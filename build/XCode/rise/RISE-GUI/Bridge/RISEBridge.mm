@@ -139,18 +139,21 @@ public:
 // inside a `ViewportFrameStore`; on each tile/frame observer
 // callback we `RenderToBuffer(RGBA16_sRGB, ForLDRDisplay(currentEV))`
 // into a bridge-owned uint16 staging buffer and fire the user's
-// `RISEImageOutputBlock` — preserving the legacy producer contract
-// (RGBA16 sRGB, then Swift `>> 8` to RGBA8) byte-for-byte at EV=0,
-// while opening up live exposure scrubbing and multi-format Save-As
-// without re-rendering.
+// `RISEImageOutputBlock` — preserving the legacy producer format
+// (RGBA16 sRGB, then Swift `>> 8` to RGBA8) at EV=0. Q16 uses
+// round-to-nearest while the legacy producer truncated, so live-preview
+// values may differ by one final LSB; the exact distinction is documented
+// at EmitFullImage_locked below. The VFS also enables live exposure
+// scrubbing and multi-format Save-As without re-rendering.
 //
-// Threading: production tile notifications never enter this helper.
-// A bounded Swift polling queue notices the FrameStore generation at
-// display cadence and calls `PollAndEmitIfDirty`; frame-complete
-// notifications still deliver a final coherent image.  The helper
-// serialises staging-buffer access with `bufferMutex_`, and invokes
-// the Swift block while holding that lock so its input pointer remains
-// valid for the duration of the call.
+// Threading: production tile notifications enter only the bounded
+// `OnTileCompleteTry` path.  It never waits for `bufferMutex_`; a busy
+// polling emit causes the tile notification to skip.  A Swift polling
+// queue also notices FrameStore generations at display cadence, and
+// frame-complete notifications deliver a final coherent image.  The
+// helper serialises staging-buffer access with `bufferMutex_`, and
+// invokes the Swift block while holding that lock so its input pointer
+// remains valid for the duration of the call.
 //
 // Lifetime: bridge owns this helper; lambda captures pass a raw
 // pointer.  The bridge tears down by (a) releasing its
@@ -224,7 +227,7 @@ public:
         lastSeenGeneration_ = vfs->Generation();
     }
 
-    // L8 round 9 — Lockless progressive-update path.
+    // L8 round 9 — Generation-gated progressive-update path.
     //
     // Replaces the synchronous per-tile `OnTileComplete` callback
     // that previously fired from rasterizer worker threads.  That
@@ -238,25 +241,22 @@ public:
     // overhead from observer serialisation even when no inversion
     // fired.
     //
-    // Post round-9: workers no longer call into the bridge from
-    // `EndTile`.  Instead, the UI thread polls `vfs->Generation()`
-    // (a `std::atomic<uint64_t>` already bumped on every EndTile)
-    // at its own cadence — typically a 30 Hz `NSTimer` driven from
+    // The UI path polls `vfs->Generation()` at its own cadence — typically a
+    // 30 Hz `NSTimer` driven from
     // the Swift `RenderViewModel`.  When the generation advances,
     // `PollAndEmitIfDirty` does a single full-frame
     // `EmitFullImage_locked` on the UI thread.  Net properties:
-    //   * Workers: zero `bufferMutex_` contention; render time is
-    //     independent of bridge / Swift / Cocoa observer work.
-    //   * UI thread: bounded ~15% utilisation during render
-    //     (~5 ms × 30 Hz emit cost); idle when generation hasn't
-    //     advanced.
+    //   * Workers: a non-blocking try_lock and one tile emit only when
+    //     acquired; they skip immediately when the polling path is busy.
+    //   * UI thread: no image conversion when generation is unchanged;
+    //     dirty cost scales with the active frame and display hardware.
     //   * Visual: smooth 30 fps update of the in-progress image.
     //     Per-pixel cadence is whatever the workers produce; UI
     //     reads at 30 Hz.
     //
-    // No-op when `vfs` is null or its generation hasn't changed
-    // since the last call.  Safe to call repeatedly (cheap when
-    // nothing is dirty).
+    // No-op when `vfs` is null or its generation hasn't changed since the
+    // last call.  Generation snapshots can briefly contend with a chain bind,
+    // so callers keep this at display cadence.
     void PollAndEmitIfDirty(Implementation::ViewportFrameStore* vfs) {
         if (!vfs) return;
         const uint64_t gen = vfs->Generation();
@@ -288,8 +288,9 @@ public:
     // only cost the user the progressive "toggle" markers — the poll can't
     // catch the microsecond EndTile→BeginTile toggle window.  Restored so
     // toggles are visible again.  MainActor flooding (the removal's stated
-    // concern) is now bounded by CoalescedImageDelivery on the Swift side,
-    // and the worker side is self-limited by the try_lock below.
+    // concern) is bounded by CoalescedImageDelivery on the Swift side, which
+    // now coalesces full-image construction as well as MainActor publication.
+    // The worker side is self-limited by the try_lock below.
     void OnTileComplete(Implementation::ViewportFrameStore* vfs,
                         const RISE::Rect& halfOpenRoi,
                         uint64_t          /*generation*/) {
@@ -327,10 +328,9 @@ public:
     //     (the bg poll will catch the FINAL pixels at its next
     //     tick).  Probability of catching the toggle is roughly
     //     (33 - bg_poll_duration) / 33, typically 60-85%.
-    //   * Workers don't block.  Per-tile observer cost is
-    //     ~bufferMutex_ try_lock + EmitRegion_locked (~50-100 µs
-    //     per tile) only when the lock is acquired; near-zero
-    //     when skipped.
+    //   * Workers don't block on bufferMutex_. An accepted callback performs
+    //     one O(tile-area) encode and region copy. Full-frame Data/CGImage/
+    //     NSImage construction runs later on the Swift coalescer queue.
     //
     // Why this doesn't re-introduce the round-1 lock inversion:
     //   * The inversion required Worker A (in observer, holding
@@ -356,9 +356,8 @@ public:
 
     // Render a sub-region of the FrameStore into the matching slice
     // of the staging buffer + fire the block with inclusive bounds.
-    // Per-tile work is O(tile-area) for the encode; FireBlock_locked's
-    // Swift receiver rebuilds a full NSImage (see RenderImageBuffer),
-    // but CoalescedImageDelivery collapses that to one MainActor drain.
+    // Per-tile work is O(tile-area) for the encode and Swift region copy.
+    // CoalescedImageDelivery performs full-image construction off-worker.
     void EmitRegion_locked(Implementation::ViewportFrameStore* vfs,
                            const RISE::Rect& halfOpenRoi) {
         unsigned int W = 0, H = 0;
@@ -688,6 +687,25 @@ private:
     std::condition_variable& mCV;
 };
 
+class ProductionRenderLease
+{
+public:
+    explicit ProductionRenderLease(std::atomic<bool>& active) : mActive(active)
+    {
+        bool expected = false;
+        mAcquired = mActive.compare_exchange_strong(
+            expected,true,std::memory_order_acq_rel);
+    }
+    ~ProductionRenderLease()
+    {
+        if( mAcquired ) mActive.store(false,std::memory_order_release);
+    }
+    bool Acquired() const { return mAcquired; }
+private:
+    std::atomic<bool>& mActive;
+    bool mAcquired = false;
+};
+
 // ============================================================
 // RISEBridge implementation
 // ============================================================
@@ -752,11 +770,13 @@ private:
     NSString* _videoOutputPath;
     RenderETAEstimator _eta;  // fed from worker thread, sampled from UI thread
     std::mutex _etaMutex;
+    std::atomic<bool> _productionRenderActive;
 }
 
 - (instancetype)init {
     self = [super init];
     if (self) {
+        _productionRenderActive.store(false, std::memory_order_relaxed);
         srand(GetMilliseconds());
 
         // Write log file to user's home directory since GUI app working directory may not be writable
@@ -1133,19 +1153,20 @@ private:
 
 // L8 round 9 — UI-thread polling entry points.  Driven by the Swift
 // side's display Timer at ~30 Hz during a render.  Each call:
-//   * Reads `vfs->Generation()` (atomic, lock-free).
+//   * Briefly snapshots the VFS chain, then reads the retained FrameStore's
+//     atomic generation.
 //   * No-ops if the generation matches the last-emitted sentinel —
 //     workers haven't produced new pixels since the previous poll.
-//   * Otherwise acquires `bufferMutex_` (uncontended in this design
-//     — workers no longer take it during their hot path), emits one
+//   * Otherwise acquires `bufferMutex_`; tile workers use a non-blocking
+//     try_lock and skip when it is held. The poll emits one
 //     full-image RenderToBuffer + block dispatch, updates the
 //     sentinel.
 //
 // The work happens on whatever thread Swift calls from — typically
-// the main run loop driving the display Timer.  Workers never wait
-// on the bridge for observer dispatch, so wall-clock render time is
-// independent of UI / Cocoa work.  See `PollAndEmitIfDirty` header
-// doc for the architecture rationale.
+// the main run loop driving the display Timer.  Tile workers may enter
+// the bounded try-only regional emit, but never wait for the polling
+// path's bridge mutex.  See `PollAndEmitIfDirty` and
+// `OnTileCompleteTry` for the two paths.
 - (void)pollProductionVFS {
     _productionVFSCallbacks->PollAndEmitIfDirty(_productionVFS);
 }
@@ -1160,26 +1181,28 @@ private:
     // full-quality, multi-output rendered result lives.  Saving
     // from the interactive (live-preview) VFS would dump the
     // low-quality preview, not the production result.
-    if (!_productionVFS || !path || !formatName) return NO;
-    IFrameEncoder* enc =
-        Implementation::FrameEncoderRegistry::Get().ByFormatName(
-            [formatName UTF8String]);
+	if (!_productionVFS || !path || !formatName) return NO;
+	ProductionRenderLease publicationLease(_productionRenderActive);
+	if (!publicationLease.Acquired()) return NO;
+	IFrameEncoder* enc =
+		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
+			[formatName UTF8String]);
     if (!enc) {
         NSLog(@"RISEBridge::saveAs: unknown format '%@'", formatName);
         return NO;
     }
     // L5a round-9 — format-aware EncodeOpts.  HDR archival formats
     // (EXR / .hdr / RGBEA) preserve scene-referred linear values
-    // > 1.0; their encoders explicitly ignore `viewTransform` and
-    // `bpp`, but pass an identity transform anyway so a future
-    // encoder change can't accidentally clip a save.  LDR formats
+    // > 1.0.  EXR consumes `bpp=32` to preserve bright fire values
+    // as FLOAT channels; the other HDR encoders ignore it.  LDR formats
     // (PNG / TIFF-8 / TGA / PPM) get the user's current display EV
     // baked in via `ForLDRDisplay(ev)`, matching the on-screen
     // viewport result the user is likely trying to preserve.
     EncodeOpts opts;
     opts.colorSpace = eColorSpace_sRGB;
     if (enc->SupportsHDR()) {
-        opts.bpp           = 0;  // ignored by HDR encoders
+		opts.colorSpace    = eColorSpace_Rec709RGB_Linear;
+        opts.bpp           = 32;
         opts.viewTransform = ViewTransform::Identity();
     } else {
         // L5e — bake in the user's currently-active tone curve so
@@ -1192,8 +1215,10 @@ private:
         opts.viewTransform = ViewTransform::ForLDRDisplay(
             static_cast<float>(ev), tc);
     }
-    return _productionVFS->SaveAs(
-        std::string([path UTF8String]), enc, opts) ? YES : NO;
+	const BOOL saved = _productionVFS->SaveAs(
+		std::string([path UTF8String]), enc, opts) ? YES : NO;
+	enc->release();
+	return saved;
 }
 
 // Allocate the PRODUCTION VFS once during bridge initialization and bind its frame-complete,
@@ -1214,8 +1239,8 @@ private:
     // against the event-loop starvation the earlier removal feared:
     // OnTileCompleteTry try_locks bufferMutex_ (skips when the bg poll owns
     // it, so workers never block), and CoalescedImageDelivery on the Swift
-    // side bounds MainActor delivery to one drain at a time regardless of the
-    // producer rate.  The frame-complete / denoise callbacks below still
+    // side bounds both full-image construction and MainActor delivery.
+    // The frame-complete / denoise callbacks below still
     // guarantee the final coherent image.
     vfs->SetTileCompleteCallback(
         [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
@@ -1247,18 +1272,12 @@ private:
 // Metal layer.  Called from `-opaqueInteractiveViewportFrameStore`
 // when the interactive viewport bridge requests the handle.
 //
-// Note (L6e-2c): the INTERACTIVE VFS deliberately does NOT call
-// `Attach(rasterizer)` — it's exposed as an opaque handle to the
-// interactive viewport which feeds it via the
-// `ViewportPreviewSink` fan-out (frame-complete only) per L5a's
-// SceneEditController-driven preview-scale oscillation.  As a
-// result the interactive VFS stays in INTERNAL-managed mode (the
-// L5a dormant-cache codepath in EnsureChain is still load-bearing
-// for resolution oscillation reuse).  Only the PRODUCTION VFS
-// migrated to direct-bind in L6e-2b.  Migrating the interactive
-// path requires routing the SceneEditController's per-pass
-// rasterizer through Attach / OnRasterizerFrameStoreChanged
-// instead of OutputImage; deferred until L6e-3.
+// L6e-3: `RISEViewportBridge.mm` owns the interactive
+// `ViewportPreviewSink`; its `OnRasterizerFrameStoreChanged` forwards every
+// per-pass canonical store to this VFS through `BindFrameStore`.  The
+// `OutputImage` fan-out remains a fallback, and is a no-op while the VFS is
+// externally bound.  Internal allocation is therefore only a fallback when a
+// producer has not published a canonical FrameStore.
 - (void)ensureInteractiveVFSCreated {
     if (_interactiveVFS) return;
     _interactiveVFS = new Implementation::ViewportFrameStore();
@@ -1286,9 +1305,9 @@ private:
 
     // (Re-)attach.  Each rasterize call begins with FreeRasterizerOutputs
     // which dropped the rasterizer's reference; we reattach here.  Attach
-    // is also safe to call repeatedly without a Free in between (it'll
-    // just stack a redundant reference) — the BOOL guard avoids that
-    // case for clarity.
+    // is also safe to call repeatedly without a Free in between because the
+    // rasterizer rejects duplicate output pointers.  The BOOL guard avoids
+    // redundant registration and bind work.
     //
     // L6e-2b/c — `Attach` (post-commit-f6b0bb4) automatically calls
     // `BindFrameStore(rasterizer->GetFrameStore())` if the rasterizer
@@ -1302,12 +1321,10 @@ private:
     // rasterizer's mFrameStore directly — no VFS-internal FrameStore
     // allocation, no FrameSink cross-store copy.
     //
-    // Caveat: MLT integrators (`mlt_rasterizer`, `mlt_spectral_rasterizer`)
-    // override `Rasterizer::AcceptsFrameStorePush()` to false (per
-    // L6e-1.1), so Job never pushes a FrameStore to them and
-    // `rasterizer->GetFrameStore()` returns null at Attach time.  VFS
-    // stays in legacy FrameSink-copy mode for those rasterizers
-    // until L6d-2 migrates MLT to multi-round-aware FrameStore writes.
+    // The legacy FrameSink-copy mode remains only for a future or
+    // noncanonical producer that does not accept the FrameStore push;
+    // current PT, BDPT, VCM, MLT, and interactive rasterizers all publish
+    // their canonical FrameStore.
     //
     // Note: the EXTERNAL FrameStore bind survives `FreeRasterizerOutputs`
     // (rasterizer drops its ref to VFS but VFS still holds the addref
@@ -1400,6 +1417,8 @@ private:
 
 - (BOOL)rasterizeAtSceneTime:(double)t {
     if (!_job) return NO;
+    ProductionRenderLease renderLease(_productionRenderActive);
+    if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
@@ -1439,6 +1458,8 @@ private:
 
 - (BOOL)rasterizeAnimation {
     if (!_job) return NO;
+    ProductionRenderLease renderLease(_productionRenderActive);
+    if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,
@@ -1470,10 +1491,11 @@ private:
             BOOL result = NO;
             try {
                 result = job->RasterizeAnimationUsingOptions() ? YES : NO;
-                if (movieOutput) movieOutput->finalize();
+                if (movieOutput && !movieOutput->finalize(result == YES) &&
+                    !(result == YES && movieOutput->HasFinalizedFirePrimaries())) result = NO;
             } catch (...) {
                 if (movieOutput) {
-                    try { movieOutput->finalize(); } catch (...) {}
+                    try { movieOutput->finalize(false); } catch (...) {}
                 }
                 rasterizer->FreeRasterizerOutputs();
                 self->_productionVFSAttachedToRasterizer = NO;
@@ -1508,6 +1530,8 @@ private:
                      bottom:(uint32_t)bottom
                 atSceneTime:(double)t {
     if (!_job) return NO;
+    ProductionRenderLease renderLease(_productionRenderActive);
+    if( !renderLease.Acquired() ) return NO;
     ViewportControllerLease lease(
         _viewportController, _viewportControllerRequired,
         _viewportControllerUsers, _viewportControllerMutex,

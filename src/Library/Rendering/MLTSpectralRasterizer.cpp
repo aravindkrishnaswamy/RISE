@@ -966,10 +966,9 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			// never displays per-round previews.  No
 			// `MarkFrameComplete` — progressive, not final.
 			CopyToFrameStore_( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
 		if( pProgressFunc ) {
@@ -1022,6 +1021,8 @@ void MLTSpectralRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1101,6 +1102,8 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {

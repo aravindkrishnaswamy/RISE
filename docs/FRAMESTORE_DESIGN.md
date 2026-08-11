@@ -16,7 +16,9 @@ chronological design/landing record; later status rows supersede early
 
 ## Implementation status
 
-**Total: 563 test assertions, 0 failures, 0 warnings on `-O3 -flto -ffast-math -Wall -pedantic`.**
+Current validation is tracked by the standalone test suite and the make,
+Deployment, and Opto warning gates; the historical per-layer counts below
+record their landing slices rather than the current aggregate.
 
 | Layer | Status | Test count | Files |
 |---|---|---|---|
@@ -36,30 +38,36 @@ chronological design/landing record; later status rows supersede early
 
 ### L4 platform integration pattern
 
-Each GUI platform (macOS SwiftUI, Windows Qt, Android Compose) follows the same recipe to integrate `ViewportFrameStore`:
+Each GUI platform uses the same canonical `ViewportFrameStore`, with a
+platform-specific presentation policy:
 
 ```cpp
 // Bridge layer (RISEBridge.mm / RenderEngine.cpp / RiseBridge.cpp):
 
-// 1. Construct ONCE, per scene/Job lifetime:
+// 1. Construct once per bridge lifetime and rebind across Job replacement
+//    (a shorter per-Job lifetime is also valid):
 auto* vfs = new ViewportFrameStore();   // Reference: refcount = 1
 
-// 2. Wire callbacks BEFORE attaching to a rasterizer.  These fire
-//    from rasterizer worker threads — platform code marshals to UI
-//    thread (Qt signals / dispatch_async / Compose LaunchedEffect):
-vfs->SetTileCompleteCallback(
-    []( const Rect& roi, uint64_t gen ) {
-        platformMarshalToUIThread( [=]{ requestRepaint( roi, gen ); } );
-    } );
+// 2. Frame completion guarantees the final coherent image on every platform.
 vfs->SetFrameCompleteCallback(
     []( unsigned frame, uint64_t gen ) {
         platformMarshalToUIThread( [=]{ requestRepaint( /*full*/, gen ); } );
     } );
 
-// 3. Attach to the active rasterizer (rasterizer's outputs list addrefs):
+// 3. Progressive delivery is deliberately platform-specific:
+//    macOS: a synchronous worker callback try-locks staging, converts only
+//           its completed tile, and hands presentation to a cadence-limited
+//           coalescer.  It skips rather than blocking when staging is busy.
+//    Windows/Android: no tile callback is installed.  The UI display clock
+//           polls FrameStore::Generation() and performs a nonblocking
+//           full-frame refresh only when the generation advances.
+
+// 4. Attach to the active rasterizer (rasterizer's outputs list addrefs).
+//    Canonical rasterizers immediately publish their external FrameStore;
+//    the internal FrameSink path is only a fallback for legacy producers:
 vfs->Attach( rasterizer );
 
-// 4. On UI-thread display refresh, render into platform-native pixel buffer:
+// 5. On UI-thread display refresh, render into platform-native pixel buffer:
 const ViewTransform xf = viewportIsHDR
     ? ViewTransform::ForHDRDisplay( exposureSliderEV )
     : ViewTransform::ForLDRDisplay( exposureSliderEV, ACES );
@@ -70,27 +78,42 @@ vfs->RenderToBuffer(
     platformBuffer, platformStride, viewportRect, fmt, xf );
 // platform code commits the buffer to its display surface
 
-// 5. On Save-As menu pick:
+// 6. On Save-As menu pick:
 IFrameEncoder* enc =
-    FrameEncoderRegistry::Get().ByExtension( pickedExtension );
+    FrameEncoderRegistry::Get().AcquireByExtension( pickedExtension );
 EncodeOpts opts;
 opts.colorSpace = pickedColorSpace;
 opts.viewTransform = ViewTransform::ForLDRDisplay( exposureSliderEV, ACES );
 vfs->SaveAs( pickedPath, enc, opts );
+safe_release( enc );
 
-// 6. On rasterizer swap (PT → BDPT in UI):
-//    Old rasterizer is destroyed (or its outputs freed); the
-//    ViewportFrameStore + FrameStore + callbacks ALL persist.
-//    Just attach to the new one:
+// 7. On rasterizer swap (PT → BDPT in UI):
+//    Keep the ViewportFrameStore and its UI callbacks, free the old
+//    rasterizer's output reference, then attach to the new rasterizer.
+//    AddRasterizerOutput publishes the new rasterizer's canonical
+//    FrameStore through OnRasterizerFrameStoreChanged; the VFS moves
+//    its observer transactionally:
 oldRasterizer->FreeRasterizerOutputs();   // see Detach() doc
 vfs->Attach( newRasterizer );
-//    No re-binding of callbacks, no FrameStore reallocation.
+//    The VFS callbacks persist; the FrameStore follows the producer.
 
-// 7. Teardown (scene unload, app exit):
+// 8. Teardown (scene unload, app exit): stop/cancel and join any render,
+//    detach/destroy the owning rasterizer outputs (or destroy the Job), and
+//    null any callbacks that capture the UI owner before its destruction.
+//    Only then release the UI owner's VFS reference:
+oldRasterizer->FreeRasterizerOutputs();
+vfs->SetTileCompleteCallback(nullptr);
+vfs->SetFrameCompleteCallback(nullptr);
+vfs->SetPreDenoiseCompleteCallback(nullptr);
+vfs->SetDenoiseCompleteCallback(nullptr);
 vfs->release();
 ```
 
-The platform-specific work is purely the marshaling layer (Qt signals / dispatch_async / Compose remember-state), the exposure slider widget, and the Save-As menu. The pixel pipeline, lifetime semantics, and rasterizer-swap behavior are all encapsulated in `ViewportFrameStore`.
+The platform-specific work is the bounded presentation policy (tile-region
+try-lock/coalescing on macOS or generation polling on Windows/Android), UI
+marshaling, the exposure slider, and Save-As.  The pixel pipeline, lifetime
+semantics, and rasterizer-swap behavior remain encapsulated in
+`ViewportFrameStore`.
 
 ### L0–L2 deviations from the original design
 
@@ -98,10 +121,10 @@ The implementation matches the original design intent in §3–§7, with these m
 
 1. **Reference convention everywhere**: all new refcounted types (`FrameStore`, `BeautyRasterImageView`, encoders) use RISE's intrusive `Reference` base instead of `std::shared_ptr`. Construction is `new T(...)` (refcount starts at 1); release via `safe_release()` or `t->release()`. Matches the rest of the library.
 2. **Tile-level `std::shared_mutex` instead of atomic seqlock**: the original design called for an atomic-seqlock with explicit memory fences. L1 round 2 review (P1) flagged this as UB on non-atomic pixel storage per the C++ memory model, regardless of fence correctness. The fix is per-tile `std::shared_mutex` — N readers + 1 writer, C++-standard data-race-free. See §4.
-3. **Observer dispatch with in-flight counter + thread-local depth**: the snapshot-then-iterate pattern from §3.6 is augmented with (a) `observerDispatchInFlight_` + `observerDispatchDone_` cv so cross-thread `RemoveObserver` waits for in-flight callbacks before returning (P2), (b) thread-local depth counter so same-thread self-detach skips the wait without deadlock (P2), (c) per-iteration recheck of `observers_` in the dispatch loop so observer A removing-and-destroying observer B in the same snapshot doesn't UAF on B's freed pointer (P2 round 3).
+3. **Serialized observer dispatch with per-observer lifetime tracking**: each FrameStore serializes its raw-pointer callbacks, snapshots the registration list, and rechecks registration immediately before claiming each callback. Per-observer in-flight counts let an external `RemoveObserver` wait for precisely the removed observer; same-thread self-detach excludes only its own active callback. A callback-side removal that would wait for a different active callback fails before mutation, and recursive publication fails before metadata or generation changes. Independent FrameStores may dispatch concurrently.
 4. **`ChannelTraits<Alpha>::Type = Chel`**, not `float`: the original design said float, but L2 review HIGH-1 found that the double→float→double roundtrip breaks byte-identity for non-1.0 alpha values. Now stored as Chel (double); 4-byte-per-pixel cost is acceptable.
 5. **`TransferFunction::Linear` is true identity**: original design had it Sanitise-clamped (NaN/Inf/negatives → 0), which is wrong for HDR archival. L1 round 2 P3 fixed this — Linear now passes through bit-identically; sanitise responsibility shifts to the LDR-fixed quantisation step in `EncodePixel`.
-6. **Two new `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` for true bit-identical scene-referred archival in RISE's native ROMM primaries (the existing `*_Linear` variants use sRGB primaries, the industry-default for EXR archival).
+6. **Two explicit ROMM export `TargetFormat` values**: `RGBA32F_ROMM_Linear` and `RGB32F_ROMM_Linear` produce scene-referred ROMM RGB (D50) archival output. RISEPel's native working space is Rec.709-linear (D65), so these targets apply the documented Rec.709→ROMM chromatic-adaptation and matrix conversion; they are not byte-identical to internal pixels. The existing `*_Linear` variants retain Rec.709/sRGB primaries and are the bit-identical float targets.
 7. **`cameraExposureEV` consumed via `FrameStore::Meta()`**: encoders read `store.Meta().cameraExposureEV` and add to `opts.viewTransform.exposureEV` to mirror legacy `FileRasterizerOutput.cpp:231`'s `staticEV + cameraEV` sum. L2 review HIGH-2 fix.
 
 ---
@@ -140,7 +163,7 @@ The implementation matches the original design intent in §3–§7, with these m
 │         │ notifies                  │  │ Channel<RISEPel> albedo? │   │ │
 │         │  (no data)                │  │ Channel<float>   depth?  │   │ │
 │         ▼                           │  └──────────────────────────┘   │ │
-│  ┌─────────────────┐                │  + tile-seqlock concurrency     │ │
+│  ┌─────────────────┐                │  + tile shared-mutex locking    │ │
 │  │ IRenderObserver │                │  + Render(fmt, xform) readback  │ │
 │  │  list           │                │  + Snapshot<T>(channel)         │ │
 │  └─────┬───────────┘                └────────┬───────────┬─────────────┘ │
@@ -209,9 +232,9 @@ The canonical artifact.
 
 ```cpp
 enum class ChannelId : uint32_t {
-    Beauty,         // RISEPel, ROMM RGB linear, always present
+    Beauty,         // RISEPel, Rec.709 RGB linear (D65), always present
     Alpha,          // float, [0,1]
-    Albedo,         // RISEPel, ROMM RGB linear (denoiser AOV / export)
+    Albedo,         // RISEPel, Rec.709 RGB linear (D65; denoiser AOV / export)
     Normal,         // Vector3, world space, unit length
     Depth,          // float, camera-space distance
     ObjectId,       // uint32_t
@@ -257,10 +280,10 @@ public:
     void MarkFrameComplete(unsigned frame);
 
     // ── observer registration ─────────────────────────────────────────
-    // Observers attach to the FrameStore, NOT to the rasterizer. The
-    // FrameStore is the persistent artifact; the rasterizer is the
-    // producer and may be swapped (PT → BDPT in the UI) without
-    // detaching observers. See §7.5.
+    // Observers attach to a specific FrameStore artifact, NOT to the
+    // rasterizer.  A producer swap may publish a new canonical store;
+    // output routes then move their store-local observer transactionally.
+    // See §7.5.
     void AddObserver     (IRenderObserver*);
     void RemoveObserver  (IRenderObserver*);
     void EnumerateObservers(IEnumCallback<IRenderObserver>&) const;
@@ -280,8 +303,10 @@ public:
     template <typename T> ConstChannelView<T> Snapshot(ChannelId) const;
 
     // Metadata.
-    const Metadata& Meta() const;
-    Metadata&       MutableMeta();      // for rasterizer to update sample counts etc.
+    Metadata Meta() const;              // synchronized immutable snapshot
+    void SetMetadata(const Metadata&);
+    void SetCameraExposureEV(double);
+    void SetFireFidelityMetadata(status, reasons, recordIds);
 
     // ── back-compat bridge ────────────────────────────────────────────
     // Returns the Beauty channel as an IRasterImage view, for code paths that
@@ -295,7 +320,7 @@ public:
 **Design decisions baked in:**
 
 - **SoA storage.** Each channel has its own buffer; AOVs allocate iff requested. `Channel<T>` is `T*`-contiguous so encoders that walk a single channel get cache-line-friendly access.
-- **Tile-aligned coordinates.** Tile size lives in `Spec`. Rasterizers pick the tile size; FrameStore mirrors it. This lets the seqlock be tile-granular and avoids per-pixel atomics.
+- **Tile-aligned coordinates.** Tile size lives in `Spec`. Rasterizers pick the tile size; FrameStore mirrors it. This keeps reader/writer exclusion tile-granular instead of imposing a whole-frame lock.
 - **Beauty channel is mandatory; others optional.** Rasterizer factories declare which channels they populate; FrameStore allocates only those.
 - **Metadata is part of the artifact.** Sample count, scene name, camera info, render time — used by EXR multichannel attrs and any future "render history" feature. Read-write so the rasterizer can update sample counts during render.
 - **`AsBeautyRasterImage()` is an explicit, scoped back-compat shim.** It lets the existing OIDN denoiser path (which takes `IRasterImage`) and the existing per-format `IRasterImageWriter` instances keep working unchanged in Phase 1. Phase 2 deletes this method.
@@ -339,12 +364,12 @@ struct ViewTransform {
 Pipeline ordering (immutable contract, encoded in `FrameStore::Render`):
 
 ```
-ROMM-linear pixel  → exposure (multiply by 2^EV)
-                   → white balance (3×3 matrix in ROMM)
-                   → ROMM → target color space matrix    [from TargetFormat]
-                   → tone curve                          [iff TargetFormat is LDR-fixed]
-                   → output transfer (sRGB / PQ / Linear) [from TargetFormat]
-                   → quantise into TargetFormat pixel layout
+Rec.709-linear D65 pixel  → exposure (multiply by 2^EV)
+                          → white balance (3×3 matrix in RISEPel working space)
+                          → Rec.709 D65 → target color space matrix [from TargetFormat]
+                          → tone curve                    [iff TargetFormat is LDR-fixed]
+                          → output transfer (sRGB / PQ / Linear) [from TargetFormat]
+                          → quantise into TargetFormat pixel layout
 ```
 
 ### 3.4 `TargetFormat` and `ColorSpace`
@@ -428,9 +453,9 @@ public:
     static FrameEncoderRegistry& Get();              // singleton, populated by RISE_API_Init
 
     void Register(std::unique_ptr<IFrameEncoder>);
-    IFrameEncoder* ByFormatName(std::string_view) const;   // "PNG"
-    IFrameEncoder* ByExtension (std::string_view) const;   // ".png"
-    std::vector<IFrameEncoder*> All() const;               // for UI menus
+    IFrameEncoder* AcquireByFormatName(std::string_view) const; // caller releases
+    IFrameEncoder* AcquireByExtension (std::string_view) const; // caller releases
+    std::vector<IFrameEncoder*> AcquireAll() const;              // release each entry
 };
 ```
 
@@ -444,7 +469,7 @@ This is the one cleanly back-compatible step: existing writers don't change at a
 
 Replaces `IRasterizerOutput` for *notification*. `IRasterizerOutput` survives in Phase 1 as the data path; in Phase 2 it's retired or kept as a deprecated shim.
 
-**Observers attach to the `FrameStore`, NOT to the rasterizer.** The FrameStore is the persistent artifact; the rasterizer is its current producer. The user changes the active rasterizer in the UI (e.g., PT → BDPT, or "Render" with different settings) → a new rasterizer is constructed against the same FrameStore → all attached observers (scene-declared file outputs, UI viewport) survive the swap and observe the new render's output without reattachment. See §7.5.
+**Observers attach to the `FrameStore`, NOT to the rasterizer.** Each rasterizer publishes its canonical FrameStore to newly attached outputs. Long-lived facades such as `ViewportFrameStore` keep their user callbacks, then transactionally move an internal observer when `OnRasterizerFrameStoreChanged` reports a different store. Observers installed directly on one FrameStore remain tied to that artifact and must be installed on a replacement explicitly. See §7.5.
 
 ```cpp
 class IRenderObserver {
@@ -471,56 +496,51 @@ public:
 
 Crucially, observer callbacks pass *no pixel data* — observers consume `FrameStore` directly. This means:
 
-- The render thread never blocks on observer work.
-- Observers can be slow (file write, network send) without back-pressuring the render.
-- The seqlock model lets observers and the rasterizer run concurrently with no mutex.
+- Callbacks are synchronous on the publishing render thread and serialized within one FrameStore. A slow callback therefore back-pressures that producer; viewport and network observers must enqueue bounded work and return promptly.
+- Frame-complete file observers intentionally keep the producer until their transactional publication finishes.
+- Pixel reads are safe because callbacks run only after the relevant tile lock has been released. Independent FrameStores do not share a dispatch lock and may publish concurrently.
 
 ---
 
-## 4. Concurrency model — tile seqlock
+## 4. Concurrency model — per-tile shared mutex
 
-Each tile has an atomic sequence counter. Writers bump it odd-then-even around their write; readers retry if the counter changed mid-read.
+Each tile owns a `std::shared_mutex`. Writers take its exclusive lock for the complete write window; readers take a shared lock while copying that tile. This replaced the original atomic-seqlock proposal because reading non-atomic pixels concurrently with a writer is a C++ data race even when sequence counters detect the tear afterward.
 
 ```cpp
 // Inside FrameStore:
-struct TileMeta {
-    std::atomic<uint64_t> seq{0};   // even = stable; odd = being written
-    Rect rect;
+struct TileLock {
+    std::shared_mutex mutex;
 };
-std::vector<TileMeta>     tiles_;
+std::unique_ptr<TileLock[]> tileLocks_;
 std::atomic<uint64_t>     globalGen_{0};
 
 void BeginTile(size_t tx, size_t ty) {
-    auto& t = tiles_[ty * tileCountX_ + tx];
-    t.seq.fetch_add(1, std::memory_order_acq_rel);   // → odd
+    tileLocks_[ty * tileCountX_ + tx].mutex.lock();
 }
 
 void EndTile(size_t tx, size_t ty) {
-    auto& t = tiles_[ty * tileCountX_ + tx];
-    t.seq.fetch_add(1, std::memory_order_acq_rel);   // → even
-    globalGen_.fetch_add(1, std::memory_order_release);
+    tileLocks_[ty * tileCountX_ + tx].mutex.unlock();
+    const uint64_t generation =
+        globalGen_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    NotifyTileComplete(tx, ty, generation);
 }
 
 // Reader inside Render():
 for each tile in roi {
-    uint64_t s1, s2;
-    do {
-        s1 = tile.seq.load(std::memory_order_acquire);
-        if (s1 & 1) { std::this_thread::yield(); continue; }
-        copy_tile_pixels_through_transform(tile, dst, fmt, xform);
-        s2 = tile.seq.load(std::memory_order_acquire);
-    } while (s1 != s2);
+    std::shared_lock<std::shared_mutex> lock(tile.mutex);
+    copy_tile_pixels_through_transform(tile, dst, fmt, xform);
 }
 ```
 
 Properties:
 
-- **Writer never blocks on readers.** A repaint spinning on a busy tile yields, but the rasterizer never spins waiting for a reader. The render thread's worst case is reading one extra cache line per tile.
-- **Reader retries are rare.** A repaint touches each tile ~once; collision probability ≈ (tile-write-time / repaint-period) per tile. For 32×32 tiles taking microseconds and a 16ms repaint loop, retries are sub-1%.
-- **No mutex.** Eliminates the rwlock contention that would otherwise grow with channel count.
-- **Memory ordering.** `acq_rel` on `EndTile`'s increment establishes happens-before with the reader's acquire load; reader sees all writes to that tile.
+- **C++-standard data-race freedom.** Shared/exclusive lock ownership provides the required happens-before relation for every channel in the tile.
+- **Concurrent readers.** Multiple viewport, encoder, and diagnostic readers may hold shared locks on the same tile.
+- **Bounded exclusion.** A writer can wait for readers and a reader can wait for a writer, but only on overlapping tiles. Read and write paths acquire tiles in row-major order.
+- **Callbacks observe unlocked pixels.** `EndTile` releases the exclusive lock before incrementing generation and dispatching `OnTileComplete`, so an observer may read the completed tile without self-deadlock.
+- **Bulk writes unlock before notification.** Resolve, denoise, clear, and AOV propagation acquire every affected tile; their scope guard releases every lock before emitting any tile callback. Observer exceptions are contained during this noexcept teardown.
 
-For "snapshot the entire frame for an encoder" (file save), use the same per-tile retry loop. If the rasterizer is mid-render, the encoder gets a *consistent-per-tile* snapshot — some tiles converged, some not, none torn. (Saving mid-render is an explicit feature; use case: "save an in-progress preview to share.")
+For "snapshot the entire frame for an encoder" (file save), readers acquire all tile shared locks in row-major order for the duration of the dump. The snapshot is untorn and writers wait until the dump completes. Production Save-As additionally uses the render/publication lease rules described by the output-provenance contract; it is not an unrestricted mid-render operation.
 
 For Phase 1 only, where `FrameSink::OutputIntermediateImage` does the writes from the rasterizer thread, the same Begin/EndTile bracketing protects the bulk-copy from `IRasterImage` into the FrameStore's beauty channel.
 
@@ -553,7 +573,7 @@ Goal: ship the new model end-to-end without touching any rasterizer factory or `
 
 - CLI: `.RISEscene` files using `file_rasterizeroutput` produce byte-identical output (the encoders dispatch to the same writers as before; same `DisplayTransformWriter` math under the hood).
 - GUI: can attach `FrameSink` + a viewport-side `IRenderObserver` to any rasterizer, get a persistent HDR FrameStore, and call `frameStore->Render(RGBA8_sRGB, ForLDRDisplay(slider))` on every viewport repaint — live exposure scrubbing works without rasterizer involvement.
-- Save-As menu: `FrameEncoderRegistry::Get().All()` populates the format dropdown; selection → `IFrameEncoder::Encode(*frameStore, ofstream, opts)`.
+- Save-As menu: `FrameEncoderRegistry::Get().AcquireAll()` provides a retained snapshot for populating the format dropdown; the UI copies the labels then releases every entry. Selection acquires the chosen encoder through `AcquireByFormatName` or `AcquireByExtension`, calls the transactional `ViewportFrameStore::SaveAs`, then releases it.
 - HDR display (Mac EDR): viewport calls `frameStore->Render(RGBA16F_ExtendedLinearSRGB, ForHDRDisplay(slider))`.
 
 ### What's still suboptimal
@@ -656,30 +676,17 @@ Phase 1: keeps working (the helper still owns its `RISERasterImage`; the FrameSt
 
 ### 7.5 Rasterizer-swap and FrameStore-replacement behavior
 
-The observer-on-FrameStore (rather than observer-on-rasterizer) attachment model means observers survive most lifecycle transitions automatically:
+The observer-on-FrameStore model keeps notifications tied to the artifact whose pixels they describe. The current implementation publishes a rasterizer's canonical store to every newly attached `IRasterizerOutput`; `ViewportFrameStore` then moves its internal observer transactionally while preserving its UI callbacks.
 
 | Transition | FrameStore | Observers | Notes |
 |---|---|---|---|
 | User clicks Render again, same scene + same rasterizer | reused | reused | Trivial; new frame in same buffer. |
-| User picks a different rasterizer (PT → BDPT) in UI | reused | reused | New rasterizer constructed against the existing FrameStore. Scene-declared file outputs and the viewport observer stay attached and emit on the new render's frames. **This is the user-visible benefit of attaching to the artifact rather than the producer.** |
-| User changes camera resolution | replaced | re-attached by Job | FrameStore is sized at construction; resolution change → allocate new FrameStore. The Job re-runs the scene-side observer attachment for the new store. The UI viewport observer subscribes on a `Job::OnFrameStoreReplaced` signal. The one transition where observer migration is non-automatic. |
+| User picks a different rasterizer (PT → BDPT) in UI | follows the new rasterizer | VFS observer moved; UI callbacks reused | `Attach(newRasterizer)` calls `AddRasterizerOutput`, which immediately sends the new canonical store through `OnRasterizerFrameStoreChanged`. The VFS prepares registration and removal before locking its chain, quiesces old callback claims, acquires one observer mutex per distinct store in deterministic address order, and commits the observer handoff with the new chain pointers. |
+| User changes camera resolution | replaced by rasterizer/Job | VFS observer moved; store-local observers rebuilt | `Rasterizer::SetFrameStore` notifies attached outputs. VFS forwards that notification to the same transactional bind path. Observers owned by scene/file routes are installed on the replacement store by their owning construction path. |
 | User loads a different scene | replaced | rebuilt from new scene | Wholly new Job state; new scene's `file_rasterizeroutput` chunks build their own observer set. |
 | User adds a temporary render-to-file mid-session ("Save As…" with auto-rerender) | reused | observer added then removed | UI attaches a one-shot `FileEncoderObserver` for the next `OnFrameComplete`, then removes it. |
 
-The *only* lifecycle event that requires re-attaching observers is FrameStore replacement, which is also the only event that genuinely invalidates the buffer's contents anyway. Attaching observers at the Job/scene level (rather than to a transient rasterizer) means rasterizer construction stays cheap and stateless from the observer's point of view.
-
-**Implementation note.** `Job` (or whatever owns the current `FrameStore`) provides:
-
-```cpp
-class IJob /* …existing methods… */ {
-public:
-    virtual std::shared_ptr<FrameStore> GetFrameStore() const = 0;
-    using FrameStoreReplacedCallback = std::function<void(std::shared_ptr<FrameStore>)>;
-    virtual void OnFrameStoreReplaced(FrameStoreReplacedCallback) = 0;
-};
-```
-
-The UI viewport binds to `OnFrameStoreReplaced`; on fire, it removes its observer from the old store and registers it on the new one. Scene-declared file observers are reattached by `Job` itself when it builds the new FrameStore (the original observer construction lives in the chunk parser's `Finalize`; on resolution change Job re-invokes the equivalent).
+FrameStore replacement is the lifecycle boundary that requires observer migration. There is no `Job::OnFrameStoreReplaced` callback and no `std::shared_ptr` ownership path. The implemented notification boundary is `IRasterizerOutput::OnRasterizerFrameStoreChanged(FrameStore*)`, driven by `Rasterizer::AddRasterizerOutput` and `Rasterizer::SetFrameStore`. `ViewportFrameStore::BindFrameStore` uses the repository's intrusive references and provides the strong guarantee: a replacement construction or registration failure leaves the previous published chain usable.
 
 ---
 
@@ -735,10 +742,13 @@ User swaps rasterizer in UI (PT → BDPT) — illustrating §7.5:
 
 ```
 GUI: user picks BDPT
-  → job.ConstructRasterizer("bdpt_pel_rasterizer", existingFrameStore)  // same store
-  → previousRasterizer destroyed
-  → frameStore observer list UNCHANGED (file outputs + viewport still attached)
-  → next Render: BDPT writes into same store, same observers fire
+  → job constructs the BDPT rasterizer and its canonical FrameStore
+  → attaching ViewportFrameStore makes the new rasterizer publish that store
+  → VFS quiesces its old BridgeObserver, registers a replacement on the new
+    store, and commits the observer handoff with its active-store pointers
+  → previous rasterizer/store references drain after the handoff
+  → next Render: BDPT writes the new store; the same UI callbacks fire through
+    the replacement store-local observer
 ```
 
 ---
@@ -776,14 +786,16 @@ User drags exposure slider:
     just kicks the next display refresh — no rasterizer involvement.
 
 User clicks "Save As PNG…":
-    enc = FrameEncoderRegistry::ByExtension(".png")
+    enc = FrameEncoderRegistry::AcquireByExtension(".png")
     EncodeOpts opts{ .viewTransform = ForLDRDisplay(currentSliderEV, ACES) }
-    enc->Encode(*store, ofstream(path), opts)
+    viewportFrameStore->SaveAs(path, enc, opts)
+    enc->release()
 
 User clicks "Save As EXR…":
-    enc = FrameEncoderRegistry::ByExtension(".exr")
+    enc = FrameEncoderRegistry::AcquireByExtension(".exr")
     EncodeOpts opts{ .viewTransform = Identity() }   // scene-referred linear
-    enc->Encode(*store, ofstream(path), opts)
+    viewportFrameStore->SaveAs(path, enc, opts)
+    enc->release()
 ```
 
 Phase 2 is identical at the GUI level — the GUI was already pulling from FrameStore.
@@ -853,7 +865,7 @@ Status legend: ✅ shipped, ◐ partially/substantially shipped, ⏳ pending.
 | **L2** | ✅ | `IFrameEncoder` + `FrameEncoderRegistry` + 7 concrete encoders (PNG, EXR, TIFF, HDR, RGBEA, TGA, PPM) wrapping existing writers; `BeautyRasterImageView::DumpImage` walks pixels in legacy-matching row-major order | 69-assertion test: byte-identical regression to legacy `FileRasterizerOutput::WriteImageToFile` across all 7 formats with various opts (LDR with/without tone curve, HDR variants, ROMM primaries, edge dimensions 1×1 / 17×16 / 3×64, non-1.0 alpha, cameraExposureEV summing, registry lookup case-insensitive + by-extension) |
 | **L3** | ✅ | `FrameSink` + `FileEncoderObserver` + `FileRasterizerOutput` shim that routes to FrameStore + IFrameEncoder under the hood | 60-assertion test: byte-identical to L2 IFrameEncoder for all 7 formats × multiple opt combinations, denoise dual-write (PreDenoise → "<pattern>.png" + Denoise → "<pattern>_denoised.png"), animation `bMultiple=true` frame-numbered output, multi-frame reuse (FrameStore correctly refilled across calls), camera+static EV summing, HDR cameraEV-zeroing.  Manual smoke: `scenes/Tests/Geometry/shapes.RISEscene` runs end-to-end through the new pipeline and produces valid PNG + denoised-PNG output. |
 | **L4a** | ✅ | Platform-agnostic `ViewportFrameStore`: facade owning (FrameStore + FrameSink + observer) with Attach/Detach/RenderToBuffer/SaveAs API + tile/frame/preDenoise/denoise callbacks for platforms to wire up.  L1 `BeautyRasterImageView::DumpImage` hardened to acquire all per-tile shared_locks (mid-render Save-As is now data-race-free). | 43-assertion test: lazy chain alloc, callbacks fire on the right events with the right (frame, generation), `RenderToBuffer` reads correctly + respects exposure, `SaveAs` byte-identical to L2 IFrameEncoder direct path, rasterizer-swap simulation, resolution-change reallocation, multi-frame reuse, mid-render concurrent SaveAs (writer + reader threads) produces non-empty files, cameraExposureEV propagates through Meta() and survives reallocation. |
-| **L4b/c/d** | ✅ shipped (4 review rounds) | 53 (L4a regression incl. region-bounded RenderToBuffer guard) | GUI viewport wiring per platform — production-render path migrated on all three: macOS SwiftUI `RISEBridge.mm` replaces `BlockRasterizerOutput` with VFS + RGBA16_sRGB read-back into a `ViewportFrameStoreCallbacks` helper that fires the existing `RISEImageOutputBlock`; Windows Qt `RenderEngine.{cpp,h}` replaces `ImageOutputAdapter` with VFS + RGBA8_sRGB direct into `m_pixelBuffer` + `imageUpdated()` Qt signal; Android `RiseBridge.{cpp,h}` + `RiseCallbacks.{cpp,h}` + `rise_jni.cpp` replaces `RasterizerOutputAdapter` with VFS + RGBA8_sRGB direct into `m_framebuffer` + `onRegionInvalidated()` JNI callback.  Each platform adds `setViewExposureEV(ev)` (live exposure scrubbing without re-render) and `saveAs(path, format, ev)` (multi-format Save-As via L2 IFrameEncoder).  Interactive-viewport `ViewportPreviewSink` (macOS / Android) deferred to a follow-up landing — this landing covers the production-render path only.  **Note**: Xcode RISE-GUI target now requires `gnu++17` (`std::shared_mutex` is C++17); was `compiler-default` = C++14.  Project file bumped. |
+| **L4b/c/d** | ✅ shipped (4 review rounds) | 53 (L4a regression incl. region-bounded RenderToBuffer guard) | GUI viewport wiring per platform — production-render path migrated on all three: macOS SwiftUI `RISEBridge.mm` replaces `BlockRasterizerOutput` with VFS + RGBA16_sRGB read-back into a `ViewportFrameStoreCallbacks` helper that fires the existing `RISEImageOutputBlock`; Windows Qt `RenderEngine.{cpp,h}` replaces `ImageOutputAdapter` with VFS + RGBA8_sRGB direct into `m_pixelBuffer` + `imageUpdated()` Qt signal; Android `RiseBridge.{cpp,h}` + `RiseCallbacks.{cpp,h}` + `rise_jni.cpp` replaces `RasterizerOutputAdapter` with VFS + RGBA8_sRGB direct into `m_framebuffer` + `onRegionInvalidated()` JNI callback.  Each platform adds `setViewExposureEV(ev)` (live exposure scrubbing without re-render) and `saveAs(path, format, ev)` (multi-format Save-As via L2 IFrameEncoder). Android's interactive `ViewportPreviewSink` now fans its normal output through the interactive VFS; its manual blit remains fallback-only when that VFS is unavailable. **Note**: Xcode RISE-GUI target now requires `gnu++17` (`std::shared_mutex` is C++17); was `compiler-default` = C++14. Project file bumped. |
 | **L5a** | ✅ shipped (2 review rounds) | manual EDR-capable Mac smoke | GUI: Mac EDR display path (`RGBA16F_ExtendedLinearSRGB` via CAMetalLayer + MTKView render pipeline).  Bridge: new `RISEHDRImageOutputBlock` typedef (binary16 / extended-linear-sRGB), `-setHDRImageOutputBlock:`, `-setHDREnabled:`, `-displayMaxEDRHeadroom`.  ViewportFrameStoreCallbacks helper now selects `RGBA16F_ExtendedLinearSRGB + ForHDRDisplay(ev)` vs `RGBA16_sRGB + ForLDRDisplay(ev)` per the HDR toggle; both are 8 bpp so the same staging buffer fits both modes.  Swift: new `MetalEDRView` (NSViewRepresentable wrapping MTKView) + durable `MetalEDRRenderer` (owned by RenderViewModel; binds the HDR block exactly once for the model's lifetime to avoid SwiftUI Coordinator-resurrection races).  Render pipeline samples the source MTLTexture with bilinear filtering + aspect-fit letterboxing in a fullscreen-quad fragment shader (no `drawableSize` mutation; preserves Retina sharpness).  EDR availability probe queries `window.screen.maximumExtendedDynamicRangeColorComponentValue` (not `mainScreen` which follows keyboard focus); subscribes to `NSWindow.didChangeScreenNotification` so the toggle dims the moment the user drags the window between EDR-capable and SDR monitors.  ContentView toggle disabled when `!edrAvailable`; interactive editor pointer events suspended while EDR preview is on.  See "Review rounds completed" below for L5a round-1 + round-2 review summaries. |
 | **L5b** | ✅ shipped | GUI: Windows HDR display path (scRGB via DXGI swap chain) | `HDRRenderWidget` + shared HDR FrameStore transform |
 | **L5c** | ✅ shipped | PQ encoding path for HDR-aware file export | HDR10 PNG and desktop video encoders carry PQ/BT.2020 metadata |
@@ -882,10 +894,10 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
   - **P2-A/B (Defensive callback nulling)**: VFS callback lambdas capture `this` (Qt/Android) or helper+vfs raw pointers (macOS).  The brief argued `m_job->release()` joins workers before VFS release, draining observer dispatch — true in the typical case via the L1 in-flight-counter / cv-wait machinery.  But defense-in-depth costs nothing: each platform's teardown path now nulls all four VFS callbacks (`SetTileCompleteCallback(nullptr)` etc.) before `vfs->release()`, so any future late-fire (e.g. due to a bug) gracefully no-ops instead of dereferencing freed memory.
   - **P2-C (macOS `setImageOutputBlock:` race)**: `_vfsCallbacks` was lazily constructed inside `-ensureVFSAttachedToRasterizer:` on the rasterize-spawning thread.  Concurrent `setImageOutputBlock:` from the UI thread raced the unique_ptr load against the lazy write.  Fix: eagerly construct `_vfsCallbacks` in `-init` (cheap — helper just owns a buffer that's allocated on first emit + an atomic EV).  `setImageOutputBlock:` now unconditionally forwards to `_vfsCallbacks->SetBlock(...)` which locks `bufferMutex_`.  Bonus: `-ensureVFSAttachedToRasterizer:` no longer needs the inner `if (!_vfsCallbacks)` guard — observer slots are bound once at VFS-construction time, before any Attach.
   - **P2-D (Chain-mutex race on dim read)**: Qt's `onVFSTileComplete` and Android's `onVFSTileComplete` read `Width()/Height()` directly off `vfs->GetFrameStore()` — but `GetFrameStore()` is a raw chain-pointer read with no lock.  A concurrent rasterizer-thread `EnsureChain` reallocation can free the pointer between the `GetFrameStore()` read and the `Width()` deref.  This is the exact race that L4 round-2 P1-2's `chainMutex_` snapshot pattern was added to close, but the new bridges bypassed it.  Fix: added `ViewportFrameStore::GetDimensions(unsigned& w, unsigned& h)` that uses the existing `SnapshotFrameStore` helper (chain-mutex shared lock + addref + release pattern) to read dims safely.  All three platforms now call `vfs->GetDimensions(W, H)` instead of `vfs->GetFrameStore()->Width()/Height()`.  New regression test `TestLazyAllocation` checks that `GetDimensions` returns (0,0) before chain alloc and the correct dims after — bumped ViewportFrameStoreTest from 49 to 51 assertions.
-  - **Deferred (P1)**: `Rasterizer::FreeRasterizerOutputs()` is not synchronized with the worker thread's iteration of the `outs` list (`PixelBasedRasterizerHelper.cpp:303-330`).  Pre-existing latent issue, not introduced by L4b/c/d, but the new pattern (persistent VFS across renders, `FreeRasterizerOutputs() + Attach()` in every rasterize) makes it slightly more visible.  The library-side fix is to add a mutex around `outs` in `Rasterizer.{h,cpp}`; out-of-scope for L4b/c/d.  Spawned as a follow-up task.
+  - **Resolved output-list synchronization**: `Rasterizer` now protects `outs` with `outsMutex`; render and enumeration paths retain a snapshot under the mutex, while remove/free swap entries out under the mutex and release the last references afterward so destructors may safely re-enter output APIs.  This closes the earlier `FreeRasterizerOutputs()` versus worker-iteration race.
   - **Deferred (P3)**: `EncodeOpts.bpp = 8` unconditionally on all three platforms' `saveAs` (so 16bpc-PNG / 16bpc-TIFF aren't reachable through this surface — only via the legacy `file_rasterizeroutput` chunk in scene files).  Defer to a follow-up that exposes per-format options on the platform `saveAs` API.
   - **Deferred (P3)**: Qt `LogPrinterAdapter` is leaked at engine destruction (engine retains a Reference but never releases it) — pre-existing bug, fix in a separate landing.
-  - **Deferred (P3)**: Android viewport-preview sink (still using `>> 8` truncation in legacy `writeDirtyRegion`) and the new VFS-driven production-render sink (using round-to-nearest) produce visually different bytes for the same input.  Out-of-scope for this landing; the viewport sink migration is a follow-up that will unify both paths through VFS.
+  - **Resolved Android interactive VFS routing**: `ViewportPreviewSink` now fans normal output through the interactive VFS, so production and interactive display conversion share the same round-to-nearest path. The manual `writeDirtyRegion` blit remains only as an unavailable-VFS fallback.
 - **L5a review round 1**: 3 P1s + 4 P2s + 2 P3s identified by the L5a adversarial pass.  P1s + the easy P2s landed; the rest documented as in-place comments or deferred to a follow-up.
   - **P1-1 (Coordinator resurrection)**: SwiftUI may build a NEW MetalEDRView wrapper before the old one's `dismantleNSView` runs, leading to a sequence where old-Coordinator-A binds the HDR block, new-Coordinator-B binds (replacing A), then A's late dismantle clears B's binding — frames go missing until the LDR path resumes.  **Fix**: introduce `MetalEDRRenderer` as the durable, RenderViewModel-owned holder of Metal state + the bridge HDR-block binding.  SwiftUI's MetalEDRView wrapper just borrows the renderer as its Coordinator (`makeCoordinator() returns renderer`).  The renderer binds the HDR block ONCE in its initialiser and unbinds in its `deinit`; SwiftUI rebuilds of the wrapper struct don't touch the binding.  `attach(view:)`/`detach()` only update a weak `view` reference for the `setNeedsDisplay` callback; the bridge binding is invariant across rebuilds.
   - **P1-2 (drawableSize race + Retina blur)**: original code called `view.drawableSize = CGSize(width: srcW, height: srcH)` from `upload()`'s `DispatchQueue.main.async`, then ran an `MTLBlitCommandEncoder.copy` from texture → drawable.  Two real bugs: (a) AppKit's window-resize handler can clobber `drawableSize` between our setter and our `setNeedsDisplay`, leaving the blit copying mismatched dims; (b) on Retina, forcing `drawableSize` to (often-smaller) source dims means the layer up-samples 2-3× via `magnificationFilter`, producing a visibly blurry preview.  **Fix**: replace the blit with a fullscreen-quad render-pipeline pass (vertex stage emits a [-1, 1]² triangle strip + UVs scaled for aspect-fit letterboxing; fragment stage samples the source MTLTexture with linear filtering).  `drawableSize` is no longer mutated — MTKView picks `bounds.size × backingScaleFactor` natively, so Retina sharpness is preserved and the OS-driven resize doesn't fight us.  The shader is built inline via `device.makeLibrary(source:)` so there's no separate `.metal` file to add to the project.
@@ -899,10 +911,11 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
   - **P2-A (HDR mode-snapshot race)**: `EmitRegion_locked` and `EmitFullImage_locked` originally read `hdrEnabled_.load()` TWICE per emit — once inside `SelectTargetFormatAndXform` to choose the TargetFormat for `RenderToBuffer`, then again inside `FireBlock_locked` to choose which Swift block (LDR vs HDR) to invoke.  `setHDREnabled:` mutates `hdrEnabled_` atomically WITHOUT taking `bufferMutex_`, so a UI toggle landing between the encode and the dispatch could deliver bytes encoded in one format through the callback expecting the other — `RGBA16_sRGB` uint16 bytes re-interpreted as half-floats by the Metal path, or vice versa.  **Fix**: snapshot `useHDR` (and `ev`) ONCE at the start of each emit and pass them to BOTH `SelectTargetFormatAndXform(useHDR, ev, ...)` and `FireBlock_locked(useHDR, ...)`.  Eliminates the window without needing `setHDREnabled` to participate in `bufferMutex_`.  No change to `setHDREnabled`'s API.
   - **P2-B (GPU-CPU MTLTexture race)**: `MetalEDRRenderer.upload()` called `texture.replace(region:..)` from rasterizer worker threads on the SAME `.shared`-storage MTLTexture that `draw(in:)` was sampling via the render pipeline.  Apple's contract: for `.shared` storage, CPU writes done after a `cmd.commit()` but before the GPU has finished sampling are racy — the in-flight render pass can see torn pixels (mixed old/new half-float data, especially visible in regions where one tile completed during the GPU sample of a neighbouring tile).  The previous design's `NSLock` only guaranteed Swift-side coherence, not CPU-vs-GPU memory coherence.  **Fix**: rearchitected as **CPU staging buffer + display texture + frame semaphore**.  Worker threads write region updates into a CPU-side `[UInt16]` (`stagingBuffer`) under `stagingLock`.  `draw(in:)` is the SINGLE writer of the GPU's `displayTexture`: under `inflightSem.wait()`, it locks `stagingLock`, full-image-`replace`s the displayTexture from `stagingBuffer`, releases `stagingLock`, encodes the render pass, and adds a `cmd.addCompletedHandler` that signals `inflightSem` after GPU sampling finishes.  The semaphore caps in-flight GPU work at 1, so the CPU-side `replace` of `displayTexture` never overlaps GPU sampling of its previous contents.  Trade-off: per-draw full-image replace (~8MB / 480 MB/s at 1024² @ 60 Hz — trivial on Apple Silicon's ~200 GB/s unified-memory bandwidth) replaces the per-tile region replace; the per-tile cost moves into `stagingBuffer`'s region memcpy, which is the same shape as before.  Incremental rendering preserved: `stagingBuffer` accumulates region updates across multiple worker fires; each `draw(in:)` picks up the latest state.  Build clean; full library tests still pass except a pre-existing `BDPTVertexRIGRebuildTest` failure that landed via the `Uniform Integrator exploration strategy` upstream commit, unrelated to L5a.
 - **L4b/c/d review round 5**: 2 P1s (one per platform).
-  - **P1-A (Android JNI global ref UAF)**: `RenderViewModel.kt:327` calls `nativeSetCallback(null)` at ViewModel `onCleared` without first joining the `Dispatchers.IO`-launched `nativeRasterize` coroutine — the comment at `RenderViewModel.kt:313` explicitly documents this ("native render is still blocking and winding down").  Meanwhile the new VFS path `RiseBridge::onVFSTileComplete` and the existing `onProgressTick` / `onLogLine` / `ensureFramebuffer` / `writeDirtyRegion` all `JNI->CallVoidMethod` against `m_kotlinCallback` from rasterizer worker threads.  `setCallback(nullptr)` did `DeleteGlobalRef` unsynchronized → race against in-flight `CallVoidMethod` on a stale jobject.  Fix: added `mutable std::mutex m_kotlinCallbackMutex` guarding `m_kotlinCallback`.  All five reader sites (onSceneReady, onRegionInvalidated × 2, onProgress, onLog) plus the `setCallback` writer plus the dtor cleanup take the mutex; readers hold it across the `CallVoidMethod` call so a concurrent `setCallback(null)` can't `DeleteGlobalRef` mid-call.  Holding the lock across CallVoidMethod is safe because the Kotlin callback handlers (Compose state updates) don't re-enter the bridge.  Hottest call site (`onProgressTick` — fires hundreds of times per render) eats the lock cost rather than re-open the UAF window.
+  - **P1-A (Android JNI global ref UAF)**: `RenderViewModel.kt:327` calls `nativeSetCallback(null)` at ViewModel `onCleared` without first joining the `Dispatchers.IO`-launched `nativeRasterize` coroutine — the comment at `RenderViewModel.kt:313` explicitly documents this ("native render is still blocking and winding down").  Meanwhile the new VFS path `RiseBridge::onVFSTileComplete` and the existing `onProgressTick` / `onLogLine` / `ensureFramebuffer` / `writeDirtyRegion` all deliver through the Kotlin callback from rasterizer worker threads.  `setCallback(nullptr)` originally did `DeleteGlobalRef` unsynchronized → race against in-flight `CallVoidMethod` on a stale jobject.  Current fix: `m_kotlinCallbackMutex` protects creation of a temporary JNI local reference and callback replacement/deletion; delivery releases the mutex before `CallVoidMethod` and keeps the local reference alive across the call.  This closes the global-ref UAF without making callback re-entry deadlock on the callback mutex; owner queries and cancellation may safely re-enter from Kotlin callbacks.
   - **P1-B (Qt load thread untracked)**: `loadScene()` started a `QThread::create([this]{ m_job->LoadAsciiScene(...); QMetaObject::invokeMethod(this, ...); })` that the round-4 `m_renderThread` slot never tracked.  `~RenderEngine()` only joined the render slot, so closing the app during scene load races `m_job` access on the load worker against `m_job->release()` in the dtor (and the `QMetaObject::invokeMethod(this,...)` queued lambda against `this` destruction).  Fix: renamed `m_renderThread` → `m_workerThread` and `waitForRenderToFinish` → `waitForWorkerToFinish`.  New `trackWorkerThread(QThread*)` helper centralises the publish-and-track pattern (sets `m_workerThread` under mutex, registers `Qt::DirectConnection` finished-signal that auto-clears, registers `deleteLater`).  All four `QThread::create` sites in the engine (loadScene + startRender + startAnimationRender) now call `trackWorkerThread(thread)` before `thread->start()`.  Load and render don't overlap in practice (UI gates Render on `state==SceneLoaded`) so a single tracking slot is sufficient.  `loadScene` and `clearScene` and the dtor all call `waitForWorkerToFinish()` before touching `m_job` / `m_viewportFrameStore`, so mid-flight worker activity is always drained before scene-state transitions.
 - **L4b/c/d review round 7**: 1 P1 (perf regression) + 1 P2 (stale events).
-  - **P1 (4× perf regression on macOS)**: VFS `OnTileComplete` callback fired the bridge's `RenderToBuffer(full-image-roi)` on every tile event.  For a 1024×1024 image with 32×32 tiles that's 1024 full-image renders per frame instead of 1024 tile-area renders — exactly the source of the 4× wall-time regression a Mac client run surfaced.  The legacy `Job::CallbackRasterizerOutputDispatch::OutputIntermediateImage` only ran `Integerize<sRGBPel,unsigned short>(65535)` over the dirty rect (not the full image) before firing the user callback with the rect's bounds; my L4b/c/d initial drop ignored the rect and re-rendered the whole frame each fire.  **Fix on all three platforms**: `OnTileComplete` lambdas now receive the half-open `roi` from the FrameStore observer and pass it through to `RenderToBuffer`.  The bridges compute `dst = bufferBase + (y0 * W + x0) * bpp` and pass FULL row stride so the kernel `dst[(y - y0) * dstStride + (x - x0) * bpp]` lands pixels at their actual image-space positions — only the dirty region is touched, the rest of the buffer keeps its prior contents (incremental rendering, exactly like legacy).  The on-screen consumer (Swift `RenderImageBuffer.handleOutput` / Qt QImage / Android onRegionInvalidated) gets the inclusive bounds `(y0, x0, y1-1, x1-1)` so its per-pixel `>> 8` walk stays region-bounded too.  Frame-complete callbacks (which fire once per frame, not per tile, and have no roi) keep the full-image path so post-denoise / post-resolve coherence is preserved.  Per-tile work is now O(tile-area) instead of O(image-area).  **New regression test** in `TestRenderToBuffer`: fills a 16×16 buffer with sentinel `0xAB`, calls `RenderToBuffer` with a 4×4 sub-region at (4,4)→(8,8), then asserts (a) every pixel OUTSIDE the region still equals `0xAB` (the perf-fix invariant — region-bounded must not touch other pixels), and (b) every pixel INSIDE the region has alpha=255 (rendered).  Tests bumped from 51 to 53 assertions.
+  - **P1 (4× perf regression on macOS)**: VFS `OnTileComplete` callback fired the bridge's `RenderToBuffer(full-image-roi)` on every tile event.  For a 1024×1024 image with 32×32 tiles that's 1024 full-image renders per frame instead of 1024 tile-area renders — exactly the source of the 4× wall-time regression a Mac client run surfaced.  The legacy `Job::CallbackRasterizerOutputDispatch::OutputIntermediateImage` only ran `Integerize<sRGBPel,unsigned short>(65535)` over the dirty rect (not the full image) before firing the user callback with the rect's bounds; my L4b/c/d initial drop ignored the rect and re-rendered the whole frame each fire.  **Fix at that review round, on all three platforms**: `OnTileComplete` lambdas received the half-open `roi` from the FrameStore observer and passed it through to `RenderToBuffer`.  The bridges computed `dst = bufferBase + (y0 * W + x0) * bpp` and passed FULL row stride so the kernel `dst[(y - y0) * dstStride + (x - x0) * bpp]` landed pixels at their actual image-space positions — only the dirty region was touched, the rest of the buffer kept its prior contents (incremental rendering, exactly like legacy).  The on-screen consumer (Swift `RenderImageBuffer.handleOutput` / Qt QImage / Android onRegionInvalidated) received the inclusive bounds `(y0, x0, y1-1, x1-1)` so its per-pixel `>> 8` walk stayed region-bounded too.  Frame-complete callbacks (which fire once per frame, not per tile, and have no roi) kept the full-image path so post-denoise / post-resolve coherence was preserved.  Per-tile work at that point became O(tile-area) instead of O(image-area).  **Regression test** in `TestRenderToBuffer`: fills a 16×16 buffer with sentinel `0xAB`, calls `RenderToBuffer` with a 4×4 sub-region at (4,4)→(8,8), then asserts (a) every pixel OUTSIDE the region still equals `0xAB` (the region-bounded API invariant), and (b) every pixel INSIDE the region has alpha=255 (rendered).  Tests bumped from 51 to 53 assertions.
+    - **Android cadence update (2026-08-10):** Android subsequently removed its production tile callback entirely. Its normal path now performs a generation-gated full-frame conversion at display cadence plus frame completion; render workers do no JNI/display conversion. The region-bounded rule above remains current for the macOS and Windows tile-callback paths and for the shared `RenderToBuffer` API.
   - *(2026-07-12 update: the completion lambdas' unconditional `SetProgress(nullptr)` described in these round entries has since become a conditional `Job::ClearProgressIfCurrent(progressCb)` -- a CAS that clears the slot only when it still holds the adapter this render installed, so a UI-thread clear can never stomp a callback an agent render installed from the coordinator worker.  The UAF/drain analysis above is unaffected.)*
   - **P2 (Qt stale queued events leak across loadScene / clearScene)**: round-6 added `removePostedEvents(this)` only in `~RenderEngine()`.  Worker threads in `loadScene` / `startRender` / `startAnimationRender` post `Qt::QueuedConnection` completion lambdas to the UI thread; if the user clicks Load (or Clear) while a render is in flight, `m_cancelFlag = true; waitForWorkerToFinish()` joins the worker BUT the queued completion lambda is still in the UI-thread event queue.  The new scene starts loading; meanwhile Qt delivers the stale completion lambda which calls `setState(Completed/Cancelled/Error)` + `m_elapsedTimer->stop()` + emits stale `progressUpdated` / `imageUpdated` / `logMessage` for the previous scene — overwriting the new state.  The QPointer guard from round-6 doesn't help because the engine is still alive (just transitioning scenes, not destroyed).  **Fix**: moved `QCoreApplication::removePostedEvents(this)` from the dtor INTO `waitForWorkerToFinish()`, so every caller (dtor + loadScene + clearScene) drains stale queued events after joining the worker.  RenderEngine only receives events it posts to itself, so removing all events for `this` is acceptable.  Comment in the dtor updated to point at the centralised drain.
 - **L4b/c/d review round 6**: 1 P1 — Qt queued-lambda UAF after `waitForWorkerToFinish()`.
@@ -925,10 +938,10 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
    Value type (POD-ish struct, ~40 bytes). Cheap to pass by const ref into `Render`. Recommend value.
 
 5. **`Render` thread-safety — is it required to be callable from multiple threads concurrently?**
-   The seqlock makes it *safe*, but is it useful? Use case: viewport repaints + an Auto-Save thread + a network mirror thread, all reading independently. Recommend yes — costs nothing extra.
+   **Resolved:** yes. Per-tile shared locks allow viewport repaints, an encoder, and diagnostics to read concurrently. Readers contend only with writers or an exclusive full-frame stage on overlapping tiles.
 
 6. **Tile size: rasterizer-driven or FrameStore-driven?**
-   Today the rasterizer picks. If FrameStore stores at a different tile size, the seqlock granularity mismatches the rasterizer's actual write granularity (false sharing). Recommend: FrameStore::Spec accepts a `tileEdge` and the rasterizer factory queries it; or the factory passes its preferred tile size into `Spec`.
+   **Resolved:** `FrameStore::Spec` carries `tileEdge`; the bound rasterizer and FrameStore use that common tile partition so lock granularity matches actual write granularity.
 
 7. **`IRenderObserver` callbacks — main-thread dispatch or render-thread dispatch?**
    Render-thread is simpler (today's `IRasterizerOutput` works that way). Each platform's GUI bridge already marshals to the UI thread via Qt signals / `dispatch_async` / Compose `LaunchedEffect`. Recommend: render-thread dispatch, document loud-and-clear.
@@ -946,7 +959,7 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
 ## 13. Risks
 
 - **Performance regression in Phase 1 from the redundant copy.** Worst case is ~one frame's worth of memory bandwidth per tile completion. On a 4K beauty-only render (~32MB) at 100ms tiles that's ~320 MB/s — manageable, but measure on Sponza-class scenes before committing. The [performance-work-with-baselines](skills/performance-work-with-baselines.md) skill applies.
-- **Tile-seqlock subtleties.** Reader spin-yield can starve under heavy contention; mitigation is the read-side `std::this_thread::yield()` and the fact that writes are short. Adversarial-review the FrameStore concurrency carefully (L1 gate).
+- **Tile-lock contention.** Long readers delay writers and long writers delay viewport/file readers on overlapping tiles. Keep per-tile write windows short, acquire multi-tile ranges in row-major order, and never dispatch observers while holding tile locks. Adversarial-review the FrameStore concurrency carefully (L1 gate).
 - **ABI break in Phase 2 affects all `RISE_API_*` callers.** The DRISE client, all three GUI apps, and any out-of-tree tools all rebuild. Stage carefully; bump API version explicitly. The `abi-preserving-api-evolution` skill is the playbook.
 - **Color-space round-trip bugs.** The conversion matrix table is correctness-sensitive. L0 has explicit per-target round-trip tests for a reason — don't skip.
 - **`IRasterizerOutput`-using third-party code.** If any out-of-tree integration uses `IRasterizerOutput` directly, Phase 2 breaks them. Phase 1's compatibility shim should be retained for at least one release after Phase 2 lands.

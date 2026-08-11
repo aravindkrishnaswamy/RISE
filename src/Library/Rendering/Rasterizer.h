@@ -17,78 +17,151 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/OidnConfig.h"
 #include "../Interfaces/IRasterizer.h"
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace RISE
 {
+	class Job;
 	namespace Implementation
 	{
 		class OIDNDenoiser;	// forward decl — full type only needed in Rasterizer.cpp
 		class FrameStore;	// forward decl — held as a counted reference
 
-		class Rasterizer : public virtual IRasterizer, public virtual Reference
+		class Rasterizer : public virtual IRasterizer,
+		                   public virtual IFireRasterizerState,
+		                   public virtual Reference
 		{
 		protected:
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
+			class FireOutputTopologyLease
+			{
+			public:
+				FireOutputTopologyLease(
+					const Rasterizer& owner,
+					const IScene& scene,
+					FireRenderPreflightAuthorization authorization );
+				~FireOutputTopologyLease();
+				FireOutputTopologyLease( const FireOutputTopologyLease& ) = delete;
+				FireOutputTopologyLease& operator=(
+					const FireOutputTopologyLease& ) = delete;
+			private:
+				const Rasterizer* owner_;
+			};
+			class RetainedRasterizerOutputSnapshot
+			{
+			public:
+				RetainedRasterizerOutputSnapshot(
+					const RasterizerOutputListType& source,
+					std::mutex& sourceMutex
+					)
+				{
+					std::lock_guard<std::mutex> lock(sourceMutex);
+					try {
+						for( IRasterizerOutput* output : source ) {
+							output->addref();
+							try {
+								mOutputs.push_back(output);
+							}
+							catch( ... ) {
+								output->release();
+								throw;
+							}
+						}
+					}
+					catch( ... ) {
+						Release();
+						throw;
+					}
+				}
+
+				~RetainedRasterizerOutputSnapshot()
+				{
+					Release();
+				}
+
+				const RasterizerOutputListType& Outputs() const
+				{
+					return mOutputs;
+				}
+
+			private:
+				void Release()
+				{
+					for( IRasterizerOutput* output : mOutputs ) output->release();
+					mOutputs.clear();
+				}
+
+				RasterizerOutputListType mOutputs;
+			};
+
+			template< class Callback >
+			void WithRetainedRasterizerOutputs( Callback callback ) const
+			{
+				RetainedRasterizerOutputSnapshot snapshot(outs,outsMutex);
+				callback(snapshot.Outputs());
+			}
+
+			template< class Callback >
+			void ForEachRasterizerOutput( Callback callback ) const
+			{
+				WithRetainedRasterizerOutputs(
+					[&]( const RasterizerOutputListType& outputs ) {
+						for( IRasterizerOutput* output : outputs ) {
+							callback(output);
+							ValidateFireOutputLeaseState();
+						}
+					});
+			}
+
 			RasterizerOutputListType				outs;
 
 			//! Registers one output under outsMutex and reports whether this call
 			//! inserted it (false means the dedup path).  AutoRasterizer uses the
 			//! result to roll back only its own wrapper insertion if delegate
-			//! registration throws.
+			//! registration throws.  A newly inserted output immediately receives
+			//! the current FrameStore before this returns.
 			bool RegisterRasterizerOutput( IRasterizerOutput* ro );
+			bool UnregisterRasterizerOutput( IRasterizerOutput* ro );
+			bool ReleaseRasterizerOutputs();
+			bool RestoreOutputFrameStoreBindings( FrameStore* frameStore );
+			void RestoreFrameStoreAfterFailedTransaction( FrameStore* frameStore );
 
-			//! L8 review round 5 — protects `outs` against concurrent
-			//! mutation from non-render threads.
-			//!
-			//! Background: the public mutators (`AddRasterizerOutput`,
-			//! `FreeRasterizerOutputs`) used to be unlocked.  In the
-			//! macOS GUI, Swift's `attachViewportFrameStoreToOpaqueRasterizer`
-			//! re-runs whenever the SwiftUI view body recomputes (per
-			//! display refresh, ~60 Hz), each call ending in
-			//! `Rasterizer::AddRasterizerOutput(vfs)` from the UI
-			//! thread.  Meanwhile, render workers iterate `outs`
-			//! unlocked (~20 sites across PT/BDPT/VCM/MLT subclasses)
-			//! firing OutputImage / OutputIntermediateImage.
-			//! Concurrent `push_back` during iteration is a `vector`
-			//! data race that can produce iterator-invalidation hangs
-			//! or crashes (the user-visible "hung after several
-			//! load→render cycles" symptom).
-			//!
-			//! AddRasterizerOutput + FreeRasterizerOutputs +
-			//! EnumerateRasterizerOutputs + ReannounceFrameStore take
-			//! this lock.  Iteration sites in subclasses remain
-			//! unlocked under the contract: callers must not invoke
-			//! `AddRasterizerOutput` / `FreeRasterizerOutputs` while
-			//! a render is in flight on the same rasterizer.  Bridge
-			//! enforces this at `[self rasterize]` entry
-			//! (FreeRasterizerOutputs + Attach happen before
-			//! `_job->Rasterize()` returns to the caller); but the
-			//! Swift-side display-refresh path violated it before
-			//! L8 round 5.  Companion fixes: dedup AddRasterizerOutput
-			//! (so the Swift path becomes a no-op when already
-			//! attached) and gate the bridge's `attachViewport...`
-			//! re-entries.
+			//! Protects the live output list, FrameStore binding, and fire
+			//! topology lease.  Every callback traversal retains a snapshot
+			//! under this mutex and invokes arbitrary output code only after
+			//! unlocking, so callback-side Add/Remove/Free is lifetime-safe.
+			//! A fire render leases topology for its full entry; mutations
+			//! during that interval fail closed.
 			mutable std::mutex						outsMutex;
+			std::atomic<uint64_t> mFireOutputTopologyGeneration { 0u };
+			std::atomic<unsigned int> mFireOutputBindingInProgress { 0u };
+			mutable unsigned int mFireOutputTopologyLeaseCount = 0u;
+			mutable const IScene* mFireOutputLeasedScene = nullptr;
+			mutable std::string mFireOutputLeasedSceneMediaBinding;
+			mutable std::function<bool()> mFireOutputLeasedStateValidator;
 
 			IProgressCallback*						pProgressFunc;
 
-			//! L6a — Canonical FrameStore the rasterizer writes into
-			//! (Phase 2 design, see docs/FRAMESTORE_DESIGN.md §6).
-			//! L6a (this commit): held but unused — the helper still
-			//! routes pixel writes through `mPersistentImage`.  L6b
-			//! flips `PixelBasedRasterizerHelper` to write through
-			//! `mFrameStore->AsBeautyRasterImage()` and bracket per-
-			//! block writes with `BeginTile`/`EndTile`.  Counted
-			//! reference: addref'd in the Rasterizer constructor when
-			//! non-null, released in the destructor.  May be null
-			//! (allows a transitional period where Job hasn't yet been
-			//! migrated to allocate one — see L6a's verification
-			//! commit).
+			//! Canonical pixel/output store.  Pixel rasterizers write the
+			//! Beauty view directly and outputs observe the same counted
+			//! binding.  It may be null only before Job installs a film-sized
+			//! store or for a legacy implementation that declines the push.
 			FrameStore*								mFrameStore;
 			int									mForTestThreadCountOverride = 0;
+			mutable std::mutex mFireRenderPreflightMutex;
+			mutable FireRenderPreflightAuthorization mFireRenderPreflightAuthorization;
+			mutable const IScene* mFireRenderPreflightScene;
+			mutable const FrameStore* mFireRenderPreflightStore;
+			mutable uint64_t mFireRenderPreflightGeneration;
+			mutable uint64_t mFireRenderPreflightOutputTopologyGeneration;
+			mutable std::string mFireRenderPreflightMetadataBinding;
+			mutable std::string mFireRenderPreflightSceneMediaBinding;
+			mutable std::function<bool()> mFireRenderStateValidator;
 
 			//! Auxiliary-surface selection is also consumed by agent
 			//! perception AOVs, so it must survive in builds without OIDN.
@@ -118,13 +191,44 @@ namespace RISE
 			mutable OIDNDenoiser*					mDenoiser;
 #endif
 
-			//! Constructor.  `frameStore` may be null while L6a is
-			//! mid-migration; non-null is the L6b+ target state.
-			//! When non-null, this constructor addrefs it; the
-			//! destructor releases.
+			//! When non-null, the constructor retains `frameStore`; the
+			//! destructor releases it.  Job may install the canonical store
+			//! later when film dimensions were unavailable at construction.
 			explicit Rasterizer( FrameStore* frameStore = nullptr );
 			virtual ~Rasterizer();
 
+			bool RequireFireRenderPreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+			void ValidateFireOutputLeaseState() const;
+			void AuthorizeInternalFireReentry(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+			void AuthorizeInternalFireDelegate(
+				IRasterizer& delegate,
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+			void ClearInternalFireDelegateAuthorization(
+				IRasterizer& delegate ) const;
+			virtual bool AuthorizeFireDelegatePreflight(
+				const IScene&,
+				FireRenderPreflightAuthorization ) const { return true; }
+			virtual void ClearFireDelegatePreflight() const {}
+			virtual bool SupportsFireMediaTransport() const { return true; }
+
+		private:
+			friend class ::RISE::Job;
+			void NotifyFrameStoreChanged( FrameStore* frameStore );
+			void SetFireRenderStateValidator(
+				const std::function<bool()>& validator ) const;
+			void ReleaseFireOutputTopologyLease() const;
+			void ClearFireRenderPreflightAuthorization() const;
+			bool AuthorizeFireRenderPreflight(
+				const IScene& scene,
+				FireRenderPreflightAuthorization authorization ) const;
+
+		public:
+			bool LastRenderCompleted() const override { return true; }
 			// Figures out the number of threads to spawn based on the number of
 			// processors in the system and the option settings
 			int HowManyThreadsToSpawn() const;
@@ -153,30 +257,24 @@ namespace RISE
 			void ForTest_SetThreadCountOverride( const int count ) {
 				mForTestThreadCountOverride = count;
 			}
-			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
+			virtual void AddRasterizerOutput( IRasterizerOutput* ro ) override;
 			//! Removes exactly one matching output, if present.  This is an
 			//! implementation-level companion to the legacy all-or-nothing
 			//! FreeRasterizerOutputs API, used by transactional callers that must
 			//! roll back one attachment without disturbing outputs added later by
 			//! another owner.
 			virtual void RemoveRasterizerOutput( IRasterizerOutput* ro );
-			virtual void FreeRasterizerOutputs( );
-			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
-			virtual void SetProgressCallback( IProgressCallback* pFunc );
-
+			virtual void FreeRasterizerOutputs( ) override;
+			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const override;
+			std::vector<IRasterizerOutput*> RetainRasterizerOutputs() const;
+			virtual void SetProgressCallback( IProgressCallback* pFunc ) override;
 			// L6a — IRasterizer override.  Returns the FrameStore
 			// passed at construction time (may be null until Job
 			// migrates to allocate one).
-			// `virtual` is explicitly written here to match the
-			// style of every other IRasterizer override in this
-			// section (AddRasterizerOutput, SetProgressCallback,
-			// etc. all spell out `virtual`).  `override` is
-			// intentionally OMITTED because the surrounding
-			// overrides aren't marked `override`; adding it here
-			// trips `-Winconsistent-missing-override` against the
-			// pre-existing methods.  See user memory:
-			// `feedback_override_keyword_in_job.md`.
-			virtual FrameStore* GetFrameStore() const
+			// `virtual` remains explicit to match the surrounding
+			// IRasterizer methods; `override` pins the capability after
+			// the fire-boundary review made this class multi-interface.
+			virtual FrameStore* GetFrameStore() const override
 				{ return mFrameStore; }
 
 			// L6b — Late-binding FrameStore setter.  Used by `Job` to
@@ -192,21 +290,16 @@ namespace RISE
 			// (rasterizer falls back to its internal IRasterImage
 			// path until L6c).
 			//
-			// Threading: caller must establish the same "rasterizer
-			// is parked, no render in flight" precondition the rest
-			// of `Job`'s mutable-state mutations honor (see Job.h
-			// CONCURRENCY CONTRACT).  L6c will introduce a
-			// chain-mutex so reader threads (UI viewports, encoders)
-			// can read FrameStore concurrently with this swap.
+			// The swap and all output notifications are transactional.
+			// Reentrant or concurrent binding changes fail closed; fire
+			// renders additionally hold a topology lease that rejects the
+			// mutation before any binding is published.
 			virtual void SetFrameStore( FrameStore* frameStore );
 
 			// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
 			// on every attached `IRasterizerOutput` WITHOUT swapping
-			// `mFrameStore`.  Use case: callers that have cleared the
-			// rasterizer's outs list (e.g. `FreeRasterizerOutputs` then
-			// `AddRasterizerOutput(newSink)`) and need the freshly-
-			// attached output to receive the current FrameStore
-			// binding without going through the
+			// `mFrameStore`.  Use case: callers that explicitly need to
+			// rebroadcast the current binding without going through the
 			// `SetFrameStore(nullptr) → SetFrameStore(fs)` toggle
 			// (which would tear down + rebuild observer state on
 			// already-bound consumers — see L6e-3 review P0).
@@ -215,26 +308,19 @@ namespace RISE
 			// just dispatches `OnRasterizerFrameStoreChanged(nullptr)`,
 			// which most outputs treat as a no-op.
 			//
-			// Threading: same as `SetFrameStore` — caller must run on
-			// the same thread that drives the rasterizer (no
-			// concurrent SetFrameStore in-flight).
+			// Reentrant or concurrent binding announcements fail closed.
 			void ReannounceFrameStore();
 
 			// L6e-1.1 — Capability hook: does this rasterizer accept
 			// the canonical Job-allocated FrameStore push, or does it
 			// run on its own internal RISERasterImage path?
 			//
-			// Default true (every PT/BDPT/VCM/interactive subclass
-			// writes through the FrameStore beauty view).  MLT and
-			// MLTSpectral override to false because their PSSMLT
-			// per-round Resolve allocates a fresh local
-			// `RISERasterImage` and never touches the FrameStore
-			// (until L6d-2 migrates them to multi-round-aware
-			// FrameStore writes).  Without this opt-out, the Job's
-			// post-scene-load `PushJobFrameStoreToRasterizers` would
-			// hand MLT a FrameStore that `GetFrameStore()` then
-			// surfaces to direct readers as perpetually stale (the
-			// rasterizer never writes into it).
+			// Default true: PT/BDPT/VCM/interactive rasterizers write
+			// through the FrameStore beauty view, and MLT copies each
+			// resolved round into the canonical store before flushing.
+			// A future rasterizer that retains an internal-only image
+			// path must override this to false until it provides the
+			// same completed-frame synchronization.
 			//
 			// Pre-fix this was a string-match on registry name in
 			// `Job::PushJobFrameStoreToRasterizers`; brittle to

@@ -1,0 +1,4436 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  MultichannelHeterogeneousMediumTest.cpp
+//
+//  Phase-A gate for the painter-baked carbon + temperature medium:
+//  shared trilinear lattice, chromatic phi(T) optics, the 10^-3 g/m^3
+//  conversion, spectral tracking, scene-unit invariance, and §9 requiredness.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cctype>
+#include <cstdint>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
+
+#include "../src/Library/RISE_API.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ILogPriv.h"
+#include "../src/Library/Interfaces/IProgressCallback.h"
+#include "../src/Library/Interfaces/IRenderObserver.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Materials/HenyeyGreensteinPhaseFunction.h"
+#include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Materials/HomogeneousMedium.h"
+#include "../src/Library/Parsers/ChunkParserRegistry.h"
+#include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/FrameEncoders.h"
+#include "../src/Library/Rendering/FileEncoderObserver.h"
+#include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
+#include "../src/Library/Utilities/CPUTopology.h"
+#include "../src/Library/Utilities/GaussLegendreQuadrature.h"
+#include "../src/Library/Utilities/MediumTransport.h"
+#include "../src/Library/Utilities/PlanckRadiance.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/Reference.h"
+#include "../src/Library/Utilities/RISECBOR64.h"
+#include "../src/Library/Utilities/RasterizerDefaults.h"
+
+using namespace RISE;
+
+namespace RISE
+{
+	bool RISE_CreateJobPriv( IJobPriv** ppi );
+}
+
+namespace
+{
+	int passed = 0;
+	int failed = 0;
+
+	void Check( const bool condition, const char* label )
+	{
+		if( condition ) {
+			++passed;
+		} else {
+			++failed;
+			std::cout << "FAIL: " << label << std::endl;
+		}
+	}
+
+	bool SameFrameMetadata(
+		const FrameStoreOutput::Metadata& a,
+		const FrameStoreOutput::Metadata& b
+		)
+	{
+		if( a.activeFireMedia.size() != b.activeFireMedia.size() ) return false;
+		for( std::size_t i=0; i<a.activeFireMedia.size(); ++i ) {
+			const FrameStoreOutput::ActiveFireMedium& lhs = a.activeFireMedia[i];
+			const FrameStoreOutput::ActiveFireMedium& rhs = b.activeFireMedia[i];
+			if( lhs.mediaKind != rhs.mediaKind || lhs.managerName != rhs.managerName ||
+				lhs.bindingKind != rhs.bindingKind || lhs.bindingOwner != rhs.bindingOwner ||
+				lhs.authoredConfigDigest != rhs.authoredConfigDigest ||
+				lhs.opticalRecordIds != rhs.opticalRecordIds ) return false;
+		}
+		return a.sceneName == b.sceneName && a.cameraName == b.cameraName &&
+			a.activeRasterizer == b.activeRasterizer && a.sampleCount == b.sampleCount &&
+			a.cameraExposureEV == b.cameraExposureEV && a.frame == b.frame &&
+			a.renderFidelityStatus == b.renderFidelityStatus &&
+			a.renderReasonCodes == b.renderReasonCodes &&
+			a.activeFireOpticsRecordIds == b.activeFireOpticsRecordIds &&
+			a.resolvedRenderConfigCoreV1 == b.resolvedRenderConfigCoreV1 &&
+			a.rendererBuildV1 == b.rendererBuildV1 &&
+			a.rendererBuildId == b.rendererBuildId &&
+			a.primaryProvenanceId == b.primaryProvenanceId &&
+			a.primaryArtifactSha256 == b.primaryArtifactSha256 &&
+			a.primaryArtifactFidelity == b.primaryArtifactFidelity;
+	}
+
+	bool SameSnapshotPixels(
+		const Implementation::FrameStore::Snapshot& a,
+		const Implementation::FrameStore::Snapshot& b )
+	{
+		const auto sameBytes = []( const auto& lhs, const auto& rhs ) {
+			return lhs.size() == rhs.size() &&
+				( lhs.empty() || std::memcmp(lhs.data(),rhs.data(),
+					lhs.size()*sizeof(lhs[0])) == 0 );
+		};
+		return sameBytes(a.beauty,b.beauty) && sameBytes(a.alpha,b.alpha) &&
+			sameBytes(a.albedo,b.albedo) && sameBytes(a.normal,b.normal) &&
+			sameBytes(a.depth,b.depth) && sameBytes(a.objectId,b.objectId) &&
+			sameBytes(a.primitiveId,b.primitiveId);
+	}
+
+	class ThrowingFrameObserver : public IRenderObserver
+	{
+	public:
+		void OnFrameComplete( unsigned int, uint64_t ) override
+		{
+			throw std::runtime_error("intentional frame callback failure");
+		}
+	};
+
+	class ThrowingIntermediateOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override
+		{
+			throw std::runtime_error("intentional intermediate output failure");
+		}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+	protected:
+		~ThrowingIntermediateOutput() override = default;
+	};
+
+	class UnclassifiedFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual Implementation::Reference
+	{
+	public:
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override
+			{ ++finalCount; }
+		unsigned int finalCount = 0u;
+	protected:
+		~UnclassifiedFireOutput() override = default;
+	};
+
+	class TopologyMutatingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		TopologyMutatingFireOutput( IRasterizer& rasterizer,
+			const unsigned int mutationCall ) :
+			rasterizer_(rasterizer), mutationCall_(mutationCall) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+		{
+			++routeCalls_;
+			if( routeCalls_ == mutationCall_ ) {
+				UnclassifiedFireOutput* injected = new UnclassifiedFireOutput();
+				rasterizer_.AddRasterizerOutput(injected);
+				injected->release();
+			}
+			return FireArtifactRouteKind::DisplayOnly;
+		}
+		unsigned int RouteCalls() const { return routeCalls_; }
+	protected:
+		~TopologyMutatingFireOutput() override = default;
+	private:
+		IRasterizer& rasterizer_;
+		const unsigned int mutationCall_;
+		mutable unsigned int routeCalls_ = 0u;
+	};
+
+	class CallbackTopologyMutatingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit CallbackTopologyMutatingFireOutput( IRasterizer& rasterizer ) :
+			rasterizer_(rasterizer), injected_(new UnclassifiedFireOutput()) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			attempted_ = true;
+			try {
+				rasterizer_.AddRasterizerOutput(injected_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected_ = std::string(error.what()).find(
+					"fire render output topology is leased") != std::string::npos;
+				throw;
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Attempted() const { return attempted_; }
+		bool Rejected() const { return rejected_; }
+		unsigned int InjectedFinalCount() const { return injected_->finalCount; }
+	protected:
+		~CallbackTopologyMutatingFireOutput() override { safe_release(injected_); }
+	private:
+		IRasterizer& rasterizer_;
+		UnclassifiedFireOutput* injected_;
+		bool attempted_ = false;
+		bool rejected_ = false;
+	};
+
+	class DuplicateCallbackFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit DuplicateCallbackFireOutput( IRasterizer& rasterizer ) :
+			rasterizer_(rasterizer) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override
+			{ ++finalCount_; }
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			attempted_ = true;
+			rasterizer_.AddRasterizerOutput(this);
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Attempted() const { return attempted_; }
+		unsigned int FinalCount() const { return finalCount_; }
+	protected:
+		~DuplicateCallbackFireOutput() override = default;
+	private:
+		IRasterizer& rasterizer_;
+		bool attempted_ = false;
+		unsigned int finalCount_ = 0u;
+	};
+
+	class MetadataMutatingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit MetadataMutatingFireOutput( Implementation::FrameStore& store ) :
+			store_(store) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			attempted_ = true;
+			FrameStoreOutput::Metadata replacement = store_.Meta();
+			replacement.activeFireMedia[0].authoredConfigDigest =
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+			try {
+				store_.SetMetadata(replacement);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected_ = std::string(error.what()).find(
+					"output metadata is leased") != std::string::npos;
+				throw;
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Attempted() const { return attempted_; }
+		bool Rejected() const { return rejected_; }
+	protected:
+		~MetadataMutatingFireOutput() override = default;
+	private:
+		Implementation::FrameStore& store_;
+		bool attempted_ = false;
+		bool rejected_ = false;
+	};
+
+	class FrameStoreSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit FrameStoreSwappingFireOutput( Implementation::Rasterizer& rasterizer ) :
+			rasterizer_(rasterizer), replacement_(nullptr) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+		{
+			if( !mutated_ ) {
+				mutated_ = true;
+				Implementation::FrameStore* current = rasterizer_.GetFrameStore();
+				Implementation::FrameStore::Spec spec;
+				spec.width = current ? current->Width() : 1u;
+				spec.height = current ? current->Height() : 1u;
+				replacement_ = new Implementation::FrameStore(spec);
+				rasterizer_.SetFrameStore(replacement_);
+				replacement_->release();
+			}
+			return FireArtifactRouteKind::DisplayOnly;
+		}
+		bool Mutated() const { return mutated_; }
+		Implementation::FrameStore* Replacement() const { return replacement_; }
+	protected:
+		~FrameStoreSwappingFireOutput() override = default;
+	private:
+		Implementation::Rasterizer& rasterizer_;
+		mutable Implementation::FrameStore* replacement_;
+		mutable bool mutated_ = false;
+	};
+
+	class SceneMediumSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		SceneMediumSwappingFireOutput( IScenePriv& scene, const IMedium& replacement ) :
+			scene_(scene), replacement_(replacement) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		FireArtifactRouteKind FireArtifactRoute() const override
+		{
+			if( !mutated_ ) {
+				mutated_ = true;
+				scene_.SetGlobalMedium(&replacement_);
+			}
+			return FireArtifactRouteKind::DisplayOnly;
+		}
+		bool Mutated() const { return mutated_; }
+	protected:
+		~SceneMediumSwappingFireOutput() override = default;
+	private:
+		IScenePriv& scene_;
+		const IMedium& replacement_;
+		mutable bool mutated_ = false;
+	};
+
+	class RuntimeSceneMediumSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		RuntimeSceneMediumSwappingFireOutput(
+			IScenePriv& scene, const IMedium& replacement ) :
+			scene_(scene), replacement_(replacement) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			if( !mutated_ ) {
+				mutated_ = true;
+				scene_.SetGlobalMedium(&replacement_);
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Mutated() const { return mutated_; }
+	protected:
+		~RuntimeSceneMediumSwappingFireOutput() override = default;
+	private:
+		IScenePriv& scene_;
+		const IMedium& replacement_;
+		bool mutated_ = false;
+	};
+
+	class RuntimeCameraSwappingFireOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		RuntimeCameraSwappingFireOutput( IScenePriv& scene, const char* cameraName ) :
+			scene_(scene), cameraName_(cameraName ? cameraName : "") {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+		void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+		void SetCameraExposureCompensationEV( Scalar ) override
+		{
+			if( !mutated_ ) {
+				mutated_ = scene_.SetActiveCamera(cameraName_.c_str());
+			}
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+		bool Mutated() const { return mutated_; }
+	protected:
+		~RuntimeCameraSwappingFireOutput() override = default;
+	private:
+		IScenePriv& scene_;
+		std::string cameraName_;
+		bool mutated_ = false;
+	};
+
+	bool ReadFileBytes( const std::filesystem::path& path,
+		RISECBOR64::Bytes& bytes )
+	{
+		std::ifstream input(path,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		const std::streampos size = input.tellg();
+		if( size < 0 ) return false;
+		input.seekg(0,std::ios::beg);
+		bytes.resize(static_cast<std::size_t>(size));
+		if( size > 0 ) input.read(reinterpret_cast<char*>(&bytes[0]),size);
+		return input.good() || input.eof();
+	}
+
+	void AppendLE16( RISECBOR64::Bytes& bytes, const std::uint16_t value )
+	{
+		bytes.push_back(static_cast<unsigned char>(value));
+		bytes.push_back(static_cast<unsigned char>(value>>8u));
+	}
+
+	void AppendLE32( RISECBOR64::Bytes& bytes, const std::uint32_t value )
+	{
+		bytes.push_back(static_cast<unsigned char>(value));
+		bytes.push_back(static_cast<unsigned char>(value>>8u));
+		bytes.push_back(static_cast<unsigned char>(value>>16u));
+		bytes.push_back(static_cast<unsigned char>(value>>24u));
+	}
+
+	bool WriteStoredAPKEntry( const std::filesystem::path& archive,
+		const std::string& entry, const RISECBOR64::Bytes& payload )
+	{
+		if( entry.size() > 0xffffu || payload.size() > 0xffffffffu ) return false;
+		RISECBOR64::Bytes encoded;
+		AppendLE32(encoded,0x04034b50u);
+		AppendLE16(encoded,20u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE32(encoded,0u);
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE16(encoded,static_cast<std::uint16_t>(entry.size()));
+		AppendLE16(encoded,0u);
+		encoded.insert(encoded.end(),entry.begin(),entry.end());
+		encoded.insert(encoded.end(),payload.begin(),payload.end());
+		const std::uint32_t centralOffset = static_cast<std::uint32_t>(encoded.size());
+		AppendLE32(encoded,0x02014b50u);
+		AppendLE16(encoded,20u);
+		AppendLE16(encoded,20u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE32(encoded,0u);
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE32(encoded,static_cast<std::uint32_t>(payload.size()));
+		AppendLE16(encoded,static_cast<std::uint16_t>(entry.size()));
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE32(encoded,0u);
+		AppendLE32(encoded,0u);
+		encoded.insert(encoded.end(),entry.begin(),entry.end());
+		const std::uint32_t centralSize =
+			static_cast<std::uint32_t>(encoded.size())-centralOffset;
+		AppendLE32(encoded,0x06054b50u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,0u);
+		AppendLE16(encoded,1u);
+		AppendLE16(encoded,1u);
+		AppendLE32(encoded,centralSize);
+		AppendLE32(encoded,centralOffset);
+		AppendLE16(encoded,0u);
+		std::ofstream output(archive,std::ios::binary|std::ios::trunc);
+		output.write(reinterpret_cast<const char*>(encoded.data()),
+			static_cast<std::streamsize>(encoded.size()));
+		return output.good();
+	}
+
+	bool Near( const Scalar actual, const Scalar expected, const Scalar tolerance )
+	{
+		return std::fabs( actual - expected ) <= tolerance;
+	}
+
+	bool NearRelative( const Scalar actual, const Scalar expected, const Scalar tolerance )
+	{
+		const Scalar scale = std::fmax( std::fabs( expected ), Scalar( 1e-300 ) );
+		return std::fabs( actual - expected ) <= tolerance * scale;
+	}
+
+	bool HasFireReason(
+		const IMedium& medium,
+		const bool predictiveRequested,
+		const char* reason
+		)
+	{
+		for( unsigned int i=0;
+			i<medium.GetFireRenderReasonCodeCount(predictiveRequested); ++i ) {
+			const char* candidate = medium.GetFireRenderReasonCode(
+				predictiveRequested,i);
+			if( candidate && std::strcmp(candidate,reason) == 0 ) return true;
+		}
+		return false;
+	}
+
+	RISEPel PelResponse( const Scalar nm )
+	{
+		XYZPel xyz;
+		if( !ColorUtils::XYZFromNM(xyz,nm) ) return RISEPel(0.0);
+		return ColorUtils::XYZtoRec709RGBMatrixOnly(xyz) *
+			(1.0/ColorUtils::CIE_Y_Integral(380.0,780.0));
+	}
+
+	RISEPel ResponsePowerMean( const Scalar exponent )
+	{
+		RISEPel mass(0.0);
+		RISEPel weighted(0.0);
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			mass[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[channel](const Scalar nm) { return PelResponse(nm)[channel]; } );
+			weighted[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[channel,exponent](const Scalar nm) {
+					return PelResponse(nm)[channel]*pow(633.0/nm,exponent);
+				} );
+			weighted[channel] /= mass[channel];
+		}
+		return weighted;
+	}
+
+	RISEPel ResponseMass()
+	{
+		RISEPel mass(0.0);
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			mass[channel] = GaussLegendre21::IntegrateVisibleBand(
+				[channel](const Scalar nm) { return PelResponse(nm)[channel]; } );
+		}
+		return mass;
+	}
+
+	Scalar SamplingPowerMass( const Scalar exponent )
+	{
+		return GaussLegendre21::IntegrateVisibleBand(
+			[exponent](const Scalar nm) {
+				XYZPel xyz;
+				if( !ColorUtils::XYZFromNM(xyz,nm) ) return Scalar(0.0);
+				return (xyz.X+xyz.Y+xyz.Z)*pow(633.0/nm,exponent);
+			} );
+	}
+
+	Scalar ScalarFromBits( const std::uint64_t bits )
+	{
+		static_assert( sizeof( Scalar ) == sizeof( bits ),
+			"non-finite regression inputs require binary64 Scalar" );
+		volatile std::uint64_t barrier = bits;
+		const std::uint64_t materialised = barrier;
+		Scalar value = 0.0;
+		std::memcpy( &value, &materialised, sizeof( value ) );
+		return value;
+	}
+
+	class AffineWorldScalarPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+	public:
+		Scalar bias;
+		Scalar x;
+		Scalar y;
+		Scalar z;
+
+		AffineWorldScalarPainter( Scalar bias_, Scalar x_, Scalar y_, Scalar z_ ) :
+		  bias( bias_ ), x( x_ ), y( y_ ), z( z_ )
+		{
+		}
+
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple(
+				bias + x * ri.ptIntersection.x + y * ri.ptIntersection.y + z * ri.ptIntersection.z );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~AffineWorldScalarPainter() override = default;
+	};
+
+	class TrilinearProductPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+		const Scalar bias_;
+		const Scalar scale_;
+
+	public:
+		TrilinearProductPainter( const Scalar bias, const Scalar scale ) :
+		  bias_(bias), scale_(scale)
+		{
+		}
+
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( bias_ + scale_*ri.ptIntersection.x*
+				ri.ptIntersection.y*ri.ptIntersection.z );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~TrilinearProductPainter() override = default;
+	};
+
+	class QuadraticXPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( ri.ptIntersection.x*ri.ptIntersection.x );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~QuadraticXPainter() override = default;
+	};
+
+	class BilinearHumpTemperaturePainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+	public:
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple( 600.0 + 1500.0*ri.ptIntersection.x*
+				(1.0-ri.ptIntersection.y) );
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~BilinearHumpTemperaturePainter() override = default;
+	};
+
+	class IntervalTopHatFunction :
+		public virtual IFunction1D,
+		public virtual Implementation::Reference
+	{
+		const Scalar minimum_;
+		const Scalar maximum_;
+		const Scalar height_;
+
+	public:
+		IntervalTopHatFunction(
+			const Scalar minimum,
+			const Scalar maximum,
+			const Scalar height = 1.0
+			) : minimum_(minimum), maximum_(maximum), height_(height)
+		{
+		}
+
+		Scalar Evaluate( const Scalar wavelength ) const override
+		{
+			return wavelength >= minimum_ && wavelength <= maximum_ ? height_ : 0.0;
+		}
+
+	protected:
+		~IntervalTopHatFunction() override = default;
+	};
+
+	class OffsetQuadraticFunction :
+		public virtual IFunction1D,
+		public virtual Implementation::Reference
+	{
+		const Scalar origin_;
+
+	public:
+		explicit OffsetQuadraticFunction( const Scalar origin ) : origin_(origin) {}
+
+		Scalar Evaluate( const Scalar wavelength ) const override
+		{
+			const Scalar offset = wavelength-origin_;
+			return offset*offset;
+		}
+
+	protected:
+		~OffsetQuadraticFunction() override = default;
+	};
+
+	class ThinSheetXPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+		const Scalar minimum_;
+		const Scalar maximum_;
+		const Scalar value_;
+
+	public:
+		ThinSheetXPainter(
+			const Scalar minimum,
+			const Scalar maximum,
+			const Scalar value
+			) : minimum_(minimum), maximum_(maximum), value_(value)
+		{
+		}
+
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+		{
+			return ScalarTriple(ri.ptIntersection.x >= minimum_ &&
+				ri.ptIntersection.x <= maximum_ ? value_ : 0.0);
+		}
+
+		bool HasPerChannelVariation() const override { return false; }
+
+	protected:
+		~ThinSheetXPainter() override = default;
+	};
+
+	class ForcedBranchSampler : public ISampler
+	{
+		const Scalar branch_;
+		RandomNumberGenerator random_;
+		bool first_;
+
+	public:
+		ForcedBranchSampler( const Scalar branch, const unsigned int seed ) :
+			branch_(branch), random_(seed), first_(true)
+		{
+		}
+
+		void BeginSample() { first_ = true; }
+
+		Scalar Get1D() override
+		{
+			if( first_ ) {
+				first_ = false;
+				return branch_;
+			}
+			return random_.CanonicalRandom();
+		}
+
+		Point2 Get2D() override { return Point2(Get1D(),Get1D()); }
+	};
+
+	Scalar ReferencePhiAwareSigmaT( const Scalar x )
+	{
+		const Scalar carbon = 1.0 + 8.0*x*x*x;
+		const Scalar temperature = 600.0 + 1600.0*x*x*x;
+		Scalar phi = 0.0;
+		if( temperature >= 900.0 ) {
+			phi = 1.0;
+		} else if( temperature > 700.0 ) {
+			const Scalar s = (temperature-700.0)/200.0;
+			phi = s*s*(3.0-2.0*s);
+		}
+		return carbon*(0.2 + phi*(2.0-0.2));
+	}
+
+	Scalar ReferencePhiAwareOpticalDepth(
+		const Scalar xBegin,
+		const Scalar xEnd
+		)
+	{
+		// Composite Simpson is an independent reference for the piecewise
+		// degree-12 integrand.  The fixed even panel count puts the numerical
+		// error far below the gate while making no use of renderer breakpoints.
+		const unsigned int panelCount = 20000u;
+		const Scalar h = (xEnd-xBegin)/Scalar(panelCount);
+		Scalar sum = ReferencePhiAwareSigmaT(xBegin) +
+			ReferencePhiAwareSigmaT(xEnd);
+		for( unsigned int i = 1u; i < panelCount; ++i ) {
+			const Scalar value = ReferencePhiAwareSigmaT(xBegin+Scalar(i)*h);
+			sum += (i&1u ? 4.0 : 2.0)*value;
+		}
+		return sqrt(3.0)*h*sum/3.0;
+	}
+
+	Scalar ReferenceHumpSigmaT( const Scalar x )
+	{
+		const Scalar temperature = 600.0 + 1500.0*x*(1.0-x);
+		Scalar phi = 0.0;
+		if( temperature >= 900.0 ) {
+			phi = 1.0;
+		} else if( temperature > 700.0 ) {
+			const Scalar s = (temperature-700.0)/200.0;
+			phi = s*s*(3.0-2.0*s);
+		}
+		return 0.2 + phi*(2.0-0.2);
+	}
+
+	Scalar ReferenceHumpOpticalDepth()
+	{
+		const unsigned int panelCount = 20000u;
+		const Scalar xBegin = 0.25;
+		const Scalar xEnd = 0.75;
+		const Scalar h = (xEnd-xBegin)/Scalar(panelCount);
+		Scalar sum = ReferenceHumpSigmaT(xBegin) +
+			ReferenceHumpSigmaT(xEnd);
+		for( unsigned int i = 1u; i < panelCount; ++i ) {
+			const Scalar value = ReferenceHumpSigmaT(xBegin+Scalar(i)*h);
+			sum += (i&1u ? 4.0 : 2.0)*value;
+		}
+		return sqrt(2.0)*h*sum/3.0;
+	}
+
+	class DerivedMultichannelHeterogeneousMedium final :
+		public MultichannelHeterogeneousMedium
+	{
+	public:
+		DerivedMultichannelHeterogeneousMedium(
+			const IScalarPainter& carbonPainter,
+			const IScalarPainter& temperaturePainter,
+			const IPhaseFunction& phase
+			) :
+		  MultichannelHeterogeneousMedium(
+			carbonPainter, temperaturePainter, 2, 2, 2,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+			0.26, 1800.0, 0.40, 0.85, 8.7, 1.2, 0.70, -0.35,
+			phase )
+		{
+		}
+
+		~DerivedMultichannelHeterogeneousMedium() override = default;
+	};
+
+	class PluginPhase final :
+		public virtual IPhaseFunction,
+		public virtual Implementation::Reference
+	{
+	public:
+		Scalar Evaluate( const Vector3&, const Vector3& ) const override
+		{
+			return 1.0 / FOUR_PI;
+		}
+		Vector3 Sample( const Vector3& wi, ISampler& ) const override { return wi; }
+		Scalar Pdf( const Vector3&, const Vector3& ) const override
+		{
+			return 1.0 / FOUR_PI;
+		}
+
+	protected:
+		~PluginPhase() override = default;
+	};
+
+	class DerivedHomogeneousMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit DerivedHomogeneousMedium( const IPhaseFunction& phase ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase )
+		{
+		}
+
+		~DerivedHomogeneousMedium() override = default;
+	};
+
+	class InvalidReasonFireMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit InvalidReasonFireMedium( const IPhaseFunction& phase ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase )
+		{
+		}
+
+		bool IsFireMedium() const override { return true; }
+		const char* GetFireOpticsRecordId() const override
+		{
+			return "2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137";
+		}
+		const char* GetFireRenderFidelityStatus( const bool ) const override
+		{
+			return "preview";
+		}
+		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
+		{
+			return 2u;
+		}
+		const char* GetFireRenderReasonCode(
+			const bool, const unsigned int index ) const override
+		{
+			return index == 0u ? "requested_preview" : "not_a_fire_reason";
+		}
+		bool FireOpticsSupportsWavelengthRange(
+			const Scalar minimumNM, const Scalar maximumNM ) const override
+		{
+			return minimumNM >= 380.0 && maximumNM <= 780.0;
+		}
+
+	protected:
+		~InvalidReasonFireMedium() override = default;
+	};
+
+	class MissingRecordIdFireMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit MissingRecordIdFireMedium( const IPhaseFunction& phase ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase ),
+		  reasonQueries(0u)
+		{
+		}
+
+		bool IsFireMedium() const override { return true; }
+		const char* GetFireOpticsRecordId() const override { return ""; }
+		bool FirePredictiveAllowed() const override { return true; }
+		const char* GetFireRenderFidelityStatus( const bool ) const override
+		{
+			return "preview";
+		}
+		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
+		{
+			return 1u;
+		}
+		const char* GetFireRenderReasonCode(
+			const bool, const unsigned int index ) const override
+		{
+			++reasonQueries;
+			return index == 0u ? "requested_preview" : nullptr;
+		}
+		bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
+		{
+			return true;
+		}
+		mutable unsigned int reasonQueries;
+
+	protected:
+		~MissingRecordIdFireMedium() override = default;
+	};
+
+	class InconsistentPredictiveFireMedium final : public HomogeneousMedium
+	{
+	public:
+		explicit InconsistentPredictiveFireMedium(
+			const IPhaseFunction& phase, const bool includePreviewRequest ) :
+		  HomogeneousMedium( RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), phase ),
+		  includePreviewRequest_(includePreviewRequest)
+		{
+		}
+
+		bool IsFireMedium() const override { return true; }
+		const char* GetFireOpticsRecordId() const override
+		{
+			return "custom-fire-record";
+		}
+		bool FirePredictiveAllowed() const override { return true; }
+		const char* GetFireRenderFidelityStatus( const bool ) const override
+		{
+			return "preview";
+		}
+		unsigned int GetFireRenderReasonCodeCount( const bool ) const override
+		{
+			return includePreviewRequest_ ? 1u : 0u;
+		}
+		const char* GetFireRenderReasonCode(
+			const bool, const unsigned int index ) const override
+		{
+			return includePreviewRequest_ && index == 0u ? "requested_preview" : nullptr;
+		}
+		bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
+		{
+			return true;
+		}
+
+	protected:
+		~InconsistentPredictiveFireMedium() override = default;
+
+	private:
+		const bool includePreviewRequest_;
+	};
+
+	class FirePreflightProgress final : public IProgressCallback
+	{
+	public:
+		FirePreflightProgress() : titleCalls(0u), progressCalls(0u) {}
+		bool Progress( const double, const double ) override
+		{
+			progressCalls.fetch_add(1u);
+			return true;
+		}
+		void SetTitle( const char* ) override { titleCalls.fetch_add(1u); }
+
+		std::atomic<unsigned int> titleCalls;
+		std::atomic<unsigned int> progressCalls;
+	};
+
+	bool FireRenderCompleted( const IRasterizer* rasterizer )
+	{
+		const IFireRasterizerState* state =
+			dynamic_cast<const IFireRasterizerState*>(rasterizer);
+		return !state || state->LastRenderCompleted();
+	}
+
+	class CancelledFireProgress final : public IProgressCallback
+	{
+	public:
+		bool Progress( const double, const double ) override { return false; }
+		void SetTitle( const char* ) override {}
+		bool IsCancelled() const override { return true; }
+	};
+
+	class CancelSignalOnlyFireProgress final : public IProgressCallback
+	{
+	public:
+		bool Progress( const double, const double ) override { return true; }
+		void SetTitle( const char* ) override {}
+		bool IsCancelled() const override { return true; }
+	};
+
+	class CompletionCountingOutput final :
+		public virtual IRasterizerOutput,
+		public virtual IFireRasterizerOutputRoute,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit CompletionCountingOutput( Implementation::FrameStore* store = nullptr ) :
+			store_(store), intermediateCount(0u), finalCount(0u), lastFrame(0u) {}
+		void OutputIntermediateImage( const IRasterImage&, const Rect* ) override
+			{ intermediateCount.fetch_add(1u); }
+		void OutputImage( const IRasterImage& image, const Rect*,
+			const unsigned int frame ) override
+		{
+			lastPixel = image.GetPEL(0u,0u);
+			lastFrame = frame;
+			if( store_ ) lastSnapshot.reset(
+				new Implementation::FrameStore::Snapshot(store_->CaptureSnapshot()));
+			finalCount.fetch_add(1u);
+		}
+		void Reset()
+		{
+			intermediateCount.store(0u);
+			finalCount.store(0u);
+			lastSnapshot.reset();
+		}
+		FireArtifactRouteKind FireArtifactRoute() const override
+			{ return FireArtifactRouteKind::DisplayOnly; }
+
+		Implementation::FrameStore* store_;
+		std::atomic<unsigned int> intermediateCount;
+		std::atomic<unsigned int> finalCount;
+		RISEColor lastPixel;
+		unsigned int lastFrame;
+		std::unique_ptr<Implementation::FrameStore::Snapshot> lastSnapshot;
+
+	protected:
+		~CompletionCountingOutput() override = default;
+	};
+
+	class CountingJobOutput final : public IJobRasterizerOutput
+	{
+	public:
+		CountingJobOutput() : calls(0u) {}
+		bool PremultipliedAlpha() override { return false; }
+		int GetColorSpace() override { return 1; }
+		void OutputImageRGBA16( const unsigned short*, const unsigned int,
+			const unsigned int, const unsigned int, const unsigned int,
+			const unsigned int, const unsigned int ) override
+		{
+			calls.fetch_add(1u);
+		}
+		std::atomic<unsigned int> calls;
+	};
+
+	class OpaqueCamera final :
+		public virtual ICamera,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit OpaqueCamera( ICamera& camera ) : camera_(camera)
+		{
+			camera_.addref();
+		}
+		bool GenerateRay( const RuntimeContext& rc, Ray& ray,
+			const Point2& point ) const override
+		{
+			return camera_.GenerateRay(rc,ray,point);
+		}
+		Point3 GetLocation() const override { return camera_.GetLocation(); }
+		Matrix4 GetMatrix() const override { return camera_.GetMatrix(); }
+		Scalar GetExposureTime() const override { return camera_.GetExposureTime(); }
+		Scalar GetScanningRate() const override { return camera_.GetScanningRate(); }
+		Scalar GetPixelRate() const override { return camera_.GetPixelRate(); }
+		Scalar GetExposureCompensationEV() const override
+		{
+			return camera_.GetExposureCompensationEV();
+		}
+		IKeyframeParameter* KeyframeFromParameters(
+			const String& name, const String& value ) override
+		{
+			return camera_.KeyframeFromParameters(name,value);
+		}
+		void SetIntermediateValue( const IKeyframeParameter& value ) override
+		{
+			camera_.SetIntermediateValue(value);
+		}
+		void RegenerateData() override { camera_.RegenerateData(); }
+
+	protected:
+		~OpaqueCamera() override { camera_.release(); }
+
+	private:
+		ICamera& camera_;
+	};
+
+	class FirePreflightLogCapture final :
+		public virtual ILogPrinter,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit FirePreflightLogCapture( const char* needle ) :
+			needle_(needle), matches_(0u)
+		{
+		}
+
+		void Print( const LogEvent& event ) override
+		{
+			if( std::strstr(event.szMessage,needle_) ) matches_.fetch_add(1u);
+		}
+		void Flush() override {}
+		unsigned int Matches() const { return matches_.load(); }
+
+	protected:
+		~FirePreflightLogCapture() override = default;
+
+	private:
+		const char* needle_;
+		std::atomic<unsigned int> matches_;
+	};
+
+	class PluginMedium final :
+		public virtual IMedium,
+		public virtual Implementation::Reference
+	{
+	public:
+		explicit PluginMedium( const IPhaseFunction& phase ) : m_phase( phase )
+		{
+			m_phase.addref();
+		}
+
+		MediumCoefficients GetCoefficients( const Point3& ) const override
+		{
+			MediumCoefficients c;
+			c.sigma_t = RISEPel( 1, 1, 1 );
+			c.sigma_s = RISEPel( 1, 1, 1 );
+			c.emission = RISEPel( 0, 0, 0 );
+			return c;
+		}
+		MediumCoefficientsNM GetCoefficientsNM( const Point3&, const Scalar ) const override
+		{
+			MediumCoefficientsNM c;
+			c.sigma_t = 1;
+			c.sigma_s = 1;
+			c.emission = 0;
+			return c;
+		}
+		const IPhaseFunction* GetPhaseFunction() const override { return &m_phase; }
+		Scalar SampleDistance(
+			const Ray&, const Scalar maxDist, ISampler&, bool& scattered ) const override
+		{
+			scattered = false;
+			return maxDist;
+		}
+		Scalar SampleDistanceNM(
+			const Ray&, const Scalar maxDist, const Scalar,
+			ISampler&, bool& scattered ) const override
+		{
+			scattered = false;
+			return maxDist;
+		}
+		RISEPel EvalTransmittance( const Ray&, const Scalar ) const override
+		{
+			return RISEPel( 1, 1, 1 );
+		}
+		Scalar EvalTransmittanceNM(
+			const Ray&, const Scalar, const Scalar ) const override { return 1; }
+		bool IsHomogeneous() const override { return true; }
+
+	protected:
+		~PluginMedium() override { m_phase.release(); }
+
+	private:
+		const IPhaseFunction& m_phase;
+	};
+
+	IMedium* CreateMedium(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const Scalar sceneUnitMeters,
+		const unsigned int resolution = 8
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool ok = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, carbon, temperature,
+			resolution, resolution, resolution,
+			bboxMin, bboxMax, sceneUnitMeters,
+			0.26, 1800.0, 0.10, 0.5,
+			8.7, 1.2, 0.6, 0.6 );
+		return ok ? medium : nullptr;
+	}
+
+	IMedium* CreateMediumWithCondensed(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const IScalarPainter& condensed,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const Scalar sceneUnitMeters,
+		const unsigned int resolution = 8
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool ok = RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+			&medium, carbon, temperature, condensed,
+			resolution, resolution, resolution,
+			bboxMin, bboxMax, sceneUnitMeters,
+			0.26, 1800.0, 0.10, 0.5,
+			8.7, 1.2, 0.6, -0.4,
+			4.0, 0.5, 0.9, 0.7 );
+		return ok ? medium : nullptr;
+	}
+
+	IMedium* CreateMediumWithChem(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const IScalarPainter& chemCH,
+		const IScalarPainter& chemC2,
+		const IScalarPainter& chemCO2,
+		const IFunction1D& spdCH,
+		const IFunction1D& spdC2,
+		const IFunction1D& spdCO2,
+		const Scalar intervalMin,
+		const Scalar intervalMax,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		const Scalar sceneUnitMeters,
+		const unsigned int resolution = 8
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool ok = RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+			&medium, carbon, temperature, nullptr,
+			chemCH, chemC2, chemCO2, spdCH, spdC2, spdCO2,
+			intervalMin, intervalMax, intervalMin, intervalMax,
+			intervalMin, intervalMax,
+			resolution, resolution, resolution, bboxMin, bboxMax,
+			sceneUnitMeters, 0.26, 1800.0, 0.10, 0.5,
+			0.0, 1.2, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0 );
+		return ok ? medium : nullptr;
+	}
+
+	Scalar SampleMeanCosine(
+		const IPhaseFunction& phase,
+		const unsigned int seed,
+		const unsigned int sampleCount = 40000
+		)
+	{
+		RandomNumberGenerator rng( seed );
+		Implementation::IndependentSampler sampler( rng );
+		const Vector3 wi( 0, 0, 1 );
+		Scalar sum = 0.0;
+		for( unsigned int i = 0; i < sampleCount; ++i ) {
+			sum += Vector3Ops::Dot( wi, phase.Sample( wi, sampler ) );
+		}
+		return sum / Scalar( sampleCount );
+	}
+
+	Scalar SampleMeanSquaredCosine(
+		const IPhaseFunction& phase,
+		const unsigned int seed,
+		const unsigned int sampleCount = 80000
+		)
+	{
+		RandomNumberGenerator rng( seed );
+		Implementation::IndependentSampler sampler( rng );
+		const Vector3 wi( 0, 0, 1 );
+		Scalar sum = 0.0;
+		for( unsigned int i = 0; i < sampleCount; ++i ) {
+			const Scalar cosine = Vector3Ops::Dot( wi, phase.Sample( wi, sampler ) );
+			sum += cosine * cosine;
+		}
+		return sum / Scalar( sampleCount );
+	}
+
+	struct FactoryInputs
+	{
+		Point3 bboxMin;
+		Point3 bboxMax;
+		Scalar sceneUnitMeters;
+		Scalar sootEm;
+		Scalar sootDensity;
+		Scalar sootAlbedoHot;
+		Scalar sootGHot;
+		Scalar smokeKmCarbon;
+		Scalar smokeNCarbon;
+		Scalar smokeAlbedoCarbon;
+		Scalar smokeGCarbon;
+
+		FactoryInputs() :
+		  bboxMin( 0, 0, 0 ), bboxMax( 1, 1, 1 ), sceneUnitMeters( 1.0 ),
+		  sootEm( 0.26 ), sootDensity( 1800.0 ), sootAlbedoHot( 0.10 ), sootGHot( 0.5 ),
+		  smokeKmCarbon( 8.7 ), smokeNCarbon( 1.2 ),
+		  smokeAlbedoCarbon( 0.6 ), smokeGCarbon( 0.6 )
+		{
+		}
+	};
+
+	bool FactoryRejects(
+		const IScalarPainter& carbon,
+		const IScalarPainter& temperature,
+		const FactoryInputs& inputs
+		)
+	{
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, carbon, temperature, 2, 2, 2,
+			inputs.bboxMin, inputs.bboxMax, inputs.sceneUnitMeters,
+			inputs.sootEm, inputs.sootDensity, inputs.sootAlbedoHot, inputs.sootGHot,
+			inputs.smokeKmCarbon, inputs.smokeNCarbon,
+			inputs.smokeAlbedoCarbon, inputs.smokeGCarbon );
+		safe_release( medium );
+		return !created && !medium;
+	}
+
+	void TestMatrixOnlyFilmResponse()
+	{
+		std::cout << "TestMatrixOnlyFilmResponse" << std::endl;
+		XYZPel xyz;
+		Check( ColorUtils::XYZFromNM(xyz,500.0),
+			"500 nm lies inside the film response support" );
+		const RISEPel linear = ColorUtils::XYZtoRec709RGBMatrixOnly(xyz);
+		const RISEPel mapped = ColorUtils::XYZtoRec709RGB(xyz);
+		Check( linear.r < 0.0 && linear.g > 0.0 && linear.b > 0.0,
+			"matrix-only spectral response preserves the signed 500 nm red lobe" );
+		Check( !Near(linear.r,mapped.r,1e-12),
+			"matrix-only response is distinct from nonlinear gamut mapping" );
+		const RISEPel responseMass = ResponseMass();
+		Check( responseMass.r > 1.15 && responseMass.r < 1.25 &&
+			responseMass.g > 0.90 && responseMass.g < 1.00 &&
+			responseMass.b > 0.85 && responseMass.b < 0.95,
+			"each signed film-response mass K_c is positive and near its recorded value" );
+		const RISEPel greyMean = ResponsePowerMean(0.0);
+		Check( NearRelative(greyMean.r,1.0,1e-14) &&
+			NearRelative(greyMean.g,1.0,1e-14) &&
+			NearRelative(greyMean.b,1.0,1e-14),
+			"response-weighted means divide by each positive K_c" );
+	}
+
+	void TestPredictivePresetSpectralConsumptionAndFidelity()
+	{
+		std::cout << "TestPredictivePresetSpectralConsumptionAndFidelity" << std::endl;
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter(
+			1.0,0.0,0.0,0.0);
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter(
+			1000.0,0.0,0.0,0.0);
+		AffineWorldScalarPainter* condensed = new AffineWorldScalarPainter(
+			1.0,0.0,0.0,0.0);
+		IMedium* medium = 0;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+			&medium, *carbon, *temperature, condensed,
+			0,0,0,0,0,0, 0.0,0.0,0.0,0.0,0.0,0.0,
+			4,4,4, Point3(0,0,0), Point3(1,1,1), 1.0,
+			"fire_optics_v1" );
+		Check( created && medium, "the named predictive optical record constructs a medium" );
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(medium);
+		if( fire ) {
+			const FireOpticsPreset& optics = FireOpticsPreset::PredictiveV1();
+			const MediumCoefficientsNM coefficients = fire->GetCoefficientsNM(
+				Point3(0.5,0.5,0.5),550.0);
+			const Scalar expectedHotAbsorption = optics.HotAbsorptionMass(550.0);
+			const Scalar expectedHotExtinction = optics.HotExtinctionMass(550.0);
+			const Scalar expectedCondExtinction = optics.CondensedExtinctionMass(550.0);
+			const Scalar expectedScattering =
+				(expectedHotExtinction-expectedHotAbsorption)+
+				expectedCondExtinction*optics.CondensedAlbedo(550.0);
+			Check( NearRelative(coefficients.sigma_t,
+				expectedHotExtinction+expectedCondExtinction,1e-13) &&
+				NearRelative(coefficients.sigma_s,expectedScattering,1e-13),
+				"NM coefficients consume wavelength-dependent record MAC, omega, and condensed optics" );
+			Check( NearRelative(fire->HotSootVolumeFraction(Point3(0.5,0.5,0.5)),
+				5.555555555555556e-7,1e-13),
+				"the medium applies the pinned 1 g/m3 soot volume-fraction unit gate" );
+			const IPhaseFunction* phase = fire->MakePhaseClosure(
+				Point3(0.5,0.5,0.5),550.0);
+			const Scalar expectedG =
+				((expectedHotExtinction-expectedHotAbsorption)*optics.HotG(550.0)+
+				 expectedCondExtinction*optics.CondensedAlbedo(550.0)*
+				 optics.CondensedG(550.0))/expectedScattering;
+			Check( phase && Near(phase->GetMeanCosine(),expectedG,1e-12),
+				"NM phase closure is sigma_s-weighted from record g spectra" );
+			if( phase ) phase->release();
+			Check( std::string(fire->GetFireOpticsRecordId()) == optics.RecordId(),
+				"the consumed record identity is exposed through the medium" );
+			Check( !fire->FirePredictiveAllowed() &&
+				std::string(fire->GetFireRenderFidelityStatus(true)) == "preview" &&
+				HasFireReason(*fire,true,"producer_unqualified") &&
+				HasFireReason(*fire,true,"chem_none_unqualified") &&
+				HasFireReason(*fire,true,"condensed_organics_ir_unclosed"),
+				"predictive evaluation fails closed with specific producer, chem, and IR reasons" );
+		}
+		safe_release(medium);
+		safe_release(carbon);
+		safe_release(temperature);
+		safe_release(condensed);
+	}
+
+	void TestBakedTrilinearChannelsAndOptics()
+	{
+		std::cout << "TestBakedTrilinearChannelsAndOptics" << std::endl;
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter( 2.0, 1.0, 2.0, 3.0 );
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter( 600.0, 400.0, 0.0, 0.0 );
+		IMedium* medium = CreateMedium(
+			*carbon, *temperature, Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		Check( medium != nullptr, "factory creates the two-channel medium" );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( fire != nullptr && fire->IsValid(), "factory returns the multichannel concrete type" );
+		if( !fire ) {
+			safe_release( medium );
+			safe_release( carbon );
+			safe_release( temperature );
+			return;
+		}
+
+		const Point3 p( 0.4375, 0.4375, 0.4375 );
+		const Scalar expectedCarbon = 4.625;
+		const Scalar expectedTemperature = 775.0;
+		const Scalar smoothArg = (expectedTemperature - 700.0) / 200.0;
+		const Scalar expectedPhi = smoothArg * smoothArg * (3.0 - 2.0 * smoothArg);
+		Check( Near( fire->LookupCarbon( p ), expectedCarbon, 1e-12 ),
+			"trilinear bake reproduces an affine carbon field between voxels" );
+		Check( Near( fire->LookupTemperature( p ), expectedTemperature, 1e-12 ),
+			"temperature shares the same trilinear lattice" );
+		Check( Near( fire->HotOpticsFraction( p ), expectedPhi, 1e-12 ),
+			"phi(T) is the pinned 700-900 K smoothstep" );
+
+		const Scalar hotAbsorptionMass =
+			6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+		const Scalar hotAbsorption = expectedCarbon * expectedPhi * hotAbsorptionMass;
+		const Scalar hotScattering = hotAbsorption * 0.10 / 0.90;
+		const Scalar coolExtinction = expectedCarbon * (1.0 - expectedPhi) * 8.7;
+		const Scalar coolScattering = coolExtinction * 0.6;
+		const MediumCoefficients c = fire->GetCoefficients( p );
+		const RISEPel hotMean = ResponsePowerMean(1.0);
+		const RISEPel coolMean = ResponsePowerMean(1.2);
+		const RISEPel expectedPelSigmaT = hotMean*(hotAbsorption+hotScattering) +
+			coolMean*coolExtinction;
+		const RISEPel expectedPelSigmaS = hotMean*hotScattering +
+			coolMean*coolScattering;
+		Check( NearRelative(c.sigma_t[0],expectedPelSigmaT[0],1e-13) &&
+			NearRelative(c.sigma_t[1],expectedPelSigmaT[1],1e-13) &&
+			NearRelative(c.sigma_t[2],expectedPelSigmaT[2],1e-13),
+			"Pel extinction is the signed-response weighted mean of spectral extinction" );
+		Check( NearRelative(c.sigma_s[0],expectedPelSigmaS[0],1e-13) &&
+			NearRelative(c.sigma_s[1],expectedPelSigmaS[1],1e-13) &&
+			NearRelative(c.sigma_s[2],expectedPelSigmaS[2],1e-13),
+			"Pel scattering is projected independently from absorption" );
+		Check( ColorMath::MinValue(c.sigma_t) >= 0.0 &&
+			ColorMath::MinValue(c.sigma_s) >= 0.0,
+			"admitted broadband optics satisfy the nonnegative projected-coefficient invariant" );
+		const Scalar hotScale500 = 633.0 / 500.0;
+		const Scalar coolScale500 = std::pow( hotScale500, 1.2 );
+		const Scalar expectedSigmaS500 =
+			hotScattering * hotScale500 + coolScattering * coolScale500;
+		const Scalar expectedSigmaT500 =
+			(hotAbsorption + hotScattering) * hotScale500 +
+			coolExtinction * coolScale500;
+		const MediumCoefficientsNM cnm = fire->GetCoefficientsNM( p, 500.0 );
+		Check( Near( cnm.sigma_t, expectedSigmaT500, 1e-11 ) &&
+			Near( cnm.sigma_s, expectedSigmaS500, 1e-11 ),
+			"NM coefficients apply the pinned hot 1/lambda and cool lambda^-n laws" );
+
+		carbon->bias = 200.0;
+		temperature->bias = 2000.0;
+		Check( Near( fire->LookupCarbon( p ), expectedCarbon, 1e-12 ) &&
+			Near( fire->LookupTemperature( p ), expectedTemperature, 1e-12 ),
+			"channel painters are baked once rather than sampled during rendering" );
+
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	void TestChromaticNMTrackingAndTransmittance()
+	{
+		std::cout << "TestChromaticNMTrackingAndTransmittance" << std::endl;
+		IScalarPainter* carbon = nullptr;
+		IScalarPainter* hotTemperature = nullptr;
+		IScalarPainter* coolTemperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &carbon, 0.2 );
+		RISE_API_CreateUniformScalarPainter( &hotTemperature, 1000.0 );
+		RISE_API_CreateUniformScalarPainter( &coolTemperature, 600.0 );
+		IMedium* hot = CreateMedium( *carbon, *hotTemperature,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		IMedium* cool = CreateMedium( *carbon, *coolTemperature,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		Check( hot && cool, "uniform hot and cool chromatic fixtures construct" );
+		if( hot && cool ) {
+			const Point3 midpoint( 0.5, 0.5, 0.5 );
+			const MultichannelHeterogeneousMedium* hotFire =
+				dynamic_cast<const MultichannelHeterogeneousMedium*>( hot );
+			const MediumCoefficientsNM hot500 = hot->GetCoefficientsNM( midpoint, 500.0 );
+			const MediumCoefficientsNM hot700 = hot->GetCoefficientsNM( midpoint, 700.0 );
+			Check( NearRelative( hot500.sigma_t / hot700.sigma_t, 1.4, 1e-13 ) &&
+				NearRelative( hot500.sigma_s / hot700.sigma_s, 1.4, 1e-13 ),
+				"hot-soot absorption and scattering both follow 1/lambda" );
+
+			const MediumCoefficientsNM cool500 = cool->GetCoefficientsNM( midpoint, 500.0 );
+			const MediumCoefficientsNM cool700 = cool->GetCoefficientsNM( midpoint, 700.0 );
+			const Scalar coolRatio = std::pow( 700.0 / 500.0, 1.2 );
+			Check( NearRelative( cool500.sigma_t / cool700.sigma_t, coolRatio, 1e-13 ) &&
+				NearRelative( cool500.sigma_s / cool500.sigma_t, 0.6, 1e-13 ),
+				"cool-smoke extinction follows lambda^-n with its authored albedo split" );
+			if( hotFire ) {
+				const Scalar majorant380 = hotFire->TrackingMajorantAtNM( midpoint, 380.0 );
+				const Scalar majorant500 = hotFire->TrackingMajorantAtNM( midpoint, 500.0 );
+				const Scalar majorant780 = hotFire->TrackingMajorantAtNM( midpoint, 780.0 );
+				Check( majorant380 >= hot->GetCoefficientsNM( midpoint, 380.0 ).sigma_t &&
+					majorant500 >= hot500.sigma_t &&
+					majorant780 >= hot->GetCoefficientsNM( midpoint, 780.0 ).sigma_t,
+					"spectral tracking majorant bounds extinction across the visible interval" );
+				Check( majorant380 == majorant500 && majorant500 == majorant780,
+					"Phase-A NM tracking retains the locked max-over-lambda majorant" );
+			}
+
+			const Ray ray( Point3( 0.5, 0.5, 0.125 ), Vector3( 0, 0, 1 ) );
+			const Scalar length = 0.5;
+			const Scalar expectedT500 = std::exp( -hot500.sigma_t * length );
+			const Scalar expectedT700 = std::exp( -hot700.sigma_t * length );
+			Check( NearRelative( hot->EvalDistancePdfNM(
+				ray, length, false, length, 500.0 ), expectedT500, 1e-12 ) &&
+				NearRelative( hot->EvalDistancePdfNM(
+				ray, length, false, length, 700.0 ), expectedT700, 1e-12 ),
+				"deterministic NM distance survival uses chromatic optical depth" );
+
+			const unsigned int samples = 30000;
+			RandomNumberGenerator rng500( 0x500u );
+			RandomNumberGenerator rng700( 0x700u );
+			Implementation::IndependentSampler sampler500( rng500 );
+			Implementation::IndependentSampler sampler700( rng700 );
+			unsigned int events500 = 0;
+			unsigned int events700 = 0;
+			Scalar transmittance500 = 0.0;
+			Scalar transmittance700 = 0.0;
+			for( unsigned int i = 0; i < samples; ++i ) {
+				bool scattered500 = false;
+				bool scattered700 = false;
+				hot->SampleDistanceNM( ray, length, 500.0, sampler500, scattered500 );
+				hot->SampleDistanceNM( ray, length, 700.0, sampler700, scattered700 );
+				if( scattered500 ) ++events500;
+				if( scattered700 ) ++events700;
+				transmittance500 += hot->EvalTransmittanceNM( ray, length, 500.0 );
+				transmittance700 += hot->EvalTransmittanceNM( ray, length, 700.0 );
+			}
+			const Scalar eventRate500 = Scalar(events500) / Scalar(samples);
+			const Scalar eventRate700 = Scalar(events700) / Scalar(samples);
+			Check( Near( eventRate500, 1.0 - expectedT500, 0.012 ) &&
+				Near( eventRate700, 1.0 - expectedT700, 0.012 ),
+				"delta tracking samples each wavelength's extinction law" );
+			Check( Near( transmittance500 / Scalar(samples), expectedT500, 0.012 ) &&
+				Near( transmittance700 / Scalar(samples), expectedT700, 0.012 ),
+				"ratio tracking estimates chromatic NM transmittance" );
+		}
+
+		safe_release( hot );
+		safe_release( cool );
+		safe_release( carbon );
+		safe_release( hotTemperature );
+		safe_release( coolTemperature );
+	}
+
+	void TestCondensedConstituentOpticsAndClosure()
+	{
+		std::cout << "TestCondensedConstituentOpticsAndClosure" << std::endl;
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 800.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* condensed =
+			new AffineWorldScalarPainter( 2.0, 1.0, 0.0, 0.0 );
+		IMedium* medium = CreateMediumWithCondensed(
+			*carbon, *temperature, *condensed,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( fire && fire->IsValid(), "three-channel fire medium constructs" );
+		if( fire ) {
+			const Point3 p( 0.4375, 0.4375, 0.4375 );
+			const Scalar expectedCondensed = 2.4375;
+			Check( Near( fire->LookupCondensed( p ), expectedCondensed, 1e-12 ),
+				"condensed channel is baked on the shared trilinear lattice" );
+
+			const Scalar nm = 500.0;
+			const Scalar wavelengthScale = 633.0 / nm;
+			const Scalar hotAbsorptionMass =
+				6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+			const Scalar hotAbsorption = 0.5 * hotAbsorptionMass * wavelengthScale;
+			const Scalar hotScattering = hotAbsorption * 0.10 / 0.90;
+			const Scalar coolExtinction = 0.5 * 8.7 * std::pow( wavelengthScale, 1.2 );
+			const Scalar coolScattering = coolExtinction * 0.6;
+			const Scalar condExtinction = expectedCondensed * 4.0 *
+				std::pow( wavelengthScale, 0.5 );
+			const Scalar condScattering = condExtinction * 0.9;
+			const MediumCoefficientsNM coeff = fire->GetCoefficientsNM( p, nm );
+			Check( NearRelative( coeff.sigma_t,
+				hotAbsorption + hotScattering + coolExtinction + condExtinction, 1e-13 ) &&
+				NearRelative( coeff.sigma_s,
+					hotScattering + coolScattering + condScattering, 1e-13 ),
+				"summed spectral optics include condensed extinction and albedo split" );
+
+			const Scalar expectedMean =
+				(hotScattering * 0.5 + coolScattering * -0.4 + condScattering * 0.7) /
+				(hotScattering + coolScattering + condScattering);
+			const Scalar totalScattering =
+				hotScattering + coolScattering + condScattering;
+			const Scalar hotWeight = hotScattering / totalScattering;
+			const Scalar coolWeight = coolScattering / totalScattering;
+			const Scalar condWeight = condScattering / totalScattering;
+			const IPhaseFunction* closure = fire->MakePhaseClosure( p, nm );
+			Check( closure && NearRelative( closure->GetMeanCosine(), expectedMean, 1e-13 ),
+				"phase closure is the sigma_s-weighted three-constituent HG mixture" );
+			if( closure ) {
+				Check( std::fabs( SampleMeanCosine( *closure, 0xc0ddu ) - expectedMean ) < 0.015,
+					"condensed g affects sampled continuation directions" );
+				const Scalar expectedSecondMoment =
+					hotWeight * (1.0 + 2.0 * 0.5 * 0.5) / 3.0 +
+					coolWeight * (1.0 + 2.0 * -0.4 * -0.4) / 3.0 +
+					condWeight * (1.0 + 2.0 * 0.7 * 0.7) / 3.0;
+				Check( std::fabs( SampleMeanSquaredCosine(
+					*closure, 0x5ec0du ) - expectedSecondMoment ) < 0.01,
+					"closure sampling preserves the HG-mixture second moment" );
+
+				const Scalar cosine = 0.25;
+				const Vector3 wi( 0, 0, 1 );
+				const Vector3 wo( std::sqrt( 1.0 - cosine*cosine ), 0, cosine );
+				const Scalar expectedPhase =
+					hotWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG( cosine, 0.5 ) +
+					coolWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG( cosine, -0.4 ) +
+					condWeight * HenyeyGreensteinPhaseFunction::EvaluateWithG( cosine, 0.7 );
+				Check( NearRelative( closure->Evaluate( wi, wo ), expectedPhase, 1e-13 ) &&
+					NearRelative( closure->Pdf( wi, wo ), expectedPhase, 1e-13 ),
+					"closure Evaluate and Pdf retain the explicit three-lobe mixture" );
+			}
+			safe_release( closure );
+
+			const Scalar hotScattering633 = 0.5*hotAbsorptionMass*0.10/0.90;
+			const Scalar coolScattering633 = 0.5*8.7*0.6;
+			const Scalar condScattering633 = expectedCondensed*4.0*0.9;
+			const RISEPel hotProjected = ResponsePowerMean(1.0)*hotScattering633;
+			const RISEPel coolProjected = ResponsePowerMean(1.2)*coolScattering633;
+			const RISEPel condProjected = ResponsePowerMean(0.5)*condScattering633;
+			const Scalar hotProposal = hotScattering633*SamplingPowerMass(1.0);
+			const Scalar coolProposal = coolScattering633*SamplingPowerMass(1.2);
+			const Scalar condProposal = condScattering633*SamplingPowerMass(0.5);
+			const Scalar proposalTotal = hotProposal+coolProposal+condProposal;
+			const Scalar expectedPelMean =
+				(hotProposal*0.5+coolProposal*-0.4+condProposal*0.7)/proposalTotal;
+			const IPhaseFunction* pelClosure = fire->MakePhaseClosurePel(p);
+			Check( pelClosure && NearRelative(
+				pelClosure->GetMeanCosine(),expectedPelMean,1e-13),
+				"Pel closure guiding mean uses the nonnegative CMF-sum proposal mixture" );
+			if( pelClosure ) {
+				const Scalar cosine = 0.25;
+				const Vector3 wi(0,0,1);
+				const Vector3 wo(std::sqrt(1.0-cosine*cosine),0,cosine);
+				const Scalar pHot = HenyeyGreensteinPhaseFunction::EvaluateWithG(cosine,0.5);
+				const Scalar pCool = HenyeyGreensteinPhaseFunction::EvaluateWithG(cosine,-0.4);
+				const Scalar pCond = HenyeyGreensteinPhaseFunction::EvaluateWithG(cosine,0.7);
+				RISEPel expectedPel(0.0);
+				for( unsigned int channel = 0; channel < 3u; ++channel ) {
+					const Scalar total = hotProjected[channel]+coolProjected[channel]+
+						condProjected[channel];
+					expectedPel[channel] = (hotProjected[channel]*pHot+
+						coolProjected[channel]*pCool+condProjected[channel]*pCond)/total;
+				}
+				const RISEPel actualPel = pelClosure->EvaluatePel(wi,wo);
+				const Scalar expectedProposal = (hotProposal*pHot+coolProposal*pCool+
+					condProposal*pCond)/proposalTotal;
+				Check( NearRelative(actualPel.r,expectedPel.r,1e-13) &&
+					NearRelative(actualPel.g,expectedPel.g,1e-13) &&
+					NearRelative(actualPel.b,expectedPel.b,1e-13),
+					"Pel closure Evaluate retains signed per-channel projected lobe weights" );
+				Check( NearRelative(pelClosure->PdfProposal(wi,wo),expectedProposal,1e-13) &&
+					NearRelative(pelClosure->Pdf(wi,wo),expectedProposal,1e-13),
+					"Pel closure samples and reports the same nonnegative proposal density" );
+				Check( std::fabs(SampleMeanCosine(*pelClosure,0x9e1u)-expectedPelMean)<0.015,
+					"Pel proposal mixture controls sampled directions" );
+			}
+			safe_release(pelClosure);
+
+			const Scalar majorant = fire->TrackingMajorantAtNM( p, 500.0 );
+			Check( majorant >= fire->GetCoefficientsNM( p, 380.0 ).sigma_t &&
+				majorant >= coeff.sigma_t &&
+				majorant >= fire->GetCoefficientsNM( p, 780.0 ).sigma_t,
+				"shared extinction majorant bounds the summed carbon and condensed optics" );
+
+			condensed->bias = 20.0;
+			Check( Near( fire->LookupCondensed( p ), expectedCondensed, 1e-12 ),
+				"condensed painter is baked once rather than read during transport" );
+		}
+
+		safe_release( medium );
+		safe_release( condensed );
+		safe_release( temperature );
+		safe_release( carbon );
+
+		IScalarPainter* zeroCarbon = nullptr;
+		IScalarPainter* hotTemperature = nullptr;
+		IScalarPainter* pureCondensed = nullptr;
+		RISE_API_CreateUniformScalarPainter( &zeroCarbon, 0.0 );
+		RISE_API_CreateUniformScalarPainter( &hotTemperature, 1200.0 );
+		RISE_API_CreateUniformScalarPainter( &pureCondensed, 1.0 );
+		IMedium* condensedOnly = CreateMediumWithCondensed(
+			*zeroCarbon, *hotTemperature, *pureCondensed,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0, 4 );
+		const MultichannelHeterogeneousMedium* condensedFire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>( condensedOnly );
+		const Scalar emissionNM = 550.0;
+		const Scalar condensedExtinction = 4.0 * std::pow( 633.0 / emissionNM, 0.5 );
+		const Scalar expectedEmission = condensedExtinction * (1.0 - 0.9) *
+			PlanckSpectralRadianceNM( emissionNM, 1200.0 );
+		Check( condensedFire && NearRelative( condensedFire->GetThermalEmissionNM(
+			Point3( 0.5, 0.5, 0.5 ), emissionNM ), expectedEmission, 1e-13 ) &&
+			condensedFire->GetThermalEmissionImportance() > 0.0,
+			"pure-condensed thermal emission is sigma_a times Planck radiance with CDF support" );
+		safe_release( condensedOnly );
+		safe_release( pureCondensed );
+		safe_release( hotTemperature );
+		safe_release( zeroCarbon );
+
+		IScalarPainter* equalCarbon = nullptr;
+		IScalarPainter* equalTemperature = nullptr;
+		IScalarPainter* equalCondensed = nullptr;
+		RISE_API_CreateUniformScalarPainter( &equalCarbon, 1.0 );
+		RISE_API_CreateUniformScalarPainter( &equalTemperature, 800.0 );
+		RISE_API_CreateUniformScalarPainter( &equalCondensed, 1.0 );
+		const Scalar equalExtinctionMass = 8.7;
+		const Scalar equalHotAlbedo = 0.1;
+		const Scalar equalSootDensity = 1800.0;
+		const Scalar equalSootEm = equalExtinctionMass * (1.0 - equalHotAlbedo) *
+			633.0e-9 * equalSootDensity / (6.0 * PI * 1.0e-3);
+		IMedium* equalMedium = nullptr;
+		const bool equalCreated =
+			RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+				&equalMedium, *equalCarbon, *equalTemperature, *equalCondensed,
+				4, 4, 4, Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+				equalSootEm, equalSootDensity, equalHotAlbedo, 0.5,
+				equalExtinctionMass, 1.2, 0.6, -0.4,
+				equalExtinctionMass, 0.5, 0.9, 0.7 );
+		const MultichannelHeterogeneousMedium* equalFire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>( equalMedium );
+		bool equalMajorantBoundsSupport = equalCreated && equalFire;
+		if( equalFire ) {
+			const Scalar positions[] = { 0.125, 0.5, 0.875 };
+			const Scalar wavelengths[] = { 380.0, 500.0, 633.0, 780.0 };
+			for( const Scalar x : positions ) {
+				const Point3 samplePoint( x, 1.0-x, 0.5 );
+				for( const Scalar wavelength : wavelengths ) {
+					equalMajorantBoundsSupport = equalMajorantBoundsSupport &&
+						equalFire->TrackingMajorantAtNM( samplePoint, wavelength ) >=
+							equalFire->GetCoefficientsNM( samplePoint, wavelength ).sigma_t;
+				}
+			}
+		}
+		Check( equalMajorantBoundsSupport,
+			"majorant bounds equal carbon-plus-condensed extinction over space and wavelength" );
+		safe_release( equalMedium );
+		safe_release( equalCondensed );
+		safe_release( equalTemperature );
+		safe_release( equalCarbon );
+	}
+
+	void TestWavelengthBoundConstituentPhaseClosure()
+	{
+		std::cout << "TestWavelengthBoundConstituentPhaseClosure" << std::endl;
+		const Scalar hotG = 0.85;
+		const Scalar coolG = -0.35;
+		const Scalar hotAlbedo = 0.40;
+		const Scalar coolAlbedo = 0.70;
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 600.0, 400.0, 0.0, 0.0 );
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature, 8, 8, 8,
+			Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+			0.26, 1800.0, hotAlbedo, hotG,
+			8.7, 1.2, coolAlbedo, coolG );
+		Check( created && medium, "phase-closure fixture constructs" );
+		if( !medium ) {
+			safe_release( carbon );
+			safe_release( temperature );
+			return;
+		}
+
+		Check( medium->GetPhaseFunction() == nullptr,
+			"fire medium exposes no legacy fixed phase function" );
+		Check( MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted( *medium ),
+			"exact multichannel fire medium occupies the continuation-closure allowlist row" );
+		{
+			IPhaseFunction* legacyPhase = nullptr;
+			RISE_API_CreateHenyeyGreensteinPhaseFunction( &legacyPhase, 0.0 );
+			DerivedMultichannelHeterogeneousMedium derived(
+				*carbon, *temperature, *legacyPhase );
+			Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted( derived ),
+				"derived multichannel fire medium is default-denied by the exact-type table" );
+			safe_release( legacyPhase );
+		}
+
+		const Point3 coolPoint( 0.125, 0.5, 0.5 );
+		const Point3 hotPoint( 0.875, 0.5, 0.5 );
+		const IPhaseFunction* pelClosure =
+			medium->MakeContinuationPhaseClosurePel(coolPoint);
+		Check( pelClosure != nullptr && Near(pelClosure->GetMeanCosine(),coolG,1e-12),
+			"step-7 Pel continuation binds the local cool-constituent lobe" );
+		if( pelClosure ) {
+			const Vector3 wi(0,0,1);
+			const Vector3 wo = Vector3Ops::Normalize(Vector3(0.6,0,0.8));
+			const RISEPel value = pelClosure->EvaluatePel(wi,wo);
+			const Scalar expected =
+				HenyeyGreensteinPhaseFunction::EvaluateWithG(0.8,coolG);
+			Check( NearRelative(value.r,expected,1e-13) &&
+				NearRelative(value.g,expected,1e-13) &&
+				NearRelative(value.b,expected,1e-13) &&
+				NearRelative(pelClosure->PdfProposal(wi,wo),expected,1e-13),
+				"single-constituent Pel Evaluate and proposal density reduce to the same HG lobe" );
+		}
+		safe_release(pelClosure);
+		const Scalar wavelengths[] = { 450.0, 750.0 };
+		for( const Scalar nm : wavelengths )
+		{
+			const IPhaseFunction* coolClosure = medium->MakePhaseClosure( coolPoint, nm );
+			const IPhaseFunction* hotClosure = medium->MakePhaseClosure( hotPoint, nm );
+			const IPhaseFunction* coolContinuation =
+				medium->MakeContinuationPhaseClosureNM( coolPoint, nm );
+			const IPhaseFunction* hotContinuation =
+				medium->MakeContinuationPhaseClosureNM( hotPoint, nm );
+			Check( coolClosure && hotClosure,
+				"two-position/two-wavelength closures construct" );
+			Check( coolContinuation && hotContinuation && coolClosure && hotClosure &&
+				Near(coolContinuation->GetMeanCosine(),
+					coolClosure->GetMeanCosine(),1e-15) &&
+				Near(hotContinuation->GetMeanCosine(),
+					hotClosure->GetMeanCosine(),1e-15),
+				"fire continuation factory preserves both local constituent mixtures" );
+			if( coolClosure && hotClosure )
+			{
+				Check( Near( coolClosure->GetMeanCosine(), coolG, 1e-12 ) &&
+					Near( hotClosure->GetMeanCosine(), hotG, 1e-12 ),
+					"opposite constituent positions bind their authored g values" );
+				const Vector3 wi( 0, 0, 1 );
+				const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.6, 0, 0.8 ) );
+				const Scalar expectedCool =
+					HenyeyGreensteinPhaseFunction::EvaluateWithG( 0.8, coolG );
+				const Scalar expectedHot =
+					HenyeyGreensteinPhaseFunction::EvaluateWithG( 0.8, hotG );
+				Check( NearRelative( coolClosure->Evaluate( wi, wo ), expectedCool, 1e-13 ) &&
+					NearRelative( hotClosure->Evaluate( wi, wo ), expectedHot, 1e-13 ) &&
+					NearRelative( coolClosure->Pdf( wi, wo ), expectedCool, 1e-13 ) &&
+					NearRelative( hotClosure->Pdf( wi, wo ), expectedHot, 1e-13 ),
+					"closure Evaluate/Pdf are the sigma_s-weighted HG law" );
+			}
+			if( coolContinuation && hotContinuation && coolClosure && hotClosure )
+			{
+				const Vector3 wi(0,0,1);
+				const Vector3 wo = Vector3Ops::Normalize(Vector3(0.6,0,0.8));
+				Check( NearRelative(coolContinuation->Evaluate(wi,wo),
+					coolClosure->Evaluate(wi,wo),1e-15) &&
+					NearRelative(coolContinuation->Pdf(wi,wo),
+						coolClosure->Pdf(wi,wo),1e-15) &&
+					NearRelative(hotContinuation->Evaluate(wi,wo),
+						hotClosure->Evaluate(wi,wo),1e-15) &&
+					NearRelative(hotContinuation->Pdf(wi,wo),
+						hotClosure->Pdf(wi,wo),1e-15),
+					"fire continuation Evaluate/Pdf match the retained local phase closures" );
+			}
+			safe_release( coolClosure );
+			safe_release( hotClosure );
+			safe_release( coolContinuation );
+			safe_release( hotContinuation );
+		}
+
+		const Point3 mixedPoint( 0.5, 0.5, 0.5 );
+		const Scalar mixedWavelengths[] = { 450.0, 750.0 };
+		Scalar measuredMeans[2] = { 0.0, 0.0 };
+		for( unsigned int i = 0; i < 2; ++i )
+		{
+			const Scalar nm = mixedWavelengths[i];
+			const IPhaseFunction* closure =
+				medium->MakeContinuationPhaseClosureNM( mixedPoint, nm );
+			Check( closure != nullptr, "mixed-constituent closure constructs" );
+			if( closure )
+			{
+				const Scalar scale = 633.0 / nm;
+				const Scalar hotAbsorptionMass =
+					6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+				const Scalar hotS = 0.5 * hotAbsorptionMass * scale *
+					hotAlbedo / (1.0 - hotAlbedo);
+				const Scalar coolS = 0.5 * 8.7 * std::pow( scale, 1.2 ) * coolAlbedo;
+				const Scalar expectedMean = (hotS * hotG + coolS * coolG) / (hotS + coolS);
+				measuredMeans[i] = closure->GetMeanCosine();
+				Check( NearRelative( measuredMeans[i], expectedMean, 1e-13 ),
+					"mixed closure mean cosine uses local wavelength-dependent sigma_s weights" );
+
+				const Vector3 wi( 0, 0, 1 );
+				const Vector3 wo = Vector3Ops::Normalize( Vector3( 0.6, 0, 0.8 ) );
+				RayIntersectionGeometric ri( Ray( mixedPoint, wi ), RasterizerState{ 0, 0 } );
+				MediumTransport::MediumScatterBSDF adapterBSDF( closure, wi );
+				MediumTransport::MediumScatterMaterial adapterMaterial( closure, wi );
+				const Scalar expected = closure->Evaluate( wo, wi );
+				const IORStack ior( 1.0 );
+				Check( NearRelative( adapterBSDF.valueNM( wo, ri, nm ), expected, 1e-13 ) &&
+					NearRelative( adapterMaterial.PdfNM( wo, ri, nm, ior ),
+						closure->Pdf( wo, wi ), 1e-13 ),
+					"NEE evaluation and Pdf adapters consume the retained closure instance" );
+			}
+			safe_release( closure );
+		}
+		Check( std::fabs( measuredMeans[0] - measuredMeans[1] ) > 1e-4,
+			"one position binds distinct phase closures at distinct wavelengths" );
+
+		const IPhaseFunction* coolClosure =
+			medium->MakeContinuationPhaseClosureNM( coolPoint, 500.0 );
+		const IPhaseFunction* hotClosure =
+			medium->MakeContinuationPhaseClosureNM( hotPoint, 500.0 );
+		if( coolClosure && hotClosure )
+		{
+			const Scalar sampledCool = SampleMeanCosine( *coolClosure, 0xc001u );
+			const Scalar sampledHot = SampleMeanCosine( *hotClosure, 0x807u );
+			Check( std::fabs( sampledCool - coolG ) < 0.015 &&
+				std::fabs( sampledHot - hotG ) < 0.015 && sampledHot - sampledCool > 1.0,
+				"stored constituent g values materially change sampled directions" );
+		}
+		safe_release( coolClosure );
+		safe_release( hotClosure );
+
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	void TestContinuationPhaseClosurePreflightTable()
+	{
+		std::cout << "TestContinuationPhaseClosurePreflightTable" << std::endl;
+		IPhaseFunction* isotropic = nullptr;
+		RISE_API_CreateIsotropicPhaseFunction( &isotropic );
+		HomogeneousMedium* exactHomogeneous = new HomogeneousMedium(
+			RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), *isotropic );
+		Check( MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*exactHomogeneous ),
+			"exact homogeneous medium with exact isotropic phase is allowlisted" );
+
+		DerivedHomogeneousMedium* derived = new DerivedHomogeneousMedium( *isotropic );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted( *derived ),
+			"derived built-in medium is default-denied" );
+
+		PluginMedium* pluginMedium = new PluginMedium( *isotropic );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*pluginMedium ),
+			"plugin medium is default-denied" );
+
+		PluginPhase* pluginPhase = new PluginPhase();
+		HomogeneousMedium* pluginPhaseMedium = new HomogeneousMedium(
+			RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), *pluginPhase );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*pluginPhaseMedium ),
+			"plugin phase on an exact built-in medium is default-denied" );
+
+		HenyeyGreensteinPhaseFunction* invalidHG =
+			new HenyeyGreensteinPhaseFunction( 1.0 );
+		HomogeneousMedium* invalidHGMedium = new HomogeneousMedium(
+			RISEPel( 0, 0, 0 ), RISEPel( 1, 1, 1 ), *invalidHG );
+		Check( !MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+			*invalidHGMedium ),
+			"finite-density HG qualification rejects g at the singular endpoint" );
+
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 1000.0, 0.0, 0.0, 0.0 );
+		MultichannelHeterogeneousMedium* invalidFire =
+			new MultichannelHeterogeneousMedium(
+				*carbon, *temperature, 2, 2, 2,
+				Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+				0.26, 1800.0, 0.4, 1.0, 8.7, 1.2, 0.7, -0.35,
+				*isotropic );
+		Check( !invalidFire->IsValid() &&
+			!MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+				*invalidFire ),
+			"invalid exact fire instance cannot pass continuation preflight" );
+
+		safe_release( invalidFire );
+		safe_release( temperature );
+		safe_release( carbon );
+		safe_release( invalidHGMedium );
+		safe_release( invalidHG );
+		safe_release( pluginPhaseMedium );
+		safe_release( pluginPhase );
+		safe_release( pluginMedium );
+		safe_release( derived );
+		safe_release( exactHomogeneous );
+		safe_release( isotropic );
+	}
+
+	void TestPhysicalUnitsAndSceneScale()
+	{
+		std::cout << "TestPhysicalUnitsAndSceneScale" << std::endl;
+		IScalarPainter* carbon = nullptr;
+		IScalarPainter* temperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &carbon, 1.0 );
+		RISE_API_CreateUniformScalarPainter( &temperature, 1000.0 );
+		IMedium* metres = CreateMedium(
+			*carbon, *temperature, Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0 );
+		IMedium* centimetres = CreateMedium(
+			*carbon, *temperature, Point3( 0, 0, 0 ), Point3( 100, 100, 100 ), 0.01 );
+		MultichannelHeterogeneousMedium* m =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( metres );
+		MultichannelHeterogeneousMedium* cm =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( centimetres );
+		Check( m != nullptr && cm != nullptr, "metre and centimetre fixtures construct" );
+		if( m && cm ) {
+			Check( Near( m->HotSootVolumeFraction( Point3( 0.5, 0.5, 0.5 ) ),
+				5.555555555555556e-7, 1e-18 ),
+				"1 g/m^3 at phi=1 gives f_v=5.5556e-7" );
+			const MediumCoefficients cM = m->GetCoefficients( Point3( 0.5, 0.5, 0.5 ) );
+			const MediumCoefficients cCM = cm->GetCoefficients( Point3( 50, 50, 50 ) );
+			Check( Near( cCM.sigma_t[0], 0.01 * cM.sigma_t[0], 1e-13 ),
+				"inverse-length coefficients convert from SI to scene units" );
+
+			const Ray rayM( Point3( 0.5, 0.5, 0.125 ), Vector3( 0, 0, 1 ) );
+			const Ray rayCM( Point3( 50, 50, 12.5 ), Vector3( 0, 0, 1 ) );
+			const Scalar transM = m->EvalDistancePdf( rayM, 0.5, false, 0.5 );
+			const Scalar transCM = cm->EvalDistancePdf( rayCM, 50.0, false, 50.0 );
+			const Scalar expectedTau = ColorMath::MaxValue(cM.sigma_t) * 0.5;
+			Check( Near( -std::log( transM ), expectedTau, 1e-10 ),
+				"deterministic optical depth matches the uniform slab" );
+			Check( Near( transCM, transM, 1e-12 ),
+				"the same physical slab is invariant between metre and centimetre scenes" );
+
+			const MediumCoefficientsNM cM500 = m->GetCoefficientsNM(
+				Point3( 0.5, 0.5, 0.5 ), 500.0 );
+			const MediumCoefficientsNM cCM500 = cm->GetCoefficientsNM(
+				Point3( 50, 50, 50 ), 500.0 );
+			const Scalar transM500 = m->EvalDistancePdfNM(
+				rayM, 0.5, false, 0.5, 500.0 );
+			const Scalar transCM500 = cm->EvalDistancePdfNM(
+				rayCM, 50.0, false, 50.0, 500.0 );
+			Check( NearRelative( cCM500.sigma_t, 0.01 * cM500.sigma_t, 1e-13 ) &&
+				NearRelative( transCM500, transM500, 1e-12 ),
+				"chromatic NM coefficients and optical depth are scene-unit invariant" );
+		}
+
+		safe_release( metres );
+		safe_release( centimetres );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	void TestPhiSupMajorant()
+	{
+		std::cout << "TestPhiSupMajorant" << std::endl;
+		// Opposing gradients make every x-cell endpoint product small while
+		// carbon*k(phi(T)) is large in the interior.  A grid built from the
+		// nonlinear product's knots is non-conservative; the required bound
+		// is max_phi(k) times the carbon-only lattice majorant.
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter( 1.5, -2.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter( 600.0, 400.0, 0.0, 0.0 );
+		const Scalar targetHotMassExtinction = 100.0;
+		const Scalar sootEm = targetHotMassExtinction * 633.0e-9 * 1800.0 /
+			(6.0 * PI * 1.0e-3);
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature,
+			2, 2, 2, Point3( 0, 0, 0 ), Point3( 1, 1, 1 ), 1.0,
+			sootEm, 1800.0, 0.0, 0.5,
+			1.0, 1.2, 0.0, 0.6 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>( medium );
+		Check( created && fire, "adversarial majorant fixture constructs" );
+		if( fire ) {
+			const Point3 interior( 0.5, 0.5, 0.5 );
+			const RISEPel sigmaT = fire->GetCoefficients( interior ).sigma_t;
+			const RISEPel hotMean = ResponsePowerMean(1.0);
+			const RISEPel coolMean = ResponsePowerMean(1.2);
+			const RISEPel expected = hotMean*25.0 + coolMean*0.25;
+			const Scalar majorant = fire->TrackingMajorantAtPel( interior );
+			Check( NearRelative(sigmaT.r,expected.r,1e-13) &&
+				NearRelative(sigmaT.g,expected.g,1e-13) &&
+				NearRelative(sigmaT.b,expected.b,1e-13),
+				"opposing carbon/temperature gradients create the intended interior maximum" );
+			Check( majorant >= ColorMath::MaxValue(sigmaT),
+				"phi-sup carbon majorant bounds the nonlinear interior extinction" );
+			const Scalar spectralMajorant = fire->TrackingMajorantAtNM( interior, 500.0 );
+			Check( spectralMajorant >= fire->GetCoefficientsNM( interior, 380.0 ).sigma_t &&
+				spectralMajorant >= fire->GetCoefficientsNM( interior, 500.0 ).sigma_t &&
+				spectralMajorant >= fire->GetCoefficientsNM( interior, 780.0 ).sigma_t,
+				"max-over-lambda majorant bounds an adversarial nonlinear phi mixture" );
+		}
+		safe_release( medium );
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	void TestPhiAwareQuadratureAndDistancePdf()
+	{
+		std::cout << "TestPhiAwareQuadratureAndDistancePdf" << std::endl;
+		// First isolate the painter-baked lattice convention.  A quadratic
+		// painter becomes piecewise linear after baking, with real knots at
+		// x={0.125,0.375,0.625,0.875}.  The legacy density offset instead
+		// splits at quarter boundaries and misses those polynomial changes.
+		QuadraticXPainter* quadraticCarbon = new QuadraticXPainter();
+		IScalarPainter* coolTemperature = nullptr;
+		RISE_API_CreateUniformScalarPainter( &coolTemperature, 600.0 );
+		IMedium* latticeMedium = nullptr;
+		const bool latticeCreated = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&latticeMedium, *quadraticCarbon, *coolTemperature,
+			4, 4, 4, Point3(0,0,0), Point3(1,1,1), 1.0,
+			0.0, 1800.0, 0.0, 0.5,
+			0.2, 0.0, 0.0, -0.4 );
+		Check( latticeCreated && latticeMedium,
+			"piecewise baked-lattice fixture constructs" );
+		if( latticeMedium ) {
+			const Scalar samples[4] = {
+				0.125*0.125, 0.375*0.375, 0.625*0.625, 0.875*0.875 };
+			Scalar expectedIntegral = 0.0;
+			for( unsigned int i = 0u; i < 3u; ++i ) {
+				expectedIntegral += 0.25*0.5*(samples[i]+samples[i+1]);
+			}
+			const Scalar expectedTau = 0.2*expectedIntegral;
+			const Ray latticeRay( Point3(0.125,0.5,0.5), Vector3(1,0,0) );
+			const Scalar survival = latticeMedium->EvalDistancePdfNM(
+				latticeRay, 0.75, false, 0.75, 633.0 );
+			Check( NearRelative( -log(survival), expectedTau, 2e-13 ),
+				"deterministic DDA splits at the actual painter-baked trilinear knots" );
+		}
+		safe_release(latticeMedium);
+		safe_release(quadraticCarbon);
+		safe_release(coolTemperature);
+
+		// A non-monotone, renderer-realizable polynomial needs derivative
+		// partitioning to reveal both roots.  Along x=y, x*(1-y) forms a
+		// hump whose endpoints are below 900 K while its interior is above;
+		// endpoint sign checks alone therefore miss both 900 K crossings.
+		IScalarPainter* uniformCarbon = nullptr;
+		RISE_API_CreateUniformScalarPainter( &uniformCarbon, 1.0 );
+		BilinearHumpTemperaturePainter* humpTemperature =
+			new BilinearHumpTemperaturePainter();
+		const Scalar humpHotMassExtinction = 2.0;
+		const Scalar humpSootEm = humpHotMassExtinction*633.0e-9*1800.0 /
+			(6.0*PI*1.0e-3);
+		IMedium* humpMedium = nullptr;
+		const bool humpCreated = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&humpMedium, *uniformCarbon, *humpTemperature,
+			2, 2, 2, Point3(0,0,0), Point3(1,1,1), 1.0,
+			humpSootEm, 1800.0, 0.0, 0.5,
+			0.2, 0.0, 0.0, -0.4 );
+		Check( humpCreated && humpMedium,
+			"non-monotone phi-transition fixture constructs" );
+		if( humpMedium ) {
+			const Scalar invSqrtTwo = 1.0/sqrt(2.0);
+			const Ray humpRay( Point3(0.25,0.25,0.5),
+				Vector3(invSqrtTwo,invSqrtTwo,0.0) );
+			const Scalar humpLength = 0.5*sqrt(2.0);
+			const Scalar survival = humpMedium->EvalDistancePdfNM(
+				humpRay, humpLength, false, humpLength, 633.0 );
+			Check( NearRelative( -log(survival),
+				ReferenceHumpOpticalDepth(), 2e-12 ),
+				"derivative partitions expose both same-sign-endpoint 900 K roots" );
+		}
+		safe_release(humpMedium);
+		safe_release(uniformCarbon);
+		safe_release(humpTemperature);
+
+		TrilinearProductPainter* carbon = new TrilinearProductPainter( 1.0, 8.0 );
+		TrilinearProductPainter* temperature =
+			new TrilinearProductPainter( 600.0, 1600.0 );
+		const Scalar targetHotMassExtinction = 2.0;
+		const Scalar sootEm = targetHotMassExtinction*633.0e-9*1800.0 /
+			(6.0*PI*1.0e-3);
+		IMedium* medium = nullptr;
+		const bool created = RISE_API_CreateMultichannelHeterogeneousMedium(
+			&medium, *carbon, *temperature,
+			2, 2, 2, Point3(0,0,0), Point3(1,1,1), 1.0,
+			sootEm, 1800.0, 0.0, 0.5,
+			0.2, 0.0, 0.0, -0.4 );
+		MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<MultichannelHeterogeneousMedium*>(medium);
+		Check( created && fire && fire->IsValid(),
+			"phi-transition quadrature fixture constructs" );
+		if( fire ) {
+			const Scalar invSqrtThree = 1.0/sqrt(3.0);
+			const Ray ray( Point3(0.25,0.25,0.25),
+				Vector3(invSqrtThree,invSqrtThree,invSqrtThree) );
+			const Scalar length = 0.5*sqrt(3.0);
+			const Scalar expectedTau = ReferencePhiAwareOpticalDepth(0.25,0.75);
+			const Scalar survival = fire->EvalDistancePdfNM(
+				ray, length, false, length, 633.0 );
+			Check( NearRelative( -log(survival), expectedTau, 2e-12 ),
+				"root-split 7-point optical depth integrates a degree-12 phi transition" );
+
+			const Scalar scatterDistance = 0.61*length;
+			const Scalar scatterX = 0.25 + scatterDistance*invSqrtThree;
+			const Scalar expectedScatterPdf = ReferencePhiAwareSigmaT(scatterX)*
+				exp( -ReferencePhiAwareOpticalDepth(0.25,scatterX) );
+			const Scalar scatterPdf = fire->EvalDistancePdfNM(
+				ray, scatterDistance, true, length, 633.0 );
+			Check( NearRelative( scatterPdf, expectedScatterPdf, 2e-12 ),
+				"EvalDistancePdfNM retains the deterministic pure-DT density through both clamps" );
+
+			bool majorantBounded = true;
+			for( unsigned int i = 0u; i <= 256u; ++i ) {
+				const Scalar x = 0.25 + 0.5*Scalar(i)/256.0;
+				const Point3 point(x,x,x);
+				if( fire->TrackingMajorantAtNM(point,633.0) <
+					fire->GetCoefficientsNM(point,633.0).sigma_t ) {
+					majorantBounded = false;
+					break;
+				}
+			}
+			Check( majorantBounded,
+				"shared-lattice majorant bounds every sampled point across both phi transitions" );
+		}
+		safe_release(medium);
+		safe_release(carbon);
+		safe_release(temperature);
+	}
+
+	void TestChemSPDNormalizationClippingAndSceneScale()
+	{
+		std::cout << "TestChemSPDNormalizationClippingAndSceneScale" << std::endl;
+		AffineWorldScalarPainter* carbon =
+			new AffineWorldScalarPainter( 0.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter( 1000.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* chemCH =
+			new AffineWorldScalarPainter( 120.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* chemC2 =
+			new AffineWorldScalarPainter( 50.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* chemZero =
+			new AffineWorldScalarPainter( 0.0, 0.0, 0.0, 0.0 );
+		IntervalTopHatFunction* tenNanometre =
+			new IntervalTopHatFunction( 500.0, 510.0 );
+
+		IMedium* medium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*tenNanometre, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(medium);
+		Check( fire != nullptr, "chem medium constructs from three authored SPD curves" );
+		if( fire ) {
+			Check( Near(fire->GetChemSPDAuthoredArea(0),10.0,1e-15),
+				"pinned 1 nm trapezoid normalizes a 10 nm top-hat to area ten" );
+			const Scalar glArea = GaussLegendre21::IntegrateVisibleBand(
+				[&](const Scalar nm){ return tenNanometre->Evaluate(nm); } );
+			Check( std::fabs(glArea-10.0) > 0.5,
+				"the shared smooth-band GL21 rule is observably unsuitable for the 10 nm top-hat" );
+			const Scalar expectedSource = 120.0/(FOUR_PI*10.0);
+			Check( NearRelative(fire->GetChemEmissionNM(Point3(0.5,0.5,0.5),505.0),
+				expectedSource,1e-14),
+				"band-integrated W/m^3 becomes per-nm per-steradian source after authored-interval normalization" );
+			Check( fire->GetChemEmissionNM(Point3(0.5,0.5,0.5),499.0) == 0.0,
+				"normalized chem SPD has no support outside its declared interval" );
+
+			RandomNumberGenerator rng(901u);
+			Implementation::IndependentSampler sampler(rng);
+			const Ray ray(Point3(-1.0,0.5,0.5),Vector3(1.0,0.0,0.0));
+			const Scalar lineEstimate = fire->EstimateChemEmissionSegmentNM(
+				ray,1.0,2.0,505.0,sampler);
+			Check( NearRelative(lineEstimate,expectedSource,1e-14),
+				"full-segment chem estimator is exact for a zero-extinction uniform source" );
+		}
+
+		OffsetQuadraticFunction* quadraticSPD =
+			new OffsetQuadraticFunction(500.0);
+		IMedium* quadraticMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*quadraticSPD, *quadraticSPD, *quadraticSPD,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* quadratic =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(quadraticMedium);
+		if( quadratic ) {
+			// Composite h=1 trapezoid for x^2 over [0,10]:
+			// 1/2(0^2+10^2) + sum_{i=1}^{9} i^2 = 50+285 = 335.
+			Check( Near(quadratic->GetChemSPDAuthoredArea(0),335.0,1e-14),
+				"nonconstant SPD pins every 1 nm composite-trapezoid sample" );
+			Check( NearRelative(quadratic->GetChemEmissionNM(
+				Point3(0.5,0.5,0.5),505.0),120.0*25.0/(FOUR_PI*335.0),1e-14),
+				"the pinned nonconstant normalization area is used by spectral emission" );
+		}
+
+		IntervalTopHatFunction* fractionalHat =
+			new IntervalTopHatFunction( 500.0, 510.5 );
+		IMedium* fractionalMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*fractionalHat, *fractionalHat, *fractionalHat,
+			500.0, 510.5, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* fractional =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(fractionalMedium);
+		if( fractional ) {
+			Check( Near(fractional->GetChemSPDAuthoredArea(0),10.5,1e-15),
+				"1 nm trapezoid normalization includes the final fractional panel" );
+			Check( NearRelative(fractional->GetChemEmissionNM(
+				Point3(0.5,0.5,0.5),505.0),120.0/(FOUR_PI*10.5),1e-14),
+				"fractional-panel normalization controls the per-nm source" );
+		}
+
+		IMedium* overlappingMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemC2, *chemZero,
+			*tenNanometre, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 0.01 );
+		const MultichannelHeterogeneousMedium* overlapping =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(overlappingMedium);
+		if( overlapping ) {
+			Check( NearRelative(overlapping->GetChemEmissionNM(
+				Point3(0.5,0.5,0.5),505.0),
+				0.01*(120.0+50.0)/(FOUR_PI*10.0),1e-14),
+				"overlapping chem bands add their normalized per-nm sources" );
+		}
+
+		IntervalTopHatFunction* clippedHat =
+			new IntervalTopHatFunction( 375.0, 385.0 );
+		IMedium* clippedMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*clippedHat, *clippedHat, *clippedHat,
+			375.0, 385.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		const MultichannelHeterogeneousMedium* clipped =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(clippedMedium);
+		if( clipped ) {
+			Scalar visibleIntegral = 0.0;
+			for( unsigned int nm = 380u; nm < 385u; ++nm ) {
+				visibleIntegral += 0.5*(
+					clipped->GetChemEmissionNM(Point3(0.5,0.5,0.5),Scalar(nm))+
+					clipped->GetChemEmissionNM(Point3(0.5,0.5,0.5),Scalar(nm+1u)) );
+			}
+			Check( NearRelative(visibleIntegral,0.5*120.0/FOUR_PI,1e-14),
+				"renderer-band clipping loses half the authored power without renormalizing" );
+		}
+
+		IMedium* centimetreMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*tenNanometre, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(100,100,100), 0.01 );
+		const MultichannelHeterogeneousMedium* centimetres =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(centimetreMedium);
+		if( fire && centimetres ) {
+			RandomNumberGenerator metreRng(77u);
+			RandomNumberGenerator centimetreRng(77u);
+			Implementation::IndependentSampler metreSampler(metreRng);
+			Implementation::IndependentSampler centimetreSampler(centimetreRng);
+			const Scalar metres = fire->EstimateChemEmissionSegmentNM(
+				Ray(Point3(-1.0,0.5,0.5),Vector3(1,0,0)),1.0,2.0,505.0,metreSampler);
+			const Scalar cm = centimetres->EstimateChemEmissionSegmentNM(
+				Ray(Point3(-100.0,50.0,50.0),Vector3(1,0,0)),100.0,200.0,
+				505.0,centimetreSampler);
+			Check( NearRelative(cm,metres,1e-14),
+				"chem line radiance is invariant between metre and centimetre scene units" );
+		}
+
+		IntervalTopHatFunction* zeroSPD =
+			new IntervalTopHatFunction(500.0,510.0,0.0);
+		IMedium* invalidSPDMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*zeroSPD, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		Check( invalidSPDMedium == nullptr,
+			"zero-area authored SPD is rejected at medium construction" );
+		safe_release(invalidSPDMedium);
+		safe_release(zeroSPD);
+
+		IntervalTopHatFunction* negativeSPD =
+			new IntervalTopHatFunction(500.0,510.0,-1.0);
+		invalidSPDMedium = CreateMediumWithChem(
+			*carbon, *temperature, *chemCH, *chemZero, *chemZero,
+			*negativeSPD, *tenNanometre, *tenNanometre,
+			500.0, 510.0, Point3(0,0,0), Point3(1,1,1), 1.0 );
+		Check( invalidSPDMedium == nullptr,
+			"negative authored SPD samples are rejected at medium construction" );
+		safe_release(invalidSPDMedium);
+		safe_release(negativeSPD);
+
+		safe_release(centimetreMedium);
+		safe_release(clippedMedium);
+		safe_release(clippedHat);
+		safe_release(overlappingMedium);
+		safe_release(fractionalMedium);
+		safe_release(fractionalHat);
+		safe_release(quadraticMedium);
+		safe_release(quadraticSPD);
+		safe_release(medium);
+		safe_release(tenNanometre);
+		safe_release(chemZero);
+		safe_release(chemC2);
+		safe_release(chemCH);
+		safe_release(temperature);
+		safe_release(carbon);
+	}
+
+	void TestChemReactionMixtureAgainstAttenuatedReference()
+	{
+		std::cout << "TestChemReactionMixtureAgainstAttenuatedReference" << std::endl;
+		ThinSheetXPainter* carbonSheet =
+			new ThinSheetXPainter(0.66,0.72,4.0);
+		AffineWorldScalarPainter* temperature =
+			new AffineWorldScalarPainter(1000.0,0.0,0.0,0.0);
+		ThinSheetXPainter* reactionSheet =
+			new ThinSheetXPainter(0.66,0.72,200.0);
+		AffineWorldScalarPainter* chemZero =
+			new AffineWorldScalarPainter(0.0,0.0,0.0,0.0);
+		IntervalTopHatFunction* spd = new IntervalTopHatFunction(500.0,510.0);
+		IMedium* medium = CreateMediumWithChem(
+			*carbonSheet,*temperature,*reactionSheet,*chemZero,*chemZero,
+			*spd,*spd,*spd,500.0,510.0,
+			Point3(0,0,0),Point3(1,1,1),1.0,32u);
+		const MultichannelHeterogeneousMedium* fire =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(medium);
+		Check( fire != nullptr,
+			"thin reaction sheet aligned with an extinction transition constructs" );
+		if( fire ) {
+			const Scalar wavelength = 505.0;
+			const unsigned int referenceSteps = 200000u;
+			const Scalar h = 1.0/Scalar(referenceSteps);
+			Scalar reference = 0.0;
+			Scalar tau = 0.0;
+			for( unsigned int i = 0; i < referenceSteps; ++i ) {
+				const Scalar x = (Scalar(i)+0.5)*h;
+				const Point3 point(x,0.5,0.5);
+				const Scalar sigmaT = fire->GetCoefficientsNM(point,wavelength).sigma_t;
+				const Scalar epsilon = fire->GetChemEmissionNM(point,wavelength);
+				reference += exp(-(tau+0.5*sigmaT*h))*epsilon*h;
+				tau += sigmaT*h;
+			}
+			Check( tau > 1.0,
+				"the adversarial reaction sheet overlaps a genuinely high optical-depth transition" );
+
+			const Ray ray(Point3(0,0.5,0.5),Vector3(1,0,0));
+			const unsigned int sampleCount = 12000u;
+			ForcedBranchSampler uniformSampler(0.25,7101u);
+			ForcedBranchSampler reactionSampler(0.75,9107u);
+			Scalar uniformSum = 0.0;
+			Scalar uniformSquareSum = 0.0;
+			Scalar reactionSum = 0.0;
+			Scalar reactionSquareSum = 0.0;
+			for( unsigned int i = 0; i < sampleCount; ++i ) {
+				uniformSampler.BeginSample();
+				const Scalar uniformEstimate = fire->EstimateChemEmissionSegmentNM(
+					ray,0.0,1.0,wavelength,uniformSampler);
+				uniformSum += uniformEstimate;
+				uniformSquareSum += uniformEstimate*uniformEstimate;
+
+				reactionSampler.BeginSample();
+				const Scalar reactionEstimate = fire->EstimateChemEmissionSegmentNM(
+					ray,0.0,1.0,wavelength,reactionSampler);
+				reactionSum += reactionEstimate;
+				reactionSquareSum += reactionEstimate*reactionEstimate;
+			}
+			const Scalar uniformMean = uniformSum/Scalar(sampleCount);
+			const Scalar reactionMean = reactionSum/Scalar(sampleCount);
+			const Scalar estimate = 0.5*(uniformMean+reactionMean);
+			const Scalar uniformVariance = fmax(0.0,
+				uniformSquareSum/Scalar(sampleCount)-uniformMean*uniformMean);
+			const Scalar reactionVariance = fmax(0.0,
+				reactionSquareSum/Scalar(sampleCount)-reactionMean*reactionMean);
+			const Scalar standardError = sqrt(0.25*(uniformVariance+reactionVariance)/
+				Scalar(sampleCount));
+			Check( uniformMean > 0.0 && reactionMean > 0.0,
+				"both the uniform and reaction-importance halves carry thin-sheet contribution" );
+			Check( std::fabs(estimate-reference) <=
+				6.0*standardError+0.003*reference,
+				"real chem mixture matches an independent attenuated thin-sheet reference" );
+		}
+
+		safe_release(medium);
+		safe_release(spd);
+		safe_release(chemZero);
+		safe_release(reactionSheet);
+		safe_release(temperature);
+		safe_release(carbonSheet);
+	}
+
+	void TestNonFiniteRejection()
+	{
+		std::cout << "TestNonFiniteRejection" << std::endl;
+		const Scalar infinity = ScalarFromBits( UINT64_C(0x7FF0000000000000) );
+		const Scalar nan = ScalarFromBits( UINT64_C(0x7FF8000000000000) );
+		AffineWorldScalarPainter* carbon = new AffineWorldScalarPainter( 1.0, 0.0, 0.0, 0.0 );
+		AffineWorldScalarPainter* temperature = new AffineWorldScalarPainter( 1000.0, 0.0, 0.0, 0.0 );
+
+		AffineWorldScalarPainter* infiniteCarbon =
+			new AffineWorldScalarPainter( infinity, 0.0, 0.0, 0.0 );
+		Check( FactoryRejects( *infiniteCarbon, *temperature, FactoryInputs() ),
+			"+Inf carbon painter is rejected before majorant construction" );
+		safe_release( infiniteCarbon );
+
+		AffineWorldScalarPainter* nanTemperature =
+			new AffineWorldScalarPainter( nan, 0.0, 0.0, 0.0 );
+		Check( FactoryRejects( *carbon, *nanTemperature, FactoryInputs() ),
+			"NaN temperature painter is rejected under fast-math" );
+		safe_release( nanTemperature );
+
+		AffineWorldScalarPainter* zeroTemperature =
+			new AffineWorldScalarPainter( 0.0, 0.0, 0.0, 0.0 );
+		Check( FactoryRejects( *carbon, *zeroTemperature, FactoryInputs() ),
+			"non-positive temperature is rejected" );
+		safe_release( zeroTemperature );
+
+		FactoryInputs invalid;
+		invalid.bboxMin.x = nan;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"NaN bbox component is rejected by the direct factory" );
+		invalid = FactoryInputs();
+		invalid.bboxMax.z = infinity;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"+Inf bbox component is rejected by the direct factory" );
+
+		struct ScalarInput
+		{
+			const char* label;
+			Scalar FactoryInputs::* member;
+		};
+		const ScalarInput scalarInputs[] = {
+			{ "scene_unit", &FactoryInputs::sceneUnitMeters },
+			{ "soot_em", &FactoryInputs::sootEm },
+			{ "soot_density", &FactoryInputs::sootDensity },
+			{ "soot_albedo_hot", &FactoryInputs::sootAlbedoHot },
+			{ "soot_g_hot", &FactoryInputs::sootGHot },
+			{ "smoke_km_carbon", &FactoryInputs::smokeKmCarbon },
+			{ "smoke_n_carbon", &FactoryInputs::smokeNCarbon },
+			{ "smoke_albedo_carbon", &FactoryInputs::smokeAlbedoCarbon },
+			{ "smoke_g_carbon", &FactoryInputs::smokeGCarbon }
+		};
+		for( const ScalarInput& input : scalarInputs ) {
+			invalid = FactoryInputs();
+			invalid.*(input.member) = infinity;
+			Check( FactoryRejects( *carbon, *temperature, invalid ),
+				(std::string( "+Inf " ) + input.label + " is rejected by the direct factory").c_str() );
+		}
+
+		invalid = FactoryInputs();
+		invalid.sootGHot = 1.0;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"g_hot=1 is rejected because the HG continuation density must remain finite" );
+		invalid = FactoryInputs();
+		invalid.smokeGCarbon = -1.0;
+		Check( FactoryRejects( *carbon, *temperature, invalid ),
+			"g_carbon=-1 is rejected because the HG continuation density must remain finite" );
+
+		safe_release( carbon );
+		safe_release( temperature );
+	}
+
+	const IAsciiChunkParser* FindMultichannelParser(
+		const std::vector<ChunkParserEntry>& entries
+		)
+	{
+		for( const ChunkParserEntry& entry : entries ) {
+			if( entry.keyword == "multichannel_heterogeneous_medium" ) {
+				return entry.parser.get();
+			}
+		}
+		return nullptr;
+	}
+
+	void FillValidBag( ParseStateBag& bag, const char* omit )
+	{
+		struct Pair { const char* key; const char* value; };
+		static const Pair values[] = {
+			{ "name", "fire" },
+			{ "channel_carbon", "painter carbon" },
+			{ "channel_temperature", "painter temperature" },
+			{ "chem_model", "none" },
+			{ "bake_resolution", "4 4 4" },
+			{ "bbox_min", "0 0 0" },
+			{ "bbox_max", "1 1 1" },
+			{ "optical_record", "synthetic_regression_v1" }
+		};
+		for( const Pair& value : values ) {
+			if( !omit || std::string( value.key ) != omit ) {
+				bag.SetSingle( value.key, value.value );
+			}
+		}
+	}
+
+	void AddChemFields( ParseStateBag& bag, const char* omit )
+	{
+		struct Pair { const char* key; const char* value; };
+		static const Pair values[] = {
+			{ "channel_chem_ch", "painter chem_ch" },
+			{ "channel_chem_c2", "painter chem_c2" },
+			{ "channel_chem_co2", "painter chem_co2" },
+			{ "chem_spd_ch", "chem_ch_spd" },
+			{ "chem_spd_c2", "chem_c2_spd" },
+			{ "chem_spd_co2", "chem_co2_spd" },
+			{ "chem_interval_ch", "500 510" },
+			{ "chem_interval_c2", "500 510" },
+			{ "chem_interval_co2", "500 510" }
+		};
+		for( const Pair& value : values ) {
+			if( !omit || std::string(value.key) != omit ) {
+				bag.SetSingle(value.key,value.value);
+			}
+		}
+	}
+
+	void TestDescriptorAndRequiredness()
+	{
+		std::cout << "TestDescriptorAndRequiredness" << std::endl;
+		std::vector<ChunkParserEntry> entries = CreateAllChunkParsers();
+		const IAsciiChunkParser* parser = FindMultichannelParser( entries );
+		Check( parser != nullptr, "chunk is registered" );
+		if( !parser ) return;
+
+		const ChunkDescriptor& descriptor = parser->Describe();
+		std::vector<std::string> required;
+		for( const ParameterDescriptor& parameter : descriptor.parameters ) {
+			if( parameter.required ) required.push_back( parameter.name );
+		}
+		Check( required.size() == 7, "the seven structural and record fields are required" );
+		const char* condensedFields[] = { "channel_condensed" };
+		for( const char* field : condensedFields ) {
+			bool foundOptional = false;
+			for( const ParameterDescriptor& parameter : descriptor.parameters ) {
+				if( parameter.name == field ) foundOptional = !parameter.required;
+			}
+			Check( foundOptional,
+				(std::string( field ) + " is advertised as conditionally required").c_str() );
+		}
+		const char* chemFields[] = {
+			"chem_model", "channel_chem_ch", "channel_chem_c2",
+			"channel_chem_co2", "chem_spd_ch", "chem_spd_c2",
+			"chem_spd_co2", "chem_interval_ch", "chem_interval_c2",
+			"chem_interval_co2"
+		};
+		for( const char* field : chemFields ) {
+			bool foundOptional = false;
+			for( const ParameterDescriptor& parameter : descriptor.parameters ) {
+				if( parameter.name == field ) foundOptional = !parameter.required;
+			}
+			Check( foundOptional,
+				(std::string(field)+" is advertised as part of the conditional chem bundle").c_str() );
+		}
+
+		IJobPriv* job = nullptr;
+		RISE_CreateJobPriv( &job );
+		Check( job != nullptr, "requiredness fixture job constructs" );
+		if( !job ) return;
+
+		for( const std::string& omitted : required ) {
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, omitted.c_str() );
+			Check( !parser->Finalize( bag, *job ),
+				("omitting required parameter " + omitted + " fails").c_str() );
+		}
+		{
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, "chem_model" );
+			Check( !parser->Finalize(bag,*job),
+				"omitting both the all-band chem bundle and chem_model none fails" );
+		}
+		{
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, nullptr );
+			bag.SetSingle( "channel_chem_ch", "painter chem_ch" );
+			Check( !parser->Finalize(bag,*job),
+				"a partial chem bundle fails even when chem_model none is present" );
+		}
+		const char* requiredChemBundle[] = {
+			"channel_chem_ch", "channel_chem_c2", "channel_chem_co2",
+			"chem_spd_ch", "chem_spd_c2", "chem_spd_co2",
+			"chem_interval_ch", "chem_interval_c2", "chem_interval_co2"
+		};
+		for( const char* omitted : requiredChemBundle ) {
+			ParseStateBag bag( &descriptor );
+			FillValidBag( bag, "chem_model" );
+			AddChemFields( bag, omitted );
+			Check( !parser->Finalize(bag,*job),
+				(std::string("chem bundle without ")+omitted+" fails").c_str() );
+		}
+		safe_release( job );
+	}
+
+	std::string SceneText()
+	{
+		return
+			"RISE ASCII SCENE 7\n\n"
+			"scene_options\n{\nscene_unit 0.01\n}\n\n"
+			"scalar_painter\n{\nname carbon\nvalue 1\n}\n\n"
+			"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
+			"scalar_painter\n{\nname condensed\nvalue 2\n}\n\n"
+			"scalar_painter\n{\nname chem_ch\nvalue 120\n}\n\n"
+			"scalar_painter\n{\nname chem_c2\nvalue 50\n}\n\n"
+			"scalar_painter\n{\nname chem_co2\nvalue 8\n}\n\n"
+			"piecewise_linear_function\n{\nname chem_ch_spd\ncp 499 0\ncp 500 1\ncp 510 1\ncp 511 0\n}\n\n"
+			"piecewise_linear_function\n{\nname chem_c2_spd\ncp 549 0\ncp 550 1\ncp 555 1\ncp 556 0\n}\n\n"
+			"piecewise_linear_function\n{\nname chem_co2_spd\ncp 699 0\ncp 700 3\ncp 702 3\ncp 703 0\n}\n\n"
+			"multichannel_heterogeneous_medium\n{\n"
+			"name fire\n"
+			"channel_carbon painter carbon\n"
+			"channel_temperature painter temperature\n"
+			"channel_condensed painter condensed\n"
+			"channel_chem_ch painter chem_ch\n"
+			"channel_chem_c2 painter chem_c2\n"
+			"channel_chem_co2 painter chem_co2\n"
+			"chem_spd_ch chem_ch_spd\n"
+			"chem_spd_c2 chem_c2_spd\n"
+			"chem_spd_co2 chem_co2_spd\n"
+			"chem_interval_ch 500 510\n"
+			"chem_interval_c2 550 555\n"
+			"chem_interval_co2 700 702\n"
+			"bake_resolution 4 4 4\n"
+			"bbox_min 0 0 0\n"
+			"bbox_max 100 100 100\n"
+			"optical_record synthetic_regression_v1\n"
+			"}\n";
+	}
+
+	void TestSceneLanguageAndSceneUnitPropagation()
+	{
+		std::cout << "TestSceneLanguageAndSceneUnitPropagation" << std::endl;
+		char filename[128];
+		std::snprintf( filename, sizeof(filename),
+			"rise_multichannel_medium_%d.RISEscene", static_cast<int>( ::getpid() ) );
+		const std::filesystem::path path =
+			std::filesystem::temp_directory_path() / filename;
+		{
+			std::ofstream output( path );
+			output << SceneText();
+		}
+
+		IJobPriv* job = nullptr;
+		RISE_CreateJobPriv( &job );
+		const bool loaded = job && job->LoadAsciiSceneViaCst( path.string().c_str() );
+		Check( loaded, "complete multichannel scene chunk loads" );
+		if( loaded ) {
+			const IMedium* medium = job->GetMedium( "fire" );
+			const MultichannelHeterogeneousMedium* fire =
+				dynamic_cast<const MultichannelHeterogeneousMedium*>( medium );
+			Check( fire != nullptr, "scene chunk registers the concrete medium" );
+			if( fire ) {
+				const Scalar hotAbsorptionMass =
+					6.0 * PI * 0.26 * 1.0e-3 / (633.0e-9 * 1800.0);
+				const RISEPel expectedSigmaT = 0.01 *
+					(ResponsePowerMean(1.0)*(0.5*hotAbsorptionMass/0.90) +
+					 ResponsePowerMean(1.2)*(0.5*8.7) +
+					 ResponsePowerMean(0.5)*(2.0*3.298));
+				const RISEPel actualSigmaT =
+					fire->GetCoefficients( Point3( 50, 50, 50 ) ).sigma_t;
+				Check( NearRelative(actualSigmaT.r,expectedSigmaT.r,1e-13) &&
+					NearRelative(actualSigmaT.g,expectedSigmaT.g,1e-13) &&
+					NearRelative(actualSigmaT.b,expectedSigmaT.b,1e-13),
+					"scene_options.scene_unit reaches medium construction" );
+				Check( Near(fire->GetChemSPDAuthoredArea(0),10.0,1e-15),
+					"authored CH fixture curve uses its own normalization interval" );
+				Check( Near(fire->GetChemSPDAuthoredArea(1),5.0,1e-15),
+					"authored C2 fixture curve uses its distinct normalization interval" );
+				Check( Near(fire->GetChemSPDAuthoredArea(2),6.0,1e-15),
+					"authored CO2 fixture curve preserves its distinct shape scale" );
+				Check( NearRelative(fire->GetChemEmissionNM(Point3(50,50,50),505.0),
+					0.01*120.0/(FOUR_PI*10.0),1e-14),
+					"CST binding isolates the CH painter, SPD, and interval" );
+				Check( NearRelative(fire->GetChemEmissionNM(Point3(50,50,50),552.0),
+					0.01*50.0/(FOUR_PI*5.0),1e-14),
+					"CST binding isolates the C2 painter, SPD, and interval" );
+				Check( NearRelative(fire->GetChemEmissionNM(Point3(50,50,50),701.0),
+					0.01*8.0*3.0/(FOUR_PI*6.0),1e-14),
+					"CST binding isolates the CO2 painter, SPD, and interval" );
+
+				const Scalar wavelengths[] = { 450.0, 750.0 };
+				for( const Scalar nm : wavelengths ) {
+					const Scalar wavelengthScale = 633.0 / nm;
+					const Scalar hotScattering = 0.5 * hotAbsorptionMass * wavelengthScale *
+						0.10 / 0.90;
+					const Scalar coolScattering = 0.5 * 8.7 *
+						pow( wavelengthScale, 1.2 ) * 0.60;
+					const Scalar condScattering = 2.0 * 3.298 *
+						pow( wavelengthScale, 0.5 ) * 0.90;
+					const Scalar expectedMean =
+						(hotScattering * 0.5 + coolScattering * 0.6 +
+						 condScattering * 0.7) /
+						(hotScattering + coolScattering + condScattering);
+					const IPhaseFunction* closure = fire->MakePhaseClosure(
+						Point3( 50, 50, 50 ), nm );
+					Check( closure && Near( closure->GetMeanCosine(), expectedMean, 1e-12 ),
+						"CST wiring consumes the single synthetic optical record" );
+					if( closure ) closure->release();
+				}
+			}
+		}
+
+		safe_release( job );
+		std::filesystem::remove( path );
+	}
+
+	void TestProductionFireFidelityPreflight()
+	{
+		std::cout << "TestProductionFireFidelityPreflight" << std::endl;
+		Check( Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\Iex-3_4.dll",{"iex"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\IlmThread-3_4.dll",{"ilmthread"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\Imath-3_2.dll",{"imath"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\zlib1.dll",{"z","zlib"}) &&
+			Implementation::BuildIdentityModuleNameMatches(
+				"/base.apk!/lib/arm64-v8a/libOpenImageDenoise.so",
+				{"openimagedenoise"}) &&
+			!Implementation::BuildIdentityModuleNameMatches(
+				"C:\\vcpkg\\bin\\OpenEXR-3_4.dll",{"iex"}),
+			"build identity matches versioned Windows and APK module basenames without collisions" );
+		const std::string apkFilename = (std::filesystem::temp_directory_path()/
+			("rise_build_identity_"+std::to_string(::getpid())+".apk")).string();
+		const std::string apkEntry = "lib/arm64-v8a/librise_jni.so";
+		const RISECBOR64::Bytes exactModuleBytes = {
+			0x7fu,0x45u,0x4cu,0x46u,0x11u,0x22u,0x33u,0x44u };
+		RISECBOR64::Bytes extractedModuleBytes;
+		const bool wroteAPK = WriteStoredAPKEntry(
+			apkFilename,apkEntry,exactModuleBytes);
+		const bool readAPKModule = wroteAPK &&
+			Implementation::ReadStoredAPKBuildIdentity(
+				apkFilename+"!/"+apkEntry,extractedModuleBytes);
+		Check( readAPKModule && extractedModuleBytes == exactModuleBytes,
+			"APK build identity hashes the exact complete stored module entry" );
+		std::remove(apkFilename.c_str());
+		char filename[128];
+		std::snprintf( filename, sizeof(filename),
+			"rise_fire_fidelity_%d.RISEscene", static_cast<int>( ::getpid() ) );
+		const std::filesystem::path path =
+			std::filesystem::temp_directory_path() / filename;
+		const auto writeScene = [&path](
+			const std::string& rasterizer, const unsigned int nmBegin,
+			const bool useHWSS = false,
+			const char* fidelityMode = "preview",
+			const bool unqualifiedConfig = false,
+			const bool includeFire = true,
+			const double carbonValue = 1.0,
+			const bool includeIrradianceCache = false,
+			const bool progressiveRendering = false,
+			const bool keyframedCamera = false ) {
+			std::ofstream output(path);
+			output <<
+				"RISE ASCII SCENE 7\n\n"
+				"scene_options\n{\nscene_unit 1\nfidelity_mode " << fidelityMode << "\n}\n\n"
+				"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+				<< rasterizer << "\n{\n";
+			if( rasterizer.find("mlt_") == 0u ) {
+				output << "bootstrap_samples 8\nchains 1\nmutations_per_pixel 1\n";
+			} else {
+				output << "samples " << (progressiveRendering ? 2 : 1) << "\n";
+			}
+			if( rasterizer.find("spectral") != std::string::npos ) {
+				output << "nmbegin " << nmBegin <<
+					"\nnmend 780\nnum_wavelengths 4\nspectral_samples 1\n"
+					"hwss " << (useHWSS ? "true" : "false") << "\n";
+			}
+			if( rasterizer.find("pathtracing_") == 0u ) {
+				output << "max_volume_bounce 1\nprogressive_rendering " <<
+					(progressiveRendering ? "true" : "false") <<
+					"\nprogressive_samples_per_pass 1\n";
+			}
+			output << (unqualifiedConfig ?
+				"oidn_denoise true\ndirect_clamp 2\nfilter_glossy 0.1\nsms_enabled true\n" :
+				"oidn_denoise false\n");
+			output <<
+				"}\n\n"
+				"film\n{\nwidth 1\nheight 1\n}\n\n"
+				"pinhole_camera\n{\nname fire_camera\nlocation 0 0 -2\nlookat 0 0 0\nup 0 1 0\nfov 45\n" <<
+				(keyframedCamera ? "exposure 0.1\n" : "") << "}\n\n";
+			if( keyframedCamera ) {
+				output <<
+					"timeline\n{\nelement_type camera\nelement fire_camera\nparam location\n"
+					"time 0\nvalue 0 0 -2\ntime 1\nvalue 1 0 -2\n}\n\n";
+			}
+			if( includeFire ) {
+				output <<
+				"scalar_painter\n{\nname carbon\nvalue " << carbonValue << "\n}\n\n"
+				"scalar_painter\n{\nname temperature\nvalue 800\n}\n\n"
+				"multichannel_heterogeneous_medium\n{\nname fire\nchannel_carbon painter carbon\nchannel_temperature painter temperature\nchem_model none\nbake_resolution 2 2 2\nbbox_min -1 -1 -1\nbbox_max 1 1 1\noptical_record fire_optics_v1\n}\n\n"
+				"global_medium\n{\nmedium fire\n}\n";
+			}
+			if( includeIrradianceCache ) {
+				output <<
+					"\nirradiance_cache\n{\nsize 4\ntolerance 0.08\n"
+					"min_spacing 0.02\n}\n";
+			}
+		};
+		writeScene("pathtracing_spectral_rasterizer",380u);
+
+		IJobPriv* job = nullptr;
+		RISE_CreateJobPriv(&job);
+		const bool loaded = job && job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( loaded, "scene-level preview fidelity request loads" );
+		if( loaded ) {
+			Check( job->Rasterize(),
+				"the exact certified 380-780 nm band renders in preview mode" );
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			const FrameStoreOutput::Metadata metadata = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			Check( store && metadata.renderFidelityStatus == "preview" &&
+				std::is_sorted(metadata.renderReasonCodes.begin(),
+					metadata.renderReasonCodes.end()) &&
+				std::find(metadata.renderReasonCodes.begin(),
+					metadata.renderReasonCodes.end(),"requested_preview") !=
+					metadata.renderReasonCodes.end() &&
+				std::find(metadata.renderReasonCodes.begin(),
+					metadata.renderReasonCodes.end(),"table_domain_exceeded") ==
+					metadata.renderReasonCodes.end() &&
+				metadata.activeFireOpticsRecordIds.size() == 1u &&
+				metadata.activeFireOpticsRecordIds[0] ==
+					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" &&
+				metadata.activeFireMedia.size() == 1u &&
+				metadata.activeFireMedia[0].mediaKind == "static_authored" &&
+				metadata.activeFireMedia[0].managerName == "fire" &&
+				metadata.activeFireMedia[0].bindingKind == "global_medium" &&
+				metadata.activeFireMedia[0].bindingOwner == "scene" &&
+				metadata.activeFireMedia[0].authoredConfigDigest.size() == 64u &&
+				!metadata.resolvedRenderConfigCoreV1.empty() &&
+				!metadata.rendererBuildV1.empty() && metadata.rendererBuildId.size() == 64u,
+				"production FrameStore carries sorted preview reasons, static-medium binding, resolved config, and build identity" );
+			RISECBOR64::Value resolvedConfig;
+			RISECBOR64::Value rendererBuild;
+			std::string provenanceDecodeError;
+			const bool configDecoded = RISECBOR64::DecodeCanonical(
+				metadata.resolvedRenderConfigCoreV1,resolvedConfig,&provenanceDecodeError);
+			const bool buildDecoded = RISECBOR64::DecodeCanonical(
+				metadata.rendererBuildV1,rendererBuild,&provenanceDecodeError);
+			const RISECBOR64::Value* sourceRevision = buildDecoded ?
+				rendererBuild.Find("source_revision") : nullptr;
+			const RISECBOR64::Value* dirtyState = buildDecoded ?
+				rendererBuild.Find("dirty_state") : nullptr;
+			const RISECBOR64::Value* rendererBinary = buildDecoded ?
+				rendererBuild.Find("renderer_binary") : nullptr;
+			const RISECBOR64::Value* compilerSettings = buildDecoded ?
+				rendererBuild.Find("compiler") : nullptr;
+			const RISECBOR64::Value* fpSettings = buildDecoded ?
+				rendererBuild.Find("fp_settings") : nullptr;
+			const RISECBOR64::Value* target = buildDecoded ?
+				rendererBuild.Find("target") : nullptr;
+			const RISECBOR64::Value* dependencyBuilds = buildDecoded ?
+				rendererBuild.Find("dependency_builds") : nullptr;
+			const RISECBOR64::Value* resolvedCamera = configDecoded ?
+				resolvedConfig.Find("camera") : nullptr;
+			const RISECBOR64::Value* resolvedAnimation = configDecoded ?
+				resolvedConfig.Find("animation") : nullptr;
+			const RISECBOR64::Value* resolvedRasterSequence = configDecoded ?
+				resolvedConfig.Find("raster_sequence") : nullptr;
+			const RISECBOR64::Value* resolvedGlobalOptions = configDecoded ?
+				resolvedConfig.Find("global_render_options") : nullptr;
+			const RISECBOR64::Value* resolvedExecution = configDecoded ?
+				resolvedConfig.Find("execution") : nullptr;
+			bool dependenciesBound = dependencyBuilds != nullptr;
+			if( dependencyBuilds ) {
+				for( const char* name : { "avcodec", "avfoundation", "avformat", "avutil",
+					"iex", "ilmthread", "imath", "oidn", "openexr", "openpgl", "png",
+					"swscale", "tiff", "videotoolbox", "x265", "zlib" } ) {
+					const RISECBOR64::Value* dependency = dependencyBuilds->Find(name);
+					const RISECBOR64::Value* availability = dependency ?
+						dependency->Find("availability") : nullptr;
+					const RISECBOR64::Value* linkage = dependency ?
+						dependency->Find("linkage") : nullptr;
+					const RISECBOR64::Value* binaries = dependency ?
+						dependency->Find("loaded_binaries") : nullptr;
+					dependenciesBound = dependenciesBound && availability && linkage && binaries &&
+						((availability->GetText() == "not_linked" &&
+							linkage->GetText() == "not_linked" && binaries->GetArray().empty()) ||
+						 (availability->GetText() == "linked" &&
+							((linkage->GetText() == "embedded" && binaries->GetArray().empty()) ||
+							 (linkage->GetText() == "dynamic" && !binaries->GetArray().empty()))) ||
+						 (availability->GetText() == "not_loaded" &&
+							linkage->GetText() == "runtime_optional" && binaries->GetArray().empty()) ||
+						 (availability->GetText() == "loaded" &&
+							linkage->GetText() == "runtime_loaded" && !binaries->GetArray().empty()));
+					if( binaries ) {
+						for( const RISECBOR64::Value& binary : binaries->GetArray() ) {
+							dependenciesBound = dependenciesBound && binary.Find("hash_basis") &&
+								binary.Find("path") &&
+								binary.Find("sha256") &&
+								binary.Find("sha256")->GetText().size() == 64u;
+						}
+					}
+				}
+			}
+			RISECBOR64::Bytes exactRendererBytes;
+			const RISECBOR64::Value* rendererHashBasis = rendererBinary ?
+				rendererBinary->Find("hash_basis") : nullptr;
+			const RISECBOR64::Value* rendererPath = rendererBinary ?
+				rendererBinary->Find("path") : nullptr;
+			const RISECBOR64::Value* rendererSHA = rendererBinary ?
+				rendererBinary->Find("sha256") : nullptr;
+			bool exactRendererRead = false;
+			if( rendererHashBasis && rendererPath ) {
+				if( rendererHashBasis->GetText() == "file_bytes" ) {
+					exactRendererRead = ReadFileBytes(
+						rendererPath->GetText(),exactRendererBytes);
+				} else if( rendererHashBasis->GetText() == "apk_stored_entry_bytes" ) {
+					exactRendererRead = Implementation::ReadStoredAPKBuildIdentity(
+						rendererPath->GetText(),exactRendererBytes);
+				}
+			}
+			Check( configDecoded && resolvedConfig.Find("film") &&
+				resolvedConfig.Find("camera") && resolvedConfig.Find("integrator") &&
+				resolvedConfig.Find("sampler") && resolvedConfig.Find("depth") &&
+				resolvedConfig.Find("clamp") && resolvedConfig.Find("filter") &&
+				resolvedConfig.Find("aov") && buildDecoded &&
+				metadata.rendererBuildId ==
+					RISECBOR64::SHA256Hex(metadata.rendererBuildV1),
+				"resolved-config categories and exact renderer-build preimage are canonical" );
+			Check( exactRendererRead && rendererSHA &&
+				rendererSHA->GetText() == RISECBOR64::SHA256Hex(exactRendererBytes),
+				"renderer build identity SHA covers the complete executable or module bytes" );
+			Check( resolvedCamera && resolvedCamera->Find("kind") &&
+				resolvedCamera->Find("kind")->GetText() == "pinhole" &&
+				resolvedCamera->Find("location") &&
+				resolvedCamera->Find("location")->GetArray().size() == 3u &&
+				resolvedCamera->Find("matrix") &&
+				resolvedCamera->Find("matrix")->GetArray().size() == 16u &&
+				resolvedCamera->Find("projection") &&
+				resolvedCamera->Find("projection")->Find("fov_radians") &&
+				resolvedAnimation && resolvedAnimation->Find("num_frames") &&
+				resolvedRasterSequence && resolvedRasterSequence->Find("kind") &&
+				resolvedRasterSequence->Find("kind")->GetText() == "morton" &&
+				resolvedRasterSequence->Find("tile_size") &&
+				resolvedRasterSequence->Find("tile_size")->GetIntegerArgument() == 32u &&
+				resolvedExecution && resolvedExecution->Find("effective_worker_task_count") &&
+				resolvedExecution->Find("effective_worker_task_count")->GetIntegerArgument() ==
+					Implementation::ComputeRenderPoolSize() &&
+				resolvedExecution->Find("force_number_of_threads") &&
+				resolvedExecution->Find("maximum_thread_count") &&
+				resolvedExecution->Find("render_thread_reserve_count") &&
+				resolvedExecution->Find("random_stream_policy") &&
+				!resolvedExecution->Find("random_stream_policy")->GetText().empty() &&
+				resolvedGlobalOptions &&
+				resolvedGlobalOptions->Find("auto_probe") &&
+				resolvedGlobalOptions->Find("vcm"),
+				"resolved config binds effective worker/RNG dispatch, raster sequence, camera, animation, and global controls" );
+			FirePreflightProgress sequenceProgress;
+			job->SetProgress(&sequenceProgress);
+			const bool callbackRender = job->Rasterize();
+			const std::vector<unsigned char> callbackConfig = store->Meta().resolvedRenderConfigCoreV1;
+			job->SetProgress(nullptr);
+			const bool noCallbackRender = job->Rasterize();
+			Check( callbackRender && noCallbackRender &&
+				callbackConfig == store->Meta().resolvedRenderConfigCoreV1 &&
+				callbackConfig == metadata.resolvedRenderConfigCoreV1,
+				"progress callback presence cannot change the effective raster sequence or config ID" );
+			const RISECBOR64::Value* initialTransport = resolvedConfig.Find("transport");
+			const RISECBOR64::Value* initialRadianceMap = initialTransport ?
+				initialTransport->Find("radiance_map") : nullptr;
+			const RISECBOR64::Value* initialRadianceScale = initialRadianceMap ?
+				initialRadianceMap->Find("scale") : nullptr;
+			const double originalRadianceScale = initialRadianceScale ?
+				initialRadianceScale->GetFloat() : 1.0;
+			const bool changedRadianceScale =
+				job->SetActiveRasterizerRadianceScale(0.25) && job->Rasterize();
+			RISECBOR64::Value changedRadianceConfig;
+			const bool changedRadianceDecoded = changedRadianceScale &&
+				RISECBOR64::DecodeCanonical(store->Meta().resolvedRenderConfigCoreV1,
+					changedRadianceConfig,&provenanceDecodeError);
+			const RISECBOR64::Value* changedTransport = changedRadianceDecoded ?
+				changedRadianceConfig.Find("transport") : nullptr;
+			const RISECBOR64::Value* changedRadianceMap = changedTransport ?
+				changedTransport->Find("radiance_map") : nullptr;
+			const RISECBOR64::Value* changedScale = changedRadianceMap ?
+				changedRadianceMap->Find("scale") : nullptr;
+			Check( changedScale && changedScale->GetFloat() == 0.25 &&
+				store->Meta().resolvedRenderConfigCoreV1 != callbackConfig,
+				"live radiance-scale edits change the resolved fire provenance" );
+			const bool restoredRadianceScale =
+				job->SetActiveRasterizerRadianceScale(originalRadianceScale) && job->Rasterize();
+			Check( restoredRadianceScale &&
+				store->Meta().resolvedRenderConfigCoreV1 == callbackConfig,
+				"restoring the live radiance scale restores the resolved configuration" );
+			const bool revisionIsHex = sourceRevision && !sourceRevision->GetText().empty() &&
+				std::all_of(sourceRevision->GetText().begin(),sourceRevision->GetText().end(),
+					[]( unsigned char c ) { return std::isxdigit(c) != 0; });
+			Check( revisionIsHex &&
+				dirtyState && dirtyState->Find("state") &&
+				dirtyState->Find("diff_sha256") &&
+				dirtyState->Find("diff_sha256")->GetText().size() == 64u &&
+				rendererBinary && rendererBinary->Find("kind") &&
+				rendererBinary->Find("hash_basis") &&
+				rendererBinary->Find("path") && rendererBinary->Find("sha256") &&
+				rendererBinary->Find("sha256")->GetText().size() == 64u &&
+				compilerSettings && compilerSettings->Find("identity") &&
+				compilerSettings->Find("optimization_mode") &&
+				compilerSettings->Find("lto_mode") && fpSettings &&
+				fpSettings->Find("contraction_mode") && fpSettings->Find("fast_math") &&
+				fpSettings->Find("finite_math_only") && target &&
+				target->Find("platform") && target->Find("architecture") &&
+				dependenciesBound,
+				"renderer build identity binds source, target, compiler/FP modes, renderer bytes, and every dependency" );
+
+			const std::string originalAuthoredDigest =
+				metadata.activeFireMedia.empty() ? std::string() :
+					metadata.activeFireMedia[0].authoredConfigDigest;
+			RISECBOR64::Value::Values carbonBake;
+			RISECBOR64::Value::Values temperatureBake;
+			for( unsigned int i=0; i<8u; ++i ) {
+				carbonBake.push_back(RISECBOR64::Value::Float(1.0));
+				temperatureBake.push_back(RISECBOR64::Value::Float(800.0));
+			}
+			const RISECBOR64::Value directAuthoredParameters =
+				RISECBOR64::Value::MapValue({
+					{ "authoring_variant", RISECBOR64::Value::String("versioned_preset") },
+					{ "chemistry", RISECBOR64::Value::MapValue({
+						{ "c2_interval_nm", RISECBOR64::Value::ArrayValue({}) },
+						{ "c2_painter", RISECBOR64::Value::String("") },
+						{ "c2_spd", RISECBOR64::Value::String("") },
+						{ "ch_interval_nm", RISECBOR64::Value::ArrayValue({}) },
+						{ "ch_painter", RISECBOR64::Value::String("") },
+						{ "ch_spd", RISECBOR64::Value::String("") },
+						{ "co2_interval_nm", RISECBOR64::Value::ArrayValue({}) },
+						{ "co2_painter", RISECBOR64::Value::String("") },
+						{ "co2_spd", RISECBOR64::Value::String("") },
+						{ "model", RISECBOR64::Value::String("none") } }) },
+					{ "optical_record", RISECBOR64::Value::String("fire_optics_v1") },
+					{ "record_kind", RISECBOR64::Value::String(
+						"static_fire_medium_parameters_v1") },
+					{ "resolved_parameters", RISECBOR64::Value::MapValue({
+						{ "bake_resolution", RISECBOR64::Value::ArrayValue({
+							RISECBOR64::Value::Unsigned(2), RISECBOR64::Value::Unsigned(2),
+							RISECBOR64::Value::Unsigned(2) }) },
+						{ "bbox_max", RISECBOR64::Value::ArrayValue({
+							RISECBOR64::Value::Float(1), RISECBOR64::Value::Float(1),
+							RISECBOR64::Value::Float(1) }) },
+						{ "bbox_min", RISECBOR64::Value::ArrayValue({
+							RISECBOR64::Value::Float(-1), RISECBOR64::Value::Float(-1),
+							RISECBOR64::Value::Float(-1) }) },
+						{ "channel_carbon_painter", RISECBOR64::Value::String("carbon") },
+						{ "channel_condensed_painter", RISECBOR64::Value::String("") },
+						{ "channel_temperature_painter", RISECBOR64::Value::String("temperature") },
+						{ "manager_name", RISECBOR64::Value::String("fire") },
+						{ "scene_unit_meters", RISECBOR64::Value::Float(1) } }) },
+					{ "schema_version", RISECBOR64::Value::Unsigned(1) }
+				});
+			const RISECBOR64::Value directBakedChannels =
+				RISECBOR64::Value::MapValue({
+					{ "channels", RISECBOR64::Value::ArrayValue({
+						RISECBOR64::Value::MapValue({
+							{ "name", RISECBOR64::Value::String("carbon") },
+							{ "values_z_y_x", RISECBOR64::Value::ArrayValue(carbonBake) } }),
+						RISECBOR64::Value::MapValue({
+							{ "name", RISECBOR64::Value::String("temperature") },
+							{ "values_z_y_x", RISECBOR64::Value::ArrayValue(temperatureBake) } }) }) },
+					{ "dimensions", RISECBOR64::Value::ArrayValue({
+						RISECBOR64::Value::Unsigned(2), RISECBOR64::Value::Unsigned(2),
+						RISECBOR64::Value::Unsigned(2) }) },
+					{ "record_kind", RISECBOR64::Value::String("static_fire_medium_bakes_v1") },
+					{ "schema_version", RISECBOR64::Value::Unsigned(1) }
+				});
+			RISECBOR64::Bytes reconstructedAuthoredRecord;
+			RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+				{ "authored_parameters", directAuthoredParameters },
+				{ "baked_channels", directBakedChannels },
+				{ "chem_spd_definitions", RISECBOR64::Value::ArrayValue({}) },
+				{ "record_kind", RISECBOR64::Value::String(
+					"static_fire_medium_authored_config_v1") },
+				{ "schema_version", RISECBOR64::Value::Unsigned(1) }
+			}),reconstructedAuthoredRecord,&provenanceDecodeError);
+			Check( !reconstructedAuthoredRecord.empty() && originalAuthoredDigest ==
+				RISECBOR64::SHA256Hex(reconstructedAuthoredRecord),
+				"static authored_config_digest directly hashes resolved parameters and frozen bakes" );
+			writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",false,true,2.0);
+			IJobPriv* changedBakeJob = nullptr;
+			RISE_CreateJobPriv(&changedBakeJob);
+			const bool changedBakeLoaded = changedBakeJob &&
+				changedBakeJob->LoadAsciiSceneViaCst(path.string().c_str());
+			const bool changedBakeRendered = changedBakeLoaded && changedBakeJob->Rasterize();
+			Implementation::FrameStore* changedBakeStore = changedBakeRendered ?
+				changedBakeJob->GetRasterizer()->GetFrameStore() : nullptr;
+			const FrameStoreOutput::Metadata changedBakeMetadata = changedBakeStore ?
+				changedBakeStore->Meta() : FrameStoreOutput::Metadata();
+			Check( !originalAuthoredDigest.empty() &&
+				changedBakeMetadata.activeFireMedia.size() == 1u &&
+				changedBakeMetadata.activeFireMedia[0].managerName == "fire" &&
+				changedBakeMetadata.activeFireMedia[0].authoredConfigDigest !=
+					originalAuthoredDigest,
+				"same-named static media with different frozen channel bakes have distinct identities" );
+			safe_release(changedBakeJob);
+			writeScene("pathtracing_spectral_rasterizer",380u);
+
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput(store);
+			rasterizer->AddRasterizerOutput(completionOutput);
+			const Implementation::FrameStore::Snapshot zeroFrameSnapshot =
+				store->CaptureSnapshot();
+			const FrameStoreOutput::Metadata zeroFrameMetadata = store->Meta();
+			const uint64_t zeroFrameGeneration = store->Generation();
+			Check( !job->RasterizeAnimation(2.0,3.0,0u,false,false) &&
+				store->Generation() == zeroFrameGeneration &&
+				SameFrameMetadata(store->Meta(),zeroFrameMetadata) &&
+				SameSnapshotPixels(store->CaptureSnapshot(),zeroFrameSnapshot) &&
+				completionOutput->finalCount.load() == 0u,
+				"zero-frame animation rejects before mutating pixels, metadata, or generation" );
+			const bool explicitAnimationRendered =
+				job->RasterizeAnimation(2.0,3.0,1u,true,true);
+			RISECBOR64::Value explicitAnimationConfig;
+			const FrameStoreOutput::Metadata explicitAnimationMetadata = store->Meta();
+			const bool explicitAnimationDecoded = explicitAnimationRendered &&
+				RISECBOR64::DecodeCanonical(
+					explicitAnimationMetadata.resolvedRenderConfigCoreV1,
+					explicitAnimationConfig,&provenanceDecodeError);
+			const RISECBOR64::Value* explicitAnimation = explicitAnimationDecoded ?
+				explicitAnimationConfig.Find("animation") : nullptr;
+			Check( explicitAnimation && explicitAnimation->Find("time_start") &&
+				explicitAnimation->Find("time_start")->GetFloat() == 2.0 &&
+				explicitAnimation->Find("time_end") &&
+				explicitAnimation->Find("time_end")->GetFloat() == 3.0 &&
+				explicitAnimation->Find("num_frames") &&
+				explicitAnimation->Find("num_frames")->GetIntegerArgument() == 1u &&
+				explicitAnimation->Find("do_fields") &&
+				explicitAnimation->Find("do_fields")->GetBoolean() &&
+				explicitAnimation->Find("invert_fields") &&
+				explicitAnimation->Find("invert_fields")->GetBoolean(),
+				"explicit animation arguments, not preset defaults, enter resolved provenance" );
+			const Implementation::FrameStore::Snapshot explicitAnimationSnapshot =
+				store->CaptureSnapshot();
+			const RISEColor explicitRetainedPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( explicitAnimationRendered && completionOutput->finalCount.load() == 1u &&
+				completionOutput->lastFrame == 0u && completionOutput->lastSnapshot &&
+				SameSnapshotPixels(explicitAnimationSnapshot,*completionOutput->lastSnapshot) &&
+				completionOutput->lastPixel.base[0] == explicitRetainedPixel.base[0] &&
+				completionOutput->lastPixel.base[1] == explicitRetainedPixel.base[1] &&
+				completionOutput->lastPixel.base[2] == explicitRetainedPixel.base[2] &&
+				completionOutput->lastPixel.a == explicitRetainedPixel.a,
+				"a successful one-frame animation retains its emitted terminal beauty and AOV snapshot" );
+			completionOutput->Reset();
+			const bool multiFrameRendered = job->RasterizeAnimation(2.0,3.0,2u,false,false);
+			const Implementation::FrameStore::Snapshot multiFrameSnapshot =
+				store->CaptureSnapshot();
+			Check( multiFrameRendered && completionOutput->finalCount.load() == 2u &&
+				completionOutput->lastFrame == 1u && completionOutput->lastSnapshot &&
+				SameSnapshotPixels(multiFrameSnapshot,*completionOutput->lastSnapshot),
+				"a successful multi-frame animation retains the last emitted beauty and AOV snapshot" );
+			completionOutput->Reset();
+			const bool selectedFrameRendered = job->RasterizeAnimationUsingOptions(1u);
+			RISECBOR64::Value selectedFrameConfig;
+			const FrameStoreOutput::Metadata selectedFrameMetadata = store->Meta();
+			const bool selectedFrameDecoded = selectedFrameRendered &&
+				RISECBOR64::DecodeCanonical(selectedFrameMetadata.resolvedRenderConfigCoreV1,
+					selectedFrameConfig,&provenanceDecodeError);
+			const RISECBOR64::Value* selectedAnimation = selectedFrameDecoded ?
+				selectedFrameConfig.Find("animation") : nullptr;
+			const RISECBOR64::Value* frameSelection = selectedAnimation ?
+				selectedAnimation->Find("frame_selection") : nullptr;
+			Check( frameSelection && frameSelection->Find("active") &&
+				frameSelection->Find("active")->GetBoolean() &&
+				frameSelection->Find("index") &&
+				frameSelection->Find("index")->GetIntegerArgument() == 1u,
+				"single-frame animation selection enters resolved provenance" );
+
+			IJobPriv* lightRRJob = nullptr;
+			RISE_CreateJobPriv(&lightRRJob);
+			const bool lightRRLoaded = lightRRJob &&
+				lightRRJob->SetLightSampleRRThreshold(0.25) &&
+				lightRRJob->LoadAsciiSceneViaCst(path.string().c_str());
+			const bool lightRRRendered = lightRRLoaded && lightRRJob->Rasterize();
+			Implementation::FrameStore* lightRRStore = lightRRRendered ?
+				lightRRJob->GetRasterizer()->GetFrameStore() : nullptr;
+			const FrameStoreOutput::Metadata lightRRMetadata = lightRRStore ?
+				lightRRStore->Meta() : FrameStoreOutput::Metadata();
+			RISECBOR64::Value lightRRConfig;
+			const bool lightRRDecoded = lightRRStore && RISECBOR64::DecodeCanonical(
+				lightRRMetadata.resolvedRenderConfigCoreV1,lightRRConfig,
+				&provenanceDecodeError);
+			const RISECBOR64::Value* lightSampling = lightRRDecoded ?
+				lightRRConfig.Find("light_sampling") : nullptr;
+			Check( lightSampling && lightSampling->Find("rr_threshold") &&
+				lightSampling->Find("rr_threshold")->GetFloat() == 0.25 &&
+				lightRRMetadata.resolvedRenderConfigCoreV1 !=
+					metadata.resolvedRenderConfigCoreV1,
+				"Job light-sampling RR threshold changes resolved provenance" );
+			safe_release(lightRRJob);
+
+			FrameStoreOutput::Metadata renderedMetadata = store->Meta();
+			RISEColor renderedPixel = store->AsBeautyRasterImage().GetPEL(0u,0u);
+			ThrowingFrameObserver throwingObserver;
+			store->AddObserver(&throwingObserver);
+			bool renderThrew = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& ) {
+				renderThrew = true;
+			}
+			store->RemoveObserver(&throwingObserver);
+			const RISEColor throwRestoredPixel = store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( renderThrew && SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				throwRestoredPixel.base[0] == renderedPixel.base[0] &&
+				throwRestoredPixel.base[1] == renderedPixel.base[1] &&
+				throwRestoredPixel.base[2] == renderedPixel.base[2] &&
+				throwRestoredPixel.a == renderedPixel.a,
+				"a throwing fire render restores the last completed pixels and metadata" );
+
+			CancelledFireProgress cancelledProgress;
+			completionOutput->Reset();
+			job->SetProgress(&cancelledProgress);
+			const bool cancelledStillRejected = !job->Rasterize();
+			job->SetProgress(nullptr);
+			const RISEColor cancelledRestoredPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( cancelledStillRejected && !FireRenderCompleted(rasterizer) &&
+				completionOutput->intermediateCount.load() > 0u &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				store->Meta().primaryProvenanceId == renderedMetadata.primaryProvenanceId &&
+				cancelledRestoredPixel.base[0] == renderedPixel.base[0] &&
+				cancelledRestoredPixel.base[1] == renderedPixel.base[1] &&
+				cancelledRestoredPixel.base[2] == renderedPixel.base[2] &&
+				cancelledRestoredPixel.a == renderedPixel.a,
+				"cancelled fire still restores the prior finalized pixels and metadata" );
+			completionOutput->Reset();
+			FireExternalRenderConfig externalConfig;
+			externalConfig.samplesPerPixel = 1u;
+			rasterizer->SetProgressCallback(&cancelledProgress);
+			const bool cancelledExternalRejected =
+				!job->RasterizeExternalRasterizerResolved(rasterizer,
+					"pathtracing_spectral_rasterizer",externalConfig,nullptr);
+			rasterizer->SetProgressCallback(nullptr);
+			const RISEColor externalRestoredPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( cancelledExternalRejected && !FireRenderCompleted(rasterizer) &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				externalRestoredPixel.base[0] == renderedPixel.base[0] &&
+				externalRestoredPixel.base[1] == renderedPixel.base[1] &&
+				externalRestoredPixel.base[2] == renderedPixel.base[2] &&
+				externalRestoredPixel.a == renderedPixel.a,
+				"cancelled external fire render restores pixels and metadata before returning" );
+			completionOutput->Reset();
+			job->SetProgress(&cancelledProgress);
+			const bool cancelledAnimationRejected =
+				!job->RasterizeAnimation(0.0,0.0,1u,false,false);
+			job->SetProgress(nullptr);
+			Check( cancelledAnimationRejected && !FireRenderCompleted(rasterizer) &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"cancelled fire animation publishes no partial tail frame" );
+			completionOutput->Reset();
+			CancelSignalOnlyFireProgress cancelSignalOnly;
+			job->SetProgress(&cancelSignalOnly);
+			const bool signalOnlyAnimationRejected =
+				!job->RasterizeAnimation(0.0,0.0,1u,false,false);
+			job->SetProgress(nullptr);
+			const RISEColor signalOnlyRestoredPixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( signalOnlyAnimationRejected && !FireRenderCompleted(rasterizer) &&
+				completionOutput->finalCount.load() == 0u &&
+				SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				signalOnlyRestoredPixel.base[0] == renderedPixel.base[0] &&
+				signalOnlyRestoredPixel.base[1] == renderedPixel.base[1] &&
+				signalOnlyRestoredPixel.base[2] == renderedPixel.base[2] &&
+				signalOnlyRestoredPixel.a == renderedPixel.a,
+				"IsCancelled alone rejects a partial fire animation and restores its prior frame" );
+			const uint64_t regionBaselineGeneration = store->Generation();
+			const bool fireRegionRejected = !job->RasterizeRegion(0u,0u,0u,0u);
+			Check( fireRegionRejected && store->Generation() == regionBaselineGeneration &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"fire region render fails closed before workers can publish a hybrid primary" );
+			job->GetScene()->SetGlobalMedium(nullptr);
+			CancelledFireProgress nonfireCancelledProgress;
+			job->SetProgress(&nonfireCancelledProgress);
+			const bool fireToNonfireCancelled = !job->Rasterize();
+			job->SetProgress(nullptr);
+			const RISEColor fireToNonfirePixel =
+				store->AsBeautyRasterImage().GetPEL(0u,0u);
+			Check( fireToNonfireCancelled && SameFrameMetadata(store->Meta(),renderedMetadata) &&
+				fireToNonfirePixel.base[0] == renderedPixel.base[0] &&
+				fireToNonfirePixel.base[1] == renderedPixel.base[1] &&
+				fireToNonfirePixel.base[2] == renderedPixel.base[2] &&
+				fireToNonfirePixel.a == renderedPixel.a,
+				"failed fire-to-nonfire render restores the prior fire pixels and metadata" );
+			const uint64_t nonfireRegionGeneration = store->Generation();
+			Check( !job->RasterizeRegion(0u,0u,0u,0u) &&
+				store->Generation() == nonfireRegionGeneration &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"fire-to-nonfire region render rejects before producing an unlabeled hybrid" );
+			Check( job->SetGlobalMedium("fire"),
+				"fire-to-nonfire rollback fixture restores the authored fire medium" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(completionOutput);
+			const uint64_t predictionBaselineGeneration = store->Generation();
+			PluginPhase* predictionPhase = new PluginPhase();
+			InconsistentPredictiveFireMedium* predictedMedium =
+				new InconsistentPredictiveFireMedium(*predictionPhase,true);
+			job->GetScene()->SetGlobalMedium(predictedMedium);
+			unsigned int predictedMs = 0xA5A5A5A5u;
+			unsigned int actualMs = 0x5A5A5A5Au;
+			const bool acceptedPrediction =
+				job->PredictRasterizationTime(1,&predictedMs,&actualMs);
+			Check( !acceptedPrediction && predictedMs == 0xA5A5A5A5u &&
+				actualMs == 0x5A5A5A5Au &&
+				store->Generation() == predictionBaselineGeneration &&
+				SameFrameMetadata(store->Meta(),renderedMetadata),
+				"unregistered custom fire prediction fails closed without relabeling the last completed frame" );
+			Check( job->SetGlobalMedium("fire"),
+				"prediction metadata fixture restores the authored fire medium" );
+			safe_release(predictedMedium);
+			safe_release(predictionPhase);
+
+#ifndef NO_EXR_SUPPORT
+			const std::filesystem::path outputBase =
+				std::filesystem::temp_directory_path() /
+				("rise_fire_late_output_" + std::to_string(::getpid()));
+			const char* savedMediaPath = std::getenv("RISE_MEDIA_PATH");
+			const bool hadMediaPath = savedMediaPath != nullptr;
+			const std::string savedMediaPathValue = hadMediaPath ?
+				savedMediaPath : std::string();
+#ifdef _WIN32
+			_putenv_s("RISE_MEDIA_PATH","");
+#else
+			setenv("RISE_MEDIA_PATH","",1);
+#endif
+			const bool outputAdded = job->AddFileRasterizerOutput(
+				outputBase.string().c_str(),false,6,32,0,0.0,0,2,true);
+			if( hadMediaPath ) {
+#ifdef _WIN32
+				_putenv_s("RISE_MEDIA_PATH",savedMediaPathValue.c_str());
+#else
+				setenv("RISE_MEDIA_PATH",savedMediaPathValue.c_str(),1);
+#endif
+			} else {
+#ifdef _WIN32
+				_putenv_s("RISE_MEDIA_PATH","");
+#else
+				unsetenv("RISE_MEDIA_PATH");
+#endif
+			}
+			Check( outputAdded && job->Rasterize(),
+				"file output added after canonical FrameStore installation renders" );
+			const std::filesystem::path outputFile = outputBase.string()+".exr";
+			const std::filesystem::path sidecarFile =
+				outputFile.string()+".provenance.cbor";
+			RISECBOR64::Bytes artifactBytes, sidecarBytes;
+			RISECBOR64::Value sidecar;
+			std::string sidecarError;
+			const bool lateOutputProvenance =
+				ReadFileBytes(outputFile,artifactBytes) && !artifactBytes.empty() &&
+				ReadFileBytes(sidecarFile,sidecarBytes) &&
+				RISECBOR64::DecodeCanonical(sidecarBytes,sidecar,&sidecarError);
+			const RISECBOR64::Value* payload = lateOutputProvenance ?
+				sidecar.Find("payload") : nullptr;
+			const RISECBOR64::Value* lateIds = payload ?
+				payload->Find("active_fire_optics_record_ids") : nullptr;
+			const RISECBOR64::Value* fidelity = payload ?
+				payload->Find("artifact_fidelity") : nullptr;
+			RISECBOR64::Bytes strippedArtifact;
+			Check( lateIds && lateIds->GetArray().size() == 1u &&
+				lateIds->GetArray()[0].GetText() ==
+					"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" &&
+				fidelity && fidelity->GetText() == "preview_primary" &&
+				Implementation::StripFireProvenanceEXRAttributes(
+					artifactBytes,strippedArtifact,sidecarError),
+				"late-added FP32 EXR output inherits canonical preview-primary provenance" );
+			std::filesystem::remove(outputFile);
+			std::filesystem::remove(sidecarFile);
+
+			const std::string priorArtifact = "previous-complete-artifact";
+			{
+				std::ofstream previous(outputFile,std::ios::binary);
+				previous.write(priorArtifact.data(),
+					static_cast<std::streamsize>(priorArtifact.size()));
+			}
+			const bool blockedSidecar = std::filesystem::create_directory(sidecarFile);
+			const FrameStoreOutput::Metadata transactionMetadata = store->Meta();
+			bool provenanceFailure = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& ex ) {
+				provenanceFailure = std::string(ex.what()).find(
+					"output_provenance_unavailable") != std::string::npos;
+			}
+			RISECBOR64::Bytes restoredArtifact;
+			const RISECBOR64::Bytes expectedArtifact(
+				priorArtifact.begin(),priorArtifact.end());
+			Check( blockedSidecar && provenanceFailure &&
+				ReadFileBytes(outputFile,restoredArtifact) &&
+				restoredArtifact == expectedArtifact &&
+				std::filesystem::is_directory(sidecarFile) &&
+				SameFrameMetadata(store->Meta(),transactionMetadata),
+				"production output failure preserves the prior artifact and frame provenance" );
+			std::filesystem::remove(outputFile);
+			std::filesystem::remove(sidecarFile);
+#endif
+
+			const FrameStoreOutput::Metadata acceptedMetadata = store->Meta();
+			const uint64_t acceptedGeneration = store->Generation();
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),
+				"predictive static-fire request fails closed on its fidelity reasons" );
+			rasterizer = dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			Check( store && store->Generation() == acceptedGeneration &&
+				SameFrameMetadata(store->Meta(),acceptedMetadata),
+				"a rejected preflight preserves the last completed frame metadata" );
+			Check( !job->SetFireFidelityMode("invented"),
+				"the job rejects an unknown fire fidelity mode" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool topologyMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( topologyMutationLoaded ) {
+			IRasterizer* rasterizer = job->GetRasterizer();
+			TopologyMutatingFireOutput* output =
+				new TopologyMutatingFireOutput(*rasterizer,2u);
+			rasterizer->AddRasterizerOutput(output);
+			Check( !job->Rasterize() && output->RouteCalls() == 2u,
+				"fire authorization rejects an output topology changed after route preflight" );
+			safe_release(output);
+		} else {
+			Check(false,"output-topology mutation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool callbackTopologyMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( callbackTopologyMutationLoaded ) {
+			IRasterizer* rasterizer = job->GetRasterizer();
+			CallbackTopologyMutatingFireOutput* output =
+				new CallbackTopologyMutatingFireOutput(*rasterizer);
+			rasterizer->AddRasterizerOutput(output);
+			bool rejectedDuringCallback = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejectedDuringCallback = std::string(error.what()).find(
+					"fire render output topology is leased") != std::string::npos;
+			}
+			Check( rejectedDuringCallback && output->Attempted() && output->Rejected() &&
+				output->InjectedFinalCount() == 0u,
+				"fire render leases output topology through reentrant output callbacks" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(output);
+		} else {
+			Check(false,"callback output-topology mutation fixture loads");
+		}
+		safe_release(job);
+
+		for( const char* rasterizerKind : {
+			"pathtracing_spectral_rasterizer", "auto_spectral_rasterizer" } ) {
+			writeScene(rasterizerKind,380u);
+			RISE_CreateJobPriv(&job);
+			const bool duplicateCallbackLoaded = job &&
+				job->LoadAsciiSceneViaCst(path.string().c_str());
+			if( duplicateCallbackLoaded ) {
+				IRasterizer* rasterizer = job->GetRasterizer();
+				DuplicateCallbackFireOutput* output =
+					new DuplicateCallbackFireOutput(*rasterizer);
+				rasterizer->AddRasterizerOutput(output);
+				Check( job->Rasterize() && output->Attempted() && output->FinalCount() == 1u,
+					(std::string(rasterizerKind)+
+						" duplicate output attachment remains an idempotent callback no-op").c_str() );
+				rasterizer->FreeRasterizerOutputs();
+				safe_release(output);
+			} else {
+				Check(false,"duplicate callback fire fixture loads");
+			}
+			safe_release(job);
+		}
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool metadataMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( metadataMutationLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+			MetadataMutatingFireOutput* output = store ?
+				new MetadataMutatingFireOutput(*store) : nullptr;
+			if( output ) rasterizer->AddRasterizerOutput(output);
+			const FrameStoreOutput::Metadata before = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			bool rejected = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find(
+					"output metadata is leased") != std::string::npos;
+			}
+			Check( output && rejected && output->Attempted() && output->Rejected() &&
+				SameFrameMetadata(store->Meta(),before),
+				"fire callback cannot replace the authorized metadata envelope" );
+			if( rasterizer ) rasterizer->FreeRasterizerOutputs();
+			safe_release(output);
+		} else {
+			Check(false,"metadata mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool frameStoreMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( frameStoreMutationLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			FrameStoreSwappingFireOutput* output = rasterizer ?
+				new FrameStoreSwappingFireOutput(*rasterizer) : nullptr;
+			if( output ) rasterizer->AddRasterizerOutput(output);
+			const bool rejected = !job->Rasterize();
+			Implementation::FrameStore* replacement = output ? output->Replacement() : nullptr;
+			Check( output && rejected && output->Mutated() && replacement &&
+				replacement == rasterizer->GetFrameStore() &&
+				replacement->Meta().renderFidelityStatus.empty(),
+				"FrameStore swap during route preflight rejects without a rollback lifetime fault" );
+			if( rasterizer ) rasterizer->FreeRasterizerOutputs();
+			safe_release(output);
+		} else {
+			Check(false,"FrameStore mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		for( const bool replaceWithFire : { false, true } ) {
+			writeScene("pathtracing_spectral_rasterizer",380u);
+			RISE_CreateJobPriv(&job);
+			const bool sceneMutationLoaded = job &&
+				job->LoadAsciiSceneViaCst(path.string().c_str());
+			if( sceneMutationLoaded ) {
+				PluginPhase* phase = new PluginPhase();
+				IMedium* replacement = replaceWithFire ?
+					static_cast<IMedium*>(new InvalidReasonFireMedium(*phase)) :
+					static_cast<IMedium*>(new DerivedHomogeneousMedium(*phase));
+				IRasterizer* rasterizer = job->GetRasterizer();
+				SceneMediumSwappingFireOutput* output =
+					new SceneMediumSwappingFireOutput(*job->GetScene(),*replacement);
+				rasterizer->AddRasterizerOutput(output);
+				Check( !job->Rasterize() && output->Mutated(),
+					replaceWithFire ?
+						"fire-to-fire medium swap invalidates route preflight" :
+						"fire-to-nonfire medium swap invalidates route preflight" );
+				rasterizer->FreeRasterizerOutputs();
+				safe_release(output);
+				safe_release(replacement);
+				safe_release(phase);
+			} else {
+				Check(false,"scene medium mutation fire fixture loads");
+			}
+			safe_release(job);
+		}
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool runtimeSceneMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( runtimeSceneMutationLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			DerivedHomogeneousMedium* replacement =
+				new DerivedHomogeneousMedium(*phase);
+			IRasterizer* rasterizer = job->GetRasterizer();
+			Implementation::FrameStore* store = rasterizer->GetFrameStore();
+			const FrameStoreOutput::Metadata before = store->Meta();
+			RuntimeSceneMediumSwappingFireOutput* output =
+				new RuntimeSceneMediumSwappingFireOutput(*job->GetScene(),*replacement);
+			rasterizer->AddRasterizerOutput(output);
+			bool rejected = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find(
+					"fire render state changed after preflight") != std::string::npos;
+			}
+			Check( rejected && output->Mutated() && SameFrameMetadata(store->Meta(),before),
+				"fire-to-nonfire mutation in an output callback fails before frame publication" );
+			rasterizer->FreeRasterizerOutputs();
+			Check( job->SetGlobalMedium("fire"),
+				"runtime fire-medium mutation fixture restores the authored medium" );
+			safe_release(output);
+			safe_release(replacement);
+			safe_release(phase);
+		} else {
+			Check(false,"runtime scene mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool runtimeConfigMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( runtimeConfigMutationLoaded ) {
+			const double location[3] = { 1.0, 0.0, -2.0 };
+			const double lookAt[3] = { 0.0, 0.0, 0.0 };
+			const double up[3] = { 0.0, 1.0, 0.0 };
+			const double orientation[3] = { 0.0, 0.0, 0.0 };
+			const double targetOrientation[2] = { 0.0, 0.0 };
+			const bool cameraAdded = job->AddPinholeCamera("runtime_camera",
+				location,lookAt,up,0.6,0.0,0.0,0.0,orientation,targetOrientation) &&
+				job->SetActiveCamera("fire_camera");
+			IRasterizer* rasterizer = job->GetRasterizer();
+			Implementation::FrameStore* store = rasterizer->GetFrameStore();
+			const FrameStoreOutput::Metadata before = store->Meta();
+			RuntimeCameraSwappingFireOutput* output =
+				new RuntimeCameraSwappingFireOutput(*job->GetScene(),"runtime_camera");
+			rasterizer->AddRasterizerOutput(output);
+			bool rejected = false;
+			try {
+				job->Rasterize();
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find(
+					"fire render state changed after preflight") != std::string::npos;
+			}
+			Check( cameraAdded && rejected && output->Mutated() &&
+				SameFrameMetadata(store->Meta(),before),
+				"camera mutation in an output callback invalidates resolved fire config" );
+			rasterizer->FreeRasterizerOutputs();
+			Check( job->SetActiveCamera("fire_camera"),
+				"runtime resolved-config mutation fixture restores the authored camera" );
+			safe_release(output);
+		} else {
+			Check(false,"runtime resolved-config mutation fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("auto_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool autoTopologyMutationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( autoTopologyMutationLoaded ) {
+			IRasterizer* rasterizer = job->GetRasterizer();
+			TopologyMutatingFireOutput* output =
+				new TopologyMutatingFireOutput(*rasterizer,3u);
+			rasterizer->AddRasterizerOutput(output);
+			Check( !job->Rasterize() && output->RouteCalls() >= 3u,
+				"Auto fire authorization binds wrapper and delegate to one inspected output epoch" );
+			safe_release(output);
+		} else {
+			Check(false,"Auto output-topology mutation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool directBoundaryLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( directBoundaryLoaded ) {
+			IRasterizer* direct = job->GetRasterizer();
+			ISampling2D* sampling = nullptr;
+			RISE_API_CreateNRooksSampling2D(&sampling,1.0,1.0,1.0);
+			sampling->SetNumSamples(1u);
+			const auto isPreflightFailure = []( const std::runtime_error& error ) {
+				return std::string(error.what()).find(
+					"output_provenance_unavailable") != std::string::npos;
+			};
+			bool predictionRejected = false;
+			bool stillRejected = false;
+			bool animationRejected = false;
+			try {
+				direct->PredictTimeToRasterizeScene(*job->GetScene(),*sampling,nullptr);
+			} catch( const std::runtime_error& error ) {
+				predictionRejected = isPreflightFailure(error);
+			}
+			try {
+				direct->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			} catch( const std::runtime_error& error ) {
+				stillRejected = isPreflightFailure(error);
+			}
+			try {
+				direct->RasterizeSceneAnimation(*job->GetScene(),0.0,0.0,1u,
+					false,false,nullptr,nullptr,nullptr);
+			} catch( const std::runtime_error& error ) {
+				animationRejected = isPreflightFailure(error);
+			}
+			Check( predictionRejected && stillRejected && animationRejected,
+				"direct public fire prediction, still, and animation require Job preflight" );
+			Check( job->Rasterize(),
+				"Job preflight reauthorizes a fire rasterizer after rejected direct entry" );
+			bool staleMetadataRejected = false;
+			try {
+				direct->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+			} catch( const std::runtime_error& error ) {
+				staleMetadataRejected = isPreflightFailure(error);
+			}
+			Check( staleMetadataRejected,
+				"a consumed Job capability cannot be replayed against finalized fire metadata" );
+			safe_release(sampling);
+		} else {
+			Check(false,"direct fire-rasterizer boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool unknownOutputLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( unknownOutputLoaded ) {
+			UnclassifiedFireOutput* output = new UnclassifiedFireOutput();
+			job->GetRasterizer()->AddRasterizerOutput(output);
+			Check( !job->Rasterize() && output->finalCount == 0u,
+				"an output without an explicit fire-route capability fails closed" );
+			safe_release(output);
+		} else {
+			Check(false,"unclassified-output preflight fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool callbackBoundaryLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( callbackBoundaryLoaded ) {
+			CountingJobOutput callback;
+			Check( job->AddCallbackRasterizerOutput(&callback) && !job->Rasterize() &&
+				callback.calls.load() == 0u,
+				"fire callback output fails closed before unlabeled pixels are emitted" );
+		} else {
+			Check(false,"fire callback-output boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,false);
+		RISE_CreateJobPriv(&job);
+		const bool nonFirePluginCameraLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( nonFirePluginCameraLoaded ) {
+			ICamera* camera = job->GetScene()->GetCameraMutable();
+			OpaqueCamera* opaque = camera ? new OpaqueCamera(*camera) : nullptr;
+			const bool installed = opaque &&
+				job->GetScene()->AddCamera("opaque_plugin_camera",opaque);
+			safe_release(opaque);
+			Check( installed && job->Rasterize(),
+				"non-fire plugin cameras bypass fire-only resolved-config encoding" );
+		} else {
+			Check(false,"non-fire plugin-camera boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool firePluginCameraLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( firePluginCameraLoaded ) {
+			ICamera* camera = job->GetScene()->GetCameraMutable();
+			OpaqueCamera* opaque = camera ? new OpaqueCamera(*camera) : nullptr;
+			const bool installed = opaque &&
+				job->GetScene()->AddCamera("opaque_plugin_camera",opaque);
+			safe_release(opaque);
+			Check( installed && !job->Rasterize(),
+				"fire plugin cameras fail closed when resolved provenance is unavailable" );
+		} else {
+			Check(false,"fire plugin-camera boundary fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,true,1.0,false,true);
+		RISE_CreateJobPriv(&job);
+		const bool progressiveExceptionLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( progressiveExceptionLoaded ) {
+			IRasterizer* progressiveRasterizer = job->GetRasterizer();
+			ThrowingIntermediateOutput* throwingOutput = new ThrowingIntermediateOutput();
+			progressiveRasterizer->AddRasterizerOutput(throwingOutput);
+			bool progressiveStillThrew = false;
+			try { job->Rasterize(); }
+			catch( const std::runtime_error& ) { progressiveStillThrew = true; }
+			progressiveRasterizer->FreeRasterizerOutputs();
+			safe_release(throwingOutput);
+			const bool progressiveStillRecovered = job->Rasterize();
+
+			throwingOutput = new ThrowingIntermediateOutput();
+			progressiveRasterizer->AddRasterizerOutput(throwingOutput);
+			bool progressiveAnimationThrew = false;
+			try { job->RasterizeAnimation(0.0,0.0,1u,false,false); }
+			catch( const std::runtime_error& ) { progressiveAnimationThrew = true; }
+			progressiveRasterizer->FreeRasterizerOutputs();
+			safe_release(throwingOutput);
+			const bool progressiveAnimationRecovered =
+				job->RasterizeAnimation(0.0,0.0,1u,false,false);
+			Check( progressiveStillThrew && progressiveStillRecovered &&
+				progressiveAnimationThrew && progressiveAnimationRecovered,
+				"progressive still and animation restore sampling, film, progress, and tile locks after exceptions" );
+		} else {
+			Check(false,"progressive exception-safety fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,true,1.0,false,false,true);
+		RISE_CreateJobPriv(&job);
+		const bool animatedCameraLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( animatedCameraLoaded ) {
+			Implementation::FrameStore* animatedStore =
+				job->GetRasterizer()->GetFrameStore();
+			std::string animatedDecodeError;
+			auto decodedCameraStates = [&]( RISECBOR64::Value& config ) {
+				const FrameStoreOutput::Metadata current = animatedStore->Meta();
+				if( !RISECBOR64::DecodeCanonical(current.resolvedRenderConfigCoreV1,
+					config,&animatedDecodeError) ) return static_cast<const RISECBOR64::Value*>(nullptr);
+				return config.Find("evaluated_camera_states");
+			};
+			const bool multiCameraRendered =
+				job->RasterizeAnimation(0.0,1.0,2u,false,false);
+			RISECBOR64::Value multiCameraConfig;
+			const RISECBOR64::Value* multiCameraStates = multiCameraRendered ?
+				decodedCameraStates(multiCameraConfig) : nullptr;
+			const RISECBOR64::Value* multiFirstCamera = multiCameraStates &&
+				multiCameraStates->GetArray().size() == 2u ?
+				multiCameraStates->GetArray()[0].Find("camera") : nullptr;
+			const RISECBOR64::Value* multiLastCamera = multiCameraStates &&
+				multiCameraStates->GetArray().size() == 2u ?
+				multiCameraStates->GetArray()[1].Find("camera") : nullptr;
+			Check( multiFirstCamera && multiLastCamera &&
+				multiCameraStates->GetArray()[0].Find("frame_index")->GetIntegerArgument() == 0u &&
+				multiCameraStates->GetArray()[1].Find("frame_index")->GetIntegerArgument() == 1u &&
+				multiFirstCamera->Find("location")->GetArray()[0].GetFloat() == 0.0 &&
+				multiLastCamera->Find("location")->GetArray()[0].GetFloat() == 1.0,
+				"multi-frame fire provenance records each evaluated keyframed camera state" );
+			const Point3 multiFinalLocation = job->GetScene()->GetCamera()->GetLocation();
+			const std::vector<std::string> multiReasons = animatedStore ?
+				animatedStore->Meta().renderReasonCodes : std::vector<std::string>();
+			Check( multiCameraRendered && multiFinalLocation.x == 1.0 &&
+				std::find(multiReasons.begin(),multiReasons.end(),
+					"keyframed_temporal_sampling_unsupported") != multiReasons.end(),
+				"preview fire holds keyframed motion blur at nominal time and records the reason" );
+
+			const bool selectedCameraRendered = job->RasterizeAnimationUsingOptions(1u);
+			RISECBOR64::Value selectedCameraConfig;
+			const RISECBOR64::Value* selectedCameraStates = selectedCameraRendered ?
+				decodedCameraStates(selectedCameraConfig) : nullptr;
+			Check( selectedCameraStates && selectedCameraStates->GetArray().size() == 1u &&
+				selectedCameraStates->GetArray()[0].Find("frame_index")->GetIntegerArgument() == 1u &&
+				selectedCameraStates->GetArray()[0].Find("camera")->Find("location")->
+					GetArray()[0].GetFloat() > 0.0,
+				"selected-frame fire provenance records the selected keyframed camera state" );
+
+			const bool fieldCameraRendered =
+				job->RasterizeAnimation(0.0,1.0,2u,true,false);
+			RISECBOR64::Value fieldCameraConfig;
+			const RISECBOR64::Value* fieldCameraStates = fieldCameraRendered ?
+				decodedCameraStates(fieldCameraConfig) : nullptr;
+			Check( fieldCameraStates && fieldCameraStates->GetArray().size() == 4u &&
+				fieldCameraStates->GetArray()[0].Find("field")->GetText() == "upper" &&
+				fieldCameraStates->GetArray()[1].Find("field")->GetText() == "lower" &&
+				fieldCameraStates->GetArray()[0].Find("camera")->Find("location")->
+					GetArray()[0].GetFloat() == 0.0 &&
+				fieldCameraStates->GetArray()[1].Find("camera")->Find("location")->
+					GetArray()[0].GetFloat() == 0.5,
+				"interlaced fire provenance records both effective keyframed camera fields" );
+
+			const FrameStoreOutput::Metadata previewAnimationMetadata =
+				animatedStore->Meta();
+			const uint64_t previewAnimationGeneration = animatedStore->Generation();
+			Check( job->SetFireFidelityMode("predictive") &&
+				!job->RasterizeAnimation(0.0,1.0,2u,false,false) &&
+				animatedStore->Generation() == previewAnimationGeneration &&
+				SameFrameMetadata(animatedStore->Meta(),previewAnimationMetadata),
+				"predictive fire rejects keyframed temporal sampling before workers and preserves the frame" );
+		} else {
+			Check(false,"animated-camera provenance fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",true);
+		RISE_CreateJobPriv(&job);
+		const bool configPreviewLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( configPreviewLoaded && job->Rasterize(),
+			"unqualified render controls remain available in preview mode" );
+		if( configPreviewLoaded ) {
+			Implementation::FrameStore* store = job->GetRasterizer()->GetFrameStore();
+			const std::vector<std::string> reasons = store ?
+				store->Meta().renderReasonCodes : std::vector<std::string>();
+			const char* expectedReasons[] = { "oidn_unqualified",
+				"path_regularization_enabled", "radiance_clamp_enabled", "sms_unqualified" };
+			bool hasAll = store != nullptr;
+			for( const char* reason : expectedReasons ) {
+				hasAll = hasAll && std::find(reasons.begin(),reasons.end(),reason) !=
+					reasons.end();
+			}
+			Check( hasAll,
+				"preflight records every active unqualified render control" );
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize(),
+				"predictive mode rejects every unqualified render control" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",379u);
+		RISE_CreateJobPriv(&job);
+		const bool outOfDomainLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( outOfDomainLoaded,
+			"out-of-domain wavelength support remains structurally loadable" );
+		if( outOfDomainLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			const uint64_t generationBefore = store ? store->Generation() : 0u;
+			Check( !job->Rasterize(),
+				"preview preflight rejects a wavelength below the certified domain" );
+			Check( store && store->Generation() == generationBefore &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"out-of-domain preview rejection leaves frame metadata untouched" );
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
+				store->Generation() == generationBefore &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"out-of-domain predictive rejection also preserves frame metadata" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_pel_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool pelLoaded = job && job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( pelLoaded && job->Rasterize(),
+			"Pel fire transport remains an explicitly labeled preview path" );
+		if( pelLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			const FrameStoreOutput::Metadata metadata = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			Check( store && std::find(metadata.renderReasonCodes.begin(),
+				metadata.renderReasonCodes.end(),"pel_transport") !=
+				metadata.renderReasonCodes.end(),
+				"Pel preflight emits pel_transport from the fixed reason enum" );
+		}
+		safe_release(job);
+
+		writeScene("auto_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool autoCancellationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( autoCancellationLoaded ) {
+			Check( job->Rasterize(),
+				"fresh Auto fire preflight resolves its concrete delegate before encoding" );
+			Implementation::FrameStore* autoStore =
+				job->GetRasterizer()->GetFrameStore();
+			RISECBOR64::Value autoConfig;
+			std::string autoConfigError;
+			const bool autoConfigDecoded = autoStore && RISECBOR64::DecodeCanonical(
+				autoStore->Meta().resolvedRenderConfigCoreV1,autoConfig,&autoConfigError);
+			const RISECBOR64::Value* autoIntegrator = autoConfigDecoded ?
+				autoConfig.Find("integrator") : nullptr;
+			Check( autoIntegrator && autoIntegrator->Find("effective_kind") &&
+				autoIntegrator->Find("effective_kind")->GetText() == "pt",
+				"Auto fire provenance records the effective PT delegate" );
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
+			CancelledFireProgress cancelledProgress;
+			IRasterizer* rasterizer = job->GetRasterizer();
+			rasterizer->AddRasterizerOutput(completionOutput);
+			job->SetProgress(&cancelledProgress);
+			const bool rejected = !job->Rasterize();
+			job->SetProgress(nullptr);
+			Check( rejected && !FireRenderCompleted(rasterizer) &&
+				completionOutput->finalCount.load() == 0u,
+				"Auto delegate propagates cancelled fire completion state transactionally" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(completionOutput);
+		} else {
+			Check(false,"Auto fire cancellation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",
+			false,true,1.0,true);
+		RISE_CreateJobPriv(&job);
+		const bool irradianceCancellationLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( irradianceCancellationLoaded ) {
+			CompletionCountingOutput* completionOutput = new CompletionCountingOutput();
+			CancelledFireProgress cancelledProgress;
+			IRasterizer* rasterizer = job->GetRasterizer();
+			rasterizer->AddRasterizerOutput(completionOutput);
+			job->SetProgress(&cancelledProgress);
+			const bool rejected = !job->Rasterize();
+			job->SetProgress(nullptr);
+			Check( rejected && completionOutput->intermediateCount.load() > 0u &&
+				completionOutput->finalCount.load() == 0u &&
+				!job->GetScene()->GetIrradianceCache()->Precomputed(),
+				"cancelled fire irradiance prepass remains preview-only and unfinalized" );
+			rasterizer->FreeRasterizerOutputs();
+			safe_release(completionOutput);
+		} else {
+			Check(false,"fire irradiance-cancellation fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,true);
+		RISE_CreateJobPriv(&job);
+		const bool hwssLoaded = job && job->LoadAsciiSceneViaCst(path.string().c_str());
+		Check( hwssLoaded && job->Rasterize(),
+			"HWSS fire transport uses the preview NM fallback" );
+		if( hwssLoaded ) {
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : 0;
+			const FrameStoreOutput::Metadata metadata = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			Check( store && std::find(metadata.renderReasonCodes.begin(),
+				metadata.renderReasonCodes.end(),"hwss_transport") !=
+				metadata.renderReasonCodes.end(),
+				"HWSS preflight emits hwss_transport from the fixed reason enum" );
+		}
+		safe_release(job);
+
+		struct UnsupportedRoute
+		{
+			const char* rasterizer;
+			bool hwss;
+		};
+		const UnsupportedRoute unsupported[] = {
+			{ "bdpt_pel_rasterizer", false },
+			{ "vcm_pel_rasterizer", false },
+			{ "mlt_rasterizer", false },
+			{ "bdpt_spectral_rasterizer", false },
+			{ "vcm_spectral_rasterizer", false },
+			{ "mlt_spectral_rasterizer", false },
+			{ "bdpt_spectral_rasterizer", true },
+			{ "vcm_spectral_rasterizer", true },
+			{ "mlt_spectral_rasterizer", true }
+		};
+		const char* const fidelityModes[] = { "preview", "predictive" };
+		FirePreflightLogCapture* unsupportedCapture =
+			new FirePreflightLogCapture("unsupported_integrator_for_fire_media");
+		GlobalLogPriv()->AddPrinter(unsupportedCapture);
+		for( const char* fidelityMode : fidelityModes ) {
+			for( const UnsupportedRoute& route : unsupported ) {
+				writeScene(route.rasterizer,380u,route.hwss,fidelityMode);
+				RISE_CreateJobPriv(&job);
+				const bool loadedUnsupported = job &&
+					job->LoadAsciiSceneViaCst(path.string().c_str());
+				Implementation::Rasterizer* rasterizer = loadedUnsupported ?
+					dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer()) : nullptr;
+				Implementation::FrameStore* store = rasterizer ?
+					rasterizer->GetFrameStore() : nullptr;
+				const uint64_t generationBefore = store ? store->Generation() : 0u;
+				const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
+					FrameStoreOutput::Metadata();
+				ISampling2D* directSampling = nullptr;
+				RISE_API_CreateNRooksSampling2D(&directSampling,1.0,1.0,1.0);
+				directSampling->SetNumSamples(1u);
+				const auto isUnsupportedFailure = []( const std::runtime_error& error ) {
+					return std::string(error.what()).find(
+						"unsupported_integrator_for_fire_media") != std::string::npos;
+				};
+				bool directPredictionRejected = false;
+				bool directStillRejected = false;
+				bool directAnimationRejected = false;
+				if( rasterizer ) {
+					try {
+						rasterizer->PredictTimeToRasterizeScene(
+							*job->GetScene(),*directSampling,nullptr);
+					} catch( const std::runtime_error& error ) {
+						directPredictionRejected = isUnsupportedFailure(error);
+					}
+					try {
+						rasterizer->RasterizeScene(*job->GetScene(),nullptr,nullptr);
+					} catch( const std::runtime_error& error ) {
+						directStillRejected = isUnsupportedFailure(error);
+					}
+					try {
+						rasterizer->RasterizeSceneAnimation(*job->GetScene(),0.0,0.0,
+							1u,false,false,nullptr,nullptr,nullptr);
+					} catch( const std::runtime_error& error ) {
+						directAnimationRejected = isUnsupportedFailure(error);
+					}
+				}
+				safe_release(directSampling);
+				FirePreflightProgress progress;
+				job->SetProgress(&progress);
+				const unsigned int reasonMatchesBefore = unsupportedCapture->Matches();
+				const bool rejected = loadedUnsupported && !job->Rasterize();
+				const std::string routeLabel = std::string(route.rasterizer) +
+					(route.hwss ? " HWSS " : " ") + fidelityMode;
+				Check( directPredictionRejected && directStillRejected &&
+					directAnimationRejected,
+					("direct unsupported fire entries reject specifically: "+
+						routeLabel).c_str() );
+				Check( rejected && progress.titleCalls.load() == 0u &&
+					progress.progressCalls.load() == 0u &&
+					unsupportedCapture->Matches() == reasonMatchesBefore+1u,
+					("unsupported fire route fails before workers: "+routeLabel).c_str() );
+				store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+				Check( store && store->Generation() == generationBefore &&
+					SameFrameMetadata(store->Meta(),metadataBefore),
+					("unsupported route preserves the prior frame snapshot: "+
+						routeLabel).c_str() );
+				safe_release(job);
+			}
+		}
+		safe_release(unsupportedCapture);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool invalidReasonLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( invalidReasonLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			InvalidReasonFireMedium* invalid = new InvalidReasonFireMedium(*phase);
+			job->GetScene()->SetGlobalMedium(invalid);
+			Check( !job->Rasterize(),
+				"preflight rejects a fire reason outside the fixed enum" );
+			safe_release(invalid);
+			safe_release(phase);
+		} else {
+			Check( false,"invalid-reason preflight fixture loads" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool missingRecordLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( missingRecordLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			MissingRecordIdFireMedium* missing = new MissingRecordIdFireMedium(*phase);
+			job->GetScene()->SetGlobalMedium(missing);
+			Implementation::Rasterizer* rasterizer =
+				dynamic_cast<Implementation::Rasterizer*>(job->GetRasterizer());
+			Implementation::FrameStore* store = rasterizer ?
+				rasterizer->GetFrameStore() : nullptr;
+			const uint64_t generationBefore = store ? store->Generation() : 0u;
+			const FrameStoreOutput::Metadata metadataBefore = store ? store->Meta() :
+				FrameStoreOutput::Metadata();
+			unsigned int predictedMs = 0xA5A5A5A5u;
+			unsigned int actualMs = 0x5A5A5A5Au;
+			Check( !job->PredictRasterizationTime(1,&predictedMs,&actualMs) && store &&
+				store->Generation() == generationBefore &&
+				predictedMs == 0xA5A5A5A5u && actualMs == 0x5A5A5A5Au &&
+				missing->reasonQueries == 1u &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"prediction rejects a fire medium with no record ID before tracing rays" );
+			Check( !job->Rasterize() && store &&
+				store->Generation() == generationBefore &&
+				missing->reasonQueries == 2u &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"preview fire medium with no record ID fails before workers" );
+			Check( job->SetFireFidelityMode("predictive") && !job->Rasterize() &&
+				store->Generation() == generationBefore &&
+				missing->reasonQueries == 3u &&
+				SameFrameMetadata(store->Meta(),metadataBefore),
+				"predictive fire medium with no record ID fails before workers" );
+			safe_release(missing);
+			safe_release(phase);
+		} else {
+			Check( false,"missing-record preflight fixture loads" );
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool inconsistentPredictiveLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( inconsistentPredictiveLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			InconsistentPredictiveFireMedium* inconsistent =
+				new InconsistentPredictiveFireMedium(*phase,true);
+			job->GetScene()->SetGlobalMedium(inconsistent);
+			unsigned int predictedMs = 0xA5A5A5A5u;
+			unsigned int actualMs = 0x5A5A5A5Au;
+			Check( job->SetFireFidelityMode("predictive") &&
+				!job->PredictRasterizationTime(1,&predictedMs,&actualMs) &&
+				!job->Rasterize() && predictedMs == 0xA5A5A5A5u &&
+				actualMs == 0x5A5A5A5Au,
+				"predictive mode rejects a custom preview-status fire claim with reasons" );
+			safe_release(inconsistent);
+			safe_release(phase);
+		} else {
+			Check(false,"inconsistent-predictive fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u);
+		RISE_CreateJobPriv(&job);
+		const bool missingPreviewRequestLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( missingPreviewRequestLoaded ) {
+			PluginPhase* phase = new PluginPhase();
+			InconsistentPredictiveFireMedium* missingPreviewRequest =
+				new InconsistentPredictiveFireMedium(*phase,false);
+			job->GetScene()->SetGlobalMedium(missingPreviewRequest);
+			Check( !job->Rasterize(),
+				"preview mode rejects a custom fire medium without requested_preview" );
+			safe_release(missingPreviewRequest);
+			safe_release(phase);
+		} else {
+			Check(false,"missing-preview-request fire fixture loads");
+		}
+		safe_release(job);
+
+		writeScene("pathtracing_spectral_rasterizer",380u,false,"preview",false,false);
+		RISE_CreateJobPriv(&job);
+		const bool unavailableEncoderLoaded = job &&
+			job->LoadAsciiSceneViaCst(path.string().c_str());
+		if( unavailableEncoderLoaded ) {
+			FrameEncoderRegistry& encoders = FrameEncoderRegistry::Get();
+			const std::filesystem::path unavailableOutput =
+				std::filesystem::temp_directory_path() /
+					("rise_unavailable_encoder_" + std::to_string(::getpid()));
+			IRasterizerOutput* unknownOutput = nullptr;
+			const bool directUnknownRejected = !RISE_API_CreateFileRasterizerOutput(
+				&unknownOutput,unavailableOutput.string().c_str(),false,7,8,
+				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
+				unknownOutput == nullptr;
+			const bool jobUnknownRejected = !job->AddFileRasterizerOutput(
+				unavailableOutput.string().c_str(),false,7,8,1,0.0,0,2,true);
+			safe_release(unknownOutput);
+			Check( directUnknownRejected && jobUnknownRejected,
+				"unknown file encoder type rejects at both API and Job authoring boundaries" );
+			IFrameEncoder* png = encoders.AcquireByFormatName("PNG");
+			const bool pngWasAvailable = png != nullptr;
+			IRasterizerOutput* retainedOutput = nullptr;
+			const bool createdBeforeRemoval = RISE_API_CreateFileRasterizerOutput(
+				&retainedOutput,unavailableOutput.string().c_str(),false,2,8,
+				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
+				retainedOutput;
+			bool removedPNG = false;
+			if( png ) {
+				removedPNG = encoders.Unregister("PNG");
+			}
+			const bool rejectedUnavailable = !job->AddFileRasterizerOutput(
+				unavailableOutput.string().c_str(),false,2,8,1,0.0,0,2,true);
+			IRasterizerOutput* directOutput = nullptr;
+			const bool directRejected = !RISE_API_CreateFileRasterizerOutput(
+				&directOutput,unavailableOutput.string().c_str(),false,2,8,
+				eColorSpace_sRGB,0.0,eDisplayTransform_None,eExrCompression_Zip,true) &&
+				directOutput == nullptr;
+			safe_release(directOutput);
+			job->RemoveRasterizerOutputs();
+			if( retainedOutput ) {
+				job->GetRasterizer()->AddRasterizerOutput(retainedOutput);
+			}
+			safe_release(retainedOutput);
+			const bool retainedRendered = createdBeforeRemoval && job->Rasterize() &&
+				std::filesystem::exists(unavailableOutput.string()+".png");
+			if( removedPNG ) {
+				encoders.Register(png);
+				png = nullptr;
+			}
+			safe_release(png);
+			const bool encoderRestored = !removedPNG ||
+				encoders.ByFormatName("PNG") != nullptr;
+			const bool availabilityContract = pngWasAvailable ?
+				(rejectedUnavailable && directRejected && retainedRendered && encoderRestored) :
+				(!createdBeforeRemoval && rejectedUnavailable && directRejected &&
+					!retainedRendered && encoderRestored);
+			Check( availabilityContract,
+				"file output retains an available encoder while absent encoders reject authoring" );
+			std::filesystem::remove(unavailableOutput.string()+".png");
+		} else {
+			Check(false,"unavailable-encoder production fixture loads");
+		}
+		safe_release(job);
+		std::filesystem::remove(path);
+	}
+
+	void TestResolvedRasterSequenceNormalization()
+	{
+		unsigned int randomCalls = 0u;
+		const ResolvedRasterSequence invalid = ResolveRasterSequence(
+			1,"not a block",[&randomCalls]() { ++randomCalls; return 0.5; });
+		Check( invalid.kind == RasterSequenceKind::Morton && invalid.tileSize == 32u &&
+			randomCalls == 0u,
+			"invalid raster-sequence options normalize to the effective Morton default" );
+
+		const double blockRandoms[] = { 0.5, 0.12, 0.25 };
+		std::size_t blockRandomIndex = 0u;
+		const ResolvedRasterSequence randomBlock = ResolveRasterSequence(
+			3,"ignored",[&]() { return blockRandoms[blockRandomIndex++]; });
+		Check( randomBlock.kind == RasterSequenceKind::Block &&
+			randomBlock.blockWidth == 64u && randomBlock.blockHeight == 64u &&
+			randomBlock.blockOrder == 1u && randomBlock.hasShuffleSeed &&
+			randomBlock.shuffleSeed == 1073741824u && blockRandomIndex == 3u,
+			"legacy random block resolution freezes its order and exact shuffle seed" );
+
+		std::size_t hilbertRandomCalls = 0u;
+		const ResolvedRasterSequence randomHilbert = ResolveRasterSequence(
+			3,"ignored",[&]() { ++hilbertRandomCalls; return 0.05; });
+		Check( randomHilbert.kind == RasterSequenceKind::Hilbert &&
+			randomHilbert.hilbertDepth == 4u && hilbertRandomCalls == 1u,
+			"legacy random Hilbert resolution freezes the selected effective sequence" );
+
+		std::size_t explicitShuffleCalls = 0u;
+		const ResolvedRasterSequence explicitShuffle = ResolveRasterSequence(
+			1,"16 24 1",[&]() { ++explicitShuffleCalls; return 0.75; });
+		Check( explicitShuffle.kind == RasterSequenceKind::Block &&
+			explicitShuffle.blockWidth == 16u && explicitShuffle.blockHeight == 24u &&
+			explicitShuffle.blockOrder == 1u && explicitShuffle.hasShuffleSeed &&
+			explicitShuffle.shuffleSeed == 3221225472u && explicitShuffleCalls == 1u,
+			"authored shuffle resolution binds the seed used by the block sequence" );
+	}
+}
+
+int main()
+{
+	TestResolvedRasterSequenceNormalization();
+	TestMatrixOnlyFilmResponse();
+	TestPredictivePresetSpectralConsumptionAndFidelity();
+	TestBakedTrilinearChannelsAndOptics();
+	TestChromaticNMTrackingAndTransmittance();
+	TestCondensedConstituentOpticsAndClosure();
+	TestWavelengthBoundConstituentPhaseClosure();
+	TestContinuationPhaseClosurePreflightTable();
+	TestPhysicalUnitsAndSceneScale();
+	TestPhiSupMajorant();
+	TestPhiAwareQuadratureAndDistancePdf();
+	TestChemSPDNormalizationClippingAndSceneScale();
+	TestChemReactionMixtureAgainstAttenuatedReference();
+	TestNonFiniteRejection();
+	TestDescriptorAndRequiredness();
+	TestSceneLanguageAndSceneUnitPropagation();
+	TestProductionFireFidelityPreflight();
+
+	std::cout << passed << " passed, " << failed << " failed" << std::endl;
+	return failed == 0 ? 0 : 1;
+}

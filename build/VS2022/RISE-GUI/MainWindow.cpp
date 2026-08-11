@@ -1109,7 +1109,11 @@ void MainWindow::onSaveRenderedImage()
         else if (selectedFilter.contains("*.png"))  path += ".png";
         else if (selectedFilter.contains("*.tif"))  path += ".tiff";
         else if (selectedFilter.contains("*.hdr"))  path += ".hdr";
-        else                                        path += ".exr";
+        else {
+            QMessageBox::warning(this, "Unsupported Image Format",
+                "Choose a registered image format before saving.");
+            return;
+        }
     }
 
     // Map the final extension → bridge format name (case-insensitive).
@@ -1122,9 +1126,13 @@ void MainWindow::onSaveRenderedImage()
     else if (ext == "rgbea")              formatName = "RGBEA";
     else if (ext == "tga")                formatName = "TGA";
     else if (ext == "ppm")                formatName = "PPM";
-    else                                  formatName = "EXR";  // safe default
+    else {
+        QMessageBox::warning(this, "Unsupported Image Format",
+            QString("No image encoder is available for .%1 files.").arg(ext));
+        return;
+    }
 
-    const bool ok = m_engine->saveAs(path, formatName, /*ev=*/0.0);
+    const bool ok = m_engine->saveAs(path, formatName, m_engine->viewExposureEV());
     if (ok) {
         statusBar()->showMessage(
             QString("Saved %1 (%2)").arg(QFileInfo(path).fileName(), formatName),
@@ -2182,18 +2190,13 @@ void MainWindow::onStateChanged(int newState)
     m_renderWidget->setRenderState(state);
 
     // L5d — gate File > Save Rendered Image.  The production VFS's
-    // FrameStore exists once the rasterizer has emitted at least
-    // one OutputImage; that happens any time we transition through
-    // Rendering / Cancelling.  Completed / Cancelled retain the
-    // last contents (`bridge.clearAll` doesn't free the VFS, per
-    // L4 §7.5).  Re-loading a scene transitions back through
-    // Loading → SceneLoaded which has no fresh output yet — gate
-    // off until the next render starts.
+    // Completed / Cancelled retain the last finalized contents
+    // (`bridge.clearAll` doesn't free the VFS, per L4 §7.5).  Never
+    // publish while Rendering / Cancelling: that surface can contain
+    // a partial fire frame whose provenance transaction is not final.
     if (m_saveImageAction) {
         const bool canSave =
-            state == RenderEngine::Rendering
-         || state == RenderEngine::Cancelling
-         || state == RenderEngine::Completed
+            state == RenderEngine::Completed
          || state == RenderEngine::Cancelled;
         m_saveImageAction->setEnabled(canSave);
     }

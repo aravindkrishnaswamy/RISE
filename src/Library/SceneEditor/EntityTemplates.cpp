@@ -266,6 +266,26 @@ namespace
 	// -------------------------------------------------------------
 	// Materials (each bundles the small painter(s) its slots need)
 	// -------------------------------------------------------------
+	const EntityTemplateDef& NullBoundaryMaterialTemplate()
+	{
+		static const EntityTemplateDef d = []{
+			EntityTemplateDef t;
+			t.category = Category::Material;
+			t.label = "Null Medium Boundary";
+			t.baseName = "medium_boundary";
+			t.hasNamedIdentity = true;
+			t.needsMaterial = false;
+			t.needsTexture = false;
+			t.chunkTexts.push_back(
+				"null_boundary_material\n"
+				"{\n"
+				"name @NAME@\n"
+				"}\n" );
+			return t;
+		}();
+		return d;
+	}
+
 	const EntityTemplateDef& LambertianMaterialTemplate()
 	{
 		static const EntityTemplateDef d = []{
@@ -645,6 +665,52 @@ namespace
 		return d;
 	}
 
+	const EntityTemplateDef& MultichannelHeterogeneousMediumTemplate()
+	{
+		static const EntityTemplateDef d = []{
+			EntityTemplateDef t;
+			t.category = Category::Medium;
+			t.label = "Fire/Smoke Multichannel Volume";
+			t.baseName = "fire_volume";
+			t.hasNamedIdentity = true;
+			t.needsMaterial = false;
+			t.needsTexture = false;
+			t.chunkTexts.push_back(
+				"scalar_painter\n"
+				"{\n"
+				"name @NAME@_carbon\n"
+				"value 0.02\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"scalar_painter\n"
+				"{\n"
+				"name @NAME@_temperature\n"
+				"value 1200\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"scalar_painter\n"
+				"{\n"
+				"name @NAME@_condensed\n"
+				"value 0.01\n"
+				"}\n" );
+			t.chunkTexts.push_back(
+				"multichannel_heterogeneous_medium\n"
+				"{\n"
+				"name @NAME@\n"
+				"channel_carbon painter @NAME@_carbon\n"
+				"channel_temperature painter @NAME@_temperature\n"
+				"channel_condensed painter @NAME@_condensed\n"
+				"chem_model none\n"
+				"bake_resolution 32 32 64\n"
+				"bbox_min -0.02 0 -0.02\n"
+				"bbox_max 0.02 0.08 0.02\n"
+				"optical_record fire_optics_v1\n"
+				"}\n" );
+			return t;
+		}();
+		return d;
+	}
+
 	// -------------------------------------------------------------
 	// Per-category template lists
 	// -------------------------------------------------------------
@@ -657,7 +723,7 @@ namespace
 			&SphereObjectTemplate(), &BoxObjectTemplate(), &CylinderObjectTemplate(), &InfinitePlaneObjectTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kMaterial = {
-			&LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(),
+			&NullBoundaryMaterialTemplate(), &LambertianMaterialTemplate(), &LambertianLuminaireMaterialTemplate(), &DielectricMaterialTemplate(),
 			&GGXMaterialTemplate(), &PerfectRefractorMaterialTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kPainter = {
@@ -665,7 +731,8 @@ namespace
 			&PngPainterTemplate(), &Perlin2DPainterTemplate(), &CheckerPainterTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kMedium = {
-			&HomogeneousMediumTemplate(), &PainterHeterogeneousMediumTemplate()
+			&HomogeneousMediumTemplate(), &PainterHeterogeneousMediumTemplate(),
+			&MultichannelHeterogeneousMediumTemplate()
 		};
 		static const std::vector<const EntityTemplateDef*> kEmpty;
 

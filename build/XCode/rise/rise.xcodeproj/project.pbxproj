@@ -765,6 +765,14 @@
 		F24B74382F52A632008304C4 /* MRUCache.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2D069C42900069C9E5 /* MRUCache.h */; };
 		F24B74392F52A632008304C4 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
 		F24B743A2F52A632008304C4 /* Optics.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
+		FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		FA51000131AA000100000002 /* PlanckRadiance.h in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
+		FD86000131CC000100000001 /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		FD86000131CC000100000002 /* RISECBOR64.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000A /* RISECBOR64.h */; };
+		FD86000131CC000100000003 /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		FD86000131CC000100000004 /* FireOptics.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
+		FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
+		FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
 		F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */; };
 		F24B743D2F52A632008304C4 /* PEL.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A32069C42900069C9E5 /* PEL.h */; };
@@ -1412,6 +1420,14 @@
 		F27F0C86069C42910069C9E5 /* MRUCache.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2D069C42900069C9E5 /* MRUCache.h */; };
 		F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A2E069C42900069C9E5 /* Optics.cpp */; };
 		F27F0C88069C42910069C9E5 /* Optics.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A2F069C42900069C9E5 /* Optics.h */; };
+		FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000005 /* PlanckRadiance.cpp */; };
+		FA51000131AA000100000004 /* PlanckRadiance.h in Headers */ = {isa = PBXBuildFile; fileRef = FA51000131AA000100000006 /* PlanckRadiance.h */; };
+		FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC000100000009 /* RISECBOR64.cpp */; };
+		FD86000131CC000100000006 /* RISECBOR64.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000A /* RISECBOR64.h */; };
+		FD86000131CC000100000007 /* FireOptics.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000B /* FireOptics.cpp */; };
+		FD86000131CC000100000008 /* FireOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
+		FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
+		FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
 		F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */; };
 		F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */; };
 		F27F0C8B069C42910069C9E5 /* PEL.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A32069C42900069C9E5 /* PEL.h */; };
@@ -1553,6 +1569,9 @@
 		F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
 		F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */; };
 		F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
+		F2E45A012FA0000100F1A45E /* SSSContainment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E45A042FA0000100F1A45E /* SSSContainment.cpp */; };
+		F2E45A022FA0000100F1A45E /* SSSContainment.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E45A052FA0000100F1A45E /* SSSContainment.h */; };
+		F2E45A032FA0000100F1A45E /* SSSContainment.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E45A042FA0000100F1A45E /* SSSContainment.cpp */; };
 		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
 		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
@@ -1561,6 +1580,14 @@
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
 		F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
+		A9B1C0037E29000100000001 /* NullBoundaryMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */; };
+		A9B1C0047E29000100000001 /* NullBoundaryMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */; };
+		A9B1C0057E29000100000001 /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
+		A9B1C0067E29000100000001 /* NullBoundaryMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */; };
+		B8C1D0037E29000100000001 /* IContinuationClosure.h in Headers */ = {isa = PBXBuildFile; fileRef = B8C1D0017E29000100000001 /* IContinuationClosure.h */; };
+		B8C1D0047E29000100000001 /* IContinuationClosure.h in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0017E29000100000001 /* IContinuationClosure.h */; };
+		B8C1D0057E29000100000001 /* ContinuationClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0027E29000100000001 /* ContinuationClosure.cpp */; };
+		B8C1D0067E29000100000001 /* ContinuationClosure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B8C1D0027E29000100000001 /* ContinuationClosure.cpp */; };
 		F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
 		F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
 		F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */; };
@@ -2599,6 +2626,14 @@
 		F27F0A2D069C42900069C9E5 /* MRUCache.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MRUCache.h; sourceTree = "<group>"; };
 		F27F0A2E069C42900069C9E5 /* Optics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Optics.cpp; sourceTree = "<group>"; };
 		F27F0A2F069C42900069C9E5 /* Optics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Optics.h; sourceTree = "<group>"; };
+		FA51000131AA000100000005 /* PlanckRadiance.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PlanckRadiance.cpp; sourceTree = "<group>"; };
+		FA51000131AA000100000006 /* PlanckRadiance.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PlanckRadiance.h; sourceTree = "<group>"; };
+		FD86000131CC000100000009 /* RISECBOR64.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RISECBOR64.cpp; sourceTree = "<group>"; };
+		FD86000131CC00010000000A /* RISECBOR64.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RISECBOR64.h; sourceTree = "<group>"; };
+		FD86000131CC00010000000B /* FireOptics.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireOptics.cpp; sourceTree = "<group>"; };
+		FD86000131CC00010000000C /* FireOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireOptics.h; sourceTree = "<group>"; };
+		FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GaussLegendreQuadrature.cpp; sourceTree = "<group>"; };
+		FB37000131BB000100000006 /* GaussLegendreQuadrature.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GaussLegendreQuadrature.h; sourceTree = "<group>"; };
 		F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OrthonormalBasis3D.cpp; sourceTree = "<group>"; };
 		F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OrthonormalBasis3D.h; sourceTree = "<group>"; };
 		F27F0A32069C42900069C9E5 /* PEL.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PEL.h; sourceTree = "<group>"; };
@@ -2708,11 +2743,17 @@
 		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
 		F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinSSSShaderOp.h; sourceTree = "<group>"; };
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
+		F2E45A042FA0000100F1A45E /* SSSContainment.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SSSContainment.cpp; sourceTree = "<group>"; };
+		F2E45A052FA0000100F1A45E /* SSSContainment.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SSSContainment.h; sourceTree = "<group>"; };
 		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
 		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
+		A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NullBoundaryMaterial.h; sourceTree = "<group>"; };
+		A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = NullBoundaryMaterial.cpp; sourceTree = "<group>"; };
+		B8C1D0017E29000100000001 /* IContinuationClosure.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IContinuationClosure.h; sourceTree = "<group>"; };
+		B8C1D0027E29000100000001 /* ContinuationClosure.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ContinuationClosure.cpp; sourceTree = "<group>"; };
 		F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SobolSampling2D.h; sourceTree = "<group>"; };
 		F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolSampling2D.cpp; sourceTree = "<group>"; };
 		F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AOVBuffers.h; sourceTree = "<group>"; };
@@ -2990,6 +3031,8 @@
 			children = (
 				F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */,
 				F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */,
+				F2E45A042FA0000100F1A45E /* SSSContainment.cpp */,
+				F2E45A052FA0000100F1A45E /* SSSContainment.h */,
 				6DBFAA4B09C4D2A20048A09D /* DiffusionApproximationExtinction.h */,
 				6DBFAA4C09C4D2A20048A09D /* PointSetOctree.cpp */,
 				6DBFAA4D09C4D2A20048A09D /* PointSetOctree.h */,
@@ -3288,6 +3331,7 @@
 				F27F0872069C428F0069C9E5 /* ILuminaryManager.h */,
 				F27F0873069C428F0069C9E5 /* IManager.h */,
 				F27F0874069C428F0069C9E5 /* IMaterial.h */,
+				B8C1D0017E29000100000001 /* IContinuationClosure.h */,
 				F27F0875069C428F0069C9E5 /* IMaterialManager.h */,
 				F27F0876069C428F0069C9E5 /* IMemoryBuffer.h */,
 				F27F0877069C428F0069C9E5 /* IModifierManager.h */,
@@ -3426,6 +3470,9 @@
 				F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */,
 				F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */,
 				F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */,
+				A9B1C0017E29000100000001 /* NullBoundaryMaterial.h */,
+				A9B1C0027E29000100000001 /* NullBoundaryMaterial.cpp */,
+				B8C1D0027E29000100000001 /* ContinuationClosure.cpp */,
 				F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */,
 				F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */,
 				F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */,
@@ -4049,6 +4096,14 @@
 				F27F0A2D069C42900069C9E5 /* MRUCache.h */,
 				F27F0A2E069C42900069C9E5 /* Optics.cpp */,
 				F27F0A2F069C42900069C9E5 /* Optics.h */,
+				FA51000131AA000100000005 /* PlanckRadiance.cpp */,
+				FA51000131AA000100000006 /* PlanckRadiance.h */,
+				FD86000131CC000100000009 /* RISECBOR64.cpp */,
+				FD86000131CC00010000000A /* RISECBOR64.h */,
+				FD86000131CC00010000000B /* FireOptics.cpp */,
+				FD86000131CC00010000000C /* FireOptics.h */,
+				FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */,
+				FB37000131BB000100000006 /* GaussLegendreQuadrature.h */,
 				F27F0A30069C42900069C9E5 /* OrthonormalBasis3D.cpp */,
 				F27F0A31069C42900069C9E5 /* OrthonormalBasis3D.h */,
 				F27F0A32069C42900069C9E5 /* PEL.h */,
@@ -4722,9 +4777,12 @@
 				F27F0BEB069C42910069C9E5 /* ReadOnlyRasterImage.h in Headers */,
 				F27F0BED069C42910069C9E5 /* RGBEAWriter.h in Headers */,
 				F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */,
+				F2E45A022FA0000100F1A45E /* SSSContainment.h in Headers */,
 				F27F0BEF069C42910069C9E5 /* TGAReader.h in Headers */,
 				F27F0BF1069C42910069C9E5 /* TGAWriter.h in Headers */,
 				F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */,
+				A9B1C0037E29000100000001 /* NullBoundaryMaterial.h in Headers */,
+				B8C1D0037E29000100000001 /* IContinuationClosure.h in Headers */,
 				F2C5D5EE2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h in Headers */,
 				F27F0BF2069C42910069C9E5 /* TIFFCommon.h in Headers */,
 				F27F0BF4069C42910069C9E5 /* TIFFReader.h in Headers */,
@@ -4845,6 +4903,10 @@
 				F27F0C85069C42910069C9E5 /* MersenneTwister.h in Headers */,
 				F27F0C86069C42910069C9E5 /* MRUCache.h in Headers */,
 				F27F0C88069C42910069C9E5 /* Optics.h in Headers */,
+				FA51000131AA000100000004 /* PlanckRadiance.h in Headers */,
+				FD86000131CC000100000006 /* RISECBOR64.h in Headers */,
+				FD86000131CC000100000008 /* FireOptics.h in Headers */,
+				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
 				F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */,
 				F27F0C8B069C42910069C9E5 /* PEL.h in Headers */,
 				F27F0C8C069C42910069C9E5 /* PiecewiseLinearFunction.h in Headers */,
@@ -4947,6 +5009,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6DBFAA1809C4D18F0048A09D /* Build configuration list for PBXNativeTarget "rise" */;
 			buildPhases = (
+				B1D000010000000000000001 /* Generate Renderer Build Identity */,
 				8DD76F630486A84900D96B5E /* Headers */,
 				8DD76F640486A84900D96B5E /* Sources */,
 				8DD76F660486A84900D96B5E /* Frameworks */,
@@ -4966,6 +5029,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F24B71CE2F52A212008304C4 /* Build configuration list for PBXNativeTarget "RISE-GUI" */;
 			buildPhases = (
+				B1D000020000000000000002 /* Generate Renderer Build Identity */,
 				F24B71C22F52A211008304C4 /* Sources */,
 				F24B71C32F52A211008304C4 /* Frameworks */,
 				F24B71C42F52A211008304C4 /* Resources */,
@@ -5027,6 +5091,43 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B1D000010000000000000001 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
+		};
+		B1D000020000000000000002 /* Generate Renderer Build Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../../tools/generate_renderer_build_identity_header.py",
+			);
+			name = "Generate Renderer Build Identity";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/RendererBuildIdentity.generated.h",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "python3 \"$SRCROOT/../../../tools/generate_renderer_build_identity_header.py\" --repo-root \"$SRCROOT/../../..\" --output \"$DERIVED_FILE_DIR/RendererBuildIdentity.generated.h\" --fp-contraction \"$RISE_FP_CONTRACTION_MODE\" --optimization-mode \"$RISE_OPTIMIZATION_MODE\" --lto-mode \"$RISE_LTO_MODE\"";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		8DD76F640486A84900D96B5E /* Sources */ = {
@@ -5271,6 +5372,8 @@
 				F27F0BF3069C42910069C9E5 /* TIFFReader.cpp in Sources */,
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
+				A9B1C0057E29000100000001 /* NullBoundaryMaterial.cpp in Sources */,
+				B8C1D0057E29000100000001 /* ContinuationClosure.cpp in Sources */,
 				F27F0BF9069C42910069C9E5 /* FileRasterizerOutput.cpp in Sources */,
 				F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
@@ -5331,6 +5434,10 @@
 				F27F0C82069C42910069C9E5 /* MemoryBuffer.cpp in Sources */,
 				F27F0C84069C42910069C9E5 /* MersenneTwister.cpp in Sources */,
 				F27F0C87069C42910069C9E5 /* Optics.cpp in Sources */,
+				FA51000131AA000100000003 /* PlanckRadiance.cpp in Sources */,
+				FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */,
+				FD86000131CC000100000007 /* FireOptics.cpp in Sources */,
+				FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
 				F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */,
@@ -5363,6 +5470,7 @@
 				F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */,
 				F277345707ECCEDC00C0B600 /* TranslucentBSDF.cpp in Sources */,
 				F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
+				F2E45A012FA0000100F1A45E /* SSSContainment.cpp in Sources */,
 				F27734A007ECD64300C0B600 /* MediaPathLocator.cpp in Sources */,
 				6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */,
 				6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */,
@@ -5664,6 +5772,7 @@
 				F24B72A92F52A632008304C4 /* DirectionalLight.h in Sources */,
 				F24B72AA2F52A632008304C4 /* PointLight.cpp in Sources */,
 				F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
+				F2E45A032FA0000100F1A45E /* SSSContainment.cpp in Sources */,
 				F24B72AB2F52A632008304C4 /* PointLight.h in Sources */,
 				F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */,
 				F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */,
@@ -6181,6 +6290,10 @@
 				F24B741D2F52A632008304C4 /* HermiteInterpolator.h in Sources */,
 				F24B741E2F52A632008304C4 /* IORStack.h in Sources */,
 				F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
+				A9B1C0047E29000100000001 /* NullBoundaryMaterial.h in Sources */,
+				A9B1C0067E29000100000001 /* NullBoundaryMaterial.cpp in Sources */,
+				B8C1D0047E29000100000001 /* IContinuationClosure.h in Sources */,
+				B8C1D0067E29000100000001 /* ContinuationClosure.cpp in Sources */,
 				F24B741F2F52A632008304C4 /* LoadLibrary.h in Sources */,
 				F24B74202F52A632008304C4 /* Log.cpp in Sources */,
 				F2D9B13E2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */,
@@ -6231,6 +6344,14 @@
 				F24B74382F52A632008304C4 /* MRUCache.h in Sources */,
 				F24B74392F52A632008304C4 /* Optics.cpp in Sources */,
 				F24B743A2F52A632008304C4 /* Optics.h in Sources */,
+				FA51000131AA000100000001 /* PlanckRadiance.cpp in Sources */,
+				FA51000131AA000100000002 /* PlanckRadiance.h in Sources */,
+				FD86000131CC000100000001 /* RISECBOR64.cpp in Sources */,
+				FD86000131CC000100000002 /* RISECBOR64.h in Sources */,
+				FD86000131CC000100000003 /* FireOptics.cpp in Sources */,
+				FD86000131CC000100000004 /* FireOptics.h in Sources */,
+				FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */,
+				FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */,
 				F24B743B2F52A632008304C4 /* OrthonormalBasis3D.cpp in Sources */,
 				F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */,
 				F24B743D2F52A632008304C4 /* PEL.h in Sources */,
@@ -6282,6 +6403,9 @@
 		6DBFAA1909C4D18F0048A09D /* Development */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6345,6 +6469,9 @@
 		6DBFAA1A09C4D18F0048A09D /* Deployment */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6406,6 +6533,9 @@
 		6DBFAA1B09C4D18F0048A09D /* Default */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6486,7 +6616,7 @@
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -6498,6 +6628,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -6527,7 +6658,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -6539,6 +6670,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -6568,7 +6700,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -6580,6 +6712,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
@@ -6588,6 +6721,9 @@
 		6DBFAA2009C4D18F0048A09D /* Opto */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6670,7 +6806,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_OPTIMIZATION_LEVEL = 3;
@@ -6682,6 +6818,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				USER_HEADER_SEARCH_PATHS = "$(DERIVED_FILE_DIR)";
 				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -6691,6 +6828,9 @@
 		F24B71CF2F52A212008304C4 /* Development */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = off;
+				RISE_OPTIMIZATION_MODE = disabled;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -6734,7 +6874,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
@@ -6812,6 +6952,9 @@
 		F24B71D02F52A212008304C4 /* Deployment */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -6855,7 +6998,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -6932,6 +7075,9 @@
 		F24B71D12F52A212008304C4 /* Default */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = compiler_default;
+				RISE_LTO_MODE = thin;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -6975,7 +7121,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -7052,6 +7198,9 @@
 		F24B71D52F52A212008304C4 /* Opto */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				RISE_FP_CONTRACTION_MODE = fast;
+				RISE_LTO_MODE = full;
+				RISE_OPTIMIZATION_MODE = O3;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -7095,7 +7244,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;

@@ -27,8 +27,6 @@
 #include "../Utilities/RasterSanityScan.h"
 
 #include <cassert>
-#include <string.h>
-#include <stdio.h>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -55,27 +53,27 @@ FileRasterizerOutput::FileRasterizerOutput(
   exr_compression( exr_compression_ ),
   exr_with_alpha( exr_with_alpha_ )
 {
+	encoder_ = FrameEncoderRegistry::Get().AcquireByFormatName(
+		FormatNameForType(type));
+
 	// Check the global options file to figuring out where to stick the rendered files
 	RISE::IOptions& options = GlobalOptions();
 
 	// First check to see if we should just stick stuff using a rendered subfolder from the media location
 	const bool bUseMediaFolder = options.ReadBool( "rendered_output_in_rise_media_folder", false );
+	const std::string authoredPattern = szPattern_ ? szPattern_ : "";
 
 	if( bUseMediaFolder ) {
-		// Do the concatenation
 		const char* szmediapath = getenv( "RISE_MEDIA_PATH" );
 		if( szmediapath ) {
-			strcpy( szPattern, szmediapath );
-			strcat( szPattern, szPattern_ );
+			pattern = std::string(szmediapath) + authoredPattern;
 		} else {
 			GlobalLog()->PrintEasyWarning( "FileRenderedOutput: Asked to use media path for rendered files, but media path is not set!" );
-			strcpy( szPattern, szPattern_ );
+			pattern = authoredPattern;
 		}
 	} else {
-		// Look for an option that gives us the folder
 		RISE::String strOutputFolder = options.ReadString( "rendered_output_folder", "" );
-		strcpy( szPattern, strOutputFolder.c_str() );
-		strcat( szPattern, szPattern_ );
+		pattern = std::string(strOutputFolder.c_str()) + authoredPattern;
 	}
 
 	if( color_space==eColorSpace_Rec709RGB_Linear || color_space==eColorSpace_ROMMRGB_Linear ) {
@@ -157,6 +155,7 @@ FileRasterizerOutput::~FileRasterizerOutput()
 	// The wait is bounded by the encoder's `Encode` runtime (one
 	// file write).  See impl below.
 	TeardownChain_();
+	safe_release(encoder_);
 }
 
 // L8 — Tear down whichever chain is currently active.  Used by both
@@ -224,39 +223,13 @@ void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
 	// Local `cameraExposureEV` field still preserves the
 	// HDR-zeroed value for any FRO-internal logic that depends on
 	// it (today there's none; vestige kept for ABI ease).  The
-	// encoder reads `framestore_->Meta()` directly, NOT this field.
+	// FrameStore Meta is the source; each file transaction snapshots it
+	// once before the encoder and provenance sidecar consume it.
 	cameraExposureEV    = IsHDRFormat( type ) ? Scalar( 0 ) : ev;
 	rawCameraExposureEV = ev;
 
 	if ( framestore_ ) {
-		framestore_->MutableMeta().cameraExposureEV =
-			static_cast<double>( rawCameraExposureEV );
-	}
-}
-
-namespace
-{
-	// Map the legacy FRO_TYPE enum to the FrameEncoderRegistry's
-	// FormatName string.  Order matches FRO_TYPE values:
-	//   TGA=0, PPM=1, PNG=2, HDR=3, TIFF=4, RGBEA=5, EXR=6.
-	const char* FormatNameForType( FileRasterizerOutput::FRO_TYPE t )
-	{
-		switch ( t ) {
-			case FileRasterizerOutput::TGA:   return "TGA";
-			case FileRasterizerOutput::PPM:   return "PPM";
-			case FileRasterizerOutput::PNG:   return "PNG";
-			case FileRasterizerOutput::HDR:   return "HDR";
-			case FileRasterizerOutput::TIFF:  return "TIFF";
-			case FileRasterizerOutput::RGBEA: return "RGBEA";
-			case FileRasterizerOutput::EXR:   return "EXR";
-		}
-		// Match the legacy WriteImageToFile switch's `default: PPM`
-		// fallback (FileRasterizerOutput.cpp pre-L3, lines 311-316):
-		// out-of-range FRO_TYPE values produced a PPM file rather
-		// than dropping the render.  Preserve that for byte-identity
-		// of any (real or future) scene that hits an unknown enum.
-		// See L3 adversarial review HIGH-1.
-		return "PPM";
+		framestore_->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));
 	}
 }
 
@@ -269,9 +242,7 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 {
 	if ( !store ) return false;
 
-	IFrameEncoder* encoder =
-		FrameEncoderRegistry::Get().ByFormatName( FormatNameForType( type ) );
-	if ( !encoder ) {
+	if ( !encoder_ ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"FileRasterizerOutput:: No IFrameEncoder registered for format '%s' "
 			"(FRO_TYPE=%d) — output disabled", FormatNameForType( type ), (int)type );
@@ -282,8 +253,8 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 	// This is the legacy → new mapping that L2 byte-identical
 	// regression validates: same color_space + bpp + EXR knobs +
 	// (exposureEV, display_transform) → same EncodeOpts → same
-	// bytes.  cameraExposureEV is consumed via FrameStore.Meta()
-	// inside the encoder, NOT added here, so we don't double-count.
+	// bytes.  cameraExposureEV comes from the transaction's immutable
+	// FrameStore metadata snapshot, NOT these opts, so we don't double-count.
 	EncodeOpts opts;
 	opts.colorSpace     = color_space;
 	opts.bpp            = bpp;
@@ -293,8 +264,8 @@ bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
 	opts.viewTransform.toneCurve  = display_transform;
 
 	encoderObserver_ = new FileEncoderObserver(
-		store, encoder, opts,
-		std::string( szPattern ), bMultiple );
+		store, encoder_, opts,
+		pattern, bMultiple );
 	store->AddObserver( encoderObserver_ );
 	return true;
 }
@@ -341,13 +312,12 @@ void FileRasterizerOutput::OnRasterizerFrameStoreChanged( FrameStore* framestore
 	// L8 review round 2 — Write our cached RAW camera EV into the
 	// canonical's Meta.  All bound FROs (regardless of HDR/LDR)
 	// write the same raw value here, so multi-FRO scenes don't
-	// clobber.  HDR encoders skip Meta-EV at READ time via the
-	// `IsHDRFormat()` gate in FrameEncoders.cpp:75; LDR encoders
+	// clobber.  HDR encoders skip the snapshotted Meta EV via the
+	// `IsHDRFormat()` gate in FrameEncoders.cpp; LDR encoders
 	// apply it.  This restores Meta as the single source of truth
 	// (the round-1 fix introducing per-observer EV double-applied
 	// when VFS ALSO wrote to Meta — see ViewportFrameStore.cpp:670).
-	framestore->MutableMeta().cameraExposureEV =
-		static_cast<double>( rawCameraExposureEV );
+	framestore->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));
 
 	if ( !BuildAndAttachObserver_( framestore ) ) {
 		// Encoder lookup failed.  Tear down to leave us in a clean
@@ -418,12 +388,11 @@ void FileRasterizerOutput::EnsureChain( unsigned int width, unsigned int height 
 	framestore_ = new FrameStore( spec );  // refcount = 1
 
 	// L8 review round 2 — Write the cached RAW camera EV into the
-	// freshly-allocated internal FrameStore's Meta.  Encoder reads
-	// from Meta + gates on IsHDRFormat at write time.  This is
+	// freshly-allocated internal FrameStore's Meta.  The file transaction
+	// snapshots Meta once, then gates on IsHDRFormat.  This is
 	// LEGACY (internal-store) mode; bound mode handles the same
 	// in OnRasterizerFrameStoreChanged.
-	framestore_->MutableMeta().cameraExposureEV =
-		static_cast<double>( rawCameraExposureEV );
+	framestore_->SetCameraExposureEV(static_cast<double>(rawCameraExposureEV));
 
 	// L8 — extracted observer build.  In legacy mode we ALSO need
 	// the FrameSink to copy pixels into our internal FrameStore on
@@ -481,19 +450,19 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, pattern.c_str() );
 }
 
 void FileRasterizerOutput::OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputPreDenoisedImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, pattern.c_str() );
 }
 
 void FileRasterizerOutput::OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
 	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 	if ( framesink_ ) framesink_->OutputDenoisedImage( pImage, pRegion, frame );
-	ScanForPathologicalPixels( pImage, szPattern );
+	ScanForPathologicalPixels( pImage, pattern.c_str() );
 }

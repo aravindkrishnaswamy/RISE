@@ -59,14 +59,14 @@ Everything in this list shares a property: it is an *OS capability surface*, not
 
 ---
 
-## 2. Current state (code-confirmed, 2026-06)
+## 2. Current state (code-confirmed, 2026-08)
 
 The audit's central claim is confirmed by direct reading:
 
 - **`RISEViewportBridge` (macOS, Obj-C++) and `ViewportBridge` (Windows, Qt) are structurally identical.** Same method set (`start`/`stop`, `scaleFilmToFit`, `setTool`/`currentTool`, `categoryForTool`, gizmo handle array, `pointerDown/Move/Up`, `cameraSurfaceDimensions`, animation options, scrub triplet, property-scrub bracket, undo/redo, save triplet, panel-mode/header/property snapshot, per-category snapshot+selection, accordion entities, `addCameraFromActive`, `sceneEpoch`). Same enums (`Tool`, `ToolCategory`, `GizmoKind`, `PanelMode`/`Category`) with the **same numeric values**, each documented as "part of the C-API contract." The only differences are the marshaling vocabulary: `NS_ENUM`/`NSArray`/blocks vs `enum class`/`QVector`/signals.
-- **Android's `RiseBridge` (JNI) is the same surface again**, prefixed `viewport*`, calling the identical `RISE_API_SceneEditController_*` C-ABI functions. Its method bodies are one-liners that forward to the C-ABI (see `RiseBridge.cpp:1033–1271`). It carries extra plumbing (JNI global-ref mutex, manual RGBA8 framebuffer, `ScopedLocalFrame`) but **zero extra domain logic**.
-- **All three bind to the same C-ABI** in `RISE_API.h` (`RISE_API_CreateSceneEditController` + ~70 `RISE_API_SceneEditController_*` entry points, lines ~3332–3720). The enums `SceneEditTool_*` (0–8) and `SceneEditCategory_*` (0–7) are the canonical numeric contract every platform mirrors.
-- **There is no MCP / LLM / agent / provider code anywhere yet** (`grep` over `src/Library/` returns nothing). All of §9 in the roadmap is designed-not-built — this doc specifies *where* it lands, not its internals (those are `MCP_TOOL_SURFACE.md` / `LLM_AGENT_RUNTIME.md`).
+- **Android's `RiseBridge` (JNI) exposes the same scene-edit vocabulary**, prefixed `viewport*`, and delegates scene mutations to the identical `RISE_API_SceneEditController_*` C-ABI functions. Its shell also owns platform lifecycle work: callback-owner admission, fail-fast JNI access, atomic production/interactive handoff, controller-time fallback, and caller-owned framebuffer snapshots. Those are threading and presentation responsibilities; scene-edit decisions remain in shared C++.
+- **All three bind to the same C-ABI** in `RISE_API.h` (`RISE_API_CreateSceneEditController` plus the `RISE_API_SceneEditController_*` family). The enums `SceneEditTool_*` (0–8) and `SceneEditCategory_*` (0–11) are the canonical numeric contract every platform mirrors.
+- **The MCP/tool, chat-loop, provider-codec, transport, session, and evaluation core is shipped** under `src/Library/Agent/` (`AgentMcpAdapter`, `AgentChatLoop`, `AgentChatCodecs`, `AgentSession`, `AgentEvalRunner`, and their support types). Platform chat UI and credential-store backends remain separate roadmap work governed by the deeper MCP/LLM specs.
 
 **Implication.** The three bridges are ~3× duplication of a *marshaling table*, not of logic — the logic is already single-sourced in `SceneEditController`. The consolidation in §3 is therefore low-risk: it removes a hand-maintained duplication of the *binding*, not a fork of behavior.
 
@@ -124,8 +124,8 @@ Each platform binds exactly as today: macOS through the Obj-C++ `.mm` (the only 
 
 ### 3.4 What legitimately stays different across the three bridges
 Consolidation does **not** mean byte-identical bridge files. These differences are real and must remain:
-- **Threading/lifetime guards.** Android holds a JNI global-ref `std::mutex` because Kotlin may call `setCallback(null)` while worker threads fire callbacks (`RiseBridge.cpp:176–196`). macOS/Windows have no JNI and don't need it.
-- **Frame delivery.** macOS/Windows keep a *persistent* `ViewportPreviewSink`; Android *reconstructs* the sink on every start, which is why `suppressFirstFrame` is threaded into `startViewport()` rather than called after (`RiseBridge.cpp:980–1016`). This is an OS-lifecycle difference, not a logic fork.
+- **Threading/lifetime guards.** Android uses generation-ordered `nativeSetCallback` ownership tokens plus owner-checked `nativeClearCallback` while worker threads can hold local callback references. macOS/Windows have no JNI and don't need that handoff protocol.
+- **Frame delivery.** macOS/Windows keep a *persistent* `ViewportPreviewSink`; Android *reconstructs* the sink on every start. Android threads `suppressFirstFrame` into `startViewport()` so controller construction can choose the source-level `StartSuppressingInitialRender` admission before its render loop begins; the sink itself never drops a frame (`RiseBridge.cpp:1058–1086`). This is an OS-lifecycle difference, not a logic fork.
 - **Pixel hand-off.** See §5 — the present surface differs by construction.
 
 These are exactly the four allowed categories from §1.2 (input/threading, present surface). Nothing domain-level differs.
@@ -137,7 +137,7 @@ These are exactly the four allowed categories from §1.2 (input/threading, prese
 The LLM integration (roadmap §9) needs to persist API tokens / OAuth refresh tokens. This is the **one genuinely per-platform piece of the LLM stack** — everything else (agent loop, provider adapters, streaming, tool dispatch) is shared C++.
 
 ### 4.1 Shared interface
-A tiny C++ interface in the library, with the *agent runtime depending only on it*. **Name + home are the GUI_ROADMAP §16 decision:** this doc's `ICredentialStore` is canonical; the LLM-runtime spec's earlier `ISecretStore` name is **unified to `ICredentialStore`** (drop `ISecretStore`), and it lives under `src/Library/Agent/` (the agent subsystem dir), **not** `src/Library/LLM/`. It is reference-counted — `ICredentialStore : public virtual IReference` — matching RISE's `IReference` convention. (Greenfield: `src/Library/Agent/` does not exist in the tree yet — [CURRENT_STATE_AUDIT.md §13](CURRENT_STATE_AUDIT.md) — so this is the decided target shape, not an existing type.)
+A tiny C++ interface in the library, with the *agent runtime depending only on it*. **Name + home are the GUI_ROADMAP §16 decision:** this doc's `ICredentialStore` is canonical; the LLM-runtime spec's earlier `ISecretStore` name is **unified to `ICredentialStore`** (drop `ISecretStore`), and it lives under the shipped `src/Library/Agent/` subsystem, **not** `src/Library/LLM/`. The credential interface itself remains planned. It is reference-counted — `ICredentialStore : public virtual IReference` — matching RISE's `IReference` convention.
 
 ```cpp
 // src/Library/Agent/ICredentialStore.h  (planned; §16-decided home & name)

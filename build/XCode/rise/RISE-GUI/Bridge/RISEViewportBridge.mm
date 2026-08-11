@@ -141,10 +141,9 @@ namespace {
 // callbacks (which produce the visually distracting "blocks
 // fill in one by one" effect) and only dispatch the *final*
 // frame to SwiftUI when the rasterizer hits FlushToOutputs at
-// end-of-pass.  The cancel-restart loop fires a new RasterizeScene
-// call on every edit, so the user sees the freshest finished
-// frame appear whole — not a half-rendered image with tile
-// boundaries.
+// end-of-pass.  A cancelled pass may contain only a partial render,
+// but it is presented as one coherent image update instead of a
+// sequence of tile-by-tile fills.
 //
 // Keeping the production image on screen after a production
 // render is NOT handled here anymore.  It used to be a one-shot
@@ -171,12 +170,14 @@ namespace {
 // ============================================================
 class ViewportPreviewSink :
     public IRasterizerOutput,
+    public IFireRasterizerOutputRoute,
     public Implementation::Reference
 {
 public:
+	FireArtifactRouteKind FireArtifactRoute() const override
+		{ return FireArtifactRouteKind::DisplayOnly; }
     ViewportPreviewSink()
     : mBlock( nil )
-    , mController( nullptr )
     , mFanoutVFS( nullptr )
     , mPresentGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
     , mLastRenderGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
@@ -209,16 +210,17 @@ public:
         retired = nil;
     }
 
-    // Borrowed; the bridge keeps the controller alive for the sink's
-    // lifetime.  Used to query IsCancelRequested at end-of-pass.
-    void SetController( SceneEditController* c ) { mController = c; }
-
     template<typename Fn>
     bool RunPresentationTransition( Fn&& fn, bool invalidateLastOnSuccess ) {
         const bool ok = fn();
         if( ok && invalidateLastOnSuccess )
             mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
         return ok;
+    }
+
+    void InvalidatePresentation() {
+        mPresentGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
     }
 
     // L5a round-4 — fan-out target for EDR.  When set, every
@@ -352,7 +354,6 @@ public:
 private:
     __strong RISEViewportImageBlock                mBlock;
     std::mutex                                      mPresentationMutex;
-    SceneEditController*                            mController;   // borrowed
     Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
     std::shared_ptr<std::atomic<unsigned long long>> mPresentGeneration;
     std::shared_ptr<std::atomic<unsigned long long>> mLastRenderGeneration;
@@ -635,10 +636,6 @@ private:
     [_host attachSceneEditController:static_cast<void*>(_controller)];
 
     if (_previewSink) {
-        // The sink queries the controller's cancel state at end-of-pass
-        // to decide whether to drop a stale dispatch.  Wire the pointer
-        // before installing the sink as a rasterizer output.
-        _previewSink->SetController(_controller);
         RISE_API_SceneEditController_SetPreviewSink(_controller, _previewSink);
 
         // N-up (§7): stand up panes 1-3's sinks alongside pane 0's,
@@ -653,7 +650,6 @@ private:
         for (unsigned int i = 1; i < 4; ++i) {
             ViewportPreviewSink* sink = new ViewportPreviewSink();
             sink->addref();
-            sink->SetController(_controller);
             _paneSinks[i] = sink;
             RISE_API_SceneEditController_SetPaneSink(_controller, i, sink);
         }
@@ -916,6 +912,13 @@ private:
 
 - (void)stop {
     if (!_controller) return;
+    auto invalidatePresentations = [&]() {
+        if( _previewSink ) _previewSink->InvalidatePresentation();
+        for( unsigned int pane = 1; pane < 4; ++pane ) {
+            if( _paneSinks[pane] ) _paneSinks[pane]->InvalidatePresentation();
+        }
+    };
+    invalidatePresentations();
     // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
     // monolithic Stop() -- this method exists so RenderViewModel can
     // pause the interactive viewport ahead of a production render
@@ -929,6 +932,7 @@ private:
     // via RISE_API_DestroySceneEditController's destructor call to the
     // real Stop().
     RISE_API_SceneEditController_StopInteractive(_controller);
+    invalidatePresentations();
     _ownsRunning = NO;
 }
 

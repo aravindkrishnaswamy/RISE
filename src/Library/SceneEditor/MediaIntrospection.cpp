@@ -11,6 +11,9 @@
 //    read-only with an explanatory note: changing its max-coefficient
 //    bounds without rebuilding the majorant grid would desync delta
 //    tracking, and the volume data + bbox were baked at construction.
+//    Enclosure is intentionally not a medium slot: media are shared assets,
+//    while a null boundary is authored as an object's exact
+//    NullBoundaryMaterial plus that object's interior_medium binding.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -61,6 +64,7 @@ CameraProperty MakeVec3Row( const char* name, const RISEPel& c, const char* desc
 const char* MediumTypeName( const IMedium& m )
 {
 	if( dynamic_cast<const HomogeneousMedium*>( &m ) )   return "Homogeneous";
+	if( dynamic_cast<const MultichannelHeterogeneousMedium*>( &m ) ) return "Multichannel Heterogeneous";
 	if( dynamic_cast<const HeterogeneousMedium*>( &m ) ) return "Heterogeneous";
 	return "(unknown type)";
 }
@@ -126,8 +130,10 @@ std::vector<CameraProperty> MediaIntrospection::Inspect(
 			"params", String( "baked at construction" ),
 			"Heterogeneous media bake the max-coefficient bounds, volume dataset, accessor, "
 			"and majorant grid at construction time — changing any of those without rebuilding "
-			"the majorant grid would desync delta tracking.  Recreate the medium chunk to "
-			"change these values." ) );
+			"the majorant grid would desync delta tracking.  This also applies to the shared "
+			"carbon/temperature/condensed/chem lattice and authored chem SPDs in "
+			"`multichannel_heterogeneous_medium`.  Recreate the "
+			"medium chunk to change these values." ) );
 	}
 
 	return rows;

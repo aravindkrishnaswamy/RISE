@@ -1625,6 +1625,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Materials/Material.h"
+#include "Materials/NullBoundaryMaterial.h"
 #include "Materials/LambertianMaterial.h"
 #include "Materials/LambertianLuminaireMaterial.h"
 #include "Materials/PhongLuminaireMaterial.h"
@@ -1668,6 +1669,19 @@ namespace RISE
 
 		(*ppi) = new NullMaterial();
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "null material" );
+		return true;
+	}
+
+	bool RISE_API_CreateNullBoundaryMaterial(
+		IMaterial** ppi
+		)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new NullBoundaryMaterial();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "null boundary material" );
 		return true;
 	}
 
@@ -4937,6 +4951,7 @@ namespace RISE
 		if( !ppi ) {
 			return false;
 		}
+		*ppi = 0;
 
 		// Map char type code to FRO_TYPE enum once; the per-case body
 		// is otherwise identical across all formats.
@@ -4945,17 +4960,28 @@ namespace RISE
 		{
 		case 0:  fro_type = FileRasterizerOutput::TGA;   break;
 		case 1:  fro_type = FileRasterizerOutput::PPM;   break;
-		default:
 		case 2:  fro_type = FileRasterizerOutput::PNG;   break;
 		case 3:  fro_type = FileRasterizerOutput::HDR;   break;
 		case 4:  fro_type = FileRasterizerOutput::TIFF;  break;
 		case 5:  fro_type = FileRasterizerOutput::RGBEA; break;
 		case 6:  fro_type = FileRasterizerOutput::EXR;   break;
+		default:
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: unknown file type code %d",
+				static_cast<int>(type) );
+			return false;
 		}
-
-		(*ppi) = new FileRasterizerOutput(
+		FileRasterizerOutput* output = new FileRasterizerOutput(
 			szPattern, bMultiple, fro_type, bpp, color_space,
 			exposureEV, display_transform, exr_compression, exr_with_alpha );
+		if( !output->HasEncoder() ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFileRasterizerOutput:: encoder '%s' is unavailable in this build",
+				FileRasterizerOutput::FormatNameForType(fro_type) );
+			output->release();
+			return false;
+		}
+		(*ppi) = output;
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "file rasterizer output" );
 
@@ -7328,6 +7354,236 @@ namespace RISE
 		safe_release( pAccessor );
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter heterogeneous medium with emission" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMedium(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction( &phase, sootGHot ) || !phase ) {
+			return false;
+		}
+
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter,
+				volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, sceneUnitMeters,
+				sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon,
+				smokeAlbedoCarbon, smokeGCarbon,
+				*phase );
+		safe_release( phase );
+
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "multichannel heterogeneous medium" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter& condensedPainter,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon,
+		Scalar smokeKmCond,
+		Scalar smokeNCond,
+		Scalar smokeAlbedoCond,
+		Scalar smokeGCond
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction( &phase, sootGHot ) || !phase ) {
+			return false;
+		}
+
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, &condensedPainter,
+				volWidth, volHeight, volDepth,
+				bboxMin, bboxMax, sceneUnitMeters,
+				sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon,
+				smokeAlbedoCarbon, smokeGCarbon,
+				smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond,
+				*phase );
+		safe_release( phase );
+
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with condensed constituent" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter* condensedPainter,
+		const IScalarPainter& chemCHPainter,
+		const IScalarPainter& chemC2Painter,
+		const IScalarPainter& chemCO2Painter,
+		const IFunction1D& chemCHSPD,
+		const IFunction1D& chemC2SPD,
+		const IFunction1D& chemCO2SPD,
+		Scalar chemCHIntervalMin,
+		Scalar chemCHIntervalMax,
+		Scalar chemC2IntervalMin,
+		Scalar chemC2IntervalMax,
+		Scalar chemCO2IntervalMin,
+		Scalar chemCO2IntervalMax,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		Scalar sootEm,
+		Scalar sootDensity,
+		Scalar sootAlbedoHot,
+		Scalar sootGHot,
+		Scalar smokeKmCarbon,
+		Scalar smokeNCarbon,
+		Scalar smokeAlbedoCarbon,
+		Scalar smokeGCarbon,
+		Scalar smokeKmCond,
+		Scalar smokeNCond,
+		Scalar smokeAlbedoCond,
+		Scalar smokeGCond
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction(&phase,sootGHot) ||
+			!phase ) return false;
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, condensedPainter,
+				&chemCHPainter, &chemC2Painter, &chemCO2Painter,
+				&chemCHSPD, &chemC2SPD, &chemCO2SPD,
+				chemCHIntervalMin, chemCHIntervalMax,
+				chemC2IntervalMin, chemC2IntervalMax,
+				chemCO2IntervalMin, chemCO2IntervalMax,
+				volWidth, volHeight, volDepth, bboxMin, bboxMax,
+				sceneUnitMeters, sootEm, sootDensity, sootAlbedoHot, sootGHot,
+				smokeKmCarbon, smokeNCarbon, smokeAlbedoCarbon, smokeGCarbon,
+				smokeKmCond, smokeNCond, smokeAlbedoCond, smokeGCond, *phase );
+		safe_release(phase);
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with chem channels" );
+		return true;
+	}
+
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+		IMedium** ppi,
+		const IScalarPainter& carbonPainter,
+		const IScalarPainter& temperaturePainter,
+		const IScalarPainter* condensedPainter,
+		const IScalarPainter* chemCHPainter,
+		const IScalarPainter* chemC2Painter,
+		const IScalarPainter* chemCO2Painter,
+		const IFunction1D* chemCHSPD,
+		const IFunction1D* chemC2SPD,
+		const IFunction1D* chemCO2SPD,
+		Scalar chemCHIntervalMin,
+		Scalar chemCHIntervalMax,
+		Scalar chemC2IntervalMin,
+		Scalar chemC2IntervalMax,
+		Scalar chemCO2IntervalMin,
+		Scalar chemCO2IntervalMax,
+		unsigned int volWidth,
+		unsigned int volHeight,
+		unsigned int volDepth,
+		const Point3& bboxMin,
+		const Point3& bboxMax,
+		Scalar sceneUnitMeters,
+		const char* opticalRecord
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = 0;
+		const FireOpticsPreset* optics = FireOpticsPreset::Named(opticalRecord);
+		if( !optics ) return false;
+		const bool hasAnyChem = chemCHPainter || chemC2Painter || chemCO2Painter ||
+			chemCHSPD || chemC2SPD || chemCO2SPD;
+		const bool hasAllChem = chemCHPainter && chemC2Painter && chemCO2Painter &&
+			chemCHSPD && chemC2SPD && chemCO2SPD;
+		if( hasAnyChem != hasAllChem ) return false;
+
+		IPhaseFunction* phase = 0;
+		if( !RISE_API_CreateHenyeyGreensteinPhaseFunction(
+			&phase, optics->HotG(550.0)) || !phase ) return false;
+		MultichannelHeterogeneousMedium* medium =
+			new MultichannelHeterogeneousMedium(
+				carbonPainter, temperaturePainter, condensedPainter,
+				chemCHPainter, chemC2Painter, chemCO2Painter,
+				chemCHSPD, chemC2SPD, chemCO2SPD,
+				chemCHIntervalMin, chemCHIntervalMax,
+				chemC2IntervalMin, chemC2IntervalMax,
+				chemCO2IntervalMin, chemCO2IntervalMax,
+				volWidth, volHeight, volDepth, bboxMin, bboxMax,
+				sceneUnitMeters, *optics, *phase );
+		safe_release(phase);
+		if( !medium->IsValid() ) {
+			medium->release();
+			return false;
+		}
+		*ppi = medium;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__,
+			"multichannel heterogeneous medium with optical preset" );
 		return true;
 	}
 

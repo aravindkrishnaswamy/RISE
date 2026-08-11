@@ -27,8 +27,8 @@ namespace RISE
 		{
 		protected:
 			RISEPel					color;					///< Color in RISEPel terms
-			SpectralPacket			spectrum;				///< The actual spectrum (no scale)
-			Scalar					temperature;			///< Temporature in Kelvins
+			SpectralPacket			spectrum;				///< Spectrum with authored scale and optional peak normalization applied
+			Scalar					temperature;			///< Temperature in Kelvins
 			Scalar					scale;					///< A scale factor
 
 			const Scalar			lambda_begin; 
@@ -36,20 +36,13 @@ namespace RISE
 			const unsigned int		numfreq; 
 			const bool				normalize;
 
-			// Given temperature and lambda, gives the intensity
-			// Uses Planck's radiation formula shown above
+			// Converts the shared per-nm radiance kernel to this painter's
+			// historical hemispherical-exitance-per-metre convention.
 			static Scalar IntensityForWavelength( const Scalar T, const Scalar lambda );
 
-			// Given tempierature, gives the total radiation output
-			// Uses Stefan-Boltzmann's law
-			static Scalar TotalRadiationOutput( const Scalar T );
-
-			// Given a required wavelength as the peak, computes the temperature for which this is true
-			// Uses Wien's displacement law
-			static Scalar TemperatureFromPeakNM( const Scalar nm );
-
-			// Given a temperature, what is the peak wavelength for it?
-			static Scalar PeakNMFromTemperature( const Scalar T );
+			// Returns the authored scale adjusted for peak normalization without
+			// mutating keyframe state.
+			Scalar EffectiveScale() const;
 
 			virtual ~BlackBodyPainter();
 
@@ -57,9 +50,6 @@ namespace RISE
 			// Constructor based on temperature of blackbody
 			BlackBodyPainter( const Scalar temp, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const bool normalize, const Scalar scale );
 
-			// Constructor based on the peak wavelength
-	//		BlackBodyPainter( const Scalar peak_lambda, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const Scalar scale=1.0 );
-			
 			RISEPel							GetColor( const RayIntersectionGeometric& ri  ) const;
 			SpectralPacket					GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar							GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;

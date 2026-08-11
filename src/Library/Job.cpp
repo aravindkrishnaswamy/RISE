@@ -21,6 +21,7 @@
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #include <cstdint>
+#include <typeinfo>
 #define _USE_MATH_DEFINES
 #include "Job.h"
 #include "Cst/Cst.h"   // P5 (save-as-CST): ParseToCst / DeriveToJob / Document
@@ -30,6 +31,8 @@
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include "Utilities/FiniteMath.h"
+#include "Utilities/RISECBOR64.h"
+#include "Version.h"
 #include "Utilities/Transformable.h"
 #include <algorithm>
 #include <cmath>
@@ -43,9 +46,16 @@
 #include "Shaders/DistributionTracingShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Rendering/FrameStore.h"
+#include "Rendering/FileRasterizerOutput.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
+#include "Rendering/BlockRasterizeSequence.h"
+#include "Rendering/AdaptiveTileSizer.h"
+#include "Cameras/PinholeCamera.h"
+#include "Cameras/ThinLensCamera.h"
+#include "Cameras/FisheyeCamera.h"
+#include "Cameras/OrthographicCamera.h"
 #include "Utilities/RString.h"
 #include "Utilities/Math3D/Constants.h"   // DEG_TO_RAD / RAD_TO_DEG for radiance_orient round-trip
 #include "Utilities/RasterizerDefaults.h"
@@ -54,16 +64,193 @@
 #include <set>
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/ThreadPool.h"
+#include "Utilities/CPUTopology.h"
 #include "Interfaces/IOptions.h"
 #include "Interfaces/IScalarPainter.h"
 #include "Interfaces/IPainterManager.h"
 #include "Painters/PainterToScalarAdapter.h"
+#include "Materials/HeterogeneousMedium.h"
 #include "Intersection/RayIntersectionGeometric.h"
 #include <cctype>
 #include <cstdlib>
 #include <atomic>   // Facet 5 slice 1a: process-global CST head-uuid mint (NextCstHeadUuid)
+#include <filesystem>
+
+#if __has_include("RendererBuildIdentity.generated.h")
+#include "RendererBuildIdentity.generated.h"
+#else
+#define RISE_BUILD_SOURCE_REVISION ""
+#define RISE_BUILD_DIRTY_STATE "unavailable"
+#define RISE_BUILD_DIRTY_DIFF_SHA256 ""
+#define RISE_BUILD_FP_CONTRACTION_MODE ""
+#define RISE_BUILD_OPTIMIZATION_MODE ""
+#define RISE_BUILD_LTO_MODE ""
+#endif
+
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#include <zlib.h>
+#endif
+#ifndef NO_TIFF_SUPPORT
+#include <tiffvers.h>
+#endif
+#ifndef NO_EXR_SUPPORT
+#include <OpenEXR/OpenEXRConfig.h>
+#include <Imath/ImathConfig.h>
+#endif
+#ifdef RISE_ENABLE_OIDN
+#include <OpenImageDenoise/config.h>
+#endif
+#ifdef RISE_ENABLE_OPENPGL
+#include <openpgl/version.h>
+#endif
+
+#if defined(__APPLE__)
+#include <mach/mach_init.h>
+#include <mach/task_info.h>
+#include <mach-o/dyld.h>
+#include <mach-o/dyld_images.h>
+#include <mach-o/loader.h>
+#elif defined(__linux__) || defined(__ANDROID__)
+#include <dlfcn.h>
+#include <link.h>
+#include <unistd.h>
+#elif defined(_WIN32)
+#include <psapi.h>
+#include <winver.h>
+#endif
 
 using namespace RISE;
+
+bool RISE::Implementation::BuildIdentityModuleNameMatches(
+	const std::string& path,
+	const std::vector<std::string>& acceptedNames )
+{
+	const std::size_t slash = path.find_last_of("/\\");
+	std::string name = path.substr(slash == std::string::npos ? 0u : slash+1u);
+	std::transform(name.begin(),name.end(),name.begin(),
+		[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+	if( name.compare(0u,3u,"lib") == 0 ) name.erase(0u,3u);
+	for( std::string accepted : acceptedNames ) {
+		std::transform(accepted.begin(),accepted.end(),accepted.begin(),
+			[]( unsigned char c ) { return static_cast<char>(std::tolower(c)); });
+		if( name.compare(0u,accepted.size(),accepted) != 0 ) continue;
+		if( name.size() == accepted.size() ) return true;
+		const unsigned char boundary =
+			static_cast<unsigned char>(name[accepted.size()]);
+		if( boundary == '.' || boundary == '-' || boundary == '_' ||
+			std::isdigit(boundary) ) return true;
+	}
+	return false;
+}
+
+bool RISE::Implementation::ReadStoredAPKBuildIdentity(
+	const std::string& modulePath,
+	std::vector<unsigned char>& bytes )
+{
+	const std::size_t separator = modulePath.find("!/");
+	if( separator == std::string::npos || separator == 0u ||
+		separator+2u >= modulePath.size() ) return false;
+	const std::string archivePath = modulePath.substr(0u,separator);
+	const std::string entryName = modulePath.substr(separator+2u);
+	std::ifstream input(archivePath,std::ios::binary);
+	if( !input ) return false;
+	input.seekg(0,std::ios::end);
+	const std::streamoff fileSize = input.tellg();
+	if( fileSize < 22 ) return false;
+	auto readAt = [&input,fileSize]( const std::uint64_t offset,
+		unsigned char* destination, const std::size_t count ) {
+		if( offset > static_cast<std::uint64_t>(fileSize) ||
+			count > static_cast<std::uint64_t>(fileSize)-offset ) return false;
+		input.clear();
+		input.seekg(static_cast<std::streamoff>(offset),std::ios::beg);
+		input.read(reinterpret_cast<char*>(destination),
+			static_cast<std::streamsize>(count));
+		return input.good() || (input.eof() &&
+			static_cast<std::size_t>(input.gcount()) == count);
+	};
+	auto little16 = []( const unsigned char* value ) {
+		return static_cast<std::uint16_t>(value[0]) |
+			(static_cast<std::uint16_t>(value[1])<<8u);
+	};
+	auto little32 = []( const unsigned char* value ) {
+		return static_cast<std::uint32_t>(value[0]) |
+			(static_cast<std::uint32_t>(value[1])<<8u) |
+			(static_cast<std::uint32_t>(value[2])<<16u) |
+			(static_cast<std::uint32_t>(value[3])<<24u);
+	};
+	const std::size_t tailSize = static_cast<std::size_t>(std::min<std::streamoff>(
+		fileSize,static_cast<std::streamoff>(65557u)));
+	std::vector<unsigned char> tail(tailSize);
+	if( !readAt(static_cast<std::uint64_t>(fileSize)-tailSize,
+		tail.data(),tail.size()) ) return false;
+	std::size_t endOffset = 0u;
+	bool foundEnd = false;
+	for( std::size_t position=tail.size()-22u+1u; position-- > 0u; ) {
+		const unsigned char* candidate = &tail[position];
+		if( little32(candidate) != 0x06054b50u ) continue;
+		const std::uint16_t commentSize = little16(candidate+20u);
+		if( position+22u+commentSize != tail.size() ) continue;
+		endOffset = position;
+		foundEnd = true;
+		break;
+	}
+	if( !foundEnd ) return false;
+	const unsigned char* end = &tail[endOffset];
+	const std::uint16_t disk = little16(end+4u);
+	const std::uint16_t centralDisk = little16(end+6u);
+	const std::uint16_t diskEntries = little16(end+8u);
+	const std::uint16_t totalEntries = little16(end+10u);
+	const std::uint32_t centralSize = little32(end+12u);
+	const std::uint32_t centralOffset = little32(end+16u);
+	if( disk != 0u || centralDisk != 0u || diskEntries != totalEntries ||
+		totalEntries == 0xffffu || centralSize == 0xffffffffu ||
+		centralOffset == 0xffffffffu ||
+		static_cast<std::uint64_t>(centralOffset)+centralSize >
+			static_cast<std::uint64_t>(fileSize) ) return false;
+	std::uint64_t cursor = centralOffset;
+	for( std::uint16_t entry=0u; entry<totalEntries; ++entry ) {
+		unsigned char central[46];
+		if( !readAt(cursor,central,sizeof(central)) ||
+			little32(central) != 0x02014b50u ) return false;
+		const std::uint16_t flags = little16(central+8u);
+		const std::uint16_t method = little16(central+10u);
+		const std::uint32_t compressedSize = little32(central+20u);
+		const std::uint32_t uncompressedSize = little32(central+24u);
+		const std::uint16_t nameSize = little16(central+28u);
+		const std::uint16_t extraSize = little16(central+30u);
+		const std::uint16_t commentSize = little16(central+32u);
+		const std::uint16_t startDisk = little16(central+34u);
+		const std::uint32_t localOffset = little32(central+42u);
+		std::vector<unsigned char> encodedName(nameSize);
+		if( !readAt(cursor+sizeof(central),encodedName.data(),encodedName.size()) ) {
+			return false;
+		}
+		const std::string name(encodedName.begin(),encodedName.end());
+		if( name == entryName ) {
+			if( (flags&1u) || method != 0u || compressedSize != uncompressedSize ||
+				startDisk != 0u || compressedSize == 0xffffffffu ||
+				localOffset == 0xffffffffu ) return false;
+			unsigned char local[30];
+			if( !readAt(localOffset,local,sizeof(local)) ||
+				little32(local) != 0x04034b50u || little16(local+8u) != 0u ||
+				(little16(local+6u)&1u) ) return false;
+			const std::uint16_t localNameSize = little16(local+26u);
+			const std::uint16_t localExtraSize = little16(local+28u);
+			std::vector<unsigned char> localName(localNameSize);
+			if( !readAt(static_cast<std::uint64_t>(localOffset)+sizeof(local),
+				localName.data(),localName.size()) ||
+				std::string(localName.begin(),localName.end()) != entryName ) return false;
+			const std::uint64_t dataOffset = static_cast<std::uint64_t>(localOffset)+
+				sizeof(local)+localNameSize+localExtraSize;
+			bytes.resize(uncompressedSize);
+			return readAt(dataOffset,bytes.data(),bytes.size());
+		}
+		cursor += sizeof(central)+nameSize+extraSize+commentSize;
+		if( cursor > static_cast<std::uint64_t>(centralOffset)+centralSize ) return false;
+	}
+	return false;
+}
 
 // P2a: a Job-level edit that changes the emitter or environment set must
 // bump the Scene's light-topology generation, so a REUSED RayCaster rebuilds
@@ -73,6 +260,1095 @@ static void BumpSceneLightGen( RISE::IScenePriv* pScene )
 {
 	if( RISE::Implementation::Scene* sc = dynamic_cast<RISE::Implementation::Scene*>( pScene ) )
 		sc->BumpLightTopologyGeneration();
+}
+
+namespace
+{
+	RISECBOR64::Value FireText( const char* value )
+	{
+		return RISECBOR64::Value::String(value ? value : "");
+	}
+
+	RISECBOR64::Value FireBool( const bool value )
+	{
+		return RISECBOR64::Value::Bool(value);
+	}
+
+	RISECBOR64::Value FireUnsigned( const unsigned int value )
+	{
+		return RISECBOR64::Value::Unsigned(value);
+	}
+
+	RISECBOR64::Value FireFloatArray( const double* values, std::size_t count );
+
+	bool FireEncodeRecord(
+		const RISECBOR64::Value& value,
+		RISECBOR64::Bytes& bytes,
+		const char* recordName )
+	{
+		std::string error;
+		if( RISECBOR64::Encode(value,bytes,&error) ) return true;
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job:: could not encode %s: %s",recordName,error.c_str());
+		return false;
+	}
+
+	bool ReadIdentityFile(
+		const std::string& path,
+		RISECBOR64::Bytes& bytes )
+	{
+		std::ifstream input(path,std::ios::binary);
+		if( !input ) return false;
+		input.seekg(0,std::ios::end);
+		const std::streampos size = input.tellg();
+		if( size < 0 ) return false;
+		input.seekg(0,std::ios::beg);
+		bytes.resize(static_cast<std::size_t>(size));
+		if( size > 0 ) input.read(reinterpret_cast<char*>(&bytes[0]),size);
+		return input.good() || input.eof();
+	}
+
+	bool ReadLoadedBinaryIdentity(
+		const std::string& path,
+		RISECBOR64::Bytes& bytes,
+		std::string& hashBasis )
+	{
+		if( ReadIdentityFile(path,bytes) ) {
+			hashBasis = "file_bytes";
+			return true;
+		}
+#if defined(__APPLE__)
+		if( __builtin_available(macOS 11.0, *) ) {
+			if( _dyld_shared_cache_contains_path(path.c_str()) ) {
+				task_dyld_info_data_t taskDyld = {};
+				mach_msg_type_number_t count = TASK_DYLD_INFO_COUNT;
+				if( task_info(mach_task_self(),TASK_DYLD_INFO,
+					reinterpret_cast<task_info_t>(&taskDyld),&count) != KERN_SUCCESS ||
+					!taskDyld.all_image_info_addr ) return false;
+				const dyld_all_image_infos* infos =
+					reinterpret_cast<const dyld_all_image_infos*>(
+						taskDyld.all_image_info_addr);
+				if( infos->version < 13u ) return false;
+				bool nonzeroUUID = false;
+				bytes.assign(infos->sharedCacheUUID,infos->sharedCacheUUID+16u);
+				for( unsigned char value : bytes ) nonzeroUUID = nonzeroUUID || value != 0u;
+				if( !nonzeroUUID ) return false;
+				bool foundImageUUID = false;
+				const std::uint32_t imageCount = _dyld_image_count();
+				for( std::uint32_t i=0u; i<imageCount && !foundImageUUID; ++i ) {
+					const char* imagePath = _dyld_get_image_name(i);
+					if( !imagePath || path != imagePath ) continue;
+					const mach_header* header = _dyld_get_image_header(i);
+					if( !header || header->magic != MH_MAGIC_64 ) return false;
+					const mach_header_64* header64 =
+						reinterpret_cast<const mach_header_64*>(header);
+					const load_command* command = reinterpret_cast<const load_command*>(
+						reinterpret_cast<const unsigned char*>(header64)+sizeof(mach_header_64));
+					for( std::uint32_t j=0u; j<header64->ncmds; ++j ) {
+						if( command->cmd == LC_UUID &&
+							command->cmdsize >= sizeof(uuid_command) ) {
+							const uuid_command* imageUUID =
+								reinterpret_cast<const uuid_command*>(command);
+							bytes.insert(bytes.end(),imageUUID->uuid,imageUUID->uuid+16u);
+							foundImageUUID = true;
+							break;
+						}
+						if( command->cmdsize < sizeof(load_command) ) return false;
+						command = reinterpret_cast<const load_command*>(
+							reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+					}
+				}
+				if( !foundImageUUID ) return false;
+				bytes.push_back(0u);
+				bytes.insert(bytes.end(),path.begin(),path.end());
+				hashBasis = "dyld_shared_cache_and_image_uuids";
+				return true;
+			}
+		}
+#endif
+#if defined(__ANDROID__)
+		if( RISE::Implementation::ReadStoredAPKBuildIdentity(path,bytes) ) {
+			hashBasis = "apk_stored_entry_bytes";
+			return true;
+		}
+#endif
+		return false;
+	}
+
+	std::string LoadedRuntimeBinaryVersion( const std::string& path )
+	{
+#if defined(__APPLE__)
+		const std::uint32_t imageCount = _dyld_image_count();
+		for( std::uint32_t i=0u; i<imageCount; ++i ) {
+			const char* imagePath = _dyld_get_image_name(i);
+			if( !imagePath || path != imagePath ) continue;
+			const mach_header* header = _dyld_get_image_header(i);
+			if( !header || (header->magic != MH_MAGIC && header->magic != MH_MAGIC_64) ) {
+				return std::string();
+			}
+			const std::size_t headerSize = header->magic == MH_MAGIC_64 ?
+				sizeof(mach_header_64) : sizeof(mach_header);
+			const load_command* command = reinterpret_cast<const load_command*>(
+				reinterpret_cast<const unsigned char*>(header)+headerSize);
+			for( std::uint32_t j=0u; j<header->ncmds; ++j ) {
+				if( command->cmdsize < sizeof(load_command) ) return std::string();
+				if( command->cmd == LC_ID_DYLIB && command->cmdsize >= sizeof(dylib_command) ) {
+					const std::uint32_t version =
+						reinterpret_cast<const dylib_command*>(command)->dylib.current_version;
+					return "mach_o_current_version:"+
+						std::to_string((version>>16u)&0xffffu)+"."+
+						std::to_string((version>>8u)&0xffu)+"."+
+						std::to_string(version&0xffu);
+				}
+				command = reinterpret_cast<const load_command*>(
+					reinterpret_cast<const unsigned char*>(command)+command->cmdsize);
+			}
+			return std::string();
+		}
+		return std::string();
+#elif defined(__linux__) || defined(__ANDROID__)
+		const std::size_t slash = path.find_last_of('/');
+		const std::string name = path.substr(slash == std::string::npos ? 0u : slash+1u);
+		const std::size_t suffix = name.find(".so.");
+		return suffix != std::string::npos && suffix+4u < name.size() ?
+			"elf_soname_suffix:"+name.substr(suffix+4u) : std::string();
+#elif defined(_WIN32)
+		HMODULE versionLibrary = GetModuleHandleA("version.dll");
+		bool releaseVersionLibrary = false;
+		if( !versionLibrary ) {
+			versionLibrary = LoadLibraryA("version.dll");
+			releaseVersionLibrary = versionLibrary != nullptr;
+		}
+		if( !versionLibrary ) return std::string();
+		using SizeFunction = DWORD (WINAPI*)(LPCSTR,LPDWORD);
+		using InfoFunction = BOOL (WINAPI*)(LPCSTR,DWORD,DWORD,LPVOID);
+		using QueryFunction = BOOL (WINAPI*)(LPCVOID,LPCSTR,LPVOID*,PUINT);
+		const SizeFunction sizeFunction = reinterpret_cast<SizeFunction>(
+			GetProcAddress(versionLibrary,"GetFileVersionInfoSizeA"));
+		const InfoFunction infoFunction = reinterpret_cast<InfoFunction>(
+			GetProcAddress(versionLibrary,"GetFileVersionInfoA"));
+		const QueryFunction queryFunction = reinterpret_cast<QueryFunction>(
+			GetProcAddress(versionLibrary,"VerQueryValueA"));
+		DWORD ignored = 0u;
+		const DWORD size = sizeFunction ? sizeFunction(path.c_str(),&ignored) : 0u;
+		std::vector<unsigned char> data(size);
+		LPVOID raw = nullptr;
+		UINT rawSize = 0u;
+		const bool read = size && infoFunction && queryFunction &&
+			infoFunction(path.c_str(),0u,size,data.data()) &&
+			queryFunction(data.data(),"\\",&raw,&rawSize) &&
+			rawSize >= sizeof(VS_FIXEDFILEINFO);
+		std::string version;
+		if( read ) {
+			const VS_FIXEDFILEINFO* fixed = static_cast<const VS_FIXEDFILEINFO*>(raw);
+			if( fixed->dwSignature == 0xfeef04bdu ) {
+				version = "pe_file_version:"+
+					std::to_string(HIWORD(fixed->dwFileVersionMS))+"."+
+					std::to_string(LOWORD(fixed->dwFileVersionMS))+"."+
+					std::to_string(HIWORD(fixed->dwFileVersionLS))+"."+
+					std::to_string(LOWORD(fixed->dwFileVersionLS));
+			}
+		}
+		if( releaseVersionLibrary ) FreeLibrary(versionLibrary);
+		return version;
+#else
+		(void)path;
+		return std::string();
+#endif
+	}
+
+	std::string CurrentRendererBinaryPath()
+	{
+#if defined(__ANDROID__)
+		Dl_info info = {};
+		if( dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath),&info) == 0 ||
+			!info.dli_fname || !info.dli_fname[0] ) return std::string();
+		std::error_code error;
+		const std::filesystem::path canonical =
+			std::filesystem::weakly_canonical(info.dli_fname,error);
+		return error ? std::string(info.dli_fname) : canonical.string();
+#elif defined(__APPLE__)
+		std::uint32_t size = 0u;
+		_NSGetExecutablePath(nullptr,&size);
+		std::vector<char> path(size);
+		if( _NSGetExecutablePath(path.data(),&size) != 0 ) return std::string();
+		return std::filesystem::weakly_canonical(path.data()).string();
+#elif defined(__linux__) || defined(__ANDROID__)
+		std::vector<char> path(4096u);
+		const ssize_t size = readlink("/proc/self/exe",path.data(),path.size()-1u);
+		if( size <= 0 ) return std::string();
+		path[static_cast<std::size_t>(size)] = '\0';
+		return std::string(path.data());
+#elif defined(_WIN32)
+		std::vector<char> path(32768u);
+		const DWORD size = GetModuleFileNameA(nullptr,path.data(),
+			static_cast<DWORD>(path.size()));
+		return size && size < static_cast<DWORD>(path.size()) ?
+			std::string(path.data(),size) : std::string();
+#else
+		return std::string();
+#endif
+	}
+
+	std::vector<std::string> LoadedBinaryPaths()
+	{
+		std::vector<std::string> paths;
+#if defined(__APPLE__)
+		const std::uint32_t count = _dyld_image_count();
+		for( std::uint32_t i=0u; i<count; ++i ) {
+			const char* path = _dyld_get_image_name(i);
+			if( path && path[0] ) paths.push_back(path);
+		}
+#elif defined(__linux__) || defined(__ANDROID__)
+		struct Collector {
+			static int Append( dl_phdr_info* info, std::size_t, void* opaque )
+			{
+				std::vector<std::string>& output =
+					*static_cast<std::vector<std::string>*>(opaque);
+				if( info->dlpi_name && info->dlpi_name[0] ) output.push_back(info->dlpi_name);
+				return 0;
+			}
+		};
+		dl_iterate_phdr(&Collector::Append,&paths);
+#elif defined(_WIN32)
+		HMODULE modules[1024];
+		DWORD bytes = 0;
+		if( EnumProcessModules(GetCurrentProcess(),modules,sizeof(modules),&bytes) ) {
+			const DWORD count = std::min<DWORD>(
+				bytes/static_cast<DWORD>(sizeof(HMODULE)),1024u);
+			for( DWORD i=0; i<count; ++i ) {
+				char path[32768];
+				const DWORD size = GetModuleFileNameA(modules[i],path,
+					static_cast<DWORD>(sizeof(path)));
+				if( size ) paths.push_back(std::string(path,size));
+			}
+		}
+#endif
+		std::sort(paths.begin(),paths.end());
+		paths.erase(std::unique(paths.begin(),paths.end()),paths.end());
+		return paths;
+	}
+
+	RISECBOR64::Value DependencyBuildIdentity(
+		const std::vector<std::string>& acceptedBinaryNames,
+		const char* version,
+		const bool enabled,
+		const bool embedded,
+		const std::vector<std::string>& loadedPaths,
+		bool& complete )
+	{
+		using RISECBOR64::Value;
+		Value::Values binaries;
+		if( enabled && !embedded ) {
+			for( const std::string& path : loadedPaths ) {
+				if( !RISE::Implementation::BuildIdentityModuleNameMatches(
+					path,acceptedBinaryNames) ) continue;
+				RISECBOR64::Bytes fileBytes;
+				std::string hashBasis;
+				if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
+					complete = false;
+					continue;
+				}
+				binaries.push_back(Value::MapValue({
+					{ "hash_basis", Value::String(hashBasis) },
+					{ "path", Value::String(path) },
+					{ "sha256", Value::String(RISECBOR64::SHA256Hex(fileBytes)) }
+				}));
+			}
+			if( binaries.empty() ) complete = false;
+		}
+		return Value::MapValue({
+			{ "availability", Value::String(enabled ? "linked" : "not_linked") },
+			{ "linkage", Value::String(enabled ? (embedded ? "embedded" : "dynamic") : "not_linked") },
+			{ "loaded_binaries", Value::ArrayValue(binaries) },
+			{ "version", Value::String(enabled ? version : "not_linked") }
+		});
+	}
+
+	RISECBOR64::Value RuntimeDependencyBuildIdentity(
+		const std::vector<std::string>& acceptedBinaryNames,
+		const std::vector<std::string>& loadedPaths,
+		bool& complete )
+	{
+		using RISECBOR64::Value;
+		Value::Values binaries;
+		std::vector<std::string> binaryVersions;
+		for( const std::string& path : loadedPaths ) {
+			if( !RISE::Implementation::BuildIdentityModuleNameMatches(
+				path,acceptedBinaryNames) ) continue;
+			RISECBOR64::Bytes fileBytes;
+			std::string hashBasis;
+			if( !ReadLoadedBinaryIdentity(path,fileBytes,hashBasis) ) {
+				complete = false;
+				continue;
+			}
+			const std::size_t slash = path.find_last_of("/\\");
+			const std::string binaryHash = RISECBOR64::SHA256Hex(fileBytes);
+			const std::string binaryVersion = LoadedRuntimeBinaryVersion(path);
+			if( binaryVersion.empty() ) {
+				complete = false;
+				continue;
+			}
+			binaryVersions.push_back(path.substr(
+				slash == std::string::npos ? 0u : slash+1u)+"@version="+
+				binaryVersion+"@sha256="+binaryHash);
+			binaries.push_back(Value::MapValue({
+				{ "hash_basis", Value::String(hashBasis) },
+				{ "path", Value::String(path) },
+				{ "sha256", Value::String(binaryHash) }
+			}));
+		}
+		std::string version = "not_loaded";
+		if( !binaryVersions.empty() ) {
+			version = "runtime_binaries_v1:";
+			for( std::size_t i=0u; i<binaryVersions.size(); ++i ) {
+				if( i ) version += ',';
+				version += binaryVersions[i];
+			}
+		}
+		return Value::MapValue({
+			{ "availability", Value::String(
+				binaries.empty() ? "not_loaded" : "loaded") },
+			{ "linkage", Value::String(
+				binaries.empty() ? "runtime_optional" : "runtime_loaded") },
+			{ "loaded_binaries", Value::ArrayValue(binaries) },
+			{ "version", Value::String(version) }
+		});
+	}
+
+	bool BuildRendererBuildIdentity(
+		RISECBOR64::Bytes& bytes,
+		std::string& identity )
+	{
+		if( !RISE_BUILD_SOURCE_REVISION[0] || !RISE_BUILD_DIRTY_DIFF_SHA256[0] ||
+			!RISE_BUILD_FP_CONTRACTION_MODE[0] || !RISE_BUILD_OPTIMIZATION_MODE[0] ||
+			!RISE_BUILD_LTO_MODE[0] ) {
+			return false;
+		}
+		const std::string contractionMode = RISE_BUILD_FP_CONTRACTION_MODE;
+		const std::string optimizationMode = RISE_BUILD_OPTIMIZATION_MODE;
+		const std::string ltoMode = RISE_BUILD_LTO_MODE;
+		if( contractionMode != "off" && contractionMode != "on" &&
+			contractionMode != "fast" && contractionMode != "compiler_default" ) {
+			return false;
+		}
+		if( optimizationMode != "disabled" && optimizationMode != "O1" &&
+			optimizationMode != "O2" && optimizationMode != "O3" &&
+			optimizationMode != "Os" && optimizationMode != "Oz" &&
+			optimizationMode != "compiler_default" ) return false;
+		if( ltoMode != "off" && ltoMode != "thin" && ltoMode != "full" &&
+			ltoMode != "compiler_default" ) return false;
+		const char* compiler =
+#if defined(__clang_version__)
+			__clang_version__;
+#elif defined(__VERSION__)
+			__VERSION__;
+#else
+			"unknown";
+#endif
+		const char* platform =
+#if defined(_WIN32)
+			"windows";
+#elif defined(__ANDROID__)
+			"android";
+#elif defined(__APPLE__)
+			"macos";
+#elif defined(__linux__)
+			"linux";
+#else
+			"unknown";
+#endif
+		const char* architecture =
+#if defined(__aarch64__) || defined(_M_ARM64)
+			"arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+			"x86_64";
+#else
+			"unknown";
+#endif
+		const bool fastMath =
+#if defined(__FAST_MATH__)
+			true;
+#else
+			false;
+#endif
+		const bool finiteMathOnly =
+#if defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
+			true;
+#else
+			false;
+#endif
+		const std::string rendererVersion =
+			std::to_string(RISE_VER_MAJOR_VERSION)+"."+
+			std::to_string(RISE_VER_MINOR_VERSION)+"."+
+			std::to_string(RISE_VER_REVISION_VERSION)+"+"+
+			std::to_string(RISE_VER_BUILD_VERSION);
+		const std::string rendererBinaryPath = CurrentRendererBinaryPath();
+		RISECBOR64::Bytes rendererBinaryBytes;
+		std::string rendererBinaryHashBasis;
+		if( rendererBinaryPath.empty() ||
+			!ReadLoadedBinaryIdentity(rendererBinaryPath,rendererBinaryBytes,
+				rendererBinaryHashBasis) ) {
+			return false;
+		}
+		const std::vector<std::string> loadedPaths = LoadedBinaryPaths();
+		bool dependenciesComplete = true;
+		const char* oidnVersion =
+#ifdef RISE_ENABLE_OIDN
+			OIDN_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const char* openexrVersion =
+#ifndef NO_EXR_SUPPORT
+			OPENEXR_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+		const char* openpglVersion =
+#ifdef RISE_ENABLE_OPENPGL
+			OPENPGL_VERSION;
+#else
+			"not_linked";
+#endif
+		const char* pngVersion =
+#ifndef NO_PNG_SUPPORT
+			PNG_LIBPNG_VER_STRING;
+#else
+			"not_linked";
+#endif
+		const char* zlibVersion =
+#ifndef NO_PNG_SUPPORT
+			ZLIB_VERSION;
+#else
+			"not_linked";
+#endif
+		const char* tiffVersion =
+#ifndef NO_TIFF_SUPPORT
+			TIFFLIB_VERSION_STR;
+#else
+			"not_linked";
+#endif
+		const char* imathVersion =
+#ifndef NO_EXR_SUPPORT
+			IMATH_VERSION_STRING;
+#else
+			"not_linked";
+#endif
+#ifndef NO_PNG_SUPPORT
+		const bool embeddedPngZlib =
+#if defined(__ANDROID__)
+			true;
+#else
+			false;
+#endif
+#endif
+		using RISECBOR64::Value;
+		const Value record = Value::MapValue({
+			{ "compiler", Value::MapValue({
+				{ "identity", Value::String(compiler) },
+				{ "language_standard", Value::String("c++17") },
+				{ "lto_mode", Value::String(ltoMode) },
+				{ "optimization_mode", Value::String(optimizationMode) } }) },
+			{ "dependency_builds", Value::MapValue({
+				{ "avcodec", RuntimeDependencyBuildIdentity(
+					{"avcodec"},loadedPaths,dependenciesComplete) },
+				{ "avfoundation", RuntimeDependencyBuildIdentity(
+					{"avfoundation"},loadedPaths,dependenciesComplete) },
+				{ "avformat", RuntimeDependencyBuildIdentity(
+					{"avformat"},loadedPaths,dependenciesComplete) },
+				{ "avutil", RuntimeDependencyBuildIdentity(
+					{"avutil"},loadedPaths,dependenciesComplete) },
+				{ "iex", DependencyBuildIdentity({"iex"},openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "ilmthread", DependencyBuildIdentity({"ilmthread"},openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "imath", DependencyBuildIdentity({"imath"},imathVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "oidn", DependencyBuildIdentity({"openimagedenoise"},oidnVersion,
+#ifdef RISE_ENABLE_OIDN
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "openexr", DependencyBuildIdentity({"openexr"},openexrVersion,
+#ifndef NO_EXR_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "openpgl", DependencyBuildIdentity({"openpgl"},openpglVersion,
+#ifdef RISE_ENABLE_OPENPGL
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "png", DependencyBuildIdentity({"png"},pngVersion,
+#ifndef NO_PNG_SUPPORT
+					true,embeddedPngZlib,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "tiff", DependencyBuildIdentity({"tiff"},tiffVersion,
+#ifndef NO_TIFF_SUPPORT
+					true,false,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) },
+				{ "swscale", RuntimeDependencyBuildIdentity(
+					{"swscale"},loadedPaths,dependenciesComplete) },
+				{ "videotoolbox", RuntimeDependencyBuildIdentity(
+					{"videotoolbox"},loadedPaths,dependenciesComplete) },
+				{ "x265", RuntimeDependencyBuildIdentity(
+					{"x265"},loadedPaths,dependenciesComplete) },
+				{ "zlib", DependencyBuildIdentity({"z","zlib"},zlibVersion,
+#ifndef NO_PNG_SUPPORT
+					true,embeddedPngZlib,
+#else
+					false,false,
+#endif
+					loadedPaths,dependenciesComplete) } }) },
+			{ "dirty_state", Value::MapValue({
+				{ "diff_sha256", Value::String(RISE_BUILD_DIRTY_DIFF_SHA256) },
+				{ "state", Value::String(RISE_BUILD_DIRTY_STATE) } }) },
+			{ "renderer_binary", Value::MapValue({
+#if defined(__ANDROID__)
+				{ "kind", Value::String("module") },
+#else
+				{ "kind", Value::String("executable") },
+#endif
+				{ "hash_basis", Value::String(rendererBinaryHashBasis) },
+				{ "path", Value::String(rendererBinaryPath) },
+				{ "sha256", Value::String(RISECBOR64::SHA256Hex(rendererBinaryBytes)) } }) },
+			{ "fp_settings", Value::MapValue({
+				{ "contraction_mode", Value::String(contractionMode) },
+				{ "fast_math", FireBool(fastMath) },
+				{ "finite_math_only", FireBool(finiteMathOnly) } }) },
+			{ "gate_harness_version", Value::String("phase_a_gate_harness_v1") },
+			{ "record_kind", Value::String("renderer_build_v1") },
+			{ "renderer_version", Value::String(rendererVersion) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "solver_schema_versions", Value::ArrayValue({
+				Value::String("fire_optics_schema_v3"),
+				Value::String("fire_output_provenance_schema_v1") }) },
+			{ "source_revision", Value::String(RISE_BUILD_SOURCE_REVISION) },
+			{ "target", Value::MapValue({
+				{ "architecture", Value::String(architecture) },
+				{ "platform", Value::String(platform) } }) }
+		});
+		if( !dependenciesComplete ) return false;
+		if( !FireEncodeRecord(record,bytes,"renderer_build_v1") ) return false;
+		identity = RISECBOR64::SHA256Hex(bytes);
+		return true;
+	}
+
+	bool BuildResolvedRenderConfig(
+		const Job::RasterizerParams& p,
+		const char* rasterizerKind,
+		const char* effectiveIntegrator,
+		const IScene& scene,
+		const FrameStore* store,
+		const FireExternalRenderConfig* external,
+		const double animationTimeStart,
+		const double animationTimeEnd,
+		const unsigned int animationFrames,
+		const bool animationFields,
+		const bool animationInvertFields,
+		const unsigned int* animationFrame,
+		const Rect* renderRegion,
+		ResolvedRasterSequence* resolvedSequence,
+		const ResolvedRasterSequence* fixedSequence,
+		RISECBOR64::Bytes& bytes )
+	{
+		using RISECBOR64::Value;
+		Value::Values aovs;
+		if( store ) {
+			static const char* const names[] = {
+				"beauty","alpha","albedo","normal","depth","object_id","primitive_id" };
+			for( unsigned int i=0; i<static_cast<unsigned int>(FrameStoreOutput::ChannelId::COUNT); ++i ) {
+				if( store->HasChannel(static_cast<FrameStoreOutput::ChannelId>(i)) ) {
+					aovs.push_back(Value::String(names[i]));
+				}
+			}
+		}
+		const IFilm* film = scene.GetFilm();
+		const ICamera* camera = external && external->cameraOverride ?
+			external->cameraOverride : scene.GetCamera();
+		Value::Values cameraLocation;
+		Value::Values cameraMatrix;
+		if( camera ) {
+			const Point3 location = camera->GetLocation();
+			cameraLocation = { Value::Float(location.x), Value::Float(location.y),
+				Value::Float(location.z) };
+			const Matrix4 matrix = camera->GetMatrix();
+			const Scalar values[16] = {
+				matrix._00,matrix._01,matrix._02,matrix._03,
+				matrix._10,matrix._11,matrix._12,matrix._13,
+				matrix._20,matrix._21,matrix._22,matrix._23,
+				matrix._30,matrix._31,matrix._32,matrix._33 };
+			for( unsigned int i=0; i<16u; ++i ) cameraMatrix.push_back(Value::Float(values[i]));
+		}
+		std::string cameraKind = camera ? "" : "none";
+		Value projection = Value::MapValue({});
+		if( camera && typeid(*camera) == typeid(Implementation::PinholeCamera) ) {
+			const Implementation::PinholeCamera* pinhole =
+				dynamic_cast<const Implementation::PinholeCamera*>(camera);
+			cameraKind = "pinhole";
+			projection = Value::MapValue({
+				{ "fov_radians", Value::Float(pinhole->GetFovStored()) },
+				{ "fstop", Value::Float(pinhole->GetFstop()) },
+				{ "iso", Value::Float(pinhole->GetIsoStored()) }
+			});
+		} else if( camera && typeid(*camera) == typeid(Implementation::ThinLensCamera) ) {
+			const Implementation::ThinLensCamera* thin =
+				dynamic_cast<const Implementation::ThinLensCamera*>(camera);
+			cameraKind = "thin_lens";
+			projection = Value::MapValue({
+				{ "anamorphic_squeeze", Value::Float(thin->GetAnamorphicSqueeze()) },
+				{ "aperture_blades", Value::Unsigned(thin->GetApertureBlades()) },
+				{ "aperture_rotation", Value::Float(thin->GetApertureRotation()) },
+				{ "focal_length_mm", Value::Float(thin->GetFocalLengthStored()) },
+				{ "focus_distance_scene_units", Value::Float(thin->GetFocusDistanceStored()) },
+				{ "fstop", Value::Float(thin->GetFstop()) },
+				{ "iso", Value::Float(thin->GetIsoStored()) },
+				{ "scene_unit_meters", Value::Float(thin->GetSceneUnitMeters()) },
+				{ "sensor_size_mm", Value::Float(thin->GetSensorSize()) },
+				{ "shift_x_mm", Value::Float(thin->GetShiftX()) },
+				{ "shift_y_mm", Value::Float(thin->GetShiftY()) },
+				{ "tilt_x_radians", Value::Float(thin->GetTiltX()) },
+				{ "tilt_y_radians", Value::Float(thin->GetTiltY()) }
+			});
+		} else if( camera && typeid(*camera) == typeid(Implementation::FisheyeCamera) ) {
+			const Implementation::FisheyeCamera* fisheye =
+				dynamic_cast<const Implementation::FisheyeCamera*>(camera);
+			cameraKind = "fisheye";
+			projection = Value::MapValue({
+				{ "scale", Value::Float(fisheye->GetScaleStored()) }
+			});
+		} else if( camera && typeid(*camera) == typeid(Implementation::OrthographicCamera) ) {
+			const Implementation::OrthographicCamera* orthographic =
+				dynamic_cast<const Implementation::OrthographicCamera*>(camera);
+			cameraKind = "orthographic";
+			const Vector2 scale = orthographic->GetViewportScaleStored();
+			projection = Value::MapValue({
+				{ "viewport_scale", Value::ArrayValue({
+					Value::Float(scale.x),Value::Float(scale.y) }) }
+			});
+		}
+		if( camera && cameraKind.empty() ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render camera parameters are not canonically introspectable");
+			return false;
+		}
+		Value externalRuntime;
+		if( external ) {
+			externalRuntime = Value::MapValue({
+				{ "camera_override", FireBool(external->cameraOverride != nullptr) },
+				{ "clay_override", FireBool(external->clayOverride) },
+				{ "idle_max_passes", FireUnsigned(external->idleMaxPasses) },
+				{ "idle_mode", FireBool(external->idleMode) },
+				{ "indirect_only", FireBool(external->indirectOnly) },
+				{ "live_samples_per_pass", FireUnsigned(external->liveSamplesPerPass) },
+				{ "max_path_depth", FireUnsigned(external->maxPathDepth) },
+				{ "preview_scale", FireUnsigned(external->previewScale) },
+				{ "progressive_on_idle", FireBool(external->progressiveOnIdle) },
+				{ "region", Value::MapValue({
+					{ "active", FireBool(external->regionActive) },
+					{ "bottom", FireUnsigned(external->regionBottom) },
+					{ "left", FireUnsigned(external->regionLeft) },
+					{ "right", FireUnsigned(external->regionRight) },
+					{ "top", FireUnsigned(external->regionTop) } }) },
+				{ "tile_order", FireUnsigned(external->tileOrder) },
+				{ "variant_pipeline", FireBool(external->variantPipeline) },
+				{ "view_mode", Value::String(external->viewportMode) },
+				{ "view_mode_caster_installed", FireBool(external->viewModeCasterInstalled) },
+				{ "xray", FireBool(external->xray) }
+			});
+		}
+		IOptions& globalOptions = GlobalOptions();
+		const unsigned int autoProbeSPP = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_spp",4)));
+		const unsigned int autoProbeScale = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_scale",4)));
+		const unsigned int autoProbeVarianceRenders = static_cast<unsigned int>(std::max(
+			2,globalOptions.ReadInt("auto_probe_variance_renders",2)));
+		const unsigned int autoProbeActivationSPP = static_cast<unsigned int>(std::max(
+			1,globalOptions.ReadInt("auto_probe_activation_spp",256)));
+		const int forcedWorkerCount = globalOptions.ReadInt("force_number_of_threads",0);
+		const int maximumWorkerCount = globalOptions.ReadInt(
+			"maximum_thread_count",0x7FFFFFFF);
+		const int reservedWorkerCount = globalOptions.ReadInt(
+			"render_thread_reserve_count",1);
+		const unsigned int effectiveWorkerTaskCount = std::max(
+			1u,Implementation::ComputeRenderPoolSize());
+		const char* randomStreamPolicy =
+#if defined(MERSENNE53)
+			"per_dispatch_task_mersenne53_seeded_from_c_rand";
+#elif defined(MERSENNE)
+			"per_dispatch_task_mersenne_seeded_from_c_rand";
+#elif defined(DRAND48)
+			"process_shared_drand48";
+#else
+			"process_shared_c_rand";
+#endif
+		ResolvedRasterSequence sequence;
+		if( external ) {
+			const unsigned int workers = std::max(
+				1u,Implementation::ComputeRenderPoolSize());
+			const unsigned int width = film ? film->GetWidth() : 0u;
+			const unsigned int height = film ? film->GetHeight() : 0u;
+			unsigned int tileSize = Implementation::ComputeTileSize(
+				width,height,workers,8u,8u,64u);
+			if( store && store->Width() == width && store->Height() == height ) {
+				tileSize = Implementation::AlignTileSizeToFrameStore(
+					tileSize,static_cast<unsigned int>(store->TileEdge()));
+			}
+			if( external->variantPipeline ) {
+				sequence.kind = RasterSequenceKind::Morton;
+				sequence.tileSize = tileSize;
+			} else {
+				sequence.kind = RasterSequenceKind::Block;
+				sequence.blockWidth = tileSize;
+				sequence.blockHeight = tileSize;
+				if( external->tileOrder == 1u ) sequence.blockOrder = 2u;
+				else if( external->tileOrder == 2u ) {
+					sequence.blockOrder = 1u;
+					sequence.hasShuffleSeed = true;
+					sequence.shuffleSeed = 0u;
+				}
+			}
+		} else if( fixedSequence ) {
+			sequence = *fixedSequence;
+			if( resolvedSequence ) *resolvedSequence = sequence;
+		} else {
+			const RISE::String options = globalOptions.ReadString(
+				"raster_sequence_options","");
+			sequence = ResolveRasterSequence(
+				globalOptions.ReadInt("raster_sequence_type",4),options.c_str(),
+				[]() { return GlobalRNG().CanonicalRandom(); });
+			if( resolvedSequence ) *resolvedSequence = sequence;
+		}
+		Value rasterSequence;
+		switch( sequence.kind ) {
+		case RasterSequenceKind::Morton:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("morton") },
+				{ "tile_size", FireUnsigned(sequence.tileSize) } });
+			break;
+		case RasterSequenceKind::Block:
+			rasterSequence = Value::MapValue({
+				{ "height", FireUnsigned(sequence.blockHeight) },
+				{ "kind", Value::String("block") },
+				{ "order", FireUnsigned(sequence.blockOrder) },
+				{ "shuffle_seed", FireUnsigned(sequence.shuffleSeed) },
+				{ "shuffle_seed_active", FireBool(sequence.hasShuffleSeed) },
+				{ "width", FireUnsigned(sequence.blockWidth) } });
+			break;
+		case RasterSequenceKind::Hilbert:
+			rasterSequence = Value::MapValue({
+				{ "depth", FireUnsigned(sequence.hilbertDepth) },
+				{ "kind", Value::String("hilbert") } });
+			break;
+		case RasterSequenceKind::Scanline:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("scanline") } });
+			break;
+		case RasterSequenceKind::RasterizerDefault:
+			rasterSequence = Value::MapValue({
+				{ "kind", Value::String("rasterizer_default") } });
+			break;
+		}
+		const Value record = Value::MapValue({
+			{ "animation", Value::MapValue({
+				{ "do_fields", FireBool(animationFields) },
+				{ "frame_selection", Value::MapValue({
+					{ "active", FireBool(animationFrame != nullptr) },
+					{ "index", FireUnsigned(animationFrame ? *animationFrame : 0u) } }) },
+				{ "invert_fields", FireBool(animationInvertFields) },
+				{ "num_frames", FireUnsigned(animationFrames) },
+				{ "time_end", Value::Float(animationTimeEnd) },
+				{ "time_start", Value::Float(animationTimeStart) } }) },
+			{ "aov", Value::MapValue({ { "channels", Value::ArrayValue(aovs) } }) },
+			{ "camera", Value::MapValue({
+				{ "exposure_compensation_ev", Value::Float(camera ? camera->GetExposureCompensationEV() : 0.0) },
+				{ "exposure_time", Value::Float(camera ? camera->GetExposureTime() : 0.0) },
+				{ "kind", Value::String(cameraKind) },
+				{ "location", Value::ArrayValue(cameraLocation) },
+				{ "matrix", Value::ArrayValue(cameraMatrix) },
+				{ "pixel_rate", Value::Float(camera ? camera->GetPixelRate() : 0.0) },
+				{ "projection", projection },
+				{ "scanning_rate", Value::Float(camera ? camera->GetScanningRate() : 0.0) } }) },
+			{ "clamp", Value::MapValue({
+				{ "direct", Value::Float(p.stability.directClamp) },
+				{ "indirect", Value::Float(p.stability.indirectClamp) } }) },
+			{ "depth", Value::MapValue({
+				{ "max_diffuse_bounce", FireUnsigned(p.stability.maxDiffuseBounce) },
+				{ "max_eye_depth", FireUnsigned(p.maxEyeDepth) },
+				{ "max_glossy_bounce", FireUnsigned(p.stability.maxGlossyBounce) },
+				{ "max_light_depth", FireUnsigned(p.maxLightDepth) },
+				{ "max_recursion", FireUnsigned(p.maxRecursion) },
+				{ "max_translucent_bounce", FireUnsigned(p.stability.maxTranslucentBounce) },
+				{ "max_transmission_bounce", FireUnsigned(p.stability.maxTransmissionBounce) },
+				{ "max_volume_bounce", FireUnsigned(p.stability.maxVolumeBounce) } }) },
+			{ "evaluated_camera_states", Value::ArrayValue({}) },
+			{ "film", Value::MapValue({
+				{ "height", Value::Unsigned(film ? film->GetHeight() : 0) },
+				{ "pixel_aspect_ratio", Value::Float(film ? film->GetPixelAR() : 1.0) },
+				{ "width", Value::Unsigned(film ? film->GetWidth() : 0) } }) },
+			{ "filter", Value::MapValue({
+				{ "height", Value::Float(p.pixelFilter.height) },
+				{ "name", Value::String(p.pixelFilter.filter.c_str()) },
+				{ "param_a", Value::Float(p.pixelFilter.paramA) },
+				{ "param_b", Value::Float(p.pixelFilter.paramB) },
+				{ "width", Value::Float(p.pixelFilter.width) } }) },
+			{ "external_runtime", externalRuntime },
+			{ "execution", Value::MapValue({
+				{ "effective_worker_task_count", FireUnsigned(effectiveWorkerTaskCount) },
+				{ "force_number_of_threads", Value::Signed(forcedWorkerCount) },
+				{ "maximum_thread_count", Value::Signed(maximumWorkerCount) },
+				{ "random_stream_policy", Value::String(randomStreamPolicy) },
+				{ "render_thread_reserve_count", Value::Signed(reservedWorkerCount) } }) },
+			{ "global_render_options", Value::MapValue({
+				{ "auto_probe", Value::MapValue({
+					{ "activation_spp", FireUnsigned(autoProbeActivationSPP) },
+					{ "reach_winsor_percentile", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_reach_winsor_pct",0.99)) },
+					{ "scale", FireUnsigned(autoProbeScale) },
+					{ "spp", FireUnsigned(autoProbeSPP) },
+					{ "tau_bdpt", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_bdpt",1.35)) },
+					{ "tau_caustic", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_caustic",1.30)) },
+					{ "tau_reach", Value::Float(globalOptions.ReadDouble(
+						"auto_probe_tau_reach",1.50)) },
+					{ "variance_renders", FireUnsigned(autoProbeVarianceRenders) } }) },
+				{ "vcm", Value::MapValue({
+					{ "progressive_radius_enabled", FireBool(!globalOptions.ReadBool(
+						"vcm_disable_progressive_radius",false)) },
+					{ "throughput_clamp_multiplier", Value::Float(globalOptions.ReadDouble(
+						"vcm_throughput_clamp_multiplier",20.0)) },
+					{ "throughput_clamp_percentile", Value::Float(globalOptions.ReadDouble(
+						"vcm_throughput_clamp_percentile",0.99)) } }) } }) },
+			{ "integrator", Value::MapValue({
+				{ "auto_choice", Value::Unsigned(static_cast<unsigned int>(p.autoIntegrator)) },
+				{ "auto_probe_enabled", FireBool(p.autoProbeEnabled) },
+				{ "effective_kind", FireText(effectiveIntegrator) },
+				{ "enable_vertex_connection", FireBool(p.enableVC) },
+				{ "enable_vertex_merging", FireBool(p.enableVM) },
+				{ "integrate_rgb", FireBool(p.integrateRGB) },
+				{ "kind", FireText(rasterizerKind) },
+				{ "merge_radius", Value::Float(p.mergeRadius) },
+				{ "path_guiding", Value::MapValue({
+					{ "alpha", Value::Float(p.pathGuiding.alpha) },
+					{ "combine_training_iterations", FireBool(p.pathGuiding.combineTrainingIterations) },
+					{ "complete_path_guiding", FireBool(p.pathGuiding.completePathGuiding) },
+					{ "complete_path_strategy_samples", FireUnsigned(p.pathGuiding.completePathStrategySamples) },
+					{ "complete_path_strategy_selection", FireBool(p.pathGuiding.completePathStrategySelection) },
+					{ "enabled", FireBool(p.pathGuiding.enabled) },
+					{ "learned_alpha", FireBool(p.pathGuiding.learnedAlpha) },
+					{ "max_guiding_depth", FireUnsigned(p.pathGuiding.maxGuidingDepth) },
+					{ "max_light_guiding_depth", FireUnsigned(p.pathGuiding.maxLightGuidingDepth) },
+					{ "online", FireBool(p.pathGuiding.online) },
+					{ "ris_candidates", FireUnsigned(p.pathGuiding.risCandidates) },
+					{ "sampling_type", Value::Unsigned(static_cast<unsigned int>(p.pathGuiding.samplingType)) },
+					{ "training_iterations", FireUnsigned(p.pathGuiding.trainingIterations) },
+					{ "training_spp", FireUnsigned(p.pathGuiding.trainingSPP) },
+					{ "warmup_iterations", FireUnsigned(p.pathGuiding.warmupIterations) } }) },
+				{ "show_luminaires", FireBool(p.showLuminaires) },
+				{ "sms", Value::MapValue({
+					{ "bernoulli_trials", FireUnsigned(p.sms.bernoulliTrials) },
+					{ "biased", FireBool(p.sms.biased) },
+					{ "enabled", FireBool(p.sms.enabled) },
+					{ "max_chain_depth", FireUnsigned(p.sms.maxChainDepth) },
+					{ "max_iterations", FireUnsigned(p.sms.maxIterations) },
+					{ "max_photon_seeds_per_shading_point", FireUnsigned(p.sms.maxPhotonSeedsPerShadingPoint) },
+					{ "multi_trials", FireUnsigned(p.sms.multiTrials) },
+					{ "photon_count", FireUnsigned(p.sms.photonCount) },
+					{ "seeding_mode", Value::Unsigned(static_cast<unsigned int>(p.sms.seedingMode)) },
+					{ "target_bounces", FireUnsigned(p.sms.targetBounces) },
+					{ "threshold", Value::Float(p.sms.threshold) },
+					{ "two_stage", FireBool(p.sms.twoStage) },
+					{ "use_levenberg_marquardt", FireBool(p.sms.useLevenbergMarquardt) } }) } }) },
+			{ "light_sampling", Value::MapValue({
+				{ "rr_threshold", Value::Float(p.lightSampleRRThreshold) } }) },
+			{ "record_kind", Value::String("resolved_render_configuration_v1") },
+			{ "raster_sequence", rasterSequence },
+			{ "render_region", Value::MapValue({
+				{ "active", FireBool(renderRegion != nullptr) },
+				{ "bottom", FireUnsigned(renderRegion ? renderRegion->bottom : 0u) },
+				{ "left", FireUnsigned(renderRegion ? renderRegion->left : 0u) },
+				{ "right", FireUnsigned(renderRegion ? renderRegion->right : 0u) },
+				{ "top", FireUnsigned(renderRegion ? renderRegion->top : 0u) } }) },
+			{ "sampler", Value::MapValue({
+				{ "adaptive", Value::MapValue({
+					{ "max_samples", FireUnsigned(p.adaptive.maxSamples) },
+					{ "show_map", FireBool(p.adaptive.showMap) },
+					{ "threshold", Value::Float(p.adaptive.threshold) } }) },
+				{ "blue_noise", FireBool(p.pixelFilter.blueNoiseSampler) },
+				{ "large_step_probability", Value::Float(p.largeStepProb) },
+				{ "luminary_sampler", Value::String(p.luminarySampler) },
+				{ "luminary_sampler_param", Value::Float(p.luminarySamplerParam) },
+				{ "mlt_bootstrap_samples", FireUnsigned(p.nBootstrap) },
+				{ "mlt_chains", FireUnsigned(p.nChains) },
+				{ "mlt_mutations_per_pixel", FireUnsigned(p.nMutationsPerPixel) },
+				{ "num_luminary_samples", FireUnsigned(p.numLumSamples) },
+				{ "pixel_sampler", Value::String(p.pixelFilter.pixelSampler.c_str()) },
+				{ "pixel_sampler_param", Value::Float(p.pixelFilter.pixelSamplerParam) },
+				{ "pixel_samples", FireUnsigned(p.numPixelSamples) },
+				{ "progressive", Value::MapValue({
+					{ "enabled", FireBool(p.progressive.enabled) },
+					{ "samples_per_pass", FireUnsigned(p.progressive.samplesPerPass) } }) },
+				{ "spectral", Value::MapValue({
+					{ "hwss", FireBool(p.spectral.useHWSS) },
+					{ "nm_begin", Value::Float(p.spectral.nmBegin) },
+					{ "nm_end", Value::Float(p.spectral.nmEnd) },
+					{ "num_wavelengths", FireUnsigned(p.spectral.numWavelengths) },
+					{ "spectral_samples", FireUnsigned(p.spectral.spectralSamples) } }) } }) },
+			{ "schema_version", Value::Unsigned(1) },
+			{ "shader", Value::String(p.shader) },
+			{ "stability", Value::MapValue({
+				{ "filter_glossy", Value::Float(p.stability.filterGlossy) },
+				{ "optimal_mis", FireBool(p.stability.optimalMIS) },
+				{ "optimal_mis_tile_size", FireUnsigned(p.stability.optimalMISTileSize) },
+				{ "optimal_mis_training_iterations", FireUnsigned(p.stability.optimalMISTrainingIterations) },
+				{ "rr_min_depth", FireUnsigned(p.stability.rrMinDepth) },
+				{ "rr_threshold", Value::Float(p.stability.rrThreshold) },
+				{ "transparent_shadows", FireBool(p.stability.transparentShadows) },
+				{ "use_light_bvh", FireBool(p.stability.useLightBVH) } }) },
+			{ "transport", Value::MapValue({
+				{ "oidn", FireBool(p.oidnDenoise) },
+				{ "oidn_device", Value::Unsigned(static_cast<unsigned int>(p.oidnDevice)) },
+				{ "oidn_prefilter", Value::Unsigned(static_cast<unsigned int>(p.oidnPrefilter)) },
+				{ "oidn_quality", Value::Unsigned(static_cast<unsigned int>(p.oidnQuality)) },
+				{ "radiance_map", Value::MapValue({
+					{ "background", FireBool(p.radianceMap.isBackground) },
+					{ "name", Value::String(p.radianceMap.name.c_str()) },
+					{ "orientation", FireFloatArray(p.radianceMap.orientation,3) },
+					{ "scale", Value::Float(p.radianceMap.scale) } }) } }) }
+		});
+		return FireEncodeRecord(record,bytes,"resolved_render_configuration_v1");
+	}
+
+	bool ResolvedConfigMatchesLeasedMetadata(
+		const RISECBOR64::Bytes& currentBytes,
+		const RISECBOR64::Bytes& leasedBytes )
+	{
+		using RISECBOR64::Value;
+		Value current;
+		Value leased;
+		std::string error;
+		if( !RISECBOR64::DecodeCanonical(currentBytes,current,&error) ||
+			!RISECBOR64::DecodeCanonical(leasedBytes,leased,&error) ||
+			current.GetType() != Value::Map || leased.GetType() != Value::Map ) return false;
+		const Value* evaluated = leased.Find("evaluated_camera_states");
+		if( !evaluated || evaluated->GetType() != Value::Array ) return false;
+		Value::Members adjusted = current.GetMap();
+		bool replaced = false;
+		for( Value::Members::value_type& member : adjusted ) {
+			if( member.first == "evaluated_camera_states" ) {
+				member.second = *evaluated;
+				replaced = true;
+				break;
+			}
+		}
+		RISECBOR64::Bytes adjustedBytes;
+		return replaced && RISECBOR64::Encode(
+			Value::MapValue(adjusted),adjustedBytes,&error) && adjustedBytes == leasedBytes;
+	}
+
+	RISECBOR64::Value FireFloatArray( const double* values, const std::size_t count )
+	{
+		RISECBOR64::Value::Values encoded;
+		encoded.reserve(count);
+		for( std::size_t i=0; i<count; ++i ) {
+			encoded.push_back(RISECBOR64::Value::Float(values[i]));
+		}
+		return RISECBOR64::Value::ArrayValue(encoded);
+	}
+
+	RISECBOR64::Value FireUInt3(
+		const unsigned int x,
+		const unsigned int y,
+		const unsigned int z )
+	{
+		return RISECBOR64::Value::ArrayValue({
+			RISECBOR64::Value::Unsigned(x),
+			RISECBOR64::Value::Unsigned(y),
+			RISECBOR64::Value::Unsigned(z) });
+	}
+
+	bool FireCanonicalRecord(
+		RISECBOR64::Value::Members members,
+		const char* recordKind,
+		const char* diagnosticName,
+		RISECBOR64::Bytes& bytes )
+	{
+		members.push_back(std::make_pair("record_kind",
+			RISECBOR64::Value::String(recordKind)));
+		members.push_back(std::make_pair("schema_version",
+			RISECBOR64::Value::Unsigned(1)));
+		bytes.clear();
+		std::string error;
+		if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue(members),bytes,&error) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: could not canonically encode %s: %s",diagnosticName,error.c_str());
+			return false;
+		}
+		return true;
+	}
+
+	RISECBOR64::Bytes FireAuthoredParameterRecord(
+		RISECBOR64::Value::Members members )
+	{
+		RISECBOR64::Bytes bytes;
+		FireCanonicalRecord(members,"static_fire_medium_parameters_v1",
+			"static fire-medium parameters",bytes);
+		return bytes;
+	}
+
+	RISECBOR64::Value FireCommonAuthoring(
+		const char* name,
+		const char* carbonPainter,
+		const char* temperaturePainter,
+		const char* condensedPainter,
+		const unsigned int bakeWidth,
+		const unsigned int bakeHeight,
+		const unsigned int bakeDepth,
+		const double bboxMin[3],
+		const double bboxMax[3],
+		const double sceneUnitMeters )
+	{
+		return RISECBOR64::Value::MapValue({
+			{ "bake_resolution", FireUInt3(bakeWidth,bakeHeight,bakeDepth) },
+			{ "bbox_max", FireFloatArray(bboxMax,3) },
+			{ "bbox_min", FireFloatArray(bboxMin,3) },
+			{ "channel_carbon_painter", FireText(carbonPainter) },
+			{ "channel_condensed_painter", FireText(condensedPainter) },
+			{ "channel_temperature_painter", FireText(temperaturePainter) },
+			{ "manager_name", FireText(name) },
+			{ "scene_unit_meters", RISECBOR64::Value::Float(sceneUnitMeters) }
+		});
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +1722,7 @@ void Job::InitializeContainers()
 	pRasterizer = 0;
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
+	m_firePredictiveRequested = false;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
 	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
@@ -583,6 +1860,7 @@ void Job::DestroyContainers()
 	safe_shutdown_and_release( pCameraManager );
 	safe_shutdown_and_release( pPntManager );
 	safe_shutdown_and_release( pScalarPntManager );
+	fireFunction1DDefinitionRecords.clear();
 	safe_shutdown_and_release( pFunc1DManager );
 	safe_shutdown_and_release( pFunc2DManager );
 	// P1-#8: clear the H3 self-invalidation callback BEFORE releasing the
@@ -602,6 +1880,7 @@ void Job::DestroyContainers()
 
 	// Release all named media
 	{
+		fireAuthoredConfigDigests.clear();
 		MediumMap::iterator it;
 		for( it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
 			safe_release( it->second );
@@ -2804,6 +4083,20 @@ bool Job::AddBlendPainter(
 // Adding materials
 //
 
+
+//! Creates a unit-transmission medium boundary
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddNullBoundaryMaterial(
+	const char* name
+	)
+{
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateNullBoundaryMaterial( &pMaterial );
+
+	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
+	safe_release( pMaterial );
+	return ok;
+}
 
 //! Creates Lambertian material
 /// \return TRUE if successful, FALSE otherwise
@@ -5467,7 +6760,28 @@ bool Job::AddPiecewiseLinearFunction(
 	const bool ok = RegisterOrDiag( pPntManager, pPainter, name, "function" );
 	safe_release( pPainter );
 
-	if( ok ) pFunc1DManager->AddItem( pFunction, name );   // primary's source func1D, gated on the painter add; its own bool stays intentionally unchecked -- a remove-then-re-add leaves a stale func1D (documented known limitation; see RemovePainter)
+	if( ok ) {
+		pFunc1DManager->AddItem( pFunction, name );   // primary's source func1D, gated on the painter add; its own bool stays intentionally unchecked -- a remove-then-re-add leaves a stale func1D (documented known limitation; see RemovePainter)
+		if( pFunc1DManager->GetItem(name) == pFunction ) {
+			RISECBOR64::Value::Values controlPoints;
+			controlPoints.reserve(num);
+			for( unsigned int i=0; i<num; ++i ) {
+				controlPoints.push_back(RISECBOR64::Value::ArrayValue({
+					RISECBOR64::Value::Float(x[i]),
+					RISECBOR64::Value::Float(y[i]) }));
+			}
+			RISECBOR64::Bytes definitionRecord;
+			const bool definitionEncoded = FireCanonicalRecord({
+				{ "control_points", RISECBOR64::Value::ArrayValue(controlPoints) },
+				{ "lut_size", RISECBOR64::Value::Unsigned(lutsize) },
+				{ "use_lut", RISECBOR64::Value::Bool(bUseLUTs) }
+			},"piecewise_linear_function_1d_authoring","1D function authoring",
+				definitionRecord);
+			if( definitionEncoded ) {
+				fireFunction1DDefinitionRecords[pFunction] = definitionRecord;
+			}
+		}
+	}
 	safe_release( pFunction );
 
 	return ok;
@@ -6016,6 +7330,493 @@ bool Job::AddPainterHeterogeneousMedium(
 	return true;
 }
 
+std::string Job::FinalizeFireAuthoredConfigDigest(
+	const IMedium& medium,
+	const std::vector<unsigned char>& authoredParameterRecord,
+	const IFunction1D* const chemSPDs[3]
+	)
+{
+	const MultichannelHeterogeneousMedium* fire =
+		dynamic_cast<const MultichannelHeterogeneousMedium*>(&medium);
+	RISECBOR64::Bytes bakedChannelRecord;
+	RISECBOR64::Value authoredParameters;
+	RISECBOR64::Value bakedChannels;
+	std::string error;
+	if( !fire || authoredParameterRecord.empty() ||
+		!RISECBOR64::DecodeCanonical(authoredParameterRecord,authoredParameters,&error) ||
+		!fire->BuildBakedChannelRecord(bakedChannelRecord) ||
+		!RISECBOR64::DecodeCanonical(bakedChannelRecord,bakedChannels,&error) ) {
+		GlobalLog()->PrintEasyError(
+			"Job:: could not bind static fire-medium provenance to its direct parameter and channel-bake records" );
+		return std::string();
+	}
+	RISECBOR64::Value::Values chemDefinitions;
+	for( unsigned int band=0; band<3u; ++band ) {
+		if( !chemSPDs || !chemSPDs[band] ) continue;
+		const std::map<const IFunction1D*,std::vector<unsigned char> >::const_iterator definition =
+			fireFunction1DDefinitionRecords.find(chemSPDs[band]);
+		if( definition == fireFunction1DDefinitionRecords.end() ||
+			definition->second.empty() ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: could not bind static fire-medium provenance to a chem SPD definition" );
+			return std::string();
+		}
+		RISECBOR64::Value definitionRecord;
+		if( !RISECBOR64::DecodeCanonical(definition->second,definitionRecord,&error) ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: chem SPD authoring record is noncanonical" );
+			return std::string();
+		}
+		chemDefinitions.push_back(definitionRecord);
+	}
+	RISECBOR64::Bytes resolvedRecord;
+	if( !FireCanonicalRecord({
+		{ "authored_parameters", authoredParameters },
+		{ "baked_channels", bakedChannels },
+		{ "chem_spd_definitions", RISECBOR64::Value::ArrayValue(chemDefinitions) }
+	},"static_fire_medium_authored_config_v1",
+		"resolved static fire-medium authoring",resolvedRecord) ) return std::string();
+	return RISECBOR64::SHA256Hex(resolvedRecord);
+}
+
+bool Job::AddMultichannelHeterogeneousMedium(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter ) return false;
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem( carbon_painter );
+	IScalarPainter* temperature = pScalarPntManager->GetItem( temperature_painter );
+	if( !carbon || !temperature ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddMultichannelHeterogeneousMedium:: scalar painter not found (carbon `%s`, temperature `%s`)",
+			carbon_painter, temperature_painter );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMedium:: carbon and temperature require single-valued scalar painters" );
+		return false;
+	}
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_two_channel") },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,0,bake_width,bake_height,bake_depth,bboxMin,
+			bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMedium(
+		&medium, *carbon, *temperature,
+		bake_width, bake_height, bake_depth,
+		Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+		Point3( bboxMax[0], bboxMax[1], bboxMax[2] ),
+		Scalar( scene_unit_meters ), Scalar( soot_em ), Scalar( soot_density ),
+		Scalar( soot_albedo_hot ), Scalar( soot_g_hot ),
+		Scalar( smoke_km_carbon ), Scalar( smoke_n_carbon ),
+		Scalar( smoke_albedo_carbon ), Scalar( smoke_g_carbon ) ) || !medium ) {
+		return false;
+	}
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,0);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
+	}
+	return true;
+}
+
+bool Job::AddMultichannelHeterogeneousMediumWithCondensed(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon,
+	const double smoke_km_cond,
+	const double smoke_n_cond,
+	const double smoke_albedo_cond,
+	const double smoke_g_cond
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter || !condensed_painter ) return false;
+	if( mediaMap.find( name ) != mediaMap.end() ) {
+		DiagDuplicateName( "medium", name );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem( carbon_painter );
+	IScalarPainter* temperature = pScalarPntManager->GetItem( temperature_painter );
+	IScalarPainter* condensed = pScalarPntManager->GetItem( condensed_painter );
+	if( !carbon || !temperature || !condensed ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: scalar painter not found (carbon `%s`, temperature `%s`, condensed `%s`)",
+			carbon_painter, temperature_painter, condensed_painter );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ||
+		condensed->HasPerChannelVariation() ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithCondensed:: physical channels require single-valued scalar painters" );
+		return false;
+	}
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_condensed") },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_albedo_condensed", RISECBOR64::Value::Float(smoke_albedo_cond) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_g_condensed", RISECBOR64::Value::Float(smoke_g_cond) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_km_condensed", RISECBOR64::Value::Float(smoke_km_cond) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "smoke_n_condensed", RISECBOR64::Value::Float(smoke_n_cond) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+		&medium, *carbon, *temperature, *condensed,
+		bake_width, bake_height, bake_depth,
+		Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+		Point3( bboxMax[0], bboxMax[1], bboxMax[2] ),
+		Scalar( scene_unit_meters ), Scalar( soot_em ), Scalar( soot_density ),
+		Scalar( soot_albedo_hot ), Scalar( soot_g_hot ),
+		Scalar( smoke_km_carbon ), Scalar( smoke_n_carbon ),
+		Scalar( smoke_albedo_carbon ), Scalar( smoke_g_carbon ),
+		Scalar( smoke_km_cond ), Scalar( smoke_n_cond ),
+		Scalar( smoke_albedo_cond ), Scalar( smoke_g_cond ) ) || !medium ) {
+		return false;
+	}
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,0);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back( static_cast<const void*>( medium ) );
+	}
+	return true;
+}
+
+bool Job::AddMultichannelHeterogeneousMediumWithChem(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const char* chem_ch_painter,
+	const char* chem_c2_painter,
+	const char* chem_co2_painter,
+	const char* chem_spd_ch,
+	const char* chem_spd_c2,
+	const char* chem_spd_co2,
+	const double chem_interval_ch[2],
+	const double chem_interval_c2[2],
+	const double chem_interval_co2[2],
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const double soot_em,
+	const double soot_density,
+	const double soot_albedo_hot,
+	const double soot_g_hot,
+	const double smoke_km_carbon,
+	const double smoke_n_carbon,
+	const double smoke_albedo_carbon,
+	const double smoke_g_carbon,
+	const double smoke_km_cond,
+	const double smoke_n_cond,
+	const double smoke_albedo_cond,
+	const double smoke_g_cond
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter ||
+		!chem_ch_painter || !chem_c2_painter || !chem_co2_painter ||
+		!chem_spd_ch || !chem_spd_c2 || !chem_spd_co2 ) return false;
+	if( mediaMap.find(name) != mediaMap.end() ) {
+		DiagDuplicateName("medium",name);
+		return false;
+	}
+	IScalarPainter* painters[6] = {
+		pScalarPntManager->GetItem(carbon_painter),
+		pScalarPntManager->GetItem(temperature_painter),
+		condensed_painter && condensed_painter[0]
+			? pScalarPntManager->GetItem(condensed_painter) : 0,
+		pScalarPntManager->GetItem(chem_ch_painter),
+		pScalarPntManager->GetItem(chem_c2_painter),
+		pScalarPntManager->GetItem(chem_co2_painter) };
+	IFunction1D* curves[3] = {
+		pFunc1DManager->GetItem(chem_spd_ch),
+		pFunc1DManager->GetItem(chem_spd_c2),
+		pFunc1DManager->GetItem(chem_spd_co2) };
+	if( !painters[0] || !painters[1] ||
+		(condensed_painter && condensed_painter[0] && !painters[2]) ||
+		!painters[3] || !painters[4] || !painters[5] ||
+		!curves[0] || !curves[1] || !curves[2] ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithChem:: channel painter or chem SPD reference not found" );
+		return false;
+	}
+	for( unsigned int i = 0; i < 6u; ++i ) {
+		if( painters[i] && painters[i]->HasPerChannelVariation() ) {
+			GlobalLog()->PrintEasyError(
+				"Job::AddMultichannelHeterogeneousMediumWithChem:: physical channels require single-valued scalar painters" );
+			return false;
+		}
+	}
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("synthetic_chem") },
+		{ "chemistry", RISECBOR64::Value::MapValue({
+			{ "c2_interval_nm", FireFloatArray(chem_interval_c2,2) },
+			{ "c2_painter", FireText(chem_c2_painter) },
+			{ "c2_spd", FireText(chem_spd_c2) },
+			{ "ch_interval_nm", FireFloatArray(chem_interval_ch,2) },
+			{ "ch_painter", FireText(chem_ch_painter) },
+			{ "ch_spd", FireText(chem_spd_ch) },
+			{ "co2_interval_nm", FireFloatArray(chem_interval_co2,2) },
+			{ "co2_painter", FireText(chem_co2_painter) },
+			{ "co2_spd", FireText(chem_spd_co2) } }) },
+		{ "optical_parameters", RISECBOR64::Value::MapValue({
+			{ "smoke_albedo_carbon", RISECBOR64::Value::Float(smoke_albedo_carbon) },
+			{ "smoke_albedo_condensed", RISECBOR64::Value::Float(smoke_albedo_cond) },
+			{ "smoke_g_carbon", RISECBOR64::Value::Float(smoke_g_carbon) },
+			{ "smoke_g_condensed", RISECBOR64::Value::Float(smoke_g_cond) },
+			{ "smoke_km_carbon", RISECBOR64::Value::Float(smoke_km_carbon) },
+			{ "smoke_km_condensed", RISECBOR64::Value::Float(smoke_km_cond) },
+			{ "smoke_n_carbon", RISECBOR64::Value::Float(smoke_n_carbon) },
+			{ "smoke_n_condensed", RISECBOR64::Value::Float(smoke_n_cond) },
+			{ "soot_albedo_hot", RISECBOR64::Value::Float(soot_albedo_hot) },
+			{ "soot_density", RISECBOR64::Value::Float(soot_density) },
+			{ "soot_em", RISECBOR64::Value::Float(soot_em) },
+			{ "soot_g_hot", RISECBOR64::Value::Float(soot_g_hot) } }) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+		&medium, *painters[0], *painters[1], painters[2],
+		*painters[3], *painters[4], *painters[5],
+		*curves[0], *curves[1], *curves[2],
+		Scalar(chem_interval_ch[0]), Scalar(chem_interval_ch[1]),
+		Scalar(chem_interval_c2[0]), Scalar(chem_interval_c2[1]),
+		Scalar(chem_interval_co2[0]), Scalar(chem_interval_co2[1]),
+		bake_width, bake_height, bake_depth,
+		Point3(bboxMin[0],bboxMin[1],bboxMin[2]),
+		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
+		Scalar(scene_unit_meters), Scalar(soot_em), Scalar(soot_density),
+		Scalar(soot_albedo_hot), Scalar(soot_g_hot),
+		Scalar(smoke_km_carbon), Scalar(smoke_n_carbon),
+		Scalar(smoke_albedo_carbon), Scalar(smoke_g_carbon),
+		Scalar(smoke_km_cond), Scalar(smoke_n_cond),
+		Scalar(smoke_albedo_cond), Scalar(smoke_g_cond)) || !medium ) return false;
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,curves);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	}
+	return true;
+}
+
+bool Job::AddMultichannelHeterogeneousMediumWithPreset(
+	const char* name,
+	const char* carbon_painter,
+	const char* temperature_painter,
+	const char* condensed_painter,
+	const char* chem_ch_painter,
+	const char* chem_c2_painter,
+	const char* chem_co2_painter,
+	const char* chem_spd_ch,
+	const char* chem_spd_c2,
+	const char* chem_spd_co2,
+	const double chem_interval_ch[2],
+	const double chem_interval_c2[2],
+	const double chem_interval_co2[2],
+	const unsigned int bake_width,
+	const unsigned int bake_height,
+	const unsigned int bake_depth,
+	const double bboxMin[3],
+	const double bboxMax[3],
+	const double scene_unit_meters,
+	const char* optical_record
+	)
+{
+	if( !name || !carbon_painter || !temperature_painter || !bboxMin ||
+		!bboxMax || !optical_record ) return false;
+	if( mediaMap.find(name) != mediaMap.end() ) {
+		DiagDuplicateName("medium",name);
+		return false;
+	}
+	const auto hasName = []( const char* value ) {
+		return value && value[0];
+	};
+	const bool chemFields[9] = {
+		hasName(chem_ch_painter), hasName(chem_c2_painter), hasName(chem_co2_painter),
+		hasName(chem_spd_ch), hasName(chem_spd_c2), hasName(chem_spd_co2),
+		chem_interval_ch != 0, chem_interval_c2 != 0, chem_interval_co2 != 0 };
+	bool hasAnyChem = false;
+	bool hasAllChem = true;
+	for( unsigned int i=0; i<9u; ++i ) {
+		hasAnyChem = hasAnyChem || chemFields[i];
+		hasAllChem = hasAllChem && chemFields[i];
+	}
+	if( hasAnyChem && !hasAllChem ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithPreset:: chem bundle is incomplete" );
+		return false;
+	}
+
+	IScalarPainter* carbon = pScalarPntManager->GetItem(carbon_painter);
+	IScalarPainter* temperature = pScalarPntManager->GetItem(temperature_painter);
+	IScalarPainter* condensed = hasName(condensed_painter) ?
+		pScalarPntManager->GetItem(condensed_painter) : 0;
+	IScalarPainter* chemPainters[3] = { 0, 0, 0 };
+	IFunction1D* chemSPDs[3] = { 0, 0, 0 };
+	if( hasAllChem ) {
+		chemPainters[0] = pScalarPntManager->GetItem(chem_ch_painter);
+		chemPainters[1] = pScalarPntManager->GetItem(chem_c2_painter);
+		chemPainters[2] = pScalarPntManager->GetItem(chem_co2_painter);
+		chemSPDs[0] = pFunc1DManager->GetItem(chem_spd_ch);
+		chemSPDs[1] = pFunc1DManager->GetItem(chem_spd_c2);
+		chemSPDs[2] = pFunc1DManager->GetItem(chem_spd_co2);
+	}
+	if( !carbon || !temperature || (hasName(condensed_painter) && !condensed) ||
+		(hasAllChem && (!chemPainters[0] || !chemPainters[1] || !chemPainters[2] ||
+			!chemSPDs[0] || !chemSPDs[1] || !chemSPDs[2])) ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddMultichannelHeterogeneousMediumWithPreset:: channel painter or chem SPD reference not found" );
+		return false;
+	}
+	if( carbon->HasPerChannelVariation() || temperature->HasPerChannelVariation() ||
+		(condensed && condensed->HasPerChannelVariation()) ) return false;
+	for( unsigned int i=0; i<3u; ++i ) {
+		if( chemPainters[i] && chemPainters[i]->HasPerChannelVariation() ) return false;
+	}
+	RISECBOR64::Value chemistry = RISECBOR64::Value::MapValue({
+		{ "c2_interval_nm", hasAllChem ? FireFloatArray(chem_interval_c2,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "c2_painter", FireText(chem_c2_painter) },
+		{ "c2_spd", FireText(chem_spd_c2) },
+		{ "ch_interval_nm", hasAllChem ? FireFloatArray(chem_interval_ch,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "ch_painter", FireText(chem_ch_painter) },
+		{ "ch_spd", FireText(chem_spd_ch) },
+		{ "co2_interval_nm", hasAllChem ? FireFloatArray(chem_interval_co2,2) :
+			RISECBOR64::Value::ArrayValue({}) },
+		{ "co2_painter", FireText(chem_co2_painter) },
+		{ "co2_spd", FireText(chem_spd_co2) },
+		{ "model", RISECBOR64::Value::String(hasAllChem ? "synthetic_fixture" : "none") }
+	});
+	const RISECBOR64::Bytes authoredParameterRecord = FireAuthoredParameterRecord({
+		{ "authoring_variant", RISECBOR64::Value::String("versioned_preset") },
+		{ "chemistry", chemistry },
+		{ "optical_record", FireText(optical_record) },
+		{ "resolved_parameters", FireCommonAuthoring(name,carbon_painter,
+			temperature_painter,condensed_painter,bake_width,bake_height,bake_depth,
+			bboxMin,bboxMax,scene_unit_meters) }
+	});
+	if( authoredParameterRecord.empty() ) return false;
+
+	IMedium* medium = 0;
+	if( !RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+		&medium, *carbon, *temperature, condensed,
+		chemPainters[0], chemPainters[1], chemPainters[2],
+		chemSPDs[0], chemSPDs[1], chemSPDs[2],
+		hasAllChem ? Scalar(chem_interval_ch[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_ch[1]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_c2[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_c2[1]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_co2[0]) : 0.0,
+		hasAllChem ? Scalar(chem_interval_co2[1]) : 0.0,
+		bake_width, bake_height, bake_depth,
+		Point3(bboxMin[0],bboxMin[1],bboxMin[2]),
+		Point3(bboxMax[0],bboxMax[1],bboxMax[2]),
+		Scalar(scene_unit_meters), optical_record ) || !medium ) return false;
+	const IFunction1D* const consumedSPDs[3] = {
+		chemSPDs[0], chemSPDs[1], chemSPDs[2] };
+	const std::string authoredDigest = FinalizeFireAuthoredConfigDigest(
+		*medium,authoredParameterRecord,consumedSPDs);
+	if( authoredDigest.empty() ) {
+		safe_release(medium);
+		return false;
+	}
+	mediaMap[name] = medium;
+	fireAuthoredConfigDigests[medium] = authoredDigest;
+	if( g_cstProductionSink ) {
+		g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	}
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)
@@ -6029,6 +7830,24 @@ bool Job::SetGlobalMedium(
 	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (global_medium)
 	pScene->SetGlobalMedium( it->second );
 	return true;
+}
+
+bool Job::SetFireFidelityMode( const char* mode )
+{
+	if( !mode ) {
+		return false;
+	}
+	if( std::strcmp(mode, "preview") == 0 ) {
+		m_firePredictiveRequested = false;
+		return true;
+	}
+	if( std::strcmp(mode, "predictive") == 0 ) {
+		m_firePredictiveRequested = true;
+		return true;
+	}
+	GlobalLog()->PrintEx( eLog_Error,
+		"Job::SetFireFidelityMode:: unknown fidelity mode `%s`", mode );
+	return false;
 }
 
 bool Job::SetObjectInteriorMedium(
@@ -6050,6 +7869,9 @@ bool Job::SetObjectInteriorMedium(
 
 	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (interior_medium)
 	pObj->AssignInteriorMedium( *(it->second) );
+	// LightSampler caches both object-medium presence and the Phase-A fire
+	// routing bit.  Reused casters rebuild those caches on the next attach.
+	BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -6058,6 +7880,19 @@ const IMedium* Job::GetMedium( const char* name ) const
 	if( !name ) return 0;
 	MediumMap::const_iterator it = mediaMap.find( String( name ) );
 	return it == mediaMap.end() ? 0 : it->second;
+}
+
+bool Job::ForTest_SetFireEffectiveAbsorptionAblation(
+	const char* name,
+	const unsigned int ablation
+	)
+{
+	if( !name ) return false;
+	MediumMap::iterator it = mediaMap.find( String( name ) );
+	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
+		dynamic_cast<MultichannelHeterogeneousMedium*>(it->second);
+	return medium && medium->ForTest_SetEffectiveAbsorptionAblation(
+		static_cast<MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation>(ablation));
 }
 
 void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
@@ -8291,7 +10126,6 @@ bool Job::AddFileRasterizerOutput(
 			szPattern ? szPattern : "(null)" );
 		return true;
 	}
-
 	COLOR_SPACE gc = eColorSpace_sRGB;
 	switch( color_space )
 	{
@@ -8360,9 +10194,11 @@ bool Job::AddFileRasterizerOutput(
 	}
 
 	IRasterizerOutput* ro = 0;
-	RISE_API_CreateFileRasterizerOutput(
+	if( !RISE_API_CreateFileRasterizerOutput(
 		&ro, szPattern, bMultiple, type, bpp, gc,
-		(Scalar)exposureEV, dt, exrc, exr_with_alpha );
+		(Scalar)exposureEV, dt, exrc, exr_with_alpha ) || !ro ) {
+		return false;
+	}
 
 	pRasterizer->AddRasterizerOutput( ro );
 	safe_release( ro );
@@ -8374,7 +10210,8 @@ namespace RISE {
 	namespace Implementation {
 		//! This is out dispatcher that handles the rasterizer output calls and pipes them off
 		//! to the client application
-		class CallbackRasterizerOutputDispatch : public virtual IRasterizerOutput, public virtual Reference
+		class CallbackRasterizerOutputDispatch : public virtual IRasterizerOutput,
+			public virtual IFireRasterizerOutputRoute, public virtual Reference
 		{
 		protected:
 			IJobRasterizerOutput&	pObj;
@@ -8413,7 +10250,7 @@ namespace RISE {
 			void OutputIntermediateImage(
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion							///< [in] Rasterized region, if its NULL then the entire image should be output
-				)
+				) override
 			{
 				// Reallocate the dispatch buffer whenever the image
 				// dimensions change, not only on first call.  Without
@@ -8550,10 +10387,13 @@ namespace RISE {
 				const IRasterImage& pImage,					///< [in] Rasterized image
 				const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
 				const unsigned int frame
-				)
+				) override
 			{
 				OutputIntermediateImage( pImage, pRegion );
 			}
+
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::UnavailableArtifact; }
 		};
 	}
 }
@@ -9188,7 +11028,7 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
-	if( !pRasterizer ) {
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(false) ) {
 		return false;
 	}
 
@@ -9196,6 +11036,11 @@ bool Job::PredictRasterizationTime(
 	RISE_API_CreateNRooksSampling2D( &pSampling, 1.0, 1.0, 1.0 );
 	pSampling->SetNumSamples( num );
 
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Prediction) ) {
+		safe_release(pSampling);
+		return false;
+	}
 	unsigned int nMs = pRasterizer->PredictTimeToRasterizeScene( *pScene, *pSampling, actual );
 
 	if( ms ) {
@@ -9206,61 +11051,699 @@ bool Job::PredictRasterizationTime(
 	return true;
 }
 
-static IRasterizeSequence* RasterizeSequenceFromOptions()
+static IRasterizeSequence* RasterizeSequenceFromResolution(
+	const ResolvedRasterSequence& resolved )
 {
-	// Read the raster sequence options from the options file
-	IOptions& options = GlobalOptions();
-
-	const int raster_sequence_type = options.ReadInt( "raster_sequence_type", 4 );
-	RISE::String raster_sequence = options.ReadString( "raster_sequence_options", "" );
-
 	IRasterizeSequence* pSeq = 0;
-	// parse the options
-	// Get the raster sequence type
-	switch( raster_sequence_type )
-	{
-	default:
-	case 4:
-		// Morton Z-order curve (default) - optimal cache locality
-		{
-			unsigned int tileSize = 32;
-			if( !raster_sequence.empty() ) {
-				sscanf( raster_sequence.c_str(), "%u", &tileSize );
-			}
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, tileSize );
-		}
+	switch( resolved.kind ) {
+	case RasterSequenceKind::Morton:
+		RISE_API_CreateMortonRasterizeSequence( &pSeq, resolved.tileSize );
 		break;
-
-	case 3:
-		// Legacy random (deprecated)
-		if( GlobalRNG().CanonicalRandom() < 0.1 ) {
-			RISE_API_CreateHilbertRasterizeSequence( &pSeq, 4 );
-		} else {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 64, 64, (char)floor(GlobalRNG().CanonicalRandom()*8.999999) );
-		}
+	case RasterSequenceKind::Block:
+		pSeq = new RISE::Implementation::BlockRasterizeSequence(
+			resolved.blockWidth,resolved.blockHeight,
+			static_cast<char>(resolved.blockOrder),resolved.shuffleSeed);
+		GlobalLog()->PrintNew( pSeq, __FILE__, __LINE__, "resolved block raster sequence" );
 		break;
-
-	case 0:
-		// Scanline (deprecated)
+	case RasterSequenceKind::Scanline:
 		RISE_API_CreateScanlineRasterizeSequence( &pSeq );
 		break;
-	case 1:
-		// Block (deprecated)
-		unsigned int width, height, type;
-		if( sscanf( raster_sequence.c_str(), "%u %u %u", &width, &height, &type ) == 3 ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, width, height, (char)type );
-		}
+	case RasterSequenceKind::Hilbert:
+		RISE_API_CreateHilbertRasterizeSequence( &pSeq, resolved.hilbertDepth );
 		break;
-	case 2:
-		// Hilbert (deprecated)
-		unsigned int depth;
-		if( sscanf( raster_sequence.c_str(), "%u", &depth ) == 1 ) {
-			RISE_API_CreateHilbertRasterizeSequence( &pSeq, depth );
-		}
+	case RasterSequenceKind::RasterizerDefault:
 		break;
 	}
-
 	return pSeq;
+}
+
+namespace
+{
+	bool SceneHasActiveFireMedium( const IScene& scene )
+	{
+		const IMedium* global = scene.GetGlobalMedium();
+		if( global && global->IsFireMedium() ) return true;
+		const IObjectManager* objects = scene.GetObjects();
+		if( !objects ) return false;
+		struct Collector : public IEnumCallback<const char*>
+		{
+			const IObjectManager& objects;
+			bool found = false;
+			explicit Collector( const IObjectManager& source ) : objects(source) {}
+			bool operator()( const char* const& name ) override
+			{
+				const IObject* object = objects.GetItem(name);
+				const IMedium* medium = object ? object->GetInteriorMedium() : nullptr;
+				found = medium && medium->IsFireMedium();
+				return !found;
+			}
+		} collector(*objects);
+		objects->EnumerateItemNames(collector);
+		return collector.found;
+	}
+
+	class FrameRenderRollback
+	{
+	public:
+		explicit FrameRenderRollback( RISE::Implementation::FrameStore* store )
+			: store_(store), original_(store ? store->Meta() : RISE::FrameStoreOutput::Metadata()),
+			  committed_(false)
+		{
+			if( store_ ) store_->addref();
+		}
+		~FrameRenderRollback()
+		{
+			if( store_ && !committed_ ) {
+				try {
+					if( snapshot_ ) {
+						if( !store_->RestoreSnapshot(*snapshot_) ) store_->SetMetadata(original_);
+					} else {
+						store_->SetMetadata(original_);
+					}
+				}
+				catch( ... ) {
+					GlobalLog()->PrintEasyError(
+						"output_provenance_unavailable: fire frame rollback could not restore metadata");
+				}
+			}
+			safe_release(store_);
+		}
+		bool ArmPixelStateForFire()
+		{
+			if( !store_ || (original_.renderFidelityStatus.empty() &&
+				store_->Meta().renderFidelityStatus.empty()) ) return false;
+			snapshot_.reset(new RISE::Implementation::FrameStore::Snapshot(
+				store_->CaptureSnapshot()));
+			snapshot_->metadata = original_;
+			return true;
+		}
+		bool PreparedFire() const
+		{
+			return store_ && (!original_.renderFidelityStatus.empty() ||
+				!store_->Meta().renderFidelityStatus.empty());
+		}
+		void Commit()
+		{
+			if( store_ ) store_->CompleteFireRenderPublication();
+			committed_ = true;
+		}
+
+	private:
+		RISE::Implementation::FrameStore* store_;
+		RISE::FrameStoreOutput::Metadata original_;
+		std::unique_ptr<RISE::Implementation::FrameStore::Snapshot> snapshot_;
+		bool committed_;
+	};
+}
+
+bool Job::ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const
+{
+	if( !rasterizer || !pScene || !SceneHasActiveFireMedium(*pScene) ) return true;
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(rasterizer);
+	if( !state || !state->ResolveForFirePreflight(*pScene) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: fire rasterizer has no preflight capability");
+		return false;
+	}
+	return true;
+}
+
+void Job::ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const
+{
+	Implementation::Rasterizer* concrete =
+		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+	if( concrete ) concrete->ClearFireRenderPreflightAuthorization();
+}
+
+bool Job::AuthorizeFireRasterizer(
+	IRasterizer* rasterizer,
+	const FireRenderPreflightAuthorization authorization ) const
+{
+	if( !rasterizer || !pScene ) return true;
+	const Implementation::FrameStore* store = rasterizer->GetFrameStore();
+	const bool preparedFire = store && !store->Meta().renderFidelityStatus.empty();
+	if( !SceneHasActiveFireMedium(*pScene) && !preparedFire ) return true;
+	Implementation::Rasterizer* concrete =
+		dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+	if( !concrete || !concrete->AuthorizeFireRenderPreflight(*pScene,authorization) ) {
+		GlobalLog()->PrintEasyError(
+			"output_provenance_unavailable: Job could not bind fire preflight authorization");
+		return false;
+	}
+	return true;
+}
+
+bool Job::FireRasterizerLastRenderCompleted( const IRasterizer* rasterizer ) const
+{
+	const IFireRasterizerState* state =
+		dynamic_cast<const IFireRasterizerState*>(rasterizer);
+	return !state || state->LastRenderCompleted();
+}
+
+bool Job::PrepareFireRenderFidelityMetadata( const bool publishMetadata )
+
+{
+	return PrepareFireRenderFidelityMetadata(animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,nullptr,nullptr,publishMetadata);
+}
+
+bool Job::PrepareFireRenderFidelityMetadata(
+	const double animationTimeStart,
+	const double animationTimeEnd,
+	const unsigned int animationFrames,
+	const bool animationFields,
+	const bool animationInvertFields,
+	const unsigned int* animationFrame,
+	const Rect* renderRegion,
+	ResolvedRasterSequence* resolvedSequence,
+	const bool publishMetadata )
+{
+	if( !pScene || !pRasterizer ) {
+		return false;
+	}
+	ClearFireRasterizerAuthorization(pRasterizer);
+	if( !SceneHasActiveFireMedium(*pScene) ) {
+		pScene->SetFireTemporalHold(false);
+		if( resolvedSequence ) {
+			const String options = GlobalOptions().ReadString(
+				"raster_sequence_options","");
+			*resolvedSequence = ResolveRasterSequence(
+				GlobalOptions().ReadInt("raster_sequence_type",4),options.c_str(),
+				[]() { return GlobalRNG().CanonicalRandom(); });
+		}
+		if( publishMetadata ) {
+			FrameStore* store = pRasterizer->GetFrameStore();
+			if( store ) store->SetFireFidelityMetadata("",{},{});
+		}
+		return true;
+	}
+	if( !ResolveFireRasterizerForPreflight(pRasterizer) ) return false;
+
+	Scalar wavelengthMin = 380.0;
+	Scalar wavelengthMax = 780.0;
+	bool useHWSS = false;
+	AutoIntegratorChoice autoIntegrator = AutoIntegratorChoice::Auto;
+	bool oidnDenoise = false;
+	bool radianceClampEnabled = false;
+	bool pathRegularizationEnabled = false;
+	bool smsEnabled = false;
+	const RasterizerParams* resolvedParams = 0;
+	const RasterizerRegistry::const_iterator active =
+		rasterizerRegistry.find(activeRasterizerName);
+	if( active != rasterizerRegistry.end() ) {
+		resolvedParams = &active->second.params;
+		wavelengthMin = active->second.params.spectral.nmBegin;
+		wavelengthMax = active->second.params.spectral.nmEnd;
+		useHWSS = active->second.params.spectral.useHWSS;
+		autoIntegrator = active->second.params.autoIntegrator;
+		oidnDenoise = active->second.params.oidnDenoise;
+		radianceClampEnabled = active->second.params.stability.directClamp > Scalar(0) ||
+			active->second.params.stability.indirectClamp > Scalar(0);
+		pathRegularizationEnabled = active->second.params.stability.filterGlossy > Scalar(0);
+		smsEnabled = active->second.params.sms.enabled;
+	}
+	ResolvedRasterSequence localResolvedSequence;
+	ResolvedRasterSequence* const effectiveResolvedSequence = resolvedSequence ?
+		resolvedSequence : &localResolvedSequence;
+	RISECBOR64::Bytes resolvedConfig;
+	const char* resolvedIntegrator = pRasterizer->ResolvedIntegratorName();
+	if( publishMetadata && (!resolvedParams || !BuildResolvedRenderConfig(
+		*resolvedParams,activeRasterizerName.c_str(),
+		resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			activeRasterizerName.c_str(),*pScene,
+		pRasterizer->GetFrameStore(),nullptr,animationTimeStart,
+		animationTimeEnd,animationFrames,animationFields,
+		animationInvertFields,animationFrame,renderRegion,effectiveResolvedSequence,
+		nullptr,resolvedConfig)) ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job:: fire render has no canonical resolved configuration");
+		return false;
+	}
+	const bool prepared = PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
+		wavelengthMin,wavelengthMax,useHWSS,autoIntegrator,oidnDenoise,
+		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,resolvedConfig,
+		publishMetadata);
+	if( prepared && publishMetadata ) {
+		Implementation::Rasterizer* concrete =
+			dynamic_cast<Implementation::Rasterizer*>(pRasterizer);
+		if( !concrete ) return false;
+		const IRasterizer* const expectedRasterizer = pRasterizer;
+		const std::string expectedRasterizerName = activeRasterizerName;
+		const std::string expectedIntegrator = resolvedIntegrator && resolvedIntegrator[0] ?
+			resolvedIntegrator : activeRasterizerName;
+		const bool hasAnimationFrame = animationFrame != nullptr;
+		const unsigned int selectedAnimationFrame = animationFrame ? *animationFrame : 0u;
+		const bool hasRenderRegion = renderRegion != nullptr;
+		const Rect selectedRenderRegion = renderRegion ? *renderRegion : Rect(0,0,0,0);
+		const ResolvedRasterSequence selectedSequence = *effectiveResolvedSequence;
+		concrete->SetFireRenderStateValidator([this,expectedRasterizer,
+			expectedRasterizerName,expectedIntegrator,
+			animationTimeStart,animationTimeEnd,animationFrames,animationFields,
+			animationInvertFields,hasAnimationFrame,selectedAnimationFrame,
+			hasRenderRegion,selectedRenderRegion,selectedSequence]() {
+			if( !pScene || pRasterizer != expectedRasterizer ||
+				activeRasterizerName != expectedRasterizerName ) return false;
+			const RasterizerRegistry::const_iterator current =
+				rasterizerRegistry.find(expectedRasterizerName);
+			if( current == rasterizerRegistry.end() ) return false;
+			RISECBOR64::Bytes currentConfig;
+			const Implementation::FrameStore* store = expectedRasterizer->GetFrameStore();
+			return store && BuildResolvedRenderConfig(current->second.params,
+				expectedRasterizerName.c_str(),expectedIntegrator.c_str(),*pScene,
+				store,nullptr,animationTimeStart,
+				animationTimeEnd,animationFrames,animationFields,animationInvertFields,
+				hasAnimationFrame ? &selectedAnimationFrame : nullptr,
+				hasRenderRegion ? &selectedRenderRegion : nullptr,nullptr,
+				&selectedSequence,currentConfig) && ResolvedConfigMatchesLeasedMetadata(
+					currentConfig,store->Meta().resolvedRenderConfigCoreV1);
+		});
+	}
+	return prepared;
+}
+
+bool Job::PrepareFireRenderForExternalRasterizer(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const bool oidnDenoise,
+	const bool radianceClampEnabled,
+	const bool pathRegularizationEnabled,
+	const bool smsEnabled )
+{
+	FireExternalRenderConfig config;
+	config.oidnDenoise = oidnDenoise;
+	config.radianceClampEnabled = radianceClampEnabled;
+	config.pathRegularizationEnabled = pathRegularizationEnabled;
+	config.smsEnabled = smsEnabled;
+	return PrepareFireRenderForExternalRasterizerResolved(
+		rasterizer,rasterizerKind,config);
+}
+
+bool Job::PrepareFireRenderForExternalRasterizerResolved(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const FireExternalRenderConfig& config )
+{
+	ClearFireRasterizerAuthorization(rasterizer);
+	if( pScene && !SceneHasActiveFireMedium(*pScene) ) {
+		pScene->SetFireTemporalHold(false);
+		FrameStore* store = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+		if( store ) store->SetFireFidelityMetadata("",{},{});
+		return true;
+	}
+	if( !ResolveFireRasterizerForPreflight(rasterizer) ) return false;
+	RasterizerParams external;
+	external.numPixelSamples = config.samplesPerPixel;
+	external.oidnDenoise = config.oidnDenoise;
+	external.integrateRGB = true;
+	external.stability.directClamp = config.radianceClampEnabled ? Scalar(1) : Scalar(0);
+	external.stability.filterGlossy =
+		config.pathRegularizationEnabled ? Scalar(1) : Scalar(0);
+	external.sms.enabled = config.smsEnabled;
+	external.lightSampleRRThreshold = lightSampleRRThreshold;
+	external.spectral.nmBegin = Scalar(380);
+	external.spectral.nmEnd = Scalar(780);
+	if( config.variantPipeline ) external.pixelFilter.filter = "box";
+	RISECBOR64::Bytes resolvedConfig;
+	const char* resolvedIntegrator = rasterizer ? rasterizer->ResolvedIntegratorName() : "";
+	if( !pScene || !BuildResolvedRenderConfig(external,
+		rasterizerKind ? rasterizerKind : "",
+		resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			(rasterizerKind ? rasterizerKind : ""),*pScene,
+		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
+	const bool prepared = PrepareFireRenderFidelityMetadata(rasterizer,
+		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
+		false,AutoIntegratorChoice::PT,config.oidnDenoise,
+		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
+		resolvedConfig,true);
+	if( prepared ) {
+		Implementation::Rasterizer* concrete =
+			dynamic_cast<Implementation::Rasterizer*>(rasterizer);
+		if( !concrete ) return false;
+		const IRasterizer* const expectedRasterizer = rasterizer;
+		const std::string expectedRasterizerKind = rasterizerKind ? rasterizerKind : "";
+		const std::string expectedIntegrator =
+			resolvedIntegrator && resolvedIntegrator[0] ? resolvedIntegrator :
+			expectedRasterizerKind;
+		const RasterizerParams expectedParams = external;
+		const FireExternalRenderConfig expectedExternal = config;
+		concrete->SetFireRenderStateValidator([this,expectedRasterizer,
+			expectedRasterizerKind,expectedIntegrator,expectedParams,expectedExternal]() {
+			if( !pScene ) return false;
+			RISECBOR64::Bytes currentConfig;
+			const Implementation::FrameStore* store = expectedRasterizer->GetFrameStore();
+			return store && BuildResolvedRenderConfig(expectedParams,
+				expectedRasterizerKind.c_str(),expectedIntegrator.c_str(),*pScene,
+				store,&expectedExternal,
+				animOptions.time_start,animOptions.time_end,animOptions.num_frames,
+				animOptions.do_fields,animOptions.invert_fields,nullptr,nullptr,
+				nullptr,nullptr,currentConfig) && ResolvedConfigMatchesLeasedMetadata(
+					currentConfig,store->Meta().resolvedRenderConfigCoreV1);
+		});
+	}
+	return prepared;
+}
+
+bool Job::RasterizeExternalRasterizerResolved(
+	IRasterizer* rasterizer,
+	const char* rasterizerKind,
+	const FireExternalRenderConfig& config,
+	const Rect* region )
+{
+	FrameRenderRollback renderRollback(rasterizer ? rasterizer->GetFrameStore() : nullptr);
+	if( !rasterizer || !PrepareFireRenderForExternalRasterizerResolved(
+		rasterizer,rasterizerKind,config) ) return false;
+	renderRollback.ArmPixelStateForFire();
+	if( !AuthorizeFireRasterizer(
+		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
+	rasterizer->RasterizeScene(*pScene,region,nullptr);
+	if( !FireRasterizerLastRenderCompleted(rasterizer) ) return false;
+	renderRollback.Commit();
+	return true;
+}
+
+bool Job::PrepareFireRenderFidelityMetadata(
+	IRasterizer* rasterizer,
+	const std::string& rasterizerKind,
+	const Scalar wavelengthMin,
+	const Scalar wavelengthMax,
+	const bool useHWSS,
+	const AutoIntegratorChoice autoIntegrator,
+	const bool oidnDenoise,
+	const bool radianceClampEnabled,
+	const bool pathRegularizationEnabled,
+	const bool smsEnabled,
+	const std::vector<unsigned char>& resolvedConfig,
+	const bool publishMetadata )
+{
+	if( !pScene || !rasterizer ) {
+		return false;
+	}
+	ClearFireRasterizerAuthorization(rasterizer);
+	pScene->SetFireTemporalHold(false);
+	Implementation::FrameStore* const preparedFrameStore = rasterizer->GetFrameStore();
+
+	struct ActiveMediumBinding
+	{
+		const IMedium* medium;
+		std::string bindingKind;
+		std::string bindingOwner;
+	};
+	std::vector<ActiveMediumBinding> activeBindings;
+	std::set<const IMedium*> activeMedia;
+	if( const IMedium* global = pScene->GetGlobalMedium() ) {
+		activeMedia.insert(global);
+		activeBindings.push_back(ActiveMediumBinding{
+			global,"global_medium","scene"});
+	}
+	struct InteriorMediumCollector : public IEnumCallback<const char*>
+	{
+		const IObjectManager& objects;
+		std::set<const IMedium*>& media;
+		std::vector<ActiveMediumBinding>& bindings;
+		InteriorMediumCollector(
+			const IObjectManager& objectManager,
+			std::set<const IMedium*>& target,
+			std::vector<ActiveMediumBinding>& targetBindings )
+			: objects(objectManager), media(target), bindings(targetBindings) {}
+		bool operator()( const char* const& name ) override
+		{
+			const IObject* object = objects.GetItem(name);
+			if( object ) {
+				const IMedium* interior = object->GetInteriorMedium();
+				if( !interior ) return true;
+				media.insert(interior);
+				bindings.push_back(ActiveMediumBinding{
+					interior,"object_interior_medium",name ? name : ""});
+			}
+			return true;
+		}
+	};
+	if( const IObjectManager* objects = pScene->GetObjects() ) {
+		InteriorMediumCollector collector(*objects,activeMedia,activeBindings);
+		objects->EnumerateItemNames(collector);
+	}
+	const auto sameActiveBindings = [this,&activeBindings]() {
+		std::set<const IMedium*> currentMedia;
+		std::vector<ActiveMediumBinding> currentBindings;
+		if( const IMedium* global = pScene->GetGlobalMedium() ) {
+			currentMedia.insert(global);
+			currentBindings.push_back(ActiveMediumBinding{
+				global,"global_medium","scene"});
+		}
+		if( const IObjectManager* objects = pScene->GetObjects() ) {
+			InteriorMediumCollector collector(*objects,currentMedia,currentBindings);
+			objects->EnumerateItemNames(collector);
+		}
+		const auto less = []( const ActiveMediumBinding& lhs,
+			const ActiveMediumBinding& rhs ) {
+			if( lhs.bindingKind != rhs.bindingKind ) return lhs.bindingKind < rhs.bindingKind;
+			if( lhs.bindingOwner != rhs.bindingOwner ) return lhs.bindingOwner < rhs.bindingOwner;
+			return std::less<const IMedium*>()(lhs.medium,rhs.medium);
+		};
+		std::vector<ActiveMediumBinding> original = activeBindings;
+		std::sort(original.begin(),original.end(),less);
+		std::sort(currentBindings.begin(),currentBindings.end(),less);
+		if( original.size() != currentBindings.size() ) return false;
+		for( std::size_t i=0; i<original.size(); ++i ) {
+			if( original[i].medium != currentBindings[i].medium ||
+				original[i].bindingKind != currentBindings[i].bindingKind ||
+				original[i].bindingOwner != currentBindings[i].bindingOwner ) return false;
+		}
+		return true;
+	};
+
+	std::set<std::string> recordIds;
+	std::set<std::string> reasons;
+	std::string status;
+	bool predictiveAllowed = true;
+	bool domainExceeded = false;
+	bool invalidFidelityMetadata = false;
+	bool missingOpticalRecord = false;
+	bool hasFireMedia = false;
+	std::vector<FrameStoreOutput::ActiveFireMedium> fireMediaMetadata;
+	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
+		medium != activeMedia.end(); ++medium ) {
+		if( !(*medium)->IsFireMedium() ) {
+			continue;
+		}
+		hasFireMedia = true;
+		const char* recordId = (*medium)->GetFireOpticsRecordId();
+		if( !recordId || !recordId[0] ) {
+			missingOpticalRecord = true;
+			predictiveAllowed = false;
+			reasons.insert("missing_optical_record");
+		} else {
+			recordIds.insert(recordId);
+		}
+		const char* mediumStatus = (*medium)->GetFireRenderFidelityStatus(
+			m_firePredictiveRequested );
+		if( !mediumStatus || std::strcmp(mediumStatus,"preview") != 0 ) {
+			invalidFidelityMetadata = true;
+		} else {
+			status = mediumStatus;
+		}
+		predictiveAllowed = predictiveAllowed && (*medium)->FirePredictiveAllowed();
+		if( !(*medium)->FireOpticsSupportsWavelengthRange(
+			wavelengthMin,wavelengthMax) ) {
+			domainExceeded = true;
+			reasons.insert("table_domain_exceeded");
+		}
+		const unsigned int count = (*medium)->GetFireRenderReasonCodeCount(
+			m_firePredictiveRequested );
+		for( unsigned int i=0; i<count; ++i ) {
+			const char* reason = (*medium)->GetFireRenderReasonCode(
+				m_firePredictiveRequested, i );
+			if( !reason || !FrameStoreOutput::IsAllowedFireRenderReasonCode(reason) ) {
+				invalidFidelityMetadata = true;
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job:: fire medium emitted unknown render reason code '%s'",
+					reason ? reason : "(null)" );
+				continue;
+			}
+			reasons.insert(reason);
+		}
+	}
+	for( std::vector<ActiveMediumBinding>::const_iterator binding=activeBindings.begin();
+		binding!=activeBindings.end(); ++binding ) {
+		if( !binding->medium->IsFireMedium() ) continue;
+		std::string managerName;
+		for( MediumMap::const_iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
+			if( named->second == binding->medium ) {
+				managerName = named->first.c_str();
+				break;
+			}
+		}
+		const std::map<const IMedium*,std::string>::const_iterator digest =
+			fireAuthoredConfigDigests.find(binding->medium);
+		if( managerName.empty() || digest == fireAuthoredConfigDigests.end() ||
+			digest->second.empty() ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+			continue;
+		}
+		FrameStoreOutput::ActiveFireMedium item;
+		item.mediaKind = "static_authored";
+		item.managerName = managerName;
+		item.bindingKind = binding->bindingKind;
+		item.bindingOwner = binding->bindingOwner;
+		item.authoredConfigDigest = digest->second;
+		const char* recordId = binding->medium->GetFireOpticsRecordId();
+		if( recordId && recordId[0] ) item.opticalRecordIds.push_back(recordId);
+		fireMediaMetadata.push_back(item);
+	}
+	std::sort(fireMediaMetadata.begin(),fireMediaMetadata.end(),
+		[]( const FrameStoreOutput::ActiveFireMedium& lhs,
+			const FrameStoreOutput::ActiveFireMedium& rhs ) {
+			if( lhs.managerName != rhs.managerName ) return lhs.managerName < rhs.managerName;
+			if( lhs.bindingKind != rhs.bindingKind ) return lhs.bindingKind < rhs.bindingKind;
+			return lhs.bindingOwner < rhs.bindingOwner;
+		});
+	bool unsupportedIntegrator = false;
+	bool transportPreview = false;
+	if( hasFireMedia ) {
+		pScene->SetFireTemporalHold(true);
+		if( pScene->GetAnimator() &&
+			pScene->GetAnimator()->AreThereAnyKeyframedObjects() ) {
+			reasons.insert("keyframed_temporal_sampling_unsupported");
+		}
+		const std::string& kind = rasterizerKind;
+		unsupportedIntegrator =
+			kind == "bdpt_pel_rasterizer" || kind == "bdpt_spectral_rasterizer" ||
+			kind == "vcm_pel_rasterizer" || kind == "vcm_spectral_rasterizer" ||
+			kind == "mlt_rasterizer" || kind == "mlt_spectral_rasterizer";
+		if( (kind == "auto_rasterizer" || kind == "auto_spectral_rasterizer") &&
+			(autoIntegrator == AutoIntegratorChoice::BDPT ||
+			 autoIntegrator == AutoIntegratorChoice::VCM) ) {
+			unsupportedIntegrator = true;
+		}
+		if( rasterizer->IsAutoDispatcher() ) {
+			const char* resolved = rasterizer->ResolvedIntegratorName();
+			unsupportedIntegrator = unsupportedIntegrator || (resolved &&
+				(std::strcmp(resolved,"bdpt") == 0 || std::strcmp(resolved,"vcm") == 0));
+		}
+		if( unsupportedIntegrator ) {
+			reasons.insert("unsupported_integrator_for_fire_media");
+		}
+		const bool pelTransport =
+			kind == "interactive_pel_rasterizer" ||
+			kind == "pixelpel_rasterizer" || kind == "pathtracing_pel_rasterizer" ||
+			kind == "auto_rasterizer" || kind == "bdpt_pel_rasterizer" ||
+			kind == "vcm_pel_rasterizer" || kind == "mlt_rasterizer";
+		if( pelTransport ) {
+			reasons.insert("pel_transport");
+			transportPreview = true;
+		}
+		const bool spectralTransport =
+			kind == "pixelintegratingspectral_rasterizer" ||
+			kind == "pathtracing_spectral_rasterizer" ||
+			kind == "auto_spectral_rasterizer" ||
+			kind == "bdpt_spectral_rasterizer" ||
+			kind == "vcm_spectral_rasterizer" || kind == "mlt_spectral_rasterizer";
+		if( spectralTransport && useHWSS ) {
+			reasons.insert("hwss_transport");
+			transportPreview = true;
+		}
+		if( oidnDenoise ) reasons.insert("oidn_unqualified");
+		if( radianceClampEnabled ) reasons.insert("radiance_clamp_enabled");
+		if( pathRegularizationEnabled ) reasons.insert("path_regularization_enabled");
+		if( smsEnabled ) reasons.insert("sms_unqualified");
+	}
+	if( hasFireMedia ) {
+		struct FireFileRouteCollector : public IEnumCallback<IRasterizerOutput>
+		{
+			bool sawArtifactOutput = false;
+			bool sawPrimary = false;
+			bool derivativeBeforePrimary = false;
+			bool unavailableRoute = false;
+			bool unknownRoute = false;
+			bool operator()( const IRasterizerOutput& output ) override
+			{
+				const IFireRasterizerOutputRoute* route =
+					dynamic_cast<const IFireRasterizerOutputRoute*>(&output);
+				if( !route ) {
+					unknownRoute = true;
+					return true;
+				}
+				switch( route->FireArtifactRoute() ) {
+				case FireArtifactRouteKind::DisplayOnly:
+					return true;
+				case FireArtifactRouteKind::UnavailableArtifact:
+					sawArtifactOutput = true;
+					unavailableRoute = true;
+					return true;
+				case FireArtifactRouteKind::PrimaryArtifact:
+					sawArtifactOutput = true;
+					sawPrimary = true;
+					return true;
+				case FireArtifactRouteKind::DerivativeArtifact:
+					sawArtifactOutput = true;
+					if( !sawPrimary ) derivativeBeforePrimary = true;
+					return true;
+				}
+				if( !sawPrimary ) {
+					derivativeBeforePrimary = true;
+				}
+				return true;
+			}
+		} routes;
+		rasterizer->EnumerateRasterizerOutputs(routes);
+		if( rasterizer->GetFrameStore() != preparedFrameStore ||
+			!sameActiveBindings() ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+		}
+		if( routes.unknownRoute || (routes.sawArtifactOutput &&
+			(routes.unavailableRoute || !routes.sawPrimary ||
+			 routes.derivativeBeforePrimary)) ) {
+			invalidFidelityMetadata = true;
+			reasons.insert("output_provenance_unavailable");
+		}
+	}
+
+	const bool missingPreviewRequest = hasFireMedia && !m_firePredictiveRequested &&
+		reasons.find("requested_preview") == reasons.end();
+	const bool predictiveRejected = m_firePredictiveRequested && hasFireMedia &&
+		(status == "preview" || !predictiveAllowed || transportPreview || !reasons.empty());
+	if( domainExceeded || predictiveRejected || unsupportedIntegrator ||
+		invalidFidelityMetadata || missingOpticalRecord || missingPreviewRequest ) {
+		std::ostringstream joined;
+		for( std::set<std::string>::const_iterator reason = reasons.begin();
+			reason != reasons.end(); ++reason ) {
+			if( reason != reasons.begin() ) joined << ", ";
+			joined << *reason;
+		}
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job:: fire render rejected before workers launch (lookup support "
+			"[%g,%g] nm): %s", static_cast<double>(wavelengthMin),
+			static_cast<double>(wavelengthMax), joined.str().c_str() );
+		return false;
+	}
+	if( publishMetadata ) {
+		FrameStore* store = rasterizer->GetFrameStore();
+		if( !store ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render output_provenance_unavailable: no canonical frame store");
+			return false;
+		}
+		RISECBOR64::Bytes rendererBuild;
+		std::string rendererBuildId;
+		if( resolvedConfig.empty() ||
+			(hasFireMedia &&
+			 !BuildRendererBuildIdentity(rendererBuild,rendererBuildId)) ) {
+			GlobalLog()->PrintEx(eLog_Error,
+				"Job:: fire render output provenance metadata is unavailable");
+			return false;
+		}
+		store->SetPreparedFireFidelityMetadata(status,
+			std::vector<std::string>(reasons.begin(),reasons.end()),
+			std::vector<std::string>(recordIds.begin(),recordIds.end()),
+			fireMediaMetadata,resolvedConfig,rendererBuild,rendererBuildId);
+	}
+	return true;
 }
 
 //! Rasterizes the entire scene
@@ -9268,22 +11751,24 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 bool Job::Rasterize(
 	)
 {
-	if( !pRasterizer ) {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(
+		animOptions.time_start,animOptions.time_end,animOptions.num_frames,
+		animOptions.do_fields,animOptions.invert_fields,nullptr,nullptr,
+		&resolvedSequence) ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// One acquire read serves both the check and the uses below -- the slot is atomic (written
 	// from the GUI thread vs the coordinator worker), so a check-then-reread would be a TOCTOU.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: DETACH the rasterizer's persistently-retained callback (Rasterizer::
 		// SetProgressCallback stores the raw pointer until the next call) rather than skipping the
@@ -9301,6 +11786,11 @@ bool Job::Rasterize(
 	// refcounted sequence object.  Release-and-rethrow keeps the success
 	// path's release at the exact same point (right after RasterizeScene
 	// returns) as before this fix.
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
 	}
@@ -9308,7 +11798,10 @@ bool Job::Rasterize(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -9323,28 +11816,49 @@ bool Job::RasterizeAnimation(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
-	if( !pRasterizer ) {
+	if( num_frames == 0u ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::RasterizeAnimation: zero-frame animations are invalid");
 		return false;
 	}
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(time_start,time_end,
+		num_frames,do_fields,invert_fields,nullptr,nullptr,&resolvedSequence) ) {
+		return false;
+	}
+	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end, num_frames, do_fields, invert_fields, 0, 0, pSeq );
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
+	try {
+		pRasterizer->RasterizeSceneAnimation( *pScene, time_start, time_end,
+			num_frames, do_fields, invert_fields, 0, 0, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
+	safe_release( pSeq );
+	if( !renderCompleted ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -9358,6 +11872,7 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
 		return false;
 	}
@@ -9373,30 +11888,42 @@ bool Job::RasterizeRegion(
 	}
 	const unsigned int clippedRight = r_min( right, width-1 );
 	const unsigned int clippedBottom = r_min( bottom, height-1 );
+	Rect rc( top, left, clippedBottom, clippedRight );
+	ResolvedRasterSequence resolvedSequence;
+	if( !PrepareFireRenderFidelityMetadata(animOptions.time_start,
+		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+		animOptions.invert_fields,nullptr,&rc,&resolvedSequence) ) {
+		return false;
+	}
+	if( metadataRollback.PreparedFire() ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::RasterizeRegion: output_provenance_unavailable: fire region renders "
+			"cannot finalize a standalone primary");
+		return false;
+	}
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	Rect	rc( top, left, clippedBottom, clippedRight );
-
 	// See the matching comment in Job::Rasterize: pSeq must be released
 	// on every exit, including a worker exception propagated up through
 	// RasterizeScene since ThreadPool::ParallelFor stopped
 	// std::terminate'ing on those (commit 2692d1af).
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
 	try {
 		pRasterizer->RasterizeScene( *pScene, &rc, pSeq );
 	}
@@ -9404,7 +11931,10 @@ bool Job::RasterizeRegion(
 		safe_release( pSeq );
 		throw;
 	}
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
+	if( !renderCompleted ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -9671,6 +12201,11 @@ bool Job::SetActiveRasterizerRadianceScale(
 		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: no active rasterizer" );
 		return false;
 	}
+	RasterizerRegistry::iterator active = rasterizerRegistry.find(activeRasterizerName);
+	if( active == rasterizerRegistry.end() || active->second.instance != pRasterizer ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no authoritative parameter snapshot" );
+		return false;
+	}
 
 	// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT and the
 	// spectral variants) derives from PixelBasedRasterizerHelper, which
@@ -9703,6 +12238,7 @@ bool Job::SetActiveRasterizerRadianceScale(
 			pRm->SetScale( Scalar( scale ) );
 		}
 	}
+	active->second.params.radianceMap.scale = Scalar(scale);
 
 	return true;
 }
@@ -9811,8 +12347,9 @@ bool Job::RemoveObject(
 	// set changes -> bump so a reused caster rebuilds.
 	IObjectPriv* pRObj = pObjectManager->GetItem( name );
 	const bool wasEmissive = ( pRObj && pRObj->GetMaterial() && pRObj->GetMaterial()->GetEmitter() );
+	const bool hadInteriorMedium = pRObj && pRObj->GetInteriorMedium();
 	const bool ok = pObjectManager->RemoveItem( name );
-	if( ok && wasEmissive ) BumpSceneLightGen( pScene );
+	if( ok && ( wasEmissive || hadInteriorMedium ) ) BumpSceneLightGen( pScene );
 	return ok;
 }
 
@@ -11565,15 +14102,10 @@ void Job::PushJobFrameStoreToRasterizers()
 		if( !r ) continue;
 
 		// L6e-1.1 — capability gate via virtual on `Rasterizer`
-		// (replaces a brittle string-match on registry name).  MLT
-		// (and MLTSpectral via inheritance) opts out — its PSSMLT
-		// per-round Resolve allocates a fresh local
-		// `RISERasterImage` and never writes into the canonical
-		// FrameStore, so a push would leave `GetFrameStore()`
-		// returning a perpetually-stale store.  L6d-2 will revisit
-		// by either threading per-round Clear+Resolve into the
-		// FrameStore beauty, or keeping MLT on the legacy path
-		// indefinitely.  See `Rasterizer::AcceptsFrameStorePush`.
+		// (replaces a brittle string-match on registry name).  Every
+		// current in-tree rasterizer accepts the push; the hook remains
+		// for future internal-only image paths that cannot keep the
+		// canonical FrameStore synchronized.
 		if( !r->AcceptsFrameStorePush() ) continue;
 
 		r->SetFrameStore( fs );
@@ -11872,32 +14404,46 @@ bool Job::RasterizeAnimationUsingOptions(
 	)
 
 {
-	if( !pRasterizer ) {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+		nullptr,nullptr,&resolvedSequence) ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions( );
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
-	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
-
-	pRasterizer->RasterizeSceneAnimation( *pScene,
-		aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
+	try {
+		pRasterizer->RasterizeSceneAnimation( *pScene,
+			aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
+	safe_release( pSeq );
+	if( !renderCompleted ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -11908,32 +14454,46 @@ bool Job::RasterizeAnimationUsingOptions(
 	const unsigned int frame						///< [in] The frame to rasterize
 	)
 {
-	if( !pRasterizer ) {
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	ResolvedRasterSequence resolvedSequence;
+	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+		&frame,nullptr,&resolvedSequence) ) {
 		return false;
 	}
+	metadataRollback.ArmPixelStateForFire();
 
-	IRasterizeSequence* pSeq = 0;
+	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
+	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
 	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
-
-		pSeq = RasterizeSequenceFromOptions();
-		if( !pSeq ) {
-			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
-		}
 	} else {
 		// Null slot: detach the rasterizer's persistently-retained callback -- see Job::Rasterize's
 		// matching else for the dormant use-after-free this closes (mirrored across the family).
 		pRasterizer->SetProgressCallback( 0 );
 	}
 
-	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
-	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
-
-	pRasterizer->RasterizeSceneAnimation( *pScene,
-		aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
+	if( !AuthorizeFireRasterizer(
+		pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+		safe_release(pSeq);
+		return false;
+	}
+	try {
+		pRasterizer->RasterizeSceneAnimation( *pScene,
+			aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
+	}
+	catch( ... ) {
+		safe_release( pSeq );
+		throw;
+	}
+	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
+	safe_release( pSeq );
+	if( !renderCompleted ) return false;
+	metadataRollback.Commit();
 
 	return true;
 }
@@ -11991,6 +14551,8 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 	const RasterizerParams& params )
 {
 	if( !pRaster ) return;
+	RasterizerParams resolvedParams = params;
+	resolvedParams.lightSampleRRThreshold = lightSampleRRThreshold;
 
 	// Replace any prior entry under this key.  Existing entries hold
 	// addrefs we put there ourselves, so safe_release matches.  The
@@ -12004,7 +14566,7 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 			// map held would delete the instance, leaving us with a
 			// dangling pointer when we re-store and re-activate.  Just
 			// re-affirm activation and refresh the snapshot.
-			it->second.params = params;
+			it->second.params = resolvedParams;
 			pRasterizer = pRaster;
 			activeRasterizerName = name;
 			return;
@@ -12014,11 +14576,11 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 		}
 		safe_release( it->second.instance );
 		it->second.instance = pRaster;
-		it->second.params   = params;
+		it->second.params   = resolvedParams;
 	} else {
 		RasterizerEntry entry;
 		entry.instance = pRaster;
-		entry.params   = params;
+		entry.params   = resolvedParams;
 		rasterizerRegistry[ name ] = entry;
 	}
 

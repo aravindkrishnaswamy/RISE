@@ -18,6 +18,7 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IRadianceMap.h"
 #include "../Utilities/Reference.h"
+#include <atomic>
 #include <string>
 
 namespace RISE
@@ -121,6 +122,15 @@ namespace RISE
 			//! false; production casters never set it (cost when off is
 			//! one bool test).  Set via SetXrayViewResolve.
 			bool						bXrayViewResolve;
+			mutable std::atomic<bool>	bFirePelDiagnosticEmitted;
+			mutable std::atomic<bool>	bCompetingMediumGuideAlphaNonzero;
+			mutable std::atomic<unsigned long long>	nCompetingMediumGuideSampleCount;
+			mutable std::atomic<bool>	bCompetingMediumReachPdfMismatch;
+			mutable std::atomic<bool>	bCompetingMediumZeroSurvivalObserved;
+			mutable std::atomic<bool>	bCompetingMediumIntermediateSurvivalObserved;
+			mutable std::atomic<bool>	bCompetingMediumUnitSurvivalObserved;
+			unsigned int				nMediumContinuationRRMinDepth;
+			Scalar					dMediumContinuationRRThreshold;
 
 			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
 			//! pending solo-target identity, retained across a same-
@@ -165,6 +175,32 @@ namespace RISE
 			//! ends up being.
 			void ResolveXrayView_( RayIntersection& ri ) const;
 
+			//! Internal same-segment continuations used only when traversing an
+			//! exact NullBoundaryMaterial.  skipEntryGates prevents a boundary
+			//! crossing from becoming a second depth/roulette event.
+			bool CastRayImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, RISEPel& c, const RAY_STATE& rs,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				RISEPel* sameSegmentMediumSource = 0 ) const;
+			bool CastRayNMImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar& c, const RAY_STATE& rs, Scalar nm,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates,
+				bool skipEntryRoulette = false,
+				bool sourceOnlySegment = false,
+				Scalar* sameSegmentMediumSource = 0 ) const;
+			bool CastRayHWSSImpl_(
+				const RuntimeContext& rc, const RasterizerState& rast,
+				const Ray& ray, Scalar c[SampledWavelengths::N],
+				const RAY_STATE& rs, SampledWavelengths& swl,
+				Scalar* distance, const IRadianceMap* pRadianceMap,
+				const IORStack& ior_stack, bool skipEntryGates ) const;
+
 		public:
 			RayCaster(
 				const bool seeRadianceMap,
@@ -174,6 +210,36 @@ namespace RISE
 				);
 
 			void AttachScene( const IScene* pScene_ );
+
+			bool CompetingMediumGuideAlphaNonzero() const {
+				return bCompetingMediumGuideAlphaNonzero.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long CompetingMediumGuideSampleCount() const {
+				return nCompetingMediumGuideSampleCount.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumReachPdfMismatch() const {
+				return bCompetingMediumReachPdfMismatch.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumZeroSurvivalObserved() const {
+				return bCompetingMediumZeroSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumIntermediateSurvivalObserved() const {
+				return bCompetingMediumIntermediateSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumUnitSurvivalObserved() const {
+				return bCompetingMediumUnitSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			void SetMediumContinuationRoulettePolicy(
+				const unsigned int minDepth, const Scalar threshold ) {
+				nMediumContinuationRRMinDepth = minDepth;
+				dMediumContinuationRRThreshold = threshold;
+			}
 
 			//! Tells the ray caster to cast the specified ray into the scene
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise

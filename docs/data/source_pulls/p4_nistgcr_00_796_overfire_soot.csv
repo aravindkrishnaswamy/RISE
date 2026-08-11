@@ -1,0 +1,9 @@
+fuel,formula,molar_mass_g_mol,burner_diameter_mm,nominal_heat_release_kW,char_residence_time_ms,dp_nm,N_arithmetic,N_geometric,N_geometric_sd,Df,Df_sd,kf,kf_sd,rho_sa_514_5_digitized,rho_sa_digitization_abs_uncertainty,rho_sa_source_u95_rel_upper,rho_sa_provenance
+acetylene,C2H2,26.04,50,6.16,329,47,417,214,3.3,1.79,0.01,8.5,0.5,0.47,0.03,0.20,NISTGCR_00_796_Fig3
+ethylene,C2H4,28.05,50,5.14,317,32,467,290,2.7,1.80,0.01,8.5,0.5,0.33,0.03,0.20,NISTGCR_00_796_Fig3
+propylene,C3H6,42.08,50,6.58,333,41,460,227,3.0,1.79,0.02,8.5,0.5,0.38,0.03,0.20,NISTGCR_00_796_Fig3
+butadiene,C4H6,54.09,50,1.70,254,42,,,,1.79,0.03,8.5,0.5,,,,not_plotted_structure_incomplete
+benzene,C6H6,78.11,51,3.40,292,50,552,261,3.5,1.77,0.05,8.5,0.5,0.50,0.03,0.20,NISTGCR_00_796_Fig3
+cyclohexane,C6H12,84.16,102,5.00,315,37,,,,1.80,0.06,8.5,0.5,,,,not_plotted_structure_incomplete
+toluene,C7H8,92.13,51,2.50,274,51,526,252,3.2,1.79,0.07,8.5,0.5,0.71,0.03,0.20,NISTGCR_00_796_Fig3
+n-heptane,C7H16,100.20,102,4.10,303,35,260,173,2.4,1.79,0.06,8.5,0.5,0.33,0.03,0.20,NISTGCR_00_796_Fig3

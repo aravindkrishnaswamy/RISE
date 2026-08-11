@@ -17,6 +17,8 @@ set(RISE_LIB "${CMAKE_CURRENT_LIST_DIR}/../../../src/Library")
 set(RISE_LIB_SOURCES
     # SRCLIBINTERFACES
     "${RISE_LIB}/Materials/IMaterial.cpp"
+    "${RISE_LIB}/Materials/NullBoundaryMaterial.cpp"
+    "${RISE_LIB}/Materials/ContinuationClosure.cpp"
 
     # SRCLIBUTILITIES
     "${RISE_LIB}/Utilities/Color/Color.cpp"
@@ -49,6 +51,10 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/CompletePathGuide.cpp"
     "${RISE_LIB}/Utilities/PathGuidingField.cpp"
     "${RISE_LIB}/Utilities/Optics.cpp"
+    "${RISE_LIB}/Utilities/RISECBOR64.cpp"
+    "${RISE_LIB}/Utilities/FireOptics.cpp"
+    "${RISE_LIB}/Utilities/PlanckRadiance.cpp"
+    "${RISE_LIB}/Utilities/GaussLegendreQuadrature.cpp"
     "${RISE_LIB}/Utilities/OrthonormalBasis3D.cpp"
     "${RISE_LIB}/Utilities/Primes.cpp"
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
@@ -295,6 +301,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Shaders/SSS/PointSetOctree.cpp"
     "${RISE_LIB}/Shaders/SSS/SubSurfaceScatteringShaderOp.cpp"
     "${RISE_LIB}/Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp"
+    "${RISE_LIB}/Shaders/SSS/SSSContainment.cpp"
     "${RISE_LIB}/Shaders/AmbientOcclusionShaderOp.cpp"
     "${RISE_LIB}/Shaders/AreaLightShaderOp.cpp"
     "${RISE_LIB}/Shaders/CausticPelPhotonMapShaderOp.cpp"

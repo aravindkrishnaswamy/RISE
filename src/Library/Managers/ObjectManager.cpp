@@ -94,8 +94,21 @@ void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ ele
 	// the fresh-record dance -- see PropagateCastInputs' doc.
 	myRI.geometric.PropagateCastInputs( ri.geometric );
 	elem->IntersectRay( myRI, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-	if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
+	const bool exactBoundaryMode = ri.geometric.minimumSurfaceRange >= 0;
+	const bool pastMinimumSurface = !exactBoundaryMode ||
+		myRI.geometric.surfaceRange > ri.geometric.minimumSurfaceRange;
+	const Scalar candidateRange = exactBoundaryMode &&
+		myRI.geometric.surfaceRange < RISE_INFINITY
+		? myRI.geometric.surfaceRange : myRI.geometric.range;
+	if( myRI.geometric.bHit && pastMinimumSurface &&
+		candidateRange < ri.geometric.range ) {
 		ri = myRI;
+		// BVH traversal reads the shared range as its running tMax.  Boundary
+		// walks must prune and order with the same exact distance they use to
+		// advance, not the legacy shading-point offset.
+		if( exactBoundaryMode ) {
+			ri.geometric.range = candidateRange;
+		}
 		RISE_PROFILE_INC(nObjectIntersectionHits);
 	}
 }
@@ -111,8 +124,17 @@ void ObjectManager::RayElementIntersection( RayIntersectionGeometric& ri, const 
 	myRI.geometric.range = ri.range;
 	myRI.geometric.PropagateCastInputs( ri );
 	elem->IntersectRay( myRI, ri.range, bHitFrontFaces, bHitBackFaces, false );
-	if( myRI.geometric.bHit && myRI.geometric.range < ri.range ) {
+	const bool exactBoundaryMode = ri.minimumSurfaceRange >= 0;
+	const bool pastMinimumSurface = !exactBoundaryMode ||
+		myRI.geometric.surfaceRange > ri.minimumSurfaceRange;
+	const Scalar candidateRange = exactBoundaryMode &&
+		myRI.geometric.surfaceRange < RISE_INFINITY
+		? myRI.geometric.surfaceRange : myRI.geometric.range;
+	if( myRI.geometric.bHit && pastMinimumSurface && candidateRange < ri.range ) {
 		ri = myRI.geometric;
+		if( exactBoundaryMode ) {
+			ri.range = candidateRange;
+		}
 	}
 }
 
@@ -305,8 +327,18 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 				this_ri.geometric.PropagateCastInputs( ri.geometric );
 				i->second.first->IntersectRay( this_ri, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 
-				if( this_ri.geometric.bHit && this_ri.geometric.range < ri.geometric.range ) {
+				const bool exactBoundaryMode = ri.geometric.minimumSurfaceRange >= 0;
+				const bool pastMinimumSurface = !exactBoundaryMode ||
+					this_ri.geometric.surfaceRange > ri.geometric.minimumSurfaceRange;
+				const Scalar candidateRange = exactBoundaryMode &&
+					this_ri.geometric.surfaceRange < RISE_INFINITY
+					? this_ri.geometric.surfaceRange : this_ri.geometric.range;
+				if( this_ri.geometric.bHit && pastMinimumSurface &&
+					candidateRange < ri.geometric.range ) {
 					ri = this_ri;
+					if( exactBoundaryMode ) {
+						ri.geometric.range = candidateRange;
+					}
 				}
 			}
 		}

@@ -58,6 +58,7 @@
 #include "../Interfaces/ICameraManager.h"
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
+#include "../Interfaces/IMedium.h"
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
 #include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
 #include "../Painters/ExpressionEval.h"     // External review P2 fix: ExpressionProgram -- reuse the SAME public expr(...) evaluator Cst.cpp's derive-time resolver is built on, so ResolveBeautyDisplayTransform_ can resolve an expr(...)-valued `exposure` param instead of silently strtod'ing it to 0
@@ -116,6 +117,31 @@ namespace RISE
 			using RISE::Cst::NodeRef;
 			using RISE::Cst::NodeKind;
 			using RISE::Cst::Document;
+
+			bool SceneHasActiveFireMedium( const IScenePriv* scene )
+			{
+				if( !scene ) return false;
+				const IMedium* global = scene->GetGlobalMedium();
+				if( global && global->IsFireMedium() ) return true;
+				const IObjectManager* objects = scene->GetObjects();
+				if( !objects ) return false;
+				struct FireInteriorCollector : public IEnumCallback<const char*>
+				{
+					const IObjectManager& objects;
+					bool found = false;
+					explicit FireInteriorCollector( const IObjectManager& manager )
+						: objects(manager) {}
+					bool operator()( const char* const& name ) override
+					{
+						const IObject* object = objects.GetItem(name);
+						const IMedium* medium = object ? object->GetInteriorMedium() : nullptr;
+						found = found || (medium && medium->IsFireMedium());
+						return !found;
+					}
+				} collector(*objects);
+				objects->EnumerateItemNames(collector);
+				return collector.found;
+			}
 
 			//! Serialize a green node's bytes (leaves carry text; internal
 			//! nodes are the concatenation of their kids -- the same
@@ -6953,6 +6979,13 @@ namespace RISE
 				// success or failure) -- matches the pre-fix contract exactly,
 				// just resolved fresh here instead of on the calling thread.
 				res.integrator = mJob->GetActiveRasterizerName();
+				if( SceneHasActiveFireMedium(mJob->GetScene()) ) {
+					res.ok = false;
+					res.message = "output_provenance_unavailable: agent image outputs "
+						"cannot emit the required fire primary and sidecar";
+					specificFailureReported = true;
+					return;
+				}
 
 				if( !isObjectMap ) {
 					ResolveBeautyDisplayTransform_( beautyExposureEV, beautyDisplayTransform, beautyColorSpace );
@@ -9873,6 +9906,7 @@ namespace RISE
 			int    vDisplayTransform = 2 /*eDisplayTransform_ACES*/;
 			int    vColorSpace = eColorSpace_sRGB;
 			bool copiedFrame = false;
+			bool fireOutputRejected = false;
 			SceneEditController::PaneSetSnapshot paneSnap;   // user-review P1-3
 			bool haveSnap = false;
 			// Fix-round-8 P1 (sibling site): this call used to take the
@@ -9887,6 +9921,10 @@ namespace RISE
 			SceneEditController::RenderRefusal refusal =
 				SceneEditController::RenderRefusal::None;
 			const bool parked = mController->RunPreviewRenderParked( [&]() {
+				if( SceneHasActiveFireMedium(mJob ? mJob->GetScene() : nullptr) ) {
+					fireOutputRejected = true;
+					return;
+				}
 				// Keep the frame copy and its live display-transform lookup in the
 				// same parked interval.  CopyInteractiveFrame itself is tile-safe,
 				// but ResolveBeautyDisplayTransform_ reads the Job's CST/camera.
@@ -9952,6 +9990,10 @@ namespace RISE
 				}
 				return std::vector<unsigned char>();
 			}
+			if( fireOutputRejected ) {
+				outReason = "output_provenance_unavailable";
+				return std::vector<unsigned char>();
+			}
 
 			// Test-only race injector: the parked closure above already captured
 			// pixels and pane metadata as one coherent snapshot.  Mutating the
@@ -10011,6 +10053,11 @@ namespace RISE
 				outHeight = sink->Height();
 			}
 			safe_release( sink );
+			if( png.empty() ) {
+				outWidth = 0;
+				outHeight = 0;
+				throw std::runtime_error( "PNG encode produced no bytes" );
+			}
 
 			outAvailable = true;
 			return png;

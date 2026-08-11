@@ -17,6 +17,10 @@
     <VcpkgEnabled>true</VcpkgEnabled>
     <VcpkgEnableManifest>true</VcpkgEnableManifest>
     <VcpkgTriplet>x64-windows</VcpkgTriplet>
+    <!-- renderer_build_v1 hashes the whole checkout, including CLI/GUI-only
+         sources.  Always evaluate this referenced project so its PreBuildEvent
+         regenerates the header before an executable-only incremental link. -->
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
@@ -60,11 +64,12 @@
            MSVC defaults to /std:c++14; pin to C++17 explicitly so
            std::filesystem and std::scoped_lock compile cleanly. -->
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <OmitFramePointers>true</OmitFramePointers>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NDEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;RISE_ENABLE_PROFILING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -91,6 +96,9 @@
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Lib>
+    <PreBuildEvent>
+      <Command>python "$(SolutionDir)..\..\tools\generate_renderer_build_identity_header.py" --repo-root "$(SolutionDir)..\.." --output "$(IntDir)RendererBuildIdentity.generated.h" --fp-contraction compiler_default --optimization-mode O2 --lto-mode off</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -98,7 +106,7 @@
            compiles identically to Release. -->
       <LanguageStandard>stdcpp17</LanguageStandard>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -123,6 +131,9 @@
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Lib>
+    <PreBuildEvent>
+      <Command>python "$(SolutionDir)..\..\tools\generate_renderer_build_identity_header.py" --repo-root "$(SolutionDir)..\.." --output "$(IntDir)RendererBuildIdentity.generated.h" --fp-contraction compiler_default --optimization-mode disabled --lto-mode off</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\src\Library\Animation\Animator.cpp" />
@@ -231,6 +242,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HomogeneousMedium.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\IMaterial.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\ContinuationClosure.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\MultipoleDiffusion.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\IsotropicPhongSPF.cpp" />
@@ -434,6 +447,7 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\SMSShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\BDPTIntegrator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\PointSetOctree.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\StandardShader.cpp" />
@@ -475,6 +489,10 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\MemoryBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\MersenneTwister.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Optics.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\RISECBOR64.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireOptics.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PathGuidingField.cpp" />
@@ -728,6 +746,8 @@
     <ClInclude Include="..\..\..\src\Library\Materials\LambertianMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\LambertianSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\Material.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\NullBoundaryMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IContinuationClosure.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarSPF.h" />
@@ -1012,6 +1032,10 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RISECBOR64.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PEL.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PiecewiseLinearFunction.h" />
@@ -1142,6 +1166,7 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\PathTracingIntegrator.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\SMSShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.h" />
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SSSContainment.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\VCMIntegrator.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\VCMLightVertex.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\VCMLightVertexStore.h" />

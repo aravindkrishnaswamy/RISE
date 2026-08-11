@@ -76,10 +76,16 @@ namespace RISE
 		//! EXR-specific knobs (ignored for other formats).
 		EXR_COMPRESSION exrCompression = eExrCompression_Piz;
 		bool            exrWithAlpha   = true;
+		float           exrPixelAspectRatio = 1.0f;
 
 		//! Animation frame index — passed to file consumers that
 		//! template filenames; the encoder itself doesn't use it.
 		unsigned frame = 0;
+
+		//! True when the encoded pixels have passed through a denoiser.
+		//! Denoised outputs are display derivatives even when their file
+		//! representation otherwise satisfies the primary EXR gates.
+		bool denoisedDerivative = false;
 
 		//! AOV inclusion for multi-channel formats (L7+).
 		//! Currently unused by all 7 base encoders; reserved.
@@ -94,6 +100,11 @@ namespace RISE
 		//! Free-form metadata (EXR custom attrs, PNG iTXt, etc.).
 		//! Reserved for future use; current encoders ignore it.
 		std::vector<std::pair<std::string, std::string>> attrs;
+
+		//! A file transaction supplies one immutable metadata snapshot so
+		//! embedded attributes and its provenance sidecar cannot diverge.
+		bool useMetadataSnapshot = false;
+		FrameStoreOutput::Metadata metadataSnapshot;
 	};
 
 	//! Stateless format-aware byte encoder.  Wraps an existing
@@ -126,9 +137,9 @@ namespace RISE
 
 		//! Encode the FrameStore's beauty + alpha channels into
 		//! `dst` using the per-format byte production rules and
-		//! the supplied options.  Throws no exceptions: write
-		//! errors are reported via the underlying IWriteBuffer
-		//! (which already has its own error semantics).
+		//! the supplied options. Allocation and codec failures may throw;
+		//! artifact-producing callers use the transactional encoder helper,
+		//! which converts them into a failed publication with no partial file.
 		//!
 		//! The encoder may NOT take ownership of `dst` — caller
 		//! retains the IWriteBuffer reference.  Caller is also

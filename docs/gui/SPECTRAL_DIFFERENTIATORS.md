@@ -80,11 +80,11 @@ writing to a painter chunk the parser already accepts, with a **live spectral sw
 
 ### 2.3 The math
 
-**Kelvin → spectrum.** `BlackBodyPainter` already evaluates Planck's law per wavelength
-(`IntensityForWavelength`, [BlackBodyPainter.cpp:26](../../src/Library/Painters/BlackBodyPainter.cpp)) and
-exposes the inverse helpers the UI needs for free: `TemperatureFromPeakNM` / `PeakNMFromTemperature` (Wien's
-law) for a "peak wavelength" read-out beside the Kelvin slider. The slider value is the chunk's `temperature`
-verbatim — no UI-side baked ramp.
+**Kelvin → spectrum.** `BlackBodyPainter` calls the shared per-nm Planck kernel
+([PlanckRadiance.cpp](../../src/Library/Utilities/PlanckRadiance.cpp)) and converts it to the painter's historical
+exitance-per-metre convention at its boundary. For a "peak wavelength" read-out beside the Kelvin slider, the UI
+computes Wien's law directly (`lambda_max_nm = 2.897771955e6 / temperature_K`); this display-only calculation is
+not a painter API. The slider value is the chunk's `temperature` verbatim — no UI-side baked ramp.
 
 **Monochromatic → spectrum.** One `cp "<nm> 1.0"` sample (or a narrow triangular bump across ±Δnm so the 4-hero
 sampler reliably catches it — a near-delta spike can fall between hero wavelengths; the UI should author a small
@@ -133,7 +133,7 @@ fall back to commit-on-release?"). Concrete guidance for the swatch:
 - A flat colour swatch needs **no path tracer** — for the Kelvin/mono/CSV modes the swatch colour is just
   `SpectralPacket::GetXYZ()` → `XYZtoRec709RGB` (the exact path `SpectralColorPainter` and `BlackBodyPainter`
   already run in their constructors — [SpectralColorPainter.cpp:22](../../src/Library/Painters/SpectralColorPainter.cpp),
-  [BlackBodyPainter.cpp:160](../../src/Library/Painters/BlackBodyPainter.cpp)). This is **microseconds**, fully
+  [BlackBodyPainter.cpp:144](../../src/Library/Painters/BlackBodyPainter.cpp)). This is **microseconds**, fully
   live on slider drag, no render. *Decision: the swatch is computed, not rendered, for D1/D2.*
   - **⚠ Evaluate the swatch by deterministic dense-wavelength integration, NOT 4 stochastic hero samples.**
     The renderer carries 4 hero λ per *path* and Monte-Carlo-integrates over many paths; a UI swatch has no path
@@ -152,7 +152,7 @@ fall back to commit-on-release?"). Concrete guidance for the swatch:
   **Route that thumbnail render through the `RenderCoordinator` as a `NodePreview`/`Thumbnail`-class isolated job**
   ([RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) §3.1, §5.2) — a *snapshot scene + private `IFilm`*, queued and
   preempted by interactive edits. **Do NOT copy the auto-router probe's live-film `ResizeFilm` round-trip for
-  this**: that pattern is safe *only* inside the probe's pre-fan-out `call_once` window and tears the live film
+  this**: that pattern is safe *only* inside the probe's pre-fan-out exclusive resolution window and tears the live film
   for any other caller ([RENDER_COORDINATOR.md](RENDER_COORDINATOR.md) §1.3, §5.1, §5.5). The coordinator's
   isolated-job model is the correct general mechanism the roadmap's A3 spike resolves to.
 - **Shared vs platform:** the swatch/curve/prism *computation* (spectrum → XYZ → RGB, Sellmeier eval, Abbe,
@@ -1059,7 +1059,7 @@ net-new engine read-back this spec identified.
   ([.cpp:22](../../src/Library/Painters/SpectralColorPainter.cpp) `GetXYZ` swatch path,
   [.cpp:43](../../src/Library/Painters/SpectralColorPainter.cpp) `ValueAtNM`),
   [BlackBodyPainter.h](../../src/Library/Painters/BlackBodyPainter.h)
-  ([.cpp:160](../../src/Library/Painters/BlackBodyPainter.cpp) `GetXYZ`),
+  ([.cpp:144](../../src/Library/Painters/BlackBodyPainter.cpp) `GetXYZ`),
   [SellmeierScalarPainter.h](../../src/Library/Painters/SellmeierScalarPainter.h),
   [PiecewiseLinearScalarPainter.h](../../src/Library/Painters/PiecewiseLinearScalarPainter.h).
 - Material: [GGXMaterial.h](../../src/Library/Materials/GGXMaterial.h) (conductor + thin-film slots).

@@ -31,9 +31,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -53,6 +58,7 @@ using namespace RISE;
 using namespace RISE::FrameStoreOutput;
 using RISE::Implementation::AOVBuffers;
 using RISE::Implementation::FrameStore;
+using RISE::Implementation::FrameStoreBulkBracket;
 using RISE::Implementation::MakeAOVPlan;
 using RISE::Implementation::PropagateAOVsToFrameStore;
 
@@ -60,6 +66,30 @@ namespace
 {
 	int gFailCount = 0;
 	int gPassCount = 0;
+
+	class ProcessWatchdog
+	{
+	public:
+		ProcessWatchdog() : completed_(std::make_shared<std::atomic<bool>>(false))
+		{
+			const auto completed = completed_;
+			std::thread([completed]() {
+				std::this_thread::sleep_for(std::chrono::seconds(30));
+				if( !completed->load(std::memory_order_acquire) ) {
+					std::fputs("FAIL: FrameStoreTest exceeded 30-second watchdog\n",stderr);
+					std::_Exit(124);
+				}
+			}).detach();
+		}
+
+		~ProcessWatchdog()
+		{
+			completed_->store(true,std::memory_order_release);
+		}
+
+	private:
+		std::shared_ptr<std::atomic<bool>> completed_;
+	};
 
 	void Check( bool cond, const std::string& label )
 	{
@@ -260,7 +290,7 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 3: tile seqlock + observer firing ────────────────
+	// ─── Section 3: tile locking + observer firing ────────────────
 	struct CountingObserver : public IRenderObserver
 	{
 		std::atomic<int> tileCount{ 0 };
@@ -279,7 +309,7 @@ namespace
 		}
 	};
 
-	void TestSeqlockAndObserver()
+	void TestTileLockingAndObserver()
 	{
 		FrameStore* store = MakeStore( 32, 16, 8 );
 
@@ -321,8 +351,8 @@ namespace
 		store->release();
 	}
 
-	// ─── Section 4: concurrent reader / writer (seqlock stress) ───
-	void TestConcurrentSeqlock()
+	// ─── Section 4: concurrent reader / writer (tile-lock stress) ──
+	void TestConcurrentTileLocking()
 	{
 		FrameStore* store = MakeStore( 32, 32, 8 );
 
@@ -600,7 +630,509 @@ namespace
 		store->release();
 	}
 
+	struct CrossThreadVictim : public IRenderObserver
+	{
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool entered = false;
+		bool continueCallback = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			entered = true;
+			condition.notify_all();
+			condition.wait(lock,[this]() { return continueCallback; });
+		}
+	};
+
+	struct CrossThreadRemover : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		IRenderObserver* victim = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool started = false;
+		bool returned = false;
+
+		void OnFrameComplete( unsigned int, uint64_t ) override
+		{
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				started = true;
+				condition.notify_all();
+			}
+			store->RemoveObserver(victim);
+			{
+				std::lock_guard<std::mutex> lock(mutex);
+				returned = true;
+				condition.notify_all();
+			}
+		}
+	};
+
+	struct ObserverDispatchContentionWitness
+	{
+		static void Notify( void* context )
+		{
+			auto* witness = static_cast<ObserverDispatchContentionWitness*>(context);
+			{
+				std::lock_guard<std::mutex> lock(witness->mutex);
+				witness->observed = true;
+			}
+			witness->condition.notify_all();
+		}
+
+		bool Wait( const std::chrono::milliseconds timeout )
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			return condition.wait_for(lock,timeout,[this]() { return observed; });
+		}
+
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool observed = false;
+	};
+
+	void TestObserverRemovalFromUnrelatedCallbackWaitsForVictim()
+	{
+		FrameStore* store = MakeStore(8,8,8);
+		CrossThreadRemover remover;
+		CrossThreadVictim victim;
+		remover.store = store;
+		remover.victim = &victim;
+		store->AddObserver(&remover);
+		store->AddObserver(&victim);
+
+		std::thread tileDispatch([&]() {
+			store->BeginTile(0,0);
+			store->EndTile(0,0);
+		});
+		{
+			std::unique_lock<std::mutex> lock(victim.mutex);
+			victim.condition.wait(lock,[&]() { return victim.entered; });
+		}
+		ObserverDispatchContentionWitness contention;
+		RISE::Implementation::SetFrameStoreObserverDispatchContentionHookForTests(
+			&ObserverDispatchContentionWitness::Notify,&contention);
+		std::thread frameDispatch([&]() { store->MarkFrameComplete(1u); });
+		const bool frameDispatchContended =
+			contention.Wait(std::chrono::milliseconds(2000));
+		RISE::Implementation::SetFrameStoreObserverDispatchContentionHookForTests(
+			nullptr,nullptr);
+		bool removeStarted = false;
+		bool removeReturnedEarly = false;
+		{
+			std::lock_guard<std::mutex> lock(remover.mutex);
+			removeStarted = remover.started;
+			removeReturnedEarly = remover.returned;
+		}
+		{
+			std::lock_guard<std::mutex> lock(victim.mutex);
+			victim.continueCallback = true;
+			victim.condition.notify_all();
+		}
+		tileDispatch.join();
+		frameDispatch.join();
+		Check(frameDispatchContended && !removeStarted &&
+			!removeReturnedEarly && remover.returned,
+			"observer callbacks serialize before unrelated removal can overlap a victim" );
+
+		store->RemoveObserver(&remover);
+		store->release();
+	}
+
+	struct ConcurrentSelfRemovingObserver : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		std::atomic<unsigned int> fires{0u};
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			fires.fetch_add(1u);
+			store->RemoveObserver(this);
+		}
+	};
+
+	void TestConcurrentSelfRemovalDrainsOtherThreads()
+	{
+		FrameStore* store = MakeStore(8,8,8);
+		ConcurrentSelfRemovingObserver observer;
+		observer.store = store;
+		store->AddObserver(&observer);
+		std::mutex startMutex;
+		std::condition_variable startCondition;
+		unsigned int ready = 0u;
+		bool start = false;
+		auto dispatch = [&]() {
+			{
+				std::unique_lock<std::mutex> lock(startMutex);
+				++ready;
+				startCondition.notify_all();
+				startCondition.wait(lock,[&]() { return start; });
+			}
+			store->BeginTile(0,0);
+			store->EndTile(0,0);
+		};
+		std::thread first(dispatch);
+		std::thread second(dispatch);
+		{
+			std::unique_lock<std::mutex> lock(startMutex);
+			startCondition.wait(lock,[&]() { return ready == 2u; });
+			start = true;
+			startCondition.notify_all();
+		}
+		first.join();
+		second.join();
+		Check(observer.fires.load() == 1u,
+			"concurrent dispatches serialize so a self-removing observer fires once" );
+		store->release();
+	}
+
+	struct SharedCrossStoreObserver : public IRenderObserver
+	{
+		FrameStore* removeFrom = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		unsigned int fires = 0u;
+		bool firstEntered = false;
+		bool continueFirst = false;
+		bool secondReturned = false;
+		bool removalRejected = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			++fires;
+			if( fires == 1u ) {
+				firstEntered = true;
+				condition.notify_all();
+				condition.wait(lock,[this]() { return continueFirst; });
+				return;
+			}
+			lock.unlock();
+			try {
+				removeFrom->RemoveObserver(this);
+			} catch( const std::runtime_error& ) {
+				removalRejected = true;
+			}
+			lock.lock();
+			secondReturned = true;
+			condition.notify_all();
+		}
+	};
+
+	void TestSharedObserverCrossStoreRemovalIsSerialized()
+	{
+		FrameStore* firstStore = MakeStore(8,8,8);
+		FrameStore* secondStore = MakeStore(8,8,8);
+		SharedCrossStoreObserver observer;
+		observer.removeFrom = firstStore;
+		firstStore->AddObserver(&observer);
+		secondStore->AddObserver(&observer);
+
+		std::thread firstDispatch([&]() {
+			firstStore->BeginTile(0,0);
+			firstStore->EndTile(0,0);
+		});
+		{
+			std::unique_lock<std::mutex> lock(observer.mutex);
+			observer.condition.wait(lock,[&]() { return observer.firstEntered; });
+		}
+		std::thread secondDispatch([&]() {
+			secondStore->BeginTile(0,0);
+			secondStore->EndTile(0,0);
+		});
+		bool overlapped = false;
+		{
+			std::unique_lock<std::mutex> lock(observer.mutex);
+			overlapped = observer.condition.wait_for(lock,std::chrono::milliseconds(2000),
+				[&]() { return observer.fires > 1u || observer.secondReturned; });
+			observer.continueFirst = true;
+			observer.condition.notify_all();
+		}
+		firstDispatch.join();
+		secondDispatch.join();
+		Check(overlapped && observer.fires == 2u && observer.secondReturned &&
+			observer.removalRejected,
+			"callback removal fails closed instead of waiting on another store callback" );
+
+		firstStore->RemoveObserver(&observer);
+		secondStore->RemoveObserver(&observer);
+		firstStore->release();
+		secondStore->release();
+	}
+
+	struct MutualRemovingObserver : public IRenderObserver
+	{
+		FrameStore* victimStore = nullptr;
+		IRenderObserver* victim = nullptr;
+		std::atomic<unsigned int> fires{0u};
+		std::atomic<unsigned int> rejections{0u};
+		std::mutex* startMutex = nullptr;
+		std::condition_variable* startCondition = nullptr;
+		unsigned int* entered = nullptr;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			fires.fetch_add(1u);
+			{
+				std::unique_lock<std::mutex> lock(*startMutex);
+				++*entered;
+				startCondition->notify_all();
+				startCondition->wait_for(lock,std::chrono::milliseconds(2000),
+					[this]() { return *entered == 2u; });
+			}
+			try { victimStore->RemoveObserver(victim); }
+			catch( const std::runtime_error& ) { rejections.fetch_add(1u); }
+		}
+	};
+
+	void TestCrossStoreMutualRemovalCannotDeadlock()
+	{
+		FrameStore* firstStore = MakeStore(8,8,8);
+		FrameStore* secondStore = MakeStore(8,8,8);
+		MutualRemovingObserver firstObserver;
+		MutualRemovingObserver secondObserver;
+		firstObserver.victimStore = secondStore;
+		firstObserver.victim = &secondObserver;
+		secondObserver.victimStore = firstStore;
+		secondObserver.victim = &firstObserver;
+		std::mutex callbackMutex;
+		std::condition_variable callbackCondition;
+		unsigned int entered = 0u;
+		firstObserver.startMutex = secondObserver.startMutex = &callbackMutex;
+		firstObserver.startCondition = secondObserver.startCondition = &callbackCondition;
+		firstObserver.entered = secondObserver.entered = &entered;
+		firstStore->AddObserver(&firstObserver);
+		secondStore->AddObserver(&secondObserver);
+
+		std::mutex startMutex;
+		std::condition_variable startCondition;
+		unsigned int ready = 0u;
+		bool start = false;
+		auto dispatch = [&]( FrameStore* store ) {
+			{
+				std::unique_lock<std::mutex> lock(startMutex);
+				++ready;
+				startCondition.notify_all();
+				startCondition.wait(lock,[&]() { return start; });
+			}
+			store->BeginTile(0,0);
+			store->EndTile(0,0);
+		};
+		std::thread firstDispatch(dispatch,firstStore);
+		std::thread secondDispatch(dispatch,secondStore);
+		{
+			std::unique_lock<std::mutex> lock(startMutex);
+			startCondition.wait(lock,[&]() { return ready == 2u; });
+			start = true;
+			startCondition.notify_all();
+		}
+		firstDispatch.join();
+		secondDispatch.join();
+		Check(firstObserver.fires.load()+secondObserver.fires.load() == 2u &&
+			firstObserver.rejections.load()+secondObserver.rejections.load() == 2u,
+			"cross-store mutual removal fails closed instead of forming a wait cycle" );
+
+		firstStore->RemoveObserver(&firstObserver);
+		secondStore->RemoveObserver(&secondObserver);
+		firstStore->release();
+		secondStore->release();
+	}
+
+	struct ReentrantDispatchObserver : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		bool rejected = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			try { store->MarkFrameComplete(1u); }
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find("reentrant") != std::string::npos;
+			}
+		}
+	};
+
+	void TestReentrantObserverDispatchFailsClosed()
+	{
+		FrameStore* store = MakeStore(8,8,8);
+		ReentrantDispatchObserver observer;
+		observer.store = store;
+		store->AddObserver(&observer);
+		store->BeginTile(0,0);
+		store->EndTile(0,0);
+		Check(observer.rejected && store->Generation() == 1u && store->Meta().frame == 0u,
+			"observer callback reentrant publication preserves frame metadata and generation" );
+		store->RemoveObserver(&observer);
+		store->release();
+	}
+
+	struct CrossThreadPublishingObserver : public IRenderObserver
+	{
+		FrameStore* other = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool startWorker = false;
+		bool workerDone = false;
+		bool completedWhileCallbackActive = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			startWorker = true;
+			condition.notify_all();
+			completedWhileCallbackActive = condition.wait_for(
+				lock,std::chrono::milliseconds(2000),[this]() { return workerDone; });
+		}
+	};
+
+	void TestCrossThreadCrossStorePublicationDoesNotDeadlock()
+	{
+		FrameStore* first = MakeStore(8,8,8);
+		FrameStore* second = MakeStore(8,8,8);
+		CrossThreadPublishingObserver observer;
+		observer.other = second;
+		first->AddObserver(&observer);
+		std::thread worker([&]() {
+			{
+				std::unique_lock<std::mutex> lock(observer.mutex);
+				observer.condition.wait(lock,[&]() { return observer.startWorker; });
+			}
+			second->MarkFrameComplete(3u);
+			{
+				std::lock_guard<std::mutex> lock(observer.mutex);
+				observer.workerDone = true;
+			}
+			observer.condition.notify_all();
+		});
+		first->BeginTile(0,0);
+		first->EndTile(0,0);
+		worker.join();
+		Check(observer.completedWhileCallbackActive && second->Meta().frame == 3u,
+			"cross-store publication on another thread is not globally serialized" );
+		first->RemoveObserver(&observer);
+		first->release();
+		second->release();
+	}
+
+	struct BulkReadObserver : public IRenderObserver
+	{
+		FrameStore* store = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		std::thread reader;
+		bool started = false;
+		bool done = false;
+		bool completedBeforeCallbackReturned = false;
+
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			if( started ) return;
+			started = true;
+			reader = std::thread([this]() {
+				std::vector<unsigned char> pixels(store->Width()*store->Height()*4u);
+				store->Render(pixels.data(),store->Width()*4u,
+					Rect(0,0,static_cast<unsigned int>(store->Height()),
+						static_cast<unsigned int>(store->Width())),
+					TargetFormat::RGBA8_sRGB,ViewTransform::Identity());
+				{
+					std::lock_guard<std::mutex> lock(mutex);
+					done = true;
+				}
+				condition.notify_all();
+			});
+			std::unique_lock<std::mutex> lock(mutex);
+			completedBeforeCallbackReturned = condition.wait_for(
+				lock,std::chrono::milliseconds(2000),[this]() { return done; });
+		}
+	};
+
+	struct ThrowingTileObserver : public IRenderObserver
+	{
+		unsigned int fires = 0u;
+		void OnTileComplete( const Rect&, uint64_t ) override
+		{
+			++fires;
+			throw std::runtime_error("injected bulk observer failure");
+		}
+	};
+
+	void TestBulkBracketReleasesAllTilesBeforeNotification()
+	{
+		FrameStore* store = MakeStore(16,8,8);
+		BulkReadObserver reader;
+		ThrowingTileObserver thrower;
+		reader.store = store;
+		store->AddObserver(&reader);
+		store->AddObserver(&thrower);
+		{
+			FrameStoreBulkBracket bracket(store,store->AsBeautyRasterImage());
+		}
+		if( reader.reader.joinable() ) reader.reader.join();
+		Check(reader.completedBeforeCallbackReturned && thrower.fires == 2u &&
+			store->Generation() == 2u,
+			"bulk bracket unlocks every tile before callbacks and contains observer failures" );
+		store->RemoveObserver(&reader);
+		store->RemoveObserver(&thrower);
+		store->release();
+	}
+
 	// ─── Section 5: Render readback identity & exposure ───────────
+	void TestConcurrentFrameMetadata()
+	{
+		FrameStore* store = MakeStore(2,2,2);
+		const unsigned int iterations = 20000;
+		std::atomic<bool> start{false};
+		std::atomic<bool> writerDone{false};
+		std::atomic<bool> valid{true};
+		std::atomic<unsigned int> checkpoint{0u};
+		std::atomic<unsigned int> acknowledged{0u};
+		std::atomic<unsigned int> readsWhileWriterActive{0u};
+		std::thread writer([&]() {
+			while( !start.load(std::memory_order_acquire) ) {}
+			for( unsigned int frame=1; frame<=iterations; ++frame ) {
+				if( frame%2u ) {
+					store->MarkFrameComplete(frame);
+				} else {
+					store->MarkDenoiseComplete(frame);
+				}
+				if( frame%100u == 0u && frame != iterations ) {
+					checkpoint.store(frame,std::memory_order_release);
+					while( acknowledged.load(std::memory_order_acquire) < frame ) {}
+				}
+			}
+			writerDone.store(true,std::memory_order_release);
+		});
+		std::thread reader([&]() {
+			start.store(true,std::memory_order_release);
+			while( !writerDone.load(std::memory_order_acquire) ) {
+				const Metadata metadata = store->Meta();
+				const bool expectedDenoised = metadata.frame != 0u &&
+					metadata.frame%2u == 0u;
+				if( metadata.frame > iterations ||
+					metadata.denoisedContent != expectedDenoised ) {
+					valid.store(false);
+				}
+				readsWhileWriterActive.fetch_add(1u,std::memory_order_relaxed);
+				const unsigned int requested =
+					checkpoint.load(std::memory_order_acquire);
+				if( requested && metadata.frame >= requested ) {
+					acknowledged.store(requested,std::memory_order_release);
+				}
+			}
+		});
+		writer.join();
+		reader.join();
+		const Metadata finalMetadata = store->Meta();
+		Check(valid.load() &&
+			readsWhileWriterActive.load() >= (iterations/100u)-1u &&
+			finalMetadata.frame == iterations && finalMetadata.denoisedContent,
+			"Mark*Complete and Meta publish coherent frame/denoise pairs during proven overlap");
+		store->release();
+	}
+
 	void TestRenderReadback()
 	{
 		FrameStore* store = MakeStore( 4, 4, 4 );
@@ -1011,6 +1543,49 @@ namespace
 	}
 
 	// ─── Section 10: regional post-processing confinement ─────────
+	void TestSnapshotRestore()
+	{
+		FrameStore* store = MakeStore( 2, 2, 1, {
+			ChannelId::Albedo, ChannelId::Normal, ChannelId::Depth,
+			ChannelId::ObjectId, ChannelId::PrimitiveId } );
+		store->AsBeautyRasterImage().SetPEL( 0, 0,
+			RISEColor(RISEPel(1.0,2.0,3.0),0.25) );
+		store->GetChannel<ChannelId::Albedo>()->At(0,0) = RISEPel(4.0,5.0,6.0);
+		store->GetChannel<ChannelId::Normal>()->At(0,0) = Vector3(7.0,8.0,9.0);
+		store->GetChannel<ChannelId::Depth>()->At(0,0) = 10.0f;
+		store->GetChannel<ChannelId::ObjectId>()->At(0,0) = 11u;
+		store->GetChannel<ChannelId::PrimitiveId>()->At(0,0) = 12u;
+		FrameStore::Metadata metadata;
+		metadata.renderFidelityStatus = "preview";
+		metadata.rendererBuildId = "prior";
+		store->SetMetadata(metadata);
+		const FrameStore::Snapshot snapshot = store->CaptureSnapshot();
+
+		store->AsBeautyRasterImage().SetPEL( 0, 0, RISEColor(RISEPel(0.0),1.0) );
+		store->GetChannel<ChannelId::Albedo>()->At(0,0) = RISEPel(0.0);
+		store->GetChannel<ChannelId::Normal>()->At(0,0) = Vector3(0.0,0.0,0.0);
+		store->GetChannel<ChannelId::Depth>()->At(0,0) = 0.0f;
+		store->GetChannel<ChannelId::ObjectId>()->At(0,0) = 0u;
+		store->GetChannel<ChannelId::PrimitiveId>()->At(0,0) = 0u;
+		store->SetMetadata(FrameStore::Metadata());
+		const uint64_t generationBeforeRestore = store->Generation();
+		const bool restored = store->RestoreSnapshot(snapshot);
+		const RISEColor beauty = store->AsBeautyRasterImage().GetPEL(0,0);
+		const RISEPel albedo = store->GetChannel<ChannelId::Albedo>()->At(0,0);
+		const Vector3 normal = store->GetChannel<ChannelId::Normal>()->At(0,0);
+		Check( restored && beauty.base[0] == 1.0 && beauty.base[1] == 2.0 &&
+			beauty.base[2] == 3.0 && beauty.a == 0.25 &&
+			albedo[0] == 4.0 && albedo[1] == 5.0 && albedo[2] == 6.0 &&
+			normal.x == 7.0 && normal.y == 8.0 && normal.z == 9.0 &&
+			store->GetChannel<ChannelId::Depth>()->At(0,0) == 10.0f &&
+			store->GetChannel<ChannelId::ObjectId>()->At(0,0) == 11u &&
+			store->GetChannel<ChannelId::PrimitiveId>()->At(0,0) == 12u &&
+			store->Meta().rendererBuildId == "prior" &&
+			store->Generation() == generationBeforeRestore + 1u,
+			"snapshot restore atomically recovers every channel, metadata, and generation" );
+		store->release();
+	}
+
 	void TestRegionalPostProcessingConfinement()
 	{
 		const unsigned int w = 16, h = 16;
@@ -1145,23 +1720,33 @@ namespace
 
 int main()
 {
+	ProcessWatchdog watchdog;
 	std::cout << "FrameStoreTest L1 — buffer + tile locking + Render readback\n";
 	std::cout << "------------------------------------------------------------\n";
 
 	TestConstructionAndGeometry();
 	TestAOVChannels();
 	TestPlannedAOVBridge();
-	TestSeqlockAndObserver();
+	TestTileLockingAndObserver();
 	TestObserverSelfDetach();
 	TestObserverCascadeRemovalNoUAF();
 	TestObserverRemoveWaitsForInFlight();
-	TestConcurrentSeqlock();
+	TestObserverRemovalFromUnrelatedCallbackWaitsForVictim();
+	TestConcurrentSelfRemovalDrainsOtherThreads();
+	TestSharedObserverCrossStoreRemovalIsSerialized();
+	TestCrossStoreMutualRemovalCannotDeadlock();
+	TestReentrantObserverDispatchFailsClosed();
+	TestCrossThreadCrossStorePublicationDoesNotDeadlock();
+	TestBulkBracketReleasesAllTilesBeforeNotification();
+	TestConcurrentTileLocking();
+	TestConcurrentFrameMetadata();
 	TestRenderReadback();
 	TestToneCurveGating();
 	TestReferenceLifetime();
 	TestBeautyRasterImageShim();
 	TestHDRArchivalIdentity();
 	TestCopyTileFromRasterImage();
+	TestSnapshotRestore();
 	TestRegionalPostProcessingConfinement();
 
 	std::cout << "------------------------------------------------------------\n";

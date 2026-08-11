@@ -20,6 +20,8 @@
 #include "../Interfaces/ILog.h"
 #include "IsotropicPhongBRDF.h"
 #include "IsotropicPhongSPF.h"
+#include "../Interfaces/IContinuationClosure.h"
+#include "../Utilities/FiniteMath.h"
 
 namespace RISE
 {
@@ -48,13 +50,40 @@ namespace RISE
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
-			inline IBSDF* GetBSDF() const {		return pBRDF; };
+			inline IBSDF* GetBSDF() const override {		return pBRDF; };
 
 			/// \return The SPF for this material.  NULL If there is no SPF
-			inline ISPF* GetSPF() const {			return pSPF; };
+			inline ISPF* GetSPF() const override {			return pSPF; };
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
-			inline IEmitter* GetEmitter() const {	return 0; };
+			inline IEmitter* GetEmitter() const override {	return 0; };
+
+			const IContinuationClosurePel* MakeContinuationClosurePel(
+				const RayIntersectionGeometric& ri,
+				const IORStack&,
+				const ContinuationPathState& pathState ) const override
+			{
+				const ScalarTriple exponent = pBRDF->GetExponent().GetValuesAt(ri);
+				if( pBRDF->GetExponent().HasPerChannelVariation() ||
+					!exponent.IsUniform() ||
+					!RISE::IsFiniteDouble(exponent.v[0]) || exponent.v[0] < 0.0 ) {
+					return 0;
+				}
+				return CreateIsotropicPhongContinuationClosurePel(
+					ri,pBRDF->GetRd().GetColor(ri),pBRDF->GetRs().GetColor(ri),
+					exponent.v[0],pathState);
+			}
+
+			const IContinuationClosureNM* MakeContinuationClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack&, const Scalar nm,
+				const ContinuationPathState& pathState ) const override
+			{
+				return CreateIsotropicPhongContinuationClosureNM(
+					ri,pBRDF->GetRd().GetColorNM(ri,nm),
+					pBRDF->GetRs().GetColorNM(ri,nm),
+					pBRDF->GetExponent().GetValueAtNM(ri,nm),pathState);
+			}
 
 			//! Read-back + rebind for the interactive editor.  Material
 			//! forwards to BOTH BRDF and SPF in lockstep so the two

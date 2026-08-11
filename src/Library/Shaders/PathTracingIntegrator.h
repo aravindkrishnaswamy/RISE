@@ -86,10 +86,55 @@ namespace RISE
 			//! SetClayOverride's doc for the exact semantics.  Default false.
 			bool				mClayOverride;
 
-			//! Shared clay reflectance state for `clay_lights`: a mid-grey
-			//! (~0.5 albedo) UniformColorPainter wrapped by a LambertianBRDF
-			//! and a LambertianSPF, all three built ONCE in the constructor
-			//! and released in the destructor.  Stateless and read-only for
+			//! Fire has no RGB/Pel transport until Phase-A step 7.  The pure
+			//! PathTracingPelRasterizer bypasses RayCaster::CastRay, so its
+			//! integrator entry needs the same one-shot diagnostic gate.
+			mutable std::atomic<bool>	mFirePelDiagnosticEmitted;
+
+			//! Phase-B preview fallback diagnostic. Unsupported continuation
+			//! materials deliberately stay on the legacy collision-march estimator
+			//! with no volume-NEE competitor. Emit this at most once per integrator
+			//! instance so a debug render identifies the degraded vertex class
+			//! without flooding the log from every sample.
+			mutable std::atomic<bool>	mUnsupportedContinuationDiagnosticEmitted;
+			mutable std::atomic<bool>	mUnsupportedFallbackSegmentObserved;
+			mutable std::atomic<bool>	mUnsupportedFallbackSegmentCompeted;
+			mutable std::atomic<bool>	mUnsupportedFallbackEndpointAttempted;
+
+			//! Phase-B medium-vertex gate witnesses.  These observe the actual
+			//! values used by continuation construction; transport never reads
+			//! them.  A competing vertex must force effective guide alpha and
+			//! guide sample count to zero, while the stored march direction
+			//! density must be the retained phase-closure Pdf times the exact
+			//! roulette-survival mass (or just phase Pdf for A_march terminals).
+			mutable std::atomic<unsigned long long>	mCompetingMediumVertexCount;
+			mutable std::atomic<unsigned long long>	mCompetingMediumEndpointAttemptCount;
+			mutable std::atomic<unsigned long long>	mNonCompetingMediumFallbackVertexCount;
+			mutable std::atomic<bool>				mCompetingMediumGuideAlphaNonzero;
+			mutable std::atomic<unsigned long long>	mCompetingMediumGuideSampleCount;
+			mutable std::atomic<bool>				mCompetingMediumReachPdfMismatch;
+			mutable std::atomic<bool>				mCompetingMediumZeroSurvivalObserved;
+			mutable std::atomic<bool>				mCompetingMediumIntermediateSurvivalObserved;
+			mutable std::atomic<bool>				mCompetingMediumUnitSurvivalObserved;
+
+			//! Phase-B configuration-matrix witnesses for the non-competing
+			//! reference route.  They prove that a requested surface guide (and
+			//! its RIS mode) actually initialized rather than letting an equality
+			//! gate pass through an unnoticed guide fallback. Transport never
+			//! reads these relaxed counters.
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceGuideInitializationCount;
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceRISCount;
+			mutable std::atomic<unsigned long long>	mSurfaceVolumeEndpointAttemptCount;
+			mutable std::atomic<bool>				mSSSOrdinaryDirectContributionObserved;
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceGuidedCandidateInstalledCount;
+			mutable std::atomic<unsigned long long>	mNonCompetingSurfaceRISCandidateInstalledCount;
+
+			//! Shared clay reflectance state for `clay_lights`: one synthetic
+			//! mid-grey LambertianMaterial built by CreateClayOverrideMaterial.
+			//! Its BRDF and SPF pointers are borrowed from that one material, so
+			//! NEE evaluation, closure construction, and continuation sampling
+			//! cannot drift onto separately constructed parameter sets.  It is
+			//! stateless and read-only for
 			//! the lifetime of the integrator (no scene-derived state, no
 			//! mutation after construction), so concurrent reads from every
 			//! render-worker thread are safe with no extra synchronization --
@@ -100,27 +145,23 @@ namespace RISE
 			//! do (the flag is stamped once at pipeline construction, before
 			//! the pipeline is ever handed to the render loop) -- would still
 			//! be safe if it ever happened.
-			const IPainter*		pClayPainter;
 			const IBSDF*		pClayBRDF;
 			const ISPF*			pClaySPF;
 
-			//! P1-c fix (review-p2b): a lightweight IMaterial adapter that
-			//! wraps pClayBRDF/pClaySPF -- passed to LightSampler::
+			//! The exact synthetic LambertianMaterial passed to LightSampler::
 			//! EvaluateDirectLighting{,NM} in place of the authored
 			//! ri.pMaterial wherever the NEE eval itself already uses the
-			//! clay BRDF.  GetBSDF()/GetSPF() return pClayBRDF/pClaySPF
-			//! directly (no duplicate Lambertian pair); GetEmitter() is
+			//! clay BRDF.  GetBSDF()/GetSPF() are the pClayBRDF/pClaySPF
+			//! borrowed above (no duplicate Lambertian pair); GetEmitter() is
 			//! always null (clay never lights up -- the surface's own
 			//! emission is handled separately and is never clayed).  Pdf/
 			//! PdfNM are NOT overridden -- they inherit IMaterial's base
 			//! implementation, which delegates to GetSPF()->Pdf(...),
 			//! i.e. pClaySPF's OWN pdf formula.  That is deliberate: it
 			//! guarantees the MIS BSDF-sampling pdf used by NEE is the
-			//! EXACT SAME function as the pdf the continuation ray is
-			//! actually sampled from (pClaySPF::Scatter), by construction,
-			//! with no hand-duplicated cos/PI formula to drift out of
-			//! sync.  Built once alongside the other three clay members;
-			//! same stateless/read-only-after-construction contract.
+			//! EXACT SAME function as the pdf the continuation ray is actually
+			//! sampled from, by construction, with no hand-duplicated cos/PI
+			//! formula to drift out of sync.
 			const IMaterial*	pClayMaterial;
 
 		private:
@@ -159,9 +200,94 @@ namespace RISE
 			static long long ConstructionCount() { return sConstructionCount.load( std::memory_order_relaxed ); }
 			static long long DestructionCount() { return sDestructionCount.load( std::memory_order_relaxed ); }
 
+			//! Builds the exact synthetic material used by `clay_lights`.
+			//! The caller owns the returned reference.  Keeping this as the one
+			//! factory lets the Phase-B closure gate directly prove that the
+			//! material's response, sample, and Pdf all share one Lambertian
+			//! parameter set.
+			static const IMaterial* CreateClayOverrideMaterial();
+
+			//! Test-visible witness for the Phase-B unsupported-material fallback.
+			//! This is diagnostic state only; no transport decision reads it.
+			bool UnsupportedContinuationDiagnosticEmitted() const {
+				return mUnsupportedContinuationDiagnosticEmitted.load(
+					std::memory_order_relaxed );
+			}
+			bool UnsupportedFallbackSegmentObserved() const {
+				return mUnsupportedFallbackSegmentObserved.load(
+					std::memory_order_relaxed );
+			}
+			bool UnsupportedFallbackSegmentCompeted() const {
+				return mUnsupportedFallbackSegmentCompeted.load(
+					std::memory_order_relaxed );
+			}
+			bool UnsupportedFallbackEndpointAttempted() const {
+				return mUnsupportedFallbackEndpointAttempted.load(
+					std::memory_order_relaxed );
+			}
+			unsigned long long CompetingMediumVertexCount() const {
+				return mCompetingMediumVertexCount.load(std::memory_order_relaxed);
+			}
+			bool CompetingMediumGuideAlphaNonzero() const {
+				return mCompetingMediumGuideAlphaNonzero.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long CompetingMediumGuideSampleCount() const {
+				return mCompetingMediumGuideSampleCount.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumReachPdfMismatch() const {
+				return mCompetingMediumReachPdfMismatch.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumZeroSurvivalObserved() const {
+				return mCompetingMediumZeroSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumIntermediateSurvivalObserved() const {
+				return mCompetingMediumIntermediateSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			bool CompetingMediumUnitSurvivalObserved() const {
+				return mCompetingMediumUnitSurvivalObserved.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long CompetingMediumEndpointAttemptCount() const {
+				return mCompetingMediumEndpointAttemptCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingMediumFallbackVertexCount() const {
+				return mNonCompetingMediumFallbackVertexCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceGuideInitializationCount() const {
+				return mNonCompetingSurfaceGuideInitializationCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceRISCount() const {
+				return mNonCompetingSurfaceRISCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long SurfaceVolumeEndpointAttemptCount() const {
+				return mSurfaceVolumeEndpointAttemptCount.load(
+					std::memory_order_relaxed);
+			}
+			bool SSSOrdinaryDirectContributionObserved() const {
+				return mSSSOrdinaryDirectContributionObserved.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceGuidedCandidateInstalledCount() const {
+				return mNonCompetingSurfaceGuidedCandidateInstalledCount.load(
+					std::memory_order_relaxed);
+			}
+			unsigned long long NonCompetingSurfaceRISCandidateInstalledCount() const {
+				return mNonCompetingSurfaceRISCandidateInstalledCount.load(
+					std::memory_order_relaxed);
+			}
+
 			//! Configure the path-vertex loop cap (see mMaxPathDepth's doc).
-			//! DEPTH ACCOUNTING: the main loop is
-			//! `for (depth = startDepth; depth < mMaxPathDepth; depth++)`.
+			//! DEPTH ACCOUNTING: ordinary vertex processing runs while
+			//! `depth < mMaxPathDepth`.
 			//! `depth` is 0-based and counts LOOP ITERATIONS = VERTICES
 			//! PROCESSED, not "bounces past the camera hit": iteration
 			//! `depth == startDepth` (startDepth is 0 for every camera-ray
@@ -177,6 +303,12 @@ namespace RISE
 			//!              the end of that iteration (harmless wasted RNG/BSDF
 			//!              work) but the loop exits before it is ever traced --
 			//!              genuinely "direct lighting only, zero bounces".
+			//!              The spectral fire estimator may still march that
+			//!              sampled outgoing SEGMENT once to score additive
+			//!              source or a thermal collision, then stops before
+			//!              processing its surface/environment endpoint.  This
+			//!              is source-before-path-depth ordering, not another
+			//!              path vertex.  Pel retains the historical loop gate.
 			//!              This is the mapping the "direct" BeautyVariant mode
 			//!              (variantMaxBounces=1) relies on.
 			//!   n == 2  -> camera hit + exactly one indirect bounce.

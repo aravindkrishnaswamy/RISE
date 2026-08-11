@@ -14,10 +14,12 @@
 //  from FrameStore::EndTile / MarkFrameComplete (Phase 2).  They
 //  carry NO pixel data — observers consume the FrameStore directly.
 //  This means:
-//    - the render thread never blocks waiting for an observer to
-//      finish (file write, network send, UI repaint queue);
-//    - the seqlock model lets observers and the rasterizer run
-//      concurrently with no mutex.
+//    - callbacks are synchronous and serialized; tile observers should
+//      enqueue expensive UI/network work, while frame observers may perform
+//      the intentional end-of-frame file transaction;
+//    - the relevant tile lock is released before notification, so callbacks
+//      may read completed pixels; a slow callback still back-pressures the
+//      publishing worker.
 //  Each platform's GUI bridge marshals from the render thread to the
 //  UI thread via Qt signals / dispatch_async / Compose
 //  LaunchedEffect; observers don't need to do that internally.

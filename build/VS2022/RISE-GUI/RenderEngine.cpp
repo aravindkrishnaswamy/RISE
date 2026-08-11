@@ -292,7 +292,7 @@ RenderEngine::RenderEngine(QObject* parent)
     });
 
     // L8 round 9 — progressive-update poll timer.  Drives the
-    // lockless `pollProductionVFS` at 30 Hz during an active
+    // generation-gated `pollProductionVFS` at 30 Hz during an active
     // render.  Started in `startRender` / `startAnimationRender`,
     // stopped at the finish path of each.  See `pollProductionVFS`
     // for the architecture rationale.
@@ -707,7 +707,7 @@ void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
     m_regionProductionRender = regionOnly;
     setState(Rendering);
     m_cancelFlag = false;
-    m_sizeDetected = false;
+    m_sizeDetected.store(false, std::memory_order_release);
     m_lastAnimationSummary.clear();  // still render: no video outputs to report
 
     // Install progress callback.  Model-B F2 slice S4: when a
@@ -750,7 +750,7 @@ void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
         m_eta.Begin();
     }
     m_elapsedTimer->start();
-    // L8 round 9 — start the lockless progressive-update poll.
+    // L8 round 9 — start the generation-gated progressive-update poll.
     m_progressivePollTimer->start();
 
     // L4 round-6 P1 — QPointer guard for the queued completion
@@ -843,7 +843,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     m_regionProductionRender = false;
     setState(Rendering);
     m_cancelFlag = false;
-    m_sizeDetected = false;
+    m_sizeDetected.store(false, std::memory_order_release);
     m_lastAnimationSummary.clear();  // repopulated on completion below
 
     // Install progress callback.  Model-B F2 slice S4: same "skip the
@@ -872,7 +872,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
         m_eta.Begin();
     }
     m_elapsedTimer->start();
-    // L8 round 9 — start the lockless progressive-update poll.
+    // L8 round 9 — start the generation-gated progressive-update poll.
     m_progressivePollTimer->start();
 
     // L4 round-6 P1 — QPointer guard for the queued completion lambda.
@@ -896,21 +896,30 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                 VideoEncoder* hevcEncoder =
                     new VideoEncoder(videoBasePath, VideoEncoder::Codec::HevcHdr10);
                 rasterizer->AddRasterizerOutput(proResEncoder);
-                rasterizer->AddRasterizerOutput(hevcEncoder);
                 proResEncoder->release();
-                hevcEncoder->release();
+                if (hevcEncoder->DerivativeAvailable()) {
+                    rasterizer->AddRasterizerOutput(hevcEncoder);
+                    hevcEncoder->release();
+                } else {
+                    hevcEncoder->release();
+                    hevcEncoder = nullptr;
+                }
 
                 bool result = false;
                 try {
                     result = job->RasterizeAnimationUsingOptions();
-                    proResEncoder->finalize();
-                    hevcEncoder->finalize();
+                    proResEncoder->finalize(result);
+                    if (hevcEncoder) hevcEncoder->finalize(result);
+                    if (result && !proResEncoder->wroteOutput() &&
+                        !proResEncoder->HasFinalizedFirePrimaries()) result = false;
                 } catch (...) {
                     // The platform worker catches at its outer boundary, but
                     // the rasterizer owns these encoder references. Finalize
                     // and release them before propagating to that boundary.
-                    try { proResEncoder->finalize(); } catch (...) {}
-                    try { hevcEncoder->finalize(); } catch (...) {}
+                    try { proResEncoder->finalize(false); } catch (...) {}
+                    if (hevcEncoder) {
+                        try { hevcEncoder->finalize(false); } catch (...) {}
+                    }
                     rasterizer->FreeRasterizerOutputs();
                     m_productionVFSAttachedToRasterizer = false;
                     throw;
@@ -921,17 +930,20 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
                     writtenParts << QStringLiteral("%1 (ProRes 4444)").arg(
                         QFileInfo(QString::fromStdString(proResEncoder->outputPath())).fileName());
                 }
-                if (hevcEncoder->wroteOutput()) {
+                if (hevcEncoder && hevcEncoder->wroteOutput()) {
                     writtenParts << QStringLiteral("%1 (HEVC HDR10)").arg(
                         QFileInfo(QString::fromStdString(hevcEncoder->outputPath())).fileName());
                 }
                 if (!writtenParts.isEmpty()) {
                     animationSummary =
                         QStringLiteral("Wrote ") + writtenParts.join(QStringLiteral(" + "));
-                    if (!hevcEncoder->wroteOutput()) {
+                    if (!hevcEncoder || !hevcEncoder->wroteOutput()) {
                         animationSummary +=
                             QStringLiteral(" (HEVC .mp4 not written - see log)");
                     }
+                } else if (result && proResEncoder->HasFinalizedFirePrimaries()) {
+                    animationSummary = QStringLiteral(
+                        "Movie derivatives failed; raw fire frame primaries were preserved");
                 }
 
                 rasterizer->FreeRasterizerOutputs();
@@ -1058,7 +1070,7 @@ void RenderEngine::clearScene()
     m_hdrPixelBuffer.clear();  // L5b — drop the binary16 cache too
     m_imageWidth = 0;
     m_imageHeight = 0;
-    m_sizeDetected = false;
+    m_sizeDetected.store(false, std::memory_order_release);
 
     emit imageUpdated(QImage());
     // Empty HDR signal so HDRRenderWidget can clear its swap chain.
@@ -1181,7 +1193,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         const int byteCount = static_cast<int>(needHDR * sizeof(uint16_t));
         QByteArray halfFloats(reinterpret_cast<const char*>(m_hdrPixelBuffer.data()),
                               byteCount);
-        bool firstTime = !m_sizeDetected;
+        const bool firstTime = !m_sizeDetected.load(std::memory_order_acquire);
         QPointer<RenderEngine> guard(this);
         QMetaObject::invokeMethod(this, [guard, halfFloats, firstTime, W, H]() {
             if (!guard) return;
@@ -1189,7 +1201,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
                                         static_cast<int>(W),
                                         static_cast<int>(H));
             if (firstTime) {
-                guard->m_sizeDetected = true;
+                guard->m_sizeDetected.store(true, std::memory_order_release);
                 emit guard->sceneSizeDetected(static_cast<int>(W),
                                               static_cast<int>(H));
             }
@@ -1210,7 +1222,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
 
     QImage image = buildImageFromBuffer();
-    bool firstTime = !m_sizeDetected;
+    const bool firstTime = !m_sizeDetected.load(std::memory_order_acquire);
 
     // L4 round-6 P1 — QPointer guard.  This is the VFS-tile-callback
     // fan-out (rasterizer worker → UI thread); if the engine is
@@ -1221,7 +1233,7 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         if (!guard) return;
         emit guard->imageUpdated(image);
         if (firstTime) {
-            guard->m_sizeDetected = true;
+            guard->m_sizeDetected.store(true, std::memory_order_release);
             emit guard->sceneSizeDetected(static_cast<int>(W), static_cast<int>(H));
         }
     }, Qt::QueuedConnection);
@@ -1237,7 +1249,8 @@ void RenderEngine::onProductionVFSFrameComplete()
     renderViewportToBufferAndEmit_locked(W, H);  // full image
     // L8 round 9 — sync the poll sentinel so a subsequent
     // pollProductionVFS doesn't redo the same work.
-    m_lastSeenGeneration = m_productionVFS->Generation();
+    m_lastSeenGeneration.store(
+        m_productionVFS->Generation(), std::memory_order_release);
 }
 
 void RenderEngine::pollProductionVFS()
@@ -1252,16 +1265,17 @@ void RenderEngine::pollProductionVFS()
     // FrameStore tile produced a `m_bufferMutex ↔ tile-mutex`
     // inversion that hung the render.
     //
-    // Lockless replacement: workers no longer fire the tile
+    // Generation-gated replacement: workers no longer fire the tile
     // callback at all (see `ensureProductionVFSAttachedToRasterizer`
-    // wiring above — `SetTileCompleteCallback` deliberately
-    // omitted).  They just bump the atomic `globalGeneration_`
-    // counter in `FrameStore` on every `EndTile`.  This method
-    // reads that counter on the Qt main thread and emits one full
-    // image when it advances.  Workers never block on the UI side.
+    // wiring above — `SetTileCompleteCallback` deliberately omitted).
+    // They bump the atomic `globalGeneration_` counter in `FrameStore` on
+    // every `EndTile`.  `ViewportFrameStore::Generation` briefly takes the
+    // chain shared lock to retain that FrameStore, so this Qt-side poll can
+    // contend with a bind; it emits one full image only when the counter
+    // advances. Tile completion workers never wait for this polling path.
     if (!m_productionVFS) return;
     const uint64_t gen = m_productionVFS->Generation();
-    if (gen == m_lastSeenGeneration) return;  // no new pixels
+    if (gen == m_lastSeenGeneration.load(std::memory_order_acquire)) return;
 
     unsigned int W = 0, H = 0;
     m_productionVFS->GetDimensions(W, H);
@@ -1271,7 +1285,7 @@ void RenderEngine::pollProductionVFS()
     // prevents the Qt GUI thread from beachballing when workers
     // hold a slow per-pixel block's tile exclusive.
     renderViewportToBufferAndEmit_locked(W, H, /*nonBlocking=*/true);
-    m_lastSeenGeneration = gen;
+    m_lastSeenGeneration.store(gen, std::memory_order_release);
 }
 
 void RenderEngine::ensureProductionVFSInitialized()
@@ -1319,12 +1333,11 @@ void RenderEngine::ensureProductionVFSAttachedToRasterizer()
     // Subsequent `Rasterizer::SetFrameStore` swaps (camera-dim change,
     // active-camera switch) re-bind via the new
     // `OnRasterizerFrameStoreChanged` notification, dispatched on
-    // every attached output.  Net effect: for PT / BDPT / VCM the VFS
+    // every attached output.  Net effect: for PT / BDPT / VCM / MLT the VFS
     // now observes the rasterizer's mFrameStore directly — no
     // VFS-internal FrameStore allocation, no FrameSink cross-store
-    // copy.  MLT rasterizers opt out of the FrameStore push (per
-    // L6e-1.1's `AcceptsFrameStorePush()` virtual) and stay on the
-    // legacy FrameSink path until L6d-2.
+    // copy.  The legacy FrameSink path remains only for a future or
+    // noncanonical producer that does not accept the FrameStore push.
     if (!m_productionVFSAttachedToRasterizer) {
         m_productionVFS->Attach(rasterizer);
         m_productionVFSAttachedToRasterizer = true;
@@ -1397,23 +1410,24 @@ bool RenderEngine::saveAs(const QString& path,
                           const QString& formatName,
                           double         ev)
 {
+	if (m_state != Completed && m_state != Cancelled) return false;
     if (!m_productionVFS) return false;
-    IFrameEncoder* enc =
-        Implementation::FrameEncoderRegistry::Get().ByFormatName(
-            formatName.toUtf8().constData());
+	IFrameEncoder* enc =
+		Implementation::FrameEncoderRegistry::Get().AcquireByFormatName(
+			formatName.toUtf8().constData());
     if (!enc) return false;
     // L5d — format-aware EncodeOpts.  HDR archival formats (EXR /
-    // .hdr / RGBEA) preserve scene-referred linear values > 1.0;
-    // their encoders explicitly ignore `viewTransform` and `bpp`,
-    // but pass an identity transform anyway so a future encoder
-    // change can't accidentally clip a save.  LDR formats (PNG /
+    // .hdr / RGBEA) preserve scene-referred linear values > 1.0.
+    // EXR consumes `bpp=32` to preserve bright fire values as FLOAT
+    // channels; the other HDR encoders ignore it.  LDR formats (PNG /
     // TIFF-8 / TGA / PPM) get the user's current display EV baked
     // in via `ForLDRDisplay(ev)`, matching the on-screen viewport
     // result the user is likely trying to preserve.
     EncodeOpts opts;
     opts.colorSpace = eColorSpace_sRGB;
     if (enc->SupportsHDR()) {
-        opts.bpp           = 0;
+		opts.colorSpace    = eColorSpace_Rec709RGB_Linear;
+        opts.bpp           = 32;
         opts.viewTransform = ViewTransform::Identity();
     } else {
         // L5e — bake the user's currently-active tone curve into
@@ -1424,8 +1438,10 @@ bool RenderEngine::saveAs(const QString& path,
         opts.viewTransform = ViewTransform::ForLDRDisplay(
             static_cast<float>(ev), tc);
     }
-    return m_productionVFS->SaveAs(
-        std::string(path.toUtf8().constData()), enc, opts);
+	const bool saved = m_productionVFS->SaveAs(
+		std::string(path.toUtf8().constData()), enc, opts);
+	enc->release();
+	return saved;
 }
 
 void RenderEngine::onLogMessage(int level, const std::string& message)

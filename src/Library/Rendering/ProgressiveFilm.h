@@ -37,12 +37,12 @@ namespace RISE
 		{
 			// PBRT-v4 RGBFilm-style storage: per-pixel accumulator is in
 			// CIE XYZ tristimulus (a linear color space, no gamut),
-			// converted to RISEPel ROMM RGB exactly once at Resolve.
+			// converted to RISEPel Rec.709 RGB exactly once at Resolve.
 			// Eliminates the per-sample chromaticity gamut clip
-			// (MoveXYZIntoROMMRGBGamut, fired by the implicit
+			// (MoveXYZIntoRec709RGBGamut, fired by the implicit
 			// RISEPel(XYZPel) conversion) that systematically suppressed
 			// out-of-gamut spectral-locus contributions toward white.
-			// For RGB rasterizers: implicit XYZPel(const ROMMRGBPel&)
+			// For RGB rasterizers: implicit XYZPel(const Rec709RGBPel&)
 			// at write is a lossless 3x3 matrix multiply (no clip);
 			// implicit RISEPel(const XYZPel&) at read does fire the
 			// chromaticity clip, but for in-gamut RGB samples the clip

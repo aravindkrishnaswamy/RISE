@@ -14,8 +14,8 @@
 //       direct path (transitivity → byte-identical to legacy
 //       FileRasterizerOutput per L2's regression).
 //    5. Rasterizer-swap simulation: register VFS on rasterizer A,
-//       detach, register on B; FrameStore + observer + tile-callback
-//       state survive across the swap.
+//       detach, register on B; UI callbacks persist while the VFS
+//       follows the new rasterizer's canonical FrameStore.
 //    6. Resolution change triggers chain reallocation + observers
 //       still fire on the new chain.
 //    7. Multi-frame reuse: two OutputImage calls populate the
@@ -27,12 +27,17 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -48,10 +53,21 @@
 #include "../src/Library/Rendering/ViewportFrameStore.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/FrameEncoders.h"
+#include "../src/Library/Rendering/FileEncoderObserver.h"
 #include "../src/Library/RasterImages/RasterImage.h"
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/DiskFileWriteBuffer.h"
+#include "../src/Library/Utilities/RISECBOR64.h"
+#include "FireOutputMetadataTestFixture.h"
 #include "../src/Library/Interfaces/IFrameEncoder.h"
+#include "../src/Library/Interfaces/IRenderObserver.h"
+
+#ifndef NO_EXR_SUPPORT
+	#include <ImfChannelList.h>
+	#include <ImfFrameBuffer.h>
+	#include <ImfInputFile.h>
+	#include <ImfStringAttribute.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -61,6 +77,30 @@ namespace
 {
 	int gFailCount = 0;
 	int gPassCount = 0;
+
+	class ProcessWatchdog
+	{
+	public:
+		ProcessWatchdog() : completed_(std::make_shared<std::atomic<bool>>(false))
+		{
+			const auto completed = completed_;
+			std::thread([completed]() {
+				std::this_thread::sleep_for(std::chrono::seconds(30));
+				if( !completed->load(std::memory_order_acquire) ) {
+					std::fputs("FAIL: ViewportFrameStoreTest exceeded 30-second watchdog\n",stderr);
+					std::_Exit(124);
+				}
+			}).detach();
+		}
+
+		~ProcessWatchdog()
+		{
+			completed_->store(true,std::memory_order_release);
+		}
+
+	private:
+		std::shared_ptr<std::atomic<bool>> completed_;
+	};
 
 	void Check( bool cond, const std::string& label )
 	{
@@ -75,6 +115,171 @@ namespace
 	constexpr unsigned int kImgW = 16;
 	constexpr unsigned int kImgH = 16;
 
+	class CallbackObserver : public IRenderObserver
+	{
+	public:
+		explicit CallbackObserver( std::function<void()> callback ) :
+			callback_(std::move(callback)) {}
+		void OnTileComplete( const Rect&, uint64_t ) override { callback_(); }
+
+	private:
+		std::function<void()> callback_;
+	};
+
+	class NoWritePNGEncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		NoWritePNGEncoder() : encodeCalls(0) {}
+		std::string FormatName() const override { return "PNG"; }
+		std::vector<std::string> Extensions() const override { return { "png" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore&, IWriteBuffer&, const EncodeOpts& ) override
+		{
+			++encodeCalls;
+		}
+
+		unsigned int encodeCalls;
+
+	protected:
+		~NoWritePNGEncoder() override {}
+	};
+
+	class RetainedFrameEncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		RetainedFrameEncoder( bool& destroyed, IFrameEncoder& delegate ) :
+			encodeCalls(0), destroyed_(destroyed), delegate_(delegate) { delegate_.addref(); }
+		std::string FormatName() const override { return "PPM"; }
+		std::vector<std::string> Extensions() const override { return { "ppm" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore& store, IWriteBuffer& output,
+			const EncodeOpts& opts ) override
+		{
+			++encodeCalls;
+			delegate_.Encode(store,output,opts);
+		}
+
+		unsigned int encodeCalls;
+
+	protected:
+		~RetainedFrameEncoder() override
+		{
+			delegate_.release();
+			destroyed_ = true;
+		}
+
+	private:
+		bool& destroyed_;
+		IFrameEncoder& delegate_;
+	};
+
+	class BlockingPPMEncoder :
+		public virtual IFrameEncoder,
+		public virtual Reference
+	{
+	public:
+		std::string FormatName() const override { return "PPM"; }
+		std::vector<std::string> Extensions() const override { return { "ppm" }; }
+		bool SupportsHDR() const override { return false; }
+		bool SupportsAOVs() const override { return false; }
+		void Encode( const FrameStore& store, IWriteBuffer& output,
+			const EncodeOpts& opts ) override
+		{
+			std::unique_lock<std::mutex> lock(mutex_);
+			captured_ = opts.metadataSnapshot;
+			entered_ = true;
+			condition_.notify_all();
+			condition_.wait(lock,[this]() { return continue_; });
+			lock.unlock();
+			IFrameEncoder* ppm = FrameEncoderRegistry::Get().AcquireByFormatName("PPM");
+			if( ppm ) {
+				ppm->Encode(store,output,opts);
+				ppm->release();
+			}
+		}
+
+		void WaitUntilEntered()
+		{
+			std::unique_lock<std::mutex> lock(mutex_);
+			condition_.wait(lock,[this]() { return entered_; });
+		}
+
+		void Continue()
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			continue_ = true;
+			condition_.notify_all();
+		}
+
+		const FrameStore::Metadata& CapturedMetadata() const { return captured_; }
+
+	protected:
+		~BlockingPPMEncoder() override {}
+
+	private:
+		std::mutex mutex_;
+		std::condition_variable condition_;
+		bool entered_ = false;
+		bool continue_ = false;
+		FrameStore::Metadata captured_;
+	};
+
+	class LeaseOrderFrameStore : public FrameStore
+	{
+	public:
+		explicit LeaseOrderFrameStore( const Spec& spec ) :
+			FrameStore(spec), finalReleaseObserved_(false),
+			finalReleaseWhileLeased_(false) {}
+
+		bool release() const override
+		{
+			if( refcount() == 1u ) {
+				bool leased = false;
+				try {
+					LeaseOrderFrameStore* self =
+						const_cast<LeaseOrderFrameStore*>(this);
+					self->SetMetadata(self->Meta());
+				}
+				catch( const std::runtime_error& error ) {
+					leased = std::string(error.what()).find("metadata is leased") !=
+						std::string::npos;
+				}
+				finalReleaseWhileLeased_.store(leased);
+				finalReleaseObserved_.store(true);
+				return true;
+			}
+			return Reference::release();
+		}
+
+		bool FinalReleaseObserved() const
+		{
+			return finalReleaseObserved_.load();
+		}
+
+		bool FinalReleaseWhileLeased() const
+		{
+			return finalReleaseWhileLeased_.load();
+		}
+
+		void FinishRelease()
+		{
+			Reference::release();
+		}
+
+	protected:
+		~LeaseOrderFrameStore() override {}
+
+	private:
+		mutable std::atomic<bool> finalReleaseObserved_;
+		mutable std::atomic<bool> finalReleaseWhileLeased_;
+	};
+
 	RISEColor PatternPixel( unsigned int x, unsigned int y )
 	{
 		const double r = static_cast<double>( x ) / static_cast<double>( kImgW - 1 );
@@ -83,14 +288,14 @@ namespace
 		return RISEColor( RISEPel( r, g, b ), 1.0 );
 	}
 
-	// Build a 16x16 IRasterImage with the test pattern.
-	RasterImage_Template<RISEPel>* MakeTestImage()
+	RasterImage_Template<RISEPel>* MakeTestImage(
+		unsigned int width = kImgW, unsigned int height = kImgH )
 	{
 		auto* img = new RasterImage_Template<RISEPel>(
-			kImgW, kImgH, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
-		for ( unsigned int y = 0; y < kImgH; ++y ) {
-			for ( unsigned int x = 0; x < kImgW; ++x ) {
-				img->SetPEL( x, y, PatternPixel( x, y ) );
+			width, height, RISEColor( RISEPel( 0, 0, 0 ), 1.0 ) );
+		for ( unsigned int y = 0; y < height; ++y ) {
+			for ( unsigned int x = 0; x < width; ++x ) {
+				img->SetPEL( x, y, PatternPixel( x%kImgW, y%kImgH ) );
 			}
 		}
 		return img;
@@ -98,13 +303,9 @@ namespace
 
 	std::string MakeTempPath()
 	{
-		const char* tmpdir = std::getenv( "TMPDIR" );
-		if ( !tmpdir ) tmpdir = "/tmp/";
 		std::ostringstream os;
-		os << tmpdir;
-		if ( os.str().back() != '/' ) os << '/';
 		os << "rise_l4_vfs_" << ::getpid();
-		return os.str();
+		return (std::filesystem::temp_directory_path()/os.str()).string();
 	}
 
 	bool ReadFileAllBytes( const std::string& path, std::vector<unsigned char>& out )
@@ -237,6 +438,55 @@ namespace
 			"intermediate (null region): tile callback fires for whole image" );
 
 		safe_release( img );
+		vfs->release();
+	}
+
+	void TestThrowingCallbacksReleaseRetainedSnapshots()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0u);
+		FrameStore* store = vfs->GetFrameStore();
+		const unsigned int baselineRefs = store->refcount();
+		auto throws = []() { throw std::runtime_error("callback failure"); };
+
+		vfs->SetTileCompleteCallback(
+			[&]( const Rect&, uint64_t ) { throws(); } );
+		bool intermediateThrew = false;
+		try { vfs->OutputIntermediateImage(*img,nullptr); }
+		catch( const std::runtime_error& ) { intermediateThrew = true; }
+		Check(intermediateThrew && store->refcount() == baselineRefs,
+			"throwing intermediate callback releases retained FrameStore snapshot" );
+
+		vfs->SetTileCompleteCallback({});
+		vfs->SetFrameCompleteCallback(
+			[&]( unsigned int, uint64_t ) { throws(); } );
+		bool finalThrew = false;
+		try { vfs->OutputImage(*img,nullptr,1u); }
+		catch( const std::runtime_error& ) { finalThrew = true; }
+		Check(finalThrew && store->refcount() == baselineRefs,
+			"throwing final callback releases retained FrameSink snapshot" );
+
+		vfs->SetFrameCompleteCallback({});
+		vfs->SetPreDenoiseCompleteCallback(
+			[&]( unsigned int, uint64_t ) { throws(); } );
+		bool preThrew = false;
+		try { vfs->OutputPreDenoisedImage(*img,nullptr,2u); }
+		catch( const std::runtime_error& ) { preThrew = true; }
+		Check(preThrew && store->refcount() == baselineRefs,
+			"throwing pre-denoise callback releases retained FrameSink snapshot" );
+
+		vfs->SetPreDenoiseCompleteCallback({});
+		vfs->SetDenoiseCompleteCallback(
+			[&]( unsigned int, uint64_t ) { throws(); } );
+		bool denoiseThrew = false;
+		try { vfs->OutputDenoisedImage(*img,nullptr,3u); }
+		catch( const std::runtime_error& ) { denoiseThrew = true; }
+		Check(denoiseThrew && store->refcount() == baselineRefs,
+			"throwing denoise callback releases retained FrameSink snapshot" );
+
+		vfs->SetDenoiseCompleteCallback({});
+		img->release();
 		vfs->release();
 	}
 
@@ -405,6 +655,7 @@ namespace
 	}
 
 	// ─── Section 4: SaveAs byte-identical to L2 ───────────────────
+#ifndef NO_PNG_SUPPORT
 	void TestSaveAsByteIdenticalToL2()
 	{
 		auto* vfs = new ViewportFrameStore();
@@ -443,6 +694,13 @@ namespace
 
 		const bool savedOk = vfs->SaveAs( vfsPath, enc, opts );
 		Check( savedOk, "SaveAs returns true on success" );
+		NoWritePNGEncoder* unknownEncoder = new NoWritePNGEncoder();
+		const std::string unknownPath = MakeTempPath()+".unknown";
+		Check( !vfs->SaveAs(unknownPath,unknownEncoder,opts) &&
+			unknownEncoder->encodeCalls == 0u &&
+			!std::filesystem::exists(unknownPath),
+			"SaveAs rejects an unavailable authored extension before encoding" );
+		unknownEncoder->release();
 
 		auto* l2Buf = new DiskFileWriteBuffer( l2Path.c_str() );
 		enc->Encode( *l2Store, *l2Buf, opts );
@@ -467,6 +725,418 @@ namespace
 		std::remove( l2Path.c_str() );
 		safe_release( img );
 		l2Store->release();
+		vfs->release();
+	}
+#endif
+
+	void SetFireFidelityMetadata( FrameStore& store )
+	{
+		const RISECBOR64::Bytes configBytes =
+			FireOutputMetadataTestFixture::ResolvedConfig(store.Width(),store.Height());
+		const RISECBOR64::Bytes buildBytes =
+			FireOutputMetadataTestFixture::RendererBuild();
+		FrameStoreOutput::ActiveFireMedium medium;
+		medium.mediaKind = "static_authored";
+		medium.managerName = "fire";
+		medium.bindingKind = "global_medium";
+		medium.bindingOwner = "scene";
+		medium.authoredConfigDigest =
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		medium.opticalRecordIds = {
+			"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" };
+		store.SetFireFidelityMetadata("preview",
+			{ "pel_transport", "producer_unqualified", "requested_preview" },
+			medium.opticalRecordIds,{ medium },configBytes,buildBytes,
+			RISECBOR64::SHA256Hex(buildBytes));
+	}
+
+#ifndef NO_PNG_SUPPORT
+	void TestSaveAsFireProvenanceAndTransaction()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage( *img, nullptr, 0 );
+		SetFireFidelityMetadata( *vfs->GetFrameStore() );
+
+		EncodeOpts opts;
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		IFrameEncoder* png = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+		const std::string pngPath = MakeTempPath() + "_gui_fire.png";
+		const std::string sidecarPath = pngPath + ".provenance.cbor";
+		Check( !vfs->SaveAs( pngPath, png, opts ) &&
+			!std::filesystem::exists(pngPath) && !std::filesystem::exists(sidecarPath),
+			"GUI SaveAs refuses a fire display derivative before a primary finalizes" );
+		std::string decodeError;
+
+#ifndef NO_EXR_SUPPORT
+		const std::string exrPath = MakeTempPath() + "_gui_fire.exr";
+		opts.colorSpace = eColorSpace_Rec709RGB_Linear;
+		opts.bpp = 32;
+		opts.viewTransform = ViewTransform::Identity();
+		FrameStore* fireStore = vfs->GetFrameStore();
+		fireStore->BeginTile(0,0);
+		fireStore->GetChannel<ChannelId::Beauty>()->At(0,0) =
+			RISEPel(70000.0,2.0,1.0);
+		fireStore->EndTile(0,0);
+		FrameStore::Metadata frameMetadata = fireStore->Meta();
+		frameMetadata.frame = 17u;
+		fireStore->SetMetadata(frameMetadata);
+		IFrameEncoder* exr = FrameEncoderRegistry::Get().ByFormatName( "EXR" );
+		Check( vfs->SaveAs( exrPath, exr, opts ),
+			"GUI SaveAs writes transactional EXR fire provenance" );
+		bool attributesMatch = false;
+		bool floatChannels = false;
+		bool largeFiniteValuePreserved = false;
+		try {
+			Imf::InputFile input( exrPath.c_str() );
+			const Imf::StringAttribute* statusAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"riseFireProv_render_fidelity_status" );
+			const Imf::StringAttribute* idAttribute =
+				input.header().findTypedAttribute<Imf::StringAttribute>(
+					"riseFireProv_provenance_id" );
+			attributesMatch = statusAttribute &&
+				statusAttribute->value() == "\"preview\"" && idAttribute &&
+				idAttribute->value() == "\""+
+					vfs->GetFrameStore()->Meta().primaryProvenanceId+"\"";
+			const Imf::Channel* redChannel =
+				input.header().channels().findChannel("R");
+			floatChannels = redChannel && redChannel->type == Imf::FLOAT;
+			const auto& dataWindow = input.header().dataWindow();
+			const int width = dataWindow.max.x-dataWindow.min.x+1;
+			const int height = dataWindow.max.y-dataWindow.min.y+1;
+			if( dataWindow.min.x == 0 && dataWindow.min.y == 0 &&
+				width > 0 && height > 0 ) {
+				std::vector<float> red(static_cast<std::size_t>(width)*height);
+				Imf::FrameBuffer frameBuffer;
+				frameBuffer.insert("R",Imf::Slice(Imf::FLOAT,
+					reinterpret_cast<char*>(red.data()),sizeof(float),
+					sizeof(float)*static_cast<std::size_t>(width)));
+				input.setFrameBuffer(frameBuffer);
+				input.readPixels(dataWindow.min.y,dataWindow.max.y);
+				largeFiniteValuePreserved = std::isfinite(red[0]) &&
+					std::abs(red[0]-70000.0f) < 1.0f;
+			}
+		} catch( ... ) {
+			attributesMatch = false;
+			floatChannels = false;
+			largeFiniteValuePreserved = false;
+		}
+		Check( attributesMatch,
+			"GUI EXR mirrors canonical JSON provenance from its sidecar" );
+		Check( floatChannels && largeFiniteValuePreserved,
+			"GUI EXR SaveAs writes FLOAT channels and preserves values above FP16 range" );
+		std::vector<unsigned char> exrBytes, exrSidecarBytes;
+		RISECBOR64::Value exrEnvelope;
+		const bool exrSidecarDecoded = ReadFileAllBytes(exrPath,exrBytes) &&
+			ReadFileAllBytes(exrPath + ".provenance.cbor",exrSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(exrSidecarBytes,exrEnvelope,&decodeError);
+		const RISECBOR64::Value* exrPayload = exrSidecarDecoded ?
+			exrEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* exrDigest = exrPayload ?
+			exrPayload->Find("artifact_sha256") : nullptr;
+		const RISECBOR64::Value* exrFidelity = exrPayload ?
+			exrPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* exrResolved = exrPayload ?
+			exrPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* exrOutput = exrResolved ?
+			exrResolved->Find("output") : nullptr;
+		const RISECBOR64::Value* exrFrame = exrOutput ?
+			exrOutput->Find("frame_index") : nullptr;
+		std::vector<unsigned char> strippedExr;
+		Check( StripFireProvenanceEXRAttributes(exrBytes,strippedExr,decodeError) &&
+			exrDigest && exrDigest->GetText() == RISECBOR64::SHA256Hex(strippedExr) &&
+			exrFidelity && exrFidelity->GetText() == "preview_primary" &&
+			exrFrame && exrFrame->GetIntegerArgument() == 17u,
+			"GUI EXR sidecar hashes stripped bytes and binds the finalized FrameStore frame" );
+
+		fireStore->MarkDenoiseComplete(17u);
+		const std::string denoisedExrPath = MakeTempPath() + "_gui_fire_denoised.exr";
+		Check( vfs->SaveAs(denoisedExrPath,exr,opts),
+			"GUI EXR SaveAs treats the current denoised FrameStore as a derivative" );
+		std::vector<unsigned char> denoisedSidecarBytes;
+		RISECBOR64::Value denoisedEnvelope;
+		const bool denoisedDecoded =
+			ReadFileAllBytes(denoisedExrPath+".provenance.cbor",denoisedSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(denoisedSidecarBytes,denoisedEnvelope,&decodeError);
+		const RISECBOR64::Value* denoisedPayload = denoisedDecoded ?
+			denoisedEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* denoisedFidelity = denoisedPayload ?
+			denoisedPayload->Find("artifact_fidelity") : nullptr;
+		const RISECBOR64::Value* denoisedConfig = denoisedPayload ?
+			denoisedPayload->Find("resolved_render_configuration_v1") : nullptr;
+		const RISECBOR64::Value* denoisedOutput = denoisedConfig ?
+			denoisedConfig->Find("output") : nullptr;
+		const RISECBOR64::Value* denoisedPrimary = denoisedPayload ?
+			denoisedPayload->Find("derived_from_primary") : nullptr;
+		Check( denoisedFidelity && denoisedFidelity->GetText() == "display_derivative" &&
+			denoisedOutput && denoisedOutput->Find("denoised_derivative") &&
+			denoisedOutput->Find("denoised_derivative")->GetBoolean() &&
+			denoisedPrimary && denoisedPrimary->Find("provenance_id") &&
+			denoisedPrimary->Find("provenance_id")->GetText() ==
+				fireStore->Meta().primaryProvenanceId,
+			"GUI denoised EXR is a linked display derivative, never a raw primary" );
+		std::remove(denoisedExrPath.c_str());
+		std::remove((denoisedExrPath+".provenance.cbor").c_str());
+
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		opts.viewTransform = ViewTransform::ForLDRDisplay();
+		Check( vfs->SaveAs( pngPath, png, opts ),
+			"GUI SaveAs writes a linked display derivative after the primary" );
+		std::vector<unsigned char> pngBytes, pngSidecarBytes;
+		RISECBOR64::Value pngEnvelope;
+		const bool pngDecoded = ReadFileAllBytes(pngPath,pngBytes) &&
+			ReadFileAllBytes(sidecarPath,pngSidecarBytes) &&
+			RISECBOR64::DecodeCanonical(pngSidecarBytes,pngEnvelope,&decodeError);
+		const RISECBOR64::Value* pngPayload = pngDecoded ?
+			pngEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* derived = pngPayload ?
+			pngPayload->Find("derived_from_primary") : nullptr;
+		const RISECBOR64::Value* pngDigest = pngPayload ?
+			pngPayload->Find("artifact_sha256") : nullptr;
+		Check( derived && derived->Find("provenance_id") &&
+			derived->Find("provenance_id")->GetText() ==
+				vfs->GetFrameStore()->Meta().primaryProvenanceId && pngDigest &&
+			pngDigest->GetText() == RISECBOR64::SHA256Hex(pngBytes),
+			"GUI derivative sidecar links the retained primary and exact derivative bytes" );
+		std::remove( exrPath.c_str() );
+		std::remove( (exrPath + ".provenance.cbor").c_str() );
+#else
+		vfs->GetFrameStore()->SetPrimaryFireArtifact(
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"preview_primary");
+#endif
+
+		std::remove( pngPath.c_str() );
+		std::remove( sidecarPath.c_str() );
+
+		opts.colorSpace = eColorSpace_sRGB;
+		opts.bpp = 8;
+		const std::string blockedPath = MakeTempPath() + "_blocked_fire.png";
+		const std::string blockedSidecar = blockedPath + ".provenance.cbor";
+		const std::string marker = blockedSidecar + "/keep";
+		std::filesystem::create_directory( blockedSidecar );
+		{
+			std::ofstream oldArtifact( blockedPath );
+			oldArtifact << "previous valid artifact";
+		}
+		{
+			std::ofstream markerFile( marker );
+			markerFile << "block replacement";
+		}
+		Check( !vfs->SaveAs( blockedPath, png, opts ),
+			"GUI SaveAs fails when the required provenance sidecar cannot commit" );
+		std::vector<unsigned char> preservedArtifact;
+		ReadFileAllBytes(blockedPath,preservedArtifact);
+		Check( std::string(preservedArtifact.begin(),preservedArtifact.end()) ==
+				"previous valid artifact",
+			"failed provenance transaction preserves the previously published artifact" );
+		std::remove( blockedPath.c_str() );
+		std::filesystem::remove( marker );
+		std::filesystem::remove( blockedSidecar );
+
+		MemoryBuffer* memory = new MemoryBuffer();
+		Check( !vfs->SaveTo(*memory,png,opts) && memory->getCurPos() == 0,
+			"GUI SaveTo fails closed when fire provenance has no sidecar sink" );
+		safe_release( memory );
+
+		NoWritePNGEncoder* noWrite = new NoWritePNGEncoder();
+		const std::string emptyPath = MakeTempPath() + "_empty_fire.png";
+		Check( !vfs->SaveAs(emptyPath,noWrite,opts),
+			"GUI SaveAs rejects an encoder that emitted no artifact bytes" );
+		Check( !std::filesystem::exists(emptyPath) &&
+			!std::filesystem::exists(emptyPath + ".provenance.cbor"),
+			"no-op encoding publishes neither an empty artifact nor a sidecar" );
+		safe_release( noWrite );
+
+		safe_release( img );
+		vfs->release();
+	}
+#endif
+
+	void TestSaveAsUsesOneMetadataSnapshot()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0);
+		FrameStore* store = vfs->GetFrameStore();
+		SetFireFidelityMetadata(*store);
+		store->SetPrimaryFireArtifact(
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"preview_primary");
+		BlockingPPMEncoder* encoder = new BlockingPPMEncoder();
+		const std::string path = MakeTempPath()+"_metadata_snapshot.ppm";
+		bool saved = false;
+		EncodeOpts opts;
+		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
+		encoder->WaitUntilEntered();
+		bool concurrentPreflightRejected = false;
+		try {
+			store->SetFireFidelityMetadata("preview",
+				{ "chem_none_unqualified", "producer_unqualified" },
+				{ "ec249fa4182cc3b9347727c1f10948bd8023813e2f4a68720b7a4f7e5ddaa2eb" });
+		}
+		catch( const std::runtime_error& error ) {
+			concurrentPreflightRejected =
+				std::string(error.what()).find("metadata is leased") != std::string::npos;
+		}
+		encoder->Continue();
+		saver.join();
+
+		std::vector<unsigned char> sidecarBytes;
+		RISECBOR64::Value provenance;
+		std::string error;
+		const bool decoded = ReadFileAllBytes(path+".provenance.cbor",sidecarBytes) &&
+			RISECBOR64::DecodeCanonical(sidecarBytes,provenance,&error);
+		const FrameStore::Metadata& encodedMetadata = encoder->CapturedMetadata();
+		const RISECBOR64::Value* payload = decoded ? provenance.Find("payload") : nullptr;
+		const RISECBOR64::Value* reasons = payload ?
+			payload->Find("render_reason_codes") : nullptr;
+		const RISECBOR64::Value* ids = payload ?
+			payload->Find("active_fire_optics_record_ids") : nullptr;
+		Check( saved && decoded && concurrentPreflightRejected &&
+			encodedMetadata.renderReasonCodes.size() == 3u &&
+			encodedMetadata.renderReasonCodes[0] == "pel_transport" && reasons &&
+			reasons->GetArray().size() == 3u &&
+			reasons->GetArray()[0].GetText() == "pel_transport" && ids &&
+			ids->GetArray().size() == 1u && ids->GetArray()[0].GetText() ==
+				"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137",
+			"SaveAs leases one metadata snapshot and rejects concurrent fire preflight" );
+
+		std::remove(path.c_str());
+		std::remove((path+".provenance.cbor").c_str());
+		encoder->release();
+		safe_release(img);
+		vfs->release();
+	}
+
+	void TestNonFireSavesLeaseOutputClassification()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0);
+		FrameStore* store = vfs->GetFrameStore();
+		EncodeOpts opts;
+
+		BlockingPPMEncoder* fileEncoder = new BlockingPPMEncoder();
+		const std::string path = MakeTempPath()+"_nonfire_classification.ppm";
+		bool fileSaved = false;
+		std::thread fileSaver([&]() {
+			fileSaved = vfs->SaveAs(path,fileEncoder,opts);
+		});
+		fileEncoder->WaitUntilEntered();
+		bool filePreflightRejected = false;
+		try {
+			SetFireFidelityMetadata(*store);
+		} catch( const std::runtime_error& error ) {
+			filePreflightRejected =
+				std::string(error.what()).find("metadata is leased") != std::string::npos;
+		}
+		fileEncoder->Continue();
+		fileSaver.join();
+		Check(fileSaved && filePreflightRejected &&
+			store->Meta().renderFidelityStatus.empty() &&
+			!std::filesystem::exists(path+".provenance.cbor"),
+			"nonfire SaveAs leases classification before concurrent fire preflight" );
+
+		BlockingPPMEncoder* bufferEncoder = new BlockingPPMEncoder();
+		MemoryBuffer* buffer = new MemoryBuffer();
+		bool bufferSaved = false;
+		std::thread bufferSaver([&]() {
+			bufferSaved = vfs->SaveTo(*buffer,bufferEncoder,opts);
+		});
+		bufferEncoder->WaitUntilEntered();
+		bool bufferPreflightRejected = false;
+		try {
+			SetFireFidelityMetadata(*store);
+		} catch( const std::runtime_error& error ) {
+			bufferPreflightRejected =
+				std::string(error.what()).find("metadata is leased") != std::string::npos;
+		}
+		bufferEncoder->Continue();
+		bufferSaver.join();
+		Check(bufferSaved && buffer->getCurPos() > 0u && bufferPreflightRejected &&
+			store->Meta().renderFidelityStatus.empty(),
+			"nonfire SaveTo leases classification before concurrent fire preflight" );
+
+		std::remove(path.c_str());
+		fileEncoder->release();
+		bufferEncoder->release();
+		buffer->release();
+		safe_release(img);
+		vfs->release();
+	}
+
+	void TestPreparedFireFrameCannotPublish()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* img = MakeTestImage();
+		vfs->OutputImage(*img,nullptr,0);
+		FrameStore* store = vfs->GetFrameStore();
+		SetFireFidelityMetadata(*store);
+		const FrameStoreOutput::Metadata finalized = store->Meta();
+		store->SetPreparedFireFidelityMetadata(finalized.renderFidelityStatus,
+			finalized.renderReasonCodes,finalized.activeFireOpticsRecordIds,
+			finalized.activeFireMedia,finalized.resolvedRenderConfigCoreV1,
+			finalized.rendererBuildV1,finalized.rendererBuildId);
+
+		IFrameEncoder* ppm = FrameEncoderRegistry::Get().AcquireByFormatName("PPM");
+		EncodeOpts opts;
+		const std::string path = MakeTempPath()+"_prepared_fire.ppm";
+		Check( ppm && !vfs->SaveAs(path,ppm,opts),
+			"GUI SaveAs rejects a prepared but uncommitted fire frame" );
+		Check( !std::filesystem::exists(path) &&
+			!std::filesystem::exists(path+".provenance.cbor"),
+			"rejected prepared fire frame publishes neither artifact nor sidecar" );
+
+		store->SetMetadata(finalized);
+		if( ppm ) ppm->release();
+		safe_release(img);
+		vfs->release();
+	}
+
+	void TestFireSaveAsLeasePrecedesStoreRelease()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new LeaseOrderFrameStore(spec);
+		SetFireFidelityMetadata(*source);
+		source->SetPrimaryFireArtifact(
+			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			"preview_primary");
+		vfs->BindFrameStore(source);
+		source->release();
+
+		BlockingPPMEncoder* encoder = new BlockingPPMEncoder();
+		const std::string path = MakeTempPath()+"_lease_rebind.ppm";
+		bool saved = false;
+		EncodeOpts opts;
+		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
+		encoder->WaitUntilEntered();
+
+		auto* replacement = new FrameStore(spec);
+		vfs->BindFrameStore(replacement);
+		replacement->release();
+		encoder->Continue();
+		saver.join();
+
+		Check( saved && source->FinalReleaseObserved() &&
+			!source->FinalReleaseWhileLeased() &&
+			vfs->GetFrameStore() == replacement,
+			"fire SaveAs releases its metadata lease before the retained store reference" );
+
+		source->FinishRelease();
+		std::remove(path.c_str());
+		std::remove((path+".provenance.cbor").c_str());
+		encoder->release();
 		vfs->release();
 	}
 
@@ -561,6 +1231,57 @@ namespace
 		vfs->release();
 	}
 
+	void TestBindDormantStoreAsExternal()
+	{
+		auto* vfs = new ViewportFrameStore();
+		std::atomic<int> frames{0};
+		vfs->SetFrameCompleteCallback(
+			[&frames]( unsigned int, uint64_t ) { ++frames; });
+
+		auto* imageA = MakeTestImage();
+		vfs->OutputImage(*imageA,nullptr,0u);
+		FrameStore* dormantCandidate = vfs->GetFrameStore();
+		dormantCandidate->addref();
+
+		auto* imageB = MakeTestImage(32u,32u);
+		vfs->OutputImage(*imageB,nullptr,1u);
+		Check(vfs->GetFrameStore() != dormantCandidate,
+			"dormant bind: resolution change parks the original store");
+
+		vfs->ForTest_SetChainConstructionHook([]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_locks") == 0 ) {
+				throw std::runtime_error("injected post-lock alias failure");
+			}
+		});
+		bool rejected = false;
+		try {
+			vfs->BindFrameStore(dormantCandidate);
+		} catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()) ==
+				"injected post-lock alias failure";
+		}
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(rejected && !vfs->IsExternallyBound() &&
+			vfs->GetFrameStore() != dormantCandidate,
+			"dormant bind: post-lock failure preserves the active chain");
+
+		vfs->BindFrameStore(dormantCandidate);
+		Check(vfs->IsExternallyBound(),
+			"dormant bind: cached store becomes an external binding");
+		Check(vfs->GetFrameStore() == dormantCandidate,
+			"dormant bind: cached store is the published active store");
+
+		const int before = frames.load();
+		dormantCandidate->MarkFrameComplete(2u);
+		Check(frames.load() == before+1,
+			"dormant bind: replacement observer receives one frame callback");
+
+		safe_release(imageB);
+		safe_release(imageA);
+		vfs->release();
+		safe_release(dormantCandidate);
+	}
+
 	// ─── Section 7: multi-frame reuse ─────────────────────────────
 	void TestMultiFrameReuse()
 	{
@@ -637,7 +1358,7 @@ namespace
 		// Main thread: SaveAs in a loop.  Each save acquires every
 		// per-tile shared_lock during DumpImage; writer is briefly
 		// blocked but doesn't crash.
-		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PPM" );
 		EncodeOpts opts;
 		opts.colorSpace = eColorSpace_sRGB;
 		opts.bpp        = 8;
@@ -647,7 +1368,7 @@ namespace
 		while ( std::chrono::steady_clock::now() - start
 		        < std::chrono::milliseconds( 200 ) )
 		{
-			const std::string path = MakeTempPath() + "_midrender.png";
+			const std::string path = MakeTempPath() + "_midrender.ppm";
 			const bool ok = vfs->SaveAs( path, enc, opts );
 			++saveCount;
 			if ( ok ) {
@@ -878,6 +1599,525 @@ namespace
 		safe_release( extFs );
 	}
 
+	void TestConcurrentExternalBindRejectsSynchronously()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* first = new FrameStore(spec);
+		auto* second = new FrameStore(spec);
+		std::mutex callbackMutex;
+		std::condition_variable callbackCondition;
+		bool callbackEntered = false;
+		bool callbackMayReturn = false;
+		bool replacementReady = false;
+		bool replacementMayProceed = false;
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
+			++callbacks;
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			if( !callbackEntered ) {
+				callbackEntered = true;
+				callbackCondition.notify_all();
+				callbackCondition.wait(lock,[&]() { return callbackMayReturn; });
+			}
+		});
+		vfs->BindFrameStore(source);
+		std::thread dispatcher([&]() {
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+		});
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return callbackEntered; });
+		}
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_allocation") != 0 ) return;
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			replacementReady = true;
+			callbackCondition.notify_all();
+			callbackCondition.wait(lock,[&]() { return replacementMayProceed; });
+		});
+		std::thread firstBinder([&]() { vfs->BindFrameStore(first); });
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return replacementReady; });
+		}
+		bool secondRejected = false;
+		try {
+			vfs->BindFrameStore(second);
+		} catch( const std::runtime_error& error ) {
+			secondRejected = std::string(error.what()) ==
+				"ViewportFrameStore bind transaction already active";
+		}
+		const bool oldStayedPublishedWhileSecondRejected =
+			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
+		{
+			std::lock_guard<std::mutex> lock(callbackMutex);
+			replacementMayProceed = true;
+			callbackMayReturn = true;
+		}
+		callbackCondition.notify_all();
+		dispatcher.join();
+		firstBinder.join();
+		vfs->ForTest_SetChainConstructionHook({});
+		const bool firstRetained = vfs->GetFrameStore() == first;
+		vfs->release();
+		first->BeginTile(0u,0u);
+		first->EndTile(0u,0u);
+		second->BeginTile(0u,0u);
+		second->EndTile(0u,0u);
+		Check(secondRejected && oldStayedPublishedWhileSecondRejected &&
+			firstRetained &&
+			callbacks.load() == 1u,
+			"a concurrent external bind rejects synchronously without disturbing the active transaction" );
+		source->release();
+		first->release();
+		second->release();
+	}
+
+	void TestPhaseOneConcurrentBindRejectsSynchronously()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* first = new FrameStore(spec);
+		auto* second = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool firstEntered = false;
+		bool firstMayContinue = false;
+		std::atomic<unsigned int> hookCalls(0u);
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) { ++callbacks; });
+		vfs->ForTest_SetBindPhaseOneHook([&]( uint64_t ) {
+			if( hookCalls.fetch_add(1u) != 0u ) return;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			firstEntered = true;
+			gateCondition.notify_all();
+			gateCondition.wait(lock,[&]() { return firstMayContinue; });
+		});
+		std::thread older([&]() { vfs->BindFrameStore(first); });
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			gateCondition.wait(lock,[&]() { return firstEntered; });
+		}
+		bool secondRejected = false;
+		try {
+			vfs->BindFrameStore(second);
+		} catch( const std::runtime_error& error ) {
+			secondRejected = std::string(error.what()) ==
+				"ViewportFrameStore bind transaction already active";
+		}
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			firstMayContinue = true;
+		}
+		gateCondition.notify_all();
+		older.join();
+		vfs->ForTest_SetBindPhaseOneHook({});
+		first->BeginTile(0u,0u);
+		first->EndTile(0u,0u);
+		second->BeginTile(0u,0u);
+		second->EndTile(0u,0u);
+		Check(secondRejected && vfs->GetFrameStore() == first &&
+			hookCalls.load() == 1u && callbacks.load() == 1u,
+			"a phase-one concurrent bind reports rejection to its own caller" );
+		vfs->release();
+		first->release();
+		second->release();
+	}
+
+	void TestBindTeardownKeepsOldChainPublished()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		auto* image = MakeTestImage();
+		std::mutex callbackMutex;
+		std::condition_variable callbackCondition;
+		bool callbackEntered = false;
+		bool callbackMayReturn = false;
+		bool replacementReady = false;
+		bool replacementMayProceed = false;
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackEntered = true;
+			callbackCondition.notify_all();
+			callbackCondition.wait(lock,[&]() { return callbackMayReturn; });
+		});
+		vfs->BindFrameStore(source);
+		std::thread dispatcher([&]() {
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+		});
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return callbackEntered; });
+		}
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_allocation") != 0 ) return;
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			replacementReady = true;
+			callbackCondition.notify_all();
+			callbackCondition.wait(lock,[&]() { return replacementMayProceed; });
+		});
+		std::thread binder([&]() { vfs->BindFrameStore(replacement); });
+		{
+			std::unique_lock<std::mutex> lock(callbackMutex);
+			callbackCondition.wait(lock,[&]() { return replacementReady; });
+		}
+		vfs->OutputImage(*image,nullptr,0u);
+		const bool oldChainStayedPublished =
+			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
+		{
+			std::lock_guard<std::mutex> lock(callbackMutex);
+			replacementMayProceed = true;
+			callbackMayReturn = true;
+		}
+		callbackCondition.notify_all();
+		dispatcher.join();
+		binder.join();
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(oldChainStayedPublished &&
+			vfs->GetFrameStore() == replacement && vfs->IsExternallyBound(),
+			"external replacement keeps the old chain published until commit" );
+		vfs->release();
+		image->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestRejectedCrossStoreBindPreservesExistingChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		auto* trigger = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool sourceCallbackEntered = false;
+		bool sourceCallbackMayReturn = false;
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) {
+			++callbacks;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			if( !sourceCallbackEntered ) {
+				sourceCallbackEntered = true;
+				gateCondition.notify_all();
+				gateCondition.wait(lock,[&]() { return sourceCallbackMayReturn; });
+			}
+		});
+		vfs->BindFrameStore(source);
+		std::thread sourceDispatcher([&]() {
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+		});
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			gateCondition.wait(lock,[&]() { return sourceCallbackEntered; });
+		}
+		bool rejected = false;
+		std::string rejection;
+		CallbackObserver triggerObserver([&]() {
+			try {
+				vfs->BindFrameStore(replacement);
+			} catch( const std::runtime_error& error ) {
+				rejected = true;
+				rejection = error.what();
+			}
+		});
+		trigger->AddObserver(&triggerObserver);
+		trigger->BeginTile(0u,0u);
+		trigger->EndTile(0u,0u);
+		trigger->RemoveObserver(&triggerObserver);
+		const bool preservedDuringRejection =
+			vfs->GetFrameStore() == source && vfs->IsExternallyBound();
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			sourceCallbackMayReturn = true;
+		}
+		gateCondition.notify_all();
+		sourceDispatcher.join();
+		source->BeginTile(0u,1u);
+		source->EndTile(0u,1u);
+		replacement->BeginTile(0u,0u);
+		replacement->EndTile(0u,0u);
+		Check(rejected && rejection ==
+				"FrameStore observer removal would wait on another callback" &&
+			preservedDuringRejection && vfs->GetFrameStore() == source &&
+			callbacks.load() == 2u,
+			"cross-store bind rejection restores the complete existing observer chain" );
+		vfs->release();
+		source->release();
+		replacement->release();
+		trigger->release();
+	}
+
+	void TestBindConstructionFailuresPreserveExistingChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::atomic<unsigned int> callbacks(0u);
+		vfs->SetTileCompleteCallback([&]( const Rect&, uint64_t ) { ++callbacks; });
+		vfs->BindFrameStore(source);
+		const std::vector<const char*> stages = {
+			"bind_after_retain",
+			"bind_after_observer_allocation",
+			"bind_after_old_observer_quiesced",
+			"bind_after_observer_locks"
+		};
+		bool allPreserved = true;
+		for( const char* stage : stages ) {
+			const unsigned int callbacksBefore = callbacks.load();
+			bool hookCalled = false;
+			vfs->ForTest_SetChainConstructionHook([stage,&hookCalled]( const char* observed ) {
+				if( std::strcmp(stage,observed) == 0 ) {
+					hookCalled = true;
+					throw std::runtime_error(stage);
+				}
+			});
+			bool rejected = false;
+			try {
+				vfs->BindFrameStore(replacement);
+			} catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()) == stage;
+			}
+			vfs->ForTest_SetChainConstructionHook({});
+			source->BeginTile(0u,0u);
+			source->EndTile(0u,0u);
+			replacement->BeginTile(0u,0u);
+			replacement->EndTile(0u,0u);
+			const bool stagePreserved = hookCalled && rejected &&
+				vfs->GetFrameStore() == source && vfs->IsExternallyBound() &&
+				callbacks.load() == callbacksBefore+1u;
+			Check(stagePreserved,std::string("external construction failure preserves binding at ")+stage);
+			allPreserved = allPreserved && stagePreserved;
+		}
+		Check(allPreserved,
+			"every external replacement construction failure preserves the old binding" );
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestBindRollbackPreservesQuiescedEventAndObserverInsertion()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::atomic<unsigned int> vfsCallbacks(0u);
+		std::atomic<unsigned int> independentCallbacks(0u);
+		CallbackObserver independent([&]() { ++independentCallbacks; });
+		vfs->SetTileCompleteCallback(
+			[&]( const Rect&, uint64_t ) { ++vfsCallbacks; });
+		vfs->BindFrameStore(source);
+		bool hookCalled = false;
+		std::thread eventThread;
+		const uint64_t generationBefore = source->Generation();
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_old_observer_quiesced") != 0 ) return;
+			hookCalled = true;
+			source->AddObserver(&independent);
+			eventThread = std::thread([&]() {
+				source->BeginTile(0u,0u);
+				source->EndTile(0u,0u);
+			});
+			while( source->Generation() == generationBefore ) {
+				std::this_thread::yield();
+			}
+			throw std::runtime_error("injected post-quiesce failure");
+		});
+		bool rejected = false;
+		try {
+			vfs->BindFrameStore(replacement);
+		} catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()) ==
+				"injected post-quiesce failure";
+		}
+		vfs->ForTest_SetChainConstructionHook({});
+		if( eventThread.joinable() ) eventThread.join();
+		Check(hookCalled && rejected && vfs->GetFrameStore() == source &&
+			vfsCallbacks.load() == 1u && independentCallbacks.load() == 1u,
+			"bind rollback releases a quiesced event to the preserved observer chain" );
+		source->RemoveObserver(&independent);
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestExposureUpdateWinsConcurrentBindCommit()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::mutex gateMutex;
+		std::condition_variable gateCondition;
+		bool replacementReady = false;
+		bool replacementMayCommit = false;
+		bool hookReleaseObserved = false;
+		vfs->SetCameraExposureCompensationEV(1.0);
+		vfs->BindFrameStore(source);
+		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_old_observer_quiesced") != 0 ) return;
+			std::unique_lock<std::mutex> lock(gateMutex);
+			replacementReady = true;
+			gateCondition.notify_all();
+			hookReleaseObserved = gateCondition.wait_for(lock,std::chrono::seconds(5),
+				[&]() { return replacementMayCommit; });
+		});
+		std::thread binder([&]() { vfs->BindFrameStore(replacement); });
+		bool replacementStageObserved = false;
+		{
+			std::unique_lock<std::mutex> lock(gateMutex);
+			replacementStageObserved = gateCondition.wait_for(lock,
+				std::chrono::seconds(5),[&]() { return replacementReady; });
+		}
+		vfs->SetCameraExposureCompensationEV(2.5);
+		{
+			std::lock_guard<std::mutex> lock(gateMutex);
+			replacementMayCommit = true;
+		}
+		gateCondition.notify_all();
+		binder.join();
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(replacementStageObserved && hookReleaseObserved &&
+			vfs->GetFrameStore() == replacement &&
+			replacement->Meta().cameraExposureEV == 2.5,
+			"a concurrent exposure update is applied to the newly committed binding" );
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestObserverMutationLockFailureRollsBackPrefix()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::atomic<int> sourceFrames{0};
+		vfs->SetFrameCompleteCallback(
+			[&sourceFrames]( unsigned int, uint64_t ) { ++sourceFrames; });
+		vfs->BindFrameStore(source);
+
+		vfs->ForTest_SetObserverMutationLockHook(
+			[]( const size_t acquired ) {
+				if( acquired == 1u ) {
+					throw std::runtime_error("injected observer lock failure");
+				}
+			});
+		bool rejected = false;
+		try {
+			vfs->BindFrameStore(replacement);
+		} catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()) ==
+				"injected observer lock failure";
+		}
+		vfs->ForTest_SetObserverMutationLockHook({});
+
+		source->MarkFrameComplete(1u);
+		const bool sourceUsable = sourceFrames.load() == 1;
+		vfs->BindFrameStore(replacement);
+		Check(rejected && sourceUsable && vfs->GetFrameStore() == replacement,
+			"observer lock failure releases the acquired prefix and preserves retry");
+
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestInternalConstructionFailuresPreserveExistingChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* originalImage = MakeTestImage();
+		vfs->OutputImage(*originalImage,nullptr,0u);
+		FrameStore* originalStore = vfs->GetFrameStore();
+		const std::vector<const char*> stages = {
+			"ensure_after_store",
+			"ensure_after_sink",
+			"ensure_after_observer_allocation",
+			"ensure_after_observer_registration"
+		};
+		bool allPreserved = true;
+		for( size_t i=0; i<stages.size(); ++i ) {
+			const char* stage = stages[i];
+			bool hookCalled = false;
+			auto* resized = MakeTestImage(
+				static_cast<unsigned int>(kImgW+1u+i), kImgH+1u);
+			vfs->ForTest_SetChainConstructionHook([stage,&hookCalled]( const char* observed ) {
+				if( std::strcmp(stage,observed) == 0 ) {
+					hookCalled = true;
+					throw std::runtime_error(stage);
+				}
+			});
+			bool rejected = false;
+			try {
+				vfs->OutputImage(*resized,nullptr,1u);
+			} catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()) == stage;
+			}
+			vfs->ForTest_SetChainConstructionHook({});
+			vfs->OutputImage(*originalImage,nullptr,2u);
+			const bool stagePreserved = hookCalled && rejected &&
+				vfs->GetFrameStore() == originalStore &&
+				vfs->GetFrameStore()->Width() == kImgW;
+			Check(stagePreserved,std::string("internal construction failure preserves binding at ")+stage);
+			allPreserved = allPreserved && stagePreserved;
+			resized->release();
+		}
+		Check(allPreserved,
+			"every internal replacement construction failure preserves a usable old chain" );
+		originalImage->release();
+		vfs->release();
+	}
+
+	void TestNullBindTearsDownInternalChain()
+	{
+		auto* vfs = new ViewportFrameStore();
+		auto* image = MakeTestImage();
+		vfs->OutputImage(*image,nullptr,0u);
+		Check(vfs->GetFrameStore() != nullptr && !vfs->IsExternallyBound(),
+			"internal chain exists before explicit null bind" );
+		vfs->BindFrameStore(nullptr);
+		Check(vfs->GetFrameStore() == nullptr && !vfs->IsExternallyBound(),
+			"explicit null bind tears down active and dormant internal chains" );
+		vfs->OutputImage(*image,nullptr,1u);
+		Check(vfs->GetFrameStore() != nullptr && !vfs->IsExternallyBound(),
+			"internal chain can be allocated again after explicit teardown" );
+		image->release();
+		vfs->release();
+	}
+
 	// ─── Section 10 (L6e-2b): SetFrameStore notification ─────────
 	//
 	// Verify that `IRasterizerOutput::OnRasterizerFrameStoreChanged`
@@ -964,30 +2204,132 @@ namespace
 		Check( vfs->GetFrameStore()->Meta().cameraExposureEV == -0.5,
 			"cameraEV preserved across FrameStore reallocation" );
 
+		FrameStore::Spec spec;
+		spec.width = 8;
+		spec.height = 8;
+		auto* externalA = new FrameStore( spec );
+		auto* externalB = new FrameStore( spec );
+		std::thread updater( [&]() {
+			for( unsigned int i=0; i<128; ++i ) {
+				vfs->SetCameraExposureCompensationEV(
+					static_cast<Scalar>(i)/Scalar(16));
+			}
+		});
+		for( unsigned int i=0; i<128; ++i ) {
+			vfs->BindFrameStore( (i & 1u) ? externalA : externalB );
+		}
+		updater.join();
+		vfs->SetCameraExposureCompensationEV( 2.25 );
+		vfs->BindFrameStore( externalA );
+		Check( vfs->GetFrameStore() == externalA &&
+			externalA->Meta().cameraExposureEV == 2.25,
+			"cameraEV publication is serialized with concurrent external binding" );
+		vfs->BindFrameStore( nullptr );
+		safe_release( externalA );
+		safe_release( externalB );
+
 		safe_release( img2 );
 		safe_release( img );
 		vfs->release();
+	}
+
+	void TestObserverRetainsUnregisteredEncoder()
+	{
+		FrameStore::Spec spec;
+		spec.width = 1;
+		spec.height = 1;
+		spec.tileEdge = 1;
+		FrameStore* store = new FrameStore(spec);
+		bool destroyed = false;
+		FrameEncoderRegistry& registry = FrameEncoderRegistry::Get();
+		IFrameEncoder* original = registry.AcquireByFormatName("PPM");
+		if( !original ) {
+			Check(false,"PPM encoder is available for the registry lifetime fixture");
+			store->release();
+			return;
+		}
+		RetainedFrameEncoder* encoder = new RetainedFrameEncoder(destroyed,*original);
+		registry.Register(encoder);
+		IFrameEncoder* acquired = registry.AcquireByFormatName("PPM");
+		IFrameEncoder* acquiredByExtension = registry.AcquireByExtension(".ppm");
+		std::vector<IFrameEncoder*> acquiredAll = registry.AcquireAll();
+		bool retainedInSnapshot = false;
+		for( IFrameEncoder* candidate : acquiredAll ) {
+			if( candidate == encoder ) {
+				retainedInSnapshot = true;
+			}
+		}
+		const std::string pattern = MakeTempPath() + "_retained_encoder";
+		const std::string artifact = pattern + ".ppm";
+		EncodeOpts opts;
+		const bool removed = registry.Unregister("PPM");
+		// Register adopts this acquired reference while the wrapper retains its own.
+		registry.Register(original);
+		FileEncoderObserver* observer = acquired ? new FileEncoderObserver(
+			store,acquired,opts,pattern,false) : nullptr;
+		safe_release(acquired);
+		if( !observer || !acquiredByExtension || !retainedInSnapshot ) {
+			Check(false,"registry acquisition retains the encoder across removal");
+			safe_release(acquiredByExtension);
+			for( IFrameEncoder* candidate : acquiredAll ) candidate->release();
+			store->release();
+			return;
+		}
+		observer->OnFrameComplete(0,store->Generation());
+		Check( removed && !destroyed &&
+			acquiredByExtension == encoder &&
+			encoder->encodeCalls == 1 &&
+			std::filesystem::exists(artifact),
+			"name, extension, and all-encoder acquisitions survive registry removal" );
+		safe_release(acquiredByExtension);
+		for( IFrameEncoder* candidate : acquiredAll ) candidate->release();
+		observer->release();
+		Check( destroyed,
+			"retained encoder is released when the observer is destroyed" );
+		store->release();
+		std::remove(artifact.c_str());
 	}
 }
 
 int main()
 {
+	ProcessWatchdog watchdog;
 	std::cout << "ViewportFrameStoreTest L4 — GUI-viewport facade\n";
 	std::cout << "------------------------------------------------------\n";
 
 	TestLazyAllocation();
 	TestCallbacks();
+	TestThrowingCallbacksReleaseRetainedSnapshots();
 	TestIntermediateMultiTile();
 	TestRenderToBuffer();
+	#ifndef NO_PNG_SUPPORT
 	TestSaveAsByteIdenticalToL2();
+	TestSaveAsFireProvenanceAndTransaction();
+	#endif
+	TestSaveAsUsesOneMetadataSnapshot();
+	TestNonFireSavesLeaseOutputClassification();
 	TestRasterizerSwap();
 	TestResolutionChange();
+	TestBindDormantStoreAsExternal();
 	TestMultiFrameReuse();
 	TestMidRenderSaveAs();
+	TestPreparedFireFrameCannotPublish();
+	TestFireSaveAsLeasePrecedesStoreRelease();
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
+	TestConcurrentExternalBindRejectsSynchronously();
+	TestPhaseOneConcurrentBindRejectsSynchronously();
+	TestBindTeardownKeepsOldChainPublished();
+	TestRejectedCrossStoreBindPreservesExistingChain();
+	TestBindConstructionFailuresPreserveExistingChain();
+	TestBindRollbackPreservesQuiescedEventAndObserverInsertion();
+	TestExposureUpdateWinsConcurrentBindCommit();
+	TestObserverMutationLockFailureRollsBackPrefix();
+	TestInternalConstructionFailuresPreserveExistingChain();
+	TestNullBindTearsDownInternalChain();
 	TestSetFrameStoreNotification_L6e2b();
+	TestObserverRetainsUnregisteredEncoder();
 
 	std::cout << "------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

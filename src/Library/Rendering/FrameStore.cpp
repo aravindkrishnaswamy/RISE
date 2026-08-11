@@ -15,29 +15,1028 @@
 #include "../Interfaces/IRenderObserver.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/RISECBOR64.h"
 #include "AOVBuffers.h"  // L7 — PropagateAOVsToFrameStore
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+#include <functional>
+#include <initializer_list>
+#include <map>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <thread>
 
 namespace
 {
-	// Thread-local depth counter so RemoveObserver can detect
-	// self-detach (observer calling RemoveObserver inside its
-	// own callback on the same thread) and skip the wait — a
-	// self-waiting thread would deadlock.  Lives in an anonymous
-	// namespace at TU scope so DispatchObservers (template, in
-	// FrameStore.cpp) and RemoveObserver (member, also in
-	// FrameStore.cpp) share it.  See L1 adversarial review P2.
-	thread_local int g_observerDispatchDepth = 0;
+	struct ObserverCallbackFrame
+	{
+		const RISE::Implementation::FrameStore* store;
+		RISE::IRenderObserver* observer;
+		ObserverCallbackFrame* prior;
+	};
+
+	thread_local ObserverCallbackFrame* g_observerCallbackFrame = nullptr;
+	std::atomic<RISE::Implementation::FrameStoreObserverDispatchContentionHook>
+		g_observerDispatchContentionHook{nullptr};
+	std::atomic<void*> g_observerDispatchContentionContext{nullptr};
+
+	std::unique_lock<std::mutex> AcquireObserverDispatchLock( std::mutex& mutex )
+	{
+		std::unique_lock<std::mutex> lock(mutex,std::defer_lock);
+		if( !lock.try_lock() ) {
+			const auto hook = g_observerDispatchContentionHook.load(
+				std::memory_order_acquire);
+			if( hook ) hook(g_observerDispatchContentionContext.load(
+				std::memory_order_acquire));
+			lock.lock();
+		}
+		return lock;
+	}
+
+	void RejectReentrantObserverPublication()
+	{
+		if( g_observerCallbackFrame ) {
+			throw std::runtime_error("FrameStore observer dispatch is reentrant");
+		}
+	}
+
+	unsigned int ObserverActiveCountOnThisThread(
+		const RISE::Implementation::FrameStore* store,
+		const RISE::IRenderObserver* observer )
+	{
+		unsigned int count = 0u;
+		for( ObserverCallbackFrame* frame = g_observerCallbackFrame;
+			frame; frame = frame->prior ) {
+			if( frame->store == store && frame->observer == observer ) ++count;
+		}
+		return count;
+	}
+}
+
+void RISE::Implementation::SetFrameStoreObserverDispatchContentionHookForTests(
+	const FrameStoreObserverDispatchContentionHook hook,
+	void* const context )
+{
+	g_observerDispatchContentionContext.store(context,std::memory_order_release);
+	g_observerDispatchContentionHook.store(hook,std::memory_order_release);
 }
 
 using namespace RISE;
 using namespace RISE::FrameStoreOutput;
+
+namespace
+{
+	bool IsSHA256Hex( const std::string& value )
+	{
+		if( value.size() != 64u ) return false;
+		for( const char c : value ) {
+			if( !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) ) return false;
+		}
+		return true;
+	}
+
+	bool IsStrictlySorted( const std::vector<std::string>& values )
+	{
+		return std::adjacent_find(values.begin(),values.end(),
+			[]( const std::string& lhs, const std::string& rhs ) {
+				return lhs >= rhs;
+			}) == values.end();
+	}
+
+	bool HasRecordHeader(
+		const RISECBOR64::Value& value,
+		const char* recordKind )
+	{
+		const RISECBOR64::Value* kind = value.Find("record_kind");
+		const RISECBOR64::Value* version = value.Find("schema_version");
+		return kind && kind->GetType() == RISECBOR64::Value::Text &&
+			kind->GetText() == recordKind && version &&
+			version->GetType() == RISECBOR64::Value::UnsignedInteger &&
+			version->GetIntegerArgument() == 1u;
+	}
+
+	bool ExactMapKeys(
+		const RISECBOR64::Value& value,
+		const std::initializer_list<const char*> keys,
+		const char* context,
+		std::string& error )
+	{
+		if( value.GetType() != RISECBOR64::Value::Map ) {
+			error = std::string(context)+" is not a map";
+			return false;
+		}
+		std::set<std::string> expected;
+		for( const char* key : keys ) expected.insert(key);
+		if( value.GetMap().size() != expected.size() ) {
+			error = std::string(context)+" has missing or unknown schema-v1 fields";
+			return false;
+		}
+		for( const auto& member : value.GetMap() ) {
+			if( expected.erase(member.first) != 1u ) {
+				error = std::string(context)+" has missing or unknown schema-v1 fields";
+				return false;
+			}
+		}
+		return expected.empty();
+	}
+
+	bool FieldType(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const RISECBOR64::Value::Type type,
+		const char* context,
+		std::string& error )
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		if( !value || value->GetType() != type ) {
+			error = std::string(context)+" field '"+key+"' has the wrong type";
+			return false;
+		}
+		return true;
+	}
+
+	bool NonemptyTextField(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const char* context,
+		std::string& error )
+	{
+		if( !FieldType(map,key,RISECBOR64::Value::Text,context,error) ) return false;
+		if( map.Find(key)->GetText().empty() ) {
+			error = std::string(context)+" field '"+key+"' is empty";
+			return false;
+		}
+		return true;
+	}
+
+	bool TextFieldIn(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const std::initializer_list<const char*> values,
+		const char* context,
+		std::string& error )
+	{
+		if( !FieldType(map,key,RISECBOR64::Value::Text,context,error) ) return false;
+		const std::string& actual = map.Find(key)->GetText();
+		for( const char* value : values ) {
+			if( actual == value ) return true;
+		}
+		error = std::string(context)+" field '"+key+"' is outside schema-v1";
+		return false;
+	}
+
+	bool UnsignedFieldAtMost(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const std::uint64_t maximum,
+		const char* context,
+		std::string& error )
+	{
+		if( !FieldType(map,key,RISECBOR64::Value::UnsignedInteger,context,error) )
+			return false;
+		if( map.Find(key)->GetIntegerArgument() <= maximum ) return true;
+		error = std::string(context)+" field '"+key+"' is outside schema-v1";
+		return false;
+	}
+
+	bool IntegerField(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const char* context,
+		std::string& error )
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		if( !value || (value->GetType() != RISECBOR64::Value::UnsignedInteger &&
+			value->GetType() != RISECBOR64::Value::NegativeInteger) ) {
+			error = std::string(context)+" field '"+key+"' is not an integer";
+			return false;
+		}
+		return true;
+	}
+
+	bool ArrayElementsAre(
+		const RISECBOR64::Value& map,
+		const char* key,
+		const RISECBOR64::Value::Type type,
+		const std::size_t exactSize,
+		const char* context,
+		std::string& error )
+	{
+		const RISECBOR64::Value* value = map.Find(key);
+		if( !value || value->GetType() != RISECBOR64::Value::Array ||
+			(exactSize != static_cast<std::size_t>(-1) &&
+			 value->GetArray().size() != exactSize) ) {
+			error = std::string(context)+" field '"+key+"' has the wrong array shape";
+			return false;
+		}
+		for( const RISECBOR64::Value& element : value->GetArray() ) {
+			if( element.GetType() != type ) {
+				error = std::string(context)+" field '"+key+"' has the wrong element type";
+				return false;
+			}
+		}
+		return true;
+	}
+
+	bool ValidateCameraSchema(
+		const RISECBOR64::Value& camera,
+		std::string& error )
+	{
+		if( !ExactMapKeys(camera,{ "exposure_compensation_ev", "exposure_time",
+			"kind", "location", "matrix", "pixel_rate", "projection",
+			"scanning_rate" },"resolved camera",error) ||
+			!FieldType(camera,"exposure_compensation_ev",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
+			!FieldType(camera,"exposure_time",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
+			!FieldType(camera,"kind",RISECBOR64::Value::Text,"resolved camera",error) ||
+			!FieldType(camera,"pixel_rate",RISECBOR64::Value::Float64,
+				"resolved camera",error) ||
+			!FieldType(camera,"scanning_rate",RISECBOR64::Value::Float64,
+				"resolved camera",error) ) return false;
+		const RISECBOR64::Value* kind = camera.Find("kind");
+		const std::size_t vectorSize = kind->GetText() == "none" ? 0u : 3u;
+		const std::size_t matrixSize = kind->GetText() == "none" ? 0u : 16u;
+		if( !ArrayElementsAre(camera,"location",RISECBOR64::Value::Float64,
+			vectorSize,"resolved camera",error) ||
+			!ArrayElementsAre(camera,"matrix",RISECBOR64::Value::Float64,
+			matrixSize,"resolved camera",error) ) return false;
+		const RISECBOR64::Value* projection = camera.Find("projection");
+		if( !projection ) return false;
+		if( kind->GetText() == "none" ) {
+			return ExactMapKeys(*projection,{},"resolved camera projection",error);
+		}
+		if( kind->GetText() == "pinhole" ) {
+			return ExactMapKeys(*projection,{"fov_radians","fstop","iso"},
+				"resolved pinhole projection",error) &&
+				FieldType(*projection,"fov_radians",RISECBOR64::Value::Float64,
+					"resolved pinhole projection",error) &&
+				FieldType(*projection,"fstop",RISECBOR64::Value::Float64,
+					"resolved pinhole projection",error) &&
+				FieldType(*projection,"iso",RISECBOR64::Value::Float64,
+					"resolved pinhole projection",error);
+		}
+		if( kind->GetText() == "fisheye" ) {
+			return ExactMapKeys(*projection,{"scale"},"resolved fisheye projection",error) &&
+				FieldType(*projection,"scale",RISECBOR64::Value::Float64,
+					"resolved fisheye projection",error);
+		}
+		if( kind->GetText() == "orthographic" ) {
+			return ExactMapKeys(*projection,{"viewport_scale"},
+				"resolved orthographic projection",error) &&
+				ArrayElementsAre(*projection,"viewport_scale",RISECBOR64::Value::Float64,
+					2u,"resolved orthographic projection",error);
+		}
+		if( kind->GetText() == "thin_lens" ) {
+			if( !ExactMapKeys(*projection,{ "anamorphic_squeeze", "aperture_blades",
+				"aperture_rotation", "focal_length_mm", "focus_distance_scene_units",
+				"fstop", "iso", "scene_unit_meters", "sensor_size_mm", "shift_x_mm",
+				"shift_y_mm", "tilt_x_radians", "tilt_y_radians" },
+				"resolved thin-lens projection",error) ) return false;
+			for( const char* field : { "anamorphic_squeeze", "aperture_rotation",
+				"focal_length_mm", "focus_distance_scene_units", "fstop", "iso",
+				"scene_unit_meters", "sensor_size_mm", "shift_x_mm", "shift_y_mm",
+				"tilt_x_radians", "tilt_y_radians" } ) {
+				if( !FieldType(*projection,field,RISECBOR64::Value::Float64,
+					"resolved thin-lens projection",error) ) return false;
+			}
+			return FieldType(*projection,"aperture_blades",
+				RISECBOR64::Value::UnsignedInteger,"resolved thin-lens projection",error);
+		}
+		error = "resolved camera kind is outside schema-v1";
+		return false;
+	}
+
+	bool ValidateResolvedConfigSchemaV1(
+		const RISECBOR64::Value& record,
+		std::string& error )
+	{
+		if( !ExactMapKeys(record,{ "animation", "aov", "camera", "clamp", "depth",
+			"evaluated_camera_states", "execution", "external_runtime", "film",
+			"filter", "global_render_options", "integrator", "light_sampling",
+			"raster_sequence", "record_kind", "render_region", "sampler",
+			"schema_version", "shader", "stability", "transport" },
+			"resolved render configuration",error) ||
+			!HasRecordHeader(record,"resolved_render_configuration_v1") ) return false;
+		const RISECBOR64::Value* animation = record.Find("animation");
+		const RISECBOR64::Value* frameSelection = animation ?
+			animation->Find("frame_selection") : nullptr;
+		if( !animation || !ExactMapKeys(*animation,{ "do_fields", "frame_selection",
+			"invert_fields", "num_frames", "time_end", "time_start" },
+			"resolved animation",error) || !frameSelection ||
+			!ExactMapKeys(*frameSelection,{"active","index"},
+				"resolved frame selection",error) ||
+			!FieldType(*animation,"do_fields",RISECBOR64::Value::Boolean,
+				"resolved animation",error) ||
+			!FieldType(*animation,"invert_fields",RISECBOR64::Value::Boolean,
+				"resolved animation",error) ||
+			!FieldType(*animation,"num_frames",RISECBOR64::Value::UnsignedInteger,
+				"resolved animation",error) ||
+			!FieldType(*animation,"time_end",RISECBOR64::Value::Float64,
+				"resolved animation",error) ||
+			!FieldType(*animation,"time_start",RISECBOR64::Value::Float64,
+				"resolved animation",error) ||
+			!FieldType(*frameSelection,"active",RISECBOR64::Value::Boolean,
+				"resolved frame selection",error) ||
+			!FieldType(*frameSelection,"index",RISECBOR64::Value::UnsignedInteger,
+				"resolved frame selection",error) ) return false;
+
+		const RISECBOR64::Value* aov = record.Find("aov");
+		if( !aov || !ExactMapKeys(*aov,{"channels"},"resolved AOV",error) ||
+			!ArrayElementsAre(*aov,"channels",RISECBOR64::Value::Text,
+				static_cast<std::size_t>(-1),"resolved AOV",error) ||
+			!ValidateCameraSchema(*record.Find("camera"),error) ) return false;
+		std::set<std::string> aovChannels;
+		for( const RISECBOR64::Value& channel : aov->Find("channels")->GetArray() ) {
+			const std::string& name = channel.GetText();
+			if( (name != "beauty" && name != "alpha" && name != "albedo" &&
+				name != "normal" && name != "depth" && name != "object_id" &&
+				name != "primitive_id") || !aovChannels.insert(name).second ) {
+				error = "resolved AOV channel is duplicated or outside schema-v1";
+				return false;
+			}
+		}
+
+		const auto exactFloatMap = [&error]( const RISECBOR64::Value* value,
+			const std::initializer_list<const char*> keys, const char* context ) {
+			if( !value || !ExactMapKeys(*value,keys,context,error) ) return false;
+			for( const char* key : keys ) {
+				if( !FieldType(*value,key,RISECBOR64::Value::Float64,context,error) ) return false;
+			}
+			return true;
+		};
+		if( !exactFloatMap(record.Find("clamp"),{"direct","indirect"},"resolved clamp") )
+			return false;
+		const RISECBOR64::Value* depth = record.Find("depth");
+		if( !depth || !ExactMapKeys(*depth,{ "max_diffuse_bounce", "max_eye_depth",
+			"max_glossy_bounce", "max_light_depth", "max_recursion",
+			"max_translucent_bounce", "max_transmission_bounce", "max_volume_bounce" },
+			"resolved depth",error) ) return false;
+		for( const auto& member : depth->GetMap() ) {
+			if( member.second.GetType() != RISECBOR64::Value::UnsignedInteger ) {
+				error = "resolved depth field has the wrong type";
+				return false;
+			}
+		}
+
+		const RISECBOR64::Value* cameraStates = record.Find("evaluated_camera_states");
+		if( !cameraStates || cameraStates->GetType() != RISECBOR64::Value::Array ) {
+			error = "evaluated camera states are not an array";
+			return false;
+		}
+		for( const RISECBOR64::Value& state : cameraStates->GetArray() ) {
+			if( !ExactMapKeys(state,{"camera","field","frame_index","time"},
+				"evaluated camera state",error) ||
+				!ValidateCameraSchema(*state.Find("camera"),error) ||
+				!TextFieldIn(state,"field",{"upper","lower","both"},
+					"evaluated camera state",error) ||
+				!FieldType(state,"frame_index",RISECBOR64::Value::UnsignedInteger,
+					"evaluated camera state",error) ||
+				!FieldType(state,"time",RISECBOR64::Value::Float64,
+					"evaluated camera state",error) ) return false;
+		}
+
+		const RISECBOR64::Value* execution = record.Find("execution");
+		if( !execution || !ExactMapKeys(*execution,{ "effective_worker_task_count",
+			"force_number_of_threads", "maximum_thread_count", "random_stream_policy",
+			"render_thread_reserve_count" },"resolved execution",error) ||
+			!FieldType(*execution,"effective_worker_task_count",
+				RISECBOR64::Value::UnsignedInteger,"resolved execution",error) ||
+			!IntegerField(*execution,"force_number_of_threads","resolved execution",error) ||
+			!IntegerField(*execution,"maximum_thread_count","resolved execution",error) ||
+			!IntegerField(*execution,"render_thread_reserve_count","resolved execution",error) ||
+			!TextFieldIn(*execution,"random_stream_policy",{
+				"per_dispatch_task_mersenne53_seeded_from_c_rand",
+				"per_dispatch_task_mersenne_seeded_from_c_rand",
+				"process_shared_drand48", "process_shared_c_rand" },
+				"resolved execution",error) ) return false;
+
+		const RISECBOR64::Value* external = record.Find("external_runtime");
+		if( !external ) return false;
+		if( external->GetType() != RISECBOR64::Value::Null ) {
+			const RISECBOR64::Value* region = external->Find("region");
+			if( !ExactMapKeys(*external,{ "camera_override", "clay_override",
+				"idle_max_passes", "idle_mode", "indirect_only", "live_samples_per_pass",
+				"max_path_depth", "preview_scale", "progressive_on_idle", "region",
+				"tile_order", "variant_pipeline", "view_mode",
+				"view_mode_caster_installed", "xray" },"resolved external runtime",error) ||
+				!region || !ExactMapKeys(*region,{"active","bottom","left","right","top"},
+					"resolved external region",error) ) return false;
+			for( const char* key : { "camera_override", "clay_override", "idle_mode",
+				"indirect_only", "progressive_on_idle", "variant_pipeline",
+				"view_mode_caster_installed", "xray" } ) {
+				if( !FieldType(*external,key,RISECBOR64::Value::Boolean,
+					"resolved external runtime",error) ) return false;
+			}
+			for( const char* key : { "idle_max_passes", "live_samples_per_pass",
+				"max_path_depth", "preview_scale", "tile_order" } ) {
+				if( !FieldType(*external,key,RISECBOR64::Value::UnsignedInteger,
+					"resolved external runtime",error) ) return false;
+			}
+			if( !UnsignedFieldAtMost(*external,"tile_order",2u,
+				"resolved external runtime",error) ||
+				!NonemptyTextField(*external,"view_mode",
+				"resolved external runtime",error) ||
+				!FieldType(*region,"active",RISECBOR64::Value::Boolean,
+					"resolved external region",error) ) return false;
+			for( const char* key : {"bottom","left","right","top"} ) {
+				if( !FieldType(*region,key,RISECBOR64::Value::UnsignedInteger,
+					"resolved external region",error) ) return false;
+			}
+		}
+
+		const RISECBOR64::Value* film = record.Find("film");
+		const RISECBOR64::Value* filter = record.Find("filter");
+		if( !film || !filter ||
+			!ExactMapKeys(*film,{"height","pixel_aspect_ratio","width"},
+			"resolved film",error) ||
+			!FieldType(*film,"height",RISECBOR64::Value::UnsignedInteger,
+				"resolved film",error) ||
+			!FieldType(*film,"width",RISECBOR64::Value::UnsignedInteger,
+				"resolved film",error) ||
+			!FieldType(*film,"pixel_aspect_ratio",RISECBOR64::Value::Float64,
+				"resolved film",error) ||
+			!ExactMapKeys(*filter,{"height","name","param_a","param_b","width"},
+				"resolved filter",error) ||
+			!FieldType(*filter,"name",RISECBOR64::Value::Text,
+				"resolved filter",error) ) return false;
+		for( const char* key : {"height","param_a","param_b","width"} )
+			if( !FieldType(*filter,key,RISECBOR64::Value::Float64,
+				"resolved filter",error) ) return false;
+
+		const RISECBOR64::Value* global = record.Find("global_render_options");
+		const RISECBOR64::Value* autoProbe = global ? global->Find("auto_probe") : nullptr;
+		const RISECBOR64::Value* vcm = global ? global->Find("vcm") : nullptr;
+		if( !global || !ExactMapKeys(*global,{"auto_probe","vcm"},
+			"resolved global options",error) || !autoProbe || !vcm ||
+			!ExactMapKeys(*autoProbe,{ "activation_spp", "reach_winsor_percentile",
+				"scale", "spp", "tau_bdpt", "tau_caustic", "tau_reach",
+				"variance_renders" },"resolved auto probe",error) ||
+			!ExactMapKeys(*vcm,{ "progressive_radius_enabled", "throughput_clamp_multiplier",
+				"throughput_clamp_percentile" },"resolved VCM options",error) ) return false;
+		for( const char* key : {"activation_spp","scale","spp","variance_renders"} ) {
+			if( !FieldType(*autoProbe,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved auto probe",error) ) return false;
+		}
+		for( const char* key : { "reach_winsor_percentile", "tau_bdpt", "tau_caustic",
+			"tau_reach" } ) if( !FieldType(*autoProbe,key,RISECBOR64::Value::Float64,
+				"resolved auto probe",error) ) return false;
+		if( !FieldType(*vcm,"progressive_radius_enabled",RISECBOR64::Value::Boolean,
+			"resolved VCM options",error) ||
+			!FieldType(*vcm,"throughput_clamp_multiplier",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ||
+			!FieldType(*vcm,"throughput_clamp_percentile",RISECBOR64::Value::Float64,
+				"resolved VCM options",error) ) return false;
+
+		const RISECBOR64::Value* integrator = record.Find("integrator");
+		const RISECBOR64::Value* guiding = integrator ? integrator->Find("path_guiding") : nullptr;
+		const RISECBOR64::Value* sms = integrator ? integrator->Find("sms") : nullptr;
+		if( !integrator || !ExactMapKeys(*integrator,{ "auto_choice", "auto_probe_enabled",
+			"effective_kind", "enable_vertex_connection", "enable_vertex_merging",
+			"integrate_rgb", "kind", "merge_radius", "path_guiding", "show_luminaires",
+			"sms" },"resolved integrator",error) || !guiding || !sms ||
+			!ExactMapKeys(*guiding,{ "alpha", "combine_training_iterations",
+				"complete_path_guiding", "complete_path_strategy_samples",
+				"complete_path_strategy_selection", "enabled", "learned_alpha",
+				"max_guiding_depth", "max_light_guiding_depth", "online", "ris_candidates",
+				"sampling_type", "training_iterations", "training_spp", "warmup_iterations" },
+				"resolved path guiding",error) ||
+			!ExactMapKeys(*sms,{ "bernoulli_trials", "biased", "enabled", "max_chain_depth",
+				"max_iterations", "max_photon_seeds_per_shading_point", "multi_trials",
+				"photon_count", "seeding_mode", "target_bounces", "threshold", "two_stage",
+				"use_levenberg_marquardt" },"resolved SMS",error) ) return false;
+		if( !UnsignedFieldAtMost(*integrator,"auto_choice",3u,
+			"resolved integrator",error) ) return false;
+		for( const char* key : { "auto_probe_enabled", "enable_vertex_connection",
+			"enable_vertex_merging", "integrate_rgb", "show_luminaires" } )
+			if( !FieldType(*integrator,key,RISECBOR64::Value::Boolean,
+				"resolved integrator",error) ) return false;
+		if( !TextFieldIn(*integrator,"kind",{
+			"interactive_pel_rasterizer", "pixelpel_rasterizer",
+			"pixelintegratingspectral_rasterizer", "pathtracing_pel_rasterizer",
+			"pathtracing_spectral_rasterizer", "auto_rasterizer",
+			"auto_spectral_rasterizer", "bdpt_pel_rasterizer",
+			"bdpt_spectral_rasterizer", "vcm_pel_rasterizer",
+			"vcm_spectral_rasterizer", "mlt_rasterizer",
+			"mlt_spectral_rasterizer" },"resolved integrator",error) ||
+			!TextFieldIn(*integrator,"effective_kind",{
+			"pt", "bdpt", "vcm", "interactive_pel_rasterizer",
+			"pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
+			"pathtracing_pel_rasterizer", "pathtracing_spectral_rasterizer",
+			"bdpt_pel_rasterizer", "bdpt_spectral_rasterizer",
+			"vcm_pel_rasterizer", "vcm_spectral_rasterizer",
+			"mlt_rasterizer", "mlt_spectral_rasterizer" },
+			"resolved integrator",error) ) return false;
+		if( !FieldType(*integrator,"merge_radius",RISECBOR64::Value::Float64,
+			"resolved integrator",error) ) return false;
+		const std::string& integratorKind = integrator->Find("kind")->GetText();
+		const std::string& effectiveKind = integrator->Find("effective_kind")->GetText();
+		const bool autoKind = integratorKind == "auto_rasterizer" ||
+			integratorKind == "auto_spectral_rasterizer";
+		if( (autoKind && effectiveKind != "pt" && effectiveKind != "bdpt" &&
+			effectiveKind != "vcm") || (!autoKind && effectiveKind != integratorKind) ) {
+			error = "resolved integrator kind/effective_kind pairing is outside schema-v1";
+			return false;
+		}
+		for( const auto& member : guiding->GetMap() ) {
+			const std::set<std::string> floatFields = {"alpha"};
+			const std::set<std::string> boolFields = { "combine_training_iterations",
+				"complete_path_guiding", "complete_path_strategy_selection", "enabled",
+				"learned_alpha", "online" };
+			const RISECBOR64::Value::Type expected = floatFields.count(member.first) ?
+				RISECBOR64::Value::Float64 : boolFields.count(member.first) ?
+				RISECBOR64::Value::Boolean : RISECBOR64::Value::UnsignedInteger;
+			if( member.second.GetType() != expected ) {
+				error = "resolved path-guiding field has the wrong type";
+				return false;
+			}
+		}
+		if( !UnsignedFieldAtMost(*guiding,"sampling_type",1u,
+			"resolved path guiding",error) ) return false;
+		for( const auto& member : sms->GetMap() ) {
+			const std::set<std::string> boolFields = {
+				"biased","enabled","two_stage","use_levenberg_marquardt"};
+			const RISECBOR64::Value::Type expected = member.first == "threshold" ?
+				RISECBOR64::Value::Float64 : boolFields.count(member.first) ?
+				RISECBOR64::Value::Boolean : RISECBOR64::Value::UnsignedInteger;
+			if( member.second.GetType() != expected ) {
+				error = "resolved SMS field has the wrong type";
+				return false;
+			}
+		}
+		if( !UnsignedFieldAtMost(*sms,"seeding_mode",1u,
+			"resolved SMS",error) ) return false;
+
+		if( !exactFloatMap(record.Find("light_sampling"),{"rr_threshold"},
+			"resolved light sampling") ) return false;
+		const RISECBOR64::Value* sequence = record.Find("raster_sequence");
+		const RISECBOR64::Value* sequenceKind = sequence ? sequence->Find("kind") : nullptr;
+		if( !sequence || !sequenceKind || sequenceKind->GetType() != RISECBOR64::Value::Text ) {
+			error = "resolved raster sequence kind is unavailable";
+			return false;
+		}
+		const std::string& sequenceName = sequenceKind->GetText();
+		if( sequenceName == "morton" ) {
+			if( !ExactMapKeys(*sequence,{"kind","tile_size"},"resolved raster sequence",error) ||
+				!FieldType(*sequence,"tile_size",RISECBOR64::Value::UnsignedInteger,
+					"resolved raster sequence",error) ) return false;
+		} else if( sequenceName == "block" ) {
+			if( !ExactMapKeys(*sequence,{ "height", "kind", "order", "shuffle_seed",
+				"shuffle_seed_active", "width" },"resolved raster sequence",error) ) return false;
+			for( const char* key : {"height","order","shuffle_seed","width"} )
+				if( !FieldType(*sequence,key,RISECBOR64::Value::UnsignedInteger,
+					"resolved raster sequence",error) ) return false;
+			if( !FieldType(*sequence,"shuffle_seed_active",RISECBOR64::Value::Boolean,
+				"resolved raster sequence",error) ) return false;
+			if( !UnsignedFieldAtMost(*sequence,"order",8u,
+				"resolved raster sequence",error) ||
+				!UnsignedFieldAtMost(*sequence,"shuffle_seed",0xffffffffu,
+					"resolved raster sequence",error) ) return false;
+			const std::uint64_t order = sequence->Find("order")->GetIntegerArgument();
+			const std::uint64_t shuffleSeed =
+				sequence->Find("shuffle_seed")->GetIntegerArgument();
+			const bool shuffleSeedActive =
+				sequence->Find("shuffle_seed_active")->GetBoolean();
+			if( shuffleSeedActive != (order == 1u) ||
+				(!shuffleSeedActive && shuffleSeed != 0u) ) {
+				error = "resolved block raster sequence has inconsistent shuffle state";
+				return false;
+			}
+		} else if( sequenceName == "hilbert" ) {
+			if( !ExactMapKeys(*sequence,{"depth","kind"},"resolved raster sequence",error) ||
+				!FieldType(*sequence,"depth",RISECBOR64::Value::UnsignedInteger,
+					"resolved raster sequence",error) ) return false;
+		} else if( sequenceName == "scanline" || sequenceName == "rasterizer_default" ) {
+			if( !ExactMapKeys(*sequence,{"kind"},"resolved raster sequence",error) ) return false;
+		} else {
+			error = "resolved raster sequence kind is outside schema-v1";
+			return false;
+		}
+
+		const RISECBOR64::Value* region = record.Find("render_region");
+		if( !region || !ExactMapKeys(*region,{"active","bottom","left","right","top"},
+			"resolved render region",error) ||
+			!FieldType(*region,"active",RISECBOR64::Value::Boolean,
+				"resolved render region",error) ) return false;
+		for( const char* key : {"bottom","left","right","top"} )
+			if( !FieldType(*region,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved render region",error) ) return false;
+
+		const RISECBOR64::Value* sampler = record.Find("sampler");
+		const RISECBOR64::Value* adaptive = sampler ? sampler->Find("adaptive") : nullptr;
+		const RISECBOR64::Value* progressive = sampler ? sampler->Find("progressive") : nullptr;
+		const RISECBOR64::Value* spectral = sampler ? sampler->Find("spectral") : nullptr;
+		if( !sampler || !ExactMapKeys(*sampler,{ "adaptive", "blue_noise",
+			"large_step_probability", "luminary_sampler", "luminary_sampler_param",
+			"mlt_bootstrap_samples", "mlt_chains", "mlt_mutations_per_pixel",
+			"num_luminary_samples", "pixel_sampler", "pixel_sampler_param", "pixel_samples",
+			"progressive", "spectral" },"resolved sampler",error) ||
+			!adaptive || !progressive || !spectral ||
+			!ExactMapKeys(*adaptive,{"max_samples","show_map","threshold"},
+				"resolved adaptive sampler",error) ||
+			!ExactMapKeys(*progressive,{"enabled","samples_per_pass"},
+				"resolved progressive sampler",error) ||
+			!ExactMapKeys(*spectral,{ "hwss", "nm_begin", "nm_end", "num_wavelengths",
+				"spectral_samples" },"resolved spectral sampler",error) ) return false;
+		for( const char* key : {"blue_noise"} ) if( !FieldType(*sampler,key,
+			RISECBOR64::Value::Boolean,"resolved sampler",error) ) return false;
+		for( const char* key : {"large_step_probability","luminary_sampler_param",
+			"pixel_sampler_param"} ) if( !FieldType(*sampler,key,RISECBOR64::Value::Float64,
+				"resolved sampler",error) ) return false;
+		for( const char* key : {"luminary_sampler","pixel_sampler"} )
+			if( !FieldType(*sampler,key,RISECBOR64::Value::Text,
+				"resolved sampler",error) ) return false;
+		for( const char* key : { "mlt_bootstrap_samples", "mlt_chains",
+			"mlt_mutations_per_pixel", "num_luminary_samples", "pixel_samples" } )
+			if( !FieldType(*sampler,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved sampler",error) ) return false;
+		if( !FieldType(*adaptive,"max_samples",RISECBOR64::Value::UnsignedInteger,
+			"resolved adaptive sampler",error) ||
+			!FieldType(*adaptive,"show_map",RISECBOR64::Value::Boolean,
+				"resolved adaptive sampler",error) ||
+			!FieldType(*adaptive,"threshold",RISECBOR64::Value::Float64,
+				"resolved adaptive sampler",error) ||
+			!FieldType(*progressive,"enabled",RISECBOR64::Value::Boolean,
+				"resolved progressive sampler",error) ||
+			!FieldType(*progressive,"samples_per_pass",RISECBOR64::Value::UnsignedInteger,
+				"resolved progressive sampler",error) ||
+			!FieldType(*spectral,"hwss",RISECBOR64::Value::Boolean,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"nm_begin",RISECBOR64::Value::Float64,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"nm_end",RISECBOR64::Value::Float64,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"num_wavelengths",RISECBOR64::Value::UnsignedInteger,
+				"resolved spectral sampler",error) ||
+			!FieldType(*spectral,"spectral_samples",RISECBOR64::Value::UnsignedInteger,
+				"resolved spectral sampler",error) ) return false;
+
+		if( !FieldType(record,"shader",RISECBOR64::Value::Text,
+			"resolved render configuration",error) ) return false;
+		const RISECBOR64::Value* stability = record.Find("stability");
+		if( !stability || !ExactMapKeys(*stability,{ "filter_glossy", "optimal_mis",
+			"optimal_mis_tile_size", "optimal_mis_training_iterations", "rr_min_depth",
+			"rr_threshold", "transparent_shadows", "use_light_bvh" },
+			"resolved stability",error) ||
+			!FieldType(*stability,"filter_glossy",RISECBOR64::Value::Float64,
+				"resolved stability",error) ||
+			!FieldType(*stability,"rr_threshold",RISECBOR64::Value::Float64,
+				"resolved stability",error) ) return false;
+		for( const char* key : {"optimal_mis","transparent_shadows","use_light_bvh"} )
+			if( !FieldType(*stability,key,RISECBOR64::Value::Boolean,
+				"resolved stability",error) ) return false;
+		for( const char* key : { "optimal_mis_tile_size",
+			"optimal_mis_training_iterations", "rr_min_depth" } )
+			if( !FieldType(*stability,key,RISECBOR64::Value::UnsignedInteger,
+				"resolved stability",error) ) return false;
+
+		const RISECBOR64::Value* transport = record.Find("transport");
+		const RISECBOR64::Value* radiance = transport ? transport->Find("radiance_map") : nullptr;
+		if( !transport || !ExactMapKeys(*transport,{ "oidn", "oidn_device",
+			"oidn_prefilter", "oidn_quality", "radiance_map" },"resolved transport",error) ||
+			!radiance || !ExactMapKeys(*radiance,{"background","name","orientation","scale"},
+				"resolved radiance map",error) ||
+			!FieldType(*transport,"oidn",RISECBOR64::Value::Boolean,
+				"resolved transport",error) ||
+			!FieldType(*transport,"oidn_device",RISECBOR64::Value::UnsignedInteger,
+				"resolved transport",error) ||
+			!FieldType(*transport,"oidn_prefilter",RISECBOR64::Value::UnsignedInteger,
+				"resolved transport",error) ||
+			!FieldType(*transport,"oidn_quality",RISECBOR64::Value::UnsignedInteger,
+				"resolved transport",error) ||
+			!FieldType(*radiance,"background",RISECBOR64::Value::Boolean,
+				"resolved radiance map",error) ||
+			!FieldType(*radiance,"name",RISECBOR64::Value::Text,
+				"resolved radiance map",error) ||
+			!ArrayElementsAre(*radiance,"orientation",RISECBOR64::Value::Float64,3u,
+				"resolved radiance map",error) ||
+			!FieldType(*radiance,"scale",RISECBOR64::Value::Float64,
+				"resolved radiance map",error) ) return false;
+		if( !UnsignedFieldAtMost(*transport,"oidn_device",2u,
+			"resolved transport",error) ||
+			!UnsignedFieldAtMost(*transport,"oidn_prefilter",1u,
+				"resolved transport",error) ||
+			!UnsignedFieldAtMost(*transport,"oidn_quality",3u,
+				"resolved transport",error) ) return false;
+		return true;
+	}
+
+	bool ValidateRendererBuildSchemaV1(
+		const RISECBOR64::Value& record,
+		std::string& error )
+	{
+		if( !ExactMapKeys(record,{ "compiler", "dependency_builds", "dirty_state",
+			"fp_settings", "gate_harness_version", "record_kind", "renderer_binary",
+			"renderer_version", "schema_version", "solver_schema_versions",
+			"source_revision", "target" },"renderer build identity",error) ||
+			!HasRecordHeader(record,"renderer_build_v1") ) return false;
+		const RISECBOR64::Value* compiler = record.Find("compiler");
+		const RISECBOR64::Value* dirty = record.Find("dirty_state");
+		const RISECBOR64::Value* binary = record.Find("renderer_binary");
+		const RISECBOR64::Value* fp = record.Find("fp_settings");
+		const RISECBOR64::Value* target = record.Find("target");
+		if( !compiler || !dirty || !binary || !fp || !target ||
+			!ExactMapKeys(*compiler,{"identity","language_standard","lto_mode",
+				"optimization_mode"},"renderer compiler",error) ||
+			!ExactMapKeys(*dirty,{"diff_sha256","state"},"renderer dirty state",error) ||
+			!ExactMapKeys(*binary,{"hash_basis","kind","path","sha256"},
+				"renderer binary",error) ||
+			!ExactMapKeys(*fp,{"contraction_mode","fast_math","finite_math_only"},
+				"renderer FP settings",error) ||
+			!ExactMapKeys(*target,{"architecture","platform"},"renderer target",error) )
+			return false;
+		if( !NonemptyTextField(*compiler,"identity","renderer compiler",error) ||
+			!TextFieldIn(*compiler,"language_standard",{"c++17"},
+				"renderer compiler",error) ||
+			!TextFieldIn(*compiler,"lto_mode",{"off","thin","full","compiler_default"},
+				"renderer compiler",error) ||
+			!TextFieldIn(*compiler,"optimization_mode",{
+				"disabled","O1","O2","O3","Os","Oz","compiler_default"},
+				"renderer compiler",error) ) return false;
+		for( const char* key : {"diff_sha256","state"} ) if( !FieldType(*dirty,key,
+			RISECBOR64::Value::Text,"renderer dirty state",error) ) return false;
+		if( !TextFieldIn(*binary,"hash_basis",{
+			"file_bytes","dyld_shared_cache_and_image_uuids","apk_stored_entry_bytes"},
+			"renderer binary",error) ||
+			!TextFieldIn(*binary,"kind",{"executable","module"},
+				"renderer binary",error) ||
+			!NonemptyTextField(*binary,"path","renderer binary",error) ||
+			!NonemptyTextField(*binary,"sha256","renderer binary",error) ) return false;
+		const std::string& dirtyState = dirty->Find("state")->GetText();
+		if( (dirtyState != "clean" && dirtyState != "dirty") ||
+			!IsSHA256Hex(dirty->Find("diff_sha256")->GetText()) ||
+			!IsSHA256Hex(binary->Find("sha256")->GetText()) ||
+			!TextFieldIn(*fp,"contraction_mode",{
+				"off","on","fast","compiler_default"},
+				"renderer FP settings",error) ||
+			!FieldType(*fp,"fast_math",RISECBOR64::Value::Boolean,
+				"renderer FP settings",error) ||
+			!FieldType(*fp,"finite_math_only",RISECBOR64::Value::Boolean,
+				"renderer FP settings",error) ) return false;
+		if( !TextFieldIn(*target,"architecture",{"arm64","x86_64"},
+			"renderer target",error) ||
+			!TextFieldIn(*target,"platform",{"windows","android","macos","linux"},
+				"renderer target",error) ||
+			!TextFieldIn(record,"gate_harness_version",{"phase_a_gate_harness_v1"},
+				"renderer build identity",error) ) return false;
+		for( const char* key : { "renderer_version", "source_revision" } )
+			if( !NonemptyTextField(record,key,"renderer build identity",error) ) return false;
+		if( !ArrayElementsAre(record,"solver_schema_versions",RISECBOR64::Value::Text,
+			static_cast<std::size_t>(-1),"renderer build identity",error) ) return false;
+		const RISECBOR64::Value* solverVersions = record.Find("solver_schema_versions");
+		if( solverVersions->GetArray().size() != 2u ||
+			solverVersions->GetArray()[0].GetText() != "fire_optics_schema_v3" ||
+			solverVersions->GetArray()[1].GetText() != "fire_output_provenance_schema_v1" ) {
+			error = "renderer solver schema versions are outside schema-v1";
+			return false;
+		}
+		const RISECBOR64::Value* dependencies = record.Find("dependency_builds");
+		if( !dependencies || !ExactMapKeys(*dependencies,{ "avcodec", "avfoundation",
+			"avformat", "avutil", "iex", "ilmthread", "imath", "oidn", "openexr",
+			"openpgl", "png", "swscale", "tiff", "videotoolbox", "x265", "zlib" },
+			"renderer dependency builds",error) ) {
+			error = "renderer dependency builds are unavailable";
+			return false;
+		}
+		for( const auto& dependency : dependencies->GetMap() ) {
+			if( !ExactMapKeys(dependency.second,{"availability","linkage",
+				"loaded_binaries","version"},"renderer dependency",error) ||
+				!FieldType(dependency.second,"availability",RISECBOR64::Value::Text,
+					"renderer dependency",error) ||
+				!FieldType(dependency.second,"linkage",RISECBOR64::Value::Text,
+					"renderer dependency",error) ||
+				!FieldType(dependency.second,"version",RISECBOR64::Value::Text,
+					"renderer dependency",error) ) return false;
+			const RISECBOR64::Value* binaries = dependency.second.Find("loaded_binaries");
+			if( !binaries || binaries->GetType() != RISECBOR64::Value::Array ) {
+				error = "renderer dependency binaries are not an array";
+				return false;
+			}
+			const std::string& availability = dependency.second.Find("availability")->GetText();
+			const std::string& linkage = dependency.second.Find("linkage")->GetText();
+			const std::string& version = dependency.second.Find("version")->GetText();
+			const bool dependencyStateValid =
+				(availability == "not_linked" && linkage == "not_linked" &&
+					binaries->GetArray().empty() && version == "not_linked") ||
+				(availability == "linked" && linkage == "embedded" &&
+					binaries->GetArray().empty() && !version.empty()) ||
+				(availability == "linked" && linkage == "dynamic" &&
+					!binaries->GetArray().empty() && !version.empty()) ||
+				(availability == "not_loaded" && linkage == "runtime_optional" &&
+					binaries->GetArray().empty() && version == "not_loaded") ||
+				(availability == "loaded" && linkage == "runtime_loaded" &&
+					!binaries->GetArray().empty() && !version.empty());
+			if( !dependencyStateValid ) {
+				error = "renderer dependency availability and linkage are inconsistent";
+				return false;
+			}
+			std::string previousBinaryPath;
+			for( const RISECBOR64::Value& loaded : binaries->GetArray() ) {
+				if( !ExactMapKeys(loaded,{"hash_basis","path","sha256"},
+					"renderer dependency binary",error) ) return false;
+				for( const char* key : {"hash_basis","path","sha256"} )
+					if( !FieldType(loaded,key,RISECBOR64::Value::Text,
+						"renderer dependency binary",error) ) return false;
+				if( !IsSHA256Hex(loaded.Find("sha256")->GetText()) ) {
+					error = "renderer dependency binary SHA-256 is malformed";
+					return false;
+				}
+				const std::string& hashBasis = loaded.Find("hash_basis")->GetText();
+				if( (hashBasis != "file_bytes" &&
+					hashBasis != "dyld_shared_cache_and_image_uuids" &&
+					hashBasis != "apk_stored_entry_bytes") ||
+					loaded.Find("path")->GetText().empty() ) {
+					error = "renderer dependency binary identity is incomplete";
+					return false;
+				}
+				if( !previousBinaryPath.empty() &&
+					loaded.Find("path")->GetText() <= previousBinaryPath ) {
+					error = "renderer dependency binaries are duplicated or unsorted";
+					return false;
+				}
+				previousBinaryPath = loaded.Find("path")->GetText();
+			}
+			if( linkage == "runtime_loaded" ) {
+				const std::string prefix = "runtime_binaries_v1:";
+				if( version.compare(0u,prefix.size(),prefix) != 0 ) {
+					error = "renderer runtime dependency version is outside schema-v1";
+					return false;
+				}
+				std::size_t cursor = prefix.size();
+				for( std::size_t i=0u; i<binaries->GetArray().size(); ++i ) {
+					const RISECBOR64::Value& loaded = binaries->GetArray()[i];
+					const std::string& path = loaded.Find("path")->GetText();
+					const std::size_t slash = path.find_last_of("/\\");
+					const std::string tokenPrefix = path.substr(
+						slash == std::string::npos ? 0u : slash+1u)+"@version=";
+					if( version.compare(cursor,tokenPrefix.size(),tokenPrefix) != 0 ) {
+						error = "renderer runtime dependency version does not name its binary";
+						return false;
+					}
+					cursor += tokenPrefix.size();
+					const std::string hashSuffix = "@sha256="+
+						loaded.Find("sha256")->GetText();
+					const std::size_t hashPosition = version.find(hashSuffix,cursor);
+					if( hashPosition == std::string::npos || hashPosition == cursor ) {
+						error = "renderer runtime dependency version is missing its binary version/hash";
+						return false;
+					}
+					cursor = hashPosition+hashSuffix.size();
+					if( i+1u < binaries->GetArray().size() ) {
+						if( cursor >= version.size() || version[cursor] != ',' ) {
+							error = "renderer runtime dependency version list is malformed";
+							return false;
+						}
+						++cursor;
+					}
+				}
+				if( cursor != version.size() ) {
+					error = "renderer runtime dependency version has unmatched data";
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+}
+
+bool RISE::FrameStoreOutput::IsAllowedFireRenderReasonCode(
+	const std::string& reason )
+{
+	static const char* const allowed[] = {
+		"requested_preview", "producer_unqualified", "heuristic_source",
+		"qualified_record_override", "missing_optical_record", "missing_chem_record",
+		"chem_none_unqualified", "missing_condensable_record", "missing_gas_opacity_record",
+		"missing_thermochemistry_record", "missing_aerosol_thermochemistry_record",
+		"missing_transport_record", "table_domain_exceeded", "missing_channel",
+		"loading_exceeded", "wet_aerosol_unsupported", "pel_transport",
+		"hwss_transport", "pel_blur_ignored", "blur_halo_insufficient",
+		"blur_time_support_out_of_range", "nonadvected_source_blur_unsupported",
+		"keyframed_temporal_sampling_unsupported", "programmatic_scene_unqualified",
+		"unrepresented_scene_mutation", "untracked_scene_mutability", "oidn_unqualified",
+		"radiance_clamp_enabled", "path_regularization_enabled", "sms_unqualified",
+		"continuation_closure_unsupported", "sss_volume_nee_unsupported", "gate_failure",
+		"output_provenance_unavailable", "condensed_organics_ir_unclosed",
+		"unsupported_integrator_for_fire_media"
+	};
+	for( const char* value : allowed ) {
+		if( reason == value ) return true;
+	}
+	return false;
+}
+
+bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
+	const Metadata& metadata,
+	std::string& error )
+{
+	error.clear();
+	if( metadata.renderFidelityStatus != "preview" ) {
+		error = "fire render fidelity status is not preview";
+		return false;
+	}
+	if( metadata.renderReasonCodes.empty() ||
+		!IsStrictlySorted(metadata.renderReasonCodes) ) {
+		error = "fire render reason codes are empty, duplicated, or unsorted";
+		return false;
+	}
+	for( const std::string& reason : metadata.renderReasonCodes ) {
+		if( !IsAllowedFireRenderReasonCode(reason) ) {
+			error = "fire render reason code is outside the fixed enum: "+reason;
+			return false;
+		}
+	}
+	if( std::find(metadata.renderReasonCodes.begin(),metadata.renderReasonCodes.end(),
+		"producer_unqualified") == metadata.renderReasonCodes.end() ) {
+		error = "static fire media require the producer_unqualified render reason";
+		return false;
+	}
+	if( metadata.activeFireOpticsRecordIds.empty() ||
+		!IsStrictlySorted(metadata.activeFireOpticsRecordIds) ) {
+		error = "active fire optical record IDs are empty, duplicated, or unsorted";
+		return false;
+	}
+	for( const std::string& id : metadata.activeFireOpticsRecordIds ) {
+		if( !IsSHA256Hex(id) ) {
+			error = "active fire optical record ID is not lowercase SHA-256";
+			return false;
+		}
+	}
+	if( metadata.activeFireMedia.empty() ) {
+		error = "active fire media are empty";
+		return false;
+	}
+	std::set<std::string> mediumRecordIds;
+	std::map<std::string,std::string> authoredDigestOwners;
+	std::string previousBinding;
+	for( const ActiveFireMedium& medium : metadata.activeFireMedia ) {
+		if( medium.mediaKind != "static_authored" || medium.managerName.empty() ||
+			(medium.bindingKind != "global_medium" &&
+			 medium.bindingKind != "object_interior_medium") ||
+			medium.bindingOwner.empty() || !IsSHA256Hex(medium.authoredConfigDigest) ||
+			medium.opticalRecordIds.empty() || !IsStrictlySorted(medium.opticalRecordIds) ) {
+			error = "active fire medium is not a complete static_authored tagged variant";
+			return false;
+		}
+		const std::string binding = medium.managerName+'\0'+medium.bindingKind+'\0'+
+			medium.bindingOwner;
+		if( !previousBinding.empty() && binding <= previousBinding ) {
+			error = "active fire media binding keys are duplicated or unsorted";
+			return false;
+		}
+		previousBinding = binding;
+		const auto digestOwner = authoredDigestOwners.find(medium.authoredConfigDigest);
+		if( digestOwner != authoredDigestOwners.end() &&
+			digestOwner->second != medium.managerName ) {
+			error = "different authored fire media share one authored_config_digest";
+			return false;
+		}
+		authoredDigestOwners[medium.authoredConfigDigest] = medium.managerName;
+		for( const std::string& id : medium.opticalRecordIds ) {
+			if( !IsSHA256Hex(id) ) {
+				error = "active fire medium optical record ID is not lowercase SHA-256";
+				return false;
+			}
+			mediumRecordIds.insert(id);
+		}
+	}
+	if( std::vector<std::string>(mediumRecordIds.begin(),mediumRecordIds.end()) !=
+		metadata.activeFireOpticsRecordIds ) {
+		error = "active fire media optical IDs do not equal the aggregate record IDs";
+		return false;
+	}
+	RISECBOR64::Value resolvedConfig;
+	if( metadata.resolvedRenderConfigCoreV1.empty() ||
+		!RISECBOR64::DecodeCanonical(metadata.resolvedRenderConfigCoreV1,
+			resolvedConfig,&error) || resolvedConfig.GetType() != RISECBOR64::Value::Map ||
+		!ValidateResolvedConfigSchemaV1(resolvedConfig,error) ||
+		resolvedConfig.Find("output") ) {
+		error = "resolved render configuration core is unavailable or outside schema-v1";
+		return false;
+	}
+	RISECBOR64::Value rendererBuild;
+	if( metadata.rendererBuildV1.empty() ||
+		!RISECBOR64::DecodeCanonical(metadata.rendererBuildV1,rendererBuild,&error) ||
+		rendererBuild.GetType() != RISECBOR64::Value::Map ||
+		!ValidateRendererBuildSchemaV1(rendererBuild,error) ||
+		!IsSHA256Hex(metadata.rendererBuildId) ||
+		metadata.rendererBuildId != RISECBOR64::SHA256Hex(metadata.rendererBuildV1) ) {
+		error = "renderer build identity is unavailable or outside schema-v1";
+		return false;
+	}
+	const bool anyPrimary = !metadata.primaryProvenanceId.empty() ||
+		!metadata.primaryArtifactSha256.empty() ||
+		!metadata.primaryArtifactFidelity.empty();
+	if( anyPrimary && (!IsSHA256Hex(metadata.primaryProvenanceId) ||
+		!IsSHA256Hex(metadata.primaryArtifactSha256) ||
+		metadata.primaryArtifactFidelity != "preview_primary") ) {
+		error = "retained fire primary linkage is incomplete or inconsistent";
+		return false;
+	}
+	return true;
+}
 
 namespace RISE
 {
@@ -244,6 +1243,7 @@ namespace RISE
 			, tileCountY_( ( spec.height + ( spec.tileEdge > 0 ? spec.tileEdge : 32 ) - 1 )
 			               / ( spec.tileEdge > 0 ? spec.tileEdge : 32 ) )
 			, presence_( static_cast<size_t>( ChannelId::COUNT ), false )
+			, completedFrame_( spec.meta.frame )
 			, meta_( spec.meta )
 		{
 			// Beauty + Alpha are always allocated.  Beauty holds the
@@ -347,6 +1347,7 @@ namespace RISE
 
 		void FrameStore::BeginTile( size_t tileX, size_t tileY )
 		{
+			RejectReentrantObserverPublication();
 			// Acquire the tile's exclusive lock.  Subsequent pixel
 			// writes happen under this lock; readers (Render) take
 			// the shared lock and block until the writer releases.
@@ -367,6 +1368,12 @@ namespace RISE
 			// the acquire load on the reader side.
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
+			NotifyTileComplete(tileX,tileY,gen);
+		}
+
+		void FrameStore::NotifyTileComplete(
+			size_t tileX, size_t tileY, uint64_t generation )
+		{
 			// Compute the tile rect for the observer callback.
 			const unsigned int x0 = static_cast<unsigned int>( tileX * tileEdge_ );
 			const unsigned int y0 = static_cast<unsigned int>( tileY * tileEdge_ );
@@ -385,12 +1392,13 @@ namespace RISE
 			// avoids two failure modes: (a) an observer that
 			// self-detaches (calls RemoveObserver(this)) inside its
 			// callback would otherwise deadlock on the non-recursive
-			// mutex; (b) a slow observer would otherwise block the
-			// writer for the full callback duration.  The snapshot
-			// is cheap (vector of pointers) compared to even one
-			// modest observer callback.  See L1 adversarial review HIGH-4.
+			// mutex.  Callbacks remain synchronous, so a slow observer
+			// still back-pressures the publishing writer by contract.  The
+			// snapshot also lets registration changes proceed while the
+			// callback is running; per-observer lifetime tracking below
+			// keeps those raw pointers safe.
 			DispatchObservers( [&]( IRenderObserver* obs ) {
-				obs->OnTileComplete( roi, gen );
+				obs->OnTileComplete( roi, generation );
 			} );
 		}
 
@@ -437,7 +1445,12 @@ namespace RISE
 
 		void FrameStore::MarkFrameComplete( unsigned frame )
 		{
-			meta_.frame = frame;
+			RejectReentrantObserverPublication();
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				completedFrame_.store(frame,std::memory_order_relaxed);
+				meta_.denoisedContent = false;
+			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
 			DispatchObservers( [&]( IRenderObserver* obs ) {
@@ -447,11 +1460,16 @@ namespace RISE
 
 		void FrameStore::MarkPreDenoiseComplete( unsigned frame )
 		{
+			RejectReentrantObserverPublication();
 			// Update meta so observers reading Meta().frame inside
 			// the callback see the current frame, not whatever the
 			// previous MarkFrameComplete left.  See L1 adversarial
 			// review MED-4.
-			meta_.frame = frame;
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				completedFrame_.store(frame,std::memory_order_relaxed);
+				meta_.denoisedContent = false;
+			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
 			DispatchObservers( [&]( IRenderObserver* obs ) {
@@ -461,7 +1479,12 @@ namespace RISE
 
 		void FrameStore::MarkDenoiseComplete( unsigned frame )
 		{
-			meta_.frame = frame;
+			RejectReentrantObserverPublication();
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				completedFrame_.store(frame,std::memory_order_relaxed);
+				meta_.denoisedContent = true;
+			}
 			const uint64_t gen = globalGeneration_.fetch_add( 1, std::memory_order_release ) + 1;
 
 			DispatchObservers( [&]( IRenderObserver* obs ) {
@@ -470,10 +1493,71 @@ namespace RISE
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// FrameStoreBulkBracket — RAII guard for full-image writes.
-		// See FrameStore.h for the contract.
+		// Render-state snapshot used to roll back incomplete fire primaries.
 		// ─────────────────────────────────────────────────────────────
 
+		FrameStore::Snapshot FrameStore::CaptureSnapshot() const
+		{
+			std::vector<std::shared_lock<std::shared_mutex>> tileLocks;
+			tileLocks.reserve(tileCountX_ * tileCountY_);
+			for( size_t ty=0; ty<tileCountY_; ++ty ) {
+				for( size_t tx=0; tx<tileCountX_; ++tx ) {
+					tileLocks.emplace_back(TileLockAt(tx,ty).mtx);
+				}
+			}
+
+			Snapshot snapshot;
+			snapshot.metadata = Meta();
+			const auto copyChannel = []( const auto* channel, auto& destination ) {
+				if( channel ) destination.assign(channel->Data(),channel->Data()+channel->Size());
+			};
+			copyChannel(beauty_.get(),snapshot.beauty);
+			copyChannel(alpha_.get(),snapshot.alpha);
+			copyChannel(albedo_.get(),snapshot.albedo);
+			copyChannel(normal_.get(),snapshot.normal);
+			copyChannel(depth_.get(),snapshot.depth);
+			copyChannel(objectId_.get(),snapshot.objectId);
+			copyChannel(primitiveId_.get(),snapshot.primitiveId);
+			return snapshot;
+		}
+
+		bool FrameStore::RestoreSnapshot( const Snapshot& snapshot )
+		{
+			const auto matchesChannel = []( const auto* channel, const auto& source ) {
+				return channel ? source.size() == channel->Size() : source.empty();
+			};
+			if( !matchesChannel(beauty_.get(),snapshot.beauty) ||
+				!matchesChannel(alpha_.get(),snapshot.alpha) ||
+				!matchesChannel(albedo_.get(),snapshot.albedo) ||
+				!matchesChannel(normal_.get(),snapshot.normal) ||
+				!matchesChannel(depth_.get(),snapshot.depth) ||
+				!matchesChannel(objectId_.get(),snapshot.objectId) ||
+				!matchesChannel(primitiveId_.get(),snapshot.primitiveId) ) return false;
+
+			std::vector<std::unique_lock<std::shared_mutex>> tileLocks;
+			tileLocks.reserve(tileCountX_ * tileCountY_);
+			for( size_t ty=0; ty<tileCountY_; ++ty ) {
+				for( size_t tx=0; tx<tileCountX_; ++tx ) {
+					tileLocks.emplace_back(TileLockAt(tx,ty).mtx);
+				}
+			}
+			const auto restoreChannel = []( auto* channel, const auto& source ) {
+				if( channel ) std::copy(source.begin(),source.end(),channel->Data());
+			};
+			restoreChannel(beauty_.get(),snapshot.beauty);
+			restoreChannel(alpha_.get(),snapshot.alpha);
+			restoreChannel(albedo_.get(),snapshot.albedo);
+			restoreChannel(normal_.get(),snapshot.normal);
+			restoreChannel(depth_.get(),snapshot.depth);
+			restoreChannel(objectId_.get(),snapshot.objectId);
+			restoreChannel(primitiveId_.get(),snapshot.primitiveId);
+			SetMetadata(snapshot.metadata);
+			globalGeneration_.fetch_add(1,std::memory_order_release);
+			return true;
+		}
+
+		// FrameStoreBulkBracket — RAII guard for full-image writes.
+		// See FrameStore.h for the contract.
 		FrameStoreBulkBracket::FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image )
 			: mFs( nullptr )
 		{
@@ -496,30 +1580,20 @@ namespace RISE
 			// forever → process-wide deadlock.  Track per-tile
 			// progress and release-in-reverse on any throw before
 			// rethrowing.  See L6e-1.1 final adversarial review P0.
-			size_t acquiredTx = 0, acquiredTy = 0;  // (tx,ty) of NEXT to acquire
+			size_t acquired = 0;
 			try {
 				for( size_t ty = 0; ty < nty; ++ty ) {
 					for( size_t tx = 0; tx < ntx; ++tx ) {
 						fs->BeginTile( tx, ty );
-						acquiredTx = tx + 1;
-						acquiredTy = ty;
+						++acquired;
 					}
-					acquiredTx = 0;
-					acquiredTy = ty + 1;
 				}
 			} catch( ... ) {
-				// Walk the prefix of acquired tiles in reverse and
-				// release.  We use `EndTile` (not `unlock` directly)
-				// so the bookkeeping stays inside FrameStore.  Note:
-				// this fires `OnTileComplete` for half the tiles
-				// during a throw — observer behaviour is "best
-				// effort" in the partial-failure case, which is the
-				// least-bad option (deadlock is worse).
-				for( size_t ty = acquiredTy + 1; ty-- > 0; ) {
-					const size_t txEnd = ( ty == acquiredTy ) ? acquiredTx : ntx;
-					for( size_t tx = txEnd; tx-- > 0; ) {
-						fs->EndTile( tx, ty );
-					}
+				// Construction never exposed a writable guard, so unwind the
+				// acquired prefix without publishing false tile completions.
+				while( acquired > 0u ) {
+					--acquired;
+					fs->TileLockAt(acquired%ntx,acquired/ntx).mtx.unlock();
 				}
 				throw;
 			}
@@ -531,12 +1605,23 @@ namespace RISE
 			if( !mFs ) return;
 			const size_t ntx = mFs->TileCountX();
 			const size_t nty = mFs->TileCountY();
-			// Release order matches acquire — irrelevant for correctness
-			// (per-tile mutexes are independent), preserved for
-			// readability + observer-fire ordering.
+			// A bulk observer may read the whole image. Release every lock
+			// before the first callback so that read cannot self-deadlock.
 			for( size_t ty = 0; ty < nty; ++ty ) {
 				for( size_t tx = 0; tx < ntx; ++tx ) {
-					mFs->EndTile( tx, ty );
+					mFs->TileLockAt(tx,ty).mtx.unlock();
+				}
+			}
+			for( size_t ty = 0; ty < nty; ++ty ) {
+				for( size_t tx = 0; tx < ntx; ++tx ) {
+					const uint64_t generation =
+						mFs->globalGeneration_.fetch_add(1,std::memory_order_release)+1;
+					try {
+						mFs->NotifyTileComplete(tx,ty,generation);
+					} catch( ... ) {
+						GlobalLog()->PrintEasyError(
+							"FrameStore bulk tile observer threw; notification was contained" );
+					}
 				}
 			}
 		}
@@ -620,10 +1705,9 @@ namespace RISE
 			return plan;
 		}
 
-		// Snapshot the observer list under the mutex, increment the
-		// in-flight counter, release the mutex, invoke callbacks
-		// without the mutex held, then decrement and notify any
-		// thread waiting in RemoveObserver.
+		// Serialize raw-pointer observer callbacks within this FrameStore,
+		// snapshot its list, then claim each callback under the
+		// store mutex immediately before invocation.
 		//
 		// IMPORTANT — per-iteration recheck against observers_:
 		// the same-thread RemoveObserver path skips the wait-for-
@@ -634,98 +1718,72 @@ namespace RISE
 		// the next iteration.  We re-acquire the mutex briefly per
 		// iteration to verify the observer is still registered;
 		// remove-during-dispatch entries are silently skipped.
-		// (Cross-thread removal is already handled by the wait
-		// protocol in RemoveObserver, but the per-iteration check
-		// is a single uniform rule that handles both.)  See L1
-		// adversarial review round 3 P2.
-		//
-		// Cost: one mutex acquire/release per snapshot entry, which
-		// is negligible compared to the cost of an observer
-		// callback (encoder writes, UI signals, etc.).
+		// External cross-thread removal waits on the claimed observer's own
+		// callback count. A removal attempted from any observer callback
+		// fails before mutation when another callback owns the target; this
+		// prevents A-removes-B / B-removes-A cycles while allowing independent
+		// stores to publish concurrently. Reentrant publication is rejected.
 		//
 		// This protocol guarantees:
 		//   1. No recursive lock: observers can call AddObserver /
 		//      RemoveObserver inside their callbacks.
 		//   2. No iterator invalidation: we iterate a stack copy.
 		//   3. No UAF on freed observers: per-iteration recheck.
-		//   4. Cross-thread RemoveObserver-then-destroy is safe:
-		//      the wait inside RemoveObserver pairs with the in-flight
-		//      counter so the caller knows no dispatch is mid-callback
-		//      on the just-removed observer when RemoveObserver
-		//      returns.
-		// See L1 adversarial review P2 (rounds 2 and 3).
+		//   4. Cross-thread RemoveObserver-then-destroy is safe: the
+		//      wait pairs with the removed observer's callback count.
+		//   5. Callback-side cross-store removal cannot block in a cycle.
 		template <typename Fn>
 		void FrameStore::DispatchObservers( Fn&& fn )
 		{
-			// L8 review round 4 — RAII guards on the in-flight counter
-			// + thread-local depth.  Pre-fix: if `fn(obs)` threw, the
-			// `--observerDispatchInFlight_` and `--g_observerDispatchDepth`
-			// at the bottom were skipped → the counter stayed at +1
-			// forever → every subsequent `RemoveObserver` waited
-			// forever (the cv predicate `inflight == 0` never became
-			// true).  This manifests as the hang on second render
-			// after scene reload reported by the user: anything that
-			// called `RemoveObserver` (e.g. `BindFrameStore` Phase 3,
-			// `~ViewportFrameStore`, `ParkActiveAsDormant_locked`
-			// eviction) blocked indefinitely.
-			//
-			// Bridge tile callbacks DO call into Cocoa / Obj-C blocks;
-			// any thrown Obj-C exception unwinds through C++ as
-			// `std::terminate` on macOS by default, but if the user's
-			// block uses `@try`/`@catch` mid-stack and re-throws as
-			// C++, or if any std::function copy/move throws on heap
-			// exhaustion, we reach the unguarded path.  Also: a
-			// `system_error` from `std::shared_mutex::lock` (resource
-			// exhaustion, EAGAIN) inside `RenderToBuffer` is on the
-			// observer-callback path and would propagate out.  Cheap
-			// to harden against; correctness consequence of NOT
-			// hardening is exactly the user-visible hang.
+			RejectReentrantObserverPublication();
+			auto dispatchLock = AcquireObserverDispatchLock(
+				observerCallbackDispatchMutex_);
 			std::vector<IRenderObserver*> snapshot;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );
 				snapshot = observers_;
-				++observerDispatchInFlight_;
 			}
-			++g_observerDispatchDepth;
+			for ( IRenderObserver* obs : snapshot ) {
+				bool claimed = false;
+				{
+					std::unique_lock<std::mutex> lock( observerMutex_ );
+					observerDispatchDone_.wait(lock,[this,obs]{
+						return std::find(observerRemovalsPrepared_.begin(),
+							observerRemovalsPrepared_.end(),obs) ==
+							observerRemovalsPrepared_.end();
+					});
+					if( std::find(observers_.begin(),observers_.end(),obs) !=
+						observers_.end() ) {
+						++observerCallbacksInFlight_[obs];
+						claimed = true;
+					}
+				}
+				if( !claimed ) continue;
 
-			try {
-				for ( IRenderObserver* obs : snapshot ) {
-					// Recheck registration before invoking.  An earlier
-					// callback in this same dispatch may have removed
-					// (and possibly destroyed) `obs` since the snapshot
-					// was taken.
-					bool stillRegistered;
+				ObserverCallbackFrame callbackFrame { this,obs,g_observerCallbackFrame };
+				g_observerCallbackFrame = &callbackFrame;
+				try {
+					fn( obs );
+				} catch ( ... ) {
+					g_observerCallbackFrame = callbackFrame.prior;
 					{
 						std::lock_guard<std::mutex> lock( observerMutex_ );
-						stillRegistered = std::find( observers_.begin(),
-						                             observers_.end(),
-						                             obs ) != observers_.end();
+						auto active = observerCallbacksInFlight_.find(obs);
+						if( active != observerCallbacksInFlight_.end() &&
+							--active->second == 0u ) observerCallbacksInFlight_.erase(active);
 					}
-					if ( stillRegistered ) {
-						fn( obs );
-					}
+					observerDispatchDone_.notify_all();
+					throw;
 				}
-			} catch ( ... ) {
-				// Decrement the counter + depth, notify waiters, then
-				// rethrow.  Rethrowing preserves the original behaviour
-				// (callers / std::terminate diagnostics see the same
-				// exception type); the only behavioural change is that
-				// the counter no longer leaks on the unwind path.
-				--g_observerDispatchDepth;
+				g_observerCallbackFrame = callbackFrame.prior;
 				{
 					std::lock_guard<std::mutex> lock( observerMutex_ );
-					--observerDispatchInFlight_;
+					auto active = observerCallbacksInFlight_.find(obs);
+					if( active != observerCallbacksInFlight_.end() &&
+						--active->second == 0u ) observerCallbacksInFlight_.erase(active);
 				}
 				observerDispatchDone_.notify_all();
-				throw;
 			}
-
-			--g_observerDispatchDepth;
-			{
-				std::lock_guard<std::mutex> lock( observerMutex_ );
-				--observerDispatchInFlight_;
-			}
-			observerDispatchDone_.notify_all();
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -741,42 +1799,265 @@ namespace RISE
 			// scene reload don't need to first remove).
 			auto it = std::find( observers_.begin(), observers_.end(), observer );
 			if ( it == observers_.end() ) {
+				if( observers_.size()+observerRegistrationReservations_ >=
+					observers_.capacity() ) {
+					observers_.reserve(
+						observers_.size()+observerRegistrationReservations_+1u);
+				}
 				observers_.push_back( observer );
 			}
 		}
 
 		void FrameStore::RemoveObserver( IRenderObserver* observer )
 		{
-			if ( !observer ) return;
-			std::unique_lock<std::mutex> lock( observerMutex_ );
-			auto it = std::find( observers_.begin(), observers_.end(), observer );
-			if ( it != observers_.end() ) {
-				observers_.erase( it );
-			}
+			RemoveObserverImpl(observer);
+		}
 
-			// Wait for any in-flight dispatch whose snapshot may
-			// still hold the just-removed observer pointer to
-			// finish — otherwise the caller could legally destroy
-			// `observer` immediately after this returns, but a
-			// dispatcher thread already partway through invoking
-			// observer.OnXxx() would dereference freed memory.
+		bool FrameStore::RemoveObserverImpl( IRenderObserver* observer )
+		{
+			if ( !observer ) return false;
+			std::unique_lock<std::mutex> lock( observerMutex_ );
+			observerDispatchDone_.wait(lock,[this,observer]{
+				return std::find(observerRemovalsPrepared_.begin(),
+					observerRemovalsPrepared_.end(),observer) ==
+					observerRemovalsPrepared_.end();
+			});
+			// Wait for callbacks that have already claimed precisely
+			// this observer.  Snapshot-only pointers are harmless: every
+			// dispatcher rechecks registration before it claims a call.
 			//
-			// Self-detach (observer calls RemoveObserver from
-			// inside its own callback ON THE SAME THREAD) skips
-			// the wait: the dispatcher IS this thread, and waiting
-			// on g_observerDispatchDepth to reach 0 would deadlock
-			// because only this thread can decrement it (after
-			// returning from the callback).  In that case the
-			// caller is mid-callback and the observer is implicitly
-			// kept alive by the call stack until the callback
-			// returns; the caller's responsibility is not to
-			// destroy `this` until they return.  See L1 adversarial
-			// review P2.
-			if ( g_observerDispatchDepth == 0 ) {
-				observerDispatchDone_.wait( lock, [this]{
-					return observerDispatchInFlight_ == 0;
-				} );
+			// Self-detach cannot wait for its current callback. The callback
+			// frame is keyed by both store and observer so a callback on one
+			// store cannot exempt an active callback on another store.
+			const unsigned int localCallbacks =
+				ObserverActiveCountOnThisThread(this,observer);
+			const auto activeBeforeRemoval = observerCallbacksInFlight_.find(observer);
+			if( g_observerCallbackFrame && activeBeforeRemoval != observerCallbacksInFlight_.end() &&
+				activeBeforeRemoval->second > localCallbacks ) {
+				throw std::runtime_error(
+					"FrameStore observer removal would wait on another callback" );
 			}
+			auto it = std::find( observers_.begin(), observers_.end(), observer );
+			if ( it == observers_.end() ) return false;
+			observers_.erase( it );
+			observerDispatchDone_.wait( lock, [this,observer,localCallbacks]{
+				const auto active = observerCallbacksInFlight_.find(observer);
+				return active == observerCallbacksInFlight_.end() ||
+					active->second <= localCallbacks;
+			} );
+			return true;
+		}
+
+		FrameStore::ObserverMutationToken::ObserverMutationToken(
+			FrameStore& owner, const Kind kind, IRenderObserver* observer )
+			: owner_(&owner), kind_(kind), observer_(observer),
+			  lock_(owner.observerMutex_)
+		{
+		}
+
+		FrameStore::ObserverMutationToken::ObserverMutationToken(
+			ObserverMutationToken&& other ) noexcept
+			: owner_(other.owner_), kind_(other.kind_), observer_(other.observer_),
+			  lock_(std::move(other.lock_))
+		{
+			other.owner_ = nullptr;
+			other.observer_ = nullptr;
+		}
+
+		void FrameStore::ObserverMutationToken::Reset() noexcept
+		{
+			owner_ = nullptr;
+			observer_ = nullptr;
+			if( lock_.owns_lock() ) lock_.unlock();
+		}
+
+		FrameStore::ObserverMutationToken::~ObserverMutationToken() noexcept
+		{
+			if( !owner_ ) return;
+			FrameStore* owner = owner_;
+			if( !lock_.owns_lock() ) lock_.lock();
+			if( kind_ == Kind::Registration ) {
+				assert(owner->observerRegistrationReservations_ != 0u);
+				if( owner->observerRegistrationReservations_ != 0u ) {
+					--owner->observerRegistrationReservations_;
+				}
+			} else if( observer_ ) {
+				auto prepared = std::find(owner->observerRemovalsPrepared_.begin(),
+					owner->observerRemovalsPrepared_.end(),observer_);
+				if( prepared != owner->observerRemovalsPrepared_.end() ) {
+					owner->observerRemovalsPrepared_.erase(prepared);
+				}
+			}
+			Reset();
+			owner->observerDispatchDone_.notify_all();
+		}
+
+		FrameStore::ObserverMutationToken FrameStore::PrepareObserverRegistration()
+		{
+			ObserverMutationToken token(*this,
+				ObserverMutationToken::Kind::Registration,nullptr);
+			if( observers_.size()+observerRegistrationReservations_ >=
+				observers_.capacity() ) {
+				observers_.reserve(
+					observers_.size()+observerRegistrationReservations_+1u);
+			}
+			++observerRegistrationReservations_;
+			token.lock_.unlock();
+			return token;
+		}
+
+		FrameStore::ObserverMutationToken FrameStore::PrepareObserverRemoval(
+			IRenderObserver* observer )
+		{
+			ObserverMutationToken token(*this,
+				ObserverMutationToken::Kind::Removal,observer);
+			if( !observer ) {
+				token.Reset();
+				return token;
+			}
+			const unsigned int localCallbacks =
+				ObserverActiveCountOnThisThread(this,observer);
+			const auto activeBeforeRemoval = observerCallbacksInFlight_.find(observer);
+			if( g_observerCallbackFrame && activeBeforeRemoval !=
+				observerCallbacksInFlight_.end() &&
+				activeBeforeRemoval->second > localCallbacks ) {
+				throw std::runtime_error(
+					"FrameStore observer removal would wait on another callback" );
+			}
+			if( std::find(observers_.begin(),observers_.end(),observer) ==
+				observers_.end() ) {
+				token.Reset();
+				return token;
+			}
+			if( std::find(observerRemovalsPrepared_.begin(),
+				observerRemovalsPrepared_.end(),observer) !=
+				observerRemovalsPrepared_.end() ) {
+				throw std::runtime_error(
+					"FrameStore observer removal already prepared" );
+			}
+			observerRemovalsPrepared_.push_back(observer);
+			observerDispatchDone_.wait(token.lock_,
+				[this,observer,localCallbacks]{
+					const auto active = observerCallbacksInFlight_.find(observer);
+					return active == observerCallbacksInFlight_.end() ||
+						active->second <= localCallbacks;
+				});
+			token.lock_.unlock();
+			return token;
+		}
+
+		void FrameStore::LockPreparedObserverMutations(
+			const std::vector<ObserverMutationToken*>& tokens,
+			const std::function<void(size_t)>& afterLock )
+		{
+			std::vector<ObserverMutationToken*> distinctStores;
+			distinctStores.reserve(tokens.size());
+			for( ObserverMutationToken* token : tokens ) {
+				if( !token || !token->owner_ || token->lock_.owns_lock() ) {
+					throw std::runtime_error(
+						"FrameStore observer mutation token set mismatch");
+				}
+				const bool represented = std::any_of(
+					distinctStores.begin(),distinctStores.end(),
+					[token]( const ObserverMutationToken* candidate ) {
+						return candidate->owner_ == token->owner_;
+					});
+				if( !represented ) distinctStores.push_back(token);
+			}
+			std::sort(distinctStores.begin(),distinctStores.end(),
+				[]( const ObserverMutationToken* lhs,
+					const ObserverMutationToken* rhs ) {
+					return std::less<FrameStore*>()(lhs->owner_,rhs->owner_);
+				});
+			size_t acquired = 0u;
+			try {
+				for( ObserverMutationToken* token : distinctStores ) {
+					token->lock_.lock();
+					++acquired;
+					if( afterLock ) afterLock(acquired);
+				}
+			} catch( ... ) {
+				UnlockPreparedObserverMutations(distinctStores);
+				throw;
+			}
+		}
+
+		void FrameStore::UnlockPreparedObserverMutations(
+			const std::vector<ObserverMutationToken*>& tokens ) noexcept
+		{
+			for( ObserverMutationToken* token : tokens ) {
+				if( token && token->lock_.owns_lock() ) token->lock_.unlock();
+			}
+		}
+
+		void FrameStore::CommitPreparedObserverRemoval(
+			ObserverMutationToken& token ) noexcept
+		{
+			assert(token.owner_ == this &&
+				token.kind_ == ObserverMutationToken::Kind::Removal &&
+				token.lock_.owns_lock());
+			if( token.owner_ != this || !token.lock_.owns_lock() ) return;
+			auto observer = std::find(observers_.begin(),observers_.end(),
+				token.observer_);
+			if( observer != observers_.end() ) observers_.erase(observer);
+			auto prepared = std::find(observerRemovalsPrepared_.begin(),
+				observerRemovalsPrepared_.end(),token.observer_);
+			if( prepared != observerRemovalsPrepared_.end() ) {
+				observerRemovalsPrepared_.erase(prepared);
+			}
+			token.Reset();
+			observerDispatchDone_.notify_all();
+		}
+
+		void FrameStore::CommitPreparedObserverRegistration(
+			ObserverMutationToken& token, IRenderObserver* observer ) noexcept
+		{
+			assert(token.owner_ == this && token.lock_.owns_lock() &&
+				token.kind_ == ObserverMutationToken::Kind::Registration);
+			if( token.owner_ != this || !token.lock_.owns_lock() ) return;
+			if( observer && std::find(observers_.begin(),observers_.end(),observer) ==
+				observers_.end() ) {
+				assert(observers_.size() < observers_.capacity());
+				observers_.push_back(observer);
+			}
+			assert(observerRegistrationReservations_ != 0u);
+			if( observerRegistrationReservations_ != 0u ) {
+				--observerRegistrationReservations_;
+			}
+			token.Reset();
+		}
+
+		void FrameStore::CommitPreparedObserverReplacement(
+			ObserverMutationToken& registration,
+			ObserverMutationToken& removal,
+			IRenderObserver* observer ) noexcept
+		{
+			assert(registration.owner_ == this && removal.owner_ == this &&
+				registration.kind_ == ObserverMutationToken::Kind::Registration &&
+				removal.kind_ == ObserverMutationToken::Kind::Removal &&
+				registration.lock_.owns_lock() && !removal.lock_.owns_lock());
+			if( registration.owner_ != this || removal.owner_ != this ||
+				!registration.lock_.owns_lock() || removal.lock_.owns_lock() ) return;
+			auto oldObserver = std::find(observers_.begin(),observers_.end(),
+				removal.observer_);
+			if( oldObserver != observers_.end() ) observers_.erase(oldObserver);
+			auto prepared = std::find(observerRemovalsPrepared_.begin(),
+				observerRemovalsPrepared_.end(),removal.observer_);
+			if( prepared != observerRemovalsPrepared_.end() ) {
+				observerRemovalsPrepared_.erase(prepared);
+			}
+			if( observer && std::find(observers_.begin(),observers_.end(),observer) ==
+				observers_.end() ) {
+				assert(observers_.size() < observers_.capacity());
+				observers_.push_back(observer);
+			}
+			assert(observerRegistrationReservations_ != 0u);
+			if( observerRegistrationReservations_ != 0u ) {
+				--observerRegistrationReservations_;
+			}
+			removal.Reset();
+			registration.Reset();
+			observerDispatchDone_.notify_all();
 		}
 
 		// ─────────────────────────────────────────────────────────────

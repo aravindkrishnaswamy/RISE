@@ -9,7 +9,7 @@
 //  found" sentinel and then asserts `abs(x - K) < eps` therefore silently
 //  PASSES even when the lookup failed -- a false-green that hid a real
 //  bug THREE times during the snapshot/transaction work (see
-//  docs/skills/red-proof-and-test-integrity.md).
+//  docs/skills/write-highly-effective-tests.md, "RED proof").
 //
 //  As of 2026-07-29 every macOS configuration also passes
 //  -fno-finite-math-only, so NaN/Inf comparisons evaluate correctly again
@@ -55,12 +55,16 @@
 #include <iostream>
 #include <string>
 #include <iterator>
+#include <map>
+#include <regex>
+#include <set>
 #include <sstream>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include "../src/Library/Agent/Json.h"
+#include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"
 
 namespace fs = std::filesystem;
 
@@ -473,7 +477,1319 @@ int main()
 	Check( offenders.empty(),
 	       "no -ffast-math-foldable NaN/Inf sentinels in tests/ (use a finite "
 	       "poison or an explicit existence Check; see docs/skills/"
-	       "red-proof-and-test-integrity.md)" );
+	       "write-highly-effective-tests.md, RED proof)" );
+
+	// File-output type selection is compiled under three independent optional
+	// encoder macros.  Every unavailable arm must reject at the authored-type
+	// boundary; substituting TGA changes both artifact fidelity and extension.
+	{
+		const fs::path parserPath = testsDir.parent_path() / "src" / "Library" /
+			"Parsers" / "ChunkParserRegistry.cpp";
+		std::ifstream parserFile(parserPath, std::ios::binary);
+		const std::string parser{
+			std::istreambuf_iterator<char>(parserFile),std::istreambuf_iterator<char>() };
+		struct EncoderMacroGate
+		{
+			const char* format;
+			const char* macro;
+		};
+		const EncoderMacroGate gates[] = {
+			{ "PNG", "NO_PNG_SUPPORT" },
+			{ "TIFF", "NO_TIFF_SUPPORT" },
+			{ "EXR", "NO_EXR_SUPPORT" }
+		};
+		for( const EncoderMacroGate& gate : gates ) {
+			const std::string formatMarker =
+				std::string("} else if( t == \"") + gate.format + "\" ) {";
+			const std::string macroMarker =
+				std::string("#ifndef ") + gate.macro;
+			const size_t formatBegin = parser.find(formatMarker);
+			const size_t macroBegin = parser.find(macroMarker,formatBegin);
+			const size_t elseBegin = parser.find("#else",macroBegin);
+			const size_t macroEnd = parser.find("#endif",elseBegin);
+			const std::string unavailableArm =
+				formatBegin != std::string::npos && macroBegin != std::string::npos &&
+				elseBegin != std::string::npos && macroEnd != std::string::npos ?
+				parser.substr(elseBegin,macroEnd-elseBegin) : std::string();
+			Check( !unavailableArm.empty() &&
+				unavailableArm.find("return false;") != std::string::npos &&
+				unavailableArm.find("type = 0") == std::string::npos,
+				std::string("authored ") + gate.format +
+				" rejects under its unavailable-encoder build macro" );
+		}
+		Check( parser.find("reverting to TGA") == std::string::npos,
+			"authored file encoders never silently substitute TGA" );
+
+		const fs::path repoRoot = testsDir.parent_path();
+		const fs::path guiSaveAsSources[] = {
+			repoRoot / "build" / "XCode" / "rise" / "RISE-GUI" / "Bridge" /
+				"RISEBridge.mm",
+			repoRoot / "build" / "VS2022" / "RISE-GUI" / "RenderEngine.cpp",
+			repoRoot / "android" / "app" / "src" / "main" / "cpp" / "RiseBridge.cpp"
+		};
+		const char* guiNames[] = { "macOS", "Windows", "Android" };
+		for( std::size_t i=0; i<3; ++i ) {
+			std::ifstream sourceFile(guiSaveAsSources[i],std::ios::binary);
+			std::string source{
+				std::istreambuf_iterator<char>(sourceFile),std::istreambuf_iterator<char>() };
+			source.erase(std::remove_if(source.begin(),source.end(),[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),source.end());
+			const std::string hdrBranch = i == 2 ?
+				"if(enc->SupportsHDR()){opts.colorSpace=RISE::eColorSpace_Rec709RGB_Linear;opts.bpp=32;opts.viewTransform=ViewTransform::Identity();}" :
+				"if(enc->SupportsHDR()){opts.colorSpace=eColorSpace_Rec709RGB_Linear;opts.bpp=32;opts.viewTransform=ViewTransform::Identity();}";
+			Check( source.find(hdrBranch)
+				!= std::string::npos,
+				std::string(guiNames[i])+
+				" GUI SaveAs requests linear FP32 from HDR encoders" );
+		}
+		const auto withoutWhitespace = []( std::string source ) {
+			source.erase(std::remove_if(source.begin(),source.end(),[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),source.end());
+			return source;
+		};
+		std::ifstream windowsMainFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "MainWindow.cpp",std::ios::binary);
+		const std::string windowsMain = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(windowsMainFile),
+			std::istreambuf_iterator<char>()));
+		std::ifstream windowsEngineFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "RenderEngine.cpp",std::ios::binary);
+		const std::string windowsEngine = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(windowsEngineFile),
+			std::istreambuf_iterator<char>()));
+		Check( windowsMain.find(
+			"constboolcanSave=state==RenderEngine::Completed||state==RenderEngine::Cancelled;") !=
+				std::string::npos &&
+			windowsEngine.find(
+				"if(m_state!=Completed&&m_state!=Cancelled)returnfalse;") !=
+				std::string::npos,
+			"Windows GUI and API SaveAs reject in-progress frame publication" );
+		std::ifstream macViewModelFile(repoRoot / "build" / "XCode" / "rise" /
+			"RISE-GUI" / "App" / "RenderViewModel.swift",std::ios::binary);
+		const std::string macViewModel = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(macViewModelFile),
+			std::istreambuf_iterator<char>()));
+		Check( windowsMain.find(
+			"m_engine->saveAs(path,formatName,m_engine->viewExposureEV())") !=
+				std::string::npos &&
+			macViewModel.find("exposureEV:viewExposureEV") != std::string::npos &&
+			macViewModel.find("nosliderexposedyet") == std::string::npos,
+			"desktop GUI SaveAs forwards the live viewport exposure" );
+		Check( windowsMain.find("else{QMessageBox::warning(this,\"UnsupportedImageFormat\"") !=
+				std::string::npos &&
+			windowsMain.find("elseformatName=\"EXR\"") == std::string::npos &&
+			macViewModel.find("default:letalert=NSAlert()") != std::string::npos &&
+			macViewModel.find("formatName=\"EXR\"}") == std::string::npos,
+			"GUI authored image formats reject unknown extensions without substitution" );
+		std::ifstream windowsLibraryProjectFile(repoRoot / "build" / "VS2022" /
+			"Library" / "Library.vcxproj",std::ios::binary);
+		const std::string windowsLibraryProject{
+			std::istreambuf_iterator<char>(windowsLibraryProjectFile),
+			std::istreambuf_iterator<char>() };
+		const std::size_t releaseGroup = windowsLibraryProject.find(
+			"<ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">");
+		const std::size_t debugGroup = windowsLibraryProject.find(
+			"<ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">",
+			releaseGroup);
+		Check( releaseGroup != std::string::npos && debugGroup != std::string::npos &&
+			windowsLibraryProject.substr(releaseGroup,debugGroup-releaseGroup).find(
+				"<Optimization>MaxSpeed</Optimization>") != std::string::npos,
+			"Windows renderer-build O2 attestation is pinned by Release project flags" );
+		std::ifstream windowsVideoHeaderFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "VideoEncoder.h",std::ios::binary);
+		const std::string windowsVideoHeader{
+			std::istreambuf_iterator<char>(windowsVideoHeaderFile),
+			std::istreambuf_iterator<char>() };
+		std::ifstream windowsVideoSourceFile(repoRoot / "build" / "VS2022" /
+			"RISE-GUI" / "VideoEncoder.cpp",std::ios::binary);
+		const std::string windowsVideoSource = withoutWhitespace(std::string(
+			std::istreambuf_iterator<char>(windowsVideoSourceFile),
+			std::istreambuf_iterator<char>()));
+		Check( windowsVideoHeader.find("IFireRasterizerOutputRoute") !=
+				std::string::npos &&
+			windowsVideoSource.find("EncodeFrameStoreFileTransaction") !=
+				std::string::npos &&
+			windowsVideoSource.find("PublishFireFrameSequenceFileTransaction") !=
+				std::string::npos &&
+			windowsVideoSource.find(".rise-tmp.movie.") != std::string::npos,
+			"Windows movies publish raw fire primaries and linked derivatives transactionally" );
+		Check( windowsVideoSource.find("avcodec_find_encoder(AV_CODEC_ID_PRORES)") ==
+				std::string::npos &&
+			windowsVideoSource.find(
+				"authoredCodecNegotiationAvailable(availableCodec,codec,fps,m_writerPath)") !=
+				std::string::npos &&
+			windowsVideoSource.find("avcodec_open2(context,codec,nullptr)") !=
+				std::string::npos &&
+			windowsVideoSource.find("avformat_write_header(format,&muxOptions)") !=
+				std::string::npos &&
+			windowsVideoSource.find("av_write_trailer(format)") !=
+				std::string::npos &&
+			windowsVideoSource.find("FireFrameSequenceEncoding::AppleProRes4444_10Bit") !=
+				std::string::npos &&
+			windowsVideoSource.find("FireFrameSequenceEncoding::HevcMain10_10Bit") !=
+				std::string::npos,
+			"Windows movie routes probe a closed sample through exact encoder and mux settings" );
+		Check( windowsVideoSource.find("descriptor.codecImplementation.c_str()") !=
+				std::string::npos &&
+			windowsVideoSource.find("descriptor.conversionBrightness") !=
+				std::string::npos &&
+			windowsVideoSource.find("descriptor.conversionContrast") !=
+				std::string::npos &&
+			windowsVideoSource.find("descriptor.conversionSaturation") !=
+				std::string::npos,
+			"Windows movie writer consumes the shared encoding descriptor" );
+		Check( windowsVideoHeader.find("m_primaryRouteAvailable") != std::string::npos &&
+			windowsVideoHeader.find("m_derivativeAvailable") != std::string::npos &&
+			windowsEngine.find("hevcEncoder->DerivativeAvailable()") != std::string::npos &&
+			windowsEngine.find("if(!hevcEncoder||!hevcEncoder->wroteOutput())") !=
+				std::string::npos &&
+			windowsVideoSource.find("authoredencoderunavailableatpreflight") !=
+				std::string::npos,
+			"Windows fire movies separate raw-primary viability from optional negotiated derivatives" );
+		Check( windowsVideoSource.find("rgbaData(static_cast<size_t>(m_width)*m_height*4u,uint16_t(0))") !=
+				std::string::npos &&
+			windowsVideoSource.find("for(inty=0;y<sourceHeight;++y)") !=
+				std::string::npos &&
+			windowsVideoSource.find("for(intx=0;x<sourceWidth;++x)") !=
+				std::string::npos,
+			"Windows movie padding clears odd-size borders and never reads beyond the source image" );
+		Check( windowsVideoSource.find("if(!encodeFrame(rgbaData.data(),m_width,m_height,frame))") !=
+				std::string::npos &&
+			windowsVideoSource.find("constintwriteResult=av_interleaved_write_frame") !=
+				std::string::npos &&
+			windowsVideoSource.find("constbooltrailerWritten=flushed&&av_write_trailer(m_formatCtx)>=0;") !=
+				std::string::npos,
+			"Windows movie success requires frame, packet, flush, and trailer completion" );
+		Check( windowsVideoSource.find("avformat_open_input(&rawFormat") !=
+				std::string::npos &&
+			windowsVideoSource.find("avcodec_find_decoder(expectedCodec)") !=
+				std::string::npos &&
+			windowsVideoSource.find("av_read_frame(format.get(),packet.get())") !=
+				std::string::npos &&
+			windowsVideoSource.find("avcodec_receive_frame(codec.get(),frame.get())") !=
+				std::string::npos &&
+			windowsVideoSource.find("decoded!=frames.size()") != std::string::npos,
+			"Windows movie publication decodes and counts the finalized frame sequence" );
+		Check( windowsVideoSource.find(
+				"validateClosedMovieArtifact(probePath,descriptorEncoding(encoding)") !=
+				std::string::npos &&
+			windowsVideoSource.find("frames[decoded].frameIndex") != std::string::npos &&
+			windowsVideoSource.find("AV_FRAME_DATA_MASTERING_DISPLAY_METADATA") !=
+				std::string::npos &&
+			windowsVideoSource.find("AV_FRAME_DATA_CONTENT_LIGHT_LEVEL") !=
+				std::string::npos &&
+			windowsVideoSource.find("masteringMetadataSeen") != std::string::npos &&
+			windowsVideoSource.find("contentLightMetadataSeen") != std::string::npos,
+			"Windows movie preflight binds frame indices and exact HDR metadata through decode" );
+
+		std::ifstream movieFile(repoRoot / "build" / "XCode" / "rise" /
+			"RISE-GUI" / "Bridge" / "MovieRasterizerOutput.mm",std::ios::binary);
+		std::string movieSource{
+			std::istreambuf_iterator<char>(movieFile),std::istreambuf_iterator<char>() };
+		std::ifstream bridgeFile(repoRoot / "build" / "XCode" / "rise" /
+			"RISE-GUI" / "Bridge" / "RISEBridge.mm",std::ios::binary);
+		std::string bridgeSource{
+			std::istreambuf_iterator<char>(bridgeFile),std::istreambuf_iterator<char>() };
+		Check( movieSource.find("failMovieDerivative") != std::string::npos &&
+			movieSource.find("finalized fire frame primaries remain valid") !=
+				std::string::npos &&
+			bridgeSource.find("HasFinalizedFirePrimaries") != std::string::npos,
+			"macOS movie derivative failure preserves finalized fire frame primaries" );
+		Check( movieSource.find("ProbeMovieDerivativeAvailability") != std::string::npos &&
+			movieSource.find("canApplyOutputSettings") != std::string::npos &&
+			movieSource.find("startWriting") != std::string::npos &&
+			movieSource.find("CVPixelBufferPoolCreatePixelBuffer") != std::string::npos &&
+			movieSource.find("appendPixelBuffer:buffer") != std::string::npos &&
+			movieSource.find("finishWritingWithCompletionHandler") != std::string::npos &&
+			movieSource.find("AVAssetWriterStatusCompleted") != std::string::npos &&
+			movieSource.find("_routeAvailable = _primaryEncoder != nullptr && probeCreated") !=
+				std::string::npos &&
+			movieSource.find("_derivativeAvailable = probeCreated &&") !=
+				std::string::npos,
+			"macOS fire movies probe a closed sample while preserving the FP32 primary route" );
+		Check( movieSource.find("MovieEncodingDescriptorSupported") != std::string::npos &&
+			movieSource.find("_encodingDescriptor.expectsMediaDataInRealTime") !=
+				std::string::npos &&
+			movieSource.find("MovieVideoSettings(_encodingDescriptor") !=
+				std::string::npos,
+			"macOS movie writer consumes the shared encoding descriptor" );
+		Check( movieSource.find("AVAssetReaderTrackOutput") != std::string::npos &&
+			movieSource.find("copyNextSampleBuffer") != std::string::npos &&
+			movieSource.find("CMTimeCompare(actualTime,expectedTime)") !=
+				std::string::npos &&
+			movieSource.find("reader.status != AVAssetReaderStatusCompleted") !=
+				std::string::npos &&
+			movieSource.find("decoded != frames.size()") != std::string::npos,
+			"macOS movie publication decodes and counts the finalized frame sequence" );
+		Check( movieSource.find("kCMFormatDescriptionExtension_BitsPerComponent") !=
+				std::string::npos &&
+			movieSource.find("kCMFormatDescriptionExtension_Depth") != std::string::npos &&
+			movieSource.find("kCMFormatDescriptionExtension_ContainsAlphaChannel") !=
+				std::string::npos &&
+			movieSource.find("kCVPixelFormatType_64ARGB") != std::string::npos &&
+			movieSource.find("CMTimeMake(frames[decoded].frameIndex,framesPerSecond)") !=
+				std::string::npos &&
+			movieSource.find("ValidateClosedMovieArtifact([writerPath UTF8String]") !=
+				std::string::npos,
+			"macOS movie preflight validates native depth, alpha, and exact linked timestamps" );
+		const std::string compactBridge = withoutWhitespace(bridgeSource);
+		Check( compactBridge.find(
+			"ProductionRenderLeasepublicationLease(_productionRenderActive);") !=
+				std::string::npos &&
+			compactBridge.find("if(!publicationLease.Acquired())returnNO;") !=
+				std::string::npos &&
+			compactBridge.find("ProductionRenderLeaserenderLease(_productionRenderActive);") !=
+				std::string::npos,
+			"macOS SaveAs and production rendering hold one exclusive publication lease" );
+		Check( movieSource.find("OutputPreDenoisedImage") != std::string::npos &&
+			movieSource.find("outputFrame(pImage, frame, true, false)") !=
+				std::string::npos &&
+			movieSource.find("OutputDenoisedImage") != std::string::npos &&
+			movieSource.find("outputFrame(pImage, frame, false, true)") !=
+				std::string::npos &&
+			movieSource.find("movie derivative has no matching raw primary") !=
+				std::string::npos,
+			"OIDN movie output archives raw fire primaries and uses denoised display derivatives" );
+		const std::size_t derivativeDisabled = movieSource.find(
+			"if (!writeDerivative || _derivativeFailed) return;");
+		const std::size_t derivativeLinkage = movieSource.find(
+			"movie derivative has no matching raw primary");
+		Check( derivativeDisabled != std::string::npos &&
+			derivativeLinkage != std::string::npos &&
+			derivativeDisabled < derivativeLinkage,
+			"a failed movie derivative cannot block later raw fire primaries" );
+		Check( movieSource.find("PublishUnprovenancedFileTransaction") !=
+				std::string::npos,
+			"nonfire movie publication transactionally retires stale fire sidecars" );
+		Check( movieSource.find("evaluated_camera_states") != std::string::npos &&
+			movieSource.find("lhsStaticConfig != rhsStaticConfig") !=
+				std::string::npos &&
+			movieSource.find("_fireMetadata = metadata") != std::string::npos,
+			"movie provenance permits only evaluated-camera config growth and finalizes the complete state table" );
+	}
+
+	// FIRE_OUTPUT_PROVENANCE_PIN_V1 P-3 parameter-surface ratchet.  The
+	// expected member names are derived from the structs themselves: a new
+	// render-affecting field fails until BuildResolvedRenderConfig consumes it.
+	{
+		const fs::path repoRoot = testsDir.parent_path();
+		auto slurp = []( const fs::path& path ) {
+			std::ifstream input(path,std::ios::binary);
+			return std::string(std::istreambuf_iterator<char>(input),
+				std::istreambuf_iterator<char>());
+		};
+		const std::string unixTestRunner = slurp(repoRoot/"run_all_tests.sh");
+		const std::string windowsTestRunner = slurp(repoRoot/"run_all_tests.ps1");
+		const std::string unixExtendedRunner = slurp(
+			repoRoot/"run_extended_tests.sh");
+		const std::string windowsExtendedRunner = slurp(
+			repoRoot/"run_extended_tests.ps1");
+		const std::string windowsTestCmake = slurp(
+			repoRoot/"build"/"cmake"/"rise-tests"/"CMakeLists.txt");
+		const std::string testReadme = slurp(repoRoot/"tests"/"README.md");
+		const std::string iorStackTest = slurp(repoRoot/"tests"/"IORStackTest.cpp");
+		const std::string fileOutputTest = slurp(
+			repoRoot/"tests"/"FileRasterizerOutputShimTest.cpp");
+		Check(unixTestRunner.find("if [ \"$bulk_rc\" -eq 0 ]") !=
+				std::string::npos &&
+			unixTestRunner.find(
+				"SKIP (current build failed; stale executable ignored)") !=
+				std::string::npos &&
+			windowsTestRunner.find("$failedBuildTargets = @{}") !=
+				std::string::npos &&
+			windowsTestRunner.find(
+				"$failedBuildTargets.ContainsKey($name)") != std::string::npos &&
+			windowsTestRunner.find(
+				"--target $src.BaseName") != std::string::npos &&
+			windowsTestRunner.find("Building RISE.lib") !=
+				std::string::npos &&
+			windowsTestRunner.find("& $msbuild $LibraryProject") !=
+				std::string::npos &&
+			windowsTestRunner.find("\"/p:SolutionDir=$SolutionDir\"") !=
+				std::string::npos &&
+			windowsTestRunner.find("& $msbuild $LibraryProject") <
+				windowsTestRunner.find("& $cmake -S $CmakeSrcDir") &&
+			windowsTestRunner.find("$skipped -ne 0 -or $found -ne $total") !=
+				std::string::npos &&
+			windowsTestRunner.find("$productionInputs = Get-ChildItem") !=
+				std::string::npos &&
+			windowsTestRunner.find("$latestProductionInput.LastWriteTime") !=
+				std::string::npos &&
+			unixTestRunner.find("[ \"$skipped\" -ne 0 ]") !=
+				std::string::npos &&
+			unixTestRunner.find("[ \"$found\" -ne \"$total\" ]") !=
+				std::string::npos &&
+			windowsTestCmake.find(
+				"NOT EXISTS \"${RISE_LIB_RELEASE}\" AND NOT EXISTS \"${RISE_LIB_DEBUG}\"") !=
+				std::string::npos &&
+			windowsTestCmake.find("/UNDEBUG") != std::string::npos &&
+			testReadme.find("do not rely on `assert(...)`") !=
+				std::string::npos &&
+			testReadme.find("representative fixed-seed Monte") !=
+				std::string::npos &&
+			testReadme.find("high-sample Phase-B mean-equality") !=
+				std::string::npos,
+			"test runners never execute stale binaries after a failed dependency-aware build" );
+		const size_t unixValidateLog = unixTestRunner.find("validate_log_dir");
+		const size_t unixDeleteLog = unixTestRunner.find("rm -rf \"$LOG_DIR\"");
+		const size_t windowsValidateLog = windowsTestRunner.find(
+			"Refusing unsafe test log directory");
+		const size_t windowsDeleteLog = windowsTestRunner.find(
+			"Remove-Item -Recurse -Force -LiteralPath $LogDir");
+		Check(unixValidateLog != std::string::npos &&
+			unixDeleteLog != std::string::npos && unixValidateLog < unixDeleteLog &&
+			unixTestRunner.find("RISE_TEST_VALIDATE_LOG_DIR_ONLY") !=
+				std::string::npos &&
+			unixTestRunner.find("rise-tests-logs|rise-tests-logs-*") !=
+				std::string::npos &&
+			unixTestRunner.find(".rise-test-log-directory") !=
+				std::string::npos &&
+			windowsValidateLog != std::string::npos &&
+			windowsDeleteLog != std::string::npos &&
+			windowsValidateLog < windowsDeleteLog &&
+			windowsTestRunner.find("Test-IsSameOrParent") != std::string::npos &&
+			windowsTestRunner.find("ValidateLogDirOnly") != std::string::npos &&
+			windowsTestRunner.find("$logLeaf -notlike 'rise-tests-logs-*'") !=
+				std::string::npos &&
+			windowsTestRunner.find(".rise-test-log-directory") !=
+				std::string::npos,
+			"test runners validate destructive log targets before removal" );
+		Check(unixExtendedRunner.find("\"build-test/$name\"") !=
+				std::string::npos &&
+			unixExtendedRunner.find("failed to build current $name") !=
+				std::string::npos &&
+			windowsExtendedRunner.find("-BuildOnly -Filter $extendedTests") !=
+				std::string::npos &&
+			windowsExtendedRunner.find("Failed to build current extended-test binaries") !=
+				std::string::npos,
+			"extended fire experiments dependency-build their exact binaries before running" );
+		Check(iorStackTest.find("\tassert(") == std::string::npos &&
+			iorStackTest.find("return failCount == 0 ? 0 : 1;") !=
+				std::string::npos,
+			"IORStack runtime oracles remain active in Release builds" );
+		Check(fileOutputTest.find("#if defined(_WIN32)") != std::string::npos &&
+			fileOutputTest.find("physicalSegmentLength = 48u") !=
+				std::string::npos &&
+			fileOutputTest.find("const std::string longPattern(4096u,'x')") !=
+				std::string::npos,
+			"long filename logic stays unbounded while Windows physical writes stay MAX_PATH-safe" );
+		const fs::path autoCoordinatorSurfaces[] = {
+			repoRoot/"src"/"Library"/"Rendering"/"AutoRasterizer.h",
+			repoRoot/"src"/"Library"/"Rendering"/"AutoRasterizer.cpp",
+			repoRoot/"docs"/"AUTO_RASTERIZER_DESIGN.md",
+			repoRoot/"docs"/"gui"/"APPROACHABILITY_FOUNDATION.md",
+			repoRoot/"docs"/"gui"/"RENDER_COORDINATOR.md",
+			repoRoot/"docs"/"gui"/"SPECTRAL_DIFFERENTIATORS.md"
+		};
+		for( const fs::path& surface : autoCoordinatorSurfaces ) {
+			Check( slurp(surface).find("call_once") == std::string::npos,
+				"Auto resolution documentation names the fail-closed coordinator: "+
+				surface.filename().string() );
+		}
+		auto braceBody = []( const std::string& source, const std::string& marker ) {
+			const std::string code = StripCommentsPreservingLayout(source);
+			const std::size_t markerAt = code.find(marker);
+			const std::size_t open = markerAt == std::string::npos ?
+				std::string::npos : code.find('{',markerAt);
+			if( open == std::string::npos ) return std::string();
+			unsigned int depth = 1u;
+			for( std::size_t i=open+1u; i<code.size(); ++i ) {
+				if( code[i] == '{' ) ++depth;
+				else if( code[i] == '}' && --depth == 0u ) {
+					return code.substr(open+1u,i-open-1u);
+				}
+			}
+			return std::string();
+		};
+		auto members = []( std::string body, const std::string& constructor ) {
+			const std::size_t constructorAt = body.find(constructor+"(");
+			if( constructorAt != std::string::npos ) body.resize(constructorAt);
+			const std::regex declaration(
+				R"(^\s*[A-Za-z_:][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_:][A-Za-z0-9_:<>]*)*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*(?:=[^;]*)?;\s*$)" );
+			std::vector<std::string> result;
+			std::istringstream lines(body);
+			std::string line;
+			std::smatch match;
+			while( std::getline(lines,line) ) {
+				if( std::regex_match(line,match,declaration) ) result.push_back(match[1].str());
+			}
+			return result;
+		};
+		const std::string jobHeader = slurp(repoRoot/"src"/"Library"/"Job.h");
+		const std::string jobSource = slurp(repoRoot/"src"/"Library"/"Job.cpp");
+		const std::string configWriter = braceBody(jobSource,"bool BuildResolvedRenderConfig(");
+		Check( !configWriter.empty(),
+			"resolved render configuration encoder is present" );
+		Check( configWriter.find("p.lightSampleRRThreshold") != std::string::npos &&
+			configWriter.find("\"rr_threshold\"") != std::string::npos,
+			"resolved-config schema consumes the Job light-sampling RR threshold" );
+		const std::vector<std::string> topMembers = members(
+			braceBody(jobHeader,"struct RasterizerParams"),"RasterizerParams");
+		for( const std::string& member : topMembers ) {
+			Check( configWriter.find("p."+member) != std::string::npos,
+				"resolved-config schema consumes RasterizerParams::"+member );
+		}
+		struct NestedSurface { const char* file; const char* type; const char* prefix; };
+		const NestedSurface nested[] = {
+			{ "RadianceMapConfig.h", "RadianceMapConfig", "radianceMap" },
+			{ "PixelFilterConfig.h", "PixelFilterConfig", "pixelFilter" },
+			{ "SMSConfig.h", "SMSConfig", "sms" },
+			{ "SpectralConfig.h", "SpectralConfig", "spectral" },
+			{ "PathGuidingField.h", "PathGuidingConfig", "pathGuiding" },
+			{ "AdaptiveSamplingConfig.h", "AdaptiveSamplingConfig", "adaptive" },
+			{ "StabilityConfig.h", "StabilityConfig", "stability" },
+			{ "ProgressiveConfig.h", "ProgressiveConfig", "progressive" }
+		};
+		for( const NestedSurface& surface : nested ) {
+			const std::string source = slurp(repoRoot/"src"/"Library"/"Utilities"/surface.file);
+			const std::vector<std::string> fields = members(
+				braceBody(source,std::string("struct ")+surface.type),surface.type);
+			Check( !fields.empty(),std::string("located render config surface ")+surface.type );
+			for( const std::string& field : fields ) {
+				Check( configWriter.find(std::string("p.")+surface.prefix+"."+field) !=
+					std::string::npos,
+					std::string("resolved-config schema consumes ")+surface.type+"::"+field );
+			}
+		}
+		const std::string jobPrivHeader = slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IJobPriv.h");
+		const std::vector<std::string> externalMembers = members(
+			braceBody(jobPrivHeader,"struct FireExternalRenderConfig"),
+			"FireExternalRenderConfig");
+		const std::string rasterizerInterface = braceBody(slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IRasterizer.h"),
+			"class IRasterizer :");
+		const std::string outputInterface = braceBody(slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IRasterizerOutput.h"),
+			"class IRasterizerOutput :");
+		Check( rasterizerInterface.find("SetFireRenderPreflightAuthorization") ==
+				std::string::npos &&
+			rasterizerInterface.find("LastRenderCompleted") == std::string::npos &&
+			outputInterface.find("FireArtifactRoute") == std::string::npos,
+			"fire capability queries do not extend legacy rasterizer plugin vtables" );
+		const std::string externalWriter = braceBody(jobSource,
+			"bool Job::PrepareFireRenderForExternalRasterizerResolved(");
+		for( const std::string& member : externalMembers ) {
+			Check( configWriter.find("external->"+member) != std::string::npos ||
+				externalWriter.find("config."+member) != std::string::npos,
+				"resolved-config schema consumes FireExternalRenderConfig::"+member );
+		}
+		const std::map<std::string,std::string> filmEvidence = {
+			{ "width", "GetWidth()" }, { "height", "GetHeight()" },
+			{ "pixelAR", "GetPixelAR()" }
+		};
+		const RISE::ChunkDescriptor* filmDescriptor =
+			RISE::DescriptorForKeyword(RISE::String("film"));
+		Check( filmDescriptor != nullptr,"film descriptor is available to the provenance ratchet" );
+		if( filmDescriptor ) {
+			for( const RISE::ParameterDescriptor& parameter : filmDescriptor->parameters ) {
+				const auto evidence = filmEvidence.find(parameter.name);
+				Check( evidence != filmEvidence.end() &&
+					configWriter.find(evidence == filmEvidence.end() ? "" : evidence->second) !=
+						std::string::npos,
+					"resolved-config schema consumes film parameter "+parameter.name );
+			}
+		}
+		const std::map<std::string,std::string> cameraEvidence = {
+			{ "name", "cameraKind" }, { "location", "GetLocation()" },
+			{ "lookat", "GetMatrix()" }, { "up", "GetMatrix()" },
+			{ "exposure", "GetExposureTime()" },
+			{ "scanning_rate", "GetScanningRate()" }, { "pixel_rate", "GetPixelRate()" },
+			{ "pitch", "GetMatrix()" }, { "roll", "GetMatrix()" },
+			{ "yaw", "GetMatrix()" }, { "orientation", "GetMatrix()" },
+			{ "theta", "GetMatrix()" }, { "phi", "GetMatrix()" },
+			{ "target_orientation", "GetMatrix()" }, { "va", "GetMatrix()" },
+			{ "vb", "GetMatrix()" }, { "components", "GetMatrix()" },
+			{ "fov", "GetFovStored()" }, { "iso", "GetIsoStored()" },
+			{ "fstop", "GetFstop()" }, { "sensor_size", "GetSensorSize()" },
+			{ "focal_length", "GetFocalLengthStored()" },
+			{ "focus_distance", "GetFocusDistanceStored()" },
+			{ "aperture_blades", "GetApertureBlades()" },
+			{ "aperture_rotation", "GetApertureRotation()" },
+			{ "anamorphic_squeeze", "GetAnamorphicSqueeze()" },
+			{ "tilt_x", "GetTiltX()" }, { "tilt_y", "GetTiltY()" },
+			{ "shift_x", "GetShiftX()" }, { "shift_y", "GetShiftY()" },
+			{ "scale", "GetScaleStored()" },
+			{ "viewport_scale", "GetViewportScaleStored()" }
+		};
+		for( const char* keyword : { "pinhole_camera", "onb_pinhole_camera",
+			"thinlens_camera", "fisheye_camera", "orthographic_camera" } ) {
+			const RISE::ChunkDescriptor* descriptor =
+				RISE::DescriptorForKeyword(RISE::String(keyword));
+			Check( descriptor != nullptr,std::string("camera descriptor is available: ")+keyword );
+			if( !descriptor ) continue;
+			for( const RISE::ParameterDescriptor& parameter : descriptor->parameters ) {
+				const auto evidence = cameraEvidence.find(parameter.name);
+				Check( evidence != cameraEvidence.end() &&
+					configWriter.find(evidence == cameraEvidence.end() ? "" : evidence->second) !=
+						std::string::npos,
+					std::string("resolved-config schema consumes ")+keyword+" parameter "+
+						parameter.name );
+			}
+		}
+		const std::map<std::string,std::string> animationEvidence = {
+			{ "time_start", "animationTimeStart" }, { "time_end", "animationTimeEnd" },
+			{ "num_frames", "animationFrames" }, { "do_fields", "animationFields" },
+			{ "invert_fields", "animationInvertFields" }
+		};
+		const std::vector<std::string> animationMembers = members(
+			braceBody(jobHeader,"struct ANIMATION_OPTIONS"),"ANIMATION_OPTIONS");
+		for( const std::string& member : animationMembers ) {
+			const auto evidence = animationEvidence.find(member);
+			Check( evidence != animationEvidence.end() &&
+				configWriter.find(evidence == animationEvidence.end() ? "" : evidence->second) !=
+					std::string::npos,
+				"resolved-config schema consumes ANIMATION_OPTIONS::"+member );
+		}
+
+		auto allDataMembers = [&braceBody]( const std::string& source,
+			const std::string& marker, const std::string& constructor ) {
+			std::string body = braceBody(source,marker);
+			const std::size_t constructorAt = body.find(constructor+"(");
+			if( constructorAt != std::string::npos ) body.resize(constructorAt);
+			const std::regex declaration(
+				R"(([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*(?:=[^;]*)?;\s*$)" );
+			std::vector<std::string> result;
+			std::istringstream lines(body);
+			std::string line;
+			std::smatch match;
+			while( std::getline(lines,line) ) {
+				if( line.find('(') == std::string::npos &&
+					std::regex_search(line,match,declaration) ) result.push_back(match[1].str());
+			}
+			return result;
+		};
+		const std::string encoderHeader = slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IFrameEncoder.h");
+		const std::string encoderSource = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FileEncoderObserver.cpp");
+		const std::string encoderConfigWriter = braceBody(encoderSource,"bool BuildFireProvenance(");
+		const std::string sequenceConfigWriter = braceBody(
+			encoderSource,"bool BuildFireFrameSequenceProvenance(");
+		const std::string sequenceHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FileEncoderObserver.h");
+		std::string windowsMovieWriter = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"VideoEncoder.cpp");
+		windowsMovieWriter.erase(std::remove_if(windowsMovieWriter.begin(),
+			windowsMovieWriter.end(),[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),windowsMovieWriter.end());
+		const std::string frameEncoders = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FrameEncoders.cpp");
+		const std::string viewportSource = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"ViewportFrameStore.cpp");
+		const std::string exposureSetter = braceBody(viewportSource,
+			"void ViewportFrameStore::SetCameraExposureCompensationEV(");
+		const std::string bindApply = braceBody(viewportSource,
+			"void ViewportFrameStore::ApplyBindFrameStore(");
+		const std::size_t exposureLock = exposureSetter.find(
+			"std::unique_lock<std::shared_mutex> lock( chainMutex_ )");
+		const std::size_t exposureWrite = exposureSetter.find("cameraExposureEV_ = ev");
+		const std::size_t bindCommitLock = bindApply.find(
+			"std::unique_lock<std::shared_mutex> lock( chainMutex_ )");
+		const std::size_t bindExposureWrite = bindApply.find(
+			"candidate.store->SetCameraExposureEV(");
+		Check(exposureLock != std::string::npos && exposureWrite != std::string::npos &&
+			exposureLock < exposureWrite && bindCommitLock != std::string::npos &&
+			bindExposureWrite != std::string::npos && bindCommitLock < bindExposureWrite,
+			"camera exposure publication is serialized with viewport binding" );
+		const std::string windowsRenderHeader = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"RenderEngine.h");
+		const std::string windowsRenderSource = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"RenderEngine.cpp");
+		const std::string androidBridgeHeader = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"RiseBridge.h");
+		std::string compactWindowsRenderHeader = windowsRenderHeader;
+		compactWindowsRenderHeader.erase(std::remove_if(
+			compactWindowsRenderHeader.begin(),compactWindowsRenderHeader.end(),
+			[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),compactWindowsRenderHeader.end());
+		std::string compactAndroidBridgeHeader = androidBridgeHeader;
+		compactAndroidBridgeHeader.erase(std::remove_if(
+			compactAndroidBridgeHeader.begin(),compactAndroidBridgeHeader.end(),
+			[]( const char c ) {
+				return std::isspace(static_cast<unsigned char>(c)) != 0;
+			}),compactAndroidBridgeHeader.end());
+		Check(compactWindowsRenderHeader.find("std::atomic<bool>m_sizeDetected") !=
+				std::string::npos &&
+			compactWindowsRenderHeader.find(
+				"std::atomic<uint64_t>m_lastSeenGeneration{0};") !=
+				std::string::npos &&
+			compactAndroidBridgeHeader.find(
+				"std::atomic<uint64_t>m_lastSeenGeneration{0};") !=
+				std::string::npos,
+			"Windows and Android callback/poll sentinels are atomic" );
+		const std::string riseBridge = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.mm");
+		const std::string riseBridgeHeader = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.h");
+		const std::string riseViewportBridge = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEViewportBridge.mm");
+		const std::string windowsViewportBridge = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"ViewportBridge.cpp");
+		const std::string interactiveEditorPlan = slurp(
+			repoRoot/"docs"/"INTERACTIVE_EDITOR_PLAN.md");
+		const std::string crossPlatformArchitecture = slurp(
+			repoRoot/"docs"/"gui"/"CROSS_PLATFORM_ARCHITECTURE.md");
+		const std::string frameStoreAndroidContract = slurp(
+			repoRoot/"docs"/"FRAMESTORE_DESIGN.md");
+		const std::string sceneEditControllerHeader = slurp(
+			repoRoot/"src"/"Library"/"SceneEditor"/"SceneEditController.h");
+		const std::string renderViewModel = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"RenderViewModel.swift");
+		const std::string metalEDRView = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"MetalEDRView.swift");
+		const std::string androidBridgeSource = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"RiseBridge.cpp");
+		const std::string androidNative = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"nativebridge"/"RiseNative.kt");
+		const std::string androidCallback = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"nativebridge"/"RiseCallback.kt");
+		const std::string androidRenderSmoke = slurp(
+			repoRoot/"android"/"app"/"src"/"androidTest"/"java"/"com"/"risegfx"/
+			"android"/"RenderSmokeTest.kt");
+		const std::string androidRenderViewModel = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"ui"/"RenderViewModel.kt");
+		const std::string androidJni = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"rise_jni.cpp");
+		const std::string androidRenderScreen = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"ui"/"RenderScreen.kt");
+		const std::string androidViewportPane = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"ui"/"ViewportPane.kt");
+		const std::string androidManifest = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"AndroidManifest.xml");
+		Check(riseBridge.find("production tile notifications never enter this helper") ==
+				std::string::npos &&
+			riseBridge.find("byte-for-byte at EV=0") == std::string::npos &&
+			riseBridge.find("workers no longer call into the bridge") == std::string::npos &&
+			riseBridge.find("workers no longer take it during their hot path") ==
+				std::string::npos &&
+			riseBridgeHeader.find("Workers fire NO synchronous bridge callbacks") ==
+				std::string::npos &&
+			renderViewModel.find("Timer is the sole driver") == std::string::npos,
+			"GUI bridge comments retain the bounded worker tile-callback contract" );
+		Check(riseBridgeHeader.find("Safe to call mid-render") == std::string::npos &&
+			riseBridgeHeader.find("Active production renders reject Save As") !=
+				std::string::npos,
+			"macOS public Save As contract matches its production render lease" );
+		Check(crossPlatformArchitecture.find(
+				"## 2. Current state (code-confirmed, 2026-08)") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find("SceneEditCategory_*` (0–11)") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find("`AgentMcpAdapter`") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find(
+				"There is no MCP / LLM / agent / provider code") ==
+				std::string::npos &&
+			crossPlatformArchitecture.find(
+				"`src/Library/Agent/` does not exist") == std::string::npos,
+			"cross-platform architecture current-state inventory matches the shipped Agent core and C ABI" );
+		Check(riseViewportBridge.find(
+			"mFanoutVFS->BindFrameStore( framestore )") != std::string::npos &&
+			riseBridge.find("deferred until L6e-3") == std::string::npos &&
+			riseBridge.find("stays in INTERNAL-managed mode") == std::string::npos &&
+			riseBridge.find("stack a redundant reference") == std::string::npos,
+			"macOS interactive VFS and attachment comments match direct binding and output dedup" );
+		Check(braceBody(androidBridgeSource,"RiseBridge::RiseBridge()").find(
+			"ensureProductionVFSCreated();") != std::string::npos,
+			"Android publishes its production VFS before UI polling can begin" );
+		const std::string androidSnapshot = braceBody(
+			androidBridgeSource,"RiseBridge::copyFramebufferSnapshot(");
+		const std::string androidLoadAndRender = braceBody(
+			androidRenderViewModel,"fun loadAndRender(");
+		const std::string androidLoadScene = braceBody(
+			androidBridgeSource,"bool RiseBridge::loadScene(");
+		const std::string androidRasterize = braceBody(
+			androidBridgeSource,"bool RiseBridge::rasterize(");
+		const std::string androidSetCallback = braceBody(
+			androidBridgeSource,"uint64_t RiseBridge::setCallback(");
+		const std::string macViewportStop = braceBody(
+			riseViewportBridge,"- (void)stop");
+		const std::string macEDRClaim = braceBody(
+			renderViewModel,"private func claimEDRPresentationOwnership(");
+		const std::string macEDRRestart = braceBody(
+			renderViewModel,"private func restartInteractiveAfterFinalProductionPoll(");
+		const std::string androidClearCallback = braceBody(
+			androidBridgeSource,"void RiseBridge::clearCallback(");
+		const std::string androidProductionHandoff = braceBody(
+			androidBridgeSource,"bool RiseBridge::prepareProductionRender(");
+		const std::string androidProductionRender = braceBody(
+			androidRenderViewModel,"suspend fun runProductionRenderInternal(");
+		const std::string androidViewportScrub = braceBody(
+			androidBridgeSource,"bool RiseBridge::viewportScrub(");
+		const std::string androidExposure = braceBody(
+			androidBridgeSource,"void RiseBridge::setViewExposureEV(");
+		const std::string androidToneCurve = braceBody(
+			androidBridgeSource,"void RiseBridge::setViewToneCurve(");
+		const std::string androidAutoResolved = braceBody(
+			androidBridgeSource,"std::string RiseBridge::autoResolvedIntegrator(");
+		const std::string androidViewportPointer = braceBody(
+			androidBridgeSource,"void RiseBridge::viewportPointerDown(");
+		const std::string androidViewportProperty = braceBody(
+			androidBridgeSource,"bool RiseBridge::viewportSetProperty(");
+		const std::string androidCallbackSnapshot = braceBody(
+			androidBridgeSource,"jobject RiseBridge::snapshotKotlinCallback(");
+		Check(androidBridgeSource.find("NewDirectByteBuffer") == std::string::npos &&
+			androidSnapshot.find("std::lock_guard<std::mutex> lock(m_fbMutex)") !=
+				std::string::npos &&
+			androidSnapshot.find("GetDirectBufferAddress") != std::string::npos &&
+			androidSnapshot.find("std::memcpy(destinationBytes, m_framebuffer") !=
+				std::string::npos &&
+			androidNative.find("nativeCopyFramebuffer(destination: ByteBuffer)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("ByteBuffer.allocateDirect") !=
+				std::string::npos &&
+			androidRenderSmoke.find("firstNonZeroByteIndex") != std::string::npos &&
+			androidRenderSmoke.find(
+				"secondBytes.put(knownNonZeroIndex, poisonByte)") != std::string::npos &&
+			androidRenderSmoke.find("next.generation == fb.generation") !=
+				std::string::npos,
+			"Android framebuffer handoff copies a locked snapshot into Java-owned storage" );
+		Check(androidNative.find("try-locks the scene lifecycle") !=
+				std::string::npos &&
+			androidNative.find("mutations return false or no-op immediately") !=
+				std::string::npos &&
+			androidRenderSmoke.find("val productionHandoff =") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"RiseNative.nativePrepareProductionRender(0.75,callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"!RiseNative.nativeViewportIsRunning(callbackOwner)") != std::string::npos,
+			"Android viewport mutations fail fast while production handoff drains and stops" );
+		Check(androidLoadAndRender.find("if (renderJob?.isActive == true) return") !=
+				std::string::npos &&
+			androidLoadAndRender.find("renderJob?.cancel()") == std::string::npos &&
+			androidRenderViewModel.find("finally {\n                stopRenderPolling()") !=
+				std::string::npos &&
+			androidRenderScreen.find("state !is RenderState.Loading") !=
+				std::string::npos &&
+			androidRenderScreen.find("state !is RenderState.Rendering") !=
+				std::string::npos &&
+			androidRenderScreen.find("state !is RenderState.Cancelling") !=
+				std::string::npos &&
+			androidRenderScreen.find("enabled = canSelectScene") !=
+				std::string::npos,
+			"Android serializes blocking JNI scene lifecycles and always stops render polls" );
+		Check(androidLoadScene.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidLoadScene.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidRasterize.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidRasterize.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidSetCallback.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidSetCallback.find(
+				"requestGeneration <= m_latestKotlinCallbackRequest") !=
+				std::string::npos &&
+			androidSetCallback.find("stopViewportUnowned();") != std::string::npos &&
+			androidSetCallback.find(
+				"notifySceneReady(env,kotlinCallback,readyWidth,readyHeight)") !=
+				std::string::npos &&
+			androidClearCallback.find("m_kotlinCallbackOwner != ownerToken") !=
+				std::string::npos &&
+			androidClearCallback.find("stopViewportUnowned();") != std::string::npos &&
+			androidRenderViewModel.find("callbackOwnerFuture.get()") !=
+				std::string::npos &&
+			androidRenderViewModel.find(
+				"nativeSetCallback(this, callbackRequestGeneration)") !=
+				std::string::npos &&
+			androidRenderViewModel.find(
+				"nativeLoadScene(scenePath, callbackOwner)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("nativeRasterize(callbackOwner)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("thenAcceptAsync") != std::string::npos &&
+			androidRenderViewModel.find("nativeClearCallback(ownerToken)") !=
+				std::string::npos &&
+			androidRenderSmoke.find("requestBase + 2L") != std::string::npos &&
+			androidRenderSmoke.find("requestBase + 1L") != std::string::npos &&
+			androidRenderSmoke.find("delayedStaleOwner == 0L") !=
+				std::string::npos &&
+			androidRenderSmoke.find("replacementReady.await") !=
+				std::string::npos &&
+			androidRenderSmoke.find("replacementWidth.get() == fb.width") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"firstNonZeroByteIndex(replacementBytes,fb.byteCount) >= 0") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"nativeLoadScene(sceneFile.absolutePath, firstOwner)") !=
+				std::string::npos &&
+			androidManifest.find("android:launchMode=\"singleTask\"") !=
+				std::string::npos,
+			"Android callback handoff is newest-request-wins and lifecycle mutations are owner-checked" );
+		const size_t firstMacStopInvalidation = macViewportStop.find(
+			"invalidatePresentations();");
+		const size_t secondMacStopInvalidation = firstMacStopInvalidation ==
+			std::string::npos ? std::string::npos : macViewportStop.find(
+				"invalidatePresentations();",firstMacStopInvalidation + 1);
+		const size_t macStopJoin = macViewportStop.find(
+			"RISE_API_SceneEditController_StopInteractive");
+		Check(riseViewportBridge.find("void InvalidatePresentation()") !=
+				std::string::npos &&
+			firstMacStopInvalidation != std::string::npos &&
+			secondMacStopInvalidation != std::string::npos &&
+			macStopJoin != std::string::npos &&
+			firstMacStopInvalidation < macStopJoin &&
+			secondMacStopInvalidation > macStopJoin,
+			"macOS stop retires queued preview presentations before and after joining the producer" );
+		Check(metalEDRView.find("final class MetalEDRPresentationCoordinator") !=
+				std::string::npos &&
+			metalEDRView.find("func accepts(_ role: MetalEDRRendererRole") !=
+				std::string::npos &&
+			metalEDRView.find("present(expectedTicket: presentationTicket)") !=
+				std::string::npos &&
+			metalEDRView.find("drainCommittedPresentations") !=
+				std::string::npos &&
+			renderViewModel.find("claimEDRPresentationOwnership(.production)") !=
+				std::string::npos &&
+			renderViewModel.find("claimEDRPresentationOwnership(.interactive)") !=
+				std::string::npos &&
+			renderViewModel.find("interactiveEDRRenderer?.drainCommittedPresentations()") !=
+				std::string::npos &&
+			renderViewModel.find("productionEDRRenderer?.drainCommittedPresentations()") !=
+				std::string::npos &&
+			macEDRClaim.find("productionEDRRenderer?.present()") !=
+				std::string::npos &&
+			macEDRClaim.find("productionEDRRenderer?.drainCommittedPresentations()") !=
+				std::string::npos &&
+			macEDRClaim.rfind("interactiveEDRRenderer?.claimPresentationOwnership()") !=
+				std::string::npos &&
+			macEDRClaim.find("productionEDRRenderer?.present()") <
+				macEDRClaim.find("productionEDRRenderer?.drainCommittedPresentations()") &&
+			macEDRClaim.find("productionEDRRenderer?.drainCommittedPresentations()") <
+				macEDRClaim.rfind("interactiveEDRRenderer?.claimPresentationOwnership()") &&
+			macEDRRestart.find("bridgeRef.pollProductionVFS()") !=
+				std::string::npos &&
+			macEDRRestart.find("claimEDRPresentationOwnership(.interactive)") !=
+				std::string::npos &&
+			macEDRRestart.find("startSuppressingInitialRender()") !=
+				std::string::npos &&
+			macEDRRestart.find("bridgeRef.pollProductionVFS()") <
+				macEDRRestart.find("claimEDRPresentationOwnership(.interactive)") &&
+			macEDRRestart.find("claimEDRPresentationOwnership(.interactive)") <
+				macEDRRestart.find("startSuppressingInitialRender()"),
+			"macOS shared Metal layer epochs and drains old-role presentations at handoff" );
+		Check(androidProductionHandoff.find(
+				"std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidProductionHandoff.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidProductionHandoff.find(
+				"RISE_API_SceneEditController_LastSceneTime") != std::string::npos &&
+			androidProductionHandoff.find("if (m_viewportHasTimeEdit)") !=
+				std::string::npos &&
+			androidProductionHandoff.find("stopViewportUnowned();") !=
+				std::string::npos &&
+			androidProductionRender.find("withContext(Dispatchers.IO)") !=
+				std::string::npos &&
+			androidProductionRender.find("nativePrepareProductionRender(") !=
+				std::string::npos &&
+			androidProductionRender.find("_sceneTime.value = canonical") !=
+				std::string::npos &&
+			androidProductionRender.find("nativeViewportIsRunning(callbackOwner)") ==
+				std::string::npos &&
+			androidProductionRender.find("nativeViewportStop(callbackOwner)") ==
+				std::string::npos &&
+			androidNative.find("MUST run off the main thread") != std::string::npos &&
+			androidNative.find("nativePrepareProductionRender(") != std::string::npos &&
+			androidJni.find("JNIF(jobject, nativePrepareProductionRender)") !=
+				std::string::npos &&
+			androidViewportScrub.find("m_viewportHasTimeEdit = true;") !=
+				std::string::npos &&
+			androidRenderSmoke.find("nativeViewportUndo(callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"nativePrepareProductionRender(0.75,callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find("synchronizedFallback") !=
+				std::string::npos &&
+			androidRenderSmoke.find("repeatedHandoff?.sceneTime == 0.0") !=
+				std::string::npos &&
+			androidBridgeSource.find("viewportLastSceneTime") == std::string::npos &&
+			androidNative.find("nativeViewportLastSceneTime") == std::string::npos,
+			"Android production handoff atomically captures viewport time and stops off-main" );
+		Check(androidAutoResolved.find("std::try_to_lock") !=
+				std::string::npos &&
+			androidAutoResolved.find("lifecycleLock.owns_lock()") !=
+				std::string::npos &&
+			androidAutoResolved.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidViewportPointer.find("std::try_to_lock") !=
+				std::string::npos &&
+			androidViewportPointer.find("lifecycleLock.owns_lock()") !=
+				std::string::npos &&
+			androidViewportPointer.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidViewportProperty.find("std::try_to_lock") !=
+				std::string::npos &&
+			androidViewportProperty.find("lifecycleLock.owns_lock()") !=
+				std::string::npos &&
+			androidViewportProperty.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidNative.find("nativeViewportPointerDown(x: Double, y: Double, ownerToken: Long)") !=
+				std::string::npos &&
+			androidNative.find("nativeViewportSetProperty(") != std::string::npos &&
+			androidViewportPane.find("nativeViewportSetProperty(name,value,ownerToken)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("nativeAutoResolvedIntegrator(callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find("nativeViewportSetSurfaceDimensions(") !=
+				std::string::npos &&
+			androidRenderSmoke.find("nativeAutoResolvedIntegrator(firstOwner)") !=
+				std::string::npos,
+			"Android post-render and viewport-controller access is fail-fast lifecycle-locked and owner-bound" );
+		const char* const androidOwnerBoundMethods[] = {
+			"autoResolvedIntegrator","autoResolveReason","scaleFilmToFit","startViewport",
+			"stopViewport","isViewportRunning","hasLivePreview",
+			"viewportSetTool","viewportCurrentTool",
+			"viewportGetLastSubToolForCategory","viewportRefreshGizmoHandles",
+			"viewportGizmoHandleCount","viewportGizmoHandle","viewportGizmoHandleAt",
+			"viewportIsGizmoDragActive","viewportActiveGizmoKind",
+			"viewportActiveGizmoAxis","viewportPointerDown","viewportPointerMove",
+			"viewportPointerUp","viewportGetCameraDimensions",
+			"viewportSetSurfaceDimensions","viewportGetAnimationOptions",
+			"viewportScrubBegin","viewportScrub","viewportScrubEnd",
+			"viewportBeginPropertyScrub","viewportEndPropertyScrub",
+			"viewportUndo","viewportRedo",
+			"viewportProductionRender","viewportRefreshProperties",
+			"viewportPanelMode","viewportPanelHeader","viewportPropertyCount",
+			"viewportPropertyName","viewportPropertyValue",
+			"viewportPropertyDescription","viewportPropertyKind",
+			"viewportPropertyEditable","viewportPropertyPresetCount",
+			"viewportPropertyPresetLabel","viewportPropertyPresetValue",
+			"viewportSetProperty","viewportCategoryEntityCount",
+			"viewportCategoryEntityName","viewportCategoryActiveName",
+			"viewportSelectionCategory","viewportSelectionName",
+			"viewportSetSelection","viewportSceneEpoch"
+		};
+		for( const char* method : androidOwnerBoundMethods ) {
+			const std::string body = braceBody(androidBridgeSource,
+				std::string("RiseBridge::")+method+"(");
+			Check(body.find("std::try_to_lock") !=
+					std::string::npos &&
+				body.find("lifecycleLock.owns_lock()") != std::string::npos &&
+				body.find("ownsCallback(ownerToken)") != std::string::npos,
+				(std::string("Android fail-fast owner/lifecycle gate covers ")+method).c_str());
+		}
+		const std::string refreshEffect =
+			"LaunchedEffect(refreshTrigger,ownerToken,interactionEnabled)";
+		Check(androidViewportPane.find(refreshEffect) != std::string::npos,
+			"Android property refresh cancels when interaction is disabled" );
+		Check(androidBridgeSource.find("IsCancelRequested at end-of-pass") ==
+				std::string::npos &&
+			androidBridgeSource.find("SetController(RISE::SceneEditController") ==
+				std::string::npos &&
+			riseViewportBridge.find("Used to query IsCancelRequested") ==
+				std::string::npos &&
+			windowsViewportBridge.find("Used to query IsCancelRequested") ==
+				std::string::npos &&
+			sceneEditControllerHeader.find("platform's preview sink") ==
+				std::string::npos &&
+			sceneEditControllerHeader.find("Viewport sinks deliberately publish") !=
+				std::string::npos,
+			"Viewport sinks publish useful cancelled partial frames without obsolete cancel guards" );
+		Check(riseViewportBridge.find("not a half-rendered image") ==
+				std::string::npos &&
+			interactiveEditorPlan.find("suppressNextFrame()") == std::string::npos &&
+			interactiveEditorPlan.find("viewportSuppressNextFrame") ==
+				std::string::npos &&
+			interactiveEditorPlan.find("startSuppressingInitialRender") !=
+				std::string::npos &&
+			interactiveEditorPlan.find("startViewport(suppressFirstFrame=true)") !=
+				std::string::npos &&
+			interactiveEditorPlan.find("unused dead code; left in place") ==
+				std::string::npos &&
+			androidNative.find("nativeViewportSuppressNextFrame") ==
+				std::string::npos &&
+			androidJni.find("nativeViewportSuppressNextFrame") ==
+				std::string::npos &&
+			androidBridgeSource.find("m_suppressNext") == std::string::npos &&
+			androidBridgeSource.find("suppress-next guard") ==
+				std::string::npos &&
+			androidBridgeSource.find(
+				"RISE_API_SceneEditController_StartSuppressingInitialRender") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find(
+				"controller construction can choose the source-level") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find("the sink itself never drops a frame") !=
+				std::string::npos,
+			"Viewport restart and partial-frame design prose matches all three adapters" );
+		Check(androidCallbackSnapshot.find("NewLocalRef(m_kotlinCallback)") !=
+				std::string::npos &&
+			androidBridgeSource.find("CallVoidMethod(m_kotlinCallback") ==
+				std::string::npos &&
+			androidCallback.find("MUST NOT call") != std::string::npos &&
+			androidCallback.find("nativeOwnsCallback") != std::string::npos &&
+			androidCallback.find("nativeCancel") != std::string::npos &&
+			frameStoreAndroidContract.find(
+				"releases the mutex before `CallVoidMethod`") !=
+				std::string::npos &&
+			frameStoreAndroidContract.find(
+				"readers hold it across the `CallVoidMethod` call") ==
+				std::string::npos &&
+			androidRenderSmoke.find("callbackReentryCount.get() > 0") !=
+				std::string::npos &&
+			androidRenderViewModel.find("System.nanoTime().coerceAtLeast(1L)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("callbackRequestCounter.getAndIncrement()") ==
+				std::string::npos,
+			"Android callback delivery is reentrant-safe and request generations remain process-monotonic" );
+		Check(androidExposure.find("m_displaySource.load") !=
+				std::string::npos &&
+			androidExposure.find("m_viewportRunning.load") == std::string::npos &&
+			androidExposure.find("onInteractiveVFSFrameComplete") !=
+				std::string::npos &&
+			androidToneCurve.find("m_displaySource.load") !=
+				std::string::npos &&
+			androidToneCurve.find("m_viewportRunning.load") == std::string::npos &&
+			androidViewportPane.find("state !is RenderState.Loading") !=
+				std::string::npos &&
+			androidViewportPane.find("state !is RenderState.Rendering") !=
+				std::string::npos &&
+			androidViewportPane.find("state !is RenderState.Cancelling") !=
+				std::string::npos,
+			"Android transform refreshes preserve the active production display source" );
+		Check(androidNative.find("nativeSetCallback] are cheap") == std::string::npos &&
+			androidCallback.find("A tile has been written") == std::string::npos &&
+			androidRenderViewModel.find("recomposes as tiles arrive") ==
+				std::string::npos &&
+			androidRenderSmoke.find("expected at least one tile callback") ==
+				std::string::npos &&
+			androidRenderSmoke.find("production refresh must cover the completed framebuffer") !=
+				std::string::npos,
+			"Android public and test contracts describe full-frame cadence invalidation" );
+		Check(androidBridgeSource.find("onProductionVFSTileComplete") ==
+				std::string::npos &&
+			androidBridgeSource.find("halfOpenRoi") == std::string::npos &&
+			androidBridgeHeader.find("onProductionVFSTileComplete") ==
+				std::string::npos,
+			"Android production display conversion is cadence-gated full-frame work" );
+		Check(androidBridgeHeader.find("allocated once per scene") == std::string::npos &&
+			androidBridgeHeader.find("RasterizerOutputImpl callback") == std::string::npos &&
+			androidCallback.find("Fired once per scene") == std::string::npos,
+			"Android framebuffer contracts describe adaptive VFS dimension changes" );
+		Check(riseBridgeHeader.find("~10 ns") == std::string::npos &&
+			riseBridgeHeader.find("~5 ms") == std::string::npos &&
+			riseBridge.find("atomic, lock-free") == std::string::npos &&
+			renderViewModel.find("atomic load + compare is ~10 ns") ==
+				std::string::npos &&
+			androidNative.find("~10 ns") == std::string::npos &&
+			androidNative.find("~5 ms") == std::string::npos &&
+			androidRenderViewModel.find("~10 ns") == std::string::npos &&
+			androidBridgeHeader.find("lockless progressive-update poll") ==
+				std::string::npos,
+			"GUI polling contracts account for VFS snapshot contention and resolution-dependent cost" );
+		Check(windowsRenderHeader.find("lockless progressive-update") ==
+				std::string::npos &&
+			windowsRenderSource.find("lockless progressive-update") ==
+				std::string::npos &&
+			windowsRenderSource.find("Lockless replacement") == std::string::npos,
+			"Windows polling contract accounts for VFS chain snapshot contention" );
+		Check(androidBridgeSource.find("Lockless replacement") ==
+				std::string::npos,
+			"Android polling contract accounts for VFS chain snapshot contention" );
+		const std::string regionUpdate = braceBody(renderViewModel,"func updateOutput(");
+		const std::string imageCoalescer = braceBody(
+			renderViewModel,"final class CoalescedImageDelivery");
+		const std::size_t firstRegionCopy = renderViewModel.find("buffer.updateOutput(");
+		const std::size_t secondRegionCopy = renderViewModel.find(
+			"buffer.updateOutput(",firstRegionCopy == std::string::npos ? 0u : firstRegionCopy+1u);
+		const std::size_t firstCoalescedRequest = renderViewModel.find(
+			"imageDelivery.request(buffer: buffer)");
+		const std::size_t secondCoalescedRequest = renderViewModel.find(
+			"imageDelivery.request(buffer: buffer)",
+			firstCoalescedRequest == std::string::npos ? 0u : firstCoalescedRequest+1u);
+		Check(!regionUpdate.empty() &&
+			regionUpdate.find("Data(pixelBuffer)") == std::string::npos &&
+			regionUpdate.find("NSImage(") == std::string::npos &&
+			regionUpdate.find("lock.try()") != std::string::npos &&
+			regionUpdate.find("isFullFrame") != std::string::npos &&
+			imageCoalescer.find("imageQueue.asyncAfter") != std::string::npos &&
+			imageCoalescer.find("buffer.makeImage()") != std::string::npos &&
+			imageCoalescer.find("while true") == std::string::npos &&
+			firstRegionCopy != std::string::npos && secondRegionCopy != std::string::npos &&
+			firstCoalescedRequest != std::string::npos &&
+			secondCoalescedRequest != std::string::npos,
+			"worker tiles use nonblocking staging before cadence-limited image construction" );
+		Check(metalEDRView.find("else if !stagingLock.try()") != std::string::npos &&
+			metalEDRView.find("DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 30.0)") !=
+				std::string::npos,
+			"HDR worker tiles skip staging contention and presentation is cadence-limited" );
+		for( const std::string& member : allDataMembers(
+			encoderHeader,"struct EncodeOpts","EncodeOpts") ) {
+			const bool transactionInternal = member == "useMetadataSnapshot" ||
+				member == "metadataSnapshot";
+			Check( transactionInternal ? frameEncoders.find("opts."+member) != std::string::npos :
+				encoderConfigWriter.find("opts."+member) != std::string::npos,
+				std::string(transactionInternal ? "encoder transaction consumes " :
+					"output provenance consumes EncodeOpts::")+member );
+		}
+		const std::string viewTransformHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"ViewTransform.h");
+		for( const std::string& member : allDataMembers(
+			viewTransformHeader,"struct ViewTransform","ViewTransform") ) {
+			Check( encoderConfigWriter.find("opts.viewTransform."+member) != std::string::npos,
+				"output provenance consumes ViewTransform::"+member );
+		}
+		Check(viewTransformHeader.find("white balance) is a placeholder") == std::string::npos &&
+			viewTransformHeader.find("Stage 2 (reserved)") == std::string::npos,
+			"ViewTransform contract describes active white-balance application" );
+		const std::string progressiveFilmHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"ProgressiveFilm.h");
+		const std::string targetFormatHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"TargetFormat.h");
+		const std::string frameStoreDesign = slurp(
+			repoRoot/"docs"/"FRAMESTORE_DESIGN.md");
+		const std::string renderObserverHeader = slurp(
+			repoRoot/"src"/"Library"/"Interfaces"/"IRenderObserver.h");
+		const std::string frameStoreHeader = slurp(
+			repoRoot/"src"/"Library"/"Rendering"/"FrameStore.h");
+		Check(viewTransformHeader.find("ROMM-linear pixel") == std::string::npos &&
+			viewTransformHeader.find("ROMM → target") == std::string::npos &&
+			progressiveFilmHeader.find("RISEPel ROMM RGB") == std::string::npos &&
+			targetFormatHeader.find("ROMM→BT.2020") == std::string::npos &&
+			frameStoreDesign.find("RISEPel, ROMM RGB linear") == std::string::npos &&
+			frameStoreDesign.find("ROMM-linear pixel") == std::string::npos &&
+			frameStoreDesign.find("matrix in ROMM") == std::string::npos &&
+			frameStoreDesign.find("ROMM → target color space") == std::string::npos &&
+			frameStoreDesign.find("native ROMM primaries") == std::string::npos &&
+			targetFormatHeader.find("Bit-identical archival in ROMM primaries") ==
+				std::string::npos,
+			"output pipeline contracts name the Rec.709-linear RISEPel working space" );
+		Check(frameStoreDesign.find("Concurrency model — tile seqlock") ==
+				std::string::npos &&
+			frameStoreDesign.find("The render thread never blocks on observer work") ==
+				std::string::npos &&
+			frameStoreDesign.find("without back-pressuring the render") ==
+				std::string::npos &&
+			frameStoreDesign.find("Reader spin-yield") == std::string::npos &&
+			renderObserverHeader.find("the seqlock model") == std::string::npos &&
+			frameStoreHeader.find("Observers MUST NOT throw") == std::string::npos &&
+			frameStoreHeader.find("Observer failures are contained") !=
+				std::string::npos,
+			"FrameStore contracts describe shared tile locks and synchronous contained callbacks" );
+		Check(frameEncoders.find("effectiveTransform.whiteBalance") != std::string::npos &&
+			frameEncoders.find("toneCurveStrength > 0.0f") != std::string::npos,
+			"LDR encoders consume white balance and tone-curve strength" );
+		for( const std::string& member : allDataMembers(sequenceHeader,
+			"struct FireFrameSequenceEncodingDescriptor",
+			"FireFrameSequenceEncodingDescriptor") ) {
+			Check( sequenceConfigWriter.find("descriptor."+member) != std::string::npos,
+				"movie provenance consumes FireFrameSequenceEncodingDescriptor::"+member );
+			Check( windowsMovieWriter.find("descriptor."+member) != std::string::npos,
+				"Windows authored movie writer consumes descriptor field "+member );
+		}
+		const std::map<std::string,std::string> fileOutputEvidence = {
+			{ "pattern", "pattern_" }, { "multiple", "bMultiple_" },
+			{ "type", "encoder.FormatName()" }, { "bpp", "opts.bpp" },
+			{ "color_space", "opts.colorSpace" },
+			{ "exposure", "opts.viewTransform.exposureEV" },
+			{ "display_transform", "opts.viewTransform.toneCurve" },
+			{ "exr_compression", "opts.exrCompression" },
+			{ "exr_with_alpha", "opts.exrWithAlpha" }
+		};
+		const RISE::ChunkDescriptor* outputDescriptor =
+			RISE::DescriptorForKeyword(RISE::String("file_rasterizeroutput"));
+		Check( outputDescriptor != nullptr,"file-output descriptor is available to the provenance ratchet" );
+		if( outputDescriptor ) {
+			for( const RISE::ParameterDescriptor& parameter : outputDescriptor->parameters ) {
+				const auto evidence = fileOutputEvidence.find(parameter.name);
+				Check( evidence != fileOutputEvidence.end() &&
+					(encoderConfigWriter.find(evidence == fileOutputEvidence.end() ? "" :
+						evidence->second) != std::string::npos ||
+					 encoderSource.find(evidence == fileOutputEvidence.end() ? "" :
+						evidence->second) != std::string::npos),
+					"output route consumes file_rasterizeroutput parameter "+parameter.name );
+			}
+		}
+
+		std::set<std::string> globalOptionNames;
+		const std::regex optionRead(
+			R"OPTION(Read(?:Int|Double|Bool|String)\s*\(\s*"([^"]+)")OPTION" );
+		for( const fs::directory_entry& entry :
+			fs::recursive_directory_iterator(repoRoot/"src"/"Library") ) {
+			if( !entry.is_regular_file() || entry.path().extension() != ".cpp" ) continue;
+			const std::string source = StripCommentsPreservingLayout(slurp(entry.path()));
+			for( std::sregex_iterator it(source.begin(),source.end(),optionRead), end;
+				it != end; ++it ) globalOptionNames.insert((*it)[1].str());
+		}
+		const std::set<std::string> nonRenderGlobalOptions = {
+			"force_all_threads_low_priority",
+			"rendered_output_folder", "rendered_output_in_rise_media_folder",
+			"thread_apply_qos"
+		};
+		for( const std::string& option : globalOptionNames ) {
+			Check( configWriter.find("\""+option+"\"") != std::string::npos ||
+				nonRenderGlobalOptions.find(option) != nonRenderGlobalOptions.end(),
+				"global option is represented in resolved config or explicitly execution/path-only: "+option );
+		}
+
+		const std::string generator = slurp(
+			repoRoot/"tools"/"generate_renderer_build_identity_header.py");
+		const std::string makefile = slurp(repoRoot/"build"/"make"/"rise"/"Makefile");
+		const std::string android = slurp(
+			repoRoot/"build"/"cmake"/"rise-android"/"CMakeLists.txt");
+		const std::string visualStudio = slurp(
+			repoRoot/"build"/"VS2022"/"Library"/"Library.vcxproj");
+		const std::string xcode = slurp(
+			repoRoot/"build"/"XCode"/"rise"/"rise.xcodeproj"/"project.pbxproj");
+		for( const char* option : { "--fp-contraction", "--optimization-mode", "--lto-mode" } ) {
+			Check( generator.find(option) != std::string::npos &&
+				makefile.find(option) != std::string::npos && android.find(option) != std::string::npos &&
+				visualStudio.find(option) != std::string::npos && xcode.find(option) != std::string::npos,
+				std::string("every build system pins renderer identity option ")+option );
+		}
+		Check( android.find("add_custom_target(rise_renderer_build_identity") != std::string::npos &&
+			android.find("add_dependencies(rise rise_renderer_build_identity)") != std::string::npos &&
+			jobSource.find("dladdr(reinterpret_cast<const void*>(&CurrentRendererBinaryPath)") !=
+				std::string::npos && jobSource.find("\"android\"") != std::string::npos,
+			"Android regenerates build identity per build and hashes the renderer-containing module" );
+		Check( jobSource.find("apk_stored_entry_bytes") != std::string::npos &&
+			jobSource.find("ReadLoadedBinaryIdentity(rendererBinaryPath") !=
+				std::string::npos &&
+			jobSource.find("loaded_elf_executable_segments") == std::string::npos &&
+			jobSource.find("loaded_mach_header_and_executable_segments") ==
+				std::string::npos &&
+			jobSource.find("{\"z\",\"zlib\"}") != std::string::npos,
+			"renderer identity hashes exact APK entries and Windows zlib basenames" );
+		Check( visualStudio.find("<DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>") !=
+				std::string::npos &&
+			visualStudio.find("generate_renderer_build_identity_header.py") !=
+				std::string::npos,
+			"Windows referenced-library builds always regenerate checkout-wide build identity" );
+		for( const char* dependency : { "iex", "ilmthread", "imath", "oidn", "openexr",
+			"openpgl", "png", "tiff", "zlib" } ) {
+			Check( jobSource.find(std::string("{ \"")+dependency+"\", DependencyBuildIdentity") !=
+				std::string::npos,
+				std::string("renderer identity binds dependency ")+dependency );
+		}
+		for( const char* dependency : { "avcodec", "avfoundation", "avformat", "avutil",
+			"swscale", "videotoolbox", "x265" } ) {
+			Check( jobSource.find(std::string("{ \"")+dependency+
+				"\", RuntimeDependencyBuildIdentity") != std::string::npos,
+				std::string("renderer identity binds movie dependency ")+dependency );
+		}
+		Check( configWriter.find("typeid(*camera) == typeid(Implementation::PinholeCamera)") !=
+				std::string::npos &&
+			configWriter.find("camera && cameraKind.empty()") != std::string::npos &&
+			configWriter.find("return false;") != std::string::npos &&
+			configWriter.find("camera ? \"external\" : \"none\"") == std::string::npos,
+			"unknown external cameras fail closed instead of sharing an empty projection identity" );
+	}
 
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
 	// The canonical scenes/Templates/empty_starter.RISEscene is copied into

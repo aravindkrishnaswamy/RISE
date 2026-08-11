@@ -69,6 +69,11 @@ namespace RISE
 			void SetMaxPathDepth( unsigned int n );
 			void SetIndirectOnly( bool b );
 			void SetClayOverride( bool b );
+			unsigned long long SurfaceVolumeEndpointAttemptCount() const;
+			unsigned long long NonCompetingSurfaceGuideInitializationCount() const;
+			unsigned long long NonCompetingSurfaceRISCount() const;
+			unsigned long long NonCompetingSurfaceGuidedCandidateInstalledCount() const;
+			unsigned long long NonCompetingSurfaceRISCandidateInstalledCount() const;
 
 			void PerformOperation(
 				const RuntimeContext& rc,

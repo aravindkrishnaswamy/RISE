@@ -55,6 +55,8 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IMemoryBuffer.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Interfaces/IRasterImageWriter.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
 
 #include <atomic>
 #include <chrono>
@@ -62,6 +64,7 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -84,11 +87,27 @@ static void Check( bool c, const std::string& w )
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
 
+#ifdef NO_PNG_SUPPORT
+static void RunPngUnavailableBoundaryTest()
+{
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(64u);
+	IRasterImageWriter* writer = nullptr;
+	const bool created =
+		RISE_API_CreatePNGWriter(&writer,*buffer,8,eColorSpace_sRGB) && writer;
+	if( created ) {
+		writer->BeginWrite(1u,1u);
+		writer->WriteColor(RISEColor(1.0,1.0,1.0,1.0),0u,0u);
+		writer->EndWrite();
+	}
+	Check( created && buffer->getCurPos() == 0u,
+		"NO_PNG_SUPPORT: read_viewport PNG encoding emits no payload bytes" );
+	safe_release(writer);
+	safe_release(buffer);
+}
+#endif
+
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
 	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
@@ -104,12 +123,13 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	// a bogus "the test is flaky / there is a race" failure -- that already
 	// cost a reviewer hours once.  The pid prefix makes the path unique per
 	// process.
-	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
-	std::ofstream f( path.c_str(), std::ios::binary );
+	const std::filesystem::path path = std::filesystem::temp_directory_path() /
+		( std::to_string( static_cast<long>( getpid() ) ) + "_" + name );
+	std::ofstream f( path, std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
 	f.close();
-	return path;
+	return path.string();
 }
 
 // A small lit diffuse sphere at a tiny NON-SQUARE 32x24 film so a full
@@ -132,6 +152,21 @@ static const char* const kScene =
 	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 30.0\n\tmaterial none\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+
+static const char* const kFireScene =
+	"RISE ASCII SCENE 7\n"
+	"scene_options\n{\n\tscene_unit 1\n\tfidelity_mode preview\n}\n\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\tnmbegin 380\n\tnmend 780\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 -2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45\n}\n\n"
+	"scalar_painter\n{\n\tname carbon\n\tvalue 1\n}\n\n"
+	"scalar_painter\n{\n\tname temperature\n\tvalue 800\n}\n\n"
+	"multichannel_heterogeneous_medium\n{\n\tname fire\n\tchannel_carbon painter carbon\n"
+	"\tchannel_temperature painter temperature\n\tchem_model none\n\tbake_resolution 2 2 2\n"
+	"\tbbox_min -1 -1 -1\n\tbbox_max 1 1 1\n\toptical_record fire_optics_v1\n}\n\n"
+	"global_medium\n{\n\tmedium fire\n}\n";
 
 // compare_to_reference split:true discriminating scenes -- the SAME sphere
 // + area-light rig as kScene above, PLUS a hosek_wilkie_skylight (visible
@@ -160,6 +195,7 @@ static const char* const kScene =
 // change -- clean dominance in BOTH directions.  If you retune these,
 // re-measure both directions; raising the sphere's albedo/light or
 // lowering the sky intensity is the axis that preserves the property.
+#ifndef NO_PNG_SUPPORT
 static const char* const kSplitSceneBase =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -228,6 +264,7 @@ static const char* const kSplitSceneTwoObjects =
 	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 100.0\n\tmaterial none\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+#endif
 
 static JsonValue ParseResponse( const std::string& line, double expectId )
 {
@@ -249,6 +286,43 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	return JsonSerialize( r );
 }
 
+#ifdef NO_PNG_SUPPORT
+static void RunPngUnavailableSessionTest()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_viewport_no_png.RISEscene",kScene);
+	Check( !scenePath.empty(),
+		"NO_PNG_SUPPORT: read_viewport scratch scene is written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst(scenePath.c_str()),
+		"NO_PNG_SUPPORT: read_viewport scene loads via CST" );
+	{
+		SceneEditController controller(*pJob,pJob->GetRasterizer());
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders(1,5000),
+			"NO_PNG_SUPPORT: a real viewport frame exists before encoding" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob(pJob);
+		session->AttachController(&controller);
+		AgentRpcDispatcher rpc(std::move(session));
+		const JsonValue envelope = ParseResponse(
+			rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":812,\"method\":\"read_viewport\",\"params\":{}}"),
+			812.0);
+		const JsonValue& error = envelope.get("error");
+		Check( error.get("code").asNumber(0.0) == -32603.0 &&
+			error.get("message").asString().find(
+				"PNG encode produced no bytes") != std::string::npos,
+			"NO_PNG_SUPPORT: read_viewport reports an explicit encoder failure" );
+		Check( envelope.find("result") == nullptr,
+			"NO_PNG_SUPPORT: read_viewport never publishes available:true with empty bytes" );
+		controller.Stop();
+	}
+	pJob->release();
+	std::remove(scenePath.c_str());
+}
+#endif
+
+#ifndef NO_PNG_SUPPORT
 // Decoded PNG bytes start with the 8-byte PNG signature 89 50 4E 47.
 static bool StartsWithPngSignature( const std::vector<unsigned char>& b )
 {
@@ -452,6 +526,7 @@ static void RunPositiveAndIsolation()
 	pJob->release();
 	std::remove( scenePath.c_str() );
 }
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // Case 2: NO-CONTROLLER -> available:false, reason:"no_controller".
@@ -558,6 +633,7 @@ static void RunNoFrameYet()
 	std::remove( scenePath.c_str() );
 }
 
+#ifndef NO_PNG_SUPPORT
 //////////////////////////////////////////////////////////////////////
 // P3c atomicity regression: read_viewport must describe the SAME pane set
 // captured with its copied frame, even when the live layout changes after the
@@ -1585,6 +1661,7 @@ static void RunCompareToReferenceSplit()
 		std::remove( scopedPath.c_str() );
 	}
 }
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // ROUND-10 P2: the REFUSAL reason wire values had ZERO coverage.
@@ -1788,17 +1865,51 @@ static void RunRefusalReasonWireValues()
 	}
 }
 
+static void RunFireViewportProvenanceRejection()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_viewport_fire_provenance.RISEscene",kFireScene);
+	Check( !scenePath.empty(), "fire viewport provenance scene is written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst(scenePath.c_str()),
+		"fire viewport provenance scene loads via CST" );
+	{
+		SceneEditController controller(*pJob,pJob->GetRasterizer());
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob(pJob);
+		session->AttachController(&controller);
+		AgentRpcDispatcher rpc(std::move(session));
+		const JsonValue envelope = ParseResponse(
+			rpc.HandleLine("{\"jsonrpc\":\"2.0\",\"id\":811,\"method\":\"read_viewport\",\"params\":{}}"),
+			811.0);
+		const JsonValue& result = envelope.get("result");
+		Check( !result.get("available").asBool() &&
+			result.get("reason").asString() == "output_provenance_unavailable" &&
+			result.get("byteLength").asNumber(-1.0) == 0.0 &&
+			result.get("png_base64").asString().empty(),
+			"read_viewport rejects fire without emitting an unlinked derivative" );
+		controller.Stop();
+	}
+	pJob->release();
+	std::remove(scenePath.c_str());
+}
+
 int main()
 {
 	std::printf( "=== AgentViewportReadTest ===\n" );
 
+	RunFireViewportProvenanceRejection();
+#ifdef NO_PNG_SUPPORT
+	RunPngUnavailableBoundaryTest();
+	RunPngUnavailableSessionTest();
+#else
 	RunPositiveAndIsolation();
-	RunNoController();
-	RunNoFrameYet();
 	RunPaneSetSnapshotAtomicity();
 	RunDisplayTransformOrdering();
 	RunCompareToReference();
 	RunCompareToReferenceSplit();
+#endif
+	RunNoController();
+	RunNoFrameYet();
 	RunRefusalReasonWireValues();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );

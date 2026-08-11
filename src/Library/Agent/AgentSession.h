@@ -204,7 +204,7 @@ namespace RISE
 		//! resubmission.  Carried 1:1 from the controller's
 		//! AgentCommitResult in LIVE mode; the direct (headless) path has
 		//! no transaction surface, so its rejects are all permanent.
-		//! Forward-declared here (full definition + the seven-reason `reason`
+		//! Forward-declared here (full definition + the complete `reason`
 		//! contract below, after AgentChunkResult) so AgentPatchResult::issues
 		//! can be declared below without reordering this file's established
 		//! feature-chronology layout (AgentPatchResult predates the actionable-
@@ -235,7 +235,7 @@ namespace RISE
 			bool        queueFull = false;
 			//! Actionable-rejection extension (the propose_patch sibling of
 			//! AgentChunkResult::issues -- see AgentChunkIssue's doc for the
-			//! full seven-reason set and AgentSession.cpp's
+			//! full reason set and AgentSession.cpp's
 			//! AnalyzeRejectedParamEdit for how this is derived): populated
 			//! ONLY for a REJECTED param edit (`applied` false, `status`
 			//! "rejected", the generic "would not derive" cause -- never for
@@ -2584,6 +2584,13 @@ namespace RISE
 			//!                    something that clears by itself -- which is
 			//!                    exactly the infinite-retry instruction the
 			//!                    chattiness work exists to remove)
+			//!   "output_provenance_unavailable" (an active fire medium makes
+			//!                    an unlinked viewport derivative invalid under
+			//!                    the fire-output provenance contract.  NOT
+			//!                    retriable for this scene/output route, and the
+			//!                    agent `render` route has the same missing
+			//!                    primary-plus-sidecar chain.  Use a provenance-
+			//!                    capable file output or tell the user)
 			//! Every surface that enumerates them must list ALL of them; the
 			//! MODEL-FACING surfaces must ALSO state retriability inline,
 			//! because that is what a model acts on and a model does not

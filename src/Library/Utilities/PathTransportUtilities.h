@@ -50,6 +50,7 @@
 
 #include "Math3D/Math3D.h"
 #include "Color/ColorMath.h"
+#include "FiniteMath.h"
 #include "StabilityConfig.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/ISPF.h"
@@ -58,6 +59,25 @@ namespace RISE
 {
 	namespace PathTransportUtilities
 	{
+		inline bool IsPositiveFiniteDensity( const Scalar density )
+		{
+			// Density support is exact: every finite positive value is legal.
+			// An epsilon cutoff would discard rare events and their compensating
+			// weights, biasing the estimator.
+			return RISE::IsFiniteDouble( density ) && density > 0;
+		}
+
+		// Scalar NM analog tracking uses the same deterministic transmittance
+		// T_det for the physical factor and the no-event atom P_0.  They cancel
+		// exactly, leaving only the reciprocal of the explicitly selected
+		// distance-technique mass (1 for pure delta tracking, 0.5 for its half
+		// of the delta-tracking/equiangular mixture).
+		inline Scalar NMNoEventSurvivalWeight( const Scalar techniqueMass )
+		{
+			return IsPositiveFiniteDensity(techniqueMass) ?
+				Scalar(1.0)/techniqueMass : Scalar(0.0);
+		}
+
 		//////////////////////////////////////////////////////////////////////
 		// Russian Roulette
 		//////////////////////////////////////////////////////////////////////
@@ -70,6 +90,22 @@ namespace RISE
 			bool	terminate;		///< True if the path should be killed
 			Scalar	survivalProb;	///< 1.0 if RR was not applied (depth < rrMinDepth)
 		};
+
+		/// Exact probability that the ordinary continuation roulette survives.
+		/// Kept separate from the random decision so NEE can evaluate the density
+		/// of its counterfactual march strategy before that strategy is sampled.
+		inline Scalar RussianRouletteSurvivalProbability(
+			unsigned int pathDepth,
+			unsigned int rrMinDepth,
+			Scalar rrThreshold,
+			Scalar currentThroughputMax,
+			Scalar prevThroughputMax
+			)
+		{
+			if( pathDepth < rrMinDepth ) return 1.0;
+			return r_min( Scalar(1.0),
+				currentThroughputMax / r_max( prevThroughputMax, rrThreshold ) );
+		}
 
 		/// Pure Russian roulette decision function.
 		///
@@ -98,8 +134,9 @@ namespace RISE
 
 			if( pathDepth >= rrMinDepth )
 			{
-				const Scalar rrProb = r_min( Scalar(1.0),
-					currentThroughputMax / r_max( prevThroughputMax, rrThreshold ) );
+				const Scalar rrProb = RussianRouletteSurvivalProbability(
+					pathDepth, rrMinDepth, rrThreshold,
+					currentThroughputMax, prevThroughputMax );
 				if( randomSample >= rrProb ) {
 					result.terminate = true;
 				} else if( rrProb > 0 && rrProb < 1.0 ) {
@@ -288,6 +325,29 @@ namespace RISE
 			return alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
 		}
 
+		/// Actual one-sample guiding-mixture density for a selected technique.
+		/// A zero guide density is valid on a phase/BSDF-selected direction and
+		/// still leaves (1-alpha)*p_phase support.  A guide-selected sample with
+		/// zero density is instead an explicit null sample; silently falling back
+		/// to a pre-drawn phase direction would add an unevaluable failure mass.
+		inline Scalar GuidingSelectedMixturePdf(
+			const Scalar alpha,
+			const Scalar guidePdf,
+			const Scalar phasePdf,
+			const bool guideTechniqueSelected
+			)
+		{
+			if( !RISE::IsFiniteDouble( alpha ) || alpha < 0 || alpha > 1 ||
+				!RISE::IsFiniteDouble( guidePdf ) || guidePdf < 0 ||
+				!RISE::IsFiniteDouble( phasePdf ) || phasePdf < 0 ||
+				( guideTechniqueSelected && guidePdf == 0 ) ) {
+				return 0;
+			}
+			const Scalar mixturePdf = GuidingCombinedPdf( alpha, guidePdf, phasePdf );
+			return IsPositiveFiniteDensity( mixturePdf )
+				? mixturePdf : 0;
+		}
+
 		/// Determines whether to sample from the guiding distribution
 		/// or keep the BSDF-sampled direction, given a uniform random
 		/// number on [0, 1).
@@ -413,29 +473,49 @@ namespace RISE
 			Scalar& effectivePdf
 			)
 		{
-			Scalar sumWeights = 0;
+			Scalar maxWeight = 0;
 			for( unsigned int i = 0; i < count; i++ ) {
-				sumWeights += candidates[i].risWeight;
+				const Scalar weight = candidates[i].risWeight;
+				if( IsPositiveFiniteDensity(weight) ) {
+					maxWeight = r_max(maxWeight,weight);
+				}
 			}
 
-			if( sumWeights <= NEARZERO ) {
+			if( !IsPositiveFiniteDensity(maxWeight) ) {
 				effectivePdf = 0;
 				return 0;
 			}
 
-			const Scalar threshold = xi * sumWeights;
+			// Scale by the largest weight before summing.  This preserves every
+			// finite positive RIS atom without an epsilon support cutoff and keeps
+			// both the selection sum and the effective-density ratio finite when
+			// the unscaled weights are uniformly tiny or would overflow in sum.
+			Scalar scaledSum = 0;
+			for( unsigned int i = 0; i < count; i++ ) {
+				const Scalar weight = candidates[i].risWeight;
+				if( IsPositiveFiniteDensity(weight) ) {
+					scaledSum += weight/maxWeight;
+				}
+			}
+			const Scalar threshold = xi * scaledSum;
 			Scalar cumulative = 0;
 			unsigned int selected = 0;
 			for( unsigned int i = 0; i < count; i++ ) {
-				cumulative += candidates[i].risWeight;
-				if( cumulative >= threshold ) {
-					selected = i;
-					break;
+				const Scalar weight = candidates[i].risWeight;
+				if( IsPositiveFiniteDensity(weight) ) {
+					cumulative += weight/maxWeight;
+					if( cumulative >= threshold ) {
+						selected = i;
+						break;
+					}
 				}
 			}
 
-			effectivePdf = candidates[selected].risTarget *
-				(static_cast<Scalar>( count ) / sumWeights);
+			effectivePdf = (candidates[selected].risTarget/maxWeight) *
+				(static_cast<Scalar>( count )/scaledSum);
+			if( !IsPositiveFiniteDensity(effectivePdf) ) {
+				effectivePdf = 0;
+			}
 			return selected;
 		}
 #endif

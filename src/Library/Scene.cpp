@@ -51,6 +51,7 @@ Scene::Scene( ) :
   pShadowMap( 0 ),
   pIrradianceCache( 0 ),
   pAnimator( 0 ),
+  mFireTemporalHold( false ),
   pGlobalMedium( 0 ),
   mLightTopologyGeneration( 0 ),
   mCausticPelPending(),
@@ -1434,4 +1435,3 @@ void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
 	// same-pointer RayCaster::AttachScene rebuilds the samplers.
 	BumpLightTopologyGeneration();
 }
-

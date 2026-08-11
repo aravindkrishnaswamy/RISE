@@ -7,10 +7,13 @@ BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
 LIB_DIR="$REPO_ROOT/src/Library"
+FIRE_OPTICS_GENERATOR="$REPO_ROOT/tools/generate_fire_optics_records.py"
+FIRE_OPTICS_DATA="$REPO_ROOT/docs/data"
+FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
-LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
+LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs-managed}"
 # Parallel build jobs for the library and bulk-test build phases.  Without
 # this, a change to a widely-included header (IJob.h, RISE_API.h, ...) meant
 # the library recompiled one file at a time AND all ~131 test binaries
@@ -18,10 +21,74 @@ LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
 # slow" (the test RUNS are seconds).  Override with RISE_TEST_BUILD_JOBS.
 JOBS="${RISE_TEST_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )}"
 
+validate_log_dir() {
+	log_base="$(basename -- "$LOG_DIR")"
+	case "$log_base" in
+		''|'/'|'.'|'..')
+			echo "Refusing unsafe test log directory: $LOG_DIR" >&2
+			exit 1
+			;;
+	esac
+	case "$log_base" in
+		rise-tests-logs|rise-tests-logs-*) ;;
+		*)
+			echo "Refusing non-dedicated test log directory: $LOG_DIR" >&2
+			exit 1
+			;;
+	esac
+	log_parent="$(dirname -- "$LOG_DIR")"
+	mkdir -p "$log_parent"
+	canonical_parent="$(CDPATH= cd -- "$log_parent" && pwd -P)"
+	canonical_log="$canonical_parent/$log_base"
+	user_profile="$(CDPATH= cd -- && pwd -P)"
+	case "$canonical_log" in
+		'/'|"$user_profile"|"$REPO_ROOT")
+			echo "Refusing unsafe test log directory: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	case "$REPO_ROOT/" in
+		"$canonical_log/"*)
+			echo "Refusing test log directory that contains the repository: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	case "$canonical_log/" in
+		"$REPO_ROOT/"*)
+			echo "Refusing test log directory inside the repository: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	marker="$canonical_log/.rise-test-log-directory"
+	if [ -d "$canonical_log" ] && [ ! -f "$marker" ] \
+	   && [ -n "$(find "$canonical_log" -mindepth 1 -print -quit 2>/dev/null)" ]
+	then
+		echo "Refusing unowned nonempty test log directory: $canonical_log" >&2
+		exit 1
+	fi
+	LOG_DIR="$canonical_log"
+}
+
+validate_log_dir
+if [ "${RISE_TEST_VALIDATE_LOG_DIR_ONLY:-0}" = "1" ]; then
+	echo "Safe test log directory: $LOG_DIR"
+	exit 0
+fi
+
 if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"
 	exit 1
 fi
+
+python_bin="$(command -v python3 || command -v python || true)"
+if [ -z "$python_bin" ]; then
+	echo "Missing Python interpreter required for the fire-optics record parity gate"
+	exit 1
+fi
+printf 'Checking embedded fire-optics records ... '
+"$python_bin" "$FIRE_OPTICS_GENERATOR" --check \
+	"$FIRE_OPTICS_DATA" "$FIRE_OPTICS_EMBEDDED"
+echo "pass"
 
 # Remove orphan .o files only (no matching .cpp). Active .o files are kept
 # so the per-test build target can skip up-to-date binaries.
@@ -41,6 +108,7 @@ fi
 mkdir -p "$BIN_DIR"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
+: > "$LOG_DIR/.rise-test-log-directory"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
 : > "$BUILD_FAIL_TSV"
@@ -180,7 +248,8 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	# Fast up-to-date short-circuit: skip the make call (which would otherwise
 	# stat the entire $(OBJLIB) tree — ~3s per test) when the binary is
 	# already newer than its source and every library .o file.
-	if [ -x "$test_path" ] \
+	if [ "$bulk_rc" -eq 0 ] \
+	   && [ -x "$test_path" ] \
 	   && [ "$test_path" -nt "$test_src" ] \
 	   && [ -z "$(find "$LIB_DIR" -name '*.o' -newer "$test_path" -print -quit 2>/dev/null)" ]
 	then
@@ -228,6 +297,14 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	test_path="$BIN_DIR/$name"
 	prefix="$(printf '[ %3d/%3d ] %-46s' "$i" "$total" "$name")"
 
+	if [ -s "$BUILD_FAIL_TSV" ] && awk -F '\t' -v test="$name" \
+		'$1 == test { found=1 } END { exit(found ? 0 : 1) }' "$BUILD_FAIL_TSV"
+	then
+		printf '%s SKIP (current build failed; stale executable ignored)\n' "$prefix"
+		skipped=$((skipped + 1))
+		continue
+	fi
+
 	if [ ! -x "$test_path" ]; then
 		printf '%s SKIP (build failed)\n' "$prefix"
 		skipped=$((skipped + 1))
@@ -261,7 +338,8 @@ done
 
 print_summary
 
-if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ]; then
+if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \
+   || [ "$skipped" -ne 0 ] || [ "$found" -ne "$total" ]; then
 	exit 1
 fi
 echo "All $found tests passed"

@@ -616,6 +616,14 @@ namespace RISE
 								IMaterial** ppi				///< [out] Pointer to recieve the material
 								);
 
+	//! Creates an exact null medium boundary.  Unlike NullMaterial/"none",
+	//! this material is traversed with unit transmission and changes only the
+	//! ray's medium-enclosure state.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNullBoundaryMaterial(
+								IMaterial** ppi				///< [out] Pointer to receive the material
+								);
+
 	//! Creates Lambertian material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateLambertianMaterial(
@@ -3390,6 +3398,129 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
 								const Point3& bboxMax				///< [in] World-space AABB maximum corner
 								);
+
+	//! Creates the Phase-A painter-baked carbon + temperature medium.
+	//! Both physical scalar painters are sampled once onto the same
+	//! trilinear lattice.  Optical coefficients are authored in SI and
+	//! converted to inverse scene units using sceneUnitMeters.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to receive the medium
+								const IScalarPainter& carbonPainter,	///< [in] Carbon concentration [g/m^3]
+								const IScalarPainter& temperaturePainter,///< [in] Temperature [K]
+								unsigned int volWidth,
+								unsigned int volHeight,
+								unsigned int volDepth,
+								const Point3& bboxMin,
+								const Point3& bboxMax,
+								Scalar sceneUnitMeters,
+								Scalar sootEm,
+								Scalar sootDensity,
+								Scalar sootAlbedoHot,
+								Scalar sootGHot,
+								Scalar smokeKmCarbon,
+								Scalar smokeNCarbon,
+								Scalar smokeAlbedoCarbon,
+							Scalar smokeGCarbon
+							);
+
+	//! Creates the Phase-A medium with the optional condensed-organic channel.
+	//! Kept as a distinct ABI entry so the original two-channel factory remains
+	//! source- and binary-compatible.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithCondensed(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter& condensedPainter,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									Scalar sootEm,
+									Scalar sootDensity,
+									Scalar sootAlbedoHot,
+									Scalar sootGHot,
+									Scalar smokeKmCarbon,
+									Scalar smokeNCarbon,
+									Scalar smokeAlbedoCarbon,
+									Scalar smokeGCarbon,
+									Scalar smokeKmCond,
+									Scalar smokeNCond,
+									Scalar smokeAlbedoCond,
+									Scalar smokeGCond
+									);
+
+	//! Creates the Phase-A medium with an optional condensed channel and the
+	//! all-or-none CH/C2/CO2 chemiluminescence channel bundle.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithChem(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter* condensedPainter,
+									const IScalarPainter& chemCHPainter,
+									const IScalarPainter& chemC2Painter,
+									const IScalarPainter& chemCO2Painter,
+									const IFunction1D& chemCHSPD,
+									const IFunction1D& chemC2SPD,
+									const IFunction1D& chemCO2SPD,
+									Scalar chemCHIntervalMin,
+									Scalar chemCHIntervalMax,
+									Scalar chemC2IntervalMin,
+									Scalar chemC2IntervalMax,
+									Scalar chemCO2IntervalMin,
+									Scalar chemCO2IntervalMax,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									Scalar sootEm,
+									Scalar sootDensity,
+									Scalar sootAlbedoHot,
+									Scalar sootGHot,
+									Scalar smokeKmCarbon,
+									Scalar smokeNCarbon,
+									Scalar smokeAlbedoCarbon,
+									Scalar smokeGCarbon,
+									Scalar smokeKmCond,
+									Scalar smokeNCond,
+									Scalar smokeAlbedoCond,
+									Scalar smokeGCond
+									);
+
+	//! Creates a fire medium from one named, versioned optical record.  The
+	//! condensed channel and chem bundle are independently optional; chem is
+	//! admitted only as an all-or-none synthetic-fixture path.
+	bool RISE_API_CreateMultichannelHeterogeneousMediumWithPreset(
+									IMedium** ppi,
+									const IScalarPainter& carbonPainter,
+									const IScalarPainter& temperaturePainter,
+									const IScalarPainter* condensedPainter,
+									const IScalarPainter* chemCHPainter,
+									const IScalarPainter* chemC2Painter,
+									const IScalarPainter* chemCO2Painter,
+									const IFunction1D* chemCHSPD,
+									const IFunction1D* chemC2SPD,
+									const IFunction1D* chemCO2SPD,
+									Scalar chemCHIntervalMin,
+									Scalar chemCHIntervalMax,
+									Scalar chemC2IntervalMin,
+									Scalar chemC2IntervalMax,
+									Scalar chemCO2IntervalMin,
+									Scalar chemCO2IntervalMax,
+									unsigned int volWidth,
+									unsigned int volHeight,
+									unsigned int volDepth,
+									const Point3& bboxMin,
+									const Point3& bboxMax,
+									Scalar sceneUnitMeters,
+									const char* opticalRecord
+									);
 
 
 	//////////////////////////////////////////////////////////

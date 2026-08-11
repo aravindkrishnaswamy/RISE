@@ -1,14 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AutoRasterizerTest.cpp - End-to-end check that the `auto_rasterizer`
-//    dispatcher (Phase 1 of docs/AUTO_RASTERIZER_DESIGN.md) delegates
-//    correctly to the concrete PT / BDPT / VCM rasterizers.
+//    multi-tier dispatcher delegates correctly to the concrete PT / BDPT /
+//    VCM rasterizers described by docs/AUTO_RASTERIZER_DESIGN.md.
 //
 //    The dispatcher is a thin IRasterizer wrapper: at the first render-
-//    time entry it picks an integrator (Phase 1: author pin, else PT)
-//    and forwards every call to a concrete rasterizer built with that
-//    integrator's canonical defaults.  "Delegates correctly" therefore
-//    has two halves, and this test checks BOTH:
+//    time entry it honors an author pin or runs the static scene gate and,
+//    when enabled, the probe tier.  It then forwards every call to a concrete
+//    rasterizer built with that integrator's canonical defaults.  "Delegates
+//    correctly" therefore has two halves, and this test checks BOTH:
 //
 //      1. STRONG / direct — after the render, the wrapper reports the
 //         integrator it actually resolved to (ResolvedIntegrator()).
@@ -45,6 +45,13 @@
 #include <cctype>
 #include <string>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
 #ifdef _WIN32
 	#include <process.h>		// _getpid()
 	#define getpid _getpid
@@ -56,12 +63,22 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
+#include "../src/Library/Interfaces/IFilm.h"
+#include "../src/Library/Job.h"
+#include "../src/Library/Materials/HeterogeneousMedium.h"
+#include "../src/Library/Materials/HomogeneousMedium.h"
+#include "../src/Library/Materials/IsotropicPhaseFunction.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/RasterizerDefaults.h"   // AutoIntegratorChoice
 #include "../src/Library/Rendering/AutoRasterizer.h"        // ResolvedIntegrator()
+#include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/Rendering/Rasterizer.h"
+#include "../src/Library/RISE_API.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -73,6 +90,32 @@ namespace RISE
 
 static int passCount = 0;
 static int failCount = 0;
+
+class ProcessWatchdog
+{
+public:
+	explicit ProcessWatchdog( const unsigned int seconds ) :
+		completed_(std::make_shared<std::atomic<bool>>(false))
+	{
+		const auto completed = completed_;
+		std::thread([completed,seconds]() {
+			std::this_thread::sleep_for(std::chrono::seconds(seconds));
+			if( !completed->load(std::memory_order_acquire) ) {
+				std::fprintf(stderr,
+					"FAIL: AutoRasterizerTest exceeded %u-second watchdog\n",seconds);
+				std::_Exit(124);
+			}
+		}).detach();
+	}
+
+	~ProcessWatchdog()
+	{
+		completed_->store(true,std::memory_order_release);
+	}
+
+private:
+	std::shared_ptr<std::atomic<bool>> completed_;
+};
 
 static void Check( bool condition, const std::string& testName )
 {
@@ -91,6 +134,7 @@ static void Check( bool condition, const std::string& testName )
 //////////////////////////////////////////////////////////////////////
 class CapturingRasterizerOutput
 	: public virtual IRasterizerOutput
+	, public virtual IFireRasterizerOutputRoute
 	, public virtual Reference
 {
 public:
@@ -105,6 +149,8 @@ protected:
 
 public:
 	virtual void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	FireArtifactRouteKind FireArtifactRoute() const override
+		{ return FireArtifactRouteKind::DisplayOnly; }
 
 	virtual void OutputImage( const IRasterImage& pImage, const Rect*, const unsigned int ) override
 	{
@@ -119,6 +165,519 @@ public:
 	}
 };
 
+class FrameStoreNotificationOutput
+	: public virtual IRasterizerOutput
+	, public virtual IFireRasterizerOutputRoute
+	, public virtual Reference
+{
+public:
+	unsigned int notifications = 0;
+	unsigned int images = 0;
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+		{ ++images; }
+	FireArtifactRouteKind FireArtifactRoute() const override
+		{ return FireArtifactRouteKind::DisplayOnly; }
+	void OnRasterizerFrameStoreChanged( FrameStore* ) override { ++notifications; }
+
+protected:
+	~FrameStoreNotificationOutput() override {}
+};
+
+class ReentrantDestructorOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	ReentrantDestructorOutput( IRasterizer& rasterizer, bool& destroyed ) :
+		rasterizer_(rasterizer), destroyed_(destroyed) {}
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, unsigned int ) override {}
+
+protected:
+	~ReentrantDestructorOutput() override
+	{
+		destroyed_ = true;
+		rasterizer_.FreeRasterizerOutputs();
+	}
+
+private:
+	IRasterizer& rasterizer_;
+	bool& destroyed_;
+};
+
+class FailingFrameStoreNotificationOutput : public FrameStoreNotificationOutput
+{
+public:
+	void ArmFailureAfter( const unsigned int additionalNotifications )
+	{
+		throwAt_ = notifications + additionalNotifications;
+		failureCount_ = 1u;
+	}
+	void ArmFailuresAfter(
+		const unsigned int additionalNotifications,
+		const unsigned int failureCount )
+	{
+		throwAt_ = notifications + additionalNotifications;
+		failureCount_ = failureCount;
+	}
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		lastStore = store;
+		if( notifications >= throwAt_ &&
+			notifications < throwAt_+failureCount_ ) {
+			throw std::runtime_error("injected FrameStore notification failure");
+		}
+	}
+	FrameStore* lastStore = nullptr;
+
+protected:
+	~FailingFrameStoreNotificationOutput() override {}
+
+private:
+	unsigned int throwAt_ = 0u;
+	unsigned int failureCount_ = 0u;
+};
+
+class BlockingFrameStoreNotificationOutput : public FrameStoreNotificationOutput
+{
+public:
+	void ArmOnNotification( const unsigned int notification )
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		blockAt_ = notification;
+	}
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			lastStore = store;
+			if( notifications != blockAt_ ) return;
+			entered_ = true;
+		}
+		condition_.notify_all();
+		std::unique_lock<std::mutex> lock(mutex_);
+		condition_.wait(lock,[this]() { return continue_; });
+	}
+	void WaitUntilEntered()
+	{
+		std::unique_lock<std::mutex> lock(mutex_);
+		condition_.wait(lock,[this]() { return entered_; });
+	}
+	void Continue()
+	{
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			continue_ = true;
+		}
+		condition_.notify_all();
+	}
+	FrameStore* lastStore = nullptr;
+
+protected:
+	~BlockingFrameStoreNotificationOutput() override {}
+
+private:
+	std::mutex mutex_;
+	std::condition_variable condition_;
+	bool entered_ = false;
+	bool continue_ = false;
+	unsigned int blockAt_ = 1u;
+};
+
+class ReentrantFrameStoreSwapOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantFrameStoreSwapOutput( Rasterizer& rasterizer, FrameStore& nestedStore ) :
+		rasterizer_(rasterizer), nestedStore_(nestedStore) {}
+	void Arm( FrameStore* trigger ) { trigger_ = trigger; }
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		lastStore = store;
+		if( trigger_ && store == trigger_ ) {
+			trigger_ = nullptr;
+			rasterizer_.SetFrameStore(&nestedStore_);
+		}
+	}
+	FrameStore* lastStore = nullptr;
+
+protected:
+	~ReentrantFrameStoreSwapOutput() override {}
+
+private:
+	Rasterizer& rasterizer_;
+	FrameStore& nestedStore_;
+	FrameStore* trigger_ = nullptr;
+};
+
+class ReentrantFrameStoreOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantFrameStoreOutput( IRasterizer& rasterizer,
+		FrameStoreNotificationOutput& lateOutput ) :
+		reentered(false), rasterizer_(rasterizer), lateOutput_(lateOutput)
+	{
+		lateOutput_.addref();
+	}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications == 2 ) {
+			reentered = true;
+			rasterizer_.AddRasterizerOutput(&lateOutput_);
+		}
+	}
+
+	bool reentered;
+
+protected:
+	~ReentrantFrameStoreOutput() override { lateOutput_.release(); }
+
+private:
+	IRasterizer& rasterizer_;
+	FrameStoreNotificationOutput& lateOutput_;
+};
+
+class ReentrantResolveOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantResolveOutput( AutoRasterizer& rasterizer, const IScene& scene ) :
+		rasterizer_(rasterizer), scene_(scene) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 2u ) return;
+		attempted = true;
+		try {
+			rasterizer_.ResolveForFirePreflight(scene_);
+		}
+		catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()).find("resolution is reentrant") !=
+				std::string::npos;
+		}
+	}
+
+	bool attempted = false;
+	bool rejected = false;
+
+protected:
+	~ReentrantResolveOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	const IScene& scene_;
+};
+
+class CrossThreadSameAutoResolveOutput : public FrameStoreNotificationOutput
+{
+public:
+	CrossThreadSameAutoResolveOutput( AutoRasterizer& rasterizer, const IScene& scene ) :
+		rasterizer_(rasterizer), scene_(scene) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 2u ) return;
+		attempted = true;
+		std::thread worker([this]() {
+			try {
+				rasterizer_.ResolveForFirePreflight(scene_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find("resolution is concurrent") !=
+					std::string::npos;
+			}
+		});
+		worker.join();
+	}
+
+	bool attempted = false;
+	bool rejected = false;
+
+protected:
+	~CrossThreadSameAutoResolveOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	const IScene& scene_;
+};
+
+class CrossThreadOtherAutoResolveOutput : public FrameStoreNotificationOutput
+{
+public:
+	CrossThreadOtherAutoResolveOutput(
+		AutoRasterizer& target, const IScene& scene ) :
+		target_(target), scene_(scene) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 2u ) return;
+		attempted = true;
+		std::thread worker([this]() {
+			try {
+				resolved = target_.ResolveForFirePreflight(scene_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejectedConcurrent = std::string(error.what()).find(
+					"resolution is concurrent") != std::string::npos;
+			}
+		});
+		worker.join();
+	}
+
+	bool attempted = false;
+	bool resolved = false;
+	bool rejectedConcurrent = false;
+
+protected:
+	~CrossThreadOtherAutoResolveOutput() override {}
+
+private:
+	AutoRasterizer& target_;
+	const IScene& scene_;
+};
+
+class CrossThreadRemoveOutput : public FrameStoreNotificationOutput
+{
+public:
+	CrossThreadRemoveOutput( AutoRasterizer& rasterizer, IRasterizerOutput& target ) :
+		rasterizer_(rasterizer), target_(target) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications != 1u ) return;
+		std::thread worker([this]() {
+			try {
+				rasterizer_.RemoveRasterizerOutput(&target_);
+			}
+			catch( const std::runtime_error& error ) {
+				rejected = std::string(error.what()).find("reentrant or concurrent") !=
+					std::string::npos;
+			}
+		});
+		worker.join();
+	}
+
+	bool rejected = false;
+
+protected:
+	~CrossThreadRemoveOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	IRasterizerOutput& target_;
+};
+
+class ThrowingAddRefOutput : public FrameStoreNotificationOutput
+{
+public:
+	void ArmThrowOnAddRef( const unsigned int call ) const
+	{
+		addRefCalls_.store(0u);
+		throwAt_.store(call);
+	}
+	void Disarm() const { throwAt_.store(0u); }
+
+	void addref() const override
+	{
+		const unsigned int call = addRefCalls_.fetch_add(1u)+1u;
+		if( throwAt_.load() == call ) {
+			throw std::runtime_error("injected addref failure");
+		}
+		Reference::addref();
+	}
+
+protected:
+	~ThrowingAddRefOutput() override {}
+
+private:
+	mutable std::atomic<unsigned int> addRefCalls_ { 0u };
+	mutable std::atomic<unsigned int> throwAt_ { 0u };
+};
+
+class ReentrantRemoveOutput : public FrameStoreNotificationOutput
+{
+public:
+	ReentrantRemoveOutput(
+		Rasterizer& rasterizer,
+		IRasterizerOutput& removed,
+		const unsigned int triggerNotification ) :
+		rasterizer_(rasterizer), removed_(removed),
+		triggerNotification_(triggerNotification) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications == triggerNotification_ ) {
+			removed = true;
+			rasterizer_.RemoveRasterizerOutput(&removed_);
+		}
+	}
+
+	bool removed = false;
+
+protected:
+	~ReentrantRemoveOutput() override {}
+
+private:
+	Rasterizer& rasterizer_;
+	IRasterizerOutput& removed_;
+	unsigned int triggerNotification_;
+};
+
+class LifetimeFrameStoreOutput
+	: public virtual IRasterizerOutput
+	, public virtual Reference
+{
+public:
+	LifetimeFrameStoreOutput(
+		IRasterizer& rasterizer,
+		const bool clearOnEnumeration,
+		const bool clearOnReannounce,
+		const bool clearOnOutput,
+		int& frameStoreNotifications,
+		int& outputImages,
+		bool& destroyed
+		) :
+		rasterizer_(rasterizer),
+		clearOnEnumeration_(clearOnEnumeration),
+		clearOnReannounce_(clearOnReannounce),
+		clearOnOutput_(clearOnOutput),
+		frameStoreNotifications_(frameStoreNotifications),
+		outputImages_(outputImages),
+		destroyed_(destroyed)
+	{}
+
+	void OutputIntermediateImage( const IRasterImage&, const Rect* ) override {}
+	void OutputImage( const IRasterImage&, const Rect*, const unsigned int ) override
+	{
+		++outputImages_;
+		if( clearOnOutput_ ) rasterizer_.FreeRasterizerOutputs();
+	}
+	void OnRasterizerFrameStoreChanged( FrameStore* ) override
+	{
+		++frameStoreNotifications_;
+		if( clearOnReannounce_ && frameStoreNotifications_ == 2 ) {
+			rasterizer_.FreeRasterizerOutputs();
+		}
+	}
+	bool ClearOnEnumeration() const { return clearOnEnumeration_; }
+
+protected:
+	~LifetimeFrameStoreOutput() override { destroyed_ = true; }
+
+private:
+	IRasterizer& rasterizer_;
+	bool clearOnEnumeration_;
+	bool clearOnReannounce_;
+	bool clearOnOutput_;
+	int& frameStoreNotifications_;
+	int& outputImages_;
+	bool& destroyed_;
+};
+
+class ClearingOutputEnumerator : public IEnumCallback<IRasterizerOutput>
+{
+public:
+	explicit ClearingOutputEnumerator( IRasterizer& rasterizer ) :
+		callbacks(0), rasterizer_(rasterizer) {}
+
+	bool operator()( const IRasterizerOutput& output ) override
+	{
+		++callbacks;
+		const LifetimeFrameStoreOutput* lifetime =
+			dynamic_cast<const LifetimeFrameStoreOutput*>(&output);
+		if( lifetime && lifetime->ClearOnEnumeration() ) {
+			rasterizer_.FreeRasterizerOutputs();
+		}
+		return true;
+	}
+
+	int callbacks;
+
+private:
+	IRasterizer& rasterizer_;
+};
+
+class TransactionalReplayOutput : public FrameStoreNotificationOutput
+{
+public:
+	TransactionalReplayOutput(
+		Rasterizer& rasterizer,
+		IProgressCallback& replacementProgress,
+		IRasterizerOutput& removedOutput,
+		IRasterizerOutput& survivingOutput,
+		const unsigned int triggerNotification
+		) :
+		mutated(false),
+		reentrantAddRejected(false),
+		rasterizer_(rasterizer),
+		replacementProgress_(replacementProgress),
+		removedOutput_(removedOutput),
+		survivingOutput_(survivingOutput),
+		triggerNotification_(triggerNotification)
+	{}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( notifications == triggerNotification_ ) {
+			try {
+				rasterizer_.AddRasterizerOutput(&survivingOutput_);
+			}
+			catch( const std::runtime_error& error ) {
+				reentrantAddRejected =
+					std::string(error.what()).find("reentrant") != std::string::npos;
+				return;
+			}
+			mutated = true;
+			rasterizer_.SetProgressCallback(&replacementProgress_);
+			rasterizer_.RemoveRasterizerOutput(&removedOutput_);
+			rasterizer_.FreeRasterizerOutputs();
+			rasterizer_.AddRasterizerOutput(&survivingOutput_);
+		}
+	}
+
+	bool mutated;
+	bool reentrantAddRejected;
+
+protected:
+	~TransactionalReplayOutput() override {}
+
+private:
+	Rasterizer& rasterizer_;
+	IProgressCallback& replacementProgress_;
+	IRasterizerOutput& removedOutput_;
+	IRasterizerOutput& survivingOutput_;
+	unsigned int triggerNotification_;
+};
+
+class HomogeneousFireTestMedium : public HomogeneousMedium
+{
+public:
+	explicit HomogeneousFireTestMedium( const IPhaseFunction& phase ) :
+		HomogeneousMedium(RISEPel(0.0,0.0,0.0),RISEPel(0.0,0.0,0.0),phase) {}
+	bool IsFireMedium() const override { return true; }
+	const char* GetFireOpticsRecordId() const override { return "auto-homogeneous-fire-test"; }
+	bool FirePredictiveAllowed() const override { return true; }
+	const char* GetFireRenderFidelityStatus( const bool ) const override { return "preview"; }
+	unsigned int GetFireRenderReasonCodeCount( const bool ) const override { return 1; }
+	const char* GetFireRenderReasonCode( const bool, const unsigned int index ) const override
+		{ return index == 0 ? "requested_preview" : 0; }
+	bool FireOpticsSupportsWavelengthRange( const Scalar, const Scalar ) const override
+		{ return true; }
+
+protected:
+	~HomogeneousFireTestMedium() override {}
+};
+
 struct ImageStats
 {
 	double mean[3];
@@ -129,6 +688,7 @@ struct ImageStats
 	bool   wasAuto;                  // true if GetRasterizer() down-cast to AutoRasterizer
 	std::string resolvedName;        // ResolvedIntegratorName() — the cross-UI string API
 	bool   queryApiOK;               // IsAutoDispatcher() && ResolveReason() non-empty
+	unsigned int probeRenders;       // LastProbeRenders(); G10 must short-circuit Tier 2
 };
 
 static double Percentile( std::vector<double>& v, double p )
@@ -159,6 +719,10 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	// See BDPTStrategyBalanceTest / INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
 	for( const RISEColor& c : cap.pixels ) {
 		const double cov = c.a;
+		if( !std::isfinite(cov) || !std::isfinite(c.base.r) ||
+			!std::isfinite(c.base.g) || !std::isfinite(c.base.b) ) {
+			return s;
+		}
 		ch[0].push_back( c.base.r * cov );
 		ch[1].push_back( c.base.g * cov );
 		ch[2].push_back( c.base.b * cov );
@@ -170,6 +734,8 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 		s.mean[c] = sum / double(ch[c].size());
 		s.p99[c]  = Percentile( ch[c], 0.99 );
 		s.max[c]  = ch[c].back();   // after sort
+		if( !std::isfinite(s.mean[c]) || !std::isfinite(s.p99[c]) ||
+			!std::isfinite(s.max[c]) ) return s;
 	}
 	s.valid = true;
 	return s;
@@ -177,9 +743,10 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 
 static std::string WriteSceneToTempFile( const char* sceneText, const char* tag )
 {
-	char path[512];
-	std::snprintf( path, sizeof(path),
-		"/tmp/auto_rasterizer_%s_%d.RISEscene", tag, static_cast<int>(::getpid()) );
+	std::ostringstream filename;
+	filename << "auto_rasterizer_" << tag << '_' << ::getpid() << ".RISEscene";
+	const std::filesystem::path path =
+		std::filesystem::temp_directory_path()/filename.str();
 
 	std::ofstream ofs( path );
 	if( !ofs.is_open() ) {
@@ -187,7 +754,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 	}
 	ofs << sceneText;
 	ofs.close();
-	return std::string( path );
+	return path.string();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -196,7 +763,10 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 // AutoRasterizer, also record which integrator it resolved to (valid
 // only after the render, since resolution is lazy).
 //////////////////////////////////////////////////////////////////////
-static ImageStats RenderAndComputeStats( const char* scenePath )
+static ImageStats RenderAndComputeStats(
+	const char* scenePath,
+	const bool addEmissiveHomogeneous = false,
+	const bool addHomogeneousFire = false )
 {
 	ImageStats result{};
 	result.resolved = AutoIntegratorChoice::Auto;
@@ -206,10 +776,27 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
 		return result;
 	}
-
 	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
+	}
+
+	if( addEmissiveHomogeneous ) {
+		const double zero[3] = { 0.0, 0.0, 0.0 };
+		const double emission[3] = { 1.0, 0.5, 0.25 };
+		if( !pJob->AddHomogeneousMediumSpectral(
+			"auto_test_emissive", zero, zero, emission, "", "", "isotropic", 0.0 ) ||
+			!pJob->SetGlobalMedium( "auto_test_emissive" ) ) {
+			safe_release( pJob );
+			return result;
+		}
+	}
+	if( addHomogeneousFire ) {
+		IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
+		HomogeneousFireTestMedium* medium = new HomogeneousFireTestMedium(*phase);
+		pJob->GetScene()->SetGlobalMedium( medium );
+		safe_release( medium );
+		safe_release( phase );
 	}
 
 	pJob->RemoveRasterizerOutputs();
@@ -238,6 +825,7 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 		result.resolved = pAuto->ResolvedIntegrator();
 		result.resolvedName = pAuto->ResolvedIntegratorName();
 		result.queryApiOK = pAuto->IsAutoDispatcher() && pAuto->ResolveReason()[0] != '\0';
+		result.probeRenders = pAuto->LastProbeRenders();
 	}
 
 	safe_release( pCap );
@@ -245,13 +833,332 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	return result;
 }
 
+static ImageStats RenderFireReferencePreview(
+	const char* scenePath,
+	const char* rasterizerKeyword,
+	const unsigned int seed,
+	const MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation ablation =
+		MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation,
+	const unsigned int width = 32u,
+	const unsigned int height = 48u,
+	const unsigned int samples = 256u )
+{
+	ImageStats result{};
+	GlobalRNG() = RandomNumberGenerator(seed);
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv(&pJob) || !pJob ) return result;
+	const std::string sampleText = std::to_string(samples);
+	if( !pJob->LoadAsciiSceneViaCst(scenePath) ||
+		!pJob->SetFilm(width,height,1.0) ||
+		!pJob->SetRasterizerParameter(rasterizerKeyword,"samples",sampleText.c_str()) ||
+		!pJob->SetRasterizerParameter(rasterizerKeyword,"oidn_denoise","false") ) {
+		safe_release(pJob);
+		return result;
+	}
+	if( ablation != MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation ) {
+		Job* concreteJob = dynamic_cast<Job*>(pJob);
+		if( !concreteJob || !concreteJob->ForTest_SetFireEffectiveAbsorptionAblation(
+			"phase_a_fire",static_cast<unsigned int>(ablation)) ) {
+			safe_release(pJob);
+			return result;
+		}
+	}
+	Rasterizer* pConcrete = dynamic_cast<Rasterizer*>( pJob->GetRasterizer() );
+	if( !pConcrete ) {
+		safe_release(pJob);
+		return result;
+	}
+	pConcrete->ForTest_SetThreadCountOverride( 1 );
+
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew(pCap,__FILE__,__LINE__,"fire preview capture output");
+	pJob->GetRasterizer()->AddRasterizerOutput(pCap);
+	if( pJob->Rasterize() ) result = ComputeStats(*pCap);
+	safe_release(pCap);
+	safe_release(pJob);
+	return result;
+}
+
+static std::string WriteFastFireProjectionScene(
+	const char* rasterizerKeyword, const char* tag )
+{
+	const bool spectral = std::string(rasterizerKeyword).find("spectral") !=
+		std::string::npos;
+	std::ostringstream scene;
+	scene <<
+		"RISE ASCII SCENE 7\n"
+		"scene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n" <<
+		rasterizerKeyword << "\n{\nsamples 1\n";
+	if( spectral ) {
+		scene << "nmbegin 380\nnmend 780\nnum_wavelengths 40\n"
+			"spectral_samples 1\nhwss false\n";
+	}
+	scene <<
+		"max_volume_bounce 1\npixel_filter box\noidn_denoise false\n}\n"
+		"film\n{\nwidth 16\nheight 16\n}\n"
+		"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\n"
+		"up 0 1 0\nfov 45\n}\n"
+		"scalar_painter\n{\nname carbon\nvalue 1\n}\n"
+		"scalar_painter\n{\nname temperature\nvalue 2300\n}\n"
+		"multichannel_heterogeneous_medium\n{\nname phase_a_fire\n"
+		"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+		"chem_model none\nbake_resolution 2 2 2\n"
+		"bbox_min -1 -1 -1\nbbox_max 1 1 1\n"
+		"optical_record fire_optics_v1\n}\n"
+		"global_medium\n{\nmedium phase_a_fire\n}\n";
+	return WriteSceneToTempFile(scene.str().c_str(),tag);
+}
+
+static void TestFirePelPreviewDivergence(
+	const bool extendedAblation, const bool fastProjection = false )
+{
+	const unsigned int seeds[] = { 1u, 7u, 42u, 314159u, 0xdeadbeefu };
+	const size_t seedBegin = extendedAblation ? 0u : 2u;
+	const size_t seedEnd = extendedAblation ?
+		sizeof(seeds)/sizeof(seeds[0]) : seedBegin+1u;
+	double maximumDivergence[3] = {0.0,0.0,0.0};
+	double magnitudeDeltaSum[3] = {0.0,0.0,0.0};
+	double tiltDeltaSum[3] = {0.0,0.0,0.0};
+	double fullDeltaSum[3] = {0.0,0.0,0.0};
+	double interactionDeltaSum[3] = {0.0,0.0,0.0};
+	double magnitudeDeltaMin[3] = {1e30,1e30,1e30};
+	double magnitudeDeltaMax[3] = {-1e30,-1e30,-1e30};
+	double tiltDeltaMin[3] = {1e30,1e30,1e30};
+	double tiltDeltaMax[3] = {-1e30,-1e30,-1e30};
+	double fullDeltaMin[3] = {1e30,1e30,1e30};
+	double fullDeltaMax[3] = {-1e30,-1e30,-1e30};
+	double selectedPelMean[3] = {0.0,0.0,0.0};
+	double selectedSpectralMean[3] = {0.0,0.0,0.0};
+	bool allValid = true;
+	bool allReferenceChannelsPositive = true;
+	const std::string fastPelPath = fastProjection ?
+		WriteFastFireProjectionScene("pathtracing_pel_rasterizer","fire_fast_pel") :
+		std::string();
+	const std::string fastSpectralPath = fastProjection ?
+		WriteFastFireProjectionScene("pathtracing_spectral_rasterizer",
+			"fire_fast_spectral") : std::string();
+	const char* pelScene = fastProjection ? fastPelPath.c_str() :
+		"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene";
+	const char* spectralScene = fastProjection ? fastSpectralPath.c_str() :
+		"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene";
+	const unsigned int projectionWidth = fastProjection ? 16u : 32u;
+	const unsigned int projectionHeight = fastProjection ? 16u : 48u;
+	const unsigned int projectionSamples = fastProjection ? 64u : 256u;
+	for( size_t seedIndex=seedBegin; seedIndex<seedEnd; ++seedIndex ) {
+		const unsigned int seed = seeds[seedIndex];
+		const ImageStats pel = RenderFireReferencePreview(
+			pelScene,
+			"pathtracing_pel_rasterizer", seed,
+			MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation,
+			projectionWidth,projectionHeight,projectionSamples );
+		const ImageStats spectral = RenderFireReferencePreview(
+			spectralScene,
+			"pathtracing_spectral_rasterizer", seed,
+			MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation,
+			projectionWidth,projectionHeight,projectionSamples );
+		ImageStats fixture{};
+		ImageStats magnitude{};
+		ImageStats tilt{};
+		if( extendedAblation ) {
+			fixture = RenderFireReferencePreview(
+				"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+				"pathtracing_spectral_rasterizer", seed,
+				MultichannelHeterogeneousMedium::FixtureMagnitudeBaseline );
+			magnitude = RenderFireReferencePreview(
+				"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+				"pathtracing_spectral_rasterizer", seed,
+				MultichannelHeterogeneousMedium::PresetMagnitudeOnly );
+			tilt = RenderFireReferencePreview(
+				"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
+				"pathtracing_spectral_rasterizer", seed,
+				MultichannelHeterogeneousMedium::PresetTiltOnly );
+		}
+		allValid = allValid && pel.valid && spectral.valid &&
+			(!extendedAblation ||
+				(fixture.valid && magnitude.valid && tilt.valid));
+		if( !pel.valid || !spectral.valid ||
+			(extendedAblation &&
+				(!fixture.valid || !magnitude.valid || !tilt.valid)) ) continue;
+		double divergence[3] = {0.0,0.0,0.0};
+		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			selectedPelMean[channel] = pel.mean[channel];
+			selectedSpectralMean[channel] = spectral.mean[channel];
+			allReferenceChannelsPositive = allReferenceChannelsPositive &&
+				pel.mean[channel] > 0.0 && spectral.mean[channel] > 0.0;
+			const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
+			divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
+			maximumDivergence[channel] = std::max(
+				maximumDivergence[channel], divergence[channel] );
+			if( !extendedAblation ) continue;
+			const double fixtureScale = std::max(
+				std::fabs(fixture.mean[channel]),1e-12);
+			const double magnitudeDelta =
+				(magnitude.mean[channel]-fixture.mean[channel])/fixtureScale;
+			const double tiltDelta =
+				(tilt.mean[channel]-fixture.mean[channel])/fixtureScale;
+			const double fullDelta =
+				(spectral.mean[channel]-fixture.mean[channel])/fixtureScale;
+			magnitudeDeltaSum[channel] += magnitudeDelta;
+			tiltDeltaSum[channel] += tiltDelta;
+			fullDeltaSum[channel] += fullDelta;
+			interactionDeltaSum[channel] += fullDelta-magnitudeDelta-tiltDelta;
+			magnitudeDeltaMin[channel] = std::min(
+				magnitudeDeltaMin[channel],magnitudeDelta);
+			magnitudeDeltaMax[channel] = std::max(
+				magnitudeDeltaMax[channel],magnitudeDelta);
+			tiltDeltaMin[channel] = std::min(tiltDeltaMin[channel],tiltDelta);
+			tiltDeltaMax[channel] = std::max(tiltDeltaMax[channel],tiltDelta);
+			fullDeltaMin[channel] = std::min(fullDeltaMin[channel],fullDelta);
+			fullDeltaMax[channel] = std::max(fullDeltaMax[channel],fullDelta);
+		}
+		std::cout << "  seed " << seed << " Pel=(" << pel.mean[0] << ","
+			<< pel.mean[1] << "," << pel.mean[2] << ") spectral=("
+			<< spectral.mean[0] << "," << spectral.mean[1] << ","
+			<< spectral.mean[2] << ") divergence=(" << divergence[0] << ","
+			<< divergence[1] << "," << divergence[2] << ")" << std::endl;
+	}
+	if( !fastPelPath.empty() ) std::remove(fastPelPath.c_str());
+	if( !fastSpectralPath.empty() ) std::remove(fastSpectralPath.c_str());
+	Check( allValid,
+		"Phase-A Pel and spectral reference scenes render for every selected seed" );
+	Check( allReferenceChannelsPositive,
+		"Phase-A Pel and spectral reference scenes retain positive channel radiance" );
+	if( !allValid || !allReferenceChannelsPositive ) return;
+	if( extendedAblation ) {
+		const double seedCount = static_cast<double>(seedEnd-seedBegin);
+		std::cout << "  E_eff ablation mean image deltas vs fixture E=0.26:";
+		for( unsigned int channel=0; channel<3u; ++channel ) {
+			std::cout << " c" << channel << " magnitude="
+				<< magnitudeDeltaSum[channel]/seedCount << "["
+				<< magnitudeDeltaMin[channel] << "," << magnitudeDeltaMax[channel]
+				<< "] tilt=" << tiltDeltaSum[channel]/seedCount << "["
+				<< tiltDeltaMin[channel] << "," << tiltDeltaMax[channel]
+				<< "] interaction="
+				<< interactionDeltaSum[channel]/seedCount << " full="
+				<< fullDeltaSum[channel]/seedCount << "[" << fullDeltaMin[channel]
+				<< "," << fullDeltaMax[channel] << "]";
+		}
+		std::cout << std::endl;
+		const double magnitudeMean[3] = {
+			magnitudeDeltaSum[0]/seedCount, magnitudeDeltaSum[1]/seedCount,
+			magnitudeDeltaSum[2]/seedCount
+		};
+		const double tiltMean[3] = {
+			tiltDeltaSum[0]/seedCount, tiltDeltaSum[1]/seedCount,
+			tiltDeltaSum[2]/seedCount
+		};
+		const double interactionMean[3] = {
+			interactionDeltaSum[0]/seedCount, interactionDeltaSum[1]/seedCount,
+			interactionDeltaSum[2]/seedCount
+		};
+		const double fullMean[3] = {
+			fullDeltaSum[0]/seedCount, fullDeltaSum[1]/seedCount,
+			fullDeltaSum[2]/seedCount
+		};
+	// The extended tier runs the complete five-seed factorial whose measured
+	// ranges are recorded below.  The default tier keeps the independent
+	// Pel-versus-spectral projection tripwire at seed 42 without paying for the
+	// three coefficient ablation renders.
+	// Controlled paired-seed factorial against the synthetic record's E=0.26:
+	// preset magnitude at 550 nm with zero tilt, preset tilt normalized back to
+	// E=0.26 at 550 nm, and the complete preset table.  Every other optical
+	// constituent, baked field, proposal, and seed is held fixed.  Measured on
+	// the operational values now hashed by record 2cdd0045... at the extended
+	// tier's five seeds, repeated through the explicit extended runner, the blue
+	// image-mean
+	// increase is +58.49%: +38.00 points (65.0%) from magnitude, +14.21 (24.3%)
+	// from tilt, and +6.28 (10.7%) from nonlinear coupling.  Per-seed blue
+	// ranges are 35.28-44.12%, 11.78-15.83%, and 50.93-62.72% for magnitude,
+	// tilt, and full; red/green full ranges are 38.58-46.90% / 41.58-51.81%.
+	// The envelopes below add margin to those measured ranges while still
+	// detecting a lost or double-applied factor.  This establishes the preset
+	// table's spectral-image magnitude and tilt contributions; it does not
+	// independently validate the Pel projection, which remains guarded by the
+	// direct divergence bound below.
+	Check( magnitudeDeltaMin[0] > 0.43 && magnitudeDeltaMax[0] < 0.56 &&
+		magnitudeDeltaMin[1] > 0.36 && magnitudeDeltaMax[1] < 0.54 &&
+		magnitudeDeltaMin[2] > 0.31 && magnitudeDeltaMax[2] < 0.48 &&
+		tiltDeltaMin[0] > -0.08 && tiltDeltaMax[0] < 0.01 &&
+		tiltDeltaMin[1] > -0.02 && tiltDeltaMax[1] < 0.06 &&
+		tiltDeltaMin[2] > 0.09 && tiltDeltaMax[2] < 0.19 &&
+		fullDeltaMin[0] > 0.35 && fullDeltaMax[0] < 0.51 &&
+		fullDeltaMin[1] > 0.38 && fullDeltaMax[1] < 0.56 &&
+		fullDeltaMin[2] > 0.47 && fullDeltaMax[2] < 0.68 &&
+		magnitudeMean[2] > 0.34 && magnitudeMean[2] < 0.42 &&
+		tiltMean[2] > 0.11 && tiltMean[2] < 0.17 &&
+		interactionMean[2] > 0.04 && interactionMean[2] < 0.09 &&
+		fullMean[2] > 0.54 && fullMean[2] < 0.63,
+		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
+	}
+
+	if( fastProjection ) {
+		// Fast-tier replacement for the original 32x48x256-spp image gate.
+		// This uniform 16x16x64-spp predictive-record scene keeps the complete
+		// parser -> medium bake -> Pel/spectral integrator -> film path while
+		// removing the showcase flame's 96x160x12 bake.  Measured over seeds
+		// 1, 7, 42, 314159, and 0xdeadbeef against preset-v1: Pel means span
+		// R 7.145-7.421, G 1.571-1.650, B 0.105-0.113; spectral means span
+		// R 6.394-7.107, G 1.315-1.516, B 0.038-0.053.  The deliberately
+		// wider envelopes retain platform/FP margin while rejecting black,
+		// missing-blue, fixture-scale, and accidentally identical routing.
+		Check( maximumDivergence[0] > 0.0 && maximumDivergence[0] < 0.30 &&
+			maximumDivergence[1] > 0.05 && maximumDivergence[1] < 0.30 &&
+			maximumDivergence[2] > 0.50 && maximumDivergence[2] < 3.0 &&
+			selectedPelMean[0] > 6.0 && selectedPelMean[0] < 9.0 &&
+			selectedPelMean[1] > 1.3 && selectedPelMean[1] < 2.0 &&
+			selectedPelMean[2] > 0.07 && selectedPelMean[2] < 0.16 &&
+			selectedSpectralMean[0] > 5.0 && selectedSpectralMean[0] < 8.0 &&
+			selectedSpectralMean[1] > 1.1 && selectedSpectralMean[1] < 1.8 &&
+			selectedSpectralMean[2] > 0.015 && selectedSpectralMean[2] < 0.09,
+			"fast preset-v1 Pel/spectral projection stays in its measured envelope" );
+		return;
+	}
+
+	// Measured single-thread against preset-v1 record
+	// 2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137
+	// (metadata-complete canonicalization e3a3392b; tripwire recorded by cdb1aad4;
+	// schema-v3 operational projection e006a52c644f2ea52ea7538788ea73e4948e1caf4162b42e62d236b55c9245c9)
+	// over the extended tier's paired seeds, repeated in standalone extended
+	// runs: red 0.60-3.46%, green 0.27-3.30%, and blue 3.73-13.00%
+	// (five-seed blue mean 9.44%).  The
+	// coefficient change explains the blue shift: E_eff rises from the
+	// fixture's constant 0.26 to 0.420169 at 550 nm (+61.6%; +76.9% at
+	// 450 nm and +53.4% at 650 nm), while its 380/780 tilt rises from 1.0
+	// to 1.311 (+31.1%).  The controlled ablation above attributes 65.0% of
+	// the full blue increase to E_eff magnitude and 24.3% to its tilt, so the
+	// divergence is coefficient-driven rather than a projection-routing error.
+	// The 15% blue cap leaves 2.00 percentage points above the measured maximum;
+	// red and green retain the fixture-era 5%
+	// tripwire.  These are consistency-only bounds.
+	Check( maximumDivergence[0] < 0.05 && maximumDivergence[1] < 0.05 &&
+		maximumDivergence[2] < 0.15,
+		"Pel preview channel-mean divergence stays inside the recorded bound" );
+}
+
 static bool ChannelsAgree( const double a[3], const double b[3], double relTol, double absFloor )
 {
 	for( int c = 0; c < 3; c++ ) {
+		if( !std::isfinite(a[c]) || !std::isfinite(b[c]) ) return false;
 		const double denom = std::fmax( std::fabs(a[c]), absFloor );
-		if( std::fabs(a[c] - b[c]) / denom > relTol ) return false;
+		const double relativeError = std::fabs(a[c] - b[c]) / denom;
+		if( !std::isfinite(relativeError) || relativeError > relTol ) return false;
 	}
 	return true;
+}
+
+static void TestNonFiniteImageStatisticsFailClosed()
+{
+	auto* capture = new CapturingRasterizerOutput();
+	capture->pixels.push_back(RISEColor(
+		RISEPel(std::nan(""),1.0,1.0),1.0));
+	const ImageStats stats = ComputeStats(*capture);
+	capture->release();
+	const double finite[3] = { 1.0,1.0,1.0 };
+	const double nonFinite[3] = { 1.0,std::nan(""),1.0 };
+	Check(!stats.valid && !ChannelsAgree(finite,nonFinite,0.1,1e-12),
+		"non-finite image data invalidates statistics and channel comparisons" );
 }
 
 static void PrintStats( const char* label, const ImageStats& s )
@@ -315,6 +1222,8 @@ static const char* kAutoAuto =
 	"auto_rasterizer\n{\n\tintegrator auto\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 static const char* kAutoUnset =
 	"auto_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoProbe =
+	"auto_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 
 // --- Phase-1b spectral fixtures.  Same shared body (kSceneCommon, RGB
 // painters JH-uplifted to spectra); only the rasterizer-chunk family changes
@@ -449,6 +1358,59 @@ standard_object
 }
 )SCENE";
 
+// Non-emissive heterogeneous medium definition.  The tests attach it once as
+// the global medium and once to an object interior so both scan paths are
+// independently observable.
+static const char* kHeterogeneousMediumDefinition = R"SCENE(
+painter_heterogeneous_medium
+{
+	name auto_test_heterogeneous
+	absorption 0 0 0
+	scattering 0 0 0
+	emission 0 0 0
+	phase isotropic
+	density_painter pnt_albedo
+	resolution 2
+	color_to_scalar luminance
+	bbox_min -1 -1 -1
+	bbox_max 1 1 1
+}
+)SCENE";
+
+static const char* kGlobalHeterogeneousMedium = R"SCENE(
+global_medium
+{
+	medium auto_test_heterogeneous
+}
+)SCENE";
+
+static const char* kGlassSphereWithInteriorMedium = R"SCENE(
+uniformcolor_painter
+{
+	name pnt_interior_glasstau
+	color 1.0 1.0 1.0
+}
+dielectric_material
+{
+	name mat_interior_glass
+	tau 0.9999
+	ior 1.5
+}
+sphere_geometry
+{
+	name interior_glassball
+	radius 0.4
+}
+standard_object
+{
+	name obj_interior_glass
+	geometry interior_glassball
+	position 0.0 0.0 0.5
+	material mat_interior_glass
+	interior_medium auto_test_heterogeneous
+}
+)SCENE";
+
 static const double kMeanTol  = 0.08;
 static const double kP99Tol   = 0.30;
 static const double kMaxTol   = 1.50;
@@ -533,14 +1495,20 @@ static void CheckDelegation(
 // static tier's job is the choice (PT/BDPT/VCM all converge to the same
 // image, so a radiance check could not tell a mis-route apart).
 //////////////////////////////////////////////////////////////////////
-static ImageStats RenderSceneBody( const char* rasterChunk, const std::string& body, const char* tag )
+static ImageStats RenderSceneBody(
+	const char* rasterChunk,
+	const std::string& body,
+	const char* tag,
+	const bool addEmissiveHomogeneous = false,
+	const bool addHomogeneousFire = false )
 {
 	const std::string scene = std::string("RISE ASCII SCENE 7\n") + kShader + rasterChunk + body;
 	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
 	if( p.empty() ) {
 		ImageStats s{}; return s;
 	}
-	const ImageStats s = RenderAndComputeStats( p.c_str() );
+	const ImageStats s = RenderAndComputeStats(
+		p.c_str(), addEmissiveHomogeneous, addHomogeneousFire );
 	std::remove( p.c_str() );
 	return s;
 }
@@ -550,10 +1518,14 @@ static void CheckStaticRoute(
 	const char* autoChunk,
 	const std::string& body,
 	const char* tag,
-	AutoIntegratorChoice expected )
+	AutoIntegratorChoice expected,
+	const bool addEmissiveHomogeneous = false,
+	const bool expectNoProbeRenders = false,
+	const bool addHomogeneousFire = false )
 {
 	std::cout << "Testing auto_rasterizer static routing: " << label << std::endl;
-	const ImageStats a = RenderSceneBody( autoChunk, body, tag );
+	const ImageStats a = RenderSceneBody(
+		autoChunk, body, tag, addEmissiveHomogeneous, addHomogeneousFire );
 	PrintStats( "auto", a );
 	Check( a.valid, std::string("render produced output: ") + label );
 	if( !a.valid ) return;
@@ -563,6 +1535,23 @@ static void CheckStaticRoute(
 	const bool ok = ( a.resolved == expected );
 	Check( ok, std::string("resolved to '") + ChoiceName(expected)
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
+	if( expectNoProbeRenders ) {
+		Check( a.probeRenders == 0u,
+			std::string("G10 short-circuits Tier-2 probe renders: ") + label );
+	}
+}
+
+static void CheckStaticFireRejection(
+	const char* label,
+	const char* autoChunk,
+	const std::string& body,
+	const char* tag )
+{
+	std::cout << "Testing auto_rasterizer preflight rejection: " << label << std::endl;
+	const ImageStats result = RenderSceneBody(
+		autoChunk,body,tag,false,true);
+	Check( !result.valid,
+		std::string("unregistered custom fire medium fails closed: ")+label );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -654,6 +1643,10 @@ static bool IsRasterizerHeader( const std::string& t )
 }
 
 static bool IsFilmHeader( const std::string& t ) { return t == "film"; }
+static bool IsFileOutputHeader( const std::string& t )
+{
+	return t == "file_rasterizeroutput";
+}
 
 // Read a corpus scene and return a variant whose rasterizer chunk is an
 // `auto_rasterizer { probe true }` and whose film is `dim x dim`.  Empty
@@ -681,6 +1674,16 @@ static std::string MakeAutoProbeScene( const char* corpusPath, unsigned int samp
 	for( size_t i = 0; i < lines.size(); ++i ) {
 		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
 		out.push_back( lines[i] );
+	}
+
+	// The harness installs its own in-memory capture. Remove corpus file
+	// outputs before derive so optional-codec authoring gates remain strict
+	// without making this routing oracle depend on PNG/EXR availability.
+	{
+		size_t os, oe;
+		while( FindChunk( out, IsFileOutputHeader, os, oe ) ) {
+			out.erase( out.begin() + os, out.begin() + oe + 1 );
+		}
 	}
 
 	// Shrink the film chunk (if present) to dim x dim for probe + render speed.
@@ -816,6 +1819,12 @@ static std::string MakeAutoSpectralProbeScene(
 		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
 		out.push_back( lines[i] );
 	}
+	{
+		size_t os, oe;
+		while( FindChunk( out, IsFileOutputHeader, os, oe ) ) {
+			out.erase( out.begin() + os, out.begin() + oe + 1 );
+		}
+	}
 
 	// Strip the legacy photon-map chunks (re-find after each erase since
 	// indices shift).  The pure spectral integrators never consume them.
@@ -915,6 +1924,1306 @@ public:
 	virtual bool Progress( const double, const double ) override { progressCalls++; return true; }
 	virtual void SetTitle( const char* ) override { titleCalls++; }
 };
+
+class MutatingReplayOutput : public FrameStoreNotificationOutput
+{
+public:
+	MutatingReplayOutput(
+		AutoRasterizer& rasterizer,
+		IProgressCallback& first,
+		IProgressCallback& second ) :
+		rasterizer_(rasterizer), first_(first), second_(second) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( !armed ) return;
+		rasterizer_.SetProgressCallback(useFirst_ ? &first_ : &second_);
+		useFirst_ = !useFirst_;
+		++mutations;
+	}
+
+	bool armed = false;
+	unsigned int mutations = 0u;
+
+protected:
+	~MutatingReplayOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+	IProgressCallback& first_;
+	IProgressCallback& second_;
+	bool useFirst_ = true;
+};
+
+class PersistentDelegateRemovalOutput : public FrameStoreNotificationOutput
+{
+public:
+	explicit PersistentDelegateRemovalOutput( AutoRasterizer& rasterizer ) :
+		rasterizer_(rasterizer) {}
+
+	void OnRasterizerFrameStoreChanged( FrameStore* store ) override
+	{
+		FrameStoreNotificationOutput::OnRasterizerFrameStoreChanged(store);
+		if( armed ) {
+			++removals;
+			rasterizer_.ForTest_FreeDelegateRasterizerOutputs();
+		}
+	}
+
+	bool armed = false;
+	unsigned int removals = 0u;
+
+protected:
+	~PersistentDelegateRemovalOutput() override {}
+
+private:
+	AutoRasterizer& rasterizer_;
+};
+
+static bool LoadAutoLifecycleJob(
+	IJobPriv*& job,
+	std::string& path,
+	const char* suffix
+	)
+{
+	const std::string scene =
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+	path = WriteSceneToTempFile(scene.c_str(),suffix);
+	return !path.empty() && RISE_CreateJobPriv(&job) && job &&
+		job->LoadAsciiSceneViaCst(path.c_str());
+}
+
+static void TestRetainedOutputSnapshots()
+{
+	const std::string label = "rasterizer callback snapshots retain every output";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"retained_output_snapshots") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+
+	IRasterizer* rasterizer = job->GetRasterizer();
+	job->RemoveRasterizerOutputs();
+	int firstNotifications = 0, secondNotifications = 0;
+	int firstImages = 0, secondImages = 0;
+	bool firstDestroyed = false, secondDestroyed = false;
+	IRasterizerOutput* first = new LifetimeFrameStoreOutput(*rasterizer,
+		true,false,false,firstNotifications,firstImages,firstDestroyed);
+	IRasterizerOutput* second = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,false,secondNotifications,secondImages,secondDestroyed);
+	rasterizer->AddRasterizerOutput(first);
+	rasterizer->AddRasterizerOutput(second);
+	safe_release(first);
+	safe_release(second);
+	ClearingOutputEnumerator enumerator(*rasterizer);
+	rasterizer->EnumerateRasterizerOutputs(enumerator);
+	Check(enumerator.callbacks == 2 && firstDestroyed && secondDestroyed,
+		"enumeration completes after a callback frees the live output list: " + label);
+
+	firstNotifications = secondNotifications = 0;
+	firstDestroyed = secondDestroyed = false;
+	first = new LifetimeFrameStoreOutput(*rasterizer,
+		false,true,false,firstNotifications,firstImages,firstDestroyed);
+	second = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,false,secondNotifications,secondImages,secondDestroyed);
+	rasterizer->AddRasterizerOutput(first);
+	rasterizer->AddRasterizerOutput(second);
+	safe_release(first);
+	safe_release(second);
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	if( concrete ) concrete->ReannounceFrameStore();
+	Check(concrete && firstNotifications == 2 && secondNotifications == 2 &&
+		firstDestroyed && secondDestroyed,
+		"FrameStore reannouncement completes after a callback frees the live list: " + label);
+
+	firstNotifications = secondNotifications = 0;
+	firstImages = secondImages = 0;
+	firstDestroyed = secondDestroyed = false;
+	first = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,true,firstNotifications,firstImages,firstDestroyed);
+	second = new LifetimeFrameStoreOutput(*rasterizer,
+		false,false,false,secondNotifications,secondImages,secondDestroyed);
+	rasterizer->AddRasterizerOutput(first);
+	rasterizer->AddRasterizerOutput(second);
+	const std::filesystem::path outputBase =
+		std::filesystem::temp_directory_path() /
+			("rise_retained_output_"+std::to_string(::getpid()));
+	IRasterizerOutput* fileOutput = nullptr;
+	const bool fileOutputCreated = RISE_API_CreateFileRasterizerOutput(
+		&fileOutput,outputBase.string().c_str(),false,1,8,eColorSpace_sRGB,
+		0.0,eDisplayTransform_None,eExrCompression_Zip,true) && fileOutput;
+	if( fileOutput ) rasterizer->AddRasterizerOutput(fileOutput);
+	safe_release(first);
+	safe_release(second);
+	safe_release(fileOutput);
+	const bool rendered = job->Rasterize();
+	const std::filesystem::path artifact = outputBase.string()+".ppm";
+	Check(rendered && firstImages == 1 && secondImages == 1 &&
+		firstDestroyed && secondDestroyed && fileOutputCreated &&
+		std::filesystem::exists(artifact),
+		"render output dispatch completes after a callback frees the live list: " + label);
+	std::filesystem::remove(artifact);
+
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestOutputDestructionReentryDoesNotHoldTopologyLock()
+{
+	const std::string label = "output destruction runs outside the topology lock";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"reentrant_output_destructor") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	IRasterizer* rasterizer = job->GetRasterizer();
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	job->RemoveRasterizerOutputs();
+	if( !concrete ) {
+		Check(false,"fixture exposes concrete rasterizer: "+label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+
+	bool removeDestroyed = false;
+	ReentrantDestructorOutput* removeOutput =
+		new ReentrantDestructorOutput(*rasterizer,removeDestroyed);
+	IRasterizerOutput* removeRaw = removeOutput;
+	rasterizer->AddRasterizerOutput(removeOutput);
+	safe_release(removeOutput);
+	concrete->RemoveRasterizerOutput(removeRaw);
+	Check(removeDestroyed,
+		"RemoveRasterizerOutput permits last-release destructor reentry: "+label);
+
+	bool freeDestroyed = false;
+	ReentrantDestructorOutput* freeOutput =
+		new ReentrantDestructorOutput(*rasterizer,freeDestroyed);
+	rasterizer->AddRasterizerOutput(freeOutput);
+	safe_release(freeOutput);
+	rasterizer->FreeRasterizerOutputs();
+	Check(freeDestroyed,
+		"FreeRasterizerOutputs permits last-release destructor reentry: "+label);
+
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestTransactionalDelegateReplay()
+{
+	const std::string label = "delegate replay publishes one reentrant state snapshot";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"transactional_replay") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+
+	IRasterizer* rasterizer = job->GetRasterizer();
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	job->RemoveRasterizerOutputs();
+	CountingProgressCallback initialProgress, replacementProgress;
+	CapturingRasterizerOutput* removed = new CapturingRasterizerOutput();
+	CapturingRasterizerOutput* survivor = new CapturingRasterizerOutput();
+	removed->addref();
+	survivor->addref();
+	TransactionalReplayOutput* mutator = concrete ? new TransactionalReplayOutput(
+		*concrete,replacementProgress,*removed,*survivor,2) : nullptr;
+	if( !mutator ) {
+		Check(false,"concrete rasterizer available: " + label);
+		safe_release(removed);
+		safe_release(survivor);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	mutator->addref();
+	rasterizer->AddRasterizerOutput(mutator);
+	rasterizer->AddRasterizerOutput(removed);
+	job->SetProgress(&initialProgress);
+
+	const bool rendered = job->Rasterize();
+	Check(rendered && mutator->mutated,
+		"replay callback performed SetProgress/Remove/Free/Add mutations: " + label);
+	Check(survivor->width > 0 && removed->width == 0,
+		"only the reentrantly committed output receives the render: " + label);
+	Check(replacementProgress.titleCalls > 0 && initialProgress.titleCalls == 0,
+		"only the reentrantly committed progress callback is published: " + label);
+
+	safe_release(mutator);
+	safe_release(removed);
+	safe_release(survivor);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestTransactionalFrameStoreReplay()
+{
+	const std::string label = "Auto FrameStore replay is transactional and reentrancy-safe";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"transactional_frame_store_replay") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	if( !rasterizer ) {
+		Check(false,"Auto rasterizer available: " + label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	job->RemoveRasterizerOutputs();
+	FailingFrameStoreNotificationOutput* failing =
+		new FailingFrameStoreNotificationOutput();
+	rasterizer->AddRasterizerOutput(failing);
+	const bool resolved = job->Rasterize();
+	FrameStore* original = rasterizer->GetFrameStore();
+	FrameStore* originalDelegate = rasterizer->ForTest_GetDelegateFrameStore();
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	failing->ArmFailuresAfter(2u,2u);
+	bool delegateReplayRejected = false;
+	try {
+		rasterizer->SetFrameStore(replacement);
+	}
+	catch( const std::runtime_error& ) {
+		delegateReplayRejected = true;
+	}
+	Check(resolved && delegateReplayRejected &&
+		rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == originalDelegate &&
+		failing->lastStore == original,
+		"delegate callback failure restores wrapper, delegate, and observer binding: " + label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(failing);
+
+	FrameStore* nested = new FrameStore(spec);
+	ReentrantFrameStoreSwapOutput* reentrant =
+		new ReentrantFrameStoreSwapOutput(*rasterizer,*nested);
+	rasterizer->AddRasterizerOutput(reentrant);
+	reentrant->Arm(replacement);
+	bool reentryRejected = false;
+	try {
+		rasterizer->SetFrameStore(replacement);
+	}
+	catch( const std::runtime_error& error ) {
+		reentryRejected = std::string(error.what()).find("reentrant") != std::string::npos;
+	}
+	Check(reentryRejected && rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == originalDelegate &&
+		reentrant->lastStore == original,
+		"nested binding is rejected and the original binding is replayed: " + label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(reentrant);
+	safe_release(nested);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestConcurrentOutputRegistrationRejectsFrameStoreSwap()
+{
+	const std::string label =
+		"concurrent output registration rejects a split FrameStore swap";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"concurrent_output_registration") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	FrameStore* original = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+	FrameStore* originalDelegate = rasterizer ?
+		rasterizer->ForTest_GetDelegateFrameStore() : nullptr;
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	std::thread registrar([&]() { rasterizer->AddRasterizerOutput(blocking); });
+	blocking->WaitUntilEntered();
+	bool rejected = false;
+	try {
+		rasterizer->SetFrameStore(replacement);
+	}
+	catch( const std::runtime_error& error ) {
+		rejected = std::string(error.what()).find("reentrant") != std::string::npos;
+	}
+	blocking->Continue();
+	registrar.join();
+	Check(resolved && rejected && rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == originalDelegate &&
+		blocking->lastStore == original,
+		"registration barrier leaves wrapper, delegate, and output on the old store: "+
+		label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(blocking);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestConcurrentAddRemoveIsAtomicAcrossDelegate()
+{
+	const std::string label = "Auto output Add/Remove rejects overlap before reconciliation";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"concurrent_add_remove") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	std::atomic<bool> addFailed(false);
+	std::atomic<bool> removeFinished(false);
+	std::atomic<bool> removeRejected(false);
+	std::mutex removeCompletionMutex;
+	std::condition_variable removeCompletionCondition;
+	std::thread adder([&]() {
+		try { rasterizer->AddRasterizerOutput(blocking); }
+		catch( ... ) { addFailed.store(true); }
+	});
+	blocking->WaitUntilEntered();
+	std::thread remover([&]() {
+		try { rasterizer->RemoveRasterizerOutput(blocking); }
+		catch( const std::runtime_error& error ) {
+			removeRejected.store(std::string(error.what()).find("reentrant or concurrent") !=
+				std::string::npos);
+		}
+		removeFinished.store(true);
+		removeCompletionCondition.notify_all();
+	});
+	bool removeFinishedPromptly = false;
+	{
+		std::unique_lock<std::mutex> lock(removeCompletionMutex);
+		removeFinishedPromptly = removeCompletionCondition.wait_for(
+			lock,std::chrono::seconds(2),[&]() { return removeFinished.load(); });
+	}
+	const bool removeFailedClosed = removeFinishedPromptly && removeRejected.load();
+	blocking->Continue();
+	adder.join();
+	remover.join();
+	rasterizer->RemoveRasterizerOutput(blocking);
+	Check(resolved && !addFailed.load() && removeFailedClosed &&
+		!rasterizer->ForTest_WrapperContainsOutput(blocking) &&
+		!rasterizer->ForTest_DelegateContainsOutput(blocking),
+		"overlap rejects promptly and a quiescent retry removes both topologies: "+label);
+	safe_release(blocking);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestSyncAndFrameStoreSwapAreSerialized()
+{
+	const std::string label = "Auto delegate sync rejects overlapping FrameStore swaps";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"sync_frame_store_swap") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool initiallyResolved = job->Rasterize();
+	FrameStore* original = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* delegateOnly = new FrameStore(spec);
+	FrameStore* replacement = new FrameStore(spec);
+	rasterizer->ForTest_SetDelegateFrameStore(delegateOnly);
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	blocking->ArmOnNotification(3u);
+	rasterizer->AddRasterizerOutput(blocking);
+	bool synchronized = false;
+	std::thread synchronizer([&]() {
+		synchronized = rasterizer->ResolveForFirePreflight(*job->GetScene());
+	});
+	blocking->WaitUntilEntered();
+	std::atomic<bool> swapFinished(false);
+	std::atomic<bool> swapRejected(false);
+	std::mutex swapCompletionMutex;
+	std::condition_variable swapCompletionCondition;
+	std::thread swapper([&]() {
+		try { rasterizer->SetFrameStore(replacement); }
+		catch( const std::runtime_error& error ) {
+			swapRejected.store(std::string(error.what()).find("reentrant or concurrent") !=
+				std::string::npos);
+		}
+		swapFinished.store(true);
+		swapCompletionCondition.notify_all();
+	});
+	bool swapFinishedPromptly = false;
+	{
+		std::unique_lock<std::mutex> lock(swapCompletionMutex);
+		swapFinishedPromptly = swapCompletionCondition.wait_for(
+			lock,std::chrono::seconds(2),[&]() { return swapFinished.load(); });
+	}
+	const bool swapFailedClosed = swapFinishedPromptly && swapRejected.load();
+	blocking->Continue();
+	synchronizer.join();
+	swapper.join();
+	rasterizer->SetFrameStore(replacement);
+	Check(initiallyResolved && synchronized && swapFailedClosed &&
+		rasterizer->GetFrameStore() == replacement &&
+		rasterizer->ForTest_GetDelegateFrameStore() == replacement,
+		"overlapping swap rejects promptly and a quiescent retry reaches both stores: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(blocking);
+	safe_release(delegateOnly);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestSyncFailureReplaysWrapperTopology()
+{
+	const std::string label =
+		"Auto delegate sync restores outputs detached by a failed rollback";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"sync_failure_topology") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool initiallyResolved = job->Rasterize();
+	FrameStore* wrapperStore = rasterizer ? rasterizer->GetFrameStore() : nullptr;
+	FrameStore::Spec spec;
+	spec.width = wrapperStore ? wrapperStore->Width() : 1u;
+	spec.height = wrapperStore ? wrapperStore->Height() : 1u;
+	FrameStore* delegateOnly = new FrameStore(spec);
+	FailingFrameStoreNotificationOutput* failing =
+		new FailingFrameStoreNotificationOutput();
+	rasterizer->AddRasterizerOutput(failing);
+	rasterizer->ForTest_SetDelegateFrameStore(delegateOnly);
+	failing->ArmFailuresAfter(1u,3u);
+	bool rejected = false;
+	try { rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( const std::runtime_error& ) { rejected = true; }
+	const bool replayed = rasterizer->ForTest_WrapperContainsOutput(failing) &&
+		rasterizer->ForTest_DelegateContainsOutput(failing);
+	bool recovered = false;
+	try { recovered = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( ... ) { recovered = false; }
+	Check(initiallyResolved && rejected && replayed && recovered &&
+		rasterizer->ForTest_GetDelegateFrameStore() == wrapperStore,
+		"failed sync replays the authoritative wrapper topology before retry: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(failing);
+	safe_release(delegateOnly);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolutionCallbackReentryFailsClosed()
+{
+	const std::string label =
+		"Auto delegate resolution callback reentry fails closed without deadlock";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"resolution_callback_reentry") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	ReentrantResolveOutput* reentrant = rasterizer ?
+		new ReentrantResolveOutput(*rasterizer,*job->GetScene()) : nullptr;
+	if( !reentrant ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(reentrant);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool resolved = false;
+	std::thread resolver([&]() {
+		try { resolved = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+		catch( ... ) { resolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: resolution callback exceeded the deadlock watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	resolver.join();
+	Check(resolved && reentrant->attempted && reentrant->rejected,
+		"nested resolution is rejected while the outer resolution completes: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(reentrant);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestCrossThreadSameAutoResolutionCallbackFailsClosed()
+{
+	const std::string label =
+		"same-Auto resolution callback worker fails closed without joining a wait";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"cross_thread_same_auto_resolution") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	CrossThreadSameAutoResolveOutput* reentrant = rasterizer ?
+		new CrossThreadSameAutoResolveOutput(*rasterizer,*job->GetScene()) : nullptr;
+	if( !reentrant ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(reentrant);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool resolved = false;
+	std::thread resolver([&]() {
+		try { resolved = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+		catch( ... ) { resolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: same-Auto worker callback exceeded the deadlock watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	resolver.join();
+	Check(resolved && reentrant->attempted && reentrant->rejected,
+		"the concurrent worker is rejected while the owning resolution completes: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(reentrant);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolutionCallbackCycleFailsClosed()
+{
+	const std::string label =
+		"two Auto delegate resolution callbacks reject an A-to-B-to-A cycle";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* firstJob = nullptr;
+	IJobPriv* secondJob = nullptr;
+	std::string firstPath, secondPath;
+	if( !LoadAutoLifecycleJob(firstJob,firstPath,"resolution_cycle_a") ||
+		!LoadAutoLifecycleJob(secondJob,secondPath,"resolution_cycle_b") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		if( !firstPath.empty() ) std::remove(firstPath.c_str());
+		if( !secondPath.empty() ) std::remove(secondPath.c_str());
+		return;
+	}
+	AutoRasterizer* first = dynamic_cast<AutoRasterizer*>(firstJob->GetRasterizer());
+	AutoRasterizer* second = dynamic_cast<AutoRasterizer*>(secondJob->GetRasterizer());
+	firstJob->RemoveRasterizerOutputs();
+	secondJob->RemoveRasterizerOutputs();
+	ReentrantResolveOutput* firstOutput = first && second ?
+		new ReentrantResolveOutput(*second,*secondJob->GetScene()) : nullptr;
+	ReentrantResolveOutput* secondOutput = first && second ?
+		new ReentrantResolveOutput(*first,*firstJob->GetScene()) : nullptr;
+	if( !firstOutput || !secondOutput ) {
+		Check(false,"two Auto rasterizers available: "+label);
+		safe_release(firstOutput);
+		safe_release(secondOutput);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		std::remove(firstPath.c_str());
+		std::remove(secondPath.c_str());
+		return;
+	}
+	first->AddRasterizerOutput(firstOutput);
+	second->AddRasterizerOutput(secondOutput);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool resolved = false;
+	std::thread resolver([&]() {
+		try { resolved = first->ResolveForFirePreflight(*firstJob->GetScene()); }
+		catch( ... ) { resolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: two-Auto resolution cycle exceeded the watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	resolver.join();
+	Check(resolved && firstOutput->attempted && secondOutput->attempted &&
+		secondOutput->rejected && first->ResolvedIntegrator() != AutoIntegratorChoice::Auto &&
+		second->ResolvedIntegrator() != AutoIntegratorChoice::Auto,
+		"the active-resolution stack rejects the cycle and both outer resolutions complete: "+
+		label);
+	first->FreeRasterizerOutputs();
+	second->FreeRasterizerOutputs();
+	safe_release(firstOutput);
+	safe_release(secondOutput);
+	safe_release(firstJob);
+	safe_release(secondJob);
+	std::remove(firstPath.c_str());
+	std::remove(secondPath.c_str());
+}
+
+static void TestCrossThreadResolutionCycleFailsClosed()
+{
+	const std::string label =
+		"callback worker handoff cannot hide an A-to-B-to-A Auto dependency";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* firstJob = nullptr;
+	IJobPriv* secondJob = nullptr;
+	std::string firstPath, secondPath;
+	if( !LoadAutoLifecycleJob(firstJob,firstPath,"cross_thread_resolution_a") ||
+		!LoadAutoLifecycleJob(secondJob,secondPath,"cross_thread_resolution_b") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		if( !firstPath.empty() ) std::remove(firstPath.c_str());
+		if( !secondPath.empty() ) std::remove(secondPath.c_str());
+		return;
+	}
+	AutoRasterizer* first = dynamic_cast<AutoRasterizer*>(firstJob->GetRasterizer());
+	AutoRasterizer* second = dynamic_cast<AutoRasterizer*>(secondJob->GetRasterizer());
+	firstJob->RemoveRasterizerOutputs();
+	secondJob->RemoveRasterizerOutputs();
+	CrossThreadOtherAutoResolveOutput* firstOutput = first && second ?
+		new CrossThreadOtherAutoResolveOutput(*second,*secondJob->GetScene()) : nullptr;
+	ReentrantResolveOutput* secondOutput = first && second ?
+		new ReentrantResolveOutput(*first,*firstJob->GetScene()) : nullptr;
+	if( !firstOutput || !secondOutput ) {
+		Check(false,"two Auto rasterizers available: "+label);
+		safe_release(firstOutput);
+		safe_release(secondOutput);
+		safe_release(firstJob);
+		safe_release(secondJob);
+		std::remove(firstPath.c_str());
+		std::remove(secondPath.c_str());
+		return;
+	}
+	first->AddRasterizerOutput(firstOutput);
+	second->AddRasterizerOutput(secondOutput);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool firstResolved = false;
+	std::thread firstThread([&]() {
+		try { firstResolved = first->ResolveForFirePreflight(*firstJob->GetScene()); }
+		catch( ... ) { firstResolved = false; }
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: callback-worker Auto handoff exceeded the watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	firstThread.join();
+	const bool secondResolved = second->ResolveForFirePreflight(*secondJob->GetScene());
+	Check(firstResolved && firstOutput->attempted && !firstOutput->resolved &&
+		firstOutput->rejectedConcurrent && secondOutput->attempted &&
+		!secondOutput->rejected && secondResolved,
+		"the worker B is rejected while A is active, then B resolves after A completes: "+label);
+	first->FreeRasterizerOutputs();
+	second->FreeRasterizerOutputs();
+	safe_release(firstOutput);
+	safe_release(secondOutput);
+	safe_release(firstJob);
+	safe_release(secondJob);
+	std::remove(firstPath.c_str());
+	std::remove(secondPath.c_str());
+}
+
+static void TestCrossThreadCallbackMutationFailsClosed()
+{
+	const std::string label =
+		"output callback cross-thread mutation fails closed instead of waiting on Auto";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"cross_thread_callback_mutation") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	FrameStoreNotificationOutput* target = new FrameStoreNotificationOutput();
+	CrossThreadRemoveOutput* callback = rasterizer ?
+		new CrossThreadRemoveOutput(*rasterizer,*target) : nullptr;
+	if( !rasterizer || !callback ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(callback);
+		safe_release(target);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(target);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool completed = false;
+	bool addSucceeded = false;
+	std::thread adder([&]() {
+		try {
+			rasterizer->AddRasterizerOutput(callback);
+			addSucceeded = true;
+		}
+		catch( ... ) {
+			addSucceeded = false;
+		}
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			completed = true;
+		}
+		completionCondition.notify_all();
+	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		if( !completionCondition.wait_for(lock,std::chrono::seconds(2),
+			[&]() { return completed; }) ) {
+			std::cerr << "FAIL: cross-thread callback mutation exceeded the watchdog: "
+				<< label << std::endl;
+			std::_Exit(1);
+		}
+	}
+	adder.join();
+	Check(resolved && addSucceeded && callback->rejected &&
+		rasterizer->ForTest_WrapperContainsOutput(target) &&
+		rasterizer->ForTest_DelegateContainsOutput(target) &&
+		rasterizer->ForTest_WrapperContainsOutput(callback) &&
+		rasterizer->ForTest_DelegateContainsOutput(callback),
+		"worker rejection returns to the callback and preserves both topologies: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(callback);
+	safe_release(target);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestProbeFailureRestoresFilmAndReferences()
+{
+	const std::string label =
+		"Auto probe unwind restores film dimensions and owned references";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"probe_unwind") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	const IFilm* film = job->GetScene() ? job->GetScene()->GetFilm() : nullptr;
+	const unsigned int width = film ? film->GetWidth() : 0u;
+	const unsigned int height = film ? film->GetHeight() : 0u;
+	const Scalar pixelAR = film ? film->GetPixelAR() : Scalar(0);
+	const unsigned int capturesBefore = rasterizer ?
+		rasterizer->ForTest_LiveProbeCaptureCount() : 0u;
+	bool rejected = false;
+	if( rasterizer && film ) {
+		try {
+			rasterizer->ForTest_ThrowInsideProbe(*job->GetScene());
+		}
+		catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()).find("injected Auto probe failure") !=
+				std::string::npos;
+		}
+	}
+	film = job->GetScene() ? job->GetScene()->GetFilm() : nullptr;
+	const bool recovered = rasterizer && film ?
+		rasterizer->ResolveForFirePreflight(*job->GetScene()) : false;
+	Check(rejected && film && film->GetWidth() == width && film->GetHeight() == height &&
+		film->GetPixelAR() == pixelAR && rasterizer->ForTest_LiveProbeCaptureCount() ==
+		capturesBefore && recovered,
+		"throwing after candidate output registration restores film, capture, and retry: "+label);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestNullDelegateBuildFailsClosedAndRetries()
+{
+	const std::string label =
+		"Auto null delegate construction fails closed without publishing completion";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"null_delegate_retry") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	bool rejected = false;
+	if( rasterizer ) {
+		rasterizer->ForTest_ReturnNullDelegateOnce();
+		try { rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+		catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()).find("failed to build") !=
+				std::string::npos;
+		}
+	}
+	const bool unpublished = rasterizer &&
+		rasterizer->ForTest_GetDelegateFrameStore() == nullptr;
+	const bool retried = rasterizer &&
+		rasterizer->ResolveForFirePreflight(*job->GetScene());
+	Check(rejected && unpublished && retried &&
+		rasterizer->ForTest_GetDelegateFrameStore() == rasterizer->GetFrameStore(),
+		"null construction rejects, leaves no delegate, and permits a later retry: "+label);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestReplayAddRefFailurePreservesRetains()
+{
+	const std::string label =
+		"final Auto replay snapshot exception releases each retained output exactly once";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"replay_addref_failure") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool resolved = job->Rasterize();
+	ThrowingAddRefOutput* output = new ThrowingAddRefOutput();
+	rasterizer->AddRasterizerOutput(output);
+	const unsigned int retainedBefore = output->refcount();
+	output->ArmThrowOnAddRef(3u);
+	bool rejected = false;
+	try { rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( const std::runtime_error& ) { rejected = true; }
+	output->Disarm();
+	Check(resolved && rejected && output->refcount() == retainedBefore &&
+		rasterizer->ForTest_WrapperContainsOutput(output) &&
+		rasterizer->ForTest_DelegateContainsOutput(output),
+		"throwing final retain leaves wrapper, delegate, and caller references balanced: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(output);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestReplayNonConvergenceIsBounded()
+{
+	const std::string label = "Auto replay rejects repeated callback mutation in bounded passes";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* candidateJob = nullptr;
+	std::string candidatePath;
+	if( !LoadAutoLifecycleJob(candidateJob,candidatePath,"candidate_nonconvergence") ) {
+		Check(false,"candidate fixture setup: "+label);
+		safe_release(candidateJob);
+		if( !candidatePath.empty() ) std::remove(candidatePath.c_str());
+		return;
+	}
+	AutoRasterizer* candidate =
+		dynamic_cast<AutoRasterizer*>(candidateJob->GetRasterizer());
+	candidateJob->RemoveRasterizerOutputs();
+	CountingProgressCallback firstProgress, secondProgress;
+	MutatingReplayOutput* mutator = candidate ? new MutatingReplayOutput(
+		*candidate,firstProgress,secondProgress) : nullptr;
+	if( !candidate || !mutator ) {
+		Check(false,"candidate Auto available: "+label);
+		safe_release(mutator);
+		safe_release(candidateJob);
+		std::remove(candidatePath.c_str());
+		return;
+	}
+	candidate->AddRasterizerOutput(mutator);
+	mutator->armed = true;
+	bool candidateRejected = false;
+	try { candidate->ResolveForFirePreflight(*candidateJob->GetScene()); }
+	catch( const std::runtime_error& error ) {
+		candidateRejected = std::string(error.what()).find("did not converge") !=
+			std::string::npos;
+	}
+	mutator->armed = false;
+	const bool candidateRecovered =
+		candidate->ResolveForFirePreflight(*candidateJob->GetScene());
+	Check(candidateRejected && mutator->mutations == 2u && candidateRecovered,
+		"candidate publication rejects a second mutation and can retry after quiescence: "+label);
+	candidate->FreeRasterizerOutputs();
+	safe_release(mutator);
+	safe_release(candidateJob);
+	std::remove(candidatePath.c_str());
+
+	IJobPriv* syncJob = nullptr;
+	std::string syncPath;
+	if( !LoadAutoLifecycleJob(syncJob,syncPath,"sync_nonconvergence") ) {
+		Check(false,"sync fixture setup: "+label);
+		safe_release(syncJob);
+		if( !syncPath.empty() ) std::remove(syncPath.c_str());
+		return;
+	}
+	AutoRasterizer* sync = dynamic_cast<AutoRasterizer*>(syncJob->GetRasterizer());
+	syncJob->RemoveRasterizerOutputs();
+	const bool syncResolved = syncJob->Rasterize();
+	PersistentDelegateRemovalOutput* remover = sync ?
+		new PersistentDelegateRemovalOutput(*sync) : nullptr;
+	if( !sync || !remover ) {
+		Check(false,"sync Auto available: "+label);
+		safe_release(remover);
+		safe_release(syncJob);
+		std::remove(syncPath.c_str());
+		return;
+	}
+	sync->AddRasterizerOutput(remover);
+	remover->armed = true;
+	sync->ForTest_FreeDelegateRasterizerOutputs();
+	bool syncRejected = false;
+	try { sync->ResolveForFirePreflight(*syncJob->GetScene()); }
+	catch( const std::runtime_error& error ) {
+		syncRejected = std::string(error.what()).find("topology could not be replayed") !=
+			std::string::npos;
+	}
+	remover->armed = false;
+	const bool syncRecovered = sync->ResolveForFirePreflight(*syncJob->GetScene());
+	Check(syncResolved && syncRejected && remover->removals == 2u && syncRecovered &&
+		sync->ForTest_WrapperContainsOutput(remover) &&
+		sync->ForTest_DelegateContainsOutput(remover),
+		"post-resolution reconciliation rejects repeated removal and later converges: "+label);
+	sync->FreeRasterizerOutputs();
+	safe_release(remover);
+	safe_release(syncJob);
+	std::remove(syncPath.c_str());
+}
+
+static void TestSyncReplayTracksReentrantRemoval()
+{
+	const std::string label =
+		"Auto sync replay retries after a callback removes a later snapshot output";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"sync_reentrant_removal") ) {
+		Check(false,"fixture setup: "+label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool initiallyResolved = job->Rasterize();
+	CapturingRasterizerOutput* removed = new CapturingRasterizerOutput();
+	ReentrantRemoveOutput* mutator = rasterizer ?
+		new ReentrantRemoveOutput(*rasterizer,*removed,3u) : nullptr;
+	if( !rasterizer || !mutator ) {
+		Check(false,"Auto rasterizer available: "+label);
+		safe_release(mutator);
+		safe_release(removed);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(mutator);
+	rasterizer->AddRasterizerOutput(removed);
+	rasterizer->ForTest_FreeDelegateRasterizerOutputs();
+	bool synchronized = false;
+	try { synchronized = rasterizer->ResolveForFirePreflight(*job->GetScene()); }
+	catch( ... ) { synchronized = false; }
+	Check(initiallyResolved && synchronized && mutator->removed &&
+		rasterizer->ForTest_WrapperContainsOutput(mutator) &&
+		rasterizer->ForTest_DelegateContainsOutput(mutator) &&
+		!rasterizer->ForTest_WrapperContainsOutput(removed) &&
+		!rasterizer->ForTest_DelegateContainsOutput(removed),
+		"revision-aware replay removes the stale delegate-only output: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(mutator);
+	safe_release(removed);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestPersistentRollbackDetachesBothTopologies()
+{
+	const std::string label = "persistent FrameStore rollback failure detaches both Auto topologies";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"persistent_rollback") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	FailingFrameStoreNotificationOutput* failing =
+		new FailingFrameStoreNotificationOutput();
+	rasterizer->AddRasterizerOutput(failing);
+	const bool resolved = job->Rasterize();
+	FrameStore* original = rasterizer->GetFrameStore();
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	failing->ArmFailuresAfter(1u,20u);
+	bool rejected = false;
+	try { rasterizer->SetFrameStore(replacement); }
+	catch( const std::runtime_error& ) { rejected = true; }
+	Check(resolved && rejected && rasterizer->GetFrameStore() == original &&
+		rasterizer->ForTest_GetDelegateFrameStore() == original &&
+		!rasterizer->ForTest_WrapperContainsOutput(failing) &&
+		!rasterizer->ForTest_DelegateContainsOutput(failing),
+		"unrecoverable output is removed from wrapper and delegate: "+label);
+	safe_release(failing);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolutionPublicationTracksConcurrentFrameStoreSwap()
+{
+	const std::string label =
+		"delegate resolution publication tracks a concurrent FrameStore swap";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"resolution_frame_store_swap") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	BlockingFrameStoreNotificationOutput* blocking =
+		new BlockingFrameStoreNotificationOutput();
+	blocking->ArmOnNotification(2u);
+	rasterizer->AddRasterizerOutput(blocking);
+	FrameStore* original = rasterizer->GetFrameStore();
+	FrameStore::Spec spec;
+	spec.width = original ? original->Width() : 1u;
+	spec.height = original ? original->Height() : 1u;
+	FrameStore* replacement = new FrameStore(spec);
+	bool resolved = false;
+	std::thread resolver([&]() {
+		resolved = rasterizer->ResolveForFirePreflight(*job->GetScene());
+	});
+	blocking->WaitUntilEntered();
+	rasterizer->SetFrameStore(replacement);
+	blocking->Continue();
+	resolver.join();
+	Check(resolved && rasterizer->GetFrameStore() == replacement &&
+		rasterizer->ForTest_GetDelegateFrameStore() == replacement,
+		"published delegate synchronizes to the store selected during replay: "+label);
+	rasterizer->FreeRasterizerOutputs();
+	safe_release(blocking);
+	safe_release(replacement);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestPostResolutionAddReentrancy()
+{
+	const std::string label = "post-resolution output attachment rejects nested topology changes";
+	std::cout << "Testing " << label << std::endl;
+	IJobPriv* job = nullptr;
+	std::string path;
+	if( !LoadAutoLifecycleJob(job,path,"post_resolution_add_reentrancy") ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	IRasterizer* rasterizer = job->GetRasterizer();
+	Rasterizer* concrete = dynamic_cast<Rasterizer*>(rasterizer);
+	job->RemoveRasterizerOutputs();
+	const bool initiallyRendered = job->Rasterize();
+	CountingProgressCallback replacementProgress;
+	CapturingRasterizerOutput* unused = new CapturingRasterizerOutput();
+	CapturingRasterizerOutput* survivor = new CapturingRasterizerOutput();
+	FrameStoreNotificationOutput* mutatorBase = nullptr;
+	TransactionalReplayOutput* mutator = concrete ? new TransactionalReplayOutput(
+		*concrete,replacementProgress,*unused,*survivor,1) : nullptr;
+	mutatorBase = mutator;
+	if( !mutator ) {
+		Check(false,"concrete rasterizer available: " + label);
+		safe_release(unused);
+		safe_release(survivor);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+	rasterizer->AddRasterizerOutput(mutator);
+	const bool rendered = job->Rasterize();
+	Check(initiallyRendered && mutator->reentrantAddRejected && !mutator->mutated,
+		"same-rasterizer nested attachment fails closed before other mutations: " + label);
+	Check(rendered && survivor->width == 0 && mutatorBase->images > 0,
+		"rejected nested attachment preserves the originally registered output: " + label);
+	safe_release(mutator);
+	safe_release(unused);
+	safe_release(survivor);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestResolvedAutoFirePreflight()
+{
+	const std::string label = "resolved unpinned Auto fails closed after fire is installed";
+	std::cout << "Testing " << label << std::endl;
+	const std::string scene =
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoAuto +
+		kSceneCommon + kGlassSphere;
+	const std::string path = WriteSceneToTempFile(scene.c_str(),"resolved_auto_fire");
+	IJobPriv* job = nullptr;
+	if( path.empty() || !RISE_CreateJobPriv(&job) || !job ||
+		!job->LoadAsciiSceneViaCst(path.c_str()) ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		if( !path.empty() ) std::remove(path.c_str());
+		return;
+	}
+	AutoRasterizer* rasterizer = dynamic_cast<AutoRasterizer*>(job->GetRasterizer());
+	job->RemoveRasterizerOutputs();
+	const bool firstRendered = job->Rasterize();
+	IsotropicPhaseFunction* phase = new IsotropicPhaseFunction();
+	HomogeneousFireTestMedium* fire = new HomogeneousFireTestMedium(*phase);
+	job->GetScene()->SetGlobalMedium(fire);
+	unsigned int predictedMs = 0xA5A5A5A5u;
+	unsigned int actualMs = 0x5A5A5A5Au;
+	const bool predictionRejected =
+		!job->PredictRasterizationTime(1,&predictedMs,&actualMs);
+	const bool rejected = !job->Rasterize();
+	Check(firstRendered && rasterizer &&
+		rasterizer->ResolvedIntegrator() == AutoIntegratorChoice::VCM,
+		"unpinned Auto first resolves to VCM on the caustic fixture: " + label);
+	Check(predictionRejected && predictedMs == 0xA5A5A5A5u &&
+		actualMs == 0x5A5A5A5Au,
+		"prediction preflight rejects the already-resolved unsupported delegate: " + label);
+	Check(rejected,
+		"render preflight rejects the already-resolved unsupported delegate: " + label);
+	safe_release(fire);
+	safe_release(phase);
+	safe_release(job);
+	std::remove(path.c_str());
+}
+
+static void TestDelegateOutputReplayReentrancy()
+{
+	const std::string label = "delegate output replay permits FrameStore callback reentrancy";
+	std::cout << "Testing " << label << std::endl;
+	const std::string scene =
+		std::string("RISE ASCII SCENE 7\n") + kShader + kAutoPT + kSceneCommon;
+	const std::string path = WriteSceneToTempFile(scene.c_str(),"reentrant_output");
+	IJobPriv* job = nullptr;
+	if( path.empty() || !RISE_CreateJobPriv(&job) || !job ||
+		!job->LoadAsciiSceneViaCst(path.c_str()) ) {
+		Check(false,"fixture setup: " + label);
+		safe_release(job);
+		std::remove(path.c_str());
+		return;
+	}
+
+	IRasterizer* rasterizer = job->GetRasterizer();
+	FrameStoreNotificationOutput* late = new FrameStoreNotificationOutput();
+	late->addref();
+	ReentrantFrameStoreOutput* reentrant =
+		new ReentrantFrameStoreOutput(*rasterizer,*late);
+	reentrant->addref();
+	rasterizer->AddRasterizerOutput(reentrant);
+
+	const bool rendered = job->Rasterize();
+	Check(rendered,"render completes without replay-lock deadlock: " + label);
+	Check(reentrant->reentered,
+		"candidate replay callback re-entered AddRasterizerOutput: " + label);
+	Check(late->notifications >= 2,
+		"reentrantly added output reached both wrapper and delegate: " + label);
+
+	safe_release(reentrant);
+	safe_release(late);
+	safe_release(job);
+	std::remove(path.c_str());
+}
 
 //////////////////////////////////////////////////////////////////////
 // TestDelegateStateForwarding -- the AutoRasterizer is a delegating
@@ -1072,18 +3381,41 @@ static void TestAutoParamPassThrough()
 	std::remove( p.c_str() );
 }
 
-int main()
+int main( const int argc, const char* const argv[] )
 {
+	struct TempOptionsCleanup
+	{
+		std::string path;
+		~TempOptionsCleanup()
+		{
+			if( !path.empty() ) std::remove(path.c_str());
+		}
+	} tempOptions;
+	bool extendedFireAblation = false;
+	bool firePreviewOnly = false;
+	for( int i=1; i<argc; ++i ) {
+		if( std::string(argv[i])=="--extended-fire-ablation" ) {
+			extendedFireAblation = true;
+		} else if( std::string(argv[i])=="--fire-preview-only" ) {
+			firePreviewOnly = true;
+		} else {
+			std::cerr << "unknown argument: " << argv[i] << std::endl;
+			return 2;
+		}
+	}
+	ProcessWatchdog watchdog(extendedFireAblation ? 900u : 120u);
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
 	// pointing GlobalOptions at a temp file that drops the activation gate
-	// to 1 and sets a cheap probe (spp 4, half-res).  MUST be set before any
+	// to 1 and sets a cheap probe (spp 4, quarter-res).  MUST be set before any
 	// GlobalOptions() access (it is a lazy singleton read once) — i.e. before
 	// the first render.  Phase-1/2 scenes carry no `probe` line, so the
 	// lowered activation gate never reaches them (probe defaults off).
 	{
-		char optPath[256];
-		std::snprintf( optPath, sizeof(optPath),
-			"/tmp/auto_probe_test_opts_%d.txt", static_cast<int>(::getpid()) );
+		std::ostringstream optFilename;
+		optFilename << "auto_probe_test_opts_" << ::getpid() << ".txt";
+		const std::string optPath = (std::filesystem::temp_directory_path()/
+			optFilename.str()).string();
+		tempOptions.path = optPath;
 		std::ofstream ofs( optPath );
 		ofs << "auto_probe_activation_spp 1\n"
 		    << "auto_probe_spp 4\n"
@@ -1095,13 +3427,28 @@ int main()
 		    << "auto_probe_variance_renders 2\n";
 		ofs.close();
 #ifdef _WIN32
-		_putenv_s( "RISE_OPTIONS_FILE", optPath );
+		_putenv_s( "RISE_OPTIONS_FILE", optPath.c_str() );
 #else
-		setenv( "RISE_OPTIONS_FILE", optPath, 1 );
+		setenv( "RISE_OPTIONS_FILE", optPath.c_str(), 1 );
 #endif
 	}
 
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
+	std::cout << std::endl;
+	TestNonFiniteImageStatisticsFailClosed();
+	if( extendedFireAblation || firePreviewOnly ) {
+		std::cout << "--- Fire Pel preview consistency ---" << std::endl;
+		TestFirePelPreviewDivergence(extendedFireAblation);
+	} else {
+		std::cout << "--- Fire Pel preview consistency: fast projection ---" << std::endl;
+		TestFirePelPreviewDivergence(false,true);
+	}
+	if( firePreviewOnly ) {
+		std::cout << std::endl;
+		std::cout << "Passed: " << passCount << std::endl;
+		std::cout << "Failed: " << failCount << std::endl;
+		return failCount == 0 ? 0 : 1;
+	}
 
 	// Pinned delegations: auto(X) must resolve to X and match X_pel_rasterizer.
 	CheckDelegation( "pin pt   -> pathtracing_pel", kAutoPT,   "auto_pt",   kRefPT,   "ref_pt",   AutoIntegratorChoice::PT );
@@ -1120,17 +3467,41 @@ int main()
 	//     frozen (soon-dangling) progress callback / output set -> PC=0.
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
+	TestRetainedOutputSnapshots();
+	TestOutputDestructionReentryDoesNotHoldTopologyLock();
+	TestTransactionalDelegateReplay();
+	TestTransactionalFrameStoreReplay();
+	TestConcurrentOutputRegistrationRejectsFrameStoreSwap();
+	TestConcurrentAddRemoveIsAtomicAcrossDelegate();
+	TestSyncAndFrameStoreSwapAreSerialized();
+	TestSyncFailureReplaysWrapperTopology();
+	TestResolutionCallbackReentryFailsClosed();
+	TestCrossThreadSameAutoResolutionCallbackFailsClosed();
+	TestResolutionCallbackCycleFailsClosed();
+	TestCrossThreadResolutionCycleFailsClosed();
+	TestCrossThreadCallbackMutationFailsClosed();
+	TestProbeFailureRestoresFilmAndReferences();
+	TestNullDelegateBuildFailsClosedAndRetries();
+	TestReplayAddRefFailurePreservesRetains();
+	TestReplayNonConvergenceIsBounded();
+	TestSyncReplayTracksReentrantRemoval();
+	TestPersistentRollbackDetachesBothTopologies();
+	TestResolutionPublicationTracksConcurrentFrameStoreSwap();
+	TestPostResolutionAddReentrancy();
+	TestDelegateOutputReplayReentrancy();
 	TestDelegateStateForwarding();
+	TestResolvedAutoFirePreflight();
 
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: auto-rasterizer UI param pass-through ---" << std::endl;
 	TestAutoParamPassThrough();
 
 	// --- Phase 2: Tier-1 static best-guess (integrator auto, no pin) ---
-	// The dispatcher introspects the assembled scene: a transmissive
-	// material + a positional point/spot light -> VCM (caustic-prone);
-	// everything else -> PT (the conservative default).  See
-	// docs/AUTO_RASTERIZER_DESIGN.md §5.
+	// The dispatcher introspects the assembled scene: any heterogeneous or
+	// emissive medium forces PT (fire/smoke G10); otherwise a transmissive
+	// material + a positional point/spot light -> VCM (caustic-prone), and
+	// everything else -> PT.  See docs/AUTO_RASTERIZER_DESIGN.md §5 and
+	// docs/FIRE_SMOKE_DESIGN.md §5.2 / §7.1 step 5.
 	std::cout << std::endl;
 	std::cout << "--- Phase 2: static best-guess routing ---" << std::endl;
 
@@ -1160,10 +3531,50 @@ int main()
 	CheckStaticRoute( "strong-indirect area-lit -> PT (probe picks BDPT)",
 		kAutoAuto, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
 
+	// (e) A non-emissive heterogeneous medium overrides the otherwise-valid
+	//     dielectric + point-light VCM signal and forces PT.
+	CheckStaticRoute( "heterogeneous medium + caustic signal -> PT",
+		kAutoAuto,
+		std::string(kSceneCommon) + kGlassSphere +
+			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
+		"p2_heterogeneous", AutoIntegratorChoice::PT );
+
+	// (f) The emissive half is independent: a homogeneous emitting medium
+	//     also overrides the competing VCM signal.  The scene language does
+	//     not author homogeneous emission, so this fixture uses the public
+	//     IJob medium API before the lazy render-time auto selection.
+	CheckStaticRoute( "emissive homogeneous medium + caustic signal -> PT",
+		kAutoAuto, std::string(kSceneCommon) + kGlassSphere,
+		"p2_emissive", AutoIntegratorChoice::PT, true );
+
+	// (f2) The plugin-shaped fire fixture is not registered in Job's authored
+	//     medium map and therefore has no identity-bearing authored digest.
+	CheckStaticFireRejection(
+		"homogeneous non-emissive custom fire medium has no authored identity",
+		kAutoAuto,std::string(kSceneCommon)+kGlassSphere,"p2_homogeneous_fire" );
+
+	// (g) Object-interior media use a separate scene scan from the global
+	//     slot.  Without that scan, this dielectric + point-light fixture
+	//     resolves VCM.
+	CheckStaticRoute( "object-interior heterogeneous medium + caustic signal -> PT",
+		kAutoAuto,
+		std::string(kSceneCommon) + kHeterogeneousMediumDefinition +
+			kGlassSphereWithInteriorMedium,
+		"p2_object_medium", AutoIntegratorChoice::PT );
+
+	// (h) Probe precedence: G10 is a capability gate, so it must return PT
+	//     before Tier 2 renders any unsupported candidate.  The test options
+	//     set activation_spp=1, making this probe live without the guard.
+	CheckStaticRoute( "probe-enabled heterogeneous medium short-circuits to PT",
+		kAutoProbe,
+		std::string(kSceneCommon) + kGlassSphere +
+			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
+		"p2_probe_medium", AutoIntegratorChoice::PT, false, true );
+
 	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
 	// The probe corrects the static tier on the cases it provably can't see.
 	// Each scene's rasterizer chunk is swapped for `auto_rasterizer{probe
-	// true}` at a shrunk film; the probe (spp 4, half-res) renders candidate
+	// true}` at a shrunk film; the probe (spp 4, quarter-res) renders candidate
 	// integrators in-process and routes per-scene.  Decisions verified by the
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
 	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
@@ -1231,6 +3642,11 @@ int main()
 		kAutoSpecAuto, std::string(kSceneCommon) + kGlassSphere, "as_vcm_static", AutoIntegratorChoice::VCM );
 	CheckStaticRoute( "spectral dielectric, area-lit only -> PT",
 		kAutoSpecAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "as_diel_nopos", AutoIntegratorChoice::PT );
+	CheckStaticRoute( "spectral heterogeneous medium + caustic signal -> PT",
+		kAutoSpecAuto,
+		std::string(kSceneCommon) + kGlassSphere +
+			kHeterogeneousMediumDefinition + kGlobalHeterogeneousMedium,
+		"as_heterogeneous", AutoIntegratorChoice::PT );
 
 	// Probe routing (probe on): the spectral dispersive caustic.  DOCUMENTED
 	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the

@@ -13,9 +13,10 @@
 #   files duplicates compile/link settings; this CMake script generates them
 #   from one source list.
 #
-# Prerequisites (one-time, done outside this script):
-#   1. Build the Library and CLI from build/VS2022/RISE.sln in both Debug and
-#      Release. This populates:
+# Prerequisites for direct CMake use (the tracked run_all_tests.ps1 performs
+# the incremental Library.vcxproj build automatically):
+#   1. Build the Library and CLI from build/VS2022/RISE.sln in the desired
+#      configuration. This populates:
 #        - bin/RISE.lib, dbin/RISE.lib
 #        - bin/*.dll, dbin/*.dll (OpenEXR + OIDN runtime)
 #        - build/VS2022/vcpkg_installed/x64-windows/x64-windows/{include,lib,...}
@@ -131,11 +132,11 @@ if(NOT EXISTS "${OPENPGL_DIR}/lib/openpgl.lib")
         "openpgl.lib to resolve pgl* symbols.")
 endif()
 
-if(NOT EXISTS "${RISE_LIB_RELEASE}" OR NOT EXISTS "${RISE_LIB_DEBUG}")
+if(NOT EXISTS "${RISE_LIB_RELEASE}" AND NOT EXISTS "${RISE_LIB_DEBUG}")
     message(FATAL_ERROR
-        "RISE.lib not found in bin/ and/or dbin/. Build the Library project in "
-        "Release and Debug before building rise-tests. Expected: "
-        "${RISE_LIB_RELEASE} and ${RISE_LIB_DEBUG}.")
+        "RISE.lib not found in bin/ or dbin/. Build the Library project in the "
+        "configuration you intend to test before building rise-tests. Expected "
+        "one of: ${RISE_LIB_RELEASE} or ${RISE_LIB_DEBUG}.")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -297,6 +298,7 @@ foreach(test_src ${TEST_SOURCES})
     target_compile_options(${test_name} PRIVATE
         /Zc:__cplusplus
         /permissive-
+        /UNDEBUG                    # legacy assert() oracles stay active in Release
         /wd4250                    # 'inherits via dominance' - benign with diamond inheritance
     )
 

@@ -35,9 +35,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -59,10 +62,30 @@ namespace RISE
 	namespace Implementation
 	{
 		class FrameStore;  // forward for the back-compat shim below
+		class FrameStoreBulkBracket;
+		class PixelBasedRasterizerHelper;
+		class Rasterizer;
+		class ViewportFrameStore;
+		using FrameStoreObserverDispatchContentionHook = void (*)(void* context);
+		//! Test instrumentation: observes an actual failed try-lock before a
+		//! second publication blocks on a FrameStore's callback dispatcher.
+		void SetFrameStoreObserverDispatchContentionHookForTests(
+			FrameStoreObserverDispatchContentionHook hook,
+			void* context );
 	}
 
 	namespace FrameStoreOutput
 	{
+		struct ActiveFireMedium
+		{
+			std::string mediaKind;             ///< "static_authored" in Phase A
+			std::string managerName;
+			std::string bindingKind;
+			std::string bindingOwner;
+			std::string authoredConfigDigest;  ///< canonical resolved authoring digest
+			std::vector<std::string> opticalRecordIds;
+		};
+
 		//! Bookkeeping carried through the render pipeline.  Producers
 		//! (rasterizers) populate fields they know about; consumers
 		//! (encoders, UI) read what they need and ignore the rest.
@@ -76,7 +99,29 @@ namespace RISE
 			uint64_t    sampleCount  = 0;      ///< samples-per-pixel converged so far
 			double      cameraExposureEV = 0.0;///< from ICamera::GetExposureCompensationEV
 			unsigned    frame        = 0;      ///< animation frame index
+			bool        denoisedContent = false; ///< current beauty pixels passed through denoising
+			std::string renderFidelityStatus;  ///< empty for non-fire; otherwise derived status
+			std::vector<std::string> renderReasonCodes; ///< sorted unique schema-v1 fire reasons
+			std::vector<std::string> activeFireOpticsRecordIds; ///< sorted unique exact-byte IDs
+			std::vector<ActiveFireMedium> activeFireMedia; ///< binding-keyed tagged provenance
+			std::vector<unsigned char> resolvedRenderConfigCoreV1; ///< canonical schema-v1 core
+			std::vector<unsigned char> rendererBuildV1; ///< canonical renderer_build_v1 bytes
+			std::string rendererBuildId; ///< SHA-256(rendererBuildV1)
+			std::string primaryProvenanceId; ///< last finalized primary for derivative linkage
+			std::string primaryArtifactSha256;
+			std::string primaryArtifactFidelity;
 		};
+
+		//! Fixed schema-v1 fire render reason-code membership.
+		bool IsAllowedFireRenderReasonCode( const std::string& reason );
+
+		//! Validates the complete semantic fire metadata envelope before render
+		//! authorization or artifact publication.  Empty renderFidelityStatus is
+		//! non-fire metadata and is intentionally rejected by this function.
+		bool ValidateFireOutputMetadata(
+			const Metadata& metadata,
+			std::string& error
+			);
 
 		//! Construction parameters for FrameStore.  Pass to the
 		//! FrameStore constructor.
@@ -118,6 +163,18 @@ namespace RISE
 			using ChannelId   = FrameStoreOutput::ChannelId;
 			using TargetFormat = FrameStoreOutput::TargetFormat;
 			using ViewTransform = FrameStoreOutput::ViewTransform;
+
+			struct Snapshot
+			{
+				Metadata metadata;
+				std::vector<RISEPel> beauty;
+				std::vector<Chel> alpha;
+				std::vector<RISEPel> albedo;
+				std::vector<Vector3> normal;
+				std::vector<float> depth;
+				std::vector<uint32_t> objectId;
+				std::vector<uint32_t> primitiveId;
+			};
 
 			explicit FrameStore( const Spec& spec );
 
@@ -254,13 +311,128 @@ namespace RISE
 
 			// ── metadata ──────────────────────────────────────────
 
-			const Metadata& Meta() const { return meta_; }
+			Metadata Meta() const
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				Metadata snapshot = meta_;
+				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				return snapshot;
+			}
 
-			//! Mutable accessor for producer-side metadata writes
-			//! (sample count updates, camera EV).  Note: this is
-			//! NOT tile-lock-protected; callers should write metadata
-			//! at frame boundaries (before MarkFrameComplete).
-			Metadata& MutableMeta() { return meta_; }
+			void SetMetadata( const Metadata& metadata )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( outputMetadataLeaseCount_ ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: output metadata is leased");
+				}
+				meta_ = metadata;
+				fireRenderPublicationBlocked_ = false;
+				completedFrame_.store(metadata.frame,std::memory_order_relaxed);
+			}
+
+			void SetCameraExposureEV( const double ev )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.cameraExposureEV = ev;
+			}
+
+			void SetFireFidelityMetadata(
+				const std::string& status,
+				const std::vector<std::string>& reasons,
+				const std::vector<std::string>& recordIds,
+				const std::vector<FrameStoreOutput::ActiveFireMedium>& media =
+					std::vector<FrameStoreOutput::ActiveFireMedium>(),
+				const std::vector<unsigned char>& renderConfig =
+					std::vector<unsigned char>(),
+				const std::vector<unsigned char>& rendererBuild =
+					std::vector<unsigned char>(),
+				const std::string& rendererBuildId = std::string()
+				)
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( outputMetadataLeaseCount_ ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: output metadata is leased");
+				}
+				meta_.renderFidelityStatus = status;
+				meta_.renderReasonCodes = reasons;
+				meta_.activeFireOpticsRecordIds = recordIds;
+				meta_.activeFireMedia = media;
+				meta_.resolvedRenderConfigCoreV1 = renderConfig;
+				meta_.rendererBuildV1 = rendererBuild;
+				meta_.rendererBuildId = rendererBuildId;
+				meta_.primaryProvenanceId.clear();
+				meta_.primaryArtifactSha256.clear();
+				meta_.primaryArtifactFidelity.clear();
+				fireRenderPublicationBlocked_ = false;
+			}
+
+			void SetPreparedFireFidelityMetadata(
+				const std::string& status,
+				const std::vector<std::string>& reasons,
+				const std::vector<std::string>& recordIds,
+				const std::vector<FrameStoreOutput::ActiveFireMedium>& media,
+				const std::vector<unsigned char>& renderConfig,
+				const std::vector<unsigned char>& rendererBuild,
+				const std::string& rendererBuildId )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( outputMetadataLeaseCount_ ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: output metadata is leased");
+				}
+				meta_.renderFidelityStatus = status;
+				meta_.renderReasonCodes = reasons;
+				meta_.activeFireOpticsRecordIds = recordIds;
+				meta_.activeFireMedia = media;
+				meta_.resolvedRenderConfigCoreV1 = renderConfig;
+				meta_.rendererBuildV1 = rendererBuild;
+				meta_.rendererBuildId = rendererBuildId;
+				meta_.primaryProvenanceId.clear();
+				meta_.primaryArtifactSha256.clear();
+				meta_.primaryArtifactFidelity.clear();
+				fireRenderPublicationBlocked_ = !status.empty();
+			}
+
+			void CompleteFireRenderPublication()
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				fireRenderPublicationBlocked_ = false;
+			}
+
+			bool AcquireExternalArtifactMetadataSnapshot(
+				Metadata& snapshot,
+				bool& metadataLease )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				metadataLease = false;
+				if( !meta_.renderFidelityStatus.empty() ) {
+					if( fireRenderPublicationBlocked_ || outputMetadataLeaseCount_ ) return false;
+				}
+				Metadata prepared = meta_;
+				prepared.frame = completedFrame_.load(std::memory_order_relaxed);
+				++outputMetadataLeaseCount_;
+				metadataLease = true;
+				snapshot = std::move(prepared);
+				return true;
+			}
+
+			void ReleaseExternalArtifactMetadataLease()
+			{
+				ReleaseFireMetadataLease();
+			}
+
+			void SetPrimaryFireArtifact(
+				const std::string& provenanceId,
+				const std::string& artifactSha256,
+				const std::string& artifactFidelity )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				meta_.primaryProvenanceId = provenanceId;
+				meta_.primaryArtifactSha256 = artifactSha256;
+				meta_.primaryArtifactFidelity = artifactFidelity;
+			}
 
 			// ── back-compat shim (Phase 1 only) ───────────────────
 
@@ -270,6 +442,9 @@ namespace RISE
 			//! copies from existing rasterizer outputs.  Phase 2
 			//! retires this shim — rasterizers will write directly
 			//! into the typed Beauty channel.
+			Snapshot CaptureSnapshot() const;
+			bool RestoreSnapshot( const Snapshot& snapshot );
+
 			IRasterImage&       AsBeautyRasterImage();
 			const IRasterImage& AsBeautyRasterImage() const;
 
@@ -279,6 +454,68 @@ namespace RISE
 			virtual ~FrameStore();
 
 		private:
+			friend class FrameStoreBulkBracket;
+			friend class Rasterizer;
+			friend class PixelBasedRasterizerHelper;
+			friend class ViewportFrameStore;
+
+			class ObserverMutationToken;
+
+			//! Prepared observer mutations are private transaction machinery for
+			//! ViewportFrameStore.  A prepared removal leaves the observer
+			//! registered but blocks new callback claims until commit or token
+			//! destruction.  A prepared registration reserves vector capacity
+			//! without publishing the observer.  Token destruction rolls either
+			//! preparation back while the owning FrameStore is retained by VFS.
+			ObserverMutationToken PrepareObserverRemoval(
+				IRenderObserver* observer );
+			ObserverMutationToken PrepareObserverRegistration();
+			static void LockPreparedObserverMutations(
+				const std::vector<ObserverMutationToken*>& tokens,
+				const std::function<void(size_t)>& afterLock );
+			static void UnlockPreparedObserverMutations(
+				const std::vector<ObserverMutationToken*>& tokens ) noexcept;
+			void CommitPreparedObserverRemoval(
+				ObserverMutationToken& token ) noexcept;
+			void CommitPreparedObserverRegistration(
+				ObserverMutationToken& token,
+				IRenderObserver* observer ) noexcept;
+			void CommitPreparedObserverReplacement(
+				ObserverMutationToken& registration,
+				ObserverMutationToken& removal,
+				IRenderObserver* observer ) noexcept;
+			//! Freezes the identity-bearing fire envelope while a rasterizer is
+			//! executing an authorized fire render.  Exposure/sample/frame progress
+			//! and finalized-primary linkage remain independently writable.
+			Metadata AcquireFireMetadataLeaseAndSnapshot()
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				Metadata snapshot = meta_;
+				snapshot.frame = completedFrame_.load(std::memory_order_relaxed);
+				++outputMetadataLeaseCount_;
+				return snapshot;
+			}
+
+			void ReleaseFireMetadataLease()
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( outputMetadataLeaseCount_ ) --outputMetadataLeaseCount_;
+			}
+
+			void UpdateAnimatedFireMetadata(
+				const std::vector<unsigned char>& renderConfig )
+			{
+				std::lock_guard<std::mutex> lock(metadataMutex_);
+				if( !outputMetadataLeaseCount_ || meta_.renderFidelityStatus.empty() ) {
+					throw std::runtime_error(
+						"output_provenance_unavailable: animated fire metadata update is unauthorized");
+				}
+				meta_.resolvedRenderConfigCoreV1 = renderConfig;
+				meta_.primaryProvenanceId.clear();
+				meta_.primaryArtifactSha256.clear();
+				meta_.primaryArtifactFidelity.clear();
+			}
+
 			//! Per-tile reader/writer lock.  `std::shared_mutex`
 			//! gives N readers / 1 writer semantics that match the
 			//! design intent (one rasterizer writes a tile while
@@ -348,22 +585,23 @@ namespace RISE
 			// AddObserver/RemoveObserver from inside their own
 			// callbacks).
 			//
-			// observerDispatchInFlight_ tracks how many dispatches
-			// have snapshots that may still hold pointers to
-			// observers in the list; RemoveObserver waits for this
-			// to reach zero before returning, so callers may safely
-			// destroy the observer immediately after RemoveObserver
-			// returns.  Self-detach (observer calls RemoveObserver
-			// from inside its own callback) is detected via the
-			// thread_local g_dispatchDepth flag in FrameStore.cpp;
-			// in that case RemoveObserver does NOT wait, since the
-			// caller is the dispatcher and waiting on itself would
-			// deadlock.  See L1 adversarial review P2.
+			// Per-observer callback counts let an external RemoveObserver
+			// wait for precisely the removed observer. Callback invocation is
+			// serialized per store. A callback-side removal that would need to
+			// wait for another active callback fails closed, avoiding raw-pointer
+			// lifetime cycles without globally serializing independent stores.
 			std::vector<IRenderObserver*>     observers_;
+			std::vector<IRenderObserver*>     observerRemovalsPrepared_;
+			size_t                            observerRegistrationReservations_ = 0u;
 			mutable std::mutex                observerMutex_;
-			int                               observerDispatchInFlight_{ 0 };
+			std::mutex                        observerCallbackDispatchMutex_;
+			std::map<IRenderObserver*,unsigned int> observerCallbacksInFlight_;
 			mutable std::condition_variable   observerDispatchDone_;
 
+			mutable std::mutex metadataMutex_;
+			unsigned int outputMetadataLeaseCount_ = 0u;
+			bool fireRenderPublicationBlocked_ = false;
+			std::atomic<unsigned int> completedFrame_;
 			Metadata meta_;
 
 			//! IRasterImage shim view onto beauty_.  Constructed
@@ -398,14 +636,44 @@ namespace RISE
 			//! observer list, releases the mutex, then invokes fn
 			//! on each snapshot entry.  Avoids deadlocks on
 			//! observer self-detach + the writer-blocked-on-slow-
-			//! observer case.  Defined in FrameStore.cpp; only used
-			//! inside that TU.
+			//! observer case. Reentrant observer dispatch fails closed;
+			//! callbacks may mutate registration but may not recursively
+			//! publish another FrameStore event. Defined in FrameStore.cpp;
+			//! only used inside that TU.
 			template <typename Fn>
 			void DispatchObservers( Fn&& fn );
+			bool RemoveObserverImpl( IRenderObserver* observer );
+			void NotifyTileComplete( size_t tileX, size_t tileY, uint64_t generation );
 
 			// FrameStore is non-copyable (Reference rules).
 			FrameStore( const FrameStore& )            = delete;
 			FrameStore& operator=( const FrameStore& ) = delete;
+		};
+
+		class FrameStore::ObserverMutationToken
+		{
+		public:
+			ObserverMutationToken( ObserverMutationToken&& other ) noexcept;
+			~ObserverMutationToken() noexcept;
+
+			ObserverMutationToken( const ObserverMutationToken& ) = delete;
+			ObserverMutationToken& operator=( const ObserverMutationToken& ) = delete;
+			ObserverMutationToken& operator=( ObserverMutationToken&& ) = delete;
+
+			bool IsPrepared() const { return owner_ != nullptr; }
+
+		private:
+			friend class FrameStore;
+			enum class Kind { Registration, Removal };
+
+			ObserverMutationToken( FrameStore& owner, Kind kind,
+				IRenderObserver* observer );
+			void Reset() noexcept;
+
+			FrameStore* owner_;
+			Kind kind_;
+			IRenderObserver* observer_;
+			std::unique_lock<std::mutex> lock_;
 		};
 
 		// L6e-1.1 — RAII guard for bulk full-image FrameStore writes.
@@ -441,13 +709,11 @@ namespace RISE
 		// rect, so a bulk-bracket holder waits cleanly behind any
 		// in-progress per-block writers (or vice versa).
 		//
-		// Each `EndTile` fires `OnTileComplete` to observers + bumps the
-		// global generation counter, so a full-image bulk write produces
-		// one observer notification per FrameStore tile (same fan-out as
-		// a fully-rendered per-block frame).  Observers MUST NOT throw
-		// from `OnTileComplete` — the destructor is implicitly
-		// `noexcept` and a throw during stack unwinding would call
-		// `std::terminate`.
+		// After every tile lock has been released, the guard bumps the
+		// global generation counter and emits one `OnTileComplete` per
+		// FrameStore tile (same fan-out as a fully-rendered per-block
+		// frame). Observer failures are contained so a noexcept scope guard
+		// cannot terminate an otherwise recoverable render unwind.
 		//
 		// IMPORTANT: do NOT construct nested inside an active per-tile
 		// bracket window — `std::shared_mutex` is non-recursive, so a
@@ -485,12 +751,9 @@ namespace RISE
 		{
 		public:
 			FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image );
-			// `noexcept` is explicit — the destructor calls
-			// `EndTile` on every tile, which fires `OnTileComplete`
-			// observers; observers MUST NOT throw (a throw during
-			// stack unwinding from a noexcept dtor calls
-			// `std::terminate`).  Marking explicit makes that
-			// contract self-documenting at the declaration site.
+			// Releases every tile before notifying observers. Observer
+			// failures are contained because a scope guard must not terminate
+			// an otherwise recoverable render unwind.
 			~FrameStoreBulkBracket() noexcept;
 
 			// Non-copyable, non-movable — strict scope semantics.

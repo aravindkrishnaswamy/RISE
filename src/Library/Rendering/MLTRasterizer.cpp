@@ -706,11 +706,13 @@ void* MLTRasterizer::RoundThread_ThreadProc( void* lpParameter )
 //////////////////////////////////////////////////////////////////////
 
 unsigned int MLTRasterizer::PredictTimeToRasterizeScene(
-	const IScene& /*pScene*/,
+	const IScene& pScene,
 	const ISampling2D& /*pSampling*/,
 	unsigned int* pActualTime
 	) const
 {
+	RequireFireRenderPreflight(
+		pScene,FireRenderPreflightAuthorization::Prediction);
 	if( pActualTime ) {
 		*pActualTime = 0;
 	}
@@ -1182,10 +1184,9 @@ bool MLTRasterizer::RenderFrameOfMLT(
 			// progressive, not final — mirrors the post-block
 			// behaviour in `PixelBasedRasterizerHelper`.
 			CopyToFrameStore_( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( *pImage, 0 );
-			}
+			ForEachRasterizerOutput([&]( IRasterizerOutput* output ) {
+				output->OutputIntermediateImage( *pImage, 0 );
+			});
 		}
 
 		// Report progress using mutations-done (same reason as
@@ -1250,6 +1251,8 @@ void MLTRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1363,6 +1366,8 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	FireOutputTopologyLease fireOutputTopologyLease(
+		*this,pScene,FireRenderPreflightAuthorization::Render);
 	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
@@ -1579,37 +1584,32 @@ bool MLTRasterizer::CopyToFrameStore_( const IRasterImage& src ) const
 void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputImage( img, rcRegion, frame );
-	}
-	// L6d-2b — gate Mark* on copy success.  Firing on a stale
-	// (dim-mismatched) canonical would mislead direct observers.
-	if( copied ) {
-		mFrameStore->MarkFrameComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkFrameComplete( frame );
+	});
 }
 
 void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
-	}
-	if( copied ) {
-		mFrameStore->MarkPreDenoiseComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputPreDenoisedImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkPreDenoiseComplete( frame );
+	});
 }
 
 void MLTRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	const bool copied = CopyToFrameStore_( img );
-	RasterizerOutputListType::const_iterator r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputDenoisedImage( img, rcRegion, frame );
-	}
-	if( copied ) {
-		mFrameStore->MarkDenoiseComplete( frame );
-	}
+	WithRetainedRasterizerOutputs([&]( const RasterizerOutputListType& outputs ) {
+		for( IRasterizerOutput* output : outputs ) {
+			output->OutputDenoisedImage( img, rcRegion, frame );
+		}
+		if( copied ) mFrameStore->MarkDenoiseComplete( frame );
+	});
 }

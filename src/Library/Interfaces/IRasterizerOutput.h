@@ -108,6 +108,26 @@ namespace RISE
 		//! must be thread-safe internally; the rasterizer holds no
 		//! lock during this dispatch.
 		virtual void OnRasterizerFrameStoreChanged( Implementation::FrameStore* /*framestore*/ ) {}
+
+	};
+
+	//! Queryable fire-output capability kept outside IRasterizerOutput's
+	//! historical vtable. Unknown/out-of-tree sinks fail closed at preflight;
+	//! in-tree display sinks and artifact publishers classify themselves.
+	enum class FireArtifactRouteKind
+	{
+		DisplayOnly,
+		PrimaryArtifact,
+		DerivativeArtifact,
+		UnavailableArtifact
+	};
+
+	class IFireRasterizerOutputRoute
+	{
+	protected:
+		virtual ~IFireRasterizerOutputRoute() {}
+	public:
+		virtual FireArtifactRouteKind FireArtifactRoute() const = 0;
 	};
 }
 

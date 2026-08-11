@@ -57,18 +57,26 @@ final class RenderImageBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Called from the render thread. Converts RGBA16 region to RGBA8 and builds an NSImage.
-    func handleOutput(
+    /// Called synchronously by the bridge. Copies and converts only the
+    /// updated region while the bridge-owned source pointer is valid.
+    func updateOutput(
         pImageData: UnsafePointer<UInt16>,
         width: UInt32, height: UInt32,
         rcTop: UInt32, rcLeft: UInt32,
         rcBottom: UInt32, rcRight: UInt32
-    ) -> NSImage? {
+    ) -> Bool {
         let w = Int(width)
         let h = Int(height)
+        guard w > 0, h > 0 else { return false }
         let totalBytes = w * h * 4
-
-        lock.lock()
+        let isFullFrame = rcTop == 0 && rcLeft == 0
+            && Int(rcBottom) >= h - 1 && Int(rcRight) >= w - 1
+        if isFullFrame {
+            lock.lock()
+        } else if !lock.try() {
+            return false
+        }
+        defer { lock.unlock() }
 
         // Initialize on first call or dimension change
         if self.width != w || self.height != h {
@@ -82,6 +90,7 @@ final class RenderImageBuffer: @unchecked Sendable {
         let left = Int(rcLeft)
         let bottom = min(Int(rcBottom), h - 1)
         let right = min(Int(rcRight), w - 1)
+        guard top <= bottom, left <= right else { return false }
 
         for y in top...bottom {
             for x in left...right {
@@ -93,7 +102,20 @@ final class RenderImageBuffer: @unchecked Sendable {
             }
         }
 
-        // Build CGImage from current buffer state
+        return true
+    }
+
+    /// Takes one coherent full-frame snapshot and builds the display image.
+    /// CoalescedImageDelivery calls this on its private queue, never on a
+    /// raster worker or the main actor.
+    func makeImage() -> NSImage? {
+        lock.lock()
+        let w = width
+        let h = height
+        guard w > 0, h > 0 else {
+            lock.unlock()
+            return nil
+        }
         let data = Data(pixelBuffer)
         lock.unlock()
 
@@ -167,28 +189,67 @@ final class CoalescedProgressDelivery: @unchecked Sendable {
     }
 }
 
-/// Same coalescing contract as `CoalescedProgressDelivery`, but for display
-/// images produced by the background VFS polling queue.
+/// Coalesces image construction as well as MainActor publication. Bridge
+/// callbacks do only bounded region conversion; the single private queue
+/// snapshots the latest complete buffer and constructs at most one NSImage
+/// per drain iteration.
 final class CoalescedImageDelivery: @unchecked Sendable {
     private let lock = NSLock()
-    private var latest: NSImage? = nil
-    private var deliveryScheduled = false
+    private let imageQueue = DispatchQueue(
+        label: "rise.display-image-coalescer", qos: .userInteractive)
+    private var pending = false
+    private var drainScheduled = false
+    private var lastDrainStart: UInt64 = 0
+    private let minimumIntervalNanoseconds: UInt64 = 33_333_333
 
-    func submit(_ image: NSImage) -> Bool {
+    func request(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
         lock.lock()
-        latest = image
-        defer { lock.unlock() }
-        guard !deliveryScheduled else { return false }
-        deliveryScheduled = true
-        return true
+        pending = true
+        guard !drainScheduled else {
+            lock.unlock()
+            return
+        }
+        drainScheduled = true
+        scheduleDrain(buffer: buffer, publish: publish)
+        lock.unlock()
     }
 
-    func takeLatest() -> NSImage? {
+    private func scheduleDrain(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let earliest = lastDrainStart &+ minimumIntervalNanoseconds
+        let delay = earliest > now ? earliest - now : 0
+        imageQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
+            [weak self] in
+            self?.drain(buffer: buffer, publish: publish)
+        }
+    }
+
+    private func drain(
+        buffer: RenderImageBuffer,
+        publish: @escaping @MainActor (NSImage) -> Void
+    ) {
         lock.lock()
-        defer { lock.unlock() }
-        deliveryScheduled = false
-        defer { latest = nil }
-        return latest
+        pending = false
+        lastDrainStart = DispatchTime.now().uptimeNanoseconds
+        lock.unlock()
+
+        if let image = buffer.makeImage() {
+            DispatchQueue.main.sync { publish(image) }
+        }
+
+        lock.lock()
+        if pending {
+            scheduleDrain(buffer: buffer, publish: publish)
+        } else {
+            drainScheduled = false
+        }
+        lock.unlock()
     }
 }
 
@@ -791,19 +852,18 @@ final class RenderViewModel: ObservableObject {
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
-    /// L8 round 9 / 16 — drives the lockless progressive-update path.
-    /// Worker threads no longer fire per-tile observer callbacks
-    /// into the bridge; instead this Timer polls the production
-    /// VFS's atomic generation counter at ~30 Hz.  When the counter
-    /// advances the bridge emits one full-image refresh.  Started
+    /// Drives the bounded progressive-update path. The timer polls the
+    /// production VFS at ~30 Hz for ordinary refinement; synchronous
+    /// try-lock tile callbacks additionally capture short-lived toggle
+    /// markers. Both feed the same image-construction coalescer. Started
     /// in startRender / start*Render, invalidated in finishRender
     /// + cancel paths.
     ///
     /// Round 16 — the Timer fires on the main run loop (cheap;
     /// just checks `pollInFlight` atomic + dispatches to
     /// `pollQueue`), but the actual poll work (`pollProductionVFS`
-    /// → RenderToBuffer → handleOutput → NSImage create) runs on
-    /// `pollQueue`, a serial `.userInteractive` background queue.
+    /// → RenderToBuffer → region copy) runs on `pollQueue`; full-image
+    /// construction runs on CoalescedImageDelivery's private queue.
     /// Pre-round-16 the whole poll ran on the main thread —
     /// ~20 ms / tick × 30 Hz = 60% main-thread utilisation, which
     /// felt like a perf regression (UI jitter) even though workers
@@ -811,7 +871,7 @@ final class RenderViewModel: ObservableObject {
     private var progressivePollTimer: Timer? = nil
 
     /// L8 round 16 — serial background queue for the heavy poll
-    /// work.  Serial so only one poll runs at a time
+    /// work. Serial so only one poll runs at a time
     /// (`pollProductionVFS` is internally re-entrant-safe via
     /// `bufferMutex_`, but funnelling through a serial queue
     /// avoids needing to skip-on-busy at the dispatch level).
@@ -907,17 +967,17 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
-        // L5a round-5 — two durable EDR renderers, one per role.
-        // Each binds to its respective bridge HDR-block slot once
-        // for the renderer's lifetime; both attach to their own
-        // CAMetalLayer (stacked production-bottom / interactive-
-        // top) when ViewportNSView lays them out.  nil if Metal
-        // is unavailable; in that case `edrAvailable` stays false
-        // and the toggle is disabled.
+        // The two durable role renderers share one presentation epoch because
+        // ViewportNSView attaches both to one CAMetalLayer. Ownership changes
+        // invalidate delayed work from the other role before it can present.
+        let edrPresentationCoordinator = MetalEDRPresentationCoordinator()
         self.productionEDRRenderer  = MetalEDRRenderer(bridge: bridge,
-                                                       role: .production)
+                                                       role: .production,
+                                                       presentationCoordinator: edrPresentationCoordinator)
         self.interactiveEDRRenderer = MetalEDRRenderer(bridge: bridge,
-                                                       role: .interactive)
+                                                       role: .interactive,
+                                                       presentationCoordinator: edrPresentationCoordinator)
+        self.interactiveEDRRenderer?.claimPresentationOwnership()
 
         // L5a — initial EDR availability probe + subscribe to
         // screen-config changes so the toggle dims/lights as the
@@ -1395,6 +1455,7 @@ final class RenderViewModel: ObservableObject {
         // executor checks all passing — and execute tool calls
         // against Scene state the production workers read off-main.
         chat.productionRenderStarting()
+        claimEDRPresentationOwnership(.production)
         viewportBridge?.stop()
 
         // Capture the canonical scrubbed time now, but advance the scene
@@ -1449,20 +1510,16 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
-        // L8 round 9 — progressive-update Timer.  Drives the
-        // lockless polling path: every ~33 ms (30 Hz) we call
+        // Progressive-update Timer: every ~33 ms (30 Hz) we call
         // `bridge.pollProductionVFS`, which checks the production
-        // VFS's atomic generation counter and emits a full-image
+        // VFS's retained FrameStore generation and emits a full-image
         // refresh only when workers have produced new pixels.
-        // Workers no longer fire per-tile observer callbacks into
-        // the bridge (round-9 design), so this Timer is the sole
-        // driver of progressive updates during a render.
+        // Worker tile callbacks independently capture short-lived toggle
+        // markers; the shared coalescer bounds full-image construction.
         //
-        // Timer fires on the main run loop — fine for the polling
-        // (atomic load + compare is ~10 ns when nothing has changed,
-        // a one-shot emit when dirty).  The emit-when-dirty path
-        // does the per-pixel encode + Swift block dispatch in
-        // ~5 ms at 800x600, well under the 33 ms tick budget.
+        // Timer fires on the main run loop. A no-change poll takes a short VFS
+        // chain snapshot and skips image conversion; a dirty poll's cost scales
+        // with the active frame and display hardware.
         //
         // L8 round 10 — added to `.common` run-loop mode so the
         // timer fires during user interaction (button hovers, menu
@@ -1532,18 +1589,14 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            guard let nsImage = buffer.handleOutput(
+            guard buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
             ) else { return }
-
-            if imageDelivery.submit(nsImage) {
-                Task { @MainActor [weak self] in
-                    guard let image = imageDelivery.takeLatest() else { return }
-                    self?.renderedImage = image
-                }
+            imageDelivery.request(buffer: buffer) { [weak self] image in
+                self?.renderedImage = image
             }
         }
 
@@ -1580,10 +1633,6 @@ final class RenderViewModel: ObservableObject {
                 // emit.
                 self.progressivePollTimer?.invalidate()
                 self.progressivePollTimer = nil
-                let bridgeRefFinal = self.bridge
-                self.pollQueue.async {
-                    bridgeRefFinal.pollProductionVFS()
-                }
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
@@ -1627,7 +1676,7 @@ final class RenderViewModel: ObservableObject {
                 // old sink-level frame-drop did not (the EDR frame reaches
                 // the layer through the FrameStore observer, bypassing the
                 // sink entirely).
-                self.viewportBridge?.startSuppressingInitialRender()
+                self.restartInteractiveAfterFinalProductionPoll()
             }
         }
     }
@@ -1642,6 +1691,7 @@ final class RenderViewModel: ObservableObject {
         // B2 review round 1: cancel any in-flight chat turn before
         // production kicks (see startRender).
         chat.productionRenderStarting()
+        claimEDRPresentationOwnership(.production)
         viewportBridge?.stop()
 
         isRegionProductionRender = false
@@ -1735,18 +1785,14 @@ final class RenderViewModel: ObservableObject {
              rcBottom: UInt32, rcRight: UInt32) in
             guard let pImageData = pImageData else { return }
 
-            guard let nsImage = buffer.handleOutput(
+            guard buffer.updateOutput(
                 pImageData: pImageData,
                 width: width, height: height,
                 rcTop: rcTop, rcLeft: rcLeft,
                 rcBottom: rcBottom, rcRight: rcRight
             ) else { return }
-
-            if imageDelivery.submit(nsImage) {
-                Task { @MainActor [weak self] in
-                    guard let image = imageDelivery.takeLatest() else { return }
-                    self?.renderedImage = image
-                }
+            imageDelivery.request(buffer: buffer) { [weak self] image in
+                self?.renderedImage = image
             }
         }
 
@@ -1778,10 +1824,6 @@ final class RenderViewModel: ObservableObject {
                 // emit.
                 self.progressivePollTimer?.invalidate()
                 self.progressivePollTimer = nil
-                let bridgeRefFinal = self.bridge
-                self.pollQueue.async {
-                    bridgeRefFinal.pollProductionVFS()
-                }
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
@@ -1805,7 +1847,7 @@ final class RenderViewModel: ObservableObject {
                 // without its initial render pass so the finished
                 // animation's last frame stays on screen until the user
                 // interacts.
-                self.viewportBridge?.startSuppressingInitialRender()
+                self.restartInteractiveAfterFinalProductionPoll()
             }
         }
     }
@@ -2164,7 +2206,32 @@ final class RenderViewModel: ObservableObject {
     func restartRefinement() {
         guard canUseSceneTransport, let vb = viewportBridge else { return }
         vb.stop()
+        claimEDRPresentationOwnership(.interactive)
         vb.start()
+    }
+
+    private func claimEDRPresentationOwnership(_ role: MetalEDRRendererRole) {
+        switch role {
+        case .production:
+            productionEDRRenderer?.claimPresentationOwnership()
+            interactiveEDRRenderer?.drainCommittedPresentations()
+        case .interactive:
+            productionEDRRenderer?.present()
+            productionEDRRenderer?.drainCommittedPresentations()
+            interactiveEDRRenderer?.claimPresentationOwnership()
+        }
+    }
+
+    private func restartInteractiveAfterFinalProductionPoll() {
+        let bridgeRef = bridge
+        pollQueue.async { [weak self] in
+            bridgeRef.pollProductionVFS()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.claimEDRPresentationOwnership(.interactive)
+                self.viewportBridge?.startSuppressingInitialRender()
+            }
+        }
     }
 
     // MARK: - Viewport render modes (P1, docs/gui/RENDER_MODES.md §5)
@@ -2860,8 +2927,7 @@ final class RenderViewModel: ObservableObject {
 
     /// L5a round-9 — gate for File > Save Rendered Image.  The
     /// production VFS's FrameStore exists once the rasterizer has
-    /// emitted at least one OutputImage; that happens any time we
-    /// transition through `.rendering`.  After completion or cancel
+    /// emitted a coherent OutputImage.  After completion or cancel
     /// the FrameStore retains its last contents (the bridge's
     /// `clearAll` does NOT free the VFS, per L4 §7.5), so saving
     /// from `.completed` or `.cancelled` produces the user's
@@ -2870,7 +2936,7 @@ final class RenderViewModel: ObservableObject {
     /// fresh output yet — disable until the next render starts.
     var canSaveImage: Bool {
         switch renderState {
-        case .rendering, .cancelling, .completed, .cancelled:
+        case .completed, .cancelled:
             return true
         default:
             return false
@@ -2882,8 +2948,8 @@ final class RenderViewModel: ObservableObject {
     /// (EXR default, then PNG / TIFF), looks up the encoder by
     /// extension, and dispatches through the bridge's format-aware
     /// `saveAs`.  HDR formats (EXR) write scene-referred linear
-    /// half/float values; LDR formats (PNG, TIFF-8) bake in the
-    /// current view exposure (today: 0 EV — no slider exposed yet).
+    /// FP32 FLOAT values; LDR formats (PNG, TIFF-8) bake in the
+    /// current view exposure.
     /// No-op if `canSaveImage` is false (e.g. no render yet).
     func saveRenderedImage() {
         guard canSaveImage else { return }
@@ -2936,12 +3002,15 @@ final class RenderViewModel: ObservableObject {
         case "tga":           formatName = "TGA"
         case "ppm":           formatName = "PPM"
         default:
-            // Unknown extension — fall back to EXR so we don't
-            // silently produce an unwritable file.
-            formatName = "EXR"
+            let alert = NSAlert()
+            alert.messageText = "Unsupported Image Format"
+            alert.informativeText = "No image encoder is available for \(url.lastPathComponent)."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
         }
 
-        let ok = bridge.save(as: url.path, format: formatName, exposureEV: 0.0)
+		let ok = bridge.save(as: url.path, format: formatName, exposureEV: viewExposureEV)
         if !ok {
             let alert = NSAlert()
             alert.messageText = "Save Failed"

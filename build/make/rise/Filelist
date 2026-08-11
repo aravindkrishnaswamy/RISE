@@ -78,6 +78,10 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\
 	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
+	$(PATHLIBRARY)Utilities/RISECBOR64.cpp				\
+	$(PATHLIBRARY)Utilities/FireOptics.cpp				\
+	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
+	$(PATHLIBRARY)Utilities/GaussLegendreQuadrature.cpp		\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
@@ -180,10 +184,12 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
+	$(PATHLIBRARY)Materials/ContinuationClosure.cpp						\
 	$(PATHLIBRARY)Materials/HomogeneousMedium.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
 	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\
+	$(PATHLIBRARY)Materials/NullBoundaryMaterial.cpp						\
 	$(PATHLIBRARY)Materials/LambertianSPF.cpp								\
 	$(PATHLIBRARY)Materials/LambertianEmitter.cpp							\
 	$(PATHLIBRARY)Materials/OrenNayarBRDF.cpp								\
@@ -338,6 +344,7 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
 	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp			\
+	$(PATHLIBRARY)Shaders/SSS/SSSContainment.cpp				\
 	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\
@@ -491,4 +498,3 @@ SRCLIB =\
 	$(SRCLIBMISC)					\
 	$(SRCLIBSCENEMANAGEMENT)		\
 	$(SRCLIBEXTLIB)
-

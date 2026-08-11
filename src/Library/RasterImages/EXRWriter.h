@@ -21,6 +21,9 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/FiniteMath.h"
 #include "EXRCompression.h"
+#include <string>
+#include <utility>
+#include <vector>
 
 #ifndef NO_EXR_SUPPORT
 	// OpenEXR includes
@@ -30,7 +33,6 @@
 	#include <ImfFrameBuffer.h>
 	#include <ImfIO.h>
 	#include <ImfArray.h>
-	#include <vector>
 	#include <limits>
 #endif
 
@@ -84,6 +86,8 @@ namespace RISE
 			EXR_COMPRESSION			compression;
 			bool					with_alpha;
 			bool					write_float;	///< true => 32-bit FLOAT channels (no FP16 65504 clamp); false => half
+			float					pixel_aspect_ratio;
+			std::vector<std::pair<std::string, std::string> > string_attributes;
 			unsigned int			horzpixels;
 			unsigned int			scanlines;
 
@@ -135,6 +139,8 @@ namespace RISE
 		#endif
 
 		public:
+			static std::string SoftwareAttribute();
+
 			EXRWriter(
 				IWriteBuffer&         buffer,
 				const COLOR_SPACE     color_space_,
@@ -143,6 +149,17 @@ namespace RISE
 				const bool            write_float_ = false );
 
 			virtual ~EXRWriter();
+
+			void SetStringAttributes(
+				const std::vector<std::pair<std::string, std::string> >& attributes )
+			{
+				string_attributes = attributes;
+			}
+
+			void SetPixelAspectRatio( const float ratio )
+			{
+				pixel_aspect_ratio = ratio;
+			}
 
 			void	BeginWrite( const unsigned int width, const unsigned int height );
 			void	WriteColor( const RISEColor& c, const unsigned int x, const unsigned int y );

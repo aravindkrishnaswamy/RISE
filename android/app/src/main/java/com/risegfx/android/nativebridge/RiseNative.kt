@@ -1,5 +1,6 @@
 package com.risegfx.android.nativebridge
 
+import androidx.annotation.Keep
 import java.nio.ByteBuffer
 
 /**
@@ -8,8 +9,10 @@ import java.nio.ByteBuffer
  * class.
  *
  * Threading rules (mirror the plan file):
- *   - [nativeInit] and [nativeSetCallback] are cheap and safe from the main
- *     thread.
+ *   - [nativeInit] is cheap and safe from the main thread.
+ *   - [nativeSetCallback] and [nativeClearCallback] serialize callback and
+ *     viewport ownership with blocking scene operations. They can wait for a
+ *     prior render to unwind and MUST run on a background thread.
  *   - [nativeLoadScene] parses a scene (blocking I/O) — call from
  *     Dispatchers.IO.
  *   - [nativeRasterize] is BLOCKING for the entire duration of a render
@@ -19,10 +22,32 @@ import java.nio.ByteBuffer
  *   - [nativeCancel] is fire-and-forget; it sets an atomic flag that the
  *     library polls on tile boundaries. A render can take several hundred
  *     ms to actually wind down after cancel.
+ *   - Every stateful `nativeViewport*` call carries the callback ownership
+ *     token. Native code validates it and try-locks the scene lifecycle for
+ *     the complete controller access, so a stale Compose tree cannot mutate
+ *     or dereference a replacement controller. If a load or render owns that
+ *     lifecycle, reads return their documented empty/zero/false default and
+ *     mutations return false or no-op immediately. Those transient defaults
+ *     are not persistent controller state; callers retry after interaction is
+ *     re-enabled.
  *
  * The shared library loads once at classload and stays resident for the
  * life of the process.
  */
+@Keep
+data class FramebufferSnapshot(
+    val width: Int,
+    val height: Int,
+    val generation: Long,
+    val byteCount: Int,
+    val copied: Boolean,
+)
+
+@Keep
+data class ProductionViewportHandoff(
+    val sceneTime: Double,
+)
+
 object RiseNative {
 
     init {
@@ -46,17 +71,31 @@ object RiseNative {
     external fun nativeInit(projectRoot: String, logFile: String, threadCount: Int)
 
     /**
-     * Register (or clear with null) the [RiseCallback] that will receive
-     * progress, tile-dirty and log notifications. Held as a JNI global ref
-     * on the native side.
+     * Register the [RiseCallback] that will receive progress, full-frame
+     * display invalidations, and log notifications. Held as a JNI global ref
+     * on the native side. Returns a nonzero ownership token. Replacement
+     * stops the prior owner's viewport and can block until its load/render
+     * call has returned, so callers must invoke this off the main thread.
+     * When a framebuffer already exists, the accepted callback receives its
+     * readiness notification synchronously before this function returns.
+     * [requestGeneration] must increase with ViewModel creation order; a
+     * delayed request older than the latest accepted generation returns zero.
      */
-    external fun nativeSetCallback(callback: RiseCallback?)
+    external fun nativeSetCallback(callback: RiseCallback, requestGeneration: Long): Long
 
     /**
-     * Parse an ASCII RISE scene file. Blocking. Returns false on parse
-     * error.
+     * Stop and detach the viewport/callback only if [ownerToken] still owns
+     * the native bridge. A delayed teardown from an older ViewModel is a
+     * no-op. This can wait for an in-flight render and must run off-main.
      */
-    external fun nativeLoadScene(absPath: String): Boolean
+    external fun nativeClearCallback(ownerToken: Long)
+    external fun nativeOwnsCallback(ownerToken: Long): Boolean
+
+    /**
+     * Parse an ASCII RISE scene file. Blocking. Returns false on parse error
+     * or when [ownerToken] no longer owns the native scene lifecycle.
+     */
+    external fun nativeLoadScene(absPath: String, ownerToken: Long): Boolean
 
     /**
      * Shrink the loaded scene's Film so the interactive preview
@@ -68,21 +107,27 @@ object RiseNative {
      * BEFORE [nativeViewportStart] so the override is in place when
      * the render thread spawns.
      */
-    external fun nativeScaleFilmToFit(surfaceW: Int, surfaceH: Int, maxLongEdge: Int): Boolean
+    external fun nativeScaleFilmToFit(
+        surfaceW: Int,
+        surfaceH: Int,
+        maxLongEdge: Int,
+        ownerToken: Long,
+    ): Boolean
 
     /**
      * Render the currently loaded scene. BLOCKING. Returns false if the
-     * render was cancelled or failed.
+     * render was cancelled, failed, or rejected for a stale [ownerToken].
      */
-    external fun nativeRasterize(): Boolean
+    external fun nativeRasterize(ownerToken: Long): Boolean
 
     // The auto-dispatcher's resolved concrete integrator ("pt"/"bdpt"/"vcm")
-    // after a render; "" if the active rasterizer isn't the auto dispatcher.
-    external fun nativeAutoResolvedIntegrator(): String
-    external fun nativeAutoResolveReason(): String
+    // after a render; "" if the active rasterizer isn't the auto dispatcher
+    // or ownerToken was superseded before this post-render query.
+    external fun nativeAutoResolvedIntegrator(ownerToken: Long): String
+    external fun nativeAutoResolveReason(ownerToken: Long): String
 
-    /** Request cooperative cancellation of an in-flight render. */
-    external fun nativeCancel()
+    /** Request cooperative cancellation; false when [ownerToken] is stale. */
+    external fun nativeCancel(ownerToken: Long): Boolean
 
     /**
      * Advance the in-memory scene to time `t` AND regenerate every
@@ -95,7 +140,7 @@ object RiseNative {
      * this call; the caller should already be in a "rendering" UI
      * state.
      */
-    external fun nativeSetSceneTime(t: Double)
+    external fun nativeSetSceneTime(t: Double, ownerToken: Long): Boolean
 
     /**
      * True if the loaded scene declares any keyframed objects.  Used
@@ -103,27 +148,29 @@ object RiseNative {
      * call right after [nativeLoadScene]; doesn't require the
      * interactive viewport controller to be running.
      */
-    external fun nativeHasAnimatedObjects(): Boolean
+    external fun nativeHasAnimatedObjects(ownerToken: Long): Boolean
 
     /**
-     * Canonical scene time tracked by the SceneEditController's edit
-     * history.  Updated by every time-scrub AND by Undo / Redo of a
-     * SetSceneTime edit, so this is the truth that production
-     * renders should pass to [nativeSetSceneTime] — the local
-     * `_sceneTime` StateFlow only tracks slider events, so it goes
-     * stale when undo/redo changes scene time without touching the
-     * slider.  Returns 0 when no controller is attached.
+     * Blocking production handoff. Captures the controller-owned scene time
+     * (including Undo/Redo), stops and destroys the interactive controller,
+     * then returns that time. When no viewport exists, [fallbackSceneTime] is
+     * returned. A stale owner returns null. MUST run off the main thread.
      */
-    external fun nativeViewportLastSceneTime(): Double
+    external fun nativePrepareProductionRender(
+        fallbackSceneTime: Double,
+        ownerToken: Long,
+    ): ProductionViewportHandoff?
 
     /**
-     * Expose the native-owned RGBA8 framebuffer as a direct [ByteBuffer].
-     * The returned buffer wraps C++ memory and is valid until the next
-     * [nativeLoadScene] with different dimensions or process shutdown.
+     * Copy the current RGBA8 framebuffer into caller-owned direct storage.
+     * Dimensions, generation, byte count, and pixels are captured under one
+     * native lock, so resize and concurrent display refreshes cannot tear a
+     * successful copy. [FramebufferSnapshot.copied] is false when [destination]
+     * is not direct or is too small for the atomically captured dimensions.
      *
      * Returns null before [RiseCallback.onSceneReady] has fired.
      */
-    external fun nativeGetFramebuffer(): ByteBuffer?
+    external fun nativeCopyFramebuffer(destination: ByteBuffer): FramebufferSnapshot?
 
     /**
      * Reset the render-time estimator and capture the current time as the
@@ -155,7 +202,7 @@ object RiseNative {
      * Adjust the view exposure compensation in EV stops and trigger an
      * immediate repaint at the new EV.  No rasterizer re-run; the
      * cached HDR FrameStore is re-rendered into the framebuffer
-     * through the same path tile callbacks use, then
+     * through the active display source's full-frame path, then
      * [RiseCallback.onRegionInvalidated] fires so Compose redraws.
      * Cheap enough to call on every drag tick of an exposure slider.
      */
@@ -175,20 +222,19 @@ object RiseNative {
     external fun nativeSetViewToneCurve(curve: Int)
 
     /**
-     * L8 round 9 — lockless progressive-update poll.  Called from a
-     * `Choreographer.postFrameCallback` loop at the display refresh
-     * rate during an active render.  The native impl checks the
-     * production VFS's atomic generation counter and emits one
+     * L8 round 9 — generation-gated progressive-update poll. Called from
+     * RenderViewModel's 30 Hz coroutine during an active render. The native
+     * impl briefly snapshots the
+     * production VFS chain, checks its FrameStore generation, and emits one
      * full-image refresh ONLY when the counter has advanced since
-     * the previous poll.  Cost when nothing has changed: ~10 ns
-     * (one atomic load + compare).  Cost when dirty: one full-image
-     * encode (~5 ms at 800x600).
+     * the previous poll.  A no-change poll avoids image conversion; a dirty
+     * poll's cost scales with the active image and device.
      *
      * Worker threads no longer fire per-tile observer callbacks
      * across the JNI boundary; they just bump the atomic generation
      * counter inside `FrameStore::EndTile`.  This poll is the sole
-     * driver of progressive UI updates during a render.  Safe to
-     * call at any rate; over-polling is cheap.
+     * driver of progressive UI updates during a render and is intended for
+     * display cadence, since its VFS snapshot can briefly contend with a bind.
      */
     external fun nativePollProductionVFS()
 
@@ -215,29 +261,16 @@ object RiseNative {
      * Build the live-preview rasterizer + sink, create the
      * SceneEditController, and start its render thread.  When
      * [suppressFirstFrame] is true (typical post-production-render
-     * restart), the first preview frame is dropped at the sink layer
-     * so the production image stays on screen until the user starts
-     * dragging — without that, a fast preview pass can blit through
-     * before the user notices.  The flag is latched on the sink
-     * INSIDE the start call (before the render thread spawns), which
-     * closes the race against the previous "Start, then SuppressNext"
-     * sequence: a cheap scene could complete pass #1 before the
-     * follow-up JNI hop returned.
+     * restart), the controller suppresses its synthetic initial render at
+     * source. The first real user edit still produces a frame; no sink-level
+     * one-shot can accidentally swallow it.
      */
-    external fun nativeViewportStart(suppressFirstFrame: Boolean): Boolean
-    external fun nativeViewportStop()
-    external fun nativeViewportIsRunning(): Boolean
-    external fun nativeViewportHasLivePreview(): Boolean
+    external fun nativeViewportStart(suppressFirstFrame: Boolean, ownerToken: Long): Boolean
+    external fun nativeViewportStop(ownerToken: Long): Boolean
+    external fun nativeViewportIsRunning(ownerToken: Long): Boolean
+    external fun nativeViewportHasLivePreview(ownerToken: Long): Boolean
 
-    /**
-     * Drop exactly one upcoming preview frame at the sink layer.  Call
-     * just before [nativeViewportStart] after a production render so the
-     * production image stays on screen until the user actually starts
-     * dragging.  Auto-clears after one drop.
-     */
-    external fun nativeViewportSuppressNextFrame()
-
-    external fun nativeViewportSetTool(tool: Int)
+    external fun nativeViewportSetTool(tool: Int, ownerToken: Long)
 
     /**
      * Read the active toolbar tool — the value most recently passed to
@@ -245,7 +278,7 @@ object RiseNative {
      * Returns 0 when no controller is attached.  Numeric values match
      * the SceneEditController::Tool enum.
      */
-    external fun nativeViewportCurrentTool(): Int
+    external fun nativeViewportCurrentTool(ownerToken: Long): Int
 
     /**
      * Map a tool int to its category int (Photoshop-style toolbar slot
@@ -267,7 +300,7 @@ object RiseNative {
      * default if nothing's been picked yet.  Returns Select (0) on
      * null controller / out-of-range category.
      */
-    external fun nativeViewportGetLastSubToolForCategory(category: Int): Int
+    external fun nativeViewportGetLastSubToolForCategory(category: Int, ownerToken: Long): Int
 
     /**
      * Recompute the gizmo handle array for the current Object selection
@@ -276,10 +309,10 @@ object RiseNative {
      * camera projection is degenerate.  Callers invoke this once per
      * preview frame before reading the handle array.
      */
-    external fun nativeViewportRefreshGizmoHandles()
+    external fun nativeViewportRefreshGizmoHandles(ownerToken: Long)
 
     /** Number of gizmo handles in the current array. */
-    external fun nativeViewportGizmoHandleCount(): Int
+    external fun nativeViewportGizmoHandleCount(ownerToken: Long): Int
 
     /**
      * Read one gizmo handle's fields packed into a primitive-double
@@ -288,7 +321,7 @@ object RiseNative {
      * `[kind, axis, screenX, screenY, screenRadius]`.  Returns a
      * length-5 array on success or an empty array on miss.
      */
-    external fun nativeViewportGizmoHandle(index: Int): DoubleArray
+    external fun nativeViewportGizmoHandle(index: Int, ownerToken: Long): DoubleArray
 
     /**
      * Hit-test the current gizmo handle array against an image-pixel-
@@ -297,24 +330,24 @@ object RiseNative {
      * mutate drag state; the Compose overlay uses this to render
      * hover feedback before a real pointer-down.
      */
-    external fun nativeViewportGizmoHandleAt(x: Double, y: Double): Int
+    external fun nativeViewportGizmoHandleAt(x: Double, y: Double, ownerToken: Long): Int
 
     /**
      * True iff a gizmo handle was hit on the most recent pointer-down
      * and the drag is still active (no pointer-up yet).
      */
-    external fun nativeViewportIsGizmoDragActive(): Boolean
+    external fun nativeViewportIsGizmoDragActive(ownerToken: Long): Boolean
 
     /**
      * Active drag handle kind / axis, or -1 when no drag is in progress.
      * Numeric values match SceneEditController::GizmoHandle::Kind.
      */
-    external fun nativeViewportActiveGizmoKind(): Int
-    external fun nativeViewportActiveGizmoAxis(): Int
+    external fun nativeViewportActiveGizmoKind(ownerToken: Long): Int
+    external fun nativeViewportActiveGizmoAxis(ownerToken: Long): Int
 
-    external fun nativeViewportPointerDown(x: Double, y: Double)
-    external fun nativeViewportPointerMove(x: Double, y: Double)
-    external fun nativeViewportPointerUp(x: Double, y: Double)
+    external fun nativeViewportPointerDown(x: Double, y: Double, ownerToken: Long)
+    external fun nativeViewportPointerMove(x: Double, y: Double, ownerToken: Long)
+    external fun nativeViewportPointerUp(x: Double, y: Double, ownerToken: Long)
 
     /**
      * Stable full-resolution camera dimensions for pointer-event coord
@@ -325,14 +358,18 @@ object RiseNative {
      * those flicker with subsampling and produce 4×–32× pan/orbit
      * jumps when the preview-scale state machine steps.
      */
-    external fun nativeViewportCameraDimensions(): Long
+    external fun nativeViewportCameraDimensions(ownerToken: Long): Long
 
     /**
      * Aspect-fitted viewport draw area in physical pixels. Single-pane
      * rendering keeps its fit-capped render resolution; the controller uses
      * this measurement for display-space gizmo geometry and drag sensitivity.
      */
-    external fun nativeViewportSetSurfaceDimensions(width: Int, height: Int): Boolean
+    external fun nativeViewportSetSurfaceDimensions(
+        width: Int,
+        height: Int,
+        ownerToken: Long,
+    ): Boolean
 
     /**
      * Scene's animation duration in scene-time units, derived from the
@@ -340,22 +377,22 @@ object RiseNative {
      * to size the timeline scrubber's slider range.  Returns 0 when
      * the scene declares no animation.
      */
-    external fun nativeViewportAnimationTimeEnd(): Double
+    external fun nativeViewportAnimationTimeEnd(ownerToken: Long): Double
 
     /**
      * Scene's frame count from the `animation_options` chunk.  Useful
      * if the UI wants to surface the count alongside the time-based
      * slider.  Returns 0 when no animation is declared.
      */
-    external fun nativeViewportAnimationNumFrames(): Int
+    external fun nativeViewportAnimationNumFrames(ownerToken: Long): Int
     /**
      * Timeline operations are refused when render admission wins the race
      * after the UI sampled its enabled state.  Callers must update local
      * scene time only when the value operation returns true.
      */
-    external fun nativeViewportScrubBegin(): Boolean
-    external fun nativeViewportScrub(t: Double): Boolean
-    external fun nativeViewportScrubEnd(): Boolean
+    external fun nativeViewportScrubBegin(ownerToken: Long): Boolean
+    external fun nativeViewportScrub(t: Double, ownerToken: Long): Boolean
+    external fun nativeViewportScrubEnd(ownerToken: Long): Boolean
 
     /**
      * Bracket a property-panel chevron drag — same scale-bump
@@ -363,13 +400,13 @@ object RiseNative {
      * these brackets the rapid-fire setProperty stream cancels every
      * in-flight render before the outer tiles get a chance.
      */
-    external fun nativeViewportBeginPropertyScrub()
-    external fun nativeViewportEndPropertyScrub()
-    external fun nativeViewportUndo()
-    external fun nativeViewportRedo()
-    external fun nativeViewportProductionRender(): Boolean
+    external fun nativeViewportBeginPropertyScrub(ownerToken: Long)
+    external fun nativeViewportEndPropertyScrub(ownerToken: Long)
+    external fun nativeViewportUndo(ownerToken: Long)
+    external fun nativeViewportRedo(ownerToken: Long)
+    external fun nativeViewportProductionRender(ownerToken: Long): Boolean
 
-    external fun nativeViewportRefreshProperties()
+    external fun nativeViewportRefreshProperties(ownerToken: Long)
     /**
      * Discriminator for which accordion section is expanded and
      * what the property panel below should display.  Numeric values
@@ -381,23 +418,35 @@ object RiseNative {
      *   4 = Light
      *   5 = Film (Output Settings — single Film per scene)
      */
-    external fun nativeViewportPanelMode(): Int
-    external fun nativeViewportPanelHeader(): String
-    external fun nativeViewportPropertyCount(): Int
-    external fun nativeViewportPropertyName(idx: Int): String
-    external fun nativeViewportPropertyValue(idx: Int): String
-    external fun nativeViewportPropertyDescription(idx: Int): String
-    external fun nativeViewportPropertyKind(idx: Int): Int
-    external fun nativeViewportPropertyEditable(idx: Int): Boolean
+    external fun nativeViewportPanelMode(ownerToken: Long): Int
+    external fun nativeViewportPanelHeader(ownerToken: Long): String
+    external fun nativeViewportPropertyCount(ownerToken: Long): Int
+    external fun nativeViewportPropertyName(idx: Int, ownerToken: Long): String
+    external fun nativeViewportPropertyValue(idx: Int, ownerToken: Long): String
+    external fun nativeViewportPropertyDescription(idx: Int, ownerToken: Long): String
+    external fun nativeViewportPropertyKind(idx: Int, ownerToken: Long): Int
+    external fun nativeViewportPropertyEditable(idx: Int, ownerToken: Long): Boolean
     /**
      * Quick-pick presets surfaced as a dropdown on a property row.
      * Empty (count == 0) for parameters whose chunk descriptor declared
      * none, in which case the panel falls back to a plain text edit.
      */
-    external fun nativeViewportPropertyPresetCount(idx: Int): Int
-    external fun nativeViewportPropertyPresetLabel(idx: Int, presetIdx: Int): String
-    external fun nativeViewportPropertyPresetValue(idx: Int, presetIdx: Int): String
-    external fun nativeViewportSetProperty(name: String, value: String): Boolean
+    external fun nativeViewportPropertyPresetCount(idx: Int, ownerToken: Long): Int
+    external fun nativeViewportPropertyPresetLabel(
+        idx: Int,
+        presetIdx: Int,
+        ownerToken: Long,
+    ): String
+    external fun nativeViewportPropertyPresetValue(
+        idx: Int,
+        presetIdx: Int,
+        ownerToken: Long,
+    ): String
+    external fun nativeViewportSetProperty(
+        name: String,
+        value: String,
+        ownerToken: Long,
+    ): Boolean
 
     /**
      * Accordion list entries for `category` (mirrors SceneEditCategory_*
@@ -405,8 +454,12 @@ object RiseNative {
      * cache by scene epoch and re-pull when [nativeViewportSceneEpoch]
      * advances.
      */
-    external fun nativeViewportCategoryEntityCount(category: Int): Int
-    external fun nativeViewportCategoryEntityName(category: Int, idx: Int): String
+    external fun nativeViewportCategoryEntityCount(category: Int, ownerToken: Long): Int
+    external fun nativeViewportCategoryEntityName(
+        category: Int,
+        idx: Int,
+        ownerToken: Long,
+    ): String
 
     /**
      * Scene-level active entity name for [category], independent of
@@ -415,23 +468,27 @@ object RiseNative {
      * populate the dropdown on first scene load with the scene's
      * current active entity rather than blank.
      */
-    external fun nativeViewportCategoryActiveName(category: Int): String
+    external fun nativeViewportCategoryActiveName(category: Int, ownerToken: Long): String
 
     /** Currently-selected accordion entry (drives the property panel). */
-    external fun nativeViewportSelectionCategory(): Int
-    external fun nativeViewportSelectionName(): String
+    external fun nativeViewportSelectionCategory(ownerToken: Long): Int
+    external fun nativeViewportSelectionName(ownerToken: Long): String
     /**
      * Apply a (category, name) selection.  Empty `name` opens the
      * section without picking a row.  Camera / Rasterizer selections
      * also activate the named entity (the rasterizer or camera the
      * next render will use).
      */
-    external fun nativeViewportSetSelection(category: Int, name: String): Boolean
+    external fun nativeViewportSetSelection(
+        category: Int,
+        name: String,
+        ownerToken: Long,
+    ): Boolean
 
     /**
      * Monotonic counter — bumped on any structural mutation that
      * could change a category's entity list.  UI watches it to know
      * when to re-pull the per-category lists.
      */
-    external fun nativeViewportSceneEpoch(): Int
+    external fun nativeViewportSceneEpoch(ownerToken: Long): Int
 }

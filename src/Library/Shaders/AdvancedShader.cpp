@@ -16,6 +16,7 @@
 #include "../Utilities/Optics.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
+#include "SSS/SSSContainment.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -68,7 +69,12 @@ void AdvancedShader::Shade(
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
 			RISEPel cthis = c;
-			op.pShaderOp->PerformOperation( rc, ri, caster, rs, cthis, ior_stack, pSPF?&scattered:0 );
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				op.pShaderOp->PerformOperation( rc, ri, caster, rs, cthis, ior_stack, pSPF?&scattered:0 );
+			} else {
+				op.pShaderOp->PerformOperation( rc, ri, caster, rs, cthis, ior_stack, pSPF?&scattered:0 );
+			}
 			switch( op.operation ) {
 				default:
 				case 'a':
@@ -131,7 +137,13 @@ Scalar AdvancedShader::ShadeNM(
 	for( i=shaderops.begin(), e=shaderops.end(); i!=e; i++ ) {
 		const SHADE_OP& op = *i;
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth ) {
-			const Scalar cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs, c, nm, ior_stack, pSPF?&scattered:0 );
+			Scalar cthis = 0;
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs, c, nm, ior_stack, pSPF?&scattered:0 );
+			} else {
+				cthis = op.pShaderOp->PerformOperationNM( rc, ri, caster, rs, c, nm, ior_stack, pSPF?&scattered:0 );
+			}
 
 			switch( op.operation ) {
 				default:
@@ -205,8 +217,14 @@ void AdvancedShader::ShadeHWSS(
 		if( rs.depth >= op.nMinDepth && rs.depth <= op.nMaxDepth )
 		{
 			Scalar opResult[SampledWavelengths::N];
-			op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs, caccum, swl,
-				ior_stack, pSPF?&scattered:0, opResult );
+			if( ShaderOpRequiresSSSContainment( *op.pShaderOp ) ) {
+				SSSContainmentScope containment;
+				op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs, caccum, swl,
+					ior_stack, pSPF?&scattered:0, opResult );
+			} else {
+				op.pShaderOp->PerformOperationHWSS( rc, ri, caster, rs, caccum, swl,
+					ior_stack, pSPF?&scattered:0, opResult );
+			}
 
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
 			{
@@ -251,5 +269,4 @@ void AdvancedShader::ResetRuntimeData() const
 		i->pShaderOp->ResetRuntimeData();
 	}
 }
-
 

@@ -354,7 +354,7 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 					weights += weight;
 				}
 
-				if( temporal_samples ) {
+				if( temporal_samples && !pScene.FireTemporalHold() ) {
 					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 				}
 

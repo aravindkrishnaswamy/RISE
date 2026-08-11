@@ -29,6 +29,7 @@
 #define MICROFACET_ENERGY_LUT_
 
 #include "Math3D/Math3D.h"
+#include "GaussLegendreQuadrature.h"
 #include "Optics.h"
 #include "math_utils.h"
 #include <array>
@@ -355,27 +356,6 @@ namespace MicrofacetEnergyLUT
 		return r_max( 0.0, (1.0 - LookupEss( c, alphaEff )) * c / (RISE::PI * Z) );
 	}
 
-	/// 21-point Gauss-Legendre quadrature nodes on [0,1].
-	static const int GL_N = 21;
-	static const Scalar GL_nodes[21] = {
-		0.0031239146898053, 0.0163865807168468, 0.0399503329247996, 0.0733183177083414, 
-		0.1157800182621611, 0.1664305979012938, 0.2241905820563901, 0.2878289398962806, 
-		0.3559893415987995, 0.4272190729195525, 0.5000000000000000, 0.5727809270804476, 
-		0.6440106584012005, 0.7121710601037194, 0.7758094179436099, 0.8335694020987061, 
-		0.8842199817378389, 0.9266816822916586, 0.9600496670752003, 0.9836134192831532, 
-		0.9968760853101948
-	};
-
-	/// 21-point Gauss-Legendre quadrature weights on [0,1].
-	static const Scalar GL_weights[21] = {
-		0.0080086141288871, 0.0184768948854263, 0.0285672127134286, 0.0380500568141897, 
-		0.0467222117280170, 0.0543986495835742, 0.0609157080268643, 0.0661344693166687, 
-		0.0699436973955366, 0.0722622394525271, 0.0730405654382176, 0.0722622394525271, 
-		0.0699436973955366, 0.0661344693166687, 0.0609157080268643, 0.0543986495835742, 
-		0.0467222117280170, 0.0380500568141897, 0.0285672127134286, 0.0184768948854263, 
-		0.0080086141288871
-	};
-
 	/// Compute the hemispherical Fresnel average for a conductor:
 	///   F_avg = 2 * integral_0^1 F(mu) * mu d_mu
 	/// Uses 21-point Gauss-Legendre quadrature.
@@ -390,14 +370,14 @@ namespace MicrofacetEnergyLUT
 			t = Vector3Ops::Normalize( Vector3Ops::Cross( n, Vector3(0,1,0) ) );
 
 		T sum = 0.0;
-		for( int i = 0; i < GL_N; i++ )
+		for( unsigned int i = 0; i < GaussLegendre21::NodeCount; i++ )
 		{
-			const Scalar mu = GL_nodes[i];
+			const Scalar mu = GaussLegendre21::Nodes[i];
 			const Scalar sinTheta = sqrt( r_max(0.0, 1.0 - mu*mu) );
 			// Direction at angle acos(mu) from normal
 			const Vector3 v = n * (-mu) + t * sinTheta;
 			const T F = Optics::CalculateConductorReflectance<T>( v, n, Ni, Nt, kt );
-			sum = sum + F * (2.0 * mu * GL_weights[i]);
+			sum = sum + F * (2.0 * mu * GaussLegendre21::Weights[i]);
 		}
 		return sum;
 	}

@@ -24,6 +24,7 @@ param(
     [string]$Config = 'Release',
     [int]$TimeoutSeconds = 0,
     [string]$LogDir,
+    [switch]$ValidateLogDirOnly,
     [switch]$NoBuild,
     [switch]$BuildOnly,
     [string[]]$Filter
@@ -37,14 +38,88 @@ $BinDir        = Join-Path $RepoRoot "$BinSubdir\tests"
 $SrcDir        = Join-Path $RepoRoot 'tests'
 $CmakeSrcDir   = Join-Path $RepoRoot 'build\cmake\rise-tests'
 $CmakeBuildDir = Join-Path $CmakeSrcDir '_out'
+$LibraryProject = Join-Path $RepoRoot 'build\VS2022\Library\Library.vcxproj'
+$SolutionDir = [IO.Path]::GetFullPath(
+    (Join-Path $RepoRoot 'build\VS2022')).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+$SolutionDir += [IO.Path]::DirectorySeparatorChar
+$RiseLibrary = if ($Config -eq 'Debug') {
+    Join-Path $RepoRoot 'dbin\RISE.lib'
+} else {
+    Join-Path $RepoRoot 'bin\RISE.lib'
+}
+$FireOpticsGenerator = Join-Path $RepoRoot 'tools\generate_fire_optics_records.py'
+$FireOpticsData = Join-Path $RepoRoot 'docs\data'
+$FireOpticsEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireOpticsRecordData.inc'
+
+$python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
+if (-not $python) {
+    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
+}
+if (-not $python) {
+    Write-Host 'ERROR: Python is required for the fire-optics record parity gate.' -ForegroundColor Red
+    exit 1
+}
+Write-Host -NoNewline 'Checking embedded fire-optics records ... '
+& $python $FireOpticsGenerator --check $FireOpticsData $FireOpticsEmbedded
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
 
 # Logs go outside the repo to mirror the .sh script's intent.
 if (-not $LogDir) {
     if ($env:RISE_TEST_LOG_DIR) {
         $LogDir = $env:RISE_TEST_LOG_DIR
     } else {
-        $LogDir = Join-Path $env:TEMP 'rise-tests-logs'
+        $LogDir = Join-Path $env:TEMP 'rise-tests-logs-managed'
     }
+}
+
+function Get-NormalizedPath([string]$Path) {
+    return [IO.Path]::GetFullPath($Path).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+}
+
+function Test-IsSameOrParent([string]$Parent, [string]$Child) {
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $parentWithSeparator = (Get-NormalizedPath $Parent) + $separator
+    $childWithSeparator = (Get-NormalizedPath $Child) + $separator
+    return $childWithSeparator.StartsWith(
+        $parentWithSeparator,[StringComparison]::OrdinalIgnoreCase)
+}
+
+$normalizedLogDir = Get-NormalizedPath $LogDir
+$normalizedRepoRoot = Get-NormalizedPath $RepoRoot
+$normalizedUserProfile = Get-NormalizedPath (
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))
+$normalizedVolumeRoot = Get-NormalizedPath ([IO.Path]::GetPathRoot($normalizedLogDir))
+$logLeaf = Split-Path -Leaf $normalizedLogDir
+if (($logLeaf -ne 'rise-tests-logs' -and $logLeaf -notlike 'rise-tests-logs-*') -or
+    $normalizedLogDir -eq $normalizedVolumeRoot -or
+    $normalizedLogDir -eq $normalizedUserProfile -or
+    (Test-IsSameOrParent $normalizedLogDir $normalizedRepoRoot) -or
+    (Test-IsSameOrParent $normalizedRepoRoot $normalizedLogDir)) {
+    Write-Host "ERROR: Refusing unsafe test log directory: $LogDir" -ForegroundColor Red
+    Write-Host 'Choose a dedicated directory outside the repository, user profile root, and volume root.'
+    exit 1
+}
+$logMarker = Join-Path $normalizedLogDir '.rise-test-log-directory'
+$logDirExists = Test-Path -LiteralPath $normalizedLogDir -PathType Container
+$logMarkerExists = Test-Path -LiteralPath $logMarker -PathType Leaf
+$logHasEntries = $logDirExists -and [bool](
+    Get-ChildItem -LiteralPath $normalizedLogDir -Force | Select-Object -First 1)
+if ($logDirExists -and -not $logMarkerExists -and $logHasEntries) {
+    Write-Host "ERROR: Refusing unowned nonempty test log directory: $LogDir" -ForegroundColor Red
+    exit 1
+}
+$LogDir = $normalizedLogDir
+if ($ValidateLogDirOnly) {
+    Write-Host "Safe test log directory: $LogDir"
+    exit 0
 }
 
 # Honor RISE_TEST_TIMEOUT env var when -TimeoutSeconds wasn't passed.
@@ -75,6 +150,30 @@ if (-not $cmake) {
     Write-Host "ERROR: cmake not found on PATH or in known VS install locations." -ForegroundColor Red
     Write-Host "Install Visual Studio 2022+ with C++ workload (which bundles CMake) or add cmake to PATH."
     exit 1
+}
+
+$msbuild = $null
+if (-not $NoBuild) {
+    $msbuildCommand = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($msbuildCommand) {
+        $msbuild = $msbuildCommand.Source
+    } else {
+        $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) `
+            'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $vswhere) {
+            $installationPath = & $vswhere '-latest' '-products' '*' `
+                '-requires' 'Microsoft.Component.MSBuild' '-property' 'installationPath' |
+                Select-Object -First 1
+            if ($installationPath) {
+                $candidate = Join-Path $installationPath 'MSBuild\Current\Bin\MSBuild.exe'
+                if (Test-Path -LiteralPath $candidate) { $msbuild = $candidate }
+            }
+        }
+    }
+    if (-not $msbuild) {
+        Write-Host 'ERROR: MSBuild not found; cannot prove RISE.lib is current.' -ForegroundColor Red
+        exit 1
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -114,14 +213,51 @@ if ($total -eq 0) {
 
 if (Test-Path -LiteralPath $LogDir) { Remove-Item -Recurse -Force -LiteralPath $LogDir }
 $null = New-Item -ItemType Directory -Force -Path $LogDir
+$null = New-Item -ItemType File -Force -Path (Join-Path $LogDir '.rise-test-log-directory')
 $null = New-Item -ItemType Directory -Force -Path $BinDir
 
 # -----------------------------------------------------------------------------
-# Phase 0: Configure CMake (one-time, or when CMakeCache.txt is missing)
+# Phase 0: Build the production library before configuring any test target.
+#
+# The CMake test projects link the VS Library project's RISE.lib as an imported
+# file; CMake therefore cannot discover changes under src/Library by itself.
+# An incremental MSBuild here is the authoritative dependency check. A failed
+# library build aborts before any stale test executable can run.
+# -----------------------------------------------------------------------------
+
+if (-not $NoBuild) {
+    $libraryBuildLog = Join-Path $LogDir 'library-build.log'
+    Write-Host -NoNewline ("Building RISE.lib [{0}] ... " -f $Config)
+    $libraryStart = Get-Date
+    & $msbuild $LibraryProject /nologo /m `
+        "/p:Configuration=$Config" '/p:Platform=x64' `
+        "/p:SolutionDir=$SolutionDir" *>&1 |
+        Out-File -FilePath $libraryBuildLog -Encoding utf8
+    $libraryBuildRc = $LASTEXITCODE
+    $libraryDuration = [int]((Get-Date) - $libraryStart).TotalSeconds
+    if ($libraryBuildRc -ne 0 -or -not (Test-Path -LiteralPath $RiseLibrary)) {
+        Write-Host ("FAILED (exit={0}, {1}s) - see {2}" -f `
+            $libraryBuildRc, $libraryDuration, $libraryBuildLog) -ForegroundColor Red
+        if (Test-Path -LiteralPath $libraryBuildLog) {
+            Get-Content -LiteralPath $libraryBuildLog -Tail 80 | Write-Host
+        }
+        exit 1
+    }
+    Write-Host ("done ({0}s)" -f $libraryDuration)
+    Remove-Item -LiteralPath $libraryBuildLog -ErrorAction SilentlyContinue
+    Write-Host ""
+}
+
+# -----------------------------------------------------------------------------
+# Phase 0.5: Configure CMake after the selected RISE.lib exists.
+#
+# A fresh checkout has no imported library or vcpkg tree. Configuring before
+# the production build made the runner unable to bootstrap the state it
+# advertised that it created. -NoBuild does not need a CMake tree at all.
 # -----------------------------------------------------------------------------
 
 $cacheFile = Join-Path $CmakeBuildDir 'CMakeCache.txt'
-if (-not (Test-Path -LiteralPath $cacheFile)) {
+if (-not $NoBuild -and -not (Test-Path -LiteralPath $cacheFile)) {
     Write-Host "Configuring CMake build tree (one-time)..."
     & $cmake -S $CmakeSrcDir -B $CmakeBuildDir -A x64
     if ($LASTEXITCODE -ne 0) {
@@ -143,6 +279,7 @@ if (-not (Test-Path -LiteralPath $cacheFile)) {
 $built = 0
 $buildFailed = 0
 $buildFailures = @()
+$failedBuildTargets = @{}
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
@@ -157,20 +294,43 @@ if (-not $NoBuild) {
         foreach ($src in $testSources) {
             & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
                 Out-File -FilePath $buildLog -Encoding utf8 -Append
+            $targetRc = $LASTEXITCODE
+            if ($targetRc -ne 0) {
+                $failedBuildTargets[$src.BaseName] = $targetRc
+            }
         }
+        $buildRc = if ($failedBuildTargets.Count -eq 0) { 0 } else { 1 }
     } else {
         & $cmake --build $CmakeBuildDir --config $Config --target rise_all_tests --parallel *>&1 |
             Out-File -FilePath $buildLog -Encoding utf8
+        $buildRc = $LASTEXITCODE
+        if ($buildRc -ne 0) {
+            # The aggregate target cannot identify which stale executable owns
+            # the failure. Re-run every target through CMake so its dependency
+            # graph (including shared test headers and RISE.lib) determines the
+            # result; never infer freshness from source/exe timestamps.
+            foreach ($src in $testSources) {
+                & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
+                    Out-File -FilePath $buildLog -Encoding utf8 -Append
+                $targetRc = $LASTEXITCODE
+                if ($targetRc -ne 0) {
+                    $failedBuildTargets[$src.BaseName] = $targetRc
+                }
+            }
+            $buildRc = if ($failedBuildTargets.Count -eq 0) { 0 } else { 1 }
+        }
     }
-    $buildRc = $LASTEXITCODE
     $bd = [int]((Get-Date) - $bs).TotalSeconds
 
-    # Walk the test list and check which exes were produced. Source-newer-than-exe
-    # signals a stale binary from a previous build whose current rebuild failed.
+    # Every nonzero target build is authoritative even if an older executable
+    # remains on disk. Successful aggregate/individual CMake builds already
+    # evaluated the complete dependency graph.
     foreach ($src in $testSources) {
         $exe = Join-Path $BinDir "$($src.BaseName).exe"
-        if ((Test-Path -LiteralPath $exe) -and `
-            ((Get-Item -LiteralPath $exe).LastWriteTime -ge $src.LastWriteTime)) {
+        if ($failedBuildTargets.ContainsKey($src.BaseName)) {
+            $buildFailed++
+            $buildFailures += $src.BaseName
+        } elseif (Test-Path -LiteralPath $exe) {
             $built++
         } else {
             $buildFailed++
@@ -190,13 +350,51 @@ if (-not $NoBuild) {
     }
     Write-Host ""
 } else {
-    # -NoBuild: assume binaries are present and skip Phase 1.
+    # -NoBuild is still fail-closed: every selected binary must exist and be
+    # at least as new as its own source, the shared test headers, and the
+    # selected production library. It never turns a missing/stale suite into
+    # a successful zero-test run.
+    $productionInputs = Get-ChildItem -Path (Join-Path $RepoRoot 'src\Library') `
+        -Recurse -File -Include '*.cpp','*.h','*.inc'
+    $productionInputs += Get-Item -LiteralPath $LibraryProject
+    $latestProductionInput = $productionInputs |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $libraryCurrent = $false
+    if ((Test-Path -LiteralPath $RiseLibrary) -and
+        $null -ne $latestProductionInput) {
+        $libraryCurrent = (Get-Item -LiteralPath $RiseLibrary).LastWriteTime -ge
+            $latestProductionInput.LastWriteTime
+    }
+    $sharedInputs = Get-ChildItem -Path $SrcDir -Filter '*.h' -File |
+        ForEach-Object { $_.FullName }
     foreach ($src in $testSources) {
-        if (Test-Path -LiteralPath (Join-Path $BinDir "$($src.BaseName).exe")) {
+        $exe = Join-Path $BinDir "$($src.BaseName).exe"
+        $invalid = -not (Test-Path -LiteralPath $exe)
+        if (-not $libraryCurrent) { $invalid = $true }
+        if (-not $invalid) {
+            $exeTime = (Get-Item -LiteralPath $exe).LastWriteTime
+            if ($exeTime -lt $src.LastWriteTime) { $invalid = $true }
+            if ($exeTime -lt (Get-Item -LiteralPath $RiseLibrary).LastWriteTime) {
+                $invalid = $true
+            }
+            foreach ($inputPath in $sharedInputs) {
+                if (-not (Test-Path -LiteralPath $inputPath) -or
+                    $exeTime -lt (Get-Item -LiteralPath $inputPath).LastWriteTime) {
+                    $invalid = $true
+                    break
+                }
+            }
+        }
+        if ($invalid) {
+            $buildFailed++
+            $buildFailures += $src.BaseName
+            $failedBuildTargets[$src.BaseName] = 1
+        } else {
             $built++
         }
     }
-    Write-Host "Skipping build (-NoBuild); $built pre-built test exe(s) found."
+    Write-Host ("Skipping build (-NoBuild); {0} current, {1} missing/stale test exe(s)." `
+        -f $built, $buildFailed)
     Write-Host ""
 }
 
@@ -223,6 +421,11 @@ foreach ($src in $testSources) {
 
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-Host "$prefix SKIP (build failed or missing)"
+        $skipped++
+        continue
+    }
+    if ($failedBuildTargets.ContainsKey($name)) {
+        Write-Host "$prefix SKIP (current build failed; stale exe ignored)"
         $skipped++
         continue
     }
@@ -306,7 +509,7 @@ if ($runFailures.Count -gt 0) {
     foreach ($f in $runFailures) { Write-Host "  - $($f.Name)" }
 }
 
-if ($failed -ne 0 -or $buildFailed -ne 0) {
+if ($failed -ne 0 -or $buildFailed -ne 0 -or $skipped -ne 0 -or $found -ne $total) {
     exit 1
 }
 Write-Host "All $found tests passed"

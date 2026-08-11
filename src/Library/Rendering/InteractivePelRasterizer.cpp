@@ -2161,6 +2161,8 @@ void InteractivePelRasterizer::RasterizeScene(
 	const bool bCancelled = pProgressFunc && pProgressFunc->IsCancelled();
 	if( pViewCaster && !bCancelled && pViewCaster->DepthWindowStale() )
 	{
+		AuthorizeInternalFireReentry(
+			pScene,FireRenderPreflightAuthorization::Render);
 		PixelBasedRasterizerHelper::RasterizeScene( pScene, pRect, pRasterSequence );
 	}
 }
@@ -2214,7 +2216,7 @@ IRasterizeSequence* InteractivePelRasterizer::CreateDefaultRasterSequence( unsig
 	switch( mCfg.tileOrder )
 	{
 	case TileOrder_Random:
-		return new BlockRasterizeSequence( tileEdge, tileEdge, 1 );
+		return new BlockRasterizeSequence( tileEdge, tileEdge, 1, 0u );
 	case TileOrder_Scanline:
 		// Scanline goes left-to-right, top-to-bottom — closest
 		// available is BlockRasterizeSequence type 2 (top-left

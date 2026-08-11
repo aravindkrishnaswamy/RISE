@@ -87,6 +87,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/AliasTable.h"
+#include "../Utilities/MISWeights.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/EnvironmentSampler.h"
 #include "LightBVH.h"
@@ -96,11 +97,45 @@ namespace RISE
 	class IRayCaster;
 	class IMaterial;
 	class ILightPriv;
+	class IORStack;
+	class IContinuationClosureNM;
+	class IPhaseFunction;
+	struct ContinuationAvailability;
+	struct MediumContinuationAvailability;
 
 	namespace Implementation { class OptimalMISAccumulator; }
 
 	namespace Implementation
 	{
+		/// Evaluate attenuation along a shadow segment using the medium that is
+		/// active on each boundary-delimited subsegment.  These are shared by
+		/// ordinary light NEE and emissive-volume NEE.  False means the scene's
+		/// boundary topology did not permit an unambiguous complete walk; @a outTr
+		/// is then zero and an error is logged rather than returning a partial
+		/// transmittance.
+		bool EvaluateShadowMediumTransmittance(
+			const Ray& ray,
+			const Scalar maxDist,
+			const IMedium* pOriginMedium,
+			const IObject* pOriginMediumObject,
+			const IScene* pScene,
+			const bool bSceneHasObjectMedia,
+			RISEPel& outTr,
+			const IORStack* pOriginStack = 0
+			);
+
+		bool EvaluateShadowMediumTransmittanceNM(
+			const Ray& ray,
+			const Scalar maxDist,
+			const IMedium* pOriginMedium,
+			const IObject* pOriginMediumObject,
+			const IScene* pScene,
+			const bool bSceneHasObjectMedia,
+			const Scalar nm,
+			Scalar& outTr,
+			const IORStack* pOriginStack = 0
+			);
+
 		/// Describes a sampled emission event from a light or mesh luminary
 		struct LightSample
 		{
@@ -143,6 +178,56 @@ namespace RISE
 			Point3				position;	///< Representative position for distance estimates
 		};
 
+		/// One wavelength-independent endpoint draw from a labeled emissive
+		/// medium.  `pdf` is q_m^V p_m(y), per scene-volume unit.
+		struct VolumeEmissionSample
+		{
+			const IMedium*	pMedium;
+			Point3			point;
+			Scalar			mediumSelectionPdf;
+			Scalar			pointPdf;
+			Scalar			pdf;
+
+			VolumeEmissionSample() :
+			  pMedium( 0 ), point( 0, 0, 0 ), mediumSelectionPdf( 0 ),
+			  pointPdf( 0 ), pdf( 0 )
+			{}
+		};
+
+		/// Shared auxiliary pivot vector U for one path vertex.  Each emissive
+		/// medium contributes one unconditional wavelength-independent draw;
+		/// the later NEE endpoint is sampled separately.
+		struct VolumeEmissionPivotState
+		{
+			std::vector<Point3> mediumPivots;
+		};
+
+		/// One vertex's shared thermal-volume auxiliary state.  LightSampler
+		/// constructs it in the pinned order -- the complete pivot vector U
+		/// first, then the independent labeled endpoint Y -- and consumers get
+		/// read-only access so NEE and the outgoing march cannot silently mutate
+		/// or regenerate either draw.
+		class VolumeEmissionVertexSample
+		{
+		public:
+			VolumeEmissionVertexSample() : pivotsReady(false), endpointAttempted(false),
+			  endpointReady(false) {}
+
+			bool HasPivots() const { return pivotsReady; }
+			bool WasEndpointAttempted() const { return endpointAttempted; }
+			bool HasEndpoint() const { return endpointReady; }
+			const VolumeEmissionPivotState& Pivots() const { return pivots; }
+			const VolumeEmissionSample& Endpoint() const { return endpoint; }
+
+		private:
+			friend class LightSampler;
+			VolumeEmissionPivotState pivots;
+			VolumeEmissionSample endpoint;
+			bool pivotsReady;
+			bool endpointAttempted;
+			bool endpointReady;
+		};
+
 		class LightSampler : public virtual Reference
 		{
 		protected:
@@ -160,6 +245,15 @@ namespace RISE
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
 			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
+			bool						bSceneHasObjectFireMedia;	///< True if any object has a fire interior medium (cached during Prepare)
+			bool						bSceneHasNullBoundaries;	///< True if any object uses the exact null-boundary material
+			std::vector<const IMedium*>	volumeEmissionMedia;	///< Deduplicated labeled thermal emitters
+			AliasTable					volumeEmissionAlias;	///< q_m^V proportional to W_m
+			bool						volumeEmissionDistributionValid;
+			std::vector<Scalar>		positionalLightBandPowers;
+			std::vector<Scalar>		volumeEmissionPowerProxies;
+			AliasTable					equiangularPivotAlias;	///< a_r over positional lights plus emissive media
+			bool						equiangularPivotDistributionValid;
 
 			/// Light BVH for importance-weighted selection (null when disabled)
 			LightBVH*					pLightBVH;
@@ -384,7 +478,8 @@ namespace RISE
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -399,8 +494,176 @@ namespace RISE
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
 				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
-				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IObject* pMediumObject,						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
+				const IORStack* pMediumStack = 0					///< [in] Full outer-to-inner medium state when available
 				) const;
+
+			/// Draw a labeled thermal-emission endpoint using q_m^V p_m(y).
+			bool SampleVolumeEmission(
+				ISampler& sampler,
+				VolumeEmissionSample& sample
+				) const;
+
+			/// Evaluate the same labeled endpoint density without sampling.
+			Scalar VolumeEmissionPdf(
+				const IMedium& medium,
+				const Point3& point
+				) const;
+
+			/// Draw the complete auxiliary pivot vector U: one independent
+			/// CDF sample per emissive medium, before endpoint selection.
+			bool SampleVolumeEmissionPivots(
+				ISampler& sampler,
+				VolumeEmissionPivotState& pivots
+				) const;
+
+			/// Use the immutable pivot vector carried by an originating vertex,
+			/// or draw a local vector when this is a camera/legacy segment.  A
+			/// supplied vector is never regenerated: invalid shared state fails
+			/// closed so NEE and march cannot condition on different U values.
+			bool ResolveVolumeEmissionPivots(
+				ISampler& sampler,
+				const VolumeEmissionPivotState* sharedPivots,
+				VolumeEmissionPivotState& pivots
+				) const;
+
+			/// Draw the shared per-vertex auxiliary state in the required order:
+			/// every medium pivot U_m unconditionally precedes the independent
+			/// labeled volume-NEE endpoint Y.
+			bool SampleVolumeEmissionVertex(
+				ISampler& sampler,
+				VolumeEmissionVertexSample& sample
+				) const;
+
+			/// Select one equiangular pivot from the watt-dimensioned mixture.
+			/// Positional entries use their fixed light position; medium entries
+			/// read the corresponding already-drawn element of U.
+			bool SampleEquiangularPivot(
+				const VolumeEmissionPivotState& pivots,
+				const Scalar xi,
+				Point3& pivot,
+				Scalar& selectionPdf
+				) const;
+
+			/// Evaluate the complete positional-light/medium equiangular distance
+			/// mixture conditioned on the already-drawn medium pivot vector U.
+			/// This is the one density used by both distance-sampling branches and,
+			/// later, by both sides of the volume-emission family MIS partition.
+			Scalar EquiangularDistancePdf(
+				const VolumeEmissionPivotState& pivots,
+				const Ray& ray,
+				const Scalar tMin,
+				const Scalar tMax,
+				const bool segmentBounded,
+				const Scalar t
+				) const;
+
+			/// Evaluate the spectral distance proposal used by both PT entry
+			/// routes on one boundary-delimited segment.  The result is kept in
+			/// log form so optically thick NEE/march weights do not underflow.
+			MISWeights::LogDensity EvaluateVolumeEmissionDistanceLogDensityNM(
+				const IMedium& medium,
+				const Ray& ray,
+				const Scalar proposalMaxDist,
+				const bool surfaceBounded,
+				const VolumeEmissionPivotState* pivots,
+				const Scalar nm,
+				const Scalar eventDistance,
+				const bool scattered
+				) const;
+
+			/// Walk the exact-null connection from a vertex to a labeled volume
+			/// endpoint once, returning physical transmittance, endpoint-medium
+			/// identity, and the competing march density conditioned on the same U.
+			bool EvaluateVolumeEmissionConnectionNM(
+				const Ray& ray,
+				const Scalar endpointDistance,
+				const IMedium* pOriginMedium,
+				const IObject* pOriginMediumObject,
+				const IORStack* pOriginStack,
+				const Scalar nm,
+				const VolumeEmissionPivotState& pivots,
+				const Scalar directionPdf,
+				Scalar& outTransmittance,
+				const IMedium** pEndpointMedium,
+				MISWeights::LogDensity& outMarchDensity
+				) const;
+
+			unsigned int GetEquiangularPivotEntryCount() const
+			{
+				return equiangularPivotAlias.Size();
+			}
+
+			Scalar GetEquiangularPivotSelectionPdf(
+				const unsigned int index
+				) const
+			{
+				return static_cast<Scalar>( equiangularPivotAlias.Pdf(index) );
+			}
+
+			Scalar GetEquiangularPivotPower(
+				const unsigned int index
+				) const;
+
+			bool IsEquiangularPivotDistributionValid() const
+			{
+				return equiangularPivotDistributionValid;
+			}
+
+			/// Low-level Phase-B volume-NEE estimator retained for isolated tests
+			/// and non-closure callers. Production PT surface and medium vertices use
+			/// the closure-bound siblings below so the competing march density is the
+			/// exact proposal later sampled at that same vertex.
+			Scalar EvaluateVolumeDirectLightingNM(
+				const RayIntersectionGeometric& ri,
+				const IBSDF& receiver,
+				const Scalar nm,
+				ISampler& sampler,
+				const IMedium* pMedium,
+				const bool isVolumeScatter,
+				const IObject* pMediumObject,
+				const IORStack* pMediumStack = 0
+				) const;
+
+			/// Surface-closure Phase-B estimator.  The shared vertex sample was
+			/// drawn before this call; A_march controls the weighted response and
+			/// its complement remains an NEE-only weight-one term.
+			Scalar EvaluateVolumeDirectLightingFromClosureNM(
+				const RayIntersectionGeometric& ri,
+				const IContinuationClosureNM& closure,
+				const ContinuationAvailability& availability,
+				Scalar nm,
+				const VolumeEmissionVertexSample& vertexSample,
+				const IMedium* pMedium,
+				const IObject* pMediumObject,
+				const IORStack* pMediumStack = 0
+				) const;
+
+			/// Medium-vertex sibling.  A retained wavelength-bound phase closure
+			/// supplies both response and direction density; the caller supplies
+			/// the exact ordinary-RR survival of that counterfactual continuation.
+			Scalar EvaluateVolumeDirectLightingFromPhaseClosureNM(
+				const Point3& scatterPoint,
+				const Vector3& incomingDirection,
+				const IPhaseFunction& phaseClosure,
+				const MediumContinuationAvailability& availability,
+				Scalar rouletteSurvivalProbability,
+				Scalar nm,
+				const VolumeEmissionVertexSample& vertexSample,
+				const IMedium* pMedium,
+				const IObject* pMediumObject,
+				const IORStack* pMediumStack = 0
+				) const;
+
+			unsigned int GetVolumeEmissionMediumCount() const
+			{
+				return static_cast<unsigned int>( volumeEmissionMedia.size() );
+			}
+
+			bool IsVolumeEmissionDistributionValid() const
+			{
+				return volumeEmissionDistributionValid;
+			}
 
 			/// Returns the alias-table selection probability for a given
 			/// mesh luminary.  Used for MIS weight computation when a
@@ -434,6 +697,19 @@ namespace RISE
 			/// evaluation — when false, all shadow transmittance calls
 			/// are skipped.
 			bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
+
+			/// Root transport stacks need containment seeding only when an exact
+			/// null boundary exists. Keeping this cached preserves legacy camera
+			/// stack initialization byte-for-byte for all other scenes.
+			bool SceneHasNullBoundaries() const { return bSceneHasNullBoundaries; }
+
+			/// Fire disables hero-wavelength medium transport until Phase D.
+			/// Cached during Prepare so HWSS routing never scans objects per sample.
+			bool SceneHasFireMedia() const
+			{
+				const IMedium* global = pPreparedScene ? pPreparedScene->GetGlobalMedium() : 0;
+				return bSceneHasObjectFireMedia || ( global && global->IsFireMedium() );
+			}
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  When M>0, EvaluateDirectLighting draws

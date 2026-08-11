@@ -228,6 +228,7 @@ namespace RISE
 			IIrradianceCache*			pIrradianceCache;
 
 			IAnimator*					pAnimator;
+			bool					mFireTemporalHold;
 
 			const IMedium*				pGlobalMedium;
 
@@ -455,6 +456,9 @@ namespace RISE
 
 			void		SetSceneTime( const Scalar time ) const ;
 			void		SetSceneTimeForPreview( const Scalar time ) const ;
+			void		SetFireTemporalHold( const bool hold )
+				{ mFireTemporalHold = hold; }
+			bool		FireTemporalHold() const { return mFireTemporalHold; }
 
 			// Deferred photon-shoot queueing (called by Job during scene parse).
 			void		QueueCausticPelPhotonShoot(		const PendingCausticPelShoot& req );

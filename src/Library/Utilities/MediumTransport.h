@@ -48,6 +48,7 @@ namespace RISE
 {
 	class IObject;
 	class LightSampler;
+	class IORStack;
 
 	namespace Implementation
 	{
@@ -56,6 +57,41 @@ namespace RISE
 
 	namespace MediumTransport
 	{
+		/// Owns the phase object used for one medium collision.  Fire collisions
+		/// acquire only their point-bound Pel or wavelength-bound NM closure;
+		/// there is no path from either branch to GetPhaseFunction.  Ordinary
+		/// media borrow their legacy stateless phase.
+		class CollisionPhaseClosure
+		{
+			const IPhaseFunction* m_pPhase;
+			bool m_owned;
+
+			CollisionPhaseClosure( const CollisionPhaseClosure& ) = delete;
+			CollisionPhaseClosure& operator=( const CollisionPhaseClosure& ) = delete;
+
+		public:
+			CollisionPhaseClosure(
+				const IMedium& medium,
+				const Point3& scatterPoint,
+				const Scalar nm,
+				const bool spectral,
+				const bool requireContinuationCapability = false
+				);
+			~CollisionPhaseClosure();
+
+			const IPhaseFunction* Get() const { return m_pPhase; }
+		};
+
+			/// Closed preflight table that Phase B must consult before asking a medium
+			/// for an NM continuation closure.  It checks the exact dynamic-type row
+			/// and the phase parameters already available on that instance.  Preflight
+			/// does not create or retain a closure; callers invoke the existing
+			/// default-unsupported factory only after this gate succeeds and retain
+			/// that one immutable instance through NEE and continuation.
+		/// Derived and plugin types remain default-denied even when they inherit an
+		/// eligible built-in.
+		bool IsContinuationPhaseClosureNMPreflightAllowlisted( const IMedium& medium );
+
 		/// Adapts an IPhaseFunction to the IBSDF interface so that
 		/// LightSampler::EvaluateDirectLighting can evaluate the
 		/// phase function at a medium scatter point.
@@ -141,11 +177,13 @@ namespace RISE
 			const Point3& scatterPoint,								///< [in] World-space scatter point
 			const Vector3& wo,										///< [in] Travel direction of arriving photon (= ray.Dir())
 			const IMedium* pMedium,									///< [in] Current medium
+			const IPhaseFunction* pPhase,							///< [in] Exact closure retained for this collision
 			const IRayCaster& caster,								///< [in] Ray caster for shadow tests
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
-			const IObject* pMediumObject							///< [in] Object enclosing the medium (NULL for global medium)
+			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
+			const IORStack* pMediumStack = 0						///< [in] Full outer-to-inner medium state when available
 			);
 
 		/// Spectral variant of EvaluateInScattering
@@ -154,12 +192,14 @@ namespace RISE
 			const Point3& scatterPoint,								///< [in] World-space scatter point
 			const Vector3& wo,										///< [in] Travel direction of arriving photon (= ray.Dir())
 			const IMedium* pMedium,									///< [in] Current medium
+			const IPhaseFunction* pPhase,							///< [in] Exact wavelength-bound closure retained for this collision
 			const Scalar nm,										///< [in] Wavelength in nanometers
 			const IRayCaster& caster,								///< [in] Ray caster for shadow tests
 			const Implementation::LightSampler* pLightSampler,		///< [in] Light sampler for NEE
 			ISampler& sampler,										///< [in] Low-discrepancy sampler
 			const RasterizerState& rast,							///< [in] Rasterizer state
-			const IObject* pMediumObject							///< [in] Object enclosing the medium (NULL for global medium)
+			const IObject* pMediumObject,							///< [in] Object enclosing the medium (NULL for global medium)
+			const IORStack* pMediumStack = 0						///< [in] Full outer-to-inner medium state when available
 			);
 	}
 }

@@ -1,17 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  IORStackSeeding.h - Seed a light / eye subpath's IORStack so that
-//    `containsCurrent()` reports the correct inside/outside state
-//    when the subpath's origin is physically inside one or more
-//    dielectric (or otherwise refractive) objects.
+//  IORStackSeeding.h - Seed a light / eye subpath's optical and enclosure
+//    stacks so that refraction and medium lookup both start from the
+//    correct nested-object state.
 //
 //  Why this exists
 //
 //    BDPT (and integrators that reuse its light subpaths, e.g. VCM)
-//    used to initialize the IOR stack to just the environment IOR
-//    and rely on the stack to reflect the ray's current medium.  That
-//    works for rays starting in free space — the stack grows as the
-//    ray enters dielectrics and shrinks as it exits them.  It FAILS
+//    used to initialize transport state to just the environment IOR
+//    and rely on later boundary hits to establish both logical stacks.
+//    That works for rays starting in free space — both stacks grow as
+//    the ray enters dielectrics and shrink as it exits them.  It FAILS
 //    silently for light subpaths whose origin is a luminaire sealed
 //    inside nested dielectrics, and for eye subpaths whose camera
 //    sits inside a dielectric (submerged camera, camera inside a
@@ -54,6 +53,7 @@
 //
 //    Objects with parity > 0 at the end are pushed in OUTERMOST-FIRST
 //    order (stack convention: bottom = outermost, top = innermost).
+//    The dielectric push operation seeds both logical stacks.
 //    Order is determined by each containing object's FIRST exit's
 //    probe-step index: smaller index = closer to seed = innermost.
 //    Insertion-sort by firstExitStep descending and push in that order.
@@ -67,11 +67,10 @@
 //    pathological ray, which the rest of the path walk then corrects
 //    as it enters/exits real boundaries.
 //
-//    The probe only considers materials whose GetSpecularInfo
-//    reports canRefract=true.  Pure reflectors (mirrors) and
-//    lambertian surfaces are skipped — they are not media and their
-//    "interior" is not a place rays travel through with a different
-//    IOR.
+//    The probe considers optical boundaries whose GetSpecularInfo reports
+//    canRefract=true and exact NullBoundaryMaterial objects.  The former
+//    seed both stacks; the latter seed enclosure only.  Pure reflectors and
+//    ordinary non-refractive surfaces are skipped.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 23, 2026
@@ -91,15 +90,16 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/SpecularInfo.h"
+#include "../Materials/NullBoundaryMaterial.h"
 #include "../Intersection/RayIntersection.h"
 
 namespace RISE
 {
 	namespace IORStackSeeding
 	{
-		/// Populate `stack` with the dielectric objects that physically
-		/// contain `pos`, so that subsequent scatters at the first
-		/// enclosing boundary see bFromInside==true.
+		/// Populate both logical stacks with the dielectric objects that
+		/// physically contain `pos`, so that subsequent refraction decisions
+		/// and innermost-exclusive medium lookup agree at the first boundary.
 		///
 		/// Safe to call with a camera position even when the camera is
 		/// not inside anything — the probe will simply find no exit
@@ -147,6 +147,7 @@ namespace RISE
 			struct Entry {
 				const IObject* pObj;
 				Scalar ior;
+				bool optical;
 				int parity;
 				int firstExitStep;  // probe step of FIRST exit, for stack-order sort
 			};
@@ -186,13 +187,23 @@ namespace RISE
 
 				if( ri.pObject && ri.pMaterial )
 				{
-					// Only track refractive materials — pure reflectors
-					// (mirrors) and Lambertian surfaces have no "interior"
-					// the ray travels through with a different IOR.
-					IORStack queryStack( Scalar( 1.0 ) );
-					const SpecularInfo info =
-						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
-					if( info.valid && info.canRefract && info.ior > 0 )
+					const bool nullBoundary =
+						Implementation::IsExactNullBoundaryMaterial( ri.pMaterial );
+					Scalar boundaryIOR = 1.0;
+					bool opticalBoundary = false;
+					bool supportedBoundary = nullBoundary;
+					if( !nullBoundary )
+					{
+						IORStack queryStack( Scalar( 1.0 ) );
+						const SpecularInfo info =
+							ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
+						if( info.valid && info.canRefract && info.ior > 0 ) {
+							boundaryIOR = info.ior;
+							opticalBoundary = true;
+							supportedBoundary = true;
+						}
+					}
+					if( supportedBoundary )
 					{
 						// Find or create per-object entry.  Linear scan is
 						// fine — kMaxNestingDepth is 8.
@@ -206,7 +217,8 @@ namespace RISE
 						if( !e && containingCount < kMaxNestingDepth ) {
 							e = &containing[containingCount++];
 							e->pObj = ri.pObject;
-							e->ior = info.ior;
+							e->ior = boundaryIOR;
+							e->optical = opticalBoundary;
 							e->parity = 0;
 							e->firstExitStep = -1;
 						}
@@ -262,7 +274,11 @@ namespace RISE
 			}
 			for( std::size_t i = 0; i < orderedCount; i++ ) {
 				stack.SetCurrentObject( ordered[i]->pObj );
-				stack.push( ordered[i]->ior );
+				if( ordered[i]->optical ) {
+					stack.push( ordered[i]->ior );
+				} else {
+					stack.pushEnclosure();
+				}
 			}
 		}
 	}

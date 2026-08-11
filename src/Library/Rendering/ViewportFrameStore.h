@@ -7,14 +7,16 @@
 //
 //    macOS SwiftUI / Windows Qt / Android Compose
 //                    │
-//                    │  (1) attach as IRasterizerOutput on whatever
-//                    │      rasterizer is current; rasterizer feeds
-//                    │      pixels into the embedded FrameStore via
-//                    │      the embedded FrameSink
+//                    │  (1) attach as IRasterizerOutput on the current
+//                    │      rasterizer; canonical producers bind their
+//                    │      external FrameStore immediately.  The embedded
+//                    │      FrameSink remains a legacy fallback only.
 //                    │
-//                    │  (2) on tile / frame completion callbacks,
-//                    │      platform code marshals to its UI thread
-//                    │      and triggers a repaint
+//                    │  (2) choose a platform delivery policy: macOS uses
+//                    │      nonblocking tile-region callbacks plus bounded
+//                    │      coalescing; Windows and Android generation-poll
+//                    │      at display cadence.  Frame completion always
+//                    │      guarantees the final coherent image.
 //                    │
 //                    │  (3) on UI-thread display refresh, calls
 //                    │      RenderToBuffer(target_format, view_xform)
@@ -34,21 +36,18 @@
 //                          └── internal BridgeObserver (fans Mark*
 //                              events out to user-supplied callbacks)
 //
-//  Rasterizer-swap behaviour (per design doc §7.5): the FrameStore
-//  is owned by THIS class, not by any specific rasterizer.  When
-//  the user changes the active rasterizer in the UI, the platform
-//  code calls Detach(oldRasterizer) + Attach(newRasterizer); the
-//  FrameStore + observer + tile/frame callbacks all survive
-//  unchanged.  The new rasterizer's first OutputImage refills the
-//  same FrameStore.  No reattachment of observers required.
+//  Rasterizer-swap behaviour (per design doc §7.5): Attach() adds
+//  this facade as an output, and Rasterizer::AddRasterizerOutput
+//  immediately publishes that rasterizer's canonical FrameStore via
+//  OnRasterizerFrameStoreChanged().  The VFS transactionally moves
+//  its BridgeObserver from the old store to the new one.  User
+//  callbacks stay on this facade; the pixel store follows the active
+//  rasterizer rather than persisting independently across the swap.
 //
-//  Lazy allocation: the FrameStore + FrameSink + BridgeObserver
-//  are constructed on the FIRST IRasterizerOutput callback, when
-//  the rasterizer's image dimensions become known.  Subsequent
-//  output calls reuse the chain.  Resolution changes (rare but
-//  possible, e.g. camera-resolution swap mid-session) trigger a
-//  reallocate-and-reattach — same pattern as
-//  FileRasterizerOutput::EnsureChain (L3).
+//  Lazy allocation applies only to legacy producers that do not push a
+//  canonical FrameStore.  Canonical rasterizers bind their store during
+//  Attach(), before pixel callbacks.  A later producer store replacement is
+//  transactionally rebound through OnRasterizerFrameStoreChanged().
 //
 //  Lifetime: ViewportFrameStore inherits from Reference per the
 //  RISE convention.  Platform code creates with `new`, registers
@@ -63,8 +62,10 @@
 #ifndef VIEWPORTFRAMESTORE_H_
 #define VIEWPORTFRAMESTORE_H_
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -87,9 +88,12 @@ namespace RISE
 		class FrameSink;
 
 		class ViewportFrameStore : public virtual IRasterizerOutput,
+		                           public virtual IFireRasterizerOutputRoute,
 		                           public virtual Reference
 		{
 		public:
+			FireArtifactRouteKind FireArtifactRoute() const override
+				{ return FireArtifactRouteKind::DisplayOnly; }
 			//! Callback for tile-completion events.  Fires from a
 			//! rasterizer worker thread; platform code is
 			//! responsible for marshalling to its UI thread (Qt
@@ -184,12 +188,13 @@ namespace RISE
 			//! Job's reference both keep it alive across the VFS
 			//! lifetime; this addref is defensive).
 			//!
-			//! Threading: takes `chainMutex_` unique-lock to swap
-			//! the chain pointers.  Reader threads in
-			//! `RenderToBuffer` / `SaveAs` / `Generation` are
-			//! unaffected — they snapshot+addref under the lock and
-			//! their captured snapshot stays valid even if we swap
-			//! mid-render.
+			//! Threading: bind writers are serialized; a concurrent or
+			//! reentrant bind request fails synchronously on its requesting
+			//! thread and may be retried by the caller. Readers in
+			//! `RenderToBuffer` / `SaveAs` / `Generation` briefly take the
+			//! shared `chainMutex_` to snapshot+addref the active store. They
+			//! can briefly contend with a bind, but their captured snapshot
+			//! stays valid after the lock is released.
 			//!
 			//! Passing `nullptr` unbinds — VFS reverts to the legacy
 			//! lazy-internal-allocate path.  The previously-bound
@@ -203,6 +208,12 @@ namespace RISE
 			//! Idempotent: re-binding the same external pointer is
 			//! a no-op (avoids spurious observer remove/re-add).
 			void BindFrameStore( FrameStore* external );
+			void ForTest_SetBindPhaseOneHook(
+				std::function<void(uint64_t)> hook );
+			void ForTest_SetChainConstructionHook(
+				std::function<void(const char*)> hook );
+			void ForTest_SetObserverMutationLockHook(
+				std::function<void(size_t)> hook );
 
 			//! Whether this VFS is currently bound to an external
 			//! FrameStore via `BindFrameStore`.  Diagnostic — most
@@ -280,19 +291,21 @@ namespace RISE
 				bool                 nonBlocking = false ) const;
 
 			// ── Save As ───────────────────────────────────────
-			//! Encode the current FrameStore via `encoder` (typically
-			//! from FrameEncoderRegistry::Get().ByFormatName(...))
-			//! and write to `path` via DiskFileWriteBuffer.  Returns
-			//! true on success.  No-op if the FrameStore hasn't been
-			//! allocated yet (returns false).
+			//! Encode the current FrameStore via a retained `encoder` from
+			//! FrameEncoderRegistry::Get().AcquireByFormatName(...); caller
+			//! releases its acquired reference after SaveAs returns.
+			//! and transactionally write it with any required fire
+			//! provenance sidecar.  Returns true on success.  No-op if
+			//! the FrameStore hasn't been allocated yet (returns false).
 			bool SaveAs(
 				const std::string&  path,
 				IFrameEncoder*      encoder,
 				const EncodeOpts&   opts ) const;
 
 			//! Variant: encode into an arbitrary IWriteBuffer (for
-			//! tests, network mirrors, in-memory previews).  Same
-			//! return semantics as the path-taking overload.
+			//! tests, network mirrors, in-memory previews). Fire frames
+			//! return false because this sink cannot transactionally carry
+			//! the required provenance sidecar; use SaveAs for artifacts.
 			bool SaveTo(
 				IWriteBuffer&       dst,
 				IFrameEncoder*      encoder,
@@ -338,8 +351,8 @@ namespace RISE
 			//! scaling).  The previous behaviour
 			//! (TeardownChain + fresh allocate every time the dims
 			//! changed) churned the FrameStore's tile-grid
-			//! allocations, observer registration, and seqlock
-			//! arrays per pass — measurably visible as repeated
+			//! allocations, observer registration, and tile-lock
+			//! grids per pass — measurably visible as repeated
 			//! "rasterizer image size changed" warnings during
 			//! interactive editing.  EnsureChain now parks the
 			//! current active chain into `dormant_` on dim change
@@ -357,15 +370,20 @@ namespace RISE
 			//! observe the active `framestore_` snapshot — they
 			//! never see the dormant entries.
 			void EnsureChain( unsigned int width, unsigned int height );
+			void ApplyBindFrameStore(
+				Implementation::FrameStore* external,
+				uint64_t requestRevision );
 
 			// L8 review round 3 — `TeardownChain()` removed.  Was
 			// holding `chainMutex_` unique_lock around
 			// `RemoveObserver`, deadlocking against in-flight
 			// observer dispatches that re-enter chainMutex_ via
 			// `RenderToBuffer`.  Replacement: `BindFrameStore(nullptr)`
-			// uses a phased pattern (snapshot + drop lock + RemoveObserver
-			// + cleanup) that doesn't deadlock.  See
-			// ViewportFrameStore.cpp for details.
+			// uses a serialized transaction: prepare registration/removal
+			// without the chain lock, quiesce callback claims, acquire one
+			// observer mutex per distinct FrameStore in address order, then
+			// commit registrations and chain pointers together.  Preparation
+			// failure leaves the old chain published. See ViewportFrameStore.cpp.
 
 			struct DormantChain;
 
@@ -415,6 +433,13 @@ namespace RISE
 			//!     facade-level pointer lifetime.
 			//! See L4 round-2 review P1-2.
 			mutable std::shared_mutex chainMutex_;
+			std::mutex bindRequestMutex_;
+			std::atomic<uint64_t> bindRevision_{ 0u };
+			std::atomic<unsigned int> bindTransactionsInFlight_{ 0u };
+			std::function<void(uint64_t)> bindPhaseOneTestHook_;
+			std::function<void(const char*)> chainConstructionTestHook_;
+			std::function<void(size_t)> observerMutationLockTestHook_;
+			bool bindDrainActive_ = false;
 
 			FrameStore*        framestore_ = nullptr;
 			FrameSink*         framesink_  = nullptr;

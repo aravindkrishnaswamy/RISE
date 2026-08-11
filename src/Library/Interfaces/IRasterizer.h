@@ -28,6 +28,13 @@ namespace RISE
 {
 	namespace Implementation { class FrameStore; }
 
+	enum class FireRenderPreflightAuthorization
+	{
+		None,
+		Prediction,
+		Render
+	};
+
 	class IRasterizer : public virtual IReference
 	{
 	protected:
@@ -198,6 +205,19 @@ namespace RISE
 		//! query those UIs consult.  Defaulted + declared last ->
 		//! ABI-stable (same convention as the overrides above).
 		virtual bool HonorsRegion() const { return true; }
+
+	};
+
+	//! Queryable completion capability kept outside IRasterizer's historical
+	//! vtable so old rasterizer plugins remain safe to inspect. Fire renders
+	//! require the in-tree Rasterizer authorization path separately.
+	class IFireRasterizerState
+	{
+	protected:
+		virtual ~IFireRasterizerState() {}
+	public:
+		virtual bool LastRenderCompleted() const = 0;
+		virtual bool ResolveForFirePreflight( const IScene& ) const { return true; }
 	};
 }
 

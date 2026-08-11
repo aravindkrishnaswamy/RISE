@@ -89,6 +89,18 @@ namespace RISE
 		bool						bHit;			// was there an intersection ? 
 		Scalar						range;			// distance to the intersection point
 		Scalar						range2;			// distance to the exit point
+		//! Exact world-ray distances to the geometric boundary before
+		//! Object's shading-point surface-error offset is applied.  Medium
+		//! topology walkers must use these: `range`/`range2` deliberately sit
+		//! just before/after a surface and therefore cannot delimit arbitrarily
+		//! thin volume segments without skipping or double-counting them.
+		Scalar						surfaceRange;
+		Scalar						surfaceRange2;
+		//! Per-cast input.  When non-negative, object-manager traversal
+		//! rejects candidates whose exact `surfaceRange` is not greater
+		//! than this value.  Boundary walks set zero to discard only the
+		//! just-processed zero-distance root without stepping over space.
+		Scalar						minimumSurfaceRange;
 		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by bump/normal-map modifiers)
 		Vector3						vNormal2;		// normal at the point of exit
 		//! GEOMETRIC normals at the entry / exit points — the actual
@@ -273,6 +285,7 @@ namespace RISE
 		{
 			glossyFilterWidth = src.glossyFilterWidth;
 			bWantsWireEdgeInfo = src.bWantsWireEdgeInfo;
+			minimumSurfaceRange = src.minimumSurfaceRange;
 		}
 
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
@@ -281,6 +294,9 @@ namespace RISE
 		  bHit( false ),
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
+		  surfaceRange( RISE_INFINITY ),
+		  surfaceRange2( RISE_INFINITY ),
+		  minimumSurfaceRange( -1.0 ),
 		  bGeomNormalOrientedToRay( false ),
 		  bHasTexCoord1( false ),
 		  pCustom( 0 ),
@@ -305,6 +321,9 @@ namespace RISE
 		  bHit( r.bHit ),
 		  range( r.range ),
 		  range2( r.range2 ),
+		  surfaceRange( r.surfaceRange ),
+		  surfaceRange2( r.surfaceRange2 ),
+		  minimumSurfaceRange( r.minimumSurfaceRange ),
 		  vNormal( r.vNormal ),
 		  vNormal2( r.vNormal2 ),
 		  vGeomNormal( r.vGeomNormal ),
@@ -345,6 +364,9 @@ namespace RISE
 			bHit = r.bHit;
 			range = r.range;
 			range2 = r.range2;
+			surfaceRange = r.surfaceRange;
+			surfaceRange2 = r.surfaceRange2;
+			minimumSurfaceRange = r.minimumSurfaceRange;
 			vNormal = r.vNormal;
 			vNormal2 = r.vNormal2;
 			vGeomNormal = r.vGeomNormal;

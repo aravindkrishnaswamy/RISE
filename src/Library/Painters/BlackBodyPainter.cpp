@@ -15,6 +15,7 @@
 #include "BlackBodyPainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/PlanckRadiance.h"
 #include "../Utilities/PiecewiseLinearFunction.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -25,41 +26,30 @@ static const Scalar NM_to_M = 1e-9;			// Convert an expression in nanometers to 
 
 Scalar BlackBodyPainter::IntensityForWavelength( const Scalar T, const Scalar lambda )
 {
-	static const Scalar speed_of_light = 2.99792458e8;
-	static const Scalar planck_constant = 6.6260755e-34;
-	static const Scalar boltzmann_constant = 1.380658e-23;
-
-	static const Scalar sqr_c = speed_of_light*speed_of_light;
-
-	// Planck's radiation function
-	// From "Introduction to Classical and Modern Optics" Meyer-Ardent, Jurgen R.
-
-	static const Scalar C1 = TWO_PI * planck_constant * sqr_c;
-	static const Scalar C2 = (planck_constant * speed_of_light) / boltzmann_constant;
-
-	const Scalar first = C1 / (pow( lambda, 5.0 ) );
-	const Scalar second = 1.0 / (exp(C2/(lambda*T)) - 1.0);
-
-	return first * second;
+	// The painter's historical spectral convention is hemispherical exitance
+	// per metre of wavelength. The shared fire kernel is radiance per nm, so
+	// keep both the pi angular projection and wavelength-unit conversion here
+	// at the painter boundary.
+	static const Scalar perNanometreToPerMetre = 1e9;
+	return PI * perNanometreToPerMetre *
+		PlanckSpectralRadianceNM( lambda / NM_to_M, T );
 }
 
-Scalar BlackBodyPainter::TotalRadiationOutput( const Scalar T )
+Scalar BlackBodyPainter::EffectiveScale() const
 {
-	static const Scalar stefan_boltzmann_constant = 5.6051e-8;
-	
-	return (stefan_boltzmann_constant * pow( T, 4.0 ) );
-}
+	if( !normalize ) {
+		return scale;
+	}
+	if( temperature <= 0.0 ) {
+		return 0.0;
+	}
 
-Scalar BlackBodyPainter::TemperatureFromPeakNM( const Scalar nm )
-{
-	static const Scalar wien_constant = 2.8978e6;
-
-	return (wien_constant/nm);
-}
-
-Scalar BlackBodyPainter::PeakNMFromTemperature( const Scalar T )
-{
-	return (0.0029/T);
+	// Wien displacement constant in nm K. Evaluate the maximum through the
+	// same painter-boundary conversion used for every spectral sample.
+	static const Scalar wienDisplacementNMKelvin = 2.897771955e6;
+	const Scalar peakNM = wienDisplacementNMKelvin / temperature;
+	const Scalar maximum = IntensityForWavelength( temperature, peakNM * NM_to_M );
+	return maximum > 0.0 ? scale / maximum : 0.0;
 }
 
 BlackBodyPainter::BlackBodyPainter( 
@@ -79,13 +69,6 @@ BlackBodyPainter::BlackBodyPainter(
 	RegenerateData();
 }
 
-/*
-BlackBodyPainter::BlackBodyPainter( const Scalar peak_lambda, const Scalar lambda_begin, const Scalar lambda_end, const unsigned int num_freq, const Scalar scale=1.0 )
-{
-	BlackBodyPainter::BlackBodyPainter( TemperatureFromPeakNM(peak_lambda), lambda_begin, lambda_end, num_freq, scale );
-}
-*/
-
 BlackBodyPainter::~BlackBodyPainter( )
 {
 }
@@ -102,7 +85,7 @@ SpectralPacket BlackBodyPainter::GetSpectrum( const RayIntersectionGeometric& ri
 
 Scalar BlackBodyPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	return IntensityForWavelength(temperature, nm*NM_to_M) * scale;
+	return IntensityForWavelength(temperature, nm*NM_to_M) * EffectiveScale();
 }
 
 
@@ -151,21 +134,15 @@ void BlackBodyPainter::RegenerateData( )
 
 	const Scalar delta = ( (lambda_end-lambda_begin) / Scalar(numfreq) );
 	Scalar freq = lambda_begin;
+	const Scalar effectiveScale = EffectiveScale();
 
 	for( unsigned int i=0; i<numfreq; i++, freq += delta ) {
-		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * scale ) );
+		pFunc->addControlPoint( std::make_pair( freq, IntensityForWavelength(temperature, freq*NM_to_M) * effectiveScale ) );
 	}
 
 	spectrum = SpectralPacket( lambda_begin, lambda_end, numfreq, pFunc );
 	XYZPel cxyz = spectrum.GetXYZ();
 	color = cxyz;
-
-	// If we are to normalize, rescale the scale
-	if( normalize ) {
-		const Scalar maxima = IntensityForWavelength( temperature, PeakNMFromTemperature( temperature ) );
-		scale /= maxima;
-		ColorMath::Scale(color);
-	}
 
 	safe_release( pFunc );
 }

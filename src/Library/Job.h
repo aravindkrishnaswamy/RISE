@@ -54,10 +54,21 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace RISE
 {
+	namespace Implementation
+	{
+		bool BuildIdentityModuleNameMatches(
+			const std::string& path,
+			const std::vector<std::string>& acceptedNames );
+		bool ReadStoredAPKBuildIdentity(
+			const std::string& modulePath,
+			std::vector<unsigned char>& bytes );
+	}
+
 	namespace Cst { struct Document; typedef std::int64_t NodeId; }   // P5 (save-as-CST): the retained canonical CST; fwd-decl keeps Cst.h out of Job.h (NodeId == Cst.h's, a legal typedef redeclaration)
 
 	//! Job - This is used to simplify the creation of a job, all things can be
@@ -186,6 +197,36 @@ namespace RISE
 		// the FrameStore it could not get at construction time
 		// (typical scene files declare rasterizer BEFORE camera).
 		void PushJobFrameStoreToRasterizers();
+		bool PrepareFireRenderFidelityMetadata( bool publishMetadata = true );
+		bool PrepareFireRenderFidelityMetadata(
+			double animationTimeStart,
+			double animationTimeEnd,
+			unsigned int animationFrames,
+			bool animationFields,
+			bool animationInvertFields,
+			const unsigned int* animationFrame,
+			const Rect* renderRegion,
+			ResolvedRasterSequence* resolvedSequence,
+			bool publishMetadata = true );
+		bool PrepareFireRenderFidelityMetadata(
+			IRasterizer* rasterizer,
+			const std::string& rasterizerKind,
+			Scalar wavelengthMin,
+			Scalar wavelengthMax,
+			bool useHWSS,
+			AutoIntegratorChoice autoIntegrator,
+			bool oidnDenoise,
+			bool radianceClampEnabled,
+			bool pathRegularizationEnabled,
+			bool smsEnabled,
+			const std::vector<unsigned char>& resolvedConfig,
+			bool publishMetadata );
+		bool ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const;
+		void ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const;
+		bool AuthorizeFireRasterizer(
+			IRasterizer* rasterizer,
+			FireRenderPreflightAuthorization authorization ) const;
+		bool FireRasterizerLastRenderCompleted( const IRasterizer* rasterizer ) const;
 
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
@@ -221,6 +262,7 @@ namespace RISE
 			std::string         luminarySampler = "none";   // PixelPelDefaults::luminarySampler
 			double              luminarySamplerParam = 1.0; // PixelPelDefaults::luminarySamplerParam
 			bool                integrateRGB    = false;    // PixelIntegratingSpectralDefaults::integrateRGB
+			double              lightSampleRRThreshold = 0.0;
 
 			// VCM-specific
 			double              mergeRadius     = 0.0;      // VCMPelDefaults::mergeRadius
@@ -294,6 +336,14 @@ namespace RISE
 
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
+		std::map<const IMedium*, std::string>		fireAuthoredConfigDigests;
+		std::map<const IFunction1D*, std::vector<unsigned char> >
+											fireFunction1DDefinitionRecords;
+		bool										m_firePredictiveRequested = false;
+		std::string FinalizeFireAuthoredConfigDigest(
+			const IMedium& medium,
+			const std::vector<unsigned char>& authoredParameterRecord,
+			const IFunction1D* const chemSPDs[3] );
 
 		// Materials registered via a composing factory
 		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)
@@ -383,6 +433,22 @@ namespace RISE
 		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
 		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
 		IProgressCallback*			GetProgress() const					{ return pGlobalProgress.load( std::memory_order_acquire ); }
+		bool PrepareFireRenderForExternalRasterizer(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			bool oidnDenoise,
+			bool radianceClampEnabled,
+			bool pathRegularizationEnabled,
+			bool smsEnabled );
+		bool PrepareFireRenderForExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config );
+		bool RasterizeExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config,
+			const Rect* region );
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -1717,6 +1783,116 @@ namespace RISE
 			const double bboxMax[3]									///< [in] World-space AABB maximum corner
 			);
 
+		bool AddMultichannelHeterogeneousMedium(
+			const char* name,
+			const char* carbon_painter,
+			const char* temperature_painter,
+			const unsigned int bake_width,
+			const unsigned int bake_height,
+			const unsigned int bake_depth,
+			const double bboxMin[3],
+			const double bboxMax[3],
+			const double scene_unit_meters,
+			const double soot_em,
+			const double soot_density,
+			const double soot_albedo_hot,
+			const double soot_g_hot,
+			const double smoke_km_carbon,
+			const double smoke_n_carbon,
+			const double smoke_albedo_carbon,
+			const double smoke_g_carbon
+			);
+
+		bool AddMultichannelHeterogeneousMediumWithCondensed(
+			const char* name,
+			const char* carbon_painter,
+			const char* temperature_painter,
+			const char* condensed_painter,
+			const unsigned int bake_width,
+			const unsigned int bake_height,
+			const unsigned int bake_depth,
+			const double bboxMin[3],
+			const double bboxMax[3],
+			const double scene_unit_meters,
+			const double soot_em,
+			const double soot_density,
+			const double soot_albedo_hot,
+			const double soot_g_hot,
+			const double smoke_km_carbon,
+			const double smoke_n_carbon,
+			const double smoke_albedo_carbon,
+			const double smoke_g_carbon,
+			const double smoke_km_cond,
+			const double smoke_n_cond,
+			const double smoke_albedo_cond,
+			const double smoke_g_cond
+			);
+
+		bool AddMultichannelHeterogeneousMediumWithChem(
+			const char* name,
+			const char* carbon_painter,
+			const char* temperature_painter,
+			const char* condensed_painter,
+			const char* chem_ch_painter,
+			const char* chem_c2_painter,
+			const char* chem_co2_painter,
+			const char* chem_spd_ch,
+			const char* chem_spd_c2,
+			const char* chem_spd_co2,
+			const double chem_interval_ch[2],
+			const double chem_interval_c2[2],
+			const double chem_interval_co2[2],
+			const unsigned int bake_width,
+			const unsigned int bake_height,
+			const unsigned int bake_depth,
+			const double bboxMin[3],
+			const double bboxMax[3],
+			const double scene_unit_meters,
+			const double soot_em,
+			const double soot_density,
+			const double soot_albedo_hot,
+			const double soot_g_hot,
+			const double smoke_km_carbon,
+			const double smoke_n_carbon,
+			const double smoke_albedo_carbon,
+			const double smoke_g_carbon,
+			const double smoke_km_cond,
+			const double smoke_n_cond,
+			const double smoke_albedo_cond,
+			const double smoke_g_cond
+			);
+
+		bool AddMultichannelHeterogeneousMediumWithPreset(
+			const char* name,
+			const char* carbon_painter,
+			const char* temperature_painter,
+			const char* condensed_painter,
+			const char* chem_ch_painter,
+			const char* chem_c2_painter,
+			const char* chem_co2_painter,
+			const char* chem_spd_ch,
+			const char* chem_spd_c2,
+			const char* chem_spd_co2,
+			const double chem_interval_ch[2],
+			const double chem_interval_c2[2],
+			const double chem_interval_co2[2],
+			const unsigned int bake_width,
+			const unsigned int bake_height,
+			const unsigned int bake_depth,
+			const double bboxMin[3],
+			const double bboxMax[3],
+			const double scene_unit_meters,
+			const char* optical_record
+			);
+		bool SetFireFidelityMode( const char* mode );
+
+		//! Adds a unit-transmission medium boundary distinct from "none".
+		//! Appended beside IJob's corresponding ABI-tail extension.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddNullBoundaryMaterial(
+			const char* name					///< [in] Name of the material
+			);
+
 		//! Sets the scene's global participating medium
 		/// \return TRUE if successful, FALSE otherwise
 		bool SetGlobalMedium(
@@ -1734,6 +1910,10 @@ namespace RISE
 		const IMedium* GetMedium(
 			const char* name
 			) const;
+
+		bool ForTest_SetFireEffectiveAbsorptionAblation(
+			const char* name,
+			const unsigned int ablation );
 
 		//! Enumerate registered medium names; see IJob.h.
 		void EnumerateMediumNames(

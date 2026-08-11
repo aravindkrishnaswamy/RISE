@@ -66,6 +66,7 @@ namespace RISE
 				);
 
 			virtual ~BidirectionalRasterizerBase();
+			virtual bool SupportsFireMediaTransport() const { return false; }
 
 			/// Scaling factor for splat film resolution.  Pel returns 1;
 			/// Spectral returns nSpectralSamples [ * SampledWavelengths::N

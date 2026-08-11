@@ -189,6 +189,7 @@ public slots:
     // "PPM" (case-insensitive).  Both no-op until the first render
     // has produced output.  See docs/FRAMESTORE_DESIGN.md §11 L4c.
     void setViewExposureEV(double ev);
+    double viewExposureEV() const { return m_viewExposureEV.load(); }
     bool saveAs(const QString& path, const QString& formatName, double ev);
 
     // L5b — toggle HDR display path on/off.  When ON, every emit
@@ -258,10 +259,10 @@ private:
     // a full-resolution QImage per tile can overwhelm Qt's queued
     // event storage before the UI thread consumes it.
     void onProductionVFSFrameComplete();
-    // L8 round 9 — lockless progressive-update poll.  Runs on the
-    // Qt main thread via `m_progressivePollTimer`; reads the
-    // production VFS's atomic generation counter and no-ops if no
-    // workers have produced new pixels since the last call.
+    // L8 round 9 — generation-gated progressive-update poll.  Runs on
+    // the Qt main thread via `m_progressivePollTimer`; briefly snapshots
+    // the production VFS chain, reads the retained FrameStore's atomic
+    // generation, and no-ops if no workers have produced new pixels.
     // Otherwise renders the full image into the staging buffer and
     // emits a QImage to the UI.  See `RenderEngine.cpp` impl for
     // the deadlock-avoidance rationale (replaces the former per-tile
@@ -303,7 +304,7 @@ private:
     std::mutex m_bufferMutex;
     int m_imageWidth = 0;
     int m_imageHeight = 0;
-    bool m_sizeDetected = false;
+    std::atomic<bool> m_sizeDetected{false};
 
     // Elapsed time tracking
     QTimer* m_elapsedTimer = nullptr;
@@ -401,12 +402,10 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
 
-    // L8 round 9 — sentinel for the lockless polling path.  Read +
-    // written ONLY on the Qt main thread (the `m_progressivePollTimer`
-    // tick handler).  Compares `vfs->Generation()` so a poll that
-    // catches no new pixels returns immediately.  See
-    // `pollProductionVFS` impl.
-    uint64_t m_lastSeenGeneration = 0;
+    // L8 round 9 — sentinel for the generation-gated polling path. Frame-complete
+    // callbacks write it on the render thread while the Qt poll reads it;
+    // atomic access keeps that handoff data-race-free.
+    std::atomic<uint64_t> m_lastSeenGeneration{0};
     // 30 Hz timer driving the progressive-update poll.  Started in
     // `startRender` / `startAnimationRender`, stopped in the finish
     // path of each.

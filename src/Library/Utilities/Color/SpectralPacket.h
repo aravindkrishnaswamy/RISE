@@ -176,8 +176,12 @@ namespace RISE
 		//
 
 		// Assignment
-		inline		SpectralPacket	operator=( const SpectralPacket& s )
+		inline		SpectralPacket&	operator=( const SpectralPacket& s )
 		{
+			if( this == &s ) {
+				return *this;
+			}
+
 			// Check if the packet we are assigned to has the same frequencies responsible
 			// and same discretization of frequencies
 			if( SameFreqs( *this, s ) )
@@ -191,18 +195,20 @@ namespace RISE
 				// reallocate
 				lambda_begin = s.lambda_begin;
 				lambda_end = s.lambda_end;
+				delta = s.delta;
+				OVnumfreq = s.OVnumfreq;
 				memcpy( amplitudes, s.amplitudes, sizeof( Scalar ) * num_freq );
 			}
 			else
 			{
 				// We have to reallocate the array
 				GlobalLog()->PrintDelete( amplitudes, __FILE__, __LINE__ );
-				delete amplitudes;
+				delete [] amplitudes;
 				lambda_begin = s.lambda_begin;
 				lambda_end = s.lambda_end;
 				num_freq = s.num_freq;
-				delta = (lambda_end-lambda_begin) / Scalar(num_freq);
-				OVnumfreq = 1.0 / Scalar(num_freq);
+				delta = s.delta;
+				OVnumfreq = s.OVnumfreq;
 				amplitudes = new Scalar[num_freq];
 				GlobalLog()->PrintNew( amplitudes, __FILE__, __LINE__, "amplitudes" );
 
@@ -286,13 +292,20 @@ namespace RISE
 		{
 			// Get the value at the particular wavelength
 
-			// Outside the frequency range
-			if( nm < lambda_begin || nm > lambda_end ) {
+			// Outside the half-open frequency range, or an invalid/empty packet.
+			// Written as !(nm < lambda_end) so NaN is rejected under fast-math.
+			if( num_freq == 0 || !(lambda_begin < lambda_end) ||
+				nm < lambda_begin || !(nm < lambda_end) ) {
 				return 0;
 			}
 
-			// Find the rigt frequency
-			int idx = int((nm-lambda_begin)/delta);
+			// Find the right frequency bin. lambda_end is the exclusive end
+			// because the packet stores num_freq samples spaced by delta. Clamp
+			// roundoff that maps a representable interior wavelength to num_freq.
+			unsigned int idx = static_cast<unsigned int>((nm-lambda_begin)/delta);
+			if( idx >= num_freq ) {
+				idx = num_freq - 1;
+			}
 			return amplitudes[idx];
 		}
 	};

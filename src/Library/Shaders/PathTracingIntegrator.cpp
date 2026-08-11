@@ -23,6 +23,7 @@
 #include "../Utilities/BSSRDFSampling.h"
 #include "../Utilities/RandomWalkSSS.h"
 #include "../Utilities/MediumTracking.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/EquiangularSampler.h"
 #include "../Utilities/PathVertexEval.h"
@@ -31,6 +32,7 @@
 #include "../Utilities/Profiling.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
+#include "../Interfaces/IContinuationClosure.h"
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): emissive non-area-light geometries (SDF) get full BSDF weight
 #include "../Utilities/MediumTransport.h"
 #include "../Intersection/RayIntersectionGeometric.h"
@@ -41,9 +43,10 @@
 #endif
 // GUI render modes P2b (docs/gui/RENDER_MODES.md §3 Lighting): the shared
 // clay-reflectance state SetClayOverride substitutes in -- a mid-grey
-// UniformColorPainter wrapped by a LambertianBRDF/LambertianSPF pair.
-#include "../Materials/LambertianBRDF.h"
-#include "../Materials/LambertianSPF.h"
+// UniformColorPainter wrapped by one synthetic LambertianMaterial.
+#include "../Materials/LambertianMaterial.h"
+#include "../Materials/NullBoundaryMaterial.h"
+#include "SSS/SSSContainment.h"
 #include "../Painters/UniformColorPainter.h"
 
 using namespace RISE;
@@ -64,6 +67,92 @@ using RISE::SpectralDispatch::SpectralValueTraits;
 
 namespace
 {
+	class ContinuationClosureNMGuard
+	{
+	public:
+		ContinuationClosureNMGuard() : closure( 0 ) {}
+		~ContinuationClosureNMGuard()
+		{
+			if( closure ) {
+				closure->release();
+				closure = 0;
+			}
+		}
+
+		void Reset( const IContinuationClosureNM* closure_ )
+		{
+			if( closure ) closure->release();
+			closure = closure_;
+		}
+
+		const IContinuationClosureNM* Get() const { return closure; }
+
+	private:
+		ContinuationClosureNMGuard( const ContinuationClosureNMGuard& );
+		ContinuationClosureNMGuard& operator=( const ContinuationClosureNMGuard& );
+		const IContinuationClosureNM* closure;
+	};
+
+	inline void ContinueAcrossNullBoundary(
+		const RayIntersection& ri,
+		Ray& ray,
+		IORStack& stack,
+		bool& rejectZeroDistanceBoundary )
+	{
+		Implementation::ApplyExactNullBoundaryTransition(
+			ri.pMaterial, ri.pObject, stack );
+		ray = Implementation::ContinueExactNullBoundaryRay(
+			ri.geometric.ray, ri.geometric.surfaceRange );
+		rejectZeroDistanceBoundary = true;
+	}
+
+	inline bool ResolvePrimaryAOVSurface(
+		const RayIntersection& initialHit,
+		const RasterizerState& rast,
+		const IScene& scene,
+		RayIntersection& resolvedHit,
+		Scalar& resolvedDepth
+		)
+	{
+		resolvedHit = initialHit;
+		resolvedDepth = initialHit.geometric.bHit
+			? initialHit.geometric.range : Scalar( 0 );
+		Scalar traversed = 0.0;
+
+		while( resolvedHit.geometric.bHit &&
+			IsExactNullBoundaryMaterial( resolvedHit.pMaterial ) )
+		{
+			const Scalar boundary = resolvedHit.geometric.surfaceRange;
+			if( !std::isfinite( boundary ) || !(boundary > 0.0) ) {
+				GlobalLog()->PrintEasyError(
+					"PathTracingIntegrator: malformed null boundary while resolving primary AOV" );
+				resolvedHit.geometric.bHit = false;
+				resolvedDepth = 0.0;
+				return false;
+			}
+
+			const Ray nextRay = ContinueExactNullBoundaryRay(
+				resolvedHit.geometric.ray, boundary );
+			const Scalar nextTraversed = traversed + boundary;
+			if( !std::isfinite( nextTraversed ) || nextTraversed < traversed ) {
+				GlobalLog()->PrintEasyError(
+					"PathTracingIntegrator: non-progressing null boundary while resolving primary AOV" );
+				resolvedHit.geometric.bHit = false;
+				resolvedDepth = 0.0;
+				return false;
+			}
+			traversed = nextTraversed;
+
+			resolvedHit = RayIntersection( nextRay, rast );
+			resolvedHit.geometric.minimumSurfaceRange = 0.0;
+			scene.GetObjects()->IntersectRay( resolvedHit, true, true, true );
+		}
+
+		resolvedDepth = resolvedHit.geometric.bHit
+			? traversed + resolvedHit.geometric.range : Scalar( 0 );
+		return resolvedHit.geometric.bHit;
+	}
+
 	inline unsigned int EffectivePathTracingMaxDepth( const RuntimeContext& rc,
 	                                                  unsigned int configured )
 	{
@@ -164,10 +253,172 @@ namespace
 		Scalar	t;
 		bool	scattered;
 		Scalar	combinedPdf;			///< MIS-combined PDF (0 unless useExplicitThroughput)
+		Scalar	logCombinedPdf;		///< Log of the same density; avoids flooring/extinction-tail underflow for fire emission.
 		bool	useExplicitThroughput;	///< true => medWeight = Tr * sigma_s / combinedPdf
 		bool	zeroContrib;			///< true => equiangular landed at zero-density; no surface fallthrough
-		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5, so its true mixture probability is 0.5*pSurvival), 1.0 in the pure-DT / analog / no-positional-light regime. Consumed at the no-scatter survival sites as Tr / (noScatterPdfScale * pSurvival).
+		Scalar	noScatterPdfScale;		///< strategy-selection factor for the no-scatter outcome: 0.5 in the equiangular-MIS regime (a no-scatter outcome can only arise from the DT strategy, chosen with prob 0.5), 1.0 in the pure-DT / analog / no-positional-light regime. Scalar NM consumes the exact T_det/P_0 cancellation as 1/noScatterPdfScale; Pel and HWSS retain their measure-specific survival formulations.
 	};
+
+	static bool PTMediumSegmentInterval(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		Scalar& segmentStart,
+		Scalar& segmentEnd )
+	{
+		Point3 bbMin;
+		Point3 bbMax;
+		if( !medium.GetBoundingBox( bbMin, bbMax ) ) {
+			segmentStart = 0.0;
+			segmentEnd = maxDist;
+			return segmentEnd > segmentStart;
+		}
+
+		segmentStart = 0.0;
+		segmentEnd = maxDist;
+		for( unsigned int axis = 0; axis < 3; ++axis ) {
+			const Scalar origin = ray.origin[axis];
+			const Scalar direction = ray.Dir()[axis];
+			if( fabs( direction ) <= 1e-20 ) {
+				if( origin < bbMin[axis] || origin > bbMax[axis] ) return false;
+				continue;
+			}
+			const Scalar inverseDirection = 1.0 / direction;
+			Scalar t0 = (bbMin[axis] - origin) * inverseDirection;
+			Scalar t1 = (bbMax[axis] - origin) * inverseDirection;
+			if( t0 > t1 ) {
+				const Scalar temporary = t0;
+				t0 = t1;
+				t1 = temporary;
+			}
+			segmentStart = fmax( segmentStart, t0 );
+			segmentEnd = fmin( segmentEnd, t1 );
+			if( segmentStart >= segmentEnd ) return false;
+		}
+		return segmentEnd > segmentStart;
+	}
+
+	static Scalar PTFullSegmentAdditiveEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar segmentStart,
+		const Scalar segmentEnd,
+		const Scalar nm,
+		const Scalar uniformXi )
+	{
+		const Scalar segmentLength = segmentEnd - segmentStart;
+		if( segmentLength <= 0.0 ) return 0.0;
+		if( medium.IsHomogeneous() ) {
+			const MediumCoefficientsNM coeff = medium.GetCoefficientsNM( ray.origin, nm );
+			if( coeff.emission == 0.0 ) return 0.0;
+			if( coeff.sigma_t > 0.0 ) {
+				const Scalar transmittanceToStart = exp( -coeff.sigma_t * segmentStart );
+				return transmittanceToStart * coeff.emission *
+					( -expm1( -coeff.sigma_t * segmentLength ) ) / coeff.sigma_t;
+			}
+			return coeff.emission * segmentLength;
+		}
+
+		const Scalar t = segmentStart + uniformXi * segmentLength;
+		const MediumCoefficientsNM coeff = medium.GetCoefficientsNM(
+			ray.PointAtLength( t ), nm );
+		if( coeff.emission == 0.0 ) return 0.0;
+		const Scalar logTr = medium.EvalLogDistancePdfNM(
+			ray, t, false, t, nm );
+		return segmentLength * exp( logTr ) * coeff.emission;
+	}
+
+	static Scalar PTFullSegmentAdditiveEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar nm,
+		const RandomNumberGenerator& random )
+	{
+		Scalar segmentStart = 0.0;
+		Scalar segmentEnd = 0.0;
+		if( !PTMediumSegmentInterval(
+			medium, ray, maxDist, segmentStart, segmentEnd ) ) return 0.0;
+		const Scalar additiveXi = medium.IsHomogeneous()
+			? 0.0 : random.CanonicalRandom();
+		return PTFullSegmentAdditiveEmissionNM(
+			medium, ray, segmentStart, segmentEnd, nm, additiveXi );
+	}
+
+	static Scalar PTFullSegmentChemEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar segmentStart,
+		const Scalar segmentEnd,
+		const Scalar nm,
+		const RandomNumberGenerator& random )
+	{
+		IndependentSampler chemSampler( random );
+		return medium.EstimateChemEmissionSegmentNM(
+			ray, segmentStart, segmentEnd, nm, chemSampler );
+	}
+
+	static Scalar PTFullSegmentChemEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar nm,
+		const RandomNumberGenerator& random )
+	{
+		Scalar segmentStart = 0.0;
+		Scalar segmentEnd = 0.0;
+		if( !PTMediumSegmentInterval(
+			medium, ray, maxDist, segmentStart, segmentEnd ) ) return 0.0;
+		return PTFullSegmentChemEmissionNM(
+			medium, ray, segmentStart, segmentEnd, nm, random );
+	}
+
+	static Scalar PTEventThermalEmissionNM(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar t,
+		const Scalar nm,
+		const MediumSampleOutcome& sample )
+	{
+		if( !medium.IsFireMedium() ) return 0.0;
+		const Point3 eventPoint = ray.PointAtLength( t );
+		const MediumCoefficientsNM coeff = medium.GetCoefficientsNM( eventPoint, nm );
+		if( coeff.sigma_t <= 0.0 ) return 0.0;
+		const Scalar epsilonThermal = medium.GetThermalEmissionNM( eventPoint, nm );
+		if( epsilonThermal == 0.0 ) return 0.0;
+		if( sample.useExplicitThroughput ) {
+			const Scalar logPdfDt = medium.EvalLogDistancePdfNM(
+				ray, t, true, maxDist, nm );
+			const Scalar logTrDet = logPdfDt - log( coeff.sigma_t );
+			return epsilonThermal * exp( logTrDet - sample.logCombinedPdf );
+		}
+		// Pure per-wavelength delta tracking has p=sigma_t*T.  Cancel
+		// analytically so optically thick tails never divide underflowed PDFs.
+		return epsilonThermal / coeff.sigma_t;
+	}
+
+	static RISEPel PTEventThermalEmissionPel(
+		const IMedium& medium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar t,
+		const MediumSampleOutcome& sample
+		)
+	{
+		if( !medium.IsFireMedium() ) return RISEPel( 0.0 );
+		const Point3 eventPoint = ray.PointAtLength( t );
+		const MediumCoefficients coeff = medium.GetCoefficients( eventPoint );
+		if( ColorMath::MaxValue(coeff.sigma_t) <= 0.0 ) return RISEPel( 0.0 );
+		const RISEPel epsilonThermal = medium.GetThermalEmissionPel( eventPoint );
+		const Scalar pdf = sample.useExplicitThroughput ? sample.combinedPdf :
+			medium.EvalDistancePdf( ray,t,true,maxDist );
+		if( !PathTransportUtilities::IsPositiveFiniteDensity(pdf) ) {
+			return RISEPel( 0.0 );
+		}
+		return medium.EvalDeterministicTransmittancePel(ray,t) *
+			epsilonThermal * (1.0/pdf);
+	}
 
 	//
 	// Medium distance sampling runs on an IndependentSampler (pure i.i.d.)
@@ -182,7 +433,9 @@ namespace
 		const IMedium* pMedium,
 		const Ray& ray,
 		const Scalar maxDist,
+		const bool surfaceBounded,
 		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
 		ISampler& sampler					///< Independent medium sampler (not the path QMC sampler)
 		)
 	{
@@ -190,20 +443,25 @@ namespace
 		out.t = 0;
 		out.scattered = false;
 		out.combinedPdf = 0;
+		out.logCombinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
 
-		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
+		// Phase-B volume NEE is spectral-only.  A fire Pel collision therefore
+		// has no matching equiangular endpoint strategy and stays on pure DT.
+		const bool useEquiangularMIS = !pMedium->IsFireMedium() && pLS &&
+			pLS->IsEquiangularPivotDistributionValid() &&
+			pLS->GetEquiangularPivotEntryCount() > 0;
 		if( !useEquiangularMIS )
 		{
 			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
 			return out;
 		}
 
-		// Clip equiangular range to medium AABB (unbounded global media
-		// return false from GetBoundingBox and are integrated over
-		// [0, maxDist]).
+		// Equiangular sampling requires an explicitly bounded segment.  A
+		// surface hit bounds it directly; otherwise a bounded medium AABB may.
+		bool equiangularSegmentBounded = surfaceBounded;
 		Scalar eqTNear = 0;
 		Scalar eqTFar = maxDist;
 		{
@@ -248,31 +506,27 @@ namespace
 				{
 					eqTNear = fmax( 0.0, tEntry );
 					eqTFar = fmin( maxDist, tExit );
+					equiangularSegmentBounded = true;
 				}
 			}
 		}
 
-		if( eqTFar <= eqTNear )
+		if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 		{
 			// Medium AABB does not intersect the ray segment — plain delta tracking.
 			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
 			return out;
 		}
 
-		// Select one positional light proportional to exitance.
-		const unsigned int nPosLights = pLS->GetPositionalLightCount();
-		const Scalar totalPosExitance = pLS->GetPositionalLightTotalExitance();
-		unsigned int selectedLight = 0;
-		{
-			const Scalar xiLight = sampler.Get1D();
-			Scalar cumulative = 0;
-			for( unsigned int i = 0; i < nPosLights; i++ )
-			{
-				cumulative += pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-				if( xiLight <= cumulative ) { selectedLight = i; break; }
-			}
+		VolumeEmissionPivotState pivots;
+		Point3 selectedPivot;
+		Scalar selectedPivotPdf = 0.0;
+		if( !pLS->ResolveVolumeEmissionPivots(sampler,sharedPivots,pivots) ||
+			!pLS->SampleEquiangularPivot(
+				pivots, sampler.Get1D(), selectedPivot, selectedPivotPdf ) ) {
+			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
+			return out;
 		}
-		const Point3& lightPos = pLS->GetPositionalLightPosition( selectedLight );
 
 		const Scalar xiStrategy = sampler.Get1D();
 
@@ -287,14 +541,8 @@ namespace
 			if( out.scattered )
 			{
 				const Scalar pdf_dt = pMedium->EvalDistancePdf( ray, out.t, true, maxDist );
-				Scalar pdf_eq = 0;
-				for( unsigned int i = 0; i < nPosLights; i++ )
-				{
-					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-					pdf_eq += pSel * EquiangularSampling::Pdf(
-						ray, pLS->GetPositionalLightPosition( i ),
-						eqTNear, eqTFar, out.t );
-				}
+				const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+					pivots, ray, eqTNear, eqTFar, true, out.t );
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 				out.useExplicitThroughput = true;
 			}
@@ -314,7 +562,7 @@ namespace
 			// Unlike delta tracking, equiangular ONLY proposes scatter events.
 			EquiangularSampling::Sample eqSample =
 				EquiangularSampling::SampleDistance(
-					ray, lightPos, eqTNear, eqTFar, sampler.Get1D() );
+					ray, selectedPivot, eqTNear, eqTFar, true, sampler.Get1D() );
 			out.t = eqSample.t;
 
 			if( out.t > eqTNear && out.t < maxDist )
@@ -326,14 +574,8 @@ namespace
 				{
 					out.scattered = true;
 					const Scalar pdf_dt = pMedium->EvalDistancePdf( ray, out.t, true, maxDist );
-					Scalar pdf_eq = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-						pdf_eq += pSel * EquiangularSampling::Pdf(
-							ray, pLS->GetPositionalLightPosition( i ),
-							eqTNear, eqTFar, out.t );
-					}
+					const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+						pivots, ray, eqTNear, eqTFar, true, out.t );
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
 					out.useExplicitThroughput = true;
 				}
@@ -365,8 +607,10 @@ namespace
 		const IMedium* pMedium,
 		const Ray& ray,
 		const Scalar maxDist,
+		const bool surfaceBounded,
 		const Scalar nm,
 		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
 		ISampler& sampler
 		)
 	{
@@ -374,17 +618,21 @@ namespace
 		out.t = 0;
 		out.scattered = false;
 		out.combinedPdf = 0;
+		out.logCombinedPdf = 0;
 		out.useExplicitThroughput = false;
 		out.zeroContrib = false;
 		out.noScatterPdfScale = 1.0;
 
-		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
+		const bool useEquiangularMIS = pLS &&
+			pLS->IsEquiangularPivotDistributionValid() &&
+			pLS->GetEquiangularPivotEntryCount() > 0;
 		if( !useEquiangularMIS )
 		{
 			out.t = pMedium->SampleDistanceNM( ray, maxDist, nm, sampler, out.scattered );
 			return out;
 		}
 
+		bool equiangularSegmentBounded = surfaceBounded;
 		Scalar eqTNear = 0;
 		Scalar eqTFar = maxDist;
 		{
@@ -429,29 +677,27 @@ namespace
 				{
 					eqTNear = fmax( 0.0, tEntry );
 					eqTFar = fmin( maxDist, tExit );
+					equiangularSegmentBounded = true;
 				}
 			}
 		}
 
-		if( eqTFar <= eqTNear )
+		if( !equiangularSegmentBounded || eqTFar <= eqTNear )
 		{
 			out.t = pMedium->SampleDistanceNM( ray, maxDist, nm, sampler, out.scattered );
 			return out;
 		}
 
-		const unsigned int nPosLights = pLS->GetPositionalLightCount();
-		const Scalar totalPosExitance = pLS->GetPositionalLightTotalExitance();
-		unsigned int selectedLight = 0;
-		{
-			const Scalar xiLight = sampler.Get1D();
-			Scalar cumulative = 0;
-			for( unsigned int i = 0; i < nPosLights; i++ )
-			{
-				cumulative += pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-				if( xiLight <= cumulative ) { selectedLight = i; break; }
-			}
+		VolumeEmissionPivotState pivots;
+		Point3 selectedPivot;
+		Scalar selectedPivotPdf = 0.0;
+		if( !pLS->ResolveVolumeEmissionPivots(sampler,sharedPivots,pivots) ||
+			!pLS->SampleEquiangularPivot(
+				pivots, sampler.Get1D(), selectedPivot, selectedPivotPdf ) ) {
+			out.t = pMedium->SampleDistanceNM(
+				ray, maxDist, nm, sampler, out.scattered );
+			return out;
 		}
-		const Point3& lightPos = pLS->GetPositionalLightPosition( selectedLight );
 
 		const Scalar xiStrategy = sampler.Get1D();
 
@@ -466,15 +712,14 @@ namespace
 			{
 				const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 					ray, out.t, true, maxDist, nm );
-				Scalar pdf_eq = 0;
-				for( unsigned int i = 0; i < nPosLights; i++ )
-				{
-					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-					pdf_eq += pSel * EquiangularSampling::Pdf(
-						ray, pLS->GetPositionalLightPosition( i ),
-						eqTNear, eqTFar, out.t );
-				}
+				const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+					pivots, ray, eqTNear, eqTFar, true, out.t );
 				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+				const MISWeights::LogDensity logDensity =
+					pLS->EvaluateVolumeEmissionDistanceLogDensityNM(
+						*pMedium,ray,maxDist,surfaceBounded,&pivots,nm,out.t,true);
+				out.logCombinedPdf = logDensity.hasSupport ?
+					logDensity.value : -RISE_INFINITY;
 				out.useExplicitThroughput = true;
 			}
 			else
@@ -490,7 +735,7 @@ namespace
 		{
 			EquiangularSampling::Sample eqSample =
 				EquiangularSampling::SampleDistance(
-					ray, lightPos, eqTNear, eqTFar, sampler.Get1D() );
+					ray, selectedPivot, eqTNear, eqTFar, true, sampler.Get1D() );
 			out.t = eqSample.t;
 
 			if( out.t > eqTNear && out.t < maxDist )
@@ -503,15 +748,14 @@ namespace
 					out.scattered = true;
 					const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
 						ray, out.t, true, maxDist, nm );
-					Scalar pdf_eq = 0;
-					for( unsigned int i = 0; i < nPosLights; i++ )
-					{
-						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
-						pdf_eq += pSel * EquiangularSampling::Pdf(
-							ray, pLS->GetPositionalLightPosition( i ),
-							eqTNear, eqTFar, out.t );
-					}
+					const Scalar pdf_eq = pLS->EquiangularDistancePdf(
+						pivots, ray, eqTNear, eqTFar, true, out.t );
 					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+					const MISWeights::LogDensity logDensity =
+						pLS->EvaluateVolumeEmissionDistanceLogDensityNM(
+							*pMedium,ray,maxDist,surfaceBounded,&pivots,nm,out.t,true);
+					out.logCombinedPdf = logDensity.hasSupport ?
+						logDensity.value : -RISE_INFINITY;
 					out.useExplicitThroughput = true;
 				}
 				else
@@ -981,6 +1225,19 @@ namespace
 	template<> inline RISEPel PTValueOne<PelTag>() { return RISEPel( 1, 1, 1 ); }
 	template<> inline Scalar  PTValueOne<NMTag>()  { return Scalar( 1 ); }
 
+	// Keep the Pel instantiation byte-for-byte on its pre-fire arithmetic;
+	// only NM has a source value to add in steps 4-6.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTCombineMediumSource(
+		const typename SpectralValueTraits<Tag>::value_type& source,
+		const typename SpectralValueTraits<Tag>::value_type& transport )
+	{
+		if constexpr ( SpectralValueTraits<Tag>::is_pel ) {
+			return transport;
+		}
+		return source + transport;
+	}
+
 	// Reduce a transmittance value to the scalar used in the legacy
 	// max-channel medium-throughput denominator.  Pel -> min channel
 	// (matches the original ColorMath::MinValue(Tr)); Scalar -> itself.
@@ -1069,6 +1326,27 @@ namespace
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& )
 	{ return pMedium->EvalTransmittance( ray, dist ); }
 
+	// A fire-Pel collision is evaluated against the deterministic projected
+	// coefficient field.  Its distance density is deterministic as well, so a
+	// stochastic ratio-tracking numerator would form a biased ratio and would
+	// change with tracker variance.  Ordinary Pel media retain their legacy
+	// stochastic transmittance path.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvalCollisionTransmittance(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const Tag& tag )
+	{
+		return PTEvalTransmittance<Tag>( pMedium, ray, dist, tag );
+	}
+
+	template<>
+	inline RISEPel PTEvalCollisionTransmittance<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& tag )
+	{
+		return pMedium->IsFireMedium() ?
+			pMedium->EvalDeterministicTransmittancePel( ray, dist ) :
+			PTEvalTransmittance<PelTag>( pMedium, ray, dist, tag );
+	}
+
 	template<>
 	inline Scalar PTEvalTransmittance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
@@ -1093,47 +1371,96 @@ namespace
 		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
 	{ return pMedium->EvalDistancePdfNM( ray, dist, /*scattered=*/false, dist, tag.nm ); }
 
+	// Analog no-scatter continuation weight.  In the scalar NM measure the
+	// physical Beer-Lambert transmittance and the delta-tracking no-event atom
+	// are the same deterministic T_det.  Their ratio therefore cancels exactly;
+	// only the explicit strategy-selection mass (0.5 for the DT half of the
+	// equiangular mixture, otherwise 1) remains.  Evaluating a second stochastic
+	// ratio-tracking Tr here would multiply downstream null-boundary source by an
+	// unnecessary estimator and violates §7.2.2's pinned T_det/P_0 update.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTNoScatterSurvivalWeight(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist,
+		const Scalar noScatterPdfScale, const Tag& tag );
+
+	template<>
+	inline RISEPel PTNoScatterSurvivalWeight<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist,
+		const Scalar noScatterPdfScale, const PelTag& tag )
+	{
+		const RISEPel Tr = PTEvalTransmittance<PelTag>(pMedium,ray,dist,tag);
+		const Scalar pSurvival = noScatterPdfScale *
+			PTEvalNoScatterSurvivalPdf<PelTag>(pMedium,ray,dist,tag);
+		return PTSurvivalWeight<PelTag>(Tr,pSurvival);
+	}
+
+	template<>
+	inline Scalar PTNoScatterSurvivalWeight<NMTag>(
+		const IMedium*, const Ray&, const Scalar,
+		const Scalar noScatterPdfScale, const NMTag& )
+	{
+		return PathTransportUtilities::NMNoEventSurvivalWeight(
+			noScatterPdfScale);
+	}
+
 	// Volume distance sampling with optional equiangular MIS.
 	template<class Tag>
 	inline MediumSampleOutcome PTSampleMediumDistance(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
-		const Implementation::LightSampler* pLS, ISampler& sampler, const Tag& tag );
+		const bool surfaceBounded,
+		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
+		ISampler& sampler, const Tag& tag );
 
 	template<>
 	inline MediumSampleOutcome PTSampleMediumDistance<PelTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
-		const Implementation::LightSampler* pLS, ISampler& sampler, const PelTag& )
-	{ return SampleDistanceWithEquiangularMIS( pMedium, ray, maxDist, pLS, sampler ); }
+		const bool surfaceBounded,
+		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
+		ISampler& sampler, const PelTag& )
+	{ return SampleDistanceWithEquiangularMIS(
+		pMedium, ray, maxDist, surfaceBounded, pLS, sharedPivots, sampler ); }
 
 	template<>
 	inline MediumSampleOutcome PTSampleMediumDistance<NMTag>(
 		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
-		const Implementation::LightSampler* pLS, ISampler& sampler, const NMTag& tag )
-	{ return SampleDistanceWithEquiangularMIS_NM( pMedium, ray, maxDist, tag.nm, pLS, sampler ); }
+		const bool surfaceBounded,
+		const Implementation::LightSampler* pLS,
+		const VolumeEmissionPivotState* sharedPivots,
+		ISampler& sampler, const NMTag& tag )
+	{ return SampleDistanceWithEquiangularMIS_NM(
+		pMedium, ray, maxDist, surfaceBounded, tag.nm, pLS,
+		sharedPivots, sampler ); }
 
 	// In-scattered radiance (NEE) at a medium scatter point.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateInScattering(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const Tag& tag );
+		const IORStack* pMediumStack, const Tag& tag );
 
 	template<>
 	inline RISEPel PTEvaluateInScattering<PelTag>(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const PelTag& )
-	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, caster, pLS, sampler, rast, pMediumObject ); }
+		const IORStack* pMediumStack, const PelTag& )
+	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, pPhase,
+		caster, pLS, sampler, rast, pMediumObject, pMediumStack ); }
 
 	template<>
 	inline Scalar PTEvaluateInScattering<NMTag>(
 		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IPhaseFunction* pPhase,
 		const IRayCaster& caster, const Implementation::LightSampler* pLS,
 		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
-		const NMTag& tag )
-	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, tag.nm, caster, pLS, sampler, rast, pMediumObject ); }
+		const IORStack* pMediumStack, const NMTag& tag )
+	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, pPhase,
+		tag.nm, caster, pLS, sampler, rast, pMediumObject, pMediumStack ); }
 
 	// Radiance-map lookup (per-object or global environment).
 	template<class Tag>
@@ -1238,19 +1565,24 @@ namespace
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag );
+		bool isVolumeScatter, const IObject* pMediumObject,
+		const IORStack* pMediumStack, const Tag& tag );
 	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const PelTag& )
-	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject,
+		const IORStack* pMediumStack, const PelTag& )
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler,
+		pShadingObject, pMedium, isVolumeScatter, pMediumObject, pMediumStack ); }
 	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
 		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
 		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
 		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
-		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag )
-	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+		bool isVolumeScatter, const IObject* pMediumObject,
+		const IORStack* pMediumStack, const NMTag& tag )
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster,
+		sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject, pMediumStack ); }
 
 	// BSDF value at a surface (guiding RIS / one-sample MIS).
 	template<class Tag>
@@ -1400,53 +1732,6 @@ namespace
 	inline RISEPel PTMulDiv( const RISEPel& a, const Scalar b, const Scalar c ) { return a * ( b / c ); }
 	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
 
-	//! P1-c fix (review-p2b, `clay_lights` MIS inconsistency): a thin
-	//! IMaterial adapter over the integrator's shared pClayBRDF/pClaySPF,
-	//! passed to LightSampler::EvaluateDirectLighting{,NM} in place of
-	//! ri.pMaterial wherever the NEE eval already substitutes the clay
-	//! BRDF for the value/contribution term.  Without this, NEE evaluated
-	//! `f = clayBRDF.value(...)` (numerator) while computing the MIS
-	//! BSDF-sampling pdf from the AUTHORED material's Pdf() (denominator)
-	//! -- a mismatched pair that makes clay_lights biased AND dependent on
-	//! the hidden authored material (mirror/dielectric materials have a
-	//! near-zero or delta Pdf(), which starves or floods the NEE weight
-	//! for a surface that is visually identical clay).  GetBSDF()/GetSPF()
-	//! return the SAME pClayBRDF/pClaySPF instances every other clay call
-	//! site uses (no duplicate Lambertian pair -- see the ctor).
-	//! GetEmitter() is always null: LightSampler::EvaluateDirectLighting
-	//! only ever calls pMaterial->Pdf()/PdfNM() on this parameter (verified
-	//! by reading every pMaterial use in both EvaluateDirectLighting and
-	//! EvaluateDirectLightingNM -- LightSampler.cpp), never
-	//! pMaterial->GetEmitter() -- the surface's own emission is evaluated
-	//! separately (PART 1) against the REAL ri.pMaterial and is never
-	//! substituted, matching SetClayOverride's documented contract.  Pdf/
-	//! PdfNM are deliberately NOT overridden: IMaterial's base
-	//! implementation (Materials/IMaterial.cpp) delegates to
-	//! GetSPF()->Pdf(...)/PdfNM(...), i.e. pClaySPF's OWN pdf formula --
-	//! the EXACT function the continuation ray is actually sampled from
-	//! (pClaySPF::Scatter), so NEE's MIS weight and the BSDF-sampling
-	//! strategy's density can never drift apart.
-	class ClayNEEMaterial :
-		public virtual IMaterial,
-		public virtual Reference
-	{
-	public:
-		ClayNEEMaterial( const IBSDF* brdf, const ISPF* spf ) :
-		  pBRDF( const_cast<IBSDF*>( brdf ) ),
-		  pSPF( const_cast<ISPF*>( spf ) )
-		{}
-
-		IBSDF* GetBSDF() const override { return pBRDF; }
-		ISPF* GetSPF() const override { return pSPF; }
-		IEmitter* GetEmitter() const override { return 0; }
-
-	protected:
-		~ClayNEEMaterial() override {}
-
-	private:
-		IBSDF* pBRDF;
-		ISPF* pSPF;
-	};
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1458,6 +1743,17 @@ namespace
 std::atomic<long long> PathTracingIntegrator::sConstructionCount( 0 );
 std::atomic<long long> PathTracingIntegrator::sDestructionCount( 0 );
 
+const IMaterial* PathTracingIntegrator::CreateClayOverrideMaterial()
+{
+	IPainter* painter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
+	GlobalLog()->PrintNew( painter, __FILE__, __LINE__, "clay_lights neutral painter" );
+	const IMaterial* material = new LambertianMaterial( *painter );
+	GlobalLog()->PrintNew( material, __FILE__, __LINE__, "clay_lights material" );
+	// LambertianMaterial's BRDF and SPF each retain the painter.
+	painter->release();
+	return material;
+}
+
 PathTracingIntegrator::PathTracingIntegrator(
 	const ManifoldSolverConfig& smsConfig,
 	const StabilityConfig& stabilityCfg
@@ -1468,7 +1764,26 @@ PathTracingIntegrator::PathTracingIntegrator(
   mMaxPathDepth( 128 ),
   mIndirectOnly( false ),
   mClayOverride( false ),
-  pClayPainter( 0 ),
+  mFirePelDiagnosticEmitted( false ),
+  mUnsupportedContinuationDiagnosticEmitted( false ),
+  mUnsupportedFallbackSegmentObserved( false ),
+  mUnsupportedFallbackSegmentCompeted( false ),
+  mUnsupportedFallbackEndpointAttempted( false ),
+  mCompetingMediumVertexCount( 0 ),
+  mCompetingMediumEndpointAttemptCount( 0 ),
+  mNonCompetingMediumFallbackVertexCount( 0 ),
+  mCompetingMediumGuideAlphaNonzero( false ),
+  mCompetingMediumGuideSampleCount( 0 ),
+  mCompetingMediumReachPdfMismatch( false ),
+  mCompetingMediumZeroSurvivalObserved( false ),
+  mCompetingMediumIntermediateSurvivalObserved( false ),
+  mCompetingMediumUnitSurvivalObserved( false ),
+  mNonCompetingSurfaceGuideInitializationCount( 0 ),
+  mNonCompetingSurfaceRISCount( 0 ),
+  mSurfaceVolumeEndpointAttemptCount( 0 ),
+  mSSSOrdinaryDirectContributionObserved( false ),
+  mNonCompetingSurfaceGuidedCandidateInstalledCount( 0 ),
+  mNonCompetingSurfaceRISCandidateInstalledCount( 0 ),
   pClayBRDF( 0 ),
   pClaySPF( 0 ),
   pClayMaterial( 0 )
@@ -1479,49 +1794,18 @@ PathTracingIntegrator::PathTracingIntegrator(
 	}
 
 	// GUI render modes P2b `clay_lights`: built unconditionally (cheap --
-	// one painter + two thin wrapper objects) rather than lazily on first
+	// one painter plus one Lambertian material) rather than lazily on first
 	// SetClayOverride(true), so there is no first-use race to reason about.
 	// A mid-grey (0.5,0.5,0.5) albedo reflectance -- neutral clay, not
 	// pure white (would over-brighten bounce energy) or pure black (would
-	// kill it).  Refcount discipline (verified against LambertianBRDF /
-	// LambertianSPF's actual ctors, both of which addref their painter
-	// argument): `new UniformColorPainter` starts refcount 1; the BRDF
-	// wrapper's ctor addrefs it to 2; the SPF wrapper's ctor addrefs it to
-	// 3.  Deliberately NOT releasing the local `pPainter` here: the third
-	// reference IS `pClayPainter`'s own -- i.e. `new` is the acquisition
-	// for the member, matching every other raw-pointer-member-holds-a-ref
-	// idiom in this file (pSolver, etc).  The three-way symmetric release
-	// in the dtor below (BRDF, then SPF, then pClayPainter) exactly
-	// balances this ctor's three addrefs, so pClayPainter is never touched
-	// after the object it points to is freed.
-	{
-		IPainter* pPainter = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );
-		// review-p3 P3 fix: all three are Reference-counted and each gets
-		// its own symmetric safe_release in the dtor below -- without a
-		// matching PrintNew, LOG_TRACK_MEMORY prints a spurious "Specified
-		// Allocation does not exist!" for each on teardown.
-		GlobalLog()->PrintNew( pPainter, __FILE__, __LINE__, "clay_lights neutral painter" );
-		pClayPainter = pPainter;
-		pClayBRDF = new LambertianBRDF( *pPainter );
-		GlobalLog()->PrintNew( pClayBRDF, __FILE__, __LINE__, "clay_lights BRDF" );
-		pClaySPF  = new LambertianSPF( *pPainter );
-		GlobalLog()->PrintNew( pClaySPF, __FILE__, __LINE__, "clay_lights SPF" );
-	}
-
-	// P1-c fix: the NEE-material adapter (see ClayNEEMaterial's doc above)
-	// wraps pClayBRDF/pClaySPF by raw (non-owning) pointer -- it does not
-	// addref them.  This is safe because all four clay members share one
-	// build-once/tear-down-once lifetime scoped to this integrator: nothing
-	// dereferences pClayMaterial's GetBSDF()/GetSPF() results outside of an
-	// active render, and pClayBRDF/pClaySPF are never released before
-	// pClayMaterial in the dtor below (in fact -- release order among the
-	// four is inconsequential here specifically because none of their
-	// destructors dereference each other; ClayNEEMaterial's dtor is a
-	// trivial no-op).
-	pClayMaterial = new ClayNEEMaterial( pClayBRDF, pClaySPF );
-	// review-p3 P3 fix: same tracking-asymmetry fix as the trio above --
-	// safe_release( pClayMaterial ) runs unconditionally in the dtor.
-	GlobalLog()->PrintNew( pClayMaterial, __FILE__, __LINE__, "clay_lights NEE material" );
+	// kill it).  The factory releases its initial painter reference after
+	// LambertianMaterial's BRDF and SPF have each retained it; destroying
+	// the material releases those final two references.
+	// The single factory owns the coherent BRDF/SPF/closure parameter set.
+	// pClayBRDF and pClaySPF are borrowed aliases held by pClayMaterial.
+	pClayMaterial = CreateClayOverrideMaterial();
+	pClayBRDF = pClayMaterial->GetBSDF();
+	pClaySPF = pClayMaterial->GetSPF();
 
 	sConstructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
@@ -1530,9 +1814,6 @@ PathTracingIntegrator::~PathTracingIntegrator()
 {
 	safe_release( pSolver );
 	safe_release( pClayMaterial );
-	safe_release( pClayBRDF );
-	safe_release( pClaySPF );
-	safe_release( pClayPainter );
 
 	sDestructionCount.fetch_add( 1, std::memory_order_relaxed );
 }
@@ -1596,7 +1877,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	RayIntersection ri( firstHit );
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
-	bool needsIntersection = false;
+	// Normal callers provide a real first surface hit.  A camera-ray volume
+	// scatter instead supplies its continuation ray in a deliberately un-hit
+	// record so this same loop performs intersection AND medium transport on
+	// that immediately-following segment.
+	bool needsIntersection = !ri.geometric.bHit;
+	bool rejectZeroDistanceBoundary = false;
 
 	// Firefly tracing: assigns a monotonically increasing per-pixel sample
 	// ID so the output log can be grouped by sample.  Only enabled when
@@ -1638,6 +1924,13 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
 
 	const LightSampler* pLS = caster.GetLightSampler();
+	VolumeEmissionSegmentState activeVolumeSegmentState =
+		CurrentVolumeEmissionSegmentState();
+	// The iterative path keeps the sampled U/Y record alive until the outgoing
+	// segment has been marched.  VolumeEmissionSegmentState intentionally holds
+	// only a read-only pivot pointer, so stack storage inside one loop iteration
+	// would dangle on `continue`.
+	VolumeEmissionVertexSample activeVolumeVertexSample;
 
 #ifdef RISE_ENABLE_OPENPGL
 	const bool useGuidingPathSegments = rc.pGuidingField &&
@@ -1657,8 +1950,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 	// caller that never calls the setter.
 	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
-	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
+	unsigned int depthIncrement = 1;
+	bool continueSameTransportSegment = false;
+	for( unsigned int depth = startDepth; ; depth += depthIncrement )
 	{
+		depthIncrement = 1;
+		// A continuation segment is transport, not a new continuation
+		// decision: even when the preceding vertex consumed the final path-depth
+		// slot, §7.1 requires its additive source and any finite thermal collision
+		// to be scored before the path-depth gate.  Permit exactly that one
+		// intersection/medium pass; a pre-computed surface hit never receives an
+		// extra vertex.
+		const bool pathDepthAllowsContinuation = depth < maxDepth;
+		const bool scoreCappedSourceSegment =
+			needsIntersection && !pathDepthAllowsContinuation;
+		if( !pathDepthAllowsContinuation && !scoreCappedSourceSegment ) {
+			break;
+		}
+
 		// Runaway-throughput guard.  PT can compound per-bounce BSDF
 		// kray amplification (Ward / multi-lobe-select divides by
 		// selection probability < 1) into exponential throughput
@@ -1683,7 +1992,10 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 		}
 
-		sampler.StartStream( 16 + depth );
+		if( !continueSameTransportSegment ) {
+			sampler.StartStream( 16 + depth );
+		}
+		continueSameTransportSegment = false;
 
 		// ============================================================
 		// Intersection + medium transport (skipped for first iteration
@@ -1693,9 +2005,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			if( rejectZeroDistanceBoundary ) {
+				ri.geometric.minimumSurfaceRange = 0.0;
+			}
+			scene.GetObjects()->IntersectRay(
+				ri, true, true, rejectZeroDistanceBoundary );
+			rejectZeroDistanceBoundary = false;
 
 			bool bHit = ri.geometric.bHit;
+			Scalar segmentNoEventProbability = 1.0;
 
 			// Medium transport
 			const IObject* pMediumObject = 0;
@@ -1704,10 +2022,22 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			if( pCurrentMedium )
 			{
-				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				const Scalar maxDist = bHit
+					? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+						? ri.geometric.surfaceRange : ri.geometric.range )
+					: RISE_INFINITY;
+				if constexpr ( !Traits::is_pel ) {
+					const Scalar additiveEmission = PTFullSegmentAdditiveEmissionNM(
+						*pCurrentMedium, currentRay, maxDist, tag.nm, rc.random );
+					const Scalar chemEmission = PTFullSegmentChemEmissionNM(
+						*pCurrentMedium, currentRay, maxDist, tag.nm, rc.random );
+					result = result + throughput * ( additiveEmission + chemEmission );
+				}
 				IndependentSampler mediumSampler( rc.random );
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler, tag );
+					pCurrentMedium, currentRay, maxDist, bHit,
+					IsSSSContainmentActive() ? 0 : pLS,
+					activeVolumeSegmentState.pivots, mediumSampler, tag );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -1720,19 +2050,74 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					break;
 				}
 
-				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
+				if( scattered )
 				{
-					// Volume scatter event
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					const MediumContinuationAvailability mediumAvailability =
+						ResolveMediumContinuationAvailability(
+							depth+1 < maxDepth,volumeBounces,stabilityConfig);
+					if constexpr ( Traits::is_pel ) {
+						result = result + throughput * PTEventThermalEmissionPel(
+							*pCurrentMedium,currentRay,maxDist,t_m,mso );
+					} else {
+						Scalar thermalEmission = PTEventThermalEmissionNM(
+							*pCurrentMedium, currentRay, maxDist, t_m, tag.nm, mso );
+						if( thermalEmission != 0.0 &&
+							activeVolumeSegmentState.competitionAvailable ) {
+							const Scalar logDistancePdf = mso.useExplicitThroughput ?
+								mso.logCombinedPdf : pCurrentMedium->EvalLogDistancePdfNM(
+									currentRay,t_m,true,maxDist,tag.nm);
+							const MISWeights::LogDensity logPMarch =
+								MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+									activeVolumeSegmentState,logDistancePdf,t_m);
+							const Scalar pV = pLS ? pLS->VolumeEmissionPdf(
+								*pCurrentMedium,scatterPt) : 0.0;
+							const MISWeights::LogDensity logPV =
+								MISWeights::MakeLogDensity(pV);
+							thermalEmission *= MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+								logPMarch,logPV,
+								activeVolumeSegmentState.competitionAvailable,
+								activeVolumeSegmentState.continuationSingular);
+						}
+						result = result + throughput * thermalEmission;
+					}
+
+					// The collision exists, and therefore emits, independently of
+					// whether the volume-scatter continuation budget is exhausted.
+					if constexpr ( Traits::is_pel ) {
+						if( !mediumAvailability.vertexAllowed ) break;
+					} else if( !pathDepthAllowsContinuation ) {
+						break;
+					}
+
+					// Volume scatter event
 					const Vector3 wo = currentRay.Dir();
 					const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
-					const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, currentRay, t_m, tag );
+					const Value Tr = PTEvalCollisionTransmittance<Tag>(
+						pCurrentMedium, currentRay, t_m, tag );
 
 					Value medWeight = Traits::zero();
 					if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
 					{
 						// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
 						medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
+					}
+					else if constexpr ( Traits::is_pel )
+					{
+						if( pCurrentMedium->IsFireMedium() ) {
+							const Scalar collisionPdf = pCurrentMedium->EvalDistancePdf(
+								currentRay,t_m,true,maxDist);
+							if( PathTransportUtilities::IsPositiveFiniteDensity(collisionPdf) ) {
+								medWeight = PTDivByScalar(
+									Tr*coeff.sigma_s,collisionPdf);
+							}
+						} else if( coeff.sigmaTReduced > 0 ) {
+							const Scalar Tr_scalar = PTTrReduced( Tr );
+							if( Tr_scalar > 0 ) {
+								medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+									coeff.sigmaTReduced * Tr_scalar );
+							}
+						}
 					}
 					else if( coeff.sigmaTReduced > 0 )
 					{
@@ -1752,18 +2137,88 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 					throughput = throughput * medWeight;
 
+					const bool volumeNEECompetes = !IsSSSContainmentActive() &&
+						!Traits::is_pel && pLS &&
+						pLS->GetVolumeEmissionMediumCount() > 0 &&
+						MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+							*pCurrentMedium);
 #ifdef RISE_ENABLE_OPENPGL
-					PGLPathSegmentData* volSegment =
-						(guidingRecorder && guidingRecorder->active) ?
-							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
+					const Scalar volumeGuidingAlpha = volumeNEECompetes ?
+						0.0 : rc.guidingAlpha;
+					if( volumeNEECompetes && volumeGuidingAlpha != 0.0 ) {
+						mCompetingMediumGuideAlphaNonzero.store(
+							true,std::memory_order_relaxed);
+					}
 #endif
+	#ifdef RISE_ENABLE_OPENPGL
+					PGLPathSegmentData* volSegment =
+						(!volumeNEECompetes && guidingRecorder && guidingRecorder->active) ?
+							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
+	#endif
+					Scalar phaseNM = 0.0;
+					if constexpr ( !Traits::is_pel ) {
+						phaseNM = tag.nm;
+					}
+					MediumTransport::CollisionPhaseClosure phaseClosure(
+						*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel,
+						volumeNEECompetes );
+					const IPhaseFunction* pPhase = phaseClosure.Get();
+					if constexpr ( !Traits::is_pel ) {
+						if( !volumeNEECompetes && pLS &&
+							pLS->GetVolumeEmissionMediumCount()>0 ) {
+							mNonCompetingMediumFallbackVertexCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
+					}
+
+					Scalar counterfactualRRSurvival = 1.0;
+					bool volumeEndpointAttempted = false;
+					if constexpr ( !Traits::is_pel ) {
+						counterfactualRRSurvival =
+							PathTransportUtilities::RussianRouletteSurvivalProbability(
+								depth+volumeBounces,rrMinDepth,rrThreshold,
+								PTSurvivalMagnitude(throughput),importance);
+						if( volumeNEECompetes && pPhase ) {
+							mCompetingMediumVertexCount.fetch_add(
+								1,std::memory_order_relaxed);
+							if( mediumAvailability.vertexAllowed ) {
+								if( counterfactualRRSurvival == 0.0 ) {
+									mCompetingMediumZeroSurvivalObserved.store(
+										true,std::memory_order_relaxed);
+								} else if( counterfactualRRSurvival == 1.0 ) {
+									mCompetingMediumUnitSurvivalObserved.store(
+										true,std::memory_order_relaxed);
+								} else {
+									mCompetingMediumIntermediateSurvivalObserved.store(
+										true,std::memory_order_relaxed);
+								}
+							}
+						}
+						if( volumeNEECompetes && pPhase ) {
+							pLS->SampleVolumeEmissionVertex(
+								sampler,activeVolumeVertexSample);
+							volumeEndpointAttempted =
+								activeVolumeVertexSample.WasEndpointAttempted();
+							if( volumeEndpointAttempted ) {
+								mCompetingMediumEndpointAttemptCount.fetch_add(
+									1,std::memory_order_relaxed);
+							}
+							const Scalar volumeLd =
+								pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+									scatterPt,wo,*pPhase,mediumAvailability,
+									counterfactualRRSurvival,tag.nm,
+									activeVolumeVertexSample,pCurrentMedium,
+									pMediumObject,&iorStack);
+							result = result + throughput*volumeLd;
+						}
+					}
 
 					// NEE at scatter point
-					if( pLS )
+					if( pLS && pPhase )
 					{
 						Value Ld = PTEvaluateInScattering<Tag>(
-							scatterPt, wo, pCurrentMedium, caster, pLS,
-							sampler, rast, pMediumObject, tag );
+							scatterPt, wo, pCurrentMedium, pPhase, caster, pLS,
+							sampler, rast, pMediumObject, &iorStack, tag );
 						if( PTPositiveMagnitude( Ld ) > 0 )
 						{
 							Value directContrib = throughput * Ld;
@@ -1777,16 +2232,18 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					}
 
 					// Sample phase function for continuation
-					const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 					if( !pPhase ) {
 						break;
 					}
+					if constexpr ( !Traits::is_pel ) {
+						if( !mediumAvailability.marchAllowed ) {
+							break;
+						}
+					}
 
 					Vector3 wi = pPhase->Sample( wo, sampler );
-					Scalar phasePdf = pPhase->Pdf( wo, wi );
-					if( phasePdf <= NEARZERO ) {
-						break;
-					}
+					Scalar phasePdf = Traits::is_pel ?
+						pPhase->PdfProposal( wo, wi ) : pPhase->Pdf( wo, wi );
 					Scalar effectivePdf = phasePdf;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -1794,8 +2251,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// and learned volume distribution.  Mirrors the surface
 					// guiding path.  Falls through to pure phase sampling
 					// when the field has no volume data at this position.
-					if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-						rc.guidingAlpha > 0 && depth <= rc.maxGuidingDepth )
+					if( rc.pGuidingField &&
+						rc.pGuidingField->IsTrained() &&
+						volumeGuidingAlpha > 0 && depth <= rc.maxGuidingDepth )
 					{
 						static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandle;
 						if( rc.pGuidingField->InitVolumeDistribution(
@@ -1807,10 +2265,14 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 									volGuideHandle, wo, meanCosine );
 							}
 
-							const Scalar alpha = rc.guidingAlpha;
+							const Scalar alpha = volumeGuidingAlpha;
 							const Scalar xiG = sampler.Get1D();
 							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 							{
+								if( volumeNEECompetes ) {
+									mCompetingMediumGuideSampleCount.fetch_add(
+										1,std::memory_order_relaxed);
+								}
 								Scalar guidePdf = 0;
 								const Point2 xi2D( sampler.Get1D(), sampler.Get1D() );
 								const Vector3 guidedDir =
@@ -1818,40 +2280,33 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								if( guidePdf > 0 )
 								{
 									wi = guidedDir;
-									phasePdf = pPhase->Pdf( wo, wi );
-									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-										alpha, guidePdf, phasePdf );
+									phasePdf = Traits::is_pel ?
+										pPhase->PdfProposal(wo,wi) : pPhase->Pdf(wo,wi);
 								}
+								effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+									alpha, guidePdf, phasePdf, true );
 							}
 							else
 							{
 								const Scalar guidePdf =
 									rc.pGuidingField->PdfVolume( volGuideHandle, wi );
-								if( guidePdf > 0 ) {
-									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-										alpha, guidePdf, phasePdf );
-								}
+								effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+									alpha, guidePdf, phasePdf, false );
 							}
 						}
 					}
 #endif
 
-					if( effectivePdf <= NEARZERO ) {
+					if( !PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) ) {
 						break;
 					}
 
-					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					const Scalar volScatterScalar = phaseVal / effectivePdf;
-					// Pel multiplies channel-wise by RISEPel(s,s,s); NM
-					// multiplies by the scalar.  Both reduce throughput by
-					// phaseVal/effectivePdf — kept distinct so each matches
-					// its original arithmetic exactly.
 					Value volScatterThroughput;
 					if constexpr ( Traits::is_pel ) {
-						volScatterThroughput = RISEPel(
-							volScatterScalar, volScatterScalar, volScatterScalar );
+						volScatterThroughput =
+							pPhase->EvaluatePel(wo,wi) * (1.0/effectivePdf);
 					} else {
-						volScatterThroughput = volScatterScalar;
+						volScatterThroughput = pPhase->Evaluate(wo,wi)/effectivePdf;
 					}
 #ifdef RISE_ENABLE_OPENPGL
 					const Value preRRVolScatterThroughput = volScatterThroughput;
@@ -1859,8 +2314,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 					throughput = throughput * volScatterThroughput;
 
-					// Russian roulette on volume scatter
-					{
+					// Total/path terminal vertices launch a source-only segment and
+					// therefore have no ordinary continuation roulette event.
+					if( Traits::is_pel || mediumAvailability.vertexAllowed ) {
 						const PathTransportUtilities::RussianRouletteResult rr =
 							PathTransportUtilities::EvaluateRussianRoulette(
 								depth + volumeBounces,
@@ -1898,6 +2354,24 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 					currentRay = Ray( scatterPt, wi );
+					const Scalar marchDirectionPdf =
+						mediumAvailability.vertexAllowed ?
+							phasePdf*counterfactualRRSurvival : phasePdf;
+					if( volumeNEECompetes ) {
+						const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+						const Scalar expectedReachPdf = mediumAvailability.vertexAllowed ?
+							retainedPhasePdf*counterfactualRRSurvival : retainedPhasePdf;
+						if( retainedPhasePdf != phasePdf ||
+							marchDirectionPdf != expectedReachPdf ) {
+							mCompetingMediumReachPdfMismatch.store(
+								true,std::memory_order_relaxed);
+						}
+					}
+					activeVolumeSegmentState = VolumeEmissionSegmentState(
+						volumeEndpointAttempted,false,
+						volumeEndpointAttempted && activeVolumeVertexSample.HasPivots() ?
+							&activeVolumeVertexSample.Pivots() : 0,
+						marchDirectionPdf,0.0,0.0);
 					bsdfPdf = effectivePdf;
 					considerEmission = true;
 					volumeBounces++;
@@ -1911,11 +2385,11 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// per-channel weight Tr / pSurvival (deterministic no-scatter
 					// survival pdf; = 1 for monochrome/NM homogeneous) so we don't
 					// double-count attenuation.
-					const Value Tr = PTEvalTransmittance<Tag>(
-						pCurrentMedium, currentRay, ri.geometric.range, tag );
 					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-						pCurrentMedium, currentRay, ri.geometric.range, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
+						pCurrentMedium, currentRay, maxDist, tag );
+					segmentNoEventProbability = pSurvival;
+					throughput = throughput * PTNoScatterSurvivalWeight<Tag>(
+						pCurrentMedium,currentRay,maxDist,mso.noScatterPdfScale,tag );
 				}
 				else if( !scattered && !bHit )
 				{
@@ -1926,12 +2400,29 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					// (deterministic no-scatter survival pdf; = 1 for
 					// monochrome/NM homogeneous) before the env radiance below
 					// multiplies into throughput — not Tr again.
-					const Value Tr = PTEvalTransmittance<Tag>(
-						pCurrentMedium, currentRay, maxDist, tag );
-					const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-						pCurrentMedium, currentRay, maxDist, tag );
-					throughput = throughput * PTSurvivalWeight<Tag>( Tr, pSurvival );
+					throughput = throughput * PTNoScatterSurvivalWeight<Tag>(
+						pCurrentMedium,currentRay,maxDist,mso.noScatterPdfScale,tag );
 				}
+			}
+
+			// A null boundary is part of this same transport segment: it has no
+			// vertex, emission/shading lookup, depth increment, or roulette event.
+			if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+				activeVolumeSegmentState = AdvanceVolumeEmissionSegmentState(
+					activeVolumeSegmentState,segmentNoEventProbability,
+					ri.geometric.surfaceRange);
+				ContinueAcrossNullBoundary(
+					ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+				depthIncrement = 0;
+				continueSameTransportSegment = true;
+				continue;
+			}
+
+			// The one spectral transport-only iteration ends after its medium
+			// source/event work.  Do not admit environment, surface emission,
+			// scattering, or any other continuation beyond the configured depth.
+			if( !pathDepthAllowsContinuation ) {
+				break;
 			}
 
 			// Miss — environment / radiance map
@@ -2027,6 +2518,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		}
 		needsIntersection = true;
 
+		// The caller-provided first hit did not pass through the intersection
+		// branch above, so handle the exact null-boundary type here as well.
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+			ContinueAcrossNullBoundary(
+				ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+			depthIncrement = 0;
+			continueSameTransportSegment = true;
+			continue;
+		}
+
 		// ============================================================
 		// Surface hit processing
 		// ============================================================
@@ -2077,9 +2578,83 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		rs.translucentBounces = translucentBounces;
 		rs.glossyFilterWidth = glossyFilterWidth;
 
+		// Phase-B surface volume NEE is enabled only for the exact audited
+		// material set (plus the integrator-owned synthetic clay material).
+		// Construct the wavelength-bound closure and resolve both availability
+		// views before drawing U/Y or any continuation random numbers.  The guard
+		// keeps this exact immutable instance alive through direct evaluation and
+		// the later continuation sample.
+		ContinuationClosureNMGuard surfaceClosureGuard;
+		ContinuationAvailability surfaceAvailability;
+		bool surfaceClosureActive = false;
+		bool surfaceUnsupportedFallback = false;
+		bool surfaceVolumeNEECompetes = false;
+		bool surfaceVolumeEndpointAttempted = false;
+		if constexpr ( Traits::is_nm ) {
+			const bool clayOverride =
+				EffectivePathTracingClayOverride( rc, mClayOverride );
+			const IMaterial* continuationMaterial = clayOverride ?
+				pClayMaterial : ri.pMaterial;
+			const bool materialSupported = clayOverride ||
+				IsExactSupportedContinuationMaterial( continuationMaterial );
+			const bool hasThermalVolumeEmitter = !IsSSSContainmentActive() &&
+				pLS && pLS->GetVolumeEmissionMediumCount() > 0;
+			const bool needsTerminalFireSegment = !IsSSSContainmentActive() &&
+				pLS && pLS->SceneHasFireMedia() && depth+1 >= maxDepth;
+			bool needsGuidedFireClosure = false;
+#ifdef RISE_ENABLE_OPENPGL
+			needsGuidedFireClosure = materialSupported &&
+				!IsSSSContainmentActive() &&
+				pCurrentMedium && pCurrentMedium->IsFireMedium() &&
+				rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+				rc.guidingAlpha > NEARZERO && depth <= rc.maxGuidingDepth;
+#endif
+			if( !materialSupported &&
+				(hasThermalVolumeEmitter || needsTerminalFireSegment) ) {
+				surfaceUnsupportedFallback = true;
+				bool expected = false;
+				if( mUnsupportedContinuationDiagnosticEmitted.compare_exchange_strong(
+					expected,true,std::memory_order_relaxed) ) {
+					GlobalLog()->PrintEasyInfo(
+						"PathTracingIntegrator: unsupported continuation material; "
+						"volume NEE disabled at this vertex and legacy collision march retained" );
+				}
+			}
+			if( materialSupported &&
+				(hasThermalVolumeEmitter || needsTerminalFireSegment ||
+					needsGuidedFireClosure) ) {
+				ContinuationPathState pathState;
+				pathState.pathDepth = depth;
+				pathState.rrMinDepth = rrMinDepth;
+				pathState.rrThreshold = rrThreshold;
+				pathState.importance = importance;
+				surfaceClosureGuard.Reset(
+					continuationMaterial->MakeContinuationClosureNM(
+						ri.geometric,iorStack,tag.nm,pathState) );
+				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
+				if( closure ) {
+					surfaceClosureActive = true;
+					surfaceVolumeNEECompetes = hasThermalVolumeEmitter;
+					surfaceAvailability = ResolveContinuationAvailability(
+						closure->GetLobeMask(),depth+1 < maxDepth,
+						diffuseBounces,glossyBounces,stabilityConfig);
+					if( surfaceVolumeNEECompetes ) {
+						pLS->SampleVolumeEmissionVertex(
+							sampler,activeVolumeVertexSample);
+						surfaceVolumeEndpointAttempted =
+							activeVolumeVertexSample.WasEndpointAttempted();
+						if( surfaceVolumeEndpointAttempted ) {
+							mSurfaceVolumeEndpointAttemptCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
+					}
+				}
+			}
+		}
+
 #ifdef RISE_ENABLE_OPENPGL
 		PGLPathSegmentData* guidingSegment =
-			(guidingRecorder && guidingRecorder->active) ?
+			(!surfaceClosureActive && guidingRecorder && guidingRecorder->active) ?
 				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
 #endif
 
@@ -2372,6 +2947,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								SSSContainmentScope containment;
 								// NEE at BSSRDF entry point.  GUI render modes P2b
 								// `indirect` (review-p2c P2-c fix): this is the
 								// SSS analog of the surface NEE gate above --
@@ -2384,12 +2960,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, 0, tag );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
 										result = result + sssDirectContrib;
+										if( pLS->GetPositionalLightCount()>0 &&
+											PTPositiveMagnitude(sssDirectContrib)>0.0 ) {
+											mSSSOrdinaryDirectContributionObserved.store(
+												true,std::memory_order_relaxed);
+										}
 									} else if( pDirectResult ) {
 										*pDirectResult = *pDirectResult + sssDirectContrib;
 									}
@@ -2446,6 +3027,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 											}
 										}
 
+										RecordSSSContainedChildLaunch();
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
 
@@ -2544,6 +3126,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 							if( !skipSSS )
 							{
+								SSSContainmentScope containment;
 								// GUI render modes P2b `indirect` (review-p2c
 								// P2-c fix): same SSS-analog-of-surface-NEE
 								// gate as the diffusion-profile site above.
@@ -2551,12 +3134,17 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 								{
 									Value directSSS = PTEvaluateDirectLighting<Tag>(
 										pLS, entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+										bssrdfSampler, ri.pObject, 0, false, 0, 0, tag );
 									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
 									if( !( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && depth == 0 ) ) {
 										result = result + sssDirectContrib;
+										if( pLS->GetPositionalLightCount()>0 &&
+											PTPositiveMagnitude(sssDirectContrib)>0.0 ) {
+											mSSSOrdinaryDirectContributionObserved.store(
+												true,std::memory_order_relaxed);
+										}
 									} else if( pDirectResult ) {
 										*pDirectResult = *pDirectResult + sssDirectContrib;
 									}
@@ -2613,6 +3201,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 											}
 										}
 
+										RecordSSSContainedChildLaunch();
 										PTCastRay<Tag>( caster, rc, rast, continuationRay,
 											cthis, rs2, pRadianceMap, iorStack, tag );
 
@@ -2764,6 +3353,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				}
 
 				currentRay = pS->ray;
+				activeVolumeSegmentState = VolumeEmissionSegmentState();
+				if constexpr ( Traits::is_nm ) {
+					if( surfaceUnsupportedFallback ) {
+						mUnsupportedFallbackSegmentObserved.store(
+							true,std::memory_order_relaxed);
+						if( activeVolumeSegmentState.competitionAvailable ) {
+							mUnsupportedFallbackSegmentCompeted.store(
+								true,std::memory_order_relaxed);
+						}
+						if( surfaceVolumeEndpointAttempted ) {
+							mUnsupportedFallbackEndpointAttempted.store(
+								true,std::memory_order_relaxed);
+						}
+					}
+				}
 				currentRay.Advance( 1e-8 );
 
 				if( pS->ior_stack ) {
@@ -2792,7 +3396,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			Value directAll = PTEvaluateDirectLighting<Tag>(
 				pLS, ri.geometric, *pBRDF,
 				EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, caster, neeSampler,
-				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
+				ri.pObject, pCurrentMedium, false, pMediumObject, &iorStack, tag );
+			if constexpr ( Traits::is_nm ) {
+				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
+				if( surfaceVolumeNEECompetes && closure ) {
+					directAll += pLS->EvaluateVolumeDirectLightingFromClosureNM(
+						ri.geometric,*closure,surfaceAvailability,tag.nm,
+						activeVolumeVertexSample,pCurrentMedium,pMediumObject,
+						&iorStack);
+				}
+			}
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			// GUI render modes P2b `indirect`: suppress NEE's direct-
 			// lighting contribution at the camera-visible vertex only --
@@ -2829,7 +3442,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// specular chain is a genuinely multi-bounce transport (the light
 		// energy already traveled through >=1 specular scatter to arrive
 		// here), not the open-air direct connection NEE evaluates.
-		if( pSolver )
+		if( pSolver && !surfaceVolumeNEECompetes )
 		{
 			const Vector3 woOutgoing = Vector3(
 				-ri.geometric.ray.Dir().x,
@@ -2910,6 +3523,235 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		// ============================================================
 		// PART 3: BSDF sampling (continue path — iterative)
 		// ============================================================
+		if constexpr ( Traits::is_nm ) {
+			if( surfaceClosureActive ) {
+				if( pAOV && !pAOV->valid &&
+					rc.aovPrefilterMode == OidnPrefilter::Accurate ) {
+					pAOV->normal = ri.geometric.vNormal;
+					pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric ) :
+						RISEPel( 1, 1, 1 );
+					pAOV->valid = true;
+				}
+				const IContinuationClosureNM* closure = surfaceClosureGuard.Get();
+				const unsigned int marchMask = surfaceAvailability.marchMask;
+				if( !closure || marchMask == eContinuationLobeNone ) {
+					break;
+				}
+
+				const bool sourceOnlySegment =
+					surfaceAvailability.vertexMask != marchMask;
+				bool closureGuidingRequested = false;
+#ifdef RISE_ENABLE_OPENPGL
+				closureGuidingRequested = !surfaceVolumeNEECompetes &&
+					!sourceOnlySegment && rc.pGuidingField &&
+					rc.pGuidingField->IsTrained() &&
+					rc.guidingAlpha > NEARZERO && depth <= rc.maxGuidingDepth;
+#endif
+				const Scalar xiLobe = sampler.Get1D();
+				const Point2 xiDirection( sampler.Get1D(), sampler.Get1D() );
+				// A total-depth terminal segment has no ordinary continuation
+				// roulette event, so it must not consume a roulette draw.
+				const Scalar xiRoulette = sourceOnlySegment ? 0.0 : sampler.Get1D();
+				ContinuationSampleNM continuation;
+				if( !closure->SampleSubset(
+					marchMask,xiLobe,xiDirection,xiRoulette,
+					!sourceOnlySegment && !closureGuidingRequested,continuation) ) {
+					break;
+				}
+
+#ifdef RISE_ENABLE_OPENPGL
+				if( closureGuidingRequested ) {
+					Scalar totalMass = 0.0;
+					if( marchMask&eContinuationLobeDiffuse ) {
+						totalMass += closure->GetSelectionMass(eContinuationLobeDiffuse);
+					}
+					if( marchMask&eContinuationLobeGlossy ) {
+						totalMass += closure->GetSelectionMass(eContinuationLobeGlossy);
+					}
+					const Scalar selectedMass =
+						closure->GetSelectionMass(continuation.lobe);
+					const Scalar lobeSelectionProbability = totalMass > 0.0 ?
+						selectedMass/totalMass : 0.0;
+					Scalar guideAlpha = rc.guidingAlpha;
+					if( rs.type==IRayCaster::RAY_STATE::eRaySpecular ) {
+						guideAlpha = 0.0;
+					} else if( continuation.lobe==eContinuationLobeGlossy ) {
+						guideAlpha *= 0.5;
+					}
+
+					static thread_local GuidingDistributionHandle closureGuideDist;
+					if( guideAlpha > NEARZERO && lobeSelectionProbability > 0.0 &&
+						rc.pGuidingField->InitDistribution(
+							closureGuideDist,ri.geometric.ptIntersection,
+							sampler.Get1D()) ) {
+						mNonCompetingSurfaceGuideInitializationCount.fetch_add(
+							1,std::memory_order_relaxed);
+						if( continuation.lobe==eContinuationLobeDiffuse ) {
+							rc.pGuidingField->ApplyCosineProduct(
+								closureGuideDist,GuidingCosineNormal(ri.geometric));
+						}
+
+						Vector3 selectedDirection = continuation.ray.Dir();
+						Scalar conditionalPdf = 0.0;
+						if( rc.guidingSamplingType==eGuidingRIS ) {
+							mNonCompetingSurfaceRISCount.fetch_add(
+								1,std::memory_order_relaxed);
+							PathTransportUtilities::GuidingRISCandidate<Scalar>
+								candidates[2];
+							for( unsigned int ci=0; ci<2; ++ci ) {
+								PathTransportUtilities::GuidingRISCandidate<Scalar>& c =
+									candidates[ci];
+								if( ci==0 ) {
+									c.direction = continuation.ray.Dir();
+									c.guidePdf = rc.pGuidingField->Pdf(
+										closureGuideDist,c.direction);
+								} else {
+									c.direction = rc.pGuidingField->Sample(
+										closureGuideDist,
+										Point2(sampler.Get1D(),sampler.Get1D()),
+										c.guidePdf);
+								}
+								c.bsdfEval = closure->EvaluateSubset(
+									continuation.lobe,c.direction);
+								c.bsdfPdf = closure->BasePdf(
+									continuation.lobe,c.direction);
+								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf(
+									closureGuideDist,c.direction);
+								c.cosTheta = fabs(Vector3Ops::Dot(
+									c.direction,ri.geometric.vNormal));
+								c.risTarget = PathTransportUtilities::GuidingRISTarget(
+									fabs(c.bsdfEval),c.cosTheta,c.incomingRadPdf,guideAlpha);
+								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+									c.bsdfPdf,c.guidePdf);
+								c.risWeight =
+									PathTransportUtilities::IsPositiveFiniteDensity(c.risPdf) ?
+									c.risTarget/c.risPdf : 0.0;
+								c.valid =
+									PathTransportUtilities::IsPositiveFiniteDensity(c.bsdfPdf) &&
+									PathTransportUtilities::IsPositiveFiniteDensity(c.risPdf) &&
+									PathTransportUtilities::IsPositiveFiniteDensity(c.bsdfEval) &&
+									(ci==0 || PathTransportUtilities::
+										IsPositiveFiniteDensity(c.guidePdf)) &&
+									PathTransportUtilities::IsPositiveFiniteDensity(c.risWeight);
+								if( !c.valid ) c.risWeight = 0.0;
+							}
+							const unsigned int selected =
+								PathTransportUtilities::GuidingRISSelectCandidate(
+									candidates,2,sampler.Get1D(),conditionalPdf);
+							if( PathTransportUtilities::IsPositiveFiniteDensity(
+								conditionalPdf) && candidates[selected].valid ) {
+								selectedDirection = candidates[selected].direction;
+							} else {
+								conditionalPdf = 0.0;
+							}
+						} else if( PathTransportUtilities::ShouldUseGuidedSample(
+							guideAlpha,sampler.Get1D()) ) {
+							Scalar guidePdf = 0.0;
+							selectedDirection = rc.pGuidingField->Sample(
+								closureGuideDist,
+								Point2(sampler.Get1D(),sampler.Get1D()),guidePdf);
+							conditionalPdf =
+								PathTransportUtilities::GuidingSelectedMixturePdf(
+									guideAlpha,guidePdf,
+									closure->BasePdf(
+										continuation.lobe,selectedDirection),true);
+						} else {
+							conditionalPdf =
+								PathTransportUtilities::GuidingSelectedMixturePdf(
+									guideAlpha,
+									rc.pGuidingField->Pdf(
+										closureGuideDist,selectedDirection),
+									closure->BasePdf(
+										continuation.lobe,selectedDirection),false);
+						}
+
+						const Scalar response = closure->EvaluateSubset(
+							continuation.lobe,selectedDirection);
+						const Scalar cosine = fabs(Vector3Ops::Dot(
+							selectedDirection,ri.geometric.vNormal));
+						const Scalar jointPdf =
+							lobeSelectionProbability*conditionalPdf;
+						if( closure->PassesHorizon(continuation.lobe,selectedDirection) &&
+							PathTransportUtilities::IsPositiveFiniteDensity(response) &&
+							PathTransportUtilities::IsPositiveFiniteDensity(jointPdf) ) {
+							continuation.ray = Ray(
+								ri.geometric.ptIntersection,selectedDirection);
+							continuation.response = response;
+							continuation.pdf = jointPdf;
+							continuation.throughput = response*cosine/jointPdf;
+							continuation.horizonPassed = true;
+							mNonCompetingSurfaceGuidedCandidateInstalledCount.fetch_add(
+								1,std::memory_order_relaxed);
+							if( rc.guidingSamplingType==eGuidingRIS ) {
+								mNonCompetingSurfaceRISCandidateInstalledCount.fetch_add(
+									1,std::memory_order_relaxed);
+							}
+						} else {
+							continuation.horizonPassed = false;
+						}
+					}
+				}
+#endif
+
+				if( closureGuidingRequested ) {
+					const Scalar candidateMagnitude = fabs(continuation.throughput);
+					continuation.survivalProbability =
+						PathTransportUtilities::IsPositiveFiniteDensity(candidateMagnitude) ?
+						PathTransportUtilities::RussianRouletteSurvivalProbability(
+							depth,rrMinDepth,rrThreshold,
+							importance*candidateMagnitude,importance) : 0.0;
+					continuation.reachPdf =
+						continuation.pdf*continuation.survivalProbability;
+					continuation.rouletteSurvived =
+						continuation.survivalProbability > 0.0 &&
+						xiRoulette < continuation.survivalProbability;
+					if( continuation.rouletteSurvived &&
+						continuation.survivalProbability < 1.0 ) {
+						continuation.throughput /= continuation.survivalProbability;
+					}
+				}
+
+				if( !continuation.horizonPassed ||
+					!continuation.rouletteSurvived ||
+					!PathTransportUtilities::IsPositiveFiniteDensity(continuation.pdf) ||
+					!PathTransportUtilities::IsPositiveFiniteDensity(continuation.reachPdf) ||
+					!RISE::IsFiniteDouble(continuation.throughput) ||
+					continuation.throughput == 0.0 ) {
+					break;
+				}
+
+				throughput *= continuation.throughput;
+				importance *= fabs(continuation.throughput);
+				bsdfPdf = continuation.pdf;
+				const Scalar cosine = fabs(Vector3Ops::Dot(
+					continuation.ray.Dir(),ri.geometric.vNormal));
+				bsdfTimesCos = continuation.response*cosine;
+				considerEmission = true;
+				if( continuation.type == ScatteredRay::eRayDiffuse ) {
+					rayType = IRayCaster::RAY_STATE::eRayDiffuse;
+					++diffuseBounces;
+				} else {
+					rayType = IRayCaster::RAY_STATE::eRaySpecular;
+					++glossyBounces;
+					if( stabilityConfig.filterGlossy > 0.0 ) {
+						glossyFilterWidth += stabilityConfig.filterGlossy;
+					}
+				}
+				bPassedThroughSpecular = false;
+				bHadNonSpecularShading = true;
+
+				currentRay = continuation.ray;
+				activeVolumeSegmentState = VolumeEmissionSegmentState(
+					surfaceVolumeEndpointAttempted,continuation.singular,
+					surfaceVolumeEndpointAttempted &&
+						activeVolumeVertexSample.HasPivots() ?
+						&activeVolumeVertexSample.Pivots() : 0,
+					continuation.reachPdf,0.0,0.0);
+				currentRay.Advance( 1e-8 );
+				continue;
+			}
+		}
+
 		// GUI render modes P2b `clay_lights`: the continuation-ray SPF --
 		// substituting clay here (rather than only at the acquisition
 		// above) keeps NEE (which reads pBRDF) and the continuation
@@ -2923,6 +3765,9 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 		}
 
 		ScatteredRayContainer scattered;
+		const bool pelTerminalFireSourceSegment = Traits::is_pel &&
+			!IsSSSContainmentActive() && pLS && pLS->SceneHasFireMedia() &&
+			depth+1 >= maxDepth;
 		{
 			RISE_PROFILE_PHASE(BSDFScatter);
 			RISE_PROFILE_INC(nBSDFScatterCalls);
@@ -2981,6 +3826,12 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 					ri.geometric.ptIntersection,
 					sampler.Get1D() ) )
 				{
+					mNonCompetingSurfaceGuideInitializationCount.fetch_add(
+						1,std::memory_order_relaxed);
+					if( rc.guidingSamplingType == eGuidingRIS ) {
+						mNonCompetingSurfaceRISCount.fetch_add(
+							1,std::memory_order_relaxed);
+					}
 					if( pS->type == ScatteredRay::eRayDiffuse ) {
 						rc.pGuidingField->ApplyCosineProduct( guideDist, GuidingCosineNormal( ri.geometric ) );
 					}
@@ -3214,7 +4065,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 #endif
 
 			// Russian roulette
-			if( !skipContinuation )
+			if( !skipContinuation && !pelTerminalFireSourceSegment )
 			{
 				const PathTransportUtilities::RussianRouletteResult rr =
 					PathTransportUtilities::EvaluateRussianRoulette(
@@ -3320,6 +4171,21 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			}
 
 			currentRay = traceRay;
+			activeVolumeSegmentState = VolumeEmissionSegmentState();
+			if constexpr ( Traits::is_nm ) {
+				if( surfaceUnsupportedFallback ) {
+					mUnsupportedFallbackSegmentObserved.store(
+						true,std::memory_order_relaxed);
+					if( activeVolumeSegmentState.competitionAvailable ) {
+						mUnsupportedFallbackSegmentCompeted.store(
+							true,std::memory_order_relaxed);
+					}
+					if( surfaceVolumeEndpointAttempted ) {
+						mUnsupportedFallbackEndpointAttempted.store(
+							true,std::memory_order_relaxed);
+					}
+				}
+			}
 			currentRay.Advance( 1e-8 );
 
 			if( traceIorStack != &iorStack ) {
@@ -3401,6 +4267,17 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	PixelAOV* pAOV
 	) const
 {
+	const LightSampler* preparedLights = caster.GetLightSampler();
+	const IMedium* globalMedium = scene.GetGlobalMedium();
+	if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+		( globalMedium && globalMedium->IsFireMedium() ) ) {
+		bool expected = false;
+		if( mFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEasyWarning(
+				"PathTracingIntegrator::IntegrateFromHit:: fire medium uses the approximate Pel preview; predictive output is spectral-only" );
+		}
+	}
+
 	return IntegrateFromHitTemplated<PelTag>(
 		rc, rast, firstHit, scene, caster, sampler, pRadianceMap,
 		startDepth, initialIorStack, bsdfPdf_, bsdfTimesCos_,
@@ -3490,7 +4367,24 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	using Traits = SpectralValueTraits<Tag>;
 	using Value = typename Traits::value_type;
 
+	if constexpr ( Traits::is_pel ) {
+		const LightSampler* preparedLights = caster.GetLightSampler();
+		const IMedium* globalMedium = scene.GetGlobalMedium();
+		if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+			( globalMedium && globalMedium->IsFireMedium() ) ) {
+			bool expected = false;
+			if( mFirePelDiagnosticEmitted.compare_exchange_strong( expected, true ) ) {
+				GlobalLog()->PrintEasyWarning(
+					"PathTracingIntegrator::IntegrateRay:: fire medium uses the approximate Pel preview; predictive output is spectral-only" );
+			}
+		}
+	}
+
 	IORStack iorStack( 1.0 );
+	const LightSampler* rootLights = caster.GetLightSampler();
+	if( rootLights && rootLights->SceneHasNullBoundaries() ) {
+		IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	}
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
@@ -3501,8 +4395,26 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// traversal.  Never replace this camera-ray range with a later
 		// bounce segment.
 		if( pAOV ) {
+			RayIntersection aovHit( ri );
+			Scalar aovDepth = 0.0;
+			ResolvePrimaryAOVSurface( ri, rast, scene, aovHit, aovDepth );
 			pAOV->primaryDepthCaptured = true;
-			pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
+			pAOV->depth = aovDepth;
+
+			const bool aovUseFirstHit =
+				( rc.aovPrefilterMode == OidnPrefilter::Fast );
+			if( aovHit.geometric.bHit && aovUseFirstHit )
+			{
+				RayIntersectionGeometric aovGeom( aovHit.geometric );
+				if( aovHit.pModifier ) aovHit.pModifier->Modify( aovGeom );
+				pAOV->normal = aovGeom.vNormal;
+				pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
+					? pClayBRDF->albedo( aovGeom )
+					: ( ( aovHit.pMaterial && aovHit.pMaterial->GetBSDF() )
+						? aovHit.pMaterial->GetBSDF()->albedo( aovGeom )
+						: RISEPel( 1, 1, 1 ) );
+				pAOV->valid = true;
+			}
 		}
 	}
 
@@ -3519,34 +4431,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// decision.  See docs/OIDN.md (OIDN-P1-1) for the design.
 	// AOV recording is compiled in for both AOV-capable tags: Pel and NM.
 	// Callers that did not request auxiliaries pass a null PixelAOV.
-	if constexpr ( Traits::supports_aov )
-	{
-		const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
-		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
-		{
-			RayIntersectionGeometric aovGeom( ri.geometric );
-			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
-			pAOV->normal = aovGeom.vNormal;
-			// GUI render modes P2b `clay_lights` (review-p2c P2-d fix):
-			// under mClayOverride every surface's REFLECTANCE is the
-			// substituted clay BRDF (see SetClayOverride's doc) -- the
-			// albedo AOV captured here for OIDN must match, or the
-			// DENOISED clay output reacquires the authored material's
-			// colouration via OIDN's albedo-guided filtering, defeating
-			// the mode's material-independence contract exactly where
-			// users look at it (the variant pipeline runs with OIDN on).
-			// This is the FAST-prefilter hook (camera ray's first hit,
-			// evaluated before IntegrateFromHit's loop ever substitutes
-			// pBRDF) -- the ACCURATE-prefilter hook inside the loop
-			// already reads the loop-local `pBRDF`, which IS already
-			// clay-substituted there, so only this site needed the fix.
-			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayBRDF->albedo( aovGeom ) :
-				( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
-					: RISEPel( 1, 1, 1 ) );
-			pAOV->valid = true;
-		}
-	}
+	// Fast AOV capture above resolves through any leading exact null-boundary
+	// chain without changing the transport intersection or stack.
 
 	// Medium transport for first bounce
 	const IObject* pMediumObject = 0;
@@ -3559,14 +4445,28 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	// (PBRT-v4 VolPathIntegrator: beta *= T_maj before the `if (!si)`
 	// infinite-light branch).  Stays 1 (no-op) in vacuum.
 	Value escapeTr = PTValueOne<Tag>();
+	Value mediumSource = Traits::zero();
 
 	if( pCurrentMedium )
 	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = ri.geometric.bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
+		if constexpr ( !Traits::is_pel ) {
+			mediumSource = mediumSource + PTFullSegmentAdditiveEmissionNM(
+				*pCurrentMedium, cameraRay, maxDist, tag.nm, rc.random );
+			mediumSource = mediumSource + PTFullSegmentChemEmissionNM(
+				*pCurrentMedium, cameraRay, maxDist, tag.nm, rc.random );
+		}
 		IndependentSampler mediumSampler( rc.random );
+		const VolumeEmissionSegmentState volumeSegmentState =
+			CurrentVolumeEmissionSegmentState();
 		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
-			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler, tag );
+			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
+			IsSSSContainmentActive() ? 0 : pLS,
+			volumeSegmentState.pivots, mediumSampler, tag );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -3575,7 +4475,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// Equiangular strategy sampled a zero-density / out-of-bounds
 			// point.  Scatter-measure sample with zero weight — do not
 			// fall through to surface shading.
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		if( scattered )
@@ -3584,14 +4484,57 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// delegate continuation to IntegrateFromHit if we get a hit.
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
+			if constexpr ( Traits::is_pel ) {
+				mediumSource = mediumSource + PTEventThermalEmissionPel(
+					*pCurrentMedium,cameraRay,maxDist,t_m,mso );
+			} else {
+				Scalar thermalEmission = PTEventThermalEmissionNM(
+					*pCurrentMedium, cameraRay, maxDist, t_m, tag.nm, mso );
+				if( thermalEmission != 0.0 &&
+					volumeSegmentState.competitionAvailable ) {
+					const Scalar logDistancePdf = mso.useExplicitThroughput ?
+						mso.logCombinedPdf : pCurrentMedium->EvalLogDistancePdfNM(
+							cameraRay,t_m,true,maxDist,tag.nm);
+					const MISWeights::LogDensity logPMarch =
+						MISWeights::VolumeEmissionMarchLogDensityAtCollision(
+							volumeSegmentState,logDistancePdf,t_m);
+					const Scalar pV = pLS ? pLS->VolumeEmissionPdf(
+						*pCurrentMedium,scatterPt) : 0.0;
+					const MISWeights::LogDensity logPV =
+						MISWeights::MakeLogDensity(pV);
+					thermalEmission *= MISWeights::VolumeEmissionMarchFamilyWeightFromLogDensities(
+						logPMarch,logPV,volumeSegmentState.competitionAvailable,
+						volumeSegmentState.continuationSingular);
+				}
+				mediumSource = mediumSource + thermalEmission;
+			}
 			const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
-			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, t_m, tag );
+			const Value Tr = PTEvalCollisionTransmittance<Tag>(
+				pCurrentMedium, cameraRay, t_m, tag );
+			Value result = mediumSource;
 
 			Value medWeight = Traits::zero();
 			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
 			{
 				// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
 				medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
+			}
+			else if constexpr ( Traits::is_pel )
+			{
+				if( pCurrentMedium->IsFireMedium() ) {
+					const Scalar collisionPdf = pCurrentMedium->EvalDistancePdf(
+						cameraRay,t_m,true,maxDist);
+					if( PathTransportUtilities::IsPositiveFiniteDensity(collisionPdf) ) {
+						medWeight = PTDivByScalar(
+							Tr*coeff.sigma_s,collisionPdf);
+					}
+				} else if( coeff.sigmaTReduced > 0 ) {
+					const Scalar Tr_scalar = PTTrReduced( Tr );
+					if( Tr_scalar > 0 ) {
+						medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+							coeff.sigmaTReduced * Tr_scalar );
+					}
+				}
 			}
 			else if( coeff.sigmaTReduced > 0 )
 			{
@@ -3603,10 +4546,90 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			}
 
 			if( PTPositiveMagnitude( medWeight ) <= 0 ) {
-				return Traits::zero();
+				return result;
+			}
+			const bool volumeNEECompetes = !IsSSSContainmentActive() &&
+				!Traits::is_pel && pLS &&
+				pLS->GetVolumeEmissionMediumCount() > 0 &&
+				MediumTransport::IsContinuationPhaseClosureNMPreflightAllowlisted(
+					*pCurrentMedium);
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar volumeGuidingAlpha = volumeNEECompetes ?
+				0.0 : rc.guidingAlpha;
+			if( volumeNEECompetes && volumeGuidingAlpha != 0.0 ) {
+				mCompetingMediumGuideAlphaNonzero.store(
+					true,std::memory_order_relaxed);
+			}
+#endif
+			const MediumContinuationAvailability mediumAvailability =
+				ResolveMediumContinuationAvailability(
+					1 < EffectivePathTracingMaxDepth(rc,mMaxPathDepth),0,
+					stabilityConfig);
+			if constexpr ( Traits::is_pel ) {
+				// The collision terminates the source-only camera segment when
+				// either total/path depth or the volume-lobe cap excludes this
+				// vertex.  Thermal pickup above remains valid; no NEE, guiding,
+				// continuation, surface, or environment event may follow.
+				if( !mediumAvailability.vertexAllowed ) {
+					return result;
+				}
 			}
 
-			Value result = Traits::zero();
+			Scalar phaseNM = 0.0;
+			if constexpr ( !Traits::is_pel ) {
+				phaseNM = tag.nm;
+			}
+			MediumTransport::CollisionPhaseClosure phaseClosure(
+				*pCurrentMedium, scatterPt, phaseNM, !Traits::is_pel,
+				volumeNEECompetes );
+			const IPhaseFunction* pPhase = phaseClosure.Get();
+			if constexpr ( !Traits::is_pel ) {
+				if( !volumeNEECompetes && pLS &&
+					pLS->GetVolumeEmissionMediumCount()>0 ) {
+					mNonCompetingMediumFallbackVertexCount.fetch_add(
+						1,std::memory_order_relaxed);
+				}
+			}
+			VolumeEmissionVertexSample volumeVertexSample;
+			bool volumeEndpointAttempted = false;
+			Scalar counterfactualRRSurvival = 1.0;
+			if constexpr ( !Traits::is_pel ) {
+				counterfactualRRSurvival =
+					PathTransportUtilities::RussianRouletteSurvivalProbability(
+						0,stabilityConfig.rrMinDepth,
+						stabilityConfig.rrThreshold,
+						PTSurvivalMagnitude(medWeight),1.0);
+				if( volumeNEECompetes && pPhase ) {
+					mCompetingMediumVertexCount.fetch_add(
+						1,std::memory_order_relaxed);
+					if( mediumAvailability.vertexAllowed ) {
+						if( counterfactualRRSurvival == 0.0 ) {
+							mCompetingMediumZeroSurvivalObserved.store(
+								true,std::memory_order_relaxed);
+						} else if( counterfactualRRSurvival == 1.0 ) {
+							mCompetingMediumUnitSurvivalObserved.store(
+								true,std::memory_order_relaxed);
+						} else {
+							mCompetingMediumIntermediateSurvivalObserved.store(
+								true,std::memory_order_relaxed);
+						}
+					}
+				}
+				if( volumeNEECompetes && pPhase ) {
+					pLS->SampleVolumeEmissionVertex(sampler,volumeVertexSample);
+					volumeEndpointAttempted = volumeVertexSample.WasEndpointAttempted();
+					if( volumeEndpointAttempted ) {
+						mCompetingMediumEndpointAttemptCount.fetch_add(
+							1,std::memory_order_relaxed);
+					}
+					const Scalar volumeLd =
+						pLS->EvaluateVolumeDirectLightingFromPhaseClosureNM(
+							scatterPt,wo,*pPhase,mediumAvailability,
+							counterfactualRRSurvival,tag.nm,
+							volumeVertexSample,pCurrentMedium,pMediumObject,&iorStack);
+					result = result + medWeight*volumeLd;
+				}
+			}
 
 			// NEE at scatter point.  GUI render modes P2b `indirect` fix
 			// (review-p2b P2-e): this in-scattering NEE is on the PRIMARY
@@ -3626,11 +4649,11 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// shadow-ray cost as every other mode, matching the surface
 			// site's lockstep contract) so the sampler stream stays in
 			// lockstep across modes; only the contribution is zeroed.
-			if( pLS )
+			if( pLS && pPhase )
 			{
 				Value Ld = PTEvaluateInScattering<Tag>(
-					scatterPt, wo, pCurrentMedium, caster, pLS,
-					sampler, rast, pMediumObject, tag );
+					scatterPt, wo, pCurrentMedium, pPhase, caster, pLS,
+					sampler, rast, pMediumObject, &iorStack, tag );
 				if( PTPositiveMagnitude( Ld ) > 0 )
 				{
 					Value directContrib = medWeight * Ld;
@@ -3645,65 +4668,136 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			}
 
 			// Sample phase function for continuation
-			const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 			if( !pPhase ) {
 				return result;
 			}
-
-			const Vector3 wi = pPhase->Sample( wo, sampler );
-			const Scalar phasePdf = pPhase->Pdf( wo, wi );
-			if( phasePdf <= NEARZERO ) {
-				return result;
+			if constexpr ( !Traits::is_pel ) {
+				if( !mediumAvailability.marchAllowed ) {
+					return result;
+				}
 			}
 
-			const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-			// Preserve the per-variant arithmetic exactly: the Pel path
-			// builds RISEPel(s,s,s) and multiplies channel-wise; the NM
-			// path evaluates `medWeight * phaseVal / phasePdf` left-to-right
-			// (multiply-then-divide).  These differ at the ULP level, so the
-			// two forms are kept distinct rather than unified.
-			Value volThroughput;
-			if constexpr ( Traits::is_pel ) {
-				volThroughput = medWeight * RISEPel(
-					phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
-			} else {
-				volThroughput = medWeight * phaseVal / phasePdf;
-			}
+			Vector3 wi = pPhase->Sample( wo, sampler );
+			Scalar phasePdf = Traits::is_pel ?
+				pPhase->PdfProposal( wo, wi ) : pPhase->Pdf( wo, wi );
+			Scalar effectivePdf = phasePdf;
 
-			// Intersect the scattered direction
-			const Ray scatteredRay( scatterPt, wi );
-			RayIntersection ri2( scatteredRay, rast );
-			scene.GetObjects()->IntersectRay( ri2, true, true, false );
+#ifdef RISE_ENABLE_OPENPGL
+			// The camera-first volume collision is the depth-zero twin of the
+			// iterative medium loop's guiding branch.  It must use the same
+			// retained collision closure for the HG product, phase evaluation,
+			// and continuation density; otherwise the first visible fire scatter
+			// silently bypasses guiding while later scatters do not.
+			if( rc.pGuidingField &&
+				rc.pGuidingField->IsTrained() &&
+				volumeGuidingAlpha > 0 )
+			{
+				static thread_local Implementation::GuidingVolumeDistributionHandle
+					cameraVolumeGuideHandle;
+				if( rc.pGuidingField->InitVolumeDistribution(
+						cameraVolumeGuideHandle, scatterPt, sampler.Get1D() ) )
+				{
+					const Scalar meanCosine = pPhase->GetMeanCosine();
+					if( fabs( meanCosine ) > 1e-6 ) {
+						rc.pGuidingField->ApplyHGProduct(
+							cameraVolumeGuideHandle, wo, meanCosine );
+					}
 
-			if( !ri2.geometric.bHit ) {
-				// Environment for volume-scattered ray.  The scattered ray
-				// continues through the same medium and escapes — attenuate
-				// the env contribution by the transmittance along that
-				// escape segment (PBRT-v4 beta *= T_maj convention).
-				if( ( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) || pDirectResult )
-				 && !PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() ) {
-					const Value TrEsc = PTEvalTransmittance<Tag>(
-						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
-					const Value volumeEnv = volThroughput * TrEsc *
-						PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
-					if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-						if( pDirectResult ) *pDirectResult = *pDirectResult + volumeEnv;
+					const Scalar alpha = volumeGuidingAlpha;
+					if( PathTransportUtilities::ShouldUseGuidedSample(
+							alpha, sampler.Get1D() ) )
+					{
+						if( volumeNEECompetes ) {
+							mCompetingMediumGuideSampleCount.fetch_add(
+								1,std::memory_order_relaxed);
+						}
+						Scalar guidePdf = 0;
+						const Vector3 guidedDir = rc.pGuidingField->SampleVolume(
+							cameraVolumeGuideHandle,
+							Point2( sampler.Get1D(), sampler.Get1D() ), guidePdf );
+						if( guidePdf > 0 ) {
+							wi = guidedDir;
+							phasePdf = Traits::is_pel ?
+								pPhase->PdfProposal(wo,wi) : pPhase->Pdf(wo,wi);
+						}
+						effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+							alpha, guidePdf, phasePdf, true );
 					} else {
-						result = result + volumeEnv;
+						const Scalar guidePdf = rc.pGuidingField->PdfVolume(
+							cameraVolumeGuideHandle, wi );
+						effectivePdf = PathTransportUtilities::GuidingSelectedMixturePdf(
+							alpha, guidePdf, phasePdf, false );
 					}
 				}
+			}
+#endif
+
+			if( !PathTransportUtilities::IsPositiveFiniteDensity( effectivePdf ) ) {
 				return result;
 			}
 
-			// Continue from the volume-scattered hit
-			Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
-				sampler, pRadianceMap, 1, iorStack, phasePdf,
-				Traits::zero(), true, 1.0,
-				IRayCaster::RAY_STATE::eRayDiffuse,
-				0, 0, 0, 0, 1, 0,
-				pAOV, tag );
+			Value volThroughput;
+			if constexpr ( Traits::is_pel ) {
+				volThroughput = medWeight * pPhase->EvaluatePel(wo,wi) *
+					(1.0/effectivePdf);
+			} else {
+				volThroughput = medWeight * pPhase->Evaluate(wo,wi) / effectivePdf;
+			}
+			if constexpr ( !Traits::is_pel ) {
+				if( mediumAvailability.vertexAllowed ) {
+					// Sample the exact survival mass already recorded in the
+					// NEE-vs-march density. Recomputing it from volThroughput
+					// would use the separately rounded
+					// (medWeight*phaseVal)/phasePdf value and can differ by an
+					// ULP even for a normalized phase closure.
+					if( sampler.Get1D() >= counterfactualRRSurvival ) {
+						return result;
+					}
+					if( counterfactualRRSurvival < 1.0 ) {
+						volThroughput = PTDivByScalar(
+							volThroughput,counterfactualRRSurvival);
+					}
+				}
+			}
 
-			return result + volThroughput * hitResult;
+			const Ray scatteredRay( scatterPt, wi );
+			// Start the iterative loop from the continuation ray itself.  Its
+			// un-hit record makes the first iteration march the outgoing medium
+			// segment before considering a surface or environment.  This is required
+			// for Pel as well as NM: direct-intersecting the Pel ray would silently
+			// skip every downstream collision and source event.
+			RayIntersection continuation( scatteredRay, rast );
+			const Scalar marchDirectionPdf =
+				mediumAvailability.vertexAllowed ?
+					phasePdf*counterfactualRRSurvival : phasePdf;
+			if( volumeNEECompetes ) {
+				const Scalar retainedPhasePdf = pPhase->Pdf(wo,wi);
+				const Scalar expectedReachPdf = mediumAvailability.vertexAllowed ?
+					retainedPhasePdf*counterfactualRRSurvival : retainedPhasePdf;
+				if( retainedPhasePdf != phasePdf ||
+					marchDirectionPdf != expectedReachPdf ) {
+					mCompetingMediumReachPdfMismatch.store(
+						true,std::memory_order_relaxed);
+				}
+			}
+			const VolumeEmissionSegmentState downstreamVolumeState(
+				volumeEndpointAttempted,false,
+				volumeEndpointAttempted && volumeVertexSample.HasPivots() ?
+					&volumeVertexSample.Pivots() : 0,
+				marchDirectionPdf,0.0,0.0);
+			Value continuationResult;
+			{
+				const VolumeEmissionSegmentStateScope volumeStateScope(
+					downstreamVolumeState);
+				continuationResult = IntegrateFromHitForTag<Tag>(
+					rc, rast, continuation, scene, caster,
+					sampler, pRadianceMap, 1, iorStack, effectivePdf,
+					Traits::zero(), true, 1.0,
+					IRayCaster::RAY_STATE::eRayDiffuse,
+					0, 0, 0, 0, 1, 0,
+					pAOV, tag );
+			}
+			return result + volThroughput * continuationResult;
 		}
 		else if( ri.geometric.bHit )
 		{
@@ -3714,11 +4808,6 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// Tr / pSurvival (deterministic no-scatter survival pdf; = 1 for
 			// monochrome/NM homogeneous) rather than Tr, which would double-count
 			// attenuation.
-			const Value Tr = PTEvalTransmittance<Tag>(
-				pCurrentMedium, cameraRay, ri.geometric.range, tag );
-			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-				pCurrentMedium, cameraRay, ri.geometric.range, tag );
-
 			if( !ri.geometric.bHit ) {
 				return Traits::zero();
 			}
@@ -3740,11 +4829,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 					0, 0, 0, 0, 0, 0,
 					pAOV, tag );
 			}
-			const Value survivalWeight = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			const Value survivalWeight = PTNoScatterSurvivalWeight<Tag>(
+				pCurrentMedium,cameraRay,maxDist,mso.noScatterPdfScale,tag );
 			if( pDirectResult ) {
 				*pDirectResult = *pDirectResult + survivalWeight * directAtHit;
 			}
-			return survivalWeight * hitResult;
+			return PTCombineMediumSource<Tag>( mediumSource, survivalWeight * hitResult );
 		}
 		else
 		{
@@ -3755,10 +4845,8 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			// pSurvival (deterministic no-scatter survival pdf; = 1 for
 			// monochrome/NM homogeneous) for the env radiance below —
 			// multiplying the full Tr would double-count attenuation.
-			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
-			const Scalar pSurvival = mso.noScatterPdfScale * PTEvalNoScatterSurvivalPdf<Tag>(
-				pCurrentMedium, cameraRay, maxDist, tag );
-			escapeTr = PTSurvivalWeight<Tag>( Tr, pSurvival );
+			escapeTr = PTNoScatterSurvivalWeight<Tag>(
+				pCurrentMedium,cameraRay,maxDist,mso.noScatterPdfScale,tag );
 		}
 	}
 
@@ -3773,7 +4861,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// lighting and are kept.  This is the ONLY primary-miss env site;
 		// the in-loop gates were dead (never reached at depth 0).
 		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) && !pDirectResult ) {
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		// Camera ray missed all geometry.  Honour the rasterizer's
@@ -3784,14 +4872,14 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		// drives indirect bounces but primary rays return black,
 		// matching Cycles' default for that pattern.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		// review-p2d P1-1: a directly-visible environment IS env illumination
 		// reaching the camera; under a light/luminary solo it must read black
 		// so that solo(light) + solo(env) == all holds pixel-for-pixel.
 		if( PTSoloSuppressEnvironment( caster ) ) {
-			return Traits::zero();
+			return mediumSource;
 		}
 
 		// Environment map
@@ -3807,9 +4895,9 @@ PathTracingIntegrator::IntegrateRayTemplated(
 		const Value primaryEnvironment = escapeTr * envResult;
 		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
 			if( pDirectResult ) *pDirectResult = *pDirectResult + primaryEnvironment;
-			return Traits::zero();
+			return mediumSource;
 		}
-		return primaryEnvironment;
+		return PTCombineMediumSource<Tag>( mediumSource, primaryEnvironment );
 	}
 
 	if constexpr ( Traits::is_pel ) {
@@ -3820,12 +4908,12 @@ PathTracingIntegrator::IntegrateRayTemplated(
 			0, 0, 0, 0, 0, 0, false, false,
 			pAOV, pDirectResult, tag );
 	}
-	return IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
+	return PTCombineMediumSource<Tag>( mediumSource, IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
 		sampler, pRadianceMap, 0, iorStack,
 		0, Traits::zero(), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
 		0, 0, 0, 0, 0, 0,
-		pAOV, tag );
+		pAOV, tag ) );
 }
 
 
@@ -3972,6 +5060,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// mode skips this and records at the first non-delta scatter below.
 	// Albedo/normal are wavelength-independent, so the hero bundle records once.
 	if( pAOV && !pAOV->valid && firstHit.geometric.bHit &&
+		!IsExactNullBoundaryMaterial( firstHit.pMaterial ) &&
 	    rc.aovPrefilterMode == OidnPrefilter::Fast )
 	{
 		pAOV->normal = firstHit.geometric.vNormal;
@@ -3983,6 +5072,29 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
 				: RISEPel( 1, 1, 1 ) );
 		pAOV->valid = true;
+	}
+
+	const LightSampler* preparedLights = caster.GetLightSampler();
+	const IMedium* globalMedium = scene.GetGlobalMedium();
+	if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+		( globalMedium && globalMedium->IsFireMedium() ) )
+	{
+		// The legacy hero-driven medium proposal divides companion
+		// wavelengths by the wrong density for chromatic fire.  Disable HWSS
+		// for the whole requested path before any medium proposal or phase
+		// lookup; each wavelength follows the already-correct NM integrator.
+		for( unsigned int i = 0; i < SampledWavelengths::N; ++i ) {
+			if( !swl.terminated[i] ) {
+				hwssResult[i] = IntegrateFromHitNM( rc, rast, firstHit,
+					swl.lambda[i], scene, caster, sampler, pRadianceMap,
+					startDepth, initialIorStack, bsdfPdf, 0,
+					considerEmission, importance, rayType,
+					diffuseBounces, glossyBounces, transmissionBounces,
+					translucentBounces, volumeBounces, glossyFilterWidth,
+					false, false, i == 0 ? pAOV : 0 );
+			}
+		}
+		return;
 	}
 
 	// Check material at first hit to determine path strategy
@@ -4072,6 +5184,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
 	bool needsIntersection = false;
+	bool rejectZeroDistanceBoundary = false;
 
 	// GUI render modes P2b `indirect` (review-p2c P2-b fix): HWSS twin of
 	// the Pel/NM loop's `bPassedThroughSpecular` -- tracks whether the
@@ -4091,8 +5204,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	// was also a hardcoded literal 128; see SetMaxPathDepth's doc.
 	const unsigned int maxDepth = EffectivePathTracingMaxDepth( rc, mMaxPathDepth );
 
-	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
+	unsigned int depthIncrement = 1;
+	bool continueSameTransportSegment = false;
+	for( unsigned int depth = startDepth; depth < maxDepth; depth += depthIncrement )
 	{
+		depthIncrement = 1;
 		// Runaway-throughput guard -- see RGB IntegrateFromHit.  HWSS
 		// carries per-wavelength throughput in throughputComp[]; take
 		// the max across the bundle.
@@ -4109,7 +5225,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 
-		sampler.StartStream( 16 + depth );
+		if( !continueSameTransportSegment ) {
+			sampler.StartStream( 16 + depth );
+		}
+		continueSameTransportSegment = false;
 
 		// ============================================================
 		// Intersection + medium transport (spectral, hero drives)
@@ -4118,7 +5237,12 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		{
 			ri = RayIntersection( currentRay, rast );
 			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
+			if( rejectZeroDistanceBoundary ) {
+				ri.geometric.minimumSurfaceRange = 0.0;
+			}
+			scene.GetObjects()->IntersectRay(
+				ri, true, true, rejectZeroDistanceBoundary );
+			rejectZeroDistanceBoundary = false;
 
 			bool bHit = ri.geometric.bHit;
 
@@ -4128,13 +5252,33 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( pCurrentMedium )
 			{
-				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				const Scalar maxDist = bHit
+					? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+						? ri.geometric.surfaceRange : ri.geometric.range )
+					: RISE_INFINITY;
+				Scalar additiveStart = 0.0;
+				Scalar additiveEnd = 0.0;
+				if( PTMediumSegmentInterval(
+					*pCurrentMedium, currentRay, maxDist, additiveStart, additiveEnd ) ) {
+					const Scalar additiveXi = pCurrentMedium->IsHomogeneous()
+						? 0.0 : rc.random.CanonicalRandom();
+					for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+						if( !swl.terminated[w] ) {
+							hwssResult[w] += throughputComp[w] *
+								PTFullSegmentAdditiveEmissionNM(
+									*pCurrentMedium, currentRay, additiveStart,
+									additiveEnd, swl.lambda[w], additiveXi );
+						}
+					}
+				}
 				IndependentSampler mediumSampler( rc.random );
 				// Hero wavelength drives free-flight sampling; the MIS
 				// combinedPdf is in distance measure (wavelength-independent
 				// for equiangular; hero-driven for delta tracking).
 				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-					pCurrentMedium, currentRay, maxDist, heroNM, pLS, mediumSampler );
+					pCurrentMedium, currentRay, maxDist, bHit,
+					heroNM, pLS, CurrentVolumeEmissionSegmentState().pivots,
+					mediumSampler );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -4172,13 +5316,19 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 						if( medWeight <= 0 ) continue;
 
+						MediumTransport::CollisionPhaseClosure phaseClosure(
+							*pCurrentMedium, scatterPt, swl.lambda[w], true );
+						const IPhaseFunction* pPhase = phaseClosure.Get();
+						if( !pPhase ) continue;
+
 						// NEE at scatter point
 						if( pLS )
 						{
 							const Vector3 wo = currentRay.Dir();
 							Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-								scatterPt, wo, pCurrentMedium, swl.lambda[w], caster, pLS,
-								sampler, rast, pMediumObject );
+								scatterPt, wo, pCurrentMedium, pPhase,
+								swl.lambda[w], caster, pLS,
+								sampler, rast, pMediumObject, &iorStack );
 							if( Ld > 0 )
 							{
 								Scalar directContrib = throughputComp[w] * medWeight * Ld;
@@ -4201,14 +5351,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					// mirrors the non-HWSS PTSurvivalWeight scalar sites (~3376).
 					const Scalar pSurvivalHero = mso.noScatterPdfScale *
 						pCurrentMedium->EvalDistancePdfNM(
-							currentRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
+							currentRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 					{
 						if( swl.terminated[w] ) {
 							continue;
 						}
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
-							currentRay, ri.geometric.range, swl.lambda[w] );
+							currentRay, maxDist, swl.lambda[w] );
 						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
@@ -4230,6 +5380,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						throughputComp[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr / pSurvivalHero ) : Tr;
 					}
 				}
+			}
+
+			if( bHit && IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+				ContinueAcrossNullBoundary(
+					ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+				depthIncrement = 0;
+				continueSameTransportSegment = true;
+				continue;
 			}
 
 			if( !bHit )
@@ -4304,6 +5462,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 		needsIntersection = true;
+
+		if( IsExactNullBoundaryMaterial( ri.pMaterial ) ) {
+			ContinueAcrossNullBoundary(
+				ri, currentRay, iorStack, rejectZeroDistanceBoundary );
+			depthIncrement = 0;
+			continueSameTransportSegment = true;
+			continue;
+		}
 
 		// ============================================================
 		// Surface hit processing (HWSS)
@@ -4537,7 +5703,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				Scalar directNM = pLS->EvaluateDirectLightingNM(
 					ri.geometric, *pBRDFCur,
 					EffectivePathTracingClayOverride( rc, mClayOverride ) ? pClayMaterial : ri.pMaterial, swl.lambda[w],
-					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
+					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject,
+					&iorStack );
 				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				// GUI render modes P2b `indirect` (HWSS twin): suppress
 				// NEE's direct-lighting contribution at the camera-visible
@@ -4870,6 +6037,10 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	}
 
 	IORStack iorStack( 1.0 );
+	const LightSampler* rootLights = caster.GetLightSampler();
+	if( rootLights && rootLights->SceneHasNullBoundaries() ) {
+		IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
+	}
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
@@ -4878,18 +6049,20 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// Capture before primary-medium sampling: HWSS can return from a volume
 	// scatter without ever entering IntegrateFromHitHWSS.
 	if( pAOV ) {
+		RayIntersection aovHit( ri );
+		Scalar aovDepth = 0.0;
+		ResolvePrimaryAOVSurface( ri, rast, scene, aovHit, aovDepth );
 		pAOV->primaryDepthCaptured = true;
-		pAOV->depth = ri.geometric.bHit ? ri.geometric.range : Scalar( 0 );
-	}
-	if( pAOV && ri.geometric.bHit ) {
-		if( !pAOV->valid && rc.aovPrefilterMode == OidnPrefilter::Fast ) {
-			RayIntersectionGeometric aovGeom( ri.geometric );
-			if( ri.pModifier ) ri.pModifier->Modify( aovGeom );
+		pAOV->depth = aovDepth;
+		if( !pAOV->valid && aovHit.geometric.bHit &&
+			rc.aovPrefilterMode == OidnPrefilter::Fast ) {
+			RayIntersectionGeometric aovGeom( aovHit.geometric );
+			if( aovHit.pModifier ) aovHit.pModifier->Modify( aovGeom );
 			pAOV->normal = aovGeom.vNormal;
 			pAOV->albedo = EffectivePathTracingClayOverride( rc, mClayOverride )
 				? pClayBRDF->albedo( aovGeom )
-				: ( ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-					? ri.pMaterial->GetBSDF()->albedo( aovGeom )
+				: ( ( aovHit.pMaterial && aovHit.pMaterial->GetBSDF() )
+					? aovHit.pMaterial->GetBSDF()->albedo( aovGeom )
 					: RISEPel( 1, 1, 1 ) );
 			pAOV->valid = true;
 		}
@@ -4902,24 +6075,62 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	const IObject* pMediumObject = 0;
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 		iorStack, &scene, pMediumObject );
+	const LightSampler* preparedLights = caster.GetLightSampler();
+	if( ( preparedLights && preparedLights->SceneHasFireMedia() ) ||
+		( pCurrentMedium && pCurrentMedium->IsFireMedium() ) )
+	{
+		// Fire is chromatic and the legacy HWSS medium proposal is hero-driven;
+		// its companion division is biased.  Until Phase D replaces that
+		// proposal, an HWSS request is four independent, correct NM paths.
+		// Route before distance sampling or any legacy phase lookup.
+		for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+			if( !swl.terminated[w] ) {
+				result[w] = IntegrateRayNM( rc, rast, cameraRay, swl.lambda[w],
+					scene, caster, sampler, pRadianceMap, w == 0 ? pAOV : 0 );
+			}
+		}
+		return;
+	}
 
 	// Per-wavelength residual transmittance along an escape segment
 	// (see RGB IntegrateRay).  Stays 1 (no-op) in vacuum.
 	Scalar escapeTr[SampledWavelengths::N];
+	Scalar additiveSource[SampledWavelengths::N];
 	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 		escapeTr[w] = 1;
+		additiveSource[w] = 0;
 	}
 
 	if( pCurrentMedium )
 	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
+		const Scalar maxDist = ri.geometric.bHit
+			? ( IsExactNullBoundaryMaterial( ri.pMaterial )
+				? ri.geometric.surfaceRange : ri.geometric.range )
+			: RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
+		Scalar additiveStart = 0.0;
+		Scalar additiveEnd = 0.0;
+		if( PTMediumSegmentInterval(
+			*pCurrentMedium, cameraRay, maxDist, additiveStart, additiveEnd ) ) {
+			const Scalar additiveXi = pCurrentMedium->IsHomogeneous()
+				? 0.0 : rc.random.CanonicalRandom();
+			for( unsigned int w = 0; w < SampledWavelengths::N; ++w ) {
+				if( !swl.terminated[w] ) {
+					additiveSource[w] = PTFullSegmentAdditiveEmissionNM(
+						*pCurrentMedium, cameraRay, additiveStart, additiveEnd,
+						swl.lambda[w], additiveXi );
+					result[w] += additiveSource[w];
+				}
+			}
+		}
 		IndependentSampler mediumSampler( rc.random );
 		// Hero wavelength drives free-flight sampling; MIS combinedPdf
 		// in distance measure (hero-driven delta tracking + wavelength-
 		// independent equiangular).
 		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-			pCurrentMedium, cameraRay, maxDist, heroNM, pLS, mediumSampler );
+			pCurrentMedium, cameraRay, maxDist, ri.geometric.bHit,
+			heroNM, pLS, CurrentVolumeEmissionSegmentState().pivots,
+			mediumSampler );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -4933,6 +6144,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			// Volume scatter: fall back to per-wavelength NM
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
+
+			// The independent full-segment additive score above survives a
+			// zero continuation budget.  Fire never reaches this legacy HWSS
+			// branch (it routes to independent NM paths before sampling).
+			if( stabilityConfig.maxVolumeBounce == 0 ) {
+				return;
+			}
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
@@ -4953,6 +6171,11 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 				if( medWeight <= 0 ) continue;
 
+				MediumTransport::CollisionPhaseClosure phaseClosure(
+					*pCurrentMedium, scatterPt, swl.lambda[w], true );
+				const IPhaseFunction* pPhase = phaseClosure.Get();
+				if( !pPhase ) continue;
+
 				// NEE at scatter point.  GUI render modes P2b `indirect`
 				// fix (review-p2b P2-e, HWSS twin of the RGB/NM
 				// IntegrateRayTemplated fix): same primary-camera-segment
@@ -4962,8 +6185,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				if( pLS )
 				{
 					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-						scatterPt, wo, pCurrentMedium, swl.lambda[w], caster,
-						pLS, sampler, rast, pMediumObject );
+						scatterPt, wo, pCurrentMedium, pPhase, swl.lambda[w], caster,
+						pLS, sampler, rast, pMediumObject, &iorStack );
 					if( Ld > 0 )
 					{
 						Scalar directContrib = medWeight * Ld;
@@ -4976,7 +6199,6 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				}
 
 				// Phase function continuation
-				const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
 				if( pPhase )
 				{
 					const Vector3 wi = pPhase->Sample( wo, sampler );
@@ -4987,33 +6209,16 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						Scalar volThroughput = medWeight * phaseVal / phasePdf;
 
 						const Ray scatteredRay( scatterPt, wi );
-						RayIntersection ri2( scatteredRay, rast );
-						scene.GetObjects()->IntersectRay( ri2, true, true, false );
-
-						if( !ri2.geometric.bHit )
-						{
-						if( !EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) &&
-							!PTSoloSuppressEnvironment( caster ) && scene.GetGlobalRadianceMap() )
-							{
-								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-									scatteredRay, RISE_INFINITY, swl.lambda[w] );
-								result[w] += volThroughput * TrEsc *
-									scene.GetGlobalRadianceMap()->GetRadianceNM(
-										scatteredRay, rast, swl.lambda[w] );
-							}
-						}
-						else
-						{
-							result[w] += volThroughput * IntegrateFromHitNM(
-								rc, rast, ri2, swl.lambda[w], scene, caster,
-								sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
-								true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
-								0, 0, 0, 0, 1, 0, false, false,
-								// HWSS geometry is hero-driven. Let only the hero
-								// continuation populate the shared, wavelength-independent
-								// Accurate guide so companion paths cannot race to define it.
-								w == 0 ? pAOV : 0 );
-						}
+						RayIntersection continuation( scatteredRay, rast );
+						result[w] += volThroughput * IntegrateFromHitNM(
+							rc, rast, continuation, swl.lambda[w], scene, caster,
+							sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
+							true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
+							0, 0, 0, 0, 1, 0, false, false,
+							// HWSS geometry is hero-driven. Let only the hero
+							// continuation populate the shared, wavelength-independent
+							// Accurate guide so companion paths cannot race to define it.
+							w == 0 ? pAOV : 0 );
 					}
 				}
 			}
@@ -5029,13 +6234,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			// non-HWSS camera surface site at ~3376.
 			const Scalar pSurvivalHero = mso.noScatterPdfScale *
 				pCurrentMedium->EvalDistancePdfNM(
-					cameraRay, ri.geometric.range, /*scattered=*/false, ri.geometric.range, heroNM );
+					cameraRay, maxDist, /*scattered=*/false, maxDist, heroNM );
 			Scalar Tr[SampledWavelengths::N];
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
 			{
 				Tr[w] = swl.terminated[w] ? 0 :
 					pCurrentMedium->EvalTransmittanceNM(
-						cameraRay, ri.geometric.range, swl.lambda[w] );
+						cameraRay, maxDist, swl.lambda[w] );
 			}
 
 			IntegrateFromHitHWSS( rc, rast, ri, swl, scene, caster,
@@ -5044,7 +6249,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				0, 0, 0, 0, 0, 0, result, pAOV );
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] *= ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w];
+				result[w] = additiveSource[w] + result[w] *
+					( ( pSurvivalHero > 0.0 ) ? ( Tr[w] / pSurvivalHero ) : Tr[w] );
 			}
 			return;
 		}
@@ -5074,9 +6280,6 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		// background is a direct contribution -- return black under
 		// indirect-only (see the RGB IntegrateRayTemplated twin).
 		if( EffectivePathTracingIndirectOnly( rc, mIndirectOnly ) ) {
-			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] = 0;
-			}
 			return;
 		}
 
@@ -5084,9 +6287,6 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		// camera-visible background stays black; indirect bounces
 		// still pull from the global radiance map elsewhere.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
-			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				result[w] = 0;
-			}
 			return;
 		}
 
@@ -5101,7 +6301,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				if( !swl.terminated[w] ) {
-					result[w] = escapeTr[w] *
+					result[w] += escapeTr[w] *
 						pRadianceMap->GetRadianceNM( cameraRay, rast, swl.lambda[w] );
 				}
 			}
@@ -5110,7 +6310,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				if( !swl.terminated[w] ) {
-					result[w] = escapeTr[w] *
+					result[w] += escapeTr[w] *
 						scene.GetGlobalRadianceMap()->GetRadianceNM(
 							cameraRay, rast, swl.lambda[w] );
 				}

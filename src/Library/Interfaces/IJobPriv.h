@@ -34,6 +34,34 @@
 
 namespace RISE
 {
+	struct FireExternalRenderConfig
+	{
+		const ICamera* cameraOverride = nullptr;
+		std::string viewportMode;
+		unsigned int samplesPerPixel = 1;
+		unsigned int previewScale = 1;
+		bool oidnDenoise = false;
+		bool radianceClampEnabled = false;
+		bool pathRegularizationEnabled = false;
+		bool smsEnabled = false;
+		bool regionActive = false;
+		unsigned int regionLeft = 0;
+		unsigned int regionTop = 0;
+		unsigned int regionRight = 0;
+		unsigned int regionBottom = 0;
+		bool xray = false;
+		bool variantPipeline = false;
+		unsigned int maxPathDepth = 0;
+		bool indirectOnly = false;
+		bool clayOverride = false;
+		unsigned int liveSamplesPerPass = 0;
+		unsigned int idleMaxPasses = 0;
+		unsigned int tileOrder = 0;
+		bool progressiveOnIdle = false;
+		bool idleMode = false;
+		bool viewModeCasterInstalled = false;
+	};
+
 	// Forward declarations — these types live in
 	// `src/Library/SceneEditor/` so we keep the include light.  The
 	// getters return raw pointers so this header doesn't have to
@@ -100,6 +128,34 @@ namespace RISE
 		// ExchangeProgress instead for their capture).  Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention -- do NOT insert mid-tail).
 		virtual IProgressCallback*			GetProgress() const = 0;
+
+		//! Apply the same fire-fidelity preflight used by Job::Rasterize to a
+		//! controller-owned rasterizer before it launches workers.  The scene
+		//! editor owns interactive and BeautyVariant rasterizers outside Job's
+		//! registry, so their resolved config is supplied explicitly.
+		//!
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
+		virtual bool PrepareFireRenderForExternalRasterizer(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			bool oidnDenoise,
+			bool radianceClampEnabled,
+			bool pathRegularizationEnabled,
+			bool smsEnabled ) = 0;
+
+		virtual bool PrepareFireRenderForExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config ) = 0;
+
+		//! Atomically preflight and enter a controller-owned rasterizer so the
+		//! Job-only fire capability never escapes to an external caller.
+		//! APPENDED AT THE TRUE END OF THE VIRTUAL TAIL.
+		virtual bool RasterizeExternalRasterizerResolved(
+			IRasterizer* rasterizer,
+			const char* rasterizerKind,
+			const FireExternalRenderConfig& config,
+			const Rect* region ) = 0;
 	};
 
 

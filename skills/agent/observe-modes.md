@@ -30,7 +30,7 @@ table, and "Transport modes" for all four additions.
 
 | Intent | Call | Cost | Trust it for | Do NOT trust it for |
 |---|---|---|---|---|
-| "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false`.  There are SEVEN reasons and they split into three groups (the full table is under "Hard warnings" item 3).  RETRIABLE, clears on its own: `editor_transaction_in_progress`, `render_in_progress`, `editor_interaction_finalize_failed`.  RESOLVES but not by retrying: `no_frame_yet` (viewport exists but hasn't drawn yet).  PERMANENT: `no_controller` (headless session -- there is no viewport and never will be), `editor_shutting_down`, `editor_interaction_unrecoverable` (a latched editor failure that never clears).  Falling back to `render` fixes `no_controller`/`no_frame_yet`; for the OTHER FOUR refusal reasons -- `editor_transaction_in_progress`, `editor_interaction_finalize_failed`, `editor_shutting_down`, `editor_interaction_unrecoverable` -- `render` hits the SAME gate and is refused too.  `render_in_progress` is the one split case, and even there `render` is a POOR fallback: a plain `render {}` BLOCKS up to 30 s on the render slot and only succeeds if the occupant finishes inside that window (the user's own production render, which shares that slot, usually does not), and it is refused with NO wait when a direct parked render holds the gate; a render with a `width`+`height` or `camera`/`view` override is always refused immediately.  Retry the FREE `read_viewport` instead of paying that block |
+| "What is the user seeing right now?" | `read_viewport {maxEdge?}` | Free -- copies the GUI's last interactive frame, NEVER renders | The exact live frame, whatever pipeline produced it, PLUS `paneSet` (N-up introspection: layout, primary, per-pane mode/vantage, and `sourcePane` = WHICH pane the PNG holds).  In a multi-pane layout ALWAYS check `sourcePane` first -- the image is the last-RENDERED pane, not necessarily the primary or the pane you care about.  The pane set is read-only by design; you cannot rearrange the user's panes | Anything when `available:false` (the full table is under "Hard warnings" item 3).  RETRIABLE, clears on its own: `editor_transaction_in_progress`, `render_in_progress`, `editor_interaction_finalize_failed`.  RESOLVES but not by retrying: `no_frame_yet` (viewport exists but hasn't drawn yet).  PERMANENT: `no_controller` (headless session -- there is no viewport and never will be), `editor_shutting_down`, `editor_interaction_unrecoverable` (a latched editor failure that never clears).  ROUTE-PERMANENT: `output_provenance_unavailable` (active fire media require a primary-plus-sidecar chain unavailable from viewport or agent render; use a provenance-capable file output or tell the user).  Falling back to `render` fixes `no_controller`/`no_frame_yet`; for the OTHER FOUR refusal reasons -- `editor_transaction_in_progress`, `editor_interaction_finalize_failed`, `editor_shutting_down`, `editor_interaction_unrecoverable` -- `render` hits the SAME gate and is refused too.  `render_in_progress` is the one split case, and even there `render` is a POOR fallback: a plain `render {}` BLOCKS up to 30 s on the render slot and only succeeds if the occupant finishes inside that window (the user's own production render, which shares that slot, usually does not), and it is refused with NO wait when a direct parked render holds the gate; a render with a `width`+`height` or `camera`/`view` override is always refused immediately.  Retry the FREE `read_viewport` instead of paying that block |
 | "Is this object roughly where I want it?" | `render {quality:"draft", width, height, camera?}` | Cheap -- a wholly separate fixed studio-preview pipeline, samples capped at 4 regardless of what you ask for | Geometry, silhouette, composition, camera framing; relative depth/placement (ESPECIALLY with a second `camera` angle -- one view alone can't tell front-of/behind/inside) | Materials, lighting, exposure, or colour -- the preview shader IGNORES the scene's authored materials and lights entirely |
 | "Which object is where? / Find object X on screen." | `render {mode:"objectmap"}` (survey, whole-frame legend) or `query_object_at {x,y}` (one answer) | About one identity render -- fixed 1 spp, no MC noise, ignores `quality`/`samples` entirely | Exact identity: byte-exact `colorHex` <-> `name` legend match, including CSG composites (legend carries the ROOT only, never the hidden operands) and instance arrays (`grid[i,j]`) | The colours as APPEARANCE -- they are arbitrary per-render identity ids, not materials. Read the objectmap PNG at NATIVE size only (omit `maxEdge` -- a box-downscale blends flat ids and breaks the match) |
 | "Does it actually look right -- and what geometry/material cues explain it?" | `render {imageMaxEdge:N}` (no `quality`, i.e. production) when appearance alone is enough -- the PNG rides back in that ONE call; add a following `read_image {representation:"perception"}` only when you want the atlas | The real render cost; perception reuses that same render | Beauty is the honest appearance; the atlas adds diffuse albedo, world orientation, and raw primary-hit depth in one bounded image | Do not treat albedo as lit colour, normal RGB as colour, or auto-windowed depth brightness as an absolute cross-frame scale |
@@ -382,8 +382,8 @@ mention (viewport, objectmap/query).
    DOWNWARD, for both `query_object_at {x,y}` and the decoded PNG's
    row order -- they always agree.
 3. **`read_viewport`'s `available:false` is a STRUCTURED SUCCESS, and
-   which reason you got determines what to do next.** There are SEVEN
-   reasons, and `render` is a fallback for exactly two of them:
+   which reason you got determines what to do next.** `render` is a
+   fallback for exactly two reasons:
 
    | `reason` | Retriable? | What to do |
    |---|---|---|
@@ -394,6 +394,7 @@ mention (viewport, objectmap/query).
    | `editor_interaction_finalize_failed` | Yes | An open editor interaction could not be finalized this time. Retry. |
    | `editor_shutting_down` | No -- never | The editor is tearing down. Stop observing. |
    | `editor_interaction_unrecoverable` | No -- never | An editor interaction failed to persist and the editor LATCHED that failure. It does NOT clear. Tell the user; do not retry, and do not switch to `render` -- it is refused too. |
+   | `output_provenance_unavailable` | No -- not for this scene/output route | Active fire media require a primary-plus-sidecar chain that viewport and agent `render` cannot emit. Use a provenance-capable file-output render or tell the user; do not retry. |
 
    **Do NOT reflexively fall back to `render`.** `render` is the right
    move for the two no-viewport reasons (`no_controller`,
@@ -402,7 +403,9 @@ mention (viewport, objectmap/query).
    `editor_interaction_unrecoverable`, a `render` call passes through
    the SAME editor/admission gate that just refused read_viewport and
    is refused too (and on the permanent ones, an infinite loop if you
-   keep trying).  That leaves `render_in_progress`, the seventh and only
+   keep trying). `output_provenance_unavailable` also rejects agent
+   `render`, because it lacks the same required output chain. That leaves
+   `render_in_progress` as the only
    split case -- covered in the paragraph immediately below, and still
    not a good fallback.
 
@@ -664,7 +667,11 @@ only honest here):
    `no_frame_yet`. `editor_shutting_down` and
    `editor_interaction_unrecoverable` are equally permanent AND a
    `render` call hits the same gates, so neither retrying nor
-   switching to `render` helps; say so and stop. The three retriable
+   switching to `render` helps; say so and stop.
+   `output_provenance_unavailable` means active fire media require a
+   primary-plus-sidecar route neither viewport nor agent `render` can
+   provide; use a provenance-capable file-output render or tell the user,
+   rather than retrying. The three retriable
    reasons (`editor_transaction_in_progress`, `render_in_progress`,
    `editor_interaction_finalize_failed`) do clear on their own -- one
    short retry of `read_viewport` is reasonable. `render` is not a way

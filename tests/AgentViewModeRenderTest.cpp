@@ -85,6 +85,7 @@
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Interfaces/IRasterImageWriter.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Interfaces/IShader.h"
@@ -103,6 +104,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -125,6 +127,25 @@ static void Check( bool c, const std::string& w )
 	if( c ) ++g_pass;
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
+
+#ifdef NO_PNG_SUPPORT
+static void RunPngUnavailableBoundaryTest()
+{
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(64u);
+	IRasterImageWriter* writer = nullptr;
+	const bool created =
+		RISE_API_CreatePNGWriter(&writer,*buffer,8,eColorSpace_sRGB) && writer;
+	if( created ) {
+		writer->BeginWrite(1u,1u);
+		writer->WriteColor(RISEColor(1.0,1.0,1.0,1.0),0u,0u);
+		writer->EndWrite();
+	}
+	Check( created && buffer->getCurPos() == 0u,
+		"NO_PNG_SUPPORT: agent PNG encoding emits no payload bytes" );
+	safe_release(writer);
+	safe_release(buffer);
+}
+#endif
 
 //----------------------------------------------------------------------
 // Scene: a self-tessellating triangle mesh (displaced_geometry with NO
@@ -153,6 +174,21 @@ static const char* const kSceneMeshAndSphere =
 	"standard_object\n{\n\tname sph_obj\n\tgeometry sph_geo\n\tmaterial mat\n\tposition 1.3 0 0\n}\n\n"
 	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
 
+static const char* const kFireScene =
+	"RISE ASCII SCENE 7\n"
+	"scene_options\n{\n\tscene_unit 1\n\tfidelity_mode preview\n}\n\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 1\n\tnmbegin 380\n\tnmend 780\n"
+	"\tnum_wavelengths 4\n\tspectral_samples 1\n\thwss false\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 8\n\theight 8\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 -2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 45\n}\n\n"
+	"scalar_painter\n{\n\tname carbon\n\tvalue 1\n}\n\n"
+	"scalar_painter\n{\n\tname temperature\n\tvalue 800\n}\n\n"
+	"multichannel_heterogeneous_medium\n{\n\tname fire\n\tchannel_carbon painter carbon\n"
+	"\tchannel_temperature painter temperature\n\tchem_model none\n\tbake_resolution 2 2 2\n"
+	"\tbbox_min -1 -1 -1\n\tbbox_max 1 1 1\n\toptical_record fire_optics_v1\n}\n\n"
+	"global_medium\n{\n\tmedium fire\n}\n";
+
 //----------------------------------------------------------------------
 // X-ray axis (docs/gui/RENDER_MODES.md "X-ray axis") coverage scene:
 // kSceneMeshAndSphere PLUS a transmissive glass sphere (dielectric_material,
@@ -176,9 +212,6 @@ static const std::string kSceneMeshSphereGlass =
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
 	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
@@ -194,14 +227,16 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	// a bogus "the test is flaky / there is a race" failure -- that already
 	// cost a reviewer hours once.  The pid prefix makes the path unique per
 	// process.
-	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
-	std::ofstream f( path.c_str(), std::ios::binary );
+	const std::filesystem::path path = std::filesystem::temp_directory_path() /
+		( std::to_string( static_cast<long>( getpid() ) ) + "_" + name );
+	std::ofstream f( path, std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
 	f.close();
-	return path;
+	return path.string();
 }
 
+#ifndef NO_PNG_SUPPORT
 typedef std::array<unsigned char, 4> Px;   // r,g,b,a
 
 struct Decoded
@@ -3498,9 +3533,69 @@ static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
 
 	pJob->release();
 }
+#endif
+
+static void RunFireOutputProvenanceRejectionTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: fire output provenance preflight ===\n" );
+	const std::string scenePath = WriteTemp(
+		"rise_agent_fire_output_provenance.RISEscene",kFireScene);
+	Check( !scenePath.empty(), "fire provenance scene is written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst(scenePath.c_str()),
+		"fire provenance scene loads via CST" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob(pJob);
+	Check( session != nullptr, "fire provenance session wraps" );
+	if( !session ) {
+		pJob->release();
+		std::remove(scenePath.c_str());
+		return;
+	}
+
+	struct RejectedRoute
+	{
+		const char* label;
+		AgentRenderParams params;
+	};
+	std::vector<RejectedRoute> routes;
+	routes.push_back(RejectedRoute{"production beauty",AgentRenderParams()});
+	AgentRenderParams draft;
+	draft.quality = AgentRenderQuality::Draft;
+	routes.push_back(RejectedRoute{"draft beauty",draft});
+	AgentRenderParams objectMap;
+	objectMap.renderTarget = AgentRenderTarget::ObjectMap;
+	routes.push_back(RejectedRoute{"object map",objectMap});
+	AgentRenderParams normals;
+	normals.renderTarget = AgentRenderTarget::ViewMode;
+	normals.viewMode = Implementation::ViewportRenderMode::Normals;
+	routes.push_back(RejectedRoute{"shader view mode",normals});
+	AgentRenderParams deepReflect;
+	deepReflect.renderTarget = AgentRenderTarget::ViewMode;
+	deepReflect.viewMode = Implementation::ViewportRenderMode::DeepReflect;
+	routes.push_back(RejectedRoute{"beauty variant",deepReflect});
+
+	for( const RejectedRoute& route : routes ) {
+		const AgentRenderResult result = session->Render(route.params);
+		Check( !result.ok && result.png.empty() &&
+			result.message.find("output_provenance_unavailable") != std::string::npos,
+			std::string(route.label) +
+				" rejects fire before emitting an unlinked agent image" );
+	}
+	unsigned int cachedW = 0, cachedH = 0;
+	Check( session->ReadImage(0,cachedW,cachedH).empty() &&
+		cachedW == 0 && cachedH == 0,
+		"rejected fire routes publish no image into the session cache" );
+
+	pJob->release();
+	std::remove(scenePath.c_str());
+}
 
 int main()
 {
+	RunFireOutputProvenanceRejectionTest();
+#ifdef NO_PNG_SUPPORT
+	RunPngUnavailableBoundaryTest();
+#else
 	RunPerModeEndToEndTest();
 	RunFilmRestoreTest();
 	RunBeautyVariantEndToEndTest();
@@ -3531,6 +3626,7 @@ int main()
 	RunIndirectModeMirrorReflectsLightTest();
 	RunIndirectModeMirrorKeepsEnvReflectionTest();
 	RunIndirectModeDiffuseUnderEnvSuppressedTest();
+#endif
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

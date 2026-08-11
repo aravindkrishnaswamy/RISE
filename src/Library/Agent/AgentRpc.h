@@ -455,8 +455,8 @@
 //                                            read_image).  NEVER triggers a render --
 //                                            the cheapest observe; it copies whatever
 //                                            the interactive render loop last produced.
-//                                            `available` is false with one of SEVEN
-//                                            reasons: "no_controller" (headless session,
+//                                            `available` is false with a reason from this
+//                                            set: "no_controller" (headless session,
 //                                            no viewport -- PERMANENT), "no_frame_yet"
 //                                            (controller attached but no interactive frame
 //                                            produced yet -- resolves when the viewport
@@ -469,8 +469,13 @@
 //                                            "editor_shutting_down" /
 //                                            "editor_interaction_unrecoverable" (both
 //                                            PERMANENT -- retrying can never succeed;
-//                                            round-10).  AgentSession::ReadViewport's
-//                                            doc is the authority on all seven, on
+//                                            round-10), or
+//                                            "output_provenance_unavailable" (active fire
+//                                            media require a provenance-capable primary-
+//                                            plus-sidecar route unavailable here and from
+//                                            agent `render`; retrying cannot help).
+//                                            AgentSession::ReadViewport's doc is the
+//                                            authority on the complete set, on
 //                                            which are retriable, and on when a
 //                                            `render` fallback actually helps
 //                                            (round-12: it is NOT a blanket

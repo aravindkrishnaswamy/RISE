@@ -15,6 +15,7 @@
 #include "DirectLightingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/MediumTracking.h"
 #include "../Lights/LightSampler.h"
 
 using namespace RISE;
@@ -73,6 +74,9 @@ void DirectLightingShaderOp::PerformOperation(
 
 	IndependentSampler fallbackSampler( rc.random );
 	ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject(
+		ior_stack, pScene, pMediumObject );
 	c = pLS->EvaluateDirectLighting(
 		ri.geometric,
 		*pBRDF,
@@ -80,9 +84,10 @@ void DirectLightingShaderOp::PerformOperation(
 		caster,
 		sampler,
 		ri.pObject,
-		0,		// pMedium: shader op runs at surface scatter, vacuum along shadow ray
+		pMedium,
 		false,	// isVolumeScatter
-		0 );	// pMediumObject
+		pMediumObject,
+		&ior_stack );
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
@@ -117,6 +122,9 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 
 	IndependentSampler fallbackSampler( rc.random );
 	ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject(
+		ior_stack, pScene, pMediumObject );
 	return pLS->EvaluateDirectLightingNM(
 		ri.geometric,
 		*pBRDF,
@@ -125,7 +133,8 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		caster,
 		sampler,
 		ri.pObject,
-		0,		// pMedium
+		pMedium,
 		false,	// isVolumeScatter
-		0 );	// pMediumObject
+		pMediumObject,
+		&ior_stack );
 }

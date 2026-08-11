@@ -227,10 +227,10 @@ private struct AppMenus: Commands {
             Divider()
 
             // L5a round-9 — File > Save Rendered Image…  Disabled
-            // until the user has started at least one render
-            // (`canSaveImage` gates on renderState ∈ {.rendering,
-            // .cancelling, .completed, .cancelled} — see
-            // RenderViewModel).  Opens an NSSavePanel with HDR
+            // until a render has completed or cancellation has
+            // finalized its last coherent frame (`canSaveImage` gates
+            // on {.completed, .cancelled} — see RenderViewModel).
+            // Opens an NSSavePanel with HDR
             // EXR as the default, with PNG / TIFF as LDR
             // alternatives in the format dropdown.
             Button("Save Rendered Image...") {

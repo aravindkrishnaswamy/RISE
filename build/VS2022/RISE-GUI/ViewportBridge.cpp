@@ -87,9 +87,12 @@ QImage RasterImageToQImage(const IRasterImage& image, IsCurrent&& isCurrent)
 // cancelled passes.
 // =====================================================================
 class ViewportPreviewSink : public IRasterizerOutput,
+                            public IFireRasterizerOutputRoute,
                             public Implementation::Reference
 {
 public:
+    FireArtifactRouteKind FireArtifactRoute() const override
+        { return FireArtifactRouteKind::DisplayOnly; }
     explicit ViewportPreviewSink(ViewportBridge* bridge)
         : m_bridge(bridge)
         , m_presentGeneration(std::make_shared<std::atomic<unsigned long long>>(0))
@@ -98,9 +101,6 @@ public:
         InvalidatePresentation();
     }
 
-    // Borrowed; the bridge keeps the controller alive for the sink's
-    // lifetime.  Used to query IsCancelRequested at end-of-pass.
-    void SetController(SceneEditController* c) { m_controller = c; }
     void InvalidatePresentation() {
         m_presentGeneration->fetch_add(1, std::memory_order_acq_rel);
         m_lastRenderGeneration->fetch_add(1, std::memory_order_acq_rel);
@@ -188,7 +188,6 @@ public:
 
 private:
     ViewportBridge*      m_bridge = nullptr;
-    SceneEditController* m_controller = nullptr;   // borrowed
     std::shared_ptr<std::atomic<unsigned long long>> m_presentGeneration;
     std::shared_ptr<std::atomic<unsigned long long>> m_lastRenderGeneration;
 };
@@ -204,9 +203,12 @@ private:
 // so Single-layout behaviour never touches this class at all.
 // =====================================================================
 class ViewportPaneSink : public IRasterizerOutput,
+                          public IFireRasterizerOutputRoute,
                           public Implementation::Reference
 {
 public:
+    FireArtifactRouteKind FireArtifactRoute() const override
+        { return FireArtifactRouteKind::DisplayOnly; }
     ViewportPaneSink(ViewportBridge* bridge, unsigned int pane)
         : m_bridge(bridge)
         , m_pane(pane)
@@ -334,10 +336,6 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
     }
 
     if (m_previewSink) {
-        // The sink queries the controller's cancel state at end-of-pass
-        // so it can drop a stale dispatch.  Wire the pointer before
-        // installing the sink as a rasterizer output.
-        m_previewSink->SetController(m_controller);
         RISE_API_SceneEditController_SetPreviewSink(m_controller, m_previewSink);
     }
 

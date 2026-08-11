@@ -11,6 +11,9 @@
 
 #include "Interfaces/IRasterizerOutput.h"
 #include "Utilities/Reference.h"
+#include "Rendering/FileEncoderObserver.h"
+
+#include <mutex>
 
 #ifdef __OBJC__
 @class AVAssetWriter;
@@ -21,6 +24,7 @@
 
 class MovieRasterizerOutput :
     public virtual RISE::IRasterizerOutput,
+    public virtual RISE::IFireRasterizerOutputRoute,
     public virtual RISE::Implementation::Reference
 {
 public:
@@ -36,9 +40,24 @@ public:
     void OutputImage(const RISE::IRasterImage& pImage,
                      const RISE::Rect* pRegion,
                      const unsigned int frame) override;
+    void OutputPreDenoisedImage(const RISE::IRasterImage& pImage,
+                               const RISE::Rect* pRegion,
+                               const unsigned int frame) override;
+    void OutputDenoisedImage(const RISE::IRasterImage& pImage,
+                            const RISE::Rect* pRegion,
+                            const unsigned int frame) override;
+    void OnRasterizerFrameStoreChanged(
+        RISE::Implementation::FrameStore* framestore) override;
+    RISE::FireArtifactRouteKind FireArtifactRoute() const override
+    {
+        return _routeAvailable ? RISE::FireArtifactRouteKind::PrimaryArtifact :
+            RISE::FireArtifactRouteKind::UnavailableArtifact;
+    }
 
     /// Flush remaining frames and close the movie file.
-    void finalize();
+    bool finalize(bool publish = true);
+    bool HasFinalizedFirePrimaries() const
+        { return _fireRender && !_failed && !_framePrimaries.empty(); }
 
 private:
 #ifdef __OBJC__
@@ -46,21 +65,43 @@ private:
     AVAssetWriterInput* _input;
     AVAssetWriterInputPixelBufferAdaptor* _adaptor;
     NSString* _outputPath;
+    NSString* _writerPath;
+    NSString* _primaryPattern;
 #else
     void* _writer;
     void* _input;
     void* _adaptor;
     void* _outputPath;
+    void* _writerPath;
+    void* _primaryPattern;
 #endif
+    RISE::Implementation::FrameStore* _frameStore;
+    mutable std::mutex _frameStoreMutex;
+    RISE::IFrameEncoder* _primaryEncoder;
+    RISE::FrameStoreOutput::Metadata _fireMetadata;
+    std::vector<RISE::Implementation::FireFramePrimary> _framePrimaries;
+    RISE::Implementation::FireFrameSequenceEncodingDescriptor _encodingDescriptor;
     int _fps;
     bool _started;
     bool _finalized;
+    bool _failed;
+    bool _derivativeFailed;
+    bool _succeeded;
+    bool _routeAvailable;
+    bool _derivativeAvailable;
+    bool _fireRender;
+    bool _metadataCaptured;
     int _width;
     int _height;
     unsigned int _framesReceived;
 
     /// Lazily configure the AVAssetWriter on first frame (when we know the dimensions).
     bool setupWriter(int width, int height);
+    bool failMovieDerivative(const char* reason);
+    void outputFrame(const RISE::IRasterImage& pImage,
+                     unsigned int frame,
+                     bool writePrimary,
+                     bool writeDerivative);
 };
 
 #endif

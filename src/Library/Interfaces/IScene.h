@@ -126,6 +126,12 @@ namespace RISE
 		/// Rasterizers MUST query the film here for grid dimensions
 		/// rather than reading them off the camera.
 		virtual const IFilm*				GetFilm( )		const = 0;
+
+		/// Fire renders hold all animation state at the coordinator-evaluated
+		/// nominal time. Per-sample consumers query this before mutating the
+		/// shared animator. Defaulted and appended for ABI stability.
+		virtual void SetFireTemporalHold( const bool hold ) { (void)hold; }
+		virtual bool FireTemporalHold() const { return false; }
 	};
 }
 
@@ -140,4 +146,3 @@ namespace RISE
 #include "IIrradianceCache.h"
 
 #endif
-

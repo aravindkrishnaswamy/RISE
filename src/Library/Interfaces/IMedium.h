@@ -181,7 +181,6 @@ namespace RISE
 				ds.pdf = sigma_t_max * exp( -sigma_t_max * ds.t );
 			else
 				ds.pdf = exp( -sigma_t_max * maxDist );
-			if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 			return ds;
 		}
 
@@ -201,7 +200,6 @@ namespace RISE
 				ds.pdf = coeff.sigma_t * exp( -coeff.sigma_t * ds.t );
 			else
 				ds.pdf = exp( -coeff.sigma_t * maxDist );
-			if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
 			return ds;
 		}
 
@@ -228,7 +226,7 @@ namespace RISE
 				pdf = sigma_t_max * exp( -sigma_t_max * t );
 			else
 				pdf = exp( -sigma_t_max * maxDist );
-			return fmax( pdf, 1e-30 );
+			return pdf;
 		}
 
 		/// Spectral variant of EvalDistancePdf
@@ -247,7 +245,7 @@ namespace RISE
 				pdf = coeff.sigma_t * exp( -coeff.sigma_t * t );
 			else
 				pdf = exp( -coeff.sigma_t * maxDist );
-			return fmax( pdf, 1e-30 );
+			return pdf;
 		}
 
 		/// Get the medium's world-space bounding box.
@@ -257,6 +255,152 @@ namespace RISE
 			Point3& bbMin,							///< [out] AABB minimum corner
 			Point3& bbMax							///< [out] AABB maximum corner
 			) const { return false; }
+
+		// Phase-A fire/smoke extension.  These default-safe virtuals are
+		// deliberately appended at the absolute vtable tail so existing medium
+		// implementations keep their historical slots.
+
+		/// True only for a fire/smoke medium requiring optical-record preflight.
+		virtual bool IsFireMedium() const { return false; }
+
+		/// Kirchhoff source epsilon_lambda = sigma_a(lambda) B_lambda(T), in
+		/// scene-length units.  Ordinary media have no thermal source.
+		virtual Scalar GetThermalEmissionNM(
+			const Point3& pt,
+			const Scalar nm
+			) const { return 0.0; }
+
+		/// Natural logarithm of the deterministic NM distance density.  Unlike
+		/// EvalDistancePdfNM this remains representable for optically thick
+		/// segments and is used by mixed distance proposals.
+		virtual Scalar EvalLogDistancePdfNM(
+			const Ray& ray,
+			const Scalar t,
+			const bool scattered,
+			const Scalar maxDist,
+			const Scalar nm
+			) const
+		{
+			const MediumCoefficientsNM coeff = GetCoefficientsNM(
+				Point3Ops::mkPoint3( ray.origin, ray.Dir() * t ), nm );
+			if( coeff.sigma_t <= 0.0 ) {
+				return scattered ? -RISE_INFINITY : 0.0;
+			}
+			return scattered
+				? log( coeff.sigma_t ) - coeff.sigma_t * t
+				: -coeff.sigma_t * maxDist;
+		}
+
+		/// Construct an immutable, wavelength-bound phase closure at a
+		/// spectral collision.  The returned object captures every local
+		/// constituent weight needed by Evaluate/Sample/Pdf/GetMeanCosine;
+		/// those methods deliberately take no wavelength argument.  The caller
+		/// owns the returned reference and must release it.  Ordinary media are
+		/// unsupported by default and continue to use GetPhaseFunction().
+		virtual const IPhaseFunction* MakePhaseClosure(
+			const Point3& pt,
+			const Scalar nm
+			) const { return 0; }
+
+		/// Raw scene-space thermal-emission importance W_m.  Zero means this
+		/// medium has no volume-NEE endpoint strategy.
+		virtual Scalar GetThermalEmissionImportance() const { return 0.0; }
+
+		/// Watt-dimensioned cross-medium/light importance proxy
+		/// A_m = 4*pi*s^2*W_m.
+		virtual Scalar GetThermalEmissionPowerProxy() const { return 0.0; }
+
+		/// Draw from this medium's wavelength-independent two-level thermal
+		/// emission distribution.  `pdf` is p_m(y), per scene-volume unit.
+		virtual bool SampleThermalEmission(
+			ISampler& sampler,
+			Point3& point,
+			Scalar& pdf
+			) const
+		{
+			pdf = 0.0;
+			return false;
+		}
+
+		/// Evaluate this medium's wavelength-independent endpoint density p_m(y).
+		virtual Scalar ThermalEmissionPdf( const Point3& point ) const
+		{
+			return 0.0;
+		}
+
+		/// Smallest positive p_m(y) over this medium's piecewise-constant
+		/// emission bins.  Used during cross-medium preparation to prove that
+		/// the labeled product q_m^V p_m remains representable.
+		virtual Scalar GetMinimumPositiveThermalEmissionPdf() const
+		{
+			return 0.0;
+		}
+
+		/// Phase-B pre-NEE continuation capability. The returned reference is
+		/// owned by the caller and must be retained unchanged through NEE and
+		/// the later continuation sample. Unsupported by default. These methods
+		/// remain at the absolute vtable tail for binary compatibility.
+		virtual const IPhaseFunction* MakeContinuationPhaseClosurePel(
+			const Point3& pt
+			) const { return 0; }
+
+		/// Wavelength-bound spectral continuation sibling.
+		virtual const IPhaseFunction* MakeContinuationPhaseClosureNM(
+			const Point3& pt,
+			const Scalar nm
+			) const { return 0; }
+
+		/// Estimate the absorption-independent chemiluminescence source over
+		/// one complete boundary-delimited medium segment.  Fire media own the
+		/// reaction-lattice proposal from §7.1 step 3; transport supplies an
+		/// independent sampler and accumulates the returned spectral-radiance
+		/// estimate at MIS weight one.  Ordinary media have no chem source.
+		///
+		/// This virtual remains at the absolute vtable tail.  The segment
+		/// endpoints are ray parameters and include the entire interval
+		/// regardless of any separately sampled collision.
+		virtual Scalar EstimateChemEmissionSegmentNM(
+			const Ray& ray,
+			const Scalar segmentStart,
+			const Scalar segmentEnd,
+			const Scalar nm,
+			ISampler& sampler
+			) const { return 0.0; }
+
+		// Phase-A step-7 Pel-preview factories and source.  These remain at
+		// the absolute vtable tail.  The closure is immutable and point-bound;
+		// its proposal density is exposed by IPhaseFunction::PdfProposal().
+		virtual const IPhaseFunction* MakePhaseClosurePel(
+			const Point3& pt
+			) const { return 0; }
+
+		virtual RISEPel GetThermalEmissionPel(
+			const Point3& pt
+			) const { return RISEPel( 0.0, 0.0, 0.0 ); }
+
+		/// Deterministic channel transmittance used by the Pel fire collision
+		/// estimator.  Ordinary media retain their historical evaluator; fire
+		/// overrides with its knot-aligned deterministic quadrature.
+		virtual RISEPel EvalDeterministicTransmittancePel(
+			const Ray& ray,
+			const Scalar dist
+			) const { return EvalTransmittance( ray, dist ); }
+
+		/// Versioned fire-optics identity and preflight result.  Ordinary media
+		/// have no optical record; fire implementations keep returned strings
+		/// alive for the lifetime of the medium.
+		virtual const char* GetFireOpticsRecordId() const { return 0; }
+		virtual bool FirePredictiveAllowed() const { return false; }
+		virtual const char* GetFireRenderFidelityStatus(
+			const bool /*predictiveRequested*/ ) const { return 0; }
+		virtual unsigned int GetFireRenderReasonCodeCount(
+			const bool /*predictiveRequested*/ ) const { return 0; }
+		virtual const char* GetFireRenderReasonCode(
+			const bool /*predictiveRequested*/,
+			const unsigned int /*index*/ ) const { return 0; }
+		virtual bool FireOpticsSupportsWavelengthRange(
+			const Scalar /*minimumNM*/,
+			const Scalar /*maximumNM*/ ) const { return false; }
 
 	};
 }

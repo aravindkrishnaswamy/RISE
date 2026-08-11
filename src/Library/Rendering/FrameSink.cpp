@@ -85,7 +85,7 @@ void FrameSink::SetCameraExposureCompensationEV( Scalar ev )
 	// FileRasterizerOutput::SetCameraExposureCompensationEV path
 	// where the per-frame EV from the camera is stacked with any
 	// scene-declared exposure_compensation at write time.
-	store_->MutableMeta().cameraExposureEV = static_cast<double>( ev );
+	store_->SetCameraExposureEV(static_cast<double>(ev));
 }
 
 // ─── CopyImageIntoStore ───────────────────────────────────────────

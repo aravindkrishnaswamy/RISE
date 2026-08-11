@@ -178,7 +178,7 @@ void PixelBasedSpectralIntegratingRasterizerRGB::IntegratePixel(
 			const Scalar weight = pPixelFilter->warpOnScreen( *m, ptOnScreen, x, height-y );
 			weights += fabs(weight);
 
-			if( temporal_samples ) {
+			if( temporal_samples && !pScene.FireTemporalHold() ) {
 				pScene.GetAnimator()->EvaluateAtTime( temporal_start + ((bTimeHalton?mh.next(0):random.CanonicalRandom())*temporal_exposure) );
 			}
 
@@ -202,6 +202,5 @@ void PixelBasedSpectralIntegratingRasterizerRGB::IntegratePixel(
 		}
 	}
 }
-
 
 

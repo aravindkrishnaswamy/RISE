@@ -71,6 +71,36 @@ void PathTracingShaderOp::SetClayOverride( bool b )
 	}
 }
 
+unsigned long long PathTracingShaderOp::SurfaceVolumeEndpointAttemptCount() const
+{
+	return pIntegrator ? pIntegrator->SurfaceVolumeEndpointAttemptCount() : 0;
+}
+
+unsigned long long PathTracingShaderOp::NonCompetingSurfaceGuideInitializationCount() const
+{
+	return pIntegrator ?
+		pIntegrator->NonCompetingSurfaceGuideInitializationCount() : 0;
+}
+
+unsigned long long PathTracingShaderOp::NonCompetingSurfaceRISCount() const
+{
+	return pIntegrator ? pIntegrator->NonCompetingSurfaceRISCount() : 0;
+}
+
+unsigned long long
+PathTracingShaderOp::NonCompetingSurfaceGuidedCandidateInstalledCount() const
+{
+	return pIntegrator ?
+		pIntegrator->NonCompetingSurfaceGuidedCandidateInstalledCount() : 0;
+}
+
+unsigned long long
+PathTracingShaderOp::NonCompetingSurfaceRISCandidateInstalledCount() const
+{
+	return pIntegrator ?
+		pIntegrator->NonCompetingSurfaceRISCandidateInstalledCount() : 0;
+}
+
 
 //////////////////////////////////////////////////////////////////////
 // PerformOperation — RGB path tracing via IntegrateFromHit
