@@ -868,6 +868,7 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 	double fullDeltaMin[3] = {1e30,1e30,1e30};
 	double fullDeltaMax[3] = {-1e30,-1e30,-1e30};
 	bool allValid = true;
+	bool allReferenceChannelsPositive = true;
 	for( size_t seedIndex=seedBegin; seedIndex<seedEnd; ++seedIndex ) {
 		const unsigned int seed = seeds[seedIndex];
 		const ImageStats pel = RenderFireReferencePreview(
@@ -901,6 +902,8 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 				(!fixture.valid || !magnitude.valid || !tilt.valid)) ) continue;
 		double divergence[3] = {0.0,0.0,0.0};
 		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			allReferenceChannelsPositive = allReferenceChannelsPositive &&
+				pel.mean[channel] > 0.0 && spectral.mean[channel] > 0.0;
 			const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
 			divergence[channel] = std::fabs(pel.mean[channel]-spectral.mean[channel])/scale;
 			maximumDivergence[channel] = std::max(
@@ -935,7 +938,9 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 	}
 	Check( allValid,
 		"Phase-A Pel and spectral reference scenes render for every selected seed" );
-	if( !allValid ) return;
+	Check( allReferenceChannelsPositive,
+		"Phase-A Pel and spectral reference scenes retain positive channel radiance" );
+	if( !allValid || !allReferenceChannelsPositive ) return;
 	if( extendedAblation ) {
 		const double seedCount = static_cast<double>(seedEnd-seedBegin);
 		std::cout << "  E_eff ablation mean image deltas vs fixture E=0.26:";
@@ -3272,7 +3277,7 @@ int main( const int argc, const char* const argv[] )
 	}
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
 	// pointing GlobalOptions at a temp file that drops the activation gate
-	// to 1 and sets a cheap probe (spp 4, half-res).  MUST be set before any
+	// to 1 and sets a cheap probe (spp 4, quarter-res).  MUST be set before any
 	// GlobalOptions() access (it is a lazy singleton read once) — i.e. before
 	// the first render.  Phase-1/2 scenes carry no `probe` line, so the
 	// lowered activation gate never reaches them (probe defaults off).
@@ -3435,7 +3440,7 @@ int main( const int argc, const char* const argv[] )
 	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
 	// The probe corrects the static tier on the cases it provably can't see.
 	// Each scene's rasterizer chunk is swapped for `auto_rasterizer{probe
-	// true}` at a shrunk film; the probe (spp 4, half-res) renders candidate
+	// true}` at a shrunk film; the probe (spp 4, quarter-res) renders candidate
 	// integrators in-process and routes per-scene.  Decisions verified by the
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
 	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
