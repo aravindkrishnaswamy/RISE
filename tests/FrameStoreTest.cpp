@@ -1055,32 +1055,51 @@ namespace
 		FrameStore* store = MakeStore(2,2,2);
 		const unsigned int iterations = 20000;
 		std::atomic<bool> start{false};
+		std::atomic<bool> writerDone{false};
 		std::atomic<bool> valid{true};
+		std::atomic<unsigned int> checkpoint{0u};
+		std::atomic<unsigned int> acknowledged{0u};
+		std::atomic<unsigned int> readsWhileWriterActive{0u};
 		std::thread writer([&]() {
 			while( !start.load(std::memory_order_acquire) ) {}
 			for( unsigned int frame=1; frame<=iterations; ++frame ) {
-				switch( frame%3u ) {
-				case 0: store->MarkFrameComplete(frame); break;
-				case 1: store->MarkPreDenoiseComplete(frame); break;
-				default: store->MarkDenoiseComplete(frame); break;
+				if( frame%2u ) {
+					store->MarkFrameComplete(frame);
+				} else {
+					store->MarkDenoiseComplete(frame);
+				}
+				if( frame%100u == 0u && frame != iterations ) {
+					checkpoint.store(frame,std::memory_order_release);
+					while( acknowledged.load(std::memory_order_acquire) < frame ) {}
 				}
 			}
+			writerDone.store(true,std::memory_order_release);
 		});
 		std::thread reader([&]() {
 			start.store(true,std::memory_order_release);
-			unsigned int previous = 0u;
-			for( unsigned int sample=0; sample<iterations; ++sample ) {
+			while( !writerDone.load(std::memory_order_acquire) ) {
 				const Metadata metadata = store->Meta();
-				if( metadata.frame < previous || metadata.frame > iterations ) {
+				const bool expectedDenoised = metadata.frame != 0u &&
+					metadata.frame%2u == 0u;
+				if( metadata.frame > iterations ||
+					metadata.denoisedContent != expectedDenoised ) {
 					valid.store(false);
 				}
-				previous = metadata.frame;
+				readsWhileWriterActive.fetch_add(1u,std::memory_order_relaxed);
+				const unsigned int requested =
+					checkpoint.load(std::memory_order_acquire);
+				if( requested && metadata.frame >= requested ) {
+					acknowledged.store(requested,std::memory_order_release);
+				}
 			}
 		});
 		writer.join();
 		reader.join();
-		Check(valid.load() && store->Meta().frame == iterations,
-			"Mark*Complete and Meta snapshots are synchronized under concurrency");
+		const Metadata finalMetadata = store->Meta();
+		Check(valid.load() &&
+			readsWhileWriterActive.load() >= (iterations/100u)-1u &&
+			finalMetadata.frame == iterations && finalMetadata.denoisedContent,
+			"Mark*Complete and Meta publish coherent frame/denoise pairs during proven overlap");
 		store->release();
 	}
 

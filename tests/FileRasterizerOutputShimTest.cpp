@@ -30,6 +30,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -40,6 +41,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -130,6 +132,68 @@ namespace
 
 	protected:
 		~PartialThrowingEXREncoder() override {}
+	};
+
+	class CoordinatedEXREncoder
+		: public virtual IFrameEncoder
+		, public virtual Reference
+	{
+	public:
+		CoordinatedEXREncoder( IFrameEncoder* delegate, bool blockFirstEncode )
+			: delegate_(delegate), blockFirstEncode_(blockFirstEncode)
+		{
+			if( delegate_ ) delegate_->addref();
+		}
+
+		std::string FormatName() const override { return delegate_->FormatName(); }
+		std::vector<std::string> Extensions() const override { return delegate_->Extensions(); }
+		bool SupportsHDR() const override { return delegate_->SupportsHDR(); }
+		bool SupportsAOVs() const override { return delegate_->SupportsAOVs(); }
+
+		void Encode( const FrameStore& store, IWriteBuffer& output,
+			const EncodeOpts& opts ) override
+		{
+			{
+				std::unique_lock<std::mutex> lock(mutex_);
+				if( !entered_ ) {
+					entered_ = true;
+					condition_.notify_all();
+					if( blockFirstEncode_ ) {
+						condition_.wait(lock,[this]() { return allowed_; });
+					}
+				}
+			}
+			delegate_->Encode(store,output,opts);
+		}
+
+		bool WaitUntilEntered( const std::chrono::milliseconds timeout )
+		{
+			std::unique_lock<std::mutex> lock(mutex_);
+			return condition_.wait_for(lock,timeout,[this]() { return entered_; });
+		}
+
+		void Allow()
+		{
+			{
+				std::lock_guard<std::mutex> lock(mutex_);
+				allowed_ = true;
+			}
+			condition_.notify_all();
+		}
+
+	protected:
+		~CoordinatedEXREncoder() override
+		{
+			if( delegate_ ) delegate_->release();
+		}
+
+	private:
+		IFrameEncoder* delegate_ = nullptr;
+		bool blockFirstEncode_ = false;
+		bool entered_ = false;
+		bool allowed_ = false;
+		std::mutex mutex_;
+		std::condition_variable condition_;
 	};
 
 	// Same pattern shape as FrameEncoderTest, copied here because
@@ -2104,26 +2168,78 @@ namespace
 			"[fire provenance] denoised EXR is a frame-indexed display derivative" );
 
 		const std::string concurrentFile = MakeTempPathWithoutExt()+"_concurrent.exr";
+		const std::string referenceAFile = MakeTempPathWithoutExt()+"_reference_a.exr";
+		const std::string referenceBFile = MakeTempPathWithoutExt()+"_reference_b.exr";
+		FrameStore* referenceAStore = MakeFireFidelityStore(0.0);
+		FrameStore* referenceBStore = MakeFireFidelityStore(1.0);
+		FrameStore* concurrentAStore = MakeFireFidelityStore(0.0);
+		FrameStore* concurrentBStore = MakeFireFidelityStore(1.0);
+		const auto differentiate = []( FrameStore* differentiated ) {
+			auto* beauty = differentiated->GetChannel<ChannelId::Beauty>();
+			differentiated->BeginTile(0,0);
+			beauty->At(0,0) = RISEPel(9.0,8.0,7.0);
+			differentiated->EndTile(0,0);
+		};
+		differentiate(referenceBStore);
+		differentiate(concurrentBStore);
+		std::string referenceErrorA;
+		std::string referenceErrorB;
+		const bool referenceA = EncodeFrameStoreFileTransaction(
+			*referenceAStore,*exr,opts,referenceAFile,referenceErrorA);
+		const bool referenceB = EncodeFrameStoreFileTransaction(
+			*referenceBStore,*exr,opts,referenceBFile,referenceErrorB);
+		std::vector<unsigned char> referenceABytes, referenceASidecar;
+		std::vector<unsigned char> referenceBBytes, referenceBSidecar;
+		const bool referencesRead = referenceA && referenceB &&
+			ReadFileAllBytes(referenceAFile,referenceABytes) &&
+			ReadFileAllBytes(referenceAFile+".provenance.cbor",referenceASidecar) &&
+			ReadFileAllBytes(referenceBFile,referenceBBytes) &&
+			ReadFileAllBytes(referenceBFile+".provenance.cbor",referenceBSidecar);
+		CoordinatedEXREncoder* encoderA = new CoordinatedEXREncoder(exr,true);
+		CoordinatedEXREncoder* encoderB = new CoordinatedEXREncoder(exr,false);
 		bool concurrentA = false;
 		bool concurrentB = false;
 		std::string concurrentErrorA;
 		std::string concurrentErrorB;
 		std::thread writerA([&]() {
-			concurrentA = EncodeFrameStoreFileTransaction(*store,*exr,opts,
+			concurrentA = EncodeFrameStoreFileTransaction(*concurrentAStore,*encoderA,opts,
 				concurrentFile,concurrentErrorA);
 		});
+		const bool writerAEntered =
+			encoderA->WaitUntilEntered(std::chrono::milliseconds(2000));
 		std::thread writerB([&]() {
-			concurrentB = EncodeFrameStoreFileTransaction(*store,*exr,opts,
+			concurrentB = EncodeFrameStoreFileTransaction(*concurrentBStore,*encoderB,opts,
 				concurrentFile,concurrentErrorB);
 		});
+		const bool writerBEnteredBeforeRelease =
+			encoderB->WaitUntilEntered(std::chrono::milliseconds(100));
+		encoderA->Allow();
 		writerA.join();
 		writerB.join();
+		const bool writerBEntered =
+			encoderB->WaitUntilEntered(std::chrono::milliseconds(100));
 		std::vector<unsigned char> concurrentBytes, concurrentSidecar;
-		Check( concurrentA && concurrentB &&
+		const bool concurrentRead =
 			ReadFileAllBytes(concurrentFile,concurrentBytes) &&
-			ReadFileAllBytes(concurrentFile+".provenance.cbor",concurrentSidecar) &&
+			ReadFileAllBytes(concurrentFile+".provenance.cbor",concurrentSidecar);
+		const bool whollyA = concurrentRead && referencesRead &&
+			concurrentBytes == referenceABytes && concurrentSidecar == referenceASidecar;
+		const bool whollyB = concurrentRead && referencesRead &&
+			concurrentBytes == referenceBBytes && concurrentSidecar == referenceBSidecar;
+		Check( writerAEntered && !writerBEnteredBeforeRelease && writerBEntered &&
+			concurrentA && concurrentB && whollyA != whollyB &&
 			VerifyFireProvenanceEXR(concurrentBytes,concurrentSidecar,transactionError),
-			"[fire provenance] concurrent same-destination transactions publish one matched pair" );
+			"[fire provenance] forced-overlap same-destination writes publish one distinguishable matched pair" );
+		safe_release(encoderA);
+		safe_release(encoderB);
+		safe_release(referenceAStore);
+		safe_release(referenceBStore);
+		safe_release(concurrentAStore);
+		safe_release(concurrentBStore);
+		std::remove(referenceAFile.c_str());
+		std::remove((referenceAFile+".provenance.cbor").c_str());
+		std::remove(referenceBFile.c_str());
+		std::remove((referenceBFile+".provenance.cbor").c_str());
 
 		const std::string pngBase = MakeTempPathWithoutExt()+"_fire_derivative";
 		const std::string pngFile = pngBase+".png";

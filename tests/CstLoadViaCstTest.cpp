@@ -215,9 +215,15 @@ int main()
 	{
 		const std::string pOk  = TempPath("auto_native.RISEscene");
 		const std::string pBad = TempPath("auto_nonnative.RISEscene");
+		const bool wroteOk = WriteTmp( pOk,
+			"RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg\nradius 1\n}\n" );
+		const bool wroteBad = WriteTmp( pBad,
+			"RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" );
+		Check( wroteOk, "Auto CST-only: native-v7 temp scene was written" );
+		Check( wroteBad, "Auto CST-only: non-native temp scene was written" );
 
 		// Native-v7 -> Auto succeeds + retains the CST Document.
-		if( WriteTmp( pOk, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg\nradius 1\n}\n" ) ) {
+		if( wroteOk ) {
 			Job* j = new Job();
 			const bool okAuto = j->LoadAsciiSceneAuto( pOk.c_str() );
 			Check( okAuto, "Auto CST-only: native-v7 scene loads via Auto (returns true)" );
@@ -227,7 +233,7 @@ int main()
 		}
 
 		// Non-native (un-migrated FOR/ENDFOR) -> Auto HARD-FAILS, retains NO Document, does NOT legacy-fall-back.
-		if( WriteTmp( pBad, "RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" ) ) {
+		if( wroteBad ) {
 			Job* j = new Job();
 			const bool okAutoBad = j->LoadAsciiSceneAuto( pBad.c_str() );
 			Check( !okAutoBad, "Auto CST-only: non-native scene HARD-FAILS via Auto (returns false, no legacy fallback)" );
@@ -243,16 +249,22 @@ int main()
 	{
 		const std::string pa = TempPath("reload_a.RISEscene");
 		const std::string pb = TempPath("reload_b.RISEscene");
-		if( WriteTmp( pa, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sa\nradius 1\n}\n" ) &&
-		    WriteTmp( pb, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sb\nradius 2\n}\n" ) ) {
+		const bool wroteA = WriteTmp( pa,
+			"RISE ASCII SCENE 6\nsphere_geometry\n{\nname sa\nradius 1\n}\n" );
+		const bool wroteB = WriteTmp( pb,
+			"RISE ASCII SCENE 6\nsphere_geometry\n{\nname sb\nradius 2\n}\n" );
+		Check( wroteA, "reload: first temp scene was written" );
+		Check( wroteB, "reload: second temp scene was written" );
+		if( wroteA && wroteB ) {
 			Job* j = new Job();
 			const bool ok1 = j->LoadAsciiSceneViaCst( pa.c_str() );
 			const bool ok2 = j->LoadAsciiSceneViaCst( pb.c_str() );   // distinct valid scene -> only load-once can refuse it
 			Check( ok1, "reload: first load succeeds" );
 			Check( !ok2, "reload: second load REFUSED by load-once (not masked by a dup-name error)" );
 			j->release();
-			std::filesystem::remove( pa ); std::filesystem::remove( pb );
 		}
+		std::filesystem::remove( pa );
+		std::filesystem::remove( pb );
 	}
 
 	std::printf( "%d passed, %d failed.\n", s_pass, s_fail );
