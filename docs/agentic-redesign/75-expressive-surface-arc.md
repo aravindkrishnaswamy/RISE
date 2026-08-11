@@ -549,8 +549,13 @@ geometry-revisions-after-a-look off its thrice-measured zero.
 whole-scene target — approved in principle, capability-gated,
 deferred); the scene-level region layout CUT with it (took the
 E4-lite presence-check windfall along; returns as its own lever if
-built-but-invisible persists); the MCP plain-render image-block gap
-(spun off); multi-object isolate.
+built-but-invisible persists); multi-object isolate.  The MCP
+plain-render image-block gap was spun off here and is now **CLOSED
+(2026-08-11)**: the adapter's tools/call handler routes through the
+shared `ChatToolResultCarriesImage` predicate instead of a private
+verb list, so a plain `render{imageMaxEdge}` reaches MCP clients as a
+real image content block.  SourceHygieneTest's MCP image-branch
+parity pin stops that private list from re-growing.
 
 **POST-ARC R2 (2026-08-10, `4b9da97c`): the shapes-vs-textures
 asymmetry, and one-call form revision.**  User observation on the

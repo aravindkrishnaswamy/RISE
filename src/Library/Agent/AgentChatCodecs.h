@@ -719,9 +719,12 @@ namespace RISE
 		//! read_viewport, file_part_plan's G3a sketch composite, or a render
 		//! called with imageMaxEdge) with a non-empty png_base64.
 		//! Shared by the loop (to decide when the
-		//! image-elision pass must run) and the codecs (which use the same
-		//! predicate to build the image block/part), so the two can never
-		//! disagree about what counts as an image-bearing result.
+		//! image-elision pass must run), the codecs (which use the same
+		//! predicate to build the image block/part), and -- as of
+		//! 2026-08-11 -- the MCP adapter's tools/call handler (which used
+		//! to keep its own hardcoded verb list and had drifted from this
+		//! one), so the three transports can never disagree about what
+		//! counts as an image-bearing result.
 		bool ChatToolResultCarriesImage( const ChatToolCall& call,
 		                                 const std::string& rawJsonRpcResponseLine );
 

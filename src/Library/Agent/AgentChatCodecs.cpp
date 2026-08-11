@@ -1298,7 +1298,7 @@ namespace RISE
 			//! rendered frame) and read_viewport all reuse read_image's
 			//! "png_base64" field name deliberately, so this ONE predicate --
 			//! and every retention/elision policy built on it -- covers all
-			//! four without a second code path.  The field test is what makes
+			//! five without a second code path.  The field test is what makes
 			//! listing render here safe: a render without imageMaxEdge has no
 			//! png_base64 and is not an image result; likewise a read_viewport
 			//! that came back available:false carries an empty png_base64 and
@@ -1321,6 +1321,13 @@ namespace RISE
 			//! a transport fact, "observed the scene" is a behavioural one, and
 			//! a sketch is the model's own drawing, not an observation.  See
 			//! AgentChatLoop.cpp's IsVisualObserveToolName.
+			//!
+			//! 2026-08-11: AgentMcpAdapter.cpp's tools/call handler now routes
+			//! through the public wrapper (ChatToolResultCarriesImage) too,
+			//! rather than keeping its own hardcoded verb list -- which it had
+			//! been doing, and which HAD drifted (it omitted a plain render).
+			//! This function is now the single source of truth for "does this
+			//! result carry an image" across all three transports.
 			bool IsImageResult( const ChatToolCall& call, const JsonValue& result, std::string& outB64 )
 			{
 				if( ( call.name != "read_image" && call.name != "compare_to_reference"

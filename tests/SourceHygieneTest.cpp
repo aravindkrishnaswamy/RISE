@@ -1342,6 +1342,49 @@ int main()
 			}
 		}
 
+		// ---- MCP tools/call image branch: no re-grown private verb list ---
+		// AgentMcpAdapter.cpp's tools/call handler used to keep its OWN
+		// hardcoded list of image-capable verbs, separate from
+		// AgentChatCodecs.cpp's IsImageResult -- and it drifted: it omitted
+		// a plain `render{imageMaxEdge}`, so that PNG reached MCP clients
+		// only as base64 text buried inside the serialized JSON, not as a
+		// real image content block, until the 2026-08-11 unification onto
+		// the shared ChatToolResultCarriesImage predicate.  Pin BOTH halves
+		// so the private list cannot silently re-grow: the adapter must
+		// still route through the shared predicate, and it must not carry
+		// a hand-rolled verb check that could drift from it again.
+		{
+			const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
+			const std::string mcpSrc = slurp( agentDir / "AgentMcpAdapter.cpp" );
+			// Match the CALL, not the bare name: the name also appears in
+			// this file's own comments and in the adapter's, so a find() on
+			// the name alone would report a false PASS for a revision that
+			// reverted the routing but kept a comment mentioning it.
+			Check( mcpSrc.find( "ChatToolResultCarriesImage( " ) != std::string::npos,
+			       "MCP image-branch parity: AgentMcpAdapter.cpp's tools/call handler still CALLS "
+			       "the shared ChatToolResultCarriesImage predicate (not merely names it in a comment)" );
+			// The adapter is a pass-through: it translates envelopes and does
+			// not branch on WHICH verb it is forwarding.  So no comparison of
+			// toolName against any image-capable verb name has a legitimate
+			// reason to exist here, in any lexical form -- and each one is a
+			// private list starting to re-grow.  `render` is deliberately NOT
+			// banned: unlike the other four it has non-image reasons to be
+			// named (the async detour), so banning it would fire on unrelated
+			// work.  A re-grown list must still name at least one of these
+			// four to be a list at all.
+			static const char* const kImageVerbLiterals[] = {
+				"read_image", "read_viewport", "compare_to_reference", "file_part_plan" };
+			for( std::size_t v = 0; v < sizeof( kImageVerbLiterals ) / sizeof( kImageVerbLiterals[0] ); ++v ) {
+				const std::string verb = kImageVerbLiterals[v];
+				Check( mcpSrc.find( "toolName == \"" + verb + "\"" ) == std::string::npos &&
+				       mcpSrc.find( "toolName != \"" + verb + "\"" ) == std::string::npos,
+				       "MCP image-branch parity: AgentMcpAdapter.cpp has not re-grown a hardcoded "
+				       "`toolName == \"" + verb + "\"` verb check -- that private list is exactly "
+				       "what drifted (it omitted plain render) between G3a and the 2026-08-11 "
+				       "unification onto the shared predicate" );
+			}
+		}
+
 		// ---- render{imageMaxEdge} through the drivers' async detour -------
 		// WHY THIS IS GUARDED IN SOURCE.  `render{imageMaxEdge:N}` returns the
 		// PNG inline so an ordinary look costs ONE turn.  The RPC refuses that

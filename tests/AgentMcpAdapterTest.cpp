@@ -10,8 +10,10 @@
 //    * tools/list -> every dispatcher verb present (the count tracks the
 //      verb surface; see kExpectedNames below); spot-check 4 schemas' required
 //      fields + a description contains a known AgentRpc.h gotcha string.
-//    * tools/call happy path: read_document, render (sync), read_image
-//      (an MCP image content block with valid base64 PNG).
+//    * tools/call happy path: read_document, render (sync), read_image,
+//      and a plain render{imageMaxEdge} (each an MCP image content block
+//      with valid base64 PNG, since the 2026-08-11 unification onto the
+//      shared ChatToolResultCarriesImage predicate).
 //    * tools/call tool-execution error: propose_patch on a nonexistent
 //      entity -> isError:true, NOT a protocol error -- RED-PROVED against
 //      a naive "always protocol error" implementation.
@@ -502,6 +504,20 @@ int main()
 		       "tools/call(read_document) text content carries the expected 'sphere_geometry' chunk keyword" );
 		Check( content.at( 0 ).get( "type" ).asString() == "text",
 		       "tools/call(read_document) content block type == \"text\"" );
+		// The BEHAVIOURAL half of the 2026-08-11 unification pin (the other
+		// half is SourceHygieneTest's source-text parity check): a verb that
+		// carries no pixels must emit NO image content block, whatever the
+		// image branch is implemented with.  Scanning the WHOLE array, not
+		// just block 0, is the point -- a predicate that wrongly admitted
+		// read_document would append the image AHEAD of this text block and
+		// the type check above would go red for the wrong reason, or behind
+		// it and go unnoticed entirely.
+		bool foundImage = false;
+		for( std::size_t i = 0; i < content.size(); ++i )
+			if( content.at( i ).get( "type" ).asString() == "image" ) foundImage = true;
+		Check( !foundImage,
+		       "tools/call(read_document) emits NO image content block -- a non-image verb never "
+		       "acquires one, however the shared image predicate is rewritten" );
 	}
 
 	//----------------------------------------------------------------------
@@ -605,11 +621,10 @@ int main()
 	// text block is not something a client is required to recognize as a
 	// picture.  Relies on the file_part_plan call above having filed "wing".
 	//
-	// The SCOPE half matters as much as the presence half: a plain `render`
-	// (no target) must STILL get no image block -- that pre-existing gap is
-	// its own spun-off follow-up, and widening it here would change the
-	// response shape of the most-called verb on this transport as a side
-	// effect of shipping the comparison.  Both halves are asserted.
+	// The presence half is asserted here; the SCOPE half -- what a plain
+	// `render` (no target) does and does not return -- is asserted just below
+	// this block, now that the 2026-08-11 follow-up has landed and the scope
+	// has flipped from "still excluded" to "now covered".
 	//----------------------------------------------------------------------
 	std::printf( "[tools/call] G3b render{isolate,target} -> MCP image content block (the comparison composite)\n" );
 	{
@@ -639,21 +654,75 @@ int main()
 		       "{type:\"image\"} block -- the composite is the point of the call, so it cannot "
 		       "arrive as text only" );
 	}
-	std::printf( "[tools/call] G3b a PLAIN render still returns text only (the spun-off gap stays open)\n" );
+	//----------------------------------------------------------------------
+	// 2026-08-11: the tools/call image branch now routes through the SAME
+	// ChatToolResultCarriesImage predicate the chat transports use (see
+	// AgentMcpAdapter.cpp), rather than a private hardcoded verb list --
+	// closing the gap where a plain render{imageMaxEdge} reached MCP
+	// clients only as base64 text buried inside the serialized JSON.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] plain render{imageMaxEdge} -> MCP image content block (the 2026-08-11 gap closure)\n" );
 	{
 		JsonValue args = JsonValue::MakeObject();
 		args.set( "imageMaxEdge", JsonValue::MakeNumber( 32 ) );
 		const std::string resp = mcp.HandleLine( ReqToolCall( 25, "render", args ) );
 		JsonValue env = ParseResponse( resp, 25 );
-		const JsonValue& content = env.get( "result" ).get( "content" );
+		Check( !env.has( "error" ), "tools/call(render{imageMaxEdge}) is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ), "tools/call(render{imageMaxEdge}) isError == false" );
+		const JsonValue& content = result.get( "content" );
+		bool foundImage = false, foundStats = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			const std::string type = block.get( "type" ).asString();
+			if( type == "image" ) {
+				foundImage = true;
+				std::vector<unsigned char> png;
+				Check( Base64Decode( block.get( "data" ).asString(), png ) && png.size() >= 8 &&
+				       png[0] == 0x89 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G' &&
+				       png[4] == 0x0D && png[5] == 0x0A && png[6] == 0x1A && png[7] == 0x0A,
+				       "plain render{imageMaxEdge}: image content block decodes to the \\x89PNG signature" );
+			} else if( type == "text" ) {
+				const std::string text = block.get( "text" ).asString();
+				if( text.find( "byteLength" ) != std::string::npos ||
+				    text.find( "imageWidth" ) != std::string::npos )
+					foundStats = true;
+			}
+		}
+		Check( foundImage,
+		       "MONEY ASSERTION: tools/call(render{imageMaxEdge}) content includes a {type:\"image\"} "
+		       "block -- the pre-existing render/MCP gap is closed, and this is the most-called verb "
+		       "on the transport so it matters most" );
+		Check( foundStats,
+		       "tools/call(render{imageMaxEdge}) still carries a {type:\"text\"} block with the "
+		       "render statistics (byteLength/imageWidth/...) alongside the image block" );
+	}
+	std::printf( "[tools/call] a render WITHOUT imageMaxEdge still returns no image content block\n" );
+	{
+		// Pins that the unification did not WIDEN the statistics-only
+		// render's response shape -- no imageMaxEdge means no png_base64 in
+		// the inner result, so the shared predicate is false and this stays
+		// a text-only reply, exactly as before 2026-08-11.
+		const std::string resp = mcp.HandleLine( ReqToolCall( 28, "render", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 28 );
+		// Assert the SUCCESS first.  Without this the check below passes
+		// vacuously on a render that failed outright: JsonValue::get on a
+		// missing key returns a null value, `content` would be empty, the
+		// loop would not execute, and "no image block" would read GREEN over
+		// a broken verb.
+		Check( !env.has( "error" ), "tools/call(render) with no imageMaxEdge is a JSON-RPC success" );
+		const JsonValue& result = env.get( "result" );
+		Check( !result.get( "isError" ).asBool( true ),
+		       "tools/call(render) with no imageMaxEdge isError == false" );
+		const JsonValue& content = result.get( "content" );
+		Check( content.isArray() && content.size() >= 1,
+		       "tools/call(render) with no imageMaxEdge still returns a non-empty content array" );
 		bool foundImage = false;
 		for( std::size_t i = 0; i < content.size(); ++i )
 			if( content.at( i ).get( "type" ).asString() == "image" ) foundImage = true;
 		Check( !foundImage,
-		       "G3b SCOPE ASSERTION: a render WITHOUT `target` still returns no image content block "
-		       "even with imageMaxEdge -- the pre-existing render/MCP gap is a separate follow-up and "
-		       "was deliberately NOT widened here.  Goes RED (and should be deleted) the day that "
-		       "follow-up lands." );
+		       "tools/call(render) with no imageMaxEdge still returns no image content block -- "
+		       "the statistics-only response shape is unchanged" );
 	}
 
 	//----------------------------------------------------------------------

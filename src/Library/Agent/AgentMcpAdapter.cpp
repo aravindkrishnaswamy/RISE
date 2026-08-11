@@ -7,6 +7,7 @@
 #include "pch.h"
 #include "AgentMcpAdapter.h"
 
+#include "AgentChatCodecs.h"
 #include "AgentRpc.h"
 #include "AgentSession.h"
 #include "Json.h"
@@ -974,10 +975,11 @@ namespace RISE
 						"(never the scene's full authored resolution/sample count); an explicit value "
 						"above the cap is silently clamped, never rejected. This is a fixed property "
 						"of the agent surface -- the user's own full-frame, full-sample renders happen "
-						"from the GUI, a separate path this cap does not touch. Returns NO image bytes by "
-						"default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back inline "
-						"in this same result, which is the one-call form to prefer for an ordinary "
-						"look. A separate read_image is still the way to re-read a render you already "
+						"from the GUI, a separate path this cap does not touch. Returns NO image content "
+						"block by default; pass `imageMaxEdge` (e.g. 192) to get the rendered PNG back "
+						"as a real MCP image content block in this same result, which is the one-call "
+						"form to prefer for an ordinary look. A separate read_image is still the way to "
+						"re-read a render you already "
 						"have at a different bound, to read an objectmap at native size, and to fetch "
 						"representation:\"perception\". "
 						"`integrator` is the active rasterizer's scene-file chunk keyword (e.g. "
@@ -1531,66 +1533,54 @@ namespace RISE
 
 					const JsonValue& innerResult = innerEnv.get( "result" );
 
-					// read_image / read_viewport get special treatment:
-					// surface the PNG as a real MCP image content block (so a
-					// vision-capable client sees the frame inline) ALONGSIDE a
-					// text block with the metadata fields -- a real win over a
-					// bare base64 string the client would otherwise have to
-					// know to decode and reinterpret itself.  read_viewport's
-					// result carries the SAME png_base64 field when
-					// available:true; when available:false the field is "" and
-					// the image block is simply skipped (the text block still
-					// carries {available,reason,...} so the client learns why).
-					// compare_to_reference joins this set too: when visual
-					// (the default) was requested, its result carries the
-					// SAME "png_base64" field name read_image does (the
-					// composite [render|reference|heatmap] diff PNG) --
-					// deliberately, so this one image-surfacing branch
-					// covers it without a separate case. When visual:false
-					// was requested there is no png_base64 field at all, so
-					// the `!b64.empty()` guard below simply skips the image
-					// block and only the text block (rmse/grid/summary/...)
-					// is returned -- no special-casing needed here.
-					// G3a (2026-08-10): file_part_plan joins the set for the
-					// same reason -- its result carries the COMPOSITE SKETCH
-					// PNG under that same field name, and the whole point of
-					// the echo is that the model SEES what it sketched, which
-					// on this transport means a real image content block.  A
-					// filing whose encode produced nothing still returns its
-					// text block, via the same `!b64.empty()` guard.
+					// Whether this result carries an image is DELEGATED to
+					// ChatToolResultCarriesImage (AgentChatCodecs.h) -- the
+					// ONE predicate every transport shares, so the verb set
+					// (read_image, read_viewport, compare_to_reference,
+					// file_part_plan, render) and the "png_base64 must be
+					// non-empty" field test live in exactly one place and
+					// cannot drift back into a private list here.  Before
+					// this unification the adapter kept its own hardcoded
+					// verb list, and it HAD drifted: it omitted a plain
+					// `render{imageMaxEdge}` (see the 2026-08-11 note below).
 					//
-					// G3b (2026-08-10): a `render` that carries a TARGET
-					// COMPARISON joins the set too -- and ONLY that render.
-					// The comparison's whole mechanism is that the
-					// [sketch | silhouette | overlay] composite puts the filed
-					// sketch back in front of the model at the moment of
-					// consultation (design doc
-					// docs/agentic-redesign/77-imagination-target-design.md
-					// sec 4.3), which on this transport means a real image
-					// content block, not a base64 string a client has to know
-					// to decode.  The presence of the `target` object is the
-					// discriminator -- it is set only when the comparison
-					// actually produced a measurement.
+					// A vision-capable MCP client seeing a real image content
+					// block, instead of a base64 string it would have to know
+					// to find inside the serialized JSON and decode itself,
+					// is the whole reason this branch exists.  read_viewport's
+					// available:false and compare_to_reference's visual:false
+					// results simply have no (or an empty) png_base64 field,
+					// so the predicate's field test naturally excludes them --
+					// no special-casing needed.  G3a's file_part_plan result
+					// carries the composite SKETCH PNG under the same field
+					// name (the point of the echo is that the model SEES what
+					// it sketched); G3b's render{target} result carries the
+					// [sketch | silhouette | overlay] comparison composite the
+					// same way.
 					//
-					// SCOPE, deliberately narrow: a plain `render` with
-					// `imageMaxEdge` STILL returns its PNG as base64 text
-					// only.  That gap is pre-existing, was spun off as its own
-					// follow-up during the G3a review, and is NOT closed here
-					// -- widening this branch to every render would change the
-					// response shape of the most-called verb on this
-					// transport, which is a separate decision from shipping
-					// the comparison.
-					const bool renderCarriesTargetComposite =
-						( toolName == "render" && innerResult.isObject() && innerResult.has( "target" ) );
-					if( toolName == "read_image" || toolName == "read_viewport" ||
-					    toolName == "compare_to_reference" || toolName == "file_part_plan" ||
-					    renderCarriesTargetComposite )
+					// 2026-08-11: the follow-up spun off during the G3a review
+					// landed -- a plain `render{imageMaxEdge}` PNG now rides
+					// back as a real image content block too, closing the gap
+					// where it reached MCP clients only as base64 text buried
+					// inside the serialized JSON.
+					//
+					// `probe.name` is the only field ChatToolResultCarriesImage
+					// reads off the call; the id/argsJson/idSynthesized fields
+					// are chat-transport bookkeeping this adapter has no
+					// analogue for, so they stay default.  `internalResp` is
+					// the SAME raw JSON-RPC response line already parsed into
+					// innerEnv above -- the predicate re-parses it, which is
+					// fine here (this is not a hot loop).
+					ChatToolCall probe;
+					probe.name = toolName;
+					if( ChatToolResultCarriesImage( probe, internalResp ) )
 					{
 						JsonValue content = JsonValue::MakeArray();
-						const std::string b64 = innerResult.get( "png_base64" ).asString();
-						if( !b64.empty() ) {
-							content.push_back( ImageBlock( b64, "image/png" ) );
-						}
+						// The predicate already proved png_base64 is
+						// non-empty, so no `!b64.empty()` guard is needed
+						// here (unlike the old hand-rolled condition).
+						content.push_back( ImageBlock(
+							innerResult.get( "png_base64" ).asString(), "image/png" ) );
 						// Metadata as text (byteLength/width/height), and the
 						// base64 too (for a client that wants the raw field
 						// rather than to decode the image block).
@@ -1598,8 +1588,14 @@ namespace RISE
 						return MakeSuccess( idValue, MakeCallToolResult( content, /*isError=*/false ) );
 					}
 
-					// Every other verb: the result JSON, serialized, as a
-					// single text block.
+					// Every other verb -- and every image-capable verb's
+					// non-image result (a false from the predicate above) --
+					// takes this same path: the result JSON, serialized, as a
+					// single text block.  That's what makes the unification
+					// behavior-preserving for a non-image result: this branch
+					// and the one above build the IDENTICAL single TextBlock,
+					// so a call the predicate excludes (or never covered) is
+					// byte-for-byte what it always returned.
 					JsonValue content = JsonValue::MakeArray();
 					content.push_back( TextBlock( JsonSerialize( innerResult ) ) );
 					return MakeSuccess( idValue, MakeCallToolResult( content, /*isError=*/false ) );
