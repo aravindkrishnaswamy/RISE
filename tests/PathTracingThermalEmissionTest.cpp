@@ -7562,10 +7562,14 @@ namespace
 			unsigned int rejectedSamples = 0;
 			unsigned int survivedSamples = 0;
 			unsigned int rrSeed = 1;
+			unsigned int rrAttempts = 0;
+			const unsigned int rrMaxAttempts = rrBranchSamples*10;
 			long double rejectedSum = 0.0;
 			long double survivedSum = 0.0;
-			while( rejectedSamples<rrBranchSamples ||
-				survivedSamples<rrBranchSamples ) {
+			while( (rejectedSamples<rrBranchSamples ||
+				survivedSamples<rrBranchSamples) &&
+				rrAttempts<rrMaxAttempts ) {
+				++rrAttempts;
 				RandomNumberGenerator probe(rrSeed);
 				const bool rejected = probe.CanonicalRandom()>=0.5;
 				if( (rejected && rejectedSamples>=rrBranchSamples) ||
@@ -7589,12 +7593,15 @@ namespace
 					++survivedSamples;
 				}
 			}
-			const Scalar rejectedMean = static_cast<Scalar>(
-				rejectedSum/static_cast<long double>(rejectedSamples));
-			const Scalar survivedMean = static_cast<Scalar>(
-				survivedSum/static_cast<long double>(survivedSamples));
-			Check( rejectedSamples==rrBranchSamples &&
-				survivedSamples==rrBranchSamples &&
+			const bool rrBranchesFilled = rejectedSamples==rrBranchSamples &&
+				survivedSamples==rrBranchSamples;
+			Check( rrBranchesFilled,
+				"pinned roulette RNG fills both NM branch partitions within the attempt cap" );
+			const Scalar rejectedMean = rrBranchesFilled ? static_cast<Scalar>(
+				rejectedSum/static_cast<long double>(rejectedSamples)) : 0.0;
+			const Scalar survivedMean = rrBranchesFilled ? static_cast<Scalar>(
+				survivedSum/static_cast<long double>(survivedSamples)) : 0.0;
+			Check( rrBranchesFilled &&
 				NearRelative(rejectedMean,expected,0.02) &&
 				NearRelative(survivedMean,expected,0.02),
 				"representable p=0.5 roulette rejection and survival both leave same-segment chem source unweighted across a null boundary" );
@@ -7652,10 +7659,14 @@ namespace
 			unsigned int rejectedHWSSSamples = 0;
 			unsigned int survivedHWSSSamples = 0;
 			unsigned int rrHWSSSeed = 1;
+			unsigned int rrHWSSAttempts = 0;
+			const unsigned int rrHWSSMaxAttempts = rrHWSSBranchSamples*10;
 			long double rejectedHWSSSum = 0.0;
 			long double survivedHWSSSum = 0.0;
-			while( rejectedHWSSSamples<rrHWSSBranchSamples ||
-				survivedHWSSSamples<rrHWSSBranchSamples ) {
+			while( (rejectedHWSSSamples<rrHWSSBranchSamples ||
+				survivedHWSSSamples<rrHWSSBranchSamples) &&
+				rrHWSSAttempts<rrHWSSMaxAttempts ) {
+				++rrHWSSAttempts;
 				RandomNumberGenerator probe(rrHWSSSeed);
 				const bool rejected = probe.CanonicalRandom()>=0.5;
 				if( (rejected && rejectedHWSSSamples>=rrHWSSBranchSamples) ||
@@ -7681,13 +7692,19 @@ namespace
 					++survivedHWSSSamples;
 				}
 			}
-			const Scalar rejectedHWSSMean = static_cast<Scalar>(
-				rejectedHWSSSum/
-					static_cast<long double>(rejectedHWSSSamples));
-			const Scalar survivedHWSSMean = static_cast<Scalar>(
-				survivedHWSSSum/
-					static_cast<long double>(survivedHWSSSamples));
-			Check( NearRelative(rejectedHWSSMean,expected,0.035) &&
+			const bool rrHWSSBranchesFilled =
+				rejectedHWSSSamples==rrHWSSBranchSamples &&
+				survivedHWSSSamples==rrHWSSBranchSamples;
+			Check( rrHWSSBranchesFilled,
+				"pinned roulette RNG fills both HWSS branch partitions within the attempt cap" );
+			const Scalar rejectedHWSSMean = rrHWSSBranchesFilled ?
+				static_cast<Scalar>(rejectedHWSSSum/
+					static_cast<long double>(rejectedHWSSSamples)) : 0.0;
+			const Scalar survivedHWSSMean = rrHWSSBranchesFilled ?
+				static_cast<Scalar>(survivedHWSSSum/
+					static_cast<long double>(survivedHWSSSamples)) : 0.0;
+			Check( rrHWSSBranchesFilled &&
+				NearRelative(rejectedHWSSMean,expected,0.035) &&
 				NearRelative(survivedHWSSMean,expected,0.035),
 				"RayCaster fire HWSS roulette rejection and survival leave same-segment chem unweighted across an exact null boundary" );
 
