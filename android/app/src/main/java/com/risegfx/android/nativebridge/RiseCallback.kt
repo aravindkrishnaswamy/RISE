@@ -4,7 +4,13 @@ package com.risegfx.android.nativebridge
  * Callback interface invoked from native code. All methods may arrive on
  * arbitrary library worker threads — implementations MUST be thread-safe
  * and must not do expensive work inline (the library's progress mutex is
- * held while these fire).
+ * held while these fire). Callback delivery does not hold the bridge's
+ * callback-reference mutex, so [RiseNative.nativeOwnsCallback] and
+ * [RiseNative.nativeCancel] may be called inline. Callbacks MUST NOT call
+ * scene-lifecycle or viewport APIs (`nativeSetCallback`, `nativeClearCallback`,
+ * `nativeLoadScene`, `nativeRasterize`, or any `nativeViewport*` method): a
+ * load/render may already own the process-wide scene lifecycle on the current
+ * thread, and re-entering it would be both recursive and semantically invalid.
  *
  * The JNI layer caches these method IDs in JNI_OnLoad, so the class name
  * and method signatures here are load-bearing. Do not rename without

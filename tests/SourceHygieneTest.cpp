@@ -1098,6 +1098,14 @@ int main()
 			androidBridgeSource,"void RiseBridge::setViewExposureEV(");
 		const std::string androidToneCurve = braceBody(
 			androidBridgeSource,"void RiseBridge::setViewToneCurve(");
+		const std::string androidAutoResolved = braceBody(
+			androidBridgeSource,"std::string RiseBridge::autoResolvedIntegrator(");
+		const std::string androidViewportPointer = braceBody(
+			androidBridgeSource,"void RiseBridge::viewportPointerDown(");
+		const std::string androidViewportProperty = braceBody(
+			androidBridgeSource,"bool RiseBridge::viewportSetProperty(");
+		const std::string androidCallbackSnapshot = braceBody(
+			androidBridgeSource,"jobject RiseBridge::snapshotKotlinCallback(");
 		Check(androidBridgeSource.find("NewDirectByteBuffer") == std::string::npos &&
 			androidSnapshot.find("std::lock_guard<std::mutex> lock(m_fbMutex)") !=
 				std::string::npos &&
@@ -1168,6 +1176,76 @@ int main()
 			androidManifest.find("android:launchMode=\"singleTask\"") !=
 				std::string::npos,
 			"Android callback handoff is newest-request-wins and lifecycle mutations are owner-checked" );
+		Check(androidAutoResolved.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidAutoResolved.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidViewportPointer.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidViewportPointer.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidViewportProperty.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidViewportProperty.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidNative.find("nativeViewportPointerDown(x: Double, y: Double, ownerToken: Long)") !=
+				std::string::npos &&
+			androidNative.find("nativeViewportSetProperty(") != std::string::npos &&
+			androidViewportPane.find("nativeViewportSetProperty(name,value,ownerToken)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("nativeAutoResolvedIntegrator(callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find("nativeViewportSetSurfaceDimensions(") !=
+				std::string::npos &&
+			androidRenderSmoke.find("nativeAutoResolvedIntegrator(firstOwner)") !=
+				std::string::npos,
+			"Android post-render and viewport-controller access is lifecycle-locked and owner-bound" );
+		const char* const androidOwnerBoundMethods[] = {
+			"autoResolvedIntegrator","autoResolveReason","startViewport",
+			"stopViewport","isViewportRunning","hasLivePreview",
+			"viewportSuppressNextFrame","viewportSetTool","viewportCurrentTool",
+			"viewportGetLastSubToolForCategory","viewportRefreshGizmoHandles",
+			"viewportGizmoHandleCount","viewportGizmoHandle","viewportGizmoHandleAt",
+			"viewportIsGizmoDragActive","viewportActiveGizmoKind",
+			"viewportActiveGizmoAxis","viewportPointerDown","viewportPointerMove",
+			"viewportPointerUp","viewportGetCameraDimensions",
+			"viewportSetSurfaceDimensions","viewportGetAnimationOptions",
+			"viewportScrubBegin","viewportScrub","viewportScrubEnd",
+			"viewportBeginPropertyScrub","viewportEndPropertyScrub",
+			"viewportUndo","viewportRedo","viewportLastSceneTime",
+			"viewportProductionRender","viewportRefreshProperties",
+			"viewportPanelMode","viewportPanelHeader","viewportPropertyCount",
+			"viewportPropertyName","viewportPropertyValue",
+			"viewportPropertyDescription","viewportPropertyKind",
+			"viewportPropertyEditable","viewportPropertyPresetCount",
+			"viewportPropertyPresetLabel","viewportPropertyPresetValue",
+			"viewportSetProperty","viewportCategoryEntityCount",
+			"viewportCategoryEntityName","viewportCategoryActiveName",
+			"viewportSelectionCategory","viewportSelectionName",
+			"viewportSetSelection","viewportSceneEpoch"
+		};
+		for( const char* method : androidOwnerBoundMethods ) {
+			const std::string body = braceBody(androidBridgeSource,
+				std::string("RiseBridge::")+method+"(");
+			Check(body.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+					std::string::npos &&
+				body.find("ownsCallback(ownerToken)") != std::string::npos,
+				(std::string("Android owner/lifecycle gate covers ")+method).c_str());
+		}
+		Check(androidCallbackSnapshot.find("NewLocalRef(m_kotlinCallback)") !=
+				std::string::npos &&
+			androidBridgeSource.find("CallVoidMethod(m_kotlinCallback") ==
+				std::string::npos &&
+			androidCallback.find("MUST NOT call") != std::string::npos &&
+			androidCallback.find("nativeOwnsCallback") != std::string::npos &&
+			androidCallback.find("nativeCancel") != std::string::npos &&
+			androidRenderSmoke.find("callbackReentryCount.get() > 0") !=
+				std::string::npos &&
+			androidRenderViewModel.find("System.nanoTime().coerceAtLeast(1L)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("callbackRequestCounter.getAndIncrement()") ==
+				std::string::npos,
+			"Android callback delivery is reentrant-safe and request generations remain process-monotonic" );
 		Check(androidExposure.find("m_displaySource.load") !=
 				std::string::npos &&
 			androidExposure.find("m_viewportRunning.load") == std::string::npos &&

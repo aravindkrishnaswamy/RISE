@@ -48,6 +48,10 @@ class RenderSmokeTest {
         val frameWidth     = AtomicInteger(0)
         val frameHeight    = AtomicInteger(0)
         val staleCallbackCount = AtomicInteger(0)
+        val activeOwnerForReentry = AtomicLong(0L)
+        val staleOwnerForReentry = AtomicLong(0L)
+        val callbackReentryCount = AtomicInteger(0)
+        val staleCancelRejectionCount = AtomicInteger(0)
 
         val staleCallback = object : RiseCallback {
             override fun onProgress(progress: Float) { staleCallbackCount.incrementAndGet() }
@@ -57,7 +61,17 @@ class RenderSmokeTest {
         }
 
         val callback = object : RiseCallback {
-            override fun onProgress(progress: Float) { progressCount.incrementAndGet() }
+            override fun onProgress(progress: Float) {
+                progressCount.incrementAndGet()
+                val activeOwner = activeOwnerForReentry.get()
+                if (activeOwner != 0L && RiseNative.nativeOwnsCallback(activeOwner)) {
+                    callbackReentryCount.incrementAndGet()
+                }
+                val staleOwner = staleOwnerForReentry.get()
+                if (staleOwner != 0L && !RiseNative.nativeCancel(staleOwner)) {
+                    staleCancelRejectionCount.incrementAndGet()
+                }
+            }
             override fun onSceneReady(width: Int, height: Int) {
                 frameWidth.set(width)
                 frameHeight.set(height)
@@ -75,6 +89,8 @@ class RenderSmokeTest {
         val delayedStaleOwner = RiseNative.nativeSetCallback(staleCallback, requestBase + 1L)
         assertTrue("first callback ownership token should be nonzero", firstOwner != 0L)
         assertTrue("newest callback ownership token should be nonzero", callbackOwner != 0L)
+        activeOwnerForReentry.set(callbackOwner)
+        staleOwnerForReentry.set(firstOwner)
         assertTrue("out-of-order stale callback request must reject", delayedStaleOwner == 0L)
         RiseNative.nativeClearCallback(firstOwner)
         assertTrue(
@@ -84,11 +100,6 @@ class RenderSmokeTest {
         assertTrue(
             "stale callback owner cannot load a scene",
             !RiseNative.nativeLoadScene(sceneFile.absolutePath, firstOwner),
-        )
-        assertTrue(
-            "stale callback owner cannot start or stop the viewport",
-            !RiseNative.nativeViewportStart(false, firstOwner) &&
-                !RiseNative.nativeViewportStop(firstOwner),
         )
         assertTrue(
             "stale callback owner cannot cancel the current render lifecycle",
@@ -103,6 +114,14 @@ class RenderSmokeTest {
             // worker pool for tile dispatch. Bounded by the @Test timeout.
             val rasterOk = RiseNative.nativeRasterize(callbackOwner)
             assertTrue("Rasterize returned false", rasterOk)
+            assertTrue(
+                "callback may re-enter owner query without deadlocking",
+                callbackReentryCount.get() > 0,
+            )
+            assertTrue(
+                "callback re-entry rejects stale cancellation without deadlocking",
+                staleCancelRejectionCount.get() > 0,
+            )
             assertTrue(
                 "onSceneReady never fired",
                 sceneReadyLatch.await(10, TimeUnit.SECONDS),
@@ -153,6 +172,52 @@ class RenderSmokeTest {
                 next.copied && secondBytes.get(knownNonZeroIndex) == originalByte &&
                     secondBytes.get(knownNonZeroIndex) != poisonByte,
             )
+
+            assertTrue(
+                "current owner can start an interactive viewport after rendering",
+                RiseNative.nativeViewportStart(false, callbackOwner),
+            )
+            assertTrue(
+                "stale callback owner cannot access the live viewport controller",
+                !RiseNative.nativeViewportStart(false, firstOwner) &&
+                    !RiseNative.nativeViewportStop(firstOwner) &&
+                    !RiseNative.nativeViewportSetSurfaceDimensions(
+                        32,24,firstOwner) &&
+                    !RiseNative.nativeViewportSetProperty(
+                        "exposure","1",firstOwner),
+            )
+            assertTrue(
+                "stale callback owner cannot inspect post-render auto state",
+                RiseNative.nativeAutoResolvedIntegrator(firstOwner).isEmpty() &&
+                    RiseNative.nativeAutoResolveReason(firstOwner).isEmpty(),
+            )
+
+            val startControllerRace = CountDownLatch(1)
+            val pointerFinished = CountDownLatch(1)
+            val pointerThread = Thread {
+                try {
+                    startControllerRace.await()
+                    repeat(256) {
+                        RiseNative.nativeViewportPointerDown(
+                            1.0,1.0,callbackOwner)
+                        RiseNative.nativeViewportPointerUp(
+                            1.0,1.0,callbackOwner)
+                    }
+                } finally {
+                    pointerFinished.countDown()
+                }
+            }
+            pointerThread.start()
+            startControllerRace.countDown()
+            assertTrue(
+                "viewport stop completes while pointer traffic is active",
+                RiseNative.nativeViewportStop(callbackOwner),
+            )
+            assertTrue(
+                "pointer traffic completes across controller teardown",
+                pointerFinished.await(10,TimeUnit.SECONDS),
+            )
+            pointerThread.join()
         } finally {
             RiseNative.nativeClearCallback(callbackOwner)
         }

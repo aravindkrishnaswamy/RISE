@@ -67,6 +67,7 @@ fun RenderScreen(
 ) {
     val state            by viewModel.state.collectAsState()
     val resolvedIntegrator by viewModel.resolvedIntegrator.collectAsState()
+    val callbackOwnerToken by viewModel.callbackOwnerToken.collectAsState()
     val progress         by viewModel.progress.collectAsState()
     val elapsedMs        by viewModel.elapsedMs.collectAsState()
     val remainingMs      by viewModel.remainingMs.collectAsState()
@@ -88,7 +89,7 @@ fun RenderScreen(
 
     // Disable viewport interaction while a render is in flight or scene
     // is loading.  Render → cancel → done lets the viewport take over.
-    val interactionEnabled = sceneLoaded
+    val interactionEnabled = sceneLoaded && callbackOwnerToken != 0L
         && state !is RenderState.Loading
         && state !is RenderState.Rendering
         && state !is RenderState.Cancelling
@@ -139,6 +140,7 @@ fun RenderScreen(
                     ViewportPane(
                         modifier = Modifier.fillMaxWidth().fillMaxHeight(),
                         frame = frame,
+                        ownerToken = callbackOwnerToken,
                         hasAnimation = hasAnimation,
                         interactionEnabled = interactionEnabled,
                         state = state,

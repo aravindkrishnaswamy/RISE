@@ -87,8 +87,8 @@ public:
     // when it is the auto_rasterizer dispatcher; empty otherwise.  Valid after a
     // render (the dispatcher resolves lazily at render time).  Queried via
     // GetRasterizer()->IsAutoDispatcher() etc. -- the shared cross-UI surface.
-    std::string autoResolvedIntegrator() const;
-    std::string autoResolveReason() const;
+    std::string autoResolvedIntegrator(uint64_t ownerToken) const;
+    std::string autoResolveReason(uint64_t ownerToken) const;
 
     // Advance the in-memory scene to time `t` AND regenerate every
     // populated photon map.  Called by RenderViewModel before
@@ -156,6 +156,9 @@ public:
     // and fires onRegionInvalidated for the full image, identical to the
     // production path.  Compose displays whichever frame arrived most
     // recently — production or viewport-preview.
+    // Every method below that reads or mutates controller state takes the
+    // installed callback owner token and holds m_sceneLifecycleMutex for the
+    // complete access. Only the two enum-mapping helpers are controller-free.
     // -------------------------------------------------------------
 
     // Build the live-preview rasterizer + sink, create the controller,
@@ -170,8 +173,8 @@ public:
     // threaded into the start call itself.
     bool startViewport(bool suppressFirstFrame, uint64_t ownerToken);
     bool stopViewport(uint64_t ownerToken);
-    bool isViewportRunning() const { return m_viewportRunning.load(); }
-    bool hasLivePreview() const    { return m_viewportRasterizer != nullptr; }
+    bool isViewportRunning(uint64_t ownerToken) const;
+    bool hasLivePreview(uint64_t ownerToken) const;
 
     // Shrink the loaded scene's Film so the interactive preview
     // renders at a screen-appropriate resolution rather than blindly
@@ -196,35 +199,35 @@ public:
     // the post-production-render restart path.  Still useful for
     // late-arriving suppress intents (e.g. inside an unrelated
     // event after the viewport's been running for a while).
-    void viewportSuppressNextFrame();
+    void viewportSuppressNextFrame(uint64_t ownerToken);
 
-    void viewportSetTool(int tool);
-    int  viewportCurrentTool() const;
+    void viewportSetTool(int tool, uint64_t ownerToken);
+    int  viewportCurrentTool(uint64_t ownerToken) const;
     int  viewportCategoryForTool(int tool) const;
     int  viewportDefaultSubToolForCategory(int category) const;
-    int  viewportGetLastSubToolForCategory(int category) const;
+    int  viewportGetLastSubToolForCategory(int category, uint64_t ownerToken) const;
 
     /// Gizmo handle math — recompute the per-tool screen-space layout
     /// for the current Object selection + camera, then expose the
     /// array for the Compose overlay.  See SceneEditController for
     /// the underlying contract.
-    void viewportRefreshGizmoHandles();
-    unsigned int viewportGizmoHandleCount() const;
+    void viewportRefreshGizmoHandles(uint64_t ownerToken);
+    unsigned int viewportGizmoHandleCount(uint64_t ownerToken) const;
 
     /// Fill `out[5]` with `{kind, axis, screenX, screenY, screenRadius}`
     /// for handle `idx`.  Returns true on success.  `kind` and `axis`
     /// are stored as doubles to keep the JNI handoff a single
     /// jdoubleArray copy.
-    bool viewportGizmoHandle(unsigned int idx, double out[5]) const;
+    bool viewportGizmoHandle(unsigned int idx, double out[5], uint64_t ownerToken) const;
 
-    int  viewportGizmoHandleAt(double x, double y) const;
-    bool viewportIsGizmoDragActive() const;
-    int  viewportActiveGizmoKind() const;
-    int  viewportActiveGizmoAxis() const;
+    int  viewportGizmoHandleAt(double x, double y, uint64_t ownerToken) const;
+    bool viewportIsGizmoDragActive(uint64_t ownerToken) const;
+    int  viewportActiveGizmoKind(uint64_t ownerToken) const;
+    int  viewportActiveGizmoAxis(uint64_t ownerToken) const;
 
-    void viewportPointerDown(double x, double y);
-    void viewportPointerMove(double x, double y);
-    void viewportPointerUp(double x, double y);
+    void viewportPointerDown(double x, double y, uint64_t ownerToken);
+    void viewportPointerMove(double x, double y, uint64_t ownerToken);
+    void viewportPointerUp(double x, double y, uint64_t ownerToken);
 
     /// Stable full-resolution camera dimensions for pointer-event
     /// coord conversion in the Compose viewport pane.  The rendered
@@ -234,27 +237,30 @@ public:
     /// pointer event (in another) live in mismatched coord spaces,
     /// producing 4×–32× pan/orbit jumps when the scale state machine
     /// steps.  Returns (0, 0) when no camera is attached.
-    void viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH) const;
-    bool viewportSetSurfaceDimensions(unsigned int width, unsigned int height);
+    void viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH,
+                                     uint64_t ownerToken) const;
+    bool viewportSetSurfaceDimensions(unsigned int width, unsigned int height,
+                                      uint64_t ownerToken);
 
     /// Scene's animation options for sizing the timeline scrubber.
     /// Returns false on null controller; the Compose UI treats that
     /// as "no animation" and hides the slider.
     bool viewportGetAnimationOptions(double& outTimeStart, double& outTimeEnd,
-                                     unsigned int& outNumFrames) const;
+                                     unsigned int& outNumFrames,
+                                     uint64_t ownerToken) const;
     /// Fallible because a coordinated/direct render can acquire admission
     /// after Compose sampled its enabled state.  FALSE means no scrub
     /// state/time mutation occurred.
-    bool viewportScrubBegin();
-    bool viewportScrub(double t);
-    bool viewportScrubEnd();
+    bool viewportScrubBegin(uint64_t ownerToken);
+    bool viewportScrub(double t, uint64_t ownerToken);
+    bool viewportScrubEnd(uint64_t ownerToken);
 
     /// Bracket a property-panel chevron scrub.  See
     /// SceneEditController::BeginPropertyScrub for the rationale.
-    void viewportBeginPropertyScrub();
-    void viewportEndPropertyScrub();
-    void viewportUndo();
-    void viewportRedo();
+    void viewportBeginPropertyScrub(uint64_t ownerToken);
+    void viewportEndPropertyScrub(uint64_t ownerToken);
+    void viewportUndo(uint64_t ownerToken);
+    void viewportRedo(uint64_t ownerToken);
 
     /// Canonical scene time owned by the underlying SceneEditController.
     /// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
@@ -263,9 +269,9 @@ public:
     /// own _sceneTime StateFlow, which goes stale when undo/redo
     /// changes scene time without going through the slider.  Returns
     /// 0 when no controller is attached.
-    double viewportLastSceneTime() const;
+    double viewportLastSceneTime(uint64_t ownerToken) const;
 
-    bool viewportProductionRender();
+    bool viewportProductionRender(uint64_t ownerToken);
 
     // L4d — live exposure scrubbing & multi-format Save-As over the
     // canonical HDR FrameStore.  setViewExposureEV adjusts the
@@ -290,35 +296,40 @@ public:
                 double             ev);
 
     // Properties panel accessors — descriptor-driven snapshot.
-    void         viewportRefreshProperties();
-    int          viewportPanelMode() const;       // 0=None,1=Camera,2=Rasterizer,3=Object,4=Light
-    std::string  viewportPanelHeader() const;     // "Camera: …" / "Object: …" / etc.
-    unsigned int viewportPropertyCount() const;
-    std::string  viewportPropertyName(unsigned int idx) const;
-    std::string  viewportPropertyValue(unsigned int idx) const;
-    std::string  viewportPropertyDescription(unsigned int idx) const;
-    int          viewportPropertyKind(unsigned int idx) const;
-    bool         viewportPropertyEditable(unsigned int idx) const;
+    void         viewportRefreshProperties(uint64_t ownerToken);
+    int          viewportPanelMode(uint64_t ownerToken) const;       // 0=None,1=Camera,2=Rasterizer,3=Object,4=Light
+    std::string  viewportPanelHeader(uint64_t ownerToken) const;     // "Camera: …" / "Object: …" / etc.
+    unsigned int viewportPropertyCount(uint64_t ownerToken) const;
+    std::string  viewportPropertyName(unsigned int idx, uint64_t ownerToken) const;
+    std::string  viewportPropertyValue(unsigned int idx, uint64_t ownerToken) const;
+    std::string  viewportPropertyDescription(unsigned int idx, uint64_t ownerToken) const;
+    int          viewportPropertyKind(unsigned int idx, uint64_t ownerToken) const;
+    bool         viewportPropertyEditable(unsigned int idx, uint64_t ownerToken) const;
     // Quick-pick presets surfaced to the UI as a dropdown.  Returns
     // empty / 0 for parameters whose descriptor declared no presets,
     // in which case the panel falls back to a plain text edit.  The
     // multi-camera "active_camera" row leans on this so Android can
     // show a real dropdown of camera names instead of forcing the
     // user to type.
-    unsigned int viewportPropertyPresetCount(unsigned int idx) const;
-    std::string  viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx) const;
-    std::string  viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx) const;
-    bool         viewportSetProperty(const std::string& name, const std::string& value);
+    unsigned int viewportPropertyPresetCount(unsigned int idx, uint64_t ownerToken) const;
+    std::string  viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx,
+                                             uint64_t ownerToken) const;
+    std::string  viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx,
+                                             uint64_t ownerToken) const;
+    bool         viewportSetProperty(const std::string& name, const std::string& value,
+                                     uint64_t ownerToken);
 
     // Accordion list entries — see SceneEditController::Category for
     // the int → category mapping.
-    unsigned int viewportCategoryEntityCount(int category) const;
-    std::string  viewportCategoryEntityName(int category, unsigned int idx) const;
-    std::string  viewportCategoryActiveName(int category) const;
-    int          viewportSelectionCategory() const;
-    std::string  viewportSelectionName() const;
-    bool         viewportSetSelection(int category, const std::string& name);
-    unsigned int viewportSceneEpoch() const;
+    unsigned int viewportCategoryEntityCount(int category, uint64_t ownerToken) const;
+    std::string  viewportCategoryEntityName(int category, unsigned int idx,
+                                            uint64_t ownerToken) const;
+    std::string  viewportCategoryActiveName(int category, uint64_t ownerToken) const;
+    int          viewportSelectionCategory(uint64_t ownerToken) const;
+    std::string  viewportSelectionName(uint64_t ownerToken) const;
+    bool         viewportSetSelection(int category, const std::string& name,
+                                      uint64_t ownerToken);
+    unsigned int viewportSceneEpoch(uint64_t ownerToken) const;
 
     // Internal: invoked by the viewport preview sink after blitting
     // the final-frame pixels into m_framebuffer.  Fires onRegionInvalidated
@@ -327,6 +338,10 @@ public:
 
 private:
     void stopViewportUnowned();
+    // Retain the installed callback as a JNI local reference while holding
+    // m_kotlinCallbackMutex. Callers invoke Kotlin only after the mutex is
+    // released, so callbacks may safely re-enter non-lifecycle bridge APIs.
+    jobject snapshotKotlinCallback(JNIEnv* env) const;
     enum class DisplaySource : uint8_t {
         None,
         Production,
@@ -424,14 +439,10 @@ private:
     // m_kotlinCallbackMutex (L4 round-5 P1-A): worker threads from
     // the rasterizer pool fire callbacks (onProgressTick / onLogLine
     // / renderProductionVFS / writeDirtyRegion / ensureFramebuffer)
-    // that JNI-CallVoidMethod against this jobject from arbitrary
-    // threads. Callback replacement first waits on m_sceneLifecycleMutex,
-    // then takes this mutex so it cannot retarget an in-flight native call.
-    // Without the callback mutex,
-    // DeleteGlobalRef would race CallVoidMethod and UAF.  Holding
-    // the mutex across CallVoidMethod is safe because the Kotlin
-    // callbacks (onProgress/onSceneReady/etc.) don't re-enter the
-    // bridge; they post Compose state updates and return.
+    // that JNI-CallVoidMethod against this jobject from arbitrary threads.
+    // Each delivery creates a local reference under this mutex, releases the
+    // mutex, then invokes Kotlin. The local ref survives a concurrent
+    // DeleteGlobalRef while allowing documented callback re-entry.
     mutable std::mutex m_kotlinCallbackMutex;
     jobject m_kotlinCallback = nullptr;
     uint64_t m_kotlinCallbackOwner = 0u;

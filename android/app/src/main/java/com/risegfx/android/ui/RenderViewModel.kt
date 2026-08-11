@@ -70,6 +70,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     private val _resolveReason = MutableStateFlow("")
     val resolveReason: StateFlow<String> = _resolveReason.asStateFlow()
 
+    private val _callbackOwnerToken = MutableStateFlow(0L)
+    val callbackOwnerToken: StateFlow<Long> = _callbackOwnerToken.asStateFlow()
+
     private val _hasAnimation = MutableStateFlow(false)
     val hasAnimation: StateFlow<Boolean> = _hasAnimation.asStateFlow()
 
@@ -162,7 +165,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     )
 
     private lateinit var callbackOwnerFuture: CompletableFuture<Long>
-    private val callbackRequestGeneration = callbackRequestCounter.getAndIncrement()
+    private val callbackRequestGeneration = nextCallbackRequestGeneration()
 
     init {
         // Callback replacement can wait for a prior ViewModel's blocking JNI
@@ -170,6 +173,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // render entry points wait for the token before touching native state.
         callbackOwnerFuture = CompletableFuture.supplyAsync {
             RiseNative.nativeSetCallback(this, callbackRequestGeneration)
+        }
+        callbackOwnerFuture.thenAccept { ownerToken ->
+            if (ownerToken != 0L) _callbackOwnerToken.value = ownerToken
         }
 
         viewModelScope.launch {
@@ -207,7 +213,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 // scenes. Do it after callback ownership is established and
                 // off-main because controller shutdown joins its render thread.
                 withContext(Dispatchers.IO) {
-                    if (RiseNative.nativeViewportIsRunning()) {
+                    if (RiseNative.nativeViewportIsRunning(callbackOwner)) {
                         RiseNative.nativeViewportStop(callbackOwner)
                     }
                 }
@@ -324,8 +330,8 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // afterwards returns 0 regardless of where the user scrubbed.
         // Falls back to `_sceneTime.value` when no viewport is
         // running (initial load, no scrubs possible).
-        val canonical = if (RiseNative.nativeViewportIsRunning()) {
-            RiseNative.nativeViewportLastSceneTime()
+        val canonical = if (RiseNative.nativeViewportIsRunning(callbackOwner)) {
+            RiseNative.nativeViewportLastSceneTime(callbackOwner)
         } else {
             _sceneTime.value
         }
@@ -333,7 +339,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // Stop the viewport before kicking the production rasterizer —
         // the production renderer takes the same scene + framebuffer the
         // viewport's interactive renderer is writing to.
-        if (RiseNative.nativeViewportIsRunning()) {
+        if (RiseNative.nativeViewportIsRunning(callbackOwner)) {
             if (!RiseNative.nativeViewportStop(callbackOwner)) {
                 _state.value = RenderState.Error("Native render ownership was replaced")
                 return
@@ -400,8 +406,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // Phase 7c — surface the auto-dispatcher's resolution once the render
         // finishes (empty if the active rasterizer isn't the auto dispatcher).
         if (ok) {
-            _resolvedIntegrator.value = RiseNative.nativeAutoResolvedIntegrator()
-            _resolveReason.value = RiseNative.nativeAutoResolveReason()
+            _resolvedIntegrator.value =
+                RiseNative.nativeAutoResolvedIntegrator(callbackOwner)
+            _resolveReason.value = RiseNative.nativeAutoResolveReason(callbackOwner)
         } else {
             _resolvedIntegrator.value = ""
             _resolveReason.value = ""
@@ -519,6 +526,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         callbackOwnerFuture.thenAcceptAsync { ownerToken ->
             if (ownerToken != 0L) RiseNative.nativeClearCallback(ownerToken)
         }
+        _callbackOwnerToken.value = 0L
         super.onCleared()
     }
 
@@ -621,7 +629,13 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     }
 
     companion object {
-        private val callbackRequestCounter = AtomicLong(1L)
+        private val callbackRequestCounter = AtomicLong(0L)
+
+        private fun nextCallbackRequestGeneration(): Long =
+            callbackRequestCounter.updateAndGet { previous ->
+                val clock = System.nanoTime().coerceAtLeast(1L)
+                if (clock > previous) clock else previous + 1L
+            }
         private const val TAG = "RISE-VM"
         private const val INVALIDATE_HZ = 30
         private const val ETA_POLL_INTERVAL_MS = 500L
