@@ -189,7 +189,8 @@ class RenderSmokeTest {
             assertTrue(
                 "stale callback owner cannot inspect post-render auto state",
                 RiseNative.nativeAutoResolvedIntegrator(firstOwner).isEmpty() &&
-                    RiseNative.nativeAutoResolveReason(firstOwner).isEmpty(),
+                    RiseNative.nativeAutoResolveReason(firstOwner).isEmpty() &&
+                    RiseNative.nativePrepareProductionRender(0.25,firstOwner) == null,
             )
 
             val startControllerRace = CountDownLatch(1)
@@ -209,20 +210,19 @@ class RenderSmokeTest {
             }
             pointerThread.start()
             startControllerRace.countDown()
-            val stoppedDuringPointerTraffic =
-                RiseNative.nativeViewportStop(callbackOwner)
+            val productionHandoff =
+                RiseNative.nativePrepareProductionRender(0.25,callbackOwner)
             assertTrue(
                 "pointer traffic completes across controller teardown",
                 pointerFinished.await(10,TimeUnit.SECONDS),
             )
             pointerThread.join()
-            assertTrue(
-                "a busy fail-fast stop succeeds after pointer traffic quiesces",
-                stoppedDuringPointerTraffic ||
-                    RiseNative.nativeViewportStop(callbackOwner),
+            assertNotNull(
+                "production handoff captures scene time and stops the viewport",
+                productionHandoff,
             )
             assertTrue(
-                "viewport is stopped after the contention retry",
+                "viewport is stopped by the atomic production handoff",
                 !RiseNative.nativeViewportIsRunning(callbackOwner),
             )
         } finally {

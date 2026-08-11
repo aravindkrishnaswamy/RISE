@@ -101,6 +101,14 @@ public:
     // the caller should already be in a "rendering" UI state.
     bool setSceneTime(double t, uint64_t ownerToken);
 
+    // Atomically capture the controller's canonical scene time and stop its
+    // interactive render thread before production rendering. If no viewport
+    // exists, fallbackSceneTime is returned unchanged. This takes the blocking
+    // lifecycle lock and may join render work, so callers MUST run it off-main.
+    bool prepareProductionRender(double fallbackSceneTime,
+                                 double& outCanonicalSceneTime,
+                                 uint64_t ownerToken);
+
     // True if the loaded scene declares any keyframed objects (so
     // the Compose UI should surface the timeline scrubber).  Mirrors
     // the macOS bridge's hasAnimatedObjects.  Queried right after
@@ -168,8 +176,8 @@ public:
     // (typical post-production-render path), the suppression flag is
     // latched on the sink BEFORE the render thread starts, closing
     // the race where a fast preview pass could blit through to the
-    // sink between the controller's Start and a follow-up
-    // SuppressNextFrame call from the UI layer.  On Android the sink
+    // sink between the controller's Start and a follow-up suppression
+    // call from the UI layer.  On Android the sink
     // is reconstructed by every stop/start (unlike macOS / Windows
     // where it's persistent), so the suppress intent has to be
     // threaded into the start call itself.
@@ -194,14 +202,6 @@ public:
                         unsigned int maxSurfaceH,
                         unsigned int maxLongEdge,
                         uint64_t ownerToken);
-
-    // Drop exactly one upcoming preview frame.  Race-prone if called
-    // *after* startViewport's render thread has already fired —
-    // prefer the suppressFirstFrame argument on startViewport for
-    // the post-production-render restart path.  Still useful for
-    // late-arriving suppress intents (e.g. inside an unrelated
-    // event after the viewport's been running for a while).
-    void viewportSuppressNextFrame(uint64_t ownerToken);
 
     void viewportSetTool(int tool, uint64_t ownerToken);
     int  viewportCurrentTool(uint64_t ownerToken) const;
@@ -263,15 +263,6 @@ public:
     void viewportEndPropertyScrub(uint64_t ownerToken);
     void viewportUndo(uint64_t ownerToken);
     void viewportRedo(uint64_t ownerToken);
-
-    /// Canonical scene time owned by the underlying SceneEditController.
-    /// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
-    /// edit; that's why RenderViewModel queries this just before
-    /// nativeRasterize / nativeSetSceneTime instead of trusting its
-    /// own _sceneTime StateFlow, which goes stale when undo/redo
-    /// changes scene time without going through the slider.  Returns
-    /// 0 when no controller is attached.
-    double viewportLastSceneTime(uint64_t ownerToken) const;
 
     bool viewportProductionRender(uint64_t ownerToken);
 

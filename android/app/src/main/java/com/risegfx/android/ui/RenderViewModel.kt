@@ -209,14 +209,6 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                     _state.value = RenderState.Error("Failed to acquire native render ownership")
                     return@launch
                 }
-                // Tear down this owner's previous viewport before swapping
-                // scenes. Do it after callback ownership is established and
-                // off-main because controller shutdown joins its render thread.
-                withContext(Dispatchers.IO) {
-                    if (RiseNative.nativeViewportIsRunning(callbackOwner)) {
-                        RiseNative.nativeViewportStop(callbackOwner)
-                    }
-                }
                 (getApplication<RiseApplication>()).ensureInitialized()
 
                 _progress.value = 0f
@@ -323,28 +315,22 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     }
 
     private suspend fun runProductionRenderInternal(callbackOwner: Long) {
-        // Capture the canonical scrubbed time from the viewport
-        // controller BEFORE stopping the viewport.  On Android,
-        // nativeViewportStop destroys the controller (unlike macOS /
-        // Windows where stop only halts the render thread); querying
-        // afterwards returns 0 regardless of where the user scrubbed.
-        // Falls back to `_sceneTime.value` when no viewport is
-        // running (initial load, no scrubs possible).
-        val canonical = if (RiseNative.nativeViewportIsRunning(callbackOwner)) {
-            RiseNative.nativeViewportLastSceneTime(callbackOwner)
-        } else {
-            _sceneTime.value
+        // Disable UI interaction before the blocking handoff. Native captures
+        // the controller-owned time and stops its render thread atomically;
+        // both lifecycle-lock waiting and controller Stop() stay off-main.
+        _progress.value = 0f
+        _state.value = RenderState.Rendering(bitmapW, bitmapH)
+        val handoff = withContext(Dispatchers.IO) {
+            RiseNative.nativePrepareProductionRender(
+                fallbackSceneTime = _sceneTime.value,
+                ownerToken = callbackOwner,
+            )
         }
-
-        // Stop the viewport before kicking the production rasterizer —
-        // the production renderer takes the same scene + framebuffer the
-        // viewport's interactive renderer is writing to.
-        if (RiseNative.nativeViewportIsRunning(callbackOwner)) {
-            if (!RiseNative.nativeViewportStop(callbackOwner)) {
-                _state.value = RenderState.Error("Native render ownership was replaced")
-                return
-            }
+        if (handoff == null) {
+            _state.value = RenderState.Error("Native render ownership was replaced")
+            return
         }
+        val canonical = handoff.sceneTime
 
         // Advance scene state to the canonical scrubbed time AND
         // regenerate photon maps before the production rasterizer
@@ -356,23 +342,13 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // controller's tracked time (captured above) rather than the
         // slider's local copy because Undo / Redo can change scene
         // time without going through the slider.
-        if (!RiseNative.nativeSetSceneTime(canonical, callbackOwner)) {
+        val sceneTimeApplied = withContext(Dispatchers.IO) {
+            RiseNative.nativeSetSceneTime(canonical, callbackOwner)
+        }
+        if (!sceneTimeApplied) {
             _state.value = RenderState.Error("Native render ownership was replaced")
             return
         }
-
-        // Engage Rendering state HERE, not from the worker-thread
-        // onSceneReady callback.  onSceneReady fires from BOTH the
-        // production rasterizer and the viewport preview sink (each
-        // time the framebuffer is resized) — letting it transition
-        // state from Done back to Rendering would falsely engage the
-        // production progress UI on a pan or scrub, and nothing on
-        // the interactive path ever transitions it back to Done.
-        // We use the last known bitmap dims (or 0×0 on the very
-        // first render) — onSceneReady will refine the dims once
-        // the rasterizer actually starts emitting tiles.
-        _progress.value = 0f
-        _state.value = RenderState.Rendering(bitmapW, bitmapH)
 
         // Start the ETA session just before rasterize so elapsed
         // time tracks the render phase, not the parse phase.

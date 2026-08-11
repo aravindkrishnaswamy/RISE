@@ -43,6 +43,11 @@ data class FramebufferSnapshot(
     val copied: Boolean,
 )
 
+@Keep
+data class ProductionViewportHandoff(
+    val sceneTime: Double,
+)
+
 object RiseNative {
 
     init {
@@ -144,15 +149,15 @@ object RiseNative {
     external fun nativeHasAnimatedObjects(ownerToken: Long): Boolean
 
     /**
-     * Canonical scene time tracked by the SceneEditController's edit
-     * history.  Updated by every time-scrub AND by Undo / Redo of a
-     * SetSceneTime edit, so this is the truth that production
-     * renders should pass to [nativeSetSceneTime] — the local
-     * `_sceneTime` StateFlow only tracks slider events, so it goes
-     * stale when undo/redo changes scene time without touching the
-     * slider.  Returns 0 when no controller is attached.
+     * Blocking production handoff. Captures the controller-owned scene time
+     * (including Undo/Redo), stops and destroys the interactive controller,
+     * then returns that time. When no viewport exists, [fallbackSceneTime] is
+     * returned. A stale owner returns null. MUST run off the main thread.
      */
-    external fun nativeViewportLastSceneTime(ownerToken: Long): Double
+    external fun nativePrepareProductionRender(
+        fallbackSceneTime: Double,
+        ownerToken: Long,
+    ): ProductionViewportHandoff?
 
     /**
      * Copy the current RGBA8 framebuffer into caller-owned direct storage.
@@ -267,14 +272,6 @@ object RiseNative {
     external fun nativeViewportStop(ownerToken: Long): Boolean
     external fun nativeViewportIsRunning(ownerToken: Long): Boolean
     external fun nativeViewportHasLivePreview(ownerToken: Long): Boolean
-
-    /**
-     * Drop exactly one upcoming preview frame at the sink layer.  Call
-     * just before [nativeViewportStart] after a production render so the
-     * production image stays on screen until the user actually starts
-     * dragging.  Auto-clears after one drop.
-     */
-    external fun nativeViewportSuppressNextFrame(ownerToken: Long)
 
     external fun nativeViewportSetTool(tool: Int, ownerToken: Long)
 

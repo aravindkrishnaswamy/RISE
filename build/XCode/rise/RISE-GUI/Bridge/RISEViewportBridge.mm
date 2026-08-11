@@ -141,10 +141,9 @@ namespace {
 // callbacks (which produce the visually distracting "blocks
 // fill in one by one" effect) and only dispatch the *final*
 // frame to SwiftUI when the rasterizer hits FlushToOutputs at
-// end-of-pass.  The cancel-restart loop fires a new RasterizeScene
-// call on every edit, so the user sees the freshest finished
-// frame appear whole — not a half-rendered image with tile
-// boundaries.
+// end-of-pass.  A cancelled pass may contain only a partial render,
+// but it is presented as one coherent image update instead of a
+// sequence of tile-by-tile fills.
 //
 // Keeping the production image on screen after a production
 // render is NOT handled here anymore.  It used to be a one-shot

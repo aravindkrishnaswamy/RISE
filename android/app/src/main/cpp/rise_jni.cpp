@@ -193,15 +193,27 @@ JNIF(jboolean, nativeSaveAs)(JNIEnv* env, jobject /*thiz*/,
            ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIF(jdouble, nativeViewportLastSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                           jlong ownerToken) {
-    // Canonical scene time tracked by the SceneEditController.  Used
-    // by RenderViewModel just before nativeSetSceneTime so the
-    // production handoff uses the truth rather than the slider's
-    // local copy (which goes stale across undo/redo).  Returns 0
-    // when no controller is attached.
-    return static_cast<jdouble>(getBridge().viewportLastSceneTime(
-        static_cast<uint64_t>(ownerToken)));
+JNIF(jobject, nativePrepareProductionRender)(JNIEnv* env, jobject /*thiz*/,
+                                              jdouble fallbackSceneTime,
+                                              jlong ownerToken) {
+    double canonicalSceneTime = static_cast<double>(fallbackSceneTime);
+    if (!getBridge().prepareProductionRender(
+            static_cast<double>(fallbackSceneTime), canonicalSceneTime,
+            static_cast<uint64_t>(ownerToken))) {
+        return nullptr;
+    }
+    jclass resultClass = env->FindClass(
+        "com/risegfx/android/nativebridge/ProductionViewportHandoff");
+    if (!resultClass) return nullptr;
+    jmethodID constructor = env->GetMethodID(resultClass, "<init>", "(D)V");
+    if (!constructor) {
+        env->DeleteLocalRef(resultClass);
+        return nullptr;
+    }
+    jobject result = env->NewObject(
+        resultClass, constructor, static_cast<jdouble>(canonicalSceneTime));
+    env->DeleteLocalRef(resultClass);
+    return result;
 }
 
 JNIF(jobject, nativeCopyFramebuffer)(JNIEnv* env, jobject /*thiz*/, jobject destination) {
@@ -254,10 +266,6 @@ JNIF(jboolean, nativeViewportHasLivePreview)(JNIEnv* /*env*/, jobject /*thiz*/,
                                              jlong ownerToken) {
     return getBridge().hasLivePreview(static_cast<uint64_t>(ownerToken)) ?
         JNI_TRUE : JNI_FALSE;
-}
-JNIF(void, nativeViewportSuppressNextFrame)(JNIEnv* /*env*/, jobject /*thiz*/,
-                                             jlong ownerToken) {
-    getBridge().viewportSuppressNextFrame(static_cast<uint64_t>(ownerToken));
 }
 JNIF(void, nativeViewportSetTool)(JNIEnv* /*env*/, jobject /*thiz*/, jint tool,
                                   jlong ownerToken) {

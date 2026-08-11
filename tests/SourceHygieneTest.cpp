@@ -1035,6 +1035,8 @@ int main()
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEViewportBridge.mm");
 		const std::string windowsViewportBridge = slurp(
 			repoRoot/"build"/"VS2022"/"RISE-GUI"/"ViewportBridge.cpp");
+		const std::string interactiveEditorPlan = slurp(
+			repoRoot/"docs"/"INTERACTIVE_EDITOR_PLAN.md");
 		const std::string sceneEditControllerHeader = slurp(
 			repoRoot/"src"/"Library"/"SceneEditor"/"SceneEditController.h");
 		const std::string renderViewModel = slurp(
@@ -1055,6 +1057,8 @@ int main()
 		const std::string androidRenderViewModel = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
 			"android"/"ui"/"RenderViewModel.kt");
+		const std::string androidJni = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"rise_jni.cpp");
 		const std::string androidRenderScreen = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
 			"android"/"ui"/"RenderScreen.kt");
@@ -1098,6 +1102,10 @@ int main()
 			androidBridgeSource,"uint64_t RiseBridge::setCallback(");
 		const std::string androidClearCallback = braceBody(
 			androidBridgeSource,"void RiseBridge::clearCallback(");
+		const std::string androidProductionHandoff = braceBody(
+			androidBridgeSource,"bool RiseBridge::prepareProductionRender(");
+		const std::string androidProductionRender = braceBody(
+			androidRenderViewModel,"suspend fun runProductionRenderInternal(");
 		const std::string androidExposure = braceBody(
 			androidBridgeSource,"void RiseBridge::setViewExposureEV(");
 		const std::string androidToneCurve = braceBody(
@@ -1130,13 +1138,14 @@ int main()
 				std::string::npos &&
 			androidNative.find("mutations return false or no-op immediately") !=
 				std::string::npos &&
-			androidRenderSmoke.find("stoppedDuringPointerTraffic ||") !=
+			androidRenderSmoke.find("val productionHandoff =") !=
 				std::string::npos &&
 			androidRenderSmoke.find(
-				"RiseNative.nativeViewportStop(callbackOwner)") != std::string::npos &&
+				"RiseNative.nativePrepareProductionRender(0.25,callbackOwner)") !=
+				std::string::npos &&
 			androidRenderSmoke.find(
 				"!RiseNative.nativeViewportIsRunning(callbackOwner)") != std::string::npos,
-			"Android viewport contention fails fast and teardown retries after traffic quiesces" );
+			"Android viewport mutations fail fast while production handoff drains and stops" );
 		Check(androidLoadAndRender.find("if (renderJob?.isActive == true) return") !=
 				std::string::npos &&
 			androidLoadAndRender.find("renderJob?.cancel()") == std::string::npos &&
@@ -1191,6 +1200,30 @@ int main()
 			androidManifest.find("android:launchMode=\"singleTask\"") !=
 				std::string::npos,
 			"Android callback handoff is newest-request-wins and lifecycle mutations are owner-checked" );
+		Check(androidProductionHandoff.find(
+				"std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidProductionHandoff.find("ownsCallback(ownerToken)") !=
+				std::string::npos &&
+			androidProductionHandoff.find(
+				"RISE_API_SceneEditController_LastSceneTime") != std::string::npos &&
+			androidProductionHandoff.find("stopViewportUnowned();") !=
+				std::string::npos &&
+			androidProductionRender.find("withContext(Dispatchers.IO)") !=
+				std::string::npos &&
+			androidProductionRender.find("nativePrepareProductionRender(") !=
+				std::string::npos &&
+			androidProductionRender.find("nativeViewportIsRunning(callbackOwner)") ==
+				std::string::npos &&
+			androidProductionRender.find("nativeViewportStop(callbackOwner)") ==
+				std::string::npos &&
+			androidNative.find("MUST run off the main thread") != std::string::npos &&
+			androidNative.find("nativePrepareProductionRender(") != std::string::npos &&
+			androidJni.find("JNIF(jobject, nativePrepareProductionRender)") !=
+				std::string::npos &&
+			androidBridgeSource.find("viewportLastSceneTime") == std::string::npos &&
+			androidNative.find("nativeViewportLastSceneTime") == std::string::npos,
+			"Android production handoff atomically captures viewport time and stops off-main" );
 		Check(androidAutoResolved.find("std::try_to_lock") !=
 				std::string::npos &&
 			androidAutoResolved.find("lifecycleLock.owns_lock()") !=
@@ -1224,7 +1257,7 @@ int main()
 		const char* const androidOwnerBoundMethods[] = {
 			"autoResolvedIntegrator","autoResolveReason","scaleFilmToFit","startViewport",
 			"stopViewport","isViewportRunning","hasLivePreview",
-			"viewportSuppressNextFrame","viewportSetTool","viewportCurrentTool",
+			"viewportSetTool","viewportCurrentTool",
 			"viewportGetLastSubToolForCategory","viewportRefreshGizmoHandles",
 			"viewportGizmoHandleCount","viewportGizmoHandle","viewportGizmoHandleAt",
 			"viewportIsGizmoDragActive","viewportActiveGizmoKind",
@@ -1233,7 +1266,7 @@ int main()
 			"viewportSetSurfaceDimensions","viewportGetAnimationOptions",
 			"viewportScrubBegin","viewportScrub","viewportScrubEnd",
 			"viewportBeginPropertyScrub","viewportEndPropertyScrub",
-			"viewportUndo","viewportRedo","viewportLastSceneTime",
+			"viewportUndo","viewportRedo",
 			"viewportProductionRender","viewportRefreshProperties",
 			"viewportPanelMode","viewportPanelHeader","viewportPropertyCount",
 			"viewportPropertyName","viewportPropertyValue",
@@ -1271,6 +1304,22 @@ int main()
 			sceneEditControllerHeader.find("Viewport sinks deliberately publish") !=
 				std::string::npos,
 			"Viewport sinks publish useful cancelled partial frames without obsolete cancel guards" );
+		Check(riseViewportBridge.find("not a half-rendered image") ==
+				std::string::npos &&
+			interactiveEditorPlan.find("suppressNextFrame()") == std::string::npos &&
+			interactiveEditorPlan.find("viewportSuppressNextFrame") ==
+				std::string::npos &&
+			interactiveEditorPlan.find("startSuppressingInitialRender") !=
+				std::string::npos &&
+			interactiveEditorPlan.find("startViewport(suppressFirstFrame=true)") !=
+				std::string::npos &&
+			interactiveEditorPlan.find("unused dead code; left in place") ==
+				std::string::npos &&
+			androidNative.find("nativeViewportSuppressNextFrame") ==
+				std::string::npos &&
+			androidJni.find("nativeViewportSuppressNextFrame") ==
+				std::string::npos,
+			"Viewport restart and partial-frame design prose matches all three adapters" );
 		Check(androidCallbackSnapshot.find("NewLocalRef(m_kotlinCallback)") !=
 				std::string::npos &&
 			androidBridgeSource.find("CallVoidMethod(m_kotlinCallback") ==

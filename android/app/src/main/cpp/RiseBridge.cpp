@@ -394,6 +394,22 @@ bool RiseBridge::setSceneTime(double t, uint64_t ownerToken) {
     return true;
 }
 
+bool RiseBridge::prepareProductionRender(double fallbackSceneTime,
+                                         double& outCanonicalSceneTime,
+                                         uint64_t ownerToken) {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    if (!ownsCallback(ownerToken) || !m_job) return false;
+    outCanonicalSceneTime = fallbackSceneTime;
+    if (m_viewportController) {
+        if (!RISE::RISE_API_SceneEditController_LastSceneTime(
+                m_viewportController, &outCanonicalSceneTime)) {
+            return false;
+        }
+        stopViewportUnowned();
+    }
+    return true;
+}
+
 void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
     bool fired = false;
     {
@@ -1070,7 +1086,7 @@ bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
 
         // Latch the first-frame suppression BEFORE Start kicks the
         // render thread.  The Android sink is freshly constructed on
-        // every start, so a follow-up SuppressNextFrame() from the UI
+        // every start, so a follow-up suppression call from the UI
         // layer races the freshly-spawned worker pool — on a cheap
         // preview scene the first OutputImage call can fire before
         // the JNI hop returns.  Setting the flag inline here closes
@@ -1096,14 +1112,6 @@ bool RiseBridge::hasLivePreview(uint64_t ownerToken) const {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
     return lifecycleLock.owns_lock() && ownsCallback(ownerToken)
         && m_viewportRasterizer != nullptr;
-}
-
-void RiseBridge::viewportSuppressNextFrame(uint64_t ownerToken) {
-    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
-    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
-    if (m_viewportSink) {
-        static_cast<ViewportPreviewSink*>(m_viewportSink)->SuppressNextFrame();
-    }
 }
 
 bool RiseBridge::stopViewport(uint64_t ownerToken) {
@@ -1299,14 +1307,6 @@ void RiseBridge::viewportRedo(uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
     if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_Redo(m_viewportController);
-}
-double RiseBridge::viewportLastSceneTime(uint64_t ownerToken) const {
-    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
-    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0.0;
-    if (!m_viewportController) return 0.0;
-    double t = 0.0;
-    RISE::RISE_API_SceneEditController_LastSceneTime(m_viewportController, &t);
-    return t;
 }
 bool RiseBridge::viewportProductionRender(uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
