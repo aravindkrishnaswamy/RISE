@@ -1,14 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  AutoRasterizerTest.cpp - End-to-end check that the `auto_rasterizer`
-//    dispatcher (Phase 1 of docs/AUTO_RASTERIZER_DESIGN.md) delegates
-//    correctly to the concrete PT / BDPT / VCM rasterizers.
+//    multi-tier dispatcher delegates correctly to the concrete PT / BDPT /
+//    VCM rasterizers described by docs/AUTO_RASTERIZER_DESIGN.md.
 //
 //    The dispatcher is a thin IRasterizer wrapper: at the first render-
-//    time entry it picks an integrator (Phase 1: author pin, else PT)
-//    and forwards every call to a concrete rasterizer built with that
-//    integrator's canonical defaults.  "Delegates correctly" therefore
-//    has two halves, and this test checks BOTH:
+//    time entry it honors an author pin or runs the static scene gate and,
+//    when enabled, the probe tier.  It then forwards every call to a concrete
+//    rasterizer built with that integrator's canonical defaults.  "Delegates
+//    correctly" therefore has two halves, and this test checks BOTH:
 //
 //      1. STRONG / direct — after the render, the wrapper reports the
 //         integrator it actually resolved to (ResolvedIntegrator()).
@@ -839,15 +839,19 @@ static ImageStats RenderFireReferencePreview(
 	const char* rasterizerKeyword,
 	const unsigned int seed,
 	const MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation ablation =
-		MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation )
+		MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation,
+	const unsigned int width = 32u,
+	const unsigned int height = 48u,
+	const unsigned int samples = 256u )
 {
 	ImageStats result{};
 	GlobalRNG() = RandomNumberGenerator(seed);
 	IJobPriv* pJob = nullptr;
 	if( !RISE_CreateJobPriv(&pJob) || !pJob ) return result;
+	const std::string sampleText = std::to_string(samples);
 	if( !pJob->LoadAsciiSceneViaCst(scenePath) ||
-		!pJob->SetFilm(32,48,1.0) ||
-		!pJob->SetRasterizerParameter(rasterizerKeyword,"samples","256") ||
+		!pJob->SetFilm(width,height,1.0) ||
+		!pJob->SetRasterizerParameter(rasterizerKeyword,"samples",sampleText.c_str()) ||
 		!pJob->SetRasterizerParameter(rasterizerKeyword,"oidn_denoise","false") ) {
 		safe_release(pJob);
 		return result;
@@ -877,7 +881,39 @@ static ImageStats RenderFireReferencePreview(
 	return result;
 }
 
-static void TestFirePelPreviewDivergence( const bool extendedAblation )
+static std::string WriteFastFireProjectionScene(
+	const char* rasterizerKeyword, const char* tag )
+{
+	const bool spectral = std::string(rasterizerKeyword).find("spectral") !=
+		std::string::npos;
+	std::ostringstream scene;
+	scene <<
+		"RISE ASCII SCENE 7\n"
+		"scene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n" <<
+		rasterizerKeyword << "\n{\nsamples 1\n";
+	if( spectral ) {
+		scene << "nmbegin 380\nnmend 780\nnum_wavelengths 40\n"
+			"spectral_samples 1\nhwss false\n";
+	}
+	scene <<
+		"max_volume_bounce 1\npixel_filter box\noidn_denoise false\n}\n"
+		"film\n{\nwidth 16\nheight 16\n}\n"
+		"pinhole_camera\n{\nlocation 0 0 -2\nlookat 0 0 0\n"
+		"up 0 1 0\nfov 45\n}\n"
+		"scalar_painter\n{\nname carbon\nvalue 1\n}\n"
+		"scalar_painter\n{\nname temperature\nvalue 2300\n}\n"
+		"multichannel_heterogeneous_medium\n{\nname phase_a_fire\n"
+		"channel_carbon painter carbon\nchannel_temperature painter temperature\n"
+		"chem_model none\nbake_resolution 2 2 2\n"
+		"bbox_min -1 -1 -1\nbbox_max 1 1 1\n"
+		"optical_record fire_optics_v1\n}\n"
+		"global_medium\n{\nmedium phase_a_fire\n}\n";
+	return WriteSceneToTempFile(scene.str().c_str(),tag);
+}
+
+static void TestFirePelPreviewDivergence(
+	const bool extendedAblation, const bool fastProjection = false )
 {
 	const unsigned int seeds[] = { 1u, 7u, 42u, 314159u, 0xdeadbeefu };
 	const size_t seedBegin = extendedAblation ? 0u : 2u;
@@ -894,16 +930,35 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 	double tiltDeltaMax[3] = {-1e30,-1e30,-1e30};
 	double fullDeltaMin[3] = {1e30,1e30,1e30};
 	double fullDeltaMax[3] = {-1e30,-1e30,-1e30};
+	double selectedPelMean[3] = {0.0,0.0,0.0};
+	double selectedSpectralMean[3] = {0.0,0.0,0.0};
 	bool allValid = true;
 	bool allReferenceChannelsPositive = true;
+	const std::string fastPelPath = fastProjection ?
+		WriteFastFireProjectionScene("pathtracing_pel_rasterizer","fire_fast_pel") :
+		std::string();
+	const std::string fastSpectralPath = fastProjection ?
+		WriteFastFireProjectionScene("pathtracing_spectral_rasterizer",
+			"fire_fast_spectral") : std::string();
+	const char* pelScene = fastProjection ? fastPelPath.c_str() :
+		"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene";
+	const char* spectralScene = fastProjection ? fastSpectralPath.c_str() :
+		"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene";
+	const unsigned int projectionWidth = fastProjection ? 16u : 32u;
+	const unsigned int projectionHeight = fastProjection ? 16u : 48u;
+	const unsigned int projectionSamples = fastProjection ? 64u : 256u;
 	for( size_t seedIndex=seedBegin; seedIndex<seedEnd; ++seedIndex ) {
 		const unsigned int seed = seeds[seedIndex];
 		const ImageStats pel = RenderFireReferencePreview(
-			"scenes/Tests/Volumes/pt_fire_phase_a_pel_preview.RISEscene",
-			"pathtracing_pel_rasterizer", seed );
+			pelScene,
+			"pathtracing_pel_rasterizer", seed,
+			MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation,
+			projectionWidth,projectionHeight,projectionSamples );
 		const ImageStats spectral = RenderFireReferencePreview(
-			"scenes/Tests/Volumes/pt_fire_phase_a_spectral.RISEscene",
-			"pathtracing_spectral_rasterizer", seed );
+			spectralScene,
+			"pathtracing_spectral_rasterizer", seed,
+			MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation,
+			projectionWidth,projectionHeight,projectionSamples );
 		ImageStats fixture{};
 		ImageStats magnitude{};
 		ImageStats tilt{};
@@ -929,6 +984,8 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 				(!fixture.valid || !magnitude.valid || !tilt.valid)) ) continue;
 		double divergence[3] = {0.0,0.0,0.0};
 		for( unsigned int channel = 0; channel < 3u; ++channel ) {
+			selectedPelMean[channel] = pel.mean[channel];
+			selectedSpectralMean[channel] = spectral.mean[channel];
 			allReferenceChannelsPositive = allReferenceChannelsPositive &&
 				pel.mean[channel] > 0.0 && spectral.mean[channel] > 0.0;
 			const double scale = std::max(std::fabs(spectral.mean[channel]),1e-12);
@@ -963,6 +1020,8 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 			<< spectral.mean[2] << ") divergence=(" << divergence[0] << ","
 			<< divergence[1] << "," << divergence[2] << ")" << std::endl;
 	}
+	if( !fastPelPath.empty() ) std::remove(fastPelPath.c_str());
+	if( !fastSpectralPath.empty() ) std::remove(fastSpectralPath.c_str());
 	Check( allValid,
 		"Phase-A Pel and spectral reference scenes render for every selected seed" );
 	Check( allReferenceChannelsPositive,
@@ -1033,6 +1092,29 @@ static void TestFirePelPreviewDivergence( const bool extendedAblation )
 		interactionMean[2] > 0.04 && interactionMean[2] < 0.09 &&
 		fullMean[2] > 0.54 && fullMean[2] < 0.63,
 		"preset-v1 E_eff magnitude and tilt ablations stay in measured envelopes" );
+	}
+
+	if( fastProjection ) {
+		// Fast-tier replacement for the original 32x48x256-spp image gate.
+		// This uniform 16x16x64-spp predictive-record scene keeps the complete
+		// parser -> medium bake -> Pel/spectral integrator -> film path while
+		// removing the showcase flame's 96x160x12 bake.  Measured over seeds
+		// 1, 7, 42, 314159, and 0xdeadbeef against preset-v1: Pel means span
+		// R 7.145-7.421, G 1.571-1.650, B 0.105-0.113; spectral means span
+		// R 6.394-7.107, G 1.315-1.516, B 0.038-0.053.  The deliberately
+		// wider envelopes retain platform/FP margin while rejecting black,
+		// missing-blue, fixture-scale, and accidentally identical routing.
+		Check( maximumDivergence[0] > 0.0 && maximumDivergence[0] < 0.30 &&
+			maximumDivergence[1] > 0.05 && maximumDivergence[1] < 0.30 &&
+			maximumDivergence[2] > 0.50 && maximumDivergence[2] < 3.0 &&
+			selectedPelMean[0] > 6.0 && selectedPelMean[0] < 9.0 &&
+			selectedPelMean[1] > 1.3 && selectedPelMean[1] < 2.0 &&
+			selectedPelMean[2] > 0.07 && selectedPelMean[2] < 0.16 &&
+			selectedSpectralMean[0] > 5.0 && selectedSpectralMean[0] < 8.0 &&
+			selectedSpectralMean[1] > 1.1 && selectedSpectralMean[1] < 1.8 &&
+			selectedSpectralMean[2] > 0.015 && selectedSpectralMean[2] < 0.09,
+			"fast preset-v1 Pel/spectral projection stays in its measured envelope" );
+		return;
 	}
 
 	// Measured single-thread against preset-v1 record
@@ -3335,8 +3417,13 @@ int main( const int argc, const char* const argv[] )
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
 	std::cout << std::endl;
 	TestNonFiniteImageStatisticsFailClosed();
-	std::cout << "--- Fire Pel preview consistency ---" << std::endl;
-	TestFirePelPreviewDivergence(extendedFireAblation);
+	if( extendedFireAblation || firePreviewOnly ) {
+		std::cout << "--- Fire Pel preview consistency ---" << std::endl;
+		TestFirePelPreviewDivergence(extendedFireAblation);
+	} else {
+		std::cout << "--- Fire Pel preview consistency: fast projection ---" << std::endl;
+		TestFirePelPreviewDivergence(false,true);
+	}
 	if( firePreviewOnly ) {
 		std::cout << std::endl;
 		std::cout << "Passed: " << passCount << std::endl;

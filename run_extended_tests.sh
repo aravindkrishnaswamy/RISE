@@ -4,6 +4,7 @@ set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$ROOT_DIR/bin/tests"
+cd "$ROOT_DIR" || exit 2
 
 run_extended() {
 	local name="$1"
@@ -19,6 +20,6 @@ run_extended() {
 
 # These render-heavy experiments deliberately run one at a time. They retain
 # the original high-sample matrices that are unsuitable for the per-commit
-# 236-test gate.
+# full per-commit suite.
 run_extended AutoRasterizerTest --extended-fire-ablation --fire-preview-only || exit $?
 run_extended PathTracingThermalEmissionTest --extended-matrix || exit $?

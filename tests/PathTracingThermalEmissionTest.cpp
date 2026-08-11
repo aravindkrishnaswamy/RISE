@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -20,9 +21,11 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #ifdef _WIN32
 	#include <process.h>
@@ -90,6 +93,33 @@ namespace
 {
 	int passed = 0;
 	int failed = 0;
+
+	class ProcessWatchdog
+	{
+	public:
+		explicit ProcessWatchdog( const unsigned int seconds ) :
+			completed_(std::make_shared<std::atomic<bool>>(false))
+		{
+			const auto completed = completed_;
+			std::thread([completed,seconds]() {
+				std::this_thread::sleep_for(std::chrono::seconds(seconds));
+				if( !completed->load(std::memory_order_acquire) ) {
+					std::fprintf(stderr,
+						"FAIL: PathTracingThermalEmissionTest exceeded %u-second watchdog\n",
+						seconds);
+					std::_Exit(124);
+				}
+			}).detach();
+		}
+
+		~ProcessWatchdog()
+		{
+			completed_->store(true,std::memory_order_release);
+		}
+
+	private:
+		std::shared_ptr<std::atomic<bool>> completed_;
+	};
 	const Scalar kTemperatureK = 1800.0;
 	const Scalar kTargetSigmaSI = 0.8;
 	const unsigned int kSamples = 80000;
@@ -5267,7 +5297,7 @@ namespace
 		std::filesystem::remove(scenePath);
 	}
 
-	void TestUnsupportedMaterialVolumeNEEFallback()
+	void TestUnsupportedMaterialVolumeNEEFallback( const bool statistical )
 	{
 		std::cout << "TestUnsupportedMaterialVolumeNEEFallback" << std::endl;
 		const std::string diagnostic =
@@ -5323,18 +5353,20 @@ namespace
 			IJobPriv* marchJob = nullptr;
 			IRayCaster* neeCaster = nullptr;
 			IRayCaster* marchOnlyCaster = nullptr;
-			const bool loaded = RISE_CreateJobPriv(&job) && job &&
-				job->LoadAsciiSceneViaCst(scenePath.string().c_str()) &&
-				RISE_CreateJobPriv(&marchJob) && marchJob &&
-				marchJob->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			bool loaded = RISE_CreateJobPriv(&job) && job &&
+				job->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			if( statistical ) {
+				loaded = loaded && RISE_CreateJobPriv(&marchJob) && marchJob &&
+					marchJob->LoadAsciiSceneViaCst(scenePath.string().c_str());
+			}
 			Check( loaded,
 				(std::string(fixtureName) + " fallback fixture loads").c_str() );
 			if( loaded ) {
 				IObjectPriv* receiver =
 					job->GetScene()->GetObjects()->GetItem("receiver_wall");
-				IObjectPriv* marchReceiver =
-					marchJob->GetScene()->GetObjects()->GetItem("receiver_wall");
-				Check( receiver != nullptr && marchReceiver != nullptr,
+				IObjectPriv* marchReceiver = statistical ?
+					marchJob->GetScene()->GetObjects()->GetItem("receiver_wall") : nullptr;
+				Check( receiver != nullptr && (!statistical || marchReceiver != nullptr),
 					(std::string(fixtureName) + " receiver resolves").c_str() );
 				if( receiver ) receiver->AssignMaterial(material);
 				if( marchReceiver ) marchReceiver->AssignMaterial(material);
@@ -5368,15 +5400,17 @@ namespace
 				const unsigned int callsBeforeRender = selfAttesting ?
 					selfAttesting->ClosureCalls() : 0;
 
-				Check( InstallMarchOnlyGlobalMedium(*marchJob) &&
-					CreatePreparedCaster(*marchJob,20,marchOnlyCaster),
-					(std::string(fixtureName) +
-						" legacy-march reference caster initializes").c_str() );
+				if( statistical ) {
+					Check( InstallMarchOnlyGlobalMedium(*marchJob) &&
+						CreatePreparedCaster(*marchJob,20,marchOnlyCaster),
+						(std::string(fixtureName) +
+							" legacy-march reference caster initializes").c_str() );
+				}
 				Check( CreatePreparedCaster(*job,20,neeCaster),
 					(std::string(fixtureName) +
 						" volume-NEE caster initializes").c_str() );
 
-				if( neeCaster && marchOnlyCaster && marchJob ) {
+				if( neeCaster && (!statistical || (marchOnlyCaster && marchJob)) ) {
 					const unsigned int diagnosticsBefore =
 						capture->MatchCount();
 					StabilityConfig config;
@@ -5389,7 +5423,8 @@ namespace
 						Scalar mean;
 						Scalar variance;
 					};
-					const unsigned int samples = 120000;
+					const unsigned int samples = statistical ? 120000u : 512u;
+					const unsigned int batchCount = statistical ? 3u : 1u;
 					auto momentsPT = [&]( const IScene& scene,
 						const IRayCaster& route,
 						const unsigned int seed ) {
@@ -5451,16 +5486,19 @@ namespace
 					};
 					SampleMoments pureOnBatches[3];
 					bool allBatchesAgree = true;
-					for( unsigned int batch=0; batch<3; ++batch ) {
+					for( unsigned int batch=0; batch<batchCount; ++batch ) {
 						const unsigned int seedBase = 0xf44bac1u +
 							thisFixture*0x101u + batch*0x10001u;
 						const SampleMoments neeOn =
 							momentsPT(*job->GetScene(),*neeCaster,seedBase);
 						pureOnBatches[batch] = neeOn;
-						const SampleMoments neeOff =
-							momentsPT(*marchJob->GetScene(),*marchOnlyCaster,
+						SampleMoments neeOff{};
+						bool agrees = true;
+						if( statistical ) {
+							neeOff = momentsPT(*marchJob->GetScene(),*marchOnlyCaster,
 								seedBase+0x5bd1u);
-						const bool agrees = agreesWithinSixSE(neeOn,neeOff);
+							agrees = agreesWithinSixSE(neeOn,neeOff);
+						}
 						if( !agrees ) {
 							std::cout << "  " << fixtureName << " batch " << batch <<
 								" means=" << neeOn.mean << "/" << neeOff.mean <<
@@ -5469,9 +5507,11 @@ namespace
 						}
 						allBatchesAgree = allBatchesAgree && agrees;
 					}
-					Check( allBatchesAgree,
-						(std::string(fixtureName) +
-							" NEE-on/off weight-1 legacy means agree in three independent batches").c_str() );
+					if( statistical ) {
+						Check( allBatchesAgree,
+							(std::string(fixtureName) +
+								" NEE-on/off weight-1 legacy means agree in three independent batches").c_str() );
+					}
 					Check( integrator->UnsupportedContinuationDiagnosticEmitted(),
 						(std::string(fixtureName) +
 							" fallback records the diagnostic route witness").c_str() );
@@ -5488,15 +5528,18 @@ namespace
 					const unsigned int diagnosticsBeforeShader =
 						capture->MatchCount();
 					bool allShaderBatchesAgree = true;
-					for( unsigned int batch=0; batch<3; ++batch ) {
+					for( unsigned int batch=0; batch<batchCount; ++batch ) {
 						const unsigned int seedBase = 0x44d15a1u +
 							thisFixture*0x211u + batch*0x20003u;
 						const SampleMoments shaderOn =
 							momentsShader(*neeCaster,seedBase);
-						const SampleMoments shaderOff =
-							momentsShader(*marchOnlyCaster,seedBase+0x9e37u);
-						const bool agrees = agreesWithinSixSE(shaderOn,shaderOff) &&
-							agreesWithinSixSE(shaderOn,pureOnBatches[batch]);
+						SampleMoments shaderOff{};
+						bool agrees = true;
+						if( statistical ) {
+							shaderOff = momentsShader(*marchOnlyCaster,seedBase+0x9e37u);
+							agrees = agreesWithinSixSE(shaderOn,shaderOff) &&
+								agreesWithinSixSE(shaderOn,pureOnBatches[batch]);
+						}
 						if( !agrees ) {
 							std::cout << "  " << fixtureName << " shader batch " << batch <<
 								" on/off/pure=" << shaderOn.mean << "/" <<
@@ -5504,9 +5547,11 @@ namespace
 						}
 						allShaderBatchesAgree = allShaderBatchesAgree && agrees;
 					}
-					Check( allShaderBatchesAgree,
-						(std::string(fixtureName) +
-							" shader-dispatch NEE-on/off fallback agrees with the pure-integrator route").c_str() );
+					if( statistical ) {
+						Check( allShaderBatchesAgree,
+							(std::string(fixtureName) +
+								" shader-dispatch NEE-on/off fallback agrees with the pure-integrator route").c_str() );
+					}
 					Check( capture->MatchCount() == diagnosticsBeforeShader+1 &&
 						capture->LastMatch() == diagnostic,
 						(std::string(fixtureName) +
@@ -7412,7 +7457,7 @@ namespace
 		std::filesystem::remove( scenePath );
 	}
 
-	void TestZeroSootChemOnlyLineEstimator()
+	void TestZeroSootChemOnlyLineEstimator( const bool statistical )
 	{
 		std::cout << "TestZeroSootChemOnlyLineEstimator" << std::endl;
 		const std::filesystem::path scenePath = std::filesystem::temp_directory_path() /
@@ -7472,6 +7517,21 @@ namespace
 				lights->GetEquiangularPivotEntryCount()==0,
 				"chem-only source is excluded from volume NEE and equiangular pivots" );
 
+			if( !statistical ) {
+				const Scalar nm = 430.0;
+				const RasterizerState rast = {0,0};
+				const Ray ray(Point3(0,0,0),Vector3(0,0,1));
+				RandomNumberGenerator rng(0xc4e8001u);
+				RuntimeContext rc(rng,RuntimeContext::PASS_NORMAL,false);
+				IndependentSampler sampler(rng);
+				const unsigned int segmentsBefore = medium->segmentSamples;
+				const Scalar sample = integrator->IntegrateRayNM(
+					rc,rast,ray,nm,*job->GetScene(),*caster,
+					sampler,nullptr,nullptr);
+				Check( std::isfinite(sample) &&
+					medium->segmentSamples > segmentsBefore,
+					"zero-soot chem-only default gate traverses the independent line-source estimator" );
+			} else {
 			const Scalar nm = 430.0;
 			const Scalar expected =
 				(SyntheticChemEmissionMedium::ReactionEnd()-
@@ -7772,6 +7832,7 @@ namespace
 				attenuatedLights->GetEquiangularPivotEntryCount()==0,
 				"attenuated chem source remains outside thermal CDF, NEE, and equiangular sampling" );
 			safe_release(attenuated);
+			}
 		}
 
 		safe_release(integrator);
@@ -9942,6 +10003,10 @@ int main( const int argc, const char* const argv[] )
 		std::cerr << "only one focused test selection may be requested" << std::endl;
 		return 2;
 	}
+	// Extended matrix baseline is about 21 minutes on the reference host;
+	// 45 minutes preserves >2x headroom while still bounding transport hangs.
+	ProcessWatchdog watchdog(
+		(extendedMatrix || previewMatrixOnly || phaseBMatrixOnly) ? 2700u : 120u);
 	if( previewMatrixOnly ) {
 		TestPreviewContainmentConfigurationMatrix(extendedMatrix);
 		std::cout << passed << " passed, " << failed << " failed" << std::endl;
@@ -9966,9 +10031,9 @@ int main( const int argc, const char* const argv[] )
 		TestPrimaryScatteringEventHonorsVolumeCapAfterEmission(true);
 		TestIsolatedSmokeConfigurationReplay(true);
 	}
-	TestSurfaceVolumeNEEProductionRoutes();
-	TestUnsupportedMaterialVolumeNEEFallback();
+	TestUnsupportedMaterialVolumeNEEFallback(extendedMatrix);
 	if( extendedMatrix ) {
+		TestSurfaceVolumeNEEProductionRoutes();
 		TestOrenNayarSurfaceVolumeNEEEquality();
 		TestIsotropicPhongSurfaceVolumeNEEEquality();
 		TestNullBoundaryMixtureSurvivalEquality();
@@ -9988,7 +10053,7 @@ int main( const int argc, const char* const argv[] )
 	TestObjectFireRoutingCacheRefreshesAfterBinding();
 	TestLegacySceneEditorMediumUndoRefreshesCache();
 	TestSpatialAdditiveSourceIsAnIndependentFullSegmentEstimator();
-	TestZeroSootChemOnlyLineEstimator();
+	TestZeroSootChemOnlyLineEstimator(extendedMatrix);
 	TestFirePhaseClosureRoutesOneBoundInstancePerCollision();
 	TestNestedSSSShaderOpContainment();
 	if( extendedMatrix ) {

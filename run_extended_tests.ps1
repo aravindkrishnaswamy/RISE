@@ -16,10 +16,16 @@ function Invoke-ExtendedTest {
     }
     Write-Host "=== $Name $Arguments ==="
     & $testPath @Arguments
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
 }
 
 # Render-heavy experiments stay sequential: each render already consumes the
 # available worker pool.
-Invoke-ExtendedTest "AutoRasterizerTest" @("--extended-fire-ablation", "--fire-preview-only")
-Invoke-ExtendedTest "PathTracingThermalEmissionTest" @("--extended-matrix")
+Push-Location $repoRoot
+try {
+    Invoke-ExtendedTest "AutoRasterizerTest" @("--extended-fire-ablation", "--fire-preview-only")
+    Invoke-ExtendedTest "PathTracingThermalEmissionTest" @("--extended-matrix")
+}
+finally {
+    Pop-Location
+}
