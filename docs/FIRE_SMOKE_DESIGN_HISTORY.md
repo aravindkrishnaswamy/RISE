@@ -950,3 +950,22 @@ it was already tried and refuted here.
   before ratification. Evidence trail: FIRE_OPTICS_PRESET_V1.md,
   FIRE_CHEM_RECORDS_V1.md, FIRE_DATASET_PULL_MANIFEST.md,
   FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md, docs/data/*.
+
+- **r49 (2026-08-08):** phase-ownership correction, raised by the Phase-B
+  implementation agent's ninth stop (no code changed before the ruling).
+  Phase B gate 5 as written — "per-frame invalidation and rebuild of the
+  emission structures" — presupposed a per-frame grid producer, but the
+  only Phase-B fire medium is statically authored (CDF built at
+  construction); the sequence contract, `fire_medium`, and the
+  freeze/prepared-input seam with `IRenderPreparationController` are all
+  Phase C, and §10.3's controller registry is populated by time-varying
+  media that do not exist in Phase B. Ruling: **split, not weaken** —
+  Phase B retains the non-vacuous core (between-renders mutation of a
+  fire medium's emission/extinction invalidates its CDF/majorants,
+  rebuild before next render, fail-closed on staleness, with a
+  mutate→render regression), while the per-frame scheduled rebuild
+  re-gates to Phase C gate 5 attached to its producer. The substance is
+  unchanged: no stale emission structure is ever consumed. The
+  alternatives — pulling the renderer-wide preparation seam into Phase B,
+  or inventing a Phase-B frame-source API with no consumer — were
+  rejected as scope creep and speculative architecture respectively.

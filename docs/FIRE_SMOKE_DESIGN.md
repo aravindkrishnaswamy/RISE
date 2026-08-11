@@ -2115,8 +2115,21 @@ the shared per-nm Planck radiance kernel with its two numeric gates (§4.2), on
 4. **The fire medium's row in the continuation-closure table** — its
    σ_s-weighted constituent HG-mixture closure (§7.2.2). Without this the
    feature is default-denied inside the only medium it exists to light.
-5. Per-frame invalidation and rebuild of the emission structures (§7.2.6),
-   scheduled in the same between-renders step as the majorant rebuild.
+5. **Emission-structure invalidation correctness for the media Phase B
+   actually has** (revised r49 — the original "per-frame invalidation and
+   rebuild" presupposed a per-frame grid producer, which is Phase C: the
+   only Phase-B fire medium is statically authored and builds its CDF at
+   construction). The Phase-B gate is: any between-renders mutation that
+   affects a fire medium's emission or extinction (authored parameters,
+   optical-record binding) **invalidates** its emission CDF and majorants,
+   which rebuild before the next render begins; rendering with a stale
+   structure is fail-closed, never silent, and a mutate→render regression
+   proves fresh values are used. The **per-frame scheduled rebuild**
+   (§7.2.6's frame-advance form, in the same between-renders step as the
+   majorant rebuild) **moves to Phase C gate 5**, attached to its producer
+   — the sequence contract and the freeze/prepared-input seam. The
+   requirement is unchanged in substance: no stale emission structure is
+   ever consumed; each phase owns the mechanism its media actually need.
 6. The §7.2.7 equality gates and configuration matrix.
 
 #### Phase C gates (all engineering)
@@ -2138,7 +2151,9 @@ the shared per-nm Planck radiance kernel with its two numeric gates (§4.2), on
 5. The freeze/prepared-input seam this arc depends on
    ([RENDER_PREPARATION_LIFECYCLE.md](RENDER_PREPARATION_LIFECYCLE.md)) —
    grid/majorant/CDF swaps strictly between renders, mid-render mutation
-   detected.
+   detected — **including the per-frame emission-CDF/majorant rebuild
+   scheduled in the frame-advance step (re-gated here from Phase B gate 5,
+   r49: it requires the per-frame grid producer this gate delivers).**
 
 #### Phase A execution order — the minimal end-to-end slice
 
