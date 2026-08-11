@@ -1054,6 +1054,9 @@ int main()
 		const std::string androidRenderScreen = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
 			"android"/"ui"/"RenderScreen.kt");
+		const std::string androidViewportPane = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
+			"android"/"ui"/"ViewportPane.kt");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
 			riseBridge.find("byte-for-byte at EV=0") == std::string::npos &&
@@ -1081,6 +1084,16 @@ int main()
 			androidBridgeSource,"RiseBridge::copyFramebufferSnapshot(");
 		const std::string androidLoadAndRender = braceBody(
 			androidRenderViewModel,"fun loadAndRender(");
+		const std::string androidLoadScene = braceBody(
+			androidBridgeSource,"bool RiseBridge::loadScene(");
+		const std::string androidRasterize = braceBody(
+			androidBridgeSource,"bool RiseBridge::rasterize(");
+		const std::string androidSetCallback = braceBody(
+			androidBridgeSource,"void RiseBridge::setCallback(");
+		const std::string androidExposure = braceBody(
+			androidBridgeSource,"void RiseBridge::setViewExposureEV(");
+		const std::string androidToneCurve = braceBody(
+			androidBridgeSource,"void RiseBridge::setViewToneCurve(");
 		Check(androidBridgeSource.find("NewDirectByteBuffer") == std::string::npos &&
 			androidSnapshot.find("std::lock_guard<std::mutex> lock(m_fbMutex)") !=
 				std::string::npos &&
@@ -1111,6 +1124,34 @@ int main()
 			androidRenderScreen.find("enabled = canSelectScene") !=
 				std::string::npos,
 			"Android serializes blocking JNI scene lifecycles and always stops render polls" );
+		Check(androidLoadScene.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidRasterize.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos &&
+			androidRasterize.find("m_productionRenderActive.store(true") !=
+				std::string::npos &&
+			androidSetCallback.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+				std::string::npos,
+			"Android serializes process-wide native load/render and callback replacement" );
+		Check(androidExposure.find("m_productionRenderActive.load") !=
+				std::string::npos &&
+			androidExposure.find("onInteractiveVFSFrameComplete") !=
+				std::string::npos &&
+			androidToneCurve.find("m_productionRenderActive.load") !=
+				std::string::npos &&
+			androidViewportPane.find("state !is RenderState.Loading") !=
+				std::string::npos &&
+			androidViewportPane.find("state !is RenderState.Rendering") !=
+				std::string::npos &&
+			androidViewportPane.find("state !is RenderState.Cancelling") !=
+				std::string::npos,
+			"Android transform refreshes preserve the active production display source" );
+		Check(androidBridgeSource.find("onProductionVFSTileComplete") ==
+				std::string::npos &&
+			androidBridgeSource.find("halfOpenRoi") == std::string::npos &&
+			androidBridgeHeader.find("onProductionVFSTileComplete") ==
+				std::string::npos,
+			"Android production display conversion is cadence-gated full-frame work" );
 		Check(androidBridgeHeader.find("allocated once per scene") == std::string::npos &&
 			androidBridgeHeader.find("RasterizerOutputImpl callback") == std::string::npos &&
 			androidCallback.find("Fired once per scene") == std::string::npos,

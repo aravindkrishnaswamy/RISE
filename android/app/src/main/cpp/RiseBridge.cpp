@@ -30,8 +30,8 @@
 
 // L4d — ViewportFrameStore-driven production-render path.
 // The rasterizer feeds pixels into a canonical HDR FrameStore wrapped
-// by ViewportFrameStore; on each tile/frame observer callback the
-// bridge RenderToBuffer(RGBA8_sRGB)s directly into m_framebuffer
+// by ViewportFrameStore; frame completion and display-cadence generation
+// polling RenderToBuffer(RGBA8_sRGB) directly into m_framebuffer
 // (saving the RGBA16-then->>8 hop the legacy RasterizerOutputAdapter
 // performed) and fires the existing onRegionInvalidated JNI
 // notification.  Adds live exposure scrubbing (setViewExposureEV)
@@ -181,17 +181,12 @@ void RiseBridge::initialize(const std::string& projectRoot,
 
 void RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
     if (!env) return;
-    // L4 round-5 P1-A — serialise the global-ref swap against
-    // worker-thread CallVoidMethod sites.  RenderViewModel
-    // (RenderViewModel.kt:327) calls nativeSetCallback(null) at
-    // ViewModel onCleared without first joining the
-    // Dispatchers.IO-launched nativeRasterize coroutine, so this
-    // path can race the rasterizer worker pool firing
-    // onProgressTick / onLogLine / onProductionVFSTileComplete.  Without
-    // the mutex the pre-L4d setCallback would
-    // DeleteGlobalRef under the worker's nose and the next
-    // CallVoidMethod would UAF the jobject.
-    std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+    // ViewModel replacement can happen while a blocking JNI load/render call
+    // is still unwinding. Wait for that process-wide lifecycle before
+    // replacing the callback, then serialize the global-ref swap against
+    // worker-thread CallVoidMethod sites.
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
     if (m_kotlinCallback) {
         env->DeleteGlobalRef(m_kotlinCallback);
         m_kotlinCallback = nullptr;
@@ -224,6 +219,7 @@ void RiseBridge::teardownJob() {
 }
 
 bool RiseBridge::loadScene(const std::string& absPath) {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
     if (!m_initialized) {
         LOGE("loadScene: bridge not initialized");
         return false;
@@ -267,6 +263,7 @@ bool RiseBridge::loadScene(const std::string& absPath) {
 }
 
 bool RiseBridge::rasterize() {
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
     if (!m_job) {
         LOGE("rasterize: no job loaded");
         return false;
@@ -290,6 +287,11 @@ bool RiseBridge::rasterize() {
     // BLOCKING. Library spawns its own pthread worker pool, dispatches tiles,
     // joins on completion. Tile callbacks fire from the workers; cancellation
     // is via the progress callback return value.
+    m_productionRenderActive.store(true,std::memory_order_release);
+    struct RenderActiveReset {
+        std::atomic<bool>& active;
+        ~RenderActiveReset() { active.store(false,std::memory_order_release); }
+    } renderActiveReset{m_productionRenderActive};
     const bool ok = m_job->Rasterize();
     LOGI("rasterize: returned %d", ok ? 1 : 0);
     return ok;
@@ -488,14 +490,10 @@ void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
     }
 }
 
-// L4 round-7 P1 perf fix: render only the changed region into the
-// matching slice of m_framebuffer, and notify Kotlin with that
-// region's bounds.  Per-tile work is now O(tile-area) not O(image-
-// area) — was a ~4× regression vs the legacy `>> 8`-of-tile path.
-// `halfOpenRoi == nullptr` → render full image (used by frame-
-// complete and exposure-scrub paths).
-void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
-                                             bool nonBlocking) {
+// Android's production tile callback is intentionally unwired. This full-frame
+// conversion runs only at display-cadence generation polls, frame completion,
+// or explicit view-transform refreshes; render workers never enter it.
+void RiseBridge::renderProductionVFS(bool nonBlocking) {
     if (!m_productionVFS) return;
     // GetDimensions takes chainMutex_ shared internally — safe against
     // a concurrent resolution-change reallocation in the rasterizer
@@ -508,21 +506,6 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
     // of dims (onSceneReady) BEFORE the first RenderToBuffer write.
     ensureFramebuffer(W, H);
 
-    // Compute the inclusive bounds we'll send to Kotlin AFTER
-    // clipping to image dims.  (0,0,H-1,W-1) for full-image emits.
-    unsigned int emitTop = 0, emitLeft = 0, emitBottom = H - 1, emitRight = W - 1;
-    if (halfOpenRoi) {
-        const unsigned int y0 = halfOpenRoi->top;
-        const unsigned int x0 = halfOpenRoi->left;
-        const unsigned int y1 = std::min<unsigned int>(halfOpenRoi->bottom, H);
-        const unsigned int x1 = std::min<unsigned int>(halfOpenRoi->right,  W);
-        if (y1 <= y0 || x1 <= x0) return;
-        emitTop    = y0;
-        emitLeft   = x0;
-        emitBottom = y1 - 1;
-        emitRight  = x1 - 1;
-    }
-
     {
         std::lock_guard<std::mutex> lock(m_fbMutex);
         if (!m_framebuffer || m_fbWidth != W || m_fbHeight != H) return;
@@ -531,27 +514,13 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
             static_cast<RISE::DISPLAY_TRANSFORM>(m_viewToneCurve.load());
         const ViewTransform xf = ViewTransform::ForLDRDisplay(
             static_cast<float>(m_viewExposureEV.load()), tc);
-        if (halfOpenRoi) {
-            // Region path — see RISEBridge.mm:EmitRegion_locked
-            // and FrameStore.cpp:748-750 for the dst-offset rationale:
-            // RenderToBuffer writes pixels at
-            //   dst[(y - y0) * dstStride + (x - x0) * bpp]
-            // so we point dst at the (y0, x0) pixel of the framebuffer
-            // and pass the FULL row stride.
-            uint8_t* base = m_framebuffer
-                            + (static_cast<size_t>(emitTop) * W + emitLeft) * 4;
-            m_productionVFS->RenderToBuffer(
-                base, static_cast<size_t>(W) * 4,
-                *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf, nonBlocking);
-        } else {
-            m_productionVFS->RenderToBuffer(
-                m_framebuffer, static_cast<size_t>(W) * 4,
-                RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
-        }
+        m_productionVFS->RenderToBuffer(
+            m_framebuffer, static_cast<size_t>(W) * 4,
+            RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
         ++m_fbGeneration;
     }
 
-    // Notify Kotlin of the dirty region (inclusive bounds).
+    // Notify Kotlin that the full image changed.
     // L4 round-5 P1-A — guard the global ref against a concurrent
     // setCallback(null) UAF.
     {
@@ -561,7 +530,7 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
             if (env) {
                 ScopedLocalFrame frame(env, 4);
                 env->CallVoidMethod(m_kotlinCallback, g_cb.onRegionInvalidated,
-                                    packRect(emitTop, emitLeft, emitBottom, emitRight));
+                                    packRect(0, 0, H - 1, W - 1));
                 if (env->ExceptionCheck()) {
                     env->ExceptionDescribe();
                     env->ExceptionClear();
@@ -574,7 +543,7 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
 void RiseBridge::onProductionVFSFrameComplete() {
     // Frame-complete fires once per frame (not per tile) — full-image
     // emit guarantees post-denoise / post-resolve coherence.
-    onProductionVFSTileComplete(nullptr);
+    renderProductionVFS();
     // L8 round 9 — sync the poll sentinel so a subsequent
     // pollProductionVFS doesn't redo the same work.
     if (m_productionVFS) {
@@ -602,7 +571,7 @@ void RiseBridge::pollProductionVFS() {
     // L8 round 14 — `nonBlocking=true`.  See FrameStore::Render doc;
     // prevents the RenderViewModel poll path from blocking on a
     // slow worker block's tile exclusive.
-    onProductionVFSTileComplete(nullptr, /*nonBlocking=*/true);
+    renderProductionVFS(/*nonBlocking=*/true);
     m_lastSeenGeneration.store(gen, std::memory_order_release);
 }
 
@@ -636,7 +605,7 @@ RISE::Implementation::ViewportFrameStore* RiseBridge::getOrCreateInteractiveVFS(
 }
 
 // L5a round-5 — interactive VFS frame-complete observer.  Same
-// shape as `onProductionVFSTileComplete(nullptr)` (full-image
+// shape as `renderProductionVFS()` (full-image
 // path) but reads dims + RenderToBuffer's from the interactive
 // VFS, so the production VFS's pixels are not disturbed.  Both
 // VFSes currently render into the same `m_framebuffer` for
@@ -687,24 +656,23 @@ void RiseBridge::onInteractiveVFSFrameComplete() {
 
 void RiseBridge::setViewExposureEV(double ev) {
     m_viewExposureEV.store(ev);
-    // Re-render BOTH VFS surfaces at the new EV.  Production
-    // re-runs through the full-image tile-complete path; interactive
-    // re-runs through its frame-complete path.  Round-5: round-trip
-    // both so the slider works whichever surface is currently
-    // displayed (Compose currently shows whichever wrote to
-    // m_framebuffer last; future split-buffer compose will pick
-    // per-layer).
-    onProductionVFSTileComplete(nullptr);
-    onInteractiveVFSFrameComplete();
+    if (m_productionRenderActive.load(std::memory_order_acquire) ||
+        !m_viewportRunning.load(std::memory_order_acquire)) {
+        renderProductionVFS();
+    } else {
+        onInteractiveVFSFrameComplete();
+    }
 }
 
 void RiseBridge::setViewToneCurve(int curve) {
-    // L5e — same lifecycle as setViewExposureEV: atomic store,
-    // re-render both VFS surfaces.  No-op for VFSes that haven't
-    // allocated yet.
+    // L5e — same lifecycle and active-display selection as exposure.
     m_viewToneCurve.store(curve);
-    onProductionVFSTileComplete(nullptr);
-    onInteractiveVFSFrameComplete();
+    if (m_productionRenderActive.load(std::memory_order_acquire) ||
+        !m_viewportRunning.load(std::memory_order_acquire)) {
+        renderProductionVFS();
+    } else {
+        onInteractiveVFSFrameComplete();
+    }
 }
 
 bool RiseBridge::saveAs(const std::string& path,

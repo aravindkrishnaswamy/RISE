@@ -161,7 +161,7 @@ public:
     // threaded into the start call itself.
     bool startViewport(bool suppressFirstFrame);
     void stopViewport();
-    bool isViewportRunning() const { return m_viewportRunning; }
+    bool isViewportRunning() const { return m_viewportRunning.load(); }
     bool hasLivePreview() const    { return m_viewportRasterizer != nullptr; }
 
     // Shrink the loaded scene's Film so the interactive preview
@@ -358,12 +358,10 @@ private:
     void ensureProductionVFSCreated();
     void ensureProductionVFSAttachedToRasterizer();
     void ensureInteractiveVFSCreated();
-    // L4 round-7 P1: tile callback takes the half-open roi so we
-    // can RenderToBuffer just the changed region (was: full image
-    // every tile fire — ~4× regression vs legacy).  nullptr → full
-    // image (used by frame-complete + setViewExposureEV scrub).
-    void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
-                                     bool nonBlocking = false);
+    // Android deliberately has no production tile callback. Render the
+    // current full VFS image only from frame completion, display-cadence
+    // generation polling, or an explicit view-transform refresh.
+    void renderProductionVFS(bool nonBlocking = false);
     void onProductionVFSFrameComplete();
     // L8 round 9 — generation-gated progressive-update poll. Called from
     // RenderViewModel's 30 Hz coroutine during an active render. See
@@ -383,8 +381,13 @@ private:
     RISE::Implementation::ViewportFrameStore* getOrCreateInteractiveVFS();
 
     // Job & state
+    // Blocking JNI load/render calls hold this process-wide Job lifecycle
+    // lock. Callback replacement waits for the same lock, so a replacement
+    // ViewModel cannot tear down or receive callbacks from the prior call.
+    mutable std::mutex m_sceneLifecycleMutex;
     RISE::IJobPriv*    m_job = nullptr;
     std::atomic<bool>  m_cancel{false};
+    std::atomic<bool>  m_productionRenderActive{false};
 
     // ETA estimator, read from the UI thread and written from progress
     // callbacks on worker threads.
@@ -403,12 +406,11 @@ private:
     // released in setCallback(nullptr) or ~RiseBridge.  Guarded by
     // m_kotlinCallbackMutex (L4 round-5 P1-A): worker threads from
     // the rasterizer pool fire callbacks (onProgressTick / onLogLine
-    // / onVFSTileComplete / writeDirtyRegion / ensureFramebuffer)
+    // / renderProductionVFS / writeDirtyRegion / ensureFramebuffer)
     // that JNI-CallVoidMethod against this jobject from arbitrary
-    // threads, while the UI thread can call setCallback(null) at
-    // ViewModel teardown without waiting for an in-flight render
-    // (RenderViewModel.kt:313 documents this — `cancel()` doesn't
-    // join the rasterize coroutine).  Without the mutex,
+    // threads. Callback replacement first waits on m_sceneLifecycleMutex,
+    // then takes this mutex so it cannot retarget an in-flight native call.
+    // Without the callback mutex,
     // DeleteGlobalRef would race CallVoidMethod and UAF.  Holding
     // the mutex across CallVoidMethod is safe because the Kotlin
     // callbacks (onProgress/onSceneReady/etc.) don't re-enter the
@@ -431,7 +433,7 @@ private:
     RISE::IRayCaster*          m_viewportPolishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
     RISE::IRasterizer*         m_viewportRasterizer = nullptr;
     RISE::IRasterizerOutput*   m_viewportSink = nullptr;
-    bool                       m_viewportRunning = false;
+    std::atomic<bool>          m_viewportRunning{false};
 
     void buildViewportLivePreview();
     void releaseViewportLivePreview();

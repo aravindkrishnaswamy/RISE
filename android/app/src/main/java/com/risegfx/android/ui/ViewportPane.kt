@@ -337,7 +337,10 @@ fun ViewportPane(
                 onExposureChange = { onExposureChange(it.toDouble()) },
                 toneCurve = viewToneCurve,
                 onToneCurveChange = onToneCurveChange,
-                enabled = state !is RenderState.Idle,
+                enabled = state !is RenderState.Idle &&
+                    state !is RenderState.Loading &&
+                    state !is RenderState.Rendering &&
+                    state !is RenderState.Cancelling,
             )
             Spacer(Modifier.height(8.dp))
             Row(Modifier.weight(1f).fillMaxWidth()) {
