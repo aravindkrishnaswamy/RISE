@@ -1,7 +1,8 @@
-# Fire output-provenance pin v1 — §8 completion proposal (draft; ratify in design loop)
+# Fire output-provenance pin v1 — §8 completion (RATIFIED r48)
 
-**Status: DRAFT PIN — implementation may proceed against it; formal
-ratification is a design-loop edit the owner routes (r48+).** This document
+**Status: RATIFIED — design revision r48 (2026-08-08) adopts P-1 through
+P-4; this document is normative alongside §8, and §8 carries the ratified
+summary.** This document
 completes four §8 output-provenance details the design references but does
 not pin, each derived by extending an *existing* §8 pattern rather than
 inventing one. If the design loop lands different semantics, the design

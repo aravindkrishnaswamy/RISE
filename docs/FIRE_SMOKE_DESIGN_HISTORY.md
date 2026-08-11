@@ -913,3 +913,40 @@ it was already tried and refuted here.
   spectral reference 1.126/0.725/0.084 % R/G/B against the recorded 5 %
   bound), all zero-P1 with green suites.
 
+
+- **r48 (2026-08-08):** the dataset-ratification revision — landed by the
+  data/records workstream at the owner's direction, closing out its
+  Q1/Q2 arc. **Q2 (optics) closed for the visible band**: adopted
+  `mac_equivalent_E` (C&C 1990 shape normalized to MAC(550)=8.0 m²/g at
+  pinned ρ=1.8 g/cm³; MAC-normative, density hashed with the table;
+  E_eff ≈ 0.39–0.51 visible; raw C&C and Dalzell–Sarofim demoted to named
+  ablation records) plus the four constituent presets — hot soot
+  ω=0.10/g=0.22 @550 (RDG-FA over table-verified morphology, validated
+  three ways), cool carbon 8.7/0.25/1.0–1.2/0.58 with the §4.3 anchor
+  check passed to <1 % (B&B MAC ↔ M&C extinction imply ω=0.251), condensed
+  organics by validated Mie ("fresh, dry, near-source, flaming" domain).
+  §12 fixtures moved to a distinct SYNTHETIC_NON_PREDICTIVE record.
+  Still open within Q2: >780 nm/IR closure (long-wave E(m) axis for §3.5;
+  `condensed_organics_ir_unclosed`) and the §3.5 derivative enclosures.
+  **§7.0 chem gate language revised** to "pinned evidence record" — a
+  derived record over traceable measured inputs qualifies iff it carries
+  measurement/covariance/digitization/geometry/spectral-truncation/
+  domain-transfer/model-form uncertainties; the wax derived record was
+  built and REFUTES negligibility at the 1 % threshold (central 1.02 %,
+  95 % bound 17.1 %; failure physical, not conservatism) — predictive
+  sooty fuels need real §4.4 chem records. **Q1 state recorded**:
+  composite-source per-fuel records allowed (separately hashed
+  subrecords, intersected domains); methane deferred (Lai 2025 read and
+  evaluated — CH*/C₂* adoptable with author contact, 390 nm/CO₂*
+  structurally absent); methanol preview for v1 with a named reopen
+  trigger; leg (ii) recorded as gated by §12 item 4. **§8 ratifications**:
+  the canonical provenance-field schema (envelopes inside the hashed
+  payload; uncertainty-kind enum; per-record out_of_domain_policy;
+  aggregates carry component policies only) and the four output-provenance
+  completions of FIRE_OUTPUT_PROVENANCE_PIN_V1.md (preview_primary;
+  tagged active_fire_media; renderer_build_v1 + parameter-surface
+  ratchet; one-preimage provenance_id with attribute-stripped EXR
+  mirroring), all implementation-consumed with green suites (236/236)
+  before ratification. Evidence trail: FIRE_OPTICS_PRESET_V1.md,
+  FIRE_CHEM_RECORDS_V1.md, FIRE_DATASET_PULL_MANIFEST.md,
+  FIRE_SOURCE_ALTERNATIVES_AUDIT_2026-08-06.md, docs/data/*.

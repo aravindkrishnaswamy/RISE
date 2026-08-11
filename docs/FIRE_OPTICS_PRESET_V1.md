@@ -1,6 +1,9 @@
 # Fire constituent optical preset v1 — draft record (§12 Q2)
 
-**Status: DRAFT FOR OWNER REVIEW — nothing here is adopted.** This document
+**Status: ADOPTED at design revision r48 (2026-08-08) for the visible
+band** — §12 item 2 records the closure; the IR/long-wave axis remains
+open there. This document is the evidence trail for the adopted records.
+Originally: this document
 assembles the candidate v1 constituent optical presets with full provenance,
 uncertainties, applicability limits, the §4.3 total-anchor consistency check,
 and every computation shown. Adopting these records is a design decision

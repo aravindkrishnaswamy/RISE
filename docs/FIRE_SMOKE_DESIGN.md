@@ -1578,11 +1578,17 @@ Rayleigh absorption regime:
 > gate: 1 g/m³ at φ = 1 must give f_v = 5.5556×10⁻⁷.
 
 E(m) ≈ 0.26 for the classic Dalzell–Sarofim index m = 1.57 − 0.56i, and is
-only weakly λ-dependent in the visible for mature soot (modern compilations
-put E(m) in 0.24–0.33; dataset policy is §12's E(m) decision — and the
-choice is shared
+only weakly λ-dependent in the visible for mature soot. **The adopted
+dataset (r48) is the `mac_equivalent_E` record** — the C&C 1990 spectral
+shape normalized to measured mass absorption, giving E_eff ≈ 0.39–0.51
+across the visible; this is deliberately higher than index-derived values
+(modern MAC-consistent E is 0.32–0.43, Liu et al. 2020/Forestieri 2018,
+vs 0.22–0.29 from the classic in-flame inversions) because RISE's Rayleigh
+expression applies no separate aggregate correction and the effective value
+must reproduce measured absorption per unit soot mass. D–S 0.26 remains
+the analytic fixture. The choice is shared
 with the sim's hot-carbon component via C₀ = 6πE(m), §3.5, carried in the
-§8 metadata).
+§8 metadata.
 Consequences:
 
 - **Extinction is chromatic** (∝ 1/λ): blue is absorbed/emitted more than red.
@@ -1708,8 +1714,10 @@ multiplication. Because φ(T) is smooth (§3.4), the hot↔cool carbon transitio
 (≈4.8 → 8.7 m²/g at 633 nm) is continuous in T, and each unit of mass has
 exactly one absorption/scattering model at each temperature — no double count,
 and §4.2 emits from the resulting **total σ_a**. Predictive constituent
-constants come only from the frozen §12 versioned presets; until Q2 closes,
-the listed numerical values are non-predictive regression fixtures. The formulas are dimensionally
+constants come only from the frozen §12 versioned presets — **frozen as of
+r48 for the visible band** (the docs/data preset-v1 records, §12 item 2);
+the §12 fixture values are a separate synthetic record and remain
+non-predictive. The formulas are dimensionally
 consistent as written (g/m³ × m²/g = m⁻¹). The k_m anchor: Mulholland–
 Croarkin's measured 8.7 m²/g at 633 nm is total post-flame smoke
 extinction — the constituent presets (k_m,carbon, k_m,cond, each with its
@@ -2194,16 +2202,31 @@ Output may be **labelled predictive** only when, in addition to the phase
 gates above:
 
 - **Optics** — §12 Q2's separate constituent datasets are frozen as preset v1
-  and the total-mixture 8.7 m²/g anchor passes. The values currently in §12
-  are explicitly non-predictive regression fixtures.
+  and the total-mixture 8.7 m²/g anchor passes. **Satisfied as of r48**: the
+  adopted records are `mac_equivalent_E` plus the four constituent presets
+  ([docs/data/](data/), [FIRE_OPTICS_PRESET_V1.md](FIRE_OPTICS_PRESET_V1.md));
+  the anchor check passed to < 1 % (implied ω = 0.251 vs B&B's independent
+  0.25). The §12 fixture values live in a separate
+  SYNTHETIC_NON_PREDICTIVE record with its own ID and are never consumed
+  predictively.
 - **Chemiluminescence** — §12 Q1's absolutely-calibrated per-fuel record
   exists for the declared fuel. Otherwise `chem_model=none` is predictive
-  **only** when a pinned measurement reports a 95 %-confidence upper bound
-  below **both** 1 % of that fuel/case's measured 380–780 nm radiant power
-  **and** the absolute radiance gate's uncertainty at every gated wavelength;
-  absent that record, a missing calibrated chem record is a predictive hard
-  error. Synthetic η_b/S_b records are estimator tests and preview assets
-  only.
+  **only** when a pinned evidence record reports a one-sided 95 %-confidence
+  upper bound — obtained either directly or through a validated measurement
+  model over traceable measured inputs; a derived record must include
+  measurement, covariance, digitization, geometry, spectral-truncation,
+  domain-transfer, and model-form uncertainties — below **both** 1 % of that
+  fuel/case's measured 380–780 nm radiant power **and** the absolute
+  radiance gate's uncertainty at every gated wavelength (the second leg is
+  evaluable only after §12 item 4 pins the gate's wavelengths and
+  uncertainty); absent that record, a missing calibrated chem record is a
+  predictive hard error. **The derived-record route was executed for wax
+  (r48): central 1.02 %, 95 % bound 17.1 % — the criterion is NOT met, and
+  sensitivity shows the failure is physical, not conservatism
+  ([FIRE_CHEM_RECORDS_V1.md](FIRE_CHEM_RECORDS_V1.md) §1.7); heptane/wood
+  are a fortiori worse. Predictive sooty fuels therefore require real §4.4
+  chem records.** Synthetic η_b/S_b records are estimator tests and preview
+  assets only.
 - **Soot/condensable yields** — §3.4's calibration and cross-prediction gates
   pass for the fuel in question.
 
@@ -3472,7 +3495,18 @@ carry indistinguishable metadata. Each sequence stores:
   string embedded **verbatim** as a manifest byte string; its record ID is
   SHA-256 of those exact bytes. An override file contains exactly that record
   byte string, so equality has one preimage (not wrapper or parsed-map
-  equality);
+  equality). **Ratified r48 — the canonical provenance-field schema**
+  (`fire-optics-canonical-provenance-schema-v1`, docs/data/): every
+  operational value carries a {value, uncertainty, provenance,
+  applicability} envelope **inside the hashed payload** — a changed
+  uncertainty is a different record; uncertainty kinds are a pinned enum
+  (measured_1sigma, expanded_95, range, assumption_bound with the assumed
+  bound as its magnitude, computed_range_from_input_sensitivity,
+  design_pinned_exact, synthetic_exact); table metadata is per-table with
+  optional per-column overrides; every record carries an explicit
+  `out_of_domain_policy` (stated even when not axis-based), and aggregate
+  records carry **no policy of their own** — component policies are copied
+  verbatim per component;
 - the **simulator-only gas-opacity record**: CO₂/H₂O table ID/hash,
   wavelength/T ranges, p₀, composition basis, pressure/broadening convention,
   interpolation and overlap rule, plus the 380–780 nm negligibility bound;
@@ -3666,6 +3700,30 @@ its fidelity claim was predictive or preview. It is deliberately not a
 distributed-transaction or attestation system (see the integrity-vs-authenticity
 note above). Round-trip tests cover each output route and verify the artifact
 digest, sequence hash, and fidelity reasons.
+
+**Ratified r48 — the four §8 completions of
+[FIRE_OUTPUT_PROVENANCE_PIN_V1.md](FIRE_OUTPUT_PROVENANCE_PIN_V1.md)**,
+which is now normative alongside this section: (P-1) `artifact_fidelity`
+gains **`preview_primary`** — artifact-level semantics identical to
+`predictive_primary` (lossless, raw, empty artifact reasons, sidecar
+required) with `render_fidelity_status=preview`; the render/artifact axes
+are orthogonal. (P-2) `active_fire_media` is a **tagged schema**,
+`media_kind = sequence_backed | static_authored`; the static variant
+carries the entry key plus `authored_config_digest` and
+`optical_record_ids`, with sequence-only fields structurally absent —
+never null — and the render carrying `producer_unqualified` as already
+specified. (P-3) the resolved-configuration and build-identity field
+enumerations are implementation-defined schema-v1 CBOR maps under this
+section's categories, ratcheted by the parameter-surface test;
+`renderer_build_v1` mirrors `producer_build_v1` with
+`renderer_build_id = SHA-256(exact bytes)`. (P-4) the sidecar envelope is
+exactly `{payload, provenance_id}` with `provenance_id = SHA-256` over the
+canonical payload bytes alone (payload includes `artifact_sha256` and no
+ID — the sequence_id one-preimage pattern); EXR mirroring uses the
+`riseFireProv_` attribute prefix, sidecar authoritative, and
+`artifact_sha256` is computed over the artifact bytes **with
+`riseFireProv_` attributes excluded** (the attribute-stripped branch, as
+implemented and round-trip tested).
 
 **Render-preparation dependency.** Phase C's per-frame grid/majorant/CDF swaps
 require that scene and render-configuration state be *frozen* for the duration
@@ -4287,7 +4345,15 @@ medium in Phase C.
   E = 0.26 is the Phase A analytic default and regression fixture; Phase C
   fidelity adopts a **versioned λ-dependent table** with κ_P(T) evaluated
   numerically (§3.5) — never the 3.83 constant formula with λ-dependent
-  E — dataset ID/hash in the §8 metadata.
+  E — dataset ID/hash in the §8 metadata. **Superseded in part r48**: the
+  adopted visible-band table is **`mac_equivalent_E`** — the C&C 1990
+  dispersion *shape* normalized to the measured mass absorption
+  MAC(550) = 8.0 ± 0.7 m²/g (Liu et al. 2020; B&B 7.5 ± 1.2 compatible) at
+  the pinned ρ = 1.8 g/cm³, named as an *effective absorption function*
+  rather than an index-derived E(m) because the §4.1 Rayleigh expression
+  applies no aggregate-interaction correction. Raw C&C and D–S are named
+  ablation records; E = 0.26 remains the Phase-A analytic fixture. The
+  κ_P(T)/long-wave portion stays with §3.5 as planned (see item 2).
 - **Phase-function form / provisional optics fixtures** (was Q2) → HG is an
   accepted Phase-A/C *functional form*. The numerical records hot soot
   (ω=0.10,g=0.5), fresh smoke (n=1.2,ω=0.6,g=0.6), and organic droplets
@@ -4297,7 +4363,14 @@ medium in Phase C.
   0.46–0.74 is a mixed aerosol measurement and cannot be assigned to the
   carbon-only constituent (whose mature-soot SSA is ~0.2–0.3). Predictive
   output remains disabled until Q2 freezes separate constituent datasets and
-  the total-mixture 8.7 m²/g anchor is passed.
+  the total-mixture 8.7 m²/g anchor is passed. **r48: Q2's visible-band
+  freeze is done and the anchor passed** (item 2 below); these fixture
+  values now live in their own SYNTHETIC_NON_PREDICTIVE record with a
+  distinct ID, and the predictive presets are the docs/data records.
+  Note two fixture-vs-preset divergences are intentional and documented:
+  g_hot fixture 0.5 vs adopted 0.22 (0.5 is a mature-aggregate value, which
+  the φ(T) split assigns to cool carbon), and condensed n fixture 0.5 vs
+  computed 1.78 (aged-droplet vs fresh-flaming size regime).
 - **Chromatic majorants** (was Q4; adopted) → max-over-λ retained
   initially; the 380–780 nm inefficiency bound is ~2.05× for soot (1/λ)
   and ~2.94× for n = 1.5 smoke — acceptable pre-profiling. Bounds must
@@ -4357,9 +4430,27 @@ medium in Phase C.
    on its recorded interval, state-dependent yield fit and independent spatial
    validation—is settled, §4.4.) **Until one record is adopted for a
    fuel, predictive rendering for that fuel is blocked.** `chem_model=none`
-   preserves predictive status only with the measured negligibility record and
+   preserves predictive status only with the pinned evidence record and
    thresholds in §7.0; lack of data is not evidence of zero emission. The
    provisional η_b/S_b values are test fixtures, not physical defaults.
+   **State as of r48** (evidence package
+   [FIRE_CHEM_RECORDS_V1.md](FIRE_CHEM_RECORDS_V1.md), machine-readable
+   records in docs/data/): (a) **composite-source records are allowed** —
+   one versioned per-fuel record may contain separately hashed subrecords
+   with distinct provenance; the certified domain is the intersection of
+   subrecord domains. (b) **Methane is deferred** — Lai et al. 2025 was
+   located, read, and evaluated criterion-by-criterion: adoptable with
+   author contact for CH*(431)/C₂* only; its 418 nm cutoff structurally
+   excludes CH* B–X 390 nm and the CO₂* continuum, so a second UV-extended
+   source is required regardless; the drafted author request is unsent. On
+   reopen, the CH* 390 closure, 431 nm continuum decomposition, and CO₂*
+   model qualification stand. (c) **The negligibility route is closed by
+   verdict for the sooty fuels** (see §7.0 — wax derived bound 1.02 %
+   central / 17.1 % at 95 % vs the 1 % criterion; heptane/wood lack any
+   lower-boundable visible denominator). (d) **Methanol stays preview for
+   v1** — no adoptable calibrated dataset exists and its visible appearance
+   is predominantly chemiluminescent; reopen trigger: a named predictive
+   acceptance case, then Liu/Lai-group parlay before any commissioning.
 2. **(optics)** Provenance and versioning for the adopted optical presets:
    which specific measurement sets become the named v1 presets for soot
    albedo, the **constituent-specific** smoke sets (k_m/n/ω/g for cool
@@ -4384,6 +4475,28 @@ medium in Phase C.
    (second-round qualification, adopted):
    **a single versioned preset record embedded in every grid sequence**
    (§8 metadata), not loose per-parameter choices.
+   **CLOSED r48 for the visible band.** The adopted v1 presets
+   (evidence and computations:
+   [FIRE_OPTICS_PRESET_V1.md](FIRE_OPTICS_PRESET_V1.md); records in
+   docs/data/, implementation-consumed with load-time gates): E(m) →
+   **`mac_equivalent_E`** (C&C 1990 spectral shape normalized to
+   MAC(550 nm) = 8.0 m²/g at the pinned ρ = 1.8 g/cm³; MAC(λ) normative,
+   density hashed with the table; raw C&C and Dalzell–Sarofim demoted to
+   named ablation records); hot soot ω = 0.10 / g = 0.22 @550 nm via
+   RDG-FA over table-verified morphology, three-way validated; cool
+   carbon k_ext(633) = 8.7 / ω = 0.25 / n = 1.0–1.2 / g = 0.58 with the
+   **anchor check passed to < 1 %** (B&B MAC ↔ M&C extinction imply
+   ω = 0.251) and mixture dilution consistent for flaming wood
+   (EC/PM ≈ 0.80, Chen 2007); condensed organics computed by validated
+   Mie over cited inputs, domain "fresh, dry, near-source, flaming".
+   Every value carries a schema-enforced envelope (provenance,
+   enum-kind uncertainty, applicability) inside the hashed payload.
+   **Still open within this item**: the > 780 nm/IR closure — the
+   long-wave E(m) extension (C&C fit to 30 µm, model-form uncertainty
+   explicit) is a future record axis for §3.5, and condensed-organic IR
+   is blocked with reason `condensed_organics_ir_unclosed` until a
+   measured mid-IR record or a negligible-cooling bound exists; the
+   derivative enclosures land with that §3.5 record work.
 3. **(combustion/aerosol)** The qualifying y_cond calibration dataset remains
    unselected. Adoption requires every field and the paired particle-plus-gas
    measurement in §3.4, an archived raw-data snapshot/hash, the OC→surrogate
@@ -4399,7 +4512,10 @@ medium in Phase C.
    tolerance. The gate reads **raw pre-exposure, pre-tone-map NM radiance** in
    W·m⁻²·sr⁻¹·nm⁻¹ directly from the spectral harness; an XYZ/RGB EXR cannot
    serve as L_λ evidence. Predictive end-to-end radiometry remains blocked
-   until this record and tolerance are frozen.
+   until this record and tolerance are frozen. **This item also gates leg
+   (ii) of §7.0's chem-negligibility path** (chem below the gate's
+   uncertainty at every gated wavelength is un-evaluable until the gate's
+   wavelengths and uncertainty exist) — recorded r48.
 5. **(gas radiation)** Select and archive the simulator-only CO₂/H₂O opacity
    model required by §3.5/§8: spectroscopic source and table-generation code,
    wavelength/T/composition/pressure domains, broadening and band-overlap
