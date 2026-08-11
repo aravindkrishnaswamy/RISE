@@ -426,7 +426,10 @@ namespace RISE
 		Vector3 m_emissionBinSize;
 		Scalar m_thermalEmissionImportance;
 		Scalar m_minPositiveThermalEmissionPdf;
+		unsigned long long m_fireMajorantGeneration;
+		unsigned long long m_fireEmissionGeneration;
 		bool m_fireDerivedStructuresCurrent;
+		bool m_forTestBlockFireDerivedRebuild;
 		bool m_valid;
 
 		virtual ~MultichannelHeterogeneousMedium();
@@ -605,15 +608,28 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
-		void InvalidateFireDerivedStructures() override
+		void InvalidateFireDerivedStructures()
 		{
 			m_fireDerivedStructuresCurrent = false;
 		}
-		bool FireDerivedStructuresCurrent() const override
+		bool FireDerivedStructuresCurrent() const
 		{
 			return m_fireDerivedStructuresCurrent;
 		}
-		bool RebuildFireDerivedStructuresForRender() override;
+		bool RebuildFireDerivedStructuresForRender();
+		unsigned long long ForTest_FireMajorantGeneration() const
+		{
+			return m_fireMajorantGeneration;
+		}
+		unsigned long long ForTest_FireEmissionGeneration() const
+		{
+			return m_fireEmissionGeneration;
+		}
+		void ForTest_SetBlockFireDerivedRebuild( const bool block )
+		{
+			m_forTestBlockFireDerivedRebuild = block;
+			if( block ) InvalidateFireDerivedStructures();
+		}
 		bool BuildBakedChannelRecord( std::vector<unsigned char>& record ) const;
 		// Test-only controlled ablation; set before Rasterize launches workers.
 		bool ForTest_SetEffectiveAbsorptionAblation(

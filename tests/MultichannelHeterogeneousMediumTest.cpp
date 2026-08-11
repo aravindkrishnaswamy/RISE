@@ -2855,22 +2855,38 @@ namespace
 			newFire->GetThermalEmissionImportance() > oldImportance &&
 			newFire->TrackingMajorantAtNM(center,500.0) > oldMajorant,
 			"the replacement CDF and majorant consume the freshly authored carbon binding" );
-		if( oldFire && newFire ) {
-			job->GetScene()->SetGlobalMedium(oldFire);
-			Check( !job->Rasterize(),
-				"a stale fire medium that cannot be rebuilt from the active manager fails closed before rendering" );
-			job->GetScene()->SetGlobalMedium(newFire);
-		}
 		Job* concreteJob = dynamic_cast<Job*>(job);
-		const bool invalidated = concreteJob && concreteJob->ForTest_SetFireEffectiveAbsorptionAblation(
-			"fire",MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation);
-		Check( invalidated && newFire && !newFire->FireDerivedStructuresCurrent(),
-			"an in-place extinction mutation invalidates both derived structures" );
+		const unsigned long long majorantGeneration = newFire ?
+			newFire->ForTest_FireMajorantGeneration() : 0u;
+		const unsigned long long emissionGeneration = newFire ?
+			newFire->ForTest_FireEmissionGeneration() : 0u;
+		const bool blocked = concreteJob && concreteJob->ForTest_SetBlockFireDerivedRebuild(
+			"fire",true);
+		Check( blocked && !job->Rasterize() && newFire &&
+			!newFire->FireDerivedStructuresCurrent() &&
+			newFire->ForTest_FireMajorantGeneration() == majorantGeneration &&
+			newFire->ForTest_FireEmissionGeneration() == emissionGeneration,
+			"a managed provenance-valid stale fire medium fails closed when rebuild is unavailable" );
+		const Scalar beforeMutationImportance = newFire ?
+			newFire->GetThermalEmissionImportance() : 0.0;
+		const Scalar beforeMutationSigmaT = newFire ?
+			newFire->GetCoefficientsNM(center,500.0).sigma_t : 0.0;
+		const bool unblocked = concreteJob && concreteJob->ForTest_SetBlockFireDerivedRebuild(
+			"fire",false);
+		const bool invalidated = unblocked && concreteJob->ForTest_SetFireEffectiveAbsorptionAblation(
+			"fire",MultichannelHeterogeneousMedium::FixtureMagnitudeBaseline);
+		Check( invalidated && newFire && !newFire->FireDerivedStructuresCurrent() &&
+			newFire->GetCoefficientsNM(center,500.0).sigma_t != beforeMutationSigmaT &&
+			newFire->GetThermalEmissionImportance() == beforeMutationImportance &&
+			newFire->ForTest_FireMajorantGeneration() == majorantGeneration &&
+			newFire->ForTest_FireEmissionGeneration() == emissionGeneration,
+			"a changed in-place optical coefficient leaves both derived structures stale until render" );
 		const bool rendered = invalidated && job->Rasterize();
 		Check( rendered && newFire && newFire->FireDerivedStructuresCurrent() &&
-			newFire->GetThermalEmissionImportance() > oldImportance &&
-			newFire->TrackingMajorantAtNM(center,500.0) > oldMajorant,
-			"render preflight rebuilds stale fire structures and retains the fresh mutation values" );
+			newFire->GetThermalEmissionImportance() != beforeMutationImportance &&
+			newFire->ForTest_FireMajorantGeneration() == majorantGeneration+1u &&
+			newFire->ForTest_FireEmissionGeneration() == emissionGeneration+1u,
+			"render preflight rebuilds both structures from the changed optical coefficients" );
 
 		if( oldFire ) oldFire->release();
 		safe_release(job);

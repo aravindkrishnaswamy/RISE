@@ -1914,6 +1914,9 @@ namespace RISE
 		bool ForTest_SetFireEffectiveAbsorptionAblation(
 			const char* name,
 			const unsigned int ablation );
+		bool ForTest_SetBlockFireDerivedRebuild(
+			const char* name,
+			const bool block );
 
 		//! Enumerate registered medium names; see IJob.h.
 		void EnumerateMediumNames(

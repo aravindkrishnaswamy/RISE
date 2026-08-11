@@ -7895,6 +7895,20 @@ bool Job::ForTest_SetFireEffectiveAbsorptionAblation(
 		static_cast<MultichannelHeterogeneousMedium::EffectiveAbsorptionAblation>(ablation));
 }
 
+bool Job::ForTest_SetBlockFireDerivedRebuild(
+	const char* name,
+	const bool block
+	)
+{
+	if( !name ) return false;
+	MediumMap::iterator it = mediaMap.find( String(name) );
+	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
+		dynamic_cast<MultichannelHeterogeneousMedium*>(it->second);
+	if( !medium ) return false;
+	medium->ForTest_SetBlockFireDerivedRebuild(block);
+	return true;
+}
+
 void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
 {
 	for( MediumMap::const_iterator it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
@@ -11527,11 +11541,13 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	std::vector<FrameStoreOutput::ActiveFireMedium> fireMediaMetadata;
 	for( std::set<const IMedium*>::const_iterator medium = activeMedia.begin();
 		medium != activeMedia.end(); ++medium ) {
-		if( !(*medium)->IsFireMedium() || (*medium)->FireDerivedStructuresCurrent() ) continue;
-		IMedium* managedMedium = 0;
+		const MultichannelHeterogeneousMedium* fireMedium =
+			dynamic_cast<const MultichannelHeterogeneousMedium*>(*medium);
+		if( !fireMedium || fireMedium->FireDerivedStructuresCurrent() ) continue;
+		MultichannelHeterogeneousMedium* managedMedium = 0;
 		for( MediumMap::iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
 			if( named->second == *medium ) {
-				managedMedium = named->second;
+				managedMedium = dynamic_cast<MultichannelHeterogeneousMedium*>(named->second);
 				break;
 			}
 		}
@@ -12442,8 +12458,10 @@ bool Job::ClearAll(
 	)
 {
 	for( MediumMap::iterator medium=mediaMap.begin(); medium!=mediaMap.end(); ++medium ) {
-		if( medium->second && medium->second->IsFireMedium() ) {
-			medium->second->InvalidateFireDerivedStructures();
+		MultichannelHeterogeneousMedium* fireMedium =
+			dynamic_cast<MultichannelHeterogeneousMedium*>(medium->second);
+		if( fireMedium ) {
+			fireMedium->InvalidateFireDerivedStructures();
 		}
 	}
 	// A deliberate ClearAll is a FULL scene reset -- it must include the retained canonical CST Document so a

@@ -2070,7 +2070,10 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	  m_emissionBinSize( 0, 0, 0 ),
 	  m_thermalEmissionImportance( 0.0 ),
   m_minPositiveThermalEmissionPdf( 0.0 ),
+	  m_fireMajorantGeneration( 0 ),
+	  m_fireEmissionGeneration( 0 ),
 	  m_fireDerivedStructuresCurrent( false ),
+	  m_forTestBlockFireDerivedRebuild( false ),
   m_valid( false )
 {
 	const IScalarPainter* chemPainters[3] = {
@@ -2227,6 +2230,7 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	IVolumeAccessor* majorantAccessor = new SummedConcentrationAccessor(
 		*m_pCarbonAccessor, m_pCondensedAccessor );
 	InitializeTrackingAccessor( *trackingAccessor, *majorantAccessor );
+	++m_fireMajorantGeneration;
 	safe_release( trackingAccessor );
 	safe_release( majorantAccessor );
 	m_previewFidelity = m_optics.EvaluateFidelity(
@@ -2239,6 +2243,7 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 		GlobalLog()->PrintEasyError(
 			"MultichannelHeterogeneousMedium:: failed to build finite thermal-emission importance" );
 	} else {
+		++m_fireEmissionGeneration;
 		m_fireDerivedStructuresCurrent = true;
 	}
 }
@@ -2316,7 +2321,8 @@ RISEPel HeterogeneousMedium::ForTest_EvalTransmittanceWithFixedRandom(
 bool MultichannelHeterogeneousMedium::RebuildFireDerivedStructuresForRender()
 {
 	m_fireDerivedStructuresCurrent = false;
-	if( !m_valid || !m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
+	if( m_forTestBlockFireDerivedRebuild || !m_valid ||
+		!m_pCarbonAccessor || !m_pTemperatureAccessor ) return false;
 	IVolumeAccessor* trackingAccessor = new MultichannelExtinctionAccessor(
 		*m_pCarbonAccessor, *m_pTemperatureAccessor, m_pCondensedAccessor,
 		m_hotExtinctionMass633, m_coolExtinctionMass633,
@@ -2325,9 +2331,11 @@ bool MultichannelHeterogeneousMedium::RebuildFireDerivedStructuresForRender()
 	IVolumeAccessor* majorantAccessor = new SummedConcentrationAccessor(
 		*m_pCarbonAccessor, m_pCondensedAccessor );
 	InitializeTrackingAccessor(*trackingAccessor,*majorantAccessor);
+	++m_fireMajorantGeneration;
 	safe_release(trackingAccessor);
 	safe_release(majorantAccessor);
 	if( !BuildThermalEmissionImportance() ) return false;
+	++m_fireEmissionGeneration;
 	m_fireDerivedStructuresCurrent = true;
 	return true;
 }
