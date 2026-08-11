@@ -345,8 +345,8 @@ bool RiseBridge::rasterize(uint64_t ownerToken) {
 }
 
 std::string RiseBridge::autoResolvedIntegrator(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return std::string();
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return std::string();
     if (!m_job) return std::string();
     RISE::IRasterizer* r = m_job->GetRasterizer();
     if (!r || !r->IsAutoDispatcher()) return std::string();
@@ -355,8 +355,8 @@ std::string RiseBridge::autoResolvedIntegrator(uint64_t ownerToken) const {
 }
 
 std::string RiseBridge::autoResolveReason(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return std::string();
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return std::string();
     if (!m_job) return std::string();
     RISE::IRasterizer* r = m_job->GetRasterizer();
     if (!r || !r->IsAutoDispatcher()) return std::string();
@@ -890,15 +890,9 @@ namespace {
 // renders and viewport-preview renders both flow through the same
 // framebuffer, so the UI doesn't need to know which one it's seeing.
 //
-// Two end-of-pass guards keep stale or undesirable buffers off the
-// screen (mirroring the macOS / Windows sinks):
-//   * Cancel guard: the rasterizer's FlushToOutputs fires
-//     unconditionally even when the dispatcher returned early for a
-//     cancel.  Without this check, every cancel-restart would flash a
-//     partially-rendered (mostly-black) buffer before the next pass.
-//   * Suppress-next: drops exactly one upcoming dispatch.  Used right
-//     after a production render returns so the production image stays
-//     on screen until the user actually starts interacting.
+// The suppress-next guard drops exactly one upcoming dispatch. It is used after
+// a production render returns so that image stays on screen until the user
+// actually starts interacting.
 class ViewportPreviewSink : public RISE::IRasterizerOutput,
                             public RISE::IFireRasterizerOutputRoute,
                             public RISE::Implementation::Reference {
@@ -913,10 +907,6 @@ public:
             m_fanoutVFS = nullptr;
         }
     }
-
-    // Borrowed; the bridge keeps the controller alive for the sink's
-    // lifetime.  Used to query IsCancelRequested at end-of-pass.
-    void SetController(RISE::SceneEditController* c) { m_controller = c; }
 
     // L5a round-5 — INTERACTIVE VFS to fan-out OutputImage into.
     // The interactive rasterizer's per-pass output is fed into
@@ -1004,7 +994,6 @@ public:
 
 private:
     RiseBridge*                                  m_bridge = nullptr;
-    RISE::SceneEditController*                   m_controller = nullptr;   // borrowed
     RISE::Implementation::ViewportFrameStore*    m_fanoutVFS = nullptr;    // strong (addref'd in SetFanoutVFS)
     std::atomic<bool>                            m_suppressNext{false};
 };
@@ -1051,8 +1040,8 @@ bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
                                 unsigned int maxSurfaceH,
                                 unsigned int maxLongEdge,
                                 uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_job) return false;
     if (maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0) return false;
     // Route through SetViewportFit (NOT ScaleFilmToFit directly) so the Job caches the CURRENT viewport size
@@ -1062,8 +1051,8 @@ bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
 }
 
 bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (m_viewportController) return true;
     if (!m_job) return false;
 
@@ -1075,13 +1064,9 @@ bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
         return false;
     }
     if (m_viewportSink) {
-        // The sink queries the controller's cancel state at end-of-pass
-        // so it can drop a stale dispatch.  Wire the pointer before
-        // installing the sink as a rasterizer output.  The downcast is
-        // safe — m_viewportSink is only ever populated with a freshly
-        // constructed ViewportPreviewSink in buildViewportLivePreview().
+        // The downcast is safe — m_viewportSink is only ever populated
+        // with a freshly constructed ViewportPreviewSink above.
         auto* previewSink = static_cast<ViewportPreviewSink*>(m_viewportSink);
-        previewSink->SetController(m_viewportController);
 
         // Latch the first-frame suppression BEFORE Start kicks the
         // render thread.  The Android sink is freshly constructed on
@@ -1102,26 +1087,28 @@ bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
 }
 
 bool RiseBridge::isViewportRunning(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    return ownsCallback(ownerToken) && m_viewportRunning.load();
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    return lifecycleLock.owns_lock() && ownsCallback(ownerToken)
+        && m_viewportRunning.load();
 }
 
 bool RiseBridge::hasLivePreview(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    return ownsCallback(ownerToken) && m_viewportRasterizer != nullptr;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    return lifecycleLock.owns_lock() && ownsCallback(ownerToken)
+        && m_viewportRasterizer != nullptr;
 }
 
 void RiseBridge::viewportSuppressNextFrame(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportSink) {
         static_cast<ViewportPreviewSink*>(m_viewportSink)->SuppressNextFrame();
     }
 }
 
 bool RiseBridge::stopViewport(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     stopViewportUnowned();
     return true;
 }
@@ -1139,13 +1126,13 @@ void RiseBridge::stopViewportUnowned() {
 }
 
 void RiseBridge::viewportSetTool(int t, uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_SetTool(m_viewportController, t);
 }
 int RiseBridge::viewportCurrentTool(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_CurrentTool(m_viewportController);
 }
@@ -1157,8 +1144,8 @@ int RiseBridge::viewportDefaultSubToolForCategory(int category) const {
 }
 int RiseBridge::viewportGetLastSubToolForCategory(int category,
                                                   uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) {
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) {
         return RISE::RISE_API_SceneEditController_DefaultSubToolForCategory(category);
     }
     if (!m_viewportController) {
@@ -1168,22 +1155,22 @@ int RiseBridge::viewportGetLastSubToolForCategory(int category,
         m_viewportController, category);
 }
 void RiseBridge::viewportRefreshGizmoHandles(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) {
         RISE::RISE_API_SceneEditController_RefreshGizmoHandles(m_viewportController);
     }
 }
 unsigned int RiseBridge::viewportGizmoHandleCount(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_GizmoHandleCount(m_viewportController);
 }
 bool RiseBridge::viewportGizmoHandle(unsigned int idx, double out[5],
                                      uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     int kind = 0;
     int axis = 0;
@@ -1201,51 +1188,51 @@ bool RiseBridge::viewportGizmoHandle(unsigned int idx, double out[5],
 }
 int RiseBridge::viewportGizmoHandleAt(double x, double y,
                                       uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return -1;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return -1;
     if (!m_viewportController) return -1;
     return RISE::RISE_API_SceneEditController_GizmoHandleAt(
         m_viewportController, x, y);
 }
 bool RiseBridge::viewportIsGizmoDragActive(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_IsGizmoDragActive(m_viewportController);
 }
 int RiseBridge::viewportActiveGizmoKind(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return -1;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return -1;
     if (!m_viewportController) return -1;
     return RISE::RISE_API_SceneEditController_ActiveGizmoKind(m_viewportController);
 }
 int RiseBridge::viewportActiveGizmoAxis(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return -1;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return -1;
     if (!m_viewportController) return -1;
     return RISE::RISE_API_SceneEditController_ActiveGizmoAxis(m_viewportController);
 }
 void RiseBridge::viewportPointerDown(double x, double y, uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerDown(m_viewportController, x, y);
 }
 void RiseBridge::viewportPointerMove(double x, double y, uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerMove(m_viewportController, x, y);
 }
 void RiseBridge::viewportPointerUp(double x, double y, uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerUp(m_viewportController, x, y);
 }
 void RiseBridge::viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH,
                                              uint64_t ownerToken) const {
     outW = 0;
     outH = 0;
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (!m_viewportController) return;
     unsigned int w = 0, h = 0;
     if (RISE::RISE_API_SceneEditController_GetCameraDimensions(m_viewportController, &w, &h)) {
@@ -1256,8 +1243,8 @@ void RiseBridge::viewportGetCameraDimensions(unsigned int& outW, unsigned int& o
 
 bool RiseBridge::viewportSetSurfaceDimensions(unsigned int width, unsigned int height,
                                               uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_SetPaneSurfaceDims(
         m_viewportController, 0, width, height);
@@ -1269,94 +1256,94 @@ bool RiseBridge::viewportGetAnimationOptions(double& outTimeStart, double& outTi
     outTimeStart = 0;
     outTimeEnd = 0;
     outNumFrames = 0;
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_GetAnimationOptions(
         m_viewportController, &outTimeStart, &outTimeEnd, &outNumFrames);
 }
 bool RiseBridge::viewportScrubBegin(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     return m_viewportController
         && RISE::RISE_API_SceneEditController_OnTimeScrubBegin(m_viewportController);
 }
 bool RiseBridge::viewportScrub(double t, uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     return m_viewportController
         && RISE::RISE_API_SceneEditController_OnTimeScrub(m_viewportController, t);
 }
 bool RiseBridge::viewportScrubEnd(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     return m_viewportController
         && RISE::RISE_API_SceneEditController_OnTimeScrubEnd(m_viewportController);
 }
 void RiseBridge::viewportBeginPropertyScrub(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_BeginPropertyScrub(m_viewportController);
 }
 void RiseBridge::viewportEndPropertyScrub(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_EndPropertyScrub(m_viewportController);
 }
 void RiseBridge::viewportUndo(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_Undo(m_viewportController);
 }
 void RiseBridge::viewportRedo(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_Redo(m_viewportController);
 }
 double RiseBridge::viewportLastSceneTime(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0.0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0.0;
     if (!m_viewportController) return 0.0;
     double t = 0.0;
     RISE::RISE_API_SceneEditController_LastSceneTime(m_viewportController, &t);
     return t;
 }
 bool RiseBridge::viewportProductionRender(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_RequestProductionRender(m_viewportController);
 }
 
 void RiseBridge::viewportRefreshProperties(uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return;
     if (m_viewportController) RISE::RISE_API_SceneEditController_RefreshProperties(m_viewportController);
 }
 int RiseBridge::viewportPanelMode(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_PanelMode(m_viewportController);
 }
 std::string RiseBridge::viewportPanelHeader(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[256] = {0};
     RISE::RISE_API_SceneEditController_PanelHeader(m_viewportController, buf, sizeof(buf));
     return std::string(buf);
 }
 unsigned int RiseBridge::viewportPropertyCount(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_PropertyCount(m_viewportController);
 }
 std::string RiseBridge::viewportPropertyName(unsigned int idx,
                                              uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[128] = {0};
     RISE::RISE_API_SceneEditController_PropertyName(m_viewportController, idx, buf, sizeof(buf));
@@ -1364,8 +1351,8 @@ std::string RiseBridge::viewportPropertyName(unsigned int idx,
 }
 std::string RiseBridge::viewportPropertyValue(unsigned int idx,
                                               uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[256] = {0};
     RISE::RISE_API_SceneEditController_PropertyValue(m_viewportController, idx, buf, sizeof(buf));
@@ -1373,38 +1360,38 @@ std::string RiseBridge::viewportPropertyValue(unsigned int idx,
 }
 std::string RiseBridge::viewportPropertyDescription(unsigned int idx,
                                                     uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[512] = {0};
     RISE::RISE_API_SceneEditController_PropertyDescription(m_viewportController, idx, buf, sizeof(buf));
     return std::string(buf);
 }
 int RiseBridge::viewportPropertyKind(unsigned int idx, uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return -1;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return -1;
     if (!m_viewportController) return -1;
     return RISE::RISE_API_SceneEditController_PropertyKind(m_viewportController, idx);
 }
 bool RiseBridge::viewportPropertyEditable(unsigned int idx,
                                           uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_PropertyEditable(m_viewportController, idx);
 }
 unsigned int RiseBridge::viewportPropertyPresetCount(unsigned int idx,
                                                      uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_PropertyPresetCount(m_viewportController, idx);
 }
 std::string RiseBridge::viewportPropertyPresetLabel(unsigned int idx,
                                                     unsigned int presetIdx,
                                                     uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[256] = {0};
     RISE::RISE_API_SceneEditController_PropertyPresetLabel(m_viewportController, idx, presetIdx, buf, sizeof(buf));
@@ -1413,8 +1400,8 @@ std::string RiseBridge::viewportPropertyPresetLabel(unsigned int idx,
 std::string RiseBridge::viewportPropertyPresetValue(unsigned int idx,
                                                     unsigned int presetIdx,
                                                     uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[256] = {0};
     RISE::RISE_API_SceneEditController_PropertyPresetValue(m_viewportController, idx, presetIdx, buf, sizeof(buf));
@@ -1423,8 +1410,8 @@ std::string RiseBridge::viewportPropertyPresetValue(unsigned int idx,
 bool RiseBridge::viewportSetProperty(const std::string& name,
                                      const std::string& value,
                                      uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_SetProperty(m_viewportController,
         name.c_str(), value.c_str());
@@ -1432,16 +1419,16 @@ bool RiseBridge::viewportSetProperty(const std::string& name,
 
 unsigned int RiseBridge::viewportCategoryEntityCount(int category,
                                                      uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_CategoryEntityCount(m_viewportController, category);
 }
 
 std::string RiseBridge::viewportCategoryEntityName(int category, unsigned int idx,
                                                    uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[128] = {0};
     if (!RISE::RISE_API_SceneEditController_CategoryEntityName(m_viewportController,
@@ -1453,8 +1440,8 @@ std::string RiseBridge::viewportCategoryEntityName(int category, unsigned int id
 
 std::string RiseBridge::viewportCategoryActiveName(int category,
                                                    uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[128] = {0};
     if (!RISE::RISE_API_SceneEditController_CategoryActiveName(m_viewportController,
@@ -1465,16 +1452,16 @@ std::string RiseBridge::viewportCategoryActiveName(int category,
 }
 
 int RiseBridge::viewportSelectionCategory(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     const int c = RISE::RISE_API_SceneEditController_GetSelectionCategory(m_viewportController);
     return c < 0 ? 0 : c;
 }
 
 std::string RiseBridge::viewportSelectionName(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return {};
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return {};
     if (!m_viewportController) return {};
     char buf[128] = {0};
     if (!RISE::RISE_API_SceneEditController_GetSelectionName(m_viewportController,
@@ -1486,16 +1473,16 @@ std::string RiseBridge::viewportSelectionName(uint64_t ownerToken) const {
 
 bool RiseBridge::viewportSetSelection(int category, const std::string& name,
                                       uint64_t ownerToken) {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return false;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_SetSelection(m_viewportController,
         category, name.c_str());
 }
 
 unsigned int RiseBridge::viewportSceneEpoch(uint64_t ownerToken) const {
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
-    if (!ownsCallback(ownerToken)) return 0;
+    std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
+    if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return 0;
     if (!m_viewportController) return 0;
     return RISE::RISE_API_SceneEditController_SceneEpoch(m_viewportController);
 }

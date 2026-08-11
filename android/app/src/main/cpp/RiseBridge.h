@@ -157,8 +157,10 @@ public:
     // production path.  Compose displays whichever frame arrived most
     // recently — production or viewport-preview.
     // Every method below that reads or mutates controller state takes the
-    // installed callback owner token and holds m_sceneLifecycleMutex for the
-    // complete access. Only the two enum-mapping helpers are controller-free.
+    // installed callback owner token and try-locks m_sceneLifecycleMutex for
+    // the complete access. A busy lifecycle fails closed immediately so a UI
+    // event cannot wait for a production render. Only the two enum-mapping
+    // helpers are controller-free.
     // -------------------------------------------------------------
 
     // Build the live-preview rasterizer + sink, create the controller,

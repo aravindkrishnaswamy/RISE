@@ -2409,14 +2409,10 @@ namespace RISE
 			mEditor.SetDirtyChangedListener( std::move( fn ) );
 		}
 
-		//! Lets the platform's preview sink check whether the current
-		//! pass was cancelled mid-render before dispatching to the UI.
-		//! End-of-pass FlushToOutputs fires unconditionally inside the
-		//! rasterizer, so without this check a cancelled pass would
-		//! overwrite the previous (good) frame with a partially-filled
-		//! one.  Reset() at the start of each render-loop iteration
-		//! clears the flag, so the value at end-of-pass tells the sink
-		//! "was THIS pass cancelled?".
+		//! Reports cancellation to agent/session coordinators that must stop
+		//! queued follow-up work after an editor operation is interrupted.
+		//! Viewport sinks deliberately publish useful partial frames and do
+		//! not use this state as a presentation filter.
 		bool IsCancelRequested() const { return mCancelProgress.IsCancelRequested(); }
 
 		// Properties panel — what the right-side panel should show is

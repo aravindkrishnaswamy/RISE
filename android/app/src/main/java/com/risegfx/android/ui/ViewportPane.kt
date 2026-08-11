@@ -239,7 +239,7 @@ fun ViewportPane(
         }
     }
 
-    LaunchedEffect(refreshTrigger,ownerToken) {
+    LaunchedEffect(refreshTrigger,ownerToken,interactionEnabled) {
         if (interactionEnabled) {
             RiseNative.nativeViewportRefreshProperties(ownerToken)
             panelMode = RiseNative.nativeViewportPanelMode(ownerToken)

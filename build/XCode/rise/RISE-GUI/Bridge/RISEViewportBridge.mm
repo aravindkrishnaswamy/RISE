@@ -179,7 +179,6 @@ public:
 		{ return FireArtifactRouteKind::DisplayOnly; }
     ViewportPreviewSink()
     : mBlock( nil )
-    , mController( nullptr )
     , mFanoutVFS( nullptr )
     , mPresentGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
     , mLastRenderGeneration( std::make_shared<std::atomic<unsigned long long>>( 0 ) )
@@ -211,10 +210,6 @@ public:
         }
         retired = nil;
     }
-
-    // Borrowed; the bridge keeps the controller alive for the sink's
-    // lifetime.  Used to query IsCancelRequested at end-of-pass.
-    void SetController( SceneEditController* c ) { mController = c; }
 
     template<typename Fn>
     bool RunPresentationTransition( Fn&& fn, bool invalidateLastOnSuccess ) {
@@ -355,7 +350,6 @@ public:
 private:
     __strong RISEViewportImageBlock                mBlock;
     std::mutex                                      mPresentationMutex;
-    SceneEditController*                            mController;   // borrowed
     Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
     std::shared_ptr<std::atomic<unsigned long long>> mPresentGeneration;
     std::shared_ptr<std::atomic<unsigned long long>> mLastRenderGeneration;
@@ -638,10 +632,6 @@ private:
     [_host attachSceneEditController:static_cast<void*>(_controller)];
 
     if (_previewSink) {
-        // The sink queries the controller's cancel state at end-of-pass
-        // to decide whether to drop a stale dispatch.  Wire the pointer
-        // before installing the sink as a rasterizer output.
-        _previewSink->SetController(_controller);
         RISE_API_SceneEditController_SetPreviewSink(_controller, _previewSink);
 
         // N-up (§7): stand up panes 1-3's sinks alongside pane 0's,
@@ -656,7 +646,6 @@ private:
         for (unsigned int i = 1; i < 4; ++i) {
             ViewportPreviewSink* sink = new ViewportPreviewSink();
             sink->addref();
-            sink->SetController(_controller);
             _paneSinks[i] = sink;
             RISE_API_SceneEditController_SetPaneSink(_controller, i, sink);
         }

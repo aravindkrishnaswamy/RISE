@@ -1033,6 +1033,10 @@ int main()
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEBridge.h");
 		const std::string riseViewportBridge = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"Bridge"/"RISEViewportBridge.mm");
+		const std::string windowsViewportBridge = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"ViewportBridge.cpp");
+		const std::string sceneEditControllerHeader = slurp(
+			repoRoot/"src"/"Library"/"SceneEditor"/"SceneEditController.h");
 		const std::string renderViewModel = slurp(
 			repoRoot/"build"/"XCode"/"rise"/"RISE-GUI"/"App"/"RenderViewModel.swift");
 		const std::string metalEDRView = slurp(
@@ -1176,15 +1180,21 @@ int main()
 			androidManifest.find("android:launchMode=\"singleTask\"") !=
 				std::string::npos,
 			"Android callback handoff is newest-request-wins and lifecycle mutations are owner-checked" );
-		Check(androidAutoResolved.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+		Check(androidAutoResolved.find("std::try_to_lock") !=
+				std::string::npos &&
+			androidAutoResolved.find("lifecycleLock.owns_lock()") !=
 				std::string::npos &&
 			androidAutoResolved.find("ownsCallback(ownerToken)") !=
 				std::string::npos &&
-			androidViewportPointer.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+			androidViewportPointer.find("std::try_to_lock") !=
+				std::string::npos &&
+			androidViewportPointer.find("lifecycleLock.owns_lock()") !=
 				std::string::npos &&
 			androidViewportPointer.find("ownsCallback(ownerToken)") !=
 				std::string::npos &&
-			androidViewportProperty.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+			androidViewportProperty.find("std::try_to_lock") !=
+				std::string::npos &&
+			androidViewportProperty.find("lifecycleLock.owns_lock()") !=
 				std::string::npos &&
 			androidViewportProperty.find("ownsCallback(ownerToken)") !=
 				std::string::npos &&
@@ -1199,9 +1209,9 @@ int main()
 				std::string::npos &&
 			androidRenderSmoke.find("nativeAutoResolvedIntegrator(firstOwner)") !=
 				std::string::npos,
-			"Android post-render and viewport-controller access is lifecycle-locked and owner-bound" );
+			"Android post-render and viewport-controller access is fail-fast lifecycle-locked and owner-bound" );
 		const char* const androidOwnerBoundMethods[] = {
-			"autoResolvedIntegrator","autoResolveReason","startViewport",
+			"autoResolvedIntegrator","autoResolveReason","scaleFilmToFit","startViewport",
 			"stopViewport","isViewportRunning","hasLivePreview",
 			"viewportSuppressNextFrame","viewportSetTool","viewportCurrentTool",
 			"viewportGetLastSubToolForCategory","viewportRefreshGizmoHandles",
@@ -1227,11 +1237,29 @@ int main()
 		for( const char* method : androidOwnerBoundMethods ) {
 			const std::string body = braceBody(androidBridgeSource,
 				std::string("RiseBridge::")+method+"(");
-			Check(body.find("lifecycleLock(m_sceneLifecycleMutex)") !=
+			Check(body.find("std::try_to_lock") !=
 					std::string::npos &&
+				body.find("lifecycleLock.owns_lock()") != std::string::npos &&
 				body.find("ownsCallback(ownerToken)") != std::string::npos,
-				(std::string("Android owner/lifecycle gate covers ")+method).c_str());
+				(std::string("Android fail-fast owner/lifecycle gate covers ")+method).c_str());
 		}
+		const std::string refreshEffect =
+			"LaunchedEffect(refreshTrigger,ownerToken,interactionEnabled)";
+		Check(androidViewportPane.find(refreshEffect) != std::string::npos,
+			"Android property refresh cancels when interaction is disabled" );
+		Check(androidBridgeSource.find("IsCancelRequested at end-of-pass") ==
+				std::string::npos &&
+			androidBridgeSource.find("SetController(RISE::SceneEditController") ==
+				std::string::npos &&
+			riseViewportBridge.find("Used to query IsCancelRequested") ==
+				std::string::npos &&
+			windowsViewportBridge.find("Used to query IsCancelRequested") ==
+				std::string::npos &&
+			sceneEditControllerHeader.find("platform's preview sink") ==
+				std::string::npos &&
+			sceneEditControllerHeader.find("Viewport sinks deliberately publish") !=
+				std::string::npos,
+			"Viewport sinks publish useful cancelled partial frames without obsolete cancel guards" );
 		Check(androidCallbackSnapshot.find("NewLocalRef(m_kotlinCallback)") !=
 				std::string::npos &&
 			androidBridgeSource.find("CallVoidMethod(m_kotlinCallback") ==
