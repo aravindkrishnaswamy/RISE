@@ -776,7 +776,6 @@ static ImageStats RenderAndComputeStats(
 	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
 		return result;
 	}
-
 	if( !pJob->LoadAsciiSceneViaCst( scenePath ) ) {
 		safe_release( pJob );
 		return result;
@@ -1644,6 +1643,10 @@ static bool IsRasterizerHeader( const std::string& t )
 }
 
 static bool IsFilmHeader( const std::string& t ) { return t == "film"; }
+static bool IsFileOutputHeader( const std::string& t )
+{
+	return t == "file_rasterizeroutput";
+}
 
 // Read a corpus scene and return a variant whose rasterizer chunk is an
 // `auto_rasterizer { probe true }` and whose film is `dim x dim`.  Empty
@@ -1671,6 +1674,16 @@ static std::string MakeAutoProbeScene( const char* corpusPath, unsigned int samp
 	for( size_t i = 0; i < lines.size(); ++i ) {
 		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
 		out.push_back( lines[i] );
+	}
+
+	// The harness installs its own in-memory capture. Remove corpus file
+	// outputs before derive so optional-codec authoring gates remain strict
+	// without making this routing oracle depend on PNG/EXR availability.
+	{
+		size_t os, oe;
+		while( FindChunk( out, IsFileOutputHeader, os, oe ) ) {
+			out.erase( out.begin() + os, out.begin() + oe + 1 );
+		}
 	}
 
 	// Shrink the film chunk (if present) to dim x dim for probe + render speed.
@@ -1805,6 +1818,12 @@ static std::string MakeAutoSpectralProbeScene(
 	for( size_t i = 0; i < lines.size(); ++i ) {
 		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
 		out.push_back( lines[i] );
+	}
+	{
+		size_t os, oe;
+		while( FindChunk( out, IsFileOutputHeader, os, oe ) ) {
+			out.erase( out.begin() + os, out.begin() + oe + 1 );
+		}
 	}
 
 	// Strip the legacy photon-map chunks (re-find after each erase since
@@ -2036,14 +2055,14 @@ static void TestRetainedOutputSnapshots()
 			("rise_retained_output_"+std::to_string(::getpid()));
 	IRasterizerOutput* fileOutput = nullptr;
 	const bool fileOutputCreated = RISE_API_CreateFileRasterizerOutput(
-		&fileOutput,outputBase.string().c_str(),false,2,8,eColorSpace_sRGB,
+		&fileOutput,outputBase.string().c_str(),false,1,8,eColorSpace_sRGB,
 		0.0,eDisplayTransform_None,eExrCompression_Zip,true) && fileOutput;
 	if( fileOutput ) rasterizer->AddRasterizerOutput(fileOutput);
 	safe_release(first);
 	safe_release(second);
 	safe_release(fileOutput);
 	const bool rendered = job->Rasterize();
-	const std::filesystem::path artifact = outputBase.string()+".png";
+	const std::filesystem::path artifact = outputBase.string()+".ppm";
 	Check(rendered && firstImages == 1 && secondImages == 1 &&
 		firstDestroyed && secondDestroyed && fileOutputCreated &&
 		std::filesystem::exists(artifact),

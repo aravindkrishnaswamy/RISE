@@ -735,11 +735,13 @@ namespace
 #else
 			"not_linked";
 #endif
+#ifndef NO_PNG_SUPPORT
 		const bool embeddedPngZlib =
 #if defined(__ANDROID__)
 			true;
 #else
 			false;
+#endif
 #endif
 		using RISECBOR64::Value;
 		const Value record = Value::MapValue({

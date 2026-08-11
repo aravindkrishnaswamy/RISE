@@ -85,6 +85,7 @@
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Interfaces/IRasterImageWriter.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Interfaces/IShader.h"
@@ -126,6 +127,25 @@ static void Check( bool c, const std::string& w )
 	if( c ) ++g_pass;
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
+
+#ifdef NO_PNG_SUPPORT
+static void RunPngUnavailableBoundaryTest()
+{
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(64u);
+	IRasterImageWriter* writer = nullptr;
+	const bool created =
+		RISE_API_CreatePNGWriter(&writer,*buffer,8,eColorSpace_sRGB) && writer;
+	if( created ) {
+		writer->BeginWrite(1u,1u);
+		writer->WriteColor(RISEColor(1.0,1.0,1.0,1.0),0u,0u);
+		writer->EndWrite();
+	}
+	Check( created && buffer->getCurPos() == 0u,
+		"NO_PNG_SUPPORT: agent PNG encoding emits no payload bytes" );
+	safe_release(writer);
+	safe_release(buffer);
+}
+#endif
 
 //----------------------------------------------------------------------
 // Scene: a self-tessellating triangle mesh (displaced_geometry with NO
@@ -216,6 +236,7 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	return path.string();
 }
 
+#ifndef NO_PNG_SUPPORT
 typedef std::array<unsigned char, 4> Px;   // r,g,b,a
 
 struct Decoded
@@ -3512,6 +3533,7 @@ static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
 
 	pJob->release();
 }
+#endif
 
 static void RunFireOutputProvenanceRejectionTest()
 {
@@ -3571,6 +3593,9 @@ static void RunFireOutputProvenanceRejectionTest()
 int main()
 {
 	RunFireOutputProvenanceRejectionTest();
+#ifdef NO_PNG_SUPPORT
+	RunPngUnavailableBoundaryTest();
+#else
 	RunPerModeEndToEndTest();
 	RunFilmRestoreTest();
 	RunBeautyVariantEndToEndTest();
@@ -3601,6 +3626,7 @@ int main()
 	RunIndirectModeMirrorReflectsLightTest();
 	RunIndirectModeMirrorKeepsEnvReflectionTest();
 	RunIndirectModeDiffuseUnderEnvSuppressedTest();
+#endif
 
 	std::printf( "\nAgentViewModeRenderTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

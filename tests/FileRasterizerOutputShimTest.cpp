@@ -2443,6 +2443,10 @@ namespace
 	#endif
 
 		const FrameStoreOutput::Metadata primaryBeforeDerivativeFailure = store->Meta();
+		Check( !primaryBeforeDerivativeFailure.primaryProvenanceId.empty() &&
+			!primaryBeforeDerivativeFailure.primaryArtifactSha256.empty() &&
+			primaryBeforeDerivativeFailure.primaryArtifactFidelity == "preview_primary",
+			"[fire provenance] derivative-failure fixture starts from a finalized primary" );
 		const std::string failedDerivativeBase =
 			MakeTempPathWithoutExt()+"_failed_derivative";
 		const std::string failedDerivativeFile = failedDerivativeBase+".ppm";
@@ -2489,6 +2493,42 @@ namespace
 		std::remove((concurrentFile+".provenance.cbor").c_str());
 		std::remove(exrFile.c_str());
 		std::remove(exrSidecar.c_str());
+#endif
+#ifdef NO_EXR_SUPPORT
+		store->SetPrimaryFireArtifact(
+			std::string(64u,'a'),std::string(64u,'b'),"preview_primary");
+		const FrameStoreOutput::Metadata primaryBeforeDerivativeFailure = store->Meta();
+		Check( !primaryBeforeDerivativeFailure.primaryProvenanceId.empty() &&
+			!primaryBeforeDerivativeFailure.primaryArtifactSha256.empty() &&
+			primaryBeforeDerivativeFailure.primaryArtifactFidelity == "preview_primary",
+			"[fire provenance] no-EXR derivative fixture starts from a finalized primary" );
+		const std::string failedDerivativeBase =
+			MakeTempPathWithoutExt()+"_no_exr_failed_derivative";
+		const std::string failedDerivativeFile = failedDerivativeBase+".ppm";
+		const std::string failedDerivativeSidecar =
+			failedDerivativeFile+".provenance.cbor";
+		std::filesystem::create_directory(failedDerivativeSidecar);
+		IFrameEncoder* ppm = FrameEncoderRegistry::Get().ByFormatName("PPM");
+		FileEncoderObserver* derivativeObserver =
+			new FileEncoderObserver(store,ppm,opts,failedDerivativeBase,false);
+		bool derivativeFailureThrew = false;
+		try {
+			derivativeObserver->OnFrameComplete(0u,0u);
+		} catch( ... ) {
+			derivativeFailureThrew = true;
+		}
+		safe_release(derivativeObserver);
+		const FrameStoreOutput::Metadata primaryAfterDerivativeFailure = store->Meta();
+		Check( !derivativeFailureThrew && !std::filesystem::exists(failedDerivativeFile) &&
+			std::filesystem::is_directory(failedDerivativeSidecar) &&
+			primaryAfterDerivativeFailure.primaryProvenanceId ==
+				primaryBeforeDerivativeFailure.primaryProvenanceId &&
+			primaryAfterDerivativeFailure.primaryArtifactSha256 ==
+				primaryBeforeDerivativeFailure.primaryArtifactSha256 &&
+			primaryAfterDerivativeFailure.primaryArtifactFidelity ==
+				primaryBeforeDerivativeFailure.primaryArtifactFidelity,
+			"[fire provenance] no-EXR failed derivative preserves the finalized primary" );
+		std::filesystem::remove(failedDerivativeSidecar);
 #endif
 		const std::string movieTemporary = MakeTempPathWithoutExt()+"_movie.closed";
 		const std::string movieFile = MakeTempPathWithoutExt()+"_movie.mov";
@@ -2561,9 +2601,12 @@ namespace
 			"[fire provenance] semantic validation binds renderer build bytes to their exact ID" );
 		invalidMetadata = movieMetadata;
 		invalidMetadata.primaryArtifactSha256.clear();
-		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
+		const bool partialPrimaryRejected =
+			!FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError);
+		Check( partialPrimaryRejected &&
 			movieError.find("primary linkage") != std::string::npos,
-			"[fire provenance] semantic validation rejects a partial retained-primary tuple" );
+			"[fire provenance] semantic validation rejects a partial retained-primary tuple ("+
+				movieError+")" );
 
 		auto withoutMember = []( const RISECBOR64::Value& map,
 			const std::string& name ) {

@@ -55,6 +55,8 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IMemoryBuffer.h"
 #include "../src/Library/Interfaces/IRasterImageReader.h"
+#include "../src/Library/Interfaces/IRasterImageWriter.h"
+#include "../src/Library/Utilities/MemoryBuffer.h"
 
 #include <atomic>
 #include <chrono>
@@ -84,6 +86,25 @@ static void Check( bool c, const std::string& w )
 	if( c ) ++g_pass;
 	else { ++g_fail; std::printf( "  FAIL: %s\n", w.c_str() ); }
 }
+
+#ifdef NO_PNG_SUPPORT
+static void RunPngUnavailableBoundaryTest()
+{
+	Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(64u);
+	IRasterImageWriter* writer = nullptr;
+	const bool created =
+		RISE_API_CreatePNGWriter(&writer,*buffer,8,eColorSpace_sRGB) && writer;
+	if( created ) {
+		writer->BeginWrite(1u,1u);
+		writer->WriteColor(RISEColor(1.0,1.0,1.0,1.0),0u,0u);
+		writer->EndWrite();
+	}
+	Check( created && buffer->getCurPos() == 0u,
+		"NO_PNG_SUPPORT: read_viewport PNG encoding emits no payload bytes" );
+	safe_release(writer);
+	safe_release(buffer);
+}
+#endif
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
@@ -174,6 +195,7 @@ static const char* const kFireScene =
 // change -- clean dominance in BOTH directions.  If you retune these,
 // re-measure both directions; raising the sphere's albedo/light or
 // lowering the sky intensity is the axis that preserves the property.
+#ifndef NO_PNG_SUPPORT
 static const char* const kSplitSceneBase =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -242,6 +264,7 @@ static const char* const kSplitSceneTwoObjects =
 	"lambertian_luminaire_material\n{\n\tname mat_emit\n\texitance pnt_emit\n\tscale 100.0\n\tmaterial none\n}\n\n"
 	"clippedplane_geometry\n{\n\tname quad_emit\n\tpta -0.6 0.6 3.5\n\tptb 0.6 0.6 3.5\n\tptc 0.6 -0.6 3.5\n\tptd -0.6 -0.6 3.5\n}\n\n"
 	"standard_object\n{\n\tname obj_emit\n\tgeometry quad_emit\n\tmaterial mat_emit\n}\n";
+#endif
 
 static JsonValue ParseResponse( const std::string& line, double expectId )
 {
@@ -263,6 +286,7 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	return JsonSerialize( r );
 }
 
+#ifndef NO_PNG_SUPPORT
 // Decoded PNG bytes start with the 8-byte PNG signature 89 50 4E 47.
 static bool StartsWithPngSignature( const std::vector<unsigned char>& b )
 {
@@ -466,6 +490,7 @@ static void RunPositiveAndIsolation()
 	pJob->release();
 	std::remove( scenePath.c_str() );
 }
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // Case 2: NO-CONTROLLER -> available:false, reason:"no_controller".
@@ -572,6 +597,7 @@ static void RunNoFrameYet()
 	std::remove( scenePath.c_str() );
 }
 
+#ifndef NO_PNG_SUPPORT
 //////////////////////////////////////////////////////////////////////
 // P3c atomicity regression: read_viewport must describe the SAME pane set
 // captured with its copied frame, even when the live layout changes after the
@@ -1599,6 +1625,7 @@ static void RunCompareToReferenceSplit()
 		std::remove( scopedPath.c_str() );
 	}
 }
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // ROUND-10 P2: the REFUSAL reason wire values had ZERO coverage.
@@ -1835,13 +1862,17 @@ int main()
 	std::printf( "=== AgentViewportReadTest ===\n" );
 
 	RunFireViewportProvenanceRejection();
+#ifdef NO_PNG_SUPPORT
+	RunPngUnavailableBoundaryTest();
+#else
 	RunPositiveAndIsolation();
-	RunNoController();
-	RunNoFrameYet();
 	RunPaneSetSnapshotAtomicity();
 	RunDisplayTransformOrdering();
 	RunCompareToReference();
 	RunCompareToReferenceSplit();
+#endif
+	RunNoController();
+	RunNoFrameYet();
 	RunRefusalReasonWireValues();
 
 	std::printf( "=== AgentViewportReadTest: %d passed, %d failed ===\n", g_pass, g_fail );
