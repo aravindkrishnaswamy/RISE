@@ -708,7 +708,7 @@ def species_spectra_batch(
         visible_wavenumber_interval_cm1: Sequence[float] = (),
 ) -> tuple[list[list[list[list[float]]]], list[list[list[int]]],
            list[list[list[float]]], list[list[float]], list[list[float]],
-           list[list[float]]]:
+           list[list[float]], int]:
     """Accumulate every requested state in one archive pass.
 
     Returned axes are cutoff, self mole fraction, gas temperature, and
@@ -747,7 +747,9 @@ def species_spectra_batch(
                                  for _ in range(max(1, len(self_mole_fractions) - 1))]
     step = grid_cm1[1] - grid_cm1[0]
     pressure_atm = pressure_pa / REFERENCE_PRESSURE_PA
+    archive_line_count = 0
     for line in lines:
+        archive_line_count += 1
         if line.molecule != molecule:
             raise ValueError("line archive contains a foreign molecule")
         if line.intensity_296_cm_per_molecule == 0.0:
@@ -831,7 +833,7 @@ def species_spectra_batch(
                            (radiation_temperature / C2_CM_K) ** 4)
             line_center_means[temperature_index][radiation_index] /= denominator
     return (spectra, counts, tail_bounds, line_center_means,
-            visible_upper_bounds, visible_cell_upper_bounds)
+            visible_upper_bounds, visible_cell_upper_bounds, archive_line_count)
 
 
 def species_spectrum(lines: Iterable[HitranLine], molecule: int,
@@ -842,7 +844,7 @@ def species_spectrum(lines: Iterable[HitranLine], molecule: int,
                      self_mole_fraction: float = 0.0) -> tuple[list[float], int, float]:
     if pressure_pa <= 0.0 or wing_cutoff_cm1 <= 0.0:
         raise ValueError("pressure and line-wing cutoff must be positive")
-    spectra, counts, tails, _, _, _ = species_spectra_batch(
+    spectra, counts, tails, _, _, _, _ = species_spectra_batch(
         lines, molecule, molar_masses_kg_per_mol, partition_sums, grid_cm1,
         [temperature_k], pressure_pa, [self_mole_fraction], [wing_cutoff_cm1])
     return spectra[0][0][0], counts[0][0][0], tails[0][0][0]

@@ -13,7 +13,7 @@ from fire_gas_opacity import C2_CM_K, PartitionSums
 
 
 def iter_line_blocks(path: Path, compression: str,
-                     block_lines: int = 65536) -> Iterator[bytes]:
+                     block_lines: int = 65536) -> Iterator[tuple[bytes, int]]:
     if compression not in {"none", "bzip2"}:
         raise ValueError("native line archive compression is unsupported")
     opener = bz2.open if compression == "bzip2" else open
@@ -23,10 +23,10 @@ def iter_line_blocks(path: Path, compression: str,
             if raw.strip():
                 rows.append(raw)
             if len(rows) == block_lines:
-                yield b"".join(rows)
+                yield b"".join(rows), len(rows)
                 rows.clear()
         if rows:
-            yield b"".join(rows)
+            yield b"".join(rows), len(rows)
 
 
 def _nested(values: Sequence[float | int], dimensions: Sequence[int]):
@@ -107,10 +107,12 @@ def species_spectra_batch_native(
         max(1, len(self_mole_fractions) - 1) *
         max(1, len(temperatures_k) - 1)))()
     error = ctypes.create_string_buffer(512)
+    archive_line_count = 0
     for item in source["files"]:
         path = Path(item["path"])
         local = path if path.is_absolute() else root / path
-        for block in iter_line_blocks(local, item["compression"]):
+        for block, block_line_count in iter_line_blocks(local, item["compression"]):
+            archive_line_count += block_line_count
             result = function(
                 block, len(block), molecule, masses_array, q_reference_array,
                 q_temperature_array, q_minimum_cell_array, capacity,
@@ -145,4 +147,5 @@ def species_spectra_batch_native(
         _nested(list(visible_cell_bounds),
                 [max(1, len(self_mole_fractions) - 1),
                  max(1, len(temperatures_k) - 1)]),
+        archive_line_count,
     )

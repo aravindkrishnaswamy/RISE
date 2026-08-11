@@ -32,9 +32,11 @@ from fire_gas_opacity import (  # noqa: E402
     voigt_profile_state_cell_upper,
 )
 from generate_fire_gas_opacity_record import (  # noqa: E402
+    EM2C_PATH_LENGTHS_M, EXPECTED_H2O_SEGMENT_NAMES,
     evaluate_mixture_planck_mean, evaluate_species_kappa_bin,
     evaluate_species_planck_mean, generate, generator_identity,
-    load_verified_manifest,
+    load_verified_manifest, validate_em2c_path_domain,
+    validate_production_species_inventory,
 )
 from build_fire_gas_opacity_native import build as build_native  # noqa: E402
 from fire_gas_opacity_native import species_spectra_batch_native  # noqa: E402
@@ -196,7 +198,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 path.write_text("200 100\n296 120\n3000 700\n", encoding="ascii")
                 q_entries.append((2, isotopologue, path))
             partition = PartitionSums.from_hitran_q_files(q_entries)
-            _, counts, _, _, _, _ = species_spectra_batch(
+            _, counts, _, _, _, _, _ = species_spectra_batch(
                 decoded, 2, {10: 0.044, 11: 0.045, 12: 0.046}, partition,
                 spectral_grid(50.0, 3000.0, 50.0), [300.0], 101325.0,
                 [0.0], [50.0])
@@ -221,10 +223,11 @@ class FireGasOpacityToolsTest(unittest.TestCase):
 
         one_shot = OneShot(lines)
         grid = spectral_grid(50.0, 3000.0, 50.0)
-        spectra, counts, _, _, _, _ = species_spectra_batch(
+        spectra, counts, _, _, _, _, archive_count = species_spectra_batch(
             one_shot, 1, {1: 0.018010565}, partition, grid,
             [300.0, 1000.0], 101325.0, [0.0, 1.0], [25.0, 50.0], [300.0])
         self.assertEqual(one_shot.passes, 1)
+        self.assertEqual(archive_count, len(lines))
         self.assertTrue(all(value > 0 for rows in counts for row in rows for value in row))
         step = grid[1] - grid[0]
         for cutoff_rows in spectra:
@@ -232,11 +235,11 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 areas = [sum(row) * step for row in self_rows]
                 self.assertTrue(all(value > 0.0 for value in areas))
 
-        aligned, _, _, _, _, _ = species_spectra_batch(
+        aligned, _, _, _, _, _, _ = species_spectra_batch(
             [lines[0]], 1, {1: 0.018010565}, partition, grid,
             [300.0], 101325.0, [0.0], [25.0])
         shifted_grid = spectral_grid(75.0, 3025.0, 50.0)
-        half_cell, _, _, _, _, _ = species_spectra_batch(
+        half_cell, _, _, _, _, _, _ = species_spectra_batch(
             [lines[0]], 1, {1: 0.018010565}, partition, shifted_grid,
             [300.0], 101325.0, [0.0], [25.0])
         self.assertAlmostEqual(sum(aligned[0][0][0]) * step,
@@ -253,11 +256,15 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         self.assertEqual({entry["species"] for entry in generated["species_tables"]},
                          {"H2O", "CO2"})
         for species in generated["species_tables"]:
+            self.assertGreater(species["archive_line_count"], 0)
             self.assertTrue(all(value > 0.0 for row in
                                 species["planck_mean_per_m_per_unit_species_mole_fraction"]
                                 for gas_rows in row for value in gas_rows))
             self.assertEqual(species["planck_mean_interpolation"]["kind"],
                              "tensor_multilinear_exact_cell_bounds_v1")
+            self.assertFalse(species["state_interpolation_qualification"]["qualified"])
+            self.assertGreater(
+                species["state_interpolation_qualification"]["maximum_relative"], 1.0)
         h2o = next(entry for entry in generated["species_tables"]
                    if entry["species"] == "H2O")
         self.assertAlmostEqual(
@@ -422,6 +429,14 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             self.assertEqual(len(parsed), 9450)
             self.assertEqual(parsed[0], (300.0, 0.01, 0.25))
             self.assertEqual(parsed[-1][0], 2900.0)
+            for temp_index in range(105):
+                row_index = 1 + 45 * 105 + temp_index
+                fields = rows[row_index].split()
+                fields[0] = f"{EM2C_PATH_LENGTHS_M[45] * 1.1:.12f}"
+                rows[row_index] = " ".join(fields)
+            source.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "grid is invalid"):
+                parse_em2c(source, verify_digest=False)
         self.assertEqual(ratio_from_em2c_filename(Path(
             "R=01.000_EM2C-SNB_totalEmissivities_90x105.dat")), 1.0)
         self.assertTrue(math.isinf(ratio_from_em2c_filename(Path(
@@ -493,6 +508,29 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "partition-sum citation"):
                 load_verified_manifest(path, FIXTURE)
+
+    def test_production_inventory_and_em2c_path_grid_are_independently_pinned(self) -> None:
+        h2o = {
+            "species": "H2O",
+            "release": "HITEMP2010",
+            "files": [{"path": name, "compression": "none"}
+                      for name in sorted(EXPECTED_H2O_SEGMENT_NAMES)],
+        }
+        validate_production_species_inventory(h2o, set(range(1, 7)))
+        missing = copy.deepcopy(h2o)
+        missing["files"].pop()
+        with self.assertRaisesRegex(ValueError, "34-segment"):
+            validate_production_species_inventory(missing, set(range(1, 7)))
+        duplicated = copy.deepcopy(h2o)
+        duplicated["files"][-1] = copy.deepcopy(duplicated["files"][0])
+        with self.assertRaisesRegex(ValueError, "34-segment"):
+            validate_production_species_inventory(duplicated, set(range(1, 7)))
+        with self.assertRaisesRegex(ValueError, "34-segment"):
+            validate_production_species_inventory(h2o, {1})
+
+        validate_em2c_path_domain(EM2C_PATH_LENGTHS_M)
+        with self.assertRaisesRegex(ValueError, "90-point EM2C"):
+            validate_em2c_path_domain([0.01, 1.0, 50.0])
 
     def test_empty_or_foreign_line_archives_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())

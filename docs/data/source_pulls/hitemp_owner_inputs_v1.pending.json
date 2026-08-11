@@ -5,11 +5,12 @@
   "owner_action": "Populate exact H2O-2010 .par inventory, CO2 02_HITEMP2024.par.bz2 SHA-256, and official partition-sum file SHA-256 values after download; then change status to production_pinned.",
   "line_byte_policy": "Never commit HITEMP .par or .par.bz2 bytes.",
   "required_owner_inputs": [
-    "H2O-2010 directory",
+    "H2O-2010 directory with the exact 34 official wavenumber segments and 114241164 total records",
     "CO2 02_HITEMP2024.par.bz2"
   ],
   "required_public_metadata": "HITRAN isotopologue partition sums covering every gas-temperature knot",
   "required_generation_axes": "The production manifest must declare self_broadening_mole_fractions spanning [0,1].",
+  "required_state_interpolation_gate": "Declare at least midpoint direct-LBL validation in every self-fraction, gas-temperature, and radiation-temperature cell; production rejects interpolation error above the pinned limit.",
   "required_convergence_gates": "Pin maximum relative Planck-mean errors for the finite spectral grid and expanded line-wing comparison.",
   "required_finite_path_gate": "Declare h/2h/4h nonlinear emissivity convergence limits over 0.01-50 atm.m; production generation rejects an unqualified grid.",
   "required_visible_gate": "Pin the maximum permitted conservative 380-780 nm gas-absorption bound against the aerosol/chem validation tolerance.",

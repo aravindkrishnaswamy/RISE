@@ -16,7 +16,9 @@ from fire_gas_opacity import (
     finite_path_emissivity_refinement_certificate, homogeneous_emissivity,
     multilinear_value, sha256_file,
 )
-from generate_fire_gas_opacity_record import validate_opacity_table
+from generate_fire_gas_opacity_record import (
+    EM2C_PATH_LENGTHS_M, validate_opacity_table,
+)
 
 
 DOI = "10.17632/x5wjzk6sjs.1"
@@ -79,9 +81,10 @@ def parse_em2c(path: Path, verify_digest: bool = True) -> list[tuple[float, floa
     for path_index in range(90):
         block = rows[path_index * 105:(path_index + 1) * 105]
         pressure_path = block[0][1]
-        if (path_index == 0 and not math.isclose(pressure_path, 0.01, rel_tol=0.0, abs_tol=1e-12)) or (
-                path_index == 89 and not math.isclose(pressure_path, 50.0, rel_tol=0.0, abs_tol=1e-9)):
-            raise ValueError("EM2C pressure-pathlength endpoints are invalid")
+        if not math.isclose(
+                pressure_path, EM2C_PATH_LENGTHS_M[path_index],
+                rel_tol=1.0e-10, abs_tol=1.0e-12):
+            raise ValueError("EM2C pressure-pathlength grid is invalid")
         for temp_index, (temperature, row_path, _) in enumerate(block):
             if temperature != 300.0 + 25.0 * temp_index or row_path != pressure_path:
                 raise ValueError("EM2C 90x105 row ordering is invalid")

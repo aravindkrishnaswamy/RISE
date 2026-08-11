@@ -22,6 +22,25 @@ from fire_gas_opacity import (
 
 SCHEMA = "rise-fire-gas-opacity-generator-input-v1"
 EXPECTED_MOLECULES = {"H2O": 1, "CO2": 2}
+EXPECTED_ARCHIVE_LINE_COUNTS = {"H2O": 114241164, "CO2": 326260084}
+EXPECTED_H2O_SEGMENT_NAMES = {
+    f"01_{lower}-{upper}_HITEMP2010.par" for lower, upper in (
+        ("00000", "00050"), ("00050", "00150"), ("00150", "00250"),
+        ("00250", "00350"), ("00350", "00500"), ("00500", "00600"),
+        ("00600", "00700"), ("00700", "00800"), ("00800", "00900"),
+        ("00900", "01000"), ("01000", "01150"), ("01150", "01300"),
+        ("01300", "01500"), ("01500", "01750"), ("01750", "02000"),
+        ("02000", "02250"), ("02250", "02500"), ("02500", "02750"),
+        ("02750", "03000"), ("03000", "03250"), ("03250", "03500"),
+        ("03500", "04150"), ("04150", "04500"), ("04500", "05000"),
+        ("05000", "05500"), ("05500", "06000"), ("06000", "06500"),
+        ("06500", "07000"), ("07000", "07500"), ("07500", "08000"),
+        ("08000", "08500"), ("08500", "09000"), ("09000", "11000"),
+        ("11000", "30000"),
+    )
+}
+EM2C_PATH_LENGTHS_M = tuple(
+    0.01 * (50.0 / 0.01) ** (index / 89.0) for index in range(90))
 PLACEHOLDER_CITATION = re.compile(
     r"\b(?:pending|placeholder|tbd|todo|owner[- ]download|distributed with)\b",
     re.IGNORECASE)
@@ -61,6 +80,54 @@ def _concrete_citation(value: str) -> bool:
         return False
     return ("http://" in value or "https://" in value or "doi" in value.lower() or
             re.search(r"\b(?:19|20)\d{2}\b", value) is not None)
+
+
+def validate_em2c_path_domain(paths: Sequence[float]) -> None:
+    if (len(paths) != len(EM2C_PATH_LENGTHS_M) or
+            any(not math.isclose(actual, expected, rel_tol=1.0e-11, abs_tol=1.0e-12)
+                for actual, expected in zip(paths, EM2C_PATH_LENGTHS_M))):
+        raise ValueError("production emissivity qualification must cover the pinned "
+                         "90-point EM2C path domain")
+
+
+def validate_production_species_inventory(
+        source: dict, mass_keys: set[int]) -> None:
+    species = source.get("species")
+    files = source.get("files", [])
+    if species == "CO2":
+        if (mass_keys != set(range(1, 13)) or len(files) != 1 or
+                Path(files[0].get("path", "")).name !=
+                "02_HITEMP2024.par.bz2" or
+                files[0].get("compression") != "bzip2" or
+                source.get("release") != "HITEMP2024"):
+            raise ValueError("CO2 production input is not the pinned HITEMP2024 archive")
+        return
+    if species == "H2O":
+        names = {Path(item.get("path", "")).name for item in files}
+        if (source.get("release") != "HITEMP2010" or
+                names != EXPECTED_H2O_SEGMENT_NAMES or
+                len(files) != len(EXPECTED_H2O_SEGMENT_NAMES) or
+                any(item.get("compression") != "none" for item in files) or
+                mass_keys != set(range(1, 7))):
+            raise ValueError("H2O production inventory is not the pinned "
+                             "34-segment HITEMP2010 archive")
+        return
+    raise ValueError("production opacity species inventory is unsupported")
+
+
+def refined_axis(knots: Sequence[float], subdivisions: int) -> list[float]:
+    if (len(knots) < 2 or subdivisions < 2 or subdivisions > 8 or
+            any(not math.isfinite(value) for value in knots) or
+            any(knots[index] >= knots[index + 1]
+                for index in range(len(knots) - 1))):
+        raise ValueError("opacity state-refinement axis is invalid")
+    result = []
+    for index in range(len(knots) - 1):
+        lower, upper = knots[index], knots[index + 1]
+        result.extend(lower + (upper - lower) * offset / subdivisions
+                      for offset in range(subdivisions))
+    result.append(float(knots[-1]))
+    return result
 
 
 def _validate_tensor(value: object, dimensions: Sequence[int], label: str) -> None:
@@ -163,6 +230,12 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
         if (species.get("molecule_number") != EXPECTED_MOLECULES[name] or
                 not isinstance(species.get("release"), str) or not species["release"]):
             raise ValueError("opacity species identity is invalid")
+        archive_line_count = species.get("archive_line_count")
+        if (not isinstance(archive_line_count, int) or
+                isinstance(archive_line_count, bool) or archive_line_count <= 0 or
+                (not synthetic and archive_line_count !=
+                 EXPECTED_ARCHIVE_LINE_COUNTS[name])):
+            raise ValueError("opacity species archive line count is invalid")
         _validate_tensor(species.get("line_counts_used"),
                          [len(self_axis), len(gas_axis)], "line counts")
         if any(count <= 0 for row in species["line_counts_used"] for count in row):
@@ -177,9 +250,40 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
                 [self_axis, gas_axis, radiation_axis], means) != species.get(
                     "planck_mean_interpolation"):
             raise ValueError("opacity interpolation certificate does not bind the table")
+        state_certificate = species.get("state_interpolation_qualification")
+        state_subdivisions = (state_certificate.get("subdivisions_per_cell")
+                              if isinstance(state_certificate, dict) else None)
+        expected_state_samples = (0 if not isinstance(state_subdivisions, int) else
+            ((len(self_axis) - 1) * state_subdivisions + 1) *
+            ((len(gas_axis) - 1) * state_subdivisions + 1) *
+            ((len(radiation_axis) - 1) * state_subdivisions + 1))
+        if (not isinstance(state_certificate, dict) or
+                state_certificate.get("kind") !=
+                "direct_lbl_uniform_subcell_state_validation_v1" or
+                not isinstance(state_certificate.get("subdivisions_per_cell"), int) or
+                isinstance(state_certificate.get("subdivisions_per_cell"), bool) or
+                state_certificate["subdivisions_per_cell"] < 2 or
+                state_certificate["subdivisions_per_cell"] > 8 or
+                not isinstance(state_certificate.get("sample_count"), int) or
+                state_certificate["sample_count"] != expected_state_samples or
+                not _is_digest(state_certificate.get("validation_samples_sha256")) or
+                not isinstance(state_certificate.get("maximum_relative"), (int, float)) or
+                not math.isfinite(state_certificate["maximum_relative"]) or
+                not isinstance(state_certificate.get("maximum_allowed_relative"),
+                               (int, float)) or
+                not math.isfinite(state_certificate["maximum_allowed_relative"]) or
+                state_certificate["maximum_allowed_relative"] <= 0.0 or
+                state_certificate.get("qualified") != (
+                    state_certificate["maximum_relative"] <=
+                    state_certificate["maximum_allowed_relative"]) or
+                (not synthetic and state_certificate.get("qualified") is not True)):
+            raise ValueError("opacity state-interpolation qualification is invalid")
         emissivity_certificate = species.get("finite_path_emissivity_grid_qualification")
         if not isinstance(emissivity_certificate, dict):
             raise ValueError("opacity finite-path emissivity qualification is missing")
+        if not synthetic:
+            validate_em2c_path_domain(
+                emissivity_certificate.get("path_lengths_m", []))
         expected_emissivity_certificate = finite_path_emissivity_refinement_certificate(
             grid,
             species["kappa_bin_average_per_m_per_unit_species_mole_fraction"],
@@ -188,6 +292,8 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
                 "maximum_allowed_estimated_remaining_relative_error", math.nan),
             emissivity_certificate.get(
                 "maximum_allowed_contraction_ratio", math.nan))
+        expected_emissivity_certificate[
+            "state_scope"] = "operational_axis_knots_only"
         if (emissivity_certificate != expected_emissivity_certificate or
                 (not synthetic and emissivity_certificate.get("qualified") is not True)):
             raise ValueError("opacity finite-path emissivity qualification is invalid")
@@ -281,19 +387,11 @@ def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, P
         if {key[1] for key in q_keys} != mass_keys:
             raise ValueError(f"{species} partition sums and isotopologue masses do not align")
         if status == "production_pinned":
-            if species == "CO2" and mass_keys != set(range(1, 13)):
-                raise ValueError("CO2 HITEMP2024 requires isotopologues 1 through 12")
+            validate_production_species_inventory(source, mass_keys)
             repo_root = Path(__file__).resolve().parent.parent
             local_lines = [_resolved(root, item["path"]).resolve() for item in files]
             if any(local == repo_root or repo_root in local.parents for local in local_lines):
                 raise ValueError("production HITEMP line bytes must remain outside the repository")
-            if species == "CO2" and not (len(files) == 1 and
-                    Path(files[0]["path"]).name == "02_HITEMP2024.par.bz2" and
-                    files[0]["compression"] == "bzip2" and source.get("release") == "HITEMP2024"):
-                raise ValueError("CO2 production input is not the pinned HITEMP2024 archive")
-            if species == "H2O" and (source.get("release") != "HITEMP2010" or
-                    any(not Path(item["path"]).name.endswith(".par") for item in files)):
-                raise ValueError("H2O production inventory is not HITEMP2010 .par data")
     if seen_species != {"H2O", "CO2"}:
         raise ValueError("manifest requires both H2O and CO2")
     return manifest, root
@@ -412,6 +510,10 @@ def generate(manifest_path: Path, input_root: Path | None,
                               manifest["radiation_temperatures_K"]]
     self_fractions = [float(value) for value in
                       manifest["self_broadening_mole_fractions"]]
+    subdivisions = manifest.get("state_interpolation_subdivisions_per_cell")
+    maximum_state_interpolation_relative = float(
+        manifest.get("maximum_planck_mean_state_interpolation_relative_error",
+                     math.nan))
     if (len(gas_temperatures) < 2 or len(radiation_temperatures) < 2 or
             any(gas_temperatures[index] >= gas_temperatures[index + 1]
                 for index in range(len(gas_temperatures) - 1)) or
@@ -422,6 +524,19 @@ def generate(manifest_path: Path, input_root: Path | None,
             any(self_fractions[index] >= self_fractions[index + 1]
                 for index in range(len(self_fractions) - 1))):
         raise ValueError("temperature grids must contain increasing closed intervals")
+    if (not isinstance(subdivisions, int) or isinstance(subdivisions, bool) or
+            subdivisions < 2 or subdivisions > 8 or
+            not math.isfinite(maximum_state_interpolation_relative) or
+            maximum_state_interpolation_relative <= 0.0):
+        raise ValueError("opacity state-interpolation qualification is invalid")
+    evaluation_gas_temperatures = refined_axis(gas_temperatures, subdivisions)
+    evaluation_radiation_temperatures = refined_axis(
+        radiation_temperatures, subdivisions)
+    evaluation_self_fractions = refined_axis(self_fractions, subdivisions)
+    operational_indices = [index * subdivisions for index in range(len(gas_temperatures))]
+    operational_self_indices = [index * subdivisions for index in range(len(self_fractions))]
+    operational_radiation_indices = [
+        index * subdivisions for index in range(len(radiation_temperatures))]
     pressure_pa = float(manifest["pressure_Pa"])
     if not math.isfinite(pressure_pa) or pressure_pa != REFERENCE_PRESSURE_PA:
         raise ValueError("opacity table pressure must be exactly 101325 Pa (1 atm)")
@@ -443,6 +558,8 @@ def generate(manifest_path: Path, input_root: Path | None,
         emissivity_config.get("maximum_estimated_remaining_relative_error", math.nan))
     emissivity_contraction_limit = float(
         emissivity_config.get("maximum_contraction_ratio", math.nan))
+    if not manifest["synthetic"]:
+        validate_em2c_path_domain(emissivity_paths)
     if (convergence_factor <= 1.0 or maximum_grid_relative <= 0.0 or
             maximum_wing_relative <= 0.0 or maximum_visible_upper <= 0.0):
         raise ValueError("line-wing convergence factor must exceed one")
@@ -456,42 +573,72 @@ def generate(manifest_path: Path, input_root: Path | None,
         if native_library is None:
             accumulator_result = species_spectra_batch(
                 _line_iterator(source, root), int(source["molecule_number"]), masses,
-                partition, grid, gas_temperatures, pressure_pa, self_fractions,
-                [cutoff, cutoff * convergence_factor], radiation_temperatures,
+                partition, grid, evaluation_gas_temperatures, pressure_pa,
+                evaluation_self_fractions,
+                [cutoff, cutoff * convergence_factor],
+                evaluation_radiation_temperatures,
                 visible_interval)
         else:
             from fire_gas_opacity_native import species_spectra_batch_native
             accumulator_result = species_spectra_batch_native(
                 native_library, source, root, masses, partition, grid,
-                gas_temperatures, pressure_pa, self_fractions,
-                [cutoff, cutoff * convergence_factor], radiation_temperatures,
+                evaluation_gas_temperatures, pressure_pa,
+                evaluation_self_fractions,
+                [cutoff, cutoff * convergence_factor],
+                evaluation_radiation_temperatures,
                 visible_interval)
         (all_spectra, all_counts, tail_bounds, center_means,
-         _visible_knot_bounds, visible_cell_bounds) = accumulator_result
-        spectra = all_spectra[0]
-        expanded = all_spectra[1]
-        line_counts = all_counts[0]
-        expanded_line_counts = all_counts[1]
-        if (any(count <= 0 for row in line_counts for count in row) or
-                any(count <= 0 for row in expanded_line_counts for count in row)):
+         _visible_knot_bounds, visible_cell_bounds,
+         archive_line_count) = accumulator_result
+        if (not manifest["synthetic"] and archive_line_count !=
+                EXPECTED_ARCHIVE_LINE_COUNTS[source["species"]]):
+            raise ValueError(
+                f"{source['species']} archive line count does not match HITEMP")
+        evaluation_spectra = all_spectra[0]
+        evaluation_expanded = all_spectra[1]
+        evaluation_line_counts = all_counts[0]
+        evaluation_expanded_line_counts = all_counts[1]
+        if (any(count <= 0 for row in evaluation_line_counts for count in row) or
+                any(count <= 0 for row in evaluation_expanded_line_counts
+                    for count in row)):
             raise ValueError(f"{source['species']} archive contributes no lines to a table state")
-        means = [[[
-            planck_mean_wavenumber(grid, spectra[self_index][gas_index], temperature)
-            for temperature in radiation_temperatures
-        ] for gas_index in range(len(gas_temperatures))]
-                 for self_index in range(len(self_fractions))]
-        expanded_means = [[[
-            planck_mean_wavenumber(grid, expanded[self_index][gas_index], temperature)
-            for temperature in radiation_temperatures
-        ] for gas_index in range(len(gas_temperatures))]
-                          for self_index in range(len(self_fractions))]
+        evaluation_means = [[[
+            planck_mean_wavenumber(
+                grid, evaluation_spectra[self_index][gas_index], temperature)
+            for temperature in evaluation_radiation_temperatures
+        ] for gas_index in range(len(evaluation_gas_temperatures))]
+                            for self_index in range(len(evaluation_self_fractions))]
+        evaluation_expanded_means = [[[
+            planck_mean_wavenumber(
+                grid, evaluation_expanded[self_index][gas_index], temperature)
+            for temperature in evaluation_radiation_temperatures
+        ] for gas_index in range(len(evaluation_gas_temperatures))]
+                                     for self_index in range(
+                                         len(evaluation_self_fractions))]
+        spectra = [[evaluation_spectra[self_index][gas_index]
+                    for gas_index in operational_indices]
+                   for self_index in operational_self_indices]
+        expanded = [[evaluation_expanded[self_index][gas_index]
+                     for gas_index in operational_indices]
+                    for self_index in operational_self_indices]
+        line_counts = [[evaluation_line_counts[self_index][gas_index]
+                        for gas_index in operational_indices]
+                       for self_index in operational_self_indices]
+        expanded_line_counts = [[
+            evaluation_expanded_line_counts[self_index][gas_index]
+            for gas_index in operational_indices]
+            for self_index in operational_self_indices]
+        means = [[[evaluation_means[self_index][gas_index][radiation_index]
+                   for radiation_index in operational_radiation_indices]
+                  for gas_index in operational_indices]
+                 for self_index in operational_self_indices]
         maximum_abs_sensitivity = 0.0
         maximum_relative_sensitivity = 0.0
-        for self_index in range(len(self_fractions)):
-            for gas_index in range(len(gas_temperatures)):
+        for self_index in range(len(evaluation_self_fractions)):
+            for gas_index in range(len(evaluation_gas_temperatures)):
                 for value, reference in zip(
-                        spectra[self_index][gas_index],
-                        expanded[self_index][gas_index]):
+                        evaluation_spectra[self_index][gas_index],
+                        evaluation_expanded[self_index][gas_index]):
                     difference = abs(value - reference)
                     maximum_abs_sensitivity = max(maximum_abs_sensitivity, difference)
                     maximum_relative_sensitivity = max(
@@ -501,7 +648,7 @@ def generate(manifest_path: Path, input_root: Path | None,
         maximum_grid_rel = 0.0
         maximum_wing_mean_abs = 0.0
         maximum_wing_mean_rel = 0.0
-        for self_index, self_rows in enumerate(means):
+        for self_index, self_rows in enumerate(evaluation_means):
             for gas_index, row in enumerate(self_rows):
                 for radiation_index, value in enumerate(row):
                     reference = center_means[gas_index][radiation_index]
@@ -509,7 +656,8 @@ def generate(manifest_path: Path, input_root: Path | None,
                     maximum_grid_abs = max(maximum_grid_abs, difference)
                     maximum_grid_rel = max(maximum_grid_rel,
                                            difference / max(abs(reference), 1.0e-300))
-                    wing_reference = expanded_means[self_index][gas_index][radiation_index]
+                    wing_reference = evaluation_expanded_means[
+                        self_index][gas_index][radiation_index]
                     wing_difference = abs(value - wing_reference)
                     maximum_wing_mean_abs = max(maximum_wing_mean_abs, wing_difference)
                     maximum_wing_mean_rel = max(
@@ -519,12 +667,54 @@ def generate(manifest_path: Path, input_root: Path | None,
             raise ValueError(f"{source['species']} spectral grid fails its Planck-mean gate")
         if maximum_wing_mean_rel > maximum_wing_relative:
             raise ValueError(f"{source['species']} line-wing comparison fails its Planck-mean gate")
+        maximum_state_interpolation_abs = 0.0
+        maximum_state_interpolation_rel = 0.0
+        worst_state = None
+        validation_samples = []
+        for self_index, self_fraction in enumerate(evaluation_self_fractions):
+            for gas_index, gas_temperature in enumerate(evaluation_gas_temperatures):
+                for radiation_index, radiation_temperature in enumerate(
+                        evaluation_radiation_temperatures):
+                    direct = evaluation_means[self_index][gas_index][radiation_index]
+                    interpolated = multilinear_value(
+                        [self_fractions, gas_temperatures, radiation_temperatures],
+                        means, [self_fraction, gas_temperature, radiation_temperature])
+                    difference = abs(direct - interpolated)
+                    relative = difference / max(abs(direct), 1.0e-300)
+                    validation_samples.append([
+                        self_fraction, gas_temperature, radiation_temperature,
+                        direct, interpolated])
+                    maximum_state_interpolation_abs = max(
+                        maximum_state_interpolation_abs, difference)
+                    if relative > maximum_state_interpolation_rel:
+                        maximum_state_interpolation_rel = relative
+                        worst_state = [self_fraction, gas_temperature,
+                                       radiation_temperature]
+        state_interpolation_certificate = {
+            "kind": "direct_lbl_uniform_subcell_state_validation_v1",
+            "subdivisions_per_cell": subdivisions,
+            "sample_count": len(validation_samples),
+            "validation_samples_sha256": hashlib.sha256(
+                canonical_json_bytes(validation_samples)).hexdigest(),
+            "maximum_absolute_m-1_per_unit_species_mole_fraction":
+                maximum_state_interpolation_abs,
+            "maximum_relative": maximum_state_interpolation_rel,
+            "maximum_allowed_relative": maximum_state_interpolation_relative,
+            "worst_state_self_fraction_Tgas_K_Trad_K": worst_state,
+            "qualified": (maximum_state_interpolation_rel <=
+                          maximum_state_interpolation_relative),
+        }
+        if (not manifest["synthetic"] and
+                not state_interpolation_certificate["qualified"]):
+            raise ValueError(
+                f"{source['species']} state interpolation fails its direct LBL gate")
         visible_maximum = max(value for row in visible_cell_bounds for value in row)
         if visible_maximum > maximum_visible_upper:
             raise ValueError(f"{source['species']} fails the visible-gas upper-bound gate")
         emissivity_certificate = finite_path_emissivity_refinement_certificate(
             grid, spectra, gas_temperatures, emissivity_paths,
             emissivity_remaining_limit, emissivity_contraction_limit)
+        emissivity_certificate["state_scope"] = "operational_axis_knots_only"
         if not manifest["synthetic"] and not emissivity_certificate["qualified"]:
             raise ValueError(
                 f"{source['species']} spectral grid fails the finite-path emissivity gate")
@@ -532,11 +722,13 @@ def generate(manifest_path: Path, input_root: Path | None,
             "species": source["species"],
             "release": source["release"],
             "molecule_number": int(source["molecule_number"]),
+            "archive_line_count": archive_line_count,
             "line_counts_used": line_counts,
             "kappa_bin_average_per_m_per_unit_species_mole_fraction": spectra,
             "planck_mean_per_m_per_unit_species_mole_fraction": means,
             "planck_mean_interpolation": tensor_linear_derivative_certificate(
                 [self_fractions, gas_temperatures, radiation_temperatures], means),
+            "state_interpolation_qualification": state_interpolation_certificate,
             "finite_path_emissivity_grid_qualification": emissivity_certificate,
             "visible_380_780nm_conservative_upper_m-1_per_unit_species_mole_fraction": visible_maximum,
             "visible_380_780nm_maximum_allowed_m-1_per_unit_species_mole_fraction": maximum_visible_upper,

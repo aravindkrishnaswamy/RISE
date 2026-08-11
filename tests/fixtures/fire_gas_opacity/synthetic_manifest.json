@@ -12,6 +12,8 @@
   "line_wing_convergence_factor": 2.0,
   "maximum_planck_mean_grid_relative_error": 0.05,
   "maximum_planck_mean_wing_relative_error": 0.05,
+  "state_interpolation_subdivisions_per_cell": 2,
+  "maximum_planck_mean_state_interpolation_relative_error": 0.05,
   "finite_path_emissivity_grid_qualification": {
     "path_lengths_m": [0.01, 1.0, 50.0],
     "maximum_estimated_remaining_relative_error": 0.05,
