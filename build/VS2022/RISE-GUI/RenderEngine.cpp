@@ -292,7 +292,7 @@ RenderEngine::RenderEngine(QObject* parent)
     });
 
     // L8 round 9 — progressive-update poll timer.  Drives the
-    // lockless `pollProductionVFS` at 30 Hz during an active
+    // generation-gated `pollProductionVFS` at 30 Hz during an active
     // render.  Started in `startRender` / `startAnimationRender`,
     // stopped at the finish path of each.  See `pollProductionVFS`
     // for the architecture rationale.
@@ -750,7 +750,7 @@ void RenderEngine::startStillRender(double sceneTime, bool regionOnly,
         m_eta.Begin();
     }
     m_elapsedTimer->start();
-    // L8 round 9 — start the lockless progressive-update poll.
+    // L8 round 9 — start the generation-gated progressive-update poll.
     m_progressivePollTimer->start();
 
     // L4 round-6 P1 — QPointer guard for the queued completion
@@ -872,7 +872,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
         m_eta.Begin();
     }
     m_elapsedTimer->start();
-    // L8 round 9 — start the lockless progressive-update poll.
+    // L8 round 9 — start the generation-gated progressive-update poll.
     m_progressivePollTimer->start();
 
     // L4 round-6 P1 — QPointer guard for the queued completion lambda.
@@ -1265,13 +1265,14 @@ void RenderEngine::pollProductionVFS()
     // FrameStore tile produced a `m_bufferMutex ↔ tile-mutex`
     // inversion that hung the render.
     //
-    // Lockless replacement: workers no longer fire the tile
+    // Generation-gated replacement: workers no longer fire the tile
     // callback at all (see `ensureProductionVFSAttachedToRasterizer`
-    // wiring above — `SetTileCompleteCallback` deliberately
-    // omitted).  They just bump the atomic `globalGeneration_`
-    // counter in `FrameStore` on every `EndTile`.  This method
-    // reads that counter on the Qt main thread and emits one full
-    // image when it advances.  Workers never block on the UI side.
+    // wiring above — `SetTileCompleteCallback` deliberately omitted).
+    // They bump the atomic `globalGeneration_` counter in `FrameStore` on
+    // every `EndTile`.  `ViewportFrameStore::Generation` briefly takes the
+    // chain shared lock to retain that FrameStore, so this Qt-side poll can
+    // contend with a bind; it emits one full image only when the counter
+    // advances. Tile completion workers never wait for this polling path.
     if (!m_productionVFS) return;
     const uint64_t gen = m_productionVFS->Generation();
     if (gen == m_lastSeenGeneration.load(std::memory_order_acquire)) return;

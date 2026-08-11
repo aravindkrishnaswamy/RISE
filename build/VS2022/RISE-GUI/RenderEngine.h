@@ -259,10 +259,10 @@ private:
     // a full-resolution QImage per tile can overwhelm Qt's queued
     // event storage before the UI thread consumes it.
     void onProductionVFSFrameComplete();
-    // L8 round 9 — lockless progressive-update poll.  Runs on the
-    // Qt main thread via `m_progressivePollTimer`; reads the
-    // production VFS's atomic generation counter and no-ops if no
-    // workers have produced new pixels since the last call.
+    // L8 round 9 — generation-gated progressive-update poll.  Runs on
+    // the Qt main thread via `m_progressivePollTimer`; briefly snapshots
+    // the production VFS chain, reads the retained FrameStore's atomic
+    // generation, and no-ops if no workers have produced new pixels.
     // Otherwise renders the full image into the staging buffer and
     // emits a QImage to the UI.  See `RenderEngine.cpp` impl for
     // the deadlock-avoidance rationale (replaces the former per-tile
@@ -402,7 +402,7 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
 
-    // L8 round 9 — sentinel for the lockless polling path.  Frame-complete
+    // L8 round 9 — sentinel for the generation-gated polling path. Frame-complete
     // callbacks write it on the render thread while the Qt poll reads it;
     // atomic access keeps that handoff data-race-free.
     std::atomic<uint64_t> m_lastSeenGeneration{0};

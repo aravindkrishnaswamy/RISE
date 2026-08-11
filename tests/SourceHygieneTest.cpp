@@ -1002,6 +1002,8 @@ int main()
 			"camera exposure publication is serialized with viewport binding" );
 		const std::string windowsRenderHeader = slurp(
 			repoRoot/"build"/"VS2022"/"RISE-GUI"/"RenderEngine.h");
+		const std::string windowsRenderSource = slurp(
+			repoRoot/"build"/"VS2022"/"RISE-GUI"/"RenderEngine.cpp");
 		const std::string androidBridgeHeader = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"cpp"/"RiseBridge.h");
 		std::string compactWindowsRenderHeader = windowsRenderHeader;
@@ -1076,6 +1078,12 @@ int main()
 			androidBridgeHeader.find("lockless progressive-update poll") ==
 				std::string::npos,
 			"GUI polling contracts account for VFS snapshot contention and resolution-dependent cost" );
+		Check(windowsRenderHeader.find("lockless progressive-update") ==
+				std::string::npos &&
+			windowsRenderSource.find("lockless progressive-update") ==
+				std::string::npos &&
+			windowsRenderSource.find("Lockless replacement") == std::string::npos,
+			"Windows polling contract accounts for VFS chain snapshot contention" );
 		const std::string regionUpdate = braceBody(renderViewModel,"func updateOutput(");
 		const std::string imageCoalescer = braceBody(
 			renderViewModel,"final class CoalescedImageDelivery");
@@ -1139,7 +1147,10 @@ int main()
 			frameStoreDesign.find("RISEPel, ROMM RGB linear") == std::string::npos &&
 			frameStoreDesign.find("ROMM-linear pixel") == std::string::npos &&
 			frameStoreDesign.find("matrix in ROMM") == std::string::npos &&
-			frameStoreDesign.find("ROMM → target color space") == std::string::npos,
+			frameStoreDesign.find("ROMM → target color space") == std::string::npos &&
+			frameStoreDesign.find("native ROMM primaries") == std::string::npos &&
+			targetFormatHeader.find("Bit-identical archival in ROMM primaries") ==
+				std::string::npos,
 			"output pipeline contracts name the Rec.709-linear RISEPel working space" );
 		Check(frameStoreDesign.find("Concurrency model — tile seqlock") ==
 				std::string::npos &&
