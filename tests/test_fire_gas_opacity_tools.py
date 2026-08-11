@@ -35,7 +35,7 @@ from generate_fire_gas_opacity_record import (  # noqa: E402
     EM2C_PATH_LENGTHS_M, EXPECTED_H2O_SEGMENT_NAMES,
     evaluate_mixture_planck_mean, evaluate_species_kappa_bin,
     evaluate_species_planck_mean, generate, generator_identity,
-    load_verified_manifest, validate_em2c_path_domain,
+    load_verified_manifest, validate_em2c_path_domain, _exact_axis_index,
     validate_production_species_inventory,
 )
 from build_fire_gas_opacity_native import build as build_native  # noqa: E402
@@ -260,11 +260,14 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             self.assertTrue(all(value > 0.0 for row in
                                 species["planck_mean_per_m_per_unit_species_mole_fraction"]
                                 for gas_rows in row for value in gas_rows))
-            self.assertEqual(species["planck_mean_interpolation"]["kind"],
+            self.assertEqual(species["planck_mean_interpolation_diagnostic"]["kind"],
                              "tensor_multilinear_exact_cell_bounds_v1")
-            self.assertFalse(species["state_interpolation_qualification"]["qualified"])
+            self.assertFalse(species["state_interpolation_diagnostic"][
+                "sample_gate_passed"])
             self.assertGreater(
-                species["state_interpolation_qualification"]["maximum_relative"], 1.0)
+                species["state_interpolation_diagnostic"]["maximum_relative"], 1.0)
+            self.assertFalse(species[
+                "finite_path_state_interpolation_diagnostic"]["sample_gate_passed"])
         h2o = next(entry for entry in generated["species_tables"]
                    if entry["species"] == "H2O")
         self.assertAlmostEqual(
@@ -352,7 +355,8 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             table, "H2O", 0.2, 900.0 - epsilon, 1100.0, 101325.0,
             allow_synthetic=True)
         derivative = (upper - lower) / (2.0 * epsilon)
-        first_cell = next(cell for cell in h2o["planck_mean_interpolation"]["cells"]
+        first_cell = next(cell for cell in h2o[
+            "planck_mean_interpolation_diagnostic"]["cells"]
                           if cell["lower_indices"] == [0, 0, 1])
         self.assertGreaterEqual(derivative, first_cell["partial_derivative_bounds"][1][0])
         self.assertLessEqual(derivative, first_cell["partial_derivative_bounds"][1][1])
@@ -376,7 +380,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 math.nextafter(table["spectral_bin_edge_domain_cm-1"][0], -math.inf),
                 101325.0, allow_synthetic=True)
         mutated = copy.deepcopy(table)
-        mutated["species_tables"][0]["planck_mean_interpolation"]["cells"][0][
+        mutated["species_tables"][0]["planck_mean_interpolation_diagnostic"]["cells"][0][
             "partial_derivative_bounds"][0][0] -= 1.0
         with self.assertRaisesRegex(ValueError, "canonical identity mismatch"):
             evaluate_species_planck_mean(
@@ -385,7 +389,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         recertified = copy.deepcopy(table)
         target = recertified["species_tables"][0]
         target["planck_mean_per_m_per_unit_species_mole_fraction"][0][0][0] *= 2.0
-        target["planck_mean_interpolation"] = tensor_linear_derivative_certificate(
+        target["planck_mean_interpolation_diagnostic"] = tensor_linear_derivative_certificate(
             [recertified["self_broadening_mole_fractions"],
              recertified["gas_temperatures_K"],
              recertified["radiation_temperatures_K"]],
@@ -419,21 +423,20 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             (1.0 - math.exp(-0.7 * 0.4)) * band_weight / total_weight, places=15)
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "em2c.dat"
-            rows = ["PL[atm-m]   Tg[K]    total-emissivity[dimLESS]"]
+            rows = ["iPL    PL[atm-m]"]
+            rows.extend(f"{index + 1} {path_length:.12f}"
+                        for index, path_length in enumerate(EM2C_PATH_LENGTHS_M))
+            rows.append("PL[atm-m]   Tg[K]    total-emissivity[dimLESS]")
             for path_index in range(90):
                 path_length = 0.01 * (50.0 / 0.01) ** (path_index / 89.0)
                 for temp_index in range(105):
-                    rows.append(f"{path_length:.12f} {300.0 + 25.0 * temp_index:.2f} 0.25")
+                    rows.append(f"{path_length:.5f} {300.0 + 25.0 * temp_index:.2f} 0.25")
             source.write_text("\n".join(rows) + "\n", encoding="utf-8")
             parsed = parse_em2c(source, verify_digest=False)
             self.assertEqual(len(parsed), 9450)
             self.assertEqual(parsed[0], (300.0, 0.01, 0.25))
             self.assertEqual(parsed[-1][0], 2900.0)
-            for temp_index in range(105):
-                row_index = 1 + 45 * 105 + temp_index
-                fields = rows[row_index].split()
-                fields[0] = f"{EM2C_PATH_LENGTHS_M[45] * 1.1:.12f}"
-                rows[row_index] = " ".join(fields)
+            rows[1 + 45] = f"46 {EM2C_PATH_LENGTHS_M[45] * 1.1:.12f}"
             source.write_text("\n".join(rows) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "grid is invalid"):
                 parse_em2c(source, verify_digest=False)
@@ -531,6 +534,8 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         validate_em2c_path_domain(EM2C_PATH_LENGTHS_M)
         with self.assertRaisesRegex(ValueError, "90-point EM2C"):
             validate_em2c_path_domain([0.01, 1.0, 50.0])
+        with self.assertRaisesRegex(ValueError, "axis knots only"):
+            _exact_axis_index([300.0, 1000.0], 700.0)
 
     def test_empty_or_foreign_line_archives_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())

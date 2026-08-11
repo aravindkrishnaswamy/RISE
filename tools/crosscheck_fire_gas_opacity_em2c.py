@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fire_gas_opacity import (
     finite_path_emissivity_refinement_certificate, homogeneous_emissivity,
-    multilinear_value, sha256_file,
+    sha256_file,
 )
 from generate_fire_gas_opacity_record import (
     EM2C_PATH_LENGTHS_M, validate_opacity_table,
@@ -41,15 +41,13 @@ def spectrum_at_temperature(table: dict, species: dict, temperature_k: float,
     self_axis = table["self_broadening_mole_fractions"]
     temperatures = table["gas_temperatures_K"]
     spectra = species["kappa_bin_average_per_m_per_unit_species_mole_fraction"]
-    result = []
-    for column in range(len(table["spectral_grid_cm-1"])):
-        values = [[spectra[self_index][gas_index][column]
-                   for gas_index in range(len(temperatures))]
-                  for self_index in range(len(self_axis))]
-        result.append(multilinear_value(
-            [self_axis, temperatures], values,
-            [self_mole_fraction, temperature_k]))
-    return result
+    try:
+        self_index = self_axis.index(self_mole_fraction)
+        temperature_index = temperatures.index(temperature_k)
+    except ValueError as exc:
+        raise ValueError("EM2C crosscheck requires every case composition and "
+                         "temperature to be an exact production-table axis knot") from exc
+    return list(spectra[self_index][temperature_index])
 
 
 def parse_em2c(path: Path, verify_digest: bool = True) -> list[tuple[float, float, float]]:
@@ -58,10 +56,30 @@ def parse_em2c(path: Path, verify_digest: bool = True) -> list[tuple[float, floa
         if not expected or sha256_file(path) != expected:
             raise ValueError("EM2C filename or SHA-256 is not the pinned V1 dataset")
     lines = path.read_text(encoding="utf-8").splitlines()
+    path_header = next((index for index, line in enumerate(lines)
+                        if "iPL" in line and "PL[atm-m]" in line), None)
     header = next((index for index, line in enumerate(lines)
                    if "total-emissivity[dimLESS]" in line), None)
-    if header is None:
-        raise ValueError("EM2C total-emissivity table header is missing")
+    if path_header is None or header is None:
+        raise ValueError("EM2C path or total-emissivity table header is missing")
+    full_precision_paths = []
+    for raw in lines[path_header + 1:header]:
+        fields = raw.split()
+        if not fields:
+            continue
+        if len(fields) != 2:
+            raise ValueError("EM2C full-precision path table is malformed")
+        index = int(fields[0])
+        value = float(fields[1])
+        if (index != len(full_precision_paths) + 1 or not math.isfinite(value) or
+                value <= 0.0):
+            raise ValueError("EM2C full-precision path table is malformed")
+        full_precision_paths.append(value)
+    if (len(full_precision_paths) != len(EM2C_PATH_LENGTHS_M) or
+            any(not math.isclose(actual, expected, rel_tol=0.0, abs_tol=5.1e-10)
+                for actual, expected in zip(
+                    full_precision_paths, EM2C_PATH_LENGTHS_M))):
+        raise ValueError("EM2C pressure-pathlength grid is invalid")
     rows = []
     for line_number, raw in enumerate(lines[header + 1:], header + 2):
         text = raw.strip()
@@ -80,14 +98,17 @@ def parse_em2c(path: Path, verify_digest: bool = True) -> list[tuple[float, floa
         raise ValueError("EM2C table does not contain 90x105 data rows")
     for path_index in range(90):
         block = rows[path_index * 105:(path_index + 1) * 105]
-        pressure_path = block[0][1]
-        if not math.isclose(
-                pressure_path, EM2C_PATH_LENGTHS_M[path_index],
-                rel_tol=1.0e-10, abs_tol=1.0e-12):
-            raise ValueError("EM2C pressure-pathlength grid is invalid")
+        row_pressure_path = block[0][1]
+        pressure_path = full_precision_paths[path_index]
+        if not math.isclose(row_pressure_path, round(pressure_path, 5),
+                            rel_tol=0.0, abs_tol=1.0e-12):
+            raise ValueError("EM2C rounded data-row path does not match its header")
         for temp_index, (temperature, row_path, _) in enumerate(block):
-            if temperature != 300.0 + 25.0 * temp_index or row_path != pressure_path:
+            if (temperature != 300.0 + 25.0 * temp_index or
+                    row_path != row_pressure_path):
                 raise ValueError("EM2C 90x105 row ordering is invalid")
+            row_offset = path_index * 105 + temp_index
+            rows[row_offset] = (temperature, pressure_path, rows[row_offset][2])
     return rows
 
 
