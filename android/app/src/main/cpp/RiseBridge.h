@@ -106,10 +106,9 @@ public:
     // boundaries, and rasterize() will return false (not true).
     void requestCancel();
 
-    // Expose the internal RGBA8 framebuffer as a direct ByteBuffer. Called
-    // by Kotlin after onSceneReady fires so it can wrap it in an
-    // AndroidBitmap and display it.
-    jobject getFramebufferByteBuffer(JNIEnv* env) const;
+    // Copy the current RGBA8 framebuffer into caller-owned direct storage.
+    // Dimensions, generation, and copy status are captured under one lock.
+    jobject copyFramebufferSnapshot(JNIEnv* env, jobject destination) const;
 
     // Internal: called by RasterizerOutputImpl on the first tile callback
     // when scene dimensions become known. Allocates m_framebuffer if needed
@@ -349,8 +348,8 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     RISE::Implementation::ViewportFrameStore* m_interactiveVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
-    // L8 round 9 — sentinel shared by the Choreographer poll and the
-    // render-thread frame-complete callback.
+    // L8 round 9 — sentinel shared by the RenderViewModel 30 Hz poll and
+    // the render-thread frame-complete callback.
     std::atomic<uint64_t>                     m_lastSeenGeneration{0};
     std::atomic<double>                       m_viewExposureEV{0.0};
 
@@ -367,9 +366,9 @@ private:
     void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
                                      bool nonBlocking = false);
     void onProductionVFSFrameComplete();
-    // L8 round 9 — generation-gated progressive-update poll.  Called from
-    // the Kotlin Choreographer at the display refresh rate during
-    // an active render.  See `pollProductionVFS` impl in
+    // L8 round 9 — generation-gated progressive-update poll. Called from
+    // RenderViewModel's 30 Hz coroutine during an active render. See
+    // `pollProductionVFS` impl in
     // RiseBridge.cpp + `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
     // doc in RISEBridge.mm (the architecture spec).
 public:
@@ -399,6 +398,7 @@ private:
     uint8_t*           m_framebuffer = nullptr;
     unsigned           m_fbWidth  = 0;
     unsigned           m_fbHeight = 0;
+    uint64_t           m_fbGeneration = 0;
 
     // JNI global ref to the Kotlin RiseCallback. Held by the bridge;
     // released in setCallback(nullptr) or ~RiseBridge.  Guarded by

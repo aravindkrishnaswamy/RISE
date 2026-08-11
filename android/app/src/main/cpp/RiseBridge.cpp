@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 
 // RISE library headers — included only in .cpp files so the .h stays thin.
 #include "RISE_API.h"
@@ -341,9 +342,12 @@ void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
         }
         std::free(m_framebuffer);
         m_framebuffer = static_cast<uint8_t*>(std::calloc(static_cast<size_t>(w) * h * 4, 1));
-        m_fbWidth  = w;
-        m_fbHeight = h;
-        fired = true;
+        m_fbWidth  = m_framebuffer ? w : 0;
+        m_fbHeight = m_framebuffer ? h : 0;
+        if (m_framebuffer) {
+            ++m_fbGeneration;
+            fired = true;
+        }
     }
     if (fired) {
         // L4 round-5 P1-A — hold m_kotlinCallbackMutex across
@@ -394,6 +398,7 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
                 drow += 4;
             }
         }
+        ++m_fbGeneration;
     }
 
     {
@@ -414,8 +419,8 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
     }
 }
 
-// L4d — VFS-driven production-render path.  Progressive display is
-// generation-polled by Choreographer; only frame-complete callbacks enter
+// L4d — VFS-driven production-render path. Progressive display is
+// generation-polled by RenderViewModel's 30 Hz coroutine; frame-complete callbacks enter
 // synchronously from the rasterizer thread.  Both routes render RGBA8_sRGB
 // directly into m_framebuffer under m_fbMutex and notify Kotlin through the
 // legacy onRegionInvalidated JNI hop.
@@ -436,10 +441,9 @@ void RiseBridge::ensureProductionVFSCreated() {
         // FrameStore tile produced a `m_bufferMutex ↔ tile-mutex`
         // inversion that hung the render after a handful of blocks.
         //
-        // Generation-gated replacement: the Kotlin side's `Choreographer`
-        // callback (post-L8 round 9 wiring in MainActivity.kt) calls
-        // `Java_..._pollProductionVFS()` at the display refresh
-        // cadence.  That JNI hop takes the VFS chain's brief shared snapshot,
+        // Generation-gated replacement: the RenderViewModel coroutine calls
+        // `Java_..._pollProductionVFS()` at 30 Hz.  That JNI hop takes the VFS
+        // chain's brief shared snapshot,
         // reads the active store's generation, and only
         // does a full-image emit when the counter advances.  Workers
         // never block on the JNI / Kotlin side; their per-tile
@@ -544,6 +548,7 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
                 m_framebuffer, static_cast<size_t>(W) * 4,
                 RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
         }
+        ++m_fbGeneration;
     }
 
     // Notify Kotlin of the dirty region (inclusive bounds).
@@ -579,9 +584,8 @@ void RiseBridge::onProductionVFSFrameComplete() {
 }
 
 void RiseBridge::pollProductionVFS() {
-    // L8 round 9 — UI-thread polling entry point.  Driven by the
-    // Kotlin side's `Choreographer` callback at the display refresh
-    // cadence during an active render.  See companion comment in
+    // L8 round 9 — UI-thread polling entry point. Driven by RenderViewModel's
+    // 30 Hz coroutine during an active render. See companion comment in
     // `ensureProductionVFSAttachedToRasterizer` for the architecture
     // rationale; the Mac (`RISEBridge.mm`) impl is the spec.
     //
@@ -596,7 +600,7 @@ void RiseBridge::pollProductionVFS() {
     const uint64_t gen = m_productionVFS->Generation();
     if (gen == m_lastSeenGeneration.load(std::memory_order_acquire)) return;
     // L8 round 14 — `nonBlocking=true`.  See FrameStore::Render doc;
-    // prevents the Choreographer / poll path from blocking on a
+    // prevents the RenderViewModel poll path from blocking on a
     // slow worker block's tile exclusive.
     onProductionVFSTileComplete(nullptr, /*nonBlocking=*/true);
     m_lastSeenGeneration.store(gen, std::memory_order_release);
@@ -658,6 +662,7 @@ void RiseBridge::onInteractiveVFSFrameComplete() {
         m_interactiveVFS->RenderToBuffer(
             m_framebuffer, static_cast<size_t>(W) * 4,
             RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
+        ++m_fbGeneration;
     }
 
     // Full-image dirty notification — interactive always emits the
@@ -809,13 +814,51 @@ void RiseBridge::onLogLine(int level, const char* message) {
     }
 }
 
-jobject RiseBridge::getFramebufferByteBuffer(JNIEnv* env) const {
-    std::lock_guard<std::mutex> lock(m_fbMutex);
-    if (!env || !m_framebuffer || m_fbWidth == 0 || m_fbHeight == 0) {
+jobject RiseBridge::copyFramebufferSnapshot(JNIEnv* env, jobject destination) const {
+    if (!env || !destination) {
         return nullptr;
     }
-    const jlong size = static_cast<jlong>(m_fbWidth) * m_fbHeight * 4;
-    return env->NewDirectByteBuffer(m_framebuffer, size);
+
+    void* const destinationBytes = env->GetDirectBufferAddress(destination);
+    const jlong destinationCapacity = env->GetDirectBufferCapacity(destination);
+    jint width = 0;
+    jint height = 0;
+    jlong generation = 0;
+    jint byteCount = 0;
+    jboolean copied = JNI_FALSE;
+    {
+        std::lock_guard<std::mutex> lock(m_fbMutex);
+        if (!m_framebuffer || m_fbWidth == 0 || m_fbHeight == 0) {
+            return nullptr;
+        }
+        const size_t pixels = static_cast<size_t>(m_fbWidth) * m_fbHeight;
+        if (pixels > static_cast<size_t>(std::numeric_limits<jsize>::max()) / 4u) {
+            return nullptr;
+        }
+        byteCount = static_cast<jint>(pixels * 4u);
+        width = static_cast<jint>(m_fbWidth);
+        height = static_cast<jint>(m_fbHeight);
+        generation = static_cast<jlong>(m_fbGeneration);
+        if (destinationBytes && destinationCapacity >= byteCount) {
+            std::memcpy(destinationBytes, m_framebuffer, static_cast<size_t>(byteCount));
+            copied = JNI_TRUE;
+        }
+    }
+
+    jclass snapshotClass = env->FindClass(
+        "com/risegfx/android/nativebridge/FramebufferSnapshot");
+    if (!snapshotClass) {
+        return nullptr;
+    }
+    jmethodID constructor = env->GetMethodID(snapshotClass, "<init>", "(IIJIZ)V");
+    if (!constructor) {
+        env->DeleteLocalRef(snapshotClass);
+        return nullptr;
+    }
+    jobject snapshot = env->NewObject(
+        snapshotClass, constructor, width, height, generation, byteCount, copied);
+    env->DeleteLocalRef(snapshotClass);
+    return snapshot;
 }
 
 // ===========================================================================

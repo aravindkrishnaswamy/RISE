@@ -21,8 +21,9 @@ interface RiseCallback {
 
     /**
      * Fired once per scene, when the first tile callback arrives and the
-     * dimensions become known. After this, [RiseNative.nativeGetFramebuffer]
-     * returns a non-null ByteBuffer of size w*h*4.
+     * dimensions become known. After this,
+     * [RiseNative.nativeCopyFramebuffer] can copy a snapshot of size w*h*4
+     * into caller-owned storage.
      */
     fun onSceneReady(width: Int, height: Int)
 

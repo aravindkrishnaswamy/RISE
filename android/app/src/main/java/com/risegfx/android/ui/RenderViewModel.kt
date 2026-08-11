@@ -148,6 +148,8 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     private var bitmap: Bitmap? = null
     private var bitmapW = 0
     private var bitmapH = 0
+    private var framebufferCopyBuffer: ByteBuffer? = null
+    private var lastFramebufferGeneration = 0L
 
     // Latest dirty rect from native land — merged into a bounding box and
     // drained to the UI at [INVALIDATE_HZ].
@@ -524,6 +526,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         bitmapW = width
         bitmapH = height
+        framebufferCopyBuffer = ByteBuffer.allocateDirect(width * height * 4)
         frame = bitmap?.asImageBitmap()
     }
 
@@ -533,10 +536,19 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
      * viewModelScope's default (Main-immediate) dispatcher because Bitmap
      * mutation is not thread-safe.
      */
+    @Synchronized
     private fun drainDirtyAndRepublish() {
         val rect = dirtyRect.getAndSet(null) ?: return
         val bmp = bitmap ?: return
-        val bytes: ByteBuffer = RiseNative.nativeGetFramebuffer() ?: return
+        val bytes = framebufferCopyBuffer ?: return
+        bytes.clear()
+        val snapshot = RiseNative.nativeCopyFramebuffer(bytes) ?: return
+        if (snapshot.width != bitmapW || snapshot.height != bitmapH ||
+            snapshot.byteCount != bmp.byteCount || !snapshot.copied ||
+            snapshot.generation <= lastFramebufferGeneration
+        ) {
+            return
+        }
 
         // Full blit of the current framebuffer. The library always passes
         // the full image with a dirty rect; copying only the rect would
@@ -544,6 +556,7 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         // the full copy on arm64 for scenes we care about (<= 2048×2048).
         bytes.rewind()
         bmp.copyPixelsFromBuffer(bytes)
+        lastFramebufferGeneration = snapshot.generation
 
         // Rebinding `frame` is what triggers Compose recomposition.
         frame = bmp.asImageBitmap()

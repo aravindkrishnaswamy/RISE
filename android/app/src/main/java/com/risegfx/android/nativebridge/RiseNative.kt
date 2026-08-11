@@ -1,5 +1,6 @@
 package com.risegfx.android.nativebridge
 
+import androidx.annotation.Keep
 import java.nio.ByteBuffer
 
 /**
@@ -23,6 +24,15 @@ import java.nio.ByteBuffer
  * The shared library loads once at classload and stays resident for the
  * life of the process.
  */
+@Keep
+data class FramebufferSnapshot(
+    val width: Int,
+    val height: Int,
+    val generation: Long,
+    val byteCount: Int,
+    val copied: Boolean,
+)
+
 object RiseNative {
 
     init {
@@ -117,13 +127,15 @@ object RiseNative {
     external fun nativeViewportLastSceneTime(): Double
 
     /**
-     * Expose the native-owned RGBA8 framebuffer as a direct [ByteBuffer].
-     * The returned buffer wraps C++ memory and is valid until the next
-     * [nativeLoadScene] with different dimensions or process shutdown.
+     * Copy the current RGBA8 framebuffer into caller-owned direct storage.
+     * Dimensions, generation, byte count, and pixels are captured under one
+     * native lock, so resize and tile writes cannot invalidate or tear a
+     * successful copy. [FramebufferSnapshot.copied] is false when [destination]
+     * is not direct or is too small for the atomically captured dimensions.
      *
      * Returns null before [RiseCallback.onSceneReady] has fired.
      */
-    external fun nativeGetFramebuffer(): ByteBuffer?
+    external fun nativeCopyFramebuffer(destination: ByteBuffer): FramebufferSnapshot?
 
     /**
      * Reset the render-time estimator and capture the current time as the
@@ -175,9 +187,9 @@ object RiseNative {
     external fun nativeSetViewToneCurve(curve: Int)
 
     /**
-     * L8 round 9 — generation-gated progressive-update poll.  Called from a
-     * `Choreographer.postFrameCallback` loop at the display refresh
-     * rate during an active render.  The native impl briefly snapshots the
+     * L8 round 9 — generation-gated progressive-update poll. Called from
+     * RenderViewModel's 30 Hz coroutine during an active render. The native
+     * impl briefly snapshots the
      * production VFS chain, checks its FrameStore generation, and emits one
      * full-image refresh ONLY when the counter has advanced since
      * the previous poll.  A no-change poll avoids image conversion; a dirty

@@ -149,8 +149,7 @@ JNIF(void, nativeSetViewToneCurve)(JNIEnv* /*env*/, jobject /*thiz*/,
 }
 
 // L8 round 9 — generation-gated progressive-update poll.  Called by the
-// Kotlin side's `Choreographer.postFrameCallback` loop at the
-// display refresh rate during an active render.  Snapshots the
+// RenderViewModel's 30 Hz coroutine during an active render. Snapshots the
 // production VFS chain and reads its FrameStore generation; no-ops if
 // the counter hasn't advanced since the last poll, otherwise emits one
 // full-image refresh via the standard `onRegionInvalidated` JNI
@@ -180,8 +179,8 @@ JNIF(jdouble, nativeViewportLastSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/) {
     return static_cast<jdouble>(getBridge().viewportLastSceneTime());
 }
 
-JNIF(jobject, nativeGetFramebuffer)(JNIEnv* env, jobject /*thiz*/) {
-    return getBridge().getFramebufferByteBuffer(env);
+JNIF(jobject, nativeCopyFramebuffer)(JNIEnv* env, jobject /*thiz*/, jobject destination) {
+    return getBridge().copyFramebufferSnapshot(env, destination);
 }
 
 JNIF(void, nativeEtaBegin)(JNIEnv* /*env*/, jobject /*thiz*/) {

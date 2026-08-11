@@ -43,10 +43,16 @@ class RenderSmokeTest {
         val sceneReadyLatch = CountDownLatch(1)
         val progressCount  = AtomicInteger(0)
         val tileCount      = AtomicInteger(0)
+        val frameWidth     = AtomicInteger(0)
+        val frameHeight    = AtomicInteger(0)
 
         RiseNative.nativeSetCallback(object : RiseCallback {
             override fun onProgress(progress: Float) { progressCount.incrementAndGet() }
-            override fun onSceneReady(width: Int, height: Int) { sceneReadyLatch.countDown() }
+            override fun onSceneReady(width: Int, height: Int) {
+                frameWidth.set(width)
+                frameHeight.set(height)
+                sceneReadyLatch.countDown()
+            }
             override fun onRegionInvalidated(packedRect: Long) { tileCount.incrementAndGet() }
             override fun onLog(level: Int, message: String) {}
         })
@@ -64,16 +70,40 @@ class RenderSmokeTest {
         )
         assertTrue("expected at least one tile callback", tileCount.get() > 0)
 
-        val fb = RiseNative.nativeGetFramebuffer()
-        assertNotNull("framebuffer not allocated", fb)
-        assertFrameHasNonZeroPixel(fb!!)
+        val firstBytes = ByteBuffer.allocateDirect(frameWidth.get() * frameHeight.get() * 4)
+        val nullableSnapshot = RiseNative.nativeCopyFramebuffer(firstBytes)
+        assertNotNull("framebuffer not allocated", nullableSnapshot)
+        val fb = requireNotNull(nullableSnapshot)
+        assertTrue("snapshot width should be positive", fb.width > 0)
+        assertTrue("snapshot height should be positive", fb.height > 0)
+        assertTrue("snapshot generation should be positive", fb.generation > 0)
+        assertTrue(
+            "snapshot byte count must match dimensions",
+            fb.byteCount == fb.width * fb.height * 4,
+        )
+        assertTrue("framebuffer snapshot should fit caller storage", fb.copied)
+        assertFrameHasNonZeroPixel(firstBytes, fb.byteCount)
+
+        val originalFirstByte = firstBytes.get(0)
+        firstBytes.put(0, (originalFirstByte.toInt() xor 0xFF).toByte())
+        val secondBytes = ByteBuffer.allocateDirect(fb.byteCount)
+        val nullableNext = RiseNative.nativeCopyFramebuffer(secondBytes)
+        assertNotNull("second framebuffer snapshot not allocated", nullableNext)
+        val next = requireNotNull(nullableNext)
+        assertTrue(
+            "mutating caller-owned storage must not mutate the native framebuffer",
+            next.copied && secondBytes.get(0) == originalFirstByte,
+        )
     }
 
-    private fun assertFrameHasNonZeroPixel(buffer: ByteBuffer) {
-        buffer.rewind()
-        val arr = ByteArray(buffer.remaining())
-        buffer.get(arr)
-        val hasNonZero = arr.any { it.toInt() and 0xFF != 0 }
+    private fun assertFrameHasNonZeroPixel(buffer: ByteBuffer, byteCount: Int) {
+        var hasNonZero = false
+        for (i in 0 until byteCount) {
+            if (buffer.get(i).toInt() and 0xFF != 0) {
+                hasNonZero = true
+                break
+            }
+        }
         assertFalse("framebuffer is entirely zero — render did not produce output", !hasNonZero)
     }
 
