@@ -193,7 +193,8 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	# Fast up-to-date short-circuit: skip the make call (which would otherwise
 	# stat the entire $(OBJLIB) tree — ~3s per test) when the binary is
 	# already newer than its source and every library .o file.
-	if [ -x "$test_path" ] \
+	if [ "$bulk_rc" -eq 0 ] \
+	   && [ -x "$test_path" ] \
 	   && [ "$test_path" -nt "$test_src" ] \
 	   && [ -z "$(find "$LIB_DIR" -name '*.o' -newer "$test_path" -print -quit 2>/dev/null)" ]
 	then

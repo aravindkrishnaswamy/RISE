@@ -162,6 +162,7 @@ if (-not (Test-Path -LiteralPath $cacheFile)) {
 $built = 0
 $buildFailed = 0
 $buildFailures = @()
+$failedBuildTargets = @{}
 
 if (-not $NoBuild) {
     $buildLog = Join-Path $LogDir 'build.log'
@@ -176,20 +177,43 @@ if (-not $NoBuild) {
         foreach ($src in $testSources) {
             & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
                 Out-File -FilePath $buildLog -Encoding utf8 -Append
+            $targetRc = $LASTEXITCODE
+            if ($targetRc -ne 0) {
+                $failedBuildTargets[$src.BaseName] = $targetRc
+            }
         }
+        $buildRc = if ($failedBuildTargets.Count -eq 0) { 0 } else { 1 }
     } else {
         & $cmake --build $CmakeBuildDir --config $Config --target rise_all_tests --parallel *>&1 |
             Out-File -FilePath $buildLog -Encoding utf8
+        $buildRc = $LASTEXITCODE
+        if ($buildRc -ne 0) {
+            # The aggregate target cannot identify which stale executable owns
+            # the failure. Re-run every target through CMake so its dependency
+            # graph (including shared test headers and RISE.lib) determines the
+            # result; never infer freshness from source/exe timestamps.
+            foreach ($src in $testSources) {
+                & $cmake --build $CmakeBuildDir --config $Config --target $src.BaseName *>&1 |
+                    Out-File -FilePath $buildLog -Encoding utf8 -Append
+                $targetRc = $LASTEXITCODE
+                if ($targetRc -ne 0) {
+                    $failedBuildTargets[$src.BaseName] = $targetRc
+                }
+            }
+            $buildRc = if ($failedBuildTargets.Count -eq 0) { 0 } else { 1 }
+        }
     }
-    $buildRc = $LASTEXITCODE
     $bd = [int]((Get-Date) - $bs).TotalSeconds
 
-    # Walk the test list and check which exes were produced. Source-newer-than-exe
-    # signals a stale binary from a previous build whose current rebuild failed.
+    # Every nonzero target build is authoritative even if an older executable
+    # remains on disk. Successful aggregate/individual CMake builds already
+    # evaluated the complete dependency graph.
     foreach ($src in $testSources) {
         $exe = Join-Path $BinDir "$($src.BaseName).exe"
-        if ((Test-Path -LiteralPath $exe) -and `
-            ((Get-Item -LiteralPath $exe).LastWriteTime -ge $src.LastWriteTime)) {
+        if ($failedBuildTargets.ContainsKey($src.BaseName)) {
+            $buildFailed++
+            $buildFailures += $src.BaseName
+        } elseif (Test-Path -LiteralPath $exe) {
             $built++
         } else {
             $buildFailed++
@@ -242,6 +266,11 @@ foreach ($src in $testSources) {
 
     if (-not (Test-Path -LiteralPath $exe)) {
         Write-Host "$prefix SKIP (build failed or missing)"
+        $skipped++
+        continue
+    }
+    if (-not $NoBuild -and $failedBuildTargets.ContainsKey($name)) {
+        Write-Host "$prefix SKIP (current build failed; stale exe ignored)"
         $skipped++
         continue
     }

@@ -780,6 +780,30 @@ int main()
 			return std::string(std::istreambuf_iterator<char>(input),
 				std::istreambuf_iterator<char>());
 		};
+		const std::string unixTestRunner = slurp(repoRoot/"run_all_tests.sh");
+		const std::string windowsTestRunner = slurp(repoRoot/"run_all_tests.ps1");
+		const std::string iorStackTest = slurp(repoRoot/"tests"/"IORStackTest.cpp");
+		const std::string fileOutputTest = slurp(
+			repoRoot/"tests"/"FileRasterizerOutputShimTest.cpp");
+		Check(unixTestRunner.find("if [ \"$bulk_rc\" -eq 0 ]") !=
+				std::string::npos &&
+			windowsTestRunner.find("$failedBuildTargets = @{}") !=
+				std::string::npos &&
+			windowsTestRunner.find(
+				"$failedBuildTargets.ContainsKey($name)") != std::string::npos &&
+			windowsTestRunner.find(
+				"--target $src.BaseName") != std::string::npos,
+			"test runners never execute stale binaries after a failed dependency-aware build" );
+		Check(iorStackTest.find("\tassert(") == std::string::npos &&
+			iorStackTest.find("return failCount == 0 ? 0 : 1;") !=
+				std::string::npos,
+			"IORStack runtime oracles remain active in Release builds" );
+		Check(fileOutputTest.find("#if defined(_WIN32)") != std::string::npos &&
+			fileOutputTest.find("physicalSegmentLength = 48u") !=
+				std::string::npos &&
+			fileOutputTest.find("const std::string longPattern(4096u,'x')") !=
+				std::string::npos,
+			"long filename logic stays unbounded while Windows physical writes stay MAX_PATH-safe" );
 		const fs::path autoCoordinatorSurfaces[] = {
 			repoRoot/"src"/"Library"/"Rendering"/"AutoRasterizer.h",
 			repoRoot/"src"/"Library"/"Rendering"/"AutoRasterizer.cpp",
@@ -1326,6 +1350,10 @@ int main()
 			androidNative.find("nativeViewportSuppressNextFrame") ==
 				std::string::npos &&
 			androidJni.find("nativeViewportSuppressNextFrame") ==
+				std::string::npos &&
+			androidBridgeSource.find("m_suppressNext") == std::string::npos &&
+			androidBridgeSource.find(
+				"RISE_API_SceneEditController_StartSuppressingInitialRender") !=
 				std::string::npos,
 			"Viewport restart and partial-frame design prose matches all three adapters" );
 		Check(androidCallbackSnapshot.find("NewLocalRef(m_kotlinCallback)") !=

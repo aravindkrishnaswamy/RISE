@@ -1071,8 +1071,17 @@ namespace
 
 		const std::filesystem::path root = MakeTempPathWithoutExt()+"_long_path";
 		std::filesystem::path directory = root;
+		// The filename builder above owns the unbounded-string contract. The
+		// physical write separately exercises nested-path publication, but an
+		// ordinary Windows test process is not longPathAware and must stay below
+		// MAX_PATH even when the host policy has not enabled extended paths.
+#if defined(_WIN32)
+		const std::size_t physicalSegmentLength = 48u;
+#else
+		const std::size_t physicalSegmentLength = 180u;
+#endif
 		for( unsigned int i=0u; i<3u; ++i ) {
-			directory /= std::string(180u,static_cast<char>('a'+i));
+			directory /= std::string(physicalSegmentLength,static_cast<char>('a'+i));
 		}
 		std::error_code directoryError;
 		const bool madeDirectories = std::filesystem::create_directories(
