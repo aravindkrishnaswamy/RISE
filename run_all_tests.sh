@@ -21,6 +21,46 @@ LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
 # slow" (the test RUNS are seconds).  Override with RISE_TEST_BUILD_JOBS.
 JOBS="${RISE_TEST_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )}"
 
+validate_log_dir() {
+	log_base="$(basename -- "$LOG_DIR")"
+	case "$log_base" in
+		''|'/'|'.'|'..')
+			echo "Refusing unsafe test log directory: $LOG_DIR" >&2
+			exit 1
+			;;
+	esac
+	log_parent="$(dirname -- "$LOG_DIR")"
+	mkdir -p "$log_parent"
+	canonical_parent="$(CDPATH= cd -- "$log_parent" && pwd -P)"
+	canonical_log="$canonical_parent/$log_base"
+	user_profile="$(CDPATH= cd -- && pwd -P)"
+	case "$canonical_log" in
+		'/'|"$user_profile"|"$REPO_ROOT")
+			echo "Refusing unsafe test log directory: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	case "$REPO_ROOT/" in
+		"$canonical_log/"*)
+			echo "Refusing test log directory that contains the repository: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	case "$canonical_log/" in
+		"$REPO_ROOT/"*)
+			echo "Refusing test log directory inside the repository: $canonical_log" >&2
+			exit 1
+			;;
+	esac
+	LOG_DIR="$canonical_log"
+}
+
+validate_log_dir
+if [ "${RISE_TEST_VALIDATE_LOG_DIR_ONLY:-0}" = "1" ]; then
+	echo "Safe test log directory: $LOG_DIR"
+	exit 0
+fi
+
 if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"
 	exit 1

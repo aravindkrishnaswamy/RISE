@@ -24,6 +24,7 @@ param(
     [string]$Config = 'Release',
     [int]$TimeoutSeconds = 0,
     [string]$LogDir,
+    [switch]$ValidateLogDirOnly,
     [switch]$NoBuild,
     [switch]$BuildOnly,
     [string[]]$Filter
@@ -70,6 +71,39 @@ if (-not $LogDir) {
     } else {
         $LogDir = Join-Path $env:TEMP 'rise-tests-logs'
     }
+}
+
+function Get-NormalizedPath([string]$Path) {
+    return [IO.Path]::GetFullPath($Path).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+}
+
+function Test-IsSameOrParent([string]$Parent, [string]$Child) {
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $parentWithSeparator = (Get-NormalizedPath $Parent) + $separator
+    $childWithSeparator = (Get-NormalizedPath $Child) + $separator
+    return $childWithSeparator.StartsWith(
+        $parentWithSeparator,[StringComparison]::OrdinalIgnoreCase)
+}
+
+$normalizedLogDir = Get-NormalizedPath $LogDir
+$normalizedRepoRoot = Get-NormalizedPath $RepoRoot
+$normalizedUserProfile = Get-NormalizedPath (
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))
+$normalizedVolumeRoot = Get-NormalizedPath ([IO.Path]::GetPathRoot($normalizedLogDir))
+if ($normalizedLogDir -eq $normalizedVolumeRoot -or
+    $normalizedLogDir -eq $normalizedUserProfile -or
+    (Test-IsSameOrParent $normalizedLogDir $normalizedRepoRoot) -or
+    (Test-IsSameOrParent $normalizedRepoRoot $normalizedLogDir)) {
+    Write-Host "ERROR: Refusing unsafe test log directory: $LogDir" -ForegroundColor Red
+    Write-Host 'Choose a dedicated directory outside the repository, user profile root, and volume root.'
+    exit 1
+}
+$LogDir = $normalizedLogDir
+if ($ValidateLogDirOnly) {
+    Write-Host "Safe test log directory: $LogDir"
+    exit 0
 }
 
 # Honor RISE_TEST_TIMEOUT env var when -TimeoutSeconds wasn't passed.
@@ -166,22 +200,7 @@ $null = New-Item -ItemType Directory -Force -Path $LogDir
 $null = New-Item -ItemType Directory -Force -Path $BinDir
 
 # -----------------------------------------------------------------------------
-# Phase 0: Configure CMake (one-time, or when CMakeCache.txt is missing)
-# -----------------------------------------------------------------------------
-
-$cacheFile = Join-Path $CmakeBuildDir 'CMakeCache.txt'
-if (-not (Test-Path -LiteralPath $cacheFile)) {
-    Write-Host "Configuring CMake build tree (one-time)..."
-    & $cmake -S $CmakeSrcDir -B $CmakeBuildDir -A x64
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: cmake configure failed (exit=$LASTEXITCODE)" -ForegroundColor Red
-        exit 1
-    }
-    Write-Host ""
-}
-
-# -----------------------------------------------------------------------------
-# Phase 0.5: Build the production library before any test target.
+# Phase 0: Build the production library before configuring any test target.
 #
 # The CMake test projects link the VS Library project's RISE.lib as an imported
 # file; CMake therefore cannot discover changes under src/Library by itself.
@@ -208,6 +227,25 @@ if (-not $NoBuild) {
     }
     Write-Host ("done ({0}s)" -f $libraryDuration)
     Remove-Item -LiteralPath $libraryBuildLog -ErrorAction SilentlyContinue
+    Write-Host ""
+}
+
+# -----------------------------------------------------------------------------
+# Phase 0.5: Configure CMake after the selected RISE.lib exists.
+#
+# A fresh checkout has no imported library or vcpkg tree. Configuring before
+# the production build made the runner unable to bootstrap the state it
+# advertised that it created. -NoBuild does not need a CMake tree at all.
+# -----------------------------------------------------------------------------
+
+$cacheFile = Join-Path $CmakeBuildDir 'CMakeCache.txt'
+if (-not $NoBuild -and -not (Test-Path -LiteralPath $cacheFile)) {
+    Write-Host "Configuring CMake build tree (one-time)..."
+    & $cmake -S $CmakeSrcDir -B $CmakeBuildDir -A x64
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: cmake configure failed (exit=$LASTEXITCODE)" -ForegroundColor Red
+        exit 1
+    }
     Write-Host ""
 }
 
@@ -294,13 +332,37 @@ if (-not $NoBuild) {
     }
     Write-Host ""
 } else {
-    # -NoBuild: assume binaries are present and skip Phase 1.
+    # -NoBuild is still fail-closed: every selected binary must exist and be
+    # at least as new as its own source, the shared test headers, and the
+    # selected production library. It never turns a missing/stale suite into
+    # a successful zero-test run.
+    $sharedInputs = @($RiseLibrary)
+    $sharedInputs += Get-ChildItem -Path $SrcDir -Filter '*.h' -File |
+        ForEach-Object { $_.FullName }
     foreach ($src in $testSources) {
-        if (Test-Path -LiteralPath (Join-Path $BinDir "$($src.BaseName).exe")) {
+        $exe = Join-Path $BinDir "$($src.BaseName).exe"
+        $invalid = -not (Test-Path -LiteralPath $exe)
+        if (-not $invalid) {
+            $exeTime = (Get-Item -LiteralPath $exe).LastWriteTime
+            if ($exeTime -lt $src.LastWriteTime) { $invalid = $true }
+            foreach ($inputPath in $sharedInputs) {
+                if (-not (Test-Path -LiteralPath $inputPath) -or
+                    $exeTime -lt (Get-Item -LiteralPath $inputPath).LastWriteTime) {
+                    $invalid = $true
+                    break
+                }
+            }
+        }
+        if ($invalid) {
+            $buildFailed++
+            $buildFailures += $src.BaseName
+            $failedBuildTargets[$src.BaseName] = 1
+        } else {
             $built++
         }
     }
-    Write-Host "Skipping build (-NoBuild); $built pre-built test exe(s) found."
+    Write-Host ("Skipping build (-NoBuild); {0} current, {1} missing/stale test exe(s)." `
+        -f $built, $buildFailed)
     Write-Host ""
 }
 
@@ -330,7 +392,7 @@ foreach ($src in $testSources) {
         $skipped++
         continue
     }
-    if (-not $NoBuild -and $failedBuildTargets.ContainsKey($name)) {
+    if ($failedBuildTargets.ContainsKey($name)) {
         Write-Host "$prefix SKIP (current build failed; stale exe ignored)"
         $skipped++
         continue
@@ -415,7 +477,7 @@ if ($runFailures.Count -gt 0) {
     foreach ($f in $runFailures) { Write-Host "  - $($f.Name)" }
 }
 
-if ($failed -ne 0 -or $buildFailed -ne 0) {
+if ($failed -ne 0 -or $buildFailed -ne 0 -or $skipped -ne 0 -or $found -ne $total) {
     exit 1
 }
 Write-Host "All $found tests passed"

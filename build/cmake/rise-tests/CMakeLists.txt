@@ -132,11 +132,11 @@ if(NOT EXISTS "${OPENPGL_DIR}/lib/openpgl.lib")
         "openpgl.lib to resolve pgl* symbols.")
 endif()
 
-if(NOT EXISTS "${RISE_LIB_RELEASE}" OR NOT EXISTS "${RISE_LIB_DEBUG}")
+if(NOT EXISTS "${RISE_LIB_RELEASE}" AND NOT EXISTS "${RISE_LIB_DEBUG}")
     message(FATAL_ERROR
-        "RISE.lib not found in bin/ and/or dbin/. Build the Library project in "
-        "Release and Debug before building rise-tests. Expected: "
-        "${RISE_LIB_RELEASE} and ${RISE_LIB_DEBUG}.")
+        "RISE.lib not found in bin/ or dbin/. Build the Library project in the "
+        "configuration you intend to test before building rise-tests. Expected "
+        "one of: ${RISE_LIB_RELEASE} or ${RISE_LIB_DEBUG}.")
 endif()
 
 # -----------------------------------------------------------------------------
