@@ -1757,12 +1757,12 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 	std::printf( "T4: Gemini request shape + tool loop...\n" );
 	AgentChatLoop loop;
 	loop.SetProvider( ChatProvider::Gemini );
-	Check( loop.ModelId() == "gemini-3.5-flash", "default Gemini model id" );
+	Check( loop.ModelId() == "gemini-3.6-flash", "default Gemini model id" );
 
 	loop.AddUserMessage( "Show me the current rendering" );
 	{
 		const ChatHttpRequest req = loop.BuildRequest( kApiKey );
-		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+		Check( req.url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
 		       "url is the v1beta generateContent endpoint" );
 		CheckKeyOnlyInAuthHeader( req, "x-goog-api-key", "T4" );
 
@@ -2837,7 +2837,7 @@ static void TestRequestGuards()
 		loop.SetProvider( ChatProvider::Gemini );
 		loop.AddUserMessage( "hi" );
 		Check( loop.BuildRequest( kApiKey ).url ==
-		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+		       "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
 		       "a normal model id passes through unchanged" );
 	}
 }

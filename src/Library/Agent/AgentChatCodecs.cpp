@@ -2402,7 +2402,7 @@ namespace RISE
 
 		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
 
-		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.5-flash"; }
+		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.6-flash"; }
 
 		std::string GeminiChatCodec::MakeUserEntry(
 			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
