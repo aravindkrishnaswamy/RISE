@@ -12,6 +12,7 @@
 
 #include "../src/Library/Rendering/DisplayTransformWriter.h"
 #include "../src/Library/Rendering/DisplayTransform.h"
+#include "../src/Library/Utilities/Color/ColorUtils.h"
 #include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
@@ -252,12 +253,19 @@ static void TestCompleteViewTransformMatchesSharedPipeline()
         const RISEPel input(0.20,0.45,0.70);
         writer->WriteColor(RISEColor(input,0.6),0,0);
 
-        double expectedR = 0.0;
-        double expectedG = 0.0;
-        double expectedB = 0.0;
-        FrameStoreOutput::ApplyViewTransformLinear(
-            transform,FrameStoreOutput::FSColorSpace::sRGB_Linear,true,
-            input.r,input.g,input.b,expectedR,expectedG,expectedB);
+        const double exposure = std::pow(2.0,0.5);
+        const double exposedR = input.r*exposure;
+        const double exposedG = input.g*exposure;
+        const double exposedB = input.b*exposure;
+        const double balancedR = 1.10*exposedR + 0.05*exposedG;
+        const double balancedG = 0.90*exposedG + 0.05*exposedB;
+        const double balancedB = 0.02*exposedR + 1.08*exposedB;
+        const double expectedR = (1.0-strength)*balancedR +
+            strength*(balancedR/(1.0+balancedR));
+        const double expectedG = (1.0-strength)*balancedG +
+            strength*(balancedG/(1.0+balancedG));
+        const double expectedB = (1.0-strength)*balancedB +
+            strength*(balancedB/(1.0+balancedB));
         if( Check(mock->writes.size() == 1u,
             "complete transform emits one pixel") ) {
             Check(IsClose(mock->writes[0].c.base.r,expectedR),
@@ -275,6 +283,46 @@ static void TestCompleteViewTransformMatchesSharedPipeline()
     }
 }
 
+static void TestROMMTargetPrimariesBranch()
+{
+    std::cout << "TestROMMTargetPrimariesBranch..." << std::endl;
+    FrameStoreOutput::ViewTransform transform;
+    transform.toneCurve = eDisplayTransform_Reinhard;
+    transform.toneCurveStrength = 1.0f;
+
+    RecordingWriter* mock = new RecordingWriter;
+    DisplayTransformWriter* writer = new DisplayTransformWriter(
+        *mock,transform,eColorSpace_ROMMRGB_Linear );
+    const RISEPel input(0.20,0.45,0.70);
+    writer->WriteColor(RISEColor(input,0.8),0,0);
+
+    Rec709RGBPel rec709;
+    rec709.r = input.r;
+    rec709.g = input.g;
+    rec709.b = input.b;
+    const ROMMRGBPel romm = ColorUtils::Rec709RGBtoROMMRGB(rec709);
+    ROMMRGBPel curved;
+    curved.r = romm.r/(1.0+romm.r);
+    curved.g = romm.g/(1.0+romm.g);
+    curved.b = romm.b/(1.0+romm.b);
+    const Rec709RGBPel expected = ColorUtils::ROMMRGBtoRec709RGB(curved);
+
+    if( Check(mock->writes.size() == 1u,
+        "ROMM transform emits one pixel") ) {
+        Check(IsClose(mock->writes[0].c.base.r,expected.r),
+            "ROMM target branch matches red");
+        Check(IsClose(mock->writes[0].c.base.g,expected.g),
+            "ROMM target branch matches green");
+        Check(IsClose(mock->writes[0].c.base.b,expected.b),
+            "ROMM target branch matches blue");
+        Check(IsClose(mock->writes[0].c.a,0.8),
+            "ROMM target branch preserves alpha");
+    }
+
+    safe_release(writer);
+    safe_release(mock);
+}
+
 int main()
 {
     TestBeginEndPassThrough();
@@ -284,6 +332,7 @@ int main()
     TestACESThroughWrapper();
     TestRefcountHoldsInner();
     TestCompleteViewTransformMatchesSharedPipeline();
+    TestROMMTargetPrimariesBranch();
     if( gFailCount == 0 ) {
         std::cout << "All DisplayTransformWriter tests passed!" << std::endl;
     } else {
