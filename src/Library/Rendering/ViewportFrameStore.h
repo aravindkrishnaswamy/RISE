@@ -212,6 +212,8 @@ namespace RISE
 				std::function<void(uint64_t)> hook );
 			void ForTest_SetChainConstructionHook(
 				std::function<void(const char*)> hook );
+			void ForTest_SetObserverMutationLockHook(
+				std::function<void(size_t)> hook );
 
 			//! Whether this VFS is currently bound to an external
 			//! FrameStore via `BindFrameStore`.  Diagnostic — most
@@ -436,6 +438,7 @@ namespace RISE
 			std::atomic<unsigned int> bindTransactionsInFlight_{ 0u };
 			std::function<void(uint64_t)> bindPhaseOneTestHook_;
 			std::function<void(const char*)> chainConstructionTestHook_;
+			std::function<void(size_t)> observerMutationLockTestHook_;
 			bool bindDrainActive_ = false;
 
 			FrameStore*        framestore_ = nullptr;

@@ -35,6 +35,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -464,7 +465,8 @@ namespace RISE
 				IRenderObserver* observer );
 			ObserverMutationToken PrepareObserverRegistration();
 			static void LockPreparedObserverMutations(
-				const std::vector<ObserverMutationToken*>& tokens );
+				const std::vector<ObserverMutationToken*>& tokens,
+				const std::function<void(size_t)>& afterLock );
 			void CommitPreparedObserverRemoval(
 				ObserverMutationToken& token ) noexcept;
 			void CommitPreparedObserverRegistration(

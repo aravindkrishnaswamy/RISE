@@ -390,8 +390,6 @@ namespace RISE
 				if( chainConstructionTestHook_ ) {
 					chainConstructionTestHook_("bind_after_observer_allocation");
 				}
-				candidate.store->SetCameraExposureEV(
-					static_cast<double>(cameraExposureEV_));
 			}
 
 			std::optional<FrameStore::ObserverMutationToken> candidateRegistration;
@@ -429,9 +427,14 @@ namespace RISE
 					mutationTokens.push_back(&*dormantRemovals[i]);
 				}
 			}
-			FrameStore::LockPreparedObserverMutations(mutationTokens);
+			FrameStore::LockPreparedObserverMutations(
+				mutationTokens,observerMutationLockTestHook_);
 			{
 				std::unique_lock<std::shared_mutex> lock(chainMutex_);
+				if( candidate.store ) {
+					candidate.store->SetCameraExposureEV(
+						static_cast<double>(cameraExposureEV_));
+				}
 				externalFrameStore_ = candidate.store;
 				framestore_ = candidate.store;
 				framesink_ = nullptr;
@@ -528,6 +531,12 @@ namespace RISE
 			std::function<void(const char*)> hook )
 		{
 			chainConstructionTestHook_ = std::move(hook);
+		}
+
+		void ViewportFrameStore::ForTest_SetObserverMutationLockHook(
+			std::function<void(size_t)> hook )
+		{
+			observerMutationLockTestHook_ = std::move(hook);
 		}
 
 		// L6e-2b — Notification override.  `Rasterizer::SetFrameStore`

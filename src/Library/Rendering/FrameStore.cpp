@@ -1922,7 +1922,8 @@ namespace RISE
 		}
 
 		void FrameStore::LockPreparedObserverMutations(
-			const std::vector<ObserverMutationToken*>& tokens )
+			const std::vector<ObserverMutationToken*>& tokens,
+			const std::function<void(size_t)>& afterLock )
 		{
 			std::vector<ObserverMutationToken*> distinctStores;
 			distinctStores.reserve(tokens.size());
@@ -1943,8 +1944,19 @@ namespace RISE
 					const ObserverMutationToken* rhs ) {
 					return std::less<FrameStore*>()(lhs->owner_,rhs->owner_);
 				});
-			for( ObserverMutationToken* token : distinctStores ) {
-				token->lock_.lock();
+			size_t acquired = 0u;
+			try {
+				for( ObserverMutationToken* token : distinctStores ) {
+					token->lock_.lock();
+					++acquired;
+					if( afterLock ) afterLock(acquired);
+				}
+			} catch( ... ) {
+				while( acquired != 0u ) {
+					--acquired;
+					distinctStores[acquired]->lock_.unlock();
+				}
+				throw;
 			}
 		}
 

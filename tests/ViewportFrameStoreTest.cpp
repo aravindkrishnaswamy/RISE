@@ -1963,7 +1963,7 @@ namespace
 		vfs->SetCameraExposureCompensationEV(1.0);
 		vfs->BindFrameStore(source);
 		vfs->ForTest_SetChainConstructionHook([&]( const char* stage ) {
-			if( std::strcmp(stage,"bind_after_observer_allocation") != 0 ) return;
+			if( std::strcmp(stage,"bind_after_old_observer_quiesced") != 0 ) return;
 			std::unique_lock<std::mutex> lock(gateMutex);
 			replacementReady = true;
 			gateCondition.notify_all();
@@ -1989,6 +1989,46 @@ namespace
 			vfs->GetFrameStore() == replacement &&
 			replacement->Meta().cameraExposureEV == 2.5,
 			"a concurrent exposure update is applied to the newly committed binding" );
+		vfs->release();
+		source->release();
+		replacement->release();
+	}
+
+	void TestObserverMutationLockFailureRollsBackPrefix()
+	{
+		auto* vfs = new ViewportFrameStore();
+		FrameStore::Spec spec;
+		spec.width = kImgW;
+		spec.height = kImgH;
+		spec.tileEdge = 8;
+		auto* source = new FrameStore(spec);
+		auto* replacement = new FrameStore(spec);
+		std::atomic<int> sourceFrames{0};
+		vfs->SetFrameCompleteCallback(
+			[&sourceFrames]( unsigned int, uint64_t ) { ++sourceFrames; });
+		vfs->BindFrameStore(source);
+
+		vfs->ForTest_SetObserverMutationLockHook(
+			[]( const size_t acquired ) {
+				if( acquired == 1u ) {
+					throw std::runtime_error("injected observer lock failure");
+				}
+			});
+		bool rejected = false;
+		try {
+			vfs->BindFrameStore(replacement);
+		} catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()) ==
+				"injected observer lock failure";
+		}
+		vfs->ForTest_SetObserverMutationLockHook({});
+
+		source->MarkFrameComplete(1u);
+		const bool sourceUsable = sourceFrames.load() == 1;
+		vfs->BindFrameStore(replacement);
+		Check(rejected && sourceUsable && vfs->GetFrameStore() == replacement,
+			"observer lock failure releases the acquired prefix and preserves retry");
+
 		vfs->release();
 		source->release();
 		replacement->release();
@@ -2261,6 +2301,7 @@ int main()
 	TestBindConstructionFailuresPreserveExistingChain();
 	TestBindRollbackPreservesQuiescedEventAndObserverInsertion();
 	TestExposureUpdateWinsConcurrentBindCommit();
+	TestObserverMutationLockFailureRollsBackPrefix();
 	TestInternalConstructionFailuresPreserveExistingChain();
 	TestNullBindTearsDownInternalChain();
 	TestSetFrameStoreNotification_L6e2b();
