@@ -184,7 +184,7 @@ int main()
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
 	Check(thermo.PredictiveBlockers().size() == 9,
 		"thermochemistry exposes every unresolved licensed/estimation field");
-	Check(transport.PredictiveBlockers().size() == 4,
+	Check(transport.PredictiveBlockers().size() == 1,
 		"transport exposes its unpublished-fit uncertainty blocker");
 	Check(!thermo.RecordId().empty() && !transport.RecordId().empty(),
 		"canonical records have content identities");

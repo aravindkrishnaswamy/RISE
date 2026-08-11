@@ -17917,16 +17917,28 @@
  "source_kind": "fire_sim_open_source_snapshot",
  "transport_closure_references": {
   "fds_source": {
+   "C_vreman": 0.07,
+   "cons_f90_sha256": "85f1ccb4553714c063f0b8235011fe728e57e7aec86d474ef845e4190c56fa83",
+   "data_f90_sha256": "2808d4cfc1a9ca2f17446c8563c13ead9824921342de549115f92a9306b070a4",
+   "default_critical_flame_temperature_C": 1427.0,
+   "license": "NIST public-domain notice",
+   "license_sha256": "38c542304b97afc4171a9b67866499eaf222509cab45c095ea69bf88d57755b7",
    "locator": "https://github.com/firemodels/fds",
-   "status": "open repository locator recorded; exact revision/files not pinned"
+   "revision": "a30dd017ac0a74cd082929978aeb97148a754e72",
+   "tau_chem_s": 1e-05
   },
   "idaes_wms": {
-   "locator": "https://idaes-pse.readthedocs.io/en/stable/explanations/components/property_package/general/transport_properties/thermal_conductivity_wms.html",
-   "status": "open locator recorded; exact reference bytes/revision not pinned"
+   "documentation_sha256": "f400247ec4517ea1b2576a4b1aedaddcc4c7203a94af2457197e98e8ee00bf8f",
+   "license": "BSD-3-Clause",
+   "license_sha256": "4fdde00bd663a045a688899c7e6924bd3b747204518e75540273c97f4bc98fa0",
+   "repository": "https://github.com/IDAES/idaes-pse",
+   "revision": "a60fbf8192a697c60564b68379847ce6e9dbb3b9",
+   "source_sha256": "c2bb4cd7d387a17585250eea69465d04caa0aee4d003e91b18fd62856fe028e5"
   },
   "vreman_2004": {
-   "locator": "https://www.vremanresearch.nl/Vreman2004.pdf",
-   "status": "author-hosted open locator recorded; exact PDF bytes not pinned"
+   "derived_Cv": 0.07,
+   "locator": "https://www.vremanresearch.nl/Vreman-PF2004-subgridmodel.pdf",
+   "sha256": "06cc0118d6441d34e4a6e97ee3437cd1de422c4a789efb18aac3bbb556955b82"
   }
  }
 }

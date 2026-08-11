@@ -32,8 +32,15 @@ EXPECTED_SOURCE_SHA256 = {
     "nist_thermoml": "64186a74e71e3b973ab7ea385ba42ef9d2583ce73323c4f9f42435c7503f632b",
     "gri_transport": "e2ef4437568311ad0ba6c2311a564966c9accb2b43ea3157b764c1e8febc5825",
     "cantera_gri30_yaml": "06650b1e0ee0012f6903d5328b1bb218cb6007d07f8ebe375d18f24811039345",
+    "idaes_wms_source": "c2bb4cd7d387a17585250eea69465d04caa0aee4d003e91b18fd62856fe028e5",
+    "idaes_wms_documentation": "f400247ec4517ea1b2576a4b1aedaddcc4c7203a94af2457197e98e8ee00bf8f",
+    "idaes_license": "4fdde00bd663a045a688899c7e6924bd3b747204518e75540273c97f4bc98fa0",
+    "vreman_2004_pdf": "06cc0118d6441d34e4a6e97ee3437cd1de422c4a789efb18aac3bbb556955b82",
+    "fds_cons": "85f1ccb4553714c063f0b8235011fe728e57e7aec86d474ef845e4190c56fa83",
+    "fds_data": "2808d4cfc1a9ca2f17446c8563c13ead9824921342de549115f92a9306b070a4",
+    "fds_license": "38c542304b97afc4171a9b67866499eaf222509cab45c095ea69bf88d57755b7",
 }
-EXPECTED_SOURCE_SNAPSHOT_SHA256 = "cdfaefb6f6153a9afc5a1dd1bb0dbd7c6e2581d5c47e26ff110f97aee5a4ee6a"
+EXPECTED_SOURCE_SNAPSHOT_SHA256 = "7546104d58d2be8b21533926376e05235fd363026e564f775646815396b16b78"
 THERMO_NAMES = (
     "Ar", "CH4", "CH3OH", "CO", "CO2", "C7H16,n-heptane",
     "H2O", "N2", "O2", "C(gr)",
@@ -200,7 +207,10 @@ def cantera_transport_tables(gri_yaml: Path) -> dict:
 
 
 def extract_sources(thermo: Path, transport: Path, thermoml: Path,
-                    gri_transport: Path, gri_yaml: Path, output: Path) -> None:
+                    gri_transport: Path, gri_yaml: Path, idaes_wms: Path,
+                    idaes_wms_doc: Path, idaes_license: Path, vreman_pdf: Path,
+                    fds_cons: Path, fds_data: Path, fds_license: Path,
+                    output: Path) -> None:
     forbidden = "burcat" in str(thermo).lower() or "burcat" in str(transport).lower()
     if forbidden:
         raise ValueError("Burcat-derived bytes are license-gated and forbidden")
@@ -209,6 +219,13 @@ def extract_sources(thermo: Path, transport: Path, thermoml: Path,
     thermoml_hash = require_source_digest(thermoml, "nist_thermoml")
     gri_transport_hash = require_source_digest(gri_transport, "gri_transport")
     gri_yaml_hash = require_source_digest(gri_yaml, "cantera_gri30_yaml")
+    idaes_wms_hash = require_source_digest(idaes_wms, "idaes_wms_source")
+    idaes_doc_hash = require_source_digest(idaes_wms_doc, "idaes_wms_documentation")
+    idaes_license_hash = require_source_digest(idaes_license, "idaes_license")
+    vreman_hash = require_source_digest(vreman_pdf, "vreman_2004_pdf")
+    fds_cons_hash = require_source_digest(fds_cons, "fds_cons")
+    fds_data_hash = require_source_digest(fds_data, "fds_data")
+    fds_license_hash = require_source_digest(fds_license, "fds_license")
     thermo_lines = thermo.read_text(encoding="ascii").splitlines(keepends=True)
     transport_lines = transport.read_text(encoding="ascii").splitlines(keepends=True)
     thermoml_value = json.loads(thermoml.read_text(encoding="utf-8"))
@@ -243,16 +260,28 @@ def extract_sources(thermo: Path, transport: Path, thermoml: Path,
         },
         "transport_closure_references": {
             "idaes_wms": {
-                "locator": "https://idaes-pse.readthedocs.io/en/stable/explanations/components/property_package/general/transport_properties/thermal_conductivity_wms.html",
-                "status": "open locator recorded; exact reference bytes/revision not pinned",
+                "repository": "https://github.com/IDAES/idaes-pse",
+                "revision": "a60fbf8192a697c60564b68379847ce6e9dbb3b9",
+                "source_sha256": idaes_wms_hash,
+                "documentation_sha256": idaes_doc_hash,
+                "license": "BSD-3-Clause",
+                "license_sha256": idaes_license_hash,
             },
             "vreman_2004": {
-                "locator": "https://www.vremanresearch.nl/Vreman2004.pdf",
-                "status": "author-hosted open locator recorded; exact PDF bytes not pinned",
+                "locator": "https://www.vremanresearch.nl/Vreman-PF2004-subgridmodel.pdf",
+                "sha256": vreman_hash,
+                "derived_Cv": 0.07,
             },
             "fds_source": {
                 "locator": "https://github.com/firemodels/fds",
-                "status": "open repository locator recorded; exact revision/files not pinned",
+                "revision": "a30dd017ac0a74cd082929978aeb97148a754e72",
+                "cons_f90_sha256": fds_cons_hash,
+                "data_f90_sha256": fds_data_hash,
+                "license": "NIST public-domain notice",
+                "license_sha256": fds_license_hash,
+                "C_vreman": 0.07,
+                "tau_chem_s": 1.0e-5,
+                "default_critical_flame_temperature_C": 1427.0,
             },
         },
     }
@@ -504,9 +533,6 @@ def transport_payload(snapshot: dict) -> dict:
             "Vreman 2004 and FIRE_SMOKE_DESIGN.md SS3.2", "uniform Phase-C MAC grid"),
         "predictive_blockers": [
             "transport_source_fit_uncertainties_unpublished",
-            "idaes_wms_reference_bytes_unpinned",
-            "vreman_reference_bytes_unpinned",
-            "fds_constant_reference_bytes_unpinned",
         ],
     }
 
@@ -539,16 +565,28 @@ def main() -> None:
     parser.add_argument("--thermoml", type=Path)
     parser.add_argument("--gri-transport", type=Path)
     parser.add_argument("--gri-yaml", type=Path)
+    parser.add_argument("--idaes-wms", type=Path)
+    parser.add_argument("--idaes-wms-doc", type=Path)
+    parser.add_argument("--idaes-license", type=Path)
+    parser.add_argument("--vreman-pdf", type=Path)
+    parser.add_argument("--fds-cons", type=Path)
+    parser.add_argument("--fds-data", type=Path)
+    parser.add_argument("--fds-license", type=Path)
     parser.add_argument("source_snapshot", type=Path)
     parser.add_argument("output", type=Path, nargs="?")
     args = parser.parse_args()
     validate_unicode17_authority()
     if args.extract_sources:
         if (not args.thermo or not args.transport or not args.thermoml or
-                not args.gri_transport or not args.gri_yaml):
-            parser.error("--extract-sources requires NASA, ThermoML, and GRI/Cantera inputs")
+                not args.gri_transport or not args.gri_yaml or not args.idaes_wms or
+                not args.idaes_wms_doc or not args.idaes_license or not args.vreman_pdf or
+                not args.fds_cons or not args.fds_data or not args.fds_license):
+            parser.error("--extract-sources requires every pinned open physical source")
         extract_sources(args.thermo, args.transport, args.thermoml,
-                        args.gri_transport, args.gri_yaml, args.source_snapshot)
+                        args.gri_transport, args.gri_yaml, args.idaes_wms,
+                        args.idaes_wms_doc, args.idaes_license, args.vreman_pdf,
+                        args.fds_cons, args.fds_data, args.fds_license,
+                        args.source_snapshot)
         return
     if not args.output:
         parser.error("output is required unless --extract-sources is used")
