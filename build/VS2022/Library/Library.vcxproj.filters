@@ -279,6 +279,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireOptics.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireSimulationRecords.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -1261,6 +1264,9 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h">
