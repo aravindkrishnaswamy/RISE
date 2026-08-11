@@ -1,0 +1,70 @@
+{
+  "schema": "rise-fire-gas-opacity-generator-input-v1",
+  "status": "synthetic_test_fixture",
+  "synthetic": true,
+  "fixture_notice": "Entirely synthetic line strengths and partition sums; never valid for physical prediction.",
+  "pressure_Pa": 101325.0,
+  "spectral_grid_cm-1": {"minimum": 50.0, "maximum": 30000.0, "step": 50.0},
+  "gas_temperatures_K": [300.0, 1000.0, 2000.0],
+  "radiation_temperatures_K": [300.0, 1000.0, 2000.0],
+  "line_wing_cutoff_cm-1": 25.0,
+  "line_wing_convergence_factor": 2.0,
+  "hitemp_citations": [
+    "HITEMP2010/2024 format exercised only; fixture values are synthetic"
+  ],
+  "original_source_citations": [
+    "synthetic test fixture authored for RISE; no measured source values"
+  ],
+  "sources": [
+    {
+      "species": "H2O",
+      "release": "HITEMP2010-format-synthetic",
+      "molecule_number": 1,
+      "isotopologue_molar_masses_kg_per_mol": {"1": 0.018010565},
+      "files": [
+        {
+          "path": "H2O-HITEMP2010.synthetic-hitran160.txt",
+          "compression": "none",
+          "sha256": "c46c32e73d450549c1574de97296e2be275e0938f589e1085625f2dcb349df60"
+        }
+      ],
+      "partition_sums": {
+        "format": "hitran_q_temperature_value_columns",
+        "files": [
+          {
+            "molecule": 1,
+            "isotopologue": 1,
+            "path": "H2O.synthetic-hitran-q.txt",
+            "sha256": "fb70f212c59817b3dff4d9da4eb919474613408363968e0554d499781c435aa6"
+          }
+        ],
+        "citation": "synthetic partition-sum fixture"
+      }
+    },
+    {
+      "species": "CO2",
+      "release": "HITEMP2024-format-synthetic",
+      "molecule_number": 2,
+      "isotopologue_molar_masses_kg_per_mol": {"1": 0.04398983},
+      "files": [
+        {
+          "path": "CO2-HITEMP2024.synthetic-hitran160.txt",
+          "compression": "none",
+          "sha256": "2885b1b754b69dc65585191591e163dc187ec02250dfb4bb3013af5273d225ff"
+        }
+      ],
+      "partition_sums": {
+        "format": "hitran_q_temperature_value_columns",
+        "files": [
+          {
+            "molecule": 2,
+            "isotopologue": 1,
+            "path": "CO2.synthetic-hitran-q.txt",
+            "sha256": "532802e4bbbb3890d588581c0422e5c3697b35408e76137a85b438cc0a7a9fd5"
+          }
+        ],
+        "citation": "synthetic partition-sum fixture"
+      }
+    }
+  ]
+}

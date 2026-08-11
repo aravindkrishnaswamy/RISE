@@ -13,6 +13,10 @@ FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
 FIRE_SIM_GENERATOR="$REPO_ROOT/tools/generate_fire_simulation_records.py"
 FIRE_SIM_DATA="$REPO_ROOT/docs/data/source_pulls/fire_sim_open_sources_v1.json"
 FIRE_SIM_EMBEDDED="$LIB_DIR/Utilities/FireSimulationRecordData.inc"
+FIRE_GAS_OPACITY_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_record.py"
+FIRE_GAS_OPACITY_MANIFEST="$REPO_ROOT/tests/fixtures/fire_gas_opacity/synthetic_manifest.json"
+FIRE_GAS_OPACITY_TABLE="$REPO_ROOT/docs/data/fire_gas_opacity_synthetic_v1.json"
+FIRE_GAS_OPACITY_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_tools.py"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -95,6 +99,13 @@ echo "pass"
 printf 'Checking embedded fire-simulation records ... '
 "$python_bin" "$FIRE_SIM_GENERATOR" --check \
 	"$FIRE_SIM_DATA" "$FIRE_SIM_EMBEDDED"
+echo "pass"
+printf 'Checking synthetic HITEMP LBL record ... '
+"$python_bin" "$FIRE_GAS_OPACITY_GENERATOR" --check \
+	"$FIRE_GAS_OPACITY_MANIFEST" "$FIRE_GAS_OPACITY_TABLE"
+echo "pass"
+printf 'Testing HITEMP LBL tools ... '
+"$python_bin" "$FIRE_GAS_OPACITY_TEST"
 echo "pass"
 
 # Remove orphan .o files only (no matching .cpp). Active .o files are kept

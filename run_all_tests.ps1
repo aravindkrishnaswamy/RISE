@@ -55,6 +55,10 @@ $FireOpticsEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireOpticsRecor
 $FireSimulationGenerator = Join-Path $RepoRoot 'tools\generate_fire_simulation_records.py'
 $FireSimulationData = Join-Path $RepoRoot 'docs\data\source_pulls\fire_sim_open_sources_v1.json'
 $FireSimulationEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireSimulationRecordData.inc'
+$FireGasOpacityGenerator = Join-Path $RepoRoot 'tools\generate_fire_gas_opacity_record.py'
+$FireGasOpacityManifest = Join-Path $RepoRoot 'tests\fixtures\fire_gas_opacity\synthetic_manifest.json'
+$FireGasOpacityTable = Join-Path $RepoRoot 'docs\data\fire_gas_opacity_synthetic_v1.json'
+$FireGasOpacityTest = Join-Path $RepoRoot 'tests\test_fire_gas_opacity_tools.py'
 
 $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
 if (-not $python) {
@@ -73,6 +77,20 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host 'pass'
 Write-Host -NoNewline 'Checking embedded fire-simulation records ... '
 & $python $FireSimulationGenerator --check $FireSimulationData $FireSimulationEmbedded
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
+Write-Host -NoNewline 'Checking synthetic HITEMP LBL record ... '
+& $python $FireGasOpacityGenerator --check $FireGasOpacityManifest $FireGasOpacityTable
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
+Write-Host -NoNewline 'Testing HITEMP LBL tools ... '
+& $python $FireGasOpacityTest
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'FAILED' -ForegroundColor Red
     exit $LASTEXITCODE

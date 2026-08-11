@@ -1,0 +1,21 @@
+{
+  "schema": "rise-fire-gas-opacity-generator-input-v1",
+  "status": "owner_download_pending",
+  "synthetic": false,
+  "owner_action": "Populate exact H2O-2010 .par inventory, CO2 02_HITEMP2024.par.bz2 SHA-256, and official partition-sum file SHA-256 values after download; then change status to production_pinned.",
+  "line_byte_policy": "Never commit HITEMP .par or .par.bz2 bytes.",
+  "required_owner_inputs": [
+    "H2O-2010 directory",
+    "CO2 02_HITEMP2024.par.bz2"
+  ],
+  "required_public_metadata": "HITRAN isotopologue partition sums covering every gas-temperature knot",
+  "hitemp_citations": [
+    "Rothman et al., HITEMP 2010, JQSRT 111 (2010) 2139-2150",
+    "HITEMP CO2 2024 release, https://hitran.org/hitemp/"
+  ],
+  "original_source_citations": [
+    "HITEMP2010 H2O original line-source citations distributed with the owner download",
+    "HITEMP2024 CO2 original line-source citations distributed with 02_HITEMP2024.par.bz2"
+  ],
+  "sources": []
+}

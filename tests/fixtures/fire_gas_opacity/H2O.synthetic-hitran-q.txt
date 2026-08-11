@@ -1,0 +1,7 @@
+# Synthetic HITRAN-Q format fixture: temperature_K partition_sum
+200.0 120.0
+296.0 174.0
+300.0 176.4
+1000.0 850.0
+2000.0 2200.0
+3000.0 3900.0
