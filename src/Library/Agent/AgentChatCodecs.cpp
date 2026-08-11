@@ -917,18 +917,19 @@ namespace RISE
 					"it to you, and holds it as this session's SCENE TARGET. `description` is REQUIRED "
 					"and is free text; nothing checks what it says, and no wording is preferred. Writing "
 					"the description IS the imagining -- the image is what lets you check yourself "
-					"against it afterwards. Once a target exists, every full-frame production render "
-					"(not draft, not a mode: render, not an isolate render) also carries a `sceneTarget` "
-					"block -- {rmse, renderMeanR/G/B, targetMeanR/G/B, compareWidth, compareHeight, "
-					"targetWidth, targetHeight, aspectMatched, compositeWidth, compositeHeight} -- and "
-					"returns a [target | render] side-by-side strip in place of the rendered frame, so "
-					"you see the two together at the moment you look. `rmse` is root-mean-square error "
-					"over the two images resampled to a shared canvas (each axis the smaller of the "
-					"two, so neither is ever enlarged; `aspectMatched` false means the two shapes "
-					"differ and each was fitted per axis). These are measurements only -- nothing is "
-					"gated on them, no value is required, and no target is ever expected to be "
-					"reproduced; the point is to notice the difference and decide for yourself whether "
-					"to act on it. Calling it again replaces this session's scene target. On a provider "
+					"against it afterwards. Your words are the SUBJECT; the image is requested in a "
+					"simple, flat-shaded 3D-render style so it is something this renderer can actually "
+					"approach, rather than concept art it cannot. Once a target exists, every full-frame "
+					"production render (not draft, not a mode: render, not an isolate render) also "
+					"carries a `sceneTarget` block -- {imagined, targetWidth, targetHeight, composite, "
+					"compositeWidth, compositeHeight} -- and any such render you ask an image of shows "
+					"that target ABOVE your render in one picture, separated by a grey rule, in place of "
+					"the rendered frame on its own. The render half is exactly the size the frame alone "
+					"would have been, so looking at the target costs you no resolution. THERE IS NO "
+					"SCORE and there is deliberately no similarity number: comparing the two pictures is "
+					"your job, not a metric's, and nothing is gated on the target, no reproduction is "
+					"expected, and the target is a reminder of what you set out to make rather than a "
+					"specification. Calling it again replaces this session's scene target. On a provider "
 					"that does not generate images this returns ok:false with a plain statement and "
 					"nothing else changes -- no call is blocked by the absence of a target. Returns "
 					"{ok,imagined,replacedPreviousTarget,provider,model,width,height,png_base64,message}.",
@@ -4205,6 +4206,32 @@ namespace RISE
 				return out;
 			}
 
+			//! Arc 77 Phase 2b (2026-08-11): THE REACHABILITY WRAPPER.
+			//!
+			//! WHY THIS TEXT EXISTS.  Phase 2 forwarded the model's
+			//! description verbatim, and providers answered with cinematic
+			//! concept art: painterly brushwork, volumetric god-rays,
+			//! photographic depth of field, lens bloom.  A path tracer
+			//! driving SDF primitives cannot approach any of that, so the
+			//! target the model was handed to steer by was an unreachable
+			//! ideal -- it could show a difference on every render and never
+			//! a difference the model could close.  This directive asks for
+			//! an image of the SAME subject in a form this renderer can
+			//! actually get to.  The imagining stays the model's act; only
+			//! the rendering STYLE is constrained.
+			//!
+			//! Do not smuggle SUBJECT guidance in here (no "make it a
+			//! product shot", no composition advice): the moment this text
+			//! decides what is in the picture, the target stops being the
+			//! model's own imagination and the mechanism loses the property
+			//! the whole arc rests on.
+			const char* const kImageStyleDirectiveDefault =
+				"Style: render this as a simple 3D-rendered image -- plain matte flat-shaded "
+				"surfaces, simple clean geometric forms, neutral even lighting, a plain uncluttered "
+				"background. No painterly, sketched or hand-drawn texture; no photographic "
+				"depth-of-field, lens flare, bloom or film grain; no text, labels or watermarks. "
+				"Depict only the subject described above, in that style.";
+
 			//! Depth-first search for the first object under `v` that carries
 			//! BOTH `data` and a mime key -- the Gemini inlineData part, whose
 			//! exact nesting has moved between API revisions (`inlineData` vs
@@ -4245,6 +4272,22 @@ namespace RISE
 			return providerName == "gemini" || providerName == "openai";
 		}
 
+		std::string ChatImageStyleDirective()
+		{
+			return ImageEnvOr_( "RISE_IMAGE_STYLE_PROMPT", kImageStyleDirectiveDefault );
+		}
+
+		std::string ComposeImageGenerationPrompt( const std::string& description )
+		{
+			const std::string style = ChatImageStyleDirective();
+			if( style.empty() ) return description;
+			if( description.empty() ) return style;
+			// The model's own words FIRST and unaltered -- the subject is
+			// its imagining, and the directive that follows constrains only
+			// how that subject is drawn.
+			return description + "\n\n" + style;
+		}
+
 		std::string ChatImageGenerationModelId( const std::string& providerName )
 		{
 			if( providerName == "gemini" )
@@ -4279,6 +4322,13 @@ namespace RISE
 				outError = "no image model id resolved for provider `" + providerName + "`";
 				return false;
 			}
+
+			// Arc 77 Phase 2b (2026-08-11): the model's description is the
+			// SUBJECT; the host appends the style directive that makes the
+			// generated target something this renderer can approach.  Done
+			// ONCE here, so both provider bodies below send the identical
+			// composed prompt and neither can drift.
+			const std::string composedPrompt = ComposeImageGenerationPrompt( prompt );
 
 			if( providerName == "gemini" ) {
 				// The SAME surface, auth header and model-id escaping as
@@ -4315,7 +4365,7 @@ namespace RISE
 				}
 
 				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
-				JsonAppendEscapedString( body, prompt );
+				JsonAppendEscapedString( body, composedPrompt );
 				body += "}]}],\"generationConfig\":{\"responseModalities\":[" + modalities + "]}}";
 				outRequest.body = body;
 				return true;
@@ -4331,7 +4381,7 @@ namespace RISE
 			std::string body = "{\"model\":";
 			JsonAppendEscapedString( body, modelId );
 			body += ",\"prompt\":";
-			JsonAppendEscapedString( body, prompt );
+			JsonAppendEscapedString( body, composedPrompt );
 			body += ",\"n\":1,\"size\":";
 			JsonAppendEscapedString( body, ImageEnvOr_( "RISE_IMAGE_SIZE_OPENAI", "1024x1024" ) );
 			body += "}";

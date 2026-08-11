@@ -693,40 +693,41 @@ namespace RISE
 						JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
 					result.set( "target", tgt );
 				}
-				// Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE comparison,
-				// under ONE nested key, same omit-when-absent convention and
-				// same `rr.ok` belt-and-braces as the two blocks above.
+				// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the
+				// WHOLE-SCENE target, under ONE nested key, same
+				// omit-when-absent convention and same `rr.ok`
+				// belt-and-braces as the two blocks above.
 				// `sceneTargetApplied` is only ever set on a qualifying,
-				// successful render whose measurement really completed (see
+				// successful render of a session that imagined a scene (see
 				// AgentRenderResult::sceneTargetApplied for the qualification
-				// rule), so a session that never imagined a scene produces a
+				// rule), so a session that never imagined one produces a
 				// byte-identical render result to before this slice.
 				//
-				// EVERY NUMBER REPORTED, NONE CHARACTERIZED -- no threshold,
-				// no verdict, no advice, here or in the accompanying message
-				// (design doc sec 5.4).
+				// PHASE 2b (2026-08-11): THERE IS NO SCORE IN THIS BLOCK, AND
+				// NONE MAY BE ADDED BACK.  It used to carry `rmse` plus six
+				// per-channel means; a live run showed those are a TONE
+				// signal, and the only edits they can motivate are exposure /
+				// emissive / light-power cranking, which measurably made the
+				// picture worse.  The COMPOSITE IMAGE is the comparison.
+				// What ships here is only what cannot be chased: that a
+				// target exists, its own pixel size, and whether (and at what
+				// size) the composite rode back.  See
+				// AgentRenderResult::sceneTargetApplied for the full record.
 				if( rr.ok && rr.sceneTargetApplied ) {
 					JsonValue st = JsonValue::MakeObject();
-					st.set( "rmse", JsonValue::MakeNumber( rr.sceneTargetRmse ) );
-					st.set( "renderMeanR", JsonValue::MakeNumber( rr.sceneTargetRenderMeanR ) );
-					st.set( "renderMeanG", JsonValue::MakeNumber( rr.sceneTargetRenderMeanG ) );
-					st.set( "renderMeanB", JsonValue::MakeNumber( rr.sceneTargetRenderMeanB ) );
-					st.set( "targetMeanR", JsonValue::MakeNumber( rr.sceneTargetMeanR ) );
-					st.set( "targetMeanG", JsonValue::MakeNumber( rr.sceneTargetMeanG ) );
-					st.set( "targetMeanB", JsonValue::MakeNumber( rr.sceneTargetMeanB ) );
-					st.set( "compareWidth",
-						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompareWidth ) ) );
-					st.set( "compareHeight",
-						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompareHeight ) ) );
+					st.set( "imagined", JsonValue::MakeBool( true ) );
 					st.set( "targetWidth",
 						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetWidth ) ) );
 					st.set( "targetHeight",
 						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetHeight ) ) );
-					st.set( "aspectMatched", JsonValue::MakeBool( rr.sceneTargetAspectMatched ) );
-					st.set( "compositeWidth",
-						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
-					st.set( "compositeHeight",
-						JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
+					const bool haveComposite = !rr.sceneTargetCompositePng.empty();
+					st.set( "composite", JsonValue::MakeBool( haveComposite ) );
+					if( haveComposite ) {
+						st.set( "compositeWidth",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeWidth ) ) );
+						st.set( "compositeHeight",
+							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
+					}
 					result.set( "sceneTarget", st );
 				}
 				return result;
@@ -3121,6 +3122,14 @@ namespace RISE
 						}
 					}
 
+					// Arc 77 Phase 2b (2026-08-11): relay the bound into the
+					// session so the scene-target composite's RENDER TILE is
+					// sized by the SAME number the plain frame below is -- see
+					// AgentRenderParams::imageMaxEdge.  0 when absent, which is
+					// also what the async path always sees (imageMaxEdge is
+					// refused with `async` above).
+					rparams.imageMaxEdge = ( imePresent == 1 ) ? imageMaxEdge : 0u;
+
 					if( wantAsync ) {
 						const AgentSession::AgentRenderAsyncResult ar = s->RenderAsync( rparams );
 						JsonValue result = JsonValue::MakeObject();
@@ -3168,7 +3177,7 @@ namespace RISE
 					// code path.  Attached only on a SUCCESSFUL render: on a
 					// failure the cache still holds the PREVIOUS render, and
 					// returning those pixels as this call's image would be a lie.
-					// Arc 77 Phase 2 (2026-08-11): `!rr.sceneTargetApplied`
+					// Arc 77 Phase 2 (2026-08-11): `sceneTargetImageRides`
 					// joins `!rr.targetApplied` on this branch for the
 					// IDENTICAL reason -- the scene-target composite below
 					// REPLACES the frame, and exactly one `png_base64` may be
@@ -3177,7 +3186,18 @@ namespace RISE
 					// comparison blocks are themselves mutually exclusive (see
 					// ApplySceneTargetComparison_'s qualification rule), so at
 					// most one of the two branches below can fire.
-					if( imePresent == 1 && rr.ok && !rr.targetApplied && !rr.sceneTargetApplied ) {
+					//
+					// Phase 2b (2026-08-11): the test is now the composite's
+					// PRESENCE, not `sceneTargetApplied`, because the two can
+					// now differ -- a qualifying render whose composite failed
+					// to encode still reports the scene-target facts, and it
+					// must fall back to the plain frame rather than returning
+					// no image at all.  (The other way they differ, a render
+					// that asked for no image, cannot reach this branch:
+					// imePresent is 0 there.)
+					const bool sceneTargetImageRides =
+						rr.ok && rr.sceneTargetApplied && !rr.sceneTargetCompositePng.empty();
+					if( imePresent == 1 && rr.ok && !rr.targetApplied && !sceneTargetImageRides ) {
 						unsigned int imgW = 0, imgH = 0;
 						const std::vector<unsigned char> png = s->ReadImage( imageMaxEdge, imgW, imgH );
 						if( !png.empty() ) {
@@ -3223,27 +3243,33 @@ namespace RISE
 						renderResult.set( "imageHeight",
 							JsonValue::MakeNumber( static_cast<double>( rr.targetCompositeHeight ) ) );
 					}
-					// Arc 77 Phase 2 (2026-08-11): on a qualifying full-frame
-					// render of a session that has imagined a scene, the inline
-					// image is the [target | render] COMPOSITE, and it rides
-					// UNCONDITIONALLY -- `imageMaxEdge` is neither required nor
-					// consulted, exactly as for G3b's strip.
+					// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: on a
+					// qualifying full-frame render of a session that has
+					// imagined a scene AND asked for an inline image, that
+					// image is the composite -- the imagined target ABOVE this
+					// render, on a canvas exactly as wide as the frame would
+					// have been.
 					//
-					// WHY UNCONDITIONALLY, and why that is not a behaviour
-					// change for anyone.  The composite IS the mechanism: the
-					// transport keeps only the most recent tool-result image
-					// live (one global slot), so this strip is the ONE moment
-					// the imagined target re-enters the model's context, and
-					// the numbers without the picture are precisely the
-					// degradation the design's sec 4.3 retention decision
-					// rejected.  It cannot surprise an existing session because
-					// `sceneTargetApplied` requires a target, and a target
-					// exists only if the model itself called imagine_scene --
-					// no session that does not use the mechanism sees any of
-					// this.  A caller that wants the plain frame can call
-					// read_image, which still serves THIS render's own beauty
-					// pixels (nothing here touches the image cache).
-					if( rr.ok && rr.sceneTargetApplied && !rr.sceneTargetCompositePng.empty() ) {
+					// WHY IT IS NOW CONDITIONAL ON `imageMaxEdge`.  Phase 2
+					// shipped the strip unconditionally, and it REPLACED the
+					// frame with a half-width panel of it: the model saw its
+					// own scene smaller than it would have with no target at
+					// all -- less resolution to spot its own defects -- and it
+					// saw it permanently juxtaposed with an unreachable ideal.
+					// The composite now carries the render at exactly the size
+					// the plain frame would have been (see
+					// AgentSession::ApplySceneTargetComparison_), which means
+					// it is sized by `imageMaxEdge` and therefore exists only
+					// when one was asked for.  A render that wanted no picture
+					// gets none, exactly as before this mechanism existed.
+					// The retention argument that made the composite a
+					// requirement is unchanged: the transport keeps only the
+					// most recent tool-result image live, so this is the ONE
+					// moment the imagined target re-enters the model's context.
+					// A caller that wants the plain frame can call read_image,
+					// which still serves THIS render's own beauty pixels
+					// (nothing here touches the image cache).
+					if( sceneTargetImageRides ) {
 						renderResult.set( "png_base64",
 							JsonValue::MakeString( Base64Encode( rr.sceneTargetCompositePng ) ) );
 						renderResult.set( "byteLength",

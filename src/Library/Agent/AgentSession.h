@@ -813,6 +813,22 @@ namespace RISE
 			//! at parse time, before RenderCore_ ever sees them, so this flag
 			//! only ever governs the two ABSENT-value defaults above.
 			bool                 fromAgentSurface = false;
+			//! Arc 77 Phase 2b (2026-08-11): the wire's `imageMaxEdge`, relayed
+			//! so the SESSION can size the scene-target composite.  0 (the
+			//! default, and what every internal C++ caller leaves it at) means
+			//! "no inline image was requested".
+			//!
+			//! WHY THE SESSION NEEDS IT.  AgentRpc returns the plain frame by
+			//! calling ReadImage(imageMaxEdge), but the scene-target composite
+			//! is BUILT HERE, and Phase 2b's hard requirement is that the
+			//! render tile inside that composite is never smaller than the
+			//! plain frame would have been.  The only way to guarantee that is
+			//! for the composite to be sized by the SAME number, applying the
+			//! SAME never-upscale rule (see ApplySceneTargetComparison_).
+			//! Nothing else reads this: it does not affect what is rendered,
+			//! only how the scene-target composite is scaled, so a caller that
+			//! leaves it 0 gets exactly today's behaviour minus the composite.
+			unsigned int         imageMaxEdge = 0;
 		};
 
 		//! R1b (2026-08-09): the agent RPC surface's resolution/sample caps for
@@ -1216,10 +1232,11 @@ namespace RISE
 			std::vector<unsigned char> targetCompositePng;
 			unsigned int               targetCompositeWidth = 0;
 			unsigned int               targetCompositeHeight = 0;
-			//! Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE target comparison
-			//! -- this render measured against the image the model asked the
-			//! provider to generate from its own description (`imagine_scene`).
-			//! ALL default to the "no comparison happened" values, and stay
+			//! Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b (2026-08-11):
+			//! the WHOLE-SCENE target -- this render shown against the image
+			//! the model asked the provider to generate from its own
+			//! description (`imagine_scene`).
+			//! ALL default to the "no target was in force" values, and stay
 			//! there for every render on a session that never imagined a
 			//! scene, so a session that does not use the mechanism produces
 			//! byte-identical results to before this slice.
@@ -1229,8 +1246,8 @@ namespace RISE
 			//! isolate and did NOT carry a part `target`.  The three
 			//! exclusions are not conservatism, they are honesty:
 			//!   * DRAFT ignores the scene's authored materials and lighting
-			//!     entirely, so an RMSE against a coloured, lit target image
-			//!     would be a real number measuring the wrong thing.
+			//!     entirely, so setting it beside a coloured, lit target
+			//!     invites reading a shading difference as a scene difference.
 			//!   * OBJECTMAP / VIEW MODE paint identity or data colours, not
 			//!     appearance -- same objection, more starkly.
 			//!   * ISOLATE deletes the rest of the scene: it is a look at ONE
@@ -1243,55 +1260,62 @@ namespace RISE
 			//! than waiting to be asked for.
 			//!
 			//! `sceneTargetApplied` gates the whole block on the wire and is
-			//! set ONLY when a measurement really happened (same rule, same
-			//! reason, as `targetApplied`).
+			//! set ONLY when a target really was in force for this render
+			//! (same rule, same reason, as `targetApplied`).
 			//!
-			//! THE COMPARISON CANVAS.  The render and the stored target are
-			//! rarely the same size, so both are BOX-DOWNSCALED to a shared
-			//! canvas whose dimensions are the per-axis MINIMUM of the two:
-			//! `sceneTargetCompareWidth = min(renderW, targetW)`,
-			//! `...Height = min(renderH, targetH)`.  Never an upscale, so no
-			//! interpolation invents detail on either side.  When the two
-			//! aspect ratios differ, that per-axis fit is a NON-UNIFORM
-			//! resample -- `sceneTargetAspectMatched` is then false and both
-			//! source sizes are reported, so a caller can see the squeeze
-			//! rather than reading a distorted RMSE as a content difference.
+			//! PHASE 2b (2026-08-11) -- THERE IS NO SCORE HERE, DELIBERATELY,
+			//! AND NONE MAY BE ADDED.  The shipped Phase 2 reported an RMSE of
+			//! the render against the target plus both sides' per-channel
+			//! means.  A live run measured what that did: 16 consultations
+			//! followed by 23 emissive_scale / 10 power / 9 radiance_scale
+			//! edits, emissive_scale cranked to 25.0, light power to 80 -- a
+			//! blown-out frame, worse than the pre-Phase-2 baseline.  The
+			//! diagnosis is structural, not a tuning miss: RMSE over full-frame
+			//! RGB is a TONE metric.  It is dominated by large flat areas, so
+			//! the only axis it exposes a gradient on is global exposure /
+			//! emission / fog -- nothing in it can ever reward a better wing.
+			//! A reproduction metric was shipped to serve a progress-check
+			//! purpose (design doc sec 1/sec 2 say that was never the intent).
+			//! Models act on facts, and a fact whose only movable axis degrades
+			//! the picture is worse than no fact.  THE COMPOSITE IMAGE IS THE
+			//! COMPARISON: a vision model can judge two pictures side by side
+			//! without a number.  So what remains is only what cannot be
+			//! chased -- that a target exists, its pixel size, and the
+			//! composite's size.  Do NOT reintroduce a similarity measure here
+			//! under any name.  (The RMSE machinery itself is untouched and
+			//! still serves compare_to_reference and the eval grader, where a
+			//! host-registered reference IS a reproduction spec.)
 			//!
-			//! `sceneTargetRmse` is root-mean-square error over the shared
-			//! canvas's R,G,B samples in [0,1] -- the SAME formula
-			//! compare_to_reference reports (and the eval grader's own
-			//! objective function), so the two numbers are directly
-			//! comparable.  The six means are each image's per-channel mean
-			//! over that same canvas, render first: they say WHICH WAY the
-			//! frame differs (too dark, too blue) where the RMSE says only
-			//! how much.
-			//!
-			//! `sceneTargetCompositePng` is the [target | render] strip, two
-			//! canvas-sized panels side by side.  It is a REQUIREMENT, not a
+			//! `sceneTargetCompositePng` is the composite: the imagined target
+			//! ABOVE this render, separated by a thin grey rule, on a canvas
+			//! exactly as wide as the render tile.  It is a REQUIREMENT, not a
 			//! convenience, for the reason G3b's composite is: the transport
-			//! keeps only the MOST RECENT tool-result image live, so this
-			//! strip is HOW the imagined target re-enters the model's context
-			//! at the moment it looks (design doc
+			//! keeps only the MOST RECENT tool-result image live, so this is
+			//! HOW the imagined target re-enters the model's context at the
+			//! moment it looks (design doc
 			//! docs/agentic-redesign/77-imagination-target-design.md sec 4.3
-			//! "Retention interaction").  Empty when !sceneTargetApplied or
-			//! when the encode failed.
+			//! "Retention interaction").
 			//!
-			//! NOTHING IS GATED ON ANY OF THESE NUMBERS and none of them is
-			//! ever characterized -- no threshold, no verdict, no advice
-			//! (design doc sec 5.4).
+			//! PHASE 2b, THE SIZE CONTRACT.  Phase 2 stacked the two panels
+			//! SIDE BY SIDE on a shared canvas that was the per-axis minimum of
+			//! render and target -- so the model saw its own frame at half the
+			//! width of an already-shrunken strip, less resolution to spot its
+			//! own defects than it would have had with no target at all.  The
+			//! render tile is now the FULL image AgentRpc would have returned
+			//! for this call: same dimensions, by the same never-upscale rule
+			//! ReadImage(imageMaxEdge) applies (see
+			//! ApplySceneTargetComparison_).  The target is scaled to that
+			//! width -- never UP; a target narrower than the tile is centred on
+			//! a black band at its own size -- and sits above.  Consequence:
+			//! the composite exists ONLY when the caller asked for an inline
+			//! image (AgentRenderParams::imageMaxEdge != 0); a render that
+			//! wanted no picture still gets the (numberless) facts and no
+			//! bytes, exactly as it did before this mechanism existed.
+			//! `sceneTargetApplied` can therefore be true with an EMPTY
+			//! composite, and AgentRpc falls back to the plain frame then.
 			bool                       sceneTargetApplied = false;
-			double                     sceneTargetRmse = 0.0;
-			double                     sceneTargetRenderMeanR = 0.0;
-			double                     sceneTargetRenderMeanG = 0.0;
-			double                     sceneTargetRenderMeanB = 0.0;
-			double                     sceneTargetMeanR = 0.0;
-			double                     sceneTargetMeanG = 0.0;
-			double                     sceneTargetMeanB = 0.0;
-			unsigned int               sceneTargetCompareWidth = 0;
-			unsigned int               sceneTargetCompareHeight = 0;
 			unsigned int               sceneTargetWidth = 0;
 			unsigned int               sceneTargetHeight = 0;
-			bool                       sceneTargetAspectMatched = true;
 			std::vector<unsigned char> sceneTargetCompositePng;
 			unsigned int               sceneTargetCompositeWidth = 0;
 			unsigned int               sceneTargetCompositeHeight = 0;
@@ -3346,10 +3370,21 @@ namespace RISE
 			// held session-side as THE scene target and returned inline so
 			// the model sees its own imagination.  From then on every
 			// full-frame production beauty render carries a factual
-			// `sceneTarget` comparison against it (see
-			// AgentRenderResult::sceneTargetApplied) plus a [target | render]
-			// composite.  Re-imagining REPLACES the target, exactly as
-			// re-filing replaces the part plan.
+			// `sceneTarget` block (see AgentRenderResult::sceneTargetApplied)
+			// and, when that call asked for an inline image, shows the target
+			// ABOVE the render in one composite.  Re-imagining REPLACES the
+			// target, exactly as re-filing replaces the part plan.
+			//
+			// PHASE 2b (2026-08-11), THE REACHABILITY HALF.  The description
+			// the model writes is the SUBJECT; the host appends a fixed STYLE
+			// directive asking for a simple, flat-shaded 3D-render-like image
+			// (see Agent::ChatImageStyleDirective in AgentChatCodecs.h).
+			// Without it providers return cinematic concept art -- painterly
+			// texture, volumetric god-rays, photographic depth of field --
+			// which a path tracer driving SDF primitives cannot approach, so
+			// the target was an unreachable ideal rather than a thing to aim
+			// at.  The imagining stays the model's act; only the rendering
+			// style is constrained.
 			//
 			// WHY THIS SHAPE, from the battery that selected it (design doc
 			// docs/agentic-redesign/77-imagination-target-design.md sec 13):
@@ -3434,7 +3469,7 @@ namespace RISE
 				//! other fields are informational and `generate` is not called.
 				bool        supported = false;
 				std::string providerName;   //!< e.g. "gemini" -- named in the capability statement
-				std::string modelId;        //!< e.g. "gemini-3.6-flash-image"
+				std::string modelId;        //!< e.g. "gemini-3.1-flash-image"
 				//! Perform ONE blocking generation of `description`.  Called
 				//! on the dispatcher thread inside tool dispatch; a generous
 				//! transport timeout is the host's to set.  Never throws.
@@ -4680,17 +4715,17 @@ namespace RISE
 			                              bool assumeParked,
 			                              const AgentPartSketch* resolvedTarget );
 
-			//! Arc 77 Phase 2 (2026-08-11): attach the WHOLE-SCENE target
-			//! comparison to a render that qualifies for it -- see
+			//! Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: attach the
+			//! WHOLE-SCENE target to a render that qualifies for it -- see
 			//! AgentRenderResult::sceneTargetApplied for the qualification
-			//! rule, the canvas convention and the composite.
+			//! rule, the no-score decision and the composite's size contract.
 			//!
 			//! Unlike ApplyTargetComparison_ this runs NO EXTRA RENDER: it
 			//! reads the frame the caller's render already produced
 			//! (`rr.png`), so it costs one PNG decode, one box-downscale of
 			//! each side and one PNG encode -- microseconds at the agent
 			//! surface's 256-pixel cap, and nothing at all on a session with
-			//! no target.
+			//! no target or on a call that asked for no inline image.
 			//!
 			//! `target` is the shared_ptr SNAPSHOT the CALLER copied on the
 			//! CALLER's thread, for exactly the reason ApplyTargetComparison_
@@ -4701,11 +4736,11 @@ namespace RISE
 			//! so a snapshot taken before a re-imagine still describes the
 			//! target the caller submitted against.
 			//!
-			//! A failure anywhere in the measurement (undecodable frame,
-			//! degenerate dims, failed encode) leaves every `sceneTarget*`
-			//! field at its default, emits no block, and appends a factual
-			//! note to `rr.message` -- it NEVER fails the render, which
-			//! succeeded on its own terms.
+			//! A failure anywhere in building the composite (undecodable
+			//! frame, degenerate dims, failed encode) leaves the composite
+			//! empty and appends a factual note to `rr.message`; the facts
+			//! still ride and AgentRpc falls back to the plain frame.  It
+			//! NEVER fails the render, which succeeded on its own terms.
 			void ApplySceneTargetComparison_( const AgentRenderParams& params,
 			                                   AgentRenderResult& rr,
 			                                   const std::shared_ptr<const AgentSceneTarget>& target );

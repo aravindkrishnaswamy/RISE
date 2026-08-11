@@ -778,11 +778,12 @@ int main()
 		Check( !foundImage,
 		       "tools/call(render) with no imageMaxEdge still returns no image content block -- "
 		       "the statistics-only response shape is unchanged" );
-		// ORDERING NOTE (Arc 77 Phase 2, 2026-08-11): this assertion holds only
-		// while the session has NO imagined scene target -- once one exists a
-		// plain render deliberately DOES carry the [target | render] strip (and
-		// the block further down asserts exactly that).  The imagine_scene call
-		// is therefore sequenced AFTER this one on purpose; do not reorder them.
+		// ORDERING NOTE (Arc 77 Phase 2, 2026-08-11): this assertion was once
+		// order-sensitive -- Phase 2 made a plain render carry the strip
+		// unconditionally once a target existed.  Phase 2b sizes the composite
+		// by `imageMaxEdge`, so "no imageMaxEdge means no image block" now
+		// holds with or without a target, and the Phase 2b block further down
+		// asserts exactly that on a session that HAS one.
 	}
 
 	//----------------------------------------------------------------------
@@ -823,18 +824,65 @@ int main()
 
 	//----------------------------------------------------------------------
 	// Arc 77 Phase 2: and the render that FOLLOWS it carries the whole-scene
-	// comparison -- the [target | render] strip, again exactly one image
-	// block, plus the factual sceneTarget numbers in the text block.
+	// target -- the target-above-render composite, again exactly one image
+	// block, plus the factual sceneTarget block in the text block.
+	//
+	// Phase 2b (2026-08-11): the composite is now sized by `imageMaxEdge`
+	// (its render half is exactly the frame the same call would otherwise
+	// have returned), so it rides only when an inline image was asked for --
+	// both halves of that are asserted below.
 	//----------------------------------------------------------------------
-	std::printf( "[tools/call] Arc77 render after imagine -> the [target | render] strip\n" );
+	std::printf( "[tools/call] Arc77 render after imagine -> the target-above-render composite\n" );
 	{
-		const std::string resp = mcp.HandleLine(
-			ReqToolCall( 27, "render", JsonValue::MakeObject() ) );
+		JsonValue args = JsonValue::MakeObject();
+		args.set( "imageMaxEdge", JsonValue::MakeNumber( 192 ) );
+		const std::string resp = mcp.HandleLine( ReqToolCall( 27, "render", args ) );
 		JsonValue env = ParseResponse( resp, 27 );
 		Check( !env.has( "error" ), "tools/call(render) after an imagine is a JSON-RPC success" );
 		const JsonValue& result = env.get( "result" );
 		Check( !result.get( "isError" ).asBool( true ), "isError == false" );
 		const JsonValue& content = result.get( "content" );
+		int imageBlocks = 0;
+		bool sawSceneTargetFacts = false;
+		bool sawAnyScore = false;
+		for( std::size_t i = 0; i < content.size(); ++i ) {
+			const JsonValue& block = content.at( i );
+			if( block.get( "type" ).asString() == "image" ) ++imageBlocks;
+			if( block.get( "type" ).asString() == "text" ) {
+				const std::string text = block.get( "text" ).asString();
+				if( text.find( "\"sceneTarget\"" ) != std::string::npos ) sawSceneTargetFacts = true;
+				if( text.find( "\"rmse\"" ) != std::string::npos ||
+				    text.find( "renderMean" ) != std::string::npos ||
+				    text.find( "targetMean" ) != std::string::npos )
+					sawAnyScore = true;
+			}
+		}
+		Check( imageBlocks == 1,
+		       "Arc77 MONEY ASSERTION: a render{imageMaxEdge} on a session with a scene target "
+		       "returns EXACTLY ONE image block -- the composite REPLACES the frame, never rides "
+		       "alongside it" );
+		Check( sawSceneTargetFacts,
+		       "Arc77: and the serialized result carries the factual sceneTarget block" );
+		Check( !sawAnyScore,
+		       "Arc77 Phase 2b MONEY ASSERTION: and that block carries NO similarity score and no "
+		       "per-channel means -- an RMSE over the full frame is a tone metric, and the live "
+		       "run that shipped it measured the model answering with emissive_scale 25.0 and "
+		       "light power 80.  The composite IMAGE is the comparison." );
+	}
+
+	//----------------------------------------------------------------------
+	// Phase 2b: and the SAME render with no `imageMaxEdge` returns the facts
+	// and NO image -- the composite is sized by that bound, so a call that
+	// asked for no picture is not handed one (which is also exactly what a
+	// pre-scene-target session did).
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] Arc77 Phase 2b render with NO imageMaxEdge -> facts, no image\n" );
+	{
+		const std::string resp = mcp.HandleLine(
+			ReqToolCall( 28, "render", JsonValue::MakeObject() ) );
+		JsonValue env = ParseResponse( resp, 28 );
+		Check( !env.has( "error" ), "tools/call(render) with no imageMaxEdge is a JSON-RPC success" );
+		const JsonValue& content = env.get( "result" ).get( "content" );
 		int imageBlocks = 0;
 		bool sawSceneTargetFacts = false;
 		for( std::size_t i = 0; i < content.size(); ++i ) {
@@ -844,12 +892,13 @@ int main()
 			    block.get( "text" ).asString().find( "\"sceneTarget\"" ) != std::string::npos )
 				sawSceneTargetFacts = true;
 		}
-		Check( imageBlocks == 1,
-		       "Arc77 MONEY ASSERTION: a plain render (NO imageMaxEdge) on a session with a scene "
-		       "target returns EXACTLY ONE image block -- the strip rides unconditionally and "
-		       "REPLACES the frame, never alongside it" );
+		Check( imageBlocks == 0,
+		       "Arc77 Phase 2b: no inline image was requested, so none is returned -- the render "
+		       "is never shown smaller (or larger) than the caller asked for because a target "
+		       "exists" );
 		Check( sawSceneTargetFacts,
-		       "Arc77: and the serialized result carries the factual sceneTarget block" );
+		       "Arc77 Phase 2b: the sceneTarget facts still ride, so the model knows a target is "
+		       "held even on a call it asked no picture of" );
 	}
 
 	//----------------------------------------------------------------------

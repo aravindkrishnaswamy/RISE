@@ -109,10 +109,22 @@
 //                                            disarm the part-plan gate).  From then on
 //                                            every FULL-FRAME PRODUCTION BEAUTY render --
 //                                            not draft, not mode:, not isolate -- gains a
-//                                            `sceneTarget` block (rmse + per-channel means
-//                                            on a shared canvas) and returns a
-//                                            [target | render] strip in place of the
-//                                            frame.  CAPABILITY-CONDITIONAL: a provider
+//                                            `sceneTarget` block {imagined,targetWidth,
+//                                            targetHeight,composite,compositeWidth?,
+//                                            compositeHeight?} and, when that render asked
+//                                            for an inline image, returns the target ABOVE
+//                                            the render in place of the frame alone.
+//                                            Phase 2b (2026-08-11): there is NO similarity
+//                                            score in that block and none may be added --
+//                                            the shipped RMSE was a TONE metric and drove
+//                                            measurable exposure/emissive cranking; the
+//                                            composite IMAGE is the comparison.  The render
+//                                            half of it is the size the plain frame would
+//                                            have been, so a target never costs resolution.
+//                                            The host also appends a fixed flat-shaded
+//                                            3D-render STYLE directive to the description
+//                                            so the generated target is reachable.
+//                                            CAPABILITY-CONDITIONAL: a provider
 //                                            with no image generation answers ok:false
 //                                            with an honest statement, and the gate is
 //                                            then exactly the shipped plan-only gate.
@@ -121,8 +133,8 @@
 //                                            imagine requirement for the session and says
 //                                            so; a missing `description` is a -32602 and
 //                                            disarms NOTHING.  Re-imagining REPLACES the
-//                                            target.  Nothing is ever gated on the
-//                                            comparison numbers.)
+//                                            target.  Nothing is ever gated on the target,
+//                                            and no reproduction is ever expected.)
 //      validate     {text?}              -> {diagnostics:[{severity,code,message,offset,length}],
 //                                            validated:"head"|"text"}
 //                                           (TWO forms, both read-only.  WITH `text`:

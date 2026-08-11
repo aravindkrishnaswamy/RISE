@@ -6982,7 +6982,7 @@ static void RunAsyncSceneTargetSnapshotTest()
 			Check( rr.get( "ok" ).asBool(),
 			       std::string( "the async render succeeded: " ) + rr.get( "message" ).asString() );
 			Check( rr.has( "sceneTarget" ),
-			       "MONEY ASSERTION: the async path measures the whole-scene comparison exactly as "
+			       "MONEY ASSERTION: the async path attaches the whole-scene target exactly as "
 			       "the sync path does, and render_wait echoes it" );
 			const JsonValue& st = rr.get( "sceneTarget" );
 			Check( st.get( "targetWidth" ).asNumber( 0.0 ) == 256.0,
@@ -6991,7 +6991,15 @@ static void RunAsyncSceneTargetSnapshotTest()
 			       "read mSceneTarget instead of the snapshot it was handed." );
 			Check( !rr.has( "png_base64" ),
 			       "and the render_wait echo carries the FACTS without image bytes, exactly as the "
-			       "part-target echo does" );
+			       "part-target echo does -- and, since Phase 2b, doubly so: `imageMaxEdge` is "
+			       "refused with `async`, and the composite is sized by it" );
+			Check( !st.get( "composite" ).asBool( true ),
+			       "Phase 2b: `composite:false` says so honestly rather than leaving the model to "
+			       "infer the absence of an image it was told to expect" );
+			Check( !st.has( "rmse" ),
+			       "Phase 2b MONEY ASSERTION: and the echoed block carries NO similarity score -- "
+			       "the RMSE this mechanism shipped with was a tone metric that drove measurable "
+			       "exposure/emissive cranking, and it is gone from every surface" );
 			Check( session->SceneTarget() && session->SceneTarget()->width == 512,
 			       "while the SESSION's live target is B -- the snapshot pinned the render, not the "
 			       "session" );

@@ -2356,23 +2356,35 @@ static void RunLastRenderCompletionSitesTest()
 }
 
 //======================================================================
-// Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE target comparison on the
-// render surface.
+// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the WHOLE-SCENE
+// target on the render surface.
 //
 // WHY THIS IS THE SURFACE.  The battery that selected this mechanism
 // measured models visiting the full-frame render 64/64 times and every
-// per-part consultation surface 0/64 -- so the comparison rides the render
+// per-part consultation surface 0/64 -- so the target rides the render
 // rather than waiting to be asked for.  These tests pin WHERE it attaches
 // and, just as importantly, where it must NOT:
-//   * DRAFT ignores the scene's materials and lighting, so an RMSE against
-//     a coloured, lit target would be a real number measuring the wrong
-//     thing.
+//   * DRAFT ignores the scene's materials and lighting, so setting it
+//     beside a coloured, lit target invites reading a shading difference
+//     as a scene difference.
 //   * OBJECTMAP paints identity colours, not appearance.
 //   * ISOLATE is a look at ONE PART; the whole-scene target is not what it
 //     is a look at.
-// Each of those would be a dishonest number in a payload this project has
-// measured models ACTING on, which is why they are assertions and not
-// merely comments.
+//
+// PHASE 2b (2026-08-11) -- what these tests now pin instead of an RMSE.
+// The shipped Phase 2 reported an RMSE plus per-channel means and replaced
+// the frame with a half-width [target | render] strip.  A live run measured
+// the result: 16 consultations, then 23 emissive_scale / 10 power / 9
+// radiance_scale edits and a blown-out frame the user judged WORSE than the
+// pre-Phase-2 baseline.  RMSE over full-frame RGB is a TONE metric -- the
+// only axis it exposes a gradient on is global exposure -- so the number
+// was deleted outright.  The two assertions that replace it are:
+//   (1) NO SCORE.  Nothing numeric that could be chased survives in the
+//       result.  A future "just a small similarity hint" re-lands the
+//       measured failure, so the absence is a MONEY assertion.
+//   (2) THE RENDER IS NEVER SMALLER.  The composite's render half is the
+//       exact size the plain frame would have been for the same call --
+//       asserted against a real ReadImage(imageMaxEdge), not restated.
 //======================================================================
 
 //! Mint a real, decodable PNG of a known size without adding a PNG encoder
@@ -2438,61 +2450,86 @@ static void RunSceneTargetTests()
 		       "and the message is unchanged" );
 	}
 
-	// (b) THE COMPARISON on a full-frame production beauty render.
+	// (b) THE TARGET on a full-frame production beauty render.
 	{
 		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
 		session->SetImageGenerator( MakeFakeImageGen( squarePng ) );
 		Check( session->ImagineScene( "a grey sphere lit from the front" ).ok, "the imagine succeeds" );
 
 		const std::string docBefore = session->ReadDocument();
-		const AgentRenderResult r = session->Render( AgentRenderParams() );
-		Check( r.ok, "the production render succeeds" );
-		Check( r.sceneTargetApplied,
+		// No inline image requested: the FACTS ride, and -- exactly as before
+		// this mechanism existed -- no bytes do.
+		const AgentRenderResult noImage = session->Render( AgentRenderParams() );
+		Check( noImage.ok && noImage.sceneTargetApplied,
 		       "MONEY ASSERTION: a full-frame production BEAUTY render carries the sceneTarget "
-		       "comparison automatically -- the model does not have to ask for it, which is the "
+		       "facts automatically -- the model does not have to ask for them, which is the "
 		       "whole point (the per-part consultation surfaces measured 0/64)" );
-		// The shared canvas is the PER-AXIS MINIMUM: a 24x24 render against a
-		// 256x256 target compares at 24x24, never upscaling either side.
-		Check( r.sceneTargetCompareWidth == r.width && r.sceneTargetCompareHeight == r.height,
-		       "the shared canvas is the render's dims here (both are smaller than the target's)" );
+		Check( noImage.sceneTargetCompositePng.empty(),
+		       "MONEY ASSERTION (Phase 2b): a render that asked for NO inline image gets no "
+		       "composite -- the composite is sized by imageMaxEdge, and a call that wanted no "
+		       "picture is not handed one" );
+
+		AgentRenderParams withImage;
+		withImage.imageMaxEdge = 192;
+		const AgentRenderResult r = session->Render( withImage );
+		Check( r.ok, "the production render succeeds" );
+		Check( r.sceneTargetApplied, "and carries the sceneTarget facts" );
 		Check( r.sceneTargetWidth == 256 && r.sceneTargetHeight == 256,
-		       "and the target's own dims are reported alongside" );
-		Check( r.sceneTargetAspectMatched,
-		       "a square render against a square target reports aspectMatched" );
-		Check( r.sceneTargetRmse >= 0.0 && r.sceneTargetRmse <= 1.7321,
-		       "the RMSE is a real number in range" );
-		Check( r.sceneTargetRenderMeanR >= 0.0 && r.sceneTargetRenderMeanR <= 1.0 &&
-		       r.sceneTargetMeanR >= 0.0 && r.sceneTargetMeanR <= 1.0,
-		       "both sides' per-channel means are in [0,1]" );
-		Check( r.sceneTargetCompositeWidth == r.sceneTargetCompareWidth * 2 &&
-		       r.sceneTargetCompositeHeight == r.sceneTargetCompareHeight,
-		       "the [target | render] strip is two canvas-sized panels wide" );
+		       "the target's own dims are reported" );
+
+		// (b1) THE SIZE CONTRACT, proven against the real thing rather than
+		//      restated: AgentRpc would have returned ReadImage(imageMaxEdge)
+		//      for this call, so the composite must be exactly that wide.
+		unsigned int plainW = 0, plainH = 0;
+		const std::vector<unsigned char> plainFrame = session->ReadImage( 192, plainW, plainH );
+		Check( !plainFrame.empty() && plainW > 0 && plainH > 0,
+		       "the plain frame this call would have returned is readable" );
+		Check( r.sceneTargetCompositeWidth == plainW,
+		       "MONEY ASSERTION (Phase 2b): the composite is EXACTLY as wide as the plain frame "
+		       "would have been -- the render is never shown smaller because a scene target "
+		       "exists.  Phase 2 halved it (a side-by-side strip) and the measured cost was the "
+		       "model having less resolution to spot its own defects than with no target at all." );
+		Check( r.sceneTargetCompositeHeight > plainH,
+		       "and TALLER than the frame -- the target is stacked ABOVE the full-width render, "
+		       "which is what buys the width back" );
 		Check( r.sceneTargetCompositePng.size() >= 8 && r.sceneTargetCompositePng[0] == 0x89 &&
 		       r.sceneTargetCompositePng[1] == 'P' && r.sceneTargetCompositePng[2] == 'N' &&
 		       r.sceneTargetCompositePng[3] == 'G',
-		       "MONEY ASSERTION: and it is a real PNG -- the strip is HOW the imagined target "
+		       "MONEY ASSERTION: and it is a real PNG -- the composite is HOW the imagined target "
 		       "re-enters the model's context at the moment it looks (the single live-image slot)" );
-		Check( r.message.find( "scene target: rmse" ) != std::string::npos,
-		       "the message states the measurement" );
+
+		// (b2) NO SCORE.  The measured Phase 2 failure was a tone metric
+		//      driving emissive/power cranking; the absence of any number to
+		//      chase is the fix, so it is asserted directly.
+		Check( r.message.find( "rmse" ) == std::string::npos &&
+		       r.message.find( "RMSE" ) == std::string::npos &&
+		       r.message.find( "mean rgb" ) == std::string::npos,
+		       "MONEY ASSERTION (Phase 2b): the render message reports NO similarity score and no "
+		       "per-channel means -- RMSE over a full frame is a tone metric, and the only edits "
+		       "it can motivate (exposure, emissive_scale, light power) measurably made the "
+		       "picture worse.  The composite IMAGE is the comparison." );
+		Check( r.message.find( "scene target" ) != std::string::npos,
+		       "the message still states that the image is the target above the render" );
 		Check( r.message.find( "close" ) == std::string::npos &&
 		       r.message.find( "poor" ) == std::string::npos &&
 		       r.message.find( "good" ) == std::string::npos,
 		       "MONEY ASSERTION: and CHARACTERIZES nothing -- no verdict word anywhere, per the "
 		       "design's no-Goodhart rule" );
 		Check( session->ReadDocument() == docBefore,
-		       "the comparison is side-effect-free on the Document" );
+		       "attaching the target is side-effect-free on the Document" );
 
 		// (c) The three exclusions, on the SAME session (so the only variable
 		//     is the render kind, not whether a target exists).
 		{
 			AgentRenderParams p;
-			p.quality = AgentRenderQuality::Draft;
+			p.quality      = AgentRenderQuality::Draft;
+			p.imageMaxEdge = 192;
 			const AgentRenderResult d = session->Render( p );
 			Check( d.ok, "the draft render succeeds" );
 			Check( !d.sceneTargetApplied,
-			       "MONEY ASSERTION: a DRAFT render carries NO comparison -- draft ignores the "
-			       "scene's materials and lighting, so an RMSE against a lit, coloured target "
-			       "would be a real number measuring the wrong thing" );
+			       "MONEY ASSERTION: a DRAFT render carries NO scene target -- draft ignores the "
+			       "scene's materials and lighting, so setting it beside a lit, coloured target "
+			       "invites reading a shading difference as a scene difference" );
 		}
 		{
 			AgentRenderParams p;
@@ -2500,38 +2537,53 @@ static void RunSceneTargetTests()
 			const AgentRenderResult om = session->Render( p );
 			Check( om.ok, "the objectmap render succeeds" );
 			Check( !om.sceneTargetApplied,
-			       "MONEY ASSERTION: an OBJECTMAP render carries NO comparison -- it paints identity "
-			       "colours, not appearance" );
+			       "MONEY ASSERTION: an OBJECTMAP render carries NO scene target -- it paints "
+			       "identity colours, not appearance" );
 		}
 		{
 			AgentRenderParams p;
-			p.isolate = "obj_sph";
+			p.isolate      = "obj_sph";
+			p.imageMaxEdge = 192;
 			const AgentRenderResult iso = session->Render( p );
 			Check( iso.ok, "the isolate render succeeds" );
 			Check( iso.isolateApplied, "and really did isolate" );
 			Check( !iso.sceneTargetApplied,
-			       "MONEY ASSERTION: an ISOLATE render carries NO whole-scene comparison -- isolate "
+			       "MONEY ASSERTION: an ISOLATE render carries NO whole-scene target -- isolate "
 			       "deletes the rest of the scene, so it is a look at one PART and the whole-scene "
 			       "target is not what it is a look at" );
 		}
 	}
 
-	// (d) A target whose aspect differs from the render's: the per-axis fit
-	//     is REPORTED, not hidden, so a squeeze cannot read as a content
-	//     difference.
+	// (d) A target whose aspect differs from the render's.  Phase 2 squeezed
+	//     both sides onto a per-axis-minimum canvas and reported the squeeze
+	//     as `aspectMatched:false` so a distorted RMSE could not read as a
+	//     content difference.  Phase 2b has no RMSE to distort: the render
+	//     tile keeps its own dims and the target is fitted to that WIDTH with
+	//     its own aspect preserved, so there is nothing to disclose.
 	{
 		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
 		session->SetImageGenerator( MakeFakeImageGen( widePng ) );   // 512x256, 2:1
 		Check( session->ImagineScene( "a wide panorama" ).ok, "the wide-target imagine succeeds" );
-		const AgentRenderResult r = session->Render( AgentRenderParams() );
-		Check( r.ok && r.sceneTargetApplied, "the comparison still happens" );
-		Check( !r.sceneTargetAspectMatched,
-		       "MONEY ASSERTION: a 1:1 render against a 2:1 target reports aspectMatched FALSE -- "
-		       "the non-uniform fit is a stated fact, not a silent distortion of the RMSE" );
+		AgentRenderParams p;
+		p.imageMaxEdge = 192;
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.sceneTargetApplied, "the target still attaches" );
 		Check( r.sceneTargetWidth == 512 && r.sceneTargetHeight == 256,
-		       "and both source sizes are reported so the squeeze is legible" );
-		Check( r.message.find( "so each was fitted per axis" ) != std::string::npos,
-		       "the message says so in words too" );
+		       "and the target's own dims are reported" );
+		unsigned int plainW = 0, plainH = 0;
+		Check( !session->ReadImage( 192, plainW, plainH ).empty(),
+		       "the plain frame this call would have returned is readable" );
+		Check( r.sceneTargetCompositeWidth == plainW,
+		       "MONEY ASSERTION (Phase 2b): a 2:1 target against a 1:1 render still leaves the "
+		       "render half at FULL size -- the target is scaled to the render's width and "
+		       "stacked above, never squeezed onto a shared canvas that shrinks the render" );
+		// A 2:1 target fitted to a square-ish render's width is HALF that
+		// width tall, plus the 2px rule -- so the composite is shorter than
+		// the two-panels-tall a same-aspect target would give.
+		Check( r.sceneTargetCompositeHeight > plainH &&
+		       r.sceneTargetCompositeHeight < plainH * 2,
+		       "and the band above it keeps the TARGET's own aspect (a wide target makes a short "
+		       "band), so nothing about either image is distorted" );
 	}
 
 	pJob->release();

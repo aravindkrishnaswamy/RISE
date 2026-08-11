@@ -1,5 +1,5 @@
 # Observe Modes: Choosing How to Look at the Scene
-> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), a production render, and (once you have called imagine_scene) that same production render measured against your imagined scene target -- each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
+> hook: Read before deciding HOW to look at the scene -- read_viewport, render{quality:"draft"}, render{mode:"objectmap"|"normals"|"depth"|"facets"|"wireframe"|"deep_reflect"|"direct"|"indirect"|"clay_lights"}/query_object_at, render{isolate:} (with or without target:), a production render, and (once you have called imagine_scene) that same production render shown beneath your imagined scene target -- each answer a DIFFERENT question at a DIFFERENT cost; the wrong pick either lies to you or burns a full render for nothing.
 
 There are exactly FOUR FAMILIES of call for looking at the scene
 through the agent surface.  They are not interchangeable, and three of
@@ -398,23 +398,36 @@ the render (`ok:false`) with the filed part names in `message`.
 
 `imagine_scene {description}` asks your provider to generate one image
 from your own written description of the finished scene, returns it to
-you, and holds it as the session's scene target. From then on every
-FULL-FRAME PRODUCTION render -- not `quality:"draft"`, not any
-`mode:` render, not an `isolate` render -- also carries a `sceneTarget`
-block (`rmse`, `renderMeanR/G/B`, `targetMeanR/G/B`, `compareWidth`,
-`compareHeight`, `targetWidth`, `targetHeight`, `aspectMatched`, and
-the composite's dims) and returns a `[target | render]` side-by-side
-strip in place of the rendered frame. The three exclusions are honesty,
-not caution: draft ignores the scene's materials and lights, a `mode:`
-render paints identity or data colours rather than appearance, and an
-isolate render is a look at one part rather than at the scene the
-target describes. `rmse` is computed after both images are box-
-downscaled to a shared canvas whose width and height are each the
-smaller of the two, so neither side is ever enlarged; when the aspect
-ratios differ, `aspectMatched` is false and each axis was fitted
-independently. Nothing is gated on any of these numbers and no target
-is expected to be reproduced. `read_image` still returns this render's
-own frame, so the strip costs you nothing you cannot get back. Calling
+you, and holds it as the session's scene target. Your words are the
+SUBJECT; the host asks for the picture in a simple, flat-shaded
+3D-render style, so what comes back is something this renderer can
+actually approach rather than concept art it cannot.
+
+From then on every FULL-FRAME PRODUCTION render -- not
+`quality:"draft"`, not any `mode:` render, not an `isolate` render --
+carries a `sceneTarget` block (`imagined`, `targetWidth`,
+`targetHeight`, `composite`, and the composite's dims), and any such
+render you pass `imageMaxEdge` to shows that target ABOVE your render
+in one picture, separated by a grey rule, in place of the rendered
+frame on its own. The render half is exactly the size the frame alone
+would have been, so looking at the target costs you no resolution. The
+three exclusions are honesty, not caution: draft ignores the scene's
+materials and lights, a `mode:` render paints identity or data colours
+rather than appearance, and an isolate render is a look at one part
+rather than at the scene the target describes.
+
+**There is no score, deliberately.** No RMSE, no similarity number, no
+per-channel means -- comparing the two pictures is your job, not a
+metric's. An earlier version of this mechanism did report an RMSE over
+the full frame; because that number is dominated by large flat areas,
+the only way to move it is global exposure, emissive scale and light
+power, so it rewarded cranking brightness and never rewarded a better
+shape. Look at the two images and ask what is structurally different:
+which forms are missing, which are the wrong shape, what is in the
+wrong place. Nothing is gated on the target and no reproduction is
+expected -- it is a reminder of what you set out to make, not a
+specification. `read_image` still returns this render's own frame, so
+the composite costs you nothing you cannot get back. Calling
 `imagine_scene` again replaces the target. On a provider without image
 generation the call returns `ok:false` with a plain statement and
 nothing else changes.

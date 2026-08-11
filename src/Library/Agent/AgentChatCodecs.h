@@ -889,7 +889,7 @@ namespace RISE
 		//! The image model id this build will ask `providerName` for --
 		//! the compiled-in default, overridden by an environment variable
 		//! so a hand test can retarget a model without recompiling:
-		//!   gemini -> RISE_IMAGE_MODEL_GEMINI (default "gemini-3.6-flash-image")
+		//!   gemini -> RISE_IMAGE_MODEL_GEMINI (default "gemini-3.1-flash-image")
 		//!   openai -> RISE_IMAGE_MODEL_OPENAI (default "gpt-image-1")
 		//! Empty string for a provider with no capability.  The env read
 		//! is CONFIG, not a credential (the same distinction AgentChatLoop's
@@ -897,8 +897,41 @@ namespace RISE
 		//! ever read from the environment here.
 		std::string ChatImageGenerationModelId( const std::string& providerName );
 
+		//! Arc 77 Phase 2b (2026-08-11): the host-side STYLE directive
+		//! appended to every image-generation prompt, so the generated
+		//! target is something a path tracer driving SDF primitives can
+		//! actually approach.
+		//!
+		//! WHY IT EXISTS.  Phase 2 forwarded the model's description
+		//! verbatim and providers returned cinematic concept art --
+		//! painterly texture, volumetric god-rays, photographic depth of
+		//! field.  A target the renderer cannot get near shows a
+		//! difference on every render and never one the model can close,
+		//! which is the opposite of a progress-check.  The directive asks
+		//! for plain matte flat shading, simple geometric forms, neutral
+		//! even lighting, a plain background, and no painterly /
+		//! photographic / textual embellishment.
+		//!
+		//! IT CONSTRAINS STYLE ONLY.  The model's description remains the
+		//! SUBJECT, unaltered and first -- the imagining stays the model's
+		//! act.  Overridable wholesale by RISE_IMAGE_STYLE_PROMPT (config,
+		//! not a credential, same read as the model/endpoint overrides
+		//! above); an unset or empty value keeps the compiled-in default.
+		std::string ChatImageStyleDirective();
+
+		//! The exact prompt string sent to a provider for `description`:
+		//! the description verbatim, a blank line, then
+		//! ChatImageStyleDirective().  Exposed (rather than left inline in
+		//! BuildImageGenerationRequest) so a test can pin the composition
+		//! order without building a request per provider.  Either half
+		//! being empty degrades to the other alone.
+		std::string ComposeImageGenerationPrompt( const std::string& description );
+
 		//! Build the POST that asks `providerName` for ONE image of
-		//! `prompt`.  `apiKey` rides in the provider's OWN auth header --
+		//! `prompt`.  `prompt` is the model's own DESCRIPTION; this
+		//! function composes it with the style directive above
+		//! (ComposeImageGenerationPrompt) before it reaches either
+		//! provider body, so the two cannot drift.  `apiKey` rides in the provider's OWN auth header --
 		//! the identical header name and sanitization the chat codec for
 		//! that provider uses (`x-goog-api-key` for Gemini, `Authorization:
 		//! Bearer` for OpenAI), never a query parameter, never a log.

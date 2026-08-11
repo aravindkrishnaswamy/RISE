@@ -6777,15 +6777,29 @@ static void TestToolOutcomeDisplay()
 		Check( e5.toolSummaries[0].outcomeLine == "96x96, luma 0.00",
 		       "T38g/G3b: a render WITHOUT a target block is unchanged" );
 
-		// Arc 77 Phase 2 (2026-08-11): the WHOLE-SCENE comparison line, under
-		// the same discipline -- a number, no verdict.
+		// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the whole-scene
+		// target line.  Phase 2 printed its RMSE here; that number is GONE
+		// from the payload (a tone metric that drove exposure cranking), so
+		// the line records only WHETHER the render was shown against the
+		// imagined scene -- the census fingerprint a human reading the
+		// transcript cannot otherwise reconstruct.
 		const ChatTranscriptEntry e6 = oneCallFlush( "render",
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
 			"\"meanR\":0,\"meanG\":0,\"meanB\":0,"
-			"\"sceneTarget\":{\"rmse\":0.3149,\"compareWidth\":96,\"compareHeight\":96}}}" );
-		Check( e6.toolSummaries[0].outcomeLine == "96x96, luma 0.00; render vs imagined scene: rmse 0.31",
-		       "T38g/Arc77: a scene-target comparison appends \"render vs imagined scene: rmse <2dp>\" "
-		       "-- a NUMBER, with no verdict word anywhere in it" );
+			"\"sceneTarget\":{\"imagined\":true,\"targetWidth\":512,\"targetHeight\":512,"
+			"\"composite\":true,\"compositeWidth\":192,\"compositeHeight\":386}}}" );
+		Check( e6.toolSummaries[0].outcomeLine == "96x96, luma 0.00; imagined-scene target shown",
+		       "T38g/Arc77 Phase 2b: a scene-target render appends \"imagined-scene target shown\" "
+		       "-- NO number at all, because the payload no longer has one to print" );
+
+		const ChatTranscriptEntry e7 = oneCallFlush( "render",
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"width\":96,\"height\":96,"
+			"\"meanR\":0,\"meanG\":0,\"meanB\":0,"
+			"\"sceneTarget\":{\"imagined\":true,\"targetWidth\":512,\"targetHeight\":512,"
+			"\"composite\":false}}}" );
+		Check( e7.toolSummaries[0].outcomeLine == "96x96, luma 0.00; imagined-scene target held",
+		       "T38g/Arc77 Phase 2b: and a render that asked for no image says the target is HELD "
+		       "-- the two are distinguishable in the transcript, which is what the census reads" );
 	}
 
 	// (g2) Arc 77 Phase 2 (2026-08-11): imagine_scene's three outcomes.
@@ -9728,7 +9742,12 @@ static void TestImageGenerationWireShapes()
 	       ChatImageGenerationModelId( "not-a-provider" ).empty(),
 	       "T50: an unrecognized provider name is simply NOT capable -- never a guessed endpoint" );
 
-	Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.6-flash-image",
+	// VERIFIED LIVE 2026-08-11: the account's image-capable generateContent
+	// model is gemini-3.1-flash-image; `gemini-3.6-flash-image` does not
+	// exist and 404'd on the first live imagine_scene.  Pinned so the two
+	// independently-versioned model lines (chat vs image) cannot be
+	// "modernised" into agreement by eye.
+	Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.1-flash-image",
 	       "T50: the gemini image model default" );
 	Check( ChatImageGenerationModelId( "openai" ) == "gpt-image-1",
 	       "T50: the openai image model default" );
@@ -9738,12 +9757,12 @@ static void TestImageGenerationWireShapes()
 		ChatHttpRequest req;
 		std::string err;
 		const bool built = BuildImageGenerationRequest(
-			"gemini", "gemini-3.6-flash-image", "SECRET-GEMINI-KEY",
+			"gemini", "gemini-3.1-flash-image", "SECRET-GEMINI-KEY",
 			"a brass orrery on a walnut desk", req, err );
 		Check( built && err.empty(), "T50: gemini image request builds" );
 		Check( req.url ==
 		       "https://generativelanguage.googleapis.com/v1beta/models/"
-		       "gemini-3.6-flash-image:generateContent",
+		       "gemini-3.1-flash-image:generateContent",
 		       "T50: gemini image generation rides the SAME generativelanguage generateContent "
 		       "surface the chat codec uses -- got: " + req.url );
 		bool sawKeyHeader = false, sawContentType = false;
@@ -9763,6 +9782,8 @@ static void TestImageGenerationWireShapes()
 		       "T50: the body asks for an IMAGE modality -- got: " + req.body );
 		Check( req.body.find( "a brass orrery on a walnut desk" ) != std::string::npos,
 		       "T50: and carries the model's description verbatim as the prompt text" );
+		Check( req.body.find( "flat-shaded" ) != std::string::npos,
+		       "T50/Phase 2b: with the host's style directive appended -- got: " + req.body );
 	}
 
 	// --- openai: the images endpoint, Bearer auth ----------------------
@@ -9786,6 +9807,58 @@ static void TestImageGenerationWireShapes()
 		       req.body.find( "\"n\":1" ) != std::string::npos &&
 		       req.body.find( "\"size\":\"1024x1024\"" ) != std::string::npos,
 		       "T50: the openai body carries model/n/size -- got: " + req.body );
+		Check( req.body.find( "a foggy harbour at dawn" ) != std::string::npos &&
+		       req.body.find( "flat-shaded" ) != std::string::npos,
+		       "T50/Phase 2b: and the SAME composed prompt as gemini -- description then style "
+		       "directive, built once so the two provider bodies cannot drift" );
+	}
+
+	//----------------------------------------------------------------------
+	// Phase 2b (2026-08-11): THE REACHABILITY WRAPPER.
+	//
+	// Phase 2 forwarded the description verbatim and providers answered with
+	// cinematic concept art -- painterly texture, god-rays, photographic
+	// depth of field -- which a path tracer driving SDF primitives cannot
+	// approach.  A target the renderer cannot get near shows a difference on
+	// every render and never one the model can close, which is the opposite
+	// of a progress-check.  These pin the two properties that matter: the
+	// model's words come FIRST and unaltered (the imagining stays its act),
+	// and a STYLE constraint follows.
+	//----------------------------------------------------------------------
+	{
+		const std::string directive = ChatImageStyleDirective();
+		Check( !directive.empty(), "T50/Phase 2b: there IS a compiled-in style directive" );
+		Check( directive.find( "flat-shaded" ) != std::string::npos &&
+		       directive.find( "neutral even lighting" ) != std::string::npos &&
+		       directive.find( "No painterly" ) != std::string::npos,
+		       "T50/Phase 2b: and it asks for a simple flat-shaded 3D-render look -- got: " +
+		       directive );
+
+		const std::string composed = ComposeImageGenerationPrompt( "a dragon over a canyon" );
+		Check( composed.compare( 0, 22, "a dragon over a canyon" ) == 0,
+		       "T50/Phase 2b MONEY ASSERTION: the model's own description comes FIRST and "
+		       "unaltered -- the subject is its imagining and the host only constrains style" );
+		Check( composed.find( directive ) != std::string::npos &&
+		       composed.size() > directive.size() + 22,
+		       "T50/Phase 2b: with the directive appended after it" );
+
+		// The override: config, not a credential.  Set, re-resolve, unset --
+		// so the rest of this binary sees the compiled-in default again.
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_STYLE_PROMPT", "Style: a rough pencil sketch." );
+#else
+		setenv( "RISE_IMAGE_STYLE_PROMPT", "Style: a rough pencil sketch.", 1 );
+#endif
+		Check( ChatImageStyleDirective() == "Style: a rough pencil sketch." &&
+		       ComposeImageGenerationPrompt( "x" ) == "x\n\nStyle: a rough pencil sketch.",
+		       "T50/Phase 2b: RISE_IMAGE_STYLE_PROMPT replaces the directive with no recompile" );
+#ifdef _WIN32
+		_putenv_s( "RISE_IMAGE_STYLE_PROMPT", "" );
+#else
+		unsetenv( "RISE_IMAGE_STYLE_PROMPT" );
+#endif
+		Check( ChatImageStyleDirective() == directive,
+		       "T50/Phase 2b: unsetting restores the compiled-in default" );
 	}
 
 	// --- an incapable provider refuses to build anything ---------------
@@ -9819,7 +9892,7 @@ static void TestImageGenerationWireShapes()
 #else
 		unsetenv( "RISE_IMAGE_MODEL_GEMINI" );
 #endif
-		Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.6-flash-image",
+		Check( ChatImageGenerationModelId( "gemini" ) == "gemini-3.1-flash-image",
 		       "T50: unsetting restores the compiled-in default" );
 	}
 
@@ -9888,7 +9961,8 @@ static void TestImageGenerationWireShapes()
 		renderCall.name = "render";
 		Check( ChatToolResultCarriesImage( renderCall,
 			       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true,"
-			       "\"sceneTarget\":{\"rmse\":0.3},\"png_base64\":\"QUJD\"}}" ),
+			       "\"sceneTarget\":{\"imagined\":true,\"composite\":true},"
+			       "\"png_base64\":\"QUJD\"}}" ),
 		       "T50: and a render carrying the scene-target composite needs no new entry -- "
 		       "`render` is already on the list and the composite uses the same field" );
 	}

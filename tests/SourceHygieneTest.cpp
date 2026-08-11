@@ -1327,17 +1327,38 @@ int main()
 					  "carry NO comparison, and a model expecting one there reads its absence as "
 					  "a broken result" },
 					{ "in place of the rendered frame",
-					  "does not state that the [target | render] strip REPLACES the frame as the "
-					  "call's image -- a model expecting its beauty frame back would misread the "
-					  "strip it gets" },
-					{ "each axis the smaller of the two, so neither is ever enlarged",
-					  "does not state the shared-canvas convention -- an RMSE whose resampling "
-					  "rule is unstated is a number a model cannot interpret across two renders "
-					  "of different sizes" },
-					{ "nothing is gated on them",
-					  "does not state that nothing is gated on the comparison numbers -- leaving "
-					  "that open invites optimizing the metric, the Goodhart failure the design "
-					  "forbids outright (sec 5.4/sec 8)" },
+					  "does not state that the composite REPLACES the frame as the call's "
+					  "image -- a model expecting its beauty frame back would misread the "
+					  "picture it gets" },
+					// ---- Phase 2b (2026-08-11).  Three pins that replace the
+					// shared-canvas/RMSE ones: the mechanism no longer reports
+					// any similarity number, the composite is now conditional
+					// on asking for an image, and the render half of it is
+					// size-guaranteed.  A surface that still promised an RMSE,
+					// or left the size contract unstated, would describe a
+					// mechanism this build does not have.
+					{ "any such render you ask an image of shows",
+					  "does not state that the composite rides only when the render asked for an "
+					  "inline image -- Phase 2b sizes it by imageMaxEdge, so a model told the "
+					  "picture arrives unconditionally would read its absence as a fault" },
+					{ "exactly the size the frame alone would have been",
+					  "does not state the size contract -- the measured Phase 2 failure was the "
+					  "model seeing its own render at HALF width inside a strip, less resolution "
+					  "to spot its own defects than with no target at all" },
+					{ "there is deliberately no similarity number",
+					  "does not state that there is NO score -- Phase 2 shipped an RMSE, a live "
+					  "run showed it is a tone metric that drove emissive/power cranking to a "
+					  "worse picture, and a surface that still advertises a number invites "
+					  "exactly the chase that was removed (sec 5.4/sec 8)" },
+					{ "nothing is gated on the target",
+					  "does not state that nothing is gated on the target -- leaving that open "
+					  "invites treating the imagined image as a reproduction spec, the Goodhart "
+					  "failure the design forbids outright (sec 5.4/sec 8)" },
+					{ "flat-shaded 3D-render style so it is something this renderer can actually approach",
+					  "does not state that the generated image is requested in a simple "
+					  "flat-shaded 3D-render style -- that host-side wrapper is why the target is "
+					  "reachable at all, and a model that believes its description went verbatim "
+					  "cannot reason about the picture it gets back" },
 					{ "Calling it again replaces this session's scene target",
 					  "does not state the re-imagine REPLACE semantics -- a model that believes "
 					  "targets accumulate cannot reason about which one a render measured against" },
@@ -1369,11 +1390,12 @@ int main()
 			       "/ optional-view schema, and the SAME render{target} comparison contract "
 			       "(isolate pairing, named vantages, shape-only IoU, composite-replaces-frame, "
 			       "overlay legend, nothing-is-gated, canvas-not-frame area fractions, and both "
-			       "omitted-field conditions) -- and, Arc 77 Phase 2, the SAME imagine_scene "
-			       "contract (description-required, generated-from-that-text, where the sceneTarget "
-			       "comparison lands and where it does NOT, strip-replaces-frame, the shared-canvas "
-			       "convention, nothing-is-gated, replace-on-re-imagine, and the "
-			       "capability-conditional refusal)" );
+			       "omitted-field conditions) -- and, Arc 77 Phase 2/2b, the SAME imagine_scene "
+			       "contract (description-required, generated-from-that-text, the flat-shaded "
+			       "3D-render style wrapper, where the sceneTarget block lands and where it does "
+			       "NOT, composite-replaces-frame and only when an image was asked for, the "
+			       "render-is-never-smaller size contract, NO similarity score, nothing-is-gated, "
+			       "replace-on-re-imagine, and the capability-conditional refusal)" );
 
 			// G3b (2026-08-10): THE FILL-FRACTION AND FIT PINS.
 			//

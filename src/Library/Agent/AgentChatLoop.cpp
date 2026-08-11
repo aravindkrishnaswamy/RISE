@@ -1296,7 +1296,7 @@ namespace RISE
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
 			//!                                                  (+ "; <part> vs sketch: iou <2dp>" on a G3b target comparison,
-			//!                                                   + "; render vs imagined scene: rmse <2dp>" on an Arc-77 scene-target one)
+			//!                                                   + "; imagined-scene target shown|held" on an Arc-77 scene-target render -- Phase 2b: no score, the composite IS the comparison)
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
 			//!   7b. name == "file_part_plan"                -> "<n> part(s): <part>=<construction>, ... (<k> sketch(es))" (G2; sketch count G3a)
 			//!   7c. name == "imagine_scene"                 -> "scene imagined (image received) <w>x<h>[, replaced previous]"
@@ -1444,18 +1444,23 @@ namespace RISE
 							line += "; " + tgt.get( "part" ).asString() + " vs sketch: iou " + iouBuf;
 						}
 					}
-					// Arc 77 Phase 2 (2026-08-11): the whole-scene comparison,
-					// same rule and same discipline as the sketch one above --
-					// a NUMBER, never a judgement, absent on every render that
-					// did not carry one, so the existing line shape is
-					// unchanged for any session that never imagined a scene.
+					// Arc 77 Phase 2 (2026-08-11), reshaped by Phase 2b: the
+					// whole-scene target.  Phase 2 printed its RMSE here; that
+					// number is GONE from the payload (it was a tone metric
+					// that drove exposure cranking -- see
+					// AgentRenderResult::sceneTargetApplied), so the line now
+					// records only WHETHER this render was shown against the
+					// imagined scene, which is the census fingerprint a human
+					// reading the transcript cannot otherwise reconstruct.
+					// Absent on every render that carried no target, so the
+					// existing line shape is unchanged for any session that
+					// never imagined a scene.
 					if( result.has( "sceneTarget" ) ) {
 						const JsonValue& st = result.get( "sceneTarget" );
-						if( st.isObject() && st.has( "rmse" ) ) {
-							char rmseBuf[32];
-							std::snprintf( rmseBuf, sizeof( rmseBuf ), "%.2f", st.get( "rmse" ).asNumber() );
-							line += "; render vs imagined scene: rmse ";
-							line += rmseBuf;
+						if( st.isObject() && st.has( "imagined" ) ) {
+							line += st.get( "composite" ).asBool( false )
+								? "; imagined-scene target shown"
+								: "; imagined-scene target held";
 						}
 					}
 					return TruncateForOutcome( line, 140 );

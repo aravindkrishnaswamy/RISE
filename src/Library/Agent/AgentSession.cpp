@@ -14208,14 +14208,30 @@ namespace RISE
 				return EncodeLinearPassthroughPng_( pels, w, h );
 			}
 
-			//! Format one double as a fixed 4-decimal fact -- the same
-			//! precision compare_to_reference's RMSE summary prints, so the
-			//! two numbers read at the same scale.
-			std::string SceneTargetFact4dp_( double v )
+			//! Arc 77 Phase 2b (2026-08-11): the dimensions
+			//! InMemoryRasterizerOutput::ToPngDownscaled would produce for a
+			//! `srcW`x`srcH` frame at `maxEdge` -- the SAME never-upscale rule,
+			//! the SAME single scale factor applied to both axes with the SAME
+			//! std::round.  Duplicated (not called) because that function
+			//! encodes a PNG from the live sink, while the scene-target
+			//! composite must size a tile cut from THIS render's own bytes; the
+			//! two must agree exactly, which is what makes "the render is never
+			//! shown smaller than it would have been without a scene target" a
+			//! provable statement rather than an intention.  A test pins the
+			//! equality against a real ReadImage(maxEdge) call.
+			void FrameDimsAtMaxEdge_( unsigned int srcW, unsigned int srcH, unsigned int maxEdge,
+			                          unsigned int& outW, unsigned int& outH )
 			{
-				char buf[32];
-				std::snprintf( buf, sizeof( buf ), "%.4f", v );
-				return std::string( buf );
+				outW = srcW;
+				outH = srcH;
+				if( srcW == 0 || srcH == 0 || maxEdge == 0 ) return;
+				const unsigned int longEdge = ( srcW >= srcH ) ? srcW : srcH;
+				if( longEdge <= maxEdge ) return;
+				const double scale = static_cast<double>( maxEdge ) / static_cast<double>( longEdge );
+				outW = static_cast<unsigned int>( std::round( scale * srcW ) );
+				outH = static_cast<unsigned int>( std::round( scale * srcH ) );
+				if( outW < 1 ) outW = 1;
+				if( outH < 1 ) outH = 1;
 			}
 		}
 
@@ -14861,10 +14877,10 @@ namespace RISE
 				mImageGenerator.modelId + " generated one " + std::to_string( storeW ) + "x" +
 				std::to_string( storeH ) + " image from your description, returned with this call and "
 				"held as this session's scene target. From now on every full-frame production render "
-				"(not draft, not a mode: render, not an isolate render) also reports `sceneTarget`: "
-				"RMSE and per-channel means of that render against this image, and returns a "
-				"[target | render] side-by-side strip in place of the frame. Those are measurements "
-				"only -- nothing is gated on them and no value is required. Calling imagine_scene "
+				"(not draft, not a mode: render, not an isolate render) reports `sceneTarget`, and any "
+				"such render you ask an image of shows this target ABOVE your render in one picture, at "
+				"the same render size you would have got anyway. There is no score and nothing is "
+				"gated: look at the two and decide for yourself what to change. Calling imagine_scene "
 				"again replaces this target.";
 			if( out.replacedPreviousTarget )
 				out.message += " This replaced the scene target imagined earlier in this session.";
@@ -14894,112 +14910,118 @@ namespace RISE
 				target->rgb.size() != static_cast<std::size_t>( target->width ) * target->height * 3 )
 				return;
 
+			// THE FACTS, and there are only these.  Phase 2b deleted the RMSE
+			// and the six per-channel means that used to be computed here --
+			// see AgentRenderResult::sceneTargetApplied for the measured
+			// reason (a tone metric fed a tone-chasing edit loop and produced
+			// a worse picture).  What is left cannot be chased: a target
+			// exists, and it is this many pixels.  Do not add a number back.
+			rr.sceneTargetApplied = true;
+			rr.sceneTargetWidth   = target->width;
+			rr.sceneTargetHeight  = target->height;
+
+			// No inline image was requested, so there is nothing to compose:
+			// the caller gets the facts and, exactly as before this mechanism
+			// existed, no bytes.
+			if( params.imageMaxEdge == 0 ) return;
+
 			std::vector<unsigned char> renderRgb;
 			unsigned int rw = 0, rh = 0;
 			std::string derr;
 			if( !DecodeReferencePngToRgb8_( rr.png.data(), rr.png.size(), renderRgb, rw, rh, derr ) ) {
-				rr.message += " (scene-target comparison not performed: this render's image could not "
-				              "be decoded -- " + derr + ")";
+				rr.message += " (scene target: the composite was not built -- this render's image could "
+				              "not be decoded: " + derr + ")";
 				return;
 			}
 
-			// THE SHARED CANVAS: the per-axis MINIMUM, so neither side is ever
-			// upscaled.  A differing aspect ratio makes this a non-uniform
-			// resample; that is reported as a fact rather than hidden.
-			const unsigned int cw = ( rw < target->width )  ? rw : target->width;
-			const unsigned int ch = ( rh < target->height ) ? rh : target->height;
-			if( cw == 0 || ch == 0 ) return;
-
-			std::vector<unsigned char> a, b;
-			if( !BoxDownscaleRgb8_( renderRgb, rw, rh, cw, ch, a ) ||
-				!BoxDownscaleRgb8_( target->rgb, target->width, target->height, cw, ch, b ) ) {
-				rr.message += " (scene-target comparison not performed: the render and the target could "
-				              "not be brought to a common size)";
+			// THE RENDER TILE IS THE WHOLE POINT OF PHASE 2b.  It is sized by
+			// the same rule ReadImage(imageMaxEdge) applies to the very same
+			// frame, so the render inside the composite is pixel-for-pixel as
+			// large as the plain frame this call would have returned with no
+			// scene target at all.  (The averaging differs in the last bit --
+			// ReadImage box-filters the sink's linear samples, this filters the
+			// encoded sRGB bytes -- but the DIMENSIONS, which is what the
+			// contract is about, are identical by construction.)
+			unsigned int tileW = 0, tileH = 0;
+			FrameDimsAtMaxEdge_( rw, rh, params.imageMaxEdge, tileW, tileH );
+			std::vector<unsigned char> tile;
+			if( tileW == 0 || tileH == 0 ||
+				!BoxDownscaleRgb8_( renderRgb, rw, rh, tileW, tileH, tile ) ) {
+				rr.message += " (scene target: the composite was not built -- this render's image could "
+				              "not be fitted to the requested size)";
 				return;
 			}
 
-			// The SAME RMSE formula compare_to_reference reports and the eval
-			// checker's compareToImage assertion uses, so the two numbers are
-			// directly comparable.  Reused as a FORMULA, deliberately not via
-			// that verb's reference REGISTRY -- SetReferenceImages is the
-			// grading-reference set and replacing it here would collide with
-			// an image_reconstruct scenario's own references.
-			const std::size_t nPixels = static_cast<std::size_t>( cw ) * ch;
-			double sumSq = 0.0;
-			double sumAR = 0.0, sumAG = 0.0, sumAB = 0.0;
-			double sumBR = 0.0, sumBG = 0.0, sumBB = 0.0;
-			for( std::size_t i = 0; i < nPixels; ++i ) {
-				const double ar = a[i*3+0] / 255.0, ag = a[i*3+1] / 255.0, ab = a[i*3+2] / 255.0;
-				const double br = b[i*3+0] / 255.0, bg = b[i*3+1] / 255.0, bb = b[i*3+2] / 255.0;
-				const double dr = ar - br, dg = ag - bg, db = ab - bb;
-				sumSq += dr*dr + dg*dg + db*db;
-				sumAR += ar; sumAG += ag; sumAB += ab;
-				sumBR += br; sumBG += bg; sumBB += bb;
+			// THE TARGET BAND, above.  Scaled to the tile's width when it is
+			// wider, and NEVER upscaled when it is narrower -- a narrower
+			// target is centred at its own size on a black band, keeping the
+			// "no interpolation invents detail" rule this mechanism has held
+			// since Phase 2.
+			unsigned int bandW = target->width;
+			unsigned int bandH = target->height;
+			if( bandW > tileW ) {
+				const double s = static_cast<double>( tileW ) / static_cast<double>( bandW );
+				bandW = tileW;
+				bandH = static_cast<unsigned int>( std::round( s * static_cast<double>( target->height ) ) );
+				if( bandH < 1 ) bandH = 1;
 			}
-			const double n = static_cast<double>( nPixels );
-			rr.sceneTargetRmse = std::sqrt( sumSq / ( n * 3.0 ) );
-			rr.sceneTargetRenderMeanR = sumAR / n;
-			rr.sceneTargetRenderMeanG = sumAG / n;
-			rr.sceneTargetRenderMeanB = sumAB / n;
-			rr.sceneTargetMeanR = sumBR / n;
-			rr.sceneTargetMeanG = sumBG / n;
-			rr.sceneTargetMeanB = sumBB / n;
-			rr.sceneTargetCompareWidth  = cw;
-			rr.sceneTargetCompareHeight = ch;
-			rr.sceneTargetWidth  = target->width;
-			rr.sceneTargetHeight = target->height;
-			// Equal to within the half-pixel the integer dims can express --
-			// compared as a cross product so no division and no epsilon on a
-			// ratio is involved.
-			rr.sceneTargetAspectMatched =
-				( static_cast<std::uint64_t>( rw ) * target->height ==
-				  static_cast<std::uint64_t>( target->width ) * rh );
+			std::vector<unsigned char> band;
+			if( !BoxDownscaleRgb8_( target->rgb, target->width, target->height, bandW, bandH, band ) ) {
+				rr.message += " (scene target: the composite was not built -- the target could not be "
+				              "fitted to this render's width)";
+				return;
+			}
 
-			// The [target | render] strip.  Target FIRST, deliberately: it is
-			// what the model said it was making, so the eye reads intent then
-			// actual, left to right, the same order compare_to_reference's own
-			// strip is documented in.
+			// COMPOSE: target on top, a thin grey rule, render below.  Stacked
+			// rather than side by side precisely so the render tile keeps the
+			// full width; the rule exists because a dark target edge above a
+			// dark render edge is otherwise one continuous image.
 			{
-				const unsigned int compW = cw * 2;
-				std::vector<RISEColor> pels( static_cast<std::size_t>( compW ) * ch );
-				for( unsigned int y = 0; y < ch; ++y ) {
-					for( unsigned int x = 0; x < cw; ++x ) {
-						const std::size_t i = ( static_cast<std::size_t>( y ) * cw + x ) * 3;
-						pels[ static_cast<std::size_t>( y ) * compW + x ] =
-							RISEColor( b[i+0] / 255.0, b[i+1] / 255.0, b[i+2] / 255.0, 1.0 );
-						pels[ static_cast<std::size_t>( y ) * compW + cw + x ] =
-							RISEColor( a[i+0] / 255.0, a[i+1] / 255.0, a[i+2] / 255.0, 1.0 );
+				const unsigned int kRule = 2;
+				const unsigned int compW = tileW;
+				const unsigned int compH = bandH + kRule + tileH;
+				std::vector<RISEColor> pels( static_cast<std::size_t>( compW ) * compH,
+				                             RISEColor( 0.0, 0.0, 0.0, 1.0 ) );
+				const unsigned int bandX = ( tileW - bandW ) / 2;
+				for( unsigned int y = 0; y < bandH; ++y ) {
+					for( unsigned int x = 0; x < bandW; ++x ) {
+						const std::size_t i = ( static_cast<std::size_t>( y ) * bandW + x ) * 3;
+						pels[ static_cast<std::size_t>( y ) * compW + bandX + x ] =
+							RISEColor( band[i+0] / 255.0, band[i+1] / 255.0, band[i+2] / 255.0, 1.0 );
 					}
 				}
-				rr.sceneTargetCompositePng = EncodeLinearPassthroughPng_( pels, compW, ch );
+				for( unsigned int y = 0; y < kRule; ++y ) {
+					for( unsigned int x = 0; x < compW; ++x ) {
+						pels[ static_cast<std::size_t>( bandH + y ) * compW + x ] =
+							RISEColor( 0.5, 0.5, 0.5, 1.0 );
+					}
+				}
+				for( unsigned int y = 0; y < tileH; ++y ) {
+					for( unsigned int x = 0; x < tileW; ++x ) {
+						const std::size_t i = ( static_cast<std::size_t>( y ) * tileW + x ) * 3;
+						pels[ static_cast<std::size_t>( bandH + kRule + y ) * compW + x ] =
+							RISEColor( tile[i+0] / 255.0, tile[i+1] / 255.0, tile[i+2] / 255.0, 1.0 );
+					}
+				}
+				rr.sceneTargetCompositePng = EncodeLinearPassthroughPng_( pels, compW, compH );
 				if( !rr.sceneTargetCompositePng.empty() ) {
 					rr.sceneTargetCompositeWidth  = compW;
-					rr.sceneTargetCompositeHeight = ch;
+					rr.sceneTargetCompositeHeight = compH;
 				}
 			}
 
-			rr.sceneTargetApplied = true;
-
-			// The note.  NUMBERS ONLY -- no threshold, no verdict, no advice,
-			// for the same reason ApplyTargetComparison_'s note carries none.
-			std::string note = " (scene target: rmse " + SceneTargetFact4dp_( rr.sceneTargetRmse ) +
-				" vs the imagined scene, measured on a " + std::to_string( cw ) + "x" +
-				std::to_string( ch ) + " shared canvas";
-			if( !rr.sceneTargetAspectMatched )
-				note += " -- the render is " + std::to_string( rw ) + "x" + std::to_string( rh ) +
-					" and the target " + std::to_string( target->width ) + "x" +
-					std::to_string( target->height ) + ", so each was fitted per axis";
-			note += "; render mean rgb " + SceneTargetFact4dp_( rr.sceneTargetRenderMeanR ) + " " +
-				SceneTargetFact4dp_( rr.sceneTargetRenderMeanG ) + " " +
-				SceneTargetFact4dp_( rr.sceneTargetRenderMeanB ) +
-				", target mean rgb " + SceneTargetFact4dp_( rr.sceneTargetMeanR ) + " " +
-				SceneTargetFact4dp_( rr.sceneTargetMeanG ) + " " +
-				SceneTargetFact4dp_( rr.sceneTargetMeanB );
-			if( !rr.sceneTargetCompositePng.empty() )
-				note += "; the image returned with this call is the [target | render] strip, not the "
-				        "rendered frame on its own";
-			note += ")";
-			rr.message += note;
+			// The note.  FACTS ONLY -- and now not even a number to
+			// characterize, which is the point.
+			if( !rr.sceneTargetCompositePng.empty() ) {
+				rr.message += " (scene target: the image returned with this call is your imagined scene "
+					"above this render, separated by a grey rule -- the render half is the same size the "
+					"frame alone would have been. Look at the two and decide for yourself what to change; "
+					"read_image returns this render's own frame.)";
+			}
+			else {
+				rr.message += " (scene target: this session has an imagined scene target, but the "
+				              "composite could not be encoded, so the plain frame was returned.)";
+			}
 		}
 
 		// Model-B F2 slice S2a -------------------------------------------------

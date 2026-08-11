@@ -444,3 +444,65 @@ nested `inlineData`) — worked **first live attempt, no override needed**.
 Cross-provider read: both models imagine unprompted and both consult the
 comparison, at different rates (gemini 16, openai 4 — openai reads the
 document far more between edits).  The mechanism is not gemini-specific.
+## 15. Phase 2b — the corrective slice (2026-08-11)
+
+Phase 2 moved the headline metric off zero (§14) and the imagining half
+worked structurally — primitives 50 % → 25 %, the first-ever `sweep`
+declared for wings.  The **comparison** half did not.  Rendering the
+gemini run's result settled it: the 16 consultations were followed by 96
+position / 45 scale / 32 orientation / **23 emissive_scale / 10 power / 9
+radiance_scale / 6 scattering** edits, `emissive_scale` cranked to 25.0 and
+15.0, light power to 80/50 — a blown-out, washed-out frame the user judged
+**worse than the pre-Phase-2 baseline**.
+
+**Diagnosis, confirmed by looking at the render: RMSE over full-frame RGB is
+a tone metric, not a structure metric.**  It is dominated by large flat
+areas, so the only gradient it exposes to a path-traced SDF scene chasing a
+painterly AI image is global exposure / emission / fog.  Nothing in it can
+ever reward a better wing.  A REPRODUCTION metric was shipped to serve a
+PROGRESS-CHECK purpose — which §1 and §2 say was never the intent.  The
+artifact stays; only the comparison changed.
+
+Three changes, all landed:
+
+1. **No score, anywhere.**  `rmse` and the six per-channel means are gone
+   from the `sceneTarget` block, both tool descriptions, the transcript
+   outcome line and the skill.  What remains cannot be chased: `imagined`,
+   `targetWidth`/`targetHeight`, `composite`, `compositeWidth`/`Height`.
+   *Models act on facts, and a fact whose only movable axis degrades the
+   picture is worse than no fact.*  The composite IMAGE is the comparison —
+   a vision model can judge two pictures side by side without a number.
+   (The RMSE machinery itself is untouched; `compare_to_reference` and the
+   eval grader still use it, where a host-registered reference genuinely IS
+   a reproduction spec.)
+2. **The render is never shown smaller.**  Phase 2's `[target | render]`
+   strip REPLACED the frame, so the model saw its own scene at half of an
+   already-shrunken canvas.  The composite is now **target stacked ABOVE
+   the render**, on a canvas exactly as wide as the frame the same call
+   would have returned — same `imageMaxEdge`, same never-upscale rule,
+   pinned in a test against a real `ReadImage(maxEdge)`.  Consequence: the
+   composite exists only when an inline image was asked for; a render that
+   wanted no picture gets the facts and no bytes, exactly as before the
+   mechanism existed.  The exactly-one-`png_base64` discipline is unchanged
+   (an encode failure now falls back to the plain frame rather than
+   returning nothing).
+3. **The target is reachable.**  The host appends a fixed STYLE directive
+   to the model's description — plain matte flat shading, simple geometric
+   forms, neutral even lighting, plain background, no painterly texture, no
+   photographic lens effects, no text (`Agent::ChatImageStyleDirective`,
+   overridable by `RISE_IMAGE_STYLE_PROMPT`).  The description remains the
+   SUBJECT and comes first, unaltered: the imagining stays the model's act,
+   only the rendering style is constrained.  Both tool surfaces state this
+   factually.
+
+Unchanged by this slice: the per-part sketch comparison (§5) — it measures
+structure and is reachable — plus the part-plan gate, the imagine
+requirement, disarm-on-provider-failure, the spend cap, and all
+capability/credential handling.
+
+**The law this refines.**  §14 established that *a fact attached to a call
+the model already makes is acted on*.  Phase 2b adds the other half: *which*
+fact decides what the acting looks like.  An attached fact is not free — it
+selects the axis the model will move.  Attaching the wrong one does not
+merely fail to help; it actively steers, and it steered this run into a
+worse picture than no mechanism at all.
