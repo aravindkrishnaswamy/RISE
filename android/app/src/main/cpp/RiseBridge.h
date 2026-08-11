@@ -60,10 +60,14 @@ public:
                     const std::string& logFile,
                     int                threadCount);
 
-    // Set the Kotlin-side RiseCallback that will receive onProgress /
+    // Install the Kotlin-side RiseCallback that will receive onProgress /
     // onRegionInvalidated / onSceneReady / onLog. Held as a JNI global ref.
-    // Passing nullptr detaches and releases the current callback.
-    void setCallback(JNIEnv* env, jobject kotlinCallback);
+    // Replacing an owner waits for any blocking scene operation and stops its
+    // viewport before returning the new nonzero ownership token.
+    uint64_t setCallback(JNIEnv* env, jobject kotlinCallback);
+    // Release the callback and viewport only when ownerToken still names the
+    // installed owner. A delayed teardown from an old ViewModel is a no-op.
+    void clearCallback(JNIEnv* env, uint64_t ownerToken);
 
     // Tear down any previous job and parse the scene. Returns false on
     // parse error.
@@ -316,6 +320,12 @@ public:
     void onViewportFramePainted();
 
 private:
+    enum class DisplaySource : uint8_t {
+        None,
+        Production,
+        Interactive,
+    };
+
     void teardownJob();
     void writeGlobalOptionsFile(const std::string& path, int threadCount);
 
@@ -387,7 +397,7 @@ private:
     mutable std::mutex m_sceneLifecycleMutex;
     RISE::IJobPriv*    m_job = nullptr;
     std::atomic<bool>  m_cancel{false};
-    std::atomic<bool>  m_productionRenderActive{false};
+    std::atomic<DisplaySource> m_displaySource{DisplaySource::None};
 
     // ETA estimator, read from the UI thread and written from progress
     // callbacks on worker threads.
@@ -403,7 +413,7 @@ private:
     uint64_t           m_fbGeneration = 0;
 
     // JNI global ref to the Kotlin RiseCallback. Held by the bridge;
-    // released in setCallback(nullptr) or ~RiseBridge.  Guarded by
+    // conditionally released by clearCallback(owner) or ~RiseBridge. Guarded by
     // m_kotlinCallbackMutex (L4 round-5 P1-A): worker threads from
     // the rasterizer pool fire callbacks (onProgressTick / onLogLine
     // / renderProductionVFS / writeDirtyRegion / ensureFramebuffer)
@@ -417,6 +427,8 @@ private:
     // bridge; they post Compose state updates and return.
     mutable std::mutex m_kotlinCallbackMutex;
     jobject m_kotlinCallback = nullptr;
+    uint64_t m_kotlinCallbackOwner = 0u;
+    uint64_t m_nextKotlinCallbackOwner = 1u;
 
     // Snapshots of init config so global.options regeneration is possible
     // on subsequent calls (not currently wired to UI).

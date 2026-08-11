@@ -9,7 +9,7 @@
 //  found" sentinel and then asserts `abs(x - K) < eps` therefore silently
 //  PASSES even when the lookup failed -- a false-green that hid a real
 //  bug THREE times during the snapshot/transaction work (see
-//  docs/skills/red-proof-and-test-integrity.md).
+//  docs/skills/write-highly-effective-tests.md, "RED proof").
 //
 //  As of 2026-07-29 every macOS configuration also passes
 //  -fno-finite-math-only, so NaN/Inf comparisons evaluate correctly again
@@ -477,7 +477,7 @@ int main()
 	Check( offenders.empty(),
 	       "no -ffast-math-foldable NaN/Inf sentinels in tests/ (use a finite "
 	       "poison or an explicit existence Check; see docs/skills/"
-	       "red-proof-and-test-integrity.md)" );
+	       "write-highly-effective-tests.md, RED proof)" );
 
 	// File-output type selection is compiled under three independent optional
 	// encoder macros.  Every unavailable arm must reject at the authored-type
@@ -1057,6 +1057,8 @@ int main()
 		const std::string androidViewportPane = slurp(
 			repoRoot/"android"/"app"/"src"/"main"/"java"/"com"/"risegfx"/
 			"android"/"ui"/"ViewportPane.kt");
+		const std::string androidManifest = slurp(
+			repoRoot/"android"/"app"/"src"/"main"/"AndroidManifest.xml");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
 			riseBridge.find("byte-for-byte at EV=0") == std::string::npos &&
@@ -1089,7 +1091,9 @@ int main()
 		const std::string androidRasterize = braceBody(
 			androidBridgeSource,"bool RiseBridge::rasterize(");
 		const std::string androidSetCallback = braceBody(
-			androidBridgeSource,"void RiseBridge::setCallback(");
+			androidBridgeSource,"uint64_t RiseBridge::setCallback(");
+		const std::string androidClearCallback = braceBody(
+			androidBridgeSource,"void RiseBridge::clearCallback(");
 		const std::string androidExposure = braceBody(
 			androidBridgeSource,"void RiseBridge::setViewExposureEV(");
 		const std::string androidToneCurve = braceBody(
@@ -1128,17 +1132,28 @@ int main()
 				std::string::npos &&
 			androidRasterize.find("lifecycleLock(m_sceneLifecycleMutex)") !=
 				std::string::npos &&
-			androidRasterize.find("m_productionRenderActive.store(true") !=
-				std::string::npos &&
 			androidSetCallback.find("lifecycleLock(m_sceneLifecycleMutex)") !=
-				std::string::npos,
-			"Android serializes process-wide native load/render and callback replacement" );
-		Check(androidExposure.find("m_productionRenderActive.load") !=
 				std::string::npos &&
+			androidSetCallback.find("stopViewport();") != std::string::npos &&
+			androidClearCallback.find("m_kotlinCallbackOwner != ownerToken") !=
+				std::string::npos &&
+			androidClearCallback.find("stopViewport();") != std::string::npos &&
+			androidRenderViewModel.find("callbackOwnerFuture.get()") !=
+				std::string::npos &&
+			androidRenderViewModel.find("thenAcceptAsync") != std::string::npos &&
+			androidRenderViewModel.find("nativeClearCallback(ownerToken)") !=
+				std::string::npos &&
+			androidManifest.find("android:launchMode=\"singleTask\"") !=
+				std::string::npos,
+			"Android callback and viewport replacement is serialized, owner-checked, and off-main" );
+		Check(androidExposure.find("m_displaySource.load") !=
+				std::string::npos &&
+			androidExposure.find("m_viewportRunning.load") == std::string::npos &&
 			androidExposure.find("onInteractiveVFSFrameComplete") !=
 				std::string::npos &&
-			androidToneCurve.find("m_productionRenderActive.load") !=
+			androidToneCurve.find("m_displaySource.load") !=
 				std::string::npos &&
+			androidToneCurve.find("m_viewportRunning.load") == std::string::npos &&
 			androidViewportPane.find("state !is RenderState.Loading") !=
 				std::string::npos &&
 			androidViewportPane.find("state !is RenderState.Rendering") !=
@@ -1146,6 +1161,15 @@ int main()
 			androidViewportPane.find("state !is RenderState.Cancelling") !=
 				std::string::npos,
 			"Android transform refreshes preserve the active production display source" );
+		Check(androidNative.find("nativeSetCallback] are cheap") == std::string::npos &&
+			androidCallback.find("A tile has been written") == std::string::npos &&
+			androidRenderViewModel.find("recomposes as tiles arrive") ==
+				std::string::npos &&
+			androidRenderSmoke.find("expected at least one tile callback") ==
+				std::string::npos &&
+			androidRenderSmoke.find("production refresh must cover the completed framebuffer") !=
+				std::string::npos,
+			"Android public and test contracts describe full-frame cadence invalidation" );
 		Check(androidBridgeSource.find("onProductionVFSTileComplete") ==
 				std::string::npos &&
 			androidBridgeSource.find("halfOpenRoi") == std::string::npos &&

@@ -29,11 +29,13 @@ interface RiseCallback {
     fun onSceneReady(width: Int, height: Int)
 
     /**
-     * A tile has been written to the native framebuffer. The rectangle is
-     * packed into [packedRect] as ((top & 0xFFFF) << 48) |
+     * The native display framebuffer has been refreshed. Current production
+     * and interactive paths publish full-frame invalidations at display/frame
+     * cadence rather than one callback per render tile. The affected rectangle
+     * is packed into [packedRect] as ((top & 0xFFFF) << 48) |
      * ((left & 0xFFFF) << 32) | ((bottom & 0xFFFF) << 16) | (right & 0xFFFF),
-     * inclusive on all four edges. The UI side should merge these into a
-     * coarse dirty rect and invalidate at frame rate rather than per-tile.
+     * inclusive on all four edges. The UI side coalesces notifications and
+     * republishes at display cadence.
      */
     fun onRegionInvalidated(packedRect: Long)
 

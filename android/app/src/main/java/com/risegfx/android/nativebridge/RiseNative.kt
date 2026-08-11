@@ -9,8 +9,10 @@ import java.nio.ByteBuffer
  * class.
  *
  * Threading rules (mirror the plan file):
- *   - [nativeInit] and [nativeSetCallback] are cheap and safe from the main
- *     thread.
+ *   - [nativeInit] is cheap and safe from the main thread.
+ *   - [nativeSetCallback] and [nativeClearCallback] serialize callback and
+ *     viewport ownership with blocking scene operations. They can wait for a
+ *     prior render to unwind and MUST run on a background thread.
  *   - [nativeLoadScene] parses a scene (blocking I/O) — call from
  *     Dispatchers.IO.
  *   - [nativeRasterize] is BLOCKING for the entire duration of a render
@@ -56,11 +58,20 @@ object RiseNative {
     external fun nativeInit(projectRoot: String, logFile: String, threadCount: Int)
 
     /**
-     * Register (or clear with null) the [RiseCallback] that will receive
-     * progress, tile-dirty and log notifications. Held as a JNI global ref
-     * on the native side.
+     * Register the [RiseCallback] that will receive progress, full-frame
+     * display invalidations, and log notifications. Held as a JNI global ref
+     * on the native side. Returns a nonzero ownership token. Replacement
+     * stops the prior owner's viewport and can block until its load/render
+     * call has returned, so callers must invoke this off the main thread.
      */
-    external fun nativeSetCallback(callback: RiseCallback?)
+    external fun nativeSetCallback(callback: RiseCallback): Long
+
+    /**
+     * Stop and detach the viewport/callback only if [ownerToken] still owns
+     * the native bridge. A delayed teardown from an older ViewModel is a
+     * no-op. This can wait for an in-flight render and must run off-main.
+     */
+    external fun nativeClearCallback(ownerToken: Long)
 
     /**
      * Parse an ASCII RISE scene file. Blocking. Returns false on parse
@@ -129,7 +140,7 @@ object RiseNative {
     /**
      * Copy the current RGBA8 framebuffer into caller-owned direct storage.
      * Dimensions, generation, byte count, and pixels are captured under one
-     * native lock, so resize and tile writes cannot invalidate or tear a
+     * native lock, so resize and concurrent display refreshes cannot tear a
      * successful copy. [FramebufferSnapshot.copied] is false when [destination]
      * is not direct or is too small for the atomically captured dimensions.
      *
@@ -167,7 +178,7 @@ object RiseNative {
      * Adjust the view exposure compensation in EV stops and trigger an
      * immediate repaint at the new EV.  No rasterizer re-run; the
      * cached HDR FrameStore is re-rendered into the framebuffer
-     * through the same path tile callbacks use, then
+     * through the active display source's full-frame path, then
      * [RiseCallback.onRegionInvalidated] fires so Compose redraws.
      * Cheap enough to call on every drag tick of an exposure slider.
      */

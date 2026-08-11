@@ -102,6 +102,7 @@ RiseBridge::~RiseBridge() {
                 env->DeleteGlobalRef(m_kotlinCallback);
             }
             m_kotlinCallback = nullptr;
+            m_kotlinCallbackOwner = 0u;
         }
     }
 }
@@ -179,27 +180,56 @@ void RiseBridge::initialize(const std::string& projectRoot,
          projectRoot.c_str(), logFile.c_str(), m_threadCount);
 }
 
-void RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
-    if (!env) return;
+uint64_t RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
+    if (!env || !kotlinCallback) return 0u;
     // ViewModel replacement can happen while a blocking JNI load/render call
     // is still unwinding. Wait for that process-wide lifecycle before
-    // replacing the callback, then serialize the global-ref swap against
-    // worker-thread CallVoidMethod sites.
+    // replacing the callback. A live viewport belongs to the old callback;
+    // stop it before retargeting so its frames can never reach the new owner.
     std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    stopViewport();
+    m_displaySource.store(DisplaySource::None,std::memory_order_release);
     std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
     if (m_kotlinCallback) {
         env->DeleteGlobalRef(m_kotlinCallback);
         m_kotlinCallback = nullptr;
     }
-    if (kotlinCallback) {
-        m_kotlinCallback = env->NewGlobalRef(kotlinCallback);
+    m_kotlinCallback = env->NewGlobalRef(kotlinCallback);
+    if (!m_kotlinCallback) {
+        m_kotlinCallbackOwner = 0u;
+        return 0u;
     }
+    m_kotlinCallbackOwner = m_nextKotlinCallbackOwner++;
+    if (m_nextKotlinCallbackOwner == 0u) m_nextKotlinCallbackOwner = 1u;
+    return m_kotlinCallbackOwner;
+}
+
+void RiseBridge::clearCallback(JNIEnv* env, uint64_t ownerToken) {
+    if (!env || ownerToken == 0u) return;
+    // Keep the token check and viewport teardown in the same lifecycle
+    // transaction as replacement. A delayed ViewModel teardown cannot stop a
+    // newer owner's viewport or delete its global reference.
+    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    {
+        std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+        if (m_kotlinCallbackOwner != ownerToken) return;
+    }
+    stopViewport();
+    m_displaySource.store(DisplaySource::None,std::memory_order_release);
+    std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+    if (m_kotlinCallbackOwner != ownerToken) return;
+    if (m_kotlinCallback) {
+        env->DeleteGlobalRef(m_kotlinCallback);
+        m_kotlinCallback = nullptr;
+    }
+    m_kotlinCallbackOwner = 0u;
 }
 
 void RiseBridge::teardownJob() {
     // Tear down viewport (which holds rasterizer/caster references back into
     // the job) BEFORE releasing the job itself.  Otherwise we'd leak.
     stopViewport();
+    m_displaySource.store(DisplaySource::None,std::memory_order_release);
 
     if (m_job) {
         // L4d: drop the rasterizer's VFS reference before destroying
@@ -287,11 +317,6 @@ bool RiseBridge::rasterize() {
     // BLOCKING. Library spawns its own pthread worker pool, dispatches tiles,
     // joins on completion. Tile callbacks fire from the workers; cancellation
     // is via the progress callback return value.
-    m_productionRenderActive.store(true,std::memory_order_release);
-    struct RenderActiveReset {
-        std::atomic<bool>& active;
-        ~RenderActiveReset() { active.store(false,std::memory_order_release); }
-    } renderActiveReset{m_productionRenderActive};
     const bool ok = m_job->Rasterize();
     LOGI("rasterize: returned %d", ok ? 1 : 0);
     return ok;
@@ -353,7 +378,7 @@ void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
     }
     if (fired) {
         // L4 round-5 P1-A — hold m_kotlinCallbackMutex across
-        // CallVoidMethod so a concurrent setCallback(null) on the
+        // CallVoidMethod so a concurrent clearCallback(owner) on the
         // UI thread can't DeleteGlobalRef the jobject mid-call.
         std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
         if (m_kotlinCallback) {
@@ -401,6 +426,8 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
             }
         }
         ++m_fbGeneration;
+        m_displaySource.store(DisplaySource::Interactive,
+                              std::memory_order_release);
     }
 
     {
@@ -518,11 +545,13 @@ void RiseBridge::renderProductionVFS(bool nonBlocking) {
             m_framebuffer, static_cast<size_t>(W) * 4,
             RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
         ++m_fbGeneration;
+        m_displaySource.store(DisplaySource::Production,
+                              std::memory_order_release);
     }
 
     // Notify Kotlin that the full image changed.
     // L4 round-5 P1-A — guard the global ref against a concurrent
-    // setCallback(null) UAF.
+    // clearCallback(owner) UAF.
     {
         std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
         if (m_kotlinCallback) {
@@ -632,6 +661,8 @@ void RiseBridge::onInteractiveVFSFrameComplete() {
             m_framebuffer, static_cast<size_t>(W) * 4,
             RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
         ++m_fbGeneration;
+        m_displaySource.store(DisplaySource::Interactive,
+                              std::memory_order_release);
     }
 
     // Full-image dirty notification — interactive always emits the
@@ -656,22 +687,30 @@ void RiseBridge::onInteractiveVFSFrameComplete() {
 
 void RiseBridge::setViewExposureEV(double ev) {
     m_viewExposureEV.store(ev);
-    if (m_productionRenderActive.load(std::memory_order_acquire) ||
-        !m_viewportRunning.load(std::memory_order_acquire)) {
-        renderProductionVFS();
-    } else {
-        onInteractiveVFSFrameComplete();
+    switch (m_displaySource.load(std::memory_order_acquire)) {
+        case DisplaySource::Production:
+            renderProductionVFS();
+            break;
+        case DisplaySource::Interactive:
+            onInteractiveVFSFrameComplete();
+            break;
+        case DisplaySource::None:
+            break;
     }
 }
 
 void RiseBridge::setViewToneCurve(int curve) {
     // L5e — same lifecycle and active-display selection as exposure.
     m_viewToneCurve.store(curve);
-    if (m_productionRenderActive.load(std::memory_order_acquire) ||
-        !m_viewportRunning.load(std::memory_order_acquire)) {
-        renderProductionVFS();
-    } else {
-        onInteractiveVFSFrameComplete();
+    switch (m_displaySource.load(std::memory_order_acquire)) {
+        case DisplaySource::Production:
+            renderProductionVFS();
+            break;
+        case DisplaySource::Interactive:
+            onInteractiveVFSFrameComplete();
+            break;
+        case DisplaySource::None:
+            break;
     }
 }
 
@@ -722,7 +761,7 @@ bool RiseBridge::onProgressTick(double progress, double total) {
     }
     {
         // L4 round-5 P1-A — guard against concurrent
-        // setCallback(null) UAF on the JNI global ref.  This is the
+        // clearCallback(owner) UAF on the JNI global ref. This is the
         // hottest call site (rasterizer fires onProgress hundreds
         // of times per render) so we want minimum lock time, but
         // dropping the lock around CallVoidMethod would re-open
@@ -767,7 +806,7 @@ int64_t RiseBridge::etaRemainingMs() const {
 void RiseBridge::onLogLine(int level, const char* message) {
     if (!message) return;
     // L4 round-5 P1-A — log lines fire from any thread; serialise
-    // jobject access against a concurrent setCallback(null).
+    // jobject access against a concurrent clearCallback(owner).
     std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
     if (!m_kotlinCallback) return;
     JNIEnv* env = getJniEnv();
@@ -1060,6 +1099,9 @@ void RiseBridge::stopViewport() {
     RISE::RISE_API_DestroySceneEditController(m_viewportController);
     m_viewportController = nullptr;
     releaseViewportLivePreview();
+    DisplaySource expected = DisplaySource::Interactive;
+    m_displaySource.compare_exchange_strong(expected,DisplaySource::None,
+                                            std::memory_order_acq_rel);
 }
 
 void RiseBridge::viewportSetTool(int t) {

@@ -83,8 +83,12 @@ JNIF(void, nativeInit)(JNIEnv* env, jobject /*thiz*/,
                            static_cast<int>(threadCount));
 }
 
-JNIF(void, nativeSetCallback)(JNIEnv* env, jobject /*thiz*/, jobject kotlinCallback) {
-    getBridge().setCallback(env, kotlinCallback);
+JNIF(jlong, nativeSetCallback)(JNIEnv* env, jobject /*thiz*/, jobject kotlinCallback) {
+    return static_cast<jlong>(getBridge().setCallback(env, kotlinCallback));
+}
+
+JNIF(void, nativeClearCallback)(JNIEnv* env, jobject /*thiz*/, jlong ownerToken) {
+    getBridge().clearCallback(env, static_cast<uint64_t>(ownerToken));
 }
 
 JNIF(jboolean, nativeLoadScene)(JNIEnv* env, jobject /*thiz*/, jstring jPath) {
