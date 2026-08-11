@@ -196,6 +196,29 @@ namespace
 		std::condition_variable condition_;
 	};
 
+	struct FileTransactionContentionWitness
+	{
+		static void Notify( void* context )
+		{
+			auto* witness = static_cast<FileTransactionContentionWitness*>(context);
+			{
+				std::lock_guard<std::mutex> lock(witness->mutex);
+				witness->observed = true;
+			}
+			witness->condition.notify_all();
+		}
+
+		bool Wait( const std::chrono::milliseconds timeout )
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			return condition.wait_for(lock,timeout,[this]() { return observed; });
+		}
+
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool observed = false;
+	};
+
 	// Same pattern shape as FrameEncoderTest, copied here because
 	// the two tests must share the test fixture: any drift between
 	// L2 input and L3 input would mask byte-equivalence bugs.
@@ -283,6 +306,7 @@ namespace
 		return changed.good();
 	}
 
+#ifndef NO_EXR_SUPPORT
 	RISECBOR64::Value ReplaceMapMember( const RISECBOR64::Value& map,
 		const std::string& name, const RISECBOR64::Value& replacement )
 	{
@@ -368,8 +392,6 @@ namespace
 		}
 		return std::string();
 	}
-
-#ifndef NO_EXR_SUPPORT
 	class DivergentEXREncoder :
 		public virtual IFrameEncoder,
 		public virtual Reference
@@ -417,7 +439,6 @@ namespace
 		IFrameEncoder& delegate_;
 		Mode mode_;
 	};
-#endif
 
 	bool ReplaceBytesAfter( std::vector<unsigned char>& bytes,
 		const std::string& marker, const std::string& from, const std::string& to )
@@ -589,6 +610,7 @@ namespace
 		}
 		return false;
 	}
+#endif
 
 	// Forward declaration — defined later in the namespace.
 	std::string MakeTempPathWithoutExt();
@@ -653,7 +675,7 @@ namespace
 	}
 
 	// Build a temp filename in the OS tmp dir.  Use a fixed prefix +
-	// random suffix per run to avoid collisions across parallel tests.
+	// process-ID suffix to avoid collisions across parallel test processes.
 	//
 	// The path returned here is ABSOLUTE ($TMPDIR on macOS is typically
 	// /var/folders/..., not "/tmp/").  EncodeViaShim below feeds this
@@ -806,6 +828,7 @@ namespace
 
 	void TestAllFormats()
 	{
+	#ifndef NO_PNG_SUPPORT
 		// PNG default
 		DiffOneCase( FileRasterizerOutput::PNG, 8, eColorSpace_sRGB,
 		             0.0, eDisplayTransform_None, eExrCompression_Piz, true,
@@ -820,7 +843,9 @@ namespace
 		DiffOneCase( FileRasterizerOutput::PNG, 16, eColorSpace_sRGB,
 		             0.0, eDisplayTransform_None, eExrCompression_Piz, true,
 		             "png", "PNG 16bpp" );
+	#endif
 
+	#ifndef NO_EXR_SUPPORT
 		// EXR PIZ
 		DiffOneCase( FileRasterizerOutput::EXR, 8, eColorSpace_Rec709RGB_Linear,
 		             0.0, eDisplayTransform_None, eExrCompression_Piz, true,
@@ -830,6 +855,7 @@ namespace
 		DiffOneCase( FileRasterizerOutput::EXR, 8, eColorSpace_Rec709RGB_Linear,
 		             0.0, eDisplayTransform_None, eExrCompression_Zip, true,
 		             "exr", "EXR ZIP" );
+	#endif
 
 		// HDR
 		DiffOneCase( FileRasterizerOutput::HDR, 8, eColorSpace_Rec709RGB_Linear,
@@ -842,9 +868,7 @@ namespace
 		             "rgbea", "RGBEA" );
 
 #ifndef NO_TIFF_SUPPORT
-		// TIFF — skipped under NO_TIFF_SUPPORT; the TIFFWriter is a
-		// stub that writes 0 bytes, so DiffOneCase's "shim wrote non-empty
-		// file" + "L2 produced non-empty bytes" Checks would fail.
+		// TIFF is registered only when TIFF support is compiled in.
 		DiffOneCase( FileRasterizerOutput::TIFF, 8, eColorSpace_sRGB,
 		             0.0, eDisplayTransform_None, eExrCompression_Piz, true,
 		             "tiff", "TIFF default" );
@@ -868,6 +892,7 @@ namespace
 
 	// Sanity: verify SetCameraExposureCompensationEV propagates to
 	// the FrameStore so encoders see it on the next frame.
+#ifndef NO_PNG_SUPPORT
 	void TestCameraExposurePropagation()
 	{
 		auto* img = new RasterImage_Template<RISEPel>(
@@ -1035,6 +1060,7 @@ namespace
 		std::remove( f7.c_str() );
 		safe_release( img );
 	}
+#endif
 
 	void TestLongOutputPattern()
 	{
@@ -1070,6 +1096,7 @@ namespace
 		safe_release(output);
 	}
 
+#ifndef NO_PNG_SUPPORT
 	void TestMultiFrameReuse()
 	{
 		// Two OutputImage calls on the same FileRasterizerOutput
@@ -1123,11 +1150,13 @@ namespace
 		safe_release( img2 );
 		safe_release( img1 );
 	}
+#endif
 
 	// Sanity: HDR formats must zero out cameraEV per
 	// FileRasterizerOutput.cpp:141 — verify by setting a
 	// non-zero camera EV and confirming EXR bytes match L2 with
 	// totalEV = 0.
+#ifndef NO_EXR_SUPPORT
 	void TestHDRZerosCameraEV()
 	{
 		auto* img = new RasterImage_Template<RISEPel>(
@@ -1167,6 +1196,7 @@ namespace
 		std::remove( fullPath.c_str() );
 		safe_release( img );
 	}
+#endif
 
 	FrameStore* MakeFireFidelityStore( const double cameraExposureEV = 0.0 )
 	{
@@ -2201,6 +2231,9 @@ namespace
 		bool concurrentB = false;
 		std::string concurrentErrorA;
 		std::string concurrentErrorB;
+		FileTransactionContentionWitness contention;
+		SetFileTransactionContentionHookForTests(
+			&FileTransactionContentionWitness::Notify,&contention);
 		std::thread writerA([&]() {
 			concurrentA = EncodeFrameStoreFileTransaction(*concurrentAStore,*encoderA,opts,
 				concurrentFile,concurrentErrorA);
@@ -2211,8 +2244,8 @@ namespace
 			concurrentB = EncodeFrameStoreFileTransaction(*concurrentBStore,*encoderB,opts,
 				concurrentFile,concurrentErrorB);
 		});
-		const bool writerBEnteredBeforeRelease =
-			encoderB->WaitUntilEntered(std::chrono::milliseconds(100));
+		const bool writerBContended = contention.Wait(std::chrono::milliseconds(2000));
+		SetFileTransactionContentionHookForTests(nullptr,nullptr);
 		encoderA->Allow();
 		writerA.join();
 		writerB.join();
@@ -2226,7 +2259,7 @@ namespace
 			concurrentBytes == referenceABytes && concurrentSidecar == referenceASidecar;
 		const bool whollyB = concurrentRead && referencesRead &&
 			concurrentBytes == referenceBBytes && concurrentSidecar == referenceBSidecar;
-		Check( writerAEntered && !writerBEnteredBeforeRelease && writerBEntered &&
+		Check( writerAEntered && writerBContended && writerBEntered &&
 			concurrentA && concurrentB && whollyA != whollyB &&
 			VerifyFireProvenanceEXR(concurrentBytes,concurrentSidecar,transactionError),
 			"[fire provenance] forced-overlap same-destination writes publish one distinguishable matched pair" );
@@ -2241,6 +2274,7 @@ namespace
 		std::remove(referenceBFile.c_str());
 		std::remove((referenceBFile+".provenance.cbor").c_str());
 
+	#ifndef NO_PNG_SUPPORT
 		const std::string pngBase = MakeTempPathWithoutExt()+"_fire_derivative";
 		const std::string pngFile = pngBase+".png";
 		const std::string pngSidecar = pngFile+".provenance.cbor";
@@ -2406,6 +2440,7 @@ namespace
 		std::remove((zeroCameraDerivativeFile+".provenance.cbor").c_str());
 		safe_release(cameraStore);
 		safe_release(zeroCameraStore);
+	#endif
 
 		const FrameStoreOutput::Metadata primaryBeforeDerivativeFailure = store->Meta();
 		const std::string failedDerivativeBase =
@@ -2434,12 +2469,14 @@ namespace
 				primaryBeforeDerivativeFailure.primaryArtifactFidelity,
 			"[fire provenance] failed display derivative preserves the finalized primary" );
 		std::filesystem::remove(failedDerivativeSidecar);
+	#ifndef NO_PNG_SUPPORT
 		std::remove(identityPng.c_str());
 		std::remove((identityPng+".provenance.cbor").c_str());
 		std::remove(zeroStrengthPng.c_str());
 		std::remove((zeroStrengthPng+".provenance.cbor").c_str());
 		std::remove(pngFile.c_str());
 		std::remove(pngSidecar.c_str());
+	#endif
 		std::remove(signedZeroFile.c_str());
 		std::remove((signedZeroFile+".provenance.cbor").c_str());
 		std::remove(halfFile.c_str());
@@ -3171,12 +3208,20 @@ int main()
 	std::cout << "----------------------------------------------------------------------\n";
 
 	TestAllFormats();
+	#ifndef NO_PNG_SUPPORT
 	TestCameraExposurePropagation();
+	#endif
+	#ifndef NO_EXR_SUPPORT
 	TestHDRZerosCameraEV();
+	#endif
+	#ifndef NO_PNG_SUPPORT
 	TestDenoiseDualWrite();
 	TestAnimationFrameNumbering();
+	#endif
 	TestLongOutputPattern();
+	#ifndef NO_PNG_SUPPORT
 	TestMultiFrameReuse();
+	#endif
 	TestFireFidelityProvenanceOutput();
 
 	std::cout << "----------------------------------------------------------------------\n";

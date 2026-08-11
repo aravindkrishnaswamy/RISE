@@ -129,6 +129,14 @@ namespace RISE
 			std::string& error
 			);
 
+		using FileTransactionContentionHook = void (*)(void* context);
+		//! Test instrumentation: observes an actual failed try-lock before a
+		//! file transaction blocks on the global publication mutex. Null clears.
+		void SetFileTransactionContentionHookForTests(
+			FileTransactionContentionHook hook,
+			void* context
+			);
+
 		//! Publish an already-closed display movie and its authoritative
 		//! frame-sequence provenance sidecar as one artifact transaction.
 		//! The temporary movie is consumed on success and removed on failure.

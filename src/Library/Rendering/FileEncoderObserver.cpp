@@ -208,6 +208,21 @@ namespace
 {
 	const char kFireAttributePrefix[] = "riseFireProv_";
 	std::mutex gFileTransactionMutex;
+	std::atomic<FileTransactionContentionHook> gFileTransactionContentionHook{nullptr};
+	std::atomic<void*> gFileTransactionContentionContext{nullptr};
+
+	std::unique_lock<std::mutex> AcquireFileTransactionLock()
+	{
+		std::unique_lock<std::mutex> lock(gFileTransactionMutex,std::defer_lock);
+		if( !lock.try_lock() ) {
+			const FileTransactionContentionHook hook =
+				gFileTransactionContentionHook.load(std::memory_order_acquire);
+			if( hook ) hook(gFileTransactionContentionContext.load(
+				std::memory_order_acquire));
+			lock.lock();
+		}
+		return lock;
+	}
 
 	RISECBOR64::Value TextArray( const std::vector<std::string>& values )
 	{
@@ -1891,6 +1906,14 @@ namespace
 	}
 }
 
+void RISE::Implementation::SetFileTransactionContentionHookForTests(
+	const FileTransactionContentionHook hook,
+	void* const context )
+{
+	gFileTransactionContentionContext.store(context,std::memory_order_release);
+	gFileTransactionContentionHook.store(hook,std::memory_order_release);
+}
+
 bool RISE::Implementation::StripFireProvenanceEXRAttributes(
 	const std::vector<unsigned char>& encoded,
 	std::vector<unsigned char>& stripped,
@@ -2044,7 +2067,7 @@ bool RISE::Implementation::PublishFireFrameSequenceFileTransaction(
 	const FireFrameSequenceArtifactValidator validateArtifact,
 	std::string& error )
 {
-	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
+	auto transactionLock = AcquireFileTransactionLock();
 	error.clear();
 	if( encodedFrameCount != frames.size() || frames.empty() ) {
 		error = "encoded movie frame count does not match the primary-link array";
@@ -2134,7 +2157,7 @@ bool RISE::Implementation::PublishUnprovenancedFileTransaction(
 	const std::string& artifactFilename,
 	std::string& error )
 {
-	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
+	auto transactionLock = AcquireFileTransactionLock();
 	error.clear();
 	RISECBOR64::Bytes artifactBytes;
 	if( !ReadArtifact(closedTemporaryArtifactFilename.c_str(),artifactBytes) ||
@@ -2175,7 +2198,7 @@ bool RISE::Implementation::EncodeFrameStoreFileTransaction(
 	std::string& error
 	)
 {
-	std::lock_guard<std::mutex> transactionLock(gFileTransactionMutex);
+	auto transactionLock = AcquireFileTransactionLock();
 	error.clear();
 	EncodeOpts transactionOpts;
 	if( !ResolveEffectiveEncoderOptions(encoder,opts,transactionOpts,error) ) return false;
