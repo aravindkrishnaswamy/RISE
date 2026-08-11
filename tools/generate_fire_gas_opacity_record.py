@@ -7,16 +7,23 @@ import argparse
 import hashlib
 import itertools
 import json
+import math
+import re
 from pathlib import Path
+from typing import Sequence
 
 from fire_gas_opacity import (
     PartitionSums, canonical_json_bytes, iter_hitran_lines,
-    planck_mean_wavenumber, sha256_file, species_spectrum, spectral_grid,
+    multilinear_value, planck_mean_wavenumber, sha256_file,
+    species_spectra_batch, spectral_grid, tensor_linear_derivative_certificate,
 )
-from generate_fire_optics_records import tabulated_spectrum
 
 
 SCHEMA = "rise-fire-gas-opacity-generator-input-v1"
+EXPECTED_MOLECULES = {"H2O": 1, "CO2": 2}
+PLACEHOLDER_CITATION = re.compile(
+    r"\b(?:pending|placeholder|tbd|todo|owner[- ]download|distributed with)\b",
+    re.IGNORECASE)
 
 
 def _is_digest(value: object) -> bool:
@@ -27,6 +34,29 @@ def _is_digest(value: object) -> bool:
 def _resolved(root: Path, text: str) -> Path:
     path = Path(text)
     return path if path.is_absolute() else root / path
+
+
+def generator_identity(paths: Sequence[Path] | None = None) -> str:
+    inventory = list(paths) if paths is not None else [
+        Path(__file__).resolve(),
+        Path(__file__).with_name("fire_gas_opacity.py").resolve(),
+    ]
+    digest = hashlib.sha256(b"rise-fire-gas-opacity-generator-inventory-v1\0")
+    for path in sorted(inventory, key=lambda item: item.name):
+        name = path.name.encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(name).to_bytes(8, "big"))
+        digest.update(name)
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def _concrete_citation(value: str) -> bool:
+    if len(value.strip()) < 24 or PLACEHOLDER_CITATION.search(value):
+        return False
+    return ("http://" in value or "https://" in value or "doi" in value.lower() or
+            re.search(r"\b(?:19|20)\d{2}\b", value) is not None)
 
 
 def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, Path]:
@@ -46,11 +76,16 @@ def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, P
         if (not isinstance(citations, list) or not citations or
                 any(not isinstance(value, str) or not value.strip() for value in citations)):
             raise ValueError(f"{field} must contain nonempty citations")
+        if status == "production_pinned" and any(
+                not _concrete_citation(value) for value in citations):
+            raise ValueError(f"{field} contains a pending or non-concrete citation")
     seen_species: set[str] = set()
     for source in manifest.get("sources", []):
         species = source.get("species")
-        if species not in {"H2O", "CO2"} or species in seen_species:
+        if species not in EXPECTED_MOLECULES or species in seen_species:
             raise ValueError("manifest must contain unique H2O and CO2 sources")
+        if int(source.get("molecule_number", 0)) != EXPECTED_MOLECULES[species]:
+            raise ValueError(f"{species} molecule number is not the pinned HITRAN identity")
         seen_species.add(species)
         files = source.get("files")
         if not isinstance(files, list) or not files:
@@ -84,6 +119,8 @@ def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, P
         if {key[1] for key in q_keys} != mass_keys:
             raise ValueError(f"{species} partition sums and isotopologue masses do not align")
         if status == "production_pinned":
+            if species == "CO2" and mass_keys != set(range(1, 13)):
+                raise ValueError("CO2 HITEMP2024 requires isotopologues 1 through 12")
             repo_root = Path(__file__).resolve().parent.parent
             local_lines = [_resolved(root, item["path"]).resolve() for item in files]
             if any(local == repo_root or repo_root in local.parents for local in local_lines):
@@ -114,19 +151,42 @@ def _partition_sums(source: dict, root: Path) -> PartitionSums:
         for item in source["partition_sums"]["files"])
 
 
-def _interpolation_certificate(gas_temperatures: list[float],
-                               radiation_temperatures: list[float],
-                               matrix: list[list[float]]) -> dict:
-    radiation = [tabulated_spectrum(radiation_temperatures, row) for row in matrix]
-    gas = [tabulated_spectrum(gas_temperatures,
-                              [matrix[row][column] for row in range(len(matrix))])
-           for column in range(len(radiation_temperatures))]
-    return {
-        "kind": "tensor_pchip_c1_v1",
-        "evaluation_order": "gas_temperature_then_radiation_temperature",
-        "radiation_temperature_rows": radiation,
-        "gas_temperature_columns": gas,
-    }
+def evaluate_species_planck_mean(table: dict, species_name: str,
+                                 self_mole_fraction: float,
+                                 gas_temperature_k: float,
+                                 radiation_temperature_k: float,
+                                 pressure_pa: float) -> float:
+    if (not math.isfinite(pressure_pa) or
+            pressure_pa != float(table.get("pressure_Pa", math.nan))):
+        raise ValueError("opacity pressure is out of domain")
+    species = next((entry for entry in table.get("species_tables", [])
+                    if entry.get("species") == species_name), None)
+    if species is None:
+        raise ValueError("opacity species record is missing")
+    axes = [table["self_broadening_mole_fractions"],
+            table["gas_temperatures_K"], table["radiation_temperatures_K"]]
+    certificate = tensor_linear_derivative_certificate(
+        axes, species["planck_mean_per_m_per_unit_species_mole_fraction"])
+    if certificate != species.get("planck_mean_interpolation"):
+        raise ValueError("opacity interpolation certificate does not bind the table")
+    return multilinear_value(
+        axes, species["planck_mean_per_m_per_unit_species_mole_fraction"],
+        [self_mole_fraction, gas_temperature_k, radiation_temperature_k])
+
+
+def evaluate_mixture_planck_mean(table: dict, h2o_mole_fraction: float,
+                                 co2_mole_fraction: float,
+                                 gas_temperature_k: float,
+                                 radiation_temperature_k: float,
+                                 pressure_pa: float) -> float:
+    fractions = (h2o_mole_fraction, co2_mole_fraction)
+    if (any(not math.isfinite(value) or value < 0.0 for value in fractions) or
+            sum(fractions) > 1.0):
+        raise ValueError("opacity composition is outside the air-balance simplex")
+    return sum(fraction * evaluate_species_planck_mean(
+        table, species, fraction, gas_temperature_k,
+        radiation_temperature_k, pressure_pa)
+               for fraction, species in zip(fractions, ("H2O", "CO2")))
 
 
 def generate(manifest_path: Path, input_root: Path | None) -> dict:
@@ -137,16 +197,30 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
     gas_temperatures = [float(value) for value in manifest["gas_temperatures_K"]]
     radiation_temperatures = [float(value) for value in
                               manifest["radiation_temperatures_K"]]
+    self_fractions = [float(value) for value in
+                      manifest["self_broadening_mole_fractions"]]
     if (len(gas_temperatures) < 2 or len(radiation_temperatures) < 2 or
             any(gas_temperatures[index] >= gas_temperatures[index + 1]
                 for index in range(len(gas_temperatures) - 1)) or
             any(radiation_temperatures[index] >= radiation_temperatures[index + 1]
-                for index in range(len(radiation_temperatures) - 1))):
+                for index in range(len(radiation_temperatures) - 1)) or
+            len(self_fractions) < 2 or self_fractions[0] != 0.0 or
+            self_fractions[-1] != 1.0 or
+            any(self_fractions[index] >= self_fractions[index + 1]
+                for index in range(len(self_fractions) - 1))):
         raise ValueError("temperature grids must contain increasing closed intervals")
     pressure_pa = float(manifest["pressure_Pa"])
+    grid_step = grid[1] - grid[0]
+    spectral_bin_edges = [grid[0] - 0.5 * grid_step,
+                          grid[-1] + 0.5 * grid_step]
+    if spectral_bin_edges[0] <= 0.0:
+        raise ValueError("spectral bins must have positive wavenumber edges")
     cutoff = float(manifest["line_wing_cutoff_cm-1"])
     convergence_factor = float(manifest["line_wing_convergence_factor"])
-    if convergence_factor <= 1.0:
+    maximum_grid_relative = float(manifest["maximum_planck_mean_grid_relative_error"])
+    maximum_wing_relative = float(manifest["maximum_planck_mean_wing_relative_error"])
+    if (convergence_factor <= 1.0 or maximum_grid_relative <= 0.0 or
+            maximum_wing_relative <= 0.0):
         raise ValueError("line-wing convergence factor must exceed one")
 
     species_tables = []
@@ -154,53 +228,95 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
         partition = _partition_sums(source, root)
         masses = {int(key): float(value) for key, value in
                   source["isotopologue_molar_masses_kg_per_mol"].items()}
-        spectra: list[list[float]] = []
-        means: list[list[float]] = []
-        line_counts: list[int] = []
-        expanded_line_counts: list[int] = []
+        all_spectra, all_counts, tail_bounds, center_means = species_spectra_batch(
+            _line_iterator(source, root), int(source["molecule_number"]), masses,
+            partition, grid, gas_temperatures, pressure_pa, self_fractions,
+            [cutoff, cutoff * convergence_factor], radiation_temperatures)
+        spectra = all_spectra[0]
+        expanded = all_spectra[1]
+        line_counts = all_counts[0]
+        expanded_line_counts = all_counts[1]
+        if (any(count <= 0 for row in line_counts for count in row) or
+                any(count <= 0 for row in expanded_line_counts for count in row)):
+            raise ValueError(f"{source['species']} archive contributes no lines to a table state")
+        means = [[[
+            planck_mean_wavenumber(grid, spectra[self_index][gas_index], temperature)
+            for temperature in radiation_temperatures
+        ] for gas_index in range(len(gas_temperatures))]
+                 for self_index in range(len(self_fractions))]
+        expanded_means = [[[
+            planck_mean_wavenumber(grid, expanded[self_index][gas_index], temperature)
+            for temperature in radiation_temperatures
+        ] for gas_index in range(len(gas_temperatures))]
+                          for self_index in range(len(self_fractions))]
         maximum_abs_sensitivity = 0.0
         maximum_relative_sensitivity = 0.0
-        for gas_temperature in gas_temperatures:
-            spectrum, count = species_spectrum(
-                _line_iterator(source, root), int(source["molecule_number"]), masses,
-                partition, grid, gas_temperature, pressure_pa, cutoff)
-            expanded, expanded_count = species_spectrum(
-                _line_iterator(source, root), int(source["molecule_number"]), masses,
-                partition, grid, gas_temperature, pressure_pa,
-                cutoff * convergence_factor)
-            for value, reference in zip(spectrum, expanded):
-                difference = abs(value - reference)
-                maximum_abs_sensitivity = max(maximum_abs_sensitivity, difference)
-                maximum_relative_sensitivity = max(
-                    maximum_relative_sensitivity,
-                    difference / max(abs(reference), 1.0e-300))
-            spectra.append(spectrum)
-            line_counts.append(count)
-            expanded_line_counts.append(expanded_count)
-            means.append([
-                planck_mean_wavenumber(grid, spectrum, temperature)
-                for temperature in radiation_temperatures
-            ])
-        visible_indices = [index for index, wn in enumerate(grid)
-                           if 1.0e7 / 780.0 <= wn <= 1.0e7 / 380.0]
+        for self_index in range(len(self_fractions)):
+            for gas_index in range(len(gas_temperatures)):
+                for value, reference in zip(
+                        spectra[self_index][gas_index],
+                        expanded[self_index][gas_index]):
+                    difference = abs(value - reference)
+                    maximum_abs_sensitivity = max(maximum_abs_sensitivity, difference)
+                    maximum_relative_sensitivity = max(
+                        maximum_relative_sensitivity,
+                        difference / max(abs(reference), 1.0e-300))
+        maximum_grid_abs = 0.0
+        maximum_grid_rel = 0.0
+        maximum_wing_mean_abs = 0.0
+        maximum_wing_mean_rel = 0.0
+        for self_index, self_rows in enumerate(means):
+            for gas_index, row in enumerate(self_rows):
+                for radiation_index, value in enumerate(row):
+                    reference = center_means[gas_index][radiation_index]
+                    difference = abs(value - reference)
+                    maximum_grid_abs = max(maximum_grid_abs, difference)
+                    maximum_grid_rel = max(maximum_grid_rel,
+                                           difference / max(abs(reference), 1.0e-300))
+                    wing_reference = expanded_means[self_index][gas_index][radiation_index]
+                    wing_difference = abs(value - wing_reference)
+                    maximum_wing_mean_abs = max(maximum_wing_mean_abs, wing_difference)
+                    maximum_wing_mean_rel = max(
+                        maximum_wing_mean_rel,
+                        wing_difference / max(abs(wing_reference), 1.0e-300))
+        if maximum_grid_rel > maximum_grid_relative:
+            raise ValueError(f"{source['species']} spectral grid fails its Planck-mean gate")
+        if maximum_wing_mean_rel > maximum_wing_relative:
+            raise ValueError(f"{source['species']} line-wing comparison fails its Planck-mean gate")
+        visible_indices = [
+            index for index, wn in enumerate(grid)
+            if (wn + 0.5 * grid_step >= 1.0e7 / 780.0 and
+                wn - 0.5 * grid_step <= 1.0e7 / 380.0)
+        ]
         visible_maximum = max(
-            (spectra[row][index] for row in range(len(spectra))
+            (gas_row[index] for self_rows in spectra for gas_row in self_rows
              for index in visible_indices), default=0.0)
         species_tables.append({
             "species": source["species"],
             "release": source["release"],
             "molecule_number": int(source["molecule_number"]),
             "line_counts_used": line_counts,
-            "kappa_per_m_per_mole_fraction": spectra,
-            "planck_mean_per_m_per_mole_fraction": means,
-            "planck_mean_interpolation": _interpolation_certificate(
-                gas_temperatures, radiation_temperatures, means),
-            "visible_380_780nm_maximum_per_m_per_mole_fraction": visible_maximum,
+            "kappa_bin_average_per_m_per_unit_species_mole_fraction": spectra,
+            "planck_mean_per_m_per_unit_species_mole_fraction": means,
+            "planck_mean_interpolation": tensor_linear_derivative_certificate(
+                [self_fractions, gas_temperatures, radiation_temperatures], means),
+            "visible_380_780nm_maximum_bin_average_per_m_per_unit_species_mole_fraction": visible_maximum,
+            "spectral_grid_discretization": {
+                "reference": "line-area-weighted Planck function evaluated at shifted line centers",
+                "maximum_absolute_planck_mean_m-1_per_unit_species_mole_fraction": maximum_grid_abs,
+                "maximum_relative_planck_mean": maximum_grid_rel,
+                "maximum_allowed_relative_planck_mean": maximum_grid_relative,
+            },
             "line_wing_sensitivity": {
                 "comparison_cutoff_cm-1": cutoff * convergence_factor,
                 "comparison_line_counts_used": expanded_line_counts,
+                "maximum_omitted_tail_probability_bound": max(
+                    value for rows in tail_bounds[0] for value in rows),
                 "maximum_absolute_m-1_per_mole_fraction": maximum_abs_sensitivity,
                 "maximum_relative": maximum_relative_sensitivity,
+                "maximum_absolute_planck_mean_m-1_per_unit_species_mole_fraction": maximum_wing_mean_abs,
+                "maximum_relative_planck_mean": maximum_wing_mean_rel,
+                "maximum_allowed_relative_planck_mean": maximum_wing_relative,
             },
             "input_files": [{"path": Path(item["path"]).name,
                              "sha256": item["sha256"]}
@@ -214,36 +330,40 @@ def generate(manifest_path: Path, input_root: Path | None) -> dict:
             },
         })
 
-    generator_paths = [Path(__file__).resolve(),
-                       Path(__file__).with_name("fire_gas_opacity.py").resolve()]
-    generator_digest = hashlib.sha256(
-        b"".join(path.read_bytes() for path in generator_paths)).hexdigest()
     payload = {
         "schema": "rise-fire-gas-opacity-table-v1",
         "record_status": ("synthetic_test_only" if manifest["synthetic"]
                           else "production_derived"),
         "synthetic": bool(manifest["synthetic"]),
         "pressure_Pa": pressure_pa,
-        "composition_basis": "m^-1 per species mole fraction at total pressure",
+        "composition_basis": "unit-species opacity times species mole fraction at total pressure",
         "composition_domain": {
             "H2O_mole_fraction": [0.0, 1.0],
             "CO2_mole_fraction": [0.0, 1.0],
             "simplex_constraint": "x_H2O+x_CO2<=1; balance is air broadener",
         },
-        "broadening_convention": ("air-broadened Voigt; gamma_air and pressure shift "
-                                  "at total pressure; linear additive species opacity"),
+        "self_broadening_mole_fractions": self_fractions,
+        "broadening_convention": ("linear gamma_air/gamma_self blend at the species mole "
+                                  "fraction; HITRAN n_air exponent applies to both terms; "
+                                  "pressure shift uses total pressure"),
         "band_overlap_rule": "spectral absorption coefficients add before Planck integration",
         "spectral_coordinate": "vacuum_wavenumber_cm-1",
+        "spectral_value_semantics": "uniform finite-volume bin average, area-preserving deposition",
         "spectral_grid_cm-1": grid,
-        "wavelength_domain_um": [1.0e4 / grid[-1], 1.0e4 / grid[0]],
+        "spectral_bin_edge_domain_cm-1": spectral_bin_edges,
+        "wavelength_domain_um": [1.0e4 / spectral_bin_edges[-1],
+                                 1.0e4 / spectral_bin_edges[0]],
         "gas_temperatures_K": gas_temperatures,
         "radiation_temperatures_K": radiation_temperatures,
         "line_wing_cutoff_cm-1": cutoff,
-        "voigt_algorithm": "Humlicek-W4 deterministic binary64",
+        "voigt_algorithm": ("32-point Gauss-Legendre Gaussian/Cauchy convolution of "
+                            "analytic interval CDFs; exact Gaussian/Lorentz degenerate "
+                            "limits; binary64"),
+        "archive_passes_per_species": 1,
         "out_of_domain_policy": "reject",
         "species_tables": species_tables,
         "provenance": {
-            "generator_sha256": generator_digest,
+            "generator_sha256": generator_identity(),
             "hitemp_citations": manifest["hitemp_citations"],
             "hitran_definitions": "https://hitran.org/docs/definitions-and-units/",
             "original_source_citations": manifest["original_source_citations"],

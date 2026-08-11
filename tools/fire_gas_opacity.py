@@ -13,7 +13,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Sequence
 
 
 C2_CM_K = 1.4387768775039338
@@ -22,6 +22,27 @@ C_LIGHT = 299792458.0
 N_AVOGADRO = 6.02214076e23
 REFERENCE_TEMPERATURE_K = 296.0
 REFERENCE_PRESSURE_PA = 101325.0
+
+# Positive nodes and weights for 32-point Gauss-Legendre quadrature.
+# Symmetry is applied explicitly below.
+LEGENDRE32_POSITIVE = (
+    (0.048307665687738316, 0.0965400885147278),
+    (0.14447196158279649, 0.09563872007927486),
+    (0.23928736225213707, 0.09384439908080457),
+    (0.33186860228212765, 0.09117387869576388),
+    (0.42135127613063535, 0.08765209300440381),
+    (0.5068999089322294, 0.08331192422694676),
+    (0.5877157572407623, 0.07819389578707031),
+    (0.6630442669302152, 0.07234579410884851),
+    (0.7321821187402897, 0.06582222277636185),
+    (0.7944837959679424, 0.05868409347853555),
+    (0.8482065834104272, 0.050998059262376176),
+    (0.8963211557660521, 0.04283589802222668),
+    (0.9349060759377397, 0.03427386291302143),
+    (0.9647622555875064, 0.02539206530926206),
+    (0.9856115115452684, 0.01627439473090567),
+    (0.9972638618494816, 0.007018610009470097),
+)
 
 
 @dataclass(frozen=True)
@@ -62,7 +83,9 @@ def parse_hitran160(line: str) -> HitranLine:
         raise ValueError(f"HITRAN record must contain exactly 160 characters, got {len(line)}")
     try:
         molecule = int(line[0:2])
-        isotopologue = int(line[2:3])
+        isotope_code = line[2:3]
+        isotopologue = ({"0": 10, "A": 11, "B": 12}.get(
+            isotope_code, int(isotope_code) if isotope_code.isdigit() else -1))
     except ValueError as exc:
         raise ValueError("invalid HITRAN molecule/isotopologue field") from exc
     result = HitranLine(
@@ -253,12 +276,12 @@ def planck_mean_wavenumber(xs_cm1: list[float], kappa_m1: list[float],
         raise ValueError("Planck-mean inputs are invalid")
     weights = [planck_weight_wavenumber(value, temperature_k) for value in xs_cm1]
     numerator = 0.0
-    for index in range(len(xs_cm1) - 1):
-        step = xs_cm1[index + 1] - xs_cm1[index]
-        if step <= 0.0:
-            raise ValueError("spectral grid must increase")
-        numerator += 0.5 * step * (
-            kappa_m1[index] * weights[index] + kappa_m1[index + 1] * weights[index + 1])
+    step = xs_cm1[1] - xs_cm1[0]
+    if step <= 0.0 or any(not math.isclose(xs_cm1[index + 1] - xs_cm1[index], step,
+                                           rel_tol=0.0, abs_tol=1.0e-12 * step)
+                          for index in range(len(xs_cm1) - 1)):
+        raise ValueError("spectral bin centers must be uniformly spaced")
+    numerator = step * sum(value * weight for value, weight in zip(kappa_m1, weights))
     full_blackbody_weight = (math.pi ** 4 / 15.0) * (temperature_k / C2_CM_K) ** 4
     result = numerator / full_blackbody_weight
     if not math.isfinite(result) or result < 0.0:
@@ -276,48 +299,303 @@ def spectral_grid(minimum: float, maximum: float, step: float) -> list[float]:
     return [minimum + index * step for index in range(count + 1)]
 
 
-def species_spectrum(lines: Iterable[HitranLine], molecule: int,
-                     molar_masses_kg_per_mol: dict[int, float],
-                     partition_sums: PartitionSums, grid_cm1: list[float],
-                     temperature_k: float, pressure_pa: float,
-                     wing_cutoff_cm1: float) -> tuple[list[float], int]:
-    if pressure_pa <= 0.0 or wing_cutoff_cm1 <= 0.0:
-        raise ValueError("pressure and line-wing cutoff must be positive")
-    number_density_cm3 = pressure_pa / (K_BOLTZMANN * temperature_k) / 1.0e6
+def pressure_broadened_half_width(line: HitranLine, temperature_k: float,
+                                  pressure_pa: float,
+                                  self_mole_fraction: float) -> float:
+    if (temperature_k <= 0.0 or pressure_pa <= 0.0 or
+            self_mole_fraction < 0.0 or self_mole_fraction > 1.0):
+        raise ValueError("pressure-broadening state is inadmissible")
     pressure_atm = pressure_pa / REFERENCE_PRESSURE_PA
-    result = [0.0] * len(grid_cm1)
-    used = 0
+    reference_width = ((1.0 - self_mole_fraction) * line.gamma_air_cm1_atm +
+                       self_mole_fraction * line.gamma_self_cm1_atm)
+    result = reference_width * pressure_atm * (
+        REFERENCE_TEMPERATURE_K / temperature_k) ** line.n_air
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError("pressure-broadened line width is invalid")
+    return result
+
+
+def voigt_interval_probability(lower_cm1: float, upper_cm1: float,
+                               sigma_cm1: float, gamma_cm1: float) -> float:
+    """Integrate a normalized Voigt profile over one interval."""
+    if (not all(math.isfinite(value) for value in
+                (lower_cm1, upper_cm1, sigma_cm1, gamma_cm1)) or
+            lower_cm1 >= upper_cm1 or sigma_cm1 < 0.0 or gamma_cm1 < 0.0 or
+            (sigma_cm1 == 0.0 and gamma_cm1 == 0.0)):
+        raise ValueError("Voigt interval is inadmissible")
+    if gamma_cm1 == 0.0:
+        scale = sigma_cm1 * math.sqrt(2.0)
+        return 0.5 * (math.erf(upper_cm1 / scale) -
+                      math.erf(lower_cm1 / scale))
+
+    def lorentz_interval(shift: float) -> float:
+        return (math.atan((upper_cm1 - shift) / gamma_cm1) -
+                math.atan((lower_cm1 - shift) / gamma_cm1)) / math.pi
+
+    if sigma_cm1 == 0.0:
+        return lorentz_interval(0.0)
+    total = 0.0
+    if gamma_cm1 <= sigma_cm1:
+        # Average the analytic Gaussian interval over a Cauchy random shift,
+        # using y=gamma*tan(theta); the Cauchy measure becomes dtheta/pi.
+        def gaussian_interval(shift: float) -> float:
+            scale = sigma_cm1 * math.sqrt(2.0)
+            return 0.5 * (math.erf((upper_cm1 - shift) / scale) -
+                          math.erf((lower_cm1 - shift) / scale))
+
+        for node, weight in LEGENDRE32_POSITIVE:
+            theta = 0.5 * math.pi * node
+            shift = gamma_cm1 * math.tan(theta)
+            total += 0.5 * weight * (gaussian_interval(shift) +
+                                     gaussian_interval(-shift))
+        result = total
+    else:
+        # Average the analytic Lorentz interval over a Gaussian random shift.
+        # Eight sigma truncation contributes less than 1.3e-15 probability.
+        scale = 8.0 * sigma_cm1
+        normalization = scale / (sigma_cm1 * math.sqrt(2.0 * math.pi))
+        for node, weight in LEGENDRE32_POSITIVE:
+            shift = scale * node
+            total += weight * normalization * (
+                math.exp(-0.5 * (shift / sigma_cm1) ** 2) *
+                (lorentz_interval(shift) + lorentz_interval(-shift)))
+        result = total
+    if not math.isfinite(result) or result < 0.0 or result > 1.0 + 1.0e-12:
+        raise ValueError("Voigt bin integral is invalid")
+    return min(1.0, result)
+
+
+def conservative_voigt_bin_weights(center_cm1: float, sigma_cm1: float,
+                                    gamma_cm1: float, grid_cm1: list[float],
+                                    cutoff_cm1: float) -> tuple[list[tuple[int, float]], float]:
+    """Voigt finite-volume bin integrals and a conservative tail bound."""
+    step = grid_cm1[1] - grid_cm1[0]
+    first = max(0, int(math.ceil(
+        (center_cm1 - cutoff_cm1 - 0.5 * step - grid_cm1[0]) / step)))
+    last = min(len(grid_cm1) - 1, int(math.floor(
+        (center_cm1 + cutoff_cm1 + 0.5 * step - grid_cm1[0]) / step)))
+    if first > last:
+        return [], 1.0
+    weights = []
+    for index in range(first, last + 1):
+        lower = max(grid_cm1[index] - 0.5 * step,
+                    center_cm1 - cutoff_cm1) - center_cm1
+        upper = min(grid_cm1[index] + 0.5 * step,
+                    center_cm1 + cutoff_cm1) - center_cm1
+        if lower < upper:
+            weight = voigt_interval_probability(lower, upper, sigma_cm1, gamma_cm1)
+            if weight > 0.0:
+                weights.append((index, weight))
+    available_half_span = min(
+        cutoff_cm1,
+        center_cm1 - (grid_cm1[0] - 0.5 * step),
+        (grid_cm1[-1] + 0.5 * step) - center_cm1,
+    )
+    if available_half_span <= 0.0:
+        return [], 1.0
+    gaussian_tail = (math.erfc(available_half_span /
+                               (math.sqrt(2.0) * sigma_cm1))
+                     if sigma_cm1 > 0.0 else 0.0)
+    lorentz_tail = (1.0 - 2.0 / math.pi *
+                    math.atan(available_half_span / gamma_cm1)
+                    if gamma_cm1 > 0.0 else 0.0)
+    return weights, min(1.0, gaussian_tail + lorentz_tail)
+
+
+def _validate_axis(values: Sequence[float], label: str) -> None:
+    if (len(values) < 2 or any(not math.isfinite(value) for value in values) or
+            any(values[index] >= values[index + 1]
+                for index in range(len(values) - 1))):
+        raise ValueError(f"{label} axis must be finite and strictly increasing")
+
+
+def _validate_samples(values: Sequence[float], label: str) -> None:
+    if (not values or any(not math.isfinite(value) for value in values) or
+            any(values[index] >= values[index + 1]
+                for index in range(len(values) - 1))):
+        raise ValueError(f"{label} samples must be finite and strictly increasing")
+
+
+def species_spectra_batch(
+        lines: Iterable[HitranLine], molecule: int,
+        molar_masses_kg_per_mol: dict[int, float],
+        partition_sums: PartitionSums, grid_cm1: list[float],
+        temperatures_k: Sequence[float], pressure_pa: float,
+        self_mole_fractions: Sequence[float],
+        wing_cutoffs_cm1: Sequence[float],
+        radiation_temperatures_k: Sequence[float] = (),
+) -> tuple[list[list[list[list[float]]]], list[list[list[int]]],
+           list[list[list[float]]], list[list[float]]]:
+    """Accumulate every requested state in one archive pass.
+
+    Returned axes are cutoff, self mole fraction, gas temperature, and
+    spectral bin.  Counts and maximum omitted-tail probability use the first
+    three axes.  Values are finite-volume bin averages, so integrating a line
+    over the output bins preserves its temperature-scaled area independently
+    of its phase within a bin.
+    """
+    _validate_samples(temperatures_k, "gas temperature")
+    _validate_samples(self_mole_fractions, "self mole fraction")
+    _validate_samples(wing_cutoffs_cm1, "wing cutoff")
+    if radiation_temperatures_k:
+        _validate_samples(radiation_temperatures_k, "radiation temperature")
+    if (pressure_pa <= 0.0 or self_mole_fractions[0] < 0.0 or
+            self_mole_fractions[-1] > 1.0):
+        raise ValueError("batch opacity state is inadmissible")
+    shape = (len(wing_cutoffs_cm1), len(self_mole_fractions),
+             len(temperatures_k))
+    spectra = [[[[0.0] * len(grid_cm1) for _ in range(shape[2])]
+                for _ in range(shape[1])] for _ in range(shape[0])]
+    counts = [[[0 for _ in range(shape[2])] for _ in range(shape[1])]
+              for _ in range(shape[0])]
+    tail_bounds = [[[0.0 for _ in range(shape[2])] for _ in range(shape[1])]
+                   for _ in range(shape[0])]
+    line_center_means = [[0.0 for _ in radiation_temperatures_k]
+                         for _ in temperatures_k]
+    step = grid_cm1[1] - grid_cm1[0]
+    pressure_atm = pressure_pa / REFERENCE_PRESSURE_PA
     for line in lines:
-        if line.molecule != molecule or line.intensity_296_cm_per_molecule == 0.0:
+        if line.molecule != molecule:
+            raise ValueError("line archive contains a foreign molecule")
+        if line.intensity_296_cm_per_molecule == 0.0:
             continue
         molar_mass = molar_masses_kg_per_mol.get(line.isotopologue)
         if not molar_mass or molar_mass <= 0.0:
             raise ValueError("line isotopologue has no positive molar mass")
         center = line.center_cm1 + line.pressure_shift_cm1_atm * pressure_atm
-        if center + wing_cutoff_cm1 < grid_cm1[0] or center - wing_cutoff_cm1 > grid_cm1[-1]:
+        if (center + wing_cutoffs_cm1[-1] < grid_cm1[0] or
+                center - wing_cutoffs_cm1[-1] > grid_cm1[-1]):
             continue
-        strength = line_intensity(line, temperature_k, partition_sums)
-        gamma = line.gamma_air_cm1_atm * pressure_atm * (
-            REFERENCE_TEMPERATURE_K / temperature_k) ** line.n_air
         molecular_mass_kg = molar_mass / N_AVOGADRO
-        sigma = center * math.sqrt(K_BOLTZMANN * temperature_k /
-                                   (molecular_mass_kg * C_LIGHT * C_LIGHT))
-        if gamma == 0.0 and sigma == 0.0:
-            raise ValueError("line has zero Lorentz and Doppler width")
-        first = max(0, int(math.ceil(
-            (center - wing_cutoff_cm1 - grid_cm1[0]) /
-            (grid_cm1[1] - grid_cm1[0]))))
-        last = min(len(grid_cm1) - 1, int(math.floor(
-            (center + wing_cutoff_cm1 - grid_cm1[0]) /
-            (grid_cm1[1] - grid_cm1[0]))))
-        for index in range(first, last + 1):
-            cross_section_cm2 = strength * voigt_profile_cm(
-                grid_cm1[index] - center, sigma, gamma)
-            result[index] += cross_section_cm2 * number_density_cm3 * 100.0
-        used += 1
-    if any(not math.isfinite(value) or value < 0.0 for value in result):
+        for temperature_index, temperature_k in enumerate(temperatures_k):
+            strength = line_intensity(line, temperature_k, partition_sums)
+            number_density_cm3 = pressure_pa / (K_BOLTZMANN * temperature_k) / 1.0e6
+            line_area_m1_cm1 = strength * number_density_cm3 * 100.0
+            for radiation_index, radiation_temperature in enumerate(
+                    radiation_temperatures_k):
+                line_center_means[temperature_index][radiation_index] += (
+                    line_area_m1_cm1 *
+                    planck_weight_wavenumber(center, radiation_temperature))
+            sigma = center * math.sqrt(K_BOLTZMANN * temperature_k /
+                                       (molecular_mass_kg * C_LIGHT * C_LIGHT))
+            for self_index, self_fraction in enumerate(self_mole_fractions):
+                gamma = pressure_broadened_half_width(
+                    line, temperature_k, pressure_pa, self_fraction)
+                if gamma == 0.0 and sigma == 0.0:
+                    raise ValueError("line has zero Lorentz and Doppler width")
+                for cutoff_index, cutoff in enumerate(wing_cutoffs_cm1):
+                    weights, tail_bound = conservative_voigt_bin_weights(
+                        center, sigma, gamma, grid_cm1, cutoff)
+                    if not weights:
+                        continue
+                    for bin_index, weight in weights:
+                        spectra[cutoff_index][self_index][temperature_index][bin_index] += (
+                            line_area_m1_cm1 * weight / step)
+                    counts[cutoff_index][self_index][temperature_index] += 1
+                    tail_bounds[cutoff_index][self_index][temperature_index] = max(
+                        tail_bounds[cutoff_index][self_index][temperature_index], tail_bound)
+    if any(not math.isfinite(value) or value < 0.0
+           for cutoff_rows in spectra for self_rows in cutoff_rows
+           for temperature_row in self_rows for value in temperature_row):
         raise ValueError("generated absorption spectrum is invalid")
-    return result, used
+    for temperature_index in range(len(temperatures_k)):
+        for radiation_index, radiation_temperature in enumerate(
+                radiation_temperatures_k):
+            denominator = ((math.pi ** 4 / 15.0) *
+                           (radiation_temperature / C2_CM_K) ** 4)
+            line_center_means[temperature_index][radiation_index] /= denominator
+    return spectra, counts, tail_bounds, line_center_means
+
+
+def species_spectrum(lines: Iterable[HitranLine], molecule: int,
+                     molar_masses_kg_per_mol: dict[int, float],
+                     partition_sums: PartitionSums, grid_cm1: list[float],
+                     temperature_k: float, pressure_pa: float,
+                     wing_cutoff_cm1: float,
+                     self_mole_fraction: float = 0.0) -> tuple[list[float], int, float]:
+    if pressure_pa <= 0.0 or wing_cutoff_cm1 <= 0.0:
+        raise ValueError("pressure and line-wing cutoff must be positive")
+    spectra, counts, tails, _ = species_spectra_batch(
+        lines, molecule, molar_masses_kg_per_mol, partition_sums, grid_cm1,
+        [temperature_k], pressure_pa, [self_mole_fraction], [wing_cutoff_cm1])
+    return spectra[0][0][0], counts[0][0][0], tails[0][0][0]
+
+
+def linear_axis_weights(axis: Sequence[float], value: float) -> tuple[int, float]:
+    _validate_axis(axis, "interpolation")
+    if not math.isfinite(value) or value < axis[0] or value > axis[-1]:
+        raise ValueError("opacity lookup is out of domain")
+    if value == axis[-1]:
+        return len(axis) - 2, 1.0
+    index = next(i for i in range(len(axis) - 1) if value <= axis[i + 1])
+    return index, (value - axis[index]) / (axis[index + 1] - axis[index])
+
+
+def multilinear_value(axes: Sequence[Sequence[float]], tensor: object,
+                      coordinates: Sequence[float]) -> float:
+    if len(axes) != len(coordinates) or not axes:
+        raise ValueError("multilinear interpolation rank mismatch")
+    cells = [linear_axis_weights(axis, coordinate)
+             for axis, coordinate in zip(axes, coordinates)]
+    result = 0.0
+    for corner in range(1 << len(axes)):
+        value = tensor
+        weight = 1.0
+        for dimension, (index, fraction) in enumerate(cells):
+            upper = (corner >> dimension) & 1
+            value = value[index + upper]
+            weight *= fraction if upper else 1.0 - fraction
+        result += weight * float(value)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError("interpolated opacity is invalid")
+    return result
+
+
+def tensor_linear_derivative_certificate(axes: Sequence[Sequence[float]],
+                                         tensor: object) -> dict:
+    """Exact per-cell partial-derivative enclosures for multilinear data."""
+    if len(axes) != 3:
+        raise ValueError("Planck-mean certificate requires a rank-three tensor")
+    for axis in axes:
+        _validate_axis(axis, "certificate")
+    cells = []
+    for i in range(len(axes[0]) - 1):
+        for j in range(len(axes[1]) - 1):
+            for k in range(len(axes[2]) - 1):
+                lower = [i, j, k]
+                bounds = []
+                for dimension in range(3):
+                    derivatives = []
+                    other_dimensions = [value for value in range(3)
+                                        if value != dimension]
+                    for bits in range(4):
+                        lo = list(lower)
+                        hi = list(lower)
+                        hi[dimension] += 1
+                        for bit_index, other in enumerate(other_dimensions):
+                            offset = (bits >> bit_index) & 1
+                            lo[other] += offset
+                            hi[other] += offset
+                        lo_value = tensor[lo[0]][lo[1]][lo[2]]
+                        hi_value = tensor[hi[0]][hi[1]][hi[2]]
+                        derivatives.append((hi_value - lo_value) /
+                                           (axes[dimension][lower[dimension] + 1] -
+                                            axes[dimension][lower[dimension]]))
+                    bounds.append([min(derivatives), max(derivatives)])
+                cells.append({
+                    "lower_indices": lower,
+                    "partial_derivative_bounds": bounds,
+                    "local_equal_temperature_derivative_bound": [
+                        bounds[1][0] + bounds[2][0],
+                        bounds[1][1] + bounds[2][1],
+                    ],
+                })
+    return {
+        "kind": "tensor_multilinear_exact_cell_bounds_v1",
+        "axes": ["self_mole_fraction", "gas_temperature_K",
+                 "radiation_temperature_K"],
+        "cells": cells,
+    }
 
 
 def canonical_json_bytes(value: object) -> bytes:

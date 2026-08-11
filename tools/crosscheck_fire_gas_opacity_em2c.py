@@ -12,8 +12,9 @@ import json
 import math
 from pathlib import Path
 
-from fire_gas_opacity import C2_CM_K, planck_weight_wavenumber, sha256_file
-from generate_fire_optics_records import pchip_slopes
+from fire_gas_opacity import (
+    C2_CM_K, multilinear_value, planck_weight_wavenumber, sha256_file,
+)
 
 
 DOI = "10.17632/x5wjzk6sjs.1"
@@ -31,44 +32,32 @@ EM2C_SHA256 = {
 }
 
 
-def _pchip_value(xs: list[float], ys: list[float], slopes: list[float], x: float) -> float:
-    if x < xs[0] or x > xs[-1]:
-        raise ValueError("EM2C temperature is outside the generated gas-temperature domain")
-    if x == xs[-1]:
-        return ys[-1]
-    index = next(i for i in range(len(xs) - 1) if x <= xs[i + 1])
-    h = xs[index + 1] - xs[index]
-    u = (x - xs[index]) / h
-    h00 = 2.0 * u ** 3 - 3.0 * u ** 2 + 1.0
-    h10 = u ** 3 - 2.0 * u ** 2 + u
-    h01 = -2.0 * u ** 3 + 3.0 * u ** 2
-    h11 = u ** 3 - u ** 2
-    return (h00 * ys[index] + h10 * h * slopes[index] +
-            h01 * ys[index + 1] + h11 * h * slopes[index + 1])
-
-
-def spectrum_at_temperature(table: dict, species: dict, temperature_k: float) -> list[float]:
+def spectrum_at_temperature(table: dict, species: dict, temperature_k: float,
+                            self_mole_fraction: float) -> list[float]:
+    self_axis = table["self_broadening_mole_fractions"]
     temperatures = table["gas_temperatures_K"]
-    spectra = species["kappa_per_m_per_mole_fraction"]
+    spectra = species["kappa_bin_average_per_m_per_unit_species_mole_fraction"]
     result = []
     for column in range(len(table["spectral_grid_cm-1"])):
-        values = [row[column] for row in spectra]
-        # The table stores mean certificates, not per-wavenumber slopes.  For the
-        # cross-check only, recompute the identical PCHIP slopes deterministically.
-        result.append(_pchip_value(temperatures, values,
-                                   pchip_slopes(temperatures, values), temperature_k))
+        values = [[spectra[self_index][gas_index][column]
+                   for gas_index in range(len(temperatures))]
+                  for self_index in range(len(self_axis))]
+        result.append(multilinear_value(
+            [self_axis, temperatures], values,
+            [self_mole_fraction, temperature_k]))
     return result
 
 
 def homogeneous_emissivity(grid: list[float], kappa: list[float],
                            temperature_k: float, path_length_m: float) -> float:
     weights = [planck_weight_wavenumber(value, temperature_k) for value in grid]
-    numerator = 0.0
-    for index in range(len(grid) - 1):
-        step = grid[index + 1] - grid[index]
-        e0 = -math.expm1(-kappa[index] * path_length_m)
-        e1 = -math.expm1(-kappa[index + 1] * path_length_m)
-        numerator += 0.5 * step * (e0 * weights[index] + e1 * weights[index + 1])
+    step = grid[1] - grid[0]
+    if (step <= 0.0 or any(not math.isclose(grid[index + 1] - grid[index], step,
+                                           rel_tol=0.0, abs_tol=1.0e-12 * step)
+                          for index in range(len(grid) - 1))):
+        raise ValueError("opacity table does not use uniform spectral bins")
+    numerator = step * sum(-math.expm1(-value * path_length_m) * weight
+                           for value, weight in zip(kappa, weights))
     full_blackbody_weight = (math.pi ** 4 / 15.0) * (temperature_k / C2_CM_K) ** 4
     return numerator / full_blackbody_weight
 
@@ -145,8 +134,10 @@ def main() -> None:
         cached: dict[float, list[float]] = {}
         for temperature, pressure_path_atm_m, reference in parse_em2c(Path(path_text)):
             if temperature not in cached:
-                h2o = spectrum_at_temperature(table, species["H2O"], temperature)
-                co2 = spectrum_at_temperature(table, species["CO2"], temperature)
+                h2o = spectrum_at_temperature(
+                    table, species["H2O"], temperature, x_h2o)
+                co2 = spectrum_at_temperature(
+                    table, species["CO2"], temperature, x_co2)
                 cached[temperature] = [x_h2o * a + x_co2 * b for a, b in zip(h2o, co2)]
             predicted = homogeneous_emissivity(
                 grid, cached[temperature], temperature, pressure_path_atm_m)

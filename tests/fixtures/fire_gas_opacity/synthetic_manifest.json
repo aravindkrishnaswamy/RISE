@@ -7,8 +7,11 @@
   "spectral_grid_cm-1": {"minimum": 50.0, "maximum": 30000.0, "step": 50.0},
   "gas_temperatures_K": [300.0, 1000.0, 2000.0],
   "radiation_temperatures_K": [300.0, 1000.0, 2000.0],
-  "line_wing_cutoff_cm-1": 25.0,
+  "self_broadening_mole_fractions": [0.0, 1.0],
+  "line_wing_cutoff_cm-1": 50.0,
   "line_wing_convergence_factor": 2.0,
+  "maximum_planck_mean_grid_relative_error": 0.05,
+  "maximum_planck_mean_wing_relative_error": 0.05,
   "hitemp_citations": [
     "HITEMP2010/2024 format exercised only; fixture values are synthetic"
   ],

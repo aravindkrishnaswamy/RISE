@@ -9,13 +9,15 @@
     "CO2 02_HITEMP2024.par.bz2"
   ],
   "required_public_metadata": "HITRAN isotopologue partition sums covering every gas-temperature knot",
+  "required_generation_axes": "The production manifest must declare self_broadening_mole_fractions spanning [0,1].",
+  "required_convergence_gates": "Pin maximum relative Planck-mean errors for the finite spectral grid and expanded line-wing comparison.",
   "hitemp_citations": [
     "Rothman et al., HITEMP 2010, JQSRT 111 (2010) 2139-2150",
     "HITEMP CO2 2024 release, https://hitran.org/hitemp/"
   ],
   "original_source_citations": [
-    "HITEMP2010 H2O original line-source citations distributed with the owner download",
-    "HITEMP2024 CO2 original line-source citations distributed with 02_HITEMP2024.par.bz2"
+    "PENDING: replace with concrete HITEMP2010 H2O original line-source citations",
+    "PENDING: replace with concrete HITEMP2024 CO2 original line-source citations"
   ],
   "sources": []
 }

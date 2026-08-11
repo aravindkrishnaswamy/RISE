@@ -149,17 +149,21 @@ all WSGG coefficient papers are paywalled (not needed under this plan).
 `tools/fire_gas_opacity.py`, `tools/generate_fire_gas_opacity_record.py`, and
 `tools/fetch_verify_hitemp_inputs.py`.  It parses the HITRAN 160-character
 format, temperature-scales line strengths with separately hash-pinned HITRAN
-partition-sum files, evaluates air-broadened Voigt profiles at 1 atm, emits
-species spectra on a declared wavenumber grid, and derives the required
-two-temperature Planck-mean matrices with PCHIP partial-derivative
-enclosures.  The owner manifest remains explicitly pending in
+partition-sum files, evaluates air/self-broadened Voigt profiles at 1 atm,
+and deposits each line into declared finite-volume wavenumber bins while
+preserving its integrated area.  It derives the required two-temperature
+Planck-mean tensors across a self-broadening composition axis and stores exact
+per-cell multilinear partial-derivative enclosures.  Each species archive is
+streamed once for all table states.  The owner manifest remains explicitly pending in
 `docs/data/source_pulls/hitemp_owner_inputs_v1.pending.json`; it cannot
 generate a physical table until the exact H₂O-2010 inventory, the
 `02_HITEMP2024.par.bz2` digest, all required isotopologue masses/partition
 sums, and the original-source citations from both distributions are pinned.
 The committed `docs/data/fire_gas_opacity_synthetic_v1.json` is labeled
-`synthetic_test_only` and proves the fixed-width, Voigt, hash, bzip2,
-spectral-table, two-argument-mean, interpolation-certificate, and OOD paths;
+`synthetic_test_only` and proves the fixed-width (including CO₂ local
+isotopologues 10–12), Voigt, line-area/grid-phase, hash, bzip2,
+spectral-table, two-argument-mean, self-broadening, interpolation-certificate,
+and OOD paths;
 it is never an operational physics fallback.  The independent CC-BY
 EM2C-SNB harness is `tools/crosscheck_fire_gas_opacity_em2c.py` (DOI
 10.17632/x5wjzk6sjs.1); it refuses the synthetic table and is ready for the
