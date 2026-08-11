@@ -30,8 +30,15 @@
 #include "CstRenderEquivalence.h"   // Job, DumpJob
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -50,7 +57,14 @@ namespace
 		return e;
 	}
 
-	bool WriteTmp( const char* path, const std::string& text )
+	std::string TempPath( const char* name )
+	{
+		return ( std::filesystem::temp_directory_path() /
+			( "cst_load_via_" + std::to_string( static_cast<long>( getpid() ) ) +
+			  "_" + name ) ).string();
+	}
+
+	bool WriteTmp( const std::string& path, const std::string& text )
 	{
 		std::ofstream f( path );
 		if( !f ) return false;
@@ -63,12 +77,12 @@ namespace
 	// parser arm that this originally compared against was retired -- CstDeriveGoldenTest is now the
 	// CST-derive correctness net for the whole corpus, so the per-inline-scene legacy oracle here is
 	// subsumed.  What stays UNIQUE to this test is the CST loader's ACCEPT/REFUSE contract below.)
-	void Case( const char* label, const char* path, const std::string& v7scene )
+	void Case( const char* label, const std::string& path, const std::string& v7scene )
 	{
 		if( !WriteTmp( path, v7scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
 
 		Job* jC = new Job();
-		const bool okC = jC->LoadAsciiSceneViaCst( path );
+		const bool okC = jC->LoadAsciiSceneViaCst( path.c_str() );
 
 		Check( okC, std::string( label ) + ": LoadAsciiSceneViaCst succeeds" );
 		if( okC )
@@ -76,33 +90,33 @@ namespace
 		Check( jC->GetCstDocument() != nullptr, std::string( label ) + ": CST load RETAINS the canonical Document" );
 
 		jC->release();
-		std::remove( path );
+		std::filesystem::remove( path );
 	}
 
 	// Assert LoadAsciiSceneViaCst REFUSES a non-native-v7 scene (returns false, retains no Document).
-	void RefuseCase( const char* label, const char* path, const std::string& scene )
+	void RefuseCase( const char* label, const std::string& path, const std::string& scene )
 	{
 		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
 		Job* j = new Job();
-		const bool ok = j->LoadAsciiSceneViaCst( path );
+		const bool ok = j->LoadAsciiSceneViaCst( path.c_str() );
 		Check( !ok, std::string( label ) + ": LoadAsciiSceneViaCst REFUSES (returns false)" );
 		Check( j->GetCstDocument() == nullptr, std::string( label ) + ": no Document retained on refusal" );
 		j->release();
-		std::remove( path );
+		std::filesystem::remove( path );
 	}
 
 	// Assert LoadAsciiSceneViaCst ACCEPTS a scene carrying a render-NEUTRAL `>` directive (`> echo` / `> set
 	// accelerator` -- the migrator passes those through; DeriveToJob skips them render-neutrally).  (Render-
 	// AFFECTING `> modify` / `> set <other>` are REFUSED -- see the RefuseCases below.)
-	void AcceptCase( const char* label, const char* path, const std::string& scene )
+	void AcceptCase( const char* label, const std::string& path, const std::string& scene )
 	{
 		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
 		Job* j = new Job();
-		const bool ok = j->LoadAsciiSceneViaCst( path );
+		const bool ok = j->LoadAsciiSceneViaCst( path.c_str() );
 		Check( ok, std::string( label ) + ": LoadAsciiSceneViaCst ACCEPTS (render-neutral > directive not false-rejected)" );
 		Check( j->GetCstDocument() != nullptr, std::string( label ) + ": Document retained" );
 		j->release();
-		std::remove( path );
+		std::filesystem::remove( path );
 	}
 }
 
@@ -113,12 +127,12 @@ int main()
 	// Slice 6e header-bump back-compat pair: the reader accepts BOTH the post-cutover `7` header and the
 	// transitional `6` header (the CST is version-agnostic).  Prove both load so a re-header can't break
 	// un-migrated user scenes, and so a re-headered corpus scene keeps loading.
-	Case( "back-compat: SCENE 7 header loads (post-cutover default)", "/tmp/cst_loadvia_v7.RISEscene",
+	Case( "back-compat: SCENE 7 header loads (post-cutover default)", TempPath("v7.RISEscene"),
 		"RISE ASCII SCENE 7\nsphere_geometry\n{\nname sg7\nradius 1\n}\n" );
-	Case( "back-compat: SCENE 6 header still loads (transitional)", "/tmp/cst_loadvia_v6.RISEscene",
+	Case( "back-compat: SCENE 6 header still loads (transitional)", TempPath("v6.RISEscene"),
 		"RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg6\nradius 1\n}\n" );
 
-	Case( "painter+material+geom+object+lights", "/tmp/cst_loadvia_1.RISEscene",
+	Case( "painter+material+geom+object+lights", TempPath("1.RISEscene"),
 		"RISE ASCII SCENE 7\n"
 		"uniformcolor_painter\n{\nname p\ncolor 0.8 0.2 0.2\n}\n"
 		"lambertian_material\n{\nname m\nreflectance p\n}\n"
@@ -127,7 +141,7 @@ int main()
 		"directional_light\n{\nname key\npower 3.14\ncolor 1.0 0.96 0.90\ndirection 0.4 0.7 0.5\n}\n"
 		"ambient_light\n{\nname amb\npower 0.2\ncolor 1 1 1\n}\n" );
 
-	Case( "shared-material refs + comments", "/tmp/cst_loadvia_2.RISEscene",
+	Case( "shared-material refs + comments", TempPath("2.RISEscene"),
 		"RISE ASCII SCENE 6\n# two spheres sharing one material\n"
 		"uniformcolor_painter\n{\nname pp\ncolor 0.1 0.6 0.9\n}\n"
 		"lambertian_material\n{\nname mm\nreflectance pp\n}\n"
@@ -137,27 +151,27 @@ int main()
 		"standard_object\n{\nname o2\ngeometry g2\nmaterial mm\nposition 1 0 0\n}\n" );
 
 	// P1 fix: non-native-v7 input is REFUSED (not silently mis-derived -- e.g. a 3-iteration FOR -> 1 body).
-	RefuseCase( "v6 FOR loop refused", "/tmp/cst_loadvia_for.RISEscene",
+	RefuseCase( "v6 FOR loop refused", TempPath("for.RISEscene"),
 		"RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" );
-	RefuseCase( "v6 `> run` directive refused", "/tmp/cst_loadvia_run.RISEscene",
+	RefuseCase( "v6 `> run` directive refused", TempPath("run.RISEscene"),
 		"RISE ASCII SCENE 6\n> run somewhere/palette.RISEscript\n" );
-	RefuseCase( "missing version header refused", "/tmp/cst_loadvia_nohdr.RISEscene",
+	RefuseCase( "missing version header refused", TempPath("nohdr.RISEscene"),
 		"sphere_geometry\n{\nname s\nradius 1\n}\n" );
 
 	// P1 (round-4 fix): a RENDER-AFFECTING `>` directive must be REFUSED -- CST-load silently drops every `>`
 	// line, so a `> modify` / `> set <other>` scene would mis-render (DumpJob is blind).  The migrator must
 	// convert these to v7 chunks (or, for `> modify`, the light-configurations feature) before they CST-load.
-	RefuseCase( "render-affecting `> modify` refused", "/tmp/cst_loadvia_modify.RISEscene",
+	RefuseCase( "render-affecting `> modify` refused", TempPath("modify.RISEscene"),
 		"RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 1\n}\n> modify object s material glow\n" );
-	RefuseCase( "render-affecting `> set light_rr_threshold` refused", "/tmp/cst_loadvia_rr.RISEscene",
+	RefuseCase( "render-affecting `> set light_rr_threshold` refused", TempPath("rr.RISEscene"),
 		"RISE ASCII SCENE 6\n> set light_rr_threshold 0.5\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
 
 	// A MIGRATED scene retains render-NEUTRAL `>` directives (`> echo`, `> set accelerator`); these MUST be
 	// accepted, not false-rejected (else ~185 corpus scenes break).  (Round-4: render-AFFECTING `> modify` /
 	// `> set <other>` are refused instead -- the RefuseCases above.)
-	AcceptCase( "> set accelerator accepted", "/tmp/cst_loadvia_set.RISEscene",
+	AcceptCase( "> set accelerator accepted", TempPath("set.RISEscene"),
 		"RISE ASCII SCENE 6\n> set accelerator B 10 8\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
-	AcceptCase( "> echo accepted", "/tmp/cst_loadvia_echo.RISEscene",
+	AcceptCase( "> echo accepted", TempPath("echo.RISEscene"),
 		"RISE ASCII SCENE 6\n> echo loading the scene\nsphere_geometry\n{\nname s\nradius 1\n}\n" );
 
 	const auto encoderScene = []( const char* type ) {
@@ -167,29 +181,29 @@ int main()
 			"RISE ASCII SCENE 7\n"
 			"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n"
 			"pixelpel_rasterizer\n{\nsamples 1\n}\n"
-			"file_rasterizeroutput\n{\npattern /tmp/cst_encoder_gate\ntype " ) +
+			"file_rasterizeroutput\n{\npattern cst_encoder_gate\ntype " ) +
 			type + "\nbpp 8\ncolor_space " + colorSpace + "\n}\n";
 	};
 #ifdef NO_PNG_SUPPORT
 	RefuseCase( "authored PNG rejects when encoder is unavailable",
-		"/tmp/cst_no_png_encoder.RISEscene", encoderScene("PNG") );
+		TempPath("no_png_encoder.RISEscene"), encoderScene("PNG") );
 #else
 	AcceptCase( "authored PNG loads when encoder is available",
-		"/tmp/cst_png_encoder.RISEscene", encoderScene("PNG") );
+		TempPath("png_encoder.RISEscene"), encoderScene("PNG") );
 #endif
 #ifdef NO_TIFF_SUPPORT
 	RefuseCase( "authored TIFF rejects when encoder is unavailable",
-		"/tmp/cst_no_tiff_encoder.RISEscene", encoderScene("TIFF") );
+		TempPath("no_tiff_encoder.RISEscene"), encoderScene("TIFF") );
 #else
 	AcceptCase( "authored TIFF loads when encoder is available",
-		"/tmp/cst_tiff_encoder.RISEscene", encoderScene("TIFF") );
+		TempPath("tiff_encoder.RISEscene"), encoderScene("TIFF") );
 #endif
 #ifdef NO_EXR_SUPPORT
 	RefuseCase( "authored EXR rejects when encoder is unavailable",
-		"/tmp/cst_no_exr_encoder.RISEscene", encoderScene("EXR") );
+		TempPath("no_exr_encoder.RISEscene"), encoderScene("EXR") );
 #else
 	AcceptCase( "authored EXR loads when encoder is available",
-		"/tmp/cst_exr_encoder.RISEscene", encoderScene("EXR") );
+		TempPath("exr_encoder.RISEscene"), encoderScene("EXR") );
 #endif
 
 	// Slice 6c-3a: LoadAsciiSceneAuto is now CST-ONLY.  A native-v7 scene loads via the CST path and RETAINS
@@ -199,27 +213,27 @@ int main()
 	// `Check( !okAutoBad, ... )` assertion would flip to a FAIL.  (Restore the legacy fallback in
 	// LoadAsciiSceneAuto and this assertion fails; that is the proof it exercises the new hard-fail.)
 	{
-		const char* pOk  = "/tmp/cst_auto_native.RISEscene";
-		const char* pBad = "/tmp/cst_auto_nonnative.RISEscene";
+		const std::string pOk  = TempPath("auto_native.RISEscene");
+		const std::string pBad = TempPath("auto_nonnative.RISEscene");
 
 		// Native-v7 -> Auto succeeds + retains the CST Document.
 		if( WriteTmp( pOk, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg\nradius 1\n}\n" ) ) {
 			Job* j = new Job();
-			const bool okAuto = j->LoadAsciiSceneAuto( pOk );
+			const bool okAuto = j->LoadAsciiSceneAuto( pOk.c_str() );
 			Check( okAuto, "Auto CST-only: native-v7 scene loads via Auto (returns true)" );
 			Check( j->HasRetainedCstDocument(), "Auto CST-only: native-v7 Auto-load RETAINS the CST Document" );
 			j->release();
-			std::remove( pOk );
+			std::filesystem::remove( pOk );
 		}
 
 		// Non-native (un-migrated FOR/ENDFOR) -> Auto HARD-FAILS, retains NO Document, does NOT legacy-fall-back.
 		if( WriteTmp( pBad, "RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" ) ) {
 			Job* j = new Job();
-			const bool okAutoBad = j->LoadAsciiSceneAuto( pBad );
+			const bool okAutoBad = j->LoadAsciiSceneAuto( pBad.c_str() );
 			Check( !okAutoBad, "Auto CST-only: non-native scene HARD-FAILS via Auto (returns false, no legacy fallback)" );
 			Check( !j->HasRetainedCstDocument(), "Auto CST-only: non-native Auto-fail retains NO Document" );
 			j->release();
-			std::remove( pBad );
+			std::filesystem::remove( pBad );
 		}
 	}
 
@@ -227,17 +241,17 @@ int main()
 	// Use a DIFFERENT, otherwise-valid 2nd scene (distinct name) so ONLY the load-once guard can refuse it --
 	// loading the same file twice would mask a neutered guard behind the duplicate-name hard error.
 	{
-		const char* pa = "/tmp/cst_loadvia_reload_a.RISEscene";
-		const char* pb = "/tmp/cst_loadvia_reload_b.RISEscene";
+		const std::string pa = TempPath("reload_a.RISEscene");
+		const std::string pb = TempPath("reload_b.RISEscene");
 		if( WriteTmp( pa, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sa\nradius 1\n}\n" ) &&
 		    WriteTmp( pb, "RISE ASCII SCENE 6\nsphere_geometry\n{\nname sb\nradius 2\n}\n" ) ) {
 			Job* j = new Job();
-			const bool ok1 = j->LoadAsciiSceneViaCst( pa );
-			const bool ok2 = j->LoadAsciiSceneViaCst( pb );   // distinct valid scene -> only load-once can refuse it
+			const bool ok1 = j->LoadAsciiSceneViaCst( pa.c_str() );
+			const bool ok2 = j->LoadAsciiSceneViaCst( pb.c_str() );   // distinct valid scene -> only load-once can refuse it
 			Check( ok1, "reload: first load succeeds" );
 			Check( !ok2, "reload: second load REFUSED by load-once (not masked by a dup-name error)" );
 			j->release();
-			std::remove( pa ); std::remove( pb );
+			std::filesystem::remove( pa ); std::filesystem::remove( pb );
 		}
 	}
 

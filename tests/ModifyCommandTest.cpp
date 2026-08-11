@@ -37,6 +37,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -161,9 +162,9 @@ static const char* kScene =
 
 static IJobPriv* LoadScene( const char* tag )
 {
-    char path[512];
-    std::snprintf( path, sizeof(path),
-        "/tmp/modify_command_test_%s_%d.RISEscene", tag, (int)::getpid() );
+    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+        ( "modify_command_test_" + std::string( tag ) + "_" +
+          std::to_string( static_cast<long>( ::getpid() ) ) + ".RISEscene" );
     std::ofstream ofs( path );
     if( !ofs.is_open() ) return nullptr;
     ofs << kScene;
@@ -171,11 +172,12 @@ static IJobPriv* LoadScene( const char* tag )
 
     IJobPriv* pJob = nullptr;
     if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
-        std::remove( path );
+        std::filesystem::remove( path );
         return nullptr;
     }
-    const bool ok = pJob->LoadAsciiSceneViaCst( path );
-    std::remove( path );
+    const std::string pathString = path.string();
+    const bool ok = pJob->LoadAsciiSceneViaCst( pathString.c_str() );
+    std::filesystem::remove( path );
     if( !ok ) {
         safe_release( pJob );
         return nullptr;

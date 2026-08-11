@@ -62,6 +62,7 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -86,9 +87,6 @@ static void Check( bool c, const std::string& w )
 
 static std::string WriteTemp( const char* name, const std::string& text )
 {
-	const char* base = std::getenv( "TMPDIR" );
-	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	// Round-8 review P2, reason CORRECTED in round 10: per-process filename.
 	// The round-8 comment justified this by asserting that run_all_tests.sh
 	// runs the suite in PARALLEL.  IT DOES NOT -- Phase 3 is a plain
@@ -104,12 +102,13 @@ static std::string WriteTemp( const char* name, const std::string& text )
 	// a bogus "the test is flaky / there is a race" failure -- that already
 	// cost a reviewer hours once.  The pid prefix makes the path unique per
 	// process.
-	std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
-	std::ofstream f( path.c_str(), std::ios::binary );
+	const std::filesystem::path path = std::filesystem::temp_directory_path() /
+		( std::to_string( static_cast<long>( getpid() ) ) + "_" + name );
+	std::ofstream f( path, std::ios::binary );
 	if( !f ) return std::string();
 	f.write( text.data(), (std::streamsize)text.size() );
 	f.close();
-	return path;
+	return path.string();
 }
 
 // A small lit diffuse sphere at a tiny NON-SQUARE 32x24 film so a full
