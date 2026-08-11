@@ -333,6 +333,27 @@ namespace RISE
 				ReadText(*envelope,"applicability",applicability,error);
 		}
 
+		bool ReadTextEnvelope(
+			const RISECBOR64::Value& map,
+			const char* key,
+			std::string& result,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* envelope = Required(
+				map,key,RISECBOR64::Value::Map,error);
+			if( !envelope ) return false;
+			const RISECBOR64::Value* uncertainty = Required(
+				*envelope,"uncertainty",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* provenance = Required(
+				*envelope,"provenance",RISECBOR64::Value::Map,error);
+			std::string applicability;
+			return ReadText(*envelope,"value",result,error) && uncertainty && provenance &&
+				ValidateUncertainty(*uncertainty,error) &&
+				ValidateProvenance(*provenance,error) &&
+				ReadText(*envelope,"applicability",applicability,error);
+		}
+
 		bool ReadBlockers(
 			const RISECBOR64::Value& record,
 			std::vector<std::string>& blockers,
@@ -593,7 +614,6 @@ namespace RISE
 		)
 	{
 		std::string kind, status, schema, version;
-		double backgroundPressure = 0.0, ambientTemperature = 0.0;
 		if( !ValidateSchemaHeader(record,error) ||
 			!ReadText(record,"record_kind",kind,error) ||
 				kind != "fire_sim_thermochemistry_property_subset" ||
@@ -604,10 +624,6 @@ namespace RISE
 			schema != "fire-optics-canonical-provenance-schema-v1" ||
 			!ReadDomain(record,"common_temperature_domain_K",m_temperatureMinK,m_temperatureMaxK,error) ||
 			!ReadEnvelope(record,"reference_temperature_K",m_referenceTemperatureK,error) ||
-			!ReadEnvelope(record,"background_pressure_Pa",backgroundPressure,error) ||
-			!ReadEnvelope(record,"ambient_temperature_K",ambientTemperature,error) ||
-			backgroundPressure <= 0.0 || ambientTemperature < m_temperatureMinK ||
-			ambientTemperature > m_temperatureMaxK ||
 			!ValidateMeasuredCondensedOrganics(record,error) ||
 			!ReadBlockers(record,m_predictiveBlockers,error) ) {
 			return false;
@@ -621,10 +637,8 @@ namespace RISE
 		}
 		const RISECBOR64::Value* encodedSpecies = Required(
 			record,"species",RISECBOR64::Value::Array,error);
-		const RISECBOR64::Value* ambientMassFractions = Required(
-			record,"ambient_mass_fractions",RISECBOR64::Value::Map,error);
 		if( !encodedSpecies || encodedSpecies->GetArray().empty() ||
-			encodedSpecies->GetArray().size() > 256 || !ambientMassFractions ) return false;
+			encodedSpecies->GetArray().size() > 256 ) return false;
 		m_species.clear();
 		std::set<std::string> ids;
 		std::size_t certificateWork = 0;
@@ -726,19 +740,6 @@ namespace RISE
 				return Fail(error,"fire-simulation h_s(T_ref) is not zero");
 			}
 			m_species.push_back(species);
-		}
-		double ambientSum = 0.0;
-		for( const auto& entry : ambientMassFractions->GetMap() ) {
-			double fraction = 0.0;
-			if( ids.find(entry.first) == ids.end() || !ReadNumber(entry.second,fraction,error) ||
-				fraction < 0.0 ) {
-				return Fail(error,"fire-simulation ambient composition is invalid");
-			}
-			ambientSum += fraction;
-		}
-		if( ambientMassFractions->GetMap().empty() ||
-			std::fabs(ambientSum-1.0) > 64.0*std::numeric_limits<double>::epsilon() ) {
-			return Fail(error,"fire-simulation ambient composition does not sum to one");
 		}
 		return true;
 	}
@@ -893,15 +894,17 @@ namespace RISE
 			!ReadText(record,"record_status",status,error) || status != "preview_only" ||
 			!ReadText(record,"provenance_schema",schema,error) ||
 			schema != "fire-optics-canonical-provenance-schema-v1" ||
-			!ReadText(record,"viscosity_mixing_law",viscosityMix,error) || viscosityMix != "wilke_v1" ||
-			!ReadText(record,"conductivity_mixing_law",conductivityMix,error) ||
+			!ReadTextEnvelope(record,"viscosity_mixing_law",viscosityMix,error) ||
+				viscosityMix != "wilke_v1" ||
+			!ReadTextEnvelope(record,"conductivity_mixing_law",conductivityMix,error) ||
 				conductivityMix != "wassiljewa_mason_saxena_v1" ||
-			!ReadText(record,"unit_lewis_diffusivity",lewisLaw,error) ||
+			!ReadTextEnvelope(record,"unit_lewis_diffusivity",lewisLaw,error) ||
 				lewisLaw != "D_mol=k_mol/(rho_g*cp_g)" ||
-			!ReadText(record,"wall_stress",wallStress,error) ||
+			!ReadTextEnvelope(record,"wall_stress",wallStress,error) ||
 				wallStress != "resolved_molecular_no_slip" ||
-			!ReadText(record,"wall_heat_flux",wallHeatFlux,error) || wallHeatFlux != "adiabatic" ||
-			!ReadText(record,"filter_widths",filterWidths,error) ||
+			!ReadTextEnvelope(record,"wall_heat_flux",wallHeatFlux,error) ||
+				wallHeatFlux != "adiabatic" ||
+			!ReadTextEnvelope(record,"filter_widths",filterWidths,error) ||
 				filterWidths != "directional_mac_cell_widths" ||
 			!ReadDomain(record,"common_temperature_domain_K",m_temperatureMinK,m_temperatureMaxK,error) ||
 			!ReadBlockers(record,m_predictiveBlockers,error) ) return false;

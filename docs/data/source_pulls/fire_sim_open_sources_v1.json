@@ -17914,5 +17914,19 @@
   "sha256": "64186a74e71e3b973ab7ea385ba42ef9d2583ce73323c4f9f42435c7503f632b"
  },
  "schema_version": 1,
- "source_kind": "fire_sim_open_source_snapshot"
+ "source_kind": "fire_sim_open_source_snapshot",
+ "transport_closure_references": {
+  "fds_source": {
+   "locator": "https://github.com/firemodels/fds",
+   "status": "open repository locator recorded; exact revision/files not pinned"
+  },
+  "idaes_wms": {
+   "locator": "https://idaes-pse.readthedocs.io/en/stable/explanations/components/property_package/general/transport_properties/thermal_conductivity_wms.html",
+   "status": "open locator recorded; exact reference bytes/revision not pinned"
+  },
+  "vreman_2004": {
+   "locator": "https://www.vremanresearch.nl/Vreman2004.pdf",
+   "status": "author-hosted open locator recorded; exact PDF bytes not pinned"
+  }
+ }
 }

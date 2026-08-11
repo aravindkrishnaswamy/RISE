@@ -33,7 +33,7 @@ EXPECTED_SOURCE_SHA256 = {
     "gri_transport": "e2ef4437568311ad0ba6c2311a564966c9accb2b43ea3157b764c1e8febc5825",
     "cantera_gri30_yaml": "06650b1e0ee0012f6903d5328b1bb218cb6007d07f8ebe375d18f24811039345",
 }
-EXPECTED_SOURCE_SNAPSHOT_SHA256 = "3c4096ebff8eee0f9e8c64e49a35b901ff408beb8583f0fea42cea91248559bd"
+EXPECTED_SOURCE_SNAPSHOT_SHA256 = "cdfaefb6f6153a9afc5a1dd1bb0dbd7c6e2581d5c47e26ff110f97aee5a4ee6a"
 THERMO_NAMES = (
     "Ar", "CH4", "CH3OH", "CO", "CO2", "C7H16,n-heptane",
     "H2O", "N2", "O2", "C(gr)",
@@ -241,6 +241,20 @@ def extract_sources(thermo: Path, transport: Path, thermoml: Path,
                         "transport.dat redistribution terms are not separately stated"),
             **cantera_transport_tables(gri_yaml),
         },
+        "transport_closure_references": {
+            "idaes_wms": {
+                "locator": "https://idaes-pse.readthedocs.io/en/stable/explanations/components/property_package/general/transport_properties/thermal_conductivity_wms.html",
+                "status": "open locator recorded; exact reference bytes/revision not pinned",
+            },
+            "vreman_2004": {
+                "locator": "https://www.vremanresearch.nl/Vreman2004.pdf",
+                "status": "author-hosted open locator recorded; exact PDF bytes not pinned",
+            },
+            "fds_source": {
+                "locator": "https://github.com/firemodels/fds",
+                "status": "open repository locator recorded; exact revision/files not pinned",
+            },
+        },
     }
     output.write_text(json.dumps(snapshot, indent=1, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -255,8 +269,12 @@ def provenance(citation: str, locator: str = "docs/FIRE_SMOKE_DESIGN.md") -> dic
 
 
 def exact(value: float, citation: str, applicability: str) -> dict:
+    return exact_value(float(value), citation, applicability)
+
+
+def exact_value(value, citation: str, applicability: str) -> dict:
     return {
-        "value": float(value),
+        "value": value,
         "uncertainty": {"kind": "design_pinned_exact", "magnitude": 0},
         "provenance": provenance(citation),
         "applicability": applicability,
@@ -375,11 +393,6 @@ def thermo_payload(snapshot: dict) -> dict:
     sources = {entry["name"]: entry for entry in snapshot["nasa_cea"]["thermochemistry"]}
     species = [clipped_thermo_species(sources[name], common_min, common_max, reference)
                for name in THERMO_NAMES]
-    mole = {"N2": 0.78084, "O2": 0.209476, "Ar": 0.009365, "CO2": 0.000319}
-    total_mass = sum(mole[name] * next(item for item in species if item["species_id"] == name)
-                     ["molecular_weight_kg_per_kmol"]["value"] for name in mole)
-    ambient = {name: mole[name] * next(item for item in species if item["species_id"] == name)
-               ["molecular_weight_kg_per_kmol"]["value"] / total_mass for name in mole}
     measured_levoglucosan = dict(snapshot["nist_thermoml"]["levoglucosan_cp"])
     measured_levoglucosan["rows"] = [
         row for row in measured_levoglucosan["rows"] if row[0] <= 370.0
@@ -397,9 +410,6 @@ def thermo_payload(snapshot: dict) -> dict:
         "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
         "common_temperature_domain_K": [common_min, common_max],
         "reference_temperature_K": exact(reference, "FIRE_SMOKE_DESIGN.md SS3.3", "all species"),
-        "background_pressure_Pa": exact(101325.0, "FIRE_SMOKE_DESIGN.md SS3.2", "open-domain baseline"),
-        "ambient_temperature_K": exact(300.0, "record common-domain floor", "open-source baseline fixture"),
-        "ambient_mass_fractions": ambient,
         "species": species,
         "predictive_blockers": [
             "complete_fuel_element_matrix_and_atom_balance_not_present",
@@ -474,19 +484,30 @@ def transport_payload(snapshot: dict) -> dict:
         "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
         "common_temperature_domain_K": [common_min, common_max],
         "species": species,
-        "viscosity_mixing_law": "wilke_v1",
-        "conductivity_mixing_law": "wassiljewa_mason_saxena_v1",
-        "unit_lewis_diffusivity": "D_mol=k_mol/(rho_g*cp_g)",
+        "viscosity_mixing_law": exact_value("wilke_v1",
+            "CHEMKIN TRANSPORT manual Eqs. 48-49", "dilute-gas mixture"),
+        "conductivity_mixing_law": exact_value("wassiljewa_mason_saxena_v1",
+            "IDAES WMS implementation; exact reference bytes not yet pinned", "dilute-gas mixture"),
+        "unit_lewis_diffusivity": exact_value("D_mol=k_mol/(rho_g*cp_g)",
+            "FIRE_SMOKE_DESIGN.md SS3.2", "unit-Lewis Phase-C closure"),
         "turbulent_prandtl": exact(0.7, "FIRE_SMOKE_DESIGN.md SS3.2; engineering-LES choice", "Phase-C LES"),
         "turbulent_schmidt": exact(0.7, "FIRE_SMOKE_DESIGN.md SS3.2; engineering-LES choice", "Phase-C LES"),
         "vreman_Cv": exact(0.07, "Vreman 2004 and FIRE_SMOKE_DESIGN.md SS3.2", "directional MAC widths"),
         "vreman_Cnu": exact(0.1, "FIRE_SMOKE_DESIGN.md SS3.3", "k_sgs closure"),
         "tau_chem_s": exact(1.0e-4, "FIRE_SMOKE_DESIGN.md SS3.3; declared bound distinct from FDS 1e-5", "Phase-C fuels"),
         "critical_flame_temperature_K": exact(1700.0, "FDS data.f90 and FIRE_SMOKE_DESIGN.md SS3.3", "hydrocarbon baseline"),
-        "wall_stress": "resolved_molecular_no_slip",
-        "wall_heat_flux": "adiabatic",
-        "filter_widths": "directional_mac_cell_widths",
-        "predictive_blockers": ["transport_source_fit_uncertainties_unpublished"],
+        "wall_stress": exact_value("resolved_molecular_no_slip",
+            "FIRE_SMOKE_DESIGN.md SS3.2", "Phase-C walls"),
+        "wall_heat_flux": exact_value("adiabatic",
+            "FIRE_SMOKE_DESIGN.md SS3.2", "Phase-C walls"),
+        "filter_widths": exact_value("directional_mac_cell_widths",
+            "Vreman 2004 and FIRE_SMOKE_DESIGN.md SS3.2", "uniform Phase-C MAC grid"),
+        "predictive_blockers": [
+            "transport_source_fit_uncertainties_unpublished",
+            "idaes_wms_reference_bytes_unpinned",
+            "vreman_reference_bytes_unpinned",
+            "fds_constant_reference_bytes_unpinned",
+        ],
     }
 
 
