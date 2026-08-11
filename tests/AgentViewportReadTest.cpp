@@ -286,6 +286,42 @@ static std::string Req( double id, const std::string& method, const JsonValue& p
 	return JsonSerialize( r );
 }
 
+#ifdef NO_PNG_SUPPORT
+static void RunPngUnavailableSessionTest()
+{
+	const std::string scenePath = WriteTemp(
+		"agent_viewport_no_png.RISEscene",kScene);
+	Check( !scenePath.empty(),
+		"NO_PNG_SUPPORT: read_viewport scratch scene is written" );
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst(scenePath.c_str()),
+		"NO_PNG_SUPPORT: read_viewport scene loads via CST" );
+	{
+		SceneEditController controller(*pJob,pJob->GetRasterizer());
+		controller.Start();
+		Check( controller.ForTest_WaitForRenders(1,5000),
+			"NO_PNG_SUPPORT: a real viewport frame exists before encoding" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob(pJob);
+		session->AttachController(&controller);
+		AgentRpcDispatcher rpc(std::move(session));
+		const JsonValue envelope = ParseResponse(
+			rpc.HandleLine(
+				"{\"jsonrpc\":\"2.0\",\"id\":812,\"method\":\"read_viewport\",\"params\":{}}"),
+			812.0);
+		const JsonValue& error = envelope.get("error");
+		Check( error.get("code").asNumber(0.0) == -32603.0 &&
+			error.get("message").asString().find(
+				"PNG encode produced no bytes") != std::string::npos,
+			"NO_PNG_SUPPORT: read_viewport reports an explicit encoder failure" );
+		Check( envelope.find("result") == nullptr,
+			"NO_PNG_SUPPORT: read_viewport never publishes available:true with empty bytes" );
+		controller.Stop();
+	}
+	pJob->release();
+	std::remove(scenePath.c_str());
+}
+#endif
+
 #ifndef NO_PNG_SUPPORT
 // Decoded PNG bytes start with the 8-byte PNG signature 89 50 4E 47.
 static bool StartsWithPngSignature( const std::vector<unsigned char>& b )
@@ -1864,6 +1900,7 @@ int main()
 	RunFireViewportProvenanceRejection();
 #ifdef NO_PNG_SUPPORT
 	RunPngUnavailableBoundaryTest();
+	RunPngUnavailableSessionTest();
 #else
 	RunPositiveAndIsolation();
 	RunPaneSetSnapshotAtomicity();

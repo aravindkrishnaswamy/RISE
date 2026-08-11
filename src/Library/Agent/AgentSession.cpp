@@ -8505,6 +8505,11 @@ namespace RISE
 				outHeight = sink->Height();
 			}
 			safe_release( sink );
+			if( png.empty() ) {
+				outWidth = 0;
+				outHeight = 0;
+				throw std::runtime_error( "PNG encode produced no bytes" );
+			}
 
 			outAvailable = true;
 			return png;
