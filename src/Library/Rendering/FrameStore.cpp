@@ -1952,11 +1952,16 @@ namespace RISE
 					if( afterLock ) afterLock(acquired);
 				}
 			} catch( ... ) {
-				while( acquired != 0u ) {
-					--acquired;
-					distinctStores[acquired]->lock_.unlock();
-				}
+				UnlockPreparedObserverMutations(distinctStores);
 				throw;
+			}
+		}
+
+		void FrameStore::UnlockPreparedObserverMutations(
+			const std::vector<ObserverMutationToken*>& tokens ) noexcept
+		{
+			for( ObserverMutationToken* token : tokens ) {
+				if( token && token->lock_.owns_lock() ) token->lock_.unlock();
 			}
 		}
 

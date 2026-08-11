@@ -1244,6 +1244,23 @@ namespace
 		Check(vfs->GetFrameStore() != dormantCandidate,
 			"dormant bind: resolution change parks the original store");
 
+		vfs->ForTest_SetChainConstructionHook([]( const char* stage ) {
+			if( std::strcmp(stage,"bind_after_observer_locks") == 0 ) {
+				throw std::runtime_error("injected post-lock alias failure");
+			}
+		});
+		bool rejected = false;
+		try {
+			vfs->BindFrameStore(dormantCandidate);
+		} catch( const std::runtime_error& error ) {
+			rejected = std::string(error.what()) ==
+				"injected post-lock alias failure";
+		}
+		vfs->ForTest_SetChainConstructionHook({});
+		Check(rejected && !vfs->IsExternallyBound() &&
+			vfs->GetFrameStore() != dormantCandidate,
+			"dormant bind: post-lock failure preserves the active chain");
+
 		vfs->BindFrameStore(dormantCandidate);
 		Check(vfs->IsExternallyBound(),
 			"dormant bind: cached store becomes an external binding");
@@ -1861,7 +1878,8 @@ namespace
 		const std::vector<const char*> stages = {
 			"bind_after_retain",
 			"bind_after_observer_allocation",
-			"bind_after_old_observer_quiesced"
+			"bind_after_old_observer_quiesced",
+			"bind_after_observer_locks"
 		};
 		bool allPreserved = true;
 		for( const char* stage : stages ) {

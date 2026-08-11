@@ -429,46 +429,54 @@ namespace RISE
 			}
 			FrameStore::LockPreparedObserverMutations(
 				mutationTokens,observerMutationLockTestHook_);
-			{
-				std::unique_lock<std::shared_mutex> lock(chainMutex_);
-				if( candidate.store ) {
-					candidate.store->SetCameraExposureEV(
-						static_cast<double>(cameraExposureEV_));
+			try {
+				if( chainConstructionTestHook_ ) {
+					chainConstructionTestHook_("bind_after_observer_locks");
 				}
-				externalFrameStore_ = candidate.store;
-				framestore_ = candidate.store;
-				framesink_ = nullptr;
-				observer_ = candidate.observer;
-				dormant_.clear();
-				if( candidate.observer ) candidate.observer->Activate();
-				if( candidateRegistration ) {
-					bool replacementCommitted = false;
-					if( oldObserverRemoval && candidate.store == oldFs ) {
-						candidate.store->CommitPreparedObserverReplacement(
-							*candidateRegistration,*oldObserverRemoval,
-							candidate.observer);
-						replacementCommitted = true;
-					} else {
-						for( size_t i=0; i<oldDormant.size(); ++i ) {
-							if( dormantRemovals[i] &&
-								candidate.store == oldDormant[i].fs ) {
-								candidate.store->CommitPreparedObserverReplacement(
-									*candidateRegistration,*dormantRemovals[i],
-									candidate.observer);
-								replacementCommitted = true;
-								break;
+				{
+					std::unique_lock<std::shared_mutex> lock(chainMutex_);
+					if( candidate.store ) {
+						candidate.store->SetCameraExposureEV(
+							static_cast<double>(cameraExposureEV_));
+					}
+					externalFrameStore_ = candidate.store;
+					framestore_ = candidate.store;
+					framesink_ = nullptr;
+					observer_ = candidate.observer;
+					dormant_.clear();
+					if( candidate.observer ) candidate.observer->Activate();
+					if( candidateRegistration ) {
+						bool replacementCommitted = false;
+						if( oldObserverRemoval && candidate.store == oldFs ) {
+							candidate.store->CommitPreparedObserverReplacement(
+								*candidateRegistration,*oldObserverRemoval,
+								candidate.observer);
+							replacementCommitted = true;
+						} else {
+							for( size_t i=0; i<oldDormant.size(); ++i ) {
+								if( dormantRemovals[i] &&
+									candidate.store == oldDormant[i].fs ) {
+									candidate.store->CommitPreparedObserverReplacement(
+										*candidateRegistration,*dormantRemovals[i],
+										candidate.observer);
+									replacementCommitted = true;
+									break;
+								}
 							}
 						}
+						if( !replacementCommitted ) {
+							candidate.store->CommitPreparedObserverRegistration(
+								*candidateRegistration,candidate.observer);
+						}
 					}
-					if( !replacementCommitted ) {
-						candidate.store->CommitPreparedObserverRegistration(
-							*candidateRegistration,candidate.observer);
+					if( oldObserverRemoval && oldObserverRemoval->IsPrepared() ) {
+						oldFs->CommitPreparedObserverRemoval(*oldObserverRemoval);
 					}
+					candidate.Commit();
 				}
-				if( oldObserverRemoval && oldObserverRemoval->IsPrepared() ) {
-					oldFs->CommitPreparedObserverRemoval(*oldObserverRemoval);
-				}
-				candidate.Commit();
+			} catch( ... ) {
+				FrameStore::UnlockPreparedObserverMutations(mutationTokens);
+				throw;
 			}
 			for( size_t i=0; i<oldDormant.size(); ++i ) {
 				if( dormantRemovals[i] && dormantRemovals[i]->IsPrepared() ) {
@@ -931,15 +939,11 @@ namespace RISE
 			// rasterizer worker thread that drives Output*Image,
 			// and only one such thread is active at a time (the
 			// "single active rasterizer" contract from §7.5 of
-			// docs/FRAMESTORE_DESIGN.md).  TeardownChain below
-			// calls FrameStore::RemoveObserver, which waits for
-			// in-flight observer dispatches.  Under the single-
-			// rasterizer-thread contract no other dispatch can be
-			// in flight on this VFS, so the wait returns
-			// immediately.  If the contract is ever relaxed
-			// (e.g. two rasterizers concurrently driving the same
-			// VFS), this reasoning breaks; see L4 adversarial
-			// review MED-3.
+			// docs/FRAMESTORE_DESIGN.md).  An LRU eviction is returned
+			// from ParkActiveAsDormant_locked and passed to
+			// TeardownDormant_unlocked only after chainMutex_ is released,
+			// so RemoveObserver can wait for callbacks that re-enter the
+			// VFS without creating a lock cycle.
 			//
 			// L6e-2a — When externally bound (`BindFrameStore`),
 			// internal allocation is skipped entirely — `framestore_`

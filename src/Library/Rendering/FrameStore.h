@@ -467,6 +467,8 @@ namespace RISE
 			static void LockPreparedObserverMutations(
 				const std::vector<ObserverMutationToken*>& tokens,
 				const std::function<void(size_t)>& afterLock );
+			static void UnlockPreparedObserverMutations(
+				const std::vector<ObserverMutationToken*>& tokens ) noexcept;
 			void CommitPreparedObserverRemoval(
 				ObserverMutationToken& token ) noexcept;
 			void CommitPreparedObserverRegistration(
