@@ -339,3 +339,43 @@ Implementation plan: **slice G3a** (schema v2 + rasterizer + target
 store + filing echo) then **slice G3b** (`render{isolate, target}`
 comparison), sequential, each through the full gate + review loop —
 split deliberately small given that G1 alone produced four review P1s.
+
+
+## 13. Battery record — gemini arm (2026-08-11, runDir `evals/runs/imagine_g3_gemini`)
+
+9/9 runs (figure ×3, courtyard anchor ×3, counterweight ×3), gemini-3.5-flash,
+tree `67ea79b7`; qwen arm deferred by the user.  Verdict as lookup:
+
+- **Filing: 9/9 PROACTIVE — the gate never fired.**  Zero refusals, zero
+  give-ups in the entire battery; every run filed before its first geometry
+  call.  Stop rule (a) not fired.  Law refinement worth recording: a stated
+  BLOCKING precondition in a tool schema is complied with proactively —
+  unlike advice, which measures zero, a requirement the model believes binds
+  moves behaviour before its enforcement is ever exercised.
+- **Constructions: honest and subject-matched.**  Courtyard: csg×3 per run
+  (columns/arches); figure: chain dragon + csg wizard + displaced ground in
+  all three runs; counterweight: predominantly primitive (correct for a
+  pedestal display).  The representation-choice translation happens when
+  forced to decide.
+- **Outlines: pro-forma.**  89% are 3–5 points; max 8.  Filing happened;
+  imagining barely did.  (The chain-dragon declarations DID translate into
+  serpentine blended_chain bodies — visibly better than the plank-wing era —
+  but the sketch artifact itself carried little information.)
+- **Consultation: ZERO.  Stop rule (b) FIRED** — 0 `render{isolate,target}`
+  comparisons in 9/9 runs.  Headline metric (geometry revisions after a
+  comparison) is vacuously 0 against its thrice-measured baseline of 0.
+- **The escalation named in (b) is REFUTED by the same census**: isolate was
+  called 0 times in 64 renders battery-wide, so auto-compare-on-isolate
+  would never fire either.  `replace_geometry_scaffold`: also 0.  Every
+  consultation surface built this arc sits UNVISITED; the one look surface
+  models actually visit — 64/64 — is the full-frame render.
+- Counterweight guard: ask-rate 3/3 (anchor 2/3) — the gate did not disturb
+  ask-for-ambiguity behaviour.  Wall: 3.3–8.3 min/run, ~50 min total.
+
+**Where the evidence points**: a whole-scene target compared at FULL-FRAME
+render time — §10's Phase 2, the user's original proposal — is the only
+target that sits on the visited surface, and it needs no part↔object join.
+The per-part sketch pipeline stays (filing works, declarations translate);
+its comparison half awaits either Phase 2's pull or a payload-fact
+attachment to full-frame renders (which would need the join solved).
+Decision deferred to the user.
