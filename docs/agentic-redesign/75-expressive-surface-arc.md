@@ -508,6 +508,50 @@ the gap, and R1 only removed the friction around it.
 **Named follow-on arc (user, 2026-08-09): creative lighting, with
 area lights as the centre of gravity** — sequenced AFTER E4-lite.
 
+**POST-ARC G-SERIES + THE ARC-77 PIVOT (2026-08-10, `9693cc2d`,
+`61c71eec`, `199b8aaa`, `67ea79b7`): from measuring the gap to
+closing the loop.**  Four slices in one day, ending in a DIRECTION
+CHANGE that gets its own design doc
+([77-imagination-target-design.md](77-imagination-target-design.md)).
+**G1 `render{isolate}`** — look at ONE part, auto-framed (0.22% →
+27.95% of frame, 127×); four review P1s, the worst a poisoning of
+`auto_rasterizer`'s once-only integrator resolution that would have
+silently degraded the USER's own renders for a whole session.
+**G2 `file_part_plan`** — the long-designed S4 plan gate, shipped
+with refuse-until-filed capped at 3; its review found the
+value-splice bypass R1c had ALREADY documented and defended — the
+third transplanted-idiom failure, now a standing review question
+("what does the neighbouring gate defend against, and why?").
+**Then the pivot**: the user judged the G2 battery not worth running
+("it will only show what I can intuit") and reframed the problem —
+the model needs an IMAGINED TARGET to iterate toward, like a human
+sketching before modelling.  Arc 77: the plan gains a REQUIRED
+outline polygon per part (G3a — deterministic 256² masks, echoed
+back as an image at filing) and every isolated look can measure
+IoU against the sketch (G3b — declared-view vantages, the
+[sketch|silhouette|overlay] composite as the retention re-surfacing
+path, numbers reported never characterized).  Measured values match
+ANALYTIC derivations (sphere vs square = π/4).  G3b's review found
+a real data race (async worker thread reading session sketch state;
+fixed by submission-time snapshot, red-proved by observing
+superseded-plan facts) and the SECOND codec-drops-caveats instance
+(now: codec text is canonical, MCP mirrors it, facts hygiene-pinned
+on both).
+**INSTRUMENT CHANGE**: post-G2 sessions carry the plan gate
+(+sketches); trajectories are not turn-comparable to earlier
+batches on any geometry-creating session.
+**The composed loop, complete in-tree:** imagine (G3a) → build
+(scaffolds/R1a) → look (E4 cadence, G1 isolate, R1b caps) → measure
+(G3b) → fix (R2) → look again.  The battery's headline question is
+pre-committed in 77 §11: does a self-authored target move
+geometry-revisions-after-a-look off its thrice-measured zero.
+**Recorded, unbuilt:** Phase 2 (provider image generation as the
+whole-scene target — approved in principle, capability-gated,
+deferred); the scene-level region layout CUT with it (took the
+E4-lite presence-check windfall along; returns as its own lever if
+built-but-invisible persists); the MCP plain-render image-block gap
+(spun off); multi-object isolate.
+
 **POST-ARC R2 (2026-08-10, `4b9da97c`): the shapes-vs-textures
 asymmetry, and one-call form revision.**  User observation on the
 first post-R1 run ("creative with textures, the shapes are very

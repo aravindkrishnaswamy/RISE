@@ -268,3 +268,49 @@ Slice record is [75-expressive-surface-arc.md](75-expressive-surface-arc.md)
   — the anti-overfit mandate applied to the supervisor's own proposal.
   Evidence from one scene justifies a MECHANISM (cost removal), not a
   taxonomy entry.
+
+## 7. Post-arc G-series + arc-77 (2026-08-10) — process notes
+
+Slice records: 75-arc §7 "POST-ARC G-SERIES"; design =
+[77-imagination-target-design.md](77-imagination-target-design.md).
+What earned recording:
+
+- **The user's reframe beat the supervisor's roadmap.**  E4-lite and
+  the G2 battery were the named next levers; the user cut both ("the
+  battery will only show what I can intuit") and substituted the
+  imagination-target mechanism.  The redesign fit the measured
+  evidence BETTER than the roadmap did — the looking loop fires but
+  has no criterion; a self-authored target converts an aesthetic
+  judgement into the one currency the law says works.  Hold roadmaps
+  loosely; the census data outlives the plan built on it.
+- **Red-proof-by-restoration is now the strongest tool in the loop.**
+  Three times today a fix was proved by putting the bug back and
+  watching the specific assertion fail (AutoRasterizer pt/vcm log;
+  the wire-gate mutation that exposed a vacuous test; the race pin
+  observing superseded-plan facts).  Every fix round should budget
+  for it.
+- **The transplanted-idiom failure got its third and fourth
+  instances** (G2's missing patch arm; G3b copying params dims into
+  the identity pass — caught by the implementer this time, which is
+  the pattern working).  The two standing review questions ("what
+  invariant does this idiom depend on?", "what does the neighbouring
+  gate defend against?") are now permanent brief furniture.
+- **The codec-drops-caveats drift class recurred one slice after it
+  was fixed** (G1 upper-bound disclosure → G3b canvas/omission
+  caveats).  Structural fix adopted: the codec string is canonical,
+  the MCP text mirrors it, and every load-bearing caveat gets a
+  two-surface hygiene pin the day it is written.
+- **"Not reachable" claims must name the surface.**  G3b's race was
+  "not model-reachable" — true of the tool schema, false of the raw
+  wire.  A reachability claim that does not enumerate surfaces is a
+  narrow truth waiting to ship.
+- **Design decisions became tripwires.**  The retention decision
+  (sketch elided by next look; comparison composite re-surfaces it)
+  is enforced by a BIDIRECTIONAL test that goes red if elision
+  breaks AND if someone pins sketches (silent per-request token-cost
+  change).  A decision without a tripwire is a comment.
+- **Supervisor build-discipline ledger, honest:** one gate killed by
+  a too-short timeout run concurrently with a worker (the third
+  overlap; first one that cost a rebuild).  Rule held since: stages
+  under the cap, gate runs alone, workers warned when handed a
+  possibly-dirty build dir.
