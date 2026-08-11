@@ -887,7 +887,7 @@ namespace RISE
 	{
 		std::string kind, status, schema, version, viscosityMix, conductivityMix;
 		std::string molecularDiffusivity, sgsDiffusivity, totalDiffusivity;
-		std::string effectiveConductivity, sharedDiffusivity, dnsSgs;
+		std::string effectiveConductivity, effectiveViscosity, sharedDiffusivity, dnsSgs;
 		std::string vremanAlpha, vremanBeta, vremanBBeta, vremanNuSgs;
 		std::string vremanNonnegativeB, vremanZeroDenominator;
 		std::string wallStress, wallHeatFlux, filterWidths;
@@ -910,6 +910,8 @@ namespace RISE
 				totalDiffusivity != "D=D_mol+D_sgs" ||
 			!ReadTextEnvelope(record,"effective_conductivity_relationship",effectiveConductivity,error) ||
 				effectiveConductivity != "k_eff=k_mol+rho_g*cp_g*nu_sgs/Pr_t" ||
+			!ReadTextEnvelope(record,"effective_viscosity_relationship",effectiveViscosity,error) ||
+				effectiveViscosity != "mu_eff=mu_mol+rho_g*nu_sgs" ||
 			!ReadTextEnvelope(record,"shared_diffusivity_rule",sharedDiffusivity,error) ||
 				sharedDiffusivity != "same_D_for_every_J_j_and_J_Z" ||
 			!ReadTextEnvelope(record,"dns_sgs_rule",dnsSgs,error) ||
@@ -1206,6 +1208,7 @@ namespace RISE
 	}
 
 	bool FireSimulationTransportRecord::EffectiveTransport(
+		const double molecularViscosityPaS,
 		const double molecularConductivityWPerMK,
 		const double gasDensityKGPerM3,
 		const double gasCpJPerKGK,
@@ -1214,13 +1217,16 @@ namespace RISE
 		double& molecularDiffusivityM2PerS,
 		double& sgsDiffusivityM2PerS,
 		double& totalDiffusivityM2PerS,
+		double& effectiveViscosityPaS,
 		double& effectiveConductivityWPerMK,
 		std::string* error
 		) const
 	{
-		if( !m_valid || !(molecularConductivityWPerMK > 0.0) ||
+		if( !m_valid || !(molecularViscosityPaS > 0.0) ||
+			!(molecularConductivityWPerMK > 0.0) ||
 			!(gasDensityKGPerM3 > 0.0) || !(gasCpJPerKGK > 0.0) ||
 			eddyViscosityM2PerS < 0.0 ||
+			!std::isfinite(molecularViscosityPaS) ||
 			!std::isfinite(molecularConductivityWPerMK) ||
 			!std::isfinite(gasDensityKGPerM3) || !std::isfinite(gasCpJPerKGK) ||
 			!std::isfinite(eddyViscosityM2PerS) ) {
@@ -1231,13 +1237,17 @@ namespace RISE
 		molecularDiffusivityM2PerS = molecularConductivityWPerMK/volumetricHeatCapacity;
 		sgsDiffusivityM2PerS = activeEddyViscosity/m_turbulentSchmidt;
 		totalDiffusivityM2PerS = molecularDiffusivityM2PerS+sgsDiffusivityM2PerS;
+		effectiveViscosityPaS = molecularViscosityPaS+
+			gasDensityKGPerM3*activeEddyViscosity;
 		effectiveConductivityWPerMK = molecularConductivityWPerMK+
 			volumetricHeatCapacity*activeEddyViscosity/m_turbulentPrandtl;
 		return (molecularDiffusivityM2PerS > 0.0 && sgsDiffusivityM2PerS >= 0.0 &&
-			totalDiffusivityM2PerS > 0.0 && effectiveConductivityWPerMK > 0.0 &&
+			totalDiffusivityM2PerS > 0.0 && effectiveViscosityPaS > 0.0 &&
+			effectiveConductivityWPerMK > 0.0 &&
 			std::isfinite(molecularDiffusivityM2PerS) &&
 			std::isfinite(sgsDiffusivityM2PerS) &&
 			std::isfinite(totalDiffusivityM2PerS) &&
+			std::isfinite(effectiveViscosityPaS) &&
 			std::isfinite(effectiveConductivityWPerMK)) ||
 			Fail(error,"fire-simulation effective transport overflowed");
 	}

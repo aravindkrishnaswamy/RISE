@@ -225,17 +225,20 @@ int main()
 		directionalGradient,directionalWidths,eddyViscosity) &&
 		NearRelative(eddyViscosity,0.07*std::sqrt(0.0625/5.0),1.0e-14),
 		"directional linear gradient matches an independent Vreman evaluation");
-	double molecularD = 0.0, sgsD = 0.0, totalD = 0.0, effectiveK = 0.0;
-	Check(transport.EffectiveTransport(0.03,1.2,1000.0,eddyViscosity,false,
-		molecularD,sgsD,totalD,effectiveK) &&
+	double molecularD = 0.0, sgsD = 0.0, totalD = 0.0;
+	double effectiveMu = 0.0, effectiveK = 0.0;
+	Check(transport.EffectiveTransport(1.8e-5,0.03,1.2,1000.0,eddyViscosity,false,
+		molecularD,sgsD,totalD,effectiveMu,effectiveK) &&
 		NearRelative(molecularD,0.03/1200.0,1.0e-14) &&
 		NearRelative(sgsD,eddyViscosity/0.7,1.0e-14) &&
 		NearRelative(totalD,molecularD+sgsD,1.0e-14) &&
+		NearRelative(effectiveMu,1.8e-5+1.2*eddyViscosity,1.0e-14) &&
 		NearRelative(effectiveK,0.03+1200.0*eddyViscosity/0.7,1.0e-14),
 		"LES effective transport follows the record-owned relationships");
-	Check(transport.EffectiveTransport(0.03,1.2,1000.0,eddyViscosity,true,
-		molecularD,sgsD,totalD,effectiveK) && sgsD == 0.0 &&
-		NearRelative(totalD,0.03/1200.0,1.0e-14) && effectiveK == 0.03,
+	Check(transport.EffectiveTransport(1.8e-5,0.03,1.2,1000.0,eddyViscosity,true,
+		molecularD,sgsD,totalD,effectiveMu,effectiveK) && sgsD == 0.0 &&
+		NearRelative(totalD,0.03/1200.0,1.0e-14) && effectiveMu == 1.8e-5 &&
+		effectiveK == 0.03,
 		"DNS retains molecular transport and zeros SGS transport");
 
 	struct CpAnchor { const char* id; double value; };
@@ -333,6 +336,7 @@ int main()
 		"sgs_diffusivity_relationship",
 		"total_diffusivity_relationship",
 		"effective_conductivity_relationship",
+		"effective_viscosity_relationship",
 		"shared_diffusivity_rule",
 		"dns_sgs_rule",
 		"vreman_alpha_relationship",

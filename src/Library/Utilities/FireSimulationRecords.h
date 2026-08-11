@@ -201,6 +201,7 @@ namespace RISE
 			std::string* error = 0
 			) const;
 		bool EffectiveTransport(
+			double molecularViscosityPaS,
 			double molecularConductivityWPerMK,
 			double gasDensityKGPerM3,
 			double gasCpJPerKGK,
@@ -209,6 +210,7 @@ namespace RISE
 			double& molecularDiffusivityM2PerS,
 			double& sgsDiffusivityM2PerS,
 			double& totalDiffusivityM2PerS,
+			double& effectiveViscosityPaS,
 			double& effectiveConductivityWPerMK,
 			std::string* error = 0
 			) const;

@@ -526,6 +526,9 @@ def transport_payload(snapshot: dict) -> dict:
         "effective_conductivity_relationship": exact_value(
             "k_eff=k_mol+rho_g*cp_g*nu_sgs/Pr_t",
             "FIRE_SMOKE_DESIGN.md SS3.2", "Phase-C gas sensible-energy transport"),
+        "effective_viscosity_relationship": exact_value(
+            "mu_eff=mu_mol+rho_g*nu_sgs",
+            "FIRE_SMOKE_DESIGN.md SS3.2", "Phase-C gas momentum transport"),
         "shared_diffusivity_rule": exact_value("same_D_for_every_J_j_and_J_Z",
             "FIRE_SMOKE_DESIGN.md SS3.2", "Phase-C constituent transport"),
         "dns_sgs_rule": exact_value("nu_sgs=0;D_sgs=0;retain_molecular_laws",
