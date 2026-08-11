@@ -2855,6 +2855,12 @@ namespace
 			newFire->GetThermalEmissionImportance() > oldImportance &&
 			newFire->TrackingMajorantAtNM(center,500.0) > oldMajorant,
 			"the replacement CDF and majorant consume the freshly authored carbon binding" );
+		if( oldFire && newFire ) {
+			job->GetScene()->SetGlobalMedium(oldFire);
+			Check( !job->Rasterize(),
+				"a stale fire medium that cannot be rebuilt from the active manager fails closed before rendering" );
+			job->GetScene()->SetGlobalMedium(newFire);
+		}
 		Job* concreteJob = dynamic_cast<Job*>(job);
 		const bool invalidated = concreteJob && concreteJob->ForTest_SetFireEffectiveAbsorptionAblation(
 			"fire",MultichannelHeterogeneousMedium::NoEffectiveAbsorptionAblation);
