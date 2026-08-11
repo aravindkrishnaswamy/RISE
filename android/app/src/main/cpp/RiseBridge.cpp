@@ -908,9 +908,9 @@ namespace {
 // renders and viewport-preview renders both flow through the same
 // framebuffer, so the UI doesn't need to know which one it's seeing.
 //
-// The suppress-next guard drops exactly one upcoming dispatch. It is used after
-// a production render returns so that image stays on screen until the user
-// actually starts interacting.
+// Post-production restart suppresses the controller's synthetic initial render
+// at source.  This sink publishes every frame it receives, so an immediate real
+// user edit can never be consumed by a sink-level one-shot.
 class ViewportPreviewSink : public RISE::IRasterizerOutput,
                             public RISE::IFireRasterizerOutputRoute,
                             public RISE::Implementation::Reference {

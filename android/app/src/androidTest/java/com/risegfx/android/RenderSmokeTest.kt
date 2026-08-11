@@ -190,8 +190,16 @@ class RenderSmokeTest {
                 "stale callback owner cannot inspect post-render auto state",
                 RiseNative.nativeAutoResolvedIntegrator(firstOwner).isEmpty() &&
                     RiseNative.nativeAutoResolveReason(firstOwner).isEmpty() &&
-                    RiseNative.nativePrepareProductionRender(0.25,firstOwner) == null,
+                    RiseNative.nativePrepareProductionRender(0.75,firstOwner) == null,
             )
+
+            assertTrue(
+                "timeline scrub creates an undoable controller-owned time",
+                RiseNative.nativeViewportScrubBegin(callbackOwner) &&
+                    RiseNative.nativeViewportScrub(0.75,callbackOwner) &&
+                    RiseNative.nativeViewportScrubEnd(callbackOwner),
+            )
+            RiseNative.nativeViewportUndo(callbackOwner)
 
             val startControllerRace = CountDownLatch(1)
             val pointerFinished = CountDownLatch(1)
@@ -211,7 +219,7 @@ class RenderSmokeTest {
             pointerThread.start()
             startControllerRace.countDown()
             val productionHandoff =
-                RiseNative.nativePrepareProductionRender(0.25,callbackOwner)
+                RiseNative.nativePrepareProductionRender(0.75,callbackOwner)
             assertTrue(
                 "pointer traffic completes across controller teardown",
                 pointerFinished.await(10,TimeUnit.SECONDS),
@@ -222,8 +230,8 @@ class RenderSmokeTest {
                 productionHandoff,
             )
             assertTrue(
-                "a fresh controller preserves the ViewModel scene-time fallback",
-                requireNotNull(productionHandoff).sceneTime == 0.25,
+                "production handoff prefers the undo-aware controller time",
+                requireNotNull(productionHandoff).sceneTime == 0.0,
             )
             assertTrue(
                 "viewport is stopped by the atomic production handoff",
@@ -234,11 +242,12 @@ class RenderSmokeTest {
                 "viewport can restart after the first production handoff",
                 RiseNative.nativeViewportStart(true,callbackOwner),
             )
+            val synchronizedFallback = requireNotNull(productionHandoff).sceneTime
             val repeatedHandoff =
-                RiseNative.nativePrepareProductionRender(0.25,callbackOwner)
+                RiseNative.nativePrepareProductionRender(synchronizedFallback,callbackOwner)
             assertTrue(
-                "a consecutive production handoff retains nonzero scene time",
-                repeatedHandoff?.sceneTime == 0.25 &&
+                "a consecutive handoff retains the synchronized undo-aware time",
+                repeatedHandoff?.sceneTime == 0.0 &&
                     !RiseNative.nativeViewportIsRunning(callbackOwner),
             )
         } finally {

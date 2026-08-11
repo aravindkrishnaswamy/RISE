@@ -331,6 +331,11 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
             return
         }
         val canonical = handoff.sceneTime
+        // Undo / Redo can change the controller-owned time without traversing
+        // the slider callback.  The controller is rebuilt after production,
+        // so its next handoff must inherit this authoritative value rather
+        // than the slider's pre-history fallback.
+        _sceneTime.value = canonical
 
         // Advance scene state to the canonical scrubbed time AND
         // regenerate photon maps before the production rasterizer
