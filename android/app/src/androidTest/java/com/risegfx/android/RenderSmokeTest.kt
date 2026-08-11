@@ -222,8 +222,24 @@ class RenderSmokeTest {
                 productionHandoff,
             )
             assertTrue(
+                "a fresh controller preserves the ViewModel scene-time fallback",
+                requireNotNull(productionHandoff).sceneTime == 0.25,
+            )
+            assertTrue(
                 "viewport is stopped by the atomic production handoff",
                 !RiseNative.nativeViewportIsRunning(callbackOwner),
+            )
+
+            assertTrue(
+                "viewport can restart after the first production handoff",
+                RiseNative.nativeViewportStart(true,callbackOwner),
+            )
+            val repeatedHandoff =
+                RiseNative.nativePrepareProductionRender(0.25,callbackOwner)
+            assertTrue(
+                "a consecutive production handoff retains nonzero scene time",
+                repeatedHandoff?.sceneTime == 0.25 &&
+                    !RiseNative.nativeViewportIsRunning(callbackOwner),
             )
         } finally {
             RiseNative.nativeClearCallback(callbackOwner)

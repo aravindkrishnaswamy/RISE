@@ -458,6 +458,11 @@ private:
     RISE::IRasterizer*         m_viewportRasterizer = nullptr;
     RISE::IRasterizerOutput*   m_viewportSink = nullptr;
     std::atomic<bool>          m_viewportRunning{false};
+    // A recreated Android controller starts with an empty edit history and a
+    // tracked time of zero. Until this controller accepts its first scrub,
+    // production handoff must preserve the ViewModel fallback rather than
+    // mistaking that construction default for a user-authored time.
+    bool                       m_viewportHasTimeEdit = false;
 
     void buildViewportLivePreview();
     void releaseViewportLivePreview();

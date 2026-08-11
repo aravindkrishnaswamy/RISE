@@ -1106,6 +1106,8 @@ int main()
 			androidBridgeSource,"bool RiseBridge::prepareProductionRender(");
 		const std::string androidProductionRender = braceBody(
 			androidRenderViewModel,"suspend fun runProductionRenderInternal(");
+		const std::string androidViewportScrub = braceBody(
+			androidBridgeSource,"bool RiseBridge::viewportScrub(");
 		const std::string androidExposure = braceBody(
 			androidBridgeSource,"void RiseBridge::setViewExposureEV(");
 		const std::string androidToneCurve = braceBody(
@@ -1207,6 +1209,8 @@ int main()
 				std::string::npos &&
 			androidProductionHandoff.find(
 				"RISE_API_SceneEditController_LastSceneTime") != std::string::npos &&
+			androidProductionHandoff.find("if (m_viewportHasTimeEdit)") !=
+				std::string::npos &&
 			androidProductionHandoff.find("stopViewportUnowned();") !=
 				std::string::npos &&
 			androidProductionRender.find("withContext(Dispatchers.IO)") !=
@@ -1220,6 +1224,10 @@ int main()
 			androidNative.find("MUST run off the main thread") != std::string::npos &&
 			androidNative.find("nativePrepareProductionRender(") != std::string::npos &&
 			androidJni.find("JNIF(jobject, nativePrepareProductionRender)") !=
+				std::string::npos &&
+			androidViewportScrub.find("m_viewportHasTimeEdit = true;") !=
+				std::string::npos &&
+			androidRenderSmoke.find("repeatedHandoff?.sceneTime == 0.25") !=
 				std::string::npos &&
 			androidBridgeSource.find("viewportLastSceneTime") == std::string::npos &&
 			androidNative.find("nativeViewportLastSceneTime") == std::string::npos,

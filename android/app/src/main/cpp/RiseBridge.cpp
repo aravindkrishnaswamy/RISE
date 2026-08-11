@@ -401,9 +401,11 @@ bool RiseBridge::prepareProductionRender(double fallbackSceneTime,
     if (!ownsCallback(ownerToken) || !m_job) return false;
     outCanonicalSceneTime = fallbackSceneTime;
     if (m_viewportController) {
-        if (!RISE::RISE_API_SceneEditController_LastSceneTime(
-                m_viewportController, &outCanonicalSceneTime)) {
-            return false;
+        if (m_viewportHasTimeEdit) {
+            if (!RISE::RISE_API_SceneEditController_LastSceneTime(
+                    m_viewportController, &outCanonicalSceneTime)) {
+                return false;
+            }
         }
         stopViewportUnowned();
     }
@@ -1079,6 +1081,7 @@ bool RiseBridge::startViewport(bool suppressFirstFrame, uint64_t ownerToken) {
         releaseViewportLivePreview();
         return false;
     }
+    m_viewportHasTimeEdit = false;
     if (m_viewportSink) {
         // The downcast is safe — m_viewportSink is only ever populated
         // with a freshly constructed ViewportPreviewSink above.
@@ -1127,6 +1130,7 @@ void RiseBridge::stopViewportUnowned() {
     m_viewportRunning = false;
     RISE::RISE_API_DestroySceneEditController(m_viewportController);
     m_viewportController = nullptr;
+    m_viewportHasTimeEdit = false;
     releaseViewportLivePreview();
     DisplaySource expected = DisplaySource::Interactive;
     m_displaySource.compare_exchange_strong(expected,DisplaySource::None,
@@ -1279,8 +1283,12 @@ bool RiseBridge::viewportScrubBegin(uint64_t ownerToken) {
 bool RiseBridge::viewportScrub(double t, uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
     if (!lifecycleLock.owns_lock() || !ownsCallback(ownerToken)) return false;
-    return m_viewportController
-        && RISE::RISE_API_SceneEditController_OnTimeScrub(m_viewportController, t);
+    if (!m_viewportController ||
+        !RISE::RISE_API_SceneEditController_OnTimeScrub(m_viewportController, t)) {
+        return false;
+    }
+    m_viewportHasTimeEdit = true;
+    return true;
 }
 bool RiseBridge::viewportScrubEnd(uint64_t ownerToken) {
     std::unique_lock<std::mutex> lifecycleLock(m_sceneLifecycleMutex, std::try_to_lock);
