@@ -782,17 +782,30 @@ int main()
 		};
 		const std::string unixTestRunner = slurp(repoRoot/"run_all_tests.sh");
 		const std::string windowsTestRunner = slurp(repoRoot/"run_all_tests.ps1");
+		const std::string windowsTestCmake = slurp(
+			repoRoot/"build"/"cmake"/"rise-tests"/"CMakeLists.txt");
+		const std::string testReadme = slurp(repoRoot/"tests"/"README.md");
 		const std::string iorStackTest = slurp(repoRoot/"tests"/"IORStackTest.cpp");
 		const std::string fileOutputTest = slurp(
 			repoRoot/"tests"/"FileRasterizerOutputShimTest.cpp");
 		Check(unixTestRunner.find("if [ \"$bulk_rc\" -eq 0 ]") !=
+				std::string::npos &&
+			unixTestRunner.find(
+				"SKIP (current build failed; stale executable ignored)") !=
 				std::string::npos &&
 			windowsTestRunner.find("$failedBuildTargets = @{}") !=
 				std::string::npos &&
 			windowsTestRunner.find(
 				"$failedBuildTargets.ContainsKey($name)") != std::string::npos &&
 			windowsTestRunner.find(
-				"--target $src.BaseName") != std::string::npos,
+				"--target $src.BaseName") != std::string::npos &&
+			windowsTestRunner.find("Building RISE.lib") !=
+				std::string::npos &&
+			windowsTestRunner.find("& $msbuild $LibraryProject") !=
+				std::string::npos &&
+			windowsTestCmake.find("/UNDEBUG") != std::string::npos &&
+			testReadme.find("do not rely on `assert(...)`") !=
+				std::string::npos,
 			"test runners never execute stale binaries after a failed dependency-aware build" );
 		Check(iorStackTest.find("\tassert(") == std::string::npos &&
 			iorStackTest.find("return failCount == 0 ? 0 : 1;") !=
@@ -1061,6 +1074,10 @@ int main()
 			repoRoot/"build"/"VS2022"/"RISE-GUI"/"ViewportBridge.cpp");
 		const std::string interactiveEditorPlan = slurp(
 			repoRoot/"docs"/"INTERACTIVE_EDITOR_PLAN.md");
+		const std::string crossPlatformArchitecture = slurp(
+			repoRoot/"docs"/"gui"/"CROSS_PLATFORM_ARCHITECTURE.md");
+		const std::string frameStoreAndroidContract = slurp(
+			repoRoot/"docs"/"FRAMESTORE_DESIGN.md");
 		const std::string sceneEditControllerHeader = slurp(
 			repoRoot/"src"/"Library"/"SceneEditor"/"SceneEditController.h");
 		const std::string renderViewModel = slurp(
@@ -1167,7 +1184,7 @@ int main()
 			androidRenderSmoke.find("val productionHandoff =") !=
 				std::string::npos &&
 			androidRenderSmoke.find(
-				"RiseNative.nativePrepareProductionRender(0.25,callbackOwner)") !=
+				"RiseNative.nativePrepareProductionRender(0.75,callbackOwner)") !=
 				std::string::npos &&
 			androidRenderSmoke.find(
 				"!RiseNative.nativeViewportIsRunning(callbackOwner)") != std::string::npos,
@@ -1241,6 +1258,8 @@ int main()
 				std::string::npos &&
 			androidProductionRender.find("nativePrepareProductionRender(") !=
 				std::string::npos &&
+			androidProductionRender.find("_sceneTime.value = canonical") !=
+				std::string::npos &&
 			androidProductionRender.find("nativeViewportIsRunning(callbackOwner)") ==
 				std::string::npos &&
 			androidProductionRender.find("nativeViewportStop(callbackOwner)") ==
@@ -1251,7 +1270,14 @@ int main()
 				std::string::npos &&
 			androidViewportScrub.find("m_viewportHasTimeEdit = true;") !=
 				std::string::npos &&
-			androidRenderSmoke.find("repeatedHandoff?.sceneTime == 0.25") !=
+			androidRenderSmoke.find("nativeViewportUndo(callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"nativePrepareProductionRender(0.75,callbackOwner)") !=
+				std::string::npos &&
+			androidRenderSmoke.find("synchronizedFallback") !=
+				std::string::npos &&
+			androidRenderSmoke.find("repeatedHandoff?.sceneTime == 0.0") !=
 				std::string::npos &&
 			androidBridgeSource.find("viewportLastSceneTime") == std::string::npos &&
 			androidNative.find("nativeViewportLastSceneTime") == std::string::npos,
@@ -1352,8 +1378,15 @@ int main()
 			androidJni.find("nativeViewportSuppressNextFrame") ==
 				std::string::npos &&
 			androidBridgeSource.find("m_suppressNext") == std::string::npos &&
+			androidBridgeSource.find("suppress-next guard") ==
+				std::string::npos &&
 			androidBridgeSource.find(
 				"RISE_API_SceneEditController_StartSuppressingInitialRender") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find(
+				"controller construction can choose the source-level") !=
+				std::string::npos &&
+			crossPlatformArchitecture.find("the sink itself never drops a frame") !=
 				std::string::npos,
 			"Viewport restart and partial-frame design prose matches all three adapters" );
 		Check(androidCallbackSnapshot.find("NewLocalRef(m_kotlinCallback)") !=
@@ -1363,6 +1396,12 @@ int main()
 			androidCallback.find("MUST NOT call") != std::string::npos &&
 			androidCallback.find("nativeOwnsCallback") != std::string::npos &&
 			androidCallback.find("nativeCancel") != std::string::npos &&
+			frameStoreAndroidContract.find(
+				"releases the mutex before `CallVoidMethod`") !=
+				std::string::npos &&
+			frameStoreAndroidContract.find(
+				"readers hold it across the `CallVoidMethod` call") ==
+				std::string::npos &&
 			androidRenderSmoke.find("callbackReentryCount.get() > 0") !=
 				std::string::npos &&
 			androidRenderViewModel.find("System.nanoTime().coerceAtLeast(1L)") !=

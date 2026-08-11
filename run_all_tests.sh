@@ -242,6 +242,14 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	test_path="$BIN_DIR/$name"
 	prefix="$(printf '[ %3d/%3d ] %-46s' "$i" "$total" "$name")"
 
+	if [ -s "$BUILD_FAIL_TSV" ] && awk -F '\t' -v test="$name" \
+		'$1 == test { found=1 } END { exit(found ? 0 : 1) }' "$BUILD_FAIL_TSV"
+	then
+		printf '%s SKIP (current build failed; stale executable ignored)\n' "$prefix"
+		skipped=$((skipped + 1))
+		continue
+	fi
+
 	if [ ! -x "$test_path" ]; then
 		printf '%s SKIP (build failed)\n' "$prefix"
 		skipped=$((skipped + 1))

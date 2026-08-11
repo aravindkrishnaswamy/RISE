@@ -37,6 +37,12 @@ $BinDir        = Join-Path $RepoRoot "$BinSubdir\tests"
 $SrcDir        = Join-Path $RepoRoot 'tests'
 $CmakeSrcDir   = Join-Path $RepoRoot 'build\cmake\rise-tests'
 $CmakeBuildDir = Join-Path $CmakeSrcDir '_out'
+$LibraryProject = Join-Path $RepoRoot 'build\VS2022\Library\Library.vcxproj'
+$RiseLibrary = if ($Config -eq 'Debug') {
+    Join-Path $RepoRoot 'dbin\RISE.lib'
+} else {
+    Join-Path $RepoRoot 'bin\RISE.lib'
+}
 $FireOpticsGenerator = Join-Path $RepoRoot 'tools\generate_fire_optics_records.py'
 $FireOpticsData = Join-Path $RepoRoot 'docs\data'
 $FireOpticsEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireOpticsRecordData.inc'
@@ -96,6 +102,30 @@ if (-not $cmake) {
     exit 1
 }
 
+$msbuild = $null
+if (-not $NoBuild) {
+    $msbuildCommand = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    if ($msbuildCommand) {
+        $msbuild = $msbuildCommand.Source
+    } else {
+        $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) `
+            'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (Test-Path -LiteralPath $vswhere) {
+            $installationPath = & $vswhere '-latest' '-products' '*' `
+                '-requires' 'Microsoft.Component.MSBuild' '-property' 'installationPath' |
+                Select-Object -First 1
+            if ($installationPath) {
+                $candidate = Join-Path $installationPath 'MSBuild\Current\Bin\MSBuild.exe'
+                if (Test-Path -LiteralPath $candidate) { $msbuild = $candidate }
+            }
+        }
+    }
+    if (-not $msbuild) {
+        Write-Host 'ERROR: MSBuild not found; cannot prove RISE.lib is current.' -ForegroundColor Red
+        exit 1
+    }
+}
+
 # -----------------------------------------------------------------------------
 # Discover tests
 # -----------------------------------------------------------------------------
@@ -147,6 +177,37 @@ if (-not (Test-Path -LiteralPath $cacheFile)) {
         Write-Host "ERROR: cmake configure failed (exit=$LASTEXITCODE)" -ForegroundColor Red
         exit 1
     }
+    Write-Host ""
+}
+
+# -----------------------------------------------------------------------------
+# Phase 0.5: Build the production library before any test target.
+#
+# The CMake test projects link the VS Library project's RISE.lib as an imported
+# file; CMake therefore cannot discover changes under src/Library by itself.
+# An incremental MSBuild here is the authoritative dependency check. A failed
+# library build aborts before any stale test executable can run.
+# -----------------------------------------------------------------------------
+
+if (-not $NoBuild) {
+    $libraryBuildLog = Join-Path $LogDir 'library-build.log'
+    Write-Host -NoNewline ("Building RISE.lib [{0}] ... " -f $Config)
+    $libraryStart = Get-Date
+    & $msbuild $LibraryProject /nologo /m `
+        "/p:Configuration=$Config" '/p:Platform=x64' *>&1 |
+        Out-File -FilePath $libraryBuildLog -Encoding utf8
+    $libraryBuildRc = $LASTEXITCODE
+    $libraryDuration = [int]((Get-Date) - $libraryStart).TotalSeconds
+    if ($libraryBuildRc -ne 0 -or -not (Test-Path -LiteralPath $RiseLibrary)) {
+        Write-Host ("FAILED (exit={0}, {1}s) - see {2}" -f `
+            $libraryBuildRc, $libraryDuration, $libraryBuildLog) -ForegroundColor Red
+        if (Test-Path -LiteralPath $libraryBuildLog) {
+            Get-Content -LiteralPath $libraryBuildLog -Tail 80 | Write-Host
+        }
+        exit 1
+    }
+    Write-Host ("done ({0}s)" -f $libraryDuration)
+    Remove-Item -LiteralPath $libraryBuildLog -ErrorAction SilentlyContinue
     Write-Host ""
 }
 

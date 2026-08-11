@@ -85,7 +85,10 @@ under `tools/`; they are not assertion-based `run_all_tests` executables.
 ## Style Of Test Used Here
 
 - Each file is an executable with its own `main`.
-- Assertions are usually plain `assert(...)`.
+- New tests use an always-on `Check`/failure counter (or an equivalent explicit
+  nonzero return) so Release builds cannot compile their oracles out. The
+  Windows test project also undefines `NDEBUG` to keep legacy `assert(...)`
+  coverage active until those files are converted.
 - Helpful progress text is printed with `std::cout`.
 - The best targets are deterministic helpers, math utilities, cache logic, and other focused behavior that does not require comparing full rendered images.
 - For procedural / noise tests, separate **exact contract checks** from **sampled-difference heuristics**. Put exact identities first in `main()` and label the weaker sampled-difference checks clearly so future readers do not mistake them for strong oracles.
@@ -97,7 +100,8 @@ under `tools/`; they are not assertion-based `run_all_tests` executables.
 1. Add a new `tests/<Name>.cpp` file.
 2. Include the minimal headers you need from `src/Library`.
 3. Keep the test deterministic and fast.
-4. Use `assert` for pass/fail checks.
+4. Use an always-on check that records failure and makes `main()` return
+   nonzero; do not rely on `assert(...)` for new runtime coverage.
 5. Build with `make -C build/make/rise tests` on Linux/macOS, or `cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel` on Windows.
 6. Run with `./run_all_tests.sh` on Linux/macOS, or `.\run_all_tests.ps1` on Windows.
 
