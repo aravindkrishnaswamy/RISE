@@ -5487,11 +5487,15 @@ namespace
 					};
 					SampleMoments pureOnBatches[3];
 					bool allBatchesAgree = true;
+					bool allPureMomentsValid = true;
 					for( unsigned int batch=0; batch<batchCount; ++batch ) {
 						const unsigned int seedBase = 0xf44bac1u +
 							thisFixture*0x101u + batch*0x10001u;
 						const SampleMoments neeOn =
 							momentsPT(*job->GetScene(),*neeCaster,seedBase);
+						allPureMomentsValid = allPureMomentsValid &&
+							std::isfinite(neeOn.mean) &&
+							std::isfinite(neeOn.variance) && neeOn.mean>0.0;
 						pureOnBatches[batch] = neeOn;
 						SampleMoments neeOff{};
 						bool agrees = true;
@@ -5513,6 +5517,9 @@ namespace
 							(std::string(fixtureName) +
 								" NEE-on/off weight-1 legacy means agree in three independent batches").c_str() );
 					}
+					Check( allPureMomentsValid,
+						(std::string(fixtureName) +
+							" fast fallback produces finite positive pure-integrator radiance").c_str() );
 					Check( integrator->UnsupportedContinuationDiagnosticEmitted(),
 						(std::string(fixtureName) +
 							" fallback records the diagnostic route witness").c_str() );
@@ -5529,11 +5536,15 @@ namespace
 					const unsigned int diagnosticsBeforeShader =
 						capture->MatchCount();
 					bool allShaderBatchesAgree = true;
+					bool allShaderMomentsValid = true;
 					for( unsigned int batch=0; batch<batchCount; ++batch ) {
 						const unsigned int seedBase = 0x44d15a1u +
 							thisFixture*0x211u + batch*0x20003u;
 						const SampleMoments shaderOn =
 							momentsShader(*neeCaster,seedBase);
+						allShaderMomentsValid = allShaderMomentsValid &&
+							std::isfinite(shaderOn.mean) &&
+							std::isfinite(shaderOn.variance) && shaderOn.mean>0.0;
 						SampleMoments shaderOff{};
 						bool agrees = true;
 						if( statistical ) {
@@ -5553,6 +5564,9 @@ namespace
 							(std::string(fixtureName) +
 								" shader-dispatch NEE-on/off fallback agrees with the pure-integrator route").c_str() );
 					}
+					Check( allShaderMomentsValid,
+						(std::string(fixtureName) +
+							" fast fallback produces finite positive shader radiance").c_str() );
 					Check( capture->MatchCount() == diagnosticsBeforeShader+1 &&
 						capture->LastMatch() == diagnostic,
 						(std::string(fixtureName) +
