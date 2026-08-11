@@ -970,7 +970,16 @@ rule to the three exported aerosol terms, but not to unexported gas. Details:
   content hash. V5 includes an absolute homogeneous product-gas cooling slab
   against an independent line/band reference as well as two cells with the
   same Z but different remote-soot-burnout histories that must cool
-  differently. No renderer can claim thermal-IR gas fidelity until those gas
+  differently. **The slab comparison is made in the optically-thin
+  Planck-mean limit** (r50): ε → κ_P·pL to first order, and that first-order
+  term *is* the Planck mean and is independent of line shape, so the
+  comparison is run at reference states where κ_P·pL ≲ 0.05 and is
+  shape-free. Comparing this thin-limit cooling closure against
+  optically-thick total emissivity would test a claim the model does not
+  make; the per-column κ_P·L monitor above is what detects a broken thin
+  assumption. Planck-mean-specific references (independent line-by-line
+  κ_P tabulations) are accordingly preferred over emissivity datasets as
+  the primary check, with emissivity data used as thin-limit corroboration. No renderer can claim thermal-IR gas fidelity until those gas
   species and this exact record are added to §8 channels and to coefficients,
   majorants, emission CDF bounds, and Kirchhoff emission.
 - For wavelength-dependent E(m), every constituent mean is evaluated
@@ -1365,6 +1374,8 @@ radiative loss):
   not an independent test. A separate homogeneous CO₂/H₂O fixture requires
   absolute band-integrated cooling against an independent reference for the
   pinned gas-table state, plus the same-Z/different-product-history check.
+  Per r50 that gas comparison is the **thin-limit Planck-mean** one defined
+  in §3.5, evaluated where κ_P·pL ≲ 0.05.
 - V6. **Timestep-refinement convergence** of heat-release and
   ignition-front histories at fixed grid (§3.3's discrete-realization and
   ignition-gate requirements), plus graph fixtures in which a CFT-failing
@@ -4539,6 +4550,37 @@ medium in Phase C.
    upper-bound test, certified closed domains, and out-of-domain rejection RED
    gate. Predictive Phase C is blocked until this closes; metadata
    fields without the actual table are not a model.
+   **Data in hand as of r50** — the derived dataset and its provenance are
+   [FIRE_GAS_OPACITY_DATASET.md](FIRE_GAS_OPACITY_DATASET.md) and
+   `docs/data/gas_opacity/`; what remains is the certified §8 record
+   (encoding, record ID, domain/derivative certification, RED gates) built
+   from it. Source: HITEMP-2010 (H₂O) and HITEMP-2024 (CO₂) from
+   HITRAN*online*, with TIPS-2021 partition sums (MIT). All 440,501,248
+   records ingested with zero parse failures, both counts reproducing the
+   published line counts exactly. **Architecture pinned (r50): the record
+   stores Planck means only, and deliberately discards line-shape
+   parameters.** §3.5 consumes κ_P in the optically-thin limit; Planck means
+   are linear in κ_λ, so broadening cancels exactly and self-broadening is
+   not an axis of this record. The stored form — amplitude with (ν, E″)
+   moments — reconstructs Σ S(T) analytically at any temperature. Two
+   consequences are binding: full Voigt line-shape generation is **out of
+   scope** for this record (it belongs to a future transmission or
+   band-resolved capability, which §3.5 explicitly does not need since gas
+   bands are simulator-only and never rendered); and a **knot-only lookup
+   table is forbidden** — §3.5's bracketed backward-Euler solve evaluates
+   both Planck means at arbitrary trial temperatures, so any representation
+   that rejects interior states cannot serve the solver. The F′(T) enclosure
+   is derived analytically from the exponential-sum form, not from finite
+   differences. Validation achieved: H₂O within 1–3 % and CO₂ within
+   0.1–3.2 % of independent line-by-line references, with CO₂ reproducing
+   the known 15–20 % offset below RADCAL/TNF that two independent LBL
+   calculations both predict. Visible-band bound (un-pruned): 1.69×10⁻⁵
+   (H₂O), 1.52×10⁻¹⁰ (CO₂) — **but the CO₂ figure covers 565–780 nm only**,
+   since the HITEMP-2024 CO₂ list ends at 17,696.93 cm⁻¹; the record must
+   carry the physical negligibility argument for 380–565 nm rather than
+   implying measured coverage. Raw `.par` bytes are not redistributed
+   (HITRAN publishes a citation policy, no licence); 36 source digests are
+   pinned and the regeneration tools committed.
 6. **(thermochemistry)** Freeze the baseline air plus per-fuel
    `gas_thermochemistry` records required by §3.3 and the carbon/condensed
    `aerosol_thermochemistry` record required by §3.4: source/provenance for every

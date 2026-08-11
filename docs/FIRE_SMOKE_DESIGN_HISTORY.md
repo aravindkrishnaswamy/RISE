@@ -969,3 +969,40 @@ it was already tried and refuted here.
   alternatives — pulling the renderer-wide preparation seam into Phase B,
   or inventing a Phase-B frame-source API with no consumer — were
   rejected as scope creep and speculative architecture respectively.
+
+- **r50 (2026-08-11):** gas-opacity architecture pinned, raised by the
+  Phase-C implementation agent's increment-2 stop. The agent's Voigt-LBL
+  generator needed 2 self-fractions × 105 temperatures = 92.5 billion
+  line-state evaluations for the EM2C cross-check against a 5-billion cap,
+  and offered three options (sharded LBL / correlated-k / unbounded table).
+  **All three were declined**: each pays for a line-shape dimension the
+  consumed quantity does not have. §3.5 consumes Planck means in the
+  optically-thin limit, Planck means are linear in κ_λ, and therefore
+  broadening cancels exactly — line shape is not an axis of this record.
+  The adopted dataset stores a temperature-independent (ν, E″) moment
+  histogram that reconstructs Σ S(T) analytically at any temperature; the
+  same state grid costs ~4×10⁷ evaluations instead of 9.25×10¹⁰.
+  **The decisive argument was correctness, not cost:** the agent's
+  knot-only lookup with interior-state rejection cannot serve §3.5 at all,
+  because the bracketed backward-Euler solve evaluates both Planck means at
+  *arbitrary trial temperatures* on every iteration. The exponential-sum
+  form is continuous and analytically differentiable in T, which is also
+  what the certified F′(T) enclosure wants — so the enclosure is now
+  derived analytically rather than by finite differences. Also amended
+  §3.5/§3.8's V5 wording: the gas slab comparison is explicitly the
+  **thin-limit Planck-mean** one (ε → κ_P·pL to first order, shape-free,
+  run where κ_P·pL ≲ 0.05), because comparing a thin-limit cooling closure
+  against optically-thick total emissivity tests a claim the model never
+  makes; the per-column κ_P·L monitor is what detects a broken thin
+  assumption, and Planck-mean-specific references are preferred over
+  emissivity datasets as the primary check. Dataset landed in `ef8332bd`
+  with full provenance (FIRE_GAS_OPACITY_DATASET.md): 440,501,248 HITEMP
+  records ingested with zero parse failures and both counts reproducing
+  HITRAN's published totals; validated to 0.1–3.2 % against two independent
+  line-by-line references while reproducing RADCAL's known CO₂ offset;
+  9.4 GB of line lists reduced to 188 KB of operational data. Item 5's
+  remaining work is the certified §8 record built from that data, not the
+  data itself. Full Voigt LBL is recorded as out of scope for this record
+  (a future transmission/band-resolved capability), and the CO₂ visible
+  bound is explicitly a 565–780 nm bound with a physical-negligibility
+  argument required for 380–565 nm.
