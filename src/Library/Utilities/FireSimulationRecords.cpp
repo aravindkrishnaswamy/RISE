@@ -254,6 +254,19 @@ namespace RISE
 			return metadata && ValidateMetadataValue(*metadata,error);
 		}
 
+		bool HasUncertaintyKind(
+			const RISECBOR64::Value& envelope,
+			const char* expected,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* uncertainty = Required(
+				envelope,"uncertainty",RISECBOR64::Value::Map,error);
+			std::string kind;
+			return uncertainty && ReadText(*uncertainty,"kind",kind,error) &&
+				(kind == expected || Fail(error,"fire-simulation uncertainty kind is not the required species kind"));
+		}
+
 		bool ValidateSchemaHeader(
 			const RISECBOR64::Value& record,
 			std::string* error
@@ -309,6 +322,160 @@ namespace RISE
 				ReadFloatArray(rows->GetArray().back(),last,error) &&
 				first[0] == 5.0 && last[0] == 370.0) ||
 				Fail(error,"fire-simulation measured condensed-organic domain is not [5,370] K");
+		}
+
+		bool ValidateMissingThermochemistryRecords(
+			const RISECBOR64::Value& record,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* missing = Required(
+				record,"missing_required_records",RISECBOR64::Value::Array,error);
+			if( !missing || missing->GetArray().size() != 2 ) {
+				return Fail(error,"fire-simulation missing-record stubs are incomplete");
+			}
+			const char* expectedSpecies[] = {
+				"C6H10O5,levoglucosan", "C6H10O5,condensed-organics"
+			};
+			const char* expectedKinds[] = {
+				"gas_species_thermochemistry", "condensed_species_thermochemistry"
+			};
+			const char* expectedRoles[] = {
+				"condensable_vapor", "condensed_organic_aerosol_above_370K"
+			};
+			for( std::size_t index=0; index<2; ++index ) {
+				const RISECBOR64::Value& stub = missing->GetArray()[index];
+				std::string kind, species, role, status, policy;
+				if( stub.GetType() != RISECBOR64::Value::Map || stub.GetMap().size() != 5 ||
+					!ReadText(stub,"record_kind",kind,error) || kind != expectedKinds[index] ||
+					!ReadText(stub,"species_id",species,error) || species != expectedSpecies[index] ||
+					!ReadText(stub,"required_role",role,error) || role != expectedRoles[index] ||
+					!ReadText(stub,"status",status,error) || status != "owner_gated_missing_record" ||
+					!ReadText(stub,"failure_policy",policy,error) ||
+						policy != "reject_consumers_requiring_species" ) {
+					return Fail(error,"fire-simulation missing-record stub is malformed or contains placeholder data");
+				}
+			}
+			return true;
+		}
+
+		bool ValidateIncrementFit(
+			const RISECBOR64::Value& fit,
+			std::string* error
+			)
+		{
+			double slope = 0.0, maximum = 0.0, rSquared = 0.0;
+			const RISECBOR64::Value* residuals = Required(
+				fit,"adjacent_increment_residuals",RISECBOR64::Value::Array,error);
+			std::vector<double> values;
+			if( !ReadFloat(fit,"slope_per_CH2",slope,error) ||
+				!ReadFloat(fit,"max_abs_adjacent_increment_residual",maximum,error) ||
+				!ReadFloat(fit,"r_squared",rSquared,error) || maximum < 0.0 ||
+				!residuals || !ReadFloatArray(*residuals,values,error) || values.size() != 4 ) {
+				return Fail(error,"fire-simulation CH2 increment fit is malformed");
+			}
+			double verifiedMaximum = 0.0;
+			for( const double value : values ) verifiedMaximum = std::max(verifiedMaximum,std::fabs(value));
+			return (verifiedMaximum == maximum) ||
+				Fail(error,"fire-simulation CH2 increment residual bound is false");
+		}
+
+		bool ValidatePentacosaneCertificate(
+			const RISECBOR64::Value& species,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* certificate = Required(
+				species,"assumption_bound_certificate",RISECBOR64::Value::Map,error);
+			if( !certificate ) return false;
+			std::string derivation, basis, citation, lowExtension;
+			double addedCH2 = 0.0, molecularWeightBound = 0.0;
+			double formationBound = 0.0, cpBound = 0.0, hsBound = 0.0;
+			const RISECBOR64::Value* sources = Required(
+				*certificate,"source_species",RISECBOR64::Value::Array,error);
+			const RISECBOR64::Value* segmentFits = Required(
+				*certificate,"segment_increment_fits",RISECBOR64::Value::Array,error);
+			const RISECBOR64::Value* molecularFit = Required(
+				*certificate,"molecular_weight_increment_fit",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* formationFit = Required(
+				*certificate,"formation_enthalpy_increment_fit",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* corroboration = Required(
+				*certificate,"corroboration_only",RISECBOR64::Value::Map,error);
+			if( !ReadText(*certificate,"derivation_kind",derivation,error) ||
+				derivation != "nasa_cea_c4_c8_least_squares_ch2_increment_v1" ||
+				!ReadFloat(*certificate,"added_CH2",addedCH2,error) || addedCH2 != 17.0 ||
+				!ReadText(*certificate,"basis",basis,error) ||
+				!ReadText(*certificate,"citation",citation,error) ||
+				!ReadText(*certificate,"low_temperature_extension",lowExtension,error) ||
+				!ReadFloat(*certificate,"molecular_weight_magnitude_kg_per_kmol",molecularWeightBound,error) ||
+				!ReadFloat(*certificate,"formation_enthalpy_magnitude_J_per_kmol",formationBound,error) ||
+				!ReadFloat(*certificate,"maximum_cp_magnitude_J_per_kg_K",cpBound,error) ||
+				!ReadFloat(*certificate,"maximum_hs_magnitude_J_per_kg",hsBound,error) ||
+				molecularWeightBound < 0.0 || formationBound <= 0.0 || cpBound <= 0.0 || hsBound <= 0.0 ||
+				!sources || sources->GetArray().size() != 5 ||
+				!segmentFits || segmentFits->GetArray().size() != 2 ||
+				!molecularFit || !formationFit || !corroboration ) {
+				return Fail(error,"fire-simulation pentacosane assumption certificate is malformed");
+			}
+			const char* expectedSources[] = {
+				"C4H10,n-butane", "C5H12,n-pentane", "C6H14,n-hexane",
+				"C7H16,n-heptane", "C8H18,n-octane"
+			};
+			for( std::size_t index=0; index<5; ++index ) {
+				if( sources->GetArray()[index].GetType() != RISECBOR64::Value::Text ||
+					sources->GetArray()[index].GetText() != expectedSources[index] ) {
+					return Fail(error,"fire-simulation pentacosane increment source list is invalid");
+				}
+			}
+			if( !ValidateIncrementFit(*molecularFit,error) ||
+				!ValidateIncrementFit(*formationFit,error) ) return false;
+			double verifiedMaximumCp = 0.0, verifiedMaximumHs = 0.0;
+			for( std::size_t index=0; index<2; ++index ) {
+				const RISECBOR64::Value& segment = segmentFits->GetArray()[index];
+				const RISECBOR64::Value* coefficientFits = Required(
+					segment,"coefficient_increment_fits",RISECBOR64::Value::Array,error);
+				double residual = 0.0, propagatedCp = 0.0, propagatedHs = 0.0;
+				std::vector<double> domain, sourceDomain;
+				const RISECBOR64::Value* encodedDomain = Required(
+					segment,"temperature_domain_K",RISECBOR64::Value::Array,error);
+				const RISECBOR64::Value* encodedSourceDomain = Required(
+					segment,"source_temperature_domain_K",RISECBOR64::Value::Array,error);
+				if( !coefficientFits || coefficientFits->GetArray().size() != 9 ||
+					!encodedDomain || !ReadFloatArray(*encodedDomain,domain,error) || domain.size() != 2 ||
+					!encodedSourceDomain || !ReadFloatArray(*encodedSourceDomain,sourceDomain,error) ||
+					sourceDomain.size() != 2 ||
+					!ReadFloat(segment,"certified_max_abs_cp_increment_residual_over_R",residual,error) ||
+					!ReadFloat(segment,"propagated_17_CH2_cp_bound_J_per_kg_K",propagatedCp,error) ||
+					!ReadFloat(segment,"propagated_17_CH2_hs_bound_J_per_kg",propagatedHs,error) ||
+					residual <= 0.0 || propagatedCp <= 0.0 || propagatedHs <= 0.0 ||
+					domain[0] != (index == 0 ? 200.0 : 1000.0) || domain[1] != (index == 0 ? 1000.0 : 6000.0) ||
+					sourceDomain[0] != (index == 0 ? 300.0 : 1000.0) ||
+					sourceDomain[1] != (index == 0 ? 1000.0 : 6000.0) ) {
+					return Fail(error,"fire-simulation pentacosane segment-fit certificate is malformed");
+				}
+				for( const RISECBOR64::Value& fit : coefficientFits->GetArray() ) {
+					if( !ValidateIncrementFit(fit,error) ) return false;
+				}
+				verifiedMaximumCp = std::max(verifiedMaximumCp,propagatedCp);
+				verifiedMaximumHs = std::max(verifiedMaximumHs,propagatedHs);
+			}
+			std::string repository, revision, licenseStatus, method;
+			double cpDifference = 0.0, formationDifference = 0.0;
+			if( verifiedMaximumCp != cpBound || verifiedMaximumHs != hsBound ||
+				!ReadText(*corroboration,"repository",repository,error) ||
+					repository != "https://github.com/ReactionMechanismGenerator/RMG-database" ||
+				!ReadText(*corroboration,"revision",revision,error) ||
+					revision != "fc7bb138f9380f1274cc9645ef6586c83dda450e" ||
+				!ReadText(*corroboration,"license_status",licenseStatus,error) ||
+					licenseStatus != "no repository license found; no bytes committed and no RMG value used as an operational source" ||
+				!ReadText(*corroboration,"method",method,error) ||
+					method != "Benson Cs-CsHHH and Cs-CsCsHH group-additivity comparison" ||
+				!ReadFloat(*corroboration,"maximum_relative_cp_difference_300_to_1000K",cpDifference,error) ||
+				!ReadFloat(*corroboration,"relative_formation_enthalpy_difference_at_298p15K",formationDifference,error) ||
+				cpDifference < 0.0 || formationDifference < 0.0 ) {
+				return Fail(error,"fire-simulation pentacosane corroboration certificate is invalid");
+			}
+			return true;
 		}
 
 		bool ReadEnvelope(
@@ -625,6 +792,7 @@ namespace RISE
 			!ReadDomain(record,"common_temperature_domain_K",m_temperatureMinK,m_temperatureMaxK,error) ||
 			!ReadEnvelope(record,"reference_temperature_K",m_referenceTemperatureK,error) ||
 			!ValidateMeasuredCondensedOrganics(record,error) ||
+			!ValidateMissingThermochemistryRecords(record,error) ||
 			!ReadBlockers(record,m_predictiveBlockers,error) ) {
 			return false;
 		}
@@ -647,10 +815,15 @@ namespace RISE
 			std::string phase;
 			const RISECBOR64::Value* formula = Required(
 				encoded,"formula",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* molecularWeightEnvelope = Required(
+				encoded,"molecular_weight_kg_per_kmol",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* formationEnthalpyEnvelope = Required(
+				encoded,"formation_enthalpy_J_per_kmol_298p15K",RISECBOR64::Value::Map,error);
 			if( !ReadText(encoded,"species_id",species.id,error) ||
 				!ids.insert(species.id).second ||
 				!ReadText(encoded,"phase",phase,error) ||
 				(phase != "gas" && phase != "aerosol_solid") || !formula || formula->GetMap().empty() ||
+				!molecularWeightEnvelope || !formationEnthalpyEnvelope ||
 				!ReadEnvelope(encoded,"molecular_weight_kg_per_kmol",species.molecularWeightKGPerKMol,error) ||
 				!ReadEnvelope(encoded,"formation_enthalpy_J_per_kmol_298p15K",species.formationEnthalpyJPerKMol,error) ||
 				species.molecularWeightKGPerKMol <= 0.0 ) {
@@ -673,9 +846,27 @@ namespace RISE
 				modelKind != "nasa9_cp_with_continuous_integrated_hs_v1" ||
 				!ReadDomain(*model,"temperature_domain_K",modelMinimum,modelMaximum,error) ||
 				!ReadFloat(*model,"reference_temperature_K",modelReference,error) ||
-				modelMinimum != m_temperatureMinK || modelMaximum != m_temperatureMaxK ||
+				modelMinimum > m_temperatureMinK || modelMaximum < m_temperatureMaxK ||
 				modelReference != m_referenceTemperatureK ||
 				!ValidateTableMetadata(*model,error) ) return false;
+			const RISECBOR64::Value* modelMetadata = model->Find("table_metadata");
+			if( species.id == "C25H52,n-pentacosane" ) {
+				double carbon = 0.0, hydrogen = 0.0;
+				const RISECBOR64::Value* carbonValue = formula->Find("C");
+				const RISECBOR64::Value* hydrogenValue = formula->Find("H");
+				if( phase != "gas" || modelMinimum != 200.0 || modelMaximum != 5000.0 ||
+					formula->GetMap().size() != 2 || !carbonValue || !hydrogenValue ||
+					!ReadNumber(*carbonValue,carbon,error) || carbon != 25.0 ||
+					!ReadNumber(*hydrogenValue,hydrogen,error) || hydrogen != 52.0 ||
+					!HasUncertaintyKind(*molecularWeightEnvelope,"assumption_bound",error) ||
+					!HasUncertaintyKind(*formationEnthalpyEnvelope,"assumption_bound",error) ||
+					!modelMetadata || !HasUncertaintyKind(*modelMetadata,"assumption_bound",error) ||
+					!ValidatePentacosaneCertificate(encoded,error) ) {
+					return Fail(error,"fire-simulation pentacosane assumption record is invalid");
+				}
+			} else if( encoded.Find("assumption_bound_certificate") ) {
+				return Fail(error,"fire-simulation assumption certificate is attached to the wrong species");
+			}
 			for( const RISECBOR64::Value& encodedSegment : segments->GetArray() ) {
 				FireThermochemistrySegment segment = {};
 				std::vector<double> coefficients;
@@ -687,8 +878,8 @@ namespace RISE
 					!ReadFloat(encodedSegment,"certified_cp_lower_J_per_kg_K",segment.certifiedCpLowerJPerKGK,error) ||
 					!encodedCoefficients || !ReadFloatArray(*encodedCoefficients,coefficients,error) ||
 					coefficients.size() != 9 || segment.temperatureMinK >= segment.temperatureMaxK ||
-					segment.temperatureMinK < m_temperatureMinK ||
-					segment.temperatureMaxK > m_temperatureMaxK ||
+					segment.temperatureMinK < modelMinimum ||
+					segment.temperatureMaxK > modelMaximum ||
 					segment.certifiedCpLowerJPerKGK <= 0.0 ) {
 					return Fail(error,"fire-simulation thermochemistry segment is invalid");
 				}
@@ -709,9 +900,9 @@ namespace RISE
 				}
 				species.segments.push_back(segment);
 			}
-			if( species.segments.front().temperatureMinK != m_temperatureMinK ||
-				species.segments.back().temperatureMaxK != m_temperatureMaxK ) {
-				return Fail(error,"fire-simulation thermochemistry species does not span the common domain");
+			if( species.segments.front().temperatureMinK != modelMinimum ||
+				species.segments.back().temperatureMaxK != modelMaximum ) {
+				return Fail(error,"fire-simulation thermochemistry species does not span its certified domain");
 			}
 			for( std::size_t i=1; i<species.segments.size(); ++i ) {
 				const FireThermochemistrySegment& left = species.segments[i-1];
@@ -828,10 +1019,12 @@ namespace RISE
 		double totalMass = 0.0;
 		std::set<std::string> ids;
 		for( const auto& entry : massDensities ) {
-			if( entry.second < 0.0 || !std::isfinite(entry.second) ||
+			const FireThermochemistrySpecies* species = FindSpecies(entry.first.c_str());
+			if( !species || entry.second < 0.0 || !std::isfinite(entry.second) ||
 				!ids.insert(entry.first).second ) {
 				return Fail(error,"fire-simulation mixture mass densities are invalid");
 			}
+			if( entry.second == 0.0 ) continue;
 			double sensibleEnthalpy = 0.0;
 			if( !SensibleEnthalpyJPerKG(entry.first.c_str(),temperatureK,sensibleEnthalpy,error) ) {
 				return false;
@@ -853,15 +1046,29 @@ namespace RISE
 		std::string* error
 		) const
 	{
+		double lower = 0.0;
+		double upper = std::numeric_limits<double>::max();
+		double positiveMass = 0.0;
+		std::set<std::string> ids;
+		for( const auto& entry : massDensities ) {
+			const FireThermochemistrySpecies* species = FindSpecies(entry.first.c_str());
+			if( !species || entry.second < 0.0 || !std::isfinite(entry.second) ||
+				!ids.insert(entry.first).second ) {
+				return Fail(error,"fire-simulation inversion composition is invalid");
+			}
+			if( entry.second == 0.0 ) continue;
+			positiveMass += entry.second;
+			lower = std::max(lower,species->segments.front().temperatureMinK);
+			upper = std::min(upper,species->segments.back().temperatureMaxK);
+		}
 		double lowEnergy = 0.0, highEnergy = 0.0;
-		if( !std::isfinite(sensibleEnergy) ||
-			!MixtureSensibleEnergyJPerM3(massDensities,m_temperatureMinK,lowEnergy,error) ||
-			!MixtureSensibleEnergyJPerM3(massDensities,m_temperatureMaxK,highEnergy,error) ) return false;
+		if( !std::isfinite(sensibleEnergy) || !(positiveMass > 0.0) ||
+			!std::isfinite(positiveMass) || !(lower < upper) ||
+			!MixtureSensibleEnergyJPerM3(massDensities,lower,lowEnergy,error) ||
+			!MixtureSensibleEnergyJPerM3(massDensities,upper,highEnergy,error) ) return false;
 		if( sensibleEnergy < lowEnergy || sensibleEnergy > highEnergy ) {
 			return Fail(error,"fire-simulation sensible energy is outside the certified inversion bracket");
 		}
-		double lower = m_temperatureMinK;
-		double upper = m_temperatureMaxK;
 		for( unsigned int iteration=0; iteration<96; ++iteration ) {
 			const double midpoint = 0.5*(lower+upper);
 			double midpointEnergy = 0.0;

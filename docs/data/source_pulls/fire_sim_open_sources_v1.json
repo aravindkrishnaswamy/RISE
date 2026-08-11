@@ -17161,6 +17161,174 @@
      }
     ],
     "source_header": "C(gr)             Graphite. Ref-Elm. TRC(4/83) vc,uc,tc1000-1002."
+   },
+   {
+    "formation_enthalpy_J_per_kmol_298p15K": -125790000.0,
+    "formula": {
+     "C": 4.0,
+     "H": 10.0
+    },
+    "molecular_weight_kg_per_kmol": 58.1222,
+    "name": "C4H10,n-butane",
+    "segments": [
+     {
+      "coefficients": [
+       -317587.254,
+       6176.33182,
+       -38.9156212,
+       0.1584654284,
+       -0.0001860050159,
+       1.199676349e-07,
+       -3.20167055e-11,
+       -45403.6339,
+       237.9488665
+      ],
+      "temperature_max_K": 1000.0,
+      "temperature_min_K": 300.0
+     },
+     {
+      "coefficients": [
+       7682322.45,
+       -32560.5151,
+       57.3673275,
+       -0.00619791681,
+       1.180186048e-06,
+       -1.221893698e-10,
+       5.25063525e-15,
+       177452.656,
+       -358.791876
+      ],
+      "temperature_max_K": 6000.0,
+      "temperature_min_K": 1000.0
+     }
+    ],
+    "source_header": "C4H10,n-butane    Hf:TRC(10/85) w1350. Chen,1975."
+   },
+   {
+    "formation_enthalpy_J_per_kmol_298p15K": -146760000.0,
+    "formula": {
+     "C": 5.0,
+     "H": 12.0
+    },
+    "molecular_weight_kg_per_kmol": 72.14878,
+    "name": "C5H12,n-pentane",
+    "segments": [
+     {
+      "coefficients": [
+       -276889.4625,
+       5834.28347,
+       -36.1754148,
+       0.1533339707,
+       -0.0001528395882,
+       8.191092e-08,
+       -1.792327902e-11,
+       -46653.7525,
+       226.5544053
+      ],
+      "temperature_max_K": 1000.0,
+      "temperature_min_K": 300.0
+     },
+     {
+      "coefficients": [
+       -2530779.286,
+       -8972.59326,
+       45.3622326,
+       -0.002626989916,
+       3.135136419e-06,
+       -5.31872894e-10,
+       2.886896868e-14,
+       14846.16529,
+       -251.6550384
+      ],
+      "temperature_max_K": 6000.0,
+      "temperature_min_K": 1000.0
+     }
+    ],
+    "source_header": "C5H12,n-pentane   TRC(10/85) tuvw1350."
+   },
+   {
+    "formation_enthalpy_J_per_kmol_298p15K": -166920000.0,
+    "formula": {
+     "C": 6.0,
+     "H": 14.0
+    },
+    "molecular_weight_kg_per_kmol": 86.17536,
+    "name": "C6H14,n-hexane",
+    "segments": [
+     {
+      "coefficients": [
+       -581592.67,
+       10790.97724,
+       -66.3394703,
+       0.2523715155,
+       -0.0002904344705,
+       1.802201514e-07,
+       -4.61722368e-11,
+       -72715.4457,
+       393.828354
+      ],
+      "temperature_max_K": 1000.0,
+      "temperature_min_K": 300.0
+     },
+     {
+      "coefficients": [
+       -3106625.684,
+       -7346.08792,
+       46.9413176,
+       0.001693963977,
+       2.068996667e-06,
+       -4.21214168e-10,
+       2.452345845e-14,
+       523.750312,
+       -254.9967718
+      ],
+      "temperature_max_K": 6000.0,
+      "temperature_min_K": 1000.0
+     }
+    ],
+    "source_header": "C6H14,n-hexane    TRC(4/85) tuvw1440."
+   },
+   {
+    "formation_enthalpy_J_per_kmol_298p15K": -208750000.0,
+    "formula": {
+     "C": 8.0,
+     "H": 18.0
+    },
+    "molecular_weight_kg_per_kmol": 114.22852,
+    "name": "C8H18,n-octane",
+    "segments": [
+     {
+      "coefficients": [
+       -698664.715,
+       13385.01096,
+       -84.1516592,
+       0.327193666,
+       -0.000377720959,
+       2.339836988e-07,
+       -6.01089265e-11,
+       -90262.2325,
+       493.922214
+      ],
+      "temperature_max_K": 1000.0,
+      "temperature_min_K": 300.0
+     },
+     {
+      "coefficients": [
+       6365406.95,
+       -31053.64657,
+       69.6916234,
+       0.01048059637,
+       -4.12962195e-06,
+       5.54322632e-10,
+       -2.651436499e-14,
+       150096.8785,
+       -416.989565
+      ],
+      "temperature_max_K": 6000.0,
+      "temperature_min_K": 1000.0
+     }
+    ],
+    "source_header": "C8H18,n-octane    TRC(4/85) tuvw1490."
    }
   ],
   "trans_inp_sha256": "379c514a7f7638371d8d9254a1d653cd078084a9371061aa0b45c5a5c3334d41",

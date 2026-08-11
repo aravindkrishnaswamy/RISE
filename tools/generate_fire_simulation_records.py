@@ -2,8 +2,8 @@
 """Freeze Phase-C open property subsets into RISE-CBOR64-v1.
 
 The operational records are deliberately generated from redistribution-safe
-NASA CEA, NIST ThermoML, and GRI-Mech/Cantera inputs.  Burcat and HITEMP content
-is excluded so license-gated coefficients cannot enter the generated records.
+NASA CEA, NIST ThermoML, and GRI-Mech/Cantera inputs.  Burcat and HITEMP line
+content is excluded so owner-gated coefficients cannot enter these records.
 The thermochemistry output is intentionally not a solver-ready §3.3 gas
 record: its explicit blockers name every missing fuel/aerosol closure.
 """
@@ -40,11 +40,17 @@ EXPECTED_SOURCE_SHA256 = {
     "fds_data": "2808d4cfc1a9ca2f17446c8563c13ead9824921342de549115f92a9306b070a4",
     "fds_license": "38c542304b97afc4171a9b67866499eaf222509cab45c095ea69bf88d57755b7",
 }
-EXPECTED_SOURCE_SNAPSHOT_SHA256 = "7546104d58d2be8b21533926376e05235fd363026e564f775646815396b16b78"
+EXPECTED_SOURCE_SNAPSHOT_SHA256 = "063c75b9e23079ad08d601666a587733c4546692eeabb4ba8bffdafa8cbf35bd"
 THERMO_NAMES = (
     "Ar", "CH4", "CH3OH", "CO", "CO2", "C7H16,n-heptane",
     "H2O", "N2", "O2", "C(gr)",
 )
+ALKANE_INCREMENT_NAMES = (
+    "C4H10,n-butane", "C5H12,n-pentane", "C6H14,n-hexane",
+    "C7H16,n-heptane", "C8H18,n-octane",
+)
+THERMO_SOURCE_NAMES = tuple(dict.fromkeys(THERMO_NAMES + ALKANE_INCREMENT_NAMES))
+PENTACOSANE_NAME = "C25H52,n-pentacosane"
 TRANSPORT_NAMES = ("Ar", "CH4", "CH3OH", "CO", "CO2", "H2O", "N2", "O2")
 FORMULAS = {
     "Ar": {"Ar": 1.0},
@@ -57,6 +63,11 @@ FORMULAS = {
     "N2": {"N": 2.0},
     "O2": {"O": 2.0},
     "C(gr)": {"C": 1.0},
+    "C4H10,n-butane": {"C": 4.0, "H": 10.0},
+    "C5H12,n-pentane": {"C": 5.0, "H": 12.0},
+    "C6H14,n-hexane": {"C": 6.0, "H": 14.0},
+    "C8H18,n-octane": {"C": 8.0, "H": 18.0},
+    PENTACOSANE_NAME: {"C": 25.0, "H": 52.0},
 }
 
 
@@ -238,7 +249,8 @@ def extract_sources(thermo: Path, transport: Path, thermoml: Path,
             "license": "Apache-2.0",
             "thermo_inp_sha256": thermo_hash,
             "trans_inp_sha256": transport_hash,
-            "thermochemistry": [parse_thermo(thermo_lines, name) for name in THERMO_NAMES],
+            "thermochemistry": [parse_thermo(thermo_lines, name)
+                                for name in THERMO_SOURCE_NAMES],
             "transport": [parse_transport(transport_lines, name) for name in TRANSPORT_NAMES],
         },
         "nist_thermoml": {
@@ -325,6 +337,178 @@ def source_envelope(value: float, citation: str, applicability: str) -> dict:
     }
 
 
+def assumption_envelope(value: float, magnitude: float, basis: str,
+                        citation: str, applicability: str) -> dict:
+    return {
+        "value": float(value),
+        "uncertainty": {
+            "kind": "assumption_bound",
+            "magnitude": float(magnitude),
+            "basis": basis,
+        },
+        "provenance": provenance(citation, "https://github.com/nasa/cea"),
+        "applicability": applicability,
+    }
+
+
+def linear_increment_fit(values: list[float]) -> dict:
+    if len(values) != 5 or not all(math.isfinite(value) for value in values):
+        raise ValueError("CH2 increment fit requires five finite C4-C8 values")
+    carbon_numbers = (4.0, 5.0, 6.0, 7.0, 8.0)
+    mean_x = 6.0
+    mean_y = sum(values) / len(values)
+    denominator = sum((value - mean_x) ** 2 for value in carbon_numbers)
+    slope = sum((x - mean_x) * (y - mean_y)
+                for x, y in zip(carbon_numbers, values)) / denominator
+    increments = [values[index + 1] - values[index]
+                  for index in range(len(values) - 1)]
+    residuals = [increment - slope for increment in increments]
+    fitted = [mean_y + slope * (x - mean_x) for x in carbon_numbers]
+    sum_squared_residual = sum((value - prediction) ** 2
+                               for value, prediction in zip(values, fitted))
+    sum_squared_total = sum((value - mean_y) ** 2 for value in values)
+    r_squared = (1.0 - sum_squared_residual / sum_squared_total
+                 if sum_squared_total > 0.0 else 1.0)
+    if not all(math.isfinite(value) for value in
+               [slope, *residuals, r_squared]):
+        raise ValueError("CH2 increment fit produced a non-finite diagnostic")
+    return {
+        "slope_per_CH2": slope,
+        "adjacent_increment_residuals": residuals,
+        "max_abs_adjacent_increment_residual": max(abs(value)
+                                                   for value in residuals),
+        "r_squared": r_squared,
+    }
+
+
+def cp_increment_residual_bound(coefficients: list[float], lo: float,
+                                hi: float) -> float:
+    maximum = 0.0
+    cursor = lo
+    while cursor < hi:
+        upper = min(cursor + 1.0, hi)
+        midpoint = 0.5 * (cursor + upper)
+        enclosure = abs(cp_over_r(coefficients, midpoint)) + \
+            cp_derivative_bound(coefficients, cursor, upper) * (upper - cursor) * 0.5
+        maximum = max(maximum, enclosure)
+        cursor = upper
+    return math.nextafter(maximum, math.inf)
+
+
+def derived_pentacosane_source(sources: dict[str, dict]) -> dict:
+    series = [sources[name] for name in ALKANE_INCREMENT_NAMES]
+    expected_domains = ((300.0, 1000.0), (1000.0, 6000.0))
+    for source in series:
+        domains = tuple((float(segment["temperature_min_K"]),
+                         float(segment["temperature_max_K"]))
+                        for segment in source["segments"])
+        if domains != expected_domains:
+            raise ValueError(f"alkane increment source {source['name']} has changed domains")
+
+    octane = series[-1]
+    derived_segments = []
+    fit_diagnostics = []
+    maximum_cp_bound = 0.0
+    maximum_hs_bound = 0.0
+    molecular_weight_fit = linear_increment_fit([
+        float(source["molecular_weight_kg_per_kmol"]) for source in series
+    ])
+    molecular_weight = float(octane["molecular_weight_kg_per_kmol"]) + \
+        17.0 * molecular_weight_fit["slope_per_CH2"]
+    formation_fit = linear_increment_fit([
+        float(source["formation_enthalpy_J_per_kmol_298p15K"]) for source in series
+    ])
+    formation_enthalpy = float(octane["formation_enthalpy_J_per_kmol_298p15K"]) + \
+        17.0 * formation_fit["slope_per_CH2"]
+
+    for segment_index, source_domain in enumerate(expected_domains):
+        coefficient_fits = []
+        coefficients = []
+        for coefficient_index in range(9):
+            fit = linear_increment_fit([
+                float(source["segments"][segment_index]["coefficients"][coefficient_index])
+                for source in series
+            ])
+            coefficient_fits.append(fit)
+            coefficients.append(float(
+                octane["segments"][segment_index]["coefficients"][coefficient_index]
+            ) + 17.0 * fit["slope_per_CH2"])
+
+        increment_slopes = [fit["slope_per_CH2"] for fit in coefficient_fits]
+        residual_polynomials = []
+        for adjacent_index in range(len(series) - 1):
+            residual_polynomials.append([
+                float(series[adjacent_index + 1]["segments"][segment_index]["coefficients"][i]) -
+                float(series[adjacent_index]["segments"][segment_index]["coefficients"][i]) -
+                increment_slopes[i]
+                for i in range(9)
+            ])
+        certified_lo = 200.0 if segment_index == 0 else source_domain[0]
+        cp_residual_over_r = max(cp_increment_residual_bound(
+            residual[:7], certified_lo, source_domain[1])
+            for residual in residual_polynomials)
+        cp_bound = 17.0 * cp_residual_over_r * R_KMOL / molecular_weight
+        hs_bound = cp_bound * max(abs(certified_lo - 300.0),
+                                  abs(source_domain[1] - 300.0))
+        maximum_cp_bound = max(maximum_cp_bound, cp_bound)
+        maximum_hs_bound = max(maximum_hs_bound, hs_bound)
+        derived_segments.append({
+            "temperature_min_K": certified_lo,
+            "temperature_max_K": source_domain[1],
+            "coefficients": coefficients,
+        })
+        fit_diagnostics.append({
+            "temperature_domain_K": [certified_lo, source_domain[1]],
+            "source_temperature_domain_K": list(source_domain),
+            "coefficient_increment_fits": coefficient_fits,
+            "certified_max_abs_cp_increment_residual_over_R": cp_residual_over_r,
+            "propagated_17_CH2_cp_bound_J_per_kg_K": cp_bound,
+            "propagated_17_CH2_hs_bound_J_per_kg": hs_bound,
+        })
+
+    basis = ("least-squares per-CH2 increment across pinned NASA CEA C4H10 through "
+             "C8H18 NASA-9 entries; nominal C25H52 is n-octane plus 17 increments; "
+             "bound is 17 times the largest certified adjacent-increment residual")
+    citation = (f"NASA CEA {CEA_REVISION} data/thermo.inp entries: " +
+                "; ".join(source["source_header"] for source in series))
+    return {
+        "name": PENTACOSANE_NAME,
+        "formula": FORMULAS[PENTACOSANE_NAME],
+        "molecular_weight_kg_per_kmol": molecular_weight,
+        "formation_enthalpy_J_per_kmol_298p15K": formation_enthalpy,
+        "source_header": "derived C25H52 by pinned C4-C8 CH2 increment fit",
+        "segments": derived_segments,
+        "assumption_bound": {
+            "derivation_kind": "nasa_cea_c4_c8_least_squares_ch2_increment_v1",
+            "added_CH2": 17.0,
+            "source_species": list(ALKANE_INCREMENT_NAMES),
+            "basis": basis,
+            "citation": citation,
+            "molecular_weight_magnitude_kg_per_kmol": 17.0 *
+                molecular_weight_fit["max_abs_adjacent_increment_residual"],
+            "formation_enthalpy_magnitude_J_per_kmol": 17.0 *
+                formation_fit["max_abs_adjacent_increment_residual"],
+            "maximum_cp_magnitude_J_per_kg_K": maximum_cp_bound,
+            "maximum_hs_magnitude_J_per_kg": maximum_hs_bound,
+            "molecular_weight_increment_fit": molecular_weight_fit,
+            "formation_enthalpy_increment_fit": formation_fit,
+            "segment_increment_fits": fit_diagnostics,
+            "low_temperature_extension": (
+                "the fitted 300-1000 K low NASA-9 segment is evaluated over 200-300 K "
+                "under the same 17-CH2 residual bound"),
+            "corroboration_only": {
+                "repository": "https://github.com/ReactionMechanismGenerator/RMG-database",
+                "revision": "fc7bb138f9380f1274cc9645ef6586c83dda450e",
+                "license_status": ("no repository license found; no bytes committed and no "
+                                   "RMG value used as an operational source"),
+                "method": "Benson Cs-CsHHH and Cs-CsCsHH group-additivity comparison",
+                "maximum_relative_cp_difference_300_to_1000K": 0.018360502400747634,
+                "relative_formation_enthalpy_difference_at_298p15K": 0.001389220390589775,
+            },
+        },
+    }
+
+
 def cp_over_r(coefficients: list[float], temperature: float) -> float:
     a = coefficients
     return (a[0] / temperature**2 + a[1] / temperature + a[2] +
@@ -361,7 +545,7 @@ def cp_antiderivative(coefficients: list[float], temperature: float) -> float:
             a[6] * temperature**5 / 5.0)
 
 
-def clipped_thermo_species(source: dict, common_min: float, common_max: float,
+def clipped_thermo_species(source: dict, domain_min: float, domain_max: float,
                            reference_temperature: float) -> dict:
     mw = float(source["molecular_weight_kg_per_kmol"])
     segments = []
@@ -369,8 +553,8 @@ def clipped_thermo_species(source: dict, common_min: float, common_max: float,
     previous_end = reference_temperature
     ordered = source["segments"]
     for raw in ordered:
-        lo = max(common_min, float(raw["temperature_min_K"]))
-        hi = min(common_max, float(raw["temperature_max_K"]))
+        lo = max(domain_min, float(raw["temperature_min_K"]))
+        hi = min(domain_max, float(raw["temperature_max_K"]))
         if lo >= hi:
             continue
         coefficients = [float(value) for value in raw["coefficients"]]
@@ -391,37 +575,79 @@ def clipped_thermo_species(source: dict, common_min: float, common_max: float,
             "certified_cp_lower_J_per_kg_K": certified_cp_lower(coefficients, lo, hi, mw),
         })
         previous_end = hi
-    if not segments or segments[0]["temperature_min_K"] != common_min or previous_end != common_max:
-        raise ValueError(f"thermochemistry does not span [{common_min},{common_max}] for {source['name']}")
+    if not segments or segments[0]["temperature_min_K"] != domain_min or previous_end != domain_max:
+        raise ValueError(f"thermochemistry does not span [{domain_min},{domain_max}] for {source['name']}")
     source_citation = f"NASA CEA {CEA_REVISION} data/thermo.inp: {source['source_header']}"
-    return {
+    assumption = source.get("assumption_bound")
+    if assumption:
+        source_citation = assumption["citation"]
+        molecular_weight = assumption_envelope(
+            mw, assumption["molecular_weight_magnitude_kg_per_kmol"],
+            assumption["basis"], source_citation,
+            "C25H52 nominal formula and pinned C4-C8 increment fit")
+        formation_enthalpy = assumption_envelope(
+            source["formation_enthalpy_J_per_kmol_298p15K"],
+            assumption["formation_enthalpy_magnitude_J_per_kmol"],
+            assumption["basis"], source_citation,
+            "standard-state extrapolation at 298.15 K")
+        model_uncertainty = {
+            "kind": "assumption_bound",
+            "magnitude": assumption["maximum_cp_magnitude_J_per_kg_K"],
+            "basis": assumption["basis"],
+            "scope": ("absolute cp bound in J/kg/K; the derivation certificate also "
+                      "records the propagated sensible-enthalpy bound"),
+        }
+        model_applicability = (
+            "C25H52 gas; 200-300 K is an explicit same-method low-temperature "
+            "extension; no extrapolation outside the closed domain")
+    else:
+        molecular_weight = source_envelope(mw, source_citation,
+                                            "pinned NASA interval set")
+        formation_enthalpy = source_envelope(
+            source["formation_enthalpy_J_per_kmol_298p15K"], source_citation,
+            "standard state at 298.15 K")
+        model_uncertainty = {
+            "kind": "computed_range_from_input_sensitivity",
+            "magnitude": [0.0, 0.0],
+            "basis": "pinned NASA coefficients; source fit uncertainty is not published",
+        }
+        model_applicability = (
+            "closed interval only; continuous h_s is integrated from source cp")
+    result = {
         "species_id": source["name"],
         "formula": source["formula"],
         "phase": "aerosol_solid" if source["name"] == "C(gr)" else "gas",
-        "molecular_weight_kg_per_kmol": source_envelope(mw, source_citation, "pinned NASA interval set"),
-        "formation_enthalpy_J_per_kmol_298p15K": source_envelope(
-            source["formation_enthalpy_J_per_kmol_298p15K"], source_citation, "standard state at 298.15 K"),
+        "molecular_weight_kg_per_kmol": molecular_weight,
+        "formation_enthalpy_J_per_kmol_298p15K": formation_enthalpy,
         "cp_hs_model": {
             "kind": "nasa9_cp_with_continuous_integrated_hs_v1",
-            "temperature_domain_K": [common_min, common_max],
+            "temperature_domain_K": [domain_min, domain_max],
             "reference_temperature_K": reference_temperature,
             "segments": segments,
             "table_metadata": {
-                "uncertainty": {"kind": "computed_range_from_input_sensitivity", "magnitude": [0.0, 0.0],
-                                "basis": "pinned NASA coefficients; source fit uncertainty is not published"},
+                "uncertainty": model_uncertainty,
                 "provenance": provenance(source_citation, "https://github.com/nasa/cea"),
-                "applicability": "closed interval only; continuous h_s is integrated from source cp",
+                "applicability": model_applicability,
                 "out_of_domain_policy": "reject",
             },
         },
     }
+    if assumption:
+        result["assumption_bound_certificate"] = assumption
+    return result
 
 
 def thermo_payload(snapshot: dict) -> dict:
     common_min, common_max, reference = 300.0, 5000.0, 300.0
     sources = {entry["name"]: entry for entry in snapshot["nasa_cea"]["thermochemistry"]}
-    species = [clipped_thermo_species(sources[name], common_min, common_max, reference)
-               for name in THERMO_NAMES]
+    sources[PENTACOSANE_NAME] = derived_pentacosane_source(sources)
+    operational_names = THERMO_NAMES + (PENTACOSANE_NAME,)
+    species = []
+    for name in operational_names:
+        source = sources[name]
+        species_minimum = max(200.0, float(source["segments"][0]["temperature_min_K"]))
+        species.append(clipped_thermo_species(
+            source, species_minimum, common_max, reference))
     measured_levoglucosan = dict(snapshot["nist_thermoml"]["levoglucosan_cp"])
     measured_levoglucosan["rows"] = [
         row for row in measured_levoglucosan["rows"] if row[0] <= 370.0
@@ -446,10 +672,24 @@ def thermo_payload(snapshot: dict) -> dict:
             "injected_fuel_composition_and_temperature_not_present",
             "operational_condensed_organic_thermochemistry_not_present",
             "thermochemistry_source_fit_uncertainties_unpublished",
-            "levoglucosan_vapor_burcat_redistribution_unresolved",
-            "pentacosane_vapor_burcat_redistribution_unresolved",
-            "levoglucosan_condensed_cp_above_370K_assumption_bound_unpinned",
-            "pentacosane_domain_extension_below_298p15K_assumption_bound_unpinned",
+            "levoglucosan_vapor_owner_gated_missing_record",
+            "levoglucosan_condensed_cp_above_370K_owner_gated_missing_record",
+        ],
+        "missing_required_records": [
+            {
+                "record_kind": "gas_species_thermochemistry",
+                "species_id": "C6H10O5,levoglucosan",
+                "required_role": "condensable_vapor",
+                "status": "owner_gated_missing_record",
+                "failure_policy": "reject_consumers_requiring_species",
+            },
+            {
+                "record_kind": "condensed_species_thermochemistry",
+                "species_id": "C6H10O5,condensed-organics",
+                "required_role": "condensed_organic_aerosol_above_370K",
+                "status": "owner_gated_missing_record",
+                "failure_policy": "reject_consumers_requiring_species",
+            },
         ],
         "measured_condensed_organics": measured_levoglucosan,
         "measured_condensed_organics_metadata": {

@@ -84,6 +84,23 @@ namespace
 		return ReplaceMember(record,"species",RISECBOR64::Value::ArrayValue(species));
 	}
 
+	RISECBOR64::Value ReplaceThermoSpeciesMember(
+		const RISECBOR64::Value& record,
+		const char* speciesId,
+		const char* key,
+		const RISECBOR64::Value& replacement
+		)
+	{
+		RISECBOR64::Value::Values species = record.Find("species")->GetArray();
+		for( auto& entry : species ) {
+			const RISECBOR64::Value* id = entry.Find("species_id");
+			if( id && id->GetText() == speciesId ) {
+				entry = ReplaceMember(entry,key,replacement);
+			}
+		}
+		return ReplaceMember(record,"species",RISECBOR64::Value::ArrayValue(species));
+	}
+
 	RISECBOR64::Value ReplaceFirstTransportPolicy(
 		const RISECBOR64::Value& record,
 		const char* policy
@@ -193,7 +210,7 @@ int main()
 	Check(transport.IsValid(),"embedded transport record loads");
 	Check(!thermo.IsPredictiveQualified(),"open thermochemistry subset remains preview-only");
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
-	Check(thermo.PredictiveBlockers().size() == 9,
+	Check(thermo.PredictiveBlockers().size() == 7,
 		"thermochemistry exposes every unresolved licensed/estimation field");
 	Check(transport.PredictiveBlockers().size() == 1,
 		"transport exposes its unpublished-fit uncertainty blocker");
@@ -240,6 +257,37 @@ int main()
 		NearRelative(totalD,0.03/1200.0,1.0e-14) && effectiveMu == 1.8e-5 &&
 		effectiveK == 0.03,
 		"DNS retains molecular transport and zeros SGS transport");
+	const FireThermochemistrySpecies* pentacosane = thermo.FindSpecies(
+		"C25H52,n-pentacosane");
+	Check(pentacosane &&
+		pentacosane->molecularWeightKGPerKMol == 352.68038 &&
+		pentacosane->formationEnthalpyJPerKMol == -560548000.0,
+		"pentacosane uses the frozen C4-C8 CH2-increment extrapolation");
+	Check(!thermo.FindSpecies("C6H10O5,levoglucosan"),
+		"owner-gated levoglucosan vapor has no placeholder species values");
+	double pentacosaneCp = 0.0, unused = 0.0;
+	Check(thermo.CpJPerKGK("C25H52,n-pentacosane",200.0,pentacosaneCp) &&
+		NearRelative(pentacosaneCp,1234.0330224466995,1.0e-12),
+		"pentacosane low-temperature extension matches the frozen fit");
+	Check(thermo.CpJPerKGK("C25H52,n-pentacosane",5000.0,pentacosaneCp) &&
+		NearRelative(pentacosaneCp,4146.221423899239,1.0e-12),
+		"pentacosane high-temperature endpoint matches the frozen fit");
+	Check(!thermo.CpJPerKGK("C25H52,n-pentacosane",199.999,unused) &&
+		!thermo.CpJPerKGK("C25H52,n-pentacosane",5000.001,unused),
+		"pentacosane rejects both sides of its certified domain");
+	Check(!thermo.CpJPerKGK("C6H10O5,levoglucosan",300.0,unused),
+		"owner-gated levoglucosan vapor fails closed at lookup");
+	const std::vector<std::pair<std::string,double> > waxOnly = {
+		{"C25H52,n-pentacosane",1.0}
+	};
+	for( const double expectedTemperature : {200.0,250.0,5000.0} ) {
+		double energy = 0.0, recovered = 0.0;
+		Check(thermo.MixtureSensibleEnergyJPerM3(
+			waxOnly,expectedTemperature,energy) &&
+			thermo.InvertMixtureTemperatureK(waxOnly,energy,recovered) &&
+			NearRelative(recovered,expectedTemperature,2.0e-13),
+			"pentacosane dynamic-domain energy inversion round trips");
+	}
 
 	struct CpAnchor { const char* id; double value; };
 	const CpAnchor cpAnchors[] = {
@@ -255,8 +303,9 @@ int main()
 			"reference sensible enthalpy evaluates");
 		Check(std::fabs(enthalpy) <= 1.0e-8,"h_s(T_ref) is zero");
 	}
-	double unused = 0.0;
-	Check(!thermo.CpJPerKGK("N2",299.999,unused),"cp rejects below-domain lookup");
+	Check(thermo.CpJPerKGK("N2",200.0,unused),
+		"NASA species retains its certified 200 K lower endpoint");
+	Check(!thermo.CpJPerKGK("N2",199.999,unused),"cp rejects below-domain lookup");
 	Check(!thermo.CpJPerKGK("N2",5000.001,unused),"cp rejects above-domain lookup");
 
 	const std::vector<std::pair<std::string,double> > densities = {
@@ -331,6 +380,43 @@ int main()
 		"thermochemistry record decodes canonically");
 	Check(RISECBOR64::DecodeCanonical(transport.RecordBytes(),transportValue,&error),
 		"transport record decodes canonically");
+	RISECBOR64::Value encodedPentacosane;
+	for( const auto& species : thermoValue.Find("species")->GetArray() ) {
+		if( species.Find("species_id") &&
+			species.Find("species_id")->GetText() == "C25H52,n-pentacosane" ) {
+			encodedPentacosane = species;
+		}
+	}
+	const RISECBOR64::Value* pentacosaneCertificate =
+		encodedPentacosane.Find("assumption_bound_certificate");
+	Check(pentacosaneCertificate &&
+		pentacosaneCertificate->Find("source_species") &&
+		pentacosaneCertificate->Find("source_species")->GetArray().size() == 5 &&
+		pentacosaneCertificate->Find("maximum_cp_magnitude_J_per_kg_K") &&
+		pentacosaneCertificate->Find("maximum_cp_magnitude_J_per_kg_K")->GetFloat() > 0.0,
+		"pentacosane record carries its nonzero C4-C8 residual certificate");
+	if( pentacosaneCertificate ) {
+		RISECBOR64::Value mutatedCertificate = ReplaceMember(*pentacosaneCertificate,
+			"added_CH2",RISECBOR64::Value::Float(16.0));
+		Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+			thermoValue,"C25H52,n-pentacosane","assumption_bound_certificate",
+			mutatedCertificate)),
+			"pentacosane rejects a mutated CH2 extrapolation certificate");
+		mutatedCertificate = RemoveMember(*pentacosaneCertificate,"corroboration_only");
+		Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceThermoSpeciesMember(
+			thermoValue,"C25H52,n-pentacosane","assumption_bound_certificate",
+			mutatedCertificate)),
+			"pentacosane requires the corroboration-only audit marker");
+	}
+	RISECBOR64::Value::Values missingStubs = thermoValue.Find(
+		"missing_required_records")->GetArray();
+	RISECBOR64::Value::Members placeholderStub = missingStubs[0].GetMap();
+	placeholderStub.push_back(std::make_pair(std::string("cp_placeholder"),
+		RISECBOR64::Value::Float(1.0)));
+	missingStubs[0] = RISECBOR64::Value::MapValue(placeholderStub);
+	Check(Rejects<FireSimulationThermochemistryRecord>(ReplaceMember(thermoValue,
+		"missing_required_records",RISECBOR64::Value::ArrayValue(missingStubs))),
+		"owner-gated species stub rejects placeholder physical values");
 	const char* closureRelationshipFields[] = {
 		"molecular_diffusivity_relationship",
 		"sgs_diffusivity_relationship",

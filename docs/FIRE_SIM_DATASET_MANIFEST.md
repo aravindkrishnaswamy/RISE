@@ -136,8 +136,11 @@ commit; <5 % emissivity error per TN 2064; 1973-era band data with an
 κ_P fits (open; diagonal-only). Initial V5 tolerance ~5 %, to be reset from
 the first HITEMP-vs-EM2C comparison, not assumed.
 
-**Flags**: HITEMP redistribution terms unstated — resolve before committing
-line-file bytes; CO₂ lines end at ~565 nm, so the 380–565 nm remainder
+**Owner resolution (2026-08-11)**: HITEMP requires citation but imposes no
+line-data redistribution license.  RISE nevertheless keeps a strict byte
+boundary: owner-downloaded `.par` files are never committed; a fetch/verify
+step pins their SHA-256 identities, and only the generator plus derived tables
+are repository artifacts.  CO₂ lines end at ~565 nm, so the 380–565 nm remainder
 needs a documented physical-negligibility statement (no CO₂ electronic
 bands in the visible) as a certified record claim; Soufiani–Taine 1997 and
 all WSGG coefficient papers are paywalled (not needed under this plan).
@@ -164,8 +167,13 @@ Per-field ranking (all access-verified by download this session):
   or CEA `C(gr)`.
 - **Levoglucosan vapor** (Y_cv): Burcat `C6H10O5` (200–6000 K, in-record
   provenance chain to published papers) — **license flag below**.
-- **Paraffin C25H52 vapor**: Burcat n-pentacosane (298.15–5000 K,
-  Thergas *estimate* — the only source of any kind).
+- **Paraffin C25H52 vapor**: owner-approved open replacement: least-squares
+  per-CH₂ increments across the pinned NASA CEA n-butane through n-octane
+  NASA-9 series, with C25H52 formed as n-octane + 17 CH₂ increments.  The
+  generated record carries the observed adjacent-increment residuals and a
+  propagated `assumption_bound`, including the same-method extension to 200 K.
+  RMG Benson groups are a corroboration-only cross-check because that repository
+  has no license; no RMG bytes or coefficients enter the operational record.
 - **Condensed-organics c_p**: Kabo 2015 measurement 5–370 K — paper
   paywalled but the **raw data is open in the NIST ThermoML archive**
   (verified, 45 C_p points). **Genuine gap: no measurement above 370 K
@@ -179,13 +187,13 @@ Per-field ranking (all access-verified by download this session):
   species; CRECK biomass mechanisms (open GitHub) if a multi-species
   mixture is ever wanted.
 
-**Flags**: (1) **Burcat license** forbids commercial redistribution without
-permission — affects the two Burcat-only species; refit from the cited
-primary data or obtain permission before hashing/shipping. (2) Pentacosane
-domain starts at 298.15 K — a scene with T_inf < 298 K will (correctly)
-fail the bracket preflight; the wax record needs a same-method extension to
-~200 K. (3) Burcat mirror fragility (garfield.elte.hu dead; ReSpecTh live)
-— archive bytes, never rely on a mirror.
+**Owner resolution (2026-08-11)**: the open CEA CH₂-increment route above
+replaces the Burcat pentacosane estimate and closes its low-temperature flag.
+Levoglucosan vapor remains owner-gated and must stay a fail-closed missing
+record with no placeholder values.  The condensed-organics route above 370 K
+also remains owner-gated while the NIST source is unavailable; consumers that
+require either missing record reject, while other fuels may proceed under the
+existing preview label.
 
 ---
 
