@@ -96,7 +96,15 @@ oldRasterizer->FreeRasterizerOutputs();   // see Detach() doc
 vfs->Attach( newRasterizer );
 //    The VFS callbacks persist; the FrameStore follows the producer.
 
-// 8. Teardown (scene unload, app exit):
+// 8. Teardown (scene unload, app exit): stop/cancel and join any render,
+//    detach/destroy the owning rasterizer outputs (or destroy the Job), and
+//    null any callbacks that capture the UI owner before its destruction.
+//    Only then release the UI owner's VFS reference:
+oldRasterizer->FreeRasterizerOutputs();
+vfs->SetTileCompleteCallback(nullptr);
+vfs->SetFrameCompleteCallback(nullptr);
+vfs->SetPreDenoiseCompleteCallback(nullptr);
+vfs->SetDenoiseCompleteCallback(nullptr);
 vfs->release();
 ```
 
@@ -885,7 +893,7 @@ Adversarial review at L3 (correctness gate — CLI byte-identical), L4 (UX gate,
   - **P2-A/B (Defensive callback nulling)**: VFS callback lambdas capture `this` (Qt/Android) or helper+vfs raw pointers (macOS).  The brief argued `m_job->release()` joins workers before VFS release, draining observer dispatch — true in the typical case via the L1 in-flight-counter / cv-wait machinery.  But defense-in-depth costs nothing: each platform's teardown path now nulls all four VFS callbacks (`SetTileCompleteCallback(nullptr)` etc.) before `vfs->release()`, so any future late-fire (e.g. due to a bug) gracefully no-ops instead of dereferencing freed memory.
   - **P2-C (macOS `setImageOutputBlock:` race)**: `_vfsCallbacks` was lazily constructed inside `-ensureVFSAttachedToRasterizer:` on the rasterize-spawning thread.  Concurrent `setImageOutputBlock:` from the UI thread raced the unique_ptr load against the lazy write.  Fix: eagerly construct `_vfsCallbacks` in `-init` (cheap — helper just owns a buffer that's allocated on first emit + an atomic EV).  `setImageOutputBlock:` now unconditionally forwards to `_vfsCallbacks->SetBlock(...)` which locks `bufferMutex_`.  Bonus: `-ensureVFSAttachedToRasterizer:` no longer needs the inner `if (!_vfsCallbacks)` guard — observer slots are bound once at VFS-construction time, before any Attach.
   - **P2-D (Chain-mutex race on dim read)**: Qt's `onVFSTileComplete` and Android's `onVFSTileComplete` read `Width()/Height()` directly off `vfs->GetFrameStore()` — but `GetFrameStore()` is a raw chain-pointer read with no lock.  A concurrent rasterizer-thread `EnsureChain` reallocation can free the pointer between the `GetFrameStore()` read and the `Width()` deref.  This is the exact race that L4 round-2 P1-2's `chainMutex_` snapshot pattern was added to close, but the new bridges bypassed it.  Fix: added `ViewportFrameStore::GetDimensions(unsigned& w, unsigned& h)` that uses the existing `SnapshotFrameStore` helper (chain-mutex shared lock + addref + release pattern) to read dims safely.  All three platforms now call `vfs->GetDimensions(W, H)` instead of `vfs->GetFrameStore()->Width()/Height()`.  New regression test `TestLazyAllocation` checks that `GetDimensions` returns (0,0) before chain alloc and the correct dims after — bumped ViewportFrameStoreTest from 49 to 51 assertions.
-  - **Deferred (P1)**: `Rasterizer::FreeRasterizerOutputs()` is not synchronized with the worker thread's iteration of the `outs` list (`PixelBasedRasterizerHelper.cpp:303-330`).  Pre-existing latent issue, not introduced by L4b/c/d, but the new pattern (persistent VFS across renders, `FreeRasterizerOutputs() + Attach()` in every rasterize) makes it slightly more visible.  The library-side fix is to add a mutex around `outs` in `Rasterizer.{h,cpp}`; out-of-scope for L4b/c/d.  Spawned as a follow-up task.
+  - **Resolved output-list synchronization**: `Rasterizer` now protects `outs` with `outsMutex`; render and enumeration paths retain a snapshot under the mutex, while remove/free swap entries out under the mutex and release the last references afterward so destructors may safely re-enter output APIs.  This closes the earlier `FreeRasterizerOutputs()` versus worker-iteration race.
   - **Deferred (P3)**: `EncodeOpts.bpp = 8` unconditionally on all three platforms' `saveAs` (so 16bpc-PNG / 16bpc-TIFF aren't reachable through this surface — only via the legacy `file_rasterizeroutput` chunk in scene files).  Defer to a follow-up that exposes per-format options on the platform `saveAs` API.
   - **Deferred (P3)**: Qt `LogPrinterAdapter` is leaked at engine destruction (engine retains a Reference but never releases it) — pre-existing bug, fix in a separate landing.
   - **Deferred (P3)**: Android viewport-preview sink (still using `>> 8` truncation in legacy `writeDirtyRegion`) and the new VFS-driven production-render sink (using round-to-nearest) produce visually different bytes for the same input.  Out-of-scope for this landing; the viewport sink migration is a follow-up that will unify both paths through VFS.

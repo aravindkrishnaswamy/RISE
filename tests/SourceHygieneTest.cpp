@@ -1047,6 +1047,7 @@ int main()
 			"android"/"ui"/"RenderViewModel.kt");
 		Check(riseBridge.find("production tile notifications never enter this helper") ==
 				std::string::npos &&
+			riseBridge.find("byte-for-byte at EV=0") == std::string::npos &&
 			riseBridge.find("workers no longer call into the bridge") == std::string::npos &&
 			riseBridge.find("workers no longer take it during their hot path") ==
 				std::string::npos &&
@@ -1067,6 +1068,19 @@ int main()
 		Check(braceBody(androidBridgeSource,"RiseBridge::RiseBridge()").find(
 			"ensureProductionVFSCreated();") != std::string::npos,
 			"Android publishes its production VFS before UI polling can begin" );
+		const std::string androidSnapshot = braceBody(
+			androidBridgeSource,"RiseBridge::copyFramebufferSnapshot(");
+		Check(androidBridgeSource.find("NewDirectByteBuffer") == std::string::npos &&
+			androidSnapshot.find("std::lock_guard<std::mutex> lock(m_fbMutex)") !=
+				std::string::npos &&
+			androidSnapshot.find("GetDirectBufferAddress") != std::string::npos &&
+			androidSnapshot.find("std::memcpy(destinationBytes, m_framebuffer") !=
+				std::string::npos &&
+			androidNative.find("nativeCopyFramebuffer(destination: ByteBuffer)") !=
+				std::string::npos &&
+			androidRenderViewModel.find("ByteBuffer.allocateDirect") !=
+				std::string::npos,
+			"Android framebuffer handoff copies a locked snapshot into Java-owned storage" );
 		Check(riseBridgeHeader.find("~10 ns") == std::string::npos &&
 			riseBridgeHeader.find("~5 ms") == std::string::npos &&
 			riseBridge.find("atomic, lock-free") == std::string::npos &&

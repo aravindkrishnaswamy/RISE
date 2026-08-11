@@ -139,10 +139,12 @@ public:
 // inside a `ViewportFrameStore`; on each tile/frame observer
 // callback we `RenderToBuffer(RGBA16_sRGB, ForLDRDisplay(currentEV))`
 // into a bridge-owned uint16 staging buffer and fire the user's
-// `RISEImageOutputBlock` — preserving the legacy producer contract
-// (RGBA16 sRGB, then Swift `>> 8` to RGBA8) byte-for-byte at EV=0,
-// while opening up live exposure scrubbing and multi-format Save-As
-// without re-rendering.
+// `RISEImageOutputBlock` — preserving the legacy producer format
+// (RGBA16 sRGB, then Swift `>> 8` to RGBA8) at EV=0. Q16 uses
+// round-to-nearest while the legacy producer truncated, so live-preview
+// values may differ by one final LSB; the exact distinction is documented
+// at EmitFullImage_locked below. The VFS also enables live exposure
+// scrubbing and multi-format Save-As without re-rendering.
 //
 // Threading: production tile notifications enter only the bounded
 // `OnTileCompleteTry` path.  It never waits for `bufferMutex_`; a busy
