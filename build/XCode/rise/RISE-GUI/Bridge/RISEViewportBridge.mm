@@ -218,6 +218,11 @@ public:
         return ok;
     }
 
+    void InvalidatePresentation() {
+        mPresentGeneration->fetch_add( 1, std::memory_order_acq_rel );
+        mLastRenderGeneration->fetch_add( 1, std::memory_order_acq_rel );
+    }
+
     // L5a round-4 — fan-out target for EDR.  When set, every
     // OutputImage call ALSO drives `vfs->OutputImage(pImage, ...)`,
     // which in turn fires the bridge's HDR/LDR observer block.
@@ -907,6 +912,13 @@ private:
 
 - (void)stop {
     if (!_controller) return;
+    auto invalidatePresentations = [&]() {
+        if( _previewSink ) _previewSink->InvalidatePresentation();
+        for( unsigned int pane = 1; pane < 4; ++pane ) {
+            if( _paneSinks[pane] ) _paneSinks[pane]->InvalidatePresentation();
+        }
+    };
+    invalidatePresentations();
     // Model-B F2 slice S4 fix round 4: StopInteractive, NOT the
     // monolithic Stop() -- this method exists so RenderViewModel can
     // pause the interactive viewport ahead of a production render
@@ -920,6 +932,7 @@ private:
     // via RISE_API_DestroySceneEditController's destructor call to the
     // real Stop().
     RISE_API_SceneEditController_StopInteractive(_controller);
+    invalidatePresentations();
     _ownsRunning = NO;
 }
 

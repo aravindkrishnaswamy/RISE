@@ -183,27 +183,45 @@ uint64_t RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback,
     // is still unwinding. Wait for that process-wide lifecycle before
     // replacing the callback. A live viewport belongs to the old callback;
     // stop it before retargeting so its frames can never reach the new owner.
-    std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+    uint64_t owner = 0u;
+    unsigned readyWidth = 0u;
+    unsigned readyHeight = 0u;
     {
-        std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
-        if (requestGeneration <= m_latestKotlinCallbackRequest) return 0u;
-        m_latestKotlinCallbackRequest = requestGeneration;
+        std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex);
+        {
+            std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+            if (requestGeneration <= m_latestKotlinCallbackRequest) return 0u;
+            m_latestKotlinCallbackRequest = requestGeneration;
+        }
+        stopViewportUnowned();
+        m_displaySource.store(DisplaySource::None,std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
+            if (m_kotlinCallback) {
+                env->DeleteGlobalRef(m_kotlinCallback);
+                m_kotlinCallback = nullptr;
+            }
+            m_kotlinCallback = env->NewGlobalRef(kotlinCallback);
+            if (!m_kotlinCallback) {
+                m_kotlinCallbackOwner = 0u;
+                return 0u;
+            }
+            m_kotlinCallbackOwner = m_nextKotlinCallbackOwner++;
+            if (m_nextKotlinCallbackOwner == 0u) m_nextKotlinCallbackOwner = 1u;
+            owner = m_kotlinCallbackOwner;
+        }
+        {
+            std::lock_guard<std::mutex> framebufferLock(m_fbMutex);
+            if (m_framebuffer) {
+                readyWidth = m_fbWidth;
+                readyHeight = m_fbHeight;
+            }
+        }
     }
-    stopViewportUnowned();
-    m_displaySource.store(DisplaySource::None,std::memory_order_release);
-    std::lock_guard<std::mutex> callbackLock(m_kotlinCallbackMutex);
-    if (m_kotlinCallback) {
-        env->DeleteGlobalRef(m_kotlinCallback);
-        m_kotlinCallback = nullptr;
+    if (readyWidth != 0u && readyHeight != 0u) {
+        notifySceneReady(readyWidth,readyHeight);
     }
-    m_kotlinCallback = env->NewGlobalRef(kotlinCallback);
-    if (!m_kotlinCallback) {
-        m_kotlinCallbackOwner = 0u;
-        return 0u;
-    }
-    m_kotlinCallbackOwner = m_nextKotlinCallbackOwner++;
-    if (m_nextKotlinCallbackOwner == 0u) m_nextKotlinCallbackOwner = 1u;
-    return m_kotlinCallbackOwner;
+    return owner;
 }
 
 void RiseBridge::clearCallback(JNIEnv* env, uint64_t ownerToken) {
@@ -429,17 +447,21 @@ void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
         }
     }
     if (fired) {
-        JNIEnv* env = getJniEnv();
-        if (env) {
-            ScopedLocalFrame frame(env, 8);
-            jobject callback = snapshotKotlinCallback(env);
-            if (callback) {
-                env->CallVoidMethod(callback, g_cb.onSceneReady,
-                                    static_cast<jint>(w), static_cast<jint>(h));
-                if (env->ExceptionCheck()) {
-                    env->ExceptionDescribe();
-                    env->ExceptionClear();
-                }
+        notifySceneReady(w,h);
+    }
+}
+
+void RiseBridge::notifySceneReady(unsigned w, unsigned h) {
+    JNIEnv* env = getJniEnv();
+    if (env) {
+        ScopedLocalFrame frame(env, 8);
+        jobject callback = snapshotKotlinCallback(env);
+        if (callback) {
+            env->CallVoidMethod(callback, g_cb.onSceneReady,
+                                static_cast<jint>(w), static_cast<jint>(h));
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
             }
         }
     }

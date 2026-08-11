@@ -89,6 +89,7 @@ class RenderSmokeTest {
         val delayedStaleOwner = RiseNative.nativeSetCallback(staleCallback, requestBase + 1L)
         assertTrue("first callback ownership token should be nonzero", firstOwner != 0L)
         assertTrue("newest callback ownership token should be nonzero", callbackOwner != 0L)
+        var cleanupOwner = callbackOwner
         activeOwnerForReentry.set(callbackOwner)
         staleOwnerForReentry.set(firstOwner)
         assertTrue("out-of-order stale callback request must reject", delayedStaleOwner == 0L)
@@ -250,8 +251,41 @@ class RenderSmokeTest {
                 repeatedHandoff?.sceneTime == 0.0 &&
                     !RiseNative.nativeViewportIsRunning(callbackOwner),
             )
+
+            val replacementReady = CountDownLatch(1)
+            val replacementWidth = AtomicInteger(0)
+            val replacementHeight = AtomicInteger(0)
+            val replacementCallback = object : RiseCallback {
+                override fun onProgress(progress: Float) {}
+                override fun onSceneReady(width: Int, height: Int) {
+                    replacementWidth.set(width)
+                    replacementHeight.set(height)
+                    replacementReady.countDown()
+                }
+                override fun onRegionInvalidated(packedRect: Long) {}
+                override fun onLog(level: Int, message: String) {}
+            }
+            val replacementOwner = RiseNative.nativeSetCallback(
+                replacementCallback,requestBase + 3L,
+            )
+            assertTrue("replacement callback ownership token should be nonzero", replacementOwner != 0L)
+            cleanupOwner = replacementOwner
+            assertTrue(
+                "a replacement callback receives existing same-size framebuffer readiness",
+                replacementReady.await(10,TimeUnit.SECONDS) &&
+                    replacementWidth.get() == fb.width &&
+                    replacementHeight.get() == fb.height,
+            )
+            val replacementBytes = ByteBuffer.allocateDirect(fb.byteCount)
+            val replacementSnapshot = RiseNative.nativeCopyFramebuffer(replacementBytes)
+            assertNotNull("replacement callback can snapshot the existing framebuffer", replacementSnapshot)
+            assertTrue(
+                "replacement callback receives a complete nonzero same-size frame",
+                requireNotNull(replacementSnapshot).copied &&
+                    firstNonZeroByteIndex(replacementBytes,fb.byteCount) >= 0,
+            )
         } finally {
-            RiseNative.nativeClearCallback(callbackOwner)
+            RiseNative.nativeClearCallback(cleanupOwner)
         }
     }
 

@@ -782,6 +782,10 @@ int main()
 		};
 		const std::string unixTestRunner = slurp(repoRoot/"run_all_tests.sh");
 		const std::string windowsTestRunner = slurp(repoRoot/"run_all_tests.ps1");
+		const std::string unixExtendedRunner = slurp(
+			repoRoot/"run_extended_tests.sh");
+		const std::string windowsExtendedRunner = slurp(
+			repoRoot/"run_extended_tests.ps1");
 		const std::string windowsTestCmake = slurp(
 			repoRoot/"build"/"cmake"/"rise-tests"/"CMakeLists.txt");
 		const std::string testReadme = slurp(repoRoot/"tests"/"README.md");
@@ -803,6 +807,13 @@ int main()
 				std::string::npos &&
 			windowsTestRunner.find("& $msbuild $LibraryProject") !=
 				std::string::npos &&
+			windowsTestRunner.find("& $msbuild $LibraryProject") <
+				windowsTestRunner.find("& $cmake -S $CmakeSrcDir") &&
+			windowsTestRunner.find("$skipped -ne 0 -or $found -ne $total") !=
+				std::string::npos &&
+			windowsTestCmake.find(
+				"NOT EXISTS \"${RISE_LIB_RELEASE}\" AND NOT EXISTS \"${RISE_LIB_DEBUG}\"") !=
+				std::string::npos &&
 			windowsTestCmake.find("/UNDEBUG") != std::string::npos &&
 			testReadme.find("do not rely on `assert(...)`") !=
 				std::string::npos &&
@@ -811,6 +822,31 @@ int main()
 			testReadme.find("high-sample Phase-B mean-equality") !=
 				std::string::npos,
 			"test runners never execute stale binaries after a failed dependency-aware build" );
+		const size_t unixValidateLog = unixTestRunner.find("validate_log_dir");
+		const size_t unixDeleteLog = unixTestRunner.find("rm -rf \"$LOG_DIR\"");
+		const size_t windowsValidateLog = windowsTestRunner.find(
+			"Refusing unsafe test log directory");
+		const size_t windowsDeleteLog = windowsTestRunner.find(
+			"Remove-Item -Recurse -Force -LiteralPath $LogDir");
+		Check(unixValidateLog != std::string::npos &&
+			unixDeleteLog != std::string::npos && unixValidateLog < unixDeleteLog &&
+			unixTestRunner.find("RISE_TEST_VALIDATE_LOG_DIR_ONLY") !=
+				std::string::npos &&
+			windowsValidateLog != std::string::npos &&
+			windowsDeleteLog != std::string::npos &&
+			windowsValidateLog < windowsDeleteLog &&
+			windowsTestRunner.find("Test-IsSameOrParent") != std::string::npos &&
+			windowsTestRunner.find("ValidateLogDirOnly") != std::string::npos,
+			"test runners validate destructive log targets before removal" );
+		Check(unixExtendedRunner.find("\"build-test/$name\"") !=
+				std::string::npos &&
+			unixExtendedRunner.find("failed to build current $name") !=
+				std::string::npos &&
+			windowsExtendedRunner.find("-BuildOnly -Filter $extendedTests") !=
+				std::string::npos &&
+			windowsExtendedRunner.find("Failed to build current extended-test binaries") !=
+				std::string::npos,
+			"extended fire experiments dependency-build their exact binaries before running" );
 		Check(iorStackTest.find("\tassert(") == std::string::npos &&
 			iorStackTest.find("return failCount == 0 ? 0 : 1;") !=
 				std::string::npos,
@@ -1158,6 +1194,8 @@ int main()
 			androidBridgeSource,"bool RiseBridge::rasterize(");
 		const std::string androidSetCallback = braceBody(
 			androidBridgeSource,"uint64_t RiseBridge::setCallback(");
+		const std::string macViewportStop = braceBody(
+			riseViewportBridge,"- (void)stop");
 		const std::string androidClearCallback = braceBody(
 			androidBridgeSource,"void RiseBridge::clearCallback(");
 		const std::string androidProductionHandoff = braceBody(
@@ -1234,6 +1272,8 @@ int main()
 				"requestGeneration <= m_latestKotlinCallbackRequest") !=
 				std::string::npos &&
 			androidSetCallback.find("stopViewportUnowned();") != std::string::npos &&
+			androidSetCallback.find("notifySceneReady(readyWidth,readyHeight)") !=
+				std::string::npos &&
 			androidClearCallback.find("m_kotlinCallbackOwner != ownerToken") !=
 				std::string::npos &&
 			androidClearCallback.find("stopViewportUnowned();") != std::string::npos &&
@@ -1254,12 +1294,34 @@ int main()
 			androidRenderSmoke.find("requestBase + 1L") != std::string::npos &&
 			androidRenderSmoke.find("delayedStaleOwner == 0L") !=
 				std::string::npos &&
+			androidRenderSmoke.find("replacementReady.await") !=
+				std::string::npos &&
+			androidRenderSmoke.find("replacementWidth.get() == fb.width") !=
+				std::string::npos &&
+			androidRenderSmoke.find(
+				"firstNonZeroByteIndex(replacementBytes,fb.byteCount) >= 0") !=
+				std::string::npos &&
 			androidRenderSmoke.find(
 				"nativeLoadScene(sceneFile.absolutePath, firstOwner)") !=
 				std::string::npos &&
 			androidManifest.find("android:launchMode=\"singleTask\"") !=
 				std::string::npos,
 			"Android callback handoff is newest-request-wins and lifecycle mutations are owner-checked" );
+		const size_t firstMacStopInvalidation = macViewportStop.find(
+			"invalidatePresentations();");
+		const size_t secondMacStopInvalidation = firstMacStopInvalidation ==
+			std::string::npos ? std::string::npos : macViewportStop.find(
+				"invalidatePresentations();",firstMacStopInvalidation + 1);
+		const size_t macStopJoin = macViewportStop.find(
+			"RISE_API_SceneEditController_StopInteractive");
+		Check(riseViewportBridge.find("void InvalidatePresentation()") !=
+				std::string::npos &&
+			firstMacStopInvalidation != std::string::npos &&
+			secondMacStopInvalidation != std::string::npos &&
+			macStopJoin != std::string::npos &&
+			firstMacStopInvalidation < macStopJoin &&
+			secondMacStopInvalidation > macStopJoin,
+			"macOS stop retires queued preview presentations before and after joining the producer" );
 		Check(androidProductionHandoff.find(
 				"std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex)") !=
 				std::string::npos &&
