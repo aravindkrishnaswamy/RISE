@@ -39,6 +39,11 @@ $SrcDir        = Join-Path $RepoRoot 'tests'
 $CmakeSrcDir   = Join-Path $RepoRoot 'build\cmake\rise-tests'
 $CmakeBuildDir = Join-Path $CmakeSrcDir '_out'
 $LibraryProject = Join-Path $RepoRoot 'build\VS2022\Library\Library.vcxproj'
+$SolutionDir = [IO.Path]::GetFullPath(
+    (Join-Path $RepoRoot 'build\VS2022')).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+$SolutionDir += [IO.Path]::DirectorySeparatorChar
 $RiseLibrary = if ($Config -eq 'Debug') {
     Join-Path $RepoRoot 'dbin\RISE.lib'
 } else {
@@ -69,7 +74,7 @@ if (-not $LogDir) {
     if ($env:RISE_TEST_LOG_DIR) {
         $LogDir = $env:RISE_TEST_LOG_DIR
     } else {
-        $LogDir = Join-Path $env:TEMP 'rise-tests-logs'
+        $LogDir = Join-Path $env:TEMP 'rise-tests-logs-managed'
     }
 }
 
@@ -92,12 +97,23 @@ $normalizedRepoRoot = Get-NormalizedPath $RepoRoot
 $normalizedUserProfile = Get-NormalizedPath (
     [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile))
 $normalizedVolumeRoot = Get-NormalizedPath ([IO.Path]::GetPathRoot($normalizedLogDir))
-if ($normalizedLogDir -eq $normalizedVolumeRoot -or
+$logLeaf = Split-Path -Leaf $normalizedLogDir
+if (($logLeaf -ne 'rise-tests-logs' -and $logLeaf -notlike 'rise-tests-logs-*') -or
+    $normalizedLogDir -eq $normalizedVolumeRoot -or
     $normalizedLogDir -eq $normalizedUserProfile -or
     (Test-IsSameOrParent $normalizedLogDir $normalizedRepoRoot) -or
     (Test-IsSameOrParent $normalizedRepoRoot $normalizedLogDir)) {
     Write-Host "ERROR: Refusing unsafe test log directory: $LogDir" -ForegroundColor Red
     Write-Host 'Choose a dedicated directory outside the repository, user profile root, and volume root.'
+    exit 1
+}
+$logMarker = Join-Path $normalizedLogDir '.rise-test-log-directory'
+$logDirExists = Test-Path -LiteralPath $normalizedLogDir -PathType Container
+$logMarkerExists = Test-Path -LiteralPath $logMarker -PathType Leaf
+$logHasEntries = $logDirExists -and [bool](
+    Get-ChildItem -LiteralPath $normalizedLogDir -Force | Select-Object -First 1)
+if ($logDirExists -and -not $logMarkerExists -and $logHasEntries) {
+    Write-Host "ERROR: Refusing unowned nonempty test log directory: $LogDir" -ForegroundColor Red
     exit 1
 }
 $LogDir = $normalizedLogDir
@@ -197,6 +213,7 @@ if ($total -eq 0) {
 
 if (Test-Path -LiteralPath $LogDir) { Remove-Item -Recurse -Force -LiteralPath $LogDir }
 $null = New-Item -ItemType Directory -Force -Path $LogDir
+$null = New-Item -ItemType File -Force -Path (Join-Path $LogDir '.rise-test-log-directory')
 $null = New-Item -ItemType Directory -Force -Path $BinDir
 
 # -----------------------------------------------------------------------------
@@ -213,7 +230,8 @@ if (-not $NoBuild) {
     Write-Host -NoNewline ("Building RISE.lib [{0}] ... " -f $Config)
     $libraryStart = Get-Date
     & $msbuild $LibraryProject /nologo /m `
-        "/p:Configuration=$Config" '/p:Platform=x64' *>&1 |
+        "/p:Configuration=$Config" '/p:Platform=x64' `
+        "/p:SolutionDir=$SolutionDir" *>&1 |
         Out-File -FilePath $libraryBuildLog -Encoding utf8
     $libraryBuildRc = $LASTEXITCODE
     $libraryDuration = [int]((Get-Date) - $libraryStart).TotalSeconds
@@ -336,15 +354,29 @@ if (-not $NoBuild) {
     # at least as new as its own source, the shared test headers, and the
     # selected production library. It never turns a missing/stale suite into
     # a successful zero-test run.
-    $sharedInputs = @($RiseLibrary)
-    $sharedInputs += Get-ChildItem -Path $SrcDir -Filter '*.h' -File |
+    $productionInputs = Get-ChildItem -Path (Join-Path $RepoRoot 'src\Library') `
+        -Recurse -File -Include '*.cpp','*.h','*.inc'
+    $productionInputs += Get-Item -LiteralPath $LibraryProject
+    $latestProductionInput = $productionInputs |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $libraryCurrent = $false
+    if ((Test-Path -LiteralPath $RiseLibrary) -and
+        $null -ne $latestProductionInput) {
+        $libraryCurrent = (Get-Item -LiteralPath $RiseLibrary).LastWriteTime -ge
+            $latestProductionInput.LastWriteTime
+    }
+    $sharedInputs = Get-ChildItem -Path $SrcDir -Filter '*.h' -File |
         ForEach-Object { $_.FullName }
     foreach ($src in $testSources) {
         $exe = Join-Path $BinDir "$($src.BaseName).exe"
         $invalid = -not (Test-Path -LiteralPath $exe)
+        if (-not $libraryCurrent) { $invalid = $true }
         if (-not $invalid) {
             $exeTime = (Get-Item -LiteralPath $exe).LastWriteTime
             if ($exeTime -lt $src.LastWriteTime) { $invalid = $true }
+            if ($exeTime -lt (Get-Item -LiteralPath $RiseLibrary).LastWriteTime) {
+                $invalid = $true
+            }
             foreach ($inputPath in $sharedInputs) {
                 if (-not (Test-Path -LiteralPath $inputPath) -or
                     $exeTime -lt (Get-Item -LiteralPath $inputPath).LastWriteTime) {

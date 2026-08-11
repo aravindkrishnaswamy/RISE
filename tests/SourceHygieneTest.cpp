@@ -807,9 +807,19 @@ int main()
 				std::string::npos &&
 			windowsTestRunner.find("& $msbuild $LibraryProject") !=
 				std::string::npos &&
+			windowsTestRunner.find("\"/p:SolutionDir=$SolutionDir\"") !=
+				std::string::npos &&
 			windowsTestRunner.find("& $msbuild $LibraryProject") <
 				windowsTestRunner.find("& $cmake -S $CmakeSrcDir") &&
 			windowsTestRunner.find("$skipped -ne 0 -or $found -ne $total") !=
+				std::string::npos &&
+			windowsTestRunner.find("$productionInputs = Get-ChildItem") !=
+				std::string::npos &&
+			windowsTestRunner.find("$latestProductionInput.LastWriteTime") !=
+				std::string::npos &&
+			unixTestRunner.find("[ \"$skipped\" -ne 0 ]") !=
+				std::string::npos &&
+			unixTestRunner.find("[ \"$found\" -ne \"$total\" ]") !=
 				std::string::npos &&
 			windowsTestCmake.find(
 				"NOT EXISTS \"${RISE_LIB_RELEASE}\" AND NOT EXISTS \"${RISE_LIB_DEBUG}\"") !=
@@ -832,11 +842,19 @@ int main()
 			unixDeleteLog != std::string::npos && unixValidateLog < unixDeleteLog &&
 			unixTestRunner.find("RISE_TEST_VALIDATE_LOG_DIR_ONLY") !=
 				std::string::npos &&
+			unixTestRunner.find("rise-tests-logs|rise-tests-logs-*") !=
+				std::string::npos &&
+			unixTestRunner.find(".rise-test-log-directory") !=
+				std::string::npos &&
 			windowsValidateLog != std::string::npos &&
 			windowsDeleteLog != std::string::npos &&
 			windowsValidateLog < windowsDeleteLog &&
 			windowsTestRunner.find("Test-IsSameOrParent") != std::string::npos &&
-			windowsTestRunner.find("ValidateLogDirOnly") != std::string::npos,
+			windowsTestRunner.find("ValidateLogDirOnly") != std::string::npos &&
+			windowsTestRunner.find("$logLeaf -notlike 'rise-tests-logs-*'") !=
+				std::string::npos &&
+			windowsTestRunner.find(".rise-test-log-directory") !=
+				std::string::npos,
 			"test runners validate destructive log targets before removal" );
 		Check(unixExtendedRunner.find("\"build-test/$name\"") !=
 				std::string::npos &&
@@ -1196,6 +1214,10 @@ int main()
 			androidBridgeSource,"uint64_t RiseBridge::setCallback(");
 		const std::string macViewportStop = braceBody(
 			riseViewportBridge,"- (void)stop");
+		const std::string macEDRClaim = braceBody(
+			renderViewModel,"private func claimEDRPresentationOwnership(");
+		const std::string macEDRRestart = braceBody(
+			renderViewModel,"private func restartInteractiveAfterFinalProductionPoll(");
 		const std::string androidClearCallback = braceBody(
 			androidBridgeSource,"void RiseBridge::clearCallback(");
 		const std::string androidProductionHandoff = braceBody(
@@ -1272,7 +1294,8 @@ int main()
 				"requestGeneration <= m_latestKotlinCallbackRequest") !=
 				std::string::npos &&
 			androidSetCallback.find("stopViewportUnowned();") != std::string::npos &&
-			androidSetCallback.find("notifySceneReady(readyWidth,readyHeight)") !=
+			androidSetCallback.find(
+				"notifySceneReady(env,kotlinCallback,readyWidth,readyHeight)") !=
 				std::string::npos &&
 			androidClearCallback.find("m_kotlinCallbackOwner != ownerToken") !=
 				std::string::npos &&
@@ -1322,6 +1345,43 @@ int main()
 			firstMacStopInvalidation < macStopJoin &&
 			secondMacStopInvalidation > macStopJoin,
 			"macOS stop retires queued preview presentations before and after joining the producer" );
+		Check(metalEDRView.find("final class MetalEDRPresentationCoordinator") !=
+				std::string::npos &&
+			metalEDRView.find("func accepts(_ role: MetalEDRRendererRole") !=
+				std::string::npos &&
+			metalEDRView.find("present(expectedTicket: presentationTicket)") !=
+				std::string::npos &&
+			metalEDRView.find("drainCommittedPresentations") !=
+				std::string::npos &&
+			renderViewModel.find("claimEDRPresentationOwnership(.production)") !=
+				std::string::npos &&
+			renderViewModel.find("claimEDRPresentationOwnership(.interactive)") !=
+				std::string::npos &&
+			renderViewModel.find("interactiveEDRRenderer?.drainCommittedPresentations()") !=
+				std::string::npos &&
+			renderViewModel.find("productionEDRRenderer?.drainCommittedPresentations()") !=
+				std::string::npos &&
+			macEDRClaim.find("productionEDRRenderer?.present()") !=
+				std::string::npos &&
+			macEDRClaim.find("productionEDRRenderer?.drainCommittedPresentations()") !=
+				std::string::npos &&
+			macEDRClaim.rfind("interactiveEDRRenderer?.claimPresentationOwnership()") !=
+				std::string::npos &&
+			macEDRClaim.find("productionEDRRenderer?.present()") <
+				macEDRClaim.find("productionEDRRenderer?.drainCommittedPresentations()") &&
+			macEDRClaim.find("productionEDRRenderer?.drainCommittedPresentations()") <
+				macEDRClaim.rfind("interactiveEDRRenderer?.claimPresentationOwnership()") &&
+			macEDRRestart.find("bridgeRef.pollProductionVFS()") !=
+				std::string::npos &&
+			macEDRRestart.find("claimEDRPresentationOwnership(.interactive)") !=
+				std::string::npos &&
+			macEDRRestart.find("startSuppressingInitialRender()") !=
+				std::string::npos &&
+			macEDRRestart.find("bridgeRef.pollProductionVFS()") <
+				macEDRRestart.find("claimEDRPresentationOwnership(.interactive)") &&
+			macEDRRestart.find("claimEDRPresentationOwnership(.interactive)") <
+				macEDRRestart.find("startSuppressingInitialRender()"),
+			"macOS shared Metal layer epochs and drains old-role presentations at handoff" );
 		Check(androidProductionHandoff.find(
 				"std::lock_guard<std::mutex> lifecycleLock(m_sceneLifecycleMutex)") !=
 				std::string::npos &&

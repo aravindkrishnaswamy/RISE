@@ -13,7 +13,7 @@ FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
-LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
+LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs-managed}"
 # Parallel build jobs for the library and bulk-test build phases.  Without
 # this, a change to a widely-included header (IJob.h, RISE_API.h, ...) meant
 # the library recompiled one file at a time AND all ~131 test binaries
@@ -26,6 +26,13 @@ validate_log_dir() {
 	case "$log_base" in
 		''|'/'|'.'|'..')
 			echo "Refusing unsafe test log directory: $LOG_DIR" >&2
+			exit 1
+			;;
+	esac
+	case "$log_base" in
+		rise-tests-logs|rise-tests-logs-*) ;;
+		*)
+			echo "Refusing non-dedicated test log directory: $LOG_DIR" >&2
 			exit 1
 			;;
 	esac
@@ -52,6 +59,13 @@ validate_log_dir() {
 			exit 1
 			;;
 	esac
+	marker="$canonical_log/.rise-test-log-directory"
+	if [ -d "$canonical_log" ] && [ ! -f "$marker" ] \
+	   && [ -n "$(find "$canonical_log" -mindepth 1 -print -quit 2>/dev/null)" ]
+	then
+		echo "Refusing unowned nonempty test log directory: $canonical_log" >&2
+		exit 1
+	fi
 	LOG_DIR="$canonical_log"
 }
 
@@ -94,6 +108,7 @@ fi
 mkdir -p "$BIN_DIR"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
+: > "$LOG_DIR/.rise-test-log-directory"
 BUILD_FAIL_TSV="$LOG_DIR/.build_failures.tsv"
 RUN_FAIL_TSV="$LOG_DIR/.run_failures.tsv"
 : > "$BUILD_FAIL_TSV"
@@ -323,7 +338,8 @@ done
 
 print_summary
 
-if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ]; then
+if [ "$failed" -ne 0 ] || [ "$build_failed" -ne 0 ] \
+   || [ "$skipped" -ne 0 ] || [ "$found" -ne "$total" ]; then
 	exit 1
 fi
 echo "All $found tests passed"
