@@ -6,19 +6,18 @@
 //  (ParseToCst), deriving the Scene from it (DeriveToJob), and RETAINING the
 //  Document for later edit/save (Model-B: "Scene = derive(CST)").  This test
 //  proves the CST load path derives a non-trivial Scene and retains the
-//  Document, and pins the loader's ACCEPT / REFUSE contract (native-v7 accepted,
-//  render-neutral `>` directives accepted, render-affecting directives + FOR /
-//  `> run` refused).
+//  Document, and pins the loader's ACCEPT / REFUSE contract: native v7 is
+//  canonical, plain transitional v6 remains accepted, render-neutral `>`
+//  directives are accepted, and retired legacy constructs, render-affecting
+//  directives, unavailable authored encoders, and `> run` are refused.
 //
 //  Slice 6c-3b: the original legacy-vs-CST DumpJob equivalence arm was retired
 //  with the rest of the legacy-parser oracle -- CstDeriveGoldenTest is the
 //  standing CST-derive correctness net over the whole corpus.
 //
-//  Suite-safe: the scenes are synthetic NATIVE-v7 forms (flat -- no
-//  $()/DEFINE/FOR/`> run`) with no external media, so the CST path (which does
-//  NOT Migrate -- the v6 corpus is converted offline in plan Slice 2) loads
-//  them directly.  Slice 2 extends the equivalence to the whole (converted)
-//  corpus through the live load path.
+//  Suite-safe: the accepted scenes are synthetic flat native forms (canonical
+//  v7 plus the explicitly supported plain-v6 transition case) with no external
+//  media, so the CST path loads them directly.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -50,7 +49,7 @@ namespace
 	void Check( bool ok, const std::string& what ) { if( ok ) ++s_pass; else { ++s_fail; std::printf( "  FAIL: %s\n", what.c_str() ); } }
 
 	// DumpJob of a fresh, empty Job -- the "derived nothing" sentinel.  A successful
-	// native-v7 load must produce a dump that differs from this.
+	// accepted native load must produce a dump that differs from this.
 	const std::string& EmptyJobDump()
 	{
 		static const std::string e = []{ Job* j = new Job(); std::string s = DumpJob( *j ); j->release(); return s; }();
@@ -72,14 +71,14 @@ namespace
 		return f.good();
 	}
 
-	// Load `v7scene` (written to `path`) via the CST path; assert it derives a non-trivial Scene
+	// Load `scene` (written to `path`) via the CST path; assert it derives a non-trivial Scene
 	// (DumpJob != the empty-Job dump) and RETAINS the canonical Document.  (Slice 6c-3b: the legacy-
 	// parser arm that this originally compared against was retired -- CstDeriveGoldenTest is now the
 	// CST-derive correctness net for the whole corpus, so the per-inline-scene legacy oracle here is
 	// subsumed.  What stays UNIQUE to this test is the CST loader's ACCEPT/REFUSE contract below.)
-	void Case( const char* label, const std::string& path, const std::string& v7scene )
+	void Case( const char* label, const std::string& path, const std::string& scene )
 	{
-		if( !WriteTmp( path, v7scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
+		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
 
 		Job* jC = new Job();
 		const bool okC = jC->LoadAsciiSceneViaCst( path.c_str() );
@@ -93,7 +92,8 @@ namespace
 		std::filesystem::remove( path );
 	}
 
-	// Assert LoadAsciiSceneViaCst REFUSES a non-native-v7 scene (returns false, retains no Document).
+	// Assert LoadAsciiSceneViaCst REFUSES a scene expected to be rejected for
+	// the reason named by its label (returns false, retains no Document).
 	void RefuseCase( const char* label, const std::string& path, const std::string& scene )
 	{
 		if( !WriteTmp( path, scene ) ) { Check( false, std::string( label ) + ": write temp scene" ); return; }
@@ -206,8 +206,8 @@ int main()
 		TempPath("exr_encoder.RISEscene"), encoderScene("EXR") );
 #endif
 
-	// Slice 6c-3a: LoadAsciiSceneAuto is now CST-ONLY.  A native-v7 scene loads via the CST path and RETAINS
-	// the canonical Document; a non-native (un-migrated) scene HARD-FAILS (returns false, NO Document) instead
+	// Slice 6c-3a: LoadAsciiSceneAuto is now CST-ONLY.  A plain transitional-v6 scene loads via the CST path and RETAINS
+	// the canonical Document; a legacy-streaming (unmigrated) scene HARD-FAILS (returns false, NO Document) instead
 	// of falling back to the legacy loader.  RED-PROVE: before this change Auto fell back to legacy on the
 	// non-native branch, so the FOR-loop scene below would have legacy-loaded and returned TRUE -- the
 	// `Check( !okAutoBad, ... )` assertion would flip to a FAIL.  (Restore the legacy fallback in
@@ -219,25 +219,25 @@ int main()
 			"RISE ASCII SCENE 6\nsphere_geometry\n{\nname sg\nradius 1\n}\n" );
 		const bool wroteBad = WriteTmp( pBad,
 			"RISE ASCII SCENE 6\nFOR i 0 1 2\nsphere_geometry\n{\nname s\nradius 1\n}\nENDFOR\n" );
-		Check( wroteOk, "Auto CST-only: native-v7 temp scene was written" );
-		Check( wroteBad, "Auto CST-only: non-native temp scene was written" );
+		Check( wroteOk, "Auto CST-only: transitional-v6 temp scene was written" );
+		Check( wroteBad, "Auto CST-only: legacy-streaming temp scene was written" );
 
-		// Native-v7 -> Auto succeeds + retains the CST Document.
+		// Plain transitional v6 -> Auto succeeds + retains the CST Document.
 		if( wroteOk ) {
 			Job* j = new Job();
 			const bool okAuto = j->LoadAsciiSceneAuto( pOk.c_str() );
-			Check( okAuto, "Auto CST-only: native-v7 scene loads via Auto (returns true)" );
-			Check( j->HasRetainedCstDocument(), "Auto CST-only: native-v7 Auto-load RETAINS the CST Document" );
+			Check( okAuto, "Auto CST-only: transitional-v6 scene loads via Auto (returns true)" );
+			Check( j->HasRetainedCstDocument(), "Auto CST-only: transitional-v6 Auto-load RETAINS the CST Document" );
 			j->release();
 			std::filesystem::remove( pOk );
 		}
 
-		// Non-native (un-migrated FOR/ENDFOR) -> Auto HARD-FAILS, retains NO Document, does NOT legacy-fall-back.
+		// Unmigrated FOR/ENDFOR -> Auto HARD-FAILS, retains NO Document, does NOT legacy-fall-back.
 		if( wroteBad ) {
 			Job* j = new Job();
 			const bool okAutoBad = j->LoadAsciiSceneAuto( pBad.c_str() );
-			Check( !okAutoBad, "Auto CST-only: non-native scene HARD-FAILS via Auto (returns false, no legacy fallback)" );
-			Check( !j->HasRetainedCstDocument(), "Auto CST-only: non-native Auto-fail retains NO Document" );
+			Check( !okAutoBad, "Auto CST-only: legacy-streaming scene HARD-FAILS (no legacy fallback)" );
+			Check( !j->HasRetainedCstDocument(), "Auto CST-only: legacy-streaming failure retains NO Document" );
 			j->release();
 			std::filesystem::remove( pBad );
 		}

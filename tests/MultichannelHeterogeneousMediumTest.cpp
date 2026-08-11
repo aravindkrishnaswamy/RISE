@@ -4328,6 +4328,7 @@ namespace
 			Check( directUnknownRejected && jobUnknownRejected,
 				"unknown file encoder type rejects at both API and Job authoring boundaries" );
 			IFrameEncoder* png = encoders.AcquireByFormatName("PNG");
+			const bool pngWasAvailable = png != nullptr;
 			IRasterizerOutput* retainedOutput = nullptr;
 			const bool createdBeforeRemoval = RISE_API_CreateFileRasterizerOutput(
 				&retainedOutput,unavailableOutput.string().c_str(),false,2,8,
@@ -4359,8 +4360,12 @@ namespace
 			safe_release(png);
 			const bool encoderRestored = !removedPNG ||
 				encoders.ByFormatName("PNG") != nullptr;
-			Check( rejectedUnavailable && directRejected && retainedRendered && encoderRestored,
-				"file output atomically retains availability while later creates reject" );
+			const bool availabilityContract = pngWasAvailable ?
+				(rejectedUnavailable && directRejected && retainedRendered && encoderRestored) :
+				(!createdBeforeRemoval && rejectedUnavailable && directRejected &&
+					!retainedRendered && encoderRestored);
+			Check( availabilityContract,
+				"file output retains an available encoder while absent encoders reject authoring" );
 			std::filesystem::remove(unavailableOutput.string()+".png");
 		} else {
 			Check(false,"unavailable-encoder production fixture loads");

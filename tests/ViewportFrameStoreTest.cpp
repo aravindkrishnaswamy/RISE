@@ -179,13 +179,13 @@ namespace
 		IFrameEncoder& delegate_;
 	};
 
-	class BlockingPNGEncoder :
+	class BlockingPPMEncoder :
 		public virtual IFrameEncoder,
 		public virtual Reference
 	{
 	public:
-		std::string FormatName() const override { return "PNG"; }
-		std::vector<std::string> Extensions() const override { return { "png" }; }
+		std::string FormatName() const override { return "PPM"; }
+		std::vector<std::string> Extensions() const override { return { "ppm" }; }
 		bool SupportsHDR() const override { return false; }
 		bool SupportsAOVs() const override { return false; }
 		void Encode( const FrameStore& store, IWriteBuffer& output,
@@ -197,10 +197,10 @@ namespace
 			condition_.notify_all();
 			condition_.wait(lock,[this]() { return continue_; });
 			lock.unlock();
-			IFrameEncoder* png = FrameEncoderRegistry::Get().AcquireByFormatName("PNG");
-			if( png ) {
-				png->Encode(store,output,opts);
-				png->release();
+			IFrameEncoder* ppm = FrameEncoderRegistry::Get().AcquireByFormatName("PPM");
+			if( ppm ) {
+				ppm->Encode(store,output,opts);
+				ppm->release();
 			}
 		}
 
@@ -220,7 +220,7 @@ namespace
 		const FrameStore::Metadata& CapturedMetadata() const { return captured_; }
 
 	protected:
-		~BlockingPNGEncoder() override {}
+		~BlockingPPMEncoder() override {}
 
 	private:
 		std::mutex mutex_;
@@ -655,6 +655,7 @@ namespace
 	}
 
 	// ─── Section 4: SaveAs byte-identical to L2 ───────────────────
+#ifndef NO_PNG_SUPPORT
 	void TestSaveAsByteIdenticalToL2()
 	{
 		auto* vfs = new ViewportFrameStore();
@@ -726,6 +727,7 @@ namespace
 		l2Store->release();
 		vfs->release();
 	}
+#endif
 
 	void SetFireFidelityMetadata( FrameStore& store )
 	{
@@ -748,6 +750,7 @@ namespace
 			RISECBOR64::SHA256Hex(buildBytes));
 	}
 
+#ifndef NO_PNG_SUPPORT
 	void TestSaveAsFireProvenanceAndTransaction()
 	{
 		auto* vfs = new ViewportFrameStore();
@@ -952,6 +955,7 @@ namespace
 		safe_release( img );
 		vfs->release();
 	}
+#endif
 
 	void TestSaveAsUsesOneMetadataSnapshot()
 	{
@@ -964,8 +968,8 @@ namespace
 			"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			"preview_primary");
-		BlockingPNGEncoder* encoder = new BlockingPNGEncoder();
-		const std::string path = MakeTempPath()+"_metadata_snapshot.png";
+		BlockingPPMEncoder* encoder = new BlockingPPMEncoder();
+		const std::string path = MakeTempPath()+"_metadata_snapshot.ppm";
 		bool saved = false;
 		EncodeOpts opts;
 		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
@@ -1018,8 +1022,8 @@ namespace
 		FrameStore* store = vfs->GetFrameStore();
 		EncodeOpts opts;
 
-		BlockingPNGEncoder* fileEncoder = new BlockingPNGEncoder();
-		const std::string path = MakeTempPath()+"_nonfire_classification.png";
+		BlockingPPMEncoder* fileEncoder = new BlockingPPMEncoder();
+		const std::string path = MakeTempPath()+"_nonfire_classification.ppm";
 		bool fileSaved = false;
 		std::thread fileSaver([&]() {
 			fileSaved = vfs->SaveAs(path,fileEncoder,opts);
@@ -1039,7 +1043,7 @@ namespace
 			!std::filesystem::exists(path+".provenance.cbor"),
 			"nonfire SaveAs leases classification before concurrent fire preflight" );
 
-		BlockingPNGEncoder* bufferEncoder = new BlockingPNGEncoder();
+		BlockingPPMEncoder* bufferEncoder = new BlockingPPMEncoder();
 		MemoryBuffer* buffer = new MemoryBuffer();
 		bool bufferSaved = false;
 		std::thread bufferSaver([&]() {
@@ -1080,17 +1084,17 @@ namespace
 			finalized.activeFireMedia,finalized.resolvedRenderConfigCoreV1,
 			finalized.rendererBuildV1,finalized.rendererBuildId);
 
-		IFrameEncoder* png = FrameEncoderRegistry::Get().AcquireByFormatName("PNG");
+		IFrameEncoder* ppm = FrameEncoderRegistry::Get().AcquireByFormatName("PPM");
 		EncodeOpts opts;
-		const std::string path = MakeTempPath()+"_prepared_fire.png";
-		Check( png && !vfs->SaveAs(path,png,opts),
+		const std::string path = MakeTempPath()+"_prepared_fire.ppm";
+		Check( ppm && !vfs->SaveAs(path,ppm,opts),
 			"GUI SaveAs rejects a prepared but uncommitted fire frame" );
 		Check( !std::filesystem::exists(path) &&
 			!std::filesystem::exists(path+".provenance.cbor"),
 			"rejected prepared fire frame publishes neither artifact nor sidecar" );
 
 		store->SetMetadata(finalized);
-		if( png ) png->release();
+		if( ppm ) ppm->release();
 		safe_release(img);
 		vfs->release();
 	}
@@ -1111,8 +1115,8 @@ namespace
 		vfs->BindFrameStore(source);
 		source->release();
 
-		BlockingPNGEncoder* encoder = new BlockingPNGEncoder();
-		const std::string path = MakeTempPath()+"_lease_rebind.png";
+		BlockingPPMEncoder* encoder = new BlockingPPMEncoder();
+		const std::string path = MakeTempPath()+"_lease_rebind.ppm";
 		bool saved = false;
 		EncodeOpts opts;
 		std::thread saver([&]() { saved = vfs->SaveAs(path,encoder,opts); });
@@ -1354,7 +1358,7 @@ namespace
 		// Main thread: SaveAs in a loop.  Each save acquires every
 		// per-tile shared_lock during DumpImage; writer is briefly
 		// blocked but doesn't crash.
-		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PPM" );
 		EncodeOpts opts;
 		opts.colorSpace = eColorSpace_sRGB;
 		opts.bpp        = 8;
@@ -1364,7 +1368,7 @@ namespace
 		while ( std::chrono::steady_clock::now() - start
 		        < std::chrono::milliseconds( 200 ) )
 		{
-			const std::string path = MakeTempPath() + "_midrender.png";
+			const std::string path = MakeTempPath() + "_midrender.ppm";
 			const bool ok = vfs->SaveAs( path, enc, opts );
 			++saveCount;
 			if ( ok ) {
@@ -2298,8 +2302,10 @@ int main()
 	TestThrowingCallbacksReleaseRetainedSnapshots();
 	TestIntermediateMultiTile();
 	TestRenderToBuffer();
+	#ifndef NO_PNG_SUPPORT
 	TestSaveAsByteIdenticalToL2();
 	TestSaveAsFireProvenanceAndTransaction();
+	#endif
 	TestSaveAsUsesOneMetadataSnapshot();
 	TestNonFireSavesLeaseOutputClassification();
 	TestRasterizerSwap();

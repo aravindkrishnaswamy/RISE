@@ -18,14 +18,15 @@
 //         → memBufB
 //    4. Compare memBufA == memBufB byte-for-byte.
 //
-//  Plus: registry sanity checks (all 7 encoders register, lookup by
-//  name and extension works, case-insensitive).
+//  Plus: registry sanity checks (all built-in encoders register, lookup
+//  by name and extension works, case-insensitive).
 //
 //////////////////////////////////////////////////////////////////////
 
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -394,15 +395,20 @@ namespace
 		auto& reg = FrameEncoderRegistry::Get();
 		auto all = reg.All();
 
-		// L5c added the 8th encoder (HDR10_PNG).  Test asserts the
-		// updated count; the legacy 7 are still present in the same
-		// registration order followed by the new HDR10_PNG.
-		Check( all.size() == 8, "registry has 8 built-in encoders (7 legacy + L5c HDR10_PNG)" );
+		std::vector<const char*> expectedFormats = { "HDR", "RGBEA", "TGA", "PPM" };
+#ifndef NO_PNG_SUPPORT
+		expectedFormats.push_back("PNG");
+		expectedFormats.push_back("HDR10_PNG");
+#endif
+#ifndef NO_EXR_SUPPORT
+		expectedFormats.push_back("EXR");
+#endif
+#ifndef NO_TIFF_SUPPORT
+		expectedFormats.push_back("TIFF");
+#endif
+		Check( all.size() == expectedFormats.size(),
+			"registry size matches the codecs compiled into this build" );
 
-		const char* expectedFormats[] = {
-			"PNG", "EXR", "TIFF", "HDR", "RGBEA", "TGA", "PPM",
-			"HDR10_PNG"
-		};
 		for ( const char* fmt : expectedFormats ) {
 			IFrameEncoder* enc = reg.ByFormatName( fmt );
 			std::ostringstream os;
@@ -411,33 +417,53 @@ namespace
 		}
 
 		// Case-insensitive lookup.
-		Check( reg.ByFormatName( "png" )  != nullptr, "ByFormatName(\"png\") (lowercase)" );
-		Check( reg.ByFormatName( "Png" )  != nullptr, "ByFormatName(\"Png\") (mixed case)" );
 		Check( reg.ByFormatName( "MISS" ) == nullptr, "ByFormatName(\"MISS\") returns null" );
 
 		// Extension lookup, with and without leading dot.
+#ifndef NO_PNG_SUPPORT
+		Check( reg.ByFormatName( "png" )  != nullptr, "ByFormatName(\"png\") (lowercase)" );
+		Check( reg.ByFormatName( "Png" )  != nullptr, "ByFormatName(\"Png\") (mixed case)" );
 		Check( reg.ByExtension( "png"  ) != nullptr, "ByExtension(\"png\")" );
 		Check( reg.ByExtension( ".png" ) != nullptr, "ByExtension(\".png\")" );
-		Check( reg.ByExtension( "tif"  ) != nullptr, "ByExtension(\"tif\") (TIFF alias)" );
-		Check( reg.ByExtension( "tiff" ) != nullptr, "ByExtension(\"tiff\")" );
-		Check( reg.ByExtension( "miss" ) == nullptr, "ByExtension(\"miss\") returns null" );
 		IFrameEncoder* acquiredPng = reg.AcquireByExtension(".png");
 		Check( acquiredPng && acquiredPng->FormatName() == "PNG",
 			"AcquireByExtension returns a retained encoder" );
 		safe_release(acquiredPng);
+#else
+		Check( reg.ByFormatName("PNG") == nullptr &&
+			reg.ByFormatName("HDR10_PNG") == nullptr,
+			"PNG encoders are absent when PNG support is disabled" );
+#endif
+#ifndef NO_TIFF_SUPPORT
+		Check( reg.ByExtension( "tif"  ) != nullptr, "ByExtension(\"tif\") (TIFF alias)" );
+		Check( reg.ByExtension( "tiff" ) != nullptr, "ByExtension(\"tiff\")" );
+#else
+		Check( reg.ByFormatName("TIFF") == nullptr,
+			"TIFF encoder is absent when TIFF support is disabled" );
+#endif
+		Check( reg.ByExtension( "miss" ) == nullptr, "ByExtension(\"miss\") returns null" );
 		std::vector<IFrameEncoder*> acquiredAll = reg.AcquireAll();
 		Check( acquiredAll.size() == all.size(),
 			"AcquireAll returns a retained registry snapshot" );
 		for( IFrameEncoder* encoder : acquiredAll ) encoder->release();
 
 		// HDR-format flags match the legacy IsHDRFormat gate.
+		#ifndef NO_EXR_SUPPORT
 		Check( reg.ByFormatName( "EXR"   )->SupportsHDR() == true,  "EXR.SupportsHDR" );
+		#else
+		Check( reg.ByFormatName("EXR") == nullptr,
+			"EXR encoder is absent when EXR support is disabled" );
+		#endif
 		Check( reg.ByFormatName( "HDR"   )->SupportsHDR() == true,  "HDR.SupportsHDR" );
 		Check( reg.ByFormatName( "RGBEA" )->SupportsHDR() == true,  "RGBEA.SupportsHDR" );
+		#ifndef NO_PNG_SUPPORT
 		Check( reg.ByFormatName( "PNG"   )->SupportsHDR() == false, "PNG !SupportsHDR" );
+		#endif
 		Check( reg.ByFormatName( "TGA"   )->SupportsHDR() == false, "TGA !SupportsHDR" );
 		Check( reg.ByFormatName( "PPM"   )->SupportsHDR() == false, "PPM !SupportsHDR" );
+		#ifndef NO_TIFF_SUPPORT
 		Check( reg.ByFormatName( "TIFF"  )->SupportsHDR() == false, "TIFF !SupportsHDR" );
+		#endif
 	}
 
 	// ─── Section 2: byte-identical regression per format ──────────
@@ -450,6 +476,7 @@ namespace
 		defaultOpts.bpp           = 8;
 
 		// PNG default + with display transform.
+#ifndef NO_PNG_SUPPORT
 		DiffOneFormat( "PNG", defaultOpts );
 		EncodeOpts pngWithTone;
 		pngWithTone.viewTransform = ViewTransform::ForLDRDisplay( 0.5f, eDisplayTransform_ACES );
@@ -472,8 +499,10 @@ namespace
 		png16.colorSpace    = eColorSpace_sRGB;
 		png16.bpp           = 16;
 		DiffOneFormat( "PNG", png16 );
+#endif
 
 		// EXR — HDR archival (no display transform applied).
+#ifndef NO_EXR_SUPPORT
 		EncodeOpts exr;
 		exr.viewTransform = ViewTransform::Identity();
 		exr.colorSpace    = eColorSpace_Rec709RGB_Linear;
@@ -484,6 +513,7 @@ namespace
 		// EXR ZIP compression variant.
 		exr.exrCompression = eExrCompression_Zip;
 		DiffOneFormat( "EXR", exr );
+#endif
 
 		// HDR / Radiance.
 		EncodeOpts hdr;
@@ -497,10 +527,7 @@ namespace
 		DiffOneFormat( "RGBEA", rgbea );
 
 #ifndef NO_TIFF_SUPPORT
-		// TIFF default.  Skipped under NO_TIFF_SUPPORT — the encoder
-		// is still registered (registry-sanity tests above cover that)
-		// but produces empty output, which trips the "non-empty output"
-		// Check at the end of DiffOneFormat.
+		// TIFF is registered and exercised only when TIFF support is compiled in.
 		EncodeOpts tiff;
 		tiff.viewTransform = ViewTransform::Identity();
 		tiff.colorSpace    = eColorSpace_sRGB;
@@ -615,6 +642,7 @@ namespace
 		const char* formats[] = { "EXR", "PNG", "HDR" };
 		for ( const char* fmt : formats ) {
 			IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( fmt );
+			if( !enc ) continue;
 
 			EncodeOpts opts;
 			opts.viewTransform = ViewTransform::Identity();
@@ -666,6 +694,11 @@ namespace
 		FillFrameStoreFromLegacy( store, *legacyImg );
 
 		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+		if( !enc ) {
+			safe_release(legacyImg);
+			store->release();
+			return;
+		}
 
 		// New path: caller sets static EV via opts; encoder pulls
 		// camera EV from store.Meta() and sums.
@@ -733,6 +766,7 @@ namespace
 		const char* formats[] = { "PNG", "EXR" };
 		for ( const char* fmt : formats ) {
 			IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( fmt );
+			if( !enc ) continue;
 
 			EncodeOpts opts;
 			opts.viewTransform = ViewTransform::Identity();
@@ -814,6 +848,11 @@ namespace
 			}
 
 			IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "PNG" );
+			if( !enc ) {
+				safe_release(legacyImg);
+				store->release();
+				continue;
+			}
 			EncodeOpts opts;
 			opts.viewTransform = ViewTransform::Identity();
 			opts.colorSpace    = eColorSpace_sRGB;
@@ -849,6 +888,10 @@ namespace
 		FillFrameStoreFromLegacyForFakeStore( store );
 
 		IFrameEncoder* enc = FrameEncoderRegistry::Get().ByFormatName( "EXR" );
+		if( !enc ) {
+			store->release();
+			return;
+		}
 
 		EncodeOpts identityOpts;
 		identityOpts.viewTransform  = ViewTransform::Identity();
@@ -921,11 +964,20 @@ void TestHDR10PNGEncoder_L5c()
 	auto* store = new FrameStore( spec );
 	auto* beauty = store->GetChannel<FrameStoreOutput::ChannelId::Beauty>();
 	auto* alpha  = store->GetChannel<FrameStoreOutput::ChannelId::Alpha>();
+	Check( alpha != nullptr, "L5c: HDR10 fixture exposes alpha edge-case storage" );
 	for ( unsigned int y = 0; y < kImgH; ++y ) {
 		for ( unsigned int x = 0; x < kImgW; ++x ) {
 			RISEColor c = PatternPixel( x, y );
 			if ( beauty ) beauty->At( x, y ) = c.base;
-			if ( alpha )  alpha->At( x, y )  = c.a;
+			if ( alpha ) {
+				if ( x == 0u && y == 0u ) {
+					alpha->At( x, y ) = std::numeric_limits<Chel>::quiet_NaN();
+				} else if ( x == 1u && y == 0u ) {
+					alpha->At( x, y ) = std::numeric_limits<Chel>::infinity();
+				} else {
+					alpha->At( x, y ) = c.a;
+				}
+			}
 		}
 	}
 
@@ -1078,7 +1130,9 @@ int main()
 	TestROMMColorSpace();
 	TestEdgeDimensions();
 	TestHDRExposureOnlyIgnored();
+#ifndef NO_PNG_SUPPORT
 	TestHDR10PNGEncoder_L5c();
+#endif
 	TestWriterFailureReleasesAllReferences();
 
 	std::cout << "------------------------------------------------------------\n";
