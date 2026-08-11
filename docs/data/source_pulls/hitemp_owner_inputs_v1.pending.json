@@ -12,6 +12,7 @@
   "required_generation_axes": "The production manifest must declare self_broadening_mole_fractions spanning [0,1].",
   "required_state_policy": "Production lookup is axis-knots-only and rejects interior self-fraction/gas-temperature/radiation-temperature states; refined direct-LBL interpolation comparisons are diagnostic and cannot qualify continuous lookup.",
   "required_spectral_state_diagnostic": "Record direct refined-state spectra versus interpolation through nonlinear finite-path emissivity on every pinned EM2C path, without treating finite samples as a continuous-domain certificate.",
+  "required_resource_preflight": "Production generation uses operational knots only and rejects before reading owner bytes when the fixed 2 GB spectral-storage or 5 billion line-state-evaluation upper bound is exceeded.",
   "required_convergence_gates": "Pin maximum relative Planck-mean errors for the finite spectral grid and expanded line-wing comparison.",
   "required_finite_path_gate": "Declare h/2h/4h nonlinear emissivity convergence limits over 0.01-50 atm.m; production generation rejects an unqualified grid.",
   "required_visible_gate": "Pin the maximum permitted conservative 380-780 nm gas-absorption bound against the aerosol/chem validation tolerance.",

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -23,7 +24,8 @@ sys.path.insert(0, str(TOOLS))
 
 from fire_gas_opacity import (  # noqa: E402
     C2_CM_K, C_LIGHT, K_BOLTZMANN, N_AVOGADRO, HitranLine, PartitionSums,
-    conservative_voigt_bin_weights, finite_path_emissivity_refinement_certificate,
+    canonical_json_bytes, conservative_voigt_bin_weights,
+    finite_path_emissivity_refinement_certificate,
     iter_hitran_lines, line_area_temperature_interval_upper, line_intensity,
     parse_hitran160, planck_weight_wavenumber, species_spectra_batch,
     spectral_grid, tensor_linear_derivative_certificate,
@@ -36,6 +38,7 @@ from generate_fire_gas_opacity_record import (  # noqa: E402
     evaluate_mixture_planck_mean, evaluate_species_kappa_bin,
     evaluate_species_planck_mean, generate, generator_identity,
     load_verified_manifest, validate_em2c_path_domain, _exact_axis_index,
+    production_resource_budget, validate_opacity_table,
     validate_production_species_inventory,
 )
 from build_fire_gas_opacity_native import build as build_native  # noqa: E402
@@ -43,6 +46,7 @@ from fire_gas_opacity_native import species_spectra_batch_native  # noqa: E402
 from fetch_verify_hitemp_inputs import verify_and_generate  # noqa: E402
 from crosscheck_fire_gas_opacity_em2c import (  # noqa: E402
     homogeneous_emissivity, parse_em2c, ratio_from_em2c_filename,
+    spectrum_at_temperature,
     validate_case_ratio, validate_contraction_limit,
     validate_emissivity_grid_state, validate_relative_tolerance,
 )
@@ -536,6 +540,114 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             validate_em2c_path_domain([0.01, 1.0, 50.0])
         with self.assertRaisesRegex(ValueError, "axis knots only"):
             _exact_axis_index([300.0, 1000.0], 700.0)
+        self.assertTrue(production_resource_budget(600, 2, 3)["within_budget"])
+        self.assertFalse(production_resource_budget(150000, 10, 105)["within_budget"])
+
+    def test_production_shaped_native_flow_enforces_counts_and_axis_knots(self) -> None:
+        manifest_path = FIXTURE / "synthetic_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["status"] = "production_pinned"
+        manifest["synthetic"] = False
+        manifest["hitemp_citations"] = [
+            "Rothman et al. 2010, DOI 10.1016/j.jqsrt.2010.05.001"]
+        manifest["original_source_citations"] = [
+            "HITEMP original sources, https://hitran.org/hitemp/"]
+        manifest["finite_path_emissivity_grid_qualification"][
+            "path_lengths_m"] = list(EM2C_PATH_LENGTHS_M)
+        for source in manifest["sources"]:
+            source["partition_sums"]["citation"] = (
+                "Gamache et al. 2021, DOI 10.1016/j.jqsrt.2021.107713")
+
+        def qualified_certificate(grid, spectra, temperatures, paths,
+                                  remaining_limit, contraction_limit):
+            return {
+                "kind": "finite_volume_h_2h_4h_nonlinear_emissivity_v1",
+                "path_lengths_m": list(paths),
+                "sample_count": len(spectra) * len(temperatures) * len(paths),
+                "maximum_adjacent_h_2h_relative_difference": 0.0,
+                "maximum_contraction_ratio": 0.0,
+                "maximum_allowed_contraction_ratio": contraction_limit,
+                "maximum_estimated_remaining_relative_error": 0.0,
+                "maximum_allowed_estimated_remaining_relative_error": remaining_limit,
+                "qualified": True,
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            library = Path(directory) / "libfire-opacity-native.so"
+            output = Path(directory) / "production.json"
+            build_native(library)
+            expected_counts = {"H2O": 3, "CO2": 2}
+            with (mock.patch(
+                    "generate_fire_gas_opacity_record.load_verified_manifest",
+                    return_value=(manifest, FIXTURE)),
+                  mock.patch(
+                    "fetch_verify_hitemp_inputs.load_verified_manifest",
+                    return_value=(manifest, FIXTURE)),
+                  mock.patch(
+                    "generate_fire_gas_opacity_record.EXPECTED_ARCHIVE_LINE_COUNTS",
+                    expected_counts),
+                  mock.patch(
+                    "generate_fire_gas_opacity_record.finite_path_emissivity_refinement_certificate",
+                    side_effect=qualified_certificate)):
+                verify_and_generate(manifest_path, FIXTURE, output, library)
+                table = json.loads(output.read_text(encoding="utf-8"))
+                identity = table["canonical_payload_without_identity_sha256"]
+                validate_opacity_table(table, expected_payload_identity=identity)
+                self.assertGreater(evaluate_species_planck_mean(
+                    table, "H2O", 0.0, 300.0, 300.0, 101325.0,
+                    expected_payload_identity=identity), 0.0)
+                with self.assertRaisesRegex(ValueError, "axis knots only"):
+                    evaluate_species_planck_mean(
+                        table, "H2O", 0.5, 300.0, 300.0, 101325.0,
+                        expected_payload_identity=identity)
+                with self.assertRaisesRegex(ValueError, "axis knots only"):
+                    evaluate_species_kappa_bin(
+                        table, "H2O", 0.0, 700.0,
+                        table["spectral_grid_cm-1"][0], 101325.0,
+                        expected_payload_identity=identity)
+                h2o = next(item for item in table["species_tables"]
+                           if item["species"] == "H2O")
+                self.assertEqual(len(spectrum_at_temperature(
+                    table, h2o, 300.0, 0.0)),
+                    len(table["spectral_grid_cm-1"]))
+                with self.assertRaisesRegex(ValueError, "exact production-table axis"):
+                    spectrum_at_temperature(table, h2o, 700.0, 0.0)
+
+                bad_count = copy.deepcopy(table)
+                h2o_bad = next(item for item in bad_count["species_tables"]
+                               if item["species"] == "H2O")
+                h2o_bad["archive_line_count"] = 4
+                payload = dict(bad_count)
+                payload.pop("canonical_payload_without_identity_sha256")
+                bad_count["canonical_payload_without_identity_sha256"] = hashlib.sha256(
+                    canonical_json_bytes(payload)).hexdigest()
+                with self.assertRaisesRegex(ValueError, "archive line count"):
+                    validate_opacity_table(
+                        bad_count, expected_payload_identity=bad_count[
+                            "canonical_payload_without_identity_sha256"])
+
+            with (mock.patch(
+                    "generate_fire_gas_opacity_record.load_verified_manifest",
+                    return_value=(manifest, FIXTURE)),
+                  mock.patch(
+                    "generate_fire_gas_opacity_record.EXPECTED_ARCHIVE_LINE_COUNTS",
+                    {"H2O": 4, "CO2": 2}),
+                  mock.patch(
+                    "generate_fire_gas_opacity_record.finite_path_emissivity_refinement_certificate",
+                    side_effect=qualified_certificate)):
+                with self.assertRaisesRegex(ValueError, "archive line count"):
+                    generate(manifest_path, FIXTURE, library)
+
+            oversized = copy.deepcopy(manifest)
+            oversized["gas_temperatures_K"] = [300.0 + 25.0 * index
+                                                for index in range(105)]
+            oversized["self_broadening_mole_fractions"] = [index / 9.0
+                                                            for index in range(10)]
+            with mock.patch(
+                    "generate_fire_gas_opacity_record.load_verified_manifest",
+                    return_value=(oversized, FIXTURE)):
+                with self.assertRaisesRegex(ValueError, "hard resource budget"):
+                    generate(manifest_path, FIXTURE, library)
 
     def test_empty_or_foreign_line_archives_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())

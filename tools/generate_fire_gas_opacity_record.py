@@ -23,6 +23,8 @@ from fire_gas_opacity import (
 SCHEMA = "rise-fire-gas-opacity-generator-input-v1"
 EXPECTED_MOLECULES = {"H2O": 1, "CO2": 2}
 EXPECTED_ARCHIVE_LINE_COUNTS = {"H2O": 114241164, "CO2": 326260084}
+MAXIMUM_PRODUCTION_SPECTRAL_STORAGE_BYTES = 2_000_000_000
+MAXIMUM_PRODUCTION_LINE_STATE_EVALUATIONS = 5_000_000_000
 EXPECTED_H2O_SEGMENT_NAMES = {
     f"01_{lower}-{upper}_HITEMP2010.par" for lower, upper in (
         ("00000", "00050"), ("00050", "00150"), ("00150", "00250"),
@@ -130,6 +132,29 @@ def refined_axis(knots: Sequence[float], subdivisions: int) -> list[float]:
     return result
 
 
+def production_resource_budget(grid_count: int, self_count: int,
+                               gas_temperature_count: int) -> dict:
+    if grid_count < 2 or self_count < 2 or gas_temperature_count < 2:
+        raise ValueError("production opacity resource dimensions are invalid")
+    state_count = self_count * gas_temperature_count
+    spectral_storage_bytes = 2 * state_count * grid_count * 8
+    line_state_evaluations = sum(EXPECTED_ARCHIVE_LINE_COUNTS.values()) * state_count
+    result = {
+        "kind": "hard_preflight_upper_bound_v1",
+        "operational_state_count_per_species": state_count,
+        "two_cutoff_spectral_storage_bytes_per_species": spectral_storage_bytes,
+        "line_state_evaluations_both_species": line_state_evaluations,
+        "maximum_spectral_storage_bytes_per_species":
+            MAXIMUM_PRODUCTION_SPECTRAL_STORAGE_BYTES,
+        "maximum_line_state_evaluations_both_species":
+            MAXIMUM_PRODUCTION_LINE_STATE_EVALUATIONS,
+        "within_budget": (
+            spectral_storage_bytes <= MAXIMUM_PRODUCTION_SPECTRAL_STORAGE_BYTES and
+            line_state_evaluations <= MAXIMUM_PRODUCTION_LINE_STATE_EVALUATIONS),
+    }
+    return result
+
+
 def _validate_tensor(value: object, dimensions: Sequence[int], label: str) -> None:
     if not dimensions:
         if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0.0:
@@ -207,6 +232,15 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
             raise ValueError(f"opacity {label} axis is malformed")
     if self_axis[0] != 0.0 or self_axis[-1] != 1.0:
         raise ValueError("opacity self-broadening axis does not span its domain")
+    budget = table.get("production_resource_budget")
+    if synthetic:
+        if budget != {"kind": "synthetic_test_fixture_not_production_budgeted"}:
+            raise ValueError("synthetic opacity resource-budget marker is invalid")
+    else:
+        expected_budget = production_resource_budget(
+            len(grid), len(self_axis), len(gas_axis))
+        if budget != expected_budget or budget.get("within_budget") is not True:
+            raise ValueError("production opacity resource budget is invalid")
     pressure = table.get("pressure_Pa")
     edges = table.get("spectral_bin_edge_domain_cm-1")
     if (not isinstance(pressure, (int, float)) or not math.isfinite(pressure) or
@@ -253,71 +287,84 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
                     "planck_mean_interpolation_diagnostic"):
             raise ValueError("opacity interpolation certificate does not bind the table")
         state_certificate = species.get("state_interpolation_diagnostic")
-        state_subdivisions = (state_certificate.get("subdivisions_per_cell")
-                              if isinstance(state_certificate, dict) else None)
-        expected_state_samples = (0 if not isinstance(state_subdivisions, int) else
-            ((len(self_axis) - 1) * state_subdivisions + 1) *
-            ((len(gas_axis) - 1) * state_subdivisions + 1) *
-            ((len(radiation_axis) - 1) * state_subdivisions + 1))
-        if (not isinstance(state_certificate, dict) or
-                state_certificate.get("kind") !=
-                "direct_lbl_uniform_subcell_state_validation_diagnostic_v1" or
-                not isinstance(state_certificate.get("subdivisions_per_cell"), int) or
-                isinstance(state_certificate.get("subdivisions_per_cell"), bool) or
-                state_certificate["subdivisions_per_cell"] < 2 or
-                state_certificate["subdivisions_per_cell"] > 8 or
-                not isinstance(state_certificate.get("sample_count"), int) or
-                state_certificate["sample_count"] != expected_state_samples or
-                not _is_digest(state_certificate.get("validation_samples_sha256")) or
-                not isinstance(state_certificate.get("maximum_relative"), (int, float)) or
-                not math.isfinite(state_certificate["maximum_relative"]) or
-                not isinstance(state_certificate.get("maximum_allowed_relative"),
-                               (int, float)) or
-                not math.isfinite(state_certificate["maximum_allowed_relative"]) or
-                state_certificate["maximum_allowed_relative"] <= 0.0 or
-                state_certificate.get("sample_gate_passed") != (
-                    state_certificate["maximum_relative"] <=
-                    state_certificate["maximum_allowed_relative"])):
-            raise ValueError("opacity state-interpolation diagnostic is invalid")
         finite_path_state = species.get(
             "finite_path_state_interpolation_diagnostic")
-        refined_self_count = ((len(self_axis) - 1) * state_subdivisions + 1
-                              if isinstance(state_subdivisions, int) else 0)
-        refined_gas_count = ((len(gas_axis) - 1) * state_subdivisions + 1
-                             if isinstance(state_subdivisions, int) else 0)
-        finite_path_state_paths = (finite_path_state.get("path_lengths_m", [])
-                                   if isinstance(finite_path_state, dict) else [])
-        expected_finite_path_samples = ((2 * refined_self_count - 1) *
-                                        refined_gas_count *
-                                        len(finite_path_state_paths))
-        if (not isinstance(finite_path_state, dict) or
-                finite_path_state.get("kind") !=
-                "direct_lbl_refined_state_finite_path_emissivity_diagnostic_v1" or
-                finite_path_state.get("composition_scales") !=
-                "unit_and_self_fraction" or
-                finite_path_state.get("sample_count") !=
-                expected_finite_path_samples or
-                not _is_digest(finite_path_state.get("validation_samples_sha256")) or
-                not isinstance(finite_path_state.get("maximum_relative"),
-                               (int, float)) or
-                not math.isfinite(finite_path_state["maximum_relative"]) or
-                not isinstance(finite_path_state.get("maximum_allowed_relative"),
-                               (int, float)) or
-                not math.isfinite(finite_path_state["maximum_allowed_relative"]) or
-                finite_path_state["maximum_allowed_relative"] <= 0.0 or
-                finite_path_state.get("sample_gate_passed") != (
-                    finite_path_state["maximum_relative"] <=
-                    finite_path_state["maximum_allowed_relative"])):
-            raise ValueError("opacity spectral-state finite-path diagnostic is invalid")
-        if not synthetic:
-            validate_em2c_path_domain(finite_path_state_paths)
+        finite_path_state_paths = []
+        if synthetic:
+            state_subdivisions = (state_certificate.get("subdivisions_per_cell")
+                                  if isinstance(state_certificate, dict) else None)
+            expected_state_samples = (0 if not isinstance(state_subdivisions, int) else
+                ((len(self_axis) - 1) * state_subdivisions + 1) *
+                ((len(gas_axis) - 1) * state_subdivisions + 1) *
+                ((len(radiation_axis) - 1) * state_subdivisions + 1))
+            if (not isinstance(state_certificate, dict) or
+                    state_certificate.get("kind") !=
+                    "direct_lbl_uniform_subcell_state_validation_diagnostic_v1" or
+                    not isinstance(state_subdivisions, int) or
+                    isinstance(state_subdivisions, bool) or
+                    state_subdivisions < 2 or state_subdivisions > 8 or
+                    state_certificate.get("sample_count") != expected_state_samples or
+                    not _is_digest(state_certificate.get("validation_samples_sha256")) or
+                    not isinstance(state_certificate.get("maximum_relative"),
+                                   (int, float)) or
+                    not math.isfinite(state_certificate["maximum_relative"]) or
+                    not isinstance(state_certificate.get("maximum_allowed_relative"),
+                                   (int, float)) or
+                    not math.isfinite(state_certificate[
+                        "maximum_allowed_relative"]) or
+                    state_certificate["maximum_allowed_relative"] <= 0.0 or
+                    state_certificate.get("sample_gate_passed") != (
+                        state_certificate["maximum_relative"] <=
+                        state_certificate["maximum_allowed_relative"])):
+                raise ValueError("opacity state-interpolation diagnostic is invalid")
+            refined_self_count = (len(self_axis) - 1) * state_subdivisions + 1
+            refined_gas_count = (len(gas_axis) - 1) * state_subdivisions + 1
+            finite_path_state_paths = (finite_path_state.get("path_lengths_m", [])
+                                       if isinstance(finite_path_state, dict) else [])
+            expected_finite_path_samples = ((2 * refined_self_count - 1) *
+                                            refined_gas_count *
+                                            len(finite_path_state_paths))
+            if (not isinstance(finite_path_state, dict) or
+                    finite_path_state.get("kind") !=
+                    "direct_lbl_refined_state_finite_path_emissivity_diagnostic_v1" or
+                    finite_path_state.get("composition_scales") !=
+                    "unit_and_self_fraction" or
+                    finite_path_state.get("sample_count") !=
+                    expected_finite_path_samples or
+                    not _is_digest(finite_path_state.get("validation_samples_sha256")) or
+                    not isinstance(finite_path_state.get("maximum_relative"),
+                                   (int, float)) or
+                    not math.isfinite(finite_path_state["maximum_relative"]) or
+                    not isinstance(finite_path_state.get("maximum_allowed_relative"),
+                                   (int, float)) or
+                    not math.isfinite(finite_path_state[
+                        "maximum_allowed_relative"]) or
+                    finite_path_state["maximum_allowed_relative"] <= 0.0 or
+                    finite_path_state.get("sample_gate_passed") != (
+                        finite_path_state["maximum_relative"] <=
+                        finite_path_state["maximum_allowed_relative"])):
+                raise ValueError("opacity spectral-state finite-path diagnostic is invalid")
+        else:
+            expected_state_stub = {
+                "kind": "skipped_axis_knots_only_production_v1",
+                "operational_use": False,
+                "reason": "continuous interpolation is rejected; refined diagnostics "
+                          "are synthetic-test-only to keep production work bounded",
+            }
+            expected_finite_stub = {
+                "kind": "skipped_axis_knots_only_production_v1",
+                "operational_use": False,
+                "reason": "finite-path state interpolation is not operational",
+            }
+            if state_certificate != expected_state_stub or finite_path_state != expected_finite_stub:
+                raise ValueError("production opacity diagnostics are not the bounded stubs")
         emissivity_certificate = species.get("finite_path_emissivity_grid_qualification")
         if not isinstance(emissivity_certificate, dict):
             raise ValueError("opacity finite-path emissivity qualification is missing")
         if not synthetic:
             validate_em2c_path_domain(
                 emissivity_certificate.get("path_lengths_m", []))
-        if (finite_path_state_paths !=
+        if (synthetic and finite_path_state_paths !=
                 emissivity_certificate.get("path_lengths_m", [])):
             raise ValueError("opacity finite-path qualifications use different domains")
         expected_emissivity_certificate = finite_path_emissivity_refinement_certificate(
@@ -592,14 +639,24 @@ def generate(manifest_path: Path, input_root: Path | None,
             not math.isfinite(maximum_finite_path_state_interpolation_relative) or
             maximum_finite_path_state_interpolation_relative <= 0.0):
         raise ValueError("opacity state-interpolation qualification is invalid")
-    evaluation_gas_temperatures = refined_axis(gas_temperatures, subdivisions)
-    evaluation_radiation_temperatures = refined_axis(
-        radiation_temperatures, subdivisions)
-    evaluation_self_fractions = refined_axis(self_fractions, subdivisions)
-    operational_indices = [index * subdivisions for index in range(len(gas_temperatures))]
-    operational_self_indices = [index * subdivisions for index in range(len(self_fractions))]
-    operational_radiation_indices = [
-        index * subdivisions for index in range(len(radiation_temperatures))]
+    if manifest["synthetic"]:
+        evaluation_gas_temperatures = refined_axis(gas_temperatures, subdivisions)
+        evaluation_radiation_temperatures = refined_axis(
+            radiation_temperatures, subdivisions)
+        evaluation_self_fractions = refined_axis(self_fractions, subdivisions)
+        operational_indices = [
+            index * subdivisions for index in range(len(gas_temperatures))]
+        operational_self_indices = [
+            index * subdivisions for index in range(len(self_fractions))]
+        operational_radiation_indices = [
+            index * subdivisions for index in range(len(radiation_temperatures))]
+    else:
+        evaluation_gas_temperatures = gas_temperatures
+        evaluation_radiation_temperatures = radiation_temperatures
+        evaluation_self_fractions = self_fractions
+        operational_indices = list(range(len(gas_temperatures)))
+        operational_self_indices = list(range(len(self_fractions)))
+        operational_radiation_indices = list(range(len(radiation_temperatures)))
     pressure_pa = float(manifest["pressure_Pa"])
     if not math.isfinite(pressure_pa) or pressure_pa != REFERENCE_PRESSURE_PA:
         raise ValueError("opacity table pressure must be exactly 101325 Pa (1 atm)")
@@ -623,6 +680,10 @@ def generate(manifest_path: Path, input_root: Path | None,
         emissivity_config.get("maximum_contraction_ratio", math.nan))
     if not manifest["synthetic"]:
         validate_em2c_path_domain(emissivity_paths)
+    resource_budget = production_resource_budget(
+        len(grid), len(self_fractions), len(gas_temperatures))
+    if not manifest["synthetic"] and not resource_budget["within_budget"]:
+        raise ValueError("production opacity manifest exceeds the hard resource budget")
     if (convergence_factor <= 1.0 or maximum_grid_relative <= 0.0 or
             maximum_wing_relative <= 0.0 or maximum_visible_upper <= 0.0):
         raise ValueError("line-wing convergence factor must exceed one")
@@ -734,7 +795,9 @@ def generate(manifest_path: Path, input_root: Path | None,
         maximum_state_interpolation_rel = 0.0
         worst_state = None
         validation_samples = []
-        for self_index, self_fraction in enumerate(evaluation_self_fractions):
+        diagnostic_self_fractions = (evaluation_self_fractions
+                                     if manifest["synthetic"] else [])
+        for self_index, self_fraction in enumerate(diagnostic_self_fractions):
             for gas_index, gas_temperature in enumerate(evaluation_gas_temperatures):
                 for radiation_index, radiation_temperature in enumerate(
                         evaluation_radiation_temperatures):
@@ -767,11 +830,18 @@ def generate(manifest_path: Path, input_root: Path | None,
             "sample_gate_passed": (maximum_state_interpolation_rel <=
                                    maximum_state_interpolation_relative),
         }
+        if not manifest["synthetic"]:
+            state_interpolation_certificate = {
+                "kind": "skipped_axis_knots_only_production_v1",
+                "operational_use": False,
+                "reason": "continuous interpolation is rejected; refined diagnostics "
+                          "are synthetic-test-only to keep production work bounded",
+            }
         maximum_finite_path_state_abs = 0.0
         maximum_finite_path_state_rel = 0.0
         worst_finite_path_state = None
         finite_path_state_samples = []
-        for self_index, self_fraction in enumerate(evaluation_self_fractions):
+        for self_index, self_fraction in enumerate(diagnostic_self_fractions):
             for gas_index, gas_temperature in enumerate(evaluation_gas_temperatures):
                 direct_spectrum = evaluation_spectra[self_index][gas_index]
                 interpolated_spectrum = []
@@ -820,6 +890,12 @@ def generate(manifest_path: Path, input_root: Path | None,
             "sample_gate_passed": (maximum_finite_path_state_rel <=
                                    maximum_finite_path_state_interpolation_relative),
         }
+        if not manifest["synthetic"]:
+            finite_path_state_certificate = {
+                "kind": "skipped_axis_knots_only_production_v1",
+                "operational_use": False,
+                "reason": "finite-path state interpolation is not operational",
+            }
         visible_maximum = max(value for row in visible_cell_bounds for value in row)
         if visible_maximum > maximum_visible_upper:
             raise ValueError(f"{source['species']} fails the visible-gas upper-bound gate")
@@ -896,6 +972,9 @@ def generate(manifest_path: Path, input_root: Path | None,
         "band_overlap_rule": "spectral absorption coefficients add before Planck integration",
         "spectral_coordinate": "vacuum_wavenumber_cm-1",
         "state_lookup_policy": "axis_knots_only_reject_interior_v1",
+        "production_resource_budget": (
+            {"kind": "synthetic_test_fixture_not_production_budgeted"}
+            if manifest["synthetic"] else resource_budget),
         "spectral_value_semantics": "uniform finite-volume bin average, area-preserving deposition",
         "spectral_grid_cm-1": grid,
         "spectral_bin_edge_domain_cm-1": spectral_bin_edges,
