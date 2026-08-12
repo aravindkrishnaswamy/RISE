@@ -290,3 +290,53 @@ N=1 each, that is variance, not a trend, and it is the clearest argument yet
 for the repeats the supervisor recommended before this arc.  It also means
 arc 81's "first area light" result must not be read as a settled behaviour
 change.
+
+## 8. CROSS-PROVIDER — gpt-5.6-terra, identical build (2026-08-12, N=1)
+
+`evals/runs/imagine_s7_population_gpt`.  Same scenario, same commit, provider
+swapped.
+
+| | objects | repeats | parts | area lights | non-physical lights |
+|---|---|---|---|---|---|
+| benchmark | 47 | 38 (81%) | 131 | 0 | 8 |
+| **gpt-5.6-terra** | **42** | 21 (50%) | 94 | **3** | 6 |
+| gemini-3.6-flash | 34 | 21 (61%) | 104 | 0 | 9 |
+
+**Every mechanism fired on both providers** — the gate, `populate_scene`,
+`light_scene`, validated insertion, zero rejected repeats.  The stack is not
+gemini-shaped.
+
+**GPT complied with the lighting policy far better**: three area lights,
+each a complete four-chunk chain, against gemini's zero.  It copied the
+single worked example three times.  That is the copyability lever working
+exactly as theorised — and it is now the strongest evidence for it, because
+the same prompt produced 3 on one provider and 0 on the other while nothing
+else in the palette changed.
+
+**And it produced a worse picture.**  This is the arc's most useful result:
+
+- The three emissive quads are **directly visible in frame as glowing white
+  slabs** — left, right, and a large one behind the subject.  The worked
+  example shows how to build an emitter; it says nothing about an emitter
+  being a visible object in the shot.  A model that copies it faithfully gets
+  a lit stage with the lights in the picture.
+- The scene sits in a **black void** — no environment at all — so the fish
+  repeats scatter into blackness rather than water.
+- The seabed reads as a grey platform with cube blocks: a diorama on a stage,
+  not a reef.
+
+Luma stdev 103.2 against the benchmark's 29.3 — the highest number this
+workstream has produced, and it measures the black-void-plus-white-panel
+contrast, not quality.  **A metric moving hard in the "good" direction while
+the picture gets worse.**  Precisely the reason every arc here pairs its
+counts with an honest look.
+
+Two things this changes:
+
+1. The area-light example needs to say what the emitter IS in the frame — a
+   window, a shaft, a glowing creature — or models will keep placing bare
+   panels in shot.  That is a palette fix, not a new arc.
+2. **Provider variance now dominates several single-run conclusions.**  Area
+   lights: 1 (gemini/arc81), 0 (gemini/arc82), 3 (gpt/arc82) — on the same
+   code.  No lighting-behaviour claim in arcs 81–82 should be treated as
+   settled without repeats.
