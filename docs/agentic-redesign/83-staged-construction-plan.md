@@ -175,8 +175,25 @@ Standing rule from 82 §10: **decompose before repeating.**  Report per-unit
 numbers, never a category total that multiplies a stable per-unit figure by a
 variable unit count.
 
-The three predictions from 82 §10.4 stand as this arc's falsifiers: N lighting
-calls yield ~N answer-fulls of lights; area-light share rises with NO change
-to palette prose; per-element population scales with element count.  If
-area-light share does not move when the unit changes, cost was never the
-mechanism and §1's principle is wrong for lighting.
+### 6.1 Correcting one of the falsifiers before it is used
+
+82 §10.4 predicted "N lighting calls yield roughly N answer-fulls of lights".
+Taken literally that is absurd — six intents × one answer-worth (6–8 lights)
+would be forty lights.  The error is in the unit, and it matters:
+
+**A unit must be sized so that ONE response is ONE unit's work.**  For an
+element that is ~20 SDF parts.  For lighting it is ONE LIGHT SOURCE, not
+"the lights for this intent".  So the per-intent call authors a single light
+— which may be a four-chunk area light, and that is the point: with a whole
+response to spend on one light, the expensive physical form is affordable
+where it was not when seven lights had to share one answer.
+
+The corrected predictions:
+
+1. **Light COUNT stays ~6–8** (it is set by the plan step, not by the loop).
+   A large jump in count means the unit is still wrong.
+2. **Area-light SHARE rises sharply, with NO change to palette prose.**  This
+   is the real falsifier: if share does not move when each light gets its own
+   completion, then cost was never the mechanism and §1's principle does not
+   transfer from construction to lighting.
+3. Per-element population scales repeats with element count.
