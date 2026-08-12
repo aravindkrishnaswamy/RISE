@@ -19056,6 +19056,23 @@ namespace RISE
 			//! prompt-hygiene test bans ("dramatic", "key light",
 			//! "three-point", "should use", ...) stays banned: these entries
 			//! state physics and show syntax.
+			//!
+			//! ARC 82 CROSS-PROVIDER FOLLOW-UP (2026-08-12) -- THE MISSING
+			//! FACT WAS VISIBILITY, NOT ADVICE.  docs/agentic-redesign/
+			//! 82-population-arc.md sec 8: gpt-5.6-terra copied the worked
+			//! example three times and produced three glowing white slabs
+			//! IN FRAME, because nothing told it an emitting surface is
+			//! rendered like any other object -- a reasonable inference from
+			//! the name "light" that this renderer does not honour.  The fix
+			//! is the same fact stated plainly (an emissive object is a
+			//! visible object; an area light is BOTH a light and a thing the
+			//! picture shows) plus the same fact carried BY the example: it
+			//! is now named as a window in the headline, not just in its
+			//! chunk names, so a model copying it inherits "this is a real
+			//! surface" rather than "this is an abstract panel".  No
+			//! should/prefer wording added -- the advice-vocabulary ban
+			//! covers this entry too, and advice measures ~0 in this
+			//! workstream.
 			struct LightPaletteEntry_
 			{
 				const char* keyword;    //!< registry keyword whose schema is fetched, or null
@@ -19079,15 +19096,24 @@ namespace RISE
 				  "holding the emitted colour; a lambertian_luminaire_material whose `exitance` is "
 				  "that painter, whose `scale` multiplies it, and whose `material none` means the "
 				  "surface only emits; a geometry for its shape; and a standard_object binding that "
-				  "geometry to that material. Because it has real area it casts SOFT shadows, falls "
-				  "off with distance the way an emitter in the world does, and is visible in the "
-				  "frame wherever the camera can see it. `scale` sets EXITANCE -- brightness per "
-				  "unit area -- so the same `scale` on a panel twice the size delivers twice the "
-				  "light: the 6000 below is the exitance one of this renderer's existing scenes "
-				  "gives a slot window reading as daylight, while a soft interior fill panel is "
-				  "typically in the tens. clippedplane_geometry is a quad given by its four corner "
-				  "points; any geometry works, and a mesh wearing this material emits from every "
-				  "triangle.",
+				  "geometry to that material. An emissive object is rendered exactly like any other "
+				  "object: the camera sees its surface, at whatever size, shape and position it is "
+				  "given, and it appears in the frame there -- an area light is BOTH a light and a "
+				  "thing the picture shows. Because it has real area it also casts SOFT shadows and "
+				  "falls off with distance the way an emitter in the world does. `scale` sets "
+				  "EXITANCE -- brightness per unit area -- so the same `scale` on a panel twice the "
+				  "size delivers twice the light: the 6000 below is the exitance one of this "
+				  "renderer's existing scenes gives a slot window reading as daylight, while a soft "
+				  "interior fill panel is typically in the tens. clippedplane_geometry is a quad "
+				  "given by its four corner points; `doublesided` (default TRUE) decides which "
+				  "faces emit. Left TRUE the quad is hit from either side and the normal is "
+				  "flipped toward whatever looks at it, so it emits from BOTH faces; set it FALSE "
+				  "and the back face is not hit at all, so only the face its winding "
+				  "pta->ptb->ptc->ptd turns toward emits and the light goes one way. Any geometry "
+				  "works, and a mesh "
+				  "wearing this material emits from every triangle. The example below IS a window: "
+				  "the quad is the wall opening its light reads as coming through, not an abstract "
+				  "panel.",
 				  "uniformcolor_painter\n"
 				  "{\n"
 				  "\tname\t\tpnt_window\n"

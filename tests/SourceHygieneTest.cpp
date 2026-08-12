@@ -1552,7 +1552,23 @@ int main()
 						  "unexplained number beside a light name invites reading it as a score" },
 						{ "do not sum to the all-lights frame",
 						  "does not state that the solo figures are NOT additive -- a model that "
-						  "believes they sum will read a correct measurement as a broken one" }
+						  "believes they sum will read a correct measurement as a broken one" },
+						// ---- ARC 82 CROSS-PROVIDER FOLLOW-UP (2026-08-12): the
+						// VISIBILITY pin.  docs/agentic-redesign/82-population-arc.md
+						// sec 8 -- gpt-5.6-terra copied the worked area-light example
+						// three times and produced three glowing white slabs directly
+						// in frame, because nothing on this surface said an emitting
+						// object is a visible one.  This is a missing FACT, not a
+						// missing instruction, so the pin checks the fact is stated
+						// (an emissive object is rendered like any other and is
+						// therefore both a light and a thing the picture shows), not
+						// any should/prefer wording -- the advice-vocabulary ban
+						// still applies to this entry.
+						{ "it is both a light and a thing the picture shows",
+						  "does not state that an area light is a VISIBLE object -- an emitting "
+						  "object is rendered like any other object in the scene, and a surface "
+						  "that leaves that unsaid lets a model copy the worked example into a "
+						  "glowing panel sitting in the middle of the shot" }
 					};
 					for( const char* fname : kPlanSurfaces ) {
 						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
