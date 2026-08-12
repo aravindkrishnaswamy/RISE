@@ -443,7 +443,11 @@ namespace RISE
 			       // Arc 81 (2026-08-12): ONE light_scene call is ONE blind
 			       // mutation -- it inserts a whole lighting design with no
 			       // visual observation in between, exactly like one batched
-			       // insert_chunks.  It is NOT a look: the small solo renders
+			       // insert_chunks.  ARC 83 SLICE 1 (2026-08-12) made that
+			       // call an internal plan-then-per-intent LOOP, and it still
+			       // counts exactly ONCE: what this streak measures is the
+			       // model's unobserved edits, and the model made one call and
+			       // saw one result.  It is NOT a look: the small solo renders
 			       // it fires to measure each light's contribution are
 			       // internal and ephemeral and no pixel of them reaches the
 			       // model, so treating it as an observation would hand every

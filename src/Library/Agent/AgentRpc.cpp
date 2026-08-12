@@ -2534,8 +2534,20 @@ namespace RISE
 				//       rejected:[{name,kind,reason}], chunkResults, retryRan,
 				//       retrySucceeded, contributions:[{name,kind,soloed,
 				//       meanLuma?,share?,reason?}], soloableLights, soloed,
-				//       allLightsMeanLuma?, message}
+				//       allLightsMeanLuma?, intentsPlanned, intentsReturned,
+				//       intentsBuilt, intentsTruncated, completions,
+				//       areaLights, zeroAreaLights, skyLights?, otherLights?,
+				//       intents:[{intent,built,form?,landed,rejected,
+				//       completions,retryRan,failure?}], message}
 				//   Arc 81 (2026-08-12), the clean-room LIGHTING pass.
+				//   ARC 83 SLICE 1 (2026-08-12): ONE call is a harness-driven
+				//   loop -- one planning completion enumerating at most
+				//   kLightIntentBudget lighting intents, then one completion
+				//   per intent authoring exactly ONE light source.  The verb,
+				//   its params and every field above the arc-83 block are
+				//   unchanged, so the model's turn count does not grow; the
+				//   new fields report the plan, the per-intent outcomes and
+				//   the completions actually spent.
 				//   MUTATING -- it inserts the chunks its pass returned through
 				//   the ordinary InsertChunks path, so it is NOT on
 				//   IsReadSafeVerb; it is also deliberately NOT on
@@ -2624,6 +2636,63 @@ namespace RISE
 							conArr.push_back( o );
 						}
 						result.set( "contributions", conArr );
+
+						// ---- ARC 83 SLICE 1: the plan step and the per-intent
+						// loop, as STRUCTURE and not only as prose.  A census
+						// that has to parse the message to learn how many
+						// completions a call spent is a census that will drift.
+						result.set( "intentsPlanned",
+							JsonValue::MakeNumber( static_cast<double>( lr.intents.size() ) ) );
+						result.set( "intentsReturned",
+							JsonValue::MakeNumber( static_cast<double>( lr.intentsReturned ) ) );
+						result.set( "intentsBuilt",
+							JsonValue::MakeNumber( static_cast<double>( lr.intentsBuilt ) ) );
+						result.set( "intentsTruncated", JsonValue::MakeBool( lr.intentsTruncated ) );
+						result.set( "completions",
+							JsonValue::MakeNumber( static_cast<double>( lr.completionsSpent ) ) );
+						result.set( "areaLights",
+							JsonValue::MakeNumber( static_cast<double>( lr.areaLightsBuilt ) ) );
+						result.set( "zeroAreaLights",
+							JsonValue::MakeNumber( static_cast<double>( lr.zeroAreaLightsBuilt ) ) );
+						// OMITTED when zero, for the same reason the inventory
+						// omits what it did not measure: a kind that was never
+						// built is not a fact worth a line.
+						if( lr.skyLightsBuilt > 0 )
+							result.set( "skyLights",
+								JsonValue::MakeNumber( static_cast<double>( lr.skyLightsBuilt ) ) );
+						if( lr.otherLightsBuilt > 0 )
+							result.set( "otherLights",
+								JsonValue::MakeNumber( static_cast<double>( lr.otherLightsBuilt ) ) );
+						JsonValue intentArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.perIntent.size(); ++i ) {
+							const AgentSession::AgentLightIntentOutcome& pi = lr.perIntent[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "intent", JsonValue::MakeString( pi.intent ) );
+							o.set( "built",  JsonValue::MakeBool( pi.built ) );
+							if( !pi.form.empty() ) o.set( "form", JsonValue::MakeString( pi.form ) );
+							JsonValue lArr = JsonValue::MakeArray();
+							for( std::size_t k = 0; k < pi.landed.size(); ++k )
+								lArr.push_back( JsonValue::MakeString( pi.landed[k] ) );
+							o.set( "landed", lArr );
+							JsonValue rArr = JsonValue::MakeArray();
+							for( std::size_t k = 0; k < pi.rejected.size(); ++k ) {
+								JsonValue ro = JsonValue::MakeObject();
+								if( !pi.rejected[k].name.empty() )
+									ro.set( "name", JsonValue::MakeString( pi.rejected[k].name ) );
+								if( !pi.rejected[k].kind.empty() )
+									ro.set( "kind", JsonValue::MakeString( pi.rejected[k].kind ) );
+								ro.set( "reason", JsonValue::MakeString( pi.rejected[k].reason ) );
+								rArr.push_back( ro );
+							}
+							o.set( "rejected", rArr );
+							o.set( "completions",
+								JsonValue::MakeNumber( static_cast<double>( pi.completions ) ) );
+							o.set( "retryRan", JsonValue::MakeBool( pi.retryRan ) );
+							if( !pi.failure.empty() )
+								o.set( "failure", JsonValue::MakeString( pi.failure ) );
+							intentArr.push_back( o );
+						}
+						result.set( "intents", intentArr );
 					}
 					result.set( "message", JsonValue::MakeString( lr.message ) );
 					return MakeSuccess( idValue, result );

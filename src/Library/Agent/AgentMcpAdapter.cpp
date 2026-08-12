@@ -992,12 +992,20 @@ namespace RISE
 						            : proposeOnly ? kLightSceneProposeRefusedNote
 						                          : std::string() ) +
 						std::string(
-						"Design the whole scene's lighting in one go: this call asks the session's "
-						"provider, in a FRESH context that contains nothing but this scene's object "
+						"Design the whole scene's lighting: this call PLANS this scene's lighting "
+						"intents in one request, then authors ONE LIGHT SOURCE PER INTENT, each in its "
+						"own separate FRESH context that contains nothing but this scene's object "
 						"inventory (every object, its screen footprint and its world position), the "
 						"camera, the scene's world bounds, the imagined description if the session has "
-						"one, the lights that already exist, and the light palette with its "
-						"grammar, to design the lighting. What comes "
+						"one, the lights that already exist, the lights the earlier intents of this "
+						"same plan already placed, that intent's own line, and the light palette with its "
+						"grammar. At most 6 intents; a longer plan is cut to its first 6 and the result "
+						"says so. One light source is either one light chunk or the four chunks of one "
+						"area light, and a SECOND light source in the same request is reported and not "
+						"inserted -- the other intents each get their own request. For the model this is "
+						"still ONE call and ONE result: the loop runs here, so its turn count does not "
+						"grow with the lighting, and a request that fails does not stop the others. "
+						"What comes "
 						"back is split into chunks, checked, and inserted here. THE PALETTE LEADS "
 						"WITH AREA LIGHTING and is the only entry carrying a complete worked "
 						"example: an area light has no chunk of its own and is spelled as an "
@@ -1026,7 +1034,7 @@ namespace RISE
 						"never removes a light, and it will not accept a camera, a film, a rasterizer "
 						"or a shader op, nor geometry unless the same answer defines an emissive "
 						"material to put on it. If anything is rejected, ONE repair retry runs "
-						"automatically with the exact rejection text -- one, then it stops, and "
+						"automatically with the exact rejection text -- one PER INTENT, then it stops, and "
 						"whatever landed stays landed. Nothing is ever dropped silently. The result "
 						"then reports WHAT EACH LIGHT ACTUALLY DOES: every light, emissive object and "
 						"environment in the scene is rendered ALONE at a small size and its frame's "
@@ -1039,6 +1047,9 @@ namespace RISE
 						"{ok,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
 						"chunkResults,retryRan,retrySucceeded,soloableLights,soloed,"
 						"allLightsMeanLuma,contributions:[{name,kind,soloed,meanLuma,share,reason}],"
+						"intentsPlanned,intentsReturned,intentsBuilt,intentsTruncated,completions,"
+						"areaLights,zeroAreaLights,skyLights,otherLights,"
+						"intents:[{intent,built,form,landed,rejected,completions,retryRan,failure}],"
 						"message}." );
 					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
 				}

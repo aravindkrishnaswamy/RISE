@@ -11455,21 +11455,68 @@ static void TestComposePhaseRemoveMixedBatchAndGiveUp()
 // are about what the harness does with an answer.
 //----------------------------------------------------------------------
 
-//! A well-formed lighting answer: two explicit lights and a complete
-//! AREA light (painter + emissive material + geometry + object).  The
-//! area light matters twice over -- it is the palette entry no agent run
-//! has ever used, and its geometry is what proves light_scene's insertion
-//! is exempt from the compose-phase creation ban.
-static const char* const kGoodLightingAnswer =
-	"omni_light\n{\n\tname lit_key\n\tposition 2 3 4\n\tcolor 1 0.95 0.9\n\tpower 60\n}\n"
-	"directional_light\n{\n\tname lit_fill\n\tdirection 0.3 0.7 0.6\n"
-	"\tcolor 0.4 0.5 0.7\n\tpower 1.2\n}\n"
+//----------------------------------------------------------------------
+// ARC 83 SLICE 1 (2026-08-12): the fixtures below are SPLIT ONE PER
+// INTENT, because the verb is.
+// Design: docs/agentic-redesign/83-staged-construction-plan.md sec 1, 2,
+// 6.1; the measurement is 82 sec 10.4.
+//
+// `light_scene` is still ONE model-facing verb with the same name, the
+// same params and the same result shape -- internally it is now a
+// harness-driven loop: one PLANNING completion enumerating this scene's
+// lighting intents, then ONE FRESH COMPLETION PER INTENT authoring
+// EXACTLY ONE light source.  So a mocked run is a PLAN answer followed by
+// one answer per intent, and the three answers below are arc 81's single
+// six-chunk answer cut along exactly that seam: the same six chunks, the
+// same four soloable lights afterwards, one light source at a time.
+//----------------------------------------------------------------------
+
+//! The PLAN step's answer: three lighting intents, one per line.  No
+//! numbering and no prose, which is the shape the planning prompt asks
+//! for; A83a covers the shapes it merely tolerates.
+static const char* const kThreeIntentPlan =
+	"sunlight arriving on the sphere from above and behind the camera\n"
+	"a soft panel filling the shadowed left side of the sphere\n"
+	"a low warm wash across the ground under the sphere\n";
+
+//! A one-line plan, for the tests whose subject is what happens INSIDE
+//! one intent rather than across the loop.
+static const char* const kOneIntentPlan =
+	"a single warm source above the sphere\n";
+
+//! Intent 1's answer: ONE light source, a zero-area point light.
+static const char* const kLightingAnswerKey =
+	"omni_light\n{\n\tname lit_key\n\tposition 2 3 4\n\tcolor 1 0.95 0.9\n\tpower 60\n}\n";
+
+//! Intent 2's answer: ONE light source, a complete AREA light (painter +
+//! emissive material + geometry + object).  It matters twice over -- it
+//! is the palette entry no agent run has ever used, and its geometry is
+//! what proves light_scene's insertion is exempt from the compose-phase
+//! creation ban.  Arc 83 exists so that a whole response can be spent on
+//! exactly this four-chunk shape.
+static const char* const kLightingAnswerArea =
 	"uniformcolor_painter\n{\n\tname lit_panel_pnt\n\tcolor 1 0.8 0.6\n}\n"
 	"lambertian_luminaire_material\n{\n\tname lit_panel_mat\n\texitance lit_panel_pnt\n"
 	"\tmaterial none\n\tscale 20\n}\n"
 	"box_geometry\n{\n\tname lit_panel_geo\n\twidth 2\n\theight 0.05\n\tdepth 1.5\n}\n"
 	"standard_object\n{\n\tname lit_panel_obj\n\tgeometry lit_panel_geo\n"
 	"\tmaterial lit_panel_mat\n\tposition 0 3 1\n}\n";
+
+//! Intent 3's answer: ONE light source, a directional light.
+static const char* const kLightingAnswerFill =
+	"directional_light\n{\n\tname lit_fill\n\tdirection 0.3 0.7 0.6\n"
+	"\tcolor 0.4 0.5 0.7\n\tpower 1.2\n}\n";
+
+//! A completer for a clean three-intent run: the plan, then one answer
+//! per intent.  FOUR completions, six chunks, four soloable lights --
+//! the same end state arc 81's single answer produced, reached the way
+//! arc 83 reaches it.
+static Agent::AgentSession::AgentTextCompleter MakeLightingCompleter(
+	int* callsOut = nullptr, std::vector<std::string>* promptsOut = nullptr )
+{
+	return MakeFakeCompleter( { kThreeIntentPlan, kLightingAnswerKey, kLightingAnswerArea,
+	                            kLightingAnswerFill }, callsOut, promptsOut );
+}
 
 //! One hand-authored light chunk, for the gate assertions.
 static std::string A81Light( const char* name )
@@ -11504,7 +11551,7 @@ static void TestLightSceneHappyPath()
 
 	int calls = 0;
 	std::vector<std::string> prompts;
-	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer }, &calls, &prompts ) );
+	sess->SetTextCompleter( MakeLightingCompleter( &calls, &prompts ) );
 	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
 	       "A81a the session is in the compose phase" );
 
@@ -11521,11 +11568,42 @@ static void TestLightSceneHappyPath()
 	             "-- one inventory pass + %d solo renders + 1 all-lights reference\n",
 	             std::chrono::duration<double, std::milli>( lt1 - lt0 ).count(), r.soloedCount );
 	Check( r.ok, "A81a light_scene succeeds" );
-	Check( calls == 1, "A81a MONEY ASSERTION: exactly ONE completion -- no retry on a clean answer" );
+	Check( calls == 4,
+	       "A81a MONEY ASSERTION: exactly FOUR completions for ONE call -- one PLAN plus one per "
+	       "planned intent, and no retry on a clean answer. Arc 81 spent one completion on the "
+	       "whole category; 82 sec 10.4 measured that a completion yields one response-worth of "
+	       "output whatever is asked of it, so the category was the wrong unit" );
 	Check( !r.retryRan, "A81a and the result says the retry did not run" );
-	Check( r.chunksExtracted == 6, "A81a all six chunks were extracted" );
+	Check( r.chunksExtracted == 6, "A81a all six chunks were extracted, across the three intents" );
 	Check( r.landed.size() == 6, "A81a and all six landed" );
 	Check( r.rejected.empty(), "A81a with nothing rejected" );
+
+	// ---- THE PLAN AND THE LOOP, as numbers the result carries.
+	Check( r.intents.size() == 3 && r.intentsReturned == 3 && !r.intentsTruncated,
+	       "A81a the plan step returned three intents and none was cut" );
+	Check( r.perIntent.size() == 3 && r.intentsBuilt == 3,
+	       "A81a one outcome per intent, and all three built something" );
+	Check( r.completionsSpent == 4 && r.completionsSpent == calls,
+	       "A81a MONEY ASSERTION: the completions the result REPORTS are the completions the "
+	       "provider actually saw -- the per-session cap bounds CALLS, so a call that spends 1+N "
+	       "completions has to say so or the spend becomes invisible" );
+	Check( r.perIntent[0].completions == 1 && r.perIntent[1].completions == 1 &&
+	       r.perIntent[2].completions == 1,
+	       "A81a with one completion charged to each intent" );
+	Check( r.perIntent[0].landed.size() == 1 && r.perIntent[1].landed.size() == 4 &&
+	       r.perIntent[2].landed.size() == 1,
+	       "A81a and each intent's landed chunks are reported per intent, not only in a total -- "
+	       "83 sec 6's standing rule after 82 sec 10.1: never a category total that multiplies a "
+	       "stable per-unit number by a variable unit count" );
+	Check( r.areaLightsBuilt == 1 && r.zeroAreaLightsBuilt == 2 && r.skyLightsBuilt == 0 &&
+	       r.otherLightsBuilt == 0,
+	       "A81a MONEY ASSERTION: the FORM of each light built is counted -- one area light "
+	       "(an emitting surface) and two zero-area idealizations. Area-light SHARE is arc 83's "
+	       "falsifier (82 sec 10.4): if it does not move when each light gets its own completion, "
+	       "cost was never the mechanism" );
+	Check( r.perIntent[1].form == "area",
+	       "A81a and the classification is read from what LANDED -- the emissive material is what "
+	       "makes intent 2's four chunks an area light" );
 	Check( sess->ReadDocument().find( "lit_key" ) != std::string::npos &&
 	       sess->ReadDocument().find( "lit_panel_obj" ) != std::string::npos,
 	       "A81a the lights are really in the document" );
@@ -11537,12 +11615,39 @@ static void TestLightSceneHappyPath()
 	Check( sess->BuildPhaseRefusalCount() == 0,
 	       "A81a and no phase refusal was spent doing it" );
 
-	// ---- THE PROMPT.  Host-composed, and carrying the composition that is
+	// ---- THE PROMPTS.  Host-composed, and carrying the composition that is
 	// the whole point of this arc: the arc-80 inventory, so the lighting is
-	// designed against where the objects actually are.
-	Check( prompts.size() == 1, "A81a one prompt was composed" );
-	if( !prompts.empty() ) {
-		const std::string& p = prompts[0];
+	// designed against where the objects actually are.  Prompt 0 is the PLAN
+	// and prompts 1..3 are the per-intent light requests; the palette
+	// assertions below are about a per-intent prompt, because that is the one
+	// that authors chunks.
+	Check( prompts.size() == 4,
+	       "A81a four prompts were composed -- the plan, then one per intent" );
+	if( prompts.size() == 4 ) {
+		Check( prompts[0].find( "LIGHTING INTENTS" ) != std::string::npos &&
+		       prompts[0].find( "ONE INTENT PER LINE" ) != std::string::npos,
+		       "A81a the FIRST prompt asks for lighting INTENTS, one per line" );
+		Check( prompts[0].find( "at most 6 intents" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: and states the budget as a number -- a budget the model is "
+		       "not told is a budget it can only discover by having its plan cut" );
+		Check( prompts[0].find( "Example:" ) == std::string::npos &&
+		       prompts[0].find( "clippedplane_geometry" ) == std::string::npos,
+		       "A81a MONEY ASSERTION: the plan prompt carries NO palette and NO grammar -- it "
+		       "writes no scene text, and arc 79 sec 1 measured that prepended text competes with "
+		       "the construction it precedes" );
+		Check( prompts[0].find( "SCENE INVENTORY" ) != std::string::npos &&
+		       prompts[0].find( "THE CAMERA:" ) != std::string::npos,
+		       "A81a while the scene facts it plans against ARE there" );
+	}
+	if( prompts.size() >= 2 ) {
+		const std::string& p = prompts[1];
+		Check( p.find( "ONE LIGHT SOURCE" ) != std::string::npos &&
+		       p.find( "intent 1 of 3" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: a per-intent prompt asks for ONE LIGHT SOURCE and says which "
+		       "intent of how many it is -- 83 sec 6.1: the unit must be sized so one response is "
+		       "one unit's work, and for lighting that unit is one light, not one category" );
+		Check( p.find( "sunlight arriving on the sphere" ) != std::string::npos,
+		       "A81a and it carries that intent's own line from the plan" );
 		Check( p.find( "SCENE INVENTORY" ) != std::string::npos &&
 		       p.find( "obj_sph" ) != std::string::npos,
 		       "A81a MONEY ASSERTION: the arc-80 SCENE INVENTORY is in the prompt, naming the "
@@ -11605,22 +11710,29 @@ static void TestLightSceneHappyPath()
 		       "A81a and the one convention a fresh context cannot recover from a parameter list "
 		       "-- directional_light's direction sense -- is stated as fact" );
 
-		// NO ADVICE.  Telling it to be dramatic, to use many lights, or to
-		// spread its power range would contaminate the very thing being
-		// measured, and advice measures ~0 in this workstream anyway.
-		// (Deliberately NOT "at least": the arc-80 inventory text this prompt
-		// embeds says "covered at least one pixel", which is a measurement,
-		// not advice.)
+	}
+
+	// NO ADVICE, ON EVERY PROMPT THIS CALL SENDS -- the plan prompt included,
+	// which is where the temptation is largest now that something host-side
+	// decides how many lights there will be.  Telling it to be dramatic, to
+	// use many lights, or to spread its power range would contaminate the
+	// very thing being measured, and advice measures ~0 in this workstream
+	// anyway.  (Deliberately NOT "at least": the arc-80 inventory text these
+	// prompts embed says "covered at least one pixel", which is a
+	// measurement, not advice.)
+	{
 		static const char* const kBannedAdvice[] = {
 			"dramatic", "many lights", "be bold", "contrast ratio",
 			"key light", "three-point", "should use", "more lights" };
-		for( std::size_t i = 0; i < sizeof( kBannedAdvice ) / sizeof( kBannedAdvice[0] ); ++i ) {
-			Check( p.find( kBannedAdvice[i] ) == std::string::npos,
-			       std::string( "A81a MONEY ASSERTION: the prompt never says \"" ) + kBannedAdvice[i] +
-			       "\" -- it gives the palette, the scene, the mood and the syntax, and nothing "
-			       "else; the light count and power range are what this arc MEASURES, so the "
-			       "prompt must not put them there" );
-		}
+		for( std::size_t q = 0; q < prompts.size(); ++q )
+			for( std::size_t i = 0; i < sizeof( kBannedAdvice ) / sizeof( kBannedAdvice[0] ); ++i ) {
+				Check( prompts[q].find( kBannedAdvice[i] ) == std::string::npos,
+				       std::string( "A81a MONEY ASSERTION: prompt " ) + std::to_string( q ) +
+				       " never says \"" + kBannedAdvice[i] +
+				       "\" -- it gives the palette, the scene, the mood and the syntax, and nothing "
+				       "else; the light count and power range are what this arc MEASURES, so the "
+				       "prompt must not put them there" );
+			}
 	}
 
 	// ---- THE CONTRIBUTIONS.  Measured by soloing, which is affordable
@@ -11677,13 +11789,20 @@ static void TestLightSceneAdmissibilityAndRetry()
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 
+		// The painter is admissible and lands; the camera and the bare
+		// geometry are not.  The light source itself is deliberately absent
+		// from this answer, so the repair retry is free to supply one -- an
+		// intent that has already landed a light source gets a SECOND-source
+		// rejection instead, which is A83b's subject, not this one's.
 		const std::string mixed =
-			"omni_light\n{\n\tname lit_ok\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 40\n}\n"
+			"uniformcolor_painter\n{\n\tname lit_ok_pnt\n\tcolor 1 1 1\n}\n"
 			"pinhole_camera\n{\n\tname lit_cam\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tfov 50\n}\n"
 			"box_geometry\n{\n\tname lit_bare_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n";
 		int calls = 0;
 		std::vector<std::string> prompts;
-		sess->SetTextCompleter( MakeFakeCompleter( { mixed, kGoodLightingAnswer },
+		// ARC 83: ONE intent, so this test's subject stays what happens
+		// INSIDE an intent -- the plan, the flawed answer, the repair.
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneIntentPlan, mixed, kLightingAnswerArea },
 		                                            &calls, &prompts ) );
 
 		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
@@ -11706,15 +11825,24 @@ static void TestLightSceneAdmissibilityAndRetry()
 		Check( sess->ReadDocument().find( "lit_cam" ) == std::string::npos &&
 		       sess->ReadDocument().find( "lit_bare_geo" ) == std::string::npos,
 		       "A81b/reject and neither reached the document" );
+		Check( sess->ReadDocument().find( "lit_ok_pnt" ) != std::string::npos,
+		       "A81b/reject while the admissible chunk of the same answer landed -- partial success "
+		       "is first-class, never an all-or-nothing on a per-chunk rule" );
 
-		// THE ONE REPAIR RETRY, driven by the harness's own rejection text.
-		Check( r.retryRan, "A81b/reject the one repair retry ran" );
-		Check( calls == 2, "A81b/reject MONEY ASSERTION: exactly TWO completions -- one, then stop" );
+		// THE ONE REPAIR RETRY, driven by the harness's own rejection text,
+		// and PER INTENT since arc 83.
+		Check( r.retryRan && r.perIntent.size() == 1 && r.perIntent[0].retryRan,
+		       "A81b/reject the one repair retry ran, and is charged to the intent that needed it" );
+		Check( calls == 3,
+		       "A81b/reject MONEY ASSERTION: exactly THREE completions -- the plan, this intent's "
+		       "one attempt and its one repair retry, then stop" );
+		Check( r.perIntent[0].completions == 2 && r.completionsSpent == 3,
+		       "A81b/reject and the intent is charged 2 of the 3" );
 		Check( r.retrySucceeded, "A81b/reject and it landed more chunks" );
-		Check( prompts.size() == 2 &&
-		       prompts[1].find( "A PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED" )
+		Check( prompts.size() == 3 &&
+		       prompts[2].find( "A PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED" )
 		       != std::string::npos &&
-		       prompts[1].find( "carrier of an emissive material" ) != std::string::npos,
+		       prompts[2].find( "carrier of an emissive material" ) != std::string::npos,
 		       "A81b/reject MONEY ASSERTION: the retry is corrected by this harness's own rejection "
 		       "text VERBATIM, not by a paraphrase of it" );
 		Check( sess->ReadDocument().find( "lit_panel_obj" ) != std::string::npos,
@@ -11733,17 +11861,31 @@ static void TestLightSceneAdmissibilityAndRetry()
 		Check( pJob != nullptr, "A81b/dupe fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
-		// The SAME name twice in one answer: the second is a real collision
+		// The SAME name from TWO INTENTS: the second is a real collision
 		// against the first, which is exactly the shape a collision against
 		// pre-existing scene content has, and it is InsertChunks' own
 		// duplicate-name rejection that catches it -- which IS this verb's
 		// naming contract, since there is no prefix rule to catch it first.
-		const std::string collides =
-			"omni_light\n{\n\tname twice\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 40\n}\n"
+		// ARC 83: across intents rather than within one answer, because two
+		// lights in ONE answer are now stopped by the one-source rule first
+		// (A83b) and would never reach the duplicate check.
+		static const char* const kTwoIntentPlan =
+			"a warm source above the sphere\na cool source behind the sphere\n";
+		const std::string collidesA =
+			"omni_light\n{\n\tname twice\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 40\n}\n";
+		const std::string collidesB =
 			"omni_light\n{\n\tname twice\n\tposition 4 5 6\n\tcolor 1 1 1\n\tpower 80\n}\n";
-		sess->SetTextCompleter( MakeFakeCompleter( { collides, collides } ) );
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kTwoIntentPlan, collidesA, collidesB },
+		                                            &calls ) );
 		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 		Check( r.landed.size() == 1, "A81b/dupe the first of the two landed" );
+		Check( calls == 4 && r.perIntent.size() == 2 && r.perIntent[0].completions == 1 &&
+		       r.perIntent[1].completions == 2,
+		       "A81b/dupe MONEY ASSERTION: the second intent's collision cost the SECOND intent a "
+		       "repair retry and cost the first one nothing -- the loop's failures are per unit" );
+		Check( r.intentsBuilt == 1,
+		       "A81b/dupe and exactly one of the two intents built something" );
 		bool sawCollision = false;
 		for( std::size_t i = 0; i < r.rejected.size(); ++i )
 			if( r.rejected[i].reason.find( "twice" ) != std::string::npos ) sawCollision = true;
@@ -11763,7 +11905,7 @@ static void TestLightSceneAdmissibilityAndRetry()
 		Check( pJob != nullptr, "A81b/noprefix fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
-		sess->SetTextCompleter( MakeFakeCompleter( {
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneIntentPlan,
 			"omni_light\n{\n\tname moonlight\n\tposition 0 9 2\n\tcolor 0.6 0.7 1\n\tpower 90\n}\n" } ) );
 		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 		Check( r.ok && r.landed.size() == 1 && r.landed[0] == "moonlight",
@@ -11817,12 +11959,30 @@ static void TestLightSceneCapabilityAndCap()
 		};
 		sess->SetTextCompleter( c );
 
+		Agent::AgentSession::AgentLightSceneResult last;
 		for( int i = 0; i < Agent::AgentSession::kLightSceneMaxPerSession; ++i )
-			sess->LightScene();
+			last = sess->LightScene();
+		// ARC 83: the PLAN step fails first, so the loop never starts and the
+		// call costs exactly one completion.  There is no retry of the plan.
+		Check( !last.ok && last.planFailure.find( "mock refuses" ) != std::string::npos &&
+		       last.perIntent.empty() && last.completionsSpent == 1,
+		       "A81c MONEY ASSERTION: a failed PLAN spends one completion and no per-intent one -- "
+		       "the loop cannot run without units, and a second plan completion would double the "
+		       "cheapest part of the call to guess at the reason" );
+		Check( last.message.find( "no intent to build" ) != std::string::npos &&
+		       last.message.find( "the plan step has no retry" ) != std::string::npos,
+		       "A81c and the result says both facts rather than reporting an empty success" );
+		Check( calls == Agent::AgentSession::kLightSceneMaxPerSession,
+		       "A81c the four capped calls reached the provider exactly four times (got " +
+		       std::to_string( calls ) + ")" );
 		const int callsAtCap = calls;
 		const Agent::AgentSession::AgentLightSceneResult over = sess->LightScene();
 		Check( !over.ok && over.message.find( "per-session cap" ) != std::string::npos,
 		       "A81c MONEY ASSERTION: the call past the per-session cap is refused and says so" );
+		Check( over.message.find( "cap on CALLS" ) != std::string::npos,
+		       "A81c MONEY ASSERTION: and says the cap counts CALLS -- since arc 83 one call spends "
+		       "one planning completion plus one per intent, so 'calls' and 'completions' are "
+		       "different numbers and a message that conflated them would be false" );
 		Check( calls == callsAtCap,
 		       "A81c and it reached the provider ZERO further times -- the cap bounds real money" );
 		pJob->release();
@@ -11844,7 +12004,7 @@ static void TestComposePhaseFirstLightRefusal()
 		Check( pJob != nullptr, "A81d/refuse fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
-		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+		sess->SetTextCompleter( MakeLightingCompleter() );
 
 		const std::string docBefore = sess->ReadDocument();
 		const Agent::AgentChunkResult r1 = sess->InsertChunk( A81Light( "hand_key" ) );
@@ -11898,7 +12058,7 @@ static void TestComposePhaseFirstLightRefusal()
 		Check( pJob != nullptr, "A81d/giveup fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
-		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+		sess->SetTextCompleter( MakeLightingCompleter() );
 
 		for( int i = 0; i < 3; ++i ) {
 			const Agent::AgentChunkResult r =
@@ -11926,7 +12086,7 @@ static void TestComposePhaseFirstLightRefusal()
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
-		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+		sess->SetTextCompleter( MakeLightingCompleter() );
 		Check( !sess->BuildProtocolActive(), "A81d/off the protocol is inactive for this session" );
 
 		Check( sess->InsertChunk( A81Light( "hand_off" ) ).applied,
@@ -11955,7 +12115,7 @@ static void TestPiecesPhaseLightsNeitherRefusedNorDisarming()
 	Check( pJob != nullptr, "A81e fixture loads" );
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
-	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+	sess->SetTextCompleter( MakeLightingCompleter() );
 	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A81e the plan files" );
 	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
 	       "A81e the session is in the pieces phase" );
@@ -11985,7 +12145,7 @@ static void TestPiecesPhaseLightsNeitherRefusedNorDisarming()
 	// The existing lights are then reported TO the pass, so it can design
 	// around them rather than duplicate them.
 	std::vector<std::string> prompts;
-	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer }, nullptr, &prompts ) );
+	sess->SetTextCompleter( MakeLightingCompleter( nullptr, &prompts ) );
 	const Agent::AgentSession::AgentLightSceneResult lr = sess->LightScene();
 	Check( lr.ok, "A81e light_scene runs" );
 	Check( !prompts.empty() &&
@@ -12005,7 +12165,7 @@ static void TestLightSceneWireShape()
 	Check( pJob != nullptr, "A81f fixture loads" );
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
-	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+	sess->SetTextCompleter( MakeLightingCompleter() );
 	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
 
 	{
@@ -12028,6 +12188,27 @@ static void TestLightSceneWireShape()
 		Check( result.has( "allLightsMeanLuma" ),
 		       "A81f and the all-lights reference it is read against" );
 		Check( result.get( "retryRan" ).asBool( true ) == false, "A81f retryRan is reported" );
+
+		// ---- ARC 83 SLICE 1: the plan and the loop ride the wire as
+		// STRUCTURE, not only as prose in `message`.
+		Check( result.get( "intentsPlanned" ).asNumber( -1 ) == 3.0 &&
+		       result.get( "intentsBuilt" ).asNumber( -1 ) == 3.0 &&
+		       result.get( "intentsTruncated" ).asBool( true ) == false,
+		       "A81f the plan's shape rides the wire" );
+		Check( result.get( "completions" ).asNumber( -1 ) == 4.0,
+		       "A81f MONEY ASSERTION: so does the number of completions the call actually spent -- "
+		       "a census that has to parse prose to learn the spend is a census that will drift" );
+		Check( result.get( "areaLights" ).asNumber( -1 ) == 1.0 &&
+		       result.get( "zeroAreaLights" ).asNumber( -1 ) == 2.0 &&
+		       !result.has( "skyLights" ) && !result.has( "otherLights" ),
+		       "A81f and the form tally, with the kinds that were never built OMITTED rather than "
+		       "reported as zero" );
+		Check( result.get( "intents" ).isArray() && result.get( "intents" ).size() == 3 &&
+		       result.get( "intents" ).at( 1 ).get( "form" ).asString() == "area" &&
+		       result.get( "intents" ).at( 1 ).get( "landed" ).size() == 4,
+		       "A81f MONEY ASSERTION: with one entry PER INTENT carrying what that intent landed -- "
+		       "83 sec 6's standing rule is per-unit numbers, and a total alone cannot show that "
+		       "one of these three units bought a four-chunk area light" );
 	}
 	// The ONE schema defect: a non-string `notes`.  There are no required
 	// params -- which scene gets lit is a property of the session.
@@ -12152,7 +12333,7 @@ static void TestAmbientLightIsAlwaysRefused()
 		Check( pJob != nullptr, "A81g/cap fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
-		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+		sess->SetTextCompleter( MakeLightingCompleter() );
 		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
 		       "A81g/cap the session is in the compose phase" );
 
@@ -12220,7 +12401,8 @@ static void TestAmbientLightIsAlwaysRefused()
 			"omni_light\n{\n\tname pass_key\n\tposition 2 3 4\n\tcolor 1 1 1\n\tpower 50\n}\n";
 		int calls = 0;
 		std::vector<std::string> prompts;
-		sess->SetTextCompleter( MakeFakeCompleter( { ambientAnswer, kGoodLightingAnswer },
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneIntentPlan, ambientAnswer,
+		                                             kLightingAnswerKey },
 		                                            &calls, &prompts ) );
 		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 
@@ -12238,8 +12420,14 @@ static void TestAmbientLightIsAlwaysRefused()
 		Check( sess->ReadDocument().find( "pass_key" ) != std::string::npos,
 		       "A81g/cleanroom while the rest of the same answer landed -- never a silent drop, "
 		       "never an all-or-nothing on a per-chunk rule" );
-		Check( r.retryRan && calls == 2 && prompts.size() == 2 &&
-		       prompts[1].find( "casts no shadow ray" ) != std::string::npos,
+		Check( sess->ReadDocument().find( "pass_key" ) != std::string::npos &&
+		       r.perIntent.size() == 1 && r.perIntent[0].form == "zero-area",
+		       "A81g/cleanroom MONEY ASSERTION: the BANNED chunk did not consume this intent's one "
+		       "light-source slot -- an answer of [ambient_light, omni_light] carries exactly one "
+		       "light source this pass can land, and refusing the omni as a 'second' one would "
+		       "punish the model twice for one mistake" );
+		Check( r.retryRan && calls == 3 && prompts.size() == 3 &&
+		       prompts[2].find( "casts no shadow ray" ) != std::string::npos,
 		       "A81g/cleanroom MONEY ASSERTION: the ban's own text drives the ONE repair retry "
 		       "VERBATIM, so the pass is corrected with the physics and the alternative in the "
 		       "same turn rather than being told only that something was rejected" );
@@ -12301,11 +12489,14 @@ static void TestPaletteAreaLightExampleParses()
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 		std::vector<std::string> prompts;
 		int calls = 0;
-		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer }, &calls, &prompts ) );
+		sess->SetTextCompleter( MakeLightingCompleter( &calls, &prompts ) );
 		sess->LightScene();
-		Check( prompts.size() == 1, "A81h a prompt was composed" );
-		if( !prompts.empty() ) {
-			const std::string& p = prompts[0];
+		// ARC 83: prompts[0] is the PLAN, which deliberately carries no
+		// palette; the example lives in every PER-INTENT prompt, and it is
+		// one of those that a model copies from.
+		Check( prompts.size() == 4, "A81h the plan prompt and three per-intent prompts were composed" );
+		if( prompts.size() >= 2 ) {
+			const std::string& p = prompts[1];
 			const std::size_t a = p.find( "Example:\n" );
 			const std::size_t b = ( a == std::string::npos )
 				? std::string::npos : p.find( "\n\n2. ", a );
@@ -12327,11 +12518,16 @@ static void TestPaletteAreaLightExampleParses()
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 		int calls = 0;
-		sess->SetTextCompleter( MakeFakeCompleter( { example }, &calls ) );
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneIntentPlan, example }, &calls ) );
 		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 
 		Check( r.ok && r.chunksExtracted == 4,
 		       "A81h the example is four chunks and all four were extracted" );
+		Check( calls == 2 && r.perIntent.size() == 1 && r.perIntent[0].form == "area",
+		       "A81h MONEY ASSERTION: and the example is EXACTLY ONE light source by this verb's own "
+		       "one-source rule -- the four-chunk area chain the arc exists to make affordable is "
+		       "not four lights, and a rule that counted it as four would refuse the palette's own "
+		       "worked example" );
 		Check( r.landed.size() == 4 && r.rejected.empty(),
 		       "A81h MONEY ASSERTION: every chunk of the shipped example LANDS through the real "
 		       "validated insertion -- painter, luminaire material, quad and object. A worked "
@@ -12349,6 +12545,317 @@ static void TestPaletteAreaLightExampleParses()
 		       "source, which is the claim the palette makes about it" );
 		pJob->release();
 	}
+}
+
+//----------------------------------------------------------------------
+// ARC 83 SLICE 1 (2026-08-12): THE UNIT OF A LIGHTING CALL IS ONE LIGHT.
+// Design: docs/agentic-redesign/83-staged-construction-plan.md sec 1, 2,
+// 6.1; measurement 82 sec 10.4.
+//
+// The four tests below cover what the loop adds on top of everything arc
+// 81 already pinned: the PLAN step and its budget, the one-light-per-
+// intent rule, the independence of the intents from one another, and the
+// composition that lets a later intent complement an earlier one.  Every
+// one uses the same mocked-completer seam the arc-79 and arc-81 tests
+// use: no live provider call is ever made.
+//----------------------------------------------------------------------
+
+//! A completer that answers the FIRST call with `plan` and every later
+//! call with one distinct omni_light -- so an N-intent plan lands N
+//! lights and the count that comes back is a fact about the loop rather
+//! than about a canned list's length.
+static Agent::AgentSession::AgentTextCompleter MakeIndexedLightCompleter(
+	const std::string& plan, int* callsOut = nullptr,
+	std::vector<std::string>* promptsOut = nullptr )
+{
+	Agent::AgentSession::AgentTextCompleter c;
+	c.supported    = true;
+	c.providerName = "mock";
+	c.modelId      = "mock-lighting-1";
+	auto count = std::make_shared<int>( 0 );
+	c.complete = [plan, count, callsOut, promptsOut]( const std::string& prompt )
+		-> Agent::AgentSession::AgentTextCompletionOutcome
+	{
+		if( promptsOut ) promptsOut->push_back( prompt );
+		++( *count );
+		if( callsOut ) *callsOut = *count;
+		Agent::AgentSession::AgentTextCompletionOutcome o;
+		o.ok = true;
+		o.text = ( *count == 1 )
+			? plan
+			: ( "omni_light\n{\n\tname a83_light" + std::to_string( *count ) +
+			    "\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 30\n}\n" );
+		return o;
+	};
+	return c;
+}
+
+//! A83a: THE PLAN STEP -- bounded at kLightIntentBudget, tolerant of the
+//! punctuation a model reaches for, and TRUNCATING OUT LOUD.
+static void TestLightSceneIntentPlanBudget()
+{
+	std::printf( "A83a: the lighting plan is bounded at the intent budget, and says when it cut...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+
+	// NINE lines of intent in three punctuations, wrapped in a fence and
+	// carrying a blank line -- a plan that is merely differently punctuated
+	// is not a failed plan.
+	static const char* const kNineIntentPlan =
+		"```\n"
+		"- sunlight through the water above the sphere\n"
+		"2. a soft fill on the left of the sphere\n"
+		"* a rim behind the sphere\n"
+		"\n"
+		"a glow under the sphere\n"
+		"a lamp inside the sphere\n"
+		"a wash across the back wall\n"
+		"a spark at the sphere's edge\n"
+		"a faint bounce off the ground\n"
+		"a cool source far behind the camera\n"
+		"```\n";
+
+	int calls = 0;
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeIndexedLightCompleter( kNineIntentPlan, &calls, &prompts ) );
+	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+	Check( r.ok, "A83a the call succeeds" );
+	Check( r.intentsReturned == 9,
+	       "A83a the plan really returned nine intents (got " +
+	       std::to_string( r.intentsReturned ) + ")" );
+	Check( static_cast<int>( r.intents.size() ) == Agent::AgentSession::kLightIntentBudget &&
+	       r.intentsTruncated,
+	       "A83a MONEY ASSERTION: the plan is cut to kLightIntentBudget and the result SAYS it was "
+	       "cut -- an unbounded plan step is an unbounded provider bill, and a silent cut is the "
+	       "false-clause class this design family exists to avoid" );
+	Check( calls == 1 + Agent::AgentSession::kLightIntentBudget,
+	       "A83a MONEY ASSERTION: exactly one completion per SURVIVING intent, plus the plan -- the "
+	       "three that were cut cost nothing (got " + std::to_string( calls ) + ")" );
+	Check( r.completionsSpent == calls,
+	       "A83a and the reported spend is the real one" );
+	Check( r.landed.size() == static_cast<std::size_t>( Agent::AgentSession::kLightIntentBudget ) &&
+	       r.intentsBuilt == Agent::AgentSession::kLightIntentBudget,
+	       "A83a six intents built six lights -- the counts the result reports are the counts that "
+	       "landed" );
+	Check( r.message.find( "the plan returned 9 intents against a budget of 6" ) != std::string::npos,
+	       "A83a and the message states both numbers rather than showing a quietly short list" );
+
+	// THE PUNCTUATION IS STRIPPED, so the intent a later prompt carries is
+	// the intent and not a bullet.
+	Check( r.intents.size() >= 3 &&
+	       r.intents[0] == "sunlight through the water above the sphere" &&
+	       r.intents[1] == "a soft fill on the left of the sphere" &&
+	       r.intents[2] == "a rim behind the sphere",
+	       "A83a a leading bullet, a leading number and a code fence are punctuation, not intents" );
+
+	// AND THE BUDGET IS IN THE PROMPT.  A budget the model is not told is a
+	// budget it can only discover by having its plan cut.
+	Check( !prompts.empty() &&
+	       prompts[0].find( "at most " + std::to_string( Agent::AgentSession::kLightIntentBudget ) +
+	                        " intents" ) != std::string::npos,
+	       "A83a the planning prompt states the budget as the same number the code enforces" );
+	pJob->release();
+}
+
+//! A83b: EXACTLY ONE LIGHT SOURCE PER INTENT -- 83 sec 6.1, the part the
+//! whole slice rests on.  A per-intent call that may author several lights
+//! rebuilds the bottleneck this slice removes, so the rule is ENFORCED and
+//! not merely requested.
+static void TestLightSceneOneLightPerIntent()
+{
+	std::printf( "A83b: one intent authors exactly one light source...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83b.RISEscene" );
+
+	// (1) TWO light chunks in one answer: the first lands, the second is
+	//     reported -- and does NOT fire the repair retry.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83b/two fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		const std::string twoLights =
+			"omni_light\n{\n\tname a83_first\n\tposition 2 3 4\n\tcolor 1 1 1\n\tpower 50\n}\n"
+			"spot_light\n{\n\tname a83_second\n\tposition 0 5 0\n\ttarget 0 0 0\n"
+			"\tinner 10\n\touter 25\n\tcolor 1 1 1\n\tpower 40\n}\n";
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneIntentPlan, twoLights }, &calls ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+		Check( r.landed.size() == 1 && r.landed[0] == "a83_first",
+		       "A83b/two MONEY ASSERTION: exactly ONE light source lands from one intent's answer -- "
+		       "the unit is one LIGHT, not one intent's worth of lights (83 sec 6.1)" );
+		bool sawSecond = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].name == "a83_second" &&
+			    r.rejected[i].reason.find( "exactly ONE light source" ) != std::string::npos )
+				sawSecond = true;
+		Check( sawSecond,
+		       "A83b/two the second is REPORTED with the reason, never silently dropped" );
+		Check( sess->ReadDocument().find( "a83_second" ) == std::string::npos,
+		       "A83b/two and it did not reach the document" );
+		Check( !r.retryRan && calls == 2,
+		       "A83b/two MONEY ASSERTION: and it does NOT fire the repair retry -- an answer whose "
+		       "one light landed is not a broken answer, and spending a second completion to ask "
+		       "for less would double this intent's cost for nothing" );
+		Check( r.perIntent.size() == 1 && r.perIntent[0].form == "zero-area" &&
+		       r.zeroAreaLightsBuilt == 1 && r.areaLightsBuilt == 0,
+		       "A83b/two the form tally counts the light that landed, once" );
+		pJob->release();
+	}
+
+	// (2) An AREA CHAIN plus an extra light: all FOUR chunks of the chain
+	//     land and the extra is reported.  This is the case the rule has to
+	//     get right -- four chunks are one light source, and a rule that
+	//     counted chunks would refuse the very form arc 83 exists to buy.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83b/area fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		const std::string areaPlusOne =
+			std::string( kLightingAnswerArea ) +
+			"omni_light\n{\n\tname a83_extra\n\tposition 9 9 9\n\tcolor 1 1 1\n\tpower 10\n}\n";
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneIntentPlan, areaPlusOne }, &calls ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+		Check( r.landed.size() == 4,
+		       "A83b/area MONEY ASSERTION: the four-chunk area chain lands WHOLE -- painter, "
+		       "emissive material, geometry and object are ONE light source, and the one-source "
+		       "rule counts sources rather than chunks" );
+		Check( sess->ReadDocument().find( "lit_panel_obj" ) != std::string::npos &&
+		       sess->ReadDocument().find( "a83_extra" ) == std::string::npos,
+		       "A83b/area while the extra light chunk in the same answer did not land" );
+		Check( r.areaLightsBuilt == 1 && r.zeroAreaLightsBuilt == 0,
+		       "A83b/area and the intent is counted as ONE area light" );
+		Check( !r.retryRan && calls == 2, "A83b/area with no retry fired by the extra" );
+		pJob->release();
+	}
+}
+
+//! A83c: A FAILING INTENT DOES NOT ABORT THE LOOP.  The remaining intents
+//! still run, and the result says which one failed and why.
+static void TestLightSceneFailedIntentDoesNotAbort()
+{
+	std::printf( "A83c: one intent's failure does not stop the others...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83c.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83c fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+
+	// A completer that fails for INTENT 2 ONLY, recognised by the prompt's
+	// own "intent 2 of 3" line -- so the failure is targeted at a unit
+	// rather than at a call count.
+	int calls = 0;
+	{
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-lighting-1";
+		auto count = std::make_shared<int>( 0 );
+		c.complete = [count, &calls]( const std::string& prompt )
+			-> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			++( *count );
+			calls = *count;
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			if( *count == 1 ) { o.ok = true; o.text = kThreeIntentPlan; return o; }
+			if( prompt.find( "intent 2 of 3" ) != std::string::npos ) {
+				o.error = "mock refuses this intent";
+				return o;
+			}
+			o.ok = true;
+			o.text = "omni_light\n{\n\tname a83c_light" + std::to_string( *count ) +
+				"\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 30\n}\n";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+	}
+
+	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+	Check( r.ok, "A83c the call still reports an ok outcome -- two of three intents were built" );
+	Check( r.perIntent.size() == 3,
+	       "A83c MONEY ASSERTION: all three intents ran; the failure of the second did not abort "
+	       "the loop" );
+	Check( r.perIntent[0].built && !r.perIntent[1].built && r.perIntent[2].built,
+	       "A83c with the middle one, and only the middle one, unbuilt" );
+	Check( r.perIntent[1].failure.find( "mock refuses this intent" ) != std::string::npos,
+	       "A83c and the reason it failed is recorded against THAT intent" );
+	Check( r.intentsBuilt == 2 && r.landed.size() == 2,
+	       "A83c two intents built one light each" );
+	Check( r.perIntent[1].completions == 2 && r.perIntent[1].retryRan,
+	       "A83c MONEY ASSERTION: the failing intent spent its own one repair retry and stopped "
+	       "there -- the retry is per intent, and a provider failure does not become the next "
+	       "intent's problem" );
+	Check( calls == 5,
+	       "A83c so the call spent 5 completions: the plan, one each for intents 1 and 3, and two "
+	       "for the intent that failed (got " + std::to_string( calls ) + ")" );
+	Check( r.message.find( "Intent 2 \"a soft panel filling the shadowed left side of the sphere\": "
+	                       "nothing inserted" ) != std::string::npos &&
+	       r.message.find( "mock refuses this intent" ) != std::string::npos,
+	       "A83c MONEY ASSERTION: and the report names the intent that failed and what happened -- "
+	       "a loop whose partial failure is invisible is a loop nobody can debug" );
+	pJob->release();
+}
+
+//! A83d: WHAT AN EARLIER INTENT PLACED IS IN THE LATER INTENTS' PROMPTS,
+//! with the intent it served -- which is what lets the later light
+//! complement the earlier one rather than repeat it.
+static void TestLightSceneLaterIntentsSeeEarlierLights()
+{
+	std::printf( "A83d: a later intent's prompt carries what the earlier intents placed...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83d.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83d fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeLightingCompleter( nullptr, &prompts ) );
+	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+	Check( r.ok && prompts.size() == 4, "A83d the plan and three per-intent prompts were composed" );
+	if( prompts.size() != 4 ) { pJob->release(); return; }
+
+	Check( prompts[1].find( "nothing yet -- this is the first intent of the plan" ) != std::string::npos,
+	       "A83d the FIRST intent is told outright that nothing has been placed yet -- an empty "
+	       "section is a fact, and omitting it would leave the model to guess" );
+	Check( prompts[2].find( "WHAT THE EARLIER INTENTS OF THIS PLAN PLACED (1)" ) != std::string::npos &&
+	       prompts[2].find( "\"sunlight arriving on the sphere from above and behind the camera\" "
+	                        "-- lit_key" ) != std::string::npos,
+	       "A83d MONEY ASSERTION: the SECOND intent's prompt names what the first placed AND the "
+	       "intent it served -- the live 'lights already in the scene' list says what the scene "
+	       "HAS, and only this section says what it was FOR, which is what a complementary light "
+	       "is designed against" );
+	Check( prompts[3].find( "WHAT THE EARLIER INTENTS OF THIS PLAN PLACED (2)" ) != std::string::npos &&
+	       prompts[3].find( "lit_panel_obj" ) != std::string::npos,
+	       "A83d and the third sees both, including every chunk of the second's area light" );
+	Check( prompts[3].find( "intent 3 of 3" ) != std::string::npos,
+	       "A83d each request also says which intent of how many it is" );
+
+	// The LIVE section is still live: the area light the second intent
+	// placed is a new emissive object, and the third intent's prompt sees it
+	// as one.
+	Check( prompts[3].find( "lit_panel_obj -- emissive object" ) != std::string::npos,
+	       "A83d MONEY ASSERTION: and the 'lights already in the scene' section is re-measured per "
+	       "intent, so an area light placed one intent ago appears as the light source it is" );
+
+	// THE INVENTORY, by contrast, is measured ONCE -- so the prompt must not
+	// claim it was measured "just now" at the third intent.
+	Check( prompts[0].find( "measured from the live scene just now" ) != std::string::npos,
+	       "A83d the PLAN prompt's inventory really was measured just now" );
+	Check( prompts[3].find( "measured from the live scene at the start of this lighting pass" )
+	       != std::string::npos &&
+	       prompts[3].find( "measured from the live scene just now" ) == std::string::npos,
+	       "A83d MONEY ASSERTION: while a per-intent prompt says WHEN its inventory was measured -- "
+	       "it is measured once and reused, so 'just now' at the sixth intent would be a false "
+	       "clause in a model-facing payload" );
+	pJob->release();
 }
 
 //----------------------------------------------------------------------
@@ -13261,6 +13768,12 @@ int main()
 	TestLightSceneWireShape();
 	TestAmbientLightIsAlwaysRefused();
 	TestPaletteAreaLightExampleParses();
+	// Arc 83 slice 1 (2026-08-12): the plan step, the one-light unit, the
+	// loop's independence, and what a later intent is told.
+	TestLightSceneIntentPlanBudget();
+	TestLightSceneOneLightPerIntent();
+	TestLightSceneFailedIntentDoesNotAbort();
+	TestLightSceneLaterIntentsSeeEarlierLights();
 
 	// Arc 82 (2026-08-12): the clean-room population pass and its render gate.
 	TestPopulateSceneHappyPath();

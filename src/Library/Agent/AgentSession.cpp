@@ -19326,6 +19326,90 @@ namespace RISE
 				return false;
 			}
 
+			//! ARC 83 SLICE 1: is this keyword one of the three ZERO-AREA
+			//! idealizations the palette groups together?  Named as a list
+			//! rather than derived, because the classification the result
+			//! reports is about PHYSICAL FORM and the registry does not carry
+			//! that: `hosek_wilkie_skylight` is a Light-category chunk too and
+			//! is physically based, so a category test would report it as an
+			//! idealization, which would be a false clause.
+			bool IsZeroAreaLightKeyword_( const std::string& k )
+			{
+				return k == "omni_light" || k == "spot_light" || k == "directional_light";
+			}
+
+			//! ARC 83 SLICE 1: read the planning completion's answer as a LIST
+			//! OF LIGHTING INTENTS -- one per line.
+			//!
+			//! Tolerant of the three shapes a model reaches for when asked for
+			//! a list (a bare line, a `- ` bullet, a `1. ` number) and of a
+			//! markdown fence around the whole thing, because a plan that is
+			//! merely differently punctuated is not a failed plan.  Everything
+			//! it drops or cuts is COUNTED, so the caller can state it:
+			//! `outReturned` is how many intent lines the answer really
+			//! carried before the budget was applied, and `outLineTruncated`
+			//! says whether any single line was longer than `maxChars`.
+			std::vector<std::string> ParseLightingIntents_( const std::string& text,
+			                                                int budget,
+			                                                std::size_t maxChars,
+			                                                int& outReturned,
+			                                                bool& outLineTruncated )
+			{
+				std::vector<std::string> out;
+				outReturned = 0;
+				outLineTruncated = false;
+				if( budget <= 0 ) return out;
+
+				std::size_t at = 0;
+				while( at <= text.size() ) {
+					const std::size_t nl = text.find( '\n', at );
+					std::string line = ( nl == std::string::npos )
+						? text.substr( at )
+						: text.substr( at, nl - at );
+					at = ( nl == std::string::npos ) ? ( text.size() + 1 ) : ( nl + 1 );
+
+					// Trim both ends of every whitespace this language's
+					// answers actually carry.
+					const char* const ws = " \t\r\f\v";
+					const std::size_t b = line.find_first_not_of( ws );
+					if( b == std::string::npos ) continue;
+					const std::size_t e = line.find_last_not_of( ws );
+					line = line.substr( b, e - b + 1 );
+
+					// A markdown fence is punctuation, not an intent.
+					if( line.compare( 0, 3, "```" ) == 0 ) continue;
+
+					// One leading bullet or one leading `N.` / `N)` number.
+					if( line.size() > 2 && ( line[0] == '-' || line[0] == '*' ) &&
+					    ( line[1] == ' ' || line[1] == '\t' ) ) {
+						line = line.substr( 2 );
+					}
+					else {
+						std::size_t d = 0;
+						while( d < line.size() && line[d] >= '0' && line[d] <= '9' ) ++d;
+						if( d > 0 && d + 1 < line.size() &&
+						    ( line[d] == '.' || line[d] == ')' ) &&
+						    ( line[d+1] == ' ' || line[d+1] == '\t' ) ) {
+							line = line.substr( d + 2 );
+						}
+					}
+					const std::size_t b2 = line.find_first_not_of( ws );
+					if( b2 == std::string::npos ) continue;
+					const std::size_t e2 = line.find_last_not_of( ws );
+					line = line.substr( b2, e2 - b2 + 1 );
+					if( line.empty() ) continue;
+
+					++outReturned;
+					if( static_cast<int>( out.size() ) >= budget ) continue;   // counted, not built
+					if( line.size() > maxChars ) {
+						line.resize( maxChars );
+						outLineTruncated = true;
+					}
+					out.push_back( line );
+				}
+				return out;
+			}
+
 			//! %.1f, for a mean luma on the 0-255 scale.
 			std::string LumaFigure_( double v )
 			{
@@ -19392,21 +19476,10 @@ namespace RISE
 			}
 		}
 
-		std::string AgentSession::ComposeLightingPrompt_( const std::string& inventoryText,
-		                                                   const std::string& notes,
-		                                                   const std::string& rejectionText ) const
+		void AgentSession::AppendLightingSceneFacts_( std::string& p,
+		                                               const std::string& inventoryText,
+		                                               const char* inventoryWhen ) const
 		{
-			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE, exactly as
-			// ComposeBuilderPrompt_ composes the construction one.  The model
-			// supplies `notes` and nothing else; every other span is this
-			// function's own text, the descriptor registry's, or a measurement
-			// of the live scene.  There is no parameter through which a caller
-			// can hand raw prompt text to the provider.
-			std::string p;
-			p += "You are designing the LIGHTING for a finished 3D scene in the RISE scene language. "
-			     "The geometry, materials and camera already exist and are not yours to change. "
-			     "Write the light chunks the scene should have.\n\n";
-
 			// ---- The subject and mood, if this session has one.  The model's
 			// OWN words about what it set out to make, restated to a context
 			// that has never seen them -- the same move ComposeBuilderPrompt_
@@ -19420,7 +19493,9 @@ namespace RISE
 			// ---- WHERE EVERYTHING IS.  The arc-80 inventory, verbatim: the
 			// one thing a lighting pass needs and a fresh context cannot see.
 			if( !inventoryText.empty() ) {
-				p += "WHAT IS IN THE SCENE AND WHERE, measured from the live scene just now:\n";
+				p += "WHAT IS IN THE SCENE AND WHERE, measured from the live scene ";
+				p += inventoryWhen;
+				p += ":\n";
 				p += inventoryText;
 				p += "\n\n";
 			}
@@ -19485,6 +19560,95 @@ namespace RISE
 				}
 				p += "\n";
 			}
+		}
+
+		std::string AgentSession::ComposeLightingPlanPrompt_( const std::string& inventoryText,
+		                                                       const std::string& notes ) const
+		{
+			// THE PLAN STEP (arc 83 slice 1).  One cheap completion that
+			// enumerates UNITS, not work: it writes no scene text at all, so it
+			// gets no palette and no grammar.  Composed host-side exactly as
+			// every other prompt on this surface is -- the caller's `notes` is
+			// the one model-supplied span, and it is length-capped before it
+			// arrives here.
+			std::string p;
+			p += "You are planning the LIGHTING for a finished 3D scene in the RISE scene language. "
+			     "The geometry, materials and camera already exist and are not yours to change. "
+			     "You are not writing any scene text in this answer: you are listing the LIGHTING "
+			     "INTENTS this scene needs. Each intent you list will then be authored on its own, "
+			     "in its own separate request, ONE LIGHT SOURCE per intent.\n\n";
+
+			AppendLightingSceneFacts_( p, inventoryText, "just now" );
+
+			if( !notes.empty() ) {
+				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such --
+				// ComposeBuilderPrompt_'s rule and its reasons, unchanged.
+				p += "NOTES FROM THE CALLER:\n";
+				p += notes;
+				p += "\n\n";
+			}
+
+			p += "THE BUDGET: at most " + std::to_string( kLightIntentBudget ) +
+			     " intents. A longer list is cut to its first " +
+			     std::to_string( kLightIntentBudget ) +
+			     " and the cut is reported in this call's result.\n\n";
+
+			p += "WRITE YOUR ANSWER AS ONE INTENT PER LINE. Each line is a short phrase naming what "
+			     "that light is for and roughly where it is in this scene -- what it falls on, and "
+			     "where it comes from. No numbering, no bullets, no blank lines, no prose around the "
+			     "list, no markdown fences. Nothing else in the answer is read.\n";
+			return p;
+		}
+
+		std::string AgentSession::ComposeLightingPrompt_( const std::string& inventoryText,
+		                                                   const std::string& notes,
+		                                                   const std::string& rejectionText,
+		                                                   const std::string& intent,
+		                                                   int intentIndex,
+		                                                   int intentCount,
+		                                                   const std::vector<std::string>& placedLines ) const
+		{
+			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE, exactly as
+			// ComposeBuilderPrompt_ composes the construction one.  The model
+			// supplies `notes` and the planning step's own intent line, both
+			// length-capped and both clearly labelled; every other span is this
+			// function's own text, the descriptor registry's, or a measurement
+			// of the live scene.  There is no parameter through which a caller
+			// can hand raw prompt text to the provider.
+			std::string p;
+			p += "You are designing ONE LIGHT SOURCE for a finished 3D scene in the RISE scene "
+			     "language. The geometry, materials and camera already exist and are not yours to "
+			     "change.\n\n";
+
+			// ---- THE UNIT.  83 sec 6.1: one response is one light source, and
+			// saying so is what buys the four-chunk area form the room it never
+			// had when a whole category shared one answer.
+			p += "THIS REQUEST'S INTENT (intent " + std::to_string( intentIndex ) + " of " +
+			     std::to_string( intentCount ) + " in this scene's lighting plan):\n";
+			p += intent;
+			p += "\n\nWrite the chunks for ONE light source for that intent, and nothing else. ONE "
+			     "light source is either ONE light chunk, or the painter + emissive material + "
+			     "geometry + standard_object of ONE area light. A second light source in the same "
+			     "answer is reported and not inserted. The rest of this scene's lighting is being "
+			     "written by the other intents, one request each.\n\n";
+
+			AppendLightingSceneFacts_( p, inventoryText, "at the start of this lighting pass" );
+
+			// ---- WHAT THE EARLIER ITERATIONS OF THIS LOOP ALREADY PLACED, with
+			// the intent each one served.  The section above lists what the
+			// scene HAS; this one says what it was FOR, which is the part that
+			// lets this light complement the others rather than repeat them.
+			if( placedLines.empty() ) {
+				p += "WHAT THE EARLIER INTENTS OF THIS PLAN PLACED: nothing yet -- this is the first "
+				     "intent of the plan.\n\n";
+			}
+			else {
+				p += "WHAT THE EARLIER INTENTS OF THIS PLAN PLACED (" +
+				     std::to_string( placedLines.size() ) + "), so this one need not repeat them:\n";
+				for( std::size_t i = 0; i < placedLines.size(); ++i )
+					p += "  " + placedLines[i] + "\n";
+				p += "\n";
+			}
 
 			p += "NAMING: every chunk you write needs a `name` that is not already used in this "
 			     "scene (hosek_wilkie_skylight is the one kind that takes no name). There is no "
@@ -19537,10 +19701,11 @@ namespace RISE
 				p += "\n";
 			}
 
-			p += "\nWHAT THIS CALL WILL ACCEPT: light chunks, and the painter / emissive material "
-			     "/ geometry / standard_object of an area light. It will NOT accept a camera, a "
-			     "film, a rasterizer or a shader op, and it will not accept geometry unless the "
-			     "same answer defines an emissive material to put on it.\n";
+			p += "\nWHAT THIS REQUEST WILL ACCEPT: ONE light source -- either one light chunk, or "
+			     "the painter / emissive material / geometry / standard_object of one area light. A "
+			     "SECOND light source in the same answer is reported and not inserted. It will NOT "
+			     "accept a camera, a film, a rasterizer or a shader op, and it will not accept "
+			     "geometry unless the same answer defines an emissive material to put on it.\n";
 
 			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
 			     "the form\n"
@@ -19557,7 +19722,7 @@ namespace RISE
 				// what happened rather than by a paraphrase of them.
 				p += "\nA PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED:\n";
 				p += rejectionText;
-				p += "\nReturn the CORRECTED SET WHOLE -- every chunk this lighting needs, "
+				p += "\nReturn the CORRECTED SET WHOLE -- every chunk this ONE light source needs, "
 				     "including the ones that were accepted, in one answer.\n";
 			}
 			return p;
@@ -19611,11 +19776,16 @@ namespace RISE
 					"blocked by this.";
 				return out;
 			}
+			// THE CAP COUNTS CALLS, NOT COMPLETIONS -- and since arc 83 slice 1
+			// those are different numbers, so the text says which (one call is
+			// a plan completion plus one per intent, each of which may spend a
+			// repair retry).
 			if( mLightSceneCalls >= kLightSceneMaxPerSession ) {
-				char capBuf[224];
+				char capBuf[256];
 				std::snprintf( capBuf, sizeof( capBuf ),
-					"light_scene has already run %d lighting completions this session -- the "
-					"per-session cap. Nothing was changed; the document is unchanged.",
+					"light_scene has already run %d lighting passes this session -- the per-session "
+					"cap on CALLS, each of which spends one planning completion plus one per intent. "
+					"Nothing was changed; the document is unchanged.",
 					kLightSceneMaxPerSession );
 				out.message = capBuf;
 				return out;
@@ -19638,9 +19808,19 @@ namespace RISE
 
 			//------------------------------------------------------------------
 			// THE COMPOSITION THAT MAKES THIS ARC WORK: the arc-80 inventory,
-			// measured NOW, handed to the builder.  It costs one small identity
-			// pass, which is affordable precisely because this verb runs once
-			// per scene rather than once per render.
+			// handed to every completion this call spends.  It costs one small
+			// identity pass, which is affordable precisely because this verb
+			// runs once per scene rather than once per render.
+			//
+			// ARC 83 SLICE 1: measured ONCE, before the loop, and reused --
+			// measuring it per intent would multiply the one expensive part of
+			// this call by the intent budget.  What that costs in accuracy is
+			// bounded and STATED rather than hidden: an area light an earlier
+			// intent placed is a new object and is absent from this text, so
+			// the per-intent prompt says WHEN the inventory was measured and
+			// carries a separate, live section naming what the earlier intents
+			// placed.  Claiming "just now" at the sixth intent would be the
+			// false-clause class arc 79 sec 8.1 records the cost of.
 			//------------------------------------------------------------------
 			std::string inventoryText;
 			{
@@ -19656,252 +19836,434 @@ namespace RISE
 				if( inv.ok ) inventoryText = inv.text;
 			}
 
-			const std::string basePrompt = ComposeLightingPrompt_( inventoryText, useNotes,
-			                                                        std::string() );
-
 			//------------------------------------------------------------------
-			// ONE ATTEMPT = one completion, extract, classify, insert.  The
-			// shape is build_element's runAttempt, with its PREFIX check
-			// replaced by this verb's own admissibility rule (see the naming
-			// note in the header): lights are scene-global, so there is no
-			// owning element for a `<element>_` prefix to identify, and the
-			// real constraint is WHAT KIND of chunk a lighting pass may land.
+			// STEP 1 OF 2: THE PLAN.  ONE cheap completion that enumerates the
+			// UNITS this call will then build -- 83 sec 2's PLAN -> per-item
+			// shape, which `build_element` has had since arc 79 and lighting
+			// did not.  It writes no scene text, so nothing here is inserted
+			// and nothing here can be rejected; what comes back is a list of
+			// lines, bounded at kLightIntentBudget with the cut STATED.
+			//
+			// THERE IS NO RETRY OF THE PLAN STEP.  The per-intent repair retry
+			// exists because a rejected chunk is a correctable fact; a plan
+			// that returned nothing readable is not, and a second plan
+			// completion would double the cheapest part of the call to guess
+			// at the reason.
 			//------------------------------------------------------------------
-			std::vector<std::string> landedNames;
-			std::vector<std::string> rejectionLines;
-			std::string providerFailure;
-			std::vector<std::string> unquotedNames;
-			std::string lastCompletionText;
-
-			const auto runAttempt = [&]( const std::string& prompt ) -> bool
 			{
-				const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+				const AgentTextCompletionOutcome comp =
+					mTextCompleter.complete( ComposeLightingPlanPrompt_( inventoryText, useNotes ) );
+				++out.completionsSpent;
 				if( !comp.ok || comp.text.empty() ) {
-					providerFailure = comp.error.empty()
+					out.planFailure = comp.error.empty()
 						? std::string( "the provider returned no text and no reason" )
 						: comp.error;
-					return false;
 				}
-				lastCompletionText = comp.text;
+				else {
+					int  returned = 0;
+					bool lineCut  = false;
+					out.intents = ParseLightingIntents_( comp.text, kLightIntentBudget,
+					                                     kLightIntentMaxChars, returned, lineCut );
+					out.intentsReturned      = returned;
+					out.intentsTruncated     = ( returned > static_cast<int>( out.intents.size() ) );
+					out.intentLinesTruncated = lineCut;
+					if( out.intents.empty() )
+						out.planFailure = "the planning answer carried no line this harness could read "
+						                  "as a lighting intent";
+				}
+			}
+			if( out.intents.empty() ) {
+				out.message = "light_scene did not complete: its lighting plan produced no intent to "
+					"build -- " + out.planFailure +
+					". Nothing was inserted and the document is unchanged. One completion was spent "
+					"on the plan and none on lighting; the plan step has no retry.";
+				return out;
+			}
 
-				std::vector<std::string> chunks, problems;
-				ExtractChunkTexts( comp.text, chunks, problems );
-				out.chunksExtracted += static_cast<unsigned int>( chunks.size() );
-				for( std::size_t i = 0; i < problems.size(); ++i ) {
-					AgentLightSceneRejection r;
-					r.reason = problems[i];
-					out.rejected.push_back( r );
-					rejectionLines.push_back( problems[i] );
-				}
-				if( chunks.empty() ) {
-					if( problems.empty() ) {
-						const std::string why =
-							"the answer contained no complete chunk (no `keyword { ... }` block)";
+			//------------------------------------------------------------------
+			// STEP 2 OF 2: ONE FRESH COMPLETION PER INTENT, each authoring
+			// EXACTLY ONE LIGHT SOURCE.
+			//
+			// 83 sec 6.1 IS THE LOAD-BEARING PART.  A unit must be sized so
+			// that ONE response is ONE unit's work, and for lighting that unit
+			// is one light SOURCE -- not "the lights for this intent".  With a
+			// whole response to spend on a single light, a four-chunk area
+			// light is affordable where it was not when seven lights shared
+			// one answer; a per-intent call allowed to author several lights
+			// would rebuild the exact bottleneck this slice removes.  The rule
+			// is therefore ENFORCED here, not merely requested in the prompt.
+			//
+			// A FAILED INTENT DOES NOT ABORT THE LOOP: the remaining intents
+			// still run and the result says which failed and why.
+			//------------------------------------------------------------------
+			std::vector<std::string> placedLines;      // one per FINISHED intent
+			std::vector<std::string> unquotedNames;    // whole call
+			std::string lastCompletionText;            // whole call
+			std::string lastProviderFailure;           // whole call
+
+			for( std::size_t ii = 0; ii < out.intents.size(); ++ii )
+			{
+				AgentLightIntentOutcome rec;
+				rec.intent = out.intents[ii];
+
+				// ---- PER-INTENT state.  Every one of these was whole-call
+				// state in arc 81 and is per-unit now, which is what makes the
+				// loop's failures independent of one another.
+				std::vector<std::string> landedNames;      // landed in THIS intent
+				std::vector<std::string> landedKinds;      // their keywords, for the form tally
+				std::vector<std::string> rejectionLines;   // what the ONE repair retry is told
+				std::string providerFailure;
+				bool intentSourceLanded = false;           // a light source landed for this intent
+
+				//--------------------------------------------------------------
+				// ONE ATTEMPT = one completion, extract, classify, insert.  The
+				// shape is build_element's runAttempt, with its PREFIX check
+				// replaced by this verb's own admissibility rule (see the
+				// naming note in the header): lights are scene-global, so there
+				// is no owning element for a `<element>_` prefix to identify,
+				// and the real constraints are WHAT KIND of chunk a lighting
+				// pass may land and -- arc 83 -- HOW MANY light sources.
+				//--------------------------------------------------------------
+				const auto runAttempt = [&]( const std::string& prompt ) -> bool
+				{
+					const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+					if( !comp.ok || comp.text.empty() ) {
+						providerFailure = comp.error.empty()
+							? std::string( "the provider returned no text and no reason" )
+							: comp.error;
+						return false;
+					}
+					lastCompletionText = comp.text;
+
+					std::vector<std::string> chunks, problems;
+					ExtractChunkTexts( comp.text, chunks, problems );
+					rec.chunksExtracted += static_cast<unsigned int>( chunks.size() );
+					for( std::size_t i = 0; i < problems.size(); ++i ) {
 						AgentLightSceneRejection r;
-						r.reason = why;
-						out.rejected.push_back( r );
-						rejectionLines.push_back( why );
+						r.reason = problems[i];
+						rec.rejected.push_back( r );
+						rejectionLines.push_back( problems[i] );
 					}
-					return false;
-				}
-
-				// PASS 1: classify, and find out whether this answer defines an
-				// EMISSIVE MATERIAL.  That single bit decides whether geometry
-				// is admissible below -- an area light needs a shape, and
-				// nothing else this verb produces does.
-				std::vector<const ChunkDescriptor*> descs( chunks.size(), nullptr );
-				std::vector<std::string> kinds( chunks.size() );
-				std::vector<std::string> names( chunks.size() );
-				std::vector<RISE::Cst::Document> docs( chunks.size() );
-				std::vector<RISE::Cst::NodeId> nodeIds( chunks.size(), 0 );
-				bool answerDefinesEmitter = false;
-				for( std::size_t i = 0; i < chunks.size(); ++i ) {
-					docs[i] = RISE::Cst::ParseToCst( chunks[i] );
-					const int n = RISE::Cst::DocItemCount( docs[i] );
-					for( int c = 0; c < n; ++c ) {
-						const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( docs[i], c );
-						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( docs[i], nid );
-						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
-						kinds[i]   = it->role;
-						names[i]   = ChunkParamString_( it, "name" );
-						nodeIds[i] = nid;
-						descs[i]   = DescriptorForKeyword( String( it->role.c_str() ) );
-						break;
-					}
-					if( DescriptorIsEmissiveMaterial_( descs[i] ) ) answerDefinesEmitter = true;
-				}
-
-				// PASS 2: admissibility, then submission.
-				std::vector<std::string> submit;
-				for( std::size_t i = 0; i < chunks.size(); ++i ) {
-					const ChunkDescriptor* d = descs[i];
-					if( !d ) {
-						AgentLightSceneRejection r;
-						r.kind   = kinds[i];
-						r.reason = "`" + ( kinds[i].empty() ? std::string( "(unnamed keyword)" ) : kinds[i] ) +
-							"` is not a chunk kind this scene language has, so it was not inserted";
-						out.rejected.push_back( r );
-						rejectionLines.push_back( r.reason );
-						continue;
-					}
-
-					// THE ADMISSIBILITY RULE, stated once.  A lighting pass may
-					// land: a LIGHT; a PAINTER and a MATERIAL (an area light's
-					// emitted colour and its emissive surface); and a GEOMETRY
-					// and an OBJECT, but ONLY when this same answer defines an
-					// emissive material for them to carry.  Everything else --
-					// camera, film, rasterizer, rasterizer output, shader op --
-					// is refused: re-aiming the camera or swapping the
-					// integrator is not lighting, and this verb's insertion is
-					// exempted from the compose-phase creation ban, so what it
-					// can admit has to be bounded here rather than there.
-					// ARC 81 FIX-ROUND (2026-08-12): `ambient_light` is refused
-					// HERE as well as at the insertion, and the duplication is
-					// deliberate.  InsertChunks would refuse it anyway, but a
-					// rejection raised here carries the ban's own text into
-					// `rejectionLines`, which is what the ONE repair retry is
-					// corrected with -- so the pass is told what to write
-					// instead, in the same turn, rather than being told only
-					// that something was rejected.  The palette this verb shows
-					// no longer offers the kind at all; this covers a model that
-					// knows it from elsewhere.
-					{
-						const std::string ban = CheckAmbientLightBanForInsert( chunks[i] );
-						if( !ban.empty() ) {
+					if( chunks.empty() ) {
+						if( problems.empty() ) {
+							const std::string why =
+								"the answer contained no complete chunk (no `keyword { ... }` block)";
 							AgentLightSceneRejection r;
-							r.name   = names[i];
+							r.reason = why;
+							rec.rejected.push_back( r );
+							rejectionLines.push_back( why );
+						}
+						return false;
+					}
+
+					// PASS 1: classify, and find THE ONE LIGHT SOURCE this
+					// answer is allowed to land.  A "source" is a Light chunk
+					// or an emissive material -- the two things that make light
+					// -- and the FIRST one in the answer is the one kept.  That
+					// single index also decides whether geometry is admissible
+					// below, because an area light needs a shape and nothing
+					// else this verb produces does.
+					std::vector<const ChunkDescriptor*> descs( chunks.size(), nullptr );
+					std::vector<std::string> kinds( chunks.size() );
+					std::vector<std::string> names( chunks.size() );
+					std::vector<RISE::Cst::Document> docs( chunks.size() );
+					std::vector<RISE::Cst::NodeId> nodeIds( chunks.size(), 0 );
+					std::vector<std::string> bans( chunks.size() );
+					int firstSourceIdx = -1;
+					for( std::size_t i = 0; i < chunks.size(); ++i ) {
+						docs[i] = RISE::Cst::ParseToCst( chunks[i] );
+						const int n = RISE::Cst::DocItemCount( docs[i] );
+						for( int c = 0; c < n; ++c ) {
+							const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( docs[i], c );
+							const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( docs[i], nid );
+							if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+							kinds[i]   = it->role;
+							names[i]   = ChunkParamString_( it, "name" );
+							nodeIds[i] = nid;
+							descs[i]   = DescriptorForKeyword( String( it->role.c_str() ) );
+							break;
+						}
+						// A chunk the ambient ban will refuse must NOT consume the
+						// one-source slot: it is never inserted, so an answer of
+						// [ambient_light, omni_light] has exactly one light source
+						// this pass can land, and the omni is it.
+						bans[i] = CheckAmbientLightBanForInsert( chunks[i] );
+						const bool isSource = descs[i] && bans[i].empty() &&
+							( descs[i]->category == ChunkCategory::Light ||
+							  DescriptorIsEmissiveMaterial_( descs[i] ) );
+						if( isSource && firstSourceIdx < 0 ) firstSourceIdx = static_cast<int>( i );
+					}
+					const bool answerSourceIsEmitter =
+						( firstSourceIdx >= 0 &&
+						  DescriptorIsEmissiveMaterial_( descs[static_cast<std::size_t>( firstSourceIdx )] ) );
+
+					// PASS 2: admissibility, then submission.
+					std::vector<std::string> submit;
+					for( std::size_t i = 0; i < chunks.size(); ++i ) {
+						const ChunkDescriptor* d = descs[i];
+						if( !d ) {
+							AgentLightSceneRejection r;
 							r.kind   = kinds[i];
-							r.reason = ban;
-							out.rejected.push_back( r );
+							r.reason = "`" + ( kinds[i].empty() ? std::string( "(unnamed keyword)" ) : kinds[i] ) +
+								"` is not a chunk kind this scene language has, so it was not inserted";
+							rec.rejected.push_back( r );
 							rejectionLines.push_back( r.reason );
 							continue;
 						}
-					}
 
-					const bool isLight    = ( d->category == ChunkCategory::Light );
-					const bool isPainter  = ( d->category == ChunkCategory::Painter );
-					const bool isMaterial = ( d->category == ChunkCategory::Material );
-					const bool isForm     = ( d->category == ChunkCategory::Geometry ||
-					                          d->category == ChunkCategory::Object );
-					if( !isLight && !isPainter && !isMaterial && !isForm ) {
-						AgentLightSceneRejection r;
-						r.name   = names[i];
-						r.kind   = kinds[i];
-						r.reason = "a `" + kinds[i] + "` chunk is not part of a lighting pass, so it was "
-							"not inserted -- light_scene accepts light chunks and the painter, emissive "
-							"material, geometry and standard_object of an area light";
-						out.rejected.push_back( r );
-						rejectionLines.push_back( r.reason );
-						continue;
-					}
-					if( isForm && !answerDefinesEmitter ) {
-						AgentLightSceneRejection r;
-						r.name   = names[i];
-						r.kind   = kinds[i];
-						r.reason = "the `" + kinds[i] + "` chunk" +
-							( names[i].empty() ? std::string() : ( " named \"" + names[i] + "\"" ) ) +
-							" was not inserted: light_scene accepts geometry only as the carrier of an "
-							"emissive material, and this answer defines none";
-						out.rejected.push_back( r );
-						rejectionLines.push_back( r.reason );
-						continue;
-					}
+						// THE `ambient_light` BAN is refused HERE as well as at
+						// the insertion, and the duplication is deliberate.
+						// InsertChunks would refuse it anyway, but a rejection
+						// raised here carries the ban's own text into
+						// `rejectionLines`, which is what the ONE repair retry
+						// is corrected with -- so the pass is told what to
+						// write instead, in the same turn, rather than being
+						// told only that something was rejected.  The palette
+						// this verb shows no longer offers the kind at all;
+						// this covers a model that knows it from elsewhere.
+						if( !bans[i].empty() ) {
+							AgentLightSceneRejection r;
+							r.name   = names[i];
+							r.kind   = kinds[i];
+							r.reason = bans[i];
+							rec.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
 
-					// A QUOTED name -- `name "key_lamp"` -- is tolerated, not
-					// rejected: ChunkParamString_ returns the raw token text,
-					// this scene language has no quoted-string syntax at all,
-					// and the builder's own references to the chunk elsewhere
-					// in the same answer are bare tokens.  Arc 79 sec 8.1's
-					// live-run defect and its fix, applied here from the start
-					// rather than after it costs another session.
-					if( names[i].size() >= 2 && names[i].front() == '"' && names[i].back() == '"' ) {
-						const std::string stripped = names[i].substr( 1, names[i].size() - 2 );
-						docs[i] = RISE::Cst::DocSetParamValue( docs[i], nodeIds[i], "name", 0, stripped );
-						chunks[i] = RISE::Cst::SerializeCst( docs[i] );
-						unquotedNames.push_back( stripped );
-						names[i] = stripped;
-					}
+						// A QUOTED name -- `name "key_lamp"` -- is tolerated,
+						// not rejected: ChunkParamString_ returns the raw token
+						// text, this scene language has no quoted-string syntax
+						// at all, and the builder's own references to the chunk
+						// elsewhere in the same answer are bare tokens.  Arc 79
+						// sec 8.1's live-run defect and its fix.  It runs BEFORE
+						// the duplicate check below, because that check compares
+						// names.
+						if( names[i].size() >= 2 && names[i].front() == '"' && names[i].back() == '"' ) {
+							const std::string stripped = names[i].substr( 1, names[i].size() - 2 );
+							docs[i] = RISE::Cst::DocSetParamValue( docs[i], nodeIds[i], "name", 0, stripped );
+							chunks[i] = RISE::Cst::SerializeCst( docs[i] );
+							unquotedNames.push_back( stripped );
+							names[i] = stripped;
+						}
 
-					// A name that already landed in the FIRST attempt is not
-					// re-submitted: the repair retry is asked for the corrected
-					// set WHOLE, so it legitimately repeats what worked, and
-					// re-inserting it would only draw a duplicate-name refusal.
-					if( !names[i].empty() ) {
-						bool already = false;
-						for( std::size_t l = 0; l < landedNames.size() && !already; ++l )
-							already = ( landedNames[l] == names[i] );
-						if( already ) continue;
+						// A name that already landed for THIS intent is not
+						// re-submitted: the repair retry is asked for the
+						// corrected set whole, so it legitimately repeats what
+						// worked, and re-inserting it would only draw a
+						// duplicate-name refusal.  It runs before the one-source
+						// rule so a re-sent light is read as the SAME light
+						// rather than as a second one.
+						if( !names[i].empty() ) {
+							bool already = false;
+							for( std::size_t l = 0; l < landedNames.size() && !already; ++l )
+								already = ( landedNames[l] == names[i] );
+							if( already ) continue;
+						}
+
+						// THE ADMISSIBILITY RULE, stated once.  This request may
+						// land: ONE light source -- a LIGHT chunk or an emissive
+						// MATERIAL; a PAINTER (an area light's emitted colour);
+						// and a GEOMETRY and an OBJECT, but ONLY when the kept
+						// source is that emissive material.  Everything else --
+						// camera, film, rasterizer, rasterizer output, shader op
+						// -- is refused: re-aiming the camera or swapping the
+						// integrator is not lighting, and this verb's insertion
+						// is exempt from the compose-phase creation ban, so what
+						// it can admit has to be bounded here rather than there.
+						const bool isLight    = ( d->category == ChunkCategory::Light );
+						const bool isPainter  = ( d->category == ChunkCategory::Painter );
+						const bool isMaterial = ( d->category == ChunkCategory::Material );
+						const bool isForm     = ( d->category == ChunkCategory::Geometry ||
+						                          d->category == ChunkCategory::Object );
+						if( !isLight && !isPainter && !isMaterial && !isForm ) {
+							AgentLightSceneRejection r;
+							r.name   = names[i];
+							r.kind   = kinds[i];
+							r.reason = "a `" + kinds[i] + "` chunk is not part of a lighting pass, so it was "
+								"not inserted -- light_scene accepts light chunks and the painter, emissive "
+								"material, geometry and standard_object of an area light";
+							rec.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+
+						// ARC 83 SLICE 1: EXACTLY ONE LIGHT SOURCE PER INTENT.
+						// The extra source is REPORTED, never silently dropped
+						// -- and deliberately NOT added to `rejectionLines`, so
+						// it does not fire the repair retry: an answer whose one
+						// light landed is not a broken answer, and spending a
+						// second completion to re-ask for less would double this
+						// intent's cost for nothing.
+						const bool isSource = isLight || DescriptorIsEmissiveMaterial_( d );
+						if( isSource &&
+						    ( static_cast<int>( i ) != firstSourceIdx || intentSourceLanded ) ) {
+							AgentLightSceneRejection r;
+							r.name   = names[i];
+							r.kind   = kinds[i];
+							r.reason = "the `" + kinds[i] + "` chunk" +
+								( names[i].empty() ? std::string() : ( " named \"" + names[i] + "\"" ) ) +
+								" was not inserted: this request authors exactly ONE light source and this "
+								"is a second one -- the other intents of this scene's lighting plan get "
+								"their own request each";
+							rec.rejected.push_back( r );
+							continue;
+						}
+						if( isForm && !answerSourceIsEmitter ) {
+							AgentLightSceneRejection r;
+							r.name   = names[i];
+							r.kind   = kinds[i];
+							r.reason = "the `" + kinds[i] + "` chunk" +
+								( names[i].empty() ? std::string() : ( " named \"" + names[i] + "\"" ) ) +
+								" was not inserted: light_scene accepts geometry only as the carrier of an "
+								"emissive material, and this answer's light source is not one";
+							rec.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+
+						submit.push_back( chunks[i] );
 					}
-					submit.push_back( chunks[i] );
+					if( submit.empty() ) return false;
+
+					std::vector<AgentChunkResult> results;
+					{
+						// The clean room's own insertion must not be refused by
+						// the gate it arms, nor by the compose-phase creation ban
+						// an area light's geometry would otherwise trip (see
+						// LightSceneInsertGuard_'s doc).
+						LightSceneInsertGuard_ guard( *this );
+						results = InsertChunks( submit );
+					}
+					bool landedAny = false;
+					for( std::size_t i = 0; i < results.size(); ++i ) {
+						out.chunkResults.push_back( results[i] );
+						if( results[i].applied ) {
+							landedNames.push_back( results[i].name );
+							landedKinds.push_back( results[i].kind );
+							rec.landed.push_back( results[i].name );
+							landedAny = true;
+							const ChunkDescriptor* ld =
+								DescriptorForKeyword( String( results[i].kind.c_str() ) );
+							if( ld && ( ld->category == ChunkCategory::Light ||
+							            DescriptorIsEmissiveMaterial_( ld ) ) )
+								intentSourceLanded = true;
+						}
+						else {
+							AgentLightSceneRejection r;
+							r.name   = results[i].name;
+							r.kind   = results[i].kind;
+							r.reason = results[i].message.empty()
+								? std::string( "the insertion was rejected with no reason given" )
+								: results[i].message;
+							rec.rejected.push_back( r );
+							rejectionLines.push_back(
+								( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
+								" was rejected: " + r.reason );
+						}
+					}
+					return landedAny;
+				};
+
+				++rec.completions;
+				runAttempt( ComposeLightingPrompt_( inventoryText, useNotes, std::string(),
+				                                     rec.intent, static_cast<int>( ii ) + 1,
+				                                     static_cast<int>( out.intents.size() ),
+				                                     placedLines ) );
+
+				// THE ONE REPAIR RETRY, on build_element's exact terms and now
+				// PER INTENT: it fires when this intent rejected anything that
+				// is correctable, or when its provider call failed.  Exactly
+				// one, then stop, whatever the outcome.
+				if( !rejectionLines.empty() || !providerFailure.empty() ) {
+					std::string rejectionText;
+					if( !providerFailure.empty() )
+						rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
+					for( std::size_t i = 0; i < rejectionLines.size(); ++i )
+						rejectionText += "- " + rejectionLines[i] + "\n";
+
+					const std::size_t landedBefore = landedNames.size();
+					rec.retryRan = true;
+					providerFailure.clear();
+					rejectionLines.clear();
+					++rec.completions;
+					runAttempt( ComposeLightingPrompt_( inventoryText, useNotes, rejectionText,
+					                                     rec.intent, static_cast<int>( ii ) + 1,
+					                                     static_cast<int>( out.intents.size() ),
+					                                     placedLines ) );
+					rec.retrySucceeded = ( landedNames.size() > landedBefore );
 				}
-				if( submit.empty() ) return false;
 
-				std::vector<AgentChunkResult> results;
+				// ---- WHAT THIS INTENT PRODUCED, classified from what actually
+				// LANDED rather than from what was asked for.  `hosek_wilkie_
+				// skylight` is a Light chunk and is physically based, so it is
+				// counted apart from the three zero-area idealizations: folding
+				// it in with them would make the tally's own sentence false.
+				rec.failure = providerFailure;
+				if( !providerFailure.empty() ) lastProviderFailure = providerFailure;
+				rec.built = !rec.landed.empty();
+				for( std::size_t k = 0; k < landedKinds.size(); ++k ) {
+					const ChunkDescriptor* ld =
+						DescriptorForKeyword( String( landedKinds[k].c_str() ) );
+					if( !ld ) continue;
+					// An emissive material that landed wins outright and
+					// wherever it sits in the answer: the chunk that makes the
+					// surface emit is what makes this an area light.
+					if( DescriptorIsEmissiveMaterial_( ld ) ) { rec.form = "area"; break; }
+					if( ld->category != ChunkCategory::Light ) continue;
+					if( !rec.form.empty() ) continue;
+					rec.form = ( landedKinds[k] == "hosek_wilkie_skylight" )
+						? std::string( "sky" )
+						: ( IsZeroAreaLightKeyword_( landedKinds[k] )
+							? std::string( "zero-area" )
+							: std::string( "other light" ) );
+				}
+				if     ( rec.form == "area" )      ++out.areaLightsBuilt;
+				else if( rec.form == "sky" )       ++out.skyLightsBuilt;
+				else if( rec.form == "zero-area" ) ++out.zeroAreaLightsBuilt;
+				else if( !rec.form.empty() )       ++out.otherLightsBuilt;
+
+				// ---- Fold this intent into the whole-call totals.
+				out.chunksExtracted  += rec.chunksExtracted;
+				out.completionsSpent += rec.completions;
+				if( rec.built ) ++out.intentsBuilt;
+				if( rec.retryRan )       out.retryRan       = true;
+				if( rec.retrySucceeded ) out.retrySucceeded = true;
+				for( std::size_t k = 0; k < rec.landed.size(); ++k )
+					out.landed.push_back( rec.landed[k] );
+				for( std::size_t k = 0; k < rec.rejected.size(); ++k )
+					out.rejected.push_back( rec.rejected[k] );
+
+				// ---- And tell the NEXT intent what this one placed, so it
+				// complements rather than duplicates.
 				{
-					// The clean room's own insertion must not be refused by the
-					// gate it arms, nor by the compose-phase creation ban an
-					// area light's geometry would otherwise trip (see
-					// LightSceneInsertGuard_'s doc).
-					LightSceneInsertGuard_ guard( *this );
-					results = InsertChunks( submit );
-				}
-				bool landedAny = false;
-				for( std::size_t i = 0; i < results.size(); ++i ) {
-					out.chunkResults.push_back( results[i] );
-					if( results[i].applied ) {
-						landedNames.push_back( results[i].name );
-						out.landed.push_back( results[i].name );
-						landedAny = true;
-					}
+					std::string line = "\"" + rec.intent + "\" -- ";
+					if( rec.landed.empty() ) line += "nothing landed";
 					else {
-						AgentLightSceneRejection r;
-						r.name   = results[i].name;
-						r.kind   = results[i].kind;
-						r.reason = results[i].message.empty()
-							? std::string( "the insertion was rejected with no reason given" )
-							: results[i].message;
-						out.rejected.push_back( r );
-						rejectionLines.push_back(
-							( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
-							" was rejected: " + r.reason );
+						for( std::size_t k = 0; k < rec.landed.size(); ++k ) {
+							if( k ) line += ", ";
+							line += rec.landed[k];
+						}
 					}
+					placedLines.push_back( line );
 				}
-				return landedAny;
-			};
 
-			runAttempt( basePrompt );
-
-			// THE ONE REPAIR RETRY, on build_element's exact terms: it fires
-			// when the first attempt rejected ANYTHING or when the provider
-			// itself failed.  Exactly one, then stop, whatever the outcome.
-			if( !rejectionLines.empty() || !providerFailure.empty() ) {
-				std::string rejectionText;
-				if( !providerFailure.empty() )
-					rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
-				for( std::size_t i = 0; i < rejectionLines.size(); ++i )
-					rejectionText += "- " + rejectionLines[i] + "\n";
-
-				const std::size_t landedBefore = landedNames.size();
-				out.retryRan = true;
-				providerFailure.clear();
-				rejectionLines.clear();
-				runAttempt( ComposeLightingPrompt_( inventoryText, useNotes, rejectionText ) );
-				out.retrySucceeded = ( landedNames.size() > landedBefore );
+				out.perIntent.push_back( rec );
 			}
 
 			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
 			// because no answer was ever parsed) is NOT an ok result -- `ok`
 			// means the builder answered and its answer was processed.
 			if( out.landed.empty() && out.rejected.empty() ) {
-				out.message = "light_scene did not complete: " +
-					( providerFailure.empty()
-						? std::string( "the lighting pass returned nothing this harness could read as a "
-						               "chunk" )
-						: providerFailure ) +
-					". Nothing was inserted and the document is unchanged" +
-					( out.retryRan ? std::string( "; the one repair retry ran and did not complete "
-					                              "either, and there is no second retry." )
-					               : std::string( "." ) );
+				out.message = "light_scene did not complete: it planned " +
+					std::to_string( out.intents.size() ) +
+					( out.intents.size() == 1 ? " intent" : " intents" ) +
+					" and no intent's completion returned anything this harness could read as a chunk" +
+					( lastProviderFailure.empty()
+						? std::string()
+						: ( " -- the last provider failure was: " + lastProviderFailure ) ) +
+					". Nothing was inserted and the document is unchanged. It spent " +
+					std::to_string( out.completionsSpent ) + " completions.";
 				return out;
 			}
 
@@ -19918,37 +20280,79 @@ namespace RISE
 			MeasureLightContributions_( out );
 
 			//------------------------------------------------------------------
-			// THE REPORT: facts only.  What landed, what did not and why,
-			// whether the retry ran, and what each light measures.  No
+			// THE REPORT: facts only.  What was planned, what each intent
+			// landed and what it did not and why, what forms the lights take,
+			// what the whole call spent, and what each light measures.  No
 			// characterization of the lighting, no advice, no score.
 			//------------------------------------------------------------------
-			std::string m = "light_scene ran one lighting completion on " +
-				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". Chunks inserted: ";
-			if( out.landed.empty() ) m += "none";
+			std::string m = "light_scene planned this scene's lighting and then ran one completion "
+				"per lighting intent on " + mTextCompleter.providerName + "/" +
+				mTextCompleter.modelId + ". It spent " + std::to_string( out.completionsSpent ) +
+				( out.completionsSpent == 1 ? " completion" : " completions" ) + ": 1 on the plan and " +
+				std::to_string( out.completionsSpent - 1 ) + " across " +
+				std::to_string( out.intents.size() ) +
+				( out.intents.size() == 1 ? " intent" : " intents" ) + ", of which " +
+				std::to_string( out.intentsBuilt ) + " landed at least one chunk";
+			if( out.intentsTruncated ) {
+				m += " (the plan returned " + std::to_string( out.intentsReturned ) +
+				     " intents against a budget of " + std::to_string( kLightIntentBudget ) +
+				     ", so it was cut to its first " + std::to_string( kLightIntentBudget ) + ")";
+			}
 			else {
-				for( std::size_t i = 0; i < out.landed.size(); ++i ) {
-					if( i ) m += ", ";
-					m += out.landed[i];
-				}
+				m += " (the budget is " + std::to_string( kLightIntentBudget ) + ")";
 			}
 			m += ".";
-			if( !out.rejected.empty() ) {
-				m += " Not inserted: ";
-				for( std::size_t i = 0; i < out.rejected.size(); ++i ) {
-					if( i ) m += "; ";
-					m += out.rejected[i].reason;
+
+			for( std::size_t i = 0; i < out.perIntent.size(); ++i ) {
+				const AgentLightIntentOutcome& r = out.perIntent[i];
+				m += " Intent " + std::to_string( i + 1 ) + " \"" + r.intent + "\": ";
+				if( r.landed.empty() ) m += "nothing inserted";
+				else {
+					m += "inserted ";
+					for( std::size_t k = 0; k < r.landed.size(); ++k ) {
+						if( k ) m += ", ";
+						m += r.landed[k];
+					}
 				}
+				if( !r.rejected.empty() ) {
+					m += "; not inserted: ";
+					for( std::size_t k = 0; k < r.rejected.size(); ++k ) {
+						if( k ) m += "; ";
+						m += r.rejected[k].reason;
+					}
+				}
+				if( r.retryRan ) {
+					m += r.retrySucceeded
+						? std::string( "; one repair retry ran and inserted more chunks" )
+						: std::string( "; one repair retry ran and inserted nothing further" );
+				}
+				if( !r.failure.empty() )
+					m += "; the last completion for it did not complete: " + r.failure;
 				m += ".";
 			}
-			if( out.retryRan ) {
-				m += out.retrySucceeded
-					? std::string( " One repair retry ran and inserted more chunks; there is no second "
-					               "retry." )
-					: std::string( " One repair retry ran and inserted nothing further; there is no "
-					               "second retry." );
+
+			{
+				const int built = out.areaLightsBuilt + out.zeroAreaLightsBuilt +
+					out.skyLightsBuilt + out.otherLightsBuilt;
+				if( built > 0 ) {
+					m += " Of the " + std::to_string( built ) +
+					     ( built == 1 ? " light source" : " light sources" ) + " this call built, " +
+					     std::to_string( out.areaLightsBuilt ) +
+					     ( out.areaLightsBuilt == 1 ? " is an area light" : " are area lights" ) +
+					     " (an object wearing an emissive material, which is a real emitting surface in "
+					     "the scene) and " + std::to_string( out.zeroAreaLightsBuilt ) +
+					     ( out.zeroAreaLightsBuilt == 1
+					       ? " is a zero-area omni / spot / directional light"
+					       : " are zero-area omni / spot / directional lights" );
+					if( out.skyLightsBuilt > 0 )
+						m += ", " + std::to_string( out.skyLightsBuilt ) + " hosek_wilkie_skylight";
+					if( out.otherLightsBuilt > 0 )
+						m += ", " + std::to_string( out.otherLightsBuilt ) +
+						     " a light chunk of another kind";
+					m += ".";
+				}
 			}
-			if( !providerFailure.empty() )
-				m += " The last lighting completion did not complete: " + providerFailure + ".";
+
 			if( !unquotedNames.empty() ) {
 				m += " This harness stripped a wrapping pair of double quotes from the `name` value of ";
 				for( std::size_t i = 0; i < unquotedNames.size(); ++i ) {
@@ -19962,7 +20366,7 @@ namespace RISE
 				// returned above), so the builder's own answer is shown rather
 				// than retained nowhere -- arc 79's Fix 3, adopted from the
 				// start.
-				m += " Nothing landed; the lighting pass's last answer, before this harness's own "
+				m += " Nothing landed; the last answer this pass returned, before this harness's own "
 				     "truncation, began:\n";
 				m += ExcerptWholeLines_( lastCompletionText, 400 );
 			}
@@ -19973,6 +20377,14 @@ namespace RISE
 					" The `notes` string was truncated to the first %u characters before it was sent.",
 					static_cast<unsigned int>( kLightSceneMaxNotes ) );
 				m += nb;
+			}
+			if( out.intentLinesTruncated ) {
+				char ib[176];
+				std::snprintf( ib, sizeof( ib ),
+					" At least one planned intent was longer than %u characters and was cut to that "
+					"length before its request was composed.",
+					static_cast<unsigned int>( kLightIntentMaxChars ) );
+				m += ib;
 			}
 			out.message = m;
 			return out;

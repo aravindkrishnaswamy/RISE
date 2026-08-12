@@ -924,15 +924,36 @@
 //                                            contributions:[{name,kind,soloed,
 //                                                            meanLuma?,share?,
 //                                                            reason?}],
+//                                            intentsPlanned,intentsReturned,
+//                                            intentsBuilt,intentsTruncated,
+//                                            completions,areaLights,zeroAreaLights,
+//                                            skyLights?,otherLights?,
+//                                            intents:[{intent,built,form?,landed,
+//                                                      rejected,completions,
+//                                                      retryRan,failure?}],
 //                                            message}
 //                                           (Arc 81 (2026-08-12): the CLEAN-ROOM
 //                                            LIGHTING pass -- arc 79's build_element
-//                                            pattern applied to lighting.  ONE fresh
-//                                            minimal completion through the session's
+//                                            pattern applied to lighting.  ARC 83
+//                                            SLICE 1 (2026-08-12) made it a
+//                                            HARNESS-DRIVEN LOOP behind the same verb
+//                                            and the same params: ONE planning
+//                                            completion enumerating at most 6 lighting
+//                                            intents, then ONE completion per intent
+//                                            authoring EXACTLY ONE light source, so a
+//                                            four-chunk area light has a whole
+//                                            response to itself instead of sharing one
+//                                            with six other lights (82 §10.4, 83 §6.1).
+//                                            A failed intent does not abort the loop.
+//                                            The model still makes ONE call and reads
+//                                            ONE result.  Each completion is fresh and
+//                                            minimal through the session's
 //                                            own provider, given the arc-80 scene
 //                                            inventory, the camera, the world bounds,
 //                                            the session's imagined subject if it has
-//                                            one, the lights that already exist, and
+//                                            one, the lights that already exist, the
+//                                            lights earlier intents of this same loop
+//                                            placed, and
 //                                            the light palette this pass can author --
 //                                            area-via-emissive-material FIRST and
 //                                            carrying the ONLY worked example, then
@@ -947,7 +968,8 @@
 //                                            physical light -- IS the encoded policy
 //                                            (81 §8), not an omission.  Validated-inserted
 //                                            through the ordinary InsertChunks path
-//                                            with ONE repair retry; nothing is ever
+//                                            with ONE repair retry PER INTENT; nothing
+//                                            is ever
 //                                            dropped silently.  `contributions`
 //                                            reports what each light ACTUALLY does,
 //                                            measured by SOLOING it in a small render
