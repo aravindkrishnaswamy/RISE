@@ -1489,11 +1489,10 @@ namespace RISE
 			OpenPressureOperator3D& coarseOperator
 			)
 		{
-			if( fineShape.nx%2 || fineShape.ny%2 || fineShape.nz%2 ||
-				fineShape.nx < 4 || fineShape.ny < 4 || fineShape.nz < 4 ) return false;
-			coarseShape.nx = fineShape.nx/2;
-			coarseShape.ny = fineShape.ny/2;
-			coarseShape.nz = fineShape.nz/2;
+			if( fineShape.nx < 4 || fineShape.ny < 4 || fineShape.nz < 4 ) return false;
+			coarseShape.nx = (fineShape.nx+1)/2;
+			coarseShape.ny = (fineShape.ny+1)/2;
+			coarseShape.nz = (fineShape.nz+1)/2;
 			coarseShape.cellWidthM = 2.0*fineShape.cellWidthM;
 			coarseOperator.rowExtra.assign(coarseShape.CellCount(),
 				std::vector<std::pair<std::size_t,double> >());
@@ -1508,20 +1507,28 @@ namespace RISE
 					std::size_t first=0; first<firstCount; ++first ) for(
 					std::size_t normal=0; normal<normalCount; ++normal ) {
 					double sum = 0.0;
+					double sampleCount=0.0;
 					for( std::size_t b=0; b<2; ++b ) for( std::size_t a=0; a<2; ++a ) {
 						std::size_t x=0,y=0,z=0;
-						if( axis == 0 ) { x=2*normal; y=2*first+a; z=2*second+b; }
-						if( axis == 1 ) { x=2*first+a; y=2*normal; z=2*second+b; }
-						if( axis == 2 ) { x=2*first+a; y=2*second+b; z=2*normal; }
+						if( axis == 0 ) { x=std::min(2*normal,fineShape.nx);
+							y=2*first+a; z=2*second+b; }
+						if( axis == 1 ) { x=2*first+a;
+							y=std::min(2*normal,fineShape.ny); z=2*second+b; }
+						if( axis == 2 ) { x=2*first+a; y=2*second+b;
+							z=std::min(2*normal,fineShape.nz); }
+						if( x>(axis==0?fineShape.nx:fineShape.nx-1) ||
+							y>(axis==1?fineShape.ny:fineShape.ny-1) ||
+							z>(axis==2?fineShape.nz:fineShape.nz-1) ) continue;
 						sum += fineOperator.faceCoefficient.component[axis][
 							OpenMACFaceIndex3D(fineShape,axis,x,y,z)];
+						sampleCount+=1.0;
 					}
 					std::size_t x=0,y=0,z=0;
 					if( axis == 0 ) { x=normal; y=first; z=second; }
 					if( axis == 1 ) { x=first; y=normal; z=second; }
 					if( axis == 2 ) { x=first; y=second; z=normal; }
 					coarseOperator.faceCoefficient.component[axis][
-						OpenMACFaceIndex3D(coarseShape,axis,x,y,z)] = 0.25*sum;
+						OpenMACFaceIndex3D(coarseShape,axis,x,y,z)] = sum/sampleCount;
 				}
 			}
 			return true;
@@ -1537,11 +1544,14 @@ namespace RISE
 			coarse.assign(coarseShape.CellCount(),0.0);
 			for( std::size_t z=0; z<coarseShape.nz; ++z ) for( std::size_t y=0;
 				y<coarseShape.ny; ++y ) for( std::size_t x=0; x<coarseShape.nx; ++x ) {
-				double sum = 0.0;
+				double sum = 0.0, sampleCount=0.0;
 				for( std::size_t dz=0; dz<2; ++dz ) for( std::size_t dy=0; dy<2; ++dy )
-					for( std::size_t dx=0; dx<2; ++dx ) sum += fine[fineShape.Index(
-						2*x+dx,2*y+dy,2*z+dz)];
-				coarse[coarseShape.Index(x,y,z)] = 0.125*sum;
+					for( std::size_t dx=0; dx<2; ++dx ) if( 2*x+dx<fineShape.nx &&
+						2*y+dy<fineShape.ny && 2*z+dz<fineShape.nz ) {
+						sum += fine[fineShape.Index(2*x+dx,2*y+dy,2*z+dz)];
+						sampleCount+=1.0;
+					}
+				coarse[coarseShape.Index(x,y,z)] = sum/sampleCount;
 			}
 		}
 
@@ -1594,6 +1604,71 @@ namespace RISE
 				coarseCorrection);
 			ProlongOpenCorrection3D(shape,coarseShape,coarseCorrection,solution);
 			SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,4,solution);
+		}
+
+		inline double OpenVectorDot3D(
+			const std::vector<double>& first,
+			const std::vector<double>& second
+			)
+		{
+			double result=0.0;
+			for( std::size_t i=0; i<first.size(); ++i ) result+=first[i]*second[i];
+			return result;
+		}
+
+		inline bool SolveOpenPressureMultigrid3D(
+			const PeriodicMACShape& shape,
+			const OpenPressureOperator3D& pressureOperator,
+			const std::vector<double>& rightHandSide,
+			const double tolerance,
+			std::vector<double>& solution,
+			std::vector<double>& residualHistory
+			)
+		{
+			const std::size_t count=shape.CellCount();
+			solution.assign(count,0.0);
+			std::vector<double> applied,r=rightHandSide,rHat=r,p(count,0.0),v(count,0.0),
+				s(count,0.0),t(count,0.0),pHat,sHat;
+			double rhoPrevious=1.0,alpha=1.0,omega=1.0;
+			for( std::size_t iteration=0; iteration<256; ++iteration ) {
+				double maximum=0.0;
+				for( const double value : r ) maximum=std::max(maximum,std::fabs(value));
+				residualHistory.push_back(maximum);
+				if( maximum<=tolerance ) return true;
+				const double rho=OpenVectorDot3D(rHat,r);
+				if( !std::isfinite(rho) || rho==0.0 ) return false;
+				const double beta=(rho/rhoPrevious)*(alpha/omega);
+				if( !std::isfinite(beta) ) return false;
+				for( std::size_t i=0; i<count; ++i ) p[i]=r[i]+beta*(p[i]-omega*v[i]);
+				pHat.assign(count,0.0);
+				OpenPressureMultigridVCycle3D(shape,pressureOperator,p,pHat);
+				ApplyOpenPressureOperator3D(shape,pressureOperator,pHat,v);
+				const double denominator=OpenVectorDot3D(rHat,v);
+				if( !std::isfinite(denominator) || denominator==0.0 ) return false;
+				alpha=rho/denominator;
+				for( std::size_t i=0; i<count; ++i ) s[i]=r[i]-alpha*v[i];
+				double sMaximum=0.0;
+				for( const double value : s ) sMaximum=std::max(sMaximum,std::fabs(value));
+				if( sMaximum<=tolerance ) {
+					for( std::size_t i=0; i<count; ++i ) solution[i]+=alpha*pHat[i];
+					residualHistory.push_back(sMaximum);
+					return true;
+				}
+				sHat.assign(count,0.0);
+				OpenPressureMultigridVCycle3D(shape,pressureOperator,s,sHat);
+				ApplyOpenPressureOperator3D(shape,pressureOperator,sHat,t);
+				const double tSquared=OpenVectorDot3D(t,t);
+				if( !std::isfinite(tSquared) || tSquared==0.0 ) return false;
+				omega=OpenVectorDot3D(t,s)/tSquared;
+				if( !std::isfinite(omega) || omega==0.0 ) return false;
+				for( std::size_t i=0; i<count; ++i ) {
+					solution[i]+=alpha*pHat[i]+omega*sHat[i];
+					r[i]=s[i]-omega*t[i];
+					if( !std::isfinite(solution[i]) || !std::isfinite(r[i]) ) return false;
+				}
+				rhoPrevious=rho;
+			}
+			return false;
 		}
 
 		inline bool ValidateOpenBoundaryConfig3D(
@@ -1800,6 +1875,8 @@ namespace RISE
 				!std::isfinite(shape.cellWidthM) || shape.cellWidthM <= 0.0 ||
 				!std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ||
 				!std::isfinite(absoluteTolerancePerS) || absoluteTolerancePerS <= 0.0 ||
+				!std::isfinite(1.0/shape.cellWidthM) ||
+				!std::isfinite(1.0/(shape.cellWidthM*shape.cellWidthM)) ||
 				!ValidateOpenBoundaryConfig3D(shape,boundary,error) ) {
 				return Fail(error,"fire solver 3-D pressure-open projection input is malformed");
 			}
@@ -1905,6 +1982,8 @@ namespace RISE
 							deltaTimeS*inverseDensity*(pressure[shape.Index(x,y,z)]-
 							pressure[shape.Index(x-1,y,z)])/shape.cellWidthM;
 						pressureOperator.faceCoefficient.component[0][face]=inverseDensity;
+						if( !std::isfinite(result.velocityMPerS.component[0][face]) ) return Fail(
+							error,"fire solver 3-D pressure-open x velocity overflowed");
 					}
 					for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=1;
 						y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
@@ -1915,6 +1994,8 @@ namespace RISE
 							deltaTimeS*inverseDensity*(pressure[shape.Index(x,y,z)]-
 							pressure[shape.Index(x,y-1,z)])/shape.cellWidthM;
 						pressureOperator.faceCoefficient.component[1][face]=inverseDensity;
+						if( !std::isfinite(result.velocityMPerS.component[1][face]) ) return Fail(
+							error,"fire solver 3-D pressure-open y velocity overflowed");
 					}
 					for( std::size_t z=1; z<shape.nz; ++z ) for( std::size_t y=0;
 						y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
@@ -1925,6 +2006,8 @@ namespace RISE
 							deltaTimeS*inverseDensity*(pressure[shape.Index(x,y,z)]-
 							pressure[shape.Index(x,y,z-1)])/shape.cellWidthM;
 						pressureOperator.faceCoefficient.component[2][face]=inverseDensity;
+						if( !std::isfinite(result.velocityMPerS.component[2][face]) ) return Fail(
+							error,"fire solver 3-D pressure-open z velocity overflowed");
 					}
 
 					double maximumHeadResidual = 0.0;
@@ -1964,6 +2047,8 @@ namespace RISE
 							const double outwardUnprojected=sign*
 								unprojectedMomentumKGPerM2S.component[axis][face]/density;
 							const double k=2.0*deltaTimeS/(density*shape.cellWidthM);
+							if( !std::isfinite(k) ) return Fail(error,
+								"fire solver 3-D pressure-open boundary scale overflowed");
 							double facePressure=0.0,outwardVelocity=outwardUnprojected+k*pressure[cell];
 							double tangentialSquared=0.0;
 							std::array<double,3> faceVelocity = {{0.0,0.0,0.0}};
@@ -2021,6 +2106,8 @@ namespace RISE
 						const std::size_t cell=shape.Index(x,y,z);
 						nonlinearResidual[cell]=OpenMACDivergence3D(shape,
 							result.velocityMPerS,x,y,z)-divergenceTargetPerS[cell];
+						if( !std::isfinite(nonlinearResidual[cell]) ) return Fail(error,
+							"fire solver 3-D pressure-open divergence overflowed");
 						maximumDivergence=std::max(maximumDivergence,
 							std::fabs(nonlinearResidual[cell]));
 						rightHandSide[cell]=-nonlinearResidual[cell]/deltaTimeS;
@@ -2047,20 +2134,12 @@ namespace RISE
 							continue;
 						}
 					}
-					std::vector<double> correction(cellCount,0.0),applied;
-					double linearResidual=std::numeric_limits<double>::infinity();
-					for( std::size_t cycle=0; cycle<128 && linearResidual>
-						absoluteTolerancePerS/deltaTimeS; ++cycle ) {
-						OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,correction);
-						ApplyOpenPressureOperator3D(shape,pressureOperator,correction,applied);
-						linearResidual=0.0;
-						for( std::size_t cell=0; cell<cellCount; ++cell ) linearResidual=
-							std::max(linearResidual,std::fabs(rightHandSide[cell]-applied[cell]));
-						result.multigridResidualHistoryPerS.push_back(deltaTimeS*linearResidual);
-					}
-					if( !std::isfinite(linearResidual) || linearResidual>
-						absoluteTolerancePerS/deltaTimeS ) return Fail(error,
+					std::vector<double> correction,linearHistory;
+					if( !SolveOpenPressureMultigrid3D(shape,pressureOperator,rightHandSide,
+						absoluteTolerancePerS/deltaTimeS,correction,linearHistory) ) return Fail(error,
 						"fire solver 3-D open multigrid did not converge");
+					for( const double value : linearHistory ) result.multigridResidualHistoryPerS.
+						push_back(deltaTimeS*value);
 					for( std::size_t cell=0; cell<cellCount; ++cell ) {
 						if( !std::isfinite(correction[cell]) ) return Fail(error,
 							"fire solver 3-D open Newton correction overflowed");
@@ -2105,6 +2184,8 @@ namespace RISE
 						result.momentumKGPerM2S.component[axis][face]=
 							result.faceDensityKGPerM3.component[axis][face]*
 							result.velocityMPerS.component[axis][face];
+						if( !std::isfinite(result.momentumKGPerM2S.component[axis][face]) ) return Fail(
+							error,"fire solver 3-D pressure-open momentum overflowed");
 					}
 					PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,result);
 					return true;
@@ -2333,19 +2414,12 @@ namespace RISE
 					rightHandSide[cell]=-residual[cell]/deltaTimeS;
 				}
 				if(maximum<=absoluteTolerancePerS){result.maximumDivergenceResidualPerS=maximum;break;}
-				std::vector<double> correction(cellCount,0.0),applied;
-				double linearResidual=std::numeric_limits<double>::infinity();
-				for( std::size_t cycle=0; cycle<128 && linearResidual>
-					absoluteTolerancePerS/deltaTimeS; ++cycle ) {
-					OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,correction);
-					ApplyOpenPressureOperator3D(shape,pressureOperator,correction,applied);
-					linearResidual=0.0;
-					for( std::size_t cell=0; cell<cellCount; ++cell ) linearResidual=
-						std::max(linearResidual,std::fabs(rightHandSide[cell]-applied[cell]));
-					result.multigridResidualHistoryPerS.push_back(deltaTimeS*linearResidual);
-				}
-				if(!std::isfinite(linearResidual) || linearResidual>absoluteTolerancePerS/deltaTimeS)
-					return Fail(error,"fire solver final 3-D open multigrid did not converge");
+				std::vector<double> correction,linearHistory;
+				if( !SolveOpenPressureMultigrid3D(shape,pressureOperator,rightHandSide,
+					absoluteTolerancePerS/deltaTimeS,correction,linearHistory) ) return Fail(error,
+					"fire solver final 3-D open multigrid did not converge");
+				for( const double value : linearHistory ) result.multigridResidualHistoryPerS.
+					push_back(deltaTimeS*value);
 				for( std::size_t cell=0; cell<cellCount; ++cell ) pressure[cell]+=correction[cell];
 				if( !evaluate() ) return Fail(error,"fire solver final 3-D velocity overflowed");
 				if( outer==3 ) return Fail(error,
@@ -2469,6 +2543,16 @@ namespace RISE
 				conductivityWPerMK.size()!=count || !std::isfinite(deltaTimeS) ||
 				deltaTimeS<=0.0 ) return Fail(error,
 				"fire solver 3-D open boundary-stage arrays are malformed");
+			for( std::size_t cell=0; cell<count; ++cell ) {
+				MethaneCellState physical=FromConservativeVector(cellState[cell]);
+				physical.temperatureK=temperatureK[cell];
+				if( !ValidateCellState(physical,error) ||
+					!std::isfinite(rhoDiffusivityKGPerMS[cell]) ||
+					rhoDiffusivityKGPerMS[cell]<0.0 ||
+					!std::isfinite(conductivityWPerMK[cell]) || conductivityWPerMK[cell]<0.0 ) {
+					return Fail(error,"fire solver 3-D open boundary-stage cell is invalid");
+				}
+			}
 			OpenMACField3D unprojected;
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				const std::size_t faceCount=OpenMACFaceCount3D(shape,axis);
