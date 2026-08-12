@@ -656,6 +656,13 @@ int main()
 	Check(!ProjectPressureOpenMACVelocity3D(overflowingOpenShape,{},OpenMACField3D(),{},
 		openBoundary3D,0.01,1.0e-8,rejectedOpenProjection,&error),
 		"V1 pressure-open projection rejects overflowing grid products before allocation");
+	OpenBoundaryConfig3D invalidKindBoundary=openBoundary3D;
+	invalidKindBoundary.kind[0]=99u;
+	Check(!ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		invalidKindBoundary,0.01,1.0e-8,rejectedOpenProjection,&error),
+		"V1 pressure-open projection rejects an unknown boundary discriminant before layout");
 	PeriodicMACShape subnormalWidthShape=openShape3D;
 	subnormalWidthShape.nx=2;subnormalWidthShape.ny=2;subnormalWidthShape.nz=2;
 	subnormalWidthShape.cellWidthM=1.0e-320;

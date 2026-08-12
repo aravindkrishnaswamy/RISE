@@ -1115,7 +1115,7 @@ namespace RISE
 
 		struct OpenBoundaryConfig3D
 		{
-			std::array<OpenBoundaryKind3D,6> kind;
+			std::array<unsigned int,6> kind;
 			std::array<std::vector<bool>,6> priorInflow;
 			std::vector<bool> bottomFuelMask;
 			ConservativeVector ambientState;
@@ -1167,7 +1167,7 @@ namespace RISE
 			const ConservativeVector& interior,
 			const double interiorTemperatureK,
 			const double outwardVelocityMPerS,
-			const OpenBoundaryKind3D kind,
+			const unsigned int kind,
 			const bool inflow,
 			const OpenBoundaryConfig3D& boundary,
 			const double ambientTemperatureK,
@@ -1182,7 +1182,8 @@ namespace RISE
 			)
 		{
 			result = OpenBoundaryFlux3D();
-			if( !std::isfinite(outwardVelocityMPerS) ||
+			if( (kind!=PressureOpenBoundary3D && kind!=AdiabaticWallBoundary3D &&
+				kind!=FuelInletBoundary3D) || !std::isfinite(outwardVelocityMPerS) ||
 				!std::isfinite(interiorTemperatureK) || interiorTemperatureK <= 0.0 ||
 				!std::isfinite(ambientTemperatureK) || ambientTemperatureK <= 0.0 ||
 				!std::isfinite(injectedTemperatureK) || injectedTemperatureK <= 0.0 ||
@@ -1381,7 +1382,7 @@ namespace RISE
 					const std::size_t cell=shape.Index(cx,cy,cz);
 					const std::size_t boundaryIndex=OpenBoundaryFaceLinearIndex3D(
 						shape,side,first,second);
-					OpenBoundaryKind3D kind=boundary.kind[side];
+					unsigned int kind=boundary.kind[side];
 					if(side==4 && !boundary.bottomFuelMask.empty() &&
 						boundary.bottomFuelMask[boundaryIndex]) kind=FuelInletBoundary3D;
 					const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
@@ -1732,6 +1733,10 @@ namespace RISE
 				injectedGasMass!=boundary.injectedGasDensityKGPerM3 ) return Fail(error,
 				"fire solver 3-D open-boundary state has invalid mass");
 			for( unsigned int side=0; side<6; ++side ) {
+				if( boundary.kind[side]!=PressureOpenBoundary3D &&
+					boundary.kind[side]!=AdiabaticWallBoundary3D &&
+					boundary.kind[side]!=FuelInletBoundary3D ) return Fail(error,
+					"fire solver 3-D boundary kind is invalid");
 				const std::size_t expected = OpenBoundaryFaceCount3D(shape,side);
 				if( !boundary.priorInflow[side].empty() &&
 					boundary.priorInflow[side].size() != expected ) {
@@ -1851,7 +1856,7 @@ namespace RISE
 					if(axis==1){x=first;y=positive?shape.ny-1:0;z=second;}
 					if(axis==2){x=first;y=second;z=positive?shape.nz-1:0;}
 					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
-					OpenBoundaryKind3D kind=boundary.kind[side];
+					unsigned int kind=boundary.kind[side];
 					if( side==4 && !boundary.bottomFuelMask.empty() &&
 						boundary.bottomFuelMask[index] ) kind=FuelInletBoundary3D;
 					if( kind==PressureOpenBoundary3D ) for( unsigned int local=0; local<2;
@@ -2025,7 +2030,7 @@ namespace RISE
 						for( std::size_t second=0; second<secondCount; ++second ) for(
 							std::size_t first=0; first<firstCount; ++first ) {
 							const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
-							OpenBoundaryKind3D kind=boundary.kind[side];
+							unsigned int kind=boundary.kind[side];
 							if(side==4 && !boundary.bottomFuelMask.empty() &&
 								boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
 							if(kind==PressureOpenBoundary3D) continue;
@@ -2057,7 +2062,7 @@ namespace RISE
 							const std::size_t cell=shape.Index(cx,cy,cz);
 							const std::size_t boundaryIndex=OpenBoundaryFaceLinearIndex3D(
 								shape,side,first,second);
-							OpenBoundaryKind3D kind=boundary.kind[side];
+							unsigned int kind=boundary.kind[side];
 							if( side==4 && !boundary.bottomFuelMask.empty() &&
 								boundary.bottomFuelMask[boundaryIndex] ) kind=FuelInletBoundary3D;
 							const double sign=positive?1.0:-1.0;
@@ -2241,7 +2246,7 @@ namespace RISE
 				layout.boundaryUnknown[side].assign(count,
 					std::numeric_limits<std::size_t>::max());
 				for( std::size_t index=0; index<count; ++index ) {
-					OpenBoundaryKind3D kind=boundary.kind[side];
+					unsigned int kind=boundary.kind[side];
 					if(side==4 && !boundary.bottomFuelMask.empty() &&
 						boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
 					if(kind==PressureOpenBoundary3D) layout.boundaryUnknown[side][index]=
@@ -2427,7 +2432,7 @@ namespace RISE
 						std::size_t x=0,y=0,z=0;if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
 						if(axis==1){x=first;y=positive?shape.ny:0;z=second;}if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
 						const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
-						OpenBoundaryKind3D kind=boundary.kind[side];
+						unsigned int kind=boundary.kind[side];
 						if(side==4&&!boundary.bottomFuelMask.empty()&&
 							boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
 						const std::size_t f=
@@ -2650,7 +2655,7 @@ namespace RISE
 				for( std::size_t second=0; second<secondCount; ++second ) for(
 					std::size_t first=0; first<firstCount; ++first ) {
 					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
-					OpenBoundaryKind3D kind=boundary.kind[side];
+					unsigned int kind=boundary.kind[side];
 					if( side==4 && !boundary.bottomFuelMask.empty() &&
 						boundary.bottomFuelMask[index] ) kind=FuelInletBoundary3D;
 					if( kind!=PressureOpenBoundary3D ) continue;
@@ -2735,7 +2740,7 @@ namespace RISE
 						const std::size_t cz=axis==2?(positive?shape.nz-1:0):z;
 						const std::size_t cell=shape.Index(cx,cy,cz);
 						const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
-						OpenBoundaryKind3D kind=boundary.kind[side];
+						unsigned int kind=boundary.kind[side];
 						if(side==4 && !boundary.bottomFuelMask.empty() &&
 							boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
 						const double sign=positive?1.0:-1.0;
