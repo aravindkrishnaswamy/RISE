@@ -46,7 +46,9 @@ OBJTESTS = $(SRCTESTS:.cpp=.o)
 # should not be invoked by run_all_tests.sh.
 PATHTOOLS = ../../../tools/
 PATHTOOLDEST = $(PATHDEST)tools/
-SRCTOOLS = $(wildcard $(PATHTOOLS)*.cpp)
+# fire_gas_opacity_native.cpp is a quarantined shared-library backend with a
+# C ABI, not a standalone executable (and intentionally has no main()).
+SRCTOOLS = $(filter-out $(PATHTOOLS)fire_gas_opacity_native.cpp,$(wildcard $(PATHTOOLS)*.cpp))
 OBJTOOLS = $(SRCTOOLS:.cpp=.o)
 
 # Source trees owned by this makefile. Sweep these for stale object files during clean.
