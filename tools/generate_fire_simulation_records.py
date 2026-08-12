@@ -824,6 +824,10 @@ def float_matrix(matrix):
 
 def nullspace_certificate(name: str, row_order: list[str], state_order: list[str],
                           constraint):
+    # The solver contract defines exact A as the canonical binary64 entries
+    # interpreted as dyadic rationals, not as their source-decimal precursors.
+    constraint = [[Fraction.from_float(float(value)) for value in row]
+                  for row in constraint]
     reduced, pivot_columns = exact_rref(constraint)
     rank = len(pivot_columns)
     exact_basis, _ = exact_nullspace(constraint)
@@ -903,6 +907,11 @@ def methane_payload(snapshot: dict) -> dict:
                for name in METHANE_SPECIES]
     molecular_weights = {name: fraction(sources[name]["molecular_weight_kg_per_kmol"])
                          for name in METHANE_SPECIES}
+    for encoded_species, name in zip(species, METHANE_SPECIES):
+        encoded_species["molecular_weight_kg_per_kmol"]["exact_rational"] = rational(
+            molecular_weights[name])
+        encoded_species["formation_enthalpy_J_per_kmol_298p15K"]["exact_rational"] = rational(
+            fraction(sources[name]["formation_enthalpy_J_per_kmol_298p15K"]))
     atomic_weights = {
         "C": molecular_weights["C(gr)"],
         "O": molecular_weights["O2"] / 2,
@@ -1235,30 +1244,36 @@ def solver_fixture_payloads() -> list[tuple[str, dict]]:
         "record_class": "synthetic_verification_fixture",
         "applicability": "V-tier RED testing only; forbidden as a physical preset",
     }
+    near_rank_certificate = nullspace_certificate(
+        "conservative_reconstruction_v1", ["r0", "r1"], ["x0", "x1"],
+        [[Fraction(1), Fraction(0)], [Fraction(0), Fraction(0)]])
+    # Keep every other certificate field structurally production-shaped, but
+    # replace A with the true rank-two candidate.  The shared exact A=UV check
+    # must be the reason this fixture is rejected.
+    near_rank_certificate["constraint_matrix"] = rational_matrix([
+        [Fraction(1), Fraction(0)], [Fraction(0), delta],
+    ])
     near_rank = dict(common)
     near_rank.update({
         "record_name": "fire-sim-solver-fixture-near-rank-deficient-v1",
         "fixture_kind": "declared_rank_too_low",
-        "candidate_constraint_matrix": rational_matrix([
-            [Fraction(1), Fraction(0)], [Fraction(0), delta],
-        ]),
-        "candidate_declared_rank": 1,
-        "exact_rank": 2,
+        "candidate_certificate": near_rank_certificate,
         "expected_outcome": "reject_exact_rank_certificate",
     })
+    wrong_matrix = [[Fraction(1), Fraction(0), Fraction(0)]]
+    wrong_subspace_certificate = nullspace_certificate(
+        "nonadvective_flux_projection_v1", ["r0"],
+        ["x0", "x1", "x2"], wrong_matrix)
+    just_over_residual_envelope = math.nextafter(
+        128.0 * sys.float_info.epsilon, math.inf)
+    wrong_subspace_certificate["orthonormal_nullspace"] = float_matrix([
+        [just_over_residual_envelope, 0.0], [1.0, 0.0], [0.0, 1.0],
+    ])
     wrong_subspace = dict(common)
     wrong_subspace.update({
         "record_name": "fire-sim-solver-fixture-correct-rank-wrong-subspace-v1",
         "fixture_kind": "correct_rank_wrong_numerical_subspace",
-        "candidate_constraint_matrix": rational_matrix([
-            [Fraction(1), Fraction(0), -delta, Fraction(-1)],
-            [Fraction(0), Fraction(0), delta, Fraction(0)],
-            [Fraction(-1), Fraction(0), Fraction(0), Fraction(1)],
-        ]),
-        "candidate_declared_rank": 2,
-        "candidate_numerical_basis": [
-            [0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0],
-        ],
+        "candidate_certificate": wrong_subspace_certificate,
         "expected_outcome": "reject_projector_subspace_certificate",
     })
     return [

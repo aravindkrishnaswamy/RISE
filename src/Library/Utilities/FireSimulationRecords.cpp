@@ -214,6 +214,18 @@ namespace RISE
 				return result;
 			}
 
+			static ExactRational Divide( const ExactRational& numerator,
+				const ExactRational& divisor )
+			{
+				ExactRational result;
+				result.numerator = ExactSigned(ExactUnsigned::Multiply(
+					numerator.numerator.magnitude,divisor.denominator),
+					numerator.numerator.negative != divisor.numerator.negative);
+				result.denominator = ExactUnsigned::Multiply(
+					numerator.denominator,divisor.numerator.magnitude);
+				return result;
+			}
+
 			static bool Equal( const ExactRational& left, const ExactRational& right )
 			{
 				const ExactSigned lhs(ExactUnsigned::Multiply(
@@ -230,6 +242,65 @@ namespace RISE
 				return numerator.negative ? -value : value;
 			}
 		};
+
+		ExactUnsigned ExactUnsignedFromBinary( const std::uint64_t value )
+		{
+			ExactUnsigned result;
+			for( int bit=63; bit>=0; --bit ) {
+				result.MultiplyByTwo();
+				if( value&(std::uint64_t(1)<<bit) ) {
+					result = ExactUnsigned::Add(result,ExactUnsigned(1));
+				}
+			}
+			return result;
+		}
+
+		ExactRational ExactBinary64( const double value )
+		{
+			ExactRational result;
+			std::uint64_t bits = 0;
+			std::memcpy(&bits,&value,sizeof(bits));
+			const bool negative = (bits>>63) != 0;
+			const std::uint64_t exponentBits = (bits>>52)&0x7ffu;
+			const std::uint64_t fractionBits = bits&((std::uint64_t(1)<<52)-1);
+			if( exponentBits == 0 && fractionBits == 0 ) return result;
+			const std::uint64_t significand = exponentBits == 0 ? fractionBits :
+				(std::uint64_t(1)<<52)|fractionBits;
+			const int exponent = exponentBits == 0 ? -1074 :
+				static_cast<int>(exponentBits)-1023-52;
+			result.numerator = ExactSigned(ExactUnsignedFromBinary(significand),negative);
+			if( exponent >= 0 ) {
+				for( int shift=0; shift<exponent; ++shift ) result.numerator.magnitude.MultiplyByTwo();
+			} else {
+				for( int shift=0; shift<-exponent; ++shift ) result.denominator.MultiplyByTwo();
+			}
+			return result;
+		}
+
+		ExactRational ExactAbsolute( ExactRational value )
+		{
+			value.numerator.negative = false;
+			return value;
+		}
+
+		bool ExactNonnegativeLessOrEqual(
+			const ExactRational& left,
+			const ExactRational& right
+			)
+		{
+			if( left.numerator.negative || right.numerator.negative ) return false;
+			return ExactUnsigned::Compare(
+				ExactUnsigned::Multiply(left.numerator.magnitude,right.denominator),
+				ExactUnsigned::Multiply(right.numerator.magnitude,left.denominator)) <= 0;
+		}
+
+		ExactRational ExactMaximum(
+			const ExactRational& left,
+			const ExactRational& right
+			)
+		{
+			return ExactNonnegativeLessOrEqual(left,right) ? right : left;
+		}
 
 		bool Fail( std::string* error, const std::string& message )
 		{
@@ -674,53 +745,71 @@ namespace RISE
 				return Fail(error,"fire-simulation numerical nullspace envelope is malformed");
 			}
 
-			long double matrixNorm = 0.0L, residualNorm = 0.0L;
+			// §3.7 treats every canonical binary64 entry as its exact dyadic
+			// rational.  Accumulating the three acceptance expressions in that
+			// field is stronger than a directed-rounding implementation: each
+			// result is a zero-width interval containing the mathematical value,
+			// independent of the platform's long-double format.
+			ExactRational matrixNorm, residualNorm;
 			for( std::size_t row=0; row<constraint.rows; ++row ) {
-				long double rowNorm = 0.0L, residualRow = 0.0L;
+				ExactRational rowNorm, residualRow;
 				for( std::size_t column=0; column<constraint.columns; ++column ) {
-					rowNorm += std::fabs(constraint.At(row,column).ToLongDouble());
+					rowNorm = ExactRational::Add(rowNorm,
+						ExactAbsolute(constraint.At(row,column)));
 				}
 				for( std::size_t basisColumn=0; basisColumn<numericalColumns; ++basisColumn ) {
-					long double value = 0.0L;
+					ExactRational value;
 					for( std::size_t column=0; column<constraint.columns; ++column ) {
-						value += constraint.At(row,column).ToLongDouble()*
-							numerical[column*numericalColumns+basisColumn];
+						value = ExactRational::Add(value,ExactRational::Multiply(
+							constraint.At(row,column),ExactBinary64(
+								numerical[column*numericalColumns+basisColumn])));
 					}
-					residualRow += std::fabs(value);
+					residualRow = ExactRational::Add(residualRow,ExactAbsolute(value));
 				}
-				matrixNorm = std::max(matrixNorm,rowNorm);
-				residualNorm = std::max(residualNorm,residualRow);
+				matrixNorm = ExactMaximum(matrixNorm,rowNorm);
+				residualNorm = ExactMaximum(residualNorm,residualRow);
 			}
-			long double orthogonalNorm = 0.0L;
+			ExactRational orthogonalNorm;
 			for( std::size_t row=0; row<numericalColumns; ++row ) {
-				long double rowNorm = 0.0L;
+				ExactRational rowNorm;
 				for( std::size_t column=0; column<numericalColumns; ++column ) {
-					long double value = row == column ? -1.0L : 0.0L;
+					ExactRational value = ExactBinary64(row == column ? -1.0 : 0.0);
 					for( std::size_t inner=0; inner<numericalRows; ++inner ) {
-						value += static_cast<long double>(numerical[inner*numericalColumns+row])*
-							numerical[inner*numericalColumns+column];
+						value = ExactRational::Add(value,ExactRational::Multiply(
+							ExactBinary64(numerical[inner*numericalColumns+row]),
+							ExactBinary64(numerical[inner*numericalColumns+column])));
 					}
-					rowNorm += std::fabs(value);
+					rowNorm = ExactRational::Add(rowNorm,ExactAbsolute(value));
 				}
-				orthogonalNorm = std::max(orthogonalNorm,rowNorm);
+				orthogonalNorm = ExactMaximum(orthogonalNorm,rowNorm);
 			}
-			long double projectorNorm = 0.0L;
+			ExactRational projectorNorm;
 			for( std::size_t row=0; row<numericalRows; ++row ) {
-				long double rowNorm = 0.0L;
+				ExactRational rowNorm;
 				for( std::size_t column=0; column<numericalRows; ++column ) {
-					long double value = -projector.At(row,column).ToLongDouble();
+					ExactRational value = projector.At(row,column);
+					value.numerator.negative = !value.IsZero() && !value.numerator.negative;
 					for( std::size_t inner=0; inner<numericalColumns; ++inner ) {
-						value += static_cast<long double>(numerical[row*numericalColumns+inner])*
-							numerical[column*numericalColumns+inner];
+						value = ExactRational::Add(value,ExactRational::Multiply(
+							ExactBinary64(numerical[row*numericalColumns+inner]),
+							ExactBinary64(numerical[column*numericalColumns+inner])));
 					}
-					rowNorm += std::fabs(value);
+					rowNorm = ExactRational::Add(rowNorm,ExactAbsolute(value));
 				}
-				projectorNorm = std::max(projectorNorm,rowNorm);
+				projectorNorm = ExactMaximum(projectorNorm,rowNorm);
 			}
-			const long double epsilon = std::numeric_limits<double>::epsilon();
-			if( residualNorm > factorAN*epsilon*std::max(1.0L,matrixNorm) ||
-				orthogonalNorm > factorOrthogonal*epsilon ||
-				projectorNorm > factorProjector*epsilon ) {
+			const ExactRational one = ExactBinary64(1.0);
+			const ExactRational epsilon = ExactBinary64(std::numeric_limits<double>::epsilon());
+			const ExactRational residualLimit = ExactRational::Multiply(
+				ExactRational::Multiply(ExactBinary64(factorAN),epsilon),
+				ExactMaximum(one,matrixNorm));
+			const ExactRational orthogonalLimit = ExactRational::Multiply(
+				ExactBinary64(factorOrthogonal),epsilon);
+			const ExactRational projectorLimit = ExactRational::Multiply(
+				ExactBinary64(factorProjector),epsilon);
+			if( !ExactNonnegativeLessOrEqual(residualNorm,residualLimit) ||
+				!ExactNonnegativeLessOrEqual(orthogonalNorm,orthogonalLimit) ||
+				!ExactNonnegativeLessOrEqual(projectorNorm,projectorLimit) ) {
 				return Fail(error,"fire-simulation numerical nullspace certificate exceeds its fp64 envelope");
 			}
 
@@ -1600,6 +1689,122 @@ namespace RISE
 		return true;
 	}
 
+	namespace
+	{
+		bool ReadMethaneThermochemistrySpecies(
+			const RISECBOR64::Value& encoded,
+			const std::string& expectedId,
+			const double commonMinimum,
+			const double commonMaximum,
+			const double referenceTemperature,
+			FireThermochemistrySpecies& species,
+			std::string* error
+			)
+		{
+			std::string phase, modelKind;
+			const RISECBOR64::Value* molecularWeightEnvelope = Required(
+				encoded,"molecular_weight_kg_per_kmol",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* formationEnthalpyEnvelope = Required(
+				encoded,"formation_enthalpy_J_per_kmol_298p15K",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* model = Required(
+				encoded,"cp_hs_model",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* segments = model ? Required(
+				*model,"segments",RISECBOR64::Value::Array,error) : 0;
+			double modelMinimum = 0.0, modelMaximum = 0.0, modelReference = 0.0;
+			if( !molecularWeightEnvelope || !formationEnthalpyEnvelope || !model || !segments ||
+				segments->GetArray().empty() || segments->GetArray().size() > 64 ||
+				!ReadText(encoded,"species_id",species.id,error) || species.id != expectedId ||
+				!ReadText(encoded,"phase",phase,error) ||
+				phase != (expectedId == "C(gr)" ? "aerosol_solid" : "gas") ||
+				!ReadEnvelope(encoded,"molecular_weight_kg_per_kmol",
+					species.molecularWeightKGPerKMol,error) ||
+				!ReadEnvelope(encoded,"formation_enthalpy_J_per_kmol_298p15K",
+					species.formationEnthalpyJPerKMol,error) ||
+				species.molecularWeightKGPerKMol <= 0.0 ||
+				!ReadText(*model,"kind",modelKind,error) ||
+				modelKind != "nasa9_cp_with_continuous_integrated_hs_v1" ||
+				!ReadDomain(*model,"temperature_domain_K",modelMinimum,modelMaximum,error) ||
+				!ReadFloat(*model,"reference_temperature_K",modelReference,error) ||
+				modelMinimum != commonMinimum || modelMaximum != commonMaximum ||
+				modelReference != referenceTemperature || !ValidateTableMetadata(*model,error) ) {
+				return Fail(error,"methane thermochemistry species metadata is invalid");
+			}
+			species.segments.clear();
+			for( const RISECBOR64::Value& encodedSegment : segments->GetArray() ) {
+				FireThermochemistrySegment segment = {};
+				std::vector<double> coefficients;
+				const RISECBOR64::Value* encodedCoefficients = Required(
+					encodedSegment,"coefficients",RISECBOR64::Value::Array,error);
+				if( !encodedCoefficients ||
+					!ReadFloat(encodedSegment,"temperature_min_K",segment.temperatureMinK,error) ||
+					!ReadFloat(encodedSegment,"temperature_max_K",segment.temperatureMaxK,error) ||
+					!ReadFloat(encodedSegment,"hs_offset_J_per_kg",
+						segment.sensibleEnthalpyOffsetJPerKG,error) ||
+					!ReadFloat(encodedSegment,"certified_cp_lower_J_per_kg_K",
+						segment.certifiedCpLowerJPerKGK,error) ||
+					!ReadFloatArray(*encodedCoefficients,coefficients,error) || coefficients.size() != 9 ||
+					segment.temperatureMinK >= segment.temperatureMaxK ||
+					segment.temperatureMinK < commonMinimum ||
+					segment.temperatureMaxK > commonMaximum ||
+					segment.certifiedCpLowerJPerKGK <= 0.0 ) {
+					return Fail(error,"methane thermochemistry segment is invalid");
+				}
+				for( std::size_t coefficient=0; coefficient<7; ++coefficient ) {
+					segment.coefficients[coefficient] = coefficients[coefficient];
+				}
+				const double verifiedLower = CertifiedCpLower(segment,
+					species.molecularWeightKGPerKMol);
+				const double tolerance = 128.0*std::numeric_limits<double>::epsilon()*
+					std::max(1.0,std::fabs(verifiedLower));
+				if( !std::isfinite(verifiedLower) ||
+					segment.certifiedCpLowerJPerKGK > verifiedLower+tolerance ) {
+					return Fail(error,"methane cp lower-bound certificate is false");
+				}
+				species.segments.push_back(segment);
+			}
+			if( species.segments.front().temperatureMinK != commonMinimum ||
+				species.segments.back().temperatureMaxK != commonMaximum ) {
+				return Fail(error,"methane thermochemistry species does not span its domain");
+			}
+			const double enthalpyScale = kUniversalGasConstantJPerKMolK/
+				species.molecularWeightKGPerKMol;
+			for( std::size_t index=0; index<species.segments.size(); ++index ) {
+				const FireThermochemistrySegment& segment = species.segments[index];
+				const double hMinimum = enthalpyScale*CpAntiderivativeOverR(
+					segment.coefficients,segment.temperatureMinK)+
+					segment.sensibleEnthalpyOffsetJPerKG;
+				const double hMaximum = enthalpyScale*CpAntiderivativeOverR(
+					segment.coefficients,segment.temperatureMaxK)+
+					segment.sensibleEnthalpyOffsetJPerKG;
+				if( !std::isfinite(hMinimum) || !std::isfinite(hMaximum) ) {
+					return Fail(error,"methane sensible enthalpy endpoint is non-finite");
+				}
+				if( index ) {
+					const FireThermochemistrySegment& left = species.segments[index-1];
+					if( left.temperatureMaxK != segment.temperatureMinK ) {
+						return Fail(error,"methane thermochemistry segment has a gap");
+					}
+					const double hLeft = enthalpyScale*CpAntiderivativeOverR(
+						left.coefficients,left.temperatureMaxK)+left.sensibleEnthalpyOffsetJPerKG;
+					const double hRight = enthalpyScale*CpAntiderivativeOverR(
+						segment.coefficients,segment.temperatureMinK)+
+						segment.sensibleEnthalpyOffsetJPerKG;
+					if( !std::isfinite(hLeft) || !std::isfinite(hRight) ||
+						std::fabs(hLeft-hRight) > 1.0e-8*std::max(1.0,std::fabs(hLeft)) ) {
+						return Fail(error,"methane sensible enthalpy is discontinuous");
+					}
+				}
+			}
+			const FireThermochemistrySegment* reference = FindSegment(species,referenceTemperature);
+			if( !reference ) return Fail(error,"methane reference segment is absent");
+			const double referenceH = enthalpyScale*CpAntiderivativeOverR(
+				reference->coefficients,referenceTemperature)+
+				reference->sensibleEnthalpyOffsetJPerKG;
+			return (std::isfinite(referenceH) && std::fabs(referenceH) <= 1.0e-8) ||
+				Fail(error,"methane h_s(T_ref) is not zero");
+		}
+	}
+
 	FireSimulationMethaneRecord::FireSimulationMethaneRecord() :
 		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0),
 		m_referenceTemperatureK(0.0), m_pressurePa(0.0),
@@ -1653,13 +1858,11 @@ namespace RISE
 			return Fail(error,"fire-simulation methane species payload is incomplete");
 		}
 		for( std::size_t index=0; index<expectedSpecies.size(); ++index ) {
-			std::string speciesId, phase;
-			if( !ReadText(encodedSpecies->GetArray()[index],"species_id",speciesId,error) ||
-				speciesId != expectedSpecies[index] ||
-				!ReadText(encodedSpecies->GetArray()[index],"phase",phase,error) ||
-				(phase != (speciesId == "C(gr)" ? "aerosol_solid" : "gas")) ) {
-				return Fail(error,"fire-simulation methane species order or phase is invalid");
-			}
+			FireThermochemistrySpecies species;
+			if( !ReadMethaneThermochemistrySpecies(encodedSpecies->GetArray()[index],
+				expectedSpecies[index],m_temperatureMinK,m_temperatureMaxK,
+				m_referenceTemperatureK,species,error) ) return false;
+			m_thermochemistrySpecies.push_back(species);
 		}
 		double carbonCount = 0.0, hydrogenCount = 0.0;
 		if( !formula->Find("C") || !formula->Find("H") ||
@@ -1686,6 +1889,50 @@ namespace RISE
 			if( !encoded || !ReadExactRational(*encoded,atomic[index],error) ||
 				atomic[index].numerator.negative || atomic[index].IsZero() ) {
 				return Fail(error,"fire-simulation methane atomic weight is invalid");
+			}
+		}
+		const unsigned int formulaCounts[7][4] = {
+			{1,4,0,0}, {0,0,2,0}, {0,0,0,2}, {1,0,2,0},
+			{0,2,1,0}, {1,0,1,0}, {1,0,0,0}
+		};
+		std::vector<ExactRational> exactWeights(expectedSpecies.size());
+		std::vector<ExactRational> exactFormationEnthalpies(expectedSpecies.size());
+		for( std::size_t speciesIndex=0; speciesIndex<expectedSpecies.size(); ++speciesIndex ) {
+			ExactRational formulaWeight;
+			for( std::size_t element=0; element<4; ++element ) {
+				ExactRational count;
+				count.numerator = ExactSigned(ExactUnsigned(formulaCounts[speciesIndex][element]));
+				formulaWeight = ExactRational::Add(formulaWeight,
+					ExactRational::Multiply(atomic[element],count));
+			}
+			const RISECBOR64::Value* weightEnvelope = encodedSpecies->GetArray()[speciesIndex].Find(
+				"molecular_weight_kg_per_kmol");
+			const RISECBOR64::Value* formationEnvelope = encodedSpecies->GetArray()[speciesIndex].Find(
+				"formation_enthalpy_J_per_kmol_298p15K");
+			if( !weightEnvelope || !weightEnvelope->Find("exact_rational") ||
+				!formationEnvelope || !formationEnvelope->Find("exact_rational") ||
+				!ReadExactRational(*weightEnvelope->Find("exact_rational"),
+					exactWeights[speciesIndex],error) ||
+				!ReadExactRational(*formationEnvelope->Find("exact_rational"),
+					exactFormationEnthalpies[speciesIndex],error) ||
+				exactWeights[speciesIndex].IsZero() ||
+				!ExactRational::Equal(formulaWeight,exactWeights[speciesIndex]) ||
+				m_thermochemistrySpecies[speciesIndex].molecularWeightKGPerKMol !=
+					static_cast<double>(exactWeights[speciesIndex].ToLongDouble()) ||
+				m_thermochemistrySpecies[speciesIndex].formationEnthalpyJPerKMol !=
+					static_cast<double>(exactFormationEnthalpies[speciesIndex].ToLongDouble()) ) {
+				return Fail(error,"methane molecular weight does not match its exact formula");
+			}
+			for( std::size_t element=0; element<4; ++element ) {
+				ExactRational count;
+				count.numerator = ExactSigned(ExactUnsigned(formulaCounts[speciesIndex][element]));
+				const ExactRational expectedFraction = ExactRational::Multiply(
+					atomic[element],count);
+				if( !ExactRational::Equal(expectedFraction,
+					ExactRational::Multiply(elementMatrix.At(element,speciesIndex),
+						exactWeights[speciesIndex])) ) {
+					return Fail(error,"methane element matrix does not derive from formulas and weights");
+				}
 			}
 		}
 		m_elementMassFractionMatrix.clear();
@@ -1753,6 +2000,8 @@ namespace RISE
 			*reaction,"stoichiometric_oxygen_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
 		const RISECBOR64::Value* reactionEnthalpyValue = reaction ? Required(
 			*reaction,"reaction_enthalpy_J_per_kmol",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* productCoefficients = reaction ? Required(
+			*reaction,"product_coefficients_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
 		const RISECBOR64::Value* effectiveOxygenValue = reaction ? Required(
 			*reaction,"effective_stoichiometric_oxygen_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
 		const RISECBOR64::Value* effectiveHeatValue = reaction ? Required(
@@ -1765,6 +2014,7 @@ namespace RISE
 			*heating,"provenance",RISECBOR64::Value::Map,error) : 0;
 		if( !heating || !reaction || !condensable || !exactHeatingValue || !oxygenValue ||
 			!reactionEnthalpyValue || !effectiveOxygenValue || !effectiveHeatValue ||
+			!productCoefficients || productCoefficients->GetMap().size() != 4 ||
 			!sootYieldValue || !condensableYieldValue || !heatingProvenance ||
 			!ReadFloat(*heating,"value",m_lowerHeatingValueJPerKG,error) ||
 			!ReadText(*heating,"derivation",derivation,error) ||
@@ -1786,12 +2036,54 @@ namespace RISE
 			m_lowerHeatingValueJPerKG != static_cast<double>(exactHeating.ToLongDouble()) ) {
 			return Fail(error,"fire-simulation methane reaction closure is malformed");
 		}
+		ExactRational two; two.numerator = ExactSigned(ExactUnsigned(2));
+		ExactRational expectedReactionEnthalpy = ExactRational::Add(
+			exactFormationEnthalpies[3],ExactRational::Multiply(two,exactFormationEnthalpies[4]));
+		ExactRational negativeFuelFormation = exactFormationEnthalpies[0];
+		negativeFuelFormation.numerator.negative = !negativeFuelFormation.IsZero() &&
+			!negativeFuelFormation.numerator.negative;
+		expectedReactionEnthalpy = ExactRational::Add(
+			expectedReactionEnthalpy,negativeFuelFormation);
+		ExactRational releasedHeat = expectedReactionEnthalpy;
+		releasedHeat.numerator.negative = !releasedHeat.IsZero() &&
+			!releasedHeat.numerator.negative;
+		const ExactRational expectedHeating = ExactRational::Divide(
+			releasedHeat,exactWeights[0]);
+		const ExactRational expectedOxygen = ExactRational::Divide(
+			ExactRational::Multiply(two,exactWeights[1]),exactWeights[0]);
+		const ExactRational expectedCO2 = ExactRational::Divide(exactWeights[3],exactWeights[0]);
+		const ExactRational expectedH2O = ExactRational::Divide(
+			ExactRational::Multiply(two,exactWeights[4]),exactWeights[0]);
+		ExactRational productCO2, productH2O, productCO, productCarbon;
+		if( !productCoefficients->Find("CO2") || !productCoefficients->Find("H2O") ||
+			!productCoefficients->Find("CO") || !productCoefficients->Find("C(gr)") ||
+			!ReadExactRational(*productCoefficients->Find("CO2"),productCO2,error) ||
+			!ReadExactRational(*productCoefficients->Find("H2O"),productH2O,error) ||
+			!ReadExactRational(*productCoefficients->Find("CO"),productCO,error) ||
+			!ReadExactRational(*productCoefficients->Find("C(gr)"),productCarbon,error) ||
+			!ExactRational::Equal(reactionEnthalpy,expectedReactionEnthalpy) ||
+			!ExactRational::Equal(exactHeating,expectedHeating) ||
+			!ExactRational::Equal(oxygen,expectedOxygen) ||
+			!ExactRational::Equal(productCO2,expectedCO2) ||
+			!ExactRational::Equal(productH2O,expectedH2O) ||
+			!productCO.IsZero() || !productCarbon.IsZero() ) {
+			return Fail(error,"methane LHV and products do not derive from its species record");
+		}
 		m_stoichiometricOxygenKGPerKGFuel = static_cast<double>(oxygen.ToLongDouble());
 		ExactRational reactionMass;
 		for( const ExactRational& value : reactionDelta ) reactionMass = ExactRational::Add(reactionMass,value);
 		ExactRational minusOne = one; minusOne.numerator.negative = true;
 		if( !reactionMass.IsZero() || !ExactRational::Equal(reactionDelta[0],minusOne) ) {
 			return Fail(error,"fire-simulation methane primary reaction mass balance is false");
+		}
+		const ExactRational expectedDelta[7] = {
+			minusOne, ExactRational::Multiply(minusOne,expectedOxygen), ExactRational(),
+			expectedCO2, expectedH2O, ExactRational(), ExactRational()
+		};
+		for( std::size_t index=0; index<7; ++index ) {
+			if( !ExactRational::Equal(reactionDelta[index],expectedDelta[index]) ) {
+				return Fail(error,"methane reaction delta does not match its derived products");
+			}
 		}
 		for( std::size_t row=0; row<4; ++row ) {
 			ExactRational residual;
@@ -1818,7 +2110,23 @@ namespace RISE
 			return Fail(error,"fire-simulation methane soot oxidation closure is malformed");
 		}
 		ExactRational sootMass = ExactRational::Add(one,sootOxygen);
-		if( !ExactRational::Equal(sootMass,sootCO2) ) {
+		const ExactRational expectedSootOxygen = ExactRational::Divide(
+			exactWeights[1],exactWeights[6]);
+		const ExactRational expectedSootCO2 = ExactRational::Divide(
+			exactWeights[3],exactWeights[6]);
+		ExactRational expectedSootReaction = ExactRational::Add(
+			exactFormationEnthalpies[3],ExactRational::Multiply(
+				minusOne,exactFormationEnthalpies[6]));
+		expectedSootReaction = ExactRational::Add(expectedSootReaction,
+			ExactRational::Multiply(minusOne,exactFormationEnthalpies[1]));
+		expectedSootReaction.numerator.negative = !expectedSootReaction.IsZero() &&
+			!expectedSootReaction.numerator.negative;
+		const ExactRational expectedSootHeat = ExactRational::Divide(
+			expectedSootReaction,exactWeights[6]);
+		if( !ExactRational::Equal(sootMass,sootCO2) ||
+			!ExactRational::Equal(sootOxygen,expectedSootOxygen) ||
+			!ExactRational::Equal(sootCO2,expectedSootCO2) ||
+			!ExactRational::Equal(sootHeat,expectedSootHeat) ) {
 			return Fail(error,"fire-simulation methane soot oxidation mass balance is false");
 		}
 		m_sootOxygenKGPerKGCarbon = static_cast<double>(sootOxygen.ToLongDouble());
@@ -1837,6 +2145,37 @@ namespace RISE
 				expectedState,m_nonadvectiveFluxProjection,error) ) {
 			return false;
 		}
+		if( m_reconstruction.declaredRank != 4 || m_reconstruction.nullity != 4 ||
+			m_nonadvectiveFluxProjection.declaredRank != 5 ||
+			m_nonadvectiveFluxProjection.nullity != 3 ) {
+			return Fail(error,"methane canonical binary64 constraint ranks are not the adopted r51 ranks");
+		}
+		std::vector<double> expectedA;
+		expectedA.reserve(4*8);
+		for( std::size_t row=0; row<4; ++row ) {
+			ExactRational elementDifference = ExactRational::Add(
+				injectedElements[row],ExactRational::Multiply(minusOne,ambientElements[row]));
+			elementDifference.numerator.negative = !elementDifference.IsZero() &&
+				!elementDifference.numerator.negative;
+			expectedA.push_back(static_cast<double>(elementDifference.ToLongDouble()));
+			for( std::size_t column=0; column<7; ++column ) {
+				const ExactRational difference = ExactRational::Add(elementMatrix.At(row,column),
+					ExactRational::Multiply(minusOne,ambientElements[row]));
+				expectedA.push_back(static_cast<double>(difference.ToLongDouble()));
+			}
+		}
+		if( m_reconstruction.constraintMatrix != expectedA ||
+			m_nonadvectiveFluxProjection.constraintMatrix.size() != expectedA.size()+8 ||
+			!std::equal(expectedA.begin(),expectedA.end(),
+				m_nonadvectiveFluxProjection.constraintMatrix.begin()) ) {
+			return Fail(error,"methane nullspace constraints do not derive from E and boundary states");
+		}
+		for( std::size_t column=0; column<8; ++column ) {
+			const double expected = column == 0 ? 0.0 : 1.0;
+			if( m_nonadvectiveFluxProjection.constraintMatrix[expectedA.size()+column] != expected ) {
+				return Fail(error,"methane flux constraint does not append the exact sum-J row");
+			}
+		}
 		return true;
 	}
 
@@ -1846,16 +2185,16 @@ namespace RISE
 		)
 	{
 		FireSimulationMethaneRecord candidate;
-		RISECBOR64::Value decoded;
 		const std::string identity = RISECBOR64::SHA256Hex(bytes);
+		if( identity != kFireSimMethanePhysicalV1SHA256 ) {
+			*this = FireSimulationMethaneRecord();
+			return Fail(error,"fire-simulation methane record is not the adopted physical preset");
+		}
+		RISECBOR64::Value decoded;
 		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) ||
 			!candidate.LoadSemanticRecord(decoded,error) ) {
 			*this = FireSimulationMethaneRecord();
 			return false;
-		}
-		if( identity != kFireSimMethanePhysicalV1SHA256 ) {
-			*this = FireSimulationMethaneRecord();
-			return Fail(error,"fire-simulation methane record is not the adopted physical preset");
 		}
 		candidate.m_recordBytes = bytes;
 		candidate.m_recordId = identity;
@@ -1873,6 +2212,100 @@ namespace RISE
 		return record;
 	}
 
+	const FireThermochemistrySpecies* FireSimulationMethaneRecord::FindSpecies(
+		const char* id ) const
+	{
+		if( !m_valid || !id ) return 0;
+		for( const FireThermochemistrySpecies& species : m_thermochemistrySpecies ) {
+			if( species.id == id ) return &species;
+		}
+		return 0;
+	}
+
+	bool FireSimulationMethaneRecord::CpJPerKGK(
+		const char* speciesId, const double temperatureK, double& result,
+		std::string* error ) const
+	{
+		const FireThermochemistrySpecies* species = FindSpecies(speciesId);
+		const FireThermochemistrySegment* segment = species ? FindSegment(*species,temperatureK) : 0;
+		if( !species ) return Fail(error,"unknown methane thermochemistry species");
+		if( !segment ) return Fail(error,"methane thermochemistry lookup is out of domain");
+		result = CpOverR(segment->coefficients,temperatureK)*
+			kUniversalGasConstantJPerKMolK/species->molecularWeightKGPerKMol;
+		return (std::isfinite(result) && result >= segment->certifiedCpLowerJPerKGK) ||
+			Fail(error,"methane cp evaluation violated its certificate");
+	}
+
+	bool FireSimulationMethaneRecord::SensibleEnthalpyJPerKG(
+		const char* speciesId, const double temperatureK, double& result,
+		std::string* error ) const
+	{
+		const FireThermochemistrySpecies* species = FindSpecies(speciesId);
+		const FireThermochemistrySegment* segment = species ? FindSegment(*species,temperatureK) : 0;
+		if( !species ) return Fail(error,"unknown methane thermochemistry species");
+		if( !segment ) return Fail(error,"methane thermochemistry lookup is out of domain");
+		result = kUniversalGasConstantJPerKMolK/species->molecularWeightKGPerKMol*
+			CpAntiderivativeOverR(segment->coefficients,temperatureK)+
+			segment->sensibleEnthalpyOffsetJPerKG;
+		return std::isfinite(result) || Fail(error,"methane h_s evaluation is non-finite");
+	}
+
+	bool FireSimulationMethaneRecord::MixtureSensibleEnergyJPerM3(
+		const std::vector<std::pair<std::string,double> >& massDensities,
+		const double temperatureK, double& result, std::string* error ) const
+	{
+		result = 0.0;
+		double totalMass = 0.0;
+		std::set<std::string> ids;
+		for( const auto& entry : massDensities ) {
+			if( !FindSpecies(entry.first.c_str()) || entry.second < 0.0 ||
+				!std::isfinite(entry.second) || !ids.insert(entry.first).second ) {
+				return Fail(error,"methane mixture mass densities are invalid");
+			}
+			if( entry.second == 0.0 ) continue;
+			double enthalpy = 0.0;
+			if( !SensibleEnthalpyJPerKG(entry.first.c_str(),temperatureK,enthalpy,error) ) return false;
+			result += entry.second*enthalpy;
+			totalMass += entry.second;
+			if( !std::isfinite(result) || !std::isfinite(totalMass) ) {
+				return Fail(error,"methane mixture accumulation overflowed");
+			}
+		}
+		return totalMass > 0.0 || Fail(error,"methane mixture is empty");
+	}
+
+	bool FireSimulationMethaneRecord::InvertMixtureTemperatureK(
+		const std::vector<std::pair<std::string,double> >& massDensities,
+		const double sensibleEnergy, double& result, std::string* error ) const
+	{
+		double lower = 0.0, upper = std::numeric_limits<double>::max(), positiveMass = 0.0;
+		std::set<std::string> ids;
+		for( const auto& entry : massDensities ) {
+			const FireThermochemistrySpecies* species = FindSpecies(entry.first.c_str());
+			if( !species || entry.second < 0.0 || !std::isfinite(entry.second) ||
+				!ids.insert(entry.first).second ) return Fail(error,"methane inversion composition is invalid");
+			if( entry.second == 0.0 ) continue;
+			positiveMass += entry.second;
+			lower = std::max(lower,species->segments.front().temperatureMinK);
+			upper = std::min(upper,species->segments.back().temperatureMaxK);
+		}
+		double lowEnergy = 0.0, highEnergy = 0.0;
+		if( !std::isfinite(sensibleEnergy) || !std::isfinite(positiveMass) || positiveMass <= 0.0 ||
+			lower >= upper || !MixtureSensibleEnergyJPerM3(massDensities,lower,lowEnergy,error) ||
+			!MixtureSensibleEnergyJPerM3(massDensities,upper,highEnergy,error) ) return false;
+		if( sensibleEnergy < lowEnergy || sensibleEnergy > highEnergy ) {
+			return Fail(error,"methane sensible energy is outside its inversion bracket");
+		}
+		for( unsigned int iteration=0; iteration<96; ++iteration ) {
+			const double midpoint = 0.5*(lower+upper);
+			double energy = 0.0;
+			if( !MixtureSensibleEnergyJPerM3(massDensities,midpoint,energy,error) ) return false;
+			if( energy < sensibleEnergy ) lower = midpoint; else upper = midpoint;
+		}
+		result = 0.5*(lower+upper);
+		return true;
+	}
+
 	const RISECBOR64::Bytes& FireSimulationSolverFixtureRecords::NearRankDeficientV1()
 	{
 		static const RISECBOR64::Bytes bytes(kFireSimSolverNearRankDeficientFixtureV1,
@@ -1887,6 +2320,50 @@ namespace RISE
 			kFireSimSolverWrongSubspaceFixtureV1+
 			kFireSimSolverWrongSubspaceFixtureV1Size);
 		return bytes;
+	}
+
+	bool FireSimulationSolverFixtureRecords::RejectsCandidateCertificate(
+		const RISECBOR64::Bytes& bytes,
+		std::string* error
+		)
+	{
+		const std::string identity = RISECBOR64::SHA256Hex(bytes);
+		const bool nearRank = identity == kFireSimSolverNearRankDeficientFixtureV1SHA256;
+		const bool wrongSubspace = identity == kFireSimSolverWrongSubspaceFixtureV1SHA256;
+		if( !nearRank && !wrongSubspace ) {
+			return Fail(error,"fire-simulation solver fixture is not an adopted RED input");
+		}
+		RISECBOR64::Value decoded;
+		std::string recordClass, fixtureKind, expectedOutcome;
+		const RISECBOR64::Value* candidate = 0;
+		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) ||
+			!ReadText(decoded,"record_class",recordClass,error) ||
+			recordClass != "synthetic_verification_fixture" ||
+			!ReadText(decoded,"fixture_kind",fixtureKind,error) ||
+			!ReadText(decoded,"expected_outcome",expectedOutcome,error) ||
+			!(candidate = Required(decoded,"candidate_certificate",
+				RISECBOR64::Value::Map,error)) ) {
+			return false;
+		}
+		FireCertifiedNullspace ignored;
+		std::string rejection;
+		const bool accepted = nearRank ? ValidateNullspaceCertificate(*candidate,
+			"conservative_reconstruction_v1",std::vector<std::string>{"r0","r1"},
+			std::vector<std::string>{"x0","x1"},ignored,&rejection) :
+			ValidateNullspaceCertificate(*candidate,"nonadvective_flux_projection_v1",
+				std::vector<std::string>{"r0"},
+				std::vector<std::string>{"x0","x1","x2"},ignored,&rejection);
+		const bool intended = nearRank ?
+			(fixtureKind == "declared_rank_too_low" &&
+			 expectedOutcome == "reject_exact_rank_certificate" &&
+			 rejection.find("exact nullspace certificate is false") != std::string::npos) :
+			(fixtureKind == "correct_rank_wrong_numerical_subspace" &&
+			 expectedOutcome == "reject_projector_subspace_certificate" &&
+			 rejection.find("exceeds its fp64 envelope") != std::string::npos);
+		if( accepted || !intended ) {
+			return Fail(error,"fire-simulation solver fixture did not reach its intended certificate rejection");
+		}
+		return true;
 	}
 
 	FireSimulationThermochemistryRecord::FireSimulationThermochemistryRecord() :
@@ -2394,9 +2871,10 @@ namespace RISE
 
 	namespace
 	{
+		template<typename Thermochemistry>
 		bool MoleFractions(
 			const std::vector<std::pair<std::string,double> >& massFractions,
-			const FireSimulationThermochemistryRecord& thermochemistry,
+			const Thermochemistry& thermochemistry,
 			std::vector<std::string>& ids,
 			std::vector<double>& molecularWeights,
 			std::vector<double>& moleFractions,
@@ -2464,9 +2942,67 @@ namespace RISE
 		return (result > 0.0 && std::isfinite(result)) || Fail(error,"fire-simulation Wilke mixture viscosity is invalid");
 	}
 
+	bool FireSimulationTransportRecord::MixtureViscosityPaS(
+		const std::vector<std::pair<std::string,double> >& massFractions,
+		const FireSimulationMethaneRecord& thermochemistry,
+		const double temperatureK,
+		double& result,
+		std::string* error
+		) const
+	{
+		std::vector<std::string> ids;
+		std::vector<double> weights, x, values;
+		if( !MoleFractions(massFractions,thermochemistry,ids,weights,x,error) ) return false;
+		for( const std::string& id : ids ) {
+			double value = 0.0;
+			if( !ViscosityPaS(id.c_str(),temperatureK,value,error) ) return false;
+			values.push_back(value);
+		}
+		result = 0.0;
+		for( std::size_t i=0; i<x.size(); ++i ) {
+			double denominator = 0.0;
+			for( std::size_t j=0; j<x.size(); ++j ) {
+				denominator += x[j]*WilkePhi(values[i],values[j],weights[i],weights[j]);
+			}
+			result += x[i]*values[i]/denominator;
+		}
+		return (result > 0.0 && std::isfinite(result)) ||
+			Fail(error,"fire-simulation Wilke mixture viscosity is invalid");
+	}
+
 	bool FireSimulationTransportRecord::MixtureConductivityWPerMK(
 		const std::vector<std::pair<std::string,double> >& massFractions,
 		const FireSimulationThermochemistryRecord& thermochemistry,
+		const double temperatureK,
+		double& result,
+		std::string* error
+		) const
+	{
+		std::vector<std::string> ids;
+		std::vector<double> weights, x, viscosity, conductivity;
+		if( !MoleFractions(massFractions,thermochemistry,ids,weights,x,error) ) return false;
+		for( const std::string& id : ids ) {
+			double mu = 0.0, k = 0.0;
+			if( !ViscosityPaS(id.c_str(),temperatureK,mu,error) ||
+				!ConductivityWPerMK(id.c_str(),temperatureK,k,error) ) return false;
+			viscosity.push_back(mu);
+			conductivity.push_back(k);
+		}
+		result = 0.0;
+		for( std::size_t i=0; i<x.size(); ++i ) {
+			double denominator = 0.0;
+			for( std::size_t j=0; j<x.size(); ++j ) {
+				denominator += x[j]*WilkePhi(viscosity[i],viscosity[j],weights[i],weights[j]);
+			}
+			result += x[i]*conductivity[i]/denominator;
+		}
+		return (result > 0.0 && std::isfinite(result)) ||
+			Fail(error,"fire-simulation WMS mixture conductivity is invalid");
+	}
+
+	bool FireSimulationTransportRecord::MixtureConductivityWPerMK(
+		const std::vector<std::pair<std::string,double> >& massFractions,
+		const FireSimulationMethaneRecord& thermochemistry,
 		const double temperatureK,
 		double& result,
 		std::string* error

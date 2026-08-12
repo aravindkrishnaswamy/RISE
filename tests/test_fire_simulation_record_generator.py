@@ -60,8 +60,8 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
 
     def test_real_A_and_C_have_exact_certified_ranks(self) -> None:
         for key, expected_rank in (
-                ("conservative_reconstruction_v1", 3),
-                ("nonadvective_flux_projection_v1", 4)):
+                ("conservative_reconstruction_v1", 4),
+                ("nonadvective_flux_projection_v1", 5)):
             certificate = self.record[key]
             matrix = decoded_matrix(certificate["constraint_matrix"])
             basis = decoded_matrix(certificate["exact_nullspace"]["basis"])
@@ -94,18 +94,27 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
             self.assertIn("V-tier RED testing only", payload["applicability"])
             self.assertTrue(payload["expected_outcome"].startswith("reject_"))
         near_rank = fixtures[0][1]
-        matrix = decoded_matrix(near_rank["candidate_constraint_matrix"])
-        self.assertEqual(1, near_rank["candidate_declared_rank"])
+        near_certificate = near_rank["candidate_certificate"]
+        matrix = decoded_matrix(near_certificate["constraint_matrix"])
+        self.assertEqual(1, near_certificate["declared_rank"])
         self.assertNotEqual(Fraction(0), records.matrix_determinant(matrix))
-        self.assertEqual(2, near_rank["exact_rank"])
+        factor = near_certificate["rank_factorization"]
+        self.assertNotEqual(matrix, records.matrix_multiply(
+            decoded_matrix(factor["left"]), decoded_matrix(factor["right"])))
         wrong = fixtures[1][1]
-        wrong_matrix = decoded_matrix(wrong["candidate_constraint_matrix"])
-        numerical_basis = wrong["candidate_numerical_basis"]
+        wrong_certificate = wrong["candidate_certificate"]
+        wrong_matrix = decoded_matrix(wrong_certificate["constraint_matrix"])
+        numerical_basis = wrong_certificate["orthonormal_nullspace"]["entries"]
         product = [[sum(float(wrong_matrix[row][column]) *
                         numerical_basis[column][basis]
-                        for column in range(4))
-                    for basis in range(2)] for row in range(3)]
+                        for column in range(len(wrong_matrix[0])))
+                    for basis in range(len(numerical_basis[0]))]
+                   for row in range(len(wrong_matrix))]
         self.assertTrue(any(value != 0.0 for row in product for value in row))
+        self.assertEqual(
+            records.math.nextafter(128.0 * records.sys.float_info.epsilon,
+                                   records.math.inf),
+            abs(product[0][0]))
 
 
 if __name__ == "__main__":

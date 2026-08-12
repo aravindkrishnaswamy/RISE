@@ -61,6 +61,13 @@ namespace RISE
 	{
 		static const RISECBOR64::Bytes& NearRankDeficientV1();
 		static const RISECBOR64::Bytes& CorrectRankWrongSubspaceV1();
+		//! Runs a pinned synthetic candidate through the same §3.7 validator
+		//! used by the physical record and succeeds only when that validator
+		//! rejects the deliberately false certificate for the intended reason.
+		static bool RejectsCandidateCertificate(
+			const RISECBOR64::Bytes& bytes,
+			std::string* error = 0
+			);
 	};
 
 	//! Complete r51 methane substrate.  Unlike OpenSubsetV1 this record owns
@@ -81,6 +88,7 @@ namespace RISE
 		double m_sootOxygenKGPerKGCarbon;
 		double m_sootCO2KGPerKGCarbon;
 		double m_sootHeatReleaseJPerKGCarbon;
+		std::vector<FireThermochemistrySpecies> m_thermochemistrySpecies;
 		std::vector<std::string> m_speciesOrder;
 		std::vector<std::string> m_elementOrder;
 		std::vector<double> m_elementMassFractionMatrix;
@@ -130,6 +138,17 @@ namespace RISE
 			return m_sootHeatReleaseJPerKGCarbon;
 		}
 		const std::vector<std::string>& SpeciesOrder() const { return m_speciesOrder; }
+		const FireThermochemistrySpecies* FindSpecies( const char* id ) const;
+		bool CpJPerKGK( const char* speciesId, double temperatureK,
+			double& result, std::string* error = 0 ) const;
+		bool SensibleEnthalpyJPerKG( const char* speciesId, double temperatureK,
+			double& result, std::string* error = 0 ) const;
+		bool MixtureSensibleEnergyJPerM3(
+			const std::vector<std::pair<std::string,double> >& massDensitiesKGPerM3,
+			double temperatureK, double& result, std::string* error = 0 ) const;
+		bool InvertMixtureTemperatureK(
+			const std::vector<std::pair<std::string,double> >& massDensitiesKGPerM3,
+			double sensibleEnergyJPerM3, double& result, std::string* error = 0 ) const;
 		const std::vector<std::string>& ElementOrder() const { return m_elementOrder; }
 		const std::vector<double>& ElementMassFractionMatrix() const
 		{
@@ -314,9 +333,23 @@ namespace RISE
 			double& result,
 			std::string* error = 0
 			) const;
+		bool MixtureViscosityPaS(
+			const std::vector<std::pair<std::string,double> >& massFractions,
+			const FireSimulationMethaneRecord& thermochemistry,
+			double temperatureK,
+			double& result,
+			std::string* error = 0
+			) const;
 		bool MixtureConductivityWPerMK(
 			const std::vector<std::pair<std::string,double> >& massFractions,
 			const FireSimulationThermochemistryRecord& thermochemistry,
+			double temperatureK,
+			double& result,
+			std::string* error = 0
+			) const;
+		bool MixtureConductivityWPerMK(
+			const std::vector<std::pair<std::string,double> >& massFractions,
+			const FireSimulationMethaneRecord& thermochemistry,
 			double temperatureK,
 			double& result,
 			std::string* error = 0

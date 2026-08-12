@@ -13,6 +13,7 @@ FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
 FIRE_SIM_GENERATOR="$REPO_ROOT/tools/generate_fire_simulation_records.py"
 FIRE_SIM_DATA="$REPO_ROOT/docs/data/source_pulls/fire_sim_open_sources_v1.json"
 FIRE_SIM_EMBEDDED="$LIB_DIR/Utilities/FireSimulationRecordData.inc"
+FIRE_SIM_GENERATOR_TEST="$REPO_ROOT/tests/test_fire_simulation_record_generator.py"
 FIRE_GAS_OPACITY_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_record.py"
 FIRE_GAS_OPACITY_MANIFEST="$REPO_ROOT/tests/fixtures/fire_gas_opacity/synthetic_manifest.json"
 FIRE_GAS_OPACITY_TABLE="$REPO_ROOT/docs/data/fire_gas_opacity_synthetic_v1.json"
@@ -104,6 +105,9 @@ echo "pass"
 printf 'Checking embedded fire-simulation records ... '
 "$python_bin" "$FIRE_SIM_GENERATOR" --check \
 	"$FIRE_SIM_DATA" "$FIRE_SIM_EMBEDDED"
+echo "pass"
+printf 'Testing physical methane record arithmetic ... '
+"$python_bin" "$FIRE_SIM_GENERATOR_TEST"
 echo "pass"
 printf 'Checking production HITEMP Planck-mean record ... '
 "$python_bin" "$FIRE_GAS_PLANCK_GENERATOR" --check \
