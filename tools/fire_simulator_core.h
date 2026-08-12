@@ -1142,6 +1142,8 @@ namespace RISE
 			std::vector<double> stepAverageDynamicPressurePa;
 			std::array<std::vector<bool>,6> inflow;
 			std::array<std::vector<double>,6> boundaryDynamicPressurePa;
+			std::array<std::array<std::vector<double>,2>,6>
+				boundaryTangentialVelocityMPerS;
 			double maximumDivergenceResidualPerS;
 			double maximumBoundaryHeadResidualPa;
 			std::vector<double> nonlinearResidualHistory;
@@ -1351,10 +1353,10 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
+			if( !ValidateOpenBoundaryConfig3D(shape,boundary,error) ) return false;
 			const std::size_t count=shape.CellCount();
 			if( cellState.size()!=count || temperatureK.size()!=count ||
-				rhoDiffusivityKGPerMS.size()!=count || conductivityWPerMK.size()!=count ||
-				!ValidateOpenBoundaryConfig3D(shape,boundary,error) ) return Fail(error,
+				rhoDiffusivityKGPerMS.size()!=count || conductivityWPerMK.size()!=count ) return Fail(error,
 				"fire solver 3-D boundary-flux field shape is invalid");
 			for( unsigned int side=0; side<6; ++side ) {
 				const unsigned int axis=side/2;
@@ -1734,6 +1736,52 @@ namespace RISE
 			}
 		}
 
+		inline double OpenBoundaryTangentialNewtonRowFactor3D(
+			const double ambientDensityKGPerM3,
+			const double normalFaceDensityKGPerM3,
+			const double tangentialVelocityMPerS,
+			const double cellWidthM,
+			const double normalImplicitDenominator
+			)
+		{
+			return 2.0*ambientDensityKGPerM3*tangentialVelocityMPerS/
+				(normalFaceDensityKGPerM3*cellWidthM*cellWidthM*
+				normalImplicitDenominator);
+		}
+
+		inline void PopulateOpenBoundaryTangentialVelocity3D(
+			const PeriodicMACShape& shape,
+			const OpenBoundaryConfig3D& boundary,
+			OpenMACProjection3DResult& result
+			)
+		{
+			for( unsigned int side=0; side<6; ++side ) {
+				const unsigned int axis=side/2;
+				const bool positive=side%2;
+				const unsigned int tangent[2]={(axis+1)%3,(axis+2)%3};
+				const std::size_t firstCount=side<2?shape.ny:shape.nx;
+				const std::size_t secondCount=side<4?shape.nz:shape.ny;
+				const std::size_t count=OpenBoundaryFaceCount3D(shape,side);
+				result.boundaryTangentialVelocityMPerS[side][0].assign(count,0.0);
+				result.boundaryTangentialVelocityMPerS[side][1].assign(count,0.0);
+				for( std::size_t second=0; second<secondCount; ++second ) for(
+					std::size_t first=0; first<firstCount; ++first ) {
+					std::size_t x=0,y=0,z=0;
+					if(axis==0){x=positive?shape.nx-1:0;y=first;z=second;}
+					if(axis==1){x=first;y=positive?shape.ny-1:0;z=second;}
+					if(axis==2){x=first;y=second;z=positive?shape.nz-1:0;}
+					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+					OpenBoundaryKind3D kind=boundary.kind[side];
+					if( side==4 && !boundary.bottomFuelMask.empty() &&
+						boundary.bottomFuelMask[index] ) kind=FuelInletBoundary3D;
+					if( kind==PressureOpenBoundary3D ) for( unsigned int local=0; local<2;
+						++local ) result.boundaryTangentialVelocityMPerS[side][local][index]=
+						OpenBoundaryTangentialCellVelocity3D(shape,result.velocityMPerS,
+							tangent[local],x,y,z);
+				}
+			}
+		}
+
 		inline bool ProjectPressureOpenMACVelocity3D(
 			const PeriodicMACShape& shape,
 			const std::vector<double>& gasDensityKGPerM3,
@@ -1950,8 +1998,9 @@ namespace RISE
 									std::vector<std::pair<std::size_t,double> > derivative;
 									AppendOpenBoundaryTangentialDerivative3D(shape,
 										result.faceDensityKGPerM3,tangent,cx,cy,cz,deltaTimeS,derivative);
-									const double factor=2.0*faceVelocity[tangent]/(
-										shape.cellWidthM*shape.cellWidthM*denominator);
+									const double factor=OpenBoundaryTangentialNewtonRowFactor3D(
+										boundary.ambientDensityKGPerM3,density,faceVelocity[tangent],
+										shape.cellWidthM,denominator);
 									for( const std::pair<std::size_t,double>& entry : derivative ) {
 										pressureOperator.rowExtra[cell].push_back(std::make_pair(
 											entry.first,factor*entry.second));
@@ -2057,10 +2106,398 @@ namespace RISE
 							result.faceDensityKGPerM3.component[axis][face]*
 							result.velocityMPerS.component[axis][face];
 					}
+					PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,result);
 					return true;
 				}
 			}
 			return Fail(error,"fire solver 3-D pressure-open active set did not converge");
+		}
+
+		inline bool ProjectPressureOpenMACVelocity3DFinal(
+			const PeriodicMACShape& shape,
+			const std::vector<double>& gasDensityKGPerM3,
+			const OpenMACField3D& unprojectedMomentumKGPerM2S,
+			const std::vector<double>& divergenceTargetPerS,
+			const OpenBoundaryConfig3D& boundary,
+			const OpenMACProjection3DResult& stage0,
+			const OpenMACProjection3DResult& stage1,
+			const double deltaTimeS,
+			const double absoluteTolerancePerS,
+			OpenMACProjection3DResult& result,
+			std::string* error = 0
+			)
+		{
+			if( !ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
+				gasDensityKGPerM3.size()!=shape.CellCount() ||
+				divergenceTargetPerS.size()!=shape.CellCount() ||
+				!std::isfinite(deltaTimeS) || deltaTimeS<=0.0 ||
+				!std::isfinite(absoluteTolerancePerS) || absoluteTolerancePerS<=0.0 ) {
+				return Fail(error,"fire solver final 3-D pressure-open input is malformed");
+			}
+			const std::size_t cellCount=shape.CellCount();
+			result=OpenMACProjection3DResult();
+			for( std::size_t cell=0; cell<cellCount; ++cell ) if(
+				!std::isfinite(gasDensityKGPerM3[cell]) || gasDensityKGPerM3[cell]<=0.0 ||
+				!std::isfinite(divergenceTargetPerS[cell]) ) return Fail(error,
+				"fire solver final 3-D pressure-open cell is invalid");
+			for( unsigned int axis=0; axis<3; ++axis ) {
+				const std::size_t count=OpenMACFaceCount3D(shape,axis);
+				if( unprojectedMomentumKGPerM2S.component[axis].size()!=count ||
+					stage0.velocityMPerS.component[axis].size()!=count ||
+					stage1.velocityMPerS.component[axis].size()!=count ) return Fail(error,
+					"fire solver final 3-D pressure-open face shape is invalid");
+				result.faceDensityKGPerM3.component[axis].assign(count,0.0);
+				result.velocityMPerS.component[axis].assign(count,0.0);
+				result.momentumKGPerM2S.component[axis].assign(count,0.0);
+				for( const double value : unprojectedMomentumKGPerM2S.component[axis] ) if(
+					!std::isfinite(value) ) return Fail(error,
+					"fire solver final 3-D pressure-open momentum is non-finite");
+				for( const double value : stage0.velocityMPerS.component[axis] ) if(
+					!std::isfinite(value) ) return Fail(error,
+					"fire solver final 3-D stage-0 velocity is non-finite");
+				for( const double value : stage1.velocityMPerS.component[axis] ) if(
+					!std::isfinite(value) ) return Fail(error,
+					"fire solver final 3-D stage-1 velocity is non-finite");
+			}
+			for( unsigned int side=0; side<6; ++side ) {
+				const std::size_t count=OpenBoundaryFaceCount3D(shape,side);
+				if( stage0.inflow[side].size()!=count || stage1.inflow[side].size()!=count ) {
+					return Fail(error,"fire solver final 3-D pressure-open class shape is invalid");
+				}
+				result.inflow[side].assign(count,false);
+				result.boundaryDynamicPressurePa[side].assign(count,0.0);
+			}
+
+			for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0;
+				y<shape.ny; ++y ) for( std::size_t x=0; x<=shape.nx; ++x ) {
+				const std::size_t face=OpenMACFaceIndex3D(shape,0,x,y,z);
+				const double first=x?gasDensityKGPerM3[shape.Index(x-1,y,z)]:
+					boundary.ambientDensityKGPerM3;
+				const double second=x<shape.nx?gasDensityKGPerM3[shape.Index(x,y,z)]:
+					boundary.ambientDensityKGPerM3;
+				result.faceDensityKGPerM3.component[0][face]=0.5*first+0.5*second;
+			}
+			for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0;
+				y<=shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+				const std::size_t face=OpenMACFaceIndex3D(shape,1,x,y,z);
+				const double first=y?gasDensityKGPerM3[shape.Index(x,y-1,z)]:
+					boundary.ambientDensityKGPerM3;
+				const double second=y<shape.ny?gasDensityKGPerM3[shape.Index(x,y,z)]:
+					boundary.ambientDensityKGPerM3;
+				result.faceDensityKGPerM3.component[1][face]=0.5*first+0.5*second;
+			}
+			for( std::size_t z=0; z<=shape.nz; ++z ) for( std::size_t y=0;
+				y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+				const std::size_t face=OpenMACFaceIndex3D(shape,2,x,y,z);
+				const bool fuel=z==0 && !boundary.bottomFuelMask.empty() &&
+					boundary.bottomFuelMask[y*shape.nx+x];
+				const double outside=fuel?boundary.injectedGasDensityKGPerM3:
+					boundary.ambientDensityKGPerM3;
+				const double first=z?gasDensityKGPerM3[shape.Index(x,y,z-1)]:outside;
+				const double second=z<shape.nz?gasDensityKGPerM3[shape.Index(x,y,z)]:outside;
+				result.faceDensityKGPerM3.component[2][face]=0.5*first+0.5*second;
+			}
+			for( unsigned int axis=0; axis<3; ++axis ) for( const double density :
+				result.faceDensityKGPerM3.component[axis] ) if( !std::isfinite(density) ||
+				density<=0.0 ) return Fail(error,
+				"fire solver final 3-D pressure-open face density overflowed");
+
+			for( unsigned int side=0; side<6; ++side ) {
+				const unsigned int axis=side/2;
+				const bool positive=side%2;
+				const std::size_t firstCount=side<2?shape.ny:shape.nx;
+				const std::size_t secondCount=side<4?shape.nz:shape.ny;
+				for( std::size_t second=0; second<secondCount; ++second ) for(
+					std::size_t first=0; first<firstCount; ++first ) {
+					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+					OpenBoundaryKind3D kind=boundary.kind[side];
+					if( side==4 && !boundary.bottomFuelMask.empty() &&
+						boundary.bottomFuelMask[index] ) kind=FuelInletBoundary3D;
+					if( kind!=PressureOpenBoundary3D ) continue;
+					std::size_t x=0,y=0,z=0,cx=0,cy=0,cz=0;
+					if(axis==0){x=positive?shape.nx:0;y=first;z=second;
+						cx=positive?shape.nx-1:0;cy=y;cz=z;}
+					if(axis==1){x=first;y=positive?shape.ny:0;z=second;
+						cx=x;cy=positive?shape.ny-1:0;cz=z;}
+					if(axis==2){x=first;y=second;z=positive?shape.nz:0;
+						cx=x;cy=y;cz=positive?shape.nz-1:0;}
+					const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
+					double speed0=stage0.velocityMPerS.component[axis][face]*
+						stage0.velocityMPerS.component[axis][face];
+					double speed1=stage1.velocityMPerS.component[axis][face]*
+						stage1.velocityMPerS.component[axis][face];
+					for( unsigned int tangent=0; tangent<3; ++tangent ) if(tangent!=axis) {
+						const double value0=OpenBoundaryTangentialCellVelocity3D(shape,
+							stage0.velocityMPerS,tangent,cx,cy,cz);
+						const double value1=OpenBoundaryTangentialCellVelocity3D(shape,
+							stage1.velocityMPerS,tangent,cx,cy,cz);
+						speed0+=value0*value0; speed1+=value1*value1;
+					}
+					if( !std::isfinite(speed0) || !std::isfinite(speed1) ) return Fail(error,
+						"fire solver final 3-D stage head overflowed");
+					result.boundaryDynamicPressurePa[side][index]=
+						-0.25*boundary.ambientDensityKGPerM3*((stage0.inflow[side][index]?
+						speed0:0.0)+(stage1.inflow[side][index]?speed1:0.0));
+					if( !std::isfinite(result.boundaryDynamicPressurePa[side][index]) ) return Fail(
+						error,"fire solver final 3-D integrated head overflowed");
+				}
+			}
+
+			OpenPressureOperator3D pressureOperator;
+			pressureOperator.rowExtra.assign(cellCount,
+				std::vector<std::pair<std::size_t,double> >());
+			for( unsigned int axis=0; axis<3; ++axis ) pressureOperator.faceCoefficient.
+				component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
+			std::vector<double> pressure(cellCount,0.0);
+			auto evaluate=[&]() {
+				for( unsigned int axis=0; axis<3; ++axis ) result.velocityMPerS.component[axis].
+					assign(OpenMACFaceCount3D(shape,axis),0.0);
+				for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0;
+					y<shape.ny; ++y ) for( std::size_t x=1; x<shape.nx; ++x ) {
+					const std::size_t face=OpenMACFaceIndex3D(shape,0,x,y,z);
+					const double inverse=1.0/result.faceDensityKGPerM3.component[0][face];
+					result.velocityMPerS.component[0][face]=unprojectedMomentumKGPerM2S.
+						component[0][face]*inverse-deltaTimeS*inverse*(pressure[
+						shape.Index(x,y,z)]-pressure[shape.Index(x-1,y,z)])/shape.cellWidthM;
+					pressureOperator.faceCoefficient.component[0][face]=inverse;
+				}
+				for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=1;
+					y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+					const std::size_t face=OpenMACFaceIndex3D(shape,1,x,y,z);
+					const double inverse=1.0/result.faceDensityKGPerM3.component[1][face];
+					result.velocityMPerS.component[1][face]=unprojectedMomentumKGPerM2S.
+						component[1][face]*inverse-deltaTimeS*inverse*(pressure[
+						shape.Index(x,y,z)]-pressure[shape.Index(x,y-1,z)])/shape.cellWidthM;
+					pressureOperator.faceCoefficient.component[1][face]=inverse;
+				}
+				for( std::size_t z=1; z<shape.nz; ++z ) for( std::size_t y=0;
+					y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+					const std::size_t face=OpenMACFaceIndex3D(shape,2,x,y,z);
+					const double inverse=1.0/result.faceDensityKGPerM3.component[2][face];
+					result.velocityMPerS.component[2][face]=unprojectedMomentumKGPerM2S.
+						component[2][face]*inverse-deltaTimeS*inverse*(pressure[
+						shape.Index(x,y,z)]-pressure[shape.Index(x,y,z-1)])/shape.cellWidthM;
+					pressureOperator.faceCoefficient.component[2][face]=inverse;
+				}
+				for( unsigned int side=0; side<6; ++side ) {
+					const unsigned int axis=side/2; const bool positive=side%2;
+					const std::size_t firstCount=side<2?shape.ny:shape.nx;
+					const std::size_t secondCount=side<4?shape.nz:shape.ny;
+					for( std::size_t second=0; second<secondCount; ++second ) for(
+						std::size_t first=0; first<firstCount; ++first ) {
+						std::size_t x=0,y=0,z=0;
+						if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+						if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+						if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+						const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
+						const std::size_t cx=axis==0?(positive?shape.nx-1:0):x;
+						const std::size_t cy=axis==1?(positive?shape.ny-1:0):y;
+						const std::size_t cz=axis==2?(positive?shape.nz-1:0):z;
+						const std::size_t cell=shape.Index(cx,cy,cz);
+						const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+						OpenBoundaryKind3D kind=boundary.kind[side];
+						if(side==4 && !boundary.bottomFuelMask.empty() &&
+							boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
+						const double sign=positive?1.0:-1.0;
+						if(kind==AdiabaticWallBoundary3D){result.velocityMPerS.component[axis][face]=0.0;
+							continue;}
+						if(kind==FuelInletBoundary3D){result.velocityMPerS.component[axis][face]=
+							sign<0.0?boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3:
+							-boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3;continue;}
+						const double density=result.faceDensityKGPerM3.component[axis][face];
+						const double outwardUnprojected=sign*unprojectedMomentumKGPerM2S.
+							component[axis][face]/density;
+						const double k=2.0*deltaTimeS/(density*shape.cellWidthM);
+						const double outward=outwardUnprojected+k*(pressure[cell]-
+							result.boundaryDynamicPressurePa[side][index]);
+						result.velocityMPerS.component[axis][face]=sign*outward;
+						pressureOperator.faceCoefficient.component[axis][face]=2.0/density;
+					}
+				}
+				for( unsigned int axis=0; axis<3; ++axis ) for( const double value :
+					result.velocityMPerS.component[axis] ) if( !std::isfinite(value) ) return false;
+				return true;
+			};
+			if( !evaluate() ) return Fail(error,"fire solver final 3-D velocity overflowed");
+			for( std::size_t outer=0; outer<4; ++outer ) {
+				std::vector<double> residual(cellCount,0.0),rightHandSide(cellCount,0.0);
+				double maximum=0.0;
+				for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0;
+					y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+					const std::size_t cell=shape.Index(x,y,z);
+					residual[cell]=OpenMACDivergence3D(shape,result.velocityMPerS,x,y,z)-
+						divergenceTargetPerS[cell];
+					if( !std::isfinite(residual[cell]) ) return Fail(error,
+						"fire solver final 3-D divergence overflowed");
+					maximum=std::max(maximum,std::fabs(residual[cell]));
+					rightHandSide[cell]=-residual[cell]/deltaTimeS;
+				}
+				if(maximum<=absoluteTolerancePerS){result.maximumDivergenceResidualPerS=maximum;break;}
+				std::vector<double> correction(cellCount,0.0),applied;
+				double linearResidual=std::numeric_limits<double>::infinity();
+				for( std::size_t cycle=0; cycle<128 && linearResidual>
+					absoluteTolerancePerS/deltaTimeS; ++cycle ) {
+					OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,correction);
+					ApplyOpenPressureOperator3D(shape,pressureOperator,correction,applied);
+					linearResidual=0.0;
+					for( std::size_t cell=0; cell<cellCount; ++cell ) linearResidual=
+						std::max(linearResidual,std::fabs(rightHandSide[cell]-applied[cell]));
+					result.multigridResidualHistoryPerS.push_back(deltaTimeS*linearResidual);
+				}
+				if(!std::isfinite(linearResidual) || linearResidual>absoluteTolerancePerS/deltaTimeS)
+					return Fail(error,"fire solver final 3-D open multigrid did not converge");
+				for( std::size_t cell=0; cell<cellCount; ++cell ) pressure[cell]+=correction[cell];
+				if( !evaluate() ) return Fail(error,"fire solver final 3-D velocity overflowed");
+				if( outer==3 ) return Fail(error,
+					"fire solver final 3-D open projection misses its divergence target");
+			}
+			result.stepAverageDynamicPressurePa=pressure;
+			result.maximumBoundaryHeadResidualPa=0.0;
+			for( unsigned int side=0; side<6; ++side ) {
+				const unsigned int axis=side/2; const bool positive=side%2;
+				const std::size_t firstCount=side<2?shape.ny:shape.nx;
+				const std::size_t secondCount=side<4?shape.nz:shape.ny;
+				for( std::size_t second=0; second<secondCount; ++second ) for(
+					std::size_t first=0; first<firstCount; ++first ) {
+					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+					if(boundary.kind[side]!=PressureOpenBoundary3D){result.inflow[side][index]=false;continue;}
+					std::size_t x=0,y=0,z=0;
+					if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+					if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+					if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+					const double outward=(positive?1.0:-1.0)*result.velocityMPerS.component[axis][
+						OpenMACFaceIndex3D(shape,axis,x,y,z)];
+					result.inflow[side][index]=outward < -boundary.velocityToleranceMPerS ? true :
+						(outward > boundary.velocityToleranceMPerS ? false : stage1.inflow[side][index]);
+				}
+			}
+			for( unsigned int axis=0; axis<3; ++axis ) for( std::size_t face=0;
+				face<result.velocityMPerS.component[axis].size(); ++face ) {
+				result.momentumKGPerM2S.component[axis][face]=
+					result.faceDensityKGPerM3.component[axis][face]*result.velocityMPerS.component[axis][face];
+				if(!std::isfinite(result.momentumKGPerM2S.component[axis][face])) return Fail(error,
+					"fire solver final 3-D open momentum overflowed");
+			}
+			PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,result);
+			return true;
+		}
+
+		struct OpenBoundaryStage3DResult
+		{
+			OpenMACProjection3DResult projection;
+			OpenBoundaryFluxField3D boundaryFlux;
+		};
+
+		inline bool BuildRelativeBuoyancyMomentumRate3D(
+			const PeriodicMACShape& shape,
+			const std::vector<double>& gasDensityKGPerM3,
+			const OpenBoundaryConfig3D& boundary,
+			const std::array<double,3>& gravityMPerS2,
+			OpenMACField3D& result,
+			std::string* error = 0
+			)
+		{
+			if( !ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
+				gasDensityKGPerM3.size()!=shape.CellCount() ) return Fail(error,
+				"fire solver 3-D relative-buoyancy input is malformed");
+			for( const double value : gravityMPerS2 ) if( !std::isfinite(value) ) return Fail(
+				error,"fire solver 3-D gravity is non-finite");
+			for( const double density : gasDensityKGPerM3 ) if( !std::isfinite(density) ||
+				density<=0.0 ) return Fail(error,"fire solver 3-D buoyancy density is invalid");
+			for( unsigned int axis=0; axis<3; ++axis ) result.component[axis].assign(
+				OpenMACFaceCount3D(shape,axis),0.0);
+			for( unsigned int axis=0; axis<3; ++axis ) {
+				const std::size_t normalCount=axis==0?shape.nx+1:(axis==1?shape.ny+1:shape.nz+1);
+				const std::size_t firstCount=axis==0?shape.ny:shape.nx;
+				const std::size_t secondCount=axis==2?shape.ny:shape.nz;
+				for( std::size_t second=0; second<secondCount; ++second ) for(
+					std::size_t first=0; first<firstCount; ++first ) for(
+					std::size_t normal=0; normal<normalCount; ++normal ) {
+					std::size_t x=0,y=0,z=0;
+					if(axis==0){x=normal;y=first;z=second;}
+					if(axis==1){x=first;y=normal;z=second;}
+					if(axis==2){x=first;y=second;z=normal;}
+					const bool lowerBoundary=normal==0,upperBoundary=normal+1==normalCount;
+					double lower=boundary.ambientDensityKGPerM3;
+					double upper=boundary.ambientDensityKGPerM3;
+					if(!lowerBoundary){const std::size_t cx=axis==0?normal-1:x;
+						const std::size_t cy=axis==1?normal-1:y;
+						const std::size_t cz=axis==2?normal-1:z;
+						lower=gasDensityKGPerM3[shape.Index(cx,cy,cz)];}
+					if(!upperBoundary){const std::size_t cx=axis==0?normal:x;
+						const std::size_t cy=axis==1?normal:y;
+						const std::size_t cz=axis==2?normal:z;
+						upper=gasDensityKGPerM3[shape.Index(cx,cy,cz)];}
+					if(axis==2 && lowerBoundary && !boundary.bottomFuelMask.empty() &&
+						boundary.bottomFuelMask[y*shape.nx+x]) lower=
+						boundary.injectedGasDensityKGPerM3;
+					const double faceDensity=0.5*lower+0.5*upper;
+					const double value=(faceDensity-boundary.ambientDensityKGPerM3)*
+						gravityMPerS2[axis];
+					if(!std::isfinite(value)) return Fail(error,
+						"fire solver 3-D relative buoyancy overflowed");
+					result.component[axis][OpenMACFaceIndex3D(shape,axis,x,y,z)]=value;
+				}
+			}
+			return true;
+		}
+
+		inline bool BuildOpenBoundaryStage3D(
+			const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& cellState,
+			const std::vector<double>& temperatureK,
+			const OpenMACField3D& beginningMomentumKGPerM2S,
+			const OpenMACField3D& nonpressureMomentumRateKGPerM2S2,
+			const std::vector<double>& divergenceTargetPerS,
+			const std::vector<double>& rhoDiffusivityKGPerMS,
+			const std::vector<double>& conductivityWPerMK,
+			const OpenBoundaryConfig3D& boundary,
+			const double ambientTemperatureK,
+			const double injectedTemperatureK,
+			const double deltaTimeS,
+			const double absoluteTolerancePerS,
+			const FireSimulationMethaneRecord& fuel,
+			const FireSimulationMethaneRecord& thermochemistry,
+			OpenBoundaryStage3DResult& result,
+			std::string* error = 0
+			)
+		{
+			if( !ValidateOpenBoundaryConfig3D(shape,boundary,error) ) return false;
+			const std::size_t count=shape.CellCount();
+			if( cellState.size()!=count || temperatureK.size()!=count ||
+				divergenceTargetPerS.size()!=count || rhoDiffusivityKGPerMS.size()!=count ||
+				conductivityWPerMK.size()!=count || !std::isfinite(deltaTimeS) ||
+				deltaTimeS<=0.0 ) return Fail(error,
+				"fire solver 3-D open boundary-stage arrays are malformed");
+			OpenMACField3D unprojected;
+			for( unsigned int axis=0; axis<3; ++axis ) {
+				const std::size_t faceCount=OpenMACFaceCount3D(shape,axis);
+				if( beginningMomentumKGPerM2S.component[axis].size()!=faceCount ||
+					nonpressureMomentumRateKGPerM2S2.component[axis].size()!=faceCount ) return Fail(
+					error,"fire solver 3-D open boundary-stage face shape is invalid");
+				unprojected.component[axis].assign(faceCount,0.0);
+				for( std::size_t face=0; face<faceCount; ++face ) {
+					const double value=beginningMomentumKGPerM2S.component[axis][face]+
+						deltaTimeS*nonpressureMomentumRateKGPerM2S2.component[axis][face];
+					if(!std::isfinite(value)) return Fail(error,
+						"fire solver 3-D open boundary-stage momentum overflowed");
+					unprojected.component[axis][face]=value;
+				}
+			}
+			OpenBoundaryStage3DResult candidate;
+			std::vector<double> gasDensity(count,0.0);
+			for( std::size_t cell=0; cell<count; ++cell ) for( std::size_t species=0;
+				species<MethaneCarbon; ++species ) {
+				gasDensity[cell]+=cellState[cell][1+species];
+			}
+			if( !ProjectPressureOpenMACVelocity3D(shape,gasDensity,
+				unprojected,divergenceTargetPerS,boundary,deltaTimeS,absoluteTolerancePerS,
+				candidate.projection,error) || !BuildOpenBoundaryFluxField3D(shape,cellState,
+				temperatureK,rhoDiffusivityKGPerMS,conductivityWPerMK,boundary,
+				candidate.projection,ambientTemperatureK,injectedTemperatureK,fuel,
+				thermochemistry,candidate.boundaryFlux,error) ) return false;
+			result=candidate;
+			return true;
 		}
 
 		inline double Dot( const std::vector<double>& first,

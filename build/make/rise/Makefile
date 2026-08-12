@@ -110,7 +110,7 @@ FORCE_RENDERER_BUILD_IDENTITY :
 # Normally you would define target upstairs and build it here, but 
 # in our case we're going to explicitly build the test programs
 
-all : librise rise meshconverter imageconverter biospecbsdfmaker
+all : librise rise meshconverter imageconverter biospecbsdfmaker fire-simulator
 
 drise : drise_server drise_client drise_submitter
 
@@ -121,6 +121,12 @@ librise : $(OBJLIB)
 rise : $(OBJLIB) $(PATHSRCS)commandconsole.o
 	@echo Linking $(PATHDEST)rise
 	@$(CXX)	$(CPPFLAGS) -o $(PATHDEST)rise $(PATHSRCS)commandconsole.o $(OBJLIB) $(LDLIBS)
+
+fire-simulator : $(OBJLIB) $(PATHTOOLS)fire_simulator.o
+	@mkdir -p $(PATHTOOLDEST)
+	@echo Linking $(PATHTOOLDEST)fire_simulator
+	@$(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)fire_simulator \
+		$(PATHTOOLS)fire_simulator.o $(OBJLIB) $(LDLIBS)
 
 risempi : $(OBJLIB) $(PATHSRCS)risempi.o
 	@echo Linking $(PATHDEST)risempi
