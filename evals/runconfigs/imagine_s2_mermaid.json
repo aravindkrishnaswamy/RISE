@@ -1,0 +1,15 @@
+{
+ "//": "Arc-79 S2 clean-room construction, SECOND SUBJECT (2026-08-11). Same harness and model as imagine_s2_gemini; the undersea mermaid prompt replaces dragon+wizard to test whether the cropped-framing / non-converging-placement result is scene-specific or harness-wide. Compare against evals/runs/imagine_s2_gemini (same build, other subject) and against the hand-authored Fable benchmark scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene (same prompt, full-context frontier model, held as the qualitative bar).",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s2_mermaid"
+}

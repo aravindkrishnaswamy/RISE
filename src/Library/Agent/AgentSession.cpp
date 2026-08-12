@@ -11503,6 +11503,12 @@ namespace RISE
 			AgentBuildElementResult out;
 			out.providerName = mTextCompleter.providerName;
 			out.modelId      = mTextCompleter.modelId;
+			// G2 fix-round (2026-08-11): build_element's OWN give-up fold --
+			// same destructor-time appender InsertChunk/ProposePatch declare
+			// up front, bound to `out.message` so a give-up notice reaches
+			// the caller regardless of which of this function's many
+			// `return out;` statements ultimately fires, success included.
+			BuildPlanGiveUpFold_ g2Fold{ out.message, std::string() };
 
 			//------------------------------------------------------------------
 			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
@@ -11558,6 +11564,41 @@ namespace RISE
 					"insert_chunks is not blocked by this.";
 				return out;
 			}
+
+			// G2 fix-round (2026-08-11): build_element's OWN build-plan-gate
+			// arm, consulted HERE -- after every do-nothing prologue check
+			// above (so those keep priority and their messages are
+			// unchanged) and BEFORE the per-session cap below and the
+			// provider completion further down -- rather than left to
+			// InsertChunks's arm inside the validated-insert this function
+			// calls once the completion comes back.  Without this, a session
+			// with no imagined scene target paid for a full builder
+			// completion only to have InsertChunks refuse every chunk it
+			// produced: the gate exists to stop geometry-creating work
+			// before it is *spent*, and by the time InsertChunks sees this
+			// function's chunks the completion is already sunk cost.  This
+			// is the exact same shared gate InsertChunks's own arm calls (see
+			// its call site above, verb "insert_chunks") -- build_element
+			// only ever runs in the PIECES phase, so `needPlan` is already
+			// satisfied in practice and `needImagine` is the condition that
+			// actually fires, but that is a fact about session state, not
+			// something this call special-cases: calling the shared gate
+			// unconditionally is what keeps the two paths from ever drifting
+			// apart on what "satisfied" means.
+			{
+				const std::string g2Clause = CheckBuildPlanGate_( "build_element", &g2Fold.notice );
+				if( !g2Clause.empty() ) {
+					out.message = g2Clause;
+					return out;
+				}
+				// g2Clause.empty() here means either "not armed / already
+				// resolved" OR "this call is the give-up" -- g2Fold.notice
+				// was written in the latter case and stays empty in the
+				// former; either way, normal build_element processing
+				// continues below and g2Fold's destructor folds any notice
+				// into out.message whichever return statement fires.
+			}
+
 			if( mBuildElementCalls >= kBuildElementMaxPerSession ) {
 				char capBuf[224];
 				std::snprintf( capBuf, sizeof( capBuf ),

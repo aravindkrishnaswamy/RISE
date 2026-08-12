@@ -10693,6 +10693,80 @@ static void TestCleanRoomBuildElementRefusals()
 	}
 }
 
+//! G2 fix-round (2026-08-11): build_element must consult the SAME build-plan
+//! gate the other six construction verbs do, and consult it BEFORE spending a
+//! provider completion -- not just before the InsertChunks call it makes with
+//! the completion's result.  Design: docs/agentic-redesign/79-clean-room-
+//! construction.md section 7.3 (the live-run defect this pins): the FIRST
+//! build_element call on a session with a filed plan but no imagined scene
+//! target ran the builder completion, got real geometry back, and had every
+//! chunk refused by InsertChunks's own gate arm -- the provider call was paid
+//! for and thrown away.  This test proves the fix: the gate now refuses
+//! build_element itself, before any completion is issued, so nothing is
+//! spent on a call the gate was always going to refuse.
+static void TestCleanRoomBuildElementBuildPlanGate()
+{
+	std::printf( "S2/G2: build_element consults the build-plan gate BEFORE spending a completion...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2g2.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2/G2 fixture loads" );
+	if( !pJob ) return;
+	const std::vector<unsigned char> png = MintCannedPng( pJob, 1 );
+
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	// A CAPABLE image generator, installed but never invoked yet -- this is
+	// what makes ImagineRequirementActive_() true and therefore the gate's
+	// imagine condition the one that actually fires, matching the live-run
+	// defect exactly (a provider that supports imagine_scene, plan filed,
+	// nothing imagined yet).
+	sess->SetImageGenerator( MakeFakeImageGen( png ) );
+	int calls = 0;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer }, &calls ) );
+	Check( sess->BuildCapable(), "S2/G2 the session is build-capable" );
+
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2/G2 the plan files" );
+	Check( sess->ActiveElement() == "wizard", "S2/G2 the wizard is active" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+	       "S2/G2 filing entered the pieces phase" );
+	Check( !sess->HasSceneTarget(), "S2/G2 -- and, deliberately, nothing has been imagined yet" );
+
+	const std::string docBefore = sess->ReadDocument();
+
+	// (1) THE DEFECT, PINNED.  build_element is refused by the SAME gate
+	//     insert_chunks enforces, and -- the point of this whole test --
+	//     the refusal happens BEFORE the builder completion, not after.
+	const Agent::AgentSession::AgentBuildElementResult r1 = sess->BuildElement( "wizard", 4.0 );
+	Check( !r1.ok, "S2/G2 build_element is refused while no scene target exists" );
+	Check( r1.message.find( "no imagined scene target has been created for this session." )
+	       != std::string::npos,
+	       "S2/G2 and the refusal is the build-plan gate's own text" );
+	Check( r1.message.find( "imagine_scene" ) != std::string::npos,
+	       "S2/G2 and names the tool that clears it" );
+	Check( calls == 0,
+	       "S2/G2 MONEY ASSERTION: NO provider completion was issued for a call the gate was always "
+	       "going to refuse -- this is the regression the live run hit: paying for a completion and "
+	       "then discarding every chunk it produced" );
+	Check( r1.chunksExtracted == 0 && r1.landed.empty(),
+	       "S2/G2 and nothing was extracted or landed -- the refusal returns before any of that runs" );
+	Check( sess->ReadDocument() == docBefore,
+	       "S2/G2 the document is byte-identical -- no mutation happened either" );
+	Check( sess->BuildPlanGateRefusalCount() == 1,
+	       "S2/G2 the refusal came out of the SAME shared counter insert_chunks/insert_chunk/"
+	       "propose_patch/the geometry-scaffold verbs all use" );
+
+	// (2) ONCE IMAGINED, build_element PROCEEDS NORMALLY -- past the gate,
+	//     straight through to a real completion and a real insert.
+	Check( sess->ImagineScene( "a robed wizard on a hilltop" ).ok, "S2/G2 the imagine succeeds" );
+	Check( sess->HasSceneTarget(), "S2/G2 a scene target now exists" );
+
+	const Agent::AgentSession::AgentBuildElementResult r2 = sess->BuildElement( "wizard", 4.0 );
+	Check( r2.ok, "S2/G2 MONEY ASSERTION: with both conditions met build_element proceeds past the "
+	              "gate exactly as before this fix" );
+	Check( calls == 1, "S2/G2 and this is the FIRST completion actually issued -- exactly one, not "
+	                   "wasted on the refused first attempt" );
+	Check( !r2.landed.empty(), "S2/G2 and it actually landed geometry" );
+}
+
 //! S2e: the first-geometry refusal -- it fires, it names build_element, it
 //! LIFTS once the element has content, and it never touches non-geometry.
 static void TestCleanRoomFirstGeometryRefusal()
@@ -11079,6 +11153,7 @@ int main()
 	TestCleanRoomValidatedInsertion();
 	TestCleanRoomRepairRetry();
 	TestCleanRoomBuildElementRefusals();
+	TestCleanRoomBuildElementBuildPlanGate();
 	TestCleanRoomFirstGeometryRefusal();
 	TestCleanRoomProtocolOff();
 	TestCleanRoomPlaceElement();
