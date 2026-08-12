@@ -1627,7 +1627,18 @@ namespace RISE
 		{
 			const std::size_t count=shape.CellCount();
 			solution.assign(count,0.0);
-			std::vector<double> applied,r=rightHandSide,rHat=r,p(count,0.0),v(count,0.0),
+			std::vector<double> applied;
+			for( std::size_t cycle=0; cycle<128; ++cycle ) {
+				OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,solution);
+				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied);
+				double maximum=0.0;
+				for( std::size_t i=0; i<count; ++i ) maximum=std::max(maximum,
+					std::fabs(rightHandSide[i]-applied[i]));
+				residualHistory.push_back(maximum);
+				if(maximum<=tolerance) return true;
+			}
+			solution.assign(count,0.0);
+			std::vector<double> r=rightHandSide,rHat=r,p(count,0.0),v(count,0.0),
 				s(count,0.0),t(count,0.0),pHat,sHat;
 			double rhoPrevious=1.0,alpha=1.0,omega=1.0;
 			for( std::size_t iteration=0; iteration<256; ++iteration ) {
@@ -1762,10 +1773,7 @@ namespace RISE
 			)
 		{
 			const std::size_t coordinate=component==0?x:(component==1?y:z);
-			const std::size_t extent=component==0?shape.nx:(component==1?shape.ny:shape.nz);
 			std::size_t first=coordinate,second=coordinate+1;
-			if( coordinate==0 ) first=second=1;
-			else if( coordinate+1==extent ) first=second=extent-1;
 			std::size_t firstX=x,firstY=y,firstZ=z;
 			std::size_t secondX=x,secondY=y,secondZ=z;
 			if(component==0){firstX=first;secondX=second;}
@@ -1788,10 +1796,7 @@ namespace RISE
 			)
 		{
 			const std::size_t coordinate=component==0?x:(component==1?y:z);
-			const std::size_t extent=component==0?shape.nx:(component==1?shape.ny:shape.nz);
 			std::size_t first=coordinate,second=coordinate+1;
-			if( coordinate==0 ) first=second=1;
-			else if( coordinate+1==extent ) first=second=extent-1;
 			const std::size_t normal[2]={first,second};
 			for( unsigned int sample=0; sample<2; ++sample ) {
 				std::size_t fx=x,fy=y,fz=z;
@@ -2011,6 +2016,29 @@ namespace RISE
 					}
 
 					double maximumHeadResidual = 0.0;
+					// Fix prescribed normal velocities before any pressure-open face evaluates
+					// its full tangential speed; boundary traversal order must not affect head.
+					for( unsigned int side=0; side<6; ++side ) {
+						const unsigned int axis=side/2; const bool positive=side%2;
+						const std::size_t firstCount=side<2?shape.ny:shape.nx;
+						const std::size_t secondCount=side<4?shape.nz:shape.ny;
+						for( std::size_t second=0; second<secondCount; ++second ) for(
+							std::size_t first=0; first<firstCount; ++first ) {
+							const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+							OpenBoundaryKind3D kind=boundary.kind[side];
+							if(side==4 && !boundary.bottomFuelMask.empty() &&
+								boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
+							if(kind==PressureOpenBoundary3D) continue;
+							std::size_t x=0,y=0,z=0;
+							if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+							if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+							if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+							const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
+							result.velocityMPerS.component[axis][face]=kind==AdiabaticWallBoundary3D?
+								0.0:((positive?-1.0:1.0)*boundary.fuelMassFluxKGPerM2S/
+								boundary.injectedGasDensityKGPerM3);
+						}
+					}
 					for( unsigned int side=0; side<6; ++side ) {
 						const unsigned int axis=side/2;
 						const bool positive=side%2;
