@@ -1,0 +1,15 @@
+{
+ "//": "Arc-81 + lighting-policy run (2026-08-12): same undersea mermaid subject and model as imagine_s4_arcs8081, now with ambient_light refused unconditionally and the light_scene palette restructured by copyability (area light the only worked example; omni/spot/directional schema-only). HEADLINE: does the scene get lit by AREA LIGHTS -- an object wearing a lambertian_luminaire_material -- rather than point/spot/directional? Also: light count and power range (s4 gave 8 at 300x), whether the ambient refusal fires and what the model does next, parts built vs surviving (s4: 65/65), and the final render judged against the Fable benchmark (stdev 29.3 / span 116). NOTE the measurement caveat: renders must be made by appending an output chunk ONLY -- the earlier width/height regex corrupted box_geometry and produced false flat frames.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s5_lighting"
+}

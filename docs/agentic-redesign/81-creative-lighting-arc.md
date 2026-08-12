@@ -138,8 +138,15 @@ nor be refused by it.
 
 ## 5. Measurement (pre-committed)
 
-1. **HEADLINE: light-power range and light count** — 40×/3–5 today against
-   the benchmark's 1000×/8.
+1. ~~**HEADLINE: light-power range and light count**~~ — **RETIRED
+   2026-08-12** (owner's call, on the evidence below).  The metric assumed
+   every light carries a `power` param.  Once a scene is lit by an AREA
+   light, its strength lives in the luminaire material's `scale` (80.0 in the
+   first such run), not in `power` at all — so the power span measures only
+   the non-physical lights that remain, and it goes DOWN as the policy
+   succeeds.  It fell 300× → 38× in the run where the first area light ever
+   appeared.  A metric that worsens as the thing it measures improves is
+   worse than no metric.  Light COUNT and KIND survive; the span does not.
 2. **Do the three never-used kinds appear** (`ambient_light`,
    `hosek_wilkie_skylight`, emissive area lights)?  This is the direct test
    of palette-in-a-clean-context.
@@ -371,3 +378,39 @@ privileged by ordering and by being the only worked example**, so its
 appearance rate is no longer a clean test of palette-in-a-clean-context.
 It is a test of the example-moves-copying lever, which is a different
 claim.
+
+## 9. RESULT — first run under the lighting policy (2026-08-12, N=1)
+
+`evals/runs/imagine_s5_lighting`, undersea subject, gemini-3.6-flash.
+
+**The first area light in this workstream's history**, and it arrived as a
+`water_surface` emissive quad — the right instinct for an underwater scene,
+and a near-copy of the palette's single worked example.  `ambient_light` was
+never attempted, so the refusal never had to fire: removing it from the
+palette was sufficient on its own.
+
+| | parts | objects | lights | area lights |
+|---|---|---|---|---|
+| Fable benchmark | 131 | 47 | 8 | 0 |
+| this run | **87** (90 built) | 16 | 7 | **1** |
+| arc-79 mermaid | 82 built / **2 kept** | 12 | 5 | 0 |
+
+Render: luma stdev 53.9 / span 222 (benchmark 29.3 / 116) — more contrast
+than the reference, which the blown-out water surface explains.
+
+**Honest read: partially encoded.**  Area lights are now reachable and get
+used.  But SEVEN non-physical lights remain, including an omni the model
+named `ocean_violet_ambient` — it reached for the ambient idea under a legal
+name.  "Most scenes should use area lights" is not yet true.
+
+**The observation worth acting on:** the palette gives area lighting ONE
+worked example and the three idealizations NONE, and the model authored one
+area light and seven idealizations.  The count of worked examples may be
+setting the count of things produced, independently of what the prose says.
+That is a testable claim about every palette this project ships, not just
+this one.
+
+Visually the best scene the workstream has produced — a readable mermaid with
+a real silhouette, jellyfish, coral, a receding seabed.  What it still lacks
+against the benchmark is POPULATION (16 objects vs 47) and ATMOSPHERE (a flat
+dark background against the benchmark's graded water).
