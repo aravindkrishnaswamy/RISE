@@ -451,6 +451,28 @@ int main()
 		allOpenObliqueProjection.maximumBoundaryHeadResidualPa<=
 		allOpenObliqueBoundary.pressureTolerancePa,
 		"V1 augmented all-open solve couples oblique edge and corner head equations safely");
+	double independentYMinusHeadResidual=0.0;
+	if(allOpenObliqueOK) for( std::size_t z=0; z<openShape3D.nz; ++z ) for(
+		std::size_t x=0; x<openShape3D.nx; ++x ) {
+		const std::size_t index=OpenBoundaryFaceLinearIndex3D(openShape3D,2,x,z);
+		const double normal=-allOpenObliqueProjection.velocityMPerS.component[1][
+			OpenMACFaceIndex3D(openShape3D,1,x,0,z)];
+		const double xTangent=0.5*(allOpenObliqueProjection.velocityMPerS.component[0][
+			OpenMACFaceIndex3D(openShape3D,0,x,0,z)]+
+			allOpenObliqueProjection.velocityMPerS.component[0][
+			OpenMACFaceIndex3D(openShape3D,0,x+1,0,z)]);
+		const double zTangent=0.5*(allOpenObliqueProjection.velocityMPerS.component[2][
+			OpenMACFaceIndex3D(openShape3D,2,x,0,z)]+
+			allOpenObliqueProjection.velocityMPerS.component[2][
+			OpenMACFaceIndex3D(openShape3D,2,x,0,z+1)]);
+		independentYMinusHeadResidual=std::max(independentYMinusHeadResidual,std::fabs(
+			allOpenObliqueProjection.boundaryDynamicPressurePa[2][index]+0.5*
+			allOpenObliqueBoundary.ambientDensityKGPerM3*(normal*normal+
+			xTangent*xTangent+zTangent*zTangent)));
+	}
+	Check(allOpenObliqueOK && independentYMinusHeadResidual<=
+		allOpenObliqueBoundary.pressureTolerancePa,
+		"V1 y-normal pressure-open head independently includes x and z tangential velocity");
 	bool productionTangentialConnected=openThrough3D.boundaryTangentialVelocityMPerS[0][0].size()==
 		OpenBoundaryFaceCount3D(openShape3D,0);
 	for( std::size_t z=0; productionTangentialConnected && z<openShape3D.nz; ++z ) for(
