@@ -1486,12 +1486,15 @@ int main()
 				// `light_scene` without -- and two of them are load-bearing in
 				// a way the construction pins are not:
 				//
-				//   * THE PALETTE.  The measurement this whole arc is built on
-				//     is that ambient_light, hosek_wilkie_skylight and
-				//     area-via-emissive-material appear in NO agent run ever
-				//     measured.  A surface that lists only the three kinds
-				//     agents already use tells the model the palette IS those
-				//     three, which is the exact belief the arc exists to test.
+				//   * THE PALETTE, and (ARC 81 FIX-ROUND, 2026-08-12) its
+				//     PHYSICS ORDER.  Arc 81 shipped six kinds flat and neutral,
+				//     and the first live run reached for ambient_light.  The
+				//     house rule is area lights first, the analytic sky second,
+				//     the zero-area kinds for special cases, and NO ambient light
+				//     at all -- it is refused on every creating path.  A surface
+				//     still presenting the six as equal options would contradict
+				//     what the code does, which is the false-clause class this
+				//     whole test family exists to stop.
 				//   * THE NAMING CONTRACT.  build_element enforces an
 				//     `<element>_` prefix; light_scene deliberately does not,
 				//     because lights are scene-global and belong to no
@@ -1503,13 +1506,26 @@ int main()
 						{ "light_scene",
 						  "never mentions light_scene -- the verb the compose-phase light refusal "
 						  "names; a model that cannot name it cannot light a composed scene" },
-						{ "ambient_light",
-						  "does not name ambient_light in the palette -- one of the three light "
-						  "kinds NO agent run has ever used, and naming the full palette is the "
-						  "hypothesis this arc tests" },
-						{ "hosek_wilkie_skylight (an analytic sun-and-sky)",
-						  "does not name hosek_wilkie_skylight in the palette -- same reason; a "
-						  "model told the palette is omni/spot/directional will use those three" },
+						{ "PALETTE LEADS WITH AREA LIGHTING",
+						  "does not state that the palette LEADS WITH AREA LIGHTING -- the house rule "
+						  "is that a scene's light sources are normally emitting surfaces, and a surface "
+						  "that presents the kinds as a flat list of equals encodes the opposite" },
+						{ "ambient_light is NOT offered and is REFUSED",
+						  "does not state that ambient_light is REFUSED -- it is blocked on every path "
+						  "that could create one, in every phase and with the build protocol off, and a "
+						  "surface that leaves that unsaid lets a model spend a call discovering it" },
+						{ "casts no shadow ray",
+						  "states the ambient_light refusal without the FACT behind it -- no position, no "
+						  "direction and no shadow ray, therefore no shadow and no falloff; a prohibition "
+						  "with no reason reads as an arbitrary rule rather than as physics" },
+						{ "zero-area idealizations",
+						  "does not say what omni/spot/directional ARE -- stated without the zero-area "
+						  "fact they read as peers of an emitting surface rather than as the special-case "
+						  "idealizations they are" },
+						{ "hosek_wilkie_skylight (a physically based analytic sun-and-sky)",
+						  "does not name hosek_wilkie_skylight in the palette -- it is a physically based "
+						  "sky model, it stays in the palette, and a model told the palette is "
+						  "omni/spot/directional will use those three" },
 						{ "emissive lambertian_luminaire_material",
 						  "does not state how AREA lighting is spelled -- there is no `area_light` "
 						  "chunk in this language, so a surface that omits the "

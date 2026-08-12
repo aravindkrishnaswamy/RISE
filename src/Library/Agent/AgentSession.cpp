@@ -1886,6 +1886,120 @@ namespace RISE
 			return std::string();
 		}
 
+		//======================================================================
+		// ARC 81 FIX-ROUND (2026-08-12) -- THE `ambient_light` BAN.
+		//
+		// House lighting policy, stated by the project owner: ambient light is
+		// an anachronism and is never used; the non-physical point / spot /
+		// directional kinds are for special cases; a scene's light sources are
+		// normally AREA lights -- an object wearing an emissive material.  Arc
+		// 81 shipped the six kinds as a flat, neutral palette, and the very
+		// first live run reached for `ambient_light`.
+		//
+		// This is the BLOCKING half of the correction (the other half is what
+		// the light_scene palette makes COPYABLE, further down this file).  It
+		// is deliberately NOT a phase gate: it consults no phase, no counter and
+		// no session state at all, so it cannot be spent, cannot give up, and is
+		// not disabled by --agent-build-protocol=off.  See the declarations in
+		// AgentSession.h for the contract; the two functions below are FREE
+		// functions for the same cross-TU reason E1's and R1c's pairs are.
+		//======================================================================
+		namespace
+		{
+			//! The registry keyword this policy names.  ONE definition, used by
+			//! both arms.  AgentChunkCrudTest asserts the registry still carries
+			//! it as a Light chunk, so a rename in ChunkParserRegistry.cpp fails
+			//! a test rather than silently turning this ban into a no-op.
+			const char* const kAmbientLightKeyword_ = "ambient_light";
+
+			//! How many top-level `ambient_light` chunks does `doc` carry?
+			int CountAmbientLightChunks_( const Document& doc )
+			{
+				int n = 0;
+				const int items = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < items; ++i ) {
+					const NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( it->role == kAmbientLightKeyword_ ) ++n;
+				}
+				return n;
+			}
+		}
+
+		std::string DescribeAmbientLightBan()
+		{
+			return "`ambient_light` is not available through this surface -- no ambient_light chunk "
+			       "is created here, in any phase and whatever the build protocol is set to. What it "
+			       "does in this renderer: it contributes the same `color * power` at every shading "
+			       "point, scaled only by that surface's own reflectance. It has no position and no "
+			       "direction (its only parameters are name, power and color), and it casts no shadow "
+			       "ray, so it can produce neither a shadow nor any falloff with distance. THE LIGHT "
+			       "THAT FILLS THAT ROLE IS AN AREA LIGHT, which in this scene language is an "
+			       "ordinary object wearing an emissive material -- there is no `area_light` chunk. "
+			       "It is four chunks: a `uniformcolor_painter` holding the emitted colour; a "
+			       "`lambertian_luminaire_material` whose `exitance` is that painter, whose `scale` "
+			       "multiplies it, and whose `material` is `none` so the surface only emits; a "
+			       "geometry for its shape (`clippedplane_geometry` takes four corner points pta, "
+			       "ptb, ptc, ptd); and a `standard_object` binding that geometry to that material. "
+			       "It has real area, so it shadows and falls off the way an emitter in the world "
+			       "does. For sky illumination over a whole scene there is `hosek_wilkie_skylight`, "
+			       "an analytic sun-and-sky model.";
+		}
+
+		std::string CheckAmbientLightBanForInsert( const std::string& chunkText, std::string* outName )
+		{
+			if( chunkText.empty() ) return std::string();
+			// Cheap literal pre-filter before the parse: the keyword has to
+			// appear verbatim in the bytes for the parse to produce that chunk,
+			// so a text without it can be answered with one substring search.
+			if( chunkText.find( kAmbientLightKeyword_ ) == std::string::npos ) return std::string();
+
+			const Document doc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i )
+			{
+				const NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				if( it->role != kAmbientLightKeyword_ ) continue;
+				if( outName ) *outName = ChunkParamString_( it, "name" );
+				return DescribeAmbientLightBan();
+			}
+			return std::string();
+		}
+
+		std::string CheckAmbientLightBanForPatch( const std::string& headText,
+		                                          const std::string& target,
+		                                          const std::string& kind,
+		                                          const std::string& param,
+		                                          const std::string& value )
+		{
+			// The same two cheap pre-filters R1c's and G2's patch arms apply, plus
+			// the literal-keyword one this ban can afford because it polices ONE
+			// keyword rather than a category (see the declaration).  A patch that
+			// cannot possibly introduce this chunk pays three substring searches.
+			if( target.empty() && kind.empty() ) return std::string();
+			if( param.empty() )                  return std::string();
+			if( value.find( '}' ) == std::string::npos ) return std::string();
+			if( value.find( kAmbientLightKeyword_ ) == std::string::npos ) return std::string();
+
+			const Document headDoc = RISE::Cst::ParseToCst( headText );
+			const RISE::Cst::NodeId id = ResolvePatchTargetChunk_( headDoc, target, kind );
+			if( !id ) return std::string();
+			if( !RISE::Cst::DocResolveNodeId( headDoc, id ) ) return std::string();
+
+			// DELTA, not state, and through the SAME round-tripped candidate the
+			// other two patch-delta gates judge (BuildPatchCandidateAsBytes_
+			// carries the full rationale): a scene that already contains an
+			// ambient_light the user authored stays editable, because editing it
+			// leaves the count where it was.
+			const Document candidateAsBytes = BuildPatchCandidateAsBytes_( headDoc, id, param, value );
+			if( CountAmbientLightChunks_( candidateAsBytes ) > CountAmbientLightChunks_( headDoc ) )
+				return DescribeAmbientLightBan();
+			return std::string();
+		}
+
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
 		{
 			std::vector<AgentDiagnostic> out;
@@ -2419,6 +2533,41 @@ namespace RISE
 			// below fills in when a value really would introduce a chunk.
 			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
 			AttributePatchOnApply_ s1Attr{ *this, r, std::string(), std::string() };
+
+			// ARC 81 FIX-ROUND (2026-08-12, house lighting policy): the
+			// `ambient_light` ban's PATCH arm, first for the same
+			// don't-spend-a-phase-refusal-on-a-permanent-prohibition reason the
+			// insert arm goes first.  It exists at all because a param value is
+			// spliced into the document as TEXT -- the identical bypass R1c's arm
+			// (b) and the build-plan gate's patch arm were each built to close
+			// for their own kinds -- so a ban with no patch arm would be a ban
+			// with a documented hole.  Its two pre-filters make it free on every
+			// patch that could not possibly introduce one.
+			//
+			// The two pre-filters are REPEATED at this call site, exactly as the
+			// S1 value-splice arm below repeats its `}` filter: they are what
+			// keeps the SNAPSHOT itself off the common path, and the shared
+			// function applies them again so the two can differ only in cost,
+			// never in the answer.
+			if( patch.value.find( '}' ) != std::string::npos &&
+			    patch.value.find( "ambient_light" ) != std::string::npos )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				const std::string clause = snap.hasDocument
+					? CheckAmbientLightBanForPatch( snap.document, patch.target, patch.kind,
+					                                 patch.param, patch.value )
+					: std::string();
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = snap.headVersion;
+					r.message     = "propose_patch refused: " + clause +
+					                " (this patch's value would have introduced an `ambient_light` chunk.)";
+					return r;
+				}
+			}
 
 			// G2 fix-round (2026-08-10, build-plan gate -- the PATCH arm): FIRST,
 			// ahead of E1's and R1c's and ahead of the authority branching, for
@@ -4136,6 +4285,36 @@ namespace RISE
 			// whichever of this function's returns fires.
 			AttributeOnApply_ s1Attr{ *this, r };
 
+			// ARC 81 FIX-ROUND (2026-08-12, house lighting policy): the
+			// `ambient_light` ban, AHEAD OF EVERY OTHER ARM in this function --
+			// and the ordering is load-bearing, not stylistic.  ambient_light IS
+			// a Light chunk, so the arc-81 first-light phase arm below WOULD fire
+			// on it and would spend one of the SHARED three phase refusals on a
+			// chunk that is refused unconditionally anyway.  Spending a
+			// sequencing budget on a permanent prohibition is exactly the
+			// double-charging the other arms avoid by being disjoint; here they
+			// are not disjoint, so this one goes first.  (The three
+			// geometry-classified arms below cannot overlap it at all.)
+			//
+			// `retriable` stays FALSE like every other policy refusal here: the
+			// GUI chat loops treat that flag as a SILENT client-side auto-retry
+			// signal, and a refusal the model never sees teaches it nothing.
+			{
+				std::string ambName;
+				const std::string clause = CheckAmbientLightBanForInsert( chunkText, &ambName );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.kind        = "ambient_light";
+					r.name        = ambName;
+					r.message     = "insert_chunk refused: " + clause;
+					return r;
+				}
+			}
+
 			// G2 (2026-08-10, build-plan gate): the InsertChunk arm, FIRST --
 			// ahead of R1c's and E1's, because this gate is a pure SEQUENCING
 			// check that consults nothing about the document and nothing about
@@ -4514,6 +4693,45 @@ namespace RISE
 				return out;
 
 			out.reserve( chunkTexts.size() );
+
+			// ARC 81 FIX-ROUND (2026-08-12, house lighting policy): the
+			// `ambient_light` ban's batch arm, an UP-FRONT WHOLE-BATCH scan and
+			// the FIRST thing this function does -- for the two reasons every
+			// other up-front scan here exists.  (1) A POLICY refusal is not an
+			// authoring failure: landing half a batch and then refusing the rest
+			// leaves a scene the model never asked for, so one ambient_light
+			// anywhere in the batch refuses the WHOLE batch, document
+			// byte-identical and head unbumped.  (2) It runs ahead of the phase
+			// scans so a batch carrying an ambient_light cannot spend a phase
+			// refusal on the way to an unconditional one (see InsertChunk's
+			// identical ordering note).  The message NAMES THE INDEX, so the fix
+			// is one edit rather than a hunt -- R1c's batch arm's convention.
+			{
+				std::size_t offender = chunkTexts.size();
+				std::string clause;
+				for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+					clause = CheckAmbientLightBanForInsert( chunkTexts[i] );
+					if( !clause.empty() ) { offender = i; break; }
+				}
+				if( offender < chunkTexts.size() ) {
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ),
+						"insert_chunks refused: NOTHING was inserted (chunks[%d]) -- ",
+						static_cast<int>( offender ) );
+					const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+					for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+						AgentChunkResult e;
+						e.applied     = false;
+						e.retriable   = false;   // see InsertChunk's arm for why
+						e.rawCode     = 0;
+						e.status      = "rejected";
+						e.headVersion = head;
+						e.message     = std::string( buf ) + clause;
+						out.push_back( e );
+					}
+					return out;
+				}
+			}
 
 			// G2 (2026-08-10, build-plan gate): an UP-FRONT scan, before the
 			// per-element loop and before R1c's own scan, for the SAME reason
@@ -11716,7 +11934,7 @@ namespace RISE
 				"is designed by light_scene -- one call, in which " +
 				( mTextCompleter.providerName.empty() ? std::string( "this session's provider" )
 				                                      : ( "`" + mTextCompleter.providerName + "`" ) ) +
-				" is given this scene's object inventory, its camera and the full light palette in a "
+				" is given this scene's object inventory, its camera and the light palette in a "
 				"fresh context, and designs the lighting; the result is checked and inserted here. "
 				"Once light_scene has run, authoring and editing lights directly is allowed and is "
 				"never refused again. Editing a light that already exists is not refused now either "
@@ -18664,75 +18882,98 @@ namespace RISE
 			//! `headline` is a FACT about the kind (what it is, and the one
 			//! convention a fresh context cannot recover by reading a
 			//! parameter list); `example` is a complete, literally parseable
-			//! chunk.  The literal example is not decoration: arc 79 sec 8.1
-			//! records a whole session's mechanism lost to a syntax slip that
-			//! prose did not prevent and a literal example did.
+			//! chunk, or NULL when this kind deliberately ships without one.
+			//! The literal example is not decoration: arc 79 sec 8.1 records a
+			//! whole session's mechanism lost to a syntax slip that prose did
+			//! not prevent and a literal example did.  `groupNote`, when
+			//! non-null, is printed ABOVE the entry -- it is how the one thing
+			//! several entries share is said once instead of three times.
 			//!
-			//! THE PALETTE IS THE HYPOTHESIS.  Agents have shipped three of
-			//! these six in every run ever measured, and ambient_light,
-			//! hosek_wilkie_skylight and area/mesh lighting in none.  Naming
-			//! all six in a minimal context is the thing being tested, so
-			//! nothing here urges their use -- they are simply present.
+			//! ARC 81 FIX-ROUND (2026-08-12) -- THE PALETTE IS ORDERED AND
+			//! WEIGHTED BY PHYSICS, NOT PRESENTED FLAT.  As shipped, arc 81
+			//! offered six kinds as a neutral list with a worked example each,
+			//! and the first live run reached for `ambient_light`.  The house
+			//! rule is: area lights are the norm; `hosek_wilkie_skylight` is a
+			//! physically based sky and stays; point / spot / directional are
+			//! non-physical idealizations for special cases; ambient light is
+			//! an anachronism and is REFUSED outright (see
+			//! DescribeAmbientLightBan above), so it is not in this list at all.
+			//!
+			//! THE POLICY IS ENCODED AS COPYABILITY, NOT AS EXHORTATION.  The
+			//! one lever this workstream has measured repeatedly is that an
+			//! EXAMPLE moves what a model writes while prose advice measures
+			//! ~0.  So the area light goes FIRST and is the only kind carrying
+			//! a complete drop-in example; the three idealizations keep their
+			//! registry schema and lose their examples.  Nothing here tells the
+			//! model what to prefer, and the composition vocabulary the
+			//! prompt-hygiene test bans ("dramatic", "key light",
+			//! "three-point", "should use", ...) stays banned: these entries
+			//! state physics and show syntax.
 			struct LightPaletteEntry_
 			{
 				const char* keyword;    //!< registry keyword whose schema is fetched, or null
+				const char* groupNote;  //!< printed above this entry, or null
 				const char* headline;
-				const char* example;
+				const char* example;    //!< complete parseable chunk text, or null for none
 			};
 
 			const LightPaletteEntry_ kLightPalette[] = {
-				{ "omni_light",
-				  "omni_light -- a point light radiating equally in all directions. Its "
-				  "contribution falls off as color * power / r^2, so `power` scales with the "
-				  "square of how far it sits from what it lights.",
-				  "omni_light\n"
+				// FIRST, and the only entry with a worked example.  The area
+				// light is also the entry with no light keyword at all, which is
+				// exactly why it needs spelling out: there is no `area_light`
+				// chunk in this language, and a context that only sees a list of
+				// `*_light` keywords cannot discover that an emitting shape is
+				// an ordinary object wearing an emissive material.
+				{ nullptr,
+				  nullptr,
+				  "AREA / MESH LIGHT -- a real emitting SURFACE in the scene, and the physically "
+				  "based way to light one. There is no `area_light` chunk: an area light is an "
+				  "ordinary object wearing an EMISSIVE material, which is four chunks -- a painter "
+				  "holding the emitted colour; a lambertian_luminaire_material whose `exitance` is "
+				  "that painter, whose `scale` multiplies it, and whose `material none` means the "
+				  "surface only emits; a geometry for its shape; and a standard_object binding that "
+				  "geometry to that material. Because it has real area it casts SOFT shadows, falls "
+				  "off with distance the way an emitter in the world does, and is visible in the "
+				  "frame wherever the camera can see it. `scale` sets EXITANCE -- brightness per "
+				  "unit area -- so the same `scale` on a panel twice the size delivers twice the "
+				  "light: the 6000 below is the exitance one of this renderer's existing scenes "
+				  "gives a slot window reading as daylight, while a soft interior fill panel is "
+				  "typically in the tens. clippedplane_geometry is a quad given by its four corner "
+				  "points; any geometry works, and a mesh wearing this material emits from every "
+				  "triangle.",
+				  "uniformcolor_painter\n"
 				  "{\n"
-				  "\tname\t\tkey_lamp\n"
-				  "\tposition\t3 4 5\n"
-				  "\tcolor\t\t1 0.95 0.85\n"
-				  "\tpower\t\t120\n"
-				  "}" },
-				{ "spot_light",
-				  "spot_light -- a cone. `position` and `target` are world points; `inner` and "
-				  "`outer` are half-angles in DEGREES and the falloff runs between them. Same "
-				  "1/r^2 law as omni_light inside the cone.",
-				  "spot_light\n"
+				  "\tname\t\tpnt_window\n"
+				  "\tcolor\t\t1.0 0.95 0.85\n"
+				  "}\n"
+				  "lambertian_luminaire_material\n"
 				  "{\n"
-				  "\tname\t\trim_spot\n"
-				  "\tposition\t-6 5 -4\n"
-				  "\ttarget\t\t0 1 0\n"
-				  "\tinner\t\t18\n"
-				  "\touter\t\t34\n"
-				  "\tcolor\t\t0.6 0.8 1\n"
-				  "\tpower\t\t400\n"
-				  "}" },
-				{ "directional_light",
-				  "directional_light -- parallel rays, no distance falloff, so its radiance is "
-				  "just color * power. `direction` is the vector FROM a lit surface TOWARD the "
-				  "light, NOT the direction the light travels: a surface is lit when "
-				  "N . direction > 0, so a camera at +Z needs a key with positive Z here.",
-				  "directional_light\n"
+				  "\tname\t\twindow_mat\n"
+				  "\texitance\tpnt_window\n"
+				  "\tscale\t\t6000.0\n"
+				  "\tmaterial\tnone\n"
+				  "}\n"
+				  "clippedplane_geometry\n"
 				  "{\n"
-				  "\tname\t\tsun\n"
-				  "\tdirection\t0.4 0.8 0.45\n"
-				  "\tcolor\t\t1 0.93 0.8\n"
-				  "\tpower\t\t3.14\n"
-				  "}" },
-				{ "ambient_light",
-				  "ambient_light -- a constant color * power added to every surface with no "
-				  "direction and no shadowing.",
-				  "ambient_light\n"
+				  "\tname\t\twindow_geo\n"
+				  "\tpta\t\t\t-1.0 2.0 -1.0\n"
+				  "\tptb\t\t\t 1.0 2.0 -1.0\n"
+				  "\tptc\t\t\t 1.0 2.0  1.0\n"
+				  "\tptd\t\t\t-1.0 2.0  1.0\n"
+				  "}\n"
+				  "standard_object\n"
 				  "{\n"
-				  "\tname\t\tfill_ambient\n"
-				  "\tcolor\t\t0.15 0.2 0.3\n"
-				  "\tpower\t\t0.4\n"
+				  "\tname\t\twindow_obj\n"
+				  "\tgeometry\twindow_geo\n"
+				  "\tmaterial\twindow_mat\n"
 				  "}" },
 				{ "hosek_wilkie_skylight",
-				  "hosek_wilkie_skylight -- an analytic sun-and-sky. It creates the scene's "
-				  "global radiance map and, unless create_sun is false, a matched "
-				  "directional_light named __hw_sun__ at the same solar position. It takes no "
-				  "`name`. solar_elevation is degrees above the horizon; solar_azimuth is "
-				  "degrees of bearing with 0 = +Z and 90 = +X.",
+				  nullptr,
+				  "hosek_wilkie_skylight -- a physically based analytic sun-and-sky model "
+				  "(Hosek-Wilkie). It creates the scene's global radiance map and, unless "
+				  "create_sun is false, a matched directional_light named __hw_sun__ at the same "
+				  "solar position. It takes no `name`. solar_elevation is degrees above the "
+				  "horizon; solar_azimuth is degrees of bearing with 0 = +Z and 90 = +X.",
 				  "hosek_wilkie_skylight\n"
 				  "{\n"
 				  "\tsolar_elevation\t\t22\n"
@@ -18742,61 +18983,46 @@ namespace RISE
 				  "\tsun_intensity_scale\t3.14\n"
 				  "\tcreate_sun\t\ttrue\n"
 				  "}" },
-				// The AREA/MESH light is the palette entry with no light
-				// keyword at all, which is exactly why it needs saying: there
-				// is no `area_light` chunk in this language, and a context that
-				// only sees a list of `*_light` keywords cannot discover that
-				// an emitting shape is spelled as an ordinary object wearing an
-				// emissive material.
-				{ nullptr,
-				  "AREA / MESH LIGHT -- there is no `area_light` chunk. An area light is an "
-				  "ordinary object wearing an EMISSIVE material: a painter for the emitted "
-				  "colour, a lambertian_luminaire_material whose `exitance` is that painter and "
-				  "whose `scale` is the brightness, a geometry, and a standard_object binding "
-				  "them. It has real size, so it casts soft shadows and is visible in the frame. "
-				  "`material none` means the surface only emits.",
-				  "uniformcolor_painter\n"
-				  "{\n"
-				  "\tname\t\tpanel_emit_pnt\n"
-				  "\tcolor\t\t1 0.85 0.6\n"
-				  "}\n"
-				  "lambertian_luminaire_material\n"
-				  "{\n"
-				  "\tname\t\tpanel_emit_mat\n"
-				  "\texitance\tpanel_emit_pnt\n"
-				  "\tmaterial\tnone\n"
-				  "\tscale\t\t40\n"
-				  "}\n"
-				  "box_geometry\n"
-				  "{\n"
-				  "\tname\t\tpanel_geo\n"
-				  "\twidth\t\t3\n"
-				  "\theight\t\t0.05\n"
-				  "\tdepth\t\t2\n"
-				  "}\n"
-				  "standard_object\n"
-				  "{\n"
-				  "\tname\t\tpanel_obj\n"
-				  "\tgeometry\tpanel_geo\n"
-				  "\tmaterial\tpanel_emit_mat\n"
-				  "\tposition\t0 6 1\n"
-				  "}" }
+				{ "omni_light",
+				  "The three kinds below are ZERO-AREA IDEALIZATIONS: the light arrives from a "
+				  "single point, or from infinity, and there is no emitting surface anywhere in the "
+				  "scene. Their shadows have hard edges with no penumbra at any distance, nothing "
+				  "about them appears in the frame, and no material governs what they emit. They "
+				  "are for the special cases that want exactly that. Their parameters are below; "
+				  "they carry no worked example.",
+				  "omni_light -- a point light radiating equally in all directions. Its "
+				  "contribution falls off as color * power / r^2, so `power` scales with the "
+				  "square of how far it sits from what it lights.",
+				  nullptr },
+				{ "spot_light",
+				  nullptr,
+				  "spot_light -- a cone. `position` and `target` are world points; `inner` and "
+				  "`outer` are half-angles in DEGREES and the falloff runs between them. Same "
+				  "1/r^2 law as omni_light inside the cone.",
+				  nullptr },
+				{ "directional_light",
+				  nullptr,
+				  "directional_light -- parallel rays, no distance falloff, so its radiance is "
+				  "just color * power. `direction` is the vector FROM a lit surface TOWARD the "
+				  "light, NOT the direction the light travels: a surface is lit when "
+				  "N . direction > 0, so a camera at +Z needs a key with positive Z here.",
+				  nullptr }
 			};
 			const std::size_t kLightPaletteCount =
 				sizeof( kLightPalette ) / sizeof( kLightPalette[0] );
 
-			//! The registry keywords whose schema the mesh-light entry needs.
+			//! The registry keywords whose schema the AREA-light entry needs.
 			//! Same discipline as kBuilderGrammarKeywords: the text is the
 			//! DESCRIPTOR REGISTRY'S OWN, fetched through the same ReadSchema
 			//! the `read_schema` tool answers with, so there is no second
 			//! hand-written grammar in this file that could drift from the
-			//! parser.  Kept to the four kinds a mesh light actually needs --
-			//! this prompt exists to be SHORT (arc 79 sec 1: 60k of prepended
-			//! text halves construction richness).
+			//! parser.  Kept to the four kinds the worked example uses -- this
+			//! prompt exists to be SHORT (arc 79 sec 1: 60k of prepended text
+			//! halves construction richness).
 			const char* const kMeshLightGrammarKeywords[] = {
 				"uniformcolor_painter",
 				"lambertian_luminaire_material",
-				"box_geometry",
+				"clippedplane_geometry",
 				"standard_object"
 			};
 			const std::size_t kMeshLightGrammarKeywordCount =
@@ -19095,10 +19321,14 @@ namespace RISE
 			// ---- THE PALETTE.  Every light source this renderer has, named
 			// explicitly, each with the registry's own parameter reference and
 			// a literal example.
-			p += "THE FULL LIGHT PALETTE -- these are every kind of light source this renderer "
-			     "has. `power` multiplies `color` in all of them.\n";
+			p += "THE LIGHT SOURCES THIS PASS CAN AUTHOR. `power` multiplies `color` on the light "
+			     "chunks; on an emissive material `scale` multiplies the painter's colour.\n";
 			for( std::size_t i = 0; i < kLightPaletteCount; ++i ) {
 				p += "\n";
+				if( kLightPalette[i].groupNote ) {
+					p += kLightPalette[i].groupNote;
+					p += "\n\n";
+				}
 				p += std::to_string( i + 1 );
 				p += ". ";
 				p += kLightPalette[i].headline;
@@ -19107,11 +19337,16 @@ namespace RISE
 					p += ReadSchema( kLightPalette[i].keyword );
 					p += "\n";
 				}
-				p += "Example:\n";
-				p += kLightPalette[i].example;
-				p += "\n";
+				// An entry with no example is not an omission to apologise for
+				// -- see kLightPalette's doc for why the three idealizations
+				// ship without one -- so nothing is printed in its place.
+				if( kLightPalette[i].example ) {
+					p += "Example:\n";
+					p += kLightPalette[i].example;
+					p += "\n";
+				}
 			}
-			p += "\nThe chunk kinds the area/mesh light above is built from:\n";
+			p += "\nThe chunk kinds the area light above is built from:\n";
 			for( std::size_t i = 0; i < kMeshLightGrammarKeywordCount; ++i ) {
 				p += "\n";
 				p += ReadSchema( kMeshLightGrammarKeywords[i] );
@@ -19347,6 +19582,29 @@ namespace RISE
 					// integrator is not lighting, and this verb's insertion is
 					// exempted from the compose-phase creation ban, so what it
 					// can admit has to be bounded here rather than there.
+					// ARC 81 FIX-ROUND (2026-08-12): `ambient_light` is refused
+					// HERE as well as at the insertion, and the duplication is
+					// deliberate.  InsertChunks would refuse it anyway, but a
+					// rejection raised here carries the ban's own text into
+					// `rejectionLines`, which is what the ONE repair retry is
+					// corrected with -- so the pass is told what to write
+					// instead, in the same turn, rather than being told only
+					// that something was rejected.  The palette this verb shows
+					// no longer offers the kind at all; this covers a model that
+					// knows it from elsewhere.
+					{
+						const std::string ban = CheckAmbientLightBanForInsert( chunks[i] );
+						if( !ban.empty() ) {
+							AgentLightSceneRejection r;
+							r.name   = names[i];
+							r.kind   = kinds[i];
+							r.reason = ban;
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+							continue;
+						}
+					}
+
 					const bool isLight    = ( d->category == ChunkCategory::Light );
 					const bool isPainter  = ( d->category == ChunkCategory::Painter );
 					const bool isMaterial = ( d->category == ChunkCategory::Material );

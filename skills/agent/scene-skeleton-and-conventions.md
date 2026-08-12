@@ -123,11 +123,19 @@ modeling-workflow-and-geometry skill for the full contract.
    the camera at `+Z` looking at the origin, a light needs **positive
    Z** in `direction` to light what the camera sees.  Importers from
    shine-direction conventions (glTF, Unity, Unreal) must NEGATE first.
-2. **`power` multiplies `color`.**  Directional/ambient: radiance =
+2. **`power` multiplies `color`.**  Directional: radiance =
    `color * power` (no falloff).  `omni_light` / `spot_light`:
    `color * power / r^2` — distant point lights need large powers
    (hundreds+).  `power 3.14` (pi) on a directional key makes a fully
-   lit white Lambertian surface return ~1.
+   lit white Lambertian surface return ~1.  On an emissive material it
+   is `scale` that multiplies the `exitance` painter instead — and
+   **most scenes should be lit by AREA LIGHTS**, an object wearing a
+   `lambertian_luminaire_material`, in most cases a rectangle.  The
+   point / spot / directional kinds are zero-area idealizations (hard
+   shadows, no penumbra, nothing visible in frame) and are for special
+   cases; `ambient_light` is REFUSED on every path that could create it
+   (no position, no direction, no shadow ray, so no shadow and no
+   falloff).  Full recipe in the lighting-recipes skill.
 3. **Colorspace defaults.**  `uniformcolor_painter` treats `color` as
    already-linear Rec.709 (`colorspace Rec709RGB_Linear`).  Add
    `colorspace sRGB` when the value came from a color picker / hex code

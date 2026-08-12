@@ -156,6 +156,7 @@
 #include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Parsers/ChunkParserRegistry.h"   // R1c: enumerate every registered rasterizer kind for the classification-coverage assertion
+#include "../src/Library/SceneEditor/ChunkDescriptorRegistry.h"   // A81g: pin that `ambient_light` is still the registry keyword the ban names
 #include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Agent/AgentRpc.h"
 #include "../src/Library/Agent/Json.h"
@@ -11559,24 +11560,47 @@ static void TestLightSceneHappyPath()
 		       "than duplicate it -- including the fixture's emissive quad, which is a light "
 		       "source with no light chunk and would be invisible to a naive light-manager scan" );
 
-		// THE PALETTE -- the hypothesis this arc tests.  All six kinds, by
-		// name, with a literal example each.
+		// THE PALETTE -- ARC 81 FIX-ROUND (2026-08-12): ordered and weighted
+		// by PHYSICS, and encoded as COPYABILITY rather than as advice.  The
+		// area light is FIRST and is the only entry with a worked example;
+		// the three zero-area kinds keep their schema and lose theirs;
+		// ambient_light is gone entirely, because it is refused outright.
 		Check( p.find( "omni_light" ) != std::string::npos &&
 		       p.find( "spot_light" ) != std::string::npos &&
-		       p.find( "directional_light" ) != std::string::npos,
-		       "A81a the three kinds every agent run already uses are in the palette" );
-		Check( p.find( "ambient_light" ) != std::string::npos &&
-		       p.find( "hosek_wilkie_skylight" ) != std::string::npos &&
-		       p.find( "AREA / MESH LIGHT" ) != std::string::npos &&
-		       p.find( "lambertian_luminaire_material" ) != std::string::npos,
-		       "A81a MONEY ASSERTION: and so are the three NO agent run has ever used -- "
-		       "ambient_light, the analytic sky, and area lighting via an emissive material. "
-		       "Presenting the full palette in a minimal context is the hypothesis being tested" );
-		Check( p.find( "\tsolar_elevation\t\t22\n" ) != std::string::npos &&
-		       p.find( "\texitance\tpanel_emit_pnt\n" ) != std::string::npos,
-		       "A81a MONEY ASSERTION: each palette entry carries a LITERAL, parseable example -- "
-		       "arc 79 sec 8.1 records an entire session's mechanism lost to a syntax slip that "
-		       "prose did not prevent and a literal example did" );
+		       p.find( "directional_light" ) != std::string::npos &&
+		       p.find( "hosek_wilkie_skylight" ) != std::string::npos,
+		       "A81a the four light-chunk kinds this surface authors are all in the palette" );
+		// ORDER, asserted through the palette's own numbering rather than
+		// through raw find() positions: `hosek_wilkie_skylight` is legitimately
+		// named earlier, in the NAMING paragraph (it is the one kind taking no
+		// `name`), so a bare position compare would be testing the wrong thing.
+		Check( p.find( "1. AREA / MESH LIGHT" ) != std::string::npos &&
+		       p.find( "2. hosek_wilkie_skylight" ) != std::string::npos &&
+		       p.find( "3. omni_light" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: the AREA light is palette entry ONE, ahead of the sky and "
+		       "of the three idealizations -- most scenes are lit by an emitting surface, and the "
+		       "palette encodes that by ORDER, not by telling the model what to prefer" );
+		Check( p.find( "\texitance\tpnt_window\n" ) != std::string::npos &&
+		       p.find( "clippedplane_geometry\n{\n" ) != std::string::npos &&
+		       p.find( "\tsolar_elevation\t\t22\n" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: the area light carries a LITERAL, parseable four-chunk "
+		       "example -- arc 79 sec 8.1 records an entire session's mechanism lost to a syntax "
+		       "slip that prose did not prevent and a literal example did, and A81h proves this "
+		       "particular one really parses" );
+		Check( p.find( "omni_light\n{" ) == std::string::npos &&
+		       p.find( "spot_light\n{" ) == std::string::npos &&
+		       p.find( "directional_light\n{" ) == std::string::npos,
+		       "A81a MONEY ASSERTION: omni / spot / directional carry NO worked example -- an "
+		       "example is the one lever this workstream has measured moving what a model "
+		       "writes, so what is copyable IS the policy; their registry schema is still there" );
+		Check( p.find( "ZERO-AREA IDEALIZATIONS" ) != std::string::npos &&
+		       p.find( "ZERO-AREA IDEALIZATIONS" ) < p.find( "3. omni_light" ),
+		       "A81a and the three are stated as what they are -- zero-area, no penumbra, for "
+		       "special cases -- as a FACT, not as a discouragement" );
+		Check( p.find( "ambient_light" ) == std::string::npos,
+		       "A81a MONEY ASSERTION: ambient_light is NOT in the palette at all. It is refused "
+		       "on every creating path (A81g), and offering a model an option the surface will "
+		       "then refuse is the false-clause class this design family exists to avoid" );
 		Check( p.find( "FROM a lit surface TOWARD the light" ) != std::string::npos,
 		       "A81a and the one convention a fresh context cannot recover from a parameter list "
 		       "-- directional_light's direction sense -- is stated as fact" );
@@ -12015,6 +12039,318 @@ static void TestLightSceneWireShape()
 	}
 }
 
+//----------------------------------------------------------------------
+// ARC 81 FIX-ROUND (2026-08-12): THE `ambient_light` BAN.
+//
+// House lighting policy from the project owner: ambient light is an
+// anachronism and is never used.  Arc 81 shipped it as one of six equal
+// palette entries and the first live run reached for it.  "NEVER" is
+// implemented as a BLOCKING REFUSAL on every path that can create the
+// chunk, and -- this is the part that is easy to get wrong -- it is NOT
+// part of the staged build protocol's phase machinery: it consumes no
+// part of the shared 3-refusal cap, cannot trigger the give-up, and is
+// not disabled by --agent-build-protocol=off.  A permanent property of
+// what this surface authors is not a sequencing gate.
+//----------------------------------------------------------------------
+
+//! One ambient_light chunk, the thing being refused.
+static std::string A81Ambient( const char* name )
+{
+	return std::string( "ambient_light\n{\n\tname " ) + name +
+		"\n\tcolor 0.15 0.2 0.3\n\tpower 0.4\n}";
+}
+
+//! The value-splice shape G2j's fixture documents in full (one line,
+//! `name` is a String slot so the derive layer commits it), carrying an
+//! ambient_light instead of a box_geometry.
+static const char* const kA81AmbientSpliceValue =
+	"obj_sph geometry sph material mat_diffuse } "
+	"ambient_light { name spliced_amb color 1 1 1 power 1 } "
+	"standard_object { name obj_sph_tail";
+
+//! Every clause of the refusal a model reads, pinned once and reused by
+//! each path -- the whole point of the shared DescribeAmbientLightBan is
+//! that the message does not vary by where you hit it.
+static void CheckAmbientBanMessage( const std::string& m, const char* where )
+{
+	Check( m.find( "not available through this surface" ) != std::string::npos,
+	       std::string( "A81g/" ) + where + " the refusal states the kind is not available here" );
+	Check( m.find( "casts no shadow ray" ) != std::string::npos &&
+	       m.find( "neither a shadow nor any falloff" ) != std::string::npos,
+	       std::string( "A81g/" ) + where + " MONEY ASSERTION: and states the PHYSICS behind it -- "
+	       "no position, no direction, no shadow ray, so no shadow and no falloff. A prohibition "
+	       "with no reason reads as an arbitrary rule" );
+	Check( m.find( "AREA LIGHT" ) != std::string::npos &&
+	       m.find( "lambertian_luminaire_material" ) != std::string::npos &&
+	       m.find( "standard_object" ) != std::string::npos,
+	       std::string( "A81g/" ) + where + " MONEY ASSERTION: and names the four-chunk chain that "
+	       "fills the role -- a refusal that leaves a model with nothing to write instead is a "
+	       "refusal it will spend turns arguing with" );
+	// FACTS ONLY: it says what the renderer does and what to write instead.
+	// It does not moralize, and it never says "you should".
+	static const char* const kBannedMoralizing[] = {
+		"should", "must", "please", "avoid", "prefer", "bad", "wrong", "never" };
+	for( std::size_t i = 0; i < sizeof( kBannedMoralizing ) / sizeof( kBannedMoralizing[0] ); ++i )
+		Check( m.find( kBannedMoralizing[i] ) == std::string::npos,
+		       std::string( "A81g/" ) + where + " the refusal never says \"" +
+		       kBannedMoralizing[i] + "\" -- it states facts and stops" );
+}
+
+static void TestAmbientLightIsAlwaysRefused()
+{
+	std::printf( "A81g: ambient_light is refused on every insertion path, unconditionally...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81g.RISEscene" );
+
+	// (0) THE REGISTRY PIN.  The ban names ONE keyword; if the parser ever
+	//     renames it the ban would silently become a no-op, so the rename
+	//     has to fail a test instead.
+	{
+		const ChunkDescriptor* d = DescriptorForKeyword( String( "ambient_light" ) );
+		Check( d != nullptr && d->category == ChunkCategory::Light,
+		       "A81g/registry `ambient_light` is still the registry keyword this ban names, and "
+		       "still a Light chunk -- a rename here would turn the refusal into a no-op" );
+	}
+
+	// (1) insert_chunk, with the BUILD PROTOCOL OFF.  This is the arm that
+	//     proves the ban is not phase machinery: a protocol-off session has
+	//     no phases at all, and every phase refusal dies with it.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81g/off fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		Check( !sess->BuildProtocolActive(), "A81g/off the protocol is inactive for this session" );
+
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentChunkResult r = sess->InsertChunk( A81Ambient( "amb_off" ) );
+		Check( !r.applied && r.status == "rejected",
+		       "A81g/off MONEY ASSERTION: an ambient_light insert is refused with "
+		       "--agent-build-protocol=off -- the ban is a permanent property of what this "
+		       "surface authors, not a sequencing gate that dies with the protocol" );
+		Check( r.kind == "ambient_light" && r.name == "amb_off",
+		       "A81g/off with the identity echo every other refusal honours" );
+		Check( !r.retriable,
+		       "A81g/off and NOT retriable -- the GUI chat loops auto-retry that flag silently, "
+		       "so a retriable refusal is one the model never sees" );
+		Check( sess->ReadDocument() == docBefore, "A81g/off the document is byte-identical" );
+		CheckAmbientBanMessage( r.message, "off" );
+
+		// The very same session authors an ORDINARY light with no trouble --
+		// the ban is one keyword, not a mood about lights.
+		Check( sess->InsertChunk( A81Light( "amb_off_ok" ) ).applied,
+		       "A81g/off an omni_light is untouched by the ban" );
+		pJob->release();
+	}
+
+	// (2) insert_chunk in COMPOSE, where the arc-81 first-light PHASE arm
+	//     would also fire on a light chunk.  The ban runs FIRST and spends
+	//     NOTHING, which is the whole reason for its ordering.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81g/cap fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "A81g/cap the session is in the compose phase" );
+
+		for( int i = 0; i < 5; ++i ) {
+			const Agent::AgentChunkResult r =
+				sess->InsertChunk( A81Ambient( ( "amb_" + std::to_string( i ) ).c_str() ) );
+			Check( !r.applied, "A81g/cap ambient refusal " + std::to_string( i + 1 ) + " of 5" );
+			Check( r.message.find( "light_scene" ) == std::string::npos,
+			       "A81g/cap and it is the BAN talking, not the phase gate -- the refusal never "
+			       "offers light_scene as the way to get an ambient_light, because there is none" );
+		}
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "A81g/cap MONEY ASSERTION: FIVE ambient refusals spent ZERO of the shared 3-refusal "
+		       "phase cap -- a permanent prohibition must not consume a sequencing budget, and at "
+		       "the old ordering these five would have burned the cap and tripped the give-up" );
+
+		// ... and the phase machinery is still fully armed underneath.
+		const Agent::AgentChunkResult ph = sess->InsertChunk( A81Light( "amb_phase" ) );
+		Check( !ph.applied && ph.message.find( "light_scene" ) != std::string::npos,
+		       "A81g/cap the compose first-light gate still fires on a real light chunk" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A81g/cap and THAT one is what spends a slot -- the cap was intact for it" );
+		pJob->release();
+	}
+
+	// (3) insert_chunks: the WHOLE batch is refused, atomically.  A policy
+	//     refusal is not an authoring failure; half a batch is a state
+	//     nobody asked for.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81g/batch fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+
+		const std::string docBefore = sess->ReadDocument();
+		std::vector<std::string> batch;
+		batch.push_back( "uniformcolor_painter\n{\n\tname a81g_pnt\n\tcolor 1 1 1\n}" );
+		batch.push_back( A81Ambient( "amb_batch" ) );
+		batch.push_back( A81Light( "a81g_omni" ) );
+		const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
+		Check( rs.size() == 3 && !rs[0].applied && !rs[1].applied && !rs[2].applied,
+		       "A81g/batch MONEY ASSERTION: one ambient_light anywhere in the batch refuses the "
+		       "WHOLE batch -- the innocent painter and omni do NOT land" );
+		Check( sess->ReadDocument() == docBefore,
+		       "A81g/batch and the document is byte-identical" );
+		Check( rs[0].message.find( "chunks[1]" ) != std::string::npos,
+		       "A81g/batch the refusal names the offending INDEX, so the fix is one edit" );
+		CheckAmbientBanMessage( rs[0].message, "batch" );
+		pJob->release();
+	}
+
+	// (4) light_scene's OWN validated insertion.  The clean room is exempt
+	//     from the phase rules it arms -- it is NOT exempt from this one --
+	//     and the rejection carries the ban's text into the ONE repair
+	//     retry, so the pass is told what to write instead in the same turn.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81g/cleanroom fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		const std::string ambientAnswer =
+			"ambient_light\n{\n\tname pass_amb\n\tcolor 0.2 0.2 0.3\n\tpower 0.5\n}\n"
+			"omni_light\n{\n\tname pass_key\n\tposition 2 3 4\n\tcolor 1 1 1\n\tpower 50\n}\n";
+		int calls = 0;
+		std::vector<std::string> prompts;
+		sess->SetTextCompleter( MakeFakeCompleter( { ambientAnswer, kGoodLightingAnswer },
+		                                            &calls, &prompts ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+		bool sawAmbientReject = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].kind == "ambient_light" ) {
+				sawAmbientReject = true;
+				CheckAmbientBanMessage( r.rejected[i].reason, "cleanroom" );
+			}
+		Check( sawAmbientReject,
+		       "A81g/cleanroom MONEY ASSERTION: light_scene's own insertion is exempt from the "
+		       "compose-phase creation ban and from the gate it arms -- and NOT from this ban" );
+		Check( sess->ReadDocument().find( "pass_amb" ) == std::string::npos,
+		       "A81g/cleanroom no ambient_light reached the document" );
+		Check( sess->ReadDocument().find( "pass_key" ) != std::string::npos,
+		       "A81g/cleanroom while the rest of the same answer landed -- never a silent drop, "
+		       "never an all-or-nothing on a per-chunk rule" );
+		Check( r.retryRan && calls == 2 && prompts.size() == 2 &&
+		       prompts[1].find( "casts no shadow ray" ) != std::string::npos,
+		       "A81g/cleanroom MONEY ASSERTION: the ban's own text drives the ONE repair retry "
+		       "VERBATIM, so the pass is corrected with the physics and the alternative in the "
+		       "same turn rather than being told only that something was rejected" );
+		pJob->release();
+	}
+
+	// (5) propose_patch's VALUE-SPLICE path -- a param value is spliced into
+	//     the document as TEXT, the identical bypass R1c's arm (b) and the
+	//     build-plan gate's patch arm each close for their own kinds.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81g/splice fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentPatchResult r = sess->ProposePatch(
+			MakePatch( G2_SPLICE_TARGET, kA81AmbientSpliceValue ) );
+		Check( !r.applied && r.status == "rejected",
+		       "A81g/splice MONEY ASSERTION: a propose_patch whose VALUE splices a whole "
+		       "ambient_light chunk into the serialized document is refused -- a ban with no "
+		       "patch arm is a ban with a documented hole" );
+		Check( sess->ReadDocument() == docBefore,
+		       "A81g/splice and the document is byte-identical" );
+		Check( sess->ReadDocument().find( "spliced_amb" ) == std::string::npos,
+		       "A81g/splice RED-PROVE (direct): the spliced chunk's name is nowhere in the document" );
+		CheckAmbientBanMessage( r.message, "splice" );
+
+		// The CONTROL: the same splice mechanism carrying something else is
+		// not this ban's business, so the refusal is about the KIND rather
+		// than about any value that happens to contain a brace.
+		const Agent::AgentPatchResult ok = sess->ProposePatch(
+			MakePatch( G2_SPLICE_TARGET, kG2SplicePainterValue ) );
+		Check( ok.message.find( "not available through this surface" ) == std::string::npos,
+		       "A81g/splice the SAME splice shape carrying a painter is not refused by THIS ban" );
+		pJob->release();
+	}
+}
+
+//! A81h: THE EXAMPLE PARSES.  The area light is the palette's one worked
+//! example, and an example that does not parse is worse than none -- it
+//! spends the model's repair retry on the harness's own typo.  So the
+//! example is EXTRACTED FROM THE SHIPPED PROMPT (not retyped here, which
+//! would only prove the copy parses) and pushed through light_scene's real
+//! validated insertion.
+static void TestPaletteAreaLightExampleParses()
+{
+	std::printf( "A81h: the palette's worked area-light example really parses...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81h.RISEscene" );
+
+	// ---- Lift the example out of the prompt this surface actually sends.
+	std::string example;
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81h/compose fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		std::vector<std::string> prompts;
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer }, &calls, &prompts ) );
+		sess->LightScene();
+		Check( prompts.size() == 1, "A81h a prompt was composed" );
+		if( !prompts.empty() ) {
+			const std::string& p = prompts[0];
+			const std::size_t a = p.find( "Example:\n" );
+			const std::size_t b = ( a == std::string::npos )
+				? std::string::npos : p.find( "\n\n2. ", a );
+			Check( a != std::string::npos && b != std::string::npos,
+			       "A81h the area light's example block is locatable in the prompt" );
+			if( a != std::string::npos && b != std::string::npos )
+				example = p.substr( a + 9, b - ( a + 9 ) );
+		}
+		pJob->release();
+	}
+	Check( example.compare( 0, 21, "uniformcolor_painter\n" ) == 0,
+	       "A81h and the block lifted is the FIRST palette entry's example, the area light" );
+	if( example.empty() ) return;
+
+	// ---- Push it through the real insertion path, verbatim.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81h/insert fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { example }, &calls ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+		Check( r.ok && r.chunksExtracted == 4,
+		       "A81h the example is four chunks and all four were extracted" );
+		Check( r.landed.size() == 4 && r.rejected.empty(),
+		       "A81h MONEY ASSERTION: every chunk of the shipped example LANDS through the real "
+		       "validated insertion -- painter, luminaire material, quad and object. A worked "
+		       "example that does not parse is worse than no example at all" );
+		Check( !r.retryRan,
+		       "A81h with no repair retry -- nothing was rejected to repair" );
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "pnt_window" )  != std::string::npos &&
+		       doc.find( "window_mat" )  != std::string::npos &&
+		       doc.find( "window_geo" )  != std::string::npos &&
+		       doc.find( "window_obj" )  != std::string::npos,
+		       "A81h and all four are really in the document by name" );
+		Check( r.soloableLightCount >= 2,
+		       "A81h the example's emissive object is soloable afterwards -- it is a real light "
+		       "source, which is the claim the palette makes about it" );
+		pJob->release();
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -12169,6 +12505,8 @@ int main()
 	TestComposePhaseFirstLightRefusal();
 	TestPiecesPhaseLightsNeitherRefusedNorDisarming();
 	TestLightSceneWireShape();
+	TestAmbientLightIsAlwaysRefused();
+	TestPaletteAreaLightExampleParses();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

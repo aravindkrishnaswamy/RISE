@@ -6613,9 +6613,11 @@ namespace RISE
 
 			//! Arc 81: compose the ENTIRE lighting prompt host-side -- the
 			//! scene inventory, the camera, the world bounds, the session's
-			//! imagined subject/mood, the lights that already exist, the FULL
-			//! light palette with its registry grammar and a literal worked
-			//! example per kind, the caller's (already length-capped) notes,
+			//! imagined subject/mood, the lights that already exist, the light
+			//! palette with its registry grammar (area light FIRST and with the
+			//! one complete worked example -- see kLightPalette's doc for why
+			//! the three zero-area kinds carry none, and why ambient_light is
+			//! absent), the caller's (already length-capped) notes,
 			//! and the output instruction.  `rejectionText` empty builds the
 			//! FIRST prompt; non-empty builds the ONE repair retry's, which is
 			//! the first plus the exact rejection text and a request for the

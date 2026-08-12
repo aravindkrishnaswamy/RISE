@@ -76,6 +76,21 @@ Good starting points:
 Open [docs/SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) and audit
 each section against your scene:
 
+0. **§3.5 Which light kind.**  Reach for an **area light** first: an
+   object wearing a `lambertian_luminaire_material`, in most cases a
+   `clippedplane_geometry` rectangle — painter → luminaire material →
+   geometry → `standard_object`, the four-chunk chain spelled out in
+   [§3.5](../SCENE_CONVENTIONS.md#35-which-light-kind-to-use--area-lights-are-the-norm).
+   It is the only kind with real area, so it is the only one that gives
+   soft shadows and physical falloff.  `hosek_wilkie_skylight` is fine
+   (a physically based sky).  `omni_light` / `spot_light` /
+   `directional_light` are zero-area idealizations — use them only when
+   a hard, sourceless key is what you actually want.  **Never author
+   `ambient_light`**: it adds the same `color · power` at every shading
+   point, casts no shadow ray, and has no falloff.  A dark path-traced
+   scene wants a bigger or brighter emitter, or a sky, not a constant
+   term.  (Convention, not enforcement, for hand-authored scenes; the
+   agent surface refuses `ambient_light` outright.)
 1. **§1 Directional light direction.**  `direction` points FROM
    surface TO light source.  For a camera at `+Z` looking at the
    origin, your `direction` vector should have a **positive Z**
@@ -415,6 +430,12 @@ object binds it.
 - **Lighting a test scene with `omni_light power 3.14` at tens of
   units.**  That's the directional-light starting value; omnis need
   `power ≈ π·r²`.
+- **Reaching for `omni_light` / `spot_light` / `directional_light` as
+  the default way to light a scene, or for `ambient_light` at all.**
+  Area lights (an object wearing a luminaire material) are the norm;
+  the zero-area kinds are for special cases and ambient light is an
+  anachronism with no shadow and no falloff.  See
+  [SCENE_CONVENTIONS.md §3.5](../SCENE_CONVENTIONS.md#35-which-light-kind-to-use--area-lights-are-the-norm).
 
 ## Concrete Example
 

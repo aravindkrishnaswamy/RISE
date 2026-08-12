@@ -301,3 +301,73 @@ duplicate-name contract, capability refusal and the spend cap, the COMPOSE
 gate with its cap/give-up/protocol-off arms, the PIECES seam, and the wire
 shape.  `SourceHygieneTest` gains an A81 pin block holding both model-facing
 surfaces to the same palette, naming and measurement clauses.
+
+---
+
+## 8. CORRECTION (2026-08-12) — the palette was wrong on the physics
+
+§4 presented six light kinds as a flat, neutral palette, on the reasoning
+that naming the three unused ones IS the hypothesis.  That was right about
+discovery and **wrong about physics**, and the first live run took the
+option it should never have been offered: `ambient_light`.
+
+Project owner, 2026-08-12: *"ambient light should NEVER be used.  Its an
+anachronism.  Non physically based lights like point, directional and spot
+should be used only extremely rarely and only for very special
+circumstances.  most scenes should use area lights (i.e. an object that is
+a luminary material, in most cases a rectangle).  We should encode this."*
+
+Three things changed; §1–§7 above are otherwise the record of what shipped.
+
+**(a) `ambient_light` is REFUSED, unconditionally.**  `insert_chunk`,
+`insert_chunks` (whole-batch, atomically), `light_scene`'s own
+admissibility pass, every scaffold verb (they route through
+`InsertChunks`), and `propose_patch`'s value-splice path all refuse it,
+through one shared message (`DescribeAmbientLightBan`).  It is **not** a
+fourth kind of phase gate: it never reaches `RefuseForPhase_`, spends no
+part of the shared 3-refusal cap, cannot trigger the give-up, and survives
+`--agent-build-protocol=off` — a permanent property of what this surface
+authors, not a sequencing rule.  Its ordering ahead of every other arm in
+`InsertChunk`/`InsertChunks` is load-bearing for exactly that reason:
+`ambient_light` is a Light chunk, so the arc-81 first-light phase arm would
+otherwise spend a phase refusal on a chunk that is refused anyway.  The
+message is facts only — what the kind does in this renderer (same
+`color * power` everywhere, no position, no direction, no shadow ray, so no
+shadow and no falloff) and the four-chunk area-light chain that fills the
+role.
+
+**(b) The palette is restructured by COPYABILITY, not by exhortation** —
+the one lever this workstream has measured repeatedly (an example moves
+copying; prose advice measures ~0).  The AREA light goes FIRST and is the
+only entry carrying a complete, drop-in worked example (the
+`pt_jewel_vault` chain: `uniformcolor_painter` →
+`lambertian_luminaire_material` → `clippedplane_geometry` →
+`standard_object`).  `hosek_wilkie_skylight` keeps its schema and example —
+it is a physically based sky model, not an anachronism.  `omni_light`,
+`spot_light` and `directional_light` keep their registry schemas and **lose
+their examples**, under one shared note stating what they are (zero-area
+idealizations, no penumbra, nothing visible in frame) and that they are for
+special cases.  `ambient_light` is gone from the palette entirely.  No
+advice vocabulary was added: the prompt-hygiene ban ("dramatic", "key
+light", "three-point", "should use", …) still passes untouched.
+
+**(c) It is encoded in the repo, not only in the agent surface.**
+[docs/SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) §3.5 states the rule
+for hand-authored scenes with the same worked chain, and
+[docs/skills/effective-rise-scene-authoring.md](../skills/effective-rise-scene-authoring.md)
+makes it step 0 of the convention checklist plus an anti-pattern.  Both are
+explicit that the area-light preference is a **convention** — the parser
+accepts every light kind and existing scenes are unaffected — while the
+`ambient_light` refusal on the agent surface is **real enforcement**.
+
+**What this costs the measurement.**  §5's measurement 2 asked whether the
+three never-used kinds appear when the palette is presented flat.  For
+`ambient_light` that question is now closed by fiat rather than by data,
+and that is the intended trade: it is not a kind whose adoption anyone
+wants to measure.  The question stays live and unbiased for
+`hosek_wilkie_skylight` and for area lighting — with the caveat, stated
+plainly so no later reading mistakes it, that **area lighting is now
+privileged by ordering and by being the only worked example**, so its
+appearance rate is no longer a clean test of palette-in-a-clean-context.
+It is a test of the example-moves-copying lever, which is a different
+claim.

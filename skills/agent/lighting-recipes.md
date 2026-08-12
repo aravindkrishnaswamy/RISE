@@ -1,6 +1,35 @@
 # Lighting Recipes
 > hook: Read when adding or tuning lights — three-point setups, environment/IBL, emissive geometry, or when brightness/units look wrong.
 
+## Which light kind to use (read this first)
+
+**Most scenes should be lit by AREA LIGHTS** — an object wearing a
+`lambertian_luminaire_material`, in most cases a rectangle.  That is the
+only kind with real area, so it is the only one that gives soft shadows
+and physical falloff, and it is what "Emissive geometry (area light)"
+below builds.  Reach for it first.
+
+`hosek_wilkie_skylight` is fine — a physically based analytic sun-and-sky
+(see "Environment / IBL").
+
+`omni_light`, `spot_light` and `directional_light` are **zero-area
+idealizations**: the light arrives from a single point or from infinity,
+their shadows have hard edges with no penumbra at any distance, and
+nothing about them appears in the frame.  Use them for the special cases
+that want exactly that — a stand-in sun with no sky, a hard key, a cheap
+probe while iterating — not as the default way to light a scene.  The
+three-point recipe immediately below is written with them because it is
+the cheap, fast setup; swapping its key for an emissive quad is a
+one-for-one substitution and gives softer, more physical shadows.
+
+**`ambient_light` is refused.**  `insert_chunk`, `insert_chunks`,
+`light_scene` and the value-splice path all reject it, in every phase and
+with the build protocol off.  It contributes the same `color * power` at
+every shading point, has no position and no direction, and casts no
+shadow ray — so it produces neither a shadow nor any falloff.  A
+path-traced scene that reads too dark wants a bigger or brighter emitting
+surface, or a sky, not a constant term.
+
 ## Three-point lighting
 
 Key = a spot aimed at the subject; fill = a dim omni opposite the key;
@@ -424,8 +453,9 @@ alignment with the container's new position.
 
 ## Power / units guidance
 
-- Directional & ambient: radiance = `color * power`, no distance
-  falloff.  `power 3.14` is a good starting key.
+- Directional: radiance = `color * power`, no distance falloff.
+  `power 3.14` is a good starting key.  (`ambient_light` is refused —
+  see "Which light kind to use" at the top.)
 - Omni & spot: `color * power / r^2` — scale power with the SQUARE of
   the distance (a light 10 units away needs ~100x the power of one at
   1 unit).
