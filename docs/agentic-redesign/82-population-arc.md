@@ -239,3 +239,54 @@ render as a model actually meets it.  `AgentProposeRenderTest` (b3): the
 population fact on a four-object, two-geometry, one-repeated scene.
 `SourceHygieneTest` gains an A82 pin block holding both model-facing surfaces
 to the contract, the one-shot, the pieces seam and the before/after report.
+
+---
+
+## 7. RESULT — first live run (2026-08-12, N=1)
+
+`evals/runs/imagine_s6_population`, undersea subject, gemini-3.6-flash.
+
+| | objects | distinct geos | repeats | SDF parts |
+|---|---|---|---|---|
+| Fable benchmark | 47 | 18 | 38 (81%) | 131 |
+| **this run** | **34** | 21 | **21 (61%)** | **104** |
+| previous run (arc 81) | 16 | — | ~0 | 87 |
+| arc 79 | 12 | — | 0 | 82 built / 2 kept |
+
+Object count **doubled**; the reuse ratio went from near zero to 61% against
+the frontier's 81%.  The gate fired once and `populate_scene` ran once — no
+working around it.  Zero rejected repeats: every geometry and material it
+named existed, so the inventory listing gave the builder what it needed.
+
+The repeats it chose are the right ones — brain corals ×3, staghorn ×3,
+anemones ×3, fish body and tail ×3 — distributed left and right along the
+seabed rather than piled at the origin.  **Population is the largest
+single-arc movement in this workstream since the clean room itself.**
+
+### 7.1 The failure the count cannot see (§5 measurement 4)
+
+Floating white bars hang in the water on the right and below the left
+jellyfish: **orphaned repeats** — tentacle geometry placed without the bell
+that belongs above it.  A repeat of a multi-part creature is only coherent if
+its parts are repeated TOGETHER with a shared transform, and nothing in this
+pass knows that `jellyfish_bell` and `jellyfish_tentacles` are one creature.
+The inventory lists geometries, not assemblies.
+
+This is the honest version of "do the repeats land sensibly": mostly yes, and
+where they do not, the cause is structural rather than careless.  The fix is
+not a better scatter — it is that the pass needs to repeat GROUPS.  Arc-78
+attribution already knows which chunks belong to which element, which is
+exactly the grouping this lacks; wiring that in is the obvious next slice.
+
+### 7.2 An unforced regression worth watching
+
+`hosek_wilkie_skylight` appeared for the first time ever — the second
+never-used kind to show up since the palette was restructured.  But the AREA
+LIGHT that appeared in arc 81's run did NOT: zero luminaire materials this
+run, and nine lights of which eight are non-physical.
+
+Two runs, two different outcomes, same build for the lighting surface.  At
+N=1 each, that is variance, not a trend, and it is the clearest argument yet
+for the repeats the supervisor recommended before this arc.  It also means
+arc 81's "first area light" result must not be read as a settled behaviour
+change.

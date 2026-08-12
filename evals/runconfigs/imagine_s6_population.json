@@ -1,0 +1,15 @@
+{
+ "//": "Arc-82 population run (2026-08-12): same undersea subject/model as imagine_s5_lighting, now with populate_scene (standard_object repeats only, inventory-fed, example built from the live scene) forced by a one-shot gate on the first COMPOSE render. HEADLINE: object count and reuse ratio -- agent 16 objects with almost no reuse, benchmark 47 with 38 repeats (81%). Also: does the gate fire once or get worked around; repeat rejection rate (does it name geometries that exist); do repeats land sensibly or float/interpenetrate (the honest look, which no count can make); turn cost. RENDER ONLY by appending an output chunk -- never rewrite width/height, that regex corrupts box_geometry.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s6_population"
+}
