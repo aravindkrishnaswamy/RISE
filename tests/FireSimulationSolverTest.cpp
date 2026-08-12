@@ -320,44 +320,44 @@ int main()
 		owningExpansionFlux || flux.totalOutwardFlux[1+MethaneN2]!=0.0;
 	Check(owningExpansionOK && owningExpansionResidual<=2.0e-8 && owningExpansionFlux,
 		"V1 owning 3-D boundary stage consumes nonzero projection target and returns its conservative open flux");
-	OpenMACField3D imposedMomentumRate3D=relativeBuoyancyRate3D;
-	for( double& value : imposedMomentumRate3D.component[0] ) value=
-		ambientState3D.GasDensity()*3.0;
-	OpenBoundaryStage3DResult forcedOpenStage3D;
-	OpenMACField3D independentlyUnprojected3D=zeroOpenMomentum3D;
-	for( std::size_t face=0; face<independentlyUnprojected3D.component[0].size(); ++face ) {
-		independentlyUnprojected3D.component[0][face]=0.01*imposedMomentumRate3D.component[0][face];
+	bool allOwningAxesMatch=true;
+	for( unsigned int forcedAxis=0; forcedAxis<3; ++forcedAxis ) {
+		OpenMACField3D imposedMomentumRate3D=relativeBuoyancyRate3D;
+		for( double& value : imposedMomentumRate3D.component[forcedAxis] ) value=
+			ambientState3D.GasDensity()*3.0;
+		OpenMACField3D independentlyUnprojected3D=zeroOpenMomentum3D;
+		for( std::size_t face=0; face<independentlyUnprojected3D.component[forcedAxis].size();
+			++face ) independentlyUnprojected3D.component[forcedAxis][face]=
+			0.01*imposedMomentumRate3D.component[forcedAxis][face];
+		OpenBoundaryConfig3D forcedBoundary3D=openBoundary3D;
+		forcedBoundary3D.kind.fill(AdiabaticWallBoundary3D);
+		forcedBoundary3D.kind[2*forcedAxis]=PressureOpenBoundary3D;
+		forcedBoundary3D.kind[2*forcedAxis+1]=PressureOpenBoundary3D;
+		OpenBoundaryStage3DResult forcedOpenStage3D;
+		OpenMACProjection3DResult independentForcedProjection3D;
+		const bool forcedOwningOK=BuildOpenBoundaryStage3D(openShape3D,ambientCells3D,
+			std::vector<double>(openShape3D.CellCount(),300.0),zeroOpenMomentum3D,
+			imposedMomentumRate3D,std::vector<double>(openShape3D.CellCount(),0.0),
+			std::vector<double>(openShape3D.CellCount(),0.0),
+			std::vector<double>(openShape3D.CellCount(),0.0),forcedBoundary3D,300.0,300.0,
+			0.01,2.0e-8,fuel,thermochemistry,forcedOpenStage3D,&error) &&
+			ProjectPressureOpenMACVelocity3D(openShape3D,
+			std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+			independentlyUnprojected3D,std::vector<double>(openShape3D.CellCount(),0.0),
+			forcedBoundary3D,0.01,2.0e-8,independentForcedProjection3D,&error);
+		bool axisMatches=forcedOwningOK;
+		for( unsigned int axis=0; axisMatches && axis<3; ++axis ) for(
+			std::size_t face=0; face<forcedOpenStage3D.projection.velocityMPerS.component[axis].size();
+			++face ) axisMatches=axisMatches && Near(
+			forcedOpenStage3D.projection.velocityMPerS.component[axis][face],
+			independentForcedProjection3D.velocityMPerS.component[axis][face],2.0e-14);
+		double maximumForcedVelocity=0.0;
+		for( const double value : forcedOpenStage3D.projection.velocityMPerS.component[forcedAxis] )
+			maximumForcedVelocity=std::max(maximumForcedVelocity,std::fabs(value));
+		allOwningAxesMatch=allOwningAxesMatch && axisMatches && maximumForcedVelocity>0.0;
 	}
-	OpenMACProjection3DResult independentForcedProjection3D;
-	OpenBoundaryConfig3D forcedBoundary3D=openBoundary3D;
-	forcedBoundary3D.kind[2]=AdiabaticWallBoundary3D;
-	forcedBoundary3D.kind[3]=AdiabaticWallBoundary3D;
-	forcedBoundary3D.kind[4]=AdiabaticWallBoundary3D;
-	forcedBoundary3D.kind[5]=AdiabaticWallBoundary3D;
-	const bool forcedOwningOK=BuildOpenBoundaryStage3D(openShape3D,ambientCells3D,
-		std::vector<double>(openShape3D.CellCount(),300.0),zeroOpenMomentum3D,
-		imposedMomentumRate3D,std::vector<double>(openShape3D.CellCount(),0.0),
-		std::vector<double>(openShape3D.CellCount(),0.0),
-		std::vector<double>(openShape3D.CellCount(),0.0),forcedBoundary3D,300.0,300.0,
-		0.01,2.0e-8,fuel,thermochemistry,forcedOpenStage3D,&error) &&
-		ProjectPressureOpenMACVelocity3D(openShape3D,
-		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
-		independentlyUnprojected3D,std::vector<double>(openShape3D.CellCount(),0.0),
-		forcedBoundary3D,0.01,2.0e-8,independentForcedProjection3D,&error);
-	bool forcedOwningMatches=forcedOwningOK;
-	for( unsigned int axis=0; forcedOwningMatches && axis<3; ++axis ) for(
-		std::size_t face=0; face<forcedOpenStage3D.projection.velocityMPerS.component[axis].size();
-		++face ) forcedOwningMatches=forcedOwningMatches && Near(
-		forcedOpenStage3D.projection.velocityMPerS.component[axis][face],
-		independentForcedProjection3D.velocityMPerS.component[axis][face],2.0e-14);
-	if(!forcedOwningMatches) std::printf("V1 owning-force diagnostic: %s forced=%d independent=%d sizes=%zu/%zu first=%.17g/%.17g\n",
-		error.c_str(),forcedOwningOK?1:0,independentForcedProjection3D.velocityMPerS.component[0].empty()?0:1,
-		forcedOpenStage3D.projection.velocityMPerS.component[0].size(),
-		independentForcedProjection3D.velocityMPerS.component[0].size(),
-		forcedOpenStage3D.projection.velocityMPerS.component[0].empty()?0.0:forcedOpenStage3D.projection.velocityMPerS.component[0][0],
-		independentForcedProjection3D.velocityMPerS.component[0].empty()?0.0:independentForcedProjection3D.velocityMPerS.component[0][0]);
-	Check(forcedOwningMatches && forcedOpenStage3D.projection.velocityMPerS.component[0][0]!=0.0,
-		"V1 owning 3-D boundary stage applies its nonpressure momentum rate before projection");
+	Check(allOwningAxesMatch,
+		"V1 owning 3-D boundary stage applies each component of its nonpressure momentum rate");
 	OpenMACProjection3DResult openExpansion3D;
 	const bool openExpansion3DOK=ProjectPressureOpenMACVelocity3D(openShape3D,
 		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
@@ -473,6 +473,28 @@ int main()
 	Check(allOpenObliqueOK && independentYMinusHeadResidual<=
 		allOpenObliqueBoundary.pressureTolerancePa,
 		"V1 y-normal pressure-open head independently includes x and z tangential velocity");
+	double independentZMinusHeadResidual=0.0;
+	if(allOpenObliqueOK) for( std::size_t y=0; y<openShape3D.ny; ++y ) for(
+		std::size_t x=0; x<openShape3D.nx; ++x ) {
+		const std::size_t index=OpenBoundaryFaceLinearIndex3D(openShape3D,4,x,y);
+		const double normal=-allOpenObliqueProjection.velocityMPerS.component[2][
+			OpenMACFaceIndex3D(openShape3D,2,x,y,0)];
+		const double xTangent=0.5*(allOpenObliqueProjection.velocityMPerS.component[0][
+			OpenMACFaceIndex3D(openShape3D,0,x,y,0)]+
+			allOpenObliqueProjection.velocityMPerS.component[0][
+			OpenMACFaceIndex3D(openShape3D,0,x+1,y,0)]);
+		const double yTangent=0.5*(allOpenObliqueProjection.velocityMPerS.component[1][
+			OpenMACFaceIndex3D(openShape3D,1,x,y,0)]+
+			allOpenObliqueProjection.velocityMPerS.component[1][
+			OpenMACFaceIndex3D(openShape3D,1,x,y+1,0)]);
+		independentZMinusHeadResidual=std::max(independentZMinusHeadResidual,std::fabs(
+			allOpenObliqueProjection.boundaryDynamicPressurePa[4][index]+0.5*
+			allOpenObliqueBoundary.ambientDensityKGPerM3*(normal*normal+
+			xTangent*xTangent+yTangent*yTangent)));
+	}
+	Check(allOpenObliqueOK && independentZMinusHeadResidual<=
+		allOpenObliqueBoundary.pressureTolerancePa,
+		"V1 z-normal pressure-open head independently includes x and y tangential velocity");
 	bool productionTangentialConnected=openThrough3D.boundaryTangentialVelocityMPerS[0][0].size()==
 		OpenBoundaryFaceCount3D(openShape3D,0);
 	for( std::size_t z=0; productionTangentialConnected && z<openShape3D.nz; ++z ) for(
@@ -499,35 +521,52 @@ int main()
 	}
 	Check(secondProductionTangent,
 		"V1 production projection returns the second pressure-open tangential component");
-	OpenBoundaryConfig3D seededInflowBoundary=throughBoundary3D;
-	for( unsigned int side=0; side<4; ++side ) seededInflowBoundary.priorInflow[side].assign(
-		OpenBoundaryFaceCount3D(openShape3D,side),true);
-	OpenMACProjection3DResult reversedToOutflow3D;
-	const bool reversalOK=ProjectPressureOpenMACVelocity3D(openShape3D,
-		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
-		throughMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
-		seededInflowBoundary,0.01,2.0e-8,reversedToOutflow3D,&error);
-	if(!reversalOK) std::printf("V1 reversal diagnostic: %s\n",error.c_str());
-	Check(reversalOK &&
-		std::none_of(reversedToOutflow3D.inflow[1].begin(),reversedToOutflow3D.inflow[1].end(),
-		[]( const bool value ){ return value; }),
-		"V1 production active set clears a stale inflow class when the face reverses to outflow");
-	OpenBoundaryFluxField3D reversedFluxField;
 	std::vector<ConservativeVector> hotOutflowCells(openShape3D.CellCount(),
 		ToConservativeVector(PhysicalMixtureLineState(fuel,thermochemistry,0.2,800.0)));
-	bool reversedFluxOK=BuildOpenBoundaryFluxField3D(openShape3D,hotOutflowCells,
-		std::vector<double>(openShape3D.CellCount(),800.0),
-		std::vector<double>(openShape3D.CellCount(),0.01),
-		std::vector<double>(openShape3D.CellCount(),0.1),seededInflowBoundary,
-		reversedToOutflow3D,300.0,300.0,fuel,thermochemistry,reversedFluxField,&error);
-	const std::size_t rightFace=OpenMACFaceIndex3D(openShape3D,0,openShape3D.nx,0,0);
-	for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
-		reversedFluxOK=reversedFluxOK && Near(reversedFluxField.side[1][0].
-			totalOutwardFlux[component],reversedToOutflow3D.velocityMPerS.component[0][rightFace]*
-			hotOutflowCells[openShape3D.Index(openShape3D.nx-1,0,0)][component],2.0e-14);
+	bool allSideReversals=true;
+	for( unsigned int reversedSide=0; reversedSide<6; ++reversedSide ) {
+		const unsigned int reversedAxis=reversedSide/2;
+		const bool positiveSide=(reversedSide%2)!=0;
+		const double coordinateSign=positiveSide?1.0:-1.0;
+		OpenBoundaryConfig3D seededInflowBoundary=openBoundary3D;
+		seededInflowBoundary.kind.fill(AdiabaticWallBoundary3D);
+		seededInflowBoundary.kind[2*reversedAxis]=PressureOpenBoundary3D;
+		seededInflowBoundary.kind[2*reversedAxis+1]=PressureOpenBoundary3D;
+		for( unsigned int side=0; side<6; ++side ) seededInflowBoundary.priorInflow[side].assign(
+			OpenBoundaryFaceCount3D(openShape3D,side),side==reversedSide);
+		OpenMACField3D outwardMomentum3D=zeroOpenMomentum3D;
+		for( double& value : outwardMomentum3D.component[reversedAxis] ) value=
+			coordinateSign*ambientState3D.GasDensity()*0.1;
+		OpenMACProjection3DResult reversedToOutflow3D;
+		bool reversalOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+			std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+			outwardMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+			seededInflowBoundary,0.01,2.0e-8,reversedToOutflow3D,&error);
+		reversalOK=reversalOK && std::none_of(reversedToOutflow3D.inflow[reversedSide].begin(),
+			reversedToOutflow3D.inflow[reversedSide].end(),[]( const bool value ){ return value; });
+		OpenBoundaryFluxField3D reversedFluxField;
+		bool reversedFluxOK=reversalOK && BuildOpenBoundaryFluxField3D(openShape3D,
+			hotOutflowCells,std::vector<double>(openShape3D.CellCount(),800.0),
+			std::vector<double>(openShape3D.CellCount(),0.01),
+			std::vector<double>(openShape3D.CellCount(),0.1),seededInflowBoundary,
+			reversedToOutflow3D,300.0,300.0,fuel,thermochemistry,reversedFluxField,&error);
+		std::size_t x=0,y=0,z=0,cx=0,cy=0,cz=0;
+		if(reversedAxis==0){x=positiveSide?openShape3D.nx:0;cx=positiveSide?openShape3D.nx-1:0;}
+		if(reversedAxis==1){y=positiveSide?openShape3D.ny:0;cy=positiveSide?openShape3D.ny-1:0;}
+		if(reversedAxis==2){z=positiveSide?openShape3D.nz:0;cz=positiveSide?openShape3D.nz-1:0;}
+		const std::size_t face=OpenMACFaceIndex3D(openShape3D,reversedAxis,x,y,z);
+		const std::size_t cell=openShape3D.Index(cx,cy,cz);
+		const double outwardVelocity=coordinateSign*
+			reversedToOutflow3D.velocityMPerS.component[reversedAxis][face];
+		for( std::size_t component=0; reversedFluxOK &&
+			component<MethaneConservativeDimension; ++component ) reversedFluxOK=
+			reversedFluxOK && Near(reversedFluxField.side[reversedSide][0].
+			totalOutwardFlux[component],outwardVelocity*hotOutflowCells[cell][component],2.0e-14);
+		allSideReversals=allSideReversals && reversedFluxOK &&
+			reversedFluxField.side[reversedSide][0].nonadvectiveEnergyOutwardFlux==0.0;
 	}
-	Check(reversedFluxOK && reversedFluxField.side[1][0].nonadvectiveEnergyOutwardFlux==0.0,
-		"V1 same-stage reversal immediately switches to interior donor and suppresses outflow diffusion");
+	Check(allSideReversals,
+		"V1 every side reclassifies stale inflow and immediately uses interior outflow flux");
 	const double jacobianAmbientDensity=ambientState3D.GasDensity();
 	const double jacobianFaceDensity=4.0*jacobianAmbientDensity;
 	const double jacobianTimeStep=0.01,jacobianWidth=openShape3D.cellWidthM;
@@ -658,11 +697,29 @@ int main()
 		"V1 pressure-open projection rejects overflowing grid products before allocation");
 	OpenBoundaryConfig3D invalidKindBoundary=openBoundary3D;
 	invalidKindBoundary.kind[0]=99u;
+	Check(!BuildOpenBoundaryFlux3D(ambientCells3D[0],300.0,0.0,99u,false,
+		openBoundary3D,300.0,300.0,0.0,0.0,openShape3D.cellWidthM,fuel,
+		thermochemistry,rejectedOpenFlux,&error),
+		"V1 scalar boundary helper rejects an unknown boundary discriminant directly");
 	Check(!ProjectPressureOpenMACVelocity3D(openShape3D,
 		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
 		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
 		invalidKindBoundary,0.01,1.0e-8,rejectedOpenProjection,&error),
 		"V1 pressure-open projection rejects an unknown boundary discriminant before layout");
+	OpenMACProjection3DResult preservedFinalProjection;
+	preservedFinalProjection.maximumDivergenceResidualPerS=123.0;
+	OpenMACProjection3DResult overflowingFinalStage0=openRest3D;
+	for( unsigned int axis=0; axis<3; ++axis ) std::fill(
+		overflowingFinalStage0.velocityMPerS.component[axis].begin(),
+		overflowingFinalStage0.velocityMPerS.component[axis].end(),
+		2.0*std::sqrt(std::numeric_limits<double>::max()));
+	Check(!ProjectPressureOpenMACVelocity3DFinal(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		openBoundary3D,overflowingFinalStage0,openRest3D,0.01,1.0e-8,
+		preservedFinalProjection,&error) &&
+		preservedFinalProjection.maximumDivergenceResidualPerS==123.0,
+		"V1 rejected final projection preserves the previously accepted output transactionally");
 	PeriodicMACShape subnormalWidthShape=openShape3D;
 	subnormalWidthShape.nx=2;subnormalWidthShape.ny=2;subnormalWidthShape.nz=2;
 	subnormalWidthShape.cellWidthM=1.0e-320;
@@ -715,61 +772,89 @@ int main()
 				(finalOpen.velocityMPerS[0] < -1.0e-9 ? false : stage1Inflow))),
 			"V1 final open projection uses the Heun indicator-integrated head");
 	}
-	for( unsigned int classCode=0; classCode<4; ++classCode ) {
+	for( unsigned int normalAxis=0; normalAxis<3; ++normalAxis ) for(
+		unsigned int classCode=0; classCode<4; ++classCode ) {
 		OpenMACProjection3DResult stage0=openRest3D,stage1=openRest3D;
+		const double stage0Velocity[3]={0.2,0.1,0.05};
+		const double stage1Velocity[3]={0.4,0.3,0.07};
 		for( unsigned int axis=0; axis<3; ++axis ) {
 			std::fill(stage0.velocityMPerS.component[axis].begin(),
-				stage0.velocityMPerS.component[axis].end(),axis==0?0.2:(axis==1?0.1:0.05));
+				stage0.velocityMPerS.component[axis].end(),stage0Velocity[axis]);
 			std::fill(stage1.velocityMPerS.component[axis].begin(),
-				stage1.velocityMPerS.component[axis].end(),axis==0?0.4:(axis==1?0.3:0.07));
+				stage1.velocityMPerS.component[axis].end(),stage1Velocity[axis]);
 		}
 		for( unsigned int side=0; side<6; ++side ) {
 			std::fill(stage0.inflow[side].begin(),stage0.inflow[side].end(),false);
 			std::fill(stage1.inflow[side].begin(),stage1.inflow[side].end(),false);
 		}
-		std::fill(stage0.inflow[0].begin(),stage0.inflow[0].end(),(classCode&1u)!=0);
-		std::fill(stage1.inflow[0].begin(),stage1.inflow[0].end(),(classCode&2u)!=0);
+		const unsigned int testedSide=2*normalAxis;
+		std::fill(stage0.inflow[testedSide].begin(),stage0.inflow[testedSide].end(),
+			(classCode&1u)!=0);
+		std::fill(stage1.inflow[testedSide].begin(),stage1.inflow[testedSide].end(),
+			(classCode&2u)!=0);
+		OpenBoundaryConfig3D finalBoundary3D=openBoundary3D;
+		finalBoundary3D.kind.fill(AdiabaticWallBoundary3D);
+		finalBoundary3D.kind[testedSide]=PressureOpenBoundary3D;
+		finalBoundary3D.kind[testedSide+1]=PressureOpenBoundary3D;
 		OpenMACProjection3DResult finalOpen3D;
 		const bool final3DOK=ProjectPressureOpenMACVelocity3DFinal(openShape3D,
 			std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
 			zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
-			throughBoundary3D,stage0,stage1,0.01,2.0e-8,finalOpen3D,&error);
+			finalBoundary3D,stage0,stage1,0.01,2.0e-8,finalOpen3D,&error);
+		const double speed0=stage0Velocity[0]*stage0Velocity[0]+
+			stage0Velocity[1]*stage0Velocity[1]+stage0Velocity[2]*stage0Velocity[2];
+		const double speed1=stage1Velocity[0]*stage1Velocity[0]+
+			stage1Velocity[1]*stage1Velocity[1]+stage1Velocity[2]*stage1Velocity[2];
 		const double expectedFullHead=-0.25*ambientState3D.GasDensity()*
-			(((classCode&1u)?0.2*0.2+0.1*0.1+0.05*0.05:0.0)+
-			 ((classCode&2u)?0.4*0.4+0.3*0.3+0.07*0.07:0.0));
-		bool exactIntegratedHead=final3DOK;
-		exactIntegratedHead=exactIntegratedHead && finalOpen3D.stepAverageDynamicPressurePa.size()==
-			openShape3D.CellCount() && finalOpen3D.velocityMPerS.component[0].size()==
-			OpenMACFaceCount3D(openShape3D,0) && finalOpen3D.momentumKGPerM2S.component[0].size()==
-			OpenMACFaceCount3D(openShape3D,0) && finalOpen3D.boundaryDynamicPressurePa[0].size()==
-			OpenBoundaryFaceCount3D(openShape3D,0);
-		for( const double pressure : finalOpen3D.boundaryDynamicPressurePa[0] ) {
+			(((classCode&1u)?speed0:0.0)+((classCode&2u)?speed1:0.0));
+		bool exactIntegratedHead=final3DOK && finalOpen3D.stepAverageDynamicPressurePa.size()==
+			openShape3D.CellCount() && finalOpen3D.boundaryDynamicPressurePa[testedSide].size()==
+			OpenBoundaryFaceCount3D(openShape3D,testedSide);
+		for( unsigned int axis=0; exactIntegratedHead && axis<3; ++axis ) {
+			exactIntegratedHead=finalOpen3D.velocityMPerS.component[axis].size()==
+				OpenMACFaceCount3D(openShape3D,axis) &&
+				finalOpen3D.momentumKGPerM2S.component[axis].size()==
+				OpenMACFaceCount3D(openShape3D,axis);
+			for( std::size_t face=0; exactIntegratedHead &&
+				face<finalOpen3D.velocityMPerS.component[axis].size(); ++face )
+				exactIntegratedHead=Near(finalOpen3D.momentumKGPerM2S.component[axis][face],
+					finalOpen3D.faceDensityKGPerM3.component[axis][face]*
+					finalOpen3D.velocityMPerS.component[axis][face],2.0e-14);
+		}
+		for( const double pressure : finalOpen3D.boundaryDynamicPressurePa[testedSide] )
 			exactIntegratedHead=exactIntegratedHead && Near(pressure,expectedFullHead,2.0e-15);
-		}
 		bool boundaryVelocityEquation=final3DOK;
-		for( std::size_t z=0; boundaryVelocityEquation && z<openShape3D.nz; ++z ) for(
-			std::size_t y=0; y<openShape3D.ny; ++y ) {
-			const std::size_t face=OpenMACFaceIndex3D(openShape3D,0,0,y,z);
-			const std::size_t cell=openShape3D.Index(0,y,z);
-			const std::size_t index=OpenBoundaryFaceLinearIndex3D(openShape3D,0,y,z);
-			const double expectedVelocity=-2.0*0.01/(
-				finalOpen3D.faceDensityKGPerM3.component[0][face]*openShape3D.cellWidthM)*
-				(finalOpen3D.stepAverageDynamicPressurePa[cell]-
-				finalOpen3D.boundaryDynamicPressurePa[0][index]);
-			boundaryVelocityEquation=boundaryVelocityEquation && Near(
-				finalOpen3D.velocityMPerS.component[0][face],expectedVelocity,2.0e-14);
-			if(classCode!=0) boundaryVelocityEquation=boundaryVelocityEquation &&
-				finalOpen3D.velocityMPerS.component[0][face]!=0.0;
-		}
-		const bool expectedEndpointLeft=finalOpen3D.velocityMPerS.component[0][0]>
-			throughBoundary3D.velocityToleranceMPerS ? true :
-			(finalOpen3D.velocityMPerS.component[0][0]<-throughBoundary3D.velocityToleranceMPerS ?
-			false:(classCode&2u)!=0);
+		const std::size_t firstCount=normalAxis==0?openShape3D.ny:openShape3D.nx;
+		const std::size_t secondCount=normalAxis==2?openShape3D.ny:openShape3D.nz;
+		for( std::size_t second=0; boundaryVelocityEquation && second<secondCount; ++second )
+			for( std::size_t first=0; first<firstCount; ++first ) {
+				std::size_t x=0,y=0,z=0;
+				if(normalAxis==0){y=first;z=second;}
+				if(normalAxis==1){x=first;z=second;}
+				if(normalAxis==2){x=first;y=second;}
+				const std::size_t face=OpenMACFaceIndex3D(openShape3D,normalAxis,x,y,z);
+				const std::size_t cell=openShape3D.Index(x,y,z);
+				const std::size_t index=OpenBoundaryFaceLinearIndex3D(openShape3D,
+					testedSide,first,second);
+				const double expectedVelocity=-2.0*0.01/(
+					finalOpen3D.faceDensityKGPerM3.component[normalAxis][face]*
+					openShape3D.cellWidthM)*(finalOpen3D.stepAverageDynamicPressurePa[cell]-
+					finalOpen3D.boundaryDynamicPressurePa[testedSide][index]);
+				boundaryVelocityEquation=boundaryVelocityEquation && Near(
+					finalOpen3D.velocityMPerS.component[normalAxis][face],expectedVelocity,2.0e-14);
+				if(classCode!=0) boundaryVelocityEquation=boundaryVelocityEquation &&
+					finalOpen3D.velocityMPerS.component[normalAxis][face]!=0.0;
+			}
+		const double endpointVelocity=finalOpen3D.velocityMPerS.component[normalAxis][0];
+		const bool expectedEndpoint=endpointVelocity>finalBoundary3D.velocityToleranceMPerS ?
+			true:(endpointVelocity<-finalBoundary3D.velocityToleranceMPerS ? false:
+			(classCode&2u)!=0);
 		Check(final3DOK && exactIntegratedHead && boundaryVelocityEquation &&
-			finalOpen3D.inflow[0].size()==
-			OpenBoundaryFaceCount3D(openShape3D,0) && finalOpen3D.inflow[0][0]==expectedEndpointLeft &&
+			finalOpen3D.inflow[testedSide].size()==
+			OpenBoundaryFaceCount3D(openShape3D,testedSide) &&
+			finalOpen3D.inflow[testedSide][0]==expectedEndpoint &&
 			finalOpen3D.maximumDivergenceResidualPerS<=2.0e-8,
-			"V1 production 3-D R2 projection uses full-vector Heun integrated head for every class switch");
+			"V1 production 3-D R2 covers every normal/tangent role and class switch");
 	}
 
 	// V2: a discontinuous-density, nonzero-divergence projection uses the

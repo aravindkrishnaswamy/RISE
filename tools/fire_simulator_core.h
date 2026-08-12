@@ -2568,7 +2568,7 @@ namespace RISE
 			const OpenMACProjection3DResult& stage1,
 			const double deltaTimeS,
 			const double absoluteTolerancePerS,
-			OpenMACProjection3DResult& result,
+			OpenMACProjection3DResult& publishedResult,
 			std::string* error = 0
 			)
 		{
@@ -2580,7 +2580,7 @@ namespace RISE
 				return Fail(error,"fire solver final 3-D pressure-open input is malformed");
 			}
 			const std::size_t cellCount=shape.CellCount();
-			result=OpenMACProjection3DResult();
+			OpenMACProjection3DResult result;
 			for( std::size_t cell=0; cell<cellCount; ++cell ) if(
 				!std::isfinite(gasDensityKGPerM3[cell]) || gasDensityKGPerM3[cell]<=0.0 ||
 				!std::isfinite(divergenceTargetPerS[cell]) ) return Fail(error,
@@ -2817,6 +2817,7 @@ namespace RISE
 					"fire solver final 3-D open momentum overflowed");
 			}
 			PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,result);
+			publishedResult=result;
 			return true;
 		}
 
