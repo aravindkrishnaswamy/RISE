@@ -1794,20 +1794,62 @@ namespace RISE
 			std::vector<double> faceAlpha;
 			std::vector<double> divergenceTargetPerS;
 			std::vector<double> picardResidualPerS;
+			std::vector<double> diffusivityM2PerS;
+			std::vector<double> conductivityWPerMK;
+			std::vector<double> dynamicViscosityPaS;
 		};
+
+		inline bool BuildPeriodicStageTransport(
+			const std::vector<ConservativeVector>& state,
+			const std::vector<double>& temperatureK,
+			const std::vector<double>& faceVelocityMPerS,
+			const double cellWidthM,
+			const bool dns,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			std::vector<double>& diffusivityM2PerS,
+			std::vector<double>& conductivityWPerMK,
+			std::vector<double>& dynamicViscosityPaS,
+			std::string* error = 0
+			)
+		{
+			const std::size_t count = state.size();
+			if( count < 3 || temperatureK.size() != count ||
+				faceVelocityMPerS.size() != count || !transport.IsValid() ||
+				!std::isfinite(cellWidthM) || cellWidthM <= 0.0 ) {
+				return Fail(error,"fire solver stage transport input is malformed");
+			}
+			diffusivityM2PerS.assign(count,0.0);
+			conductivityWPerMK.assign(count,0.0);
+			dynamicViscosityPaS.assign(count,0.0);
+			const double widths[3] = {cellWidthM,cellWidthM,cellWidthM};
+			for( std::size_t cell=0; cell<count; ++cell ) {
+				MethaneCellState physical = FromConservativeVector(state[cell]);
+				physical.temperatureK = temperatureK[cell];
+				double gradient[3][3] = {};
+				gradient[0][0] = (faceVelocityMPerS[cell]-
+					faceVelocityMPerS[(cell+count-1)%count])/cellWidthM;
+				CellTransportEvaluation evaluation;
+				if( !EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
+					transport,evaluation,error) ) return false;
+				diffusivityM2PerS[cell] = evaluation.totalDiffusivityM2PerS;
+				conductivityWPerMK[cell] = evaluation.effectiveConductivityWPerMK;
+				dynamicViscosityPaS[cell] = evaluation.effectiveViscosityPaS;
+			}
+			return true;
+		}
 
 		inline bool SolvePeriodicCoupledStage(
 			const std::vector<ConservativeVector>& state,
 			const std::vector<double>& unprojectedMomentum,
-			const std::vector<double>& diffusivityM2PerS,
-			const std::vector<double>& conductivityWPerMK,
-			const std::vector<double>& dynamicViscosityPaS,
 			const std::vector<ConservativeVector>& frozenSourcePerS,
 			const PeriodicTransportConfig& config,
 			const double projectionTolerancePerS,
 			const bool solvePredictorLimiter,
+			const bool dns,
 			const FireSimulationMethaneRecord& fuel,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
 			PeriodicCoupledStage& result,
 			std::string* error = 0
 			)
@@ -1816,12 +1858,18 @@ namespace RISE
 			if( !InvertPeriodicTemperatures(state,thermochemistry,temperature,error) ) return false;
 			std::vector<double> target(state.size(),0.0), priorMassFlux(state.size(),0.0);
 			std::vector<double> priorAlpha(state.size(),0.0);
+			std::vector<double> priorDiffusivity(state.size(),0.0),
+				priorConductivity(state.size(),0.0),priorViscosity(state.size(),0.0);
 			result.picardResidualPerS.clear();
 			for( std::size_t iteration=0; iteration<64; ++iteration ) {
 				PeriodicProjectionResult projection;
 				if( !ProjectPeriodicMACVelocity(GasDensityFromConservative(state),
 					unprojectedMomentum,target,config.cellWidthM,config.deltaTimeS,
 					projectionTolerancePerS,projection,error) ) return false;
+				std::vector<double> diffusivityM2PerS, conductivityWPerMK, dynamicViscosityPaS;
+				if( !BuildPeriodicStageTransport(state,temperature,projection.velocityMPerS,
+					config.cellWidthM,dns,thermochemistry,transport,diffusivityM2PerS,
+					conductivityWPerMK,dynamicViscosityPaS,error) ) return false;
 				PeriodicFluxPair flux;
 				if( !BuildPeriodicFluxPair(state,temperature,projection.velocityMPerS,
 					diffusivityM2PerS,conductivityWPerMK,config.cellWidthM,fuel,
@@ -1835,7 +1883,8 @@ namespace RISE
 				std::vector<double> nextTarget;
 				if( !PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,flux,
 					frozenSourcePerS,config.cellWidthM,thermochemistry,nextTarget,error) ) return false;
-				double residual = 0.0, massFluxResidual = 0.0, alphaResidual = 0.0;
+				double residual = 0.0, massFluxResidual = 0.0, alphaResidual = 0.0,
+					coefficientResidual = 0.0;
 				for( std::size_t cell=0; cell<state.size(); ++cell ) {
 					residual = std::max(residual,std::fabs(nextTarget[cell]-target[cell]));
 					const double massFlux = projection.faceDensityKGPerM3[cell]*
@@ -1845,21 +1894,32 @@ namespace RISE
 					priorMassFlux[cell] = massFlux;
 					if( solvePredictorLimiter && iteration ) alphaResidual = std::max(
 						alphaResidual,std::fabs(nextAlpha[cell]-priorAlpha[cell]));
+					if( iteration ) coefficientResidual = std::max({coefficientResidual,
+						std::fabs(diffusivityM2PerS[cell]-priorDiffusivity[cell]),
+						std::fabs(conductivityWPerMK[cell]-priorConductivity[cell]),
+						std::fabs(dynamicViscosityPaS[cell]-priorViscosity[cell])});
 				}
 				if( solvePredictorLimiter ) priorAlpha = nextAlpha;
+				priorDiffusivity = diffusivityM2PerS;
+				priorConductivity = conductivityWPerMK;
+				priorViscosity = dynamicViscosityPaS;
 				result.picardResidualPerS.push_back(std::max({residual,massFluxResidual/
-					std::max(config.cellWidthM,1.0e-300),alphaResidual}));
+					std::max(config.cellWidthM,1.0e-300),alphaResidual,coefficientResidual}));
 				target = nextTarget;
 				result.flux = flux;
 				result.projection = projection;
 				result.divergenceTargetPerS = target;
 				result.faceAlpha = nextAlpha;
+				result.diffusivityM2PerS = diffusivityM2PerS;
+				result.conductivityWPerMK = conductivityWPerMK;
+				result.dynamicViscosityPaS = dynamicViscosityPaS;
 				if( !RemainingMomentumRHS(state,projection.velocityMPerS,
 					dynamicViscosityPaS,frozenSourcePerS,config,
 					result.nonpressureMomentumRHS,error) ) return false;
 				if( residual <= projectionTolerancePerS &&
 					(!iteration || (massFluxResidual/config.cellWidthM <= projectionTolerancePerS &&
-						alphaResidual <= projectionTolerancePerS)) ) {
+						alphaResidual <= projectionTolerancePerS &&
+						coefficientResidual <= projectionTolerancePerS)) ) {
 					// Reproject once against the newly accepted target; the flux is
 					// rebuilt by the next iteration unless it was already unchanged.
 					if( iteration ) return true;
@@ -1884,25 +1944,24 @@ namespace RISE
 		inline bool AdvancePeriodicProjectedHeun(
 			const std::vector<ConservativeVector>& beginning,
 			const std::vector<double>& beginningMomentum,
-			const std::vector<double>& diffusivityM2PerS,
-			const std::vector<double>& conductivityWPerMK,
-			const std::vector<double>& dynamicViscosityPaS,
 			const std::vector<ConservativeVector>& frozenSourcePerS,
 			const PeriodicTransportConfig& config,
 			const double projectionTolerancePerS,
+			const bool dns,
 			const FireSimulationMethaneRecord& fuel,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
 			PeriodicProjectedHeunResult& result,
 			std::string* error = 0
 			)
 		{
 			const std::size_t count = beginning.size();
-			if( beginningMomentum.size() != count || dynamicViscosityPaS.size() != count ) {
+			if( beginningMomentum.size() != count ) {
 				return Fail(error,"fire solver projected-Heun momentum dimension is invalid");
 			}
-			if( !SolvePeriodicCoupledStage(beginning,beginningMomentum,diffusivityM2PerS,
-				conductivityWPerMK,dynamicViscosityPaS,frozenSourcePerS,config,projectionTolerancePerS,true,
-				fuel,thermochemistry,result.r0,error) ) return false;
+			if( !SolvePeriodicCoupledStage(beginning,beginningMomentum,frozenSourcePerS,
+				config,projectionTolerancePerS,true,dns,fuel,thermochemistry,transport,
+				result.r0,error) ) return false;
 			std::vector<ConservativeVector> predictor;
 			std::vector<double> predictorAlpha;
 			if( !ApplyPeriodicSharedFCT(beginning,result.r0.flux,frozenSourcePerS,
@@ -1922,9 +1981,9 @@ namespace RISE
 				predictorMomentum[face] = beginningMomentum[face]+config.deltaTimeS*(
 					result.r0.nonpressureMomentumRHS[face]-predictorMomentumDivergence[face]);
 			}
-			if( !SolvePeriodicCoupledStage(predictor,predictorMomentum,diffusivityM2PerS,
-				conductivityWPerMK,dynamicViscosityPaS,frozenSourcePerS,config,projectionTolerancePerS,false,
-				fuel,thermochemistry,result.r1,error) ) return false;
+			if( !SolvePeriodicCoupledStage(predictor,predictorMomentum,frozenSourcePerS,
+				config,projectionTolerancePerS,false,dns,fuel,thermochemistry,transport,
+				result.r1,error) ) return false;
 			PeriodicFluxPair averaged;
 			averaged.low.resize(count); averaged.high.resize(count);
 			averaged.nonadvectiveMass.resize(count); averaged.nonadvectiveEnergy.resize(count);
@@ -1963,9 +2022,9 @@ namespace RISE
 					result.r0.nonpressureMomentumRHS[face]+
 					result.r1.nonpressureMomentumRHS[face]-divergence0[face]-divergence1[face]);
 			}
-			if( !SolvePeriodicCoupledStage(result.conservative,heunMomentum,diffusivityM2PerS,
-				conductivityWPerMK,dynamicViscosityPaS,frozenSourcePerS,config,projectionTolerancePerS,false,
-				fuel,thermochemistry,result.r2,error) ) return false;
+			if( !SolvePeriodicCoupledStage(result.conservative,heunMomentum,frozenSourcePerS,
+				config,projectionTolerancePerS,false,dns,fuel,thermochemistry,transport,
+				result.r2,error) ) return false;
 			result.momentumKGPerM2S = result.r2.projection.momentumKGPerM2S;
 			result.velocityMPerS = result.r2.projection.velocityMPerS;
 			result.stepAveragePressurePa = result.r2.projection.pressureImpulsePa;
@@ -2401,6 +2460,58 @@ namespace RISE
 				result.sensibleEnergyJPerM3)/deltaTimeS;
 			return std::isfinite(acceptedCoolingWPerM3) ||
 				Fail(error,"fire solver accepted radiative exchange is invalid");
+		}
+
+		inline bool BuildFrozenMethaneSourcePacket(
+			const MethaneCellState& beginning,
+			const MethaneReactionStep& reactionStep,
+			const double ambientTemperatureK,
+			const double escapeFactor,
+			const FireSimulationMethaneRecord& fuel,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationGasOpacityRecord& opacity,
+			MethaneSourcePacket& result,
+			std::string* error = 0
+			)
+		{
+			MethaneSourcePacket reaction;
+			if( !BuildMethaneReactionPacket(beginning,fuel,reactionStep,reaction,error) ) return false;
+			MethaneCellState postReaction;
+			if( !ApplySourcePacket(beginning,reaction,thermochemistry,postReaction,error) ) return false;
+			MethaneCellState finalScratch;
+			double signedCoolingWPerM3 = 0.0;
+			if( !ApplyGasRadiationBackwardEuler(postReaction,ambientTemperatureK,
+				reactionStep.deltaTimeS,escapeFactor,thermochemistry,opacity,
+				finalScratch,signedCoolingWPerM3,error) ) return false;
+			result = reaction;
+			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+				result.constituentDelta[species] = finalScratch.constituent[species]-
+					beginning.constituent[species];
+			}
+			result.sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
+				beginning.sensibleEnergyJPerM3;
+			result.radiativeCoolingWPerM3 = signedCoolingWPerM3;
+			double massResidual = 0.0;
+			for( const double delta : result.constituentDelta ) massResidual += delta;
+			double elementResidual = 0.0;
+			const std::vector<double>& element = fuel.ElementMassFractionMatrix();
+			for( std::size_t row=0; row<fuel.ElementOrder().size(); ++row ) {
+				double residual = 0.0;
+				for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+					residual += element[row*MethaneSpeciesCount+species]*
+						result.constituentDelta[species];
+				}
+				elementResidual = std::max(elementResidual,std::fabs(residual));
+			}
+			const double scale = std::max(1.0,beginning.TotalDensity());
+			const double tolerance = 4096.0*std::numeric_limits<double>::epsilon()*scale;
+			const double expectedEnergy = reaction.sensibleEnergyDeltaJPerM3-
+				reactionStep.deltaTimeS*signedCoolingWPerM3;
+			const double energyTolerance = 4096.0*std::numeric_limits<double>::epsilon()*
+				std::max(1.0,std::fabs(expectedEnergy));
+			return (std::fabs(massResidual) <= tolerance && elementResidual <= tolerance &&
+				std::fabs(result.sensibleEnergyDeltaJPerM3-expectedEnergy) <= energyTolerance) ||
+				Fail(error,"fire solver frozen source packet failed its mass/element/energy ledger");
 		}
 	}
 }

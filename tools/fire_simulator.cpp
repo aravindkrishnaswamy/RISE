@@ -86,8 +86,7 @@ int main( const int argc, const char* const argv[] )
 	}
 	const std::size_t count = 16;
 	std::vector<ConservativeVector> conservative(count,ToConservativeVector(state));
-	std::vector<double> momentum(count,state.GasDensity()*0.25), diffusivity(count,0.0);
-	std::vector<double> conductivity(count,0.0), viscosity(count,0.0);
+	std::vector<double> momentum(count,state.GasDensity()*0.25);
 	std::vector<ConservativeVector> source(count);
 	PeriodicTransportConfig config;
 	config.cellWidthM = 1.0/static_cast<double>(count);
@@ -95,8 +94,8 @@ int main( const int argc, const char* const argv[] )
 	config.ambientTemperatureK = 300.0;
 	config.adiabaticTemperatureK = 2500.0;
 	PeriodicProjectedHeunResult advanced;
-	if( !AdvancePeriodicProjectedHeun(conservative,momentum,diffusivity,
-		conductivity,viscosity,source,config,1.0e-11,fuel,fuel,advanced,&error) ) {
+	if( !AdvancePeriodicProjectedHeun(conservative,momentum,source,config,
+		1.0e-11,false,fuel,fuel,transport,advanced,&error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
 	double maximumVelocityError = 0.0;

@@ -380,12 +380,10 @@ int main()
 		ToConservativeVector(PhysicalMixtureLineState(fuel,thermochemistry,
 			0.2,800.0)));
 	std::vector<double> uniformMomentum(transportCells,0.25);
-	std::vector<double> zeroDiffusivity(transportCells,0.0);
-	std::vector<double> zeroViscosity(transportCells,0.0);
 	PeriodicProjectedHeunResult coupledTransport;
 	const bool coupledOK = AdvancePeriodicProjectedHeun(uniformState,uniformMomentum,
-		zeroDiffusivity,zeroConductivity,zeroViscosity,zeroSource,transportConfig,1.0e-11,
-		fuel,thermochemistry,coupledTransport,&error);
+		zeroSource,transportConfig,1.0e-11,false,fuel,thermochemistry,transport,
+		coupledTransport,&error);
 	if( !coupledOK ) std::printf("V2/V3 coupled diagnostic: %s\n",error.c_str());
 	Check(coupledOK && !coupledTransport.r0.picardResidualPerS.empty() &&
 		!coupledTransport.r1.picardResidualPerS.empty() &&
@@ -456,6 +454,16 @@ int main()
 	Check(ApplySourcePacket(beginning,packet,thermochemistry,reactedState,&error) &&
 		reactedState.temperatureK > beginning.temperatureK,
 		"V4 packet inversion produces a hotter admissible physical state");
+	MethaneSourcePacket completePacket;
+	Check(BuildFrozenMethaneSourcePacket(beginning,step,300.0,0.5,fuel,
+		thermochemistry,opacity,completePacket,&error) &&
+		completePacket.radiativeCoolingWPerM3 > 0.0 &&
+		completePacket.sensibleEnergyDeltaJPerM3 < packet.sensibleEnergyDeltaJPerM3,
+		"V4 one provisional scratch trajectory freezes reaction and radiation into one packet");
+	MethaneCellState completeSourceState;
+	Check(ApplySourcePacket(beginning,completePacket,thermochemistry,
+		completeSourceState,&error) && completeSourceState.temperatureK > beginning.temperatureK,
+		"V4 complete frozen packet is consumed once by the conservative source map");
 	MethaneReactionStep overflowRateStep = step;
 	overflowRateStep.deltaTimeS = 1.0e-310;
 	overflowRateStep.mixingTimeS = std::numeric_limits<double>::denorm_min();
