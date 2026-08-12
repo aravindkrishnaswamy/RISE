@@ -4581,6 +4581,30 @@ medium in Phase C.
    implying measured coverage. Raw `.par` bytes are not redistributed
    (HITRAN publishes a citation policy, no licence); 36 source digests are
    pinned and the regeneration tools committed.
+   **Solver bring-up rule (r51).** The per-fuel structure below is already
+   staged, so solver development takes the **first fuel whose species set is
+   fully open, as a complete physical record** — not a synthetic closure.
+   That fuel is **methane**: CH₄/O₂/N₂/CO₂/H₂O/CO/C(gr) are all in the
+   Apache-2.0 NASA Glenn set, LHV is computed from the record's own ΔfH so
+   the energy ledger closes self-consistently, atom-balanced products and
+   the element matrix are arithmetic, and **methane has no condensable
+   organic stream at all**, so the owner-gated levoglucosan and
+   condensed-organic-c_p fields do not appear in it. The derived
+   `conservative_reconstruction_v1` (N_A) and
+   `nonadvective_flux_projection_v1` (N_C) closures are exact linear algebra
+   over that species set (§3.7, solver spec), so they are *computed* with
+   their rational rank/projector certificates, never measured — they were
+   never blocked on data. **A synthetic closure must not be the primary
+   verification substrate**: rank and projector certificates checked only
+   against a contrived matrix can mask a structural property of a real
+   element matrix (the shared carbon column across CO₂/CO/soot being the
+   obvious case), and a parallel synthetic artifact is free to drift from
+   the physical record. Synthetic closures remain **required** for
+   *contrived* V-tier fixtures — deliberate rank deficiency, manufactured
+   solutions, RED cases that must fail — and carry distinct record IDs under
+   the same fixture-versus-preset separation §12's optics records use.
+   Fuels whose records remain owner-gated (wax's condensable stream, wood)
+   stay fail-closed while their gas-phase sides are completed.
 6. **(thermochemistry)** Freeze the baseline air plus per-fuel
    `gas_thermochemistry` records required by §3.3 and the carbon/condensed
    `aerosol_thermochemistry` record required by §3.4: source/provenance for every

@@ -1006,3 +1006,35 @@ it was already tried and refuted here.
   (a future transmission/band-resolved capability), and the CO₂ visible
   bound is explicitly a 565–780 nm bound with a physical-negligibility
   argument required for 380–565 nm.
+
+- **r51 (2026-08-11):** solver bring-up rule, from the Phase-C agent's
+  increment-3 stop. The thermochemistry generator emits a property subset
+  lacking the element matrix, atom-balanced closure, LHV, product
+  coefficients, injected compositions, and the N_A/N_C closures; the agent
+  proposed either a strictly synthetic verification closure or expanding
+  the physical record first. **Neither as framed.** Two facts settle it.
+  (1) N_A (`conservative_reconstruction_v1`) and N_C
+  (`nonadvective_flux_projection_v1`) are *pure linear algebra over the
+  species set* — orthonormal nullspace bases for A and C=[A;(0,1,…,1)] with
+  exact rational rank factorizations and pivot-minor certificates. They are
+  computed, never measured, and were therefore never blocked on owner-gated
+  data; the blocker is only that the generator does not yet emit a complete
+  fuel record. (2) **Methane is fully open and fully ungated**: every
+  species is in the Apache-2.0 NASA Glenn set, LHV follows from the
+  record's own ΔfH (closing the energy ledger self-consistently), the
+  element matrix and products are arithmetic, and methane has no
+  condensable organic stream — so the owner-gated levoglucosan and
+  condensed-organic-c_p fields simply do not occur in it. Bring-up
+  therefore uses a **complete physical methane record**, with synthetic
+  closures restricted to contrived V-tier fixtures (rank deficiency,
+  manufactured solutions, RED cases) under distinct record IDs. Rationale
+  for refusing a synthetic-primary path: rank/projector certificates
+  verified only against a contrived matrix can mask a structural property
+  of a real element matrix — the carbon column shared by CO₂, CO and soot
+  is the obvious candidate — and a parallel synthetic artifact is free to
+  drift from the physical record, which is exactly the failure the
+  fixture-versus-preset ID separation exists to prevent. Wax and wood stay
+  fail-closed on their condensable streams while their gas-phase sides are
+  completed. Methane is also the item-4 radiance-gate candidate and the
+  design's own DNS-resolvable laminar class, so this ordering costs nothing
+  downstream.
