@@ -137,11 +137,45 @@ the destruction has another cause; the model routes around the ban via
 and the ban should be reverted rather than tightened; census overhead
 material on ordinary renders → make it conditional, not universal.
 
-## 7. Open question inherited from arc 79
+## 6.1 FIRST USE — the instrument overturned the diagnosis (2026-08-12)
+
+Pointed at the arc-79 scene that "renders empty", before any live run:
+
+```
+SCENE INVENTORY -- 19 objects; 17 covered at least one pixel and 2 covered none
+  seabed_sand_obj -- 1174 px, 17.0% of frame, centred 0.50 across / 0.85 down
+  seabed_rock_obj --  337 px,  4.9% of frame, centred 0.51 across / 0.81 down
+  corals_fan_obj  --   89 px,  1.3% of frame, centred 0.30 across / 0.69 down
+  ...
+```
+
+**17 of 19 objects cover pixels, every one sensibly placed.**  Sampling the
+beauty render at the seabed's own pixels gives `(39,111,151)`; empty sky
+gives `(40,113,154)`.  Luma stdev 3.5 on a mean of 101 — **about 3% contrast
+across the entire frame**.
+
+So the geometry was correct, the placement was correct, and the picture is
+one flat blue because the LIGHTING is drowned.  The model deleted 80 of 82
+parts to fix a problem on an axis it never touched.  That is precisely the
+attribution error this arc exists to prevent, and it is now demonstrated
+rather than argued — §7's open question is answered, and the answer was never
+geometry.
+
+It also re-points the workstream: the next real constraint is **lighting**,
+which is the arc the user queued on 2026-08-09 and which is still unstarted.
+
+A candidate the census does NOT yet cover: it reports where things are, not
+whether they are *distinguishable*.  A contrast or luma-spread fact would
+have named this failure outright.  Recorded as a candidate, not built —
+one mechanism at a time, measured.
+
+## 7. Open question inherited from arc 79 — ANSWERED
 
 Why the arc-79 composed scene renders empty is still unpinned.  Ruled out:
 parse errors, unresolved references, forward references, missing lights,
 exotic materials, camera aim (the whole object cluster is inside the frustum
 by arithmetic), oversized or displaced geometry, and the environment
-background.  **The census is itself the instrument for this** — its first
-real test is being pointed at that scene to see what it says.
+background.  **Answered by the census itself in §6.1: the scene is not empty.**  It
+contains 17 visible objects at ~3% contrast, which is indistinguishable from
+empty to the eye and to a model.  Everything ruled out above was ruled out
+correctly; the remaining axis was the one never suspected.
