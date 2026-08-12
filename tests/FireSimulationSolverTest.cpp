@@ -762,14 +762,27 @@ int main()
 		maskedFuelProjection.velocityMPerS.component[2][unmaskedFuelNormalFace]==0.0 &&
 		maskedFuelProjection.momentumKGPerM2S.component[2][unmaskedFuelNormalFace]==0.0,
 		"V1 fuel-bed momentum ledger matches scalar mass flux only on masked faces");
-	OpenBoundaryConfig3D lateralFuelBoundary=openBoundary3D;
-	lateralFuelBoundary.kind[0]=FuelInletBoundary3D;
-	OpenMACProjection3DResult rejectedLateralFuel;
+	bool rejectsEveryWholeFaceFuel=true;
+	for( unsigned int fuelSide=0; fuelSide<6; ++fuelSide ) {
+		OpenBoundaryConfig3D wholeFaceFuelBoundary=openBoundary3D;
+		wholeFaceFuelBoundary.kind[fuelSide]=FuelInletBoundary3D;
+		OpenMACProjection3DResult rejectedWholeFaceFuel;
+		rejectsEveryWholeFaceFuel=rejectsEveryWholeFaceFuel &&
+			!ProjectPressureOpenMACVelocity3D(openShape3D,
+			std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+			zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+			wholeFaceFuelBoundary,0.01,2.0e-8,rejectedWholeFaceFuel,&error);
+	}
+	Check(rejectsEveryWholeFaceFuel,
+		"V1 rejects whole-face fuel kinds on every side in favor of the bottom bed mask");
+	OpenBoundaryConfig3D openBottomFuelMask=maskedFuelBoundary;
+	openBottomFuelMask.kind[4]=PressureOpenBoundary3D;
+	OpenMACProjection3DResult rejectedOpenBottomFuelMask;
 	Check(!ProjectPressureOpenMACVelocity3D(openShape3D,
 		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
 		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
-		lateralFuelBoundary,0.01,2.0e-8,rejectedLateralFuel,&error),
-		"V1 rejects fuel-inlet kinds outside the bottom bed-mask route");
+		openBottomFuelMask,0.01,2.0e-8,rejectedOpenBottomFuelMask,&error),
+		"V1 fuel mask requires every unmasked bottom-bed face to remain adiabatic");
 	OpenMACProjection3DResult tangentialBoundaryOracle=openRest3D;
 	std::fill(tangentialBoundaryOracle.velocityMPerS.component[0].begin(),
 		tangentialBoundaryOracle.velocityMPerS.component[0].end(),0.25);

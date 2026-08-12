@@ -1749,6 +1749,9 @@ namespace RISE
 				boundary.bottomFuelMask.size() != shape.nx*shape.ny ) {
 				return Fail(error,"fire solver 3-D fuel-mask shape is invalid");
 			}
+			if( !boundary.bottomFuelMask.empty() &&
+				boundary.kind[4]!=AdiabaticWallBoundary3D ) return Fail(error,
+				"fire solver 3-D fuel mask requires an otherwise adiabatic bottom bed");
 			return true;
 		}
 
