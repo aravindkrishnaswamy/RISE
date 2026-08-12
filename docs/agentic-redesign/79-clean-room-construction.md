@@ -234,6 +234,81 @@ the lighting arc already queued.
 
 N=1.  Repeats before any of this is treated as settled.
 
+## 8. SECOND SUBJECT — the undersea mermaid prompt (2026-08-11, N=1 each)
+
+Run on the verbatim prompt behind the held Fable benchmark
+(`scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene`), so the agent
+has a same-prompt frontier reference to be measured against.  Asked because
+the dragon+wizard result was uninspiring and the scene itself was a suspect.
+
+### 8.1 Attempt 1 was destroyed by a harness bug, not by the subject
+
+`build_element` for "coral_reef" produced a complete four-piece reef — 17
+chunks — and **lost every one**.  Two builder mistakes in sequence, and the
+harness mishandled the second:
+
+1. no `name` param at all, the intended name used as the chunk KEYWORD;
+2. on the one repair retry, a real `name` — but QUOTED.
+   `ChunkParamString_` returns raw token text, so the prefix check compared
+   `"coral_reef_rock_painter` (leading quote) against `coral_reef_` and
+   rejected all 17 as *"does not begin with the required prefix"*.
+
+That message was false, and therefore unfixable from — which is why the
+retry died too.  The element stayed empty, the clean-room gate then refused
+hand-authoring three times, gave up as designed, and the model hand-authored
+the rest of the run.  **One quoting technicality cost the entire mechanism
+for that session.**  Fixed in `00dd86fd` (strip-and-disclose, a literal
+syntax example in the builder prompt, and a builder-output excerpt on total
+rejection — the completion text had been retained nowhere, so the failure
+was undiagnosable after the fact).
+
+### 8.2 Attempt 2: the clean room worked better than it ever has — and the compose phase demolished it
+
+All five builders succeeded: **4 / 21 / 21 / 24 / 12 = 82 SDF parts built**,
+against 48 for the whole dragon scene.  `place_element` was called exactly
+**five times, once per element** — it converged, where the dragon run
+thrashed through 24 calls.  On its own evidence the construction half of
+this arc is working.
+
+Then, in the compose phase, the model **removed all 31 objects and
+re-inserted them — twice** — then removed 18 more and rebuilt with
+ellipsoids, spheres and cylinders.  Final scene: **2 part lines, one
+`sdf_geometry` survivor.**  80 of 82 parts destroyed by their own author.
+Nothing failed to apply; every removal and insertion was clean and
+deliberate.
+
+The trigger is visible in the trajectory: `query_object_at` returned "no
+object at this pixel" on four of five probes, and the composed scene renders
+as an **empty blue frame**.  The model was looking at its own scene, finding
+nothing, and rationally concluding its geometry was the problem — so it
+replaced rich SDF forms with primitives it could reason about.  **The
+harness let it destroy good work to fix a problem that was not in the work.**
+
+Why the composed scene renders empty is NOT yet pinned, and that is the top
+open question for the next arc.  What is ruled out: parse errors (none),
+unresolved references (none), missing lights (five), exotic materials (plain
+opaque PBR), camera aim (a pinhole at (0,-0.2,7) looking at the origin with
+the entire object cluster inside ±3 units and inside the frustum by
+arithmetic), and the environment background (off, still blue).  It needs the
+object-map tooling, not more arithmetic.
+
+### 8.3 The subject was not the problem — and the bar is now quantified
+
+| | SDF parts | objects | geometry kinds |
+|---|---|---|---|
+| **Fable benchmark, same prompt, full context** | **131** | 47 | 5 |
+| agent, dragon subject | 48 | 11 | 1 |
+| agent, mermaid attempt 1 (clean room lost) | 34 | 12 | 3 |
+| agent, mermaid attempt 2 (built 82, kept 2) | 2 | 19 | 5 |
+
+The frontier reference is ~2.7× the best agent scene on parts and ~4× on
+objects.  But the agent's BUILDERS produced 82 parts in attempt 2 — within
+striking distance of 131 — and then threw them away.  The gap is no longer
+mainly a construction gap.
+
+**Conclusion: the scene was not too hard.  Composition is the whole
+problem, and it is now doing active damage rather than merely underperforming.**
+
 Stop rules: parts-per-element does not beat arc-78's → the clean room did not
 survive productionisation, and the context-dilution finding is banked as
 knowledge without a mechanism.  Rejection rate >50% after retry → the

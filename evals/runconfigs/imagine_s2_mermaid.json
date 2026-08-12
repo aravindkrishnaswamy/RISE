@@ -1,5 +1,5 @@
 {
- "//": "Arc-79 S2 clean-room construction, SECOND SUBJECT (2026-08-11). Same harness and model as imagine_s2_gemini; the undersea mermaid prompt replaces dragon+wizard to test whether the cropped-framing / non-converging-placement result is scene-specific or harness-wide. Compare against evals/runs/imagine_s2_gemini (same build, other subject) and against the hand-authored Fable benchmark scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene (same prompt, full-context frontier model, held as the qualitative bar).",
+ "//": "Arc-79 S2 clean-room construction, SECOND SUBJECT (2026-08-11). Same harness and model as imagine_s2_gemini; the undersea mermaid prompt replaces dragon+wizard to test whether the cropped-framing / non-converging-placement result is scene-specific or harness-wide. Compare against evals/runs/imagine_s2_gemini (same build, other subject) and against the hand-authored Fable benchmark scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene (same prompt, full-context frontier model, held as the qualitative bar). RE-RUN after the quoted-name / syntax-example / total-rejection-excerpt fixes: the first attempt lost all 17 builder chunks to a quoting technicality and never measured the subject at all.",
  "scenarios": [
   "evals/scenarios/battery/imagine_undersea_mermaid.json"
  ],
@@ -11,5 +11,5 @@
   }
  ],
  "repeats": 1,
- "runDir": "evals/runs/imagine_s2_mermaid"
+ "runDir": "evals/runs/imagine_s2_mermaid2"
 }

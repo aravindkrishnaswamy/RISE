@@ -363,3 +363,37 @@ wrong — stop building on it and go measure a different one.**
   are the same error — **a verification step that cannot distinguish "clean"
   from "did not run" is not a verification step.**  The guard test was only
   trustworthy once it was made to fail on demand.
+
+### Arc 79, second subject — the mermaid runs (2026-08-11)
+
+- **A single false sentence in a rejection message cost an entire
+  mechanism for a whole session.**  The builder quoted a chunk name; the
+  prefix check compared the leading quote character and reported "does not
+  begin with the required prefix", which was untrue and therefore
+  unfixable-from.  All 17 chunks of a finished coral reef died, the element
+  stayed empty, the clean-room gate gave up as designed, and the model
+  hand-authored the rest of the run.  The repo rule that a model-facing
+  payload must never contain a false claim is not a style preference — this
+  is what it costs.
+- **A failure with no retained evidence is a failure you cannot fix.**  The
+  builder's completion text was kept nowhere, so the run could not be
+  reconstructed after the fact.  Any host-mediated call that can reject
+  everything it produced must retain an excerpt of what it produced.
+- **The clean room's best result yet, and its author destroyed it.**  Five
+  builders, 82 SDF parts, `place_element` converging in exactly one call per
+  element — then the compose phase removed all 31 objects and re-inserted
+  twice, and finished by replacing rich SDF forms with ellipsoids and
+  cylinders.  2 of 82 parts survived.  Every operation applied cleanly; this
+  was deliberate, not a bug in the edits.
+- **The mechanism that matters most is the one that stops good work from
+  being thrown away.**  `query_object_at` said "no object at this pixel"
+  four times and the composed scene renders empty, so the model rationally
+  blamed its geometry and simplified.  It was wrong, and nothing in the
+  harness could tell it so.  A future arrangement arc needs to make "your
+  geometry is fine, your placement or camera is not" a fact the model
+  receives — otherwise every composition failure will keep being paid for
+  in destroyed construction.
+- **Judge a subject by whether it was measured, not by its output.**  The
+  first mermaid run looked like evidence the scene was too hard; it was
+  evidence of a quoting bug.  The rendered result of a run whose mechanism
+  never engaged says nothing about the subject.
