@@ -43,11 +43,32 @@ arrives in front of it.
 So arc 80 builds no new verb.  It moves an existing fact to where the model
 will actually meet it.
 
+## 2.1 "Where is everything" beats "what is at this pixel"
+
+User, 2026-08-12: *"'where is everything' is a better tool for a model than
+'what is at this pixel'."*  This is the design point of the arc, and it is
+sharper than "the model needed more information".
+
+`query_object_at` is an **inverse** query.  To use it you must already know
+where to look, and its negative answer — *"no object at this pixel"* — is
+information-free about where anything actually is.  Five such probes told the
+model only that its guesses were wrong, and it read that as evidence about
+its geometry.  A **forward** inventory answers the question actually being
+asked: every object, and where each one is.
+
+So the census is not a failure report that lists what went missing.  It is an
+inventory of the whole scene, in which the zero-pixel objects are simply the
+entries whose answer is unhappy.  Same code path, exposed both as the render
+payload (where it will be met) and as an explicit verb (because the question
+deserves a name).  `query_object_at` is untouched — it was never wrong, just
+the wrong shape for this question.
+
 ## 3. Mechanism 1 — the visibility census (a payload fact)
 
-Every full-scene beauty render result gains a compact census: how many
-objects the scene has, how many produced at least one pixel in this frame,
-and — when some produced none — which ones, each with a reason class:
+Every full-scene beauty render result gains a compact inventory of **every**
+object: its screen footprint, and where it is — in the frame for the ones
+that landed, and in the world (plus which way it lies relative to the view)
+for the ones that did not.  The unhappy entries carry a reason class:
 
 - **behind the camera / outside the view frustum** — analytic, from the
   object's world bbox and the camera, no render needed (the pinhole
@@ -60,7 +81,14 @@ and — when some produced none — which ones, each with a reason class:
 
 The per-object tally reuses the existing objectmap identity pass at a small
 fixed resolution — a single pass with no lighting — rather than re-rendering
-beauty.
+beauty.  The payload is bounded: one compact line per object, the healthy
+majority summarized in a large scene, every zero-pixel object named in full,
+and any truncation stated rather than silent.
+
+The same inventory is also exposed as an explicit verb, sharing ONE code path
+with the payload — the question deserves a name, and the user asked for the
+tooling.  But no load-bearing behaviour may depend on the verb being called:
+this workstream's own measurements say it will not be.
 
 FACTS ONLY: no advice, no suggested fix, and nothing described as "missing"
 or "broken".  An object produced no pixels; that is the fact.  Advice would
