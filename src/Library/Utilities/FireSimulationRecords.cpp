@@ -9,6 +9,9 @@
 #include "FireSimulationRecords.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <set>
 
@@ -23,10 +26,246 @@ namespace RISE
 		const char* kPentacosaneSpeciesSHA256 =
 			"0cdb2a537e18c2db27994c2a8889badf32dae32cf352f973de35c68c2bff7ded";
 
+		class ExactUnsigned
+		{
+			static const std::uint32_t kBase = 1000000000u;
+			std::vector<std::uint32_t> m_words;
+
+			void Trim()
+			{
+				while( !m_words.empty() && m_words.back() == 0 ) m_words.pop_back();
+			}
+
+		public:
+			ExactUnsigned() {}
+			explicit ExactUnsigned( const std::uint32_t value )
+			{
+				if( value ) m_words.push_back(value);
+			}
+
+			bool IsZero() const { return m_words.empty(); }
+			bool IsOne() const { return m_words.size() == 1 && m_words[0] == 1; }
+			bool IsEven() const { return IsZero() || (m_words[0]&1u) == 0; }
+			std::size_t WordCount() const { return m_words.size(); }
+
+			static bool Parse( const std::string& text, ExactUnsigned& result )
+			{
+				if( text.empty() || text.size() > 256 ||
+					(text.size() > 1 && text[0] == '0') ) return false;
+				ExactUnsigned parsed;
+				for( const char digit : text ) {
+					if( digit < '0' || digit > '9' ) return false;
+					parsed = Multiply(parsed,ExactUnsigned(10));
+					parsed = Add(parsed,ExactUnsigned(static_cast<std::uint32_t>(digit-'0')));
+				}
+				result = parsed;
+				return true;
+			}
+
+			static int Compare( const ExactUnsigned& left, const ExactUnsigned& right )
+			{
+				if( left.m_words.size() != right.m_words.size() ) {
+					return left.m_words.size() < right.m_words.size() ? -1 : 1;
+				}
+				for( std::size_t index=left.m_words.size(); index>0; --index ) {
+					if( left.m_words[index-1] != right.m_words[index-1] ) {
+						return left.m_words[index-1] < right.m_words[index-1] ? -1 : 1;
+					}
+				}
+				return 0;
+			}
+
+			static ExactUnsigned Add( const ExactUnsigned& left, const ExactUnsigned& right )
+			{
+				ExactUnsigned result;
+				const std::size_t count = std::max(left.m_words.size(),right.m_words.size());
+				result.m_words.resize(count,0);
+				std::uint64_t carry = 0;
+				for( std::size_t index=0; index<count; ++index ) {
+					const std::uint64_t value = carry+
+						(index < left.m_words.size() ? left.m_words[index] : 0)+
+						(index < right.m_words.size() ? right.m_words[index] : 0);
+					result.m_words[index] = static_cast<std::uint32_t>(value%kBase);
+					carry = value/kBase;
+				}
+				if( carry ) result.m_words.push_back(static_cast<std::uint32_t>(carry));
+				return result;
+			}
+
+			static ExactUnsigned Subtract( const ExactUnsigned& left, const ExactUnsigned& right )
+			{
+				ExactUnsigned result;
+				result.m_words.resize(left.m_words.size(),0);
+				std::int64_t borrow = 0;
+				for( std::size_t index=0; index<left.m_words.size(); ++index ) {
+					std::int64_t value = static_cast<std::int64_t>(left.m_words[index])-borrow-
+						(index < right.m_words.size() ? right.m_words[index] : 0);
+					if( value < 0 ) { value += kBase; borrow = 1; } else borrow = 0;
+					result.m_words[index] = static_cast<std::uint32_t>(value);
+				}
+				result.Trim();
+				return result;
+			}
+
+			static ExactUnsigned Multiply( const ExactUnsigned& left, const ExactUnsigned& right )
+			{
+				ExactUnsigned result;
+				if( left.IsZero() || right.IsZero() ) return result;
+				result.m_words.assign(left.m_words.size()+right.m_words.size(),0);
+				for( std::size_t i=0; i<left.m_words.size(); ++i ) {
+					std::uint64_t carry = 0;
+					for( std::size_t j=0; j<right.m_words.size(); ++j ) {
+						const std::uint64_t value = result.m_words[i+j]+carry+
+							static_cast<std::uint64_t>(left.m_words[i])*right.m_words[j];
+						result.m_words[i+j] = static_cast<std::uint32_t>(value%kBase);
+						carry = value/kBase;
+					}
+					std::size_t index = i+right.m_words.size();
+					while( carry ) {
+						const std::uint64_t value = result.m_words[index]+carry;
+						result.m_words[index] = static_cast<std::uint32_t>(value%kBase);
+						carry = value/kBase;
+						++index;
+					}
+				}
+				result.Trim();
+				return result;
+			}
+
+			void DivideByTwo()
+			{
+				std::uint64_t carry = 0;
+				for( std::size_t index=m_words.size(); index>0; --index ) {
+					const std::uint64_t value = carry*kBase+m_words[index-1];
+					m_words[index-1] = static_cast<std::uint32_t>(value/2);
+					carry = value%2;
+				}
+				Trim();
+			}
+
+			void MultiplyByTwo()
+			{
+				*this = Multiply(*this,ExactUnsigned(2));
+			}
+
+			long double ToLongDouble() const
+			{
+				long double result = 0.0L;
+				for( std::size_t index=m_words.size(); index>0; --index ) {
+					result = result*static_cast<long double>(kBase)+m_words[index-1];
+				}
+				return result;
+			}
+		};
+
+		struct ExactSigned
+		{
+			bool negative;
+			ExactUnsigned magnitude;
+
+			ExactSigned() : negative(false) {}
+			explicit ExactSigned( const ExactUnsigned& value, const bool isNegative=false ) :
+				negative(isNegative && !value.IsZero()), magnitude(value) {}
+
+			static ExactSigned Add( const ExactSigned& left, const ExactSigned& right )
+			{
+				if( left.negative == right.negative ) {
+					return ExactSigned(ExactUnsigned::Add(left.magnitude,right.magnitude),left.negative);
+				}
+				const int comparison = ExactUnsigned::Compare(left.magnitude,right.magnitude);
+				if( comparison == 0 ) return ExactSigned();
+				return comparison > 0 ?
+					ExactSigned(ExactUnsigned::Subtract(left.magnitude,right.magnitude),left.negative) :
+					ExactSigned(ExactUnsigned::Subtract(right.magnitude,left.magnitude),right.negative);
+			}
+
+			static ExactSigned Multiply( const ExactSigned& left, const ExactSigned& right )
+			{
+				return ExactSigned(ExactUnsigned::Multiply(left.magnitude,right.magnitude),
+					left.negative != right.negative);
+			}
+		};
+
+		struct ExactRational
+		{
+			ExactSigned numerator;
+			ExactUnsigned denominator;
+
+			ExactRational() : denominator(1) {}
+			bool IsZero() const { return numerator.magnitude.IsZero(); }
+
+			static ExactRational Add( const ExactRational& left, const ExactRational& right )
+			{
+				ExactRational result;
+				const ExactSigned leftScaled(ExactUnsigned::Multiply(
+					left.numerator.magnitude,right.denominator),left.numerator.negative);
+				const ExactSigned rightScaled(ExactUnsigned::Multiply(
+					right.numerator.magnitude,left.denominator),right.numerator.negative);
+				result.numerator = ExactSigned::Add(leftScaled,rightScaled);
+				result.denominator = ExactUnsigned::Multiply(left.denominator,right.denominator);
+				return result;
+			}
+
+			static ExactRational Multiply( const ExactRational& left, const ExactRational& right )
+			{
+				ExactRational result;
+				result.numerator = ExactSigned::Multiply(left.numerator,right.numerator);
+				result.denominator = ExactUnsigned::Multiply(left.denominator,right.denominator);
+				return result;
+			}
+
+			static bool Equal( const ExactRational& left, const ExactRational& right )
+			{
+				const ExactSigned lhs(ExactUnsigned::Multiply(
+					left.numerator.magnitude,right.denominator),left.numerator.negative);
+				const ExactSigned rhs(ExactUnsigned::Multiply(
+					right.numerator.magnitude,left.denominator),right.numerator.negative);
+				return lhs.negative == rhs.negative &&
+					ExactUnsigned::Compare(lhs.magnitude,rhs.magnitude) == 0;
+			}
+
+			long double ToLongDouble() const
+			{
+				const long double value = numerator.magnitude.ToLongDouble()/denominator.ToLongDouble();
+				return numerator.negative ? -value : value;
+			}
+		};
+
 		bool Fail( std::string* error, const std::string& message )
 		{
 			if( error ) *error = message;
 			return false;
+		}
+
+		bool GreatestCommonDivisor(
+			ExactUnsigned left,
+			ExactUnsigned right,
+			ExactUnsigned& result
+			)
+		{
+			if( left.IsZero() ) { result = right; return true; }
+			if( right.IsZero() ) { result = left; return true; }
+			std::size_t commonTwos = 0, work = 0;
+			while( left.IsEven() && right.IsEven() ) {
+				left.DivideByTwo(); right.DivideByTwo(); ++commonTwos;
+				if( ++work > 100000 ) return false;
+			}
+			while( left.IsEven() ) {
+				left.DivideByTwo();
+				if( ++work > 100000 ) return false;
+			}
+			while( !right.IsZero() ) {
+				while( right.IsEven() ) {
+					right.DivideByTwo();
+					if( ++work > 100000 ) return false;
+				}
+				if( ExactUnsigned::Compare(left,right) > 0 ) std::swap(left,right);
+				right = ExactUnsigned::Subtract(right,left);
+				if( ++work > 100000 ) return false;
+			}
+			for( std::size_t index=0; index<commonTwos; ++index ) left.MultiplyByTwo();
+			result = left;
+			return true;
 		}
 
 		const RISECBOR64::Value* Required(
@@ -46,6 +285,482 @@ namespace RISE
 				return 0;
 			}
 			return value;
+		}
+
+		bool ReadText(
+			const RISECBOR64::Value& map, const char* key,
+			std::string& result, std::string* error );
+		bool ReadFloat(
+			const RISECBOR64::Value& map, const char* key,
+			double& result, std::string* error );
+		bool ReadFloatArray(
+			const RISECBOR64::Value& value, std::vector<double>& result,
+			std::string* error );
+
+		bool ReadExactRational(
+			const RISECBOR64::Value& encoded,
+			ExactRational& result,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* numerator = Required(
+				encoded,"numerator",RISECBOR64::Value::Text,error);
+			const RISECBOR64::Value* denominator = Required(
+				encoded,"denominator",RISECBOR64::Value::Text,error);
+			if( !numerator || !denominator || encoded.GetMap().size() != 2 ) {
+				return Fail(error,"fire-simulation exact rational is malformed");
+			}
+			const std::string numeratorText = numerator->GetText();
+			const bool negative = !numeratorText.empty() && numeratorText[0] == '-';
+			const std::string magnitudeText = negative ? numeratorText.substr(1) : numeratorText;
+			ExactUnsigned magnitude, divisor;
+			if( magnitudeText.empty() || (negative && magnitudeText == "0") ||
+				!ExactUnsigned::Parse(magnitudeText,magnitude) ||
+				!ExactUnsigned::Parse(denominator->GetText(),result.denominator) ||
+				result.denominator.IsZero() ||
+				!GreatestCommonDivisor(magnitude,result.denominator,divisor) ||
+				!divisor.IsOne() ) {
+				return Fail(error,"fire-simulation exact rational is not canonical and reduced");
+			}
+			result.numerator = ExactSigned(magnitude,negative);
+			return true;
+		}
+
+		struct ExactMatrix
+		{
+			std::size_t rows;
+			std::size_t columns;
+			std::vector<ExactRational> entries;
+
+			ExactMatrix() : rows(0), columns(0) {}
+			const ExactRational& At( const std::size_t row, const std::size_t column ) const
+			{
+				return entries[row*columns+column];
+			}
+		};
+
+		bool ReadExactMatrix(
+			const RISECBOR64::Value& encoded,
+			ExactMatrix& result,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* rows = Required(
+				encoded,"rows",RISECBOR64::Value::UnsignedInteger,error);
+			const RISECBOR64::Value* columns = Required(
+				encoded,"columns",RISECBOR64::Value::UnsignedInteger,error);
+			const RISECBOR64::Value* entries = Required(
+				encoded,"entries",RISECBOR64::Value::Array,error);
+			if( !rows || !columns || !entries || encoded.GetMap().size() != 3 ||
+				rows->GetIntegerArgument() == 0 || rows->GetIntegerArgument() > 16 ||
+				columns->GetIntegerArgument() == 0 || columns->GetIntegerArgument() > 16 ||
+				entries->GetArray().size() != rows->GetIntegerArgument() ) {
+				return Fail(error,"fire-simulation exact matrix dimensions are malformed");
+			}
+			result = ExactMatrix();
+			result.rows = static_cast<std::size_t>(rows->GetIntegerArgument());
+			result.columns = static_cast<std::size_t>(columns->GetIntegerArgument());
+			result.entries.reserve(result.rows*result.columns);
+			for( const RISECBOR64::Value& row : entries->GetArray() ) {
+				if( row.GetType() != RISECBOR64::Value::Array ||
+					row.GetArray().size() != result.columns ) {
+					return Fail(error,"fire-simulation exact matrix row is malformed");
+				}
+				for( const RISECBOR64::Value& value : row.GetArray() ) {
+					ExactRational rational;
+					if( !ReadExactRational(value,rational,error) ) return false;
+					result.entries.push_back(rational);
+				}
+			}
+			return true;
+		}
+
+		bool ExactMatrixEqual( const ExactMatrix& left, const ExactMatrix& right )
+		{
+			if( left.rows != right.rows || left.columns != right.columns ) return false;
+			for( std::size_t index=0; index<left.entries.size(); ++index ) {
+				if( !ExactRational::Equal(left.entries[index],right.entries[index]) ) return false;
+			}
+			return true;
+		}
+
+		bool ExactMatrixMultiply(
+			const ExactMatrix& left,
+			const ExactMatrix& right,
+			ExactMatrix& result
+			)
+		{
+			if( left.columns != right.rows ) return false;
+			result = ExactMatrix();
+			result.rows = left.rows;
+			result.columns = right.columns;
+			result.entries.assign(result.rows*result.columns,ExactRational());
+			for( std::size_t row=0; row<result.rows; ++row ) {
+				for( std::size_t column=0; column<result.columns; ++column ) {
+					ExactRational sum;
+					for( std::size_t inner=0; inner<left.columns; ++inner ) {
+						sum = ExactRational::Add(sum,ExactRational::Multiply(
+							left.At(row,inner),right.At(inner,column)));
+					}
+					result.entries[row*result.columns+column] = sum;
+				}
+			}
+			return true;
+		}
+
+		ExactRational ExactDeterminantRecursive(
+			const ExactMatrix& matrix,
+			std::vector<bool>& used,
+			const std::size_t row,
+			bool& valid
+			)
+		{
+			if( row == matrix.rows ) {
+				ExactRational one;
+				one.numerator = ExactSigned(ExactUnsigned(1));
+				return one;
+			}
+			ExactRational sum;
+			for( std::size_t column=0; column<matrix.columns; ++column ) {
+				if( used[column] ) continue;
+				std::size_t usedAfter = 0;
+				for( std::size_t prior=column+1; prior<used.size(); ++prior ) {
+					if( used[prior] ) ++usedAfter;
+				}
+				used[column] = true;
+				ExactRational term = ExactRational::Multiply(matrix.At(row,column),
+					ExactDeterminantRecursive(matrix,used,row+1,valid));
+				used[column] = false;
+				if( usedAfter&1u ) term.numerator.negative =
+					!term.numerator.magnitude.IsZero() && !term.numerator.negative;
+				sum = ExactRational::Add(sum,term);
+			}
+			return sum;
+		}
+
+		bool ExactDeterminant( const ExactMatrix& matrix, ExactRational& result )
+		{
+			if( matrix.rows == 0 || matrix.rows != matrix.columns || matrix.rows > 8 ) return false;
+			std::vector<bool> used(matrix.columns,false);
+			bool valid = true;
+			result = ExactDeterminantRecursive(matrix,used,0,valid);
+			return valid;
+		}
+
+		bool ReadIndexArray(
+			const RISECBOR64::Value& owner,
+			const char* key,
+			std::vector<std::size_t>& result,
+			const std::size_t limit,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* encoded = Required(
+				owner,key,RISECBOR64::Value::Array,error);
+			if( !encoded || encoded->GetArray().empty() || encoded->GetArray().size() > limit ) return false;
+			result.clear();
+			std::set<std::size_t> unique;
+			for( const RISECBOR64::Value& value : encoded->GetArray() ) {
+				if( value.GetType() != RISECBOR64::Value::UnsignedInteger ||
+					value.GetIntegerArgument() >= limit ) {
+					return Fail(error,"fire-simulation pivot index is outside its matrix");
+				}
+				const std::size_t index = static_cast<std::size_t>(value.GetIntegerArgument());
+				if( !unique.insert(index).second ) return Fail(error,"fire-simulation pivot index is duplicated");
+				result.push_back(index);
+			}
+			return true;
+		}
+
+		ExactMatrix ExactMinor(
+			const ExactMatrix& source,
+			const std::vector<std::size_t>& rows,
+			const std::vector<std::size_t>& columns
+			)
+		{
+			ExactMatrix result;
+			result.rows = rows.size(); result.columns = columns.size();
+			for( const std::size_t row : rows ) {
+				for( const std::size_t column : columns ) result.entries.push_back(source.At(row,column));
+			}
+			return result;
+		}
+
+		bool ReadTextArray(
+			const RISECBOR64::Value& owner,
+			const char* key,
+			std::vector<std::string>& result,
+			const std::size_t maximum,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* encoded = Required(
+				owner,key,RISECBOR64::Value::Array,error);
+			if( !encoded || encoded->GetArray().empty() || encoded->GetArray().size() > maximum ) return false;
+			result.clear();
+			std::set<std::string> unique;
+			for( const RISECBOR64::Value& value : encoded->GetArray() ) {
+				if( value.GetType() != RISECBOR64::Value::Text || value.GetText().empty() ||
+					!unique.insert(value.GetText()).second ) {
+					return Fail(error,"fire-simulation ordered text array is malformed");
+				}
+				result.push_back(value.GetText());
+			}
+			return true;
+		}
+
+		bool ExactMatrixIsZero( const ExactMatrix& matrix )
+		{
+			for( const ExactRational& value : matrix.entries ) if( !value.IsZero() ) return false;
+			return true;
+		}
+
+		bool ReadFloatMatrix(
+			const RISECBOR64::Value& encoded,
+			std::vector<double>& result,
+			std::size_t& rows,
+			std::size_t& columns,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* encodedRows = Required(
+				encoded,"rows",RISECBOR64::Value::UnsignedInteger,error);
+			const RISECBOR64::Value* encodedColumns = Required(
+				encoded,"columns",RISECBOR64::Value::UnsignedInteger,error);
+			const RISECBOR64::Value* entries = Required(
+				encoded,"entries",RISECBOR64::Value::Array,error);
+			std::string layout, digest;
+			if( !encodedRows || !encodedColumns || !entries || encoded.GetMap().size() != 5 ||
+				!ReadText(encoded,"binary64_layout",layout,error) ||
+				layout != "ieee754_big_endian_row_major" ||
+				!ReadText(encoded,"binary64_sha256",digest,error) || digest.size() != 64 ||
+				encodedRows->GetIntegerArgument() == 0 || encodedRows->GetIntegerArgument() > 16 ||
+				encodedColumns->GetIntegerArgument() == 0 || encodedColumns->GetIntegerArgument() > 16 ||
+				entries->GetArray().size() != encodedRows->GetIntegerArgument() ) {
+				return Fail(error,"fire-simulation binary64 matrix is malformed");
+			}
+			rows = static_cast<std::size_t>(encodedRows->GetIntegerArgument());
+			columns = static_cast<std::size_t>(encodedColumns->GetIntegerArgument());
+			result.clear(); result.reserve(rows*columns);
+			RISECBOR64::Bytes packed;
+			packed.reserve(rows*columns*8);
+			for( const RISECBOR64::Value& row : entries->GetArray() ) {
+				std::vector<double> values;
+				if( !ReadFloatArray(row,values,error) || values.size() != columns ) return false;
+				for( const double value : values ) {
+					std::uint64_t bits = 0;
+					std::memcpy(&bits,&value,sizeof(bits));
+					for( int shift=56; shift>=0; shift-=8 ) {
+						packed.push_back(static_cast<unsigned char>((bits>>shift)&0xffu));
+					}
+					result.push_back(value);
+				}
+			}
+			return RISECBOR64::SHA256Hex(packed) == digest ||
+				Fail(error,"fire-simulation binary64 matrix digest mismatch");
+		}
+
+		bool ValidateNullspaceCertificate(
+			const RISECBOR64::Value& encoded,
+			const char* expectedKind,
+			const std::vector<std::string>& expectedRows,
+			const std::vector<std::string>& expectedState,
+			FireCertifiedNullspace& result,
+			std::string* error
+			)
+		{
+			std::string kind;
+			std::vector<std::string> rowOrder, stateOrder;
+			const RISECBOR64::Value* rankValue = Required(
+				encoded,"declared_rank",RISECBOR64::Value::UnsignedInteger,error);
+			const RISECBOR64::Value* constraintValue = Required(
+				encoded,"constraint_matrix",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* factorization = Required(
+				encoded,"rank_factorization",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* nullspace = Required(
+				encoded,"exact_nullspace",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* projectorValue = Required(
+				encoded,"exact_projector",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* numericalValue = Required(
+				encoded,"orthonormal_nullspace",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* envelopes = Required(
+				encoded,"residual_envelopes",RISECBOR64::Value::Map,error);
+			if( !rankValue || !constraintValue || !factorization || !nullspace ||
+				!projectorValue || !numericalValue || !envelopes || encoded.GetMap().size() != 10 ||
+				!ReadText(encoded,"record_kind",kind,error) || kind != expectedKind ||
+				!ReadTextArray(encoded,"constraint_row_order",rowOrder,16,error) ||
+				!ReadTextArray(encoded,"state_order",stateOrder,16,error) ||
+				rowOrder != expectedRows || stateOrder != expectedState ) {
+				return Fail(error,"fire-simulation nullspace certificate header is malformed");
+			}
+			const std::size_t rank = static_cast<std::size_t>(rankValue->GetIntegerArgument());
+			if( rank == 0 || rank > rowOrder.size() || rank >= stateOrder.size() ) {
+				return Fail(error,"fire-simulation nullspace rank is invalid");
+			}
+
+			ExactMatrix constraint, left, right, product, exactBasis, nullResidual, projector;
+			const RISECBOR64::Value* leftValue = Required(
+				*factorization,"left",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* rightValue = Required(
+				*factorization,"right",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* factorDetValue = Required(
+				*factorization,"pivot_minor_determinant",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* basisValue = Required(
+				*nullspace,"basis",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* nullDetValue = Required(
+				*nullspace,"pivot_minor_determinant",RISECBOR64::Value::Map,error);
+			std::vector<std::size_t> factorRows, factorColumns, nullRows, nullColumns;
+			ExactRational factorDet, nullDet, verifiedDet;
+			if( !leftValue || !rightValue || !factorDetValue || !basisValue || !nullDetValue ||
+				factorization->GetMap().size() != 5 || nullspace->GetMap().size() != 4 ||
+				!ReadExactMatrix(*constraintValue,constraint,error) ||
+				constraint.rows != rowOrder.size() || constraint.columns != stateOrder.size() ||
+				!ReadExactMatrix(*leftValue,left,error) || left.rows != constraint.rows || left.columns != rank ||
+				!ReadExactMatrix(*rightValue,right,error) || right.rows != rank || right.columns != constraint.columns ||
+				!ExactMatrixMultiply(left,right,product) || !ExactMatrixEqual(product,constraint) ||
+				!ReadIndexArray(*factorization,"pivot_rows",factorRows,constraint.rows,error) ||
+				!ReadIndexArray(*factorization,"pivot_columns",factorColumns,constraint.columns,error) ||
+				factorRows.size() != rank || factorColumns.size() != rank ||
+				!ReadExactRational(*factorDetValue,factorDet,error) || factorDet.IsZero() ||
+				!ExactDeterminant(ExactMinor(constraint,factorRows,factorColumns),verifiedDet) ||
+				!ExactRational::Equal(factorDet,verifiedDet) ||
+				!ReadExactMatrix(*basisValue,exactBasis,error) || exactBasis.rows != constraint.columns ||
+				exactBasis.columns != constraint.columns-rank ||
+				!ExactMatrixMultiply(constraint,exactBasis,nullResidual) || !ExactMatrixIsZero(nullResidual) ||
+				!ReadIndexArray(*nullspace,"pivot_rows",nullRows,exactBasis.rows,error) ||
+				!ReadIndexArray(*nullspace,"pivot_columns",nullColumns,exactBasis.columns,error) ||
+				nullRows.size() != exactBasis.columns || nullColumns.size() != exactBasis.columns ||
+				!ReadExactRational(*nullDetValue,nullDet,error) || nullDet.IsZero() ||
+				!ExactDeterminant(ExactMinor(exactBasis,nullRows,nullColumns),verifiedDet) ||
+				!ExactRational::Equal(nullDet,verifiedDet) ||
+				!ReadExactMatrix(*projectorValue,projector,error) ||
+				projector.rows != constraint.columns || projector.columns != constraint.columns ) {
+				return Fail(error,"fire-simulation exact nullspace certificate is false");
+			}
+
+			for( std::size_t row=0; row<projector.rows; ++row ) {
+				for( std::size_t column=0; column<projector.columns; ++column ) {
+					if( !ExactRational::Equal(projector.At(row,column),projector.At(column,row)) ) {
+						return Fail(error,"fire-simulation exact projector is not symmetric");
+					}
+				}
+			}
+			ExactMatrix projectorSquared, projectedBasis;
+			if( !ExactMatrixMultiply(projector,projector,projectorSquared) ||
+				!ExactMatrixEqual(projectorSquared,projector) ||
+				!ExactMatrixMultiply(projector,exactBasis,projectedBasis) ||
+				!ExactMatrixEqual(projectedBasis,exactBasis) ) {
+				return Fail(error,"fire-simulation exact projector does not span the certified nullspace");
+			}
+
+			std::vector<double> numerical;
+			std::size_t numericalRows = 0, numericalColumns = 0;
+			double factorAN = 0.0, factorOrthogonal = 0.0, factorProjector = 0.0;
+			double measuredAN = 0.0, measuredOrthogonal = 0.0, measuredProjector = 0.0;
+			if( !ReadFloatMatrix(*numericalValue,numerical,numericalRows,numericalColumns,error) ) {
+				return false;
+			}
+			if( numericalRows != constraint.columns || numericalColumns != constraint.columns-rank ||
+				!ReadFloat(*envelopes,"A_N_infinity_factor_epsilon64",factorAN,error) || factorAN != 128.0 ||
+				!ReadFloat(*envelopes,"Nt_N_minus_I_infinity_factor_epsilon64",factorOrthogonal,error) ||
+					factorOrthogonal != 128.0 ||
+				!ReadFloat(*envelopes,"NNt_minus_exact_projector_infinity_factor_epsilon64",factorProjector,error) ||
+					factorProjector != 1024.0 ||
+				!ReadFloat(*envelopes,"generator_measured_A_N_infinity",measuredAN,error) || measuredAN < 0.0 ||
+				!ReadFloat(*envelopes,"generator_measured_Nt_N_minus_I_infinity",measuredOrthogonal,error) ||
+					measuredOrthogonal < 0.0 ||
+				!ReadFloat(*envelopes,"generator_measured_projector_infinity",measuredProjector,error) ||
+					measuredProjector < 0.0 ) {
+				return Fail(error,"fire-simulation numerical nullspace envelope is malformed");
+			}
+
+			long double matrixNorm = 0.0L, residualNorm = 0.0L;
+			for( std::size_t row=0; row<constraint.rows; ++row ) {
+				long double rowNorm = 0.0L, residualRow = 0.0L;
+				for( std::size_t column=0; column<constraint.columns; ++column ) {
+					rowNorm += std::fabs(constraint.At(row,column).ToLongDouble());
+				}
+				for( std::size_t basisColumn=0; basisColumn<numericalColumns; ++basisColumn ) {
+					long double value = 0.0L;
+					for( std::size_t column=0; column<constraint.columns; ++column ) {
+						value += constraint.At(row,column).ToLongDouble()*
+							numerical[column*numericalColumns+basisColumn];
+					}
+					residualRow += std::fabs(value);
+				}
+				matrixNorm = std::max(matrixNorm,rowNorm);
+				residualNorm = std::max(residualNorm,residualRow);
+			}
+			long double orthogonalNorm = 0.0L;
+			for( std::size_t row=0; row<numericalColumns; ++row ) {
+				long double rowNorm = 0.0L;
+				for( std::size_t column=0; column<numericalColumns; ++column ) {
+					long double value = row == column ? -1.0L : 0.0L;
+					for( std::size_t inner=0; inner<numericalRows; ++inner ) {
+						value += static_cast<long double>(numerical[inner*numericalColumns+row])*
+							numerical[inner*numericalColumns+column];
+					}
+					rowNorm += std::fabs(value);
+				}
+				orthogonalNorm = std::max(orthogonalNorm,rowNorm);
+			}
+			long double projectorNorm = 0.0L;
+			for( std::size_t row=0; row<numericalRows; ++row ) {
+				long double rowNorm = 0.0L;
+				for( std::size_t column=0; column<numericalRows; ++column ) {
+					long double value = -projector.At(row,column).ToLongDouble();
+					for( std::size_t inner=0; inner<numericalColumns; ++inner ) {
+						value += static_cast<long double>(numerical[row*numericalColumns+inner])*
+							numerical[column*numericalColumns+inner];
+					}
+					rowNorm += std::fabs(value);
+				}
+				projectorNorm = std::max(projectorNorm,rowNorm);
+			}
+			const long double epsilon = std::numeric_limits<double>::epsilon();
+			if( residualNorm > factorAN*epsilon*std::max(1.0L,matrixNorm) ||
+				orthogonalNorm > factorOrthogonal*epsilon ||
+				projectorNorm > factorProjector*epsilon ) {
+				return Fail(error,"fire-simulation numerical nullspace certificate exceeds its fp64 envelope");
+			}
+
+			result = FireCertifiedNullspace();
+			result.stateOrder = stateOrder;
+			result.constraintRowOrder = rowOrder;
+			result.constraintRows = constraint.rows;
+			result.stateDimension = constraint.columns;
+			result.declaredRank = rank;
+			result.nullity = numericalColumns;
+			result.orthonormalBasis = numerical;
+			result.constraintMatrix.reserve(constraint.entries.size());
+			for( const ExactRational& value : constraint.entries ) {
+				result.constraintMatrix.push_back(static_cast<double>(value.ToLongDouble()));
+			}
+			return true;
+		}
+
+		bool ReadRationalArray(
+			const RISECBOR64::Value& owner,
+			const char* key,
+			std::vector<ExactRational>& exact,
+			std::vector<double>& numeric,
+			const std::size_t expected,
+			std::string* error
+			)
+		{
+			const RISECBOR64::Value* encoded = Required(
+				owner,key,RISECBOR64::Value::Array,error);
+			if( !encoded || encoded->GetArray().size() != expected ) {
+				return Fail(error,"fire-simulation rational vector has the wrong dimension");
+			}
+			exact.clear(); numeric.clear();
+			for( const RISECBOR64::Value& value : encoded->GetArray() ) {
+				ExactRational rational;
+				if( !ReadExactRational(value,rational,error) ) return false;
+				exact.push_back(rational);
+				numeric.push_back(static_cast<double>(rational.ToLongDouble()));
+			}
+			return true;
 		}
 
 		bool ReadText(
@@ -850,6 +1565,328 @@ namespace RISE
 			}
 			return result;
 		}
+	}
+
+	bool FireCertifiedNullspace::Project(
+		const std::vector<double>& input,
+		std::vector<double>& output,
+		std::string* error
+		) const
+	{
+		if( stateDimension == 0 || nullity == 0 ||
+			input.size() != stateDimension ||
+			orthonormalBasis.size() != stateDimension*nullity ) {
+			return Fail(error,"fire-simulation nullspace projection dimensions are invalid");
+		}
+		std::vector<double> coordinates(nullity,0.0);
+		for( std::size_t column=0; column<nullity; ++column ) {
+			for( std::size_t row=0; row<stateDimension; ++row ) {
+				if( !std::isfinite(input[row]) ) {
+					return Fail(error,"fire-simulation nullspace projection input is non-finite");
+				}
+				coordinates[column] += orthonormalBasis[row*nullity+column]*input[row];
+			}
+		}
+		output.assign(stateDimension,0.0);
+		for( std::size_t row=0; row<stateDimension; ++row ) {
+			for( std::size_t column=0; column<nullity; ++column ) {
+				output[row] += orthonormalBasis[row*nullity+column]*coordinates[column];
+			}
+			if( !std::isfinite(output[row]) ) {
+				output.clear();
+				return Fail(error,"fire-simulation nullspace projection overflowed");
+			}
+		}
+		return true;
+	}
+
+	FireSimulationMethaneRecord::FireSimulationMethaneRecord() :
+		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0),
+		m_referenceTemperatureK(0.0), m_pressurePa(0.0),
+		m_lowerHeatingValueJPerKG(0.0), m_stoichiometricOxygenKGPerKGFuel(0.0),
+		m_sootOxygenKGPerKGCarbon(0.0), m_sootCO2KGPerKGCarbon(0.0),
+		m_sootHeatReleaseJPerKGCarbon(0.0)
+	{
+	}
+
+	bool FireSimulationMethaneRecord::LoadSemanticRecord(
+		const RISECBOR64::Value& record,
+		std::string* error
+		)
+	{
+		const std::vector<std::string> expectedSpecies = {
+			"CH4", "O2", "N2", "CO2", "H2O", "CO", "C(gr)"
+		};
+		const std::vector<std::string> expectedElements = {"C", "H", "O", "N"};
+		const std::vector<std::string> expectedState = {
+			"rho_tot_Z", "q:CH4", "q:O2", "q:N2", "q:CO2", "q:H2O", "q:CO", "q:C(gr)"
+		};
+		std::string version, kind, status, recordClass, schema;
+		if( !ValidateSchemaHeader(record,error) ||
+			!ReadText(record,"version",version,error) || version != "1.0.0-preview.1" ||
+			!ReadText(record,"record_kind",kind,error) || kind != "fire_sim_methane_fuel_closure" ||
+			!ReadText(record,"record_name",m_recordName,error) ||
+			!ReadText(record,"record_status",status,error) || status != "preview_only" ||
+			!ReadText(record,"record_class",recordClass,error) || recordClass != "physical_fuel_preset" ||
+			!ReadText(record,"provenance_schema",schema,error) ||
+				schema != "fire-optics-canonical-provenance-schema-v1" ||
+			!ReadDomain(record,"common_temperature_domain_K",m_temperatureMinK,m_temperatureMaxK,error) ||
+			m_temperatureMinK != 300.0 || m_temperatureMaxK != 5000.0 ||
+			!ReadEnvelope(record,"reference_temperature_K",m_referenceTemperatureK,error) ||
+			m_referenceTemperatureK != 300.0 ||
+			!ReadEnvelope(record,"thermodynamic_pressure_Pa",m_pressurePa,error) ||
+			m_pressurePa != 101325.0 ||
+			!ReadTextArray(record,"species_order",m_speciesOrder,16,error) ||
+			m_speciesOrder != expectedSpecies ||
+			!ReadTextArray(record,"element_order",m_elementOrder,16,error) ||
+			m_elementOrder != expectedElements ||
+			!ReadBlockers(record,m_predictiveBlockers,error) ) {
+			return Fail(error,"fire-simulation methane record header is invalid");
+		}
+
+		const RISECBOR64::Value* encodedSpecies = Required(
+			record,"species",RISECBOR64::Value::Array,error);
+		const RISECBOR64::Value* formula = Required(
+			record,"fuel_formula",RISECBOR64::Value::Map,error);
+		if( !encodedSpecies || encodedSpecies->GetArray().size() != expectedSpecies.size() ||
+			!formula || formula->GetMap().size() != 2 ) {
+			return Fail(error,"fire-simulation methane species payload is incomplete");
+		}
+		for( std::size_t index=0; index<expectedSpecies.size(); ++index ) {
+			std::string speciesId, phase;
+			if( !ReadText(encodedSpecies->GetArray()[index],"species_id",speciesId,error) ||
+				speciesId != expectedSpecies[index] ||
+				!ReadText(encodedSpecies->GetArray()[index],"phase",phase,error) ||
+				(phase != (speciesId == "C(gr)" ? "aerosol_solid" : "gas")) ) {
+				return Fail(error,"fire-simulation methane species order or phase is invalid");
+			}
+		}
+		double carbonCount = 0.0, hydrogenCount = 0.0;
+		if( !formula->Find("C") || !formula->Find("H") ||
+			!ReadNumber(*formula->Find("C"),carbonCount,error) || carbonCount != 1.0 ||
+			!ReadNumber(*formula->Find("H"),hydrogenCount,error) || hydrogenCount != 4.0 ) {
+			return Fail(error,"fire-simulation methane formula is invalid");
+		}
+
+		const RISECBOR64::Value* atomicWeights = Required(
+			record,"atomic_weights_kg_per_kmol",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* elementMatrixValue = Required(
+			record,"element_mass_fraction_matrix",RISECBOR64::Value::Map,error);
+		ExactMatrix elementMatrix;
+		std::vector<ExactRational> atomic(4);
+		const char* atomicNames[] = {"C", "H", "O", "N"};
+		if( !atomicWeights || atomicWeights->GetMap().size() != 4 || !elementMatrixValue ||
+			!ReadExactMatrix(*elementMatrixValue,elementMatrix,error) ||
+			elementMatrix.rows != expectedElements.size() ||
+			elementMatrix.columns != expectedSpecies.size() ) {
+			return Fail(error,"fire-simulation methane element matrix is malformed");
+		}
+		for( std::size_t index=0; index<4; ++index ) {
+			const RISECBOR64::Value* encoded = atomicWeights->Find(atomicNames[index]);
+			if( !encoded || !ReadExactRational(*encoded,atomic[index],error) ||
+				atomic[index].numerator.negative || atomic[index].IsZero() ) {
+				return Fail(error,"fire-simulation methane atomic weight is invalid");
+			}
+		}
+		m_elementMassFractionMatrix.clear();
+		for( const ExactRational& value : elementMatrix.entries ) {
+			m_elementMassFractionMatrix.push_back(static_cast<double>(value.ToLongDouble()));
+		}
+
+		const RISECBOR64::Value* ambient = Required(
+			record,"ambient_state",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* injected = Required(
+			record,"injected_fuel_state",RISECBOR64::Value::Map,error);
+		std::vector<ExactRational> ambientMass, injectedMass, ambientElements, injectedElements;
+		std::vector<double> ignored;
+		double ambientTemperature = 0.0, injectedTemperature = 0.0;
+		if( !ambient || !injected ||
+			!ReadEnvelope(*ambient,"temperature_K",ambientTemperature,error) ||
+			!ReadEnvelope(*injected,"temperature_K",injectedTemperature,error) ||
+			ambientTemperature != m_referenceTemperatureK || injectedTemperature != m_referenceTemperatureK ||
+			!ReadRationalArray(*ambient,"mass_fractions",ambientMass,m_ambientMassFractions,7,error) ||
+			!ReadRationalArray(*injected,"mass_fractions",injectedMass,m_injectedMassFractions,7,error) ||
+			!ReadRationalArray(*ambient,"element_mass_fractions",ambientElements,ignored,4,error) ||
+			!ReadRationalArray(*injected,"element_mass_fractions",injectedElements,ignored,4,error) ) {
+			return Fail(error,"fire-simulation methane boundary states are malformed");
+		}
+		ExactRational massSum, injectionSum;
+		for( std::size_t column=0; column<7; ++column ) {
+			massSum = ExactRational::Add(massSum,ambientMass[column]);
+			injectionSum = ExactRational::Add(injectionSum,injectedMass[column]);
+		}
+		ExactRational one; one.numerator = ExactSigned(ExactUnsigned(1));
+		if( !ExactRational::Equal(massSum,one) || !ExactRational::Equal(injectionSum,one) ||
+			!ExactRational::Equal(injectedMass[0],one) ) {
+			return Fail(error,"fire-simulation methane boundary mass fractions do not sum exactly");
+		}
+		for( std::size_t column=1; column<7; ++column ) {
+			if( !injectedMass[column].IsZero() ) return Fail(error,"methane injection is not pure CH4");
+		}
+		for( std::size_t row=0; row<4; ++row ) {
+			ExactRational ambientValue, injectedValue;
+			for( std::size_t column=0; column<7; ++column ) {
+				ambientValue = ExactRational::Add(ambientValue,ExactRational::Multiply(
+					elementMatrix.At(row,column),ambientMass[column]));
+				injectedValue = ExactRational::Add(injectedValue,ExactRational::Multiply(
+					elementMatrix.At(row,column),injectedMass[column]));
+			}
+			if( !ExactRational::Equal(ambientValue,ambientElements[row]) ||
+				!ExactRational::Equal(injectedValue,injectedElements[row]) ) {
+				return Fail(error,"fire-simulation methane boundary element arithmetic is false");
+			}
+		}
+
+		const RISECBOR64::Value* heating = Required(
+			record,"lower_heating_value_J_per_kg",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* reaction = Required(
+			record,"primary_reaction",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* condensable = Required(
+			record,"condensable_stream",RISECBOR64::Value::Map,error);
+		ExactRational exactHeating, oxygen, reactionEnthalpy, effectiveOxygen, effectiveHeat;
+		ExactRational sootYield, condensableYield;
+		std::vector<ExactRational> reactionDelta;
+		std::string derivation, equation, condensableKind;
+		const RISECBOR64::Value* exactHeatingValue = heating ? Required(
+			*heating,"exact_rational",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* oxygenValue = reaction ? Required(
+			*reaction,"stoichiometric_oxygen_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* reactionEnthalpyValue = reaction ? Required(
+			*reaction,"reaction_enthalpy_J_per_kmol",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* effectiveOxygenValue = reaction ? Required(
+			*reaction,"effective_stoichiometric_oxygen_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* effectiveHeatValue = reaction ? Required(
+			*reaction,"effective_heat_release_J_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* sootYieldValue = reaction ? Required(
+			*reaction,"gross_soot_yield_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* condensableYieldValue = reaction ? Required(
+			*reaction,"condensable_yield_kg_per_kg_fuel",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* heatingProvenance = heating ? Required(
+			*heating,"provenance",RISECBOR64::Value::Map,error) : 0;
+		if( !heating || !reaction || !condensable || !exactHeatingValue || !oxygenValue ||
+			!reactionEnthalpyValue || !effectiveOxygenValue || !effectiveHeatValue ||
+			!sootYieldValue || !condensableYieldValue || !heatingProvenance ||
+			!ReadFloat(*heating,"value",m_lowerHeatingValueJPerKG,error) ||
+			!ReadText(*heating,"derivation",derivation,error) ||
+			!ValidateProvenance(*heatingProvenance,error) ||
+			!ReadExactRational(*exactHeatingValue,exactHeating,error) ||
+			!ReadText(*reaction,"equation",equation,error) || equation != "CH4+2O2->CO2+2H2O" ||
+			!ReadExactRational(*oxygenValue,oxygen,error) || oxygen.numerator.negative || oxygen.IsZero() ||
+			!ReadExactRational(*reactionEnthalpyValue,reactionEnthalpy,error) ||
+				!reactionEnthalpy.numerator.negative || reactionEnthalpy.IsZero() ||
+			!ReadExactRational(*effectiveOxygenValue,effectiveOxygen,error) ||
+			!ReadExactRational(*effectiveHeatValue,effectiveHeat,error) ||
+			!ReadExactRational(*sootYieldValue,sootYield,error) || !sootYield.IsZero() ||
+			!ReadExactRational(*condensableYieldValue,condensableYield,error) || !condensableYield.IsZero() ||
+			!ReadRationalArray(*reaction,"constituent_delta_kg_per_kg_fuel",reactionDelta,
+				m_primaryReactionDelta,7,error) ||
+			!ReadText(*condensable,"kind",condensableKind,error) || condensableKind != "none" ||
+			!ExactRational::Equal(exactHeating,effectiveHeat) ||
+			!ExactRational::Equal(oxygen,effectiveOxygen) ||
+			m_lowerHeatingValueJPerKG != static_cast<double>(exactHeating.ToLongDouble()) ) {
+			return Fail(error,"fire-simulation methane reaction closure is malformed");
+		}
+		m_stoichiometricOxygenKGPerKGFuel = static_cast<double>(oxygen.ToLongDouble());
+		ExactRational reactionMass;
+		for( const ExactRational& value : reactionDelta ) reactionMass = ExactRational::Add(reactionMass,value);
+		ExactRational minusOne = one; minusOne.numerator.negative = true;
+		if( !reactionMass.IsZero() || !ExactRational::Equal(reactionDelta[0],minusOne) ) {
+			return Fail(error,"fire-simulation methane primary reaction mass balance is false");
+		}
+		for( std::size_t row=0; row<4; ++row ) {
+			ExactRational residual;
+			for( std::size_t column=0; column<7; ++column ) residual = ExactRational::Add(
+				residual,ExactRational::Multiply(elementMatrix.At(row,column),reactionDelta[column]));
+			if( !residual.IsZero() ) return Fail(error,"fire-simulation methane element balance is false");
+		}
+		const RISECBOR64::Value* sootOxidation = Required(
+			record,"soot_oxidation",RISECBOR64::Value::Map,error);
+		ExactRational sootOxygen, sootCO2, sootHeat, sootMassResidual;
+		std::string sootEquation;
+		if( !sootOxidation ||
+			!ReadText(*sootOxidation,"equation",sootEquation,error) || sootEquation != "C(gr)+O2->CO2" ||
+			!sootOxidation->Find("oxygen_kg_per_kg_carbon") ||
+			!ReadExactRational(*sootOxidation->Find("oxygen_kg_per_kg_carbon"),sootOxygen,error) ||
+			!sootOxidation->Find("co2_kg_per_kg_carbon") ||
+			!ReadExactRational(*sootOxidation->Find("co2_kg_per_kg_carbon"),sootCO2,error) ||
+			!sootOxidation->Find("heat_release_J_per_kg_carbon") ||
+			!ReadExactRational(*sootOxidation->Find("heat_release_J_per_kg_carbon"),sootHeat,error) ||
+			!sootOxidation->Find("exact_mass_residual") ||
+			!ReadExactRational(*sootOxidation->Find("exact_mass_residual"),sootMassResidual,error) ||
+			!sootMassResidual.IsZero() || sootOxygen.numerator.negative || sootCO2.numerator.negative ||
+			sootHeat.numerator.negative || sootOxygen.IsZero() || sootCO2.IsZero() || sootHeat.IsZero() ) {
+			return Fail(error,"fire-simulation methane soot oxidation closure is malformed");
+		}
+		ExactRational sootMass = ExactRational::Add(one,sootOxygen);
+		if( !ExactRational::Equal(sootMass,sootCO2) ) {
+			return Fail(error,"fire-simulation methane soot oxidation mass balance is false");
+		}
+		m_sootOxygenKGPerKGCarbon = static_cast<double>(sootOxygen.ToLongDouble());
+		m_sootCO2KGPerKGCarbon = static_cast<double>(sootCO2.ToLongDouble());
+		m_sootHeatReleaseJPerKGCarbon = static_cast<double>(sootHeat.ToLongDouble());
+
+		const RISECBOR64::Value* reconstruction = Required(
+			record,"conservative_reconstruction_v1",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* fluxProjection = Required(
+			record,"nonadvective_flux_projection_v1",RISECBOR64::Value::Map,error);
+		if( !reconstruction || !fluxProjection ||
+			!ValidateNullspaceCertificate(*reconstruction,"conservative_reconstruction_v1",
+				expectedElements,expectedState,m_reconstruction,error) ||
+			!ValidateNullspaceCertificate(*fluxProjection,"nonadvective_flux_projection_v1",
+				std::vector<std::string>{"C","H","O","N","sum_constituent_flux"},
+				expectedState,m_nonadvectiveFluxProjection,error) ) {
+			return false;
+		}
+		return true;
+	}
+
+	bool FireSimulationMethaneRecord::LoadCanonicalRecord(
+		const RISECBOR64::Bytes& bytes,
+		std::string* error
+		)
+	{
+		FireSimulationMethaneRecord candidate;
+		RISECBOR64::Value decoded;
+		const std::string identity = RISECBOR64::SHA256Hex(bytes);
+		if( !RISECBOR64::DecodeCanonical(bytes,decoded,error) ||
+			!candidate.LoadSemanticRecord(decoded,error) ) {
+			*this = FireSimulationMethaneRecord();
+			return false;
+		}
+		if( identity != kFireSimMethanePhysicalV1SHA256 ) {
+			*this = FireSimulationMethaneRecord();
+			return Fail(error,"fire-simulation methane record is not the adopted physical preset");
+		}
+		candidate.m_recordBytes = bytes;
+		candidate.m_recordId = identity;
+		candidate.m_valid = true;
+		*this = candidate;
+		return true;
+	}
+
+	const FireSimulationMethaneRecord& FireSimulationMethaneRecord::PhysicalV1()
+	{
+		static const FireSimulationMethaneRecord record =
+			LoadEmbedded<FireSimulationMethaneRecord>(
+				kFireSimMethanePhysicalV1,kFireSimMethanePhysicalV1Size,
+				kFireSimMethanePhysicalV1SHA256);
+		return record;
+	}
+
+	const RISECBOR64::Bytes& FireSimulationSolverFixtureRecords::NearRankDeficientV1()
+	{
+		static const RISECBOR64::Bytes bytes(kFireSimSolverNearRankDeficientFixtureV1,
+			kFireSimSolverNearRankDeficientFixtureV1+
+			kFireSimSolverNearRankDeficientFixtureV1Size);
+		return bytes;
+	}
+
+	const RISECBOR64::Bytes& FireSimulationSolverFixtureRecords::CorrectRankWrongSubspaceV1()
+	{
+		static const RISECBOR64::Bytes bytes(kFireSimSolverWrongSubspaceFixtureV1,
+			kFireSimSolverWrongSubspaceFixtureV1+
+			kFireSimSolverWrongSubspaceFixtureV1Size);
+		return bytes;
 	}
 
 	FireSimulationThermochemistryRecord::FireSimulationThermochemistryRecord() :

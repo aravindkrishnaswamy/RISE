@@ -198,6 +198,17 @@ namespace
 			!record.LoadCanonicalRecord(bytes,&error) && !error.empty();
 	}
 
+	template<class Record>
+	std::string RejectionError( const RISECBOR64::Value& value )
+	{
+		RISECBOR64::Bytes bytes;
+		std::string error;
+		Record record;
+		if( !RISECBOR64::Encode(value,bytes,&error) ) return error;
+		if( record.LoadCanonicalRecord(bytes,&error) ) return std::string();
+		return error;
+	}
+
 	double WilkePhi(
 		const double propertyI,
 		const double propertyJ,
@@ -233,14 +244,67 @@ int main()
 {
 	const FireSimulationThermochemistryRecord& thermo =
 		FireSimulationThermochemistryRecord::OpenSubsetV1();
+	const FireSimulationMethaneRecord& methane =
+		FireSimulationMethaneRecord::PhysicalV1();
 	const FireSimulationTransportRecord& transport =
 		FireSimulationTransportRecord::OpenV1();
 	const FireSimulationGasOpacityRecord& opacity =
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	Check(thermo.IsValid(),"embedded thermochemistry record loads");
+	Check(methane.IsValid(),"complete physical methane record loads");
 	Check(transport.IsValid(),"embedded transport record loads");
 	Check(opacity.IsValid(),"embedded HITEMP Planck-mean record loads");
 	Check(!thermo.IsPredictiveQualified(),"open thermochemistry subset remains preview-only");
+	Check(!methane.IsPredictiveQualified(),
+		"physical methane substrate retains only its explicit predictive-label blockers");
+	Check(methane.SpeciesOrder() == std::vector<std::string>({
+		"CH4","O2","N2","CO2","H2O","CO","C(gr)"}),
+		"methane record owns the exact r51 species order");
+	Check(methane.ElementOrder() == std::vector<std::string>({"C","H","O","N"}),
+		"methane record carries every conserved element");
+	Check(methane.ConservativeReconstruction().declaredRank == 3 &&
+		methane.ConservativeReconstruction().nullity == 5 &&
+		methane.NonadvectiveFluxProjection().declaredRank == 4 &&
+		methane.NonadvectiveFluxProjection().nullity == 4,
+		"real methane A exposes its dependent mass row and C adds exactly one rank");
+	Check(std::fabs(methane.LowerHeatingValueJPerKG()-50027364.88044851) < 0.1 &&
+		std::fabs(methane.StoichiometricOxygenKGPerKGFuel()-3.989263492008084) < 1.0e-12,
+		"methane LHV and oxygen coefficient derive from the pinned CEA formation data");
+	std::vector<double> arbitraryFlux = {0.13,-0.22,0.31,-0.17,0.19,-0.07,0.11,-0.09};
+	std::vector<double> projectedFlux;
+	Check(methane.NonadvectiveFluxProjection().Project(arbitraryFlux,projectedFlux),
+		"certified methane N_C projects an arbitrary raw flux");
+	if( projectedFlux.size() == 8 ) {
+		const FireCertifiedNullspace& closure = methane.NonadvectiveFluxProjection();
+		for( std::size_t row=0; row<closure.constraintRows; ++row ) {
+			double residual = 0.0;
+			for( std::size_t column=0; column<closure.stateDimension; ++column ) {
+				residual += closure.constraintMatrix[row*closure.stateDimension+column]*
+					projectedFlux[column];
+			}
+			Check(std::fabs(residual) <= 2.0e-14,
+				"projected methane flux satisfies every A plus sum-J row");
+		}
+	}
+	RISECBOR64::Value nearRankFixture, wrongSubspaceFixture;
+	std::string fixtureError;
+	const RISECBOR64::Bytes& nearRankBytes =
+		FireSimulationSolverFixtureRecords::NearRankDeficientV1();
+	const RISECBOR64::Bytes& wrongSubspaceBytes =
+		FireSimulationSolverFixtureRecords::CorrectRankWrongSubspaceV1();
+	Check(RISECBOR64::DecodeCanonical(nearRankBytes,nearRankFixture,&fixtureError) &&
+		RISECBOR64::DecodeCanonical(wrongSubspaceBytes,wrongSubspaceFixture,&fixtureError),
+		"synthetic solver RED records decode canonically");
+	Check(nearRankFixture.Find("record_class") &&
+		nearRankFixture.Find("record_class")->GetText() == "synthetic_verification_fixture" &&
+		wrongSubspaceFixture.Find("record_class") &&
+		wrongSubspaceFixture.Find("record_class")->GetText() == "synthetic_verification_fixture" &&
+		RISECBOR64::SHA256Hex(nearRankBytes) != RISECBOR64::SHA256Hex(wrongSubspaceBytes),
+		"contrived rank and wrong-subspace fixtures have distinct non-preset identities");
+	FireSimulationMethaneRecord fixtureAsPreset;
+	Check(!fixtureAsPreset.LoadCanonicalRecord(nearRankBytes) &&
+		!fixtureAsPreset.LoadCanonicalRecord(wrongSubspaceBytes),
+		"synthetic solver fixtures can never load as the physical methane preset");
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
 	Check(thermo.PredictiveBlockers().size() == 7,
 		"thermochemistry exposes every unresolved licensed/estimation field");
@@ -466,10 +530,12 @@ int main()
 			"WMS mixture matches an independent equation evaluation");
 	}
 
-	RISECBOR64::Value thermoValue, transportValue, opacityRecordValue;
+	RISECBOR64::Value thermoValue, methaneValue, transportValue, opacityRecordValue;
 	std::string error;
 	Check(RISECBOR64::DecodeCanonical(thermo.RecordBytes(),thermoValue,&error),
 		"thermochemistry record decodes canonically");
+	Check(RISECBOR64::DecodeCanonical(methane.RecordBytes(),methaneValue,&error),
+		"physical methane record decodes canonically");
 	Check(RISECBOR64::DecodeCanonical(transport.RecordBytes(),transportValue,&error),
 		"transport record decodes canonically");
 	Check(RISECBOR64::DecodeCanonical(opacity.RecordBytes(),opacityRecordValue,&error),
@@ -712,6 +778,53 @@ int main()
 		!invalidatedTransport.IsValid() && invalidatedTransport.RecordBytes().empty() &&
 		!invalidatedTransport.FindSpecies("N2"),
 		"failed reload clears all previously valid transport state");
+	RISECBOR64::Value reconstruction = *methaneValue.Find("conservative_reconstruction_v1");
+	RISECBOR64::Value exactConstraint = *reconstruction.Find("constraint_matrix");
+	RISECBOR64::Value::Values constraintRows = exactConstraint.Find("entries")->GetArray();
+	RISECBOR64::Value::Values firstConstraintRow = constraintRows[0].GetArray();
+	firstConstraintRow[0] = ReplaceMember(firstConstraintRow[0],"numerator",
+		RISECBOR64::Value::String("123456789"));
+	constraintRows[0] = RISECBOR64::Value::ArrayValue(firstConstraintRow);
+	exactConstraint = ReplaceMember(exactConstraint,"entries",
+		RISECBOR64::Value::ArrayValue(constraintRows));
+	reconstruction = ReplaceMember(reconstruction,"constraint_matrix",exactConstraint);
+	const std::string falseRankError = RejectionError<FireSimulationMethaneRecord>(
+		ReplaceMember(methaneValue,"conservative_reconstruction_v1",reconstruction));
+	Check(falseRankError.find("exact nullspace certificate is false") != std::string::npos,
+		"mutating physical A is rejected by exact rank/nullspace validation before identity");
+	RISECBOR64::Value fluxClosure = *methaneValue.Find("nonadvective_flux_projection_v1");
+	RISECBOR64::Value numericalBasis = *fluxClosure.Find("orthonormal_nullspace");
+	RISECBOR64::Value::Values basisRows = numericalBasis.Find("entries")->GetArray();
+	RISECBOR64::Value::Values basisFirstRow = basisRows[0].GetArray();
+	basisFirstRow[0] = RISECBOR64::Value::Float(basisFirstRow[0].GetFloat()+0.125);
+	basisRows[0] = RISECBOR64::Value::ArrayValue(basisFirstRow);
+	numericalBasis = ReplaceMember(numericalBasis,"entries",
+		RISECBOR64::Value::ArrayValue(basisRows));
+	fluxClosure = ReplaceMember(fluxClosure,"orthonormal_nullspace",numericalBasis);
+	const std::string falseBasisError = RejectionError<FireSimulationMethaneRecord>(
+		ReplaceMember(methaneValue,"nonadvective_flux_projection_v1",fluxClosure));
+	Check(falseBasisError.find("binary64 matrix digest mismatch") != std::string::npos,
+		"mutating N_C bytes is rejected by its binary64 digest before identity");
+	RISECBOR64::Value reaction = *methaneValue.Find("primary_reaction");
+	RISECBOR64::Value::Values reactionDelta = reaction.Find(
+		"constituent_delta_kg_per_kg_fuel")->GetArray();
+	reactionDelta[3] = ReplaceMember(reactionDelta[3],"numerator",
+		RISECBOR64::Value::String("1"));
+	reaction = ReplaceMember(reaction,"constituent_delta_kg_per_kg_fuel",
+		RISECBOR64::Value::ArrayValue(reactionDelta));
+	const std::string falseBalanceError = RejectionError<FireSimulationMethaneRecord>(
+		ReplaceMember(methaneValue,"primary_reaction",reaction));
+	Check(falseBalanceError.find("mass balance is false") != std::string::npos,
+		"mutating a physical methane product coefficient fails the exact mass ledger");
+	Check(Rejects<FireSimulationMethaneRecord>(ReplaceMember(methaneValue,"record_name",
+		RISECBOR64::Value::String("recertified methane mutation"))),
+		"semantically valid methane metadata mutation is rejected by adopted preset identity");
+	FireSimulationMethaneRecord invalidatedMethane;
+	Check(invalidatedMethane.LoadCanonicalRecord(methane.RecordBytes()),
+		"reload regression starts from a valid methane record");
+	Check(!invalidatedMethane.LoadCanonicalRecord(malformedBytes) &&
+		!invalidatedMethane.IsValid() && invalidatedMethane.RecordBytes().empty(),
+		"failed reload clears all previously valid methane state");
 	Check(Rejects<FireSimulationGasOpacityRecord>(ReplaceMember(opacityRecordValue,
 		"record_name",RISECBOR64::Value::String("recertified mutation"))),
 		"Planck-mean record identity rejects a canonically recertified mutation");

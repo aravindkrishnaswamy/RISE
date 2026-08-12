@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Freeze Phase-C open property subsets into RISE-CBOR64-v1.
+"""Freeze Phase-C open physical-property records into RISE-CBOR64-v1.
 
 The operational records are deliberately generated from redistribution-safe
 NASA CEA, NIST ThermoML, and GRI-Mech/Cantera inputs.  Burcat and HITEMP line
 content is excluded so owner-gated coefficients cannot enter these records.
-The thermochemistry output is intentionally not a solver-ready §3.3 gas
-record: its explicit blockers name every missing fuel/aerosol closure.
+The legacy aggregate thermochemistry output remains a property subset for
+wax/wood bring-up.  The same pinned NASA CEA snapshot also produces the
+complete physical methane record required by the r51 solver bring-up rule.
 """
 
 from __future__ import annotations
@@ -13,10 +14,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import itertools
 import json
 import math
 import re
+import struct
 import sys
+from fractions import Fraction
 from pathlib import Path
 
 from generate_fire_optics_records import (
@@ -69,6 +73,9 @@ FORMULAS = {
     "C8H18,n-octane": {"C": 8.0, "H": 18.0},
     PENTACOSANE_NAME: {"C": 25.0, "H": 52.0},
 }
+
+METHANE_SPECIES = ("CH4", "O2", "N2", "CO2", "H2O", "CO", "C(gr)")
+METHANE_ELEMENTS = ("C", "H", "O", "N")
 
 
 def sha256(path: Path) -> str:
@@ -637,6 +644,417 @@ def clipped_thermo_species(source: dict, domain_min: float, domain_max: float,
     return result
 
 
+def fraction(value) -> Fraction:
+    """Convert source decimals to exact rationals without a binary64 detour."""
+    if isinstance(value, Fraction):
+        return value
+    if isinstance(value, int):
+        return Fraction(value)
+    return Fraction(str(value))
+
+
+def rational(value: Fraction) -> dict:
+    value = fraction(value)
+    return {
+        "numerator": str(value.numerator),
+        "denominator": str(value.denominator),
+    }
+
+
+def rational_matrix(matrix: list[list[Fraction]]) -> dict:
+    if not matrix or not matrix[0] or any(len(row) != len(matrix[0]) for row in matrix):
+        raise ValueError("rational matrix is empty or ragged")
+    return {
+        "rows": len(matrix),
+        "columns": len(matrix[0]),
+        "entries": [[rational(value) for value in row] for row in matrix],
+    }
+
+
+def matrix_transpose(matrix):
+    return [list(row) for row in zip(*matrix)]
+
+
+def matrix_multiply(left, right):
+    if not left or not right or len(left[0]) != len(right):
+        raise ValueError("invalid exact matrix product")
+    return [[sum((left[i][k] * right[k][j] for k in range(len(right))),
+                 Fraction(0))
+             for j in range(len(right[0]))]
+            for i in range(len(left))]
+
+
+def matrix_inverse(matrix):
+    size = len(matrix)
+    if size == 0 or any(len(row) != size for row in matrix):
+        raise ValueError("exact inverse requires a square matrix")
+    work = [[fraction(value) for value in row] +
+            [Fraction(int(i == j)) for j in range(size)]
+            for i, row in enumerate(matrix)]
+    for column in range(size):
+        pivot = next((row for row in range(column, size)
+                      if work[row][column] != 0), None)
+        if pivot is None:
+            raise ValueError("exact matrix is singular")
+        work[column], work[pivot] = work[pivot], work[column]
+        scale = work[column][column]
+        work[column] = [value / scale for value in work[column]]
+        for row in range(size):
+            if row == column or work[row][column] == 0:
+                continue
+            scale = work[row][column]
+            work[row] = [work[row][index] - scale * work[column][index]
+                         for index in range(2 * size)]
+    return [row[size:] for row in work]
+
+
+def matrix_determinant(matrix):
+    size = len(matrix)
+    if size == 0 or any(len(row) != size for row in matrix):
+        raise ValueError("exact determinant requires a square matrix")
+    total = Fraction(0)
+    for permutation in itertools.permutations(range(size)):
+        inversions = sum(permutation[i] > permutation[j]
+                         for i in range(size) for j in range(i + 1, size))
+        product = Fraction(-1 if inversions % 2 else 1)
+        for row, column in enumerate(permutation):
+            product *= matrix[row][column]
+        total += product
+    return total
+
+
+def exact_rref(matrix):
+    work = [[fraction(value) for value in row] for row in matrix]
+    pivot_columns = []
+    pivot_row = 0
+    for column in range(len(work[0])):
+        selected = next((row for row in range(pivot_row, len(work))
+                         if work[row][column] != 0), None)
+        if selected is None:
+            continue
+        work[pivot_row], work[selected] = work[selected], work[pivot_row]
+        scale = work[pivot_row][column]
+        work[pivot_row] = [value / scale for value in work[pivot_row]]
+        for row in range(len(work)):
+            if row == pivot_row or work[row][column] == 0:
+                continue
+            scale = work[row][column]
+            work[row] = [work[row][index] - scale * work[pivot_row][index]
+                         for index in range(len(work[0]))]
+        pivot_columns.append(column)
+        pivot_row += 1
+        if pivot_row == len(work):
+            break
+    return work, pivot_columns
+
+
+def exact_nullspace(matrix):
+    reduced, pivot_columns = exact_rref(matrix)
+    free_columns = [column for column in range(len(matrix[0]))
+                    if column not in pivot_columns]
+    columns = []
+    for free in free_columns:
+        vector = [Fraction(0) for _ in range(len(matrix[0]))]
+        vector[free] = Fraction(1)
+        for row, pivot in enumerate(pivot_columns):
+            vector[pivot] = -reduced[row][free]
+        columns.append(vector)
+    return matrix_transpose(columns), pivot_columns
+
+
+def first_nonzero_minor(matrix, rank):
+    for rows in itertools.combinations(range(len(matrix)), rank):
+        for columns in itertools.combinations(range(len(matrix[0])), rank):
+            minor = [[matrix[row][column] for column in columns] for row in rows]
+            determinant = matrix_determinant(minor)
+            if determinant != 0:
+                return list(rows), list(columns), determinant
+    raise ValueError("declared exact rank has no nonzero pivot minor")
+
+
+def rank_factorization(matrix, rank):
+    rows, columns, determinant = first_nonzero_minor(matrix, rank)
+    pivot = [[matrix[row][column] for column in columns] for row in rows]
+    left = [[row[column] for column in columns] for row in matrix]
+    selected_rows = [[matrix[row][column] for column in range(len(matrix[0]))]
+                     for row in rows]
+    right = matrix_multiply(matrix_inverse(pivot), selected_rows)
+    if matrix_multiply(left, right) != matrix:
+        raise ValueError("exact rank factorization did not reproduce the constraint matrix")
+    return left, right, rows, columns, determinant
+
+
+def orthonormalize_exact_columns(basis):
+    columns = matrix_transpose(basis)
+    orthonormal = []
+    for exact_column in columns:
+        vector = [float(value) for value in exact_column]
+        # Two modified-Gram-Schmidt passes make the emitted binary64 columns
+        # deterministic and comfortably tighter than the §3.7 envelopes.
+        for _ in range(2):
+            for prior in orthonormal:
+                projection = sum(vector[i] * prior[i]
+                                 for i in range(len(vector)))
+                vector = [vector[i] - projection * prior[i]
+                          for i in range(len(vector))]
+        norm = math.sqrt(sum(value * value for value in vector))
+        if not math.isfinite(norm) or norm == 0.0:
+            raise ValueError("exact nullspace produced a singular numerical basis")
+        vector = [value / norm for value in vector]
+        first = next(value for value in vector if value != 0.0)
+        if first < 0.0:
+            vector = [-value for value in vector]
+        orthonormal.append(vector)
+    return matrix_transpose(orthonormal)
+
+
+def float_matrix(matrix):
+    matrix = [[0.0 if value == 0.0 else value for value in row]
+              for row in matrix]
+    packed = b"".join(struct.pack(">d", value)
+                      for row in matrix for value in row)
+    return {
+        "rows": len(matrix),
+        "columns": len(matrix[0]),
+        "entries": matrix,
+        "binary64_layout": "ieee754_big_endian_row_major",
+        "binary64_sha256": hashlib.sha256(packed).hexdigest(),
+    }
+
+
+def nullspace_certificate(name: str, row_order: list[str], state_order: list[str],
+                          constraint):
+    reduced, pivot_columns = exact_rref(constraint)
+    rank = len(pivot_columns)
+    exact_basis, _ = exact_nullspace(constraint)
+    if len(exact_basis[0]) != len(state_order) - rank:
+        raise ValueError("exact nullity disagrees with the rank certificate")
+    factor_left, factor_right, pivot_rows, pivot_columns, pivot_det = \
+        rank_factorization(constraint, rank)
+    null_rows, null_columns, null_det = first_nonzero_minor(
+        exact_basis, len(exact_basis[0]))
+    if any(value != 0 for row in matrix_multiply(constraint, exact_basis)
+           for value in row):
+        raise ValueError("exact nullspace residual is nonzero")
+    gram = matrix_multiply(matrix_transpose(exact_basis), exact_basis)
+    projector = matrix_multiply(
+        matrix_multiply(exact_basis, matrix_inverse(gram)),
+        matrix_transpose(exact_basis))
+    numerical_basis = orthonormalize_exact_columns(exact_basis)
+    numeric_projector = [[sum(numerical_basis[i][k] * numerical_basis[j][k]
+                              for k in range(len(numerical_basis[0])))
+                          for j in range(len(numerical_basis))]
+                         for i in range(len(numerical_basis))]
+    projector_error = max(sum(abs(numeric_projector[i][j] - float(projector[i][j]))
+                              for j in range(len(projector)))
+                          for i in range(len(projector)))
+    residual = max(sum(abs(sum(float(constraint[i][j]) * numerical_basis[j][k]
+                               for j in range(len(state_order))))
+                       for k in range(len(numerical_basis[0])))
+                   for i in range(len(constraint)))
+    orthonormality = max(sum(abs(sum(numerical_basis[k][i] * numerical_basis[k][j]
+                                       for k in range(len(state_order))) -
+                                   (1.0 if i == j else 0.0))
+                               for j in range(len(numerical_basis[0])))
+                           for i in range(len(numerical_basis[0])))
+    eps = sys.float_info.epsilon
+    if projector_error > 1024.0 * eps or residual > 128.0 * eps * max(
+            1.0, max(sum(abs(float(value)) for value in row) for row in constraint)) or \
+            orthonormality > 128.0 * eps:
+        raise ValueError("numerical nullspace does not meet the §3.7 fp64 certificate")
+    return {
+        "record_kind": name,
+        "state_order": state_order,
+        "constraint_row_order": row_order,
+        "constraint_matrix": rational_matrix(constraint),
+        "declared_rank": rank,
+        "rank_factorization": {
+            "left": rational_matrix(factor_left),
+            "right": rational_matrix(factor_right),
+            "pivot_rows": pivot_rows,
+            "pivot_columns": pivot_columns,
+            "pivot_minor_determinant": rational(pivot_det),
+        },
+        "exact_nullspace": {
+            "basis": rational_matrix(exact_basis),
+            "pivot_rows": null_rows,
+            "pivot_columns": null_columns,
+            "pivot_minor_determinant": rational(null_det),
+        },
+        "exact_projector": rational_matrix(projector),
+        "orthonormal_nullspace": float_matrix(numerical_basis),
+        "residual_envelopes": {
+            "A_N_infinity_factor_epsilon64": 128.0,
+            "Nt_N_minus_I_infinity_factor_epsilon64": 128.0,
+            "NNt_minus_exact_projector_infinity_factor_epsilon64": 1024.0,
+            "generator_measured_A_N_infinity": residual,
+            "generator_measured_Nt_N_minus_I_infinity": orthonormality,
+            "generator_measured_projector_infinity": projector_error,
+        },
+    }
+
+
+def methane_payload(snapshot: dict) -> dict:
+    common_min, common_max, reference = 300.0, 5000.0, 300.0
+    sources = {entry["name"]: entry
+               for entry in snapshot["nasa_cea"]["thermochemistry"]}
+    species = [clipped_thermo_species(sources[name], common_min, common_max,
+                                      reference)
+               for name in METHANE_SPECIES]
+    molecular_weights = {name: fraction(sources[name]["molecular_weight_kg_per_kmol"])
+                         for name in METHANE_SPECIES}
+    atomic_weights = {
+        "C": molecular_weights["C(gr)"],
+        "O": molecular_weights["O2"] / 2,
+        "N": molecular_weights["N2"] / 2,
+        "H": (molecular_weights["H2O"] - molecular_weights["O2"] / 2) / 2,
+    }
+    for name in METHANE_SPECIES:
+        formula_weight = sum(atomic_weights[element] * fraction(count)
+                             for element, count in FORMULAS[name].items())
+        if formula_weight != molecular_weights[name]:
+            raise ValueError(f"NASA formula arithmetic does not reproduce W for {name}")
+    element_matrix = [[atomic_weights[element] * fraction(FORMULAS[name].get(element, 0)) /
+                       molecular_weights[name] for name in METHANE_SPECIES]
+                      for element in METHANE_ELEMENTS]
+
+    # The r51 rule makes air and the injection state case declarations rather
+    # than measurements.  The bring-up case pins dry 21/79 molar air and pure
+    # methane at the record's common reference temperature.
+    ambient_moles = {"O2": Fraction(21, 100), "N2": Fraction(79, 100)}
+    ambient_mass_total = sum(ambient_moles[name] * molecular_weights[name]
+                             for name in ambient_moles)
+    ambient_mass = [ambient_moles.get(name, Fraction(0)) * molecular_weights[name] /
+                    ambient_mass_total for name in METHANE_SPECIES]
+    injected_mass = [Fraction(int(name == "CH4")) for name in METHANE_SPECIES]
+    ambient_elements = [sum(element_matrix[row][column] * ambient_mass[column]
+                            for column in range(len(METHANE_SPECIES)))
+                        for row in range(len(METHANE_ELEMENTS))]
+    injected_elements = [sum(element_matrix[row][column] * injected_mass[column]
+                             for column in range(len(METHANE_SPECIES)))
+                         for row in range(len(METHANE_ELEMENTS))]
+
+    state_order = ["rho_tot_Z"] + [f"q:{name}" for name in METHANE_SPECIES]
+    reconstruction = [[-(injected_elements[row] - ambient_elements[row])] +
+                      [element_matrix[row][column] - ambient_elements[row]
+                       for column in range(len(METHANE_SPECIES))]
+                      for row in range(len(METHANE_ELEMENTS))]
+    flux_projection = reconstruction + [[Fraction(0)] +
+                                        [Fraction(1)] * len(METHANE_SPECIES)]
+    reconstruction_certificate = nullspace_certificate(
+        "conservative_reconstruction_v1", list(METHANE_ELEMENTS), state_order,
+        reconstruction)
+    flux_certificate = nullspace_certificate(
+        "nonadvective_flux_projection_v1",
+        list(METHANE_ELEMENTS) + ["sum_constituent_flux"], state_order,
+        flux_projection)
+
+    hf = {name: fraction(sources[name]["formation_enthalpy_J_per_kmol_298p15K"])
+          for name in METHANE_SPECIES}
+    reaction_enthalpy = hf["CO2"] + 2 * hf["H2O"] - hf["CH4"]
+    if reaction_enthalpy >= 0:
+        raise ValueError("methane source formation enthalpies do not yield exothermic combustion")
+    lhv = -reaction_enthalpy / molecular_weights["CH4"]
+    stoichiometric_oxygen = 2 * molecular_weights["O2"] / molecular_weights["CH4"]
+    product_co2 = molecular_weights["CO2"] / molecular_weights["CH4"]
+    product_h2o = 2 * molecular_weights["H2O"] / molecular_weights["CH4"]
+    soot_oxygen = molecular_weights["O2"] / molecular_weights["C(gr)"]
+    soot_product_co2 = molecular_weights["CO2"] / molecular_weights["C(gr)"]
+    soot_heat = -(hf["CO2"] - hf["C(gr)"] - hf["O2"]) / molecular_weights["C(gr)"]
+    if Fraction(1) + stoichiometric_oxygen != product_co2 + product_h2o:
+        raise ValueError("methane primary reaction mass balance failed")
+    reaction_delta = [Fraction(-1), -stoichiometric_oxygen, Fraction(0),
+                      product_co2, product_h2o, Fraction(0), Fraction(0)]
+    for row in range(len(METHANE_ELEMENTS)):
+        if sum(element_matrix[row][column] * reaction_delta[column]
+               for column in range(len(METHANE_SPECIES))) != 0:
+            raise ValueError("methane primary reaction element balance failed")
+
+    return {
+        "schema_version": 1,
+        "version": "1.0.0-preview.1",
+        "record_kind": "fire_sim_methane_fuel_closure",
+        "record_name": "fire-sim-methane-physical-v1",
+        "record_status": "preview_only",
+        "record_class": "physical_fuel_preset",
+        "provenance_schema": "fire-optics-canonical-provenance-schema-v1",
+        "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
+        "common_temperature_domain_K": [common_min, common_max],
+        "reference_temperature_K": exact(reference, "FIRE_SMOKE_DESIGN.md SS3.3", "all species"),
+        "thermodynamic_pressure_Pa": exact(101325.0, "FIRE_SMOKE_DESIGN.md SS3.2", "open-domain methane bring-up"),
+        "species_order": list(METHANE_SPECIES),
+        "element_order": list(METHANE_ELEMENTS),
+        "atomic_weights_kg_per_kmol": {key: rational(value)
+                                        for key, value in atomic_weights.items()},
+        "element_mass_fraction_matrix": rational_matrix(element_matrix),
+        "species": species,
+        "ambient_state": {
+            "temperature_K": exact(reference, "FIRE_SMOKE_DESIGN.md SS3.9 case declaration", "methane bring-up"),
+            "mole_fractions": {name: rational(ambient_moles.get(name, Fraction(0)))
+                               for name in METHANE_SPECIES},
+            "mass_fractions": [rational(value) for value in ambient_mass],
+            "element_mass_fractions": [rational(value) for value in ambient_elements],
+        },
+        "injected_fuel_state": {
+            "temperature_K": exact(reference, "FIRE_SMOKE_DESIGN.md SS3.9 case declaration", "methane bring-up"),
+            "mass_fractions": [rational(value) for value in injected_mass],
+            "element_mass_fractions": [rational(value) for value in injected_elements],
+        },
+        "fuel_formula": FORMULAS["CH4"],
+        "lower_heating_value_J_per_kg": {
+            "value": float(lhv),
+            "exact_rational": rational(lhv),
+            "derivation": "-(hf_CO2+2*hf_H2O-hf_CH4)/W_CH4; all gases in NASA reference states",
+            "provenance": provenance(
+                f"NASA CEA {CEA_REVISION} data/thermo.inp formation enthalpies",
+                "https://github.com/nasa/cea"),
+        },
+        "primary_reaction": {
+            "equation": "CH4+2O2->CO2+2H2O",
+            "stoichiometric_oxygen_kg_per_kg_fuel": rational(stoichiometric_oxygen),
+            "product_coefficients_kg_per_kg_fuel": {
+                "CO2": rational(product_co2), "H2O": rational(product_h2o),
+                "CO": rational(Fraction(0)), "C(gr)": rational(Fraction(0)),
+            },
+            "constituent_delta_kg_per_kg_fuel": [rational(value) for value in reaction_delta],
+            "reaction_enthalpy_J_per_kmol": rational(reaction_enthalpy),
+            "gross_soot_yield_kg_per_kg_fuel": rational(Fraction(0)),
+            "condensable_yield_kg_per_kg_fuel": rational(Fraction(0)),
+            "effective_stoichiometric_oxygen_kg_per_kg_fuel": rational(stoichiometric_oxygen),
+            "effective_heat_release_J_per_kg_fuel": rational(lhv),
+            "admissibility_proof": {
+                "all_product_coefficients_nonnegative": True,
+                "gross_soot_yield_nonnegative": True,
+                "condensable_yield_nonnegative": True,
+                "effective_stoichiometric_oxygen_positive": True,
+                "effective_heat_release_positive": True,
+                "exact_mass_residual": rational(Fraction(0)),
+                "exact_element_residuals": [rational(Fraction(0))
+                                            for _ in METHANE_ELEMENTS],
+            },
+        },
+        "soot_oxidation": {
+            "equation": "C(gr)+O2->CO2",
+            "oxygen_kg_per_kg_carbon": rational(soot_oxygen),
+            "co2_kg_per_kg_carbon": rational(soot_product_co2),
+            "heat_release_J_per_kg_carbon": rational(soot_heat),
+            "exact_mass_residual": rational(Fraction(1) + soot_oxygen - soot_product_co2),
+        },
+        "conservative_reconstruction_v1": reconstruction_certificate,
+        "nonadvective_flux_projection_v1": flux_certificate,
+        "condensable_stream": {
+            "kind": "none",
+            "yield_kg_per_kg_fuel": rational(Fraction(0)),
+            "owner_gated_thermochemistry_required": False,
+        },
+        "predictive_blockers": [
+            "thermochemistry_source_fit_uncertainties_unpublished",
+            "methane_soot_yield_calibration_not_present",
+            "methane_chem_radiant_source_record_not_present",
+        ],
+    }
+
+
 def thermo_payload(snapshot: dict) -> dict:
     common_min, common_max, reference = 300.0, 5000.0, 300.0
     sources = {entry["name"]: entry for entry in snapshot["nasa_cea"]["thermochemistry"]}
@@ -807,6 +1225,48 @@ def transport_payload(snapshot: dict) -> dict:
     }
 
 
+def solver_fixture_payloads() -> list[tuple[str, dict]]:
+    """Contrived RED inputs; never physical fuel presets or solver defaults."""
+    delta = Fraction(1, 1 << 60)
+    common = {
+        "schema_version": 1,
+        "version": "1.0.0-preview.1",
+        "record_kind": "fire_sim_solver_verification_fixture",
+        "record_class": "synthetic_verification_fixture",
+        "applicability": "V-tier RED testing only; forbidden as a physical preset",
+    }
+    near_rank = dict(common)
+    near_rank.update({
+        "record_name": "fire-sim-solver-fixture-near-rank-deficient-v1",
+        "fixture_kind": "declared_rank_too_low",
+        "candidate_constraint_matrix": rational_matrix([
+            [Fraction(1), Fraction(0)], [Fraction(0), delta],
+        ]),
+        "candidate_declared_rank": 1,
+        "exact_rank": 2,
+        "expected_outcome": "reject_exact_rank_certificate",
+    })
+    wrong_subspace = dict(common)
+    wrong_subspace.update({
+        "record_name": "fire-sim-solver-fixture-correct-rank-wrong-subspace-v1",
+        "fixture_kind": "correct_rank_wrong_numerical_subspace",
+        "candidate_constraint_matrix": rational_matrix([
+            [Fraction(1), Fraction(0), -delta, Fraction(-1)],
+            [Fraction(0), Fraction(0), delta, Fraction(0)],
+            [Fraction(-1), Fraction(0), Fraction(0), Fraction(1)],
+        ]),
+        "candidate_declared_rank": 2,
+        "candidate_numerical_basis": [
+            [0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0],
+        ],
+        "expected_outcome": "reject_projector_subspace_certificate",
+    })
+    return [
+        ("kFireSimSolverNearRankDeficientFixtureV1", near_rank),
+        ("kFireSimSolverWrongSubspaceFixtureV1", wrong_subspace),
+    ]
+
+
 def generate(snapshot_path: Path) -> str:
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
     snapshot_id = hashlib.sha256(encode(snapshot)).hexdigest()
@@ -818,11 +1278,15 @@ def generate(snapshot_path: Path) -> str:
     if "burcat" in json.dumps(snapshot).lower() or "hitemp" in json.dumps(snapshot).lower():
         raise ValueError("license-gated Burcat/HITEMP bytes are forbidden in this generator")
     thermo = encode(thermo_payload(snapshot))
+    methane = encode(methane_payload(snapshot))
     transport = encode(transport_payload(snapshot))
     target = io.StringIO(newline="\n")
     target.write("// Generated from docs/data/source_pulls/fire_sim_open_sources_v1.json.\n\n")
     emit_array(target, "kFireSimThermochemistryOpenV1", thermo)
+    emit_array(target, "kFireSimMethanePhysicalV1", methane)
     emit_array(target, "kFireSimTransportOpenV1", transport)
+    for symbol, payload in solver_fixture_payloads():
+        emit_array(target, symbol, encode(payload))
     return target.getvalue()
 
 

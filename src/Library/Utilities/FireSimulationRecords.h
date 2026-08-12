@@ -34,6 +34,133 @@ namespace RISE
 		std::vector<FireThermochemistrySegment> segments;
 	};
 
+	struct FireCertifiedNullspace
+	{
+		std::vector<std::string> stateOrder;
+		std::vector<std::string> constraintRowOrder;
+		std::size_t constraintRows;
+		std::size_t stateDimension;
+		std::size_t declaredRank;
+		std::size_t nullity;
+		std::vector<double> constraintMatrix;
+		std::vector<double> orthonormalBasis;
+
+		FireCertifiedNullspace() : constraintRows(0), stateDimension(0),
+			declaredRank(0), nullity(0) {}
+
+		bool Project(
+			const std::vector<double>& input,
+			std::vector<double>& output,
+			std::string* error = 0
+			) const;
+	};
+
+	//! Canonical synthetic RED inputs.  These records are deliberately not
+	//! loadable as physical fuel presets.
+	struct FireSimulationSolverFixtureRecords
+	{
+		static const RISECBOR64::Bytes& NearRankDeficientV1();
+		static const RISECBOR64::Bytes& CorrectRankWrongSubspaceV1();
+	};
+
+	//! Complete r51 methane substrate.  Unlike OpenSubsetV1 this record owns
+	//! the physical species/order, element/reaction arithmetic and both §3.7
+	//! certified nullspaces; wax/wood owner-gated stubs are not members.
+	class FireSimulationMethaneRecord
+	{
+		bool m_valid;
+		std::string m_recordName;
+		std::string m_recordId;
+		RISECBOR64::Bytes m_recordBytes;
+		double m_temperatureMinK;
+		double m_temperatureMaxK;
+		double m_referenceTemperatureK;
+		double m_pressurePa;
+		double m_lowerHeatingValueJPerKG;
+		double m_stoichiometricOxygenKGPerKGFuel;
+		double m_sootOxygenKGPerKGCarbon;
+		double m_sootCO2KGPerKGCarbon;
+		double m_sootHeatReleaseJPerKGCarbon;
+		std::vector<std::string> m_speciesOrder;
+		std::vector<std::string> m_elementOrder;
+		std::vector<double> m_elementMassFractionMatrix;
+		std::vector<double> m_ambientMassFractions;
+		std::vector<double> m_injectedMassFractions;
+		std::vector<double> m_primaryReactionDelta;
+		FireCertifiedNullspace m_reconstruction;
+		FireCertifiedNullspace m_nonadvectiveFluxProjection;
+		std::vector<std::string> m_predictiveBlockers;
+
+		bool LoadSemanticRecord(
+			const RISECBOR64::Value& record,
+			std::string* error
+			);
+
+	public:
+		FireSimulationMethaneRecord();
+
+		bool LoadCanonicalRecord(
+			const RISECBOR64::Bytes& bytes,
+			std::string* error = 0
+			);
+
+		static const FireSimulationMethaneRecord& PhysicalV1();
+
+		bool IsValid() const { return m_valid; }
+		bool IsPredictiveQualified() const
+		{
+			return m_valid && m_predictiveBlockers.empty();
+		}
+		const std::string& RecordName() const { return m_recordName; }
+		const std::string& RecordId() const { return m_recordId; }
+		const RISECBOR64::Bytes& RecordBytes() const { return m_recordBytes; }
+		double TemperatureMinK() const { return m_temperatureMinK; }
+		double TemperatureMaxK() const { return m_temperatureMaxK; }
+		double ReferenceTemperatureK() const { return m_referenceTemperatureK; }
+		double ThermodynamicPressurePa() const { return m_pressurePa; }
+		double LowerHeatingValueJPerKG() const { return m_lowerHeatingValueJPerKG; }
+		double StoichiometricOxygenKGPerKGFuel() const
+		{
+			return m_stoichiometricOxygenKGPerKGFuel;
+		}
+		double SootOxygenKGPerKGCarbon() const { return m_sootOxygenKGPerKGCarbon; }
+		double SootCO2KGPerKGCarbon() const { return m_sootCO2KGPerKGCarbon; }
+		double SootHeatReleaseJPerKGCarbon() const
+		{
+			return m_sootHeatReleaseJPerKGCarbon;
+		}
+		const std::vector<std::string>& SpeciesOrder() const { return m_speciesOrder; }
+		const std::vector<std::string>& ElementOrder() const { return m_elementOrder; }
+		const std::vector<double>& ElementMassFractionMatrix() const
+		{
+			return m_elementMassFractionMatrix;
+		}
+		const std::vector<double>& AmbientMassFractions() const
+		{
+			return m_ambientMassFractions;
+		}
+		const std::vector<double>& InjectedMassFractions() const
+		{
+			return m_injectedMassFractions;
+		}
+		const std::vector<double>& PrimaryReactionDelta() const
+		{
+			return m_primaryReactionDelta;
+		}
+		const FireCertifiedNullspace& ConservativeReconstruction() const
+		{
+			return m_reconstruction;
+		}
+		const FireCertifiedNullspace& NonadvectiveFluxProjection() const
+		{
+			return m_nonadvectiveFluxProjection;
+		}
+		const std::vector<std::string>& PredictiveBlockers() const
+		{
+			return m_predictiveBlockers;
+		}
+	};
+
 	class FireSimulationThermochemistryRecord
 	{
 		bool m_valid;
