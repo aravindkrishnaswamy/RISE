@@ -340,3 +340,51 @@ Two things this changes:
    lights: 1 (gemini/arc81), 0 (gemini/arc82), 3 (gpt/arc82) — on the same
    code.  No lighting-behaviour claim in arcs 81–82 should be treated as
    settled without repeats.
+
+## 9. REPEATS — three gemini runs, identical build (2026-08-12)
+
+`evals/runs/imagine_s8_repeats`, after the emitter-visibility fix.  The first
+honest variance measurement in this workstream.
+
+| run | turns | objects | repeats | reuse % | SDF parts | area lights | populate | light_scene |
+|---|---|---|---|---|---|---|---|---|
+| r1 | 68 | 23 | 15 | 65% | 82 | 0 | 1 | 1 |
+| r2 | 40 | 26 | 16 | 62% | 67 | 0 | 1 | 1 |
+| r3 | 48 | 27 | 18 | 67% | 66 | 2 | 1 | 1 |
+| **mean** | 52 | **25.3** | 16.3 | **65%** | **71.7** | 0.7 | 1.0 | 1.0 |
+| *single run s6* | 39 | *34* | *21* | *61%* | *104* | *0* | 1 | 1 |
+| benchmark | — | 47 | 38 | 81% | 131 | 0 | — | — |
+
+### 9.1 What is STABLE
+
+- **The mechanisms fire every time.**  `populate_scene` and `light_scene` ran
+  exactly once in all three runs; the gates are reliable, not lucky.
+- **The reuse ratio is the solid result: 62 / 65 / 67%.**  Three runs inside
+  five points, from a pre-population baseline of ~0.  Population is real.
+- No emissive quad landed in frame as a bare panel in any run.
+
+### 9.2 What is NOT stable, and the correction it forces
+
+- **Object count 23–27 (mean 25.3).  The single run reported earlier was 34 —
+  the top of the range, not the centre.**  "Object count doubled" was an
+  overstatement of a real effect: 16 → ~25 is +56%, not +112%.
+- **SDF parts 66–82 (mean 71.7), against single runs of 87 and 104 earlier.**
+  Part counts may be DRIFTING DOWN as the prompts grow.  That would be this
+  workstream's own context-dilution finding turning on the workstream: every
+  arc adds palette and contract text to the same builders.  It is a
+  hypothesis, not a result — the 87 and 104 figures are themselves N=1 — but
+  it is the first sign that mechanisms may be costing what they buy, and the
+  next arc should measure prompt size against part count before adding text.
+- **Area lights 0 / 0 / 2 here, 3 on gpt, 1 in arc 81.**  Confirmed as
+  variance-dominated.  No lighting-behaviour claim from arcs 81–82 survives.
+- Picture quality varies far more than any count: r3 has 27 objects and reads
+  as jellyfish-sticks over an empty teal field, while the earlier 34-object
+  run was the best picture the workstream has made.
+
+### 9.3 The lesson for this project's method
+
+Four arcs of single-run conclusions were stacked on each other, and the first
+variance check moved the headline by half.  **Counts here have a spread of
+±20% or worse; effects smaller than that are unmeasurable at N=1 and should
+not be reported as findings.**  The reuse ratio survived precisely because it
+is a large, tight effect.  Run repeats before believing an arc, not after.
