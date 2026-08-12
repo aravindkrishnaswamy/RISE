@@ -2439,7 +2439,7 @@ namespace RISE
 						OpenMACFaceIndex3D(shape,axis,x,y,z);const double sign=positive?1.0:-1.0;
 						if(kind==AdiabaticWallBoundary3D){velocity.component[axis][f]=0.0;continue;}
 						if(kind==FuelInletBoundary3D){velocity.component[axis][f]=(positive?-1.0:1.0)*
-						boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3;continue;}
+						boundary.fuelMassFluxKGPerM2S/candidate.faceDensityKGPerM3.component[axis][f];continue;}
 						const std::size_t cx=axis==0?(positive?shape.nx-1:0):x,cy=axis==1?
 						(positive?shape.ny-1:0):y,cz=axis==2?(positive?shape.nz-1:0):z;
 						const std::size_t cell=shape.Index(cx,cy,cz),bindex=layout.boundaryUnknown[side][index];
@@ -2747,8 +2747,8 @@ namespace RISE
 						if(kind==AdiabaticWallBoundary3D){result.velocityMPerS.component[axis][face]=0.0;
 							continue;}
 						if(kind==FuelInletBoundary3D){result.velocityMPerS.component[axis][face]=
-							sign<0.0?boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3:
-							-boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3;continue;}
+							-sign*boundary.fuelMassFluxKGPerM2S/
+							result.faceDensityKGPerM3.component[axis][face];continue;}
 						const double density=result.faceDensityKGPerM3.component[axis][face];
 						const double outwardUnprojected=sign*unprojectedMomentumKGPerM2S.
 							component[axis][face]/density;
