@@ -1,9 +1,12 @@
 # Clean-Room Construction — Local Frames and Validated Insertion (Arc 79 Design, 2026-08-11)
 
-> **Status:** DESIGN, approved to build (user 2026-08-11: *"nail the
-> local-frame contract and validated insertion, then build it"*).  Successor
-> to arc 78 (staged build protocol), which supplies the element windows and
-> attribution this arc builds on.
+> **Status:** BUILT AND MEASURED (2026-08-11).  Shipped in `ef0beee3` +
+> `560f2dad`; first live result in §7 — the wizard moved 4 → 10 SDF parts and
+> the scene 20 → 48, at 2× the turn cost, with **composition now the binding
+> constraint**.  Built on user direction *"nail the local-frame contract and
+> validated insertion, then build it"*.  Successor to arc 78 (staged build
+> protocol), which supplies the element windows and attribution this arc
+> builds on.
 
 ---
 
@@ -160,6 +163,76 @@ The general rule for anyone adding a tool: **the canonical `kToolDefs` schema
 must satisfy the most restrictive provider on the roster, because it is shared
 verbatim by all of them.**  Express constraints in prose and enforce them
 server-side.
+
+## 7. RESULT — first live run, gemini-3.6-flash, N=1 (2026-08-11)
+
+`evals/runs/imagine_s2_gemini` against the arc-78 baseline
+`evals/runs/imagine_s1_gemini`, same scenario, same model, same prompt.
+
+### 7.1 The headline: construction richness moved
+
+Per-element SDF `part` lines in the FINAL scene (not the builder's claim):
+
+| element | arc-78 | arc-79 | |
+|---|---|---|---|
+| wizard | 4 (hat 2 + robe 2) | **10** (robe 3, beard 2, hat 2, staff 2, orb 1) | **2.5×** |
+| dragon | 16 (one chain) | 22 | 1.4× |
+| landscape | 4 | 9 | 2.3× |
+| mist/magic | — | 7 | new |
+| **scene total** | **20** | **48** | **2.4×** |
+
+The wizard is the load-bearing number.  It sat at 1–4 parts across twelve
+runs and three arcs while every information / feedback / visibility / cost
+mechanism failed to move it.  A fresh minimal context moved it to 10, with
+the beard and staff the focused probe named and no live run had ever built.
+**Context dilution was a real constraint and the clean room relieves it.**
+
+It did NOT reach the hand simulation's 15, and the dragon barely moved —
+arc-78 already spent a 16-part chain there, so the headroom was in the
+elements that were being skimped, not the one already getting attention.
+
+### 7.2 What it cost, and what broke
+
+- **Turn cost doubled**: 38 turns → 76; tool calls 37 → 75.  At arc-78's own
+  stop-rule boundary (>2× with no quality gain → revert).  There IS a gain,
+  so this is not a revert — but the margin is gone.
+- **Composition regressed, and is now the binding constraint.**  The render
+  crops both figures at the top edge with half the frame empty ground.
+  `place_element` was called **24 times** — the most-used verb in the run,
+  against 0/64 for every voluntary tool this workstream has shipped, so the
+  verb is wanted — but it never converged: repeated re-placements of the same
+  element with contradictory scales (wizard at 0.85, 0.45, 0.5, 0.45, 0.9,
+  3.5, 1.0).  The model is placing blind and cannot tell when it is done.
+- **Frame contract honoured only for grounded elements**: landscape 0.98×,
+  wizard 1.24× — dragon 2.33×, mist 2.37×.  Both overshoots are the
+  spread/airborne elements, whose Y extent is incidental to their form.  The
+  budget reads as a scale hint for a standing figure and as nothing at all
+  for a flying one.
+- **Insertion rejection rate 2/5 on first attempt**, both repaired by the
+  single retry — under the 50% stop rule, and the contract's honest-report
+  behaviour worked exactly as designed (no silent drops, reasons named).
+
+### 7.3 The defect this run exposed
+
+`build_element`'s FIRST call returned **zero chunks**: its validated insertion
+goes through `InsertChunks`, which inherits arc-77's precondition that a
+session must have an imagined scene target before anything can be inserted.
+The builder ran, produced geometry, and had all of it refused for a reason
+that has nothing to do with the builder.  The model recovered (called
+`imagine_scene`, retried) but paid a wasted provider call for it.  A
+host-mediated builder should not be gated on a target the orchestrator is
+free to create later — fix before the next measurement.
+
+### 7.4 Verdict
+
+The mechanism works on the axis it was aimed at and is worth keeping.  The
+constraint has moved: **richness is no longer the limiter, arrangement is.**
+Twenty-four non-converging placement calls and a camera that crops the
+subject are not a construction problem, and no amount of further per-element
+richness will fix them.  That is the next arc, and it is the same shape as
+the lighting arc already queued.
+
+N=1.  Repeats before any of this is treated as settled.
 
 Stop rules: parts-per-element does not beat arc-78's → the clean room did not
 survive productionisation, and the context-dilution finding is banked as

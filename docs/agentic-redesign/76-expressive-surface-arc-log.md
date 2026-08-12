@@ -314,3 +314,52 @@ What earned recording:
   overlap; first one that cost a rebuild).  Rule held since: stages
   under the cap, gate runs alone, workers warned when handed a
   possibly-dirty build dir.
+
+---
+
+## Arc 79 — clean-room construction (2026-08-11)
+
+**The finding the arc was built on, and it held.**  Context volume, not
+knowledge, was the constraint.  A wizard that sat at 1–4 SDF parts for twelve
+runs across three arcs went to **10** the first time an element was built in a
+fresh minimal context — with the beard and staff the focused probe had named
+and no live run ever produced.  Scene total 20 → 48 parts.  Six mechanisms
+aimed at information, feedback, visibility, cost, serialization and reasoning
+all measured zero; the seventh, aimed at dilution, moved the number on the
+first run.  **When six well-built mechanisms fail on one axis, the axis is
+wrong — stop building on it and go measure a different one.**
+
+- **The gain is uneven, and the unevenness is informative.**  The wizard 2.5×;
+  the dragon only 1.4×, because arc-78 already spent a 16-part chain there.
+  Clean rooms recover attention for the elements being *skimped*, not the one
+  already getting it.  Expect the benefit to concentrate wherever the loaded
+  context was cutting corners.
+- **The constraint moved rather than closed.**  `place_element` was called 24
+  times — the most-used verb in the run, against 0/64 for every voluntary tool
+  this workstream shipped, so the verb is clearly wanted — and it never
+  converged: the same element re-placed at 0.85, 0.45, 0.5, 0.9, 3.5, 1.0.
+  The final render crops both figures.  **Richness stopped being the limiter
+  and arrangement started.**  Cost doubled (38 → 76 turns) buying that trade.
+- **A precondition inherited from a neighbouring arc ate a whole provider
+  call.**  `build_element`'s insertion goes through `InsertChunks`, which
+  carries arc-77's "no target, no insert" rule; the first builder produced
+  real geometry and had every chunk refused for a reason unrelated to
+  building.  The transplanted-idiom class again, in its inverse form: not a
+  guard copied where its precondition is absent, but a guard INHERITED where
+  its precondition does not apply.  New brief question: *what does the shared
+  path I am reusing already refuse?*
+- **Provider schema is a compatibility surface, and it took an outage to
+  learn it.**  Two tools declared `exclusiveMinimum`; Gemini's
+  functionDeclarations proto rejects unknown keywords with a request-killing
+  400, so every Gemini session broke.  `kToolDefs` is shared verbatim by all
+  providers, so it must satisfy the most restrictive one — constraints go in
+  prose and are enforced server-side.  Now pinned by a red-proved denylist
+  test that scans the real wire body.
+- **Supervisor ledger, honest:** ran `git checkout` on a file holding an
+  uncommitted worker fix and destroyed it (recovered by hand); wrote a
+  red-prove script under `set -e` whose first grep correctly matched nothing
+  and silently aborted the whole thing; then wrote an injection anchor that
+  matched three tools and proved nothing while appearing to pass.  All three
+  are the same error — **a verification step that cannot distinguish "clean"
+  from "did not run" is not a verification step.**  The guard test was only
+  trustworthy once it was made to fail on demand.
