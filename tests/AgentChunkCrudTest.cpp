@@ -11205,6 +11205,234 @@ static void TestCleanRoomReplaceGeometryScaffoldGate()
 	}
 }
 
+
+//----------------------------------------------------------------------
+// Arc 80 (2026-08-12): THE COMPOSE PHASE MAY NOT DELETE FORM.
+//
+// docs/agentic-redesign/79-clean-room-construction.md sec 8.2 measured the
+// failure this closes: five builders produced 82 SDF parts, place_element
+// converged in one call per element -- and then the COMPOSE phase removed
+// all 31 objects, re-inserted them twice, removed 18 more, and rebuilt
+// with ellipsoids and cylinders.  Two of 82 parts survived.  Nothing
+// failed to apply; every removal was clean and deliberate.
+//
+// The rule is arc 78 sec 2.3's, extended one verb: ATTRIBUTE EVERYTHING,
+// REFUSE ONLY ON FORM-BEARING CHUNKS.  Compose places; it does not
+// destroy form.  Lights, cameras, film, rasterizers, materials and
+// painters stay removable there, because a model that cannot re-light or
+// re-aim cannot compose at all.
+//----------------------------------------------------------------------
+
+//! kScene plus a light and a second, unattributed object -- the compose
+//! arm needs a NON-form-bearing chunk to prove it is still removable, and
+//! kScene has no light of its own.
+static const char* const kComposeRemoveScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
+	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
+
+//! Take a gate-armed session from PLAN to COMPOSE with one geometry chunk
+//! and one standard_object attributed to the first element.
+static void ArcEightyToCompose( Agent::AgentSession& sess )
+{
+	sess.FileBuildPlan( TwoElementPlan() );
+	sess.InsertChunk( S1Box( "wizard_body" ) );
+	sess.InsertChunk( "standard_object\n{\n\tname wizard_obj\n\tgeometry wizard_body\n"
+	                  "\tmaterial mat_diffuse\n}" );
+	sess.FinishElement();
+	sess.FinishElement();
+}
+
+static void TestComposePhaseRefusesRemovingForm()
+{
+	std::printf( "A80a: the compose phase refuses removing form-bearing chunks...\n" );
+	const std::string tmp = TempPath( "agentcrud_a80a.RISEscene" );
+	Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+	Check( pJob != nullptr, "A80a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	ArcEightyToCompose( *sess );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+	       "A80a the session reaches the compose phase" );
+	Check( sess->ChunkElement( "wizard_obj" ) == "wizard",
+	       "A80a and the object it built is attributed to the wizard element" );
+
+	const std::string docBefore = sess->ReadDocument();
+
+	// (1) THE OBJECT.  This is the exact operation arc 79 sec 8.2 recorded
+	//     31 times in one session.
+	const Agent::AgentChunkResult r1 = sess->RemoveChunk( "wizard_obj", "" );
+	Check( !r1.applied,
+	       "A80a MONEY ASSERTION: removing a standard_object in the compose phase is REFUSED -- "
+	       "the measured failure was a compose phase that removed all 31 objects and rebuilt "
+	       "with primitives, with every operation applying cleanly" );
+	Check( r1.message.find( "remove_chunk refused" ) != std::string::npos &&
+	       r1.message.find( "form-bearing" ) != std::string::npos &&
+	       r1.message.find( "reopen_element" ) != std::string::npos,
+	       "A80a and the refusal names the verb, says what compose is for, and names the "
+	       "deliberate way to do it anyway" );
+	Check( sess->ReadDocument() == docBefore, "A80a RED-PROVE: the document is byte-identical" );
+	Check( sess->BuildPhaseRefusalCount() == 1, "A80a it spends one shared refusal" );
+
+	// (2) THE GEOMETRY behind it.
+	const Agent::AgentChunkResult r2 = sess->RemoveChunk( "wizard_body", "" );
+	Check( !r2.applied && r2.message.find( "form-bearing" ) != std::string::npos,
+	       "A80a a GEOMETRY chunk is refused too -- the object places the form, the geometry IS "
+	       "the form" );
+	Check( sess->ReadDocument() == docBefore, "A80a RED-PROVE: still byte-identical" );
+	Check( sess->BuildPhaseRefusalCount() == 2, "A80a the counter is exactly two" );
+
+	// (3) THE LIGHT.  Arc 78 sec 2.3's governing rule, unchanged: a model
+	//     that cannot re-light its own scene cannot compose it.
+	const Agent::AgentChunkResult r3 = sess->RemoveChunk( "key", "" );
+	Check( r3.applied,
+	       "A80a MONEY ASSERTION: a LIGHT is still removable in the compose phase -- the rule is "
+	       "ATTRIBUTE EVERYTHING, REFUSE ONLY ON FORM-BEARING CHUNKS, and lighting is exactly "
+	       "what the compose phase is for" );
+	Check( sess->BuildPhaseRefusalCount() == 2,
+	       "A80a and an ALLOWED removal costs no refusal" );
+
+	// (4) A PAINTER, for the same reason materials and painters are exempt
+	//     from the cross-element arm: sharing one across elements is
+	//     ordinary authoring.
+	Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname a80_spare\n\tcolor 0.1 0.2 0.3\n}" ).applied,
+	       "A80a a painter can be CREATED in compose (only geometry creation is refused)" );
+	Check( sess->RemoveChunk( "a80_spare", "" ).applied,
+	       "A80a and removed again" );
+
+	// (5) A NAME THAT RESOLVES TO NOTHING is never refused by this rule --
+	//     under-refusing is the correct direction of error.
+	const Agent::AgentChunkResult r5 = sess->RemoveChunk( "a80_no_such_chunk", "" );
+	Check( !r5.applied, "A80a removing an unknown chunk still fails" );
+	Check( r5.message.find( "form-bearing" ) == std::string::npos,
+	       "A80a MONEY ASSERTION: but NOT as a phase refusal -- an unresolvable name is left to "
+	       "the remove itself, which reports it far better than a phase rule could" );
+	Check( sess->BuildPhaseRefusalCount() == 2, "A80a and it costs no refusal" );
+
+	pJob->release();
+}
+
+static void TestComposePhaseRemoveMixedBatchAndGiveUp()
+{
+	std::printf( "A80b: mixed remove_chunks batches, the shared cap, and the give-up...\n" );
+
+	// ---- The MIXED batch: one light, one object.  WHOLE-CALL refusal. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80b_mixed.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80b/mixed fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		std::vector<std::string> targets;
+		targets.push_back( "key" );          // a light -- removable on its own
+		targets.push_back( "wizard_obj" );   // form-bearing -- not
+		const Agent::AgentSession::AgentRemoveBatchResult br = sess->RemoveChunks( targets );
+		Check( !br.applied,
+		       "A80b MONEY ASSERTION: a MIXED batch is refused WHOLE -- remove_chunks is "
+		       "all-or-nothing everywhere else in this verb, and tearing down the "
+		       "non-form-bearing half of a batch would leave a scene the model never asked for" );
+		Check( br.message.find( "1 of the 2 chunks named are form-bearing" ) != std::string::npos,
+		       "A80b and the refusal says exactly how many of the named chunks triggered it" );
+		Check( br.message.find( "removes all of its targets or none of them" ) != std::string::npos,
+		       "A80b MONEY ASSERTION: and states the all-or-nothing outcome outright, so the "
+		       "model knows what happened to the light it also named" );
+		Check( sess->ReadDocument() == docBefore,
+		       "A80b RED-PROVE: the document is byte-identical -- the LIGHT was not removed either" );
+		Check( br.targetResults.size() == 2 && !br.targetResults[0].applied &&
+		       !br.targetResults[1].applied,
+		       "A80b and both per-target entries carry the batch verdict" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A80b a two-target batch costs ONE refusal, exactly as the creation arm does" );
+
+		// A batch of ONLY non-form-bearing targets still applies.
+		std::vector<std::string> ok;
+		ok.push_back( "key" );
+		Check( sess->RemoveChunks( ok ).applied,
+		       "A80b an all-light batch applies untouched" );
+		pJob->release();
+	}
+
+	// ---- The SHARED cap and the give-up: no model is ever stranded. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80b_giveup.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80b/giveup fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+
+		// Two refusals from the CREATION arm, one from the DELETE arm --
+		// proving the counter is genuinely shared across the compose rules.
+		Check( !sess->InsertChunk( S1Box( "a80_c1" ) ).applied, "A80b/giveup creation refusal 1" );
+		Check( !sess->InsertChunk( S1Box( "a80_c2" ) ).applied, "A80b/giveup creation refusal 2" );
+		Check( sess->BuildPhaseRefusalCount() == 2, "A80b/giveup two spent on creation" );
+		Check( !sess->RemoveChunk( "wizard_obj", "" ).applied,
+		       "A80b/giveup the delete arm refuses as the THIRD" );
+		Check( sess->BuildPhaseRefusalCount() == 3,
+		       "A80b MONEY ASSERTION: the delete arm shares ONE budget with the other compose "
+		       "rules -- a model that cannot work the protocol should not have to exhaust two "
+		       "separate budgets to get out of it" );
+		Check( !sess->BuildPhaseGaveUp(), "A80b/giveup three is the cap, not the give-up" );
+
+		const Agent::AgentChunkResult fourth = sess->RemoveChunk( "wizard_obj", "" );
+		Check( fourth.applied,
+		       "A80b MONEY ASSERTION: the FOURTH attempt GIVES UP and the removal PROCEEDS -- no "
+		       "model is ever stranded by this rule" );
+		Check( sess->BuildPhaseGaveUp(), "A80b/giveup the session has given up" );
+		Check( fourth.message.find( "build phase" ) != std::string::npos,
+		       "A80b/giveup and the give-up is stated in the call's own result, not only in a log" );
+		Check( sess->RemoveChunk( "wizard_body", "" ).applied,
+		       "A80b/giveup and nothing is refused for this reason afterwards" );
+		pJob->release();
+	}
+
+	// ---- --agent-build-protocol=off disables it with everything else. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80b_off.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80b/off fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		Check( !sess->BuildProtocolActive(), "A80b/off the protocol is inactive for this session" );
+		Check( sess->RemoveChunk( "obj_sph", "" ).applied,
+		       "A80b MONEY ASSERTION: with --agent-build-protocol=off a standard_object removal "
+		       "applies with no interception at all -- the opt-out covers this arm exactly as it "
+		       "covers the other three" );
+		pJob->release();
+	}
+
+	// ---- The PIECES phase is untouched: an element may delete its own. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80b_pieces.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80b/pieces fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "A80b/pieces the plan files" );
+		Check( sess->InsertChunk( S1Box( "wizard_body" ) ).applied, "A80b/pieces a geometry insert applies" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+		       "A80b/pieces the session is in the pieces phase" );
+		Check( sess->RemoveChunk( "wizard_body", "" ).applied,
+		       "A80b MONEY ASSERTION: inside its OWN element window a model may still delete its "
+		       "own geometry -- this arm fires only in compose, so revision during construction "
+		       "is untouched" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A80b/pieces and no refusal was spent" );
+		pJob->release();
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -11347,6 +11575,10 @@ int main()
 	TestReplaceGeometryScaffoldGatesAreDelta();
 	TestReplaceGeometryScaffoldExternalAuthority();
 	TestReplaceGeometryScaffoldWireShape();
+
+	// Arc 80 (2026-08-12): the compose phase may not delete form.
+	TestComposePhaseRefusesRemovingForm();
+	TestComposePhaseRemoveMixedBatchAndGiveUp();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

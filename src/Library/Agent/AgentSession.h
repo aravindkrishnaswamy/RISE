@@ -829,6 +829,21 @@ namespace RISE
 			//! only how the scene-target composite is scaled, so a caller that
 			//! leaves it 0 gets exactly today's behaviour minus the composite.
 			unsigned int         imageMaxEdge = 0;
+			//! Arc 80 (2026-08-12): INTERNAL-ONLY, and there is no wire
+			//! parameter for it -- no RPC, MCP or chat surface can set it,
+			//! and none should ever be added.  It marks a render this file
+			//! issues for its OWN measurement (currently only the scene
+			//! inventory's identity pass) rather than one a caller asked
+			//! for, and its single effect is to suppress
+			//! AdoptAgentRenderImageParked: a flat identity segmentation
+			//! must NEVER land in the GUI's Last Render pane in place of
+			//! the beauty frame the user is looking at.  That is a
+			//! user-visible surface, distinct from the session image cache
+			//! EphemeralRenderCacheGuard already protects, and the census
+			//! runs on EVERY qualifying render rather than on request, so
+			//! leaving it unguarded would replace the user's picture with a
+			//! segmentation map every time the agent rendered.
+			bool                 internalEphemeral = false;
 		};
 
 		//! R1b (2026-08-09): the agent RPC surface's resolution/sample caps for
@@ -1319,6 +1334,55 @@ namespace RISE
 			std::vector<unsigned char> sceneTargetCompositePng;
 			unsigned int               sceneTargetCompositeWidth = 0;
 			unsigned int               sceneTargetCompositeHeight = 0;
+			//! Arc 80 (2026-08-12): THE SCENE INVENTORY, riding the render
+			//! result as a PAYLOAD FACT.  It answers "where is everything?"
+			//! for the frame just rendered: every scene object, its screen
+			//! footprint, and where it is -- in the frame for the ones that
+			//! covered pixels, in the world plus a direction for the ones
+			//! that did not.
+			//!
+			//! WHY IT IS NOT A TOOL.  Every voluntary consultation surface
+			//! this workstream shipped measured 0/64 uses (arcs 76-77), so a
+			//! "where is everything?" verb would go unread.  It therefore
+			//! rides the result of the `render` call the model already
+			//! makes.  (`scene_inventory` exposes the same computation as an
+			//! explicit verb through the SAME code path -- see
+			//! AgentSession::SceneInventory -- but no behaviour depends on
+			//! anyone calling it.)
+			//!
+			//! WHAT IT COST arc 79 NOT to have: a composed scene rendered
+			//! empty, `query_object_at` answered "no object at this pixel"
+			//! on four of five probes, and the model concluded its GEOMETRY
+			//! was broken and replaced 80 of 82 hand-built SDF parts with
+			//! primitives.  The geometry was fine.  An inverse (pixel ->
+			//! object) query cannot say so; a forward inventory can.
+			//!
+			//! WHERE IT ATTACHES: a SUCCEEDED, full-scene BEAUTY render
+			//! (`renderMode` "production" or "draft") of a scene with at
+			//! least one object.  NOT for `isolate` (one object by
+			//! construction), NOT for objectmap / normals / depth / facets /
+			//! wireframe (already diagnostics), and NOT for the
+			//! production-transport modes deep_reflect / direct / indirect /
+			//! clay_lights -- see ApplyVisibilityCensus_ in AgentSession.cpp
+			//! for why each exclusion is a truthfulness requirement rather
+			//! than conservatism.
+			//!
+			//! `inventoryApplied` gates the whole block on the wire (same
+			//! convention as `targetApplied` / `sceneTargetApplied`).
+			//! `inventoryObjectCount` is how many world-visible objects the
+			//! scene has; `inventoryCoveredCount` how many of them covered
+			//! at least one pixel of the identity pass;
+			//! `inventoryPassWidth`/`Height` are that pass's own dims (it is
+			//! a small fixed-size one-ray-per-pixel identity render, NOT the
+			//! beauty frame -- so "covered no pixels" is a statement about
+			//! THAT resolution, which the text states outright).
+			//! `inventoryText` is the whole inventory as the model reads it.
+			bool                       inventoryApplied = false;
+			int                        inventoryObjectCount = 0;
+			int                        inventoryCoveredCount = 0;
+			unsigned int               inventoryPassWidth = 0;
+			unsigned int               inventoryPassHeight = 0;
+			std::string                inventoryText;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -4963,6 +5027,153 @@ namespace RISE
 			AgentQueryObjectResult QueryObjectAt( int x, int y,
 			                                       const AgentQueryObjectParams& params = AgentQueryObjectParams() );
 
+			//! Arc 80 (2026-08-12): ONE object's row in the scene inventory
+			//! (see AgentRenderResult::inventoryApplied for the mechanism and
+			//! the evidence behind it).  Every field is a MEASUREMENT or a
+			//! classification of one; nothing here is a judgement, and no
+			//! field says an object is "missing" or "wrong".
+			struct AgentSceneInventoryEntry
+			{
+				//! The object's legend name -- the SAME identity a
+				//! mode:"objectmap" legend and `query_object_at` report.
+				std::string   name;
+				//! Pixels this object covered in the identity pass (see
+				//! AgentSceneInventoryResult::passWidth): exact, one ray per
+				//! pixel, no lighting and no materials involved.
+				std::uint32_t pixelCount = 0;
+				//! pixelCount / (passWidth * passHeight), in [0,1].
+				double        frameFraction = 0.0;
+				//! pixelCount > 0.
+				bool          onScreen = false;
+				//! WHERE IT IS IN THE FRAME -- a fraction of the frame
+				//! measured from the LEFT (`frameX`) and from the TOP
+				//! (`frameY`), both in [0,1].  MEANINGFUL ONLY WHEN
+				//! `framePositionKnown`; both are 0 otherwise and are
+				//! omitted on the wire, because a fabricated 0,0 reads as
+				//! "top-left corner" and this payload cannot afford a false
+				//! clause.
+				//!
+				//! `framePositionFromPixels` says WHICH measurement it is,
+				//! and the two are genuinely different facts:
+				//!   * TRUE  -- the centre of the object's PIXEL bounding
+				//!     box in the identity pass.  Exact, and needs no camera
+				//!     model, so it is available under any projection.
+				//!   * FALSE -- the centre of the object's projected WORLD
+				//!     BOUNDING BOX, clipped to the frame.  The fallback
+				//!     when no pixel of the pass carried this object's
+				//!     registered identity colour -- which really happens:
+				//!     the identity image loses byte-exactness on a scene
+				//!     with a transmissive surface between the camera and
+				//!     the scene, and then NO object can be located by
+				//!     pixel.  A bounding box is not a silhouette, so this
+				//!     is the coarser answer and the text says which one it
+				//!     is reporting.
+				bool          framePositionKnown = false;
+				bool          framePositionFromPixels = false;
+				double        frameX = 0.0;
+				double        frameY = 0.0;
+				//! The centre of the object's world bounding box -- the
+				//! "where is it, then?" for an object that covered no
+				//! pixels.  `worldCentreKnown` is false when the object's
+				//! bbox is not finite/bounded, in which case the three
+				//! numbers are NOT measurements and are omitted on the wire.
+				bool          worldCentreKnown = false;
+				double        worldCentre[3] = { 0.0, 0.0, 0.0 };
+				//! HOW THIS OBJECT SITS RELATIVE TO THE VIEW.  Exactly one
+				//! of:
+				//!   "onscreen"   -- it covered at least one pixel.
+				//!   "behind"     -- its whole world bbox is behind the
+				//!                   camera plane.
+				//!   "offframe"   -- its whole bbox is in front of the
+				//!                   camera and projects entirely outside
+				//!                   the frame; `offFrameDirection` names
+				//!                   which way.
+				//!   "overlaps"   -- its bbox is in front of the camera and
+				//!                   its projection overlaps the frame, yet
+				//!                   no pixel of it was hit (occluded,
+				//!                   smaller than a pass pixel, or the bbox
+				//!                   overlaps where the object itself does
+				//!                   not -- this does NOT distinguish those,
+				//!                   and the text does not claim to).
+				//!   "straddles"  -- its bbox crosses the camera plane, so a
+				//!                   screen-space position is undefined.
+				//!   "unknown"    -- frame position was not computed at all;
+				//!                   see AgentSceneInventoryResult::
+				//!                   framePositionSuppressedReason.
+				std::string   placement;
+				//! For "offframe" only: "left", "right", "above", "below",
+				//! or a pair joined by " and ".  Empty otherwise.
+				std::string   offFrameDirection;
+			};
+
+			//! Arc 80 (2026-08-12): the whole inventory -- what
+			//! `scene_inventory` returns and what the render payload's
+			//! `inventory` block is formatted from.  ONE code path builds
+			//! both (AgentSession.cpp's ComputeSceneInventory_).
+			struct AgentSceneInventoryResult
+			{
+				//! True iff the inventory was actually measured.  False
+				//! leaves every count at 0 and puts the reason in `message`
+				//! -- no head, no objects, or the identity pass failed.
+				bool         ok = false;
+				//! The ONE not-ok case that is not a failure: the scene has
+				//! no world-visible objects, so there is no "where is
+				//! everything" to answer.  The render payload attaches
+				//! NOTHING in that case (rather than an empty inventory);
+				//! every other not-ok case is stated in the render message.
+				bool         noObjects = false;
+				//! The identity pass's own dims (NOT the beauty frame's).
+				unsigned int passWidth = 0;
+				unsigned int passHeight = 0;
+				int          objectCount = 0;
+				int          coveredCount = 0;
+				//! True iff the analytic pinhole classification ran, i.e.
+				//! `placement` can be "behind"/"offframe"/"overlaps"/
+				//! "straddles" rather than "unknown".  When false,
+				//! `framePositionSuppressedReason` says why in one clause --
+				//! honouring ProjectedBBoxCoverage's contract that a
+				//! non-pinhole camera gets NO tan-based verdict rather than
+				//! a wrong-model one.
+				bool         framePositionComputed = false;
+				std::string  framePositionSuppressedReason;
+				//! How many on-screen entries got their in-frame position
+				//! from the pass's own PIXELS (the rest, if any, fell back
+				//! to the projected bounding box -- see
+				//! AgentSceneInventoryEntry::framePositionFromPixels).
+				int          pixelLocatedCount = 0;
+				//! One entry per world-visible object, in DESCENDING pixel
+				//! count then ascending name -- so the objects that covered
+				//! nothing are last and complete.
+				std::vector<AgentSceneInventoryEntry> entries;
+				//! The formatted inventory, exactly as a model reads it (see
+				//! FormatSceneInventory_ for the bounding rules).
+				std::string  text;
+				std::string  message;
+			};
+
+			//! Arc 80 (2026-08-12): `scene_inventory` -- "where is
+			//! everything?", asked directly.
+			//!
+			//! Runs ONE small one-ray-per-pixel identity render through the
+			//! ACTIVE camera and reports, for every world-visible object,
+			//! its pixel footprint and its position: in the frame when it
+			//! covered pixels, in the world (plus which way it lies relative
+			//! to the view) when it did not.
+			//!
+			//! THIS VERB IS NOT WHERE THE MECHANISM LIVES.  The same
+			//! computation rides every full-scene beauty render's result
+			//! automatically (AgentRenderResult::inventoryApplied), because
+			//! every voluntary consultation surface this workstream shipped
+			//! measured 0/64 uses.  The verb exists because the inventory is
+			//! worth being able to ask for; nothing depends on it being
+			//! asked for.
+			//!
+			//! Like `query_object_at`, the internal identity render is
+			//! EPHEMERAL: it never becomes "the last render", so a following
+			//! `read_image` still serves the caller's own frame
+			//! (EphemeralRenderCacheGuard), and the Document is untouched.
+			AgentSceneInventoryResult SceneInventory();
+
 			//! Round-2 P1-1 test hook: override DrainAsyncRender_'s per-chunk
 			//! wait duration for THIS session instance (default 0 = "use
 			//! whatever chunkMs the caller/default passes").  Exists so a
@@ -5289,6 +5500,57 @@ namespace RISE
 			void ApplySceneTargetComparison_( const AgentRenderParams& params,
 			                                   AgentRenderResult& rr,
 			                                   const std::shared_ptr<const AgentSceneTarget>& target );
+
+			//! Arc 80 (2026-08-12): THE SHARED INVENTORY CORE -- the one code
+			//! path behind both the render payload's `inventory` block and
+			//! the `scene_inventory` verb, so the two can never drift.
+			//!
+			//! Runs ONE ephemeral mode:"objectmap" render (the existing
+			//! identity pipeline, tally and legend -- no new rendering code)
+			//! at a small fixed long edge, decodes its pixels for each
+			//! object's footprint and pixel-bbox centre, and classifies every
+			//! object that covered nothing against the camera analytically.
+			//!
+			//! `source` supplies the camera/view override the caller's own
+			//! render used, so the inventory describes THAT view; the dims
+			//! are replaced by the pass's own (aspect taken from
+			//! `frameW`/`frameH`).  `assumeParked` has exactly the meaning
+			//! ApplyTargetComparison_ gives it -- the async worker is already
+			//! inside the park and must not re-park.
+			//!
+			//! Never throws on a failed pass: `ok` stays false and `message`
+			//! says why.
+			AgentSceneInventoryResult ComputeSceneInventory_( const AgentRenderParams& source,
+			                                                   unsigned int frameW,
+			                                                   unsigned int frameH,
+			                                                   bool assumeParked );
+
+			//! Arc 80 (2026-08-12): attach the inventory to a render result
+			//! that qualifies for it -- see AgentRenderResult::
+			//! inventoryApplied for the qualification rule.  A no-op for
+			//! every render that does not qualify, so a non-qualifying call
+			//! is byte-identical to before this mechanism existed.
+			void ApplyVisibilityCensus_( const AgentRenderParams& params,
+			                              AgentRenderResult& rr,
+			                              bool assumeParked );
+
+			//! Arc 80 (2026-08-12): resolve the pinhole eye/target/up/FOV and
+			//! aspect the render described by `params` actually used, for the
+			//! analytic off-screen classification.  Returns false -- with a
+			//! one-clause reason in `outSuppressReason` -- rather than
+			//! guessing, whenever the pose cannot be reconstructed EXACTLY:
+			//! a named `view` (resolved inside RenderCore_ from a controller
+			//! store this function does not re-enter), an orientation-only
+			//! camera override, an unparseable override, no snapshottable
+			//! active camera, or an active camera that is not a PinholeCamera
+			//! (ProjectedBBoxCoverage's tan-based formula would be the WRONG
+			//! projection model, not an approximation -- the same rule G1's
+			//! fix-round applied to `isolateBBoxCoverage`).
+			bool ResolveInventoryCamera_( const AgentRenderParams& params,
+			                               unsigned int frameW, unsigned int frameH,
+			                               double outEye[3], double outTarget[3], double outUp[3],
+			                               double& outTanHalfV, double& outAspect,
+			                               std::string& outSuppressReason ) const;
 
 			//! Resolve the effective BEAUTY display transform (exposure EV +
 			//! tone-curve enum) the agent's in-memory PNG encode must apply so
@@ -5887,6 +6149,60 @@ namespace RISE
 			//! carries, for the same reason (a call refused for being malformed
 			//! must not also burn a phase refusal).
 			std::string CheckComposePhaseForCreate_( const char* verb, std::string* outGiveUpNotice );
+
+			//! Arc 80 (2026-08-12): the DELETE arm of the compose-phase rules
+			//! -- is REMOVING this chunk refused because the compose phase
+			//! places rather than destroys?  "" unless ALL of: the protocol
+			//! is on and has not given up, the session is in the Compose
+			//! phase, and `target` names a FORM-BEARING chunk
+			//! (KindIsFormBearing_).  Otherwise the refusal, naming
+			//! reopen_element.  Shares RefuseForPhase_'s counter, cap and
+			//! give-up with the other three arms, so a model can never be
+			//! stranded.
+			//!
+			//! WHY IT EXISTS: arc 79 sec 8.2 measured a compose phase that
+			//! removed all 31 objects, re-inserted them twice, removed 18
+			//! more and rebuilt with primitives -- 80 of 82 hand-built SDF
+			//! parts destroyed by their own author, every operation clean and
+			//! deliberate.  Compose is for placing.
+			//!
+			//! TAKES THE WHOLE TARGET LIST, and refuses the WHOLE CALL when
+			//! ANY target is form-bearing -- `remove_chunks` is all-or-nothing
+			//! everywhere else in this file (its cross-element arm, its
+			//! authority gate, its engine apply), and a policy refusal that
+			//! tore down the non-form-bearing half of a batch would leave a
+			//! scene the model never asked for.  The refusal text says so
+			//! outright, and names which targets triggered it, so the model
+			//! knows exactly what happened to the rest.  `remove_chunk` passes
+			//! a one-element list.
+			std::string CheckComposePhaseForRemove_( const char* verb,
+			                                         const std::vector<std::string>& targets,
+			                                         std::string* outGiveUpNotice );
+
+			//! Arc 80: true for the FORM-BEARING registry categories --
+			//! Geometry and Object.  The exact complement, within what a
+			//! model authors, of KindIsPhaseExemptCategory_ above: lights,
+			//! cameras, film, rasterizers, rasterizer outputs, materials and
+			//! painters are NOT form-bearing and stay removable in compose,
+			//! per the governing "ATTRIBUTE EVERYTHING, REFUSE ONLY ON
+			//! FORM-BEARING CHUNKS" rule (arc 78 sec 2.3).  The REGISTRY is
+			//! the classifier, so a geometry kind added later is covered with
+			//! no edit here.
+			static bool KindIsFormBearing_( const std::string& kind );
+
+			//! Arc 80: does `target` name a form-bearing chunk?  Answers from
+			//! two cheap, lock-free sources, in order: the session's own
+			//! chunk-to-element attribution (which records the KIND of every
+			//! chunk created in an element window), then the live scene's
+			//! object and geometry managers (the same caller-thread manager
+			//! reads ElementWorldBounds_ and QueryObjectAt already do).  It
+			//! deliberately does NOT parse the Document: an unresolvable name
+			//! returns false, i.e. it is never refused -- under-refusing is
+			//! the correct direction of error for a phase rule.
+			//! `outWhat` receives a short factual noun for the refusal text
+			//! ("the geometry chunk `sdf_geometry`", "an object in the
+			//! scene").
+			bool TargetIsFormBearing_( const std::string& target, std::string& outWhat ) const;
 
 			//! S2 (2026-08-11): the THIRD arm of the phase refusals (design
 			//! sec 4) -- is HAND-AUTHORING this geometry chunk refused because

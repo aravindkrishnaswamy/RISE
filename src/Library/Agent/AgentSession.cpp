@@ -58,6 +58,7 @@
 #include "../Interfaces/ICameraManager.h"
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
+#include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12): TargetIsFormBearing_ asks the live scene whether a name is a geometry, with no Document parse
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
 #include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
 #include "../Painters/ExpressionEval.h"     // External review P2 fix: ExpressionProgram -- reuse the SAME public expr(...) evaluator Cst.cpp's derive-time resolver is built on, so ResolveBeautyDisplayTransform_ can resolve an expr(...)-valued `exposure` param instead of silently strtod'ing it to 0
@@ -7456,6 +7457,11 @@ namespace RISE
 			//! call -- 65536 readers for a 256x256 frame).
 			//! Returns false (leaving the outputs untouched) when the bytes
 			//! do not decode.
+			//!
+			//! Arc 80 (2026-08-12) added DecodePngRgbAll_ below it -- the same
+			//! one-reader-for-the-whole-image decode, keeping the IDENTITY
+			//! bytes instead of collapsing them to 0/1, because the scene
+			//! inventory needs to know WHICH object each pixel belongs to.
 			bool DecodePngSilhouetteMask_( const std::vector<unsigned char>& png,
 			                               std::vector<unsigned char>& outMask,
 			                               unsigned int& outW, unsigned int& outH )
@@ -7499,6 +7505,60 @@ namespace RISE
 				safe_release( buffer );
 
 				outMask.swap( mask );
+				outW = width;
+				outH = height;
+				return true;
+			}
+
+			//! Arc 80 (2026-08-12): decode a whole PNG into a packed 8-bit RGB
+			//! buffer (3 bytes per pixel, row-major from the TOP row).  ONE
+			//! reader for the whole image, and the SAME round-to-nearest
+			//! quantizer DecodePngRgbAt and DecodePngSilhouetteMask_ use -- so
+			//! a byte matched against an objectmap legend's `colorHex` here is
+			//! decided by arithmetic identical to the single-pixel path, and
+			//! the palette's byte-uniqueness contract carries over unchanged.
+			//! Returns false (outputs untouched) when the bytes do not decode.
+			bool DecodePngRgbAll_( const std::vector<unsigned char>& png,
+			                       std::vector<unsigned char>& outRgb,
+			                       unsigned int& outW, unsigned int& outH )
+			{
+				if( png.empty() || png.size() > static_cast<std::size_t>( UINT_MAX ) ) return false;
+				Implementation::MemoryBuffer* buffer = new Implementation::MemoryBuffer(
+					const_cast<char*>( reinterpret_cast<const char*>( png.data() ) ),
+					static_cast<unsigned int>( png.size() ), false );
+				IRasterImageReader* reader = nullptr;
+				if( !RISE_API_CreatePNGReader( &reader, *buffer, eColorSpace_Rec709RGB_Linear ) || !reader ) {
+					safe_release( buffer );
+					return false;
+				}
+				unsigned int width = 0, height = 0;
+				if( !reader->BeginRead( width, height ) || width == 0 || height == 0 ) {
+					safe_release( reader );
+					safe_release( buffer );
+					return false;
+				}
+				auto toByte = []( double value ) -> unsigned char {
+					const int rounded = static_cast<int>( value * 255.0 + 0.5 );
+					return static_cast<unsigned char>( rounded < 0 ? 0 : ( rounded > 255 ? 255 : rounded ) );
+				};
+				std::vector<unsigned char> rgb(
+					static_cast<std::size_t>( width ) * static_cast<std::size_t>( height ) * 3, 0 );
+				for( unsigned int y = 0; y < height; ++y ) {
+					for( unsigned int x = 0; x < width; ++x ) {
+						RISEColor pixel;
+						reader->ReadColor( pixel, x, y );
+						const std::size_t at =
+							( static_cast<std::size_t>( y ) * width + x ) * 3;
+						rgb[at + 0] = toByte( pixel.base.r );
+						rgb[at + 1] = toByte( pixel.base.g );
+						rgb[at + 2] = toByte( pixel.base.b );
+					}
+				}
+				reader->EndRead();
+				safe_release( reader );
+				safe_release( buffer );
+
+				outRgb.swap( rgb );
 				outW = width;
 				outH = height;
 				return true;
@@ -8253,13 +8313,23 @@ namespace RISE
 			// destructive.  FIRST, ahead of the authority gate, because it is a
 			// pure sequencing check that consults nothing about the document or
 			// about whether the remove would otherwise be accepted -- the same
-			// placement rule the build-plan gate's arms follow.  There is no
-			// compose arm here: removing is not creating, and the compose phase
-			// allows edits to any element's chunks.
+			// placement rule the build-plan gate's arms follow.
+			//
+			// ARC 80 (2026-08-12) added the COMPOSE arm below it: S1's original
+			// "removing is not creating, so there is no compose arm" reading was
+			// measured wrong by arc 79 sec 8.2 -- the compose phase deleted 80 of
+			// 82 hand-built SDF parts, cleanly and deliberately.  The two arms are
+			// ordered cross-element first, then compose, because they are mutually
+			// exclusive by phase (the cross-element arm only fires in Pieces) and
+			// this keeps the Pieces-phase behaviour byte-identical.
 			BuildPlanGiveUpFold_ s1Fold{ r.message, std::string() };
 			{
-				const std::string clause = CheckElementWindowForEdit_( "remove_chunk", target,
-				                                                        &s1Fold.notice );
+				std::string clause = CheckElementWindowForEdit_( "remove_chunk", target,
+				                                                  &s1Fold.notice );
+				if( clause.empty() )
+					clause = CheckComposePhaseForRemove_( "remove_chunk",
+					                                       std::vector<std::string>( 1, target ),
+					                                       &s1Fold.notice );
 				if( !clause.empty() ) {
 					r.applied     = false;
 					r.retriable   = false;   // see InsertChunk's G2 arm for why
@@ -8482,11 +8552,20 @@ namespace RISE
 			// the reason this verb is all-or-nothing everywhere else: a policy refusal is not an
 			// authoring failure, and tearing down half a batch leaves a scene the model never asked
 			// for.  ONE interception per CALL, so a batching caller spends the phase budget at the
-			// same rate a singular caller does.  There is no compose arm -- removing is not creating.
+			// same rate a singular caller does.
+			//
+			// ARC 80 (2026-08-12) adds the COMPOSE arm after it, with the SAME all-or-nothing
+			// shape and for the same reason (S1's "there is no compose arm -- removing is not
+			// creating" was measured wrong: see arc 79 sec 8.2).  A MIXED batch -- one light and
+			// one standard_object -- refuses WHOLE, and CheckComposePhaseForRemove_'s text states
+			// that so the model knows the light was not removed either.  The two arms are mutually
+			// exclusive by phase, and at most ONE refusal is spent per call either way.
 			{
 				std::string s1Clause;
 				for( std::size_t u = 0; u < unique.size() && s1Clause.empty(); ++u )
 					s1Clause = CheckElementWindowForEdit_( "remove_chunks", unique[u], &s1Fold.notice );
+				if( s1Clause.empty() )
+					s1Clause = CheckComposePhaseForRemove_( "remove_chunks", unique, &s1Fold.notice );
 				if( !s1Clause.empty() ) {
 					r.applied     = false;
 					r.retriable   = false;   // see InsertChunk's G2 arm for why
@@ -10610,6 +10689,120 @@ namespace RISE
 			return RefuseForPhase_( verb, body, outGiveUpNotice );
 		}
 
+		bool AgentSession::KindIsFormBearing_( const std::string& kind )
+		{
+			if( kind.empty() ) return false;
+			const ChunkDescriptor* d = DescriptorForKeyword( String( kind.c_str() ) );
+			if( !d ) return false;
+			// The exact complement, within the set a model authors, of
+			// KindIsPhaseExemptCategory_ -- see that function for the
+			// governing rule.  Geometry is the form; the Object chunk is what
+			// places that form in the world.  Everything else (light, camera,
+			// film, rasterizer, rasterizer output, material, painter) is
+			// scene-wide or shareable and stays freely removable.
+			return d->category == ChunkCategory::Geometry ||
+			       d->category == ChunkCategory::Object;
+		}
+
+		bool AgentSession::TargetIsFormBearing_( const std::string& target,
+		                                          std::string& outWhat ) const
+		{
+			outWhat.clear();
+			if( target.empty() ) return false;
+
+			// (1) THE SESSION'S OWN RECORD.  Every chunk created inside an
+			// element window has its KIND recorded (AttributeChunkToActiveElement_),
+			// which is both the cheapest source and the one that covers the
+			// case this rule exists for: an element's own geometry, built in
+			// the pieces phase, being deleted in compose.
+			if( const ChunkAttribution_* a = FindChunkAttribution_( target ) ) {
+				if( KindIsFormBearing_( a->kind ) ) {
+					outWhat = "the " + a->kind + " chunk \"" + target + "\"";
+					return true;
+				}
+				// A recorded NON-form-bearing kind is a definite answer: no
+				// need to consult the scene, and no refusal.
+				if( !a->kind.empty() ) return false;
+			}
+
+			// (2) THE LIVE SCENE.  A chunk created OUTSIDE an element window
+			// (in the plan phase, in compose itself, or before the session
+			// began) carries no attribution, so ask the managers the derive
+			// populated.  These are the same caller-thread manager reads
+			// ElementWorldBounds_ and QueryObjectAt's resolution already
+			// perform; neither parses the Document.
+			if( IJobPriv* job = mJob ) {
+				if( IObjectManager* objs = job->GetObjects() ) {
+					if( objs->GetItem( target.c_str() ) ) {
+						outWhat = "\"" + target + "\", an object in the scene";
+						return true;
+					}
+				}
+				if( IGeometryManager* geo = job->GetGeometries() ) {
+					if( geo->GetItem( target.c_str() ) ) {
+						outWhat = "\"" + target + "\", a geometry in the scene";
+						return true;
+					}
+				}
+			}
+
+			// UNRESOLVABLE -> NOT REFUSED.  Under-refusing is the correct
+			// direction of error here: a name this cannot classify is either
+			// not form-bearing or does not exist, and the remove itself will
+			// report the latter far better than a phase rule could.
+			return false;
+		}
+
+		std::string AgentSession::CheckComposePhaseForRemove_( const char* verb,
+		                                                        const std::vector<std::string>& targets,
+		                                                        std::string* outGiveUpNotice )
+		{
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+			if( targets.empty() )                              return std::string();
+
+			// Which of them are form-bearing?  Listed in the order the caller
+			// named them, capped, and counted -- so a batch refusal states
+			// exactly what triggered it rather than "one of these".
+			static const std::size_t kMaxNamed = 6;
+			std::size_t   formBearing = 0;
+			std::string   listing;
+			for( std::size_t i = 0; i < targets.size(); ++i ) {
+				std::string what;
+				if( !TargetIsFormBearing_( targets[i], what ) ) continue;
+				++formBearing;
+				if( formBearing <= kMaxNamed ) {
+					if( !listing.empty() ) listing += "; ";
+					listing += what;
+				}
+			}
+			if( formBearing == 0 ) return std::string();
+			if( formBearing > kMaxNamed )
+				listing += " (+" + std::to_string( formBearing - kMaxNamed ) + " more)";
+
+			// WHAT COMPOSE IS FOR, stated as fact -- the same register as the
+			// creation arm: what this phase does, what it does not, and the
+			// escape.  No advice about what to place or how, and no claim
+			// about whether the chunk is any good: what the arrangement pass
+			// does is precisely what this slice measures.
+			std::string body;
+			if( formBearing == 1 && targets.size() == 1 ) {
+				body = listing + " is form-bearing, and ";
+			}
+			else {
+				body = std::to_string( formBearing ) + " of the " + std::to_string( targets.size() ) +
+					" chunks named are form-bearing (" + listing + "), this call removes all of its "
+					"targets or none of them, and ";
+			}
+			body +=
+				"this session is in the compose phase, which places elements rather than removing "
+				"their form. Lights, cameras, film, rasterizers, materials and painters can still be "
+				"removed here, and every chunk can still be edited. reopen_element with the name of "
+				"an element re-enters that element's window, where removing its geometry and objects "
+				"is allowed again.";
+			return RefuseForPhase_( verb, body, outGiveUpNotice );
+		}
+
 		namespace
 		{
 			//! S1: lowercase a copy, for the piece-name NAMING check.  ASCII
@@ -12307,6 +12500,12 @@ namespace RISE
 			// extra render, so unlike the sketch comparison it does not care
 			// whether the park has released.
 			ApplySceneTargetComparison_( params, rr, sceneTargetSnapshot );
+			// Arc 80 (2026-08-12): the SCENE INVENTORY, last, for the same
+			// reason the sketch comparison runs here rather than inside
+			// RenderCore_ -- it fires one more internal render of its own and
+			// must not be inside the first one's critical section.  A no-op
+			// unless the render qualifies (see ApplyVisibilityCensus_).
+			ApplyVisibilityCensus_( params, rr, /*assumeParked=*/false );
 			return rr;
 		}
 
@@ -12904,6 +13103,13 @@ namespace RISE
 			// state there.
 			auto publishCompletedToLastRender = [&]()
 			{
+				// Arc 80 (2026-08-12): an INTERNAL measurement pass never
+				// publishes -- see AgentRenderParams::internalEphemeral.  The
+				// scene inventory's identity render rides every qualifying
+				// beauty render, so without this the GUI's Last Render pane
+				// would show a flat segmentation map instead of the picture
+				// the user just asked for, every single time.
+				if( params.internalEphemeral ) return;
 				if( !mController || !renderRan || !rendered || wasCancelled
 				 || !sink || !sink->HasImage() )
 					return;
@@ -17376,6 +17582,729 @@ namespace RISE
 			}
 		}
 
+		//----------------------------------------------------------------------
+		// Arc 80 (2026-08-12): THE SCENE INVENTORY -- "where is everything?"
+		//
+		// docs/agentic-redesign/79-clean-room-construction.md sec 8.2 recorded
+		// the failure this answers: a composed scene rendered as an empty
+		// frame, `query_object_at` said "no object at this pixel" on four of
+		// five probes, and the model -- rationally, on the evidence it had --
+		// concluded its GEOMETRY was broken and replaced 80 of 82 hand-built
+		// SDF parts with primitives.  Its geometry was fine.  An INVERSE query
+		// (pixel -> object) cannot establish that; you must already know where
+		// to look, and a miss tells you nothing.  A FORWARD inventory can:
+		// "all 19 objects exist, and here is where each one is."
+		//
+		// It rides the render result as a PAYLOAD FACT, not a tool, because
+		// every voluntary consultation surface this workstream shipped
+		// measured 0/64 uses.  `scene_inventory` exposes the same computation
+		// through the same code path for anyone who does want to ask.
+		//
+		// FACTS ONLY.  Nothing here advises, characterizes, or calls an object
+		// missing or broken.  It covered pixels or it did not; it is here or
+		// it is there.
+		//----------------------------------------------------------------------
+
+		namespace
+		{
+			//! The identity pass's long edge.  Small on purpose: this is a
+			//! one-ray-per-pixel identity render with no lighting, no
+			//! materials and no sampling, and its job is to answer "did this
+			//! object appear, and roughly where" -- not to be looked at.  The
+			//! cost is stated in the payload text (a footprint under one pass
+			//! pixel reads as 0), so the resolution is disclosed rather than
+			//! being a hidden source of zeroes.
+			const unsigned int kInventoryPassLongEdge = 96;
+
+			//! Bounding rules for the formatted inventory.  ON-SCREEN entries
+			//! are the healthy majority and are summarized once the list gets
+			//! long; ZERO-PIXEL entries are the whole reason this exists and
+			//! are named in full, with their own (much larger) safety cap so
+			//! a pathological scene still cannot emit an unbounded payload.
+			//! Both truncations are STATED in the text, never silent.
+			const std::size_t kInventoryMaxOnScreenLines = 12;
+			const std::size_t kInventoryMaxZeroLines     = 40;
+
+			//! How a world AABB sits relative to a pinhole view.
+			enum class InventoryPlacement_
+			{
+				Behind,     //!< every corner at or behind the camera plane
+				Straddles,  //!< some corners in front, some behind -- no screen-space position exists
+				OffFrame,   //!< all in front, and the projected box misses the frame entirely
+				Overlaps    //!< all in front, and the projected box overlaps the frame
+			};
+
+			//! Classify `bbMin`..`bbMax` against the pinhole view (eye,
+			//! target, up, tan(vfov/2), aspect).  Uses the SAME basis and the
+			//! SAME projection ProjectedBBoxCoverage builds -- this is that
+			//! function's classification half, kept separate because coverage
+			//! returns a single -1.0 for every "cannot project" case whereas
+			//! the inventory has to say WHICH case.
+			//!
+			//! `outDirection` is filled ONLY for OffFrame, from the side(s)
+			//! the projected box actually clears: "left", "right", "above",
+			//! "below", or two of them joined by " and ".  Returns false
+			//! (nothing written) on a degenerate basis or degenerate lens.
+			bool ClassifyBBoxAgainstView_( const double bbMin[3], const double bbMax[3],
+			                                const double eye[3], const double target[3],
+			                                const double upHint[3],
+			                                const double tanHalfVFov, const double aspect,
+			                                InventoryPlacement_& outPlacement,
+			                                std::string& outDirection )
+			{
+				outDirection.clear();
+				if( !( tanHalfVFov > 0.0 ) || !( aspect > 0.0 ) ) return false;
+
+				double f[3] = { target[0]-eye[0], target[1]-eye[1], target[2]-eye[2] };
+				const double fl = std::sqrt( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] );
+				if( !( fl > 0.0 ) ) return false;
+				f[0] /= fl; f[1] /= fl; f[2] /= fl;
+
+				double r[3] = { f[1]*upHint[2] - f[2]*upHint[1],
+				                f[2]*upHint[0] - f[0]*upHint[2],
+				                f[0]*upHint[1] - f[1]*upHint[0] };
+				const double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+				if( !( rl > 1e-12 ) ) return false;   // view direction parallel to the up hint
+				r[0] /= rl; r[1] /= rl; r[2] /= rl;
+
+				const double u[3] = { r[1]*f[2] - r[2]*f[1],
+				                      r[2]*f[0] - r[0]*f[2],
+				                      r[0]*f[1] - r[1]*f[0] };
+
+				int inFront = 0;
+				double minX = 1e300, maxX = -1e300, minY = 1e300, maxY = -1e300;
+				for( int c = 0; c < 8; ++c ) {
+					const double p[3] = {
+						( c & 1 ) ? bbMax[0] : bbMin[0],
+						( c & 2 ) ? bbMax[1] : bbMin[1],
+						( c & 4 ) ? bbMax[2] : bbMin[2] };
+					const double v[3] = { p[0]-eye[0], p[1]-eye[1], p[2]-eye[2] };
+					const double z = v[0]*f[0] + v[1]*f[1] + v[2]*f[2];
+					if( !( z > 1e-9 ) ) continue;
+					++inFront;
+					const double sx = ( v[0]*r[0] + v[1]*r[1] + v[2]*r[2] ) / ( z * tanHalfVFov * aspect );
+					const double sy = ( v[0]*u[0] + v[1]*u[1] + v[2]*u[2] ) / ( z * tanHalfVFov );
+					if( sx < minX ) minX = sx;
+					if( sx > maxX ) maxX = sx;
+					if( sy < minY ) minY = sy;
+					if( sy > maxY ) maxY = sy;
+				}
+
+				if( inFront == 0 ) { outPlacement = InventoryPlacement_::Behind;    return true; }
+				if( inFront <  8 ) { outPlacement = InventoryPlacement_::Straddles; return true; }
+
+				// All eight corners project, so the axis-aligned screen box is
+				// exact and is a SUPERSET of the object's own projection: a box
+				// that clears the frame proves the object does too, which is
+				// why this direction of the test can be asserted as fact.
+				std::string dirs;
+				if( maxX <= -1.0 ) dirs = "left";
+				else if( minX >= 1.0 ) dirs = "right";
+				if( maxY <= -1.0 ) { if( !dirs.empty() ) dirs += " and "; dirs += "below"; }
+				else if( minY >= 1.0 ) { if( !dirs.empty() ) dirs += " and "; dirs += "above"; }
+				if( !dirs.empty() ) {
+					outPlacement = InventoryPlacement_::OffFrame;
+					outDirection = dirs;
+					return true;
+				}
+				outPlacement = InventoryPlacement_::Overlaps;
+				return true;
+			}
+
+			//! The centre of a world AABB's projection, as a fraction of the
+			//! frame from the LEFT and from the TOP, clipped to the frame.
+			//! The FALLBACK in-frame position for an object no pixel could
+			//! be attributed to -- see AgentSceneInventoryEntry::
+			//! framePositionFromPixels for when that happens and why it is a
+			//! coarser fact rather than the same one.  Returns false (nothing
+			//! written) unless all eight corners are in front of the camera
+			//! and the projection overlaps the frame.
+			bool ProjectedBBoxFrameCentre_( const double bbMin[3], const double bbMax[3],
+			                                 const double eye[3], const double target[3],
+			                                 const double upHint[3],
+			                                 const double tanHalfVFov, const double aspect,
+			                                 double& outX, double& outY )
+			{
+				if( !( tanHalfVFov > 0.0 ) || !( aspect > 0.0 ) ) return false;
+				double f[3] = { target[0]-eye[0], target[1]-eye[1], target[2]-eye[2] };
+				const double fl = std::sqrt( f[0]*f[0] + f[1]*f[1] + f[2]*f[2] );
+				if( !( fl > 0.0 ) ) return false;
+				f[0] /= fl; f[1] /= fl; f[2] /= fl;
+				double r[3] = { f[1]*upHint[2] - f[2]*upHint[1],
+				                f[2]*upHint[0] - f[0]*upHint[2],
+				                f[0]*upHint[1] - f[1]*upHint[0] };
+				const double rl = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
+				if( !( rl > 1e-12 ) ) return false;
+				r[0] /= rl; r[1] /= rl; r[2] /= rl;
+				const double u[3] = { r[1]*f[2] - r[2]*f[1],
+				                      r[2]*f[0] - r[0]*f[2],
+				                      r[0]*f[1] - r[1]*f[0] };
+				double minX = 1e300, maxX = -1e300, minY = 1e300, maxY = -1e300;
+				for( int c = 0; c < 8; ++c ) {
+					const double p[3] = {
+						( c & 1 ) ? bbMax[0] : bbMin[0],
+						( c & 2 ) ? bbMax[1] : bbMin[1],
+						( c & 4 ) ? bbMax[2] : bbMin[2] };
+					const double v[3] = { p[0]-eye[0], p[1]-eye[1], p[2]-eye[2] };
+					const double z = v[0]*f[0] + v[1]*f[1] + v[2]*f[2];
+					if( !( z > 1e-9 ) ) return false;
+					const double sx = ( v[0]*r[0] + v[1]*r[1] + v[2]*r[2] ) / ( z * tanHalfVFov * aspect );
+					const double sy = ( v[0]*u[0] + v[1]*u[1] + v[2]*u[2] ) / ( z * tanHalfVFov );
+					if( sx < minX ) minX = sx;
+					if( sx > maxX ) maxX = sx;
+					if( sy < minY ) minY = sy;
+					if( sy > maxY ) maxY = sy;
+				}
+				if( minX < -1.0 ) minX = -1.0;
+				if( maxX >  1.0 ) maxX =  1.0;
+				if( minY < -1.0 ) minY = -1.0;
+				if( maxY >  1.0 ) maxY =  1.0;
+				if( !( maxX >= minX ) || !( maxY >= minY ) ) return false;
+				// NDC x is right-positive and y is UP-positive; the reported
+				// fractions are from the LEFT and from the TOP.
+				outX = ( ( minX + maxX ) * 0.5 + 1.0 ) * 0.5;
+				outY = 1.0 - ( ( minY + maxY ) * 0.5 + 1.0 ) * 0.5;
+				return true;
+			}
+
+			//! "%.1f%%", or "<0.1%" for a footprint that rounds to nothing --
+			//! never "0.0%" for an object that really did cover pixels.
+			std::string InventoryPercent_( double fraction )
+			{
+				const double pct = fraction * 100.0;
+				if( pct > 0.0 && pct < 0.1 ) return "<0.1% of frame";
+				char buf[48];
+				std::snprintf( buf, sizeof( buf ), "%.1f%% of frame", pct );
+				return std::string( buf );
+			}
+
+			//! Two decimals, for the in-frame position fractions.
+			std::string Inventory2dp_( double v )
+			{
+				char buf[32];
+				std::snprintf( buf, sizeof( buf ), "%.2f", v );
+				return std::string( buf );
+			}
+
+			//! The ONE formatter -- the render payload and `scene_inventory`
+			//! both read this string, so the two surfaces cannot describe the
+			//! same scene differently.  See kInventoryMaxOnScreenLines for the
+			//! bounding rules.
+			std::string FormatSceneInventory_( const AgentSession::AgentSceneInventoryResult& inv )
+			{
+				std::string t = "SCENE INVENTORY -- " + std::to_string( inv.objectCount ) +
+					( inv.objectCount == 1 ? " object; " : " objects; " );
+				if( inv.coveredCount == inv.objectCount ) {
+					t += "all " + std::to_string( inv.objectCount ) + " covered at least one pixel";
+				}
+				else {
+					t += std::to_string( inv.coveredCount ) + " covered at least one pixel and " +
+						std::to_string( inv.objectCount - inv.coveredCount ) + " covered none";
+				}
+				t += ", measured in a " + std::to_string( inv.passWidth ) + "x" +
+					std::to_string( inv.passHeight ) + " one-ray-per-pixel identity pass through this "
+					"render's camera (a footprint smaller than one pass pixel reads as 0). Frame "
+					"positions are that pass's own pixels, counted from the left and from the top.";
+				if( !inv.framePositionComputed && inv.coveredCount < inv.objectCount ) {
+					t += " Where an object that covered no pixels lies relative to the view was NOT "
+					     "computed for this render: " + inv.framePositionSuppressedReason + ".";
+				}
+				// STATED, NEVER SILENT.  When nothing could be located by
+				// pixel, every position below is the coarser projected-bbox
+				// centre, and the reader is told once rather than having to
+				// infer it from a per-line phrase.
+				if( inv.coveredCount > 0 && inv.pixelLocatedCount == 0 ) {
+					t += " No pixel of the pass carried a registered identity colour, so the "
+					     "positions below are projected bounding-box centres, not pixel "
+					     "measurements.";
+				}
+
+				std::size_t onScreenShown = 0, onScreenTotal = 0;
+				std::size_t zeroShown = 0, zeroTotal = 0;
+				std::string onScreenTail, zeroTail;
+				for( std::size_t i = 0; i < inv.entries.size(); ++i ) {
+					const AgentSession::AgentSceneInventoryEntry& e = inv.entries[i];
+					if( e.onScreen ) {
+						++onScreenTotal;
+						if( onScreenShown >= kInventoryMaxOnScreenLines ) continue;
+						++onScreenShown;
+						onScreenTail += "\n  " + e.name + " -- " + std::to_string( e.pixelCount ) +
+							" px, " + InventoryPercent_( e.frameFraction );
+						if( e.framePositionKnown ) {
+							onScreenTail += std::string( e.framePositionFromPixels
+								? ", centred " : ", bounding box centred " ) +
+								Inventory2dp_( e.frameX ) + " across / " +
+								Inventory2dp_( e.frameY ) + " down";
+						}
+						if( e.worldCentreKnown )
+							onScreenTail += ", world bbox centre (" + FormatVec3_( e.worldCentre ) + ")";
+					}
+					else {
+						++zeroTotal;
+						if( zeroShown >= kInventoryMaxZeroLines ) continue;
+						++zeroShown;
+						std::string where;
+						if     ( e.placement == "behind" )    where = "its bounding box is entirely behind the camera";
+						else if( e.placement == "offframe" )  where = "its bounding box projects entirely off-frame, " + e.offFrameDirection;
+						else if( e.placement == "overlaps" )  where = "its bounding box overlaps the frame";
+						else if( e.placement == "straddles" ) where = "its bounding box crosses the camera plane";
+						else                                   where = "where it lies relative to the view was not computed";
+						zeroTail += "\n  " + e.name + " -- 0 px, " + where;
+						if( e.worldCentreKnown )
+							zeroTail += "; world bbox centre (" + FormatVec3_( e.worldCentre ) + ")";
+						else
+							zeroTail += "; its world bounding box could not be read";
+					}
+				}
+
+				if( onScreenTotal ) {
+					t += "\nCovered pixels (largest first):" + onScreenTail;
+					if( onScreenShown < onScreenTotal )
+						t += "\n  ... and " + std::to_string( onScreenTotal - onScreenShown ) +
+							" more objects, each covering at least one pixel (" +
+							std::to_string( onScreenShown ) + " of " + std::to_string( onScreenTotal ) +
+							" listed).";
+				}
+				if( zeroTotal ) {
+					t += "\nCovered no pixels:" + zeroTail;
+					if( zeroShown < zeroTotal )
+						t += "\n  ... and " + std::to_string( zeroTotal - zeroShown ) +
+							" more objects, each covering no pixels (" + std::to_string( zeroShown ) +
+							" of " + std::to_string( zeroTotal ) + " listed).";
+				}
+				return t;
+			}
+		}
+
+		bool AgentSession::ResolveInventoryCamera_( const AgentRenderParams& params,
+		                                             unsigned int frameW, unsigned int frameH,
+		                                             double outEye[3], double outTarget[3], double outUp[3],
+		                                             double& outTanHalfV, double& outAspect,
+		                                             std::string& outSuppressReason ) const
+		{
+			outSuppressReason.clear();
+
+			// A NAMED VIEW is resolved inside RenderCore_ against a live
+			// controller's Named Views store (or a scene camera) and applied
+			// as an override.  Reconstructing it here would mean re-entering
+			// the controller from a second place and hoping the two
+			// resolutions agree; a wrong pose would produce confidently wrong
+			// "behind the camera" verdicts, which is exactly the class of
+			// false payload fact this arc exists to remove.
+			if( !params.view.empty() ) {
+				outSuppressReason = "this render was taken from the named view \"" + params.view +
+					"\", whose pose the inventory does not reconstruct";
+				return false;
+			}
+			// An orientation-expressed pose has no eye/target pair to project
+			// from without duplicating the camera's own Euler composition.
+			if( params.camera.hasOrientation || params.camera.hasTargetOrientation ) {
+				outSuppressReason = "this render's camera override is expressed as an orientation "
+				                    "rather than a location/lookat pair";
+				return false;
+			}
+
+			ICameraManager* cams = mJob ? mJob->GetCameras() : nullptr;
+			const std::string activeName = mJob ? mJob->GetActiveCameraName() : std::string();
+			const ICamera* cam = ( cams && !activeName.empty() ) ? cams->GetItem( activeName.c_str() ) : nullptr;
+			CameraSnapshot snap;
+			if( !cam || !CameraIntrospection::CaptureCameraSnapshot( *cam, snap ) ) {
+				outSuppressReason = "the active camera's pose could not be read";
+				return false;
+			}
+			// PINHOLE ONLY, and suppressed rather than approximated -- the
+			// same rule G1's fix-round applied to isolateBBoxCoverage.  A
+			// camera override can only SetProperty fields on the ALREADY
+			// active camera, so a thin-lens/fisheye/orthographic camera
+			// renders through its own projection no matter what pose was
+			// supplied, and a tan(fov/2) model would be the WRONG projection,
+			// not an approximation of the right one.
+			if( snap.type != RISE::CameraSnapshot::Pinhole || !( snap.fov > 0.0 ) ) {
+				outSuppressReason = "the active camera is not a pinhole, and the inventory's "
+				                    "projection assumes one";
+				return false;
+			}
+
+			for( int a = 0; a < 3; ++a ) {
+				outEye[a]    = snap.location[a];
+				outTarget[a] = snap.lookat[a];
+				outUp[a]     = snap.up[a];
+			}
+			double vfovRad = snap.fov;   // CameraSnapshot::fov is RADIANS (CameraIntrospection's convention)
+
+			// The caller's own pose override wins, read back out of the SAME
+			// fields the render applied -- so this measures the camera that
+			// actually rendered, not the pre-override one.
+			auto parseVec3 = []( const std::string& s, double out[3] ) -> bool {
+				return std::sscanf( s.c_str(), "%lf %lf %lf", &out[0], &out[1], &out[2] ) == 3;
+			};
+			bool parsed = true;
+			if( params.camera.hasLocation && !parseVec3( params.camera.location, outEye ) )   parsed = false;
+			if( params.camera.hasLookAt   && !parseVec3( params.camera.lookAt,   outTarget ) ) parsed = false;
+			if( params.camera.hasUp       && !parseVec3( params.camera.up,       outUp ) )     parsed = false;
+			if( !parsed ) {
+				outSuppressReason = "this render's camera override could not be parsed back to an "
+				                    "eye/target pair";
+				return false;
+			}
+			if( params.camera.hasFov ) {
+				const double fovDeg = std::strtod( params.camera.fov.c_str(), nullptr );
+				if( fovDeg > 0.0 && fovDeg < 180.0 )
+					vfovRad = fovDeg * 3.14159265358979323846 / 180.0;
+			}
+
+			// The aspect the frame was actually rendered at.  `frameW`/`frameH`
+			// are the completed render's own dims (after every implicit
+			// resolution default), and the Film's pixel aspect ratio multiplies
+			// them exactly as PinholeCamera::ComputeScaleFromFOV does.
+			double pixAR = 1.0;
+			if( const IScenePriv* scene = mJob ? mJob->GetScene() : nullptr ) {
+				if( const IFilm* film = scene->GetFilm() ) pixAR = film->GetPixelAR();
+			}
+			if( !( frameW > 0 && frameH > 0 ) || !RISE::IsFiniteDouble( pixAR ) || !( pixAR > 0.0 ) ) {
+				outSuppressReason = "this render's frame dimensions or pixel aspect ratio are not usable";
+				return false;
+			}
+			outAspect   = ( static_cast<double>( frameW ) / static_cast<double>( frameH ) ) * pixAR;
+			outTanHalfV = std::tan( vfovRad * 0.5 );
+			return outTanHalfV > 0.0;
+		}
+
+		AgentSession::AgentSceneInventoryResult AgentSession::ComputeSceneInventory_(
+			const AgentRenderParams& source, unsigned int frameW, unsigned int frameH,
+			bool assumeParked )
+		{
+			AgentSceneInventoryResult inv;
+			if( !mJob ) {
+				inv.message = "no head loaded";
+				return inv;
+			}
+
+			// ---- The identity pass.  `source` carries the caller's own
+			// camera/view override, so the inventory describes the view they
+			// rendered; everything else is narrowed, exactly as
+			// ApplyTargetComparison_ narrows its own pass, because an
+			// objectmap render ignores all of it anyway.
+			AgentRenderParams om = source;
+			om.renderTarget  = AgentRenderTarget::ObjectMap;
+			om.quality       = AgentRenderQuality::Production;
+			om.samples       = -1;
+			om.perception    = false;
+			om.xray          = false;
+			om.pinned        = false;
+			om.imageMaxEdge  = 0;
+			// THE PASS IS OURS, NOT THE CALLER'S.  It must not reach the
+			// GUI's Last Render pane (see the field's own doc); the session
+			// image cache is protected separately, by the
+			// EphemeralRenderCacheGuard below.
+			om.internalEphemeral = true;
+			om.isolate.clear();
+			om.target.clear();
+			om.light.clear();
+
+			// A SMALL FIXED PASS, at the frame's own aspect.  This is an
+			// identity render -- one ray per pixel, no shading -- so its cost
+			// is a fraction of the beauty render it rides on, and its
+			// resolution is disclosed in the text rather than hidden.
+			{
+				unsigned int w = frameW, h = frameH;
+				if( !( w > 0 && h > 0 ) ) { w = 4; h = 3; }
+				double s = static_cast<double>( kInventoryPassLongEdge ) /
+					static_cast<double>( w >= h ? w : h );
+				if( s > 1.0 ) s = 1.0;   // never upscale past the frame's own dims
+				unsigned int pw = static_cast<unsigned int>( std::lround( s * w ) );
+				unsigned int ph = static_cast<unsigned int>( std::lround( s * h ) );
+				if( pw < 8 ) pw = 8;
+				if( ph < 8 ) ph = 8;
+				om.width  = pw;
+				om.height = ph;
+			}
+
+			AgentRenderResult omr;
+			{
+				// The identity frame must NEVER displace the caller's own last
+				// render in the image cache -- see EphemeralRenderCacheGuard's
+				// doc; the same hazard and the same guard QueryObjectAt,
+				// CompareToReference and ApplyTargetComparison_ each use.
+				EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
+				                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
+				omr = RenderCore_( om, assumeParked, /*forcedJobId=*/0, /*resolvedTarget=*/nullptr );
+			}
+			if( !omr.ok ) {
+				inv.message = "the identity pass failed" +
+					( omr.message.empty() ? std::string() : ( " -- " + omr.message ) );
+				return inv;
+			}
+			inv.passWidth  = omr.width;
+			inv.passHeight = omr.height;
+
+			// ---- Footprints, from the EXISTING objectmap tally.  `legend` is
+			// built by the identity render itself (one entry per world-visible
+			// object, with the shader's own per-object pixel count), so the
+			// counts here are the objectmap machinery's, not a second
+			// measurement that could disagree with it.
+			const std::size_t passPixels =
+				static_cast<std::size_t>( inv.passWidth ) * static_cast<std::size_t>( inv.passHeight );
+			if( passPixels == 0 ) {
+				inv.message = "the identity pass produced no pixels";
+				return inv;
+			}
+
+			// ---- In-frame POSITIONS, from the pass's own pixels.  Decoding
+			// the identity image gives each object's pixel bounding box
+			// exactly, with no camera model involved -- so an on-screen
+			// object's position is available under EVERY camera, including a
+			// non-pinhole one where the analytic classification below is
+			// suppressed.
+			std::vector<unsigned char> rgb;
+			unsigned int dw = 0, dh = 0;
+			const bool havePixels = DecodePngRgbAll_( omr.png, rgb, dw, dh ) &&
+				dw == inv.passWidth && dh == inv.passHeight;
+
+			struct PixelBox_
+			{
+				unsigned int minX = 0, minY = 0, maxX = 0, maxY = 0;
+				bool         any = false;
+			};
+			std::map<std::string, PixelBox_> boxes;
+			if( havePixels ) {
+				// name-by-exact-byte, the SAME match query_object_at makes.
+				std::map<std::uint32_t, const std::string*> byColor;
+				for( std::size_t i = 0; i < omr.legend.size(); ++i ) {
+					const LegendEntry& e = omr.legend[i];
+					if( e.name == "<unmapped>" || e.colorHex.size() != 7 || e.colorHex[0] != '#' ) continue;
+					const unsigned long v = std::strtoul( e.colorHex.c_str() + 1, nullptr, 16 );
+					byColor[ static_cast<std::uint32_t>( v ) ] = &e.name;
+				}
+				for( unsigned int y = 0; y < dh; ++y ) {
+					for( unsigned int x = 0; x < dw; ++x ) {
+						const std::size_t at = ( static_cast<std::size_t>( y ) * dw + x ) * 3;
+						const std::uint32_t key =
+							( static_cast<std::uint32_t>( rgb[at+0] ) << 16 ) |
+							( static_cast<std::uint32_t>( rgb[at+1] ) <<  8 ) |
+							  static_cast<std::uint32_t>( rgb[at+2] );
+						if( key == 0 ) continue;   // the reserved background byte
+						const std::map<std::uint32_t, const std::string*>::const_iterator f = byColor.find( key );
+						if( f == byColor.end() ) continue;
+						PixelBox_& b = boxes[ *f->second ];
+						if( !b.any ) { b.minX = b.maxX = x; b.minY = b.maxY = y; b.any = true; }
+						else {
+							if( x < b.minX ) b.minX = x;
+							if( x > b.maxX ) b.maxX = x;
+							if( y < b.minY ) b.minY = y;
+							if( y > b.maxY ) b.maxY = y;
+						}
+					}
+				}
+			}
+
+			// ---- The camera, for the off-screen half.
+			double eye[3] = { 0, 0, 0 }, tgt[3] = { 0, 0, -1 }, up[3] = { 0, 1, 0 };
+			double tanHalfV = 0.0, aspect = 1.0;
+			std::string suppressReason;
+			inv.framePositionComputed = ResolveInventoryCamera_( source, frameW, frameH,
+			                                                      eye, tgt, up, tanHalfV, aspect,
+			                                                      suppressReason );
+			inv.framePositionSuppressedReason = suppressReason;
+
+			// ---- One entry per object.
+			IObjectManager* objs = mJob->GetObjects();
+			for( std::size_t i = 0; i < omr.legend.size(); ++i ) {
+				const LegendEntry& le = omr.legend[i];
+				if( le.name == "<unmapped>" ) continue;   // not an object -- see the legend's own doc
+
+				AgentSceneInventoryEntry e;
+				e.name          = le.name;
+				e.pixelCount    = le.pixelCount;
+				e.frameFraction = static_cast<double>( le.pixelCount ) / static_cast<double>( passPixels );
+				e.onScreen      = le.pixelCount > 0;
+
+				// The object's world bounding box -- the "where is it, then?"
+				// for anything that covered nothing, and the input to the
+				// analytic classification.  A legend name that does not
+				// resolve to a manager item (a generator-synthesized instance
+				// name, e.g. "grid[0,1]") honestly reports no box rather than
+				// a fabricated one.
+				double bbMin[3] = { 0, 0, 0 }, bbMax[3] = { 0, 0, 0 };
+				bool bboxUsable = false;
+				if( IObjectPriv* obj = objs ? objs->GetItem( le.name.c_str() ) : nullptr ) {
+					const BoundingBox bb = static_cast<const IObject*>( obj )->getBoundingBox();
+					bbMin[0] = bb.ll.x; bbMin[1] = bb.ll.y; bbMin[2] = bb.ll.z;
+					bbMax[0] = bb.ur.x; bbMax[1] = bb.ur.y; bbMax[2] = bb.ur.z;
+					bboxUsable = true;
+					for( int a = 0; a < 3; ++a ) {
+						const double ext = bbMax[a] - bbMin[a];
+						if( !RISE::IsFiniteDouble( bbMin[a] ) || !RISE::IsFiniteDouble( bbMax[a] ) ||
+							!( ext >= 0.0 ) || ext > 1.0e12 ) {
+							bboxUsable = false;
+						}
+					}
+				}
+				if( bboxUsable ) {
+					e.worldCentreKnown = true;
+					for( int a = 0; a < 3; ++a ) e.worldCentre[a] = ( bbMin[a] + bbMax[a] ) * 0.5;
+				}
+
+				if( e.onScreen ) {
+					e.placement = "onscreen";
+					const std::map<std::string, PixelBox_>::const_iterator b = boxes.find( le.name );
+					if( b != boxes.end() && b->second.any ) {
+						e.framePositionKnown      = true;
+						e.framePositionFromPixels = true;
+						e.frameX = ( ( b->second.minX + b->second.maxX ) * 0.5 + 0.5 ) /
+							static_cast<double>( inv.passWidth );
+						e.frameY = ( ( b->second.minY + b->second.maxY ) * 0.5 + 0.5 ) /
+							static_cast<double>( inv.passHeight );
+						++inv.pixelLocatedCount;
+					}
+					// NO PIXEL CARRIED THIS OBJECT'S IDENTITY COLOUR.  It
+					// really happens on real scenes: measured on a 47-object
+					// scene with a full-frame dielectric water surface, ZERO
+					// of the 47 registered identity colours appear anywhere in
+					// the identity image (the preview ray caster composites
+					// through a transmissive surface, so every pixel behind
+					// one is a blend), while the shader-side per-object tally
+					// -- which counts first hits, not encoded pixels -- stays
+					// exact.  The footprint above is therefore still a real
+					// measurement; only the pixel POSITION is unavailable.
+					// Fall back to the projected bounding box, and let the
+					// entry say which of the two it is reporting.  A
+					// fabricated 0,0 would read as "top-left corner", which is
+					// exactly the class of false payload clause arc 79 sec 8.1
+					// records as costing an entire session's mechanism.
+					else if( inv.framePositionComputed && bboxUsable ) {
+						double fx = 0.0, fy = 0.0;
+						if( ProjectedBBoxFrameCentre_( bbMin, bbMax, eye, tgt, up,
+						                                tanHalfV, aspect, fx, fy ) ) {
+							e.framePositionKnown      = true;
+							e.framePositionFromPixels = false;
+							e.frameX = fx;
+							e.frameY = fy;
+						}
+					}
+					++inv.coveredCount;
+				}
+				else if( !inv.framePositionComputed || !bboxUsable ) {
+					e.placement = "unknown";
+				}
+				else {
+					InventoryPlacement_ p = InventoryPlacement_::Overlaps;
+					std::string dir;
+					if( !ClassifyBBoxAgainstView_( bbMin, bbMax, eye, tgt, up, tanHalfV, aspect, p, dir ) ) {
+						e.placement = "unknown";
+					}
+					else {
+						switch( p ) {
+							case InventoryPlacement_::Behind:    e.placement = "behind";    break;
+							case InventoryPlacement_::Straddles: e.placement = "straddles"; break;
+							case InventoryPlacement_::OffFrame:  e.placement = "offframe";  e.offFrameDirection = dir; break;
+							case InventoryPlacement_::Overlaps:  e.placement = "overlaps";  break;
+						}
+					}
+				}
+				inv.entries.push_back( e );
+				++inv.objectCount;
+			}
+
+			if( inv.objectCount == 0 ) {
+				inv.noObjects = true;
+				inv.message   = "this scene has no world-visible objects";
+				return inv;
+			}
+
+			// DESCENDING footprint, then name -- so the objects that covered
+			// nothing are last and, per the bounding rules, complete.
+			std::stable_sort( inv.entries.begin(), inv.entries.end(),
+				[]( const AgentSceneInventoryEntry& a, const AgentSceneInventoryEntry& b ) {
+					if( a.pixelCount != b.pixelCount ) return a.pixelCount > b.pixelCount;
+					return a.name < b.name;
+				} );
+
+			inv.ok      = true;
+			inv.text    = FormatSceneInventory_( inv );
+			inv.message = "ok";
+			if( !havePixels && inv.coveredCount > 0 ) {
+				// Stated, not swallowed: the footprints are real (they come
+				// from the render's own tally) but the in-frame positions
+				// could not be read, so every reported centre would be 0,0.
+				inv.message = "ok (the identity pass's image could not be decoded, so in-frame "
+				              "positions were not measured)";
+			}
+			return inv;
+		}
+
+		AgentSession::AgentSceneInventoryResult AgentSession::SceneInventory()
+		{
+			// The verb runs the SAME core the render payload does, with an
+			// all-default source (the active camera, the scene's own Film
+			// aspect).  Nothing in this file's behaviour depends on this verb
+			// being called -- see its header doc.
+			unsigned int frameW = 0, frameH = 0;
+			if( mJob ) {
+				if( const IScenePriv* scene = mJob->GetScene() ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						frameW = film->GetWidth();
+						frameH = film->GetHeight();
+					}
+				}
+			}
+			return ComputeSceneInventory_( AgentRenderParams(), frameW, frameH,
+			                                /*assumeParked=*/false );
+		}
+
+		void AgentSession::ApplyVisibilityCensus_( const AgentRenderParams& params,
+		                                            AgentRenderResult& rr,
+		                                            bool assumeParked )
+		{
+			// THE QUALIFICATION RULE, in one place.  Every term is a pure
+			// function of `params` or of the completed result.
+			//
+			//  * A FAILED render describes no image, so it gets no facts about
+			//    one (G1's fix-round P1, applied in advance).
+			//  * ISOLATE renders ONE object with everything else hidden: an
+			//    inventory of a scene deliberately emptied to one object would
+			//    report 19 objects covering no pixels and be true of nothing
+			//    the caller asked about.
+			//  * OBJECTMAP and the false-colour data modes (normals / depth /
+			//    facets / wireframe) are already diagnostics -- an objectmap
+			//    render IS this measurement, at full size, with a legend.
+			//  * THE PRODUCTION-TRANSPORT MODES (deep_reflect / direct /
+			//    indirect / clay_lights) are EXCLUDED, deliberately: they are
+			//    real transports selected to answer a lighting question, at a
+			//    fixed reduced resolution this pass would not share, and the
+			//    inventory's identity pass measures where GEOMETRY is, not
+			//    what that transport carries.  Attaching it there would put a
+			//    footprint census beside an image whose content it does not
+			//    describe.
+			// `renderMode` is the one discriminator that already distinguishes
+			// all of these ("production" / "draft" / "objectmap" / the view
+			// mode's own wire name), so the rule reads off it directly.
+			if( !rr.ok ) return;
+			if( rr.renderMode != "production" && rr.renderMode != "draft" ) return;
+			if( !params.isolate.empty() || rr.isolateApplied ) return;
+			if( !mJob ) return;
+
+			const AgentSceneInventoryResult inv =
+				ComputeSceneInventory_( params, rr.width, rr.height, assumeParked );
+			if( !inv.ok ) {
+				// A scene with no objects gets NOTHING, not an empty inventory:
+				// there is no "where is everything" to answer, and the render
+				// result is byte-identical to before this mechanism existed.
+				// Any OTHER failure is stated rather than swallowed.
+				if( inv.noObjects ) return;
+				rr.message += " (scene inventory not computed: " +
+					( inv.message.empty() ? std::string( "no reason reported" ) : inv.message ) + ")";
+				return;
+			}
+
+			rr.inventoryApplied     = true;
+			rr.inventoryObjectCount = inv.objectCount;
+			rr.inventoryCoveredCount = inv.coveredCount;
+			rr.inventoryPassWidth   = inv.passWidth;
+			rr.inventoryPassHeight  = inv.passHeight;
+			rr.inventoryText        = inv.text;
+		}
+
 		// Model-B F2 slice S2a -------------------------------------------------
 
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
@@ -17592,6 +18521,16 @@ namespace RISE
 					// same reason the sketch comparison is: the cached result a
 					// later render_wait echoes must carry the block.
 					ApplySceneTargetComparison_( params, r, sceneTargetSnapshot );
+					// Arc 80 (2026-08-12): the SCENE INVENTORY, measured on the
+					// async path exactly as the synchronous one measures it --
+					// same helper, same one-extra-identity-render mechanism --
+					// with assumeParked=true, because this closure is STILL
+					// inside the worker's park and a nested re-park would
+					// self-deadlock on the controller's non-recursive mMutex
+					// (ApplyTargetComparison_'s reason, unchanged).  Placed
+					// before the mLastAsyncRenderResult store below so the
+					// cached result a later render_wait echoes carries it.
+					ApplyVisibilityCensus_( params, r, /*assumeParked=*/true );
 					// Model-B F2 slice S2b: cache the FULL result (the whole
 					// point of RenderCore_ having computed it) so a caller
 					// that drove this render via render{"async":true} ->

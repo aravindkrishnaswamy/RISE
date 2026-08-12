@@ -1161,13 +1161,31 @@ static void RunRenderJobIdTests()
 			       "the agent-preview render's id is GREATER than whatever the controller's counter last assigned (ONE shared monotonic counter across BOTH render classes)" );
 
 			// AFTER the render completes, CurrentRenderJob() reports the
-			// job inactive, naming the SAME id/class the result reported --
-			// this snapshot IS safely observable (no race: the render
-			// thread released mMutex before Render() returned).
+			// job inactive -- this snapshot IS safely observable (no race:
+			// the render thread released mMutex before Render() returned).
+			//
+			// ARC 80 (2026-08-12) CHANGED WHICH ID IT NAMES, and the change
+			// is honest rather than incidental.  A full-scene beauty render
+			// now attaches a SCENE INVENTORY, whose small identity pass is a
+			// second parked render on the synchronous path -- so the
+			// controller's shared counter advances once more and its
+			// single-slot record names THAT pass, not the beauty render.
+			// The assertion becomes the invariant that is actually true and
+			// still worth pinning: the beauty render's own id is real, the
+			// record is coherent and inactive, and the counter only ever
+			// moves FORWARD.  (Nothing observable is lost: the id the caller
+			// was handed is the beauty render's, the sync render has already
+			// completed by the time it is handed back, and on the ASYNC path
+			// the inventory's pass runs inside the worker's existing park and
+			// mints no id at all.  In a live GUI this record is churned
+			// constantly anyway -- RenderLoop mints an Interactive job for
+			// every viewport pass.)
 			const SceneEditController::RenderJobStatus after = controller.CurrentRenderJob();
 			Check( !after.active, "CurrentRenderJob() reports the job INACTIVE after the render completes" );
-			Check( after.id == liveResult.renderJobId,
-			       "CurrentRenderJob()'s post-render snapshot names the SAME renderJobId the result reported" );
+			Check( after.id >= liveResult.renderJobId,
+			       "CurrentRenderJob()'s post-render snapshot names an id at or after the one the "
+			       "result reported (the scene inventory's ephemeral identity pass is the later "
+			       "mint on the synchronous path)" );
 			Check( after.renderClass == SceneEditController::RenderClass::AgentPreview,
 			       "CurrentRenderJob()'s post-render snapshot reports RenderClass::AgentPreview for the agent-routed render" );
 
@@ -2591,6 +2609,431 @@ static void RunSceneTargetTests()
 	std::remove( scenePath.c_str() );
 }
 
+
+//======================================================================
+// Arc 80 (2026-08-12): the SCENE INVENTORY on the render surface.
+//
+// WHAT IT IS FOR, from the measurement.  docs/agentic-redesign/
+// 79-clean-room-construction.md sec 8.2: a composed scene rendered as an
+// empty frame, `query_object_at` answered "no object at this pixel" on
+// four of five probes, and the model concluded its GEOMETRY was broken and
+// replaced 80 of 82 hand-built SDF parts with primitives.  Its geometry
+// was fine.  Nothing in the harness could say so, because an INVERSE
+// (pixel -> object) query cannot: you must already know where to look, and
+// a miss reports nothing about where anything is.
+//
+// These tests pin the FORWARD answer -- every object, its footprint, and
+// where it is -- and the two properties that make it usable:
+//   (1) IT RIDES THE RENDER.  Not a verb the model has to think of; every
+//       voluntary consultation surface this workstream shipped measured
+//       0/64 uses.  `scene_inventory` exists and returns the SAME text
+//       through the SAME code path, and that identity is asserted.
+//   (2) EVERY CLAUSE IS TRUE OF WHAT THE CODE COMPUTES.  A non-pinhole
+//       camera produces NO frustum verdict, only a stated reason (arc 79
+//       sec 8.1: one false clause in a model-facing payload cost an entire
+//       session's mechanism).
+//======================================================================
+
+//! 19 objects, NONE of which covers a pixel -- the shape of the arc-79
+//! failure, with every off-screen reason class represented at once:
+//! 6 behind the camera, 5 off-frame (2 left, 1 right, 1 above, 1 below),
+//! 2 crossing the camera plane far to the side, and 6 sub-pixel spheres
+//! whose bounding boxes overlap the frame.  The camera sits at +Z looking
+//! at the origin, so "behind" is +Z beyond the eye.
+static std::string BuildNineteenObjectScene()
+{
+	std::string s =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+		"film\n{\n\twidth 96\n\theight 72\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 10\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"omni_light\n{\n\tname key\n\tposition 0 5 10\n\tpower 60\n\tcolor 1 1 1\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n";
+
+	auto sphere = []( const std::string& name, double r, double x, double y, double z ) {
+		char buf[512];
+		std::snprintf( buf, sizeof( buf ),
+			"sphere_geometry\n{\n\tname geo_%s\n\tradius %.6g\n}\n\n"
+			"standard_object\n{\n\tname %s\n\tgeometry geo_%s\n\tmaterial mat\n"
+			"\tposition %.6g %.6g %.6g\n}\n\n",
+			name.c_str(), r, name.c_str(), name.c_str(), x, y, z );
+		return std::string( buf );
+	};
+	auto box = []( const std::string& name, double x, double y, double z,
+	               double w, double h, double d ) {
+		char buf[512];
+		std::snprintf( buf, sizeof( buf ),
+			"box_geometry\n{\n\tname geo_%s\n\twidth %.6g\n\theight %.6g\n\tdepth %.6g\n}\n\n"
+			"standard_object\n{\n\tname %s\n\tgeometry geo_%s\n\tmaterial mat\n"
+			"\tposition %.6g %.6g %.6g\n}\n\n",
+			name.c_str(), w, h, d, name.c_str(), name.c_str(), x, y, z );
+		return std::string( buf );
+	};
+
+	// 6 BEHIND the camera (eye at z=+10, looking toward -Z).
+	for( int i = 0; i < 6; ++i )
+		s += sphere( "behind_" + std::to_string( i ), 1.0, -5.0 + 2.0 * i, 0.0, 30.0 );
+	// 5 OFF-FRAME, in front of the camera but outside its cone.
+	s += sphere( "offleft_a",  1.0, -60.0,   0.0, 0.0 );
+	s += sphere( "offleft_b",  1.0, -80.0,   0.0, 0.0 );
+	s += sphere( "offright_a", 1.0,  60.0,   0.0, 0.0 );
+	s += sphere( "offabove_a", 1.0,   0.0,  60.0, 0.0 );
+	s += sphere( "offbelow_a", 1.0,   0.0, -60.0, 0.0 );
+	// 2 CROSSING the camera plane, far off to the side.
+	s += box( "straddle_a", -70.0, 0.0, 10.0, 2.0, 2.0, 60.0 );
+	s += box( "straddle_b",  70.0, 0.0, 10.0, 2.0, 2.0, 60.0 );
+	// 6 SUB-PIXEL spheres inside the frame: their bounding boxes overlap
+	// it, no ray centre lands on them at the pass's resolution.
+	for( int i = 0; i < 6; ++i )
+		s += sphere( "speck_" + std::to_string( i ), 0.0005,
+		             -0.213 + 0.0917 * i, 0.137 - 0.0713 * i, 0.0 );
+	return s;
+}
+
+static void RunSceneInventoryTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Arc 80 (the scene inventory) ===\n" );
+
+	// ---- (a) The ORDINARY case: a two-object scene, both visible. -------
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_inventory.RISEscene", kScene );
+		Check( !scenePath.empty(), "wrote the inventory scene to a temp file" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the inventory scene via the CST path" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const std::string docBefore = session->ReadDocument();
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the production render succeeds" );
+		Check( r.inventoryApplied,
+		       "MONEY ASSERTION: a full-scene production BEAUTY render carries the scene "
+		       "inventory automatically -- the model never has to ask 'where is everything', "
+		       "which is the whole point (every voluntary consultation surface this workstream "
+		       "shipped measured 0/64 uses)" );
+		Check( r.inventoryObjectCount == 2, "both scene objects are counted" );
+		// obj_emit is a clipped plane at z=3.5 and the camera's eye is at
+		// z=3.5 -- it lies ON the camera plane, so it covers no pixel and is
+		// reported as such.  Asserting the MEASURED state rather than a
+		// convenient one is the point of the mechanism.
+		Check( r.inventoryCoveredCount == 1,
+		       "one covered pixels and one (the emitter plane, coplanar with the eye) did not" );
+		Check( r.inventoryPassWidth > 0 && r.inventoryPassHeight > 0,
+		       "the identity pass's own dims are reported" );
+		Check( r.inventoryText.find( "SCENE INVENTORY" ) != std::string::npos,
+		       "the inventory text is present" );
+		Check( r.inventoryText.find( "obj_sph" ) != std::string::npos &&
+		       r.inventoryText.find( "obj_emit" ) != std::string::npos,
+		       "MONEY ASSERTION: EVERY object is named, not just the ones with a problem -- the "
+		       "inventory answers 'where is everything', and the zero-pixel entries are simply "
+		       "the ones whose answer is unhappy" );
+		Check( r.inventoryText.find( "across / " ) != std::string::npos,
+		       "and a visible object's position in the frame is reported" );
+		// NO ADVICE, NO VERDICT.  The one rule this payload cannot break.
+		Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+		       r.inventoryText.find( "should" )   == std::string::npos &&
+		       r.inventoryText.find( "missing" )  == std::string::npos &&
+		       r.inventoryText.find( "broken" )   == std::string::npos &&
+		       r.inventoryText.find( "wrong" )    == std::string::npos,
+		       "MONEY ASSERTION: the inventory advises nothing and calls nothing missing or "
+		       "broken -- it reports what is, and any nudge toward a fix would contaminate the "
+		       "very behaviour this mechanism exists to measure" );
+		Check( session->ReadDocument() == docBefore,
+		       "computing the inventory is side-effect-free on the Document" );
+
+		// THE VERB AND THE PAYLOAD ARE ONE CODE PATH.
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		Check( si.ok && si.objectCount == 2 && si.coveredCount == 1,
+		       "scene_inventory reports the same two objects" );
+		Check( si.text == r.inventoryText,
+		       "MONEY ASSERTION: the explicit verb returns the SAME text the render payload "
+		       "carried -- ONE code path, so the two surfaces cannot describe one scene "
+		       "differently.  The payload is where the mechanism lives; the verb is for "
+		       "anyone who wants to ask." );
+		Check( si.entries.size() == 2 && si.entries[0].onScreen && !si.entries[1].onScreen,
+		       "and the structured entries carry both objects, largest footprint first" );
+
+		// A CAMERA OVERRIDE: the inventory describes the view that ACTUALLY
+		// rendered, not the pre-override camera.  Head-on from +Z the
+		// emitter plane (1.2 units wide at z=3.5) subtends more than the
+		// sphere behind it and hides it completely -- so this is also the
+		// OCCLUSION case, and what it must say about it.
+		{
+			AgentRenderParams cp;
+			cp.camera.hasLocation = true;  cp.camera.location = "0 0 8";
+			cp.camera.hasLookAt   = true;  cp.camera.lookAt   = "0 0 0";
+			const AgentRenderResult cr = session->Render( cp );
+			Check( cr.ok && cr.inventoryApplied, "the camera-override render carries the inventory" );
+			Check( cr.inventoryText.find( "obj_emit -- " ) != std::string::npos &&
+			       cr.inventoryText.find( "obj_emit -- 0 px" ) == std::string::npos,
+			       "MONEY ASSERTION: the emitter plane is now the VISIBLE object -- the inventory "
+			       "measures the caller's ephemeral camera override, not the scene's authored "
+			       "camera (which had the eye coplanar with that same plane)" );
+			Check( cr.inventoryText.find( "obj_sph -- 0 px, its bounding box overlaps the frame" )
+			       != std::string::npos,
+			       "MONEY ASSERTION: the sphere is fully OCCLUDED by that plane, and the "
+			       "inventory says exactly what it measured -- its bounding box overlaps the "
+			       "frame and it covered no pixels -- without speculating that it is occluded "
+			       "rather than sub-pixel.  It does NOT say the object is missing." );
+		}
+
+
+
+		// The ephemeral pass must not become "the last render".
+		unsigned int iw = 0, ih = 0;
+		const std::vector<unsigned char> img = session->ReadImage( 0, iw, ih );
+		Check( !img.empty() && iw == r.width && ih == r.height,
+		       "MONEY ASSERTION: read_image still serves the caller's OWN beauty frame -- the "
+		       "inventory's identity pass never displaces it in the image cache" );
+
+		// ---- (b) The exclusions. ----------------------------------------
+		{
+			AgentRenderParams p;
+			p.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult d = session->Render( p );
+			Check( d.ok && d.inventoryApplied,
+			       "MONEY ASSERTION: a DRAFT render DOES carry the inventory -- draft ignores "
+			       "materials and lighting, but the inventory measures where GEOMETRY is, which "
+			       "draft shows faithfully, and an empty-looking draft frame misleads exactly as "
+			       "an empty production one does" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult om = session->Render( p );
+			Check( om.ok && !om.inventoryApplied,
+			       "MONEY ASSERTION: an OBJECTMAP render carries NO inventory -- that render IS "
+			       "this measurement, at full size, with a legend" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ViewMode;
+			p.viewMode = RISE::Implementation::ViewportRenderMode::Normals;
+			const AgentRenderResult vm = session->Render( p );
+			Check( vm.ok && !vm.inventoryApplied,
+			       "MONEY ASSERTION: a false-colour DATA mode carries no inventory -- already a "
+			       "diagnostic" );
+		}
+		{
+			AgentRenderParams p;
+			p.renderTarget = AgentRenderTarget::ViewMode;
+			p.viewMode = RISE::Implementation::ViewportRenderMode::Direct;
+			const AgentRenderResult bv = session->Render( p );
+			Check( bv.ok && !bv.inventoryApplied,
+			       "MONEY ASSERTION: a PRODUCTION-TRANSPORT mode (direct) carries no inventory "
+			       "either -- a deliberately selected transport at a fixed reduced resolution, "
+			       "answering a lighting question the geometry census does not describe" );
+		}
+		{
+			AgentRenderParams p;
+			p.isolate = "obj_sph";
+			const AgentRenderResult iso = session->Render( p );
+			Check( iso.ok && iso.isolateApplied && !iso.inventoryApplied,
+			       "MONEY ASSERTION: an ISOLATE render carries no inventory -- it renders ONE "
+			       "object with every other hidden, so an inventory of it would report the rest "
+			       "of the scene covering no pixels and be true of nothing the caller asked" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (b2) EVERY object visible: the headline's all-present form. ----
+	{
+		static const char* const kTwoVisible =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 64\n\theight 48\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 10\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"omni_light\n{\n\tname key\n\tposition 0 5 10\n\tpower 60\n\tcolor 1 1 1\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_l\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_left\n\tgeometry geo_l\n\tmaterial mat\n\tposition -1.4 0 0\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_r\n\tradius 0.8\n}\n\n"
+			"standard_object\n{\n\tname obj_right\n\tgeometry geo_r\n\tmaterial mat\n\tposition 1.4 0 0\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_2vis.RISEscene", kTwoVisible );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the two-visible-object scene via the CST path" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok && r.inventoryApplied && r.inventoryCoveredCount == 2,
+		       "both spheres cover pixels" );
+		Check( r.inventoryText.find( "all 2 covered at least one pixel" ) != std::string::npos,
+		       "the headline reads in its all-present form" );
+		Check( r.inventoryText.find( "Covered no pixels" ) == std::string::npos,
+		       "which is stated by its absence, not by an empty list" );
+		// LEFT is left and RIGHT is right: the in-frame position is a real
+		// measurement, not a placeholder.
+		double leftX = -1.0, rightX = -1.0;
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			if( si.entries[i].name == "obj_left"  ) leftX  = si.entries[i].frameX;
+			if( si.entries[i].name == "obj_right" ) rightX = si.entries[i].frameX;
+		}
+		Check( leftX >= 0.0 && rightX >= 0.0 && leftX < 0.5 && rightX > 0.5 && leftX < rightX,
+		       "MONEY ASSERTION: the frame position is REAL -- the object at world -X reports a "
+		       "frame position left of centre and the one at +X reports right of centre, read "
+		       "from the identity pass's own pixels" );
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			Check( si.entries[i].framePositionKnown && si.entries[i].framePositionFromPixels,
+			       "and it is reported as a PIXEL measurement, not the coarser projected-bbox "
+			       "fallback -- the two are different facts and the entry says which it is" );
+		}
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (c) THE ARC-79 SHAPE: 19 objects, none of them on screen. ------
+	{
+		const std::string sceneText = BuildNineteenObjectScene();
+		const std::string scenePath = WriteTemp( "rise_agent_inventory19.RISEscene", sceneText );
+		Check( !scenePath.empty(), "wrote the 19-object scene to a temp file" );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the 19-object scene via the CST path" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the 19-object render succeeds" );
+		Check( r.inventoryApplied, "and carries the inventory" );
+		Check( r.inventoryObjectCount == 19,
+		       "all 19 objects are counted (got " + std::to_string( r.inventoryObjectCount ) + ")" );
+		Check( r.inventoryCoveredCount == 0,
+		       "and NONE of them covered a pixel (got " +
+		       std::to_string( r.inventoryCoveredCount ) + " that did)" );
+
+		// THE DELIVERABLE: print the exact text a model would read here.
+		std::printf( "---- inventory text, 19 objects, none on screen ----\n%s\n----\n",
+		             r.inventoryText.c_str() );
+
+		Check( r.inventoryText.find( "entirely behind the camera" ) != std::string::npos,
+		       "MONEY ASSERTION: an object behind the camera is named WITH THAT REASON -- the "
+		       "reason class is the load-bearing part; 'it covered no pixels' alone is what "
+		       "query_object_at already said" );
+		Check( r.inventoryText.find( "off-frame, left" ) != std::string::npos &&
+		       r.inventoryText.find( "off-frame, right" ) != std::string::npos &&
+		       r.inventoryText.find( "off-frame, above" ) != std::string::npos &&
+		       r.inventoryText.find( "off-frame, below" ) != std::string::npos,
+		       "an object outside the frustum is named with the DIRECTION it lies in" );
+		Check( r.inventoryText.find( "overlaps the frame" ) != std::string::npos,
+		       "an object inside the frame that covered no pixels says exactly that, and does "
+		       "NOT speculate about whether it is occluded or sub-pixel" );
+		Check( r.inventoryText.find( "crosses the camera plane" ) != std::string::npos,
+		       "and a box spanning the camera plane says its screen position is undefined "
+		       "rather than inventing one" );
+		Check( r.inventoryText.find( "world bbox centre (" ) != std::string::npos,
+		       "MONEY ASSERTION: every off-screen object is reported WITH ITS WORLD POSITION -- "
+		       "'all 19 exist and here is where each one is' is the answer arc 79's model "
+		       "needed and could not get" );
+		Check( r.inventoryText.find( "behind_0" ) != std::string::npos &&
+		       r.inventoryText.find( "speck_5" ) != std::string::npos,
+		       "and EVERY zero-pixel object is named in full, never summarized away" );
+		Check( r.inventoryText.find( "across / " ) == std::string::npos,
+		       "MONEY ASSERTION: and NOT ONE of them is given an in-frame position -- an object "
+		       "that covered no pixels has no measured place in the frame, and a fabricated "
+		       "0.00/0.00 would read as 'top-left corner'" );
+		{
+			const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+			Check( si.ok && si.entries.size() == 19, "the verb agrees on the object count" );
+			bool anyPositioned = false;
+			for( std::size_t i = 0; i < si.entries.size(); ++i )
+				if( si.entries[i].framePositionKnown ) anyPositioned = true;
+			Check( !anyPositioned,
+			       "and no entry carries a frame position at all, so the wire omits frameX/frameY "
+			       "rather than serializing measured-looking zeros" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (d) A NON-PINHOLE camera fabricates no verdict. ----------------
+	{
+		std::string ortho = kScene;
+		const std::string pin = "pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n";
+		const std::size_t at = ortho.find( pin );
+		Check( at != std::string::npos, "found the pinhole camera chunk to replace" );
+		ortho.replace( at, pin.size(),
+			"orthographic_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n"
+			"\tviewport_scale 2.0\n}\n" );
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_ortho.RISEscene", ortho );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the orthographic-camera scene via the CST path" );
+
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		Check( si.ok, "the inventory still runs on a non-pinhole camera" );
+		Check( !si.framePositionComputed,
+		       "MONEY ASSERTION: a NON-PINHOLE camera produces NO frustum verdict -- the "
+		       "projected-bbox formula is a tan(fov/2) pinhole model, so applying it here "
+		       "would be the WRONG projection, not an approximation of the right one (the "
+		       "rule G1's fix-round set for isolate.bboxCoverage)" );
+		Check( si.framePositionSuppressedReason.find( "not a pinhole" ) != std::string::npos,
+		       "and it says so, in one clause, instead of leaving the caller to guess" );
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			Check( si.entries[i].onScreen || si.entries[i].placement == "unknown",
+			       "every off-screen entry's placement is honestly 'unknown' on a non-pinhole "
+			       "camera" );
+		}
+		// The FOOTPRINTS and in-frame positions still work: they are read
+		// from the pass's own pixels, with no camera model involved.
+		bool anyOnScreenWithPosition = false;
+		for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+			if( si.entries[i].onScreen && si.entries[i].frameX > 0.0 ) anyOnScreenWithPosition = true;
+		}
+		Check( anyOnScreenWithPosition,
+		       "MONEY ASSERTION: a VISIBLE object's frame position survives a non-pinhole "
+		       "camera -- it is measured from the identity pass's own pixels, so 'where is it' "
+		       "is answerable for everything on screen under any projection" );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (e) THE COST, measured rather than asserted. -------------------
+	// The census rides EVERY qualifying render, so its overhead is a tax on
+	// the whole surface and has to be a reported number, not a hope.
+	{
+		const std::string sceneText = BuildNineteenObjectScene();
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_cost.RISEscene", sceneText );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the cost-measurement scene via the CST path" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		AgentRenderParams p;
+		p.width = 256; p.height = 192; p.samples = 8;
+		session->Render( p );   // warm up
+
+		double beautyMs = 0.0, inventoryMs = 0.0;
+		const int kReps = 3;
+		for( int i = 0; i < kReps; ++i ) {
+			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+			const AgentRenderResult rr = session->Render( p );
+			const std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+			Check( rr.ok && rr.inventoryApplied, "the timed render carries the inventory" );
+			const std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+			session->SceneInventory();
+			const std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
+			beautyMs    += std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+			inventoryMs += std::chrono::duration<double, std::milli>( t3 - t2 ).count();
+		}
+		std::printf( "[arc 80 cost] 256x192 @ 8spp, 19 objects: render+inventory %.1f ms, "
+		             "inventory alone %.1f ms (%.1f%% of the whole call)\n",
+		             beautyMs / kReps, inventoryMs / kReps,
+		             beautyMs > 0.0 ? 100.0 * inventoryMs / beautyMs : 0.0 );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -2612,6 +3055,7 @@ int main()
 	RunNoRasterizerDraftTest();
 	RunLastRenderCompletionSitesTest();
 	RunSceneTargetTests();   // Arc 77 Phase 2 (2026-08-11)
+	RunSceneInventoryTests();   // Arc 80 (2026-08-12)
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

@@ -1530,7 +1530,12 @@ static void RunInlineRenderImageTest()
 			"previewWidth", "previewHeight", "cameraOverridden", "message",
 			"renderJobId", "samplesOverridden", "effectiveSamples", "renderMode",
 			"perceptionAvailable", "perceptionPersistentBytes", "perceptionAuxiliaryPeakBytes",
-			"note" };
+			"note",
+			// Arc 80 (2026-08-12): the SCENE INVENTORY rides every full-scene
+			// beauty render -- "where is everything", answered with the picture
+			// rather than waiting to be asked for (every voluntary consultation
+			// surface this workstream shipped measured 0/64 uses).
+			"inventory" };
 		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
 		bool allPresent = true;
 		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;

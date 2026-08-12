@@ -676,7 +676,17 @@ namespace RISE
 					"ANY judgement of materials/lighting/exposure/colour. A full-resolution, "
 					"full-authored-sample-count render is a GUI action, not something this "
 					"tool can produce -- tell the user to render from the app if that's what "
-					"they need.",
+					"they need. "
+					"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no isolate, no mode:) "
+					"also comes back with an `inventory` block: how many objects the scene has, how "
+					"many covered at least one pixel, and one line per object saying how much of the "
+					"frame it covers and where it is -- in the frame for the ones that appeared, and "
+					"in the world plus which way it lies (behind the camera, off-frame left, "
+					"overlapping the frame but covering nothing, ...) for the ones that did not. It "
+					"is measured in a small one-ray-per-pixel identity pass through this render's "
+					"camera, whose dimensions the block states. Read it before concluding anything "
+					"about an empty-looking frame: an object that covered no pixels is still there, "
+					"and the block says where.",
 					"{\"type\":\"object\",\"properties\":{"
 						"\"samples\":{\"type\":\"number\",\"description\":"
 						"\"Optional sample-count override, CLAMPED to [1,16] (an agent-surface cap -- see this tool's own description). Honoured by the pixel-based rasterizer family (PT, spectral PT, BDPT, VCM) via a transient, non-mutating setter -- check the result's samplesOverridden/effectiveSamples fields. On an unsupported rasterizer (MLT, photon-map-only, Auto's outer wrapper) the override is honestly reported as NOT applied, never silently ignored -- this also applies when the CAP itself could not be applied (no `samples` given, but the scene's authored count exceeds 16 and the rasterizer doesn't support the override): the message says so plainly rather than silently rendering at the higher count. Omit this and the render still runs at 16spp or less -- if the scene's own authored sample count is under 16, that count is used unchanged; if it's higher, it's capped to 16 and `effectiveSamples`/the result's `agentRenderCap.samplesCapped` report the cap honestly. Under quality:draft this is instead a firm request CAPPED at 4.\"},"
@@ -784,6 +794,37 @@ namespace RISE
 							"\"fov\":{\"type\":\"number\",\"description\":\"Optional field of view in degrees, EXCLUSIVE range (0, 180).\"}"
 						"},\"required\":[\"location\",\"lookat\"]}"
 					"},\"required\":[\"x\",\"y\"]}"
+				},
+				// Arc 80 (2026-08-12).  THIS text is the CANONICAL statement of the
+				// scene_inventory contract; AgentMcpAdapter.cpp's entry MIRRORS it
+				// sentence for sentence, per the convention G3b's `target` block
+				// records -- a caveat added to only ONE of these surfaces is a
+				// caveat added to NEITHER.
+				{
+					"scene_inventory",
+					"Ask WHERE EVERYTHING IS: one line per object in the scene, saying how much of "
+					"the frame it covers and where it sits. Takes no arguments -- it inventories the "
+					"ACTIVE camera's view. This is the FORWARD question; query_object_at is the "
+					"inverse one (\"what is at this pixel\"), which can only answer about a spot you "
+					"already guessed, and whose \"no object at this pixel\" tells you nothing about "
+					"where anything actually is. An object that covered pixels is reported with its "
+					"pixel count, its share of the frame, and its position in the frame as fractions "
+					"from the left and from the top. An object that covered none is reported with its "
+					"world bounding-box centre and where it lies relative to the view: entirely behind "
+					"the camera, entirely off-frame (with the direction), overlapping the frame but "
+					"covering no pixels (occluded, or smaller than one pass pixel -- this does not "
+					"distinguish those), or crossing the camera plane. Positions are measured in a "
+					"small one-ray-per-pixel identity pass, so a footprint under one pass pixel reads "
+					"as 0, and the pass's dimensions are reported. Where an object lies relative to "
+					"the view is NOT computed -- and says so -- when the active camera is not a "
+					"pinhole, or the render was taken from a named view or an orientation-only camera "
+					"override. YOU USUALLY DO NOT NEED TO CALL THIS: the same inventory comes back "
+					"automatically, in the same words, on every full-scene beauty render's result "
+					"under `inventory`. Returns {ok,objects,covered,passWidth,passHeight,"
+					"framePositionComputed,framePositionNote,entries,text,message}. It renders "
+					"internally (one cheap identity pass), changes nothing in the document, and does "
+					"not replace the image read_image returns.",
+					"{\"type\":\"object\",\"properties\":{}}"
 				},
 				{
 					"compare_to_reference",

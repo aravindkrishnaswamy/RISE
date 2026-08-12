@@ -258,7 +258,7 @@ int main()
 		Check( env.has( "id" ), "id:null response HAS an id field" );
 		Check( env.get( "id" ).isNull(), "id:null response echoes id back as null (not omitted, not a fabricated number)" );
 		Check( !env.has( "error" ), "id:null tools/list is a JSON-RPC success" );
-		Check( env.get( "result" ).get( "tools" ).size() == 29, "id:null tools/list result carries all 29 tools" );
+		Check( env.get( "result" ).get( "tools" ).size() == 30, "id:null tools/list result carries all 30 tools" );
 	}
 	{
 		// Same id:null contract for `ping`, cross-checking both fixes
@@ -332,7 +332,7 @@ int main()
 		Check( !env.has( "error" ), "tools/list returns a success" );
 		toolsList = env.get( "result" ).get( "tools" );
 		Check( toolsList.isArray(), "tools/list result.tools is an array" );
-		Check( toolsList.size() == 29, "tools/list returns EXACTLY the 29 agent verbs" );
+		Check( toolsList.size() == 30, "tools/list returns EXACTLY the 30 agent verbs" );
 
 		static const char* const kExpectedNames[] = {
 			// S1 (2026-08-11): the two staged-build-protocol verbs.
@@ -345,6 +345,7 @@ int main()
 			"remove_chunks",   // R1a (2026-08-09): the ATOMIC batch remove
 			"render", "render_status", "render_wait", "render_cancel",
 			"read_image", "read_viewport", "query_object_at",
+			"scene_inventory",   // Arc 80 (2026-08-12): the FORWARD "where is everything" inventory
 			"compare_to_reference",
 			"imagine_scene",   // Arc 77 Phase 2 (2026-08-11): the whole-scene imagined target
 			"list_proposals", "resolve_proposal"
@@ -1089,7 +1090,7 @@ int main()
 
 		const std::string listResp = nohead.HandleLine( Req( 41, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue listEnv = ParseResponse( listResp, 41 );
-		Check( listEnv.get( "result" ).get( "tools" ).size() == 29, "no-head tools/list still lists all 29 tools" );
+		Check( listEnv.get( "result" ).get( "tools" ).size() == 30, "no-head tools/list still lists all 30 tools" );
 
 		// A stateless tool (read_schema) works with no head.
 		{

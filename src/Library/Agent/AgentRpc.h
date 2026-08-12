@@ -872,6 +872,49 @@
 //                                            READ-SAFE: available under every
 //                                            autonomy posture, including Read (a pure
 //                                            read, exactly like render itself).)
+//      scene_inventory {}                -> {ok,objects,covered,passWidth,passHeight,
+//                                            framePositionComputed,
+//                                            framePositionNote?,
+//                                            entries:[{name,pixelCount,frameFraction,
+//                                                      onScreen,frameX?,frameY?,
+//                                                      worldCentre?,placement,
+//                                                      offFrameDirection?}],
+//                                            text,message}
+//                                           (Arc 80 (2026-08-12): "WHERE IS
+//                                            EVERYTHING?" -- the FORWARD counterpart
+//                                            to query_object_at's inverse
+//                                            pixel->object probe.  Reports EVERY
+//                                            world-visible object: its footprint in a
+//                                            small one-ray-per-pixel identity pass
+//                                            through the ACTIVE camera, plus where it
+//                                            is -- in the frame (`frameX`/`frameY`,
+//                                            fractions from the left and from the top,
+//                                            read from the pass's own pixels, so
+//                                            available under any camera) for anything
+//                                            that covered pixels; in the world
+//                                            (`worldCentre`) plus a `placement` of
+//                                            behind / offframe (+`offFrameDirection`)
+//                                            / overlaps / straddles for anything that
+//                                            did not.  `placement` is "unknown" and
+//                                            `framePositionComputed` false when the
+//                                            pose cannot be reconstructed exactly (a
+//                                            named view, an orientation-only override)
+//                                            or the active camera is not a PINHOLE --
+//                                            SUPPRESSED, never approximated, the same
+//                                            rule isolate.bboxCoverage follows.
+//                                            TAKES NO PARAMS.  The SAME measurement
+//                                            (same code path) rides every full-scene
+//                                            beauty render's result as `inventory`
+//                                            without being asked for, which is where
+//                                            the mechanism actually lives -- every
+//                                            voluntary consultation surface this
+//                                            workstream shipped measured 0/64 uses.
+//                                            Never mutates the retained Document and
+//                                            never displaces the last render in the
+//                                            image cache (the identity pass is
+//                                            ephemeral, exactly like
+//                                            query_object_at's).  READ-SAFE under
+//                                            every autonomy posture.)
 //      compare_to_reference {reference,camera?,visual?,samples?}
 //                                        -> {ok,error?,badReference?,rmse,
 //                                            channelDelta:{r,g,b},
@@ -1067,7 +1110,8 @@
 //    DENY-BY-DEFAULT: `Read` allows ONLY the read-safe allowlist
 //    (read_document, read_schema, read_skill, validate, render,
 //    render_status, render_wait, render_cancel, read_image,
-//    list_proposals, read_viewport, query_object_at, compare_to_reference,
+//    list_proposals, read_viewport, query_object_at, scene_inventory,
+//    compare_to_reference,
 //    file_build_plan, finish_element, reopen_element, imagine_scene --
 //    IsReadSafeVerb in
 //    AgentRpc.cpp, the single source of truth for membership; keep this
@@ -1191,7 +1235,7 @@ namespace RISE
 		//! the full class-default-vs-binary-default rationale.
 		enum class AgentAutonomy
 		{
-			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/compare_to_reference/file_build_plan/finish_element/reopen_element/imagine_scene) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
+			Read,     //!< DENY-BY-DEFAULT: only the read-safe ALLOWLIST (IsReadSafeVerb -- read_document/read_schema/read_skill/validate/render/render_status/render_wait/render_cancel/read_image/read_viewport/list_proposals/query_object_at/scene_inventory/compare_to_reference/file_build_plan/finish_element/reopen_element/imagine_scene) dispatches; every other method, including the 6 known-mutating verbs (propose_patch/propose_patches/insert_chunk/insert_chunks/remove_chunk/remove_chunks), resolve_proposal, and any future unclassified verb, is refused.
 			//! Secure-MCP slice 5b: the read-safe allowlist PLUS the 6 mutating
 			//! verbs (propose_patch/propose_patches/insert_chunk/
 			//! insert_chunks/remove_chunk/remove_chunks) dispatch -- but

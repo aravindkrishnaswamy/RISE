@@ -132,6 +132,11 @@ namespace RISE
 				       // autonomy posture, including Read, exactly like
 				       // render itself.
 				       method == "query_object_at" ||
+				       // Arc 80 (2026-08-12): scene_inventory is a PURE READ by
+				       // exactly query_object_at's test -- it runs the same
+				       // ephemeral identity render and never touches the
+				       // retained Document.
+				       method == "scene_inventory" ||
 				       // compare_to_reference is a PURE READ -- it renders
 				       // (never mutates the retained Document, exactly like
 				       // render itself) and grades against a HOST-registered
@@ -766,6 +771,37 @@ namespace RISE
 							JsonValue::MakeNumber( static_cast<double>( rr.sceneTargetCompositeHeight ) ) );
 					}
 					result.set( "sceneTarget", st );
+				}
+				// Arc 80 (2026-08-12): the SCENE INVENTORY -- "where is
+				// everything?" -- under ONE nested key, same omit-when-absent
+				// convention and same `rr.ok` belt-and-braces as the three
+				// blocks above.  `inventoryApplied` is only ever set on a
+				// successful, non-isolate, full-scene BEAUTY render of a scene
+				// with at least one object (see AgentRenderResult::
+				// inventoryApplied), so every other render is byte-identical
+				// to before this mechanism existed.
+				//
+				// IT RIDES THE RENDER RESULT ON PURPOSE.  `scene_inventory`
+				// returns the same measurement (through the same code path)
+				// for anyone who asks, but every voluntary consultation
+				// surface this workstream shipped measured 0/64 uses -- so the
+				// answer to "did my objects appear, and where are they" is
+				// delivered with the picture, unasked.
+				//
+				// `text` is the whole inventory as prose; it is what a model
+				// actually reads, and the counts beside it are the same facts
+				// in machine form.  EVERY CLAUSE IN IT IS A MEASUREMENT --
+				// nothing is characterized, no object is called missing, and
+				// no fix is suggested (arc 79 sec 8.1: a false clause in a
+				// model-facing payload cost an entire session's mechanism).
+				if( rr.ok && rr.inventoryApplied ) {
+					JsonValue inv = JsonValue::MakeObject();
+					inv.set( "objects", JsonValue::MakeNumber( static_cast<double>( rr.inventoryObjectCount ) ) );
+					inv.set( "covered", JsonValue::MakeNumber( static_cast<double>( rr.inventoryCoveredCount ) ) );
+					inv.set( "passWidth",  JsonValue::MakeNumber( static_cast<double>( rr.inventoryPassWidth ) ) );
+					inv.set( "passHeight", JsonValue::MakeNumber( static_cast<double>( rr.inventoryPassHeight ) ) );
+					inv.set( "text", JsonValue::MakeString( rr.inventoryText ) );
+					result.set( "inventory", inv );
 				}
 				return result;
 			}
@@ -4133,6 +4169,89 @@ namespace RISE
 					result.set( "width",   JsonValue::MakeNumber( static_cast<double>( qr.width ) ) );
 					result.set( "height",  JsonValue::MakeNumber( static_cast<double>( qr.height ) ) );
 					result.set( "message", JsonValue::MakeString( qr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// scene_inventory {} ->
+				//   {ok,objects,covered,passWidth,passHeight,
+				//    framePositionComputed,framePositionNote?,
+				//    entries:[{name,pixelCount,frameFraction,onScreen,
+				//              frameX?,frameY?,worldCentre?,placement,
+				//              offFrameDirection?}],
+				//    text,message}
+				//   Arc 80 (2026-08-12): "where is everything?", asked
+				//   directly.  TAKES NO PARAMS -- it inventories the ACTIVE
+				//   camera's view of the live scene.  Shares ONE code path
+				//   (AgentSession::ComputeSceneInventory_) with the `inventory`
+				//   block every full-scene beauty render already carries, so
+				//   the two surfaces cannot describe the same scene
+				//   differently; the PAYLOAD path is the one expected to
+				//   matter (every voluntary consultation surface this
+				//   workstream shipped measured 0/64 uses), and no behaviour
+				//   depends on this verb being called.
+				//   A scene with no objects, or a failed identity pass,
+				//   returns ok:false with the reason in `message` -- never a
+				//   fabricated empty inventory.
+				//--------------------------------------------------------------
+				if( m == "scene_inventory" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+
+					const AgentSession::AgentSceneInventoryResult si = s->SceneInventory();
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",         JsonValue::MakeBool( si.ok ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( si.objectCount ) ) );
+					result.set( "covered",    JsonValue::MakeNumber( static_cast<double>( si.coveredCount ) ) );
+					result.set( "passWidth",  JsonValue::MakeNumber( static_cast<double>( si.passWidth ) ) );
+					result.set( "passHeight", JsonValue::MakeNumber( static_cast<double>( si.passHeight ) ) );
+					result.set( "framePositionComputed",
+						JsonValue::MakeBool( si.framePositionComputed ) );
+					// CONDITIONAL, the same omit-when-empty convention as
+					// `note`/`legend`/`issues`: present only when there IS a
+					// reason, i.e. when the analytic classification was
+					// suppressed rather than run.
+					if( !si.framePositionSuppressedReason.empty() )
+						result.set( "framePositionNote",
+							JsonValue::MakeString( si.framePositionSuppressedReason ) );
+					JsonValue entries = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < si.entries.size(); ++i ) {
+						const AgentSession::AgentSceneInventoryEntry& e = si.entries[i];
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "name",          JsonValue::MakeString( e.name ) );
+						o.set( "pixelCount",    JsonValue::MakeNumber( static_cast<double>( e.pixelCount ) ) );
+						o.set( "frameFraction", JsonValue::MakeNumber( e.frameFraction ) );
+						o.set( "onScreen",      JsonValue::MakeBool( e.onScreen ) );
+						o.set( "placement",     JsonValue::MakeString( e.placement ) );
+						// Every remaining key is OMITTED rather than sent as a
+						// measured-looking zero when it was not measured --
+						// the sentinel-then-omit convention `bboxCoverage` and
+						// `bboxMin`/`bboxMax` already follow above.
+						// frameX/frameY ride ONLY when a position was really
+						// measured, and `framePositionSource` says WHICH
+						// measurement it is: "pixels" (the object's pixel
+						// bounding box in the identity pass) or "bbox" (its
+						// projected world bounding box, the fallback when no
+						// pixel carried its identity colour).  A fabricated
+						// 0,0 would read as "top-left corner".
+						if( e.framePositionKnown ) {
+							o.set( "frameX", JsonValue::MakeNumber( e.frameX ) );
+							o.set( "frameY", JsonValue::MakeNumber( e.frameY ) );
+							o.set( "framePositionSource", JsonValue::MakeString(
+								e.framePositionFromPixels ? "pixels" : "bbox" ) );
+						}
+						if( e.worldCentreKnown ) {
+							JsonValue c = JsonValue::MakeArray();
+							for( int a = 0; a < 3; ++a )
+								c.push_back( JsonValue::MakeNumber( e.worldCentre[a] ) );
+							o.set( "worldCentre", c );
+						}
+						if( !e.offFrameDirection.empty() )
+							o.set( "offFrameDirection", JsonValue::MakeString( e.offFrameDirection ) );
+						entries.push_back( o );
+					}
+					result.set( "entries", entries );
+					result.set( "text",    JsonValue::MakeString( si.text ) );
+					result.set( "message", JsonValue::MakeString( si.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

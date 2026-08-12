@@ -336,7 +336,7 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 27 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 28 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -1240,7 +1240,8 @@ namespace RISE
 						"message,renderJobId,samplesOverridden,effectiveSamples,renderMode} (plus a "
 						"per-object `legend` when mode:\"objectmap\", an `isolate` object when "
 						"`isolate` was applied, a `target` object with the measured sketch "
-						"comparison when `target` was applied, and an `agentRenderCap` object "
+						"comparison when `target` was applied, an `inventory` object on every "
+						"full-scene beauty render -- see below -- and an `agentRenderCap` object "
 						"when the agent-surface cap described next actually reduced this render). "
 						"AGENT RENDERS ARE CAPPED at 256px on the long edge and 16 samples/pixel -- "
 						"omitted width/height/samples still render, just at or under those caps "
@@ -1282,7 +1283,19 @@ namespace RISE
 						"an adapter whose session IS controller-attached, so `pinned` is honoured "
 						"and a render really can queue behind (or be refused by) another render "
 						"-- see read_viewport's `render_in_progress` note below for what that "
-						"means in practice.",
+						"means in practice. "
+						"EVERY FULL-SCENE BEAUTY RENDER (production or draft, no `isolate`, no "
+						"`mode`) also carries an `inventory` object: {objects, covered, passWidth, "
+						"passHeight, text}. `text` is one line per object saying how much of the "
+						"frame it covers and where it is -- in the frame for the ones that "
+						"appeared, and in the world plus which way it lies (behind the camera, "
+						"off-frame left, overlapping the frame but covering nothing, ...) for the "
+						"ones that did not. It is measured in a small one-ray-per-pixel identity "
+						"pass through this render's camera, at the passWidth x passHeight it "
+						"reports, so a footprint under one pass pixel reads as 0. Read it before "
+						"concluding anything about an empty-looking frame: an object that covered "
+						"no pixels is still there, and the block says where. The `scene_inventory` "
+						"tool returns the same measurement on demand.",
 						ObjectProp( "", props, std::vector<std::string>() ) ) );
 				}
 
@@ -1453,6 +1466,40 @@ namespace RISE
 						ObjectProp( "", props, required ) ) );
 				}
 
+				// scene_inventory (Arc 80, 2026-08-12) -- the FORWARD
+				// counterpart to query_object_at.  Its text MIRRORS
+				// AgentChatCodecs.cpp's entry sentence for sentence, per this
+				// file's canonical-codec convention.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					tools.push_back( MakeTool( "scene_inventory",
+						"Ask WHERE EVERYTHING IS: one line per object in the scene, saying how much "
+						"of the frame it covers and where it sits. Takes no arguments -- it "
+						"inventories the ACTIVE camera's view. This is the FORWARD question; "
+						"query_object_at is the inverse one (\"what is at this pixel\"), which can "
+						"only answer about a spot you already guessed, and whose \"no object at this "
+						"pixel\" tells you nothing about where anything actually is. An object that "
+						"covered pixels is reported with its pixel count, its share of the frame, and "
+						"its position in the frame as fractions from the left and from the top. An "
+						"object that covered none is reported with its world bounding-box centre and "
+						"where it lies relative to the view: entirely behind the camera, entirely "
+						"off-frame (with the direction), overlapping the frame but covering no pixels "
+						"(occluded, or smaller than one pass pixel -- this does not distinguish "
+						"those), or crossing the camera plane. Positions are measured in a small "
+						"one-ray-per-pixel identity pass, so a footprint under one pass pixel reads "
+						"as 0, and the pass's dimensions are reported. Where an object lies relative "
+						"to the view is NOT computed -- and says so -- when the active camera is not "
+						"a pinhole, or the render was taken from a named view or an orientation-only "
+						"camera override. YOU USUALLY DO NOT NEED TO CALL THIS: the same inventory "
+						"comes back automatically, in the same words, on every full-scene "
+						"beauty render's result under `inventory`. Returns "
+						"{ok,objects,covered,passWidth,passHeight,framePositionComputed,"
+						"framePositionNote,entries,text,message}. It renders internally (one cheap "
+						"identity pass), changes nothing in the document, and does not replace the "
+						"image read_image returns.",
+						ObjectProp( "", props, std::vector<std::string>() ) ) );
+				}
+
 				// compare_to_reference (the reconstruction feedback instrument)
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -1579,7 +1626,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 27 tool names this adapter recognizes --
+			//! The list of the 28 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -1596,6 +1643,7 @@ namespace RISE
 					"remove_chunks",
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
+					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
 					"compare_to_reference",
 					"list_proposals", "resolve_proposal"
 				};
@@ -1742,7 +1790,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 27 verbs as MCP tools.
+				// tools/list -> the 28 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

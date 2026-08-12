@@ -529,6 +529,14 @@ namespace RISE
 			{
 				return v == "render" || v == "read_image" || v == "read_viewport" ||
 				       v == "query_object_at" || v == "compare_to_reference" ||
+				       // Arc 80 (2026-08-12): scene_inventory is a look by
+				       // exactly query_object_at's test -- it answers from a
+				       // RENDERED identity frame of the live scene, so
+				       // calling it requires the scene to have actually been
+				       // rendered.  (The mechanism it belongs to does not
+				       // depend on this: the same inventory rides every
+				       // `render` result, and `render` is already on the list.)
+				       v == "scene_inventory" ||
 				       v == "finish_element";
 			}
 		}
