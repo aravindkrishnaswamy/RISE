@@ -922,6 +922,16 @@ namespace RISE
 		//! shift measurably under a visible edit.  Callers wanting to compare
 		//! images robustly (edit-changed-the-render, not-all-black) should use
 		//! these, not raw PNG bytes.
+
+		//! Arc 81 (2026-08-12): the half-width, in 0-255 luma levels, of the
+		//! band the tonal fact's CONCENTRATION figure counts around the
+		//! frame's most common luma value (see
+		//! AgentRenderResult::tonalModeConcentration).  Five levels is 2% of
+		//! the range; a FIXED band is what makes the figure comparable
+		//! between two frames, and the text always states the band it used
+		//! rather than leaving the reader to assume one.
+		static constexpr unsigned int kTonalConcentrationBand = 5;
+
 		struct AgentRenderResult
 		{
 			bool                       ok = false;
@@ -1383,6 +1393,69 @@ namespace RISE
 			unsigned int               inventoryPassWidth = 0;
 			unsigned int               inventoryPassHeight = 0;
 			std::string                inventoryText;
+			//! Arc 81 (2026-08-12): THE TONAL FACT -- the frame's own luma
+			//! distribution, riding the render result beside the inventory.
+			//!
+			//! WHY IT EXISTS.  Arc 80 sec 6.1 pointed the brand-new inventory at
+			//! the arc-79 scene that "renders empty" and found 17 of 19
+			//! objects covering pixels, every one sensibly placed.  The
+			//! picture was one flat blue: luma stdev 3.5 on a mean of 101,
+			//! about 3% contrast across the whole frame.  The inventory says
+			//! WHERE things are; it cannot say whether they are
+			//! DISTINGUISHABLE.  This is that second fact, and arc 80 recorded
+			//! it as the named candidate.
+			//!
+			//! IT COSTS NO RENDER.  Every number here is computed from the
+			//! pixels this call ALREADY produced (`png`), decoded once -- in
+			//! deliberate contrast to the inventory, which fires its own
+			//! identity pass.
+			//!
+			//! WHERE IT ATTACHES -- a strict SUBSET of the inventory's rule:
+			//! a SUCCEEDED render whose `renderMode` is "production" and
+			//! which did not `isolate`.  The three surfaces the inventory
+			//! also skips are skipped here for a sharper reason -- an
+			//! objectmap or a normals/depth/facets/wireframe frame carries
+			//! identity or data COLOURS, so its luma distribution is a
+			//! histogram of a palette and nothing about light; an `isolate`
+			//! frame is one object on an emptied scene, so its distribution
+			//! is mostly the background the isolation created.  DRAFT is
+			//! additionally excluded, where the inventory allows it: a draft
+			//! frame comes from a fixed studio-preview shader that ignores
+			//! the scene's authored lighting entirely (see `renderMode`), so
+			//! a tonal fact there would describe the preview's tone while
+			//! reading as a statement about the scene's.  The
+			//! production-transport modes (deep_reflect / direct / indirect /
+			//! clay_lights) are excluded by the same `renderMode` test that
+			//! excludes them from the inventory.
+			//!
+			//! FACTS ONLY.  `tonalText` states the distribution and stops.
+			//! There is no threshold, no verdict, and nothing here is called
+			//! flat, dull, low or wrong -- the model draws the conclusion.  A
+			//! judgement would both contaminate the behaviour this arc
+			//! measures and break the rule arc 79 sec 8.1 records the cost of
+			//! breaking.
+			//!
+			//! `tonalApplied` gates the whole block on the wire (same
+			//! convention as `inventoryApplied`).  Every other field is
+			//! meaningful ONLY when it is true.  Luma is the Rec.709
+			//! weighting (0.2126 R + 0.7152 G + 0.0722 B) of the DISPLAYED
+			//! 8-bit pixels -- the bytes a viewer and a vision model actually
+			//! see, after the scene's exposure, tone curve and colour space.
+			//! `tonalLumaP1`/`P99` are the 1st and 99th percentile luma
+			//! levels; `tonalLumaMode` is the most common level;
+			//! `tonalModeConcentration` is the fraction of the frame in [0,1]
+			//! whose luma lies within kTonalConcentrationBand levels of that
+			//! mode.  `tonalPixelsMeasured` is how many pixels were counted
+			//! (the frame's own, not a sample).
+			bool                       tonalApplied = false;
+			double                     tonalLumaMean = 0.0;
+			double                     tonalLumaStdDev = 0.0;
+			unsigned int               tonalLumaP1 = 0;
+			unsigned int               tonalLumaP99 = 0;
+			unsigned int               tonalLumaMode = 0;
+			double                     tonalModeConcentration = 0.0;
+			unsigned int               tonalPixelsMeasured = 0;
+			std::string                tonalText;
 		};
 
 		//! compare_to_reference params.  `reference` is REQUIRED -- the
@@ -4122,6 +4195,179 @@ namespace RISE
 			                                      const std::string& scale = std::string(),
 			                                      const std::string& orientation = std::string() );
 
+			//----------------------------------------------------------------
+			// ARC 81 (2026-08-12): `light_scene` -- A CLEAN-ROOM LIGHTING PASS.
+			// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+			//
+			// THE MEASUREMENT.  Against the hand-authored frontier benchmark
+			// on the same prompt (scenes/Benchmarks/dreamscape_coral_queens_hour
+			// .RISEscene), every agent run in this workstream has produced 3-5
+			// lights spanning about 40x in power, and has used ONLY omni_light,
+			// spot_light and directional_light.  The benchmark uses 8 lights
+			// spanning ~1000x.  RISE also offers ambient_light,
+			// hosek_wilkie_skylight and area/mesh lighting via an emissive
+			// material; NO agent run has ever used any of the three.
+			//
+			// WHY A CLEAN ROOM.  Arc 79's fresh minimal context is the ONE
+			// mechanism in this workstream that ever moved a number (the
+			// wizard, 4 -> 10 SDF parts, after twelve runs of information and
+			// feedback mechanisms moved it none).  Lighting is authored in
+			// exactly the diluted-context regime arc 79 relieved -- in the
+			// compose phase, 60-70 turns deep.  So it gets the same treatment:
+			// ONE fresh, minimal provider completion, through the session's
+			// own credentials and transport, validated-inserted.
+			//
+			// WHAT THE LIGHTING BUILDER GETS THAT build_element COULD NOT: the
+			// arc-80 SCENE INVENTORY.  The lighting is designed against where
+			// the objects actually are -- their names, world bbox centres and
+			// sizes -- plus the camera, the scene's world bounds, the session's
+			// imagined subject/mood if it has one, and the lights that already
+			// exist.  That composition is what makes this arc possible at all.
+			//
+			// WHAT IT IS NOT TOLD: to be dramatic, to use many lights, or to
+			// spread its power range.  That is advice, advice measures ~0 in
+			// this workstream, and it would contaminate the very thing being
+			// measured.  It gets the palette, the scene, the mood and the
+			// syntax.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `light_scene` calls allowed per session.
+			//! Capability and schema refusals never count.  Lower than
+			//! kBuildElementMaxPerSession because there is one lighting design
+			//! per scene, not one per element -- the same real-provider-money
+			//! rationale, a smaller natural number of calls.  ONE call can
+			//! reach the provider TWICE (the pass plus its single repair
+			//! retry), which the cap deliberately does not distinguish.
+			static constexpr int kLightSceneMaxPerSession = 4;
+
+			//! The longest `notes` string a `light_scene` call may carry --
+			//! the ONE model-supplied span in the host-composed lighting
+			//! prompt, capped for kBuildElementMaxNotes' reason and TRUNCATED
+			//! with the truncation stated, never silently.
+			static constexpr std::size_t kLightSceneMaxNotes = 2000;
+
+			//! How many lights `light_scene` will SOLO to measure their
+			//! contribution.  Each solo is one small real render, affordable
+			//! ONLY because this verb runs once per scene rather than once per
+			//! render.  When the scene has more soloable lights than this the
+			//! cap is applied to the largest-power-first order and the result
+			//! text SAYS a cap applied and how many were skipped -- never a
+			//! silent truncation.
+			static constexpr int kLightSceneMaxSolos = 8;
+
+			//! The long edge of each contribution-measuring solo render.
+			//! Small on purpose: the measurement is a whole-frame mean, which
+			//! converges far faster than a picture does.
+			static constexpr unsigned int kLightSceneSoloLongEdge = 64;
+
+			//! One chunk the lighting builder returned that was NOT inserted,
+			//! with the reason.  Never a silent drop -- the same contract
+			//! AgentBuildElementRejection carries, and the same struct shape.
+			struct AgentLightSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! ONE light's measured contribution to the frame.  `soloed` false
+			//! means the solo render did not happen or did not succeed, in
+			//! which case `meanLuma` is NOT a measurement and `reason` says
+			//! what happened -- the same "omit rather than fabricate" rule the
+			//! inventory's frame positions follow.
+			struct AgentLightContribution
+			{
+				std::string name;
+				//! "light" (an ILightManager entry), "emissive object" (a mesh
+				//! luminary), or "environment" (the scene's radiance map --
+				//! the reserved solo name RayCaster::SetSoloLightByName
+				//! accepts).
+				std::string kind;
+				bool        soloed = false;
+				//! Mean Rec.709 luma, 0-255, of the frame rendered with ONLY
+				//! this light active.  Meaningful only when `soloed`.
+				double      meanLuma = 0.0;
+				//! `meanLuma` as a fraction [0,1] of the SUM of every soloed
+				//! light's mean luma -- a share, deliberately NOT a fraction
+				//! of the all-lights frame (light transport is not additive
+				//! through a path tracer's MIS and shadowing, so claiming the
+				//! solos sum to the whole frame would be a false clause).
+				double      shareOfSoloedTotal = 0.0;
+				std::string reason;   //!< why it was not soloed; empty when it was
+			};
+
+			//! The structured result of LightScene.  `ok` means the builder
+			//! ANSWERED and its answer was processed -- NOT that everything
+			//! landed.  Partial success is first-class and honestly reported,
+			//! exactly as in AgentBuildElementResult.
+			struct AgentLightSceneResult
+			{
+				bool        ok = false;
+				bool        capabilityRefusal = false;
+				std::string providerName;
+				std::string modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<std::string> landed;
+				std::vector<AgentLightSceneRejection> rejected;
+				std::vector<AgentChunkResult> chunkResults;
+				bool        retryRan = false;
+				bool        retrySucceeded = false;
+				//! Every soloable light in the scene AFTER the pass, in
+				//! descending measured contribution, capped at
+				//! kLightSceneMaxSolos.
+				std::vector<AgentLightContribution> contributions;
+				//! How many soloable lights the scene has, and how many of
+				//! them were actually soloed -- so a cap is visible as a
+				//! number rather than inferred from a short list.
+				int         soloableLightCount = 0;
+				int         soloedCount = 0;
+				//! Mean Rec.709 luma (0-255) of the SAME small frame with
+				//! every light active, so each solo has something to be read
+				//! against.  Meaningful only when `soloedCount > 0`.
+				double      allLightsMeanLuma = 0.0;
+				std::string message;
+			};
+
+			//! Design this scene's lighting in a FRESH minimal provider
+			//! context and validated-insert the result.
+			//!
+			//! CALLABLE IN EVERY PHASE, and with the staged build protocol
+			//! off.  Unlike `build_element` it needs no active element --
+			//! lights are scene-global (arc 78 sec 2.3 exempts the whole Light
+			//! category from element-window rules), and a protocol-off session
+			//! has no phases at all, so refusing it there would be exactly the
+			//! over-refusal arc 78 names as this design family's worst failure
+			//! mode.  What IS phase-scoped is the gate that forces its first
+			//! use -- see CheckFirstLightThroughCleanRoom_.
+			//!
+			//! NAMING: there is NO name-prefix requirement, deliberately --
+			//! see CheckFirstLightThroughCleanRoom_'s doc for why the
+			//! `<element>_` idiom's precondition does not hold here and what
+			//! replaces it.
+			//!
+			//! ONE STATED CONSEQUENCE of being callable in every phase: called
+			//! from inside an element window, whatever it inserts is
+			//! ATTRIBUTED to the active element, by arc 78's universal
+			//! attribute-everything rule and its machinery, unchanged.  For a
+			//! light chunk that is inert (the whole Light category is exempt
+			//! from every element-window refusal, and `place_element`
+			//! transforms only `standard_object`s).  For an AREA light it
+			//! means `place_element` would carry that emissive object along
+			//! with the element -- correct behaviour for a lamp built as part
+			//! of a lamp element, surprising for a key light.  The phase this
+			//! verb is designed for, and the one its gate forces it in, is
+			//! COMPOSE, where no element is active and nothing is attributed.
+			//!
+			//! `notes` is optional free text from the caller, interpolated
+			//! into the host-composed prompt (see kLightSceneMaxNotes); the
+			//! model NEVER supplies raw prompt text -- the inventory, the
+			//! camera, the world bounds, the palette, the syntax examples and
+			//! the output instruction are all composed HERE.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry,
+			//! then up to kLightSceneMaxSolos + 1 small internal renders.
+			AgentLightSceneResult LightScene( const std::string& notes = std::string() );
+
 			//! The balanced-brace CHUNK EXTRACTOR (design sec 2.2), exposed
 			//! static so a test can drive it on hostile input without a
 			//! session or a provider.  Splits `text` -- a builder's whole
@@ -5534,6 +5780,17 @@ namespace RISE
 			                              AgentRenderResult& rr,
 			                              bool assumeParked );
 
+			//! Arc 81 (2026-08-12): attach the TONAL FACT to a render result
+			//! that qualifies for it -- see AgentRenderResult::tonalApplied
+			//! for the qualification rule and the reasoning behind each
+			//! exclusion.  Reads `rr.png` (the pixels this call already
+			//! produced) and NOTHING else: no render, no scene access, no
+			//! lock, no document.  A no-op for every render that does not
+			//! qualify and for one whose bytes will not decode, so a
+			//! non-qualifying call is byte-identical to before this mechanism
+			//! existed.
+			void ApplyTonalFact_( const AgentRenderParams& params, AgentRenderResult& rr );
+
 			//! Arc 80 (2026-08-12): resolve the pinhole eye/target/up/FOV and
 			//! aspect the render described by `params` actually used, for the
 			//! analytic off-screen classification.  Returns false -- with a
@@ -6220,6 +6477,109 @@ namespace RISE
 			//! two arms carry, for the same reason.
 			std::string CheckFirstGeometryThroughCleanRoom_( const char* verb,
 			                                                 std::string* outGiveUpNotice );
+
+			//! Arc 81 (2026-08-12): the FOURTH arm of the phase refusals --
+			//! is HAND-AUTHORING this light chunk refused because
+			//! `light_scene` has not run yet?  "" unless ALL of: the protocol
+			//! is on and has not given up, the session is in the COMPOSE
+			//! phase, the host installed a text completer (a path that does
+			//! not exist cannot be forced), this call is not LightScene's own
+			//! insertion, and LightScene has not reached the provider in this
+			//! session.  Otherwise the refusal, naming `light_scene`.  Shares
+			//! RefuseForPhase_'s counter, cap and give-up with the other three
+			//! arms, so a model can never be stranded, and dies with
+			//! `--agent-build-protocol=off` like all of them.
+			//!
+			//! THE SEAM, stated because getting it wrong would break a
+			//! shipped rule.  Arc 78 sec 2.3 DELIBERATELY allows lights during
+			//! element windows -- a model that cannot light a part cannot see
+			//! it -- so this arm returns "" outside the COMPOSE phase and
+			//! never reaches back into PIECES.  And those pieces-phase lights
+			//! must NOT disarm it: the condition is "has light_scene run",
+			//! not "does the scene have lights", so a scene that entered
+			//! compose already carrying four element-window work lights still
+			//! gets its lighting designed in a clean room.
+			//!
+			//! Call it ONLY once the caller has established that this call
+			//! really does create a LIGHT chunk -- the same precondition the
+			//! other three arms carry, for the same reason.
+			std::string CheckFirstLightThroughCleanRoom_( const char* verb,
+			                                              std::string* outGiveUpNotice );
+
+			//! Arc 81: true iff `chunkText` parses to at least one top-level
+			//! chunk whose registry descriptor is ChunkCategory::Light -- the
+			//! exact sibling of ChunkTextCreatesGeometry_, registry-classified
+			//! for the same reason, so a light kind added later is covered
+			//! with no edit here.  Deliberately does NOT try to detect a
+			//! hand-authored MESH light (an emissive material bound to an
+			//! object): that is a material plus a geometry plus an object, no
+			//! one of which is a light chunk, and a gate that guessed at the
+			//! combination would refuse ordinary material authoring.  The gate
+			//! therefore covers the light CHUNK kinds and says so.
+			static bool ChunkTextCreatesLight_( const std::string& chunkText,
+			                                    std::string* outKind = nullptr,
+			                                    std::string* outName = nullptr );
+
+			//! Arc 81: true while LightScene is submitting its own extracted
+			//! chunks through InsertChunks.  Consulted by BOTH the arm above
+			//! (so the mechanism cannot refuse the verb it names) and by
+			//! CheckComposePhaseForCreate_ -- a lighting pass that returns an
+			//! emissive quad legitimately creates geometry, and the compose
+			//! phase's creation ban exists to stop a model REPLACING form, not
+			//! to stop the clean room adding a light source.  Set by an RAII
+			//! guard around the ONE InsertChunks call, exactly like
+			//! BuildElementInsertGuard_.
+			bool mInLightSceneInsert = false;
+			struct LightSceneInsertGuard_
+			{
+				AgentSession& session;
+				explicit LightSceneInsertGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInLightSceneInsert = true;
+				}
+				~LightSceneInsertGuard_() { session.mInLightSceneInsert = false; }
+			};
+
+			//! Arc 81 spend cap: LightScene calls that actually reached the
+			//! completer this session.  Capability and schema refusals never
+			//! count.  See kLightSceneMaxPerSession.
+			int mLightSceneCalls = 0;
+
+			//! Arc 81: has `light_scene` reached the provider in this session?
+			//! This -- not "does the scene have lights", and not "did anything
+			//! land" -- is what lifts the compose-phase light refusal.  A pass
+			//! whose chunks were all rejected still lifts it: refusing hand
+			//! authoring after the clean room has had its one turn would
+			//! strand exactly the session whose builder failed.
+			bool mLightSceneRan = false;
+
+			//! Arc 81: compose the ENTIRE lighting prompt host-side -- the
+			//! scene inventory, the camera, the world bounds, the session's
+			//! imagined subject/mood, the lights that already exist, the FULL
+			//! light palette with its registry grammar and a literal worked
+			//! example per kind, the caller's (already length-capped) notes,
+			//! and the output instruction.  `rejectionText` empty builds the
+			//! FIRST prompt; non-empty builds the ONE repair retry's, which is
+			//! the first plus the exact rejection text and a request for the
+			//! corrected set whole -- ComposeBuilderPrompt_'s contract,
+			//! unchanged.
+			std::string ComposeLightingPrompt_( const std::string& inventoryText,
+			                                    const std::string& notes,
+			                                    const std::string& rejectionText ) const;
+
+			//! Arc 81: fill LightScene's `contributions` / `soloableLightCount`
+			//! / `soloedCount` / `allLightsMeanLuma` by SOLOING each light --
+			//! one small real render per light plus one all-lights reference,
+			//! affordable only because `light_scene` runs once per scene rather
+			//! than once per render.  Capped at kLightSceneMaxSolos, with the
+			//! cap stated in the report rather than shown as a short list; a
+			//! rasterizer that cannot solo (light solo is a path-tracing
+			//! mechanism -- see RasterizerSupportsLightSolo) costs exactly ONE
+			//! failed render, after which every remaining entry carries the
+			//! same stated reason and no further render is spent.  Every pass
+			//! is internal and ephemeral: none reaches the GUI's Last Render
+			//! pane or the session image cache.
+			void MeasureLightContributions_( AgentLightSceneResult& out );
 
 			//! S2: true while BuildElement is submitting its own extracted
 			//! chunks through InsertChunks.  The clean-room refusal above

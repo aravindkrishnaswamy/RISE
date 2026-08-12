@@ -336,7 +336,20 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 28 existing AgentRpc verbs,
+			//! Arc 81 (2026-08-12): the clean-room LIGHTING verb's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! sixth sibling of the notes above, same rationale (it mutates;
+			//! deliberately excluded from AgentRpc.cpp's IsProposeSafeVerb
+			//! rather than pay the "N mutating verbs" prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under
+			//! Propose exactly like Read; deliberately contains neither magic
+			//! substring the per-note counters key on).
+			const std::string kLightSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: light_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Build the `tools/list` result: the 29 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -948,6 +961,68 @@ namespace RISE
 						"{ok,element,objects,skipped:[{object,reason}],patchResults,patchesApplied,"
 						"patchesRejected,bbox:{min,max},message}." );
 					tools.push_back( MakeTool( "place_element", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// light_scene (Arc 81, 2026-08-12) -- the clean-room LIGHTING
+				// verb.  It MUTATES (it inserts what its pass returned), so it
+				// is not read-safe, and it is additionally excluded from
+				// AgentRpc's Propose-autonomy allowlist exactly like the two
+				// clean-room verbs above, carrying the matching note.  THE
+				// CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for the
+				// drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the lighting pass alongside the inventory and "
+						"the camera -- anything about the mood or the look this scene's own state does "
+						"not already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kLightSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Design the whole scene's lighting in one go: this call asks the session's "
+						"provider, in a FRESH context that contains nothing but this scene's object "
+						"inventory (every object, its screen footprint and its world position), the "
+						"camera, the scene's world bounds, the imagined description if the session has "
+						"one, the lights that already exist, and the full light palette with its "
+						"grammar and a literal example per kind, to design the lighting. What comes "
+						"back is split into chunks, checked, and inserted here. THE PALETTE IT IS "
+						"SHOWN IS EVERY LIGHT SOURCE THIS RENDERER HAS: omni_light, spot_light, "
+						"directional_light, ambient_light, hosek_wilkie_skylight (an analytic "
+						"sun-and-sky) and area/mesh lighting -- which has no chunk of its own and is "
+						"spelled as an ordinary object wearing an emissive "
+						"lambertian_luminaire_material. It is the way the FIRST lighting for a "
+						"composed scene gets made: in the COMPOSE phase, while light_scene has not "
+						"run, insert_chunk and insert_chunks carrying a light chunk are refused and "
+						"name this tool -- up to 3 refusals shared with the other build-phase rules, "
+						"after which they stop intercepting. Once light_scene has run, authoring "
+						"lights by hand is allowed and is never refused again; editing a light that "
+						"already exists is never refused at all, and lights created inside an element "
+						"window in the pieces phase are not affected by any of this. THERE IS NO NAME "
+						"PREFIX -- lights are scene-global and belong to no element -- but a name "
+						"already used in the scene is rejected and NOT renamed, because renaming would "
+						"break the references between the pass's own chunks. This call only ADDS: it "
+						"never removes a light, and it will not accept a camera, a film, a rasterizer "
+						"or a shader op, nor geometry unless the same answer defines an emissive "
+						"material to put on it. If anything is rejected, ONE repair retry runs "
+						"automatically with the exact rejection text -- one, then it stops, and "
+						"whatever landed stays landed. Nothing is ever dropped silently. The result "
+						"then reports WHAT EACH LIGHT ACTUALLY DOES: every light, emissive object and "
+						"environment in the scene is rendered ALONE at a small size and its frame's "
+						"mean luma reported, against the same frame with all of them lit. That "
+						"measurement is capped and the message says so when the cap applies; the "
+						"figures do not sum to the all-lights frame, because light transport through "
+						"this renderer is not additive. On a provider that cannot run a separate "
+						"completion this returns ok:false with a plain statement, nothing else "
+						"changes, and authoring lights by hand is not blocked. Returns "
+						"{ok,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
+						"chunkResults,retryRan,retrySucceeded,soloableLights,soloed,"
+						"allLightsMeanLuma,contributions:[{name,kind,soloed,meanLuma,share,reason}],"
+						"message}." );
+					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on
@@ -1626,7 +1701,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 28 tool names this adapter recognizes --
+			//! The list of the 29 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -1644,6 +1719,7 @@ namespace RISE
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
+					"light_scene",       // Arc 81 (2026-08-12): MUTATING, the clean-room lighting pass
 					"compare_to_reference",
 					"list_proposals", "resolve_proposal"
 				};
@@ -1790,7 +1866,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 28 verbs as MCP tools.
+				// tools/list -> the 29 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

@@ -49,6 +49,8 @@
 #include "../src/Library/Interfaces/IRasterizer.h"   // Model-B F2 slice S3: SetSampleCountOverride/GetSampleCountOverride red-prove
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Rendering/FrameStore.h"
+#include "../src/Library/RISE_API.h"           // Arc 81: the tone step's own cost is one PNG decode -- measured directly
+#include "../src/Library/Utilities/MemoryBuffer.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"   // Model-B F2 S3 fix round (P1): ForTest_SamplingKernelName red-prove
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"   // Model-B F2 slice S1: RenderJobId coordinator bookkeeping
@@ -3034,6 +3036,267 @@ static void RunSceneInventoryTests()
 	}
 }
 
+//======================================================================
+// ARC 81 (2026-08-12): THE TONAL FACT.
+// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+//
+// WHY IT EXISTS.  Arc 80 sec 6.1 pointed the brand-new inventory at the
+// arc-79 scene that "renders empty" and found 17 of 19 objects covering
+// pixels, every one sensibly placed.  The picture was one flat blue --
+// luma stdev 3.5 on a mean of 101, about 3% contrast across the whole
+// frame.  The inventory says WHERE things are; it cannot say whether they
+// are DISTINGUISHABLE.  Arc 80 recorded that as the named next candidate;
+// this is it.
+//
+// WHAT THESE TESTS PIN:
+//   (1) THE TWO FRAMES ARE TOLD APART BY THE NUMBERS.  A frame with no
+//       tonal range and an ordinary one produce unmistakably different
+//       strings -- which is the whole design, because the harness is
+//       forbidden from saying "this looks flat".
+//   (2) IT COSTS NO RENDER.  Measured, and reported as a number.
+//   (3) FACTS ONLY, and every clause true of what the code computes.
+//   (4) THE SUPPRESSION RULE, on every surface it excludes.
+//======================================================================
+
+//! A frame with NO tonal range at all: one emissive quad, of CONSTANT
+//! exitance, filling the whole view.  Emission is view-independent, so
+//! every pixel resolves to the same displayed byte -- the shape of the
+//! mermaid2 pathology (measured luma stdev 0.4 out of 255), reproduced
+//! deterministically rather than approximated.
+static const char* const kFlatToneScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_flat\n\tcolor 0.35 0.4 0.45\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname mat_flat\n\texitance pnt_flat\n"
+	"\tscale 1.0\n\tmaterial none\n}\n\n"
+	"clippedplane_geometry\n{\n\tname quad_flat\n\tpta -40 40 -2\n\tptb 40 40 -2\n"
+	"\tptc 40 -40 -2\n\tptd -40 -40 -2\n}\n\n"
+	"standard_object\n{\n\tname obj_flat\n\tgeometry quad_flat\n\tmaterial mat_flat\n}\n";
+
+static void RunFrameToneTests()
+{
+	std::printf( "=== AgentProposeRenderTest: Arc 81 (the tonal fact) ===\n" );
+
+	// ---- (a) THE MONEY COMPARISON: a flat frame and an ordinary one. ----
+	std::string flatText, normalText;
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_flat.RISEscene", kFlatToneScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the flat-tone scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		const std::string docBefore = session->ReadDocument();
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok, "the flat-tone production render succeeds" );
+		Check( r.tonalApplied,
+		       "MONEY ASSERTION: a full-scene production render carries the tonal fact "
+		       "automatically -- the model never has to ask what its own frame looks like, which "
+		       "is the whole point (every voluntary consultation surface this workstream shipped "
+		       "measured 0/64 uses)" );
+		flatText = r.tonalText;
+		std::printf( "[arc 81 tone] FLAT   : %s\n", flatText.c_str() );
+
+		Check( r.tonalLumaStdDev < 2.0,
+		       "the flat frame's luma standard deviation is under 2 of 255 (got " +
+		       std::to_string( r.tonalLumaStdDev ) + ")" );
+		Check( r.tonalLumaP99 - r.tonalLumaP1 <= 4,
+		       "and its 1st-to-99th percentile span is at most 4 levels (got " +
+		       std::to_string( r.tonalLumaP99 - r.tonalLumaP1 ) + ")" );
+		Check( r.tonalModeConcentration > 0.98,
+		       "MONEY ASSERTION: essentially the whole frame sits within a few levels of one "
+		       "value -- the statistic chosen so the mermaid2 pathology is unmistakable" );
+		Check( r.tonalPixelsMeasured == r.width * r.height,
+		       "every pixel of the frame was counted, not a sample" );
+		Check( session->ReadDocument() == docBefore,
+		       "computing the tonal fact is side-effect-free on the Document" );
+
+		// NO ADVICE, NO VERDICT.  The one rule this payload cannot break --
+		// the same list the inventory's own test pins, plus the adjectives
+		// this particular fact would be tempted into.
+		static const char* const kBanned[] = {
+			"consider", "should", "missing", "broken", "wrong",
+			"flat", "dull", "low ", "too ", "lacks", "needs" };
+		for( std::size_t i = 0; i < sizeof( kBanned ) / sizeof( kBanned[0] ); ++i ) {
+			Check( flatText.find( kBanned[i] ) == std::string::npos,
+			       std::string( "MONEY ASSERTION: the tonal fact never says \"" ) + kBanned[i] +
+			       "\" -- it states the distribution and the model draws the conclusion; a "
+			       "verdict would contaminate the very behaviour arc 81 measures" );
+		}
+		Check( flatText.find( "Rec.709 luma" ) != std::string::npos &&
+		       flatText.find( "0-255 scale" ) != std::string::npos,
+		       "and it says exactly what it measured and on what scale, so no clause is "
+		       "left for the reader to assume" );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_normal.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the ordinary scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		AgentRenderParams p;
+		p.width = 64; p.height = 64;
+		const AgentRenderResult r = session->Render( p );
+		Check( r.ok && r.tonalApplied, "the ordinary production render carries the tonal fact" );
+		normalText = r.tonalText;
+		std::printf( "[arc 81 tone] NORMAL : %s\n", normalText.c_str() );
+
+		Check( r.tonalLumaStdDev > 20.0,
+		       "MONEY ASSERTION: an ordinary lit frame measures a standard deviation an order of "
+		       "magnitude above the flat one (got " + std::to_string( r.tonalLumaStdDev ) +
+		       ") -- the two frames are told apart by the NUMBERS, which is what lets the harness "
+		       "stay silent about what they mean" );
+		Check( r.tonalLumaP99 - r.tonalLumaP1 > 40,
+		       "and its percentile span is dozens of levels wide (got " +
+		       std::to_string( r.tonalLumaP99 - r.tonalLumaP1 ) + ")" );
+		Check( r.tonalModeConcentration < 0.9,
+		       "with the frame NOT concentrated on one value (got " +
+		       std::to_string( r.tonalModeConcentration ) + ")" );
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+	Check( !flatText.empty() && !normalText.empty() && flatText != normalText,
+	       "the two frames produce different strings" );
+
+	// ---- (b) SUPPRESSION, on every surface the rule excludes. -----------
+	// A strict SUBSET of the inventory's rule: draft is additionally
+	// excluded here, because a draft frame's pixels come from a fixed
+	// studio-preview shader that ignores the scene's authored lighting
+	// entirely -- a tonal number off one would be true of the preview and
+	// read as a statement about the scene.
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_suppress.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the suppression scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		{
+			AgentRenderParams d;
+			d.quality = AgentRenderQuality::Draft;
+			const AgentRenderResult r = session->Render( d );
+			Check( r.ok && r.inventoryApplied && !r.tonalApplied,
+			       "MONEY ASSERTION: a DRAFT render carries the inventory but NOT the tonal fact "
+			       "-- draft ignores the scene's authored lighting, so its tone is the preview "
+			       "shader's, and reporting it would be a true number about the wrong thing" );
+		}
+		{
+			AgentRenderParams om;
+			om.renderTarget = AgentRenderTarget::ObjectMap;
+			const AgentRenderResult r = session->Render( om );
+			Check( r.ok && !r.tonalApplied,
+			       "an OBJECTMAP render carries no tonal fact -- its pixels are identity colours, "
+			       "so their luma histogram is a histogram of a palette" );
+		}
+		{
+			AgentRenderParams vm;
+			vm.renderTarget = AgentRenderTarget::ViewMode;
+			vm.viewMode     = RISE::Implementation::ViewportRenderMode::Normals;
+			const AgentRenderResult r = session->Render( vm );
+			Check( r.ok && !r.tonalApplied,
+			       "a false-colour view-mode render carries no tonal fact, for the same reason" );
+		}
+		{
+			AgentRenderParams iso;
+			iso.isolate = "obj_sph";
+			const AgentRenderResult r = session->Render( iso );
+			Check( r.ok && r.isolateApplied && !r.tonalApplied,
+			       "an ISOLATE render carries no tonal fact -- most of that frame is the "
+			       "background the isolation created, not the scene's own tone" );
+		}
+		{
+			// A FAILED render describes no image, so it gets no facts about
+			// one: the same rule the inventory follows, and the reason
+			// AgentRenderResult::tonalApplied gates on `ok` first.
+			AgentRenderParams bad;
+			bad.isolate = "no_such_object_anywhere";
+			const AgentRenderResult r = session->Render( bad );
+			Check( !r.ok && !r.tonalApplied,
+			       "a FAILED render carries no tonal fact at all" );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
+	// ---- (c) WHAT IT COSTS.  The whole design claim of this mechanism is
+	// that it is free beside the inventory's own identity pass, so the
+	// comparison is measured rather than asserted.
+	{
+		const std::string scenePath = WriteTemp( "rise_agent_tone_cost.RISEscene", kScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "Job loads the tone-cost scene" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+
+		AgentRenderParams p;
+		p.width = 256; p.height = 192; p.samples = 8;
+		session->Render( p );   // warm up
+
+		double wholeMs = 0.0, inventoryMs = 0.0;
+		const int kReps = 3;
+		for( int i = 0; i < kReps; ++i ) {
+			const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+			const AgentRenderResult rr = session->Render( p );
+			const std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+			Check( rr.ok && rr.tonalApplied && rr.inventoryApplied,
+			       "the timed render carries both payload facts" );
+			const std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+			session->SceneInventory();
+			const std::chrono::steady_clock::time_point t3 = std::chrono::steady_clock::now();
+			wholeMs     += std::chrono::duration<double, std::milli>( t1 - t0 ).count();
+			inventoryMs += std::chrono::duration<double, std::milli>( t3 - t2 ).count();
+		}
+		// AND THE TONE STEP ITSELF.  Its whole cost is ONE decode of the
+		// PNG the render already produced, so the honest way to measure it
+		// is to run exactly that decode here, independently, on the same
+		// bytes.  (Timing Render() twice cannot separate it: every
+		// suppression that would turn the fact off also changes what gets
+		// rendered.)
+		{
+			const AgentRenderResult rr = session->Render( p );
+			Check( rr.ok && !rr.png.empty(), "the cost-measurement render produced bytes" );
+			double decodeMs = 0.0;
+			for( int i = 0; i < kReps; ++i ) {
+				const std::chrono::steady_clock::time_point d0 = std::chrono::steady_clock::now();
+				Implementation::MemoryBuffer* buf = new Implementation::MemoryBuffer(
+					const_cast<char*>( reinterpret_cast<const char*>( rr.png.data() ) ),
+					static_cast<unsigned int>( rr.png.size() ), false );
+				IRasterImageReader* reader = nullptr;
+				if( RISE_API_CreatePNGReader( &reader, *buf, eColorSpace_Rec709RGB_Linear ) && reader ) {
+					unsigned int w = 0, h = 0;
+					if( reader->BeginRead( w, h ) ) {
+						double acc = 0.0;
+						for( unsigned int y = 0; y < h; ++y )
+							for( unsigned int x = 0; x < w; ++x ) {
+								RISEColor px;
+								reader->ReadColor( px, x, y );
+								acc += px.base.r;   // keep the loop from being elided
+							}
+						(void)acc;
+						reader->EndRead();
+					}
+					reader->release();
+				}
+				buf->release();
+				const std::chrono::steady_clock::time_point d1 = std::chrono::steady_clock::now();
+				decodeMs += std::chrono::duration<double, std::milli>( d1 - d0 ).count();
+			}
+			std::printf( "[arc 81 cost] 256x192 @ 8spp: render+inventory+tone %.1f ms, "
+			             "inventory alone %.1f ms, the tone step's whole cost (one PNG decode of "
+			             "the frame already produced) %.1f ms\n",
+			             wholeMs / kReps, inventoryMs / kReps, decodeMs / kReps );
+		}
+
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -3056,6 +3319,7 @@ int main()
 	RunLastRenderCompletionSitesTest();
 	RunSceneTargetTests();   // Arc 77 Phase 2 (2026-08-11)
 	RunSceneInventoryTests();   // Arc 80 (2026-08-12)
+	RunFrameToneTests();        // Arc 81 (2026-08-12)
 
 	std::printf( "=== AgentProposeRenderTest TOTAL: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

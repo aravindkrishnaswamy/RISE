@@ -803,6 +803,41 @@ namespace RISE
 					inv.set( "text", JsonValue::MakeString( rr.inventoryText ) );
 					result.set( "inventory", inv );
 				}
+				// Arc 81 (2026-08-12): THE TONAL FACT -- the frame's own luma
+				// distribution -- under ONE nested key, same omit-when-absent
+				// convention and same `rr.ok` belt-and-braces as the blocks
+				// above.  `tonalApplied` is only ever set on a successful,
+				// non-isolate, full PRODUCTION beauty render (see
+				// AgentRenderResult::tonalApplied for why each exclusion is a
+				// truthfulness requirement rather than conservatism), so every
+				// other render is byte-identical to before this existed.
+				//
+				// IT COSTS NO RENDER.  Unlike the inventory beside it, every
+				// number here is computed from the pixels this call already
+				// produced.
+				//
+				// WHY IT EXISTS: arc 80 sec 6.1 found the scene that "renders
+				// empty" was not empty -- 17 of 19 objects covered pixels, and
+				// the picture was one flat blue at about 3% contrast across the
+				// frame.  The inventory says where things are; this says
+				// whether they are distinguishable.  EVERY CLAUSE IN `text` IS
+				// A MEASUREMENT: no threshold, no verdict, no adjective, and
+				// none may be added -- the model draws the conclusion.
+				if( rr.ok && rr.tonalApplied ) {
+					JsonValue tone = JsonValue::MakeObject();
+					tone.set( "lumaMean",   JsonValue::MakeNumber( rr.tonalLumaMean ) );
+					tone.set( "lumaStdDev", JsonValue::MakeNumber( rr.tonalLumaStdDev ) );
+					tone.set( "lumaP1",  JsonValue::MakeNumber( static_cast<double>( rr.tonalLumaP1 ) ) );
+					tone.set( "lumaP99", JsonValue::MakeNumber( static_cast<double>( rr.tonalLumaP99 ) ) );
+					tone.set( "lumaMode", JsonValue::MakeNumber( static_cast<double>( rr.tonalLumaMode ) ) );
+					tone.set( "modeConcentration", JsonValue::MakeNumber( rr.tonalModeConcentration ) );
+					tone.set( "modeBand",
+						JsonValue::MakeNumber( static_cast<double>( kTonalConcentrationBand ) ) );
+					tone.set( "pixels",
+						JsonValue::MakeNumber( static_cast<double>( rr.tonalPixelsMeasured ) ) );
+					tone.set( "text", JsonValue::MakeString( rr.tonalText ) );
+					result.set( "tone", tone );
+				}
 				return result;
 			}
 
@@ -1210,6 +1245,19 @@ namespace RISE
 					// Propose-specific message shape (truthful
 					// data.autonomy="propose", not the generic Read-posture
 					// fallback's hardcoded "read").
+					// Arc 81 (2026-08-12): light_scene is the clean-room LIGHTING
+					// verb and mutates (it inserts the chunks its pass
+					// returned, through the ordinary InsertChunks path), so it
+					// is excluded from IsProposeSafeVerb for exactly the reason
+					// build_element is, with the same message shape.
+					if( m == "light_scene" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; light_scene "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					if( m == "build_element" || m == "place_element" ) {
 						return MakeProposeAutonomyRefusedError( idValue, m,
 							"refused: this session runs with --agent-autonomy=propose; " + m +
@@ -2463,6 +2511,107 @@ namespace RISE
 						result.set( "bbox", bbox );
 					}
 					result.set( "message", JsonValue::MakeString( prr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// light_scene {notes?}
+				//   -> {ok, provider, model, chunksExtracted, landed,
+				//       rejected:[{name,kind,reason}], chunkResults, retryRan,
+				//       retrySucceeded, contributions:[{name,kind,soloed,
+				//       meanLuma?,share?,reason?}], soloableLights, soloed,
+				//       allLightsMeanLuma?, message}
+				//   Arc 81 (2026-08-12), the clean-room LIGHTING pass.
+				//   MUTATING -- it inserts the chunks its pass returned through
+				//   the ordinary InsertChunks path, so it is NOT on
+				//   IsReadSafeVerb; it is also deliberately NOT on
+				//   IsProposeSafeVerb, for build_element's reason and with the
+				//   same Propose-specific message (see the autonomy block
+				//   above).
+				//   THE ONLY -32602 is a non-string `notes`.  There are no
+				//   required params at all: which scene gets lit is a property
+				//   of the session, not of the request, and every state outcome
+				//   (no head, no completer, the per-session cap) is an ok:false
+				//   success envelope rather than a schema error.
+				//--------------------------------------------------------------
+				if( m == "light_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentLightSceneResult lr = s->LightScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( lr.ok ) );
+					if( lr.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !lr.providerName.empty() ) result.set( "provider", JsonValue::MakeString( lr.providerName ) );
+					if( !lr.modelId.empty() )      result.set( "model",    JsonValue::MakeString( lr.modelId ) );
+					if( lr.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( lr.chunksExtracted ) ) );
+						JsonValue landedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.landed.size(); ++i )
+							landedArr.push_back( JsonValue::MakeString( lr.landed[i] ) );
+						result.set( "landed", landedArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !lr.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( lr.rejected[i].name ) );
+							if( !lr.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( lr.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( lr.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.chunkResults.size(); ++i ) {
+							crArr.push_back( ChunkResultJson( lr.chunkResults[i],
+								s->ChunkElement( lr.chunkResults[i].name ) ) );
+						}
+						result.set( "chunkResults", crArr );
+						result.set( "retryRan",       JsonValue::MakeBool( lr.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( lr.retrySucceeded ) );
+						result.set( "soloableLights",
+							JsonValue::MakeNumber( static_cast<double>( lr.soloableLightCount ) ) );
+						result.set( "soloed",
+							JsonValue::MakeNumber( static_cast<double>( lr.soloedCount ) ) );
+						// OMITTED when nothing was soloed: with no solo there
+						// is no frame to have been the reference, and a 0.0
+						// here would read as a black scene rather than as an
+						// absent measurement (the inventory's own
+						// omit-rather-than-fabricate rule).
+						if( lr.soloedCount > 0 )
+							result.set( "allLightsMeanLuma", JsonValue::MakeNumber( lr.allLightsMeanLuma ) );
+						JsonValue conArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < lr.contributions.size(); ++i ) {
+							const AgentSession::AgentLightContribution& c = lr.contributions[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name", JsonValue::MakeString( c.name ) );
+							o.set( "kind", JsonValue::MakeString( c.kind ) );
+							o.set( "soloed", JsonValue::MakeBool( c.soloed ) );
+							if( c.soloed ) {
+								o.set( "meanLuma", JsonValue::MakeNumber( c.meanLuma ) );
+								o.set( "share",    JsonValue::MakeNumber( c.shareOfSoloedTotal ) );
+							}
+							else if( !c.reason.empty() ) {
+								o.set( "reason", JsonValue::MakeString( c.reason ) );
+							}
+							conArr.push_back( o );
+						}
+						result.set( "contributions", conArr );
+					}
+					result.set( "message", JsonValue::MakeString( lr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

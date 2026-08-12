@@ -915,6 +915,46 @@
 //                                            ephemeral, exactly like
 //                                            query_object_at's).  READ-SAFE under
 //                                            every autonomy posture.)
+//      light_scene {notes?}              -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,landed,
+//                                            rejected:[{name?,kind?,reason}],
+//                                            chunkResults,retryRan,retrySucceeded,
+//                                            soloableLights,soloed,
+//                                            allLightsMeanLuma?,
+//                                            contributions:[{name,kind,soloed,
+//                                                            meanLuma?,share?,
+//                                                            reason?}],
+//                                            message}
+//                                           (Arc 81 (2026-08-12): the CLEAN-ROOM
+//                                            LIGHTING pass -- arc 79's build_element
+//                                            pattern applied to lighting.  ONE fresh
+//                                            minimal completion through the session's
+//                                            own provider, given the arc-80 scene
+//                                            inventory, the camera, the world bounds,
+//                                            the session's imagined subject if it has
+//                                            one, the lights that already exist, and
+//                                            the FULL light palette -- omni / spot /
+//                                            directional / ambient / hosek_wilkie
+//                                            skylight / area-via-emissive-material --
+//                                            with the registry's grammar and a literal
+//                                            example for each.  Validated-inserted
+//                                            through the ordinary InsertChunks path
+//                                            with ONE repair retry; nothing is ever
+//                                            dropped silently.  `contributions`
+//                                            reports what each light ACTUALLY does,
+//                                            measured by SOLOING it in a small render
+//                                            -- affordable because this verb runs once
+//                                            per scene, not once per render -- capped,
+//                                            with the cap stated.  There is no name
+//                                            prefix (lights are scene-global and
+//                                            belong to no element); the real
+//                                            constraint is uniqueness, which
+//                                            InsertChunks already enforces.  MUTATING:
+//                                            not read-safe, and deliberately not on
+//                                            the Propose allowlist either, exactly
+//                                            like build_element.  TAKES NO REQUIRED
+//                                            PARAMS; the only -32602 is a non-string
+//                                            `notes`.)
 //      compare_to_reference {reference,camera?,visual?,samples?}
 //                                        -> {ok,error?,badReference?,rmse,
 //                                            channelDelta:{r,g,b},

@@ -4246,6 +4246,33 @@ namespace RISE
 				}
 			}
 
+			// Arc 81 (2026-08-12, clean-room lighting): the FIRST-LIGHT
+			// refusal -- in the COMPOSE phase, while light_scene has not run,
+			// creating a light chunk by hand is refused and names it.  The
+			// FOURTH arm of the same shared counter, on the SAME terms as the
+			// three above (light-creating text only, same cap, same
+			// retriable=false), and mutually exclusive with the S2 arm by
+			// phase.  Deliberately COMPOSE-only: arc 78 sec 2.3 allows lights
+			// inside element windows and this must not take that back.
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				std::string s3Kind, s3Name;
+				if( ChunkTextCreatesLight_( chunkText, &s3Kind, &s3Name ) ) {
+					const std::string clause =
+						CheckFirstLightThroughCleanRoom_( "insert_chunk", &s1Fold.notice );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.retriable   = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = ReadHeadVersion();
+						r.kind        = s3Kind;
+						r.name        = s3Name;
+						r.message     = clause;
+						return r;
+					}
+				}
+			}
+
 			// R1c (2026-08-09, agent rasterizer allowlist): the InsertChunk arm
 			// of the gate, FIRST -- before E1's and before the authority
 			// branching -- because it is the cheapest of the three (a CST parse
@@ -4586,6 +4613,37 @@ namespace RISE
 				if( createsGeometry ) {
 					const std::string clause =
 						CheckFirstGeometryThroughCleanRoom_( "insert_chunks", &s1GiveUpNotice );
+					if( !clause.empty() ) {
+						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+							AgentChunkResult e;
+							e.applied     = false;
+							e.retriable   = false;   // see InsertChunk's arm for why
+							e.rawCode     = 0;
+							e.status      = "rejected";
+							e.headVersion = head;
+							e.message     = clause;
+							if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
+							out.push_back( e );
+						}
+						return out;
+					}
+				}
+			}
+
+			// Arc 81 (2026-08-12, clean-room lighting): the FIRST-LIGHT
+			// refusal's batch arm, an up-front whole-batch scan for the
+			// identical half-a-batch reason the three scans above are one.  It
+			// shares s1GiveUpNotice with them because it is the same counter,
+			// and it cannot fire together with the Pieces-phase arm above (one
+			// needs Compose, the other Pieces).
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				bool createsLight = false;
+				for( std::size_t i = 0; i < chunkTexts.size() && !createsLight; ++i )
+					createsLight = ChunkTextCreatesLight_( chunkTexts[i] );
+				if( createsLight ) {
+					const std::string clause =
+						CheckFirstLightThroughCleanRoom_( "insert_chunks", &s1GiveUpNotice );
 					if( !clause.empty() ) {
 						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
 						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
@@ -7564,6 +7622,148 @@ namespace RISE
 				return true;
 			}
 
+
+			//----------------------------------------------------------------
+			// Arc 81 (2026-08-12) -- THE TONAL FACT's arithmetic.
+			//
+			// The inventory's named successor candidate (arc 80 sec 6.1): it
+			// says where things are, this says whether they are
+			// DISTINGUISHABLE.  Every number is computed from pixels a render
+			// already produced -- no second pass, in deliberate contrast to
+			// the inventory's own identity pass.  It lives HERE, beside the
+			// PNG decoders it reads through, because it has TWO consumers:
+			// AgentSession::ApplyTonalFact_ (the render payload) and
+			// AgentSession::LightScene (the per-light contribution measure),
+			// and ONE definition of "luma" is what keeps the two comparable.
+			//----------------------------------------------------------------
+			//! The frame's luma distribution, as the four statistics the fact
+			//! reports.  `ok` false means nothing here is a measurement (an
+			//! empty or malformed buffer); every field stays at its default
+			//! and the caller attaches nothing, rather than reporting a mean
+			//! of 0 for a frame it could not read.
+			struct FrameToneStats_
+			{
+				bool         ok = false;
+				double       mean = 0.0;
+				double       stdDev = 0.0;
+				unsigned int p1 = 0;
+				unsigned int p99 = 0;
+				unsigned int mode = 0;
+				double       concentration = 0.0;
+				std::uint64_t pixels = 0;
+			};
+
+			//! Rec.709 luma of a DISPLAYED 8-bit triple, rounded to the
+			//! nearest level.  The same weighting BT.709 defines and every
+			//! image tool reports; applied to the PNG's own bytes (which is
+			//! what DecodePngRgbAll_ returns -- see its doc: it reads through
+			//! the linear-passthrough colour space, so a byte comes back as
+			//! the byte that was stored), so this is the luma of the picture
+			//! as a viewer sees it, after exposure, tone curve and colour
+			//! space have already been applied at encode time.
+			inline unsigned int LumaByte_( unsigned char r, unsigned char g, unsigned char b )
+			{
+				const double l = 0.2126 * static_cast<double>( r ) +
+				                 0.7152 * static_cast<double>( g ) +
+				                 0.0722 * static_cast<double>( b );
+				const int rounded = static_cast<int>( l + 0.5 );
+				return static_cast<unsigned int>( rounded < 0 ? 0 : ( rounded > 255 ? 255 : rounded ) );
+			}
+
+			//! ONE pass over the pixels into a 256-bin histogram, then every
+			//! statistic off the histogram -- so the cost is O(pixels) with a
+			//! one-integer-add inner loop and no second traversal, and the
+			//! percentile / mode / concentration figures are exact rather
+			//! than sampled.
+			FrameToneStats_ ComputeFrameTone_( const std::vector<unsigned char>& rgb,
+			                                    unsigned int w, unsigned int h )
+			{
+				FrameToneStats_ t;
+				const std::uint64_t n =
+					static_cast<std::uint64_t>( w ) * static_cast<std::uint64_t>( h );
+				if( n == 0 || rgb.size() < static_cast<std::size_t>( n * 3 ) ) return t;
+
+				std::uint64_t hist[256] = { 0 };
+				for( std::uint64_t i = 0; i < n; ++i ) {
+					const std::size_t at = static_cast<std::size_t>( i ) * 3;
+					++hist[ LumaByte_( rgb[at+0], rgb[at+1], rgb[at+2] ) ];
+				}
+
+				double sum = 0.0, sumSq = 0.0;
+				std::uint64_t best = 0;
+				unsigned int  mode = 0;
+				for( unsigned int v = 0; v < 256; ++v ) {
+					const double c = static_cast<double>( hist[v] );
+					const double d = static_cast<double>( v );
+					sum   += c * d;
+					sumSq += c * d * d;
+					// TIES GO TO THE LOWER LEVEL (strict >), so the reported
+					// mode is a deterministic function of the histogram.
+					if( hist[v] > best ) { best = hist[v]; mode = v; }
+				}
+				const double nd = static_cast<double>( n );
+				t.mean = sum / nd;
+				// Population variance, clamped at 0: the algebraic form can
+				// go a hair negative on a perfectly uniform frame through
+				// floating-point cancellation, and a NaN from sqrt(-1e-15)
+				// would be a false number in a model-facing payload.
+				double var = sumSq / nd - t.mean * t.mean;
+				if( !( var > 0.0 ) ) var = 0.0;
+				t.stdDev = std::sqrt( var );
+
+				// NEAREST-RANK percentiles: the smallest level at which the
+				// cumulative count reaches ceil(p*n).  Both thresholds are at
+				// least 1, so a 1-pixel frame reports that pixel's own level
+				// for both.
+				const std::uint64_t need1  = ( n + 99 ) / 100;
+				const std::uint64_t need99 = ( n * 99 + 99 ) / 100;
+				std::uint64_t cum = 0;
+				bool have1 = false;
+				t.p1 = 0; t.p99 = 255;
+				for( unsigned int v = 0; v < 256; ++v ) {
+					cum += hist[v];
+					if( !have1 && cum >= need1 ) { t.p1 = v; have1 = true; }
+					if( cum >= need99 ) { t.p99 = v; break; }
+				}
+
+				const unsigned int lo = ( mode > kTonalConcentrationBand )
+					? ( mode - kTonalConcentrationBand ) : 0u;
+				const unsigned int hi = ( mode + kTonalConcentrationBand < 255u )
+					? ( mode + kTonalConcentrationBand ) : 255u;
+				std::uint64_t inBand = 0;
+				for( unsigned int v = lo; v <= hi; ++v ) inBand += hist[v];
+
+				t.mode          = mode;
+				t.concentration = static_cast<double>( inBand ) / nd;
+				t.pixels        = n;
+				t.ok            = true;
+				return t;
+			}
+
+			//! The fact, as the model reads it.  FACTS ONLY: it states the
+			//! distribution and stops.  There is no threshold here, no verdict
+			//! and no adjective -- the two frames this was calibrated against
+			//! (a stdev-0.4 one and a stdev-29 one) are told apart by the
+			//! NUMBERS, which is the whole design, because a harness that said
+			//! "this looks flat" would contaminate the behaviour arc 81
+			//! measures and would be exactly the false-clause class arc 79
+			//! sec 8.1 records the cost of.
+			std::string FormatFrameTone_( const FrameToneStats_& t,
+			                               unsigned int w, unsigned int h )
+			{
+				char buf[560];
+				std::snprintf( buf, sizeof( buf ),
+					"FRAME TONE -- Rec.709 luma of the displayed 8-bit pixels of this %ux%u frame, on a "
+					"0-255 scale: mean %.1f, standard deviation %.2f, 1st-to-99th-percentile span %u "
+					"levels (%u to %u). The most common luma value is %u, and %.1f%% of the frame lies "
+					"within +/-%u levels of it.",
+					w, h,
+					t.mean, t.stdDev,
+					( t.p99 >= t.p1 ) ? ( t.p99 - t.p1 ) : 0u, t.p1, t.p99,
+					t.mode, t.concentration * 100.0,
+					kTonalConcentrationBand );
+				return std::string( buf );
+			}
 			//! Crop `src` (a `w` x `h` 0/1 mask, row-major from the TOP row)
 			//! to its own filled bounding box and resample it onto the shared
 			//! kElementSketchCanvas^2 canvas through SketchFitTransform_ -- the
@@ -7844,6 +8044,30 @@ namespace RISE
 				// with no edit.
 				const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
 				if( d && d->category == ChunkCategory::Geometry ) {
+					if( outKind ) *outKind = it->role;
+					if( outName ) *outName = ChunkParamString_( it, "name" );
+					return true;
+				}
+			}
+			return false;
+		}
+
+		bool AgentSession::ChunkTextCreatesLight_( const std::string& chunkText,
+		                                           std::string* outKind, std::string* outName )
+		{
+			// The exact sibling of ChunkTextCreatesGeometry_ above, one
+			// ChunkCategory across: the REGISTRY is the classifier, so a light
+			// kind added later is covered here with no edit -- the same
+			// property KindIsPhaseExemptCategory_ relies on for the same set.
+			if( chunkText.empty() ) return false;
+			const RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
+				if( d && d->category == ChunkCategory::Light ) {
 					if( outKind ) *outKind = it->role;
 					if( outName ) *outName = ChunkParamString_( it, "name" );
 					return true;
@@ -10676,6 +10900,18 @@ namespace RISE
 		{
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+			// Arc 81 (2026-08-12): LightScene's OWN insertion is a clean room,
+			// and a lighting pass legitimately creates GEOMETRY -- an emissive
+			// quad is a material plus a shape plus an object, and the shape is
+			// the light.  This ban exists to stop a model REPLACING form it
+			// already built (arc 79 sec 8.2: 80 of 82 SDF parts destroyed in
+			// compose), not to stop the clean room adding a light source.
+			// LightScene independently REFUSES any geometry its builder
+			// returns unless the same answer defines an emissive material to
+			// put on it, so what this exemption can admit is bounded to
+			// lighting.  Same shape, same reason, as
+			// CheckFirstGeometryThroughCleanRoom_'s mInBuildElementInsert arm.
+			if( mInLightSceneInsert )                          return std::string();
 
 			// WHAT COMPOSE IS FOR, stated as fact: what is allowed and what is
 			// not, plus the escape.  No advice about what to adjust -- whether
@@ -11447,6 +11683,44 @@ namespace RISE
 				" constructs the whole element on its own and the result is checked and inserted "
 				"here. Once \"" + active + "\" has a chunk recorded against it, authoring geometry "
 				"for it directly is allowed and is never refused again.";
+			return RefuseForPhase_( verb, body, outGiveUpNotice );
+		}
+
+		std::string AgentSession::CheckFirstLightThroughCleanRoom_( const char* verb,
+		                                                             std::string* outGiveUpNotice )
+		{
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			// THE SEAM.  Arc 78 sec 2.3 DELIBERATELY allows lights during
+			// element windows -- a model that cannot light a part cannot see
+			// it -- so this arm exists only in COMPOSE and never reaches back
+			// into PIECES.  It is also why the condition below is "has
+			// light_scene run" rather than "does the scene have lights": a
+			// scene that entered compose already carrying element-window work
+			// lights must not have the gate silently disarmed by them.
+			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST -- the same
+			// capability-conditional rule the geometry arm and the imagine
+			// half of the build-plan gate follow.
+			if( !BuildCapable() )                              return std::string();
+			// LightScene's own insertion is the clean room; refusing it would
+			// have the mechanism refuse the verb it names.
+			if( mInLightSceneInsert )                          return std::string();
+			// ONE turn in the clean room lifts this permanently, whatever came
+			// of it (see mLightSceneRan): construction through the clean room,
+			// refinement in the model's hands, and no way to be stranded by a
+			// builder that failed.
+			if( mLightSceneRan )                               return std::string();
+
+			const std::string body =
+				"light_scene has not run in this session, and the first lighting for a composed scene "
+				"is designed by light_scene -- one call, in which " +
+				( mTextCompleter.providerName.empty() ? std::string( "this session's provider" )
+				                                      : ( "`" + mTextCompleter.providerName + "`" ) ) +
+				" is given this scene's object inventory, its camera and the full light palette in a "
+				"fresh context, and designs the lighting; the result is checked and inserted here. "
+				"Once light_scene has run, authoring and editing lights directly is allowed and is "
+				"never refused again. Editing a light that already exists is not refused now either "
+				"-- this applies to creating one.";
 			return RefuseForPhase_( verb, body, outGiveUpNotice );
 		}
 
@@ -12506,6 +12780,13 @@ namespace RISE
 			// must not be inside the first one's critical section.  A no-op
 			// unless the render qualifies (see ApplyVisibilityCensus_).
 			ApplyVisibilityCensus_( params, rr, /*assumeParked=*/false );
+			// Arc 81 (2026-08-12): the TONAL FACT.  Unlike the three
+			// mechanisms above it fires NO render of its own -- it reads the
+			// pixels `rr` already carries -- so it needs no park reasoning and
+			// could sit anywhere after RenderCore_.  It sits LAST so the
+			// payload's facts are attached in the order a reader meets them:
+			// what the picture is of, then what it looks like.
+			ApplyTonalFact_( params, rr );
 			return rr;
 		}
 
@@ -18305,6 +18586,1120 @@ namespace RISE
 			rr.inventoryText        = inv.text;
 		}
 
+		void AgentSession::ApplyTonalFact_( const AgentRenderParams& params, AgentRenderResult& rr )
+		{
+			// THE QUALIFICATION RULE, in one place and a strict SUBSET of
+			// ApplyVisibilityCensus_'s -- see AgentRenderResult::tonalApplied
+			// for why each term is a truthfulness requirement rather than
+			// conservatism.  Every term is a pure function of `params` or of
+			// the completed result; nothing here touches the scene.
+			//
+			//  * A FAILED render describes no image, so it gets no facts about
+			//    one.
+			//  * "production" ONLY.  This excludes objectmap and the
+			//    false-colour data modes (whose pixels are identity or data
+			//    colours, so a luma histogram of them is a histogram of a
+			//    palette), the production-transport modes (deep_reflect /
+			//    direct / indirect / clay_lights, which render at their own
+			//    fixed reduced resolution through a transport chosen to answer
+			//    a different question), AND -- unlike the inventory -- DRAFT,
+			//    whose pixels come from a fixed studio-preview shader that
+			//    ignores the scene's authored lighting entirely.  A tonal
+			//    number computed off a draft frame would be true of the
+			//    preview and read as a statement about the scene.
+			//  * ISOLATE renders ONE object with everything else hidden, so
+			//    most of the frame is the background the isolation created.
+			if( !rr.ok ) return;
+			if( rr.renderMode != "production" ) return;
+			if( !params.isolate.empty() || rr.isolateApplied ) return;
+			if( rr.png.empty() ) return;
+
+			// THE ONLY WORK: decode the bytes this call already produced.  No
+			// render, no scene, no lock -- the mechanism's whole cost is one
+			// PNG decode of a frame that has already been encoded once.
+			std::vector<unsigned char> rgb;
+			unsigned int dw = 0, dh = 0;
+			if( !DecodePngRgbAll_( rr.png, rgb, dw, dh ) ) {
+				// Stated, not swallowed -- the same convention the inventory's
+				// undecodable-pass case follows.
+				rr.message += " (frame tone not measured: this render's image bytes could not be "
+				              "decoded)";
+				return;
+			}
+
+			const FrameToneStats_ t = ComputeFrameTone_( rgb, dw, dh );
+			if( !t.ok ) {
+				rr.message += " (frame tone not measured: the decoded image had no pixels)";
+				return;
+			}
+
+			rr.tonalApplied           = true;
+			rr.tonalLumaMean          = t.mean;
+			rr.tonalLumaStdDev        = t.stdDev;
+			rr.tonalLumaP1            = t.p1;
+			rr.tonalLumaP99           = t.p99;
+			rr.tonalLumaMode          = t.mode;
+			rr.tonalModeConcentration = t.concentration;
+			rr.tonalPixelsMeasured    = static_cast<unsigned int>( t.pixels );
+			rr.tonalText              = FormatFrameTone_( t, dw, dh );
+		}
+
+
+		//======================================================================
+		// ARC 81 (2026-08-12) -- `light_scene`, A CLEAN-ROOM LIGHTING PASS.
+		// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+		//
+		// Modelled directly on arc 79's `build_element`: the same host-mediated
+		// pattern, the same session credentials and transport (mTextCompleter),
+		// the same validated insertion through InsertChunks, the same ONE
+		// repair retry, the same honest partial-success report, and the same
+		// never-a-silent-drop rule.  What it adds is the part build_element
+		// could not have -- the arc-80 SCENE INVENTORY, so the lighting is
+		// designed against where the objects actually are.
+		//======================================================================
+
+		namespace
+		{
+			//! ONE entry of the light palette the builder is shown.  The
+			//! `headline` is a FACT about the kind (what it is, and the one
+			//! convention a fresh context cannot recover by reading a
+			//! parameter list); `example` is a complete, literally parseable
+			//! chunk.  The literal example is not decoration: arc 79 sec 8.1
+			//! records a whole session's mechanism lost to a syntax slip that
+			//! prose did not prevent and a literal example did.
+			//!
+			//! THE PALETTE IS THE HYPOTHESIS.  Agents have shipped three of
+			//! these six in every run ever measured, and ambient_light,
+			//! hosek_wilkie_skylight and area/mesh lighting in none.  Naming
+			//! all six in a minimal context is the thing being tested, so
+			//! nothing here urges their use -- they are simply present.
+			struct LightPaletteEntry_
+			{
+				const char* keyword;    //!< registry keyword whose schema is fetched, or null
+				const char* headline;
+				const char* example;
+			};
+
+			const LightPaletteEntry_ kLightPalette[] = {
+				{ "omni_light",
+				  "omni_light -- a point light radiating equally in all directions. Its "
+				  "contribution falls off as color * power / r^2, so `power` scales with the "
+				  "square of how far it sits from what it lights.",
+				  "omni_light\n"
+				  "{\n"
+				  "\tname\t\tkey_lamp\n"
+				  "\tposition\t3 4 5\n"
+				  "\tcolor\t\t1 0.95 0.85\n"
+				  "\tpower\t\t120\n"
+				  "}" },
+				{ "spot_light",
+				  "spot_light -- a cone. `position` and `target` are world points; `inner` and "
+				  "`outer` are half-angles in DEGREES and the falloff runs between them. Same "
+				  "1/r^2 law as omni_light inside the cone.",
+				  "spot_light\n"
+				  "{\n"
+				  "\tname\t\trim_spot\n"
+				  "\tposition\t-6 5 -4\n"
+				  "\ttarget\t\t0 1 0\n"
+				  "\tinner\t\t18\n"
+				  "\touter\t\t34\n"
+				  "\tcolor\t\t0.6 0.8 1\n"
+				  "\tpower\t\t400\n"
+				  "}" },
+				{ "directional_light",
+				  "directional_light -- parallel rays, no distance falloff, so its radiance is "
+				  "just color * power. `direction` is the vector FROM a lit surface TOWARD the "
+				  "light, NOT the direction the light travels: a surface is lit when "
+				  "N . direction > 0, so a camera at +Z needs a key with positive Z here.",
+				  "directional_light\n"
+				  "{\n"
+				  "\tname\t\tsun\n"
+				  "\tdirection\t0.4 0.8 0.45\n"
+				  "\tcolor\t\t1 0.93 0.8\n"
+				  "\tpower\t\t3.14\n"
+				  "}" },
+				{ "ambient_light",
+				  "ambient_light -- a constant color * power added to every surface with no "
+				  "direction and no shadowing.",
+				  "ambient_light\n"
+				  "{\n"
+				  "\tname\t\tfill_ambient\n"
+				  "\tcolor\t\t0.15 0.2 0.3\n"
+				  "\tpower\t\t0.4\n"
+				  "}" },
+				{ "hosek_wilkie_skylight",
+				  "hosek_wilkie_skylight -- an analytic sun-and-sky. It creates the scene's "
+				  "global radiance map and, unless create_sun is false, a matched "
+				  "directional_light named __hw_sun__ at the same solar position. It takes no "
+				  "`name`. solar_elevation is degrees above the horizon; solar_azimuth is "
+				  "degrees of bearing with 0 = +Z and 90 = +X.",
+				  "hosek_wilkie_skylight\n"
+				  "{\n"
+				  "\tsolar_elevation\t\t22\n"
+				  "\tsolar_azimuth\t\t135\n"
+				  "\tturbidity\t\t4\n"
+				  "\tsky_intensity_scale\t1.0\n"
+				  "\tsun_intensity_scale\t3.14\n"
+				  "\tcreate_sun\t\ttrue\n"
+				  "}" },
+				// The AREA/MESH light is the palette entry with no light
+				// keyword at all, which is exactly why it needs saying: there
+				// is no `area_light` chunk in this language, and a context that
+				// only sees a list of `*_light` keywords cannot discover that
+				// an emitting shape is spelled as an ordinary object wearing an
+				// emissive material.
+				{ nullptr,
+				  "AREA / MESH LIGHT -- there is no `area_light` chunk. An area light is an "
+				  "ordinary object wearing an EMISSIVE material: a painter for the emitted "
+				  "colour, a lambertian_luminaire_material whose `exitance` is that painter and "
+				  "whose `scale` is the brightness, a geometry, and a standard_object binding "
+				  "them. It has real size, so it casts soft shadows and is visible in the frame. "
+				  "`material none` means the surface only emits.",
+				  "uniformcolor_painter\n"
+				  "{\n"
+				  "\tname\t\tpanel_emit_pnt\n"
+				  "\tcolor\t\t1 0.85 0.6\n"
+				  "}\n"
+				  "lambertian_luminaire_material\n"
+				  "{\n"
+				  "\tname\t\tpanel_emit_mat\n"
+				  "\texitance\tpanel_emit_pnt\n"
+				  "\tmaterial\tnone\n"
+				  "\tscale\t\t40\n"
+				  "}\n"
+				  "box_geometry\n"
+				  "{\n"
+				  "\tname\t\tpanel_geo\n"
+				  "\twidth\t\t3\n"
+				  "\theight\t\t0.05\n"
+				  "\tdepth\t\t2\n"
+				  "}\n"
+				  "standard_object\n"
+				  "{\n"
+				  "\tname\t\tpanel_obj\n"
+				  "\tgeometry\tpanel_geo\n"
+				  "\tmaterial\tpanel_emit_mat\n"
+				  "\tposition\t0 6 1\n"
+				  "}" }
+			};
+			const std::size_t kLightPaletteCount =
+				sizeof( kLightPalette ) / sizeof( kLightPalette[0] );
+
+			//! The registry keywords whose schema the mesh-light entry needs.
+			//! Same discipline as kBuilderGrammarKeywords: the text is the
+			//! DESCRIPTOR REGISTRY'S OWN, fetched through the same ReadSchema
+			//! the `read_schema` tool answers with, so there is no second
+			//! hand-written grammar in this file that could drift from the
+			//! parser.  Kept to the four kinds a mesh light actually needs --
+			//! this prompt exists to be SHORT (arc 79 sec 1: 60k of prepended
+			//! text halves construction richness).
+			const char* const kMeshLightGrammarKeywords[] = {
+				"uniformcolor_painter",
+				"lambertian_luminaire_material",
+				"box_geometry",
+				"standard_object"
+			};
+			const std::size_t kMeshLightGrammarKeywordCount =
+				sizeof( kMeshLightGrammarKeywords ) / sizeof( kMeshLightGrammarKeywords[0] );
+
+			//! ONE name a light-solo render can resolve, and what it is.
+			struct SoloableLight_
+			{
+				std::string name;
+				std::string kind;   //!< "light" / "emissive object" / "environment"
+			};
+
+			//! Every name RayCaster::SetSoloLightByName would resolve, in ITS
+			//! resolution order -- explicit lights first, then emissive
+			//! objects, then the reserved "environment" when the scene has a
+			//! global radiance map.  Mirroring that order matters: a light and
+			//! an object can share a name, and the light wins there, so
+			//! collecting in any other order would report a contribution
+			//! against the wrong entity.  Every name returned is therefore
+			//! guaranteed to resolve when it is soloed.
+			std::vector<SoloableLight_> CollectSoloableLights_( IJobPriv* job )
+			{
+				std::vector<SoloableLight_> out;
+				if( !job ) return out;
+
+				struct NameCollector : public IEnumCallback<const char*>
+				{
+					std::vector<std::string> names;
+					bool operator()( const char* const& n ) override
+					{
+						if( n && *n ) names.push_back( std::string( n ) );
+						return true;
+					}
+				};
+
+				if( ILightManager* lights = job->GetLights() ) {
+					NameCollector c;
+					lights->EnumerateItemNames( c );
+					for( std::size_t i = 0; i < c.names.size(); ++i ) {
+						SoloableLight_ s;
+						s.name = c.names[i];
+						s.kind = "light";
+						out.push_back( s );
+					}
+				}
+				if( IObjectManager* objs = job->GetObjects() ) {
+					NameCollector c;
+					objs->EnumerateItemNames( c );
+					for( std::size_t i = 0; i < c.names.size(); ++i ) {
+						IObjectPriv* o = objs->GetItem( c.names[i].c_str() );
+						if( !o || !o->GetMaterial() || !o->GetMaterial()->GetEmitter() ) continue;
+						bool shadowed = false;
+						for( std::size_t k = 0; k < out.size() && !shadowed; ++k )
+							shadowed = ( out[k].name == c.names[i] );
+						if( shadowed ) continue;   // the explicit light of this name wins
+						SoloableLight_ s;
+						s.name = c.names[i];
+						s.kind = "emissive object";
+						out.push_back( s );
+					}
+				}
+				if( const IScenePriv* scene = job->GetScene() ) {
+					if( scene->GetGlobalRadianceMap() ) {
+						bool shadowed = false;
+						for( std::size_t k = 0; k < out.size() && !shadowed; ++k )
+							shadowed = ( out[k].name == "environment" );
+						if( !shadowed ) {
+							SoloableLight_ s;
+							s.name = "environment";
+							s.kind = "environment";
+							out.push_back( s );
+						}
+					}
+				}
+				return out;
+			}
+
+			//! The union of every world-visible object's world bounding box.
+			//! False (outputs untouched) when the scene has none, or when
+			//! every box is unusable -- the same finite/bounded test
+			//! ComputeSceneInventory_ applies, so the two cannot disagree
+			//! about which boxes are real.
+			bool SceneWorldBounds_( IObjectManager* objs, double outMin[3], double outMax[3] )
+			{
+				if( !objs ) return false;
+				const std::vector<std::string> names = CollectObjectNames( objs );
+				bool any = false;
+				double mn[3] = { 0, 0, 0 }, mx[3] = { 0, 0, 0 };
+				for( std::size_t i = 0; i < names.size(); ++i ) {
+					IObjectPriv* o = objs->GetItem( names[i].c_str() );
+					if( !o || !o->IsWorldVisible() ) continue;
+					const BoundingBox bb = static_cast<const IObject*>( o )->getBoundingBox();
+					const double lo[3] = { bb.ll.x, bb.ll.y, bb.ll.z };
+					const double hi[3] = { bb.ur.x, bb.ur.y, bb.ur.z };
+					bool usable = true;
+					for( int a = 0; a < 3; ++a ) {
+						const double ext = hi[a] - lo[a];
+						if( !RISE::IsFiniteDouble( lo[a] ) || !RISE::IsFiniteDouble( hi[a] ) ||
+						    !( ext >= 0.0 ) || ext > 1.0e12 ) usable = false;
+					}
+					if( !usable ) continue;
+					if( !any ) {
+						for( int a = 0; a < 3; ++a ) { mn[a] = lo[a]; mx[a] = hi[a]; }
+						any = true;
+					}
+					else {
+						for( int a = 0; a < 3; ++a ) {
+							if( lo[a] < mn[a] ) mn[a] = lo[a];
+							if( hi[a] > mx[a] ) mx[a] = hi[a];
+						}
+					}
+				}
+				if( !any ) return false;
+				for( int a = 0; a < 3; ++a ) { outMin[a] = mn[a]; outMax[a] = mx[a]; }
+				return true;
+			}
+
+			//! Does this material chunk EMIT?  Registry-classified, by the
+			//! presence of an `exitance` parameter in the descriptor -- which
+			//! is exactly and only what the luminaire materials carry
+			//! (lambertian_luminaire_material, phong_luminaire_material), so a
+			//! luminaire material added later is recognised with no edit here.
+			bool DescriptorIsEmissiveMaterial_( const ChunkDescriptor* d )
+			{
+				if( !d || d->category != ChunkCategory::Material ) return false;
+				for( std::size_t i = 0; i < d->parameters.size(); ++i )
+					if( d->parameters[i].name == "exitance" ) return true;
+				return false;
+			}
+
+			//! %.1f, for a mean luma on the 0-255 scale.
+			std::string LumaFigure_( double v )
+			{
+				char buf[32];
+				std::snprintf( buf, sizeof( buf ), "%.1f", v );
+				return std::string( buf );
+			}
+
+			//! The per-light contribution paragraph.  FACTS ONLY, and every
+			//! clause true of what was actually measured: it names the
+			//! measurement (mean Rec.709 luma of a solo render at a stated
+			//! size), states the all-lights figure the solos are read against,
+			//! lists what each light measured, states outright that the solos
+			//! do NOT sum to the whole (a path tracer's shadowing and MIS make
+			//! transport non-additive, and a payload that implied otherwise
+			//! would be the false-clause class arc 79 sec 8.1 records), and
+			//! states any cap rather than showing a quietly short list.
+			std::string FormatLightContributions_( const AgentSession::AgentLightSceneResult& r )
+			{
+				if( r.soloableLightCount == 0 )
+					return "The scene has no light, emissive object or environment that a solo "
+					       "render can name, so no contribution was measured.";
+
+				std::string t;
+				if( r.soloedCount > 0 ) {
+					t += "Contribution of each light, measured by rendering the scene with only that "
+					     "light active and taking the frame's mean Rec.709 luma on the 0-255 scale "
+					     "(the same frame with every light active measures " +
+					     LumaFigure_( r.allLightsMeanLuma ) + "):";
+					for( std::size_t i = 0; i < r.contributions.size(); ++i ) {
+						const AgentSession::AgentLightContribution& c = r.contributions[i];
+						if( !c.soloed ) continue;
+						char pct[32];
+						std::snprintf( pct, sizeof( pct ), "%.0f%%", c.shareOfSoloedTotal * 100.0 );
+						t += " " + c.name + " (" + c.kind + ") " + LumaFigure_( c.meanLuma ) +
+						     ", " + pct + " of the soloed total;";
+					}
+					if( !t.empty() && t[t.size()-1] == ';' ) t[t.size()-1] = '.';
+					t += " Light transport is not additive through this renderer's shadowing and "
+					     "MIS, so those figures do not sum to the all-lights one.";
+				}
+
+				// The UNMEASURED entries, named with their reason -- never
+				// dropped, and never silently absent from a list the reader
+				// would otherwise take as complete.
+				int notMeasured = 0;
+				std::string why;
+				for( std::size_t i = 0; i < r.contributions.size(); ++i ) {
+					if( r.contributions[i].soloed ) continue;
+					++notMeasured;
+					if( notMeasured == 1 ) why = r.contributions[i].reason;
+				}
+				if( notMeasured > 0 ) {
+					if( !t.empty() ) t += " ";
+					t += std::to_string( notMeasured ) + " of the scene's " +
+					     std::to_string( r.soloableLightCount ) +
+					     ( r.soloableLightCount == 1 ? " light source was"
+					                                 : " light sources were" ) +
+					     " not measured";
+					if( !why.empty() ) t += " -- " + why;
+					t += ".";
+				}
+				return t;
+			}
+		}
+
+		std::string AgentSession::ComposeLightingPrompt_( const std::string& inventoryText,
+		                                                   const std::string& notes,
+		                                                   const std::string& rejectionText ) const
+		{
+			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE, exactly as
+			// ComposeBuilderPrompt_ composes the construction one.  The model
+			// supplies `notes` and nothing else; every other span is this
+			// function's own text, the descriptor registry's, or a measurement
+			// of the live scene.  There is no parameter through which a caller
+			// can hand raw prompt text to the provider.
+			std::string p;
+			p += "You are designing the LIGHTING for a finished 3D scene in the RISE scene language. "
+			     "The geometry, materials and camera already exist and are not yours to change. "
+			     "Write the light chunks the scene should have.\n\n";
+
+			// ---- The subject and mood, if this session has one.  The model's
+			// OWN words about what it set out to make, restated to a context
+			// that has never seen them -- the same move ComposeBuilderPrompt_
+			// makes with the element's declared pieces.
+			if( mSceneTarget && !mSceneTarget->description.empty() ) {
+				p += "WHAT THIS SCENE IS MEANT TO BE (the description its author wrote):\n";
+				p += mSceneTarget->description;
+				p += "\n\n";
+			}
+
+			// ---- WHERE EVERYTHING IS.  The arc-80 inventory, verbatim: the
+			// one thing a lighting pass needs and a fresh context cannot see.
+			if( !inventoryText.empty() ) {
+				p += "WHAT IS IN THE SCENE AND WHERE, measured from the live scene just now:\n";
+				p += inventoryText;
+				p += "\n\n";
+			}
+
+			// ---- The camera, so the lighting is designed for the view that
+			// will actually be rendered.
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob ? mJob->GetScene() : nullptr ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				double eye[3] = { 0, 0, 0 }, tgt[3] = { 0, 0, -1 }, up[3] = { 0, 1, 0 };
+				double tanHalfV = 0.0, aspect = 1.0;
+				std::string why;
+				if( ResolveInventoryCamera_( AgentRenderParams(), fw, fh, eye, tgt, up,
+				                              tanHalfV, aspect, why ) ) {
+					const double vfovDeg = 2.0 * std::atan( tanHalfV ) * 180.0 /
+						3.14159265358979323846;
+					p += "THE CAMERA: at (" + FormatVec3_( eye ) + "), looking at (" +
+						FormatVec3_( tgt ) + "), up (" + FormatVec3_( up ) +
+						"), vertical field of view " + FormatScalar_( vfovDeg ) + " degrees.\n";
+				}
+				else {
+					// STATED, NOT GUESSED -- the same contract the inventory's
+					// own suppression follows: a wrong camera would produce
+					// confidently wrong lighting geometry.
+					p += "THE CAMERA: its pose was not read for this prompt (" + why + ").\n";
+				}
+			}
+
+			// ---- The world the lights have to cover.
+			{
+				double wmin[3], wmax[3];
+				if( SceneWorldBounds_( mJob ? mJob->GetObjects() : nullptr, wmin, wmax ) ) {
+					const double size[3] = { wmax[0]-wmin[0], wmax[1]-wmin[1], wmax[2]-wmin[2] };
+					p += "THE SCENE'S WORLD BOUNDS: (" + FormatVec3_( wmin ) + ") to (" +
+						FormatVec3_( wmax ) + "), so it is " + FormatVec3_( size ) +
+						" units across in X Y Z. +Y is up.\n";
+				}
+				else {
+					p += "THE SCENE'S WORLD BOUNDS: no object with a usable bounding box, so they "
+					     "were not measured. +Y is up.\n";
+				}
+			}
+
+			// ---- What is already lighting it, so the pass can design around
+			// what exists rather than duplicating it.
+			{
+				const std::vector<SoloableLight_> existing = CollectSoloableLights_( mJob );
+				if( existing.empty() ) {
+					p += "LIGHTS ALREADY IN THE SCENE: none.\n";
+				}
+				else {
+					p += "LIGHTS ALREADY IN THE SCENE (" + std::to_string( existing.size() ) +
+					     "). They stay unless something else removes them; this call only ADDS "
+					     "chunks, and a chunk whose name is already taken is rejected:\n";
+					for( std::size_t i = 0; i < existing.size(); ++i )
+						p += "  " + existing[i].name + " -- " + existing[i].kind + "\n";
+				}
+				p += "\n";
+			}
+
+			p += "NAMING: every chunk you write needs a `name` that is not already used in this "
+			     "scene (hosek_wilkie_skylight is the one kind that takes no name). There is no "
+			     "required prefix. A name that collides is rejected and NOT renamed, because "
+			     "renaming would break the references between your own chunks.\n\n";
+
+			// ---- THE PALETTE.  Every light source this renderer has, named
+			// explicitly, each with the registry's own parameter reference and
+			// a literal example.
+			p += "THE FULL LIGHT PALETTE -- these are every kind of light source this renderer "
+			     "has. `power` multiplies `color` in all of them.\n";
+			for( std::size_t i = 0; i < kLightPaletteCount; ++i ) {
+				p += "\n";
+				p += std::to_string( i + 1 );
+				p += ". ";
+				p += kLightPalette[i].headline;
+				p += "\n";
+				if( kLightPalette[i].keyword ) {
+					p += ReadSchema( kLightPalette[i].keyword );
+					p += "\n";
+				}
+				p += "Example:\n";
+				p += kLightPalette[i].example;
+				p += "\n";
+			}
+			p += "\nThe chunk kinds the area/mesh light above is built from:\n";
+			for( std::size_t i = 0; i < kMeshLightGrammarKeywordCount; ++i ) {
+				p += "\n";
+				p += ReadSchema( kMeshLightGrammarKeywords[i] );
+				p += "\n";
+			}
+
+			if( !notes.empty() ) {
+				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such --
+				// ComposeBuilderPrompt_'s rule and its reasons, unchanged.  It
+				// is length-capped before it gets here and JSON-escaped by the
+				// request builder, so it cannot reach the endpoint, the
+				// headers or the key.
+				p += "\nNOTES FROM THE CALLER:\n";
+				p += notes;
+				p += "\n";
+			}
+
+			p += "\nWHAT THIS CALL WILL ACCEPT: light chunks, and the painter / emissive material "
+			     "/ geometry / standard_object of an area light. It will NOT accept a camera, a "
+			     "film, a rasterizer or a shader op, and it will not accept geometry unless the "
+			     "same answer defines an emissive material to put on it.\n";
+
+			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
+			     "the form\n"
+			     "keyword\n"
+			     "{\n"
+			     "\tparameter value\n"
+			     "}\n"
+			     "with the braces on their own lines. A chunk that another chunk references must "
+			     "come first. No prose, no explanation, no markdown fences, no scene header.\n";
+
+			if( !rejectionText.empty() ) {
+				// THE ONE REPAIR RETRY.  The rejection text is this harness's
+				// own, verbatim, so the builder is corrected by facts about
+				// what happened rather than by a paraphrase of them.
+				p += "\nA PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED:\n";
+				p += rejectionText;
+				p += "\nReturn the CORRECTED SET WHOLE -- every chunk this lighting needs, "
+				     "including the ones that were accepted, in one answer.\n";
+			}
+			return p;
+		}
+
+		AgentSession::AgentLightSceneResult AgentSession::LightScene( const std::string& notes )
+		{
+			AgentLightSceneResult out;
+			out.providerName = mTextCompleter.providerName;
+			out.modelId      = mTextCompleter.modelId;
+			// NO GIVE-UP FOLD HERE, unlike build_element -- and the absence is
+			// deliberate rather than an omission.  build_element consults
+			// CheckBuildPlanGate_ itself and therefore needs somewhere to put
+			// a give-up notice its own return paths would otherwise lose.
+			// light_scene consults NO phase gate: it is callable in every
+			// phase and with the protocol off (see the header), and the one
+			// gate its chunks can still meet -- the build-plan gate's
+			// geometry arm, which an area light's carrier can trip on a
+			// session that has filed no plan -- fires inside InsertChunks,
+			// whose per-chunk results (notice folded in and all) are carried
+			// out verbatim through `chunkResults` and `rejected`.
+
+			//------------------------------------------------------------------
+			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
+			// state, mutates no document, costs no budget and is never counted.
+			//
+			// NOTE WHAT IS *NOT* HERE.  There is no phase check and no
+			// build-protocol check.  build_element has both because it builds
+			// the ACTIVE element of the pieces phase; lighting is scene-global
+			// (arc 78 sec 2.3 exempts the whole Light category from every
+			// element-window rule) and a protocol-off session has no phases at
+			// all, so refusing there would be exactly the over-refusal that
+			// design names as its worst failure mode.  What IS phase-scoped is
+			// the gate that forces the first use -- see
+			// CheckFirstLightThroughCleanRoom_.
+			//------------------------------------------------------------------
+			if( !mJob ) {
+				out.message = "light_scene did nothing: no head is loaded, so there is no scene to "
+				              "light.";
+				return out;
+			}
+			if( !BuildCapable() ) {
+				out.capabilityRefusal = true;
+				const std::string who = mTextCompleter.providerName.empty()
+					? std::string( "this session's provider" )
+					: ( "`" + mTextCompleter.providerName + "`" );
+				out.message = "light_scene is not available: " + who + " does not run a separate "
+					"completion through this build, so there is no fresh context to design the "
+					"lighting in. Nothing was changed and nothing else about this session changes -- "
+					"authoring light chunks directly with insert_chunk or insert_chunks is not "
+					"blocked by this.";
+				return out;
+			}
+			if( mLightSceneCalls >= kLightSceneMaxPerSession ) {
+				char capBuf[224];
+				std::snprintf( capBuf, sizeof( capBuf ),
+					"light_scene has already run %d lighting completions this session -- the "
+					"per-session cap. Nothing was changed; the document is unchanged.",
+					kLightSceneMaxPerSession );
+				out.message = capBuf;
+				return out;
+			}
+			++mLightSceneCalls;
+			// THE GATE LIFTS HERE, before the completion rather than after it.
+			// A provider failure must not leave hand-authoring refused for the
+			// rest of the session -- the clean room has had its turn either
+			// way (see mLightSceneRan).
+			mLightSceneRan = true;
+
+			// The caller's notes, length-capped BEFORE composition and with the
+			// truncation stated rather than silent.
+			std::string useNotes = notes;
+			bool notesTruncated = false;
+			if( useNotes.size() > kLightSceneMaxNotes ) {
+				useNotes.resize( kLightSceneMaxNotes );
+				notesTruncated = true;
+			}
+
+			//------------------------------------------------------------------
+			// THE COMPOSITION THAT MAKES THIS ARC WORK: the arc-80 inventory,
+			// measured NOW, handed to the builder.  It costs one small identity
+			// pass, which is affordable precisely because this verb runs once
+			// per scene rather than once per render.
+			//------------------------------------------------------------------
+			std::string inventoryText;
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob->GetScene() ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				const AgentSceneInventoryResult inv =
+					ComputeSceneInventory_( AgentRenderParams(), fw, fh, /*assumeParked=*/false );
+				if( inv.ok ) inventoryText = inv.text;
+			}
+
+			const std::string basePrompt = ComposeLightingPrompt_( inventoryText, useNotes,
+			                                                        std::string() );
+
+			//------------------------------------------------------------------
+			// ONE ATTEMPT = one completion, extract, classify, insert.  The
+			// shape is build_element's runAttempt, with its PREFIX check
+			// replaced by this verb's own admissibility rule (see the naming
+			// note in the header): lights are scene-global, so there is no
+			// owning element for a `<element>_` prefix to identify, and the
+			// real constraint is WHAT KIND of chunk a lighting pass may land.
+			//------------------------------------------------------------------
+			std::vector<std::string> landedNames;
+			std::vector<std::string> rejectionLines;
+			std::string providerFailure;
+			std::vector<std::string> unquotedNames;
+			std::string lastCompletionText;
+
+			const auto runAttempt = [&]( const std::string& prompt ) -> bool
+			{
+				const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+				if( !comp.ok || comp.text.empty() ) {
+					providerFailure = comp.error.empty()
+						? std::string( "the provider returned no text and no reason" )
+						: comp.error;
+					return false;
+				}
+				lastCompletionText = comp.text;
+
+				std::vector<std::string> chunks, problems;
+				ExtractChunkTexts( comp.text, chunks, problems );
+				out.chunksExtracted += static_cast<unsigned int>( chunks.size() );
+				for( std::size_t i = 0; i < problems.size(); ++i ) {
+					AgentLightSceneRejection r;
+					r.reason = problems[i];
+					out.rejected.push_back( r );
+					rejectionLines.push_back( problems[i] );
+				}
+				if( chunks.empty() ) {
+					if( problems.empty() ) {
+						const std::string why =
+							"the answer contained no complete chunk (no `keyword { ... }` block)";
+						AgentLightSceneRejection r;
+						r.reason = why;
+						out.rejected.push_back( r );
+						rejectionLines.push_back( why );
+					}
+					return false;
+				}
+
+				// PASS 1: classify, and find out whether this answer defines an
+				// EMISSIVE MATERIAL.  That single bit decides whether geometry
+				// is admissible below -- an area light needs a shape, and
+				// nothing else this verb produces does.
+				std::vector<const ChunkDescriptor*> descs( chunks.size(), nullptr );
+				std::vector<std::string> kinds( chunks.size() );
+				std::vector<std::string> names( chunks.size() );
+				std::vector<RISE::Cst::Document> docs( chunks.size() );
+				std::vector<RISE::Cst::NodeId> nodeIds( chunks.size(), 0 );
+				bool answerDefinesEmitter = false;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					docs[i] = RISE::Cst::ParseToCst( chunks[i] );
+					const int n = RISE::Cst::DocItemCount( docs[i] );
+					for( int c = 0; c < n; ++c ) {
+						const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( docs[i], c );
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( docs[i], nid );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						kinds[i]   = it->role;
+						names[i]   = ChunkParamString_( it, "name" );
+						nodeIds[i] = nid;
+						descs[i]   = DescriptorForKeyword( String( it->role.c_str() ) );
+						break;
+					}
+					if( DescriptorIsEmissiveMaterial_( descs[i] ) ) answerDefinesEmitter = true;
+				}
+
+				// PASS 2: admissibility, then submission.
+				std::vector<std::string> submit;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					const ChunkDescriptor* d = descs[i];
+					if( !d ) {
+						AgentLightSceneRejection r;
+						r.kind   = kinds[i];
+						r.reason = "`" + ( kinds[i].empty() ? std::string( "(unnamed keyword)" ) : kinds[i] ) +
+							"` is not a chunk kind this scene language has, so it was not inserted";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
+					// THE ADMISSIBILITY RULE, stated once.  A lighting pass may
+					// land: a LIGHT; a PAINTER and a MATERIAL (an area light's
+					// emitted colour and its emissive surface); and a GEOMETRY
+					// and an OBJECT, but ONLY when this same answer defines an
+					// emissive material for them to carry.  Everything else --
+					// camera, film, rasterizer, rasterizer output, shader op --
+					// is refused: re-aiming the camera or swapping the
+					// integrator is not lighting, and this verb's insertion is
+					// exempted from the compose-phase creation ban, so what it
+					// can admit has to be bounded here rather than there.
+					const bool isLight    = ( d->category == ChunkCategory::Light );
+					const bool isPainter  = ( d->category == ChunkCategory::Painter );
+					const bool isMaterial = ( d->category == ChunkCategory::Material );
+					const bool isForm     = ( d->category == ChunkCategory::Geometry ||
+					                          d->category == ChunkCategory::Object );
+					if( !isLight && !isPainter && !isMaterial && !isForm ) {
+						AgentLightSceneRejection r;
+						r.name   = names[i];
+						r.kind   = kinds[i];
+						r.reason = "a `" + kinds[i] + "` chunk is not part of a lighting pass, so it was "
+							"not inserted -- light_scene accepts light chunks and the painter, emissive "
+							"material, geometry and standard_object of an area light";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					if( isForm && !answerDefinesEmitter ) {
+						AgentLightSceneRejection r;
+						r.name   = names[i];
+						r.kind   = kinds[i];
+						r.reason = "the `" + kinds[i] + "` chunk" +
+							( names[i].empty() ? std::string() : ( " named \"" + names[i] + "\"" ) ) +
+							" was not inserted: light_scene accepts geometry only as the carrier of an "
+							"emissive material, and this answer defines none";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
+					// A QUOTED name -- `name "key_lamp"` -- is tolerated, not
+					// rejected: ChunkParamString_ returns the raw token text,
+					// this scene language has no quoted-string syntax at all,
+					// and the builder's own references to the chunk elsewhere
+					// in the same answer are bare tokens.  Arc 79 sec 8.1's
+					// live-run defect and its fix, applied here from the start
+					// rather than after it costs another session.
+					if( names[i].size() >= 2 && names[i].front() == '"' && names[i].back() == '"' ) {
+						const std::string stripped = names[i].substr( 1, names[i].size() - 2 );
+						docs[i] = RISE::Cst::DocSetParamValue( docs[i], nodeIds[i], "name", 0, stripped );
+						chunks[i] = RISE::Cst::SerializeCst( docs[i] );
+						unquotedNames.push_back( stripped );
+						names[i] = stripped;
+					}
+
+					// A name that already landed in the FIRST attempt is not
+					// re-submitted: the repair retry is asked for the corrected
+					// set WHOLE, so it legitimately repeats what worked, and
+					// re-inserting it would only draw a duplicate-name refusal.
+					if( !names[i].empty() ) {
+						bool already = false;
+						for( std::size_t l = 0; l < landedNames.size() && !already; ++l )
+							already = ( landedNames[l] == names[i] );
+						if( already ) continue;
+					}
+					submit.push_back( chunks[i] );
+				}
+				if( submit.empty() ) return false;
+
+				std::vector<AgentChunkResult> results;
+				{
+					// The clean room's own insertion must not be refused by the
+					// gate it arms, nor by the compose-phase creation ban an
+					// area light's geometry would otherwise trip (see
+					// LightSceneInsertGuard_'s doc).
+					LightSceneInsertGuard_ guard( *this );
+					results = InsertChunks( submit );
+				}
+				bool landedAny = false;
+				for( std::size_t i = 0; i < results.size(); ++i ) {
+					out.chunkResults.push_back( results[i] );
+					if( results[i].applied ) {
+						landedNames.push_back( results[i].name );
+						out.landed.push_back( results[i].name );
+						landedAny = true;
+					}
+					else {
+						AgentLightSceneRejection r;
+						r.name   = results[i].name;
+						r.kind   = results[i].kind;
+						r.reason = results[i].message.empty()
+							? std::string( "the insertion was rejected with no reason given" )
+							: results[i].message;
+						out.rejected.push_back( r );
+						rejectionLines.push_back(
+							( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
+							" was rejected: " + r.reason );
+					}
+				}
+				return landedAny;
+			};
+
+			runAttempt( basePrompt );
+
+			// THE ONE REPAIR RETRY, on build_element's exact terms: it fires
+			// when the first attempt rejected ANYTHING or when the provider
+			// itself failed.  Exactly one, then stop, whatever the outcome.
+			if( !rejectionLines.empty() || !providerFailure.empty() ) {
+				std::string rejectionText;
+				if( !providerFailure.empty() )
+					rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
+				for( std::size_t i = 0; i < rejectionLines.size(); ++i )
+					rejectionText += "- " + rejectionLines[i] + "\n";
+
+				const std::size_t landedBefore = landedNames.size();
+				out.retryRan = true;
+				providerFailure.clear();
+				rejectionLines.clear();
+				runAttempt( ComposeLightingPrompt_( inventoryText, useNotes, rejectionText ) );
+				out.retrySucceeded = ( landedNames.size() > landedBefore );
+			}
+
+			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
+			// because no answer was ever parsed) is NOT an ok result -- `ok`
+			// means the builder answered and its answer was processed.
+			if( out.landed.empty() && out.rejected.empty() ) {
+				out.message = "light_scene did not complete: " +
+					( providerFailure.empty()
+						? std::string( "the lighting pass returned nothing this harness could read as a "
+						               "chunk" )
+						: providerFailure ) +
+					". Nothing was inserted and the document is unchanged" +
+					( out.retryRan ? std::string( "; the one repair retry ran and did not complete "
+					                              "either, and there is no second retry." )
+					               : std::string( "." ) );
+				return out;
+			}
+
+			out.ok = true;
+
+			//------------------------------------------------------------------
+			// WHAT EACH LIGHT ACTUALLY DOES, measured by soloing it.
+			//
+			// N small renders are affordable HERE and nowhere else in this
+			// surface: this call runs once per scene, not once per render.  The
+			// measurement is a whole-frame mean, which converges far faster
+			// than a picture does, so the renders are tiny.
+			//------------------------------------------------------------------
+			MeasureLightContributions_( out );
+
+			//------------------------------------------------------------------
+			// THE REPORT: facts only.  What landed, what did not and why,
+			// whether the retry ran, and what each light measures.  No
+			// characterization of the lighting, no advice, no score.
+			//------------------------------------------------------------------
+			std::string m = "light_scene ran one lighting completion on " +
+				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". Chunks inserted: ";
+			if( out.landed.empty() ) m += "none";
+			else {
+				for( std::size_t i = 0; i < out.landed.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.landed[i];
+				}
+			}
+			m += ".";
+			if( !out.rejected.empty() ) {
+				m += " Not inserted: ";
+				for( std::size_t i = 0; i < out.rejected.size(); ++i ) {
+					if( i ) m += "; ";
+					m += out.rejected[i].reason;
+				}
+				m += ".";
+			}
+			if( out.retryRan ) {
+				m += out.retrySucceeded
+					? std::string( " One repair retry ran and inserted more chunks; there is no second "
+					               "retry." )
+					: std::string( " One repair retry ran and inserted nothing further; there is no "
+					               "second retry." );
+			}
+			if( !providerFailure.empty() )
+				m += " The last lighting completion did not complete: " + providerFailure + ".";
+			if( !unquotedNames.empty() ) {
+				m += " This harness stripped a wrapping pair of double quotes from the `name` value of ";
+				for( std::size_t i = 0; i < unquotedNames.size(); ++i ) {
+					if( i ) m += ", ";
+					m += unquotedNames[i];
+				}
+				m += " before inserting.";
+			}
+			if( out.landed.empty() && !lastCompletionText.empty() ) {
+				// TOTAL rejection ONLY (the pure provider-failure case already
+				// returned above), so the builder's own answer is shown rather
+				// than retained nowhere -- arc 79's Fix 3, adopted from the
+				// start.
+				m += " Nothing landed; the lighting pass's last answer, before this harness's own "
+				     "truncation, began:\n";
+				m += ExcerptWholeLines_( lastCompletionText, 400 );
+			}
+			m += " " + FormatLightContributions_( out );
+			if( notesTruncated ) {
+				char nb[144];
+				std::snprintf( nb, sizeof( nb ),
+					" The `notes` string was truncated to the first %u characters before it was sent.",
+					static_cast<unsigned int>( kLightSceneMaxNotes ) );
+				m += nb;
+			}
+			out.message = m;
+			return out;
+		}
+
+		void AgentSession::MeasureLightContributions_( AgentLightSceneResult& out )
+		{
+			const std::vector<SoloableLight_> all = CollectSoloableLights_( mJob );
+			out.soloableLightCount = static_cast<int>( all.size() );
+			if( all.empty() ) return;
+
+			// ---- The solo frame's dims: the scene's own aspect at a small
+			// fixed long edge.  A whole-frame MEAN converges far faster than a
+			// picture does, so this is a real measurement at a tiny cost.
+			unsigned int pw = kLightSceneSoloLongEdge, ph = kLightSceneSoloLongEdge;
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob ? mJob->GetScene() : nullptr ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				if( !( fw > 0 && fh > 0 ) ) { fw = 4; fh = 3; }
+				double s = static_cast<double>( kLightSceneSoloLongEdge ) /
+					static_cast<double>( fw >= fh ? fw : fh );
+				if( s > 1.0 ) s = 1.0;   // never upscale past the scene's own dims
+				pw = static_cast<unsigned int>( std::lround( s * fw ) );
+				ph = static_cast<unsigned int>( std::lround( s * fh ) );
+				if( pw < 8 ) pw = 8;
+				if( ph < 8 ) ph = 8;
+			}
+
+			AgentRenderParams base;
+			base.quality          = AgentRenderQuality::Production;   // draft ignores lighting entirely
+			base.samples          = 4;
+			base.width            = pw;
+			base.height           = ph;
+			base.perception       = false;
+			base.imageMaxEdge     = 0;
+			// THESE PASSES ARE OURS, NOT THE CALLER'S.  Same two protections
+			// ComputeSceneInventory_'s pass takes: `internalEphemeral` keeps
+			// them out of the GUI's Last Render pane, and the guard below keeps
+			// them out of the session image cache, so a following `read_image`
+			// still serves whatever the model last actually looked at.
+			base.internalEphemeral = true;
+
+			EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
+			                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
+
+			// ---- The ALL-LIGHTS reference, first.  It is what each solo is
+			// read against, and it costs one render that also proves the
+			// pipeline works before any solo is attempted.
+			bool haveReference = false;
+			{
+				const AgentRenderResult r = RenderCore_( base, /*assumeParked=*/false,
+				                                          /*forcedJobId=*/0, /*resolvedTarget=*/nullptr );
+				std::vector<unsigned char> rgb;
+				unsigned int dw = 0, dh = 0;
+				if( r.ok && DecodePngRgbAll_( r.png, rgb, dw, dh ) ) {
+					const FrameToneStats_ t = ComputeFrameTone_( rgb, dw, dh );
+					if( t.ok ) {
+						out.allLightsMeanLuma = t.mean;
+						haveReference = true;
+					}
+				}
+			}
+
+			// ---- One solo per light, capped.  The cap applies to the
+			// renderer's OWN resolution order (explicit lights, then emissive
+			// objects, then the environment) -- see CollectSoloableLights_ --
+			// and the report states that a cap applied rather than quietly
+			// showing a short list.
+			//
+			// NO REFERENCE, NO SOLOS.  A failed all-lights render means this
+			// scene will not render at all right now, so spending N more
+			// renders to learn that N more times is waste -- and a solo figure
+			// with no reference to read it against would be a number the
+			// report could not honestly frame.
+			std::string blockedReason;
+			if( !haveReference ) {
+				blockedReason = "the all-lights reference render did not produce a readable frame, "
+				                "so nothing was soloed against it";
+			}
+			for( std::size_t i = 0; i < all.size(); ++i ) {
+				AgentLightContribution c;
+				c.name = all[i].name;
+				c.kind = all[i].kind;
+
+				if( static_cast<int>( i ) >= kLightSceneMaxSolos ) {
+					c.reason = "not soloed: this pass measures at most " +
+						std::to_string( kLightSceneMaxSolos ) + " lights";
+					out.contributions.push_back( c );
+					continue;
+				}
+				if( !blockedReason.empty() ) {
+					// ONE failed solo is enough to know the rest will fail the
+					// same way (the refusal is a property of the rasterizer,
+					// not of the name), so no further render is spent.
+					c.reason = blockedReason;
+					out.contributions.push_back( c );
+					continue;
+				}
+
+				AgentRenderParams sp = base;
+				sp.light = all[i].name;
+				const AgentRenderResult r = RenderCore_( sp, /*assumeParked=*/false,
+				                                          /*forcedJobId=*/0, /*resolvedTarget=*/nullptr );
+				if( !r.ok ) {
+					blockedReason = r.message.empty()
+						? std::string( "the solo render did not succeed and gave no reason" )
+						: r.message;
+					c.reason = blockedReason;
+					out.contributions.push_back( c );
+					continue;
+				}
+				std::vector<unsigned char> rgb;
+				unsigned int dw = 0, dh = 0;
+				if( !DecodePngRgbAll_( r.png, rgb, dw, dh ) ) {
+					c.reason = "the solo render's image bytes could not be decoded";
+					out.contributions.push_back( c );
+					continue;
+				}
+				const FrameToneStats_ t = ComputeFrameTone_( rgb, dw, dh );
+				if( !t.ok ) {
+					c.reason = "the solo render decoded to no pixels";
+					out.contributions.push_back( c );
+					continue;
+				}
+				c.soloed   = true;
+				c.meanLuma = t.mean;
+				++out.soloedCount;
+				out.contributions.push_back( c );
+			}
+			// SHARE OF THE SOLOED TOTAL, deliberately not "share of the frame":
+			// a path tracer's shadowing and MIS make light transport
+			// non-additive, so claiming these sum to the all-lights frame would
+			// be a false clause in a model-facing payload.
+			double soloTotal = 0.0;
+			for( std::size_t i = 0; i < out.contributions.size(); ++i )
+				if( out.contributions[i].soloed ) soloTotal += out.contributions[i].meanLuma;
+			if( soloTotal > 0.0 ) {
+				for( std::size_t i = 0; i < out.contributions.size(); ++i )
+					if( out.contributions[i].soloed )
+						out.contributions[i].shareOfSoloedTotal =
+							out.contributions[i].meanLuma / soloTotal;
+			}
+
+			// Measured entries first, brightest first; unmeasured ones after,
+			// in the order they were collected.
+			std::stable_sort( out.contributions.begin(), out.contributions.end(),
+				[]( const AgentLightContribution& a, const AgentLightContribution& b ) {
+					if( a.soloed != b.soloed ) return a.soloed;
+					if( !a.soloed ) return false;
+					return a.meanLuma > b.meanLuma;
+				} );
+		}
+
 		// Model-B F2 slice S2a -------------------------------------------------
 
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
@@ -18531,6 +19926,14 @@ namespace RISE
 					// before the mLastAsyncRenderResult store below so the
 					// cached result a later render_wait echoes carries it.
 					ApplyVisibilityCensus_( params, r, /*assumeParked=*/true );
+					// Arc 81 (2026-08-12): the TONAL FACT, on the async path
+					// exactly as on the synchronous one.  It reads only the
+					// pixels `r` already carries, so it needs no park flag --
+					// but it must be attached HERE, before the
+					// mLastAsyncRenderResult store below, for the same reason
+					// the three above are: the cached result a later
+					// render_wait echoes has to carry it.
+					ApplyTonalFact_( params, r );
 					// Model-B F2 slice S2b: cache the FULL result (the whole
 					// point of RenderCore_ having computed it) so a caller
 					// that drove this render via render{"async":true} ->

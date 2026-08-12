@@ -440,6 +440,17 @@ namespace RISE
 				       // the streak the way finish_element's real isolate render
 				       // legitimately does.
 				       v == "build_element" || v == "place_element" ||
+			       // Arc 81 (2026-08-12): ONE light_scene call is ONE blind
+			       // mutation -- it inserts a whole lighting design with no
+			       // visual observation in between, exactly like one batched
+			       // insert_chunks.  It is NOT a look: the small solo renders
+			       // it fires to measure each light's contribution are
+			       // internal and ephemeral and no pixel of them reaches the
+			       // model, so treating it as an observation would hand every
+			       // model a free, image-free streak reset -- the same call
+			       // file_build_plan's sketch echo and imagine_scene's
+			       // generated image each got, and for the same reason.
+			       v == "light_scene" ||
 				       v == "propose_patch" || v == "propose_patches" ||
 				       v == "remove_chunk" ||
 				       // R1a (2026-08-09): ONE remove_chunks call is ONE

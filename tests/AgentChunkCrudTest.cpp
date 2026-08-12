@@ -11433,6 +11433,588 @@ static void TestComposePhaseRemoveMixedBatchAndGiveUp()
 	}
 }
 
+
+//----------------------------------------------------------------------
+// ARC 81 (2026-08-12): `light_scene` -- THE CLEAN-ROOM LIGHTING PASS,
+// and the COMPOSE-phase refusal that forces its first use.
+// Design: docs/agentic-redesign/81-creative-lighting-arc.md.
+//
+// THE MEASUREMENT BEHIND IT.  Against the hand-authored frontier benchmark
+// on the same prompt, every agent run in this workstream produced 3-5
+// lights spanning ~40x in power and used ONLY omni_light / spot_light /
+// directional_light; the benchmark uses 8 lights spanning ~1000x, and
+// ambient_light, hosek_wilkie_skylight and area/mesh lighting appear in NO
+// agent run ever measured.  Lighting is authored in exactly the
+// diluted-context regime arc 79's clean room relieved -- in the compose
+// phase, 60-70 turns deep -- so it gets the same treatment.
+//
+// EVERY TEST HERE USES A MOCKED TEXT COMPLETER, through the same
+// AgentSession::SetTextCompleter seam the arc-79 tests above use and for
+// the same reason: no live provider call is ever made, and the assertions
+// are about what the harness does with an answer.
+//----------------------------------------------------------------------
+
+//! A well-formed lighting answer: two explicit lights and a complete
+//! AREA light (painter + emissive material + geometry + object).  The
+//! area light matters twice over -- it is the palette entry no agent run
+//! has ever used, and its geometry is what proves light_scene's insertion
+//! is exempt from the compose-phase creation ban.
+static const char* const kGoodLightingAnswer =
+	"omni_light\n{\n\tname lit_key\n\tposition 2 3 4\n\tcolor 1 0.95 0.9\n\tpower 60\n}\n"
+	"directional_light\n{\n\tname lit_fill\n\tdirection 0.3 0.7 0.6\n"
+	"\tcolor 0.4 0.5 0.7\n\tpower 1.2\n}\n"
+	"uniformcolor_painter\n{\n\tname lit_panel_pnt\n\tcolor 1 0.8 0.6\n}\n"
+	"lambertian_luminaire_material\n{\n\tname lit_panel_mat\n\texitance lit_panel_pnt\n"
+	"\tmaterial none\n\tscale 20\n}\n"
+	"box_geometry\n{\n\tname lit_panel_geo\n\twidth 2\n\theight 0.05\n\tdepth 1.5\n}\n"
+	"standard_object\n{\n\tname lit_panel_obj\n\tgeometry lit_panel_geo\n"
+	"\tmaterial lit_panel_mat\n\tposition 0 3 1\n}\n";
+
+//! One hand-authored light chunk, for the gate assertions.
+static std::string A81Light( const char* name )
+{
+	return std::string( "omni_light\n{\n\tname " ) + name +
+		"\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 30\n}";
+}
+
+//! A session on `kScene` that has reached the COMPOSE phase: the gate's
+//! arming condition, and the phase light_scene is designed for.  The
+//! element is finished empty on purpose -- nothing about the lighting rule
+//! depends on what was built.
+static std::unique_ptr<Agent::AgentSession> A81ComposeSession( Job* pJob )
+{
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->FileBuildPlan( WizardOnlyPlan() );
+	sess->FinishElement();
+	return sess;
+}
+
+//! A81a: the happy path -- a whole lighting design lands, the prompt is
+//! the composition this arc exists for, and each light's contribution is
+//! MEASURED rather than asserted.
+static void TestLightSceneHappyPath()
+{
+	std::printf( "A81a: light_scene designs a scene's lighting in a fresh context...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A81a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+
+	int calls = 0;
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer }, &calls, &prompts ) );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+	       "A81a the session is in the compose phase" );
+
+	// WHAT IT COSTS.  Reported rather than asserted, the same way arc 80
+	// reports the inventory's overhead: one completion (mocked to ~0 here,
+	// so this figure is the HARNESS's share -- one inventory pass plus the
+	// all-lights reference and one small render per light), paid ONCE per
+	// scene rather than once per render, which is the entire reason N solo
+	// renders are affordable at all.
+	const std::chrono::steady_clock::time_point lt0 = std::chrono::steady_clock::now();
+	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+	const std::chrono::steady_clock::time_point lt1 = std::chrono::steady_clock::now();
+	std::printf( "[arc 81 cost] one light_scene call (24x24 scene, mocked completion): %.1f ms "
+	             "-- one inventory pass + %d solo renders + 1 all-lights reference\n",
+	             std::chrono::duration<double, std::milli>( lt1 - lt0 ).count(), r.soloedCount );
+	Check( r.ok, "A81a light_scene succeeds" );
+	Check( calls == 1, "A81a MONEY ASSERTION: exactly ONE completion -- no retry on a clean answer" );
+	Check( !r.retryRan, "A81a and the result says the retry did not run" );
+	Check( r.chunksExtracted == 6, "A81a all six chunks were extracted" );
+	Check( r.landed.size() == 6, "A81a and all six landed" );
+	Check( r.rejected.empty(), "A81a with nothing rejected" );
+	Check( sess->ReadDocument().find( "lit_key" ) != std::string::npos &&
+	       sess->ReadDocument().find( "lit_panel_obj" ) != std::string::npos,
+	       "A81a the lights are really in the document" );
+	Check( sess->ReadDocument().find( "lit_panel_geo" ) != std::string::npos,
+	       "A81a MONEY ASSERTION: the AREA light's GEOMETRY landed in the COMPOSE phase -- "
+	       "light_scene's own insertion is exempt from the compose-phase creation ban, because "
+	       "an emissive quad is a light source and that ban exists to stop a model replacing form "
+	       "it already built" );
+	Check( sess->BuildPhaseRefusalCount() == 0,
+	       "A81a and no phase refusal was spent doing it" );
+
+	// ---- THE PROMPT.  Host-composed, and carrying the composition that is
+	// the whole point of this arc: the arc-80 inventory, so the lighting is
+	// designed against where the objects actually are.
+	Check( prompts.size() == 1, "A81a one prompt was composed" );
+	if( !prompts.empty() ) {
+		const std::string& p = prompts[0];
+		Check( p.find( "SCENE INVENTORY" ) != std::string::npos &&
+		       p.find( "obj_sph" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: the arc-80 SCENE INVENTORY is in the prompt, naming the "
+		       "scene's actual objects -- this is the part build_element could not have, and it "
+		       "is what makes the lighting designed for THIS scene rather than for a description "
+		       "of one" );
+		Check( p.find( "THE CAMERA:" ) != std::string::npos &&
+		       p.find( "field of view" ) != std::string::npos,
+		       "A81a the camera pose and FOV are stated" );
+		Check( p.find( "WORLD BOUNDS" ) != std::string::npos,
+		       "A81a and so are the scene's world bounds" );
+		Check( p.find( "LIGHTS ALREADY IN THE SCENE (1)" ) != std::string::npos &&
+		       p.find( "obj_emit -- emissive object" ) != std::string::npos,
+		       "A81a and what is ALREADY lighting it, so the pass can design around it rather "
+		       "than duplicate it -- including the fixture's emissive quad, which is a light "
+		       "source with no light chunk and would be invisible to a naive light-manager scan" );
+
+		// THE PALETTE -- the hypothesis this arc tests.  All six kinds, by
+		// name, with a literal example each.
+		Check( p.find( "omni_light" ) != std::string::npos &&
+		       p.find( "spot_light" ) != std::string::npos &&
+		       p.find( "directional_light" ) != std::string::npos,
+		       "A81a the three kinds every agent run already uses are in the palette" );
+		Check( p.find( "ambient_light" ) != std::string::npos &&
+		       p.find( "hosek_wilkie_skylight" ) != std::string::npos &&
+		       p.find( "AREA / MESH LIGHT" ) != std::string::npos &&
+		       p.find( "lambertian_luminaire_material" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: and so are the three NO agent run has ever used -- "
+		       "ambient_light, the analytic sky, and area lighting via an emissive material. "
+		       "Presenting the full palette in a minimal context is the hypothesis being tested" );
+		Check( p.find( "\tsolar_elevation\t\t22\n" ) != std::string::npos &&
+		       p.find( "\texitance\tpanel_emit_pnt\n" ) != std::string::npos,
+		       "A81a MONEY ASSERTION: each palette entry carries a LITERAL, parseable example -- "
+		       "arc 79 sec 8.1 records an entire session's mechanism lost to a syntax slip that "
+		       "prose did not prevent and a literal example did" );
+		Check( p.find( "FROM a lit surface TOWARD the light" ) != std::string::npos,
+		       "A81a and the one convention a fresh context cannot recover from a parameter list "
+		       "-- directional_light's direction sense -- is stated as fact" );
+
+		// NO ADVICE.  Telling it to be dramatic, to use many lights, or to
+		// spread its power range would contaminate the very thing being
+		// measured, and advice measures ~0 in this workstream anyway.
+		// (Deliberately NOT "at least": the arc-80 inventory text this prompt
+		// embeds says "covered at least one pixel", which is a measurement,
+		// not advice.)
+		static const char* const kBannedAdvice[] = {
+			"dramatic", "many lights", "be bold", "contrast ratio",
+			"key light", "three-point", "should use", "more lights" };
+		for( std::size_t i = 0; i < sizeof( kBannedAdvice ) / sizeof( kBannedAdvice[0] ); ++i ) {
+			Check( p.find( kBannedAdvice[i] ) == std::string::npos,
+			       std::string( "A81a MONEY ASSERTION: the prompt never says \"" ) + kBannedAdvice[i] +
+			       "\" -- it gives the palette, the scene, the mood and the syntax, and nothing "
+			       "else; the light count and power range are what this arc MEASURES, so the "
+			       "prompt must not put them there" );
+		}
+	}
+
+	// ---- THE CONTRIBUTIONS.  Measured by soloing, which is affordable
+	// because this call runs once per scene.
+	Check( r.soloableLightCount == 4,
+	       "A81a four light sources are soloable afterwards -- the two explicit lights the pass "
+	       "added, the emissive panel it added, and the fixture's own emissive quad (got " +
+	       std::to_string( r.soloableLightCount ) + ")" );
+	Check( r.soloedCount == 4, "A81a and all four were actually soloed" );
+	Check( r.contributions.size() == 4, "A81a with one entry each" );
+	Check( r.allLightsMeanLuma > 0.0,
+	       "A81a the all-lights reference frame is a real measurement" );
+	bool everyOneMeasured = true, descending = true;
+	double prev = 1e300;
+	for( std::size_t i = 0; i < r.contributions.size(); ++i ) {
+		if( !r.contributions[i].soloed ) everyOneMeasured = false;
+		if( r.contributions[i].meanLuma > prev ) descending = false;
+		prev = r.contributions[i].meanLuma;
+	}
+	Check( everyOneMeasured,
+	       "A81a MONEY ASSERTION: every light's ACTUAL contribution was measured by rendering the "
+	       "scene with only it lit -- N small renders are affordable here and nowhere else, "
+	       "because light_scene runs once per scene rather than once per render" );
+	Check( descending, "A81a and they come back brightest first" );
+	Check( r.message.find( "Contribution of each light" ) != std::string::npos,
+	       "A81a the report states what was measured" );
+	Check( r.message.find( "not additive" ) != std::string::npos,
+	       "A81a MONEY ASSERTION: and states outright that the solo figures do NOT sum to the "
+	       "all-lights frame -- implying otherwise would be a false clause in a model-facing "
+	       "payload, the class arc 79 sec 8.1 records the cost of" );
+
+	// FACTS ONLY, exactly as the inventory and the tonal fact are.
+	static const char* const kBannedVerdict[] = { "consider", "should", "too ", "flat", "needs" };
+	for( std::size_t i = 0; i < sizeof( kBannedVerdict ) / sizeof( kBannedVerdict[0] ); ++i ) {
+		Check( r.message.find( kBannedVerdict[i] ) == std::string::npos,
+		       std::string( "A81a the result never says \"" ) + kBannedVerdict[i] +
+		       "\" -- it reports what landed and what each light measures, and stops" );
+	}
+}
+
+//! A81b: the admissibility rule and the ONE repair retry.  A lighting pass
+//! that returns a camera, or geometry with nothing emissive to put on it,
+//! has those chunks REJECTED with a reason -- never dropped silently -- and
+//! that rejection text drives exactly one retry.
+static void TestLightSceneAdmissibilityAndRetry()
+{
+	std::printf( "A81b: light_scene rejects what is not lighting, and repairs once...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81b.RISEscene" );
+
+	// (1) A CAMERA and a BARE GEOMETRY are refused; the omni_light lands.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81b/reject fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+
+		const std::string mixed =
+			"omni_light\n{\n\tname lit_ok\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 40\n}\n"
+			"pinhole_camera\n{\n\tname lit_cam\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tfov 50\n}\n"
+			"box_geometry\n{\n\tname lit_bare_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n";
+		int calls = 0;
+		std::vector<std::string> prompts;
+		sess->SetTextCompleter( MakeFakeCompleter( { mixed, kGoodLightingAnswer },
+		                                            &calls, &prompts ) );
+
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+		Check( r.ok, "A81b/reject the call reports its outcome" );
+		bool sawCameraReject = false, sawBareGeometryReject = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
+			if( r.rejected[i].name == "lit_cam" ||
+			    r.rejected[i].reason.find( "pinhole_camera" ) != std::string::npos )
+				sawCameraReject = true;
+			if( r.rejected[i].reason.find( "carrier of an emissive material" ) != std::string::npos )
+				sawBareGeometryReject = true;
+		}
+		Check( sawCameraReject,
+		       "A81b/reject MONEY ASSERTION: a camera is rejected -- re-aiming the camera is not "
+		       "lighting, and this verb's insertion is exempt from the compose-phase creation "
+		       "ban, so what it may admit has to be bounded here" );
+		Check( sawBareGeometryReject,
+		       "A81b/reject MONEY ASSERTION: geometry with no emissive material in the same answer "
+		       "is rejected -- the exemption admits an area light's carrier, not arbitrary form" );
+		Check( sess->ReadDocument().find( "lit_cam" ) == std::string::npos &&
+		       sess->ReadDocument().find( "lit_bare_geo" ) == std::string::npos,
+		       "A81b/reject and neither reached the document" );
+
+		// THE ONE REPAIR RETRY, driven by the harness's own rejection text.
+		Check( r.retryRan, "A81b/reject the one repair retry ran" );
+		Check( calls == 2, "A81b/reject MONEY ASSERTION: exactly TWO completions -- one, then stop" );
+		Check( r.retrySucceeded, "A81b/reject and it landed more chunks" );
+		Check( prompts.size() == 2 &&
+		       prompts[1].find( "A PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED" )
+		       != std::string::npos &&
+		       prompts[1].find( "carrier of an emissive material" ) != std::string::npos,
+		       "A81b/reject MONEY ASSERTION: the retry is corrected by this harness's own rejection "
+		       "text VERBATIM, not by a paraphrase of it" );
+		Check( sess->ReadDocument().find( "lit_panel_obj" ) != std::string::npos,
+		       "A81b/reject and the corrected answer's area light landed" );
+		pJob->release();
+	}
+
+	// (2) A DUPLICATE NAME is rejected and NOT renamed -- the naming
+	//     contract this verb actually has.  There is no `<element>_` prefix
+	//     check: lights are scene-global and belong to no element, so the
+	//     prefix idiom's precondition (an owning element whose members must
+	//     be identifiable) does not hold.  UNIQUENESS is the real
+	//     constraint, and InsertChunks already enforces it.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81b/dupe fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		// The SAME name twice in one answer: the second is a real collision
+		// against the first, which is exactly the shape a collision against
+		// pre-existing scene content has, and it is InsertChunks' own
+		// duplicate-name rejection that catches it -- which IS this verb's
+		// naming contract, since there is no prefix rule to catch it first.
+		const std::string collides =
+			"omni_light\n{\n\tname twice\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 40\n}\n"
+			"omni_light\n{\n\tname twice\n\tposition 4 5 6\n\tcolor 1 1 1\n\tpower 80\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { collides, collides } ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+		Check( r.landed.size() == 1, "A81b/dupe the first of the two landed" );
+		bool sawCollision = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "twice" ) != std::string::npos ) sawCollision = true;
+		Check( sawCollision,
+		       "A81b/dupe MONEY ASSERTION: the colliding name is REJECTED and reported, never "
+		       "silently renamed -- renaming would break the references the pass wrote between "
+		       "its own chunks, which is why uniqueness (not a prefix) is this verb's naming rule" );
+		Check( r.retryRan, "A81b/dupe and the rejection drove the one repair retry" );
+		pJob->release();
+	}
+
+	// (3) A CHUNK WITHOUT the prefix any element would have imposed is
+	//     accepted: proving the transplanted idiom really is absent, not
+	//     merely unmentioned.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81b/noprefix fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( {
+			"omni_light\n{\n\tname moonlight\n\tposition 0 9 2\n\tcolor 0.6 0.7 1\n\tpower 90\n}\n" } ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+		Check( r.ok && r.landed.size() == 1 && r.landed[0] == "moonlight",
+		       "A81b/noprefix MONEY ASSERTION: a light named with NO element prefix lands -- lights "
+		       "are scene-global, so the `<element>_` rule build_element enforces has no "
+		       "precondition here and is deliberately absent" );
+		pJob->release();
+	}
+}
+
+//! A81c: the capability refusal and the per-session spend cap -- the two
+//! bounds `build_element` carries, carried identically.
+static void TestLightSceneCapabilityAndCap()
+{
+	std::printf( "A81c: light_scene's capability refusal and per-session cap...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81c.RISEscene" );
+
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81c/cap-refusal fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		Check( !sess->BuildCapable(), "A81c no completer is installed" );
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+		Check( !r.ok && r.capabilityRefusal,
+		       "A81c a provider that cannot run a separate completion refuses honestly" );
+		Check( r.message.find( "authoring light chunks directly" ) != std::string::npos,
+		       "A81c and says outright that hand authoring is not blocked by it" );
+		Check( sess->ReadDocument() == docBefore, "A81c with the document untouched" );
+		pJob->release();
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81c/cap fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		int calls = 0;
+		// A completer that always FAILS, so each call is cheap and the cap
+		// is what stops the sequence rather than the document filling up.
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-lighting-1";
+		c.complete = [&calls]( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			++calls;
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "mock refuses";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+
+		for( int i = 0; i < Agent::AgentSession::kLightSceneMaxPerSession; ++i )
+			sess->LightScene();
+		const int callsAtCap = calls;
+		const Agent::AgentSession::AgentLightSceneResult over = sess->LightScene();
+		Check( !over.ok && over.message.find( "per-session cap" ) != std::string::npos,
+		       "A81c MONEY ASSERTION: the call past the per-session cap is refused and says so" );
+		Check( calls == callsAtCap,
+		       "A81c and it reached the provider ZERO further times -- the cap bounds real money" );
+		pJob->release();
+	}
+}
+
+//! A81d: THE COMPOSE-PHASE GATE.  In compose, the first light-authoring
+//! edit must come from light_scene; a hand-authored light chunk is refused
+//! while it has not run, and permitted once it has.  It shares
+//! RefuseForPhase_'s 3-refusal cap and give-up with the other three arms.
+static void TestComposePhaseFirstLightRefusal()
+{
+	std::printf( "A81d: in compose, the first light must come from light_scene...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81d.RISEscene" );
+
+	// (1) REFUSED, naming the verb; the batch surface refuses atomically.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81d/refuse fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( A81Light( "hand_key" ) );
+		Check( !r1.applied && r1.status == "rejected",
+		       "A81d MONEY ASSERTION: a hand-authored light chunk is refused in compose while "
+		       "light_scene has not run" );
+		Check( r1.message.find( "light_scene" ) != std::string::npos,
+		       "A81d and the refusal names light_scene" );
+		Check( r1.kind == "omni_light" && r1.name == "hand_key",
+		       "A81d with the identity echo every other refusal honours" );
+		Check( sess->ReadDocument() == docBefore, "A81d the document is byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A81d it burns exactly one slot of the SHARED phase counter (the fourth arm)" );
+
+		// A NON-light chunk is untouched by this rule.
+		Check( sess->InsertChunk(
+			"uniformcolor_painter\n{\n\tname a81d_pnt\n\tcolor 0.2 0.3 0.4\n}" ).applied,
+		       "A81d a painter is never refused by the lighting rule" );
+
+		{
+			std::vector<std::string> batch;
+			batch.push_back( A81Light( "hand_b1" ) );
+			batch.push_back( "uniformcolor_painter\n{\n\tname a81d_b2\n\tcolor 1 1 1\n}" );
+			const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
+			Check( rs.size() == 2 && !rs[0].applied && !rs[1].applied,
+			       "A81d insert_chunks is refused as a WHOLE -- half a batch is a state nobody "
+			       "asked for" );
+			Check( sess->BuildPhaseRefusalCount() == 2, "A81d one more slot of the same counter" );
+		}
+
+		// (2) light_scene ITSELF is never refused by the rule it arms, and
+		//     running it LIFTS the refusal permanently.
+		const Agent::AgentSession::AgentLightSceneResult lr = sess->LightScene();
+		Check( lr.ok && lr.landed.size() == 6,
+		       "A81d MONEY ASSERTION: the clean room's own insertion is not refused by the "
+		       "clean-room rule" );
+		Check( sess->InsertChunk( A81Light( "hand_after" ) ).applied,
+		       "A81d MONEY ASSERTION: once light_scene has run, hand authoring is allowed -- "
+		       "construction through the clean room, refinement in the model's hands" );
+		Check( sess->InsertChunk( A81Light( "hand_after2" ) ).applied,
+		       "A81d -- and stays allowed" );
+		Check( sess->BuildPhaseRefusalCount() == 2, "A81d with no further refusals counted" );
+		pJob->release();
+	}
+
+	// (3) THE CAP AND THE GIVE-UP.  Three refusals, then the phase rules
+	//     stop intercepting -- shared with the other arms, so no model is
+	//     ever stranded.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81d/giveup fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+
+		for( int i = 0; i < 3; ++i ) {
+			const Agent::AgentChunkResult r =
+				sess->InsertChunk( A81Light( ( "hand_" + std::to_string( i ) ).c_str() ) );
+			Check( !r.applied, "A81d/giveup refusal " + std::to_string( i + 1 ) + " of 3" );
+		}
+		Check( sess->BuildPhaseRefusalCount() == 3, "A81d/giveup the cap is reached" );
+		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81Light( "hand_3" ) );
+		Check( r4.applied,
+		       "A81d/giveup MONEY ASSERTION: the fourth call is LET THROUGH -- the shared cap gives "
+		       "up rather than refusing a model forever" );
+		Check( r4.message.find( "stopped intercepting" ) != std::string::npos,
+		       "A81d/giveup and the give-up notice rides the call's own result, so a trajectory "
+		       "census sees the event" );
+		pJob->release();
+	}
+
+	// (4) PROTOCOL OFF disables the refusal with everything else -- and
+	//     light_scene itself still WORKS, because lighting needs no element
+	//     window and a protocol-off session has no phases at all.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81d/off fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+		Check( !sess->BuildProtocolActive(), "A81d/off the protocol is inactive for this session" );
+
+		Check( sess->InsertChunk( A81Light( "hand_off" ) ).applied,
+		       "A81d/off MONEY ASSERTION: a hand-authored light is NOT refused with the protocol "
+		       "off -- the gate dies with --agent-build-protocol=off like its three siblings" );
+		const Agent::AgentSession::AgentLightSceneResult lr = sess->LightScene();
+		Check( lr.ok,
+		       "A81d/off MONEY ASSERTION: and light_scene STILL WORKS with the protocol off -- "
+		       "unlike build_element it needs no active element, and refusing it on a session "
+		       "that has no phases at all would be exactly the over-refusal arc 78 sec 2.3 names "
+		       "as this design family's worst failure mode" );
+		pJob->release();
+	}
+}
+
+//! A81e: THE SEAM.  Arc 78 sec 2.3 deliberately ALLOWS lights during
+//! element windows -- a model that cannot light a part cannot see it.
+//! Those lights must not be refused by this gate, and they must not
+//! DISARM it either: the condition is "has light_scene run", not "does the
+//! scene have lights".
+static void TestPiecesPhaseLightsNeitherRefusedNorDisarming()
+{
+	std::printf( "A81e: pieces-phase lights are untouched by the compose gate, and do not disarm it...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81e.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A81e fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A81e the plan files" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+	       "A81e the session is in the pieces phase" );
+	Check( sess->ElementChunks( "wizard" ).empty(),
+	       "A81e with the active element still empty -- the arc-79 clean room is armed too" );
+
+	// A WORK LIGHT inside an element window: allowed, and it does not even
+	// trip the arc-79 first-geometry arm (which fires on GEOMETRY only).
+	Check( sess->InsertChunk( A81Light( "work_light" ) ).applied,
+	       "A81e MONEY ASSERTION: a light authored inside an element window is allowed -- arc 78 "
+	       "sec 2.3's rule, which this arc must not take back" );
+	Check( sess->BuildPhaseRefusalCount() == 0, "A81e and spends no refusal" );
+	Check( sess->InsertChunk( A81Light( "work_light2" ) ).applied, "A81e -- and so is a second" );
+
+	// Now into compose, with two lights already in the scene.
+	Check( sess->FinishElement().ok, "A81e the element finishes" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+	       "A81e the session is in the compose phase" );
+	const Agent::AgentChunkResult r = sess->InsertChunk( A81Light( "compose_hand" ) );
+	Check( !r.applied && r.message.find( "light_scene" ) != std::string::npos,
+	       "A81e MONEY ASSERTION: the two pieces-phase lights did NOT disarm the compose gate -- "
+	       "it keys on whether light_scene has run, not on whether the scene has lights, so a "
+	       "scene that entered compose carrying element-window work lights still gets its "
+	       "lighting designed in a clean room" );
+	Check( sess->BuildPhaseRefusalCount() == 1, "A81e and this is the first refusal spent" );
+
+	// The existing lights are then reported TO the pass, so it can design
+	// around them rather than duplicate them.
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer }, nullptr, &prompts ) );
+	const Agent::AgentSession::AgentLightSceneResult lr = sess->LightScene();
+	Check( lr.ok, "A81e light_scene runs" );
+	Check( !prompts.empty() &&
+	       prompts[0].find( "work_light" ) != std::string::npos &&
+	       prompts[0].find( "LIGHTS ALREADY IN THE SCENE (3)" ) != std::string::npos,
+	       "A81e MONEY ASSERTION: and the lights that already exist are named in its prompt" );
+	pJob->release();
+}
+
+//! A81f: light_scene over JSON-RPC -- the wire shape, and the one schema
+//! error it has.
+static void TestLightSceneWireShape()
+{
+	std::printf( "A81f: light_scene over JSON-RPC...\n" );
+	const std::string tmp = TempPath( "agentcrud_a81f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A81f fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodLightingAnswer } ) );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"light_scene\",\"params\":{}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "A81f light_scene returns a result object" );
+		Check( result.get( "ok" ).asBool( false ), "A81f ok:true" );
+		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 6,
+		       "A81f the landed list rides the wire" );
+		Check( result.get( "soloableLights" ).asNumber( -1 ) == 4.0,
+		       "A81f and so does the soloable-light count" );
+		Check( result.get( "contributions" ).isArray() &&
+		       result.get( "contributions" ).size() == 4,
+		       "A81f MONEY ASSERTION: the per-light contributions are a STRUCTURED fact, not only "
+		       "prose" );
+		Check( result.get( "contributions" ).at( 0 ).get( "soloed" ).asBool( false ) &&
+		       result.get( "contributions" ).at( 0 ).has( "meanLuma" ),
+		       "A81f with a real measurement on each measured entry" );
+		Check( result.has( "allLightsMeanLuma" ),
+		       "A81f and the all-lights reference it is read against" );
+		Check( result.get( "retryRan" ).asBool( true ) == false, "A81f retryRan is reported" );
+	}
+	// The ONE schema defect: a non-string `notes`.  There are no required
+	// params -- which scene gets lit is a property of the session.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"light_scene\",\"params\":{\"notes\":7}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "A81f a non-string `notes` is a schema error" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -11579,6 +12161,14 @@ int main()
 	// Arc 80 (2026-08-12): the compose phase may not delete form.
 	TestComposePhaseRefusesRemovingForm();
 	TestComposePhaseRemoveMixedBatchAndGiveUp();
+
+	// Arc 81 (2026-08-12): the clean-room lighting pass and its gate.
+	TestLightSceneHappyPath();
+	TestLightSceneAdmissibilityAndRetry();
+	TestLightSceneCapabilityAndCap();
+	TestComposePhaseFirstLightRefusal();
+	TestPiecesPhaseLightsNeitherRefusedNorDisarming();
+	TestLightSceneWireShape();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

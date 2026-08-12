@@ -1479,6 +1479,74 @@ int main()
 					}
 				}
 
+				// ---- ARC 81 (2026-08-12): the CLEAN-ROOM LIGHTING surface pins.
+				//
+				// Same test, same problem list, same reason as the S1 and S2
+				// blocks above.  These are the clauses a model cannot work
+				// `light_scene` without -- and two of them are load-bearing in
+				// a way the construction pins are not:
+				//
+				//   * THE PALETTE.  The measurement this whole arc is built on
+				//     is that ambient_light, hosek_wilkie_skylight and
+				//     area-via-emissive-material appear in NO agent run ever
+				//     measured.  A surface that lists only the three kinds
+				//     agents already use tells the model the palette IS those
+				//     three, which is the exact belief the arc exists to test.
+				//   * THE NAMING CONTRACT.  build_element enforces an
+				//     `<element>_` prefix; light_scene deliberately does not,
+				//     because lights are scene-global and belong to no
+				//     element.  A surface that leaves that unstated invites
+				//     the model to assume its sibling's rule.
+				{
+					struct A81Pin { const char* text; const char* why; };
+					static const A81Pin kA81Pins[] = {
+						{ "light_scene",
+						  "never mentions light_scene -- the verb the compose-phase light refusal "
+						  "names; a model that cannot name it cannot light a composed scene" },
+						{ "ambient_light",
+						  "does not name ambient_light in the palette -- one of the three light "
+						  "kinds NO agent run has ever used, and naming the full palette is the "
+						  "hypothesis this arc tests" },
+						{ "hosek_wilkie_skylight (an analytic sun-and-sky)",
+						  "does not name hosek_wilkie_skylight in the palette -- same reason; a "
+						  "model told the palette is omni/spot/directional will use those three" },
+						{ "emissive lambertian_luminaire_material",
+						  "does not state how AREA lighting is spelled -- there is no `area_light` "
+						  "chunk in this language, so a surface that omits the "
+						  "object-wearing-an-emissive-material form makes area lights undiscoverable" },
+						{ "THERE IS NO NAME PREFIX",
+						  "does not state that light_scene has no prefix rule -- its sibling "
+						  "build_element enforces one, and a model that assumes the same here will "
+						  "write names to satisfy a check that does not exist" },
+						{ "while light_scene has not run",
+						  "does not state WHEN a hand-authored light is refused -- a refusal whose "
+						  "condition is unstated reads as a bug, not a sequence" },
+						{ "authoring lights by hand is allowed and is never refused again",
+						  "does not state what LIFTS the refusal -- construction through the clean "
+						  "room, refinement by hand, is the whole rule and half of it is useless" },
+						{ "not affected by any of this",
+						  "does not state the PIECES-phase seam -- arc 78 sec 2.3 deliberately "
+						  "allows lights inside element windows, and a model told otherwise cannot "
+						  "light a part in order to see it" },
+						{ "ONE repair retry runs automatically",
+						  "does not state that the retry is automatic and singular -- a model that "
+						  "believes it must retry by hand will spend turns re-issuing the call" },
+						{ "rendered ALONE at a small size",
+						  "does not state HOW the per-light contribution is measured -- an "
+						  "unexplained number beside a light name invites reading it as a score" },
+						{ "do not sum to the all-lights frame",
+						  "does not state that the solo figures are NOT additive -- a model that "
+						  "believes they sum will read a correct measurement as a broken one" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA81Pins ) / sizeof( kA81Pins[0] ); ++k ) {
+							if( joined.find( kA81Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA81Pins[k].why );
+						}
+					}
+				}
+
 				for( const char* fname : kPlanSurfaces ) {
 					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
 					if( joined.find( "imagine_scene" ) == std::string::npos ) {

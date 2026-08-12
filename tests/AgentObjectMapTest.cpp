@@ -1705,7 +1705,11 @@ static void RunInlineRenderImageTest()
 			// beauty render -- "where is everything", answered with the picture
 			// rather than waiting to be asked for (every voluntary consultation
 			// surface this workstream shipped measured 0/64 uses).
-			"inventory" };
+			"inventory",
+			// Arc 81 (2026-08-12): the TONAL FACT rides the same surface, and
+			// unlike the inventory beside it costs NO extra render -- it is
+			// computed from the pixels this call already produced.
+			"tone" };
 		const std::size_t nPlain = sizeof( kPlainKeys ) / sizeof( kPlainKeys[0] );
 		bool allPresent = true;
 		for( std::size_t i = 0; i < nPlain; ++i ) if( !r.has( kPlainKeys[i] ) ) allPresent = false;
