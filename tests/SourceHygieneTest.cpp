@@ -1563,6 +1563,67 @@ int main()
 					}
 				}
 
+				// ---- ARC 82 (2026-08-12): the CLEAN-ROOM POPULATION surface
+				//      pins.  Two things a model cannot recover by experiment,
+				//      and one it would mis-read without being told:
+				//   * THE HARD CONTRACT.  populate_scene creates
+				//     `standard_object` and NOTHING else, and only naming a
+				//     geometry and a material that already exist.  Its sibling
+				//     build_element creates whole elements from nothing; a
+				//     model that assumes the same here writes a geometry chunk
+				//     and gets it rejected.
+				//   * THE GATE IS ON RENDER, and it fires ONCE.  Every other
+				//     phase rule in this family refuses an EDIT; this one
+				//     refuses a LOOK, which is alarming enough that a model
+				//     told nothing would reasonably read it as a broken
+				//     harness rather than as a sequence.  The one-shot and the
+				//     pieces-phase seam are the two facts that make it safe to
+				//     ignore, and both have to be stated.
+				{
+					struct A82Pin { const char* text; const char* why; };
+					static const A82Pin kA82Pins[] = {
+						{ "populate_scene",
+						  "never mentions populate_scene -- the verb the compose-phase render "
+						  "refusal names; a model that cannot name it cannot lift the refusal" },
+						{ "IT CREATES standard_object CHUNKS AND NOTHING ELSE",
+						  "does not state populate_scene's HARD CONTRACT -- its sibling "
+						  "build_element creates whole elements from nothing, and a model that "
+						  "assumes the same rule here writes geometry and gets it rejected" },
+						{ "must name a geometry and a material THAT ALREADY EXIST",
+						  "does not state that a placement must REFERENCE existing names -- a chunk "
+						  "naming an unknown geometry or material is rejected, and a model told "
+						  "nothing will invent names and spend the repair retry discovering it" },
+						{ "Making new form is build_element's job, not this one's",
+						  "does not say WHERE new form comes from -- a refusal that leaves a model "
+						  "with nothing to do instead is a refusal it will spend turns arguing with" },
+						{ "the first full-scene render is refused ONCE",
+						  "does not state that the compose-phase render refusal fires exactly ONCE "
+						  "-- every other rule in this family refuses repeatedly, and a model that "
+						  "expects to be blind until it complies will behave very differently from "
+						  "one that knows the next render proceeds regardless" },
+						{ "renders in the pieces phase are never refused",
+						  "does not state the PIECES-phase seam -- arc 78 sec 2.3's rule is that a "
+						  "model must always be able to look at the part it is building, and a "
+						  "model told a render can be refused will stop looking" },
+						{ "ONE worked example, built from this scene's own geometry and material "
+						  "names",
+						  "does not state that the example is built from the LIVE scene -- a model "
+						  "that thinks the example is illustrative will substitute names it "
+						  "invented for ones that already work" },
+						{ "the scene's object count before and after",
+						  "does not state that the result reports the object count on both sides -- "
+						  "the one number this pass exists to move, and a model that does not know "
+						  "it is reported cannot read its own result" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA82Pins ) / sizeof( kA82Pins[0] ); ++k ) {
+							if( joined.find( kA82Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA82Pins[k].why );
+						}
+					}
+				}
+
 				for( const char* fname : kPlanSurfaces ) {
 					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
 					if( joined.find( "imagine_scene" ) == std::string::npos ) {

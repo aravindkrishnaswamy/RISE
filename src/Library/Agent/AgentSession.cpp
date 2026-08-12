@@ -59,6 +59,7 @@
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
 #include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12): TargetIsFormBearing_ asks the live scene whether a name is a geometry, with no Document parse
+#include "../Interfaces/IMaterialManager.h" // Arc 82 (2026-08-12): PopulateScene asks the live scene whether the material a repeat names already exists
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
 #include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
 #include "../Painters/ExpressionEval.h"     // External review P2 fix: ExpressionProgram -- reuse the SAME public expr(...) evaluator Cst.cpp's derive-time resolver is built on, so ResolveBeautyDisplayTransform_ can resolve an expr(...)-valued `exposure` param instead of silently strtod'ing it to 0
@@ -11942,6 +11943,57 @@ namespace RISE
 			return RefuseForPhase_( verb, body, outGiveUpNotice );
 		}
 
+		std::string AgentSession::CheckPopulateBeforeComposeRender_( const char* verb,
+		                                                             std::string* outGiveUpNotice )
+		{
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			// THE SEAM.  Renders during PIECES are untouched: arc 78 sec 2.3's
+			// rule is that a model must always be able to look at the part it
+			// is building, and this arm must not take that back.  It exists
+			// only in COMPOSE, which is where a model turns from building to
+			// judging the picture -- and judging a picture is exactly what
+			// population belongs BEFORE.
+			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST -- the same
+			// capability-conditional rule the geometry and light arms follow.
+			// PopulateScene answers with a capability statement on a host with
+			// no text completer, so forcing a render through it there would
+			// strand the session outright.
+			if( !BuildCapable() )                              return std::string();
+			// ONE turn in the clean room lifts this permanently, whatever came
+			// of it (see mPopulateSceneRan): a pass whose chunks were all
+			// rejected still had its turn, and a failed pass must not leave a
+			// session unable to look at its own scene.
+			if( mPopulateSceneRan )                            return std::string();
+			// AND IT FIRES AT MOST ONCE, which is stricter than the other four
+			// arms on purpose.  A refused EDIT leaves a model able to look at
+			// its scene; a refused RENDER leaves it blind, and a model that
+			// declines the redirection must still be able to see.  One refusal
+			// names the verb; every render after that proceeds.  The direct
+			// consequence for the shared 3-refusal budget is that this arm can
+			// consume AT MOST ONE slot of it.
+			if( mPopulateRenderGateFired )                     return std::string();
+
+			const std::string body =
+				"populate_scene has not run in this session, and a composed scene is populated before "
+				"it is judged -- one call, in which " +
+				( mTextCompleter.providerName.empty() ? std::string( "this session's provider" )
+				                                      : ( "`" + mTextCompleter.providerName + "`" ) ) +
+				" is given this scene's object inventory, its camera, and the geometries and "
+				"materials it already has, in a fresh context, and places more standard_objects using "
+				"them; the result is checked and inserted here. This is the ONLY render this rule "
+				"will ever refuse in this session: the next one proceeds whether or not "
+				"populate_scene has run, and renders in the pieces phase are never refused at all.";
+			const std::string clause = RefuseForPhase_( verb, body, outGiveUpNotice );
+			// LATCHED ON THE REFUSAL, not on reaching this line: when
+			// RefuseForPhase_ returns "" it did NOT refuse (the protocol gave
+			// up on this very call, or was already spent), and burning the
+			// one-shot on a call that let the render through would silently
+			// retire the mechanism without it ever having fired.
+			if( !clause.empty() ) mPopulateRenderGateFired = true;
+			return clause;
+		}
+
 		namespace
 		{
 			//! S2: does `chunkItem` carry a parameter named `pname` at all?
@@ -12933,6 +12985,52 @@ namespace RISE
 		}
 
 		AgentRenderResult AgentSession::Render( const AgentRenderParams& params )
+		{
+			// ARC 82 (2026-08-12): THE COMPOSE-PHASE POPULATION GATE, first --
+			// before the target resolve, before RenderCore_, before anything
+			// this call would otherwise spend.  Population belongs before you
+			// judge the picture, and the first compose render is the moment the
+			// model turns to judging it.
+			//
+			// WHICH RENDERS THIS SEES, and why the two conditions are exactly
+			// these:
+			//   * `fromAgentSurface` is set ONLY by AgentRpc's `render` handler
+			//     and by FinishElement's own isolate render, so it is the
+			//     precise marker of "a model asked for this frame".  Every
+			//     INTERNAL render in this file -- the inventory's identity
+			//     pass, light_scene's solos, query_object_at, the reference
+			//     comparison -- leaves it false and is therefore untouched, as
+			//     a diagnostic must be.
+			//   * `isolate` empty excludes looking at ONE part, which is not
+			//     judging the picture and is what FinishElement's render is.
+			//     That is the same exclusion ApplyVisibilityCensus_ makes, for
+			//     the same reason.
+			if( params.fromAgentSurface && params.isolate.empty() ) {
+				std::string giveUpNotice;
+				const std::string clause =
+					CheckPopulateBeforeComposeRender_( "render", &giveUpNotice );
+				if( !clause.empty() ) {
+					AgentRenderResult refused;
+					refused.ok      = false;
+					refused.message = clause;
+					return refused;
+				}
+				// The give-up and the refusal are EXCLUSIVE outcomes, so a
+				// notice here always rides a render that consequently
+				// PROCEEDS -- folded once the result exists, so the event is
+				// visible in the payload a trajectory census reads rather than
+				// only in a log line.
+				if( !giveUpNotice.empty() ) {
+					AgentRenderResult rr0 = RenderInner_( params );
+					if( !rr0.message.empty() ) rr0.message += "  ";
+					rr0.message += giveUpNotice;
+					return rr0;
+				}
+			}
+			return RenderInner_( params );
+		}
+
+		AgentRenderResult AgentSession::RenderInner_( const AgentRenderParams& params )
 		{
 			// G3b fix-round (2026-08-10) FIX 1: RESOLVE ONCE, HERE, ON THE
 			// CALLER'S THREAD -- the SAME shape the async path uses, so the
@@ -18304,6 +18402,30 @@ namespace RISE
 					std::to_string( inv.passHeight ) + " one-ray-per-pixel identity pass through this "
 					"render's camera (a footprint smaller than one pass pixel reads as 0). Frame "
 					"positions are that pass's own pixels, counted from the left and from the top.";
+
+				// ARC 82 (2026-08-12): THE POPULATION FACT.  Free -- the walk
+				// above already visited every object -- and in the same
+				// facts-only register as everything around it: two counts, no
+				// verdict, no target, and no comparison to any reference.
+				// See AgentSceneInventoryResult::distinctGeometryCount for how
+				// "distinct" is decided (geometry POINTER identity, so two
+				// objects naming the same geometry chunk are one geometry
+				// here by construction).
+				if( inv.distinctGeometryCount > 0 ) {
+					t += " Those objects draw on " + std::to_string( inv.distinctGeometryCount ) +
+						( inv.distinctGeometryCount == 1 ? " distinct geometry, "
+						                                 : " distinct geometries, " ) +
+						std::to_string( inv.sharedGeometryCount ) +
+						( inv.sharedGeometryCount == 1 ? " of which is" : " of which are" ) +
+						" used by more than one object.";
+				}
+				if( inv.geometryUnreadCount > 0 ) {
+					t += " " + std::to_string( inv.geometryUnreadCount ) +
+						( inv.geometryUnreadCount == 1
+							? std::string( " object's geometry could not be read, so it is" )
+							: std::string( " objects' geometry could not be read, so they are" ) ) +
+						" not in those two counts.";
+				}
 				if( !inv.framePositionComputed && inv.coveredCount < inv.objectCount ) {
 					t += " Where an object that covered no pixels lies relative to the view was NOT "
 					     "computed for this render: " + inv.framePositionSuppressedReason + ".";
@@ -18607,7 +18729,15 @@ namespace RISE
 			inv.framePositionSuppressedReason = suppressReason;
 
 			// ---- One entry per object.
+			//
+			// ARC 82 (2026-08-12): the population tally rides this same walk.
+			// `geoUsers` counts objects per GEOMETRY POINTER -- identity, not
+			// name, so two objects naming the same geometry chunk land on one
+			// key by construction and no second lookup can disagree with the
+			// first.  An object whose geometry cannot be read is COUNTED AS
+			// UNREAD rather than folded into either figure.
 			IObjectManager* objs = mJob->GetObjects();
+			std::map<const void*, int> geoUsers;
 			for( std::size_t i = 0; i < omr.legend.size(); ++i ) {
 				const LegendEntry& le = omr.legend[i];
 				if( le.name == "<unmapped>" ) continue;   // not an object -- see the legend's own doc
@@ -18626,7 +18756,16 @@ namespace RISE
 				// a fabricated one.
 				double bbMin[3] = { 0, 0, 0 }, bbMax[3] = { 0, 0, 0 };
 				bool bboxUsable = false;
+				bool geometryRead = false;
 				if( IObjectPriv* obj = objs ? objs->GetItem( le.name.c_str() ) : nullptr ) {
+					// Arc 82: the population tally's one read.  A null here is
+					// an honest "this object exposes no geometry" (IObject's
+					// own default), not an error.
+					if( const void* g = static_cast<const void*>(
+						static_cast<const IObject*>( obj )->GetGeometry() ) ) {
+						++geoUsers[g];
+						geometryRead = true;
+					}
 					const BoundingBox bb = static_cast<const IObject*>( obj )->getBoundingBox();
 					bbMin[0] = bb.ll.x; bbMin[1] = bb.ll.y; bbMin[2] = bb.ll.z;
 					bbMax[0] = bb.ur.x; bbMax[1] = bb.ur.y; bbMax[2] = bb.ur.z;
@@ -18643,6 +18782,7 @@ namespace RISE
 					e.worldCentreKnown = true;
 					for( int a = 0; a < 3; ++a ) e.worldCentre[a] = ( bbMin[a] + bbMax[a] ) * 0.5;
 				}
+				if( !geometryRead ) ++inv.geometryUnreadCount;
 
 				if( e.onScreen ) {
 					e.placement = "onscreen";
@@ -18709,6 +18849,13 @@ namespace RISE
 				inv.noObjects = true;
 				inv.message   = "this scene has no world-visible objects";
 				return inv;
+			}
+
+			// Arc 82: the two population figures, from the tally above.
+			inv.distinctGeometryCount = static_cast<int>( geoUsers.size() );
+			for( std::map<const void*, int>::const_iterator g = geoUsers.begin();
+			     g != geoUsers.end(); ++g ) {
+				if( g->second > 1 ) ++inv.sharedGeometryCount;
 			}
 
 			// DESCENDING footprint, then name -- so the objects that covered
@@ -19958,17 +20105,767 @@ namespace RISE
 				} );
 		}
 
+		//======================================================================
+		// ARC 82 (2026-08-12) -- `populate_scene`, A CLEAN-ROOM POPULATION PASS.
+		// Design: docs/agentic-redesign/82-population-arc.md.
+		//
+		// Modelled directly on arc 81's `light_scene`, which is itself arc 79's
+		// `build_element`: the same host-mediated transport (mTextCompleter),
+		// the same validated insertion through InsertChunks, the same ONE
+		// repair retry, the same honest partial-success report and the same
+		// never-a-silent-drop rule.  What it adds is the RAW MATERIAL listing
+		// -- the geometries and materials the scene already has and the objects
+		// currently drawn with each -- because a repeat is made out of names
+		// that already exist.
+		//
+		// THE HARD CONTRACT: `standard_object` and nothing else, naming a
+		// geometry and a material that already exist.  New FORM belongs to
+		// `build_element`; keeping the two disjoint is what stops this becoming
+		// a second builder.
+		//======================================================================
+
+		std::vector<AgentSession::PopulationStock_> AgentSession::CollectPopulationStock_() const
+		{
+			std::vector<PopulationStock_> out;
+			if( !mJob ) return out;
+
+			// THE RETAINED CST IS THE SOURCE, not the object manager, and the
+			// reason is what a repeat has to WRITE: a chunk NAME.  The manager
+			// holds resolved pointers; only the document knows that `obj_fish_3`
+			// says `geometry fish`.
+			const RISE::Cst::Document* doc = mJob->GetCstDocument();
+			if( !doc ) return out;
+
+			const int n = RISE::Cst::DocItemCount( *doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( *doc, i );
+				const RISE::Cst::NodeRef node =
+					id ? RISE::Cst::DocResolveNodeId( *doc, id ) : RISE::Cst::NodeRef();
+				if( !node || node->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				if( node->role != "standard_object" ) continue;
+
+				const std::string oname = ChunkParamString_( node, "name" );
+				const std::string gname = ChunkParamString_( node, "geometry" );
+				const std::string mname = ChunkParamString_( node, "material" );
+				// ALL THREE OR NOTHING.  An object missing any of them is not
+				// raw material a repeat can be made from, and listing it would
+				// invite the pass to reference a name that is not there.
+				if( oname.empty() || gname.empty() || mname.empty() ) continue;
+
+				std::size_t at = out.size();
+				for( std::size_t k = 0; k < out.size(); ++k )
+					if( out[k].geometry == gname ) { at = k; break; }
+				if( at == out.size() ) {
+					PopulationStock_ s;
+					s.geometry = gname;
+					out.push_back( s );
+				}
+				PopulationStock_& s = out[at];
+				s.users.push_back( oname );
+				bool haveMaterial = false;
+				for( std::size_t k = 0; k < s.materials.size() && !haveMaterial; ++k )
+					haveMaterial = ( s.materials[k] == mname );
+				if( !haveMaterial ) s.materials.push_back( mname );
+			}
+
+			// MOST-USED FIRST, then by name.  The order is what decides which
+			// geometry the worked example is built from, and the most-used one
+			// is the safest bet: it is already proven to work in this scene
+			// more than once.
+			std::stable_sort( out.begin(), out.end(),
+				[]( const PopulationStock_& a, const PopulationStock_& b ) {
+					if( a.users.size() != b.users.size() ) return a.users.size() > b.users.size();
+					return a.geometry < b.geometry;
+				} );
+			return out;
+		}
+
+		std::string AgentSession::ComposePopulationExample_(
+			const std::vector<PopulationStock_>& stock, std::string& outName ) const
+		{
+			outName.clear();
+			if( stock.empty() ) return std::string();
+			const PopulationStock_& s = stock[0];
+			if( s.materials.empty() || s.users.empty() ) return std::string();
+
+			// THE EXAMPLE IS BUILT FROM THIS SCENE'S OWN NAMES, not from
+			// invented ones, and that is the whole point.  arc 81's palette can
+			// afford invented names because it CREATES what it references; a
+			// repeat cannot -- an illustrative `geometry fish` in a scene with
+			// no `fish` would be copied and then rejected, spending the one
+			// repair retry on the harness's own placeholder.  A82g proves this
+			// example really inserts.
+			std::string base = s.geometry + "_again";
+			std::string name = base;
+			if( IObjectManager* objs = mJob ? mJob->GetObjects() : nullptr ) {
+				for( int k = 2; k <= 64 && objs->GetItem( name.c_str() ); ++k )
+					name = base + "_" + std::to_string( k );
+			}
+			outName = name;
+
+			// The source object's OWN position, so the example is a real
+			// displacement of a real placement rather than a jump to the
+			// origin.  Absent (or expressed as a matrix) reads as 0 0 0, which
+			// is what standard_object itself defaults to.
+			double from[3] = { 0.0, 0.0, 0.0 };
+			if( const RISE::Cst::Document* doc = mJob ? mJob->GetCstDocument() : nullptr ) {
+				const int n = RISE::Cst::DocItemCount( *doc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeId id = RISE::Cst::DocNodeIdAt( *doc, i );
+					const RISE::Cst::NodeRef node =
+						id ? RISE::Cst::DocResolveNodeId( *doc, id ) : RISE::Cst::NodeRef();
+					if( !node || node->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( node->role != "standard_object" ) continue;
+					if( ChunkParamString_( node, "name" ) != s.users[0] ) continue;
+					const std::string pos = ChunkParamString_( node, "position" );
+					if( !pos.empty() ) {
+						double p[3] = { 0.0, 0.0, 0.0 };
+						if( std::sscanf( pos.c_str(), "%lf %lf %lf", &p[0], &p[1], &p[2] ) == 3 ) {
+							for( int a = 0; a < 3; ++a )
+								if( RISE::IsFiniteDouble( p[a] ) ) from[a] = p[a];
+						}
+					}
+					break;
+				}
+			}
+
+			// A STEP SIZED BY THE SCENE, so the example lands in the same world
+			// the scene occupies rather than at an arbitrary distance.  No
+			// usable bounds -> one unit, stated nowhere because a number in an
+			// example claims nothing.
+			double step = 1.0;
+			{
+				double wmin[3], wmax[3];
+				if( SceneWorldBounds_( mJob ? mJob->GetObjects() : nullptr, wmin, wmax ) ) {
+					double widest = 0.0;
+					for( int a = 0; a < 3; ++a ) {
+						const double e = wmax[a] - wmin[a];
+						if( e > widest ) widest = e;
+					}
+					if( RISE::IsFiniteDouble( widest ) && widest > 1.0e-4 ) step = widest * 0.15;
+				}
+			}
+			const double to[3] = { from[0] + step, from[1], from[2] - step * 0.5 };
+
+			return "standard_object\n"
+			       "{\n"
+			       "\tname\t\t" + name + "\n"
+			       "\tgeometry\t" + s.geometry + "\n"
+			       "\tmaterial\t" + s.materials[0] + "\n"
+			       "\tposition\t" + FormatVec3_( to ) + "\n"
+			       "\torientation\t0 35 0\n"
+			       "\tscale\t\t0.7\n"
+			       "}";
+		}
+
+		std::string AgentSession::ComposePopulationPrompt_(
+			const std::string& inventoryText,
+			const std::vector<PopulationStock_>& stock,
+			const std::string& example,
+			const std::string& notes,
+			const std::string& rejectionText ) const
+		{
+			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE, exactly as
+			// ComposeLightingPrompt_ composes the lighting one.  The model
+			// supplies `notes` and nothing else; every other span is this
+			// function's own text, the descriptor registry's, or a measurement
+			// of the live scene.
+			//
+			// WHAT IS DELIBERATELY ABSENT: any number of objects, any
+			// instruction to add many, and any phrase about filling the scene.
+			// Object count is precisely what this arc measures, so putting one
+			// here would manufacture the result rather than move it.
+			std::string p;
+			p += "You are placing objects in a finished 3D scene in the RISE scene language. "
+			     "The geometry, materials, lights and camera already exist and are not yours to "
+			     "change. The only chunk this call can create is a standard_object: one placement "
+			     "of a geometry and a material that this scene ALREADY HAS, at a position, "
+			     "orientation and scale you choose.\n\n";
+
+			// ---- The subject, if this session has one.  The model's OWN words
+			// about what it set out to make, restated to a context that has
+			// never seen them -- and here they carry the judgement about what
+			// deserves repeating.
+			if( mSceneTarget && !mSceneTarget->description.empty() ) {
+				p += "WHAT THIS SCENE IS MEANT TO BE (the description its author wrote):\n";
+				p += mSceneTarget->description;
+				p += "\n\n";
+			}
+
+			// ---- WHERE EVERYTHING IS.  The arc-80 inventory, verbatim: what
+			// makes a placement relate to real geometry rather than to a guess.
+			if( !inventoryText.empty() ) {
+				p += "WHAT IS IN THE SCENE AND WHERE, measured from the live scene just now:\n";
+				p += inventoryText;
+				p += "\n\n";
+			}
+
+			// ---- The camera, so the placements are made for the view that
+			// will actually be rendered.
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob ? mJob->GetScene() : nullptr ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				double eye[3] = { 0, 0, 0 }, tgt[3] = { 0, 0, -1 }, up[3] = { 0, 1, 0 };
+				double tanHalfV = 0.0, aspect = 1.0;
+				std::string why;
+				if( ResolveInventoryCamera_( AgentRenderParams(), fw, fh, eye, tgt, up,
+				                              tanHalfV, aspect, why ) ) {
+					const double vfovDeg = 2.0 * std::atan( tanHalfV ) * 180.0 /
+						3.14159265358979323846;
+					p += "THE CAMERA: at (" + FormatVec3_( eye ) + "), looking at (" +
+						FormatVec3_( tgt ) + "), up (" + FormatVec3_( up ) +
+						"), vertical field of view " + FormatScalar_( vfovDeg ) + " degrees.\n";
+				}
+				else {
+					// STATED, NOT GUESSED -- ComposeLightingPrompt_'s contract.
+					p += "THE CAMERA: its pose was not read for this prompt (" + why + ").\n";
+				}
+			}
+
+			// ---- The world the placements have to live in.
+			{
+				double wmin[3], wmax[3];
+				if( SceneWorldBounds_( mJob ? mJob->GetObjects() : nullptr, wmin, wmax ) ) {
+					const double size[3] = { wmax[0]-wmin[0], wmax[1]-wmin[1], wmax[2]-wmin[2] };
+					p += "THE SCENE'S WORLD BOUNDS: (" + FormatVec3_( wmin ) + ") to (" +
+						FormatVec3_( wmax ) + "), so it is " + FormatVec3_( size ) +
+						" units across in X Y Z. +Y is up.\n";
+				}
+				else {
+					p += "THE SCENE'S WORLD BOUNDS: no object with a usable bounding box, so they "
+					     "were not measured. +Y is up.\n";
+				}
+			}
+			p += "\n";
+
+			// ---- THE RAW MATERIAL.  Every geometry the scene has, the
+			// materials it is worn with, and who wears it now.  This is the
+			// listing that makes a repeat writable at all: a standard_object
+			// naming a geometry or a material this list does not contain is
+			// rejected, so the list IS the vocabulary.
+			p += "THE GEOMETRIES AND MATERIALS THIS SCENE ALREADY HAS, and the objects drawn with "
+			     "each. A standard_object you write must name one geometry and one material from "
+			     "this list:\n";
+			{
+				const std::size_t shown = ( stock.size() > kPopulateSceneMaxGeometriesListed )
+					? kPopulateSceneMaxGeometriesListed : stock.size();
+				for( std::size_t i = 0; i < shown; ++i ) {
+					const PopulationStock_& s = stock[i];
+					p += "  " + s.geometry + " -- material";
+					if( s.materials.size() > 1 ) p += "s";
+					p += " ";
+					for( std::size_t k = 0; k < s.materials.size(); ++k ) {
+						if( k ) p += ", ";
+						p += s.materials[k];
+					}
+					p += "; used by " + std::to_string( s.users.size() ) +
+						( s.users.size() == 1 ? " object: " : " objects: " );
+					const std::size_t un = ( s.users.size() > kPopulateSceneMaxUsersPerGeometry )
+						? kPopulateSceneMaxUsersPerGeometry : s.users.size();
+					for( std::size_t k = 0; k < un; ++k ) {
+						if( k ) p += ", ";
+						p += s.users[k];
+					}
+					// TRUNCATION IS STATED, never a quietly short list -- the
+					// same rule the inventory's own bounding follows.
+					if( un < s.users.size() )
+						p += ", and " + std::to_string( s.users.size() - un ) + " more";
+					p += "\n";
+				}
+				if( shown < stock.size() )
+					p += "  ... and " + std::to_string( stock.size() - shown ) +
+						" more geometries, not listed here (" + std::to_string( shown ) + " of " +
+						std::to_string( stock.size() ) + " listed).\n";
+			}
+			p += "\n";
+
+			p += "NAMING: every standard_object you write needs a `name` that is not already used in "
+			     "this scene. A name that collides is rejected and NOT renamed, because renaming "
+			     "would break the references between your own chunks.\n\n";
+
+			// ---- THE GRAMMAR, from the DESCRIPTOR REGISTRY -- the same
+			// ReadSchema the `read_schema` tool answers with, so there is no
+			// second hand-written grammar here that could drift from the parser.
+			p += "THE ONE CHUNK KIND THIS PASS CAN AUTHOR:\n";
+			p += ReadSchema( "standard_object" );
+			p += "\n";
+
+			if( !example.empty() ) {
+				// ONE example, and it names THIS scene's own geometry and
+				// material -- see ComposePopulationExample_ for why an
+				// illustrative one would be worse than none.
+				p += "\nExample -- one more placement of a geometry and a material this scene already "
+				     "has, at a different position, orientation and scale:\n";
+				p += example;
+				p += "\n";
+			}
+
+			if( !notes.empty() ) {
+				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such.  It is
+				// length-capped before it gets here and JSON-escaped by the
+				// request builder, so it cannot reach the endpoint, the headers
+				// or the key.
+				p += "\nNOTES FROM THE CALLER:\n";
+				p += notes;
+				p += "\n";
+			}
+
+			p += "\nWHAT THIS CALL WILL ACCEPT: standard_object chunks, and nothing else. A chunk of "
+			     "any other kind is rejected, and so is a standard_object naming a geometry or a "
+			     "material that is not in the list above -- this call creates no geometry, no "
+			     "material and no painter.\n";
+
+			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
+			     "the form\n"
+			     "keyword\n"
+			     "{\n"
+			     "\tparameter value\n"
+			     "}\n"
+			     "with the braces on their own lines. No prose, no explanation, no markdown fences, "
+			     "no scene header.\n";
+
+			if( !rejectionText.empty() ) {
+				// THE ONE REPAIR RETRY.  The rejection text is this harness's
+				// own, verbatim, so the pass is corrected by facts about what
+				// happened rather than by a paraphrase of them.
+				p += "\nA PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED:\n";
+				p += rejectionText;
+				p += "\nReturn the CORRECTED SET WHOLE -- every placement this scene needs, "
+				     "including the ones that were accepted, in one answer.\n";
+			}
+			return p;
+		}
+
+		AgentSession::AgentPopulateSceneResult AgentSession::PopulateScene( const std::string& notes )
+		{
+			AgentPopulateSceneResult out;
+			out.providerName = mTextCompleter.providerName;
+			out.modelId      = mTextCompleter.modelId;
+			// NO GIVE-UP FOLD, for LightScene's reason exactly: this verb
+			// consults no phase gate of its own (it is callable in every phase
+			// and with the protocol off), and no arm on the insert path fires
+			// on an Object chunk -- see the header's "ARC 82 HAS NO
+			// mInPopulateSceneInsert GUARD" note for that enumeration.
+
+			//------------------------------------------------------------------
+			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
+			// state, mutates no document, costs no budget and is never counted.
+			//------------------------------------------------------------------
+			if( !mJob ) {
+				out.message = "populate_scene did nothing: no head is loaded, so there is no scene to "
+				              "populate.";
+				return out;
+			}
+			if( !BuildCapable() ) {
+				out.capabilityRefusal = true;
+				const std::string who = mTextCompleter.providerName.empty()
+					? std::string( "this session's provider" )
+					: ( "`" + mTextCompleter.providerName + "`" );
+				out.message = "populate_scene is not available: " + who + " does not run a separate "
+					"completion through this build, so there is no fresh context to place objects in. "
+					"Nothing was changed and nothing else about this session changes -- authoring "
+					"standard_object chunks directly with insert_chunk or insert_chunks is not blocked "
+					"by this.";
+				return out;
+			}
+
+			// NO RAW MATERIAL, NO PASS.  A repeat is made out of a geometry and
+			// a material that already exist; a scene with no standard_object
+			// naming both has nothing for this verb to work from, and sending a
+			// prompt whose vocabulary list is empty would spend real provider
+			// money to be told so.
+			const std::vector<PopulationStock_> stock = CollectPopulationStock_();
+			if( stock.empty() ) {
+				out.message = "populate_scene did nothing: this scene has no standard_object naming "
+				              "both a geometry and a material, so there is nothing for a placement to "
+				              "reference. The document is unchanged.";
+				return out;
+			}
+
+			if( mPopulateSceneCalls >= kPopulateSceneMaxPerSession ) {
+				char capBuf[240];
+				std::snprintf( capBuf, sizeof( capBuf ),
+					"populate_scene has already run %d population completions this session -- the "
+					"per-session cap. Nothing was changed; the document is unchanged.",
+					kPopulateSceneMaxPerSession );
+				out.message = capBuf;
+				return out;
+			}
+			++mPopulateSceneCalls;
+			// THE GATE LIFTS HERE, before the completion rather than after it.
+			// A provider failure must not leave the session unable to render
+			// for the rest of its life -- the clean room has had its turn
+			// either way (see mPopulateSceneRan).
+			mPopulateSceneRan = true;
+
+			out.objectCountBefore = static_cast<int>( CollectObjectNames( mJob->GetObjects() ).size() );
+
+			// The caller's notes, length-capped BEFORE composition and with the
+			// truncation stated rather than silent.
+			std::string useNotes = notes;
+			bool notesTruncated = false;
+			if( useNotes.size() > kPopulateSceneMaxNotes ) {
+				useNotes.resize( kPopulateSceneMaxNotes );
+				notesTruncated = true;
+			}
+
+			// The arc-80 inventory, measured NOW: what makes a placement relate
+			// to real geometry.  One small identity pass, affordable because
+			// this verb runs once per scene rather than once per render.
+			std::string inventoryText;
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob->GetScene() ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				const AgentSceneInventoryResult inv =
+					ComputeSceneInventory_( AgentRenderParams(), fw, fh, /*assumeParked=*/false );
+				if( inv.ok ) inventoryText = inv.text;
+			}
+
+			std::string exampleName;
+			const std::string example = ComposePopulationExample_( stock, exampleName );
+			const std::string basePrompt = ComposePopulationPrompt_( inventoryText, stock, example,
+			                                                          useNotes, std::string() );
+
+			//------------------------------------------------------------------
+			// ONE ATTEMPT = one completion, extract, classify, insert.  The
+			// shape is LightScene's runAttempt with its admissibility rule
+			// replaced by this verb's own: standard_object only, and only when
+			// the geometry and the material it names already exist.
+			//------------------------------------------------------------------
+			std::vector<std::string> landedNames;
+			std::vector<std::string> rejectionLines;
+			std::string providerFailure;
+			std::vector<std::string> unquotedNames;
+			std::string lastCompletionText;
+
+			const auto runAttempt = [&]( const std::string& prompt ) -> bool
+			{
+				const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+				if( !comp.ok || comp.text.empty() ) {
+					providerFailure = comp.error.empty()
+						? std::string( "the provider returned no text and no reason" )
+						: comp.error;
+					return false;
+				}
+				lastCompletionText = comp.text;
+
+				std::vector<std::string> chunks, problems;
+				ExtractChunkTexts( comp.text, chunks, problems );
+				out.chunksExtracted += static_cast<unsigned int>( chunks.size() );
+				for( std::size_t i = 0; i < problems.size(); ++i ) {
+					AgentPopulateSceneRejection r;
+					r.reason = problems[i];
+					out.rejected.push_back( r );
+					rejectionLines.push_back( problems[i] );
+				}
+				if( chunks.empty() ) {
+					if( problems.empty() ) {
+						const std::string why =
+							"the answer contained no complete chunk (no `keyword { ... }` block)";
+						AgentPopulateSceneRejection r;
+						r.reason = why;
+						out.rejected.push_back( r );
+						rejectionLines.push_back( why );
+					}
+					return false;
+				}
+
+				IGeometryManager* geos = mJob->GetGeometries();
+				IMaterialManager* mats = mJob->GetMaterials();
+
+				std::vector<std::string> submit;
+				std::vector<AgentPopulateSceneCreation> submitInfo;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
+					std::string kind, oname, gname, mname;
+					RISE::Cst::NodeId nodeId = 0;
+					{
+						const int n = RISE::Cst::DocItemCount( doc );
+						for( int c = 0; c < n; ++c ) {
+							const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( doc, c );
+							const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, nid );
+							if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+							kind   = it->role;
+							oname  = ChunkParamString_( it, "name" );
+							gname  = ChunkParamString_( it, "geometry" );
+							mname  = ChunkParamString_( it, "material" );
+							nodeId = nid;
+							break;
+						}
+					}
+
+					// THE ADMISSIBILITY RULE, stated once.  A population pass
+					// may land ONE kind of chunk: a standard_object.  Anything
+					// else -- a geometry, a material, a painter, a light, a
+					// camera -- is refused with the reason, because new FORM is
+					// build_element's job and a pass that could create it would
+					// be a second builder with none of the first one's checks.
+					if( kind != "standard_object" ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "a `" + ( kind.empty() ? std::string( "(unnamed keyword)" ) : kind ) +
+							"` chunk is not part of a population pass, so it was not inserted -- "
+							"populate_scene creates standard_object chunks only, each naming a geometry "
+							"and a material that already exist";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
+					// A QUOTED name is tolerated, not rejected -- arc 79 sec
+					// 8.1's live-run defect and its fix, applied from the start.
+					// This scene language has no quoted-string syntax at all.
+					if( oname.size() >= 2 && oname.front() == '"' && oname.back() == '"' ) {
+						const std::string stripped = oname.substr( 1, oname.size() - 2 );
+						doc = RISE::Cst::DocSetParamValue( doc, nodeId, "name", 0, stripped );
+						chunks[i] = RISE::Cst::SerializeCst( doc );
+						unquotedNames.push_back( stripped );
+						oname = stripped;
+					}
+
+					// THE REFERENCE RULE.  A repeat must name a geometry and a
+					// material that ALREADY EXIST -- asked of the live managers,
+					// which is what the derive would resolve against anyway, so
+					// a name that passes here cannot dangle later.
+					if( gname.empty() || !geos || !geos->GetItem( gname.c_str() ) ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "the standard_object" +
+							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+							" was not inserted: it names " +
+							( gname.empty() ? std::string( "no geometry at all" )
+							                : ( "the geometry \"" + gname + "\", which this scene does "
+							                    "not have" ) ) +
+							" -- populate_scene places geometries that already exist and creates none";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					if( mname.empty() || !mats || !mats->GetItem( mname.c_str() ) ) {
+						AgentPopulateSceneRejection r;
+						r.name   = oname;
+						r.kind   = kind;
+						r.reason = "the standard_object" +
+							( oname.empty() ? std::string() : ( " named \"" + oname + "\"" ) ) +
+							" was not inserted: it names " +
+							( mname.empty() ? std::string( "no material at all" )
+							                : ( "the material \"" + mname + "\", which this scene does "
+							                    "not have" ) ) +
+							" -- populate_scene places materials that already exist and creates none";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
+					// A name that already landed in the FIRST attempt is not
+					// re-submitted: the repair retry is asked for the corrected
+					// set WHOLE, so it legitimately repeats what worked.
+					if( !oname.empty() ) {
+						bool already = false;
+						for( std::size_t l = 0; l < landedNames.size() && !already; ++l )
+							already = ( landedNames[l] == oname );
+						if( already ) continue;
+					}
+
+					AgentPopulateSceneCreation info;
+					info.name     = oname;
+					info.geometry = gname;
+					info.material = mname;
+					submit.push_back( chunks[i] );
+					submitInfo.push_back( info );
+				}
+				if( submit.empty() ) return false;
+
+				const std::vector<AgentChunkResult> results = InsertChunks( submit );
+				bool landedAny = false;
+				for( std::size_t i = 0; i < results.size(); ++i ) {
+					out.chunkResults.push_back( results[i] );
+					if( results[i].applied ) {
+						landedNames.push_back( results[i].name );
+						AgentPopulateSceneCreation c;
+						c.name = results[i].name;
+						if( i < submitInfo.size() ) {
+							c.geometry = submitInfo[i].geometry;
+							c.material = submitInfo[i].material;
+						}
+						out.created.push_back( c );
+						landedAny = true;
+					}
+					else {
+						AgentPopulateSceneRejection r;
+						r.name   = results[i].name;
+						r.kind   = results[i].kind;
+						r.reason = results[i].message.empty()
+							? std::string( "the insertion was rejected with no reason given" )
+							: results[i].message;
+						out.rejected.push_back( r );
+						rejectionLines.push_back(
+							( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
+							" was rejected: " + r.reason );
+					}
+				}
+				return landedAny;
+			};
+
+			runAttempt( basePrompt );
+
+			// THE ONE REPAIR RETRY, on LightScene's exact terms: it fires when
+			// the first attempt rejected ANYTHING or when the provider itself
+			// failed.  Exactly one, then stop, whatever the outcome.
+			if( !rejectionLines.empty() || !providerFailure.empty() ) {
+				std::string rejectionText;
+				if( !providerFailure.empty() )
+					rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
+				for( std::size_t i = 0; i < rejectionLines.size(); ++i )
+					rejectionText += "- " + rejectionLines[i] + "\n";
+
+				const std::size_t landedBefore = landedNames.size();
+				out.retryRan = true;
+				providerFailure.clear();
+				rejectionLines.clear();
+				runAttempt( ComposePopulationPrompt_( inventoryText, stock, example, useNotes,
+				                                       rejectionText ) );
+				out.retrySucceeded = ( landedNames.size() > landedBefore );
+			}
+
+			out.objectCountAfter = static_cast<int>( CollectObjectNames( mJob->GetObjects() ).size() );
+
+			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
+			// because no answer was ever parsed) is NOT an ok result -- `ok`
+			// means the pass answered and its answer was processed.
+			if( out.created.empty() && out.rejected.empty() ) {
+				out.message = "populate_scene did not complete: " +
+					( providerFailure.empty()
+						? std::string( "the population pass returned nothing this harness could read as "
+						               "a chunk" )
+						: providerFailure ) +
+					". Nothing was inserted and the document is unchanged" +
+					( out.retryRan ? std::string( "; the one repair retry ran and did not complete "
+					                              "either, and there is no second retry." )
+					               : std::string( "." ) );
+				return out;
+			}
+
+			out.ok = true;
+
+			//------------------------------------------------------------------
+			// THE REPORT: facts only.  What was created and what each repeats,
+			// what was not and why, whether the retry ran, and the scene's
+			// object count before and after.  No characterization of the
+			// population, no advice, no score -- the count is what this arc
+			// measures, so the payload states it and stops.
+			//------------------------------------------------------------------
+			std::string m = "populate_scene ran one population completion on " +
+				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". Objects created: ";
+			if( out.created.empty() ) m += "none";
+			else {
+				for( std::size_t i = 0; i < out.created.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.created[i].name;
+					if( !out.created[i].geometry.empty() ) {
+						m += " (geometry " + out.created[i].geometry;
+						if( !out.created[i].material.empty() )
+							m += ", material " + out.created[i].material;
+						m += ")";
+					}
+				}
+			}
+			m += ".";
+			if( !out.rejected.empty() ) {
+				m += " Not created: ";
+				for( std::size_t i = 0; i < out.rejected.size(); ++i ) {
+					if( i ) m += "; ";
+					m += out.rejected[i].reason;
+				}
+				m += ".";
+			}
+			if( out.retryRan ) {
+				m += out.retrySucceeded
+					? std::string( " One repair retry ran and inserted more chunks; there is no second "
+					               "retry." )
+					: std::string( " One repair retry ran and inserted nothing further; there is no "
+					               "second retry." );
+			}
+			if( !providerFailure.empty() )
+				m += " The last population completion did not complete: " + providerFailure + ".";
+			if( !unquotedNames.empty() ) {
+				m += " This harness stripped a wrapping pair of double quotes from the `name` value of ";
+				for( std::size_t i = 0; i < unquotedNames.size(); ++i ) {
+					if( i ) m += ", ";
+					m += unquotedNames[i];
+				}
+				m += " before inserting.";
+			}
+			if( out.created.empty() && !lastCompletionText.empty() ) {
+				// TOTAL rejection ONLY (the pure provider-failure case already
+				// returned above), so the pass's own answer is shown rather
+				// than retained nowhere -- arc 79's Fix 3.
+				m += " Nothing landed; the population pass's last answer, before this harness's own "
+				     "truncation, began:\n";
+				m += ExcerptWholeLines_( lastCompletionText, 400 );
+			}
+			m += " The scene had " + std::to_string( out.objectCountBefore ) +
+				( out.objectCountBefore == 1 ? " object" : " objects" ) + " before this call and " +
+				std::to_string( out.objectCountAfter ) +
+				( out.objectCountAfter == 1 ? " object" : " objects" ) + " after it.";
+			if( notesTruncated ) {
+				char nb[144];
+				std::snprintf( nb, sizeof( nb ),
+					" The `notes` string was truncated to the first %u characters before it was sent.",
+					static_cast<unsigned int>( kPopulateSceneMaxNotes ) );
+				m += nb;
+			}
+			out.message = m;
+			return out;
+		}
+
 		// Model-B F2 slice S2a -------------------------------------------------
 
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
 		{
 			AgentRenderAsyncResult out;
 			out.pinned = params.pinned;   // echoed regardless of accepted -- see the struct doc
+			// Arc 82: the phase machinery's give-up notice, folded into
+			// whichever `message` this call ends up returning -- the same RAII
+			// shape InsertChunk and ProposePatch use, and for the same reason
+			// (the event must be visible in the payload a trajectory census
+			// reads, not only in a log line).
+			BuildPlanGiveUpFold_ a82Fold{ out.message, std::string() };
 
 			if( !mController ) {
 				out.accepted = false;
 				out.message  = "no controller attached -- RenderAsync requires a LIVE controller (headless sessions have no coordinator/worker to submit to); use the synchronous Render() instead";
 				return out;
+			}
+
+			// ARC 82 (2026-08-12): THE COMPOSE-PHASE POPULATION GATE, on the
+			// ASYNC path too.  `render{"async":true}` is the same request on
+			// the same wire handler, with the same rparams (fromAgentSurface
+			// set); a gate present on only one of the two would be a gate with
+			// a one-word bypass.  A refusal here is accepted=false, which the
+			// wire renders as status:"refused" -- the same shape the
+			// no-controller and unresolvable-target refusals above already use,
+			// and nothing is queued.
+			if( params.fromAgentSurface && params.isolate.empty() ) {
+				const std::string clause =
+					CheckPopulateBeforeComposeRender_( "render", &a82Fold.notice );
+				if( !clause.empty() ) {
+					out.accepted = false;
+					out.message  = clause;
+					return out;
+				}
 			}
 
 			// ---- G3b fix-round (2026-08-10) FIX 1: SNAPSHOT THE TARGET

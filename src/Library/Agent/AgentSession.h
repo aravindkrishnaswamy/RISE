@@ -4426,6 +4426,132 @@ namespace RISE
 			//! then up to kLightSceneMaxSolos + 1 small internal renders.
 			AgentLightSceneResult LightScene( const std::string& notes = std::string() );
 
+			//----------------------------------------------------------------
+			// ARC 82 (2026-08-12): `populate_scene` -- A CLEAN-ROOM
+			// POPULATION PASS.
+			// Design: docs/agentic-redesign/82-population-arc.md.
+			//
+			// THE MEASUREMENT.  The hand-authored frontier benchmark on the
+			// same prompt (scenes/Benchmarks/dreamscape_coral_queens_hour
+			// .RISEscene) has 47 objects built from 18 distinct geometries:
+			// 38 of the 47 are REPEATS of a geometry another object already
+			// uses (fish x14, motes x5, rock_crag x3, staghorn x3,
+			// kelp_blade x3, jelly_bell x3, jelly_tentacles x3, sea_fan x2,
+			// brain_coral x2).  It uses no generator or instancing chunk of
+			// any kind -- every repeat is an ordinary standard_object naming
+			// the same geometry and material at a different transform.  The
+			// best agent run to date has 16 objects and almost no reuse.
+			//
+			// So the gap is not modelling -- the elements the builders
+			// produce are good -- it is that the session builds ONE of each
+			// and stops.  Population is placement, and placement is cheap.
+			//
+			// HARD CONTRACT: this pass may create ONLY `standard_object`
+			// chunks, each naming a geometry and a material that ALREADY
+			// EXIST.  No geometry, no material, no painter, no light, no
+			// camera.  New FORM belongs to `build_element`; keeping the two
+			// disjoint is what stops this becoming a second builder.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `populate_scene` calls allowed per session.
+			//! kLightSceneMaxPerSession's number and rationale exactly: one
+			//! population pass per scene, and a real-provider spend bound
+			//! that a repair retry deliberately does not distinguish.
+			static constexpr int kPopulateSceneMaxPerSession = 4;
+
+			//! The longest `notes` string a `populate_scene` call may carry
+			//! -- the ONE model-supplied span in the host-composed prompt,
+			//! TRUNCATED with the truncation stated, never silently.
+			static constexpr std::size_t kPopulateSceneMaxNotes = 2000;
+
+			//! How many geometries the prompt's "what this scene already
+			//! has" listing names, and how many users it names under each.
+			//! Bounded for arc 79 sec 1's reason (prepended text competes
+			//! with construction richness), and any truncation is STATED.
+			static constexpr std::size_t kPopulateSceneMaxGeometriesListed = 40;
+			static constexpr std::size_t kPopulateSceneMaxUsersPerGeometry = 6;
+
+			//! One chunk the population pass returned that was NOT inserted,
+			//! with the reason.  Never a silent drop -- the same contract and
+			//! the same struct shape AgentLightSceneRejection carries.
+			struct AgentPopulateSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! ONE object this pass created, and what it repeats.  `geometry`
+			//! and `material` are the names it referenced -- both guaranteed
+			//! to have existed before the call, because a chunk naming an
+			//! unknown one is rejected rather than inserted.
+			struct AgentPopulateSceneCreation
+			{
+				std::string name;
+				std::string geometry;
+				std::string material;
+			};
+
+			//! The structured result of PopulateScene.  `ok` means the pass
+			//! ANSWERED and its answer was processed -- NOT that everything
+			//! landed.  Partial success is first-class and honestly reported,
+			//! exactly as in AgentLightSceneResult.
+			struct AgentPopulateSceneResult
+			{
+				bool         ok = false;
+				bool         capabilityRefusal = false;
+				std::string  providerName;
+				std::string  modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<AgentPopulateSceneCreation> created;
+				std::vector<AgentPopulateSceneRejection> rejected;
+				std::vector<AgentChunkResult> chunkResults;
+				bool         retryRan = false;
+				bool         retrySucceeded = false;
+				//! The scene's world-visible object count before and after
+				//! this call -- measured, both times, from the object
+				//! manager, so the difference is a fact about the scene
+				//! rather than a count of what this pass believes it did.
+				int          objectCountBefore = 0;
+				int          objectCountAfter = 0;
+				std::string  message;
+			};
+
+			//! Populate this scene in a FRESH minimal provider context:
+			//! place MORE standard_objects using the geometries and
+			//! materials it already has, and validated-insert the result.
+			//!
+			//! CALLABLE IN EVERY PHASE, and with the staged build protocol
+			//! off, for LightScene's reasons exactly: it needs no active
+			//! element, and a protocol-off session has no phases at all, so
+			//! refusing it there would be the over-refusal arc 78 sec 2.3
+			//! names as this design family's worst failure mode.  What IS
+			//! phase-scoped is the gate that forces its first use -- see
+			//! CheckPopulateBeforeComposeRender_.
+			//!
+			//! WHAT THE PASS IS GIVEN: arc 80's scene inventory (so a repeat
+			//! is placed in relation to real geometry), the camera and the
+			//! scene's world bounds (so it fills the FRAME rather than
+			//! scattering into space), an explicit list of the geometries and
+			//! materials already in the scene with the objects currently
+			//! using each, the imagined description if the session has one,
+			//! and ONE worked example -- a `standard_object` repeat built
+			//! from THIS scene's own geometry and material names, so the
+			//! example is not merely illustrative but literally insertable
+			//! here.
+			//!
+			//! WHAT IT IS NOT TOLD: how many objects to make, or to fill the
+			//! scene.  Object count is exactly what this arc MEASURES, so a
+			//! number in the prompt would manufacture the result.
+			//!
+			//! `notes` is optional free text from the caller, interpolated
+			//! into the host-composed prompt (see kPopulateSceneMaxNotes);
+			//! the model NEVER supplies raw prompt text.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry.
+			//! It fires NO render of its own.
+			AgentPopulateSceneResult PopulateScene( const std::string& notes = std::string() );
+
 			//! The balanced-brace CHUNK EXTRACTOR (design sec 2.2), exposed
 			//! static so a test can drive it on hostile input without a
 			//! session or a provider.  Splits `text` -- a builder's whole
@@ -5445,6 +5571,22 @@ namespace RISE
 				//! to the projected bounding box -- see
 				//! AgentSceneInventoryEntry::framePositionFromPixels).
 				int          pixelLocatedCount = 0;
+				//! ARC 82 (2026-08-12): THE POPULATION FACT.  How many
+				//! DISTINCT geometries the counted objects draw on, and how
+				//! many of those geometries are drawn on by more than one
+				//! object.  Free: the inventory's walk already visits every
+				//! object, and geometry identity is a pointer compare
+				//! (IObject::GetGeometry), so two objects naming the same
+				//! geometry chunk are the same geometry here by construction.
+				//! `geometryUnreadCount` is how many objects were NOT counted
+				//! because their geometry could not be read -- a legend name
+				//! that resolves to no manager item (a generator-synthesized
+				//! instance) or an object kind that exposes none.  Stated in
+				//! the text rather than folded away, the same
+				//! omit-rather-than-fabricate rule the frame positions follow.
+				int          distinctGeometryCount = 0;
+				int          sharedGeometryCount = 0;
+				int          geometryUnreadCount = 0;
 				//! One entry per world-visible object, in DESCENDING pixel
 				//! count then ascending name -- so the objects that covered
 				//! nothing are last and complete.
@@ -6640,6 +6782,132 @@ namespace RISE
 			//! is internal and ephemeral: none reaches the GUI's Last Render
 			//! pane or the session image cache.
 			void MeasureLightContributions_( AgentLightSceneResult& out );
+
+			//----------------------------------------------------------------
+			// ARC 82 (2026-08-12): the population pass's private surface.
+			//----------------------------------------------------------------
+
+			//! Arc 82: the FIFTH arm of the phase refusals -- is this
+			//! full-scene RENDER refused because `populate_scene` has not run
+			//! yet?  "" unless ALL of: the protocol is on and has not given
+			//! up, the session is in the COMPOSE phase, the host installed a
+			//! text completer (a path that does not exist cannot be forced;
+			//! and PopulateScene itself answers with a capability statement
+			//! there), this arm has not already fired once in this session,
+			//! and PopulateScene has not reached the provider.  Otherwise the
+			//! refusal, naming `populate_scene`.  Shares RefuseForPhase_'s
+			//! counter, cap and give-up with the other four arms, and dies
+			//! with `--agent-build-protocol=off` like all of them.
+			//!
+			//! WHY A RENDER AND NOT AN EDIT.  Population belongs BEFORE you
+			//! judge the picture, and the first compose render is the exact
+			//! moment the model turns to judging it.  There is no
+			//! "population-creating edit" to hang this on the way the light
+			//! arm hangs on a light chunk: a repeat is an ordinary
+			//! standard_object, indistinguishable from a first placement.
+			//!
+			//! IT FIRES AT MOST ONCE PER SESSION (mPopulateRenderGateFired),
+			//! which is stricter than the other four arms and deliberately
+			//! so: a refused EDIT leaves a model able to look at its scene,
+			//! while a refused RENDER leaves it blind.  One refusal names the
+			//! verb; after that every render proceeds whether or not the pass
+			//! was run.  The direct consequence for the shared budget is that
+			//! this arm can consume AT MOST ONE of the three refusals.
+			//!
+			//! THE SEAM: PIECES-phase renders are untouched (the arm returns
+			//! "" outside COMPOSE) -- arc 78 sec 2.3's rule that a model must
+			//! always be able to look at the part it is building.
+			std::string CheckPopulateBeforeComposeRender_( const char* verb,
+			                                               std::string* outGiveUpNotice );
+
+			//! Arc 82: everything Render(params) did before the population gate
+			//! was put in front of it -- the target resolve, the scene-target
+			//! snapshot, RenderCore_, and the four payload facts.  Split out so
+			//! the gate has ONE place to stand and every existing return path
+			//! below it is untouched.  Never call this to serve a model's
+			//! `render`: call Render(params), which is the gated entry.
+			AgentRenderResult RenderInner_( const AgentRenderParams& params );
+
+			//! Arc 82: has the render arm above already refused once in this
+			//! session?  See its doc for why one is the whole budget.
+			bool mPopulateRenderGateFired = false;
+
+			//! ARC 82 HAS NO `mInPopulateSceneInsert` GUARD, and the absence
+			//! is a checked fact rather than an oversight.  Its two siblings
+			//! need one because what they insert is exactly what some phase
+			//! arm refuses: BuildElement inserts GEOMETRY (the build-plan
+			//! gate, the compose-creation ban and the first-geometry arm all
+			//! fire on it) and LightScene can insert an emissive quad's
+			//! geometry.  PopulateScene inserts `standard_object` and nothing
+			//! else, and NO arm on the insert path fires on an Object chunk:
+			//! the build-plan gate, CheckComposePhaseForCreate_ and
+			//! CheckFirstGeometryThroughCleanRoom_ are each entered only
+			//! behind ChunkTextCreatesGeometry_ (ChunkCategory::Geometry
+			//! only), and the arc-81 arm only behind ChunkTextCreatesLight_.
+			//! Placing objects is precisely what arc 80 says the compose
+			//! phase is FOR.  Its own gate is on RENDER, which this verb
+			//! never calls.  If a future arm is ever made to fire on Object
+			//! creation, this is the note that says a guard became necessary.
+
+			//! Arc 82 spend cap: PopulateScene calls that actually reached
+			//! the completer this session.  Capability and schema refusals
+			//! never count.  See kPopulateSceneMaxPerSession.
+			int mPopulateSceneCalls = 0;
+
+			//! Arc 82: has `populate_scene` reached the provider in this
+			//! session?  This -- not "did anything land" -- is what lifts the
+			//! compose-phase render refusal, for mLightSceneRan's reason
+			//! exactly: a pass whose chunks were all rejected still had its
+			//! turn, and a failed pass must not strand the session.
+			bool mPopulateSceneRan = false;
+
+			//! Arc 82: ONE geometry the scene already has, and the objects
+			//! currently drawn with it -- the RAW MATERIAL a repeat is made
+			//! from.  Read from the retained CST's `standard_object` chunks,
+			//! because what a repeat must name is a chunk NAME.
+			struct PopulationStock_
+			{
+				std::string              geometry;
+				//! Distinct material names used with this geometry, in first
+				//! appearance order.
+				std::vector<std::string> materials;
+				//! The objects drawn with it, in document order.
+				std::vector<std::string> users;
+			};
+
+			//! Arc 82: collect PopulationStock_ for this scene, in descending
+			//! user count then ascending geometry name.  Empty when the scene
+			//! has no `standard_object` naming both a geometry and a material
+			//! -- the one state in which a population pass has nothing to
+			//! work from, and PopulateScene does nothing rather than send a
+			//! prompt with no raw material in it.
+			std::vector<PopulationStock_> CollectPopulationStock_() const;
+
+			//! Arc 82: the ONE worked example, built from THIS scene's own
+			//! stock so it is literally insertable here rather than merely
+			//! illustrative -- a `standard_object` naming an existing
+			//! geometry and material at a different position, orientation and
+			//! scale.  `outName` receives the object name it uses, chosen not
+			//! to collide with anything currently in the scene.  Returns ""
+			//! when `stock` is empty.
+			std::string ComposePopulationExample_( const std::vector<PopulationStock_>& stock,
+			                                       std::string& outName ) const;
+
+			//! Arc 82: compose the ENTIRE population prompt host-side -- the
+			//! session's imagined subject, the arc-80 inventory, the camera,
+			//! the world bounds, the stock listing, the standard_object
+			//! grammar from the registry, the ONE worked example, the
+			//! caller's (already length-capped) notes and the output
+			//! instruction.  `rejectionText` empty builds the FIRST prompt;
+			//! non-empty builds the ONE repair retry's.  It states the
+			//! CONTRACT (standard_object only, existing geometry and material
+			//! only) and never a count: object count is what this arc
+			//! measures, so a number here would manufacture the result.
+			std::string ComposePopulationPrompt_( const std::string& inventoryText,
+			                                      const std::vector<PopulationStock_>& stock,
+			                                      const std::string& example,
+			                                      const std::string& notes,
+			                                      const std::string& rejectionText ) const;
 
 			//! S2: true while BuildElement is submitting its own extracted
 			//! chunks through InsertChunks.  The clean-room refusal above

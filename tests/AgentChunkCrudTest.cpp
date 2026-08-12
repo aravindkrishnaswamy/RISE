@@ -12351,6 +12351,760 @@ static void TestPaletteAreaLightExampleParses()
 	}
 }
 
+//----------------------------------------------------------------------
+// ARC 82 (2026-08-12): `populate_scene` -- THE CLEAN-ROOM POPULATION PASS,
+// and the COMPOSE-phase RENDER refusal that forces its first use.
+// Design: docs/agentic-redesign/82-population-arc.md.
+//
+// THE MEASUREMENT BEHIND IT.  The hand-authored frontier benchmark on the
+// same prompt has 47 objects built from 18 distinct geometries -- 38 of the
+// 47 are REPEATS of a geometry another object already uses -- and it uses no
+// generator or instancing chunk of any kind: every repeat is an ordinary
+// standard_object naming the same geometry and material at a different
+// transform.  The best agent run to date has 16 objects and almost no reuse.
+// The gap is not modelling; it is that the session builds one of each and
+// stops.
+//
+// EVERY TEST HERE USES A MOCKED TEXT COMPLETER, through the same
+// AgentSession::SetTextCompleter seam the arc-79 and arc-81 tests use: no
+// live provider call is ever made, and the assertions are about what the
+// harness does with an answer.
+//----------------------------------------------------------------------
+
+//! Three repeats of the fixture's OWN sphere -- the shape this verb exists
+//! to produce, and every one of them references a geometry and a material
+//! that already exist.
+static const char* const kGoodPopulationAnswer =
+	"standard_object\n{\n\tname pop_sph_a\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+	"\tposition 1.4 0 -0.6\n\tscale 0.6\n}\n"
+	"standard_object\n{\n\tname pop_sph_b\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+	"\tposition -1.5 0.2 -1.1\n\torientation 0 40 0\n\tscale 0.45\n}\n"
+	"standard_object\n{\n\tname pop_sph_c\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+	"\tposition 0.3 -0.9 -2.0\n\tscale 0.8\n}\n";
+
+//! A scene with geometry and material but NO standard_object -- the one
+//! state in which a population pass has nothing to work from.
+static const char* const kNoObjectScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt_albedo\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname mat_diffuse\n\treflectance pnt_albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n";
+
+//! A session on `kScene` that has reached the COMPOSE phase -- the phase
+//! this verb's gate lives in.  A81ComposeSession's twin, kept separate so
+//! neither arc's fixture can be changed on behalf of the other.
+static std::unique_ptr<Agent::AgentSession> A82ComposeSession( Job* pJob )
+{
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->FileBuildPlan( WizardOnlyPlan() );
+	sess->FinishElement();
+	return sess;
+}
+
+//! A render as a MODEL issues one: `fromAgentSurface` is what AgentRpc's
+//! `render` handler sets, and it is the exact discriminator the gate keys
+//! on.  Everything internal to AgentSession leaves it false.
+static Agent::AgentRenderParams A82ModelRender()
+{
+	Agent::AgentRenderParams rp;
+	rp.fromAgentSurface = true;
+	rp.width  = 24;
+	rp.height = 24;
+	rp.samples = 1;
+	return rp;
+}
+
+//! A82a: the happy path -- repeats land, the prompt carries the raw
+//! material this arc exists to hand over, and the report states the object
+//! count before and after.
+static void TestPopulateSceneHappyPath()
+{
+	std::printf( "A82a: populate_scene places repeats of what the scene already has...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A82a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+	int calls = 0;
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer }, &calls, &prompts ) );
+
+	const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+	Check( r.ok, "A82a populate_scene succeeds" );
+	Check( calls == 1, "A82a MONEY ASSERTION: exactly ONE completion -- no retry on a clean answer" );
+	Check( !r.retryRan, "A82a and the result says the retry did not run" );
+	Check( r.chunksExtracted == 3, "A82a all three chunks were extracted" );
+	Check( r.created.size() == 3, "A82a and all three landed" );
+	Check( r.rejected.empty(), "A82a with nothing rejected" );
+	Check( r.created.size() == 3 && r.created[0].geometry == "sph" &&
+	       r.created[0].material == "mat_diffuse",
+	       "A82a MONEY ASSERTION: each creation records WHAT IT REPEATS -- the geometry and the "
+	       "material it referenced, both of which already existed, which is the whole contract" );
+	Check( r.objectCountBefore == 2 && r.objectCountAfter == 5,
+	       "A82a MONEY ASSERTION: the scene's object count is measured from the object manager "
+	       "BEFORE and AFTER, so the difference is a fact about the scene rather than a count of "
+	       "what the pass believes it did (got " + std::to_string( r.objectCountBefore ) + " -> " +
+	       std::to_string( r.objectCountAfter ) + ")" );
+	Check( sess->ReadDocument().find( "pop_sph_a" ) != std::string::npos &&
+	       sess->ReadDocument().find( "pop_sph_c" ) != std::string::npos,
+	       "A82a the repeats are really in the document" );
+	Check( sess->BuildPhaseRefusalCount() == 0,
+	       "A82a MONEY ASSERTION: placing objects in COMPOSE spends no phase refusal -- arc 80's "
+	       "creation ban fires on GEOMETRY, and placing an element is what compose is FOR" );
+
+	// ---- THE PROMPT.  Host-composed, and carrying the raw material a
+	// repeat is made from.
+	Check( prompts.size() == 1, "A82a one prompt was composed" );
+	if( !prompts.empty() ) {
+		const std::string& p = prompts[0];
+		Check( p.find( "SCENE INVENTORY" ) != std::string::npos &&
+		       p.find( "obj_sph" ) != std::string::npos,
+		       "A82a the arc-80 SCENE INVENTORY is in the prompt, naming the scene's actual "
+		       "objects -- so a repeat can be placed in relation to real geometry" );
+		Check( p.find( "THE CAMERA:" ) != std::string::npos &&
+		       p.find( "field of view" ) != std::string::npos,
+		       "A82a the camera pose and FOV are stated, so placements can fill the view that will "
+		       "actually be rendered" );
+		Check( p.find( "WORLD BOUNDS" ) != std::string::npos,
+		       "A82a and so are the scene's world bounds" );
+		Check( p.find( "THE GEOMETRIES AND MATERIALS THIS SCENE ALREADY HAS" ) != std::string::npos,
+		       "A82a MONEY ASSERTION: the RAW MATERIAL listing is in the prompt -- a repeat must "
+		       "reference an existing geometry and material, so the list of them IS the vocabulary" );
+		Check( p.find( "sph -- material mat_diffuse; used by 1 object: obj_sph" ) != std::string::npos,
+		       "A82a and each entry names the geometry, the material it is worn with, and the "
+		       "objects currently using it" );
+		Check( p.find( "quad_emit -- material mat_emit" ) != std::string::npos,
+		       "A82a for every geometry the scene has, not only the first" );
+		Check( p.find( "standard_object" ) != std::string::npos &&
+		       p.find( "geometry" ) != std::string::npos,
+		       "A82a the standard_object grammar comes from the descriptor registry" );
+
+		// THE ONE WORKED EXAMPLE, built from this scene's own names.
+		Check( p.find( "Example -- one more placement" ) != std::string::npos,
+		       "A82a MONEY ASSERTION: the prompt carries exactly ONE worked example -- the lever "
+		       "this workstream has measured moving what a model writes" );
+		Check( p.find( "\tgeometry\tquad_emit\n" ) != std::string::npos ||
+		       p.find( "\tgeometry\tsph\n" ) != std::string::npos,
+		       "A82a MONEY ASSERTION: and the example names THIS scene's own geometry, not an "
+		       "invented one -- an illustrative name would be copied and then rejected, spending "
+		       "the one repair retry on the harness's own placeholder (A82g proves it inserts)" );
+		Check( p.find( "\torientation\t" ) != std::string::npos &&
+		       p.find( "\tscale\t\t" ) != std::string::npos &&
+		       p.find( "\tposition\t" ) != std::string::npos,
+		       "A82a and it shows a different position, orientation AND scale, which is what makes "
+		       "a repeat a repeat rather than a duplicate" );
+
+		// NO COUNT, NO EXHORTATION.  Object count is exactly what this arc
+		// measures, so a number in the prompt would manufacture the result
+		// instead of moving it.
+		static const char* const kBannedPopulationAdvice[] = {
+			"fill the scene", "as many", "many objects", "how many", "dozens", "a lot of",
+			"be generous", "densely", "should add", "at least ten" };
+		for( std::size_t i = 0;
+		     i < sizeof( kBannedPopulationAdvice ) / sizeof( kBannedPopulationAdvice[0] ); ++i ) {
+			Check( p.find( kBannedPopulationAdvice[i] ) == std::string::npos,
+			       std::string( "A82a MONEY ASSERTION: the prompt never says \"" ) +
+			       kBannedPopulationAdvice[i] + "\" -- it states the contract, the scene and the "
+			       "vocabulary, and nothing else; the object count is what this arc MEASURES, so "
+			       "the prompt must not put one there" );
+		}
+		// And no bare digit-plus-object instruction either.
+		for( int n = 2; n <= 9; ++n ) {
+			const std::string phrase = std::to_string( n ) + " objects";
+			Check( p.find( phrase + " into" ) == std::string::npos &&
+			       p.find( "add " + phrase ) == std::string::npos,
+			       "A82a the prompt never asks for a specific number of objects" );
+		}
+	}
+
+	// ---- THE REPORT.  Facts only, exactly as the inventory and the tonal
+	// fact are.
+	Check( r.message.find( "pop_sph_a (geometry sph, material mat_diffuse)" ) != std::string::npos,
+	       "A82a the report states what each created object repeats" );
+	Check( r.message.find( "had 2 objects before this call and 5 objects after it" )
+	       != std::string::npos,
+	       "A82a MONEY ASSERTION: and the before/after object count outright -- the number this arc "
+	       "measures, stated rather than left to be inferred" );
+	static const char* const kBannedPopulationVerdict[] = {
+		"consider", "should", "too ", "sparse", "empty", "needs", "richer" };
+	for( std::size_t i = 0;
+	     i < sizeof( kBannedPopulationVerdict ) / sizeof( kBannedPopulationVerdict[0] ); ++i ) {
+		Check( r.message.find( kBannedPopulationVerdict[i] ) == std::string::npos,
+		       std::string( "A82a the result never says \"" ) + kBannedPopulationVerdict[i] +
+		       "\" -- it reports what landed and what the counts are, and stops" );
+	}
+	pJob->release();
+}
+
+//! A82b: THE HARD CONTRACT.  Only standard_object, and only naming a
+//! geometry and a material that already exist.  Everything else is
+//! REJECTED with the reason -- never dropped -- and that text drives
+//! exactly one repair retry.
+static void TestPopulateSceneContractAndRetry()
+{
+	std::printf( "A82b: populate_scene creates standard_objects and nothing else...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82b.RISEscene" );
+
+	// (1) A GEOMETRY chunk, an unknown geometry reference and an unknown
+	//     material reference are each refused; the good repeat lands.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82b/reject fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+		const std::string mixed =
+			"standard_object\n{\n\tname pop_ok\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+			"\tposition 1 0 -1\n}\n"
+			"sphere_geometry\n{\n\tname pop_new_geo\n\tradius 0.3\n}\n"
+			"uniformcolor_painter\n{\n\tname pop_new_pnt\n\tcolor 1 0 0\n}\n"
+			"standard_object\n{\n\tname pop_ghost_geo\n\tgeometry ghost\n\tmaterial mat_diffuse\n}\n"
+			"standard_object\n{\n\tname pop_ghost_mat\n\tgeometry sph\n\tmaterial ghost_mat\n}\n";
+		int calls = 0;
+		std::vector<std::string> prompts;
+		sess->SetTextCompleter( MakeFakeCompleter( { mixed, kGoodPopulationAnswer },
+		                                            &calls, &prompts ) );
+
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.ok, "A82b/reject the call reports its outcome" );
+		bool sawGeometryKind = false, sawPainterKind = false;
+		bool sawUnknownGeometry = false, sawUnknownMaterial = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
+			const std::string& why = r.rejected[i].reason;
+			if( r.rejected[i].kind == "sphere_geometry" &&
+			    why.find( "not part of a population pass" ) != std::string::npos )
+				sawGeometryKind = true;
+			if( r.rejected[i].kind == "uniformcolor_painter" &&
+			    why.find( "not part of a population pass" ) != std::string::npos )
+				sawPainterKind = true;
+			if( why.find( "the geometry \"ghost\", which this scene does not have" ) != std::string::npos )
+				sawUnknownGeometry = true;
+			if( why.find( "the material \"ghost_mat\", which this scene does not have" ) != std::string::npos )
+				sawUnknownMaterial = true;
+		}
+		Check( sawGeometryKind && sawPainterKind,
+		       "A82b/reject MONEY ASSERTION: a geometry chunk and a painter chunk are BOTH rejected "
+		       "-- populate_scene creates standard_object and nothing else, which is what stops it "
+		       "becoming a second builder; new form belongs to build_element" );
+		Check( sawUnknownGeometry,
+		       "A82b/reject MONEY ASSERTION: a repeat naming a geometry this scene does not have is "
+		       "rejected WITH THAT REASON, so the pass is told what was wrong rather than that "
+		       "something was" );
+		Check( sawUnknownMaterial,
+		       "A82b/reject and the same for an unknown material" );
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "pop_new_geo" )  == std::string::npos &&
+		       doc.find( "pop_new_pnt" )  == std::string::npos &&
+		       doc.find( "pop_ghost_geo" ) == std::string::npos &&
+		       doc.find( "pop_ghost_mat" ) == std::string::npos,
+		       "A82b/reject RED-PROVE: not one of the four reached the document" );
+		Check( doc.find( "pop_ok" ) != std::string::npos,
+		       "A82b/reject while the good repeat in the same answer landed -- never an "
+		       "all-or-nothing on a per-chunk rule" );
+
+		// THE ONE REPAIR RETRY, driven by this harness's own rejection text.
+		Check( r.retryRan, "A82b/reject the one repair retry ran" );
+		Check( calls == 2, "A82b/reject MONEY ASSERTION: exactly TWO completions -- one, then stop" );
+		Check( r.retrySucceeded, "A82b/reject and it landed more chunks" );
+		Check( prompts.size() == 2 &&
+		       prompts[1].find( "A PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED" )
+		       != std::string::npos &&
+		       prompts[1].find( "which this scene does not have" ) != std::string::npos,
+		       "A82b/reject MONEY ASSERTION: the retry is corrected by this harness's own rejection "
+		       "text VERBATIM, not by a paraphrase of it" );
+		pJob->release();
+	}
+
+	// (2) A DUPLICATE NAME is rejected and NOT renamed -- InsertChunks'
+	//     own contract, which is this verb's naming rule too.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82b/dupe fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string collides =
+			"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n"
+			"\tposition 2 0 0\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { collides, collides } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( r.created.empty(),
+		       "A82b/dupe MONEY ASSERTION: a repeat whose name is already taken by an existing "
+		       "object is REJECTED, never silently renamed -- renaming would break the references "
+		       "the pass wrote between its own chunks" );
+		Check( !r.rejected.empty(), "A82b/dupe and it is reported" );
+		Check( r.objectCountBefore == 2 && r.objectCountAfter == 2,
+		       "A82b/dupe with the object count unmoved, measured both times" );
+		pJob->release();
+	}
+}
+
+//! A82c: the capability refusal, the per-session spend cap, and the
+//! nothing-to-repeat case -- the three bounds, each of which must cost the
+//! provider nothing.
+static void TestPopulateSceneCapabilityCapAndNoStock()
+{
+	std::printf( "A82c: populate_scene's capability refusal, spend cap and empty-stock case...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82c.RISEscene" );
+
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82c/cap-refusal fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		Check( !sess->BuildCapable(), "A82c no completer is installed" );
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( !r.ok && r.capabilityRefusal,
+		       "A82c a provider that cannot run a separate completion refuses honestly" );
+		Check( r.message.find( "authoring standard_object chunks directly" ) != std::string::npos,
+		       "A82c and says outright that hand authoring is not blocked by it" );
+		Check( sess->ReadDocument() == docBefore, "A82c with the document untouched" );
+		pJob->release();
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82c/cap fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		int calls = 0;
+		// A completer that always FAILS, so each call is cheap and the cap is
+		// what stops the sequence rather than the document filling up.
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-population-1";
+		c.complete = [&calls]( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			++calls;
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "mock refuses";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+
+		for( int i = 0; i < Agent::AgentSession::kPopulateSceneMaxPerSession; ++i )
+			sess->PopulateScene();
+		const int callsAtCap = calls;
+		const Agent::AgentSession::AgentPopulateSceneResult over = sess->PopulateScene();
+		Check( !over.ok && over.message.find( "per-session cap" ) != std::string::npos,
+		       "A82c MONEY ASSERTION: the call past the per-session cap is refused and says so" );
+		Check( calls == callsAtCap,
+		       "A82c and it reached the provider ZERO further times -- the cap bounds real money" );
+		pJob->release();
+	}
+	{
+		const std::string tmp2 = TempPath( "agentcrud_a82c_nostock.RISEscene" );
+		Job* pJob = LoadScene( kNoObjectScene, tmp2 );
+		Check( pJob != nullptr, "A82c/nostock fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer }, &calls ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+		Check( !r.ok && r.message.find( "nothing for a placement to reference" ) != std::string::npos,
+		       "A82c/nostock MONEY ASSERTION: a scene with no standard_object naming both a geometry "
+		       "and a material has nothing to repeat, and the pass says so" );
+		Check( calls == 0,
+		       "A82c/nostock and it never called the provider -- sending a prompt whose vocabulary "
+		       "list is empty would spend real money to be told what the harness already knows" );
+		pJob->release();
+	}
+}
+
+//! A82d: THE COMPOSE-PHASE RENDER GATE.  In compose, the FIRST full-scene
+//! render is refused once and names populate_scene.  Renders in the pieces
+//! phase are never touched, isolate renders are never touched, and the
+//! refusal fires at most once whatever the model does next.
+static void TestComposePhaseFirstRenderRefusal()
+{
+	std::printf( "A82d: in compose, the first render is gated on populate_scene...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82d.RISEscene" );
+
+	// (1) REFUSED ONCE, naming the verb -- and ONLY once.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82d/refuse fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "A82d the session is in the compose phase" );
+
+		const Agent::AgentRenderResult r1 = sess->Render( A82ModelRender() );
+		Check( !r1.ok,
+		       "A82d MONEY ASSERTION: the first compose-phase render is refused while "
+		       "populate_scene has not run -- population belongs before you judge the picture, and "
+		       "the first compose render is the moment the model turns to judging it" );
+		Check( r1.message.find( "populate_scene" ) != std::string::npos &&
+		       r1.message.find( "render refused" ) != std::string::npos,
+		       "A82d and the refusal names the verb and says what happened" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A82d it burns exactly one slot of the SHARED phase counter (the fifth arm)" );
+
+		const Agent::AgentRenderResult r2 = sess->Render( A82ModelRender() );
+		Check( r2.ok,
+		       "A82d MONEY ASSERTION: the SECOND render proceeds even though populate_scene still "
+		       "has not run -- this arm fires at most once per session, because a refused EDIT "
+		       "leaves a model able to look at its scene while a refused RENDER leaves it blind" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A82d and no second slot of the shared counter was spent" );
+		const Agent::AgentRenderResult r3 = sess->Render( A82ModelRender() );
+		Check( r3.ok, "A82d -- and it stays lifted" );
+		pJob->release();
+	}
+
+	// (2) RUNNING THE PASS lifts it too, on a session that has not spent
+	//     the one-shot -- and the pass itself is never gated by the rule it
+	//     arms, because it fires no render at all.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82d/lift fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+
+		const Agent::AgentSession::AgentPopulateSceneResult pr = sess->PopulateScene();
+		Check( pr.ok && pr.created.size() == 3, "A82d/lift the pass runs and lands its repeats" );
+		Check( sess->Render( A82ModelRender() ).ok,
+		       "A82d/lift MONEY ASSERTION: once populate_scene has run, the very first render "
+		       "proceeds -- population through the clean room, judgement in the model's hands" );
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "A82d/lift and no refusal was ever spent" );
+		pJob->release();
+	}
+
+	// (3) A FAILED PASS LIFTS IT TOO.  The gate keys on "has the pass
+	//     reached the provider", not on "did anything land": refusing
+	//     renders after the clean room's one turn would strand exactly the
+	//     session whose provider failed.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82d/failed fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-population-1";
+		c.complete = []( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "mock refuses";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+		const Agent::AgentSession::AgentPopulateSceneResult pr = sess->PopulateScene();
+		Check( !pr.ok, "A82d/failed the pass did not complete" );
+		Check( sess->Render( A82ModelRender() ).ok,
+		       "A82d/failed MONEY ASSERTION: and the render still proceeds -- a failed clean room "
+		       "must not leave a session unable to look at its own scene" );
+		pJob->release();
+	}
+
+	// (4) THE SEAM: pieces-phase renders are never gated, and neither are
+	//     isolate renders or the session's own internal passes.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82d/pieces fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A82d/pieces the plan files" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+		       "A82d/pieces the session is in the pieces phase" );
+		Check( sess->Render( A82ModelRender() ).ok,
+		       "A82d/pieces MONEY ASSERTION: a pieces-phase render is NEVER refused -- arc 78 sec "
+		       "2.3's rule that a model must always be able to look at the part it is building, "
+		       "which this arc must not take back" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A82d/pieces and spends no refusal" );
+
+		Check( sess->FinishElement().ok, "A82d/pieces the element finishes" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "A82d/pieces the session is now in compose" );
+		{
+			// An ISOLATE render is looking at ONE part, not judging the
+			// picture -- the same exclusion the arc-80 inventory makes.
+			Agent::AgentRenderParams iso = A82ModelRender();
+			iso.isolate = "obj_sph";
+			Check( sess->Render( iso ).ok,
+			       "A82d/pieces MONEY ASSERTION: an isolate render in COMPOSE is not refused either "
+			       "-- it looks at one object, which is not judging the composed picture" );
+			Check( sess->BuildPhaseRefusalCount() == 0, "A82d/pieces and spends no refusal" );
+		}
+		{
+			// AN INTERNAL PASS.  `scene_inventory` runs a real render of its
+			// own; every internal render in AgentSession leaves
+			// `fromAgentSurface` false, which is exactly why the gate cannot
+			// see them.
+			const Agent::AgentSession::AgentSceneInventoryResult si = sess->SceneInventory();
+			Check( si.ok,
+			       "A82d/pieces MONEY ASSERTION: an INTERNAL render (the inventory's identity pass) "
+			       "is never gated -- a diagnostic that could be refused would be a diagnostic that "
+			       "stops working exactly when it is needed" );
+			Check( sess->BuildPhaseRefusalCount() == 0, "A82d/pieces and spends no refusal" );
+		}
+		// ... and the model-issued full-scene render is still refused once.
+		Check( !sess->Render( A82ModelRender() ).ok,
+		       "A82d/pieces the gate is still armed for the render that IS judging the picture" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "A82d/pieces and THAT one spends the slot" );
+		pJob->release();
+	}
+
+	// (5) PROTOCOL OFF disables the refusal with everything else -- and
+	//     populate_scene itself still WORKS, because placing objects needs
+	//     no element window and a protocol-off session has no phases at all.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82d/off fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+		Check( !sess->BuildProtocolActive(), "A82d/off the protocol is inactive for this session" );
+
+		Check( sess->Render( A82ModelRender() ).ok,
+		       "A82d/off MONEY ASSERTION: a render is NOT refused with --agent-build-protocol=off -- "
+		       "the gate dies with the protocol like its four siblings" );
+		const Agent::AgentSession::AgentPopulateSceneResult pr = sess->PopulateScene();
+		Check( pr.ok,
+		       "A82d/off MONEY ASSERTION: and populate_scene STILL WORKS with the protocol off -- "
+		       "refusing it on a session that has no phases at all would be exactly the "
+		       "over-refusal arc 78 sec 2.3 names as this design family's worst failure mode" );
+		pJob->release();
+	}
+}
+
+//! A82e: THE THREE-ARM CAP INTERACTION.  Five arms now share
+//! RefuseForPhase_'s 3-refusal counter, three of which live in COMPOSE:
+//! arc 80's delete ban, arc 81's first-light gate and arc 82's first-render
+//! gate.  A session that hits all three must not be starved -- and the
+//! render arm's one-shot is what bounds its share of the budget.
+static void TestThreeComposeArmsShareOneCap()
+{
+	std::printf( "A82e: the three compose-phase arms share one cap without starving anyone...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82e.RISEscene" );
+
+	// (1) ALL THREE FIRE, one slot each, then the FOURTH refusable call
+	//     gives up and proceeds.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82e/all3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+
+		Check( !sess->InsertChunk( A81Light( "a82e_hand_key" ) ).applied,
+		       "A82e/all3 arc 81's first-light arm refuses (slot 1)" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "A82e/all3 one slot spent" );
+		Check( !sess->RemoveChunk( "obj_sph" ).applied,
+		       "A82e/all3 arc 80's delete ban refuses (slot 2)" );
+		Check( sess->BuildPhaseRefusalCount() == 2, "A82e/all3 two slots spent" );
+		Check( !sess->Render( A82ModelRender() ).ok,
+		       "A82e/all3 arc 82's first-render arm refuses (slot 3)" );
+		Check( sess->BuildPhaseRefusalCount() == 3,
+		       "A82e/all3 MONEY ASSERTION: all three COMPOSE arms draw on ONE shared budget -- a "
+		       "model that cannot work the protocol must not have to exhaust three separate ones" );
+		Check( !sess->BuildPhaseGaveUp(), "A82e/all3 three is the cap, not the give-up" );
+
+		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81Light( "a82e_hand_2" ) );
+		Check( r4.applied && sess->BuildPhaseGaveUp(),
+		       "A82e/all3 MONEY ASSERTION: the FOURTH refusable call GIVES UP and proceeds -- the "
+		       "give-up is a GLOBAL release, so no arrangement of the three can strand a session" );
+		Check( sess->Render( A82ModelRender() ).ok &&
+		       sess->RemoveChunk( "obj_sph" ).applied,
+		       "A82e/all3 and every arm has stopped intercepting, render included" );
+		pJob->release();
+	}
+
+	// (2) THE RENDER ARM'S SHARE IS BOUNDED AT ONE.  Ten renders in a row
+	//     spend one slot between them, leaving the other two arms their
+	//     budget -- the property the one-shot exists to guarantee.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82e/bound fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+
+		int refusedRenders = 0;
+		for( int i = 0; i < 10; ++i )
+			if( !sess->Render( A82ModelRender() ).ok ) ++refusedRenders;
+		Check( refusedRenders == 1,
+		       "A82e/bound MONEY ASSERTION: TEN renders produce exactly ONE refusal (got " +
+		       std::to_string( refusedRenders ) + ") -- without the one-shot the render arm alone "
+		       "would burn the whole shared cap and trip the give-up, silently disarming arc 80's "
+		       "delete ban and arc 81's light gate for the rest of the session" );
+		Check( sess->BuildPhaseRefusalCount() == 1 && !sess->BuildPhaseGaveUp(),
+		       "A82e/bound and two slots are left for the other two arms" );
+		Check( !sess->InsertChunk( A81Light( "a82e_b_key" ) ).applied &&
+		       !sess->RemoveChunk( "obj_sph" ).applied,
+		       "A82e/bound which they then use, both still intercepting" );
+		Check( sess->BuildPhaseRefusalCount() == 3, "A82e/bound the cap is reached, exactly" );
+		pJob->release();
+	}
+
+	// (3) THE OPPOSITE ORDER: the other two arms exhaust the cap FIRST.
+	//     The render arm then never refuses -- the failure direction is
+	//     always "let through", never "blocked forever" -- and the give-up
+	//     notice rides the render's own result so the event is visible.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82e/spent fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+
+		Check( !sess->InsertChunk( A81Light( "a82e_s1" ) ).applied, "A82e/spent slot 1" );
+		Check( !sess->InsertChunk( A81Light( "a82e_s2" ) ).applied, "A82e/spent slot 2" );
+		Check( !sess->InsertChunk( A81Light( "a82e_s3" ) ).applied, "A82e/spent slot 3" );
+		Check( sess->BuildPhaseRefusalCount() == 3 && !sess->BuildPhaseGaveUp(),
+		       "A82e/spent the cap is reached by the light arm alone" );
+
+		const Agent::AgentRenderResult rr = sess->Render( A82ModelRender() );
+		Check( rr.ok,
+		       "A82e/spent MONEY ASSERTION: the render PROCEEDS -- an arm that arrives after the "
+		       "shared budget is spent lets the call through and triggers the give-up; it can never "
+		       "block one forever" );
+		Check( sess->BuildPhaseGaveUp(), "A82e/spent and the session has given up" );
+		Check( rr.message.find( "stopped intercepting" ) != std::string::npos,
+		       "A82e/spent MONEY ASSERTION: with the give-up notice folded into the RENDER's own "
+		       "result, so a trajectory census sees the event rather than only a log line" );
+		pJob->release();
+	}
+}
+
+//! A82f: populate_scene over JSON-RPC -- the wire shape, the one schema
+//! error it has, and the gated render as a model actually meets it.
+static void TestPopulateSceneWireShape()
+{
+	std::printf( "A82f: populate_scene over JSON-RPC...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A82f fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	// THE GATED RENDER, over the real wire -- the surface a model meets.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"render\",\"params\":{\"width\":24,\"height\":24,\"samples\":1}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "A82f the gated render returns a result object" );
+		Check( !result.get( "ok" ).asBool( true ),
+		       "A82f MONEY ASSERTION: the first compose-phase render over the wire is refused" );
+		Check( result.get( "message" ).asString().find( "populate_scene" ) != std::string::npos,
+		       "A82f and the message names the verb that lifts it" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"populate_scene\",\"params\":{}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "A82f populate_scene returns a result object" );
+		Check( result.get( "ok" ).asBool( false ), "A82f ok:true" );
+		Check( result.get( "created" ).isArray() && result.get( "created" ).size() == 3,
+		       "A82f the created list rides the wire" );
+		Check( result.get( "created" ).at( 0 ).get( "geometry" ).asString() == "sph" &&
+		       result.get( "created" ).at( 0 ).get( "material" ).asString() == "mat_diffuse",
+		       "A82f MONEY ASSERTION: with what each one REPEATS as a STRUCTURED fact, not only "
+		       "prose" );
+		Check( result.get( "objectsBefore" ).asNumber( -1 ) == 2.0 &&
+		       result.get( "objectsAfter" ).asNumber( -1 ) == 5.0,
+		       "A82f and the before/after object counts" );
+		Check( result.get( "retryRan" ).asBool( true ) == false, "A82f retryRan is reported" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"render\",\"params\":{\"width\":24,\"height\":24,\"samples\":1}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "A82f the post-pass render returns a result object" );
+		Check( result.get( "ok" ).asBool( false ),
+		       "A82f MONEY ASSERTION: and the render after the pass PROCEEDS over the same wire" );
+	}
+	// The ONE schema defect: a non-string `notes`.  There are no required
+	// params -- which scene gets populated is a property of the session.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"populate_scene\",\"params\":{\"notes\":7}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "A82f a non-string `notes` is a schema error" );
+	}
+}
+
+//! A82g: THE EXAMPLE INSERTS.  populate_scene ships one worked example, and
+//! an example that does not parse is worse than none -- it spends the
+//! model's repair retry on the harness's own typo.  So the example is
+//! EXTRACTED FROM THE SHIPPED PROMPT (not retyped here, which would only
+//! prove the copy parses) and pushed through the real validated insertion.
+//! A81h's approach, applied to this arc's one example.
+static void TestPopulationExampleInserts()
+{
+	std::printf( "A82g: populate_scene's worked example really inserts...\n" );
+	const std::string tmp = TempPath( "agentcrud_a82g.RISEscene" );
+
+	// ---- Lift the example out of the prompt this surface actually sends.
+	std::string example;
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82g/compose fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::vector<std::string> prompts;
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer }, nullptr, &prompts ) );
+		sess->PopulateScene();
+		Check( prompts.size() == 1, "A82g a prompt was composed" );
+		if( !prompts.empty() ) {
+			const std::string& p = prompts[0];
+			const std::string head = "orientation and scale:\n";
+			const std::size_t a = p.find( head );
+			const std::size_t b = ( a == std::string::npos )
+				? std::string::npos : p.find( "\n\nWHAT THIS CALL WILL ACCEPT", a );
+			Check( a != std::string::npos && b != std::string::npos,
+			       "A82g the example block is locatable in the prompt" );
+			if( a != std::string::npos && b != std::string::npos )
+				example = p.substr( a + head.size(), b - ( a + head.size() ) );
+		}
+		pJob->release();
+	}
+	Check( example.compare( 0, 16, "standard_object\n" ) == 0,
+	       "A82g and the block lifted is a standard_object chunk" );
+	if( example.empty() ) return;
+
+	// ---- Push it through the real insertion path, verbatim, on a FRESH
+	//      copy of the same scene -- so what is proved is that the example
+	//      the model is shown lands in the scene the model is shown it for.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82g/insert fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { example } ) );
+		const Agent::AgentSession::AgentPopulateSceneResult r = sess->PopulateScene();
+
+		Check( r.ok && r.chunksExtracted == 1,
+		       "A82g the example is one chunk and it was extracted" );
+		Check( r.created.size() == 1 && r.rejected.empty(),
+		       "A82g MONEY ASSERTION: the shipped example LANDS through the real validated "
+		       "insertion -- including the reference rule, which means the geometry and the "
+		       "material it names really do exist in this scene. A worked example that gets "
+		       "rejected is worse than no example at all" );
+		Check( !r.retryRan, "A82g with no repair retry -- nothing was rejected to repair" );
+		Check( r.objectCountAfter == r.objectCountBefore + 1,
+		       "A82g and the scene really gained an object" );
+		Check( !r.created.empty() && !r.created[0].geometry.empty() &&
+		       sess->ReadDocument().find( r.created[0].name ) != std::string::npos,
+		       "A82g which is in the document under the name the example used" );
+		pJob->release();
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -12507,6 +13261,15 @@ int main()
 	TestLightSceneWireShape();
 	TestAmbientLightIsAlwaysRefused();
 	TestPaletteAreaLightExampleParses();
+
+	// Arc 82 (2026-08-12): the clean-room population pass and its render gate.
+	TestPopulateSceneHappyPath();
+	TestPopulateSceneContractAndRetry();
+	TestPopulateSceneCapabilityCapAndNoStock();
+	TestComposePhaseFirstRenderRefusal();
+	TestThreeComposeArmsShareOneCap();
+	TestPopulateSceneWireShape();
+	TestPopulationExampleInserts();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

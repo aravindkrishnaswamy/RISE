@@ -2890,6 +2890,84 @@ static void RunSceneInventoryTests()
 		std::remove( scenePath.c_str() );
 	}
 
+	// ---- (b3) ARC 82 (2026-08-12): THE POPULATION FACT. -----------------
+	//
+	// The frontier benchmark on this workstream's own prompt has 47 objects
+	// built from 18 distinct geometries -- 38 of the 47 are repeats of a
+	// geometry another object already uses -- and it reaches that with no
+	// generator or instancing chunk at all: every repeat is an ordinary
+	// standard_object naming the same geometry at a different transform.
+	// The inventory's walk already visits every object, so stating how many
+	// distinct geometries they draw on and how many of those are drawn on
+	// more than once is free.  FACTS ONLY: two counts, no verdict, no
+	// target, and no comparison to any reference.
+	{
+		// FOUR objects, TWO geometries, ONE of which is repeated three times
+		// -- so the two figures are distinguishable from each other and from
+		// the object count.  Distinctness is decided by geometry POINTER, and
+		// this scene is the proof that two objects naming one geometry chunk
+		// count as one geometry rather than two.
+		static const char* const kRepeatScene =
+			"RISE ASCII SCENE 7\n"
+			"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+			"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+			"film\n{\n\twidth 64\n\theight 48\n}\n\n"
+			"pinhole_camera\n{\n\tlocation 0 0 10\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+			"omni_light\n{\n\tname key\n\tposition 0 5 10\n\tpower 60\n\tcolor 1 1 1\n}\n\n"
+			"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+			"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_ball\n\tradius 0.5\n}\n\n"
+			"sphere_geometry\n{\n\tname geo_lone\n\tradius 0.4\n}\n\n"
+			"standard_object\n{\n\tname obj_ball_a\n\tgeometry geo_ball\n\tmaterial mat\n\tposition -1.6 0 0\n}\n\n"
+			"standard_object\n{\n\tname obj_ball_b\n\tgeometry geo_ball\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+			"standard_object\n{\n\tname obj_ball_c\n\tgeometry geo_ball\n\tmaterial mat\n\tposition 1.6 0 0\n}\n\n"
+			"standard_object\n{\n\tname obj_lone\n\tgeometry geo_lone\n\tmaterial mat\n\tposition 0 1.4 0\n}\n";
+		const std::string scenePath = WriteTemp( "rise_agent_inventory_repeat.RISEscene", kRepeatScene );
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+		       "Job loads the repeated-geometry scene via the CST path" );
+		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+		const AgentSession::AgentSceneInventoryResult si = session->SceneInventory();
+		Check( si.ok && si.objectCount == 4, "the repeated-geometry scene has four objects" );
+		Check( si.distinctGeometryCount == 2,
+		       "MONEY ASSERTION: four objects drawing on TWO geometries are counted as two -- "
+		       "distinctness is geometry POINTER identity, so three objects naming one geometry "
+		       "chunk cannot read as three geometries (got " +
+		       std::to_string( si.distinctGeometryCount ) + ")" );
+		Check( si.sharedGeometryCount == 1,
+		       "MONEY ASSERTION: and exactly ONE of those two is used by more than one object -- "
+		       "the reuse figure, which is what separates 47-objects-from-18-geometries from "
+		       "47-objects-from-47 (got " + std::to_string( si.sharedGeometryCount ) + ")" );
+		Check( si.geometryUnreadCount == 0,
+		       "with every object's geometry read, so neither figure is silently partial" );
+		Check( si.text.find( "Those objects draw on 2 distinct geometries, 1 of which is used by "
+		                      "more than one object." ) != std::string::npos,
+		       "MONEY ASSERTION: and the fact is IN THE TEXT the model reads, on the render "
+		       "payload it already meets -- every voluntary consultation surface this workstream "
+		       "shipped measured 0/64 uses" );
+		Check( si.text.find( "could not be read" ) == std::string::npos,
+		       "and the unread clause is absent when there is nothing unread, rather than "
+		       "present with a zero" );
+		// FACTS ONLY, exactly as the rest of the inventory is: no target, no
+		// comparison, no verdict about whether two is enough.
+		static const char* const kBannedPopulationWords[] = {
+			"consider", "should", "sparse", "benchmark", "too few", "only", "more variety" };
+		for( std::size_t i = 0;
+		     i < sizeof( kBannedPopulationWords ) / sizeof( kBannedPopulationWords[0] ); ++i ) {
+			Check( si.text.find( kBannedPopulationWords[i] ) == std::string::npos,
+			       std::string( "the population fact never says \"" ) + kBannedPopulationWords[i] +
+			       "\" -- it states two counts and stops; a verdict would contaminate the very "
+			       "behaviour arc 82 measures" );
+		}
+		// THE PAYLOAD AND THE VERB ARE STILL ONE CODE PATH.
+		const AgentRenderResult r = session->Render( AgentRenderParams() );
+		Check( r.ok && r.inventoryApplied &&
+		       r.inventoryText.find( "2 distinct geometries" ) != std::string::npos,
+		       "and the same sentence rides the render payload, from the same formatter" );
+		pJob->release();
+		std::remove( scenePath.c_str() );
+	}
+
 	// ---- (c) THE ARC-79 SHAPE: 19 objects, none of them on screen. ------
 	{
 		const std::string sceneText = BuildNineteenObjectScene();

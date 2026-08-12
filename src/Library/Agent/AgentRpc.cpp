@@ -1258,6 +1258,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// Arc 82 (2026-08-12): populate_scene is the clean-room
+					// POPULATION verb and mutates (it inserts the
+					// standard_object chunks its pass returned, through the
+					// ordinary InsertChunks path), so it is excluded from
+					// IsProposeSafeVerb for exactly the reason light_scene is,
+					// with the same message shape.
+					if( m == "populate_scene" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; populate_scene "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					if( m == "build_element" || m == "place_element" ) {
 						return MakeProposeAutonomyRefusedError( idValue, m,
 							"refused: this session runs with --agent-autonomy=propose; " + m +
@@ -2612,6 +2626,94 @@ namespace RISE
 						result.set( "contributions", conArr );
 					}
 					result.set( "message", JsonValue::MakeString( lr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// populate_scene {notes?}
+				//   -> {ok, provider, model, chunksExtracted,
+				//       created:[{name,geometry,material}],
+				//       rejected:[{name,kind,reason}], chunkResults, retryRan,
+				//       retrySucceeded, objectsBefore, objectsAfter, message}
+				//   Arc 82 (2026-08-12), the clean-room POPULATION pass.
+				//   MUTATING -- it inserts the standard_object chunks its pass
+				//   returned through the ordinary InsertChunks path, so it is
+				//   NOT on IsReadSafeVerb; it is also deliberately NOT on
+				//   IsProposeSafeVerb, for light_scene's reason and with the
+				//   same Propose-specific message (see the autonomy block
+				//   above).
+				//   THE ONLY -32602 is a non-string `notes`.  There are no
+				//   required params at all: which scene gets populated is a
+				//   property of the session, not of the request, and every
+				//   state outcome (no head, no completer, no geometry to
+				//   repeat, the per-session cap) is an ok:false success
+				//   envelope rather than a schema error.
+				//--------------------------------------------------------------
+				if( m == "populate_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentPopulateSceneResult pr = s->PopulateScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( pr.ok ) );
+					if( pr.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !pr.providerName.empty() ) result.set( "provider", JsonValue::MakeString( pr.providerName ) );
+					if( !pr.modelId.empty() )      result.set( "model",    JsonValue::MakeString( pr.modelId ) );
+					if( pr.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( pr.chunksExtracted ) ) );
+						JsonValue createdArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < pr.created.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name", JsonValue::MakeString( pr.created[i].name ) );
+							// OMITTED rather than sent empty: a repeat always
+							// names both, but a chunk result whose identity
+							// echo came back without them must not report a
+							// blank as if it were a reference.
+							if( !pr.created[i].geometry.empty() )
+								o.set( "geometry", JsonValue::MakeString( pr.created[i].geometry ) );
+							if( !pr.created[i].material.empty() )
+								o.set( "material", JsonValue::MakeString( pr.created[i].material ) );
+							createdArr.push_back( o );
+						}
+						result.set( "created", createdArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < pr.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !pr.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( pr.rejected[i].name ) );
+							if( !pr.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( pr.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( pr.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < pr.chunkResults.size(); ++i ) {
+							crArr.push_back( ChunkResultJson( pr.chunkResults[i],
+								s->ChunkElement( pr.chunkResults[i].name ) ) );
+						}
+						result.set( "chunkResults", crArr );
+						result.set( "retryRan",       JsonValue::MakeBool( pr.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( pr.retrySucceeded ) );
+						result.set( "objectsBefore",
+							JsonValue::MakeNumber( static_cast<double>( pr.objectCountBefore ) ) );
+						result.set( "objectsAfter",
+							JsonValue::MakeNumber( static_cast<double>( pr.objectCountAfter ) ) );
+					}
+					result.set( "message", JsonValue::MakeString( pr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

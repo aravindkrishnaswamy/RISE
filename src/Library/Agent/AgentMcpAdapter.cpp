@@ -349,6 +349,15 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! Arc 82 (2026-08-12): the SEVENTH sibling, same rationale and
+			//! same shape -- populate_scene mutates (it inserts the
+			//! standard_object chunks its pass returned) and is deliberately
+			//! excluded from AgentRpc.cpp's IsProposeSafeVerb.
+			const std::string kPopulateSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: populate_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			//! Build the `tools/list` result: the 29 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
@@ -1030,6 +1039,60 @@ namespace RISE
 						"allLightsMeanLuma,contributions:[{name,kind,soloed,meanLuma,share,reason}],"
 						"message}." );
 					tools.push_back( MakeTool( "light_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// populate_scene (Arc 82, 2026-08-12) -- the clean-room
+				// POPULATION verb.  It MUTATES (it inserts the standard_object
+				// chunks its pass returned), so it is not read-safe, and it is
+				// additionally excluded from AgentRpc's Propose-autonomy
+				// allowlist exactly like light_scene, carrying the matching
+				// note.  THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for
+				// the drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the population pass alongside the inventory and "
+						"the camera -- anything about what this scene is that its own state does not "
+						"already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kPopulateSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Populate the scene: this call asks the session's provider, in a FRESH context "
+						"that contains nothing but this scene's object inventory (every object, its "
+						"screen footprint and its world position), the camera, the scene's world bounds, "
+						"the imagined description if the session has one, and A LIST OF THE GEOMETRIES "
+						"AND MATERIALS THIS SCENE ALREADY HAS with the objects currently using each, to "
+						"place more objects. What comes back is split into chunks, checked, and inserted "
+						"here. IT CREATES standard_object CHUNKS AND NOTHING ELSE: no geometry, no "
+						"material, no painter, no light, no camera. Each one must name a geometry and a "
+						"material THAT ALREADY EXIST -- a chunk naming an unknown geometry or material "
+						"is rejected with that reason, and a chunk of any other kind is rejected too. "
+						"Making new form is build_element's job, not this one's. The prompt carries ONE "
+						"worked example, built from this scene's own geometry and material names so it "
+						"is literally insertable here. It is the way the FIRST compose-phase render gets "
+						"earned: in the COMPOSE phase, while populate_scene has not run, the first "
+						"full-scene render is refused ONCE and names this tool -- one refusal, shared "
+						"with the other build-phase rules and capped with them, after which every render "
+						"proceeds whether or not this ran; renders in the pieces phase are never "
+						"refused, and neither is a render with `isolate`. A name already used in the "
+						"scene is rejected and NOT renamed. If anything is rejected, ONE repair retry "
+						"runs automatically with the exact rejection text -- one, then it stops, and "
+						"whatever landed stays landed. Nothing is ever dropped silently. The result "
+						"reports which objects were created and what geometry and material each one "
+						"repeats, what was rejected and why, and the scene's object count before and "
+						"after. On a provider that cannot run a separate completion this returns "
+						"ok:false with a plain statement, nothing else changes, and authoring "
+						"standard_object chunks by hand is not blocked. A scene with no standard_object "
+						"naming both a geometry and a material has nothing to repeat, and this returns "
+						"ok:false saying so without calling the provider. Returns {ok,provider,model,"
+						"chunksExtracted,created:[{name,geometry,material}],"
+						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
+						"objectsBefore,objectsAfter,message}." );
+					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on
@@ -1727,6 +1790,7 @@ namespace RISE
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
 					"light_scene",       // Arc 81 (2026-08-12): MUTATING, the clean-room lighting pass
+					"populate_scene",    // Arc 82 (2026-08-12): MUTATING, the clean-room population pass
 					"compare_to_reference",
 					"list_proposals", "resolve_proposal"
 				};

@@ -206,8 +206,8 @@ int main()
 		       "SECOND response echoes id==2 (tools/list -- the notification in between produced no line)" );
 		if( ok ) {
 			const JsonValue& tools = env.get( "result" ).get( "tools" );
-			Check( tools.isArray() && tools.size() == 31,
-			       "tools/list response lists exactly the 31 agent verbs" );
+			Check( tools.isArray() && tools.size() == 32,
+			       "tools/list response lists exactly the 32 agent verbs" );
 		}
 	}
 

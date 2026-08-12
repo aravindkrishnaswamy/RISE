@@ -451,6 +451,14 @@ namespace RISE
 			       // file_build_plan's sketch echo and imagine_scene's
 			       // generated image each got, and for the same reason.
 			       v == "light_scene" ||
+			       // Arc 82 (2026-08-12): ONE populate_scene call is ONE blind
+			       // mutation for light_scene's reason exactly -- it inserts a
+			       // whole set of placements with no visual observation in
+			       // between.  It is even more clearly NOT a look than its
+			       // sibling: it fires no render at all, not even an internal
+			       // one, so there is nothing here that could be mistaken for
+			       // an observation.
+			       v == "populate_scene" ||
 				       v == "propose_patch" || v == "propose_patches" ||
 				       v == "remove_chunk" ||
 				       // R1a (2026-08-09): ONE remove_chunks call is ONE

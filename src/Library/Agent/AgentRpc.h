@@ -933,11 +933,22 @@
 //                                            inventory, the camera, the world bounds,
 //                                            the session's imagined subject if it has
 //                                            one, the lights that already exist, and
-//                                            the FULL light palette -- omni / spot /
-//                                            directional / ambient / hosek_wilkie
-//                                            skylight / area-via-emissive-material --
-//                                            with the registry's grammar and a literal
-//                                            example for each.  Validated-inserted
+//                                            the light palette this pass can author --
+//                                            area-via-emissive-material FIRST and
+//                                            carrying the ONLY worked example, then
+//                                            hosek_wilkie skylight, then omni / spot /
+//                                            directional as zero-area idealizations
+//                                            with the registry's grammar and NO
+//                                            example.  `ambient_light` is NOT in the
+//                                            palette and is refused on every path
+//                                            that could create one, in every phase
+//                                            and with the build protocol off.
+//                                            (Corrected 2026-08-12: this comment
+//                                            previously advertised ambient and "a
+//                                            literal example for each", both untrue
+//                                            since the arc-81 fix-round -- a stale
+//                                            model-facing claim is the same defect
+//                                            class as a false one.)  Validated-inserted
 //                                            through the ordinary InsertChunks path
 //                                            with ONE repair retry; nothing is ever
 //                                            dropped silently.  `contributions`
@@ -955,6 +966,42 @@
 //                                            like build_element.  TAKES NO REQUIRED
 //                                            PARAMS; the only -32602 is a non-string
 //                                            `notes`.)
+//      populate_scene {notes?}           -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,
+//                                            created:[{name,geometry?,material?}],
+//                                            rejected:[{name?,kind?,reason}],
+//                                            chunkResults,retryRan,retrySucceeded,
+//                                            objectsBefore,objectsAfter,message}
+//                                           (Arc 82 (2026-08-12): the CLEAN-ROOM
+//                                            POPULATION pass -- the same pattern
+//                                            applied to placement.  ONE fresh minimal
+//                                            completion through the session's own
+//                                            provider, given the arc-80 scene
+//                                            inventory, the camera, the world bounds,
+//                                            the session's imagined subject if it has
+//                                            one, and an explicit list of the
+//                                            geometries and materials the scene
+//                                            already has with the objects using each,
+//                                            plus ONE worked example built from this
+//                                            scene's own names.  HARD CONTRACT: it
+//                                            may create `standard_object` chunks and
+//                                            nothing else, each naming a geometry and
+//                                            a material that ALREADY EXIST -- new form
+//                                            belongs to build_element, and a chunk
+//                                            naming an unknown geometry or material is
+//                                            rejected with that reason.  Validated-
+//                                            inserted through the ordinary
+//                                            InsertChunks path with ONE repair retry;
+//                                            nothing is ever dropped silently.  It
+//                                            forces its own first use by refusing the
+//                                            FIRST compose-phase `render` (once per
+//                                            session, sharing the build-phase refusal
+//                                            cap; pieces-phase renders are never
+//                                            refused).  MUTATING: not read-safe, and
+//                                            deliberately not on the Propose allowlist
+//                                            either, exactly like light_scene.  TAKES
+//                                            NO REQUIRED PARAMS; the only -32602 is a
+//                                            non-string `notes`.)
 //      compare_to_reference {reference,camera?,visual?,samples?}
 //                                        -> {ok,error?,badReference?,rmse,
 //                                            channelDelta:{r,g,b},
