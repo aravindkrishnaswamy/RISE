@@ -136,6 +136,41 @@ is active. Display tone curve still applies; P1 shaders emit linear values
 chosen for legibility under the default transform (only `objectmap` needs and
 implements byte exactness).
 
+### Vacuum traversal (2026-08-12)
+
+Every ShaderPipeline caster — the `objectmap` identity caster and all four data
+modes — sets `RayCaster::SetBypassMediumTransport(true)`, so it traverses the
+scene as a **vacuum**: both an enclosing object's interior medium and the
+scene's `global_medium` are ignored. BeautyVariant modes (`deep_reflect`,
+`direct`, `indirect`, `clay_lights`) deliberately do **not** — those are real
+transport renders and must keep participating media.
+
+Volumetric transport is not a physical effect these modes should honour; it is
+a corruption of their data contract, and it breaks them three ways at once:
+
+1. The medium's free-flight sampler terminates most primary rays at a scatter
+   event **before any surface**, so the shader never runs for those pixels.
+2. A surviving ray's flat data value is multiplied by the medium's per-channel
+   transmittance, so an identity byte no longer equals its palette entry.
+3. An **in-scattered radiance term is added on top** — and it is Monte-Carlo
+   sampled, so the render is not even reproducible run to run.
+
+Measured before the fix on `scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene`
+(47 objects, `global_medium med_ocean`) at 96×72: **zero** of the 47 registered
+legend colours appeared anywhere in the image, the frame carried 4964–5080
+**distinct** colours out of 6912 pixels, only ~2200 of 6912 pixels were ever
+shaded, and every run differed. `query_object_at` answered *"hit an
+unregistered/unmapped object"* for points visibly on objects. After the fix:
+41 distinct colours, every non-background pixel exactly a legend colour,
+per-object image count == shader tally, `5855 + 1057 background == 6912`, and
+byte-identical across runs.
+
+Note that `quality:"draft"` (the studio material preview) is **not** covered by
+this flag. Its shader synthesizes its own studio lighting and ignores scene
+lights, but it emits radiance rather than data, so it has no exactness contract
+to violate — a draft render inside a dense medium is legitimately foggy. Regression
+coverage: `AgentObjectMapTest`'s `kSceneMedium` block.
+
 ## 5. Viewport mode switching (P1 mechanism)
 
 The shader rides on the ray caster, and `InteractivePelRasterizer` already has

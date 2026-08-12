@@ -122,6 +122,36 @@ namespace RISE
 			//! one bool test).  Set via SetXrayViewResolve.
 			bool						bXrayViewResolve;
 
+			//! When true, CastRay / CastRayNM / CastRayHWSS treat the scene
+			//! as a VACUUM: the enclosing-object interior medium and the
+			//! scene's `global_medium` are both ignored, so a primary ray
+			//! travels in a straight line to the first surface and the
+			//! shader's returned colour reaches the film UNMODIFIED -- no
+			//! free-flight scatter event that terminates the ray short of
+			//! any surface, no transmittance multiply, no in-scattered
+			//! radiance added on top.
+			//!
+			//! This exists for the DIAGNOSTIC casters whose shaders emit
+			//! DATA rather than radiance: the objectmap identity shader
+			//! (whose per-pixel byte must equal the object's palette entry
+			//! exactly -- see CreateInteractiveObjectMapPipeline) and the
+			//! normals / depth / facets / wireframe view-mode shaders.  For
+			//! those, volumetric transport is not a physical effect to
+			//! honour but a corruption: it rescales a flat identity colour
+			//! per pixel, adds a Monte-Carlo in-scattering term (so the same
+			//! render is not even reproducible run to run), and swallows the
+			//! majority of primary rays before they ever reach a surface, so
+			//! most pixels never call Shade at all.  In a scene with a
+			//! `global_medium` that turns the whole identity contract into
+			//! noise.
+			//!
+			//! Deliberately NOT set on the BeautyVariant view modes
+			//! (deep_reflect / direct / indirect / clay_lights): those ARE
+			//! transport renders and must keep participating media.
+			//! Default false; production casters never set it (cost when off
+			//! is one bool test on a path that already reads the IOR stack).
+			bool						bBypassMediumTransport;
+
 			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
 			//! pending solo-target identity, retained across a same-
 			//! pointer LightSampler rebuild (RebuildLightSamplers destroys
@@ -386,6 +416,14 @@ namespace RISE
 
 			/// \return Whether the caster-layer x-ray resolver is enabled.
 			bool GetXrayViewResolve() const { return bXrayViewResolve; }
+
+			//! Enables/disables vacuum traversal for a diagnostic caster --
+			//! see `bBypassMediumTransport` for the full contract.  Off by
+			//! default; production casters never call this.
+			void SetBypassMediumTransport( const bool enable ) { bBypassMediumTransport = enable; }
+
+			/// \return Whether this caster ignores participating media.
+			bool GetBypassMediumTransport() const { return bBypassMediumTransport; }
 
 			//! GUI render modes (docs/gui/RENDER_MODES.md §3 "light solo"):
 			//! resolves `name` against the attached scene's ILightManager

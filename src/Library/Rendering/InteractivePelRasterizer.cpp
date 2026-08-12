@@ -1294,8 +1294,28 @@ bool RISE::Implementation::CreateInteractiveObjectMapPipeline(
 	// hitting an emitter BEFORE the ObjectIdShader runs, so the emissive
 	// object would vanish into background and its legend entry would be a
 	// permanent unexplained pixelCount:0.
-	IRayCaster* pCaster = new InteractiveMaterialPreviewRayCaster( *pShader, /*showLuminaires*/true );
+	InteractiveMaterialPreviewRayCaster* pCaster =
+		new InteractiveMaterialPreviewRayCaster( *pShader, /*showLuminaires*/true );
 	pShader->release();
+
+	// EXACTNESS INVARIANT, transport half: traverse a VACUUM.  Without this
+	// a scene that declares a `global_medium` (or an object with an interior
+	// medium the camera sits inside) destroys the identity contract three
+	// ways at once -- the free-flight sampler terminates most primary rays
+	// at a scatter event before they ever reach a surface (so ObjectIdShader
+	// never runs for those pixels and the legend's pixelCounts collapse),
+	// the survivors' flat identity colour is multiplied by the medium's
+	// per-channel transmittance, and an in-scattered radiance term is added
+	// on top.  The result is an image in which NONE of the registered
+	// palette colours appear, `query_object_at` reports "no object here" on
+	// points that are visibly on objects, and the whole render is
+	// Monte-Carlo noisy so it is not even reproducible run to run.
+	// Measured on scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene
+	// (47 objects, `global_medium med_ocean`): 0 of 47 legend colours
+	// present, 4964-5080 distinct colours in a 6912-pixel frame, and only
+	// ~2200 of 6912 pixels shaded, varying every run.  See
+	// AgentObjectMapTest's kSceneMedium coverage.
+	pCaster->SetBypassMediumTransport( true );
 
 	// Default preview config, progressive OFF -- a single exact pass.  We
 	// deliberately install NO polish caster and NO sampling kernel: the
@@ -1440,6 +1460,17 @@ bool RISE::Implementation::CreateInteractiveViewModeCaster(
 	// ResolveXrayView_.  This composes with all four data modes with no
 	// per-shader plumbing.
 	pCaster->SetXrayViewResolve( xray );
+	// The four data modes emit DATA, not radiance -- a world-space normal, a
+	// windowed depth, a facet index, an edge distance.  Volumetric transport
+	// has nothing to contribute to any of them and everything to take away:
+	// it terminates primary rays at scatter events (so a normal/depth pixel
+	// reports the medium rather than the surface behind it) and rescales the
+	// false colour that does survive.  Traverse a vacuum, same reasoning as
+	// the objectmap identity caster -- see RayCaster::bBypassMediumTransport.
+	// The BeautyVariant modes (deep_reflect / direct / indirect /
+	// clay_lights) are NOT built here; they route through
+	// CreateBeautyVariantPipeline and keep participating media, as they must.
+	pCaster->SetBypassMediumTransport( true );
 	*ppCaster = pCaster;
 	return true;
 }

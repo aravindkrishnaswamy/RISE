@@ -137,6 +137,7 @@ RayCaster::RayCaster(
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
   bWantsWireEdgeInfo( false ),
   bXrayViewResolve( false ),
+  bBypassMediumTransport( false ),
   iPendingSoloKind( 0 ),
   pendingSoloLight( 0 ),
   pendingSoloLuminary( 0 )
@@ -763,7 +764,13 @@ bool RayCaster::CastRay(
 	//      - Apply transmittance to surface shading result
 	// ----------------------------------------------------------------
 	const IObject* pMediumObject = 0;
-	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+	// bBypassMediumTransport: a DIAGNOSTIC caster (objectmap identity /
+	// normals / depth / facets / wireframe) traverses a VACUUM, so the flat
+	// data its shader emits reaches the film unmodified -- see the flag's
+	// contract in RayCaster.h.  Production casters leave this false.
+	const IMedium* pMedium = bBypassMediumTransport
+		? 0
+		: MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
 	// G6: stamp the ambient (incident-medium) IOR so a GGX conductor shaded via
 	// the RayCaster shader path sees the surrounding medium's IOR rather than
@@ -1456,7 +1463,11 @@ bool RayCaster::CastRayNM(
 
 	// Medium transport (spectral variant)
 	const IObject* pMediumObject = 0;
-	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
+	// bBypassMediumTransport: a DIAGNOSTIC caster traverses a vacuum -- see
+	// the flag's contract in RayCaster.h.
+	const IMedium* pMedium = bBypassMediumTransport
+		? 0
+		: MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
 	// G6: stamp the ambient (incident-medium) IOR (per-wavelength n(λ) in NM) so
 	// a GGX conductor shaded via the RayCaster spectral shader path uses the
@@ -2485,7 +2496,12 @@ bool RayCaster::CastRayHWSS(
 	// Check for participating medium BEFORE Russian roulette.
 	// CastRayNM performs its own RR internally, so we must not
 	// apply RR here and then again inside CastRayNM.
-	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	// bBypassMediumTransport (see RayCaster.h) short-circuits the whole
+	// per-wavelength CastRayNM fallback, keeping a diagnostic caster on ONE
+	// code path whether or not the scene declares a medium.
+	const IMedium* pMedium = bBypassMediumTransport
+		? 0
+		: MediumTracking::GetCurrentMedium( ior_stack, pScene );
 	if( pMedium )
 	{
 		bool anyHit = false;
