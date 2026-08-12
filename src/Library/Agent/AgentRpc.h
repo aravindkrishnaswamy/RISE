@@ -942,13 +942,10 @@
 //                                            example.  `ambient_light` is NOT in the
 //                                            palette and is refused on every path
 //                                            that could create one, in every phase
-//                                            and with the build protocol off.
-//                                            (Corrected 2026-08-12: this comment
-//                                            previously advertised ambient and "a
-//                                            literal example for each", both untrue
-//                                            since the arc-81 fix-round -- a stale
-//                                            model-facing claim is the same defect
-//                                            class as a false one.)  Validated-inserted
+//                                            and with the build protocol off.  That
+//                                            asymmetry -- one worked example, for the
+//                                            physical light -- IS the encoded policy
+//                                            (81 §8), not an omission.  Validated-inserted
 //                                            through the ordinary InsertChunks path
 //                                            with ONE repair retry; nothing is ever
 //                                            dropped silently.  `contributions`
