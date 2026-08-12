@@ -29,8 +29,10 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.snapshot_path = ROOT / "docs/data/source_pulls/fire_sim_open_sources_v1.json"
+        cls.constants_path = ROOT / "docs/data/fire_fuel_methane_v1.draft.json"
         cls.snapshot = json.loads(cls.snapshot_path.read_text(encoding="utf-8"))
-        cls.record = records.methane_payload(cls.snapshot)
+        cls.constants = records.load_methane_constants(cls.constants_path)
+        cls.record = records.methane_payload(cls.snapshot,cls.constants)
 
     def test_physical_species_and_no_owner_gated_condensable(self) -> None:
         self.assertEqual(list(records.METHANE_SPECIES), self.record["species_order"])
@@ -79,11 +81,33 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
             self.assertEqual(basis, records.matrix_multiply(projector, basis))
 
     def test_generated_include_is_current(self) -> None:
-        generated = records.generate(self.snapshot_path)
+        generated = records.generate(self.snapshot_path,self.constants_path)
         committed = (ROOT / "src/Library/Utilities/FireSimulationRecordData.inc").read_text(
             encoding="utf-8")
         self.assertEqual(committed, generated)
         self.assertIn("kFireSimMethanePhysicalV1SHA256", generated)
+
+    def test_r52_operational_constant_taxonomy(self) -> None:
+        ignition = self.record["ignition_gate"]
+        pilot = ignition["pilot_temperature_K"]
+        autoignition = ignition["autoignition_temperature_K"]
+        self.assertEqual("design_gate_not_measured_property",
+                         pilot["model_basis"]["kind"])
+        self.assertNotIn("provenance", pilot)
+        self.assertLess(pilot["value"], autoignition["value"])
+        self.assertEqual("range", autoignition["uncertainty"]["kind"])
+        self.assertEqual("measured_1sigma",
+                         self.record["gross_soot_yield_kg_per_kg_fuel"]
+                         ["uncertainty"]["kind"])
+        self.assertEqual(0.0,
+                         self.record["gross_soot_yield_kg_per_kg_fuel"]["value"])
+        radiative = self.record["radiative_fraction_default"]
+        self.assertEqual([0.07,0.28],radiative["uncertainty"]["magnitude"])
+        self.assertIn("case_record",radiative["override_policy"])
+        density = self.record["soot_density_reference"]
+        self.assertNotIn("value",density)
+        self.assertEqual(records.PREDICTIVE_FIRE_OPTICS_RECORD_SHA256,
+                         density["optics_preset_record_id"])
 
     def test_contrived_red_closures_are_distinct_nonpreset_records(self) -> None:
         fixtures = records.solver_fixture_payloads()

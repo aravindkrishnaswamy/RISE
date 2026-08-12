@@ -54,6 +54,7 @@ $FireOpticsData = Join-Path $RepoRoot 'docs\data'
 $FireOpticsEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireOpticsRecordData.inc'
 $FireSimulationGenerator = Join-Path $RepoRoot 'tools\generate_fire_simulation_records.py'
 $FireSimulationData = Join-Path $RepoRoot 'docs\data\source_pulls\fire_sim_open_sources_v1.json'
+$FireSimulationMethaneConstants = Join-Path $RepoRoot 'docs\data\fire_fuel_methane_v1.draft.json'
 $FireSimulationEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireSimulationRecordData.inc'
 $FireSimulationGeneratorTest = Join-Path $RepoRoot 'tests\test_fire_simulation_record_generator.py'
 $FireGasOpacityGenerator = Join-Path $RepoRoot 'tools\generate_fire_gas_opacity_record.py'
@@ -82,7 +83,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host 'pass'
 Write-Host -NoNewline 'Checking embedded fire-simulation records ... '
-& $python $FireSimulationGenerator --check $FireSimulationData $FireSimulationEmbedded
+& $python $FireSimulationGenerator --check --methane-constants `
+    $FireSimulationMethaneConstants $FireSimulationData $FireSimulationEmbedded
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'FAILED' -ForegroundColor Red
     exit $LASTEXITCODE

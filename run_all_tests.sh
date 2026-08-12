@@ -12,6 +12,7 @@ FIRE_OPTICS_DATA="$REPO_ROOT/docs/data"
 FIRE_OPTICS_EMBEDDED="$LIB_DIR/Utilities/FireOpticsRecordData.inc"
 FIRE_SIM_GENERATOR="$REPO_ROOT/tools/generate_fire_simulation_records.py"
 FIRE_SIM_DATA="$REPO_ROOT/docs/data/source_pulls/fire_sim_open_sources_v1.json"
+FIRE_SIM_METHANE_CONSTANTS="$REPO_ROOT/docs/data/fire_fuel_methane_v1.draft.json"
 FIRE_SIM_EMBEDDED="$LIB_DIR/Utilities/FireSimulationRecordData.inc"
 FIRE_SIM_GENERATOR_TEST="$REPO_ROOT/tests/test_fire_simulation_record_generator.py"
 FIRE_GAS_OPACITY_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_record.py"
@@ -104,6 +105,7 @@ printf 'Checking embedded fire-optics records ... '
 echo "pass"
 printf 'Checking embedded fire-simulation records ... '
 "$python_bin" "$FIRE_SIM_GENERATOR" --check \
+	--methane-constants "$FIRE_SIM_METHANE_CONSTANTS" \
 	"$FIRE_SIM_DATA" "$FIRE_SIM_EMBEDDED"
 echo "pass"
 printf 'Testing physical methane record arithmetic ... '

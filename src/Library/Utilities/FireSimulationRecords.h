@@ -88,6 +88,15 @@ namespace RISE
 		double m_sootOxygenKGPerKGCarbon;
 		double m_sootCO2KGPerKGCarbon;
 		double m_sootHeatReleaseJPerKGCarbon;
+		double m_pilotTemperatureK;
+		double m_autoignitionTemperatureK;
+		double m_sootOxidationTemperatureK;
+		double m_sootYieldKGPerKGFuel;
+		double m_defaultRadiativeFraction;
+		double m_radiativeFractionMinimum;
+		double m_radiativeFractionMaximum;
+		std::string m_sootDensityOpticsRecordName;
+		std::string m_sootDensityOpticsRecordId;
 		std::vector<FireThermochemistrySpecies> m_thermochemistrySpecies;
 		std::vector<std::string> m_speciesOrder;
 		std::vector<std::string> m_elementOrder;
@@ -137,6 +146,23 @@ namespace RISE
 		{
 			return m_sootHeatReleaseJPerKGCarbon;
 		}
+		double PilotTemperatureK() const { return m_pilotTemperatureK; }
+		double AutoignitionTemperatureK() const { return m_autoignitionTemperatureK; }
+		double SootOxidationTemperatureK() const { return m_sootOxidationTemperatureK; }
+		double SootYieldKGPerKGFuel() const { return m_sootYieldKGPerKGFuel; }
+		double DefaultRadiativeFraction() const { return m_defaultRadiativeFraction; }
+		bool ResolveRadiativeFraction(
+			const char* caseRecordId,
+			bool hasCaseOverride,
+			double caseOverride,
+			double& result,
+			std::string* error = 0
+			) const;
+		bool ResolveSootDensityKGPerM3(
+			const FireOpticsPreset& optics,
+			double& result,
+			std::string* error = 0
+			) const;
 		const std::vector<std::string>& SpeciesOrder() const { return m_speciesOrder; }
 		const FireThermochemistrySpecies* FindSpecies( const char* id ) const;
 		bool CpJPerKGK( const char* speciesId, double temperatureK,

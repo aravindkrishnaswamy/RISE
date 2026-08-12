@@ -270,6 +270,26 @@ int main()
 	Check(std::fabs(methane.LowerHeatingValueJPerKG()-50027364.88044851) < 0.1 &&
 		std::fabs(methane.StoichiometricOxygenKGPerKGFuel()-3.989263492008084) < 1.0e-12,
 		"methane LHV and oxygen coefficient derive from the pinned CEA formation data");
+	double defaultRadiativeFraction = 0.0, overriddenRadiativeFraction = 0.0;
+	double referencedSootDensity = 0.0;
+	Check(methane.PilotTemperatureK() == 600.0 &&
+		methane.AutoignitionTemperatureK() == 810.4 &&
+		methane.SootOxidationTemperatureK() == 1300.0 &&
+		methane.SootYieldKGPerKGFuel() == 0.0,
+		"methane exposes the r52 operational constants by their distinct taxonomy");
+	Check(methane.ResolveRadiativeFraction(0,false,0.0,defaultRadiativeFraction) &&
+		defaultRadiativeFraction == 0.2 &&
+		methane.ResolveRadiativeFraction(
+			"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			true,0.14,overriddenRadiativeFraction) && overriddenRadiativeFraction == 0.14 &&
+		!methane.ResolveRadiativeFraction("not-a-case-record",true,0.14,
+			overriddenRadiativeFraction),
+		"radiative fraction defaults from fuel and overrides only through a hashed case record");
+	Check(methane.ResolveSootDensityKGPerM3(FireOpticsPreset::PredictiveV1(),
+		referencedSootDensity) && referencedSootDensity == 1800.0 &&
+		!methane.ResolveSootDensityKGPerM3(FireOpticsPreset::SyntheticRegressionV1(),
+			referencedSootDensity),
+		"methane soot density resolves only through the adopted optics record identity");
 	std::vector<double> arbitraryFlux = {0.13,-0.22,0.31,-0.17,0.19,-0.07,0.11,-0.09};
 	std::vector<double> projectedFlux;
 	Check(methane.NonadvectiveFluxProjection().Project(arbitraryFlux,projectedFlux),

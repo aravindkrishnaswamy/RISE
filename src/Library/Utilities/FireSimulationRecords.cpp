@@ -1810,7 +1810,10 @@ namespace RISE
 		m_referenceTemperatureK(0.0), m_pressurePa(0.0),
 		m_lowerHeatingValueJPerKG(0.0), m_stoichiometricOxygenKGPerKGFuel(0.0),
 		m_sootOxygenKGPerKGCarbon(0.0), m_sootCO2KGPerKGCarbon(0.0),
-		m_sootHeatReleaseJPerKGCarbon(0.0)
+		m_sootHeatReleaseJPerKGCarbon(0.0), m_pilotTemperatureK(0.0),
+		m_autoignitionTemperatureK(0.0), m_sootOxidationTemperatureK(0.0),
+		m_sootYieldKGPerKGFuel(0.0), m_defaultRadiativeFraction(0.0),
+		m_radiativeFractionMinimum(0.0), m_radiativeFractionMaximum(0.0)
 	{
 	}
 
@@ -1847,6 +1850,65 @@ namespace RISE
 			m_elementOrder != expectedElements ||
 			!ReadBlockers(record,m_predictiveBlockers,error) ) {
 			return Fail(error,"fire-simulation methane record header is invalid");
+		}
+		const RISECBOR64::Value* constantsSource = Required(
+			record,"operational_constants_source",RISECBOR64::Value::Map,error);
+		std::string constantsName, constantsDigest;
+		double constantsRevision = 0.0;
+		if( !constantsSource || constantsSource->GetMap().size() != 3 ||
+			!ReadText(*constantsSource,"record_name",constantsName,error) ||
+			constantsName != "fire-fuel-methane-v1" ||
+			!ReadText(*constantsSource,"source_file_sha256",constantsDigest,error) ||
+			constantsDigest != "be8c6642d306361a6aae36f7d648399f21232dc52490b3db0114a853b37f3307" ||
+			!constantsSource->Find("design_revision") ||
+			!ReadNumber(*constantsSource->Find("design_revision"),constantsRevision,error) ||
+			constantsRevision != 52.0 ) {
+			return Fail(error,"fire-simulation methane operational-constants authority is invalid");
+		}
+
+		auto readOperationalEnvelope = [error](
+			const RISECBOR64::Value& envelope,
+			const char* expectedUnit,
+			const char* expectedUncertainty,
+			double& value ) {
+			const RISECBOR64::Value* uncertainty = Required(
+				envelope,"uncertainty",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* source = Required(
+				envelope,"provenance",RISECBOR64::Value::Map,error);
+			std::string unit, applicability, kind;
+			return uncertainty && source && ReadFloat(envelope,"value",value,error) &&
+				ReadText(envelope,"unit",unit,error) && unit == expectedUnit &&
+				ReadText(envelope,"applicability",applicability,error) &&
+				ValidateUncertainty(*uncertainty,error) &&
+				ReadText(*uncertainty,"kind",kind,error) && kind == expectedUncertainty &&
+				ValidateProvenance(*source,error);
+		};
+		const RISECBOR64::Value* ignition = Required(
+			record,"ignition_gate",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* pilot = ignition ? Required(
+			*ignition,"pilot_temperature_K",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* autoignition = ignition ? Required(
+			*ignition,"autoignition_temperature_K",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* pilotUncertainty = pilot ? Required(
+			*pilot,"uncertainty",RISECBOR64::Value::Map,error) : 0;
+		const RISECBOR64::Value* pilotBasis = pilot ? Required(
+			*pilot,"model_basis",RISECBOR64::Value::Map,error) : 0;
+		std::string pilotUnit, pilotApplicability, pilotKind, basisKind;
+		if( !ignition || ignition->GetMap().size() != 2 || !pilot || !autoignition ||
+			pilot->GetMap().size() != 5 || pilot->Find("provenance") || !pilotUncertainty ||
+			!pilotBasis || !ReadFloat(*pilot,"value",m_pilotTemperatureK,error) ||
+			!ReadText(*pilot,"unit",pilotUnit,error) || pilotUnit != "K" ||
+			!ReadText(*pilot,"applicability",pilotApplicability,error) ||
+			!ValidateUncertainty(*pilotUncertainty,error) ||
+			!ReadText(*pilotUncertainty,"kind",pilotKind,error) ||
+			pilotKind != "design_pinned_exact" ||
+			!ReadText(*pilotBasis,"kind",basisKind,error) ||
+			basisKind != "design_gate_not_measured_property" ||
+			!readOperationalEnvelope(*autoignition,"K","range",
+				m_autoignitionTemperatureK) ||
+			m_pilotTemperatureK != 600.0 || m_autoignitionTemperatureK != 810.4 ||
+			!(m_pilotTemperatureK < m_autoignitionTemperatureK) ) {
+			return Fail(error,"fire-simulation methane ignition taxonomy is invalid");
 		}
 
 		const RISECBOR64::Value* encodedSpecies = Required(
@@ -1983,6 +2045,50 @@ namespace RISE
 				return Fail(error,"fire-simulation methane boundary element arithmetic is false");
 			}
 		}
+		const RISECBOR64::Value* sootYieldEnvelope = Required(
+			record,"gross_soot_yield_kg_per_kg_fuel",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* radiativeEnvelope = Required(
+			record,"radiative_fraction_default",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* radiativeUncertainty = radiativeEnvelope ? Required(
+			*radiativeEnvelope,"uncertainty",RISECBOR64::Value::Map,error) : 0;
+		std::vector<double> radiativeRange;
+		std::string overridePolicy;
+		if( !sootYieldEnvelope || !radiativeEnvelope || !radiativeUncertainty ||
+			!readOperationalEnvelope(*sootYieldEnvelope,"kg soot / kg fuel",
+				"measured_1sigma",m_sootYieldKGPerKGFuel) ||
+			m_sootYieldKGPerKGFuel != 0.0 ||
+			!readOperationalEnvelope(*radiativeEnvelope,"dimensionless","range",
+				m_defaultRadiativeFraction) ||
+			!ReadText(*radiativeEnvelope,"override_policy",overridePolicy,error) ||
+			overridePolicy != "case_record_whole_record_override_with_case_record_id" ||
+			!radiativeUncertainty->Find("magnitude") ||
+			!ReadFloatArray(*radiativeUncertainty->Find("magnitude"),radiativeRange,error) ||
+			radiativeRange.size() != 2 || radiativeRange[0] != 0.07 ||
+			radiativeRange[1] != 0.28 || m_defaultRadiativeFraction != 0.2 ) {
+			return Fail(error,"fire-simulation methane soot/radiative taxonomy is invalid");
+		}
+		m_radiativeFractionMinimum = radiativeRange[0];
+		m_radiativeFractionMaximum = radiativeRange[1];
+		const RISECBOR64::Value* densityReference = Required(
+			record,"soot_density_reference",RISECBOR64::Value::Map,error);
+		std::string densityComponent, densityField, densityConversion;
+		if( !densityReference || densityReference->GetMap().size() != 5 ||
+			densityReference->Find("value") ||
+			!ReadText(*densityReference,"optics_preset_record_name",
+				m_sootDensityOpticsRecordName,error) ||
+			m_sootDensityOpticsRecordName != "fire-optics-predictive-v1" ||
+			!ReadText(*densityReference,"optics_preset_record_id",
+				m_sootDensityOpticsRecordId,error) ||
+			m_sootDensityOpticsRecordId !=
+				"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" ||
+			!ReadText(*densityReference,"component_record_name",densityComponent,error) ||
+			densityComponent != "soot-mac-equivalent-e-v1" ||
+			!ReadText(*densityReference,"field_path",densityField,error) ||
+			densityField != "effective_absorption.pinned_density_g_cm3" ||
+			!ReadText(*densityReference,"conversion",densityConversion,error) ||
+			densityConversion != "kg_per_m3=1000*g_per_cm3" ) {
+			return Fail(error,"fire-simulation methane soot density is not an adopted optics reference");
+		}
 
 		const RISECBOR64::Value* heating = Required(
 			record,"lower_heating_value_J_per_kg",RISECBOR64::Value::Map,error);
@@ -2027,6 +2133,7 @@ namespace RISE
 			!ReadExactRational(*effectiveOxygenValue,effectiveOxygen,error) ||
 			!ReadExactRational(*effectiveHeatValue,effectiveHeat,error) ||
 			!ReadExactRational(*sootYieldValue,sootYield,error) || !sootYield.IsZero() ||
+			static_cast<double>(sootYield.ToLongDouble()) != m_sootYieldKGPerKGFuel ||
 			!ReadExactRational(*condensableYieldValue,condensableYield,error) || !condensableYield.IsZero() ||
 			!ReadRationalArray(*reaction,"constituent_delta_kg_per_kg_fuel",reactionDelta,
 				m_primaryReactionDelta,7,error) ||
@@ -2093,9 +2200,13 @@ namespace RISE
 		}
 		const RISECBOR64::Value* sootOxidation = Required(
 			record,"soot_oxidation",RISECBOR64::Value::Map,error);
+		const RISECBOR64::Value* oxidationTemperature = sootOxidation ? Required(
+			*sootOxidation,"activation_temperature_K",RISECBOR64::Value::Map,error) : 0;
 		ExactRational sootOxygen, sootCO2, sootHeat, sootMassResidual;
 		std::string sootEquation;
-		if( !sootOxidation ||
+		if( !sootOxidation || !oxidationTemperature ||
+			!readOperationalEnvelope(*oxidationTemperature,"K","assumption_bound",
+				m_sootOxidationTemperatureK) || m_sootOxidationTemperatureK != 1300.0 ||
 			!ReadText(*sootOxidation,"equation",sootEquation,error) || sootEquation != "C(gr)+O2->CO2" ||
 			!sootOxidation->Find("oxygen_kg_per_kg_carbon") ||
 			!ReadExactRational(*sootOxidation->Find("oxygen_kg_per_kg_carbon"),sootOxygen,error) ||
@@ -2304,6 +2415,46 @@ namespace RISE
 		}
 		result = 0.5*(lower+upper);
 		return true;
+	}
+
+	bool FireSimulationMethaneRecord::ResolveRadiativeFraction(
+		const char* caseRecordId,
+		const bool hasCaseOverride,
+		const double caseOverride,
+		double& result,
+		std::string* error
+		) const
+	{
+		if( !m_valid ) return Fail(error,"methane radiative fraction requires a valid fuel record");
+		if( !hasCaseOverride ) {
+			result = m_defaultRadiativeFraction;
+			return true;
+		}
+		const std::string identity = caseRecordId ? caseRecordId : "";
+		if( identity.size() != 64 || !std::all_of(identity.begin(),identity.end(),
+			[]( const char value ) { return (value >= '0' && value <= '9') ||
+				(value >= 'a' && value <= 'f'); }) ||
+			!std::isfinite(caseOverride) || caseOverride < 0.0 || caseOverride > 1.0 ) {
+			return Fail(error,"methane radiative-fraction override lacks a canonical case record");
+		}
+		result = caseOverride;
+		return true;
+	}
+
+	bool FireSimulationMethaneRecord::ResolveSootDensityKGPerM3(
+		const FireOpticsPreset& optics,
+		double& result,
+		std::string* error
+		) const
+	{
+		if( !m_valid || !optics.IsValid() || optics.IsSynthetic() ||
+			optics.RecordName() != m_sootDensityOpticsRecordName ||
+			optics.RecordId() != m_sootDensityOpticsRecordId ) {
+			return Fail(error,"methane soot density reference does not resolve to the adopted optics record");
+		}
+		result = optics.SootDensityKgM3();
+		return (result > 0.0 && std::isfinite(result)) ||
+			Fail(error,"methane referenced soot density is invalid");
 	}
 
 	const RISECBOR64::Bytes& FireSimulationSolverFixtureRecords::NearRankDeficientV1()

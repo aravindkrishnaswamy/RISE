@@ -45,6 +45,11 @@ EXPECTED_SOURCE_SHA256 = {
     "fds_license": "38c542304b97afc4171a9b67866499eaf222509cab45c095ea69bf88d57755b7",
 }
 EXPECTED_SOURCE_SNAPSHOT_SHA256 = "063c75b9e23079ad08d601666a587733c4546692eeabb4ba8bffdafa8cbf35bd"
+EXPECTED_METHANE_CONSTANTS_SHA256 = "be8c6642d306361a6aae36f7d648399f21232dc52490b3db0114a853b37f3307"
+PREDICTIVE_FIRE_OPTICS_RECORD_NAME = "fire-optics-predictive-v1"
+PREDICTIVE_FIRE_OPTICS_RECORD_SHA256 = \
+    "2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137"
+SOOT_DENSITY_COMPONENT_RECORD_NAME = "soot-mac-equivalent-e-v1"
 THERMO_NAMES = (
     "Ar", "CH4", "CH3OH", "CO", "CO2", "C7H16,n-heptane",
     "H2O", "N2", "O2", "C(gr)",
@@ -898,7 +903,49 @@ def nullspace_certificate(name: str, row_order: list[str], state_order: list[str
     }
 
 
-def methane_payload(snapshot: dict) -> dict:
+def load_methane_constants(path: Path) -> dict:
+    actual = sha256(path)
+    if actual != EXPECTED_METHANE_CONSTANTS_SHA256:
+        raise ValueError(
+            f"methane operational-constants SHA-256 mismatch: expected "
+            f"{EXPECTED_METHANE_CONSTANTS_SHA256}, got {actual}")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if (record.get("record_name") != "fire-fuel-methane-v1" or
+            record.get("record_kind") != "fuel_operational_constants" or
+            record.get("design_revision_evaluated_against") != 52):
+        raise ValueError("methane operational-constants authority is unsupported")
+    expected = {
+        "T_AIT": (810.4, "range", [810.0, 873.0]),
+        "T_ox": (1300.0, "assumption_bound", [1273.0, 1400.0]),
+        "T_pilot": (600.0, "design_pinned_exact", 0),
+        "chi_r": (0.2, "range", [0.07, 0.28]),
+        "y_s": (0.0, "measured_1sigma", 0.0),
+    }
+    values = record.get("values", {})
+    for name, (value, kind, magnitude) in expected.items():
+        entry = values.get(name, {})
+        uncertainty = entry.get("uncertainty", {})
+        if (entry.get("value") != value or uncertainty.get("kind") != kind or
+                uncertainty.get("magnitude") != magnitude):
+            raise ValueError(f"methane operational constant {name} changed")
+    density = values.get("rho_soot", {})
+    if (density.get("policy", "").find("REFERENCED, NOT DUPLICATED") < 0 or
+            "fire-optics-mac-equivalent-e-v1" not in density.get("reference", "")):
+        raise ValueError("methane soot density is not reference-only")
+    return record
+
+
+def measured_or_config_envelope(entry: dict) -> dict:
+    return {
+        "value": float(entry["value"]),
+        "unit": entry["unit"],
+        "uncertainty": dict(entry["uncertainty"]),
+        "provenance": dict(entry["provenance"]),
+        "applicability": entry["applicability"],
+    }
+
+
+def methane_payload(snapshot: dict, constants: dict) -> dict:
     common_min, common_max, reference = 300.0, 5000.0, 300.0
     sources = {entry["name"]: entry
                for entry in snapshot["nasa_cea"]["thermochemistry"]}
@@ -979,6 +1026,29 @@ def methane_payload(snapshot: dict) -> dict:
                for column in range(len(METHANE_SPECIES))) != 0:
             raise ValueError("methane primary reaction element balance failed")
 
+    constant_values = constants["values"]
+    autoignition = measured_or_config_envelope(constant_values["T_AIT"])
+    oxidation = measured_or_config_envelope(constant_values["T_ox"])
+    oxidation["uncertainty"]["basis"] = oxidation["uncertainty"]["note"]
+    radiative_fraction = measured_or_config_envelope(constant_values["chi_r"])
+    radiative_fraction["override_policy"] = (
+        "case_record_whole_record_override_with_case_record_id")
+    soot_yield = measured_or_config_envelope(constant_values["y_s"])
+    pilot_source = constant_values["T_pilot"]
+    pilot_gate = {
+        "value": float(pilot_source["value"]),
+        "unit": pilot_source["unit"],
+        "uncertainty": dict(pilot_source["uncertainty"]),
+        "applicability": pilot_source["applicability"],
+        "model_basis": {
+            "kind": "design_gate_not_measured_property",
+            "design_locator": pilot_source["provenance"]["locator"],
+            "structural_requirement": pilot_source["provenance"][
+                "structural_requirement"],
+        },
+    }
+    if not pilot_gate["value"] < autoignition["value"]:
+        raise ValueError("methane T_pilot must be strictly below T_AIT")
     return {
         "schema_version": 1,
         "version": "1.0.0-preview.1",
@@ -988,6 +1058,11 @@ def methane_payload(snapshot: dict) -> dict:
         "record_class": "physical_fuel_preset",
         "provenance_schema": "fire-optics-canonical-provenance-schema-v1",
         "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
+        "operational_constants_source": {
+            "record_name": constants["record_name"],
+            "source_file_sha256": EXPECTED_METHANE_CONSTANTS_SHA256,
+            "design_revision": 52,
+        },
         "common_temperature_domain_K": [common_min, common_max],
         "reference_temperature_K": exact(reference, "FIRE_SMOKE_DESIGN.md SS3.3", "all species"),
         "thermodynamic_pressure_Pa": exact(101325.0, "FIRE_SMOKE_DESIGN.md SS3.2", "open-domain methane bring-up"),
@@ -1048,6 +1123,20 @@ def methane_payload(snapshot: dict) -> dict:
             "co2_kg_per_kg_carbon": rational(soot_product_co2),
             "heat_release_J_per_kg_carbon": rational(soot_heat),
             "exact_mass_residual": rational(Fraction(1) + soot_oxygen - soot_product_co2),
+            "activation_temperature_K": oxidation,
+        },
+        "ignition_gate": {
+            "pilot_temperature_K": pilot_gate,
+            "autoignition_temperature_K": autoignition,
+        },
+        "gross_soot_yield_kg_per_kg_fuel": soot_yield,
+        "radiative_fraction_default": radiative_fraction,
+        "soot_density_reference": {
+            "optics_preset_record_name": PREDICTIVE_FIRE_OPTICS_RECORD_NAME,
+            "optics_preset_record_id": PREDICTIVE_FIRE_OPTICS_RECORD_SHA256,
+            "component_record_name": SOOT_DENSITY_COMPONENT_RECORD_NAME,
+            "field_path": "effective_absorption.pinned_density_g_cm3",
+            "conversion": "kg_per_m3=1000*g_per_cm3",
         },
         "conservative_reconstruction_v1": reconstruction_certificate,
         "nonadvective_flux_projection_v1": flux_certificate,
@@ -1058,7 +1147,6 @@ def methane_payload(snapshot: dict) -> dict:
         },
         "predictive_blockers": [
             "thermochemistry_source_fit_uncertainties_unpublished",
-            "methane_soot_yield_calibration_not_present",
             "methane_chem_radiant_source_record_not_present",
         ],
     }
@@ -1282,8 +1370,9 @@ def solver_fixture_payloads() -> list[tuple[str, dict]]:
     ]
 
 
-def generate(snapshot_path: Path) -> str:
+def generate(snapshot_path: Path, methane_constants_path: Path) -> str:
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    methane_constants = load_methane_constants(methane_constants_path)
     snapshot_id = hashlib.sha256(encode(snapshot)).hexdigest()
     if snapshot_id != EXPECTED_SOURCE_SNAPSHOT_SHA256:
         raise ValueError(
@@ -1293,7 +1382,7 @@ def generate(snapshot_path: Path) -> str:
     if "burcat" in json.dumps(snapshot).lower() or "hitemp" in json.dumps(snapshot).lower():
         raise ValueError("license-gated Burcat/HITEMP bytes are forbidden in this generator")
     thermo = encode(thermo_payload(snapshot))
-    methane = encode(methane_payload(snapshot))
+    methane = encode(methane_payload(snapshot,methane_constants))
     transport = encode(transport_payload(snapshot))
     target = io.StringIO(newline="\n")
     target.write("// Generated from docs/data/source_pulls/fire_sim_open_sources_v1.json.\n\n")
@@ -1321,6 +1410,7 @@ def main() -> None:
     parser.add_argument("--fds-cons", type=Path)
     parser.add_argument("--fds-data", type=Path)
     parser.add_argument("--fds-license", type=Path)
+    parser.add_argument("--methane-constants", type=Path)
     parser.add_argument("source_snapshot", type=Path)
     parser.add_argument("output", type=Path, nargs="?")
     args = parser.parse_args()
@@ -1339,7 +1429,9 @@ def main() -> None:
         return
     if not args.output:
         parser.error("output is required unless --extract-sources is used")
-    generated = generate(args.source_snapshot)
+    if not args.methane_constants:
+        parser.error("--methane-constants is required for physical methane generation")
+    generated = generate(args.source_snapshot,args.methane_constants)
     if args.check:
         if not args.output.is_file() or args.output.read_text(encoding="utf-8") != generated:
             raise SystemExit(f"{args.output} is stale")
