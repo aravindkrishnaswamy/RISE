@@ -379,6 +379,11 @@ int main()
 		throughMomentum3D.component[1][OpenMACFaceIndex3D(openShape3D,1,x,y,z)]=
 			ambientState3D.GasDensity()*(0.02+0.002*static_cast<double>(y));
 	}
+	for( std::size_t z=0; z<=openShape3D.nz; ++z ) for( std::size_t y=0;
+		y<openShape3D.ny; ++y ) for( std::size_t x=0; x<openShape3D.nx; ++x ) {
+		throughMomentum3D.component[2][OpenMACFaceIndex3D(openShape3D,2,x,y,z)]=
+			ambientState3D.GasDensity()*(0.03+0.001*static_cast<double>(z));
+	}
 	OpenBoundaryConfig3D throughBoundary3D=openBoundary3D;
 	throughBoundary3D.kind[2]=AdiabaticWallBoundary3D;
 	throughBoundary3D.kind[3]=AdiabaticWallBoundary3D;
@@ -405,9 +410,14 @@ int main()
 			OpenMACFaceIndex3D(openShape3D,1,0,y,z)]+
 			openThrough3D.velocityMPerS.component[1][
 			OpenMACFaceIndex3D(openShape3D,1,0,y+1,z)]);
+		const double secondTangent=0.5*(openThrough3D.velocityMPerS.component[2][
+			OpenMACFaceIndex3D(openShape3D,2,0,y,z)]+
+			openThrough3D.velocityMPerS.component[2][
+			OpenMACFaceIndex3D(openShape3D,2,0,y,z+1)]);
 		independentObliqueHeadResidual=std::max(independentObliqueHeadResidual,std::fabs(
 			openThrough3D.boundaryDynamicPressurePa[0][index]+0.5*
-			throughBoundary3D.ambientDensityKGPerM3*(normal*normal+tangent*tangent)));
+			throughBoundary3D.ambientDensityKGPerM3*(normal*normal+tangent*tangent+
+			secondTangent*secondTangent)));
 	}
 	Check(openThrough3DOK && std::all_of(openThrough3D.inflow[0].begin(),
 		openThrough3D.inflow[0].end(),[]( const bool value ){ return value; }) &&
@@ -424,6 +434,8 @@ int main()
 		allOpenObliqueBoundary.priorInflow[0].end(),true);
 	std::fill(allOpenObliqueBoundary.priorInflow[2].begin(),
 		allOpenObliqueBoundary.priorInflow[2].end(),true);
+	std::fill(allOpenObliqueBoundary.priorInflow[4].begin(),
+		allOpenObliqueBoundary.priorInflow[4].end(),true);
 	OpenMACProjection3DResult allOpenObliqueProjection;
 	const bool allOpenObliqueOK=ProjectPressureOpenMACVelocity3D(openShape3D,
 		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
@@ -452,6 +464,19 @@ int main()
 	}
 	Check(productionTangentialConnected,
 		"V1 production projection returns pressure-open tangential zero-gradient velocity");
+	bool secondProductionTangent=openThrough3D.boundaryTangentialVelocityMPerS[0][1].size()==
+		OpenBoundaryFaceCount3D(openShape3D,0);
+	for( std::size_t z=0; secondProductionTangent && z<openShape3D.nz; ++z ) for(
+		std::size_t y=0; y<openShape3D.ny; ++y ) {
+		const std::size_t index=OpenBoundaryFaceLinearIndex3D(openShape3D,0,y,z);
+		secondProductionTangent=secondProductionTangent && Near(
+			openThrough3D.boundaryTangentialVelocityMPerS[0][1][index],
+			0.5*(openThrough3D.velocityMPerS.component[2][OpenMACFaceIndex3D(
+				openShape3D,2,0,y,z)]+openThrough3D.velocityMPerS.component[2][
+				OpenMACFaceIndex3D(openShape3D,2,0,y,z+1)]),2.0e-14);
+	}
+	Check(secondProductionTangent,
+		"V1 production projection returns the second pressure-open tangential component");
 	OpenBoundaryConfig3D seededInflowBoundary=throughBoundary3D;
 	for( unsigned int side=0; side<4; ++side ) seededInflowBoundary.priorInflow[side].assign(
 		OpenBoundaryFaceCount3D(openShape3D,side),true);
@@ -665,9 +690,9 @@ int main()
 		OpenMACProjection3DResult stage0=openRest3D,stage1=openRest3D;
 		for( unsigned int axis=0; axis<3; ++axis ) {
 			std::fill(stage0.velocityMPerS.component[axis].begin(),
-				stage0.velocityMPerS.component[axis].end(),axis==0?0.2:(axis==1?0.1:0.0));
+				stage0.velocityMPerS.component[axis].end(),axis==0?0.2:(axis==1?0.1:0.05));
 			std::fill(stage1.velocityMPerS.component[axis].begin(),
-				stage1.velocityMPerS.component[axis].end(),axis==0?0.4:(axis==1?0.3:0.0));
+				stage1.velocityMPerS.component[axis].end(),axis==0?0.4:(axis==1?0.3:0.07));
 		}
 		for( unsigned int side=0; side<6; ++side ) {
 			std::fill(stage0.inflow[side].begin(),stage0.inflow[side].end(),false);
@@ -681,8 +706,8 @@ int main()
 			zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
 			throughBoundary3D,stage0,stage1,0.01,2.0e-8,finalOpen3D,&error);
 		const double expectedFullHead=-0.25*ambientState3D.GasDensity()*
-			(((classCode&1u)?0.2*0.2+0.1*0.1:0.0)+
-			 ((classCode&2u)?0.4*0.4+0.3*0.3:0.0));
+			(((classCode&1u)?0.2*0.2+0.1*0.1+0.05*0.05:0.0)+
+			 ((classCode&2u)?0.4*0.4+0.3*0.3+0.07*0.07:0.0));
 		bool exactIntegratedHead=final3DOK;
 		exactIntegratedHead=exactIntegratedHead && finalOpen3D.stepAverageDynamicPressurePa.size()==
 			openShape3D.CellCount() && finalOpen3D.velocityMPerS.component[0].size()==
