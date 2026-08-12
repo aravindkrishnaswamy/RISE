@@ -1862,7 +1862,7 @@ namespace RISE
 			}
 		}
 
-		inline bool ProjectPressureOpenMACVelocity3D(
+		inline bool ReferenceProjectPressureOpenMACVelocity3DEliminated(
 			const PeriodicMACShape& shape,
 			const std::vector<double>& gasDensityKGPerM3,
 			const OpenMACField3D& unprojectedMomentumKGPerM2S,
@@ -2220,6 +2220,337 @@ namespace RISE
 				}
 			}
 			return Fail(error,"fire solver 3-D pressure-open active set did not converge");
+		}
+
+		struct OpenAugmentedPressureLayout3D
+		{
+			std::array<std::vector<std::size_t>,6> boundaryUnknown;
+			std::size_t unknownCount;
+			OpenAugmentedPressureLayout3D() : unknownCount(0) {}
+		};
+
+		inline void BuildOpenAugmentedPressureLayout3D(
+			const PeriodicMACShape& shape,
+			const OpenBoundaryConfig3D& boundary,
+			OpenAugmentedPressureLayout3D& layout
+			)
+		{
+			layout.unknownCount=shape.CellCount();
+			for( unsigned int side=0; side<6; ++side ) {
+				const std::size_t count=OpenBoundaryFaceCount3D(shape,side);
+				layout.boundaryUnknown[side].assign(count,
+					std::numeric_limits<std::size_t>::max());
+				for( std::size_t index=0; index<count; ++index ) {
+					OpenBoundaryKind3D kind=boundary.kind[side];
+					if(side==4 && !boundary.bottomFuelMask.empty() &&
+						boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
+					if(kind==PressureOpenBoundary3D) layout.boundaryUnknown[side][index]=
+						layout.unknownCount++;
+				}
+			}
+		}
+
+		template<typename ApplyOperator,typename ApplyPreconditioner>
+		inline bool SolveOpenAugmentedBiCGStab(
+			const std::vector<double>& rightHandSide,
+			const double tolerance,
+			const ApplyOperator& applyOperator,
+			const ApplyPreconditioner& applyPreconditioner,
+			std::vector<double>& solution
+			)
+		{
+			const std::size_t count=rightHandSide.size();
+			solution.assign(count,0.0);
+			std::vector<double> r=rightHandSide,rHat=r,p(count,0.0),v(count,0.0),
+				s(count,0.0),t(count,0.0),pHat,sHat;
+			double rhoPrevious=1.0,alpha=1.0,omega=1.0;
+			for( std::size_t iteration=0; iteration<512; ++iteration ) {
+				double maximum=0.0;
+				for(const double value:r) maximum=std::max(maximum,std::fabs(value));
+				if(maximum<=tolerance) return true;
+				const double rho=OpenVectorDot3D(rHat,r);
+				if(!std::isfinite(rho) || rho==0.0) return false;
+				const double beta=(rho/rhoPrevious)*(alpha/omega);
+				if(!std::isfinite(beta)) return false;
+				for(std::size_t i=0;i<count;++i)p[i]=r[i]+beta*(p[i]-omega*v[i]);
+				if(!applyPreconditioner(p,pHat) || !applyOperator(pHat,v)) return false;
+				const double denominator=OpenVectorDot3D(rHat,v);
+				if(!std::isfinite(denominator) || denominator==0.0) return false;
+				alpha=rho/denominator;
+				for(std::size_t i=0;i<count;++i)s[i]=r[i]-alpha*v[i];
+				double sMaximum=0.0;
+				for(const double value:s)sMaximum=std::max(sMaximum,std::fabs(value));
+				if(sMaximum<=tolerance){for(std::size_t i=0;i<count;++i)solution[i]+=alpha*pHat[i];
+					return true;}
+				if(!applyPreconditioner(s,sHat) || !applyOperator(sHat,t))return false;
+				const double tSquared=OpenVectorDot3D(t,t);
+				if(!std::isfinite(tSquared) || tSquared==0.0)return false;
+				omega=OpenVectorDot3D(t,s)/tSquared;
+				if(!std::isfinite(omega) || omega==0.0)return false;
+				for(std::size_t i=0;i<count;++i){solution[i]+=alpha*pHat[i]+omega*sHat[i];
+					r[i]=s[i]-omega*t[i];if(!std::isfinite(solution[i]) ||
+					!std::isfinite(r[i]))return false;}
+				rhoPrevious=rho;
+			}
+			return false;
+		}
+
+		inline bool ProjectPressureOpenMACVelocity3D(
+			const PeriodicMACShape& shape,
+			const std::vector<double>& gasDensityKGPerM3,
+			const OpenMACField3D& unprojectedMomentumKGPerM2S,
+			const std::vector<double>& divergenceTargetPerS,
+			const OpenBoundaryConfig3D& boundary,
+			const double deltaTimeS,
+			const double absoluteTolerancePerS,
+			OpenMACProjection3DResult& result,
+			std::string* error = 0
+			)
+		{
+			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
+				gasDensityKGPerM3.size()!=shape.CellCount() ||
+				divergenceTargetPerS.size()!=shape.CellCount() ||
+				!std::isfinite(deltaTimeS) || deltaTimeS<=0.0 ||
+				!std::isfinite(absoluteTolerancePerS) || absoluteTolerancePerS<=0.0 ||
+				!std::isfinite(1.0/shape.cellWidthM) ||
+				!std::isfinite(1.0/(shape.cellWidthM*shape.cellWidthM))) return Fail(error,
+				"fire solver augmented 3-D pressure-open input is malformed");
+			const std::size_t cellCount=shape.CellCount();
+			OpenMACProjection3DResult candidate;
+			for(std::size_t cell=0;cell<cellCount;++cell)if(!std::isfinite(
+				gasDensityKGPerM3[cell]) || gasDensityKGPerM3[cell]<=0.0 ||
+				!std::isfinite(divergenceTargetPerS[cell]))return Fail(error,
+				"fire solver augmented 3-D pressure-open cell is invalid");
+			for(unsigned int axis=0;axis<3;++axis){const std::size_t faceCount=
+				OpenMACFaceCount3D(shape,axis);if(unprojectedMomentumKGPerM2S.component[axis].
+				size()!=faceCount)return Fail(error,"fire solver augmented 3-D face shape is invalid");
+				candidate.faceDensityKGPerM3.component[axis].assign(faceCount,0.0);
+				candidate.velocityMPerS.component[axis].assign(faceCount,0.0);
+				candidate.momentumKGPerM2S.component[axis].assign(faceCount,0.0);
+				for(const double value:unprojectedMomentumKGPerM2S.component[axis])if(
+					!std::isfinite(value))return Fail(error,"fire solver augmented momentum is non-finite");}
+			for(unsigned int side=0;side<6;++side){const std::size_t count=
+				OpenBoundaryFaceCount3D(shape,side);candidate.inflow[side]=
+				boundary.priorInflow[side].empty()?std::vector<bool>(count,false):
+				boundary.priorInflow[side];candidate.boundaryDynamicPressurePa[side].assign(count,0.0);}
+			for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
+				for(std::size_t x=0;x<=shape.nx;++x){const std::size_t face=
+				OpenMACFaceIndex3D(shape,0,x,y,z);const double a=x?gasDensityKGPerM3[
+				shape.Index(x-1,y,z)]:boundary.ambientDensityKGPerM3;const double b=x<shape.nx?
+				gasDensityKGPerM3[shape.Index(x,y,z)]:boundary.ambientDensityKGPerM3;
+				candidate.faceDensityKGPerM3.component[0][face]=0.5*a+0.5*b;}
+			for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=0;y<=shape.ny;++y)
+				for(std::size_t x=0;x<shape.nx;++x){const std::size_t face=
+				OpenMACFaceIndex3D(shape,1,x,y,z);const double a=y?gasDensityKGPerM3[
+				shape.Index(x,y-1,z)]:boundary.ambientDensityKGPerM3;const double b=y<shape.ny?
+				gasDensityKGPerM3[shape.Index(x,y,z)]:boundary.ambientDensityKGPerM3;
+				candidate.faceDensityKGPerM3.component[1][face]=0.5*a+0.5*b;}
+			for(std::size_t z=0;z<=shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
+				for(std::size_t x=0;x<shape.nx;++x){const std::size_t face=
+				OpenMACFaceIndex3D(shape,2,x,y,z);const bool fuel=z==0 &&
+				!boundary.bottomFuelMask.empty()&&boundary.bottomFuelMask[y*shape.nx+x];
+				const double outside=fuel?boundary.injectedGasDensityKGPerM3:
+				boundary.ambientDensityKGPerM3;const double a=z?gasDensityKGPerM3[
+				shape.Index(x,y,z-1)]:outside;const double b=z<shape.nz?gasDensityKGPerM3[
+				shape.Index(x,y,z)]:outside;candidate.faceDensityKGPerM3.component[2][face]=
+				0.5*a+0.5*b;}
+			for(unsigned int axis=0;axis<3;++axis)for(const double density:
+				candidate.faceDensityKGPerM3.component[axis])if(!std::isfinite(density)||density<=0.0)
+				return Fail(error,"fire solver augmented face density overflowed");
+
+			OpenAugmentedPressureLayout3D layout;BuildOpenAugmentedPressureLayout3D(shape,
+				boundary,layout);
+			OpenPressureOperator3D preconditionerOperator;
+			preconditionerOperator.rowExtra.assign(cellCount,
+				std::vector<std::pair<std::size_t,double> >());
+			for( unsigned int axis=0; axis<3; ++axis ) preconditionerOperator.
+				faceCoefficient.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
+			for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0; y<shape.ny;
+				++y ) for( std::size_t x=1; x<shape.nx; ++x ) {
+				const std::size_t face=OpenMACFaceIndex3D(shape,0,x,y,z);
+				preconditionerOperator.faceCoefficient.component[0][face]=1.0/
+					candidate.faceDensityKGPerM3.component[0][face];
+			}
+			for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=1; y<shape.ny;
+				++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+				const std::size_t face=OpenMACFaceIndex3D(shape,1,x,y,z);
+				preconditionerOperator.faceCoefficient.component[1][face]=1.0/
+					candidate.faceDensityKGPerM3.component[1][face];
+			}
+			for( std::size_t z=1; z<shape.nz; ++z ) for( std::size_t y=0; y<shape.ny;
+				++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+				const std::size_t face=OpenMACFaceIndex3D(shape,2,x,y,z);
+				preconditionerOperator.faceCoefficient.component[2][face]=1.0/
+					candidate.faceDensityKGPerM3.component[2][face];
+			}
+			for( unsigned int side=0; side<6; ++side ) {
+				const unsigned int axis=side/2; const bool positive=side%2;
+				const std::size_t firstCount=side<2?shape.ny:shape.nx;
+				const std::size_t secondCount=side<4?shape.nz:shape.ny;
+				for( std::size_t second=0; second<secondCount; ++second ) for(
+					std::size_t first=0; first<firstCount; ++first ) {
+					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+					if( layout.boundaryUnknown[side][index]==
+						std::numeric_limits<std::size_t>::max() ) continue;
+					std::size_t x=0,y=0,z=0;
+					if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+					if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+					if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+					const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
+					preconditionerOperator.faceCoefficient.component[axis][face]=2.0/
+						candidate.faceDensityKGPerM3.component[axis][face];
+				}
+			}
+			std::vector<double> unknown(layout.unknownCount,0.0);
+			std::vector<std::vector<unsigned char> > activeHistory;
+			auto evaluateVelocity=[&](const std::vector<double>& value,OpenMACField3D& velocity){
+				for(unsigned int axis=0;axis<3;++axis)velocity.component[axis].assign(
+					OpenMACFaceCount3D(shape,axis),0.0);
+				for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
+					for(std::size_t x=1;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,0,x,y,z);
+					velocity.component[0][f]=unprojectedMomentumKGPerM2S.component[0][f]/
+					candidate.faceDensityKGPerM3.component[0][f]-deltaTimeS*(value[shape.Index(x,y,z)]-
+					value[shape.Index(x-1,y,z)])/(candidate.faceDensityKGPerM3.component[0][f]*shape.cellWidthM);}
+				for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=1;y<shape.ny;++y)
+					for(std::size_t x=0;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,1,x,y,z);
+					velocity.component[1][f]=unprojectedMomentumKGPerM2S.component[1][f]/
+					candidate.faceDensityKGPerM3.component[1][f]-deltaTimeS*(value[shape.Index(x,y,z)]-
+					value[shape.Index(x,y-1,z)])/(candidate.faceDensityKGPerM3.component[1][f]*shape.cellWidthM);}
+				for(std::size_t z=1;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
+					for(std::size_t x=0;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,2,x,y,z);
+					velocity.component[2][f]=unprojectedMomentumKGPerM2S.component[2][f]/
+					candidate.faceDensityKGPerM3.component[2][f]-deltaTimeS*(value[shape.Index(x,y,z)]-
+					value[shape.Index(x,y,z-1)])/(candidate.faceDensityKGPerM3.component[2][f]*shape.cellWidthM);}
+				for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
+					const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
+					for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
+						std::size_t x=0,y=0,z=0;if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+						if(axis==1){x=first;y=positive?shape.ny:0;z=second;}if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+						const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+						OpenBoundaryKind3D kind=boundary.kind[side];
+						if(side==4&&!boundary.bottomFuelMask.empty()&&
+							boundary.bottomFuelMask[index]) kind=FuelInletBoundary3D;
+						const std::size_t f=
+						OpenMACFaceIndex3D(shape,axis,x,y,z);const double sign=positive?1.0:-1.0;
+						if(kind==AdiabaticWallBoundary3D){velocity.component[axis][f]=0.0;continue;}
+						if(kind==FuelInletBoundary3D){velocity.component[axis][f]=(positive?-1.0:1.0)*
+						boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3;continue;}
+						const std::size_t cx=axis==0?(positive?shape.nx-1:0):x,cy=axis==1?
+						(positive?shape.ny-1:0):y,cz=axis==2?(positive?shape.nz-1:0):z;
+						const std::size_t cell=shape.Index(cx,cy,cz),bindex=layout.boundaryUnknown[side][index];
+						const double density=candidate.faceDensityKGPerM3.component[axis][f];
+						const double outward=sign*unprojectedMomentumKGPerM2S.component[axis][f]/density+
+						2.0*deltaTimeS*(value[cell]-value[bindex])/(density*shape.cellWidthM);
+						velocity.component[axis][f]=sign*outward;}}
+				for(unsigned int axis=0;axis<3;++axis) for(const double v:
+					velocity.component[axis]) {
+					if(!std::isfinite(v)) return false;
+				}
+				return true;
+			};
+			auto evaluateResidual=[&](const std::vector<double>& value,OpenMACField3D& velocity,
+				std::vector<double>& residual){if(!evaluateVelocity(value,velocity))return false;
+				residual.assign(layout.unknownCount,0.0);for(std::size_t z=0;z<shape.nz;++z)
+				for(std::size_t y=0;y<shape.ny;++y)for(std::size_t x=0;x<shape.nx;++x){const std::size_t cell=
+				shape.Index(x,y,z);residual[cell]=OpenMACDivergence3D(shape,velocity,x,y,z)-divergenceTargetPerS[cell];}
+				for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
+				const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
+				for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
+				const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second),u=
+				layout.boundaryUnknown[side][index];if(u==std::numeric_limits<std::size_t>::max())continue;
+				std::size_t x=0,y=0,z=0;if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+				if(axis==1){x=first;y=positive?shape.ny:0;z=second;}if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+				double speed=velocity.component[axis][OpenMACFaceIndex3D(shape,axis,x,y,z)];speed*=speed;
+				const std::size_t cx=axis==0?(positive?shape.nx-1:0):x,cy=axis==1?(positive?shape.ny-1:0):y,
+				cz=axis==2?(positive?shape.nz-1:0):z;for(unsigned int tangent=0;tangent<3;++tangent)if(tangent!=axis){
+				const double tv=OpenBoundaryTangentialCellVelocity3D(shape,velocity,tangent,cx,cy,cz);speed+=tv*tv;}
+				residual[u]=value[u]+(candidate.inflow[side][index]?0.5*boundary.ambientDensityKGPerM3*speed:0.0);}}
+				for(const double v:residual)if(!std::isfinite(v))return false;return true;};
+
+			for(std::size_t active=0;active<16;++active){std::vector<unsigned char> activeState;
+				for(unsigned int side=0;side<6;++side)for(const bool b:candidate.inflow[side])activeState.push_back(b?1u:0u);
+				if(std::find(activeHistory.begin(),activeHistory.end(),activeState)!=activeHistory.end()) {
+					return Fail(error,"fire solver augmented 3-D active set cycled");
+				}
+				activeHistory.push_back(activeState);
+				bool converged=false;for(std::size_t nonlinear=0;nonlinear<40;++nonlinear){OpenMACField3D velocity;
+					std::vector<double> residual;
+					if(!evaluateResidual(unknown,velocity,residual)) return Fail(error,
+						"fire solver augmented residual overflowed");
+					double maximumDivergence=0.0,maximumHead=0.0;
+					for(std::size_t i=0;i<cellCount;++i)maximumDivergence=std::max(maximumDivergence,std::fabs(residual[i]));
+					for(std::size_t i=cellCount;i<layout.unknownCount;++i)maximumHead=std::max(maximumHead,std::fabs(residual[i]));
+					const double norm=std::max(maximumDivergence/absoluteTolerancePerS,maximumHead/boundary.pressureTolerancePa);
+					candidate.nonlinearResidualHistory.push_back(norm);if(maximumDivergence<=absoluteTolerancePerS &&
+					maximumHead<=boundary.pressureTolerancePa){candidate.velocityMPerS=velocity;candidate.maximumDivergenceResidualPerS=
+					maximumDivergence;candidate.maximumBoundaryHeadResidualPa=maximumHead;converged=true;break;}
+					auto applyJ=[&](const std::vector<double>& direction,std::vector<double>& output){
+						OpenMACField3D dVelocity;if(!evaluateVelocity(direction,dVelocity))return false;
+						// evaluateVelocity is affine; remove the unprojected/prescribed constant.
+						OpenMACField3D zeroVelocity;std::vector<double> zero(layout.unknownCount,0.0);
+						if(!evaluateVelocity(zero,zeroVelocity))return false;for(unsigned int axis=0;axis<3;++axis)
+						for(std::size_t f=0;f<dVelocity.component[axis].size();++f)dVelocity.component[axis][f]-=zeroVelocity.component[axis][f];
+						output.assign(layout.unknownCount,0.0);for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
+						for(std::size_t x=0;x<shape.nx;++x)output[shape.Index(x,y,z)]=OpenMACDivergence3D(shape,dVelocity,x,y,z);
+						for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
+						const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
+						for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
+						const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second),u=layout.boundaryUnknown[side][index];
+						if(u==std::numeric_limits<std::size_t>::max())continue;output[u]=direction[u];if(!candidate.inflow[side][index])continue;
+						std::size_t x=0,y=0,z=0;if(axis==0){x=positive?shape.nx:0;y=first;z=second;}if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+						if(axis==2){x=first;y=second;z=positive?shape.nz:0;}const std::size_t cx=axis==0?(positive?shape.nx-1:0):x,
+						cy=axis==1?(positive?shape.ny-1:0):y,cz=axis==2?(positive?shape.nz-1:0):z;
+						const std::size_t f=OpenMACFaceIndex3D(shape,axis,x,y,z);double dot=velocity.component[axis][f]*dVelocity.component[axis][f];
+						for(unsigned int tangent=0;tangent<3;++tangent)if(tangent!=axis)dot+=OpenBoundaryTangentialCellVelocity3D(shape,
+						velocity,tangent,cx,cy,cz)*OpenBoundaryTangentialCellVelocity3D(shape,dVelocity,tangent,cx,cy,cz);
+						output[u]+=boundary.ambientDensityKGPerM3*dot;}}return true;};
+					auto precondition=[&](const std::vector<double>& rhs,
+						std::vector<double>& output) {
+						output.assign(layout.unknownCount,0.0);
+						std::vector<double> cellRight(rhs.begin(),rhs.begin()+cellCount);
+						std::vector<double> cellSolution(cellCount,0.0);
+						OpenPressureMultigridVCycle3D(shape,preconditionerOperator,
+							cellRight,cellSolution);
+						for( std::size_t cell=0; cell<cellCount; ++cell ) output[cell]=
+							cellSolution[cell]/deltaTimeS;
+						for( std::size_t i=cellCount; i<layout.unknownCount; ++i ) {
+							output[i]=rhs[i];
+						}
+						return true;
+					};
+					std::vector<double> rhs=residual,update;for(double& v:rhs)v=-v;
+					const double linearTolerance=std::min(absoluteTolerancePerS,boundary.pressureTolerancePa)*0.1;
+					if(!SolveOpenAugmentedBiCGStab(rhs,linearTolerance,applyJ,precondition,update)) {
+						return Fail(error,"fire solver augmented Newton system did not converge");
+					}
+					double damping=1.0;bool accepted=false;
+					candidate.multigridResidualHistoryPerS.push_back(norm);
+					while(damping>=1.0/1024.0){std::vector<double> trial=unknown,trialResidual;OpenMACField3D trialVelocity;
+						for(std::size_t i=0;i<trial.size();++i)trial[i]+=damping*update[i];if(evaluateResidual(trial,trialVelocity,trialResidual)){
+						double td=0.0,th=0.0;for(std::size_t i=0;i<cellCount;++i)td=std::max(td,std::fabs(trialResidual[i]));
+						for(std::size_t i=cellCount;i<trial.size();++i)th=std::max(th,std::fabs(trialResidual[i]));
+						if(std::max(td/absoluteTolerancePerS,th/boundary.pressureTolerancePa)<norm){unknown.swap(trial);accepted=true;break;}}
+						damping*=0.5;}if(!accepted)return Fail(error,"fire solver augmented Newton line search failed");}
+				if(!converged)return Fail(error,"fire solver augmented nonlinear solve did not converge");bool changed=false;
+				for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
+				const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
+				for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
+				const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+				if(layout.boundaryUnknown[side][index]==std::numeric_limits<std::size_t>::max()) continue;
+				std::size_t x=0,y=0,z=0;if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+				if(axis==1){x=first;y=positive?shape.ny:0;z=second;}if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+				const double outward=(positive?1.0:-1.0)*candidate.velocityMPerS.component[axis][OpenMACFaceIndex3D(shape,axis,x,y,z)];
+				const bool next=outward < -boundary.velocityToleranceMPerS?true:(outward>boundary.velocityToleranceMPerS?false:
+				candidate.inflow[side][index]);changed=changed||next!=candidate.inflow[side][index];candidate.inflow[side][index]=next;}}
+				if(!changed){candidate.stepAverageDynamicPressurePa.assign(unknown.begin(),unknown.begin()+cellCount);
+				for(unsigned int side=0;side<6;++side)for(std::size_t i=0;i<layout.boundaryUnknown[side].size();++i){const std::size_t u=
+				layout.boundaryUnknown[side][i];if(u!=std::numeric_limits<std::size_t>::max())candidate.boundaryDynamicPressurePa[side][i]=unknown[u];}
+				for(unsigned int axis=0;axis<3;++axis)for(std::size_t f=0;f<candidate.velocityMPerS.component[axis].size();++f){candidate.momentumKGPerM2S.component[axis][f]=
+				candidate.faceDensityKGPerM3.component[axis][f]*candidate.velocityMPerS.component[axis][f];if(!std::isfinite(candidate.momentumKGPerM2S.component[axis][f]))
+				return Fail(error,"fire solver augmented momentum overflowed");}
+				PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,candidate);
+				result=candidate;return true;}}
+			return Fail(error,"fire solver augmented active set did not converge");
 		}
 
 		inline bool ProjectPressureOpenMACVelocity3DFinal(
