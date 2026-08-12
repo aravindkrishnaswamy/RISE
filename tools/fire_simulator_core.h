@@ -474,13 +474,21 @@ namespace RISE
 			packet.gasHeatReleaseWPerM3 = reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
 			packet.sootHeatReleaseWPerM3 = oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
+				if( !std::isfinite(packet.constituentDelta[index]) ) {
+					return Fail(error,"fire solver reaction packet contains a non-finite constituent delta");
+				}
 				if( beginning.constituent[index]+packet.constituentDelta[index] <
 					-64.0*std::numeric_limits<double>::epsilon()*
 					std::max(1.0,beginning.constituent[index]) ) {
 					return Fail(error,"fire solver shared oxygen allocation produced a negative inventory");
 				}
 			}
-			return std::isfinite(packet.sensibleEnergyDeltaJPerM3) ||
+			return (std::isfinite(packet.sensibleEnergyDeltaJPerM3) &&
+				std::isfinite(packet.reactedFuelKGPerM3) &&
+				std::isfinite(packet.oxidizedCarbonKGPerM3) &&
+				std::isfinite(packet.grossCarbonFormedKGPerM3) &&
+				std::isfinite(packet.gasHeatReleaseWPerM3) &&
+				std::isfinite(packet.sootHeatReleaseWPerM3)) ||
 				Fail(error,"fire solver reaction packet overflowed");
 		}
 
@@ -495,16 +503,21 @@ namespace RISE
 			result = beginning;
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				result.constituent[index] += packet.constituentDelta[index];
-				if( result.constituent[index] < 0.0 && result.constituent[index] >
-					-64.0*std::numeric_limits<double>::epsilon() ) {
-					result.constituent[index] = 0.0;
-				}
 			}
 			result.sensibleEnergyJPerM3 += packet.sensibleEnergyDeltaJPerM3;
+			std::vector<std::pair<std::string,double> > propertyDensities;
+			if( !ThermochemicalDensitiesWithinForwardEnvelope(result,propertyDensities,error) ) {
+				return false;
+			}
 			if( !thermochemistry.InvertMixtureTemperatureK(
-				ThermochemicalDensities(result),result.sensibleEnergyJPerM3,
+				propertyDensities,result.sensibleEnergyJPerM3,
 				result.temperatureK,error) ) return false;
-			return ValidateCellState(result,error);
+			const double total = result.TotalDensity();
+			return (std::isfinite(total) && total > 0.0 &&
+				std::isfinite(result.rhoTotalZ) && result.rhoTotalZ >= 0.0 &&
+				result.rhoTotalZ <= total && std::isfinite(result.temperatureK) &&
+				result.temperatureK > 0.0) ||
+				Fail(error,"fire solver source packet produced an invalid accepted state");
 		}
 
 		inline double MCScalarSlope( const double backward, const double forward )
@@ -1166,13 +1179,17 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			const std::size_t count = shape.CellCount();
 			if( shape.nx < 2 || shape.ny < 2 || shape.nz < 2 ||
+				shape.nx > std::numeric_limits<std::size_t>::max()/shape.ny ||
+				shape.nx*shape.ny > std::numeric_limits<std::size_t>::max()/shape.nz ||
 				!std::isfinite(shape.cellWidthM) || shape.cellWidthM <= 0.0 ||
-				gasDensityKGPerM3.size() != count || divergenceTargetPerS.size() != count ||
 				!std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ||
 				!std::isfinite(absoluteTolerancePerS) || absoluteTolerancePerS <= 0.0 ) {
 				return Fail(error,"fire solver 3-D periodic MAC projection input is malformed");
+			}
+			const std::size_t count = shape.CellCount();
+			if( gasDensityKGPerM3.size() != count || divergenceTargetPerS.size() != count ) {
+				return Fail(error,"fire solver 3-D periodic MAC projection array shape is invalid");
 			}
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				if( unprojectedMomentumKGPerM2S.component[axis].size() != count ) {
@@ -1432,6 +1449,233 @@ namespace RISE
 				return Fail(error,message.str());
 			}
 			return true;
+		}
+
+		struct OpenMACProjection1DResult
+		{
+			std::vector<double> faceDensityKGPerM3;
+			std::vector<double> velocityMPerS;
+			std::vector<double> momentumKGPerM2S;
+			std::vector<double> dynamicPressurePa;
+			bool leftInflow;
+			bool rightInflow;
+			double maximumDivergenceResidualPerS;
+			double maximumBoundaryHeadResidualPa;
+			std::vector<double> nonlinearResidualHistory;
+			OpenMACProjection1DResult() : leftInflow(false), rightInflow(false),
+				maximumDivergenceResidualPerS(0.0),maximumBoundaryHeadResidualPa(0.0) {}
+		};
+
+		inline bool SolveDenseLinearSystem(
+			std::vector<double> matrix,
+			std::vector<double> rightHandSide,
+			std::vector<double>& result
+			)
+		{
+			const std::size_t count = rightHandSide.size();
+			if( matrix.size() != count*count ) return false;
+			for( std::size_t pivot=0; pivot<count; ++pivot ) {
+				std::size_t selected = pivot;
+				for( std::size_t row=pivot+1; row<count; ++row ) {
+					if( std::fabs(matrix[row*count+pivot]) >
+						std::fabs(matrix[selected*count+pivot]) ) selected = row;
+				}
+				if( !std::isfinite(matrix[selected*count+pivot]) ||
+					matrix[selected*count+pivot] == 0.0 ) return false;
+				if( selected != pivot ) {
+					for( std::size_t column=pivot; column<count; ++column ) {
+						std::swap(matrix[pivot*count+column],matrix[selected*count+column]);
+					}
+					std::swap(rightHandSide[pivot],rightHandSide[selected]);
+				}
+				const double diagonal = matrix[pivot*count+pivot];
+				for( std::size_t row=pivot+1; row<count; ++row ) {
+					const double factor = matrix[row*count+pivot]/diagonal;
+					matrix[row*count+pivot] = 0.0;
+					for( std::size_t column=pivot+1; column<count; ++column ) {
+						matrix[row*count+column] -= factor*matrix[pivot*count+column];
+					}
+					rightHandSide[row] -= factor*rightHandSide[pivot];
+				}
+			}
+			result.assign(count,0.0);
+			for( std::size_t reverse=0; reverse<count; ++reverse ) {
+				const std::size_t row = count-1-reverse;
+				double value = rightHandSide[row];
+				for( std::size_t column=row+1; column<count; ++column ) {
+					value -= matrix[row*count+column]*result[column];
+				}
+				result[row] = value/matrix[row*count+row];
+				if( !std::isfinite(result[row]) ) return false;
+			}
+			return true;
+		}
+
+		inline bool ProjectPressureOpenMACVelocity1D(
+			const std::vector<double>& gasDensityKGPerM3,
+			const std::vector<double>& unprojectedMomentumKGPerM2S,
+			const std::vector<double>& divergenceTargetPerS,
+			const double ambientDensityKGPerM3,
+			const double cellWidthM,
+			const double deltaTimeS,
+			const double velocityToleranceMPerS,
+			const double pressureTolerancePa,
+			const bool seedLeftInflow,
+			const bool seedRightInflow,
+			OpenMACProjection1DResult& result,
+			std::string* error = 0
+			)
+		{
+			const std::size_t cells = gasDensityKGPerM3.size();
+			const std::size_t unknowns = cells+2;
+			if( cells < 2 || unprojectedMomentumKGPerM2S.size() != cells+1 ||
+				divergenceTargetPerS.size() != cells ||
+				!std::isfinite(ambientDensityKGPerM3) || ambientDensityKGPerM3 <= 0.0 ||
+				!std::isfinite(cellWidthM) || cellWidthM <= 0.0 ||
+				!std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ||
+				!std::isfinite(velocityToleranceMPerS) || velocityToleranceMPerS < 0.0 ||
+				!std::isfinite(pressureTolerancePa) || pressureTolerancePa <= 0.0 ) {
+				return Fail(error,"fire solver pressure-open projection input is malformed");
+			}
+			result = OpenMACProjection1DResult();
+			result.leftInflow = seedLeftInflow;
+			result.rightInflow = seedRightInflow;
+			result.faceDensityKGPerM3.assign(cells+1,0.0);
+			for( std::size_t cell=0; cell<cells; ++cell ) {
+				if( !std::isfinite(gasDensityKGPerM3[cell]) || gasDensityKGPerM3[cell] <= 0.0 ||
+					!std::isfinite(divergenceTargetPerS[cell]) ) {
+					return Fail(error,"fire solver pressure-open cell is invalid");
+				}
+			}
+			for( const double momentum : unprojectedMomentumKGPerM2S ) {
+				if( !std::isfinite(momentum) ) return Fail(error,"fire solver pressure-open momentum is invalid");
+			}
+			result.faceDensityKGPerM3[0] = 0.5*(ambientDensityKGPerM3+gasDensityKGPerM3[0]);
+			for( std::size_t face=1; face<cells; ++face ) {
+				result.faceDensityKGPerM3[face] = 0.5*(gasDensityKGPerM3[face-1]+gasDensityKGPerM3[face]);
+			}
+			result.faceDensityKGPerM3[cells] = 0.5*(gasDensityKGPerM3[cells-1]+ambientDensityKGPerM3);
+			std::vector<double> pressure(unknowns,0.0);
+			std::vector<unsigned int> seen;
+			for( std::size_t activeIteration=0; activeIteration<8; ++activeIteration ) {
+				const unsigned int activeCode = (result.leftInflow ? 1u : 0u) |
+					(result.rightInflow ? 2u : 0u);
+				if( std::find(seen.begin(),seen.end(),activeCode) != seen.end() ) {
+					return Fail(error,"fire solver pressure-open active set cycled");
+				}
+				seen.push_back(activeCode);
+				bool newtonConverged = false;
+				for( std::size_t newton=0; newton<40; ++newton ) {
+					std::vector<double> velocity(cells+1,0.0), residual(unknowns,0.0);
+					std::vector<double> derivative((cells+1)*unknowns,0.0);
+					for( std::size_t face=0; face<=cells; ++face ) {
+						velocity[face] = unprojectedMomentumKGPerM2S[face]/
+							result.faceDensityKGPerM3[face];
+						if( face == 0 ) {
+							const double factor = 2.0*deltaTimeS/
+								(result.faceDensityKGPerM3[face]*cellWidthM);
+							velocity[face] -= factor*(pressure[0]-pressure[cells]);
+							derivative[face*unknowns+0] = -factor;
+							derivative[face*unknowns+cells] = factor;
+						} else if( face == cells ) {
+							const double factor = 2.0*deltaTimeS/
+								(result.faceDensityKGPerM3[face]*cellWidthM);
+							velocity[face] -= factor*(pressure[cells+1]-pressure[cells-1]);
+							derivative[face*unknowns+cells+1] = -factor;
+							derivative[face*unknowns+cells-1] = factor;
+						} else {
+							const double factor = deltaTimeS/
+								(result.faceDensityKGPerM3[face]*cellWidthM);
+							velocity[face] -= factor*(pressure[face]-pressure[face-1]);
+							derivative[face*unknowns+face] = -factor;
+							derivative[face*unknowns+face-1] = factor;
+						}
+					}
+					std::vector<double> jacobian(unknowns*unknowns,0.0);
+					for( std::size_t cell=0; cell<cells; ++cell ) {
+						residual[cell] = (velocity[cell+1]-velocity[cell])/cellWidthM-
+							divergenceTargetPerS[cell];
+						for( std::size_t column=0; column<unknowns; ++column ) {
+							jacobian[cell*unknowns+column] = (derivative[(cell+1)*unknowns+column]-
+								derivative[cell*unknowns+column])/cellWidthM;
+						}
+					}
+					const std::size_t leftRow = cells, rightRow = cells+1;
+					residual[leftRow] = pressure[cells];
+					residual[rightRow] = pressure[cells+1];
+					jacobian[leftRow*unknowns+cells] = 1.0;
+					jacobian[rightRow*unknowns+cells+1] = 1.0;
+					if( result.leftInflow ) {
+						residual[leftRow] += 0.5*ambientDensityKGPerM3*velocity[0]*velocity[0];
+						for( std::size_t column=0; column<unknowns; ++column ) {
+							jacobian[leftRow*unknowns+column] += ambientDensityKGPerM3*
+								velocity[0]*derivative[column];
+						}
+					}
+					if( result.rightInflow ) {
+						residual[rightRow] += 0.5*ambientDensityKGPerM3*
+							velocity[cells]*velocity[cells];
+						for( std::size_t column=0; column<unknowns; ++column ) {
+							jacobian[rightRow*unknowns+column] += ambientDensityKGPerM3*
+								velocity[cells]*derivative[cells*unknowns+column];
+						}
+					}
+					double divergenceNorm = 0.0;
+					for( std::size_t row=0; row<cells; ++row ) divergenceNorm =
+						std::max(divergenceNorm,std::fabs(residual[row]));
+					const double headNorm = std::max(std::fabs(residual[leftRow]),
+						std::fabs(residual[rightRow]));
+					const double norm = std::max(divergenceNorm*cellWidthM/
+						std::max(velocityToleranceMPerS,1.0e-300),headNorm/pressureTolerancePa);
+					result.nonlinearResidualHistory.push_back(norm);
+					if( divergenceNorm <= velocityToleranceMPerS/cellWidthM &&
+						headNorm <= pressureTolerancePa ) { newtonConverged = true; break; }
+					for( double& value : residual ) value = -value;
+					std::vector<double> update;
+					if( !SolveDenseLinearSystem(jacobian,residual,update) ) {
+						return Fail(error,"fire solver pressure-open Newton system is singular");
+					}
+					double damping = 1.0;
+					for( const double value : update ) if( !std::isfinite(value) ) damping = 0.0;
+					if( damping == 0.0 ) return Fail(error,"fire solver pressure-open Newton update overflowed");
+					for( std::size_t column=0; column<unknowns; ++column ) pressure[column] += damping*update[column];
+				}
+				if( !newtonConverged ) return Fail(error,
+					"fire solver pressure-open damped Newton iteration did not converge");
+				result.dynamicPressurePa.assign(pressure.begin(),pressure.begin()+cells);
+				result.velocityMPerS.assign(cells+1,0.0);
+				result.momentumKGPerM2S.assign(cells+1,0.0);
+				for( std::size_t face=0; face<=cells; ++face ) {
+					double gradient = 0.0;
+					if( face == 0 ) gradient = 2.0*(pressure[0]-pressure[cells])/cellWidthM;
+					else if( face == cells ) gradient = 2.0*(pressure[cells+1]-pressure[cells-1])/cellWidthM;
+					else gradient = (pressure[face]-pressure[face-1])/cellWidthM;
+					result.momentumKGPerM2S[face] = unprojectedMomentumKGPerM2S[face]-deltaTimeS*gradient;
+					result.velocityMPerS[face] = result.momentumKGPerM2S[face]/result.faceDensityKGPerM3[face];
+				}
+				const double leftOutward = -result.velocityMPerS[0];
+				const double rightOutward = result.velocityMPerS[cells];
+				const bool nextLeft = leftOutward < -velocityToleranceMPerS ? true :
+					(leftOutward > velocityToleranceMPerS ? false : result.leftInflow);
+				const bool nextRight = rightOutward < -velocityToleranceMPerS ? true :
+					(rightOutward > velocityToleranceMPerS ? false : result.rightInflow);
+				if( nextLeft == result.leftInflow && nextRight == result.rightInflow ) {
+					result.maximumDivergenceResidualPerS = 0.0;
+					for( std::size_t cell=0; cell<cells; ++cell ) result.maximumDivergenceResidualPerS =
+						std::max(result.maximumDivergenceResidualPerS,std::fabs((result.velocityMPerS[cell+1]-
+							result.velocityMPerS[cell])/cellWidthM-divergenceTargetPerS[cell]));
+					result.maximumBoundaryHeadResidualPa = std::max(
+						std::fabs(pressure[cells]+(result.leftInflow ? 0.5*ambientDensityKGPerM3*
+							result.velocityMPerS[0]*result.velocityMPerS[0] : 0.0)),
+						std::fabs(pressure[cells+1]+(result.rightInflow ? 0.5*ambientDensityKGPerM3*
+							result.velocityMPerS[cells]*result.velocityMPerS[cells] : 0.0)));
+					return result.maximumDivergenceResidualPerS <= velocityToleranceMPerS/cellWidthM &&
+						result.maximumBoundaryHeadResidualPa <= pressureTolerancePa;
+				}
+				result.leftInflow = nextLeft;
+				result.rightInflow = nextRight;
+			}
+			return Fail(error,"fire solver pressure-open active set did not converge");
 		}
 
 		inline std::vector<double> GasDensityFromConservative(
@@ -1736,6 +1980,11 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
+			if( !fuel.IsValid() || !thermochemistry.IsValid() ||
+				fuel.PrimaryReactionDelta().size() != MethaneSpeciesCount ||
+				!ValidateCellState(beginning,error) ) {
+				return Fail(error,"fire solver trial adiabatic state lacks valid records");
+			}
 			const double extent = std::min(beginning.constituent[MethaneCH4],
 				beginning.constituent[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
 			MethaneCellState trial = beginning;
@@ -1745,7 +1994,8 @@ namespace RISE
 			}
 			trial.sensibleEnergyJPerM3 += extent*fuel.LowerHeatingValueJPerKG();
 			return thermochemistry.InvertMixtureTemperatureK(
-				ThermochemicalDensities(trial),trial.sensibleEnergyJPerM3,result,error);
+				ThermochemicalDensities(trial),trial.sensibleEnergyJPerM3,result,error) &&
+				(std::isfinite(result) || Fail(error,"fire solver trial adiabatic temperature is non-finite"));
 		}
 
 		struct IgnitionGrid
@@ -1764,10 +2014,18 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			const std::size_t count = grid.nx*grid.ny*grid.nz;
 			if( grid.nx == 0 || grid.ny == 0 || grid.nz == 0 ||
-				grid.cells.size() != count || grid.pilotMask.size() != count ||
+				grid.nx > std::numeric_limits<std::size_t>::max()/grid.ny ||
+				grid.nx*grid.ny > std::numeric_limits<std::size_t>::max()/grid.nz ||
+				!fuel.IsValid() || !thermochemistry.IsValid() ||
 				!transport.IsValid() ) {
+				return Fail(error,"fire solver ignition graph input is malformed");
+			}
+			const std::size_t plane = grid.nx*grid.ny;
+			const std::size_t count = plane*grid.nz;
+			if(
+				grid.cells.size() != count || grid.pilotMask.size() != count ||
+				count == 0 ) {
 				return Fail(error,"fire solver ignition graph input is malformed");
 			}
 			std::vector<bool> vertex(count,false), seed(count,false);
@@ -1788,7 +2046,6 @@ namespace RISE
 			for( std::size_t index=0; index<count; ++index ) if( seed[index] ) {
 				eligible[index] = true; pending.push(index);
 			}
-			const std::size_t plane = grid.nx*grid.ny;
 			while( !pending.empty() ) {
 				const std::size_t index = pending.front(); pending.pop();
 				const std::size_t x = index%grid.nx;
@@ -1845,11 +2102,16 @@ namespace RISE
 			double exchangeIntegralW = 0.0;
 			for( std::size_t cell=0; cell<unscaledExchangeWPerM3.size(); ++cell ) {
 				if( !std::isfinite(unscaledExchangeWPerM3[cell]) ||
-					unscaledExchangeWPerM3[cell] < 0.0 || !std::isfinite(cellVolumeM3[cell]) ||
+					!std::isfinite(cellVolumeM3[cell]) ||
 					cellVolumeM3[cell] <= 0.0 ) {
 					return Fail(error,"fire solver radiation budget contains an invalid cell");
 				}
-				exchangeIntegralW += unscaledExchangeWPerM3[cell]*cellVolumeM3[cell];
+				const double contribution = unscaledExchangeWPerM3[cell]*cellVolumeM3[cell];
+				if( !std::isfinite(contribution) ||
+					!std::isfinite(exchangeIntegralW+contribution) ) {
+					return Fail(error,"fire solver radiation budget accumulation overflowed");
+				}
+				exchangeIntegralW += contribution;
 			}
 			result = RadiationEscapeFactor();
 			if( totalHeatReleaseW > 0.0 ) {
@@ -2079,11 +2341,11 @@ namespace RISE
 				preRadiation.temperatureK > opacity.TemperatureMaxK() ) {
 				return Fail(error,"fire solver radiation map is outside its certified domain");
 			}
-			if( preRadiation.temperatureK <= ambientTemperatureK || escapeFactor == 0.0 ) {
+			if( preRadiation.temperatureK == ambientTemperatureK || escapeFactor == 0.0 ) {
 				result = preRadiation; acceptedCoolingWPerM3 = 0.0; return true;
 			}
-			const double lower = ambientTemperatureK;
-			const double upper = preRadiation.temperatureK;
+			const double lower = std::min(ambientTemperatureK,preRadiation.temperatureK);
+			const double upper = std::max(ambientTemperatureK,preRadiation.temperatureK);
 			const double cpLower = MixtureCertifiedCpLowerJPerM3K(
 				preRadiation,lower,upper,thermochemistry);
 			if( cpLower <= 0.0 ) return Fail(error,"fire solver radiation map lacks a positive C_T bound");
@@ -2137,8 +2399,8 @@ namespace RISE
 				result.sensibleEnergyJPerM3,error) ) return false;
 			acceptedCoolingWPerM3 = (preRadiation.sensibleEnergyJPerM3-
 				result.sensibleEnergyJPerM3)/deltaTimeS;
-			return (std::isfinite(acceptedCoolingWPerM3) && acceptedCoolingWPerM3 >= 0.0) ||
-				Fail(error,"fire solver accepted radiative cooling is invalid");
+			return std::isfinite(acceptedCoolingWPerM3) ||
+				Fail(error,"fire solver accepted radiative exchange is invalid");
 		}
 	}
 }

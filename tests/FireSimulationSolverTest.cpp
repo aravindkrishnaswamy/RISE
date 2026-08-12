@@ -150,7 +150,7 @@ int main()
 		"accepted-stage inversion rejects a finite but pressure-inconsistent state");
 
 	// V1: hydrostatic-relative buoyancy supplies no momentum in the ambient
-	// state, so the periodic projection's cold-start fixed point is exact rest.
+	// state, and pressure-open faces cold-start in their static-pressure class.
 	const std::size_t projectionCells = 32;
 	std::vector<double> ambientDensity(projectionCells,1.18);
 	std::vector<double> zeroMomentum(projectionCells,0.0);
@@ -162,6 +162,25 @@ int main()
 	Check(*std::max_element(restProjection.velocityMPerS.begin(),
 		restProjection.velocityMPerS.end()) == 0.0,
 		"V1 hydrostatic-relative ambient remains exactly quiescent");
+	std::vector<double> openDensity(8,1.18), openMomentum(9,0.0);
+	std::vector<double> openTarget(8,0.0);
+	OpenMACProjection1DResult openRest;
+	Check(ProjectPressureOpenMACVelocity1D(openDensity,openMomentum,openTarget,
+		1.18,0.05,0.01,1.0e-10,1.18e-10,false,false,openRest,&error) &&
+		!openRest.leftInflow && !openRest.rightInflow &&
+		*std::max_element(openRest.velocityMPerS.begin(),
+			openRest.velocityMPerS.end()) == 0.0 &&
+		openRest.maximumBoundaryHeadResidualPa == 0.0,
+		"V1 quiescent pressure-open box preserves exact hydrostatic-relative rest");
+	std::fill(openMomentum.begin(),openMomentum.end(),1.18*0.1);
+	OpenMACProjection1DResult throughFlow;
+	const bool throughFlowOK = ProjectPressureOpenMACVelocity1D(openDensity,
+		openMomentum,openTarget,1.18,0.05,0.01,1.0e-9,1.18e-10,
+		false,false,throughFlow,&error);
+	if( !throughFlowOK ) std::printf("V1 open-flow diagnostic: %s\n",error.c_str());
+	Check(throughFlowOK && throughFlow.leftInflow && !throughFlow.rightInflow &&
+		throughFlow.maximumBoundaryHeadResidualPa <= 1.18e-10,
+		"V1 active set reclassifies ambient inflow and enforces total head");
 
 	// V2: a discontinuous-density, nonzero-divergence projection uses the
 	// same arithmetic staggered density for stored momentum and pressure.
@@ -238,6 +257,13 @@ int main()
 	Check(projection3DOK && residual3D <= 2.0e-10 &&
 		!projected3D.residualHistoryPerS.empty(),
 		"V2 3-D MAC projection closes a variable-density manufactured divergence");
+	PeriodicMACShape overflowShape;
+	overflowShape.nx = std::numeric_limits<std::size_t>::max()/2+1;
+	overflowShape.ny = 2; overflowShape.nz = 2; overflowShape.cellWidthM = 1.0;
+	PeriodicMACField emptyMomentum3D;
+	Check(!ProjectPeriodicMACVelocity3D(overflowShape,{},emptyMomentum3D,{},
+		0.01,1.0e-8,projected3D,&error),
+		"V2 rejects a wrapped 3-D grid product before indexing or solving");
 
 	// V3: physical methane/air states are reconstructed through the adopted
 	// N_A and the one physical diffusion flux is projected through N_C.
@@ -430,6 +456,20 @@ int main()
 	Check(ApplySourcePacket(beginning,packet,thermochemistry,reactedState,&error) &&
 		reactedState.temperatureK > beginning.temperatureK,
 		"V4 packet inversion produces a hotter admissible physical state");
+	MethaneReactionStep overflowRateStep = step;
+	overflowRateStep.deltaTimeS = 1.0e-310;
+	overflowRateStep.mixingTimeS = std::numeric_limits<double>::denorm_min();
+	MethaneSourcePacket overflowRatePacket;
+	Check(!BuildMethaneReactionPacket(beginning,fuel,overflowRateStep,
+		overflowRatePacket,&error),
+		"V4 rejects a packet whose finite extent produces non-finite diagnostic rates");
+	MethaneSourcePacket tracePacket;
+	tracePacket.constituentDelta[MethaneO2] = -std::nextafter(
+		beginning.constituent[MethaneO2],std::numeric_limits<double>::infinity());
+	MethaneCellState traceState;
+	Check(ApplySourcePacket(beginning,tracePacket,thermochemistry,traceState,&error) &&
+		traceState.constituent[MethaneO2] < 0.0,
+		"V4 property inversion maps a roundoff trace without clamping the conservative ledger");
 	Check(lesTransport.eddyViscosityM2PerS >= 0.0 &&
 		dnsTransport.eddyViscosityM2PerS == 0.0 &&
 		dnsTransport.sgsDiffusivityM2PerS == 0.0 &&
@@ -478,6 +518,15 @@ int main()
 	Check(cooledProducts.temperatureK < hotProducts.temperatureK &&
 		Near(coolingWPerM3,acceptedExchange.exchangeWPerM3,2.0e-12),
 		"V5 accepted energy loss equals the implicit Planck-mean cooling rate");
+	const MethaneCellState coldProducts = StateAtTemperature(products,0.0,
+		400.0,thermochemistry);
+	MethaneCellState warmedProducts;
+	double signedCoolingWPerM3 = 0.0;
+	Check(ApplyGasRadiationBackwardEuler(coldProducts,500.0,radiationStepS,1.0,
+		thermochemistry,opacity,warmedProducts,signedCoolingWPerM3,&error) &&
+		warmedProducts.temperatureK > coldProducts.temperatureK &&
+		signedCoolingWPerM3 < 0.0,
+		"V5 signed Kirchhoff exchange heats gas below its black enclosure temperature");
 	RadiationEscapeFactor escape;
 	const std::vector<double> exchangeFixture = {100.0,200.0};
 	const std::vector<double> volumeFixture = {1.0,1.0};
@@ -492,6 +541,11 @@ int main()
 		postFireEscape,&error) && postFireEscape.beta == 0.0 &&
 		postFireEscape.gamma == 1.0 && postFireEscape.accepted == 1.0,
 		"V5 degenerate post-fire state reverts to unscaled optically-thin cooling");
+	RadiationEscapeFactor overflowEscape;
+	Check(!ComputeRadiationEscapeFactor(1.0,600.0,0.1,
+		{std::numeric_limits<double>::max(),std::numeric_limits<double>::max()},
+		{1.0,1.0},true,overflowEscape,&error),
+		"V5 radiative-budget accumulation rejects finite-input overflow");
 	double derivativeLower = 0.0;
 	Check(CertifiedGasExchangeDerivativeLower(hotProducts,1300.0,1400.0,300.0,
 		thermochemistry,opacity,derivativeLower,&error) &&
@@ -535,6 +589,17 @@ int main()
 	Check(BuildIgnitionEligibility(grid,fuel,thermochemistry,transport,
 		repeatedEligibility,&error) && repeatedEligibility == eligibility,
 		"V6 eligibility depends only on the current conservative state");
+	FireSimulationMethaneRecord invalidFuel;
+	std::vector<bool> invalidEligibility = {true};
+	Check(!BuildIgnitionEligibility(grid,invalidFuel,thermochemistry,transport,
+		invalidEligibility,&error),
+		"V6 ignition fails closed before indexing an invalid fuel record");
+	IgnitionGrid overflowGrid;
+	overflowGrid.nx = std::numeric_limits<std::size_t>::max()/2+1;
+	overflowGrid.ny = 2; overflowGrid.nz = 2;
+	Check(!BuildIgnitionEligibility(overflowGrid,fuel,thermochemistry,transport,
+		invalidEligibility,&error),
+		"V6 ignition rejects a wrapped grid product");
 
 	// V6 local split refinement: exponential finite-step conversion composes
 	// exactly when the accepted remainder is used by the next substep.
