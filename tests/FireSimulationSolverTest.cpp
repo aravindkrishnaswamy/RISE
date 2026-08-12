@@ -181,6 +181,20 @@ int main()
 	Check(throughFlowOK && throughFlow.leftInflow && !throughFlow.rightInflow &&
 		throughFlow.maximumBoundaryHeadResidualPa <= 1.18e-10,
 		"V1 active set reclassifies ambient inflow and enforces total head");
+	for( unsigned int classCode=0; classCode<4; ++classCode ) {
+		const bool stage0Inflow = (classCode&1u) != 0;
+		const bool stage1Inflow = (classCode&2u) != 0;
+		OpenMACProjection1DResult finalOpen;
+		const bool finalOK = ProjectPressureOpenMACVelocity1DFinal(openDensity,
+			std::vector<double>(9,0.0),openTarget,1.18,0.05,0.01,
+			stage0Inflow,stage1Inflow,false,false,0.2,0.4,0.0,0.0,
+			1.0e-9,finalOpen,&error);
+		const double expectedIntegratedHead = -0.25*1.18*
+			((stage0Inflow ? 0.2*0.2 : 0.0)+(stage1Inflow ? 0.4*0.4 : 0.0));
+		Check(finalOK && Near(finalOpen.leftBoundaryPressurePa,
+			expectedIntegratedHead,2.0e-15),
+			"V1 final open projection uses the Heun indicator-integrated head");
+	}
 
 	// V2: a discontinuous-density, nonzero-divergence projection uses the
 	// same arithmetic staggered density for stored momentum and pressure.

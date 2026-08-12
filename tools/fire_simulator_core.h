@@ -1168,6 +1168,134 @@ namespace RISE
 			}
 		}
 
+		inline void SmoothPeriodicMACPoisson3D(
+			const PeriodicMACShape& shape,
+			const PeriodicMACField& inverseFaceDensity,
+			const std::vector<double>& rightHandSide,
+			const std::size_t iterations,
+			std::vector<double>& solution
+			)
+		{
+			const std::size_t count = shape.CellCount();
+			const double inverseWidth2 = 1.0/(shape.cellWidthM*shape.cellWidthM);
+			std::vector<double> applied, next(count,0.0);
+			for( std::size_t iteration=0; iteration<iterations; ++iteration ) {
+				ApplyNegativePeriodicMACPoisson3D(shape,inverseFaceDensity,solution,applied);
+				for( std::size_t cell=0; cell<count; ++cell ) {
+					double diagonal = 0.0;
+					for( unsigned int axis=0; axis<3; ++axis ) diagonal += inverseWidth2*(
+						inverseFaceDensity.component[axis][cell]+inverseFaceDensity.component[axis][
+							PeriodicPrevious(shape,cell,axis)]);
+					next[cell] = solution[cell]+(2.0/3.0)*(rightHandSide[cell]-applied[cell])/diagonal;
+				}
+				solution.swap(next);
+				RemoveMean(solution);
+			}
+		}
+
+		inline bool CoarsenPeriodicMACLevel(
+			const PeriodicMACShape& fineShape,
+			const PeriodicMACField& fineCoefficient,
+			PeriodicMACShape& coarseShape,
+			PeriodicMACField& coarseCoefficient
+			)
+		{
+			if( fineShape.nx%2 || fineShape.ny%2 || fineShape.nz%2 ||
+				fineShape.nx < 4 || fineShape.ny < 4 || fineShape.nz < 4 ) return false;
+			coarseShape.nx = fineShape.nx/2;
+			coarseShape.ny = fineShape.ny/2;
+			coarseShape.nz = fineShape.nz/2;
+			coarseShape.cellWidthM = 2.0*fineShape.cellWidthM;
+			for( unsigned int axis=0; axis<3; ++axis ) {
+				coarseCoefficient.component[axis].assign(coarseShape.CellCount(),0.0);
+			}
+			for( std::size_t z=0; z<coarseShape.nz; ++z ) for( std::size_t y=0;
+				y<coarseShape.ny; ++y ) for( std::size_t x=0; x<coarseShape.nx; ++x ) {
+				const std::size_t coarse = coarseShape.Index(x,y,z);
+				for( unsigned int axis=0; axis<3; ++axis ) {
+					double sum = 0.0;
+					for( std::size_t first=0; first<2; ++first ) for( std::size_t second=0;
+						second<2; ++second ) {
+						std::size_t fx=2*x, fy=2*y, fz=2*z;
+						if( axis == 0 ) { fx += 1; fy += first; fz += second; }
+						if( axis == 1 ) { fy += 1; fx += first; fz += second; }
+						if( axis == 2 ) { fz += 1; fx += first; fy += second; }
+						sum += fineCoefficient.component[axis][fineShape.Index(fx,fy,fz)];
+					}
+					coarseCoefficient.component[axis][coarse] = 0.25*sum;
+				}
+			}
+			return true;
+		}
+
+		inline void RestrictPeriodicResidual3D(
+			const PeriodicMACShape& fineShape,
+			const PeriodicMACShape& coarseShape,
+			const std::vector<double>& fine,
+			std::vector<double>& coarse
+			)
+		{
+			coarse.assign(coarseShape.CellCount(),0.0);
+			for( std::size_t z=0; z<coarseShape.nz; ++z ) for( std::size_t y=0;
+				y<coarseShape.ny; ++y ) for( std::size_t x=0; x<coarseShape.nx; ++x ) {
+				double sum = 0.0;
+				for( std::size_t dz=0; dz<2; ++dz ) for( std::size_t dy=0; dy<2; ++dy )
+					for( std::size_t dx=0; dx<2; ++dx ) sum += fine[fineShape.Index(
+						2*x+dx,2*y+dy,2*z+dz)];
+				coarse[coarseShape.Index(x,y,z)] = 0.125*sum;
+			}
+			RemoveMean(coarse);
+		}
+
+		inline void ProlongPeriodicCorrection3D(
+			const PeriodicMACShape& fineShape,
+			const PeriodicMACShape& coarseShape,
+			const std::vector<double>& coarse,
+			std::vector<double>& fine
+			)
+		{
+			for( std::size_t z=0; z<fineShape.nz; ++z ) for( std::size_t y=0;
+				y<fineShape.ny; ++y ) for( std::size_t x=0; x<fineShape.nx; ++x ) {
+				const std::size_t cx=x/2, cy=y/2, cz=z/2;
+				const double tx = (x%2)*0.5, ty = (y%2)*0.5, tz = (z%2)*0.5;
+				double value = 0.0;
+				for( std::size_t dz=0; dz<2; ++dz ) for( std::size_t dy=0; dy<2; ++dy )
+					for( std::size_t dx=0; dx<2; ++dx ) value +=
+						(dx ? tx : 1.0-tx)*(dy ? ty : 1.0-ty)*(dz ? tz : 1.0-tz)*
+						coarse[coarseShape.Index((cx+dx)%coarseShape.nx,
+							(cy+dy)%coarseShape.ny,(cz+dz)%coarseShape.nz)];
+				fine[fineShape.Index(x,y,z)] += value;
+			}
+			RemoveMean(fine);
+		}
+
+		inline void PeriodicMACMultigridVCycle3D(
+			const PeriodicMACShape& shape,
+			const PeriodicMACField& coefficient,
+			const std::vector<double>& rightHandSide,
+			std::vector<double>& solution
+			)
+		{
+			PeriodicMACShape coarseShape;
+			PeriodicMACField coarseCoefficient;
+			if( !CoarsenPeriodicMACLevel(shape,coefficient,coarseShape,coarseCoefficient) ) {
+				SmoothPeriodicMACPoisson3D(shape,coefficient,rightHandSide,40,solution);
+				return;
+			}
+			SmoothPeriodicMACPoisson3D(shape,coefficient,rightHandSide,4,solution);
+			std::vector<double> applied, residual(shape.CellCount(),0.0), coarseRight;
+			ApplyNegativePeriodicMACPoisson3D(shape,coefficient,solution,applied);
+			for( std::size_t cell=0; cell<shape.CellCount(); ++cell ) {
+				residual[cell] = rightHandSide[cell]-applied[cell];
+			}
+			RestrictPeriodicResidual3D(shape,coarseShape,residual,coarseRight);
+			std::vector<double> coarseCorrection(coarseShape.CellCount(),0.0);
+			PeriodicMACMultigridVCycle3D(coarseShape,coarseCoefficient,coarseRight,
+				coarseCorrection);
+			ProlongPeriodicCorrection3D(shape,coarseShape,coarseCorrection,solution);
+			SmoothPeriodicMACPoisson3D(shape,coefficient,rightHandSide,4,solution);
+		}
+
 		inline bool ProjectPeriodicMACVelocity3D(
 			const PeriodicMACShape& shape,
 			const std::vector<double>& gasDensityKGPerM3,
@@ -1237,38 +1365,28 @@ namespace RISE
 			}
 			RemoveMean(rightHandSide);
 			result.stepAverageDynamicPressurePa.assign(count,0.0);
-			std::vector<double> residual = rightHandSide;
-			std::vector<double> direction = residual, operatorDirection;
-			double residualSquared = Dot(residual,residual);
 			const double pressureTolerance = absoluteTolerancePerS/deltaTimeS;
 			result.residualHistoryPerS.clear();
-			for( std::size_t iteration=0; iteration<8*count &&
-				std::sqrt(residualSquared) > pressureTolerance; ++iteration ) {
-				ApplyNegativePeriodicMACPoisson3D(shape,inverseFaceDensity,direction,
-					operatorDirection);
-				const double denominator = Dot(direction,operatorDirection);
-				if( !std::isfinite(denominator) || denominator <= 0.0 ) {
-					return Fail(error,"fire solver 3-D pressure operator lost positive definiteness");
-				}
-				const double alpha = residualSquared/denominator;
+			std::vector<double> applied, residual(count,0.0);
+			double residualNorm = std::numeric_limits<double>::infinity();
+			for( std::size_t cycle=0; cycle<128 && residualNorm > pressureTolerance; ++cycle ) {
+				PeriodicMACMultigridVCycle3D(shape,inverseFaceDensity,rightHandSide,
+					result.stepAverageDynamicPressurePa);
+				ApplyNegativePeriodicMACPoisson3D(shape,inverseFaceDensity,
+					result.stepAverageDynamicPressurePa,applied);
+				double residualSquared = 0.0;
 				for( std::size_t cell=0; cell<count; ++cell ) {
-					result.stepAverageDynamicPressurePa[cell] += alpha*direction[cell];
-					residual[cell] -= alpha*operatorDirection[cell];
+					residual[cell] = rightHandSide[cell]-applied[cell];
+					residualSquared += residual[cell]*residual[cell];
 				}
-				RemoveMean(result.stepAverageDynamicPressurePa);
 				RemoveMean(residual);
-				const double nextResidualSquared = Dot(residual,residual);
+				residualNorm = std::sqrt(residualSquared);
 				result.residualHistoryPerS.push_back(deltaTimeS*
-					std::sqrt(nextResidualSquared/static_cast<double>(count)));
-				if( nextResidualSquared == 0.0 ) { residualSquared = 0.0; break; }
-				const double beta = nextResidualSquared/residualSquared;
-				for( std::size_t cell=0; cell<count; ++cell ) {
-					direction[cell] = residual[cell]+beta*direction[cell];
-				}
-				RemoveMean(direction);
-				residualSquared = nextResidualSquared;
+					residualNorm/std::sqrt(static_cast<double>(count)));
+				if( !std::isfinite(residualNorm) ) return Fail(error,
+					"fire solver 3-D geometric multigrid residual overflowed");
 			}
-			if( std::sqrt(residualSquared) > pressureTolerance ) {
+			if( residualNorm > pressureTolerance ) {
 				return Fail(error,"fire solver 3-D periodic pressure solve did not converge");
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
@@ -1461,9 +1579,12 @@ namespace RISE
 			bool rightInflow;
 			double maximumDivergenceResidualPerS;
 			double maximumBoundaryHeadResidualPa;
+			double leftBoundaryPressurePa;
+			double rightBoundaryPressurePa;
 			std::vector<double> nonlinearResidualHistory;
 			OpenMACProjection1DResult() : leftInflow(false), rightInflow(false),
-				maximumDivergenceResidualPerS(0.0),maximumBoundaryHeadResidualPa(0.0) {}
+				maximumDivergenceResidualPerS(0.0),maximumBoundaryHeadResidualPa(0.0),
+				leftBoundaryPressurePa(0.0),rightBoundaryPressurePa(0.0) {}
 		};
 
 		inline bool SolveDenseLinearSystem(
@@ -1564,6 +1685,32 @@ namespace RISE
 					return Fail(error,"fire solver pressure-open active set cycled");
 				}
 				seen.push_back(activeCode);
+				auto combinedResidual = [&]( const std::vector<double>& candidate ) {
+					std::vector<double> velocity(cells+1,0.0);
+					for( std::size_t face=0; face<=cells; ++face ) {
+						velocity[face] = unprojectedMomentumKGPerM2S[face]/
+							result.faceDensityKGPerM3[face];
+						if( face == 0 ) velocity[face] -= 2.0*deltaTimeS*
+							(candidate[0]-candidate[cells])/
+							(result.faceDensityKGPerM3[face]*cellWidthM);
+						else if( face == cells ) velocity[face] -= 2.0*deltaTimeS*
+							(candidate[cells+1]-candidate[cells-1])/
+							(result.faceDensityKGPerM3[face]*cellWidthM);
+						else velocity[face] -= deltaTimeS*(candidate[face]-candidate[face-1])/
+							(result.faceDensityKGPerM3[face]*cellWidthM);
+					}
+					double divergenceNorm = 0.0;
+					for( std::size_t cell=0; cell<cells; ++cell ) divergenceNorm =
+						std::max(divergenceNorm,std::fabs((velocity[cell+1]-velocity[cell])/
+							cellWidthM-divergenceTargetPerS[cell]));
+					const double leftHead = candidate[cells]+(result.leftInflow ?
+						0.5*ambientDensityKGPerM3*velocity[0]*velocity[0] : 0.0);
+					const double rightHead = candidate[cells+1]+(result.rightInflow ?
+						0.5*ambientDensityKGPerM3*velocity[cells]*velocity[cells] : 0.0);
+					return std::max(divergenceNorm*cellWidthM/
+						std::max(velocityToleranceMPerS,1.0e-300),
+						std::max(std::fabs(leftHead),std::fabs(rightHead))/pressureTolerancePa);
+				};
 				bool newtonConverged = false;
 				for( std::size_t newton=0; newton<40; ++newton ) {
 					std::vector<double> velocity(cells+1,0.0), residual(unknowns,0.0);
@@ -1635,10 +1782,23 @@ namespace RISE
 					if( !SolveDenseLinearSystem(jacobian,residual,update) ) {
 						return Fail(error,"fire solver pressure-open Newton system is singular");
 					}
+					for( const double value : update ) if( !std::isfinite(value) ) {
+						return Fail(error,"fire solver pressure-open Newton update overflowed");
+					}
 					double damping = 1.0;
-					for( const double value : update ) if( !std::isfinite(value) ) damping = 0.0;
-					if( damping == 0.0 ) return Fail(error,"fire solver pressure-open Newton update overflowed");
-					for( std::size_t column=0; column<unknowns; ++column ) pressure[column] += damping*update[column];
+					std::vector<double> trial(unknowns,0.0);
+					double trialNorm = std::numeric_limits<double>::infinity();
+					while( damping >= std::ldexp(1.0,-20) ) {
+						for( std::size_t column=0; column<unknowns; ++column ) {
+							trial[column] = pressure[column]+damping*update[column];
+						}
+						trialNorm = combinedResidual(trial);
+						if( std::isfinite(trialNorm) && trialNorm < norm ) break;
+						damping *= 0.5;
+					}
+					if( !std::isfinite(trialNorm) || trialNorm >= norm ) return Fail(error,
+						"fire solver pressure-open Newton line search failed");
+					pressure.swap(trial);
 				}
 				if( !newtonConverged ) return Fail(error,
 					"fire solver pressure-open damped Newton iteration did not converge");
@@ -1669,6 +1829,8 @@ namespace RISE
 							result.velocityMPerS[0]*result.velocityMPerS[0] : 0.0)),
 						std::fabs(pressure[cells+1]+(result.rightInflow ? 0.5*ambientDensityKGPerM3*
 							result.velocityMPerS[cells]*result.velocityMPerS[cells] : 0.0)));
+					result.leftBoundaryPressurePa = pressure[cells];
+					result.rightBoundaryPressurePa = pressure[cells+1];
 					return result.maximumDivergenceResidualPerS <= velocityToleranceMPerS/cellWidthM &&
 						result.maximumBoundaryHeadResidualPa <= pressureTolerancePa;
 				}
@@ -1676,6 +1838,95 @@ namespace RISE
 				result.rightInflow = nextRight;
 			}
 			return Fail(error,"fire solver pressure-open active set did not converge");
+		}
+
+		inline bool ProjectPressureOpenMACVelocity1DFinal(
+			const std::vector<double>& gasDensityKGPerM3,
+			const std::vector<double>& unprojectedMomentumKGPerM2S,
+			const std::vector<double>& divergenceTargetPerS,
+			const double ambientDensityKGPerM3,
+			const double cellWidthM,
+			const double deltaTimeS,
+			const bool leftStage0Inflow,
+			const bool leftStage1Inflow,
+			const bool rightStage0Inflow,
+			const bool rightStage1Inflow,
+			const double leftStage0VelocityMPerS,
+			const double leftStage1VelocityMPerS,
+			const double rightStage0VelocityMPerS,
+			const double rightStage1VelocityMPerS,
+			const double absoluteTolerancePerS,
+			OpenMACProjection1DResult& result,
+			std::string* error = 0
+			)
+		{
+			const std::size_t cells = gasDensityKGPerM3.size();
+			if( cells < 2 || unprojectedMomentumKGPerM2S.size() != cells+1 ||
+				divergenceTargetPerS.size() != cells || !std::isfinite(ambientDensityKGPerM3) ||
+				ambientDensityKGPerM3 <= 0.0 || !std::isfinite(cellWidthM) || cellWidthM <= 0.0 ||
+				!std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ||
+				!std::isfinite(absoluteTolerancePerS) || absoluteTolerancePerS <= 0.0 ) {
+				return Fail(error,"fire solver final pressure-open projection input is malformed");
+			}
+			const double stageVelocity[4] = {leftStage0VelocityMPerS,leftStage1VelocityMPerS,
+				rightStage0VelocityMPerS,rightStage1VelocityMPerS};
+			for( const double velocity : stageVelocity ) if( !std::isfinite(velocity) ) {
+				return Fail(error,"fire solver final pressure-open stage velocity is non-finite");
+			}
+			const double leftPressure = -0.25*ambientDensityKGPerM3*
+				((leftStage0Inflow ? leftStage0VelocityMPerS*leftStage0VelocityMPerS : 0.0)+
+				 (leftStage1Inflow ? leftStage1VelocityMPerS*leftStage1VelocityMPerS : 0.0));
+			const double rightPressure = -0.25*ambientDensityKGPerM3*
+				((rightStage0Inflow ? rightStage0VelocityMPerS*rightStage0VelocityMPerS : 0.0)+
+				 (rightStage1Inflow ? rightStage1VelocityMPerS*rightStage1VelocityMPerS : 0.0));
+			result = OpenMACProjection1DResult();
+			result.leftBoundaryPressurePa = leftPressure;
+			result.rightBoundaryPressurePa = rightPressure;
+			result.faceDensityKGPerM3.assign(cells+1,0.0);
+			result.faceDensityKGPerM3[0] = 0.5*(ambientDensityKGPerM3+gasDensityKGPerM3[0]);
+			for( std::size_t face=1; face<cells; ++face ) result.faceDensityKGPerM3[face] =
+				0.5*(gasDensityKGPerM3[face-1]+gasDensityKGPerM3[face]);
+			result.faceDensityKGPerM3[cells] = 0.5*(gasDensityKGPerM3[cells-1]+ambientDensityKGPerM3);
+			std::vector<double> zeroPressure(cells,0.0), zeroVelocity(cells+1,0.0);
+			auto velocityFromPressure = [&]( const std::vector<double>& pressure,
+				std::vector<double>& velocity ) {
+				velocity.assign(cells+1,0.0);
+				for( std::size_t face=0; face<=cells; ++face ) {
+					double gradient = face == 0 ? 2.0*(pressure[0]-leftPressure)/cellWidthM :
+						(face == cells ? 2.0*(rightPressure-pressure[cells-1])/cellWidthM :
+						(pressure[face]-pressure[face-1])/cellWidthM);
+					velocity[face] = (unprojectedMomentumKGPerM2S[face]-deltaTimeS*gradient)/
+						result.faceDensityKGPerM3[face];
+				}
+			};
+			velocityFromPressure(zeroPressure,zeroVelocity);
+			std::vector<double> matrix(cells*cells,0.0), rightHandSide(cells,0.0);
+			for( std::size_t row=0; row<cells; ++row ) rightHandSide[row] =
+				divergenceTargetPerS[row]-(zeroVelocity[row+1]-zeroVelocity[row])/cellWidthM;
+			for( std::size_t column=0; column<cells; ++column ) {
+				std::vector<double> basis(cells,0.0), basisVelocity(cells+1,0.0);
+				basis[column] = 1.0;
+				velocityFromPressure(basis,basisVelocity);
+				for( std::size_t row=0; row<cells; ++row ) matrix[row*cells+column] =
+					((basisVelocity[row+1]-basisVelocity[row])-
+					 (zeroVelocity[row+1]-zeroVelocity[row]))/cellWidthM;
+			}
+			if( !SolveDenseLinearSystem(matrix,rightHandSide,result.dynamicPressurePa) ) {
+				return Fail(error,"fire solver final pressure-open linear system is singular");
+			}
+			velocityFromPressure(result.dynamicPressurePa,result.velocityMPerS);
+			result.momentumKGPerM2S.assign(cells+1,0.0);
+			for( std::size_t face=0; face<=cells; ++face ) result.momentumKGPerM2S[face] =
+				result.faceDensityKGPerM3[face]*result.velocityMPerS[face];
+			result.maximumDivergenceResidualPerS = 0.0;
+			for( std::size_t cell=0; cell<cells; ++cell ) result.maximumDivergenceResidualPerS =
+				std::max(result.maximumDivergenceResidualPerS,std::fabs((result.velocityMPerS[cell+1]-
+					result.velocityMPerS[cell])/cellWidthM-divergenceTargetPerS[cell]));
+			result.maximumBoundaryHeadResidualPa = 0.0;
+			result.leftInflow = result.velocityMPerS[0] < 0.0;
+			result.rightInflow = result.velocityMPerS[cells] > 0.0 ? false : true;
+			return result.maximumDivergenceResidualPerS <= absoluteTolerancePerS ||
+				Fail(error,"fire solver final pressure-open projection misses its divergence target");
 		}
 
 		inline std::vector<double> GasDensityFromConservative(
