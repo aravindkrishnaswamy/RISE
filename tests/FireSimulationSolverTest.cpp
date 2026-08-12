@@ -106,6 +106,43 @@ namespace
 			temperatureK,thermochemistry);
 	}
 
+	MethaneCellState ProductRichMixtureLineState(
+		const FireSimulationMethaneRecord& fuel,
+		const FireSimulationMethaneRecord& thermochemistry,
+		const double mixtureFraction,
+		const double temperatureK
+		)
+	{
+		std::array<double,MethaneSpeciesCount> weight={};
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)weight[species]=
+			(1.0-mixtureFraction)*fuel.AmbientMassFractions()[species]+
+			mixtureFraction*fuel.InjectedMassFractions()[species];
+		const double primaryExtent=0.006;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			weight[species]+=primaryExtent*fuel.PrimaryReactionDelta()[species];
+		static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		double molecularWeight[MethaneCarbon]={};
+		for(std::size_t species=0;species<MethaneCarbon;++species){
+			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(names[species]);
+			if(!property){std::printf("FAIL: product-rich fixture lacks %s\n",names[species]);
+				++failures;return MethaneCellState();}
+			molecularWeight[species]=property->molecularWeightKGPerKMol;
+		}
+		const FireThermochemistrySpecies* carbon=thermochemistry.FindSpecies("C(gr)");
+		if(!carbon){std::printf("FAIL: product-rich fixture lacks C(gr)\n");++failures;
+			return MethaneCellState();}
+		const double coExtent=0.002,carbonExtent=0.001;
+		weight[MethaneCH4]-=coExtent+carbonExtent;
+		weight[MethaneO2]-=(1.5*coExtent+carbonExtent)*molecularWeight[MethaneO2]/
+			molecularWeight[MethaneCH4];
+		weight[MethaneCO]+=coExtent*molecularWeight[MethaneCO]/molecularWeight[MethaneCH4];
+		weight[MethaneCarbon]+=carbonExtent*carbon->molecularWeightKGPerKMol/
+			molecularWeight[MethaneCH4];
+		weight[MethaneH2O]+=(2.0*coExtent+2.0*carbonExtent)*molecularWeight[MethaneH2O]/
+			molecularWeight[MethaneCH4];
+		return StateAtTemperature(weight,mixtureFraction,temperatureK,thermochemistry);
+	}
+
 	double MaximumConstraintResidual(
 		const FireCertifiedNullspace& closure,
 		const ConservativeVector& state
@@ -1022,10 +1059,13 @@ int main()
 		rejectedProjection,&error),
 		"V2 spatially uniform nonzero periodic divergence is rejected");
 	PeriodicProjectionResult overflowProjection;
-	Check(!ProjectPeriodicMACVelocity(std::vector<double>(3,
+	Check(ProjectPeriodicMACVelocity(std::vector<double>(3,
 		std::numeric_limits<double>::max()),std::vector<double>(3,0.0),
-		std::vector<double>(3,0.0),1.0,0.01,1.0e-8,overflowProjection,&error),
-		"V2 rejects finite cell densities whose staggered arithmetic mean overflows");
+		std::vector<double>(3,0.0),1.0,0.01,1.0e-8,overflowProjection,&error)&&
+		std::all_of(overflowProjection.faceDensityKGPerM3.begin(),
+			overflowProjection.faceDensityKGPerM3.end(),[](const double value){
+				return value==std::numeric_limits<double>::max();}),
+		"V2 forms an overflow-safe staggered mean of finite positive densities");
 	PeriodicMACShape shape3D;
 	shape3D.nx = 4; shape3D.ny = 4; shape3D.nz = 4;
 	shape3D.cellWidthM = 0.025;
@@ -1135,39 +1175,141 @@ int main()
 	exactNC=maximumNCDifference<2.0e-18;
 	Check(exactNC,
 		"V3 physical diffusion uses exactly N_C N_C^T with no sequential correction");
-	// The same unequal-cp diffusion ledger is gauge invariant.  Re-form the
-	// sensible enthalpy and J_h ledgers at two distinct reference temperatures;
-	// at uniform T each must close exactly after the projected species update.
+	PeriodicMACShape zeroCarbonShape;zeroCarbonShape.nx=3;zeroCarbonShape.ny=3;
+	zeroCarbonShape.nz=3;zeroCarbonShape.cellWidthM=1.0/3.0;
+	std::vector<ConservativeVector> zeroCarbonState(zeroCarbonShape.CellCount());
+	std::vector<double> zeroCarbonTemperature(zeroCarbonShape.CellCount(),0.0);
+	for(std::size_t cell=0;cell<zeroCarbonState.size();++cell){const std::size_t x=cell%3,
+		y=(cell/3)%3;const double burnedTemperature=650.0+45.0*y;
+		MethaneCellState burned=PhysicalMixtureLineState(fuel,
+			thermochemistry,0.01+0.004*x+0.001*y,burnedTemperature);
+		const double extent=burned.constituent[MethaneCH4]/
+			(-fuel.PrimaryReactionDelta()[MethaneCH4]);
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			burned.constituent[species]+=extent*fuel.PrimaryReactionDelta()[species];
+		burned.constituent[MethaneCH4]=0.0;
+		Check(thermochemistry.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(burned),
+			burned.temperatureK,burned.sensibleEnergyJPerM3,&error),
+			"V3 post-burn zero-CH4 fixture has physical sensible energy");
+		zeroCarbonState[cell]=ToConservativeVector(burned);
+		zeroCarbonTemperature[cell]=burnedTemperature;}
+	std::array<std::vector<std::array<double,MethaneMassStateDimension> >,3> zeroCarbonSlope;
+	bool zeroCarbonTangent=InvariantMCMassSlopes3D(zeroCarbonShape,zeroCarbonState,
+		fuel.ConservativeReconstruction(),zeroCarbonSlope,&error);
+	double zeroCarbonResidual=0.0;
+	for(unsigned int axis=0;zeroCarbonTangent&&axis<3;++axis)for(const auto& slope:
+		zeroCarbonSlope[axis]){zeroCarbonTangent=zeroCarbonTangent&&
+		slope[1+MethaneCH4]==0.0;for(std::size_t row=0;row<fuel.
+		ConservativeReconstruction().constraintRows;++row){double residual=0.0;
+		for(std::size_t column=0;column<MethaneMassStateDimension;++column){
+			residual+=fuel.ConservativeReconstruction().constraintMatrix[
+				row*MethaneMassStateDimension+column]*slope[column];
+		}
+		zeroCarbonResidual=std::max(zeroCarbonResidual,std::fabs(residual));
+		zeroCarbonTangent=zeroCarbonTangent&&std::fabs(residual)<2.0e-15;}}
+	if(!zeroCarbonTangent)std::printf("V3 zero-CH4 slope residual %.17g\n",zeroCarbonResidual);
+	Check(zeroCarbonTangent,
+		"V3 absent-inventory MC slopes preserve zero CH4 and the full N_A tangent");
+	double nonzeroAbsentSlope=0.0;for(unsigned int axis=0;axis<3;++axis)for(const auto& slope:
+		zeroCarbonSlope[axis])for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+		if(row!=1+MethaneCH4)nonzeroAbsentSlope=std::max(nonzeroAbsentSlope,std::fabs(slope[row]));
+	Check(nonzeroAbsentSlope>1.0e-8,
+		"V3 zero-inventory reduced basis retains a genuinely high-order methane slope");
+	OpenBoundaryConfig3D zeroCarbonBoundary=openBoundary3D;
+	zeroCarbonBoundary.kind.fill(AdiabaticWallBoundary3D);
+	zeroCarbonBoundary.bottomFuelMask.clear();
+	const double zeroCarbonGasDensity=FromConservativeVector(zeroCarbonState[0]).GasDensity();
+	OpenMACProjection3DResult zeroCarbonProjection;
+	for(unsigned int axis=0;axis<3;++axis){
+		const std::size_t faceCount=OpenMACFaceCount3D(zeroCarbonShape,axis);
+		zeroCarbonProjection.velocityMPerS.component[axis].assign(faceCount,axis==0?0.2:0.0);
+		zeroCarbonProjection.faceDensityKGPerM3.component[axis].assign(faceCount,
+			zeroCarbonGasDensity);
+		zeroCarbonProjection.momentumKGPerM2S.component[axis].assign(faceCount,
+			axis==0?0.2*zeroCarbonGasDensity:0.0);
+	}
+	for(unsigned int side=0;side<6;++side)zeroCarbonProjection.inflow[side].assign(
+		OpenBoundaryFaceCount3D(zeroCarbonShape,side),false);
+	OpenFluxPair3D zeroCarbonOpenFlux;
+	const std::vector<double> zeroCarbonZero(zeroCarbonShape.CellCount(),0.0);
+	const bool zeroCarbonOpenOK=BuildOpenFluxPair3D(zeroCarbonShape,zeroCarbonState,
+		zeroCarbonTemperature,zeroCarbonProjection,zeroCarbonZero,zeroCarbonZero,
+		zeroCarbonBoundary,300.0,300.0,fuel,thermochemistry,zeroCarbonOpenFlux,&error);
+	double zeroCarbonOpenResidual=0.0,zeroCarbonOpenCorrection=0.0;
+	bool zeroCarbonOpenTangent=zeroCarbonOpenOK;
+	for(unsigned int axis=0;zeroCarbonOpenTangent&&axis<3;++axis)
+		for(std::size_t face=0;face<zeroCarbonOpenFlux.high[axis].size();++face){
+			std::array<double,MethaneMassStateDimension> correction;
+			for(std::size_t row=0;row<MethaneMassStateDimension;++row){
+				correction[row]=zeroCarbonOpenFlux.high[axis][face][row]-
+					zeroCarbonOpenFlux.low[axis][face][row];
+				zeroCarbonOpenCorrection=std::max(zeroCarbonOpenCorrection,
+					std::fabs(correction[row]));
+			}
+			zeroCarbonOpenTangent=zeroCarbonOpenTangent&&
+				zeroCarbonOpenFlux.high[axis][face][1+MethaneCH4]==0.0&&
+				zeroCarbonOpenFlux.low[axis][face][1+MethaneCH4]==0.0;
+			for(std::size_t row=0;row<fuel.ConservativeReconstruction().constraintRows;++row){
+				double residual=0.0;
+				for(std::size_t column=0;column<MethaneMassStateDimension;++column)
+					residual+=fuel.ConservativeReconstruction().constraintMatrix[
+						row*MethaneMassStateDimension+column]*correction[column];
+				zeroCarbonOpenResidual=std::max(zeroCarbonOpenResidual,std::fabs(residual));
+				zeroCarbonOpenTangent=zeroCarbonOpenTangent&&std::fabs(residual)<2.0e-15;
+			}
+		}
+	if(!(zeroCarbonOpenTangent&&zeroCarbonOpenCorrection>1.0e-8))std::printf(
+		"V3 open zero-CH4 slope tangent=%d residual=%.17g correction=%.17g error=%s\n",
+		zeroCarbonOpenTangent?1:0,zeroCarbonOpenResidual,zeroCarbonOpenCorrection,error.c_str());
+	Check(zeroCarbonOpenTangent&&zeroCarbonOpenCorrection>1.0e-8,
+		"V3 open MC reconstruction preserves absent methane and N_A while retaining high order");
+	OpenFluxPair3D emptyOpenFlux;std::vector<ConservativeVector> sentinelOpenResult(1);
+	std::array<std::vector<double>,3> emptyOpenAlpha;PeriodicMACShape zeroOpenShape;
+	zeroOpenShape.cellWidthM=1.0;PeriodicTransportConfig malformedOpenFCTConfig;
+	malformedOpenFCTConfig.deltaTimeS=0.1;malformedOpenFCTConfig.cellWidthM=1.0;
+	malformedOpenFCTConfig.ambientTemperatureK=300.0;
+	malformedOpenFCTConfig.adiabaticTemperatureK=2500.0;
+	Check(!ApplyOpenSharedFCT3D(zeroOpenShape,{},emptyOpenFlux,{},malformedOpenFCTConfig,
+		fuel,thermochemistry,sentinelOpenResult,emptyOpenAlpha,&error)&&
+		sentinelOpenResult.size()==1,
+		"V3 open FCT rejects a zero-sized grid transactionally");
+	// The same unequal-cp diffusion ledger is gauge invariant.  First bind the
+	// production J_h field to the independently evaluated species enthalpies,
+	// then transform both H_s and that production flux to two reference gauges.
 	bool twoReferenceIsothermal=true;
 	for(const double gaugeReferenceK:std::array<double,2>{{300.0,650.0}}){
-		std::array<double,MethaneSpeciesCount> gaugeEnthalpy={};
+		std::array<double,MethaneSpeciesCount> temperatureEnthalpy={},referenceEnthalpy={};
 		static const char* gaugeNames[MethaneSpeciesCount]={
 			"CH4","O2","N2","CO2","H2O","CO","C(gr)"};
 		for(std::size_t species=0;species<MethaneSpeciesCount;++species){
-			double atTemperature=0.0,atReference=0.0;
 			twoReferenceIsothermal=twoReferenceIsothermal &&
 				thermochemistry.SensibleEnthalpyJPerKG(gaugeNames[species],800.0,
-					atTemperature,&error) &&
+					temperatureEnthalpy[species],&error) &&
 				thermochemistry.SensibleEnthalpyJPerKG(gaugeNames[species],gaugeReferenceK,
-					atReference,&error);
-			gaugeEnthalpy[species]=atTemperature-atReference;
+					referenceEnthalpy[species],&error);
+		}
+		for(std::size_t face=0;twoReferenceIsothermal&&face<transportCells;++face){
+			double expectedJh=0.0;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				expectedJh+=temperatureEnthalpy[species]*
+					physicalFlux.nonadvectiveMass[face][1+species];
+			twoReferenceIsothermal=Near(physicalFlux.nonadvectiveEnergy[face],expectedJh,2.0e-14);
 		}
 		for(std::size_t cell=0;twoReferenceIsothermal && cell<transportCells;++cell){
 			const std::size_t previous=(cell+transportCells-1)%transportCells;
-			double energyBefore=0.0,energyAfter=0.0;
+			double energyBefore=transportBeginning[cell][MethaneMassStateDimension],
+				energyAfter=0.0,incomingJh=physicalFlux.nonadvectiveEnergy[previous],
+				outgoingJh=physicalFlux.nonadvectiveEnergy[cell];
 			for(std::size_t species=0;species<MethaneSpeciesCount;++species){
 				const double densityBefore=transportBeginning[cell][1+species];
 				const double densityAfter=densityBefore+0.002*transportCells*(
 					physicalFlux.nonadvectiveMass[previous][1+species]-
 					physicalFlux.nonadvectiveMass[cell][1+species]);
-				energyBefore+=gaugeEnthalpy[species]*densityBefore;
-				energyAfter+=gaugeEnthalpy[species]*densityAfter;
-			}
-			double incomingJh=0.0,outgoingJh=0.0;
-			for(std::size_t species=0;species<MethaneSpeciesCount;++species){
-				incomingJh+=gaugeEnthalpy[species]*
+				energyBefore-=referenceEnthalpy[species]*densityBefore;
+				energyAfter+=(temperatureEnthalpy[species]-referenceEnthalpy[species])*densityAfter;
+				incomingJh-=referenceEnthalpy[species]*
 					physicalFlux.nonadvectiveMass[previous][1+species];
-				outgoingJh+=gaugeEnthalpy[species]*
+				outgoingJh-=referenceEnthalpy[species]*
 					physicalFlux.nonadvectiveMass[cell][1+species];
 			}
 			const double advancedEnergy=energyBefore+0.002*transportCells*(
@@ -1232,6 +1374,21 @@ int main()
 	limiterFlux.high.assign(8,ConservativeVector());
 	limiterFlux.high[0] = 0.2*(pureFuel-pureAir);
 	std::vector<ConservativeVector> limiterSource(8), limiterResult;
+	MethaneReactionStep limiterReaction;
+	limiterReaction.deltaTimeS=1.0;
+	limiterReaction.mixingTimeS=2.0;
+	limiterReaction.primaryEligible=true;
+	for(std::size_t cell=0;cell<limiterState.size();++cell){
+		MethaneSourcePacket packet;
+		MethaneCellState limiterPhysical=FromConservativeVector(limiterState[cell]);
+		limiterPhysical.temperatureK=800.0;
+		Check(BuildMethaneReactionPacket(limiterPhysical,fuel,
+			limiterReaction,packet,&error),
+			"V2/V3 limiter fixture consumes a record-derived methane packet");
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			limiterSource[cell][1+species]=packet.constituentDelta[species];
+		limiterSource[cell][MethaneMassStateDimension]=packet.sensibleEnergyDeltaJPerM3;
+	}
 	std::vector<double> limiterAlpha;
 	PeriodicTransportConfig limiterConfig = transportConfig;
 	limiterConfig.cellWidthM = 1.0;
@@ -1239,21 +1396,19 @@ int main()
 	Check(ApplyPeriodicSharedFCT(limiterState,limiterFlux,limiterSource,
 		limiterConfig,fuel,thermochemistry,limiterResult,limiterAlpha,&error),
 		"V3 limiter-active manufactured correction is admissible");
-	const double expectedLimiterAlpha = limiterState[0][0]/
-		(0.2*(pureFuel[0]-pureAir[0]));
 	Check(limiterAlpha.size() == 8 && limiterAlpha[0] > 0.0 &&
-		limiterAlpha[0] < 1.0 &&
-		Near(limiterAlpha[0],expectedLimiterAlpha,2.0e-14),
-		"V3 one nodal Z budget supplies one shared nontrivial face alpha");
+		limiterAlpha[0] < 1.0,
+		"V2/V3 record-derived packet and one nodal budget supply one shared nontrivial face alpha");
 	if( limiterResult.size() == limiterState.size() ) {
 		for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
-			double before = 0.0, after = 0.0;
-			for( std::size_t cell=0; cell<limiterState.size(); ++cell ) {
-				before += limiterState[cell][component];
-				after += limiterResult[cell][component];
-			}
-			Check(Near(after,before,2.0e-15),
-				"V3 limiter uses the same signed face correction in both cells");
+				double before = 0.0, after = 0.0, source = 0.0;
+				for( std::size_t cell=0; cell<limiterState.size(); ++cell ) {
+					before += limiterState[cell][component];
+					after += limiterResult[cell][component];
+					source += limiterSource[cell][component];
+				}
+				Check(Near(after,before+source,2.0e-15),
+					"V2/V3 limiter consumes the methane packet once and the same signed face correction twice");
 		}
 	}
 	std::vector<ConservativeVector> uniformState(transportCells,
@@ -1306,6 +1461,7 @@ int main()
 	ownerConfig.transport.ambientGasDensityKGPerM3=ownerPhysical.GasDensity();
 	ownerConfig.projectionTolerancePerS=2.0e-10;
 	ownerConfig.dns=true;
+	ownerConfig.retainStageDiagnostics=true;
 	ConservativeAdvance3DResult ownerResult;
 	const bool ownerOK=AdvanceConservative3D(ownerShape,ownerBeginning,ownerMomentum,
 		std::vector<MethaneSourcePacket>(ownerCount),ownerConfig,fuel,thermochemistry,
@@ -1323,6 +1479,44 @@ int main()
 		!ownerResult.r1.picardResidualPerS.empty() &&
 		!ownerResult.r2.picardResidualPerS.empty(),
 		"V2/V3 single 3-D owner preserves a physical uniform free stream through R0/R1/R2");
+	// Unequal-cp fuel/air endpoints at one temperature form the production
+	// isothermal mixing box.  Its projected J_h must keep T uniform while the
+	// owner derives and projects the nonzero discrete expansion target.
+	std::vector<ConservativeVector> mixingBeginning(ownerCount);
+	for(std::size_t cell=0;cell<ownerCount;++cell){
+		const std::size_t x=cell%ownerShape.nx;
+		const double z=0.12+0.16*(0.5+0.5*std::sin(2.0*pi*(x+0.5)/ownerShape.nx));
+		mixingBeginning[cell]=ToConservativeVector(PhysicalMixtureLineState(
+			fuel,thermochemistry,z,800.0));
+	}
+	PeriodicMACField mixingMomentum;
+	for(unsigned int axis=0;axis<3;++axis)mixingMomentum.component[axis].assign(ownerCount,0.0);
+	ConservativeAdvance3DConfig mixingConfig=ownerConfig;
+	mixingConfig.transport.deltaTimeS=1.0e-4;
+	ConservativeAdvance3DResult mixingResult;
+	const bool mixingOK=AdvanceConservative3D(ownerShape,mixingBeginning,mixingMomentum,
+		std::vector<MethaneSourcePacket>(ownerCount),mixingConfig,fuel,thermochemistry,
+		transport,mixingResult,&error);
+	std::vector<double> mixingTemperature;
+	bool mixingIsothermal=mixingOK&&InvertPeriodicTemperatures(mixingResult.conservative,
+		thermochemistry,mixingTemperature,&error);
+	std::array<double,MethaneConservativeDimension> mixingBefore={},mixingAfter={};
+	double mixingSdiv=0.0;
+	for(std::size_t cell=0;mixingIsothermal&&cell<ownerCount;++cell){
+		mixingIsothermal=mixingIsothermal&&std::fabs(mixingTemperature[cell]-800.0)<2.0e-8&&
+			MaximumConstraintResidual(fuel.ConservativeReconstruction(),
+				mixingResult.conservative[cell])<4.0e-14;
+		mixingSdiv=std::max(mixingSdiv,std::fabs(mixingResult.divergenceHeunPerS[cell]));
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+			mixingBefore[component]+=mixingBeginning[cell][component];
+			mixingAfter[component]+=mixingResult.conservative[cell][component];
+		}
+	}
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+		mixingIsothermal=mixingIsothermal&&Near(mixingAfter[component],mixingBefore[component],
+			3.0e-14);
+	Check(mixingOK&&mixingIsothermal&&mixingSdiv>0.0,
+		"V2 owning unequal-cp mixing box keeps T uniform, conserves every ledger, and projects discrete S_div");
 	ConservativeAdvance3DConfig openOwnerConfig;
 	openOwnerConfig.periodicBoundaries=false;
 	openOwnerConfig.openBoundary=openBoundary3D;
@@ -1366,6 +1560,282 @@ int main()
 	}
 	Check(openOwnerOK && openOwnerRest,
 		"V2/V3 single 3-D owner reaches the accepted V1 pressure-open rest infrastructure");
+	OpenMACField3D scheduleMomentum;
+	ConservativeAdvance3DConfig scheduleConfig=openOwnerConfig;
+	scheduleConfig.transport.deltaTimeS=1.0e-5;
+	scheduleConfig.transport.ambientTemperatureK=800.0;
+	scheduleConfig.transport.ambientGasDensityKGPerM3=ownerPhysical.GasDensity();
+	scheduleConfig.openBoundary.ambientDensityKGPerM3=ownerPhysical.GasDensity();
+	scheduleConfig.openBoundary.ambientState=ToConservativeVector(ownerPhysical);
+	const std::vector<ConservativeVector> scheduleBeginning(openShape3D.CellCount(),
+		ToConservativeVector(ownerPhysical));
+	for(unsigned int axis=0;axis<3;++axis)scheduleMomentum.component[axis].assign(
+		OpenMACFaceCount3D(openShape3D,axis),0.0);
+	for(std::size_t z=0;z<openShape3D.nz;++z)for(std::size_t y=0;y<openShape3D.ny;++y)
+		for(std::size_t x=1;x<openShape3D.nx;++x){
+			const std::size_t face=OpenMACFaceIndex3D(openShape3D,0,x,y,z);
+			scheduleMomentum.component[0][face]=ownerPhysical.GasDensity()*1.0e-4*
+				std::sin(pi*static_cast<double>(x)/openShape3D.nx);
+		}
+	OpenConservativeAdvance3DResult scheduleResult;
+	const bool scheduleOK=AdvanceOpenConservative3DImplementation(openShape3D,
+		scheduleBeginning,scheduleMomentum,std::vector<MethaneSourcePacket>(openShape3D.CellCount()),
+		scheduleConfig,fuel,thermochemistry,transport,scheduleResult,&error);
+	OpenMACProjection3DResult independentR0;
+	const bool independentR0OK=scheduleOK&&ProjectPressureOpenMACVelocity3D(openShape3D,
+		GasDensityFromConservative(scheduleBeginning),scheduleMomentum,
+		scheduleResult.r0.divergenceTargetPerS,scheduleConfig.openBoundary,
+		scheduleConfig.transport.deltaTimeS,scheduleConfig.projectionTolerancePerS,
+		independentR0,&error);
+	double r0ScheduleDifference=0.0;
+	for(unsigned int axis=0;independentR0OK&&axis<3;++axis)for(std::size_t face=0;
+		face<independentR0.velocityMPerS.component[axis].size();++face)
+			r0ScheduleDifference=std::max(r0ScheduleDifference,std::fabs(
+			independentR0.velocityMPerS.component[axis][face]-
+				scheduleResult.r0.projection.velocityMPerS.component[axis][face]));
+	if(!(independentR0OK&&r0ScheduleDifference<=2.0e-12))std::printf(
+		"V2 open schedule diagnostic advance=%d independent=%d difference=%.9g error=%s\n",
+		scheduleOK?1:0,independentR0OK?1:0,r0ScheduleDifference,error.c_str());
+	Check(independentR0OK&&r0ScheduleDifference<=2.0e-12,
+		"V2 open R0 projects fixed M^n without consuming its recomputed A-hat twice");
+	OpenMACProjection3DResult viscousLocalA=openRest3D,viscousLocalB=openRest3D;
+	for(unsigned int axis=0;axis<3;++axis){
+		viscousLocalA.velocityMPerS.component[axis].assign(OpenMACFaceCount3D(openShape3D,axis),0.0);
+		viscousLocalB.velocityMPerS.component[axis].assign(OpenMACFaceCount3D(openShape3D,axis),0.0);
+	}
+	for(std::size_t z=0;z<openShape3D.nz;++z)for(std::size_t y=0;y<openShape3D.ny;++y){
+		viscousLocalA.velocityMPerS.component[0][OpenMACFaceIndex3D(openShape3D,0,1,y,z)]=0.02;
+		viscousLocalB.velocityMPerS.component[0][OpenMACFaceIndex3D(openShape3D,0,1,y,z)]=0.02;
+		viscousLocalB.velocityMPerS.component[0][OpenMACFaceIndex3D(openShape3D,0,
+			openShape3D.nx,y,z)]=0.9;
+	}
+	OpenMACField3D viscousRHSA,viscousRHSB;
+	const bool viscousLocalOK=BuildOpenNonpressureMomentumRHS3D(openShape3D,ambientCells3D,
+		viscousLocalA,std::vector<double>(openShape3D.CellCount(),0.01),
+		std::vector<ConservativeVector>(openShape3D.CellCount()),openOwnerConfig,
+		viscousRHSA,&error)&&BuildOpenNonpressureMomentumRHS3D(openShape3D,ambientCells3D,
+		viscousLocalB,std::vector<double>(openShape3D.CellCount(),0.01),
+		std::vector<ConservativeVector>(openShape3D.CellCount()),openOwnerConfig,
+		viscousRHSB,&error);
+	double nearSideViscousDifference=0.0;
+	for(std::size_t z=0;viscousLocalOK&&z<openShape3D.nz;++z)for(std::size_t y=0;
+		y<openShape3D.ny;++y){const std::size_t face=OpenMACFaceIndex3D(openShape3D,0,1,y,z);
+		nearSideViscousDifference=std::max(nearSideViscousDifference,std::fabs(
+			viscousRHSA.component[0][face]-viscousRHSB.component[0][face]));}
+	Check(viscousLocalOK&&nearSideViscousDifference==0.0,
+		"V2 open viscous stress has no periodic far-boundary coupling");
+	OpenMACProjection3DResult phaseProjection=openRest3D;
+	for(unsigned int axis=0;axis<3;++axis)phaseProjection.velocityMPerS.component[axis].assign(
+		OpenMACFaceCount3D(openShape3D,axis),axis==0?0.1:0.0);
+	std::vector<ConservativeVector> phaseSource(openShape3D.CellCount());
+	for(std::size_t z=0;z<openShape3D.nz;++z)for(std::size_t y=0;y<openShape3D.ny;++y)
+		phaseSource[openShape3D.Index(0,y,z)][1+MethaneCH4]=
+			2.0*openOwnerConfig.transport.deltaTimeS;
+	OpenMACField3D phaseRHS;
+	const bool phaseRestrictionOK=BuildOpenNonpressureMomentumRHS3D(openShape3D,
+		ambientCells3D,phaseProjection,std::vector<double>(openShape3D.CellCount(),0.0),
+		phaseSource,openOwnerConfig,phaseRHS,&error);
+	bool boundaryPhaseHalf=phaseRestrictionOK;
+	for(std::size_t z=0;boundaryPhaseHalf&&z<openShape3D.nz;++z)for(std::size_t y=0;
+		y<openShape3D.ny;++y)boundaryPhaseHalf=Near(phaseRHS.component[0][
+		OpenMACFaceIndex3D(openShape3D,0,0,y,z)],0.1,2.0e-14);
+	Check(boundaryPhaseHalf,
+		"V2 open phase momentum uses the same half-cell boundary restriction as I_rho");
+
+	// Exact dual-control-volume oracle: the compatible normal momentum flux
+	// must restrict primal mass fluxes with I_i before differencing.  The
+	// asymmetric three-face pattern distinguishes it from a collocated F*u.
+	PeriodicMACShape compatibilityShape;
+	compatibilityShape.nx=3;compatibilityShape.ny=3;compatibilityShape.nz=3;
+	compatibilityShape.cellWidthM=1.0;
+	std::array<std::vector<double>,3> compatibilityAdvection,compatibilityDiffusion;
+	PeriodicMACField compatibilityVelocity;
+	for(unsigned int axis=0;axis<3;++axis){
+		compatibilityAdvection[axis].assign(compatibilityShape.CellCount(),0.0);
+		compatibilityDiffusion[axis].assign(compatibilityShape.CellCount(),0.0);
+		compatibilityVelocity.component[axis].assign(compatibilityShape.CellCount(),
+			axis==0?1.0:0.0);
+	}
+	for(std::size_t cell=0;cell<compatibilityShape.CellCount();++cell){
+		const std::size_t x=cell%3;
+		compatibilityAdvection[0][cell]=x==0?1.0:(x==1?2.0:4.0);
+	}
+	const std::array<std::vector<double>,3> compatibilityDivergence=
+		CompatibleMomentumFluxDivergence3D(compatibilityShape,compatibilityAdvection,
+			compatibilityDiffusion,compatibilityVelocity);
+	Check(compatibilityDivergence[0][0]==-1.0,
+		"V2 compatible momentum uses the pinned I_i primal-flux restriction");
+
+	// Open MC reconstruction must use the local boundary ghost.  A perturbation
+	// at the far x+ boundary is forbidden from changing the x-=adjacent face.
+	PeriodicMACShape ghostShape;
+	ghostShape.nx=4;ghostShape.ny=3;ghostShape.nz=3;ghostShape.cellWidthM=0.1;
+	std::vector<ConservativeVector> ghostStateA(ghostShape.CellCount()),ghostStateB;
+	std::vector<double> ghostTemperature(ghostShape.CellCount(),800.0),
+		ghostZero(ghostShape.CellCount(),0.0);
+	for(std::size_t cell=0;cell<ghostShape.CellCount();++cell){
+		const std::size_t x=cell%ghostShape.nx;
+		ghostStateA[cell]=ToConservativeVector(PhysicalMixtureLineState(fuel,
+			thermochemistry,0.12+0.03*x,800.0));
+	}
+	ghostStateB=ghostStateA;
+	for(std::size_t cell=0;cell<ghostShape.CellCount();++cell)if(cell%ghostShape.nx==3)
+		ghostStateB[cell]=ToConservativeVector(PhysicalMixtureLineState(fuel,
+			thermochemistry,0.7,800.0));
+	OpenBoundaryConfig3D ghostBoundary=openBoundary3D;
+	ghostBoundary.kind.fill(AdiabaticWallBoundary3D);
+	OpenMACProjection3DResult ghostProjection;
+	for(unsigned int axis=0;axis<3;++axis){
+		ghostProjection.velocityMPerS.component[axis].assign(
+			OpenMACFaceCount3D(ghostShape,axis),axis==0?0.1:0.0);
+		ghostProjection.faceDensityKGPerM3.component[axis].assign(
+			OpenMACFaceCount3D(ghostShape,axis),ownerPhysical.GasDensity());
+		ghostProjection.momentumKGPerM2S.component[axis].assign(
+			OpenMACFaceCount3D(ghostShape,axis),axis==0?0.1*ownerPhysical.GasDensity():0.0);
+	}
+	for(unsigned int side=0;side<6;++side)ghostProjection.inflow[side].assign(
+		OpenBoundaryFaceCount3D(ghostShape,side),false);
+	OpenFluxPair3D ghostFluxA,ghostFluxB;
+	const bool ghostFluxOK=BuildOpenFluxPair3D(ghostShape,ghostStateA,ghostTemperature,
+		ghostProjection,ghostZero,ghostZero,ghostBoundary,300.0,300.0,fuel,
+		thermochemistry,ghostFluxA,&error)&&BuildOpenFluxPair3D(ghostShape,ghostStateB,
+		ghostTemperature,ghostProjection,ghostZero,ghostZero,ghostBoundary,300.0,300.0,
+		fuel,thermochemistry,ghostFluxB,&error);
+	const std::size_t ghostFace=OpenMACFaceIndex3D(ghostShape,0,1,1,1);
+	bool localGhost=ghostFluxOK;
+	for(std::size_t component=0;localGhost&&component<MethaneConservativeDimension;++component)
+		localGhost=ghostFluxA.high[0][ghostFace][component]==
+			ghostFluxB.high[0][ghostFace][component];
+	Check(localGhost,"V3 open MC boundary reconstruction has no periodic far-side coupling");
+	OpenFluxPair3D openCompatibilityFlux;
+	std::array<std::vector<double>,3> openCompatibilityAlpha;
+	OpenMACField3D openCompatibilityVelocity;
+	for(unsigned int axis=0;axis<3;++axis){
+		const std::size_t faceCount=OpenMACFaceCount3D(compatibilityShape,axis);
+		openCompatibilityFlux.low[axis].assign(faceCount,ConservativeVector());
+		openCompatibilityFlux.high[axis].assign(faceCount,ConservativeVector());
+		openCompatibilityFlux.nonadvectiveMass[axis].assign(faceCount,
+			std::array<double,MethaneMassStateDimension>());
+		openCompatibilityFlux.nonadvectiveEnergy[axis].assign(faceCount,0.0);
+		openCompatibilityAlpha[axis].assign(faceCount,1.0);
+		openCompatibilityVelocity.component[axis].assign(faceCount,0.0);
+	}
+	const std::size_t openF0=OpenMACFaceIndex3D(compatibilityShape,0,0,0,0);
+	const std::size_t openF1=OpenMACFaceIndex3D(compatibilityShape,0,1,0,0);
+	const std::size_t openF2=OpenMACFaceIndex3D(compatibilityShape,0,2,0,0);
+	openCompatibilityFlux.low[0][openF0][1+MethaneCH4]=1.0;
+	openCompatibilityFlux.low[0][openF1][1+MethaneCH4]=2.0;
+	openCompatibilityFlux.low[0][openF2][1+MethaneCH4]=4.0;
+	openCompatibilityFlux.high[0]=openCompatibilityFlux.low[0];
+	openCompatibilityVelocity.component[0][openF0]=1.0;
+	openCompatibilityVelocity.component[0][openF1]=3.0;
+	openCompatibilityVelocity.component[0][openF2]=2.0;
+	const OpenMACField3D openCompatibility=OpenCompatibleMomentumFluxDivergence3D(
+		compatibilityShape,openCompatibilityFlux,openCompatibilityAlpha,
+		openCompatibilityVelocity);
+	Check(openCompatibility.component[0][openF1]==4.5,
+		"V2 open momentum applies D_i to the restricted primal mass flux");
+	Check(openCompatibility.component[0][openF0]==4.0,
+		"V2 open momentum uses the one-sided compatible restriction at a boundary face");
+	OpenBoundaryConfig3D tangentFuelBoundary=ghostBoundary;
+	tangentFuelBoundary.bottomFuelMask.assign(compatibilityShape.nx*compatibilityShape.ny,false);
+	tangentFuelBoundary.bottomFuelMask[1]=true;
+	OpenFluxPair3D tangentFuelFlux=openCompatibilityFlux;
+	for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;
+		face<tangentFuelFlux.low[axis].size();++face){
+		tangentFuelFlux.low[axis][face]=ConservativeVector();
+		tangentFuelFlux.high[axis][face]=ConservativeVector();
+	}
+	for(const std::size_t x:std::array<std::size_t,2>{{0,1}}){
+		const std::size_t face=OpenMACFaceIndex3D(compatibilityShape,2,x,0,0);
+		tangentFuelFlux.low[2][face][1+MethaneCH4]=1.0;
+		tangentFuelFlux.high[2][face][1+MethaneCH4]=1.0;
+	}
+	OpenMACField3D tangentVelocity;
+	for(unsigned int axis=0;axis<3;++axis)tangentVelocity.component[axis].assign(
+		OpenMACFaceCount3D(compatibilityShape,axis),axis==0?2.0:0.0);
+	const OpenMACField3D tangentFuelCompatibility=OpenCompatibleMomentumFluxDivergence3D(
+		compatibilityShape,tangentFuelFlux,openCompatibilityAlpha,tangentVelocity,
+		&tangentFuelBoundary);
+	const std::size_t tangentFuelFace=OpenMACFaceIndex3D(compatibilityShape,0,1,0,0);
+	Check(tangentFuelCompatibility.component[0][tangentFuelFace]==0.0,
+		"V2 masked fuel injection carries zero tangential momentum in the dual volume");
+
+	// Wall/fuel tangential velocity uses the no-slip reflected ghost, whereas a
+	// pressure-open face uses the specified zero-normal-gradient ghost.
+	std::vector<ConservativeVector> shearState(compatibilityShape.CellCount(),
+		ToConservativeVector(ownerPhysical));
+	OpenMACProjection3DResult shearProjection;
+	for(unsigned int axis=0;axis<3;++axis)shearProjection.velocityMPerS.component[axis].assign(
+		OpenMACFaceCount3D(compatibilityShape,axis),axis==0?1.0:0.0);
+	ConservativeAdvance3DConfig shearConfig=ownerConfig;
+	shearConfig.openBoundary=ghostBoundary;
+	shearConfig.transport.cellWidthM=compatibilityShape.cellWidthM;
+	OpenMACField3D wallShear,openShear;
+	const bool wallShearOK=BuildOpenNonpressureMomentumRHS3D(compatibilityShape,shearState,
+		shearProjection,std::vector<double>(compatibilityShape.CellCount(),0.1),
+		std::vector<ConservativeVector>(compatibilityShape.CellCount()),shearConfig,wallShear,&error);
+	shearConfig.openBoundary.kind.fill(PressureOpenBoundary3D);
+	const bool openShearOK=BuildOpenNonpressureMomentumRHS3D(compatibilityShape,shearState,
+		shearProjection,std::vector<double>(compatibilityShape.CellCount(),0.1),
+		std::vector<ConservativeVector>(compatibilityShape.CellCount()),shearConfig,openShear,&error);
+	const std::size_t shearFace=OpenMACFaceIndex3D(compatibilityShape,0,1,1,0);
+	if(!(wallShearOK&&openShearOK&&std::fabs(wallShear.component[0][shearFace])>1.0e-6&&
+		std::fabs(openShear.component[0][shearFace])<1.0e-14))std::printf(
+		"V2 shear diagnostic wall=%.17g open=%.17g error=%s\n",
+		wallShear.component[0][shearFace],openShear.component[0][shearFace],error.c_str());
+	Check(wallShearOK&&openShearOK&&std::fabs(wallShear.component[0][shearFace])>1.0e-6&&
+		std::fabs(openShear.component[0][shearFace])<1.0e-14,
+		"V2 open viscous stress distinguishes no-slip wall and pressure-open Neumann ghosts");
+	OpenMACField3D lesVelocity=shearProjection.velocityMPerS;
+	for(std::size_t face=0;face<lesVelocity.component[1].size();++face)
+		lesVelocity.component[1][face]=0.17*static_cast<double>(face%compatibilityShape.nx);
+	std::vector<double> wallD,wallK,wallMu,openD,openK,openMu;
+	const bool wallLES=BuildOpenStageTransport3D(compatibilityShape,shearState,
+		std::vector<double>(compatibilityShape.CellCount(),800.0),lesVelocity,ghostBoundary,
+		false,thermochemistry,transport,wallD,wallK,wallMu,&error);
+	OpenBoundaryConfig3D lesOpenBoundary=ghostBoundary;
+	lesOpenBoundary.kind.fill(PressureOpenBoundary3D);
+	const bool openLES=BuildOpenStageTransport3D(compatibilityShape,shearState,
+		std::vector<double>(compatibilityShape.CellCount(),800.0),lesVelocity,lesOpenBoundary,
+		false,thermochemistry,transport,openD,openK,openMu,&error);
+	double lesBoundaryDifference=0.0;for(std::size_t cell=0;wallLES&&openLES&&
+		cell<wallMu.size();++cell)lesBoundaryDifference=std::max(lesBoundaryDifference,
+			std::fabs(wallMu[cell]-openMu[cell]));
+	Check(wallLES&&openLES&&lesBoundaryDifference>0.0,
+		"V2 open LES/Vreman transport consumes boundary-aware wall and pressure-open velocity ghosts");
+
+	// The same owning open flux path must admit CH4 supplied by a masked bed;
+	// exact-zero canonicalization applies only when no boundary is a source.
+	OpenFluxPair3D maskedOwnerFlux;
+	std::vector<double> maskedTemperature(openShape3D.CellCount(),300.0),
+		maskedZero(openShape3D.CellCount(),0.0);
+	std::vector<ConservativeVector> maskedAdvanced;
+	std::array<std::vector<double>,3> maskedAlpha;
+	PeriodicTransportConfig maskedTransport=openOwnerConfig.transport;
+	const bool maskedOwnerFCT=BuildOpenFluxPair3D(openShape3D,ambientCells3D,
+		maskedTemperature,maskedFuelProjection,maskedZero,maskedZero,maskedFuelBoundary,
+		300.0,300.0,fuel,thermochemistry,maskedOwnerFlux,&error)&&
+		ApplyOpenSharedFCT3D(openShape3D,ambientCells3D,maskedOwnerFlux,
+			std::vector<ConservativeVector>(openShape3D.CellCount()),maskedTransport,fuel,
+			thermochemistry,maskedAdvanced,maskedAlpha,&error);
+	double injectedCH4Inventory=0.0;for(const ConservativeVector& cell:maskedAdvanced)
+		injectedCH4Inventory+=cell[1+MethaneCH4];
+	Check(maskedOwnerFCT&&injectedCH4Inventory>0.0,
+		"V3 open FCT accepts a boundary-supplied previously absent fuel inventory");
+	OpenFluxPair3D malformedOpenFlux=maskedOwnerFlux;
+	malformedOpenFlux.high[0].clear();
+	std::vector<ConservativeVector> unchangedMalformed(1,ConservativeVector());
+	const std::vector<ConservativeVector> malformedSnapshot=unchangedMalformed;
+	const bool malformedRejected=!ApplyOpenSharedFCT3D(openShape3D,ambientCells3D,malformedOpenFlux,
+		std::vector<ConservativeVector>(openShape3D.CellCount()),maskedTransport,fuel,
+		thermochemistry,unchangedMalformed,maskedAlpha,&error);
+	bool malformedTransactional=unchangedMalformed.size()==malformedSnapshot.size();
+	for(std::size_t cell=0;malformedTransactional&&cell<unchangedMalformed.size();++cell)
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+			malformedTransactional=unchangedMalformed[cell][component]==malformedSnapshot[cell][component];
+	Check(malformedRejected&&malformedTransactional,
+		"V3 open FCT rejects a truncated high-order face field transactionally");
 
 	// V3(a,b): advect a nonuniform density field whose mixture fraction,
 	// species fractions, sensible enthalpy per mass and aerosol fraction are
@@ -1429,17 +1899,60 @@ int main()
 	// only the incompatible mean expansion.  The remaining nonzero S_div field
 	// must be reconstructed from the exact discrete packet and physical flux.
 	MethaneReactionStep manufacturedReactionStep;
-	manufacturedReactionStep.deltaTimeS=ownerConfig.transport.deltaTimeS;
-	manufacturedReactionStep.mixingTimeS=2.0e4;
+	manufacturedReactionStep.deltaTimeS=1.0e-5;
+	manufacturedReactionStep.mixingTimeS=0.2;
 	manufacturedReactionStep.primaryEligible=true;
 	manufacturedReactionStep.sootOxidationEnabled=true;
-	const MethaneCellState manufacturedCell=PhysicalMixtureLineState(
-		fuel,thermochemistry,0.2,800.0);
-	std::vector<MethaneCellState> manufacturedPhysical(ownerCount,manufacturedCell);
-	std::vector<ConservativeVector> manufacturedBeginning(ownerCount,
-		ToConservativeVector(manufacturedCell));
+	std::vector<MethaneCellState> manufacturedPhysical(ownerCount);
+	std::vector<ConservativeVector> manufacturedBeginning(ownerCount);
+	std::vector<double> manufacturedTemperature(ownerCount);
+	const ConservativeVector manufacturedPhysicalBase=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,0.2,800.0));
+	const ConservativeVector manufacturedProductRich=ToConservativeVector(
+		ProductRichMixtureLineState(fuel,thermochemistry,0.2,800.0));
+	const ConservativeVector manufacturedFuelRich=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,0.8,800.0));
+	const ConservativeVector manufacturedProductDirection=manufacturedProductRich-
+		manufacturedPhysicalBase;
+	const double manufacturedProductFloor=1.0e-2;
+	const ConservativeVector manufacturedBase=manufacturedPhysicalBase+
+		manufacturedProductFloor*manufacturedProductDirection;
+	std::array<double,MethaneMassStateDimension> manufacturedDirection={};
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+		manufacturedDirection[row]=manufacturedFuelRich[row]-manufacturedPhysicalBase[row];
+	double manufacturedAmplitude=std::numeric_limits<double>::max();
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(manufacturedDirection[row]!=0.0)
+		manufacturedAmplitude=std::min(manufacturedAmplitude,0.35*manufacturedBase[row]/
+			std::fabs(manufacturedDirection[row]));
+	for(std::size_t cell=0;cell<ownerCount;++cell){
+		ConservativeVector manufacturedState=manufacturedBase;
+		const std::size_t x=cell%ownerShape.nx;
+		const double signal=(cell%ownerShape.nx)&1?1.0:-1.0;
+		const double productWeight=0.505+0.495*std::sin(
+			2.0*pi*(x+0.5)/ownerShape.nx+0.31);
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+			manufacturedState[row]+=signal*manufacturedAmplitude*manufacturedDirection[row]+
+				(productWeight-manufacturedProductFloor)*
+					manufacturedProductDirection[row];
+		manufacturedPhysical[cell]=FromConservativeVector(manufacturedState);
+		static const char* manufacturedName[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		double manufacturedMoles=0.0;for(std::size_t species=0;species<MethaneCarbon;++species)
+			manufacturedMoles+=manufacturedPhysical[cell].constituent[species]/
+				thermochemistry.FindSpecies(manufacturedName[species])->molecularWeightKGPerKMol;
+		manufacturedPhysical[cell].temperatureK=thermochemistry.ThermodynamicPressurePa()/
+			(8314.46261815324*manufacturedMoles);
+		Check(thermochemistry.MixtureSensibleEnergyJPerM3(
+			ThermochemicalDensities(manufacturedPhysical[cell]),
+			manufacturedPhysical[cell].temperatureK,
+			manufacturedPhysical[cell].sensibleEnergyJPerM3,&error),
+			"V2 limiter-active manufactured state has a physical energy");
+		manufacturedBeginning[cell]=ToConservativeVector(manufacturedPhysical[cell]);
+		manufacturedTemperature[cell]=manufacturedPhysical[cell].temperatureK;
+	}
 	ConservativeAdvance3DConfig manufacturedConfig=ownerConfig;
+	manufacturedConfig.transport.deltaTimeS=manufacturedReactionStep.deltaTimeS;
 	manufacturedConfig.transport.ambientGasDensityKGPerM3=ownerPhysical.GasDensity();
+	manufacturedConfig.projectionTolerancePerS=1.0e-3;
 	std::vector<MethaneSourcePacket> manufacturedPacket(ownerCount);
 	std::vector<double> rawManufacturedTarget(ownerCount,0.0),
 		energyExpansionCoefficient(ownerCount,0.0);
@@ -1458,14 +1971,16 @@ int main()
 		ConservativeVector rate;
 		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 			rate[1+species]=manufacturedPacket[cell].constituentDelta[species]/
-				ownerConfig.transport.deltaTimeS;
+				manufacturedConfig.transport.deltaTimeS;
 		rate[MethaneMassStateDimension]=manufacturedPacket[cell].sensibleEnergyDeltaJPerM3/
-			ownerConfig.transport.deltaTimeS;
-		Check(DivergenceFromDiscreteRate(manufacturedBeginning[cell],rate,800.0,thermochemistry,
+			manufacturedConfig.transport.deltaTimeS;
+		Check(DivergenceFromDiscreteRate(manufacturedBeginning[cell],rate,
+			manufacturedTemperature[cell],thermochemistry,
 			rawManufacturedTarget[cell],&error),"V2 manufactured packet divergence is evaluable");
 		ConservativeVector unitEnergyRate;
 		unitEnergyRate[MethaneMassStateDimension]=1.0;
-		Check(DivergenceFromDiscreteRate(manufacturedBeginning[cell],unitEnergyRate,800.0,
+		Check(DivergenceFromDiscreteRate(manufacturedBeginning[cell],unitEnergyRate,
+			manufacturedTemperature[cell],
 			thermochemistry,energyExpansionCoefficient[cell],&error) &&
 			energyExpansionCoefficient[cell]>0.0,
 			"V2 manufactured cooling coefficient follows the full divergence identity");
@@ -1477,50 +1992,217 @@ int main()
 		if(cell+1==ownerCount) desired=-desiredSum; else desiredSum+=desired;
 		manufacturedPacket[cell].sensibleEnergyDeltaJPerM3+=(desired-
 			rawManufacturedTarget[cell])/energyExpansionCoefficient[cell]*
-			ownerConfig.transport.deltaTimeS;
+			manufacturedConfig.transport.deltaTimeS;
 	}
+	PeriodicMACField manufacturedVelocity;
+	const double manufacturedAdvectionVelocity=1.0e3;
+	for(unsigned int axis=0;axis<3;++axis){manufacturedVelocity.component[axis].resize(
+		ownerCount);for(std::size_t face=0;face<ownerCount;++face){const std::size_t x=
+			face%ownerShape.nx,y=(face/ownerShape.nx)%ownerShape.ny;
+			const double px=(x+(axis==0?1.0:0.5))/ownerShape.nx;
+			const double py=(y+(axis==1?1.0:0.5))/ownerShape.ny;
+			manufacturedVelocity.component[axis][face]=axis==0?
+				manufacturedAdvectionVelocity*std::sin(2.0*pi*px)*std::cos(2.0*pi*py):
+				(axis==1?-manufacturedAdvectionVelocity*std::cos(2.0*pi*px)*
+					std::sin(2.0*pi*py):0.0);}}
+	std::vector<double> manufacturedD,manufacturedK,manufacturedMu;
+	PeriodicFluxPair3D manufacturedInitialFlux;
+	Check(BuildPeriodicStageTransport3D(ownerShape,manufacturedBeginning,
+		manufacturedTemperature,manufacturedVelocity,true,thermochemistry,
+		transport,manufacturedD,manufacturedK,manufacturedMu,&error)&&
+		BuildPeriodicFluxPair3D(ownerShape,manufacturedBeginning,
+		manufacturedTemperature,manufacturedVelocity,manufacturedD,
+		manufacturedK,fuel,thermochemistry,manufacturedInitialFlux,&error),
+		"V2 manufactured initial physical flux is evaluable");
 	// One-cell residual cancellation makes the periodic compatibility identity
-	// exact in the same fp64 evaluation used by the production target builder.
+	// exact in the same discrete flux/update evaluation used by production.
 	for(unsigned int correction=0;correction<3;++correction){
-		double sum=0.0;
+		std::vector<ConservativeVector> correctionDelta(ownerCount);
 		for(std::size_t cell=0;cell<ownerCount;++cell){
-			ConservativeVector rate;
 			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
-				rate[1+species]=manufacturedPacket[cell].constituentDelta[species]/
-					ownerConfig.transport.deltaTimeS;
-			rate[MethaneMassStateDimension]=manufacturedPacket[cell].sensibleEnergyDeltaJPerM3/
-				ownerConfig.transport.deltaTimeS;
-			double evaluated=0.0;
-			DivergenceFromDiscreteRate(manufacturedBeginning[cell],rate,800.0,thermochemistry,
-				evaluated,&error);
-			sum+=evaluated;
+				correctionDelta[cell][1+species]=manufacturedPacket[cell].constituentDelta[species];
+			correctionDelta[cell][MethaneMassStateDimension]=
+				manufacturedPacket[cell].sensibleEnergyDeltaJPerM3;
 		}
+		std::vector<double> correctionTarget;
+		Check(PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,manufacturedBeginning,
+			manufacturedTemperature,manufacturedInitialFlux,correctionDelta,
+			manufacturedConfig.transport.deltaTimeS,thermochemistry,correctionTarget,&error),
+			"V2 manufactured compatibility correction uses the discrete target");
+		double sum=0.0;for(const double value:correctionTarget)sum+=value;
 		manufacturedPacket.back().sensibleEnergyDeltaJPerM3-=sum/
-			energyExpansionCoefficient.back()*ownerConfig.transport.deltaTimeS;
+			energyExpansionCoefficient.back()*manufacturedConfig.transport.deltaTimeS;
 	}
 	PeriodicMACField manufacturedMomentum;
-	for(unsigned int axis=0;axis<3;++axis) manufacturedMomentum.component[axis].assign(
-		ownerCount,0.0);
+	for(unsigned int axis=0;axis<3;++axis){
+		manufacturedMomentum.component[axis].resize(ownerCount);
+		for(std::size_t face=0;face<ownerCount;++face){
+			const std::size_t next=PeriodicNext(ownerShape,face,axis);
+			manufacturedMomentum.component[axis][face]=PositiveArithmeticMean(
+				manufacturedPhysical[face].GasDensity(),manufacturedPhysical[next].GasDensity())*
+				manufacturedVelocity.component[axis][face];
+		}
+	}
+	// A periodic manufactured packet must have zero mean expansion at both
+	// nonlinear stages.  Calibrate one zero-R0 energy dipole by secant so the
+	// frozen physical packet is also exactly R1-compatible; this changes no
+	// global source ledger and is fixture construction, not an accuracy oracle.
+	auto trialStageMeans=[&](std::array<double,2>& mean){
+		ConservativeAdvance3DResult trial;std::string trialError;
+		if(!AdvanceConservative3D(ownerShape,manufacturedBeginning,manufacturedMomentum,
+			manufacturedPacket,manufacturedConfig,fuel,thermochemistry,transport,trial,
+			&trialError))return false;
+		mean={{0.0,0.0}};
+		for(const double value:trial.r1.divergenceTargetPerS)mean[0]+=value/ownerCount;
+		for(const double value:trial.r2.divergenceTargetPerS)mean[1]+=value/ownerCount;
+		return true;
+	};
+	std::array<double,2> calibrationMean={{0.0,0.0}},probeA={{0.0,0.0}},
+		probeB={{0.0,0.0}};
+	bool calibrationOK=true;
+	const double calibrationProbe=0.1;
+	for(unsigned int iteration=0;calibrationOK&&iteration<5;++iteration){
+		calibrationOK=trialStageMeans(calibrationMean);
+		if(calibrationOK){manufacturedPacket[0].sensibleEnergyDeltaJPerM3+=calibrationProbe;
+			manufacturedPacket[1].sensibleEnergyDeltaJPerM3-=calibrationProbe*
+				energyExpansionCoefficient[0]/energyExpansionCoefficient[1];
+			calibrationOK=trialStageMeans(probeA);
+			manufacturedPacket[0].sensibleEnergyDeltaJPerM3-=calibrationProbe;
+			manufacturedPacket[1].sensibleEnergyDeltaJPerM3+=calibrationProbe*
+				energyExpansionCoefficient[0]/energyExpansionCoefficient[1];}
+		if(calibrationOK){manufacturedPacket[2].sensibleEnergyDeltaJPerM3+=calibrationProbe;
+			manufacturedPacket[3].sensibleEnergyDeltaJPerM3-=calibrationProbe*
+				energyExpansionCoefficient[2]/energyExpansionCoefficient[3];
+			calibrationOK=trialStageMeans(probeB);
+			manufacturedPacket[2].sensibleEnergyDeltaJPerM3-=calibrationProbe;
+			manufacturedPacket[3].sensibleEnergyDeltaJPerM3+=calibrationProbe*
+				energyExpansionCoefficient[2]/energyExpansionCoefficient[3];}
+		if(calibrationOK){const double j00=(probeA[0]-calibrationMean[0])/calibrationProbe,
+			j10=(probeA[1]-calibrationMean[1])/calibrationProbe,
+			j01=(probeB[0]-calibrationMean[0])/calibrationProbe,
+			j11=(probeB[1]-calibrationMean[1])/calibrationProbe,
+			determinant=j00*j11-j01*j10;
+			calibrationOK=std::isfinite(determinant)&&determinant!=0.0;
+			if(calibrationOK){const double deltaA=(-calibrationMean[0]*j11+
+				j01*calibrationMean[1])/determinant,deltaB=(-j00*calibrationMean[1]+
+				calibrationMean[0]*j10)/determinant;
+				manufacturedPacket[0].sensibleEnergyDeltaJPerM3+=deltaA;
+				manufacturedPacket[1].sensibleEnergyDeltaJPerM3-=deltaA*
+					energyExpansionCoefficient[0]/energyExpansionCoefficient[1];
+				manufacturedPacket[2].sensibleEnergyDeltaJPerM3+=deltaB;
+				manufacturedPacket[3].sensibleEnergyDeltaJPerM3-=deltaB*
+					energyExpansionCoefficient[2]/energyExpansionCoefficient[3];}}
+	}
+	manufacturedConfig.projectionTolerancePerS=1.0e-8;
+	if(!calibrationOK)std::printf("V2 calibration failed means %.17g %.17g\n",
+		calibrationMean[0],calibrationMean[1]);
 	ConservativeAdvance3DResult manufacturedResult;
-	const bool manufacturedOK=AdvanceConservative3D(ownerShape,manufacturedBeginning,
+	const bool manufacturedOK=calibrationOK&&AdvanceConservative3D(ownerShape,manufacturedBeginning,
 		manufacturedMomentum,manufacturedPacket,manufacturedConfig,fuel,thermochemistry,
 		transport,manufacturedResult,&error);
 	if(!manufacturedOK) std::printf("V2 reacting owner diagnostic: %s\n",error.c_str());
 	double maximumTargetMismatch=0.0,maximumProjectionMismatch=0.0;
+	double manufacturedR0Mean=0.0,manufacturedR1Mean=0.0;
+	double manufacturedMinimumAlpha=1.0;
 	std::array<double,MethaneConservativeDimension> manufacturedBefore={},
 		manufacturedAfter={},manufacturedSource={};
-	for(std::size_t cell=0;manufacturedOK && cell<ownerCount;++cell){
+	std::vector<ConservativeVector> manufacturedDelta(ownerCount);
+	for(std::size_t cell=0;cell<ownerCount;++cell){
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			manufacturedDelta[cell][1+species]=manufacturedPacket[cell].constituentDelta[species];
+		manufacturedDelta[cell][MethaneMassStateDimension]=
+			manufacturedPacket[cell].sensibleEnergyDeltaJPerM3;
+	}
+	std::vector<double> independentlyManufacturedR0Target;
+	const bool manufacturedTargetOK=manufacturedOK&&PeriodicDivergenceTargetFromPhysicalFlux3D(
+		ownerShape,manufacturedBeginning,manufacturedTemperature,
+		manufacturedResult.r0.flux,manufacturedDelta,manufacturedConfig.transport.deltaTimeS,
+		thermochemistry,independentlyManufacturedR0Target,&error);
+	std::vector<ConservativeVector> independentlyManufacturedPredictor;
+	std::array<std::vector<double>,3> independentlyManufacturedAlpha;
+	std::vector<double> independentlyManufacturedPredictorTemperature,
+		independentlyManufacturedR1Target,independentlyManufacturedHeunTarget;
+	PeriodicFluxPair3D independentlyManufacturedAverage;
+	bool manufacturedTableauOK=manufacturedTargetOK&&ApplyPeriodicSharedFCT3D(ownerShape,
+		manufacturedBeginning,manufacturedResult.r0.flux,manufacturedDelta,
+		manufacturedConfig.transport,fuel,thermochemistry,independentlyManufacturedPredictor,
+		independentlyManufacturedAlpha,&error)&&InvertPeriodicTemperatures(
+		independentlyManufacturedPredictor,thermochemistry,
+		independentlyManufacturedPredictorTemperature,&error)&&
+		PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,
+			independentlyManufacturedPredictor,independentlyManufacturedPredictorTemperature,
+			manufacturedResult.r1.flux,manufacturedDelta,
+			manufacturedConfig.transport.deltaTimeS,thermochemistry,
+			independentlyManufacturedR1Target,&error);
+	for(unsigned int axis=0;manufacturedTableauOK&&axis<3;++axis){
+		independentlyManufacturedAverage.low[axis].resize(ownerCount);
+		independentlyManufacturedAverage.high[axis].resize(ownerCount);
+		independentlyManufacturedAverage.nonadvectiveMass[axis].resize(ownerCount);
+		independentlyManufacturedAverage.nonadvectiveEnergy[axis].resize(ownerCount);
+		for(std::size_t face=0;face<ownerCount;++face){
+			independentlyManufacturedAverage.low[axis][face]=0.5*(
+				manufacturedResult.r0.flux.low[axis][face]+manufacturedResult.r1.flux.low[axis][face]);
+			independentlyManufacturedAverage.high[axis][face]=0.5*(
+				manufacturedResult.r0.flux.high[axis][face]+manufacturedResult.r1.flux.high[axis][face]);
+			independentlyManufacturedAverage.nonadvectiveEnergy[axis][face]=0.5*(
+				manufacturedResult.r0.flux.nonadvectiveEnergy[axis][face]+
+				manufacturedResult.r1.flux.nonadvectiveEnergy[axis][face]);
+			for(std::size_t component=0;component<MethaneMassStateDimension;++component)
+				independentlyManufacturedAverage.nonadvectiveMass[axis][face][component]=0.5*(
+					manufacturedResult.r0.flux.nonadvectiveMass[axis][face][component]+
+					manufacturedResult.r1.flux.nonadvectiveMass[axis][face][component]);
+		}
+	}
+	std::vector<double> independentlyManufacturedAcceptedTemperature;
+	std::vector<double> independentlyManufacturedR2Target;
+	std::vector<ConservativeVector> independentlyManufacturedCommit;
+	std::array<std::vector<double>,3> independentlyManufacturedCommitAlpha;
+	manufacturedTableauOK=manufacturedTableauOK&&ApplyPeriodicSharedFCT3D(ownerShape,
+		manufacturedBeginning,independentlyManufacturedAverage,manufacturedDelta,
+		manufacturedConfig.transport,fuel,thermochemistry,independentlyManufacturedCommit,
+		independentlyManufacturedCommitAlpha,&error)&&InvertPeriodicTemperatures(
+		manufacturedResult.conservative,thermochemistry,
+		independentlyManufacturedAcceptedTemperature,&error)&&
+		PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,
+			manufacturedResult.conservative,independentlyManufacturedAcceptedTemperature,
+			independentlyManufacturedAverage,manufacturedDelta,
+			manufacturedConfig.transport.deltaTimeS,thermochemistry,
+			independentlyManufacturedHeunTarget,&error)&&
+		PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,
+			manufacturedResult.conservative,independentlyManufacturedAcceptedTemperature,
+			manufacturedResult.r2.flux,manufacturedDelta,
+			manufacturedConfig.transport.deltaTimeS,thermochemistry,
+			independentlyManufacturedR2Target,&error);
+	double maximumR1TargetMismatch=0.0,maximumHeunTargetMismatch=0.0,
+		maximumR2TargetMismatch=0.0,maximumR2HeunDifference=0.0;
+	for(std::size_t cell=0;manufacturedTableauOK && cell<ownerCount;++cell){
+		manufacturedR0Mean+=manufacturedResult.r0.divergenceTargetPerS[cell]/ownerCount;
+		manufacturedR1Mean+=manufacturedResult.r1.divergenceTargetPerS[cell]/ownerCount;
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+			manufacturedTableauOK=manufacturedTableauOK&&
+				manufacturedResult.conservative[cell][component]==
+					independentlyManufacturedCommit[cell][component];
 		ConservativeVector rate;
 		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 			rate[1+species]=manufacturedPacket[cell].constituentDelta[species]/
-				ownerConfig.transport.deltaTimeS;
+				manufacturedConfig.transport.deltaTimeS;
 		rate[MethaneMassStateDimension]=manufacturedPacket[cell].sensibleEnergyDeltaJPerM3/
-			ownerConfig.transport.deltaTimeS;
-		double exactTarget=0.0;
-		DivergenceFromDiscreteRate(manufacturedBeginning[cell],rate,800.0,thermochemistry,
-			exactTarget,&error);
+			manufacturedConfig.transport.deltaTimeS;
 		maximumTargetMismatch=std::max(maximumTargetMismatch,std::fabs(
-			manufacturedResult.r0.divergenceTargetPerS[cell]-exactTarget));
+			manufacturedResult.r0.divergenceTargetPerS[cell]-
+			independentlyManufacturedR0Target[cell]));
+		maximumR1TargetMismatch=std::max(maximumR1TargetMismatch,std::fabs(
+			manufacturedResult.r1.divergenceTargetPerS[cell]-
+			independentlyManufacturedR1Target[cell]));
+		maximumHeunTargetMismatch=std::max(maximumHeunTargetMismatch,std::fabs(
+			manufacturedResult.divergenceHeunPerS[cell]-
+			independentlyManufacturedHeunTarget[cell]));
+		maximumR2TargetMismatch=std::max(maximumR2TargetMismatch,std::fabs(
+			manufacturedResult.r2.divergenceTargetPerS[cell]-
+			independentlyManufacturedR2Target[cell]));
+		maximumR2HeunDifference=std::max(maximumR2HeunDifference,std::fabs(
+			manufacturedResult.r2.divergenceTargetPerS[cell]-
+			manufacturedResult.divergenceHeunPerS[cell]));
 		maximumProjectionMismatch=std::max(maximumProjectionMismatch,std::fabs(
 			PeriodicMACDivergence3D(ownerShape,
 				manufacturedResult.r2.projection.velocityMPerS,cell)-
@@ -1534,6 +2216,8 @@ int main()
 		manufacturedSource[MethaneMassStateDimension]+=
 			manufacturedPacket[cell].sensibleEnergyDeltaJPerM3;
 	}
+	for(unsigned int axis=0;axis<3;++axis)for(const double alpha:manufacturedResult.faceAlpha[axis])
+		manufacturedMinimumAlpha=std::min(manufacturedMinimumAlpha,alpha);
 	bool sourceConsumedOnce=manufacturedOK,manufacturedElements=manufacturedOK;
 	for(const MethaneSourcePacket& packet:manufacturedPacket)
 		manufacturedElements=manufacturedElements &&
@@ -1550,13 +2234,174 @@ int main()
 			manufacturedSource[component]);
 		sourceConsumedOnce=sourceConsumedOnce && componentOnce;
 	}
+	const bool manufacturedPicardConverged=manufacturedOK&&
+		!manufacturedResult.r0.picardResidualPerS.empty()&&
+		!manufacturedResult.r1.picardResidualPerS.empty()&&
+		manufacturedResult.r0.picardResidualPerS.back()<=manufacturedConfig.projectionTolerancePerS&&
+		manufacturedResult.r1.picardResidualPerS.back()<=manufacturedConfig.projectionTolerancePerS;
+	bool namedStageVelocityRED=manufacturedOK;
+	std::vector<double> forbiddenR0Temperature,forbiddenR1Temperature;
+	PeriodicMACField forbiddenR0Velocity,forbiddenR1Velocity;
+	for(unsigned int axis=0;axis<3;++axis){forbiddenR0Velocity.component[axis].resize(ownerCount);
+		forbiddenR1Velocity.component[axis].resize(ownerCount);for(std::size_t face=0;face<ownerCount;
+			++face){const std::size_t next=PeriodicNext(ownerShape,face,axis);
+			forbiddenR0Velocity.component[axis][face]=manufacturedMomentum.component[axis][face]/
+				PositiveArithmeticMean(FromConservativeVector(manufacturedBeginning[face]).GasDensity(),
+					FromConservativeVector(manufacturedBeginning[next]).GasDensity());}}
+	PeriodicFluxPair3D forbiddenR0Flux,forbiddenR1Flux;
+	namedStageVelocityRED=namedStageVelocityRED&&InvertPeriodicTemperatures(manufacturedBeginning,
+		thermochemistry,forbiddenR0Temperature,&error)&&BuildPeriodicFluxPair3D(ownerShape,
+		manufacturedBeginning,forbiddenR0Temperature,forbiddenR0Velocity,
+		manufacturedResult.r0.diffusivityM2PerS,manufacturedResult.r0.conductivityWPerMK,fuel,
+		thermochemistry,forbiddenR0Flux,&error);
+	PeriodicMACField forbiddenPredictorMomentum=manufacturedMomentum;
+	if(namedStageVelocityRED){std::array<std::vector<double>,3> low,high,diffusive,accepted;
+		GasPrimalSubfluxes3D(manufacturedResult.r0.flux,low,high,diffusive);
+		for(unsigned int axis=0;axis<3;++axis){accepted[axis].resize(ownerCount);for(std::size_t face=0;
+			face<ownerCount;++face)accepted[axis][face]=low[axis][face]+independentlyManufacturedAlpha[
+				axis][face]*(high[axis][face]-low[axis][face]);}
+		const auto divergence=CompatibleMomentumFluxDivergence3D(ownerShape,accepted,diffusive,
+			manufacturedResult.r0.projection.velocityMPerS);
+		for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;face<ownerCount;++face)
+			forbiddenPredictorMomentum.component[axis][face]+=manufacturedConfig.transport.deltaTimeS*(
+				manufacturedResult.r0.nonpressureMomentumRHS.component[axis][face]-divergence[axis][face]);
+		for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;face<ownerCount;++face){const
+			std::size_t next=PeriodicNext(ownerShape,face,axis);forbiddenR1Velocity.component[axis][face]=
+			forbiddenPredictorMomentum.component[axis][face]/PositiveArithmeticMean(
+				FromConservativeVector(independentlyManufacturedPredictor[face]).GasDensity(),
+				FromConservativeVector(independentlyManufacturedPredictor[next]).GasDensity());}
+		namedStageVelocityRED=InvertPeriodicTemperatures(independentlyManufacturedPredictor,
+			thermochemistry,forbiddenR1Temperature,&error)&&BuildPeriodicFluxPair3D(ownerShape,
+			independentlyManufacturedPredictor,forbiddenR1Temperature,forbiddenR1Velocity,
+			manufacturedResult.r1.diffusivityM2PerS,manufacturedResult.r1.conductivityWPerMK,fuel,
+			thermochemistry,forbiddenR1Flux,&error);}
+	double forbiddenVelocityFluxDifference=0.0;
+	for(unsigned int axis=0;namedStageVelocityRED&&axis<3;++axis)for(std::size_t face=0;face<ownerCount;
+		++face)for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+		forbiddenVelocityFluxDifference=std::max({forbiddenVelocityFluxDifference,std::fabs(
+			forbiddenR0Flux.high[axis][face][component]-manufacturedResult.r0.flux.high[axis][face][component]),
+			std::fabs(forbiddenR1Flux.high[axis][face][component]-manufacturedResult.r1.flux.high[axis][face][component])});
+	namedStageVelocityRED=namedStageVelocityRED&&forbiddenVelocityFluxDifference>1.0e-8;
 	if(!(manufacturedOK && maximumTargetMismatch<2.0e-11 &&
+		maximumR1TargetMismatch<2.0e-11&&maximumHeunTargetMismatch<2.0e-11&&
+		maximumR2TargetMismatch<2.0e-11&&maximumR2HeunDifference>1.0e-10&&
 		maximumProjectionMismatch<=manufacturedConfig.projectionTolerancePerS &&
-		sourceConsumedOnce)) std::printf("V2 reacting metrics target=%.9g projection=%.9g once=%d\n",
-		maximumTargetMismatch,maximumProjectionMismatch,sourceConsumedOnce?1:0);
-	Check(manufacturedOK && manufacturedElements && maximumTargetMismatch<2.0e-11 &&
+		sourceConsumedOnce&&manufacturedMinimumAlpha>0.0&&manufacturedMinimumAlpha<1.0)) std::printf("V2 reacting metrics target=%.9g projection=%.9g once=%d alpha=%.17g\n",
+		maximumTargetMismatch,maximumProjectionMismatch,sourceConsumedOnce?1:0,
+		manufacturedMinimumAlpha);
+	Check(std::fabs(manufacturedR0Mean)<manufacturedConfig.projectionTolerancePerS&&
+		std::fabs(manufacturedR1Mean)<manufacturedConfig.projectionTolerancePerS,
+		"V2 reacting manufactured source is exactly periodic-compatible at R0 and R1");
+	Check(manufacturedOK && manufacturedTargetOK && manufacturedTableauOK&&
+		manufacturedPicardConverged&&manufacturedElements&&namedStageVelocityRED &&
+		manufacturedMinimumAlpha>0.0 && manufacturedMinimumAlpha<1.0 && maximumTargetMismatch<2.0e-11 &&
+		maximumR1TargetMismatch<2.0e-11&&maximumHeunTargetMismatch<2.0e-11&&
+		maximumR2TargetMismatch<2.0e-11&&maximumR2HeunDifference>1.0e-10&&
 		maximumProjectionMismatch<=manufacturedConfig.projectionTolerancePerS && sourceConsumedOnce,
 		"V2 reacting 3-D owner derives S_div from its one frozen-packet update and closes R2");
+
+	// The frozen source is deliberately Euler-split from transport.  This
+	// independent characteristic solution therefore converges at the declared
+	// first-order source-split rate even though the transport tableau is Heun.
+	// The physical owner above is bit-bound to this same shared FCT commit.
+	const std::size_t sourceSplitResolution[3]={16,32,64};
+	double sourceSplitError[3]={};bool sourceSplitOK=true,sourceSplitLedgers=true;
+	const double sourceSplitFinalTime=0.2,sourceSplitVelocity=0.18;
+	ConservativeVector sourceSplitDirection;
+	static const char* sourceSplitName[MethaneSpeciesCount]={
+		"CH4","O2","N2","CO2","H2O","CO","C(gr)"};
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+		sourceSplitDirection[1+species]=fuel.PrimaryReactionDelta()[species];
+		double enthalpy=0.0;Check(thermochemistry.SensibleEnthalpyJPerKG(
+			sourceSplitName[species],800.0,enthalpy,&error),
+			"V2 source-split direction has record-derived isothermal enthalpy");
+		sourceSplitDirection[MethaneMassStateDimension]+=enthalpy*
+			fuel.PrimaryReactionDelta()[species];
+	}
+	const ConservativeVector sourceSplitBase=manufacturedProductRich;
+	double sourceSplitInitialAmplitude=std::numeric_limits<double>::max();
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)if(
+		sourceSplitDirection[1+species]!=0.0)sourceSplitInitialAmplitude=std::min(
+			sourceSplitInitialAmplitude,0.08*sourceSplitBase[1+species]/
+			std::fabs(sourceSplitDirection[1+species]));
+	const double sourceSplitRelaxationPerS=0.8;
+	for(std::size_t level=0;level<3;++level){
+		PeriodicMACShape splitShape;splitShape.nx=sourceSplitResolution[level];
+		splitShape.ny=4;splitShape.nz=4;splitShape.cellWidthM=1.0/splitShape.nx;
+		const std::size_t count=splitShape.CellCount();
+		PeriodicMACField splitVelocity;for(unsigned int axis=0;axis<3;++axis)
+			splitVelocity.component[axis].assign(count,axis==0?sourceSplitVelocity:0.0);
+		std::vector<ConservativeVector> state(count);
+		for(std::size_t cell=0;cell<count;++cell){const std::size_t x=cell%splitShape.nx;
+			const double phase=2.0*pi*(x+0.5)/splitShape.nx;
+			state[cell]=sourceSplitBase;for(std::size_t row=0;row<MethaneConservativeDimension;
+				++row)state[cell][row]+=sourceSplitInitialAmplitude*std::sin(phase)*
+					sourceSplitDirection[row];}
+		const std::size_t steps=static_cast<std::size_t>(std::ceil(sourceSplitFinalTime/
+			(0.22*splitShape.cellWidthM/sourceSplitVelocity)));
+		PeriodicTransportConfig splitConfig=ownerConfig.transport;
+		splitConfig.cellWidthM=splitShape.cellWidthM;
+		splitConfig.deltaTimeS=sourceSplitFinalTime/steps;
+		std::array<std::vector<double>,3> alpha;
+		for(std::size_t step=0;sourceSplitOK&&step<steps;++step){
+			std::vector<MethaneSourcePacket> packet(count);
+			for(std::size_t cell=0;cell<count;++cell){const double coordinate=
+				(state[cell][1+MethaneCH4]-sourceSplitBase[1+MethaneCH4])/
+					sourceSplitDirection[1+MethaneCH4];
+				const double deltaCoordinate=-splitConfig.deltaTimeS*
+					sourceSplitRelaxationPerS*coordinate;
+				for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+					packet[cell].constituentDelta[species]=deltaCoordinate*
+						sourceSplitDirection[1+species];
+				packet[cell].sensibleEnergyDeltaJPerM3=deltaCoordinate*
+					sourceSplitDirection[MethaneMassStateDimension];}
+			PeriodicMACField splitMomentum;for(unsigned int axis=0;axis<3;++axis){
+				splitMomentum.component[axis].resize(count);for(std::size_t face=0;face<count;
+					++face){const std::size_t next=PeriodicNext(splitShape,face,axis);
+					splitMomentum.component[axis][face]=PositiveArithmeticMean(
+						FromConservativeVector(state[face]).GasDensity(),
+						FromConservativeVector(state[next]).GasDensity())*
+						 splitVelocity.component[axis][face];}}
+			ConservativeAdvance3DConfig splitOwner=ownerConfig;
+			splitOwner.transport=splitConfig;splitOwner.dns=true;splitOwner.gravityMPerS2={{0,0,0}};
+			splitOwner.projectionTolerancePerS=1.0e-7;
+			ConservativeAdvance3DResult next;
+			sourceSplitOK=AdvanceConservative3D(splitShape,state,splitMomentum,packet,
+				splitOwner,fuel,thermochemistry,transport,next,&error);
+			if(sourceSplitOK){state.swap(next.conservative);alpha=std::move(next.faceAlpha);}
+		}
+		std::array<double,MethaneConservativeDimension> initialTotal={},finalTotal={};
+		for(std::size_t cell=0;sourceSplitOK&&cell<count;++cell){const std::size_t x=
+			cell%splitShape.nx;const double coordinate=(x+0.5)/splitShape.nx;
+			double departure=coordinate-sourceSplitVelocity*sourceSplitFinalTime;
+			departure-=std::floor(departure);
+			const double initialWave=std::exp(-sourceSplitRelaxationPerS*
+				sourceSplitFinalTime)*std::sin(2.0*pi*departure);
+			ConservativeVector exact=sourceSplitBase;
+			for(std::size_t row=0;row<MethaneConservativeDimension;++row)
+				exact[row]+=sourceSplitInitialAmplitude*initialWave*
+					sourceSplitDirection[row];
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+				sourceSplitError[level]+=std::fabs(state[cell][component]-exact[component])/
+					(count*MethaneConservativeDimension);
+				initialTotal[component]+=sourceSplitBase[component];
+				finalTotal[component]+=state[cell][component];}
+			sourceSplitLedgers=sourceSplitLedgers&&MaximumConstraintResidual(
+				fuel.ConservativeReconstruction(),state[cell])<4.0e-13;
+		}
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+			sourceSplitLedgers=sourceSplitLedgers&&Near(finalTotal[component],
+				initialTotal[component],8.0e-13);
+	}
+	const double sourceSplitOrder=std::log(sourceSplitError[1]/sourceSplitError[2])/
+		std::log(2.0);
+	if(!(sourceSplitOK&&sourceSplitLedgers&&sourceSplitOrder>=0.85&&sourceSplitOrder<=1.25))
+		std::printf("V2 source-split errors %.17g %.17g %.17g order %.6g amplitude %.17g direction %.17g ok=%d ledger=%d error=%s\n",
+			sourceSplitError[0],sourceSplitError[1],sourceSplitError[2],sourceSplitOrder,
+			sourceSplitInitialAmplitude,manufacturedDirection[0],sourceSplitOK?1:0,
+			sourceSplitLedgers?1:0,error.c_str());
+	Check(sourceSplitOK&&sourceSplitLedgers&&sourceSplitOrder>=0.85&&sourceSplitOrder<=1.25,
+		"V2 frozen reacting-source split has its independent analytic first-order history");
 
 	// V2 variable-density momentum manufacture.  Conservative momentum
 	// advection, viscous stress, relative buoyancy and a nonzero divergence
@@ -1565,7 +2410,7 @@ int main()
 	// refinements rather than against the implementation's own residual.
 	const std::size_t momentumResolution[3]={8,16,32};
 	double manufacturedVelocityError[3]={},manufacturedPressureError[3]={};
-	bool momentumManufacture=true,momentumTermsActive=true;
+	bool momentumManufacture=true,momentumTermsActive=true,ownerMomentumSchedule=true;
 	for(std::size_t level=0;level<3;++level){
 		PeriodicMACShape momentumShape;
 		momentumShape.nx=momentumResolution[level];
@@ -1574,7 +2419,7 @@ int main()
 		momentumShape.cellWidthM=1.0/momentumShape.nx;
 		const std::size_t count=momentumShape.CellCount();
 		std::vector<ConservativeVector> momentumState(count);
-		std::vector<double> momentumTemperature(count,800.0),momentumViscosity(count,0.018);
+		std::vector<double> momentumTemperature(count),momentumViscosity(count,0.018);
 		std::vector<double> target(count),exactPressure(count);
 		PeriodicMACField exactVelocity,unprojectedMomentum,beginningManufacturedMomentum;
 		for(unsigned int axis=0;axis<3;++axis){
@@ -1590,7 +2435,9 @@ int main()
 			const double yc=(y+0.5)*momentumShape.cellWidthM;
 			const double zc=(z+0.5)*momentumShape.cellWidthM;
 			const double densityScale=1.0+0.12*std::sin(2.0*pi*xc)*std::cos(2.0*pi*yc);
-			momentumState[cell]=densityScale*ToConservativeVector(ownerPhysical);
+			momentumTemperature[cell]=800.0/densityScale;
+			momentumState[cell]=ToConservativeVector(PhysicalMixtureLineState(fuel,
+				thermochemistry,0.2,momentumTemperature[cell]));
 			target[cell]=2.0*pi*(0.08*std::cos(2.0*pi*xc)-
 				0.05*std::cos(2.0*pi*yc)+0.035*std::cos(2.0*pi*zc));
 			exactPressure[cell]=0.7*std::sin(2.0*pi*xc)*std::cos(2.0*pi*yc)+
@@ -1613,6 +2460,31 @@ int main()
 		const std::array<std::vector<double>,3> momentumAdvection=
 			CompatibleMomentumFluxDivergence3D(momentumShape,highMomentum,
 				diffusiveMomentum,exactVelocity);
+		std::array<std::vector<double>,3> independentAdvection;
+		for(unsigned int component=0;component<3;++component){
+			independentAdvection[component].assign(count,0.0);
+			for(std::size_t face=0;face<count;++face){double divergence=0.0;
+				for(unsigned int derivative=0;derivative<3;++derivative){
+					const std::size_t nextComponent=PeriodicNext(momentumShape,face,component),
+						previousDerivative=PeriodicPrevious(momentumShape,face,derivative),
+						nextComponentPreviousDerivative=PeriodicPrevious(momentumShape,
+							nextComponent,derivative);
+					auto mass=[&](std::size_t index){return highMomentum[derivative][index]+
+						diffusiveMomentum[derivative][index];};
+					double upper=0.0,lower=0.0;
+					if(derivative==component){upper=0.25*(mass(face)+mass(nextComponent))*(
+						exactVelocity.component[component][face]+exactVelocity.component[
+							component][nextComponent]);lower=0.25*(mass(previousDerivative)+
+						mass(face))*(exactVelocity.component[component][previousDerivative]+
+							exactVelocity.component[component][face]);}
+					else{const std::size_t nextDerivative=PeriodicNext(momentumShape,face,
+						derivative);upper=0.25*(mass(face)+mass(nextComponent))*(
+						exactVelocity.component[component][face]+exactVelocity.component[
+							component][nextDerivative]);lower=0.25*(mass(previousDerivative)+
+						mass(nextComponentPreviousDerivative))*(exactVelocity.component[
+							component][previousDerivative]+exactVelocity.component[component][face]);}
+					divergence+=(upper-lower)/momentumShape.cellWidthM;}
+				independentAdvection[component][face]=divergence;}}
 		PeriodicMACField momentumRHS;
 		const bool momentumRHSOK=RemainingMomentumRHS3D(momentumShape,
 			momentumState,exactVelocity,momentumViscosity,
@@ -1620,11 +2492,64 @@ int main()
 			std::array<double,3>{{0.4,-0.3,-9.80665}},momentumRHS,&error);
 		momentumManufacture=momentumManufacture && momentumRHSOK;
 		if(!momentumRHSOK){std::printf("V2 momentum RHS level=%zu: %s\n",level,error.c_str());continue;}
-		double activeAdvection=0.0,activeNonpressure=0.0;
+		PeriodicMACField independentRHS;std::array<std::vector<double>,3> independentCellVelocity;
+		for(unsigned int component=0;component<3;++component){independentRHS.component[component].
+			assign(count,0.0);independentCellVelocity[component].resize(count);for(std::size_t cell=0;
+			cell<count;++cell)independentCellVelocity[component][cell]=0.5*(exactVelocity.component[
+			component][cell]+exactVelocity.component[component][PeriodicPrevious(momentumShape,
+			cell,component)]);}
+		std::array<std::array<std::vector<double>,3>,3> independentStress;
+		for(unsigned int component=0;component<3;++component)for(unsigned int derivative=0;
+			derivative<3;++derivative)independentStress[component][derivative].assign(count,0.0);
+		for(std::size_t cell=0;cell<count;++cell){double gradient[3][3]={},divergence=0.0;
+			for(unsigned int derivative=0;derivative<3;++derivative){const std::size_t previous=
+				PeriodicPrevious(momentumShape,cell,derivative),next=PeriodicNext(momentumShape,
+				cell,derivative);for(unsigned int component=0;component<3;++component)gradient[
+				derivative][component]=(independentCellVelocity[component][next]-
+				independentCellVelocity[component][previous])/(2.0*momentumShape.cellWidthM);
+				divergence+=gradient[derivative][derivative];}
+			for(unsigned int component=0;component<3;++component)for(unsigned int derivative=0;
+				derivative<3;++derivative)independentStress[component][derivative][cell]=
+				momentumViscosity[cell]*(gradient[derivative][component]+gradient[component][derivative]-
+					(component==derivative?(2.0/3.0)*divergence:0.0));}
+		double independentOperatorDifference=0.0;
+		for(unsigned int component=0;component<3;++component)for(std::size_t face=0;face<count;
+			++face){const std::size_t right=PeriodicNext(momentumShape,face,component);double viscous=
+			(independentStress[component][component][right]-independentStress[component][component][
+				face])/momentumShape.cellWidthM;for(unsigned int derivative=0;derivative<3;++derivative){
+			if(derivative==component)continue;const std::size_t previous=PeriodicPrevious(momentumShape,
+				face,derivative),next=PeriodicNext(momentumShape,face,derivative),previousRight=
+				PeriodicPrevious(momentumShape,right,derivative),nextRight=PeriodicNext(momentumShape,
+				right,derivative);viscous+=0.25*(independentStress[component][derivative][next]+
+				independentStress[component][derivative][nextRight]-independentStress[component][derivative][
+				previous]-independentStress[component][derivative][previousRight])/
+				momentumShape.cellWidthM;}const double gasDensity=0.5*(FromConservativeVector(
+			momentumState[face]).GasDensity()+FromConservativeVector(momentumState[right]).GasDensity());
+			independentRHS.component[component][face]=viscous+(gasDensity-ownerPhysical.GasDensity())*
+				std::array<double,3>{{0.4,-0.3,-9.80665}}[component];
+			independentOperatorDifference=std::max({independentOperatorDifference,std::fabs(
+				momentumAdvection[component][face]-independentAdvection[component][face]),std::fabs(
+				momentumRHS.component[component][face]-independentRHS.component[component][face])});}
+		momentumManufacture=momentumManufacture&&independentOperatorDifference<2.0e-13;
+		PeriodicMACField momentumWithoutGravity,momentumWithoutViscosity;
+		const bool separatedMomentumOK=momentumRHSOK&&RemainingMomentumRHS3D(momentumShape,
+			momentumState,exactVelocity,momentumViscosity,
+			std::vector<ConservativeVector>(count),0.003,ownerPhysical.GasDensity(),
+			std::array<double,3>{{0.0,0.0,0.0}},momentumWithoutGravity,&error)&&
+			RemainingMomentumRHS3D(momentumShape,momentumState,exactVelocity,
+			std::vector<double>(count,0.0),std::vector<ConservativeVector>(count),0.003,
+			ownerPhysical.GasDensity(),std::array<double,3>{{0.4,-0.3,-9.80665}},
+			momentumWithoutViscosity,&error);
+		momentumManufacture=momentumManufacture&&separatedMomentumOK;
+		double activeAdvection=0.0,activeNonpressure=0.0,activeViscous=0.0,activeBuoyancy=0.0;
 		for(std::size_t cell=0;cell<count;++cell) for(unsigned int axis=0;axis<3;++axis){
 			activeAdvection=std::max(activeAdvection,std::fabs(momentumAdvection[axis][cell]));
 			activeNonpressure=std::max(activeNonpressure,
 				std::fabs(momentumRHS.component[axis][cell]));
+			activeBuoyancy=std::max(activeBuoyancy,std::fabs(
+				momentumRHS.component[axis][cell]-momentumWithoutGravity.component[axis][cell]));
+			activeViscous=std::max(activeViscous,std::fabs(
+				momentumRHS.component[axis][cell]-momentumWithoutViscosity.component[axis][cell]));
 			const std::size_t next=PeriodicNext(momentumShape,cell,axis);
 			const double faceDensity=0.5*(FromConservativeVector(momentumState[cell]).GasDensity()+
 				FromConservativeVector(momentumState[next]).GasDensity());
@@ -1640,7 +2565,8 @@ int main()
 			momentumManufacture=momentumManufacture && Near(assembled,
 				unprojectedMomentum.component[axis][cell],4.0e-15);
 		}
-		momentumTermsActive=momentumTermsActive && activeAdvection>0.0 && activeNonpressure>0.0;
+		momentumTermsActive=momentumTermsActive && activeAdvection>0.0 &&
+			activeNonpressure>0.0&&activeViscous>0.0&&activeBuoyancy>0.0;
 		PeriodicMACProjection3DResult momentumProjected;
 		const bool momentumProjectionOK=ProjectPeriodicMACVelocity3D(momentumShape,
 			GasDensityFromConservative(momentumState),unprojectedMomentum,target,0.003,
@@ -1650,16 +2576,161 @@ int main()
 			std::printf("V2 momentum level=%zu diagnostic: %s\n",level,error.c_str());
 			continue;
 		}
-		double pressureMean=0.0,computedMean=0.0;
+		double pressureMean=0.0,computedMean=0.0,endpointPressureError=0.0;
 		for(std::size_t cell=0;cell<count;++cell){pressureMean+=exactPressure[cell]/count;
 			computedMean+=momentumProjected.stepAverageDynamicPressurePa[cell]/count;}
 		for(std::size_t cell=0;momentumManufacture && cell<count;++cell){
 			manufacturedPressureError[level]+=std::fabs(
 				momentumProjected.stepAverageDynamicPressurePa[cell]-computedMean-
 				(exactPressure[cell]-pressureMean))/count;
+			endpointPressureError+=std::fabs(momentumProjected.stepAverageDynamicPressurePa[cell]-
+				computedMean-2.0*(exactPressure[cell]-pressureMean))/count;
 			for(unsigned int axis=0;axis<3;++axis) manufacturedVelocityError[level]+=
 				std::fabs(momentumProjected.velocityMPerS.component[axis][cell]-
-				exactVelocity.component[axis][cell])/(3.0*count);
+					exactVelocity.component[axis][cell])/(3.0*count);
+		}
+		momentumManufacture=momentumManufacture&&endpointPressureError>
+			4.0*manufacturedPressureError[level];
+		{
+			ConservativeAdvance3DConfig momentumOwnerConfig=ownerConfig;
+			momentumOwnerConfig.transport.cellWidthM=momentumShape.cellWidthM;
+			momentumOwnerConfig.transport.deltaTimeS=2.0e-4;
+			momentumOwnerConfig.transport.ambientGasDensityKGPerM3=ownerPhysical.GasDensity();
+			momentumOwnerConfig.gravityMPerS2={{0.4,-0.3,-9.80665}};
+			momentumOwnerConfig.dns=true;
+			PeriodicMACField ownerBeginningMomentum;
+			for(unsigned int axis=0;axis<3;++axis){
+				ownerBeginningMomentum.component[axis].resize(count);
+				for(std::size_t face=0;face<count;++face){
+					const std::size_t next=PeriodicNext(momentumShape,face,axis);
+					const double faceDensity=0.5*(FromConservativeVector(momentumState[face]).GasDensity()+
+						FromConservativeVector(momentumState[next]).GasDensity());
+					ownerBeginningMomentum.component[axis][face]=faceDensity*
+						exactVelocity.component[axis][face];
+				}
+			}
+			std::vector<MethaneSourcePacket> momentumOwnerPacket(count);
+			std::vector<double> ownerDiffusivity,ownerConductivity,ownerViscosity;
+			PeriodicFluxPair3D ownerInitialFlux;
+			std::vector<double> ownerRawTarget;
+			bool ownerSourceOK=BuildPeriodicStageTransport3D(momentumShape,momentumState,
+				momentumTemperature,exactVelocity,true,thermochemistry,transport,ownerDiffusivity,
+				ownerConductivity,ownerViscosity,&error)&&BuildPeriodicFluxPair3D(momentumShape,
+				momentumState,momentumTemperature,exactVelocity,ownerDiffusivity,ownerConductivity,
+				fuel,thermochemistry,ownerInitialFlux,&error)&&
+				PeriodicDivergenceTargetFromPhysicalFlux3D(momentumShape,momentumState,
+					momentumTemperature,ownerInitialFlux,std::vector<ConservativeVector>(count),
+					momentumOwnerConfig.transport.deltaTimeS,thermochemistry,ownerRawTarget,&error);
+			double ownerTargetMean=0.0;for(const double value:ownerRawTarget)ownerTargetMean+=value/count;
+			for(std::size_t cell=0;ownerSourceOK&&cell<count;++cell){
+				ConservativeVector unitEnergyRate;unitEnergyRate[MethaneMassStateDimension]=1.0;
+				double coefficient=0.0;ownerSourceOK=DivergenceFromDiscreteRate(momentumState[cell],
+					unitEnergyRate,momentumTemperature[cell],thermochemistry,coefficient,&error)&&
+					coefficient>0.0;
+				momentumOwnerPacket[cell].sensibleEnergyDeltaJPerM3=-ownerTargetMean/coefficient*
+					momentumOwnerConfig.transport.deltaTimeS;
+			}
+			ConservativeAdvance3DResult momentumOwnerResult;
+			const bool momentumOwnerOK=AdvanceConservative3D(momentumShape,momentumState,
+				ownerBeginningMomentum,momentumOwnerPacket,momentumOwnerConfig,
+				fuel,thermochemistry,transport,momentumOwnerResult,&error);
+			if(!momentumOwnerOK)std::printf("V2 owning momentum diagnostic: %s\n",error.c_str());
+			ownerMomentumSchedule=ownerMomentumSchedule&&ownerSourceOK&&momentumOwnerOK;
+			PeriodicMACProjection3DResult independentlyCommitted,independentR0Projection,
+				independentR1Projection;
+			if(momentumOwnerOK){
+				std::vector<ConservativeVector> momentumPredictor;
+				std::array<std::vector<double>,3> momentumPredictorAlpha;
+				std::vector<ConservativeVector> momentumSourceDelta;
+				bool momentumPredictorOK=FrozenPacketDeltas3D(momentumOwnerPacket,count,
+					momentumSourceDelta,&error)&&ApplyPeriodicSharedFCT3D(momentumShape,momentumState,
+					momentumOwnerResult.r0.flux,momentumSourceDelta,momentumOwnerConfig.transport,
+					fuel,thermochemistry,momentumPredictor,momentumPredictorAlpha,&error);
+				std::array<std::vector<double>,3> r0Low,r0High,r0Diffusion,
+					r1Low,r1High,r1Diffusion,r0Accepted,r0PredictorAccepted,r1Accepted;
+				GasPrimalSubfluxes3D(momentumOwnerResult.r0.flux,r0Low,r0High,r0Diffusion);
+				GasPrimalSubfluxes3D(momentumOwnerResult.r1.flux,r1Low,r1High,r1Diffusion);
+				for(unsigned int axis=0;axis<3;++axis){
+					r0Accepted[axis].resize(count);r0PredictorAccepted[axis].resize(count);
+					r1Accepted[axis].resize(count);
+					for(std::size_t face=0;face<count;++face){
+						r0Accepted[axis][face]=r0Low[axis][face]+momentumOwnerResult.faceAlpha[axis][face]*
+							(r0High[axis][face]-r0Low[axis][face]);
+						r0PredictorAccepted[axis][face]=r0Low[axis][face]+
+							momentumPredictorAlpha[axis][face]*(r0High[axis][face]-r0Low[axis][face]);
+						r1Accepted[axis][face]=r1Low[axis][face]+momentumOwnerResult.faceAlpha[axis][face]*
+							(r1High[axis][face]-r1Low[axis][face]);
+					}
+				}
+				const std::array<std::vector<double>,3> r0Divergence=
+					CompatibleMomentumFluxDivergence3D(momentumShape,r0Accepted,r0Diffusion,
+						momentumOwnerResult.r0.projection.velocityMPerS);
+				const std::array<std::vector<double>,3> r0PredictorDivergence=
+					CompatibleMomentumFluxDivergence3D(momentumShape,r0PredictorAccepted,r0Diffusion,
+						momentumOwnerResult.r0.projection.velocityMPerS);
+				const std::array<std::vector<double>,3> r1Divergence=
+					CompatibleMomentumFluxDivergence3D(momentumShape,r1Accepted,r1Diffusion,
+						momentumOwnerResult.r1.projection.velocityMPerS);
+				PeriodicMACField independentPredictorMomentum=ownerBeginningMomentum;
+				for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;face<count;++face)
+					independentPredictorMomentum.component[axis][face]+=
+						momentumOwnerConfig.transport.deltaTimeS*(momentumOwnerResult.r0.
+						nonpressureMomentumRHS.component[axis][face]-r0PredictorDivergence[axis][face]);
+				bool independentStages=momentumPredictorOK&&ProjectPeriodicMACVelocity3D(momentumShape,
+					GasDensityFromConservative(momentumState),ownerBeginningMomentum,
+					momentumOwnerResult.r0.divergenceTargetPerS,
+					momentumOwnerConfig.transport.deltaTimeS,momentumOwnerConfig.projectionTolerancePerS,
+					independentR0Projection,&error)&&ProjectPeriodicMACVelocity3D(momentumShape,
+					GasDensityFromConservative(momentumPredictor),independentPredictorMomentum,
+					momentumOwnerResult.r1.divergenceTargetPerS,momentumOwnerConfig.transport.deltaTimeS,
+					momentumOwnerConfig.projectionTolerancePerS,independentR1Projection,&error);
+				double stageVelocityDifference=0.0;
+				for(unsigned int axis=0;independentStages&&axis<3;++axis)for(std::size_t face=0;
+					face<count;++face)stageVelocityDifference=std::max({stageVelocityDifference,
+					std::fabs(independentR0Projection.velocityMPerS.component[axis][face]-
+						momentumOwnerResult.r0.projection.velocityMPerS.component[axis][face]),
+					std::fabs(independentR1Projection.velocityMPerS.component[axis][face]-
+						momentumOwnerResult.r1.projection.velocityMPerS.component[axis][face])});
+				PeriodicMACField independentFinalMomentum=ownerBeginningMomentum;
+				double activeOwnerAdvection=0.0,activeOwnerNonpressure=0.0,activeOwnerSdiv=0.0;
+				for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;face<count;++face){
+					independentFinalMomentum.component[axis][face]+=0.5*
+						momentumOwnerConfig.transport.deltaTimeS*(
+						momentumOwnerResult.r0.nonpressureMomentumRHS.component[axis][face]+
+						momentumOwnerResult.r1.nonpressureMomentumRHS.component[axis][face]-
+						r0Divergence[axis][face]-r1Divergence[axis][face]);
+					activeOwnerAdvection=std::max({activeOwnerAdvection,std::fabs(r0Divergence[axis][face]),
+						std::fabs(r1Divergence[axis][face])});
+					activeOwnerNonpressure=std::max({activeOwnerNonpressure,std::fabs(
+						momentumOwnerResult.r0.nonpressureMomentumRHS.component[axis][face]),std::fabs(
+						momentumOwnerResult.r1.nonpressureMomentumRHS.component[axis][face])});
+				}
+				for(const double value:momentumOwnerResult.divergenceHeunPerS)
+					activeOwnerSdiv=std::max(activeOwnerSdiv,std::fabs(value));
+				const bool independentCommitOK=ProjectPeriodicMACVelocity3D(momentumShape,
+					GasDensityFromConservative(momentumOwnerResult.conservative),independentFinalMomentum,
+					momentumOwnerResult.r2.divergenceTargetPerS,momentumOwnerConfig.transport.deltaTimeS,
+					momentumOwnerConfig.projectionTolerancePerS,independentlyCommitted,&error);
+				double velocityDifference=0.0,pressureDifference=0.0;
+				for(std::size_t cell=0;independentCommitOK&&cell<count;++cell){
+					pressureDifference=std::max(pressureDifference,std::fabs(
+						independentlyCommitted.stepAverageDynamicPressurePa[cell]-
+						momentumOwnerResult.stepAverageDynamicPressurePa[cell]));
+					for(unsigned int axis=0;axis<3;++axis)velocityDifference=std::max(
+						velocityDifference,std::fabs(independentlyCommitted.velocityMPerS.component[
+						axis][cell]-momentumOwnerResult.velocityMPerS.component[axis][cell]));
+				}
+				double endpointHeunDifference=0.0;for(std::size_t cell=0;cell<count;++cell)
+					endpointHeunDifference=std::max(endpointHeunDifference,std::fabs(momentumOwnerResult.r2.
+						divergenceTargetPerS[cell]-momentumOwnerResult.divergenceHeunPerS[cell]));
+				ownerMomentumSchedule=ownerMomentumSchedule&&independentStages&&stageVelocityDifference<2.0e-9&&
+					independentCommitOK&&activeOwnerAdvection>0.0&&
+					activeOwnerNonpressure>0.0&&activeOwnerSdiv>0.0&&velocityDifference<2.0e-9&&
+					pressureDifference<2.0e-7&&endpointHeunDifference>1.0e-12;
+				if(!ownerMomentumSchedule)std::printf("V2 owner momentum metrics source=%d commit=%d adv=%.9g rhs=%.9g sdiv=%.9g vel=%.9g p=%.9g\n",
+					ownerSourceOK?1:0,independentCommitOK?1:0,activeOwnerAdvection,
+					activeOwnerNonpressure,activeOwnerSdiv,velocityDifference,pressureDifference);
+			}
 		}
 	}
 	const double velocityOrder=std::log(manufacturedVelocityError[1]/
@@ -1669,9 +2740,9 @@ int main()
 	if(!(momentumManufacture && momentumTermsActive && velocityOrder>=1.8 &&
 		pressureOrder>=1.8)) std::printf("V2 momentum orders velocity=%.6g pressure=%.6g errors %.9g %.9g\n",
 		velocityOrder,pressureOrder,manufacturedVelocityError[2],manufacturedPressureError[2]);
-	Check(momentumManufacture && momentumTermsActive && velocityOrder>=1.8 &&
+	Check(momentumManufacture && momentumTermsActive && ownerMomentumSchedule&&velocityOrder>=1.8 &&
 		pressureOrder>=1.8,
-		"V2 variable-density momentum manufacture is second order with all RHS terms active");
+		"V2 owning variable-density momentum is tableau-exact and the manufactured projection is second order");
 
 	// V3(c) is intentionally a failure oracle.  A deforming off-grid Courant
 	// field compresses one flank and expands the other while sharp extrema
@@ -1691,6 +2762,135 @@ int main()
 		(macCormackFailure.relativeInventoryError>1.0e-6 ||
 		macCormackFailure.maximumLocalConservativeError>1.0e-4),
 		"V3(c) deforming off-grid MacCormack control fails conservation as required");
+	std::vector<ConservativeVector> debugFullState(debugDensity.size());
+	double minimumDebugCarbon=std::numeric_limits<double>::max(),maximumDebugCarbon=0.0;
+	for(std::size_t cell=0;cell<debugDensity.size();++cell){
+		const double x=(cell+0.5)/static_cast<double>(debugDensity.size());
+		const double y=0.43,dx=x-0.31,dy=y-0.43;
+		const double z=0.22+0.34*std::exp(-380.0*(dx*dx+dy*dy));
+		const ConservativeVector physical=ToConservativeVector(PhysicalMixtureLineState(
+			fuel,thermochemistry,z,800.0));
+		const ConservativeVector product=ToConservativeVector(ProductRichMixtureLineState(
+			fuel,thermochemistry,z,800.0));
+		const double weight=(dx*dx+dy*dy<0.018||
+			(x>0.62&&x<0.76&&y>0.18&&y<0.35))?1.0:1.0e-2;
+		debugFullState[cell]=(1.0-weight)*physical+weight*product;
+		debugVelocity[cell]=0.14*std::sin(2.0*pi*x)*std::cos(2.0*pi*y);
+		minimumDebugCarbon=std::min(minimumDebugCarbon,
+			debugFullState[cell][1+MethaneCarbon]);
+		maximumDebugCarbon=std::max(maximumDebugCarbon,
+			debugFullState[cell][1+MethaneCarbon]);
+	}
+	DebugMacCormackNegativeControl fullMacCormackFailure;
+	const bool fullMacCormackRuns=EvaluateDebugMacCormackAffineNegativeControl1D(
+		debugFullState,debugVelocity,1.0/debugFullState.size(),0.017,
+		fuel.ConservativeReconstruction(),fullMacCormackFailure,&error);
+	Check(fullMacCormackRuns&&fullMacCormackFailure.clampActivated&&
+		maximumDebugCarbon>minimumDebugCarbon&&
+		(fullMacCormackFailure.relativeInventoryError>1.0e-6||
+		fullMacCormackFailure.maximumAffineResidual>1.0e-8),
+		"V3(c) full methane/aerosol MacCormack control violates the conservative solution or local affine closure");
+	// The production FCT kernel uses a divergence-free cellular velocity, so its
+	// full methane/aerosol state has an independent characteristic solution
+	// without introducing a momentum-forcing hook into production.
+	const std::size_t deformingResolution[3]={12,24,48};
+	double deformingError[3]={};bool deformingProduction=true,deformingLedgers=true;
+	double deformingMinimumAlpha=1.0;
+	for(std::size_t level=0;level<3;++level){
+		PeriodicMACShape deformingShape;deformingShape.nx=deformingResolution[level];
+		deformingShape.ny=deformingResolution[level];deformingShape.nz=3;
+		deformingShape.cellWidthM=1.0/deformingShape.nx;
+		const std::size_t count=deformingShape.CellCount();
+		auto initialState=[&](const double x,const double y){
+			const double dx=x-0.31,dy=y-0.43;
+			const double z=0.22+0.34*std::exp(-380.0*(dx*dx+dy*dy));
+			const ConservativeVector physical=ToConservativeVector(
+				PhysicalMixtureLineState(fuel,thermochemistry,z,800.0));
+			const ConservativeVector product=ToConservativeVector(
+				ProductRichMixtureLineState(fuel,thermochemistry,z,800.0));
+			const double weight=(dx*dx+dy*dy<0.018||
+				(x>0.62&&x<0.76&&y>0.18&&y<0.35))?1.0:1.0e-2;
+			return (1.0-weight)*physical+weight*product;};
+		std::vector<ConservativeVector> state(count);
+		double deformingInitialResidual=0.0;
+		for(std::size_t cell=0;cell<count;++cell){const std::size_t x=cell%deformingShape.nx,
+			y=(cell/deformingShape.nx)%deformingShape.ny;state[cell]=initialState(
+			(x+0.5)/deformingShape.nx,(y+0.5)/deformingShape.ny);
+			deformingInitialResidual=std::max(deformingInitialResidual,
+				MaximumConstraintResidual(fuel.ConservativeReconstruction(),state[cell]));}
+		if(deformingInitialResidual>5.0e-14)std::printf("V3(c) initial residual %.17g\n",
+			deformingInitialResidual);
+		PeriodicMACField velocity;for(unsigned int axis=0;axis<3;++axis){
+			velocity.component[axis].resize(count);for(std::size_t face=0;face<count;++face){
+				const std::size_t ix=face%deformingShape.nx,iy=(face/deformingShape.nx)%
+					deformingShape.ny;
+				const double x=(ix+(axis==0?1.0:0.5))/deformingShape.nx;
+				const double y=(iy+(axis==1?1.0:0.5))/deformingShape.ny;
+				velocity.component[axis][face]=axis==0?0.14*std::sin(2.0*pi*x)*
+					std::cos(2.0*pi*y):(axis==1?-0.14*std::cos(2.0*pi*x)*
+					std::sin(2.0*pi*y):0.0);}}
+		const double finalTime=0.02;
+		const std::size_t steps=static_cast<std::size_t>(std::ceil(
+			0.14*finalTime/(0.05*deformingShape.cellWidthM)));
+		PeriodicTransportConfig config=ownerConfig.transport;
+		config.cellWidthM=deformingShape.cellWidthM;
+		config.deltaTimeS=finalTime/static_cast<double>(steps);
+		std::array<std::vector<double>,3> alpha;
+		for(std::size_t step=0;deformingProduction&&step<steps;++step){
+			std::vector<ConservativeVector> next;
+			deformingProduction=ReferenceAdvancePeriodicTransportHeun3D(deformingShape,state,
+				velocity,std::vector<double>(count,0.0),std::vector<double>(count,0.0),false,
+				config,fuel,thermochemistry,next,alpha,&error);state.swap(next);
+			if(!deformingProduction)std::printf("V3(c) failed level=%zu step=%zu: %s\n",
+				level,step,error.c_str());
+			for(unsigned int axis=0;axis<3;++axis)for(const double value:alpha[axis])
+				deformingMinimumAlpha=std::min(deformingMinimumAlpha,value);
+		}
+		std::array<double,MethaneConservativeDimension> before={},after={};
+		for(std::size_t cell=0;deformingProduction&&cell<count;++cell){
+			const std::size_t ix=cell%deformingShape.nx,iy=(cell/deformingShape.nx)%
+				deformingShape.ny;double x=(ix+0.5)/deformingShape.nx,
+				y=(iy+0.5)/deformingShape.ny;
+			auto characteristicVelocity=[pi](const double px,const double py){return
+				std::array<double,2>{{0.14*std::sin(2.0*pi*px)*std::cos(2.0*pi*py),
+				-0.14*std::cos(2.0*pi*px)*std::sin(2.0*pi*py)}};};
+			const std::size_t characteristicSteps=80;const double ds=-finalTime/
+				static_cast<double>(characteristicSteps);
+			for(std::size_t substep=0;substep<characteristicSteps;++substep){
+				const std::array<double,2> k1=characteristicVelocity(x,y);
+				const std::array<double,2> k2=characteristicVelocity(x+0.5*ds*k1[0],
+					y+0.5*ds*k1[1]);
+				const std::array<double,2> k3=characteristicVelocity(x+0.5*ds*k2[0],
+					y+0.5*ds*k2[1]);
+				const std::array<double,2> k4=characteristicVelocity(x+ds*k3[0],y+ds*k3[1]);
+				x+=ds*(k1[0]+2.0*k2[0]+2.0*k3[0]+k4[0])/6.0;
+				y+=ds*(k1[1]+2.0*k2[1]+2.0*k3[1]+k4[1])/6.0;
+				x-=std::floor(x);y-=std::floor(y);
+			}
+			const ConservativeVector exact=initialState(x,y);
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+				deformingError[level]+=std::fabs(state[cell][component]-exact[component])/
+					(static_cast<double>(count)*MethaneConservativeDimension);
+				before[component]+=initialState((ix+0.5)/deformingShape.nx,
+					(iy+0.5)/deformingShape.ny)[component];
+				after[component]+=state[cell][component];
+			}
+			deformingLedgers=deformingLedgers&&MaximumConstraintResidual(
+				fuel.ConservativeReconstruction(),state[cell])<5.0e-14&&
+				state[cell][1+MethaneCarbon]>=0.0;
+		}
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+			deformingLedgers=deformingLedgers&&Near(after[component],before[component],5.0e-14);
+	}
+	const double deformingOrder=std::log(deformingError[1]/deformingError[2])/std::log(2.0);
+	if(!(deformingProduction&&deformingLedgers&&deformingOrder>0.4&&
+		deformingMinimumAlpha>0.0&&deformingMinimumAlpha<1.0))std::printf(
+		"V3(c) deform errors %.9g %.9g %.9g order %.6g alpha %.17g ledgers %d production %d error=%s\n",
+		deformingError[0],deformingError[1],deformingError[2],deformingOrder,
+		deformingMinimumAlpha,deformingLedgers?1:0,deformingProduction?1:0,error.c_str());
+	Check(deformingProduction&&deformingLedgers&&deformingOrder>0.4&&
+		deformingMinimumAlpha>0.0&&deformingMinimumAlpha<1.0,
+		"V3(c) clamp-active production FCT converges to the analytic deforming-flow solution with every ledger");
 
 	// V3(d): smooth physical mixture-line translation.  Three refinements
 	// independently measure every conservative field and derived temperature;
@@ -1700,6 +2900,36 @@ int main()
 	std::array<double,MethaneConservativeDimension+1> donorError={};
 	double positiveAlphaFaces=0.0,totalAlphaFaces=0.0;
 	bool smoothRuns=true,smoothLedgers=true;
+	const ConservativeVector productBase=ToConservativeVector(ProductRichMixtureLineState(
+		fuel,thermochemistry,0.3,800.0));
+	std::array<double,MethaneMassStateDimension> productDirection={};
+	const FireCertifiedNullspace& smoothClosure=fuel.ConservativeReconstruction();
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row)for(std::size_t basis=0;
+		basis<smoothClosure.nullity;++basis)productDirection[row]+=(1.0+basis)*
+		smoothClosure.orthonormalBasis[row*smoothClosure.nullity+basis];
+	double productAmplitude=0.02;
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(productDirection[row]!=0.0)
+		productAmplitude=std::min(productAmplitude,0.08*productBase[row]/
+			(1.2*std::fabs(productDirection[row])));
+	auto smoothProductState=[&](const double phase){
+		const double signal=std::sin(2.0*pi*phase)+0.2*std::cos(4.0*pi*phase);
+		ConservativeVector state=productBase;
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+			state[row]+=productAmplitude*signal*productDirection[row];
+		MethaneCellState physical=FromConservativeVector(state);
+		static const char* speciesName[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		double moleDensity=0.0;
+		for(std::size_t species=0;species<MethaneCarbon;++species)
+			moleDensity+=physical.constituent[species]/thermochemistry.FindSpecies(
+				speciesName[species])->molecularWeightKGPerKMol;
+		physical.temperatureK=thermochemistry.ThermodynamicPressurePa()/(8314.46261815324*moleDensity);
+		std::string fixtureError;
+		if(!thermochemistry.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(physical),
+			physical.temperatureK,physical.sensibleEnergyJPerM3,&fixtureError)){
+			std::printf("FAIL: smooth product fixture: %s\n",fixtureError.c_str());++failures;
+		}
+		return ToConservativeVector(physical);
+	};
 	for(std::size_t level=0;level<3;++level){
 		PeriodicMACShape smoothShape;
 		smoothShape.nx=smoothResolution[level];smoothShape.ny=3;smoothShape.nz=3;
@@ -1709,12 +2939,7 @@ int main()
 		for(std::size_t cell=0;cell<smoothCount;++cell){
 			const std::size_t x=cell%smoothShape.nx;
 			const double coordinate=(x+0.5)/static_cast<double>(smoothShape.nx);
-			const double z=0.20+0.025*std::sin(2.0*pi*coordinate)+
-				0.006*std::cos(4.0*pi*coordinate);
-			const double temperature=800.0+8.0*std::cos(2.0*pi*coordinate)-
-				2.0*std::sin(4.0*pi*coordinate);
-			highState[cell]=ToConservativeVector(PhysicalMixtureLineState(
-				fuel,thermochemistry,z,temperature));
+			highState[cell]=smoothProductState(coordinate);
 		}
 		donorState=highState;
 		const std::vector<ConservativeVector> smoothInitial=highState;
@@ -1730,16 +2955,37 @@ int main()
 		smoothConfig.ambientTemperatureK=300.0;
 		smoothConfig.adiabaticTemperatureK=2500.0;
 		std::array<std::vector<double>,3> smoothAlpha,donorAlpha;
+		PeriodicMACField smoothMomentum;
+		for(unsigned int axis=0;axis<3;++axis){
+			smoothMomentum.component[axis].resize(smoothCount);
+			for(std::size_t face=0;face<smoothCount;++face){
+				const std::size_t next=PeriodicNext(smoothShape,face,axis);
+				const double faceDensity=PositiveArithmeticMean(
+					FromConservativeVector(highState[face]).GasDensity(),
+					FromConservativeVector(highState[next]).GasDensity());
+				smoothMomentum.component[axis][face]=faceDensity*smoothVelocity.component[axis][face];
+			}
+		}
+		ConservativeAdvance3DConfig smoothOwnerConfig=ownerConfig;
+		smoothOwnerConfig.transport=smoothConfig;
+		smoothOwnerConfig.transport.ambientGasDensityKGPerM3=
+			FromConservativeVector(productBase).GasDensity();
+		smoothOwnerConfig.gravityMPerS2.fill(0.0);
+		smoothOwnerConfig.dns=true;
+		smoothOwnerConfig.projectionTolerancePerS=2.0e-8;
 		for(std::size_t step=0;smoothRuns && step<steps;++step){
 			std::vector<ConservativeVector> nextHigh,nextDonor;
-			smoothRuns=ReferenceAdvancePeriodicTransportHeun3D(smoothShape,highState,
-				smoothVelocity,std::vector<double>(smoothCount,0.0),
-				std::vector<double>(smoothCount,0.0),false,smoothConfig,fuel,
-				thermochemistry,nextHigh,smoothAlpha,&error) &&
+			ConservativeAdvance3DResult smoothOwnerResult;
+			smoothRuns=AdvanceConservative3D(smoothShape,highState,smoothMomentum,
+				std::vector<MethaneSourcePacket>(smoothCount),smoothOwnerConfig,fuel,
+				thermochemistry,transport,smoothOwnerResult,&error) &&
 				ReferenceAdvancePeriodicTransportHeun3D(smoothShape,donorState,
 				smoothVelocity,std::vector<double>(smoothCount,0.0),
 				std::vector<double>(smoothCount,0.0),true,smoothConfig,fuel,
 				thermochemistry,nextDonor,donorAlpha,&error);
+			if(smoothRuns){nextHigh=smoothOwnerResult.conservative;
+				smoothMomentum=smoothOwnerResult.momentumKGPerM2S;
+				smoothAlpha=smoothOwnerResult.faceAlpha;}
 			highState.swap(nextHigh);donorState.swap(nextDonor);
 		}
 		if(!smoothRuns) std::printf("V3(d) level=%zu diagnostic: %s\n",level,error.c_str());
@@ -1755,12 +3001,15 @@ int main()
 			const std::size_t x=cell%smoothShape.nx;
 			double coordinate=(x+0.5)/static_cast<double>(smoothShape.nx)-0.35*finalTime;
 			coordinate-=std::floor(coordinate);
-			const double z=0.20+0.025*std::sin(2.0*pi*coordinate)+
-				0.006*std::cos(4.0*pi*coordinate);
-			const double exactTemperature=800.0+8.0*std::cos(2.0*pi*coordinate)-
-				2.0*std::sin(4.0*pi*coordinate);
-			const ConservativeVector exact=ToConservativeVector(PhysicalMixtureLineState(
-				fuel,thermochemistry,z,exactTemperature));
+			const ConservativeVector exact=smoothProductState(coordinate);
+			MethaneCellState exactPhysical=FromConservativeVector(exact);
+			static const char* smoothSpeciesName[MethaneCarbon]={
+				"CH4","O2","N2","CO2","H2O","CO"};
+			double exactMoleDensity=0.0;for(std::size_t species=0;species<MethaneCarbon;++species)
+				exactMoleDensity+=exactPhysical.constituent[species]/thermochemistry.FindSpecies(
+					smoothSpeciesName[species])->molecularWeightKGPerKMol;
+			const double exactTemperature=thermochemistry.ThermodynamicPressurePa()/
+				(8314.46261815324*exactMoleDensity);
 			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
 				smoothError[level][component]+=std::fabs(highState[cell][component]-exact[component]);
 				if(level==2) donorError[component]+=std::fabs(donorState[cell][component]-exact[component]);
@@ -1775,7 +3024,7 @@ int main()
 			}
 			smoothLedgers=smoothLedgers && MaximumConstraintResidual(
 				fuel.ConservativeReconstruction(),highState[cell])<4.0e-14 &&
-				highState[cell][1+MethaneCarbon]==0.0;
+				highState[cell][1+MethaneCarbon]>0.0;
 		}
 		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
 			smoothLedgers=smoothLedgers && Near(smoothAfter[component],
@@ -1785,16 +3034,11 @@ int main()
 	}
 	bool smoothOrder=smoothRuns,beatsDonor=smoothRuns;
 	for(std::size_t component=0;component<MethaneConservativeDimension+1;++component){
-		const bool exactZero=smoothError[0][component]==0.0 &&
-			smoothError[1][component]==0.0 && smoothError[2][component]==0.0 &&
-			donorError[component]==0.0;
-		const double order=exactZero?std::numeric_limits<double>::infinity():
-			std::log(smoothError[1][component]/
+		const double order=std::log(smoothError[1][component]/
 			std::max(smoothError[2][component],1.0e-300))/std::log(2.0);
-		smoothOrder=smoothOrder && (exactZero || order>=1.8);
-		beatsDonor=beatsDonor && (exactZero ||
-			smoothError[2][component]<donorError[component]);
-		if(!(exactZero || (order>=1.8 && smoothError[2][component]<donorError[component])))
+		smoothOrder=smoothOrder && order>=1.8;
+		beatsDonor=beatsDonor && smoothError[2][component]<donorError[component];
+		if(!(order>=1.8 && smoothError[2][component]<donorError[component]))
 			std::printf("V3(d) component=%zu errors=%.9g,%.9g,%.9g order=%.6g donor=%.9g\n",
 				component,smoothError[0][component],smoothError[1][component],
 				smoothError[2][component],order,donorError[component]);
@@ -1802,6 +3046,53 @@ int main()
 	Check(smoothRuns && smoothLedgers && smoothOrder && beatsDonor && positiveAlphaFaces>0.0 &&
 		totalAlphaFaces>0.0,
 		"V3(d) smooth 3-D FCT is second order, limiter-active, and beats donor for every field");
+
+	// V3(b) is independent of the advection cases: a nonzero inert aerosol
+	// inventory undergoes only projected multicomponent diffusion.  Every cell
+	// must remain on the affine manifold while the aerosol inventory is exact.
+	PeriodicMACShape aerosolShape;
+	aerosolShape.nx=8;aerosolShape.ny=3;aerosolShape.nz=3;aerosolShape.cellWidthM=0.125;
+	const std::size_t aerosolCount=aerosolShape.CellCount();
+	std::vector<ConservativeVector> aerosolBeginning(aerosolCount);
+	for(std::size_t cell=0;cell<aerosolCount;++cell)aerosolBeginning[cell]=
+		smoothProductState((cell%aerosolShape.nx+0.5)/aerosolShape.nx);
+	std::vector<double> aerosolTemperature;
+	PeriodicMACField aerosolVelocity;
+	for(unsigned int axis=0;axis<3;++axis)aerosolVelocity.component[axis].assign(aerosolCount,0.0);
+	PeriodicFluxPair3D aerosolFlux;
+	std::vector<ConservativeVector> aerosolAfter;
+	std::array<std::vector<double>,3> aerosolAlpha;
+	PeriodicTransportConfig aerosolConfig=ownerConfig.transport;
+	aerosolConfig.cellWidthM=aerosolShape.cellWidthM;aerosolConfig.deltaTimeS=0.001;
+	const bool aerosolDiffusionOK=InvertPeriodicTemperatures(aerosolBeginning,thermochemistry,
+		aerosolTemperature,&error)&&BuildPeriodicFluxPair3D(aerosolShape,aerosolBeginning,
+		aerosolTemperature,aerosolVelocity,std::vector<double>(aerosolCount,1.0e-4),
+		std::vector<double>(aerosolCount,0.0),fuel,thermochemistry,aerosolFlux,&error)&&
+		ApplyPeriodicSharedFCT3D(aerosolShape,aerosolBeginning,aerosolFlux,
+			std::vector<ConservativeVector>(aerosolCount),aerosolConfig,fuel,
+			thermochemistry,aerosolAfter,aerosolAlpha,&error);
+	std::array<double,MethaneConservativeDimension> aerosolBeforeLedger={},aerosolAfterLedger={};
+	bool aerosolAffine=aerosolDiffusionOK;
+	for(std::size_t cell=0;cell<aerosolCount;++cell){
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+			aerosolBeforeLedger[component]+=aerosolBeginning[cell][component];
+		if(aerosolDiffusionOK){
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+				aerosolAfterLedger[component]+=aerosolAfter[cell][component];
+			aerosolAffine=aerosolAffine&&MaximumConstraintResidual(
+				fuel.ConservativeReconstruction(),aerosolAfter[cell])<4.0e-14;}
+	}
+	bool aerosolGlobalLedgers=aerosolDiffusionOK;
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+		aerosolGlobalLedgers=aerosolGlobalLedgers&&Near(aerosolAfterLedger[component],
+			aerosolBeforeLedger[component],3.0e-14);
+	std::array<double,MethaneSpeciesCount> aerosolSpeciesDelta={};
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		aerosolSpeciesDelta[species]=aerosolAfterLedger[1+species]-
+			aerosolBeforeLedger[1+species];
+	Check(aerosolDiffusionOK&&aerosolBeforeLedger[1+MethaneCarbon]>0.0&&aerosolAffine&&
+		aerosolGlobalLedgers&&MaximumElementResidual(fuel,aerosolSpeciesDelta)<3.0e-14,
+		"V3(b) projected pure diffusion preserves every species, aerosol, rhoZ, Hs, element ledger and local affine state");
 
 	// V4: a finite-step packet, not an externally tabulated heat source, must
 	// preserve mass/elements and use the record-derived methane energy ledger.

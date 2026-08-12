@@ -58,42 +58,67 @@
 					reconstruction.stateDimension*reconstruction.nullity ) {
 				return Fail(error,"fire solver 3-D invariant reconstruction dimensions are invalid");
 			}
-			std::vector<std::vector<double> > coordinate(count,
-				std::vector<double>(reconstruction.nullity,0.0));
+			std::vector<double> coordinate(count*reconstruction.nullity,0.0);
+			std::array<bool,MethaneMassStateDimension> identicallyZero;
+			identicallyZero.fill(true);
 			for( std::size_t cell=0; cell<count; ++cell ) {
+				for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+					identicallyZero[row]=identicallyZero[row]&&cells[cell][row]==0.0;
 				for( std::size_t basis=0; basis<reconstruction.nullity; ++basis ) {
 					for( std::size_t row=0; row<MethaneMassStateDimension; ++row ) {
-						coordinate[cell][basis] += reconstruction.orthonormalBasis[
+					coordinate[cell*reconstruction.nullity+basis] += reconstruction.orthonormalBasis[
 							row*reconstruction.nullity+basis]*cells[cell][row];
 					}
 				}
 			}
+			std::vector<std::vector<double> > absentNormals;
+			for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(identicallyZero[row]){
+				std::vector<double> normal(reconstruction.nullity);
+				for(std::size_t basis=0;basis<reconstruction.nullity;++basis)normal[basis]=
+					reconstruction.orthonormalBasis[row*reconstruction.nullity+basis];
+				for(const std::vector<double>& prior:absentNormals){
+					double dot=0.0;
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						dot+=normal[basis]*prior[basis];
+					}
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						normal[basis]-=dot*prior[basis];
+					}
+				}
+				double norm=0.0;for(const double value:normal)norm+=value*value;
+				if(norm>256.0*std::numeric_limits<double>::epsilon()){norm=std::sqrt(norm);
+					for(double& value:normal)value/=norm;absentNormals.push_back(normal);}}
+			std::vector<double> coordinateSlope(reconstruction.nullity,0.0);
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				slopes[axis].assign(count,std::array<double,MethaneMassStateDimension>());
 				for( std::size_t cell=0; cell<count; ++cell ) {
 					slopes[axis][cell].fill(0.0);
 					const std::size_t previous = PeriodicPrevious(shape,cell,axis);
 					const std::size_t next = PeriodicNext(shape,cell,axis);
+					std::fill(coordinateSlope.begin(),coordinateSlope.end(),0.0);
 					for( std::size_t basis=0; basis<reconstruction.nullity; ++basis ) {
-						const double slope = MCScalarSlope(
-							coordinate[cell][basis]-coordinate[previous][basis],
-							coordinate[next][basis]-coordinate[cell][basis]);
+						coordinateSlope[basis] = MCScalarSlope(
+							coordinate[cell*reconstruction.nullity+basis]-
+								coordinate[previous*reconstruction.nullity+basis],
+							coordinate[next*reconstruction.nullity+basis]-
+								coordinate[cell*reconstruction.nullity+basis]);
+					}
+					for(const std::vector<double>& normal:absentNormals){double dot=0.0;
+						for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+							dot+=coordinateSlope[basis]*normal[basis];
+						}
+						for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+							coordinateSlope[basis]-=dot*normal[basis];
+						}}
+					for( std::size_t basis=0; basis<reconstruction.nullity; ++basis ) {
 						for( std::size_t row=0; row<MethaneMassStateDimension; ++row ) {
 							slopes[axis][cell][row] += reconstruction.orthonormalBasis[
-								row*reconstruction.nullity+basis]*slope;
+								row*reconstruction.nullity+basis]*coordinateSlope[basis];
 						}
 					}
+					for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(
+						identicallyZero[row])slopes[axis][cell][row]=0.0;
 				}
-			}
-			// An identically absent inventory is an exact invariant (not merely a
-			// nonnegative inequality).  Preserve the methane zero-soot limit and any
-			// other exact-zero constituent without a roundoff-sized basis leakage.
-			for( std::size_t row=0; row<MethaneMassStateDimension; ++row ) {
-				bool identicallyZero=true;
-				for( const ConservativeVector& cell:cells ) identicallyZero=
-					identicallyZero && cell[row]==0.0;
-				if( identicallyZero ) for( unsigned int axis=0; axis<3; ++axis ) for(
-					std::size_t cell=0; cell<count; ++cell ) slopes[axis][cell][row]=0.0;
 			}
 			return true;
 		}
@@ -283,32 +308,30 @@
 					correction[2*axis+1][cell] = -scale*(flux.high[axis][cell]-
 						flux.low[axis][cell]);
 				}
-				const double tolerance = 512.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,std::fabs(low[cell][MethaneMassStateDimension]));
 				if( !ConservativeStateFeasible(low[cell],ambientEnthalpy,
-					adiabaticEnthalpy,tolerance) ) return Fail(error,
+					adiabaticEnthalpy,512.0) ) return Fail(error,
 					"fire solver 3-D low-order FCT state is infeasible");
 				if( !CertifiedMassConstraintSatisfied(low[cell],
 					fuel.ConservativeReconstruction()) ) return Fail(error,
 					"fire solver 3-D low-order FCT state violates the certified affine invariant");
 			}
 			const std::size_t inequalityCount = 4+MethaneSpeciesCount;
-			std::vector<std::vector<double> > ratio(count,
-				std::vector<double>(inequalityCount,1.0));
+			std::vector<double> ratio(count*inequalityCount,1.0);
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				double stateScale=1.0;
-				for( std::size_t component=0; component<MethaneConservativeDimension;
-					++component ) stateScale=std::max(stateScale,std::fabs(low[cell][component]));
-				const double outwardBudget=4096.0*std::numeric_limits<double>::epsilon()*
-					stateScale;
 				for( std::size_t inequality=0; inequality<inequalityCount; ++inequality ) {
+					// Reserve half the accepted-state outward-rounding envelope for the
+					// six face accumulations performed after this ratio is formed.  Mass
+					// inequalities must never inherit the energy component's unit scale.
+					const double outwardBudget=1024.0*
+						std::numeric_limits<double>::epsilon()*InequalityRoundoffScale(
+							low[cell],inequality,ambientEnthalpy,adiabaticEnthalpy);
 					const double budget = std::max(0.0,-InequalityValue(low[cell],inequality,
 						ambientEnthalpy,adiabaticEnthalpy))+outwardBudget;
 					double requested = 0.0;
 					for( unsigned int direction=0; direction<6; ++direction ) requested +=
 						std::max(0.0,InequalityValue(correction[direction][cell],inequality,
 							ambientEnthalpy,adiabaticEnthalpy));
-					ratio[cell][inequality] = requested > 0.0 ?
+					ratio[cell*inequalityCount+inequality] = requested > 0.0 ?
 						std::min(1.0,budget/requested) : 1.0;
 				}
 			}
@@ -320,12 +343,12 @@
 						if( InequalityValue(correction[2*axis+1][left],inequality,
 							ambientEnthalpy,adiabaticEnthalpy) > 0.0 ) {
 							faceAlpha[axis][left] = std::min(faceAlpha[axis][left],
-								ratio[left][inequality]);
+								ratio[left*inequalityCount+inequality]);
 						}
 						if( InequalityValue(correction[2*axis][right],inequality,
 							ambientEnthalpy,adiabaticEnthalpy) > 0.0 ) {
 							faceAlpha[axis][left] = std::min(faceAlpha[axis][left],
-								ratio[right][inequality]);
+								ratio[right*inequalityCount+inequality]);
 						}
 					}
 				}
@@ -351,10 +374,8 @@
 					candidate[cell][component]=0.0;}}
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				const double tolerance = 2048.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,std::fabs(candidate[cell][MethaneMassStateDimension]));
 				if( !ConservativeStateFeasible(candidate[cell],ambientEnthalpy,
-					adiabaticEnthalpy,tolerance) || !CertifiedMassConstraintSatisfied(
+					adiabaticEnthalpy,2048.0) || !CertifiedMassConstraintSatisfied(
 					candidate[cell],fuel.ConservativeReconstruction()) ) return Fail(error,
 					"fire solver 3-D shared FCT result violates a nodal invariant");
 			}
@@ -364,12 +385,13 @@
 
 		// Test reference for spatial/temporal convergence.  It owns no production
 		// state and is deliberately not callable through fire_simulator.
-		inline bool ReferenceAdvancePeriodicTransportHeun3D(
+		inline bool ReferenceAdvancePeriodicTransportHeun3DWithSource(
 			const PeriodicMACShape& shape,
 			const std::vector<ConservativeVector>& beginning,
 			const PeriodicMACField& velocity,
 			const std::vector<double>& diffusivity,
 			const std::vector<double>& conductivity,
+			const std::vector<ConservativeVector>& frozenSourceDelta,
 			const bool donorOnly,
 			const PeriodicTransportConfig& config,
 			const FireSimulationMethaneRecord& fuel,
@@ -386,10 +408,11 @@
 			if( !BuildPeriodicFluxPair3D(shape,beginning,temperature0,velocity,diffusivity,
 				conductivity,fuel,thermochemistry,flux0,error) ) return false;
 			if( donorOnly ) flux0.high=flux0.low;
-			const std::vector<ConservativeVector> zeroDelta(beginning.size());
+			if(frozenSourceDelta.size()!=beginning.size()) return Fail(error,
+				"fire solver 3-D reference source shape is invalid");
 			std::vector<ConservativeVector> predictor;
 			std::array<std::vector<double>,3> predictorAlpha;
-			if( !ApplyPeriodicSharedFCT3D(shape,beginning,flux0,zeroDelta,config,fuel,
+			if( !ApplyPeriodicSharedFCT3D(shape,beginning,flux0,frozenSourceDelta,config,fuel,
 				thermochemistry,predictor,predictorAlpha,error) ||
 				!InvertPeriodicTemperatures(predictor,thermochemistry,temperature1,error) )
 				return false;
@@ -413,17 +436,39 @@
 							flux1.nonadvectiveMass[axis][face][component]);
 				}
 			}
-			return ApplyPeriodicSharedFCT3D(shape,beginning,averaged,zeroDelta,config,fuel,
+			return ApplyPeriodicSharedFCT3D(shape,beginning,averaged,frozenSourceDelta,config,fuel,
 				thermochemistry,result,acceptedAlpha,error);
+		}
+
+		inline bool ReferenceAdvancePeriodicTransportHeun3D(
+			const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& beginning,
+			const PeriodicMACField& velocity,
+			const std::vector<double>& diffusivity,
+			const std::vector<double>& conductivity,
+			const bool donorOnly,
+			const PeriodicTransportConfig& config,
+			const FireSimulationMethaneRecord& fuel,
+			const FireSimulationMethaneRecord& thermochemistry,
+			std::vector<ConservativeVector>& result,
+			std::array<std::vector<double>,3>& acceptedAlpha,
+			std::string* error = 0
+			)
+		{
+			return ReferenceAdvancePeriodicTransportHeun3DWithSource(shape,beginning,velocity,
+				diffusivity,conductivity,std::vector<ConservativeVector>(beginning.size()),donorOnly,
+				config,fuel,thermochemistry,result,acceptedAlpha,error);
 		}
 
 		struct DebugMacCormackNegativeControl
 		{
 			double relativeInventoryError;
 			double maximumLocalConservativeError;
+			double maximumAffineResidual;
 			bool clampActivated;
 			DebugMacCormackNegativeControl() : relativeInventoryError(0.0),
-				maximumLocalConservativeError(0.0),clampActivated(false) {}
+				maximumLocalConservativeError(0.0),maximumAffineResidual(0.0),
+				clampActivated(false) {}
 		};
 
 		// Semi-Lagrangian MacCormack is retained only as V3(c)'s deliberately bad
@@ -489,6 +534,70 @@
 			return (std::isfinite(result.relativeInventoryError) &&
 				std::isfinite(result.maximumLocalConservativeError)) || Fail(error,
 				"fire solver debug MacCormack diagnostic overflowed");
+		}
+
+		// Full-state V3(c) diagnostic.  Only aggregate failure measures escape;
+		// the semi-Lagrangian candidate is never returned and therefore cannot be
+		// installed as a production conservative state.
+		inline bool EvaluateDebugMacCormackAffineNegativeControl1D(
+			const std::vector<ConservativeVector>& state,
+			const std::vector<double>& cellVelocityMPerS,
+			const double cellWidthM,
+			const double deltaTimeS,
+			const FireCertifiedNullspace& reconstruction,
+			DebugMacCormackNegativeControl& result,
+			std::string* error=0
+			)
+		{
+			if(state.size()<8||cellVelocityMPerS.size()!=state.size())return Fail(error,
+				"fire solver full-state debug MacCormack fixture is malformed");
+			std::vector<ConservativeVector> corrected(state.size());
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+				std::vector<double> field(state.size());
+				for(std::size_t cell=0;cell<state.size();++cell)field[cell]=state[cell][component];
+				const std::size_t count=field.size();
+				auto sample=[&](const std::vector<double>& values,double coordinate){
+					coordinate-=std::floor(coordinate/static_cast<double>(count))*
+						static_cast<double>(count);
+					const std::size_t left=static_cast<std::size_t>(std::floor(coordinate))%count;
+					const std::size_t right=(left+1)%count;
+					const double fraction=coordinate-std::floor(coordinate);
+					return (1.0-fraction)*values[left]+fraction*values[right];
+				};
+				std::vector<double> forward(count),backward(count),candidate(count);
+				for(std::size_t cell=0;cell<count;++cell){
+					const double courant=deltaTimeS*cellVelocityMPerS[cell]/cellWidthM;
+					forward[cell]=sample(field,static_cast<double>(cell)-courant);
+				}
+				double before=0.0,after=0.0;
+				for(std::size_t cell=0;cell<count;++cell){
+					const double courant=deltaTimeS*cellVelocityMPerS[cell]/cellWidthM;
+					backward[cell]=sample(forward,static_cast<double>(cell)+courant);
+					const double unlimited=forward[cell]+0.5*(field[cell]-backward[cell]);
+					const double lo=std::min({field[(cell+count-1)%count],field[cell],
+						field[(cell+1)%count]});
+					const double hi=std::max({field[(cell+count-1)%count],field[cell],
+						field[(cell+1)%count]});
+					candidate[cell]=std::max(lo,std::min(hi,unlimited));
+					result.clampActivated=result.clampActivated||candidate[cell]!=unlimited;
+					before+=field[cell];after+=candidate[cell];
+					corrected[cell][component]=candidate[cell];
+				}
+				result.relativeInventoryError=std::max(result.relativeInventoryError,
+					std::fabs(after-before)/std::max(1.0,std::fabs(before)));
+			}
+			for(const ConservativeVector& cell:corrected)for(std::size_t row=0;
+				row<reconstruction.constraintRows;++row){
+				double residual=0.0;for(std::size_t column=0;
+					column<reconstruction.stateDimension;++column)residual+=
+						reconstruction.constraintMatrix[row*reconstruction.stateDimension+column]*
+						cell[column];
+				result.maximumAffineResidual=std::max(result.maximumAffineResidual,
+					std::fabs(residual));
+			}
+			return (std::isfinite(result.relativeInventoryError)&&
+				std::isfinite(result.maximumAffineResidual))||Fail(error,
+					"fire solver full-state debug MacCormack diagnostic overflowed");
 		}
 
 		inline bool BuildPeriodicStageTransport3D(
@@ -640,10 +749,13 @@
 						};
 						double upper = 0.0, lower = 0.0;
 						if( derivative == component ) {
-							upper = massFlux(nextComponent)*0.5*(
+							// Restrict the primal gas flux to the momentum control-volume
+							// boundary with the same I_i used for staggered density.  This is
+							// the discrete compatibility identity D_i I_i = I_rho,i D.
+							upper = 0.25*(massFlux(face)+massFlux(nextComponent))*(
 								faceVelocity.component[component][face]+
 								faceVelocity.component[component][nextComponent]);
-							lower = massFlux(face)*0.5*(
+							lower = 0.25*(massFlux(previousDerivative)+massFlux(face))*(
 								faceVelocity.component[component][previousDerivative]+
 								faceVelocity.component[component][face]);
 						} else {
@@ -787,6 +899,7 @@
 			const std::vector<ConservativeVector>& state,
 			const std::vector<double>& temperatureK,
 			const OpenMACField3D& faceVelocity,
+			const OpenBoundaryConfig3D& boundary,
 			const bool dns,
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
@@ -797,7 +910,8 @@
 			)
 		{
 			const std::size_t count=shape.CellCount();
-			if(state.size()!=count || temperatureK.size()!=count) return Fail(error,
+			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error)||state.size()!=count ||
+				temperatureK.size()!=count) return Fail(error,
 				"fire solver open stage transport shape is invalid");
 			std::array<std::vector<double>,3> cellVelocity;
 			for(unsigned int component=0;component<3;++component){
@@ -810,6 +924,25 @@
 			}
 			diffusivity.assign(count,0.0);conductivity.assign(count,0.0);viscosity.assign(count,0.0);
 			const double widths[3]={shape.cellWidthM,shape.cellWidthM,shape.cellWidthM};
+			auto boundaryKind=[&](const unsigned int side,const std::size_t x,
+				const std::size_t y,const std::size_t z){
+				const std::size_t first=side<2?y:x,second=side<4?z:y;
+				const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+				unsigned int kind=boundary.kind[side];
+				if(side==4&&!boundary.bottomFuelMask.empty()&&boundary.bottomFuelMask[index])
+					kind=FuelInletBoundary3D;
+				return kind;
+			};
+			auto boundaryVelocity=[&](const unsigned int side,const unsigned int component,
+				const std::size_t x,const std::size_t y,const std::size_t z){
+				const unsigned int normal=side/2;
+				if(component!=normal)return 0.0;
+				std::size_t fx=x,fy=y,fz=z;
+				if(normal==0)fx=(side&1)?shape.nx:0;
+				if(normal==1)fy=(side&1)?shape.ny:0;
+				if(normal==2)fz=(side&1)?shape.nz:0;
+				return faceVelocity.component[component][OpenMACFaceIndex3D(shape,component,fx,fy,fz)];
+			};
 			for(std::size_t cell=0;cell<count;++cell){
 				MethaneCellState physical=FromConservativeVector(state[cell]);
 				physical.temperatureK=temperatureK[cell];
@@ -830,11 +963,22 @@
 					const std::size_t extent=derivative==0?shape.nx:(derivative==1?shape.ny:shape.nz);
 					const std::size_t previous=coordinate?PeriodicPrevious(shape,cell,derivative):cell;
 					const std::size_t next=coordinate+1<extent?PeriodicNext(shape,cell,derivative):cell;
-					const double distance=(coordinate&&coordinate+1<extent)?2.0*shape.cellWidthM:
-						shape.cellWidthM;
-					for(unsigned int component=0;component<3;++component)
-						gradient[derivative][component]=(cellVelocity[component][next]-
-							cellVelocity[component][previous])/distance;
+					for(unsigned int component=0;component<3;++component){
+						double previousValue=cellVelocity[component][previous],
+							nextValue=cellVelocity[component][next];
+						if(coordinate==0){const unsigned int side=2*derivative;
+							if(boundaryKind(side,x,y,z)==PressureOpenBoundary3D)
+								previousValue=cellVelocity[component][cell];
+							else previousValue=2.0*boundaryVelocity(side,component,x,y,z)-
+								cellVelocity[component][cell];}
+						if(coordinate+1==extent){const unsigned int side=2*derivative+1;
+							if(boundaryKind(side,x,y,z)==PressureOpenBoundary3D)
+								nextValue=cellVelocity[component][cell];
+							else nextValue=2.0*boundaryVelocity(side,component,x,y,z)-
+								cellVelocity[component][cell];}
+						gradient[derivative][component]=(nextValue-previousValue)/
+							(2.0*shape.cellWidthM);
+					}
 				}
 				CellTransportEvaluation evaluation;
 				if(!EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
@@ -860,9 +1004,37 @@
 			const FireSimulationMethaneRecord& thermochemistry,
 			OpenFluxPair3D& result,
 			std::string* error=0
-			)
+		)
 		{
+			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error) || state.size()!=shape.CellCount() ||
+				temperatureK.size()!=shape.CellCount() || diffusivity.size()!=shape.CellCount() ||
+				conductivity.size()!=shape.CellCount() || !std::isfinite(ambientTemperatureK) ||
+				ambientTemperatureK<=0.0 || !std::isfinite(injectedTemperatureK) ||
+				injectedTemperatureK<=0.0) return Fail(error,
+				"fire solver open flux-pair input is malformed");
+			for(unsigned int axis=0;axis<3;++axis)if(projection.velocityMPerS.component[axis].size()!=
+				OpenMACFaceCount3D(shape,axis)) return Fail(error,
+				"fire solver open flux-pair velocity shape is invalid");
+			for(unsigned int side=0;side<6;++side)if(projection.inflow[side].size()!=
+				OpenBoundaryFaceCount3D(shape,side)) return Fail(error,
+				"fire solver open flux-pair active-set shape is invalid");
 			const std::size_t count=shape.CellCount();
+			auto boundaryGhost=[&](const std::size_t cell,const unsigned int axis,
+				const bool positive)->const ConservativeVector& {
+				const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
+					z=cell/(shape.nx*shape.ny);
+				const unsigned int side=2*axis+(positive?1u:0u);
+				const std::size_t first=axis==0?y:x;
+				const std::size_t second=axis==2?y:z;
+				const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+				unsigned int kind=boundary.kind[side];
+				if(side==4&&!boundary.bottomFuelMask.empty()&&boundary.bottomFuelMask[index])
+					kind=FuelInletBoundary3D;
+				if(kind==FuelInletBoundary3D) return boundary.injectedState;
+				if(kind==PressureOpenBoundary3D&&projection.inflow[side][index])
+					return boundary.ambientState;
+				return state[cell];
+			};
 			PeriodicMACField periodicVelocity;
 			for(unsigned int axis=0;axis<3;++axis){
 				periodicVelocity.component[axis].resize(count);
@@ -872,6 +1044,103 @@
 			PeriodicFluxPair3D interior;
 			if(!BuildPeriodicFluxPair3D(shape,state,temperatureK,periodicVelocity,diffusivity,
 				conductivity,fuel,thermochemistry,interior,error)) return false;
+			// Replace periodic reconstruction coordinates with boundary-aware MC
+			// coordinates.  Ambient/injected ghosts are physical states; outflow and
+			// adiabatic ghosts are the adjacent interior state (zero normal slope).
+			const FireCertifiedNullspace& reconstruction=fuel.ConservativeReconstruction();
+			std::vector<double> coordinate(count*reconstruction.nullity,0.0);
+			for(std::size_t cell=0;cell<count;++cell)for(std::size_t basis=0;
+				basis<reconstruction.nullity;++basis)for(std::size_t row=0;
+				row<MethaneMassStateDimension;++row) coordinate[cell*reconstruction.nullity+basis]+=
+					reconstruction.orthonormalBasis[row*reconstruction.nullity+basis]*state[cell][row];
+			std::array<std::vector<std::array<double,MethaneMassStateDimension> >,3> openSlope;
+			std::array<std::vector<double>,3> openEnergySlope;
+			for(unsigned int axis=0;axis<3;++axis){
+				openSlope[axis].assign(count,std::array<double,MethaneMassStateDimension>());
+				openEnergySlope[axis].assign(count,0.0);
+				const std::size_t extent=axis==0?shape.nx:(axis==1?shape.ny:shape.nz);
+				for(std::size_t cell=0;cell<count;++cell){
+					openSlope[axis][cell].fill(0.0);
+					const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
+						z=cell/(shape.nx*shape.ny);
+					const std::size_t position=axis==0?x:(axis==1?y:z);
+					const ConservativeVector& previousState=position?state[PeriodicPrevious(
+						shape,cell,axis)]:boundaryGhost(cell,axis,false);
+					const ConservativeVector& nextState=position+1<extent?state[PeriodicNext(
+						shape,cell,axis)]:boundaryGhost(cell,axis,true);
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						double previousCoordinate=0.0,nextCoordinate=0.0;
+						for(std::size_t row=0;row<MethaneMassStateDimension;++row){
+							const double coefficient=reconstruction.orthonormalBasis[
+								row*reconstruction.nullity+basis];
+							previousCoordinate+=coefficient*previousState[row];
+							nextCoordinate+=coefficient*nextState[row];
+						}
+						const double slope=MCScalarSlope(
+							coordinate[cell*reconstruction.nullity+basis]-previousCoordinate,
+							nextCoordinate-coordinate[cell*reconstruction.nullity+basis]);
+						for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+							openSlope[axis][cell][row]+=reconstruction.orthonormalBasis[
+								row*reconstruction.nullity+basis]*slope;
+					}
+					openEnergySlope[axis][cell]=MCScalarSlope(state[cell][MethaneMassStateDimension]-
+						previousState[MethaneMassStateDimension],nextState[MethaneMassStateDimension]-
+						state[cell][MethaneMassStateDimension]);
+				}
+			}
+			std::array<bool,MethaneMassStateDimension> absentFromDomain;
+			absentFromDomain.fill(true);
+			for(const ConservativeVector& cell:state)for(std::size_t row=0;
+				row<MethaneMassStateDimension;++row)absentFromDomain[row]=
+					absentFromDomain[row]&&cell[row]==0.0;
+			bool ambientCanSupply=false,fuelCanSupply=false;
+			for(unsigned int side=0;side<6;++side)ambientCanSupply=ambientCanSupply||
+				boundary.kind[side]==PressureOpenBoundary3D;
+			for(const bool isFuel:boundary.bottomFuelMask)fuelCanSupply=fuelCanSupply||isFuel;
+			for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+				absentFromDomain[row]=absentFromDomain[row]&&
+					(!ambientCanSupply||boundary.ambientState[row]==0.0)&&
+					(!fuelCanSupply||boundary.injectedState[row]==0.0);
+			std::vector<std::vector<double> > openAbsentNormals;
+			for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(absentFromDomain[row]){
+				std::vector<double> normal(reconstruction.nullity);
+				for(std::size_t basis=0;basis<reconstruction.nullity;++basis)normal[basis]=
+					reconstruction.orthonormalBasis[row*reconstruction.nullity+basis];
+				for(const std::vector<double>& prior:openAbsentNormals){
+					double dot=0.0;
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						dot+=normal[basis]*prior[basis];
+					}
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						normal[basis]-=dot*prior[basis];
+					}
+				}
+				double norm=0.0;for(const double value:normal)norm+=value*value;
+				if(norm>256.0*std::numeric_limits<double>::epsilon()){norm=std::sqrt(norm);
+					for(double& value:normal)value/=norm;openAbsentNormals.push_back(normal);}}
+			std::vector<double> openCoordinateSlope(reconstruction.nullity,0.0);
+			for(unsigned int axis=0;axis<3;++axis)for(std::size_t cell=0;cell<count;++cell){
+				std::fill(openCoordinateSlope.begin(),openCoordinateSlope.end(),0.0);
+				for(std::size_t basis=0;basis<reconstruction.nullity;++basis)for(std::size_t row=0;
+					row<MethaneMassStateDimension;++row)openCoordinateSlope[basis]+=
+						reconstruction.orthonormalBasis[row*reconstruction.nullity+basis]*
+						openSlope[axis][cell][row];
+				for(const std::vector<double>& normal:openAbsentNormals){
+					double dot=0.0;
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						dot+=openCoordinateSlope[basis]*normal[basis];
+					}
+					for(std::size_t basis=0;basis<reconstruction.nullity;++basis){
+						openCoordinateSlope[basis]-=dot*normal[basis];
+					}
+				}
+				openSlope[axis][cell].fill(0.0);for(std::size_t basis=0;basis<reconstruction.nullity;
+					++basis)for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+						openSlope[axis][cell][row]+=reconstruction.orthonormalBasis[
+							row*reconstruction.nullity+basis]*openCoordinateSlope[basis];
+				for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(absentFromDomain[row])
+					openSlope[axis][cell][row]=0.0;
+			}
 			std::vector<double> rhoDiffusivity(count,0.0);
 			for(std::size_t cell=0;cell<count;++cell){
 				double total=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;++species)
@@ -897,7 +1166,20 @@
 					if(coordinate+1<normalExtent){
 						const std::size_t face=OpenUpperFaceForCell3D(shape,cell,axis);
 						result.low[axis][face]=interior.low[axis][cell];
-						result.high[axis][face]=interior.high[axis][cell];
+						const std::size_t right=PeriodicNext(shape,cell,axis);
+						const double velocity=projection.velocityMPerS.component[axis][face];
+						for(std::size_t component=0;component<MethaneMassStateDimension;++component){
+							const double highValue=velocity>=0.0?state[cell][component]+
+								0.5*openSlope[axis][cell][component]:state[right][component]-
+								0.5*openSlope[axis][right][component];
+							result.high[axis][face][component]=velocity*highValue+
+								interior.nonadvectiveMass[axis][cell][component];
+						}
+						const double highEnergy=velocity>=0.0?state[cell][MethaneMassStateDimension]+
+							0.5*openEnergySlope[axis][cell]:state[right][MethaneMassStateDimension]-
+							0.5*openEnergySlope[axis][right];
+						result.high[axis][face][MethaneMassStateDimension]=velocity*highEnergy+
+							interior.nonadvectiveEnergy[axis][cell];
 						result.nonadvectiveMass[axis][face]=interior.nonadvectiveMass[axis][cell];
 						result.nonadvectiveEnergy[axis][face]=interior.nonadvectiveEnergy[axis][cell];
 					}
@@ -941,9 +1223,17 @@
 			std::string* error=0
 			)
 		{
+			if(!ValidatePeriodicShape3D(shape,error))return false;
 			const std::size_t count=shape.CellCount();
-			if(beginning.size()!=count || sourceDelta.size()!=count) return Fail(error,
+			if(beginning.size()!=count || sourceDelta.size()!=count ||
+				!std::isfinite(config.deltaTimeS) || config.deltaTimeS<=0.0 ||
+				!std::isfinite(shape.cellWidthM) || shape.cellWidthM<=0.0) return Fail(error,
 				"fire solver open FCT state shape is invalid");
+			for(unsigned int axis=0;axis<3;++axis){const std::size_t faceCount=
+				OpenMACFaceCount3D(shape,axis);if(flux.low[axis].size()!=faceCount ||
+				flux.high[axis].size()!=faceCount || flux.nonadvectiveMass[axis].size()!=faceCount ||
+				flux.nonadvectiveEnergy[axis].size()!=faceCount) return Fail(error,
+					"fire solver open FCT face shape is invalid");}
 			std::array<double,MethaneSpeciesCount> ambientEnthalpy,adiabaticEnthalpy;
 			if(!FireSimulationEnthalpyBounds(config,thermochemistry,ambientEnthalpy,
 				adiabaticEnthalpy,error)) return false;
@@ -957,33 +1247,28 @@
 				for(unsigned int axis=0;axis<3;++axis){
 					const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
 					const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
-					if(flux.low[axis].size()!=OpenMACFaceCount3D(shape,axis)) return Fail(error,
-						"fire solver open FCT face shape is invalid");
 					low[cell]=low[cell]+scale*(flux.low[axis][lower]-flux.low[axis][upper]);
 					correction[2*axis][cell]=scale*(flux.high[axis][lower]-flux.low[axis][lower]);
 					correction[2*axis+1][cell]=-scale*(flux.high[axis][upper]-flux.low[axis][upper]);
 				}
-				const double tolerance=1024.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,std::fabs(low[cell][MethaneMassStateDimension]));
 				if(!ConservativeStateFeasible(low[cell],ambientEnthalpy,adiabaticEnthalpy,
-					tolerance) || !CertifiedMassConstraintSatisfied(low[cell],
+					1024.0) || !CertifiedMassConstraintSatisfied(low[cell],
 					fuel.ConservativeReconstruction())) return Fail(error,
 					"fire solver open low-order state is infeasible");
 			}
 			const std::size_t inequalityCount=4+MethaneSpeciesCount;
-			std::vector<std::vector<double> > ratio(count,std::vector<double>(inequalityCount,1.0));
+			std::vector<double> ratio(count*inequalityCount,1.0);
 			for(std::size_t cell=0;cell<count;++cell) for(std::size_t inequality=0;
 				inequality<inequalityCount;++inequality){
-				double stateScale=1.0;for(std::size_t component=0;
-					component<MethaneConservativeDimension;++component) stateScale=
-					std::max(stateScale,std::fabs(low[cell][component]));
 				const double budget=std::max(0.0,-InequalityValue(low[cell],inequality,
-					ambientEnthalpy,adiabaticEnthalpy))+4096.0*
-					std::numeric_limits<double>::epsilon()*stateScale;
+					ambientEnthalpy,adiabaticEnthalpy))+2048.0*
+					std::numeric_limits<double>::epsilon()*InequalityRoundoffScale(low[cell],
+						inequality,ambientEnthalpy,adiabaticEnthalpy);
 				double requested=0.0;for(unsigned int direction=0;direction<6;++direction)
 					requested+=std::max(0.0,InequalityValue(correction[direction][cell],
 						inequality,ambientEnthalpy,adiabaticEnthalpy));
-				ratio[cell][inequality]=requested>0.0?std::min(1.0,budget/requested):1.0;
+				ratio[cell*inequalityCount+inequality]=requested>0.0?
+					std::min(1.0,budget/requested):1.0;
 			}
 			for(unsigned int axis=0;axis<3;++axis){
 				const std::size_t faceCount=OpenMACFaceCount3D(shape,axis);
@@ -999,10 +1284,10 @@
 					for(std::size_t inequality=0;inequality<inequalityCount;++inequality){
 						if(InequalityValue(correction[2*axis+1][cell],inequality,
 							ambientEnthalpy,adiabaticEnthalpy)>0.0) alpha[axis][face]=
-							std::min(alpha[axis][face],ratio[cell][inequality]);
+							std::min(alpha[axis][face],ratio[cell*inequalityCount+inequality]);
 						if(InequalityValue(correction[2*axis][right],inequality,
 							ambientEnthalpy,adiabaticEnthalpy)>0.0) alpha[axis][face]=
-							std::min(alpha[axis][face],ratio[right][inequality]);
+							std::min(alpha[axis][face],ratio[right*inequalityCount+inequality]);
 					}
 				}
 			}
@@ -1024,15 +1309,38 @@
 				for(std::size_t cell=0;cell<count;++cell){absent=absent&&
 					beginning[cell][component]==0.0&&sourceDelta[cell][component]==0.0;
 					scaleValue=std::max(scaleValue,std::fabs(candidate[cell][component]));}
+				// An open boundary is a legitimate inventory source.  Only canonicalize
+				// roundoff to exact zero when neither the initial/source state nor any
+				// boundary flux supplies this component.
+				for(unsigned int side=0;absent&&side<6;++side){
+					const unsigned int axis=side/2;const bool positive=side%2;
+					const std::size_t firstCount=side<2?shape.ny:shape.nx;
+					const std::size_t secondCount=side<4?shape.nz:shape.ny;
+					for(std::size_t second=0;absent&&second<secondCount;++second)
+						for(std::size_t first=0;absent&&first<firstCount;++first){
+							std::size_t x=0,y=0,z=0;
+							if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+							if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+							if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+							const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
+							absent=flux.low[axis][face][component]==0.0&&
+								flux.high[axis][face][component]==0.0;
+						}
+				}
 				if(absent){const double envelope=4096.0*std::numeric_limits<double>::epsilon()*
 					scaleValue;for(std::size_t cell=0;cell<count;++cell){if(std::fabs(
 					candidate[cell][component])>envelope)return Fail(error,
 					"fire solver open FCT created a finite absent inventory");
 					candidate[cell][component]=0.0;}}
 			}
-			for(std::size_t cell=0;cell<count;++cell) if(!CertifiedMassConstraintSatisfied(
-				candidate[cell],fuel.ConservativeReconstruction())) return Fail(error,
-				"fire solver open FCT result violates the affine invariant");
+			for(std::size_t cell=0;cell<count;++cell){
+				if(!ConservativeStateFeasible(candidate[cell],ambientEnthalpy,
+					adiabaticEnthalpy,4096.0)) return Fail(error,
+					"fire solver open FCT result is infeasible");
+				if(!CertifiedMassConstraintSatisfied(candidate[cell],
+					fuel.ConservativeReconstruction())) return Fail(error,
+					"fire solver open FCT result violates the affine invariant");
+			}
 			result.swap(candidate);return true;
 		}
 
@@ -1070,15 +1378,14 @@
 			const PeriodicMACShape& shape,
 			const OpenFluxPair3D& flux,
 			const std::array<std::vector<double>,3>& alpha,
-			const OpenMACField3D& velocity
+			const OpenMACField3D& velocity,
+			const OpenBoundaryConfig3D* boundary=0
 			)
 		{
-			const std::size_t count=shape.CellCount();
-			std::array<std::vector<double>,3> gasFlux,cellVelocity,cellDivergence;
+			std::array<std::vector<double>,3> gasFlux;
 			for(unsigned int axis=0;axis<3;++axis){
 				const std::size_t faceCount=OpenMACFaceCount3D(shape,axis);
-				gasFlux[axis].assign(faceCount,0.0);cellVelocity[axis].assign(count,0.0);
-				cellDivergence[axis].assign(count,0.0);
+				gasFlux[axis].assign(faceCount,0.0);
 				for(std::size_t face=0;face<faceCount;++face){
 					double low=0.0,high=0.0,physical=0.0;
 					for(std::size_t species=0;species<MethaneCarbon;++species){
@@ -1089,32 +1396,6 @@
 							flux.nonadvectiveMass[axis][face][1+species];
 					}
 					gasFlux[axis][face]=low+alpha[axis][face]*(high-low)+physical;
-				}
-				for(std::size_t cell=0;cell<count;++cell) cellVelocity[axis][cell]=0.5*(
-					velocity.component[axis][OpenLowerFaceForCell3D(shape,cell,axis)]+
-					velocity.component[axis][OpenUpperFaceForCell3D(shape,cell,axis)]);
-			}
-			for(unsigned int component=0;component<3;++component) for(std::size_t cell=0;
-				cell<count;++cell){
-				for(unsigned int axis=0;axis<3;++axis){
-					const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
-					const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
-					auto transported=[&](const std::size_t face,const bool upperFace){
-						if(axis==component) return velocity.component[component][face];
-						const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
-							z=cell/(shape.nx*shape.ny);
-						const std::size_t coordinate=axis==0?x:(axis==1?y:z);
-						const std::size_t extent=axis==0?shape.nx:(axis==1?shape.ny:shape.nz);
-						double value=cellVelocity[component][cell];unsigned int samples=1;
-						if(upperFace&&coordinate+1<extent){value+=cellVelocity[component][
-							PeriodicNext(shape,cell,axis)];++samples;}
-						if(!upperFace&&coordinate){value+=cellVelocity[component][
-							PeriodicPrevious(shape,cell,axis)];++samples;}
-						return value/static_cast<double>(samples);
-					};
-					cellDivergence[component][cell]+=(gasFlux[axis][upper]*
-						transported(upper,true)-gasFlux[axis][lower]*transported(lower,false))/
-						shape.cellWidthM;
 				}
 			}
 			OpenMACField3D result;
@@ -1129,13 +1410,95 @@
 					std::size_t x=0,y=0,z=0;if(component==0){x=normal;y=first;z=second;}
 					if(component==1){x=first;y=normal;z=second;}
 					if(component==2){x=first;y=second;z=normal;}
-					double value=0.0;unsigned int samples=0;
-					if(normal){value+=cellDivergence[component][shape.Index(component==0?
-						normal-1:x,component==1?normal-1:y,component==2?normal-1:z)];++samples;}
-					if(normal+1<normalCount){value+=cellDivergence[component][shape.Index(
-						component==0?normal:x,component==1?normal:y,component==2?normal:z)];++samples;}
-					result.component[component][OpenMACFaceIndex3D(shape,component,x,y,z)]=
-						samples?value/static_cast<double>(samples):0.0;
+					const std::size_t componentFace=OpenMACFaceIndex3D(shape,component,x,y,z);
+					double divergence=0.0;
+					for(unsigned int derivative=0;derivative<3;++derivative){
+						if(derivative==component){
+							const std::size_t previousNormal=normal?normal-1:normal;
+							const std::size_t nextNormal=normal+1<normalCount?normal+1:normal;
+							std::size_t px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+							if(component==0){px=previousNormal;nx=nextNormal;}
+							if(component==1){py=previousNormal;ny=nextNormal;}
+							if(component==2){pz=previousNormal;nz=nextNormal;}
+							const std::size_t previousFace=OpenMACFaceIndex3D(shape,component,px,py,pz);
+							const std::size_t nextFace=OpenMACFaceIndex3D(shape,component,nx,ny,nz);
+							const double upper=0.25*(gasFlux[component][componentFace]+
+								gasFlux[component][nextFace])*(velocity.component[component][componentFace]+
+								velocity.component[component][nextFace]);
+							const double lower=0.25*(gasFlux[component][previousFace]+
+								gasFlux[component][componentFace])*(velocity.component[component][previousFace]+
+								velocity.component[component][componentFace]);
+							const double normalScale=normal==0||normal+1==normalCount?2.0:1.0;
+							divergence+=normalScale*(upper-lower)/shape.cellWidthM;
+						}else{
+							const std::size_t derivativeExtent=derivative==0?shape.nx:
+								(derivative==1?shape.ny:shape.nz);
+							const std::size_t derivativePosition=derivative==0?x:(derivative==1?y:z);
+							const std::size_t lowerBoundary=derivativePosition;
+							const std::size_t upperBoundary=derivativePosition+1;
+							const std::size_t componentExtent=component==0?shape.nx:
+								(component==1?shape.ny:shape.nz);
+							const std::size_t componentLower=normal?normal-1:0;
+							const std::size_t componentUpper=normal<componentExtent?normal:componentExtent-1;
+							auto derivativeFlux=[&](const std::size_t componentCell,
+								const std::size_t derivativeBoundary){
+								std::size_t fx=x,fy=y,fz=z;
+								if(component==0)fx=componentCell;if(component==1)fy=componentCell;
+								if(component==2)fz=componentCell;
+								if(derivative==0)fx=derivativeBoundary;
+								if(derivative==1)fy=derivativeBoundary;
+								if(derivative==2)fz=derivativeBoundary;
+								return gasFlux[derivative][OpenMACFaceIndex3D(shape,derivative,fx,fy,fz)];
+							};
+							auto shiftedVelocity=[&](const bool upper){
+								std::size_t vx=x,vy=y,vz=z;
+								const std::size_t shifted=upper?std::min(derivativePosition+1,
+									derivativeExtent-1):(derivativePosition?derivativePosition-1:0);
+								if(derivative==0)vx=shifted;if(derivative==1)vy=shifted;
+								if(derivative==2)vz=shifted;
+								return velocity.component[component][OpenMACFaceIndex3D(shape,component,vx,vy,vz)];
+							};
+							auto prescribedDerivativeBoundary=[&](const unsigned int side){
+								if(!boundary)return false;
+								const std::size_t cellX=std::min(x,shape.nx-1);
+								const std::size_t cellY=std::min(y,shape.ny-1);
+								const std::size_t cellZ=std::min(z,shape.nz-1);
+								const std::size_t first=side<2?cellY:cellX;
+								const std::size_t second=side<4?cellZ:cellY;
+								const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+								unsigned int kind=boundary->kind[side];
+								if(side==4&&!boundary->bottomFuelMask.empty()&&
+									boundary->bottomFuelMask[index])kind=FuelInletBoundary3D;
+								return kind!=PressureOpenBoundary3D;
+							};
+							double upper=0.25*(derivativeFlux(componentLower,upperBoundary)+
+								derivativeFlux(componentUpper,upperBoundary))*(
+								velocity.component[component][componentFace]+shiftedVelocity(true));
+							double lower=0.25*(derivativeFlux(componentLower,lowerBoundary)+
+								derivativeFlux(componentUpper,lowerBoundary))*(shiftedVelocity(false)+
+								velocity.component[component][componentFace]);
+							// Wall and fuel-bed ghosts carry no tangential momentum.  The
+							// corresponding dual-control-volume boundary product is zero;
+							// pressure-open faces retain the interior tangential trace.
+							if(derivativePosition==0&&prescribedDerivativeBoundary(2*derivative))
+								lower=0.0;
+							if(derivativePosition+1==derivativeExtent&&
+								prescribedDerivativeBoundary(2*derivative+1))upper=0.0;
+							divergence+=(upper-lower)/shape.cellWidthM;
+						}
+					}
+					if(boundary){
+						const bool lowerBoundary=normal==0,upperBoundary=normal+1==normalCount;
+						if(lowerBoundary||upperBoundary){
+							const unsigned int side=2*component+(upperBoundary?1u:0u);
+							const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+							unsigned int kind=boundary->kind[side];
+							if(side==4&&!boundary->bottomFuelMask.empty()&&
+								boundary->bottomFuelMask[index])kind=FuelInletBoundary3D;
+							if(kind!=PressureOpenBoundary3D)divergence=0.0;
+						}
+					}
+					result.component[component][componentFace]=divergence;
 				}
 			}
 			return result;
@@ -1148,10 +1511,11 @@
 			double projectionTolerancePerS;
 			bool dns;
 			bool periodicBoundaries;
+			bool retainStageDiagnostics;
 			OpenBoundaryConfig3D openBoundary;
 			double injectedTemperatureK;
 			ConservativeAdvance3DConfig() : projectionTolerancePerS(0.0),dns(false),
-				periodicBoundaries(true),injectedTemperatureK(0.0)
+				periodicBoundaries(true),retainStageDiagnostics(false),injectedTemperatureK(0.0)
 			{
 				gravityMPerS2.fill(0.0);
 			}
@@ -1339,25 +1703,120 @@
 			const ConservativeAdvance3DConfig& config,
 			OpenMACField3D& result,
 			std::string* error=0
-			)
+		)
 		{
+			const std::size_t expectedCellCount=shape.CellCount();
+			if(state.size()!=expectedCellCount || viscosity.size()!=expectedCellCount ||
+				sourceDelta.size()!=expectedCellCount || !std::isfinite(config.transport.deltaTimeS) ||
+				config.transport.deltaTimeS<=0.0) return Fail(error,
+				"fire solver open momentum input is malformed");
+			for(unsigned int axis=0;axis<3;++axis)if(
+				projection.velocityMPerS.component[axis].size()!=OpenMACFaceCount3D(shape,axis))
+				return Fail(error,"fire solver open momentum velocity shape is invalid");
 			if(!BuildRelativeBuoyancyMomentumRate3D(shape,GasDensityFromConservative(state),
 				config.openBoundary,config.gravityMPerS2,result,error)) return false;
-			PeriodicMACField periodicVelocity,periodicViscous;
-			for(unsigned int axis=0;axis<3;++axis){periodicVelocity.component[axis].resize(
-				shape.CellCount());for(std::size_t cell=0;cell<shape.CellCount();++cell)
-				periodicVelocity.component[axis][cell]=projection.velocityMPerS.component[axis][
-					OpenUpperFaceForCell3D(shape,cell,axis)];}
-			if(!RemainingMomentumRHS3D(shape,state,periodicVelocity,viscosity,
-				std::vector<ConservativeVector>(shape.CellCount()),config.transport.deltaTimeS,
-				config.openBoundary.ambientDensityKGPerM3,std::array<double,3>{{0.0,0.0,0.0}},
-				periodicViscous,error)) return false;
-			for(unsigned int axis=0;axis<3;++axis)for(std::size_t cell=0;cell<shape.CellCount();
-				++cell){const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
-					z=cell/(shape.nx*shape.ny);const std::size_t coordinate=axis==0?x:
-					(axis==1?y:z);const std::size_t extent=axis==0?shape.nx:
-					(axis==1?shape.ny:shape.nz);if(coordinate+1<extent) result.component[axis][
-					OpenUpperFaceForCell3D(shape,cell,axis)]+=periodicViscous.component[axis][cell];}
+			const std::size_t cellCount=shape.CellCount();
+			if(viscosity.size()!=cellCount) return Fail(error,
+				"fire solver open momentum viscosity shape is invalid");
+			std::array<std::vector<double>,3> cellVelocity;
+			for(unsigned int component=0;component<3;++component){
+				cellVelocity[component].assign(cellCount,0.0);
+				for(std::size_t cell=0;cell<cellCount;++cell)cellVelocity[component][cell]=0.5*(
+					projection.velocityMPerS.component[component][OpenLowerFaceForCell3D(shape,cell,component)]+
+					projection.velocityMPerS.component[component][OpenUpperFaceForCell3D(shape,cell,component)]);
+			}
+			auto boundaryKind=[&](const unsigned int side,const std::size_t x,
+				const std::size_t y,const std::size_t z){
+				const std::size_t first=side<2?y:x;
+				const std::size_t second=side<4?z:y;
+				const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,first,second);
+				unsigned int kind=config.openBoundary.kind[side];
+				if(side==4&&!config.openBoundary.bottomFuelMask.empty()&&
+					config.openBoundary.bottomFuelMask[index])kind=FuelInletBoundary3D;
+				return kind;
+			};
+			auto boundaryVelocity=[&](const unsigned int side,const unsigned int component,
+				const std::size_t x,const std::size_t y,const std::size_t z){
+				const unsigned int normal=side/2;
+				if(component!=normal)return 0.0;
+				std::size_t fx=x,fy=y,fz=z;
+				if(normal==0)fx=(side&1)?shape.nx:0;
+				if(normal==1)fy=(side&1)?shape.ny:0;
+				if(normal==2)fz=(side&1)?shape.nz:0;
+				return projection.velocityMPerS.component[component][
+					OpenMACFaceIndex3D(shape,component,fx,fy,fz)];
+			};
+			std::array<std::array<std::vector<double>,3>,3> stress;
+			for(unsigned int component=0;component<3;++component)for(unsigned int derivative=0;
+				derivative<3;++derivative)stress[component][derivative].assign(cellCount,0.0);
+			for(std::size_t cell=0;cell<cellCount;++cell){
+				if(!std::isfinite(viscosity[cell])||viscosity[cell]<0.0)return Fail(error,
+					"fire solver open momentum viscosity is invalid");
+				const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,z=cell/(shape.nx*shape.ny);
+				double gradient[3][3]={},divergence=0.0;
+				for(unsigned int derivative=0;derivative<3;++derivative){
+					const std::size_t position=derivative==0?x:(derivative==1?y:z);
+					const std::size_t extent=derivative==0?shape.nx:(derivative==1?shape.ny:shape.nz);
+					const std::size_t previous=position?PeriodicPrevious(shape,cell,derivative):cell;
+					const std::size_t next=position+1<extent?PeriodicNext(shape,cell,derivative):cell;
+					for(unsigned int component=0;component<3;++component){
+						double previousValue=cellVelocity[component][previous];
+						double nextValue=cellVelocity[component][next];
+						if(position==0){
+							const unsigned int side=2*derivative;
+							if(boundaryKind(side,x,y,z)==PressureOpenBoundary3D)
+								previousValue=cellVelocity[component][cell];
+							else previousValue=2.0*boundaryVelocity(side,component,x,y,z)-
+								cellVelocity[component][cell];
+						}
+						if(position+1==extent){
+							const unsigned int side=2*derivative+1;
+							if(boundaryKind(side,x,y,z)==PressureOpenBoundary3D)
+								nextValue=cellVelocity[component][cell];
+							else nextValue=2.0*boundaryVelocity(side,component,x,y,z)-
+								cellVelocity[component][cell];
+						}
+						gradient[derivative][component]=(nextValue-previousValue)/
+							(2.0*shape.cellWidthM);
+					}
+					divergence+=gradient[derivative][derivative];
+				}
+				for(unsigned int component=0;component<3;++component)for(unsigned int derivative=0;
+					derivative<3;++derivative)stress[component][derivative][cell]=viscosity[cell]*(
+					gradient[derivative][component]+gradient[component][derivative]-
+					(component==derivative?(2.0/3.0)*divergence:0.0));
+			}
+			for(unsigned int component=0;component<3;++component){
+				const std::size_t normalCount=component==0?shape.nx+1:(component==1?shape.ny+1:shape.nz+1);
+				const std::size_t firstCount=component==0?shape.ny:shape.nx;
+				const std::size_t secondCount=component==2?shape.ny:shape.nz;
+				for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;
+					first<firstCount;++first)for(std::size_t normal=1;normal+1<normalCount;++normal){
+					std::size_t x=0,y=0,z=0;if(component==0){x=normal;y=first;z=second;}
+					if(component==1){x=first;y=normal;z=second;}if(component==2){x=first;y=second;z=normal;}
+					const std::size_t left=shape.Index(component==0?normal-1:x,
+						component==1?normal-1:y,component==2?normal-1:z);
+					const std::size_t right=shape.Index(component==0?normal:x,
+						component==1?normal:y,component==2?normal:z);
+					double viscous=(stress[component][component][right]-stress[component][component][left])/
+						shape.cellWidthM;
+					for(unsigned int derivative=0;derivative<3;++derivative){
+						if(derivative==component)continue;
+						const std::size_t leftPosition=derivative==0?x:(derivative==1?y:z);
+						const std::size_t extent=derivative==0?shape.nx:(derivative==1?shape.ny:shape.nz);
+						const std::size_t leftPrevious=leftPosition?PeriodicPrevious(shape,left,derivative):left;
+						const std::size_t rightPrevious=leftPosition?PeriodicPrevious(shape,right,derivative):right;
+						const std::size_t leftNext=leftPosition+1<extent?PeriodicNext(shape,left,derivative):left;
+						const std::size_t rightNext=leftPosition+1<extent?PeriodicNext(shape,right,derivative):right;
+						const double distance=(leftPosition&&leftPosition+1<extent)?4.0*shape.cellWidthM:
+							2.0*shape.cellWidthM;
+						viscous+=(stress[component][derivative][leftNext]+stress[component][derivative][rightNext]-
+							stress[component][derivative][leftPrevious]-stress[component][derivative][rightPrevious])/
+							distance;
+					}
+					result.component[component][OpenMACFaceIndex3D(shape,component,x,y,z)]+=viscous;
+				}
+			}
 			for(unsigned int axis=0;axis<3;++axis){
 				const std::size_t normalCount=axis==0?shape.nx+1:(axis==1?shape.ny+1:shape.nz+1);
 				const std::size_t firstCount=axis==0?shape.ny:shape.nx;
@@ -1382,8 +1841,12 @@
 						}
 						++samples;
 					}
+					// The outside half of a boundary momentum control volume has no
+					// internal phase source; retain the same arithmetic I_rho restriction.
+					const double restriction=normal==0||normal+1==normalCount?0.5:
+						1.0/static_cast<double>(samples);
 					if(samples) result.component[axis][face]+=
-						projection.velocityMPerS.component[axis][face]*phase/samples;
+						projection.velocityMPerS.component[axis][face]*phase*restriction;
 				}
 			}
 			return true;
@@ -1396,6 +1859,7 @@
 			const std::vector<ConservativeVector>& sourceDelta,
 			const ConservativeAdvance3DConfig& config,
 			const bool predictorLimiter,
+			const std::array<std::vector<bool>,6>* activeSetSeed,
 			const OpenMACProjection3DResult* stage0,
 			const OpenMACProjection3DResult* stage1,
 			const FireSimulationMethaneRecord& fuel,
@@ -1407,38 +1871,42 @@
 		{
 			const std::size_t count=shape.CellCount();std::vector<double> temperature;
 			if(!InvertPeriodicTemperatures(state,thermochemistry,temperature,error)) return false;
+			OpenBoundaryConfig3D stageBoundary=config.openBoundary;
+			if(activeSetSeed) stageBoundary.priorInflow=*activeSetSeed;
 			std::vector<double> target(count,0.0),priorMass;
 			std::array<std::vector<double>,3> priorAlpha;
+			std::array<std::vector<bool>,6> priorInflow=stageBoundary.priorInflow;
+			std::vector<double> priorDiffusivity(count,0.0),priorConductivity(count,0.0),
+				priorViscosity(count,0.0);
 			for(unsigned int axis=0;axis<3;++axis) priorMass.insert(priorMass.end(),
 				OpenMACFaceCount3D(shape,axis),0.0);
 			result.picardResidualPerS.clear();
-			OpenMACProjection3DResult priorProjection;
 			for(std::size_t iteration=0;iteration<64;++iteration){
 				OpenMACProjection3DResult projection;
-				OpenMACField3D nonpressure,unprojected=baseMomentum;
-				if(iteration && !BuildOpenNonpressureMomentumRHS3D(shape,state,priorProjection,
-					result.dynamicViscosityPaS,sourceDelta,config,nonpressure,error)) return false;
-				if(iteration) for(unsigned int axis=0;axis<3;++axis) for(std::size_t face=0;
-					face<unprojected.component[axis].size();++face) unprojected.component[axis][face]+=
-					config.transport.deltaTimeS*nonpressure.component[axis][face];
+				// The owning tableau has already assembled the fixed momentum passed to this
+				// stage: M^n for R0, M*dagger for R1, and M^{n+1,dagger} for R2.  The
+				// Picard loop recomputes A-hat for the next tableau assembly, but must not
+				// add it again to the momentum being projected.
+				const OpenMACField3D& unprojected=baseMomentum;
 				const bool finalStage=stage0&&stage1;
 				const bool projectionOK=finalStage?ProjectPressureOpenMACVelocity3DFinal(shape,
-					GasDensityFromConservative(state),unprojected,target,config.openBoundary,
+					GasDensityFromConservative(state),unprojected,target,stageBoundary,
 					*stage0,*stage1,config.transport.deltaTimeS,config.projectionTolerancePerS,
 					projection,error):ProjectPressureOpenMACVelocity3D(shape,
-					GasDensityFromConservative(state),unprojected,target,config.openBoundary,
+					GasDensityFromConservative(state),unprojected,target,stageBoundary,
 					config.transport.deltaTimeS,config.projectionTolerancePerS,projection,error);
 				if(!projectionOK) return false;
 				std::vector<double> diffusivity,conductivity,viscosity;
 				if(!BuildOpenStageTransport3D(shape,state,temperature,projection.velocityMPerS,
-					config.dns,thermochemistry,transport,diffusivity,conductivity,viscosity,error))
+					stageBoundary,config.dns,thermochemistry,transport,diffusivity,conductivity,
+					viscosity,error))
 					return false;
 				OpenMACField3D evaluatedNonpressure;
 				if(!BuildOpenNonpressureMomentumRHS3D(shape,state,projection,viscosity,
 					sourceDelta,config,evaluatedNonpressure,error)) return false;
 				OpenFluxPair3D flux;
 				if(!BuildOpenFluxPair3D(shape,state,temperature,projection,diffusivity,conductivity,
-					config.openBoundary,config.transport.ambientTemperatureK,
+					stageBoundary,config.transport.ambientTemperatureK,
 					config.injectedTemperatureK,fuel,thermochemistry,flux,error)) return false;
 				std::array<std::vector<double>,3> nextAlpha;
 				if(predictorLimiter){std::vector<ConservativeVector> predictor;
@@ -1447,9 +1915,20 @@
 				std::vector<double> nextTarget;
 				if(!OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
 					sourceDelta,config.transport.deltaTimeS,thermochemistry,nextTarget,error)) return false;
-				double residual=0.0,massResidual=0.0,alphaResidual=0.0;std::size_t offset=0;
+				double residual=0.0,massResidual=0.0,alphaResidual=0.0,
+					coefficientResidual=0.0;bool activeSetChanged=false;std::size_t offset=0;
+				if(iteration)for(unsigned int side=0;side<6;++side)
+					activeSetChanged=activeSetChanged||projection.inflow[side]!=priorInflow[side];
 				for(std::size_t cell=0;cell<count;++cell) residual=std::max(residual,
 					std::fabs(nextTarget[cell]-target[cell]));
+				for(std::size_t cell=0;cell<count;++cell){
+					if(iteration)coefficientResidual=std::max({coefficientResidual,
+						std::fabs(diffusivity[cell]-priorDiffusivity[cell]),
+						std::fabs(conductivity[cell]-priorConductivity[cell]),
+						std::fabs(viscosity[cell]-priorViscosity[cell])});
+					priorDiffusivity[cell]=diffusivity[cell];priorConductivity[cell]=conductivity[cell];
+					priorViscosity[cell]=viscosity[cell];
+				}
 				for(unsigned int axis=0;axis<3;++axis){
 					for(std::size_t face=0;face<projection.momentumKGPerM2S.component[axis].size();
 						++face){
@@ -1463,29 +1942,32 @@
 						++face) alphaResidual=std::max(alphaResidual,std::fabs(nextAlpha[axis][face]-
 						priorAlpha[axis][face]));
 				}
-				result.picardResidualPerS.push_back(std::max({residual,massResidual,alphaResidual}));
-				target.swap(nextTarget);priorProjection=projection;
+				result.picardResidualPerS.push_back(std::max({residual,massResidual,alphaResidual,
+					coefficientResidual}));
+				target.swap(nextTarget);
 				if(predictorLimiter) priorAlpha=nextAlpha;
+				priorInflow=projection.inflow;
 				result.dynamicViscosityPaS=viscosity;
 				if(iteration&&residual<=config.projectionTolerancePerS&&
 					massResidual<=config.projectionTolerancePerS&&
-					alphaResidual<=config.projectionTolerancePerS){
+					alphaResidual<=config.projectionTolerancePerS&&
+					coefficientResidual<=config.projectionTolerancePerS&&!activeSetChanged){
 					OpenMACProjection3DResult acceptedProjection;
 					const bool acceptedOK=finalStage?ProjectPressureOpenMACVelocity3DFinal(shape,
-						GasDensityFromConservative(state),unprojected,target,config.openBoundary,
+						GasDensityFromConservative(state),unprojected,target,stageBoundary,
 						*stage0,*stage1,config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error):ProjectPressureOpenMACVelocity3D(shape,
-						GasDensityFromConservative(state),unprojected,target,config.openBoundary,
+						GasDensityFromConservative(state),unprojected,target,stageBoundary,
 						config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error);
 					if(!acceptedOK) return false;
 					std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
-						acceptedProjection.velocityMPerS,config.dns,thermochemistry,transport,
+						acceptedProjection.velocityMPerS,stageBoundary,config.dns,thermochemistry,transport,
 						acceptedDiffusivity,acceptedConductivity,acceptedViscosity,error)) return false;
 					OpenFluxPair3D acceptedFlux;
 					if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedProjection,
-						acceptedDiffusivity,acceptedConductivity,config.openBoundary,
+						acceptedDiffusivity,acceptedConductivity,stageBoundary,
 						config.transport.ambientTemperatureK,config.injectedTemperatureK,fuel,
 						thermochemistry,acceptedFlux,error)) return false;
 					std::vector<double> verifiedTarget;
@@ -1493,15 +1975,33 @@
 						sourceDelta,config.transport.deltaTimeS,thermochemistry,verifiedTarget,error))
 						return false;
 					double verification=0.0;for(std::size_t cell=0;cell<count;++cell)
-						verification=std::max(verification,std::fabs(verifiedTarget[cell]-target[cell]));
-					if(verification>config.projectionTolerancePerS){target.swap(verifiedTarget);
-						priorProjection=acceptedProjection;continue;}
-					result.projection=acceptedProjection;result.flux=acceptedFlux;
-					result.faceAlpha=nextAlpha;result.divergenceTargetPerS=verifiedTarget;
+						verification=std::max({verification,std::fabs(verifiedTarget[cell]-target[cell]),
+							std::fabs(acceptedDiffusivity[cell]-diffusivity[cell]),
+							std::fabs(acceptedConductivity[cell]-conductivity[cell]),
+							std::fabs(acceptedViscosity[cell]-viscosity[cell])});
+					bool verifiedActiveSet=true;for(unsigned int side=0;side<6;++side)
+						verifiedActiveSet=verifiedActiveSet&&acceptedProjection.inflow[side]==
+							projection.inflow[side];
+					std::array<std::vector<double>,3> verifiedAlpha;
+					if(predictorLimiter){std::vector<ConservativeVector> verifiedPredictor;
+						if(!ApplyOpenSharedFCT3D(shape,state,acceptedFlux,sourceDelta,
+							config.transport,fuel,thermochemistry,verifiedPredictor,verifiedAlpha,error))
+							return false;
+						for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;
+							face<verifiedAlpha[axis].size();++face)verification=std::max(verification,
+								std::fabs(verifiedAlpha[axis][face]-nextAlpha[axis][face]));
+					}
+					if(verification>config.projectionTolerancePerS||!verifiedActiveSet){
+						target.swap(verifiedTarget);priorInflow=acceptedProjection.inflow;
+						continue;}
+					result.projection=std::move(acceptedProjection);
+					result.flux=std::move(acceptedFlux);
+					result.faceAlpha=predictorLimiter?std::move(verifiedAlpha):std::move(nextAlpha);
+					result.divergenceTargetPerS=std::move(verifiedTarget);
 					result.diffusivityM2PerS=acceptedDiffusivity;
 					result.conductivityWPerMK=acceptedConductivity;
 					result.dynamicViscosityPaS=acceptedViscosity;
-					return BuildOpenNonpressureMomentumRHS3D(shape,state,acceptedProjection,
+					return BuildOpenNonpressureMomentumRHS3D(shape,state,result.projection,
 						acceptedViscosity,sourceDelta,config,result.nonpressureMomentumRHS,error);
 				}
 			}
@@ -1616,7 +2116,11 @@
 					beginningMomentum.component[axis][face]+0.5*config.transport.deltaTimeS*(
 					candidate.r0.nonpressureMomentumRHS.component[axis][face]+
 					candidate.r1.nonpressureMomentumRHS.component[axis][face]-
-					divergence0[axis][face]-divergence1[axis][face]);
+						divergence0[axis][face]-divergence1[axis][face]);
+			}
+			if(!config.retainStageDiagnostics){
+				candidate.r0=ConservativeStage3D();
+				candidate.r1=ConservativeStage3D();
 			}
 			if( !SolveConservativeStage3D(shape,candidate.conservative,finalMomentum,sourceDelta,
 				config,false,fuel,thermochemistry,transport,candidate.r2,error) ) return false;
@@ -1624,7 +2128,12 @@
 			candidate.velocityMPerS = candidate.r2.projection.velocityMPerS;
 			candidate.stepAverageDynamicPressurePa =
 				candidate.r2.projection.stepAverageDynamicPressurePa;
-			result = candidate;
+			if(!config.retainStageDiagnostics){
+				candidate.r0=ConservativeStage3D();
+				candidate.r1=ConservativeStage3D();
+				candidate.r2=ConservativeStage3D();
+			}
+			result = std::move(candidate);
 			return true;
 		}
 
@@ -1652,20 +2161,22 @@
 			if(!FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,error)) return false;
 			OpenConservativeAdvance3DResult candidate;
 			if(!SolveOpenConservativeStage3D(shape,beginning,beginningMomentum,sourceDelta,
-				config,true,0,0,fuel,thermochemistry,transport,candidate.r0,error)) return false;
+				config,true,0,0,0,fuel,thermochemistry,transport,candidate.r0,error)) return false;
 			std::vector<ConservativeVector> predictor;
 			std::array<std::vector<double>,3> predictorAlpha;
 			if(!ApplyOpenSharedFCT3D(shape,beginning,candidate.r0.flux,sourceDelta,
 				config.transport,fuel,thermochemistry,predictor,predictorAlpha,error)) return false;
 			const OpenMACField3D predictorAdvection=OpenCompatibleMomentumFluxDivergence3D(
-				shape,candidate.r0.flux,predictorAlpha,candidate.r0.projection.velocityMPerS);
+				shape,candidate.r0.flux,predictorAlpha,candidate.r0.projection.velocityMPerS,
+				&config.openBoundary);
 			OpenMACField3D predictorMomentum=beginningMomentum;
 			for(unsigned int axis=0;axis<3;++axis) for(std::size_t face=0;face<
 				predictorMomentum.component[axis].size();++face) predictorMomentum.component[axis][face]+=
 				config.transport.deltaTimeS*(candidate.r0.nonpressureMomentumRHS.component[axis][face]-
 				predictorAdvection.component[axis][face]);
 			if(!SolveOpenConservativeStage3D(shape,predictor,predictorMomentum,sourceDelta,
-				config,false,0,0,fuel,thermochemistry,transport,candidate.r1,error)) return false;
+				config,false,&candidate.r0.projection.inflow,0,0,fuel,thermochemistry,transport,
+				candidate.r1,error)) return false;
 			OpenFluxPair3D averaged;
 			for(unsigned int axis=0;axis<3;++axis){const std::size_t faceCount=
 				OpenMACFaceCount3D(shape,axis);averaged.low[axis].resize(faceCount);
@@ -1690,23 +2201,35 @@
 				config.transport.deltaTimeS,thermochemistry,candidate.divergenceHeunPerS,error))
 				return false;
 			const OpenMACField3D advection0=OpenCompatibleMomentumFluxDivergence3D(shape,
-				candidate.r0.flux,candidate.faceAlpha,candidate.r0.projection.velocityMPerS);
+				candidate.r0.flux,candidate.faceAlpha,candidate.r0.projection.velocityMPerS,
+				&config.openBoundary);
 			const OpenMACField3D advection1=OpenCompatibleMomentumFluxDivergence3D(shape,
-				candidate.r1.flux,candidate.faceAlpha,candidate.r1.projection.velocityMPerS);
+				candidate.r1.flux,candidate.faceAlpha,candidate.r1.projection.velocityMPerS,
+				&config.openBoundary);
 			OpenMACField3D finalMomentum=beginningMomentum;
 			for(unsigned int axis=0;axis<3;++axis) for(std::size_t face=0;face<
 				finalMomentum.component[axis].size();++face) finalMomentum.component[axis][face]+=
 				0.5*config.transport.deltaTimeS*(candidate.r0.nonpressureMomentumRHS.component[
 				axis][face]+candidate.r1.nonpressureMomentumRHS.component[axis][face]-
-				advection0.component[axis][face]-advection1.component[axis][face]);
+					advection0.component[axis][face]-advection1.component[axis][face]);
+			if(!config.retainStageDiagnostics){
+				candidate.r0.flux=OpenFluxPair3D();candidate.r1.flux=OpenFluxPair3D();
+				candidate.r0.nonpressureMomentumRHS=OpenMACField3D();
+				candidate.r1.nonpressureMomentumRHS=OpenMACField3D();
+				candidate.r0.faceAlpha={};candidate.r1.faceAlpha={};
+				candidate.r0.diffusivityM2PerS.clear();candidate.r1.diffusivityM2PerS.clear();
+				candidate.r0.conductivityWPerMK.clear();candidate.r1.conductivityWPerMK.clear();
+				candidate.r0.dynamicViscosityPaS.clear();candidate.r1.dynamicViscosityPaS.clear();
+			}
 			if(!SolveOpenConservativeStage3D(shape,candidate.conservative,finalMomentum,
-				sourceDelta,config,false,&candidate.r0.projection,&candidate.r1.projection,
+				sourceDelta,config,false,&candidate.r1.projection.inflow,&candidate.r0.projection,
+				&candidate.r1.projection,
 				fuel,thermochemistry,transport,candidate.r2,error)) return false;
 			candidate.momentumKGPerM2S=candidate.r2.projection.momentumKGPerM2S;
 			candidate.velocityMPerS=candidate.r2.projection.velocityMPerS;
 			candidate.stepAverageDynamicPressurePa=
 				candidate.r2.projection.stepAverageDynamicPressurePa;
-			result=candidate;return true;
+			result=std::move(candidate);return true;
 		}
 
 		inline bool AdvanceConservative3D(
@@ -1740,7 +2263,17 @@
 				open.r2.projection.maximumDivergenceResidualPerS;
 			candidate.maximumBoundaryHeadResidualPa=
 				open.r2.projection.maximumBoundaryHeadResidualPa;
-			result=candidate;return true;
+			if(config.retainStageDiagnostics){
+				candidate.r0.flux.low=std::move(open.r0.flux.low);
+				candidate.r0.flux.high=std::move(open.r0.flux.high);
+				candidate.r0.flux.nonadvectiveMass=std::move(open.r0.flux.nonadvectiveMass);
+				candidate.r0.flux.nonadvectiveEnergy=std::move(open.r0.flux.nonadvectiveEnergy);
+				candidate.r0.faceAlpha=std::move(open.r0.faceAlpha);
+				candidate.r0.picardResidualPerS=std::move(open.r0.picardResidualPerS);
+				candidate.r1.picardResidualPerS=std::move(open.r1.picardResidualPerS);
+				candidate.r2.picardResidualPerS=std::move(open.r2.picardResidualPerS);
+			}
+			result=std::move(candidate);return true;
 		}
 
 #endif

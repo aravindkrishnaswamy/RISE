@@ -92,6 +92,13 @@ namespace RISE
 			return false;
 		}
 
+		inline double PositiveArithmeticMean( const double first, const double second )
+		{
+			const double larger=std::max(first,second);
+			const double smaller=std::min(first,second);
+			return larger*(0.5+0.5*(smaller/larger));
+		}
+
 		struct MethaneCellState
 		{
 			double rhoTotalZ;
@@ -711,19 +718,46 @@ namespace RISE
 			const ConservativeVector& state,
 			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
 			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
-			const double tolerance
+			const double roundoffMultiplier
 			)
 		{
 			double total = 0.0, lowerEnergy = 0.0, upperEnergy = 0.0;
 			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
-				if( state[1+species] < -tolerance ) return false;
 				total += state[1+species];
 				lowerEnergy += state[1+species]*ambientEnthalpy[species];
 				upperEnergy += state[1+species]*adiabaticEnthalpy[species];
 			}
-			return total > 0.0 && state[0] >= -tolerance && state[0] <= total+tolerance &&
-				state[MethaneMassStateDimension] >= lowerEnergy-tolerance &&
-				state[MethaneMassStateDimension] <= upperEnergy+tolerance;
+			const double massTolerance=roundoffMultiplier*std::numeric_limits<double>::epsilon()*
+				std::max(1.0,std::fabs(total));
+			const double energyTolerance=roundoffMultiplier*std::numeric_limits<double>::epsilon()*
+				std::max({1.0,std::fabs(state[MethaneMassStateDimension]),
+				std::fabs(lowerEnergy),std::fabs(upperEnergy)});
+			for( std::size_t species=0; species<MethaneSpeciesCount; ++species )
+				if( state[1+species] < -massTolerance ) return false;
+			return total > 0.0 && state[0] >= -massTolerance &&
+				state[0] <= total+massTolerance &&
+				state[MethaneMassStateDimension] >= lowerEnergy-energyTolerance &&
+				state[MethaneMassStateDimension] <= upperEnergy+energyTolerance;
+		}
+
+		inline double InequalityRoundoffScale(
+			const ConservativeVector& state,
+			const std::size_t inequality,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy
+			)
+		{
+			if( inequality < 2+MethaneSpeciesCount ) {
+				double total=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;
+					++species)total+=state[1+species];
+				return std::max({1.0,std::fabs(state[0]),std::fabs(total)});
+			}
+			double scale=std::max(1.0,std::fabs(state[MethaneMassStateDimension]));
+			const auto& enthalpy=inequality==2+MethaneSpeciesCount?
+				ambientEnthalpy:adiabaticEnthalpy;
+			double sum=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				sum+=std::fabs(enthalpy[species]*state[1+species]);
+			return std::max(scale,sum);
 		}
 
 		inline bool FireSimulationEnthalpyBounds(
@@ -839,10 +873,8 @@ namespace RISE
 					scale*(flux.low[leftFace]-flux.low[rightFace]);
 				leftCorrection[cell] = scale*(flux.high[leftFace]-flux.low[leftFace]);
 				rightCorrection[cell] = -scale*(flux.high[rightFace]-flux.low[rightFace]);
-				const double tolerance = 256.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,std::fabs(low[cell][MethaneMassStateDimension]));
 				if( !ConservativeStateFeasible(low[cell],ambientEnthalpy,
-					adiabaticEnthalpy,tolerance) ) {
+					adiabaticEnthalpy,256.0) ) {
 					return Fail(error,"fire solver low-order FCT state is infeasible");
 				}
 				if( !CertifiedMassConstraintSatisfied(low[cell],
@@ -890,10 +922,8 @@ namespace RISE
 				result[right] = result[right]+correction;
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				const double tolerance = 1024.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,std::fabs(result[cell][MethaneMassStateDimension]));
 				if( !ConservativeStateFeasible(result[cell],ambientEnthalpy,
-					adiabaticEnthalpy,tolerance) ) {
+					adiabaticEnthalpy,1024.0) ) {
 					return Fail(error,"fire solver shared FCT result violates a nodal budget");
 				}
 				if( !CertifiedMassConstraintSatisfied(result[cell],
@@ -3212,10 +3242,10 @@ namespace RISE
 				targetMaximum = std::max(targetMaximum,std::fabs(divergenceTargetPerS[cell]));
 				for( unsigned int axis=0; axis<3; ++axis ) {
 					const std::size_t next = PeriodicNext(shape,cell,axis);
-					const double faceDensity = 0.5*(gasDensityKGPerM3[cell]+
+					const double faceDensity = PositiveArithmeticMean(gasDensityKGPerM3[cell],
 						gasDensityKGPerM3[next]);
 					const double momentum = unprojectedMomentumKGPerM2S.component[axis][cell];
-					if( !std::isfinite(momentum) ) {
+					if( !std::isfinite(faceDensity) || faceDensity<=0.0 || !std::isfinite(momentum) ) {
 						return Fail(error,"fire solver 3-D periodic MAC momentum is non-finite");
 					}
 					result.faceDensityKGPerM3.component[axis][cell] = faceDensity;
@@ -3367,8 +3397,8 @@ namespace RISE
 			std::vector<double> inverseFaceDensity(count,0.0), rightHandSide(count,0.0);
 			for( std::size_t face=0; face<count; ++face ) {
 				const std::size_t right = (face+1)%count;
-				result.faceDensityKGPerM3[face] = 0.5*gasDensityKGPerM3[face]+
-					0.5*gasDensityKGPerM3[right];
+				result.faceDensityKGPerM3[face] = PositiveArithmeticMean(
+					gasDensityKGPerM3[face],gasDensityKGPerM3[right]);
 				if( !std::isfinite(result.faceDensityKGPerM3[face]) ||
 					result.faceDensityKGPerM3[face] <= 0.0 ) return Fail(error,
 					"fire solver periodic staggered density overflowed");
