@@ -10209,6 +10209,95 @@ static void TestTextCompletionWireShapes()
 	}
 }
 
+//----------------------------------------------------------------------
+// T52 (2026-08-11): Gemini functionDeclarations JSON-Schema keyword
+// denylist, matched against the REAL WIRE BODY.
+//
+// THIS IS A RECORDED OUTAGE, NOT SPECULATION.  A live Gemini agent run
+// died before a single tool call with an HTTP 400 the instant the S2
+// build_element/place_element schemas landed:
+//
+//   "Invalid JSON payload received. Unknown name \"exclusiveMinimum\" at
+//    'tools[0].function_declarations[20].parameters.properties[1].value':
+//    Cannot find field."
+//
+// Gemini's functionDeclarations schema is an OpenAPI-subset proto, NOT
+// full JSON Schema -- it 400s the WHOLE request the moment ANY tool
+// anywhere in the array carries a keyword it does not recognize.  Every
+// other tool in kToolDefs (AgentChatCodecs.cpp) used none of the
+// JSON-Schema-only keywords, which is exactly why nothing caught this:
+// build_element's `height` and place_element's `scale` were the FIRST
+// schemas to reach for one.
+//
+// This test does not read kToolDefs directly -- GeminiChatCodec::
+// GeminiFunctionDeclarationsJson() is a file-static helper with no
+// externally callable entry point, and asserting against the exact wire
+// text GeminiChatCodec::BuildRequest sends is strictly better anyway: it
+// is what actually reaches Google, byte for byte.
+//
+// The denylist below is exactly the set the task that created this test
+// specified: keywords that are BOTH documented-unsupported by Gemini's
+// functionDeclarations subset AND currently unused anywhere in the tool
+// table, so this check cannot false-positive on a keyword the table
+// legitimately relies on today (`additionalProperties`, `minimum`,
+// `maximum`, `pattern`, `default` are all either supported or not worth
+// the false-positive risk, and are deliberately excluded).
+//
+// Matched at JSON KEY POSITION (`"keyword":`), not as a bare substring --
+// a denylisted word could legitimately appear inside a free-text
+// `description` as prose (e.g. a tool explaining what a `$ref` or a
+// `const` chunk parameter is) without being a schema keyword at all, and
+// a bare-substring scan would false-positive on that prose.
+//----------------------------------------------------------------------
+static void TestGeminiSchemaKeywordDenylist()
+{
+	std::printf( "T52: Gemini wire body carries none of the functionDeclarations-rejected "
+	             "JSON-Schema keywords (2026-08-11 400 regression guard)...\n" );
+
+	AgentChatLoop loop;
+	loop.SetProvider( ChatProvider::Gemini );
+	loop.AddUserMessage( "hello" );
+	const std::string body = loop.BuildRequest( kApiKey ).body;
+
+	Check( body.find( "\"tools\":[{\"functionDeclarations\":" ) != std::string::npos,
+	       "T52: the Gemini wire body carries a functionDeclarations tools array to scan" );
+
+	// Denied AND currently unused (task-specified list) -- exhaustive, not
+	// illustrative: adding a NEW use of one of these to the tool table
+	// must fail this test, not slip through because the list was partial.
+	static const char* const kDenylist[] = {
+		"exclusiveMinimum", "exclusiveMaximum", "multipleOf", "const",
+		"oneOf", "allOf", "$schema", "$ref"
+	};
+
+	std::vector<std::string> problems;
+	for( const char* kw : kDenylist ) {
+		const std::string keyPattern = std::string( "\"" ) + kw + "\":";
+		for( std::size_t at = body.find( keyPattern ); at != std::string::npos;
+		     at = body.find( keyPattern, at + 1 ) ) {
+			// Name the offending tool by scanning backward for the nearest
+			// preceding {"name":"...", so a failure is actionable without
+			// grepping the whole body by hand.
+			std::string toolName = "(tool name not found)";
+			const std::size_t nameKey = body.rfind( "\"name\":\"", at );
+			if( nameKey != std::string::npos ) {
+				const std::size_t nameStart = nameKey + 8;
+				const std::size_t nameEnd = body.find( '"', nameStart );
+				if( nameEnd != std::string::npos )
+					toolName = body.substr( nameStart, nameEnd - nameStart );
+			}
+			problems.push_back( std::string( "keyword `" ) + kw + "` at byte " +
+				std::to_string( at ) + " in tool `" + toolName + "`" );
+		}
+	}
+	for( const std::string& p : problems )
+		std::printf( "  T52 GEMINI SCHEMA REJECT: %s\n", p.c_str() );
+	Check( problems.empty(),
+	       "T52: the Gemini wire body's tools array contains no keyword from Gemini's "
+	       "documented-unsupported denylist -- a hit here means the SAME class of request-killing "
+	       "400 this test exists to prevent (see the header comment for the exact 2026-08-11 error)" );
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -10291,6 +10380,7 @@ int main()
 	TestSequencingGateAcrossProvidersAndByteIdentity();
 	TestFileBuildPlanToolAndGateClassification();
 	TestDriverNoteSmoke();
+	TestGeminiSchemaKeywordDenylist();
 
 	std::remove( scenePath.c_str() );
 	std::printf( "=== AgentChatLoopTest: %d passed, %d failed ===\n", g_pass, g_fail );

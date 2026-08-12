@@ -838,11 +838,10 @@ namespace RISE
 						"active." ) );
 					JsonValue heightProp = JsonValue::MakeObject();
 					heightProp.set( "type", JsonValue::MakeString( "number" ) );
-					heightProp.set( "exclusiveMinimum", JsonValue::MakeNumber( 0.0 ) );
 					heightProp.set( "description", JsonValue::MakeString(
-						"Required. How tall the element should be in world units (its Y extent). A "
-						"request, not a limit -- the realised bounding box comes back in the result and "
-						"nothing is refused for missing it." ) );
+						"Required. How tall the element should be in world units (its Y extent). Must "
+						"be greater than 0. A request, not a limit -- the realised bounding box comes "
+						"back in the result and nothing is refused for missing it." ) );
 					props.set( "height", heightProp );
 					props.set( "notes", StringProp(
 						"Optional free text passed to the builder alongside the pieces and the outline "
@@ -911,10 +910,9 @@ namespace RISE
 						"already is rather than resetting it there." ) );
 					JsonValue scaleProp = JsonValue::MakeObject();
 					scaleProp.set( "type", JsonValue::MakeString( "number" ) );
-					scaleProp.set( "exclusiveMinimum", JsonValue::MakeNumber( 0.0 ) );
 					scaleProp.set( "description", JsonValue::MakeString(
-						"Optional, default 1. ONE uniform factor -- not three. It multiplies each "
-						"object's scale and its offset from the element's origin." ) );
+						"Optional, default 1. ONE uniform factor -- not three. Must be greater than 0. "
+						"It multiplies each object's scale and its offset from the element's origin." ) );
 					props.set( "scale", scaleProp );
 					props.set( "orientation", StringProp(
 						"Optional, default \"0 0 0\". Euler degrees about the element's own origin, as "

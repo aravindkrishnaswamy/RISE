@@ -130,6 +130,37 @@ now being available to it.
 6. Composition quality at the end — the honest visual judgement, since part
    count is a proxy and the simulation proved richness alone is not enough.
 
+## 6.1 Build note — Gemini's tool schema is not JSON Schema (2026-08-11)
+
+The first live S2 run died at HTTP 400 with **zero tool calls**:
+
+```
+Unknown name "exclusiveMinimum" at
+  'tools[0].function_declarations[20].parameters.properties[1].value'
+```
+
+`build_element.height` and `place_element.scale` were declared
+`"exclusiveMinimum": 0`.  Gemini's `functionDeclarations` is an OpenAPI-subset
+proto, not full JSON Schema, and an unknown keyword is a hard request-level
+rejection — not a warning, not an ignored field.  Every Gemini session was
+broken by the commit, and nothing caught it because the other 25 tools use no
+schema validation keywords at all; these two were the first in the table.
+
+The keyword was removed rather than replaced: the real constraint is strictly
+`> 0`, which `minimum` cannot express, and both values are already validated
+server-side with a message that says so.  The constraint now lives in the
+description text, which is where the model reads it anyway.
+
+`TestGeminiSchemaKeywordDenylist` (AgentChatLoopTest T52) scans the REAL
+`BuildRequest` body — not the source table — for the keyword class that
+Gemini rejects, and was red-proved by reinjecting `exclusiveMinimum` and
+confirming the test fails naming the keyword and the offending tool.
+
+The general rule for anyone adding a tool: **the canonical `kToolDefs` schema
+must satisfy the most restrictive provider on the roster, because it is shared
+verbatim by all of them.**  Express constraints in prose and enforce them
+server-side.
+
 Stop rules: parts-per-element does not beat arc-78's → the clean room did not
 survive productionisation, and the context-dilution finding is banked as
 knowledge without a mechanism.  Rejection rate >50% after retry → the
