@@ -181,10 +181,26 @@ int main()
 		ambientMomentumRHS,&error) && *std::max_element(ambientMomentumRHS.begin(),
 		ambientMomentumRHS.end()) == 0.0,
 		"V1 relative buoyancy leaves the physical ambient record exactly quiescent");
+	std::vector<ConservativeVector> buoyantControl=ambientConservative;
+	for( std::size_t component=1; component<=MethaneSpeciesCount; ++component ) {
+		buoyantControl[0][component]*=0.8;
+	}
+	std::vector<double> buoyantMomentumRHS;
+	const double expectedRelativeBuoyancy=(0.5*(
+		FromConservativeVector(buoyantControl[0]).GasDensity()+
+		FromConservativeVector(buoyantControl[1]).GasDensity())-
+		ambientMomentumConfig.ambientGasDensityKGPerM3)*
+		ambientMomentumConfig.gravityMPerS2;
+	Check(RemainingMomentumRHS(buoyantControl,zeroMomentum,
+		std::vector<double>(projectionCells,0.0),
+		std::vector<ConservativeVector>(projectionCells),ambientMomentumConfig,
+		buoyantMomentumRHS,&error) && Near(buoyantMomentumRHS[0],
+		expectedRelativeBuoyancy,2.0e-15) && expectedRelativeBuoyancy!=0.0,
+		"V1 relative buoyancy uses rho-rho_infinity rather than absolute weight");
 	std::vector<double> openDensity(8,1.18), openMomentum(9,0.0);
 	std::vector<double> openTarget(8,0.0);
 	OpenMACProjection1DResult openRest;
-	Check(ProjectPressureOpenMACVelocity1D(openDensity,openMomentum,openTarget,
+	Check(ReferenceProjectPressureOpenMACVelocity1D(openDensity,openMomentum,openTarget,
 		1.18,0.05,0.01,1.0e-10,1.18e-10,false,false,openRest,&error) &&
 		!openRest.leftInflow && !openRest.rightInflow &&
 		*std::max_element(openRest.velocityMPerS.begin(),
@@ -193,18 +209,155 @@ int main()
 		"V1 quiescent pressure-open box preserves exact hydrostatic-relative rest");
 	std::fill(openMomentum.begin(),openMomentum.end(),1.18*0.1);
 	OpenMACProjection1DResult throughFlow;
-	const bool throughFlowOK = ProjectPressureOpenMACVelocity1D(openDensity,
+	const bool throughFlowOK = ReferenceProjectPressureOpenMACVelocity1D(openDensity,
 		openMomentum,openTarget,1.18,0.05,0.01,1.0e-9,1.18e-10,
 		false,false,throughFlow,&error);
 	if( !throughFlowOK ) std::printf("V1 open-flow diagnostic: %s\n",error.c_str());
 	Check(throughFlowOK && throughFlow.leftInflow && !throughFlow.rightInflow &&
 		throughFlow.maximumBoundaryHeadResidualPa <= 1.18e-10,
 		"V1 active set reclassifies ambient inflow and enforces total head");
+	PeriodicMACShape openShape3D;
+	openShape3D.nx=8; openShape3D.ny=8; openShape3D.nz=8;
+	openShape3D.cellWidthM=0.025;
+	const MethaneCellState ambientState3D=PhysicalMixtureLineState(
+		fuel,thermochemistry,0.0,300.0);
+	const MethaneCellState injectedState3D=PhysicalMixtureLineState(
+		fuel,thermochemistry,1.0,300.0);
+	OpenBoundaryConfig3D openBoundary3D;
+	openBoundary3D.ambientDensityKGPerM3=ambientState3D.GasDensity();
+	openBoundary3D.injectedGasDensityKGPerM3=injectedState3D.GasDensity();
+	openBoundary3D.ambientState=ToConservativeVector(ambientState3D);
+	openBoundary3D.injectedState=ToConservativeVector(injectedState3D);
+	openBoundary3D.fuelMassFluxKGPerM2S=0.01;
+	openBoundary3D.velocityToleranceMPerS=1.0e-10;
+	openBoundary3D.pressureTolerancePa=openBoundary3D.ambientDensityKGPerM3*1.0e-10;
+	OpenMACField3D zeroOpenMomentum3D;
+	for( unsigned int axis=0; axis<3; ++axis ) zeroOpenMomentum3D.component[axis].assign(
+		OpenMACFaceCount3D(openShape3D,axis),0.0);
+	OpenMACProjection3DResult openRest3D;
+	const bool openRest3DOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		openBoundary3D,0.01,1.0e-10,openRest3D,&error);
+	if( !openRest3DOK ) std::printf("V1 3-D open-rest diagnostic: %s\n",error.c_str());
+	double maximumOpenVelocity3D=0.0,maximumOpenPressure3D=0.0;
+	for( unsigned int axis=0; axis<3; ++axis ) for( const double velocity :
+		openRest3D.velocityMPerS.component[axis] ) maximumOpenVelocity3D=
+		std::max(maximumOpenVelocity3D,std::fabs(velocity));
+	for( const double pressure : openRest3D.stepAverageDynamicPressurePa ) maximumOpenPressure3D=
+		std::max(maximumOpenPressure3D,std::fabs(pressure));
+	Check(openRest3DOK && maximumOpenVelocity3D==0.0 && maximumOpenPressure3D==0.0 &&
+		openRest3D.maximumDivergenceResidualPerS==0.0 &&
+		openRest3D.maximumBoundaryHeadResidualPa==0.0,
+		"V1 production 3-D pressure-open multigrid preserves exact hydrostatic rest");
+	OpenBoundaryFluxField3D restBoundaryFlux3D;
+	const std::vector<ConservativeVector> ambientCells3D(openShape3D.CellCount(),
+		ToConservativeVector(ambientState3D));
+	Check(openRest3DOK && BuildOpenBoundaryFluxField3D(openShape3D,ambientCells3D,
+		std::vector<double>(openShape3D.CellCount(),300.0),
+		std::vector<double>(openShape3D.CellCount(),0.01),
+		std::vector<double>(openShape3D.CellCount(),0.1),openBoundary3D,openRest3D,
+		300.0,300.0,fuel,thermochemistry,restBoundaryFlux3D,&error),
+		"V1 assembles all six production scalar/enthalpy boundary fields");
+	for( unsigned int side=0; side<6; ++side ) for( const OpenBoundaryFlux3D& flux :
+		restBoundaryFlux3D.side[side] ) for( std::size_t component=0;
+		component<MethaneConservativeDimension; ++component ) Check(
+		flux.totalOutwardFlux[component]==0.0,
+		"V1 quiescent ambient boundary carries exactly zero conservative flux");
+	OpenMACProjection3DResult openExpansion3D;
+	const bool openExpansion3DOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.05),
+		openBoundary3D,0.01,2.0e-8,openExpansion3D,&error);
+	if( !openExpansion3DOK ) std::printf("V1 3-D open-expansion diagnostic: %s\n",error.c_str());
+	Check(openExpansion3DOK && !openExpansion3D.multigridResidualHistoryPerS.empty() &&
+		openExpansion3D.maximumDivergenceResidualPerS<=2.0e-8 &&
+		openExpansion3D.maximumBoundaryHeadResidualPa<=openBoundary3D.pressureTolerancePa,
+		"V1 3-D pressure-open multigrid closes a nonzero compatible expansion field");
+	OpenMACField3D throughMomentum3D=zeroOpenMomentum3D;
+	for( std::size_t z=0; z<openShape3D.nz; ++z ) for( std::size_t y=0;
+		y<openShape3D.ny; ++y ) for( std::size_t x=0; x<=openShape3D.nx; ++x ) {
+		throughMomentum3D.component[0][OpenMACFaceIndex3D(openShape3D,0,x,y,z)]=
+			ambientState3D.GasDensity()*0.1;
+	}
+	for( std::size_t z=0; z<openShape3D.nz; ++z ) for( std::size_t y=0;
+		y<=openShape3D.ny; ++y ) for( std::size_t x=0; x<openShape3D.nx; ++x ) {
+		throughMomentum3D.component[1][OpenMACFaceIndex3D(openShape3D,1,x,y,z)]=
+			ambientState3D.GasDensity()*0.05;
+	}
+	OpenBoundaryConfig3D throughBoundary3D=openBoundary3D;
+	throughBoundary3D.kind[4]=AdiabaticWallBoundary3D;
+	throughBoundary3D.kind[5]=AdiabaticWallBoundary3D;
+	OpenMACProjection3DResult openThrough3D;
+	const bool openThrough3DOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		throughMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		throughBoundary3D,0.01,2.0e-8,openThrough3D,&error);
+	if( !openThrough3DOK ) {
+		std::printf("V1 3-D total-head diagnostic: %s\n",error.c_str());
+		for( unsigned int side=0; side<6; ++side ) std::printf(" side%u inflow=%zu/%zu\n",
+			side,static_cast<std::size_t>(std::count(openThrough3D.inflow[side].begin(),
+			openThrough3D.inflow[side].end(),true)),openThrough3D.inflow[side].size());
+	}
+	double independentObliqueHeadResidual=0.0;
+	if( openThrough3DOK ) for( std::size_t z=0; z<openShape3D.nz; ++z ) for(
+		std::size_t y=0; y<openShape3D.ny; ++y ) {
+		const std::size_t index=OpenBoundaryFaceLinearIndex3D(openShape3D,0,y,z);
+		const double normal=-openThrough3D.velocityMPerS.component[0][
+			OpenMACFaceIndex3D(openShape3D,0,0,y,z)];
+		const double tangent=OpenBoundaryTangentialCellVelocity3D(openShape3D,
+			openThrough3D.velocityMPerS,1,0,y,z);
+		independentObliqueHeadResidual=std::max(independentObliqueHeadResidual,std::fabs(
+			openThrough3D.boundaryDynamicPressurePa[0][index]+0.5*
+			throughBoundary3D.ambientDensityKGPerM3*(normal*normal+tangent*tangent)));
+	}
+	Check(openThrough3DOK && std::all_of(openThrough3D.inflow[0].begin(),
+		openThrough3D.inflow[0].end(),[]( const bool value ){ return value; }) &&
+		std::none_of(openThrough3D.inflow[1].begin(),openThrough3D.inflow[1].end(),
+			[]( const bool value ){ return value; }) &&
+		independentObliqueHeadResidual<=throughBoundary3D.pressureTolerancePa,
+		"V1 3-D active set enforces full-vector total-head inflow and static-pressure outflow");
+	OpenBoundaryFlux3D ambientBackflowFlux,outflowFlux,fuelFlux;
+	Check(BuildOpenBoundaryFlux3D(ToConservativeVector(ambientState3D),300.0,-0.1,
+		PressureOpenBoundary3D,true,openBoundary3D,300.0,300.0,0.01,0.1,
+		openShape3D.cellWidthM,fuel,thermochemistry,ambientBackflowFlux,&error) &&
+		std::fabs(ambientBackflowFlux.nonadvectiveEnergyOutwardFlux)<1.0e-12 &&
+		ambientBackflowFlux.totalOutwardFlux[1+MethaneCarbon]==0.0,
+		"V1 pressure-open inflow installs the complete frozen ambient ghost");
+	const MethaneCellState hotOutflow=PhysicalMixtureLineState(fuel,thermochemistry,0.2,800.0);
+	Check(BuildOpenBoundaryFlux3D(ToConservativeVector(hotOutflow),800.0,0.1,
+		PressureOpenBoundary3D,false,openBoundary3D,300.0,300.0,0.01,0.1,
+		openShape3D.cellWidthM,fuel,thermochemistry,outflowFlux,&error) &&
+		outflowFlux.nonadvectiveEnergyOutwardFlux==0.0 &&
+		std::all_of(outflowFlux.nonadvectiveMassOutwardFlux.begin(),
+			outflowFlux.nonadvectiveMassOutwardFlux.end(),[]( const double value ){ return value==0.0; }),
+		"V1 pressure-open outflow suppresses every inward diffusive/conductive flux");
+	Check(BuildOpenBoundaryFlux3D(ToConservativeVector(ambientState3D),300.0,0.0,
+		FuelInletBoundary3D,true,openBoundary3D,300.0,300.0,0.0,0.0,
+		openShape3D.cellWidthM,fuel,thermochemistry,fuelFlux,&error) &&
+		Near(fuelFlux.totalOutwardFlux[0],-openBoundary3D.fuelMassFluxKGPerM2S,2.0e-15) &&
+		fuelFlux.totalOutwardFlux[1+MethaneCarbon]==0.0,
+		"V1 fuel-bed flux injects the complete methane record state with zero aerosol");
+	ConservativeVector overflowingOpenState=ToConservativeVector(ambientState3D);
+	overflowingOpenState[MethaneMassStateDimension]=std::numeric_limits<double>::max();
+	OpenBoundaryFlux3D rejectedOpenFlux;
+	Check(!BuildOpenBoundaryFlux3D(overflowingOpenState,300.0,
+		std::numeric_limits<double>::max(),PressureOpenBoundary3D,false,
+		openBoundary3D,300.0,300.0,0.0,0.0,openShape3D.cellWidthM,fuel,
+		thermochemistry,rejectedOpenFlux,&error),
+		"V1 open conservative boundary rejects finite-product overflow");
+	PeriodicMACShape overflowingOpenShape;
+	overflowingOpenShape.nx=std::numeric_limits<std::size_t>::max()/2+1;
+	overflowingOpenShape.ny=2; overflowingOpenShape.nz=2; overflowingOpenShape.cellWidthM=1.0;
+	OpenMACProjection3DResult rejectedOpenProjection;
+	Check(!ProjectPressureOpenMACVelocity3D(overflowingOpenShape,{},OpenMACField3D(),{},
+		openBoundary3D,0.01,1.0e-8,rejectedOpenProjection,&error),
+		"V1 pressure-open projection rejects overflowing grid products before allocation");
 	for( unsigned int classCode=0; classCode<4; ++classCode ) {
 		const bool stage0Inflow = (classCode&1u) != 0;
 		const bool stage1Inflow = (classCode&2u) != 0;
 		OpenMACProjection1DResult finalOpen;
-		const bool finalOK = ProjectPressureOpenMACVelocity1DFinal(openDensity,
+		const bool finalOK = ReferenceProjectPressureOpenMACVelocity1DFinal(openDensity,
 			std::vector<double>(9,0.0),openTarget,1.18,0.05,0.01,
 			stage0Inflow,stage1Inflow,false,false,0.2,0.4,0.0,0.0,
 			1.0e-9,1.0e-9,finalOpen,&error);
@@ -734,6 +887,6 @@ int main()
 		std::printf("FireSimulationSolverTest: %d failure(s)\n",failures);
 		return 1;
 	}
-	std::printf("FireSimulationSolverTest: V1-V6 kernel checks passed\n");
+	std::printf("FireSimulationSolverTest: current solver kernel checks passed\n");
 	return 0;
 }

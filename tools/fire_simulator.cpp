@@ -24,21 +24,24 @@ namespace
 		std::printf("usage: fire_simulator --verify-records | --methane-bringup\n");
 	}
 
-	bool UniformState(
+	bool MixtureLineState(
 		const FireSimulationMethaneRecord& fuel,
+		const double mixtureFraction,
+		const double temperatureK,
 		MethaneCellState& result,
 		std::string& error
 		)
 	{
 		result = MethaneCellState();
-		result.temperatureK = 800.0;
+		result.temperatureK = temperatureK;
 		static const char* names[MethaneCarbon] = {
 			"CH4", "O2", "N2", "CO2", "H2O", "CO"
 		};
 		double inverseMeanWeightSum = 0.0;
 		for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
-			result.constituent[species] = 0.8*fuel.AmbientMassFractions()[species]+
-				0.2*fuel.InjectedMassFractions()[species];
+			result.constituent[species] = (1.0-mixtureFraction)*
+				fuel.AmbientMassFractions()[species]+mixtureFraction*
+				fuel.InjectedMassFractions()[species];
 			if( species < MethaneCarbon ) {
 				const FireThermochemistrySpecies* property = fuel.FindSpecies(names[species]);
 				if( !property ) return false;
@@ -49,10 +52,19 @@ namespace
 		const double scale = fuel.ThermodynamicPressurePa()/
 			(8314.46261815324*result.temperatureK*inverseMeanWeightSum);
 		for( double& density : result.constituent ) density *= scale;
-		result.rhoTotalZ = 0.2*result.TotalDensity();
+		result.rhoTotalZ = mixtureFraction*result.TotalDensity();
 		return fuel.MixtureSensibleEnergyJPerM3(
 			ThermochemicalDensities(result),result.temperatureK,
 			result.sensibleEnergyJPerM3,&error);
+	}
+
+	bool UniformState(
+		const FireSimulationMethaneRecord& fuel,
+		MethaneCellState& result,
+		std::string& error
+		)
+	{
+		return MixtureLineState(fuel,0.2,800.0,result,error);
 	}
 }
 
@@ -142,12 +154,28 @@ int main( const int argc, const char* const argv[] )
 		state.temperatureK,fuel,expansionPerS,&error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
-	const std::size_t openCells = 8;
-	OpenMACProjection1DResult openExpansion;
-	if( !ProjectPressureOpenMACVelocity1D(std::vector<double>(openCells,state.GasDensity()),
-		std::vector<double>(openCells+1,0.0),std::vector<double>(openCells,expansionPerS),
-		state.GasDensity(),0.01,sourceStep.deltaTimeS,1.0e-8,
-		state.GasDensity()*1.0e-8,false,false,openExpansion,&error) ) {
+	PeriodicMACShape openShape;
+	openShape.nx=8; openShape.ny=8; openShape.nz=8; openShape.cellWidthM=0.01;
+	MethaneCellState ambientState,injectedState;
+	if( !MixtureLineState(fuel,0.0,300.0,ambientState,error) ||
+		!MixtureLineState(fuel,1.0,300.0,injectedState,error) ) {
+		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
+	}
+	OpenBoundaryConfig3D openBoundary;
+	openBoundary.ambientState=ToConservativeVector(ambientState);
+	openBoundary.injectedState=ToConservativeVector(injectedState);
+	openBoundary.ambientDensityKGPerM3=ambientState.GasDensity();
+	openBoundary.injectedGasDensityKGPerM3=injectedState.GasDensity();
+	openBoundary.velocityToleranceMPerS=1.0e-8;
+	openBoundary.pressureTolerancePa=ambientState.GasDensity()*1.0e-8;
+	OpenMACField3D openMomentum;
+	for( unsigned int axis=0; axis<3; ++axis ) openMomentum.component[axis].assign(
+		OpenMACFaceCount3D(openShape,axis),0.0);
+	OpenMACProjection3DResult openExpansion;
+	if( !ProjectPressureOpenMACVelocity3D(openShape,
+		std::vector<double>(openShape.CellCount(),state.GasDensity()),openMomentum,
+		std::vector<double>(openShape.CellCount(),expansionPerS),openBoundary,
+		sourceStep.deltaTimeS,1.0e-8,openExpansion,&error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
 	std::printf("record=%s cells=%zu r0=%zu r1=%zu r2=%zu max_free_stream_error=%.17g expansion=%.17g escape=%.17g open_head_residual=%.17g\n",
