@@ -10066,6 +10066,173 @@ static void TestBuildProtocolErasedGeometryAttribution()
 	       "S1f and it spent none of the three shared refusal slots" );
 }
 
+//----------------------------------------------------------------------
+// S1 fix-round (2026-08-11, P1): the DIAGNOSED (code-3) outcome MUTATES
+// the document while reporting `applied == false`, so every attribution
+// hook keys off AgentSession::ResultMutatedDocument_ (`applied || status
+// == "diagnosed"`) rather than off `applied` alone.  Below is that
+// predicate's executable guard, both directions.
+//
+// A code 3 cannot be synthesized from scene DATA -- it is the
+// should-not-happen divergence where the dry-run passes but the real
+// re-derive emits diagnostics.  So this reuses AgentLiveCommitTest's
+// CodeThreeJob technique (Tests 6/14/20/27): override the chunk-CRUD
+// virtuals, let the BASE call do the real D2 work (the Document really
+// is mutated and the managers really are replaced -- the assertions
+// below prove it against the live scene), and rewrite only the REPORTED
+// code 2 -> 3.  Chunk CRUD is always D2-class, so no variant scene is
+// needed to reach the rewrite.
+//
+// Arming is explicit per call rather than left on: each direction then
+// red-proves exactly ONE hook site, and nothing else in the fixture
+// (the plan filing, the setup insert, the finish) is running diagnosed.
+//----------------------------------------------------------------------
+class CodeThreeCrudJob : public Job
+{
+public:
+	CodeThreeCrudJob() : Job(), mForceCodeThree( false ) {}
+	void SetForceCodeThree( bool on ) { mForceCodeThree = on; }
+	int ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned int keywordMax,
+	                         char* outName, unsigned int nameMax, char* outDiag, unsigned int diagMax,
+	                         int* outInsertedAt = nullptr ) override
+	{
+		const int base = Job::ApplyCstInsertChunk( chunkText, outKeyword, keywordMax,
+		                                           outName, nameMax, outDiag, diagMax, outInsertedAt );
+		return ( mForceCodeThree && base == 2 ) ? 3 : base;
+	}
+	int ApplyCstRemoveChunk( const char* target, const char* kind,
+	                         char* outKeyword, unsigned int keywordMax, char* outDiag, unsigned int diagMax ) override
+	{
+		const int base = Job::ApplyCstRemoveChunk( target, kind, outKeyword, keywordMax, outDiag, diagMax );
+		return ( mForceCodeThree && base == 2 ) ? 3 : base;
+	}
+private:
+	bool mForceCodeThree;
+};
+
+//! Load `kScene` into a CodeThreeCrudJob (LoadScene's sibling -- it hard-codes
+//! `new Job()`), force-code-three DISARMED so the load and the setup calls are
+//! ordinary clean commits.
+static CodeThreeCrudJob* LoadSceneCodeThree( const std::string& path )
+{
+	{ std::ofstream o( path.c_str(), std::ios::binary ); o << kScene; }
+	CodeThreeCrudJob* pJob = new CodeThreeCrudJob();
+	if( !pJob->LoadAsciiSceneViaCst( path.c_str() ) ) {
+		pJob->release();
+		std::remove( path.c_str() );
+		return nullptr;
+	}
+	return pJob;
+}
+
+static void TestBuildProtocolDiagnosedAttribution()
+{
+	std::printf( "S1g: a DIAGNOSED (code-3) insert is still ATTRIBUTED, and a diagnosed remove still DROPS attribution...\n" );
+
+	// (a) A chunk landed by a DIAGNOSED insert belongs to the active element.
+	//     Pre-fix (`applied` alone) it landed UNATTRIBUTED -- invisible to
+	//     finish_element and to the census, and freely editable from every
+	//     other element's window, which is the "everything created in an
+	//     element window is attributed to it" invariant broken outright.
+	{
+		const std::string tmp = TempPath( "agentcrud_s1g_insert.RISEscene" );
+		CodeThreeCrudJob* pJob = LoadSceneCodeThree( tmp );
+		Check( pJob != nullptr, "S1g(a) fixture loads into CodeThreeCrudJob via the CST path" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1g(a) the plan files" );
+		Check( sess->ActiveElement() == "wizard", "S1g(a) with the wizard active" );
+
+		pJob->SetForceCodeThree( true );
+		const Agent::AgentChunkResult ins = sess->InsertChunk( S1Box( "wz_diag_geo" ) );
+		pJob->SetForceCodeThree( false );
+
+		Check( !ins.applied && ins.status == "diagnosed" && ins.rawCode == 3,
+		       "S1g(a) the insert is a code-3 diagnosed commit -- applied is FALSE, as the wire contract says" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "wz_diag_geo" ) != nullptr,
+		       "S1g(a) RED-PROVE the premise: the chunk IS in the live derived scene despite applied==false "
+		       "-- this is a mutation, not a reject" );
+		Check( sess->ChunkElement( "wz_diag_geo" ) == "wizard",
+		       "S1g(a) MONEY ASSERTION: it is attributed to the ACTIVE element (goes red if the hook keys "
+		       "off `applied` instead of ResultMutatedDocument_)" );
+
+		const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+		Check( f.ok && f.element == "wizard", "S1g(a) the wizard finishes" );
+		Check( f.chunks.size() == 1 && f.chunks[0] == "wz_diag_geo",
+		       "S1g(a) MONEY ASSERTION: finish_element reports the diagnosed chunk as the element's work "
+		       "-- an unattributed chunk would be missing from this list entirely" );
+		Check( sess->ActiveElement() == "terrain", "S1g(a) and terrain becomes active" );
+
+		// The behavioural consequence: the wizard's chunk is now out of reach.
+		const std::string docBefore = sess->ReadDocument();
+		Agent::AgentSetPatch patch;
+		patch.target = "wz_diag_geo";
+		patch.param  = "width";
+		patch.value  = "2.0";
+		const Agent::AgentPatchResult p = sess->ProposePatch( patch );
+		Check( !p.applied && p.status == "rejected",
+		       "S1g(a) MONEY ASSERTION: an edit from ANOTHER element's window is refused -- the window rule "
+		       "covers a diagnosed chunk exactly as it covers a cleanly-applied one" );
+		Check( p.message.find( "was created while the element" ) != std::string::npos &&
+		       p.message.find( "wizard" ) != std::string::npos &&
+		       p.message.find( "reopen_element" ) != std::string::npos,
+		       "S1g(a) and it is the CROSS-ELEMENT refusal, naming the owning element and the way back" );
+		Check( sess->ReadDocument() == docBefore, "S1g(a) RED-PROVE: the refused patch left the document byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "S1g(a) one phase refusal is counted" );
+	}
+
+	// (b) A chunk erased by a DIAGNOSED remove loses its attribution.  Pre-fix
+	//     the entry survived the chunk, and CheckElementWindowForEdit_ is a
+	//     pure attribution lookup that runs BEFORE any document read -- so a
+	//     later edit came back as a cross-element refusal for a chunk that
+	//     does not exist, steering the model to reopen_element on something no
+	//     window can fix and spending a shared refusal slot to do it (the same
+	//     failure S1f pins for the scaffold-replace path).
+	{
+		const std::string tmp = TempPath( "agentcrud_s1g_remove.RISEscene" );
+		CodeThreeCrudJob* pJob = LoadSceneCodeThree( tmp );
+		Check( pJob != nullptr, "S1g(b) fixture loads into CodeThreeCrudJob via the CST path" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1g(b) the plan files" );
+
+		// Setup insert is CLEAN (still disarmed), so this direction red-proves
+		// the remove-side hook alone.
+		Check( sess->InsertChunk( S1Box( "wz_doomed" ) ).applied, "S1g(b) the setup insert applies cleanly" );
+		Check( sess->ChunkElement( "wz_doomed" ) == "wizard", "S1g(b) and is attributed to the wizard" );
+
+		pJob->SetForceCodeThree( true );
+		const Agent::AgentChunkResult rm = sess->RemoveChunk( "wz_doomed" );
+		pJob->SetForceCodeThree( false );
+
+		Check( !rm.applied && rm.status == "diagnosed" && rm.rawCode == 3,
+		       "S1g(b) the remove is a code-3 diagnosed commit -- applied is FALSE" );
+		Check( pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "wz_doomed" ) == nullptr,
+		       "S1g(b) RED-PROVE the premise: the chunk is GONE from the live derived scene despite "
+		       "applied==false -- the erase really landed" );
+		Check( sess->ChunkElement( "wz_doomed" ).empty(),
+		       "S1g(b) MONEY ASSERTION: the erased chunk's attribution went with it (goes red if the hook "
+		       "keys off `applied` instead of ResultMutatedDocument_)" );
+
+		const Agent::AgentSession::AgentFinishElementResult f = sess->FinishElement();
+		Check( f.ok && f.chunks.empty(),
+		       "S1g(b) finish_element reports nothing attributed -- the only chunk was erased" );
+		Check( sess->ActiveElement() == "terrain", "S1g(b) terrain becomes active" );
+
+		Agent::AgentSetPatch ghost;
+		ghost.target = "wz_doomed";
+		ghost.param  = "width";
+		ghost.value  = "2.0";
+		const Agent::AgentPatchResult gp = sess->ProposePatch( ghost );
+		Check( !gp.applied, "S1g(b) a patch naming the erased chunk still fails (it is not there)" );
+		Check( gp.message.find( "was created while the element" ) == std::string::npos,
+		       "S1g(b) MONEY ASSERTION: but NOT as a cross-element refusal -- a stale entry could only send "
+		       "the model to reopen_element for a chunk no window contains" );
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "S1g(b) and it spent none of the three shared refusal slots" );
+	}
+}
+
 static void TestBuildProtocolWireShape()
 {
 	std::printf( "S1d: finish_element / reopen_element over the wire...\n" );
@@ -10905,6 +11072,7 @@ int main()
 	TestBuildProtocolIsolateRenderAndSwitchOff();
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();
+	TestBuildProtocolDiagnosedAttribution();
 	TestBuildProtocolWireShape();
 	// S2 (2026-08-11): clean-room construction.
 	TestCleanRoomBuildElementHappyPath();
