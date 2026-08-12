@@ -148,6 +148,11 @@ int main()
 	Check(!InvertPeriodicTemperatures({ToConservativeVector(badEOSFixture)},
 		thermochemistry,rejectedTemperature,&error),
 		"accepted-stage inversion rejects a finite but pressure-inconsistent state");
+	MethaneCellState overflowingDensityState = eosFixture;
+	overflowingDensityState.constituent[MethaneCH4] = std::numeric_limits<double>::max();
+	overflowingDensityState.constituent[MethaneO2] = std::numeric_limits<double>::max();
+	Check(!ValidateCellState(overflowingDensityState,&error),
+		"accepted cell validation rejects a non-finite constituent sum");
 
 	// V1: hydrostatic-relative buoyancy supplies no momentum in the ambient
 	// state, and pressure-open faces cold-start in their static-pressure class.
@@ -162,6 +167,20 @@ int main()
 	Check(*std::max_element(restProjection.velocityMPerS.begin(),
 		restProjection.velocityMPerS.end()) == 0.0,
 		"V1 hydrostatic-relative ambient remains exactly quiescent");
+	std::vector<ConservativeVector> ambientConservative(projectionCells,
+		ToConservativeVector(PhysicalMixtureLineState(fuel,thermochemistry,0.0,300.0)));
+	PeriodicTransportConfig ambientMomentumConfig;
+	ambientMomentumConfig.cellWidthM = 1.0/static_cast<double>(projectionCells);
+	ambientMomentumConfig.ambientGasDensityKGPerM3 =
+		FromConservativeVector(ambientConservative[0]).GasDensity();
+	ambientMomentumConfig.gravityMPerS2 = -9.80665;
+	std::vector<double> ambientMomentumRHS;
+	Check(RemainingMomentumRHS(ambientConservative,zeroMomentum,
+		std::vector<double>(projectionCells,0.0),
+		std::vector<ConservativeVector>(projectionCells),ambientMomentumConfig,
+		ambientMomentumRHS,&error) && *std::max_element(ambientMomentumRHS.begin(),
+		ambientMomentumRHS.end()) == 0.0,
+		"V1 relative buoyancy leaves the physical ambient record exactly quiescent");
 	std::vector<double> openDensity(8,1.18), openMomentum(9,0.0);
 	std::vector<double> openTarget(8,0.0);
 	OpenMACProjection1DResult openRest;
@@ -235,6 +254,11 @@ int main()
 		1.0/static_cast<double>(projectionCells),0.02,2.0e-11,
 		rejectedProjection,&error),
 		"V2 spatially uniform nonzero periodic divergence is rejected");
+	PeriodicProjectionResult overflowProjection;
+	Check(!ProjectPeriodicMACVelocity(std::vector<double>(3,
+		std::numeric_limits<double>::max()),std::vector<double>(3,0.0),
+		std::vector<double>(3,0.0),1.0,0.01,1.0e-8,overflowProjection,&error),
+		"V2 rejects finite cell densities whose staggered arithmetic mean overflows");
 	PeriodicMACShape shape3D;
 	shape3D.nx = 4; shape3D.ny = 4; shape3D.nz = 4;
 	shape3D.cellWidthM = 0.025;
@@ -497,14 +521,31 @@ int main()
 	std::vector<MethaneSourcePacket> gridPackets;
 	RadiationEscapeFactor gridEscape;
 	double gridRadiativeFraction = 0.0;
+	MethaneCellState gridPostReaction;
+	GasExchangeEvaluation gridUnscaledExchange;
+	const double gridDerivedHeatReleaseW = 3.0*(packet.gasHeatReleaseWPerM3+
+		packet.sootHeatReleaseWPerM3);
+	Check(ApplySourcePacket(beginning,packet,thermochemistry,gridPostReaction,&error) &&
+		EvaluateGasExchange(gridPostReaction,gridPostReaction.temperatureK,300.0,
+			thermochemistry,opacity,gridUnscaledExchange,&error),
+		"V4 independent grid-source budget oracle evaluates");
 	Check(fuel.ResolveRadiativeFraction("solver-v4-grid-source-v1",false,0.0,
 		gridRadiativeFraction,&error) && BuildFrozenMethaneSourcePackets(
-		{beginning,beginning},{step,step},{1.0,2.0},300.0,600.0,600.0,
-		gridRadiativeFraction,true,fuel,thermochemistry,opacity,gridPackets,
+		{beginning,beginning},{step,step},{1.0,2.0},300.0,600.0,
+		gridRadiativeFraction,false,fuel,thermochemistry,opacity,gridPackets,
 		gridEscape,&error) && gridPackets.size() == 2 &&
 		gridPackets[0].radiativeCoolingWPerM3 ==
-			gridPackets[1].radiativeCoolingWPerM3 && gridEscape.accepted > 0.0,
+			gridPackets[1].radiativeCoolingWPerM3 && gridEscape.accepted >= 0.0 &&
+			gridEscape.accepted <= 1.0 && Near(gridEscape.beta,
+				gridRadiativeFraction*gridDerivedHeatReleaseW/
+				(3.0*gridUnscaledExchange.exchangeWPerM3),2.0e-15),
 		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
+	RadiationEscapeFactor predictiveInsufficientOpacity;
+	Check(!ComputeRadiationEscapeFactor(gridDerivedHeatReleaseW,600.0,
+		gridRadiativeFraction,{gridUnscaledExchange.exchangeWPerM3,
+		gridUnscaledExchange.exchangeWPerM3},{1.0,2.0},true,
+		predictiveInsufficientOpacity,&error),
+		"V4 predictive radiation fails closed when the methane gas opacity cannot supply chi_r");
 	MethaneReactionStep overflowRateStep = step;
 	overflowRateStep.deltaTimeS = 1.0e-310;
 	overflowRateStep.mixingTimeS = std::numeric_limits<double>::denorm_min();

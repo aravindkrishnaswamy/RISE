@@ -202,7 +202,7 @@ namespace RISE
 				}
 			}
 			const double total = state.TotalDensity();
-			return (total > 0.0 && state.rhoTotalZ <= total) ||
+			return (std::isfinite(total) && total > 0.0 && state.rhoTotalZ <= total) ||
 				Fail(error,"fire solver mixture fraction is outside [0,1]");
 		}
 
@@ -1496,8 +1496,11 @@ namespace RISE
 			std::vector<double> inverseFaceDensity(count,0.0), rightHandSide(count,0.0);
 			for( std::size_t face=0; face<count; ++face ) {
 				const std::size_t right = (face+1)%count;
-				result.faceDensityKGPerM3[face] = 0.5*(gasDensityKGPerM3[face]+
-					gasDensityKGPerM3[right]);
+				result.faceDensityKGPerM3[face] = 0.5*gasDensityKGPerM3[face]+
+					0.5*gasDensityKGPerM3[right];
+				if( !std::isfinite(result.faceDensityKGPerM3[face]) ||
+					result.faceDensityKGPerM3[face] <= 0.0 ) return Fail(error,
+					"fire solver periodic staggered density overflowed");
 				inverseFaceDensity[face] = 1.0/result.faceDensityKGPerM3[face];
 				result.velocityMPerS[face] = unprojectedMomentumKGPerM2S[face]*
 					inverseFaceDensity[face];
@@ -2454,7 +2457,7 @@ namespace RISE
 			}
 			result.gamma = std::max(0.0,std::min(1.0,1.0-totalHeatReleaseW/
 				(0.01*nominalPeakHeatReleaseW)));
-			result.accepted = std::max(result.beta,result.gamma);
+			result.accepted = std::min(1.0,std::max(result.beta,result.gamma));
 			return std::isfinite(result.accepted) ||
 				Fail(error,"fire solver radiation escape factor overflowed");
 		}
@@ -2798,7 +2801,6 @@ namespace RISE
 			const std::vector<MethaneReactionStep>& reactionStep,
 			const std::vector<double>& cellVolumeM3,
 			const double ambientTemperatureK,
-			const double totalHeatReleaseW,
 			const double nominalPeakHeatReleaseW,
 			const double radiativeFraction,
 			const bool predictive,
@@ -2815,25 +2817,46 @@ namespace RISE
 				return Fail(error,"fire solver grid source-packet arrays are malformed");
 			}
 			std::vector<double> unscaledExchange(count,0.0);
+			std::vector<MethaneSourcePacket> reaction(count);
+			std::vector<MethaneCellState> postReaction(count);
+			double totalHeatReleaseW = 0.0;
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				MethaneSourcePacket reaction;
-				MethaneCellState postReaction;
 				if( !BuildMethaneReactionPacket(beginning[cell],fuel,reactionStep[cell],
-					reaction,error) || !ApplySourcePacket(beginning[cell],reaction,
-					thermochemistry,postReaction,error) ) return false;
+					reaction[cell],error) || !ApplySourcePacket(beginning[cell],reaction[cell],
+					thermochemistry,postReaction[cell],error) ) return false;
 				GasExchangeEvaluation exchange;
-				if( !EvaluateGasExchange(postReaction,postReaction.temperatureK,
+				if( !EvaluateGasExchange(postReaction[cell],postReaction[cell].temperatureK,
 					ambientTemperatureK,thermochemistry,opacity,exchange,error) ) return false;
 				unscaledExchange[cell] = exchange.exchangeWPerM3;
+				const double heatRelease = (reaction[cell].gasHeatReleaseWPerM3+
+					reaction[cell].sootHeatReleaseWPerM3)*cellVolumeM3[cell];
+				if( !std::isfinite(heatRelease) || !std::isfinite(totalHeatReleaseW+heatRelease) ) {
+					return Fail(error,"fire solver grid heat-release accumulation overflowed");
+				}
+				totalHeatReleaseW += heatRelease;
 			}
+			RadiationEscapeFactor candidateFactor;
 			if( !ComputeRadiationEscapeFactor(totalHeatReleaseW,nominalPeakHeatReleaseW,
-				radiativeFraction,unscaledExchange,cellVolumeM3,predictive,factor,error) ) return false;
-			result.assign(count,MethaneSourcePacket());
+				radiativeFraction,unscaledExchange,cellVolumeM3,predictive,
+				candidateFactor,error) ) return false;
+			std::vector<MethaneSourcePacket> candidateResult(count);
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				if( !BuildFrozenMethaneSourcePacket(beginning[cell],reactionStep[cell],
-					ambientTemperatureK,factor.accepted,fuel,thermochemistry,opacity,
-					result[cell],error) ) return false;
+				MethaneCellState finalScratch;
+				double signedCoolingWPerM3 = 0.0;
+				if( !ApplyGasRadiationBackwardEuler(postReaction[cell],ambientTemperatureK,
+					reactionStep[cell].deltaTimeS,candidateFactor.accepted,thermochemistry,opacity,
+					finalScratch,signedCoolingWPerM3,error) ) return false;
+				candidateResult[cell] = reaction[cell];
+				for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+					candidateResult[cell].constituentDelta[species] = finalScratch.constituent[species]-
+						beginning[cell].constituent[species];
+				}
+				candidateResult[cell].sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
+					beginning[cell].sensibleEnergyJPerM3;
+				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
 			}
+			result.swap(candidateResult);
+			factor = candidateFactor;
 			return true;
 		}
 	}

@@ -122,12 +122,11 @@ int main( const int argc, const char* const argv[] )
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
 	const double cellVolumeM3 = 0.001;
-	const double heatReleaseW = exchangeProbe.exchangeWPerM3*cellVolumeM3/
-		(2.0*radiativeFraction);
 	std::vector<MethaneSourcePacket> frozenPacket;
 	RadiationEscapeFactor escape;
 	if( !BuildFrozenMethaneSourcePackets({state},{sourceStep},{cellVolumeM3},300.0,
-		heatReleaseW,heatReleaseW,radiativeFraction,true,fuel,fuel,opacity,
+		reactionProbe.gasHeatReleaseWPerM3*cellVolumeM3,radiativeFraction,
+		fuel.IsPredictiveQualified(),fuel,fuel,opacity,
 		frozenPacket,escape,&error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
