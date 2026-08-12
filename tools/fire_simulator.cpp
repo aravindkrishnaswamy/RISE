@@ -96,26 +96,33 @@ int main( const int argc, const char* const argv[] )
 	if( !UniformState(fuel,state,error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
-	const std::size_t count = 16;
+	PeriodicMACShape ownerShape;
+	ownerShape.nx=4; ownerShape.ny=4; ownerShape.nz=4; ownerShape.cellWidthM=0.025;
+	const std::size_t count = ownerShape.CellCount();
 	std::vector<ConservativeVector> conservative(count,ToConservativeVector(state));
-	std::vector<double> momentum(count,state.GasDensity()*0.25);
-	std::vector<ConservativeVector> source(count);
-	PeriodicTransportConfig config;
-	config.cellWidthM = 1.0/static_cast<double>(count);
-	config.deltaTimeS = 0.01;
-	config.ambientTemperatureK = 300.0;
-	config.adiabaticTemperatureK = 2500.0;
-	PeriodicProjectedHeunResult advanced;
-	if( !AdvancePeriodicProjectedHeun(conservative,momentum,source,config,
-		1.0e-11,false,fuel,fuel,transport,advanced,&error) ) {
+	PeriodicMACField momentum;
+	for( unsigned int axis=0; axis<3; ++axis ) momentum.component[axis].assign(count,
+		state.GasDensity()*(axis==0 ? 0.25 : 0.0));
+	ConservativeAdvance3DConfig config;
+	config.transport.cellWidthM = ownerShape.cellWidthM;
+	config.transport.deltaTimeS = 0.001;
+	config.transport.ambientTemperatureK = 300.0;
+	config.transport.adiabaticTemperatureK = 2500.0;
+	config.transport.ambientGasDensityKGPerM3=state.GasDensity();
+	config.projectionTolerancePerS=2.0e-10;
+	config.dns=true;
+	ConservativeAdvance3DResult advanced;
+	if( !AdvanceConservative3D(ownerShape,conservative,momentum,
+		std::vector<MethaneSourcePacket>(count),config,fuel,fuel,transport,
+		advanced,&error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
 	double maximumVelocityError = 0.0;
-	for( const double velocity : advanced.velocityMPerS ) {
+	for( const double velocity : advanced.velocityMPerS.component[0] ) {
 		maximumVelocityError = std::max(maximumVelocityError,std::fabs(velocity-0.25));
 	}
 	MethaneReactionStep sourceStep;
-	sourceStep.deltaTimeS = 0.002;
+	sourceStep.deltaTimeS = 0.0001;
 	sourceStep.mixingTimeS = 0.02;
 	sourceStep.primaryEligible = true;
 	sourceStep.sootOxidationEnabled = true;
@@ -168,14 +175,25 @@ int main( const int argc, const char* const argv[] )
 	openBoundary.injectedGasDensityKGPerM3=injectedState.GasDensity();
 	openBoundary.velocityToleranceMPerS=1.0e-8;
 	openBoundary.pressureTolerancePa=ambientState.GasDensity()*1.0e-8;
-	OpenMACField3D openMomentum;
+	PeriodicMACField openMomentum;
 	for( unsigned int axis=0; axis<3; ++axis ) openMomentum.component[axis].assign(
 		OpenMACFaceCount3D(openShape,axis),0.0);
-	OpenMACProjection3DResult openExpansion;
-	if( !ProjectPressureOpenMACVelocity3D(openShape,
-		std::vector<double>(openShape.CellCount(),state.GasDensity()),openMomentum,
-		std::vector<double>(openShape.CellCount(),expansionPerS),openBoundary,
-		sourceStep.deltaTimeS,1.0e-8,openExpansion,&error) ) {
+	ConservativeAdvance3DConfig openAdvanceConfig;
+	openAdvanceConfig.periodicBoundaries=false;
+	openAdvanceConfig.openBoundary=openBoundary;
+	openAdvanceConfig.transport.cellWidthM=openShape.cellWidthM;
+	openAdvanceConfig.transport.deltaTimeS=sourceStep.deltaTimeS;
+	openAdvanceConfig.transport.ambientTemperatureK=300.0;
+	openAdvanceConfig.transport.adiabaticTemperatureK=2500.0;
+	openAdvanceConfig.transport.ambientGasDensityKGPerM3=ambientState.GasDensity();
+	openAdvanceConfig.injectedTemperatureK=300.0;
+	openAdvanceConfig.projectionTolerancePerS=1.0e-8;
+	openAdvanceConfig.dns=true;
+	ConservativeAdvance3DResult openExpansion;
+	if( !AdvanceConservative3D(openShape,
+		std::vector<ConservativeVector>(openShape.CellCount(),ToConservativeVector(state)),
+		openMomentum,std::vector<MethaneSourcePacket>(openShape.CellCount(),frozenPacket[0]),
+		openAdvanceConfig,fuel,fuel,transport,openExpansion,&error) ) {
 		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
 	}
 	std::printf("record=%s cells=%zu r0=%zu r1=%zu r2=%zu max_free_stream_error=%.17g expansion=%.17g escape=%.17g open_head_residual=%.17g\n",

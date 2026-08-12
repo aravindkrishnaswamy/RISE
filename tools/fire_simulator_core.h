@@ -196,9 +196,13 @@ namespace RISE
 				!std::isfinite(state.temperatureK) || state.temperatureK <= 0.0 ) {
 				return Fail(error,"fire solver cell contains a non-finite or negative primary field");
 			}
-			for( const double density : state.constituent ) {
+			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+				const double density=state.constituent[species];
 				if( !std::isfinite(density) || density < 0.0 ) {
-					return Fail(error,"fire solver cell contains a negative constituent density");
+					std::ostringstream message;
+					message << "fire solver cell contains an invalid constituent density: species="
+						<< species << " value=" << density;
+					return Fail(error,message.str());
 				}
 			}
 			const double total = state.TotalDensity();
@@ -217,8 +221,13 @@ namespace RISE
 				"CH4", "O2", "N2", "CO2", "H2O", "CO"
 			};
 			if( !thermochemistry.IsValid() || !std::isfinite(state.temperatureK) ||
-				state.temperatureK <= 0.0 || !std::isfinite(state.rhoTotalZ) ||
-				state.rhoTotalZ < 0.0 ) return Fail(error,"fire solver EOS state is invalid");
+				state.temperatureK <= 0.0 || !std::isfinite(state.rhoTotalZ) ) return Fail(error,
+				"fire solver EOS state is invalid");
+			double densityScale=1.0;
+			for(const double density:state.constituent)
+				densityScale=std::max(densityScale,std::fabs(density));
+			if(state.rhoTotalZ < -2048.0*std::numeric_limits<double>::epsilon()*densityScale)
+				return Fail(error,"fire solver EOS mixture fraction exceeds its fp64 envelope");
 			std::vector<std::pair<std::string,double> > propertyDensities;
 			if( !ThermochemicalDensitiesWithinForwardEnvelope(state,propertyDensities,error) ) {
 				return false;
@@ -927,7 +936,10 @@ namespace RISE
 					std::ostringstream message;
 					message << "fire solver cell " << cell
 						<< " violates the accepted-state EOS gate: residual="
-						<< equationOfStateResidual << "; " << inversionError;
+						<< equationOfStateResidual << "; " << inversionError << "; constituents=";
+					for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+						message << (species ? "," : "") << state.constituent[species];
+					}
 					return Fail(error,message.str());
 				}
 			}
@@ -1019,7 +1031,9 @@ namespace RISE
 			return true;
 		}
 
-		inline bool AdvancePeriodicTransportHeun(
+		// Test-only one-dimensional reference.  Production state is owned only by
+		// AdvanceConservative3D below.
+		inline bool ReferenceAdvancePeriodicTransportHeun1D(
 			const std::vector<ConservativeVector>& beginning,
 			const std::vector<double>& faceVelocityMPerS,
 			const std::vector<double>& diffusivityM2PerS,
@@ -1234,7 +1248,10 @@ namespace RISE
 			for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
 				identicalAmbient=identicalAmbient && interior[component]==boundary.ambientState[component];
 			}
-			if( identicalAmbient && interiorTemperatureK==ambientTemperatureK ) return true;
+			// Identical conservative ambient bytes define the same thermodynamic
+			// state.  Do not manufacture a conductive flux from the inversion's
+			// last-bit temperature representation.
+			if( identicalAmbient ) return true;
 			double interiorTotal = 0.0, ambientTotal = 0.0;
 			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
 				interiorTotal += interior[1+species];
@@ -3207,8 +3224,9 @@ namespace RISE
 				}
 			}
 			targetMean /= static_cast<double>(count);
-			if( std::fabs(targetMean) > 128.0*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,targetMaximum) ) {
+			if( std::fabs(targetMean) > std::max(absoluteTolerancePerS,
+				128.0*std::numeric_limits<double>::epsilon()*
+				std::max(1.0,targetMaximum)) ) {
 				return Fail(error,"fire solver 3-D periodic divergence target violates compatibility");
 			}
 			std::vector<double> rightHandSide(count,0.0);
@@ -4069,7 +4087,8 @@ namespace RISE
 			PeriodicCoupledStage r2;
 		};
 
-		inline bool AdvancePeriodicProjectedHeun(
+		// Test-only one-dimensional reference retained for cross-checks.
+		inline bool ReferenceAdvancePeriodicProjectedHeun1D(
 			const std::vector<ConservativeVector>& beginning,
 			const std::vector<double>& beginningMomentum,
 			const std::vector<ConservativeVector>& frozenSourcePerS,
@@ -4714,6 +4733,12 @@ namespace RISE
 			factor = candidateFactor;
 			return true;
 		}
+
+		// The production conservative owner is kept in a separate header so the
+		// pressure/open-boundary kernels above remain reviewable.  This include is
+		// intentionally inside RISE::FireSim; the included file is a namespace
+		// fragment and cannot be used as an independent implementation path.
+#include "fire_simulator_3d_advance.h"
 	}
 }
 
