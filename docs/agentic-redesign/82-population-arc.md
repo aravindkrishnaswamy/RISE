@@ -443,12 +443,10 @@ every observation: at most one area chain per run, gpt (which writes more
 output per turn) managing three, and the ratio being insensitive to prose
 about physics.
 
-**The fix follows directly and needs no further runs: make an area light cost
-one line.**  This repo already has the pattern — `insert_material_scaffold`
-and `insert_geometry_scaffold` expand a single call into a chunk graph.  An
-area-light scaffold would put the physical light on equal footing with the
-non-physical ones, and only then does the palette's preference get a fair
-test.  Until it exists, the lighting-policy result is measuring typing cost.
+~~The fix is to make an area light cost one line via a scaffold.~~
+**SUPERSEDED within the hour — see §10.4.  "Chunk economy" was the wrong
+frame and the scaffold was the wrong fix: it treats typing cost, which is a
+symptom, not the cause.**
 
 ### 10.3 Method
 
@@ -457,3 +455,49 @@ decomposition, and both were killed by arithmetic on data already collected.
 **Before spending tokens on repeats, decompose the metric: is it a product?
 Is it confounded by composition? Can it see all the ways the work can
 succeed?**
+
+### 10.4 Why "chunk economy" exists at all — and it is OUR bug (2026-08-12)
+
+Owner: *"Why is chunk economy even a thing?  We aren't trying to save chunks,
+especially if for more complex scenes, more chunks will be needed."*
+
+Correct, and the question dissolves the previous section's fix.  Nothing in
+the harness asks for economy: `ChatTextCompletionMaxTokens()` is **16384**,
+and an eleven-chunk lighting answer is under a thousand.  The cap is not
+binding and we imposed no budget.
+
+The constraint is structural, and it is one we built:
+
+| clean room | calls per run | output per run |
+|---|---|---|
+| `build_element` | **5** — one per element | ~90–100 SDF parts |
+| `light_scene` | **1** — all lighting | 6–8 lights |
+| `populate_scene` | **1** — all population | ~10–20 objects |
+
+**A single completion yields roughly one response-worth of output whatever
+you ask of it.**  Arc 79's entire finding was one fresh context per UNIT OF
+WORK; construction is rich because every element gets its own completion.
+Arcs 81 and 82 then set the unit to the whole CATEGORY, so lighting gets one
+answer's worth of lights and population one answer's worth of repeats.  **The
+bottleneck the clean room was invented to remove was reintroduced one level
+down.**
+
+That, not preference and not typing cost, is why the expensive form loses:
+the model is fitting seven lights into one answer, and seven four-chunk
+chains do not fit the shape of one answer the way seven one-liners do.  It
+also explains gpt exactly — more output per response, so three area chains
+and 42 objects from the same single calls.
+
+**The fix is the unit, not the syntax.**  `light_scene` should run per
+lighting intent (or be driven iteratively until it reports done) and
+`populate_scene` per element rather than per scene.  The HARNESS must drive
+that loop: the model may already call each up to four times
+(`kLightSceneMaxPerSession` = 4) and calls each exactly once in every run
+measured — voluntary re-use is zero here, as it has been for every voluntary
+surface this project has shipped.
+
+Predictions this makes, cheap to check on the next run and worth stating
+before it: lighting called N times yields roughly N answer-fulls of lights;
+area lights rise without any change to the palette prose; and per-element
+population scales repeats with element count instead of flattening them into
+one response.
