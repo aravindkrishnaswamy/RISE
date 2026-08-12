@@ -1,13 +1,17 @@
 {
  "citations_required": {
   "hitemp_2010_h2o": "Rothman, Gordon, Barber, Dothe, Gamache, Goldman, Perevalov, Tashkun, Tennyson, 'HITEMP, the high-temperature molecular spectroscopic database', JQSRT 111(15):2139-2150 (2010), doi:10.1016/j.jqsrt.2010.05.001",
-  "hitemp_co2_2024": "HITEMP CO2 2024 edition as distributed by HITRANonline (hitran.org/hitemp/); cite the HITEMP article together with the CO2-2024 edition article named on that page, and the original data sources referenced for individual parameters, per HITRAN's citation policy.",
+  "hitemp_co2_2024": "Hargreaves, Gordon, Huang, Toon, Rothman, 'Updating the carbon dioxide line list in HITEMP', JQSRT 333:109324 (2025), doi:10.1016/j.jqsrt.2024.109324",
+  "hitemp_co2_2024_original_sources": [
+   "Huang, Freedman, Tashkun, Schwenke, Lee, 'AI-3000K Infrared Line List for Hot CO2', J. Mol. Spectrosc. 392:111748 (2023), doi:10.1016/j.jms.2023.111748",
+   "Gordon et al., 'The HITRAN2020 molecular spectroscopic database', JQSRT 277:107949 (2022), doi:10.1016/j.jqsrt.2021.107949",
+   "Huang, Schwenke, Lee, 'Isotopologue consistency of semi-empirical line lists for CO2 and SO2: Ames-2016', JQSRT 230:222-246 (2019), doi:10.1016/j.jqsrt.2019.03.002"
+  ],
   "hitran_citation_policy": "https://hitran.org/citepolicy/",
   "tips_2021": "Gamache, Vispoel, Rey, Nikitin, Tyuterev, Egorov, Gordon, Boudon, 'Total internal partition sums for the HITRAN2020 database', JQSRT 271:107713 (2021), doi:10.1016/j.jqsrt.2021.107713; data doi:10.5281/zenodo.4708099; MIT licence, (C) 2021 Robert Gamache"
  },
  "compiled": "2026-08-11",
- "design_revision_evaluated_against": 49,
- "draft_record_id_sha256_of_payload": "5da49bb59c1b57282bcbc6acd82b7b7c811e01e6a6167b89f50fbfbccc15393c",
+ "design_revision_evaluated_against": 50,
  "licensing": {
   "hitemp": "No licence text is published by HITRAN; a citation policy only. Free to obtain with a free account. This repository therefore ships DERIVED TABLES ONLY and pins the source bytes by digest.",
   "redistribution_decision": "raw .par line-list bytes deliberately NOT committed to this repository",
@@ -17,6 +21,7 @@
   "co2": {
    "elow_max_cm-1": "39987.2630",
    "histogram_cells": "1468935",
+   "isotopologues": 12,
    "nu_max_cm-1": "17696.929730",
    "nu_min_cm-1": "0.000001",
    "records_kept": "326260084",
@@ -27,20 +32,37 @@
   "h2o": {
    "elow_max_cm-1": "29994.9727",
    "histogram_cells": "306635",
+   "isotopologues": 6,
    "nu_max_cm-1": "29661.820700",
    "nu_min_cm-1": "0.000100",
    "records_kept": "114241164",
    "records_read": "114241164",
    "rejected_unparseable": "0",
    "visible_band_line_count": "446553"
+  },
+  "derived_artifact_sha256": {
+   "hitemp_planck_mean_co2_v1.txt": "7d24505ec13bc33ccb074f350fa9f4675604f807e60c77986068ee202936860f",
+   "hitemp_planck_mean_h2o_v1.txt": "e2ccce619ec546bb5c13d8eaf2f01cfb7a7b78cc91c629fa98d3a9f261c2aa97",
+   "hitemp_planck_surface_co2_v1.txt": "9f76e5a62f740fedfa5bc7e6dbbe661aafa82065d702ef7037cf07448058dea1",
+   "hitemp_planck_surface_h2o_v1.txt": "b18dbd0db57294b340c0ed1f8b0da39557f5567f85015fd12d420c9c40649a7e",
+   "hitemp_planck_validation_25K_co2_v1.txt": "434134803bc82d0ab8d867743bd10cddb83bb3afcd1c47203d143e82572dad98",
+   "hitemp_planck_validation_25K_h2o_v1.txt": "46be4144cf40744947e42cb9a27c4e3a12ec325d0599ad701c4d9382608c1549",
+   "hitemp_spectral_basis_co2_v1.hist.gz": "1b50240e640539e392e60f59cf6d7b1b441b27e71db78f795db9d43a181a5cb4",
+   "hitemp_spectral_basis_h2o_v1.hist.gz": "efbc532d0e52559bfa4c0d1bbf857898c728613f503c1afedf223a50a734c7e3",
+   "hitemp_visible_basis_co2_v1.hist.gz": "152d8ee00e91a20c31e24f659a655ff6f2ffdd88967de1cfb0464a83be3c6da0",
+   "hitemp_visible_basis_h2o_v1.hist.gz": "17895196cadf71091ce77a07559cbe09b07a485a8c138bc3c3e0255c65f18f59",
+   "hitemp_visible_tail_basis_co2_v1.hist.gz": "a91caf4e744cc8cbd90f575b29c25ff84c518bec07ac890734717ebc66c61c10",
+   "hitemp_visible_tail_basis_h2o_v1.hist.gz": "530fd7cd50fbed4b3aa8acbe66a67e1fa584b742e6e23dc597d628affed79d8d",
+   "hitemp_visible_certificate_co2_v1.json": "e5d523d954ff3ff36f7ecdd8d83fb3e0e7dc06a8c15d1e525419034574769149",
+   "hitemp_visible_certificate_h2o_v1.json": "80b46f4a045afc2cf441e85e02ebbcd70707908a4fdb4f5969643e15635cefb0"
   }
  },
  "purpose": "Pins the exact HITEMP line-list bytes and TIPS partition sums from which the derived CO2/H2O Planck-mean tables in this directory were computed. Raw .par bytes are NOT redistributed in this repository; they are re-obtainable from HITRANonline by any (free) account holder and verified against these digests.",
  "quantity_semantics": "Planck-mean absorption coefficient kappa_P(T_gas, T_radiation) per species, in the optically-thin limit of FIRE_SMOKE_DESIGN.md section 3.5. Stored as a per-molecule cross-section (cm^2/molecule), hence pressure-independent in this limit; the m^-1 atm^-1 column assumes 1 atm partial pressure. Line shape parameters do not enter this quantity and are discarded during reduction. NOT valid for transmission, optically-thick transfer, or band-resolved radiative transfer.",
  "record_kind": "gas_opacity_source_pin",
  "record_name": "hitemp-co2-h2o-planck-mean-v1",
- "record_status": "DRAFT_FOR_OWNER_REVIEW__NOT_ADOPTED",
- "schema_version": "draft-1",
+ "record_status": "ADOPTED_SOURCE_PIN_FOR_PREDICTIVE_RECORD",
+ "schema_version": "1",
  "source_files": {
   "file_count": 36,
   "root_note": "paths relative to the operator's local HITEMP archive; digests are over the exact bytes as served",
@@ -83,15 +105,40 @@
    "Read-me_for_HITEMP.pdf": "4a6dd134e3eb4d1a3ce94ee4d0342263c12fb40064ee44cefefd21071f340749"
   }
  },
+ "tips_2021_source_files": {
+  "archive_sha256": "3bfdbf99c4b59edec194fb66493ee0f041ee53d450c10f4072aeed8b2998c466",
+  "doi": "10.5281/zenodo.4708099",
+  "license": "MIT, (C) 2021 Robert Gamache",
+  "sha256": {
+   "1_1.QTpy": "113817db7cf4ee5b9224b6602b01287d33afc4dd9082c8cca0e405a1e8b6584f",
+   "1_2.QTpy": "092ead2bf3c626860b4d5d0af33c46639b769ee19e8efbf2b24d47b71b6f4964",
+   "1_3.QTpy": "33ff8d48ab288a9d2f186d33fb6e1abc4958bb799fcd988f5cafee9a8de82758",
+   "1_4.QTpy": "928e538ded4e64fd26d1b607d3704dc206e667a3f51f9e0c95e80c83eaa86134",
+   "1_5.QTpy": "37ad8079daac612e2c48e6ce796e5bc94a1a319d65d3b910d358040bc9413904",
+   "1_6.QTpy": "5e117d3edf410a5a09af7f89ddf90e40d986f6652979c40107a44f540540bfcc",
+   "2_1.QTpy": "46132920c590eebcef12080a1d2b42ac769a94caf4778a284d6ee5e9e2dce5eb",
+   "2_2.QTpy": "83870a1c98332f445035eaf529e65e134fb03b44b9376befa8f9ea2bc897a06b",
+   "2_3.QTpy": "d4affad11c5c30d3e5f7c8de5ee0bd67f978be311d1a1171610f9099ba2716d4",
+   "2_4.QTpy": "9cb0de4d93abc33bb065ae8c4d9f1943accdfa70acaf5631915cd2409476921d",
+   "2_5.QTpy": "a3a7e2add21bb4d284a1444f41316475f9a8966c61d1213f6b1cf3e0d62123b7",
+   "2_6.QTpy": "d3d9ab6de5c61d167fb2b92f76f60a27d8d8f2dbac1e86c9e4a0f86e7c363fd2",
+   "2_7.QTpy": "d397a9e528fb749825e6ff3d7de327f47eee197665f3564fce940d6af5b4472f",
+   "2_8.QTpy": "51c24f2aa7819850260597c148e3a7f96167fd408c0c153cb8238370b071a329",
+   "2_9.QTpy": "719deb6e02db92352b7fd2fc1eece8b7859047ac8d5780c573ad7d0a13a203dc",
+   "2_10.QTpy": "ba9c92deb024b145220db89497332686b728c075aae98e516f9b3fbdfcb6634c",
+   "2_11.QTpy": "6d36c0179d76deebba0e54a2d3437fd7913e9e700c9b59e4de1d16ced7f4aa82",
+   "2_12.QTpy": "08fb560ba934ece1551fe77869ce9e9e2706d60066b504c9e8cb1e3d22d15568"
+  }
+ },
  "tools": {
-  "tools/hitemp_planck_mean.cpp": "b1394b9fd3762fc552630d0ccd4357dc3f9d238f68b742ae5ccea3c878e863a8",
-  "tools/hitemp_reduce.cpp": "e6335ae5d6d4e6355400551dbea09e74ddd70d7e2019c1f3b0b0c6b1588f31ab",
-  "tools/hitemp_visible_bound.py": "6d157c7039f20230ebd445e7af84d9fca8e9cfbb754a6bcd22830782c6a04953"
+  "tools/hitemp_planck_mean.cpp": "12b79f2d68293487c5fde21aa5276b1682b0ed233adaafbd1c2ea4be071a2f74",
+  "tools/hitemp_reduce.cpp": "af99f0e221a5e77dca36e00f5e62ca7c2cb3194e484aef331c817917d8b61cdf",
+  "tools/hitemp_visible_bound.py": "6b36478583f366f9dab464f4de18a4f402d95b4ed0240e3130ab24d964a1f35c"
  },
  "validation_references_not_inputs": {
   "cdsd4000_lbl_independent": "Zheng et al., ES Energy & Environment 17:33-43 (2022), doi:10.30919/esee8c635",
   "hitemp_lbl_independent": "Chmielewski & Gieras, J. Power Technologies 95(2):97-104 (2015)",
   "radcal_tnf": "Grosshandler, NIST TN 1402 (1993), via the TNF Workshop radiation page kappa_P fits; Barlow et al., Combust. Flame 127:2102-2118 (2001)"
  },
- "version": "1.0.0-draft"
+ "version": "1.0.0"
 }

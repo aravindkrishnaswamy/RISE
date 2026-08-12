@@ -123,18 +123,14 @@ temperature term needs spectral κ_λ or a two-argument table — **a
 single-argument κ_P(T) fit cannot populate the record** (disqualifies the
 TNF fits and WSGG as primaries on structure alone).
 
-**Verdict: closeable by building.** Recommended primary: **HITEMP
-regeneration** (H₂O-2010, 114 M lines to 30,000 cm⁻¹; CO₂-2024, 326 M
-lines to 17,697 cm⁻¹; free, account-gated, hashable `.par` bytes) with
-RISE-owned LBL table-generation code (Voigt integrator → κ_λ → two-argument
-Planck means), which the record wants archived anyway. Independent V5
-cooling reference: the **CC-BY EM2C-SNB total-emissivity dataset**
-(Mendeley, DOI 10.17632/x5wjzk6sjs.1; 300–2900 K, 94,500 values;
-independent lineage). Spot-checks: RADCAL (NIST public-domain repo, pinned
-commit; <5 % emissivity error per TN 2064; 1973-era band data with an
-**unpinned T domain — verify from TN 1402 at archive time**) and the TNF
-κ_P fits (open; diagonal-only). Initial V5 tolerance ~5 %, to be reset from
-the first HITEMP-vs-EM2C comparison, not assumed.
+**Verdict: closed for the §3.5 optically-thin quantity.** The adopted primary
+is the HITEMP-derived continuous two-temperature Planck-mean dataset under
+`docs/data/gas_opacity/`: H₂O-2010 (114,241,164 lines) and CO₂-2024
+(326,260,084 lines), with all 36 owner-local source digests and all 18
+TIPS-2021 isotopologue files pinned in `hitemp_sources_v1.json`. Raw `.par`
+bytes are never committed. The record consumes a per-cell exponential-sum
+reduction in (ν,E″); line shape and self broadening do not enter the linear
+Planck mean and are deliberately not record axes.
 
 **Owner resolution (2026-08-11)**: HITEMP requires citation but imposes no
 line-data redistribution license.  RISE nevertheless keeps a strict byte
@@ -145,36 +141,31 @@ needs a documented physical-negligibility statement (no CO₂ electronic
 bands in the visible) as a certified record claim; Soufiani–Taine 1997 and
 all WSGG coefficient papers are paywalled (not needed under this plan).
 
-**Generator increment (2026-08-11)**: the committed reference toolchain is
-`tools/fire_gas_opacity.py`, `tools/generate_fire_gas_opacity_record.py`, and
-`tools/fetch_verify_hitemp_inputs.py`.  It parses the HITRAN 160-character
-format, temperature-scales line strengths with separately hash-pinned HITRAN
-partition-sum files, evaluates air/self-broadened Voigt profiles at 1 atm,
-and deposits each line into declared finite-volume wavenumber bins while
-preserving its integrated area.  It derives the required two-temperature
-Planck-mean tensors across a self-broadening composition axis and stores exact
-per-cell multilinear partial-derivative enclosures.  Each species archive is
-streamed once for all table states. Production generation is required to use
-the compiled streaming accumulator in `tools/fire_gas_opacity_native.cpp`;
-the Python implementation is the independently compared reference used by the
-synthetic fixture. Both finite-bin and expanded-wing Planck-mean convergence
-limits are manifest gates, and a sum-of-per-line conservative profile bound
-gates gas absorption over 380–780 nm rather than mistaking a bin average for a
-pointwise upper bound. The owner manifest remains explicitly pending in
-`docs/data/source_pulls/hitemp_owner_inputs_v1.pending.json`; it cannot
-generate a physical table until the exact H₂O-2010 inventory, the
-`02_HITEMP2024.par.bz2` digest, all required isotopologue masses/partition
-sums, and the original-source citations from both distributions are pinned.
-The committed `docs/data/fire_gas_opacity_synthetic_v1.json` is labeled
-`synthetic_test_only` and proves the fixed-width (including CO₂ local
-isotopologues 10–12), Voigt, line-area/grid-phase, hash, bzip2,
-spectral-table, two-argument-mean, self-broadening, interpolation-certificate,
-and OOD paths;
-it is never an operational physics fallback.  The independent CC-BY
-EM2C-SNB harness is `tools/crosscheck_fire_gas_opacity_em2c.py` (DOI
-10.17632/x5wjzk6sjs.1); it refuses the synthetic table and is ready for the
-first owner-derived physical record, at which point the provisional 5 % gate
-must be reset from observed comparison error rather than assumed.
+**Generator increment (2026-08-11)**: `tools/hitemp_reduce.cpp` streams the
+pinned sources into a deterministic temperature-independent spectral-energy
+basis; `tools/hitemp_planck_mean.cpp` produces full knots, measures pruning
+error, and analytically differentiates the pruned basis;
+`tools/generate_fire_gas_opacity_planck_record.py` freezes the operational C1
+bicubic and exact Bernstein derivative enclosures; and
+`tools/fetch_verify_hitemp_planck_inputs.py` reproduces every committed basis,
+50 K surface, independent 25 K interpolation oracle, and visible certificate
+from verified owner bytes. Runtime accepts arbitrary temperatures over
+300–2500 K and rejects only out-of-domain values. The observed pruning bounds
+are 2.23×10⁻³ for H₂O and 1.81×10⁻³ for CO₂. The visible gate includes exact
+in-band line selection plus conservative Voigt leakage from every out-of-band
+line over 380–780 nm. CO₂ HITEMP line-centre coverage ends at 565 nm, so its
+reported `1.52×10⁻¹⁰` fraction is only 565–780 nm; the record separately
+carries the all-line modeled-wing bound and the physical-negligibility
+argument for unrepresented electronic absorption over 380–565 nm.
+
+The prior Voigt/LBL tools (`tools/fire_gas_opacity.py`,
+`tools/fire_gas_opacity_native.cpp`, and
+`tools/generate_fire_gas_opacity_record.py`) are synthetic/research-only
+transmission tooling. They reject production manifests and cannot emit the
+§3.5 predictive record. EM2C-SNB (CC-BY 4.0, DOI 10.17632/x5wjzk6sjs.1) is
+retained only as a thin-end corroboration via
+`tools/crosscheck_fire_gas_opacity_em2c_thin.py`; the primary checks are the
+Planck-mean-specific Chmielewski–Gieras and Zheng CDSD-4000 comparisons.
 
 ---
 

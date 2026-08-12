@@ -17,6 +17,11 @@ FIRE_GAS_OPACITY_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_record.py
 FIRE_GAS_OPACITY_MANIFEST="$REPO_ROOT/tests/fixtures/fire_gas_opacity/synthetic_manifest.json"
 FIRE_GAS_OPACITY_TABLE="$REPO_ROOT/docs/data/fire_gas_opacity_synthetic_v1.json"
 FIRE_GAS_OPACITY_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_tools.py"
+FIRE_GAS_PLANCK_GENERATOR="$REPO_ROOT/tools/generate_fire_gas_opacity_planck_record.py"
+FIRE_GAS_PLANCK_MANIFEST="$REPO_ROOT/docs/data/gas_opacity/hitemp_sources_v1.json"
+FIRE_GAS_PLANCK_EMBEDDED="$LIB_DIR/Utilities/FireGasOpacityRecordData.inc"
+FIRE_GAS_PLANCK_RECORD="$REPO_ROOT/docs/data/gas_opacity/fire_gas_opacity_hitemp_planck_mean_v1.cbor"
+FIRE_GAS_PLANCK_TEST="$REPO_ROOT/tests/test_fire_gas_opacity_planck_record.py"
 # Logs go outside the repo so they survive cloud-sync providers (iCloud,
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
@@ -100,11 +105,19 @@ printf 'Checking embedded fire-simulation records ... '
 "$python_bin" "$FIRE_SIM_GENERATOR" --check \
 	"$FIRE_SIM_DATA" "$FIRE_SIM_EMBEDDED"
 echo "pass"
-printf 'Checking synthetic HITEMP LBL record ... '
+printf 'Checking production HITEMP Planck-mean record ... '
+"$python_bin" "$FIRE_GAS_PLANCK_GENERATOR" --check \
+	"$FIRE_GAS_PLANCK_MANIFEST" "$FIRE_GAS_PLANCK_EMBEDDED" \
+	--record "$FIRE_GAS_PLANCK_RECORD"
+echo "pass"
+printf 'Testing production HITEMP Planck-mean tools ... '
+"$python_bin" "$FIRE_GAS_PLANCK_TEST"
+echo "pass"
+printf 'Checking quarantined synthetic HITEMP LBL record ... '
 "$python_bin" "$FIRE_GAS_OPACITY_GENERATOR" --check \
 	"$FIRE_GAS_OPACITY_MANIFEST" "$FIRE_GAS_OPACITY_TABLE"
 echo "pass"
-printf 'Testing HITEMP LBL tools ... '
+printf 'Testing quarantined HITEMP LBL tools ... '
 "$python_bin" "$FIRE_GAS_OPACITY_TEST"
 echo "pass"
 

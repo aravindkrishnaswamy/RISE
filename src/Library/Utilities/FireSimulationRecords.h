@@ -215,6 +215,84 @@ namespace RISE
 			std::string* error = 0
 			) const;
 	};
+
+	struct FireGasOpacityCell
+	{
+		double coefficients[4][4];
+		double gasDerivativeMinimum;
+		double gasDerivativeMaximum;
+		double radiationDerivativeMinimum;
+		double radiationDerivativeMaximum;
+	};
+
+	struct FireGasOpacitySpecies
+	{
+		std::string id;
+		std::vector<double> gasTemperatureAxisK;
+		std::vector<double> radiationTemperatureAxisK;
+		std::vector<FireGasOpacityCell> cells;
+	};
+
+	//! Certified simulator-only optically-thin CO2/H2O Planck means.
+	class FireSimulationGasOpacityRecord
+	{
+		bool m_valid;
+		std::string m_recordName;
+		std::string m_recordId;
+		RISECBOR64::Bytes m_recordBytes;
+		double m_temperatureMinK;
+		double m_temperatureMaxK;
+		std::vector<FireGasOpacitySpecies> m_species;
+
+		bool LoadSemanticRecord(
+			const RISECBOR64::Value& record,
+			std::string* error
+			);
+
+	public:
+		FireSimulationGasOpacityRecord();
+
+		bool LoadCanonicalRecord(
+			const RISECBOR64::Bytes& bytes,
+			std::string* error = 0
+			);
+
+		static const FireSimulationGasOpacityRecord& HITEMPPlanckMeanV1();
+
+		bool IsValid() const { return m_valid; }
+		const std::string& RecordName() const { return m_recordName; }
+		const std::string& RecordId() const { return m_recordId; }
+		const RISECBOR64::Bytes& RecordBytes() const { return m_recordBytes; }
+		double TemperatureMinK() const { return m_temperatureMinK; }
+		double TemperatureMaxK() const { return m_temperatureMaxK; }
+
+		const FireGasOpacitySpecies* FindSpecies( const char* id ) const;
+
+		//! Returns sigma_P and its two analytic partial derivatives.
+		bool PlanckMeanCrossSectionM2PerMolecule(
+			const char* speciesId,
+			double gasTemperatureK,
+			double radiationTemperatureK,
+			double& result,
+			double& gasTemperatureDerivative,
+			double& radiationTemperatureDerivative,
+			std::string* error = 0
+			) const;
+
+		//! Encloses both partial derivatives over a closed temperature rectangle.
+		bool PlanckMeanDerivativeEnclosure(
+			const char* speciesId,
+			double gasTemperatureMinimumK,
+			double gasTemperatureMaximumK,
+			double radiationTemperatureMinimumK,
+			double radiationTemperatureMaximumK,
+			double& gasDerivativeMinimum,
+			double& gasDerivativeMaximum,
+			double& radiationDerivativeMinimum,
+			double& radiationDerivativeMaximum,
+			std::string* error = 0
+			) const;
+	};
 }
 
 #endif

@@ -235,8 +235,11 @@ int main()
 		FireSimulationThermochemistryRecord::OpenSubsetV1();
 	const FireSimulationTransportRecord& transport =
 		FireSimulationTransportRecord::OpenV1();
+	const FireSimulationGasOpacityRecord& opacity =
+		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	Check(thermo.IsValid(),"embedded thermochemistry record loads");
 	Check(transport.IsValid(),"embedded transport record loads");
+	Check(opacity.IsValid(),"embedded HITEMP Planck-mean record loads");
 	Check(!thermo.IsPredictiveQualified(),"open thermochemistry subset remains preview-only");
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
 	Check(thermo.PredictiveBlockers().size() == 7,
@@ -249,6 +252,66 @@ int main()
 		"thermochemistry common domain is frozen");
 	Check(transport.TemperatureMinK() == 300.0 && transport.TemperatureMaxK() == 3000.0,
 		"transport common domain is frozen");
+	Check(opacity.TemperatureMinK() == 300.0 && opacity.TemperatureMaxK() == 2500.0,
+		"Planck-mean record exposes its certified continuous temperature domain");
+	Check(opacity.FindSpecies("H2O") && opacity.FindSpecies("CO2") &&
+		!opacity.FindSpecies("N2"),"Planck-mean record has the exact adopted species inventory");
+	double opacityValue = 0.0, opacityGasDerivative = 0.0;
+	double opacityRadiationDerivative = 0.0;
+	Check(opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",300.0,300.0,
+		opacityValue,opacityGasDerivative,opacityRadiationDerivative) &&
+		std::fabs(opacityValue-2.1374710395e-24) <= 2.0e-12*2.1374710395e-24,
+		"H2O Planck-mean anchor matches the committed full HITEMP table");
+	Check(opacity.PlanckMeanCrossSectionM2PerMolecule("CO2",300.0,300.0,
+		opacityValue,opacityGasDerivative,opacityRadiationDerivative) &&
+		std::fabs(opacityValue-1.0756050218e-24) <= 2.0e-12*1.0756050218e-24,
+		"CO2 Planck-mean anchor matches the committed full HITEMP table");
+	const double interiorGasTemperature = 923.25;
+	const double interiorRadiationTemperature = 1476.75;
+	Check(opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",interiorGasTemperature,
+		interiorRadiationTemperature,opacityValue,opacityGasDerivative,
+		opacityRadiationDerivative),
+		"Planck-mean record evaluates arbitrary interior solver temperatures");
+	const double derivativeStepK = 1.0e-2;
+	double plusValue = 0.0, minusValue = 0.0, derivativeScratch0 = 0.0;
+	double derivativeScratch1 = 0.0;
+	opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",
+		interiorGasTemperature+derivativeStepK,interiorRadiationTemperature,
+		plusValue,derivativeScratch0,derivativeScratch1);
+	opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",
+		interiorGasTemperature-derivativeStepK,interiorRadiationTemperature,
+		minusValue,derivativeScratch0,derivativeScratch1);
+	const double differencedGasDerivative =
+		(plusValue-minusValue)/(2.0*derivativeStepK);
+	Check(std::fabs(opacityGasDerivative-differencedGasDerivative) <=
+		2.0e-8*std::max(std::fabs(opacityGasDerivative),1.0e-300),
+		"analytic gas-temperature partial matches an independent central difference");
+	opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",interiorGasTemperature,
+		interiorRadiationTemperature+derivativeStepK,plusValue,
+		derivativeScratch0,derivativeScratch1);
+	opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",interiorGasTemperature,
+		interiorRadiationTemperature-derivativeStepK,minusValue,
+		derivativeScratch0,derivativeScratch1);
+	const double differencedRadiationDerivative =
+		(plusValue-minusValue)/(2.0*derivativeStepK);
+	Check(std::fabs(opacityRadiationDerivative-differencedRadiationDerivative) <=
+		2.0e-8*std::max(std::fabs(opacityRadiationDerivative),1.0e-300),
+		"analytic radiation-temperature partial matches an independent central difference");
+	double gasDerivativeMinimum = 0.0, gasDerivativeMaximum = 0.0;
+	double radiationDerivativeMinimum = 0.0, radiationDerivativeMaximum = 0.0;
+	Check(opacity.PlanckMeanDerivativeEnclosure("H2O",900.0,950.0,1450.0,1500.0,
+		gasDerivativeMinimum,gasDerivativeMaximum,radiationDerivativeMinimum,
+		radiationDerivativeMaximum) &&
+		opacityGasDerivative >= gasDerivativeMinimum &&
+		opacityGasDerivative <= gasDerivativeMaximum &&
+		opacityRadiationDerivative >= radiationDerivativeMinimum &&
+		opacityRadiationDerivative <= radiationDerivativeMaximum,
+		"certified derivative enclosure contains the interior analytic partials");
+	Check(!opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",299.999,300.0,
+		opacityValue,opacityGasDerivative,opacityRadiationDerivative) &&
+		!opacity.PlanckMeanCrossSectionM2PerMolecule("CO2",2500.001,2500.0,
+		opacityValue,opacityGasDerivative,opacityRadiationDerivative),
+		"Planck-mean lookup rejects both sides of its certified domain");
 	Check(transport.TurbulentPrandtl() == 0.7 && transport.TurbulentSchmidt() == 0.7,
 		"turbulent transport constants come from the record");
 	Check(transport.VremanCv() == 0.07 && transport.VremanCnu() == 0.1,
@@ -403,12 +466,14 @@ int main()
 			"WMS mixture matches an independent equation evaluation");
 	}
 
-	RISECBOR64::Value thermoValue, transportValue;
+	RISECBOR64::Value thermoValue, transportValue, opacityRecordValue;
 	std::string error;
 	Check(RISECBOR64::DecodeCanonical(thermo.RecordBytes(),thermoValue,&error),
 		"thermochemistry record decodes canonically");
 	Check(RISECBOR64::DecodeCanonical(transport.RecordBytes(),transportValue,&error),
 		"transport record decodes canonically");
+	Check(RISECBOR64::DecodeCanonical(opacity.RecordBytes(),opacityRecordValue,&error),
+		"Planck-mean record decodes canonically");
 	RISECBOR64::Value encodedPentacosane;
 	for( const auto& species : thermoValue.Find("species")->GetArray() ) {
 		if( species.Find("species_id") &&
@@ -647,6 +712,16 @@ int main()
 		!invalidatedTransport.IsValid() && invalidatedTransport.RecordBytes().empty() &&
 		!invalidatedTransport.FindSpecies("N2"),
 		"failed reload clears all previously valid transport state");
+	Check(Rejects<FireSimulationGasOpacityRecord>(ReplaceMember(opacityRecordValue,
+		"record_name",RISECBOR64::Value::String("recertified mutation"))),
+		"Planck-mean record identity rejects a canonically recertified mutation");
+	FireSimulationGasOpacityRecord invalidatedOpacity;
+	Check(invalidatedOpacity.LoadCanonicalRecord(opacity.RecordBytes()),
+		"reload regression starts from a valid Planck-mean record");
+	Check(!invalidatedOpacity.LoadCanonicalRecord(malformedBytes) &&
+		!invalidatedOpacity.IsValid() && invalidatedOpacity.RecordBytes().empty() &&
+		!invalidatedOpacity.FindSpecies("H2O"),
+		"failed reload clears all previously valid Planck-mean state");
 
 	if( failures ) {
 		std::printf("FireSimulationRecordsTest: %d failure(s)\n",failures);

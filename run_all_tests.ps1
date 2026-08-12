@@ -59,6 +59,11 @@ $FireGasOpacityGenerator = Join-Path $RepoRoot 'tools\generate_fire_gas_opacity_
 $FireGasOpacityManifest = Join-Path $RepoRoot 'tests\fixtures\fire_gas_opacity\synthetic_manifest.json'
 $FireGasOpacityTable = Join-Path $RepoRoot 'docs\data\fire_gas_opacity_synthetic_v1.json'
 $FireGasOpacityTest = Join-Path $RepoRoot 'tests\test_fire_gas_opacity_tools.py'
+$FireGasPlanckGenerator = Join-Path $RepoRoot 'tools\generate_fire_gas_opacity_planck_record.py'
+$FireGasPlanckManifest = Join-Path $RepoRoot 'docs\data\gas_opacity\hitemp_sources_v1.json'
+$FireGasPlanckEmbedded = Join-Path $RepoRoot 'src\Library\Utilities\FireGasOpacityRecordData.inc'
+$FireGasPlanckRecord = Join-Path $RepoRoot 'docs\data\gas_opacity\fire_gas_opacity_hitemp_planck_mean_v1.cbor'
+$FireGasPlanckTest = Join-Path $RepoRoot 'tests\test_fire_gas_opacity_planck_record.py'
 
 $python = (Get-Command python3 -ErrorAction SilentlyContinue).Source
 if (-not $python) {
@@ -82,14 +87,29 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 Write-Host 'pass'
-Write-Host -NoNewline 'Checking synthetic HITEMP LBL record ... '
+Write-Host -NoNewline 'Checking production HITEMP Planck-mean record ... '
+& $python $FireGasPlanckGenerator --check $FireGasPlanckManifest `
+    $FireGasPlanckEmbedded --record $FireGasPlanckRecord
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
+Write-Host -NoNewline 'Testing production HITEMP Planck-mean tools ... '
+& $python $FireGasPlanckTest
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'FAILED' -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+Write-Host 'pass'
+Write-Host -NoNewline 'Checking quarantined synthetic HITEMP LBL record ... '
 & $python $FireGasOpacityGenerator --check $FireGasOpacityManifest $FireGasOpacityTable
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'FAILED' -ForegroundColor Red
     exit $LASTEXITCODE
 }
 Write-Host 'pass'
-Write-Host -NoNewline 'Testing HITEMP LBL tools ... '
+Write-Host -NoNewline 'Testing quarantined HITEMP LBL tools ... '
 & $python $FireGasOpacityTest
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'FAILED' -ForegroundColor Red

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Build the optional production HITEMP native accumulator."""
+"""Build the optional quarantined transmission/LBL accumulator.
+
+This binary is not part of the section-3.5 Planck-mean production path.
+"""
 
 from __future__ import annotations
 

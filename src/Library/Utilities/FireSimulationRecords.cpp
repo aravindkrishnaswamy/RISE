@@ -17,6 +17,7 @@ namespace RISE
 	namespace
 	{
 #include "FireSimulationRecordData.inc"
+#include "FireGasOpacityRecordData.inc"
 
 		const double kUniversalGasConstantJPerKMolK = 8314.46261815324;
 		const char* kPentacosaneSpeciesSHA256 =
@@ -754,6 +755,86 @@ namespace RISE
 			return result.Initialize(x,y,slopes,enclosures,error);
 		}
 
+		double SmallBinomial( const unsigned int n, const unsigned int k )
+		{
+			static const double values[5][5] = {
+				{1,0,0,0,0}, {1,1,0,0,0}, {1,2,1,0,0},
+				{1,3,3,1,0}, {1,4,6,4,1}
+			};
+			return k <= n && n <= 4 ? values[n][k] : 0.0;
+		}
+
+		void BicubicCoefficients(
+			const double corners[2][2][4],
+			const double gasSpacing,
+			const double radiationSpacing,
+			double result[4][4]
+			)
+		{
+			const double h[4][4] = {
+				{1,0,0,0}, {0,0,1,0}, {-3,3,-2,-1}, {2,-2,1,1}
+			};
+			double geometry[4][4] = {
+				{corners[0][0][0],corners[0][1][0],radiationSpacing*corners[0][0][2],radiationSpacing*corners[0][1][2]},
+				{corners[1][0][0],corners[1][1][0],radiationSpacing*corners[1][0][2],radiationSpacing*corners[1][1][2]},
+				{gasSpacing*corners[0][0][1],gasSpacing*corners[0][1][1],gasSpacing*radiationSpacing*corners[0][0][3],gasSpacing*radiationSpacing*corners[0][1][3]},
+				{gasSpacing*corners[1][0][1],gasSpacing*corners[1][1][1],gasSpacing*radiationSpacing*corners[1][0][3],gasSpacing*radiationSpacing*corners[1][1][3]}
+			};
+			double temporary[4][4] = {};
+			for( unsigned int i=0; i<4; ++i ) {
+				for( unsigned int j=0; j<4; ++j ) {
+					for( unsigned int k=0; k<4; ++k ) temporary[i][j] += h[i][k]*geometry[k][j];
+				}
+			}
+			for( unsigned int i=0; i<4; ++i ) {
+				for( unsigned int j=0; j<4; ++j ) {
+					result[i][j] = 0.0;
+					for( unsigned int k=0; k<4; ++k ) result[i][j] += temporary[i][k]*h[j][k];
+				}
+			}
+		}
+
+		void BicubicDerivativeBounds(
+			const double coefficients[4][4],
+			const double spacing,
+			const bool gasDerivative,
+			double& minimum,
+			double& maximum
+			)
+		{
+			const unsigned int degreeGas = gasDerivative ? 2 : 3;
+			const unsigned int degreeRadiation = gasDerivative ? 3 : 2;
+			minimum = std::numeric_limits<double>::max();
+			maximum = -std::numeric_limits<double>::max();
+			for( unsigned int k=0; k<=degreeGas; ++k ) {
+				for( unsigned int ell=0; ell<=degreeRadiation; ++ell ) {
+					double control = 0.0;
+					for( unsigned int i=0; i<=k; ++i ) {
+						for( unsigned int j=0; j<=ell; ++j ) {
+							const double power = gasDerivative ?
+								(i+1)*coefficients[i+1][j]/spacing :
+								(j+1)*coefficients[i][j+1]/spacing;
+							control += power*SmallBinomial(k,i)/SmallBinomial(degreeGas,i)*
+								SmallBinomial(ell,j)/SmallBinomial(degreeRadiation,j);
+						}
+					}
+					minimum = std::min(minimum,control);
+					maximum = std::max(maximum,control);
+				}
+			}
+			minimum = std::nextafter(minimum,-std::numeric_limits<double>::infinity());
+			maximum = std::nextafter(maximum,std::numeric_limits<double>::infinity());
+		}
+
+		std::size_t OpacityCellIndex(
+			const std::vector<double>& axis,
+			const double value
+			)
+		{
+			if( value == axis.back() ) return axis.size()-2;
+			return static_cast<std::size_t>(std::upper_bound(axis.begin(),axis.end(),value)-axis.begin()-1);
+		}
+
 		template<class Record>
 		Record LoadEmbedded(
 			const unsigned char* bytes,
@@ -1482,5 +1563,293 @@ namespace RISE
 			std::isfinite(effectiveViscosityPaS) &&
 			std::isfinite(effectiveConductivityWPerMK)) ||
 			Fail(error,"fire-simulation effective transport overflowed");
+	}
+
+	FireSimulationGasOpacityRecord::FireSimulationGasOpacityRecord() :
+		m_valid(false), m_temperatureMinK(0.0), m_temperatureMaxK(0.0)
+	{
+	}
+
+	bool FireSimulationGasOpacityRecord::LoadSemanticRecord(
+		const RISECBOR64::Value& record,
+		std::string* error
+		)
+	{
+		std::string kind, version, status, schema, policy, semantics, composition,
+			pressure, overlap;
+		const RISECBOR64::Value* rawCommitted = Required(
+			record,"raw_hitemp_line_bytes_committed",RISECBOR64::Value::Boolean,error);
+		if( !ValidateSchemaHeader(record,error) ||
+			!ReadText(record,"record_kind",kind,error) || kind != "fire_sim_gas_opacity" ||
+			!ReadText(record,"record_name",m_recordName,error) ||
+			!ReadText(record,"version",version,error) || version != "1.0.0" ||
+			!ReadText(record,"record_status",status,error) || status != "predictive_qualified" ||
+			!ReadText(record,"provenance_schema",schema,error) ||
+				schema != "fire-optics-canonical-provenance-schema-v1" ||
+			!ReadText(record,"out_of_domain_policy",policy,error) || policy != "reject" ||
+			!ReadText(record,"quantity_semantics",semantics,error) ||
+			!ReadText(record,"composition_basis",composition,error) ||
+			!ReadText(record,"pressure_convention",pressure,error) ||
+			!ReadText(record,"band_overlap_rule",overlap,error) || !rawCommitted ||
+			rawCommitted->GetBoolean() ) {
+			return Fail(error,"fire gas-opacity record header or byte-boundary policy is invalid");
+		}
+		const RISECBOR64::Value* encodedSpecies = Required(
+			record,"species",RISECBOR64::Value::Array,error);
+		if( !encodedSpecies || encodedSpecies->GetArray().size() != 2 ) {
+			return Fail(error,"fire gas-opacity species inventory is invalid");
+		}
+		m_species.clear();
+		m_temperatureMinK = 300.0;
+		m_temperatureMaxK = 2500.0;
+		const char* expectedIds[2] = {"H2O","CO2"};
+		for( std::size_t speciesIndex=0; speciesIndex<2; ++speciesIndex ) {
+			const RISECBOR64::Value& encoded = encodedSpecies->GetArray()[speciesIndex];
+			FireGasOpacitySpecies species;
+			std::string quantity, applicability;
+			double domainMinimum = 0.0, domainMaximum = 0.0;
+			const RISECBOR64::Value* uncertainty = Required(
+				encoded,"uncertainty",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* provenance = Required(
+				encoded,"provenance",RISECBOR64::Value::Map,error);
+			const RISECBOR64::Value* interpolation = Required(
+				encoded,"interpolation",RISECBOR64::Value::Map,error);
+			if( !ReadText(encoded,"species_id",species.id,error) ||
+				species.id != expectedIds[speciesIndex] ||
+				!ReadText(encoded,"quantity",quantity,error) ||
+				quantity != "planck_mean_cross_section_m2_per_molecule" ||
+				!ReadDomain(encoded,"temperature_domain_K",domainMinimum,domainMaximum,error) ||
+				domainMinimum != m_temperatureMinK || domainMaximum != m_temperatureMaxK ||
+				!uncertainty || !ValidateUncertainty(*uncertainty,error) ||
+				!provenance || !ValidateProvenance(*provenance,error) ||
+				!ReadText(encoded,"applicability",applicability,error) ||
+				applicability != "optically_thin_planck_mean_cooling_only" || !interpolation ) {
+				return Fail(error,"fire gas-opacity species metadata is invalid");
+			}
+			const RISECBOR64::Value* gasAxis = Required(
+				encoded,"gas_temperature_axis_K",RISECBOR64::Value::Array,error);
+			const RISECBOR64::Value* radiationAxis = Required(
+				encoded,"radiation_temperature_axis_K",RISECBOR64::Value::Array,error);
+			if( !gasAxis || !radiationAxis ||
+				!ReadFloatArray(*gasAxis,species.gasTemperatureAxisK,error) ||
+				!ReadFloatArray(*radiationAxis,species.radiationTemperatureAxisK,error) ||
+				species.gasTemperatureAxisK.size() != 45 ||
+				species.radiationTemperatureAxisK != species.gasTemperatureAxisK ) {
+				return Fail(error,"fire gas-opacity temperature axes are invalid");
+			}
+			for( std::size_t i=0; i<45; ++i ) {
+				if( species.gasTemperatureAxisK[i] != 300.0+50.0*static_cast<double>(i) ) {
+					return Fail(error,"fire gas-opacity temperature lattice is unsupported");
+				}
+			}
+			std::string interpolationKind, interiorPolicy, derivativeSource;
+			if( !ReadText(*interpolation,"kind",interpolationKind,error) ||
+				interpolationKind != "tensor_bicubic_hermite_c1_analytic_basis_derivatives_v1" ||
+				!ReadText(*interpolation,"interior_state_policy",interiorPolicy,error) ||
+				interiorPolicy != "evaluate_c1_bicubic_never_reject_interior" ||
+				!ReadText(*interpolation,"derivative_source",derivativeSource,error) ) {
+				return Fail(error,"fire gas-opacity interpolation policy is unsupported");
+			}
+			const RISECBOR64::Value* encodedNodes = Required(
+				*interpolation,"nodes_row_major",RISECBOR64::Value::Array,error);
+			const RISECBOR64::Value* encodedBounds = Required(
+				*interpolation,"cell_partial_derivative_enclosures_row_major",
+				RISECBOR64::Value::Array,error);
+			if( !encodedNodes || encodedNodes->GetArray().size() != 45*45 ||
+				!encodedBounds || encodedBounds->GetArray().size() != 44*44 ) {
+				return Fail(error,"fire gas-opacity node or certificate count is invalid");
+			}
+			std::vector<std::vector<double> > nodes;
+			nodes.reserve(45*45);
+			for( const RISECBOR64::Value& node : encodedNodes->GetArray() ) {
+				std::vector<double> fields;
+				if( !ReadFloatArray(node,fields,error) || fields.size() != 4 || fields[0] <= 0.0 ) {
+					return Fail(error,"fire gas-opacity interpolation node is invalid");
+				}
+				nodes.push_back(fields);
+			}
+			for( std::size_t gas=0; gas<44; ++gas ) {
+				for( std::size_t radiation=0; radiation<44; ++radiation ) {
+					double corners[2][2][4] = {};
+					for( std::size_t dx=0; dx<2; ++dx ) {
+						for( std::size_t dy=0; dy<2; ++dy ) {
+							const std::vector<double>& node = nodes[(gas+dx)*45+radiation+dy];
+							for( std::size_t field=0; field<4; ++field ) corners[dx][dy][field] = node[field];
+						}
+					}
+					FireGasOpacityCell cell = {};
+					BicubicCoefficients(corners,50.0,50.0,cell.coefficients);
+					double verifiedGasMinimum, verifiedGasMaximum;
+					double verifiedRadiationMinimum, verifiedRadiationMaximum;
+					BicubicDerivativeBounds(cell.coefficients,50.0,true,
+						verifiedGasMinimum,verifiedGasMaximum);
+					BicubicDerivativeBounds(cell.coefficients,50.0,false,
+						verifiedRadiationMinimum,verifiedRadiationMaximum);
+					std::vector<double> bounds;
+					const std::size_t cellIndex = gas*44+radiation;
+					if( !ReadFloatArray(encodedBounds->GetArray()[cellIndex],bounds,error) ||
+						bounds.size() != 4 || bounds[0] > bounds[1] || bounds[2] > bounds[3] ) {
+						return Fail(error,"fire gas-opacity derivative enclosure is malformed");
+					}
+					const double scale = std::max({1.0e-300,std::fabs(verifiedGasMinimum),
+						std::fabs(verifiedGasMaximum),std::fabs(verifiedRadiationMinimum),
+						std::fabs(verifiedRadiationMaximum)});
+					const double tolerance = 512.0*std::numeric_limits<double>::epsilon()*scale;
+					if( bounds[0] > verifiedGasMinimum+tolerance ||
+						bounds[1] < verifiedGasMaximum-tolerance ||
+						bounds[2] > verifiedRadiationMinimum+tolerance ||
+						bounds[3] < verifiedRadiationMaximum-tolerance ) {
+						return Fail(error,"fire gas-opacity derivative enclosure is false");
+					}
+					cell.gasDerivativeMinimum = bounds[0];
+					cell.gasDerivativeMaximum = bounds[1];
+					cell.radiationDerivativeMinimum = bounds[2];
+					cell.radiationDerivativeMaximum = bounds[3];
+					species.cells.push_back(cell);
+				}
+			}
+			m_species.push_back(species);
+		}
+		return true;
+	}
+
+	bool FireSimulationGasOpacityRecord::LoadCanonicalRecord(
+		const RISECBOR64::Bytes& bytes,
+		std::string* error
+		)
+	{
+		FireSimulationGasOpacityRecord candidate;
+		RISECBOR64::Value record;
+		if( !RISECBOR64::DecodeCanonical(bytes,record,error) ||
+			!candidate.LoadSemanticRecord(record,error) ) {
+			*this = FireSimulationGasOpacityRecord();
+			return false;
+		}
+		candidate.m_recordId = RISECBOR64::SHA256Hex(bytes);
+		if( candidate.m_recordId != kFireGasOpacityHITEMPPlanckMeanV1SHA256 ) {
+			*this = FireSimulationGasOpacityRecord();
+			return Fail(error,"fire gas-opacity V1 bytes do not match the adopted record identity");
+		}
+		candidate.m_recordBytes = bytes;
+		candidate.m_valid = true;
+		*this = candidate;
+		return true;
+	}
+
+	const FireSimulationGasOpacityRecord&
+	FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1()
+	{
+		static const FireSimulationGasOpacityRecord record = LoadEmbedded<FireSimulationGasOpacityRecord>(
+			kFireGasOpacityHITEMPPlanckMeanV1,kFireGasOpacityHITEMPPlanckMeanV1Size,
+			kFireGasOpacityHITEMPPlanckMeanV1SHA256);
+		return record;
+	}
+
+	const FireGasOpacitySpecies* FireSimulationGasOpacityRecord::FindSpecies(
+		const char* id
+		) const
+	{
+		if( !m_valid || !id ) return 0;
+		for( const FireGasOpacitySpecies& species : m_species ) {
+			if( species.id == id ) return &species;
+		}
+		return 0;
+	}
+
+	bool FireSimulationGasOpacityRecord::PlanckMeanCrossSectionM2PerMolecule(
+		const char* speciesId,
+		const double gasTemperatureK,
+		const double radiationTemperatureK,
+		double& result,
+		double& gasTemperatureDerivative,
+		double& radiationTemperatureDerivative,
+		std::string* error
+		) const
+	{
+		const FireGasOpacitySpecies* species = FindSpecies(speciesId);
+		if( !species || !std::isfinite(gasTemperatureK) ||
+			!std::isfinite(radiationTemperatureK) ||
+			gasTemperatureK < m_temperatureMinK || gasTemperatureK > m_temperatureMaxK ||
+			radiationTemperatureK < m_temperatureMinK ||
+			radiationTemperatureK > m_temperatureMaxK ) {
+			return Fail(error,"fire gas-opacity lookup is invalid or out of domain");
+		}
+		const std::size_t gas = OpacityCellIndex(species->gasTemperatureAxisK,gasTemperatureK);
+		const std::size_t radiation = OpacityCellIndex(
+			species->radiationTemperatureAxisK,radiationTemperatureK);
+		const FireGasOpacityCell& cell = species->cells[gas*44+radiation];
+		const double u = (gasTemperatureK-species->gasTemperatureAxisK[gas])/50.0;
+		const double v = (radiationTemperatureK-species->radiationTemperatureAxisK[radiation])/50.0;
+		double powersU[4] = {1.0,u,u*u,u*u*u};
+		double powersV[4] = {1.0,v,v*v,v*v*v};
+		result = gasTemperatureDerivative = radiationTemperatureDerivative = 0.0;
+		for( unsigned int i=0; i<4; ++i ) {
+			for( unsigned int j=0; j<4; ++j ) {
+				result += cell.coefficients[i][j]*powersU[i]*powersV[j];
+				if( i ) gasTemperatureDerivative +=
+					i*cell.coefficients[i][j]*powersU[i-1]*powersV[j]/50.0;
+				if( j ) radiationTemperatureDerivative +=
+					j*cell.coefficients[i][j]*powersU[i]*powersV[j-1]/50.0;
+			}
+		}
+		return (result > 0.0 && std::isfinite(result) &&
+			std::isfinite(gasTemperatureDerivative) &&
+			std::isfinite(radiationTemperatureDerivative)) ||
+			Fail(error,"fire gas-opacity interpolation produced a non-finite value");
+	}
+
+	bool FireSimulationGasOpacityRecord::PlanckMeanDerivativeEnclosure(
+		const char* speciesId,
+		const double gasTemperatureMinimumK,
+		const double gasTemperatureMaximumK,
+		const double radiationTemperatureMinimumK,
+		const double radiationTemperatureMaximumK,
+		double& gasDerivativeMinimum,
+		double& gasDerivativeMaximum,
+		double& radiationDerivativeMinimum,
+		double& radiationDerivativeMaximum,
+		std::string* error
+		) const
+	{
+		const FireGasOpacitySpecies* species = FindSpecies(speciesId);
+		if( !species || !std::isfinite(gasTemperatureMinimumK) ||
+			!std::isfinite(gasTemperatureMaximumK) ||
+			!std::isfinite(radiationTemperatureMinimumK) ||
+			!std::isfinite(radiationTemperatureMaximumK) ||
+			gasTemperatureMinimumK > gasTemperatureMaximumK ||
+			radiationTemperatureMinimumK > radiationTemperatureMaximumK ||
+			gasTemperatureMinimumK < m_temperatureMinK ||
+			gasTemperatureMaximumK > m_temperatureMaxK ||
+			radiationTemperatureMinimumK < m_temperatureMinK ||
+			radiationTemperatureMaximumK > m_temperatureMaxK ) {
+			return Fail(error,"fire gas-opacity enclosure rectangle is invalid or out of domain");
+		}
+		const std::size_t gasFirst = OpacityCellIndex(
+			species->gasTemperatureAxisK,gasTemperatureMinimumK);
+		const std::size_t gasLast = OpacityCellIndex(
+			species->gasTemperatureAxisK,gasTemperatureMaximumK);
+		const std::size_t radiationFirst = OpacityCellIndex(
+			species->radiationTemperatureAxisK,radiationTemperatureMinimumK);
+		const std::size_t radiationLast = OpacityCellIndex(
+			species->radiationTemperatureAxisK,radiationTemperatureMaximumK);
+		gasDerivativeMinimum = radiationDerivativeMinimum =
+			std::numeric_limits<double>::max();
+		gasDerivativeMaximum = radiationDerivativeMaximum =
+			-std::numeric_limits<double>::max();
+		for( std::size_t gas=gasFirst; gas<=gasLast; ++gas ) {
+			for( std::size_t radiation=radiationFirst; radiation<=radiationLast; ++radiation ) {
+				const FireGasOpacityCell& cell = species->cells[gas*44+radiation];
+				gasDerivativeMinimum = std::min(gasDerivativeMinimum,cell.gasDerivativeMinimum);
+				gasDerivativeMaximum = std::max(gasDerivativeMaximum,cell.gasDerivativeMaximum);
+				radiationDerivativeMinimum = std::min(
+					radiationDerivativeMinimum,cell.radiationDerivativeMinimum);
+				radiationDerivativeMaximum = std::max(
+					radiationDerivativeMaximum,cell.radiationDerivativeMaximum);
+			}
+		}
+		return (std::isfinite(gasDerivativeMinimum) && std::isfinite(gasDerivativeMaximum) &&
+			std::isfinite(radiationDerivativeMinimum) &&
+			std::isfinite(radiationDerivativeMaximum)) ||
+			Fail(error,"fire gas-opacity derivative enclosure is non-finite");
 	}
 }

@@ -1,4 +1,6 @@
-// Native streaming accumulator for production-scale HITEMP archives.
+// Quarantined native Voigt/LBL accumulator for transmission and band-resolved
+// research.  It is not used by FIRE_SMOKE_DESIGN.md section 3.5; the production
+// optically-thin path is tools/generate_fire_gas_opacity_planck_record.py.
 // The Python front end owns manifests, hashes, bzip2 streaming, and record
 // emission; this translation unit owns the line-count-proportional hot loop.
 

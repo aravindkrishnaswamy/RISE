@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Deterministic HITEMP/HITRAN line-by-line gas-opacity primitives.
+"""Quarantined HITEMP/HITRAN line-by-line gas-opacity research primitives.
+
+This module is explicitly out of scope for FIRE_SMOKE_DESIGN.md section 3.5.
+It is retained for transmission/band-resolved experiments and synthetic
+regressions only.  The production optically-thin solver record is generated
+by generate_fire_gas_opacity_planck_record.py from the committed exponential-
+sum/Planck-mean dataset; do not use this module to produce that record.
 
 Line archives remain owner-local.  This module accepts only hash-verified
 inputs and emits derived spectral absorption and two-temperature Planck means.

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""ctypes bridge for the production HITEMP streaming accumulator."""
+"""ctypes bridge for the quarantined transmission/LBL accumulator.
+
+Not used by the production section-3.5 optically-thin Planck-mean record.
+"""
 
 from __future__ import annotations
 

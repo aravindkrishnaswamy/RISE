@@ -1,143 +1,270 @@
 #!/usr/bin/env python3
-"""Compute the 380-780 nm absorption upper bound for the CO2/H2O gas-opacity
-record (FIRE_SMOKE_DESIGN.md §12 item 5).
+"""Certify visible absorption from an exact-line-selected HITEMP histogram.
 
-The bound MUST be computed from the UN-PRUNED histogram: pruning only removes
-absorption, so a bound taken from pruned data would understate it.  Reports,
-per species and over the certified temperature domain, the fraction of the
-Planck-mean absorption coefficient contributed by lines inside the renderer's
-380-780 nm band, plus the absolute visible-band kappa_P itself.
+The reducer selects line centres before binning.  This tool then computes:
 
-Usage:
-  hitemp_visible_bound.py <hist> <tips_dir> [--tlo 300] [--thi 2500] [--tstep 100]
+* the historical 100 K-lattice observed visible fraction and absorption; and
+* a continuous-domain upper bound on absolute visible absorption.
+
+The continuous bound does not evaluate cell moments.  It uses only ΣA and the
+known (nu,E'') extent of every occupied bin, so moment approximation and a
+line straddling a wavelength boundary cannot make it optimistic.
 """
-import sys, os, math
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+
 
 C2 = 1.4387769
 TREF = 296.0
-N_ATM = 7.3389965e21          # molec/cm^3 at 1 atm, times 1/T[K]
-VIS_LO_WN = 1.0e7 / 780.0     # 12820.5 cm^-1
-VIS_HI_WN = 1.0e7 / 380.0     # 26315.8 cm^-1
+N_ATM = 7.3389965e21  # molecules/cm^3 times 1/T[K]
+NU_BIN_WIDTH = 25.0
+E_BIN_WIDTH = 50.0
+PLANCK_NORM = math.pi**4 / 15.0
 
 
-def load_tips(tips_dir):
-    q = {}
-    for iso in range(1, 14):
-        p = os.path.join(tips_dir, f"q_iso{iso}.txt")
-        if not os.path.exists(p):
-            continue
-        ts, qs = [], []
-        with open(p) as f:
-            for line in f:
-                a, b = line.split()
-                ts.append(float(a)); qs.append(float(b))
-        q[iso] = (ts, qs)
-    return q
+def load_tips(tips_dir: Path) -> dict[int, tuple[list[float], list[float]]]:
+    result = {}
+    for path in sorted(tips_dir.glob("q_iso*.txt")):
+        isotopologue = int(path.stem.removeprefix("q_iso"))
+        rows = [tuple(map(float, line.split())) for line in path.read_text().splitlines()]
+        temperatures = [row[0] for row in rows]
+        partitions = [row[1] for row in rows]
+        if (len(rows) < 2500 or any(right <= left for left, right in
+                                    zip(temperatures, temperatures[1:])) or
+                any(right < left for left, right in zip(partitions, partitions[1:])) or
+                temperatures[0] > TREF):
+            raise ValueError(f"TIPS table is not a monotone covering table: {path}")
+        result[isotopologue] = (temperatures, partitions)
+    if not result:
+        raise ValueError("no TIPS tables found")
+    return result
 
 
-def qval(tips, iso, T):
-    ts, qs = tips[iso]
-    if T <= ts[0]:
-        return qs[0]
-    if T >= ts[-1]:
-        return qs[-1]
-    lo, hi = 0, len(ts) - 1
+def qval(tips: dict[int, tuple[list[float], list[float]]], iso: int,
+         temperature: float) -> float:
+    temperatures, partitions = tips[iso]
+    if not temperatures[0] <= temperature <= temperatures[-1]:
+        raise ValueError("temperature is outside TIPS coverage")
+    lo, hi = 0, len(temperatures) - 1
     while hi - lo > 1:
-        m = (lo + hi) // 2
-        if ts[m] <= T: lo = m
-        else: hi = m
-    f = (T - ts[lo]) / (ts[hi] - ts[lo])
-    return qs[lo] + f * (qs[hi] - qs[lo])
+        middle = (lo + hi) // 2
+        if temperatures[middle] <= temperature:
+            lo = middle
+        else:
+            hi = middle
+    fraction = ((temperature - temperatures[lo]) /
+                (temperatures[hi] - temperatures[lo]))
+    return partitions[lo] + fraction * (partitions[hi] - partitions[lo])
 
 
-def load_cells(path):
+def load_cells(path: Path) -> tuple[list[tuple[int, int, int, float, float, float, float]], dict[str, str]]:
     cells = []
-    meta = {}
-    with open(path) as f:
-        for line in f:
-            if line.startswith('#'):
-                parts = line[1:].split()
-                if len(parts) >= 2:
-                    meta[parts[0]] = ' '.join(parts[1:])
-                continue
-            p = line.split()
-            if len(p) != 8:
-                continue
-            cells.append((int(p[0]), float(p[3]), float(p[4]), float(p[5]), float(p[6])))
-    return cells, meta
+    metadata = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        if line.startswith("#"):
+            parts = line[1:].split()
+            if len(parts) >= 2:
+                metadata[parts[0]] = " ".join(parts[1:])
+            continue
+        parts = line.split()
+        if len(parts) != 8:
+            raise ValueError("visible histogram row is malformed")
+        cells.append((int(parts[0]), int(parts[1]), int(parts[2]),
+                      float(parts[3]), float(parts[4]), float(parts[5]),
+                      float(parts[6])))
+    if metadata.get("histogram_kind") != "exact_line_center_band":
+        raise ValueError("visible certificate requires an exact-line-selected histogram")
+    if int(metadata.get("cells", "-1")) != len(cells) or not cells:
+        raise ValueError("visible histogram cell count is invalid")
+    return cells, metadata
 
 
-def planck_w(nu, Tr):
-    x = C2 * nu / Tr
-    if x > 700.0:
-        return 0.0
-    return nu * nu * nu / math.expm1(x)
+def load_total_table(path: Path) -> dict[tuple[float, float], float]:
+    result = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        if line.startswith("#") or not line:
+            continue
+        gas, radiation, cross_section, _ = map(float, line.split())
+        result[(gas, radiation)] = cross_section
+    return result
 
 
-def planck_norm(Tr):
-    t = Tr / C2
-    return t ** 4 * (math.pi ** 4 / 15.0)
+def load_tail_cells(path: Path) -> tuple[list[tuple[int, int, float]], dict[str, str]]:
+    cells = []
+    metadata = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        if line.startswith("#"):
+            parts = line[1:].split()
+            if len(parts) >= 2:
+                metadata[parts[0]] = " ".join(parts[1:])
+            continue
+        parts = line.split()
+        if len(parts) != 4:
+            raise ValueError("visible Voigt-tail row is malformed")
+        cells.append((int(parts[0]), int(parts[1]), float(parts[2])))
+    if (metadata.get("histogram_kind") != "all_line_voigt_band_probability_upper" or
+            metadata.get("pressure_Pa") != "101325" or
+            int(metadata.get("cells", "-1")) != len(cells) or not cells):
+        raise ValueError("visible certificate requires the all-line one-atmosphere tail basis")
+    return cells, metadata
 
 
-def main():
-    hist, tips_dir = sys.argv[1], sys.argv[2]
-    tlo, thi, tstep = 300.0, 2500.0, 100.0
-    args = sys.argv[3:]
-    for i, a in enumerate(args):
-        if a == '--tlo': tlo = float(args[i + 1])
-        elif a == '--thi': thi = float(args[i + 1])
-        elif a == '--tstep': tstep = float(args[i + 1])
-
-    tips = load_tips(tips_dir)
-    cells, meta = load_cells(hist)
-    print(f"# cells {len(cells)}  (un-pruned: {meta.get('cells','?')})")
-    print(f"# visible band {VIS_LO_WN:.1f}-{VIS_HI_WN:.1f} cm^-1 (380-780 nm)")
-    print(f"# source records_read {meta.get('records_read','?')}")
-    print()
-    print(f"{'T_gas':>7} {'T_rad':>7} {'kP_total':>13} {'kP_visible':>13} {'vis_fraction':>13}")
-
-    worst_frac = 0.0
-    worst_at = None
-    max_vis_abs = 0.0
-    T = tlo
-    temps = []
-    while T <= thi + 1e-9:
-        temps.append(T); T += tstep
-
-    for Tg in temps:
-        st = []
-        for iso, sumA, meanE, meanE2, meanNu in cells:
-            if iso not in tips:
-                st.append(0.0); continue
-            varE = max(0.0, meanE2 - meanE * meanE)
-            x = C2 / Tg
-            corr = 1.0 + 0.5 * x * x * varE
-            s = (sumA * (qval(tips, iso, TREF) / qval(tips, iso, Tg))
-                 * math.exp(-x * meanE) * (1.0 - math.exp(-x * meanNu)) * corr)
-            st.append(s)
-        for Tr in temps:
-            norm = planck_norm(Tr)
-            tot = 0.0; vis = 0.0
-            for (iso, sumA, meanE, meanE2, meanNu), s in zip(cells, st):
-                w = s * planck_w(meanNu, Tr)
-                tot += w
-                if VIS_LO_WN <= meanNu <= VIS_HI_WN:
-                    vis += w
-            tot /= norm; vis /= norm
-            n1 = N_ATM / Tg
-            frac = (vis / tot) if tot > 0 else 0.0
-            if frac > worst_frac:
-                worst_frac = frac; worst_at = (Tg, Tr)
-            max_vis_abs = max(max_vis_abs, vis * n1 * 100.0)
-            if Tr in (temps[0], temps[len(temps) // 2], temps[-1]):
-                print(f"{Tg:7.0f} {Tr:7.0f} {tot * n1 * 100.0:13.5e} "
-                      f"{vis * n1 * 100.0:13.5e} {frac:13.5e}")
-
-    print()
-    print(f"# WORST visible fraction of kappa_P over domain: {worst_frac:.6e} at "
-          f"T_gas={worst_at[0]:.0f} K, T_rad={worst_at[1]:.0f} K")
-    print(f"# MAX absolute visible-band kappa_P: {max_vis_abs:.6e} 1/(m*atm)")
+def planck_weight(wavenumber: float, temperature: float) -> float:
+    x = C2 * wavenumber / temperature
+    return (wavenumber**3 / math.expm1(x) /
+            ((temperature / C2)**4 * PLANCK_NORM))
 
 
-if __name__ == '__main__':
+def observed_strength(cell: tuple[int, int, int, float, float, float, float],
+                      gas_temperature: float,
+                      tips: dict[int, tuple[list[float], list[float]]]) -> float:
+    iso, _, _, sum_a, mean_e, mean_e2, mean_nu = cell
+    variance = max(0.0, mean_e2 - mean_e * mean_e)
+    inverse_temperature = C2 / gas_temperature
+    correction = 1.0 + 0.5 * inverse_temperature**2 * variance
+    return (sum_a * qval(tips, iso, TREF) / qval(tips, iso, gas_temperature) *
+            math.exp(-inverse_temperature * mean_e) *
+            (1.0 - math.exp(-inverse_temperature * mean_nu)) * correction)
+
+
+def continuous_absorption_upper(
+        cells: list[tuple[int, int, float]],
+        tips: dict[int, tuple[list[float], list[float]]], tlo: float, thi: float,
+        band_lo: float, band_hi: float, gas_interval: float) -> float:
+    # For the normalized Planck weight in this band, x/(1-exp(-x)) > 4,
+    # hence it increases with T_r.  At fixed T_r, x/(1-exp(-x)) > 3,
+    # hence it decreases with nu.  This proves the per-bin maximum used below.
+    smallest_x = C2 * band_lo / thi
+    ratio = smallest_x / (1.0 - math.exp(-smallest_x))
+    if ratio <= 4.0:
+        raise ValueError("visible-domain Planck monotonicity precondition failed")
+
+    gas_intervals = []
+    lower = tlo
+    while lower < thi:
+        upper = min(thi, lower + gas_interval)
+        gas_intervals.append((lower, upper))
+        lower = upper
+
+    total_upper = 0.0
+    planck_upper = planck_weight(band_lo, thi)
+    for iso, e_bin, sum_a_stim_tail in cells:
+        if (iso not in tips or not math.isfinite(sum_a_stim_tail) or
+                sum_a_stim_tail < 0.0):
+            raise ValueError("visible histogram has invalid cell data")
+        e_lower = e_bin * E_BIN_WIDTH
+        q_reference = qval(tips, iso, TREF)
+        gas_upper = 0.0
+        for interval_lower, interval_upper in gas_intervals:
+            # Each factor is bounded in its known monotone direction.  Their
+            # extrema need not occur at one temperature; multiplying them is
+            # deliberately conservative and covers every interior state.
+            candidate = (
+                N_ATM / interval_lower * 100.0 *
+                q_reference / qval(tips, iso, interval_lower) *
+                math.exp(-C2 * e_lower / interval_upper))
+            gas_upper = max(gas_upper, candidate)
+        total_upper += sum_a_stim_tail * gas_upper * planck_upper
+    return math.nextafter(total_upper, math.inf)
+
+
+def certificate(args: argparse.Namespace) -> dict:
+    cells, metadata = load_cells(args.visible_histogram)
+    tail_cells, tail_metadata = load_tail_cells(args.visible_tail_histogram)
+    tips = load_tips(args.tips)
+    total = load_total_table(args.total_table)
+    band_lo = float(metadata["visible_band_lo_cm-1"])
+    band_hi = float(metadata["visible_band_hi_cm-1"])
+    if not math.isclose(band_lo, args.band_lo, rel_tol=0.0, abs_tol=5.0e-8) or not math.isclose(
+            band_hi, args.band_hi, rel_tol=0.0, abs_tol=5.0e-8):
+        raise ValueError("visible histogram band does not match the declared band")
+    if (tail_metadata.get("visible_band_lo_cm-1") != metadata["visible_band_lo_cm-1"] or
+            tail_metadata.get("visible_band_hi_cm-1") != metadata["visible_band_hi_cm-1"]):
+        raise ValueError("visible centre and Voigt-tail bases have different bands")
+
+    maximum_fraction = 0.0
+    maximum_absorption = 0.0
+    maximum_fraction_at = None
+    maximum_absorption_at = None
+    temperatures = [float(value) for value in range(int(args.tlo), int(args.thi) + 1, 100)]
+    if temperatures[-1] != args.thi:
+        temperatures.append(args.thi)
+    for gas_temperature in temperatures:
+        strengths = [observed_strength(cell, gas_temperature, tips) for cell in cells]
+        number_density = N_ATM / gas_temperature
+        for radiation_temperature in temperatures:
+            visible_cross_section = sum(
+                strength * planck_weight(cell[6], radiation_temperature)
+                for cell, strength in zip(cells, strengths))
+            absorption = visible_cross_section * number_density * 100.0
+            total_cross_section = total.get((gas_temperature, radiation_temperature))
+            if total_cross_section is None or total_cross_section <= 0.0:
+                raise ValueError("total table lacks a positive 100 K validation knot")
+            fraction = visible_cross_section / total_cross_section
+            if fraction > maximum_fraction:
+                maximum_fraction = fraction
+                maximum_fraction_at = [gas_temperature, radiation_temperature]
+            if absorption > maximum_absorption:
+                maximum_absorption = absorption
+                maximum_absorption_at = [gas_temperature, radiation_temperature]
+
+    upper = continuous_absorption_upper(
+        tail_cells, tips, args.tlo, args.thi, band_lo, band_hi, args.gas_bound_interval)
+    if upper < maximum_absorption:
+        raise ValueError("continuous visible bound is below the observed maximum")
+    return {
+        "schema": "rise-hitemp-visible-certificate-v1",
+        "species": args.species,
+        "temperature_domain_K": [args.tlo, args.thi],
+        "bounded_renderer_wavenumber_domain_cm-1": [band_lo, band_hi],
+        "exact_selected_line_count": int(metadata["visible_band_line_count"]),
+        "histogram_cell_count": len(cells),
+        "all_line_voigt_tail_cell_count": len(tail_cells),
+        "observed_100K_lattice": {
+            "maximum_fraction_of_total_planck_mean": maximum_fraction,
+            "maximum_fraction_at_K": maximum_fraction_at,
+            "maximum_absorption_per_m_atm": maximum_absorption,
+            "maximum_absorption_at_K": maximum_absorption_at,
+        },
+        "continuous_upper_absorption_per_m_atm": upper,
+        "continuous_bound_method": (
+            "all HITEMP lines; one-atmosphere Voigt band probability bounded by a "
+            "Cauchy interval plus Gaussian tail union bound using worst air/self width, "
+            "temperature exponent, pressure shift and lightest-isotopologue Doppler width; "
+            "then monotone E/T/Q bounds over 50 K gas intervals and the exact visible-band "
+            "normalized-Planck-weight maximum over the radiation-temperature interval"),
+        "gas_bound_interval_K": args.gas_bound_interval,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("visible_histogram", type=Path)
+    parser.add_argument("visible_tail_histogram", type=Path)
+    parser.add_argument("tips", type=Path)
+    parser.add_argument("--total-table", required=True, type=Path)
+    parser.add_argument("--species", required=True, choices=("H2O", "CO2"))
+    parser.add_argument("--band-lo", required=True, type=float)
+    parser.add_argument("--band-hi", required=True, type=float)
+    parser.add_argument("--tlo", type=float, default=300.0)
+    parser.add_argument("--thi", type=float, default=2500.0)
+    parser.add_argument("--gas-bound-interval", type=float, default=50.0)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    if (args.tlo != int(args.tlo) or args.thi != int(args.thi) or
+            args.tlo < TREF or args.thi <= args.tlo or args.gas_bound_interval <= 0.0):
+        raise ValueError("invalid visible-certificate temperature domain")
+    result = json.dumps(certificate(args), indent=1, sort_keys=True) + "\n"
+    if args.output:
+        args.output.write_text(result, encoding="utf-8")
+    else:
+        print(result, end="")
+
+
+if __name__ == "__main__":
     main()

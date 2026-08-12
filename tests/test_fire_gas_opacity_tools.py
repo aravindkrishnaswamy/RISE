@@ -410,7 +410,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         relabeled["canonical_payload_without_identity_sha256"] = hashlib.sha256(
             (json.dumps(payload, sort_keys=True, separators=(",", ":"),
                         ensure_ascii=False, allow_nan=False) + "\n").encode()).hexdigest()
-        with self.assertRaisesRegex(ValueError, "externally pinned identity"):
+        with self.assertRaisesRegex(ValueError, "non-operational"):
             evaluate_species_planck_mean(
                 relabeled, "H2O", 0.0, 300.0, 300.0, 101325.0)
 
@@ -479,7 +479,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bad-production.json"
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "pending or non-concrete"):
+            with self.assertRaisesRegex(ValueError, "production generation is retired"):
                 load_verified_manifest(path, FIXTURE)
             first = Path(directory) / "a.py"
             second = Path(directory) / "b.py"
@@ -513,7 +513,7 @@ class FireGasOpacityToolsTest(unittest.TestCase):
                 "Rothman et al. 2010, DOI 10.1016/j.jqsrt.2010.05.001"]
             manifest["sources"][0]["partition_sums"]["citation"] = "PENDING"
             path.write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "partition-sum citation"):
+            with self.assertRaisesRegex(ValueError, "production generation is retired"):
                 load_verified_manifest(path, FIXTURE)
 
     def test_production_inventory_and_em2c_path_grid_are_independently_pinned(self) -> None:
@@ -552,102 +552,25 @@ class FireGasOpacityToolsTest(unittest.TestCase):
             "Rothman et al. 2010, DOI 10.1016/j.jqsrt.2010.05.001"]
         manifest["original_source_citations"] = [
             "HITEMP original sources, https://hitran.org/hitemp/"]
-        manifest["finite_path_emissivity_grid_qualification"][
-            "path_lengths_m"] = list(EM2C_PATH_LENGTHS_M)
         for source in manifest["sources"]:
             source["partition_sums"]["citation"] = (
                 "Gamache et al. 2021, DOI 10.1016/j.jqsrt.2021.107713")
-
-        def qualified_certificate(grid, spectra, temperatures, paths,
-                                  remaining_limit, contraction_limit):
-            return {
-                "kind": "finite_volume_h_2h_4h_nonlinear_emissivity_v1",
-                "path_lengths_m": list(paths),
-                "sample_count": len(spectra) * len(temperatures) * len(paths),
-                "maximum_adjacent_h_2h_relative_difference": 0.0,
-                "maximum_contraction_ratio": 0.0,
-                "maximum_allowed_contraction_ratio": contraction_limit,
-                "maximum_estimated_remaining_relative_error": 0.0,
-                "maximum_allowed_estimated_remaining_relative_error": remaining_limit,
-                "qualified": True,
-            }
-
         with tempfile.TemporaryDirectory() as directory:
-            library = Path(directory) / "libfire-opacity-native.so"
-            output = Path(directory) / "production.json"
-            build_native(library)
-            expected_counts = {"H2O": 3, "CO2": 2}
-            with (mock.patch(
-                    "generate_fire_gas_opacity_record.load_verified_manifest",
-                    return_value=(manifest, FIXTURE)),
-                  mock.patch(
-                    "fetch_verify_hitemp_inputs.load_verified_manifest",
-                    return_value=(manifest, FIXTURE)),
-                  mock.patch(
-                    "generate_fire_gas_opacity_record.EXPECTED_ARCHIVE_LINE_COUNTS",
-                    expected_counts),
-                  mock.patch(
-                    "generate_fire_gas_opacity_record.finite_path_emissivity_refinement_certificate",
-                    side_effect=qualified_certificate)):
-                verify_and_generate(manifest_path, FIXTURE, output, library)
-                table = json.loads(output.read_text(encoding="utf-8"))
-                identity = table["canonical_payload_without_identity_sha256"]
-                validate_opacity_table(table, expected_payload_identity=identity)
-                self.assertGreater(evaluate_species_planck_mean(
-                    table, "H2O", 0.0, 300.0, 300.0, 101325.0,
-                    expected_payload_identity=identity), 0.0)
-                with self.assertRaisesRegex(ValueError, "axis knots only"):
-                    evaluate_species_planck_mean(
-                        table, "H2O", 0.5, 300.0, 300.0, 101325.0,
-                        expected_payload_identity=identity)
-                with self.assertRaisesRegex(ValueError, "axis knots only"):
-                    evaluate_species_kappa_bin(
-                        table, "H2O", 0.0, 700.0,
-                        table["spectral_grid_cm-1"][0], 101325.0,
-                        expected_payload_identity=identity)
-                h2o = next(item for item in table["species_tables"]
-                           if item["species"] == "H2O")
-                self.assertEqual(len(spectrum_at_temperature(
-                    table, h2o, 300.0, 0.0)),
-                    len(table["spectral_grid_cm-1"]))
-                with self.assertRaisesRegex(ValueError, "exact production-table axis"):
-                    spectrum_at_temperature(table, h2o, 700.0, 0.0)
-
-                bad_count = copy.deepcopy(table)
-                h2o_bad = next(item for item in bad_count["species_tables"]
-                               if item["species"] == "H2O")
-                h2o_bad["archive_line_count"] = 4
-                payload = dict(bad_count)
-                payload.pop("canonical_payload_without_identity_sha256")
-                bad_count["canonical_payload_without_identity_sha256"] = hashlib.sha256(
-                    canonical_json_bytes(payload)).hexdigest()
-                with self.assertRaisesRegex(ValueError, "archive line count"):
-                    validate_opacity_table(
-                        bad_count, expected_payload_identity=bad_count[
-                            "canonical_payload_without_identity_sha256"])
-
-            with (mock.patch(
-                    "generate_fire_gas_opacity_record.load_verified_manifest",
-                    return_value=(manifest, FIXTURE)),
-                  mock.patch(
-                    "generate_fire_gas_opacity_record.EXPECTED_ARCHIVE_LINE_COUNTS",
-                    {"H2O": 4, "CO2": 2}),
-                  mock.patch(
-                    "generate_fire_gas_opacity_record.finite_path_emissivity_refinement_certificate",
-                    side_effect=qualified_certificate)):
-                with self.assertRaisesRegex(ValueError, "archive line count"):
-                    generate(manifest_path, FIXTURE, library)
-
-            oversized = copy.deepcopy(manifest)
-            oversized["gas_temperatures_K"] = [300.0 + 25.0 * index
-                                                for index in range(105)]
-            oversized["self_broadening_mole_fractions"] = [index / 9.0
-                                                            for index in range(10)]
+            retired_manifest = Path(directory) / "retired-production.json"
+            retired_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "production generation is retired"):
+                load_verified_manifest(retired_manifest, FIXTURE)
             with mock.patch(
                     "generate_fire_gas_opacity_record.load_verified_manifest",
-                    return_value=(oversized, FIXTURE)):
-                with self.assertRaisesRegex(ValueError, "hard resource budget"):
-                    generate(manifest_path, FIXTURE, library)
+                    return_value=(manifest, FIXTURE)):
+                with self.assertRaisesRegex(ValueError, "production generation is retired"):
+                    generate(retired_manifest, FIXTURE)
+            retired_table = json.loads(
+                (REPO / "docs/data/fire_gas_opacity_synthetic_v1.json").read_text())
+            retired_table["synthetic"] = False
+            retired_table["record_status"] = "production_derived"
+            with self.assertRaisesRegex(ValueError, "non-operational"):
+                validate_opacity_table(retired_table)
 
     def test_empty_or_foreign_line_archives_fail_closed(self) -> None:
         manifest = json.loads((FIXTURE / "synthetic_manifest.json").read_text())

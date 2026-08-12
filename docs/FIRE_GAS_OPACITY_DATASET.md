@@ -6,8 +6,9 @@ the HITEMP line lists. This document records exactly what was done, so that
 credit goes to HITRAN*online* and the specific publications, and so the
 dataset can be regenerated and audited from first sources.
 
-**Status: DRAFT dataset for owner review — not yet an adopted §8 record.** The
-certified record (RISE-CBOR64-v1 encoding, record ID, certified domains,
+**Status: ADOPTED dataset and §8 record.** The certified record
+(RISE-CBOR64-v1, SHA-256
+`837840ed6c19bbf87096e428c897a9052615d7bbcf4114b460b91d4f9ecddd15`, certified domains,
 derivative enclosures, out-of-domain rejection) is produced from this data by
 the fire-simulation record generator; this document and the tables under
 [data/gas_opacity/](data/gas_opacity/) are its input and its provenance trail.
@@ -142,8 +143,9 @@ normalizer:
 
 giving a per-molecule cross-section in cm²/molecule; the tables also carry
 the 1 atm partial-pressure form in m⁻¹·atm⁻¹ for comparison with published
-fits. Partition sums Q(T) are per-isotopologue TIPS-2021, linearly
-interpolated on its 1 K grid (matching the reference implementation).
+fits. Partition sums Q(T) are per-isotopologue TIPS-2021, interpolated with a
+monotone C1 PCHIP on its 1 K grid. Every tabulated knot is reproduced exactly,
+while the continuous form supplies the analytic derivative required by the solver.
 HITRAN intensities already include terrestrial isotopologue abundance, so
 summing isotopologues yields natural-abundance gas absorption.
 
@@ -153,7 +155,10 @@ summing isotopologues yields natural-abundance gas absorption.
 |---|---|
 | [tools/hitemp_reduce.cpp](../tools/hitemp_reduce.cpp) | streams `.par` records → spectral-energy histogram |
 | [tools/hitemp_planck_mean.cpp](../tools/hitemp_planck_mean.cpp) | histogram → κ_P(T_gas,T_r) table; prunes with measured error |
-| [tools/hitemp_visible_bound.py](../tools/hitemp_visible_bound.py) | 380–780 nm upper bound from the **un-pruned** histogram |
+| [tools/hitemp_visible_bound.py](../tools/hitemp_visible_bound.py) | continuous visible upper bound from the exact-line-selected, **un-pruned** histogram |
+| [tools/generate_fire_gas_opacity_planck_record.py](../tools/generate_fire_gas_opacity_planck_record.py) | full knots + analytic basis derivatives → canonical C1 record and derivative enclosures |
+| [tools/fetch_verify_hitemp_planck_inputs.py](../tools/fetch_verify_hitemp_planck_inputs.py) | owner-byte verification and full source→basis→surface reproduction |
+| [tools/crosscheck_fire_gas_opacity_em2c_thin.py](../tools/crosscheck_fire_gas_opacity_em2c_thin.py) | thin-end EM2C corroboration (not qualification) |
 
 Regeneration: obtain the pinned files from HITRAN*online*, verify SHA-256
 against `hitemp_sources_v1.json`, then
@@ -228,24 +233,31 @@ error.
 
 ### 4.3 380–780 nm upper bound (§12 item 5)
 
-Computed from the **un-pruned** histogram, since pruning only removes
-absorption and would understate a bound:
+The reducer selects exact line centres before binning for the observed values,
+so a cell straddling a band edge cannot hide an in-band line. The certificate
+also includes **every out-of-band line**: at one atmosphere it bounds Voigt
+leakage into 380–780 nm by a Gaussian second-moment tail plus a maximum-Cauchy-
+density interval bound using the worst air/self width, temperature exponent,
+pressure shift and lightest-isotopologue Doppler width. The resulting tail
+weights then receive monotone Q(T), Boltzmann, number-density and normalized-
+Planck bounds over the complete continuous 300–2500 K rectangle.
 
-| | worst visible fraction of κ_P | max absolute visible κ_P |
-|---|---|---|
-| H₂O | 1.694×10⁻⁵ (at T_gas = T_r = 2500 K) | 6.973×10⁻⁵ m⁻¹·atm⁻¹ |
-| CO₂ | 1.522×10⁻¹⁰ (at T_gas = T_r = 2500 K) | 1.424×10⁻⁹ m⁻¹·atm⁻¹ |
+| | dataset-reported visible fraction | exact-selection observed maximum | certified continuous absolute upper bound |
+|---|---|---|---|
+| H₂O, 380–780 nm | 1.694×10⁻⁵ | 6.97348×10⁻⁵ m⁻¹·atm⁻¹ | 9.60685×10⁻⁴ m⁻¹·atm⁻¹ |
+| CO₂, reported centres 565–780 nm; modeled wings 380–780 nm | 1.522×10⁻¹⁰ | 1.42396×10⁻⁹ m⁻¹·atm⁻¹ | 2.77118×10⁻⁴ m⁻¹·atm⁻¹ |
 
-Both worst cases occur at the hottest corner of the domain, as expected.
-Water vapour's visible-band absorption is ~4 orders of magnitude below
-in-flame soot extinction and CO₂'s is ~9 orders below, satisfying the
-design's requirement that the gas table be bounded negligible in the
-renderer's 380–780 nm band by a wide margin.
+The centre-selected observations are much smaller than the deliberately loose
+wing certificates. The predictive gate uses the latter: both species remain
+below 10⁻³ m⁻¹·atm⁻¹ over the renderer's 380–780 nm band, still negligible
+against in-flame soot extinction without relying on the sampled magnitudes.
 
 **Caveat that must travel with the CO₂ number:** the HITEMP-2024 CO₂ line
 list ends at 17,696.93 cm⁻¹ (≈565 nm), so the 380–565 nm portion of the
-band contains **no tabulated CO₂ lines at all**. The CO₂ figure above is
-therefore a bound over 565–780 nm only, and the record must carry the
+band contains **no tabulated CO₂ line centres at all**. The reported fraction
+and centre-selected observation therefore cover 565–780 nm only. The
+all-line Voigt-wing certificate covers modeled leakage across 380–780 nm, and
+the record separately carries the
 *physical* negligibility argument for the remainder (CO₂ has no electronic
 absorption bands in the visible) rather than implying measured coverage
 there. This is the same gap flagged in

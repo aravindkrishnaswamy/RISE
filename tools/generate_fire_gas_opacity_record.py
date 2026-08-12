@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate derived HITEMP CO2/H2O spectra and two-temperature Planck means."""
+"""Generate quarantined line-shaped spectra for non-SS3.5 research only.
+
+This Voigt/LBL path is not the production fire-solver path.  It remains for
+transmission/band-resolved experiments and its synthetic regression suite.
+Section 3.5 records come from generate_fire_gas_opacity_planck_record.py.
+"""
 
 from __future__ import annotations
 
@@ -175,6 +180,8 @@ def validate_opacity_table(table: dict, *, allow_synthetic: bool = False,
     if (synthetic, status) not in {
             (True, "synthetic_test_only"), (False, "production_derived")}:
         raise ValueError("opacity table status/synthetic pair is invalid")
+    if not synthetic:
+        raise ValueError("Voigt/LBL production tables are retired and non-operational")
     if synthetic and not allow_synthetic:
         raise ValueError("synthetic opacity table is forbidden for operational use")
     identity = table.get("canonical_payload_without_identity_sha256")
@@ -411,6 +418,8 @@ def load_verified_manifest(path: Path, input_root: Path | None) -> tuple[dict, P
     status = manifest.get("status")
     if status not in {"synthetic_test_fixture", "production_pinned"}:
         raise ValueError("HITEMP inputs remain owner-download pending; no table can be generated")
+    if status == "production_pinned":
+        raise ValueError("Voigt/LBL production generation is retired; use the adopted Planck-mean path")
     root = input_root.resolve() if input_root else path.parent.resolve()
     if status == "production_pinned" and manifest.get("synthetic") is not False:
         raise ValueError("production HITEMP manifest must explicitly declare synthetic=false")
@@ -604,6 +613,8 @@ def evaluate_species_kappa_bin(table: dict, species_name: str,
 def generate(manifest_path: Path, input_root: Path | None,
              native_library: Path | None = None) -> dict:
     manifest, root = load_verified_manifest(manifest_path, input_root)
+    if not manifest["synthetic"]:
+        raise ValueError("Voigt/LBL production generation is retired; use the adopted Planck-mean path")
     if not manifest["synthetic"] and native_library is None:
         raise ValueError("production HITEMP generation requires the native accumulator")
     if native_library is not None and not native_library.is_file():

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Cross-check a generated opacity table against the CC-BY EM2C-SNB data.
+"""Cross-check a quarantined line-shaped table against CC-BY EM2C-SNB data.
+
+This finite-path harness is retained for transmission research only and is
+not a qualification gate for section 3.5.  The production record uses the
+separate thin-limit Planck-mean corroboration harness.
 
 Dataset: DOI 10.17632/x5wjzk6sjs.1.  The Mendeley bytes are independent
 reference inputs and are not required to live in the repository.
