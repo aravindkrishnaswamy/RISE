@@ -1414,6 +1414,32 @@ void ViewportBridge::agentSetImageGenerator(const QString& providerName, const Q
         };
     }
 
+    // S2 (2026-08-11): the TEXT sibling -- `build_element`'s builder
+    // completion, from the SAME provider name, key and shared transport,
+    // installed on the SAME three sessions in the SAME loop below, so a
+    // credential change reinstalls both capabilities or neither.  Mirrors
+    // macOS RISEViewportBridge's identical block.
+    const Agent::ChatTextCompleter wireText =
+        Agent::MakeChatTextCompleter(provider, key, transport);
+
+    Agent::AgentSession::AgentTextCompleter comp;
+    comp.providerName = wireText.providerName;
+    comp.supported     = wireText.supported;
+    comp.modelId       = wireText.modelId;
+    if (wireText.supported) {
+        const std::function<Agent::ChatTextCompletionOutcome(const std::string&)> rawComplete =
+            wireText.complete;
+        comp.complete =
+            [rawComplete](const std::string& prompt) -> Agent::AgentSession::AgentTextCompletionOutcome {
+            Agent::AgentSession::AgentTextCompletionOutcome out;
+            const Agent::ChatTextCompletionOutcome r = rawComplete(prompt);
+            out.ok    = r.ok;
+            out.text  = r.text;
+            out.error = r.error;
+            return out;
+        };
+    }
+
     // Every in-app tool-call-reachable session, mirroring macOS
     // RISEViewportBridge's identical three-dispatcher loop.
     Agent::AgentRpcDispatcher* dispatchers[] = {
@@ -1421,6 +1447,7 @@ void ViewportBridge::agentSetImageGenerator(const QString& providerName, const Q
     for (Agent::AgentRpcDispatcher* d : dispatchers) {
         if (d && d->Session()) {
             d->Session()->SetImageGenerator(gen);
+            d->Session()->SetTextCompleter(comp);
         }
     }
 }

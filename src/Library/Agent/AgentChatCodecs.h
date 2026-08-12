@@ -1051,6 +1051,151 @@ namespace RISE
 			const std::string& providerName,
 			const std::string& apiKey,
 			std::shared_ptr<IChatHttpTransport> transport );
+
+		//--------------------------------------------------------------
+		// Arc 79 slice S2 (2026-08-11) -- PROVIDER TEXT COMPLETION, the
+		// wire half of `build_element`.  The TEXT SIBLING of the image
+		// block above, function for function, and deliberately shaped
+		// the same way so the two read as one facility:
+		//
+		//   ChatProviderSupportsImageGeneration <-> ...SupportsTextCompletion
+		//   ChatImageGenerationModelId          <-> ChatTextCompletionModelId
+		//   BuildImageGenerationRequest         <-> BuildTextCompletionRequest
+		//   ParseImageGenerationResponse        <-> ParseTextCompletionResponse
+		//   ChatImageGenerator/MakeChat...      <-> ChatTextCompleter/MakeChat...
+		//
+		// WHY IT EXISTS (measured, docs/agentic-redesign/79-clean-room-
+		// construction.md sec 1).  The same request to the same model
+		// yields 18.0 SDF parts in a SHORT context, 7.7 with 60k of the
+		// agent's own skills prepended, and 1-2 inside a live session.
+		// Construction richness is bounded by CONTEXT VOLUME, not by
+		// knowledge -- so `build_element` asks the session's own provider
+		// for ONE element in ONE fresh, minimal completion instead of
+		// asking the loaded session to author it.
+		//
+		// SAME KEY DISCIPLINE, VERBATIM.  The key rides ONLY in the
+		// provider's own auth header (the identical header name and
+		// SanitizeHeaderValue call that provider's CHAT codec uses),
+		// never a query parameter, never the body, never a log.  Parse
+		// failures name a SHAPE and never echo a body substring: a
+		// provider body can carry the prompt back and must not be
+		// spliced into a result the model reads.
+		//
+		// PROVIDER IDENTITY IS A STRING, same accepted spellings and the
+		// same never-guess-an-endpoint rule as the image block.
+		//--------------------------------------------------------------
+
+		//! Does `providerName` have a wired single-turn text-completion
+		//! endpoint?  true for "anthropic", "gemini", "openai" and "xai";
+		//! false for every other name, INCLUDING "local" (whose base URL
+		//! is a launch-time configuration this TU deliberately does not
+		//! read) and every unrecognized one.
+		bool ChatProviderSupportsTextCompletion( const std::string& providerName );
+
+		//! The TEXT model id this build will ask `providerName` for --
+		//! that provider's own chat default, overridden by an environment
+		//! variable so a hand test can retarget without recompiling:
+		//!   anthropic -> RISE_BUILDER_MODEL_ANTHROPIC (default "claude-sonnet-5")
+		//!   gemini    -> RISE_BUILDER_MODEL_GEMINI    (default "gemini-3.6-flash")
+		//!   openai    -> RISE_BUILDER_MODEL_OPENAI    (default "gpt-5.6-terra")
+		//!   xai       -> RISE_BUILDER_MODEL_XAI       (default "grok-4.5")
+		//! The defaults are the SAME ids the four chat codecs declare as
+		//! their DefaultModelId, so the builder completion runs on the
+		//! same model line the session itself runs on unless a caller
+		//! says otherwise.  Empty string for a provider with no
+		//! capability.  The env read is CONFIG, not a credential -- the
+		//! same distinction the RISE_IMAGE_* reads are documented under;
+		//! no key is ever read from the environment here.
+		std::string ChatTextCompletionModelId( const std::string& providerName );
+
+		//! The output-token budget every text completion asks for.  One
+		//! builder answer is a handful of chunks (the hand simulation's
+		//! richest element was 15 SDF parts plus a material, a painter and
+		//! an object), but the reasoning models on three of the four
+		//! providers spend output tokens on reasoning before the first
+		//! visible character, so the budget is set well above the visible
+		//! answer's size rather than at it.
+		unsigned int ChatTextCompletionMaxTokens();
+
+		//! Build the POST that asks `providerName` for ONE single-turn
+		//! completion of `prompt`.  There is no system prompt and no tool
+		//! table by construction: a fresh minimal context is the entire
+		//! point of the mechanism, so this builder has no parameter that
+		//! could add one.  `apiKey` rides in the provider's OWN auth
+		//! header (`x-api-key` + `anthropic-version` for Anthropic,
+		//! `x-goog-api-key` for Gemini, `Authorization: Bearer` for OpenAI
+		//! and xAI) -- never a query parameter, never a log.  Returns
+		//! false with a factual `outError` when the provider has no
+		//! capability, the model id resolved empty, or `prompt` is empty.
+		//!
+		//! Endpoint overrides, for the same no-recompile hand-test reason
+		//! as the model ids (all FULL urls except Gemini's, which is the
+		//! MODELS BASE with "/<model>:generateContent" appended exactly as
+		//! GeminiChatCodec::BuildRequest does):
+		//!   RISE_BUILDER_ENDPOINT_ANTHROPIC (default "https://api.anthropic.com/v1/messages")
+		//!   RISE_BUILDER_ENDPOINT_GEMINI    (default "https://generativelanguage.googleapis.com/v1beta/models")
+		//!   RISE_BUILDER_ENDPOINT_OPENAI    (default "https://api.openai.com/v1/responses")
+		//!   RISE_BUILDER_ENDPOINT_XAI       (default "https://api.x.ai/v1/chat/completions")
+		bool BuildTextCompletionRequest( const std::string& providerName,
+		                                 const std::string& modelId,
+		                                 const std::string& apiKey,
+		                                 const std::string& prompt,
+		                                 ChatHttpRequest& outRequest,
+		                                 std::string& outError );
+
+		//! Pull the assistant TEXT out of a 200-OK response body.
+		//! Anthropic: `content[]`, every {type:"text"} block concatenated.
+		//! Gemini: `candidates[0].content.parts[]`, every {text} part
+		//! concatenated.  OpenAI (responses API): `output_text` when the
+		//! provider sent that convenience field, else `output[]` ->
+		//! `content[]` -> every {type:"output_text"} block concatenated.
+		//! xAI (chat-completions): `choices[0].message.content`.
+		//! Returns false with a factual, HEADER-FREE and BODY-FREE
+		//! `outError` otherwise -- the same rule
+		//! ParseImageGenerationResponse states and for the same reason.
+		//! An empty-but-well-formed answer is a FAILURE here (a builder
+		//! that returned nothing is not a builder that succeeded).
+		bool ParseTextCompletionResponse( const std::string& providerName,
+		                                  const std::string& body,
+		                                  std::string& outText,
+		                                  std::string& outError );
+
+		//! One blocking text-completion attempt's outcome.  Mirrors
+		//! AgentSession::AgentTextCompletionOutcome's three fields exactly.
+		struct ChatTextCompletionOutcome
+		{
+			bool        ok = false;
+			std::string text;
+			std::string error;
+		};
+
+		//! The host-installable shape.  Mirrors
+		//! AgentSession::AgentTextCompleter's three data fields plus
+		//! `complete`, for the identical layering reason ChatImageGenerator
+		//! is a distinct type from AgentSession::AgentImageGenerator: this
+		//! file stays independent of AgentSession.h and every caller does a
+		//! trivial 4-field copy at the installation point.
+		struct ChatTextCompleter
+		{
+			bool        supported = false;
+			std::string providerName;
+			std::string modelId;
+			std::function<ChatTextCompletionOutcome( const std::string& prompt )> complete;
+		};
+
+		//! Build the FULL host-installable text completer for
+		//! `providerName` -- the exact sibling of MakeChatImageGenerator,
+		//! with the same by-value key capture, the same shared_ptr
+		//! transport lifetime, the same never-throws contract, and the same
+		//! "reinstall after a credential change" requirement (see
+		//! AgentSession::SetTextCompleter).  When supported, `complete`
+		//! performs ONE synchronous BuildTextCompletionRequest ->
+		//! `transport`.Post -> ParseTextCompletionResponse round trip per
+		//! call.
+		ChatTextCompleter MakeChatTextCompleter(
+			const std::string& providerName,
+			const std::string& apiKey,
+			std::shared_ptr<IChatHttpTransport> transport );
 	}
 }
 

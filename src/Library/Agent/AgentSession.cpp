@@ -4217,6 +4217,34 @@ namespace RISE
 				}
 			}
 
+			// S2 (2026-08-11, clean-room construction): the FIRST-GEOMETRY
+			// refusal -- while the active element has no chunk of its own, the
+			// first geometry for it comes from build_element (design sec 4).
+			// Placed on the SAME terms as the two arms above (geometry-creating
+			// text only, same shared counter, same retriable=false) and mutually
+			// exclusive with the compose arm by phase.  It never fires on
+			// BuildElement's own insertion (see the predicate) and never on a
+			// session whose host installed no text completer, so it can only
+			// redirect construction toward a path that actually exists.
+			if( mBuildPhase == AgentBuildPhase::Pieces ) {
+				std::string s2Kind, s2Name;
+				if( ChunkTextCreatesGeometry_( chunkText, &s2Kind, &s2Name ) ) {
+					const std::string clause =
+						CheckFirstGeometryThroughCleanRoom_( "insert_chunk", &s1Fold.notice );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.retriable   = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = ReadHeadVersion();
+						r.kind        = s2Kind;
+						r.name        = s2Name;
+						r.message     = clause;
+						return r;
+					}
+				}
+			}
+
 			// R1c (2026-08-09, agent rasterizer allowlist): the InsertChunk arm
 			// of the gate, FIRST -- before E1's and before the authority
 			// branching -- because it is the cheapest of the three (a CST parse
@@ -4535,6 +4563,38 @@ namespace RISE
 							// The gate above may have tripped its OWN give-up on
 							// this same call; carry that notice too rather than
 							// lose it behind this refusal.
+							if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
+							out.push_back( e );
+						}
+						return out;
+					}
+				}
+			}
+
+			// S2 (2026-08-11, clean-room construction): the FIRST-GEOMETRY
+			// refusal, the third arm of the same phase counter, as its own
+			// up-front batch scan for the identical half-a-batch reason.  It
+			// shares s1GiveUpNotice with the compose arm above because the two
+			// are the same counter -- they cannot both fire on one call (one
+			// needs the Compose phase, the other the Pieces phase), so one
+			// notice variable is enough and cannot lose an event.
+			if( mBuildPhase == AgentBuildPhase::Pieces ) {
+				bool createsGeometry = false;
+				for( std::size_t i = 0; i < chunkTexts.size() && !createsGeometry; ++i )
+					createsGeometry = ChunkTextCreatesGeometry_( chunkTexts[i] );
+				if( createsGeometry ) {
+					const std::string clause =
+						CheckFirstGeometryThroughCleanRoom_( "insert_chunks", &s1GiveUpNotice );
+					if( !clause.empty() ) {
+						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+							AgentChunkResult e;
+							e.applied     = false;
+							e.retriable   = false;   // see InsertChunk's arm for why
+							e.rawCode     = 0;
+							e.status      = "rejected";
+							e.headVersion = head;
+							e.message     = clause;
 							if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
 							out.push_back( e );
 						}
@@ -6433,6 +6493,27 @@ namespace RISE
 			{
 				const std::string clause = CheckComposePhaseForCreate_( "replace_geometry_scaffold",
 				                                                         &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+			// (c) S2 fix-round (2026-08-11, P1): the FIRST-GEOMETRY clean-room
+			// check -- InsertGeometryScaffold gets this transitively through
+			// InsertChunks, but this verb splices the CST and commits by its
+			// own path (never reaching InsertChunk/InsertChunks), so without
+			// this call an active element with no attributed chunks could get
+			// its first geometry landed here instead of through
+			// build_element, then have the gate's "any attributed chunk lifts
+			// this permanently" rule disarm the clean room for that element
+			// for the rest of the session -- exactly the bypass design sec 4
+			// exists to prevent.  Unconditional: this verb always creates
+			// geometry, so it needs no ChunkTextCreatesGeometry_ predicate
+			// (unlike InsertChunk, which must distinguish geometry-creating
+			// text from everything else it also accepts).
+			{
+				const std::string clause = CheckFirstGeometryThroughCleanRoom_( "replace_geometry_scaffold",
+				                                                                  &s1Fold.notice );
 				if( !clause.empty() ) {
 					out.message = clause;
 					return out;
@@ -10830,6 +10911,1161 @@ namespace RISE
 			m += ". Chunks created from here are recorded against \"" + out.element +
 				"\", and finish_element closes it again. Elements with no finish recorded: " +
 				std::to_string( out.unfinished.size() ) + ".";
+			out.message = m;
+			return out;
+		}
+
+		//----------------------------------------------------------------------
+		// S2 (2026-08-11): CLEAN-ROOM CONSTRUCTION -- build_element and
+		// place_element.
+		//
+		// See AgentSession.h's block above AgentTextCompleter for the mechanism
+		// and docs/agentic-redesign/79-clean-room-construction.md for the
+		// measurement.  This is the whole implementation apart from the ONE
+		// call-site hook in the two hand-authoring insert verbs (InsertChunk,
+		// InsertChunks), each marked "S2 (2026-08-11)".
+		//
+		// PLACED HERE, below the arc-78 protocol, deliberately: every gate this
+		// slice adds is a THIRD ARM of RefuseForPhase_ above, and BuildElement's
+		// bbox report reuses the same ResolveIsolateObject filter FinishElement's
+		// isolate pick uses.
+		//----------------------------------------------------------------------
+
+		const char* AgentSession::LocalFrameContract()
+		{
+			// SENT TO THE BUILDER VERBATIM.  Requirements and facts only: what
+			// frame to author in, what to name things, what to include and what
+			// not to.  Nothing here says what the element should LOOK like or
+			// how much detail to put in it -- the whole point of the fresh
+			// context is that the builder decides that with its full attention.
+			return
+				"LOCAL FRAME -- build this element as if it stood alone:\n"
+				"1. ORIGIN AT THE BASE CENTRE. The element's lowest point sits at y = 0, "
+				"horizontally centred on x = 0, z = 0. Something that will end up airborne is "
+				"still authored base-at-origin; lift is placement, not construction.\n"
+				"2. +Y IS UP, AND THE ELEMENT FACES +Z (toward a camera on the +Z side).\n"
+				"3. HEIGHT BUDGET. Occupy roughly the requested height in Y. This is a request, "
+				"not a limit: the realised bounding box is measured and reported back to the "
+				"caller, and nothing is refused for missing it.\n"
+				"4. NAME PREFIX. Every chunk name begins with the required prefix given above. "
+				"This one IS enforced: a chunk whose name does not begin with it is rejected and "
+				"NOT renamed, because renaming would break the references between your own "
+				"chunks.\n"
+				"5. SELF-CONTAINED. Define your own painters and materials, and finish with at "
+				"least one standard_object binding a geometry to a material. Every name a chunk "
+				"references must be one you defined in this same answer.\n"
+				"6. DO NOT AUTHOR: cameras, lights, film, rasterizers, ground planes, or any "
+				"world placement. Those belong to the scene, not to this element, and a chunk "
+				"of those kinds will be rejected.";
+		}
+
+		std::string AgentSession::ElementChunkNamePrefix( const std::string& element )
+		{
+			std::string out;
+			bool pendingSep = false;
+			for( std::size_t i = 0; i < element.size(); ++i ) {
+				const unsigned char c = static_cast<unsigned char>( element[i] );
+				const bool alnum = ( c >= '0' && c <= '9' ) || ( c >= 'a' && c <= 'z' ) ||
+				                   ( c >= 'A' && c <= 'Z' );
+				if( alnum ) {
+					if( pendingSep && !out.empty() ) out += '_';
+					pendingSep = false;
+					out += static_cast<char>( ( c >= 'A' && c <= 'Z' ) ? ( c - 'A' + 'a' ) : c );
+				}
+				else {
+					pendingSep = true;
+				}
+			}
+			// An element name with no ASCII alphanumeric in it at all still
+			// needs a legal, STATED prefix -- the builder is told the literal
+			// string, so any deterministic answer works as long as the check
+			// and the prompt agree, which they do by both calling this.
+			if( out.empty() ) out = "element";
+			return out + "_";
+		}
+
+		void AgentSession::ExtractChunkTexts( const std::string& text,
+		                                       std::vector<std::string>& outChunks,
+		                                       std::vector<std::string>& outProblems )
+		{
+			outChunks.clear();
+			outProblems.clear();
+			if( text.empty() ) return;
+
+			// (1) Drop markdown fence LINES.  A provider asked for scene text
+			// very often wraps it in ``` fences; the fence is not part of any
+			// chunk and would otherwise sit in the prose the scan skips
+			// anyway -- removing it up front keeps the line numbers this
+			// function reports meaningful (a removed fence line is replaced by
+			// an EMPTY line, not deleted, so reported line numbers still match
+			// the builder's own answer).
+			std::string src;
+			src.reserve( text.size() );
+			{
+				std::size_t at = 0;
+				while( at <= text.size() ) {
+					std::size_t eol = text.find( '\n', at );
+					const bool last = ( eol == std::string::npos );
+					if( last ) eol = text.size();
+					const std::string line = text.substr( at, eol - at );
+					std::size_t b = 0, e = line.size();
+					while( b < e && ( line[b] == ' ' || line[b] == '\t' || line[b] == '\r' ) ) ++b;
+					while( e > b && ( line[e-1] == ' ' || line[e-1] == '\t' || line[e-1] == '\r' ) ) --e;
+					const bool fence = ( e - b ) >= 3 && line.compare( b, 3, "```" ) == 0;
+					if( !fence ) src += line;
+					if( !last ) src += '\n';
+					if( last ) break;
+					at = eol + 1;
+				}
+			}
+
+			// (2) The single-pass balanced-brace walk.  `lineOf` is computed on
+			// demand rather than tracked, because it is needed only when
+			// something is wrong.
+			const auto lineOf = [&src]( std::size_t pos ) -> int {
+				int line = 1;
+				for( std::size_t i = 0; i < pos && i < src.size(); ++i )
+					if( src[i] == '\n' ) ++line;
+				return line;
+			};
+			// Skip the two comment forms the CST lexer absorbs (`#` to
+			// end-of-line and `/* ... */`) so a brace inside a comment can
+			// neither open nor close a chunk.  Returns the index just past the
+			// comment, or `i` when there is no comment at `i`.
+			const auto skipComment = [&src]( std::size_t i ) -> std::size_t {
+				if( i >= src.size() ) return i;
+				if( src[i] == '#' ) {
+					const std::size_t nl = src.find( '\n', i );
+					return ( nl == std::string::npos ) ? src.size() : nl;
+				}
+				if( src[i] == '/' && i + 1 < src.size() && src[i+1] == '*' ) {
+					const std::size_t end = src.find( "*/", i + 2 );
+					return ( end == std::string::npos ) ? src.size() : ( end + 2 );
+				}
+				return i;
+			};
+			// S2 fix-round (2026-08-11, P2): the BACKWARD twin of `skipComment`,
+			// for the keyword scan below.  `k` is a boundary such that
+			// `src[k-1]` (when `k > 0`) is the nearest not-yet-skipped
+			// character to the left; returns the new boundary after skipping
+			// ONE trailing comment that ends exactly at `k`, or `k` unchanged
+			// when none does.  Without this, `keyword /* note */\n{` and
+			// `keyword # note\n{` -- both legal RISE syntax -- made the
+			// backward whitespace-only skip stop inside the comment body,
+			// mis-scanning the keyword (or finding none) and silently
+			// dropping a well-formed chunk; see the forward `skipComment`
+			// call at the matching site for why comments must be transparent
+			// to this walk in both directions.
+			const auto skipCommentBackward = [&src]( std::size_t k ) -> std::size_t {
+				// A block comment ending right at `k`: `src[k-2..k-1] == "*/"`.
+				// Find the matching `/*` and jump to its start; the minimum
+				// comment `/**/` is 4 chars, so `k >= 4` before searching.
+				if( k >= 4 && src[k-2] == '*' && src[k-1] == '/' ) {
+					const std::size_t start = src.rfind( "/*", k - 4 );
+					if( start != std::string::npos ) return start;
+				}
+				// A line comment covering `k`: walk back to the start of the
+				// current line and look for a `#` before `k` on it.  RISE
+				// keywords/identifiers never contain `#`, so the first `#` on
+				// the line is unambiguously the comment's start.
+				const std::size_t lineStart =
+					( k == 0 ) ? 0 : ( [&]() -> std::size_t {
+						const std::size_t nl = src.rfind( '\n', k - 1 );
+						return ( nl == std::string::npos ) ? std::size_t( 0 ) : nl + 1;
+					} )();
+				const std::size_t hash = src.find( '#', lineStart );
+				if( hash != std::string::npos && hash < k ) return hash;
+				return k;
+			};
+
+			// Walk from the `{` at `open` to just past its matching `}`.
+			// Returns npos when the braces never balance.  Shared by the
+			// keyword-less skip and the chunk-body scan so the two can never
+			// disagree about where a block ends.
+			const auto matchBrace = [&src, &skipComment]( std::size_t open ) -> std::size_t {
+				std::size_t j = open + 1;
+				int depth = 1;
+				while( j < src.size() && depth > 0 ) {
+					const std::size_t afterC = skipComment( j );
+					if( afterC != j ) { j = afterC; continue; }
+					if( src[j] == '{' ) ++depth;
+					else if( src[j] == '}' ) --depth;
+					++j;
+				}
+				return ( depth > 0 ) ? std::string::npos : j;
+			};
+
+			std::size_t i = 0;
+			while( i < src.size() ) {
+				const std::size_t afterComment = skipComment( i );
+				if( afterComment != i ) { i = afterComment; continue; }
+
+				if( src[i] == '}' ) {
+					char buf[128];
+					std::snprintf( buf, sizeof( buf ),
+						"a closing brace on line %d had no chunk open before it", lineOf( i ) );
+					outProblems.push_back( buf );
+					++i;
+					continue;
+				}
+				if( src[i] != '{' ) { ++i; continue; }
+
+				// The KEYWORD is the identifier token immediately before this
+				// brace, whitespace and comments allowed in between.  Skip
+				// whitespace and comments alternately (a comment can be
+				// followed by more whitespace, then another comment) until
+				// neither moves `k` -- symmetric with `matchBrace`'s forward
+				// interleaving of the same two skips.
+				std::size_t k = i;
+				for( bool moved = true; moved; ) {
+					moved = false;
+					while( k > 0 ) {
+						const char c = src[k-1];
+						if( c == ' ' || c == '\t' || c == '\r' || c == '\n' ) { --k; moved = true; continue; }
+						break;
+					}
+					const std::size_t afterC = skipCommentBackward( k );
+					if( afterC != k ) { k = afterC; moved = true; }
+				}
+				const std::size_t kwEnd = k;
+				while( k > 0 ) {
+					const unsigned char c = static_cast<unsigned char>( src[k-1] );
+					const bool ident = ( c >= '0' && c <= '9' ) || ( c >= 'a' && c <= 'z' ) ||
+					                   ( c >= 'A' && c <= 'Z' ) || c == '_';
+					if( !ident ) break;
+					--k;
+				}
+				const std::string keyword = ( kwEnd > k ) ? src.substr( k, kwEnd - k ) : std::string();
+				if( keyword.empty() ) {
+					char buf[128];
+					std::snprintf( buf, sizeof( buf ),
+						"an opening brace on line %d had no chunk keyword before it", lineOf( i ) );
+					outProblems.push_back( buf );
+					// Skip the WHOLE block, not just the brace: its closing
+					// brace belongs to it, and reporting that close as a
+					// second, stray problem would turn one defect into two.
+					const std::size_t past = matchBrace( i );
+					if( past == std::string::npos ) {
+						char ubuf[160];
+						std::snprintf( ubuf, sizeof( ubuf ),
+							"the brace block opened on line %d was never closed; nothing after it "
+							"could be read as a chunk", lineOf( i ) );
+						outProblems.push_back( ubuf );
+						return;
+					}
+					i = past;
+					continue;
+				}
+
+				// Walk to the matching close.
+				const std::size_t j = matchBrace( i );
+				if( j == std::string::npos ) {
+					// THE FAILURE THE HAND SIMULATION SWALLOWED.  Report it and
+					// stop: everything after an unclosed brace is inside that
+					// chunk by definition, so continuing would invent chunks.
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"the `%s` chunk opened on line %d was never closed (its braces do not balance "
+						"before the end of the answer); it was not inserted, and nothing after it "
+						"could be read as a chunk either",
+						keyword.c_str(), lineOf( i ) );
+					outProblems.push_back( buf );
+					return;
+				}
+
+				// Re-emit in the CANONICAL form InsertChunk requires: the
+				// keyword alone on its line, both braces on their own lines.
+				// The body is passed through verbatim.  This normalization is
+				// deliberate -- `sdf_geometry {` on one line is the single most
+				// likely formatting slip and refusing it would spend the repair
+				// retry on punctuation rather than on substance.
+				std::string body = src.substr( i + 1, ( j - 1 ) - ( i + 1 ) );
+				while( !body.empty() && ( body[0] == '\n' || body[0] == '\r' ) )
+					body.erase( body.begin() );
+				while( !body.empty() && ( body[body.size()-1] == '\n' || body[body.size()-1] == '\r' ||
+				                          body[body.size()-1] == ' '  || body[body.size()-1] == '\t' ) )
+					body.erase( body.size() - 1 );
+				outChunks.push_back( keyword + "\n{\n" + body + "\n}\n" );
+				i = j;
+			}
+		}
+
+		std::string AgentSession::CheckFirstGeometryThroughCleanRoom_( const char* verb,
+		                                                                std::string* outGiveUpNotice )
+		{
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			if( mBuildPhase != AgentBuildPhase::Pieces )       return std::string();
+			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST.  On a host
+			// with no text completer installed `build_element` answers with a
+			// capability statement, so forcing construction through it would
+			// strand the session outright -- the same capability-conditional
+			// rule the imagine half of the build-plan gate follows.
+			if( !BuildCapable() )                              return std::string();
+			// BuildElement's own insertion is the clean room; refusing it would
+			// have the mechanism refuse the verb it names.
+			if( mInBuildElementInsert )                        return std::string();
+			if( mActiveElement >= mBuildPlan.size() )          return std::string();
+
+			const std::string& active = mBuildPlan[ mActiveElement ].element;
+			// ANY chunk already recorded against the element lifts this
+			// permanently for that element (design sec 4): construction goes
+			// through the clean room, refinement stays in the model's hands.
+			if( !ElementChunks( active ).empty() )             return std::string();
+
+			const std::string body =
+				"the element \"" + active + "\" has no chunk recorded against it yet, and the first "
+				"geometry for an element is built by build_element -- one call, in which " +
+				( mTextCompleter.providerName.empty() ? std::string( "this session's provider" )
+				                                      : ( "`" + mTextCompleter.providerName + "`" ) ) +
+				" constructs the whole element on its own and the result is checked and inserted "
+				"here. Once \"" + active + "\" has a chunk recorded against it, authoring geometry "
+				"for it directly is allowed and is never refused again.";
+			return RefuseForPhase_( verb, body, outGiveUpNotice );
+		}
+
+		namespace
+		{
+			//! S2: does `chunkItem` carry a parameter named `pname` at all?
+			//! ChunkParamString_ cannot answer this (an absent param and a
+			//! present-but-empty one both read as ""), and place_element's
+			//! matrix / quaternion precedence checks need PRESENCE.
+			bool ChunkHasParam_( const RISE::Cst::NodeRef& chunkItem, const std::string& pname )
+			{
+				if( !chunkItem ) return false;
+				for( const RISE::Cst::NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+					for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+						if( tk && tk->kind == RISE::Cst::NodeKind::Token &&
+						    tk->role == "pname" && tk->text == pname ) return true;
+					}
+				}
+				return false;
+			}
+
+			//! S2: how many `part` lines does this chunk text carry?  The
+			//! arc's headline measurement, counted from the CST rather than by
+			//! substring so a `part` inside a comment or a value cannot
+			//! inflate it.
+			unsigned int CountSdfPartLines_( const std::string& chunkText )
+			{
+				unsigned int n = 0;
+				const RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunkText );
+				const int items = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < items; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					for( const RISE::Cst::NodeRef& kid : it->kids ) {
+						if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+						for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+							if( tk && tk->kind == RISE::Cst::NodeKind::Token &&
+							    tk->role == "pname" && tk->text == "part" ) ++n;
+						}
+					}
+				}
+				return n;
+			}
+
+			//! S2: parse "x y z" into three finite doubles.  Returns false on
+			//! anything else -- a wrong-arity or non-finite triple is a schema
+			//! defect the caller reports, never a silently-substituted zero.
+			bool ParseVec3_( const std::string& s, double out[3] )
+			{
+				double v[3] = { 0.0, 0.0, 0.0 };
+				char extra[8] = { 0 };
+				// The 4th conversion is the TRAILING-GARBAGE probe: it must
+				// NOT match, so "1 2 3 4" and "1 2 3 oops" are both rejected
+				// rather than silently read as "1 2 3".
+				const int n = std::sscanf( s.c_str(), "%lf %lf %lf %7s", &v[0], &v[1], &v[2], extra );
+				if( n != 3 ) return false;
+				for( int i = 0; i < 3; ++i )
+					if( !RISE::IsFiniteDouble( v[i] ) ) return false;
+				out[0] = v[0]; out[1] = v[1]; out[2] = v[2];
+				return true;
+			}
+
+			//! S2: format a double for a scene-text parameter value.  %.6g is
+			//! the same shortest-round-trippable-enough form the scaffold chunk
+			//! writers use; -0 is normalized to 0 so a placement at the origin
+			//! reads as one.
+			std::string FormatScalar_( double v )
+			{
+				if( v == 0.0 ) v = 0.0;
+				char buf[48];
+				std::snprintf( buf, sizeof( buf ), "%.6g", v );
+				return buf;
+			}
+
+			std::string FormatVec3_( const double v[3] )
+			{
+				return FormatScalar_( v[0] ) + " " + FormatScalar_( v[1] ) + " " + FormatScalar_( v[2] );
+			}
+
+			//! S2: rotate `p` by the Euler triple `deg` using the SAME
+			//! composition Transformable::SetOrientation applies --
+			//! XRotation(x) * YRotation(y) * ZRotation(z) in RISE's row-vector
+			//! convention, i.e. the point is rotated about X first, then Y,
+			//! then Z.  Written out rather than reusing Matrix4Ops so this file
+			//! does not have to agree with that header's storage order as well
+			//! as its composition order; the two rotations a placement can
+			//! involve are the only rotations here.
+			void RotateEulerDeg_( const double deg[3], const double p[3], double out[3] )
+			{
+				const double d2r = 3.14159265358979323846 / 180.0;
+				const double cx = std::cos( deg[0]*d2r ), sx = std::sin( deg[0]*d2r );
+				const double cy = std::cos( deg[1]*d2r ), sy = std::sin( deg[1]*d2r );
+				const double cz = std::cos( deg[2]*d2r ), sz = std::sin( deg[2]*d2r );
+				// X, then Y, then Z.
+				double x = p[0], y = p[1], z = p[2];
+				double ny =  cx*y - sx*z;
+				double nz =  sx*y + cx*z;
+				y = ny; z = nz;
+				double nx =  cy*x + sy*z;
+				nz        = -sy*x + cy*z;
+				x = nx; z = nz;
+				nx =  cz*x - sz*y;
+				ny =  sz*x + cz*y;
+				out[0] = nx; out[1] = ny; out[2] = z;
+			}
+		}
+
+		bool AgentSession::ElementWorldBounds_( const std::string& element,
+		                                         double outMin[3], double outMax[3] ) const
+		{
+			bool any = false;
+			double lo[3] = { 0.0, 0.0, 0.0 };
+			double hi[3] = { 0.0, 0.0, 0.0 };
+			const std::vector<std::string> chunks = ElementChunks( element );
+			for( std::size_t i = 0; i < chunks.size(); ++i ) {
+				const ChunkAttribution_* a = FindChunkAttribution_( chunks[i] );
+				if( !a ) continue;
+				const ChunkDescriptor* d = DescriptorForKeyword( String( a->kind.c_str() ) );
+				if( !d || d->category != ChunkCategory::Object ) continue;
+				IObjectManager* objMgr = mJob ? mJob->GetObjects() : nullptr;
+				IObjectPriv* obj = nullptr;
+				std::string ignored;
+				if( !ResolveIsolateObject( objMgr, chunks[i], obj, ignored ) || !obj ) continue;
+				const BoundingBox bb = static_cast<const IObject*>( obj )->getBoundingBox();
+				const double bmin[3] = { bb.ll.x, bb.ll.y, bb.ll.z };
+				const double bmax[3] = { bb.ur.x, bb.ur.y, bb.ur.z };
+				bool finite = true;
+				for( int k = 0; k < 3; ++k )
+					if( !RISE::IsFiniteDouble( bmin[k] ) || !RISE::IsFiniteDouble( bmax[k] ) ) finite = false;
+				if( !finite ) continue;
+				for( int k = 0; k < 3; ++k ) {
+					if( !any ) { lo[k] = bmin[k]; hi[k] = bmax[k]; }
+					else {
+						if( bmin[k] < lo[k] ) lo[k] = bmin[k];
+						if( bmax[k] > hi[k] ) hi[k] = bmax[k];
+					}
+				}
+				any = true;
+			}
+			if( !any ) return false;
+			for( int k = 0; k < 3; ++k ) { outMin[k] = lo[k]; outMax[k] = hi[k]; }
+			return true;
+		}
+
+		namespace
+		{
+			//! S2: the chunk kinds whose descriptor-generated schema is sent to
+			//! the builder.  DELIBERATELY SHORT.  The measurement this whole
+			//! mechanism exploits is that context VOLUME collapses construction
+			//! richness (18.0 SDF parts at short context, 7.7 with 60k of
+			//! skills prepended), so a builder prompt that grew to a full
+			//! grammar dump would destroy the very effect it exists to capture.
+			//! These five cover the contract's requirements: a rich implicit
+			//! geometry, a simple explicit one, two materials at two levels of
+			//! detail, a painter, and the standard_object every element must
+			//! finish with.
+			//!
+			//! THE TEXT IS THE DESCRIPTOR REGISTRY'S OWN, fetched through the
+			//! same ReadSchema the `read_schema` tool answers with -- there is
+			//! no second, hand-written grammar description in this file that
+			//! could drift from the parser.
+			const char* const kBuilderGrammarKeywords[] = {
+				"sdf_geometry",
+				"box_geometry",
+				"uniformcolor_painter",
+				"lambertian_material",
+				"pbr_metallic_roughness_material",
+				"standard_object"
+			};
+			const std::size_t kBuilderGrammarKeywordCount =
+				sizeof( kBuilderGrammarKeywords ) / sizeof( kBuilderGrammarKeywords[0] );
+		}
+
+		std::string AgentSession::ComposeBuilderPrompt_( const std::string& element,
+		                                                  double height,
+		                                                  const std::string& notes,
+		                                                  const std::string& rejectionText ) const
+		{
+			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE.  The model supplies
+			// the element name, the height and the notes; every other span --
+			// the grammar, the pieces, the outline, the frame contract, the
+			// output instruction -- is this function's own text or the
+			// descriptor registry's.  There is no parameter through which a
+			// caller can hand raw prompt text to the provider.
+			const std::string prefix = ElementChunkNamePrefix( element );
+
+			std::string p;
+			p += "You are writing RISE scene-language chunks that build ONE element of a 3D scene: \"";
+			p += element;
+			p += "\".\n\n";
+
+			// The element's declared decomposition and its filed outline, both
+			// from the arc-78 build plan -- the model's OWN earlier statements
+			// about this element, restated to a context that has never seen
+			// them.
+			const AgentBuildPlanEntry* entry = nullptr;
+			for( std::size_t i = 0; i < mBuildPlan.size(); ++i )
+				if( mBuildPlan[i].element == element ) { entry = &mBuildPlan[i]; break; }
+			if( entry ) {
+				if( !entry->pieces.empty() ) {
+					p += "PIECES it was broken into (build all of them; they are a checklist, not a "
+					     "chunk-per-piece requirement):\n";
+					for( std::size_t i = 0; i < entry->pieces.size(); ++i ) {
+						p += "  - ";
+						p += entry->pieces[i];
+						p += "\n";
+					}
+					p += "\n";
+				}
+				if( !entry->construction.empty() ) {
+					p += "DECLARED CONSTRUCTION METHOD: " + entry->construction + "\n\n";
+				}
+				if( !entry->outline.empty() ) {
+					p += "OUTLINE SKETCH of the element's silhouette, as \"x y\" points (";
+					p += entry->view.empty() ? std::string( kBuildPlanDefaultView ) : entry->view;
+					p += " view; units are arbitrary and the shape is what matters, not the scale):\n";
+					p += entry->outline;
+					p += "\n\n";
+				}
+			}
+
+			{
+				char hb[96];
+				std::snprintf( hb, sizeof( hb ), "%.6g", height );
+				p += "REQUESTED HEIGHT: ";
+				p += hb;
+				p += " world units in Y.\n";
+			}
+			p += "REQUIRED CHUNK-NAME PREFIX: ";
+			p += prefix;
+			p += "\n\n";
+
+			p += LocalFrameContract();
+			p += "\n\n";
+
+			if( !notes.empty() ) {
+				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such so the
+				// builder reads it as a note from the caller rather than as
+				// part of the contract above it.  It is length-capped before
+				// it gets here and is JSON-escaped by the request builder, so
+				// it cannot reach the endpoint, the headers or the key.
+				p += "NOTES FROM THE CALLER:\n";
+				p += notes;
+				p += "\n\n";
+			}
+
+			p += "THE CHUNK GRAMMAR you may use. This is the scene language's own parameter "
+			     "reference for the chunk kinds relevant here; the parser is authoritative.\n";
+			for( std::size_t i = 0; i < kBuilderGrammarKeywordCount; ++i ) {
+				p += "\n";
+				p += ReadSchema( kBuilderGrammarKeywords[i] );
+				p += "\n";
+			}
+
+			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
+			     "the form\n"
+			     "keyword\n"
+			     "{\n"
+			     "\tparameter value\n"
+			     "}\n"
+			     "with the braces on their own lines. A chunk that another chunk references must "
+			     "come first. No prose, no explanation, no markdown fences, no scene header.\n";
+
+			if( !rejectionText.empty() ) {
+				// THE ONE REPAIR RETRY.  The rejection text is this harness's
+				// own, verbatim, so the builder is corrected by facts about
+				// what happened rather than by a paraphrase of them.
+				p += "\nA PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED:\n";
+				p += rejectionText;
+				p += "\nReturn the CORRECTED SET WHOLE -- every chunk this element needs, including "
+				     "the ones that were accepted, in one answer.\n";
+			}
+			return p;
+		}
+
+		AgentSession::AgentBuildElementResult AgentSession::BuildElement(
+			const std::string& element, double height, const std::string& notes )
+		{
+			AgentBuildElementResult out;
+			out.providerName = mTextCompleter.providerName;
+			out.modelId      = mTextCompleter.modelId;
+
+			//------------------------------------------------------------------
+			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
+			// state, mutates no document, costs no budget and is never counted.
+			//------------------------------------------------------------------
+			if( element.empty() ) {
+				out.message = "build_element: `element` must be a non-empty string. Nothing was built.";
+				return out;
+			}
+			if( !RISE::IsFiniteDouble( height ) || height <= 0.0 ) {
+				out.message = "build_element: `height` must be a finite number greater than 0. "
+				              "Nothing was built.";
+				return out;
+			}
+			if( !BuildProtocolActive_() ) {
+				out.message = "build_element did nothing: the staged build protocol is off for this "
+				              "session, so no element window is open. Author the element's chunks "
+				              "directly with insert_chunk or insert_chunks.";
+				return out;
+			}
+			if( mBuildPhase != AgentBuildPhase::Pieces ) {
+				out.message = std::string( "build_element did nothing: this session is in the " ) +
+					BuildPhaseName( mBuildPhase ) + " phase, and build_element builds the ACTIVE "
+					"element of the pieces phase. " +
+					( mBuildPhase == AgentBuildPhase::Plan
+						? std::string( "file_build_plan declares the elements and makes the first one "
+						               "active." )
+						: std::string( "reopen_element with an element name re-enters that element's "
+						               "window." ) );
+				return out;
+			}
+			if( mActiveElement >= mBuildPlan.size() ) {
+				out.message = "build_element did nothing: the active element index does not resolve "
+				              "against the filed build plan.";
+				return out;
+			}
+			const std::string active = mBuildPlan[ mActiveElement ].element;
+			if( element != active ) {
+				out.message = "build_element did nothing: \"" + element + "\" is not the active "
+					"element -- \"" + active + "\" is. reopen_element with element \"" + element +
+					"\" makes it active, if it is in the filed build plan.";
+				return out;
+			}
+			if( !BuildCapable() ) {
+				out.capabilityRefusal = true;
+				const std::string who = mTextCompleter.providerName.empty()
+					? std::string( "this session's provider" )
+					: ( "`" + mTextCompleter.providerName + "`" );
+				out.message = "build_element is not available: " + who + " does not run a separate "
+					"builder completion through this build, so there is no fresh context to "
+					"construct the element in. Nothing was built and nothing else about this session "
+					"changes -- authoring the element's chunks directly with insert_chunk or "
+					"insert_chunks is not blocked by this.";
+				return out;
+			}
+			if( mBuildElementCalls >= kBuildElementMaxPerSession ) {
+				char capBuf[224];
+				std::snprintf( capBuf, sizeof( capBuf ),
+					"build_element has already run %d builder completions this session -- the "
+					"per-session cap. Nothing was built; the document is unchanged.",
+					kBuildElementMaxPerSession );
+				out.message = capBuf;
+				return out;
+			}
+			++mBuildElementCalls;
+
+			out.element = element;
+
+			// The caller's notes, length-capped BEFORE composition and with the
+			// truncation stated rather than silent.
+			std::string useNotes = notes;
+			bool notesTruncated = false;
+			if( useNotes.size() > kBuildElementMaxNotes ) {
+				useNotes.resize( kBuildElementMaxNotes );
+				notesTruncated = true;
+			}
+
+			const std::string basePrompt = ComposeBuilderPrompt_( element, height, useNotes,
+			                                                      std::string() );
+			const std::string prefix = ElementChunkNamePrefix( element );
+
+			//------------------------------------------------------------------
+			// ONE ATTEMPT = one completion, extract, prefix-check, insert.
+			// Everything the attempt learned rides back in `attemptRejections`,
+			// which is also the exact text the repair retry is given.
+			//------------------------------------------------------------------
+			std::vector<std::string> landedNames;
+			std::vector<std::string> rejectionLines;
+			std::string providerFailure;
+
+			const auto runAttempt = [&]( const std::string& prompt ) -> bool
+			{
+				const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+				if( !comp.ok || comp.text.empty() ) {
+					providerFailure = comp.error.empty()
+						? std::string( "the provider returned no text and no reason" )
+						: comp.error;
+					return false;
+				}
+
+				std::vector<std::string> chunks, problems;
+				ExtractChunkTexts( comp.text, chunks, problems );
+				out.chunksExtracted += static_cast<unsigned int>( chunks.size() );
+				for( std::size_t i = 0; i < problems.size(); ++i ) {
+					AgentBuildElementRejection r;
+					r.reason = problems[i];
+					out.rejected.push_back( r );
+					rejectionLines.push_back( problems[i] );
+				}
+				if( chunks.empty() ) {
+					if( problems.empty() ) {
+						const std::string why =
+							"the answer contained no complete chunk (no `keyword { ... }` block)";
+						AgentBuildElementRejection r;
+						r.reason = why;
+						out.rejected.push_back( r );
+						rejectionLines.push_back( why );
+					}
+					return false;
+				}
+
+				// PREFIX CHECK BEFORE INSERTION, and never a rename: renaming
+				// would break the references the builder just wrote between its
+				// own chunks.
+				std::vector<std::string> submit;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					std::string kind, name;
+					{
+						const RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunks[i] );
+						const int n = RISE::Cst::DocItemCount( cdoc );
+						for( int c = 0; c < n; ++c ) {
+							const RISE::Cst::NodeRef it =
+								RISE::Cst::DocResolveNodeId( cdoc, RISE::Cst::DocNodeIdAt( cdoc, c ) );
+							if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+							kind = it->role;
+							name = ChunkParamString_( it, "name" );
+							break;
+						}
+					}
+					if( name.empty() ) {
+						AgentBuildElementRejection r;
+						r.kind   = kind;
+						r.reason = "a " + ( kind.empty() ? std::string( "chunk" ) : ( "`" + kind + "`" ) ) +
+							" carried no `name`, so it cannot be recorded against the element; every "
+							"chunk must be named and every name must begin \"" + prefix + "\"";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					if( name.compare( 0, prefix.size(), prefix ) != 0 ) {
+						AgentBuildElementRejection r;
+						r.name   = name;
+						r.kind   = kind;
+						r.reason = "the chunk named \"" + name + "\" does not begin with the required "
+							"prefix \"" + prefix + "\", so it was not inserted (it was NOT renamed -- "
+							"renaming would break the references between the chunks)";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					// A name that already landed in the FIRST attempt is not
+					// re-submitted: the repair retry is asked for the corrected
+					// set WHOLE, so it legitimately repeats what worked, and
+					// re-inserting it would only draw a duplicate-name refusal.
+					bool already = false;
+					for( std::size_t l = 0; l < landedNames.size() && !already; ++l )
+						already = ( landedNames[l] == name );
+					if( already ) continue;
+					submit.push_back( chunks[i] );
+				}
+				if( submit.empty() ) return false;
+
+				std::vector<AgentChunkResult> results;
+				{
+					// The clean room's own insertion must not be refused by the
+					// clean-room gate it arms (AgentSession.h's guard doc).
+					BuildElementInsertGuard_ guard( *this );
+					results = InsertChunks( submit );
+				}
+				bool landedAny = false;
+				for( std::size_t i = 0; i < results.size(); ++i ) {
+					out.chunkResults.push_back( results[i] );
+					if( results[i].applied ) {
+						landedNames.push_back( results[i].name );
+						out.landed.push_back( results[i].name );
+						out.sdfPartCount += CountSdfPartLines_( submit[i] );
+						landedAny = true;
+					}
+					else {
+						AgentBuildElementRejection r;
+						r.name   = results[i].name;
+						r.kind   = results[i].kind;
+						r.reason = results[i].message.empty()
+							? std::string( "the insertion was rejected with no reason given" )
+							: results[i].message;
+						out.rejected.push_back( r );
+						rejectionLines.push_back(
+							( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
+							" was rejected: " + r.reason );
+					}
+				}
+				return landedAny;
+			};
+
+			runAttempt( basePrompt );
+
+			// THE ONE REPAIR RETRY.  It fires when the first attempt rejected
+			// ANYTHING -- an unbalanced chunk, a prefix violation, an insert
+			// refusal -- or when the provider itself failed.  Exactly one, then
+			// stop, whatever the outcome.
+			if( !rejectionLines.empty() || !providerFailure.empty() ) {
+				std::string rejectionText;
+				if( !providerFailure.empty() )
+					rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
+				for( std::size_t i = 0; i < rejectionLines.size(); ++i )
+					rejectionText += "- " + rejectionLines[i] + "\n";
+
+				const std::size_t landedBefore = landedNames.size();
+				const std::size_t rejectedBefore = out.rejected.size();
+				out.retryRan = true;
+				providerFailure.clear();
+				rejectionLines.clear();
+				runAttempt( ComposeBuilderPrompt_( element, height, useNotes, rejectionText ) );
+				out.retrySucceeded = ( landedNames.size() > landedBefore );
+				(void)rejectedBefore;
+			}
+
+			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
+			// because no answer was ever parsed) is NOT an ok result: `ok`
+			// means the builder answered and its answer was processed.
+			// Reported as its own outcome rather than as an empty success, and
+			// -- unlike imagine_scene's provider failure -- it disarms nothing,
+			// because the clean-room refusal is already conditional on there
+			// being a completer at all and the 3-refusal give-up bounds it.
+			if( out.landed.empty() && out.rejected.empty() ) {
+				out.message = "build_element did not complete: " +
+					( providerFailure.empty()
+						? std::string( "the builder returned nothing this harness could read as a chunk" )
+						: providerFailure ) +
+					". Nothing was inserted and the document is unchanged" +
+					( out.retryRan ? std::string( "; the one repair retry ran and did not complete "
+					                              "either, and there is no second retry." )
+					               : std::string( "." ) );
+				return out;
+			}
+
+			out.ok = true;
+			out.bboxValid = ElementWorldBounds_( element, out.bboxMin, out.bboxMax );
+
+			//------------------------------------------------------------------
+			// THE REPORT: facts only.  What landed, what did not and why,
+			// whether the retry ran, the realised box and the part count.  No
+			// characterization of the element, no advice about what to do next,
+			// no score.
+			//------------------------------------------------------------------
+			std::string m = "build_element ran one builder completion for \"" + element + "\" on " +
+				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". Chunks inserted: ";
+			if( out.landed.empty() ) m += "none";
+			else {
+				for( std::size_t i = 0; i < out.landed.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.landed[i];
+				}
+			}
+			m += ".";
+			if( !out.rejected.empty() ) {
+				m += " Not inserted: ";
+				for( std::size_t i = 0; i < out.rejected.size(); ++i ) {
+					if( i ) m += "; ";
+					m += out.rejected[i].reason;
+				}
+				m += ".";
+			}
+			if( out.retryRan ) {
+				m += out.retrySucceeded
+					? std::string( " One repair retry ran and inserted more chunks; there is no second "
+					               "retry." )
+					: std::string( " One repair retry ran and inserted nothing further; there is no "
+					               "second retry." );
+			}
+			if( !providerFailure.empty() )
+				m += " The last builder completion did not complete: " + providerFailure + ".";
+			{
+				char pb[128];
+				std::snprintf( pb, sizeof( pb ), " SDF part lines across the inserted geometry: %u.",
+					out.sdfPartCount );
+				m += pb;
+			}
+			if( out.bboxValid ) {
+				m += " Realised world bounding box of the objects recorded against \"" + element +
+					"\": (" + FormatScalar_( out.bboxMin[0] ) + ", " + FormatScalar_( out.bboxMin[1] ) +
+					", " + FormatScalar_( out.bboxMin[2] ) + ") to (" + FormatScalar_( out.bboxMax[0] ) +
+					", " + FormatScalar_( out.bboxMax[1] ) + ", " + FormatScalar_( out.bboxMax[2] ) +
+					"), so " + FormatScalar_( out.bboxMax[1] - out.bboxMin[1] ) +
+					" units tall against the " + FormatScalar_( height ) + " requested.";
+			}
+			else {
+				m += " No object recorded against \"" + element + "\" resolves in the scene, so there "
+				     "is no bounding box to report.";
+			}
+			if( notesTruncated ) {
+				char nb[144];
+				std::snprintf( nb, sizeof( nb ),
+					" The `notes` string was truncated to the first %u characters before it was sent.",
+					static_cast<unsigned int>( kBuildElementMaxNotes ) );
+				m += nb;
+			}
+			m += " place_element moves everything recorded against this element into the scene as one "
+			     "rigid transform.";
+			out.message = m;
+			return out;
+		}
+
+		AgentSession::AgentPlaceElementResult AgentSession::PlaceElement(
+			const std::string& element, const std::string& position,
+			const std::string& scale, const std::string& orientation )
+		{
+			AgentPlaceElementResult out;
+			out.element = element;
+
+			if( !BuildProtocolActive_() ) {
+				out.message = "place_element did nothing: the staged build protocol is off for this "
+				              "session, so no chunk is recorded against an element. Set each object's "
+				              "position with propose_patch instead.";
+				return out;
+			}
+			if( mBuildPlan.empty() ) {
+				out.message = "place_element did nothing: no build plan has been filed in this "
+				              "session, so there is no element to place.";
+				return out;
+			}
+			bool known = false;
+			for( std::size_t i = 0; i < mBuildPlan.size() && !known; ++i )
+				known = ( mBuildPlan[i].element == element );
+			if( !known ) {
+				out.message = "place_element did nothing: \"" + element + "\" is not in the filed "
+					"build plan, which lists: " + ElementSketchNameList() + ".";
+				return out;
+			}
+
+			double pos[3] = { 0.0, 0.0, 0.0 };
+			if( !ParseVec3_( position, pos ) ) {
+				out.message = "place_element did nothing: `position` must be three finite numbers, "
+				              "\"x y z\" -- the element's new base-centre in world space.";
+				return out;
+			}
+			double s = 1.0;
+			if( !scale.empty() ) {
+				char sextra[8] = { 0 };
+				const int sn = std::sscanf( scale.c_str(), "%lf %7s", &s, sextra );
+				if( sn != 1 ) {
+					out.message = "place_element did nothing: `scale` must be ONE number (a uniform "
+					              "factor), not three.";
+					return out;
+				}
+				if( !RISE::IsFiniteDouble( s ) || s <= 0.0 ) {
+					out.message = "place_element did nothing: `scale` must be one finite number "
+					              "greater than 0 -- a uniform factor.";
+					return out;
+				}
+			}
+			double rot[3] = { 0.0, 0.0, 0.0 };
+			if( !orientation.empty() && !ParseVec3_( orientation, rot ) ) {
+				out.message = "place_element did nothing: `orientation` must be three finite numbers, "
+				              "\"ex ey ez\" in degrees.";
+				return out;
+			}
+			const bool rotating = ( rot[0] != 0.0 || rot[1] != 0.0 || rot[2] != 0.0 );
+
+			// Read the objects' CURRENT params from the document, so the
+			// composition below is against what is actually authored rather
+			// than against a derived transform this verb cannot write back.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "place_element did nothing: this session has no scene document.";
+				return out;
+			}
+
+			// ONE parse of the snapshot's bytes, reused for every object --
+			// AgentDocumentSnapshot carries the document TEXT, not a CST.
+			const RISE::Cst::Document liveDoc = RISE::Cst::ParseToCst( snap.document );
+
+			std::vector<AgentSetPatch> patches;
+			std::vector<std::string> approxObjects;
+			const std::vector<std::string> chunks = ElementChunks( element );
+			for( std::size_t c = 0; c < chunks.size(); ++c ) {
+				const ChunkAttribution_* a = FindChunkAttribution_( chunks[c] );
+				if( !a || a->kind != "standard_object" ) continue;
+
+				RISE::Cst::NodeRef objItem;
+				{
+					const int n = RISE::Cst::DocItemCount( liveDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId(
+							liveDoc, RISE::Cst::DocNodeIdAt( liveDoc, i ) );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						if( it->role != "standard_object" ) continue;
+						if( ChunkParamString_( it, "name" ) != chunks[c] ) continue;
+						objItem = it;
+						break;
+					}
+				}
+				if( !objItem ) {
+					AgentPlaceElementSkip sk;
+					sk.object = chunks[c];
+					sk.reason = "this standard_object is no longer in the document";
+					out.skipped.push_back( sk );
+					continue;
+				}
+				if( ChunkHasParam_( objItem, "matrix" ) ) {
+					// A `matrix` bypasses position / orientation / scale
+					// entirely, so patching them would be a silent no-op --
+					// exactly the failure mode this arc exists to remove.
+					AgentPlaceElementSkip sk;
+					sk.object = chunks[c];
+					sk.reason = "this standard_object is authored with `matrix`, which bypasses "
+					            "position, orientation and scale, so a placement written into those "
+					            "parameters would have no effect";
+					out.skipped.push_back( sk );
+					continue;
+				}
+				const bool hasQuat = ChunkHasParam_( objItem, "quaternion" );
+
+				double oldPos[3] = { 0.0, 0.0, 0.0 };
+				double oldScale[3] = { 1.0, 1.0, 1.0 };
+				double oldRot[3] = { 0.0, 0.0, 0.0 };
+				const std::string posStr = ChunkParamString_( objItem, "position" );
+				const std::string sclStr = ChunkParamString_( objItem, "scale" );
+				const std::string rotStr = ChunkParamString_( objItem, "orientation" );
+				if( !posStr.empty() && !ParseVec3_( posStr, oldPos ) ) {
+					AgentPlaceElementSkip sk;
+					sk.object = chunks[c];
+					sk.reason = "this standard_object's `position` is not three finite numbers, so "
+					            "there is nothing to compose the placement with";
+					out.skipped.push_back( sk );
+					continue;
+				}
+				if( !sclStr.empty() && !ParseVec3_( sclStr, oldScale ) ) {
+					oldScale[0] = oldScale[1] = oldScale[2] = 1.0;
+				}
+				const bool hadRot = ( !rotStr.empty() && ParseVec3_( rotStr, oldRot ) &&
+				                      ( oldRot[0] != 0.0 || oldRot[1] != 0.0 || oldRot[2] != 0.0 ) );
+
+				// SCALE about the element's own origin, then ROTATE about it,
+				// then OFFSET -- so the object's own place inside the element
+				// is preserved and carried rigidly.
+				double p[3] = { oldPos[0] * s, oldPos[1] * s, oldPos[2] * s };
+				if( rotating ) {
+					double r[3];
+					RotateEulerDeg_( rot, p, r );
+					p[0] = r[0]; p[1] = r[1]; p[2] = r[2];
+				}
+				p[0] += pos[0]; p[1] += pos[1]; p[2] += pos[2];
+
+				AgentSetPatch pp;
+				pp.target = chunks[c];
+				pp.kind   = "standard_object";
+				pp.param  = "position";
+				pp.value  = FormatVec3_( p );
+				patches.push_back( pp );
+
+				if( s != 1.0 || !sclStr.empty() ) {
+					const double ns[3] = { oldScale[0] * s, oldScale[1] * s, oldScale[2] * s };
+					AgentSetPatch sp;
+					sp.target = chunks[c];
+					sp.kind   = "standard_object";
+					sp.param  = "scale";
+					sp.value  = FormatVec3_( ns );
+					patches.push_back( sp );
+				}
+
+				if( rotating ) {
+					if( hasQuat ) {
+						AgentPlaceElementSkip sk;
+						sk.object = chunks[c];
+						sk.reason = "this standard_object is authored with `quaternion`, which takes "
+						            "precedence over `orientation`, so it was moved and scaled but "
+						            "not rotated";
+						out.skipped.push_back( sk );
+					}
+					else {
+						const double nr[3] = { oldRot[0] + rot[0], oldRot[1] + rot[1],
+						                       oldRot[2] + rot[2] };
+						AgentSetPatch rp;
+						rp.target = chunks[c];
+						rp.kind   = "standard_object";
+						rp.param  = "orientation";
+						rp.value  = FormatVec3_( nr );
+						patches.push_back( rp );
+						if( hadRot ) approxObjects.push_back( chunks[c] );
+					}
+				}
+
+				out.objects.push_back( chunks[c] );
+			}
+
+			if( patches.empty() ) {
+				out.message = "place_element did nothing: no standard_object recorded against \"" +
+					element + "\" could be placed";
+				if( !out.skipped.empty() ) {
+					out.message += " (";
+					for( std::size_t i = 0; i < out.skipped.size(); ++i ) {
+						if( i ) out.message += "; ";
+						out.message += out.skipped[i].object + ": " + out.skipped[i].reason;
+					}
+					out.message += ")";
+				}
+				else {
+					out.message += " -- build_element creates the element's objects, and every chunk "
+					               "created while an element is active is recorded against it";
+				}
+				out.message += ". The document is unchanged.";
+				return out;
+			}
+
+			// ONE batch, so ONE head bump and ONE undo step for the whole
+			// placement.  ProposePatches is sequential and best-effort inside
+			// the batch, which is right here: a rejected object does not make
+			// the others' placement wrong.
+			out.patchResults = ProposePatches( patches );
+			for( std::size_t i = 0; i < out.patchResults.size(); ++i ) {
+				if( out.patchResults[i].applied ) ++out.patchesApplied;
+				else                              ++out.patchesRejected;
+			}
+			out.ok = ( out.patchesApplied > 0 );
+			out.bboxValid = ElementWorldBounds_( element, out.bboxMin, out.bboxMax );
+
+			std::string m = "place_element applied one rigid transform to " +
+				std::to_string( out.objects.size() ) +
+				( out.objects.size() == 1 ? " object" : " objects" ) + " recorded against \"" +
+				element + "\": base-centre moved to (" + FormatVec3_( pos ) + ")";
+			if( s != 1.0 ) m += ", scaled by " + FormatScalar_( s ) + " about the element's origin";
+			if( rotating ) m += ", rotated (" + FormatVec3_( rot ) + ") degrees about it";
+			m += ". Each object's own offset inside the element was scaled and rotated with the "
+			     "element and then added to the new base-centre, so their relative arrangement is "
+			     "unchanged. Patches applied: " + std::to_string( out.patchesApplied );
+			if( out.patchesRejected > 0 )
+				m += ", rejected: " + std::to_string( out.patchesRejected );
+			m += ".";
+			if( !approxObjects.empty() ) {
+				m += " These objects already carried a rotation of their own, and the placement's "
+				     "Euler degrees were ADDED per axis, which is exact only when both rotations "
+				     "are about the same axis: ";
+				for( std::size_t i = 0; i < approxObjects.size(); ++i ) {
+					if( i ) m += ", ";
+					m += approxObjects[i];
+				}
+				m += ".";
+			}
+			if( !out.skipped.empty() ) {
+				m += " Not fully placed: ";
+				for( std::size_t i = 0; i < out.skipped.size(); ++i ) {
+					if( i ) m += "; ";
+					m += out.skipped[i].object + " -- " + out.skipped[i].reason;
+				}
+				m += ".";
+			}
+			if( out.bboxValid ) {
+				m += " The element's world bounding box is now (" + FormatScalar_( out.bboxMin[0] ) +
+					", " + FormatScalar_( out.bboxMin[1] ) + ", " + FormatScalar_( out.bboxMin[2] ) +
+					") to (" + FormatScalar_( out.bboxMax[0] ) + ", " + FormatScalar_( out.bboxMax[1] ) +
+					", " + FormatScalar_( out.bboxMax[2] ) + ").";
+			}
 			out.message = m;
 			return out;
 		}

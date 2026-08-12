@@ -851,8 +851,8 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 27,
-		       "tools/list under Read STILL lists all 27 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 29,
+		       "tools/list under Read STILL lists all 29 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
@@ -903,7 +903,7 @@ static void TestMcpLayer()
 		       sawInsertGeometryScaffold && sawReplaceGeometryScaffold && sawRemoveChunk && sawRemoveChunks &&
 		       sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 9, "EXACTLY 9 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 11, "EXACTLY 11 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold and -- S2, 2026-08-11 -- build_element/place_element, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -913,7 +913,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 27, "tools/list under Commit lists all 27 tools" );
+		Check( tools.isArray() && tools.size() == 29, "tools/list under Commit lists all 29 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -951,7 +951,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 27, "tools/list under Propose lists all 27 tools" );
+		Check( tools.isArray() && tools.size() == 29, "tools/list under Propose lists all 29 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove

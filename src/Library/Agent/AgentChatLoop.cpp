@@ -429,6 +429,17 @@ namespace RISE
 				       // ONE history entry and ONE undo step, so it must count
 				       // exactly once here too, no more and no less.
 				       v == "replace_geometry_scaffold" ||
+				       // S2 (2026-08-11): ONE build_element call is ONE blind
+				       // mutation -- it inserts the whole element's chunks with
+				       // no visual observation in between, exactly like one
+				       // batched insert_chunks (and, if anything, a LARGER one).
+				       // ONE place_element call is likewise ONE blind mutation:
+				       // it is deliberately one patch batch, one head bump and
+				       // one undo step, so it counts exactly once.  Neither is a
+				       // LOOK -- neither renders anything, so neither can reset
+				       // the streak the way finish_element's real isolate render
+				       // legitimately does.
+				       v == "build_element" || v == "place_element" ||
 				       v == "propose_patch" || v == "propose_patches" ||
 				       v == "remove_chunk" ||
 				       // R1a (2026-08-09): ONE remove_chunks call is ONE

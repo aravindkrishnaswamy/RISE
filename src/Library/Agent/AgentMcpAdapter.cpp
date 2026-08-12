@@ -319,6 +319,23 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! S2 (2026-08-11): the two CLEAN-ROOM verbs' own annotations under
+			//! AgentAutonomy::Propose SPECIFICALLY -- the fourth and fifth
+			//! siblings of the three scaffold notes above, same rationale
+			//! (both mutate; both deliberately excluded from
+			//! AgentRpc.cpp's IsProposeSafeVerb rather than pay the "N mutating
+			//! verbs" prose ripple SourceHygieneTest's verb-parity scan pins;
+			//! refused under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kBuildElementProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+			const std::string kPlaceElementProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: place_element is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			//! Build the `tools/list` result: the 27 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
@@ -802,6 +819,137 @@ namespace RISE
 						"lists the names that are). Returns {ok,element,phase,previousPhase,chunks,"
 						"unfinished,message}.";
 					tools.push_back( MakeTool( "reopen_element", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// build_element / place_element (S2, 2026-08-11) -- the two
+				// CLEAN-ROOM verbs.  Both MUTATE (build_element inserts what the
+				// builder returned; place_element submits one patch batch), so
+				// neither is read-safe; both are additionally excluded from
+				// AgentRpc's Propose-autonomy allowlist, exactly like the three
+				// scaffold verbs, and carry the same kScaffoldProposeRefusedNote
+				// caveat on this surface.  THE CODEC TEXT IS CANONICAL AND THIS
+				// MIRRORS IT, for the drift-class reason recorded on
+				// file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "element", StringProp(
+						"Required. The name of the ACTIVE element, exactly as filed in file_build_plan. "
+						"A name that is not the active element does nothing and says which element is "
+						"active." ) );
+					JsonValue heightProp = JsonValue::MakeObject();
+					heightProp.set( "type", JsonValue::MakeString( "number" ) );
+					heightProp.set( "exclusiveMinimum", JsonValue::MakeNumber( 0.0 ) );
+					heightProp.set( "description", JsonValue::MakeString(
+						"Required. How tall the element should be in world units (its Y extent). A "
+						"request, not a limit -- the realised bounding box comes back in the result and "
+						"nothing is refused for missing it." ) );
+					props.set( "height", heightProp );
+					props.set( "notes", StringProp(
+						"Optional free text passed to the builder alongside the pieces and the outline "
+						"-- anything about this element the plan does not already say. Nothing checks "
+						"what it says." ) );
+					std::vector<std::string> required;
+					required.push_back( "element" );
+					required.push_back( "height" );
+
+					// readOnly and proposeOnly are BOTH refusals for this verb,
+					// with different truthful wording (see
+					// kBuildElementProposeRefusedNote's doc).
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kBuildElementProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Build the ACTIVE element in one go: this call asks the session's provider, in "
+						"a FRESH context that contains nothing but the scene-language grammar for the "
+						"chunk kinds involved, the pieces declared for this element, the outline "
+						"sketched for it, the requested height and a fixed local-frame contract, to "
+						"construct the whole element on its own. What comes back is split into chunks, "
+						"checked, and inserted here. It is the way the FIRST geometry for an element "
+						"gets made: while the active element has no chunk recorded against it, "
+						"insert_chunk and insert_chunks carrying a geometry chunk are refused and name "
+						"this tool -- up to 3 refusals shared with the other build-phase rules, after "
+						"which they stop intercepting. Once the element has any chunk recorded against "
+						"it, authoring geometry for it by hand is allowed and is never refused again. "
+						"Only geometry chunks are ever refused this way; materials, painters and "
+						"standard_objects never are. THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE: "
+						"the contract sent to the builder puts the element's base-centre at (0,0,0) "
+						"with +Y up, facing +Z -- place_element is what moves it into the scene "
+						"afterwards. `height` is a REQUEST, not a limit: the realised bounding box is "
+						"measured and reported back, and nothing is refused for missing it. EVERY "
+						"CHUNK NAME MUST BEGIN with the element's prefix (the element name lowercased, "
+						"non-alphanumerics collapsed to underscores, plus a trailing underscore -- "
+						"\"wizard\" gives \"wizard_\"); a chunk whose name does not begin with the "
+						"required prefix is rejected and is NOT renamed, because renaming would break "
+						"the references between the builder's own chunks. If anything is rejected, ONE "
+						"repair retry runs automatically with the exact rejection text -- one, then it "
+						"stops, and whatever landed stays landed. Nothing is ever dropped silently: a "
+						"chunk that came back unclosed, unnamed, wrongly prefixed or rejected by "
+						"insertion is reported with its reason. Everything that lands is recorded "
+						"against the active element exactly as if it had been inserted directly. On a "
+						"provider that cannot run a separate completion this returns ok:false with a "
+						"plain statement, nothing else changes, and authoring by hand is not blocked. "
+						"Returns {ok,element,provider,model,chunksExtracted,landed,"
+						"rejected:[{name,kind,reason}],chunkResults,retryRan,retrySucceeded,"
+						"sdfPartCount,bbox:{min,max,height},message}." );
+					tools.push_back( MakeTool( "build_element", desc, ObjectProp( "", props, required ) ) );
+				}
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "element", StringProp(
+						"Required. The name of an element in the filed build plan, exactly as you "
+						"filed it." ) );
+					// S2 fix-round (2026-08-11, P2): this SHORT line used to say only
+					// "where the base-centre goes", which reads as an absolute world
+					// coordinate; the OFFSET/compose semantics were stated only in the
+					// fuller tool description below.  Now unmistakable here too --
+					// mirrors AgentChatCodecs.cpp's identical fix verbatim.
+					props.set( "position", StringProp(
+						"Required. An OFFSET added to each object's own CURRENT (already scaled/rotated) "
+						"position, as \"x y z\" -- equals the base-centre's world position on a first "
+						"call from the origin, but a later call composes on top of wherever the element "
+						"already is rather than resetting it there." ) );
+					JsonValue scaleProp = JsonValue::MakeObject();
+					scaleProp.set( "type", JsonValue::MakeString( "number" ) );
+					scaleProp.set( "exclusiveMinimum", JsonValue::MakeNumber( 0.0 ) );
+					scaleProp.set( "description", JsonValue::MakeString(
+						"Optional, default 1. ONE uniform factor -- not three. It multiplies each "
+						"object's scale and its offset from the element's origin." ) );
+					props.set( "scale", scaleProp );
+					props.set( "orientation", StringProp(
+						"Optional, default \"0 0 0\". Euler degrees about the element's own origin, as "
+						"\"ex ey ez\"." ) );
+					std::vector<std::string> required;
+					required.push_back( "element" );
+					required.push_back( "position" );
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kPlaceElementProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Move an element into the scene: one rigid transform applied to every "
+						"standard_object recorded against it, so an element built at the origin ends "
+						"up where you want it without patching each object. `position` is where the "
+						"element's base-centre goes, and it is an OFFSET -- each object's own position "
+						"inside the element is scaled, rotated and then added to it, so the objects "
+						"keep their arrangement relative to one another. `scale` is one uniform factor "
+						"multiplying each object's scale and its offset from the element's origin, so "
+						"the element scales about its own base-centre. `orientation` is Euler degrees "
+						"about that same origin; an object that carries no rotation of its own is set "
+						"to it exactly, and one that already carries a rotation has the degrees added "
+						"per axis, which the result reports because adding Euler angles is only exact "
+						"when both rotations are about the same axis. An object authored with `matrix` "
+						"is skipped and named, because a matrix overrides position, orientation and "
+						"scale and the patch would do nothing; an object authored with `quaternion` is "
+						"moved and scaled but not rotated, and is named too. Legal in the pieces phase "
+						"and in the compose phase. The whole placement is ONE batch, so ONE head "
+						"version bump and ONE undo step. ok:false means nothing was submitted (no "
+						"build plan, an element that is not in it, or an element with no "
+						"standard_object recorded against it) and the document is unchanged. Returns "
+						"{ok,element,objects,skipped:[{object,reason}],patchResults,patchesApplied,"
+						"patchesRejected,bbox:{min,max},message}." );
+					tools.push_back( MakeTool( "place_element", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on

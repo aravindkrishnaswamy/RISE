@@ -3785,6 +3785,315 @@ namespace RISE
 			//! budget.
 			static constexpr unsigned int kSceneTargetMaxEdge = 512;
 
+			//----------------------------------------------------------------
+			// Arc 79 slice S2 (2026-08-11): CLEAN-ROOM CONSTRUCTION -- the two
+			// verbs `build_element` and `place_element`.
+			// Design: docs/agentic-redesign/79-clean-room-construction.md.
+			//
+			// THE MEASUREMENT THIS EXPLOITS (design sec 1).  The same request
+			// to the same model produced 18.0 SDF parts in a SHORT context,
+			// 7.7 with 60k of the agent's own skills prepended, and 1-2 inside
+			// a live session.  A hand simulation that built each element in a
+			// FRESH minimal context produced 67 parts across a scene (wizard
+			// 15) against the live run's ~10 (wizard 2).  Construction
+			// richness is bounded by CONTEXT VOLUME, not by knowledge -- so
+			// `build_element` asks the session's OWN provider, through the
+			// host-mediated `imagine_scene` pattern (text instead of image),
+			// for ONE element in ONE fresh minimal completion.
+			//
+			// THAT SIMULATION FAILED AT COMPOSITION, structurally: each
+			// builder invented its own coordinate conventions, the glue was
+			// string concatenation with no validation (it silently dropped an
+			// unbalanced chunk, every light and the scene header), and the
+			// assembler was handed a screenshot rather than an inventory.
+			// The two contracts below are exactly those three gaps:
+			//
+			//   LOCAL FRAME (LocalFrameContract, sent to the builder verbatim)
+			//     -- base-centre at the origin, +Y up, facing +Z, a height
+			//     budget, a name prefix, self-contained, and no world
+			//     placement.  `place_element` is what the frame exists to
+			//     enable, and it is the operation RISE's FLAT scene graph
+			//     cannot express natively.
+			//
+			//   VALIDATED INSERTION -- never string concatenation.  A real
+			//     balanced-brace extractor (ExtractChunkTexts, which REPORTS
+			//     an unbalanced chunk instead of dropping it), a name-prefix
+			//     check that REJECTS rather than renames (renaming would break
+			//     the internal references the builder just wrote), submission
+			//     through the SAME InsertChunks path any agent-authored chunk
+			//     takes, ONE capped repair retry, and a factual report of what
+			//     landed, what was rejected and why.
+			//
+			// ATTRIBUTION is the arc-78 machinery, unchanged: everything that
+			// lands is recorded against the active element because it landed
+			// while that element was active.  Nothing here reads or writes
+			// attribution directly.
+			//----------------------------------------------------------------
+
+			//! One blocking text-completion attempt's outcome, as the HOST
+			//! reports it back to this class.  `ok` true REQUIRES non-empty
+			//! `text`.  `error` must be a HEADER-FREE, BODY-FREE category (the
+			//! IChatHttpTransport contract) -- it is echoed to the model.
+			//! Mirrors Agent::ChatTextCompletionOutcome field for field.
+			struct AgentTextCompletionOutcome
+			{
+				bool        ok = false;
+				std::string text;
+				std::string error;
+			};
+
+			//! The HOST-INSTALLED text-completion capability -- the exact
+			//! sibling of AgentImageGenerator, and host-provided for the same
+			//! reason: performing the POST needs the host's transport and the
+			//! session's chat credentials, neither of which this class has or
+			//! should have.  Left unset (the default at EVERY existing
+			//! construction site) the session honestly reports no capability,
+			//! `build_element` answers with a capability statement, and the
+			//! clean-room refusal never arms -- back-compat by construction.
+			struct AgentTextCompleter
+			{
+				bool        supported = false;
+				std::string providerName;   //!< e.g. "gemini" -- named in the capability statement
+				std::string modelId;        //!< e.g. "gemini-3.6-flash"
+				//! Perform ONE blocking completion of `prompt`.  Called on the
+				//! dispatcher thread inside tool dispatch; a generous transport
+				//! timeout is the host's to set.  Never throws.
+				std::function<AgentTextCompletionOutcome( const std::string& prompt )> complete;
+			};
+
+			//! Install (or replace) the host's text-completion capability.
+			//! HOST-PROVIDED ONLY -- there is no wire verb that can set,
+			//! change or inspect the endpoint, the model or the credentials.
+			//! Call once, before the session serves requests; a credential
+			//! change is satisfied by building a fresh completer and calling
+			//! this again (see Agent::MakeChatTextCompleter).
+			void SetTextCompleter( AgentTextCompleter completer )
+			{
+				mTextCompleter = std::move( completer );
+			}
+
+			//! Can this session run a builder completion (i.e. did the host
+			//! install a capable completer)?  Observation only -- this is what
+			//! makes both `build_element` and the clean-room refusal
+			//! conditional, exactly as ImagineCapable does for its half of the
+			//! build-plan gate.
+			bool BuildCapable() const
+			{
+				return mTextCompleter.supported && mTextCompleter.complete != nullptr;
+			}
+
+			//! THE LOCAL-FRAME CONTRACT, sent to the builder VERBATIM and
+			//! exposed here so a test can pin the exact text without building
+			//! a prompt.  Facts and requirements only -- no advice about what
+			//! to build, no judgement, no score.
+			static const char* LocalFrameContract();
+
+			//! Generator-reaching `build_element` calls allowed per session.
+			//! Capability, phase and schema refusals never count.  Same
+			//! motivation as kSceneImagineMaxPerSession: this is a verb whose
+			//! cost is real, billed provider money rather than local compute,
+			//! and the interactive surface has no call budget.  ONE call can
+			//! reach the provider TWICE (the build plus its single repair
+			//! retry), which the cap deliberately does not distinguish -- it
+			//! bounds calls, and the retry is bounded at one by construction.
+			static constexpr int kBuildElementMaxPerSession = 16;
+
+			//! The longest `notes` string a `build_element` call may carry.
+			//! `notes` is interpolated into the host-composed builder prompt
+			//! (clearly labelled, after the frame contract), so it is the ONE
+			//! model-supplied span in that prompt; the cap bounds what a
+			//! runaway call can spend, and over-long notes are TRUNCATED with
+			//! the truncation stated, never silently.
+			static constexpr std::size_t kBuildElementMaxNotes = 2000;
+
+			//! One chunk the builder returned that was NOT inserted, with the
+			//! reason.  Never a silent drop -- the simulation's most damaging
+			//! failure mode (design sec 2.2).
+			struct AgentBuildElementRejection
+			{
+				std::string name;    //!< the chunk `name` when it had one, else ""
+				std::string kind;    //!< the chunk keyword when it parsed, else ""
+				std::string reason;  //!< factual, actionable, no advice
+			};
+
+			//! The structured result of BuildElement.  `ok` means the builder
+			//! ANSWERED and its answer was processed -- NOT that everything
+			//! landed; `landed` / `rejected` carry that, and a partial outcome
+			//! is a first-class, honestly-reported result.
+			struct AgentBuildElementResult
+			{
+				bool        ok = false;
+				//! true iff the refusal was "this provider cannot run a
+				//! builder completion" rather than a failed attempt.
+				bool        capabilityRefusal = false;
+				std::string element;        //!< the element this built for ("" when !ok)
+				std::string providerName;
+				std::string modelId;
+				//! Chunks the extractor recovered from the builder's answer,
+				//! across BOTH attempts (see `retryRan`).
+				unsigned int chunksExtracted = 0;
+				//! Chunk names that actually landed in the document, in
+				//! insertion order.
+				std::vector<std::string> landed;
+				std::vector<AgentBuildElementRejection> rejected;
+				//! One AgentChunkResult per chunk SUBMITTED (both attempts, in
+				//! submission order) -- the same per-element shape
+				//! InsertChunks returns, so a caller can see each chunk's own
+				//! status without re-reading the document.
+				std::vector<AgentChunkResult> chunkResults;
+				bool        retryRan = false;      //!< the ONE repair retry was issued
+				bool        retrySucceeded = false;//!< ... and it landed at least one more chunk
+				//! `part` lines across the geometry chunks that LANDED -- the
+				//! arc's headline measurement (design sec 6 item 1).  A plain
+				//! count, never a target and never scored.
+				unsigned int sdfPartCount = 0;
+				//! The element's realised WORLD bounding box: the union over
+				//! the standard_objects attributed to it that the scene can
+				//! resolve.  `bboxValid` false when it has none.
+				bool        bboxValid = false;
+				double      bboxMin[3] = { 0.0, 0.0, 0.0 };
+				double      bboxMax[3] = { 0.0, 0.0, 0.0 };
+				std::string message;
+			};
+
+			//! Build ONE element in a FRESH minimal provider context and
+			//! validated-insert the result.  Requires the arc-78 PIECES phase
+			//! with `element` ACTIVE -- a mismatch, a missing plan, a compose-
+			//! phase call or a provider with no completion capability all come
+			//! back ok:false having changed NOTHING (no document mutation, no
+			//! phase change, no refusal counted).
+			//!
+			//! `height` is the requested Y extent, a REQUEST and not a gate:
+			//! the harness MEASURES the realised bbox and reports it rather
+			//! than enforcing it.  `notes` is optional free text from the
+			//! caller, interpolated into the host-composed prompt (see
+			//! kBuildElementMaxNotes); the model NEVER supplies raw prompt
+			//! text -- the grammar, the frame contract, the element's declared
+			//! pieces, its filed outline and the output instruction are all
+			//! composed HERE.
+			//!
+			//! Blocking: one provider round trip, plus at most ONE repair
+			//! retry when the first insertion rejects anything.
+			AgentBuildElementResult BuildElement( const std::string& element,
+			                                      double height,
+			                                      const std::string& notes = std::string() );
+
+			//! One standard_object `place_element` did not transform, and why.
+			struct AgentPlaceElementSkip
+			{
+				std::string object;
+				std::string reason;
+			};
+
+			//! The structured result of PlaceElement.  `ok` false means the
+			//! call did NOTHING -- no patch was submitted and the document is
+			//! byte-identical -- and `message` says why.
+			struct AgentPlaceElementResult
+			{
+				bool        ok = false;
+				std::string element;
+				//! The standard_objects transformed, in attribution order.
+				std::vector<std::string> objects;
+				std::vector<AgentPlaceElementSkip> skipped;
+				//! One AgentPatchResult per patch submitted, in submission
+				//! order (position, then scale, then orientation, per object).
+				std::vector<AgentPatchResult> patchResults;
+				unsigned int patchesApplied = 0;
+				unsigned int patchesRejected = 0;
+				//! The element's world bounding box AFTER the placement, when
+				//! it has resolvable objects.
+				bool        bboxValid = false;
+				double      bboxMin[3] = { 0.0, 0.0, 0.0 };
+				double      bboxMax[3] = { 0.0, 0.0, 0.0 };
+				std::string message;
+			};
+
+			//! Apply ONE rigid transform to every `standard_object` attributed
+			//! to `element` -- the operation the local frame exists to make
+			//! possible, and the one RISE's flat scene graph cannot express
+			//! natively.  Legal in the PIECES and COMPOSE phases; ok:false
+			//! (nothing submitted) with the protocol off, with no plan filed,
+			//! for an element not in the plan, or for an element with no
+			//! standard_object attributed to it.
+			//!
+			//! COMPOSITION SEMANTICS (it COMPOSES with each object's existing
+			//! params; it never replaces them wholesale):
+			//!   * `scale` is a single UNIFORM factor, default 1.  Each
+			//!     object's per-axis `scale` is MULTIPLIED by it, and each
+			//!     object's existing `position` is multiplied by it too -- so
+			//!     an element scales about its OWN base-centre origin and its
+			//!     internal offsets scale with it.  Exact regardless of any
+			//!     rotation, because a uniform scale commutes with rotation.
+			//!   * `orientation` is Euler DEGREES, default "0 0 0", and
+			//!     rotates the element about its own origin.  Each object's
+			//!     existing `position` is rotated EXACTLY (the same
+			//!     Rx*Ry*Rz composition Transformable::SetOrientation applies).
+			//!     For the object's OWN rotation: an object that carries none
+			//!     (or an all-zero one) is SET to this rotation, which is
+			//!     exact; an object that already carries a non-zero
+			//!     `orientation` has the degrees ADDED per axis, which is
+			//!     exact when the two rotations share a single axis and an
+			//!     APPROXIMATION otherwise -- the result names every object
+			//!     that case applied to rather than leaving it implied.
+			//!   * `position` is the element's new base-centre in world space
+			//!     and is an OFFSET: it is ADDED to each object's existing
+			//!     position after that position has been scaled and rotated.
+			//!     An element whose objects already carry their own offsets
+			//!     therefore keeps them, rigidly -- which is the whole point.
+			//!   * An object authored with `matrix` is SKIPPED and named: a
+			//!     `matrix` bypasses position/orientation/scale entirely
+			//!     (see standard_object's descriptor), so patching those
+			//!     params would be a silent no-op, and a silent no-op is
+			//!     exactly what this arc exists to eliminate.  An object
+			//!     authored with `quaternion` is positioned and scaled (both
+			//!     compose with a quaternion) but NOT rotated, and is named
+			//!     for that too.
+			//!
+			//! Routes entirely through ProposePatches, so authority, autonomy
+			//! staging, conflict detection and per-patch diagnostics are
+			//! inherited unchanged.  ONE head bump and ONE undo step: the
+			//! whole placement is submitted as a single ProposePatches batch.
+			AgentPlaceElementResult PlaceElement( const std::string& element,
+			                                      const std::string& position,
+			                                      const std::string& scale = std::string(),
+			                                      const std::string& orientation = std::string() );
+
+			//! The balanced-brace CHUNK EXTRACTOR (design sec 2.2), exposed
+			//! static so a test can drive it on hostile input without a
+			//! session or a provider.  Splits `text` -- a builder's whole
+			//! answer, prose and markdown fences included -- into complete
+			//! chunk texts, each re-emitted in the CANONICAL form InsertChunk
+			//! requires (`keyword\n{\n<body>\n}`).
+			//!
+			//! THE ALGORITHM.  Markdown fence lines are removed first.  The
+			//! scan then walks the text once, skipping `#`-to-end-of-line and
+			//! `/* ... */` comments exactly as the CST lexer does, looking for
+			//! a `{` at depth 0; the chunk KEYWORD is the identifier token
+			//! immediately before it.  From that brace it counts `{` and `}`
+			//! until depth returns to 0 -- that span is the chunk body.
+			//!
+			//! MALFORMED INPUT IS REPORTED, NEVER DROPPED (this is the whole
+			//! reason it is not a line regex -- the hand simulation's regex
+			//! extractor silently dropped an unbalanced chunk):
+			//!   * an opening brace whose chunk is never closed -> one
+			//!     `outProblems` entry naming the keyword and the line;
+			//!   * a `{` with no identifier before it -> one entry naming the
+			//!     line;
+			//!   * a stray `}` at depth 0 -> one entry naming the line.
+			//! Text outside any chunk (the builder's prose) is IGNORED
+			//! silently -- it is not malformed, it is just not a chunk.
+			static void ExtractChunkTexts( const std::string& text,
+			                               std::vector<std::string>& outChunks,
+			                               std::vector<std::string>& outProblems );
+
+			//! The chunk-name prefix every chunk of `element` must start with:
+			//! the element name lowercased with every non-alphanumeric run
+			//! collapsed to one `_`, trimmed, plus a trailing `_` (so element
+			//! "Left Wing" gives "left_wing_").  An element name with no
+			//! alphanumeric character at all gives "element_".  Static so the
+			//! prompt, the check and a test all read the SAME rule.
+			static std::string ElementChunkNamePrefix( const std::string& element );
+
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
 			//! narrowing -- the SAME resolution rules as ProposePatch,
@@ -5578,6 +5887,75 @@ namespace RISE
 			//! carries, for the same reason (a call refused for being malformed
 			//! must not also burn a phase refusal).
 			std::string CheckComposePhaseForCreate_( const char* verb, std::string* outGiveUpNotice );
+
+			//! S2 (2026-08-11): the THIRD arm of the phase refusals (design
+			//! sec 4) -- is HAND-AUTHORING this geometry chunk refused because
+			//! the active element has no chunk of its own yet?  "" unless ALL
+			//! of: the protocol is on and has not given up, the session is in
+			//! the Pieces phase, the host installed a text completer (a path
+			//! that does not exist cannot be forced), this call is not
+			//! BuildElement's own insertion, and the active element has NO
+			//! chunk recorded against it.  Otherwise the refusal, naming
+			//! `build_element`.  Shares RefuseForPhase_'s counter, cap and
+			//! give-up with the other two arms.
+			//!
+			//! Call it ONLY once the caller has established that this call
+			//! really does create geometry -- the same precondition the other
+			//! two arms carry, for the same reason.
+			std::string CheckFirstGeometryThroughCleanRoom_( const char* verb,
+			                                                 std::string* outGiveUpNotice );
+
+			//! S2: true while BuildElement is submitting its own extracted
+			//! chunks through InsertChunks.  The clean-room refusal above
+			//! consults it so the mechanism cannot refuse the very verb it
+			//! names.  Set by an RAII guard around the ONE InsertChunks call
+			//! (BuildElement is synchronous and single-caller, like every
+			//! other session method), so it is always cleared on every path.
+			bool mInBuildElementInsert = false;
+			struct BuildElementInsertGuard_
+			{
+				AgentSession& session;
+				explicit BuildElementInsertGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInBuildElementInsert = true;
+				}
+				~BuildElementInsertGuard_() { session.mInBuildElementInsert = false; }
+			};
+
+			//! S2: the host-installed text-completion capability; default-
+			//! constructed (supported=false, no callable) at every existing
+			//! construction site, so a host that never installs one gets a
+			//! session where `build_element` states its absence and the
+			//! clean-room refusal never arms.
+			AgentTextCompleter mTextCompleter;
+
+			//! S2 spend cap: BuildElement calls that actually reached the
+			//! completer this session.  Capability, phase and schema refusals
+			//! never count.  See kBuildElementMaxPerSession.
+			int mBuildElementCalls = 0;
+
+			//! S2: compose the ENTIRE builder prompt host-side for `element`
+			//! -- the grammar, the element's declared pieces, its filed
+			//! outline, the height budget, the local-frame contract verbatim,
+			//! the caller's (already length-capped) notes, and the output
+			//! instruction.  The model never supplies raw prompt text; it
+			//! supplies the element name, the height and the notes only.
+			//! `rejectionText` empty builds the FIRST prompt; non-empty builds
+			//! the ONE repair retry's prompt, which is the first prompt plus
+			//! the exact rejection text and a request for the corrected set
+			//! whole.
+			std::string ComposeBuilderPrompt_( const std::string& element,
+			                                   double height,
+			                                   const std::string& notes,
+			                                   const std::string& rejectionText ) const;
+
+			//! S2: the element's realised WORLD bounding box -- the union over
+			//! the standard_objects attributed to it that the scene's object
+			//! manager can resolve (the SAME ResolveIsolateObject filter
+			//! FinishElement's isolate pick uses, so "renderable" means one
+			//! thing in this class).  Returns false when it has none.
+			bool ElementWorldBounds_( const std::string& element,
+			                          double outMin[3], double outMax[3] ) const;
 
 			//----------------------------------------------------------------
 			// Arc 77 Phase 2 (2026-08-11): the scene-target state.  Lives in

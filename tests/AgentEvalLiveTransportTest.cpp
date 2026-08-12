@@ -1309,6 +1309,107 @@ static void TestMakeChatImageGeneratorWiring()
 }
 
 //----------------------------------------------------------------------
+// T5c (S2 fix-round, 2026-08-11, P3): Agent::MakeChatTextCompleter
+// (AgentChatCodecs.h) -- the TEXT sibling of T5b just above, for the same
+// reason: build_element's host completer is real transport-wired code
+// that, before this fix, had zero coverage of its own -- every clean-room
+// test (AgentChunkCrudTest.cpp's S2 block) mocks the completer at the
+// AgentSession::SetTextCompleter seam, never exercising
+// BuildTextCompletionRequest / ParseTextCompletionResponse / the glue that
+// binds them to a transport.  Exercises all four supported providers
+// against the SAME MockTransport this file already drives the chat and
+// image paths with:
+//   (a) key hygiene -- the key rides the provider's OWN auth header ONLY;
+//   (b) a failed HTTP response yields a STATUS-CODE-ONLY error, never the
+//       body (a provider error body can echo the prompt straight back);
+//   (c) the success path threads decoded text through end to end, for one
+//       representative provider -- the per-provider response SHAPES
+//       themselves are pinned directly in AgentChatLoopTest.cpp's T51.
+//----------------------------------------------------------------------
+static void TestMakeChatTextCompleterWiring()
+{
+	std::printf( "T5c: MakeChatTextCompleter -- key hygiene + status-only error, all 4 providers...\n" );
+
+	struct ProviderCase { const char* name; const char* authHeader; };
+	const ProviderCase cases[] = {
+		{ "anthropic", "x-api-key" },
+		{ "gemini",    "x-goog-api-key" },
+		{ "openai",    "authorization" },
+		{ "xai",       "authorization" },
+	};
+
+	for( const ProviderCase& pc : cases ) {
+		const std::string kFakeKey =
+			std::string( "FAKE-" ) + pc.name + "-TEXT-KEY-DO-NOT-LEAK-0123456789";
+
+		// (a) + (b): a 403 whose body carries a distinctive "leak" marker --
+		// proves the marker never reaches the outcome's error string, and
+		// that the key never rides anywhere but its own auth header.
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		mock->responses.push_back(
+			{ 403, "{\"error\":{\"message\":\"SECRET_PROMPT_LEAK_MARKER\"}}", "", 3 } );
+
+		const ChatTextCompleter comp = MakeChatTextCompleter( pc.name, kFakeKey, mock );
+		Check( comp.supported, std::string( "T5c: " ) + pc.name + " reports text-completion capability" );
+		Check( comp.complete != nullptr,
+		       std::string( "T5c: " ) + pc.name + " completer has a callable complete" );
+
+		const ChatTextCompletionOutcome out = comp.complete( "build the wizard element" );
+		Check( !out.ok, std::string( "T5c: " ) + pc.name + " -- a 403 response is reported as a failure" );
+		Check( out.error.find( "403" ) != std::string::npos,
+		       std::string( "T5c: " ) + pc.name + " -- the failure message names the HTTP status" );
+		Check( out.error.find( "SECRET_PROMPT_LEAK_MARKER" ) == std::string::npos,
+		       std::string( "T5c MONEY ASSERTION: " ) + pc.name +
+		       " -- the failure message never echoes the response body" );
+
+		Check( mock->seenRequests.size() == 1,
+		       std::string( "T5c: " ) + pc.name + " -- exactly one POST was issued" );
+		if( !mock->seenRequests.empty() ) {
+			const ChatHttpRequest& req = mock->seenRequests[0];
+			Check( req.url.find( kFakeKey ) == std::string::npos,
+			       std::string( "T5c: " ) + pc.name + " -- the key never appears in the request URL" );
+			Check( req.body.find( kFakeKey ) == std::string::npos,
+			       std::string( "T5c: " ) + pc.name + " -- the key never appears in the request body" );
+			Check( mock->AnyRequestHeaderContains( kFakeKey ),
+			       std::string( "T5c: " ) + pc.name +
+			       " -- the key DOES appear in a request header (red-prove: not vacuously absent)" );
+			bool keyOnlyInAuthHeader = true;
+			for( std::size_t h = 0; h < req.headers.size(); ++h ) {
+				const bool hasKey = req.headers[h].second.find( kFakeKey ) != std::string::npos;
+				if( hasKey && req.headers[h].first != pc.authHeader ) keyOnlyInAuthHeader = false;
+			}
+			Check( keyOnlyInAuthHeader,
+			       std::string( "T5c: " ) + pc.name + " -- the key rides ONLY its own auth header (" +
+			       pc.authHeader + "), no other header" );
+		}
+	}
+
+	// (c) success: one representative provider (anthropic) decodes an
+	// end-to-end canned response through the transport.
+	{
+		std::shared_ptr<MockTransport> mock = std::make_shared<MockTransport>();
+		mock->responses.push_back( { 200,
+			"{\"content\":[{\"type\":\"text\",\"text\":\"sdf_geometry\\n{\\n\\tname wizard_body_sdf\\n}\\n\"}]}",
+			"", 5 } );
+
+		const ChatTextCompleter comp = MakeChatTextCompleter( "anthropic", "SOME-KEY", mock );
+		const ChatTextCompletionOutcome out = comp.complete( "build the wizard element" );
+		Check( out.ok, "T5c: a 200 response with a text content block succeeds" );
+		Check( out.text.find( "wizard_body_sdf" ) != std::string::npos,
+		       "T5c: the decoded text threads through end to end" );
+	}
+
+	// no HTTP transport installed -- an honest, factual refusal, never a
+	// crash.
+	{
+		const ChatTextCompleter comp = MakeChatTextCompleter( "anthropic", "k", nullptr );
+		const ChatTextCompletionOutcome out = comp.complete( "p" );
+		Check( !out.ok && out.error.find( "no HTTP transport" ) != std::string::npos,
+		       "T5c: with no transport installed, the completer fails honestly rather than crashing" );
+	}
+}
+
+//----------------------------------------------------------------------
 // T11: FIX 1 -- the LOCAL provider's raised 900s transport timeout budget
 //      reaches the (mock) transport, end-to-end through RunScenarioLive
 //      (not just the codec-level unit test in AgentChatLoopTest.cpp).
@@ -3169,6 +3270,7 @@ int main()
 	TestLive5xxDoesNotStackWithDegenerate();
 	TestKeyHygieneRedProve();
 	TestMakeChatImageGeneratorWiring();
+	TestMakeChatTextCompleterWiring();
 	TestLiveLocalProviderTimeoutBudget();
 	TestLiveHttp5xxRetrySucceeds();
 	TestLiveHttp5xxRetryStillFails();

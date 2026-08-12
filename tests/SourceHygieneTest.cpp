@@ -1422,6 +1422,63 @@ int main()
 					}
 				}
 
+				// ---- S2 (2026-08-11): the CLEAN-ROOM CONSTRUCTION surface pins.
+				//
+				// Same test, same problem list, same reason as the S1 block
+				// above: two hand-authored surfaces describe ONE mechanism, and
+				// a clause on only one of them silently changes what the model
+				// on the other transport believes.  These are the clauses a
+				// model cannot work the clean room without -- that the builder
+				// works at the ORIGIN (so the element must be placed
+				// afterwards), that the name prefix is ENFORCED and never
+				// silently repaired by renaming, that the height is a request
+				// rather than a limit (or a model will chase a number nothing
+				// is measuring against it), that exactly ONE repair retry runs,
+				// that the hand-authoring refusal exists and what lifts it, and
+				// that place_element's position is an OFFSET (the one sentence
+				// that decides whether an element's internal arrangement
+				// survives placement).
+				{
+					struct S2Pin { const char* text; const char* why; };
+					static const S2Pin kS2Pins[] = {
+						{ "build_element",
+						  "never mentions build_element -- the verb the first-geometry refusal names; "
+						  "a model that cannot name it cannot start an element" },
+						{ "place_element",
+						  "never mentions place_element -- an element built at the origin that is "
+						  "never placed is the interpenetration this arc exists to fix" },
+						{ "THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE",
+						  "does not state that the builder authors in a LOCAL frame -- a model that "
+						  "expects world placement reads a correct element as a misplaced one" },
+						{ "does not begin with the required prefix is rejected and is NOT renamed",
+						  "does not state that the prefix check rejects rather than renames -- a "
+						  "model told the harness will fix names will not write them" },
+						{ "nothing is refused for missing it",
+						  "does not state that `height` is a request, not a limit -- presented as a "
+						  "gate it becomes a number to satisfy instead of a budget to build within" },
+						{ "ONE repair retry runs automatically",
+						  "does not state that the retry is automatic and singular -- a model that "
+						  "believes it must retry by hand will spend turns re-issuing the call" },
+						{ "while the active element has no chunk recorded against it",
+						  "does not state WHEN hand-authored geometry is refused -- a refusal whose "
+						  "condition is unstated reads as a bug, not a sequence" },
+						{ "authoring geometry for it by hand is allowed and is never refused again",
+						  "does not state what LIFTS the refusal -- construction through the clean "
+						  "room, refinement by hand, is the whole rule and half of it is useless" },
+						{ "is scaled, rotated and then added to it",
+						  "does not state that place_element's position is an OFFSET composed with "
+						  "each object's own -- a model that reads it as a replacement will collapse "
+						  "its element onto one point" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kS2Pins ) / sizeof( kS2Pins[0] ); ++k ) {
+							if( joined.find( kS2Pins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kS2Pins[k].why );
+						}
+					}
+				}
+
 				for( const char* fname : kPlanSurfaces ) {
 					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
 					if( joined.find( "imagine_scene" ) == std::string::npos ) {

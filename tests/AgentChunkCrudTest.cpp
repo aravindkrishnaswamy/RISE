@@ -10176,6 +10176,648 @@ static void TestBuildProtocolWireShape()
 	}
 }
 
+//----------------------------------------------------------------------
+// S2 (2026-08-11): CLEAN-ROOM CONSTRUCTION -- build_element, place_element
+// and the first-geometry refusal.
+// Design: docs/agentic-redesign/79-clean-room-construction.md.
+//
+// EVERY TEST HERE USES A MOCKED TEXT COMPLETER.  No live provider call is
+// made, ever: the completer is a canned-answer callable installed through
+// the same AgentSession::SetTextCompleter seam the eval runner and both
+// GUIs use, so the harness drives the byte-identical session path a real
+// completion would, and the ASSERTIONS are about what the harness does
+// with an answer -- which is the whole of what this slice owns.
+//----------------------------------------------------------------------
+
+//! A completer that answers with `answers[i]` on the i-th call and repeats
+//! the last one thereafter, counting the calls it received.
+static Agent::AgentSession::AgentTextCompleter MakeFakeCompleter(
+	std::vector<std::string> answers, int* callsOut = nullptr,
+	std::vector<std::string>* promptsOut = nullptr )
+{
+	Agent::AgentSession::AgentTextCompleter c;
+	c.supported    = true;
+	c.providerName = "mock";
+	c.modelId      = "mock-builder-1";
+	auto shared = std::make_shared<std::vector<std::string> >( std::move( answers ) );
+	auto count  = std::make_shared<int>( 0 );
+	c.complete = [shared, count, callsOut, promptsOut]( const std::string& prompt )
+		-> Agent::AgentSession::AgentTextCompletionOutcome
+	{
+		Agent::AgentSession::AgentTextCompletionOutcome o;
+		if( promptsOut ) promptsOut->push_back( prompt );
+		const std::size_t idx = ( static_cast<std::size_t>( *count ) < shared->size() )
+			? static_cast<std::size_t>( *count )
+			: ( shared->empty() ? 0 : shared->size() - 1 );
+		++( *count );
+		if( callsOut ) *callsOut = *count;
+		if( shared->empty() ) { o.error = "no canned answer"; return o; }
+		o.ok   = true;
+		o.text = ( *shared )[idx];
+		return o;
+	};
+	return c;
+}
+
+//! A one-element plan, so the first element is active the moment it files.
+static std::vector<Agent::AgentSession::AgentBuildPlanEntry> WizardOnlyPlan()
+{
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p;
+	Agent::AgentSession::AgentBuildPlanEntry a;
+	a.element = "wizard";
+	a.pieces.push_back( "robe" );
+	a.pieces.push_back( "hat" );
+	a.construction = "csg";
+	a.outline = "0 0; 2 0; 1.2 4; 0.8 4";
+	p.push_back( a );
+	return p;
+}
+
+//! A well-formed builder answer: a painter, a material, an SDF geometry with
+//! THREE part lines, and one standard_object -- every name prefixed
+//! `wizard_`, and the object at the origin so the bbox is predictable.
+static const char* const kGoodBuilderAnswer =
+	"uniformcolor_painter\n{\n\tname wizard_robe_pnt\n\tcolor 0.3 0.2 0.5\n}\n"
+	"lambertian_material\n{\n\tname wizard_robe_mat\n\treflectance wizard_robe_pnt\n}\n"
+	"sdf_geometry\n{\n\tname wizard_body_sdf\n"
+	"\tpart roundcone union 0  0 0.4 0  0 0 0  1 1 1  0.5 0.25 0.9  0\n"
+	"\tpart sphere smin 0.1  0 1.6 0  0 0 0  1 1 1  0.3 0 0  0\n"
+	"\tpart torus smin 0.05  0 1.85 0  0 0 0  1 1 1  0.45 0.06 0  0\n"
+	"}\n"
+	"standard_object\n{\n\tname wizard_obj\n\tgeometry wizard_body_sdf\n"
+	"\tmaterial wizard_robe_mat\n\tposition 0 0 0\n}\n";
+
+//! S2a: the happy path -- chunks land, they are attributed, the part count
+//! and the realised bbox come back, and no retry was needed.
+static void TestCleanRoomBuildElementHappyPath()
+{
+	std::printf( "S2a: build_element inserts a whole element, reports its bbox and part count...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	int calls = 0;
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer }, &calls, &prompts ) );
+	Check( sess->BuildCapable(), "S2a the session reports the installed completer as a capability" );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2a the plan files" );
+	Check( sess->ActiveElement() == "wizard", "S2a the wizard is active" );
+
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+	Check( r.ok, "S2a build_element succeeds" );
+	Check( calls == 1, "S2a MONEY ASSERTION: exactly ONE completion -- no retry on a clean answer" );
+	Check( !r.retryRan, "S2a and the result says the retry did not run" );
+	Check( r.chunksExtracted == 4, "S2a all four chunks were extracted" );
+	Check( r.landed.size() == 4, "S2a and all four landed" );
+	Check( r.rejected.empty(), "S2a with nothing rejected" );
+	Check( r.sdfPartCount == 3,
+	       "S2a MONEY ASSERTION: the SDF part count is the arc's headline measurement and is counted "
+	       "from the CST of what actually landed (got " + std::to_string( r.sdfPartCount ) + ")" );
+	Check( sess->ChunkElement( "wizard_body_sdf" ) == "wizard",
+	       "S2a every landed chunk is attributed by the arc-78 machinery, unchanged" );
+	Check( sess->ChunkElement( "wizard_robe_mat" ) == "wizard",
+	       "S2a -- including the material" );
+	Check( r.bboxValid, "S2a the realised world bbox is reported" );
+	Check( r.bboxMax[1] > r.bboxMin[1],
+	       "S2a and it has a real Y extent (the inventory the assembler never had)" );
+	Check( r.message.find( "against the 4 requested" ) != std::string::npos,
+	       "S2a the message states the realised height AGAINST the request, never as a pass/fail" );
+
+	// THE PROMPT IS HOST-COMPOSED.  Everything the builder was told came
+	// from this harness or from the descriptor registry.
+	Check( prompts.size() == 1, "S2a one prompt was composed" );
+	if( !prompts.empty() ) {
+		const std::string& p = prompts[0];
+		Check( p.find( Agent::AgentSession::LocalFrameContract() ) != std::string::npos,
+		       "S2a MONEY ASSERTION: the local-frame contract is sent VERBATIM" );
+		Check( p.find( "wizard_" ) != std::string::npos, "S2a the required prefix is stated" );
+		Check( p.find( "robe" ) != std::string::npos && p.find( "hat" ) != std::string::npos,
+		       "S2a the element's DECLARED PIECES are restated to the fresh context" );
+		Check( p.find( "0 0; 2 0; 1.2 4; 0.8 4" ) != std::string::npos,
+		       "S2a and so is the outline it sketched" );
+		Check( p.find( "sdf_geometry" ) != std::string::npos &&
+		       p.find( "standard_object" ) != std::string::npos,
+		       "S2a the grammar comes from the descriptor registry (ReadSchema), not a second "
+		       "hand-written copy that could drift from the parser" );
+	}
+}
+
+//! S2b: a prefix violation is REJECTED, not renamed -- and an unbalanced
+//! chunk is REPORTED, not dropped.  Both drive the one repair retry.
+static void TestCleanRoomValidatedInsertion()
+{
+	std::printf( "S2b: prefix violations rejected without renaming; an unbalanced chunk reported...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2b.RISEscene" );
+
+	// (1) PREFIX VIOLATION.  The second chunk is named without the prefix.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2b/prefix fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string bad =
+			"uniformcolor_painter\n{\n\tname wizard_pnt\n\tcolor 0.3 0.2 0.5\n}\n"
+			"lambertian_material\n{\n\tname robe_mat\n\treflectance wizard_pnt\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { bad } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2b/prefix the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( r.ok, "S2b/prefix the call still reports its outcome" );
+		bool sawPrefixReject = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].name == "robe_mat" ) sawPrefixReject = true;
+		Check( sawPrefixReject, "S2b/prefix the wrongly-named chunk is REJECTED by name" );
+		Check( sess->ReadDocument().find( "wizard_robe_mat" ) == std::string::npos,
+		       "S2b/prefix MONEY ASSERTION: it was NOT renamed into the document -- renaming would "
+		       "break the references the builder wrote between its own chunks" );
+		Check( sess->ReadDocument().find( "\trobe_mat" ) == std::string::npos,
+		       "S2b/prefix and it was not inserted under its own name either" );
+	}
+
+	// (2) UNBALANCED CHUNK -- the hand simulation's silent drop.
+	{
+		std::vector<std::string> chunks, problems;
+		Agent::AgentSession::ExtractChunkTexts(
+			"box_geometry\n{\n\tname wizard_a\n\twidth 1\n}\n"
+			"sdf_geometry\n{\n\tname wizard_b\n\tpart sphere union 0 0 0 0 0 0 0 1 1 1 1 0 0 0\n",
+			chunks, problems );
+		Check( chunks.size() == 1, "S2b/unbalanced the closed chunk is still recovered" );
+		Check( problems.size() == 1,
+		       "S2b/unbalanced MONEY ASSERTION: the UNCLOSED chunk is REPORTED, never dropped -- the "
+		       "hand simulation's most damaging failure mode" );
+		if( !problems.empty() )
+			Check( problems[0].find( "sdf_geometry" ) != std::string::npos &&
+			       problems[0].find( "never closed" ) != std::string::npos,
+			       "S2b/unbalanced and the report names the chunk and what was wrong" );
+	}
+
+	// (3) The extractor's other malformed shapes, and the canonical re-emit.
+	{
+		std::vector<std::string> chunks, problems;
+		Agent::AgentSession::ExtractChunkTexts(
+			"```\nHere is the element.\n{\n\tstray 1\n}\n}\n"
+			"box_geometry { name wizard_c\n width 2 }\n```\n",
+			chunks, problems );
+		Check( chunks.size() == 1, "S2b/malformed only the real chunk is extracted" );
+		if( !chunks.empty() ) {
+			Check( chunks[0].find( "box_geometry\n{\n" ) == 0,
+			       "S2b/malformed a same-line `keyword {` is re-emitted in the canonical "
+			       "braces-on-their-own-lines form insert_chunk requires" );
+		}
+		Check( problems.size() == 2,
+		       "S2b/malformed BOTH the keyword-less brace and the stray closing brace are reported "
+		       "(got " + std::to_string( problems.size() ) + ")" );
+		Check( chunks.size() == 1 || problems.size() == 2, "S2b/malformed (guard)" );
+	}
+
+	// (4) S2 fix-round (2026-08-11, P2): a comment between the keyword and
+	// the opening brace -- both forms the CST lexer accepts -- must not
+	// blind the backward keyword scan.  Before the fix, the backward scan
+	// skipped whitespace only, stopped INSIDE the comment body, and
+	// misreported both well-formed chunks below as keyword-less, silently
+	// dropping them.
+	{
+		std::vector<std::string> chunks, problems;
+		Agent::AgentSession::ExtractChunkTexts(
+			"box_geometry # a trailing line comment\n{\n\tname wizard_lc\n\twidth 1\n}\n"
+			"sdf_geometry /* a block comment */\n{\n\tname wizard_bc\n"
+			"\tpart sphere union 0 0 0 0 0 0 0 1 1 1 1 0 0 0\n}\n",
+			chunks, problems );
+		Check( problems.empty(),
+		       "S2b/comments MONEY ASSERTION: neither comment form is misreported as a keyword-less "
+		       "brace (got " + std::to_string( problems.size() ) + " problem(s))" );
+		Check( chunks.size() == 2,
+		       "S2b/comments and BOTH chunks are extracted, not silently dropped "
+		       "(got " + std::to_string( chunks.size() ) + ")" );
+		if( chunks.size() == 2 ) {
+			Check( chunks[0].find( "box_geometry\n{\n" ) == 0,
+			       "S2b/comments the line-comment-preceded chunk keeps its `box_geometry` keyword" );
+			Check( chunks[1].find( "sdf_geometry\n{\n" ) == 0,
+			       "S2b/comments the block-comment-preceded chunk keeps its `sdf_geometry` keyword" );
+		}
+	}
+}
+
+//! S2c: the ONE repair retry -- it fires once and succeeds, and it fires
+//! once and honestly reports a partial outcome.
+static void TestCleanRoomRepairRetry()
+{
+	std::printf( "S2c: one repair retry, whether it succeeds or not...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2c.RISEscene" );
+
+	// (1) RETRY SUCCEEDS.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2c/ok fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string firstBad =
+			"uniformcolor_painter\n{\n\tname pnt_wrong\n\tcolor 0.3 0.2 0.5\n}\n";
+		int calls = 0;
+		std::vector<std::string> prompts;
+		sess->SetTextCompleter( MakeFakeCompleter( { firstBad, kGoodBuilderAnswer },
+		                                           &calls, &prompts ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2c/ok the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( calls == 2, "S2c/ok MONEY ASSERTION: exactly TWO completions -- one build, one retry" );
+		Check( r.retryRan && r.retrySucceeded, "S2c/ok the retry ran and landed chunks" );
+		Check( r.landed.size() == 4, "S2c/ok the corrected set landed whole" );
+		Check( prompts.size() == 2 &&
+		       prompts[1].find( "A PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED" )
+		           != std::string::npos,
+		       "S2c/ok the retry prompt carries the rejection block" );
+		Check( prompts.size() == 2 && prompts[1].find( "pnt_wrong" ) != std::string::npos,
+		       "S2c/ok MONEY ASSERTION: it carries the EXACT rejection text, so the builder is "
+		       "corrected by what happened rather than by a paraphrase" );
+	}
+
+	// (2) RETRY FAILS -- partial, honest, and NO second retry.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2c/partial fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string halfGood =
+			"uniformcolor_painter\n{\n\tname wizard_pnt\n\tcolor 0.3 0.2 0.5\n}\n"
+			"lambertian_material\n{\n\tname nope_mat\n\treflectance wizard_pnt\n}\n";
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { halfGood, halfGood }, &calls ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2c/partial the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( calls == 2,
+		       "S2c/partial MONEY ASSERTION: the retry is capped at ONE -- a builder that keeps "
+		       "returning the same defect is not asked a third time" );
+		Check( r.retryRan && !r.retrySucceeded, "S2c/partial the retry ran and added nothing" );
+		Check( r.landed.size() == 1 && r.landed[0] == "wizard_pnt",
+		       "S2c/partial what landed, landed -- partial success is a first-class outcome" );
+		bool sawReason = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].name == "nope_mat" ) sawReason = true;
+		Check( sawReason, "S2c/partial and every rejection is still named with its reason" );
+		Check( r.message.find( "no second retry" ) != std::string::npos,
+		       "S2c/partial the message says outright that there is no second retry" );
+	}
+}
+
+//! S2d: the do-nothing cases -- wrong phase, wrong element, no capability.
+static void TestCleanRoomBuildElementRefusals()
+{
+	std::printf( "S2d: build_element outside the pieces phase, and off the active element...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2d.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2d fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	int calls = 0;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer }, &calls ) );
+
+	// PLAN phase: no element is active yet.
+	{
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( !r.ok, "S2d build_element in the PLAN phase does nothing" );
+		Check( r.message.find( "file_build_plan" ) != std::string::npos,
+		       "S2d and names the verb that starts the build" );
+		Check( calls == 0, "S2d MONEY ASSERTION: it never reached the provider, so it cost nothing" );
+	}
+	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S2d the two-element plan files" );
+
+	// A name that is not the ACTIVE element.
+	{
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "terrain", 4.0 );
+		Check( !r.ok, "S2d build_element for a non-active element does nothing" );
+		Check( r.message.find( "reopen_element" ) != std::string::npos,
+		       "S2d and names the escape that would make it active" );
+		Check( calls == 0, "S2d still no provider call" );
+	}
+	// A bad height is refused before anything else.
+	{
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 0.0 );
+		Check( !r.ok && calls == 0, "S2d a non-positive height does nothing and costs nothing" );
+	}
+	// COMPOSE phase.
+	{
+		Check( sess->FinishElement().ok, "S2d the wizard finishes" );
+		Check( sess->FinishElement().ok, "S2d and so does terrain, entering compose" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "S2d the session is in compose" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( !r.ok, "S2d build_element in COMPOSE does nothing" );
+		Check( r.message.find( "reopen_element" ) != std::string::npos,
+		       "S2d and names the way back into an element window" );
+		Check( calls == 0, "S2d and never reached the provider" );
+	}
+
+	// NO CAPABILITY -- an honest statement, and hand authoring is not blocked.
+	{
+		Job* pJob2 = LoadScene( kScene, TempPath( "agentcrud_s2d2.RISEscene" ) );
+		Check( pJob2 != nullptr, "S2d/nocap fixture loads" );
+		if( !pJob2 ) return;
+		std::unique_ptr<Agent::AgentSession> s2 = WrapJobGateArmed( pJob2 );
+		Check( !s2->BuildCapable(), "S2d/nocap a session with no completer is not build-capable" );
+		Check( s2->FileBuildPlan( WizardOnlyPlan() ).ok, "S2d/nocap the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = s2->BuildElement( "wizard", 4.0 );
+		Check( !r.ok && r.capabilityRefusal, "S2d/nocap it is a CAPABILITY refusal" );
+		Check( r.message.find( "not blocked by this" ) != std::string::npos,
+		       "S2d/nocap and says outright that hand authoring still works" );
+		Check( s2->InsertChunk( S1Box( "wizard_hand" ) ).applied,
+		       "S2d/nocap MONEY ASSERTION: with no builder to route to, the first-geometry refusal "
+		       "never arms -- a mechanism cannot force a path that does not exist" );
+	}
+}
+
+//! S2e: the first-geometry refusal -- it fires, it names build_element, it
+//! LIFTS once the element has content, and it never touches non-geometry.
+static void TestCleanRoomFirstGeometryRefusal()
+{
+	std::printf( "S2e: the first geometry for an element must come from build_element...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2e.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2e fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2e the plan files" );
+
+	// A MATERIAL is never refused by this rule.
+	Check( sess->InsertChunk(
+		"uniformcolor_painter\n{\n\tname wizard_p0\n\tcolor 0.1 0.2 0.3\n}" ).applied,
+	       "S2e a painter is never refused by the clean-room rule" );
+	// ...but a painter counts as content, so re-arm by starting clean.
+	Check( sess->RemoveChunk( "wizard_p0" ).applied, "S2e (and is removed again for the next arm)" );
+	Check( sess->ElementChunks( "wizard" ).empty(), "S2e the element is empty again" );
+
+	const std::string docBefore = sess->ReadDocument();
+	const Agent::AgentChunkResult r1 = sess->InsertChunk( S1Box( "wizard_hand" ) );
+	Check( !r1.applied && r1.status == "rejected",
+	       "S2e MONEY ASSERTION: hand-authored geometry is refused while the element has no chunk" );
+	Check( r1.message.find( "build_element" ) != std::string::npos,
+	       "S2e and the refusal names build_element" );
+	Check( sess->ReadDocument() == docBefore, "S2e the document is byte-identical" );
+	Check( sess->BuildPhaseRefusalCount() == 1,
+	       "S2e it burns exactly one slot of the SHARED phase counter (the third arm)" );
+
+	// The BATCH surface refuses on the same terms, atomically.
+	{
+		std::vector<std::string> batch;
+		batch.push_back( S1Box( "wizard_b1" ) );
+		batch.push_back( "uniformcolor_painter\n{\n\tname wizard_b2\n\tcolor 1 1 1\n}" );
+		const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
+		Check( rs.size() == 2 && !rs[0].applied && !rs[1].applied,
+		       "S2e insert_chunks is refused as a WHOLE -- half an element is a state nobody asked for" );
+		Check( sess->ReadDocument() == docBefore, "S2e and the document is still byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 2, "S2e one more slot of the same counter" );
+	}
+
+	// build_element itself is NEVER refused by the rule it arms.
+	const Agent::AgentSession::AgentBuildElementResult br = sess->BuildElement( "wizard", 4.0 );
+	Check( br.ok && br.landed.size() == 4,
+	       "S2e MONEY ASSERTION: the clean room's own insertion is not refused by the clean-room rule" );
+
+	// ...and now hand authoring is allowed, permanently, for this element.
+	Check( sess->InsertChunk( S1Box( "wizard_hand" ) ).applied,
+	       "S2e MONEY ASSERTION: once the element has content, refinement by hand is allowed" );
+	Check( sess->InsertChunk( S1Box( "wizard_hand2" ) ).applied,
+	       "S2e -- and stays allowed" );
+	Check( sess->BuildPhaseRefusalCount() == 2, "S2e with no further refusals counted" );
+}
+
+//! S2f: protocol OFF disables the refusal with everything else.
+static void TestCleanRoomProtocolOff()
+{
+	std::printf( "S2f: --agent-build-protocol=off disables the clean-room refusal too...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2f fixture loads" );
+	if( !pJob ) return;
+
+	Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+	Check( !sess->BuildProtocolActive(), "S2f the protocol is inactive for this session" );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2f the plan still files (the gate clears)" );
+	Check( sess->InsertChunk( S1Box( "wizard_hand" ) ).applied,
+	       "S2f MONEY ASSERTION: hand-authored geometry is NOT refused with the protocol off" );
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+	Check( !r.ok, "S2f and build_element itself does nothing" );
+	Check( r.message.find( "staged build protocol is off" ) != std::string::npos,
+	       "S2f saying exactly that" );
+	Check( !sess->PlaceElement( "wizard", "1 0 0" ).ok, "S2f place_element does nothing either" );
+}
+
+//! S2g: place_element offsets a MULTI-OBJECT element rigidly, and reports
+//! what it could not fully place.
+static void TestCleanRoomPlaceElement()
+{
+	std::printf( "S2g: place_element moves a multi-object element as one rigid transform...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2g.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2g fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	// A two-object element with its own internal offsets, authored through
+	// build_element so the attribution is the real one.
+	const std::string twoObjects =
+		"uniformcolor_painter\n{\n\tname wizard_pnt\n\tcolor 0.3 0.2 0.5\n}\n"
+		"lambertian_material\n{\n\tname wizard_mat\n\treflectance wizard_pnt\n}\n"
+		"box_geometry\n{\n\tname wizard_body_geo\n\twidth 1\n\theight 2\n\tdepth 1\n}\n"
+		"box_geometry\n{\n\tname wizard_hat_geo\n\twidth 1.4\n\theight 0.3\n\tdepth 1.4\n}\n"
+		"standard_object\n{\n\tname wizard_body_obj\n\tgeometry wizard_body_geo\n"
+		"\tmaterial wizard_mat\n\tposition 0 1 0\n}\n"
+		"standard_object\n{\n\tname wizard_hat_obj\n\tgeometry wizard_hat_geo\n"
+		"\tmaterial wizard_mat\n\tposition 0 2.15 0\n}\n";
+	sess->SetTextCompleter( MakeFakeCompleter( { twoObjects } ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2g the plan files" );
+	const Agent::AgentSession::AgentBuildElementResult br = sess->BuildElement( "wizard", 2.3 );
+	Check( br.ok && br.landed.size() == 6, "S2g the two-object element lands" );
+
+	const Agent::AgentSession::AgentPlaceElementResult pr =
+		sess->PlaceElement( "wizard", "5 0 -2" );
+	Check( pr.ok, "S2g place_element applies" );
+	Check( pr.objects.size() == 2,
+	       "S2g MONEY ASSERTION: EVERY standard_object attributed to the element is transformed, "
+	       "which is the operation RISE's flat scene graph cannot express natively" );
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "position 5 1 -2" ) != std::string::npos,
+	       "S2g the body's own offset (0 1 0) is PRESERVED and added to the new base-centre" );
+	Check( doc.find( "position 5 2.15 -2" ) != std::string::npos,
+	       "S2g MONEY ASSERTION: so is the hat's -- the element moves rigidly, it does not collapse" );
+
+	// A second placement composes against the first the same way (offset,
+	// not accumulate-from-origin): the base-centre is where it is asked for.
+	const Agent::AgentSession::AgentPlaceElementResult pr2 =
+		sess->PlaceElement( "wizard", "0 0 0", "2" );
+	Check( pr2.ok, "S2g a scaled placement applies" );
+	const std::string doc2 = sess->ReadDocument();
+	Check( doc2.find( "scale 2 2 2" ) != std::string::npos,
+	       "S2g the uniform factor multiplies each object's scale" );
+	Check( doc2.find( "position 10 2 -4" ) != std::string::npos,
+	       "S2g and multiplies its offset from the element's origin, so the element scales about "
+	       "its own base-centre" );
+
+	// An element with nothing placeable says so, and changes nothing.
+	{
+		const std::string before = sess->ReadDocument();
+		const Agent::AgentSession::AgentPlaceElementResult none =
+			sess->PlaceElement( "not_an_element", "0 0 0" );
+		Check( !none.ok, "S2g an unknown element does nothing" );
+		Check( none.message.find( "not in the filed" ) != std::string::npos,
+		       "S2g and lists what is filed" );
+		Check( sess->ReadDocument() == before, "S2g with the document byte-identical" );
+	}
+}
+
+//! S2h: the wire shape of both verbs.
+static void TestCleanRoomWireShape()
+{
+	std::printf( "S2h: build_element / place_element over JSON-RPC...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2h.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2h fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2h the plan files" );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"build_element\",\"params\":"
+			"{\"element\":\"wizard\",\"height\":4.0}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S2h build_element returns a result object" );
+		Check( result.get( "ok" ).asBool( false ), "S2h ok:true" );
+		Check( result.get( "sdfPartCount" ).asNumber( -1 ) == 3.0, "S2h sdfPartCount rides the wire" );
+		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 4,
+		       "S2h and so does the landed list" );
+		Check( result.get( "bbox" ).isObject(),
+		       "S2h the realised bbox is a structured fact, not only prose" );
+		Check( result.get( "retryRan" ).asBool( true ) == false, "S2h retryRan is reported" );
+	}
+	// A schema defect is a clean -32602 that never touches a counter.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"build_element\",\"params\":"
+			"{\"element\":\"wizard\"}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "S2h a missing `height` is a schema error, not a refusal" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"place_element\",\"params\":"
+			"{\"element\":\"wizard\",\"position\":\"2 0 1\"}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "S2h place_element returns a result object" );
+		Check( result.get( "ok" ).asBool( false ), "S2h ok:true" );
+		Check( result.get( "objects" ).isArray() && result.get( "objects" ).size() == 1,
+		       "S2h with the objects it transformed" );
+		Check( result.get( "patchesApplied" ).asNumber( 0 ) >= 1.0, "S2h and the patch count" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"place_element\",\"params\":"
+			"{\"element\":\"wizard\"}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "S2h a missing `position` is a schema error" );
+	}
+}
+
+//! S2i (S2 fix-round, 2026-08-11, P1): replace_geometry_scaffold used to
+//! bypass the first-geometry clean-room gate entirely.  Unlike
+//! insert_geometry_scaffold, it never routes through InsertChunk /
+//! InsertChunks (it splices the CST and commits by its own path), so
+//! without the fix it could land geometry against a PRE-EXISTING,
+//! UNATTRIBUTED object -- never refused on its own, since the gate only
+//! guards an element's FIRST chunk -- attribute the result to the active
+//! element, and thereby permanently disarm the clean room for that element
+//! without ever going through build_element.  Also covers the sibling
+//! coverage the reviewer flagged as missing: insert_geometry_scaffold
+//! against an empty active element IS refused (transitively, through
+//! InsertChunks).
+static void TestCleanRoomReplaceGeometryScaffoldGate()
+{
+	std::printf( "S2i: replace_geometry_scaffold and insert_geometry_scaffold both honour the "
+	             "first-geometry clean-room gate...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2i.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2i fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2i the plan files" );
+	Check( sess->ElementChunks( "wizard" ).empty(), "S2i the wizard has no chunks yet" );
+
+	// The sibling coverage: insert_geometry_scaffold is refused too, on the
+	// same terms, transitively through InsertChunks.
+	{
+		const std::string docBefore = sess->ReadDocument();
+		// InsertGeometryScaffold's `ok` means only "well-formed and
+		// submitted" (the SAME "not a promise every chunk landed" hedge
+		// InsertGeometryScaffoldResult's own doc states) -- the actual
+		// per-chunk disposition, and the clean-room refusal, lives in
+		// `chunkResults`, exactly as InsertChunks reports it directly.
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->InsertGeometryScaffold( "sweep_rail", "s2iIns", 1.0, 0.4, 1.0 );
+		Check( !sr.chunkResults.empty(), "S2i insert_geometry_scaffold's request expanded to chunks" );
+		bool allRefused = !sr.chunkResults.empty();
+		bool anyNamesBuildElement = false;
+		for( std::size_t k = 0; k < sr.chunkResults.size(); ++k ) {
+			if( sr.chunkResults[k].applied ) allRefused = false;
+			if( sr.chunkResults[k].message.find( "build_element" ) != std::string::npos )
+				anyNamesBuildElement = true;
+		}
+		Check( allRefused,
+		       "S2i MONEY ASSERTION: EVERY chunk insert_geometry_scaffold expands to is refused while "
+		       "the element is empty -- transitively, through InsertChunks" );
+		Check( anyNamesBuildElement, "S2i and the refusal names build_element" );
+		Check( sess->ReadDocument() == docBefore, "S2i the document is byte-identical" );
+		Check( sess->ElementChunks( "wizard" ).empty(),
+		       "S2i the element is still empty -- the gate was not disarmed" );
+	}
+
+	const int refusalsBefore = sess->BuildPhaseRefusalCount();
+
+	// THE BUG: replace_geometry_scaffold against `obj_sph`, a PRE-EXISTING
+	// object in the fixture scene that is not attributed to any element.
+	// Before the fix, this landed, attributed `obj_sph` to "wizard", and
+	// permanently disarmed the clean room for it.
+	{
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "s2iRep", 1.0, 0.4, 1.0 );
+		Check( !sr.ok,
+		       "S2i MONEY ASSERTION: replace_geometry_scaffold against a pre-existing unattributed "
+		       "object is REFUSED while the active element has no chunk of its own" );
+		Check( sr.message.find( "build_element" ) != std::string::npos,
+		       "S2i and the refusal names build_element" );
+		Check( sess->ReadDocument() == docBefore,
+		       "S2i MONEY ASSERTION: the document is byte-identical -- obj_sph's geometry slot was "
+		       "NOT rebound" );
+		Check( sess->ChunkElement( "obj_sph" ).empty(),
+		       "S2i MONEY ASSERTION: obj_sph was NOT attributed to wizard" );
+		Check( sess->ElementChunks( "wizard" ).empty(),
+		       "S2i and the element still has zero chunks -- the gate was NOT permanently disarmed" );
+		Check( sess->BuildPhaseRefusalCount() == refusalsBefore + 1,
+		       "S2i the shared phase-refusal counter incremented exactly once" );
+	}
+
+	// Once the element has content -- landed the honest way, through
+	// build_element -- the identical call succeeds: refinement by scaffold
+	// is allowed once construction went through the clean room first.
+	const Agent::AgentSession::AgentBuildElementResult br = sess->BuildElement( "wizard", 4.0 );
+	Check( br.ok && !br.landed.empty(), "S2i build_element lands the element's first geometry" );
+
+	{
+		const Agent::AgentSession::AgentGeometryScaffoldResult sr =
+			sess->ReplaceGeometryScaffold( "obj_sph", "sweep_rail", "s2iRep2", 1.0, 0.4, 1.0 );
+		Check( sr.ok, "S2i MONEY ASSERTION: once the element has content, the same "
+		       "replace_geometry_scaffold call succeeds" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -10264,6 +10906,16 @@ int main()
 	TestBuildProtocolRefusalCallSites();
 	TestBuildProtocolErasedGeometryAttribution();
 	TestBuildProtocolWireShape();
+	// S2 (2026-08-11): clean-room construction.
+	TestCleanRoomBuildElementHappyPath();
+	TestCleanRoomValidatedInsertion();
+	TestCleanRoomRepairRetry();
+	TestCleanRoomBuildElementRefusals();
+	TestCleanRoomFirstGeometryRefusal();
+	TestCleanRoomProtocolOff();
+	TestCleanRoomPlaceElement();
+	TestCleanRoomWireShape();
+	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();
 	TestGeometryScaffoldDisplacedBumpyVsFlat();
 	TestGeometryScaffoldAspectFlow();

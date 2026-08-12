@@ -2601,6 +2601,36 @@ namespace RISE
 						};
 					}
 					session->SetImageGenerator( std::move( gen ) );
+
+					// S2 (2026-08-11): the TEXT sibling, installed from the
+					// SAME provider name, the SAME apiKey parameter and the
+					// SAME FetchFnTransport -- so a replayed or mocked
+					// transport drives `build_element`'s builder completion on
+					// the byte-identical code path a real socket does, and this
+					// TU's no-credential/no-getenv contract is as intact as it
+					// is for the image generator above.
+					const ChatTextCompleter wireText =
+						MakeChatTextCompleter( providerName, apiKey, transport );
+
+					AgentSession::AgentTextCompleter comp;
+					comp.providerName = wireText.providerName;
+					comp.supported    = wireText.supported;
+					comp.modelId      = wireText.modelId;
+					if( wireText.supported ) {
+						const std::function<ChatTextCompletionOutcome( const std::string& )> rawComplete =
+							wireText.complete;
+						comp.complete =
+							[rawComplete]( const std::string& prompt ) -> AgentSession::AgentTextCompletionOutcome
+						{
+							AgentSession::AgentTextCompletionOutcome out;
+							const ChatTextCompletionOutcome r = rawComplete( prompt );
+							out.ok    = r.ok;
+							out.text  = r.text;
+							out.error = r.error;
+							return out;
+						};
+					}
+					session->SetTextCompleter( std::move( comp ) );
 				}
 
 				const long long headVersionStart = static_cast<long long>( session->HeadVersion().revision );

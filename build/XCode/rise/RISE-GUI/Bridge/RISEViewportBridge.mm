@@ -2410,6 +2410,33 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         };
     }
 
+    // S2 (2026-08-11): the TEXT sibling of the generator above --
+    // `build_element`'s builder completion, built from the SAME provider
+    // name, the SAME key and the SAME shared transport, and installed on
+    // the SAME three sessions in the SAME loop below. One installation
+    // point for both capabilities, so a credential change reinstalls both
+    // or neither.
+    const RISE::Agent::ChatTextCompleter wireText =
+        RISE::Agent::MakeChatTextCompleter(provider, key, transport);
+
+    RISE::Agent::AgentSession::AgentTextCompleter comp;
+    comp.providerName = wireText.providerName;
+    comp.supported    = wireText.supported;
+    comp.modelId      = wireText.modelId;
+    if (wireText.supported) {
+        const std::function<RISE::Agent::ChatTextCompletionOutcome(const std::string&)> rawComplete =
+            wireText.complete;
+        comp.complete =
+            [rawComplete](const std::string& prompt) -> RISE::Agent::AgentSession::AgentTextCompletionOutcome {
+            RISE::Agent::AgentSession::AgentTextCompletionOutcome out;
+            const RISE::Agent::ChatTextCompletionOutcome r = rawComplete(prompt);
+            out.ok    = r.ok;
+            out.text  = r.text;
+            out.error = r.error;
+            return out;
+        };
+    }
+
     // Every in-app TOOL-CALL-REACHABLE session: `_agentDispatcher` (the
     // administrative path -agentHandleLine drives; imagine_scene is on
     // the read-safe allowlist so it dispatches there too), plus both
@@ -2417,12 +2444,14 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     // autonomy. AgentSession::SetImageGenerator copies its argument, so
     // handing the SAME `gen` to all three is safe -- each session ends up
     // with its own independent AgentImageGenerator, all three sharing the
-    // one `transport` via shared_ptr.
+    // one `transport` via shared_ptr.  SetTextCompleter copies too, so the
+    // same is true of `comp`.
     RISE::Agent::AgentRpcDispatcher* dispatchers[] = {
         _agentDispatcher, _agentToolDispatcherOwner, _agentToolDispatcherPropose};
     for (RISE::Agent::AgentRpcDispatcher* d : dispatchers) {
         if (d && d->Session()) {
             d->Session()->SetImageGenerator(gen);
+            d->Session()->SetTextCompleter(comp);
         }
     }
 }

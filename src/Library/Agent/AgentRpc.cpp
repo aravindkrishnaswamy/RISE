@@ -1165,6 +1165,23 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// S2 (2026-08-11): build_element and place_element are the
+					// two clean-room verbs.  BOTH mutate (build_element inserts
+					// through InsertChunks, place_element patches through
+					// ProposePatches), so neither is read-safe -- and both are
+					// excluded from IsProposeSafeVerb for the SAME reason the
+					// three scaffold verbs above are, with the SAME
+					// Propose-specific message shape (truthful
+					// data.autonomy="propose", not the generic Read-posture
+					// fallback's hardcoded "read").
+					if( m == "build_element" || m == "place_element" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; " + m +
+							" is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					return MakeAutonomyRefusedError( idValue, m );
 				}
 
@@ -2194,6 +2211,222 @@ namespace RISE
 						result.set( "unfinished", unfinishedArr );
 					}
 					result.set( "message", JsonValue::MakeString( rr2.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// build_element {element, height, notes?}
+				//   -> {ok, element, provider, model, chunksExtracted,
+				//       landed:[...], rejected:[{name?,kind?,reason}],
+				//       chunkResults:[...], retryRan, retrySucceeded,
+				//       sdfPartCount, bbox?:{min:[3],max:[3],height},
+				//       capabilityRefusal?, message}
+				//   S2 (2026-08-11).  MUTATING -- it inserts the chunks the
+				//   builder returned through the ordinary InsertChunks path, so
+				//   it is NOT on IsReadSafeVerb.  It is also deliberately NOT on
+				//   IsProposeSafeVerb, for the same reason and with the same
+				//   Propose-specific message shape the three scaffold verbs have
+				//   (see the autonomy block above): adding a verb there ripples
+				//   through every "N mutating verbs" prose restatement that
+				//   SourceHygieneTest's verb-parity scan pins, and this slice
+				//   does not need Propose reachability to be measured.
+				//   `element` and `height` are validated HERE so a defect is a
+				//   clean -32602 -- a schema error, which (like file_build_plan's)
+				//   never touches any refusal counter.  Every STATE mismatch (not
+				//   the active element, wrong phase, no completer installed) is an
+				//   ok:false success envelope instead, because which element is
+				//   active depends on the session, not on the request's shape.
+				//--------------------------------------------------------------
+				if( m == "build_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* elemVal = params.find( "element" );
+					if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'element' (non-empty string) is required -- the name of the "
+							"ACTIVE element in the filed build plan" );
+					}
+					const JsonValue* hVal = params.find( "height" );
+					if( !hVal || !hVal->isNumber() || !( hVal->asNumber() > 0.0 ) ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'height' (a number greater than 0) is required -- the "
+							"element's target extent in Y, in world units" );
+					}
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentBuildElementResult br =
+						s->BuildElement( elemVal->asString(), hVal->asNumber(), notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( br.ok ) );
+					if( br.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !br.element.empty() )      result.set( "element",  JsonValue::MakeString( br.element ) );
+					if( !br.providerName.empty() ) result.set( "provider", JsonValue::MakeString( br.providerName ) );
+					if( !br.modelId.empty() )      result.set( "model",    JsonValue::MakeString( br.modelId ) );
+					if( br.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( br.chunksExtracted ) ) );
+						JsonValue landedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.landed.size(); ++i )
+							landedArr.push_back( JsonValue::MakeString( br.landed[i] ) );
+						result.set( "landed", landedArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !br.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( br.rejected[i].name ) );
+							if( !br.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( br.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( br.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < br.chunkResults.size(); ++i ) {
+							// S1 fix-round's `element` attribution rides along here
+							// too -- see ChunkResultJson's doc.
+							crArr.push_back( ChunkResultJson( br.chunkResults[i],
+								s->ChunkElement( br.chunkResults[i].name ) ) );
+						}
+						result.set( "chunkResults", crArr );
+						result.set( "retryRan",       JsonValue::MakeBool( br.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( br.retrySucceeded ) );
+						result.set( "sdfPartCount",
+							JsonValue::MakeNumber( static_cast<double>( br.sdfPartCount ) ) );
+						if( br.bboxValid ) {
+							JsonValue bbox = JsonValue::MakeObject();
+							JsonValue mn = JsonValue::MakeArray(), mx = JsonValue::MakeArray();
+							for( int k = 0; k < 3; ++k ) {
+								mn.push_back( JsonValue::MakeNumber( br.bboxMin[k] ) );
+								mx.push_back( JsonValue::MakeNumber( br.bboxMax[k] ) );
+							}
+							bbox.set( "min", mn );
+							bbox.set( "max", mx );
+							bbox.set( "height", JsonValue::MakeNumber( br.bboxMax[1] - br.bboxMin[1] ) );
+							result.set( "bbox", bbox );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( br.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// place_element {element, position, scale?, orientation?}
+				//   -> {ok, element, objects:[...], skipped:[{object,reason}],
+				//       patchResults:[...], patchesApplied, patchesRejected,
+				//       bbox?:{min:[3],max:[3]}, message}
+				//   S2 (2026-08-11).  MUTATING (it submits one ProposePatches
+				//   batch), so NOT read-safe and -- like build_element above --
+				//   deliberately not on IsProposeSafeVerb either.  The only
+				//   -32602s are param SHAPE defects; an element that is not in
+				//   the plan, or has no placeable object, is an ok:false success
+				//   envelope, for reopen_element's reason (a STATE mismatch, not
+				//   a shape defect).
+				//--------------------------------------------------------------
+				if( m == "place_element" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					const JsonValue* elemVal = params.find( "element" );
+					if( !elemVal || !elemVal->isString() || elemVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'element' (non-empty string) is required -- the name of an "
+							"element in the filed build plan" );
+					}
+					const JsonValue* posVal = params.find( "position" );
+					if( !posVal || !posVal->isString() || posVal->asString().empty() ) {
+						return MakeError( idValue, kInvalidParams,
+							"Invalid params: 'position' (a \"x y z\" string) is required -- where the "
+							"element's base-centre goes in world space" );
+					}
+					std::string scaleStr, orientStr;
+					{
+						const JsonValue* sc = params.find( "scale" );
+						if( sc ) {
+							// Accepted as a NUMBER or as a one-number string; the
+							// session layer parses one canonical form.
+							if( sc->isNumber() ) {
+								char b[48];
+								std::snprintf( b, sizeof( b ), "%.10g", sc->asNumber() );
+								scaleStr = b;
+							}
+							else if( sc->isString() ) scaleStr = sc->asString();
+							else {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'scale', when present, must be a number (a uniform "
+									"factor greater than 0)" );
+							}
+						}
+						const JsonValue* orv = params.find( "orientation" );
+						if( orv ) {
+							if( !orv->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'orientation', when present, must be a \"ex ey ez\" "
+									"string in degrees" );
+							}
+							orientStr = orv->asString();
+						}
+					}
+
+					const AgentSession::AgentPlaceElementResult prr =
+						s->PlaceElement( elemVal->asString(), posVal->asString(), scaleStr, orientStr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( prr.ok ) );
+					if( !prr.element.empty() ) result.set( "element", JsonValue::MakeString( prr.element ) );
+					JsonValue objArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < prr.objects.size(); ++i )
+						objArr.push_back( JsonValue::MakeString( prr.objects[i] ) );
+					result.set( "objects", objArr );
+					JsonValue skipArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < prr.skipped.size(); ++i ) {
+						JsonValue o = JsonValue::MakeObject();
+						o.set( "object", JsonValue::MakeString( prr.skipped[i].object ) );
+						o.set( "reason", JsonValue::MakeString( prr.skipped[i].reason ) );
+						skipArr.push_back( o );
+					}
+					result.set( "skipped", skipArr );
+					// The SAME per-element shape propose_patches emits (there is
+					// no shared helper to call -- that verb builds it inline
+					// too; the fields are pinned by AgentPatchResult's doc).
+					JsonValue prArr = JsonValue::MakeArray();
+					for( std::size_t i = 0; i < prr.patchResults.size(); ++i ) {
+						const AgentPatchResult& pr = prr.patchResults[i];
+						JsonValue itemRes = JsonValue::MakeObject();
+						itemRes.set( "applied", JsonValue::MakeBool( pr.applied ) );
+						itemRes.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
+						itemRes.set( "status",  JsonValue::MakeString( pr.status ) );
+						itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
+						itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
+						itemRes.set( "message", JsonValue::MakeString( pr.message ) );
+						if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
+						prArr.push_back( itemRes );
+					}
+					result.set( "patchResults", prArr );
+					result.set( "patchesApplied",
+						JsonValue::MakeNumber( static_cast<double>( prr.patchesApplied ) ) );
+					result.set( "patchesRejected",
+						JsonValue::MakeNumber( static_cast<double>( prr.patchesRejected ) ) );
+					if( prr.bboxValid ) {
+						JsonValue bbox = JsonValue::MakeObject();
+						JsonValue mn = JsonValue::MakeArray(), mx = JsonValue::MakeArray();
+						for( int k = 0; k < 3; ++k ) {
+							mn.push_back( JsonValue::MakeNumber( prr.bboxMin[k] ) );
+							mx.push_back( JsonValue::MakeNumber( prr.bboxMax[k] ) );
+						}
+						bbox.set( "min", mn );
+						bbox.set( "max", mx );
+						result.set( "bbox", bbox );
+					}
+					result.set( "message", JsonValue::MakeString( prr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

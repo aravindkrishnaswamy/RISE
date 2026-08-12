@@ -465,7 +465,7 @@ static void TestOpenAIRequestShape()
 	       "user text rides as a Responses user message" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 22, "body carries twenty-two OpenAI tools" );
+	Check( tools.isArray() && tools.size() == 24, "body carries twenty-four OpenAI tools" );
 	bool sawReadDocument = false;
 	// Arc-75 slice S2.1 test #7: insert_material_scaffold is visible in
 	// the SAME tool table the eval runner (headless) and every other
@@ -566,8 +566,8 @@ static void TestXaiAndLocalRequestShape()
 		       "xAI (hosted) request carries the unchanged 300s transport timeout budget" );
 		JsonValue root = ParseBody( req.body );
 		Check( root.get( "model" ).asString() == "grok-4.5", "xAI body carries the grok-4.5 model id" );
-		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 22,
-		       "xAI body carries the same twenty-two tools" );
+		Check( root.get( "tools" ).isArray() && root.get( "tools" ).size() == 24,
+		       "xAI body carries the same twenty-four tools" );
 	}
 
 	// --- local (keyless): 127.0.0.1 default endpoint, qwen3:32b default,
@@ -832,7 +832,7 @@ static void TestAnthropicRequestShape()
 	Check( !root.has( "thinking" ), "no thinking config is set (omitted = adaptive)" );
 
 	const JsonValue& tools = root.get( "tools" );
-	Check( tools.isArray() && tools.size() == 22, "body carries twenty-two tools" );
+	Check( tools.isArray() && tools.size() == 24, "body carries twenty-four tools" );
 	const char* expected[] = { "read_document", "read_schema", "read_skill", "validate",
 	                           "propose_patch", "propose_patches", "insert_chunk", "insert_chunks", "remove_chunk",
 	                           // R1a (2026-08-09): the ATOMIC batch remove.
@@ -1772,7 +1772,7 @@ static void TestGemini( AgentRpcDispatcher& rpc )
 		       AgentChatLoop::SystemPrompt(),
 		       "systemInstruction carries the co-editing prompt" );
 		const JsonValue& decls = root.get( "tools" ).at( 0 ).get( "functionDeclarations" );
-		Check( decls.isArray() && decls.size() == 22, "twenty-two functionDeclarations" );
+		Check( decls.isArray() && decls.size() == 24, "twenty-four functionDeclarations" );
 		bool sawPatch = false, sawInsert = false, sawRemove = false;
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() == "propose_patch" ) {
@@ -9995,6 +9995,220 @@ static void TestImageGenerationWireShapes()
 	}
 }
 
+//----------------------------------------------------------------------
+// T51 (S2 fix-round, 2026-08-11, P3): provider TEXT completion wire shapes
+// -- the `build_element` half of AgentChatCodecs.h (BuildTextCompletionRequest
+// / ParseTextCompletionResponse / MakeChatTextCompleter), previously covered
+// only by reading -- every clean-room test (AgentChunkCrudTest.cpp's S2
+// block) mocks the completer via AgentSession::SetTextCompleter, so the
+// wire code itself never ran under a test.  Mirrors T50's per-provider
+// structure exactly: key hygiene (the key rides ONLY the provider's own
+// auth header, never the url or body), a canned success response parses to
+// the expected text, and a shape-mismatch failure never echoes the body
+// (a provider body can carry the prompt straight back).  Mocked
+// BuildTextCompletionRequest / ParseTextCompletionResponse calls only --
+// no transport, no live call; MakeChatTextCompleter's actual HTTP wiring
+// (status-only error, key-hygiene end to end) is covered separately in
+// AgentEvalLiveTransportTest.cpp's T5c, the same split T50/T5b already use
+// for the image sibling.
+//----------------------------------------------------------------------
+static void TestTextCompletionWireShapes()
+{
+	std::printf( "T51: provider text-completion wire shapes (build_element's host half)...\n" );
+
+	// --- the capability map --------------------------------------------
+	Check( ChatProviderSupportsTextCompletion( "anthropic" ) &&
+	       ChatProviderSupportsTextCompletion( "gemini" ) &&
+	       ChatProviderSupportsTextCompletion( "openai" ) &&
+	       ChatProviderSupportsTextCompletion( "xai" ),
+	       "T51: all four chat providers have a text-completion endpoint" );
+	Check( !ChatProviderSupportsTextCompletion( "local" ) &&
+	       !ChatProviderSupportsTextCompletion( "not-a-provider" ),
+	       "T51: local and an unrecognized name do NOT -- never a guessed endpoint" );
+
+	// --- anthropic: x-api-key + anthropic-version, the chat codec's own --
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"anthropic", "claude-sonnet-5", "SECRET-ANTHROPIC-KEY",
+			"build the wizard element", req, err );
+		Check( built && err.empty(), "T51: anthropic text request builds" );
+		Check( req.url == "https://api.anthropic.com/v1/messages",
+		       "T51: anthropic text completion rides the SAME /v1/messages surface the chat codec "
+		       "uses -- got: " + req.url );
+		bool sawKeyHeader = false, sawVersion = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i ) {
+			if( req.headers[i].first == "x-api-key" )
+				sawKeyHeader = ( req.headers[i].second == "SECRET-ANTHROPIC-KEY" );
+			if( req.headers[i].first == "anthropic-version" ) sawVersion = true;
+		}
+		Check( sawKeyHeader, "T51: the key rides in anthropic's OWN x-api-key header" );
+		Check( sawVersion, "T51: and anthropic-version is set" );
+		Check( req.url.find( "SECRET-ANTHROPIC-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-ANTHROPIC-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- gemini: x-goog-api-key, the models/<id>:generateContent surface -
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"gemini", "gemini-3.6-flash", "SECRET-GEMINI-KEY",
+			"build the wizard element", req, err );
+		Check( built && err.empty(), "T51: gemini text request builds" );
+		Check( req.url ==
+		       "https://generativelanguage.googleapis.com/v1beta/models/"
+		       "gemini-3.6-flash:generateContent",
+		       "T51: got: " + req.url );
+		bool sawKeyHeader = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "x-goog-api-key" )
+				sawKeyHeader = ( req.headers[i].second == "SECRET-GEMINI-KEY" );
+		Check( sawKeyHeader, "T51: the key rides in gemini's OWN x-goog-api-key header" );
+		Check( req.url.find( "SECRET-GEMINI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-GEMINI-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- openai: /v1/responses, LOWERCASE `authorization` (the text-
+	// completion codec's own header casing -- distinct from the image
+	// sibling's capitalized `Authorization`) --------------------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"openai", "gpt-5.6-terra", "SECRET-OPENAI-KEY",
+			"build the wizard element", req, err );
+		Check( built && err.empty(), "T51: openai text request builds" );
+		Check( req.url == "https://api.openai.com/v1/responses",
+		       "T51: got: " + req.url );
+		bool sawAuth = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "authorization" )
+				sawAuth = ( req.headers[i].second == "Bearer SECRET-OPENAI-KEY" );
+		Check( sawAuth, "T51: the key rides in the lowercase `authorization` header" );
+		Check( req.url.find( "SECRET-OPENAI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-OPENAI-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- xai: the OpenAI-compatible chat-completions surface, lowercase
+	// `authorization` too ------------------------------------------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		const bool built = BuildTextCompletionRequest(
+			"xai", "grok-4.5", "SECRET-XAI-KEY", "build the wizard element", req, err );
+		Check( built && err.empty(), "T51: xai text request builds" );
+		Check( req.url == "https://api.x.ai/v1/chat/completions",
+		       "T51: got: " + req.url );
+		bool sawAuth = false;
+		for( std::size_t i = 0; i < req.headers.size(); ++i )
+			if( req.headers[i].first == "authorization" )
+				sawAuth = ( req.headers[i].second == "Bearer SECRET-XAI-KEY" );
+		Check( sawAuth, "T51: the key rides in the lowercase `authorization` header" );
+		Check( req.url.find( "SECRET-XAI-KEY" ) == std::string::npos &&
+		       req.body.find( "SECRET-XAI-KEY" ) == std::string::npos,
+		       "T51 MONEY ASSERTION: the key is NOWHERE in the url or the body" );
+		Check( req.body.find( "build the wizard element" ) != std::string::npos,
+		       "T51: and the body carries the prompt verbatim" );
+	}
+
+	// --- an incapable provider refuses to build anything ----------------
+	{
+		ChatHttpRequest req;
+		std::string err;
+		Check( !BuildTextCompletionRequest( "local", "whatever", "k", "p", req, err ) &&
+		       !err.empty() && req.url.empty(),
+		       "T51: an incapable provider yields NO request and a factual reason" );
+	}
+
+	// --- response parsing: success per provider -------------------------
+	{
+		std::string text, err;
+		Check( ParseTextCompletionResponse( "anthropic",
+			       "{\"content\":[{\"type\":\"text\",\"text\":\"sdf_geometry { }\"}]}", text, err ) &&
+		       text == "sdf_geometry { }",
+		       "T51: the anthropic content[] text block parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "gemini",
+			       "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"box_geometry { }\"}]}}]}",
+			       text, err ) && text == "box_geometry { }",
+		       "T51: the gemini candidates[0].content.parts[0].text parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "openai",
+			       "{\"output_text\":\"standard_object { }\"}", text, err ) &&
+		       text == "standard_object { }",
+		       "T51: the openai `output_text` convenience field parses" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "openai",
+			       "{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"lambertian_material { }\"}]}]}",
+			       text, err ) && text == "lambertian_material { }",
+		       "T51: and the output[]->content[]->output_text fallback parses when there is no "
+		       "convenience field" );
+
+		text.clear(); err.clear();
+		Check( ParseTextCompletionResponse( "xai",
+			       "{\"choices\":[{\"message\":{\"content\":\"uniformcolor_painter { }\"}}]}",
+			       text, err ) && text == "uniformcolor_painter { }",
+		       "T51: the xai choices[0].message.content string parses" );
+	}
+
+	// --- response parsing: shape mismatch, per provider, error names a
+	// SHAPE and NEVER echoes the body -- a provider error body can carry
+	// the prompt straight back, and must not reach a result the model
+	// reads (the same rule ParseImageGenerationResponse's T50 tests pin) --
+	{
+		const char* const kMarker = "SECRET_PROMPT_LEAK_MARKER";
+		struct Case { const char* provider; std::string body; };
+		const Case cases[] = {
+			{ "anthropic", std::string( "{\"content\":\"" ) + kMarker + "\"}" },
+			{ "gemini",    std::string( "{\"candidates\":[{\"content\":{\"parts\":[{\"notes\":\"" ) +
+			               kMarker + "\"}]}}]}" },
+			{ "openai",    std::string( "{\"output\":[{\"content\":[{\"type\":\"other\",\"junk\":\"" ) +
+			               kMarker + "\"}]}]}" },
+			{ "xai",       std::string( "{\"choices\":[{\"other\":\"" ) + kMarker + "\"}]}" },
+		};
+		for( const Case& c : cases ) {
+			std::string t, e;
+			Check( !ParseTextCompletionResponse( c.provider, c.body, t, e ) && !e.empty(),
+			       std::string( "T51: a shape-mismatched " ) + c.provider + " body fails with a reason" );
+			Check( e.find( kMarker ) == std::string::npos,
+			       std::string( "T51 MONEY ASSERTION: the " ) + c.provider +
+			       " parse error never echoes the response body" );
+			Check( t.empty(), std::string( "T51: and no partial text for " ) + c.provider );
+		}
+
+		// Not JSON at all, and an unrecognized provider -- both factual,
+		// neither echoes the body.
+		std::string t, e;
+		Check( !ParseTextCompletionResponse( "gemini", "not json at all, SECRET_PROMPT_LEAK_MARKER",
+			       t, e ) && !e.empty() && e.find( "SECRET_PROMPT_LEAK_MARKER" ) == std::string::npos,
+		       "T51: an unparseable body fails with a reason that does not echo it" );
+		t.clear(); e.clear();
+		Check( !ParseTextCompletionResponse( "not-a-provider", "{}", t, e ) && !e.empty(),
+		       "T51: an unrecognized provider has no completion-response shape" );
+
+		// WELL-FORMED BUT EMPTY IS A FAILURE, same as the image sibling's
+		// "0 chunks landed, no rejections" trap.
+		t.clear(); e.clear();
+		Check( !ParseTextCompletionResponse( "anthropic",
+			       "{\"content\":[{\"type\":\"text\",\"text\":\"\"}]}", t, e ) && !e.empty(),
+		       "T51: a well-formed but EMPTY assistant text is a failure, not a silent success" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -10063,6 +10277,7 @@ int main()
 	TestReasoningExtraction();
 	TestToolOutcomeDisplay();
 	TestImageGenerationWireShapes();
+	TestTextCompletionWireShapes();
 	TestAskUserToolSchema();
 	TestAskUserToolLoop();
 	TestAskUserParallelWithDispatchedTool( rpc );

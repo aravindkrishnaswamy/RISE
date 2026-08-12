@@ -961,6 +961,87 @@ namespace RISE
 					"},\"required\":[\"element\"]}"
 				},
 				{
+					"build_element",
+					"Build the ACTIVE element in one go: this call asks your provider, in a FRESH "
+					"context that contains nothing but the scene-language grammar for the chunk kinds "
+					"involved, the pieces you declared for this element, the outline you sketched for "
+					"it, the height you ask for and a fixed local-frame contract, to construct the "
+					"whole element on its own. What comes back is split into chunks, checked, and "
+					"inserted here. It is the way the FIRST geometry for an element gets made: while "
+					"the active element has no chunk recorded against it, insert_chunk and "
+					"insert_chunks carrying a geometry chunk are refused and name this tool -- up to 3 "
+					"refusals shared with the other build-phase rules, after which they stop "
+					"intercepting. Once the element has any chunk recorded against it, authoring "
+					"geometry for it by hand is allowed and is never refused again. Only geometry "
+					"chunks are ever refused this way; materials, painters and standard_objects never "
+					"are. THE ELEMENT IS BUILT AT THE ORIGIN, NOT IN PLACE: the contract sent to the "
+					"builder puts the element's base-centre at (0,0,0) with +Y up, facing +Z -- "
+					"place_element is what moves it into the scene afterwards. `height` is a REQUEST, "
+					"not a limit: the realised bounding box is measured and reported back to you, and "
+					"nothing is refused for missing it. EVERY CHUNK NAME MUST BEGIN with the element's "
+					"prefix (the element name lowercased, non-alphanumerics collapsed to underscores, "
+					"plus a trailing underscore -- \"wizard\" gives \"wizard_\"); a chunk whose name "
+					"does not begin with the required prefix is rejected and is NOT renamed, because "
+					"renaming would break the references between the builder's own chunks. If anything "
+					"is rejected, ONE repair retry runs automatically with the exact rejection text -- "
+					"one, then it stops, and whatever landed stays landed. Nothing is ever dropped "
+					"silently: a chunk that came back unclosed, unnamed, wrongly prefixed or rejected "
+					"by insertion is reported with its reason. Everything that lands is recorded "
+					"against the active element exactly as if you had inserted it yourself. On a "
+					"provider that cannot run a separate completion this returns ok:false with a plain "
+					"statement, nothing else changes, and authoring by hand is not blocked. Returns "
+					"{ok,element,provider,model,chunksExtracted,landed,rejected:[{name,kind,reason}],"
+					"chunkResults,retryRan,retrySucceeded,sdfPartCount,bbox:{min,max,height},message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of the ACTIVE element, exactly as you filed it in file_build_plan. A name that is not the active element does nothing and says which element is active.\"},"
+						"\"height\":{\"type\":\"number\",\"exclusiveMinimum\":0,\"description\":"
+						"\"Required. How tall the element should be in world units (its Y extent). A request, not a limit -- the realised bounding box comes back in the result and nothing is refused for missing it.\"},"
+						"\"notes\":{\"type\":\"string\",\"description\":"
+						"\"Optional free text passed to the builder alongside the pieces and the outline -- anything about this element the plan does not already say. Nothing checks what it says.\"}"
+					"},\"required\":[\"element\",\"height\"]}"
+				},
+				{
+					"place_element",
+					"Move an element into the scene: one rigid transform applied to every "
+					"standard_object recorded against it, so an element built at the origin ends up "
+					"where you want it without you patching each object. `position` is where the "
+					"element's base-centre goes, and it is an OFFSET -- each object's own position "
+					"inside the element is scaled, rotated and then added to it, so the objects keep "
+					"their arrangement relative to one another. `scale` is one uniform factor "
+					"multiplying each object's scale and its offset from the element's origin, so the "
+					"element scales about its own base-centre. `orientation` is Euler degrees about "
+					"that same origin; an object that carries no rotation of its own is set to it "
+					"exactly, and one that already carries a rotation has the degrees added per axis, "
+					"which the result reports because adding Euler angles is only exact when both "
+					"rotations are about the same axis. An object authored with `matrix` is skipped "
+					"and named, because a matrix overrides position, orientation and scale and the "
+					"patch would do nothing; an object authored with `quaternion` is moved and scaled "
+					"but not rotated, and is named too. Legal in the pieces phase and in the compose "
+					"phase. The whole placement is ONE batch, so ONE head version bump and ONE undo "
+					"step. ok:false means nothing was submitted (no build plan, an element that is not "
+					"in it, or an element with no standard_object recorded against it) and the "
+					"document is unchanged. Returns {ok,element,objects,skipped:[{object,reason}],"
+					"patchResults,patchesApplied,patchesRejected,bbox:{min,max},message}.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"element\":{\"type\":\"string\",\"description\":"
+						"\"Required. The name of an element in the filed build plan, exactly as you filed it.\"},"
+						"\"position\":{\"type\":\"string\",\"description\":"
+						// S2 fix-round (2026-08-11, P2): this SHORT line used to say only
+						// \"where the base-centre goes\", which reads as an absolute world
+						// coordinate; the OFFSET/compose semantics were stated only in the
+						// fuller tool description below.  Now unmistakable here too.
+						"\"Required. An OFFSET added to each object's own CURRENT (already scaled/rotated) "
+						"position, as \\\"x y z\\\" -- equals the base-centre's world position on a first "
+						"call from the origin, but a later call composes on top of wherever the element "
+						"already is rather than resetting it there.\"},"
+						"\"scale\":{\"type\":\"number\",\"exclusiveMinimum\":0,\"description\":"
+						"\"Optional, default 1. ONE uniform factor -- not three. It multiplies each object's scale and its offset from the element's origin.\"},"
+						"\"orientation\":{\"type\":\"string\",\"description\":"
+						"\"Optional, default \\\"0 0 0\\\". Euler degrees about the element's own origin, as \\\"ex ey ez\\\".\"}"
+					"},\"required\":[\"element\",\"position\"]}"
+				},
+				{
 					"imagine_scene",
 					"Imagine the finished scene before you build it: write your own visual description "
 					"of what it should look like -- subject, composition, lighting, mood, colour -- and "
@@ -4562,6 +4643,316 @@ namespace RISE
 				                                   result.mimeType, perr ) ) {
 					result.bytes.clear();
 					result.error = perr;
+					return result;
+				}
+				result.ok = true;
+				return result;
+			};
+			return out;
+		}
+
+		//======================================================================
+		// Arc 79 slice S2 (2026-08-11): PROVIDER TEXT COMPLETION -- the wire
+		// half of `build_element`, the text sibling of the image block above.
+		// See AgentChatCodecs.h for the contract; the key discipline, the
+		// body-free parse errors and the endpoint/model override idiom are
+		// the image block's, reused rather than restated.
+		//======================================================================
+		namespace
+		{
+			//! Concatenate every `text`-bearing element of a provider content
+			//! array, tolerating both a bare {text:...} shape (Gemini parts)
+			//! and a typed {type:"...",text:...} shape (Anthropic blocks,
+			//! OpenAI output_text blocks).  `typeFilter` empty accepts any
+			//! typed block; otherwise only that `type`.  Shape-TOLERANT for
+			//! the same reason FindInlineImagePart_ is: an API revision that
+			//! moves a key should degrade to "found it anyway", never to a
+			//! false "the provider returned nothing".
+			void AppendTextBlocks_( const JsonValue& arr, const char* typeFilter, std::string& out )
+			{
+				if( !arr.isArray() ) return;
+				for( std::size_t i = 0; i < arr.size(); ++i ) {
+					const JsonValue& b = arr.at( i );
+					if( !b.isObject() ) continue;
+					if( typeFilter && *typeFilter ) {
+						const JsonValue* t = b.find( "type" );
+						if( !t || !t->isString() || t->asString() != typeFilter ) continue;
+					}
+					const JsonValue* tx = b.find( "text" );
+					if( tx && tx->isString() ) out += tx->asString();
+				}
+			}
+		}
+
+		bool ChatProviderSupportsTextCompletion( const std::string& providerName )
+		{
+			return providerName == "anthropic" || providerName == "gemini" ||
+			       providerName == "openai"    || providerName == "xai";
+		}
+
+		std::string ChatTextCompletionModelId( const std::string& providerName )
+		{
+			// The DEFAULTS are each chat codec's own DefaultModelId, so a
+			// builder completion runs on the same model line the session
+			// runs on.  Keep them in step by hand when a codec default
+			// moves -- there is no shared constant to read them from
+			// (DefaultModelId is a virtual on a codec INSTANCE, and this
+			// function has no instance and must answer for a provider the
+			// caller may not have constructed a codec for).
+			if( providerName == "anthropic" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_ANTHROPIC", "claude-sonnet-5" );
+			if( providerName == "gemini" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-3.6-flash" );
+			if( providerName == "openai" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_OPENAI", "gpt-5.6-terra" );
+			if( providerName == "xai" )
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_XAI", "grok-4.5" );
+			return std::string();
+		}
+
+		unsigned int ChatTextCompletionMaxTokens()
+		{
+			return 16384u;
+		}
+
+		bool BuildTextCompletionRequest( const std::string& providerName,
+		                                 const std::string& modelId,
+		                                 const std::string& apiKey,
+		                                 const std::string& prompt,
+		                                 ChatHttpRequest& outRequest,
+		                                 std::string& outError )
+		{
+			outRequest = ChatHttpRequest();
+			if( !ChatProviderSupportsTextCompletion( providerName ) ) {
+				outError = "provider `" + providerName +
+					"` has no text-completion endpoint in this build";
+				return false;
+			}
+			if( modelId.empty() ) {
+				outError = "no text model id resolved for provider `" + providerName + "`";
+				return false;
+			}
+			if( prompt.empty() ) {
+				outError = "the text-completion prompt was empty";
+				return false;
+			}
+
+			const std::string maxTok = std::to_string( ChatTextCompletionMaxTokens() );
+
+			if( providerName == "anthropic" ) {
+				outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_ANTHROPIC",
+				                              "https://api.anthropic.com/v1/messages" );
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				// The SAME two headers AnthropicChatCodec::BuildRequest emits,
+				// with the same sanitization.
+				outRequest.headers.push_back(
+					std::make_pair( "x-api-key", SanitizeHeaderValue( apiKey ) ) );
+				outRequest.headers.push_back( std::make_pair( "anthropic-version", "2023-06-01" ) );
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_tokens\":" + maxTok +
+					",\"messages\":[{\"role\":\"user\",\"content\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}";
+				outRequest.body = body;
+				return true;
+			}
+
+			if( providerName == "gemini" ) {
+				const std::string base =
+					ImageEnvOr_( "RISE_BUILDER_ENDPOINT_GEMINI",
+					             "https://generativelanguage.googleapis.com/v1beta/models" );
+				outRequest.url = base + "/" + SanitizeModelIdForUrl( modelId ) + ":generateContent";
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "x-goog-api-key", SanitizeHeaderValue( apiKey ) ) );
+				std::string body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}],\"generationConfig\":{\"maxOutputTokens\":" + maxTok + "}}";
+				outRequest.body = body;
+				return true;
+			}
+
+			if( providerName == "openai" ) {
+				outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_OPENAI",
+				                              "https://api.openai.com/v1/responses" );
+				outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+				outRequest.headers.push_back(
+					std::make_pair( "authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+				// The responses API's simplest single-turn form: `input` as a
+				// plain string.  No `instructions`, no `tools` -- a fresh
+				// minimal context is the mechanism.
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_output_tokens\":" + maxTok + ",\"input\":";
+				JsonAppendEscapedString( body, prompt );
+				body += ",\"store\":false}";
+				outRequest.body = body;
+				return true;
+			}
+
+			// xai: the OpenAI-compatible chat-completions surface, Bearer
+			// auth -- the SAME shape AgentChatLoop configures OpenAIChatCodec
+			// with for this provider.
+			outRequest.url = ImageEnvOr_( "RISE_BUILDER_ENDPOINT_XAI",
+			                              "https://api.x.ai/v1/chat/completions" );
+			outRequest.headers.push_back( std::make_pair( "content-type", "application/json" ) );
+			outRequest.headers.push_back(
+				std::make_pair( "authorization", "Bearer " + SanitizeHeaderValue( apiKey ) ) );
+			{
+				std::string body = "{\"model\":";
+				JsonAppendEscapedString( body, modelId );
+				body += ",\"max_completion_tokens\":" + maxTok +
+					",\"messages\":[{\"role\":\"user\",\"content\":";
+				JsonAppendEscapedString( body, prompt );
+				body += "}]}";
+				outRequest.body = body;
+			}
+			return true;
+		}
+
+		bool ParseTextCompletionResponse( const std::string& providerName,
+		                                  const std::string& body,
+		                                  std::string& outText,
+		                                  std::string& outError )
+		{
+			outText.clear();
+			JsonValue root;
+			std::string perr;
+			if( !JsonParse( body, root, perr ) || !root.isObject() ) {
+				outError = "the completion response body did not parse as a JSON object";
+				return false;
+			}
+
+			std::string text;
+			if( providerName == "anthropic" ) {
+				const JsonValue* content = root.find( "content" );
+				if( !content || !content->isArray() ) {
+					outError = "the completion response carried no `content` array";
+					return false;
+				}
+				AppendTextBlocks_( *content, "text", text );
+				if( text.empty() ) AppendTextBlocks_( *content, "", text );
+			}
+			else if( providerName == "gemini" ) {
+				const JsonValue* cands = root.find( "candidates" );
+				if( !cands || !cands->isArray() || cands->size() == 0 ) {
+					outError = "the completion response carried no `candidates`";
+					return false;
+				}
+				const JsonValue& c0 = cands->at( 0 );
+				const JsonValue* content = c0.isObject() ? c0.find( "content" ) : nullptr;
+				const JsonValue* parts = ( content && content->isObject() )
+					? content->find( "parts" ) : nullptr;
+				if( !parts || !parts->isArray() ) {
+					outError = "the completion response's candidate carried no content parts";
+					return false;
+				}
+				AppendTextBlocks_( *parts, "", text );
+			}
+			else if( providerName == "openai" ) {
+				const JsonValue* convenience = root.find( "output_text" );
+				if( convenience && convenience->isString() ) text = convenience->asString();
+				if( text.empty() ) {
+					const JsonValue* output = root.find( "output" );
+					if( !output || !output->isArray() ) {
+						outError = "the completion response carried neither `output_text` nor an "
+						           "`output` array";
+						return false;
+					}
+					for( std::size_t i = 0; i < output->size(); ++i ) {
+						const JsonValue& item = output->at( i );
+						if( !item.isObject() ) continue;
+						const JsonValue* content = item.find( "content" );
+						if( content ) AppendTextBlocks_( *content, "output_text", text );
+					}
+				}
+			}
+			else if( providerName == "xai" ) {
+				const JsonValue* choices = root.find( "choices" );
+				if( !choices || !choices->isArray() || choices->size() == 0 ) {
+					outError = "the completion response carried no `choices`";
+					return false;
+				}
+				const JsonValue& c0 = choices->at( 0 );
+				const JsonValue* msg = c0.isObject() ? c0.find( "message" ) : nullptr;
+				const JsonValue* content = ( msg && msg->isObject() ) ? msg->find( "content" ) : nullptr;
+				if( content && content->isString() ) text = content->asString();
+				else if( content && content->isArray() ) AppendTextBlocks_( *content, "", text );
+				else {
+					outError = "the completion response's first choice carried no message content";
+					return false;
+				}
+			}
+			else {
+				outError = "provider `" + providerName +
+					"` has no completion-response shape in this build";
+				return false;
+			}
+
+			if( text.empty() ) {
+				// WELL-FORMED BUT EMPTY IS A FAILURE.  A builder that returned
+				// nothing is not a builder that succeeded, and reporting
+				// "0 chunks landed, no rejections" would be a true sentence
+				// that reads as the model's own fault.
+				outError = "the completion response parsed but carried no assistant text";
+				return false;
+			}
+			outText.swap( text );
+			return true;
+		}
+
+		ChatTextCompleter MakeChatTextCompleter( const std::string& providerName,
+		                                          const std::string& apiKey,
+		                                          std::shared_ptr<IChatHttpTransport> transport )
+		{
+			ChatTextCompleter out;
+			out.providerName = providerName;
+			out.supported    = ChatProviderSupportsTextCompletion( providerName );
+			out.modelId      = ChatTextCompletionModelId( providerName );
+			if( !out.supported ) return out;
+
+			// By-value key/model capture and shared_ptr transport lifetime --
+			// identical to MakeChatImageGenerator's, for the identical reason
+			// (see that function's comment).
+			const std::string providerCopy = providerName;
+			const std::string modelIdCopy  = out.modelId;
+			const std::string apiKeyCopy   = apiKey;
+			out.complete =
+				[providerCopy, modelIdCopy, apiKeyCopy, transport]
+				( const std::string& prompt ) -> ChatTextCompletionOutcome
+			{
+				ChatTextCompletionOutcome result;
+				ChatHttpRequest req;
+				std::string berr;
+				if( !BuildTextCompletionRequest( providerCopy, modelIdCopy, apiKeyCopy,
+				                                 prompt, req, berr ) ) {
+					result.error = berr;
+					return result;
+				}
+				if( !transport ) {
+					result.error = "no HTTP transport was installed for text completion";
+					return result;
+				}
+				const ChatHttpResponse resp = transport->Post( req );
+				if( !resp.error.empty() ) {
+					// The transport's HEADER-FREE category, never the request
+					// and never the key -- ChatHttpTransport.h's contract.
+					result.error = resp.error;
+					return result;
+				}
+				if( resp.status < 200 || resp.status >= 300 ) {
+					// The STATUS only.  A provider error body can echo the
+					// prompt back and must not be spliced into a result the
+					// model reads.
+					result.error = "the completion provider answered HTTP " +
+						std::to_string( resp.status );
+					return result;
+				}
+				std::string pterr;
+				if( !ParseTextCompletionResponse( providerCopy, resp.body, result.text, pterr ) ) {
+					result.text.clear();
+					result.error = pterr;
 					return result;
 				}
 				result.ok = true;
