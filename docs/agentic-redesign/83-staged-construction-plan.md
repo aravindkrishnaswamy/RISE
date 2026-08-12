@@ -197,3 +197,71 @@ The corrected predictions:
    completion, then cost was never the mechanism and §1's principle does not
    transfer from construction to lighting.
 3. Per-element population scales repeats with element count.
+
+---
+
+## 7. SLICE 1 RESULT — the unit fix works; the area-light prediction is FALSIFIED (2026-08-12)
+
+`evals/runs/imagine_s9_lightunit`, gemini, N=1, `kLightPalette` byte-identical.
+
+| falsifier (§6.1) | prediction | result |
+|---|---|---|
+| light COUNT stays ~6–8 | yes | **6** ✓ |
+| area-light SHARE rises | yes | **0 of 6** ✗ |
+
+The loop itself works exactly as designed: 6 intents planned, 6 built, 7
+completions, one light per intent, no over-production.  **And it produced
+fewer area lights than the single-call version it replaced** (which managed
+1, 0, 0, 0, 2 across five runs).
+
+**So room was not the mechanism, and 82 §10.4's "chunk economy" explanation
+is dead too.**  Both of this workstream's explanations for area-light
+avoidance are now falsified — first taste, then cost.
+
+### 7.1 What the data actually says
+
+The plan step's own output is the tell.  All six intents:
+
+1. "High above **directional light** casting cyan godrays…"
+2. "Soft white key **spot light** from upper right…"
+3. "Warm magenta and gold coral reef **point light** near lower left…"
+4. "Deep cyan **fill light** from camera position…"
+5. "Bright teal bioluminescent accent **point light** near upper right…"
+6. "Cool blue **rim light** from top behind the sunken ruin…"
+
+**Every intent names an instrument, and the planning prompt contains no
+palette.**  It was given none deliberately — it writes no scene text, so a
+palette looked like waste.  With no vocabulary offered it fell back on
+conventional CG lighting language (key/fill/rim, spot/point/directional), and
+each per-intent builder then faithfully executed the instrument it had
+already been handed.  The builder sees the palette but the decision was made
+one step earlier.
+
+**The kind is chosen where the options are not visible.**  That is a design
+error with a name, and it is a new instance of a pattern this project keeps
+hitting: a fact must be attached to the call that MAKES the decision, not to
+the call that carries it out.
+
+### 7.2 What follows
+
+The fix is cheap and testable: either give the planning step the palette, or
+require intents to describe the JOB rather than the INSTRUMENT ("light
+falling on the mermaid from above through the water surface" instead of
+"directional light from above").  Probably both — the job phrasing removes
+the premature commitment, the palette gives the planner something to commit
+to when it must.
+
+Prediction, pre-committed: with the palette moved (or added) to the planning
+step, area-light share rises and light count stays 6–8.  **If share STILL
+does not move, then no mechanism this project has proposed explains it, and
+the honest conclusion is that these models will not author a four-chunk
+emitter for a scene's general lighting whatever the harness does — at which
+point the answer is to stop asking and make the physical light a first-class
+one-chunk affordance in the scene language itself.**
+
+### 7.3 Cost
+
+7 completions for lighting where there was 1.  Justified only if the fix in
+§7.2 moves the number; a 7× spend that produces the same lighting is a
+regression, and slice 1 alone currently IS that.  This must be re-measured
+before the remaining slices assume the pattern is sound.
