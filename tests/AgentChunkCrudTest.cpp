@@ -10911,6 +10911,152 @@ static void TestCleanRoomPlaceElement()
 	}
 }
 
+//! G3 fix-round (2026-08-11): a live run built a 4-piece, 17-chunk element
+//! and had EVERY chunk rejected, in two stages -- first for carrying no
+//! `name` at all (the builder used the intended name as the chunk KEYWORD
+//! instead), then, on the one repair retry, for carrying a QUOTED `name`
+//! (`name "coral_reef_rock_painter"`).  ChunkParamString_ returns the raw
+//! token text, so the quoted value came back WITH the quote characters, and
+//! the prefix check's rejection message then LIED -- it claimed the name did
+//! not begin with the required prefix when, quoted, it never could have.
+//! Design: docs/agentic-redesign/79-clean-room-construction.md.  Three
+//! things pinned here: (1) a quoted name that legitimately begins with the
+//! prefix once stripped LANDS, under the bare name, and the strip is
+//! DISCLOSED in the result message; (2) a quoted name that STILL fails the
+//! prefix check after stripping reports the failure against the STRIPPED
+//! (true) name, never the quoted one; (3) a TOTAL rejection (every chunk
+//! refused) shows a short excerpt of what the builder actually returned --
+//! and ONLY a total rejection, never a partial or full success.
+static void TestCleanRoomBuildElementQuotedNameAndTotalRejection()
+{
+	std::printf( "S2/G3: quoted `name` values tolerated & disclosed; TOTAL rejection shows an excerpt...\n" );
+
+	// (1) A quoted name that LANDS after stripping, and the strip is
+	// DISCLOSED.  Cross-references between the chunks (reflectance,
+	// geometry, material) stay BARE, matching the live-run shape: only the
+	// DEFINITION side was quoted, and stripping it makes the definition
+	// match the references the builder already wrote.
+	{
+		const std::string tmp = TempPath( "agentcrud_s2g3a.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2/G3a fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string quotedGood =
+			"uniformcolor_painter\n{\n\tname \"wizard_robe_pnt\"\n\tcolor 0.3 0.2 0.5\n}\n"
+			"lambertian_material\n{\n\tname \"wizard_robe_mat\"\n\treflectance wizard_robe_pnt\n}\n"
+			"sdf_geometry\n{\n\tname \"wizard_body_sdf\"\n"
+			"\tpart roundcone union 0  0 0.4 0  0 0 0  1 1 1  0.5 0.25 0.9  0\n}\n"
+			"standard_object\n{\n\tname \"wizard_obj\"\n\tgeometry wizard_body_sdf\n"
+			"\tmaterial wizard_robe_mat\n\tposition 0 0 0\n}\n";
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { quotedGood }, &calls ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2/G3a the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( calls == 1,
+		       "S2/G3a MONEY ASSERTION: no retry needed -- the quoted names land on the FIRST attempt" );
+		Check( r.ok && r.landed.size() == 4, "S2/G3a every chunk lands despite the quoted names" );
+		Check( r.rejected.empty(), "S2/G3a nothing is rejected" );
+		bool sawBareName = false;
+		for( std::size_t i = 0; i < r.landed.size(); ++i )
+			if( r.landed[i] == "wizard_robe_pnt" ) sawBareName = true;
+		Check( sawBareName, "S2/G3a MONEY ASSERTION: it landed under the BARE name, not the quoted one" );
+		Check( sess->ReadDocument().find( "\"wizard_robe_pnt\"" ) == std::string::npos,
+		       "S2/G3a and the document itself carries no quote characters" );
+		Check( sess->ChunkElement( "wizard_robe_pnt" ) == "wizard",
+		       "S2/G3a attributed to the element under the bare name" );
+		Check( r.message.find( "stripped a wrapping pair of double quotes" ) != std::string::npos,
+		       "S2/G3a MONEY ASSERTION: the fix is DISCLOSED in the result message" );
+		Check( r.message.find( "wizard_robe_pnt" ) != std::string::npos,
+		       "S2/G3a and it names at least one of the chunks it fixed" );
+	}
+
+	// (2) A quoted name that STILL fails the prefix check after stripping --
+	// the reported reason must be against the STRIPPED name, the TRUE
+	// statement, never the quoted (false) one.
+	{
+		const std::string tmp = TempPath( "agentcrud_s2g3b.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2/G3b fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string quotedBadPrefix =
+			"uniformcolor_painter\n{\n\tname \"robe_pnt\"\n\tcolor 0.3 0.2 0.5\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { quotedBadPrefix } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2/G3b the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( !r.rejected.empty(), "S2/G3b something was rejected" );
+		bool sawStrippedReason = false;
+		bool sawRejectedName = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i ) {
+			if( r.rejected[i].reason.find( "\"robe_pnt\" does not begin" ) != std::string::npos )
+				sawStrippedReason = true;
+			if( r.rejected[i].name == "robe_pnt" ) sawRejectedName = true;
+		}
+		Check( sawStrippedReason,
+		       "S2/G3b MONEY ASSERTION: the prefix-failure reason names the STRIPPED name \"robe_pnt\" "
+		       "-- the true statement (before this fix it named the QUOTED form, a false claim)" );
+		Check( sawRejectedName, "S2/G3b and the rejection's own `name` field is the stripped form too" );
+	}
+
+	// (3) A TOTAL rejection shows an excerpt of the builder's actual answer;
+	// a partial or full success shows none.
+	{
+		// (3a) total: every chunk this element got, across both attempts, is
+		// rejected (wrong prefix, not a missing answer -- so this is a real
+		// total rejection, not the separate pure-provider-failure case).
+		const std::string tmp = TempPath( "agentcrud_s2g3c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2/G3c fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string allBad =
+			"uniformcolor_painter\n{\n\tname nope_pnt\n\tcolor 0.3 0.2 0.5\n}\n"
+			"lambertian_material\n{\n\tname nope_mat\n\treflectance nope_pnt\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { allBad, allBad } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2/G3c the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( r.ok && r.landed.empty(), "S2/G3c MONEY ASSERTION: a total rejection -- nothing landed" );
+		Check( !r.rejected.empty(), "S2/G3c but chunks WERE rejected (not the pure provider-failure case)" );
+		Check( r.message.find( "the builder's last answer" ) != std::string::npos,
+		       "S2/G3c MONEY ASSERTION: the total-rejection excerpt is present" );
+		Check( r.message.find( "nope_pnt" ) != std::string::npos ||
+		       r.message.find( "nope_mat" ) != std::string::npos,
+		       "S2/G3c and shows what the builder actually wrote" );
+	}
+	{
+		// (3b) partial success: the excerpt must NOT appear.
+		const std::string tmp = TempPath( "agentcrud_s2g3d.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2/G3d fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const std::string halfGood =
+			"uniformcolor_painter\n{\n\tname wizard_pnt\n\tcolor 0.3 0.2 0.5\n}\n"
+			"lambertian_material\n{\n\tname nope_mat\n\treflectance wizard_pnt\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { halfGood, halfGood } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2/G3d the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( r.ok && !r.landed.empty(), "S2/G3d something landed -- a partial success" );
+		Check( r.message.find( "the builder's last answer" ) == std::string::npos,
+		       "S2/G3d MONEY ASSERTION: the total-rejection excerpt is NOT shown on a partial success" );
+	}
+	{
+		// (3c) full success: no excerpt either.
+		const std::string tmp = TempPath( "agentcrud_s2g3e.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "S2/G3e fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "S2/G3e the plan files" );
+		const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "wizard", 4.0 );
+		Check( r.ok && r.rejected.empty(), "S2/G3e a clean full success" );
+		Check( r.message.find( "the builder's last answer" ) == std::string::npos,
+		       "S2/G3e and no excerpt on a full success either" );
+	}
+}
+
 //! S2h: the wire shape of both verbs.
 static void TestCleanRoomWireShape()
 {
@@ -11157,6 +11303,7 @@ int main()
 	TestCleanRoomFirstGeometryRefusal();
 	TestCleanRoomProtocolOff();
 	TestCleanRoomPlaceElement();
+	TestCleanRoomBuildElementQuotedNameAndTotalRejection();
 	TestCleanRoomWireShape();
 	TestCleanRoomReplaceGeometryScaffoldGate();
 	TestGeometryScaffoldFamilies();

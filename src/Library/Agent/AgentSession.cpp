@@ -10956,7 +10956,41 @@ namespace RISE
 				"references must be one you defined in this same answer.\n"
 				"6. DO NOT AUTHOR: cameras, lights, film, rasterizers, ground planes, or any "
 				"world placement. Those belong to the scene, not to this element, and a chunk "
-				"of those kinds will be rejected.";
+				"of those kinds will be rejected.\n"
+				"7. EXACT SYNTAX -- a correctly-formed, correctly-named chunk looks like this "
+				"(replace <prefix> with the required prefix given above; every name is a BARE "
+				"TOKEN, never in quotes -- this scene language has no quoted-string syntax, so "
+				"quoting a name just makes the quote characters part of it):\n"
+				"uniformcolor_painter\n"
+				"{\n"
+				"\tname <prefix>rock_pnt\n"
+				"\tcolor 0.4 0.3 0.2\n"
+				"}\n"
+				"lambertian_material\n"
+				"{\n"
+				"\tname <prefix>rock_mat\n"
+				"\treflectance <prefix>rock_pnt\n"
+				"}\n"
+				// DELIBERATELY NO GEOMETRY CHUNK IN THIS EXAMPLE.  The
+				// example exists to fix a SYNTAX failure (a builder that
+				// wrote its names as chunk keywords, then as quoted
+				// strings), and this project has measured that an example
+				// moves COPYING -- so a concrete `box_geometry { }` here
+				// would be a drop-in anchor on the exact axis arc 79
+				// measures (SDF part count per element).  The chunk shape
+				// and the naming rule are fully demonstrated by the painter
+				// / material / object chain; the geometry kinds and the
+				// part grammar are already given in full above, where they
+				// carry no worked example to copy.
+				"standard_object\n"
+				"{\n"
+				"\tname <prefix>rock_obj\n"
+				"\tgeometry <prefix>rock_geo\n"
+				"\tmaterial <prefix>rock_mat\n"
+				"}\n"
+				"The geometry chunk named <prefix>rock_geo there is written the same way: its "
+				"kind on its own line, its brace on its own line, and a bare-token name carrying "
+				"the prefix.";
 		}
 
 		std::string AgentSession::ElementChunkNamePrefix( const std::string& element )
@@ -11497,6 +11531,29 @@ namespace RISE
 			return p;
 		}
 
+		namespace
+		{
+			//! Fix 3 (2026-08-11, live-run defect): a short, whole-line excerpt
+			//! of `text` for the build_element TOTAL-rejection report -- cut at
+			//! `capChars`, backed up to the last newline at or before the cut
+			//! so no line is sliced mid-way, with an explicit truncation
+			//! marker whenever it WAS cut.  Never silent, matching this file's
+			//! own truncation convention (see `notesTruncated` in BuildElement
+			//! below).  Before this, a total rejection (every chunk the
+			//! builder wrote refused) retained the builder's actual answer
+			//! nowhere, so the failure was undiagnosable after the fact.
+			std::string ExcerptWholeLines_( const std::string& text, std::size_t capChars )
+			{
+				if( text.size() <= capChars ) return text;
+				std::size_t cut = text.rfind( '\n', capChars );
+				if( cut == std::string::npos || cut == 0 ) cut = capChars;
+				std::string ex = text.substr( 0, cut );
+				while( !ex.empty() && ( ex.back() == '\n' || ex.back() == '\r' ) ) ex.pop_back();
+				ex += "\n[...truncated...]";
+				return ex;
+			}
+		}
+
 		AgentSession::AgentBuildElementResult AgentSession::BuildElement(
 			const std::string& element, double height, const std::string& notes )
 		{
@@ -11633,6 +11690,20 @@ namespace RISE
 			std::vector<std::string> landedNames;
 			std::vector<std::string> rejectionLines;
 			std::string providerFailure;
+			// Fix 1 (2026-08-11, live-run defect): chunk names the builder
+			// quoted (`name "foo"` instead of `name foo` -- this scene
+			// language has no quoted-string syntax, so the quotes come back
+			// as literal characters in the extracted name) but that are
+			// otherwise fine, across both attempts.  Disclosed to the caller
+			// as a statement of what this harness did, never as advice.
+			std::vector<std::string> unquotedNames;
+			// Fix 3: the most recent completion's raw text, kept so a
+			// TOTAL rejection (every chunk the builder wrote was refused)
+			// can show an excerpt of what it actually returned -- today
+			// that text is retained nowhere once extraction/validation
+			// finishes, so a total rejection is undiagnosable after the
+			// fact.
+			std::string lastCompletionText;
 
 			const auto runAttempt = [&]( const std::string& prompt ) -> bool
 			{
@@ -11643,6 +11714,7 @@ namespace RISE
 						: comp.error;
 					return false;
 				}
+				lastCompletionText = comp.text;
 
 				std::vector<std::string> chunks, problems;
 				ExtractChunkTexts( comp.text, chunks, problems );
@@ -11671,15 +11743,17 @@ namespace RISE
 				std::vector<std::string> submit;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
 					std::string kind, name;
+					RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunks[i] );
+					RISE::Cst::NodeId chunkNodeId = 0;
 					{
-						const RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunks[i] );
 						const int n = RISE::Cst::DocItemCount( cdoc );
 						for( int c = 0; c < n; ++c ) {
-							const RISE::Cst::NodeRef it =
-								RISE::Cst::DocResolveNodeId( cdoc, RISE::Cst::DocNodeIdAt( cdoc, c ) );
+							const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( cdoc, c );
+							const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( cdoc, nid );
 							if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
 							kind = it->role;
 							name = ChunkParamString_( it, "name" );
+							chunkNodeId = nid;
 							break;
 						}
 					}
@@ -11692,6 +11766,29 @@ namespace RISE
 						out.rejected.push_back( r );
 						rejectionLines.push_back( r.reason );
 						continue;
+					}
+					// Fix 1 (2026-08-11, live-run defect): a QUOTED name --
+					// `name "coral_reef_rock_painter"` -- is tolerated, not
+					// rejected.  ChunkParamString_ returns the raw token
+					// text, so a quoted value comes back WITH the quote
+					// characters, and comparing that against a bare `prefix`
+					// always failed even when the name legitimately began
+					// with it (the live-run rejection message then LIED:
+					// it claimed the name did not begin with the prefix
+					// when it did, just wrapped in quotes).  This is
+					// deliberately NOT the rename the comment below forbids:
+					// the builder's OWN references to this same chunk,
+					// written elsewhere in this same answer, are bare
+					// tokens -- this scene language has no quoted-string
+					// syntax at all -- so stripping the quotes here makes
+					// the DEFINITION match what the builder already wrote,
+					// which is the opposite of breaking those references.
+					if( name.size() >= 2 && name.front() == '"' && name.back() == '"' ) {
+						const std::string stripped = name.substr( 1, name.size() - 2 );
+						cdoc = RISE::Cst::DocSetParamValue( cdoc, chunkNodeId, "name", 0, stripped );
+						chunks[i] = RISE::Cst::SerializeCst( cdoc );
+						unquotedNames.push_back( stripped );
+						name = stripped;
 					}
 					if( name.compare( 0, prefix.size(), prefix ) != 0 ) {
 						AgentBuildElementRejection r;
@@ -11826,6 +11923,27 @@ namespace RISE
 			}
 			if( !providerFailure.empty() )
 				m += " The last builder completion did not complete: " + providerFailure + ".";
+			if( !unquotedNames.empty() ) {
+				// Fix 1's disclosure: a statement of what this harness did,
+				// never advice.
+				m += " This harness stripped a wrapping pair of double quotes from the `name` value "
+				     "of ";
+				for( std::size_t i = 0; i < unquotedNames.size(); ++i ) {
+					if( i ) m += ", ";
+					m += unquotedNames[i];
+				}
+				m += " before checking the prefix and inserting.";
+			}
+			if( out.landed.empty() && !lastCompletionText.empty() ) {
+				// Fix 3: TOTAL rejection ONLY -- out.landed.empty() here means
+				// every chunk across both attempts was rejected (the pure
+				// provider-failure case already returned above), so this is
+				// reached exactly on a total rejection and never on a partial
+				// or full success.
+				m += " Nothing landed for this element; the builder's last answer, before this "
+				     "harness's own truncation, began:\n";
+				m += ExcerptWholeLines_( lastCompletionText, 400 );
+			}
 			{
 				char pb[128];
 				std::snprintf( pb, sizeof( pb ), " SDF part lines across the inserted geometry: %u.",
