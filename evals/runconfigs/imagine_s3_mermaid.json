@@ -1,0 +1,15 @@
+{
+ "//": "Arc-80 composition run (2026-08-12): same mermaid subject and model as imagine_s2_mermaid2, now with the render-result visibility census (a payload fact, not a verb) and the COMPOSE-phase ban on removing form-bearing chunks. HEADLINE (80 SS6 item 1): SDF parts BUILT vs parts SURVIVING in the final scene -- arc-79 built 82 and kept 2, so anything near 1.0 is the win. Also: does the composed scene render non-empty, or does the census at least SAY why; how many compose removal refusals fire and whether the model routes around them via reopen_element (the 80 SS4 hole); and whether post-census edits address what the census actually reported.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s3_mermaid"
+}
