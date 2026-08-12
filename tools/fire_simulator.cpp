@@ -102,9 +102,59 @@ int main( const int argc, const char* const argv[] )
 	for( const double velocity : advanced.velocityMPerS ) {
 		maximumVelocityError = std::max(maximumVelocityError,std::fabs(velocity-0.25));
 	}
-	std::printf("record=%s cells=%zu r0=%zu r1=%zu r2=%zu max_free_stream_error=%.17g\n",
+	MethaneReactionStep sourceStep;
+	sourceStep.deltaTimeS = 0.002;
+	sourceStep.mixingTimeS = 0.02;
+	sourceStep.primaryEligible = true;
+	sourceStep.sootOxidationEnabled = true;
+	MethaneSourcePacket reactionProbe;
+	MethaneCellState postReactionProbe;
+	GasExchangeEvaluation exchangeProbe;
+	if( !BuildMethaneReactionPacket(state,fuel,sourceStep,reactionProbe,&error) ||
+		!ApplySourcePacket(state,reactionProbe,fuel,postReactionProbe,&error) ||
+		!EvaluateGasExchange(postReactionProbe,postReactionProbe.temperatureK,300.0,
+			fuel,opacity,exchangeProbe,&error) ) {
+		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
+	}
+	double radiativeFraction = 0.0;
+	if( !fuel.ResolveRadiativeFraction("methane-bringup-v1",false,0.0,
+		radiativeFraction,&error) ) {
+		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
+	}
+	const double cellVolumeM3 = 0.001;
+	const double heatReleaseW = exchangeProbe.exchangeWPerM3*cellVolumeM3/
+		(2.0*radiativeFraction);
+	std::vector<MethaneSourcePacket> frozenPacket;
+	RadiationEscapeFactor escape;
+	if( !BuildFrozenMethaneSourcePackets({state},{sourceStep},{cellVolumeM3},300.0,
+		heatReleaseW,heatReleaseW,radiativeFraction,true,fuel,fuel,opacity,
+		frozenPacket,escape,&error) ) {
+		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
+	}
+	ConservativeVector sourceRate;
+	sourceRate[0] = 0.0;
+	for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
+		sourceRate[1+species] = frozenPacket[0].constituentDelta[species]/sourceStep.deltaTimeS;
+	}
+	sourceRate[MethaneMassStateDimension] = frozenPacket[0].sensibleEnergyDeltaJPerM3/
+		sourceStep.deltaTimeS;
+	double expansionPerS = 0.0;
+	if( !DivergenceFromDiscreteRate(ToConservativeVector(state),sourceRate,
+		state.temperatureK,fuel,expansionPerS,&error) ) {
+		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
+	}
+	const std::size_t openCells = 8;
+	OpenMACProjection1DResult openExpansion;
+	if( !ProjectPressureOpenMACVelocity1D(std::vector<double>(openCells,state.GasDensity()),
+		std::vector<double>(openCells+1,0.0),std::vector<double>(openCells,expansionPerS),
+		state.GasDensity(),0.01,sourceStep.deltaTimeS,1.0e-8,
+		state.GasDensity()*1.0e-8,false,false,openExpansion,&error) ) {
+		std::fprintf(stderr,"fire_simulator: %s\n",error.c_str()); return 1;
+	}
+	std::printf("record=%s cells=%zu r0=%zu r1=%zu r2=%zu max_free_stream_error=%.17g expansion=%.17g escape=%.17g open_head_residual=%.17g\n",
 		fuel.RecordId().c_str(),count,advanced.r0.picardResidualPerS.size(),
 		advanced.r1.picardResidualPerS.size(),advanced.r2.picardResidualPerS.size(),
-		maximumVelocityError);
-	return maximumVelocityError <= 2.0e-14 ? 0 : 1;
+		maximumVelocityError,expansionPerS,escape.accepted,
+		openExpansion.maximumBoundaryHeadResidualPa);
+	return maximumVelocityError <= 2.0e-14 && expansionPerS > 0.0 ? 0 : 1;
 }

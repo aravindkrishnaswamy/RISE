@@ -188,11 +188,13 @@ int main()
 		const bool finalOK = ProjectPressureOpenMACVelocity1DFinal(openDensity,
 			std::vector<double>(9,0.0),openTarget,1.18,0.05,0.01,
 			stage0Inflow,stage1Inflow,false,false,0.2,0.4,0.0,0.0,
-			1.0e-9,finalOpen,&error);
+			1.0e-9,1.0e-9,finalOpen,&error);
 		const double expectedIntegratedHead = -0.25*1.18*
 			((stage0Inflow ? 0.2*0.2 : 0.0)+(stage1Inflow ? 0.4*0.4 : 0.0));
 		Check(finalOK && Near(finalOpen.leftBoundaryPressurePa,
-			expectedIntegratedHead,2.0e-15),
+			expectedIntegratedHead,2.0e-15) &&
+			(finalOpen.leftInflow == (finalOpen.velocityMPerS[0] > 1.0e-9 ? true :
+				(finalOpen.velocityMPerS[0] < -1.0e-9 ? false : stage1Inflow))),
 			"V1 final open projection uses the Heun indicator-integrated head");
 	}
 
@@ -403,6 +405,20 @@ int main()
 		!coupledTransport.r1.picardResidualPerS.empty() &&
 		!coupledTransport.r2.picardResidualPerS.empty(),
 		"V2/V3 projected-Heun executes converged R0, R1, and endpoint R2 solves");
+	if( coupledOK ) {
+		const PeriodicCoupledStage* stages[3] = {
+			&coupledTransport.r0,&coupledTransport.r1,&coupledTransport.r2
+		};
+		for( const PeriodicCoupledStage* stage : stages ) {
+			double acceptedResidual = 0.0;
+			for( std::size_t cell=0; cell<transportCells; ++cell ) acceptedResidual =
+				std::max(acceptedResidual,std::fabs(PeriodicDivergence(
+					stage->projection.velocityMPerS,cell,transportConfig.cellWidthM)-
+					stage->divergenceTargetPerS[cell]));
+			Check(acceptedResidual <= 1.0e-11,
+				"V2/V3 each accepted Picard stage is reprojected against its stored target");
+		}
+	}
 
 	// V4: a finite-step packet, not an externally tabulated heat source, must
 	// preserve mass/elements and use the record-derived methane energy ledger.
@@ -478,6 +494,17 @@ int main()
 	Check(ApplySourcePacket(beginning,completePacket,thermochemistry,
 		completeSourceState,&error) && completeSourceState.temperatureK > beginning.temperatureK,
 		"V4 complete frozen packet is consumed once by the conservative source map");
+	std::vector<MethaneSourcePacket> gridPackets;
+	RadiationEscapeFactor gridEscape;
+	double gridRadiativeFraction = 0.0;
+	Check(fuel.ResolveRadiativeFraction("solver-v4-grid-source-v1",false,0.0,
+		gridRadiativeFraction,&error) && BuildFrozenMethaneSourcePackets(
+		{beginning,beginning},{step,step},{1.0,2.0},300.0,600.0,600.0,
+		gridRadiativeFraction,true,fuel,thermochemistry,opacity,gridPackets,
+		gridEscape,&error) && gridPackets.size() == 2 &&
+		gridPackets[0].radiativeCoolingWPerM3 ==
+			gridPackets[1].radiativeCoolingWPerM3 && gridEscape.accepted > 0.0,
+		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
 	MethaneReactionStep overflowRateStep = step;
 	overflowRateStep.deltaTimeS = 1.0e-310;
 	overflowRateStep.mixingTimeS = std::numeric_limits<double>::denorm_min();
@@ -533,6 +560,17 @@ int main()
 	Check(ApplyGasRadiationBackwardEuler(hotProducts,300.0,radiationStepS,1.0,
 		thermochemistry,opacity,cooledProducts,coolingWPerM3,&error),
 		"V5 certified gas backward-Euler map accepts the physical product state");
+	double acceptedEnergyCheck = 0.0;
+	GasExchangeEvaluation acceptedRootExchange;
+	Check(thermochemistry.MixtureSensibleEnergyJPerM3(
+		ThermochemicalDensities(cooledProducts),cooledProducts.temperatureK,
+		acceptedEnergyCheck,&error) && EvaluateGasExchange(cooledProducts,
+		cooledProducts.temperatureK,300.0,thermochemistry,opacity,
+		acceptedRootExchange,&error) && std::fabs(acceptedEnergyCheck-
+		hotProducts.sensibleEnergyJPerM3+radiationStepS*
+		acceptedRootExchange.exchangeWPerM3) <= 64.0*std::numeric_limits<double>::epsilon()*
+		std::max(1.0,std::fabs(hotProducts.sensibleEnergyJPerM3)),
+		"V5 accepted gas root satisfies the energy residual tolerance");
 	GasExchangeEvaluation acceptedExchange;
 	Check(EvaluateGasExchange(cooledProducts,cooledProducts.temperatureK,300.0,
 		thermochemistry,opacity,acceptedExchange,&error),

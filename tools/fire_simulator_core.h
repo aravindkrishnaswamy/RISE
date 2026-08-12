@@ -500,23 +500,23 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			result = beginning;
+			MethaneCellState candidate = beginning;
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
-				result.constituent[index] += packet.constituentDelta[index];
+				candidate.constituent[index] += packet.constituentDelta[index];
 			}
-			result.sensibleEnergyJPerM3 += packet.sensibleEnergyDeltaJPerM3;
+			candidate.sensibleEnergyJPerM3 += packet.sensibleEnergyDeltaJPerM3;
 			std::vector<std::pair<std::string,double> > propertyDensities;
-			if( !ThermochemicalDensitiesWithinForwardEnvelope(result,propertyDensities,error) ) {
+			if( !ThermochemicalDensitiesWithinForwardEnvelope(candidate,propertyDensities,error) ) {
 				return false;
 			}
 			if( !thermochemistry.InvertMixtureTemperatureK(
-				propertyDensities,result.sensibleEnergyJPerM3,
-				result.temperatureK,error) ) return false;
-			const double total = result.TotalDensity();
+				propertyDensities,candidate.sensibleEnergyJPerM3,
+				candidate.temperatureK,error) ) return false;
+			const double total = candidate.TotalDensity();
 			return (std::isfinite(total) && total > 0.0 &&
-				std::isfinite(result.rhoTotalZ) && result.rhoTotalZ >= 0.0 &&
-				result.rhoTotalZ <= total && std::isfinite(result.temperatureK) &&
-				result.temperatureK > 0.0) ||
+				std::isfinite(candidate.rhoTotalZ) && candidate.rhoTotalZ >= 0.0 &&
+				candidate.rhoTotalZ <= total && std::isfinite(candidate.temperatureK) &&
+				candidate.temperatureK > 0.0 && ((result=candidate),true)) ||
 				Fail(error,"fire solver source packet produced an invalid accepted state");
 		}
 
@@ -1855,6 +1855,7 @@ namespace RISE
 			const double leftStage1VelocityMPerS,
 			const double rightStage0VelocityMPerS,
 			const double rightStage1VelocityMPerS,
+			const double velocityToleranceMPerS,
 			const double absoluteTolerancePerS,
 			OpenMACProjection1DResult& result,
 			std::string* error = 0
@@ -1865,6 +1866,7 @@ namespace RISE
 				divergenceTargetPerS.size() != cells || !std::isfinite(ambientDensityKGPerM3) ||
 				ambientDensityKGPerM3 <= 0.0 || !std::isfinite(cellWidthM) || cellWidthM <= 0.0 ||
 				!std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ||
+				!std::isfinite(velocityToleranceMPerS) || velocityToleranceMPerS < 0.0 ||
 				!std::isfinite(absoluteTolerancePerS) || absoluteTolerancePerS <= 0.0 ) {
 				return Fail(error,"fire solver final pressure-open projection input is malformed");
 			}
@@ -1872,6 +1874,16 @@ namespace RISE
 				rightStage0VelocityMPerS,rightStage1VelocityMPerS};
 			for( const double velocity : stageVelocity ) if( !std::isfinite(velocity) ) {
 				return Fail(error,"fire solver final pressure-open stage velocity is non-finite");
+			}
+			for( std::size_t cell=0; cell<cells; ++cell ) {
+				if( !std::isfinite(gasDensityKGPerM3[cell]) || gasDensityKGPerM3[cell] <= 0.0 ||
+					!std::isfinite(divergenceTargetPerS[cell]) ) {
+					return Fail(error,"fire solver final pressure-open cell is invalid");
+				}
+			}
+			for( const double momentum : unprojectedMomentumKGPerM2S ) {
+				if( !std::isfinite(momentum) ) return Fail(error,
+					"fire solver final pressure-open momentum is invalid");
 			}
 			const double leftPressure = -0.25*ambientDensityKGPerM3*
 				((leftStage0Inflow ? leftStage0VelocityMPerS*leftStage0VelocityMPerS : 0.0)+
@@ -1923,8 +1935,10 @@ namespace RISE
 				std::max(result.maximumDivergenceResidualPerS,std::fabs((result.velocityMPerS[cell+1]-
 					result.velocityMPerS[cell])/cellWidthM-divergenceTargetPerS[cell]));
 			result.maximumBoundaryHeadResidualPa = 0.0;
-			result.leftInflow = result.velocityMPerS[0] < 0.0;
-			result.rightInflow = result.velocityMPerS[cells] > 0.0 ? false : true;
+			result.leftInflow = result.velocityMPerS[0] > velocityToleranceMPerS ? true :
+				(result.velocityMPerS[0] < -velocityToleranceMPerS ? false : leftStage1Inflow);
+			result.rightInflow = result.velocityMPerS[cells] < -velocityToleranceMPerS ? true :
+				(result.velocityMPerS[cells] > velocityToleranceMPerS ? false : rightStage1Inflow);
 			return result.maximumDivergenceResidualPerS <= absoluteTolerancePerS ||
 				Fail(error,"fire solver final pressure-open projection misses its divergence target");
 		}
@@ -2171,9 +2185,14 @@ namespace RISE
 					(!iteration || (massFluxResidual/config.cellWidthM <= projectionTolerancePerS &&
 						alphaResidual <= projectionTolerancePerS &&
 						coefficientResidual <= projectionTolerancePerS)) ) {
-					// Reproject once against the newly accepted target; the flux is
-					// rebuilt by the next iteration unless it was already unchanged.
-					if( iteration ) return true;
+					if( iteration ) {
+						PeriodicProjectionResult acceptedProjection;
+						if( !ProjectPeriodicMACVelocity(GasDensityFromConservative(state),
+							unprojectedMomentum,target,config.cellWidthM,config.deltaTimeS,
+							projectionTolerancePerS,acceptedProjection,error) ) return false;
+						result.projection = acceptedProjection;
+						return true;
+					}
 				}
 			}
 			return Fail(error,"fire solver periodic coupled Picard stage did not converge");
@@ -2702,15 +2721,24 @@ namespace RISE
 				if( hi-lo <= 8.0*std::numeric_limits<double>::epsilon()*
 					std::max(1.0,midpoint) ) break;
 			}
-			result = preRadiation;
-			result.temperatureK = 0.5*(lo+hi);
+			MethaneCellState candidate = preRadiation;
+			candidate.temperatureK = 0.5*(lo+hi);
+			double finalResidual = 0.0;
+			if( !residual(candidate.temperatureK,finalResidual) ) return false;
 			if( !thermochemistry.MixtureSensibleEnergyJPerM3(
-				ThermochemicalDensities(result),result.temperatureK,
-				result.sensibleEnergyJPerM3,error) ) return false;
+				ThermochemicalDensities(candidate),candidate.temperatureK,
+				candidate.sensibleEnergyJPerM3,error) ) return false;
 			acceptedCoolingWPerM3 = (preRadiation.sensibleEnergyJPerM3-
-				result.sensibleEnergyJPerM3)/deltaTimeS;
-			return std::isfinite(acceptedCoolingWPerM3) ||
-				Fail(error,"fire solver accepted radiative exchange is invalid");
+				candidate.sensibleEnergyJPerM3)/deltaTimeS;
+			const double energyScale = std::max({1.0,
+				std::fabs(preRadiation.sensibleEnergyJPerM3),
+				std::fabs(candidate.sensibleEnergyJPerM3)});
+			if( std::fabs(finalResidual) > 64.0*std::numeric_limits<double>::epsilon()*
+				energyScale ) return Fail(error,"fire solver radiation root misses its energy residual tolerance");
+			if( !std::isfinite(acceptedCoolingWPerM3) ) return Fail(error,
+				"fire solver accepted radiative exchange is invalid");
+			result = candidate;
+			return true;
 		}
 
 		inline bool BuildFrozenMethaneSourcePacket(
@@ -2763,6 +2791,50 @@ namespace RISE
 			return (std::fabs(massResidual) <= tolerance && elementResidual <= tolerance &&
 				std::fabs(result.sensibleEnergyDeltaJPerM3-expectedEnergy) <= energyTolerance) ||
 				Fail(error,"fire solver frozen source packet failed its mass/element/energy ledger");
+		}
+
+		inline bool BuildFrozenMethaneSourcePackets(
+			const std::vector<MethaneCellState>& beginning,
+			const std::vector<MethaneReactionStep>& reactionStep,
+			const std::vector<double>& cellVolumeM3,
+			const double ambientTemperatureK,
+			const double totalHeatReleaseW,
+			const double nominalPeakHeatReleaseW,
+			const double radiativeFraction,
+			const bool predictive,
+			const FireSimulationMethaneRecord& fuel,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationGasOpacityRecord& opacity,
+			std::vector<MethaneSourcePacket>& result,
+			RadiationEscapeFactor& factor,
+			std::string* error = 0
+			)
+		{
+			const std::size_t count = beginning.size();
+			if( count == 0 || reactionStep.size() != count || cellVolumeM3.size() != count ) {
+				return Fail(error,"fire solver grid source-packet arrays are malformed");
+			}
+			std::vector<double> unscaledExchange(count,0.0);
+			for( std::size_t cell=0; cell<count; ++cell ) {
+				MethaneSourcePacket reaction;
+				MethaneCellState postReaction;
+				if( !BuildMethaneReactionPacket(beginning[cell],fuel,reactionStep[cell],
+					reaction,error) || !ApplySourcePacket(beginning[cell],reaction,
+					thermochemistry,postReaction,error) ) return false;
+				GasExchangeEvaluation exchange;
+				if( !EvaluateGasExchange(postReaction,postReaction.temperatureK,
+					ambientTemperatureK,thermochemistry,opacity,exchange,error) ) return false;
+				unscaledExchange[cell] = exchange.exchangeWPerM3;
+			}
+			if( !ComputeRadiationEscapeFactor(totalHeatReleaseW,nominalPeakHeatReleaseW,
+				radiativeFraction,unscaledExchange,cellVolumeM3,predictive,factor,error) ) return false;
+			result.assign(count,MethaneSourcePacket());
+			for( std::size_t cell=0; cell<count; ++cell ) {
+				if( !BuildFrozenMethaneSourcePacket(beginning[cell],reactionStep[cell],
+					ambientTemperatureK,factor.accepted,fuel,thermochemistry,opacity,
+					result[cell],error) ) return false;
+			}
+			return true;
 		}
 	}
 }
