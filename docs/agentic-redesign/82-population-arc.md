@@ -368,13 +368,9 @@ honest variance measurement in this workstream.
 - **Object count 23–27 (mean 25.3).  The single run reported earlier was 34 —
   the top of the range, not the centre.**  "Object count doubled" was an
   overstatement of a real effect: 16 → ~25 is +56%, not +112%.
-- **SDF parts 66–82 (mean 71.7), against single runs of 87 and 104 earlier.**
-  Part counts may be DRIFTING DOWN as the prompts grow.  That would be this
-  workstream's own context-dilution finding turning on the workstream: every
-  arc adds palette and contract text to the same builders.  It is a
-  hypothesis, not a result — the 87 and 104 figures are themselves N=1 — but
-  it is the first sign that mechanisms may be costing what they buy, and the
-  next arc should measure prompt size against part count before adding text.
+- ~~**SDF parts may be drifting down as prompts grow**~~ — **RETRACTED
+  2026-08-12, see §10.**  Decomposing the total instead of repeating it showed
+  the builder is stable and the metric was confounded.
 - **Area lights 0 / 0 / 2 here, 3 on gpt, 1 in arc 81.**  Confirmed as
   variance-dominated.  No lighting-behaviour claim from arcs 81–82 survives.
 - Picture quality varies far more than any count: r3 has 27 objects and reads
@@ -388,3 +384,76 @@ variance check moved the headline by half.  **Counts here have a spread of
 ±20% or worse; effects smaller than that are unmeasurable at N=1 and should
 not be reported as findings.**  The reuse ratio survived precisely because it
 is a large, tight effect.  Run repeats before believing an arc, not after.
+
+## 10. DECOMPOSITION BEATS REPETITION (2026-08-12)
+
+The owner declined further repeats — *"I need more sound theories on what is
+happening... I don't believe run to run the result can drop so badly"* — and
+was right.  Decomposing the numbers already in hand explained both anomalies,
+at no token cost.
+
+### 10.1 The builder is stable; the METRIC was confounded
+
+**Parts for the SAME element across runs** (the figure, apples to apples):
+
+| run | s5 | s6 | s7 (gpt) | s8r1 | s8r2 | s8r3 |
+|---|---|---|---|---|---|---|
+| mermaid parts | 23 | 22 | 38 | 17 | 23 | 25 |
+
+Gemini: 23, 22, 17, 23, 25 — mean 22, **no decline**.  The clean room is not
+degrading, and the context-dilution-turning-on-us hypothesis is dead.
+
+The scene TOTAL moved for two reasons that have nothing to do with builder
+quality:
+
+1. **Element-set composition.**  Runs planned 4 elements instead of 5, and
+   terrain elements are cheap: `sea_floor` 6, `seabed` 10–11, one at 0.
+2. **The metric cannot see primitive-built geometry.**  "SDF parts" counts
+   `part` lines only, so an element built from a box or a plane scores ZERO
+   while being perfectly good work.  s8r2's `sea_floor` at 0 parts is a flat
+   seabed, not a failure.
+
+**Total SDF parts is therefore a bad headline** — it multiplies a stable
+per-element number by a variable element count and blinds itself to
+primitives.  Parts for a NAMED element is the sound metric, and it is the one
+this workstream started with (the wizard).
+
+### 10.2 Area lights: cost, not taste
+
+No area chain was ever rejected and no retry ever ran — the model simply does
+not write one about 60% of the time.  But the lights-per-run figure is
+strikingly stable:
+
+| run | lights delivered | area chains | chunks written |
+|---|---|---|---|
+| s5 | 7 | 1 | 10 |
+| s6 | 8 | 0 | 8 |
+| s8r1 | 6 | 0 | 6 |
+| s8r2 | 7 | 0 | 7 |
+| s8r3 | 8 | 1 | 11 |
+
+**Every run lands on 6–8 lights.**  That is the quantity the model holds
+fixed.  And the policy asks it to express those lights in the most expensive
+chunk shape available: an area light is FOUR chunks (painter, luminaire
+material, geometry, object) where an omni is ONE.  Seven area lights would be
+28 chunks against seven one-liners.
+
+So adoption is governed by **chunk economy, not preference** — which explains
+every observation: at most one area chain per run, gpt (which writes more
+output per turn) managing three, and the ratio being insensitive to prose
+about physics.
+
+**The fix follows directly and needs no further runs: make an area light cost
+one line.**  This repo already has the pattern — `insert_material_scaffold`
+and `insert_geometry_scaffold` expand a single call into a chunk graph.  An
+area-light scaffold would put the physical light on equal footing with the
+non-physical ones, and only then does the palette's preference get a fair
+test.  Until it exists, the lighting-policy result is measuring typing cost.
+
+### 10.3 Method
+
+Two false conclusions in this arc were produced by repetition-without-
+decomposition, and both were killed by arithmetic on data already collected.
+**Before spending tokens on repeats, decompose the metric: is it a product?
+Is it confounded by composition? Can it see all the ways the work can
+succeed?**
