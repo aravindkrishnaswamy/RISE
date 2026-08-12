@@ -1737,6 +1737,8 @@ namespace RISE
 					boundary.kind[side]!=AdiabaticWallBoundary3D &&
 					boundary.kind[side]!=FuelInletBoundary3D ) return Fail(error,
 					"fire solver 3-D boundary kind is invalid");
+				if( boundary.kind[side]==FuelInletBoundary3D ) return Fail(error,
+					"fire solver 3-D fuel inlet must be selected by the bottom bed mask");
 				const std::size_t expected = OpenBoundaryFaceCount3D(shape,side);
 				if( !boundary.priorInflow[side].empty() &&
 					boundary.priorInflow[side].size() != expected ) {

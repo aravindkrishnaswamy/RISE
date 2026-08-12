@@ -733,7 +733,17 @@ int main()
 		maskedFuelOK=maskedFuelOK && Near(maskedFuelField.side[4][fuelFaceIndex].
 			totalOutwardFlux[component],fuelFlux.totalOutwardFlux[component],2.0e-15);
 	}
-	Check(maskedFuelOK,"V1 full 3-D boundary dispatch applies every fuel species and enthalpy on the bed mask");
+	const std::size_t unmaskedFuelNeighbor=fuelFaceIndex-1;
+	for( std::size_t component=0; component<MethaneConservativeDimension; ++component )
+		maskedFuelOK=maskedFuelOK && maskedFuelField.side[4][unmaskedFuelNeighbor].
+			totalOutwardFlux[component]==0.0;
+	maskedFuelOK=maskedFuelOK && maskedFuelField.side[4][unmaskedFuelNeighbor].
+		nonadvectiveEnergyOutwardFlux==0.0 && std::all_of(maskedFuelField.side[4][
+		unmaskedFuelNeighbor].nonadvectiveMassOutwardFlux.begin(),maskedFuelField.side[4][
+		unmaskedFuelNeighbor].nonadvectiveMassOutwardFlux.end(),
+		[]( const double value ){ return value==0.0; });
+	Check(maskedFuelOK,
+		"V1 bed mask injects every fuel field while an unmasked neighbor remains adiabatic");
 	OpenMACProjection3DResult maskedFuelProjection;
 	const bool maskedFuelProjectionOK=ProjectPressureOpenMACVelocity3D(openShape3D,
 		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
@@ -741,13 +751,25 @@ int main()
 		maskedFuelBoundary,0.01,2.0e-8,maskedFuelProjection,&error);
 	const std::size_t maskedFuelNormalFace=OpenMACFaceIndex3D(openShape3D,2,
 		openShape3D.nx/2,openShape3D.ny/2,0);
+	const std::size_t unmaskedFuelNormalFace=OpenMACFaceIndex3D(openShape3D,2,
+		openShape3D.nx/2-1,openShape3D.ny/2,0);
 	Check(maskedFuelProjectionOK && Near(
 		maskedFuelProjection.momentumKGPerM2S.component[2][maskedFuelNormalFace],
 		openBoundary3D.fuelMassFluxKGPerM2S,2.0e-15) && Near(
 		maskedFuelProjection.faceDensityKGPerM3.component[2][maskedFuelNormalFace]*
 		maskedFuelProjection.velocityMPerS.component[2][maskedFuelNormalFace],
-		openBoundary3D.fuelMassFluxKGPerM2S,2.0e-15),
-		"V1 fuel-bed normal momentum and scalar ledgers use the same prescribed mass flux");
+		openBoundary3D.fuelMassFluxKGPerM2S,2.0e-15) &&
+		maskedFuelProjection.velocityMPerS.component[2][unmaskedFuelNormalFace]==0.0 &&
+		maskedFuelProjection.momentumKGPerM2S.component[2][unmaskedFuelNormalFace]==0.0,
+		"V1 fuel-bed momentum ledger matches scalar mass flux only on masked faces");
+	OpenBoundaryConfig3D lateralFuelBoundary=openBoundary3D;
+	lateralFuelBoundary.kind[0]=FuelInletBoundary3D;
+	OpenMACProjection3DResult rejectedLateralFuel;
+	Check(!ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		lateralFuelBoundary,0.01,2.0e-8,rejectedLateralFuel,&error),
+		"V1 rejects fuel-inlet kinds outside the bottom bed-mask route");
 	OpenMACProjection3DResult tangentialBoundaryOracle=openRest3D;
 	std::fill(tangentialBoundaryOracle.velocityMPerS.component[0].begin(),
 		tangentialBoundaryOracle.velocityMPerS.component[0].end(),0.25);
