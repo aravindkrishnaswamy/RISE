@@ -4605,6 +4605,47 @@ medium in Phase C.
    the same fixture-versus-preset separation §12's optics records use.
    Fuels whose records remain owner-gated (wax's condensable stream, wood)
    stay fail-closed while their gas-phase sides are completed.
+   **Per-fuel constant taxonomy, corrected (r52).** Sourcing methane's
+   operational constants showed the phrase "per-fuel" was doing too much
+   work; the fields divide into three kinds and the record must say which:
+   (a) **measured per-fuel properties** — T_AIT (methane 810 K, Zabetakis
+   Bulletin 627 Table 4; apparatus-dependent, and Robinson & Smith 1984
+   argue experimentally for 873 K, so the record carries the 810–873 K
+   spread) and y_s (methane **0.00**, measured — Köylü/Sivathanu/Faeth
+   IAFSS FSS-3 Table 3 report the flames "emitted no soot"; FDS ships no
+   per-fuel soot yield at all and its 0.01 input value is a modelling
+   convention, not a measurement); (b) **model closure constants with no
+   per-fuel measured meaning** — **T_pilot is not a fuel property**: a gas
+   has no piloted-ignition temperature (piloted ignition of a gas is set by
+   flammability limits and pilot energy), and the ~600 K figure in fire
+   texts is the piloted-ignition *surface* temperature of *solids*. It is
+   retained as a numerical gate whose only structural requirement is
+   T_pilot < T_AIT, and it must be labelled as such rather than sourced.
+   T_ox (~1300 K) is likewise fuel-independent, justified empirically by
+   Kent & Wagner 1984 and Glassman 1988 (burnout quenches near 1300 K from
+   radiative cooling) rather than by Nagle–Strickland-Constable kinetics,
+   whose calibration only begins at 1273 K and which assumes O₂ is the
+   oxidant; (c) **configuration-dependent quantities that are not fuel
+   constants at all** — **χ_r**. Measured methane values span 0.07–0.28
+   across burner size and HRR (NIST 0.10/0.38/1.0 m burners), 0.181
+   turbulent (Markstein), 0.14 for 35 m LNG; FDS states plainly that "there
+   is no single value of radiative fraction for a given fuel." The fuel
+   record therefore carries χ_r as a **declared default with its
+   configuration applicability and measured spread** (methane 0.20, Beyler
+   Table 66.14), and a §3.9 case record **may override it** for its own
+   configuration through the existing override path. Since §3.5's budget
+   β = χ_r·Q̇_tot/Σe·V and the §3.8 integrated-radiative-fraction gate both
+   consume χ_r, a scenario whose configuration differs materially from the
+   default's must override rather than inherit. ρ_soot is **referenced from
+   the optics record, never duplicated** — that density is identity-bearing
+   there (hashed with the κ table), and a second editable copy of a quantity
+   that scales radiance is precisely the drift the pin prevents. Methane's
+   drafted record is
+   [fire_fuel_methane_v1.draft.json](data/fire_fuel_methane_v1.draft.json).
+   Consequence worth stating: with y_s = 0, a predictive methane flame emits
+   almost no visible thermal continuum — correct physics (methane burns
+   blue), which makes methane an excellent *solver* bring-up fuel and a poor
+   *visual* one until §4.4 chem is enabled.
 6. **(thermochemistry)** Freeze the baseline air plus per-fuel
    `gas_thermochemistry` records required by §3.3 and the carbon/condensed
    `aerosol_thermochemistry` record required by §3.4: source/provenance for every

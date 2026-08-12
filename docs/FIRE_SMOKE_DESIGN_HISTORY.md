@@ -1038,3 +1038,37 @@ it was already tried and refuted here.
   completed. Methane is also the item-4 radiance-gate candidate and the
   design's own DNS-resolvable laminar class, so this ordering costs nothing
   downstream.
+
+- **r52 (2026-08-12):** per-fuel constant taxonomy corrected, from the
+  Phase-C agent's increment-3 stop on missing methane operational
+  constants. Sourcing them surfaced two design errors, not just gaps.
+  **(1) T_pilot is not a per-fuel measured property.** A gaseous fuel has
+  no piloted-ignition temperature — piloted ignition of a gas is governed
+  by flammability limits and pilot energy, not a bulk temperature
+  threshold — and the ≈600 K figure the design carried is the
+  piloted-ignition *surface* temperature of *solids* (wood, paper), a
+  different quantity entirely; it is also far below every measured methane
+  AIT (810–873 K). It is retained as a numerical gate constant whose only
+  structural requirement is T_pilot < T_AIT, now labelled as such. FDS's
+  analogue corroborates the classification: its AUTO_IGNITION_TEMPERATURE
+  defaults to a value that disables the gate, and its guide says the value
+  "may need to be lowered for cases where the grid size is greater than
+  10 cm" — a parameter retuned with grid resolution is a closure, not a
+  property. **(2) χ_r is not a fuel constant.** Measured methane values
+  span 0.07–0.28 across burner size and heat-release rate, and FDS states
+  outright that "there is no single value of radiative fraction for a given
+  fuel." Because §3.5's budget and the §3.8 gate both consume it, the fuel
+  record now carries χ_r as a declared default with applicability and
+  spread, overridable per §3.9 case. Also pinned: T_ox (~1300 K) is
+  fuel-independent and justified by empirical burnout quench (Kent & Wagner
+  1984, Glassman 1988) rather than NSC kinetics, whose calibration begins
+  only at 1273 K and assumes O₂ is the oxidant; methane y_s = **0.00**
+  measured (Köylü/Sivathanu/Faeth — "emitted no soot"), with FDS's 0.01
+  explicitly a modelling convention since FDS ships no per-fuel soot yield;
+  T_AIT = 810 K with the 810–873 K spread recorded, apparatus-dependent and
+  pre-ASTM-E659; and ρ_soot referenced from the optics record rather than
+  duplicated, since that density is identity-bearing there. Recorded
+  consequence: with y_s = 0 a predictive methane flame emits almost no
+  visible thermal continuum — correct physics, and it makes methane an
+  excellent solver bring-up fuel but a poor visual one until §4.4 chem is
+  enabled. Record: `docs/data/fire_fuel_methane_v1.draft.json`.
