@@ -234,6 +234,43 @@ the lighting arc already queued.
 
 N=1.  Repeats before any of this is treated as settled.
 
+> ## ⚠ CORRECTION (2026-08-12) — the "renders empty" finding was a MEASUREMENT-HARNESS BUG
+>
+> Every claim in this document that a scene "renders empty", "renders as a
+> flat blue frame", or has "~3% contrast" is **FALSE and withdrawn**.
+>
+> The supervisor's scene-prep step rewrote film dimensions with the regex
+> `^(\s*width\s+)\d+` → `800`.  `box_geometry` ALSO takes `width` / `height`,
+> and the pattern matched only the integer part: **`width 0.8` became
+> `width 800.8`.**  Every box in the scene inflated to ~800×600 world units and
+> swallowed the camera, so the render was the inside of a giant box — a
+> constant frame.  Scenes built purely from `sdf_geometry` (both dragon runs)
+> were untouched, which is exactly why only the mermaid-family scenes appeared
+> to fail, and why the false pattern looked so convincing.
+>
+> The project owner reported both scenes load and render correctly in the GUI;
+> that is what exposed it.  Re-rendered with ONLY an output chunk appended and
+> nothing else altered:
+>
+> | scene | luma stdev | span |
+> |---|---|---|
+> | Fable benchmark (frontier reference) | 29.3 | 116 |
+> | arcs 80+81 mermaid | **40.1** | **176** |
+> | arc-79 mermaid2 | **28.9** | **129** |
+>
+> Both agent scenes match or exceed the frontier benchmark's tonal range.
+>
+> **What survives:** everything measured from scene TEXT or the trajectory —
+> part counts, parts built vs surviving, compose-phase removals, light counts,
+> power ranges, light kinds, tool sequences.  Those never touched the corrupted
+> copy.
+>
+> **What is void:** every conclusion drawn from a rendered frame — "the scene
+> renders empty", "the lighting is drowned", and the causal story that the
+> model destroyed its geometry *because* the render looked empty.  The
+> destruction happened; the reason is now unexplained.
+>
+
 ## 8. SECOND SUBJECT — the undersea mermaid prompt (2026-08-11, N=1 each)
 
 Run on the verbatim prompt behind the held Fable benchmark

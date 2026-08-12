@@ -2091,6 +2091,64 @@ namespace RISE
 		                                                   const std::string& param,
 		                                                   const std::string& value );
 
+		//! ARC 81 FIX-ROUND (2026-08-12, house lighting policy): the refusal
+		//! text for `ambient_light`, shared VERBATIM by every path that can
+		//! create a chunk, so the model reads one message wherever it hits it.
+		//!
+		//! FACTS ONLY, and every clause TRUE of this renderer.  What
+		//! AmbientLight.h's ComputeDirectLighting actually does is add
+		//! `color * power` scaled only by the shading point's own BSDF; the
+		//! descriptor gives it no position and no direction (name / power /
+		//! color are its only parameters); and RayCaster.h's shadow-routing
+		//! doc records that ambient is the one light kind that casts no
+		//! shadow ray.  So "no shadow, no falloff" is a statement about the
+		//! implementation, not a judgement of it.  The message names the
+		//! AREA-LIGHT chain that fills the role and stops -- no "you should",
+		//! no advice.
+		std::string DescribeAmbientLightBan();
+
+		//! ARC 81 FIX-ROUND: does `chunkText` create an `ambient_light` chunk?
+		//! "" when it does not; DescribeAmbientLightBan() when it does, with
+		//! (when non-null) `outName` receiving that chunk's bare `name` so a
+		//! refusal can still carry the identity echo.
+		//!
+		//! UNCONDITIONAL, and deliberately NOT part of the staged-build-protocol
+		//! phase machinery: it is a permanent property of what this surface
+		//! authors, not a sequencing gate.  It therefore does NOT go through
+		//! RefuseForPhase_, does not consume the shared 3-refusal cap, cannot
+		//! trigger the give-up, and is NOT disabled by --agent-build-protocol=off.
+		//!
+		//! EVERY top-level chunk in `chunkText` is scanned, not just the first
+		//! -- the same no-smuggling rule CheckRasterizerAllowlistGateForInsert
+		//! follows, and for the same reason.  An insert is purely ADDITIVE, so
+		//! no head text is needed: an ambient_light chunk in `chunkText` is by
+		//! construction a newly created one.
+		std::string CheckAmbientLightBanForInsert( const std::string& chunkText,
+		                                            std::string* outName = nullptr );
+
+		//! ARC 81 FIX-ROUND: would this PARAM EDIT introduce an `ambient_light`
+		//! chunk through the VALUE-SPLICE mechanism R1c's arm (b) and the
+		//! build-plan gate's patch arm both close for their own kinds?  "" when
+		//! it would not.
+		//!
+		//! DELTA, NOT STATE: head and candidate are compared by `ambient_light`
+		//! COUNT, so a scene that already carries one the USER authored stays
+		//! fully editable -- every param on it patches cleanly, because editing
+		//! it changes no count.  Only a count that GOES UP is a creation.
+		//!
+		//! Two cheap pre-filters bound the cost so this does not put a
+		//! serialize/reparse round trip on every patch for a whole build: the
+		//! value must contain a `}` (closing the current chunk is a NECESSARY
+		//! step of the splice -- chunk syntax has no brace-free form) AND the
+		//! literal text `ambient_light` (the keyword has to appear verbatim in
+		//! the spliced bytes for the parse to produce that chunk).  Neither can
+		//! produce a false negative.
+		std::string CheckAmbientLightBanForPatch( const std::string& headText,
+		                                           const std::string& target,
+		                                           const std::string& kind,
+		                                           const std::string& param,
+		                                           const std::string& value );
+
 		//! G2 fix-round (2026-08-10): would this PARAM EDIT newly introduce a
 		//! chunk whose registry ChunkCategory is Geometry?  Returns that
 		//! chunk's KEYWORD (and, via `outName`, its bare `name` param) -- ""

@@ -1,0 +1,15 @@
+{
+ "//": "Arcs 80+81 combined live run (2026-08-12): same mermaid subject/model as imagine_s2_mermaid2, now with the forward scene inventory + tonal fact on every render, the COMPOSE delete-ban, and light_scene (clean-room lighting fed by the inventory). Neither arc has been measured live. ARC-80 HEADLINE: SDF parts BUILT vs SURVIVING (arc 79 built 82, kept 2). ARC-81 HEADLINE: light count and power range (agents 3-5 lights / ~40x; frontier benchmark 8 / ~1000x) and whether ambient_light / hosek_wilkie_skylight / emissive area lights -- never used in any agent run -- appear at all. Also: final-render tonal spread vs the benchmark stdev 29 / span 116, compose removal refusals and whether the model routes around them via reopen_element, and whether it refines lighting after light_scene or accepts it whole.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s4_arcs8081"
+}

@@ -397,3 +397,46 @@ wrong — stop building on it and go measure a different one.**
   first mermaid run looked like evidence the scene was too hard; it was
   evidence of a quoting bug.  The rendered result of a run whose mechanism
   never engaged says nothing about the subject.
+
+### The measurement-harness bug that corrupted three arcs (2026-08-12)
+
+Three arcs' rendered-frame conclusions were wrong for one reason: the
+supervisor's scene-prep step resized the film with
+
+```
+re.sub(r'(?m)^(\s*width\s+)\d+', r'\g<1>800', scene)
+```
+
+`box_geometry` also takes `width` / `height`, and `\d+` matched only the
+integer part, so **`width 0.8` became `width 800.8`**.  Every box inflated to
+~800×600 world units and swallowed the camera.  The render was the inside of
+a giant box: a mathematically constant frame.
+
+- **It looked like a real pattern.**  Scenes built purely from `sdf_geometry`
+  (both dragon runs) have no `width` param and rendered fine, so the failure
+  landed exclusively on the mermaid-family scenes.  "Two mermaid scenes flat,
+  two dragon scenes fine" reads as a genuine scene-class signal.  It was an
+  artifact of which chunk kinds each scene happened to use.
+- **The false conclusion survived a long forensic hunt** — parse errors,
+  unresolved and forward references, lights, materials, media, environment,
+  camera aim, geometry scale, raw-vs-denoised.  Every hypothesis was about
+  the SCENE, because the possibility that the instrument was lying was never
+  on the list.  The user reporting "both of those scenes render fine in the
+  GUI" is what broke it open.
+- **The rule this earns: when something misbehaves only in YOUR pipeline and
+  not in the user's, suspect the pipeline first.**  A discrepancy between two
+  observers of the same artifact is evidence about the observers.
+- **The narrower rule: a regex written for one chunk's parameter will match
+  another chunk's parameter of the same name.**  Scene-prep edits must be
+  scoped to the chunk (parse, edit the film chunk, re-serialize) or not made
+  at all.  Appending an output chunk and touching NOTHING else is the safe
+  form, and is what the corrected renders used.
+- **What survived, and why:** every number taken from scene TEXT or the
+  trajectory — parts built, parts surviving, removals, light counts, power
+  ranges, kinds, tool sequences — was never routed through the corrupted
+  copy.  Arc 80's inventory probe also ran on an unmodified copy, which is
+  why it correctly reported 17 of 19 objects covering pixels while the beauty
+  render next to it showed nothing.  **That contradiction was visible in the
+  evidence and was rationalized instead of investigated** — the inventory and
+  the render disagreed, and the conclusion drawn was "the lighting must be
+  drowned" rather than "one of these two is lying".
