@@ -325,3 +325,38 @@ steering them:
   everything that worked was designed by the human after the harness's
   measurements falsified the supervisor's mechanisms.  The measurements
   were the contribution; the ideas mostly weren't.
+
+---
+
+## Postscript: the gemini-3.7-flash run (2026-08-13, owner's live GUI session)
+
+Hours after the journal above was written, Google shipped 3.7-flash, the
+default was flipped, and the owner ran the standing underwater prompt in the
+GUI.  Census of trajectory `20260813T224541Z-a09fcd8e`, with the caveat
+stated first: **two variables changed at once** (new model AND the complete
+harness stack live together for the first time), so credit cannot be split —
+but the per-element figure (26 vs 3.6-flash's stable 22) suggests some of
+the lift is the model's.
+
+| | 2 weeks ago | this run | frontier benchmark |
+|---|---|---|---|
+| SDF parts | 1–2 per figure | **157 built, 157 kept** | 131 |
+| objects | 3–5 | **47** (13 + 34 repeats) | 47 |
+| reuse ratio | ~0 | **72%** (7 geometries repeated) | 81% |
+| physical light sources | 0 ever | **4 of 4 area lights** | 0 of 8 (spots) |
+| destruction in compose | catastrophic (82→2 once) | **zero removals** | — |
+| gate fights | — | zero toll refusals, zero give-ups | — |
+
+The lighting line deserves its asterisk spelled out: the agent's scene is lit
+*entirely* by emitting surfaces — sunlight shaft, surface daylight, sea glow,
+caustic patches, all objects wearing emissive materials — where the
+hand-authored frontier benchmark itself uses eight zero-area spots.  On the
+owner's physics policy the agent run is now more principled than the
+reference it was chasing.  The toll never fired because there was nothing to
+toll.
+
+The owner's verdict, verbatim: *"This result is not bad at all, this is a
+big improvement from where we started 2 weeks ago."*  N=1, as always — but
+every mechanism in the stack fired exactly once, nothing was refused,
+nothing was destroyed, and the numbers meet or exceed the reference on
+three of four axes.  A reasonable place to end the chapter.
