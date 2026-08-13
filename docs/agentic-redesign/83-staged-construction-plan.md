@@ -278,3 +278,39 @@ one-chunk affordance in the scene language itself.**
 §7.2 moves the number; a 7× spend that produces the same lighting is a
 regression, and slice 1 alone currently IS that.  This must be re-measured
 before the remaining slices assume the pattern is sound.
+
+## 8. SLICE 1 REDESIGN — source-first lighting (owner design, 2026-08-12)
+
+The owner replaced both my candidate fixes with a better frame: *"ask the
+model to think about the most physically correct lighting for the scenario
+and then build that in one go — for a lamp on a desk a light bulb that
+glows, for an outdoor scene the hosek sky, for an interior a series of
+rectangles emulating ceiling lights."*
+
+**Why this is the right diagnosis: the question asked selects the form of
+the answer.**  "What lighting jobs does this scene need?" is a cinematography
+question whose native vocabulary is key/fill/rim — words that REFER to studio
+instruments — which is why 11 of 11 intents produced zero-area lights even
+with kind-naming forbidden and the palette in view.  "What in this world
+physically emits light?" has THINGS as answers — a bulb, a window, the sky,
+ceiling panels, a glowing creature — and things become emissive objects.
+The physics falls out of the vocabulary with no preference language anywhere.
+
+Structure: enumeration completion (sources that physically exist, one per
+line, budget 6) then ONE build completion for all of them.  The per-intent
+loop dies: its justification (room in the answer) was falsified — gpt wrote
+three full chains in one answer — and cost returns from 7 completions to ~2.
+
+Ledger of the three lighting designs, kept honest:
+
+| design | completions | area lights | verdict |
+|---|---|---|---|
+| single call, category unit (arc 81) | 1 | 1/0/0/0/2 in 5 runs | thin |
+| per-intent loop (slice 1 v1) | 7 | 0 in 11 intents, 2 runs | WORSE, and binds the builder to the planner's kind |
+| source-first (this) | ~2 | to measure | — |
+
+Falsifier: if source enumeration on the undersea scene does not name mostly
+THINGS (surface light, glowing creatures) — or names things and the build
+still authors only zero-area kinds — then vocabulary was not the lever
+either, and the language-level one-chunk physical light (§7.2's exit) is
+next with no further prompt work.

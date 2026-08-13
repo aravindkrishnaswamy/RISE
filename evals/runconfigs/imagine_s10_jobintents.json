@@ -1,0 +1,15 @@
+{
+ "//": "Arc-83 slice-1 fix-round re-run (2026-08-12): planner now describes JOBS (kind-naming forbidden) and is told the authoring step chooses among emitting surfaces / sun-and-sky / zero-area idealizations. Watch: do intents stop naming instruments; does the per-intent builder, now actually free, pick any area lights; light count should stay ~6. N=1 read honestly: pre-slice zero was MODAL (1/0/0/0/2), so only a NONZERO area count here is informative; another zero stays ambiguous and is recorded as such.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s10_jobintents"
+}
