@@ -126,7 +126,9 @@ Lambertian BRDF's `1/π` factor cancels with it: a fully-lit Lambertian
 white surface returns `color = 1`.
 
 An emissive material has no `power`; its `scale` multiplies the
-`exitance` painter's colour instead (§3.5).
+`exitance` painter's colour instead (§3.5).  `rect_light` has no `power`
+either — it takes `exitance`, which is that same per-unit-area quantity,
+and the parser rejects a `power` line on it.
 
 ---
 
@@ -139,9 +141,52 @@ surface** is the one place it is enforced in code — see the end of this
 section.
 
 **Most scenes should be lit by AREA LIGHTS: an object wearing a
-luminaire material, in most cases a rectangle.**  There is no
-`area_light` chunk.  An area light is four chunks — the canonical chain,
-as used by
+luminaire material, in most cases a rectangle.**
+
+### The rectangle case: `rect_light` (one chunk)
+
+Because a rectangular panel is the common case, it has a chunk of its
+own (2026-08-12):
+
+```text
+rect_light
+{
+	name		window_light
+	center		0 4 0
+	size		2 1
+	facing		0 -1 0
+	color		1.0 0.95 0.85
+	exitance	6000
+}
+```
+
+- `center` is the panel's world-space centre; `size` is `width height`
+  in scene units; `facing` is **the direction the panel emits toward**
+  (a ceiling panel lighting the floor is `0 -1 0`).  It need not be unit
+  length, but a zero vector fails the load.
+- The panel emits toward `facing` **only** — its back face is not hit at
+  all.  `facing` becomes the quad's geometric normal exactly.
+- `exitance` is emitted radiance **per unit area** (it is the `scale` of
+  the luminaire material below), so the same number on a panel twice the
+  size delivers twice the light.  It must be > 0.  **There is no `power`
+  parameter** — `power` on the zero-area lights is a different quantity,
+  and writing one here fails the load rather than being ignored.
+- `color` defaults to `1 1 1`, linear Rec.709.
+
+`rect_light` is **parse-time sugar**: the parser expands it into exactly
+the four chunks below, so the renderer treats it as an ordinary emitting
+object.  Its `name` names the OBJECT; the helpers it also creates are
+`<name>__pnt` (painter), `<name>__mat` (luminaire material) and
+`<name>__geo` (quad).  A collision on any of the four fails the load
+with the ordinary duplicate-name error.  The scene file keeps the
+compact text — save serializes the CST document, so a `rect_light` saves
+back as a `rect_light`.
+
+### Any other shape: the four-chunk chain
+
+There is no `area_light` chunk, and `rect_light` is a *rectangle*.  An
+emitter of any other shape — a sphere lamp, a mesh fixture, a curved
+panel — is written as the chain `rect_light` expands into, as used by
 [scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene](../scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene):
 
 ```text
@@ -179,6 +224,13 @@ standard_object
 - Any geometry works; a mesh wearing the material emits from every
   triangle.  `clippedplane_geometry` is a quad given by four corner
   points and is the usual choice for a window or a panel.
+- **Sidedness is the corner winding plus `doublesided`.**  The quad's
+  normal is `normalize(Cross(ptb - pta, ptd - pta))`, and a Lambertian
+  luminaire emits only where `Dot(out, N) > 0`.  With `doublesided TRUE`
+  (the default) a back-face hit flips the normal toward the ray, so the
+  quad emits from BOTH faces; with `doublesided FALSE` the back face is
+  not hit at all and only the winding's face emits.  `rect_light` sets
+  `FALSE` and derives the winding from `facing`.
 - **`scale` sets exitance — brightness per unit area** — so the same
   `scale` on a panel twice the size delivers twice the light.  The
   number is therefore scene-dependent, and the values in `scenes/` span
@@ -225,7 +277,8 @@ but do not author a new one.
 them, and the `propose_patch` value-splice path) **refuses** to create
 an `ambient_light` chunk, unconditionally — in every build phase and
 with `--agent-build-protocol=off` — and its refusal states the physics
-above and names this four-chunk chain.  Everything else in this section
+above and names `rect_light` first, then this four-chunk chain as the
+general form.  Everything else in this section
 is convention, not enforcement: the CLI, the GUI and the scene loader
 will all happily author and load any light kind.
 

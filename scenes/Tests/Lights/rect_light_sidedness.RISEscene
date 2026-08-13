@@ -1,0 +1,149 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   File:           rect_light_sidedness.RISEscene
+#   Description:    The `rect_light` chunk's sidedness contract, as a picture.
+#
+#                   `rect_light` is a rectangular AREA light written as ONE chunk; the parser expands it
+#                   into the four-chunk chain of docs/SCENE_CONVENTIONS.md §3.5 (a uniformcolor_painter,
+#                   a lambertian_luminaire_material, a clippedplane_geometry and a standard_object).
+#
+#                   THE CONTRACT: the panel emits toward `facing` and nowhere else.  Two panels sit at the
+#                   same height over the same grey floor:
+#
+#                     panel_down (LEFT, x = -2.5)   facing  0 -1 0   -> emits at the floor; a soft pool of
+#                                                                       light with a penumbra-edged shadow
+#                                                                       under the sphere below it.
+#                     panel_up   (RIGHT, x = +2.5)  facing  0  1 0   -> emits at the ceiling that is not
+#                                                                       there.  Its underside is BLACK and
+#                                                                       the floor below it is unlit.
+#
+#                   So the render is asymmetric: bright left, dark right.  A symmetric render means the
+#                   corner winding or the one-sided-emission gate regressed.  RectLightChunkTest asserts
+#                   the same thing numerically (facing-down mean vs facing-up mean); this scene is the
+#                   eyeball version, and the one place the chunk appears in the tracked corpus.
+#
+#                   Note both panels ARE visible in frame -- an area light is an ordinary object, so the
+#                   camera sees its surface.  That is the point, not an authoring slip.
+#############################################################################################################
+
+film
+{
+	width			320
+	height			180
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+pinhole_camera
+{
+	location		0 2.6 9.0
+	lookat			0 1.0 0
+	up				0 1 0
+	fov				52.0
+}
+
+# ---- The floor the two pools of light land on.
+uniformcolor_painter
+{
+	name			pnt_floor
+	color			0.72 0.72 0.72
+}
+
+lambertian_material
+{
+	name			mat_floor
+	reflectance		pnt_floor
+}
+
+clippedplane_geometry
+{
+	name			geo_floor
+	pta				-8.0 0.0 -8.0
+	ptb				 8.0 0.0 -8.0
+	ptc				 8.0 0.0  8.0
+	ptd				-8.0 0.0  8.0
+}
+
+standard_object
+{
+	name			floor
+	geometry		geo_floor
+	material		mat_floor
+}
+
+# ---- A sphere under each panel, so the shadow (or its absence) is legible.
+sphere_geometry
+{
+	name			geo_ball
+	radius			0.55
+}
+
+uniformcolor_painter
+{
+	name			pnt_ball
+	color			0.80 0.62 0.45
+}
+
+lambertian_material
+{
+	name			mat_ball
+	reflectance		pnt_ball
+}
+
+standard_object
+{
+	name			ball_left
+	geometry		geo_ball
+	material		mat_ball
+	position		-2.5 0.55 0
+}
+
+standard_object
+{
+	name			ball_right
+	geometry		geo_ball
+	material		mat_ball
+	position		 2.5 0.55 0
+}
+
+# ---- LEFT: emits DOWN.  The floor under it is lit.
+rect_light
+{
+	name			panel_down
+	center			-2.5 3.2 0
+	size			2.0 1.2
+	facing			0 -1 0
+	color			1.0 0.95 0.85
+	exitance		60
+}
+
+# ---- RIGHT: identical but emits UP.  Nothing below it receives light, and
+#      the face the camera sees is the dark back of the panel.
+rect_light
+{
+	name			panel_up
+	center			 2.5 3.2 0
+	size			2.0 1.2
+	facing			0 1 0
+	color			1.0 0.95 0.85
+	exitance		60
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			128
+	pixel_filter		box
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/rect_light_sidedness
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}

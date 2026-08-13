@@ -11671,6 +11671,45 @@ static void TestLightSceneHappyPath()
 		       "example -- arc 79 sec 8.1 records an entire session's mechanism lost to a syntax "
 		       "slip that prose did not prevent and a literal example did, and A81h proves this "
 		       "particular one really parses" );
+		// ---- ARC 83 SLICE 3 (2026-08-12): the one-chunk area light.  Three
+		// prompt-side mechanism families each produced ZERO area lights with
+		// the chain as the sole worked example (83 sec 9), so the fix moved to
+		// the scene language: `rect_light` IS a lighting-category chunk and IS
+		// an area light.  It leads the entry and it is what is copyable first;
+		// the chain stays because a rect_light is a RECTANGLE and a sphere
+		// lamp, a mesh fixture or a curved panel still needs the general form.
+		Check( p.find( "rect_light\n{\n" ) != std::string::npos &&
+		       p.find( "\tcenter\t\t0 4 0\n" ) != std::string::npos &&
+		       p.find( "\tsize\t\t2 1\n" ) != std::string::npos &&
+		       p.find( "\tfacing\t\t0 -1 0\n" ) != std::string::npos &&
+		       p.find( "\texitance\t6000\n" ) != std::string::npos,
+		       "A83c MONEY ASSERTION: the area entry carries a LITERAL, parseable one-chunk "
+		       "rect_light example -- the scene-language answer to 83 sec 9, where the four-chunk "
+		       "chain as sole example produced zero area lights across three mechanism families" );
+		Check( p.find( "rect_light\n{\n" ) < p.find( "uniformcolor_painter\n{\n" ),
+		       "A83c MONEY ASSERTION: and the one-chunk form comes FIRST, ahead of the chain -- "
+		       "what is copyable first is the policy, the same lever the palette's ORDER is" );
+		Check( p.find( "`facing` (the direction it emits toward)" ) != std::string::npos &&
+		       p.find( "emits toward `facing` and nowhere else" ) != std::string::npos,
+		       "A83c the entry states the SIDEDNESS fact -- a rect_light emits one way, toward "
+		       "`facing`, which is the whole reason the parameter is not called `normal`" );
+		// EXITANCE ONLY (project owner, 2026-08-12): rect_light has no `power`
+		// parameter and no alias for one, so the schema the palette prints for
+		// it must not offer one -- a prompt that did would teach a line the
+		// parser rejects.  The schema is the REGISTRY'S own text, so this is a
+		// real check on the descriptor, not on hand-written prose.
+		{
+			const std::size_t at = p.find( "1. AREA / MESH LIGHT" );
+			const std::size_t to = p.find( "2. hosek_wilkie_skylight" );
+			const std::string areaEntry = ( at != std::string::npos && to != std::string::npos && to > at )
+				? p.substr( at, to - at ) : std::string();
+			Check( !areaEntry.empty() && areaEntry.find( "exitance" ) != std::string::npos,
+			       "A83c the area entry's schema names `exitance`" );
+			Check( !areaEntry.empty() && areaEntry.find( "power" ) == std::string::npos,
+			       "A83c MONEY ASSERTION: and nowhere in the area entry does `power` appear -- "
+			       "rect_light is exitance-only, and a prompt offering a `power` line would teach "
+			       "syntax the parser rejects" );
+		}
 		Check( p.find( "omni_light\n{" ) == std::string::npos &&
 		       p.find( "spot_light\n{" ) == std::string::npos &&
 		       p.find( "directional_light\n{" ) == std::string::npos,
@@ -12230,6 +12269,16 @@ static void CheckAmbientBanMessage( const std::string& m, const char* where )
 	       std::string( "A81g/" ) + where + " MONEY ASSERTION: and names the four-chunk chain that "
 	       "fills the role -- a refusal that leaves a model with nothing to write instead is a "
 	       "refusal it will spend turns arguing with" );
+	// ARC 83 SLICE 3: and it names the ONE-CHUNK form FIRST.  A refusal that
+	// offers only the four-chunk chain is offering the form 83 sec 9 measured
+	// nobody reaching for; `rect_light` is one chunk and is what the model can
+	// write in the same breath as the refused line.
+	Check( m.find( "`rect_light`" ) != std::string::npos,
+	       std::string( "A81g/" ) + where + " MONEY ASSERTION: and names `rect_light`, the "
+	       "one-chunk area light, as the thing to write instead" );
+	Check( m.find( "`rect_light`" ) < m.find( "lambertian_luminaire_material" ),
+	       std::string( "A81g/" ) + where + " with the one-chunk form named BEFORE the chain -- "
+	       "the chain is the general case, not the first thing to reach for" );
 	// FACTS ONLY: it says what the renderer does and what to write instead.
 	// It does not moralize, and it never says "you should".
 	static const char* const kBannedMoralizing[] = {
@@ -12426,21 +12475,29 @@ static void TestAmbientLightIsAlwaysRefused()
 	}
 }
 
-//! A81h: THE EXAMPLE PARSES.  The area light is the palette's one worked
-//! example, and an example that does not parse is worse than none -- it
-//! spends the model's repair retry on the harness's own typo.  So the
-//! example is EXTRACTED FROM THE SHIPPED PROMPT (not retyped here, which
-//! would only prove the copy parses) and pushed through light_scene's real
-//! validated insertion.  Item 7 of the arc-83-slice-2 test list: this test
-//! still passes, now lifted from the BUILD prompt (prompts[1]) rather than
-//! the single prompt arc 81 sent.
+//! A81h: THE EXAMPLES PARSE.  The area light is the palette's one entry
+//! with worked examples, and an example that does not parse is worse than
+//! none -- it spends the model's repair retry on the harness's own typo.
+//! So each example is EXTRACTED FROM THE SHIPPED PROMPT (not retyped here,
+//! which would only prove the copy parses) and pushed through light_scene's
+//! real validated insertion.  Item 7 of the arc-83-slice-2 test list, now
+//! lifted from the BUILD prompt (prompts[1]) rather than the single prompt
+//! arc 81 sent.
+//!
+//! ARC 83 SLICE 3 (2026-08-12): the entry carries TWO blocks now -- the
+//! one-chunk `rect_light` FIRST, then the general four-chunk chain any
+//! non-rectangular emitter still needs -- so BOTH are lifted and BOTH are
+//! pushed through.  The one-chunk form is the whole point of the slice (83
+//! sec 9: three prompt-side mechanisms produced zero area lights with the
+//! chain as the sole example), and if it did not parse, the slice would be
+//! shipping a worse example than the one it replaced.
 static void TestPaletteAreaLightExampleParses()
 {
-	std::printf( "A81h: the palette's worked area-light example really parses...\n" );
+	std::printf( "A81h: the palette's worked area-light examples really parse...\n" );
 	const std::string tmp = TempPath( "agentcrud_a81h.RISEscene" );
 
-	// ---- Lift the example out of the prompt this surface actually sends.
-	std::string example;
+	// ---- Lift both example blocks out of the prompt this surface sends.
+	std::string oneChunk, chain;
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A81h/compose fixture loads" );
@@ -12451,56 +12508,201 @@ static void TestPaletteAreaLightExampleParses()
 		sess->SetTextCompleter( MakeLightingCompleter( &calls, &prompts ) );
 		sess->LightScene();
 		// ARC 83 SLICE 2: prompts[0] is the ENUMERATION, which deliberately
-		// carries no palette; the example lives in the BUILD prompt.
+		// carries no palette; the examples live in the BUILD prompt.
 		Check( prompts.size() == 2, "A81h the enumeration prompt and the build prompt were composed" );
 		if( prompts.size() >= 2 ) {
 			const std::string& p = prompts[1];
+			// Block 1 runs from "Example:\n" to the blank line that separates
+			// it from the note introducing block 2.
 			const std::size_t a = p.find( "Example:\n" );
 			const std::size_t b = ( a == std::string::npos )
-				? std::string::npos : p.find( "\n\n2. ", a );
+				? std::string::npos : p.find( "\n\n", a );
 			Check( a != std::string::npos && b != std::string::npos,
-			       "A81h the area light's example block is locatable in the prompt" );
+			       "A81h the one-chunk example block is locatable in the prompt" );
 			if( a != std::string::npos && b != std::string::npos )
-				example = p.substr( a + 9, b - ( a + 9 ) );
+				oneChunk = p.substr( a + 9, b - ( a + 9 ) );
+			// Block 2 runs from "Also valid:\n" to the start of palette entry 2.
+			const std::size_t c = p.find( "Also valid:\n" );
+			const std::size_t d = ( c == std::string::npos )
+				? std::string::npos : p.find( "\n\n2. ", c );
+			Check( c != std::string::npos && d != std::string::npos,
+			       "A81h the general four-chunk example block is locatable in the prompt" );
+			if( c != std::string::npos && d != std::string::npos )
+				chain = p.substr( c + 12, d - ( c + 12 ) );
 		}
 		pJob->release();
 	}
-	Check( example.compare( 0, 21, "uniformcolor_painter\n" ) == 0,
-	       "A81h and the block lifted is the FIRST palette entry's example, the area light" );
-	if( example.empty() ) return;
+	Check( oneChunk.compare( 0, 11, "rect_light\n" ) == 0,
+	       "A81h MONEY ASSERTION: the FIRST block the entry offers is the one-chunk rect_light -- "
+	       "what is copyable first IS the policy (83 sec 9)" );
+	Check( chain.compare( 0, 21, "uniformcolor_painter\n" ) == 0,
+	       "A81h and the second block is the general chain, starting at its painter" );
+	if( oneChunk.empty() || chain.empty() ) return;
 
-	// ---- Push it through the real insertion path, verbatim.
+	// ---- Push the ONE-CHUNK form through the real insertion path, verbatim.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A81h/insert fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 		int calls = 0;
-		sess->SetTextCompleter( MakeFakeCompleter( { kOneSourceEnumeration, example }, &calls ) );
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneSourceEnumeration, oneChunk }, &calls ) );
 		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 
-		Check( r.ok && r.chunksExtracted == 4,
-		       "A81h the example is four chunks and all four were extracted" );
+		Check( r.ok && r.chunksExtracted == 1,
+		       "A81h the one-chunk example is ONE chunk and it was extracted" );
 		Check( calls == 2,
-		       "A81h MONEY ASSERTION: TWO completions -- the enumeration and the ONE build that "
-		       "authors the whole four-chunk area chain in one answer" );
-		Check( r.landed.size() == 4 && r.rejected.empty(),
-		       "A81h MONEY ASSERTION: every chunk of the shipped example LANDS through the real "
-		       "validated insertion -- painter, luminaire material, quad and object. A worked "
-		       "example that does not parse is worse than no example at all" );
+		       "A81h MONEY ASSERTION: TWO completions -- the enumeration and the ONE build" );
+		Check( r.landed.size() == 1 && r.rejected.empty(),
+		       "A81h MONEY ASSERTION: the shipped rect_light example LANDS through the real "
+		       "validated insertion. A worked example that does not parse is worse than none" );
 		Check( !r.retryRan,
 		       "A81h with no repair retry -- nothing was rejected to repair" );
 		Check( r.areaLightsBuilt == 1,
-		       "A81h and the classification counts the example as ONE area light, not four" );
+		       "A81h MONEY ASSERTION: and the classification counts a landed rect_light as ONE "
+		       "AREA light -- reporting it as `a light chunk of another kind` would be a false "
+		       "clause in the exact number this arc measures" );
+		Check( r.zeroAreaLightsBuilt == 0 && r.otherLightsBuilt == 0,
+		       "A81h and it is counted nowhere else" );
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "rect_light" ) != std::string::npos &&
+		       doc.find( "window_light" ) != std::string::npos,
+		       "A81h and the COMPACT form is what the document holds -- the expansion happens at "
+		       "derive, so the text stays one chunk" );
+		// (No "the chain is absent" check here: the fixture scene already
+		// carries its own emissive quad, so the keyword is legitimately
+		// present.  That the EXPANSION never reaches the document is asserted
+		// where it belongs -- RectLightChunkTest's round-trip, which serializes
+		// the Job's retained CST Document, the same thing save writes.)
+		Check( r.soloableLightCount >= 2,
+		       "A81h the rect_light's emissive object is soloable afterwards -- it is a real light "
+		       "source, which is the claim the palette makes about it" );
+		pJob->release();
+	}
+
+	// ---- And the GENERAL form, which any non-rectangular emitter needs.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A81h/insert-chain fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		int calls = 0;
+		sess->SetTextCompleter( MakeFakeCompleter( { kOneSourceEnumeration, chain }, &calls ) );
+		const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+
+		Check( r.ok && r.chunksExtracted == 4,
+		       "A81h the general example is four chunks and all four were extracted" );
+		Check( r.landed.size() == 4 && r.rejected.empty(),
+		       "A81h MONEY ASSERTION: every chunk of the shipped chain LANDS through the real "
+		       "validated insertion -- painter, luminaire material, quad and object" );
+		Check( !r.retryRan, "A81h/chain with no repair retry" );
+		Check( r.areaLightsBuilt == 1,
+		       "A81h and the classification counts the chain as ONE area light, not four" );
 		const std::string doc = sess->ReadDocument();
 		Check( doc.find( "pnt_window" )  != std::string::npos &&
 		       doc.find( "window_mat" )  != std::string::npos &&
 		       doc.find( "window_geo" )  != std::string::npos &&
 		       doc.find( "window_obj" )  != std::string::npos,
 		       "A81h and all four are really in the document by name" );
-		Check( r.soloableLightCount >= 2,
-		       "A81h the example's emissive object is soloable afterwards -- it is a real light "
-		       "source, which is the claim the palette makes about it" );
+		pJob->release();
+	}
+}
+
+//! A83e: `rect_light` REACHES THE DOCUMENT BY HAND, through the ordinary
+//! insert verbs -- arc 83 slice 3.  A81h proves the palette's own example
+//! lands through light_scene; this proves the chunk is a first-class member
+//! of the insertion surface, which is where a model refining a scene after
+//! the build will actually reach for it.  It also pins the two properties
+//! that make it a LIGHT rather than just another object: insert_chunks
+//! reports its `kind` as `rect_light`, and the compose-phase first-light
+//! refusal fires on it exactly as it does on omni_light (the refusal is
+//! category-classified from the registry, so an area light that slipped
+//! past it would be a hole in the sequencing rule).
+static void TestRectLightThroughInsertVerbs()
+{
+	std::printf( "A83e: rect_light inserts by hand and is classified as a light...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83e.RISEscene" );
+
+	const std::string kRect =
+		"rect_light\n{\n"
+		"\tname\t\thand_panel\n"
+		"\tcenter\t\t0 4 0\n"
+		"\tsize\t\t2 1\n"
+		"\tfacing\t\t0 -1 0\n"
+		"\tcolor\t\t1.0 0.95 0.85\n"
+		"\texitance\t120\n"
+		"}";
+
+	// (0) THE REGISTRY PIN, the same shape A81g's: rect_light must stay a
+	//     LIGHT-category chunk, because every classifier in this surface
+	//     (the phase refusal, light_scene's admissibility rule, the editor
+	//     tree) reads the category rather than the keyword.
+	{
+		const ChunkDescriptor* d = DescriptorForKeyword( String( "rect_light" ) );
+		Check( d != nullptr && d->category == ChunkCategory::Light,
+		       "A83e/registry `rect_light` is a registered Light chunk" );
+		bool hasPower = false, hasExitance = false, hasFacing = false;
+		if( d ) for( const ParameterDescriptor& p : d->parameters ) {
+			if( p.name == "power" )    hasPower = true;
+			if( p.name == "exitance" ) hasExitance = true;
+			if( p.name == "facing" )   hasFacing = true;
+		}
+		Check( hasExitance && hasFacing,
+		       "A83e/registry its descriptor carries `exitance` and `facing`" );
+		Check( !hasPower,
+		       "A83e/registry MONEY ASSERTION: and carries NO `power` -- exitance only (project "
+		       "owner, 2026-08-12); a descriptor entry is the only thing that could make the "
+		       "surfaces' `power` prose true, and there isn't one" );
+	}
+
+	// (1) insert_chunks, protocol OFF -- the plain authoring path.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83e/insert fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+
+		const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( { kRect } );
+		Check( rs.size() == 1 && rs[0].applied,
+		       "A83e MONEY ASSERTION: insert_chunks ACCEPTS a rect_light chunk and it lands" );
+		if( rs.size() == 1 ) {
+			Check( rs[0].kind == "rect_light" && rs[0].name == "hand_panel",
+			       "A83e with the identity echo, naming the chunk keyword and its name" );
+		}
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "rect_light" ) != std::string::npos &&
+		       doc.find( "hand_panel" ) != std::string::npos,
+		       "A83e and the COMPACT text is what the document holds" );
+		// The EXPANSION really happened in the live Job: all four entities are
+		// in their managers under the documented derived names, so the chunk
+		// produced a real emitting object rather than a document entry.
+		Check( pJob->GetObjects()    && pJob->GetObjects()->GetItem( "hand_panel" ) != 0,
+		       "A83e MONEY ASSERTION: and the live Job holds the OBJECT `hand_panel` -- the "
+		       "insert derived a real emitting surface, not just a line of text" );
+		Check( pJob->GetPainters()   && pJob->GetPainters()->GetItem( "hand_panel__pnt" ) != 0 &&
+		       pJob->GetMaterials()  && pJob->GetMaterials()->GetItem( "hand_panel__mat" ) != 0 &&
+		       pJob->GetGeometries() && pJob->GetGeometries()->GetItem( "hand_panel__geo" ) != 0,
+		       "A83e and the three derived helpers under the names the descriptor documents "
+		       "(`__pnt`, `__mat`, `__geo`), so a collision on any of them is diagnosable" );
+		pJob->release();
+	}
+
+	// (2) COMPOSE phase: the first-light refusal fires on it, same as on any
+	//     other light chunk.  A hole here would let an area light bypass the
+	//     sequencing rule precisely because it is the kind the rule wants.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83e/compose fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		sess->SetTextCompleter( MakeLightingCompleter() );
+		const Agent::AgentChunkResult r = sess->InsertChunk( kRect );
+		Check( !r.applied && r.message.find( "light_scene" ) != std::string::npos,
+		       "A83e MONEY ASSERTION: in COMPOSE a hand-authored rect_light is refused and named "
+		       "to light_scene, exactly as omni_light is -- the refusal classifies by registry "
+		       "CATEGORY, so the new kind is covered with no edit to the gate" );
 		pJob->release();
 	}
 }
@@ -13650,6 +13852,9 @@ int main()
 	TestLightSceneWireShape();
 	TestAmbientLightIsAlwaysRefused();
 	TestPaletteAreaLightExampleParses();
+	// Arc 83 slice 3 (2026-08-12): the one-chunk area light in the scene
+	// language, reached through the ordinary insert verbs.
+	TestRectLightThroughInsertVerbs();
 	// Arc 83 slice 2 (2026-08-12): the owner's redesign -- enumerate the
 	// light sources, then build them all in one go.
 	TestLightSceneSourceEnumerationBudget();

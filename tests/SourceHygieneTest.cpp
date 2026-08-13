@@ -1530,6 +1530,25 @@ int main()
 						  "does not state how AREA lighting is spelled -- there is no `area_light` "
 						  "chunk in this language, so a surface that omits the "
 						  "object-wearing-an-emissive-material form makes area lights undiscoverable" },
+						// ---- ARC 83 SLICE 3 (2026-08-12): the SCENE-LANGUAGE
+						// pin.  docs/agentic-redesign/83-staged-construction-
+						// plan.md sec 9 pre-committed that if the prompt-side
+						// mechanisms failed the fix would move to the scene
+						// language, and all three failed: palette order + sole
+						// worked example, one completion per light, and
+						// source-first enumeration each produced ZERO area
+						// lights.  `rect_light` is the answer -- a
+						// lighting-category chunk that IS an area light, which
+						// the parser expands into the same four-chunk chain.  A
+						// surface that still describes area lighting ONLY as
+						// that chain describes the world as it was before this
+						// slice, which is the false-clause class this test
+						// family exists to stop.  The pin is the FACT that the
+						// one-chunk form exists, not advice to use it.
+						{ "A rectangular area light is ONE chunk, rect_light",
+						  "does not name rect_light -- a rectangular area light is ONE chunk now, and "
+						  "a surface that still presents area lighting only as a four-chunk chain "
+						  "hides the one form a single reach can actually land on" },
 						{ "THERE IS NO NAME PREFIX",
 						  "does not state that light_scene has no prefix rule -- its sibling "
 						  "build_element enforces one, and a model that assumes the same here will "

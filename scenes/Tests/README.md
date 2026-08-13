@@ -27,7 +27,9 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Importers/`: glTF import regression scenes (Khronos sample assets, alpha modes, embedded textures, light-control)
 - `LightBVH/`: many-light regression scenes comparing alias-table sampling vs. light BVH (corridor 20/100 lights, spotlights stage, BDPT mixed-light Cornell)
 - `Lighting/`: physically based unit and environment-map lighting checks
-- `Lights/`: environment, mesh-emitter, and analytic-sky comparisons
+- `Lights/`: environment, mesh-emitter, and analytic-sky comparisons, plus
+  `rect_light_sidedness` (the one-chunk area light emits toward `facing`
+  only — two identical panels, one facing down and one up, over one floor)
 - `MLT/`: Metropolis light transport baselines and comparison renders
 - `Materials/`: isolated material demonstrations and regression scenes;
   `Materials/Enamel/` contains the silver, swatch, dome, SDF, and dimple

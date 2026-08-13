@@ -350,4 +350,96 @@ lighting-category chunk, so the model's reach lands on it; it IS an area
 light, so the owner's physics policy is satisfied by construction rather
 than persuasion.  Design and build pending owner approval — it is a
 scene-language change, which is the owner's domain, not an agent-surface
-tweak.
+tweak.  **Approved and shipped the same day — see §10.**
+
+---
+
+## 10. SLICE 3 — `rect_light` SHIPPED (2026-08-12)
+
+Owner approval, verbatim: *"Yes do rect_light, expand at parse time,
+exitance only."*  Built as approved; nothing measured yet, and nothing here
+claims a result.
+
+### 10.1 What the chunk is
+
+```
+rect_light
+{
+	name		window_light
+	center		0 4 0
+	size		2 1
+	facing		0 -1 0
+	color		1.0 0.95 0.85
+	exitance	6000
+}
+```
+
+`name`, `center`, `size` (width height) and `facing` are required, as is
+`exitance` (> 0).  `color` defaults to `1 1 1`.  **There is no `power`
+parameter and no alias** — the descriptor IS the accepted set, so a `power`
+line fails the load rather than being ignored.
+
+### 10.2 Parse-time expansion, and nothing else
+
+`RectLightAsciiChunkParser::Finalize` makes the same four `IJob` calls a
+hand-authored chain makes — `AddUniformColorPainter`,
+`AddLambertianLuminaireMaterial` (exitance as scale, inner material `none`),
+`AddClippedPlaneGeometry`, `AddObject`.  **The renderer core learns no new
+concept**: no new entity, no new `ILight`, nothing downstream to teach.  The
+CST keeps the compact text, so save round-trips it verbatim and every derive
+expands it identically — and because scene load and the agent insert path
+both run through the one chunk-parser registry, both got the chunk with no
+second edit (verified: `RectLightChunkTest` round-trip, `AgentChunkCrudTest`
+A83e).
+
+Derived names are `<name>__pnt` / `<name>__mat` / `<name>__geo`; the chunk's
+own `name` names the OBJECT, so solo / object-map / isolate report it.  A
+collision on any of the four fails the derive with the manager's ordinary
+duplicate-name error.
+
+One consequence worth carrying forward: `Cst::DeriveToJobIncremental` had to
+refuse `rect_light` alongside `gltf_import`.  Its category is `Light` (right
+for every other consumer), but there is no `ILight` for `DropChunkByCategory`
+to remove, so an incremental re-derive would leave three orphans.  Editing one
+falls back to a full derive.
+
+### 10.3 The sidedness contract, and how it was proved
+
+The panel emits toward `facing` only.  That rests on two facts:
+`LambertianEmitter::emittedRadiance` returns black when `Dot(out, N) <= 0`,
+and `ClippedPlaneGeometry` takes `N = normalize(Cross(ptb-pta, ptd-pta))`
+from the corner winding.  So the corners are laid out
+`(-U,-V) (+U,-V) (+U,+V) (-U,+V)` about `center`, giving
+`Cross(width·U, height·V) = width·height·F`, and `doublesided` is FALSE
+(left TRUE, a back-face hit flips the normal toward the ray and the panel
+would emit both ways).  `U` comes from world up, falling back to world +Z
+when `facing` is (anti)parallel to up; a zero-length `facing` fails the load.
+
+This repo shipped a false sidedness claim eight commits earlier (97a96d34),
+so the claim is proved twice rather than asserted: `RectLightChunkTest` asks
+the derived geometry for its own normal across nine `facing` directions
+including both up-degeneracies (exact to 1e-9), and renders the same panel
+over the same floor facing down (mean 0.241) and facing up (mean exactly 0).
+`scenes/Tests/Lights/rect_light_sidedness.RISEscene` is the eyeball version.
+
+### 10.4 Surfaces
+
+The `light_scene` palette's AREA entry now leads with `rect_light` and its
+schema, carries the one-chunk example FIRST, and keeps the four-chunk chain
+below it as the general form — because a `rect_light` is a *rectangle*, and a
+sphere lamp or mesh fixture still needs the chain.  Both blocks are literal
+and both are lifted from the shipped prompt and pushed through the real
+insertion path (A81h).  The ambient-light refusal names `rect_light` first.
+Both tool-description surfaces and `SCENE_CONVENTIONS.md` §3.5,
+`effective-rise-scene-authoring`, `lighting-recipes` say the same thing, with
+`SourceHygieneTest` pinning it.  `light_scene`'s report counts a landed
+`rect_light` as an AREA light, not as "a light chunk of another kind" — that
+number is what this arc measures.
+
+### 10.5 What is NOT yet known
+
+Whether the model reaches for it.  §9's three falsified families were all
+prompt-side; this one changes what is *reachable in a single reach*, which is
+a different mechanism — but it is a hypothesis until a run says otherwise.
+The falsifier is the same as before: an imagine-and-build run whose lighting
+pass produces a non-zero area-light count with the sources it enumerates.

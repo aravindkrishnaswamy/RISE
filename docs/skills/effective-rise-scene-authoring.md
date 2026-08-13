@@ -76,13 +76,19 @@ Good starting points:
 Open [docs/SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) and audit
 each section against your scene:
 
-0. **§3.5 Which light kind.**  Reach for an **area light** first: an
-   object wearing a `lambertian_luminaire_material`, in most cases a
-   `clippedplane_geometry` rectangle — painter → luminaire material →
-   geometry → `standard_object`, the four-chunk chain spelled out in
+0. **§3.5 Which light kind.**  Reach for an **area light** first.  For
+   a rectangular panel — the usual case — that is one chunk,
+   `rect_light { name … center … size <w> <h> … facing … color …
+   exitance … }`: `facing` is the direction it emits toward (and it
+   emits that way only), and `exitance` is brightness per unit area,
+   so the same number on a panel twice the size delivers twice the
+   light.  There is no `power` on it.  For an emitter of any **other**
+   shape (a sphere lamp, a mesh fixture) write the four-chunk chain
+   `rect_light` expands into — painter → `lambertian_luminaire_material`
+   → geometry → `standard_object` — spelled out in
    [§3.5](../SCENE_CONVENTIONS.md#35-which-light-kind-to-use--area-lights-are-the-norm).
-   It is the only kind with real area, so it is the only one that gives
-   soft shadows and physical falloff.  `hosek_wilkie_skylight` is fine
+   Either way it is the only kind with real area, so it is the only one
+   that gives soft shadows and physical falloff.  `hosek_wilkie_skylight` is fine
    (a physically based sky).  `omni_light` / `spot_light` /
    `directional_light` are zero-area idealizations — use them only when
    a hard, sourceless key is what you actually want.  **Never author

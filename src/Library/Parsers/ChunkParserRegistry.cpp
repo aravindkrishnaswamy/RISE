@@ -6998,6 +6998,255 @@ namespace RISE
 				}
 			};
 
+			//======================================================================
+			// RectLight -- a first-class ONE-CHUNK PHYSICAL light (2026-08-12).
+			//
+			// WHY IT EXISTS.  docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 9: three separate mechanism families (palette order + sole worked
+			// example; one completion per light; source-first enumeration) each
+			// failed to get an agent to author an area light, because the category
+			// of the task summons the category of the chunk -- asked for LIGHTING,
+			// a model writes chunks from the lighting category, and until now every
+			// chunk in that category was a zero-area idealization.  The fix is a
+			// lighting-category chunk that IS an area light.
+			//
+			// WHAT IT IS.  Pure PARSE-TIME SUGAR over the canonical four-chunk area
+			// light (docs/SCENE_CONVENTIONS.md sec 3.5): this Finalize makes exactly
+			// the four IJob calls a hand-authored chain makes, in the same order.
+			// The renderer core learns NO new concept -- there is no RectLight
+			// entity, no new ILight, nothing downstream to teach.  The DOCUMENT
+			// keeps the compact `rect_light` text (the CST stores the chunk as
+			// authored, so save round-trips it verbatim) and every derive expands it
+			// identically.  Because scene load and the agent insert path both run
+			// through this same registry, both get the chunk with no second edit.
+			//
+			// EXITANCE ONLY.  There is deliberately no `power` parameter and no
+			// alias for one (project owner, 2026-08-12).  `exitance` is brightness
+			// PER UNIT AREA -- it is what `scale` means on the underlying
+			// lambertian_luminaire_material -- so the same number on a panel twice
+			// the size delivers twice the light.  A `power` knob would invite the
+			// zero-area lights' `color * power` reading, which is a different
+			// quantity.
+			//
+			// SIDEDNESS.  The panel emits toward `facing` and nowhere else.  Two
+			// facts make that work, and BOTH are load-bearing:
+			//   * LambertianEmitter::emittedRadiance returns black when
+			//     Dot(out, N) <= 0 (LambertianEmitter.cpp) -- emission is
+			//     one-sided about the surface normal.
+			//   * ClippedPlaneGeometry derives that normal from the corner winding:
+			//     N = normalize(Cross(dpdu, dpdv)) with dpdu = ptb - pta and
+			//     dpdv = ptd - pta for a planar parallelogram (the (u,v) layout is
+			//     pta->(0,0), ptb->(1,0), ptc->(1,1), ptd->(0,1); see
+			//     ClippedPlaneGeometry.cpp's header block and IntersectRay).
+			// So the corner order below is chosen to make Cross(ptb-pta, ptd-pta)
+			// point along `facing`, and `doublesided` is FALSE: with it TRUE a
+			// back-face hit flips the normal toward the ray, Dot(out, N) becomes
+			// positive again, and the panel would emit from BOTH faces.
+			//
+			// DERIVED NAMES.  The chunk's `name` names the OBJECT; the three
+			// entities it also creates are `<name>__pnt` (painter), `<name>__mat`
+			// (luminaire material) and `<name>__geo` (quad).  A collision on any of
+			// the four fails the derive with the manager's ordinary duplicate-name
+			// error -- never silently.
+			//======================================================================
+			const char* const kRectLightPainterSuffix  = "__pnt";
+			const char* const kRectLightMaterialSuffix = "__mat";
+			const char* const kRectLightGeometrySuffix = "__geo";
+
+			struct RectLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! One place both the log line and the CST derive diagnostic are
+				//! written from, so an author sees the same sentence wherever the
+				//! failure surfaces.
+				static bool Reject( const std::string& why )
+				{
+					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					GlobalLog()->PrintEx( eLog_Error, "rect_light:: %s", why.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// ---- REQUIRED PARAMETERS.  `required` in a ParameterDescriptor
+					// is metadata for the schema/editor surfaces; the dispatcher does
+					// not enforce it, so every required parameter is checked here (the
+					// same shape thinlens_camera's validation block uses).
+					const std::string name = bag.GetString( "name", std::string() );
+					if( name.empty() ) {
+						return Reject( "`name` is required -- it names the object this light becomes" );
+					}
+
+					double center[3] = {0,0,0};
+					if( !bag.GetVec3( "center", center ) ) {
+						return Reject( "`center` is required -- the world-space centre of the panel" );
+					}
+
+					double facing[3] = {0,0,0};
+					if( !bag.GetVec3( "facing", facing ) ) {
+						return Reject( "`facing` is required -- the direction the panel emits toward" );
+					}
+
+					if( !bag.Has( "size" ) ) {
+						return Reject( "`size` is required -- two numbers, width and height" );
+					}
+					if( !HasExactNumericArity( bag, "size", 2 ) ) {
+						return Reject( "`size` takes exactly two numbers (width height); got `" +
+						               bag.GetString( "size" ) + "`" );
+					}
+					double width = 0.0, height = 0.0;
+					sscanf( bag.GetString( "size" ).c_str(), "%lf %lf", &width, &height );
+					if( width <= 0.0 || height <= 0.0 ) {
+						char buf[128];
+						std::snprintf( buf, sizeof(buf),
+							"`size` must be two POSITIVE numbers (width height); got %g %g", width, height );
+						return Reject( buf );
+					}
+
+					if( !bag.Has( "exitance" ) ) {
+						return Reject( "`exitance` is required -- emitted radiance per unit area, "
+						               "so a panel twice the size at the same exitance delivers twice the light" );
+					}
+					const double exitance = bag.GetDouble( "exitance", 0.0 );
+					if( !( exitance > 0.0 ) ) {
+						char buf[128];
+						std::snprintf( buf, sizeof(buf),
+							"`exitance` must be greater than zero; got %g (a light that emits nothing is not a light)",
+							exitance );
+						return Reject( buf );
+					}
+
+					double color[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "color", color );
+
+					// ---- THE PANEL BASIS.  `facing` becomes the quad's geometric
+					// normal exactly; U and V are its in-plane width / height axes.
+					// Cross(U, V) == F by construction: V = Cross(F, U) with U unit
+					// and perpendicular to F gives Cross(U, Cross(F, U)) =
+					// F(U.U) - U(U.F) = F.
+					const Vector3 rawFacing( facing[0], facing[1], facing[2] );
+					const Scalar  facingLen = Vector3Ops::Magnitude( rawFacing );
+					if( !( facingLen > 1e-12 ) ) {
+						return Reject( "`facing` is degenerate (zero-length) -- it must be the "
+						               "direction the panel emits toward, e.g. `facing 0 -1 0` for a "
+						               "ceiling panel pointing at the floor" );
+					}
+					const Vector3 F = rawFacing * ( 1.0 / facingLen );
+
+					// The helper axis picks the in-plane frame.  World up is the
+					// natural choice -- it makes `height` the vertical axis for any
+					// horizontally-facing panel -- but it degenerates when `facing`
+					// IS (anti)parallel to up, so a floor / ceiling panel falls back
+					// to world +Z and gets width along X, height along Z.
+					const Vector3 kWorldUp( 0.0, 1.0, 0.0 );
+					const Vector3 kWorldFwd( 0.0, 0.0, 1.0 );
+					const Vector3 helper =
+						( fabs( Vector3Ops::Dot( F, kWorldUp ) ) < 0.999999 ) ? kWorldUp : kWorldFwd;
+					const Vector3 U = Vector3Ops::Normalize( Vector3Ops::Cross( helper, F ) );
+					const Vector3 V = Vector3Ops::Cross( F, U );
+
+					const Scalar hw = 0.5 * width;
+					const Scalar hh = 0.5 * height;
+					const Vector3 du = U * hw;
+					const Vector3 dv = V * hh;
+
+					// Winding pta -> ptb -> ptc -> ptd walks (-U,-V) (+U,-V) (+U,+V)
+					// (-U,+V), so ptb - pta = width*U and ptd - pta = height*V, and
+					// Cross(ptb - pta, ptd - pta) = width*height*F -- the geometric
+					// normal IS `facing`.
+					double pta[3], ptb[3], ptc[3], ptd[3];
+					for( int k = 0; k < 3; ++k ) {
+						const double c  = center[k];
+						const double eu = ( k == 0 ? du.x : ( k == 1 ? du.y : du.z ) );
+						const double ev = ( k == 0 ? dv.x : ( k == 1 ? dv.y : dv.z ) );
+						pta[k] = c - eu - ev;
+						ptb[k] = c + eu - ev;
+						ptc[k] = c + eu + ev;
+						ptd[k] = c - eu + ev;
+					}
+
+					// ---- THE FOUR CALLS.  Same order, same arguments as the
+					// hand-authored chain in docs/SCENE_CONVENTIONS.md sec 3.5.
+					const std::string pntName = name + kRectLightPainterSuffix;
+					const std::string matName = name + kRectLightMaterialSuffix;
+					const std::string geoName = name + kRectLightGeometrySuffix;
+
+					// `Rec709RGB_Linear` matches uniformcolor_painter's own default:
+					// a hand-typed light tint is a physical number, not a
+					// display-referred one.
+					if( !pJob.AddUniformColorPainter( pntName.c_str(), color, "Rec709RGB_Linear" ) ) {
+						return Reject( "could not create the emitted-colour painter `" + pntName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+					// Mirror uniformcolor_painter's cache write so a downstream chunk
+					// that reads a painter's colour sees this one too.
+					{
+						PainterColor pc = { { color[0], color[1], color[2] } };
+						s_painterColors[pntName] = pc;
+					}
+
+					if( !pJob.AddLambertianLuminaireMaterial( matName.c_str(), pntName.c_str(), "none", exitance ) ) {
+						return Reject( "could not create the luminaire material `" + matName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					if( !pJob.AddClippedPlaneGeometry( geoName.c_str(), pta, ptb, ptc, ptd, false ) ) {
+						return Reject( "could not create the panel geometry `" + geoName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					double pos[3]    = { 0.0, 0.0, 0.0 };
+					double orient[3] = { 0.0, 0.0, 0.0 };
+					double scl[3]    = { 1.0, 1.0, 1.0 };
+					if( !pJob.AddObject( name.c_str(), geoName.c_str(), matName.c_str(), 0, 0,
+					                     radianceMapConfig, pos, orient, scl, true, true ) ) {
+						return Reject( "could not create the object `" + name +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "rect_light"; cd.category = ChunkCategory::Light;
+						cd.description =
+							"A rectangular AREA light: a real emitting surface in the scene, and the "
+							"physically based way to light one.  It is expanded at parse time into the "
+							"four chunks an area light is otherwise written as -- a uniformcolor_painter "
+							"holding `color`, a lambertian_luminaire_material whose exitance is that "
+							"painter and whose scale is `exitance`, a clippedplane_geometry whose four "
+							"corners come from center/size/facing, and a standard_object binding them.  "
+							"Those three helper entities are named `<name>__pnt`, `<name>__mat` and "
+							"`<name>__geo`; the standard_object takes `<name>` itself, so `<name>` is "
+							"what render-time tools (solo, object map, isolate) report.  A collision on "
+							"any of the four names fails the load with the ordinary duplicate-name "
+							"error.  The panel emits toward `facing` ONLY -- the back face is not hit at "
+							"all.  Being an ordinary object it is rendered like one: the camera sees its "
+							"surface wherever it is, so it is both a light and a thing the picture shows.  "
+							"It has real area, so it casts soft shadows and falls off with distance.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.required = true;
+						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
+						{ auto& p = P(); p.name = "center";   p.kind = ValueKind::DoubleVec3; p.required = true;
+						  p.description = "World-space centre of the panel"; }
+						{ auto& p = P(); p.name = "size";     p.kind = ValueKind::Double;     p.required = true;
+						  p.tupleKinds = {ValueKind::Double, ValueKind::Double};
+						  p.description = "Two positive numbers: width and height, in scene units"; p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "facing";   p.kind = ValueKind::DoubleVec3; p.required = true;
+						  p.description = "The direction the panel EMITS toward (a ceiling panel lighting the floor is `0 -1 0`).  It becomes the quad's normal exactly; the back face does not emit.  Need not be unit length, but must not be zero"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Double;     p.required = true;
+						  p.description = "Emitted radiance PER UNIT AREA, so the same number on a panel twice the size delivers twice the light.  Must be greater than zero.  Existing scenes span four orders of magnitude: tens for a soft interior fill panel, thousands for a small window reading as daylight"; }
+						{ auto& p = P(); p.name = "color";    p.kind = ValueKind::DoubleVec3;
+						  p.description = "R G B tint of the emitted light, linear Rec.709"; p.defaultValueHint = "1 1 1"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			//////////////////////////////////////////
 			// ShaderOps
 			//////////////////////////////////////////
@@ -10160,6 +10409,7 @@ namespace RISE
 		add( "spot_light",                            new SpotLightAsciiChunkParser() );
 		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
 		add( "hosek_wilkie_skylight",                 new HosekWilkieSkylightAsciiChunkParser() );
+		add( "rect_light",                            new RectLightAsciiChunkParser() );
 
 		// Photon maps & gather
 		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );

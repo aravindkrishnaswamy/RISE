@@ -3,11 +3,38 @@
 
 ## Which light kind to use (read this first)
 
-**Most scenes should be lit by AREA LIGHTS** — an object wearing a
-`lambertian_luminaire_material`, in most cases a rectangle.  That is the
-only kind with real area, so it is the only one that gives soft shadows
-and physical falloff, and it is what "Emissive geometry (area light)"
-below builds.  Reach for it first.
+**Most scenes should be lit by AREA LIGHTS** — a real emitting surface
+in the scene.  That is the only kind with real area, so it is the only
+one that gives soft shadows and physical falloff.  Reach for it first.
+
+**A rectangular panel is ONE chunk, `rect_light`:**
+
+```
+rect_light
+{
+	name		window_light
+	center		0 4 0
+	size		2 1
+	facing		0 -1 0
+	color		1.0 0.95 0.85
+	exitance	6000
+}
+```
+
+`center` is the panel's centre, `size` is `width height`, and `facing`
+is the direction it emits toward — a ceiling panel lighting the floor is
+`0 -1 0`, and the back face does not emit at all.  `exitance` is
+brightness **per unit area**, so the same number on a panel twice the
+size delivers twice the light; it must be > 0, and there is **no
+`power`** on this chunk (a `power` line fails the load).  Because it is
+an ordinary object, the camera sees its surface wherever it is: point it
+away from the camera, or put it outside the frame, unless a visible
+glowing panel is what the shot wants.
+
+For an emitter of any **other** shape — a sphere lamp, a mesh fixture, a
+curved panel — write the four chunks `rect_light` expands into: painter
+→ `lambertian_luminaire_material` → geometry → `standard_object`.  That
+is what "Emissive geometry (area light)" below builds.
 
 `hosek_wilkie_skylight` is fine — a physically based analytic sun-and-sky
 (see "Environment / IBL").
@@ -28,7 +55,8 @@ with the build protocol off.  It contributes the same `color * power` at
 every shading point, has no position and no direction, and casts no
 shadow ray — so it produces neither a shadow nor any falloff.  A
 path-traced scene that reads too dark wants a bigger or brighter emitting
-surface, or a sky, not a constant term.
+surface (a `rect_light`, or a bigger `exitance` on the one it has), or a
+sky, not a constant term.
 
 ## Three-point lighting
 
@@ -303,13 +331,20 @@ standard_object
 
 ## Emissive geometry (area light)
 
+This is the GENERAL form, for an emitter that is not a rectangle — a
+rectangular panel is one `rect_light` chunk (see "Which light kind to
+use" at the top), and `rect_light` expands into exactly this.
+
 A `lambertian_luminaire_material` turns any object into an area
 emitter: `exitance` is the emission color painter, `scale` the
 brightness, `material` the underlying surface (`none` = pure emitter).
 Prefer area emitters over point lights for soft shadows and for BDPT /
 VCM scenes; prefer point/omni lights for cheap hard-shadow setups.
-**Winding rule**: the quad's vertex ORDER picks the emitting side — if
-an emissive quad gives a black render, flip the point order.
+**Winding rule**: the quad's vertex ORDER picks the emitting side — the
+normal is `Cross(ptb - pta, ptd - pta)` and emission only leaves that
+face, so if an emissive quad gives a black render, flip the point order.
+With `doublesided TRUE` (the default) the quad emits from BOTH faces;
+set it `FALSE` for a one-way panel.
 
 ```rise
 RISE ASCII SCENE 7
@@ -460,7 +495,9 @@ alignment with the container's new position.
   the distance (a light 10 units away needs ~100x the power of one at
   1 unit).
 - Luminaire `scale` multiplies exitance directly; 10-150 is a typical
-  range for a small quad lighting a room-sized scene.
+  range for a small quad lighting a room-sized scene.  `exitance` on a
+  `rect_light` is that same number: brightness per unit area, so
+  doubling the panel's `size` doubles the light it delivers.
 - If everything is black: check the directional `direction` sign first
   (FROM-surface-TO-light), then power magnitudes; for an emissive
   quad, check the vertex winding (it picks the emitting side).

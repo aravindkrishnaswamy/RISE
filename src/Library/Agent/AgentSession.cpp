@@ -1936,16 +1936,20 @@ namespace RISE
 			       "point, scaled only by that surface's own reflectance. It has no position and no "
 			       "direction (its only parameters are name, power and color), and it casts no shadow "
 			       "ray, so it can produce neither a shadow nor any falloff with distance. THE LIGHT "
-			       "THAT FILLS THAT ROLE IS AN AREA LIGHT, which in this scene language is an "
-			       "ordinary object wearing an emissive material -- there is no `area_light` chunk. "
-			       "It is four chunks: a `uniformcolor_painter` holding the emitted colour; a "
+			       "THAT FILLS THAT ROLE IS AN AREA LIGHT -- a real emitting surface in the scene. "
+			       "For a rectangular panel that is ONE chunk, `rect_light`, which takes `name`, "
+			       "`center`, `size` (width height), `facing` (the direction it emits toward), "
+			       "`color` and `exitance` (brightness per unit area). An area light of any OTHER "
+			       "shape is an ordinary object wearing an emissive material -- there is no "
+			       "`area_light` chunk -- which is the four chunks `rect_light` is itself expanded "
+			       "into: a `uniformcolor_painter` holding the emitted colour; a "
 			       "`lambertian_luminaire_material` whose `exitance` is that painter, whose `scale` "
 			       "multiplies it, and whose `material` is `none` so the surface only emits; a "
 			       "geometry for its shape (`clippedplane_geometry` takes four corner points pta, "
 			       "ptb, ptc, ptd); and a `standard_object` binding that geometry to that material. "
-			       "It has real area, so it shadows and falls off the way an emitter in the world "
-			       "does. For sky illumination over a whole scene there is `hosek_wilkie_skylight`, "
-			       "an analytic sun-and-sky model.";
+			       "Either way it has real area, so it shadows and falls off the way an emitter in "
+			       "the world does. For sky illumination over a whole scene there is "
+			       "`hosek_wilkie_skylight`, an analytic sun-and-sky model.";
 		}
 
 		std::string CheckAmbientLightBanForInsert( const std::string& chunkText, std::string* outName )
@@ -19079,41 +19083,82 @@ namespace RISE
 				const char* groupNote;  //!< printed above this entry, or null
 				const char* headline;
 				const char* example;    //!< complete parseable chunk text, or null for none
+				//! ARC 83 SLICE 3: a SECOND complete parseable block, with its
+				//! own introducing line.  The area light now has two forms --
+				//! the one-chunk `rect_light` and the general chain any
+				//! non-rectangular emitter needs -- and BOTH have to be
+				//! literal, because a literal example is the one lever this
+				//! workstream has measured moving what a model writes.  They
+				//! are separate fields rather than one string with prose in
+				//! the middle so each block stays independently LIFTABLE: the
+				//! A81h test extracts them from the shipped prompt and pushes
+				//! each through the real insertion path, which it could not do
+				//! if the two were glued together by a sentence.  Both null on
+				//! every other entry.
+				const char* altNote = nullptr;
+				const char* alt     = nullptr;
 			};
 
 			const LightPaletteEntry_ kLightPalette[] = {
-				// FIRST, and the only entry with a worked example.  The area
-				// light is also the entry with no light keyword at all, which is
-				// exactly why it needs spelling out: there is no `area_light`
-				// chunk in this language, and a context that only sees a list of
-				// `*_light` keywords cannot discover that an emitting shape is
-				// an ordinary object wearing an emissive material.
-				{ nullptr,
+				// FIRST, and the only entry with a worked example.
+				//
+				// ARC 83 SLICE 3 (2026-08-12) -- THE ENTRY NOW LEADS WITH A
+				// CHUNK.  Everything above this comment about copyability still
+				// holds; what changed is that the copyable thing is now ONE
+				// chunk.  83 sec 9: with the four-chunk chain as the sole worked
+				// example, three separate mechanism families (palette order,
+				// one completion per light, source-first enumeration) each
+				// produced ZERO area lights, and the convergent observation was
+				// that the category of the task summons the category of the
+				// chunk -- asked for LIGHTING, a model writes chunks from the
+				// lighting category, whatever they happen to be.  `rect_light`
+				// is a lighting-category chunk that IS an area light, so the
+				// reach lands on it; the parser expands it into exactly the
+				// chain below.  The chain stays, unchanged and still literal,
+				// as the GENERAL form -- a rect_light is a rectangle, and a
+				// sphere lamp, a mesh fixture or a curved panel still needs it.
+				{ "rect_light",
 				  nullptr,
 				  "AREA / MESH LIGHT -- a real emitting SURFACE in the scene, and the physically "
-				  "based way to light one. There is no `area_light` chunk: an area light is an "
-				  "ordinary object wearing an EMISSIVE material, which is four chunks -- a painter "
-				  "holding the emitted colour; a lambertian_luminaire_material whose `exitance` is "
-				  "that painter, whose `scale` multiplies it, and whose `material none` means the "
-				  "surface only emits; a geometry for its shape; and a standard_object binding that "
-				  "geometry to that material. An emissive object is rendered exactly like any other "
-				  "object: the camera sees its surface, at whatever size, shape and position it is "
-				  "given, and it appears in the frame there -- an area light is BOTH a light and a "
-				  "thing the picture shows. Because it has real area it also casts SOFT shadows and "
-				  "falls off with distance the way an emitter in the world does. `scale` sets "
-				  "EXITANCE -- brightness per unit area -- so the same `scale` on a panel twice the "
-				  "size delivers twice the light: the 6000 below is the exitance one of this "
-				  "renderer's existing scenes gives a slot window reading as daylight, while a soft "
-				  "interior fill panel is typically in the tens. clippedplane_geometry is a quad "
-				  "given by its four corner points; `doublesided` (default TRUE) decides which "
-				  "faces emit. Left TRUE the quad is hit from either side and the normal is "
-				  "flipped toward whatever looks at it, so it emits from BOTH faces; set it FALSE "
-				  "and the back face is not hit at all, so only the face its winding "
-				  "pta->ptb->ptc->ptd turns toward emits and the light goes one way. Any geometry "
-				  "works, and a mesh "
-				  "wearing this material emits from every triangle. The example below IS a window: "
-				  "the quad is the wall opening its light reads as coming through, not an abstract "
-				  "panel.",
+				  "based way to light one. For a rectangular panel it is ONE chunk, `rect_light`: "
+				  "`center`, `size` (width height), `facing` (the direction it emits toward), "
+				  "`color` and `exitance`. An area light of ANY OTHER shape is written out as the "
+				  "four chunks rect_light is itself expanded into -- a painter holding the emitted "
+				  "colour; a lambertian_luminaire_material whose `exitance` is that painter, whose "
+				  "`scale` multiplies it, and whose `material none` means the surface only emits; a "
+				  "geometry for its shape; and a standard_object binding that geometry to that "
+				  "material. Both forms are below. An emissive object is rendered exactly like any "
+				  "other object: the camera sees its surface, at whatever size, shape and position "
+				  "it is given, and it appears in the frame there -- an area light is BOTH a light "
+				  "and a thing the picture shows. Because it has real area it also casts SOFT "
+				  "shadows and falls off with distance the way an emitter in the world does. "
+				  "`exitance` on a rect_light, and `scale` on a luminaire material, are the SAME "
+				  "quantity: brightness per unit area, so the same number on a panel twice the size "
+				  "delivers twice the light. The 6000 below is the exitance one of this renderer's "
+				  "existing scenes gives a slot window reading as daylight, while a soft interior "
+				  "fill panel is typically in the tens. A rect_light emits toward `facing` and "
+				  "nowhere else; its back face is not hit at all. In the four-chunk form that "
+				  "choice is `doublesided` on clippedplane_geometry (a quad given by its four "
+				  "corner points): left TRUE, the default, the quad is hit from either side and the "
+				  "normal is flipped toward whatever looks at it, so it emits from BOTH faces; set "
+				  "FALSE, only the face its winding pta->ptb->ptc->ptd turns toward emits. Any "
+				  "geometry works, and a mesh wearing this material emits from every triangle. The "
+				  "examples below ARE a window: the panel is the wall opening its light reads as "
+				  "coming through, not an abstract slab.",
+				  "rect_light\n"
+				  "{\n"
+				  "\tname\t\twindow_light\n"
+				  "\tcenter\t\t0 4 0\n"
+				  "\tsize\t\t2 1\n"
+				  "\tfacing\t\t0 -1 0\n"
+				  "\tcolor\t\t1.0 0.95 0.85\n"
+				  "\texitance\t6000\n"
+				  "}",
+				  "That exact light, written out the long way -- this is what rect_light expands "
+				  "into, and it is the form to use for an emitter that is not a rectangle: put the "
+				  "material on a sphere_geometry, a mesh, or any other shape instead. The corner "
+				  "winding pta->ptb->ptc->ptd turns the emitting face toward -Y, which is what "
+				  "`facing 0 -1 0` means above.",
 				  "uniformcolor_painter\n"
 				  "{\n"
 				  "\tname\t\tpnt_window\n"
@@ -19129,10 +19174,11 @@ namespace RISE
 				  "clippedplane_geometry\n"
 				  "{\n"
 				  "\tname\t\twindow_geo\n"
-				  "\tpta\t\t\t-1.0 2.0 -1.0\n"
-				  "\tptb\t\t\t 1.0 2.0 -1.0\n"
-				  "\tptc\t\t\t 1.0 2.0  1.0\n"
-				  "\tptd\t\t\t-1.0 2.0  1.0\n"
+				  "\tpta\t\t\t-1.0 4.0 -0.5\n"
+				  "\tptb\t\t\t 1.0 4.0 -0.5\n"
+				  "\tptc\t\t\t 1.0 4.0  0.5\n"
+				  "\tptd\t\t\t-1.0 4.0  0.5\n"
+				  "\tdoublesided\tFALSE\n"
 				  "}\n"
 				  "standard_object\n"
 				  "{\n"
@@ -19192,6 +19238,13 @@ namespace RISE
 			//! parser.  Kept to the four kinds the worked example uses -- this
 			//! prompt exists to be SHORT (arc 79 sec 1: 60k of prepended text
 			//! halves construction richness).
+			//!
+			//! ARC 83 SLICE 3: `rect_light` is deliberately NOT in this list.
+			//! The AREA entry now carries it as its own palette `keyword`, so
+			//! its schema is already printed inside the entry; repeating it
+			//! here would spend prompt on the same text twice.  These four
+			//! remain because they are the GENERAL form, which the entry's
+			//! second example uses and any non-rectangular emitter needs.
 			const char* const kMeshLightGrammarKeywords[] = {
 				"uniformcolor_painter",
 				"lambertian_luminaire_material",
@@ -19336,6 +19389,19 @@ namespace RISE
 			bool IsZeroAreaLightKeyword_( const std::string& k )
 			{
 				return k == "omni_light" || k == "spot_light" || k == "directional_light";
+			}
+
+			//! ARC 83 SLICE 3: is this keyword a light chunk that IS an area
+			//! light?  Same reason IsZeroAreaLightKeyword_ is a named list and
+			//! not a category test: the question is about PHYSICAL FORM, which
+			//! ChunkCategory does not carry.  `rect_light` is a Light-category
+			//! chunk whose Finalize expands into an emissive object, so the
+			//! report must count it with the area lights -- counting it as
+			//! "a light chunk of another kind" would be a false clause in the
+			//! one number this whole arc is measuring.
+			bool IsAreaLightKeyword_( const std::string& k )
+			{
+				return k == "rect_light";
 			}
 
 			//! ARC 83 SLICE 2: read the enumeration completion's answer as a
@@ -19672,8 +19738,11 @@ namespace RISE
 			// ---- THE PALETTE.  Every light source this renderer has, named
 			// explicitly, each with the registry's own parameter reference and
 			// a literal example.
-			p += "THE LIGHT SOURCES THIS PASS CAN AUTHOR. `power` multiplies `color` on the light "
-			     "chunks; on an emissive material `scale` multiplies the painter's colour.\n";
+			p += "THE LIGHT SOURCES THIS PASS CAN AUTHOR. On the zero-area light chunks `power` "
+			     "multiplies `color`; on an emissive material `scale` multiplies the painter's "
+			     "colour, and `exitance` on a rect_light is that same quantity. Each entry's "
+			     "parameter list below is the parser's own, so it is exactly what that chunk "
+			     "accepts.\n";
 			for( std::size_t i = 0; i < kLightPaletteCount; ++i ) {
 				p += "\n";
 				if( kLightPalette[i].groupNote ) {
@@ -19694,6 +19763,19 @@ namespace RISE
 				if( kLightPalette[i].example ) {
 					p += "Example:\n";
 					p += kLightPalette[i].example;
+					p += "\n";
+				}
+				// ARC 83 SLICE 3: the second literal block, introduced by its
+				// own line.  Blank lines around each block keep the two
+				// independently liftable (A81h extracts and parses each).
+				if( kLightPalette[i].altNote ) {
+					p += "\n";
+					p += kLightPalette[i].altNote;
+					p += "\n";
+				}
+				if( kLightPalette[i].alt ) {
+					p += "\nAlso valid:\n";
+					p += kLightPalette[i].alt;
 					p += "\n";
 				}
 			}
@@ -20156,17 +20238,21 @@ namespace RISE
 
 			// ---- WHAT WAS BUILT, classified from what actually LANDED
 			// rather than from what was asked for.  An emissive material
-			// that landed is one area light; a landed hosek_wilkie_skylight
-			// is one sky light; a landed omni/spot/directional is one
-			// zero-area light; any other landed Light chunk is "other".
-			// This reuses arc 83 slice 1's classification unchanged -- it
-			// never depended on the per-intent loop, only on what landed.
+			// that landed is one area light, and so is a landed rect_light
+			// (arc 83 slice 3: a Light-category chunk that expands into an
+			// emissive object -- see IsAreaLightKeyword_); a landed
+			// hosek_wilkie_skylight is one sky light; a landed
+			// omni/spot/directional is one zero-area light; any other landed
+			// Light chunk is "other".  This reuses arc 83 slice 1's
+			// classification -- it never depended on the per-intent loop,
+			// only on what landed.
 			for( std::size_t k = 0; k < landedKinds.size(); ++k ) {
 				const ChunkDescriptor* ld = DescriptorForKeyword( String( landedKinds[k].c_str() ) );
 				if( !ld ) continue;
 				if( DescriptorIsEmissiveMaterial_( ld ) ) { ++out.areaLightsBuilt; continue; }
 				if( ld->category != ChunkCategory::Light ) continue;
-				if( landedKinds[k] == "hosek_wilkie_skylight" )    ++out.skyLightsBuilt;
+				if( IsAreaLightKeyword_( landedKinds[k] ) )          ++out.areaLightsBuilt;
+				else if( landedKinds[k] == "hosek_wilkie_skylight" ) ++out.skyLightsBuilt;
 				else if( IsZeroAreaLightKeyword_( landedKinds[k] ) ) ++out.zeroAreaLightsBuilt;
 				else                                                ++out.otherLightsBuilt;
 			}
