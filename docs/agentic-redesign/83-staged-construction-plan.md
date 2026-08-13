@@ -443,3 +443,24 @@ prompt-side; this one changes what is *reachable in a single reach*, which is
 a different mechanism — but it is a hypothesis until a run says otherwise.
 The falsifier is the same as before: an imagine-and-build run whose lighting
 pass produces a non-zero area-light count with the sources it enumerates.
+
+## 11. FIRST LIVE rect_light (2026-08-12, N=1)
+
+`evals/runs/imagine_s12_rectlight`.  Enumeration again perfect (5 sources,
+all things).  The build wrote **one rect_light** — `coral_floor_glow_panel`,
+center on the sea floor, `facing 0 1 0.2` (up into the scene), size 1.5×1.2,
+exitance 80 — correctly formed on the first live use, plus 9 zero-area
+lights for the other sources.  2 completions.
+
+Read against the priors (area sources per run: 1/0/0/0/2 single-call, 0+0
+per-intent, 0 source-first pre-rect_light): nonzero, correctly used, in the
+lighting category as predicted — the reach hypothesis survives its first
+test.  But 1 of 10 is not "most scenes use area lights"; the glowing
+creatures still became omnis.  At N=1 the honest statement is: the chunk
+WORKS end-to-end live and the distribution has not flipped.  The remaining
+gap is plausibly that a jellyfish is not a rectangle — the natural emitter
+for a glowing creature is the creature's own geometry wearing an emissive
+material, which the builders already do in construction.  That suggests the
+eventual bridge is between the enumeration's "things that glow" and the
+EXISTING objects' materials (make-this-object-emit), not another light
+chunk.  Recorded as the next hypothesis, unmeasured.
