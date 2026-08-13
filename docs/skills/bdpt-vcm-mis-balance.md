@@ -54,12 +54,32 @@ description: |
 
 ## Procedure
 
-### 0. Rule out the two known non-MIS causes first
+### 0. Rule out the three known non-MIS causes first
 
-Two failure modes (both found 2026-06-10 on a torus-arealight scene)
-produce exactly the "bidirectional render disagrees with PT" symptom
-while the MIS arithmetic is perfectly healthy.  Both are minutes to
-check; do them before any integrator instrumentation:
+Three failure modes produce exactly the "bidirectional render
+disagrees with PT" symptom while the MIS arithmetic is perfectly
+healthy.  All are minutes to check; do them before any integrator
+instrumentation:
+
+0. **PT may be the broken one — check IOR-stack seeding when the
+   camera (or an emitter) sits inside a dielectric.**  (Found
+   2026-08-13 on `vcm_sdf_luminaire_jellyfish`: VCM read 2.2× PT's
+   mean and was blamed, but PT was losing ~8× of the env energy.)
+   A transport walk that STARTS inside a dielectric must seed its
+   IORStack from the start point (`IORStackSeeding::SeedFromPoint`)
+   or DielectricSPF misclassifies the first boundary crossing
+   (`bFromInside==false`) and silently DROPS the delta-transmission
+   lobe.  BDPT/VCM eye+light subpaths have always seeded;
+   PathTracingIntegrator, the legacy PixelBased rasterizers, and the
+   photon tracers only gained seeding 2026-08-13.  Fast diagnosis:
+   build a camera-inside-a-delta-shell + uniform-env micro-scene
+   (closed form: every pixel == env colour exactly — see
+   EnvLightBalanceTest's "submerged camera" topology); or flip
+   `RISE_DISABLE_IOR_STACK_SEEDING=1` and see whether the healthy
+   integrator collapses to match the broken one.  Related trap the
+   same investigation hit: `dielectric_material` `scattering 0.0` is
+   MAXIMALLY DIFFUSE transmission (Phong exponent 0), not "no
+   scattering" — a delta pass-through needs `scattering 1000000`.
 
 1. **Output-layer splat loss — compare the plain file against
    `_denoised`, or re-render with `oidn_denoise FALSE`.**  With

@@ -16,6 +16,7 @@
 
 #include "../Interfaces/IPhotonTracer.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Rendering/LuminaryManager.h"
 
 namespace RISE
@@ -141,8 +142,6 @@ namespace RISE
 				const LuminaryManager::LuminariesList& lum = pLumManager->getLuminaries();
 				LuminaryManager::LuminariesList::const_iterator	i, e;
 
-				IORStack ior_stack( 1.0 );
-
 				// Then from now on each luminaire will only shoot photons proportional to its relative power
 				if( bShootFromMeshLights )
 				for( i=lum.begin(), e=lum.end(); i!=e; i++ )
@@ -191,6 +190,18 @@ namespace RISE
 						rig.onb.CreateFromW( rig.vNormal );
 
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
+
+						// Fresh per-photon stack seeded from THIS photon's
+						// origin: a luminaire sealed inside nested
+						// dielectrics (e.g. a light in a glass egg) needs
+						// its emitted photon to see bFromInside==true at
+						// the first boundary crossing, or DielectricSPF
+						// misclassifies it and drops the transmission
+						// lobe.  Also fixes a latent state-leak: the old
+						// shared ior_stack could carry residual state
+						// between unrelated photons.
+						IORStack ior_stack( 1.0 );
+						IORStackSeeding::SeedFromPoint( ior_stack, r.origin, *pScene );
 
 						// Now shoot that ray as a photon
 						TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
@@ -242,6 +253,13 @@ namespace RISE
 								const RISEPel power = (pdf > 0) ?
 									l->emittedRadiance( r.Dir() ) * (dPowerScale / pdf) :
 									RISEPel(0,0,0);
+
+								// Fresh per-photon stack seeded from THIS
+								// photon's origin; see the mesh-luminaire
+								// loop above for why a shared stack is
+								// wrong (embedded/enclosed light case).
+								IORStack ior_stack( 1.0 );
+								IORStackSeeding::SeedFromPoint( ior_stack, r.origin, *pScene );
 
 								TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
 

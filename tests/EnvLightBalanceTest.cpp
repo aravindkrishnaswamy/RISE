@@ -963,10 +963,158 @@ static void TestEnvOnlySpectral( bool hwss )
 		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology J: SUBMERGED camera — env seen through a delta-transmissive
+// dielectric shell that encloses the camera.
+//
+// Camera at the origin inside a closed dielectric box (ior 1.0,
+// tau 1 1 1, scattering 1e6 = pure delta transmission), uniform env
+// L = 1.  CLOSED FORM: every ray crosses exactly one lossless delta
+// interface and escapes to the uniform env, so every pixel of every
+// unbiased integrator must be EXACTLY 1.0 — no MC noise, no MIS
+// subtlety, no visibility term.
+//
+// REGRESSION GUARDED (2026-08-13, found via the
+// vcm_sdf_luminaire_jellyfish torture scene): PathTracingIntegrator
+// did not seed its eye-ray IORStack from the camera position
+// (IORStackSeeding::SeedFromPoint), unlike BDPT/VCM's eye subpath.
+// With the camera inside a dielectric, the first boundary crossing
+// ran with bFromInside==false, DielectricSPF's wrong-side test
+// dropped the transmission lobe, and PT rendered this scene at
+// EXACTLY 0.0 — an 8x env-energy deficit on the full jellyfish
+// scene that masqueraded as a VCM over-count.  The same gap existed
+// in the legacy PixelBased rasterizer camera entries and the photon
+// tracers' emission origins.
+//
+// Tolerance: 3% on the mean (fp16 capture + box filter), 1.5x max.
+// Pre-fix PT fails catastrophically (mean 0 vs 1).
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneSubmergedCamera =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 0\n"
+	"\tlookat 0 0 -1\n"
+	"\tup 0 1 0\n"
+	"\tfov 40.0\n"
+	"}\n"
+	"\n"
+	"dielectric_material\n"
+	"{\n"
+	"\tname mat_shell\n"
+	"\ttau 1.0 1.0 1.0\n"
+	"\tior 1.0\n"
+	"\tscattering 1000000.0\n"
+	"}\n"
+	"\n"
+	"box_geometry\n"
+	"{\n"
+	"\tname shell_box\n"
+	"\twidth 4.0\n"
+	"\theight 4.0\n"
+	"\tdepth 4.0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_shell\n"
+	"\tgeometry shell_box\n"
+	"\tmaterial mat_shell\n"
+	"}\n";
+
+// PT rasterizer for the submerged topology: must be DefaultPathTracing
+// (the shared kRasterizerPT uses DefaultDirectLighting, which cannot
+// continue through the dielectric shell).
+static const char* kRasterizerPTSubmerged =
+	"standard_shader\n"
+	"{\n"
+	"\tname global\n"
+	"\tshaderop DefaultPathTracing\n"
+	"}\n"
+	"\n"
+	"pathtracing_pel_rasterizer\n"
+	"{\n"
+	"\tsamples 16\n"
+	"\tpixel_filter box\n"
+	"\tradiance_map pnt_env\n"
+	"\tradiance_scale 1.0\n"
+	"\tradiance_background TRUE\n"
+	"}\n"
+	"\n"
+	"file_rasterizeroutput\n"
+	"{\n"
+	"\tpattern /tmp/env_balance_pt_submerged_unused\n"
+	"\ttype PNG\n"
+	"\tbpp 8\n"
+	"\tcolor_space sRGB\n"
+	"}\n";
+
+static void CheckExactRadiance(
+	const char* integratorName,
+	const ImageStats& s,
+	const char* topologyName )
+{
+	Check( s.valid, ( std::string(integratorName) + " render produced output: " + topologyName ).c_str() );
+	if( !s.valid ) return;
+	for( int c = 0; c < 3; ++c ) {
+		const bool meanOk = std::fabs( s.mean[c] - 1.0 ) <= 0.03;
+		const bool maxOk  = s.max[c] <= 1.5;
+		Check( meanOk, ( std::string(integratorName) + " mean == 1.0 (closed form), channel "
+			+ std::to_string(c) + ": " + topologyName ).c_str() );
+		Check( maxOk, ( std::string(integratorName) + " max <= 1.5, channel "
+			+ std::to_string(c) + ": " + topologyName ).c_str() );
+		if( !meanOk ) {
+			std::cout << "    " << integratorName << " mean[" << c << "] = "
+				<< s.mean[c] << " (expected 1.0)" << std::endl;
+		}
+	}
+}
+
+static void TestSubmergedCameraDeltaShell()
+{
+	const char* topologyName = "submerged camera / delta dielectric shell";
+	std::cout << "Testing closed-form: " << topologyName << std::endl;
+
+	const std::string common = std::string( kSceneSubmergedCamera ) + kEnvPainter;
+	const std::string ptScene   = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerPTSubmerged;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerBDPT;
+	const std::string vcmScene  = std::string("RISE ASCII SCENE 7\n") + common + kRasterizerVCM;
+
+	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "ptsub"   );
+	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdptsub" );
+	const std::string vcmPath  = WriteSceneToTempFile( vcmScene.c_str(),  "vcmsub"  );
+	if( ptPath.empty() || bdptPath.empty() || vcmPath.empty() ) {
+		Check( false, ( std::string("temp file write: ") + topologyName ).c_str() );
+		return;
+	}
+
+	const ImageStats pt   = RenderAndComputeStats( ptPath.c_str() );
+	const ImageStats bdpt = RenderAndComputeStats( bdptPath.c_str() );
+	const ImageStats vcm  = RenderAndComputeStats( vcmPath.c_str() );
+
+	PrintStats( "PT  ", pt );
+	PrintStats( "BDPT", bdpt );
+	PrintStats( "VCM ", vcm );
+
+	std::remove( ptPath.c_str() );
+	std::remove( bdptPath.c_str() );
+	std::remove( vcmPath.c_str() );
+
+	CheckExactRadiance( "PT",   pt,   topologyName );
+	CheckExactRadiance( "BDPT", bdpt, topologyName );
+	CheckExactRadiance( "VCM",  vcm,  topologyName );
+}
+
 int main( int /*argc*/, char* /*argv*/[] )
 {
 	std::cout << "EnvLightBalanceTest — verifying BDPT/VCM match PT on IBL scenes" << std::endl;
 
+	TestSubmergedCameraDeltaShell();
 	TestEnvOnly();
 	TestEnvPlusOmni();
 	TestEnvPlusMesh();

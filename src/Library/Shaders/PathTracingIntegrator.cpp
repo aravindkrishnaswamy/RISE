@@ -27,6 +27,7 @@
 #include "../Utilities/EquiangularSampler.h"
 #include "../Utilities/PathVertexEval.h"
 #include "../Utilities/OptimalMISAccumulator.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Profiling.h"
 #include "../Utilities/FiniteMath.h"
@@ -3491,6 +3492,13 @@ PathTracingIntegrator::IntegrateRayTemplated(
 	using Value = typename Traits::value_type;
 
 	IORStack iorStack( 1.0 );
+	// Seed from the camera-ray origin: if the camera sits inside a
+	// dielectric (submerged camera, camera inside a medium volume), the
+	// first boundary crossing must see bFromInside==true or the
+	// DielectricSPF wrong-side test drops the transmission lobe entirely.
+	// Free-space cameras: the probe finds no enclosing objects, no-op.
+	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
+	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray
@@ -4870,6 +4878,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	}
 
 	IORStack iorStack( 1.0 );
+	// Seed from the camera-ray origin: if the camera sits inside a
+	// dielectric (submerged camera, camera inside a medium volume), the
+	// first boundary crossing must see bFromInside==true or the
+	// DielectricSPF wrong-side test drops the transmission lobe entirely.
+	// Free-space cameras: the probe finds no enclosing objects, no-op.
+	// Mirrors the eye-subpath seeding in BDPTIntegrator (GenerateEyeSubpath).
+	IORStackSeeding::SeedFromPoint( iorStack, cameraRay.origin, scene );
 	sampler.StartStream( 16 );
 
 	// Intersect camera ray

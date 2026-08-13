@@ -25,6 +25,7 @@
 #include "../Utilities/ThreadPool.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/IORStackSeeding.h"
 #include <algorithm>
 
 using namespace RISE;
@@ -254,8 +255,14 @@ void RISE::Implementation::CollectFirstHitAOVRows(
 						PixelAOV aov;
 						rc.pAOV = &aov;
 						RISEPel ignoredRadiance( 0, 0, 0 );
+						// Seed from the camera-ray origin (submerged-camera
+						// case) so the Accurate-mode guide walk classifies
+						// its first dielectric crossing the same way the
+						// beauty pass now does; free-space cameras: no-op.
+						IORStack iorStack( 1.0 );
+						IORStackSeeding::SeedFromPoint( iorStack, ray.origin, scene );
 						caster.CastRay( rc, rast, ray, ignoredRadiance,
-							IRayCaster::RAY_STATE(), 0, 0 );
+							IRayCaster::RAY_STATE(), 0, 0, iorStack );
 						rc.pAOV = 0;
 						if( aov.valid ) {
 							sampleNormal = aov.normal;

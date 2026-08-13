@@ -17,6 +17,7 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/IORStack.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
@@ -89,14 +90,27 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 	bool bHit = false;
 	c = ColorXYZ(0,0,0,0);
 
+	// Seed from the camera-ray origin: if the camera sits inside a
+	// dielectric (submerged camera, camera inside a medium volume), the
+	// first boundary crossing must see bFromInside==true or the
+	// DielectricSPF wrong-side test drops the transmission lobe
+	// entirely.  Free-space cameras: the probe finds no enclosing
+	// objects, no-op.  Shared across every wavelength sample below —
+	// they all originate from the same camera ray.
+	IORStack iorStack( 1.0 );
+	const IScene* pAttachedScene = pCaster->GetAttachedScene();
+	if( pAttachedScene ) {
+		IORStackSeeding::SeedFromPoint( iorStack, ray.origin, *pAttachedScene );
+	}
+
 	if( nSpectralSamples == 1 )
 	{
 		// Special case if only one spectral sample
-		const Scalar nm = num_wavelengths < 10000 ? 
-				(lambda_begin + int(rc.random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps) : 
+		const Scalar nm = num_wavelengths < 10000 ?
+				(lambda_begin + int(rc.random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps) :
 				(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
 		Scalar nmvalue = 0;
-		bHit = pCaster->CastRayNM( rc, rast, ray, nmvalue, IRayCaster::RAY_STATE(), nm, 0, 0 );
+		bHit = pCaster->CastRayNM( rc, rast, ray, nmvalue, IRayCaster::RAY_STATE(), nm, 0, 0, iorStack );
 
 		if( bHit && nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
@@ -131,7 +145,7 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 			SPECTRAL_SAMPLE	samp;
 			samp.nm = nm;
 
-			bool bThisHit = pCaster->CastRayNM( rc, rast, ray, samp.value, IRayCaster::RAY_STATE(), nm, 0, 0 );
+			bool bThisHit = pCaster->CastRayNM( rc, rast, ray, samp.value, IRayCaster::RAY_STATE(), nm, 0, 0, iorStack );
 
 			if( bThisHit ) {
 				bHit = true;
@@ -202,6 +216,18 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 		Scalar cHWSS[SampledWavelengths::N] = {0};
 		IRayCaster::RAY_STATE rs;
 		IORStack cameraIorStack( 1.0 );
+		// Seed from the camera-ray origin: if the camera sits inside a
+		// dielectric (submerged camera, camera inside a medium volume),
+		// the first boundary crossing must see bFromInside==true or the
+		// DielectricSPF wrong-side test drops the transmission lobe
+		// entirely.  Free-space cameras: the probe finds no enclosing
+		// objects, no-op.
+		{
+			const IScene* pAttachedScene = pCaster->GetAttachedScene();
+			if( pAttachedScene ) {
+				IORStackSeeding::SeedFromPoint( cameraIorStack, ray.origin, *pAttachedScene );
+			}
+		}
 		bool bThisHit = pCaster->CastRayHWSS( rc, rast, ray, cHWSS, rs, swl, 0, 0, cameraIorStack );
 
 		if( bThisHit ) {

@@ -17,6 +17,7 @@
 
 #include "../Interfaces/IPhotonTracer.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Rendering/LuminaryManager.h"
 
 namespace RISE
@@ -93,8 +94,6 @@ namespace RISE
 				const LuminaryManager::LuminariesList& lum = pLumManager->getLuminaries();
 				LuminaryManager::LuminariesList::const_iterator	i, e;
 
-				IORStack ior_stack( 1.0 );
-
 				const Scalar wavelength_steps = (nm_end-nm_begin)/Scalar(num_wavelengths);
 				for( i=lum.begin(), e=lum.end(); i!=e; i++ )
 				{
@@ -148,6 +147,18 @@ namespace RISE
 							nm_begin + int(random.CanonicalRandom()*Scalar(num_wavelengths)) * wavelength_steps : 
 							nm_begin + random.CanonicalRandom() * (nm_end-nm_begin);
 						const Scalar power = pEmitter->averageRadiantExitanceNM(nm) * area_premul;
+
+						// Fresh per-photon stack seeded from THIS photon's
+						// origin: a luminaire sealed inside nested
+						// dielectrics (e.g. a light in a glass egg) needs
+						// its emitted photon to see bFromInside==true at
+						// the first boundary crossing, or DielectricSPF
+						// misclassifies it and drops the transmission
+						// lobe.  Also fixes a latent state-leak: the old
+						// shared ior_stack could carry residual state
+						// between unrelated photons.
+						IORStack ior_stack( 1.0 );
+						IORStackSeeding::SeedFromPoint( ior_stack, r.origin, *pScene );
 
 						// Now shoot that ray as a photon
 						TraceSinglePhoton( r, power, nm, *pPhotonMap, ior_stack );

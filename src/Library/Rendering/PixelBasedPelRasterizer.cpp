@@ -653,7 +653,16 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
 					PixelAOV aov;
 					rc.pAOV = pAOVBuffers ? &aov : 0;
-					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
+					// Seed from the camera-ray origin: if the camera sits
+					// inside a dielectric (submerged camera, camera inside
+					// a medium volume), the first boundary crossing must
+					// see bFromInside==true or the DielectricSPF
+					// wrong-side test drops the transmission lobe
+					// entirely.  Free-space cameras: the probe finds no
+					// enclosing objects, no-op.
+					IORStack iorStack( 1.0 );
+					IORStackSeeding::SeedFromPoint( iorStack, ray.origin, pScene );
+					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0, iorStack );
 					rc.pAOV = 0;
 					if( pAOVBuffers ) {
 						if( aov.valid ) {
@@ -772,7 +781,15 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
 			PixelAOV aov;
 			rc.pAOV = pAOVBuffers ? &aov : 0;
-			if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 ) ) {
+			// Seed from the camera-ray origin: if the camera sits inside a
+			// dielectric (submerged camera, camera inside a medium
+			// volume), the first boundary crossing must see
+			// bFromInside==true or the DielectricSPF wrong-side test
+			// drops the transmission lobe entirely.  Free-space cameras:
+			// the probe finds no enclosing objects, no-op.
+			IORStack iorStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( iorStack, ray.origin, pScene );
+			if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0, iorStack ) ) {
 				cret = RISEColor( c, 1.0 );
 			}
 			rc.pAOV = 0;
