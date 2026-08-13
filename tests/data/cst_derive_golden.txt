@@ -47,6 +47,7 @@ scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene  30c9b024ca1febda527e2e
 scenes/FeatureBased/SDF/sdf_morph_torture.RISEscene  9b1cab2486e45a01bbff933fdd96ec618949d539a00d04777a32b710462bc3ab  2024  39
 scenes/FeatureBased/Shaders/SSS/sss_gi_dragon.RISEscene  178bd803bc80070bc5e1e62c92eeffc7134d195cbfbbadf1c4104fcbe3d55b20  2106  29
 scenes/FeatureBased/Shaders/visiblehuman.RISEscene  20394064aadcca9fd82fc7921c1e9910b6412cf6ac66c6564a23193c081c57fd  474  22
+scenes/FeatureBased/VCM/vcm_sdf_luminaire_jellyfish.RISEscene  1f2eeed2ab2091544ecb7edfd3190b887a27c99e51279f1a05320df3da425e63  12090  206
 scenes/FeatureBased/VCM/vcm_veach_egg_displaced.RISEscene  e558b628dd1c7158bf013aad1d932ae795044d683a25a43d8e9b0ffafa83d11d  2335  45
 scenes/Templates/empty_starter.RISEscene  8402d4ae8e7cf9bcf9298d9b5795cc3610fb82f5f45e05af6c7dcd36835eff33  218  16
 scenes/Tests/Animation/animation_exposure.RISEscene  2647e1304dd5f525651466721cbc9afa3dcb8a73574639eee535d5b0d277bcf9  1082  25
@@ -166,6 +167,7 @@ scenes/Tests/Lights/env_plus_mesh_emitter_bdpt.RISEscene  93e880c9a6e845dff7849b
 scenes/Tests/Lights/env_plus_mesh_emitter_pt.RISEscene  93e880c9a6e845dff7849b1ddb351e42d652c02e329b53cd3f147b71176ee1e9  2127  39
 scenes/Tests/Lights/env_plus_mesh_emitter_vcm.RISEscene  93e880c9a6e845dff7849b1ddb351e42d652c02e329b53cd3f147b71176ee1e9  2127  39
 scenes/Tests/Lights/hosek_wilkie_sky_lab.RISEscene  4c2ef9fe54e2c0b4de15719be62868f44dc5706ec06f89a35061e26b4eb74e7c  1530  30
+scenes/Tests/Lights/rect_light_sidedness.RISEscene  3e6a7b40102947954492123776af87146bc9a986383b515a8b1947592edd37b6  1842  33
 scenes/Tests/MLT/cornellbox_mlt.RISEscene  46ea6d0b715fb8847c7e6e232b2585f275c5b0d7fd3bf31b39b2723eee059b53  1911  36
 scenes/Tests/MLT/cornellbox_mlt_fast.RISEscene  6c20cc771f33913a819f16cad6e8259d42c9f7e57dafc31de5694151d4292884  1911  36
 scenes/Tests/MLT/mlt_torus_chain_atrium.RISEscene  54724595ad858edc58b46147d19cb64d3ed17bb04f0d701066c26723f647d1d0  14477  121

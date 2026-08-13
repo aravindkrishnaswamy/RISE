@@ -1,0 +1,751 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   VCM torture test: "SDF luminaire jellyfish"                                                             #
+#   An underwater tableau -- a sea turtle banking over a coral reef, a jellyfish drifting at right, all      #
+#   inside a scattering water volume under a displaced dielectric surface.  Built by a GUI agent session;    #
+#   banked here for the transport stress it puts on VCM, not for its picture.                                #
+#############################################################################################################
+
+#############################################################################################################
+#   SESSION PROVENANCE                                                                                      #
+#                                                                                                           #
+#   Prompt (verbatim, the user's own words):                                                                #
+#     "Build an underwater world filled with interesting sea creatures, corals and other interesting        #
+#      objects.  Make the lighting dramatic but realistic.  The scene should also be colorful but also      #
+#      realistic and creatively use materials and shapes."                                                  #
+#   (The trajectory's user record also carries a bracketed restatement from the intake assistant, marked    #
+#   informational-only in the record itself.  It is not reproduced here as authored intent.)                #
+#                                                                                                           #
+#   Model:    provider `gemini`.  All 51 agent turns in the trajectory record                               #
+#             gen_ai.request.model = gemini-3.5-flash.  The single populate_scene completion reports        #
+#             model gemini-3.6-flash in its own result.  Both values are as recorded; the brief that        #
+#             commissioned this reconstruction said gemini-3.6-flash, which matches only that one call.     #
+#   Date:     2026-08-13 (session started 14:14:51Z).  RISE GUI agent session.                              #
+#   Session:  trace c04ad682-ce1b-41ce-a80d-8d76f338c355                                                    #
+#   Trajectory: ~/Library/Application Support/RISE/trajectories/gui/20260813T141451Z-c04ad682.jsonl         #
+#############################################################################################################
+
+#############################################################################################################
+#   RECONSTRUCTION NOTE -- THIS FILE IS A RECONSTRUCTION, NOT THE SCENE THE SESSION SAVED.                  #
+#                                                                                                           #
+#   The owner closed the app without saving.  This file was rebuilt from the session trajectory: the LAST   #
+#   read_document result (full document text at head revision 58, which already contains all four           #
+#   build_element outputs) plus every recorded mutating call after it, applied in recorded order and ONLY   #
+#   where the recorded result says it applied.  place_element transforms were re-applied by a port of the   #
+#   engine's own composition -- AgentSession::PlaceElement, plus RotateEulerDeg_ / FormatVec3_ -- not by    #
+#   approximation; all six calls reproduce their recorded patch counts exactly (6, 6, 21, 9, 14, 21).       #
+#                                                                                                           #
+#   KNOWN GAPS -- what is NOT here, and why:                                                                #
+#                                                                                                           #
+#   1. THE FIVE populate_scene REPEATS ARE ABSENT.  populate_scene created corals_stem1_extra1,             #
+#      corals_stem2_extra1, corals_polyps_extra1, corals_stem1_extra2 and corals_polyps_extra2 (reusing     #
+#      the corals geometries and materials).  The trajectory records their names, geometry and material     #
+#      but NOT their positions, so they cannot be replaced without inventing coordinates.  They are         #
+#      omitted rather than guessed.  Measured effect: this scene has 18 objects where the session's final   #
+#      render had 23.                                                                                      #
+#                                                                                                           #
+#   2. THREE RECORDED CALLS ARE DELIBERATELY NOT APPLIED, because they did not apply in the session         #
+#      either: two insert_chunks batches refused (zero-area-light gate, then compose-phase geometry gate)   #
+#      and one remove_chunks refused (compose-phase form-bearing gate).  The identical third insert and     #
+#      the post-reopen remove DID apply and ARE here.                                                       #
+#                                                                                                           #
+#   3. TWO RASTERIZER CHUNKS ARE PRESENT, as in the session: the starter's pathtracing_pel_rasterizer and   #
+#      the inserted vcm_pel_rasterizer.  Unnamed chunks derive last-wins, so VCM is the active integrator   #
+#      -- which is exactly what every recorded render result reports.  Left as authored; do not "tidy".     #
+#                                                                                                           #
+#   FIDELITY vs THE SESSION'S LAST RECORDED RENDER (256x192, 16 spp, VCM):                                  #
+#     every object's world bbox centre matches to the printed precision (17 of 17 shared objects);          #
+#     FRAME TONE luma mean 39.2 here vs 39.0 recorded, stddev 13.44 vs 13.60, mode 40 vs 40,                #
+#     P1/P99 12/97 vs 13/97; meanRGB (0.00713, 0.03684, 0.08764) vs (0.00691, 0.03671, 0.08767).            #
+#     The residual is the five absent coral repeats: they occluded ~112 px of water_volume and ~7 px of     #
+#     corals_stem2_obj in the recorded frame.                                                               #
+#############################################################################################################
+
+#############################################################################################################
+#   WHY IT IS HELD -- WHAT THIS SCENE STRESSES                                                              #
+#                                                                                                           #
+#   Emissive materials on SDF geometry, inside a dielectric bell, inside a scattering medium.  The three    #
+#   jellyfish materials are pbr_metallic_roughness_material with an `emissive` painter and an               #
+#   emissive_scale (jellyfish_bell_emit at 0.4, jellyfish_core_emit at 0.8, jellyfish_tentacle_emit at      #
+#   0.7) -- NOT lambertian_luminaire_material; there is no lambertian_luminaire chunk anywhere in this      #
+#   scene or in the session that built it.  Each is bound to an sdf_geometry at sampling_detail 64.         #
+#                                                                                                           #
+#   That combination exercises the CanBeAreaLight guard in BOTH directions in one load:                     #
+#     * jellyfish_bell_geo and jellyfish_core_geo area-sample cleanly, so NEE gets to area-sample an        #
+#       IMPLICIT surface and VCM gets to emit light subpaths and photons from one -- through the            #
+#       surrounding dielectric bell, which is S-D-S transport;                                             #
+#     * jellyfish_tentacles_geo does NOT.  Its capsule radii (0.006 to 0.018) fall below the sampling       #
+#       grid, so SDFGeometry reports "sampling mesh PROVABLY missed surface in 77 grid cell(s)",            #
+#       CanBeAreaLight() returns false, and LuminaryManager drops it from light sampling -- it still        #
+#       contributes emission on direct camera view and BSDF-sampled hits.  Both warnings fire on every      #
+#       load of this file.  They are the point, not a defect to fix: raising sampling_detail would          #
+#       silence the case this scene exists to hold.                                                        #
+#                                                                                                           #
+#   Layered on top: a homogeneous_medium interior (absorption 0.04 0.005 0.001, scattering 0.02 0.02 0.03,  #
+#   HG g=0.4) filling a box that contains everything; a displaced_geometry dielectric water surface at      #
+#   ior 1.333 above it; a directional sun at power 120 through that surface; and a radiance_background      #
+#   environment.  So the SDF sampling cache, the area-light guard, volumetric transport and a refractive    #
+#   boundary are all under load in the same frame.                                                          #
+#                                                                                                           #
+#   HONEST CAVEATS, measured not assumed:                                                                   #
+#     * The corals are misplaced.  corals_stem1_obj and corals_stem2_obj have world bbox centres at         #
+#       z = +26 and z = +31 -- far behind the camera plane -- because their SDF capsule parts carry         #
+#       rotations that place_element's scale-then-offset composition carried outward.  This is faithful     #
+#       to the session: the recorded final render reports the same centres. It is not a reconstruction      #
+#       error.                                                                                              #
+#     * The `pixel_filter box` and 16-sample settings are the agent's, kept as authored.                    #
+#     * validate reports one info diagnostic (DESIGN_SCALAR_PIPE_UNUSED); the session's own validate call   #
+#       reported the same one.                                                                              #
+#############################################################################################################
+
+#############################################################################################################
+#   MEASURED PT-vs-VCM A/B (2026-08-13, 400x300, matched spp, scratch copies -- the banked file itself      #
+#   keeps BOTH rasterizer chunks, VCM active).  Raw pre-OIDN PNG, Rec.709 luma on 0-255:                    #
+#                                                                                                           #
+#     integrator          spp    wall      mean      sd     P99     max   mean|neighbour diff|              #
+#     pathtracing_pel     256    11.4 s   18.21   27.31   142.3   233.0        4.93                         #
+#     pathtracing_pel    1024    44.5 s   18.37   27.43   138.8   205.8        4.02                         #
+#     vcm_pel             256    16.6 s   39.89   24.14   162.3   253.7       12.10                         #
+#     vcm_pel            1024    66.7 s   42.06   24.08   148.9   245.6       11.65                         #
+#                                                                                                           #
+#   READ IT HONESTLY.  PT behaves like a converging estimator here: its mean is flat across a 4x            #
+#   sample increase (18.21 -> 18.37) and its neighbour-difference falls (4.93 -> 4.02).  VCM does           #
+#   NOT.  The VCM frame is covered in dense salt-and-pepper speckle that barely shrinks from 256 to         #
+#   1024 spp (12.10 -> 11.65, against PT 4.02 at the same spp), and its mean DRIFTS UP (39.89 ->            #
+#   42.06) instead of settling.  So the ~2.2x mean gap is NOT established as transport PT cannot            #
+#   reach; some unknown part of it is VCM's own unresolved outlier energy.  Separating the two needs        #
+#   a converged reference this scene does not have.  That unresolved disagreement, on a topology            #
+#   (SDF area lights + dielectric bell + dielectric surface + scattering medium) squarely inside            #
+#   VCM's documented regime, is the reason the scene is worth keeping.                                      #
+#############################################################################################################
+
+
+uniformcolor_painter
+{
+	name seabed_sand_pnt
+	color 0.76 0.70 0.55
+}
+
+uniformcolor_painter
+{
+	name seabed_rock_pnt
+	color 0.35 0.32 0.28
+}
+
+uniformcolor_painter
+{
+	name corals_stem1_pnt
+	color 0.92 0.32 0.22
+}
+
+uniformcolor_painter
+{
+	name corals_stem2_pnt
+	color 0.88 0.18 0.45
+}
+
+uniformcolor_painter
+{
+	name corals_polyps_pnt
+	color 0.98 0.82 0.2
+}
+
+uniformcolor_painter
+{
+	name turtle_shell_pnt
+	color 0.18 0.26 0.12
+}
+
+uniformcolor_painter
+{
+	name turtle_skin_pnt
+	color 0.25 0.34 0.18
+}
+
+uniformcolor_painter
+{
+	name turtle_beak_pnt
+	color 0.42 0.35 0.22
+}
+
+uniformcolor_painter
+{
+	name jellyfish_bell_pnt
+	color 0.4 0.8 0.95
+}
+
+uniformcolor_painter
+{
+	name jellyfish_bell_emit
+	color 0.15 0.45 0.75
+}
+
+uniformcolor_painter
+{
+	name jellyfish_core_pnt
+	color 0.95 0.4 0.75
+}
+
+uniformcolor_painter
+{
+	name jellyfish_core_emit
+	color 0.85 0.2 0.65
+}
+
+uniformcolor_painter
+{
+	name jellyfish_tentacle_pnt
+	color 0.5 0.85 1.0
+}
+
+uniformcolor_painter
+{
+	name jellyfish_tentacle_emit
+	color 0.3 0.7 0.95
+}
+
+perlin2d_painter
+{
+	name surface_waves_fn
+	octaves 4
+	persistence 0.5
+	scale 8.0 8.0
+}
+
+uniformcolor_painter
+{
+	name pnt_sea_bg
+	color 0.01 0.05 0.12
+}
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				16
+	pixel_filter		box
+}
+
+film
+{
+	width				800
+	height				600
+}
+
+pinhole_camera
+{
+	location 0 1.6 6.5
+	lookat 0.3 0.4 -0.3
+	up					0 1 0
+	fov 48.0
+}
+
+pbr_metallic_roughness_material
+{
+	name seabed_sand_mat
+	base_color seabed_sand_pnt
+	roughness 0.9
+	metallic 0.0
+}
+
+sdf_geometry
+{
+	name seabed_plane_geo
+	part roundbox union 0.0 0.0 0.1 0.0 0 0 0 2.2 0.1 2.2 0 0 0 0.05
+	part sphere smin 0.15 -0.6 0.25 0.3 0 0 0 0.25 0.2 0.25 0 0 0 0.0
+	part sphere smin 0.15 0.8 0.25 -0.4 0 0 0 0.3 0.22 0.3 0 0 0 0.0
+	part sphere smin 0.15 0.1 0.22 0.8 0 0 0 0.2 0.18 0.2 0 0 0 0.0
+}
+
+
+pbr_metallic_roughness_material
+{
+	name seabed_rock_mat
+	base_color seabed_rock_pnt
+	roughness 0.8
+	metallic 0.0
+}
+
+sdf_geometry
+{
+	name seabed_rocky_outcrop_1_geo
+	part roundbox union 0.0 -1.2 0.9 -0.5 15 20 -10 0.5 0.8 0.5 0 0 0 0.15
+	part sphere smin 0.25 -1.0 1.4 -0.3 0 0 0 0.45 0.45 0.45 0 0 0 0.0
+	part sphere smin 0.2 -1.3 0.5 -0.6 0 0 0 0.55 0.4 0.55 0 0 0 0.0
+	part roundbox subtract 0.1 -0.8 1.1 -0.2 0 45 0 0.3 0.5 0.3 0 0 0 0.05
+}
+
+sdf_geometry
+{
+	name seabed_rocky_outcrop_2_geo
+	part roundbox union 0.0 1.1 0.75 -0.8 -10 -15 12 0.45 0.7 0.45 0 0 0 0.12
+	part sphere smin 0.22 0.9 1.2 -0.6 0 0 0 0.4 0.4 0.4 0 0 0 0.0
+	part sphere smin 0.18 1.3 0.4 -0.9 0 0 0 0.5 0.35 0.5 0 0 0 0.0
+}
+
+pbr_metallic_roughness_material
+{
+	name corals_stem1_mat
+	base_color corals_stem1_pnt
+	roughness 0.4
+	metallic 0.0
+}
+
+sdf_geometry
+{
+	name corals_stem1_geo
+	part capsule union 0.08 0 0.25 0 0 0 0 1 1 1 0.12 0.2 0 0
+	part capsule smin 0.08 0 0.6 0 0 15 0 1 1 1 0.09 0.2 0 0
+	part capsule smin 0.08 -0.15 0.9 0 0 25 0 1 1 1 0.07 0.2 0 0
+	part capsule smin 0.08 -0.3 1.2 0 0 35 0 1 1 1 0.05 0.15 0 0
+	part capsule smin 0.08 0.15 0.9 0 0 -20 0 1 1 1 0.07 0.2 0 0
+	part capsule smin 0.08 0.3 1.25 0 0 -30 0 1 1 1 0.05 0.15 0 0
+	part capsule smin 0.08 0.0 0.9 20 0 0 0 1 1 1 0.07 0.2 0 0
+	part capsule smin 0.08 0.05 1.3 30 0 0 0 1 1 1 0.04 0.15 0 0
+}
+
+pbr_metallic_roughness_material
+{
+	name corals_stem2_mat
+	base_color corals_stem2_pnt
+	roughness 0.4
+	metallic 0.0
+}
+
+sdf_geometry
+{
+	name corals_stem2_geo
+	part capsule union 0.08 0.2 0.2 0 0 -10 0 1 1 1 0.1 0.18 0 0
+	part capsule smin 0.08 0.3 0.55 0 0 -20 0 1 1 1 0.08 0.18 0 0
+	part capsule smin 0.08 0.45 0.95 0 0 -15 0 1 1 1 0.06 0.2 0 0
+	part capsule smin 0.08 0.55 1.35 0 0 -5 0 1 1 1 0.04 0.15 0 0
+	part capsule smin 0.08 0.2 0.8 20 0 0 0 1 1 1 0.06 0.18 0 0
+	part capsule smin 0.08 0.15 1.15 35 0 0 0 1 1 1 0.04 0.15 0 0
+}
+
+pbr_metallic_roughness_material
+{
+	name corals_polyps_mat
+	base_color corals_polyps_pnt
+	roughness 0.3
+	metallic 0.0
+}
+
+sdf_geometry
+{
+	name corals_polyps_geo
+	part sphere union 0.03 -0.38 1.32 0 0 0 0 1 1 1 0.035 0 0 0
+	part sphere union 0.03 0.38 1.38 0 0 0 0 1 1 1 0.035 0 0 0
+	part sphere union 0.03 0.08 1.42 0 0 0 0 1 1 1 0.032 0 0 0
+	part sphere union 0.03 -0.22 0.98 0 0 0 0 1 1 1 0.03 0 0 0
+	part sphere union 0.03 0.22 0.98 0 0 0 0 1 1 1 0.03 0 0 0
+	part sphere union 0.03 0.6 1.45 0 0 0 0 1 1 1 0.035 0 0 0
+	part sphere union 0.03 0.18 1.25 0 0 0 0 1 1 1 0.03 0 0 0
+	part sphere union 0.03 -0.1 0.65 0 0 0 0 1 1 1 0.028 0 0 0
+	part sphere union 0.03 0.12 0.65 0 0 0 0 1 1 1 0.028 0 0 0
+	part sphere union 0.03 0.35 0.62 0 0 0 0 1 1 1 0.028 0 0 0
+}
+
+pbr_metallic_roughness_material
+{
+	name turtle_shell_mat
+	base_color turtle_shell_pnt
+	roughness 0.35
+}
+
+pbr_metallic_roughness_material
+{
+	name turtle_skin_mat
+	base_color turtle_skin_pnt
+	roughness 0.45
+}
+
+pbr_metallic_roughness_material
+{
+	name turtle_beak_mat
+	base_color turtle_beak_pnt
+	roughness 0.50
+}
+
+
+
+
+
+
+
+
+pbr_metallic_roughness_material
+{
+	name jellyfish_bell_mat
+	base_color jellyfish_bell_pnt
+	metallic 0.0
+	roughness 0.15
+	specular_factor 1.0
+	emissive jellyfish_bell_emit
+	emissive_scale 0.4
+}
+
+sdf_geometry
+{
+	name jellyfish_bell_geo
+	sampling_detail 64
+	part sphere union 0.0 0 1.55 0 0 0 0 1 0.85 1 0.45 0 0 0.0
+	part box subtract 0.1 0 1.05 0 0 0 0 1 1 1 0.5 0.2 0.5 0.05
+	part torus smin 0.08 0 1.25 0 0 0 0 1 1 1 0.4 0.035 0 0.0
+}
+
+pbr_metallic_roughness_material
+{
+	name jellyfish_core_mat
+	base_color jellyfish_core_pnt
+	metallic 0.0
+	roughness 0.3
+	emissive jellyfish_core_emit
+	emissive_scale 0.8
+}
+
+sdf_geometry
+{
+	name jellyfish_core_geo
+	sampling_detail 64
+	part sphere union 0.0 0 1.45 0 0 0 0 0.6 1.0 0.6 0.25 0 0 0.0
+	part capsule smin 0.05 0 1.25 0 0 0 0 1 1 1 0.04 0.25 0 0.0
+	part capsule smin 0.05 0.08 1.20 0.08 15 20 0 1 1 1 0.035 0.3 0 0.0
+	part capsule smin 0.05 -0.08 1.20 -0.08 -15 -20 0 1 1 1 0.035 0.3 0 0.0
+}
+
+pbr_metallic_roughness_material
+{
+	name jellyfish_tentacle_mat
+	base_color jellyfish_tentacle_pnt
+	metallic 0.0
+	roughness 0.2
+	emissive jellyfish_tentacle_emit
+	emissive_scale 0.7
+}
+
+sdf_geometry
+{
+	name jellyfish_tentacles_geo
+	sampling_detail 64
+	part capsule union 0.0 -0.12 0.95 0.05 10 5 -5 1 1 1 0.018 0.5 0 0.0
+	part capsule smin 0.03 -0.18 0.45 0.02 -8 -10 5 1 1 1 0.012 0.5 0 0.0
+	part capsule smin 0.03 -0.12 0.12 -0.02 5 8 0 1 1 1 0.008 0.25 0 0.0
+	part capsule union 0.0 0.12 0.95 -0.05 -8 -5 8 1 1 1 0.018 0.5 0 0.0
+	part capsule smin 0.03 0.16 0.45 0.03 10 12 -5 1 1 1 0.012 0.5 0 0.0
+	part capsule smin 0.03 0.10 0.12 0.05 -6 -8 0 1 1 1 0.008 0.25 0 0.0
+	part capsule union 0.0 0.00 0.98 0.15 5 -10 12 1 1 1 0.016 0.45 0 0.0
+	part capsule smin 0.03 0.04 0.50 0.20 -8 5 -10 1 1 1 0.011 0.45 0 0.0
+	part capsule smin 0.03 0.02 0.15 0.12 4 2 5 1 1 1 0.007 0.25 0 0.0
+	part capsule union 0.0 0.02 0.98 -0.15 -12 8 -8 1 1 1 0.016 0.45 0 0.0
+	part capsule smin 0.03 -0.05 0.50 -0.18 10 -8 8 1 1 1 0.011 0.45 0 0.0
+	part capsule smin 0.03 -0.02 0.15 -0.10 -5 -3 -4 1 1 1 0.007 0.25 0 0.0
+	part capsule union 0.0 -0.22 1.00 0.00 15 0 -10 1 1 1 0.014 0.40 0 0.0
+	part capsule smin 0.03 -0.28 0.52 -0.05 -12 5 12 1 1 1 0.009 0.40 0 0.0
+	part capsule smin 0.03 -0.22 0.16 -0.02 8 -4 -6 1 1 1 0.006 0.30 0 0.0
+	part capsule union 0.0 0.22 1.00 0.00 -15 0 10 1 1 1 0.014 0.40 0 0.0
+	part capsule smin 0.03 0.26 0.52 0.06 12 -5 -10 1 1 1 0.009 0.40 0 0.0
+	part capsule smin 0.03 0.20 0.16 0.02 -8 4 6 1 1 1 0.006 0.30 0 0.0
+}
+
+homogeneous_medium
+{
+	name water_medium
+	absorption 0.04 0.005 0.001
+	scattering 0.02 0.02 0.03
+	phase hg 0.4
+}
+
+dielectric_material
+{
+	name water_boundary_mat
+	tau 1.0 1.0 1.0
+	ior 1.0
+	scattering 0.0
+}
+
+box_geometry
+{
+	name water_box_geo
+	width 24.0
+	height 9.0
+	depth 24.0
+}
+
+box_geometry
+{
+	name water_surface_base
+	width 16.0
+	height 0.2
+	depth 16.0
+}
+
+displaced_geometry
+{
+	name water_surface_geo
+	base_geometry water_surface_base
+	detail 64
+	displacement surface_waves_fn
+	disp_scale 0.25
+}
+
+dielectric_material
+{
+	name water_surface_mat
+	tau 0.95 0.98 0.99
+	ior 1.333
+	scattering 100000.0
+}
+
+sdf_geometry
+{
+	name turtle_shell_geo
+	part sphere union 0.0 0.0 0.0 0.42 0.0 0.0 0.0 0.95 0.32 1.15 1.0 0.0 0.0 0.0
+	part roundbox smin 0.15 0.0 0.25 0.0 0.0 0.0 0.0 0.80 0.10 0.95 1.0 1.0 1.0 0.10
+	part roundbox smin 0.10 0.0 0.55 0.0 0.0 0.0 0.0 0.45 0.12 0.85 1.0 1.0 1.0 0.08
+}
+
+sdf_geometry
+{
+	name turtle_head_geo
+	part sphere union 0.0 0.0 0.45 1.35 0.0 0.0 0.0 0.22 0.18 0.26 1.0 0.0 0.0 0.0
+	part capsule smin 0.12 0.0 0.42 1.10 10.0 0.0 0.0 0.18 0.18 0.30 1.0 1.0 0.0 0.04
+}
+
+sdf_geometry
+{
+	name turtle_beak_geo
+	part roundbox union 0.0 0.0 0.41 1.58 20.0 0.0 0.0 0.08 0.07 0.10 1.0 1.0 1.0 0.02
+}
+
+sdf_geometry
+{
+	name turtle_flipper_fl_geo
+	part capsule union 0.0 -0.75 0.36 0.60 -10.0 35.0 -15.0 0.16 0.04 0.60 1.0 1.0 0.0 0.03
+	part capsule smin 0.08 -1.25 0.34 0.90 -5.0 60.0 -10.0 0.13 0.03 0.45 1.0 1.0 0.0 0.02
+}
+
+sdf_geometry
+{
+	name turtle_flipper_fr_geo
+	part capsule union 0.0 0.75 0.36 0.60 -10.0 -35.0 15.0 0.16 0.04 0.60 1.0 1.0 0.0 0.03
+	part capsule smin 0.08 1.25 0.34 0.90 -5.0 -60.0 10.0 0.13 0.03 0.45 1.0 1.0 0.0 0.02
+}
+
+sdf_geometry
+{
+	name turtle_flipper_rl_geo
+	part capsule union 0.0 -0.65 0.30 -0.75 10.0 -40.0 -10.0 0.12 0.03 0.30 1.0 1.0 0.0 0.02
+}
+
+sdf_geometry
+{
+	name turtle_flipper_rr_geo
+	part capsule union 0.0 0.65 0.30 -0.75 10.0 40.0 10.0 0.12 0.03 0.30 1.0 1.0 0.0 0.02
+}
+standard_object
+{
+	name seabed_plane
+	geometry seabed_plane_geo
+	material seabed_sand_mat
+	position 0 -2.5 0
+	scale 4 4 4
+}
+
+standard_object
+{
+	name seabed_rocky_outcrop_1
+	geometry seabed_rocky_outcrop_1_geo
+	material seabed_rock_mat
+	position 0 -2.5 0
+	scale 4 4 4
+}
+
+standard_object
+{
+	name seabed_rocky_outcrop_2
+	geometry seabed_rocky_outcrop_2_geo
+	material seabed_rock_mat
+	position 0 -2.5 0
+	scale 4 4 4
+}
+
+standard_object
+{
+	name corals_stem1_obj
+	geometry corals_stem1_geo
+	material corals_stem1_mat
+	position -1.8 -2.3 -0.5
+	scale 1.8 1.8 1.8
+}
+
+standard_object
+{
+	name corals_stem2_obj
+	geometry corals_stem2_geo
+	material corals_stem2_mat
+	position -1.8 -2.3 -0.5
+	scale 1.8 1.8 1.8
+}
+
+standard_object
+{
+	name corals_polyps_obj
+	geometry corals_polyps_geo
+	material corals_polyps_mat
+	position -1.8 -2.3 -0.5
+	scale 1.8 1.8 1.8
+}
+
+
+
+
+
+
+
+
+standard_object
+{
+	name jellyfish_bell_obj
+	geometry jellyfish_bell_geo
+	material jellyfish_bell_mat
+	position 1.8 0.6 0
+	scale 1.3 1.3 1.3
+	orientation 10 -20 -5
+}
+
+standard_object
+{
+	name jellyfish_core_obj
+	geometry jellyfish_core_geo
+	material jellyfish_core_mat
+	position 1.8 0.6 0
+	scale 1.3 1.3 1.3
+	orientation 10 -20 -5
+}
+
+standard_object
+{
+	name jellyfish_tentacles_obj
+	geometry jellyfish_tentacles_geo
+	material jellyfish_tentacle_mat
+	position 1.8 0.6 0
+	scale 1.3 1.3 1.3
+	orientation 10 -20 -5
+}
+
+
+standard_object
+{
+	name water_volume
+	geometry water_box_geo
+	material water_boundary_mat
+	interior_medium water_medium
+	position 0 0.5 0
+}
+
+standard_object
+{
+	name water_surface
+	geometry water_surface_geo
+	material water_surface_mat
+	position 0 4.0 0
+}
+
+vcm_pel_rasterizer
+{
+	samples 16
+	pixel_filter box
+	oidn_denoise TRUE
+	radiance_map pnt_sea_bg
+	radiance_background TRUE
+}
+
+directional_light
+{
+	name sun_light
+	power 120.0
+	color 0.9 0.95 1.0
+	direction 0.3 0.9 0.1
+}
+
+omni_light
+{
+	name seabed_glow
+	power 80.0
+	color 0.8 0.5 0.3
+	position -4.0 -2.0 2.0
+}
+
+standard_object
+{
+	name turtle_shell_obj
+	geometry turtle_shell_geo
+	material turtle_shell_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}
+
+standard_object
+{
+	name turtle_head_obj
+	geometry turtle_head_geo
+	material turtle_skin_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}
+
+standard_object
+{
+	name turtle_beak_obj
+	geometry turtle_beak_geo
+	material turtle_beak_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}
+
+standard_object
+{
+	name turtle_flipper_fl_obj
+	geometry turtle_flipper_fl_geo
+	material turtle_skin_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}
+
+standard_object
+{
+	name turtle_flipper_fr_obj
+	geometry turtle_flipper_fr_geo
+	material turtle_skin_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}
+
+standard_object
+{
+	name turtle_flipper_rl_obj
+	geometry turtle_flipper_rl_geo
+	material turtle_skin_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}
+
+standard_object
+{
+	name turtle_flipper_rr_obj
+	geometry turtle_flipper_rr_geo
+	material turtle_skin_mat
+	position -0.2 0.4 -1
+	scale 1.4 1.4 1.4
+	orientation -15 45 10
+}

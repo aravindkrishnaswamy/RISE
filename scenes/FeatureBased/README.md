@@ -31,7 +31,15 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
-- `VCM/`: vertex-connection-and-merging showpieces
+- `VCM/`: vertex-connection-and-merging showpieces.
+  `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
+  than a picture: emissive SDF geometry inside a dielectric bell inside a scattering
+  medium, under a displaced dielectric water surface. It exercises the
+  `CanBeAreaLight` guard in both directions in a single load (two SDF emitters
+  area-sample and become NEE lights, one provably cannot and falls back to
+  BSDF-hit-only emission), and PT and VCM disagree on it by ~2.2x in frame mean with
+  VCM's speckle unresolved at 1024 spp. Its header carries the full provenance,
+  the reconstruction note, and the measured A/B.
 
 ## Recommended Smoke Scenes
 
