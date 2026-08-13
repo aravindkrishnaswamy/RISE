@@ -1223,6 +1223,33 @@ typedef NS_ENUM(NSInteger, RISEAgentAutonomyLevel) {
                                  apiKey:(NSString *)apiKey
     NS_SWIFT_NAME(agentSetImageGenerator(provider:apiKey:));
 
+#pragma mark - Agent session mode (Arc 83 §4.1: the build/refine transition)
+
+/// Tell EVERY in-app session this bridge owns that the agent's turn just
+/// ended with its own prose rather than a tool call — the ONE structural
+/// signal that ends the staged build protocol's COMPULSION (see
+/// `AgentSession::NoteFinalAnswer` and the block above
+/// `AgentSession::SessionMode`).  After it, no construction gate fires
+/// again on these sessions: no phase refusals, no compose-phase delete
+/// ban, no forced clean rooms, no populate-before-render, no build-plan
+/// gate.  Every verb stays available; nothing is compelled.
+///
+/// Call it from the chat driver's FinalText arm (ChatViewModel's
+/// `.finalText` case), unconditionally and on EVERY final turn:
+/// `NoteFinalAnswer` is idempotent and one-way, so only the first one on a
+/// session that started from an EMPTY scene changes anything at all.  A
+/// session that opened a scene already carrying geometry is in "refining"
+/// from construction and was never gated in the first place.
+///
+/// Hits the same three in-app sessions `-agentSetImageGeneratorProvider:
+/// apiKey:` installs onto — the administrative one plus both tool-call
+/// ones — because they all serve the SAME document and the turn that just
+/// ended is the same turn for all of them.  It deliberately does NOT reach
+/// the hosted loopback server's External session: there the EXTERNAL MCP
+/// client owns the model loop and no turn-end signal crosses the wire.
+- (void)agentNoteFinalAnswer
+    NS_SWIFT_NAME(agentNoteFinalAnswer());
+
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 
 /// Start a LOOPBACK-ONLY MCP HTTP server (the same

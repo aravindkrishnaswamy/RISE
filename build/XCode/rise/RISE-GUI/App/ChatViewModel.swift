@@ -2468,6 +2468,15 @@ final class ChatViewModel: ObservableObject {
                 if !step.finalText.isEmpty {
                     transcript.append(Entry(kind: .assistant, text: step.finalText))
                 }
+                // Arc 83 §4.1: THE MODE TRANSITION.  A turn that ends with
+                // the model's own prose rather than a tool call is "the
+                // agent's first final answer" — the event that ends the
+                // staged build protocol's compulsion for every in-app
+                // session.  Unconditional and on every final turn: the
+                // underlying NoteFinalAnswer is idempotent and one-way, and
+                // a session that opened a scene already carrying geometry
+                // has been in "refining" since construction anyway.
+                viewportBridge?.agentNoteFinalAnswer()
                 return
 
             case .providerError:

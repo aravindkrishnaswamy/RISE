@@ -1442,6 +1442,14 @@ void ChatPanel::networkFinished()
     }
 
     if (step.kind == ChatStepResult::Kind::FinalText) {
+        // Arc 83 sec 4.1: THE MODE TRANSITION.  A turn that ends with the
+        // model's own prose rather than a tool call is "the agent's first
+        // final answer" -- the event that ends the staged build protocol's
+        // compulsion for every in-app session.  Unconditional and on every
+        // final turn: NoteFinalAnswer is idempotent and one-way, and a
+        // session that opened a scene already carrying geometry has been in
+        // "refining" since construction anyway.
+        if (m_bridge) m_bridge->agentNoteFinalAnswer();
         finishBusy();
         return;
     }

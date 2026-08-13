@@ -528,3 +528,180 @@ skills all say the same unconditional-confirmation fact now, with
 `SourceHygieneTest` pinning the wording (the budget-number parity pin that
 used to tie both tool surfaces to `kZeroAreaLightSceneBudget` is gone with
 the constant).
+
+## 14. §4 AS BUILT — the session mode (2026-08-13)
+
+§4 is implemented.  What follows is what actually landed, including the
+two places the design as written could not be implemented as specified.
+
+### 14.1 The rule, as coded
+
+An explicit one-way session mode, `AgentSession::AgentSessionMode`:
+
+- **BUILDING** — the document the session was constructed over carried no
+  form, and no final answer has arrived yet.
+- **REFINING** — every other case, and forever after the transition.
+
+The one-sentence version is in the code, at the top of the public block
+above `SessionMode()`: **compulsion belongs to the first build;
+availability is forever.**
+
+### 14.2 Determination 1 — "started empty"
+
+Decided **at session construction**, from `IJobPriv::GetCstDocument()` —
+the document actually loaded — and snapshotted in a `const bool
+mStartedEmpty`.  Never recomputed: a count taken later would see a build
+in progress and answer the wrong question.  Both factories load before
+they construct (`LoadFromFile` parses the file first; `WrapJob` is handed
+a Job the host already loaded), so the classifier sees the real starting
+scene.
+
+**Empty = no form-bearing chunk**, where form-bearing is the *existing*
+`KindIsFormBearing_` predicate the compose-phase delete-ban already used:
+registry category `Geometry` or `Object` (a `standard_object`).  One
+classifier, so "what counts as form" cannot drift into two answers.
+Cameras, film, rasterizers, shaders, painters, materials and **lights** in
+a starter template do not make a scene non-empty.  A Job with no retained
+CST head reads *started empty* — the fail-safe direction (gates on), the
+same polarity both launch switches already take.
+
+Exposed publicly as `SceneTextCarriesForm(text)` so a caller or a test can
+classify a scene file without standing up a session.  Verified against the
+real files: `scenes/Templates/empty_starter.RISEscene` classifies **empty**
+(so every eval build scenario and the GUI start-screen path still get the
+protocol), and `scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene`
+classifies **non-empty**.  Checked the eval battery too: all four bare/build
+scenarios load an empty document (the 265-byte and 369-byte inlines are
+shader + rasterizer + film + camera, plus one painter); the refinement-shaped
+scenarios (`remove_object`, `param_edit`, `multi_turn_edit`, …) load
+documents with objects and are therefore REFINING — which is exactly §4's
+conflict 2 being closed rather than a regression.
+
+### 14.3 Determination 2 — the transition seam
+
+`AgentChatLoop` deliberately holds **no session pointer** (it speaks the
+protocol and performs no I/O), so there is no single library-level seam.
+The true structural signal is `ChatStepResult::Kind::FinalText` — a model
+reply carrying no tool call — and it is reached **per host**.  The
+transition is therefore a public one-way, idempotent
+`AgentSession::NoteFinalAnswer()`, called from each host's FinalText arm.
+No chat-text sniffing, no wall-clock, no call counts.
+
+| surface | flips? | where |
+|---|---|---|
+| eval runner | yes | `AgentEvalRunner::RunScenario`, the `Kind::FinalText` arm |
+| macOS GUI | yes | `ChatViewModel.swift` `.finalText` → `RISEViewportBridge -agentNoteFinalAnswer` → all three in-app sessions |
+| Windows GUI | yes | `ChatPanel::networkFinished`'s FinalText arm → `ViewportBridge::agentNoteFinalAnswer` → same three |
+| MCP stdio (`AgentMcpAdapter`) | **no** | the external client owns the model loop |
+| MCP over loopback HTTP (`AgentLoopbackHttpServer`) | **no** | same |
+
+**The MCP surfaces cannot flip, and that is stated rather than papered
+over.**  Nothing about a turn ending crosses the MCP wire and MCP has no
+notification for it, so an MCP session that *started empty* stays in
+BUILDING for its whole life.  The alternative was a heuristic, and a wrong
+guess in the refusal path is worse than a predictable one-way rule.  An MCP
+session that opens a non-empty scene — the overwhelmingly common case — is
+REFINING from construction and never needed the transition.
+
+### 14.4 What went inert, and what did not
+
+| mechanism | in REFINING | why |
+|---|---|---|
+| build-plan gate (`BuildPlanGateArmed_`) | **inert** | construction compulsion |
+| cross-element edit refusal (`CheckElementWindowForEdit_`) | **inert** | " |
+| compose-phase geometry-creation refusal (`CheckComposePhaseForCreate_`) | **inert** | " |
+| compose-phase delete-ban (`CheckComposePhaseForRemove_`) | **inert** | " |
+| first-geometry clean room (`CheckFirstGeometryThroughCleanRoom_`) | **inert** | " |
+| first-light clean room (`CheckFirstLightThroughCleanRoom_`) | **inert** | " |
+| populate-before-compose-render (`CheckPopulateBeforeComposeRender_`) | **inert** | " |
+| `ambient_light` ban | **ACTIVE** | renderer policy — a wall |
+| zero-area light confirmation | **ACTIVE** | renderer policy — a toll the owner priced |
+| chunk attribution / phase transitions / finish / reopen | **ACTIVE** | recording is harmless and the census wants it |
+| every verb (`build_element`, `light_scene`, `populate_scene`, `place_element`, `file_build_plan`) | **AVAILABLE** | their own do-nothing prologues still apply |
+| render caps, rasterizer allowlist, autonomy postures | **ACTIVE** | never build protocol |
+
+Mechanically: one predicate, `ConstructionCompulsionActive_()`, added to
+`BuildPlanGateArmed_` and to `RefuseForPhase_` *plus* each of its six arms.
+It is deliberately **not** folded into `BuildProtocolActive_()`, because
+that predicate also governs attribution and the phase transitions, which
+must keep running.  Putting it in `RefuseForPhase_` as well as in each arm
+means a seventh arm added later inherits it by construction.
+
+The mode travels on the wire beside `phase`, in the three results that
+already carry session state (`file_build_plan`, `finish_element`,
+`reopen_element`): `"mode": "building" | "refining"`.  No new surface was
+invented for it.
+
+### 14.5 Where the design could not be implemented as written
+
+**One place, and it is a test-construction problem, not a semantics
+compromise.**  Every existing construction-gate test wraps a fixture that
+carries pre-existing geometry *on purpose* — a cross-element refusal and
+the "pre-existing content is never attributed" RED-PROVEs need chunks the
+session did not author.  Under the new rule those sessions classify
+REFINING, and ~2 900 assertions would have gone green for the wrong reason.
+Migrating them to an empty fixture would have deleted the very thing they
+test.
+
+So `WrapJobWithSessionMode(job, mode, …)` exists: `WrapJob` with the mode
+**pinned** instead of classified.  Every product surface still classifies;
+the pin's only caller is `AgentChunkCrudTest`'s gate helper (and one
+hand-rolled External session in the G2o staged-resolve arm).  It exempts a
+session from nothing — a pinned-Building session still transitions on
+`NoteFinalAnswer`, a pinned-Refining one still never gates — and
+`StartedEmpty()` keeps reporting the document's real answer, so a pinned
+session cannot lie about what it opened.  The A83M block below then tests
+the *classification* through the ordinary `WrapJob` path, so the pin never
+hides the rule it works around.
+
+One shipped-behaviour test genuinely changed rather than being
+accommodated: `AgentAutonomyPolicyTest`'s G2/wire arm launches a real
+headless `rise --agent-stdio` child and asserts the gate fires by default.
+It was launching over a scene with a sphere in it; that scene is now
+REFINING and correctly does not gate, so the arm launches over a new
+form-free `kEmptyScene` fixture.  The claim it makes ("a shipped process
+gates by default") is unchanged and still measured end-to-end.
+
+**Not implemented, and named:** §4.3's residual is unchanged — a user
+interjecting mid-build is still in BUILDING and can still hit a gate for up
+to three turns.  It is pinned as an *accepted* assertion (A83M/c), so if it
+ever flips, that is a design change and not a fix.
+
+### 14.6 Tests
+
+All in `tests/AgentChunkCrudTest.cpp`, block A83M.  Each conflict arm has a
+pinned-Building **control** beside it, so neither half can pass vacuously.
+
+- `TestSessionModeClassification` (A83M/a) — the shipped starter template
+  classifies empty; a shipped benchmark classifies non-empty; construction
+  snapshots both ways; a light + painter + material still reads empty while
+  one geometry chunk or one `standard_object` flips it; the pin reports the
+  pinned mode and the document's real `StartedEmpty`.
+- `TestRefiningDisarmsTheThreeConflicts` (A83M/b) — the three §4 conflicts:
+  removing a form-bearing chunk (single and batch) proceeds; the first
+  compose-phase render proceeds with no `populate_scene` demand (on a
+  build-capable session, so the arm's own precondition is met); hand-authored
+  geometry lands with no build-plan demand and, after a plan is filed, with
+  no `build_element` demand — while attribution keeps running.  Three
+  controls prove each is still refused while BUILDING.
+- `TestSessionModeTransitionIsOneWay` (A83M/c) — an empty-start session is
+  BUILDING and really is refused; the mid-build interjection is still
+  refused (the accepted residual); `NoteFinalAnswer` flips it; the
+  previously-refused insert lands; a second build plan filed in REFINING
+  does not resurrect the gates; a second `NoteFinalAnswer` is a no-op.
+- `TestRefiningKeepsRendererPolicy` (A83M/d) — the ambient ban still
+  refuses with its full physics text in REFINING; a zero-area light still
+  costs its one confirmation bounce and lands on the identical re-issue;
+  with the launch switches off nothing gates in **either** mode.
+
+### 14.7 Verification
+
+`make -C build/make/rise -j8 all && make -C build/make/rise -j8 tests`,
+clean rebuild, warning-free.  Verbatim results: AgentChunkCrudTest 2982/0
+(was 2893/0 — 89 new assertions), AgentAutonomyPolicyTest 388/0, and the
+other 20 Agent\* binaries plus SourceHygieneTest 146/0, RectLightChunkTest
+56/0, ShapeLightChunkTest 71/0, CstSaveFidelityTest 29/0,
+CstIncrementalDeriveTest 24/0 — all zero failures.  No eval run: this slice
+was explicitly scoped without provider calls, so the live claim "a refining
+user's instruction is no longer refused" is proved by unit test and by the
+scenario-scene audit in §14.2, not by a measured run.

@@ -2194,6 +2194,13 @@ namespace RISE
 					// the state transition without parsing prose.
 					result.set( "phase",                JsonValue::MakeString(
 						AgentSession::BuildPhaseName( s->BuildPhase() ) ) );
+					// ARC 83 sec 4.1: the SESSION MODE travels with the phase
+					// wherever session state is surfaced -- "building" while
+					// the gates can fire, "refining" once they cannot.  A
+					// census reads the transition here rather than inferring
+					// it from the absence of refusals.
+					result.set( "mode",                 JsonValue::MakeString(
+						AgentSession::SessionModeName( s->SessionMode() ) ) );
 					if( !s->ActiveElement().empty() )
 						result.set( "activeElement",    JsonValue::MakeString( s->ActiveElement() ) );
 					// G3a: the ONE composite sketch PNG, under the SAME
@@ -2234,6 +2241,8 @@ namespace RISE
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",    JsonValue::MakeBool( fr.ok ) );
 					result.set( "phase", JsonValue::MakeString( fr.phase ) );
+					result.set( "mode",  JsonValue::MakeString(
+						AgentSession::SessionModeName( s->SessionMode() ) ) );
 					if( !fr.element.empty() )     result.set( "element",     JsonValue::MakeString( fr.element ) );
 					if( !fr.nextElement.empty() ) result.set( "nextElement", JsonValue::MakeString( fr.nextElement ) );
 					if( fr.ok ) {
@@ -2296,6 +2305,8 @@ namespace RISE
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",            JsonValue::MakeBool( rr2.ok ) );
 					result.set( "phase",         JsonValue::MakeString( rr2.phase ) );
+					result.set( "mode",          JsonValue::MakeString(
+						AgentSession::SessionModeName( s->SessionMode() ) ) );
 					result.set( "previousPhase", JsonValue::MakeString( rr2.previousPhase ) );
 					if( !rr2.element.empty() ) result.set( "element", JsonValue::MakeString( rr2.element ) );
 					if( rr2.ok ) {

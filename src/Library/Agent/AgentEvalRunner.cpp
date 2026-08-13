@@ -3049,6 +3049,19 @@ namespace RISE
 						else if( st.kind == ChatStepResult::Kind::FinalText ) {
 							finalText = st.finalText;
 							turnDone = true;
+							// ARC 83 sec 4.1: THE MODE TRANSITION SEAM.  A turn
+							// that ends with the model's own prose rather than a
+							// tool call is "the agent's first final answer" --
+							// the exact event that ends the build protocol's
+							// compulsion.  This is the ONE structural signal for
+							// it (no chat-text sniffing, no wall-clock, no call
+							// counts), and it is per-HOST because AgentChatLoop
+							// deliberately holds no session pointer.  Called
+							// unconditionally and on EVERY final turn:
+							// NoteFinalAnswer is idempotent and one-way, so only
+							// the first one does anything.
+							if( AgentSession* sess = dispatcher->Session() )
+								sess->NoteFinalAnswer();
 						}
 						else {   // ProviderError
 							terminalStatus = "provider_error";

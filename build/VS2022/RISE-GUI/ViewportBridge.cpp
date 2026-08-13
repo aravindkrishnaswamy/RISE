@@ -1452,6 +1452,20 @@ void ViewportBridge::agentSetImageGenerator(const QString& providerName, const Q
     }
 }
 
+void ViewportBridge::agentNoteFinalAnswer()
+{
+    // The SAME three in-app sessions the generator install above touches,
+    // and for the same reason: they serve one document, so the turn that
+    // just ended is the same turn for all of them.  Idempotent and one-way
+    // (AgentSession.h's block above SessionMode), so calling it on every
+    // final turn is correct and costs nothing.
+    Agent::AgentRpcDispatcher* dispatchers[] = {
+        m_agentDispatcher.get(), m_agentToolDispatcherOwner.get(), m_agentToolDispatcherPropose.get()};
+    for (Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) d->Session()->NoteFinalAnswer();
+    }
+}
+
 ViewportBridge::PanelMode ViewportBridge::panelMode() const
 {
     if (!m_controller) return PanelMode::None;

@@ -3717,6 +3717,144 @@ namespace RISE
 			static void SetBuildProtocolDefaultEnabled( bool enabled );
 			static bool BuildProtocolDefaultEnabled();
 
+			//----------------------------------------------------------------
+			// ARC 83 sec 4.1 (2026-08-13): THE SESSION MODE.
+			//
+			// COMPULSION BELONGS TO THE FIRST BUILD; AVAILABILITY IS FOREVER.
+			//
+			// Before this, the construction gates keyed on the launch switches
+			// ALONE (BuildProtocolActive_).  Nothing asked whether the scene
+			// already existed and nothing ever ended the protocol, so a user
+			// who opened a FINISHED scene got the PLAN phase with every gate
+			// armed: "move the jellyfish left" could be refused toward
+			// file_build_plan, "delete the manta ray" hit the compose
+			// delete-ban, and "just show me a render" was answered with a
+			// demand for populate_scene.  A harness that refuses what the user
+			// just asked for is worse than one that never gated anything.
+			//
+			// THE RULE, one-way and coarse on purpose (sec 4.2: sniffing user
+			// intent out of chat text is an intent classifier in the refusal
+			// path, and it fails open or closed at the worst moment):
+			//   BUILDING   the scene STARTED EMPTY, and the agent has not yet
+			//              produced its first final answer.
+			//   REFINING   every other case, and forever after the transition.
+			//              Never flips back -- not by a second build plan, not
+			//              by reopen_element, not by anything.
+			//
+			// WHAT REFINING TURNS OFF: COMPULSION ONLY.  Every
+			// RefuseForPhase_ arm (cross-element edit, compose-phase create,
+			// compose-phase remove, both forced clean rooms, the
+			// populate-before-render gate) and the build-plan gate are inert.
+			// EVERY VERB STAYS AVAILABLE -- build_element, light_scene,
+			// populate_scene and place_element all still work when called, and
+			// should be called for a substantial addition; nothing is
+			// COMPELLED.
+			//
+			// WHAT REFINING DOES NOT TOUCH, deliberately.  The ambient_light
+			// BAN and the zero-area light CONFIRMATION are RENDERER POLICY,
+			// not build protocol: a refining user's "add a spotlight" costs
+			// one bounce, and that is the intended price (arc 83 sec 13).
+			// Also untouched: render caps, the rasterizer allowlist, autonomy
+			// postures, and attribution bookkeeping -- recording stays
+			// harmless and useful for the census; only the REFUSALS go inert.
+			//
+			// WHICH SURFACES FLIP THE MODE, and which cannot.
+			//   * FLIPS: any host that drives the model loop itself and can
+			//     see a turn end with prose rather than a tool call, i.e. a
+			//     host holding an AgentChatLoop and reaching
+			//     ChatStepResult::Kind::FinalText.  Today: the eval runner
+			//     (AgentEvalRunner::RunScenario's FinalText arm), the macOS
+			//     GUI (ChatViewModel's `.finalText` case, through
+			//     RISEViewportBridge -agentNoteFinalAnswer) and the Windows
+			//     GUI (ChatPanel::networkFinished's FinalText arm, through
+			//     ViewportBridge::agentNoteFinalAnswer).
+			//   * CANNOT FLIP: the MCP surfaces -- AgentMcpAdapter (stdio) and
+			//     AgentLoopbackHttpServer.  There the EXTERNAL client owns the
+			//     model loop; nothing about a turn ending crosses the wire, and
+			//     MCP has no notification for it.  Such a session that started
+			//     empty therefore stays in BUILDING for its whole life.  That
+			//     is stated rather than papered over: the alternative would be
+			//     a heuristic (wall-clock, call counts, sniffing text), and a
+			//     wrong guess in the refusal path is worse than a predictable
+			//     one-way rule.  An MCP session that opens a NON-EMPTY scene --
+			//     the overwhelmingly common case -- is REFINING from
+			//     construction and never needed the transition at all.
+			//
+			// RESIDUAL RISK, named (sec 4.3): a user interjecting MID-BUILD
+			// ("no, remove that") is still in BUILDING and can still hit a gate
+			// for up to three turns, which is what the shared 3-refusal cap
+			// and give-up bound.  Accepted; revisit if it shows up in practice.
+			//----------------------------------------------------------------
+
+			//! Which mode this session is in.  One-way: Building -> Refining.
+			enum class AgentSessionMode
+			{
+				Building,   //!< started empty, no final answer yet -- gates armed
+				Refining    //!< every other case -- no construction gate fires
+			};
+
+			//! The ONE wire/prose rendering of a mode -- "building",
+			//! "refining".  Shared by every surface, exactly as
+			//! BuildPhaseName is for the phase.
+			static const char* SessionModeName( AgentSessionMode m );
+
+			//! This session's mode.  Decided at CONSTRUCTION from the document
+			//! actually loaded (see StartedEmpty) and moved to Refining, once
+			//! and permanently, by NoteFinalAnswer.
+			AgentSessionMode SessionMode() const { return mSessionMode; }
+
+			//! Did the document this session was constructed over carry NO
+			//! form?  Snapshotted in a const member at construction and never
+			//! recomputed -- a count taken later would see a build in progress
+			//! and answer the wrong question.  A session with no retained CST
+			//! document at all reads TRUE (the fail-safe direction: gates on,
+			//! matching both launch switches' defaults).
+			bool StartedEmpty() const { return mStartedEmpty; }
+
+			//! THE TRANSITION.  Call this when a conversation turn ended with
+			//! the model's own prose rather than a tool call -- the host's
+			//! ChatStepResult::Kind::FinalText arm.  Idempotent and one-way: a
+			//! session already in Refining is unaffected, and nothing ever
+			//! returns a session to Building.  Safe to call from a host that
+			//! cannot tell whether the protocol is on; with the protocol off
+			//! the mode is recorded and changes nothing.
+			void NoteFinalAnswer();
+
+			//! Does `sceneText` carry FORM -- at least one top-level chunk
+			//! whose registry descriptor is ChunkCategory::Geometry or
+			//! ChunkCategory::Object (a standard_object)?  This is the
+			//! emptiness rule, stated positively: cameras, film, rasterizers,
+			//! shaders, painters, materials and lights in a starter template
+			//! do NOT make a scene non-empty, because none of them is a thing
+			//! the agent was asked to build.  The registry is the classifier
+			//! (KindIsFormBearing_), so a geometry kind added later is covered
+			//! with no edit here.  Public so a caller (and a test) can classify
+			//! a scene file without standing up a session.
+			static bool SceneTextCarriesForm( const std::string& sceneText );
+
+			//! WrapJob, with the session mode PINNED instead of classified
+			//! from the document.  WrapJob and LoadFromFile -- every product
+			//! surface -- classify; this exists for a caller that must place a
+			//! session in a KNOWN mode over a document that would classify the
+			//! other way.  Today that caller is the ONE test binary whose
+			//! subject IS the construction gates: a gate test needs a fixture
+			//! carrying chunks the session did NOT author (that is what a
+			//! cross-element refusal and a "pre-existing content is never
+			//! attributed" RED-PROVE are about), and such a fixture classifies
+			//! REFINING, which would make every gate under test inert and the
+			//! suite green for the wrong reason.
+			//!
+			//! Nothing on the wire can reach this, and it exempts the session
+			//! from nothing: a session pinned to Building still transitions on
+			//! NoteFinalAnswer, and one pinned to Refining still never gates.
+			//! StartedEmpty() keeps reporting the DOCUMENT's real answer, so a
+			//! pinned session cannot lie about what it opened.
+			static std::unique_ptr<AgentSession> WrapJobWithSessionMode(
+				IJobPriv* job, AgentSessionMode mode,
+				AgentAuthority authority = AgentAuthority::Owner,
+				std::shared_ptr<AgentImageCache> sharedImageCache =
+					std::shared_ptr<AgentImageCache>() );
+
 			//! The structured result of FinishElement.  `ok` false means the
 			//! call did nothing at all -- no phase change, no attribution
 			//! change -- and `message` says why (no plan filed; already in the
@@ -6628,6 +6766,48 @@ namespace RISE
 				return mBuildProtocolEnabled && mBuildPlanGateEnabled;
 			}
 
+			//----------------------------------------------------------------
+			// ARC 83 sec 4.1 (2026-08-13): the SESSION MODE's private half.
+			// The contract, the surfaces and the residual risk are in the
+			// public block above SessionMode.
+			//----------------------------------------------------------------
+
+			//! Did the document this session was constructed over carry no
+			//! form?  CONST: decided once, from the document actually loaded,
+			//! and never recomputed -- inferring it later from chunk counts
+			//! would see a build in progress and answer the wrong question.
+			const bool mStartedEmpty;
+			//! Building iff mStartedEmpty at construction; moved to Refining,
+			//! once and permanently, by NoteFinalAnswer.
+			AgentSessionMode mSessionMode;
+
+			//! The construction-time classifier behind mStartedEmpty.  Reads
+			//! `job`'s RETAINED CST head; a Job with no retained head (or a
+			//! null Job) reads "started empty", the fail-safe direction that
+			//! matches both launch switches' TRUE defaults.  A static taking
+			//! the constructor's own parameter so the initializer list can
+			//! run it without depending on member-initialization order.
+			static bool JobStartedEmpty_( IJobPriv* job );
+
+			//! Does `doc` carry at least one form-bearing top-level chunk?
+			//! The ONE walk both SceneTextCarriesForm (which parses first) and
+			//! JobStartedEmpty_ (which reads the retained head directly) run,
+			//! so the public classifier and the constructor can never disagree
+			//! about what "empty" means.
+			static bool DocumentCarriesForm_( const RISE::Cst::Document& doc );
+
+			//! IS COMPULSION IN FORCE?  The ONE predicate every construction
+			//! gate adds to its own armed-ness test -- the build-plan gate
+			//! (BuildPlanGateArmed_) and every RefuseForPhase_ arm.  It is
+			//! DELIBERATELY not folded into BuildProtocolActive_: that
+			//! predicate also governs attribution, the phase transitions and
+			//! finish/reopen, all of which keep running in REFINING because
+			//! the census still wants them and no user is refused by them.
+			bool ConstructionCompulsionActive_() const
+			{
+				return mSessionMode == AgentSessionMode::Building;
+			}
+
 			//! Record `name` (kind `kind`) as created under the ACTIVE element.
 			//! A no-op outside the Pieces phase, with the protocol off, or on an
 			//! empty name -- so a chunk created in the PLAN phase, or by a
@@ -7248,6 +7428,11 @@ namespace RISE
 			//! plan-only gate.
 			bool BuildPlanGateArmed_() const
 			{
+				// ARC 83 sec 4.1: REFINING disarms the gate outright, ahead of
+				// every other term -- so the hot call sites skip their CST
+				// parse too, and a user tweaking a finished scene is never
+				// pushed toward file_build_plan for a scene already built.
+				if( !ConstructionCompulsionActive_() ) return false;
 				if( !mBuildPlanGateEnabled || mBuildPlanGateGaveUp ) return false;
 				if( !mBuildPlanFiled ) return true;
 				return ImagineRequirementActive_() && !mSceneTarget;

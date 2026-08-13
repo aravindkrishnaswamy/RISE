@@ -2456,6 +2456,21 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     }
 }
 
+#pragma mark - Agent session mode (Arc 83 §4.1: the build/refine transition)
+
+- (void)agentNoteFinalAnswer {
+    // The SAME three in-app sessions the generator install above touches,
+    // and for the same reason: they serve one document, so the turn that
+    // just ended is the same turn for all of them.  NoteFinalAnswer is
+    // idempotent and one-way (AgentSession.h's block above SessionMode), so
+    // calling this on every final turn is correct and costs nothing.
+    RISE::Agent::AgentRpcDispatcher* dispatchers[] = {
+        _agentDispatcher, _agentToolDispatcherOwner, _agentToolDispatcherPropose};
+    for (RISE::Agent::AgentRpcDispatcher* d : dispatchers) {
+        if (d && d->Session()) d->Session()->NoteFinalAnswer();
+    }
+}
+
 #pragma mark - Secure-MCP slice 5c: GUI-hosted external MCP endpoint
 
 // THREADING MODEL (two-dispatcher-one-controller), read this before

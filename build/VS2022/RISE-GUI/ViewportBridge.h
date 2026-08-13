@@ -863,6 +863,28 @@ public:
     /// ChatPanel::runNextStep).
     void agentSetImageGenerator(const QString& providerName, const QString& apiKey);
 
+    // Agent session mode (Arc 83 sec 4.1: the build/refine transition) ---
+
+    /// Windows mirror of macOS RISEViewportBridge's
+    /// `-agentNoteFinalAnswer`.  Tells EVERY in-app session this bridge
+    /// owns (m_agentDispatcher, m_agentToolDispatcherOwner,
+    /// m_agentToolDispatcherPropose) that the agent's turn just ended with
+    /// its own prose rather than a tool call -- the ONE structural signal
+    /// that ends the staged build protocol's COMPULSION (see
+    /// RISE::Agent::AgentSession::NoteFinalAnswer and the block above
+    /// AgentSession::SessionMode).  After it no construction gate fires
+    /// again on these sessions: no phase refusals, no compose-phase delete
+    /// ban, no forced clean rooms, no populate-before-render, no build-plan
+    /// gate.  Every verb stays available; nothing is compelled.
+    ///
+    /// Called from ChatPanel's FinalText arm, unconditionally and on every
+    /// final turn: NoteFinalAnswer is idempotent and one-way, so only the
+    /// first one on a session that started from an EMPTY scene changes
+    /// anything.  Deliberately does NOT reach the hosted loopback server's
+    /// External session -- there the external MCP client owns the model
+    /// loop and no turn-end signal crosses the wire.
+    void agentNoteFinalAnswer();
+
     // Properties panel ------------------------------------------------
 
     /// Mirrors RISE::SceneEditController::PanelMode.  Drives which

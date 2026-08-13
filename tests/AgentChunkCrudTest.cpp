@@ -130,6 +130,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -7605,10 +7606,21 @@ static void TestReplaceGeometryScaffoldWireShape()
 //! tests turn it back on for exactly the width of the construction call --
 //! the session SNAPSHOTS it, so restoring immediately after keeps every
 //! other test's opt-out in force and leaves no global set behind.
+//!
+//! ARC 83 sec 4.1 (2026-08-13): and with the SESSION MODE PINNED to
+//! Building.  Every fixture these gate tests use carries pre-existing
+//! geometry ON PURPOSE -- a cross-element refusal and the "pre-existing
+//! content is never attributed" RED-PROVEs need chunks the session did not
+//! author -- and such a document classifies as REFINING, in which NO
+//! construction gate fires at all.  Without the pin this helper would hand
+//! back sessions that pass every gate test vacuously.  The A83M block at
+//! the end of this file is where the CLASSIFICATION itself is tested, on
+//! sessions built through the ordinary WrapJob path.
 static std::unique_ptr<Agent::AgentSession> WrapJobGateArmed( Job* pJob )
 {
 	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
-	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJob( pJob );
+	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJobWithSessionMode(
+		pJob, Agent::AgentSession::AgentSessionMode::Building );
 	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 	return s;
 }
@@ -8414,10 +8426,16 @@ static void TestBuildPlanGateStagedResolve()
 	// authority branching, exactly as the insert verbs' arms do.
 	{
 		// WrapJobGateArmed wraps as Owner, so arm the default by hand for
-		// exactly the width of this External construction (same idiom).
+		// exactly the width of this External construction (same idiom) --
+		// and pin the session mode to Building for the same reason that
+		// helper does (arc 83 sec 4.1: this fixture carries geometry, so
+		// the ordinary classification would be REFINING and the gate under
+		// test would be inert).
 		Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
 		std::unique_ptr<Agent::AgentSession> ext =
-			Agent::AgentSession::WrapJob( pJob, Agent::AgentAuthority::External );
+			Agent::AgentSession::WrapJobWithSessionMode(
+				pJob, Agent::AgentSession::AgentSessionMode::Building,
+				Agent::AgentAuthority::External );
 		Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
 		ext->AttachController( &c );
 		const Agent::AgentPatchResult r = ext->ProposePatch(
@@ -14608,6 +14626,476 @@ static void TestPopulationExampleInserts()
 	}
 }
 
+//----------------------------------------------------------------------
+// ARC 83 sec 4.1 (2026-08-13): THE SESSION MODE.
+//
+// COMPULSION BELONGS TO THE FIRST BUILD; AVAILABILITY IS FOREVER.
+//
+// Three conflicts were live before this, all against an EXPLICIT user
+// instruction on a scene that already existed (sec 4):
+//   1. "move the jellyfish left" -> the first hand-authored edit refused
+//      toward file_build_plan, for a scene that is already built.
+//   2. "delete the manta ray"    -> the compose-phase delete-ban refuses
+//      removing a form-bearing chunk.
+//   3. "just show me a render"   -> the first-compose-render gate demands
+//      populate_scene first.
+// Each is a REGRESSION TEST below, against a NON-EMPTY fixture, with a
+// pinned-Building positive control beside it so a green result can never
+// mean "the gate was never armed in the first place".
+//
+// The other half is the TRANSITION: an empty-start session really is
+// gated, one final answer really does end it, and nothing ever puts it
+// back.  Plus the two things REFINING deliberately does NOT turn off --
+// the ambient ban (a wall) and the zero-area confirmation (a toll) --
+// because those are renderer policy, not build protocol.
+//----------------------------------------------------------------------
+
+//! The STRUCTURAL MINIMUM for a loadable scene -- shader, rasterizer,
+//! film, camera, and no form at all.  Deliberately the shape of
+//! scenes/Templates/empty_starter.RISEscene (the document the GUI's
+//! start-screen path and the eval battery's build scenarios load); A83M/a
+//! pins the real file against the same classifier so this copy cannot
+//! drift into testing something the product never sees.
+static const char* const kA83EmptyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n";
+
+//! WrapJobGateArmed's SIBLING, and the difference is the whole point of
+//! this block: the gate default is armed for exactly the width of the
+//! construction call, but the session is built through the ORDINARY
+//! WrapJob path, so its mode is CLASSIFIED from the document rather than
+//! pinned.  Every A83M assertion about what a real user's session does
+//! goes through this; WrapJobGateArmed's pin exists only so the gate
+//! tests above stay non-vacuous.
+static std::unique_ptr<Agent::AgentSession> WrapJobGateArmedClassified( Job* pJob )
+{
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( true );
+	std::unique_ptr<Agent::AgentSession> s = Agent::AgentSession::WrapJob( pJob );
+	Agent::AgentSession::SetBuildPlanGateDefaultEnabled( false );
+	return s;
+}
+
+//! Read a whole file, or "" -- for the two REAL scene files A83M/a
+//! classifies (the shipped starter template and a shipped benchmark).
+static std::string ReadWholeFile( const char* path )
+{
+	std::ifstream f( path, std::ios::binary );
+	if( !f ) return std::string();
+	std::ostringstream ss;
+	ss << f.rdbuf();
+	return ss.str();
+}
+
+//! A83M/a: THE EMPTINESS RULE.  What counts as "started empty", on the
+//! real files the product actually loads, and what a constructed session
+//! makes of each.
+static void TestSessionModeClassification()
+{
+	std::printf( "A83M/a: started-empty classification -- the starter template, a benchmark, and "
+	             "what a session makes of each...\n" );
+
+	// (1) THE SHIPPED STARTER TEMPLATE really classifies EMPTY.  This is
+	//     the document the GUI start-screen path and every build scenario
+	//     in the eval battery load; if it ever gained scaffold geometry,
+	//     every build session would silently start in REFINING with no
+	//     gate at all, and this assertion is what would catch it.
+	{
+		const std::string starter =
+			ReadWholeFile( "scenes/Templates/empty_starter.RISEscene" );
+		Check( !starter.empty(), "A83M/a the shipped starter template is readable" );
+		if( !starter.empty() ) {
+			Check( !Agent::AgentSession::SceneTextCarriesForm( starter ),
+			       "A83M/a MONEY ASSERTION: scenes/Templates/empty_starter.RISEscene carries NO "
+			       "form -- its shader, rasterizer, film and camera are scene apparatus, not the "
+			       "thing the agent was asked to build" );
+		}
+	}
+
+	// (2) A SHIPPED BENCHMARK really classifies NON-EMPTY -- the other
+	//     end of the rule, on a scene nobody would call a starter.
+	{
+		const std::string bench =
+			ReadWholeFile( "scenes/Benchmarks/dreamscape_coral_queens_hour.RISEscene" );
+		Check( !bench.empty(), "A83M/a the benchmark scene is readable" );
+		if( !bench.empty() ) {
+			Check( Agent::AgentSession::SceneTextCarriesForm( bench ),
+			       "A83M/a MONEY ASSERTION: a finished benchmark scene DOES carry form, so a "
+			       "session opening it is REFINING from construction and no gate ever fires on "
+			       "the user's first instruction" );
+		}
+	}
+
+	// (3) THE CONSTRUCTION SNAPSHOT, both ways.
+	{
+		const std::string tmpE = TempPath( "agentcrud_a83m_a_empty.RISEscene" );
+		Job* pJobE = LoadScene( kA83EmptyScene, tmpE );
+		Check( pJobE != nullptr, "A83M/a empty fixture loads" );
+		if( !pJobE ) return;
+		std::unique_ptr<Agent::AgentSession> se = WrapJobGateArmedClassified( pJobE );
+		Check( se->StartedEmpty(), "A83M/a an empty document reads StartedEmpty" );
+		Check( se->SessionMode() == Agent::AgentSession::AgentSessionMode::Building,
+		       "A83M/a MONEY ASSERTION: and the session starts in BUILDING" );
+		Check( std::string( Agent::AgentSession::SessionModeName( se->SessionMode() ) ) == "building",
+		       "A83M/a with one wire spelling for it" );
+		se.reset(); pJobE->release(); std::remove( tmpE.c_str() );
+
+		const std::string tmpF = TempPath( "agentcrud_a83m_a_full.RISEscene" );
+		Job* pJobF = LoadScene( kScene, tmpF );
+		Check( pJobF != nullptr, "A83M/a non-empty fixture loads" );
+		if( !pJobF ) return;
+		std::unique_ptr<Agent::AgentSession> sf = WrapJobGateArmedClassified( pJobF );
+		Check( !sf->StartedEmpty(),
+		       "A83M/a a document with a sphere_geometry and a standard_object is NOT empty" );
+		Check( sf->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+		       "A83M/a MONEY ASSERTION: so the session starts in REFINING -- the user opened a "
+		       "scene the agent did not author" );
+		Check( std::string( Agent::AgentSession::SessionModeName( sf->SessionMode() ) ) == "refining",
+		       "A83M/a with one wire spelling for that too" );
+		// The PIN does not rewrite history: a pinned session still reports
+		// what the document actually was.
+		std::unique_ptr<Agent::AgentSession> sp = Agent::AgentSession::WrapJobWithSessionMode(
+			pJobF, Agent::AgentSession::AgentSessionMode::Building );
+		Check( sp->SessionMode() == Agent::AgentSession::AgentSessionMode::Building &&
+		       !sp->StartedEmpty(),
+		       "A83M/a a mode-pinned session reports the pinned MODE and the document's real "
+		       "StartedEmpty -- the pin cannot lie about what was opened" );
+		sp.reset(); sf.reset(); pJobF->release(); std::remove( tmpF.c_str() );
+	}
+
+	// (4) LIGHTS, CAMERAS, MATERIALS AND PAINTERS ARE NOT FORM.  The rule
+	//     names geometry and standard_object and nothing else; a starter
+	//     that ships a key light must still classify as empty.
+	{
+		const std::string lit = std::string( kA83EmptyScene ) +
+			"\nomni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n"
+			"uniformcolor_painter\n{\n\tname p\n\tcolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\n\tname m\n\treflectance p\n}\n";
+		Check( !Agent::AgentSession::SceneTextCarriesForm( lit ),
+		       "A83M/a MONEY ASSERTION: a light, a painter and a material do not make a scene "
+		       "non-empty -- none of them is a thing the agent was asked to build" );
+		Check( Agent::AgentSession::SceneTextCarriesForm(
+			lit + "\nsphere_geometry\n{\n\tname s\n\tradius 1\n}\n" ),
+		       "A83M/a RED-PROVE: adding ONE geometry chunk flips it" );
+		Check( Agent::AgentSession::SceneTextCarriesForm(
+			lit + "\nstandard_object\n{\n\tname o\n\tgeometry sph\n\tmaterial m\n}\n" ),
+		       "A83M/a RED-PROVE: and so does ONE standard_object" );
+		Check( !Agent::AgentSession::SceneTextCarriesForm( "" ),
+		       "A83M/a an empty text carries no form" );
+	}
+}
+
+//! A83M/b: THE THREE CONFLICTS, as regression tests.  Each arm runs the
+//! user's instruction on a REFINING session (it must proceed) and the
+//! identical sequence on a pinned-BUILDING session (it must be refused),
+//! so neither half can pass vacuously.
+static void TestRefiningDisarmsTheThreeConflicts()
+{
+	std::printf( "A83M/b: in REFINING no construction gate fires -- the three sec 4 conflicts...\n" );
+
+	// (1) "DELETE THE MANTA RAY" -- the compose-phase delete-ban.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_b1.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A83M/b1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+		       "A83M/b1 the fixture carries form, so the session is REFINING" );
+		ArcEightyToCompose( *sess );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "A83M/b1 the PHASES still run in refining -- only the refusals go inert" );
+
+		const Agent::AgentChunkResult r1 = sess->RemoveChunk( "wizard_obj", "" );
+		Check( r1.applied,
+		       "A83M/b1 MONEY ASSERTION: removing a form-bearing standard_object PROCEEDS in "
+		       "refining -- a harness that refuses what the user just asked for is worse than "
+		       "one that never gated anything" );
+		Check( r1.message.find( "form-bearing" ) == std::string::npos,
+		       "A83M/b1 and nothing about the compose rule appears in the result" );
+		const Agent::AgentChunkResult r2 = sess->RemoveChunk( "wizard_body", "" );
+		Check( r2.applied, "A83M/b1 the GEOMETRY behind it goes too" );
+		std::vector<std::string> batch;
+		batch.push_back( "obj_sph" );
+		batch.push_back( "sph" );
+		const Agent::AgentSession::AgentRemoveBatchResult rb = sess->RemoveChunks( batch );
+		Check( rb.applied,
+		       "A83M/b1 and the BATCH surface is inert on the same terms -- a form-bearing batch "
+		       "removes whole" );
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "A83M/b1 not one slot of the shared refusal counter was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (1c) THE CONTROL for (1): the identical sequence, pinned to Building.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_b1c.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A83M/b1c fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "wizard_obj", "" );
+		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
+		       "A83M/b1c CONTROL: the SAME call on a BUILDING session is still refused -- (1) is "
+		       "not passing because the gate was never armed" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) "JUST SHOW ME A RENDER" -- the first-compose-render gate.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_b2.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83M/b2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+		sess->FileBuildPlan( WizardOnlyPlan() );
+		sess->FinishElement();
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "A83M/b2 the session reaches compose" );
+		Check( sess->BuildCapable(),
+		       "A83M/b2 and IS build-capable, so the populate arm's own precondition is met -- "
+		       "without this the arm would be inert for a reason that has nothing to do with mode" );
+		const Agent::AgentRenderResult rr = sess->Render( A82ModelRender() );
+		Check( rr.ok,
+		       "A83M/b2 MONEY ASSERTION: the first compose-phase render PROCEEDS in refining, "
+		       "with no demand for populate_scene -- the user asked to see the picture" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83M/b2 and no refusal was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2c) THE CONTROL for (2).
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_b2c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83M/b2c fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+		const Agent::AgentRenderResult rr = sess->Render( A82ModelRender() );
+		Check( !rr.ok && rr.message.find( "populate_scene" ) != std::string::npos,
+		       "A83M/b2c CONTROL: the SAME render on a BUILDING session is still refused" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) "MOVE THE JELLYFISH LEFT" -- hand-authored geometry, refused by
+	//     the build-plan gate before a plan exists and by the clean-room
+	//     rule after one does.  Both must be inert.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_b3.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83M/b3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		Check( sess->BuildPlanGateEnabled(),
+		       "A83M/b3 the gate's launch switch IS on for this session -- the mode is the only "
+		       "thing disarming it" );
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( S1Box( "a83m_box" ) );
+		Check( r1.applied,
+		       "A83M/b3 MONEY ASSERTION: hand-authored geometry lands with NO build-plan demand -- "
+		       "the scene is already built, and a plan for it is a demand for work already done" );
+		Check( r1.message.find( "file_build_plan" ) == std::string::npos,
+		       "A83M/b3 and the gate's prose appears nowhere in the result" );
+
+		// ...and after a plan IS filed, the clean-room arm stays inert too.
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok,
+		       "A83M/b3 filing a plan still WORKS in refining -- every verb stays available" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces &&
+		       sess->ElementChunks( "wizard" ).empty(),
+		       "A83M/b3 with an empty element active -- exactly the state the clean-room arm arms in" );
+		const Agent::AgentChunkResult r2 = sess->InsertChunk( S1Box( "a83m_hand" ) );
+		Check( r2.applied,
+		       "A83M/b3 MONEY ASSERTION: and the element's FIRST geometry lands by hand, with no "
+		       "build_element demand" );
+		Check( r2.message.find( "build_element" ) == std::string::npos,
+		       "A83M/b3 and no clean-room prose either" );
+		Check( sess->ChunkElement( "a83m_hand" ) == "wizard",
+		       "A83M/b3 RED-PROVE: attribution KEPT RUNNING -- recording is harmless and the "
+		       "census still wants it; only the refusals went inert" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83M/b3 and no refusal was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3c) THE CONTROL for (3), both halves.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_b3c.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83M/b3c fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( S1Box( "a83m_box_c" ) );
+		Check( !r1.applied && r1.message.find( "file_build_plan" ) != std::string::npos,
+		       "A83M/b3c CONTROL: on a BUILDING session the same insert is refused by the "
+		       "build-plan gate" );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A83M/b3c the plan files" );
+		const Agent::AgentChunkResult r2 = sess->InsertChunk( S1Box( "a83m_hand_c" ) );
+		Check( !r2.applied && r2.message.find( "build_element" ) != std::string::npos,
+		       "A83M/b3c CONTROL: and the first hand-authored geometry is refused by the clean "
+		       "room" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83M/c: THE TRANSITION.  An empty-start session is gated; one final
+//! answer ends it; nothing puts it back.  Plus the sec 4.3 residual,
+//! pinned as ACCEPTED rather than left to be discovered.
+static void TestSessionModeTransitionIsOneWay()
+{
+	std::printf( "A83M/c: building -> refining on the first final answer, and never back...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83m_c.RISEscene" );
+	Job* pJob = LoadScene( kA83EmptyScene, tmp );
+	Check( pJob != nullptr, "A83M/c empty fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+	Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Building,
+	       "A83M/c an empty-start session begins in BUILDING" );
+
+	// (1) THE GATE REALLY FIRES on this session -- everything below is
+	//     meaningless without it.
+	const std::string docBefore = sess->ReadDocument();
+	const Agent::AgentChunkResult r1 = sess->InsertChunk( S1Box( "a83m_c1" ) );
+	Check( !r1.applied && r1.message.find( "file_build_plan" ) != std::string::npos,
+	       "A83M/c the build-plan gate refuses a geometry insert while BUILDING" );
+	Check( sess->ReadDocument() == docBefore, "A83M/c and the document is byte-identical" );
+
+	// (2) THE SEC 4.3 RESIDUAL, PINNED AS ACCEPTED: a user interjecting
+	//     MID-BUILD is still in BUILDING and can still hit the gate.  This
+	//     is the documented, bounded cost of a one-way rule with no intent
+	//     classifier in the refusal path -- the 3-refusal cap and give-up
+	//     are what bound it.  If this assertion ever flips, the mechanism
+	//     grew an intent heuristic and that is a design change, not a fix.
+	const Agent::AgentChunkResult r2 = sess->InsertChunk( S1Box( "a83m_c2" ) );
+	Check( !r2.applied,
+	       "A83M/c MONEY ASSERTION (accepted residual): a mid-build interjection is STILL "
+	       "BUILDING and is still refused -- bounded by the 3-refusal cap, never by guessing at "
+	       "what the user meant" );
+	Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Building,
+	       "A83M/c nothing about a tool call moves the mode" );
+
+	// (3) THE TRANSITION.
+	sess->NoteFinalAnswer();
+	Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+	       "A83M/c MONEY ASSERTION: the first final answer moves the session to REFINING" );
+	Check( sess->StartedEmpty(),
+	       "A83M/c and StartedEmpty still reports what the document WAS -- the transition is "
+	       "about compulsion, not about rewriting the record" );
+
+	// (4) THE PREVIOUSLY-REFUSED ACTION NOW PROCEEDS.
+	const Agent::AgentChunkResult r3 = sess->InsertChunk( S1Box( "a83m_c1" ) );
+	Check( r3.applied,
+	       "A83M/c MONEY ASSERTION: the identical insert that was refused twice now lands" );
+
+	// (5) IT NEVER FLIPS BACK.  Filing a SECOND build plan in refining does
+	//     not resurrect the gates -- the plan is a tool the user may still
+	//     reach for, not a re-entry into compulsion.
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodBuilderAnswer } ) );
+	Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A83M/c a second plan files in refining" );
+	Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+	       "A83M/c and the mode is unmoved" );
+	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+	       "A83M/c the phase machinery moved with it, as it always does" );
+	const Agent::AgentChunkResult r4 = sess->InsertChunk( S1Box( "a83m_c3" ) );
+	Check( r4.applied,
+	       "A83M/c MONEY ASSERTION: and the clean-room arm STAYS inert -- a second build plan "
+	       "does not resurrect a gate the session has left behind" );
+	sess->NoteFinalAnswer();
+	Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+	       "A83M/c a second NoteFinalAnswer is a no-op -- idempotent and one-way" );
+	Check( sess->BuildPhaseRefusalCount() == 0,
+	       "A83M/c no PHASE refusal was ever spent on this session" );
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! A83M/d: WHAT REFINING DOES **NOT** TURN OFF.  The ambient ban is a
+//! wall and the zero-area confirmation is a toll: both are renderer
+//! policy about what this surface authors, not sequencing gates, so both
+//! survive the mode exactly as they already survive protocol-off.  And
+//! with the protocol OFF, nothing gates in EITHER mode.
+static void TestRefiningKeepsRendererPolicy()
+{
+	std::printf( "A83M/d: the ambient ban and the zero-area confirmation survive refining...\n" );
+
+	// (1) THE AMBIENT BAN, on a REFINING session.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_d1.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83M/d1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+		       "A83M/d1 the session is refining" );
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentChunkResult r = sess->InsertChunk( A81Ambient( "a83m_amb" ) );
+		Check( !r.applied && r.status == "rejected",
+		       "A83M/d1 MONEY ASSERTION: ambient_light is STILL refused in refining -- the ban is "
+		       "a permanent property of what this surface authors, not build compulsion" );
+		CheckAmbientBanMessage( r.message, "refining" );
+		Check( sess->ReadDocument() == docBefore, "A83M/d1 the document is byte-identical" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) THE ZERO-AREA CONFIRMATION, on a REFINING session: refused once
+	//     with the physics, landed on the identical re-issue.  The owner's
+	//     explicit call (sec 4): a refining user's "add a spotlight" costs
+	//     one bounce, and that is the intended price.
+	{
+		const std::string tmp = TempPath( "agentcrud_a83m_d2.RISEscene" );
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83M/d2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		const std::string spot =
+			"spot_light\n{\n\tname a83m_spot\n\tposition 0 3 3\n\ttarget 0 0 0\n"
+			"\tinner 10\n\touter 25\n\tpower 30\n\tcolor 1 1 1\n}";
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( spot );
+		Check( !r1.applied &&
+		       r1.message.find( "RE-ISSUING THIS EXACT REQUEST INSERTS IT" ) != std::string::npos,
+		       "A83M/d2 MONEY ASSERTION: a zero-area light still costs one confirmation bounce in "
+		       "refining -- the toll is deliberate and the owner priced it" );
+		const Agent::AgentChunkResult r2 = sess->InsertChunk( spot );
+		Check( r2.applied,
+		       "A83M/d2 and the identical re-issue lands, exactly as it does while building" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) PROTOCOL OFF: unchanged in BOTH modes.  The mode narrows what
+	//     compulsion applies to; it never widens it.
+	{
+		const std::string tmpE = TempPath( "agentcrud_a83m_d3e.RISEscene" );
+		Job* pJobE = LoadScene( kA83EmptyScene, tmpE );
+		Check( pJobE != nullptr, "A83M/d3 empty fixture loads" );
+		if( !pJobE ) return;
+		// The binary's own default is OFF (see main), so the ordinary
+		// WrapJob here is a protocol-off session.
+		std::unique_ptr<Agent::AgentSession> se = Agent::AgentSession::WrapJob( pJobE );
+		Check( se->SessionMode() == Agent::AgentSession::AgentSessionMode::Building &&
+		       !se->BuildProtocolActive(),
+		       "A83M/d3 an empty-start session with the switches off is BUILDING with no protocol" );
+		Check( se->InsertChunk( S1Box( "a83m_d3e" ) ).applied,
+		       "A83M/d3 MONEY ASSERTION: and nothing gates -- BUILDING alone compels nothing when "
+		       "the launch switches are off" );
+		se.reset(); pJobE->release(); std::remove( tmpE.c_str() );
+
+		const std::string tmpF = TempPath( "agentcrud_a83m_d3f.RISEscene" );
+		Job* pJobF = LoadScene( kScene, tmpF );
+		Check( pJobF != nullptr, "A83M/d3 non-empty fixture loads" );
+		if( !pJobF ) return;
+		std::unique_ptr<Agent::AgentSession> sf = Agent::AgentSession::WrapJob( pJobF );
+		Check( sf->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining &&
+		       !sf->BuildProtocolActive(),
+		       "A83M/d3 and a non-empty one is REFINING with no protocol" );
+		Check( sf->InsertChunk( S1Box( "a83m_d3f" ) ).applied,
+		       "A83M/d3 with the same outcome -- protocol-off behaviour is identical in both modes" );
+		sf.reset(); pJobF->release(); std::remove( tmpF.c_str() );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -14789,6 +15277,13 @@ int main()
 	TestThreeComposeArmsShareOneCap();
 	TestPopulateSceneWireShape();
 	TestPopulationExampleInserts();
+
+	// Arc 83 sec 4.1 (2026-08-13): the SESSION MODE -- compulsion belongs to
+	// the first build; availability is forever.
+	TestSessionModeClassification();
+	TestRefiningDisarmsTheThreeConflicts();
+	TestSessionModeTransitionIsOneWay();
+	TestRefiningKeepsRendererPolicy();
 
 	std::printf( "AgentChunkCrudTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

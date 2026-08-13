@@ -123,6 +123,22 @@ static const char* const kScene =
 	"sphere_geometry\n{\n\tname sph\n\tradius 0.8\n}\n\n"
 	"standard_object\n{\n\tname obj_sph\n\tgeometry sph\n\tmaterial mat_diffuse\n}\n";
 
+//! ARC 83 sec 4.1 (2026-08-13): the SAME scene with NO FORM -- no geometry
+//! chunk and no standard_object.  The build-plan gate (and every other
+//! construction gate) fires ONLY in a session whose document STARTED EMPTY:
+//! a session handed a scene that already carries geometry is REFINING from
+//! construction, and refusing a user's first edit there was the defect sec 4
+//! names.  So the G2/wire arm below -- whose claim is "a shipped headless
+//! process really does gate by default" -- has to launch over THIS document.
+//! Everything else in this file is about AUTONOMY, which the mode does not
+//! touch, and keeps using kScene.
+static const char* const kEmptyScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n";
+
 static std::string WriteTemp( const char* name, const std::string& text )
 {
 	const char* base = std::getenv( "TMPDIR" );
@@ -1278,6 +1294,12 @@ static void TestLaunchFlagParsing()
 	// file_build_plan really does dispatch (it is READ-SAFE, so it must reach
 	// the session under every posture -- and it is the ONLY way to disarm the
 	// gate), and that --agent-part-plan-gate=off really turns it off. ---
+	// ARC 83 sec 4.1: over the EMPTY document (see kEmptyScene) -- the gate
+	// only ever fires in a session that started with no form, so launching
+	// this arm over kScene would measure the MODE, not the launch default.
+	const std::string emptyScenePath =
+		WriteTemp( "rise_agent_autonomy_smoke_empty.RISEscene", kEmptyScene );
+	Check( !emptyScenePath.empty(), "wrote the empty-document gate scene to a temp file" );
 	{
 		const std::string requests =
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"insert_chunk\",\"params\":{\"chunkText\":"
@@ -1290,7 +1312,7 @@ static void TestLaunchFlagParsing()
 		std::vector<std::string> args;
 		args.push_back( "--agent-stdio" );
 		args.push_back( "--agent-autonomy=commit" );
-		args.push_back( scenePath );
+		args.push_back( emptyScenePath );
 		std::string outStdout, outStderr;
 		const int rc = RunChild( args, requests, outStdout, outStderr );
 		Check( rc == 0, "G2/wire: the gate-ON child exits 0 on stdin EOF" );
@@ -1322,7 +1344,7 @@ static void TestLaunchFlagParsing()
 		args.push_back( "--agent-stdio" );
 		args.push_back( "--agent-autonomy=commit" );
 		args.push_back( "--agent-part-plan-gate=off" );
-		args.push_back( scenePath );
+		args.push_back( emptyScenePath );
 		std::string outStdout, outStderr;
 		const int rc = RunChild( args, requests, outStdout, outStderr );
 		Check( rc == 0, "G2/wire: the `--agent-part-plan-gate=off` child exits 0" );
@@ -1479,6 +1501,7 @@ static void TestLaunchFlagParsing()
 	}
 
 	std::remove( scenePath.c_str() );
+	std::remove( emptyScenePath.c_str() );
 }
 
 #else  // _WIN32

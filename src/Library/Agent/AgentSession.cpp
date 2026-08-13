@@ -652,7 +652,17 @@ namespace RISE
 			  // AgentImageCache's doc for why that matters (the hosted
 			  // loopback server's External session relies on it).
 			  mImageCache( sharedImageCache ? sharedImageCache
-			                                : std::make_shared<AgentImageCache>() )
+			                                : std::make_shared<AgentImageCache>() ),
+			  // ARC 83 sec 4.1 (2026-08-13): the SESSION MODE, decided HERE
+			  // and only here, from the document actually loaded.  Both
+			  // factories load before they construct (LoadFromFile parses the
+			  // file first; WrapJob is handed a Job the host already loaded),
+			  // so this sees the real starting scene.  Deliberately NOT
+			  // inferred later from chunk counts -- a build in progress would
+			  // read as non-empty and silently end its own protocol.
+			  mStartedEmpty( JobStartedEmpty_( job ) ),
+			  mSessionMode( mStartedEmpty ? AgentSessionMode::Building
+			                              : AgentSessionMode::Refining )
 		{
 			// G2 (2026-08-10): SNAPSHOT the process-wide build-plan-gate
 			// default here, once.  A session's posture is fixed for its whole
@@ -665,6 +675,77 @@ namespace RISE
 			// together (BuildProtocolActive_), so a session that snapshotted
 			// them one instant apart could not disagree with itself later.
 			mBuildProtocolEnabled = BuildProtocolDefaultEnabled();
+		}
+
+		//======================================================================
+		// ARC 83 sec 4.1 (2026-08-13): THE SESSION MODE.
+		// Compulsion belongs to the first build; availability is forever.
+		// The whole contract, the surface list and the residual risk are in
+		// AgentSession.h's public block above SessionMode.
+		//======================================================================
+
+		bool AgentSession::DocumentCarriesForm_( const RISE::Cst::Document& doc )
+		{
+			const int items = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < items; ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				// The SAME classifier the compose-phase delete-ban uses, so
+				// "what counts as form" is one answer in this file rather than
+				// two that eventually disagree.
+				if( KindIsFormBearing_( it->role ) ) return true;
+			}
+			return false;
+		}
+
+		bool AgentSession::SceneTextCarriesForm( const std::string& sceneText )
+		{
+			if( sceneText.empty() ) return false;
+			return DocumentCarriesForm_( RISE::Cst::ParseToCst( sceneText ) );
+		}
+
+		bool AgentSession::JobStartedEmpty_( IJobPriv* job )
+		{
+			if( !job ) return true;
+			const RISE::Cst::Document* doc = job->GetCstDocument();
+			// NO RETAINED HEAD -> "started empty".  That is the fail-safe
+			// direction (gates ON), matching what both launch switches do when
+			// nobody has said otherwise; a session with nothing loaded has
+			// certainly not been handed a finished scene to refine.
+			if( !doc ) return true;
+			return !DocumentCarriesForm_( *doc );
+		}
+
+		const char* AgentSession::SessionModeName( AgentSessionMode m )
+		{
+			switch( m ) {
+				case AgentSessionMode::Refining: return "refining";
+				case AgentSessionMode::Building: break;
+			}
+			return "building";
+		}
+
+		std::unique_ptr<AgentSession> AgentSession::WrapJobWithSessionMode(
+			IJobPriv* job, AgentSessionMode mode, AgentAuthority authority,
+			std::shared_ptr<AgentImageCache> sharedImageCache )
+		{
+			std::unique_ptr<AgentSession> s = WrapJob( job, authority, sharedImageCache );
+			// The PIN, and the only thing that differs from WrapJob.
+			// mStartedEmpty is deliberately left alone -- it is the const
+			// record of what the document actually was, and a pinned session
+			// must not be able to misreport that.
+			if( s ) s->mSessionMode = mode;
+			return s;
+		}
+
+		void AgentSession::NoteFinalAnswer()
+		{
+			// ONE-WAY and idempotent.  No condition beyond the current mode:
+			// a host that cannot tell whether the protocol is on may call this
+			// unconditionally at the end of every turn, and only the FIRST
+			// call on a Building session does anything at all.
+			mSessionMode = AgentSessionMode::Refining;
 		}
 
 		std::uint64_t AgentSession::RetainedPerceptionBytesLocked_() const
@@ -11397,6 +11478,12 @@ namespace RISE
 			// compose-phase creation) because they are two faces of one
 			// mechanism: a model that cannot work the protocol should not have
 			// to exhaust two separate budgets to get out of it.
+			//
+			// ARC 83 sec 4.1: the REFINING check lives HERE as well as in each
+			// arm's own prologue, so a future arm inherits it by construction
+			// rather than by somebody remembering.  The arms check it too,
+			// which lets them skip their own classification work.
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 
 			if( mBuildPhaseRefusalCount < kBuildPhaseMaxRefusals )
@@ -11433,6 +11520,8 @@ namespace RISE
 		                                                       const std::string& target,
 		                                                       std::string* outGiveUpNotice )
 		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			if( mBuildPhase != AgentBuildPhase::Pieces )       return std::string();
 			if( target.empty() )                               return std::string();
@@ -11459,6 +11548,8 @@ namespace RISE
 		std::string AgentSession::CheckComposePhaseForCreate_( const char* verb,
 		                                                        std::string* outGiveUpNotice )
 		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
 			// Arc 81 (2026-08-12): LightScene's OWN insertion is a clean room,
@@ -11554,6 +11645,8 @@ namespace RISE
 		                                                        const std::vector<std::string>& targets,
 		                                                        std::string* outGiveUpNotice )
 		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
 			if( targets.empty() )                              return std::string();
@@ -12217,6 +12310,8 @@ namespace RISE
 		std::string AgentSession::CheckFirstGeometryThroughCleanRoom_( const char* verb,
 		                                                                std::string* outGiveUpNotice )
 		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			if( mBuildPhase != AgentBuildPhase::Pieces )       return std::string();
 			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST.  On a host
@@ -12250,6 +12345,8 @@ namespace RISE
 		std::string AgentSession::CheckFirstLightThroughCleanRoom_( const char* verb,
 		                                                             std::string* outGiveUpNotice )
 		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			// THE SEAM.  Arc 78 sec 2.3 DELIBERATELY allows lights during
 			// element windows -- a model that cannot light a part cannot see
@@ -12288,6 +12385,8 @@ namespace RISE
 		std::string AgentSession::CheckPopulateBeforeComposeRender_( const char* verb,
 		                                                             std::string* outGiveUpNotice )
 		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
 			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
 			// THE SEAM.  Renders during PIECES are untouched: arc 78 sec 2.3's
 			// rule is that a model must always be able to look at the part it
