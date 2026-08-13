@@ -1939,9 +1939,15 @@ namespace RISE
 			       "THAT FILLS THAT ROLE IS AN AREA LIGHT -- a real emitting surface in the scene. "
 			       "For a rectangular panel that is ONE chunk, `rect_light`, which takes `name`, "
 			       "`center`, `size` (width height), `facing` (the direction it emits toward), "
-			       "`color` and `exitance` (brightness per unit area). An area light of any OTHER "
+			       "`color` and `exitance` (brightness per unit area). For a bulb, an orb, a lamp "
+			       "body or any glowing volume it is also ONE chunk, `shape_light`, which takes "
+			       "`name`, `shape` (sphere, ellipsoid, box or cylinder), `center`, `size` (the "
+			       "numbers that shape takes), `orientation`, `color` and the same `exitance` -- a "
+			       "closed solid emits outward everywhere, so it has no `facing` at all. An area "
+			       "light of any OTHER "
 			       "shape is an ordinary object wearing an emissive material -- there is no "
-			       "`area_light` chunk -- which is the four chunks `rect_light` is itself expanded "
+			       "`area_light` chunk -- which is the four chunks `rect_light` and `shape_light` "
+			       "are themselves expanded "
 			       "into: a `uniformcolor_painter` holding the emitted colour; a "
 			       "`lambertian_luminaire_material` whose `exitance` is that painter, whose `scale` "
 			       "multiplies it, and whose `material` is `none` so the surface only emits; a "
@@ -2003,6 +2009,256 @@ namespace RISE
 			if( CountAmbientLightChunks_( candidateAsBytes ) > CountAmbientLightChunks_( headDoc ) )
 				return DescribeAmbientLightBan();
 			return std::string();
+		}
+
+		//======================================================================
+		// ARC 83 SLICE 4 (2026-08-12) -- THE ZERO-AREA LIGHT BUDGET.
+		//
+		// Owner, verbatim: "penalize the model for choosing omni, spot or
+		// ambient over shape light."  Ambient is banned outright, above and
+		// unchanged; the other three are BUDGETED rather than banned, because
+		// a zero-area idealization is legitimate for the special cases that
+		// want exactly that.  The whole contract -- why a budget and not a ban,
+		// why confirm-once, and why the confirm is keyed on a canonical content
+		// fingerprint rather than on a name or a hash -- is documented in
+		// AgentSession.h (the public block above kZeroAreaLightSceneBudget and
+		// the private one above mZeroAreaLightConfirms).  What follows is the
+		// mechanism.
+		//
+		// The COUNTING half is file-local and pure; the DECIDING half needs the
+		// confirm set and is therefore a member.  That is the one structural
+		// difference from the ambient ban's free-function pair above, and it is
+		// forced: a ban has no state, a budget with a confirm does.
+		//======================================================================
+		namespace
+		{
+			//! ARC 83 SLICE 1: is this keyword one of the three ZERO-AREA
+			//! idealizations the palette groups together?  Named as a list
+			//! rather than derived, because the classification is about
+			//! PHYSICAL FORM and the registry does not carry it:
+			//! `hosek_wilkie_skylight` is a Light-category chunk too and is
+			//! physically based, so a category test would report it as an
+			//! idealization, which would be a false clause.
+			//!
+			//! ARC 83 SLICE 4 moved this definition UP to here from
+			//! light_scene's classification block further down (which still
+			//! calls it), so that the BUDGET and the REPORT read ONE list.  Two
+			//! lists would eventually disagree, and a scene refused for
+			//! carrying three of something the same call then reports as two
+			//! would be indefensible.
+			bool IsZeroAreaLightKeyword_( const std::string& k )
+			{
+				return k == "omni_light" || k == "spot_light" || k == "directional_light";
+			}
+
+			//! The cheap literal pre-filter -- the ambient ban's, in triplicate.
+			//! A zero-area light chunk's keyword has to appear VERBATIM in the
+			//! bytes for a parse to produce one, so a text carrying none of the
+			//! three is answered by three substring searches and no parse at
+			//! all.  Cannot produce a false negative.
+			bool TextCouldCarryZeroAreaLight_( const std::string& text )
+			{
+				return text.find( "omni_light" )        != std::string::npos ||
+				       text.find( "spot_light" )        != std::string::npos ||
+				       text.find( "directional_light" ) != std::string::npos;
+			}
+
+			//! The CANONICAL CONTENT FINGERPRINT of one chunk node --
+			//! `<keyword>|<param>=<value>|...`, params SORTED BY NAME.  See
+			//! AgentSession.h's private block for why this shape rather than a
+			//! name or a hash.  Values arrive already whitespace-collapsed: the
+			//! CST stores each value token separately and this joins them with
+			//! single spaces (ChunkParamString_'s convention), so a re-indent
+			//! or a tabs-for-spaces swap cannot change a fingerprint.
+			std::string ChunkContentFingerprint_( const NodeRef& chunkItem )
+			{
+				if( !chunkItem ) return std::string();
+				std::vector<std::string> pairs;
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string pname, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) pname = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( pname.empty() ) continue;
+					pairs.push_back( pname + "=" + val );
+				}
+				std::sort( pairs.begin(), pairs.end() );
+				std::string fp = chunkItem->role;
+				for( std::size_t i = 0; i < pairs.size(); ++i ) { fp += '|'; fp += pairs[i]; }
+				return fp;
+			}
+
+			//! Every zero-area light chunk in `doc`, as fingerprints, in
+			//! document order.
+			std::vector<std::string> ZeroAreaLightFingerprintsInDoc_( const Document& doc )
+			{
+				std::vector<std::string> out;
+				const int items = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < items; ++i ) {
+					const NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( !IsZeroAreaLightKeyword_( it->role ) ) continue;
+					out.push_back( ChunkContentFingerprint_( it ) );
+				}
+				return out;
+			}
+
+			//! The FIRST zero-area light chunk in `text`, as (keyword, name), for
+			//! the identity echo a refusal still owes its caller.  Leaves both
+			//! outputs untouched when there is none.
+			void ZeroAreaLightIdentityForText_( const std::string& text,
+			                                    std::string* outKind, std::string* outName )
+			{
+				if( text.empty() || !TextCouldCarryZeroAreaLight_( text ) ) return;
+				const Document doc = RISE::Cst::ParseToCst( text );
+				const int items = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < items; ++i ) {
+					const NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( !IsZeroAreaLightKeyword_( it->role ) ) continue;
+					if( outKind ) *outKind = it->role;
+					if( outName ) *outName = ChunkParamString_( it, "name" );
+					return;
+				}
+			}
+
+			//! How many top-level zero-area light chunks does `doc` carry?
+			//! THE DOCUMENT IS THE COUNT, never a session tally -- so an undo, a
+			//! removal, a co-editor's change and the user's own edit all move
+			//! the budget correctly, and a scene that has room is never refused
+			//! because of something that is no longer in it.
+			int CountZeroAreaLightChunks_( const Document& doc )
+			{
+				return static_cast<int>( ZeroAreaLightFingerprintsInDoc_( doc ).size() );
+			}
+		}
+
+		std::string AgentSession::DescribeZeroAreaLightBudgetRefusal( int inDocument, int inRequest )
+		{
+			return "This scene carries " + std::to_string( inDocument ) +
+			       " zero-area light chunk" + ( inDocument == 1 ? "" : "s" ) +
+			       " (omni_light, spot_light, directional_light) and this request adds " +
+			       std::to_string( inRequest ) + " more, against a free budget of " +
+			       std::to_string( kZeroAreaLightSceneBudget ) + " per scene. A zero-area light has no "
+			       "emitting surface anywhere in the scene: the light arrives from a single point or "
+			       "from infinity, its shadows have hard edges with no penumbra at any distance, "
+			       "nothing about it appears in the frame, and no material governs what it emits. THE "
+			       "LIGHT FORMS WITH REAL AREA ARE OUTSIDE THIS BUDGET and are counted by nothing: "
+			       "`shape_light`, ONE chunk for a sphere, ellipsoid, box or cylinder that emits -- "
+			       "`name`, `shape`, `center`, `size` (the numbers that shape takes), `exitance`, and "
+			       "optionally `color` and `orientation` -- which emits outward in every direction, so "
+			       "it carries no facing at all; `rect_light`, ONE chunk for a rectangular panel -- "
+			       "`name`, `center`, `size` (width height), `facing`, `exitance` and optionally "
+			       "`color`; an emitter of any other shape, written as a `uniformcolor_painter` plus a "
+			       "`lambertian_luminaire_material` plus a geometry plus a `standard_object`; and "
+			       "`hosek_wilkie_skylight`, an analytic sun-and-sky model. Each of those has real "
+			       "area, so it casts soft shadows and falls off with distance, and being an ordinary "
+			       "object it is also seen by the camera. RE-ISSUING THIS EXACT REQUEST INSERTS IT: "
+			       "this refusal fires once for a given request, and the identical request after it is "
+			       "applied.";
+		}
+
+		std::vector<std::string> AgentSession::ZeroAreaLightFingerprintsForText_( const std::string& text )
+		{
+			if( text.empty() || !TextCouldCarryZeroAreaLight_( text ) )
+				return std::vector<std::string>();
+			return ZeroAreaLightFingerprintsInDoc_( RISE::Cst::ParseToCst( text ) );
+		}
+
+		std::string AgentSession::CheckZeroAreaLightBudget_( int inDocument, int alreadyPending,
+		                                                     const std::vector<std::string>& fps )
+		{
+			if( fps.empty() ) return std::string();
+
+			const int wouldBe = inDocument + alreadyPending + static_cast<int>( fps.size() );
+			if( wouldBe <= kZeroAreaLightSceneBudget ) return std::string();
+
+			// CONFIRM-ONCE.  EVERY fingerprint in this request has to have been
+			// refused before for the request to land -- all of them, not any: a
+			// batch pairing one already-refused light with one brand new one is
+			// a NEW request, and letting it through on the strength of the old
+			// half would make the refusal skippable by padding.
+			bool allConfirmed = true;
+			for( std::size_t i = 0; i < fps.size() && allConfirmed; ++i )
+				allConfirmed = ( mZeroAreaLightConfirms.find( fps[i] ) != mZeroAreaLightConfirms.end() );
+			if( allConfirmed ) return std::string();
+
+			// Record BEFORE returning, and record ALL of them -- including any
+			// already present -- so the identical re-issue is one confirmed set
+			// whichever subset of it the model repeats.
+			for( std::size_t i = 0; i < fps.size(); ++i )
+				mZeroAreaLightConfirms.insert( fps[i] );
+
+			return DescribeZeroAreaLightBudgetRefusal(
+				inDocument, alreadyPending + static_cast<int>( fps.size() ) );
+		}
+
+		std::string AgentSession::CheckZeroAreaLightBudgetForTexts_(
+			const std::vector<std::string>& texts, std::size_t* outOffender )
+		{
+			std::vector<std::string> fps;
+			std::size_t offender = texts.size();
+			for( std::size_t i = 0; i < texts.size(); ++i ) {
+				const std::vector<std::string> f = ZeroAreaLightFingerprintsForText_( texts[i] );
+				if( f.empty() ) continue;
+				if( offender == texts.size() ) offender = i;
+				fps.insert( fps.end(), f.begin(), f.end() );
+			}
+			if( fps.empty() ) return std::string();
+			if( outOffender ) *outOffender = offender;
+
+			// The SNAPSHOT is taken only once the pre-filtered parse has found a
+			// real zero-area light, so a build that never authors one never pays
+			// for this check at all.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			const int inDoc = snap.hasDocument
+				? CountZeroAreaLightChunks_( RISE::Cst::ParseToCst( snap.document ) ) : 0;
+			return CheckZeroAreaLightBudget_( inDoc, 0, fps );
+		}
+
+		std::string AgentSession::CheckZeroAreaLightBudgetForPatch_( const std::string& headText,
+		                                                             const std::string& target,
+		                                                             const std::string& kind,
+		                                                             const std::string& param,
+		                                                             const std::string& value )
+		{
+			// The ambient patch arm's pre-filters, exactly: a patch that could
+			// not possibly introduce one of these chunks pays four substring
+			// searches and no parse.
+			if( target.empty() && kind.empty() ) return std::string();
+			if( param.empty() )                  return std::string();
+			if( value.find( '}' ) == std::string::npos ) return std::string();
+			if( !TextCouldCarryZeroAreaLight_( value ) ) return std::string();
+
+			const Document headDoc = RISE::Cst::ParseToCst( headText );
+			const RISE::Cst::NodeId id = ResolvePatchTargetChunk_( headDoc, target, kind );
+			if( !id ) return std::string();
+			if( !RISE::Cst::DocResolveNodeId( headDoc, id ) ) return std::string();
+
+			// DELTA, not state, through the SAME round-tripped candidate the
+			// other patch-delta gates judge: what is charged is the MULTISET
+			// DIFFERENCE -- the fingerprints the candidate has and the head does
+			// not.  So editing a zero-area light that already exists is free
+			// however far over budget the scene already is, which is the E1
+			// state-vs-delta lesson the ambient arm applies too.
+			const Document candidate = BuildPatchCandidateAsBytes_( headDoc, id, param, value );
+			const std::vector<std::string> headFps = ZeroAreaLightFingerprintsInDoc_( headDoc );
+			const std::vector<std::string> candFps = ZeroAreaLightFingerprintsInDoc_( candidate );
+			std::vector<std::string> pool = headFps;
+			std::vector<std::string> added;
+			for( std::size_t i = 0; i < candFps.size(); ++i ) {
+				const std::vector<std::string>::iterator at =
+					std::find( pool.begin(), pool.end(), candFps[i] );
+				if( at != pool.end() ) pool.erase( at );
+				else                   added.push_back( candFps[i] );
+			}
+			if( added.empty() ) return std::string();
+			return CheckZeroAreaLightBudget_( static_cast<int>( headFps.size() ), 0, added );
 		}
 
 		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText )
@@ -2570,6 +2826,36 @@ namespace RISE
 					r.headVersion = snap.headVersion;
 					r.message     = "propose_patch refused: " + clause +
 					                " (this patch's value would have introduced an `ambient_light` chunk.)";
+					return r;
+				}
+			}
+
+			// ARC 83 SLICE 4 (2026-08-12): the ZERO-AREA LIGHT BUDGET's PATCH arm,
+			// next, and it exists for the ban arm's exact reason -- a param value is
+			// spliced into the document as TEXT, so a budget with no patch arm would
+			// be a budget with a documented hole through which a whole scene's worth
+			// of omni_lights could be written.  Its pre-filters are repeated at this
+			// call site for the same reason the ban's are: they keep the SNAPSHOT
+			// itself off the common path, and the shared function applies them again
+			// so the two can differ only in cost, never in the answer.
+			if( patch.value.find( '}' ) != std::string::npos &&
+			    ( patch.value.find( "omni_light" )        != std::string::npos ||
+			      patch.value.find( "spot_light" )        != std::string::npos ||
+			      patch.value.find( "directional_light" ) != std::string::npos ) )
+			{
+				const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+				const std::string clause = snap.hasDocument
+					? CheckZeroAreaLightBudgetForPatch_( snap.document, patch.target, patch.kind,
+					                                     patch.param, patch.value )
+					: std::string();
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = snap.headVersion;
+					r.message     = "propose_patch refused: " + clause +
+					                " (this patch's value would have introduced a zero-area light chunk.)";
 					return r;
 				}
 			}
@@ -4320,6 +4606,39 @@ namespace RISE
 				}
 			}
 
+			// ARC 83 SLICE 4 (2026-08-12, house lighting policy): the ZERO-AREA
+			// LIGHT BUDGET, immediately after the ambient ban and for the SAME
+			// ordering reason -- omni / spot / directional are Light chunks, so
+			// the arc-81 first-light PHASE arm below would fire on them and would
+			// spend one of the SHARED three phase refusals on a call this
+			// unconditional policy answers by itself.  A permanent policy must not
+			// consume a sequencing budget, so it goes first, exactly as the ban
+			// does.  (It is ordered AFTER the ban only because the two are
+			// disjoint by keyword and the ban is the absolute one.)
+			//
+			// `retriable` stays FALSE for the ban's reason -- and here the flag
+			// would be actively harmful: a GUI chat loop that silently re-issues a
+			// retriable refusal would consume the model's ONE confirm on its
+			// behalf, so the refusal would never be read and the light would land
+			// as if the budget did not exist.
+			{
+				const std::vector<std::string> texts( 1, chunkText );
+				const std::string clause = CheckZeroAreaLightBudgetForTexts_( texts );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					// Identity echo, the contract every other InsertChunk guard
+					// honours: the check already parsed the text, so naming the
+					// offending chunk costs one more walk of the same document.
+					ZeroAreaLightIdentityForText_( chunkText, &r.kind, &r.name );
+					r.message     = "insert_chunk refused: " + clause;
+					return r;
+				}
+			}
+
 			// G2 (2026-08-10, build-plan gate): the InsertChunk arm, FIRST --
 			// ahead of R1c's and E1's, because this gate is a pure SEQUENCING
 			// check that consults nothing about the document and nothing about
@@ -4719,6 +5038,41 @@ namespace RISE
 					if( !clause.empty() ) { offender = i; break; }
 				}
 				if( offender < chunkTexts.size() ) {
+					char buf[96];
+					std::snprintf( buf, sizeof( buf ),
+						"insert_chunks refused: NOTHING was inserted (chunks[%d]) -- ",
+						static_cast<int>( offender ) );
+					const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+					for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+						AgentChunkResult e;
+						e.applied     = false;
+						e.retriable   = false;   // see InsertChunk's arm for why
+						e.rawCode     = 0;
+						e.status      = "rejected";
+						e.headVersion = head;
+						e.message     = std::string( buf ) + clause;
+						out.push_back( e );
+					}
+					return out;
+				}
+			}
+
+			// ARC 83 SLICE 4 (2026-08-12): the ZERO-AREA LIGHT BUDGET's batch arm,
+			// an UP-FRONT WHOLE-BATCH scan for the ambient arm's two reasons, plus
+			// one of its own.  (1) A POLICY refusal is not an authoring failure, so
+			// an over-budget batch lands NOTHING and the document stays
+			// byte-identical.  (2) It runs ahead of the phase scans so it cannot
+			// spend a phase refusal on the way to an unconditional one.  (3) THE
+			// BATCH IS ONE REQUEST: every zero-area light in it is charged
+			// together, refused together and CONFIRMED together, so re-issuing the
+			// same batch lands the same batch.  Charging each element separately
+			// would refuse a five-light batch five times over five calls, which is
+			// the opposite of one refusal that a re-issue clears.
+			{
+				std::size_t offender = chunkTexts.size();
+				const std::string clause =
+					CheckZeroAreaLightBudgetForTexts_( chunkTexts, &offender );
+				if( !clause.empty() ) {
 					char buf[96];
 					std::snprintf( buf, sizeof( buf ),
 						"insert_chunks refused: NOTHING was inserted (chunks[%d]) -- ",
@@ -19097,6 +19451,18 @@ namespace RISE
 				//! every other entry.
 				const char* altNote = nullptr;
 				const char* alt     = nullptr;
+				//! ARC 83 SLICE 4: a THIRD block, and a SECOND schema keyword.  The
+				//! area entry now carries the two one-chunk forms -- `rect_light`
+				//! for a panel and `shape_light` for a solid -- and then the general
+				//! chain, so there are three literal blocks and two registry schemas
+				//! to print.  Same reason they are separate fields as slice 3's
+				//! pair: each block has to stay independently LIFTABLE, because the
+				//! A81h test extracts each from the shipped prompt and pushes it
+				//! through the real insertion path, which it could not do if any two
+				//! were glued together by a sentence.  Null on every other entry.
+				const char* keyword2 = nullptr;  //!< a second schema, printed under the first
+				const char* alt2Note = nullptr;
+				const char* alt2     = nullptr;
 			};
 
 			const LightPaletteEntry_ kLightPalette[] = {
@@ -19122,8 +19488,13 @@ namespace RISE
 				  "AREA / MESH LIGHT -- a real emitting SURFACE in the scene, and the physically "
 				  "based way to light one. For a rectangular panel it is ONE chunk, `rect_light`: "
 				  "`center`, `size` (width height), `facing` (the direction it emits toward), "
-				  "`color` and `exitance`. An area light of ANY OTHER shape is written out as the "
-				  "four chunks rect_light is itself expanded into -- a painter holding the emitted "
+				  "`color` and `exitance`. For a bulb, an orb, a lamp body, a glowing creature or "
+				  "any other glowing volume it is also ONE chunk, `shape_light`: `shape` (sphere, "
+				  "ellipsoid, box or cylinder), `center`, `size` (the numbers that shape takes), "
+				  "`orientation`, `color` and the same `exitance` -- a closed solid emits OUTWARD IN "
+				  "EVERY DIRECTION, so it carries no facing at all. An area light of ANY OTHER shape "
+				  "is written out as the "
+				  "four chunks those two are themselves expanded into -- a painter holding the emitted "
 				  "colour; a lambertian_luminaire_material whose `exitance` is that painter, whose "
 				  "`scale` multiplies it, and whose `material none` means the surface only emits; a "
 				  "geometry for its shape; and a standard_object binding that geometry to that "
@@ -19137,7 +19508,9 @@ namespace RISE
 				  "delivers twice the light. The 6000 below is the exitance one of this renderer's "
 				  "existing scenes gives a slot window reading as daylight, while a soft interior "
 				  "fill panel is typically in the tens. A rect_light emits toward `facing` and "
-				  "nowhere else; its back face is not hit at all. In the four-chunk form that "
+				  "nowhere else; its back face is not hit at all. A shape_light has no such choice "
+				  "to make: every one of its shapes is a closed solid whose surface faces outward "
+				  "everywhere, so the whole of it emits away from the solid. In the four-chunk form that "
 				  "choice is `doublesided` on clippedplane_geometry (a quad given by its four "
 				  "corner points): left TRUE, the default, the quad is hit from either side and the "
 				  "normal is flipped toward whatever looks at it, so it emits from BOTH faces; set "
@@ -19154,11 +19527,27 @@ namespace RISE
 				  "\tcolor\t\t1.0 0.95 0.85\n"
 				  "\texitance\t6000\n"
 				  "}",
-				  "That exact light, written out the long way -- this is what rect_light expands "
-				  "into, and it is the form to use for an emitter that is not a rectangle: put the "
-				  "material on a sphere_geometry, a mesh, or any other shape instead. The corner "
-				  "winding pta->ptb->ptc->ptd turns the emitting face toward -Y, which is what "
-				  "`facing 0 -1 0` means above.",
+				  "A glowing SOLID, the other one-chunk form -- a small bright bulb hanging in the "
+				  "room. `shape sphere` takes one number for `size` (its radius); `ellipsoid` takes "
+				  "three (its radii), `box` three (width height depth) and `cylinder` two (radius "
+				  "height, standing on +Y until `orientation` turns it). It emits from its whole "
+				  "surface, outward, and the camera sees the glowing solid itself wherever it sits.",
+				  "shape_light\n"
+				  "{\n"
+				  "\tname\t\tbulb_light\n"
+				  "\tshape\t\tsphere\n"
+				  "\tcenter\t\t0 3 0\n"
+				  "\tsize\t\t0.15\n"
+				  "\tcolor\t\t1.0 0.92 0.8\n"
+				  "\texitance\t400\n"
+				  "}",
+				  "shape_light",
+				  "The window light written out the long way -- this is what rect_light expands "
+				  "into, and with a different geometry chunk it is what shape_light expands into "
+				  "too. It is the form for an emitter that is neither a rectangle nor one of those "
+				  "four solids: put the material on a mesh, a torus, a bezier patch, anything. The "
+				  "corner winding pta->ptb->ptc->ptd turns the emitting face toward -Y, which is "
+				  "what `facing 0 -1 0` means above.",
 				  "uniformcolor_painter\n"
 				  "{\n"
 				  "\tname\t\tpnt_window\n"
@@ -19208,7 +19597,10 @@ namespace RISE
 				  "scene. Their shadows have hard edges with no penumbra at any distance, nothing "
 				  "about them appears in the frame, and no material governs what they emit. They "
 				  "are for the special cases that want exactly that. Their parameters are below; "
-				  "they carry no worked example.",
+				  "they carry no worked example. A scene has a FREE BUDGET OF 2 of these: beyond "
+				  "it, each request to insert one is refused once, with the count and the "
+				  "alternatives, and lands when re-issued unchanged. The forms above -- shape_light, "
+				  "rect_light, an emissive object, hosek_wilkie_skylight -- are counted by nothing.",
 				  "omni_light -- a point light radiating equally in all directions. Its "
 				  "contribution falls off as color * power / r^2, so `power` scales with the "
 				  "square of how far it sits from what it lights.",
@@ -19239,12 +19631,14 @@ namespace RISE
 			//! prompt exists to be SHORT (arc 79 sec 1: 60k of prepended text
 			//! halves construction richness).
 			//!
-			//! ARC 83 SLICE 3: `rect_light` is deliberately NOT in this list.
-			//! The AREA entry now carries it as its own palette `keyword`, so
-			//! its schema is already printed inside the entry; repeating it
-			//! here would spend prompt on the same text twice.  These four
-			//! remain because they are the GENERAL form, which the entry's
-			//! second example uses and any non-rectangular emitter needs.
+			//! ARC 83 SLICE 3 / SLICE 4: `rect_light` and `shape_light` are
+			//! deliberately NOT in this list.  The AREA entry carries them as
+			//! its own palette `keyword` and `keyword2`, so both schemas are
+			//! already printed inside the entry; repeating either here would
+			//! spend prompt on the same text twice.  These four remain because
+			//! they are the GENERAL form, which the entry's third example uses
+			//! and any emitter that is neither a rectangle nor one of the four
+			//! solids needs.
 			const char* const kMeshLightGrammarKeywords[] = {
 				"uniformcolor_painter",
 				"lambertian_luminaire_material",
@@ -19379,29 +19773,26 @@ namespace RISE
 				return false;
 			}
 
-			//! ARC 83 SLICE 1: is this keyword one of the three ZERO-AREA
-			//! idealizations the palette groups together?  Named as a list
-			//! rather than derived, because the classification the result
-			//! reports is about PHYSICAL FORM and the registry does not carry
-			//! that: `hosek_wilkie_skylight` is a Light-category chunk too and
-			//! is physically based, so a category test would report it as an
-			//! idealization, which would be a false clause.
-			bool IsZeroAreaLightKeyword_( const std::string& k )
-			{
-				return k == "omni_light" || k == "spot_light" || k == "directional_light";
-			}
+			// ARC 83 SLICE 1's `IsZeroAreaLightKeyword_` USED TO BE DEFINED
+			// HERE.  Slice 4 moved it to the ZERO-AREA LIGHT BUDGET block near
+			// the top of this file, because the budget's refusal and this
+			// classification's report have to read the SAME list -- refusing a
+			// scene for carrying three of something the same call then counts
+			// as two would be indefensible.  It is still an unnamed-namespace
+			// free function in this TU, so the call sites below are unchanged.
 
 			//! ARC 83 SLICE 3: is this keyword a light chunk that IS an area
 			//! light?  Same reason IsZeroAreaLightKeyword_ is a named list and
 			//! not a category test: the question is about PHYSICAL FORM, which
-			//! ChunkCategory does not carry.  `rect_light` is a Light-category
-			//! chunk whose Finalize expands into an emissive object, so the
-			//! report must count it with the area lights -- counting it as
-			//! "a light chunk of another kind" would be a false clause in the
-			//! one number this whole arc is measuring.
+			//! ChunkCategory does not carry.  `rect_light` and (arc 83 slice 4)
+			//! `shape_light` are Light-category chunks whose Finalize expands
+			//! into an emissive object, so the report must count them with the
+			//! area lights -- counting either as "a light chunk of another
+			//! kind" would be a false clause in the one number this whole arc
+			//! is measuring.
 			bool IsAreaLightKeyword_( const std::string& k )
 			{
-				return k == "rect_light";
+				return k == "rect_light" || k == "shape_light";
 			}
 
 			//! ARC 83 SLICE 2: read the enumeration completion's answer as a
@@ -19740,7 +20131,8 @@ namespace RISE
 			// a literal example.
 			p += "THE LIGHT SOURCES THIS PASS CAN AUTHOR. On the zero-area light chunks `power` "
 			     "multiplies `color`; on an emissive material `scale` multiplies the painter's "
-			     "colour, and `exitance` on a rect_light is that same quantity. Each entry's "
+			     "colour, and `exitance` on a rect_light or a shape_light is that same quantity. "
+			     "Each entry's "
 			     "parameter list below is the parser's own, so it is exactly what that chunk "
 			     "accepts.\n";
 			for( std::size_t i = 0; i < kLightPaletteCount; ++i ) {
@@ -19755,6 +20147,13 @@ namespace RISE
 				p += "\n";
 				if( kLightPalette[i].keyword ) {
 					p += ReadSchema( kLightPalette[i].keyword );
+					p += "\n";
+				}
+				// ARC 83 SLICE 4: the area entry's SECOND schema (`shape_light`),
+				// printed under the first so both one-chunk forms arrive with the
+				// parser's own parameter list rather than with prose about it.
+				if( kLightPalette[i].keyword2 ) {
+					p += ReadSchema( kLightPalette[i].keyword2 );
 					p += "\n";
 				}
 				// An entry with no example is not an omission to apologise for
@@ -19776,6 +20175,19 @@ namespace RISE
 				if( kLightPalette[i].alt ) {
 					p += "\nAlso valid:\n";
 					p += kLightPalette[i].alt;
+					p += "\n";
+				}
+				// ARC 83 SLICE 4: the third literal block, same shape as the second
+				// and separated by the same blank lines, so all three stay
+				// independently liftable by A81h.
+				if( kLightPalette[i].alt2Note ) {
+					p += "\n";
+					p += kLightPalette[i].alt2Note;
+					p += "\n";
+				}
+				if( kLightPalette[i].alt2 ) {
+					p += "\nAlso valid:\n";
+					p += kLightPalette[i].alt2;
 					p += "\n";
 				}
 			}
@@ -20054,6 +20466,24 @@ namespace RISE
 				}
 
 				// PASS 2: admissibility, then submission.
+				//
+				// ARC 83 SLICE 4: the ZERO-AREA LIGHT BUDGET is applied HERE, per
+				// chunk, against the live document PLUS what this same answer has
+				// already been allowed to add.  Both halves are load-bearing.  The
+				// document half is the budget's rule (never a session tally).  The
+				// running half is what keeps this arm and InsertChunks' batch arm
+				// AGREEING: without it a six-omni answer would pass admissibility
+				// six times (nothing has landed yet, so the document count never
+				// moves) and then be refused whole by the batch scan below, which
+				// would throw away the two lights that were actually within budget.
+				int zeroAreaInDoc = 0;
+				{
+					const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+					if( snap.hasDocument )
+						zeroAreaInDoc = CountZeroAreaLightChunks_( RISE::Cst::ParseToCst( snap.document ) );
+				}
+				int zeroAreaPending = 0;
+
 				std::vector<std::string> submit;
 				for( std::size_t i = 0; i < chunks.size(); ++i ) {
 					const ChunkDescriptor* d = descs[i];
@@ -20155,6 +20585,40 @@ namespace RISE
 							already = ( landedNames[l] == names[i] );
 						if( already ) continue;
 					}
+
+					// THE ZERO-AREA LIGHT BUDGET, last -- AFTER the already-landed
+					// skip above, deliberately.  On the repair retry the builder is
+					// asked for the corrected set WHOLE, so it legitimately repeats
+					// the lights that already landed; charging those against the
+					// budget a second time would refuse chunks that are already in
+					// the document.  Charged here, the retry pays only for what it
+					// is actually still trying to add.
+					//
+					// THE RETRY IS THE CONFIRM, and it composes with the existing
+					// repair machinery rather than needing anything new: a refusal
+					// here pushes its text into `rejectionLines`, which is verbatim
+					// what the ONE repair retry is corrected with, and the refusal
+					// has already recorded the chunk's fingerprint -- so a retry
+					// that re-issues the same light passes this check and lands.
+					{
+						const std::vector<std::string> fps =
+							ZeroAreaLightFingerprintsForText_( chunks[i] );
+						if( !fps.empty() ) {
+							const std::string over =
+								CheckZeroAreaLightBudget_( zeroAreaInDoc, zeroAreaPending, fps );
+							if( !over.empty() ) {
+								AgentLightSceneRejection r;
+								r.name   = names[i];
+								r.kind   = kinds[i];
+								r.reason = over;
+								out.rejected.push_back( r );
+								rejectionLines.push_back( r.reason );
+								continue;
+							}
+							zeroAreaPending += static_cast<int>( fps.size() );
+						}
+					}
+
 					submit.push_back( chunks[i] );
 				}
 				if( submit.empty() ) return false;

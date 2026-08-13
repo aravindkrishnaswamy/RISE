@@ -7247,6 +7247,295 @@ namespace RISE
 				}
 			};
 
+			//======================================================================
+			// ShapeLight -- the CLOSED-SOLID sibling of rect_light (2026-08-12).
+			//
+			// WHY IT EXISTS.  `rect_light` (above) closed the one-chunk gap for a
+			// PANEL, and the first live run using it recorded the remaining half
+			// (docs/agentic-redesign/83-staged-construction-plan.md sec 11): the
+			// glowing creatures of an imagined scene still became omni_lights,
+			// because a jellyfish is not a rectangle and the only one-chunk light
+			// with real area was.  `shape_light` is the same mechanism for the
+			// shapes a glowing THING is: a bulb, an orb, a lamp body, a glowing
+			// volume.  Owner-approved 2026-08-12, together with the zero-area
+			// budget that makes reaching for an idealization cost something.
+			//
+			// WHAT IT IS.  Pure PARSE-TIME SUGAR, exactly as rect_light is: this
+			// Finalize makes the same four IJob calls the hand-authored area-light
+			// chain makes (docs/SCENE_CONVENTIONS.md sec 3.5) -- painter,
+			// lambertian luminaire material, geometry, object.  The renderer core
+			// learns NO new concept, the CST keeps the compact authored text, and
+			// scene load and the agent insert path both get it through this one
+			// registry.  rect_light is NOT folded into it: a rectangle needs a
+			// `facing`, a closed solid emits every way at once, and the two
+			// parameter sets do not want to be one.
+			//
+			// SIDEDNESS IS FREE HERE, AND THIS IS THE INTERESTING DIFFERENCE.
+			// rect_light needed a `facing` parameter, a corner winding chosen to
+			// make Cross(ptb-pta, ptd-pta) point along it, and `doublesided FALSE`,
+			// all so that LambertianEmitter's one-sidedness (emittedRadiance
+			// returns black when Dot(out, N) <= 0) pointed the right way.  Every
+			// shape below is a CLOSED SOLID whose surface normal already points
+			// OUTWARD at every point -- SphereGeometry / EllipsoidGeometry return
+			// the outward radial normal, BoxGeometry the outward face normal,
+			// CylinderGeometry the outward radial normal on the wall and the
+			// outward axial normal on each cap.  Composed with the same one-sided
+			// emitter that gives exactly "emits outward everywhere, inward
+			// nowhere", which is what a bulb does, so there is NO facing parameter
+			// and nothing for an author to get backwards.
+			//
+			// SIZE IS PER-SHAPE, and its arity is what selects the shape's own
+			// constructor.  sphere = one radius; ellipsoid = three radii (the
+			// semi-axes, like ellipsoid_geometry's `radii`); box = width height
+			// depth (the X, Y and Z extents of box_geometry, which is centred on
+			// the origin); cylinder = radius height, built on the +Y axis so it
+			// stands upright, because `orientation` can turn it anywhere and the
+			// upright reading is the one an author can hold in their head.
+			//
+			// DERIVED NAMES.  The same three suffixes rect_light uses, and
+			// deliberately the same: the two chunks produce the same kind of
+			// entity set, so an author who has learned one set of derived names
+			// has learned both.  A collision on any of the four fails the derive
+			// with the manager's ordinary duplicate-name error.
+			//======================================================================
+			const char* const kShapeLightPainterSuffix  = kRectLightPainterSuffix;
+			const char* const kShapeLightMaterialSuffix = kRectLightMaterialSuffix;
+			const char* const kShapeLightGeometrySuffix = kRectLightGeometrySuffix;
+
+			//! The four shapes, their `size` arity and what those numbers mean.
+			//! ONE table: the validator, the geometry switch and the descriptor's
+			//! own text are all written from it, so a fifth shape cannot be added
+			//! to one and forgotten in another.
+			struct ShapeLightShape_
+			{
+				const char* keyword;
+				int         sizeArity;
+				const char* sizeMeaning;   //!< for the descriptor and the diagnostics
+			};
+			const ShapeLightShape_ kShapeLightShapes[] = {
+				{ "sphere",    1, "one radius" },
+				{ "ellipsoid", 3, "three radii -- the semi-axes, X Y Z" },
+				{ "box",       3, "width height depth -- the X, Y and Z extents" },
+				{ "cylinder",  2, "radius height -- the cylinder stands on the +Y axis" }
+			};
+			const std::size_t kShapeLightShapeCount =
+				sizeof( kShapeLightShapes ) / sizeof( kShapeLightShapes[0] );
+
+			//! "`sphere` (one radius), `ellipsoid` (...), ..." -- the valid set,
+			//! spelled the same way in every diagnostic that names it.
+			inline std::string ShapeLightValidShapes()
+			{
+				std::string s;
+				for( std::size_t i = 0; i < kShapeLightShapeCount; ++i ) {
+					if( i ) s += ( i + 1 == kShapeLightShapeCount ) ? " and " : ", ";
+					s += std::string( "`" ) + kShapeLightShapes[i].keyword + "` (" +
+					     kShapeLightShapes[i].sizeMeaning + ")";
+				}
+				return s;
+			}
+
+			struct ShapeLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! One place both the log line and the CST derive diagnostic are
+				//! written from -- rect_light's Reject, same reason.
+				static bool Reject( const std::string& why )
+				{
+					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					GlobalLog()->PrintEx( eLog_Error, "shape_light:: %s", why.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// ---- REQUIRED PARAMETERS.  `required` in a ParameterDescriptor
+					// is metadata for the schema / editor surfaces; the dispatcher
+					// does not enforce it, so every required parameter is checked
+					// here (rect_light's block, and thinlens_camera's before it).
+					const std::string name = bag.GetString( "name", std::string() );
+					if( name.empty() ) {
+						return Reject( "`name` is required -- it names the object this light becomes" );
+					}
+
+					// ---- THE SHAPE, which also fixes what `size` means.  The
+					// dispatcher does NOT validate an Enum parameter's value (it
+					// only type-checks numeric kinds), so an unknown shape has to
+					// fail here, naming the whole valid set rather than just
+					// saying no.
+					const std::string shape = bag.GetString( "shape", std::string() );
+					if( shape.empty() ) {
+						return Reject( "`shape` is required -- one of " + ShapeLightValidShapes() );
+					}
+					const ShapeLightShape_* chosen = 0;
+					for( std::size_t i = 0; i < kShapeLightShapeCount; ++i )
+						if( shape == kShapeLightShapes[i].keyword ) { chosen = &kShapeLightShapes[i]; break; }
+					if( !chosen ) {
+						return Reject( "`shape " + shape + "` is not a shape this chunk builds -- it is one of " +
+						               ShapeLightValidShapes() );
+					}
+
+					double center[3] = {0,0,0};
+					if( !bag.GetVec3( "center", center ) ) {
+						return Reject( "`center` is required -- the world-space centre of the emitting solid" );
+					}
+
+					if( !bag.Has( "size" ) ) {
+						return Reject( std::string( "`size` is required -- for `shape " ) + chosen->keyword +
+						               "` it is " + chosen->sizeMeaning );
+					}
+					if( !HasExactNumericArity( bag, "size", chosen->sizeArity ) ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%d", chosen->sizeArity );
+						return Reject( std::string( "`size` takes exactly " ) + buf + " number" +
+						               ( chosen->sizeArity == 1 ? "" : "s" ) + " for `shape " + chosen->keyword +
+						               "` -- " + chosen->sizeMeaning + "; got `" + bag.GetString( "size" ) + "`" );
+					}
+					double sz[3] = { 0.0, 0.0, 0.0 };
+					{
+						std::istringstream iss( bag.GetString( "size" ) );
+						for( int k = 0; k < chosen->sizeArity; ++k ) iss >> sz[k];
+					}
+					for( int k = 0; k < chosen->sizeArity; ++k ) {
+						if( !( sz[k] > 0.0 ) ) {
+							char buf[192];
+							std::snprintf( buf, sizeof(buf),
+								"`size` must be %d POSITIVE number%s (%s); got `%s`",
+								chosen->sizeArity, chosen->sizeArity == 1 ? "" : "s",
+								chosen->sizeMeaning, bag.GetString( "size" ).c_str() );
+							return Reject( buf );
+						}
+					}
+
+					if( !bag.Has( "exitance" ) ) {
+						return Reject( "`exitance` is required -- emitted radiance per unit area, "
+						               "so the same number on a bigger solid delivers more light" );
+					}
+					const double exitance = bag.GetDouble( "exitance", 0.0 );
+					if( !( exitance > 0.0 ) ) {
+						char buf[128];
+						std::snprintf( buf, sizeof(buf),
+							"`exitance` must be greater than zero; got %g (a light that emits nothing is not a light)",
+							exitance );
+						return Reject( buf );
+					}
+
+					double color[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "color", color );
+
+					// `orientation` is Euler DEGREES on the standard_object this
+					// expands into, exactly as an author would write it there --
+					// same parameter, same units, same axis order.
+					double orient[3] = { 0.0, 0.0, 0.0 };
+					if( bag.GetVec3( "orientation", orient ) ) {
+						orient[0] *= DEG_TO_RAD;
+						orient[1] *= DEG_TO_RAD;
+						orient[2] *= DEG_TO_RAD;
+					}
+
+					// ---- THE FOUR CALLS.  Same order and same arguments as the
+					// hand-authored chain, and as rect_light's Finalize.
+					const std::string pntName = name + kShapeLightPainterSuffix;
+					const std::string matName = name + kShapeLightMaterialSuffix;
+					const std::string geoName = name + kShapeLightGeometrySuffix;
+
+					if( !pJob.AddUniformColorPainter( pntName.c_str(), color, "Rec709RGB_Linear" ) ) {
+						return Reject( "could not create the emitted-colour painter `" + pntName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+					{
+						PainterColor pc = { { color[0], color[1], color[2] } };
+						s_painterColors[pntName] = pc;
+					}
+
+					if( !pJob.AddLambertianLuminaireMaterial( matName.c_str(), pntName.c_str(), "none", exitance ) ) {
+						return Reject( "could not create the luminaire material `" + matName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					// Every one of these constructors builds its solid CENTRED ON
+					// THE ORIGIN (BoxGeometry spans +-w/2, CylinderGeometry spans
+					// +-height/2 along its axis), so `center` is carried entirely
+					// by the object's position below -- there is no half-extent
+					// offset to apply here and none to get wrong.
+					bool geoOk = false;
+					if( shape == "sphere" ) {
+						geoOk = pJob.AddSphereGeometry( geoName.c_str(), sz[0] );
+					} else if( shape == "ellipsoid" ) {
+						const double radii[3] = { sz[0], sz[1], sz[2] };
+						geoOk = pJob.AddEllipsoidGeometry( geoName.c_str(), radii );
+					} else if( shape == "box" ) {
+						geoOk = pJob.AddBoxGeometry( geoName.c_str(), sz[0], sz[1], sz[2] );
+					} else {
+						// CAPPED, and that is load-bearing: an open tube has no end
+						// caps, so it would emit from the wall only and a camera
+						// looking down the axis would see straight through a light.
+						geoOk = pJob.AddCylinderGeometry( geoName.c_str(), 'y', sz[0], sz[1], true );
+					}
+					if( !geoOk ) {
+						return Reject( "could not create the `" + shape + "` geometry `" + geoName +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					double scl[3] = { 1.0, 1.0, 1.0 };
+					if( !pJob.AddObject( name.c_str(), geoName.c_str(), matName.c_str(), 0, 0,
+					                     radianceMapConfig, center, orient, scl, true, true ) ) {
+						return Reject( "could not create the object `" + name +
+						               "` -- the usual cause is that a chunk of that name already exists" );
+					}
+
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "shape_light"; cd.category = ChunkCategory::Light;
+						cd.description =
+							"A SOLID AREA light: a real emitting sphere, ellipsoid, box or cylinder in the "
+							"scene -- the form a bulb, an orb, a lamp body or a glowing volume takes, and "
+							"the physically based way to light one.  It is the closed-solid sibling of "
+							"`rect_light` (a rectangular panel) and is expanded at parse time into the "
+							"same four chunks an area light is otherwise written as -- a "
+							"uniformcolor_painter holding `color`, a lambertian_luminaire_material whose "
+							"exitance is that painter and whose scale is `exitance`, the shape's own "
+							"geometry chunk, and a standard_object placing it at `center`.  Those three "
+							"helper entities are named `<name>__pnt`, `<name>__mat` and `<name>__geo`; "
+							"the standard_object takes `<name>` itself, so `<name>` is what render-time "
+							"tools (solo, object map, isolate) report.  A collision on any of the four "
+							"names fails the load with the ordinary duplicate-name error.  IT EMITS "
+							"OUTWARD IN EVERY DIRECTION AND THERE IS NO FACING PARAMETER: each of these "
+							"shapes is a closed solid whose surface normal points outward everywhere, and "
+							"lambertian emission is one-sided about that normal, so the whole surface "
+							"emits away from the solid and nothing emits into it.  (That is the one place "
+							"it differs from rect_light, which is an open quad and therefore needs a "
+							"`facing`.)  Being an ordinary object it is rendered like one: the camera sees "
+							"its surface wherever it is, so it is both a light and a thing the picture "
+							"shows.  It has real area, so it casts soft shadows and falls off with "
+							"distance.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
+						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
+						{ auto& p = P(); p.name = "shape";       p.kind = ValueKind::Enum;       p.required = true;
+						  p.enumValues = {"sphere","ellipsoid","box","cylinder"};
+						  p.description = "Which closed solid emits.  It also fixes how many numbers `size` takes: " + ShapeLightValidShapes(); }
+						{ auto& p = P(); p.name = "center";      p.kind = ValueKind::DoubleVec3; p.required = true;
+						  p.description = "World-space centre of the solid.  Every shape is built centred on its own origin and placed here"; }
+						{ auto& p = P(); p.name = "size";        p.kind = ValueKind::Double;     p.required = true;
+						  p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double};
+						  p.description = "Positive numbers in scene units, as many as the chosen `shape` takes: " + ShapeLightValidShapes(); p.unitLabel = "scene units"; }
+						{ auto& p = P(); p.name = "exitance";    p.kind = ValueKind::Double;     p.required = true;
+						  p.description = "Emitted radiance PER UNIT AREA, so the same number on a bigger solid delivers more light.  Must be greater than zero.  Existing scenes span four orders of magnitude: tens for a soft glowing body, thousands for a small bright bulb"; }
+						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3;
+						  p.description = "Euler orientation in DEGREES, applied to the solid about `center` -- the same parameter standard_object takes.  A sphere is unchanged by it; it is what turns a cylinder off its default +Y axis, and what tilts a box or an ellipsoid"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";       p.kind = ValueKind::DoubleVec3;
+						  p.description = "R G B tint of the emitted light, linear Rec.709"; p.defaultValueHint = "1 1 1"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			//////////////////////////////////////////
 			// ShaderOps
 			//////////////////////////////////////////
@@ -10410,6 +10699,7 @@ namespace RISE
 		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
 		add( "hosek_wilkie_skylight",                 new HosekWilkieSkylightAsciiChunkParser() );
 		add( "rect_light",                            new RectLightAsciiChunkParser() );
+		add( "shape_light",                           new ShapeLightAsciiChunkParser() );
 
 		// Photon maps & gather
 		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );

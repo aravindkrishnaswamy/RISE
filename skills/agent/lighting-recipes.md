@@ -31,10 +31,37 @@ an ordinary object, the camera sees its surface wherever it is: point it
 away from the camera, or put it outside the frame, unless a visible
 glowing panel is what the shot wants.
 
-For an emitter of any **other** shape — a sphere lamp, a mesh fixture, a
-curved panel — write the four chunks `rect_light` expands into: painter
-→ `lambertian_luminaire_material` → geometry → `standard_object`.  That
-is what "Emissive geometry (area light)" below builds.
+**A glowing solid — a bulb, an orb, a lamp body — is ONE chunk,
+`shape_light`:**
+
+```
+shape_light
+{
+	name		bulb_light
+	shape		sphere
+	center		0 3 0
+	size		0.15
+	color		1.0 0.92 0.8
+	exitance	400
+}
+```
+
+`shape` is `sphere` (one `size` number, the radius), `ellipsoid` (three,
+the semi-axis radii), `box` (three, width height depth) or `cylinder`
+(two, radius height — stands on +Y until `orientation` turns it).
+`center` is world-space; `orientation` is an optional Euler rotation in
+degrees, default `0 0 0`.  **There is no `facing` on this chunk and none
+is needed**: every one of these shapes is a closed solid whose surface
+normal points outward everywhere, so it emits outward over its whole
+surface and nowhere inward.  `exitance` is the same per-unit-area
+quantity `rect_light` takes, must be > 0, and there is **no `power`**
+here either.
+
+For an emitter of any **other** shape — a mesh fixture, a torus, a
+curved patch — write the four chunks `rect_light` and `shape_light` both
+expand into: painter → `lambertian_luminaire_material` → geometry →
+`standard_object`.  That is what "Emissive geometry (area light)" below
+builds.
 
 `hosek_wilkie_skylight` is fine — a physically based analytic sun-and-sky
 (see "Environment / IBL").
@@ -48,6 +75,13 @@ probe while iterating — not as the default way to light a scene.  The
 three-point recipe immediately below is written with them because it is
 the cheap, fast setup; swapping its key for an emissive quad is a
 one-for-one substitution and gives softer, more physical shadows.
+
+**These three kinds share a free budget of 2 per scene** on this agent
+surface, counted together and read off the live document at check time
+(removing one frees a slot).  Past the budget, the insert is refused
+once — stating the count and the alternatives — and lands when the
+identical request is re-issued unchanged.  `shape_light`, `rect_light`,
+an emissive object and `hosek_wilkie_skylight` are counted by nothing.
 
 **`ambient_light` is refused.**  `insert_chunk`, `insert_chunks`,
 `light_scene` and the value-splice path all reject it, in every phase and
@@ -331,9 +365,11 @@ standard_object
 
 ## Emissive geometry (area light)
 
-This is the GENERAL form, for an emitter that is not a rectangle — a
-rectangular panel is one `rect_light` chunk (see "Which light kind to
-use" at the top), and `rect_light` expands into exactly this.
+This is the GENERAL form, for an emitter that is neither a rectangle
+nor one of `shape_light`'s four solids (sphere, ellipsoid, box,
+cylinder) — see "Which light kind to use" at the top.  A rectangular
+panel is one `rect_light` chunk; a glowing solid is one `shape_light`
+chunk; both expand into exactly this.
 
 A `lambertian_luminaire_material` turns any object into an area
 emitter: `exitance` is the emission color painter, `scale` the
@@ -496,8 +532,10 @@ alignment with the container's new position.
   1 unit).
 - Luminaire `scale` multiplies exitance directly; 10-150 is a typical
   range for a small quad lighting a room-sized scene.  `exitance` on a
-  `rect_light` is that same number: brightness per unit area, so
-  doubling the panel's `size` doubles the light it delivers.
+  `rect_light` or a `shape_light` is that same number: brightness per
+  unit area, so the light delivered scales with the emitter's AREA --
+  doubling a panel's width doubles it, and doubling a sphere
+  `shape_light`'s radius quadruples it.
 - If everything is black: check the directional `direction` sign first
   (FROM-surface-TO-light), then power magnitudes; for an emissive
   quad, check the vertex winding (it picks the emitting side).

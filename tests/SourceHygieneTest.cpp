@@ -1549,6 +1549,34 @@ int main()
 						  "does not name rect_light -- a rectangular area light is ONE chunk now, and "
 						  "a surface that still presents area lighting only as a four-chunk chain "
 						  "hides the one form a single reach can actually land on" },
+						// ---- ARC 83 SLICE 4 (2026-08-12): the SOLID area light,
+						// and the ZERO-AREA BUDGET.  Sec 11's first live
+						// rect_light run wrote one area light and nine zero-area
+						// ones: the panel form landed, but a glowing creature is
+						// not a rectangle and there was no one-chunk solid to
+						// reach for.  `shape_light` is that chunk, and the budget
+						// is what makes reaching past it cost a turn.  Both pins
+						// are FACTS about what the code does -- a surface that
+						// omits shape_light hides the form, and a surface that
+						// omits the budget lets a model meet an unannounced
+						// refusal and read it as a broken harness.
+						{ "A glowing SOLID is also ONE chunk, shape_light",
+						  "does not name shape_light -- a glowing sphere, ellipsoid, box or cylinder "
+						  "is ONE chunk now, and a surface that offers only the rectangular panel "
+						  "leaves every non-rectangular emitter looking like a four-chunk job" },
+						{ "a closed solid emits outward in every direction, so it needs no facing",
+						  "states shape_light without the one fact that distinguishes it from "
+						  "rect_light -- it has no `facing`, because a closed solid emits outward "
+						  "everywhere; a model that assumes its sibling's parameter set writes a "
+						  "line the parser rejects" },
+						{ "FREE BUDGET OF 2 zero-area lights",
+						  "does not state the zero-area light BUDGET -- omni/spot/directional past "
+						  "the second are refused once each, and a model that meets that refusal "
+						  "unannounced will read a documented policy as a broken harness" },
+						{ "the identical request after that refusal is applied",
+						  "states the zero-area budget without its ESCAPE -- the refusal is once per "
+						  "request and the re-issue lands, and a model told only that it was refused "
+						  "will either give up on a light it needs or spend turns arguing" },
 						{ "THERE IS NO NAME PREFIX",
 						  "does not state that light_scene has no prefix rule -- its sibling "
 						  "build_element enforces one, and a model that assumes the same here will "
@@ -1651,6 +1679,39 @@ int main()
 										"harness cuts a longer enumeration to that number, and a surface "
 										"naming a different one (or none) advertises a contract the "
 										"enumeration does not have" );
+							}
+						}
+					}
+					// ARC 83 SLICE 4 PARITY: the same discipline for the
+					// ZERO-AREA LIGHT BUDGET.  Both surfaces state it as a
+					// literal number in hand-authored prose, and the harness
+					// enforces kZeroAreaLightSceneBudget; a bump on one side
+					// that left the other behind would advertise a budget the
+					// refusal does not use, which is exactly the false clause
+					// this test family exists to stop.
+					{
+						const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
+						const std::string anchor = "kZeroAreaLightSceneBudget = ";
+						const size_t at = headerSrc.find( anchor );
+						std::string budget;
+						if( at != std::string::npos ) {
+							size_t q = at + anchor.size();
+							while( q < headerSrc.size() &&
+							       std::isdigit( static_cast<unsigned char>( headerSrc[q] ) ) )
+								budget += headerSrc[q++];
+						}
+						Check( !budget.empty(),
+						       "A83 parity: parsed kZeroAreaLightSceneBudget out of AgentSession.h" );
+						if( !budget.empty() ) {
+							for( const char* fname : kPlanSurfaces ) {
+								const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+								if( joined.find( "FREE BUDGET OF " + budget + " zero-area lights" ) ==
+								    std::string::npos )
+									planProblems.push_back( std::string( fname ) + ": does not state the "
+										"zero-area light budget as `FREE BUDGET OF " + budget +
+										" zero-area lights` -- the refusal fires at that number, and a "
+										"surface naming a different one (or none) advertises a policy the "
+										"harness does not run" );
 							}
 						}
 					}

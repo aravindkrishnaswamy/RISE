@@ -126,9 +126,10 @@ Lambertian BRDF's `1/π` factor cancels with it: a fully-lit Lambertian
 white surface returns `color = 1`.
 
 An emissive material has no `power`; its `scale` multiplies the
-`exitance` painter's colour instead (§3.5).  `rect_light` has no `power`
-either — it takes `exitance`, which is that same per-unit-area quantity,
-and the parser rejects a `power` line on it.
+`exitance` painter's colour instead (§3.5).  `rect_light` and
+`shape_light` have no `power` either — they take `exitance`, which is
+that same per-unit-area quantity, and the parser rejects a `power` line
+on either.
 
 ---
 
@@ -182,11 +183,76 @@ with the ordinary duplicate-name error.  The scene file keeps the
 compact text — save serializes the CST document, so a `rect_light` saves
 back as a `rect_light`.
 
+### The solid case: `shape_light` (one chunk)
+
+A bulb, an orb, a lamp body or any other glowing solid has a chunk of
+its own too (2026-08-12):
+
+```text
+shape_light
+{
+	name		bulb_light
+	shape		sphere
+	center		0 3 0
+	size		0.15
+	color		1.0 0.92 0.8
+	exitance	400
+}
+```
+
+- `shape` is one of `sphere`, `ellipsoid`, `box` or `cylinder`, and it
+  fixes what `size` means:
+
+  | `shape` | `size` |
+  |---|---|
+  | `sphere` | one number — the radius |
+  | `ellipsoid` | three numbers — the semi-axis radii, X Y Z |
+  | `box` | three numbers — width height depth |
+  | `cylinder` | two numbers — radius height (the cylinder stands on the **+Y** axis until `orientation` turns it) |
+
+  A wrong number of `size` values fails the load and names the count
+  that shape needs; an unknown `shape` value fails the load and names
+  the four valid ones.
+- `center` is the solid's world-space centre.  `orientation` is an
+  optional Euler rotation in **degrees**, applied about `center` —
+  the same parameter `standard_object` takes.  It defaults to `0 0 0`;
+  a sphere is unchanged by it, and it is what turns a cylinder off its
+  default +Y axis, or tilts a box or an ellipsoid.
+- **There is no `facing` parameter, and none is needed.**  All four
+  shapes are closed solids whose surface normal points outward
+  everywhere, and lambertian emission is one-sided about that normal,
+  so a `shape_light` emits outward over its whole surface and inward
+  nowhere.  (`rect_light` needs `facing` only because a quad is an open
+  surface with two sides.)
+- `exitance` is emitted radiance **per unit area** — the same quantity
+  `rect_light`'s `exitance` is — so the same number on a bigger solid
+  delivers more light.  It must be > 0.  **There is no `power`
+  parameter**, and writing one fails the load rather than being
+  ignored.
+- `color` defaults to `1 1 1`, linear Rec.709.
+
+Like `rect_light`, `shape_light` is **parse-time sugar**: the parser
+expands it into exactly the same four-chunk area-light chain — a
+`uniformcolor_painter` holding `color`, a `lambertian_luminaire_material`
+whose `exitance` is that painter and whose `scale` is the chunk's
+`exitance`, the shape's own geometry chunk, and a `standard_object`
+placing it at `center` with `orientation`.  The derived names are the
+same three `rect_light` uses: `<name>__pnt`, `<name>__mat` and
+`<name>__geo`; the chunk's own `name` names the OBJECT.  A collision on
+any of the four fails the load with the ordinary duplicate-name error.
+The scene file keeps the compact text — a `shape_light` saves back as a
+`shape_light`.
+
+Being an ordinary object, a `shape_light` is visible in the frame,
+casts soft shadows, and falls off with distance, exactly like
+`rect_light`.
+
 ### Any other shape: the four-chunk chain
 
-There is no `area_light` chunk, and `rect_light` is a *rectangle*.  An
-emitter of any other shape — a sphere lamp, a mesh fixture, a curved
-panel — is written as the chain `rect_light` expands into, as used by
+There is no `area_light` chunk.  `rect_light` is a *rectangle* and
+`shape_light` is a sphere, ellipsoid, box or cylinder; an emitter of any
+other shape — a mesh fixture, a torus, a curved patch — is written as
+the chain both of those expand into, as used by
 [scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene](../scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene):
 
 ```text
@@ -255,7 +321,14 @@ no penumbra at any distance, no material governs what they emit, and
 nothing about them appears in the frame.  Reach for them when that is
 what you actually want (a stand-in sun on a scene with no sky, a hard
 key for a diagram, a cheap probe while iterating), not as the default
-way to light a scene.
+way to light a scene.  On the **agent surface** they additionally carry
+a **free budget of 2 of these per scene**, counted together across all
+three kinds and read off the live document at check time (removing one
+frees a slot).  At or under the budget a chunk inserts normally; over
+budget the request is refused once, stating the count and the
+alternatives, and the identical request lands when re-issued unchanged.
+`shape_light`, `rect_light`, an emissive object and
+`hosek_wilkie_skylight` are counted by nothing.
 
 **`ambient_light`: never.**  It contributes the same `color · power` at
 every shading point, scaled only by that surface's own reflectance; it
@@ -277,10 +350,15 @@ but do not author a new one.
 them, and the `propose_patch` value-splice path) **refuses** to create
 an `ambient_light` chunk, unconditionally — in every build phase and
 with `--agent-build-protocol=off` — and its refusal states the physics
-above and names `rect_light` first, then this four-chunk chain as the
-general form.  Everything else in this section
-is convention, not enforcement: the CLI, the GUI and the scene loader
-will all happily author and load any light kind.
+above and names `shape_light` beside `rect_light` first, then this
+four-chunk chain as the general form.  The same surface, the same
+routes, and the same unconditional treatment (not part of the
+build-phase machinery, no phase-refusal budget consumed, survives
+`--agent-build-protocol=off`) apply the 2-per-scene `omni_light` /
+`spot_light` / `directional_light` budget above.  Everything else in
+this section is convention, not enforcement: the CLI, the GUI and the
+scene loader will all happily author and load any light kind or any
+number of them.
 
 ---
 

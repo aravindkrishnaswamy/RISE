@@ -82,21 +82,30 @@ each section against your scene:
    exitance … }`: `facing` is the direction it emits toward (and it
    emits that way only), and `exitance` is brightness per unit area,
    so the same number on a panel twice the size delivers twice the
-   light.  There is no `power` on it.  For an emitter of any **other**
-   shape (a sphere lamp, a mesh fixture) write the four-chunk chain
-   `rect_light` expands into — painter → `lambertian_luminaire_material`
-   → geometry → `standard_object` — spelled out in
+   light.  There is no `power` on it.  For a glowing solid — a bulb, an
+   orb, a lamp body — it is one chunk, `shape_light { name … shape …
+   center … size … exitance … }`, `shape` one of `sphere` / `ellipsoid`
+   / `box` / `cylinder` (each fixing `size`'s arity); it has no
+   `facing` because a closed solid's normal already points outward
+   everywhere, and no `power` either.  For an emitter of any **other**
+   shape (a mesh fixture, a torus) write the four-chunk chain
+   `rect_light` and `shape_light` both expand into — painter →
+   `lambertian_luminaire_material` → geometry → `standard_object` —
+   spelled out in
    [§3.5](../SCENE_CONVENTIONS.md#35-which-light-kind-to-use--area-lights-are-the-norm).
-   Either way it is the only kind with real area, so it is the only one
-   that gives soft shadows and physical falloff.  `hosek_wilkie_skylight` is fine
-   (a physically based sky).  `omni_light` / `spot_light` /
-   `directional_light` are zero-area idealizations — use them only when
-   a hard, sourceless key is what you actually want.  **Never author
-   `ambient_light`**: it adds the same `color · power` at every shading
-   point, casts no shadow ray, and has no falloff.  A dark path-traced
-   scene wants a bigger or brighter emitter, or a sky, not a constant
-   term.  (Convention, not enforcement, for hand-authored scenes; the
-   agent surface refuses `ambient_light` outright.)
+   All three are the only kinds with real area, so they are the only
+   ones that give soft shadows and physical falloff.
+   `hosek_wilkie_skylight` is fine (a physically based sky).
+   `omni_light` / `spot_light` / `directional_light` are zero-area
+   idealizations — use them only when a hard, sourceless key is what
+   you actually want; on the agent surface they share a free budget of
+   2 per scene, refused once past it and inserted on an identical
+   re-issue.  **Never author `ambient_light`**: it adds the same
+   `color · power` at every shading point, casts no shadow ray, and has
+   no falloff.  A dark path-traced scene wants a bigger or brighter
+   emitter, or a sky, not a constant term.  (Convention, not
+   enforcement, for hand-authored scenes; the agent surface refuses
+   `ambient_light` outright.)
 1. **§1 Directional light direction.**  `direction` points FROM
    surface TO light source.  For a camera at `+Z` looking at the
    origin, your `direction` vector should have a **positive Z**

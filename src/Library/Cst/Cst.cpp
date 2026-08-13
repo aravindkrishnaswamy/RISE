@@ -1769,15 +1769,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			diags.push_back( node->role + ": a bulk importer -- one chunk creates many objects/materials/painters/lights, which a typed RemoveGeometry cannot undo; fall back to a full derive" );
 			return 0;
 		}
-		if( node->role == "rect_light" ) {                       // parse-time sugar: one chunk, four entities
+		if( node->role == "rect_light" || node->role == "shape_light" ) {  // parse-time sugar: one chunk, four entities
 			// Same class as gltf_import, one size down: rect_light's Finalize expands into a
-			// painter + a luminaire material + a clippedplane geometry + a standard_object
-			// (ChunkParserRegistry.cpp, RectLightAsciiChunkParser).  Its ChunkCategory is Light --
-			// which is right for every OTHER consumer (the editor files it under Lights, the agent
-			// surface treats it as a light) -- but there is no ILight to drop, so
-			// DropChunkByCategory's RemoveLight would fail while three real entities stayed behind.
-			// Refuse -> full derive, which rebuilds all four from the document (D51: never a
-			// silent corruption).
+			// painter + a luminaire material + a clippedplane geometry + a standard_object, and
+			// shape_light's into a painter + a luminaire material + a sphere / ellipsoid / box /
+			// cylinder geometry + a standard_object (ChunkParserRegistry.cpp,
+			// RectLightAsciiChunkParser / ShapeLightAsciiChunkParser).  Their ChunkCategory is
+			// Light -- which is right for every OTHER consumer (the editor files them under
+			// Lights, the agent surface treats them as lights) -- but there is no ILight to drop,
+			// so DropChunkByCategory's RemoveLight would fail while three real entities stayed
+			// behind.  Refuse -> full derive, which rebuilds all four from the document (D51:
+			// never a silent corruption).
 			diags.push_back( node->role + " '" + name + "': one chunk expands into a painter, a "
 				"luminaire material, a geometry and an object; a typed RemoveLight cannot undo that -- "
 				"fall back to a full derive" );

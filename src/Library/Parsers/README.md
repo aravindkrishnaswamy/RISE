@@ -135,40 +135,44 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Shaders | 4 | `standard_shader`, `advanced_shader`, `directvolumerendering_shader`, `spectraldirectvolumerendering_shader` |
 | Rasterizers | 12 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `vcm_pel_rasterizer`, `mlt_spectral_rasterizer`, `auto_rasterizer`, `auto_spectral_rasterizer` |
 | Rasterizer outputs | 1 | `file_rasterizeroutput` (attaches to the active rasterizer — its rasterizer chunk must be declared before it, else the load fails with a "no rasterizer is set" diagnostic) |
-| Lights | 6 | `rect_light`, `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
+| Lights | 7 | `rect_light`, `shape_light`, `ambient_light`, `omni_light`, `spot_light`, `directional_light`, `hosek_wilkie_skylight` |
 | Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
 | Irradiance cache | 1 | `irradiance_cache` |
 | Animation | 4 | `keyframe`, `timeline`, `animation_options`, `animation` |
 | Scene variants | 2 | `scene_variant`, `active_scene_variant` (the CST named-overlay feature) |
 | Global config | 1 | `light_rr_threshold` (standalone RR-threshold chunk, mirrors `global_medium`) |
 
-**Total: 159 unique chunk keywords** (the per-family counts above sum to 159; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 160 unique chunk keywords** (the per-family counts above sum to 160; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the canonical list — this table is a summary, not the source of truth.
 
 ### Composite chunks (parse-time sugar)
 
-Almost every chunk's `Finalize` makes ONE `pJob.AddX(...)` call. `rect_light`
-(2026-08-12) is the exception worth knowing about: it is a rectangular **area
-light** written as one chunk, and its `Finalize` makes the FOUR calls the
+Almost every chunk's `Finalize` makes ONE `pJob.AddX(...)` call. The **area
+lights** (2026-08-12) are the exceptions worth knowing about — `rect_light` (a
+rectangular panel) and `shape_light` (a sphere / ellipsoid / box / cylinder that
+emits). Each is written as one chunk and each `Finalize` makes the FOUR calls the
 hand-authored area-light chain makes — `AddUniformColorPainter`,
-`AddLambertianLuminaireMaterial`, `AddClippedPlaneGeometry`, `AddObject` (see
+`AddLambertianLuminaireMaterial`, the shape's own geometry call
+(`AddClippedPlaneGeometry` / `AddSphereGeometry` / `AddEllipsoidGeometry` /
+`AddBoxGeometry` / `AddCylinderGeometry`), `AddObject` (see
 [docs/SCENE_CONVENTIONS.md](../../../docs/SCENE_CONVENTIONS.md) §3.5 for the
-chain, and `RectLightAsciiChunkParser`'s header comment in
-[ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for the corner math and the
-sidedness contract). The renderer core learns nothing new; the CST keeps the
-compact text, so save round-trips it verbatim and every derive expands it
-identically.
+chain, and the two parsers' header comments in
+[ChunkParserRegistry.cpp](ChunkParserRegistry.cpp) for `rect_light`'s corner math
+and sidedness contract, and for why `shape_light` needs no `facing` at all). The
+renderer core learns nothing new; the CST keeps the compact text, so save
+round-trips it verbatim and every derive expands it identically.
 
 Two consequences for anyone adding another composite chunk:
 
 - The three helper entities get **derived names** (`<name>__pnt`, `<name>__mat`,
-  `<name>__geo`), documented in the descriptor's `description` so a collision is
-  diagnosable. Any of the four failing returns `false` from `Finalize`, which
-  fails the derive with the manager's ordinary duplicate-name error.
+  `<name>__geo`) — the same three for both chunks, deliberately — documented in
+  the descriptor's `description` so a collision is diagnosable. Any of the four
+  failing returns `false` from `Finalize`, which fails the derive with the
+  manager's ordinary duplicate-name error.
 - **The incremental derive must refuse it.** `Cst::DeriveToJobIncremental` drops
   and re-applies an edited chunk by category (`DropChunkByCategory`), which
-  cannot undo a chunk that produced entities in four managers. `rect_light` is
-  named in that function's refusal list alongside `gltf_import`, so editing one
-  falls back to a full derive.
+  cannot undo a chunk that produced entities in four managers. `rect_light` and
+  `shape_light` are both named in that function's refusal list alongside
+  `gltf_import`, so editing one falls back to a full derive.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 
