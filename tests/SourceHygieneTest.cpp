@@ -1569,10 +1569,11 @@ int main()
 						  "rect_light -- it has no `facing`, because a closed solid emits outward "
 						  "everywhere; a model that assumes its sibling's parameter set writes a "
 						  "line the parser rejects" },
-						{ "FREE BUDGET OF 2 zero-area lights",
-						  "does not state the zero-area light BUDGET -- omni/spot/directional past "
-						  "the second are refused once each, and a model that meets that refusal "
-						  "unannounced will read a documented policy as a broken harness" },
+						{ "Each request to insert one is refused once with the facts and the "
+						  "alternatives",
+						  "does not state the zero-area light CONFIRMATION -- every omni/spot/"
+						  "directional creation request is refused once, and a model that meets that "
+						  "refusal unannounced will read a documented policy as a broken harness" },
 						{ "the identical request after that refusal is applied",
 						  "states the zero-area budget without its ESCAPE -- the refusal is once per "
 						  "request and the re-issue lands, and a model told only that it was refused "
@@ -1682,39 +1683,14 @@ int main()
 							}
 						}
 					}
-					// ARC 83 SLICE 4 PARITY: the same discipline for the
-					// ZERO-AREA LIGHT BUDGET.  Both surfaces state it as a
-					// literal number in hand-authored prose, and the harness
-					// enforces kZeroAreaLightSceneBudget; a bump on one side
-					// that left the other behind would advertise a budget the
-					// refusal does not use, which is exactly the false clause
-					// this test family exists to stop.
-					{
-						const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
-						const std::string anchor = "kZeroAreaLightSceneBudget = ";
-						const size_t at = headerSrc.find( anchor );
-						std::string budget;
-						if( at != std::string::npos ) {
-							size_t q = at + anchor.size();
-							while( q < headerSrc.size() &&
-							       std::isdigit( static_cast<unsigned char>( headerSrc[q] ) ) )
-								budget += headerSrc[q++];
-						}
-						Check( !budget.empty(),
-						       "A83 parity: parsed kZeroAreaLightSceneBudget out of AgentSession.h" );
-						if( !budget.empty() ) {
-							for( const char* fname : kPlanSurfaces ) {
-								const std::string joined = joinLiterals( slurp( agentDir / fname ) );
-								if( joined.find( "FREE BUDGET OF " + budget + " zero-area lights" ) ==
-								    std::string::npos )
-									planProblems.push_back( std::string( fname ) + ": does not state the "
-										"zero-area light budget as `FREE BUDGET OF " + budget +
-										" zero-area lights` -- the refusal fires at that number, and a "
-										"surface naming a different one (or none) advertises a policy the "
-										"harness does not run" );
-							}
-						}
-					}
+					// ARC 83 SLICE 4 PARITY (2026-08-12, REMOVED 2026-08-13): the
+					// budget-number parity pin that lived here checked both
+					// tool-surface descriptions against `kZeroAreaLightSceneBudget`
+					// in AgentSession.h.  The owner removed the free budget of 2
+					// (docs/agentic-redesign/83-staged-construction-plan.md sec 13)
+					// -- the confirmation now fires unconditionally, so there is no
+					// number left to keep in parity.  The A81Pins block above still
+					// pins the CONFIRMATION wording itself on both surfaces.
 				}
 
 				// ---- ARC 82 (2026-08-12): the CLEAN-ROOM POPULATION surface

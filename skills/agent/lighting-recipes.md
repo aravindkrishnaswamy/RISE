@@ -76,12 +76,14 @@ three-point recipe immediately below is written with them because it is
 the cheap, fast setup; swapping its key for an emissive quad is a
 one-for-one substitution and gives softer, more physical shadows.
 
-**These three kinds share a free budget of 2 per scene** on this agent
-surface, counted together and read off the live document at check time
-(removing one frees a slot).  Past the budget, the insert is refused
-once — stating the count and the alternatives — and lands when the
-identical request is re-issued unchanged.  `shape_light`, `rect_light`,
-an emissive object and `hosek_wilkie_skylight` are counted by nothing.
+**Every insert of one of these three kinds needs confirmation** on this
+agent surface — unconditional, from the first request, not past a free
+allowance (the free budget of 2 this shipped with on 2026-08-12 was
+removed 2026-08-13: it exempted exactly the uses this confirmation
+exists to make deliberate).  The insert is refused once — stating the
+physics and the alternatives — and lands when the identical request is
+re-issued unchanged.  `shape_light`, `rect_light`, an emissive object
+and `hosek_wilkie_skylight` carry no confirmation requirement at all.
 
 **`ambient_light` is refused.**  `insert_chunk`, `insert_chunks`,
 `light_scene` and the value-splice path all reject it, in every phase and

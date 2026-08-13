@@ -491,3 +491,40 @@ clustered small, heavy black surround -- lighting got physical while framing
 got worse, and framing is a later slice); and whether the budget's friction
 or shape coverage did more of the work is not separable in this run and does
 not need to be -- both are shipped policy now, not competing hypotheses.
+
+## 13. The free budget of 2 REMOVED (2026-08-13)
+
+Owner decision, verbatim-ish: the free budget of 2 zero-area lights per
+scene is removed.  Every `omni_light` / `spot_light` / `directional_light`
+creation request is refused once with the facts and lands when the
+identical request is re-issued -- from the FIRST one.  The owner's policy
+for these three kinds is "only extremely rarely and only for very special
+circumstances"; confirm-once makes every use deliberate, and a free
+allowance exempted the first two uses of a session from exactly that test.
+
+The mechanism itself -- confirm-once, canonical content fingerprints (sorted
+params, collapsed whitespace), a batch charged as one request, a patch
+judged as a delta so editing an existing zero-area light stays free,
+unconditional / no phase-cap interaction / survives protocol-off, ambient
+still a ban with no confirm -- is UNCHANGED by this.  §12's "free budget of
+2, then refuse-once-confirm" becomes "refuse-once-confirm, unconditionally";
+the shape_light + confirmation combination §12 credits for flipping the
+distribution does not depend on which of those two shapes the confirmation
+took, since neither run this doc records reached the (now nonexistent)
+budget ceiling in the first place -- shape_light's five landed lights and
+the sixth's single spot-light confirm turn are unaffected by removing an
+allowance a 6-source answer never spent.
+
+What did change, mechanically: `kZeroAreaLightSceneBudget` and the
+per-document zero-area count it read
+(`CountZeroAreaLightChunks_`) are deleted -- there is nothing left to count.
+The refusal text (`DescribeZeroAreaLightConfirmationRefusal`) loses the
+"this scene carries N... adds M more, against a free budget of 2" clause and
+keeps the physics facts and the escape clause verbatim.  The palette's
+zero-area group note, the two tool-surface descriptions
+(`AgentChatCodecs.cpp`, `AgentMcpAdapter.cpp`), `SCENE_CONVENTIONS.md`
+§3.5, and the `scene-skeleton-and-conventions` / `lighting-recipes` agent
+skills all say the same unconditional-confirmation fact now, with
+`SourceHygieneTest` pinning the wording (the budget-number parity pin that
+used to tie both tool surfaces to `kZeroAreaLightSceneBudget` is gone with
+the constant).

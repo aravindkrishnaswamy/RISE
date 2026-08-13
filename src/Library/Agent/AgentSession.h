@@ -4362,13 +4362,22 @@ namespace RISE
 			static constexpr int kLightSceneMaxPerSession = 4;
 
 			//! How many LIGHT SOURCES one `light_scene` call will enumerate
-			//! and then build.  Six because every run measured before this
-			//! redesign converged on 6-8 lights (82 sec 10.4) -- the budget is
-			//! set at the low end of what the model already does.  The number
-			//! is stated in the enumeration prompt, and a longer list is
-			//! TRUNCATED with the truncation stated in the result, never
-			//! silently.
-			static constexpr int kLightSourceBudget = 6;
+			//! and then build.  RAISED 6 -> 16 (2026-08-13): 6 was sized to the
+			//! dead per-intent loop where each source cost a completion; under
+			//! the source-first design (this comment block, arc 83 slice 2)
+			//! the enumeration length costs almost nothing -- one build
+			//! completion regardless of how many sources it authors, so the
+			//! only per-source cost left is the solo measurement
+			//! (kLightSceneMaxSolos, moved with it below).  At 6 this was a
+			//! RICHNESS cap: an interior with windows plus a lamp row plus a
+			//! few practicals legitimately exceeds it.  At 16 it is a runaway
+			//! backstop, sized so no legitimate scene meets it -- the same
+			//! philosophy kBuildElementMaxPerSession uses.  A bound sized to
+			//! typical scenes is a cap; a bound sized so nothing legitimate
+			//! hits it is a backstop.  The number is stated in the enumeration
+			//! prompt, and a longer list is TRUNCATED with the truncation
+			//! stated in the result, never silently.
+			static constexpr int kLightSourceBudget = 16;
 
 			//! The longest ONE enumerated source line may be.  A source is
 			//! provider-supplied text that this harness then interpolates
@@ -4383,13 +4392,17 @@ namespace RISE
 			static constexpr std::size_t kLightSceneMaxNotes = 2000;
 
 			//! How many lights `light_scene` will SOLO to measure their
-			//! contribution.  Each solo is one small real render, affordable
-			//! ONLY because this verb runs once per scene rather than once per
-			//! render.  When the scene has more soloable lights than this the
-			//! cap is applied to the largest-power-first order and the result
-			//! text SAYS a cap applied and how many were skipped -- never a
-			//! silent truncation.
-			static constexpr int kLightSceneMaxSolos = 8;
+			//! contribution.  RAISED 8 -> 16 (2026-08-13), IN STEP WITH
+			//! kLightSourceBudget above: the solo pass is the one place a
+			//! larger source budget actually costs more (one small render per
+			//! light), so its cap moves with the enumeration cap rather than
+			//! being left behind at the old ceiling.  Each solo is one small
+			//! real render, affordable ONLY because this verb runs once per
+			//! scene rather than once per render.  When the scene has more
+			//! soloable lights than this the cap is applied to the
+			//! largest-power-first order and the result text SAYS a cap
+			//! applied and how many were skipped -- never a silent truncation.
+			static constexpr int kLightSceneMaxSolos = 16;
 
 			//! The long edge of each contribution-measuring solo render.
 			//! Small on purpose: the measurement is a whole-frame mean, which
@@ -4397,25 +4410,27 @@ namespace RISE
 			static constexpr unsigned int kLightSceneSoloLongEdge = 64;
 
 			//----------------------------------------------------------------
-			// ARC 83 SLICE 4 (2026-08-12) -- THE ZERO-AREA LIGHT BUDGET.
+			// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13 -- THE ZERO-AREA
+			// LIGHT CONFIRMATION.
 			//
-			// Owner, verbatim: "penalize the model for choosing omni, spot or
-			// ambient over shape light."  `ambient_light` was already banned
-			// absolutely (DescribeAmbientLightBan above) and stays that way.
-			// The other three -- omni_light, spot_light, directional_light --
-			// are legitimate for the special cases that want a zero-area
-			// idealization, so they are not banned; they are BUDGETED.
+			// Owner, verbatim (2026-08-12): "penalize the model for choosing
+			// omni, spot or ambient over shape light."  `ambient_light` was
+			// already banned absolutely (DescribeAmbientLightBan above) and
+			// stays that way.  The other three -- omni_light, spot_light,
+			// directional_light -- are legitimate for the special cases that
+			// want a zero-area idealization, so they are not banned; they
+			// are CONFIRMED.
 			//
-			// WHY A BUDGET RATHER THAN A BAN, AND WHY IT IS CONFIRM-ONCE.  83
-			// sec 9 falsified three prompt-side mechanism families on this
-			// exact question; sec 11's first live rect_light run still produced
-			// 1 area light against 9 zero-area ones.  Advice measures ~0 in
-			// this workstream and a hard ban would make correct scenes
-			// unbuildable, so what is left is COST: the first two are free, and
-			// past that each distinct request is refused once, with the facts,
-			// and lands the moment it is re-issued unchanged.  A model that
-			// means it pays one turn; a model reaching by reflex is shown the
-			// area-light forms at the moment it reaches.
+			// THE FREE BUDGET OF 2 IS REMOVED (owner, 2026-08-13, verbatim
+			// reasoning in docs/agentic-redesign/83-staged-construction-
+			// plan.md sec 13): a free allowance exempted the first two uses
+			// of a session from exactly the deliberateness test this
+			// mechanism exists to apply.  The gate is now unconditional --
+			// EVERY zero-area light creation request is refused once, with
+			// the facts, and lands the moment it is re-issued unchanged, from
+			// the FIRST one.  A model that means it pays one turn; a model
+			// reaching by reflex is shown the area-light forms at the moment
+			// it reaches, on every reach, not just past a free allowance.
 			//
 			// UNCONDITIONAL, exactly like the ambient ban and for the same
 			// reasons: it is a permanent property of what this surface
@@ -4425,30 +4440,19 @@ namespace RISE
 			// --agent-build-protocol=off.
 			//----------------------------------------------------------------
 
-			//! How many ZERO-AREA light chunks (omni_light / spot_light /
-			//! directional_light) a scene may carry before the refusal starts.
-			//! TWO: enough for the key-plus-one shape a genuinely
-			//! idealization-lit scene takes, few enough that the 6-10 the
-			//! measured runs produce cannot pass unremarked.  A light with real
-			//! AREA -- shape_light, rect_light -- and the analytic sky
-			//! (hosek_wilkie_skylight) are NOT counted against it at all.
-			static constexpr int kZeroAreaLightSceneBudget = 2;
-
 			//! The refusal text, shared VERBATIM by every path that can create
 			//! a zero-area light chunk, so the model reads one message wherever
 			//! it hits it (DescribeAmbientLightBan's rule).
 			//!
-			//! FACTS ONLY -- what the document currently carries, what the
-			//! budget is, which light forms are outside it, what a zero-area
-			//! light physically is, and that re-issuing this exact request
-			//! inserts it.  No should/prefer/avoid wording: the
-			//! advice-vocabulary ban this workstream enforces on the prompts
-			//! covers the refusals too.
-			//!
-			//! `inDocument` is how many zero-area light chunks the live
-			//! document carries RIGHT NOW; `inRequest` is how many this request
-			//! would add.
-			static std::string DescribeZeroAreaLightBudgetRefusal( int inDocument, int inRequest );
+			//! FACTS ONLY -- what a zero-area light physically is, which light
+			//! forms carry no confirmation requirement at all, and that
+			//! re-issuing this exact request inserts it.  No should/prefer/
+			//! avoid wording: the advice-vocabulary ban this workstream
+			//! enforces on the prompts covers the refusals too.  Takes no
+			//! parameters -- unlike the superseded budget text, nothing here
+			//! varies by how many zero-area lights the document or the
+			//! request carries; the message is the same fact every time.
+			static std::string DescribeZeroAreaLightConfirmationRefusal();
 
 			//! One chunk the lighting builder returned that was NOT inserted,
 			//! with the reason.  Never a silent drop -- the same contract
@@ -7285,18 +7289,20 @@ namespace RISE
 			std::string CheckBuildPlanGate_( const char* verb, std::string* outGiveUpNotice = nullptr );
 
 			//----------------------------------------------------------------
-			// ARC 83 SLICE 4 (2026-08-12): the ZERO-AREA LIGHT BUDGET's per-
-			// session half.  The contract and the reasoning are in the public
-			// block above kZeroAreaLightSceneBudget; what lives here is the one
-			// thing the budget needs a session for -- remembering which exact
-			// requests have already been refused once, so the re-issue lands.
+			// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: the ZERO-AREA
+			// LIGHT CONFIRMATION's per-session half.  The contract and the
+			// reasoning are in the public block above
+			// DescribeZeroAreaLightConfirmationRefusal; what lives here is the
+			// one thing the confirmation needs a session for -- remembering
+			// which exact requests have already been refused once, so the
+			// re-issue lands.
 			//
-			// THE COUNT ITSELF IS NEVER SESSION STATE.  It is read off the LIVE
-			// DOCUMENT at every check (CountZeroAreaLightChunks_ in
-			// AgentSession.cpp), so an undo, a removal, a user edit or a
-			// co-editor's change all move the budget correctly.  A session
-			// tally would drift from the document the first time anything
-			// removed a light, and would then refuse a scene that has room.
+			// THERE IS NO COUNTING LEFT AT ALL (2026-08-13).  The free budget
+			// of 2 that used to be read off the live document is gone -- see
+			// docs/agentic-redesign/83-staged-construction-plan.md sec 13 for
+			// the owner's reasoning.  The decision is now purely "has every
+			// fingerprint in this request already been refused once this
+			// session" -- no document snapshot, no per-request running total.
 			//
 			// WHAT A CONFIRM IS KEYED ON -- a CANONICAL CONTENT FINGERPRINT of
 			// the chunk, not its name and not a hash:
@@ -7331,50 +7337,43 @@ namespace RISE
 			//! parse).
 			static std::vector<std::string> ZeroAreaLightFingerprintsForText_( const std::string& text );
 
-			//! The budget decision, and the ONE place the confirm set is
-			//! written.  "" when the request may proceed -- either because it
-			//! fits (`inDocument` + `alreadyPending` + `fps.size()` is within
-			//! kZeroAreaLightSceneBudget) or because EVERY fingerprint in `fps`
-			//! has already been refused once this session, which is what makes
-			//! an identical re-issue land.  Otherwise the refusal text, and
-			//! every fingerprint in `fps` is RECORDED so the next identical
-			//! request is the one that lands.
-			//!
-			//! `inDocument` is the live document's own count; `alreadyPending`
-			//! is how many this same multi-chunk request has already been
-			//! allowed to add ahead of this step (light_scene's per-chunk arm
-			//! is the only caller that passes a non-zero value).
-			std::string CheckZeroAreaLightBudget_( int inDocument, int alreadyPending,
-			                                        const std::vector<std::string>& fps );
+			//! The confirmation decision, and the ONE place the confirm set is
+			//! written.  "" when EVERY fingerprint in `fps` has already been
+			//! refused once this session, which is what makes an identical
+			//! re-issue land.  Otherwise the refusal text, and every
+			//! fingerprint in `fps` is RECORDED so the next identical request
+			//! is the one that lands.  `fps` empty is also "" -- a request
+			//! that creates no zero-area light has nothing to confirm.
+			std::string CheckZeroAreaLightConfirmation_( const std::vector<std::string>& fps );
 
-			//! The whole check for a set of chunk texts, snapshot included:
-			//! reads the live document, fingerprints every zero-area light the
-			//! texts would create, and calls CheckZeroAreaLightBudget_ once for
-			//! the lot.  "" when they may proceed.  `outOffender`, when
-			//! non-null, receives the index of the FIRST text carrying a
-			//! zero-area light, so a batch refusal can name it the way R1c's
-			//! and the ambient ban's batch arms do.
-			std::string CheckZeroAreaLightBudgetForTexts_( const std::vector<std::string>& texts,
-			                                                std::size_t* outOffender = nullptr );
+			//! The whole check for a set of chunk texts: fingerprints every
+			//! zero-area light the texts would create and calls
+			//! CheckZeroAreaLightConfirmation_ once for the lot.  "" when they
+			//! may proceed.  `outOffender`, when non-null, receives the index
+			//! of the FIRST text carrying a zero-area light, so a batch
+			//! refusal can name it the way R1c's and the ambient ban's batch
+			//! arms do.
+			std::string CheckZeroAreaLightConfirmationForTexts_( const std::vector<std::string>& texts,
+			                                                     std::size_t* outOffender = nullptr );
 
 			//! The PATCH arm -- the value-splice mechanism R1c's arm (b), the
 			//! build-plan gate's patch arm and the ambient ban's patch arm each
 			//! close for their own kinds.  Judged as a DELTA against the head:
 			//! the fingerprints charged are the ones the candidate document has
 			//! and the head does not, so editing a zero-area light that already
-			//! exists is free however far over budget the scene already is.
-			std::string CheckZeroAreaLightBudgetForPatch_( const std::string& headText,
-			                                               const std::string& target,
-			                                               const std::string& kind,
-			                                               const std::string& param,
-			                                               const std::string& value );
+			//! exists is free, confirmed or not.
+			std::string CheckZeroAreaLightConfirmationForPatch_( const std::string& headText,
+			                                                     const std::string& target,
+			                                                     const std::string& kind,
+			                                                     const std::string& param,
+			                                                     const std::string& value );
 
-			//! Requests refused once by the budget, as canonical fingerprints.
-			//! Single-threaded-caller like every other member in the phase /
-			//! gate blocks above.  Session-lifetime: never serialized into the
-			//! Document, never persisted, and never cleared -- a confirm is a
-			//! promise that the re-issue lands, and taking it back would make
-			//! the refusal text false.
+			//! Requests refused once by the confirmation gate, as canonical
+			//! fingerprints.  Single-threaded-caller like every other member
+			//! in the phase / gate blocks above.  Session-lifetime: never
+			//! serialized into the Document, never persisted, and never
+			//! cleared -- a confirm is a promise that the re-issue lands, and
+			//! taking it back would make the refusal text false.
 			std::set<std::string> mZeroAreaLightConfirms;
 
 			//! Offscreen-isolation fix-round P1-A test hook -- see

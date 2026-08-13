@@ -228,6 +228,24 @@ static Job* LoadScene( const char* text, const std::string& path )
 	return pJob;
 }
 
+//! ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: insert `chunkText`
+//! through `sess`, confirming it first if it is a brand-new zero-area light
+//! (omni_light / spot_light / directional_light) `sess` has not confirmed
+//! yet.  Every zero-area light creation request is refused once and lands
+//! on an identical re-issue, from the FIRST one -- so a fixture in a test
+//! whose SUBJECT is something else entirely (not the confirmation gate
+//! itself) uses this rather than spelling out the refuse-then-reissue dance
+//! at every call site.  A chunk kind the gate never touches (an area light,
+//! a painter, ...) lands on the first call, exactly as InsertChunk alone
+//! would.  Returns the result of whichever call actually landed it.
+static Agent::AgentChunkResult InsertChunkConfirmed( Agent::AgentSession* sess, const std::string& chunkText )
+{
+	Agent::AgentChunkResult r = sess->InsertChunk( chunkText );
+	if( !r.applied && r.message.find( "RE-ISSUING THIS EXACT REQUEST INSERTS IT" ) != std::string::npos )
+		r = sess->InsertChunk( chunkText );
+	return r;
+}
+
 //----------------------------------------------------------------------
 // CST item helpers for the byte-exact trivia assertions: serialize one
 // green node (same contract as Cst.cpp's internal Serialize) and collect
@@ -329,7 +347,7 @@ static void TestHeadlessInsert()
 	Agent::AgentChunkResult r4 = sess->InsertChunk(
 		"standard_object\n{\n\tname obj_new\n\tgeometry sph2\n\tmaterial mat_new\n\tposition 1.2 0 0\n}" );
 	Check( r4.applied, "insert object applied" );
-	Agent::AgentChunkResult r5 = sess->InsertChunk(
+	Agent::AgentChunkResult r5 = InsertChunkConfirmed( sess.get(),
 		"omni_light\n{\n\tname key\n\tposition 0 4 2\n\tcolor 1 1 1\n\tpower 2.0\n}" );
 	Check( r5.applied, "insert omni_light applied" );
 	Check( r5.kind == "omni_light" && r5.name == "key", "light insert echoes kind + name" );
@@ -483,7 +501,8 @@ static void TestRemove()
 
 	// Seed a light to remove, plus an AMBIGUOUS bare name: a geometry and a
 	// material both named "dup" (different (kind,name) paths, so both insert).
-	Check( sess->InsertChunk( "omni_light\n{\n\tname key\n\tposition 0 4 2\n\tcolor 1 1 1\n\tpower 2.0\n}" ).applied,
+	Check( InsertChunkConfirmed( sess.get(),
+	       "omni_light\n{\n\tname key\n\tposition 0 4 2\n\tcolor 1 1 1\n\tpower 2.0\n}" ).applied,
 	       "seed light inserted" );
 	Check( sess->InsertChunk( "sphere_geometry\n{\n\tname dup\n\tradius 0.1\n}" ).applied,
 	       "seed geometry 'dup' inserted" );
@@ -572,6 +591,15 @@ static void TestConflictGate()
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 
 	const char* lightChunk = "omni_light\n{\n\tname key\n\tposition 0 4 2\n\tcolor 1 1 1\n\tpower 2.0\n}";
+
+	// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: CONFIRM `lightChunk`'s
+	// fingerprint once, up front, and discard the result -- this case is
+	// about the CONFLICT gate (a stale base version), not the zero-area
+	// confirmation gate, and the confirm follows the SESSION rather than the
+	// document, so every later insert/remove/re-insert of the identical
+	// `lightChunk` text below stays confirmed regardless of whether it is
+	// currently in the document.
+	sess->InsertChunk( lightChunk );
 
 	// Build a STALE base (the head as if it had moved on).
 	RISE::Cst::CstHeadVersion stale = sess->HeadVersion();
@@ -820,8 +848,14 @@ static void TestInsertRemoveSymmetry()
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 
-	const std::string before = sess->ReadDocument();
+	// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: confirm `chunkText`'s
+	// fingerprint before `before` is captured -- the refusal never mutates
+	// the document, so the byte-exact assertions below (about what INSERT
+	// appends) are unaffected either way.
 	const char* chunkText = "omni_light\n{\n\tname key\n\tposition 0 4 2\n\tcolor 1 1 1\n\tpower 2.0\n}";
+	sess->InsertChunk( chunkText );
+
+	const std::string before = sess->ReadDocument();
 
 	// INSERT appends exactly [leadSep "\n"][chunk][trailSep "\n"].
 	Check( sess->InsertChunk( chunkText ).applied, "insert applies" );
@@ -904,6 +938,21 @@ static void TestLiveControllerPath()
 		sess->AttachController( &c );
 		Check( sess->HasController(), "session attached to the running controller" );
 
+		// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: EVERY zero-area
+		// light creation request is refused once and lands on an identical
+		// re-issue, from the FIRST one -- there is no free budget left, so
+		// `livekey` and `fillkey` below each need a throwaway refused attempt
+		// here to CONFIRM their fingerprints before the timed subtests below,
+		// which measure park/kick and transaction behaviour, not this policy.
+		// The refusal mutates nothing, so it disturbs neither the render
+		// controller nor the transaction state this case is actually about.
+		Check( !sess->InsertChunk(
+			"omni_light\n{\nname livekey\nposition 0 4 2\ncolor 1 1 1\npower 2.0\n}" ).applied,
+			"the first livekey insert is refused (zero-area confirmation) and confirms it" );
+		Check( !sess->InsertChunk(
+			"omni_light\n{\nname fillkey\nposition -2 3 1\ncolor 1 1 1\npower 1.0\n}" ).applied,
+			"the first fillkey insert is refused (zero-area confirmation) and confirms it too" );
+
 		// (1) INSERT during a running render: parked (cancel count advances),
 		// applied, dirty flips, and a fresh viewport pass fires (the kick).
 		Check( !c.HasUnsavedChanges(), "scene is CLEAN before the live insert" );
@@ -942,14 +991,14 @@ static void TestLiveControllerPath()
 		// and the transaction boundary.
 		c.OnTimeScrubBegin();
 		const std::string headBeforeScrub = sess->ReadDocument();
-		// ARC 83 SLICE 4: a rect_light, not a third omni_light.  `livekey` and
-		// `fillkey` above have already spent this scene's whole zero-area light
-		// budget (kZeroAreaLightSceneBudget), and that policy refusal fires
-		// AHEAD of the controller's transient one -- so a third omni here would
-		// come back rejected-and-NOT-retriable for a completely different
-		// reason and this case would silently stop testing the scrub gate.  An
-		// area light is outside the budget by construction, so what is measured
-		// here is the gesture boundary and nothing else.
+		// ARC 83 SLICE 4: a rect_light, not a third omni_light.  A brand new,
+		// never-confirmed omni_light here would be refused by the zero-area
+		// confirmation gate, which fires AHEAD of the controller's transient
+		// one -- so a third omni would come back rejected-and-NOT-retriable
+		// for a completely different reason and this case would silently
+		// stop testing the scrub gate.  A rect_light is never subject to
+		// that gate at all, so what is measured here is the gesture
+		// boundary and nothing else.
 		static const char* const kScrubLight =
 			"rect_light\n{\nname gesturekey\ncenter 2 3 1\nsize 1 1\n"
 			"facing 0 -1 0\ncolor 1 1 1\nexitance 20\n}";
@@ -1014,6 +1063,16 @@ static void TestLiveDispatcherChunkCrud()
 		std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 		sess->AttachController( &c );
 		Agent::AgentRpcDispatcher disp( std::move( sess ) );
+
+		// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: prime the
+		// zero-area confirmation for `wirekey`'s exact fingerprint -- the
+		// FIRST creation request for any omni_light is refused unconditionally
+		// now, and this case is about the wire shape, not that gate.  The
+		// refusal mutates nothing, so it disturbs neither the live managers
+		// nor the controller.
+		disp.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"insert_chunk\",\"params\":"
+			"{\"chunkText\":\"omni_light\\n{\\nname wirekey\\nposition 0 4 2\\ncolor 1 1 1\\npower 2.0\\n}\"}}" );
 
 		// insert_chunk over the wire.
 		const std::string insResp = disp.HandleLine(
@@ -1618,7 +1677,7 @@ static void TestRemoveChunkNameKeywordCoincidence()
 		"G7: second unnamed timeline inserts" );
 
 	// ...plus an omni_light literally NAMED "timeline" (a coincidental name/keyword clash).
-	Agent::AgentChunkResult rLight = sess->InsertChunk(
+	Agent::AgentChunkResult rLight = InsertChunkConfirmed( sess.get(),
 		"omni_light\n{\n\tname timeline\n\tposition 2 2 2\n\tcolor 1 1 1\n\tpower 5.0\n}" );
 	Check( rLight.applied && rLight.status == "applied", "G7: the light named `timeline` inserts" );
 
@@ -7892,7 +7951,8 @@ static void TestBuildPlanGateIgnoresNonGeometry()
 	       "G2d a painter insert is NOT intercepted" );
 	Check( sess->InsertChunk( "lambertian_material\n{\n\tname g2d_m\n\treflectance g2d_p\n}" ).applied,
 	       "G2d a material insert is NOT intercepted" );
-	Check( sess->InsertChunk( "omni_light\n{\n\tname g2d_l\n\tpower 50.0\n\tposition 2 2 2\n}" ).applied,
+	Check( InsertChunkConfirmed( sess.get(),
+	       "omni_light\n{\n\tname g2d_l\n\tpower 50.0\n\tposition 2 2 2\n}" ).applied,
 	       "G2d a light insert is NOT intercepted" );
 	// insert_material_scaffold emits painters + a material and no geometry:
 	// it must not burn the gate either.
@@ -9759,7 +9819,8 @@ static void TestBuildProtocolPhasesAndAttribution()
 	Check( sess->ReadDocument() == docCompose, "S1a RED-PROVE: the document is byte-identical" );
 	Check( sess->ProposePatch( patch ).applied,
 	       "S1a but editing ANY element's chunk is allowed in compose (composition adjusts parts)" );
-	Check( sess->InsertChunk( "omni_light\n{\n\tname s1_key\n\tpower 40\n\tposition 2 2 2\n}" ).applied,
+	Check( InsertChunkConfirmed( sess.get(),
+	       "omni_light\n{\n\tname s1_key\n\tpower 40\n\tposition 2 2 2\n}" ).applied,
 	       "S1a and a LIGHT can still be created there -- lighting is compose's stated job" );
 
 	// The escape really works.
@@ -9781,7 +9842,8 @@ static void TestBuildProtocolExemptionsAndGiveUp()
 	Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "S1b the plan files" );
 
 	// A light created inside the wizard's window IS attributed to it...
-	Check( sess->InsertChunk( "omni_light\n{\n\tname s1b_key\n\tpower 40\n\tposition 2 2 2\n}" ).applied,
+	Check( InsertChunkConfirmed( sess.get(),
+	       "omni_light\n{\n\tname s1b_key\n\tpower 40\n\tposition 2 2 2\n}" ).applied,
 	       "S1b a light created in the wizard's window applies" );
 	Check( sess->ChunkElement( "s1b_key" ) == "wizard", "S1b and is attributed to it" );
 	Check( sess->InsertChunk( S1Box( "wizard_robe" ) ).applied, "S1b so does a geometry chunk" );
@@ -11580,20 +11642,32 @@ static void TestLightSceneHappyPath()
 	             "-- one inventory pass + %d solo renders + 1 all-lights reference\n",
 	             std::chrono::duration<double, std::milli>( lt1 - lt0 ).count(), r.soloedCount );
 	Check( r.ok, "A81a light_scene succeeds" );
-	Check( calls == 2,
-	       "A81a MONEY ASSERTION: exactly TWO completions for ONE call -- one ENUMERATION and one "
-	       "BUILD, no retry on a clean answer. Arc 83 slice 1 spent 4 completions on the same "
-	       "outcome (a plan plus one per intent); slice 2 (the owner's redesign) collapses the loop "
-	       "back to two, with the build authoring every enumerated source in one answer" );
-	Check( !r.retryRan, "A81a and the result says the retry did not run" );
-	Check( r.chunksExtracted == 6, "A81a all six chunks were extracted from the one build answer" );
-	Check( r.landed.size() == 6, "A81a and all six landed" );
-	Check( r.rejected.empty(), "A81a with nothing rejected" );
+	// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: kGoodLightingAnswer
+	// carries TWO zero-area lights (lit_key, lit_fill), and every zero-area
+	// light creation request is now refused once and lands only on an
+	// identical re-issue, from the FIRST one -- there is no free budget left
+	// to land them straight through.  So THIS answer is rejected in part on
+	// its first pass, the harness's ONE repair retry re-issues it verbatim
+	// (MakeLightingCompleter's canned build answer repeats when asked twice),
+	// and both land confirmed on the retry: THREE completions, not two.
+	Check( calls == 3,
+	       "A81a MONEY ASSERTION: THREE completions for ONE call -- the ENUMERATION, the BUILD's "
+	       "first attempt (which the zero-area confirmation gate partly refuses), and the ONE "
+	       "repair retry that re-issues and lands the confirmed pair" );
+	Check( r.retryRan && r.retrySucceeded,
+	       "A81a and the result says the retry ran and landed more chunks" );
+	Check( r.chunksExtracted == 12,
+	       "A81a MONEY ASSERTION: twelve chunks extracted -- six from the first build attempt and "
+	       "six more from the retry's verbatim re-issue of the same answer" );
+	Check( r.landed.size() == 6, "A81a and all six landed (unique, by the time the retry is done)" );
+	Check( !r.rejected.empty(),
+	       "A81a MONEY ASSERTION: the first pass's two zero-area confirmation refusals are reported, "
+	       "not swallowed -- they are what drives the retry that then lands both" );
 
 	// ---- THE ENUMERATION, as numbers the result carries.
 	Check( r.sources.size() == 3 && r.sourcesReturned == 3 && !r.sourcesTruncated,
 	       "A81a the enumeration returned three sources and none was cut" );
-	Check( r.completionsSpent == 2 && r.completionsSpent == calls,
+	Check( r.completionsSpent == 3 && r.completionsSpent == calls,
 	       "A81a MONEY ASSERTION: the completions the result REPORTS are the completions the "
 	       "provider actually saw" );
 	Check( r.areaLightsBuilt == 1 && r.zeroAreaLightsBuilt == 2 && r.skyLightsBuilt == 0 &&
@@ -11617,13 +11691,15 @@ static void TestLightSceneHappyPath()
 	// designed against where the objects actually are.  Prompt 0 is the
 	// ENUMERATION and prompt 1 is the BUILD; the palette assertions below are
 	// about the build prompt, because that is the one that authors chunks.
-	Check( prompts.size() == 2,
-	       "A81a two prompts were composed -- the enumeration, then the build" );
-	if( prompts.size() == 2 ) {
+	Check( prompts.size() == 3,
+	       "A81a three prompts were composed -- the enumeration, the build, and its one repair "
+	       "retry (the zero-area confirmation gate's refusal on the first build attempt)" );
+	if( prompts.size() >= 2 ) {
 		Check( prompts[0].find( "WHAT IN THIS WORLD PHYSICALLY EMITS LIGHT" ) != std::string::npos &&
 		       prompts[0].find( "ONE SOURCE PER LINE" ) != std::string::npos,
 		       "A81a the FIRST prompt asks what physically emits light, one source per line" );
-		Check( prompts[0].find( "at most 6 sources" ) != std::string::npos,
+		Check( prompts[0].find( "at most " + std::to_string( Agent::AgentSession::kLightSourceBudget ) +
+		                        " sources" ) != std::string::npos,
 		       "A81a MONEY ASSERTION: and states the budget as a number -- a budget the model is "
 		       "not told is a budget it can only discover by having its answer cut" );
 		Check( prompts[0].find( "Example:" ) == std::string::npos &&
@@ -11759,17 +11835,20 @@ static void TestLightSceneHappyPath()
 		       "A81a MONEY ASSERTION: omni / spot / directional carry NO worked example -- an "
 		       "example is the one lever this workstream has measured moving what a model "
 		       "writes, so what is copyable IS the policy; their registry schema is still there" );
-		// ---- ARC 83 SLICE 4: the BUDGET is stated in the group note, as a
-		// fact and with its escape.  A budget a model is not told about is one
-		// it can only discover by being refused.
-		Check( p.find( "FREE BUDGET OF 2" ) != std::string::npos &&
-		       p.find( "lands when re-issued unchanged" ) != std::string::npos,
-		       "A83f MONEY ASSERTION: the zero-area group note states the free budget AND that a "
+		// ---- ARC 83 SLICE 4, REVISED 2026-08-13: the CONFIRMATION is stated
+		// in the group note, as a fact and with its escape.  The owner
+		// removed the free budget of 2 (docs/agentic-redesign/
+		// 83-staged-construction-plan.md sec 13); a model not told about the
+		// confirmation can only discover it by being refused.
+		Check( p.find( "Each of these three kinds is refused once per exact request" ) !=
+		           std::string::npos &&
+		       p.find( "lands when the identical request is re-issued unchanged" ) != std::string::npos,
+		       "A83f MONEY ASSERTION: the zero-area group note states the confirmation AND that a "
 		       "re-issued request lands -- half the rule is worse than none, because a model told "
 		       "only that it was refused will either give up or spend turns arguing" );
-		Check( std::to_string( Agent::AgentSession::kZeroAreaLightSceneBudget ) == "2",
-		       "A83f and the number in that sentence is the number the code enforces "
-		       "(kZeroAreaLightSceneBudget)" );
+		Check( p.find( "shape_light, rect_light, an emissive object, hosek_wilkie_skylight -- are "
+		               "never subject to this at all" ) != std::string::npos,
+		       "A83f and the group note names the forms that carry no confirmation requirement" );
 		Check( p.find( "ZERO-AREA IDEALIZATIONS" ) != std::string::npos &&
 		       p.find( "ZERO-AREA IDEALIZATIONS" ) < p.find( "3. omni_light" ),
 		       "A81a and the three are stated as what they are -- zero-area, no penumbra, for "
@@ -11855,15 +11934,21 @@ static void TestLightSceneAdmissibilityAndRetry()
 	std::printf( "A81b: light_scene rejects what is not lighting, and repairs once...\n" );
 	const std::string tmp = TempPath( "agentcrud_a81b.RISEscene" );
 
-	// (1) A CAMERA and a BARE GEOMETRY are refused; the omni_light lands.
+	// (1) A CAMERA and a BARE GEOMETRY are refused; the shape_light lands.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A81b/reject fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 
+		// `lit_ok` is a shape_light, not an omni_light: this case is about
+		// the ADMISSIBILITY rule (camera / bare-geometry rejection), and its
+		// retry answer (kGoodLightingAnswer, the 3rd canned answer) does not
+		// mention `lit_ok` at all, so a zero-area `lit_ok` would be refused
+		// on pass 1 by the confirmation gate and never re-issued, entangling
+		// this case with a rule it is not testing (2026-08-13).
 		const std::string mixed =
-			"omni_light\n{\n\tname lit_ok\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 40\n}\n"
+			"shape_light\n{\n\tname lit_ok\n\tshape sphere\n\tcenter 0 3 0\n\tsize 0.2\n\texitance 100\n}\n"
 			"pinhole_camera\n{\n\tname lit_cam\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tfov 50\n}\n"
 			"box_geometry\n{\n\tname lit_bare_geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n";
 		int calls = 0;
@@ -12062,14 +12147,22 @@ static void TestComposePhaseFirstLightRefusal()
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 		sess->SetTextCompleter( MakeLightingCompleter() );
 
+		// ARC 83 SLICE 4: an AREA light (rect_light), not an omni.  The
+		// zero-area CONFIRMATION gate runs AHEAD of the compose-phase
+		// first-light gate this case exists to test (2026-08-13: it fires
+		// unconditionally, from the first request), so a brand new omni here
+		// would be intercepted by that gate instead and this case would stop
+		// testing the one it names.  A rect_light carries no confirmation
+		// requirement at all, and the compose gate classifies by registry
+		// CATEGORY, so it probes the gate just as well.
 		const std::string docBefore = sess->ReadDocument();
-		const Agent::AgentChunkResult r1 = sess->InsertChunk( A81Light( "hand_key" ) );
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( A81AreaLight( "hand_key" ) );
 		Check( !r1.applied && r1.status == "rejected",
 		       "A81d MONEY ASSERTION: a hand-authored light chunk is refused in compose while "
 		       "light_scene has not run" );
 		Check( r1.message.find( "light_scene" ) != std::string::npos,
 		       "A81d and the refusal names light_scene" );
-		Check( r1.kind == "omni_light" && r1.name == "hand_key",
+		Check( r1.kind == "rect_light" && r1.name == "hand_key",
 		       "A81d with the identity echo every other refusal honours" );
 		Check( sess->ReadDocument() == docBefore, "A81d the document is byte-identical" );
 		Check( sess->BuildPhaseRefusalCount() == 1,
@@ -12082,7 +12175,7 @@ static void TestComposePhaseFirstLightRefusal()
 
 		{
 			std::vector<std::string> batch;
-			batch.push_back( A81Light( "hand_b1" ) );
+			batch.push_back( A81AreaLight( "hand_b1" ) );
 			batch.push_back( "uniformcolor_painter\n{\n\tname a81d_b2\n\tcolor 1 1 1\n}" );
 			const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
 			Check( rs.size() == 2 && !rs[0].applied && !rs[1].applied,
@@ -12097,14 +12190,14 @@ static void TestComposePhaseFirstLightRefusal()
 		Check( lr.ok && lr.landed.size() == 6,
 		       "A81d MONEY ASSERTION: the clean room's own insertion is not refused by the "
 		       "clean-room rule" );
-		// ARC 83 SLICE 4: AREA lights here, not two more omnis.  The build
-		// answer above already landed this scene's whole zero-area budget
-		// (lit_key + lit_fill), so a third omni would come back refused by
-		// kZeroAreaLightSceneBudget -- a completely different rule -- and this
-		// case would stop testing the one it names.  An area light is outside
-		// that budget, and the compose gate classifies by registry CATEGORY, so
-		// a rect_light is exactly as good a probe of "is hand authoring allowed
-		// now" as an omni_light was.
+		// ARC 83 SLICE 4: AREA lights here, not two more omnis.  A brand new
+		// omni here would come back refused by the zero-area CONFIRMATION
+		// gate (2026-08-13: unconditional, from the first request) -- a
+		// completely different rule -- and this case would stop testing the
+		// one it names.  A rect_light carries no confirmation requirement at
+		// all, and the compose gate classifies by registry CATEGORY, so it is
+		// exactly as good a probe of "is hand authoring allowed now" as an
+		// omni_light was.
 		Check( sess->InsertChunk( A81AreaLight( "hand_after" ) ).applied,
 		       "A81d MONEY ASSERTION: once light_scene has run, hand authoring is allowed -- "
 		       "construction through the clean room, refinement in the model's hands" );
@@ -12124,13 +12217,16 @@ static void TestComposePhaseFirstLightRefusal()
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 		sess->SetTextCompleter( MakeLightingCompleter() );
 
+		// AREA lights (rect_light), not omnis: see (1)'s note -- a brand new
+		// omni here would be intercepted by the zero-area CONFIRMATION gate
+		// instead of the phase gate this case exists to cap.
 		for( int i = 0; i < 3; ++i ) {
 			const Agent::AgentChunkResult r =
-				sess->InsertChunk( A81Light( ( "hand_" + std::to_string( i ) ).c_str() ) );
+				sess->InsertChunk( A81AreaLight( ( "hand_" + std::to_string( i ) ).c_str() ) );
 			Check( !r.applied, "A81d/giveup refusal " + std::to_string( i + 1 ) + " of 3" );
 		}
 		Check( sess->BuildPhaseRefusalCount() == 3, "A81d/giveup the cap is reached" );
-		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81Light( "hand_3" ) );
+		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81AreaLight( "hand_3" ) );
 		Check( r4.applied,
 		       "A81d/giveup MONEY ASSERTION: the fourth call is LET THROUGH -- the shared cap gives "
 		       "up rather than refusing a model forever" );
@@ -12192,22 +12288,32 @@ static void TestPiecesPhaseLightsNeitherRefusedNorDisarming()
 
 	// A WORK LIGHT inside an element window: allowed, and it does not even
 	// trip the arc-79 first-geometry arm (which fires on GEOMETRY only).
+	// 2026-08-13: a brand new zero-area light's FIRST request is refused by
+	// the (phase-independent) confirmation gate regardless of phase, so this
+	// case needs the refuse-then-reissue dance before its MONEY ASSERTION.
+	Check( !sess->InsertChunk( A81Light( "work_light" ) ).applied,
+	       "A81e work_light's first request is refused (zero-area confirmation, not a phase rule)" );
 	Check( sess->InsertChunk( A81Light( "work_light" ) ).applied,
-	       "A81e MONEY ASSERTION: a light authored inside an element window is allowed -- arc 78 "
-	       "sec 2.3's rule, which this arc must not take back" );
-	Check( sess->BuildPhaseRefusalCount() == 0, "A81e and spends no refusal" );
-	Check( sess->InsertChunk( A81Light( "work_light2" ) ).applied, "A81e -- and so is a second" );
+	       "A81e MONEY ASSERTION: and on re-issue a light authored inside an element window is "
+	       "allowed -- arc 78 sec 2.3's rule, which this arc must not take back" );
+	Check( sess->BuildPhaseRefusalCount() == 0,
+	       "A81e and neither request spent a PHASE refusal -- the confirmation gate is not phase "
+	       "machinery" );
+	Check( !sess->InsertChunk( A81Light( "work_light2" ) ).applied,
+	       "A81e work_light2's first request is refused too" );
+	Check( sess->InsertChunk( A81Light( "work_light2" ) ).applied,
+	       "A81e -- and so is a second, on re-issue" );
 
 	// Now into compose, with two lights already in the scene.
 	Check( sess->FinishElement().ok, "A81e the element finishes" );
 	Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
 	       "A81e the session is in the compose phase" );
-	// ARC 83 SLICE 4: an AREA light.  The two work lights above are this
-	// scene's whole zero-area budget, so a third omni would be refused by
-	// kZeroAreaLightSceneBudget before the compose gate ever saw it -- and the
-	// assertion below is specifically that the COMPOSE GATE is still armed.
-	// The gate classifies by registry CATEGORY, so a rect_light probes it just
-	// as well and is outside the budget by construction.
+	// ARC 83 SLICE 4: an AREA light.  A brand new omni here would be refused
+	// by the zero-area CONFIRMATION gate before the compose gate ever saw
+	// it -- and the assertion below is specifically that the COMPOSE GATE is
+	// still armed.  The gate classifies by registry CATEGORY, so a
+	// rect_light probes it just as well and carries no confirmation
+	// requirement at all.
 	const Agent::AgentChunkResult r = sess->InsertChunk( A81AreaLight( "compose_hand" ) );
 	Check( !r.applied && r.message.find( "light_scene" ) != std::string::npos,
 	       "A81e MONEY ASSERTION: the two pieces-phase lights did NOT disarm the compose gate -- "
@@ -12262,7 +12368,13 @@ static void TestLightSceneWireShape()
 		       "A81f with a real measurement on each measured entry" );
 		Check( result.has( "allLightsMeanLuma" ),
 		       "A81f and the all-lights reference it is read against" );
-		Check( result.get( "retryRan" ).asBool( true ) == false, "A81f retryRan is reported" );
+		// ARC 83 SLICE 4, REVISED 2026-08-13: kGoodLightingAnswer's two
+		// zero-area lights are each refused once (unconfirmed) on the first
+		// build attempt and land on the ONE repair retry that re-issues them
+		// confirmed -- so THIS call really does retry, and its wire shape
+		// should say so honestly rather than pin the pre-2026-08-13 budget's
+		// free-landing shape.
+		Check( result.get( "retryRan" ).asBool( false ) == true, "A81f retryRan is reported" );
 
 		// ---- ARC 83 SLICE 2: the enumeration rides the wire as STRUCTURE,
 		// not only as prose in `message`.
@@ -12270,7 +12382,7 @@ static void TestLightSceneWireShape()
 		       result.get( "sourcesReturned" ).asNumber( -1 ) == 3.0 &&
 		       result.get( "sourcesTruncated" ).asBool( true ) == false,
 		       "A81f the enumeration's shape rides the wire" );
-		Check( result.get( "completions" ).asNumber( -1 ) == 2.0,
+		Check( result.get( "completions" ).asNumber( -1 ) == 3.0,
 		       "A81f MONEY ASSERTION: so does the number of completions the call actually spent -- "
 		       "a census that has to parse prose to learn the spend is a census that will drift" );
 		Check( result.get( "areaLights" ).asNumber( -1 ) == 1.0 &&
@@ -12403,9 +12515,12 @@ static void TestAmbientLightIsAlwaysRefused()
 		CheckAmbientBanMessage( r.message, "off" );
 
 		// The very same session authors an ORDINARY light with no trouble --
-		// the ban is one keyword, not a mood about lights.
-		Check( sess->InsertChunk( A81Light( "amb_off_ok" ) ).applied,
-		       "A81g/off an omni_light is untouched by the ban" );
+		// the ban is one keyword, not a mood about lights.  An AREA light
+		// (rect_light), not an omni: a brand new omni would be refused by
+		// the unrelated zero-area CONFIRMATION gate (2026-08-13) and this
+		// case would stop testing the ambient ban specifically.
+		Check( sess->InsertChunk( A81AreaLight( "amb_off_ok" ) ).applied,
+		       "A81g/off a rect_light is untouched by the ban" );
 		pJob->release();
 	}
 
@@ -12434,8 +12549,10 @@ static void TestAmbientLightIsAlwaysRefused()
 		       "phase cap -- a permanent prohibition must not consume a sequencing budget, and at "
 		       "the old ordering these five would have burned the cap and tripped the give-up" );
 
-		// ... and the phase machinery is still fully armed underneath.
-		const Agent::AgentChunkResult ph = sess->InsertChunk( A81Light( "amb_phase" ) );
+		// ... and the phase machinery is still fully armed underneath.  An
+		// AREA light again (2026-08-13): a brand new omni would be
+		// intercepted by the unrelated zero-area CONFIRMATION gate first.
+		const Agent::AgentChunkResult ph = sess->InsertChunk( A81AreaLight( "amb_phase" ) );
 		Check( !ph.applied && ph.message.find( "light_scene" ) != std::string::npos,
 		       "A81g/cap the compose first-light gate still fires on a real light chunk" );
 		Check( sess->BuildPhaseRefusalCount() == 1,
@@ -12480,9 +12597,15 @@ static void TestAmbientLightIsAlwaysRefused()
 		Check( pJob != nullptr, "A81g/cleanroom fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
+		// `pass_key` is a shape_light, not an omni_light: this case is about
+		// the AMBIENT BAN inside light_scene, and its retry answer
+		// (kGoodLightingAnswer, the 3rd canned answer) does not mention
+		// `pass_key`, so a zero-area `pass_key` would be refused by the
+		// unrelated confirmation gate on pass 1 and never re-issued
+		// (2026-08-13).
 		const std::string ambientAnswer =
 			"ambient_light\n{\n\tname pass_amb\n\tcolor 0.2 0.2 0.3\n\tpower 0.5\n}\n"
-			"omni_light\n{\n\tname pass_key\n\tposition 2 3 4\n\tcolor 1 1 1\n\tpower 50\n}\n";
+			"shape_light\n{\n\tname pass_key\n\tshape sphere\n\tcenter 2 3 4\n\tsize 0.2\n\texitance 100\n}\n";
 		int calls = 0;
 		std::vector<std::string> prompts;
 		sess->SetTextCompleter( MakeFakeCompleter( { kOneSourceEnumeration, ambientAnswer,
@@ -12589,8 +12712,11 @@ static void TestPaletteAreaLightExampleParses()
 		sess->SetTextCompleter( MakeLightingCompleter( &calls, &prompts ) );
 		sess->LightScene();
 		// ARC 83 SLICE 2: prompts[0] is the ENUMERATION, which deliberately
-		// carries no palette; the examples live in the BUILD prompt.
-		Check( prompts.size() == 2, "A81h the enumeration prompt and the build prompt were composed" );
+		// carries no palette; the examples live in the BUILD prompt, prompts[1]
+		// -- present whether or not the zero-area confirmation gate goes on to
+		// force a repair retry (a third prompt) over kGoodLightingAnswer's two
+		// zero-area lights, which this case does not care about.
+		Check( prompts.size() >= 2, "A81h the enumeration prompt and the build prompt were composed" );
 		if( prompts.size() >= 2 ) {
 			const std::string& p = prompts[1];
 			// Block 1 runs from "Example:\n" to the blank line that separates
@@ -12842,23 +12968,29 @@ static void TestRectLightThroughInsertVerbs()
 }
 
 //----------------------------------------------------------------------
-// ARC 83 SLICE 4 (2026-08-12): THE ZERO-AREA LIGHT BUDGET, and the
-// one-chunk SOLID area light that gives it somewhere to send the model.
+// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: THE ZERO-AREA LIGHT
+// CONFIRMATION, and the one-chunk SOLID area light that gives it somewhere
+// to send the model.
 //
-// Owner, verbatim: "penalize the model for choosing omni, spot or ambient
-// over shape light."  Ambient is BANNED (A81g above, unchanged and still
-// absolute).  omni / spot / directional are BUDGETED: two per scene free,
-// and past that each distinct request is refused ONCE, with the facts, and
-// lands the moment it is re-issued unchanged.
+// Owner, verbatim (2026-08-12): "penalize the model for choosing omni,
+// spot or ambient over shape light."  Ambient is BANNED (A81g above,
+// unchanged and still absolute).  omni / spot / directional are
+// CONFIRMED: EVERY distinct creation request is refused ONCE, with the
+// facts, and lands the moment it is re-issued unchanged -- from the FIRST
+// one.  The free budget of 2 that used to exempt a session's first two
+// uses is REMOVED (owner, 2026-08-13): it exempted exactly the uses this
+// mechanism exists to make deliberate.  See
+// docs/agentic-redesign/83-staged-construction-plan.md sec 13 for the
+// owner's reasoning verbatim.
 //
-// The three properties that are easy to get wrong, and that the cases
-// below exist for:
-//   * THE COUNT IS THE DOCUMENT'S, not a session tally.  Remove a light
-//     and the slot comes back.  A tally would drift the first time
-//     anything was undone and would then refuse a scene that has room.
+// The properties that are easy to get wrong, and that the cases below
+// exist for:
 //   * THE CONFIRM IS CONTENT-KEYED, not name-keyed.  A model that
 //     re-issues "the same request" reformats it; a model dodging the
-//     budget renames it.  Both are covered.
+//     gate renames it.  Both are covered.
+//   * A RENAMED OR DIFFERENTLY-WORDED request IS a new request and gets
+//     its own refusal -- confirming one light does not amnesty the rest
+//     of the session.
 //   * IT IS NOT PHASE MACHINERY.  Like the ambient ban it spends none of
 //     the shared 3-refusal phase cap, and it survives
 //     --agent-build-protocol=off.
@@ -12880,30 +13012,32 @@ static std::string A83OmniReordered( const char* name )
 		name + "\n}";
 }
 
-//! Every clause of the budget refusal, pinned once and reused by each path
-//! -- the shared DescribeZeroAreaLightBudgetRefusal exists precisely so the
-//! message does not vary by where you hit it.
+//! Every clause of the confirmation refusal, pinned once and reused by each
+//! path -- the shared DescribeZeroAreaLightConfirmationRefusal exists
+//! precisely so the message does not vary by where you hit it.
 static void CheckZeroAreaBudgetMessage( const std::string& m, const char* where )
 {
-	Check( m.find( "zero-area light chunk" ) != std::string::npos &&
-	       m.find( "free budget of 2 per scene" ) != std::string::npos,
-	       std::string( "A83g/" ) + where + " MONEY ASSERTION: the refusal states the COUNT and "
-	       "the BUDGET -- a refusal that does not say how many is a rule the model cannot plan "
-	       "against" );
 	Check( m.find( "no emitting surface anywhere in the scene" ) != std::string::npos &&
 	       m.find( "hard edges with no penumbra" ) != std::string::npos,
-	       std::string( "A83g/" ) + where + " and states the PHYSICS behind it -- what a zero-area "
-	       "light actually is; a budget with no reason reads as an arbitrary quota" );
+	       std::string( "A83g/" ) + where + " MONEY ASSERTION: states the PHYSICS -- what a "
+	       "zero-area light actually is; a refusal with no reason reads as an arbitrary rule" );
 	Check( m.find( "`shape_light`" ) != std::string::npos &&
 	       m.find( "`rect_light`" ) != std::string::npos &&
 	       m.find( "hosek_wilkie_skylight" ) != std::string::npos,
-	       std::string( "A83g/" ) + where + " MONEY ASSERTION: and names the forms that are NOT "
-	       "counted -- shape_light, rect_light and the analytic sky. A refusal that leaves a model "
-	       "with nothing to write instead is a refusal it will spend turns arguing with" );
+	       std::string( "A83g/" ) + where + " MONEY ASSERTION: and names the forms that carry no "
+	       "confirmation requirement -- shape_light, rect_light and the analytic sky. A refusal "
+	       "that leaves a model with nothing to write instead is a refusal it will spend turns "
+	       "arguing with" );
 	Check( m.find( "RE-ISSUING THIS EXACT REQUEST INSERTS IT" ) != std::string::npos,
 	       std::string( "A83g/" ) + where + " MONEY ASSERTION: and states the ESCAPE. This is a "
 	       "confirm, not a prohibition, and a model told only that it was refused would either "
 	       "abandon a light it needs or re-issue blind" );
+	// 2026-08-13: the free budget of 2, and any count/threshold clause that
+	// went with it, is gone -- the message is the same FACT every time,
+	// unconditionally, from the first request.
+	Check( m.find( "free budget" ) == std::string::npos && m.find( "This scene carries" ) == std::string::npos,
+	       std::string( "A83g/" ) + where + " MONEY ASSERTION: the message carries no count or "
+	       "budget clause -- the confirmation is unconditional, not a threshold" );
 	// FACTS ONLY -- the ambient ban's own banned-word list, applied here for
 	// the same reason: this surface states what the renderer does and stops.
 	static const char* const kBannedMoralizing[] = {
@@ -12914,16 +13048,17 @@ static void CheckZeroAreaBudgetMessage( const std::string& m, const char* where 
 		       kBannedMoralizing[i] + "\" -- it states facts and stops" );
 }
 
-//! A83g: the budget on the two INSERT verbs -- the free allowance, the
-//! refusal, the confirm-once re-issue, and the fact that the count is read
-//! off the document rather than tallied.
+//! A83g: the confirmation on the two INSERT verbs -- unconditional from the
+//! FIRST request, the confirm-once re-issue, and content-keying.
 static void TestZeroAreaLightBudgetOnInserts()
 {
-	std::printf( "A83g: the zero-area light budget -- 2 free, then refused once and confirmed...\n" );
+	std::printf( "A83g: the zero-area light confirmation -- refused once, from the first request, "
+	             "then confirmed...\n" );
 	const std::string tmp = TempPath( "agentcrud_a83g.RISEscene" );
 
-	// (1) TWO FREE, THIRD REFUSED, RE-ISSUE LANDS.  Protocol OFF, so this is
-	//     the budget talking and demonstrably not the phase machinery.
+	// (1) THE FIRST REQUEST IS REFUSED, RE-ISSUE LANDS.  Protocol OFF, so
+	//     this is the confirmation talking and demonstrably not the phase
+	//     machinery.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83g/insert fixture loads" );
@@ -12933,48 +13068,41 @@ static void TestZeroAreaLightBudgetOnInserts()
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
 		Check( !sess->BuildProtocolActive(), "A83g/insert the protocol is inactive for this session" );
 
-		Check( sess->InsertChunk( A83Omni( "z1" ) ).applied,
-		       "A83g/insert the FIRST zero-area light inserts with nothing said" );
-		Check( sess->InsertChunk( A83Omni( "z2" ) ).applied,
-		       "A83g/insert and so does the second -- the budget is a free allowance, not a warning" );
-
-		const std::string docAtBudget = sess->ReadDocument();
-		const Agent::AgentChunkResult r3 = sess->InsertChunk( A83Omni( "z3" ) );
-		Check( !r3.applied && r3.status == "rejected",
-		       "A83g/insert MONEY ASSERTION: the THIRD is refused -- the owner's penalty for "
-		       "reaching past an area light, expressed as a cost rather than as advice, because "
-		       "advice measures ~0 in this workstream (83 sec 9)" );
-		Check( !r3.retriable,
+		const std::string docBefore = sess->ReadDocument();
+		const Agent::AgentChunkResult r1 = sess->InsertChunk( A83Omni( "z1" ) );
+		Check( !r1.applied && r1.status == "rejected",
+		       "A83g/insert MONEY ASSERTION: the FIRST zero-area light request is refused -- there "
+		       "is no free allowance left (removed 2026-08-13); the owner's penalty for reaching "
+		       "past an area light is a cost from the first reach, not past a threshold, because a "
+		       "free allowance exempted exactly the uses this mechanism exists to make deliberate" );
+		Check( !r1.retriable,
 		       "A83g/insert and NOT retriable -- the GUI chat loops silently re-issue that flag, "
 		       "which would spend the model's one confirm on its behalf and land the light without "
 		       "the refusal ever being read" );
-		Check( r3.kind == "omni_light" && r3.name == "z3",
+		Check( r1.kind == "omni_light" && r1.name == "z1",
 		       "A83g/insert with the identity echo every other refusal honours" );
-		Check( sess->ReadDocument() == docAtBudget,
+		Check( sess->ReadDocument() == docBefore,
 		       "A83g/insert the document is byte-identical" );
-		CheckZeroAreaBudgetMessage( r3.message, "insert" );
-		Check( r3.message.find( "This scene carries 2 zero-area light chunks" ) != std::string::npos &&
-		       r3.message.find( "adds 1 more" ) != std::string::npos,
-		       "A83g/insert MONEY ASSERTION: and the two numbers in the message are this scene's "
-		       "real ones -- 2 carried, 1 requested" );
+		CheckZeroAreaBudgetMessage( r1.message, "insert" );
 
 		// THE CONFIRM.  The identical request, re-issued, LANDS.
-		const Agent::AgentChunkResult r3b = sess->InsertChunk( A83Omni( "z3" ) );
-		Check( r3b.applied,
+		const Agent::AgentChunkResult r1b = sess->InsertChunk( A83Omni( "z1" ) );
+		Check( r1b.applied,
 		       "A83g/insert MONEY ASSERTION: the IDENTICAL re-issued request LANDS -- confirm-once. "
 		       "A hard ban would make a legitimately idealization-lit scene unbuildable; what this "
 		       "costs a model that means it is exactly one turn" );
-		Check( sess->ReadDocument().find( "z3" ) != std::string::npos,
-		       "A83g/insert and z3 is really in the document" );
+		Check( sess->ReadDocument().find( "z1" ) != std::string::npos,
+		       "A83g/insert and z1 is really in the document" );
 
 		// A DIFFERENT light is a DIFFERENT request: the confirm is per-request,
-		// not a session-wide amnesty.
-		const Agent::AgentChunkResult r4 = sess->InsertChunk( A83Omni( "z4" ) );
-		Check( !r4.applied,
-		       "A83g/insert MONEY ASSERTION: a DIFFERENT light past the budget is refused on its "
-		       "own account -- confirming one request does not disarm the budget for the rest of "
-		       "the session, which is what makes the cost per-light rather than one-off" );
-		Check( sess->InsertChunk( A83Omni( "z4" ) ).applied,
+		// not a session-wide amnesty -- so a SECOND light, still unconfirmed,
+		// is refused on its own account too.
+		const Agent::AgentChunkResult r2 = sess->InsertChunk( A83Omni( "z2" ) );
+		Check( !r2.applied,
+		       "A83g/insert MONEY ASSERTION: a DIFFERENT light is refused on its own account -- "
+		       "confirming one request does not disarm the gate for the rest of the session, which "
+		       "is what makes the cost per-light rather than one-off" );
+		Check( sess->InsertChunk( A83Omni( "z2" ) ).applied,
 		       "A83g/insert -- and it too lands on re-issue" );
 		pJob->release();
 	}
@@ -12991,17 +13119,15 @@ static void TestZeroAreaLightBudgetOnInserts()
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
 
-		Check( sess->InsertChunk( A83Omni( "f1" ) ).applied, "A83g/fingerprint first is free" );
-		Check( sess->InsertChunk( A83Omni( "f2" ) ).applied, "A83g/fingerprint second is free" );
 		Check( !sess->InsertChunk( A83Omni( "f3" ) ).applied,
-		       "A83g/fingerprint the third is refused once" );
+		       "A83g/fingerprint the first request is refused" );
 		Check( sess->InsertChunk( A83OmniReordered( "f3" ) ).applied,
 		       "A83g/fingerprint MONEY ASSERTION: the re-issue with its params REORDERED and "
 		       "re-indented is honoured as the SAME request -- a model re-emitting an answer "
 		       "rarely re-emits the same bytes, and a byte-keyed confirm would refuse forever" );
 
 		// A RENAME is a different request and gets its own refusal.  This is
-		// what stops the budget being dodged by renaming.
+		// what stops the confirmation being dodged by renaming.
 		Check( !sess->InsertChunk( A83Omni( "f4" ) ).applied,
 		       "A83g/fingerprint MONEY ASSERTION: the same light under a NEW NAME is a new request "
 		       "and is refused -- a name-keyed confirm would let a reflexive model land any number "
@@ -13009,33 +13135,34 @@ static void TestZeroAreaLightBudgetOnInserts()
 		pJob->release();
 	}
 
-	// (3) THE COUNT FOLLOWS THE DOCUMENT.  Remove one, and the next insert is
-	//     free again -- because the check reads the live document, never a
-	//     session tally that undo and removal would strand.
+	// (3) THE CONFIRM FOLLOWS THE SESSION, NOT THE DOCUMENT.  2026-08-13:
+	//     with the free budget gone there is no per-document count left to
+	//     read -- so a light that is REMOVED after being confirmed does not
+	//     lose its confirmation.  Re-inserting the identical content lands
+	//     straight through, because the fingerprint was confirmed once this
+	//     session and a confirm is a promise, not a running total.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
-		Check( pJob != nullptr, "A83g/document fixture loads" );
+		Check( pJob != nullptr, "A83g/session fixture loads" );
 		if( !pJob ) return;
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
 
-		Check( sess->InsertChunk( A83Omni( "d1" ) ).applied, "A83g/document d1 inserts" );
-		Check( sess->InsertChunk( A83Omni( "d2" ) ).applied, "A83g/document d2 inserts" );
-		Check( !sess->InsertChunk( A83Omni( "d3" ) ).applied,
-		       "A83g/document at budget, d3 is refused" );
-		Check( sess->RemoveChunk( "d1" ).applied, "A83g/document d1 is removed" );
-		Check( sess->InsertChunk( A83Omni( "d4" ) ).applied,
-		       "A83g/document MONEY ASSERTION: with one removed, a BRAND NEW zero-area light "
-		       "inserts freely again -- the budget counts the DOCUMENT at check time, so undo, a "
-		       "removal and the user's own edit all move it correctly. A session tally would have "
-		       "refused this one" );
+		Check( !sess->InsertChunk( A83Omni( "d1" ) ).applied, "A83g/session d1's first request is refused" );
+		Check( sess->InsertChunk( A83Omni( "d1" ) ).applied, "A83g/session and lands on re-issue" );
+		Check( sess->RemoveChunk( "d1" ).applied, "A83g/session d1 is removed" );
+		Check( sess->InsertChunk( A83Omni( "d1" ) ).applied,
+		       "A83g/session MONEY ASSERTION: re-inserting the IDENTICAL content after removal "
+		       "lands with no fresh refusal -- the confirm set is session-lifetime and keyed on "
+		       "content, not a document count, so removing the light does not un-confirm it" );
 		pJob->release();
 	}
 
-	// (4) WHAT IS NOT COUNTED.  The area lights and the analytic sky are
-	//     outside the budget entirely -- any number of them, at any time,
-	//     including while the zero-area count is already over.
+	// (4) THE AREA LIGHTS AND THE ANALYTIC SKY CARRY NO CONFIRMATION
+	//     REQUIREMENT AT ALL -- any number of them, at any time, regardless
+	//     of how many zero-area requests this session has pending or
+	//     refused.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83g/exempt fixture loads" );
@@ -13044,11 +13171,9 @@ static void TestZeroAreaLightBudgetOnInserts()
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
 
-		// Spend the whole budget first, so every insert below is happening in a
-		// scene that is AT the limit.
-		Check( sess->InsertChunk( A83Omni( "e1" ) ).applied, "A83g/exempt e1 inserts" );
-		Check( sess->InsertChunk( A83Omni( "e2" ) ).applied, "A83g/exempt e2 inserts" );
-		Check( !sess->InsertChunk( A83Omni( "e3" ) ).applied, "A83g/exempt the budget is spent" );
+		// A pending, UNconfirmed zero-area refusal first, so every insert
+		// below is happening in a session that has one outstanding.
+		Check( !sess->InsertChunk( A83Omni( "e1" ) ).applied, "A83g/exempt e1's first request is refused" );
 
 		for( int i = 0; i < 4; ++i ) {
 			const std::string n = "shp" + std::to_string( i );
@@ -13056,7 +13181,7 @@ static void TestZeroAreaLightBudgetOnInserts()
 				"shape_light\n{\n\tname " + n + "\n\tshape sphere\n\tcenter 0 3 0\n"
 				"\tsize 0.2\n\texitance 100\n}" ).applied,
 			       "A83g/exempt shape_light #" + std::to_string( i + 1 ) +
-			       " inserts with the zero-area budget already spent" );
+			       " inserts with a zero-area refusal already outstanding" );
 		}
 		for( int i = 0; i < 3; ++i ) {
 			const std::string n = "rct" + std::to_string( i );
@@ -13069,26 +13194,30 @@ static void TestZeroAreaLightBudgetOnInserts()
 			"hosek_wilkie_skylight\n{\n\tsolar_elevation 22\n\tsolar_azimuth 135\n"
 			"\tturbidity 4\n}" ).applied,
 		       "A83g/exempt MONEY ASSERTION: and hosek_wilkie_skylight inserts -- seven area "
-		       "lights and a sky, all while the zero-area count sits at its limit. The budget is "
+		       "lights and a sky, all while a zero-area refusal sits unconfirmed. The gate is "
 		       "about the ZERO-AREA form, not about how many lights a scene may have" );
 
-		// ... and the budget is still exactly where it was: the exempt inserts
-		// consumed nothing.
-		Check( !sess->InsertChunk( A83Omni( "e5" ) ).applied,
-		       "A83g/exempt the zero-area budget is unchanged by any of them" );
+		// ... and a DIFFERENT, still brand new zero-area light is refused on
+		// its own account: the exempt inserts above confirmed nothing on any
+		// zero-area light's behalf (e1 itself would now land on re-issue --
+		// that is what confirm-once means -- so this checks a fresh name).
+		Check( !sess->InsertChunk( A83Omni( "e2" ) ).applied,
+		       "A83g/exempt a fresh zero-area light is STILL refused -- the exempt inserts above "
+		       "confirmed nothing on its behalf" );
 		pJob->release();
 	}
 }
 
-//! A83h: the budget on the BATCH verb and on the propose_patch VALUE-SPLICE
-//! path -- the two remaining creating surfaces the ambient ban wires, wired
-//! the same way and for the same reasons.
+//! A83h: the confirmation on the BATCH verb and on the propose_patch
+//! VALUE-SPLICE path -- the two remaining creating surfaces the ambient ban
+//! wires, wired the same way and for the same reasons.
 static void TestZeroAreaLightBudgetOnBatchAndPatch()
 {
-	std::printf( "A83h: the zero-area budget on insert_chunks and on the patch value-splice...\n" );
+	std::printf( "A83h: the zero-area confirmation on insert_chunks and on the patch value-splice...\n" );
 	const std::string tmp = TempPath( "agentcrud_a83h.RISEscene" );
 
-	// (1) THE BATCH IS ONE REQUEST: refused whole, confirmed whole, and the
+	// (1) THE BATCH IS ONE REQUEST: refused whole (every element of it is a
+	//     brand new, unconfirmed zero-area light), confirmed whole, and the
 	//     identical batch re-issued lands whole.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
@@ -13108,10 +13237,9 @@ static void TestZeroAreaLightBudgetOnBatchAndPatch()
 		const std::vector<Agent::AgentChunkResult> rs = sess->InsertChunks( batch );
 		Check( rs.size() == 4 && !rs[0].applied && !rs[1].applied &&
 		       !rs[2].applied && !rs[3].applied,
-		       "A83h/batch MONEY ASSERTION: a batch that would take the scene over the budget is "
-		       "refused WHOLE -- the innocent painter and the two lights that WOULD have fitted do "
-		       "not land, because a policy refusal is not an authoring failure and half a batch is "
-		       "a state nobody asked for" );
+		       "A83h/batch MONEY ASSERTION: a batch carrying any unconfirmed zero-area light is "
+		       "refused WHOLE -- the innocent painter does not land either, because a policy "
+		       "refusal is not an authoring failure and half a batch is a state nobody asked for" );
 		Check( sess->ReadDocument() == docBefore,
 		       "A83h/batch and the document is byte-identical" );
 		Check( rs[0].message.find( "chunks[1]" ) != std::string::npos,
@@ -13122,16 +13250,16 @@ static void TestZeroAreaLightBudgetOnBatchAndPatch()
 		Check( rs2.size() == 4 && rs2[0].applied && rs2[1].applied &&
 		       rs2[2].applied && rs2[3].applied,
 		       "A83h/batch MONEY ASSERTION: the IDENTICAL batch re-issued lands ENTIRELY -- the "
-		       "whole batch is one request, so it is charged, refused and confirmed as one. "
-		       "Charging its elements separately would refuse a three-light batch three times" );
+		       "whole batch is one request, so it is refused and confirmed as one. Charging its "
+		       "elements separately would refuse a three-light batch three times" );
 		pJob->release();
 	}
 
 	// (2) THE VALUE-SPLICE PATH.  A param value is spliced into the document
 	//     as TEXT, the identical bypass R1c's arm (b), the build-plan gate's
 	//     patch arm and the ambient ban's patch arm each close for their own
-	//     kinds -- a budget with no patch arm would be a budget with a
-	//     documented hole.
+	//     kinds -- a confirmation with no patch arm would be a confirmation
+	//     with a documented hole.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83h/splice fixture loads" );
@@ -13139,11 +13267,6 @@ static void TestZeroAreaLightBudgetOnBatchAndPatch()
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
-
-		// Spend the budget the ordinary way first, so the splice below is the
-		// call that goes over.
-		Check( sess->InsertChunk( A83Omni( "s1" ) ).applied, "A83h/splice s1 inserts" );
-		Check( sess->InsertChunk( A83Omni( "s2" ) ).applied, "A83h/splice s2 inserts" );
 
 		static const char* const kSpliceValue =
 			"obj_sph geometry sph material mat_diffuse } "
@@ -13154,8 +13277,8 @@ static void TestZeroAreaLightBudgetOnBatchAndPatch()
 		const Agent::AgentPatchResult r = sess->ProposePatch(
 			MakePatch( G2_SPLICE_TARGET, kSpliceValue ) );
 		Check( !r.applied && r.status == "rejected",
-		       "A83h/splice MONEY ASSERTION: a propose_patch whose VALUE splices a whole omni_light "
-		       "into the serialized document is charged against the budget and refused" );
+		       "A83h/splice MONEY ASSERTION: a propose_patch whose VALUE splices a whole (unconfirmed) "
+		       "omni_light into the serialized document is refused" );
 		Check( sess->ReadDocument() == docBefore,
 		       "A83h/splice and the document is byte-identical" );
 		Check( sess->ReadDocument().find( "spliced_omni" ) == std::string::npos,
@@ -13170,18 +13293,18 @@ static void TestZeroAreaLightBudgetOnBatchAndPatch()
 		       "on every path that can create one of these chunks" );
 
 		// THE CONTROL: the same splice mechanism carrying something else is
-		// not this budget's business.
+		// not this gate's business.
 		const Agent::AgentPatchResult ok = sess->ProposePatch(
 			MakePatch( G2_SPLICE_TARGET, kG2SplicePainterValue ) );
-		Check( ok.message.find( "free budget of 2 per scene" ) == std::string::npos,
-		       "A83h/splice the SAME splice shape carrying a painter is not refused by THIS budget" );
+		Check( ok.message.find( "CONFIRMATION REQUIREMENT" ) == std::string::npos,
+		       "A83h/splice the SAME splice shape carrying a painter is not refused by THIS gate" );
 		pJob->release();
 	}
 
-	// (3) EDITING an existing zero-area light is FREE, however far over the
-	//     budget the scene already is -- the patch arm is judged as a DELTA
-	//     against the head, the E1 state-vs-delta lesson the ambient arm
-	//     applies too.  A scene the USER authored stays fully editable.
+	// (3) EDITING an existing zero-area light is FREE, confirmed or not --
+	//     the patch arm is judged as a DELTA against the head, the E1
+	//     state-vs-delta lesson the ambient arm applies too.  A scene the
+	//     USER authored stays fully editable.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83h/edit fixture loads" );
@@ -13190,28 +13313,28 @@ static void TestZeroAreaLightBudgetOnBatchAndPatch()
 		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
 
-		Check( sess->InsertChunk( A83Omni( "keep1" ) ).applied, "A83h/edit keep1 inserts" );
-		Check( sess->InsertChunk( A83Omni( "keep2" ) ).applied, "A83h/edit keep2 inserts" );
-		Check( !sess->InsertChunk( A83Omni( "keep3" ) ).applied, "A83h/edit the budget is spent" );
+		Check( !sess->InsertChunk( A83Omni( "keep1" ) ).applied, "A83h/edit keep1's first request is refused" );
+		Check( sess->InsertChunk( A83Omni( "keep1" ) ).applied, "A83h/edit and lands on re-issue" );
 
 		const Agent::AgentPatchResult e =
 			sess->ProposePatch( MakePatch( "keep1", "omni_light", "power", "80" ) );
 		Check( e.applied,
 		       "A83h/edit MONEY ASSERTION: editing an omni_light that ALREADY EXISTS is untouched "
-		       "by the budget, at the limit -- the patch arm charges the DELTA, so a scene the "
-		       "user authored stays fully editable however many zero-area lights it carries" );
+		       "by the confirmation gate -- the patch arm charges the DELTA, so a scene the user "
+		       "authored stays fully editable regardless of confirmation state" );
 		pJob->release();
 	}
 }
 
-//! A83i: the budget inside light_scene -- per-chunk admissibility, and THE
-//! RETRY IS THE CONFIRM.  This is the one path where the confirm-once
+//! A83i: the confirmation inside light_scene -- per-chunk admissibility, and
+//! THE RETRY IS THE CONFIRM.  This is the one path where the confirm-once
 //! contract has to compose with machinery that already existed (the ONE
 //! repair retry, driven verbatim by the rejection text), so it is verified
 //! end to end rather than asserted.
 static void TestZeroAreaLightBudgetInLightScene()
 {
-	std::printf( "A83i: light_scene's own build is budgeted, and its repair retry IS the confirm...\n" );
+	std::printf( "A83i: light_scene's own build is confirmation-gated, and its repair retry IS the "
+	             "confirm...\n" );
 	const std::string tmp = TempPath( "agentcrud_a83i.RISEscene" );
 
 	Job* pJob = LoadScene( kScene, tmp );
@@ -13219,40 +13342,40 @@ static void TestZeroAreaLightBudgetInLightScene()
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 
-	// FIVE omni_lights in one build answer -- the shape 83 sec 9 and sec 11
-	// both measured live.  The first two fit; the other three are refused,
-	// each with the budget's own text, which is verbatim what the ONE repair
-	// retry is corrected with.  The retry then re-issues the whole corrected
-	// set (build_element's contract, which this verb inherits), and the three
-	// land because they are now confirmed.
-	std::string fiveLights;
-	for( int i = 1; i <= 5; ++i )
-		fiveLights += "omni_light\n{\n\tname a83i_light" + std::to_string( i ) +
+	// TWO omni_lights in one build answer.  2026-08-13: with the free
+	// budget removed, EVERY zero-area light in the first pass is refused,
+	// each with the confirmation's own text, which is verbatim what the ONE
+	// repair retry is corrected with.  The retry then re-issues the whole
+	// corrected set (build_element's contract, which this verb inherits),
+	// and both land because they are now confirmed.
+	std::string twoLights;
+	for( int i = 1; i <= 2; ++i )
+		twoLights += "omni_light\n{\n\tname a83i_light" + std::to_string( i ) +
 			"\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 30\n}\n";
 
 	int calls = 0;
 	std::vector<std::string> prompts;
 	sess->SetTextCompleter(
-		MakeFakeCompleter( { kOneSourceEnumeration, fiveLights, fiveLights }, &calls, &prompts ) );
+		MakeFakeCompleter( { kOneSourceEnumeration, twoLights, twoLights }, &calls, &prompts ) );
 	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 
 	Check( r.ok, "A83i the call completes" );
-	Check( r.chunksExtracted == 10,
-	       "A83i both build answers were parsed (five chunks each)" );
+	Check( r.chunksExtracted == 4,
+	       "A83i both build answers were parsed (two chunks each)" );
 
-	// THE FIRST PASS: two land, three are refused with the budget's text.
-	int budgetRejections = 0;
+	// THE FIRST PASS: BOTH are refused, unconfirmed -- there is no free
+	// allowance left to land either of them straight through.
+	int confirmationRejections = 0;
 	for( std::size_t i = 0; i < r.rejected.size(); ++i )
-		if( r.rejected[i].reason.find( "free budget of 2 per scene" ) != std::string::npos ) {
-			++budgetRejections;
-			if( budgetRejections == 1 )
+		if( r.rejected[i].reason.find( "RE-ISSUING THIS EXACT REQUEST INSERTS IT" ) != std::string::npos ) {
+			++confirmationRejections;
+			if( confirmationRejections == 1 )
 				CheckZeroAreaBudgetMessage( r.rejected[i].reason, "light_scene" );
 		}
-	Check( budgetRejections == 3,
-	       "A83i MONEY ASSERTION: the build's third, fourth and fifth zero-area lights are refused "
-	       "by the budget while the first two land -- the check is PER CHUNK against the document "
-	       "plus what this same answer has already been allowed to add, so a five-light answer is "
-	       "not thrown away whole (got " + std::to_string( budgetRejections ) + ")" );
+	Check( confirmationRejections == 2,
+	       "A83i MONEY ASSERTION: BOTH zero-area lights in the build are refused by the confirmation "
+	       "gate on the first pass -- unconditional, from the first request, not past a threshold "
+	       "(got " + std::to_string( confirmationRejections ) + ")" );
 
 	// THE RETRY IS THE CONFIRM.
 	Check( r.retryRan,
@@ -13261,43 +13384,35 @@ static void TestZeroAreaLightBudgetInLightScene()
 	Check( calls == 3, "A83i and it cost the documented three completions (got " +
 	       std::to_string( calls ) + ")" );
 	Check( prompts.size() == 3 &&
-	       prompts[2].find( "free budget of 2 per scene" ) != std::string::npos &&
 	       prompts[2].find( "RE-ISSUING THIS EXACT REQUEST INSERTS IT" ) != std::string::npos,
-	       "A83i MONEY ASSERTION: the budget's own text drives the repair retry VERBATIM -- so the "
-	       "pass is told the count, the alternatives AND that re-issuing works, in the same turn" );
-	Check( r.retrySucceeded && r.landed.size() == 5,
-	       "A83i MONEY ASSERTION: the retry re-issues the same five and ALL FIVE are now in the "
+	       "A83i MONEY ASSERTION: the confirmation's own text drives the repair retry VERBATIM -- so "
+	       "the pass is told the physics, the alternatives AND that re-issuing works, in the same "
+	       "turn" );
+	Check( r.retrySucceeded && r.landed.size() == 2,
+	       "A83i MONEY ASSERTION: the retry re-issues the same two and BOTH are now in the "
 	       "document -- the retry IS the confirm, composed out of machinery that already existed "
 	       "(got " + std::to_string( r.landed.size() ) + " landed)" );
-	Check( r.zeroAreaLightsBuilt == 5,
-	       "A83i and the report counts five zero-area lights built, which is the number this arc "
+	Check( r.zeroAreaLightsBuilt == 2,
+	       "A83i and the report counts two zero-area lights built, which is the number this arc "
 	       "measures" );
-
-	// The two that landed on the FIRST pass are not re-charged on the retry:
-	// they are skipped by the already-landed filter ahead of the budget check,
-	// so the retry pays only for what it is still trying to add.
-	int duplicateNameRejections = 0;
-	for( std::size_t i = 0; i < r.rejected.size(); ++i )
-		if( r.rejected[i].reason.find( "a83i_light1" ) != std::string::npos ) ++duplicateNameRejections;
-	Check( duplicateNameRejections == 0,
-	       "A83i and the two that already landed are silently skipped on the retry rather than "
-	       "re-charged or re-refused -- the budget check sits AFTER the already-landed filter" );
 
 	pJob->release();
 }
 
-//! A83j: the budget is NOT PHASE MACHINERY -- the property that is easiest
-//! to get wrong, and the one A81g pins for the ambient ban.  Same three
-//! facts: it spends none of the shared phase cap, it cannot trigger the
-//! give-up, and ambient stays absolutely banned beside it (a ban is not a
-//! budget and is not confirmable).
+//! A83j: the confirmation is NOT PHASE MACHINERY -- the property that is
+//! easiest to get wrong, and the one A81g pins for the ambient ban.  Same
+//! three facts: it spends none of the shared phase cap, it cannot trigger
+//! the give-up, and ambient stays absolutely banned beside it (a ban is not
+//! a confirmation and is not confirmable).
 static void TestZeroAreaLightBudgetIsNotPhaseMachinery()
 {
-	std::printf( "A83j: the budget spends no phase refusal, and ambient stays absolutely banned...\n" );
+	std::printf( "A83j: the confirmation spends no phase refusal, and ambient stays absolutely "
+	             "banned...\n" );
 	const std::string tmp = TempPath( "agentcrud_a83j.RISEscene" );
 
 	// (1) IN COMPOSE, where the arc-81 first-light phase arm would also fire
-	//     on a light chunk.  The budget runs FIRST and spends NOTHING.
+	//     on a light chunk.  The confirmation gate runs FIRST and spends
+	//     NOTHING.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83j/cap fixture loads" );
@@ -13306,33 +13421,40 @@ static void TestZeroAreaLightBudgetIsNotPhaseMachinery()
 		sess->SetTextCompleter( MakeLightingCompleter() );
 
 		// Run light_scene first so the compose first-light gate is lifted and
-		// hand authoring is allowed; its answer lands two zero-area lights,
-		// which is exactly the budget.
+		// hand authoring is allowed; its answer lands two zero-area lights --
+		// each refused once on the build's first pass and confirmed by the
+		// harness's own repair retry (2026-08-13: no free allowance land them
+		// straight through any more), so both are confirmed fingerprints by
+		// the time this call returns.
 		const Agent::AgentSession::AgentLightSceneResult lr = sess->LightScene();
 		Check( lr.ok && lr.zeroAreaLightsBuilt == 2,
-		       "A83j/cap light_scene lands two zero-area lights -- the scene is now at budget" );
+		       "A83j/cap light_scene lands two zero-area lights, via its own repair retry" );
 		const int refusalsAfterLightScene = sess->BuildPhaseRefusalCount();
 
+		// FIVE brand new, never-confirmed zero-area lights: every one is
+		// refused on its own account, regardless of what light_scene already
+		// landed -- the confirm is per-fingerprint, not a session amnesty.
 		for( int i = 0; i < 5; ++i ) {
 			const Agent::AgentChunkResult r =
 				sess->InsertChunk( A83Omni( ( "cap_" + std::to_string( i ) ).c_str() ) );
 			Check( !r.applied,
-			       "A83j/cap budget refusal " + std::to_string( i + 1 ) + " of 5" );
-			Check( r.message.find( "free budget of 2 per scene" ) != std::string::npos,
-			       "A83j/cap and it is the BUDGET talking, not a phase rule" );
+			       "A83j/cap confirmation refusal " + std::to_string( i + 1 ) + " of 5" );
+			Check( r.message.find( "RE-ISSUING THIS EXACT REQUEST INSERTS IT" ) != std::string::npos,
+			       "A83j/cap and it is the CONFIRMATION talking, not a phase rule" );
 		}
 		Check( sess->BuildPhaseRefusalCount() == refusalsAfterLightScene,
-		       "A83j/cap MONEY ASSERTION: FIVE budget refusals spent ZERO of the shared 3-refusal "
-		       "phase cap -- a permanent policy must not consume a sequencing budget, and at any "
-		       "other ordering these five would have burned the cap and tripped the give-up" );
+		       "A83j/cap MONEY ASSERTION: FIVE confirmation refusals spent ZERO of the shared "
+		       "3-refusal phase cap -- a permanent policy must not consume a sequencing budget, and "
+		       "at any other ordering these five would have burned the cap and tripped the give-up" );
 		Check( !sess->BuildPlanGateGaveUp(),
 		       "A83j/cap and nothing gave up" );
 		pJob->release();
 	}
 
-	// (2) AMBIENT IS A BAN, NOT A BUDGET.  It is refused the first time and
-	//     every time, and re-issuing does NOT confirm it -- the two policies
-	//     live side by side and must not be confused for one another.
+	// (2) AMBIENT IS A BAN, NOT A CONFIRMATION.  It is refused the first
+	//     time and every time, and re-issuing does NOT confirm it -- the two
+	//     policies live side by side and must not be confused for one
+	//     another.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83j/ambient fixture loads" );
@@ -13345,21 +13467,21 @@ static void TestZeroAreaLightBudgetIsNotPhaseMachinery()
 			const Agent::AgentChunkResult r = sess->InsertChunk( A81Ambient( "amb_again" ) );
 			Check( !r.applied,
 			       "A83j/ambient MONEY ASSERTION: the IDENTICAL ambient_light re-issued is refused "
-			       "again (" + std::to_string( i + 1 ) + " of 4) -- a BAN is not a budget and has "
-			       "no confirm; the two policies sit beside each other and a model that learned "
-			       "the budget's escape must not find it works here" );
+			       "again (" + std::to_string( i + 1 ) + " of 4) -- a BAN is not a confirmation and "
+			       "has no confirm; the two policies sit beside each other and a model that learned "
+			       "the confirmation's escape must not find it works here" );
 			Check( r.message.find( "not available through this surface" ) != std::string::npos,
-			       "A83j/ambient and it is the BAN's own text, not the budget's" );
-			Check( r.message.find( "free budget" ) == std::string::npos,
-			       "A83j/ambient which never offers a budget the kind does not have" );
+			       "A83j/ambient and it is the BAN's own text, not the confirmation's" );
+			Check( r.message.find( "CONFIRMATION REQUIREMENT" ) == std::string::npos,
+			       "A83j/ambient which never offers a confirmation escape the kind does not have" );
 		}
 		Check( sess->ReadDocument().find( "amb_again" ) == std::string::npos,
 		       "A83j/ambient no ambient_light ever reached the document" );
 		pJob->release();
 	}
 
-	// (3) PROTOCOL OFF: the budget survives, exactly as the ban does.  A
-	//     session with no phases at all still has this policy.
+	// (3) PROTOCOL OFF: the confirmation survives, exactly as the ban does.
+	//     A session with no phases at all still has this policy.
 	{
 		Job* pJob = LoadScene( kScene, tmp );
 		Check( pJob != nullptr, "A83j/off fixture loads" );
@@ -13369,14 +13491,12 @@ static void TestZeroAreaLightBudgetIsNotPhaseMachinery()
 		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
 		Check( !sess->BuildProtocolActive(), "A83j/off the protocol is inactive" );
 
-		Check( sess->InsertChunk( A83Omni( "off1" ) ).applied, "A83j/off off1 inserts" );
-		Check( sess->InsertChunk( A83Omni( "off2" ) ).applied, "A83j/off off2 inserts" );
-		const Agent::AgentChunkResult r = sess->InsertChunk( A83Omni( "off3" ) );
+		const Agent::AgentChunkResult r = sess->InsertChunk( A83Omni( "off1" ) );
 		Check( !r.applied,
-		       "A83j/off MONEY ASSERTION: the budget still refuses with "
+		       "A83j/off MONEY ASSERTION: the confirmation gate still refuses with "
 		       "--agent-build-protocol=off -- it is a permanent property of what this surface "
 		       "authors, not a sequencing gate that dies with the protocol" );
-		Check( sess->InsertChunk( A83Omni( "off3" ) ).applied,
+		Check( sess->InsertChunk( A83Omni( "off1" ) ).applied,
 		       "A83j/off and the confirm still works there too" );
 		pJob->release();
 	}
@@ -13504,10 +13624,13 @@ static void TestLightSceneSourceEnumerationBudget()
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = A81ComposeSession( pJob );
 
-	// NINE lines in three punctuations, wrapped in a fence and carrying a
-	// blank line -- an enumeration that is merely differently punctuated
-	// is not a failed one.
-	static const char* const kNineSourceEnumeration =
+	// SEVENTEEN lines in three punctuations, wrapped in a fence and carrying
+	// a blank line -- an enumeration that is merely differently punctuated
+	// is not a failed one.  Seventeen is exactly ONE PAST kLightSourceBudget
+	// (2026-08-13: raised 6 -> 16, docs/agentic-redesign/
+	// 83-staged-construction-plan.md sec 13's sibling scope addition), so
+	// the cut this case measures still really fires.
+	static const char* const kSeventeenSourceEnumeration =
 		"```\n"
 		"sunlight through the water above the sphere\n"
 		"- a soft fill on the left of the sphere\n"
@@ -13519,34 +13642,36 @@ static void TestLightSceneSourceEnumerationBudget()
 		"a spark at the sphere's edge\n"
 		"a faint bounce off the ground\n"
 		"a cool source far behind the camera\n"
+		"a warm bounce off the left wall\n"
+		"a glint off the water's surface\n"
+		"a soft glow from inside the coral\n"
+		"a shaft of light through the kelp\n"
+		"a cold source above the surface\n"
+		"a faint glow from a distant lantern\n"
+		"a last warm source low on the horizon\n"
+		"a final cool glint off a wet rock\n"
 		"```\n";
 
-	// The BUILD answer for the (cut) enumeration: six distinct lights, one per
-	// surviving source -- ONE completion, not one per source.
-	//
-	// ARC 83 SLICE 4: two omni_lights and four shape_lights, not six omnis.
-	// Six zero-area lights is exactly what kZeroAreaLightSceneBudget refuses
-	// (and what the budget's own tests below measure); this case is about the
-	// ENUMERATION budget and the completion count, so its build answer stays
-	// inside the other budget rather than colliding with it.  The mix is also
-	// closer to what a lit scene looks like.
-	std::string sixLights;
-	for( int i = 1; i <= 2; ++i )
-		sixLights += "omni_light\n{\n\tname a83_light" + std::to_string( i ) +
-			"\n\tposition 1 2 3\n\tcolor 1 1 1\n\tpower 30\n}\n";
-	for( int i = 3; i <= 6; ++i )
-		sixLights += "shape_light\n{\n\tname a83_light" + std::to_string( i ) +
+	// The BUILD answer for the (cut) enumeration: sixteen shape_lights, one
+	// per surviving source -- ONE completion, not one per source.  ALL
+	// shape_light, not a mix with omni_light: this case is about the
+	// ENUMERATION budget and the completion count, and a zero-area light
+	// among them would need its own confirm-then-reissue turn (2026-08-13),
+	// which is a completely different mechanism this case is not measuring.
+	std::string sixteenLights;
+	for( int i = 1; i <= Agent::AgentSession::kLightSourceBudget; ++i )
+		sixteenLights += "shape_light\n{\n\tname a83_light" + std::to_string( i ) +
 			"\n\tshape sphere\n\tcenter 1 2 3\n\tsize 0.2\n\texitance 100\n}\n";
 
 	int calls = 0;
 	std::vector<std::string> prompts;
 	sess->SetTextCompleter(
-		MakeFakeCompleter( { kNineSourceEnumeration, sixLights }, &calls, &prompts ) );
+		MakeFakeCompleter( { kSeventeenSourceEnumeration, sixteenLights }, &calls, &prompts ) );
 	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
 
 	Check( r.ok, "A83a the call succeeds" );
-	Check( r.sourcesReturned == 9,
-	       "A83a the enumeration really returned nine sources (got " +
+	Check( r.sourcesReturned == 17,
+	       "A83a the enumeration really returned seventeen sources (got " +
 	       std::to_string( r.sourcesReturned ) + ")" );
 	Check( static_cast<int>( r.sources.size() ) == Agent::AgentSession::kLightSourceBudget &&
 	       r.sourcesTruncated,
@@ -13555,12 +13680,13 @@ static void TestLightSceneSourceEnumerationBudget()
 	       "is the false-clause class this design family exists to avoid" );
 	Check( calls == 2,
 	       "A83a MONEY ASSERTION: exactly TWO completions regardless of how many sources survive the "
-	       "cut -- the enumeration and ONE build that authors all six in one answer, not one "
+	       "cut -- the enumeration and ONE build that authors all sixteen in one answer, not one "
 	       "completion per source (got " + std::to_string( calls ) + ")" );
 	Check( r.completionsSpent == calls, "A83a and the reported spend is the real one" );
 	Check( r.landed.size() == static_cast<std::size_t>( Agent::AgentSession::kLightSourceBudget ),
-	       "A83a six sources' worth of chunks landed from the one build answer" );
-	Check( r.message.find( "The enumeration returned 9 sources against a budget of 6" ) !=
+	       "A83a sixteen sources' worth of chunks landed from the one build answer" );
+	Check( r.message.find( "The enumeration returned 17 sources against a budget of " +
+	                       std::to_string( Agent::AgentSession::kLightSourceBudget ) ) !=
 	           std::string::npos,
 	       "A83a and the message states both numbers rather than showing a quietly short list" );
 
@@ -13598,7 +13724,7 @@ static void TestLightSceneEnumerationForbidsKindNaming()
 	std::vector<std::string> prompts;
 	sess->SetTextCompleter( MakeLightingCompleter( nullptr, &prompts ) );
 	sess->LightScene();
-	Check( prompts.size() == 2, "A83b the enumeration and build prompts were composed" );
+	Check( prompts.size() >= 2, "A83b the enumeration and build prompts were composed" );
 	if( prompts.empty() ) { pJob->release(); return; }
 	const std::string& p = prompts[0];
 
@@ -13653,7 +13779,7 @@ static void TestLightSceneBuildReceivesSourcesVerbatim()
 	std::vector<std::string> prompts;
 	sess->SetTextCompleter( MakeLightingCompleter( nullptr, &prompts ) );
 	const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
-	Check( r.ok && prompts.size() == 2, "A83c the enumeration and build prompts were composed" );
+	Check( r.ok && prompts.size() >= 2, "A83c the enumeration and build prompts were composed" );
 	if( prompts.size() != 2 ) { pJob->release(); return; }
 
 	const std::string& build = prompts[1];
@@ -14257,6 +14383,11 @@ static void TestComposePhaseFirstRenderRefusal()
 //! arc 80's delete ban, arc 81's first-light gate and arc 82's first-render
 //! gate.  A session that hits all three must not be starved -- and the
 //! render arm's one-shot is what bounds its share of the budget.
+//!
+//! Every light chunk below is an AREA light (A81AreaLight, a rect_light),
+//! not an omni: 2026-08-13, the zero-area CONFIRMATION gate runs AHEAD of
+//! the phase arms this test counts and fires unconditionally on a brand
+//! new omni, which would mask the phase counter this case is about.
 static void TestThreeComposeArmsShareOneCap()
 {
 	std::printf( "A82e: the three compose-phase arms share one cap without starving anyone...\n" );
@@ -14271,7 +14402,7 @@ static void TestThreeComposeArmsShareOneCap()
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
 		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
 
-		Check( !sess->InsertChunk( A81Light( "a82e_hand_key" ) ).applied,
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_hand_key" ) ).applied,
 		       "A82e/all3 arc 81's first-light arm refuses (slot 1)" );
 		Check( sess->BuildPhaseRefusalCount() == 1, "A82e/all3 one slot spent" );
 		Check( !sess->RemoveChunk( "obj_sph" ).applied,
@@ -14284,7 +14415,7 @@ static void TestThreeComposeArmsShareOneCap()
 		       "model that cannot work the protocol must not have to exhaust three separate ones" );
 		Check( !sess->BuildPhaseGaveUp(), "A82e/all3 three is the cap, not the give-up" );
 
-		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81Light( "a82e_hand_2" ) );
+		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81AreaLight( "a82e_hand_2" ) );
 		Check( r4.applied && sess->BuildPhaseGaveUp(),
 		       "A82e/all3 MONEY ASSERTION: the FOURTH refusable call GIVES UP and proceeds -- the "
 		       "give-up is a GLOBAL release, so no arrangement of the three can strand a session" );
@@ -14314,7 +14445,7 @@ static void TestThreeComposeArmsShareOneCap()
 		       "delete ban and arc 81's light gate for the rest of the session" );
 		Check( sess->BuildPhaseRefusalCount() == 1 && !sess->BuildPhaseGaveUp(),
 		       "A82e/bound and two slots are left for the other two arms" );
-		Check( !sess->InsertChunk( A81Light( "a82e_b_key" ) ).applied &&
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_b_key" ) ).applied &&
 		       !sess->RemoveChunk( "obj_sph" ).applied,
 		       "A82e/bound which they then use, both still intercepting" );
 		Check( sess->BuildPhaseRefusalCount() == 3, "A82e/bound the cap is reached, exactly" );
@@ -14332,9 +14463,9 @@ static void TestThreeComposeArmsShareOneCap()
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
 		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
 
-		Check( !sess->InsertChunk( A81Light( "a82e_s1" ) ).applied, "A82e/spent slot 1" );
-		Check( !sess->InsertChunk( A81Light( "a82e_s2" ) ).applied, "A82e/spent slot 2" );
-		Check( !sess->InsertChunk( A81Light( "a82e_s3" ) ).applied, "A82e/spent slot 3" );
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_s1" ) ).applied, "A82e/spent slot 1" );
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_s2" ) ).applied, "A82e/spent slot 2" );
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_s3" ) ).applied, "A82e/spent slot 3" );
 		Check( sess->BuildPhaseRefusalCount() == 3 && !sess->BuildPhaseGaveUp(),
 		       "A82e/spent the cap is reached by the light arm alone" );
 

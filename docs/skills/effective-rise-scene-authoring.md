@@ -98,9 +98,10 @@ each section against your scene:
    `hosek_wilkie_skylight` is fine (a physically based sky).
    `omni_light` / `spot_light` / `directional_light` are zero-area
    idealizations — use them only when a hard, sourceless key is what
-   you actually want; on the agent surface they share a free budget of
-   2 per scene, refused once past it and inserted on an identical
-   re-issue.  **Never author `ambient_light`**: it adds the same
+   you actually want; on the agent surface every insert of one of these
+   three kinds needs confirmation, unconditionally from the first
+   request, refused once and inserted on an identical re-issue.
+   **Never author `ambient_light`**: it adds the same
    `color · power` at every shading point, casts no shadow ray, and has
    no falloff.  A dark path-traced scene wants a bigger or brighter
    emitter, or a sky, not a constant term.  (Convention, not

@@ -1346,6 +1346,17 @@ static void TestAnthropicToolLoop( AgentRpcDispatcher& rpc )
 static void TestInsertChunkToolLoop( AgentRpcDispatcher& rpc )
 {
 	std::printf( "T2b: insert_chunk tool loop end-to-end (live dispatcher)...\n" );
+
+	// ARC 83 SLICE 4 (2026-08-12), REVISED 2026-08-13: prime the zero-area
+	// confirmation for `chatloop_key`'s exact fingerprint on the SHARED
+	// dispatcher session before this case's own insert -- the FIRST
+	// creation request for any omni_light is refused unconditionally now,
+	// and this case is about the tool-loop round-trip, not that gate.  The
+	// refusal mutates nothing.
+	rpc.HandleLine(
+		"{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"insert_chunk\",\"params\":"
+		"{\"chunkText\":\"omni_light\\n{\\nname chatloop_key\\nposition 0 5 0\\ncolor 1 1 1\\npower 2.0\\n}\"}}" );
+
 	AgentChatLoop loop;
 	loop.SetProvider( ChatProvider::Anthropic );
 	loop.AddUserMessage( "Add a key light above the sphere" );

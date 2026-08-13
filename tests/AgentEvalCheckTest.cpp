@@ -4302,7 +4302,16 @@ static void TestAdversarialOracleControls()
 		insertMsg( "Backdrop object.", "standard_object\n{\n\tname backdrop\n\tgeometry backdropgeom\n\tmaterial backdrop\n}" );
 		insertMsg( "Key light object.", "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" );
 		insertMsg( "Hero object.", "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" );
+		// 2026-08-13: the zero-area light CONFIRMATION gate refuses this
+		// omni_light's FIRST creation request unconditionally now (the free
+		// budget of 2 is gone) and lands it on an identical re-issue -- this
+		// replayed (non-adaptive) fixture cannot react to that refusal by
+		// itself, so the message is scripted twice, matching what a real
+		// model's own repair turn would do.  One extra mutating call, still
+		// well under the E4 gate's 10-call threshold noted above (8 -> 9).
 		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+		insertMsg( "Cool omni fill light (confirming the zero-area light).",
+			"omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
 			"Built the scene; key light is neutral white.", {}, "end_turn" ) );
 
@@ -4501,7 +4510,28 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
 			"tool_use" ) );
+		// 2026-08-13: the zero-area light CONFIRMATION gate refuses this
+		// omni_light's FIRST creation request unconditionally now (the free
+		// budget of 2 is gone) and lands it on an identical re-issue -- this
+		// replayed (non-adaptive) fixture cannot react to that refusal
+		// itself, so the call is scripted TWICE.  The trajectory
+		// checkpoint's mechanical-loop detector (AgentEvalRunner.cpp
+		// `noMechanicalLoop`) compares ADJACENT tool RECORDS across the
+		// whole flattened call sequence, not adjacent MESSAGES -- splitting
+		// the reissue into its own message did not satisfy it, because the
+		// two insert_chunk records were still back-to-back in that
+		// sequence.  A `read_document` in between (a real model's plausible
+		// "what's actually in the scene" check after a refusal) breaks the
+		// adjacency the detector keys on.  Three post-checkin messages
+		// instead of one brings the E4 mutating streak to exactly 10
+		// (msg_5's 3 + msg_6's 1 + msg_7's 4 + msg_8's 1 + msg_8b's 1;
+		// msg_8a's read_document is not a mutating call and does not count).
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8a", "Checking what actually landed.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8b", "Confirming the fill light (re-issuing the identical request).",
 			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Rendering to check the composition.",
@@ -4667,7 +4697,28 @@ static void TestAdversarialOracleControls()
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname key\n\tgeometry keygeom\n\tmaterial key_mat\n}" ) },
 				{ "insert_chunk", InsertChunkInput( "standard_object\n{\n\tname hero\n\tgeometry herogeom\n\tposition 0 0 0\n\tmaterial teal\n}" ) } },
 			"tool_use" ) );
+		// 2026-08-13: the zero-area light CONFIRMATION gate refuses this
+		// omni_light's FIRST creation request unconditionally now (the free
+		// budget of 2 is gone) and lands it on an identical re-issue -- this
+		// replayed (non-adaptive) fixture cannot react to that refusal
+		// itself, so the call is scripted TWICE.  The trajectory
+		// checkpoint's mechanical-loop detector (AgentEvalRunner.cpp
+		// `noMechanicalLoop`) compares ADJACENT tool RECORDS across the
+		// whole flattened call sequence, not adjacent MESSAGES -- splitting
+		// the reissue into its own message did not satisfy it, because the
+		// two insert_chunk records were still back-to-back in that
+		// sequence.  A `read_document` in between (a real model's plausible
+		// "what's actually in the scene" check after a refusal) breaks the
+		// adjacency the detector keys on.  Three post-checkin messages
+		// instead of one brings the E4 mutating streak to exactly 10
+		// (msg_5's 3 + msg_6's 1 + msg_7's 4 + msg_8's 1 + msg_8b's 1;
+		// msg_8a's read_document is not a mutating call and does not count).
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			"tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8a", "Checking what actually landed.",
+			{ { "read_document", EmptyInput() } }, "tool_use" ) );
+		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8b", "Confirming the fill light (re-issuing the identical request).",
 			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Draft check of the composition.",

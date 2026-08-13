@@ -322,13 +322,14 @@ nothing about them appears in the frame.  Reach for them when that is
 what you actually want (a stand-in sun on a scene with no sky, a hard
 key for a diagram, a cheap probe while iterating), not as the default
 way to light a scene.  On the **agent surface** they additionally carry
-a **free budget of 2 of these per scene**, counted together across all
-three kinds and read off the live document at check time (removing one
-frees a slot).  At or under the budget a chunk inserts normally; over
-budget the request is refused once, stating the count and the
-alternatives, and the identical request lands when re-issued unchanged.
+a **confirmation requirement**: EVERY creation request for one of these
+three kinds is refused once, stating the physics and the alternatives,
+and the identical request lands when re-issued unchanged — from the
+first request, not past a free allowance (the free budget of 2 this
+mechanism shipped with on 2026-08-12 was removed 2026-08-13: it
+exempted exactly the uses this confirmation exists to make deliberate).
 `shape_light`, `rect_light`, an emissive object and
-`hosek_wilkie_skylight` are counted by nothing.
+`hosek_wilkie_skylight` carry no confirmation requirement at all.
 
 **`ambient_light`: never.**  It contributes the same `color · power` at
 every shading point, scaled only by that surface's own reflectance; it
