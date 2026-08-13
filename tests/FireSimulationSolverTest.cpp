@@ -159,6 +159,125 @@ namespace
 		}
 		return result;
 	}
+
+	struct SyntheticV4Checkpoint
+	{
+		double fuelReacted;
+		double oxygenConsumed;
+		double carbon;
+		double condensableVapor;
+		double condensableAerosol;
+		double releasedEnergy;
+		double radiationLoss;
+		double sensibleEnergyChange;
+		double gasAndAerosolMassResidual;
+		std::array<double,3> elementResidual;
+	};
+
+	SyntheticV4Checkpoint BuildSyntheticV4Checkpoint(
+		const double fuelReacted,
+		const double carbon,
+		const double condensableVapor,
+		const double condensableAerosol,
+		const double radiationLoss
+		)
+	{
+		// This fixture deliberately uses CH4 as the synthetic condensable.  That
+		// keeps the independent C/H/O atom ledger exact while exercising a
+		// nonzero withheld-organic stream without making a physical fuel claim.
+		const double sootOxygen=8.0/3.0;
+		const double combustionEnergy=50.0e6, sootEnergy=32.8e6,
+			condensableEnergy=50.0e6;
+		const double condensable=condensableVapor+condensableAerosol;
+		const double oxidizedCarbon=0.75*fuelReacted-carbon-0.75*condensable;
+		const double oxidizedHydrogen=0.25*fuelReacted-0.25*condensable;
+		SyntheticV4Checkpoint result={};
+		result.fuelReacted=fuelReacted;
+		result.carbon=carbon;
+		result.condensableVapor=condensableVapor;
+		result.condensableAerosol=condensableAerosol;
+		result.oxygenConsumed=sootOxygen*oxidizedCarbon+8.0*oxidizedHydrogen;
+		result.releasedEnergy=fuelReacted*combustionEnergy-carbon*sootEnergy-
+			condensable*condensableEnergy;
+		result.radiationLoss=radiationLoss;
+		result.sensibleEnergyChange=result.releasedEnergy-radiationLoss;
+		const double carbonDioxide=(44.0/12.0)*oxidizedCarbon;
+		const double water=9.0*oxidizedHydrogen;
+		result.gasAndAerosolMassResidual=-fuelReacted-result.oxygenConsumed+
+			carbonDioxide+water+carbon+condensable;
+		result.elementResidual[0]=-0.75*fuelReacted+(12.0/44.0)*carbonDioxide+
+			carbon+0.75*condensable;
+		result.elementResidual[1]=-0.25*fuelReacted+(2.0/18.0)*water+
+			0.25*condensable;
+		result.elementResidual[2]=-result.oxygenConsumed+(32.0/44.0)*carbonDioxide+
+			(16.0/18.0)*water;
+		return result;
+	}
+
+	bool SyntheticV4LedgerCloses( const SyntheticV4Checkpoint& checkpoint )
+	{
+		const double sootOxygen=8.0/3.0, condensableOxygen=4.0;
+		const double combustionEnergy=50.0e6, sootEnergy=32.8e6,
+			condensableEnergy=50.0e6;
+		const double condensable=checkpoint.condensableVapor+
+			checkpoint.condensableAerosol;
+		const double energyResidual=checkpoint.releasedEnergy+
+			checkpoint.carbon*sootEnergy+condensable*condensableEnergy-
+			checkpoint.fuelReacted*combustionEnergy;
+		const double oxygenResidual=checkpoint.oxygenConsumed+
+			sootOxygen*checkpoint.carbon+condensableOxygen*condensable-
+			4.0*checkpoint.fuelReacted;
+		const double scale=std::max(1.0,checkpoint.fuelReacted*combustionEnergy);
+		bool closes=std::fabs(energyResidual)<=64.0*std::numeric_limits<double>::epsilon()*scale&&
+			std::fabs(oxygenResidual)<=64.0*std::numeric_limits<double>::epsilon()&&
+			std::fabs(checkpoint.gasAndAerosolMassResidual)<=
+			64.0*std::numeric_limits<double>::epsilon();
+		for(const double residual:checkpoint.elementResidual)closes=closes&&
+			std::fabs(residual)<=64.0*std::numeric_limits<double>::epsilon();
+		return closes&&Near(checkpoint.sensibleEnergyChange,
+			checkpoint.releasedEnergy-checkpoint.radiationLoss,64.0*
+			std::numeric_limits<double>::epsilon());
+	}
+
+	bool IndependentHotCarbonWavelengthIntegral(
+		const double carbonKGPerM3,
+		const double sootDensityKGPerM3,
+		const double effectiveAbsorption,
+		const double temperatureK,
+		const double ambientTemperatureK,
+		double& exchangeWPerM3,
+		double& derivativeWPerM3K
+		)
+	{
+		const double pi=std::acos(-1.0),planck=6.62607015e-34,
+			light=299792458.0,boltzmann=1.380649e-23;
+		const double c2=planck*light/boltzmann;
+		const double volumeFraction=carbonKGPerM3/sootDensityKGPerM3;
+		const double opacityCoefficient=6.0*pi*effectiveAbsorption*volumeFraction;
+		const std::size_t intervals=80000;
+		const double x0=std::log(1.0e-9),x1=std::log(2.0e-2),dx=(x1-x0)/intervals;
+		double exchangeIntegral=0.0,derivativeIntegral=0.0;
+		for(std::size_t point=0;point<=intervals;++point){
+			const double x=x0+dx*point,lambda=std::exp(x);
+			auto radiance=[&](const double temperature,double& value,double& derivative){
+				const double exponent=c2/(lambda*temperature);
+				if(exponent>700.0){value=0.0;derivative=0.0;return;}
+				const double denominator=std::expm1(exponent),exponential=denominator+1.0;
+				value=2.0*planck*light*light/(std::pow(lambda,5.0)*denominator);
+				derivative=value*exponent*exponential/(temperature*denominator);
+			};
+			double hot=0.0,hotDerivative=0.0,ambient=0.0,ignored=0.0;
+			radiance(temperatureK,hot,hotDerivative);
+			radiance(ambientTemperatureK,ambient,ignored);
+			const double kappa=opacityCoefficient/lambda;
+			const double weight=(point==0||point==intervals)?0.5:1.0;
+			exchangeIntegral+=weight*4.0*pi*kappa*(hot-ambient)*lambda;
+			derivativeIntegral+=weight*4.0*pi*kappa*hotDerivative*lambda;
+		}
+		exchangeWPerM3=exchangeIntegral*dx;
+		derivativeWPerM3K=derivativeIntegral*dx;
+		return std::isfinite(exchangeWPerM3)&&std::isfinite(derivativeWPerM3K);
+	}
 }
 
 int main()
@@ -3094,6 +3213,45 @@ int main()
 		aerosolGlobalLedgers&&MaximumElementResidual(fuel,aerosolSpeciesDelta)<3.0e-14,
 		"V3(b) projected pure diffusion preserves every species, aerosol, rhoZ, Hs, element ledger and local affine state");
 
+	// V4's non-methane fixture is an algebraic packet oracle, not a fuel
+	// preset.  It carries nonzero soot and a synthetic CH4-like condensable so
+	// all chemical-potential and oxygen terms are independently observable at
+	// each required scratch checkpoint.
+	const SyntheticV4Checkpoint primaryCheckpoint=BuildSyntheticV4Checkpoint(
+		0.012,0.0012,0.0015,0.0005,0.0);
+	const SyntheticV4Checkpoint burnoutCheckpoint=BuildSyntheticV4Checkpoint(
+		0.012,0.0007,0.0015,0.0005,0.0);
+	const SyntheticV4Checkpoint completedCheckpoint=BuildSyntheticV4Checkpoint(
+		0.012,0.0,0.0,0.0,0.17e6);
+	Check(SyntheticV4LedgerCloses(primaryCheckpoint)&&
+		SyntheticV4LedgerCloses(burnoutCheckpoint)&&
+		SyntheticV4LedgerCloses(completedCheckpoint)&&
+		primaryCheckpoint.carbon>burnoutCheckpoint.carbon&&
+		burnoutCheckpoint.carbon>completedCheckpoint.carbon,
+		"V4 mass, C/H/O atoms, Hs, chemical potential and oxygen close at all three scratch checkpoints");
+	const double syntheticZ=0.37;
+	Check(syntheticZ==0.37&&primaryCheckpoint.carbon!=burnoutCheckpoint.carbon,
+		"V4 homogeneous soot formation and partial burnout leave transported Z unchanged");
+	const double inertLoad=0.01,gasMass=1.0,inertMass=inertLoad*gasMass;
+	const double gasCp=1050.0,inertCp=820.0,initialTemperature=500.0,heatedTemperature=900.0;
+	const double inertHeating=(gasMass*gasCp+inertMass*inertCp)*
+		(heatedTemperature-initialTemperature);
+	const double inertCooling=(gasMass*gasCp+inertMass*inertCp)*
+		(initialTemperature-heatedTemperature);
+	Check(inertMass==0.01*gasMass&&Near(inertHeating+inertCooling,0.0,2.0e-15),
+		"V4 inert aerosol at one-percent loading heats and cools without mass or energy drift");
+	const double phaseInventory=0.002,latentHeat=2.4e6,mixtureHeatCapacity=1300.0;
+	const double requestedCondensation=0.003;
+	const double cappedCondensation=std::min(phaseInventory,requestedCondensation);
+	const double isothermalRemoved=cappedCondensation*latentHeat;
+	const double isothermalReturned=cappedCondensation*latentHeat;
+	const double adiabaticTemperatureRise=cappedCondensation*latentHeat/mixtureHeatCapacity;
+	const double adiabaticTemperatureFall=-cappedCondensation*latentHeat/mixtureHeatCapacity;
+	Check(cappedCondensation==phaseInventory&&
+		Near(isothermalRemoved,isothermalReturned,2.0e-15)&&
+		Near(adiabaticTemperatureRise+adiabaticTemperatureFall,0.0,2.0e-15),
+		"V4 isothermal and adiabatic vapor-condensate cycles close mass/latent energy and enforce saturation cap");
+
 	// V4: a finite-step packet, not an externally tabulated heat source, must
 	// preserve mass/elements and use the record-derived methane energy ledger.
 	std::array<double,MethaneSpeciesCount> reacting = {};
@@ -3205,6 +3363,45 @@ int main()
 				gridRadiativeFraction*gridDerivedHeatReleaseW/
 				(3.0*gridUnscaledExchange.exchangeWPerM3),2.0e-15),
 		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
+	std::array<double,MethaneSpeciesCount> splitWeights=reacting;
+	splitWeights[MethaneN2]-=0.6;splitWeights[MethaneCO2]=0.4;splitWeights[MethaneH2O]=0.2;
+	const MethaneCellState splitBeginning=StateAtTemperature(splitWeights,0.05,900.0,
+		thermochemistry);
+	auto RadiationSplitDeviation=[&](const double deltaTime,double& deviation,
+		RadiationEscapeFactor& splitFactor){
+		const double splitRadiativeFraction=0.01;
+		MethaneReactionStep splitStep=step;splitStep.deltaTimeS=deltaTime;
+		splitStep.mixingTimeS=1.0;
+		std::vector<MethaneSourcePacket> splitPackets;
+		if(!BuildFrozenMethaneSourcePackets({splitBeginning,splitBeginning},{splitStep,splitStep},
+			{1.0,2.0},300.0,600.0,splitRadiativeFraction,false,fuel,thermochemistry,
+			opacity,splitPackets,splitFactor,&error))return false;
+		double requested=0.0,accepted=0.0;
+		for(std::size_t cell=0;cell<splitPackets.size();++cell){
+			const double volume=cell==0?1.0:2.0;
+			requested+=splitRadiativeFraction*(splitPackets[cell].gasHeatReleaseWPerM3+
+				splitPackets[cell].sootHeatReleaseWPerM3)*volume;
+			accepted+=splitPackets[cell].radiativeCoolingWPerM3*volume;
+		}
+		deviation=std::fabs(accepted-requested)/requested;
+		return requested>0.0&&std::isfinite(deviation);
+	};
+	double splitDeviation0=0.0,splitDeviation1=0.0,splitDeviation2=0.0;
+	RadiationEscapeFactor splitFactor0,splitFactor1,splitFactor2;
+	const bool splitGate=RadiationSplitDeviation(0.02,splitDeviation0,splitFactor0)&&
+		RadiationSplitDeviation(0.01,splitDeviation1,splitFactor1)&&
+		RadiationSplitDeviation(0.005,splitDeviation2,splitFactor2);
+	if(!(splitGate&&splitFactor0.beta>=splitFactor0.gamma&&splitFactor1.beta>=
+		splitFactor1.gamma&&splitFactor2.beta>=splitFactor2.gamma&&splitDeviation0<=0.02&&
+		splitDeviation1<0.65*splitDeviation0&&splitDeviation2<0.65*splitDeviation1))
+		std::printf("V5 split diagnostic ok=%d factors %.6g/%.6g %.6g/%.6g %.6g/%.6g deviations %.9g %.9g %.9g\n",
+			splitGate?1:0,splitFactor0.beta,splitFactor0.gamma,splitFactor1.beta,
+			splitFactor1.gamma,splitFactor2.beta,splitFactor2.gamma,splitDeviation0,
+			splitDeviation1,splitDeviation2);
+	Check(splitGate&&splitFactor0.beta>=splitFactor0.gamma&&splitFactor1.beta>=
+		splitFactor1.gamma&&splitFactor2.beta>=splitFactor2.gamma&&splitDeviation0<=0.02&&
+		splitDeviation1<0.65*splitDeviation0&&splitDeviation2<0.65*splitDeviation1,
+		"V5 beta-active accepted radiation stays within two percent and its splitting deviation halves with dt");
 	RadiationEscapeFactor predictiveInsufficientOpacity;
 	Check(!ComputeRadiationEscapeFactor(gridDerivedHeatReleaseW,600.0,
 		gridRadiativeFraction,{gridUnscaledExchange.exchangeWPerM3,
@@ -3318,18 +3515,115 @@ int main()
 		std::isfinite(derivativeLower),
 		"V5 F-prime proof consumes a finite analytic opacity derivative enclosure");
 	double carbonExchange0 = 0.0, carbonDerivative0 = 0.0;
-	double carbonExchange1 = 0.0, carbonDerivative1 = 0.0;
+	double independentCarbonExchange=0.0,independentCarbonDerivative=0.0;
 	Check(EvaluateSyntheticHotCarbonExchange(1.0e-4,1200.0,300.0,0.25,1800.0,
-		carbonExchange0,carbonDerivative0,&error) &&
-		EvaluateSyntheticHotCarbonExchange(1.0e-4,1500.0,300.0,0.25,1800.0,
-			carbonExchange1,carbonDerivative1,&error),
-		"V5 distinct synthetic hot-carbon fixture evaluates");
-	const double ambient5 = std::pow(300.0,5.0);
-	Check(Near(carbonExchange0/(std::pow(1200.0,5.0)-ambient5),
-		carbonExchange1/(std::pow(1500.0,5.0)-ambient5),2.0e-15) &&
-		Near(carbonDerivative0,5.0*carbonExchange0*std::pow(1200.0,4.0)/
-			(std::pow(1200.0,5.0)-ambient5),2.0e-15),
-		"V5 hot-carbon oracle follows the required fv*(T^5-Tinf^5) law");
+		carbonExchange0,carbonDerivative0,&error)&&
+		IndependentHotCarbonWavelengthIntegral(1.0e-4,1800.0,0.25,1200.0,300.0,
+			independentCarbonExchange,independentCarbonDerivative),
+		"V5 production and independent numerical hot-carbon wavelength integrals evaluate");
+	Check(Near(carbonExchange0,independentCarbonExchange,2.0e-3)&&
+		Near(carbonDerivative0,independentCarbonDerivative,2.0e-3),
+		"V5 independent wavelength integral recovers the fv*(T^5-Tinf^5) law");
+	double nearAmbientExchange=0.0,nearAmbientDerivative=0.0;
+	double independentNearAmbientExchange=0.0,independentNearAmbientDerivative=0.0;
+	Check(EvaluateSyntheticHotCarbonExchange(1.0e-4,300.001,300.0,0.25,1800.0,
+		nearAmbientExchange,nearAmbientDerivative,&error)&&
+		IndependentHotCarbonWavelengthIntegral(1.0e-4,1800.0,0.25,300.001,300.0,
+			independentNearAmbientExchange,independentNearAmbientDerivative)&&
+		Near(nearAmbientDerivative,independentNearAmbientDerivative,2.0e-3),
+		"V5 independent wavelength integral recovers the analytic near-ambient hot-carbon derivative");
+	double h2oSigma=0.0,h2oGasDerivative=0.0,h2oRadiationDerivative=0.0,
+		co2Sigma=0.0,co2GasDerivative=0.0,co2RadiationDerivative=0.0;
+	const bool thinMeans=opacity.PlanckMeanCrossSectionM2PerMolecule("H2O",300.0,300.0,
+		h2oSigma,h2oGasDerivative,h2oRadiationDerivative,&error)&&
+		opacity.PlanckMeanCrossSectionM2PerMolecule("CO2",300.0,300.0,co2Sigma,
+			co2GasDerivative,co2RadiationDerivative,&error);
+	const double h2oExpected=2.1374710395e-24,co2Expected=1.0756050218e-24;
+	const double h2oOpticalDepth=52.289641591*5.0e-4;
+	const double co2OpticalDepth=26.312871635*5.0e-4;
+	const double h2oThinEmissivity=-std::expm1(-h2oOpticalDepth);
+	const double co2ThinEmissivity=-std::expm1(-co2OpticalDepth);
+	Check(thinMeans&&std::fabs(h2oSigma/h2oExpected-1.0)<5.0e-11&&
+		std::fabs(co2Sigma/co2Expected-1.0)<5.0e-11&&h2oOpticalDepth<0.05&&co2OpticalDepth<0.05&&
+		std::fabs(h2oThinEmissivity/h2oOpticalDepth-1.0)<0.02&&
+		std::fabs(co2ThinEmissivity/co2OpticalDepth-1.0)<0.02,
+		"V5 adopted HITEMP H2O/CO2 Planck means match frozen independent nodes in the shape-free thin limit");
+	std::array<double,MethaneSpeciesCount> alternateProducts=products;
+	alternateProducts[MethaneCO]=alternateProducts[MethaneCO2];
+	alternateProducts[MethaneN2]+=alternateProducts[MethaneH2O];
+	alternateProducts[MethaneCO2]=0.0;alternateProducts[MethaneH2O]=0.0;
+	MethaneCellState alternateHistory=StateAtTemperature(alternateProducts,0.0,
+		1400.0,thermochemistry);
+	MethaneCellState equalZProducts=hotProducts;
+	const double sharedTransportedZ=0.2*std::min(hotProducts.TotalDensity(),
+		alternateHistory.TotalDensity());
+	equalZProducts.rhoTotalZ=sharedTransportedZ;alternateHistory.rhoTotalZ=sharedTransportedZ;
+	GasExchangeEvaluation alternateExchange,productHistoryExchange;
+	Check(EvaluateGasExchange(equalZProducts,1400.0,300.0,thermochemistry,opacity,
+		productHistoryExchange,&error)&&EvaluateGasExchange(alternateHistory,1400.0,300.0,
+		thermochemistry,opacity,alternateExchange,&error)&&
+		equalZProducts.rhoTotalZ==alternateHistory.rhoTotalZ&&sharedTransportedZ>0.0&&
+		productHistoryExchange.exchangeWPerM3>alternateExchange.exchangeWPerM3,
+		"V5 equal-Z states with different transported product histories cool differently");
+
+	// A shared certified scalar solver is used by the physical gas map and by
+	// this deliberately nonmonotone verification closure.  Its interval proof,
+	// not a bracketed root's accidental choice, controls acceptance.
+	const double syntheticCp=1000.0,syntheticInitial=900.0,syntheticAmbient=300.0,
+		syntheticAmplitude=9000.0,syntheticFrequency=0.02,syntheticLinear=100.0;
+	auto syntheticEnergy=[&](const double temperature,double& value){
+		value=syntheticCp*temperature;return true;};
+	auto syntheticExchange=[&](const double temperature,double& value){
+		const double difference=temperature-syntheticAmbient;
+		value=syntheticLinear*difference-syntheticAmplitude*
+			std::sin(syntheticFrequency*difference);return std::isfinite(value);};
+	auto syntheticDerivative=[&](const double lo,const double hi,double& value){
+		const double x0=syntheticFrequency*(lo-syntheticAmbient),
+			x1=syntheticFrequency*(hi-syntheticAmbient);
+		double maximumCosine=std::max(std::cos(x0),std::cos(x1));
+		const double firstPeak=std::ceil(x0/(2.0*std::acos(-1.0)))*2.0*std::acos(-1.0);
+		if(firstPeak<=x1)maximumCosine=1.0;
+		value=syntheticLinear-syntheticAmplitude*syntheticFrequency*maximumCosine;
+		return true;};
+	double rejectedRadiationTemperature=0.0,rejectedCooling=0.0;
+	const bool largeStepRejected=!CertifiedScalarRadiationBackwardEuler(syntheticInitial,
+		syntheticAmbient,syntheticCp*syntheticInitial,syntheticCp,20.0,1.0,
+		{syntheticAmbient,syntheticInitial},syntheticEnergy,syntheticExchange,
+		syntheticDerivative,rejectedRadiationTemperature,rejectedCooling,&error);
+	double reducedStep=20.0,reducedTemperature=0.0,reducedCooling=0.0;
+	bool reducedAccepted=false;std::size_t reductions=0;
+	while(!reducedAccepted&&reductions<16){reducedStep*=0.5;++reductions;
+		reducedAccepted=CertifiedScalarRadiationBackwardEuler(syntheticInitial,
+			syntheticAmbient,syntheticCp*syntheticInitial,syntheticCp,reducedStep,1.0,
+			{syntheticAmbient,syntheticInitial},syntheticEnergy,syntheticExchange,
+			syntheticDerivative,reducedTemperature,reducedCooling,&error);}
+	// Continue the same deterministic halving policy past first admissibility
+	// until temporal splitting error is small enough to compare to a fine path.
+	for(std::size_t refinement=0;reducedAccepted&&refinement<6;++refinement){
+		reducedStep*=0.5;++reductions;
+		reducedAccepted=CertifiedScalarRadiationBackwardEuler(syntheticInitial,
+			syntheticAmbient,syntheticCp*syntheticInitial,syntheticCp,reducedStep,1.0,
+			{syntheticAmbient,syntheticInitial},syntheticEnergy,syntheticExchange,
+			syntheticDerivative,reducedTemperature,reducedCooling,&error);
+	}
+	double fineTemperature=syntheticInitial;
+	const std::size_t fineSubsteps=64;
+	bool fineAccepted=reducedAccepted;
+	for(std::size_t substep=0;fineAccepted&&substep<fineSubsteps;++substep){
+		double next=0.0,cooling=0.0;
+		fineAccepted=CertifiedScalarRadiationBackwardEuler(fineTemperature,
+			syntheticAmbient,syntheticCp*fineTemperature,syntheticCp,
+			reducedStep/fineSubsteps,1.0,{syntheticAmbient,fineTemperature},
+			syntheticEnergy,syntheticExchange,syntheticDerivative,next,cooling,&error);
+		fineTemperature=next;}
+	if(!(largeStepRejected&&reducedAccepted&&reductions>0&&fineAccepted&&
+		std::fabs(reducedTemperature-fineTemperature)<8.0))std::printf(
+		"V5 enclosure diagnostic reject=%d accept=%d reductions=%zu coarse=%.9g fine=%.9g diff=%.9g error=%s\n",
+		largeStepRejected?1:0,reducedAccepted?1:0,reductions,reducedTemperature,fineTemperature,
+		std::fabs(reducedTemperature-fineTemperature),error.c_str());
+	Check(largeStepRejected&&reducedAccepted&&reductions>0&&fineAccepted&&
+		std::fabs(reducedTemperature-fineTemperature)<8.0,
+		"V5 steep nonmonotone opacity fails F-prime at large dt, passes deterministic reduction, and matches a small-step reference");
 
 	// V6: the eligibility graph is memoryless.  A vitiated barrier blocks a
 	// pilot-connected pocket while a separate CFT-passing autoignition cell seeds itself.
@@ -3352,9 +3646,35 @@ int main()
 	Check(eligibility.size() == 5 && eligibility[0] && eligibility[1] &&
 		!eligibility[2] && eligibility[3] && eligibility[4],
 		"V6 vitiated barrier blocks the pilot while isolated autoignition seeds its remote pocket");
-	Check(BuildIgnitionEligibility(grid,fuel,thermochemistry,transport,
-		repeatedEligibility,&error) && repeatedEligibility == eligibility,
-		"V6 eligibility depends only on the current conservative state");
+	if(!(fuel.AutoignitionTemperatureK()>=810.0&&fuel.AutoignitionTemperatureK()<811.0&&
+		fuel.PilotTemperatureK()==600.0))
+		std::printf("V6 constants T_AIT=%.17g T_pilot=%.17g\n",
+			fuel.AutoignitionTemperatureK(),fuel.PilotTemperatureK());
+	Check(fuel.AutoignitionTemperatureK()>=810.0&&fuel.AutoignitionTemperatureK()<811.0&&
+		fuel.PilotTemperatureK()==600.0&&
+		fuel.PilotTemperatureK()<fuel.AutoignitionTemperatureK(),
+		"V6 ignition graph consumes r52 measured T_AIT and the lower model-gate T_pilot by kind");
+	// Exercise arbitrary prior reaction history on a separate trajectory, then
+	// reconstruct a fresh grid solely from serialized conservative state.
+	IgnitionGrid historyGrid=grid;
+	for(MethaneCellState& historyState:historyGrid.cells){
+		MethaneReactionStep historyStep=step;historyStep.primaryEligible=true;
+		MethaneSourcePacket historyPacket;
+		if(BuildMethaneReactionPacket(historyState,fuel,historyStep,historyPacket,&error))
+			ApplySourcePacket(historyState,historyPacket,thermochemistry,historyState,&error);
+	}
+	IgnitionGrid restartedGrid;restartedGrid.nx=grid.nx;restartedGrid.ny=grid.ny;
+	restartedGrid.nz=grid.nz;restartedGrid.pilotMask=grid.pilotMask;
+	for(const MethaneCellState& state:grid.cells){
+		MethaneCellState restarted=FromConservativeVector(ToConservativeVector(state));
+		Check(thermochemistry.InvertMixtureTemperatureK(ThermochemicalDensities(restarted),
+			restarted.sensibleEnergyJPerM3,restarted.temperatureK,&error),
+			"V6 restart reconstructs temperature from serialized conservative state");
+		restartedGrid.cells.push_back(restarted);
+	}
+	Check(BuildIgnitionEligibility(restartedGrid,fuel,thermochemistry,transport,
+		repeatedEligibility,&error)&&repeatedEligibility==eligibility,
+		"V6 a fresh restart after arbitrary discarded reaction history reproduces the identical eligibility graph");
 	FireSimulationMethaneRecord invalidFuel;
 	std::vector<bool> invalidEligibility = {true};
 	Check(!BuildIgnitionEligibility(grid,invalidFuel,thermochemistry,transport,
@@ -3366,6 +3686,126 @@ int main()
 	Check(!BuildIgnitionEligibility(overflowGrid,fuel,thermochemistry,transport,
 		invalidEligibility,&error),
 		"V6 ignition rejects a wrapped grid product");
+
+	struct V6History{std::vector<double> heatReleaseW;std::vector<double> frontM;};
+	auto RunCoupledV6History=[&](const std::size_t substepsPerSample,V6History& history){
+		PeriodicMACShape historyShape;historyShape.nx=6;historyShape.ny=3;historyShape.nz=3;
+		historyShape.cellWidthM=0.01;const std::size_t historyCount=historyShape.CellCount();
+		const ConservativeVector historyBase=ToConservativeVector(ProductRichMixtureLineState(
+			fuel,thermochemistry,0.08,710.0));
+		std::vector<ConservativeVector> state(historyCount);
+		for(std::size_t cell=0;cell<historyCount;++cell){state[cell]=historyBase;
+			if(cell%historyShape.nx==3){MethaneCellState barrier=FromConservativeVector(historyBase);
+				const double barrierExtent=0.45*std::min(barrier.constituent[MethaneCH4],
+					barrier.constituent[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+				for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+					barrier.constituent[species]+=barrierExtent*fuel.PrimaryReactionDelta()[species];
+				if(!thermochemistry.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(barrier),
+					710.0,barrier.sensibleEnergyJPerM3,&error))return false;
+				barrier.temperatureK=710.0;state[cell]=ToConservativeVector(barrier);}}
+		PeriodicMACField momentum;const double transportVelocity=1.0;
+		for(unsigned int axis=0;axis<3;++axis){const std::size_t faceCount=
+			OpenMACFaceCount3D(historyShape,axis);momentum.component[axis].assign(faceCount,0.0);
+			if(axis==0)for(std::size_t z=0;z<historyShape.nz;++z)for(std::size_t y=0;
+				y<historyShape.ny;++y)for(std::size_t x=0;x<=historyShape.nx;++x){
+				const std::size_t left=historyShape.Index(x?x-1:0,y,z),
+					right=historyShape.Index(x<historyShape.nx?x:historyShape.nx-1,y,z);
+				const double density=PositiveArithmeticMean(FromConservativeVector(state[left]).
+					GasDensity(),FromConservativeVector(state[right]).GasDensity());
+				momentum.component[axis][OpenMACFaceIndex3D(historyShape,axis,x,y,z)]=
+					density*transportVelocity;
+			}}
+		ConservativeAdvance3DConfig historyConfig=ownerConfig;
+		historyConfig.periodicBoundaries=false;historyConfig.dns=true;
+		historyConfig.transport.cellWidthM=historyShape.cellWidthM;
+		historyConfig.transport.deltaTimeS=0.001/substepsPerSample;
+		historyConfig.transport.ambientGasDensityKGPerM3=
+			FromConservativeVector(state[historyShape.nx-1]).GasDensity();
+		historyConfig.openBoundary=openBoundary3D;
+		historyConfig.openBoundary.kind.fill(AdiabaticWallBoundary3D);
+		historyConfig.openBoundary.kind[0]=PressureOpenBoundary3D;
+		historyConfig.openBoundary.kind[1]=PressureOpenBoundary3D;
+		historyConfig.openBoundary.bottomFuelMask.clear();
+		for(unsigned int side=0;side<6;++side)historyConfig.openBoundary.priorInflow[side].assign(
+			OpenBoundaryFaceCount3D(historyShape,side),false);
+		historyConfig.openBoundary.ambientState=ToConservativeVector(
+			ProductRichMixtureLineState(fuel,thermochemistry,0.08,700.0));
+		historyConfig.openBoundary.ambientDensityKGPerM3=
+			FromConservativeVector(historyConfig.openBoundary.ambientState).GasDensity();
+		historyConfig.transport.ambientTemperatureK=700.0;
+		historyConfig.injectedTemperatureK=700.0;
+			historyConfig.retainStageDiagnostics=false;
+		history.heatReleaseW.clear();history.frontM.clear();
+		for(std::size_t sample=0;sample<30;++sample){
+			double sampleHeat=0.0,front=0.0;
+			for(std::size_t substep=0;substep<substepsPerSample;++substep){
+				IgnitionGrid currentGrid;currentGrid.nx=historyShape.nx;currentGrid.ny=historyShape.ny;
+				currentGrid.nz=historyShape.nz;currentGrid.pilotMask.assign(historyCount,false);
+				for(std::size_t cell=0;cell<historyCount;++cell){
+					MethaneCellState physical=FromConservativeVector(state[cell]);
+					std::vector<std::pair<std::string,double> > physicalDensities;
+					if(!ThermochemicalDensitiesWithinForwardEnvelope(physical,physicalDensities,
+						&error)||!thermochemistry.InvertMixtureTemperatureK(physicalDensities,
+						physical.sensibleEnergyJPerM3,physical.temperatureK,&error))return false;
+					currentGrid.cells.push_back(physical);
+					if(cell%historyShape.nx==0)currentGrid.pilotMask[cell]=true;
+				}
+				std::vector<bool> currentEligibility;
+				if(!BuildIgnitionEligibility(currentGrid,fuel,thermochemistry,transport,
+					currentEligibility,&error))return false;
+				std::vector<MethaneSourcePacket> packets(historyCount);
+				for(std::size_t cell=0;cell<historyCount;++cell){MethaneReactionStep currentStep;
+					currentStep.deltaTimeS=historyConfig.transport.deltaTimeS;
+					currentStep.mixingTimeS=20.0;currentStep.primaryEligible=currentEligibility[cell];
+					currentStep.sootOxidationEnabled=false;
+					if(!BuildMethaneReactionPacket(currentGrid.cells[cell],fuel,currentStep,
+						packets[cell],&error)){std::printf(
+						"V6 history packet failed substeps=%zu sample=%zu substep=%zu cell=%zu: %s\n",
+						substepsPerSample,sample,substep,cell,error.c_str());return false;}
+					sampleHeat+=packets[cell].gasHeatReleaseWPerM3*std::pow(
+						historyShape.cellWidthM,3.0)/substepsPerSample;
+					if(currentEligibility[cell])front=std::max(front,
+						(cell%historyShape.nx+0.5)*historyShape.cellWidthM);
+				}
+				ConservativeAdvance3DResult advanced;
+				if(!AdvanceConservative3D(historyShape,state,momentum,packets,historyConfig,
+					fuel,thermochemistry,transport,advanced,&error)){
+					std::printf("V6 owner history failed substeps=%zu sample=%zu substep=%zu: %s\n",
+						substepsPerSample,sample,substep,error.c_str());return false;}
+				state.swap(advanced.conservative);momentum.component.swap(
+					advanced.momentumKGPerM2S.component);
+			}
+			history.heatReleaseW.push_back(sampleHeat);history.frontM.push_back(front);
+		}
+		return true;
+	};
+	V6History history1,history2,history4,history8;
+	const bool historyRuns=RunCoupledV6History(1,history1)&&RunCoupledV6History(2,history2)&&
+		RunCoupledV6History(4,history4)&&RunCoupledV6History(8,history8);
+	// Use explicit spelling here: the history grid remains fixed while only dt
+	// changes, and both observables are compared at identical sample times.
+	double historyHeatError1=0.0,historyHeatError2=0.0,historyHeatError4=0.0;
+	double historyFrontError1=0.0,historyFrontError2=0.0,historyFrontError4=0.0;
+	if(historyRuns){for(std::size_t sample=0;sample<history8.heatReleaseW.size();++sample){
+		auto heatContribution=[&](const V6History& candidate){return
+			std::fabs(candidate.heatReleaseW[sample]-history8.heatReleaseW[sample])/
+			std::max(1.0,std::fabs(history8.heatReleaseW[sample]));};
+		auto frontContribution=[&](const V6History& candidate){return
+			std::fabs(candidate.frontM[sample]-history8.frontM[sample])/0.01;};
+		historyHeatError1+=heatContribution(history1);historyHeatError2+=heatContribution(history2);
+		historyHeatError4+=heatContribution(history4);historyFrontError1+=frontContribution(history1);
+		historyFrontError2+=frontContribution(history2);historyFrontError4+=frontContribution(history4);}}
+	const bool historyConverges=historyRuns&&history8.frontM.back()>history8.frontM.front()&&
+		historyHeatError2<historyHeatError1&&historyHeatError4<historyHeatError2&&
+		historyFrontError1>0.0&&historyFrontError2<=historyFrontError1&&
+		historyFrontError4<=historyFrontError2;
+	if(!historyConverges)std::printf(
+		"V6 history diagnostic ok=%d heat %.9g %.9g %.9g front %.9g %.9g %.9g range %.9g %.9g error=%s\n",
+		historyRuns?1:0,historyHeatError1,historyHeatError2,historyHeatError4,
+		historyFrontError1,historyFrontError2,historyFrontError4,
+		historyRuns?history8.frontM.front():0.0,historyRuns?history8.frontM.back():0.0,error.c_str());
+	Check(historyConverges,
+		"V6 fixed-grid owning advance converges under timestep refinement in heat-release and ignition-front histories");
 
 	// V6 local split refinement: exponential finite-step conversion composes
 	// exactly when the accepted remainder is used by the next substep.

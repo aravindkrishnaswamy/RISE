@@ -4229,8 +4229,10 @@ namespace RISE
 				trial.constituent[index] += extent*delta[index];
 			}
 			trial.sensibleEnergyJPerM3 += extent*fuel.LowerHeatingValueJPerKG();
-			return thermochemistry.InvertMixtureTemperatureK(
-				ThermochemicalDensities(trial),trial.sensibleEnergyJPerM3,result,error) &&
+			std::vector<std::pair<std::string,double> > propertyDensities;
+			return ThermochemicalDensitiesWithinForwardEnvelope(trial,propertyDensities,error)&&
+				thermochemistry.InvertMixtureTemperatureK(propertyDensities,
+				trial.sensibleEnergyJPerM3,result,error) &&
 				(std::isfinite(result) || Fail(error,"fire solver trial adiabatic temperature is non-finite"));
 		}
 
@@ -4557,6 +4559,77 @@ namespace RISE
 				Fail(error,"fire solver gas-exchange derivative sum overflowed");
 		}
 
+		template<class EnergyFunction,class ExchangeFunction,class DerivativeLowerFunction>
+		inline bool CertifiedScalarRadiationBackwardEuler(
+			const double initialTemperatureK,
+			const double ambientTemperatureK,
+			const double initialEnergyJPerM3,
+			const double heatCapacityLowerJPerM3K,
+			const double deltaTimeS,
+			const double escapeFactor,
+			std::vector<double> knots,
+			const EnergyFunction& energy,
+			const ExchangeFunction& exchange,
+			const DerivativeLowerFunction& derivativeLower,
+			double& acceptedTemperatureK,
+			double& acceptedCoolingWPerM3,
+			std::string* error = 0
+			)
+		{
+			if(!std::isfinite(initialTemperatureK)||!std::isfinite(ambientTemperatureK)||
+				!std::isfinite(initialEnergyJPerM3)||!std::isfinite(heatCapacityLowerJPerM3K)||
+				heatCapacityLowerJPerM3K<=0.0||!std::isfinite(deltaTimeS)||deltaTimeS<=0.0||
+				!std::isfinite(escapeFactor)||escapeFactor<0.0||escapeFactor>1.0){
+				return Fail(error,"fire solver certified scalar radiation input is malformed");
+			}
+			const double lower=std::min(initialTemperatureK,ambientTemperatureK);
+			const double upper=std::max(initialTemperatureK,ambientTemperatureK);
+			knots.push_back(lower);knots.push_back(upper);
+			std::sort(knots.begin(),knots.end());
+			knots.erase(std::remove_if(knots.begin(),knots.end(),[&](const double value){
+				return !std::isfinite(value)||value<lower||value>upper;
+			}),knots.end());
+			knots.erase(std::unique(knots.begin(),knots.end()),knots.end());
+			if(knots.size()<2)return Fail(error,"fire solver certified scalar radiation lacks a bracket");
+			for(std::size_t interval=0;interval+1<knots.size();++interval){
+				double bound=0.0;
+				if(!derivativeLower(knots[interval],knots[interval+1],bound)||
+					!std::isfinite(bound)||heatCapacityLowerJPerM3K+
+					deltaTimeS*escapeFactor*bound<=0.0){
+					return Fail(error,"fire solver radiation F-prime enclosure is not strictly positive");
+				}
+			}
+			auto residual=[&](const double temperature,double& value){
+				double sensible=0.0,radiative=0.0;
+				if(!energy(temperature,sensible)||!exchange(temperature,radiative))return false;
+				value=sensible-initialEnergyJPerM3+deltaTimeS*escapeFactor*radiative;
+				return std::isfinite(value);
+			};
+			double fLower=0.0,fUpper=0.0;
+			if(!residual(lower,fLower)||!residual(upper,fUpper)||fLower>0.0||fUpper<0.0){
+				return Fail(error,"fire solver radiation map lacks its certified endpoint sign change");
+			}
+			double lo=lower,hi=upper;
+			for(std::size_t iteration=0;iteration<160;++iteration){
+				const double midpoint=0.5*(lo+hi);double value=0.0;
+				if(!residual(midpoint,value))return false;
+				if(value>0.0)hi=midpoint;else lo=midpoint;
+				if(hi-lo<=8.0*std::numeric_limits<double>::epsilon()*
+					std::max(1.0,midpoint))break;
+			}
+			acceptedTemperatureK=0.5*(lo+hi);double finalEnergy=0.0,finalResidual=0.0;
+			if(!energy(acceptedTemperatureK,finalEnergy)||!residual(acceptedTemperatureK,
+				finalResidual))return false;
+			const double energyScale=std::max({1.0,std::fabs(initialEnergyJPerM3),
+				std::fabs(finalEnergy)});
+			if(std::fabs(finalResidual)>64.0*std::numeric_limits<double>::epsilon()*energyScale){
+				return Fail(error,"fire solver radiation root misses its energy residual tolerance");
+			}
+			acceptedCoolingWPerM3=(initialEnergyJPerM3-finalEnergy)/deltaTimeS;
+			return (std::isfinite(acceptedTemperatureK)&&std::isfinite(acceptedCoolingWPerM3))||
+				Fail(error,"fire solver certified scalar radiation result overflowed");
+		}
+
 		inline bool ApplyGasRadiationBackwardEuler(
 			const MethaneCellState& preRadiation,
 			const double ambientTemperatureK,
@@ -4593,57 +4666,26 @@ namespace RISE
 			for( const double value : co2->radiationTemperatureAxisK ) if( value > lower && value < upper ) knots.push_back(value);
 			for( const double value : h2o->gasTemperatureAxisK ) if( value > lower && value < upper ) knots.push_back(value);
 			for( const double value : h2o->radiationTemperatureAxisK ) if( value > lower && value < upper ) knots.push_back(value);
-			std::sort(knots.begin(),knots.end());
-			knots.erase(std::unique(knots.begin(),knots.end()),knots.end());
-			for( std::size_t interval=0; interval+1<knots.size(); ++interval ) {
-				const double lo = knots[interval], hi = knots[interval+1];
-				double derivativeLower = 0.0;
-				if( !CertifiedGasExchangeDerivativeLower(preRadiation,lo,hi,
-					ambientTemperatureK,thermochemistry,opacity,derivativeLower,error) ) return false;
-				if( cpLower+deltaTimeS*escapeFactor*derivativeLower <= 0.0 ) {
-					return Fail(error,"fire solver radiation F-prime enclosure is not strictly positive");
-				}
-			}
-			auto residual = [&]( const double temperature, double& value ) {
-				double energy = 0.0;
-				if( !thermochemistry.MixtureSensibleEnergyJPerM3(
-					ThermochemicalDensities(preRadiation),temperature,energy,error) ) return false;
-				GasExchangeEvaluation exchange;
-				if( !EvaluateGasExchange(preRadiation,temperature,ambientTemperatureK,
-					thermochemistry,opacity,exchange,error) ) return false;
-				value = energy-preRadiation.sensibleEnergyJPerM3+
-					deltaTimeS*escapeFactor*exchange.exchangeWPerM3;
-				return std::isfinite(value);
+			auto energy=[&](const double temperature,double& value){
+				return thermochemistry.MixtureSensibleEnergyJPerM3(
+					ThermochemicalDensities(preRadiation),temperature,value,error);
 			};
-			double fLower = 0.0, fUpper = 0.0;
-			if( !residual(lower,fLower) || !residual(upper,fUpper) || fLower > 0.0 || fUpper < 0.0 ) {
-				return Fail(error,"fire solver radiation map lacks its certified endpoint sign change");
-			}
-			double lo = lower, hi = upper;
-			for( std::size_t iteration=0; iteration<160; ++iteration ) {
-				const double midpoint = 0.5*(lo+hi);
-				double value = 0.0;
-				if( !residual(midpoint,value) ) return false;
-				if( value > 0.0 ) hi = midpoint; else lo = midpoint;
-				if( hi-lo <= 8.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,midpoint) ) break;
-			}
+			auto exchange=[&](const double temperature,double& value){
+				GasExchangeEvaluation evaluation;
+				if(!EvaluateGasExchange(preRadiation,temperature,ambientTemperatureK,
+					thermochemistry,opacity,evaluation,error))return false;
+				value=evaluation.exchangeWPerM3;return true;
+			};
+			auto derivative=[&](const double lo,const double hi,double& value){
+				return CertifiedGasExchangeDerivativeLower(preRadiation,lo,hi,
+					ambientTemperatureK,thermochemistry,opacity,value,error);
+			};
 			MethaneCellState candidate = preRadiation;
-			candidate.temperatureK = 0.5*(lo+hi);
-			double finalResidual = 0.0;
-			if( !residual(candidate.temperatureK,finalResidual) ) return false;
-			if( !thermochemistry.MixtureSensibleEnergyJPerM3(
-				ThermochemicalDensities(candidate),candidate.temperatureK,
-				candidate.sensibleEnergyJPerM3,error) ) return false;
-			acceptedCoolingWPerM3 = (preRadiation.sensibleEnergyJPerM3-
-				candidate.sensibleEnergyJPerM3)/deltaTimeS;
-			const double energyScale = std::max({1.0,
-				std::fabs(preRadiation.sensibleEnergyJPerM3),
-				std::fabs(candidate.sensibleEnergyJPerM3)});
-			if( std::fabs(finalResidual) > 64.0*std::numeric_limits<double>::epsilon()*
-				energyScale ) return Fail(error,"fire solver radiation root misses its energy residual tolerance");
-			if( !std::isfinite(acceptedCoolingWPerM3) ) return Fail(error,
-				"fire solver accepted radiative exchange is invalid");
+			if(!CertifiedScalarRadiationBackwardEuler(preRadiation.temperatureK,
+				ambientTemperatureK,preRadiation.sensibleEnergyJPerM3,cpLower,deltaTimeS,
+				escapeFactor,knots,energy,exchange,derivative,candidate.temperatureK,
+				acceptedCoolingWPerM3,error))return false;
+			if(!energy(candidate.temperatureK,candidate.sensibleEnergyJPerM3))return false;
 			result = candidate;
 			return true;
 		}
