@@ -314,3 +314,40 @@ THINGS (surface light, glowing creatures) — or names things and the build
 still authors only zero-area kinds — then vocabulary was not the lever
 either, and the language-level one-chunk physical light (§7.2's exit) is
 next with no further prompt work.
+
+## 9. SOURCE-FIRST RESULT — the falsifier fired; prompt work on this is OVER (2026-08-12)
+
+`evals/runs/imagine_s11_sourcefirst`, gemini, N=1 — but this falsifier was
+designed so one run answers it, because the enumeration half SUCCEEDED:
+
+Sources enumerated (verbatim): sunlight through the ocean surface;
+bioluminescent coral and anemones; glowing jellyfish; glowing fish.  All
+THINGS, zero instruments.  The vocabulary hypothesis got its fair test.
+
+The build then authored **7 zero-area lights and 0 area lights** — an omni
+for the glowing jellyfish, omnis for the glowing fish — with the palette in
+full view.  Completions: 2, so the cost regression is gone.
+
+Three mechanism families are now falsified on this question:
+| hypothesis | mechanism | result |
+|---|---|---|
+| taste / salience | palette order + sole worked example (arc 81) | 1/0/0/0/2 |
+| cost / room | one completion per light (slice 1 v1) | 0 of 11 |
+| vocabulary / framing | source-first enumeration (owner design) | 0 of 7, with perfect source lines |
+
+One convergent observation makes the conclusion sharper: in CONSTRUCTION,
+the builders write emissive materials routinely (`*_emiss_painter` chunks on
+anemones, orbs, jellyfish in arc-79/82 runs).  The model will make a thing
+glow when it is building the THING.  Asked for LIGHTING, it writes chunks
+from the lighting category — whatever they are.  The category of the task
+summons the category of the chunk, and no prompt inverts that.
+
+**Per the pre-commitment: the fix moves to the scene language.**  A
+first-class one-chunk physical light — e.g. `rect_light { name, corners (or
+center/size/facing), color, exitance }` — that the parser deterministically
+expands into painter → luminaire material → clippedplane → object.  It IS a
+lighting-category chunk, so the model's reach lands on it; it IS an area
+light, so the owner's physics policy is satisfied by construction rather
+than persuasion.  Design and build pending owner approval — it is a
+scene-language change, which is the owner's domain, not an agent-surface
+tweak.
