@@ -200,7 +200,20 @@ The corrected predictions:
 
 ---
 
-## 7. SLICE 1 RESULT — the unit fix works; the area-light prediction is FALSIFIED (2026-08-12)
+## 7. SLICE 1 RESULT — the unit fix works; the share claim was OVERREAD (2026-08-12)
+
+> **§7 correction, same day:** "FALSIFIED" below was itself an N=1 overreach
+> — the pre-slice record is 1/0/0/0/2, so ZERO was already the modal outcome
+> and one post-slice zero cannot distinguish "share dropped" from "nothing
+> changed".  The owner's challenge ("something must be off") exposed the part
+> that IS established: a structural defect.  The intent line binds the
+> builder — an intent saying "point light" makes authoring an area light an
+> act of disobedience — so the design GUARANTEED the palette could not
+> matter, regardless of share.  The pre-slice area lights happened precisely
+> because the old single call chose kinds while looking at the palette.
+> Fixed same day: the planner now describes JOBS and is forbidden to name a
+> kind, and it is told as fact that the authoring step chooses among real
+> emitting surfaces, a sun-and-sky model, and zero-area idealizations.
 
 `evals/runs/imagine_s9_lightunit`, gemini, N=1, `kLightPalette` byte-identical.
 

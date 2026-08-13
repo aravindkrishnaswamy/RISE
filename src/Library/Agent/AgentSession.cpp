@@ -19593,10 +19593,28 @@ namespace RISE
 			     std::to_string( kLightIntentBudget ) +
 			     " and the cut is reported in this call's result.\n\n";
 
+			// ARC 83 SLICE-1 FIX-ROUND (2026-08-12): intents must describe the
+			// JOB, never the INSTRUMENT.  The first live run's planner named a
+			// kind in all six intents ("key spot light", "coral reef point
+			// light") -- vocabulary it fell back on because this prompt offers
+			// none -- and the per-intent builder then had no real choice: an
+			// intent line saying "point light" binds the one step that CAN see
+			// the palette to a decision made where the palette is invisible.
+			// The instrument choice belongs downstream, so this prompt now
+			// (a) forbids naming a light kind in an intent, and (b) states the
+			// fact the chooser needs either way: that the authoring step
+			// chooses among real emitting surfaces, a sun-and-sky model, and
+			// zero-area idealizations.  A fact, not a preference -- the
+			// advice-vocabulary ban applies to this prompt too.
 			p += "WRITE YOUR ANSWER AS ONE INTENT PER LINE. Each line is a short phrase naming what "
-			     "that light is for and roughly where it is in this scene -- what it falls on, and "
-			     "where it comes from. No numbering, no bullets, no blank lines, no prose around the "
-			     "list, no markdown fences. Nothing else in the answer is read.\n";
+			     "that light is for and roughly where it comes from and what it falls on, in this "
+			     "scene's own terms. Describe the JOB of the light, not the equipment: do NOT name "
+			     "a light kind (no \"spot\", \"point\", \"omni\", \"directional\", \"area\" or "
+			     "\"ambient\" in an intent) -- the kind is chosen by the authoring step, which "
+			     "picks per intent among real emitting surfaces placed in the scene, a physical "
+			     "sun-and-sky model, and zero-area idealizations. No numbering, no bullets, no "
+			     "blank lines, no prose around the list, no markdown fences. Nothing else in the "
+			     "answer is read.\n";
 			return p;
 		}
 
