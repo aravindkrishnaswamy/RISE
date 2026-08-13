@@ -167,11 +167,11 @@ namespace
 		double carbon;
 		double condensableVapor;
 		double condensableAerosol;
+		double carbonDioxide;
+		double water;
 		double releasedEnergy;
 		double radiationLoss;
 		double sensibleEnergyChange;
-		double gasAndAerosolMassResidual;
-		std::array<double,3> elementResidual;
 	};
 
 	SyntheticV4Checkpoint BuildSyntheticV4Checkpoint(
@@ -201,16 +201,8 @@ namespace
 			condensable*condensableEnergy;
 		result.radiationLoss=radiationLoss;
 		result.sensibleEnergyChange=result.releasedEnergy-radiationLoss;
-		const double carbonDioxide=(44.0/12.0)*oxidizedCarbon;
-		const double water=9.0*oxidizedHydrogen;
-		result.gasAndAerosolMassResidual=-fuelReacted-result.oxygenConsumed+
-			carbonDioxide+water+carbon+condensable;
-		result.elementResidual[0]=-0.75*fuelReacted+(12.0/44.0)*carbonDioxide+
-			carbon+0.75*condensable;
-		result.elementResidual[1]=-0.25*fuelReacted+(2.0/18.0)*water+
-			0.25*condensable;
-		result.elementResidual[2]=-result.oxygenConsumed+(32.0/44.0)*carbonDioxide+
-			(16.0/18.0)*water;
+		result.carbonDioxide=(44.0/12.0)*oxidizedCarbon;
+		result.water=9.0*oxidizedHydrogen;
 		return result;
 	}
 
@@ -227,12 +219,21 @@ namespace
 		const double oxygenResidual=checkpoint.oxygenConsumed+
 			sootOxygen*checkpoint.carbon+condensableOxygen*condensable-
 			4.0*checkpoint.fuelReacted;
+		const double massResidual=-checkpoint.fuelReacted-checkpoint.oxygenConsumed+
+			checkpoint.carbonDioxide+checkpoint.water+checkpoint.carbon+condensable;
+		const std::array<double,3> elementResidual={
+			-0.75*checkpoint.fuelReacted+(12.0/44.0)*checkpoint.carbonDioxide+
+				checkpoint.carbon+0.75*condensable,
+			-0.25*checkpoint.fuelReacted+(2.0/18.0)*checkpoint.water+
+				0.25*condensable,
+			-checkpoint.oxygenConsumed+(32.0/44.0)*checkpoint.carbonDioxide+
+				(16.0/18.0)*checkpoint.water};
 		const double scale=std::max(1.0,checkpoint.fuelReacted*combustionEnergy);
 		bool closes=std::fabs(energyResidual)<=64.0*std::numeric_limits<double>::epsilon()*scale&&
 			std::fabs(oxygenResidual)<=64.0*std::numeric_limits<double>::epsilon()&&
-			std::fabs(checkpoint.gasAndAerosolMassResidual)<=
+			std::fabs(massResidual)<=
 			64.0*std::numeric_limits<double>::epsilon();
-		for(const double residual:checkpoint.elementResidual)closes=closes&&
+		for(const double residual:elementResidual)closes=closes&&
 			std::fabs(residual)<=64.0*std::numeric_limits<double>::epsilon();
 		return closes&&Near(checkpoint.sensibleEnergyChange,
 			checkpoint.releasedEnergy-checkpoint.radiationLoss,64.0*
@@ -247,14 +248,9 @@ namespace
 		const double sootOxygen=8.0/3.0,sootEnergy=32.8e6;
 		checkpoint.carbon-=oxidizedCarbon;
 		checkpoint.oxygenConsumed+=sootOxygen*oxidizedCarbon;
+		checkpoint.carbonDioxide+=(44.0/12.0)*oxidizedCarbon;
 		checkpoint.releasedEnergy+=sootEnergy*oxidizedCarbon;
 		checkpoint.sensibleEnergyChange+=sootEnergy*oxidizedCarbon;
-		checkpoint.gasAndAerosolMassResidual+=-sootOxygen*oxidizedCarbon+
-			(44.0/12.0)*oxidizedCarbon-oxidizedCarbon;
-		checkpoint.elementResidual[0]+=(12.0/44.0)*(44.0/12.0)*oxidizedCarbon-
-			oxidizedCarbon;
-		checkpoint.elementResidual[2]+=-sootOxygen*oxidizedCarbon+
-			(32.0/44.0)*(44.0/12.0)*oxidizedCarbon;
 	}
 
 	void CompleteSyntheticV4Condensable(
@@ -266,15 +262,11 @@ namespace
 			checkpoint.condensableAerosol;
 		checkpoint.condensableVapor=0.0;checkpoint.condensableAerosol=0.0;
 		checkpoint.oxygenConsumed+=4.0*condensable;
+		checkpoint.carbonDioxide+=2.75*condensable;
+		checkpoint.water+=2.25*condensable;
 		checkpoint.releasedEnergy+=50.0e6*condensable;
 		checkpoint.radiationLoss+=radiationLoss;
 		checkpoint.sensibleEnergyChange+=50.0e6*condensable-radiationLoss;
-		checkpoint.gasAndAerosolMassResidual+=-4.0*condensable+
-			2.75*condensable+2.25*condensable-condensable;
-		checkpoint.elementResidual[0]+=0.75*condensable-0.75*condensable;
-		checkpoint.elementResidual[1]+=0.25*condensable-0.25*condensable;
-		checkpoint.elementResidual[2]+=-4.0*condensable+2.0*condensable+
-			2.0*condensable;
 	}
 
 	bool IndependentHotCarbonWavelengthIntegral(
@@ -3391,19 +3383,33 @@ int main()
 	corruptedMass.constituentDelta[MethaneN2]+=1.0e-5;
 	corruptedEnergy.sensibleEnergyDeltaJPerM3+=1.0;
 	corruptedOxygen.constituentDelta[MethaneO2]+=1.0e-5;
+	MethaneSourcePacket corruptedGasRate=completePacket,corruptedSootRate=completePacket;
+	corruptedGasRate.gasHeatReleaseWPerM3*=2.0;
+	corruptedSootRate.sootHeatReleaseWPerM3=1.0;
 	Check(!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedMass,&error)&&
 		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedEnergy,&error)&&
-		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedOxygen,&error),
-		"V4 frozen-packet validator rejects mass/atom, Hs/chemical-potential, and oxygen corruption");
+		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedOxygen,&error)&&
+		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedGasRate,&error)&&
+		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedSootRate,&error),
+		"V4 frozen-packet validator rejects mass/atom, Hs/chemical-potential, oxygen, and heat-rate corruption");
 		auto ConstantPressurePacketGate=[&](const double deltaTime,double& eosResidual,
-		double& divergenceResidual,double& ledgerResidual){
+		double& divergenceResidual,double& ledgerResidual,double& analyticResidual){
 		MethaneCellState expansionBeginning=ProductRichMixtureLineState(fuel,
 			thermochemistry,0.08,900.0);
 		MethaneReactionStep expansionStep=step;expansionStep.deltaTimeS=deltaTime;
 		expansionStep.mixingTimeS=0.5;expansionStep.sootOxidationEnabled=false;
 		MethaneSourcePacket expansionPacket;
-		if(!BuildMethaneReactionPacket(expansionBeginning,fuel,expansionStep,
+		if(!BuildFrozenMethaneSourcePacket(expansionBeginning,expansionStep,
+			expansionBeginning.temperatureK,0.0,fuel,thermochemistry,opacity,
 			expansionPacket,&error))return false;
+		ConservativeVector expansionRate;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			expansionRate[1+species]=expansionPacket.constituentDelta[species]/deltaTime;
+		expansionRate[MethaneMassStateDimension]=
+			expansionPacket.sensibleEnergyDeltaJPerM3/deltaTime;
+		double analyticDivergence=0.0;
+		if(!DivergenceFromDiscreteRate(ToConservativeVector(expansionBeginning),expansionRate,
+			expansionBeginning.temperatureK,thermochemistry,analyticDivergence,&error))return false;
 		const std::size_t count=openShape3D.CellCount();
 		const std::vector<ConservativeVector> initial(count,ToConservativeVector(expansionBeginning));
 		std::vector<MethaneSourcePacket> packets(count,expansionPacket);
@@ -3422,7 +3428,7 @@ int main()
 		OpenConservativeAdvance3DResult advanced;
 		if(!AdvanceOpenConservative3DImplementation(openShape3D,initial,momentum,packets,
 			expansionConfig,fuel,thermochemistry,transport,advanced,&error))return false;
-		eosResidual=0.0;divergenceResidual=0.0;ledgerResidual=0.0;
+		eosResidual=0.0;divergenceResidual=0.0;ledgerResidual=0.0;analyticResidual=0.0;
 		std::array<double,MethaneConservativeDimension> globalBefore={},globalAfter={},
 			globalSource={};
 		for(std::size_t cell=0;cell<count;++cell){
@@ -3438,6 +3444,8 @@ int main()
 				OpenMACDivergence3D(openShape3D,advanced.velocityMPerS,cell%openShape3D.nx,
 					(cell/openShape3D.nx)%openShape3D.ny,cell/(openShape3D.nx*openShape3D.ny))-
 				advanced.r2.divergenceTargetPerS[cell]));
+			analyticResidual=std::max(analyticResidual,std::fabs(
+				advanced.r0.divergenceTargetPerS[cell]-analyticDivergence));
 			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
 				globalBefore[component]+=initial[cell][component];
 				globalAfter[component]+=advanced.conservative[cell][component];}
@@ -3461,17 +3469,42 @@ int main()
 				std::fabs(boundaryChange)});
 			ledgerResidual=std::max(ledgerResidual,std::fabs(globalAfter[component]-
 				globalBefore[component]-globalSource[component]-boundaryChange)/ledgerScale);}
+		double outwardVolumeFlux=0.0;
+		for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;
+			const std::size_t firstCount=side<2?openShape3D.ny:openShape3D.nx,
+				secondCount=side<4?openShape3D.nz:openShape3D.ny;
+			for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;
+				first<firstCount;++first){std::size_t x=0,y=0,z=0;
+					if(axis==0){x=side%2?openShape3D.nx:0;y=first;z=second;}
+					if(axis==1){x=first;y=side%2?openShape3D.ny:0;z=second;}
+					if(axis==2){x=first;y=second;z=side%2?openShape3D.nz:0;}
+					const double velocity=advanced.r0.projection.velocityMPerS.component[axis]
+						[OpenMACFaceIndex3D(openShape3D,axis,x,y,z)];
+					outwardVolumeFlux+=(side%2?1.0:-1.0)*velocity*
+						openShape3D.cellWidthM*openShape3D.cellWidthM;}}
+		const double domainVolume=count*std::pow(openShape3D.cellWidthM,3.0);
+		analyticResidual=std::max(analyticResidual,std::fabs(
+			outwardVolumeFlux/domainVolume-analyticDivergence));
 		return true;};
 	double expansionEOS0=0.0,expansionDivergence0=0.0,expansionLedger0=0.0,
-		expansionEOS1=0.0,expansionDivergence1=0.0,expansionLedger1=0.0;
+		expansionAnalytic0=0.0,expansionEOS1=0.0,expansionDivergence1=0.0,
+		expansionLedger1=0.0,expansionAnalytic1=0.0;
 	const bool expansionGate0=ConstantPressurePacketGate(1.0e-5,expansionEOS0,
-		expansionDivergence0,expansionLedger0),expansionGate1=ConstantPressurePacketGate(
-		5.0e-6,expansionEOS1,expansionDivergence1,expansionLedger1);
-	if(!(expansionGate0&&expansionGate1))std::printf("V4 expansion failure %d %d: %s\n",
-		expansionGate0?1:0,expansionGate1?1:0,error.c_str());
+		expansionDivergence0,expansionLedger0,expansionAnalytic0),
+		expansionGate1=ConstantPressurePacketGate(5.0e-6,expansionEOS1,
+			expansionDivergence1,expansionLedger1,expansionAnalytic1);
+	if(!(expansionGate0&&expansionGate1&&expansionEOS0<=1.0e-3&&
+		expansionEOS1<=expansionEOS0&&expansionDivergence0<=2.0e-8&&
+		expansionDivergence1<=2.0e-8&&expansionLedger0<5.0e-13&&expansionLedger1<5.0e-13&&
+		expansionAnalytic0<2.0e-8&&expansionAnalytic1<2.0e-8))std::printf(
+		"V4 expansion failure %d %d eos %.9g %.9g div %.9g %.9g ledger %.9g %.9g analytic %.9g %.9g: %s\n",
+		expansionGate0?1:0,expansionGate1?1:0,expansionEOS0,expansionEOS1,
+		expansionDivergence0,expansionDivergence1,expansionLedger0,expansionLedger1,
+		expansionAnalytic0,expansionAnalytic1,error.c_str());
 	Check(expansionGate0&&expansionGate1&&expansionEOS0<=1.0e-3&&
 		expansionEOS1<=expansionEOS0&&expansionDivergence0<=2.0e-8&&
-		expansionDivergence1<=2.0e-8&&expansionLedger0<5.0e-13&&expansionLedger1<5.0e-13,
+		expansionDivergence1<=2.0e-8&&expansionLedger0<5.0e-13&&expansionLedger1<5.0e-13&&
+		expansionAnalytic0<2.0e-8&&expansionAnalytic1<2.0e-8,
 		"V4 constant-p0 open control volume consumes one physical packet and closes face, EOS, and refinement ledgers");
 	std::vector<MethaneSourcePacket> gridPackets;
 	RadiationEscapeFactor gridEscape;
@@ -3491,10 +3524,18 @@ int main()
 		gridEscape,&error) && gridPackets.size() == 2 &&
 		gridPackets[0].radiativeCoolingWPerM3 ==
 			gridPackets[1].radiativeCoolingWPerM3 && gridEscape.accepted >= 0.0 &&
-			gridEscape.accepted <= 1.0 && Near(gridEscape.beta,
+			Near(gridEscape.accepted,std::max(gridEscape.beta,gridEscape.gamma),2.0e-15)&&
+			Near(gridEscape.beta,
 				gridRadiativeFraction*gridDerivedHeatReleaseW/
 				(3.0*gridUnscaledExchange.exchangeWPerM3),2.0e-15),
 		"V4 one grid-level pass derives and freezes a shared record-resolved escape factor");
+	RadiationEscapeFactor previewUnderOpaque,overflowBetaEscape;
+	Check(ComputeRadiationEscapeFactor(2.0,100.0,1.0,{0.5},{1.0},false,
+		previewUnderOpaque,&error)&&previewUnderOpaque.beta==4.0&&
+		previewUnderOpaque.accepted==4.0&&
+		!ComputeRadiationEscapeFactor(std::numeric_limits<double>::max(),100.0,1.0,
+			{std::numeric_limits<double>::denorm_min()},{1.0},false,overflowBetaEscape,&error),
+		"V5 preview preserves beta above one while nonfinite beta fails closed");
 	std::array<double,MethaneSpeciesCount> splitWeights=reacting;
 	splitWeights[MethaneN2]-=0.6;splitWeights[MethaneCO2]=0.4;splitWeights[MethaneH2O]=0.2;
 	const MethaneCellState splitBeginning=StateAtTemperature(splitWeights,0.05,900.0,
@@ -3523,16 +3564,18 @@ int main()
 	const bool splitGate=RadiationSplitDeviation(0.02,splitDeviation0,splitFactor0)&&
 		RadiationSplitDeviation(0.01,splitDeviation1,splitFactor1)&&
 		RadiationSplitDeviation(0.005,splitDeviation2,splitFactor2);
+	const double splitOrder01=std::log(splitDeviation1/splitDeviation0)/std::log(0.5),
+		splitOrder12=std::log(splitDeviation2/splitDeviation1)/std::log(0.5);
 	if(!(splitGate&&splitFactor0.beta>=splitFactor0.gamma&&splitFactor1.beta>=
 		splitFactor1.gamma&&splitFactor2.beta>=splitFactor2.gamma&&splitDeviation0<=0.02&&
-		splitDeviation1<0.65*splitDeviation0&&splitDeviation2<0.65*splitDeviation1))
+		splitOrder01>=0.85&&splitOrder01<=1.15&&splitOrder12>=0.85&&splitOrder12<=1.15))
 		std::printf("V5 split diagnostic ok=%d factors %.6g/%.6g %.6g/%.6g %.6g/%.6g deviations %.9g %.9g %.9g\n",
 			splitGate?1:0,splitFactor0.beta,splitFactor0.gamma,splitFactor1.beta,
 			splitFactor1.gamma,splitFactor2.beta,splitFactor2.gamma,splitDeviation0,
 			splitDeviation1,splitDeviation2);
 	Check(splitGate&&splitFactor0.beta>=splitFactor0.gamma&&splitFactor1.beta>=
 		splitFactor1.gamma&&splitFactor2.beta>=splitFactor2.gamma&&splitDeviation0<=0.02&&
-		splitDeviation1<0.65*splitDeviation0&&splitDeviation2<0.65*splitDeviation1,
+		splitOrder01>=0.85&&splitOrder01<=1.15&&splitOrder12>=0.85&&splitOrder12<=1.15,
 		"V5 beta-active accepted radiation stays within two percent and its splitting deviation halves with dt");
 	RadiationEscapeFactor predictiveInsufficientOpacity;
 	Check(!ComputeRadiationEscapeFactor(gridDerivedHeatReleaseW,600.0,
@@ -3741,18 +3784,20 @@ int main()
 		const double kappa=syntheticKCool+(syntheticKHot-syntheticKCool)*phi;
 		value=syntheticExchangeScale*kappa*(std::pow(temperature,4.0)-
 			std::pow(syntheticAmbient,4.0));return std::isfinite(value)&&value>=0.0;};
+	std::vector<double> syntheticPhiKnots={syntheticAmbient,syntheticInitial};
+	const double halfPi=0.5*std::acos(-1.0);
+	for(double phase=halfPi;syntheticAmbient+phase/syntheticFrequency<syntheticInitial;
+		phase+=std::acos(-1.0))syntheticPhiKnots.push_back(
+			syntheticAmbient+phase/syntheticFrequency);
 	auto syntheticDerivative=[&](const double lo,const double hi,double& value){
+		for(const double knot:syntheticPhiKnots)if(knot>lo&&knot<hi){
+			value=-1.0e12;return true;}
 		const double deltaK=syntheticKHot-syntheticKCool;
 		const double derivativeKLower=-0.45*syntheticFrequency*deltaK;
 		const double kappaLower=syntheticKCool+0.05*deltaK;
 		value=syntheticExchangeScale*(derivativeKLower*(std::pow(hi,4.0)-
 			std::pow(syntheticAmbient,4.0))+4.0*kappaLower*std::pow(lo,3.0));
 		return true;};
-	std::vector<double> syntheticPhiKnots={syntheticAmbient,syntheticInitial};
-	const double halfPi=0.5*std::acos(-1.0);
-	for(double phase=halfPi;syntheticAmbient+phase/syntheticFrequency<syntheticInitial;
-		phase+=std::acos(-1.0))syntheticPhiKnots.push_back(
-			syntheticAmbient+phase/syntheticFrequency);
 	double rejectedRadiationTemperature=0.0,rejectedCooling=0.0;
 	const bool largeStepRejected=!CertifiedScalarRadiationBackwardEuler(syntheticInitial,
 		syntheticAmbient,syntheticCp*syntheticInitial,syntheticCp,20.0,1.0,
@@ -3765,6 +3810,11 @@ int main()
 			syntheticAmbient,syntheticCp*syntheticInitial,syntheticCp,reducedStep,1.0,
 			syntheticPhiKnots,syntheticEnergy,syntheticExchange,
 			syntheticDerivative,reducedTemperature,reducedCooling,&error);}
+	double unsplitTemperature=0.0,unsplitCooling=0.0;
+	const bool unsplitRejected=!CertifiedScalarRadiationBackwardEuler(syntheticInitial,
+		syntheticAmbient,syntheticCp*syntheticInitial,syntheticCp,reducedStep,1.0,
+		{syntheticAmbient,syntheticInitial},syntheticEnergy,syntheticExchange,
+		syntheticDerivative,unsplitTemperature,unsplitCooling,&error);
 	// Continue the same deterministic halving policy past first admissibility
 	// until temporal splitting error is small enough to compare to a fine path.
 	for(std::size_t refinement=0;reducedAccepted&&refinement<6;++refinement){
@@ -3789,39 +3839,39 @@ int main()
 		"V5 enclosure diagnostic reject=%d accept=%d reductions=%zu coarse=%.9g fine=%.9g diff=%.9g error=%s\n",
 		largeStepRejected?1:0,reducedAccepted?1:0,reductions,reducedTemperature,fineTemperature,
 		std::fabs(reducedTemperature-fineTemperature),error.c_str());
-	Check(largeStepRejected&&reducedAccepted&&reductions>0&&fineAccepted&&
+	Check(largeStepRejected&&reducedAccepted&&unsplitRejected&&reductions>0&&fineAccepted&&
 		std::fabs(reducedTemperature-fineTemperature)<8.0,
 		"V5 steep nonmonotone opacity fails F-prime at large dt, passes deterministic reduction, and matches a small-step reference");
 
 	// V6: the eligibility graph is memoryless.  A vitiated barrier blocks a
 	// pilot-connected pocket while a separate CFT-passing autoignition cell seeds itself.
 	IgnitionGrid grid;
-	grid.nx = 5; grid.ny = 1; grid.nz = 1;
-	grid.cells.assign(5,StateAtTemperature(beginning.constituent,
+	grid.nx = 6; grid.ny = 1; grid.nz = 1;
+	grid.cells.assign(6,StateAtTemperature(beginning.constituent,
 		beginning.rhoTotalZ/beginning.TotalDensity(),700.0,thermochemistry));
-	grid.pilotMask.assign(5,false);
+	grid.pilotMask.assign(6,false);
 	grid.pilotMask[0] = true;
 	const double gridMixtureFraction = beginning.rhoTotalZ/beginning.TotalDensity();
 	grid.cells[0] = StateAtTemperature(grid.cells[0].constituent,
 		gridMixtureFraction,1001.0,thermochemistry);
-	const double removedBarrierFuel=0.999*grid.cells[2].constituent[MethaneCH4],
-		removedBarrierOxygen=0.999*grid.cells[2].constituent[MethaneO2];
-	grid.cells[2].constituent[MethaneCH4]-=removedBarrierFuel;
-	grid.cells[2].constituent[MethaneO2]-=removedBarrierOxygen;
-	grid.cells[2].constituent[MethaneN2]+=removedBarrierFuel+removedBarrierOxygen;
-	grid.cells[2] = StateAtTemperature(grid.cells[2].constituent,
+	const double removedBarrierFuel=0.999*grid.cells[4].constituent[MethaneCH4],
+		removedBarrierOxygen=0.999*grid.cells[4].constituent[MethaneO2];
+	grid.cells[4].constituent[MethaneCH4]-=removedBarrierFuel;
+	grid.cells[4].constituent[MethaneO2]-=removedBarrierOxygen;
+	grid.cells[4].constituent[MethaneN2]+=removedBarrierFuel+removedBarrierOxygen;
+	grid.cells[4] = StateAtTemperature(grid.cells[4].constituent,
 		gridMixtureFraction,700.0,thermochemistry);
 	double barrierAdiabatic=0.0;
-	Check(TrialAdiabaticTemperatureK(grid.cells[2],fuel,thermochemistry,
+	Check(TrialAdiabaticTemperatureK(grid.cells[4],fuel,thermochemistry,
 		barrierAdiabatic,&error)&&barrierAdiabatic<transport.CriticalFlameTemperatureK()&&
-		grid.cells[2].constituent[MethaneCH4]>0.0&&grid.cells[2].constituent[MethaneO2]>0.0,
+		grid.cells[4].constituent[MethaneCH4]>0.0&&grid.cells[4].constituent[MethaneO2]>0.0,
 		"V6 vitiated barrier reaches and fails the CFT trial with both reactants present");
 	std::vector<bool> eligibility,repeatedEligibility,historyEligibility;
 	Check(BuildIgnitionEligibility(grid,fuel,thermochemistry,transport,
 		eligibility,&error),"V6 ignition eligibility graph evaluates");
-	Check(eligibility.size()==5&&eligibility[0]&&eligibility[1]&&!eligibility[2]&&
-		!eligibility[3]&&!eligibility[4],
-		"V6 vitiated barrier blocks pilot propagation into a remote CFT-passing pocket");
+	Check(eligibility.size()==6&&eligibility[0]&&eligibility[1]&&eligibility[2]&&
+		eligibility[3]&&!eligibility[4]&&!eligibility[5],
+		"V6 pilot traversal crosses a multi-hop component while a vitiated barrier blocks the remote pocket");
 	IgnitionGrid autoignitionGrid;autoignitionGrid.nx=autoignitionGrid.ny=
 		autoignitionGrid.nz=1;autoignitionGrid.pilotMask.assign(1,false);
 	autoignitionGrid.cells.push_back(StateAtTemperature(beginning.constituent,
@@ -3979,7 +4029,7 @@ int main()
 				state.swap(advanced.conservative);momentum.component.swap(
 					advanced.momentumKGPerM2S.component);
 			}
-			history.heatReleaseW.push_back(sampleHeat);history.frontM.push_back(front);
+				history.heatReleaseW.push_back(sampleHeat);history.frontM.push_back(front);
 		}
 		return true;
 	};

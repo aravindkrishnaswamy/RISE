@@ -4357,13 +4357,15 @@ namespace RISE
 					return Fail(error,"fire solver burning radiation budget has no modeled opacity");
 				}
 				result.beta = radiativeFraction*totalHeatReleaseW/exchangeIntegralW;
+				if(!std::isfinite(result.beta))return Fail(error,
+					"fire solver radiation escape factor overflowed");
 				if( predictive && result.beta > 1.0 ) {
 					return Fail(error,"fire solver predictive opacity cannot supply the requested radiative fraction");
 				}
 			}
 			result.gamma = std::max(0.0,std::min(1.0,1.0-totalHeatReleaseW/
 				(0.01*nominalPeakHeatReleaseW)));
-			result.accepted = std::min(1.0,std::max(result.beta,result.gamma));
+			result.accepted = std::max(result.beta,result.gamma);
 			return std::isfinite(result.accepted) ||
 				Fail(error,"fire solver radiation escape factor overflowed");
 		}
@@ -4579,7 +4581,7 @@ namespace RISE
 			if(!std::isfinite(initialTemperatureK)||!std::isfinite(ambientTemperatureK)||
 				!std::isfinite(initialEnergyJPerM3)||!std::isfinite(heatCapacityLowerJPerM3K)||
 				heatCapacityLowerJPerM3K<=0.0||!std::isfinite(deltaTimeS)||deltaTimeS<=0.0||
-				!std::isfinite(escapeFactor)||escapeFactor<0.0||escapeFactor>1.0){
+				!std::isfinite(escapeFactor)||escapeFactor<0.0){
 				return Fail(error,"fire solver certified scalar radiation input is malformed");
 			}
 			const double lower=std::min(initialTemperatureK,ambientTemperatureK);
@@ -4644,7 +4646,7 @@ namespace RISE
 		{
 			if( !ValidateCellState(preRadiation,error) || !std::isfinite(deltaTimeS) ||
 				deltaTimeS <= 0.0 || !std::isfinite(escapeFactor) || escapeFactor < 0.0 ||
-				escapeFactor > 1.0 || ambientTemperatureK < opacity.TemperatureMinK() ||
+				ambientTemperatureK < opacity.TemperatureMinK() ||
 				ambientTemperatureK > opacity.TemperatureMaxK() ||
 				preRadiation.temperatureK < opacity.TemperatureMinK() ||
 				preRadiation.temperatureK > opacity.TemperatureMaxK() ) {
@@ -4715,11 +4717,29 @@ namespace RISE
 				packet.reactedFuelKGPerM3+fuel.SootOxygenKGPerKGCarbon()*
 				packet.oxidizedCarbonKGPerM3;
 			const double energyTolerance=4096.0*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,std::fabs(expectedEnergy));
-			return (std::fabs(massResidual)<=tolerance&&elementResidual<=tolerance&&
+				std::max({1.0,std::fabs(expectedEnergy),
+					std::fabs(beginning.sensibleEnergyJPerM3)});
+			const double expectedGasRate=packet.reactedFuelKGPerM3*
+				fuel.LowerHeatingValueJPerKG()/reactionStep.deltaTimeS;
+			const double expectedSootRate=packet.oxidizedCarbonKGPerM3*
+				fuel.SootHeatReleaseJPerKGCarbon()/reactionStep.deltaTimeS;
+			const double rateTolerance=4096.0*std::numeric_limits<double>::epsilon()*
+				std::max({1.0,std::fabs(expectedGasRate),std::fabs(expectedSootRate)});
+			const bool closes=std::fabs(massResidual)<=tolerance&&elementResidual<=tolerance&&
 				std::fabs(packet.sensibleEnergyDeltaJPerM3-expectedEnergy)<=energyTolerance&&
-				std::fabs(-packet.constituentDelta[MethaneO2]-oxygenExpected)<=tolerance)||
-				Fail(error,"fire solver frozen source packet failed its mass/element/chemical-potential ledger");
+				std::fabs(-packet.constituentDelta[MethaneO2]-oxygenExpected)<=tolerance&&
+				std::isfinite(packet.gasHeatReleaseWPerM3)&&
+				std::isfinite(packet.sootHeatReleaseWPerM3)&&
+				std::fabs(packet.gasHeatReleaseWPerM3-expectedGasRate)<=rateTolerance&&
+				std::fabs(packet.sootHeatReleaseWPerM3-expectedSootRate)<=rateTolerance;
+			if(closes)return true;
+			std::ostringstream message;message<<"fire solver frozen source packet failed its ledger: mass="
+				<<massResidual<<", element="<<elementResidual<<", oxygen="
+				<<(-packet.constituentDelta[MethaneO2]-oxygenExpected)<<", energy="
+				<<(packet.sensibleEnergyDeltaJPerM3-expectedEnergy)<<", gas-rate="
+				<<(packet.gasHeatReleaseWPerM3-expectedGasRate)<<", soot-rate="
+				<<(packet.sootHeatReleaseWPerM3-expectedSootRate);
+			return Fail(error,message.str());
 		}
 
 		inline bool BuildFrozenMethaneSourcePacket(
