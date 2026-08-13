@@ -1134,3 +1134,32 @@ it was already tried and refuted here.
   fixed-order reductions (the discipline the V-tier ledgers already
   assume), enforced by a 1-vs-N determinism fixture, with threads recorded
   in producer/run metadata only.
+
+- **r55 (2026-08-13):** the pilot pinned as a physical energy source, from
+  the capstone's cold-start stop. The agent's diagnosis eliminated every
+  numerical suspect (bed tuple exactly in the constraint space with zero
+  affine residual; state-scaled tolerance; a 3×3×3 production fixture
+  passing without step reduction; an fp64 endpoint-inversion mismatch found
+  and fixed with a 2×-envelope RED), leaving a genuine design hole: §3.3
+  named a "fixed pilot-source mask" without defining it, and the
+  piloted-with-resolved-T gate is circular for a cold gas burner — piloted
+  eligibility needs T > T_pilot, and a 300 K domain with 300 K injection
+  has no heat source until reaction starts. Pin: the pilot is what a real
+  pilot is — a small flame — modelled as a prescribed volumetric energy
+  source through the ordinary source-packet/ℋ_s ledger, never a state
+  overwrite. Mask derived canonically (first layer above the bed, centers
+  in the annulus [D/2, D/2+2δx] — the fuel/air interface, where the
+  eligibility graph can actually build vertices); power exactly 0.01·Q̇_ref
+  uniform over the mask; active for exactly 1·t_ft from run start, so the
+  5·t_ft discard/pre-roll window guarantees no pilot energy touches any
+  measured statistic; ledgered in ℋ_s but excluded from Q̇_tot (it is not
+  heat of combustion — χ_r's budget and ε_Q see combustion only). No new
+  authored field; the block is derived, echoed, and inside
+  `case_record_id`. Case schema v1 amended in place — no persisted record
+  predates the pin. Eligibility, seeding, and extinction semantics are
+  unchanged: the pilot supplies the resolved heat the gate always
+  presumed. Alternatives rejected: an FDS-style gate-bypass zone (changes
+  the gate semantics the design chose deliberately, and ignites without
+  resolved heat — exactly the non-physics §3.3 was written to avoid) and a
+  temperature overwrite (violates the conservative-ledger discipline every
+  V-tier gate certifies).

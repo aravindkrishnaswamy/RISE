@@ -573,6 +573,40 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
   This is what prevents the fuel-bed rim and re-entrained cold pockets
   from burning spontaneously while letting the flame spread at a physical
   rate.
+
+  **The pilot is a prescribed energy source, fully pinned (r55).** The
+  "fixed pilot-source mask" above was named but never defined, leaving the
+  cold-start gate circular: piloted ignition needs resolved T > T_pilot,
+  and a 300 K domain with 300 K injection has no heat source until
+  reaction starts. The pilot is what a real pilot is — a small flame
+  heating the fuel/air interface — modelled as a prescribed volumetric
+  energy source through the ordinary source-packet/ℋ_s ledger (never a
+  state overwrite):
+  - **Mask (derived, canonical):** the first cell layer above the bed
+    whose centers lie in the annulus [D/2, D/2 + 2δx] around the source
+    axis — the fuel/air interface ring where a physical pilot sits and
+    where both reactants are available to the eligibility graph.
+  - **Power:** exactly **0.01·Q̇_ref**, distributed uniformly per mask
+    cell. Small enough not to contaminate any empirical row; ample to
+    take a two-cell ring past T_pilot.
+  - **Timing:** active from run start (cold start or pre-roll start
+    alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
+    The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
+    the measured envelope or any statistics window.
+  - **Ledger:** pilot energy enters ℋ_s conservation like any source
+    term and appears as its own diagnostic line; it is **not** heat of
+    combustion and is therefore excluded from Q̇_tot (χ_r's budget and
+    ε_Q see combustion only).
+  - **Payload:** the pilot block (model version, mask rule, power
+    fraction, duration multiplier) is echoed into the §3.9 derived
+    fields, hence inside `case_record_id`. No new authored field exists;
+    the pilot is universal and derived. Case schema v1 is amended in
+    place to include the block — no persisted v1 record predates this
+    pin, so there is no compatibility surface.
+  The V6 graph fixtures keep their own test-level seeds and are
+  unaffected; nothing about eligibility, seeding, or extinction changes —
+  the pilot merely supplies the resolved heat the existing gate always
+  presumed.
 - **Extinction gate (FDS critical-flame-temperature test):** a cell that
   *would* react is suppressed if adiabatic combustion of its mixed contents
   cannot reach T_CFT (empirical, ≈1700 K for hydrocarbons) — this kills
@@ -1611,7 +1645,13 @@ following; two conforming tools must derive identical bytes:
    exactly the authored value, scaled by amplitude **a = 0.01**, and
    applied **constantly for the entire run** (a slightly non-uniform
    burner — no time discontinuity, fully deterministic).
-7. **Thread count and reduction mode are NOT identity-bearing.** The
+7. **Pilot (r55).** The prescribed pilot energy source of §3.3: mask =
+   first layer above the bed, centers in the annulus [D/2, D/2 + 2δx];
+   power exactly 0.01·Q̇_ref uniform per mask cell; active from run start
+   for exactly 1·t_ft; ledgered in ℋ_s but excluded from Q̇_tot. The
+   pilot block is echoed in the derived fields and is part of
+   `case_record_id`.
+8. **Thread count and reduction mode are NOT identity-bearing.** The
    requirement is on the output: the solver must produce **bit-identical
    sequences regardless of effective thread count**, via fixed-order
    (deterministic tree) reductions — the same discipline the V-tier
