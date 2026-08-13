@@ -1148,7 +1148,37 @@ The most notorious practical trap in fire LES; specified accordingly:
   integer arithmetic, proving rank(A)≤r. Recorded pivot-row/pivot-column
   indices additionally select an r×r minor B of A; its exact fraction-free
   elimination certificate has nonzero final pivots and proves rank(A)≥r.
-  Thus rank(A)=r independently of the approximate N_A columns. The record also
+  Thus rank(A)=r independently of the approximate N_A columns.
+  **Physical-kernel consistency (r56) — three additional certificates, all
+  generator-time and exact.** Sustained methane combustion exposed that a
+  kernel can pass every rank certificate above and still be *physically*
+  wrong: the canonical-binary64 A and the fuel's reaction stoichiometry had
+  been derived through different arithmetic paths from the same atomic
+  weights, so the exact-dyadic nullspace missed the atom-balanced reaction
+  direction — per-step residual ~7×10⁻¹⁸ with a *systematic* sign,
+  accumulating linearly into the affine envelope, while projecting it away
+  displaced ρZ and CH₄ by ~2×10⁻⁷ because the kernel carried a
+  near-dependency at the ~10⁻¹¹ scale (an exact rational row dependency —
+  mass = Σ elements — broken by independent rounding). Requirements:
+  (1) **one rational source** — A, every reaction/stream stoichiometric
+  direction of every referenced fuel record, and the b(Z) affine relation
+  are generated from the same pinned exact-rational atomic weights, and the
+  generator proves **A_ℚ·Δq_r = 0 exactly in ℚ** for every physical
+  direction Δq_r before any rounding; (2) **stored-row independence** — the
+  canonical record stores only a maximal independent row set; exactly
+  dependent constraints (the mass row, b(Z)) are declared symbolically and
+  derived, never stored as separately rounded rows, so no rounding-broken
+  near-dependency can enter the dyadic kernel; (3) **conditioning
+  certificate** — the record carries a certified positive lower bound on
+  the smallest singular value of the stored row basis (outward-rounded
+  interval arithmetic), so a residual-to-displacement amplification of the
+  kind above is structurally impossible to reintroduce silently. A
+  sustained-combustion fixture asserts the per-step reaction residual is
+  unbiased round-off (envelope growth ~√steps, not linear). **Projecting a
+  physical reaction delta through the kernel is never a permissible repair
+  for this defect class** — with a consistent kernel the projection is the
+  rounding-level no-op §3.3 specifies, and anything larger is a generator
+  bug that must fail generation, not run time. The record also
   carries an exact rational nullspace basis B_A with `cols(B_A)=n-r`, encoded
   as canonical reduced numerator/positive-denominator pairs inside the same
   hashed record;

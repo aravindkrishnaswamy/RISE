@@ -1163,3 +1163,30 @@ it was already tried and refuted here.
   resolved heat — exactly the non-physics §3.3 was written to avoid) and a
   temperature overwrite (violates the conservative-ledger discipline every
   V-tier gate certifies).
+
+- **r56 (2026-08-13):** physical-kernel consistency pinned, from the
+  capstone's sustained-combustion stop — the deepest catch of the
+  implementation arc, and the affine envelope doing precisely its job.
+  The rank-4 canonical-binary64 A passed every r51 certificate yet its
+  exact-dyadic nullspace missed the atom-balanced methane reaction
+  direction: A and the reaction stoichiometry had been derived through
+  different arithmetic paths from the same atomic weights. Signature:
+  per-step A-residual ~7×10⁻¹⁸ with systematic sign, linear accumulation
+  to the ~2.17×10⁻¹² envelope over sustained burning, and a projector
+  displacement of ~2×10⁻⁷ on the first reacting step — the 10¹¹
+  amplification implying a near-dependency in the kernel at ~10⁻¹¹ (an
+  exact rational row dependency, mass = Σ elements, broken by independent
+  rounding). Disposition: **regenerate, never correct at run time** — the
+  agent's option 2 (a defined source-packet correction) was rejected
+  because a systematic 2×10⁻⁷ transfer of ρZ/CH₄ per step is nonphysical
+  mass/element motion that would silently corrupt the V4 ledger and the
+  reaction closure. Three new generator-time certificates: one exact-
+  rational source for A, all fuel stoichiometric directions, and b(Z),
+  with A_ℚ·Δq_r = 0 proved in ℚ before rounding; stored-row independence
+  (dependent constraints declared symbolically, never stored as
+  separately rounded rows); and a certified positive lower bound on the
+  stored row basis's smallest singular value. Plus a sustained-combustion
+  fixture asserting unbiased (√steps) residual growth. N_A, N_C, the
+  methane record, and case identities regenerate downstream —
+  pre-release, no compatibility surface. The run-time envelope stays
+  fixed and fail-closed: it caught this.
