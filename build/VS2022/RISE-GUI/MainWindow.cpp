@@ -47,6 +47,7 @@
 #include <QSettings>
 #include <QPalette>
 #include <QEvent>
+#include <QCloseEvent>
 #include <QSlider>
 #include <QStackedWidget>
 #include <QSplitter>
@@ -334,6 +335,14 @@ MainWindow::~MainWindow()
     // would otherwise delete the engine first and leave borrowed pointers.
     if (m_engine) {
         m_engine->cancelAndJoinInFlightWork();
+    }
+    // Durable document snapshots: write the trajectory's final
+    // "session_end" snapshot + summary under an honest "app_quit" status
+    // BEFORE teardownViewport() severs m_chatPanel from m_viewportBridge
+    // (mirrors macOS ChatViewModel's NSApplication.willTerminateNotification
+    // handler -- see ChatPanel::finishTrajectoryOnQuit's doc).
+    if (m_chatPanel) {
+        m_chatPanel->finishTrajectoryOnQuit();
     }
     teardownViewport();
 }
@@ -1179,6 +1188,23 @@ void MainWindow::changeEvent(QEvent* e)
     if (e->type() == QEvent::PaletteChange && m_themeReady && m_themeEpochSeen != Theme::paletteEpoch()) {
         restyleTheme();
     }
+}
+
+// Quit-time unsaved-work prompt -- mirrors macOS AppDelegate.
+// applicationShouldTerminate (RISEApp.swift).  The window close box and
+// File > Exit (exitAction -> QWidget::close()) both post a QCloseEvent
+// here.  Reuses the SAME gate Close Scene / load-over already run --
+// Save/Discard/Cancel, untitled-scene Save-As, the both-dirty scene+editor
+// case.  Cancel/a refused save ignores the event (quit aborted, same as a
+// cancelled Close Scene); accepting it lets ~MainWindow()'s existing
+// cancel-and-join-then-flush-trajectory ordering run unchanged.
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (!promptToSaveUnsavedWork(tr("quitting"))) {
+        event->ignore();
+        return;
+    }
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::restyleTheme()

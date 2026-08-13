@@ -726,6 +726,7 @@ final class ChatViewModel: ObservableObject {
     var chatRenderWillSubmit: () -> Void = {}
 
     private let chatBridge = RISEAgentChatBridge()
+
     /// The per-scene tool executor.  WEAK: RenderViewModel owns the
     /// viewport bridge; on clearScene it calls `sceneClosed()` (which
     /// also nils this) BEFORE shutting the bridge down, so the driver
@@ -976,11 +977,13 @@ final class ChatViewModel: ObservableObject {
         // Review-round P2: the session record's scene-identity fields were
         // shipped dead (""/-1) -- the scene PATH is the trajectory<->document
         // correlator the eval harness needs, and it is available right here.
-        // headVersion stays best-effort -1 on the GUI (no cheap accessor at
-        // attach time; the headless runner populates it precisely).
+        // headVersion is now populated too (durable-document-snapshots work):
+        // -agentHeadVersionRevision is a cheap accessor (RISEViewportBridge.h),
+        // closing the "no cheap accessor at attach time" gap this comment used
+        // to note; -1 only when there is no live viewport bridge yet.
         chatBridge.startTrajectory(directory: trajectoryDirectory,
                                    scenePath: currentScenePath,
-                                   headVersion: -1,
+                                   headVersion: viewportBridge?.agentHeadVersionRevision() ?? -1,
                                    enabled: recordTrajectories)
     }
 
@@ -1076,6 +1079,29 @@ final class ChatViewModel: ObservableObject {
         // (not `.propose`) is the honest default.
         let storedAutonomyRaw = UserDefaults.standard.object(forKey: Self.autonomyLevelKey) as? Int
         autonomyLevel = storedAutonomyRaw.flatMap(RISEAgentAutonomyLevel.init(rawValue:)) ?? .apply
+
+    }
+
+    /// Durable document snapshots: write the trajectory's final
+    /// `session_end` snapshot + summary under an honest "app_quit"
+    /// status.  Called by RenderViewModel's own
+    /// `NSApplication.willTerminateNotification` observer -- RenderViewModel
+    /// owns render lifecycle and must request cancellation of any
+    /// in-flight production render BEFORE this runs (see that
+    /// observer's doc): the coherent read this triggers (through
+    /// `AgentSession::ReadDocumentSnapshot`) BLOCKS while the render
+    /// thread holds the controller mutex, so calling this before the
+    /// render is at least cooperatively cancelling stalls app
+    /// termination for the render's full remaining duration.  The
+    /// viewport bridge/controller are still alive at willTerminate
+    /// (nothing tears them down on quit today), so the provider
+    /// installed in `sceneOpened` still works.  Idempotent:
+    /// FinishTrajectory's underlying CloseTrajectorySession guards a
+    /// second close (`mSessionEmitted`), so a normal `sceneClosed()`
+    /// reset racing this (it cannot in practice -- willTerminate is the
+    /// last thing that runs) would still be a harmless no-op.
+    func appWillTerminate() {
+        chatBridge.finishTrajectory(status: "app_quit")
     }
 
     // MARK: Scene lifecycle (driven by RenderViewModel)
@@ -1147,6 +1173,28 @@ final class ChatViewModel: ObservableObject {
                 detailText: Self.skillIndexNote(fromRpcResponse: indexResponse)))
         }
 
+        // Durable document snapshots (product gap: a scene built entirely
+        // inside a live agent session, never Save As'd, was otherwise
+        // unrecoverable on quit/crash).  Reinstall on every scene open so
+        // the closure always resolves against THIS scene's viewport bridge
+        // -- `[weak self]` plus a fresh read of `self.viewportBridge` at
+        // CALL time (not capture time) is what makes sceneClosed()'s
+        // close-time snapshot above find the right (still-alive) bridge.
+        // AGENT RPC THREAD DISCIPLINE: fired from wherever
+        // AgentChatLoop::SetDocumentSnapshotProvider's doc says the C++
+        // core calls its provider -- the agent RPC thread, in practice
+        // the same main/UI thread this whole bridge is single-threaded on
+        // (see the bridge headers' THREADING notes), so no dispatch hop
+        // is needed here.
+        chatBridge.setDocumentSnapshotProvider { [weak self] in
+            guard let vb = self?.viewportBridge else { return nil }
+            var uuid: UInt64 = 0
+            var revision: UInt64 = 0
+            guard let text = vb.agentReadDocumentSnapshotText(uuid: &uuid, revision: &revision)
+            else { return nil }
+            return RISEAgentChatDocumentSnapshot(text: text, headUuid: uuid, headRevision: revision)
+        }
+
         // Eval-harness E1: a freshly-opened scene starts a NEW trajectory
         // file (the skill index is set above, so the session record captures
         // the full system prompt including skills on first user message).
@@ -1183,7 +1231,14 @@ final class ChatViewModel: ObservableObject {
         // time the panel re-renders for the (about to be gone) scene.
         stopExternalHosting()
         sceneGeneration += 1
-        viewportBridge = nil
+        // Durable document snapshots: `chatBridge.reset()` below closes the
+        // trajectory session and, per SetDocumentSnapshotProvider's policy,
+        // takes one final "session_end" snapshot through the closure set in
+        // sceneOpened -- which reads `self.viewportBridge`.  It MUST still
+        // resolve to the (still-alive; RenderViewModel calls sceneClosed()
+        // before shutdown -- see this method's doc) outgoing bridge, so
+        // `viewportBridge` is cleared AFTER reset(), not before.  Nilling it
+        // early used to make the close-time snapshot silently find nothing.
         currentScenePath = ""
         chatBridge.reset()
         // Eval-harness E1: reset() closed the session ("reset" summary to
@@ -1191,6 +1246,7 @@ final class ChatViewModel: ObservableObject {
         // next sceneOpened starts a fresh one).
         chatBridge.startTrajectory(directory: trajectoryDirectory,
                                    scenePath: "", headVersion: -1, enabled: false)
+        viewportBridge = nil
         transcript = []
         lastReportedCompactedEntryCount = 0
         inputText = ""

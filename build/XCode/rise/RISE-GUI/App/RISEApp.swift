@@ -76,6 +76,36 @@ enum SkillsRootBootstrap {
     }
 }
 
+/// Quit-time unsaved-work prompt (84-trajectory-document-snapshots'
+/// backstop is a safety net, not the fix — this is the fix): SwiftUI's
+/// `App` protocol installs an implicit delegate that always answers
+/// `applicationShouldTerminate` with `.terminateNow`, so intercepting Cmd-Q
+/// / the app-menu Quit item requires an explicit `NSApplicationDelegate`
+/// via `NSApplicationDelegateAdaptor`.  Kept a thin NSObject rather than
+/// an ObservableObject — it renders nothing and has no SwiftUI observers,
+/// it only needs a reference to the already-existing RenderViewModel.
+///
+/// Reuses `RenderViewModel.promptToSaveUnsavedWork` verbatim — the SAME
+/// Save/Discard/Cancel gate Close Scene and load-over already run (covers
+/// untitled scenes via Save-As panel, save failures, and the both-dirty
+/// scene+editor case).  A render in flight at quit time is handled
+/// separately by RenderViewModel's existing `willTerminateNotification`
+/// observer (cancels it, then flushes the trajectory) which fires AFTER
+/// `applicationShouldTerminate` returns — so this delegate never needs to
+/// wait on a render itself.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var viewModel: RenderViewModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let vm = viewModel else { return .terminateNow }
+        // promptToSaveUnsavedWork runs NSAlert.runModal() synchronously on
+        // the main thread — applicationShouldTerminate is itself called on
+        // main, so this blocks termination exactly as long as the user
+        // takes to answer, same as the Close Scene prompt blocks a close.
+        return vm.promptToSaveUnsavedWork(before: "quitting") ? .terminateNow : .terminateCancel
+    }
+}
+
 @main
 struct RISEApp: App {
     /// Menu-flyout fix (2026-07-16): the model is held through a plain
@@ -90,6 +120,15 @@ struct RISEApp: App {
     /// publishes only when menu-rendered state actually changes.
     @State private var app = AppModel()
 
+    /// Installs AppDelegate as the app's NSApplicationDelegate so
+    /// `applicationShouldTerminate` runs on quit.  The adaptor creates
+    /// `appDelegate` before this struct's `init()` body runs (same
+    /// compiler-synthesized default-value timing as `app` above), so
+    /// wiring `appDelegate.viewModel = app.viewModel` in `init()` below
+    /// is safe — it happens well before any window can appear, let alone
+    /// before the user could quit.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     /// Mirrors ThemeState's persisted mode so the File > Theme menu
     /// checkmarks stay live (ThemeState.setMode writes this same
     /// UserDefaults key, which also drives ContentView's root .id()
@@ -98,6 +137,10 @@ struct RISEApp: App {
     private var themeModeRaw: String = ThemeMode.dark.rawValue
 
     init() {
+        // Quit-time save prompt: hand the delegate the SAME RenderViewModel
+        // instance ContentView/the menus use (not a second one) so its
+        // dirty check reflects the actual open scene.
+        appDelegate.viewModel = app.viewModel
         // Anchor the agent's skills to the INSTALLATION before anything
         // can read the index (see SkillsRootBootstrap for why binding
         // them to RISE_MEDIA_PATH, which follows the open scene, was the

@@ -183,6 +183,29 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
 @property (nonatomic, readonly) BOOL retryDegenerateTurn;
 @end
 
+/// Durable document snapshots: one coherent (document text, head-version)
+/// read, returned by a `RISEAgentChatDocumentSnapshotProvider` block --
+/// mirrors the non-`hasDocument` half of
+/// RISE::Agent::AgentSession::AgentDocumentSnapshot.  A value object
+/// (not raw out-pointers) so the Swift closure reads naturally; `nil`
+/// (never an instance with empty text) is how the provider spells "no
+/// document to save".
+@interface RISEAgentChatDocumentSnapshot : NSObject
+- (instancetype)initWithText:(NSString *)text
+                     headUuid:(uint64_t)headUuid
+                 headRevision:(uint64_t)headRevision;
+@property (nonatomic, readonly, copy) NSString *text;
+@property (nonatomic, readonly) uint64_t headUuid;
+@property (nonatomic, readonly) uint64_t headRevision;
+@end
+
+/// Fired synchronously wherever RISE::Agent::AgentChatLoop::
+/// SetDocumentSnapshotProvider's doc says the C++ core calls its
+/// provider (the agent RPC thread; CAN BLOCK while a render owns the
+/// scene) -- see -setDocumentSnapshotProvider: below.  Returns nil when
+/// there is no document to save.
+typedef RISEAgentChatDocumentSnapshot * _Nullable (^RISEAgentChatDocumentSnapshotProvider)(void);
+
 @interface RISEAgentChatBridge : NSObject
 
 /// Constructs with the ChatGPT/OpenAI provider + its default model
@@ -360,6 +383,24 @@ typedef NS_ENUM(NSInteger, RISEAgentChatRole) {
                        headVersion:(long long)headVersion
                            enabled:(BOOL)enabled
     NS_SWIFT_NAME(startTrajectory(directory:scenePath:headVersion:enabled:));
+
+/// Durable document snapshots (product gap: a scene built entirely
+/// inside a live GUI agent session, never Save As'd, was otherwise
+/// unrecoverable on quit/crash -- the trajectory recorded tool
+/// calls/results but never the document TEXT).  Wires
+/// RISE::Agent::AgentChatLoop::SetDocumentSnapshotProvider: `provider`
+/// is called to fetch a fresh (text, uuid, revision) whenever the
+/// loop's write policy decides a `document_snapshot` record is due (see
+/// that method's doc for the full policy -- per-advancing-tool-call,
+/// decimated past 1MB, plus one at every trajectory close for ANY
+/// status including app_quit).  Pass nil to detach (every hook becomes
+/// a no-op, matching a fresh loop's default).  Survives -reset /
+/// -setProvider:modelId: (provider-neutral config, like the skill
+/// index / system-prompt override).  A plain assignment underneath --
+/// safe to call repeatedly (e.g. alongside every -startTrajectory: call,
+/// so a fresh viewport bridge is always the one the closure reaches).
+- (void)setDocumentSnapshotProvider:(nullable RISEAgentChatDocumentSnapshotProvider)provider
+    NS_SWIFT_NAME(setDocumentSnapshotProvider(_:));
 
 /// Record one LLM HTTP round (driver-measured status/body/latency) into
 /// the `llm` trajectory record -- call just BEFORE handleResponse.  No-op

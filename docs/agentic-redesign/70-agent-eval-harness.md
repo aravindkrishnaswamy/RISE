@@ -64,7 +64,10 @@ was written; the shipped E1–E5 work supersedes the absences below):**
 - Adopt the **OTel GenAI field vocabulary** as JSONL key names (request+response model,
   input/output/cache-read tokens, finish_reasons, error.type) with **no SDK**.
 - **Flat, append-only records** with `trace_id`/`parent_span_id`/`dotted_order` + a
-  `run_type` discriminator (`llm`/`tool`/`user`/`history_edit`/`summary`) — what the
+  `run_type` discriminator (`session`/`llm`/`tool`/`user`/`history_edit`/
+  `document_snapshot`/`summary` as shipped — see
+  [84-trajectory-document-snapshots.md](84-trajectory-document-snapshots.md) for the
+  newest kind) — what the
   mature systems converge on. Retries = sibling records (`attempt`, `retry_of`), never
   counters. One **summary line** per trajectory (n_turns, n_toolcalls, tokens, wall time,
   terminal status) for single-line regression diffs.

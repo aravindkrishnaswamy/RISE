@@ -1273,6 +1273,16 @@ namespace RISE
 						break;
 					}
 				}
+				// Durable document snapshots: the SAME headVersion object this
+				// loop already parses for t.headVersionAfter also carries the
+				// uuid half of the identity that snapshot policy needs (see
+				// SetDocumentSnapshotProvider) -- t.headVersionAfter stays
+				// revision-only (unchanged wire contract), but this call also
+				// wants the uuid, so it is parsed alongside into locals rather
+				// than added to TrajectoryToolRecord.
+				bool     headVersionAdvanced = false;
+				uint64_t headVersionUuid = 0;
+				uint64_t headVersionRevision = 0;
 				JsonValue env;
 				std::string perr;
 				if( JsonParse( rawJsonRpcResponseLine, env, perr ) && env.isObject() ) {
@@ -1282,15 +1292,38 @@ namespace RISE
 					if( result.isObject() ) {
 						const JsonValue& hv = result.get( "headVersion" );
 						if( hv.isObject() ) {
-							if( hv.get( "revision" ).isNumber() )
+							if( hv.get( "revision" ).isNumber() ) {
 								t.headVersionAfter = static_cast<long long>( hv.get( "revision" ).asNumber() );
+								headVersionRevision = static_cast<uint64_t>( hv.get( "revision" ).asNumber() );
+								headVersionAdvanced = true;
+							}
+							if( hv.get( "uuid" ).isNumber() )
+								headVersionUuid = static_cast<uint64_t>( hv.get( "uuid" ).asNumber() );
 						}
 						else if( hv.isNumber() ) {
 							t.headVersionAfter = static_cast<long long>( hv.asNumber() );
+							headVersionRevision = static_cast<uint64_t>( hv.asNumber() );
+							headVersionAdvanced = true;
 						}
 					}
 				}
 				mRecorder->EmitTool( t );
+
+				// Durable document snapshots, head_bump path -- see
+				// SetDocumentSnapshotProvider.  AGENT RPC THREAD DISCIPLINE:
+				// AddToolResult runs on whatever thread dispatches a tool
+				// result back into this loop, which in the GUI's in-app
+				// topology is the agent RPC thread -- the SAME thread every
+				// tool dispatch and read verb runs on, matching
+				// AgentSession::ReadDocumentSnapshot's documented discipline
+				// (the provider this loop calls is a thin wrapper around it).
+				// uuid 0 is the documented "no retained head" sentinel
+				// (Cst.h:206, CstHeadVersion::uuid) -- e.g. read_document on a
+				// session with no CST head reports {uuid:0, revision:0}, which
+				// looks "advanced" against a fresh trace's zero-init locals but
+				// names no real document, so skip the provider call entirely.
+				if( headVersionAdvanced && headVersionUuid != 0 )
+					MaybeEmitHeadBumpSnapshot( headVersionUuid, headVersionRevision );
 			}
 
 			// Once every pending call of the assistant turn has a result,
@@ -2309,6 +2342,31 @@ namespace RISE
 		void AgentChatLoop::CloseTrajectorySession( const std::string& status )
 		{
 			if( !mRecorder || !mSessionEmitted ) return;
+
+			// Durable document snapshots, session_end path -- see
+			// SetDocumentSnapshotProvider.  BEFORE the summary, for ANY
+			// close status (including "app_quit" -- the summary right after
+			// this carries that status), capture one final snapshot --
+			// UNLESS the head has not moved since the last snapshot already
+			// written this trace (the head_bump policy usually already
+			// covers it; this dedupe just avoids writing an identical copy
+			// on every ordinary close).  AGENT RPC THREAD DISCIPLINE: see
+			// the provider setter's doc.  Reset()/SetProvider() can reach
+			// here from the MAIN thread while a controller-owned render
+			// still holds the scene -- the provider then BLOCKS until the
+			// render releases (matching ReadAgentSceneSnapshot's documented
+			// try-lock-is-wrong-here rationale).  Accepted, not a bug: a
+			// close-time snapshot is worth a brief stall.
+			if( mDocumentSnapshotProvider ) {
+				std::string text;
+				uint64_t    uuid = 0;
+				uint64_t    revision = 0;
+				if( mDocumentSnapshotProvider( text, uuid, revision ) &&
+				    ( !mHasLastSnapshotVersion ||
+				      mLastSnapshotUuid != uuid || mLastSnapshotRevision != revision ) )
+					WriteDocumentSnapshotRecord( "session_end", text, uuid, revision );
+			}
+
 			mRecorder->EmitSummary( status );
 			mSessionEmitted = false;
 			// Roll to a fresh trace id on the SAME sink so the next recorded
@@ -2319,6 +2377,14 @@ namespace RISE
 				cfg.traceId.clear();
 				mRecorder.reset( new ChatTrajectoryRecorder( mTrajectorySink, cfg ) );
 			}
+
+			// A fresh trace has no prior snapshot to compare against or
+			// decimate by -- see the write-policy fields' doc.
+			mHasLastSnapshotVersion = false;
+			mLastSnapshotUuid = 0;
+			mLastSnapshotRevision = 0;
+			mLastSnapshotDocumentBytes = 0;
+			mSnapshotAdvanceCount = 0;
 		}
 
 		void AgentChatLoop::SetTrajectorySink(
@@ -2343,6 +2409,91 @@ namespace RISE
 				mRecorder.reset();
 				mTrajectorySink = std::function<void(const std::string&)>();
 			}
+
+			// Durable document snapshots: a replaced or detached sink starts
+			// a fresh trace with no prior snapshot to compare against or
+			// decimate by -- see the write-policy fields' doc.  (Note: the
+			// "replaced" summary above -- unlike CloseTrajectorySession's
+			// close -- does NOT itself write a session_end snapshot; that
+			// hook is scoped to Reset/SetProvider/FinishTrajectory closes.
+			// Deliberately so: on the replace path (e.g. a successor scene's
+			// startTrajectory calling in while this session is still live),
+			// mDocumentSnapshotProvider may ALREADY resolve to the NEW
+			// scene's bridge by the time we get here, so a snapshot taken
+			// now could attribute the successor's document to the closing
+			// trace -- worse than no snapshot.  Every path that CAN
+			// coherently snapshot (Reset/SetProvider/FinishTrajectory) goes
+			// through CloseTrajectorySession first, while the provider still
+			// unambiguously names the trace being closed.)
+			mHasLastSnapshotVersion = false;
+			mLastSnapshotUuid = 0;
+			mLastSnapshotRevision = 0;
+			mLastSnapshotDocumentBytes = 0;
+			mSnapshotAdvanceCount = 0;
+		}
+
+		void AgentChatLoop::SetDocumentSnapshotProvider(
+			std::function<bool( std::string& outText, uint64_t& outUuid, uint64_t& outRevision )> provider )
+		{
+			mDocumentSnapshotProvider = provider;
+		}
+
+		void AgentChatLoop::MaybeEmitHeadBumpSnapshot( uint64_t uuid, uint64_t revision )
+		{
+			if( !mRecorder || !mDocumentSnapshotProvider ) return;
+			// The head did not advance past the last WRITTEN snapshot --
+			// nothing new to save.  Covers both "this tool call did not
+			// mutate" (uuid/revision unchanged) and "we already snapshotted
+			// this exact head" (a prior call in the same turn already fired).
+			if( mHasLastSnapshotVersion &&
+			    mLastSnapshotUuid == uuid && mLastSnapshotRevision == revision )
+				return;
+
+			// Decimation: once a WRITTEN snapshot's document met or exceeded
+			// kDocumentSnapshotDecimationBytes, only every
+			// kDocumentSnapshotDecimationStride-th advance actually
+			// snapshots.  The FIRST advance of a trace is exempt --
+			// mHasLastSnapshotVersion is false, so mLastSnapshotDocumentBytes
+			// is still its zero-init default and `decimating` below is
+			// false -- it always fires.
+			++mSnapshotAdvanceCount;
+			const bool decimating = mLastSnapshotDocumentBytes >= kDocumentSnapshotDecimationBytes;
+			if( decimating && mSnapshotAdvanceCount < kDocumentSnapshotDecimationStride )
+				return;
+
+			std::string docText;
+			uint64_t    docUuid = 0;
+			uint64_t    docRevision = 0;
+			if( mDocumentSnapshotProvider( docText, docUuid, docRevision ) )
+				WriteDocumentSnapshotRecord( "head_bump", docText, docUuid, docRevision );
+			// NOTE: mSnapshotAdvanceCount is intentionally NOT reset here --
+			// see WriteDocumentSnapshotRecord.  If the provider returned
+			// false above, the stride-th advance is consumed with nothing
+			// written, and resetting here would silently extend the
+			// decimation window; leaving the counter armed means the very
+			// next advancing call retries immediately.
+		}
+
+		void AgentChatLoop::WriteDocumentSnapshotRecord( const std::string& reason,
+			const std::string& text, uint64_t uuid, uint64_t revision )
+		{
+			EnsureSessionRecordEmitted();
+			TrajectoryDocumentSnapshotRecord rec;
+			rec.reason = reason;
+			rec.headVersionUuid = uuid;
+			rec.headVersionRevision = revision;
+			rec.documentText = text;
+			rec.documentBytes = static_cast<long long>( text.size() );
+			mRecorder->EmitDocumentSnapshot( rec );
+
+			mHasLastSnapshotVersion = true;
+			mLastSnapshotUuid = uuid;
+			mLastSnapshotRevision = revision;
+			mLastSnapshotDocumentBytes = rec.documentBytes;
+			// Reset ONLY on a successful write -- see the field's doc.  A
+			// provider failure at the stride boundary must NOT consume the
+			// decimation window (see MaybeEmitHeadBumpSnapshot).
+			mSnapshotAdvanceCount = 0;
 		}
 
 		void AgentChatLoop::RecordHttpRound(

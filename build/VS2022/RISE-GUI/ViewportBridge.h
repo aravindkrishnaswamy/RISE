@@ -18,7 +18,9 @@
 #include <QString>
 #include <QVector>
 #include <QtGlobal>
+#include <cstdint>
 #include <memory>
+#include <string>
 
 class RenderEngine;
 
@@ -662,6 +664,36 @@ public:
     /// through this session too.  Expected, not a bug: send a `render` here
     /// first if you want pixels back here.
     QString agentHandleLine(const QString& jsonRpcRequest);
+
+    /// Durable document snapshots (see
+    /// RISE::Agent::AgentChatLoop::SetDocumentSnapshotProvider): the
+    /// retained CST head's REVISION alone, via the administrative
+    /// dispatcher's session (m_agentDispatcher -- Owner authority,
+    /// WrapJob's the SAME Job and AttachController's the SAME
+    /// m_controller as every other in-app session, so any of the three
+    /// would answer identically).  -1 when the dispatcher/session is
+    /// unavailable, mirroring TrajectorySessionRecord::sceneHeadVersion's
+    /// documented "-1 = unknown" sentinel.  CHEAP -- no document copy --
+    /// safe to call at trajectory-start time, though it takes the
+    /// controller mutex like every coherent read (same lock used by
+    /// commits / interactive render coordination), so it can briefly
+    /// block if the render thread currently holds it.  Mirrors macOS
+    /// RISEViewportBridge.agentHeadVersionRevision.
+    qint64 agentHeadVersionRevision() const;
+
+    /// Durable document snapshots: ONE coherent read of the full CST
+    /// document text plus the head-version identity those exact bytes
+    /// ARE, for ChatPanel's document-snapshot provider to wrap.
+    /// Delegates to AgentSession::ReadDocumentSnapshot on the SAME
+    /// administrative session `agentHeadVersionRevision()` reads.
+    /// CONTROLLER-MEDIATED: this call can BLOCK while a render owns the
+    /// scene -- call only from the agent RPC thread, matching
+    /// AgentChatLoop::SetDocumentSnapshotProvider's documented
+    /// discipline.  Returns false (outText/outUuid/outRevision
+    /// untouched) when there is no retained document (never CST-loaded,
+    /// or after ClearAll) or the dispatcher/session is unavailable.
+    /// Mirrors macOS RISEViewportBridge.agentReadDocumentSnapshotTextWithUuid:revision:.
+    bool agentReadDocumentSnapshot(std::string& outText, uint64_t& outUuid, uint64_t& outRevision) const;
 
     // ---- Agent autonomy selector (2026-07 GUI composer chips) -------
     // Mirrors the macOS RISEViewportBridge's three-dispatcher design

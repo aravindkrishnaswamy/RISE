@@ -2314,6 +2314,31 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return out ?: kNoDispatcher;
 }
 
+- (int64_t)agentHeadVersionRevision {
+    if (!_agentDispatcher || !_agentDispatcher->Session()) return -1;
+    return static_cast<int64_t>(_agentDispatcher->Session()->ReadHeadVersion().revision);
+}
+
+- (nullable NSString *)agentReadDocumentSnapshotTextWithUuid:(uint64_t *)outUuid
+                                                     revision:(uint64_t *)outRevision {
+    if (!outUuid || !outRevision) return nil;
+    if (!_agentDispatcher || !_agentDispatcher->Session()) return nil;
+    const RISE::Agent::AgentSession::AgentDocumentSnapshot snap =
+        _agentDispatcher->Session()->ReadDocumentSnapshot();
+    if (!snap.hasDocument) return nil;
+    // Convert FIRST, and only write the out-params on success -- mirrors
+    // the -propertySnapshot convention above (~line 2118): invalid UTF-8
+    // must read as "no document to save" (nil), never as a valid empty
+    // snapshot that a recovery path would trust and persist.  `?: @""`
+    // here would do exactly that -- silently turn a corrupt document into
+    // an empty one.
+    NSString *text = [NSString stringWithUTF8String:snap.document.c_str()];
+    if (!text) return nil;
+    *outUuid = snap.headVersion.uuid;
+    *outRevision = snap.headVersion.revision;
+    return text;
+}
+
 #pragma mark - Agent autonomy selector (2026-07 GUI composer chips)
 
 - (RISEAgentAutonomyLevel)agentAutonomyLevel {

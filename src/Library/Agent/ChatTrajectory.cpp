@@ -202,6 +202,22 @@ namespace RISE
 			return JsonSerialize( o );
 		}
 
+		std::string SerializeTrajectoryRecord( const TrajectoryDocumentSnapshotRecord& r,
+			const std::string& traceId, const std::string& dottedOrder )
+		{
+			JsonValue o = CommonObj( traceId, dottedOrder, "document_snapshot" );
+			o.set( "reason", JsonValue::MakeString( r.reason ) );
+			// Same double-encoding convention as HeadVersionJson
+			// (AgentRpc.cpp) and every other head-version field in this
+			// file: a monotonic counter starting at 1 stays well under
+			// 2^53, so the round-trip through a JSON number is lossless.
+			o.set( "head_version_uuid", Num( static_cast<double>( r.headVersionUuid ) ) );
+			o.set( "head_version_revision", Num( static_cast<double>( r.headVersionRevision ) ) );
+			o.set( "document_text", JsonValue::MakeString( r.documentText ) );
+			o.set( "document_bytes", Num( static_cast<double>( r.documentBytes ) ) );
+			return JsonSerialize( o );
+		}
+
 		std::string SerializeTrajectoryRecord( const TrajectorySummaryRecord& r,
 			const std::string& traceId, const std::string& dottedOrder )
 		{
@@ -354,6 +370,11 @@ namespace RISE
 		}
 
 		std::string ChatTrajectoryRecorder::EmitHistoryEdit( const TrajectoryHistoryEditRecord& r )
+		{
+			return Emit( SerializeTrajectoryRecord( r, mTraceId, NextDottedOrder() ) );
+		}
+
+		std::string ChatTrajectoryRecorder::EmitDocumentSnapshot( const TrajectoryDocumentSnapshotRecord& r )
 		{
 			return Emit( SerializeTrajectoryRecord( r, mTraceId, NextDottedOrder() ) );
 		}

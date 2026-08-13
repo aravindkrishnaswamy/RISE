@@ -1014,6 +1014,45 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (NSString *)agentHandleLine:(NSString *)jsonRpcRequest
     NS_SWIFT_NAME(agentHandleLine(_:));
 
+/// Durable document snapshots (see AgentChatLoop::SetDocumentSnapshotProvider):
+/// the retained CST head's REVISION alone, read with the SAME coherence
+/// discipline as `-agentReadDocumentSnapshotTextWithUuid:revision:` below, via
+/// the administrative dispatcher's session (`_agentDispatcher` -- Owner
+/// authority, WrapJob's the SAME Job and AttachController's the SAME
+/// `_controller` as every other in-app session, so any of the three would
+/// answer identically -- see the ivar block's doc).  -1 when the
+/// dispatcher/session is unavailable, mirroring
+/// TrajectorySessionRecord::sceneHeadVersion's documented "-1 = unknown"
+/// sentinel.  CHEAP: no document copy -- safe to call at trajectory-start
+/// time (closes the "no cheap accessor" gap `ChatViewModel.startTrajectory()`
+/// used to note) -- though it takes the controller mutex like every
+/// coherent read (`SceneEditController::ReadAgentHeadVersion`), so it can
+/// briefly block if the render thread currently holds it.
+- (int64_t)agentHeadVersionRevision
+    NS_SWIFT_NAME(agentHeadVersionRevision());
+
+/// Durable document snapshots: ONE coherent read of the full CST document
+/// text plus the head-version identity those exact bytes ARE, for
+/// `RISEAgentChatBridge`'s `-setDocumentSnapshotProvider:` to wrap.
+/// Delegates to `AgentSession::ReadDocumentSnapshot` on the SAME
+/// administrative session `-agentHeadVersionRevision` reads (see that
+/// method's doc for why any of the three in-app sessions would answer
+/// identically).  CONTROLLER-MEDIATED: this call can BLOCK while a render
+/// owns the scene (see `SceneEditController::ReadAgentSceneSnapshot`'s
+/// doc) -- call only from the agent RPC thread, matching
+/// `AgentChatLoop::SetDocumentSnapshotProvider`'s documented discipline.
+/// Returns `nil` (with `outUuid`/`outRevision` left untouched) when there
+/// is no retained document (never CST-loaded, or after ClearAll, or the
+/// dispatcher/session is unavailable) or nil out-pointers are passed --
+/// and ALSO when the captured document bytes fail UTF-8 conversion
+/// (`+[NSString stringWithUTF8String:]` returns nil): the out-params are
+/// left untouched in that case too, matching the `-propertySnapshot`
+/// convention.  Invalid UTF-8 must read as "no document to save," never
+/// as a valid empty snapshot a recovery path would trust.
+- (nullable NSString *)agentReadDocumentSnapshotTextWithUuid:(uint64_t *)outUuid
+                                                     revision:(uint64_t *)outRevision
+    NS_SWIFT_NAME(agentReadDocumentSnapshotText(uuid:revision:));
+
 #pragma mark - Agent autonomy selector (2026-07 GUI composer chips)
 
 /// Mirrors RISE::Agent::AgentAutonomy (AgentRpc.h) plus the routing choice

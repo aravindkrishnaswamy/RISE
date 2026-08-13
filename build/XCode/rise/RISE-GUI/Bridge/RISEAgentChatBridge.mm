@@ -47,6 +47,22 @@ static NSString *ToNS(const std::string& s) {
     return out ?: @"";
 }
 
+@implementation RISEAgentChatDocumentSnapshot
+
+- (instancetype)initWithText:(NSString *)text
+                     headUuid:(uint64_t)headUuid
+                 headRevision:(uint64_t)headRevision {
+    self = [super init];
+    if (self) {
+        _text = [text copy];
+        _headUuid = headUuid;
+        _headRevision = headRevision;
+    }
+    return self;
+}
+
+@end
+
 @implementation RISEAgentChatAttachment
 
 - (instancetype)initWithMimeType:(NSString *)mimeType
@@ -414,6 +430,27 @@ static NSString *ToNS(const std::string& s) {
     cfg.scenePath = ToStd(scenePath);
     cfg.sceneHeadVersion = headVersion;
     _loop->SetTrajectorySink(Agent::MakeTrajectoryFileSink(path), cfg);
+}
+
+- (void)setDocumentSnapshotProvider:(RISEAgentChatDocumentSnapshotProvider)provider {
+    if (!provider) {
+        _loop->SetDocumentSnapshotProvider(
+            std::function<bool( std::string&, uint64_t&, uint64_t& )>());
+        return;
+    }
+    // Captured by value: an ObjC block is ARC-retained by the C++
+    // lambda's copy just like any other strong reference, so `provider`
+    // stays alive for as long as `_loop` keeps this std::function -- no
+    // dangling call once -setDocumentSnapshotProvider: returns.
+    _loop->SetDocumentSnapshotProvider(
+        [provider]( std::string& outText, uint64_t& outUuid, uint64_t& outRevision ) -> bool {
+            RISEAgentChatDocumentSnapshot* snap = provider();
+            if (!snap) return false;
+            outText = ToStd(snap.text);
+            outUuid = snap.headUuid;
+            outRevision = snap.headRevision;
+            return true;
+        });
 }
 
 - (void)recordHttpRoundWithStatus:(NSInteger)httpStatus

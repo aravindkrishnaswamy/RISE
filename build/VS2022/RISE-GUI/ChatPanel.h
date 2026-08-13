@@ -58,6 +58,20 @@ public:
 
     void setViewportBridge(ViewportBridge* bridge);
 
+    //! Durable document snapshots: called by MainWindow's destructor
+    //! BEFORE teardownViewport() (mirrors macOS ChatViewModel's
+    //! NSApplication.willTerminateNotification handler) so the
+    //! trajectory's final "session_end" document_snapshot + summary are
+    //! written while `m_bridge`/the viewport bridge's session are still
+    //! alive -- teardownViewport() -> setViewportBridge(nullptr) runs
+    //! AFTER this and would otherwise take that close under status
+    //! "reset" instead of the more honest "app_quit" (see
+    //! AgentChatLoop::CloseTrajectorySession's dedupe: whichever close
+    //! runs first writes the snapshot; a second close this soon after
+    //! finds nothing new and is a harmless no-op).  No-op if no
+    //! trajectory session is active.
+    void finishTrajectoryOnQuit() { m_loop->FinishTrajectory("app_quit"); }
+
     //! Review-round P2 (E1): the scene path is the trajectory<->document
     //! correlator; MainWindow sets it at scene load, clears it at teardown.
     //! Takes effect at the NEXT startTrajectory (no mid-session restart).

@@ -760,6 +760,27 @@ ChatPanel::ChatPanel(QWidget* parent)
     m_loop->SetContextBudget(AgentChatLoop::kDefaultContextBudgetHighTokens,
                              AgentChatLoop::kDefaultContextBudgetLowTokens);
 
+    // Durable document snapshots (product gap: a scene built entirely
+    // inside a live GUI agent session, never Save As'd, was otherwise
+    // unrecoverable on quit/crash -- the trajectory recorded tool
+    // calls/results but never the document TEXT).  Installed ONCE here
+    // -- unlike the macOS bridge's per-scene reinstall, `this` (the
+    // panel) is native C++ and outlives every scene, and the lambda
+    // reads `this->m_bridge` FRESH at call time (never captured), so
+    // one installation covers every future setViewportBridge() call.
+    // No-op until a bridge is attached (ViewportBridge::
+    // agentReadDocumentSnapshot returns false with m_bridge == nullptr).
+    // AGENT RPC THREAD DISCIPLINE: fired from wherever
+    // AgentChatLoop::SetDocumentSnapshotProvider's doc says the C++ core
+    // calls its provider -- the agent RPC thread, in practice the same
+    // main/UI thread this whole panel is single-threaded on (mirrors the
+    // Mac bridge's THREADING note).
+    m_loop->SetDocumentSnapshotProvider(
+        [this](std::string& outText, uint64_t& outUuid, uint64_t& outRevision) -> bool {
+            if (!m_bridge) return false;
+            return m_bridge->agentReadDocumentSnapshot(outText, outUuid, outRevision);
+        });
+
     m_network = new QNetworkAccessManager(this);
     // P2-6: mirror the Mac driver's URLRequest.timeoutInterval = 300 --
     // without this a stalled connection blocks the turn (and the render-
@@ -1189,9 +1210,25 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         // render_cancel must reach the controller that owns the job.
         requestStop();
     }
-    m_bridge = bridge;
+    // Durable document snapshots: on the CLOSING path (bridge == nullptr)
+    // `m_bridge` is intentionally NOT cleared yet here -- the
+    // document-snapshot provider set up alongside SetTrajectorySink reads
+    // `this->m_bridge` at call time, and `m_loop->Reset()` below (which
+    // closes the trajectory session and, per
+    // AgentChatLoop::SetDocumentSnapshotProvider's policy, takes one
+    // final "session_end" snapshot) needs that read to still resolve to
+    // the outgoing (still-alive; the caller owns synchronous teardown
+    // AFTER this call, per requestStop()'s comment above) bridge.  The
+    // `else` branch below clears `m_bridge` to nullptr AFTER Reset() but
+    // BEFORE startTrajectory() -- see the comment there.  Every check
+    // in between that needs "are we closing" uses the `bridge` PARAMETER
+    // (which is already nullptr here), not `m_bridge`, so this deferral
+    // changes no other behavior.
+    if (bridge) {
+        m_bridge = bridge;
+    }
     m_sceneEditableExternal = (bridge != nullptr);
-    if (!m_bridge && m_outstandingRenderJobId != 0) {
+    if (!bridge && m_outstandingRenderJobId != 0) {
         // The caller now owns synchronous bridge/controller teardown, which
         // joins the worker before a later scene can attach.  No live scene
         // controls remain to protect, so retire this scene's occupancy.
@@ -1200,7 +1237,7 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         setOutstandingRenderJobId(0);
     }
     recomputeSceneEditable();
-    if (m_bridge) {
+    if (bridge) {
         // Agent autonomy selector: a fresh bridge's dispatchers default
         // to Apply (see ViewportBridge.h's doc) until told otherwise --
         // apply THIS panel's persisted choice immediately so a scene
@@ -1243,6 +1280,14 @@ void ChatPanel::setViewportBridge(ViewportBridge* bridge)
         m_skillIndexEmpty = false;
         m_skillIndexNote.clear();
         m_loop->Reset();
+        // NOW clear it -- see the top of this function for why the close-
+        // time trajectory snapshot needed m_bridge to still be valid
+        // through the Reset() call above.  It MUST be cleared BEFORE
+        // startTrajectory() below, whose "detach when no scene is bound"
+        // guard reads m_bridge -- with the outgoing bridge still set it
+        // would ATTACH a fresh sink to the closing scene instead of
+        // detaching.
+        m_bridge = nullptr;
         // Detach so no file lingers between scenes.
         startTrajectory();
         refreshTranscript();
@@ -2227,7 +2272,10 @@ void ChatPanel::startTrajectory()
     RISE::Agent::ChatTrajectoryConfig cfg;
     cfg.traceId = traceId;
     cfg.scenePath = toStdString(m_scenePath);
-    cfg.sceneHeadVersion = -1;   // best-effort on the GUI; the headless runner populates it precisely
+    // Durable-document-snapshots work: m_bridge is guaranteed non-null here
+    // (guarded above), so the cheap accessor always resolves to the real
+    // revision -- closes the "-1 best-effort" gap this used to note.
+    cfg.sceneHeadVersion = static_cast<long long>(m_bridge->agentHeadVersionRevision());
     m_loop->SetTrajectorySink(RISE::Agent::MakeTrajectoryFileSink(path), cfg);
 }
 

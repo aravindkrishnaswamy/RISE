@@ -27,6 +27,7 @@
 #include "Theme.h"
 
 class QAction;
+class QCloseEvent;
 class QTimer;
 class QActionGroup;
 class QMenu;
@@ -144,6 +145,16 @@ protected:
     // calls its own restyleTheme(). MainWindow is the reference
     // implementation the per-panel conversions cite.
     void changeEvent(QEvent* e) override;
+
+    /// Quit-time unsaved-work prompt -- mirrors macOS AppDelegate's
+    /// applicationShouldTerminate (RISEApp.swift).  Fires on the window
+    /// close box AND File > Exit (both route through QWidget::close(),
+    /// which posts a QCloseEvent).  Reuses promptToSaveUnsavedWork, the
+    /// SAME Save/Discard/Cancel gate Close Scene / load-over already run.
+    /// event->ignore() aborts the quit exactly like Cancel aborts a Close
+    /// Scene; the render-cancel-then-flush ordering on an accepted quit
+    /// stays in ~MainWindow(), unchanged.
+    void closeEvent(QCloseEvent* event) override;
 
 private:
     void createMenuBar();

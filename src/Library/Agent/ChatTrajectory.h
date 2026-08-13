@@ -165,6 +165,37 @@ namespace RISE
 			std::string reason;            //!< "tool_image_elision" / "user_image_elision"
 		};
 
+		//! run_type "document_snapshot": a durable copy of the FULL scene
+		//! document, so a scene built entirely inside a live GUI agent
+		//! session (never Save As'd) survives a crash / force-quit --
+		//! recoverable from the newest document_snapshot line in the
+		//! trajectory JSONL.  `reason` is "head_bump" (the per-advancing-
+		//! tool-call policy in AgentChatLoop -- see
+		//! AgentChatLoop::SetDocumentSnapshotProvider) or "session_end"
+		//! (a chat-loop close for ANY status, including app_quit -- the
+		//! `summary` record emitted right after carries the actual
+		//! status).  headVersionUuid/headVersionRevision are BOTH stored
+		//! here -- unlike TrajectoryToolRecord::headVersionAfter, which
+		//! is revision-only -- because recovery must correlate a snapshot
+		//! to a SPECIFIC retained head (RISE::Cst::CstHeadVersion), not
+		//! just order revisions within one; a scene reload mints a fresh
+		//! uuid, so a revision number alone is ambiguous across loads.
+		struct TrajectoryDocumentSnapshotRecord
+		{
+			std::string reason;                    //!< "head_bump" / "session_end"
+			uint64_t    headVersionUuid = 0;
+			uint64_t    headVersionRevision = 0;
+			std::string documentText;              //!< the FULL serialized CST document
+			//! documentText.size() as captured, BEFORE the unconditional
+			//! secret-redaction pass (see RedactTrajectoryLine) runs over the
+			//! serialized line.  That pass can replace a matched span inside
+			//! document_text with "[REDACTED]", changing its on-disk length,
+			//! so documentBytes is a capture-time size HINT for cheap
+			//! scanning -- not a parse-free integrity/length check against
+			//! the JSONL line's actual document_text.
+			long long   documentBytes = 0;
+		};
+
 		//! run_type "summary": the terminal one-line rollup.
 		struct TrajectorySummaryRecord
 		{
@@ -217,6 +248,8 @@ namespace RISE
 			const std::string& traceId, const std::string& dottedOrder );
 		std::string SerializeTrajectoryRecord( const TrajectoryHistoryEditRecord&,
 			const std::string& traceId, const std::string& dottedOrder );
+		std::string SerializeTrajectoryRecord( const TrajectoryDocumentSnapshotRecord&,
+			const std::string& traceId, const std::string& dottedOrder );
 		std::string SerializeTrajectoryRecord( const TrajectorySummaryRecord&,
 			const std::string& traceId, const std::string& dottedOrder );
 
@@ -260,6 +293,12 @@ namespace RISE
 			std::string EmitLlm( const TrajectoryLlmRecord& );
 			std::string EmitTool( const TrajectoryToolRecord& );
 			std::string EmitHistoryEdit( const TrajectoryHistoryEditRecord& );
+
+			//! Emit a document_snapshot record -- NOT counted in the running
+			//! summary accumulators (it is not a turn, tool call, or LLM
+			//! round); the only bookkeeping it needs lives in AgentChatLoop's
+			//! write policy, not here.
+			std::string EmitDocumentSnapshot( const TrajectoryDocumentSnapshotRecord& );
 
 			//! Emit the terminal summary from the running accumulators with
 			//! the given status; wall_ms is clock()-startedAt.

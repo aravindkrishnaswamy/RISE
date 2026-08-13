@@ -788,6 +788,14 @@ final class RenderViewModel: ObservableObject {
     /// when not playing; cancelled + niled by stopPreviewPlay().
     private var previewPlayTask: Task<Void, Never>? = nil
     private let cancelFlag = AtomicBool(false)
+    /// Durable document snapshots: the app-quit observer token
+    /// (NSApplication.willTerminateNotification) registered once in
+    /// `init()` -- see that registration's doc.  Held so `deinit` can
+    /// remove it; RenderViewModel is an app-lifetime singleton (see
+    /// AppModel), so in practice this fires exactly once per process,
+    /// but removing it on deinit keeps the observer from outliving its
+    /// `[weak self]` closure's usefulness if that ever changes.
+    private var appQuitObserver: NSObjectProtocol?
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
@@ -935,6 +943,58 @@ final class RenderViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.refreshEDRAvailability()
             }
+        }
+
+        // Durable document snapshots: RenderViewModel owns render
+        // lifecycle, so it -- not ChatViewModel -- is where a quit-time
+        // render cancellation belongs.  ORDERING REQUIRED: cancel BEFORE
+        // finish, mirroring MainWindow::~MainWindow's destructor ordering
+        // on Windows (cancelAndJoinInFlightWork() runs before
+        // finishTrajectoryOnQuit()).  Without this, quitting mid-
+        // production-render would block app termination for the render's
+        // FULL remaining duration: ChatViewModel.appWillTerminate()'s
+        // coherent document read blocks on the controller mutex for as
+        // long as the render thread holds it (see
+        // SceneEditController::ReadAgentSceneSnapshot's documented
+        // "BLOCKING, deliberately" contract).  Requesting cancellation
+        // first bounds that wait to the render's cooperative-cancel
+        // latency instead.
+        //
+        // A `queue: .main` NotificationCenter observer is delivered
+        // SYNCHRONOUSLY when the notification is posted from the main
+        // thread (which app termination is) -- this closure calls
+        // straight into @MainActor-isolated members rather than hopping
+        // through `Task { @MainActor in }`, so both steps below complete
+        // before `-applicationWillTerminate:` returns.  (Mirrors the
+        // pattern the old ChatViewModel-owned observer used before this
+        // fix moved it here.)
+        appQuitObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            // The notification is posted (and, with `queue: .main`,
+            // delivered) on the main thread during app termination, so
+            // asserting main-actor isolation here is sound -- and keeps
+            // the body SYNCHRONOUS, which a `Task { @MainActor in }` hop
+            // would not.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Non-blocking cancel REQUEST only -- the same request
+                // continueClearAndLoad/finishSaveAndReload issue before their
+                // own awaited join.  No `await` here: willTerminate's
+                // synchronous-delivery guarantee is what bounds the stall,
+                // and an async hop would defeat it.
+                if self.renderState == .rendering || self.renderState == .cancelling {
+                    self.cancelRender()
+                }
+                self.chat.appWillTerminate()
+            }
+        }
+    }
+
+    deinit {
+        if let observer = appQuitObserver {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -2486,15 +2546,23 @@ final class RenderViewModel: ObservableObject {
     }
 
     /// The single unsaved-work gate for destructive scene transitions
-    /// (Close Scene, load-over).  Handles BOTH dirt kinds — unsaved LIVE
+    /// (Close Scene, load-over, and — via AppDelegate.applicationShouldTerminate
+    /// in RISEApp.swift — app quit).  Handles BOTH dirt kinds — unsaved LIVE
     /// scene edits (sceneEditsDirty) and unsaved RAW editor text
     /// (isEditorDirty) — including the BOTH-dirty case round 3 caught:
     /// they are independent flags, and saving the scene does NOT save a
     /// divergent editor buffer (writing that buffer to the same file
     /// would clobber the scene save), so the both case gets an explicit
     /// follow-up offer to save the text to a SEPARATE file.  Returns true
-    /// to proceed with the transition, false to abort it.
-    private func promptToSaveUnsavedWork(before action: String) -> Bool {
+    /// to proceed with the transition, false to abort it.  Not `private`:
+    /// AppDelegate calls this synchronously from `applicationShouldTerminate`,
+    /// which NSAlert.runModal() (called inside) supports directly — no
+    /// `.terminateLater` dance needed.  Deliberately indifferent to render
+    /// state, same as the Close Scene / load-over callers: a render in
+    /// flight at quit time is cancelled separately by the existing
+    /// `willTerminateNotification` observer in `init()`, which fires AFTER
+    /// `applicationShouldTerminate` has already decided to terminate.
+    func promptToSaveUnsavedWork(before action: String) -> Bool {
         guard sceneEditsDirty || isEditorDirty else { return true }
         let alert = NSAlert()
         alert.messageText = "Unsaved Changes"

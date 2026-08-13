@@ -31,6 +31,22 @@
 //        occurrence regex-redacted) and NO auth header NAME appears.
 //    E7  Rotation: PruneTrajectoryDir keeps the newest N / <= bytes,
 //        pruning oldest-first.
+//    E8  RecordAuxiliaryHttpRound -- the Mac GUI prompt-triage HTTP
+//        round-trip recorded into the MAIN session's trajectory as a
+//        purpose-tagged `llm` record, with state isolation (touches
+//        nothing else) and its own redaction red-prove.
+//    E9  Durable document snapshots (AgentChatLoop::
+//        SetDocumentSnapshotProvider): schema round-trip (folded into
+//        E1), the write policy (one head_bump snapshot per advancing
+//        headVersion, none for a non-advancing one), decimation past
+//        1MB (only every 10th advance snapshots), the close-time
+//        session_end snapshot's dedupe (skipped when the head has not
+//        moved since the last snapshot; fires with the CURRENT head
+//        when it has), and the no-provider no-op (zero snapshot
+//        records, ordinary record shape unaffected).  Closes the
+//        product gap where a scene built entirely inside a live GUI
+//        agent session -- never Save As'd -- was unrecoverable if the
+//        app quit or crashed.
 //
 //  RED-PROVE evidence (development-time, reverted): (a) with
 //  StripAuthHeaders neutered to a pass-through, E6's "no auth header
@@ -191,6 +207,26 @@ static void TestSchemaRoundTrip()
 		Check( j.get( "before_bytes" ).asNumber() == 1000.0, "history_edit before bytes" );
 		Check( j.get( "after_bytes" ).asNumber() == 40.0, "history_edit after bytes" );
 		Check( j.get( "reason" ).asString() == "tool_image_elision", "history_edit reason" );
+	}
+	{
+		// E9 prep: TrajectoryDocumentSnapshotRecord round-trips every field.
+		TrajectoryDocumentSnapshotRecord r;
+		r.reason = "head_bump";
+		r.headVersionUuid = 42;
+		r.headVersionRevision = 7;
+		r.documentText = "RISE ASCII SCENE 7\n{\n}\n";
+		r.documentBytes = static_cast<long long>( r.documentText.size() );
+		JsonValue j = Parse( SerializeTrajectoryRecord( r, tid, dot ) );
+		Check( j.get( "run_type" ).asString() == "document_snapshot", "document_snapshot run_type" );
+		Check( j.get( "trace_id" ).asString() == tid, "document_snapshot trace_id" );
+		Check( j.get( "dotted_order" ).asString() == dot, "document_snapshot dotted_order" );
+		Check( j.get( "reason" ).asString() == "head_bump", "document_snapshot reason" );
+		Check( j.get( "head_version_uuid" ).asNumber() == 42.0, "document_snapshot head_version_uuid" );
+		Check( j.get( "head_version_revision" ).asNumber() == 7.0, "document_snapshot head_version_revision" );
+		Check( j.get( "document_text" ).asString() == r.documentText,
+		       "document_snapshot document_text round-trips verbatim" );
+		Check( j.get( "document_bytes" ).asNumber() == static_cast<double>( r.documentText.size() ),
+		       "document_snapshot document_bytes matches the text length" );
 	}
 	{
 		TrajectorySummaryRecord r;
@@ -764,6 +800,274 @@ static void TestAuxiliaryHttpRound()
 }
 
 //----------------------------------------------------------------------
+// E9: durable document snapshots (AgentChatLoop::SetDocumentSnapshotProvider) --
+// the write policy (per-advance head_bump, decimated past 1MB, dedupe'd
+// close-time session_end) and the no-provider no-op, all offline with a
+// fake provider -- no GUI, no real Job/AgentSession involved.
+//----------------------------------------------------------------------
+namespace
+{
+	//! A single-tool-call assistant turn (mirrors E5's kReadImgA/B shape).
+	std::string SnapshotToolUseBody( const std::string& callId )
+	{
+		return std::string(
+			"{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5\"," ) +
+			"\"content\":[{\"type\":\"tool_use\",\"id\":\"" + callId + "\",\"name\":\"insert_chunk\",\"input\":{}}]," +
+			"\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}";
+	}
+
+	//! The JSON-RPC success envelope reporting a numeric {uuid,revision}
+	//! headVersion -- the shape AgentRpc.cpp's HeadVersionJson emits.
+	std::string SnapshotEnvelope( int rpcId, uint64_t uuid, uint64_t revision )
+	{
+		return "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string( rpcId ) +
+			",\"result\":{\"applied\":true,\"status\":\"applied\",\"headVersion\":{\"uuid\":" +
+			std::to_string( uuid ) + ",\"revision\":" + std::to_string( revision ) + "}}}";
+	}
+
+	//! Drive one tool-call round trip (HandleResponse -> ToolCallToJsonRpcLine
+	//! -> AddToolResult) reporting the given headVersion.  `callId`/`rpcId`
+	//! must be unique per call within a loop instance.
+	void DriveOneToolCall( AgentChatLoop& loop, const std::string& callId, int rpcId,
+	                       uint64_t uuid, uint64_t revision )
+	{
+		ChatStepResult st = loop.HandleResponse( 200, SnapshotToolUseBody( callId ) );
+		if( st.kind != ChatStepResult::Kind::ToolCalls || st.toolCalls.size() != 1 ) {
+			Check( false, "DriveOneToolCall: expected exactly one tool call" );
+			return;
+		}
+		loop.ToolCallToJsonRpcLine( st.toolCalls[0], rpcId );
+		loop.AddToolResult( st.toolCalls[0], SnapshotEnvelope( rpcId, uuid, revision ) );
+	}
+
+	//! A controllable fake document: the provider always answers with
+	//! whatever this struct currently holds -- the test mutates it to
+	//! simulate the real document advancing alongside each tool call's
+	//! reported headVersion (they describe the SAME underlying document
+	//! in the real system, so keeping them in lockstep here is the
+	//! faithful fixture, not a simplification).
+	struct FakeDoc
+	{
+		std::string text = "scene-text";
+		uint64_t    uuid = 42;
+		uint64_t    revision = 0;
+		bool        hasDocument = true;
+	};
+
+	std::function<bool( std::string&, uint64_t&, uint64_t& )> MakeFakeProvider(
+		std::shared_ptr<FakeDoc> doc )
+	{
+		return [doc]( std::string& outText, uint64_t& outUuid, uint64_t& outRevision ) -> bool {
+			if( !doc->hasDocument ) return false;
+			outText = doc->text;
+			outUuid = doc->uuid;
+			outRevision = doc->revision;
+			return true;
+		};
+	}
+
+	//! Count document_snapshot lines (optionally filtered by `reason`) in
+	//! a recorded line vector.
+	int CountSnapshots( const std::vector<std::string>& lines, const std::string& reason = "" )
+	{
+		int n = 0;
+		for( std::size_t i = 0; i < lines.size(); ++i ) {
+			JsonValue r = Parse( lines[i] );
+			if( r.get( "run_type" ).asString() != "document_snapshot" ) continue;
+			if( !reason.empty() && r.get( "reason" ).asString() != reason ) continue;
+			++n;
+		}
+		return n;
+	}
+}
+
+static void TestDocumentSnapshotPolicy()
+{
+	std::printf( "E9: durable document snapshots (write policy + decimation + no-provider)...\n" );
+
+	// --- A: small document -- every advancing call snapshots 1:1;
+	//     a non-advancing call snapshots nothing; a dedupe'd close (head
+	//     unchanged since the last snapshot) adds no session_end. ---
+	{
+		std::shared_ptr<std::vector<std::string> > lines =
+			std::make_shared<std::vector<std::string> >();
+		std::function<void(const std::string&)> sink =
+			[lines]( const std::string& l ) { lines->push_back( l ); };
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "t-snap-a";
+		cfg.clock = MakeCounterClock( 1 );
+		loop.SetTrajectorySink( sink, cfg );
+
+		std::shared_ptr<FakeDoc> doc = std::make_shared<FakeDoc>();
+		loop.SetDocumentSnapshotProvider( MakeFakeProvider( doc ) );
+
+		loop.AddUserMessage( "build the scene" );
+
+		// Three advancing calls -> three head_bump snapshots (small doc,
+		// no decimation).
+		for( int i = 1; i <= 3; ++i ) {
+			doc->revision = static_cast<uint64_t>( i );
+			DriveOneToolCall( loop, "toolu_a" + std::to_string( i ), i, doc->uuid, doc->revision );
+		}
+		Check( CountSnapshots( *lines, "head_bump" ) == 3,
+		       "small doc: 3 advancing calls -> 3 head_bump snapshots" );
+
+		// A non-advancing call (same headVersion the loop already saw --
+		// e.g. a read-only verb's result echoing the current head) adds
+		// no new snapshot.
+		DriveOneToolCall( loop, "toolu_a4", 4, doc->uuid, doc->revision );
+		Check( CountSnapshots( *lines, "head_bump" ) == 3,
+		       "non-advancing headVersion -> no additional head_bump snapshot" );
+
+		const int beforeClose = CountSnapshots( *lines );
+		loop.FinishTrajectory( "closed" );
+		Check( CountSnapshots( *lines, "session_end" ) == 0,
+		       "close with head UNCHANGED since the last snapshot -> no session_end snapshot (dedupe)" );
+		Check( CountSnapshots( *lines ) == beforeClose,
+		       "dedupe'd close adds no document_snapshot record at all" );
+	}
+
+	// --- B: decimation past 1MB, and a NON-dedupe'd close. ---
+	{
+		std::shared_ptr<std::vector<std::string> > lines =
+			std::make_shared<std::vector<std::string> >();
+		std::function<void(const std::string&)> sink =
+			[lines]( const std::string& l ) { lines->push_back( l ); };
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "t-snap-b";
+		cfg.clock = MakeCounterClock( 1 );
+		loop.SetTrajectorySink( sink, cfg );
+
+		std::shared_ptr<FakeDoc> doc = std::make_shared<FakeDoc>();
+		doc->text = std::string( 1200000, 'x' );   // ~1.2MB: over the 1MB decimation threshold
+		loop.SetDocumentSnapshotProvider( MakeFakeProvider( doc ) );
+
+		loop.AddUserMessage( "build a huge scene" );
+
+		// Call #1: the FIRST advance of the trace always snapshots (no
+		// prior WRITTEN snapshot to decimate by yet) -- even though this
+		// document is already >1MB, so decimation only takes effect
+		// STARTING from call #2.
+		doc->revision = 1;
+		DriveOneToolCall( loop, "toolu_b1", 101, doc->uuid, doc->revision );
+		Check( CountSnapshots( *lines, "head_bump" ) == 1,
+		       "large doc: call #1 always snapshots regardless of size" );
+
+		// Calls #2..#11 (10 more advancing calls): kDocumentSnapshotDecimationStride
+		// is 10, so only the LAST of these (the 10th advance since the
+		// last WRITTEN snapshot) fires -- one more head_bump, at call #11.
+		for( int i = 2; i <= 11; ++i ) {
+			doc->revision = static_cast<uint64_t>( i );
+			DriveOneToolCall( loop, "toolu_b" + std::to_string( i ), 100 + i, doc->uuid, doc->revision );
+		}
+		Check( CountSnapshots( *lines, "head_bump" ) == 2,
+		       "large doc: only every 10th advancing call snapshots once decimating (2 total: call #1 and call #11)" );
+
+		// Call #12: decimated again (only 1 advance since the call-#11
+		// snapshot) -- head now sits at revision 12, past the last
+		// WRITTEN snapshot's revision 11, so this is a NON-dedupe'd close
+		// below.
+		doc->revision = 12;
+		DriveOneToolCall( loop, "toolu_b12", 112, doc->uuid, doc->revision );
+		Check( CountSnapshots( *lines, "head_bump" ) == 2,
+		       "call #12 stays decimated (still 2 head_bump snapshots)" );
+
+		loop.FinishTrajectory( "closed" );
+		Check( CountSnapshots( *lines, "session_end" ) == 1,
+		       "close with head MOVED since the last snapshot (rev 11 -> 12) -> one session_end snapshot" );
+
+		// The session_end snapshot carries the CURRENT (revision 12)
+		// state, not the stale revision-11 one the decimation skipped.
+		bool sawCorrectSessionEnd = false;
+		for( std::size_t i = 0; i < lines->size(); ++i ) {
+			JsonValue r = Parse( ( *lines )[i] );
+			if( r.get( "run_type" ).asString() == "document_snapshot" &&
+			    r.get( "reason" ).asString() == "session_end" ) {
+				Check( r.get( "head_version_revision" ).asNumber() == 12.0,
+				       "session_end snapshot carries the CURRENT revision (12), not the decimated-past one" );
+				Check( r.get( "document_bytes" ).asNumber() == 1200000.0,
+				       "session_end snapshot's document_bytes matches the ~1.2MB fake document" );
+				sawCorrectSessionEnd = true;
+			}
+		}
+		Check( sawCorrectSessionEnd, "found the session_end document_snapshot line to check" );
+	}
+
+	// --- C: no provider set -> zero document_snapshot records, and the
+	//     rest of the trajectory is byte-for-byte the pre-feature shape
+	//     (still 6 records: session,user,llm,tool,llm,summary). ---
+	{
+		std::shared_ptr<std::vector<std::string> > lines =
+			std::make_shared<std::vector<std::string> >();
+		std::function<void(const std::string&)> sink =
+			[lines]( const std::string& l ) { lines->push_back( l ); };
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "t-snap-c";
+		cfg.clock = MakeCounterClock( 1 );
+		loop.SetTrajectorySink( sink, cfg );
+		// Deliberately no SetDocumentSnapshotProvider call.
+
+		loop.AddUserMessage( "no provider here" );
+		DriveOneToolCall( loop, "toolu_c1", 1, 42, 1 );
+		loop.FinishTrajectory( "closed" );
+
+		Check( CountSnapshots( *lines ) == 0,
+		       "no provider set -> zero document_snapshot records, even with an advancing headVersion" );
+		// DriveOneToolCall never calls RecordHttpRound (mirrors E5's
+		// tool-only flow, not E4's full HTTP-round flow), so the ordinary
+		// shape here is session, user, tool, summary -- 4 records, none
+		// of them a document_snapshot.  The point of this assertion is
+		// that the pre-feature record count/shape is UNCHANGED by having
+		// no provider attached, not that this exact shape is load-bearing.
+		Check( lines->size() == 4,
+		       "no provider set -> the ordinary (session,user,tool,summary) record count is unaffected" );
+	}
+
+	// --- Informational timing: the emit path (provider call + build +
+	// serialize + redact + sink write) on a realistically sized document.
+	// PRINTS, does not gate. ---
+	{
+		std::shared_ptr<FakeDoc> doc = std::make_shared<FakeDoc>();
+		// Simulate "a few hundred chunks": a repeated chunk-shaped block,
+		// large enough to also exercise the decimation-sized regime.
+		std::string chunk =
+			"standard_object\n{\n\tname \"obj\"\n\tgeometry \"sphere\"\n\tmaterial \"default\"\n}\n\n";
+		std::string big;
+		big.reserve( chunk.size() * 400 );
+		for( int i = 0; i < 400; ++i ) big += chunk;
+		doc->text = big;
+		doc->revision = 1;
+
+		AgentChatLoop loop;
+		loop.SetProvider( ChatProvider::Anthropic );
+		ChatTrajectoryConfig cfg;
+		cfg.traceId = "t-snap-timing";   // real clock (no injected cfg.clock)
+		std::function<void(const std::string&)> sink = []( const std::string& ) {};
+		loop.SetTrajectorySink( sink, cfg );
+		loop.SetDocumentSnapshotProvider( MakeFakeProvider( doc ) );
+		loop.AddUserMessage( "time this" );
+
+		const auto t0 = std::chrono::steady_clock::now();
+		DriveOneToolCall( loop, "toolu_timing", 1, doc->uuid, doc->revision );
+		const auto t1 = std::chrono::steady_clock::now();
+		const long long micros =
+			std::chrono::duration_cast<std::chrono::microseconds>( t1 - t0 ).count();
+		std::printf( "  [info] document_snapshot emit path (%zu-byte document, provider call + "
+		             "build + serialize + redact + sink write): %lld us\n",
+		             big.size(), micros );
+	}
+}
+
+//----------------------------------------------------------------------
 // Review-round P2: "recording never disrupts the chat" must hold for ANY
 // sink -- a throwing sink is swallowed and recording is disabled for the
 // rest of the session (the sink is dropped after the first throw).
@@ -806,6 +1110,7 @@ int main()
 	TestRedactionRedProve();
 	TestRotation();
 	TestAuxiliaryHttpRound();
+	TestDocumentSnapshotPolicy();
 	RunThrowingSinkTest();
 	std::printf( "=== AgentTrajectoryTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

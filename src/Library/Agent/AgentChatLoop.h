@@ -576,6 +576,17 @@ namespace RISE
 			//! is accepted rather than mangled.
 			static const int kMinRetainedSpans = 2;
 
+			//! Durable document snapshots (see SetDocumentSnapshotProvider):
+			//! once a WRITTEN head_bump snapshot's document meets or exceeds
+			//! this size, later head-advancing tool calls only trigger a fresh
+			//! snapshot every kDocumentSnapshotDecimationStride-th advance
+			//! instead of every one -- a multi-MB scene should not pay a full
+			//! SerializeCst + JSONL-line write on every single edit.
+			static const long long kDocumentSnapshotDecimationBytes = 1024 * 1024;   // 1 MB
+
+			//! See kDocumentSnapshotDecimationBytes.
+			static const int kDocumentSnapshotDecimationStride = 10;
+
 			//! The compaction budget BOTH GUI drivers install at startup
 			//! (Mac: RISEAgentChatBridge's init; Windows: ChatPanel's
 			//! constructor).  Kept here rather than in each driver so the
@@ -975,6 +986,46 @@ namespace RISE
 			void SetTrajectorySink( std::function<void(const std::string&)> sink,
 			                        const ChatTrajectoryConfig& config = ChatTrajectoryConfig() );
 
+			//! Durable document snapshots: a scene built entirely inside a live
+			//! GUI agent session (never Save As'd) is otherwise unrecoverable
+			//! if the app quits or crashes -- the trajectory records tool
+			//! calls/results but never the document TEXT.  `provider` fills
+			//! outText with the full serialized CST document and
+			//! outUuid/outRevision with the retained head's identity AT THE
+			//! MOMENT OF THAT READ, returning false when there is no document
+			//! to save (never CST-loaded, or after ClearAll).  Plain uint64_t
+			//! (not RISE::Cst::CstHeadVersion) so this header does not need a
+			//! Cst.h include.  The INTENDED implementation is a thin wrapper
+			//! around AgentSession::ReadDocumentSnapshot -- see that method's
+			//! doc for the coherent-read / threading discipline this loop
+			//! relies on (agent-RPC-thread only; controller-mediated when a
+			//! controller is attached, so a close-time call can BLOCK while a
+			//! render owns the scene -- accepted, not a bug).
+			//!
+			//! WRITE POLICY (both hooks below are no-ops when no provider is
+			//! set -- headless/eval paths are unaffected byte-for-byte):
+			//!   - AddToolResult: after a tool result reports an ADVANCING
+			//!     (uuid,revision) versus the last WRITTEN snapshot, emit a
+			//!     "head_bump" document_snapshot -- except once a written
+			//!     snapshot's document exceeded
+			//!     kDocumentSnapshotDecimationBytes, after which only every
+			//!     kDocumentSnapshotDecimationStride-th advance snapshots (a
+			//!     huge scene should not pay a full SerializeCst + JSONL-line
+			//!     cost on every single edit).  The FIRST advance of a trace
+			//!     always snapshots (there is no prior size to decimate by).
+			//!   - CloseTrajectorySession: BEFORE the summary, for ANY close
+			//!     status (including "app_quit"), emit a "session_end"
+			//!     snapshot UNLESS the head has not moved since the last
+			//!     snapshot already written this trace (dedupe -- the
+			//!     head_bump policy usually already covers it).
+			//! The write-policy bookkeeping (last snapshotted version, advance
+			//! counter) resets whenever the trace rolls to a new one (every
+			//! CloseTrajectorySession) and whenever the sink itself is
+			//! replaced/detached (SetTrajectorySink) -- a fresh trace has no
+			//! prior snapshot to compare against or decimate by.
+			void SetDocumentSnapshotProvider(
+				std::function<bool( std::string& outText, uint64_t& outUuid, uint64_t& outRevision )> provider );
+
 			//! Record one LLM HTTP round into the `llm` trajectory record.
 			//! Called by the DRIVER just before HandleResponse (the driver
 			//! owns the HTTP round-trip, so it alone knows the status/body/
@@ -1156,6 +1207,24 @@ namespace RISE
 			//! FinishTrajectory.
 			void CloseTrajectorySession( const std::string& status );
 
+			//! Durable document snapshots, head_bump path (see
+			//! SetDocumentSnapshotProvider): called from AddToolResult with the
+			//! (uuid,revision) the JUST-COMPLETED tool result reported.  Gates
+			//! on that version having ADVANCED past the last WRITTEN snapshot,
+			//! applies the decimation policy, then -- only if still due --
+			//! calls the provider and writes the record.  No-op when no
+			//! recorder or no provider is attached.
+			void MaybeEmitHeadBumpSnapshot( uint64_t uuid, uint64_t revision );
+
+			//! Durable document snapshots: build + emit ONE document_snapshot
+			//! record from an already-read (text,uuid,revision) and update the
+			//! last-written bookkeeping those two callers gate on.  Shared by
+			//! MaybeEmitHeadBumpSnapshot and CloseTrajectorySession's
+			//! session_end write so the "build the record + update
+			//! mLastSnapshot*" logic exists in exactly one place.
+			void WriteDocumentSnapshotRecord( const std::string& reason,
+				const std::string& text, uint64_t uuid, uint64_t revision );
+
 			//! One in-flight tool dispatch: the JSON-RPC line + start time
 			//! stamped by ToolCallToJsonRpcLine, completed at AddToolResult.
 			struct ToolLinePending
@@ -1255,6 +1324,29 @@ namespace RISE
 			std::function<int64_t()>                 mTrajectoryClock;
 			ChatHttpRequest                          mLastRequest;
 			std::vector<ToolLinePending>             mToolLineStash;
+
+			//! Durable document snapshots (see SetDocumentSnapshotProvider).
+			//! mDocumentSnapshotProvider empty => every hook below is a no-op,
+			//! byte-identical to the pre-snapshot behaviour (headless/eval
+			//! paths, and any GUI session before the driver wires one up).
+			std::function<bool( std::string&, uint64_t&, uint64_t& )> mDocumentSnapshotProvider;
+			//! Identity of the last snapshot actually WRITTEN this trace (not
+			//! merely observed) -- both hooks gate against this, and it is
+			//! what CloseTrajectorySession's session_end dedupe compares
+			//! against.  mHasLastSnapshotVersion false => no snapshot written
+			//! yet this trace, so the first advancing call always fires.
+			bool     mHasLastSnapshotVersion = false;
+			uint64_t mLastSnapshotUuid = 0;
+			uint64_t mLastSnapshotRevision = 0;
+			//! documentBytes of the last WRITTEN snapshot -- decimation compares
+			//! THIS (not the current document's size, which head_bump does not
+			//! know without calling the provider) against
+			//! kDocumentSnapshotDecimationBytes.
+			long long mLastSnapshotDocumentBytes = 0;
+			//! Head-advancing calls seen since the last WRITTEN snapshot, while
+			//! decimating.  Reset to 0 every time a snapshot is actually
+			//! written (see WriteDocumentSnapshotRecord).
+			int mSnapshotAdvanceCount = 0;
 
 			//! See the "TEXT-ONLY-MODEL IMAGE-REJECTION RECOVERY" note above
 			//! mToolRounds.

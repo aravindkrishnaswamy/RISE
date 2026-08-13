@@ -1327,6 +1327,25 @@ QString ViewportBridge::agentHandleLine(const QString& jsonRpcRequest)
     return QString::fromUtf8(response.c_str());
 }
 
+qint64 ViewportBridge::agentHeadVersionRevision() const
+{
+    if (!m_agentDispatcher || !m_agentDispatcher->Session()) return -1;
+    return static_cast<qint64>(m_agentDispatcher->Session()->ReadHeadVersion().revision);
+}
+
+bool ViewportBridge::agentReadDocumentSnapshot(std::string& outText, uint64_t& outUuid,
+                                                uint64_t& outRevision) const
+{
+    if (!m_agentDispatcher || !m_agentDispatcher->Session()) return false;
+    const RISE::Agent::AgentSession::AgentDocumentSnapshot snap =
+        m_agentDispatcher->Session()->ReadDocumentSnapshot();
+    if (!snap.hasDocument) return false;
+    outText = snap.document;
+    outUuid = snap.headVersion.uuid;
+    outRevision = snap.headVersion.revision;
+    return true;
+}
+
 void ViewportBridge::setAgentAutonomyLevel(AgentAutonomyLevel level)
 {
     if (level != AgentAutonomyLevel::Read && level != AgentAutonomyLevel::Propose
