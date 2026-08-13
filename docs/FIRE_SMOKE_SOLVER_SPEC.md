@@ -290,7 +290,11 @@ error and must be corrected.
   buoyant-acceleration limit Δt ≲ √(2δx/g′₊) (g′₊ = max(g′, 0) per §3.3 —
   the signed form goes non-real over cold dense fuel; the limit is simply
   inactive where g′₊ = 0), and
-  the explicit diffusion limit Δt ∝ δx²/ν. All molecular/SGS diffusion and
+  the explicit diffusion limit Δt ∝ δx²/ν. **Exact coefficients are pinned
+  by design r54 (§3.9 determinism pins, item 4) — advective 0.5·δx/max|u|,
+  buoyant 0.5·√(2δx/g′₊max), diffusive δx²/(8·ν★max), ×1.1 growth rate
+  limit — because Δt selection is on the `case_record_id` identity path and
+  two conforming tools must not differ.** All molecular/SGS diffusion and
   conduction are explicit in this arc; subcycling or an IMEX replacement is a
   separately designed optimization, not an implementation choice hidden under
   “Heun.” Radiative cooling alone uses §3.5's local backward-Euler source map.

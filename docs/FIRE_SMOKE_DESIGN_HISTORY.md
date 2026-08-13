@@ -1104,3 +1104,33 @@ it was already tried and refuted here.
   data items exactly as §7.0 separates the two. Next: the §3.9 case
   contract (case_record_id) and the first end-to-end preview-labelled
   methane sim→grid→renderer run.
+
+- **r54 (2026-08-13):** §3.9 determinism pins, from the Phase-C agent's
+  capstone stop: the case grammar was explicitly "not final" and eight
+  underdeterminations (ranges like "2–3 D" and "≥5", `≲`/`∝` timestep
+  forms, an unspecified perturbation algorithm, a Heskestad small-case
+  hole, an unresolved §3.9↔r52 χ_r conflict, and unplaced thread-count
+  identity) made a canonical `case_record_id` impossible without invented
+  semantics — confirmed by two independent audits. Pinning principles:
+  take the design's own conservative range-ends deterministically; prefer
+  requirements-on-output over implementation choices; nothing on the
+  identity path carries a `≲`. The pins: (1) case schema v1 final, with
+  the standard one-preimage envelope; (2) lateral exactly 3 D, top exactly
+  2 L_f_eff (5 L_f_eff plume-law), with **L_f_eff = max(L_f, D)** closing
+  the nonpositive-Heskestad hole; disc source masked by cell centers;
+  (3) δx = D*/tier exactly, extents round UP to integer multiples — the
+  extent grows to fit δx, never the reverse; (4) exact Δt coefficients
+  (0.5 advective, 0.5 buoyant, 1/8 diffusive against the δx²/6ν 3D bound,
+  ×1.1 growth limit), mirrored into the solver spec since Δt selection is
+  identity-bearing; (5) t_ft = H/√(g·D*) — a priori computable and erring
+  conservative — with discard/pre-roll exactly 5·t_ft; (6) the seeded
+  perturbation fully specified (SplitMix64 over lattice indices, top-53-bit
+  mapping, mean-subtracted 1 % multiplicative source-flux pattern, constant
+  for the whole run); (7) the χ_r conflict resolved by the r52 taxonomy
+  itself — the no-override rule now binds classes (a)/(b) only, and class
+  (c) gets an optional case-level `chi_r` field inside the hashed payload;
+  (8) thread count and reduction mode are **not** identity-bearing: the
+  solver must produce bit-identical sequences at any thread count via
+  fixed-order reductions (the discipline the V-tier ledgers already
+  assume), enforced by a 1-vs-N determinism fixture, with threads recorded
+  in producer/run metadata only.

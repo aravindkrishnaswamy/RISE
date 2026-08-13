@@ -1472,7 +1472,8 @@ box, a grid resolution, and a timestep policy, which is precisely the
 un-understandable authoring surface §1's philosophy forbids. This section
 defines the case file: **the few physically meaningful choices a user
 actually makes, with everything else derived from rules this design already
-pins.** Illustrative form (grammar not final; semantics normative):
+pins.** Form below is **final as case schema v1 (r54)**; semantics
+normative:
 
 ```
 fire_case
@@ -1498,8 +1499,15 @@ fire_case
 - **`fuel`** names a versioned fuel record (§8): Δh_c, s_st, W, y_form/y_s,
   y_cond, χ_r, ρ_soot, T_pilot/T_AIT/T_ox/T_cond, the condensable
   pseudo-species set, and the optical/chem preset references. The case file
-  never restates a fuel constant; overriding one is creating a *new named
-  record*, not editing a case (the same no-loose-tuning posture as
+  never restates a fuel constant **of r52 class (a) or (b)** — measured
+  properties and closure gates; overriding one is creating a *new named
+  record*, not editing a case. **r52 class (c) — configuration-dependent
+  quantities, today exactly χ_r — is the carve-out (r54, resolving the
+  §3.9↔r52 conflict): the case schema has an optional `chi_r` field that
+  overrides the fuel record's declared default for this configuration, and
+  the override value is part of the case payload and therefore of
+  `case_record_id`.** Omitting it inherits the fuel default; either way the
+  effective χ_r is echoed in the derived fields (the same no-loose-tuning posture as
   `fire_medium`, §9).
 - **`intensity`** is either the physical mass flux ṁ″_F directly, or a
   target heat-release rate Q̇ in kW, converted through the fuel record as
@@ -1556,9 +1564,62 @@ fire_case
   the §8 manifest gains an explicit **`case_record_id`** field carrying that
   hash (distinct from the qualification gate-evidence IDs, which record how
   the *producer* was validated, not which case ran), so a grid sequence
-  names the exact case that produced it. Same case + same build + same
-  seed + same thread count reproduces the sequence per §3.8's determinism
-  policy (bitwise at fixed thread count with ordered reductions).
+  names the exact case that produced it.
+
+**Determinism pins (r54) — the exact rules that make `case_record_id`
+canonical.** Every range or `≲` in the guidance above resolves to the
+following; two conforming tools must derive identical bytes:
+
+1. **Schema and preimage.** Case schema v1, RISE-CBOR64-v1, the standard
+   one-preimage envelope: exactly `{payload, case_record_id}`,
+   `case_record_id` = SHA-256 over the canonical encoding of `payload`
+   alone. `payload` carries `schema_version=1`, every authored field, every
+   derived echo below, and every referenced record ID; it contains no
+   `case_record_id`.
+2. **Derived geometry.** L_f from Heskestad at peak Q̇, with the small-case
+   fallback **L_f_eff = max(L_f, D)** (a nonpositive Heskestad height means
+   a bed-dominated low-Q̇ regime; the domain must still clear the source).
+   Lateral extent: exactly **3 D** per side beyond the source. Top: exactly
+   **2 L_f_eff**, or exactly **5 L_f_eff** when the case is tagged
+   plume-law. Source: a disc of diameter D centered on the domain floor's
+   lateral midpoint; the source mask is every cell whose **center** lies
+   within that disc.
+3. **Grid.** δx = D*/tier exactly (tier ∈ {6, 10, 14} from `quality`);
+   each required extent rounds **up** to the next integer multiple of δx;
+   N per axis is that multiple. δx is never adjusted to fit the extent —
+   the extent grows to fit δx (uniform cubic MAC cells).
+4. **Timestep.** Δt = min of three exact limits, evaluated from the
+   step-start state: advective **0.5·δx/max_axis|u_axis|∞**; buoyant
+   **0.5·√(2δx/g′₊max)** (inactive where g′₊ = 0); diffusive
+   **δx²/(8·ν★max)** with ν★ = the maximum over cells of every active
+   diffusivity (ν_mol+ν_sgs, each D, k_eff/(ρc_p)) — the 1/8 coefficient
+   sits below the 7-point-Laplacian 3D stability bound δx²/6ν with margin.
+   Growth is rate-limited to **×1.1 per step**; shrink is unlimited. All
+   coefficients are exact binary64 constants of the record.
+5. **Flow-through time and windows.** t_ft = **H_domain/u\*** with
+   u\* = √(g·D\*) — computable a priori from derived quantities, and
+   erring long (u\* underestimates the developed plume), so windows err
+   conservative. Discard (statistics cases) and pre-roll (e(0)>0
+   animation cases) are **exactly 5·t_ft**; cold-start animation cases
+   have no window, as stated above.
+6. **Symmetry-breaking perturbation.** A fixed multiplicative pattern on
+   the source mass flux: per source cell, u = 2·f₅₃(SplitMix64(seed XOR
+   linear_index))−1 ∈ [−1,1), where linear_index = i + N_x·(j + N_y·k) in
+   the sequence-frame lattice and f₅₃ maps the top 53 bits to [0,1);
+   SplitMix64 is the public-domain constant set (γ = 0x9E3779B97F4A7C15).
+   The pattern is mean-subtracted over the source mask so total ṁ is
+   exactly the authored value, scaled by amplitude **a = 0.01**, and
+   applied **constantly for the entire run** (a slightly non-uniform
+   burner — no time discontinuity, fully deterministic).
+7. **Thread count and reduction mode are NOT identity-bearing.** The
+   requirement is on the output: the solver must produce **bit-identical
+   sequences regardless of effective thread count**, via fixed-order
+   (deterministic tree) reductions — the same discipline the V-tier
+   ledgers already assume. Thread count and reduction mode are recorded in
+   producer/run metadata only, and a determinism fixture (same case at 1
+   and N threads → identical frame digests) enforces the requirement.
+   Same case + same build + same seed reproduces the sequence bitwise,
+   independent of thread count.
 - **Looping is explicitly out of scope.** A physically simulated fire never
   tiles in time; authoring a loop (cross-fade selection, phase-aligned cuts
   on the puffing period) is a content-tooling problem over finished
