@@ -492,6 +492,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RISECBOR64.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireOptics.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSimulationRecords.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.cpp" />
@@ -667,6 +668,7 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterImageReader.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterImageWriter.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizer.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRenderPreparationController.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizerOutput.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IRenderObserver.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IFrameEncoder.h" />
@@ -1036,6 +1038,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RISECBOR64.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PlanckRadiance.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GaussLegendreQuadrature.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h" />

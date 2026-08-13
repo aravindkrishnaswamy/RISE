@@ -21,6 +21,7 @@
 #include "../Utilities/GaussLegendreQuadrature.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RISECBOR64.h"
+#include "../Utilities/FireSequence.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_TRI.h"
@@ -34,6 +35,79 @@ using namespace RISE;
 
 namespace
 {
+	class SequenceBootstrapScalarPainter :
+		public virtual IScalarPainter,
+		public virtual Implementation::Reference
+	{
+		Scalar value_;
+	public:
+		explicit SequenceBootstrapScalarPainter( const Scalar value ) : value_(value) {}
+		~SequenceBootstrapScalarPainter() override = default;
+		ScalarTriple GetValuesAt( const RayIntersectionGeometric& ) const override
+		{
+			return ScalarTriple(value_);
+		}
+	};
+
+	static const IScalarPainter& SequenceZeroPainter()
+	{
+		static SequenceBootstrapScalarPainter painter(0.0);
+		return painter;
+	}
+
+	static const IScalarPainter& SequenceTemperaturePainter()
+	{
+		static SequenceBootstrapScalarPainter painter(300.0);
+		return painter;
+	}
+
+	class SequenceUnitSpectralFunction :
+		public virtual IFunction1D,
+		public virtual Implementation::Reference
+	{
+	public:
+		~SequenceUnitSpectralFunction() override = default;
+		Scalar Evaluate( const Scalar ) const override { return 1.0; }
+	};
+
+	static const IFunction1D& SequenceUnitSPD()
+	{
+		static SequenceUnitSpectralFunction function;
+		return function;
+	}
+
+	static IVolumeAccessor* DenseSequenceAccessor(
+		const Implementation::FireSequenceDenseChannel& channel )
+	{
+		if( channel.vectorValues || channel.dimensions[0] > 0x7fffffffu ||
+			channel.dimensions[1] > 0x7fffffffu || channel.dimensions[2] > 0x7fffffffu ) return nullptr;
+		const unsigned int width = static_cast<unsigned int>(channel.dimensions[0]);
+		const unsigned int height = static_cast<unsigned int>(channel.dimensions[1]);
+		const unsigned int depth = static_cast<unsigned int>(channel.dimensions[2]);
+		const std::size_t count = static_cast<std::size_t>(width)*height*depth;
+		if( channel.values.size() != count ) return nullptr;
+		Volume<Scalar>* volume = new Volume<Scalar>(width,height,depth);
+		if( volume->Width() != width || volume->Height() != height || volume->Depth() != depth ) {
+			safe_release(volume);
+			return nullptr;
+		}
+		const int halfWidth = static_cast<int>(width)/2;
+		const int halfHeight = static_cast<int>(height)/2;
+		const int halfDepth = static_cast<int>(depth)/2;
+		for( unsigned int z=0; z<depth; ++z ) for( unsigned int y=0; y<height; ++y ) {
+			for( unsigned int x=0; x<width; ++x ) {
+				volume->SetValue(static_cast<int>(x)-halfWidth,
+					static_cast<int>(y)-halfHeight,static_cast<int>(z)-halfDepth,
+					channel.values[static_cast<std::size_t>(x)+static_cast<std::size_t>(width)*
+						(static_cast<std::size_t>(y)+static_cast<std::size_t>(height)*z)]);
+			}
+		}
+		IVolumeAccessor* accessor = new VolumeAccessor_TRI();
+		accessor->BindVolume(volume);
+		safe_release(volume);
+		return accessor;
+	}
+
 	struct RatioTrackingTestState
 	{
 		bool active = false;
@@ -2074,7 +2148,8 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	  m_fireEmissionGeneration( 0 ),
 	  m_fireDerivedStructuresCurrent( false ),
 	  m_forTestBlockFireDerivedRebuild( false ),
-  m_valid( false )
+	  m_valid( false ),
+	  m_sequenceBacked( false )
 {
 	const IScalarPainter* chemPainters[3] = {
 		chemCHPainter, chemC2Painter, chemCO2Painter };
@@ -2248,6 +2323,36 @@ MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
 	}
 }
 
+MultichannelHeterogeneousMedium::MultichannelHeterogeneousMedium(
+	const Implementation::FireSequencePreparedFrame& frame,
+	const std::array<std::array<double,2>,3>& chemNormalizationIntervalsNM,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volDepth,
+	const Point3& bboxMin,
+	const Point3& bboxMax,
+	const Scalar sceneUnitMeters,
+	const FireOpticsPreset& optics,
+	const IPhaseFunction& phase
+	) :
+	MultichannelHeterogeneousMedium(
+		SequenceZeroPainter(),SequenceTemperaturePainter(),
+		frame.channels.count("condensed") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_CH") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_C2") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_CO2") ? &SequenceZeroPainter() : nullptr,
+		frame.channels.count("chem_CH") ? &SequenceUnitSPD() : nullptr,
+		frame.channels.count("chem_C2") ? &SequenceUnitSPD() : nullptr,
+		frame.channels.count("chem_CO2") ? &SequenceUnitSPD() : nullptr,
+		chemNormalizationIntervalsNM[0][0],chemNormalizationIntervalsNM[0][1],
+		chemNormalizationIntervalsNM[1][0],chemNormalizationIntervalsNM[1][1],
+		chemNormalizationIntervalsNM[2][0],chemNormalizationIntervalsNM[2][1],
+		volWidth,volHeight,volDepth,bboxMin,bboxMax,sceneUnitMeters,optics,phase )
+{
+	m_sequenceBacked = true;
+	if( m_valid && !InstallPreparedFireSequenceFrame(frame) ) m_valid = false;
+}
+
 MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 {
 	safe_release( m_pCarbonAccessor );
@@ -2257,6 +2362,82 @@ MultichannelHeterogeneousMedium::~MultichannelHeterogeneousMedium()
 		safe_release( m_pChemAccessor[band] );
 		safe_release( m_pChemSPD[band] );
 	}
+}
+
+bool MultichannelHeterogeneousMedium::InstallPreparedFireSequenceFrame(
+	const Implementation::FireSequencePreparedFrame& frame )
+{
+	const auto carbon = frame.channels.find("carbon");
+	const auto temperature = frame.channels.find("temperature");
+	const auto condensed = frame.channels.find("condensed");
+	const auto chemCH = frame.channels.find("chem_CH");
+	const auto chemC2 = frame.channels.find("chem_C2");
+	const auto chemCO2 = frame.channels.find("chem_CO2");
+	const bool anyChem=chemCH!=frame.channels.end() || chemC2!=frame.channels.end() ||
+		chemCO2!=frame.channels.end();
+	const bool allChem=chemCH!=frame.channels.end() && chemC2!=frame.channels.end() &&
+		chemCO2!=frame.channels.end();
+	if( !m_valid || carbon == frame.channels.end() || temperature == frame.channels.end() ||
+		carbon->second.dimensions[0] != m_volWidth ||
+		carbon->second.dimensions[1] != m_volHeight ||
+		carbon->second.dimensions[2] != m_volDepth ||
+		temperature->second.dimensions != carbon->second.dimensions ||
+		(condensed != frame.channels.end() && condensed->second.dimensions != carbon->second.dimensions) ||
+		(anyChem && !allChem) || (allChem && (!m_pChemSPD[0] || !m_pChemSPD[1] || !m_pChemSPD[2])) ||
+		(allChem && (chemCH->second.dimensions!=carbon->second.dimensions ||
+			chemC2->second.dimensions!=carbon->second.dimensions ||
+			chemCO2->second.dimensions!=carbon->second.dimensions)) ) return false;
+
+	IVolumeAccessor* newCarbon = DenseSequenceAccessor(carbon->second);
+	IVolumeAccessor* newTemperature = DenseSequenceAccessor(temperature->second);
+	IVolumeAccessor* newCondensed = condensed == frame.channels.end() ? nullptr :
+		DenseSequenceAccessor(condensed->second);
+	IVolumeAccessor* newChem[3]={
+		allChem ? DenseSequenceAccessor(chemCH->second) : nullptr,
+		allChem ? DenseSequenceAccessor(chemC2->second) : nullptr,
+		allChem ? DenseSequenceAccessor(chemCO2->second) : nullptr };
+	if( !newCarbon || !newTemperature || (condensed != frame.channels.end() && !newCondensed) ||
+		(allChem && (!newChem[0] || !newChem[1] || !newChem[2])) ) {
+		safe_release(newCarbon); safe_release(newTemperature); safe_release(newCondensed);
+		for( unsigned int band=0; band<3u; ++band ) safe_release(newChem[band]);
+		return false;
+	}
+	IVolumeAccessor* oldCarbon = m_pCarbonAccessor;
+	IVolumeAccessor* oldTemperature = m_pTemperatureAccessor;
+	IVolumeAccessor* oldCondensed = m_pCondensedAccessor;
+	IVolumeAccessor* oldChem[3]={m_pChemAccessor[0],m_pChemAccessor[1],m_pChemAccessor[2]};
+	const bool oldCondensedInventory = m_hasNonzeroCondensedInventory;
+	m_pCarbonAccessor = newCarbon;
+	m_pTemperatureAccessor = newTemperature;
+	m_pCondensedAccessor = newCondensed;
+	for( unsigned int band=0; band<3u; ++band ) m_pChemAccessor[band]=newChem[band];
+	m_hasNonzeroCondensedInventory = condensed != frame.channels.end() &&
+		condensed->second.maximum > 0.0;
+	InvalidateFireDerivedStructures();
+	if( !RebuildFireDerivedStructuresForRender() ) {
+		m_pCarbonAccessor = oldCarbon;
+		m_pTemperatureAccessor = oldTemperature;
+		m_pCondensedAccessor = oldCondensed;
+		for( unsigned int band=0; band<3u; ++band ) m_pChemAccessor[band]=oldChem[band];
+		m_hasNonzeroCondensedInventory = oldCondensedInventory;
+		RebuildFireDerivedStructuresForRender();
+		safe_release(newCarbon); safe_release(newTemperature); safe_release(newCondensed);
+		for( unsigned int band=0; band<3u; ++band ) safe_release(newChem[band]);
+		return false;
+	}
+	safe_release(oldCarbon); safe_release(oldTemperature); safe_release(oldCondensed);
+	for( unsigned int band=0; band<3u; ++band ) safe_release(oldChem[band]);
+	return true;
+}
+
+bool MultichannelHeterogeneousMedium::BindSequencePreparationController(
+	Implementation::FireSequencePreparationController& controller,
+	const std::string& installerIdentity, std::string& error )
+{
+	return controller.SetFrameInstaller(
+		[this](const Implementation::FireSequencePreparedFrame& frame) {
+			return InstallPreparedFireSequenceFrame(frame);
+		},installerIdentity,error);
 }
 
 bool MultichannelHeterogeneousMedium::ForTest_SetEffectiveAbsorptionAblation(

@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CameraCommon.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
@@ -127,6 +128,7 @@ IKeyframeParameter* CameraCommon::KeyframeFromParameters( const String& name, co
 
 void CameraCommon::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case LOCATION_ID:
@@ -184,5 +186,6 @@ void CameraCommon::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CameraCommon::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Recompute( frame.GetWidth(), frame.GetHeight() );
 }

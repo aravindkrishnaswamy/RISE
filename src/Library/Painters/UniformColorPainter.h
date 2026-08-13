@@ -19,6 +19,7 @@
 #define UNIFORM_COLOR_PAINTER_
 
 #include "Painter.h"
+#include "../Utilities/Transformable.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Utilities/Color/RGBSpectra.h"
 
@@ -115,6 +116,8 @@ namespace RISE
 
 			void SetIntermediateValue( const IKeyframeParameter& val )
 			{
+				Transformable::PreparedExternalMutationScope preparedMutation;
+				if( !preparedMutation.IsValid() ) return;
 				if( val.getID() == 100 ) {
 					C = *(RISEPel*)val.getValue();
 					Recompute();

@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "RISECBOR64.h"
 #include <algorithm>
+#include <fstream>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -834,4 +835,34 @@ std::string RISECBOR64::SHA256Hex(
 		result[2u*i+1u] = hex[digest[i]&0x0fu];
 	}
 	return result;
+}
+
+bool RISECBOR64::SHA256FileHex( const std::string& filename, std::string& digest )
+{
+	digest.clear();
+	std::ifstream input(filename,std::ios::binary);
+	if( !input ) return false;
+	return SHA256StreamHex(input,digest);
+}
+
+bool RISECBOR64::SHA256StreamHex( std::istream& input, std::string& digest )
+{
+	digest.clear();
+	SHA256 sha;
+	unsigned char buffer[1024u*1024u];
+	while( input ) {
+		input.read(reinterpret_cast<char*>(buffer),sizeof(buffer));
+		const std::streamsize count = input.gcount();
+		if( count > 0 ) sha.Update(buffer,static_cast<std::size_t>(count));
+	}
+	if( !input.eof() ) return false;
+	unsigned char bytes[32];
+	sha.Final(bytes);
+	static const char hex[] = "0123456789abcdef";
+	digest.assign(64u,'0');
+	for( unsigned int i=0; i<32u; ++i ) {
+		digest[2u*i] = hex[bytes[i]>>4];
+		digest[2u*i+1u] = hex[bytes[i]&0x0fu];
+	}
+	return true;
 }

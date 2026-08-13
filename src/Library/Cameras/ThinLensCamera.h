@@ -180,11 +180,13 @@ namespace RISE
 			inline Scalar GetTiltY()                   const { return tiltY; }
 			inline Scalar GetShiftX()                  const { return shiftX; }           // mm
 			inline Scalar GetShiftY()                  const { return shiftY; }           // mm
-			inline void SetSensorSize( Scalar v )              { sensorSize = v; }
-			inline void SetFocalLengthStored( Scalar v )       { focalLength = v; }
-			inline void SetFstop( Scalar v )                   { fstop = v; }
-			inline void SetFocusDistanceStored( Scalar v )     { focusDistance = v; }
+			inline void SetSensorSize( Scalar v )              { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) sensorSize = v; }
+			inline void SetFocalLengthStored( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) focalLength = v; }
+			inline void SetFstop( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) fstop = v; }
+			inline void SetFocusDistanceStored( Scalar v )     { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) focusDistance = v; }
 			inline void SetSceneUnitMeters( Scalar v ) {
+				Transformable::PreparedExternalMutationScope m;
+				if( !m.IsValid() ) return;
 				// Guard against zero / negative — `Recompute()` divides
 				// by sceneUnitMeters, so 0 produces inf/NaN and
 				// negatives flip the sign of every mm-to-scene
@@ -193,13 +195,13 @@ namespace RISE
 				// caller.
 				if( v > 0 ) sceneUnitMeters = v;
 			}
-			inline void SetTiltX( Scalar v )                   { tiltX = v; }
-			inline void SetTiltY( Scalar v )                   { tiltY = v; }
-			inline void SetShiftX( Scalar v )                  { shiftX = v; }
-			inline void SetShiftY( Scalar v )                  { shiftY = v; }
-			inline void SetApertureBlades( unsigned int v )    { apertureBlades = v; }
-			inline void SetApertureRotation( Scalar v )        { apertureRotation = v; }
-			inline void SetAnamorphicSqueeze( Scalar v )       { anamorphicSqueeze = v; }
+			inline void SetTiltX( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltX = v; }
+			inline void SetTiltY( Scalar v )                   { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) tiltY = v; }
+			inline void SetShiftX( Scalar v )                  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) shiftX = v; }
+			inline void SetShiftY( Scalar v )                  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) shiftY = v; }
+			inline void SetApertureBlades( unsigned int v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) apertureBlades = v; }
+			inline void SetApertureRotation( Scalar v )        { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) apertureRotation = v; }
+			inline void SetAnamorphicSqueeze( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) anamorphicSqueeze = v; }
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 
@@ -208,7 +210,7 @@ namespace RISE
 			//! see ICamera.h for the formula and stacking semantics.
 			Scalar GetExposureCompensationEV() const override { return evCompensation_; }
 			inline Scalar GetIsoStored() const { return iso_; }
-			inline void   SetIsoStored( Scalar v ) { iso_ = v; }
+			inline void   SetIsoStored( Scalar v ) { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) iso_ = v; }
 
 			//! Landing 5: also rebuild the photographic exposure cache
 			//! after geometric state.  fstop and exposureTime feed

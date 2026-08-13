@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "ThinLensCamera.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "CameraTransforms.h"
@@ -346,6 +347,7 @@ ThinLensCamera::~ThinLensCamera( )
 
 void ThinLensCamera::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Geometric state first.
 	CameraCommon::RegenerateData();
 
@@ -488,6 +490,7 @@ IKeyframeParameter* ThinLensCamera::KeyframeFromParameters( const String& name, 
 
 void ThinLensCamera::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	CameraCommon::SetIntermediateValue( val );
 
 	switch( val.getID() )

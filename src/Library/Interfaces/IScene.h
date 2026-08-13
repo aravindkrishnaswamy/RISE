@@ -132,6 +132,7 @@ namespace RISE
 		/// shared animator. Defaulted and appended for ABI stability.
 		virtual void SetFireTemporalHold( const bool hold ) { (void)hold; }
 		virtual bool FireTemporalHold() const { return false; }
+		virtual bool HasTimeVaryingMedia() const { return false; }
 	};
 }
 

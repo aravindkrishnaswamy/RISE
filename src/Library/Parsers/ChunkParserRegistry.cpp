@@ -6612,6 +6612,61 @@ namespace RISE
 				}
 			};
 
+			struct FireMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const struct Expected { const char* key; const char* value; } expected[] = {
+						{"channel_carbon","carbon"},{"channel_temperature","temperature"}
+					};
+					for( const Expected& item : expected ) if( bag.GetString(item.key) != item.value ) {
+						GlobalLog()->PrintEasyError("fire_medium channel binding differs from the version-1 manifest schema");
+						return false;
+					}
+					const bool chemNone = bag.Has("chem_model") && bag.GetString("chem_model") == "none";
+					const bool allChem = bag.Has("channel_chem_ch") && bag.Has("channel_chem_c2") &&
+						bag.Has("channel_chem_co2");
+					if( chemNone == allChem || (allChem &&
+						(bag.GetString("channel_chem_ch") != "chem_CH" ||
+						 bag.GetString("channel_chem_c2") != "chem_C2" ||
+						 bag.GetString("channel_chem_co2") != "chem_CO2")) ) return false;
+					if( bag.Has("channel_condensed") && bag.GetString("channel_condensed") != "condensed" ) return false;
+					if( !pJob.SetFireFidelityMode(bag.GetString("fidelity_mode").c_str()) ) return false;
+					return pJob.AddFireMediumBound(bag.GetString("name").c_str(),
+						bag.GetString("sequence_manifest").c_str(),"carbon","temperature",
+						bag.Has("channel_condensed") ? "condensed" : "",
+						bag.Has("channel_reaction") ? "reaction" : "",
+						allChem ? "chem_CH" : "",allChem ? "chem_C2" : "",
+						allChem ? "chem_CO2" : "",
+						bag.Has("channel_velocity") ? "velocity" : "",chemNone);
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "fire_medium";
+						cd.category = ChunkCategory::Medium;
+						cd.description = "Manifest-backed physical fire sequence medium.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p=P(); p.name="name"; p.kind=ValueKind::String; p.required=true; }
+						{ auto& p=P(); p.name="fidelity_mode"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"preview","predictive"}; }
+						{ auto& p=P(); p.name="sequence_manifest"; p.kind=ValueKind::String; p.required=true; }
+						{ auto& p=P(); p.name="channel_carbon"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"carbon"}; }
+						{ auto& p=P(); p.name="channel_temperature"; p.kind=ValueKind::Enum; p.required=true; p.enumValues={"temperature"}; }
+						{ auto& p=P(); p.name="channel_condensed"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"condensed"}; }
+						{ auto& p=P(); p.name="channel_reaction"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"reaction"}; }
+						{ auto& p=P(); p.name="chem_model"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"none"}; }
+						{ auto& p=P(); p.name="channel_chem_ch"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CH"}; }
+						{ auto& p=P(); p.name="channel_chem_c2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_C2"}; }
+						{ auto& p=P(); p.name="channel_chem_co2"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"chem_CO2"}; }
+						{ auto& p=P(); p.name="channel_velocity"; p.kind=ValueKind::Enum; p.required=false; p.enumValues={"velocity"}; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 
 			//////////////////////////////////////////
 			// Objects
@@ -10332,6 +10387,7 @@ namespace RISE
 		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
 		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
 		add( "multichannel_heterogeneous_medium",     new MultichannelHeterogeneousMediumAsciiChunkParser() );
+		add( "fire_medium",                          new FireMediumAsciiChunkParser() );
 
 		// Objects
 		add( "standard_object",                       new StandardObjectAsciiChunkParser() );

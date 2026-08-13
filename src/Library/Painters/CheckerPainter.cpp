@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CheckerPainter.h"
 #include "../Animation/KeyframableHelper.h"
 
@@ -91,6 +92,7 @@ IKeyframeParameter* CheckerPainter::KeyframeFromParameters( const String& name, 
 
 void CheckerPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SIZE_ID:
@@ -103,4 +105,5 @@ void CheckerPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CheckerPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }

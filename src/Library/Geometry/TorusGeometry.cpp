@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "TorusGeometry.h"
 #include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
@@ -351,6 +352,7 @@ IKeyframeParameter* TorusGeometry::KeyframeFromParameters( const String& name, c
 
 void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case MAJORRADIUS_ID:
@@ -369,6 +371,7 @@ void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void TorusGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Standard torus parameterisation matching the scene spec:
 	//   majorradius = ring radius (distance from torus axis to ring centre)
 	//   minorradius = tube radius

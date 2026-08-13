@@ -7,6 +7,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CompositeFunction2DPainter.h"
 #include <algorithm>
 
@@ -124,8 +125,10 @@ IKeyframeParameter* CompositeFunction2DPainter::KeyframeFromParameters( const St
 
 void CompositeFunction2DPainter::SetIntermediateValue( const IKeyframeParameter& )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }
 
 void CompositeFunction2DPainter::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }

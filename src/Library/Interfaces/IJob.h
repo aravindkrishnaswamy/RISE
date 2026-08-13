@@ -3882,6 +3882,30 @@ namespace RISE
 			const char* /*mode*/
 			) { return false; }
 
+		//! Adds a manifest-backed fire sequence medium.  The manifest is the sole
+		//! sequence locator and carries the complete physical/record closure.
+		//! NB: appended at the ABI tail.
+		virtual bool AddFireMedium(
+			const char* /*name*/,
+			const char* /*sequence_manifest*/
+			) { return false; }
+
+		//! Exact scene binding for the manifest-backed channel set. Empty optional
+		//! names mean absent; chem is either none or the complete triplet.
+		virtual bool AddFireMediumBound(
+			const char* name, const char* sequence_manifest,
+			const char* channel_carbon, const char* channel_temperature,
+			const char* channel_condensed, const char* channel_reaction,
+			const char* channel_chem_ch, const char* channel_chem_c2,
+			const char* channel_chem_co2, const char* channel_velocity,
+			const bool chem_model_none )
+		{
+			(void)channel_carbon;(void)channel_temperature;(void)channel_condensed;
+			(void)channel_reaction;(void)channel_chem_ch;(void)channel_chem_c2;
+			(void)channel_chem_co2;(void)channel_velocity;(void)chem_model_none;
+			return AddFireMedium(name,sequence_manifest);
+		}
+
 	};
 
 

@@ -78,12 +78,20 @@ namespace RISE
 	{
 		struct ActiveFireMedium
 		{
-			std::string mediaKind;             ///< "static_authored" in Phase A
+			std::string mediaKind;             ///< tagged static_authored | sequence_backed
 			std::string managerName;
 			std::string bindingKind;
 			std::string bindingOwner;
 			std::string authoredConfigDigest;  ///< canonical resolved authoring digest
 			std::vector<std::string> opticalRecordIds;
+			std::string sequenceId;            ///< sequence_backed only
+			std::int64_t selectedBaseFrameIndex = 0;
+			std::string wholeFileDigest;
+			std::string sourceKind;
+			std::string physicalMapping;
+			std::string effectiveBlurState;
+			std::string preparedInputId;
+			std::uint64_t preparedStateGeneration = 0;
 		};
 
 		//! Bookkeeping carried through the render pipeline.  Producers
@@ -120,6 +128,11 @@ namespace RISE
 		//! non-fire metadata and is intentionally rejected by this function.
 		bool ValidateFireOutputMetadata(
 			const Metadata& metadata,
+			std::string& error
+			);
+
+		bool ValidateRendererBuildIdentityV1(
+			const std::vector<unsigned char>& bytes,
 			std::string& error
 			);
 

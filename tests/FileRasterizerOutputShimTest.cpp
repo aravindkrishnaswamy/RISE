@@ -1208,7 +1208,8 @@ namespace
 	}
 #endif
 
-	FrameStore* MakeFireFidelityStore( const double cameraExposureEV = 0.0 )
+	FrameStore* MakeFireFidelityStore( const double cameraExposureEV = 0.0,
+		const bool sequenceBacked = false )
 	{
 		FrameStore::Spec spec;
 		spec.width = kImgW;
@@ -1454,16 +1455,28 @@ namespace
 				{ "platform", Value::String("macos") } }) }
 		}),buildBytes,&encodeError);
 		FrameStoreOutput::ActiveFireMedium medium;
-		medium.mediaKind = "static_authored";
+		medium.mediaKind = sequenceBacked ? "sequence_backed" : "static_authored";
 		medium.managerName = "fire";
 		medium.bindingKind = "global_medium";
 		medium.bindingOwner = "scene";
-		medium.authoredConfigDigest =
-			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		if( sequenceBacked ) {
+			medium.sequenceId = std::string(64,'a');
+			medium.selectedBaseFrameIndex = 7;
+			medium.wholeFileDigest = std::string(64,'b');
+			medium.sourceKind = "rise_simulation";
+			medium.physicalMapping = "absolute_si";
+			medium.effectiveBlurState = "disabled";
+			medium.preparedInputId = std::string(64,'c');
+			medium.preparedStateGeneration = 9;
+		} else {
+			medium.authoredConfigDigest =
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		}
 		medium.opticalRecordIds = {
 			"2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137" };
 		store->SetFireFidelityMetadata("preview",
-			{ "pel_transport", "producer_unqualified", "requested_preview" },
+			sequenceBacked ? std::vector<std::string>{"pel_transport","requested_preview"} :
+				std::vector<std::string>{"pel_transport","producer_unqualified","requested_preview"},
 			medium.opticalRecordIds,{ medium },configBytes,buildBytes,
 			RISECBOR64::SHA256Hex(buildBytes));
 		store->SetCameraExposureEV(cameraExposureEV);
@@ -1557,6 +1570,38 @@ namespace
 		std::string verifyError;
 		Check( VerifyFireProvenanceEXR(exrBytes,exrSidecarBytes,verifyError),
 			"[fire provenance] verifier accepts the authoritative envelope and exact EXR mirrors" );
+		FrameStore* sequenceStore = MakeFireFidelityStore(0.0,true);
+		const std::string sequenceFile = MakeTempPathWithoutExt()+"_sequence_backed.exr";
+		std::string sequenceError;
+		Check(EncodeFrameStoreFileTransaction(*sequenceStore,*exr,opts,sequenceFile,sequenceError),
+			"[fire provenance] sequence_backed primary and sidecar publish transactionally");
+		std::vector<unsigned char> sequenceArtifact, sequenceSidecar;
+		RISECBOR64::Value sequenceEnvelope;
+		const bool sequenceDecoded = ReadFileAllBytes(sequenceFile,sequenceArtifact) &&
+			ReadFileAllBytes(sequenceFile+".provenance.cbor",sequenceSidecar) &&
+			RISECBOR64::DecodeCanonical(sequenceSidecar,sequenceEnvelope,&sequenceError);
+		const RISECBOR64::Value* sequencePayload = sequenceDecoded ?
+			sequenceEnvelope.Find("payload") : nullptr;
+		const RISECBOR64::Value* sequenceMedia = sequencePayload ?
+			sequencePayload->Find("active_fire_media") : nullptr;
+		const RISECBOR64::Value* sequenceEntry = sequenceMedia &&
+			sequenceMedia->GetType() == RISECBOR64::Value::Array &&
+			sequenceMedia->GetArray().size() == 1u ? &sequenceMedia->GetArray()[0] : nullptr;
+		Check(sequenceEntry && sequenceEntry->GetMap().size() == 13u &&
+			sequenceEntry->Find("media_kind") &&
+			sequenceEntry->Find("media_kind")->GetText() == "sequence_backed" &&
+			sequenceEntry->Find("sequence_id") &&
+			sequenceEntry->Find("selected_base_frame_index") &&
+			sequenceEntry->Find("selected_base_frame_index")->GetIntegerArgument() == 7u &&
+			sequenceEntry->Find("whole_file_digest") &&
+			sequenceEntry->Find("source_kind") && sequenceEntry->Find("physical_mapping") &&
+			sequenceEntry->Find("effective_blur_state") &&
+			!sequenceEntry->Find("authored_config_digest") &&
+			VerifyFireProvenanceEXR(sequenceArtifact,sequenceSidecar,sequenceError),
+			"[fire provenance] sequence_backed tagged fields round-trip through authoritative sidecar verification");
+		std::remove(sequenceFile.c_str());
+		std::remove((sequenceFile+".provenance.cbor").c_str());
+		safe_release(sequenceStore);
 		auto encodeSelfConsistentEXR = [&]( const RISECBOR64::Value& seedPayload,
 			const EncodeOpts& actualOpts, std::vector<unsigned char>& artifact,
 			RISECBOR64::Bytes& sidecar ) {
@@ -2596,8 +2641,7 @@ namespace
 			"[fire provenance] semantic validation rejects a malformed aggregate record ID" );
 		invalidMetadata = movieMetadata;
 		invalidMetadata.activeFireMedia[0].authoredConfigDigest[0] = 'A';
-		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError) &&
-			movieError.find("static_authored tagged variant") != std::string::npos,
+		Check( !FrameStoreOutput::ValidateFireOutputMetadata(invalidMetadata,movieError),
 			"[fire provenance] semantic validation rejects a malformed authored-config digest" );
 		invalidMetadata = movieMetadata;
 		invalidMetadata.activeFireMedia[0].opticalRecordIds[0] = std::string(64u,'b');

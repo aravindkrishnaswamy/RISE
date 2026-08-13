@@ -133,14 +133,32 @@ namespace
 			for( const std::string& recordId : medium.opticalRecordIds ) {
 				opticalIds.push_back(Value::String(recordId));
 			}
-			media.push_back(Value::MapValue({
-				{ "authored_config_digest", Value::String(medium.authoredConfigDigest) },
-				{ "binding_kind", Value::String(medium.bindingKind) },
-				{ "binding_owner", Value::String(medium.bindingOwner) },
-				{ "manager_name", Value::String(medium.managerName) },
-				{ "media_kind", Value::String(medium.mediaKind) },
-				{ "optical_record_ids", Value::ArrayValue(opticalIds) }
-			}));
+			if( medium.mediaKind == "sequence_backed" ) {
+				media.push_back(Value::MapValue({
+					{ "binding_kind", Value::String(medium.bindingKind) },
+					{ "binding_owner", Value::String(medium.bindingOwner) },
+					{ "effective_blur_state", Value::String(medium.effectiveBlurState) },
+					{ "manager_name", Value::String(medium.managerName) },
+					{ "media_kind", Value::String(medium.mediaKind) },
+					{ "optical_record_ids", Value::ArrayValue(opticalIds) },
+					{ "physical_mapping", Value::String(medium.physicalMapping) },
+					{ "prepared_input_id", Value::String(medium.preparedInputId) },
+					{ "prepared_state_generation", Value::Unsigned(medium.preparedStateGeneration) },
+					{ "selected_base_frame_index", Value::Signed(medium.selectedBaseFrameIndex) },
+					{ "sequence_id", Value::String(medium.sequenceId) },
+					{ "source_kind", Value::String(medium.sourceKind) },
+					{ "whole_file_digest", Value::String(medium.wholeFileDigest) }
+				}));
+			} else {
+				media.push_back(Value::MapValue({
+					{ "authored_config_digest", Value::String(medium.authoredConfigDigest) },
+					{ "binding_kind", Value::String(medium.bindingKind) },
+					{ "binding_owner", Value::String(medium.bindingOwner) },
+					{ "manager_name", Value::String(medium.managerName) },
+					{ "media_kind", Value::String(medium.mediaKind) },
+					{ "optical_record_ids", Value::ArrayValue(opticalIds) }
+				}));
+			}
 		}
 		RISECBOR64::Bytes encoded;
 		std::string error;

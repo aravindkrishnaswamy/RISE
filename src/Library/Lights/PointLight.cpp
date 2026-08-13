@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "PointLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
@@ -171,6 +172,7 @@ IKeyframeParameter* PointLight::KeyframeFromParameters( const String& name, cons
 
 void PointLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case COLOR_ID:

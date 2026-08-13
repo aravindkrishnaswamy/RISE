@@ -10,6 +10,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "SDFGeometry.h"
 
 #include <cmath>
@@ -1381,6 +1382,7 @@ IKeyframeParameter* SDFGeometry::KeyframeFromParameters( const String& name, con
 
 void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	const unsigned int id = val.getID();
 
 	if( id == SDF_HF_SCALE_ID ) {
@@ -1407,6 +1409,7 @@ void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void SDFGeometry::RegenerateData()
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Re-derive everything downstream of the (now animated) field: the
 	// heightfield Lipschitz bound, the order-folded AABB + surface epsilon,
 	// and the lazily-built area-light / SSS sampling cache.  Runs ONCE per

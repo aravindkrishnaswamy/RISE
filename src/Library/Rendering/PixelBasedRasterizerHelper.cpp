@@ -34,6 +34,7 @@
 #include "../Interfaces/IScenePriv.h"
 #include "../Utilities/RenderParallelScope.h"
 #include "../Utilities/RISECBOR64.h"
+#include "../Utilities/Transformable.h"
 #include "../Cameras/PinholeCamera.h"
 #include "../Cameras/ThinLensCamera.h"
 #include "../Cameras/FisheyeCamera.h"
@@ -50,6 +51,56 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	thread_local unsigned int gPreparedRenderDepth = 0u;
+
+	class PreparedInvocationScope
+	{
+	public:
+		PreparedInvocationScope() { ++gPreparedRenderDepth; }
+		~PreparedInvocationScope() { --gPreparedRenderDepth; }
+	};
+
+	class PreparedInternalTransformScope
+	{
+	public:
+		PreparedInternalTransformScope() { Transformable::BeginPreparedInternalMutation(); }
+		~PreparedInternalTransformScope() { Transformable::EndPreparedInternalMutation(); }
+	};
+
+	void EvaluatePreparedAnimator( const IScene& scene, const Scalar time )
+	{
+		if( !scene.GetAnimator() ) return;
+		PreparedInternalTransformScope scope;
+		scene.GetAnimator()->EvaluateAtTime(time);
+	}
+
+	bool PrepareAndFreeze(
+		const IScene& scene, IRayCaster& caster, const Scalar nominal,
+		const Rect* crop, const unsigned int field,
+		IRenderPreparationController& controller )
+	{
+		EvaluatePreparedAnimator(scene,nominal);
+		if( scene.GetObjects() ) scene.GetObjects()->InvalidateSpatialStructure();
+		caster.InvalidateLightSamplers();
+		scene.SetSceneTimeForPreview(nominal);
+		std::string error;
+		if( !controller.PrepareMediaForRender(
+			ComputePathTimeSupport(scene,nominal,crop,field),error) ||
+			!controller.AcquireRenderFreeze(error) ) {
+			GlobalLog()->PrintEx(eLog_Error,"prepared render rejected: %s",error.c_str());
+			return false;
+		}
+		return true;
+	}
+
+	bool ReleasePreparedFreeze( IRenderPreparationController& controller )
+	{
+		std::string error;
+		if( controller.ReleaseRenderFreeze(error) ) return true;
+		GlobalLog()->PrintEx(eLog_Error,"prepared render freeze failed: %s",error.c_str());
+		return false;
+	}
+
 	class FrameStoreTileWriteGuard
 	{
 	public:
@@ -186,6 +237,40 @@ namespace
 		members.push_back(std::make_pair(key,value));
 	}
 
+}
+
+RenderTimeSupport RISE::ComputePathTimeSupport(
+	const IScene& scene, const Scalar nominal, const Rect* crop,
+	const unsigned int fieldParity )
+{
+	RenderTimeSupport result{nominal,nominal,nominal};
+	const ICamera* camera = scene.GetCamera();
+	const IFilm* film = scene.GetFilm();
+	if( !camera || !film || film->GetWidth() == 0u || film->GetHeight() == 0u ) return result;
+	const unsigned int width = film->GetWidth(), height = film->GetHeight();
+	const unsigned int x0 = crop ? std::min(crop->left,width-1u) : 0u;
+	const unsigned int x1 = crop ? std::min(crop->right,width-1u) : width-1u;
+	unsigned int y0 = crop ? std::min(crop->top,height-1u) : 0u;
+	unsigned int y1 = crop ? std::min(crop->bottom,height-1u) : height-1u;
+	if( fieldParity < 2u ) {
+		if( (y0&1u) != fieldParity ) ++y0;
+		if( (y1&1u) != fieldParity && y1 ) --y1;
+		if( y0 > y1 ) return result;
+	}
+	const double exposure = std::max(0.0,double(camera->GetExposureTime()));
+	const double scan = double(camera->GetScanningRate());
+	const double pixel = double(camera->GetPixelRate());
+	double base = nominal-exposure*0.5;
+	if( pixel != 0.0 ) base = nominal-double(height/2u)*scan-double(width/2u)*pixel;
+	else if( scan != 0.0 ) base = nominal-double(height/2u)*scan;
+	const double candidates[] = {
+		base+scan*y0+pixel*x0,base+scan*y0+pixel*x1,
+		base+scan*y1+pixel*x0,base+scan*y1+pixel*x1};
+	const auto bounds = std::minmax_element(std::begin(candidates),std::end(candidates));
+	result.open = *bounds.first;
+	result.close = *bounds.second+exposure;
+	if( result.open > result.close ) std::swap(result.open,result.close);
+	return result;
 }
 
 bool PixelBasedRasterizerHelper::AppendEvaluatedCameraState(
@@ -457,6 +542,10 @@ void PixelBasedRasterizerHelper::ConfigureOutputRegion(
 
 unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const
 {
+	if( pScene.HasTimeVaryingMedia() && gPreparedRenderDepth == 0u ) {
+		GlobalLog()->PrintEasyError("time_varying_media_requires_prepared_prediction");
+		return 0xFFFFFFFFu;
+	}
 	RequireFireRenderPreflight(
 		pScene,FireRenderPreflightAuthorization::Prediction);
 	// Snapshot the active camera once at function entry — keeps
@@ -523,6 +612,21 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 
 	int threads = HowManyThreadsToSpawn();
 	return (unsigned int)((Scalar(t.getInterval())/Scalar(samples.size())) * width*height*num_subsamples / threads);
+}
+
+unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScenePrepared(
+	const IScene& scene, const ISampling2D& sampling, unsigned int* actual,
+	const Scalar nominal, IRenderPreparationController& controller ) const
+{
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( !PrepareAndFreeze(scene,*pCaster,nominal,nullptr,FIELD_BOTH,controller) )
+		return 0xFFFFFFFFu;
+	PreparedInvocationScope prepared;
+	unsigned int result = 0xFFFFFFFFu;
+	try { result = PredictTimeToRasterizeScene(scene,sampling,actual); }
+	catch( ... ) { ReleasePreparedFreeze(controller); throw; }
+	if( !ReleasePreparedFreeze(controller) ) return 0xFFFFFFFFu;
+	return result;
 }
 
 void PixelBasedRasterizerHelper::DrawToggles( IRasterImage& image, const Rect& rc_region, const RISEColor& toggle_color, const double toggle_size ) const
@@ -1195,9 +1299,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( pScene.HasTimeVaryingMedia() && gPreparedRenderDepth == 0u ) {
+		GlobalLog()->PrintEasyError("time_varying_media_requires_prepared_render");
+		return;
+	}
 	FireOutputTopologyLease fireOutputTopologyLease(
 		*this,pScene,FireRenderPreflightAuthorization::Render);
-	mLastRenderCompleted.store(false,std::memory_order_release);
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.  Tier 2 §5.5:
 	// a free-fly ViewportPose supplies a viewport-private override camera the
 	// interactive still-frame renders THROUGH; the real scene still flows to the
@@ -1664,6 +1772,20 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #endif
 	mLastRenderCompleted.store(mainPassCompleted,std::memory_order_release);
 	aovUnwindGuard.Dismiss();
+}
+
+void PixelBasedRasterizerHelper::RasterizeScenePrepared(
+	const IScene& scene, const Scalar nominal,
+	IRenderPreparationController& controller, const Rect* rect,
+	IRasterizeSequence* sequence ) const
+{
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( !PrepareAndFreeze(scene,*pCaster,nominal,rect,FIELD_BOTH,controller) ) return;
+	PreparedInvocationScope prepared;
+	try { RasterizeScene(scene,rect,sequence); }
+	catch( ... ) { ReleasePreparedFreeze(controller); throw; }
+	if( !ReleasePreparedFreeze(controller) )
+		mLastRenderCompleted.store(false,std::memory_order_release);
 }
 
 bool PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
@@ -2148,9 +2270,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( pScene.HasTimeVaryingMedia() && gPreparedRenderDepth == 0u ) {
+		GlobalLog()->PrintEasyError("time_varying_media_requires_prepared_animation");
+		return;
+	}
 	FireOutputTopologyLease fireOutputTopologyLease(
 		*this,pScene,FireRenderPreflightAuthorization::Render);
-	mLastRenderCompleted.store(false,std::memory_order_release);
 	if( num_frames == 0u ) {
 		GlobalLog()->PrintSourceError(
 			"PixelBasedRasterizerHelper::RasterizeSceneAnimation:: zero-frame animations are invalid",
@@ -2303,14 +2429,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			Scalar curtime_lower = curtime_upper + step_size/2;
 
 			// Upper field
-			pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
+			EvaluatePreparedAnimator(pScene,curtime_upper);
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			if( bHasKeyframedObjects ) {
 				pScene.GetObjects()->InvalidateSpatialStructure();
 			}
 			pScene.GetObjects()->PrepareForRendering();
-			pScene.SetSceneTime( curtime_upper );
+			if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_upper);
+			else pScene.SetSceneTime(curtime_upper);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime_upper,invert_fields ? "lower" : "upper") ) {
 				cancelled = true;
@@ -2345,12 +2472,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					// Restore the deterministic nominal field state before the bounded
 					// fallback. The fallback deliberately does not replay the beauty
 					// pass's temporal sample distribution (AGENT_PERCEPTION.md).
-					pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
+					EvaluatePreparedAnimator(pScene,curtime_upper);
 					if( bHasKeyframedObjects ) {
 						pScene.GetObjects()->InvalidateSpatialStructure();
 					}
 					pScene.GetObjects()->PrepareForRendering();
-					pScene.SetSceneTime( curtime_upper );
+					if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_upper);
+					else pScene.SetSceneTime(curtime_upper);
 					const FIELD upperField = invert_fields ? FIELD_LOWER : FIELD_UPPER;
 					CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 						interlacedFallbackPlan, static_cast<unsigned int>( upperField ), 2,
@@ -2359,12 +2487,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			}
 
 			// Lower field
-			pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
+			EvaluatePreparedAnimator(pScene,curtime_lower);
 			if( bHasKeyframedObjects ) {
 				pScene.GetObjects()->InvalidateSpatialStructure();
 			}
 			pScene.GetObjects()->PrepareForRendering();
-			pScene.SetSceneTime( curtime_lower );
+			if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_lower);
+			else pScene.SetSceneTime(curtime_lower);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime_lower,invert_fields ? "upper" : "lower") ) {
 				cancelled = true;
@@ -2384,12 +2513,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			if( pAOVBuffers && interlacedFallbackPlan.Any() ) {
 				// RenderFrameOfAnimation may leave the animator at its final
 				// exposure sample. Re-establish the nominal lower-field state.
-				pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
+				EvaluatePreparedAnimator(pScene,curtime_lower);
 				if( bHasKeyframedObjects ) {
 					pScene.GetObjects()->InvalidateSpatialStructure();
 				}
 				pScene.GetObjects()->PrepareForRendering();
-				pScene.SetSceneTime( curtime_lower );
+				if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime_lower);
+				else pScene.SetSceneTime(curtime_lower);
 				const FIELD lowerField = invert_fields ? FIELD_UPPER : FIELD_LOWER;
 				CollectFirstHitAOVRows( pScene, *pCaster, *pAOVBuffers,
 					interlacedFallbackPlan, static_cast<unsigned int>( lowerField ), 2,
@@ -2399,14 +2529,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
 			fallbackNominalTime = curtime;
-			pScene.GetAnimator()->EvaluateAtTime( curtime );
+			EvaluatePreparedAnimator(pScene,curtime);
 			// Rebuild spatial structure after transforms update but before
 			// SetSceneTime, which regenerates photon maps via ray tracing.
 			if( bHasKeyframedObjects ) {
 				pScene.GetObjects()->InvalidateSpatialStructure();
 			}
 			pScene.GetObjects()->PrepareForRendering();
-			pScene.SetSceneTime( curtime );
+			if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(curtime);
+			else pScene.SetSceneTime(curtime);
 			if( !AppendEvaluatedCameraState(mFrameStore,*pCam,currentFrameIndex,
 				curtime,"both") ) {
 				cancelled = true;
@@ -2454,12 +2585,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 				// As with fields above, motion-blur/scanning samples can leave the
 				// animator at an arbitrary sample time. The bounded fallback is a
 				// deterministic nominal-frame approximation, not temporal replay.
-				pScene.GetAnimator()->EvaluateAtTime( fallbackNominalTime );
+				EvaluatePreparedAnimator(pScene,fallbackNominalTime);
 				if( bHasKeyframedObjects ) {
 					pScene.GetObjects()->InvalidateSpatialStructure();
 				}
 				pScene.GetObjects()->PrepareForRendering();
-				pScene.SetSceneTime( fallbackNominalTime );
+				if( gPreparedRenderDepth ) pScene.SetSceneTimeForPreview(fallbackNominalTime);
+				else pScene.SetSceneTime(fallbackNominalTime);
 				CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers, fallbackSPP,
 					mDenoisingPrefilter, pRect );
 			}
@@ -2530,6 +2662,29 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #endif
 	mLastRenderCompleted.store(!cancelled,std::memory_order_release);
 	aovUnwindGuard.Dismiss();
+}
+
+void PixelBasedRasterizerHelper::RasterizeSceneAnimationPrepared(
+	const IScene& scene, const Scalar timeStart, const Scalar timeEnd,
+	const unsigned int frameCount, const bool fields, const bool invertFields,
+	IRenderPreparationController& controller, const Rect* rect,
+	const unsigned int* specificFrame, IRasterizeSequence* sequence ) const
+{
+	mLastRenderCompleted.store(false,std::memory_order_release);
+	if( !specificFrame || frameCount == 0u || *specificFrame >= frameCount ) {
+		GlobalLog()->PrintEasyError(
+			"prepared time-varying animation requires one selected frame");
+		return;
+	}
+	const Scalar nominal = frameCount > 1u ? timeStart+(timeEnd-timeStart)*
+		(Scalar(*specificFrame)/Scalar(frameCount-1u)) : timeStart;
+	if( !PrepareAndFreeze(scene,*pCaster,nominal,rect,FIELD_BOTH,controller) ) return;
+	PreparedInvocationScope prepared;
+	try { RasterizeSceneAnimation(scene,timeStart,timeEnd,frameCount,fields,
+		invertFields,rect,specificFrame,sequence); }
+	catch( ... ) { ReleasePreparedFreeze(controller); throw; }
+	if( !ReleasePreparedFreeze(controller) )
+		mLastRenderCompleted.store(false,std::memory_order_release);
 }
 
 // Default IRasterImage acquisition: persistent buffer reused across

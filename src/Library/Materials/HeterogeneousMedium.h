@@ -65,6 +65,11 @@
 
 namespace RISE
 {
+	class Job;
+	namespace Implementation {
+		struct FireSequencePreparedFrame;
+		class FireSequencePreparationController;
+	}
 	/// \brief Heterogeneous participating medium driven by a volume dataset
 	///
 	/// Density is looked up from an IVolumeAccessor and scaled by
@@ -431,6 +436,7 @@ namespace RISE
 		bool m_fireDerivedStructuresCurrent;
 		bool m_forTestBlockFireDerivedRebuild;
 		bool m_valid;
+		bool m_sequenceBacked;
 
 		virtual ~MultichannelHeterogeneousMedium();
 		Scalar SpectralTrackingMajorant( const Scalar nm ) const override;
@@ -497,6 +503,14 @@ namespace RISE
 			const Scalar intervalMin,
 			const Scalar intervalMax
 			);
+		bool InstallPreparedFireSequenceFrame(
+			const Implementation::FireSequencePreparedFrame& frame );
+		void InvalidateFireDerivedStructures()
+		{
+			m_fireDerivedStructuresCurrent = false;
+		}
+		bool RebuildFireDerivedStructuresForRender();
+		friend class Job;
 
 	public:
 		MultichannelHeterogeneousMedium(
@@ -516,6 +530,19 @@ namespace RISE
 			const Scalar smokeNCarbon,
 			const Scalar smokeAlbedoCarbon,
 			const Scalar smokeGCarbon,
+			const IPhaseFunction& phase
+			);
+
+		MultichannelHeterogeneousMedium(
+			const Implementation::FireSequencePreparedFrame& frame,
+			const std::array<std::array<double,2>,3>& chemNormalizationIntervalsNM,
+			const unsigned int volWidth,
+			const unsigned int volHeight,
+			const unsigned int volDepth,
+			const Point3& bboxMin,
+			const Point3& bboxMax,
+			const Scalar sceneUnitMeters,
+			const FireOpticsPreset& optics,
 			const IPhaseFunction& phase
 			);
 
@@ -608,15 +635,15 @@ namespace RISE
 			);
 
 		bool IsValid() const { return m_valid; }
-		void InvalidateFireDerivedStructures()
-		{
-			m_fireDerivedStructuresCurrent = false;
-		}
+		bool IsTimeVaryingMedium() const override { return m_sequenceBacked; }
 		bool FireDerivedStructuresCurrent() const
 		{
 			return m_fireDerivedStructuresCurrent;
 		}
-		bool RebuildFireDerivedStructuresForRender();
+		bool BindSequencePreparationController(
+			Implementation::FireSequencePreparationController& controller,
+			const std::string& installerIdentity,
+			std::string& error );
 		unsigned long long ForTest_FireMajorantGeneration() const
 		{
 			return m_fireMajorantGeneration;

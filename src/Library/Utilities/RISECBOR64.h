@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iosfwd>
 #include <string>
 #include <utility>
 #include <vector>
@@ -116,6 +117,21 @@ namespace RISE
 		std::string SHA256Hex(
 			const unsigned char* bytes,
 			std::size_t byteCount
+			);
+
+		//! Streams a file into the same SHA-256 implementation without retaining
+		//! the whole artifact in memory. Returns false on any read failure.
+		bool SHA256FileHex(
+			const std::string& filename,
+			std::string& digest
+			);
+
+		//! Hashes the bytes from the stream's current position through EOF.
+		//! The caller retains ownership and may seek back to decode the exact
+		//! same opened object, avoiding a path-reopen identity race.
+		bool SHA256StreamHex(
+			std::istream& input,
+			std::string& digest
 			);
 
 		inline std::string SHA256Hex( const Bytes& bytes )

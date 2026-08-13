@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "CurlNoise3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -100,6 +101,7 @@ IKeyframeParameter* CurlNoise3DPainter::KeyframeFromParameters( const String& na
 
 void CurlNoise3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -117,6 +119,7 @@ void CurlNoise3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void CurlNoise3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new CurlNoise3D( *pInterp, dPersistence, nOctaves < 32 ? nOctaves : 32, dEpsilon );

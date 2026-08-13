@@ -135,6 +135,16 @@ namespace RISE
 				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
 				) const override;
+			unsigned int PredictTimeToRasterizeScenePrepared(
+				const IScene&, const ISampling2D&, unsigned int*, Scalar,
+				IRenderPreparationController& ) const override;
+			void RasterizeScenePrepared(
+				const IScene&, Scalar, IRenderPreparationController&,
+				const Rect*, IRasterizeSequence* ) const override;
+			void RasterizeSceneAnimationPrepared(
+				const IScene&, Scalar, Scalar, unsigned int, bool, bool,
+				IRenderPreparationController&, const Rect*, const unsigned int*,
+				IRasterizeSequence* ) const override;
 
 			//
 			// State-mutators the base `Rasterizer` DOES provide, re-declared

@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "SpotLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
@@ -223,6 +224,7 @@ IKeyframeParameter* SpotLight::KeyframeFromParameters( const String& name, const
 
 void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case TARGET_ID:

@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "InfinitePlaneGeometry.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Interfaces/ILog.h"
@@ -181,6 +182,7 @@ IKeyframeParameter* InfinitePlaneGeometry::KeyframeFromParameters( const String&
 
 void InfinitePlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case XTILE_ID:
@@ -198,6 +200,7 @@ void InfinitePlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val 
 
 void InfinitePlaneGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( xTile >  0 ) {
 		OVXTile = 1.0 / xTile;
 	} else {
@@ -210,4 +213,3 @@ void InfinitePlaneGeometry::RegenerateData( )
 		GlobalLog()->PrintSourceError( "InfinitePlaneGeometry:: yTile <= 0", __FILE__, __LINE__ );
 	}
 }
-

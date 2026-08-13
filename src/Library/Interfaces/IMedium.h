@@ -401,6 +401,7 @@ namespace RISE
 		virtual bool FireOpticsSupportsWavelengthRange(
 			const Scalar /*minimumNM*/,
 			const Scalar /*maximumNM*/ ) const { return false; }
+		virtual bool IsTimeVaryingMedium() const { return false; }
 
 	};
 }

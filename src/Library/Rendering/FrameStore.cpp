@@ -928,18 +928,29 @@ bool RISE::FrameStoreOutput::IsAllowedFireRenderReasonCode(
 	return false;
 }
 
+bool RISE::FrameStoreOutput::ValidateRendererBuildIdentityV1(
+	const std::vector<unsigned char>& bytes, std::string& error )
+{
+	RISECBOR64::Value record;
+	return !bytes.empty() && RISECBOR64::DecodeCanonical(bytes,record,&error) &&
+		record.GetType() == RISECBOR64::Value::Map &&
+		ValidateRendererBuildSchemaV1(record,error);
+}
+
 bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 	const Metadata& metadata,
 	std::string& error )
 {
 	error.clear();
-	if( metadata.renderFidelityStatus != "preview" ) {
-		error = "fire render fidelity status is not preview";
+	if( metadata.renderFidelityStatus != "preview" &&
+		metadata.renderFidelityStatus != "predictive" ) {
+		error = "fire render fidelity status is outside schema-v1";
 		return false;
 	}
-	if( metadata.renderReasonCodes.empty() ||
-		!IsStrictlySorted(metadata.renderReasonCodes) ) {
-		error = "fire render reason codes are empty, duplicated, or unsorted";
+	if( (!metadata.renderReasonCodes.empty() &&
+		!IsStrictlySorted(metadata.renderReasonCodes)) ||
+		(metadata.renderFidelityStatus == "preview" && metadata.renderReasonCodes.empty()) ) {
+		error = "fire render reason codes are missing, duplicated, or unsorted";
 		return false;
 	}
 	for( const std::string& reason : metadata.renderReasonCodes ) {
@@ -947,11 +958,6 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			error = "fire render reason code is outside the fixed enum: "+reason;
 			return false;
 		}
-	}
-	if( std::find(metadata.renderReasonCodes.begin(),metadata.renderReasonCodes.end(),
-		"producer_unqualified") == metadata.renderReasonCodes.end() ) {
-		error = "static fire media require the producer_unqualified render reason";
-		return false;
 	}
 	if( metadata.activeFireOpticsRecordIds.empty() ||
 		!IsStrictlySorted(metadata.activeFireOpticsRecordIds) ) {
@@ -971,14 +977,45 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 	std::set<std::string> mediumRecordIds;
 	std::map<std::string,std::string> authoredDigestOwners;
 	std::string previousBinding;
+	bool hasStaticAuthored = false;
 	for( const ActiveFireMedium& medium : metadata.activeFireMedia ) {
-		if( medium.mediaKind != "static_authored" || medium.managerName.empty() ||
+		if( medium.managerName.empty() ||
 			(medium.bindingKind != "global_medium" &&
 			 medium.bindingKind != "object_interior_medium") ||
-			medium.bindingOwner.empty() || !IsSHA256Hex(medium.authoredConfigDigest) ||
+			medium.bindingOwner.empty() ||
 			medium.opticalRecordIds.empty() || !IsStrictlySorted(medium.opticalRecordIds) ) {
-			error = "active fire medium is not a complete static_authored tagged variant";
+			error = "active fire medium binding or optical-record set is incomplete";
 			return false;
+		}
+		const bool isStatic = medium.mediaKind == "static_authored";
+		const bool isSequence = medium.mediaKind == "sequence_backed";
+		if( !isStatic && !isSequence ) {
+			error = "active fire medium media_kind is outside the tagged schema";
+			return false;
+		}
+		if( isStatic ) {
+			hasStaticAuthored = true;
+			if( !IsSHA256Hex(medium.authoredConfigDigest) || !medium.sequenceId.empty() ||
+				!medium.wholeFileDigest.empty() || !medium.sourceKind.empty() ||
+				!medium.physicalMapping.empty() || !medium.effectiveBlurState.empty() ||
+				!medium.preparedInputId.empty() || medium.preparedStateGeneration != 0u ) {
+				error = "active fire medium is not a structurally exact static_authored tagged variant";
+				return false;
+			}
+		} else {
+			if( !medium.authoredConfigDigest.empty() || !IsSHA256Hex(medium.sequenceId) ||
+				!IsSHA256Hex(medium.wholeFileDigest) || !IsSHA256Hex(medium.preparedInputId) ||
+				medium.preparedStateGeneration == 0u ||
+				(medium.sourceKind != "rise_simulation" &&
+				 medium.sourceKind != "qualified_external" &&
+				 medium.sourceKind != "heuristic_import") ||
+				(medium.physicalMapping != "absolute_si" &&
+				 medium.physicalMapping.rfind("heuristic:",0u) != 0u) ||
+				(medium.effectiveBlurState != "disabled" &&
+				 medium.effectiveBlurState != "enabled") ) {
+				error = "active fire medium is not a structurally exact sequence_backed variant";
+				return false;
+			}
 		}
 		const std::string binding = medium.managerName+'\0'+medium.bindingKind+'\0'+
 			medium.bindingOwner;
@@ -987,13 +1024,15 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			return false;
 		}
 		previousBinding = binding;
-		const auto digestOwner = authoredDigestOwners.find(medium.authoredConfigDigest);
-		if( digestOwner != authoredDigestOwners.end() &&
-			digestOwner->second != medium.managerName ) {
-			error = "different authored fire media share one authored_config_digest";
-			return false;
+		if( isStatic ) {
+			const auto digestOwner = authoredDigestOwners.find(medium.authoredConfigDigest);
+			if( digestOwner != authoredDigestOwners.end() &&
+				digestOwner->second != medium.managerName ) {
+				error = "different authored fire media share one authored_config_digest";
+				return false;
+			}
+			authoredDigestOwners[medium.authoredConfigDigest] = medium.managerName;
 		}
-		authoredDigestOwners[medium.authoredConfigDigest] = medium.managerName;
 		for( const std::string& id : medium.opticalRecordIds ) {
 			if( !IsSHA256Hex(id) ) {
 				error = "active fire medium optical record ID is not lowercase SHA-256";
@@ -1001,6 +1040,12 @@ bool RISE::FrameStoreOutput::ValidateFireOutputMetadata(
 			}
 			mediumRecordIds.insert(id);
 		}
+	}
+	if( hasStaticAuthored && std::find(metadata.renderReasonCodes.begin(),
+		metadata.renderReasonCodes.end(),"producer_unqualified") ==
+		metadata.renderReasonCodes.end() ) {
+		error = "static fire media require the producer_unqualified render reason";
+		return false;
 	}
 	if( std::vector<std::string>(mediumRecordIds.begin(),mediumRecordIds.end()) !=
 		metadata.activeFireOpticsRecordIds ) {

@@ -249,6 +249,7 @@ RayCaster::RayCaster(
   bPendingUseLightBVH( false ),
   iPendingRISCandidates( -1 ),
   builtLightGeneration( 0 ),
+  forceLightSamplerRebuild( false ),
   bTransparentShadows( false ),
   dRadianceScaleOverride( -1.0 ),		// negative = no override (use the map's own scale)
   bWantsWireEdgeInfo( false ),
@@ -367,9 +368,10 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 	if( pScene == pScene_ ) {
 		if( pScene ) {
 			const unsigned int liveGen = SceneLightGeneration( pScene );
-			if( liveGen != builtLightGeneration ) {
+			if( forceLightSamplerRebuild || liveGen != builtLightGeneration ) {
 				RebuildLightSamplers();
 				builtLightGeneration = liveGen;
+				forceLightSamplerRebuild = false;
 			}
 		}
 		return;
@@ -383,6 +385,7 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 
 		RebuildLightSamplers();
 		builtLightGeneration = SceneLightGeneration( pScene );
+		forceLightSamplerRebuild = false;
 	}
 }
 

@@ -60,7 +60,7 @@ endif
 CPPFLAGS_OIDN = -I$(OIDN_PREFIX)/include
 
 # options for the linker
-CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) $(CPPFLAGS_OIDN) -flto
+CPPFLAGS = -I$(PATHLIBRARY) -isystem /opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) $(CPPFLAGS_OIDN) -flto
 
 # C++17 standard pinned explicitly: the codebase uses [[nodiscard]] et al.
 # Without -std=, Apple clang's default standard varies by toolchain version
@@ -121,7 +121,16 @@ DEF_OIDN = -DRISE_ENABLE_OIDN
 # Turn this on to enable Intel Open Path Guiding Library
 DEF_OPENPGL = -DRISE_ENABLE_OPENPGL
 
-DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN) $(DEF_OPENPGL)
+# Phase-C fire sequences are a desktop OpenVDB capability.  Non-OpenVDB
+# builds still compile the manifest and fail closed before frame loading.
+OPENVDB_PREFIX ?= /opt/homebrew/opt/openvdb
+ifneq ($(wildcard $(OPENVDB_PREFIX)/include/openvdb/openvdb.h),)
+CPPFLAGS_OPENVDB = -isystem $(OPENVDB_PREFIX)/include
+DEF_OPENVDB = -DRISE_ENABLE_OPENVDB
+LDLIBS_OPENVDB = -L$(OPENVDB_PREFIX)/lib -Wl,-rpath,$(OPENVDB_PREFIX)/lib -lopenvdb -ltbb
+endif
+
+DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN) $(DEF_OPENPGL) $(DEF_OPENVDB)
 
 # libraries to link with.  OIDN-specific -L is listed BEFORE
 # /opt/homebrew/lib so the in-tree extlib OIDN install wins over
@@ -133,4 +142,5 @@ LDLIBS_OPENPGL = -lopenpgl
 # Eval-harness slice E4: -framework Foundation links NSURLSession for the
 # macOS platform-TLS leg (TlsTransportMac.mm).  A plain NSURLSession POST
 # needs no Security framework (no manual TLS-trust API is called).
-LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL) -framework Foundation
+CPPFLAGS += $(CPPFLAGS_OPENVDB)
+LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL) $(LDLIBS_OPENVDB) -framework Foundation

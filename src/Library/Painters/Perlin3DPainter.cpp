@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Perlin3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -102,6 +103,7 @@ IKeyframeParameter* Perlin3DPainter::KeyframeFromParameters( const String& name,
 
 void Perlin3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -119,9 +121,9 @@ void Perlin3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void Perlin3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new PerlinNoise3D( *pInterp, dPersistence, nOctaves<32?nOctaves:32 );
 	GlobalLog()->PrintNew( pFunc, __FILE__, __LINE__, "NoiseFunction" );
 }
-

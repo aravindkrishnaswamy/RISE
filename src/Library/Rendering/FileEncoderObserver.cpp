@@ -240,14 +240,32 @@ namespace
 		Value::Values encoded;
 		encoded.reserve(media.size());
 		for( std::size_t i=0; i<media.size(); ++i ) {
-			encoded.push_back(Value::MapValue({
-				{ "authored_config_digest", Value::String(media[i].authoredConfigDigest) },
-				{ "binding_kind", Value::String(media[i].bindingKind) },
-				{ "binding_owner", Value::String(media[i].bindingOwner) },
-				{ "manager_name", Value::String(media[i].managerName) },
-				{ "media_kind", Value::String(media[i].mediaKind) },
-				{ "optical_record_ids", TextArray(media[i].opticalRecordIds) }
-			}));
+			if( media[i].mediaKind == "sequence_backed" ) {
+				encoded.push_back(Value::MapValue({
+					{ "binding_kind", Value::String(media[i].bindingKind) },
+					{ "binding_owner", Value::String(media[i].bindingOwner) },
+					{ "effective_blur_state", Value::String(media[i].effectiveBlurState) },
+					{ "manager_name", Value::String(media[i].managerName) },
+					{ "media_kind", Value::String(media[i].mediaKind) },
+					{ "optical_record_ids", TextArray(media[i].opticalRecordIds) },
+					{ "physical_mapping", Value::String(media[i].physicalMapping) },
+					{ "prepared_input_id", Value::String(media[i].preparedInputId) },
+					{ "prepared_state_generation", Value::Unsigned(media[i].preparedStateGeneration) },
+					{ "selected_base_frame_index", Value::Signed(media[i].selectedBaseFrameIndex) },
+					{ "sequence_id", Value::String(media[i].sequenceId) },
+					{ "source_kind", Value::String(media[i].sourceKind) },
+					{ "whole_file_digest", Value::String(media[i].wholeFileDigest) }
+				}));
+			} else {
+				encoded.push_back(Value::MapValue({
+					{ "authored_config_digest", Value::String(media[i].authoredConfigDigest) },
+					{ "binding_kind", Value::String(media[i].bindingKind) },
+					{ "binding_owner", Value::String(media[i].bindingOwner) },
+					{ "manager_name", Value::String(media[i].managerName) },
+					{ "media_kind", Value::String(media[i].mediaKind) },
+					{ "optical_record_ids", TextArray(media[i].opticalRecordIds) }
+				}));
+			}
 		}
 		return Value::ArrayValue(encoded);
 	}
@@ -887,24 +905,68 @@ namespace
 			return false;
 		}
 		for( const Value& encodedMedium : media->GetArray() ) {
-			if( !ExactKeys(encodedMedium,{ "authored_config_digest", "binding_kind",
-				"binding_owner", "manager_name", "media_kind", "optical_record_ids" }) ) {
-				error = "fire provenance active medium is outside schema-v1";
+			const Value* kind = encodedMedium.Find("media_kind");
+			if( !kind || kind->GetType() != Value::Text ) {
+				error = "fire provenance active medium has no tagged media_kind";
 				return false;
 			}
-			for( const char* key : { "authored_config_digest", "binding_kind",
-				"binding_owner", "manager_name", "media_kind" } ) {
+			const bool sequence = kind->GetText() == "sequence_backed";
+			if( sequence ? !ExactKeys(encodedMedium,{ "binding_kind", "binding_owner",
+				"effective_blur_state", "manager_name", "media_kind", "optical_record_ids",
+				"physical_mapping", "prepared_input_id", "prepared_state_generation",
+				"selected_base_frame_index", "sequence_id", "source_kind", "whole_file_digest" }) :
+				!ExactKeys(encodedMedium,{ "authored_config_digest", "binding_kind",
+				"binding_owner", "manager_name", "media_kind", "optical_record_ids" }) ) {
+				error = "fire provenance active medium is outside its tagged schema-v1 variant";
+				return false;
+			}
+			std::vector<const char*> textKeys = { "binding_kind", "binding_owner",
+				"manager_name", "media_kind" };
+			if( sequence ) {
+				for( const char* key : { "effective_blur_state", "physical_mapping",
+					"prepared_input_id", "sequence_id", "source_kind", "whole_file_digest" } ) {
+					textKeys.push_back(key);
+				}
+			} else {
+				textKeys.push_back("authored_config_digest");
+			}
+			for( const char* key : textKeys ) {
 				if( encodedMedium.Find(key)->GetType() != Value::Text ) {
 					error = "fire provenance active medium text field has the wrong type";
 					return false;
 				}
 			}
 			FrameStoreOutput::ActiveFireMedium decoded;
-			decoded.authoredConfigDigest = encodedMedium.Find("authored_config_digest")->GetText();
 			decoded.bindingKind = encodedMedium.Find("binding_kind")->GetText();
 			decoded.bindingOwner = encodedMedium.Find("binding_owner")->GetText();
 			decoded.managerName = encodedMedium.Find("manager_name")->GetText();
 			decoded.mediaKind = encodedMedium.Find("media_kind")->GetText();
+			if( sequence ) {
+				decoded.effectiveBlurState = encodedMedium.Find("effective_blur_state")->GetText();
+				decoded.physicalMapping = encodedMedium.Find("physical_mapping")->GetText();
+				decoded.preparedInputId = encodedMedium.Find("prepared_input_id")->GetText();
+				decoded.sequenceId = encodedMedium.Find("sequence_id")->GetText();
+				decoded.sourceKind = encodedMedium.Find("source_kind")->GetText();
+				decoded.wholeFileDigest = encodedMedium.Find("whole_file_digest")->GetText();
+				const Value* generation = encodedMedium.Find("prepared_state_generation");
+				const Value* frameIndex = encodedMedium.Find("selected_base_frame_index");
+				if( generation->GetType() != Value::UnsignedInteger ||
+					(frameIndex->GetType() != Value::UnsignedInteger &&
+					 frameIndex->GetType() != Value::NegativeInteger) ||
+					(frameIndex->GetType() == Value::UnsignedInteger && frameIndex->GetIntegerArgument() >
+						static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) ||
+					(frameIndex->GetType() == Value::NegativeInteger && frameIndex->GetIntegerArgument() >=
+						static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) ) {
+					error = "fire provenance sequence generation/frame index has the wrong type";
+					return false;
+				}
+				decoded.preparedStateGeneration = generation->GetIntegerArgument();
+				decoded.selectedBaseFrameIndex = frameIndex->GetType() == Value::UnsignedInteger ?
+					static_cast<std::int64_t>(frameIndex->GetIntegerArgument()) :
+					-1-static_cast<std::int64_t>(frameIndex->GetIntegerArgument());
+			} else {
+				decoded.authoredConfigDigest = encodedMedium.Find("authored_config_digest")->GetText();
+			}
 			if( !ParseTextArray(encodedMedium.Find("optical_record_ids"),
 				decoded.opticalRecordIds) ) {
 				error = "fire provenance active medium optical IDs are not text";

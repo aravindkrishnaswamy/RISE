@@ -51,8 +51,10 @@
 #include "Utilities/AdaptiveSamplingConfig.h"
 #include "Utilities/StabilityConfig.h"
 #include "Utilities/OidnConfig.h"
+#include <condition_variable>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -61,6 +63,9 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		class FireSequenceManifest;
+		class FireSequencePreparationController;
+		struct FireSequenceRenderTimeSupport;
 		bool BuildIdentityModuleNameMatches(
 			const std::string& path,
 			const std::vector<std::string>& acceptedNames );
@@ -118,6 +123,39 @@ namespace RISE
 		// didn't ask to be created.  CLI keeps the default (false) so
 		// command-line behaviour is byte-identical to legacy.
 		bool										m_suppressFileRasterizerOutputs = false;
+		mutable std::mutex m_preparedRequestMutex;
+		mutable std::condition_variable m_preparedRequestCondition;
+		std::atomic<unsigned int> m_activePreparedRequests{0u};
+		std::atomic<bool> m_destroyingPreparedInputs{false};
+		bool BeginPreparedRequest();
+		void EndPreparedRequest();
+		bool PreparedProgressSafe() const;
+		bool PreparedMutationLocked() const
+			{ return m_activePreparedRequests.load()!=0u || m_destroyingPreparedInputs.load(); }
+		class PreparedRequestGuard
+		{
+			Job* owner_ = nullptr;
+			bool valid_ = false;
+		public:
+			PreparedRequestGuard(Job& owner,const bool required)
+			{
+				valid_=!required || owner.BeginPreparedRequest();
+				if( required && valid_ ) {
+					owner_=&owner;
+					owner_->addref();
+				}
+			}
+			~PreparedRequestGuard()
+			{
+				if( owner_ ) {
+					Job* owner=owner_;
+					owner_=nullptr;
+					owner->EndPreparedRequest();
+					owner->release();
+				}
+			}
+			bool IsValid() const { return valid_; }
+		};
 
 		// Two transform snapshots captured at scene-load time, owned by
 		// Job for its lifetime.  Held by unique_ptr so raw pointers
@@ -220,6 +258,7 @@ namespace RISE
 			bool pathRegularizationEnabled,
 			bool smsEnabled,
 			const std::vector<unsigned char>& resolvedConfig,
+			const Implementation::FireSequenceRenderTimeSupport* sequenceTimeSupport,
 			bool publishMetadata );
 		bool ResolveFireRasterizerForPreflight( IRasterizer* rasterizer ) const;
 		void ClearFireRasterizerAuthorization( IRasterizer* rasterizer ) const;
@@ -322,8 +361,10 @@ namespace RISE
 		// pointer over.  All Set*Rasterizer methods funnel through
 		// this helper so the registry + snapshot stay in lockstep
 		// with the active pointer.
-		void RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
+		bool RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
 			const RasterizerParams& params );
+		bool RasterizeAnimationOwned( double time_start, double time_end,
+			unsigned int num_frames, bool do_fields, bool invert_fields );
 
 		// A global progress reporter.  Atomic: the slot is written from more than one thread (a
 		// GUI's UI-thread SetProgress/ClearProgressIfCurrent vs the SceneEditController coordinator
@@ -337,6 +378,12 @@ namespace RISE
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
 		std::map<const IMedium*, std::string>		fireAuthoredConfigDigests;
+		std::map<const IMedium*, std::shared_ptr<Implementation::FireSequenceManifest> >
+											fireSequenceManifests;
+		std::map<const IMedium*, std::shared_ptr<Implementation::FireSequencePreparationController> >
+											fireSequenceControllers;
+		std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> >
+			ActiveFireSequenceControllers( std::string& error );
 		std::map<const IFunction1D*, std::vector<unsigned char> >
 											fireFunction1DDefinitionRecords;
 		bool										m_firePredictiveRequested = false;
@@ -1884,6 +1931,14 @@ namespace RISE
 			const double scene_unit_meters,
 			const char* optical_record
 			);
+		bool AddFireMedium( const char* name, const char* sequence_manifest );
+		bool AddFireMediumBound(
+			const char* name, const char* sequence_manifest,
+			const char* channel_carbon, const char* channel_temperature,
+			const char* channel_condensed, const char* channel_reaction,
+			const char* channel_chem_ch, const char* channel_chem_c2,
+			const char* channel_chem_co2, const char* channel_velocity,
+			bool chem_model_none );
 		bool SetFireFidelityMode( const char* mode );
 
 		//! Adds a unit-transmission medium boundary distinct from "none".

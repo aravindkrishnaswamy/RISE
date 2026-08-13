@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "BoxGeometry.h"
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -459,6 +460,7 @@ IKeyframeParameter* BoxGeometry::KeyframeFromParameters( const String& name, con
 
 void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case WIDTH_ID:
@@ -484,6 +486,7 @@ void BoxGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void BoxGeometry::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( dWidth > 0 ) {
 		dOVWidth = 1.0 / dWidth;
 	} else {

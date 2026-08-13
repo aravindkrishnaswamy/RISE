@@ -42,7 +42,10 @@ namespace RISE
 				return bShootPhotons;
 			}
 
-			inline void SetCanGeneratePhotons( bool b ) { bShootPhotons = b; }
+			inline void SetCanGeneratePhotons( bool b ) {
+				Transformable::PreparedExternalMutationScope mutation;
+				if( mutation.IsValid() ) bShootPhotons = b;
+			}
 
 			inline bool IsPositionalLight() const { return true; }
 

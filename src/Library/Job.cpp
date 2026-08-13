@@ -32,6 +32,8 @@
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include "Utilities/FiniteMath.h"
 #include "Utilities/RISECBOR64.h"
+#include "Utilities/FireSequence.h"
+#include "Utilities/FireSimulationRecords.h"
 #include "Version.h"
 #include "Utilities/Transformable.h"
 #include <algorithm>
@@ -70,6 +72,7 @@
 #include "Interfaces/IPainterManager.h"
 #include "Painters/PainterToScalarAdapter.h"
 #include "Materials/HeterogeneousMedium.h"
+#include "Materials/HenyeyGreensteinPhaseFunction.h"
 #include "Intersection/RayIntersectionGeometric.h"
 #include <cctype>
 #include <cstdlib>
@@ -1596,7 +1599,43 @@ Job::Job( )
 
 Job::~Job( )
 {
+	{
+		std::unique_lock<std::mutex> lock(m_preparedRequestMutex);
+		m_destroyingPreparedInputs=true;
+		m_preparedRequestCondition.wait(lock,[this]() {
+			return m_activePreparedRequests==0u;
+		});
+	}
 	DestroyContainers();
+}
+
+bool Job::BeginPreparedRequest()
+{
+	std::lock_guard<std::mutex> lock(m_preparedRequestMutex);
+	if( m_destroyingPreparedInputs ) return false;
+	if( m_activePreparedRequests ) {
+		GlobalLog()->PrintEasyError("prepared_request_already_active");
+		return false;
+	}
+	Transformable::BeginPreparedMutationFreeze();
+	++m_activePreparedRequests;
+	return true;
+}
+
+void Job::EndPreparedRequest()
+{
+	std::lock_guard<std::mutex> lock(m_preparedRequestMutex);
+	if( m_activePreparedRequests ) --m_activePreparedRequests;
+	Transformable::EndPreparedMutationFreeze();
+	if( !m_activePreparedRequests ) m_preparedRequestCondition.notify_all();
+}
+
+bool Job::PreparedProgressSafe() const
+{
+	if( !pScene || !pScene->HasTimeVaryingMedia() ||
+		!pGlobalProgress.load(std::memory_order_acquire) ) return true;
+	GlobalLog()->PrintEasyError("unsafe_progress_callback");
+	return false;
 }
 
 // L6b — lazy-allocate (or reuse) the canonical FrameStore.  The
@@ -1881,6 +1920,8 @@ void Job::DestroyContainers()
 	// Release all named media
 	{
 		fireAuthoredConfigDigests.clear();
+		fireSequenceControllers.clear();
+		fireSequenceManifests.clear();
 		MediumMap::iterator it;
 		for( it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
 			safe_release( it->second );
@@ -1903,6 +1944,8 @@ bool Job::SetPrimaryAcceleration(
 	const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	if( pObjectManager ) {
 		pObjectManager->Shutdown();
 		pObjectManager->release();
@@ -1919,6 +1962,8 @@ bool Job::SetLightSampleRRThreshold(
 	const double threshold
 	)
 {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	lightSampleRRThreshold = threshold;
 	return true;
 }
@@ -1929,6 +1974,8 @@ bool Job::SetFilm(
 	const double pixelAR
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	// Reject zero dims and non-finite / non-positive pixelAR.  `NaN <=
 	// 0.0` is false (NaN comparisons always return false), so the plain
 	// `pixelAR <= 0.0` check used to let NaN through and poison every
@@ -2226,6 +2273,8 @@ bool Job::AddOrthographicCamera(
 
 bool Job::SetActiveCamera( const char* name )
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !pScene ) return false;
 	const bool ok = pScene->SetActiveCamera( name );
 	if( ok ) {
@@ -3968,6 +4017,8 @@ bool Job::AddTexCoord1Painter(
 
 bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
 {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !pRm ) {
 		return false;
 	}
@@ -3983,6 +4034,8 @@ bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
 
 bool Job::ClearGlobalRadianceMap()
 {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !pScene ) return false;
 	// Un-install the environment map from the LIVE scene.  Needed by the editor's
 	// RemoveEnvironment: a rasterizer rebuild with radiance_map "none" does NOT
@@ -4698,6 +4751,8 @@ bool Job::AddBioSpecSkinMaterial(
 	const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 
 	// Resolve every BioSpec parameter to an IScalarPainter (physical
 	// scalars).  Every slot here reads `.v[0]` inside the SPF —
@@ -6972,6 +7027,8 @@ bool Job::AddObjectMatrix(
 	const bool bReceivesShadows
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	// RESOLVE every reference FIRST, before any mutation (review P1.7 atomicity) -- see AddObject.
 	IGeometry* pGeometry = pGeomManager->GetItem( geom );
 	if( !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom ); return false; }
@@ -7821,6 +7878,8 @@ bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	MediumMap::iterator it = mediaMap.find( name );
 	if( it == mediaMap.end() ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetGlobalMedium:: Medium not found `%s`", name );
@@ -7832,8 +7891,233 @@ bool Job::SetGlobalMedium(
 	return true;
 }
 
+bool Job::AddFireMedium( const char* name, const char* sequenceManifest )
+
+{
+	return AddFireMediumBound(name,sequenceManifest,"carbon","temperature","",
+		"reaction","","","","velocity",true);
+}
+
+bool Job::AddFireMediumBound(
+	const char* name, const char* sequenceManifest,
+	const char* channelCarbon, const char* channelTemperature,
+	const char* channelCondensed, const char* channelReaction,
+	const char* channelChemCH, const char* channelChemC2,
+	const char* channelChemCO2, const char* channelVelocity,
+	const bool chemModelNone )
+{
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
+	if( !name || !name[0] || !sequenceManifest || !sequenceManifest[0] ||
+		mediaMap.find(name) != mediaMap.end() ) return false;
+	const std::string resolved = GlobalMediaPathLocator().Find(sequenceManifest).c_str();
+	RISECBOR64::Bytes bytes;
+	if( !ReadIdentityFile(resolved,bytes) ) {
+		GlobalLog()->PrintEasyError("Job::AddFireMedium:: sequence manifest is unreadable");
+		return false;
+	}
+	std::shared_ptr<Implementation::FireSequenceManifest> manifest(
+		new Implementation::FireSequenceManifest());
+	std::string error;
+	if( !manifest->LoadCanonicalEnvelope(bytes,
+		std::filesystem::path(resolved).parent_path().string(),error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
+		return false;
+	}
+	const auto bound = [](const char* value) { return value && value[0]; };
+	const auto exact = [&bound](const char* value,const char* expected) {
+		return !bound(value) || std::strcmp(value,expected)==0;
+	};
+	if( !bound(channelCarbon) || !bound(channelTemperature) ||
+		!exact(channelCarbon,"carbon") || !exact(channelTemperature,"temperature") ||
+		!exact(channelCondensed,"condensed") || !exact(channelReaction,"reaction") ||
+		!exact(channelChemCH,"chem_CH") || !exact(channelChemC2,"chem_C2") ||
+		!exact(channelChemCO2,"chem_CO2") || !exact(channelVelocity,"velocity") ) return false;
+	const bool boundChem=bound(channelChemCH)||bound(channelChemC2)||bound(channelChemCO2);
+	if( chemModelNone==boundChem || (boundChem && !(bound(channelChemCH)&&
+		bound(channelChemC2)&&bound(channelChemCO2))) ) return false;
+	const auto manifestHas=[&manifest](const char* name) {
+		for( const auto& channel : manifest->Channels() ) if( channel.name==name ) return true;
+		return false;
+	};
+	for( const char* selected : {channelCarbon,channelTemperature,channelCondensed,
+		channelReaction,channelChemCH,channelChemC2,channelChemCO2,channelVelocity} )
+		if( bound(selected) && !manifestHas(selected) ) return false;
+	for( const char* optional : {"condensed","reaction","velocity"} ) {
+		const bool selected = (std::strcmp(optional,"condensed")==0 && bound(channelCondensed)) ||
+			(std::strcmp(optional,"reaction")==0 && bound(channelReaction)) ||
+			(std::strcmp(optional,"velocity")==0 && bound(channelVelocity));
+		if( manifestHas(optional) != selected ) return false;
+	}
+	if( manifestHas("chem_CH") != boundChem || manifestHas("chem_C2") != boundChem ||
+		manifestHas("chem_CO2") != boundChem ) return false;
+	if( !manifest->PreflightAllFrames(error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: sequence preflight: %s",error.c_str());
+		return false;
+	}
+	Implementation::FireSequenceMappedTime initialTime;
+	if( !manifest->MapSceneTime(manifest->TimeMap().sceneTimeOrigin,initialTime,error) ) return false;
+	Implementation::FireSequencePreparedFrame initialFrame;
+	if( !manifest->LoadFrame(initialTime.baseFrameIndex,initialFrame,error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: %s",error.c_str());
+		return false;
+	}
+	FireOpticsPreset optics;
+	if( !optics.LoadCanonicalRecord(manifest->OpticalRecord(),&error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: optical record: %s",error.c_str());
+		return false;
+	}
+	const RISECBOR64::Bytes* fuelBytes = manifest->EmbeddedRecord("fuel_record");
+	const RISECBOR64::Bytes* thermoBytes = manifest->EmbeddedRecord("gas_thermochemistry_record");
+	const RISECBOR64::Bytes* transportBytes = manifest->EmbeddedRecord("transport_closure_record");
+	const RISECBOR64::Bytes* opacityBytes = manifest->EmbeddedRecord("gas_opacity_record");
+	FireSimulationMethaneRecord fuel;
+	FireSimulationThermochemistryRecord thermochemistry;
+	FireSimulationTransportRecord transport;
+	FireSimulationGasOpacityRecord opacity;
+	if( !fuelBytes || !thermoBytes || !transportBytes || !opacityBytes ||
+		!fuel.LoadCanonicalRecord(*fuelBytes,&error) ||
+		!thermochemistry.LoadCanonicalRecord(*thermoBytes,&error) ||
+		!transport.LoadCanonicalRecord(*transportBytes,&error) ||
+		!opacity.LoadCanonicalRecord(*opacityBytes,&error) ) {
+		GlobalLog()->PrintEx(eLog_Error,"Job::AddFireMedium:: embedded physical record: %s",error.c_str());
+		return false;
+	}
+	double resolvedSootDensityKGPerM3 = 0.0;
+	if( !fuel.ResolveSootDensityKGPerM3(optics,resolvedSootDensityKGPerM3,&error) ||
+		!std::isfinite(resolvedSootDensityKGPerM3) || resolvedSootDensityKGPerM3<=0.0 ) {
+		GlobalLog()->PrintEx(eLog_Error,
+			"Job::AddFireMedium:: fuel/optics soot-density binding: %s",error.c_str());
+		return false;
+	}
+	const double commonMinimum = std::max({fuel.TemperatureMinK(),
+		thermochemistry.TemperatureMinK(),transport.TemperatureMinK(),
+		opacity.TemperatureMinK()});
+	const double commonMaximum = std::min({fuel.TemperatureMaxK(),
+		thermochemistry.TemperatureMaxK(),transport.TemperatureMaxK(),
+		opacity.TemperatureMaxK()});
+	if( manifest->TemperatureDomainMinimumK() != commonMinimum ||
+		manifest->TemperatureDomainMaximumK() != commonMaximum ) {
+		GlobalLog()->PrintEasyError("Job::AddFireMedium:: declared common temperature domain is not the embedded-record intersection");
+		return false;
+	}
+	const Implementation::FireSequenceChannelDescriptor* carbon = nullptr;
+	for( const Implementation::FireSequenceChannelDescriptor& channel : manifest->Channels() )
+		if( channel.name == "carbon" ) carbon = &channel;
+	if( !carbon || carbon->dimensions[0] > UINT_MAX || carbon->dimensions[1] > UINT_MAX ||
+		carbon->dimensions[2] > UINT_MAX ) return false;
+	const double scale = manifest->SceneUnitMeters();
+	const std::array<double,3>& translation = manifest->SceneTranslation();
+	const Point3 minimum((carbon->coreFaceBoundsMeters[0]+translation[0])/scale,
+		(carbon->coreFaceBoundsMeters[1]+translation[1])/scale,
+		(carbon->coreFaceBoundsMeters[2]+translation[2])/scale);
+	const Point3 maximum((carbon->coreFaceBoundsMeters[3]+translation[0])/scale,
+		(carbon->coreFaceBoundsMeters[4]+translation[1])/scale,
+		(carbon->coreFaceBoundsMeters[5]+translation[2])/scale);
+	HenyeyGreensteinPhaseFunction* phase = new HenyeyGreensteinPhaseFunction(0.0);
+	MultichannelHeterogeneousMedium* medium = new MultichannelHeterogeneousMedium(
+		initialFrame,manifest->ChemNormalizationIntervalsNM(),
+		static_cast<unsigned int>(carbon->dimensions[0]),
+		static_cast<unsigned int>(carbon->dimensions[1]),
+		static_cast<unsigned int>(carbon->dimensions[2]),minimum,maximum,scale,optics,*phase);
+	phase->release();
+	if( !medium->IsValid() ) {
+		medium->release();
+		GlobalLog()->PrintEasyError("Job::AddFireMedium:: prepared sequence medium is invalid");
+		return false;
+	}
+	std::shared_ptr<Implementation::FireSequencePreparationController> controller(
+		new Implementation::FireSequencePreparationController(*manifest));
+	RISECBOR64::Bytes installerBytes;
+	const RISECBOR64::Value installerRecord = RISECBOR64::Value::MapValue({
+		{"cdf_algorithm",RISECBOR64::Value::String("thermal_emission_alias_v1")},
+		{"manager_name",RISECBOR64::Value::String(name)},
+		{"majorant_algorithm",RISECBOR64::Value::String("fire_trilinear_block_majorant_v1")},
+		{"optical_record_id",RISECBOR64::Value::String(optics.RecordId())},
+		{"scene_unit_meters",RISECBOR64::Value::Float(scale)},
+		{"sequence_id",RISECBOR64::Value::String(manifest->SequenceId())}
+	});
+	if( !RISECBOR64::Encode(installerRecord,installerBytes,&error) ||
+		!medium->BindSequencePreparationController(*controller,
+			RISECBOR64::SHA256Hex(installerBytes),error) ) {
+		medium->release();
+		return false;
+	}
+	RISECBOR64::Bytes initialBindingBytes;
+	if( !RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+		{"bindings",RISECBOR64::Value::ArrayValue({})},
+		{"manager_name",RISECBOR64::Value::String(name)}
+	}),initialBindingBytes,&error) || !controller->SetActiveBindingIdentity(
+		RISECBOR64::SHA256Hex(initialBindingBytes),error) ) {
+		medium->release(); return false;
+	}
+	Implementation::FireSequenceRenderTimeSupport support{
+		manifest->TimeMap().sceneTimeOrigin,manifest->TimeMap().sceneTimeOrigin,
+		manifest->TimeMap().sceneTimeOrigin};
+	if( !controller->PrepareMediaForRender(support,false,error) ) {
+		medium->release();
+		return false;
+	}
+	mediaMap[name] = medium;
+	fireSequenceManifests[medium] = manifest;
+	fireSequenceControllers[medium] = controller;
+	if( g_cstProductionSink ) g_cstProductionSink->push_back(static_cast<const void*>(medium));
+	return true;
+}
+
+std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> >
+Job::ActiveFireSequenceControllers( std::string& error )
+{
+	std::map<const IMedium*,std::vector<std::pair<std::string,std::string> > > bindings;
+	if( const IMedium* global = pScene ? pScene->GetGlobalMedium() : nullptr )
+		bindings[global].push_back({"global_medium","scene"});
+	if( pScene && pScene->GetObjects() ) {
+		struct Collector : public IEnumCallback<const char*>
+		{
+			const IObjectManager& objects;
+			std::map<const IMedium*,std::vector<std::pair<std::string,std::string> > >& bindings;
+			Collector(const IObjectManager& source,
+				std::map<const IMedium*,std::vector<std::pair<std::string,std::string> > >& target)
+				: objects(source), bindings(target) {}
+			bool operator()(const char* const& name) override
+			{
+				const IObject* object=objects.GetItem(name);
+				if( object && object->GetInteriorMedium() ) bindings[object->GetInteriorMedium()].push_back(
+					{"object_interior_medium",name ? name : ""});
+				return true;
+			}
+		} collector(*pScene->GetObjects(),bindings);
+		pScene->GetObjects()->EnumerateItemNames(collector);
+	}
+	std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > result;
+	for( auto& item : bindings ) {
+		const auto found=fireSequenceControllers.find(item.first);
+		if( found==fireSequenceControllers.end() ) continue;
+		std::sort(item.second.begin(),item.second.end());
+		RISECBOR64::Value::Values encodedBindings;
+		for( const auto& binding : item.second ) encodedBindings.push_back(
+			RISECBOR64::Value::MapValue({
+				{"binding_kind",RISECBOR64::Value::String(binding.first)},
+				{"binding_owner",RISECBOR64::Value::String(binding.second)}}));
+		std::string managerName;
+		for( const auto& medium : mediaMap ) if( medium.second==item.first ) {
+			managerName=medium.first.c_str(); break;
+		}
+		RISECBOR64::Bytes bytes;
+		if( managerName.empty() || !RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+			{"bindings",RISECBOR64::Value::ArrayValue(encodedBindings)},
+			{"manager_name",RISECBOR64::Value::String(managerName)}
+		}),bytes,&error) || !found->second->SetActiveBindingIdentity(
+			RISECBOR64::SHA256Hex(bytes),error) ) return {};
+		result.push_back(found->second);
+	}
+	return result;
+}
+
 bool Job::SetFireFidelityMode( const char* mode )
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	if( !mode ) {
 		return false;
 	}
@@ -7855,6 +8139,8 @@ bool Job::SetObjectInteriorMedium(
 	const char* medium_name									///< [in] Name of the medium
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	IObjectPriv* pObj = pObjectManager->GetItem( object_name );
 	if( !pObj ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectInteriorMedium:: Object not found `%s`", object_name );
@@ -7887,6 +8173,8 @@ bool Job::ForTest_SetFireEffectiveAbsorptionAblation(
 	const unsigned int ablation
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name ) return false;
 	MediumMap::iterator it = mediaMap.find( String( name ) );
 	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
@@ -7900,6 +8188,8 @@ bool Job::ForTest_SetBlockFireDerivedRebuild(
 	const bool block
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name ) return false;
 	MediumMap::iterator it = mediaMap.find( String(name) );
 	MultichannelHeterogeneousMedium* medium = it == mediaMap.end() ? 0 :
@@ -8849,6 +9139,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -8929,9 +9221,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "pixelpel_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "pixelpel_rasterizer", pRaster, snap );
 }
 
 //! Sets the rasterizer type to be pixel based spectral integrating
@@ -8959,6 +9249,8 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9061,9 +9353,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	snap.pixelFilter     = pixelFilterConfig;
 	snap.spectral        = spectralConfig;
 	snap.stability       = stabilityConfig;
-	RegisterAndActivateRasterizer( "pixelintegratingspectral_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "pixelintegratingspectral_rasterizer", pRaster, snap );
 }
 
 //! Sets the rasterizer type to be adaptive pixel based PEL
@@ -9086,6 +9376,8 @@ bool Job::SetBDPTPelRasterizer(
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9162,9 +9454,7 @@ bool Job::SetBDPTPelRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "bdpt_pel_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "bdpt_pel_rasterizer", pRaster, snap );
 }
 
 bool Job::SetBDPTSpectralRasterizer(
@@ -9186,6 +9476,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9263,9 +9555,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	snap.pathGuiding     = guidingConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "bdpt_spectral_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "bdpt_spectral_rasterizer", pRaster, snap );
 }
 
 bool Job::SetVCMPelRasterizer(
@@ -9289,6 +9579,8 @@ bool Job::SetVCMPelRasterizer(
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9384,9 +9676,7 @@ bool Job::SetVCMPelRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "vcm_pel_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "vcm_pel_rasterizer", pRaster, snap );
 }
 
 bool Job::SetVCMSpectralRasterizer(
@@ -9411,6 +9701,8 @@ bool Job::SetVCMSpectralRasterizer(
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9512,9 +9804,7 @@ bool Job::SetVCMSpectralRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "vcm_spectral_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "vcm_spectral_rasterizer", pRaster, snap );
 }
 
 bool Job::SetAutoRasterizer(
@@ -9535,6 +9825,8 @@ bool Job::SetAutoRasterizer(
 	const bool probeEnabled
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	// The shared setup (sampler/filter, shader, caster, radiance map, RR
 	// threshold, light BVH) is integrator-agnostic and IDENTICAL to the
 	// PT/BDPT/VCM setters — the dispatcher delegates to a rasterizer built
@@ -9614,9 +9906,7 @@ bool Job::SetAutoRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "auto_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "auto_rasterizer", pRaster, snap );
 }
 
 bool Job::SetAutoSpectralRasterizer(
@@ -9637,6 +9927,8 @@ bool Job::SetAutoSpectralRasterizer(
 	const bool probeEnabled
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	// Mirrors Job::SetAutoRasterizer; the ONLY differences are the SPECTRAL
 	// delegate factory (RISE_API_CreateAutoSpectralRasterizer) and the
 	// spectral-core param bundle in place of path-guiding.  The shared setup
@@ -9716,9 +10008,7 @@ bool Job::SetAutoSpectralRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "auto_spectral_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "auto_spectral_rasterizer", pRaster, snap );
 }
 
 bool Job::SetPathTracingPelRasterizer(
@@ -9738,6 +10028,8 @@ bool Job::SetPathTracingPelRasterizer(
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9825,9 +10117,7 @@ bool Job::SetPathTracingPelRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "pathtracing_pel_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "pathtracing_pel_rasterizer", pRaster, snap );
 }
 
 bool Job::SetPathTracingSpectralRasterizer(
@@ -9847,6 +10137,8 @@ bool Job::SetPathTracingSpectralRasterizer(
 	const ProgressiveConfig& progressiveConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	ISampling2D* pPixelSampler = 0;
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
@@ -9933,9 +10225,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
 	snap.progressive     = progressiveConfig;
-	RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTRasterizer(
@@ -9955,6 +10245,8 @@ bool Job::SetMLTRasterizer(
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	IShader* pShader = pShaderManager->GetItem( shader );
 	if( !pShader ) {
 		GlobalLog()->PrintEasyError( "Job::SetMLTRasterizer:: Default shader not found" );
@@ -10011,9 +10303,7 @@ bool Job::SetMLTRasterizer(
 	snap.oidnPrefilter      = oidnPrefilter;
 	snap.pixelFilter        = pixelFilterConfig;
 	snap.stability          = stabilityConfig;
-	RegisterAndActivateRasterizer( "mlt_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "mlt_rasterizer", pRaster, snap );
 }
 
 bool Job::SetMLTSpectralRasterizer(
@@ -10034,6 +10324,8 @@ bool Job::SetMLTSpectralRasterizer(
 	const StabilityConfig& stabilityConfig
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	IShader* pShader = pShaderManager->GetItem( shader );
 	if( !pShader ) {
 		GlobalLog()->PrintEasyError( "Job::SetMLTSpectralRasterizer:: Default shader not found" );
@@ -10086,9 +10378,7 @@ bool Job::SetMLTSpectralRasterizer(
 	snap.spectral           = spectralConfig;
 	snap.pixelFilter        = pixelFilterConfig;
 	snap.stability          = stabilityConfig;
-	RegisterAndActivateRasterizer( "mlt_spectral_rasterizer", pRaster, snap );
-
-	return true;
+	return RegisterAndActivateRasterizer( "mlt_spectral_rasterizer", pRaster, snap );
 }
 
 //
@@ -11034,6 +11324,51 @@ bool Job::ShootShadowPhotons(
 	return true;
 }
 
+namespace
+{
+	class FireSequencePreparationGroup : public IRenderPreparationController
+	{
+		std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers_;
+		std::vector<Implementation::FireSequencePreparationController::RenderLease> leases_;
+		std::function<bool(const RenderTimeSupport&)> afterPrepare_;
+	public:
+		FireSequencePreparationGroup(
+			std::vector<std::shared_ptr<Implementation::FireSequencePreparationController> > controllers,
+			std::function<bool(const RenderTimeSupport&)> afterPrepare )
+			: controllers_(std::move(controllers)), afterPrepare_(std::move(afterPrepare)) {}
+		bool PrepareMediaForRender(const RenderTimeSupport& support,std::string& error) override
+		{
+			if( !leases_.empty() ) { error="mutation_frozen"; return false; }
+			const Implementation::FireSequenceRenderTimeSupport fireSupport{
+				support.nominal,support.open,support.close};
+			for( const auto& controller : controllers_ )
+				if( !controller->PrepareMediaForRender(fireSupport,false,error) ) return false;
+			if( afterPrepare_ && !afterPrepare_(support) ) {
+				error="prepared fire fidelity publication failed"; return false;
+			}
+			return true;
+		}
+		bool AcquireRenderFreeze(std::string& error) override
+		{
+			if( !leases_.empty() ) { error="mutation_frozen"; return false; }
+			for( const auto& controller : controllers_ ) {
+				auto lease=controller->AcquireRenderLease(error);
+				if( !lease.IsValid() ) { leases_.clear(); return false; }
+				leases_.push_back(std::move(lease));
+			}
+			return true;
+		}
+		bool ReleaseRenderFreeze(std::string& error) override
+		{
+			bool stable=leases_.size()==controllers_.size();
+			for( const auto& lease : leases_ ) stable=lease.StateStayedFrozen() && stable;
+			leases_.clear();
+			if( !stable ) error="prepared media mutated during render";
+			return stable;
+		}
+	};
+}
+
 //! Predicts the amount of time in ms it will take to rasterize the current scene
 /// \return TRUE if successful, FALSE otherwise
 bool Job::PredictRasterizationTime(
@@ -11042,6 +11377,8 @@ bool Job::PredictRasterizationTime(
 	unsigned int* actual							///< [out] Actual time it took to do the predicted kernel
 	)
 {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(false) ) {
 		return false;
 	}
@@ -11055,7 +11392,23 @@ bool Job::PredictRasterizationTime(
 		safe_release(pSampling);
 		return false;
 	}
-	unsigned int nMs = pRasterizer->PredictTimeToRasterizeScene( *pScene, *pSampling, actual );
+	unsigned int nMs = 0xFFFFFFFFu;
+	if( pScene->HasTimeVaryingMedia() ) {
+		std::string preparationError;
+		auto controllers=ActiveFireSequenceControllers(preparationError);
+		if( controllers.empty() ) { safe_release(pSampling); return false; }
+		FireSequencePreparationGroup preparation(std::move(controllers),
+			[this](const RenderTimeSupport&) {
+				return PrepareFireRenderFidelityMetadata(false) &&
+					AuthorizeFireRasterizer(pRasterizer,
+						FireRenderPreflightAuthorization::Prediction);
+			});
+		nMs=pRasterizer->PredictTimeToRasterizeScenePrepared(*pScene,*pSampling,
+			actual,Scalar(animOptions.time_start),preparation);
+	} else {
+		nMs=pRasterizer->PredictTimeToRasterizeScene(*pScene,*pSampling,actual);
+	}
+	if( nMs == 0xFFFFFFFFu ) { safe_release(pSampling); return false; }
 
 	if( ms ) {
 		*ms = nMs;
@@ -11298,7 +11651,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	const bool prepared = PrepareFireRenderFidelityMetadata(pRasterizer,activeRasterizerName,
 		wavelengthMin,wavelengthMax,useHWSS,autoIntegrator,oidnDenoise,
 		radianceClampEnabled,pathRegularizationEnabled,smsEnabled,resolvedConfig,
-		publishMetadata);
+		nullptr,publishMetadata);
 	if( prepared && publishMetadata ) {
 		Implementation::Rasterizer* concrete =
 			dynamic_cast<Implementation::Rasterizer*>(pRasterizer);
@@ -11388,11 +11741,13 @@ bool Job::PrepareFireRenderForExternalRasterizerResolved(
 		rasterizer ? rasterizer->GetFrameStore() : 0,&config,animOptions.time_start,
 		animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
 		animOptions.invert_fields,nullptr,nullptr,nullptr,nullptr,resolvedConfig) ) return false;
+	const Implementation::FireSequenceRenderTimeSupport sequenceSupport{
+		animOptions.time_start,animOptions.time_start,animOptions.time_start};
 	const bool prepared = PrepareFireRenderFidelityMetadata(rasterizer,
 		std::string(rasterizerKind ? rasterizerKind : ""),Scalar(380),Scalar(780),
 		false,AutoIntegratorChoice::PT,config.oidnDenoise,
 		config.radianceClampEnabled,config.pathRegularizationEnabled,config.smsEnabled,
-		resolvedConfig,true);
+		resolvedConfig,&sequenceSupport,true);
 	if( prepared ) {
 		Implementation::Rasterizer* concrete =
 			dynamic_cast<Implementation::Rasterizer*>(rasterizer);
@@ -11427,13 +11782,26 @@ bool Job::RasterizeExternalRasterizerResolved(
 	const FireExternalRenderConfig& config,
 	const Rect* region )
 {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	FrameRenderRollback renderRollback(rasterizer ? rasterizer->GetFrameStore() : nullptr);
 	if( !rasterizer || !PrepareFireRenderForExternalRasterizerResolved(
 		rasterizer,rasterizerKind,config) ) return false;
 	renderRollback.ArmPixelStateForFire();
+	std::string preparationError;
+	auto controllers=ActiveFireSequenceControllers(preparationError);
+	if( pScene->HasTimeVaryingMedia() && controllers.empty() ) return false;
+	FireSequencePreparationGroup preparation(std::move(controllers),
+		[this,rasterizer,rasterizerKind,config](const RenderTimeSupport&) {
+			return PrepareFireRenderForExternalRasterizerResolved(
+				rasterizer,rasterizerKind,config) && AuthorizeFireRasterizer(
+					rasterizer,FireRenderPreflightAuthorization::Render);
+		});
 	if( !AuthorizeFireRasterizer(
 		rasterizer,FireRenderPreflightAuthorization::Render) ) return false;
-	rasterizer->RasterizeScene(*pScene,region,nullptr);
+	if( pScene->HasTimeVaryingMedia() ) rasterizer->RasterizeScenePrepared(
+		*pScene,Scalar(animOptions.time_start),preparation,region,nullptr);
+	else rasterizer->RasterizeScene(*pScene,region,nullptr);
 	if( !FireRasterizerLastRenderCompleted(rasterizer) ) return false;
 	renderRollback.Commit();
 	return true;
@@ -11451,6 +11819,7 @@ bool Job::PrepareFireRenderFidelityMetadata(
 	const bool pathRegularizationEnabled,
 	const bool smsEnabled,
 	const std::vector<unsigned char>& resolvedConfig,
+	const Implementation::FireSequenceRenderTimeSupport* sequenceTimeSupport,
 	const bool publishMetadata )
 {
 	if( !pScene || !rasterizer ) {
@@ -11500,6 +11869,17 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		InteriorMediumCollector collector(*objects,activeMedia,activeBindings);
 		objects->EnumerateItemNames(collector);
 	}
+	bool hasActiveSequence = false;
+	for( const IMedium* medium : activeMedia )
+		hasActiveSequence = hasActiveSequence || fireSequenceControllers.count(medium) != 0u;
+	if( hasActiveSequence ) {
+		std::string bindingError;
+		if( ActiveFireSequenceControllers(bindingError).empty() ) {
+			GlobalLog()->PrintEx(eLog_Error,"Job:: fire sequence binding identity: %s",
+				bindingError.c_str());
+			return false;
+		}
+	}
 	const auto sameActiveBindings = [this,&activeBindings]() {
 		std::set<const IMedium*> currentMedia;
 		std::vector<ActiveMediumBinding> currentBindings;
@@ -11529,6 +11909,17 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		}
 		return true;
 	};
+	if( sequenceTimeSupport ) {
+		for( const IMedium* medium : activeMedia ) {
+			const auto controller = fireSequenceControllers.find(medium);
+			if( controller == fireSequenceControllers.end() ) continue;
+			std::string error;
+			if( !controller->second->PrepareMediaForRender(*sequenceTimeSupport,false,error) ) {
+				GlobalLog()->PrintEx(eLog_Error,"Job:: fire sequence preparation failed: %s",error.c_str());
+				return false;
+			}
+		}
+	}
 
 	std::set<std::string> recordIds;
 	std::set<std::string> reasons;
@@ -11544,6 +11935,11 @@ bool Job::PrepareFireRenderFidelityMetadata(
 		const MultichannelHeterogeneousMedium* fireMedium =
 			dynamic_cast<const MultichannelHeterogeneousMedium*>(*medium);
 		if( !fireMedium || fireMedium->FireDerivedStructuresCurrent() ) continue;
+		if( fireSequenceControllers.find(*medium) != fireSequenceControllers.end() ) {
+			GlobalLog()->PrintEasyError(
+				"Job:: sequence-backed fire medium is stale outside its prepared frame transaction" );
+			return false;
+		}
 		MultichannelHeterogeneousMedium* managedMedium = 0;
 		for( MediumMap::iterator named=mediaMap.begin(); named!=mediaMap.end(); ++named ) {
 			if( named->second == *medium ) {
@@ -11610,20 +12006,41 @@ bool Job::PrepareFireRenderFidelityMetadata(
 				break;
 			}
 		}
-		const std::map<const IMedium*,std::string>::const_iterator digest =
-			fireAuthoredConfigDigests.find(binding->medium);
-		if( managerName.empty() || digest == fireAuthoredConfigDigests.end() ||
-			digest->second.empty() ) {
+		const auto sequenceManifest = fireSequenceManifests.find(binding->medium);
+		const auto sequenceController = fireSequenceControllers.find(binding->medium);
+		const std::map<const IMedium*,std::string>::const_iterator digest = fireAuthoredConfigDigests.find(binding->medium);
+		if( managerName.empty() || ((sequenceManifest == fireSequenceManifests.end() ||
+			sequenceController == fireSequenceControllers.end()) &&
+			(digest == fireAuthoredConfigDigests.end() || digest->second.empty())) ) {
 			invalidFidelityMetadata = true;
 			reasons.insert("output_provenance_unavailable");
 			continue;
 		}
 		FrameStoreOutput::ActiveFireMedium item;
-		item.mediaKind = "static_authored";
 		item.managerName = managerName;
 		item.bindingKind = binding->bindingKind;
 		item.bindingOwner = binding->bindingOwner;
-		item.authoredConfigDigest = digest->second;
+		if( sequenceManifest != fireSequenceManifests.end() &&
+			sequenceController != fireSequenceControllers.end() ) {
+			const std::shared_ptr<const Implementation::FireSequencePreparedFrame> frame =
+				sequenceController->second->PreparedFrame();
+			if( !frame ) return false;
+			item.mediaKind = "sequence_backed";
+			item.sequenceId = sequenceManifest->second->SequenceId();
+			item.selectedBaseFrameIndex = frame->frameIndex;
+			item.wholeFileDigest = frame->wholeFileSha256;
+			item.sourceKind = sequenceManifest->second->SourceKind();
+			item.physicalMapping = sequenceManifest->second->PhysicalMapping();
+			item.effectiveBlurState = "disabled";
+			item.preparedInputId = sequenceController->second->PreparedInputId();
+			item.preparedStateGeneration = sequenceController->second->Generation();
+			if( sequenceManifest->second->SourceQualification() == "preview_only" ||
+				item.sourceKind == "heuristic_import" ||
+				item.physicalMapping.rfind("heuristic:",0u) == 0u ) reasons.insert("producer_unqualified");
+		} else {
+			item.mediaKind = "static_authored";
+			item.authoredConfigDigest = digest->second;
+		}
 		const char* recordId = binding->medium->GetFireOpticsRecordId();
 		if( recordId && recordId[0] ) item.opticalRecordIds.push_back(recordId);
 		fireMediaMetadata.push_back(item);
@@ -11784,6 +12201,8 @@ bool Job::PrepareFireRenderFidelityMetadata(
 bool Job::Rasterize(
 	)
 {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(
@@ -11793,13 +12212,25 @@ bool Job::Rasterize(
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
+	std::string preparationError;
+	auto activeSequenceControllers=ActiveFireSequenceControllers(preparationError);
+	if( pScene->HasTimeVaryingMedia() && activeSequenceControllers.empty() ) return false;
+	FireSequencePreparationGroup preparation(std::move(activeSequenceControllers),
+		[this](const RenderTimeSupport&) {
+			return PrepareFireRenderFidelityMetadata(animOptions.time_start,
+				animOptions.time_end,animOptions.num_frames,animOptions.do_fields,
+				animOptions.invert_fields,nullptr,nullptr,nullptr,true) &&
+				AuthorizeFireRasterizer(pRasterizer,
+					FireRenderPreflightAuthorization::Render);
+		});
 
 	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
 	if( !pSeq ) return false;
 
 	// One acquire read serves both the check and the uses below -- the slot is atomic (written
 	// from the GUI thread vs the coordinator worker), so a check-then-reread would be a TOCTOU.
-	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
 	} else {
@@ -11825,7 +12256,9 @@ bool Job::Rasterize(
 		return false;
 	}
 	try {
-		pRasterizer->RasterizeScene( *pScene, 0, pSeq );
+		if( pScene->HasTimeVaryingMedia() ) pRasterizer->RasterizeScenePrepared(
+			*pScene,Scalar(animOptions.time_start),preparation,0,pSeq);
+		else pRasterizer->RasterizeScene(*pScene,0,pSeq);
 	}
 	catch( ... ) {
 		safe_release( pSeq );
@@ -11842,6 +12275,15 @@ bool Job::Rasterize(
 //! Rasterizes an animation
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RasterizeAnimation(
+	const double time_start, const double time_end, const unsigned int num_frames,
+	const bool do_fields, const bool invert_fields )
+{
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
+	return RasterizeAnimationOwned(time_start,time_end,num_frames,do_fields,invert_fields);
+}
+
+bool Job::RasterizeAnimationOwned(
 	const double time_start,						///< [in] Scene time to start rasterizing at
 	const double time_end,							///< [in] Scene time to finish rasterizing
 	const unsigned int num_frames,					///< [in] Number of frames to rasterize
@@ -11853,6 +12295,59 @@ bool Job::RasterizeAnimation(
 		GlobalLog()->PrintEx(eLog_Error,
 			"Job::RasterizeAnimation: zero-frame animations are invalid");
 		return false;
+	}
+	if( pScene && pScene->HasTimeVaryingMedia() ) {
+		FrameRenderRollback sequenceRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+		for( unsigned int frame=0; frame<num_frames; ++frame ) {
+			ResolvedRasterSequence resolved;
+			if( !pRasterizer || !PrepareFireRenderFidelityMetadata(time_start,time_end,
+				num_frames,do_fields,invert_fields,&frame,nullptr,&resolved) ) return false;
+			sequenceRollback.ArmPixelStateForFire();
+			IRasterizeSequence* sequence = RasterizeSequenceFromResolution(resolved);
+			if( !sequence ) return false;
+			std::string preparationError;
+			auto activeControllers=ActiveFireSequenceControllers(preparationError);
+			if( activeControllers.empty() ) { safe_release(sequence); return false; }
+			if( do_fields ) {
+				const double step=num_frames>1u ? (time_end-time_start)/double(num_frames-1u) : 0.0;
+				const double upper=time_start+double(frame)*step;
+				const double lower=upper+0.5*step;
+				for( const auto& binding : fireSequenceControllers ) {
+					if( std::find(activeControllers.begin(),activeControllers.end(),binding.second)==
+						activeControllers.end() ) continue;
+					const auto manifest=fireSequenceManifests.find(binding.first);
+					Implementation::FireSequenceMappedTime upperMapped,lowerMapped;
+					if( manifest==fireSequenceManifests.end() ||
+						!manifest->second->MapSceneTime(upper,upperMapped,preparationError) ||
+						!manifest->second->MapSceneTime(lower,lowerMapped,preparationError) ||
+						upperMapped.baseFrameIndex!=lowerMapped.baseFrameIndex ) {
+						GlobalLog()->PrintEasyError(
+							"interlaced_sequence_frame_mismatch: one artifact cannot bind two base frames");
+						safe_release(sequence);
+						return false;
+					}
+				}
+			}
+			FireSequencePreparationGroup preparation(std::move(activeControllers),
+				[this,time_start,time_end,num_frames,do_fields,invert_fields,frame](
+					const RenderTimeSupport&) {
+					return PrepareFireRenderFidelityMetadata(time_start,time_end,num_frames,
+						do_fields,invert_fields,&frame,nullptr,nullptr,true) &&
+						AuthorizeFireRasterizer(pRasterizer,
+							FireRenderPreflightAuthorization::Render);
+				});
+			if( !AuthorizeFireRasterizer(pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+				safe_release(sequence); return false;
+			}
+			try {
+				pRasterizer->RasterizeSceneAnimationPrepared(*pScene,time_start,time_end,
+					num_frames,do_fields,invert_fields,preparation,0,&frame,sequence);
+			} catch(...) { safe_release(sequence); throw; }
+			safe_release(sequence);
+			if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+		}
+		sequenceRollback.Commit();
+		return true;
 	}
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	ResolvedRasterSequence resolvedSequence;
@@ -11866,7 +12361,8 @@ bool Job::RasterizeAnimation(
 	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
-	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
 	} else {
@@ -11905,6 +12401,8 @@ bool Job::RasterizeRegion(
 	const unsigned int bottom						///< [in] Bottom most scanline
 	)
 {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	if( !pRasterizer || !pScene || !pScene->GetFilm() ) {
 		return false;
@@ -11939,7 +12437,8 @@ bool Job::RasterizeRegion(
 	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
-	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
 	} else {
@@ -11984,6 +12483,8 @@ bool Job::SetObjectPosition(
 	const double pos[3]								///< [in] Position of the object
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	if( !name ) {
 		return false;
 	}
@@ -12006,6 +12507,8 @@ bool Job::SetObjectOrientation(
 	const double orient[3]							///< [in] Orientation of the object
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name ) {
 		return false;
 	}
@@ -12028,6 +12531,8 @@ bool Job::SetObjectScale(
 	const double scale								///< [in] Scaling of the object
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name ) {
 		return false;
 	}
@@ -12054,6 +12559,8 @@ bool Job::SetObjectUVToSpherical(
 	const double radius								///< [in] Radius of the sphere
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
@@ -12075,6 +12582,8 @@ bool Job::SetObjectUVToBox(
 	const double depth								///< [in] Depth of the box
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
@@ -12096,6 +12605,8 @@ bool Job::SetObjectUVToCylindrical(
 	const double size								///< [in] Size of the cylinder
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
@@ -12115,6 +12626,8 @@ bool Job::SetObjectIntersectionError(
 	const double error								///< [in] Threshold of error
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	IObjectPriv* pObj = pObjectManager->GetItem( name );
 
 	if( !pObj ) {
@@ -12139,6 +12652,8 @@ bool Job::SetObjectMaterial(
 	const char* materialName						///< [in] Name of the material to bind
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !objName || !materialName ) {
 		GlobalLog()->PrintEasyError( "Job::SetObjectMaterial:: null object or material name" );
 		return false;
@@ -12173,6 +12688,8 @@ bool Job::SetObjectShader(
 	const char* shaderName							///< [in] Name of the shader to bind
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !objName || !shaderName ) {
 		GlobalLog()->PrintEasyError( "Job::SetObjectShader:: null object or shader name" );
 		return false;
@@ -12199,6 +12716,8 @@ bool Job::SetMaterialEmissionScale(
 	const double scale								///< [in] New emission scale
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !materialName ) {
 		GlobalLog()->PrintEasyError( "Job::SetMaterialEmissionScale:: null material name" );
 		return false;
@@ -12457,6 +12976,17 @@ bool Job::RemoveRasterizerOutputs(
 bool Job::ClearAll(
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( m_activePreparedRequests != 0u || m_destroyingPreparedInputs ) {
+		GlobalLog()->PrintEasyError("mutation_frozen");
+		return false;
+	}
+	for( const auto& controller : fireSequenceControllers ) {
+		if( controller.second && controller.second->HasActiveRenderLease() ) {
+			GlobalLog()->PrintEasyError("mutation_frozen");
+			return false;
+		}
+	}
 	for( MediumMap::iterator medium=mediaMap.begin(); medium!=mediaMap.end(); ++medium ) {
 		MultichannelHeterogeneousMedium* fireMedium =
 			dynamic_cast<MultichannelHeterogeneousMedium*>(medium->second);
@@ -14280,6 +14810,8 @@ bool Job::SetAnimationOptions(
 	const bool invert_fields						///< [in] Should the fields be temporally inverted?
 	)
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return false; }
 	animOptions.time_start = time_start;
 	animOptions.time_end = time_end;
 	animOptions.num_frames = num_frames;
@@ -14444,21 +14976,32 @@ bool Job::RasterizeAnimationUsingOptions(
 	)
 
 {
-	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	if( !fireSequenceControllers.empty() ) return RasterizeAnimationOwned(aTs,aTe,aNf,aDf,aInvf);
+	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
 		nullptr,nullptr,&resolvedSequence) ) {
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
+	std::vector<Implementation::FireSequencePreparationController::RenderLease> sequenceLeases;
+	for( const auto& binding : fireSequenceControllers ) {
+		std::string error;
+		auto lease = binding.second->AcquireRenderLease(error);
+		if( !lease.IsValid() ) return false;
+		sequenceLeases.push_back(std::move(lease));
+	}
 
 	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
 	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
-	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
 	} else {
@@ -14483,6 +15026,7 @@ bool Job::RasterizeAnimationUsingOptions(
 	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
+	for( const auto& lease : sequenceLeases ) if( !lease.StateStayedFrozen() ) return false;
 	metadataRollback.Commit();
 
 	return true;
@@ -14494,21 +15038,80 @@ bool Job::RasterizeAnimationUsingOptions(
 	const unsigned int frame						///< [in] The frame to rasterize
 	)
 {
+	PreparedRequestGuard request(*this,true);
+	if( !request.IsValid() || !PreparedProgressSafe() ) return false;
 	FrameRenderRollback metadataRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
 	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
 	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+	if( pScene && pScene->HasTimeVaryingMedia() ) {
+		if( frame >= aNf ) return false;
+		FrameRenderRollback sequenceRollback(pRasterizer ? pRasterizer->GetFrameStore() : 0);
+		ResolvedRasterSequence resolved;
+		if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+			&frame,nullptr,&resolved) ) return false;
+		sequenceRollback.ArmPixelStateForFire();
+		IRasterizeSequence* sequence=RasterizeSequenceFromResolution(resolved);
+		if( !sequence ) return false;
+		std::string preparationError;
+		auto controllers=ActiveFireSequenceControllers(preparationError);
+		if( controllers.empty() ) { safe_release(sequence); return false; }
+		if( aDf ) {
+			const double step=aNf>1u ? (aTe-aTs)/double(aNf-1u) : 0.0;
+			const double upper=aTs+double(frame)*step;
+			const double lower=upper+0.5*step;
+			for( const auto& binding : fireSequenceControllers ) {
+				if( std::find(controllers.begin(),controllers.end(),binding.second)==controllers.end() )
+					continue;
+				const auto manifest=fireSequenceManifests.find(binding.first);
+				Implementation::FireSequenceMappedTime upperMapped,lowerMapped;
+				if( manifest==fireSequenceManifests.end() ||
+					!manifest->second->MapSceneTime(upper,upperMapped,preparationError) ||
+					!manifest->second->MapSceneTime(lower,lowerMapped,preparationError) ||
+					upperMapped.baseFrameIndex!=lowerMapped.baseFrameIndex ) {
+					GlobalLog()->PrintEasyError(
+						"interlaced_sequence_frame_mismatch: one artifact cannot bind two base frames");
+					safe_release(sequence);
+					return false;
+				}
+			}
+		}
+		FireSequencePreparationGroup preparation(std::move(controllers),
+			[this,aTs,aTe,aNf,aDf,aInvf,frame](const RenderTimeSupport&) {
+				return PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
+					&frame,nullptr,nullptr,true) && AuthorizeFireRasterizer(
+						pRasterizer,FireRenderPreflightAuthorization::Render);
+			});
+		if( !AuthorizeFireRasterizer(pRasterizer,FireRenderPreflightAuthorization::Render) ) {
+			safe_release(sequence); return false;
+		}
+		try { pRasterizer->RasterizeSceneAnimationPrepared(*pScene,aTs,aTe,aNf,
+			aDf,aInvf,preparation,0,&frame,sequence); }
+		catch(...) { safe_release(sequence); throw; }
+		safe_release(sequence);
+		if( !FireRasterizerLastRenderCompleted(pRasterizer) ) return false;
+		sequenceRollback.Commit();
+		return true;
+	}
 	ResolvedRasterSequence resolvedSequence;
 	if( !pRasterizer || !PrepareFireRenderFidelityMetadata(aTs,aTe,aNf,aDf,aInvf,
 		&frame,nullptr,&resolvedSequence) ) {
 		return false;
 	}
 	metadataRollback.ArmPixelStateForFire();
+	std::vector<Implementation::FireSequencePreparationController::RenderLease> sequenceLeases;
+	for( const auto& binding : fireSequenceControllers ) {
+		std::string error;
+		auto lease = binding.second->AcquireRenderLease(error);
+		if( !lease.IsValid() ) return false;
+		sequenceLeases.push_back(std::move(lease));
+	}
 
 	IRasterizeSequence* pSeq = RasterizeSequenceFromResolution(resolvedSequence);
 	if( !pSeq ) return false;
 
 	// Single acquire read (atomic slot) -- see Job::Rasterize's matching comment.
-	IProgressCallback* const progress = pGlobalProgress.load( std::memory_order_acquire );
+	IProgressCallback* const progress = pScene && pScene->HasTimeVaryingMedia() ? nullptr :
+		pGlobalProgress.load( std::memory_order_acquire );
 	if( progress ) {
 		pRasterizer->SetProgressCallback( progress );
 	} else {
@@ -14533,18 +15136,23 @@ bool Job::RasterizeAnimationUsingOptions(
 	const bool renderCompleted = FireRasterizerLastRenderCompleted(pRasterizer);
 	safe_release( pSeq );
 	if( !renderCompleted ) return false;
+	for( const auto& lease : sequenceLeases ) if( !lease.StateStayedFrozen() ) return false;
 	metadataRollback.Commit();
 
 	return true;
 }
 
 void Job::SetProgress( IProgressCallback* pProgress ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) { GlobalLog()->PrintEasyError("mutation_frozen"); return; }
 	// Release store: pairs with the acquire loads in GetProgress + the Rasterize family so a thread
 	// that observes the pointer also observes the callback object behind it fully constructed.
 	pGlobalProgress.store( pProgress, std::memory_order_release );
 }
 
 bool Job::ClearProgressIfCurrent( IProgressCallback* expected ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	// A null `expected` is a contract error, not a request (a bare CAS would "succeed" null->null
 	// and return true, contradicting the interface doc's "TRUE iff the slot was cleared") --
 	// refuse it up front so the return value stays meaningful.
@@ -14559,12 +15167,16 @@ bool Job::ClearProgressIfCurrent( IProgressCallback* expected ) {
 }
 
 IProgressCallback* Job::ExchangeProgress( IProgressCallback* next ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return pGlobalProgress.load(std::memory_order_acquire);
 	// One indivisible capture-and-install -- see the IJob.h tail doc for why the coordinator
 	// paths must not split this into GetProgress() + SetProgress().
 	return pGlobalProgress.exchange( next, std::memory_order_acq_rel );
 }
 
 bool Job::SetProgressIfCurrent( IProgressCallback* expected, IProgressCallback* next ) {
+	std::lock_guard<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	// Install-side CAS twin of ClearProgressIfCurrent -- see the IJob.h tail doc.  A null
 	// `expected` is MEANINGFUL here ("install only if the slot is empty"), unlike
 	// ClearProgressIfCurrent's null-refusal (there a null expected would make the return value a
@@ -14587,10 +15199,10 @@ bool Job::SetProgressIfCurrent( IProgressCallback* expected, IProgressCallback* 
 //  the scene file.
 // ============================================================
 
-void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
+bool Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
 	const RasterizerParams& params )
 {
-	if( !pRaster ) return;
+	if( !pRaster ) return false;
 	RasterizerParams resolvedParams = params;
 	resolvedParams.lightSampleRRThreshold = lightSampleRRThreshold;
 
@@ -14609,7 +15221,7 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 			it->second.params = resolvedParams;
 			pRasterizer = pRaster;
 			activeRasterizerName = name;
-			return;
+			return true;
 		}
 		if( pRasterizer == it->second.instance ) {
 			pRasterizer = 0;   // breaks the dangling-borrow
@@ -14628,6 +15240,7 @@ void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* p
 	// owned by the registry now — pRasterizer is a non-owning borrow.
 	pRasterizer = pRaster;
 	activeRasterizerName = name;
+	return true;
 }
 
 const Job::RasterizerParams* Job::GetRasterizerParams( const std::string& name ) const
@@ -14639,6 +15252,8 @@ const Job::RasterizerParams* Job::GetRasterizerParams( const std::string& name )
 
 bool Job::SetActiveRasterizer( const char* name )
 {
+	std::unique_lock<std::mutex> preparedLock(m_preparedRequestMutex);
+	if( PreparedMutationLocked() ) return false;
 	if( !name || !*name ) return false;
 	const std::string key( name );
 	RasterizerRegistry::iterator it = rasterizerRegistry.find( key );
@@ -14648,6 +15263,7 @@ bool Job::SetActiveRasterizer( const char* name )
 		activeRasterizerName = key;
 		return true;
 	}
+	preparedLock.unlock();
 	// Not in the registry yet.  Try to lazy-build it from the standard
 	// types catalogue with sensible defaults.  On success, the
 	// Set*Rasterizer path (called from inside the helper) registers AND

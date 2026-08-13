@@ -52,6 +52,7 @@ Scene::Scene( ) :
   pIrradianceCache( 0 ),
   pAnimator( 0 ),
   mFireTemporalHold( false ),
+  mHasTimeVaryingMedia( false ),
   pGlobalMedium( 0 ),
   mLightTopologyGeneration( 0 ),
   mCausticPelPending(),
@@ -572,6 +573,27 @@ void Scene::SetGlobalMedium( const IMedium* pMedium )
 		pGlobalMedium = pMedium;
 		pGlobalMedium->addref();
 	}
+}
+
+bool Scene::HasTimeVaryingMedia() const
+{
+	if( pGlobalMedium && pGlobalMedium->IsTimeVaryingMedium() ) return true;
+	if( !pObjectManager ) return mHasTimeVaryingMedia;
+	struct Collector : public IEnumCallback<const char*>
+	{
+		const IObjectManager& objects;
+		bool found = false;
+		explicit Collector(const IObjectManager& source) : objects(source) {}
+		bool operator()(const char* const& name) override
+		{
+			const IObject* object=objects.GetItem(name);
+			found = object && object->GetInteriorMedium() &&
+				object->GetInteriorMedium()->IsTimeVaryingMedium();
+			return !found;
+		}
+	} collector(*pObjectManager);
+	pObjectManager->EnumerateItemNames(collector);
+	return mHasTimeVaryingMedia || collector.found;
 }
 
 void Scene::SetSceneTime( const Scalar time ) const

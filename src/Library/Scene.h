@@ -229,6 +229,7 @@ namespace RISE
 
 			IAnimator*					pAnimator;
 			bool					mFireTemporalHold;
+			bool					mHasTimeVaryingMedia;
 
 			const IMedium*				pGlobalMedium;
 
@@ -459,6 +460,9 @@ namespace RISE
 			void		SetFireTemporalHold( const bool hold )
 				{ mFireTemporalHold = hold; }
 			bool		FireTemporalHold() const { return mFireTemporalHold; }
+			bool		HasTimeVaryingMedia() const;
+			void		SetHasTimeVaryingMedia( const bool value )
+				{ mHasTimeVaryingMedia = value; }
 
 			// Deferred photon-shoot queueing (called by Job during scene parse).
 			void		QueueCausticPelPhotonShoot(		const PendingCausticPelShoot& req );

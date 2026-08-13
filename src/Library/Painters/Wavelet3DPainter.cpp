@@ -11,6 +11,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Wavelet3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -99,6 +100,7 @@ IKeyframeParameter* Wavelet3DPainter::KeyframeFromParameters( const String& name
 
 void Wavelet3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -116,6 +118,7 @@ void Wavelet3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void Wavelet3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new WaveletNoise3D( nTileSize, dPersistence, nOctaves < 16 ? nOctaves : 16 );

@@ -192,6 +192,10 @@ namespace RISE
 		/// \return The unified light sampler for the current scene, or NULL if not available
 		virtual const Implementation::LightSampler* GetLightSampler() const = 0;
 
+		//! Prepared-render control plane: force the next AttachScene call to
+		//! rebuild all cached light samplers even for an unchanged Scene pointer.
+		virtual void InvalidateLightSamplers() {}
+
 		/// Sets the number of RIS candidates for spatially-aware light
 		/// selection.  Must be called after AttachScene().
 		virtual void SetRISCandidates(

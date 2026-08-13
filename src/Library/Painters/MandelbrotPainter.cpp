@@ -14,6 +14,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "MandelbrotPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -149,6 +150,7 @@ IKeyframeParameter* MandelbrotPainter::KeyframeFromParameters( const String& nam
 
 void MandelbrotPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case UPPERX_ID:
@@ -181,7 +183,7 @@ void MandelbrotPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void MandelbrotPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	x_range = ( upper_x - lower_x );
 	y_range = ( upper_y - lower_y );
 }
-

@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "SDF3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -108,6 +109,7 @@ IKeyframeParameter* SDF3DPainter::KeyframeFromParameters( const String& name, co
 
 void SDF3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -125,6 +127,7 @@ void SDF3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void SDF3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new SDFPrimitive3D( eType, dParam1, dParam2, dParam3, dShellThickness, dNoiseAmplitude, dNoiseFrequency, *pInterp );

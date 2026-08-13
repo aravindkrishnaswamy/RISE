@@ -589,6 +589,16 @@ namespace RISE
 			virtual unsigned int PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const override;
 			virtual void RasterizeScene( const IScene& pScene, const Rect* pRect, IRasterizeSequence* pRasterSequence ) const override;
 			virtual void RasterizeSceneAnimation( const IScene& pScene, const Scalar time_start, const Scalar time_end, const unsigned int num_frames, const bool do_fields, const bool invert_fields, const Rect* pRect, const unsigned int* specificFrame, IRasterizeSequence* pRasterSequence ) const override;
+			unsigned int PredictTimeToRasterizeScenePrepared(
+				const IScene&, const ISampling2D&, unsigned int*, Scalar,
+				IRenderPreparationController& ) const override;
+			void RasterizeScenePrepared(
+				const IScene&, Scalar, IRenderPreparationController&,
+				const Rect*, IRasterizeSequence* ) const override;
+			void RasterizeSceneAnimationPrepared(
+				const IScene&, Scalar, Scalar, unsigned int, bool, bool,
+				IRenderPreparationController&, const Rect*, const unsigned int*,
+				IRasterizeSequence* ) const override;
 			virtual bool LastRenderCompleted() const override
 				{ return mLastRenderCompleted.load(std::memory_order_acquire); }
 

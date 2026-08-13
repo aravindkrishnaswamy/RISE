@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "DirectionalLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
@@ -150,6 +151,7 @@ IKeyframeParameter* DirectionalLight::KeyframeFromParameters( const String& name
 
 void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case DIRECTION_ID:
@@ -171,5 +173,3 @@ void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 
 	Transformable::SetIntermediateValue( val );
 }
-
-

@@ -1643,6 +1643,22 @@ unsigned int AutoRasterizer::PredictTimeToRasterizeScene(
 	return 0;
 }
 
+unsigned int AutoRasterizer::PredictTimeToRasterizeScenePrepared(
+	const IScene& scene, const ISampling2D& sampling, unsigned int* actual,
+	const Scalar nominal, IRenderPreparationController& controller ) const
+{
+	EnsureResolved(&scene);
+	SyncDelegateFrameStore();
+	IRasterizer* delegate = RetainDelegate();
+	if( !delegate ) return 0xFFFFFFFFu;
+	unsigned int result = 0xFFFFFFFFu;
+	try { result = delegate->PredictTimeToRasterizeScenePrepared(
+		scene,sampling,actual,nominal,controller); }
+	catch( ... ) { safe_release(delegate); throw; }
+	safe_release(delegate);
+	return result;
+}
+
 void AutoRasterizer::RasterizeScene(
 	const IScene& pScene,
 	const Rect* pRect,
@@ -1663,6 +1679,20 @@ void AutoRasterizer::RasterizeScene(
 	}
 	safe_release(delegate);
 	ValidateFireOutputLeaseState();
+}
+
+void AutoRasterizer::RasterizeScenePrepared(
+	const IScene& scene, const Scalar nominal,
+	IRenderPreparationController& controller, const Rect* rect,
+	IRasterizeSequence* sequence ) const
+{
+	EnsureResolved(&scene);
+	SyncDelegateFrameStore();
+	IRasterizer* delegate = RetainDelegate();
+	try { if( delegate ) delegate->RasterizeScenePrepared(
+		scene,nominal,controller,rect,sequence); }
+	catch( ... ) { safe_release(delegate); throw; }
+	safe_release(delegate);
 }
 
 void AutoRasterizer::RasterizeSceneAnimation(
@@ -1694,6 +1724,21 @@ void AutoRasterizer::RasterizeSceneAnimation(
 	}
 	safe_release(delegate);
 	ValidateFireOutputLeaseState();
+}
+
+void AutoRasterizer::RasterizeSceneAnimationPrepared(
+	const IScene& scene, const Scalar timeStart, const Scalar timeEnd,
+	const unsigned int frameCount, const bool fields, const bool invertFields,
+	IRenderPreparationController& controller, const Rect* rect,
+	const unsigned int* frame, IRasterizeSequence* sequence ) const
+{
+	EnsureResolved(&scene);
+	SyncDelegateFrameStore();
+	IRasterizer* delegate = RetainDelegate();
+	try { if( delegate ) delegate->RasterizeSceneAnimationPrepared(scene,timeStart,timeEnd,
+		frameCount,fields,invertFields,controller,rect,frame,sequence); }
+	catch( ... ) { safe_release(delegate); throw; }
+	safe_release(delegate);
 }
 
 bool AutoRasterizer::AuthorizeFireDelegatePreflight(

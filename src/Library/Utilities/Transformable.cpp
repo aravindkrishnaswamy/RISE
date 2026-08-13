@@ -17,13 +17,19 @@
 #include "../Interfaces/ILog.h"
 #include "FiniteMath.h"
 
+#include <cassert>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 namespace {
+	std::atomic<unsigned int> gPreparedMutationFreezeCount{0u};
+	thread_local unsigned int gPreparedInternalMutationDepth=0u;
+	thread_local unsigned int gPreparedExternalMutationDepth=0u;
+	std::shared_mutex gPreparedMutationMutex;
 
 Vector3 LeastAlignedCardinal_( const Vector3& unit )
 {
@@ -208,6 +214,55 @@ bool TransformStateV2IsValid_( const TransformStateV2& state )
 
 } // namespace
 
+void Transformable::BeginPreparedMutationFreeze()
+{
+	gPreparedMutationMutex.lock();
+	gPreparedMutationFreezeCount.fetch_add(1u,std::memory_order_acq_rel);
+}
+
+void Transformable::EndPreparedMutationFreeze()
+{
+	const unsigned int previous=gPreparedMutationFreezeCount.fetch_sub(1u,std::memory_order_acq_rel);
+	assert(previous>0u);
+	gPreparedMutationMutex.unlock();
+}
+
+void Transformable::BeginPreparedInternalMutation() { ++gPreparedInternalMutationDepth; }
+void Transformable::EndPreparedInternalMutation()
+{
+	assert(gPreparedInternalMutationDepth>0u);
+	if( gPreparedInternalMutationDepth ) --gPreparedInternalMutationDepth;
+}
+bool Transformable::ExternalMutationIsFrozen()
+{
+	return !gPreparedInternalMutationDepth &&
+		gPreparedMutationFreezeCount.load(std::memory_order_acquire)!=0u;
+}
+
+bool Transformable::BeginPreparedExternalMutation()
+{
+	if( gPreparedInternalMutationDepth ) { ++gPreparedExternalMutationDepth; return true; }
+	if( gPreparedExternalMutationDepth ) { ++gPreparedExternalMutationDepth; return true; }
+	if( !gPreparedMutationMutex.try_lock_shared() ) return false;
+	gPreparedExternalMutationDepth=1u;
+	return true;
+}
+
+void Transformable::EndPreparedExternalMutation()
+{
+	assert(gPreparedExternalMutationDepth>0u);
+	if( gPreparedExternalMutationDepth && --gPreparedExternalMutationDepth==0u &&
+		!gPreparedInternalMutationDepth )
+		gPreparedMutationMutex.unlock_shared();
+}
+
+Transformable::PreparedExternalMutationScope::PreparedExternalMutationScope()
+	: valid_(Transformable::BeginPreparedExternalMutation()) {}
+Transformable::PreparedExternalMutationScope::~PreparedExternalMutationScope()
+{
+	if( valid_ ) Transformable::EndPreparedExternalMutation();
+}
+
 Transformable::Transformable( ) :
 	m_mxPosition( Matrix4Ops::Identity() ),
 	m_mxOrientation( Matrix4Ops::Identity() ),
@@ -224,6 +279,7 @@ Transformable::~Transformable( )
 
 void Transformable::PushTopTransStack( const Matrix4& mat )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_transformstack.push_front( mat );
 	FinalMatrixMetadata metadata;
 	if( ReadFinalMetadata_( this, metadata ) ) {
@@ -234,11 +290,13 @@ void Transformable::PushTopTransStack( const Matrix4& mat )
 
 void Transformable::PushBottomTransStack( const Matrix4& mat )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_transformstack.push_back( mat );
 }
 
 void Transformable::PopTopTransStack( )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( m_transformstack.empty() ) return;
 	FinalMatrixMetadata metadata;
 	const bool active = ReadFinalMetadata_( this, metadata );
@@ -256,6 +314,7 @@ void Transformable::PopTopTransStack( )
 
 void Transformable::PopBottomTransStack( )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	if( m_transformstack.empty() ) return;
 	FinalMatrixMetadata metadata;
 	const bool active = ReadFinalMetadata_( this, metadata );
@@ -269,6 +328,7 @@ void Transformable::PopBottomTransStack( )
 
 void Transformable::ClearAllTransforms( )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_transformstack.clear( );
 	m_mxPosition = Matrix4Ops::Identity();
 	m_mxOrientation = Matrix4Ops::Identity();
@@ -281,42 +341,49 @@ void Transformable::ClearAllTransforms( )
 
 void Transformable::ClearTransformStack( )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_transformstack.clear( );
 	ClearFinalMetadata_( this );
 }
 
 void Transformable::TranslateObject( const Vector3& vec )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Matrix4 mx = Matrix4Ops::Translation( vec );
 	PushBottomTransStack( mx );
 }
 
 void Transformable::RotateObjectXAxis( const Scalar nAmount )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Matrix4 mx = Matrix4Ops::XRotation( nAmount );
 	PushBottomTransStack( mx );
 }
 
 void Transformable::RotateObjectYAxis( const Scalar nAmount )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Matrix4 mx = Matrix4Ops::YRotation( nAmount );
 	PushBottomTransStack( mx );
 }
 
 void Transformable::RotateObjectZAxis( const Scalar nAmount )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Matrix4 mx = Matrix4Ops::ZRotation( nAmount );
 	PushBottomTransStack( mx );
 }
 
 void Transformable::RotateObjectArbAxis( const Vector3& axis, const Scalar nAmount )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	Matrix4 mx = Matrix4Ops::Rotation( axis, nAmount );
 	PushBottomTransStack( mx );
 }
 
 void Transformable::SetPosition( const Point3& pos )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	FinalMatrixMetadata metadata;
 	if( ReadFinalMetadata_( this, metadata ) ) {
 		if( metadata.authoritativeIndex < m_transformstack.size() ) {
@@ -338,6 +405,7 @@ void Transformable::SetPosition( const Point3& pos )
 
 void Transformable::SetOrientation( const Vector3& orient )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	const Matrix4 orientation = Matrix4Ops::XRotation( orient.x ) *
 		Matrix4Ops::YRotation( orient.y ) * 
 		Matrix4Ops::ZRotation( orient.z );
@@ -364,6 +432,7 @@ void Transformable::SetOrientation( const Vector3& orient )
 
 void Transformable::SetScale( const Scalar nAmount )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	FinalMatrixMetadata metadata;
 	if( ReadFinalMetadata_( this, metadata ) ) {
 		if( !metadata.scaleBaseValid ) {
@@ -387,6 +456,7 @@ void Transformable::SetScale( const Scalar nAmount )
 
 void Transformable::SetStretch( const Vector3& stretch )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	FinalMatrixMetadata metadata;
 	if( ReadFinalMetadata_( this, metadata ) ) {
 		if( !metadata.scaleBaseValid ) {
@@ -410,6 +480,7 @@ void Transformable::SetStretch( const Vector3& stretch )
 
 void Transformable::SetFinalTransformMatrix( const Matrix4& matrix )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	ReplaceFinalStack_( matrix );
 	FinalMatrixMetadata metadata;
 	metadata.active = true;
@@ -435,6 +506,7 @@ void Transformable::ReplaceFinalStack_( const Matrix4& matrix )
 
 void Transformable::FinalizeTransformations( )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	m_mxFinalTrans = Matrix4Ops::Identity();
 
 	// First apply the scale, orientation and position matrices
@@ -474,6 +546,7 @@ TransformState Transformable::CaptureTransformState( ) const
 
 void Transformable::RestoreTransformState( const TransformState& st )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Restore the component matrices EXACTLY (the whole point: a later
 	// absolute SetPosition / SetOrientation / ... then replaces the right
 	// component) and re-push the collapsed stack product as one entry.
@@ -506,6 +579,7 @@ TransformStateV2 Transformable::CaptureTransformStateV2( ) const
 
 bool Transformable::RestoreTransformStateV2( const TransformStateV2& state )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return false;
 	if( !TransformStateV2IsValid_( state ) ) return false;
 	m_transformstack.assign( state.stackEntries.begin(), state.stackEntries.end() );
 	m_mxPosition = state.transform.position;
@@ -573,6 +647,7 @@ IKeyframeParameter* Transformable::KeyframeFromParameters( const String& name, c
 
 void Transformable::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case POSITION_ID:
@@ -598,5 +673,6 @@ void Transformable::SetIntermediateValue( const IKeyframeParameter& val )
 
 void Transformable::RegenerateData( )
 {
+	PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	FinalizeTransformations();
 }

@@ -16,6 +16,7 @@
 
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Transformable.h"
 #include "Frame.h"
 
 namespace RISE
@@ -97,11 +98,11 @@ namespace RISE
 			// Regenerate) so the basis matrix is rebuilt exactly
 			// once per logical edit.
 			//
-			inline void SetLocation( const Point3& p )    { vPosition = p; }
+			inline void SetLocation( const Point3& p )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) vPosition = p; }
 			inline Point3 GetStoredLookAt() const         { return vLookAt; }
 			inline Vector3 GetStoredUp() const            { return vUp; }
-			inline void SetLookAt( const Point3& p )      { vLookAt = p; }
-			inline void SetUp( const Vector3& u )         { vUp = u; }
+			inline void SetLookAt( const Point3& p )      { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) vLookAt = p; }
+			inline void SetUp( const Vector3& u )         { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) vUp = u; }
 
 			//! Rest position — `vPosition` as stored, BEFORE the
 			//! orbit-around-look-at rotation that Recompute applies via
@@ -136,12 +137,12 @@ namespace RISE
 			//! factory (which would silently degrade the camera's
 			//! basis representation).
 			inline bool    IsFromONB()                    const { return from_onb; }
-			inline void    SetPixelAR( Scalar v )               { pixelAR = v; /* RegenerateData by caller */ }
-			inline void    SetExposureTimeStored( Scalar v )    { exposureTime = v; }
-			inline void    SetScanningRateStored( Scalar v )    { scanningRate = v; }
-			inline void    SetPixelRateStored( Scalar v )       { pixelRate = v; }
-			inline void    SetEulerOrientation( const Vector3& v )  { orientation = v; }
-			inline void    SetTargetOrientation( const Vector2& v ) { target_orientation = v; }
+			inline void    SetPixelAR( Scalar v )               { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) pixelAR = v; }
+			inline void    SetExposureTimeStored( Scalar v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) exposureTime = v; }
+			inline void    SetScanningRateStored( Scalar v )    { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) scanningRate = v; }
+			inline void    SetPixelRateStored( Scalar v )       { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) pixelRate = v; }
+			inline void    SetEulerOrientation( const Vector3& v )  { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) orientation = v; }
+			inline void    SetTargetOrientation( const Vector2& v ) { Transformable::PreparedExternalMutationScope m; if(m.IsValid()) target_orientation = v; }
 
 			//! Update the camera's frame dimensions and rebuild the
 			//! basis matrix.  Used by the interactive editor to render
@@ -151,6 +152,8 @@ namespace RISE
 			//! dimensions when the drag ends.
 			inline void SetDimensions( unsigned int w, unsigned int h )
 			{
+				Transformable::PreparedExternalMutationScope mutation;
+				if( !mutation.IsValid() ) return;
 				frame.SetDimensions( w, h );
 				RegenerateData();
 			}
@@ -163,6 +166,8 @@ namespace RISE
 			//! projects through the old camera dims.
 			inline void SetDimensionsAndPixelAR( unsigned int w, unsigned int h, Scalar pAR )
 			{
+				Transformable::PreparedExternalMutationScope mutation;
+				if( !mutation.IsValid() ) return;
 				frame.SetDimensions( w, h );
 				pixelAR = pAR;
 				RegenerateData();

@@ -73,6 +73,7 @@ namespace RISE
 			//! 0 is the "never built" sentinel only in concert with a null
 			//! pScene; once a scene is attached this tracks its generation.
 			unsigned int				builtLightGeneration;
+			bool					forceLightSamplerRebuild;
 
 			//! Rebuilds the cached LuminaryManager / LightSampler /
 			//! EnvironmentSampler from the currently-attached `pScene`.
@@ -210,6 +211,8 @@ namespace RISE
 				);
 
 			void AttachScene( const IScene* pScene_ );
+			void InvalidateLightSamplers()
+				{ forceLightSamplerRebuild = true; }
 
 			bool CompetingMediumGuideAlphaNonzero() const {
 				return bCompetingMediumGuideAlphaNonzero.load(

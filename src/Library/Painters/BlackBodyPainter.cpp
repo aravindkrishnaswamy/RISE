@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "BlackBodyPainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -111,6 +112,7 @@ IKeyframeParameter* BlackBodyPainter::KeyframeFromParameters( const String& name
 
 void BlackBodyPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case TEMPERATURE_ID:
@@ -128,6 +130,7 @@ void BlackBodyPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void BlackBodyPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	// Using planck's formula
 	PiecewiseLinearFunction1D* pFunc = new PiecewiseLinearFunction1D();
 	GlobalLog()->PrintNew( pFunc, __FILE__, __LINE__, "piecewise linear function 1D" );

@@ -92,7 +92,15 @@ namespace
 			if( lhs.mediaKind != rhs.mediaKind || lhs.managerName != rhs.managerName ||
 				lhs.bindingKind != rhs.bindingKind || lhs.bindingOwner != rhs.bindingOwner ||
 				lhs.authoredConfigDigest != rhs.authoredConfigDigest ||
-				lhs.opticalRecordIds != rhs.opticalRecordIds ) return false;
+				lhs.opticalRecordIds != rhs.opticalRecordIds ||
+				lhs.sequenceId != rhs.sequenceId ||
+				lhs.selectedBaseFrameIndex != rhs.selectedBaseFrameIndex ||
+				lhs.wholeFileDigest != rhs.wholeFileDigest ||
+				lhs.sourceKind != rhs.sourceKind ||
+				lhs.physicalMapping != rhs.physicalMapping ||
+				lhs.effectiveBlurState != rhs.effectiveBlurState ||
+				lhs.preparedInputId != rhs.preparedInputId ||
+				lhs.preparedStateGeneration != rhs.preparedStateGeneration ) return false;
 		}
 		return a.sceneName == b.sceneName && a.cameraName == b.cameraName &&
 			a.activeRasterizer == b.activeRasterizer && a.sampleCount == b.sampleCount &&

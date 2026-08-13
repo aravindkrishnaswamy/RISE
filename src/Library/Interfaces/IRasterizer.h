@@ -23,10 +23,17 @@
 #include "ISampling2D.h"
 #include "IEnumCallback.h"
 #include "IProgressCallback.h"
+#include "IRenderPreparationController.h"
 
 namespace RISE
 {
 	namespace Implementation { class FrameStore; }
+
+	//! Shared sign-aware bound used by prepared rasterizers and the primary
+	//! path-time sampler. fieldParity is 0/1 for a field or 2 for both.
+	RenderTimeSupport ComputePathTimeSupport(
+		const IScene& scene, Scalar nominal, const Rect* crop,
+		unsigned int fieldParity );
 
 	enum class FireRenderPreflightAuthorization
 	{
@@ -205,6 +212,19 @@ namespace RISE
 		//! query those UIs consult.  Defaulted + declared last ->
 		//! ABI-stable (same convention as the overrides above).
 		virtual bool HonorsRegion() const { return true; }
+
+		//! Prepared time-varying-media entry points. Legacy methods are only
+		//! valid for scenes whose HasTimeVaryingMedia() is false.
+		virtual unsigned int PredictTimeToRasterizeScenePrepared(
+			const IScene&, const ISampling2D&, unsigned int*, const Scalar,
+			IRenderPreparationController& ) const { return 0xFFFFFFFFu; }
+		virtual void RasterizeScenePrepared(
+			const IScene&, const Scalar, IRenderPreparationController&,
+			const Rect*, IRasterizeSequence* ) const {}
+		virtual void RasterizeSceneAnimationPrepared(
+			const IScene&, const Scalar, const Scalar, const unsigned int,
+			const bool, const bool, IRenderPreparationController&, const Rect*,
+			const unsigned int*, IRasterizeSequence* ) const {}
 
 	};
 

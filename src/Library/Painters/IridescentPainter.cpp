@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "IridescentPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -78,6 +79,7 @@ IKeyframeParameter* IridescentPainter::KeyframeFromParameters( const String& nam
 
 void IridescentPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case BIAS_ID:
@@ -90,4 +92,5 @@ void IridescentPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void IridescentPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 }

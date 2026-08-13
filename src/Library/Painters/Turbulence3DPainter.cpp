@@ -14,6 +14,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Turbulence3DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -106,6 +107,7 @@ IKeyframeParameter* Turbulence3DPainter::KeyframeFromParameters( const String& n
 
 void Turbulence3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -123,6 +125,7 @@ void Turbulence3DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void Turbulence3DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new TurbulenceNoise3D( *pInterp, dPersistence, nOctaves<32?nOctaves:32 );

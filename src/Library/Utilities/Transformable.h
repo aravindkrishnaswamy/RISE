@@ -43,6 +43,24 @@ namespace RISE
 			void ReplaceFinalStack_( const Matrix4& matrix );
 
 		public:
+			class PreparedExternalMutationScope
+			{
+				bool valid_;
+			public:
+				PreparedExternalMutationScope();
+				~PreparedExternalMutationScope();
+				bool IsValid() const { return valid_; }
+			};
+			// Prepared renders freeze direct manager/item transform mutation too,
+			// not only Job wrappers. Animator evaluation receives a narrowly scoped
+			// internal capability around its own derived updates.
+			static void BeginPreparedMutationFreeze();
+			static void EndPreparedMutationFreeze();
+			static void BeginPreparedInternalMutation();
+			static void EndPreparedInternalMutation();
+			static bool ExternalMutationIsFrozen();
+			static bool BeginPreparedExternalMutation();
+			static void EndPreparedExternalMutation();
 			// These two methods allow direct access to the transformation stack
 			virtual void PushTopTransStack( const Matrix4& mat );
 			virtual void PushBottomTransStack( const Matrix4& mat );

@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Transformable.h"
 #include "Perlin2DPainter.h"
 #include "../Utilities/SimpleInterpolators.h"
 #include "../Animation/KeyframableHelper.h"
@@ -106,6 +107,7 @@ IKeyframeParameter* Perlin2DPainter::KeyframeFromParameters( const String& name,
 
 void Perlin2DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	switch( val.getID() )
 	{
 	case SCALE_ID:
@@ -123,10 +125,10 @@ void Perlin2DPainter::SetIntermediateValue( const IKeyframeParameter& val )
 
 void Perlin2DPainter::RegenerateData( )
 {
+	Transformable::PreparedExternalMutationScope preparedMutation; if( !preparedMutation.IsValid() ) return;
 	safe_release( pFunc );
 
 	pFunc = new PerlinNoise2D( *pInterp, dPersistence, nOctaves<32?nOctaves:32 );
 	GlobalLog()->PrintNew( pFunc, __FILE__, __LINE__, "NoiseFunction" );
 
 }
-

@@ -290,3 +290,5 @@ AddMultichannelHeterogeneousMediumWithCondensed
 AddMultichannelHeterogeneousMediumWithChem
 AddMultichannelHeterogeneousMediumWithPreset
 SetFireFidelityMode
+AddFireMedium
+AddFireMediumBound
