@@ -16,6 +16,8 @@
 #include "../Interfaces/IGeometry.h"		// CanBeAreaLight() capability check below
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/ProbabilityDensityFunction.h"
+#include <atomic>
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -169,6 +171,41 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 				"but still contributes emission on direct camera view or a BSDF-sampled hit.",
 				__FILE__, __LINE__ );
 			return;
+		}
+
+		// Non-uniform-scale warning (2026-08-13, GetArea world-area
+		// Jacobian): Object::GetArea() corrects the claimed NEE pdf by
+		// |det|^(2/3), which is EXACT only for rotations / reflections /
+		// uniform scales.  A non-uniformly scaled (or sheared) luminaire
+		// gets a geometric-mean approximation that can sit further from
+		// the true world area than no correction at all (e.g. a unit box
+		// flattened to a panel light), and object-space-uniform sampling
+		// is not world-uniform on such a transform either.  Announce it
+		// once so the wrong light level is diagnosable instead of silent.
+		{
+			// Row-vector convention (see PointsOps.h Transform): the image
+			// of object-space basis vector e_i is storage ROW i, so for the
+			// scale-then-rotate composition standard_object builds, the row
+			// norms of the linear part are exactly the per-axis scales.
+			const Matrix4 mx = pObject.GetFinalTransformMatrix();
+			const Scalar sx2 = mx._00*mx._00 + mx._01*mx._01 + mx._02*mx._02;
+			const Scalar sy2 = mx._10*mx._10 + mx._11*mx._11 + mx._12*mx._12;
+			const Scalar sz2 = mx._20*mx._20 + mx._21*mx._21 + mx._22*mx._22;
+			const Scalar mn = std::min( sx2, std::min( sy2, sz2 ) );
+			const Scalar mx2 = std::max( sx2, std::max( sy2, sz2 ) );
+			if( mn <= 0 || mx2 > mn * Scalar( 1.0 + 1e-6 ) ) {
+				static std::atomic<bool> warnedNonUniformLuminaire{ false };
+				bool expected = false;
+				if( warnedNonUniformLuminaire.compare_exchange_strong( expected, true ) ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"LuminaryManager:: an area light carries a NON-UNIFORM scale (or shear) "
+						"in its object transform.  GetArea()'s world-area correction is exact "
+						"only for uniform scales; this emitter's NEE pdf uses a geometric-mean "
+						"approximation and its surface sampling is not uniform in world area, "
+						"so its light contribution is approximate.  Prefer baking the aspect "
+						"into the geometry and keeping the object scale uniform." );
+				}
+			}
 		}
 
 		LUM_ELEM elem;

@@ -34,7 +34,8 @@ Object::Object( ) :
   bCastsShadows( true ),
   bReceivesShadows( true ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
-  m_tangentFrameSign( 1.0 )
+  m_tangentFrameSign( 1.0 ),
+  m_worldAreaScale( 1.0 )
 {
 }
 
@@ -51,7 +52,8 @@ Object::Object( const IGeometry* pGeometry_ ) :
   bCastsShadows( true ),
   bReceivesShadows( true ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
-  m_tangentFrameSign( 1.0 )
+  m_tangentFrameSign( 1.0 ),
+  m_worldAreaScale( 1.0 )
 {
 	if( pGeometry ) {
 		pGeometry->addref();
@@ -141,6 +143,7 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.bReceivesShadows       = bReceivesShadows;
 	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;
 	dst.m_tangentFrameSign     = m_tangentFrameSign;
+	dst.m_worldAreaScale       = m_worldAreaScale;
 
 	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
 	// Copying these is what makes the clone independent: a later
@@ -804,7 +807,40 @@ Scalar Object::GetArea( ) const
 	// or bypassed the luminaries list) and is belt-and-suspenders for
 	// class (1); it exists so a future caller that forgets its own check
 	// degrades to "zero area" instead of a null-deref.
-	return pGeometry ? pGeometry->GetArea() : Scalar( 0 );
+	if( !pGeometry ) {
+		return Scalar( 0 );
+	}
+
+	// WORLD-AREA JACOBIAN (2026-08-13): pGeometry->GetArea() is the
+	// OBJECT-space surface area, but UniformRandomPoint() returns points
+	// transformed through m_mxFinalTrans -- so every consumer that claims
+	// pdfPosition = 1/GetArea() (LightSampler NEE, BDPT/VCM InitLight,
+	// photon-emission power normalization, SSS dipole sampling) needs the
+	// WORLD-space area or the claimed density is wrong by the transform's
+	// area scaling (a `scale 2` emitter previously lit its surroundings at
+	// 1/4 the correct NEE energy; measured 0.39x after MIS mixing).
+	//
+	// m_worldAreaScale = |det(linear part)|^(2/3), cached by
+	// FinalizeTransformations(): EXACT for rotations, reflections, and
+	// uniform scales (the overwhelmingly common case: det = s^3, area
+	// scale = s^2).  For non-uniform scale or shear it is the geometric-
+	// mean approximation -- the true area factor varies across the surface
+	// with the local normal, and object-space-uniform sampling is then not
+	// world-uniform either, so the residual error there sits in the
+	// sampler, not just this scalar (LuminaryManager warns once when a
+	// non-uniformly-scaled luminaire is admitted).  Exactness needs
+	// per-geometry integration; not attempted here.
+	//
+	// RISE_INFINITY guard: InfinitePlaneGeometry::GetArea() returns the
+	// DBL_MAX sentinel; multiplying it by any factor > 1 (a scale, or a
+	// rotation whose determinant lands at 1+1ulp) would overflow to +inf,
+	// which turns the light-selection alias table's TotalWeight into inf
+	// and every pdfSelect into NaN.  Pass the sentinel through untouched.
+	const Scalar objArea = pGeometry->GetArea();
+	if( objArea <= 0 || objArea >= RISE_INFINITY ) {
+		return objArea;
+	}
+	return objArea * m_worldAreaScale;
 }
 
 void Object::Realize() const
@@ -837,4 +873,15 @@ void Object::FinalizeTransformations( )
 	// ri.geometric.bitangentSign.
 	const Scalar det = Matrix4Ops::Determinant( m_mxFinalTrans );
 	m_tangentFrameSign = (det < Scalar( 0 )) ? Scalar( -1 ) : Scalar( 1 );
+
+	// World-area scaling of the linear part, cached here (the transform is
+	// immutable during render) so the hot GetArea() path is a single
+	// multiply.  |det|^(2/3) is EXACT for rotations / reflections / uniform
+	// scales; for non-uniform scale or shear it is the geometric-mean
+	// approximation (see GetArea()'s comment).  Degenerate transform → 0,
+	// matching the "cannot area-sample" sentinel convention.
+	const Scalar absDet = fabs( det );
+	m_worldAreaScale = (absDet > Scalar( 0 ))
+		? pow( absDet, Scalar( 2.0 / 3.0 ) )
+		: Scalar( 0 );
 }

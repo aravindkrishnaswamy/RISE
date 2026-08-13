@@ -105,6 +105,8 @@
 #include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Objects/Object.h"
+#include "../src/Library/Geometry/InfinitePlaneGeometry.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1342,10 +1344,97 @@ static void TestBilinearPatch()
 // Main
 // ============================================================
 
+// ============================================================
+// Object world-area Jacobian
+//
+// Object::UniformRandomPoint() returns WORLD-space samples
+// (transformed through m_mxFinalTrans), so Object::GetArea() must
+// report the WORLD-space area or every consumer claiming
+// pdfPosition = 1/GetArea() (LightSampler NEE, BDPT/VCM InitLight,
+// photon-emission normalization) is off by the transform's area
+// scaling.  Regression (2026-08-13): GetArea() returned the raw
+// object-space geometry area, so a `scale 2` emissive sphere lit its
+// surroundings at ~0.39x of the identical unscaled sphere (NEE
+// under-counted 4x, partially MIS-compensated by BSDF-hit emission).
+// ============================================================
+
+static void TestObjectWorldArea()
+{
+	std::cout << "Testing Object::GetArea world-area Jacobian..." << std::endl;
+
+	SphereGeometry* g = new SphereGeometry( 1.5 );
+	const Scalar geomArea = g->GetArea();
+	REQUIRE( geomArea > 0.0, "object-area: geometry area positive" );
+
+	{
+		// identity transform: world area == object area
+		Implementation::Object* o = new Implementation::Object( g );
+		o->FinalizeTransformations();
+		REQUIRE( IsClose( o->GetArea(), geomArea, 1e-9 * geomArea ),
+			"object-area: identity transform preserves area" );
+		o->release();
+	}
+	{
+		// uniform scale s: world area == s^2 * object area (exact)
+		Implementation::Object* o = new Implementation::Object( g );
+		o->SetScale( 2.0 );
+		o->FinalizeTransformations();
+		REQUIRE( IsClose( o->GetArea(), 4.0 * geomArea, 1e-9 * geomArea ),
+			"object-area: uniform scale 2 gives 4x area" );
+		o->release();
+	}
+	{
+		// rotation + translation: area invariant
+		Implementation::Object* o = new Implementation::Object( g );
+		o->SetOrientation( Vector3( 0.3, 1.1, -0.7 ) );
+		o->TranslateObject( Vector3( 5, -2, 3 ) );
+		o->FinalizeTransformations();
+		REQUIRE( IsClose( o->GetArea(), geomArea, 1e-9 * geomArea ),
+			"object-area: rotation+translation preserve area" );
+		o->release();
+	}
+
+	{
+		// non-uniform scale: |det|^(2/3) geometric-mean APPROXIMATION.
+		// This pins the documented current behaviour (not ground truth —
+		// the true world area of a stretched sphere differs; see the
+		// comment in Object::GetArea and the LuminaryManager warn-once).
+		Implementation::Object* o = new Implementation::Object( g );
+		o->SetStretch( Vector3( 4.0, 0.05, 4.0 ) );
+		o->FinalizeTransformations();
+		const Scalar expect = geomArea * pow( 4.0 * 0.05 * 4.0, 2.0 / 3.0 );
+		REQUIRE( IsClose( o->GetArea(), expect, 1e-9 * geomArea ),
+			"object-area: non-uniform scale uses |det|^(2/3) approximation" );
+		o->release();
+	}
+	{
+		// RISE_INFINITY sentinel (infinite plane): must pass through
+		// UNTOUCHED — multiplying DBL_MAX by any factor > 1 overflows to
+		// +inf, which would NaN the light-selection alias table
+		// (TotalWeight=inf → pdf=inf/inf).
+		InfinitePlaneGeometry* plane = new InfinitePlaneGeometry( 1.0, 1.0 );
+		Implementation::Object* o = new Implementation::Object( plane );
+		o->SetScale( 2.0 );
+		o->SetOrientation( Vector3( 0.2, 0.5, 0.1 ) );
+		o->FinalizeTransformations();
+		const Scalar a = o->GetArea();
+		REQUIRE( a == plane->GetArea(),
+			"object-area: RISE_INFINITY sentinel passes through unscaled" );
+		REQUIRE( a <= RISE_INFINITY && a == a,
+			"object-area: infinite-plane area stays finite (no inf/NaN)" );
+		o->release();
+		plane->release();
+	}
+
+	g->release();
+	std::cout << "  object world-area Jacobian checks done\n";
+}
+
 int main()
 {
 	std::cout << "=== Geometry (u, v) parameterisation regression test ===\n";
 
+	TestObjectWorldArea();
 	TestSphere();
 	TestEllipsoid();
 	TestBox();
