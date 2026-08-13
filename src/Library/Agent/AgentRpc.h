@@ -924,56 +924,61 @@
 //                                            contributions:[{name,kind,soloed,
 //                                                            meanLuma?,share?,
 //                                                            reason?}],
-//                                            intentsPlanned,intentsReturned,
-//                                            intentsBuilt,intentsTruncated,
+//                                            sourcesPlanned,sourcesReturned,
+//                                            sourcesTruncated,
 //                                            completions,areaLights,zeroAreaLights,
 //                                            skyLights?,otherLights?,
-//                                            intents:[{intent,built,form?,landed,
-//                                                      rejected,completions,
-//                                                      retryRan,failure?}],
+//                                            sources:[string],
 //                                            message}
 //                                           (Arc 81 (2026-08-12): the CLEAN-ROOM
 //                                            LIGHTING pass -- arc 79's build_element
 //                                            pattern applied to lighting.  ARC 83
-//                                            SLICE 1 (2026-08-12) made it a
-//                                            HARNESS-DRIVEN LOOP behind the same verb
-//                                            and the same params: ONE planning
-//                                            completion enumerating at most 6 lighting
-//                                            intents, then ONE completion per intent
-//                                            authoring EXACTLY ONE light source, so a
-//                                            four-chunk area light has a whole
-//                                            response to itself instead of sharing one
-//                                            with six other lights (82 §10.4, 83 §6.1).
-//                                            A failed intent does not abort the loop.
-//                                            The model still makes ONE call and reads
-//                                            ONE result.  Each completion is fresh and
-//                                            minimal through the session's
-//                                            own provider, given the arc-80 scene
+//                                            SLICE 2 (2026-08-12), the owner's direct
+//                                            redesign: ONE call is exactly TWO
+//                                            completions on the happy path.  First,
+//                                            THE SOURCE ENUMERATION -- WHAT IN THIS
+//                                            WORLD PHYSICALLY EMITS LIGHT, bounded at
+//                                            6 sources, forbidden from naming a
+//                                            renderer light kind (the sun/sky, an
+//                                            opening, a fixture, or something that
+//                                            itself glows -- things, not studio
+//                                            instruments; slice 1's per-intent
+//                                            "lighting intents" question native to
+//                                            key/fill/rim vocabulary produced ZERO
+//                                            area lights and is retired).  Second, THE
+//                                            BUILD -- given that source list verbatim,
+//                                            write the chunks for ALL of it in ONE
+//                                            answer; the one-light-per-answer cap
+//                                            slice 1 enforced is gone with the
+//                                            per-intent loop it belonged to.  The
+//                                            model still makes ONE call and reads ONE
+//                                            result.  Each completion is fresh and
+//                                            minimal through the session's own
+//                                            provider, given the arc-80 scene
 //                                            inventory, the camera, the world bounds,
 //                                            the session's imagined subject if it has
-//                                            one, the lights that already exist, the
-//                                            lights earlier intents of this same loop
-//                                            placed, and
-//                                            the light palette this pass can author --
-//                                            area-via-emissive-material FIRST and
-//                                            carrying the ONLY worked example, then
-//                                            hosek_wilkie skylight, then omni / spot /
-//                                            directional as zero-area idealizations
-//                                            with the registry's grammar and NO
-//                                            example.  `ambient_light` is NOT in the
-//                                            palette and is refused on every path
-//                                            that could create one, in every phase
-//                                            and with the build protocol off.  That
-//                                            asymmetry -- one worked example, for the
-//                                            physical light -- IS the encoded policy
-//                                            (81 §8), not an omission.  Validated-inserted
+//                                            one, and the lights that already exist;
+//                                            the build additionally gets the light
+//                                            palette it can author -- area-via-
+//                                            emissive-material FIRST and carrying the
+//                                            ONLY worked example, then hosek_wilkie
+//                                            skylight, then omni / spot / directional
+//                                            as zero-area idealizations with the
+//                                            registry's grammar and NO example.
+//                                            `ambient_light` is NOT in the palette and
+//                                            is refused on every path that could
+//                                            create one, in every phase and with the
+//                                            build protocol off.  That asymmetry --
+//                                            one worked example, for the physical
+//                                            light -- IS the encoded policy (81 §8),
+//                                            not an omission.  Validated-inserted
 //                                            through the ordinary InsertChunks path
-//                                            with ONE repair retry PER INTENT; nothing
-//                                            is ever
-//                                            dropped silently.  `contributions`
-//                                            reports what each light ACTUALLY does,
-//                                            measured by SOLOING it in a small render
-//                                            -- affordable because this verb runs once
+//                                            with ONE repair retry over the WHOLE
+//                                            build answer; nothing is ever dropped
+//                                            silently.  `contributions` reports what
+//                                            each light ACTUALLY does, measured by
+//                                            SOLOING it in a small render --
+//                                            affordable because this verb runs once
 //                                            per scene, not once per render -- capped,
 //                                            with the cap stated.  There is no name
 //                                            prefix (lights are scene-global and

@@ -1569,25 +1569,30 @@ int main()
 						  "object is rendered like any other object in the scene, and a surface "
 						  "that leaves that unsaid lets a model copy the worked example into a "
 						  "glowing panel sitting in the middle of the shot" },
-						// ---- ARC 83 SLICE 1 (2026-08-12): the UNIT pins.
-						// docs/agentic-redesign/83-staged-construction-plan.md
-						// sec 6.1.  `light_scene` is now a plan-then-per-intent
-						// loop that authors ONE light source per request, and
-						// both facts change what a model should write into a
-						// single call: told nothing, it writes the whole
-						// lighting design into one answer -- which is the
-						// bottleneck this slice removes -- and it reads the
-						// second-light-source rejection as a bug.  Neither is
-						// advice: both are what the harness does.
-						{ "ONE LIGHT SOURCE PER INTENT",
-						  "does not state that this call authors ONE LIGHT SOURCE PER INTENT -- a "
-						  "model that believes one request takes the whole lighting design writes "
-						  "seven one-line lights into one answer, which is exactly the unit error "
-						  "arc 83 exists to correct" },
-						{ "SECOND light source in the same request is reported and not inserted",
-						  "does not state what happens to a second light source in one request -- "
-						  "the rule is enforced, so a surface that omits it turns a documented "
-						  "rejection into what reads as a harness bug" }
+						// ---- ARC 83 SLICE 2 (2026-08-12): the OWNER'S REDESIGN
+						// pins.  docs/agentic-redesign/83-staged-construction-
+						// plan.md sec 7 and its correction block.  Slice 1's
+						// per-intent loop asked a cinematography question
+						// ("what lighting intents does this scene need") whose
+						// native vocabulary is key/fill/rim and it produced
+						// ZERO area lights; the owner's question has THINGS as
+						// answers.  A model told nothing about the two-step
+						// shape reads a build-phase rejection (a second light
+						// source rejected because a PRIOR completion already
+						// enumerated a bounded list) as a harness bug rather
+						// than as the documented contract it is.  Neither pin
+						// is advice: both are what the harness does.
+						{ "WHAT IN THIS WORLD PHYSICALLY EMITS LIGHT",
+						  "does not state the question this call actually answers -- WHAT IN THIS "
+						  "WORLD PHYSICALLY EMITS LIGHT -- a model told only 'design the lighting' "
+						  "has no reason to expect its answer is enumerated as physical things "
+						  "before anything is built" },
+						{ "authors the chunks for ALL of those sources together in one further "
+						  "request",
+						  "does not state that the BUILD step authors every enumerated source "
+						  "together in ONE request -- the one-light-per-answer cap arc 83 slice 1 "
+						  "enforced is gone, and a model that still assumes it will split its own "
+						  "answer across imagined separate requests" }
 					};
 					for( const char* fname : kPlanSurfaces ) {
 						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
@@ -1597,17 +1602,17 @@ int main()
 						}
 					}
 
-					// ARC 83 SLICE 1 PARITY: both surfaces state the intent
+					// ARC 83 SLICE 2 PARITY: both surfaces state the source
 					// budget as a LITERAL NUMBER (their text is hand-authored
 					// prose, so neither can derive it), and the harness
-					// enforces kLightIntentBudget.  Pin the literal against
+					// enforces kLightSourceBudget.  Pin the literal against
 					// the header the same way the build plan's maxItems is
 					// pinned against kBuildPlanMaxElements -- a bump on one
 					// side that left the other behind would advertise a
-					// budget the loop does not have.
+					// budget the enumeration does not have.
 					{
 						const std::string headerSrc = slurp( agentDir / "AgentSession.h" );
-						const std::string anchor = "kLightIntentBudget = ";
+						const std::string anchor = "kLightSourceBudget = ";
 						const size_t at = headerSrc.find( anchor );
 						std::string budget;
 						if( at != std::string::npos ) {
@@ -1617,15 +1622,16 @@ int main()
 								budget += headerSrc[q++];
 						}
 						Check( !budget.empty(),
-						       "A83 parity: parsed kLightIntentBudget out of AgentSession.h" );
+						       "A83 parity: parsed kLightSourceBudget out of AgentSession.h" );
 						if( !budget.empty() ) {
 							for( const char* fname : kPlanSurfaces ) {
 								const std::string joined = joinLiterals( slurp( agentDir / fname ) );
-								if( joined.find( "At most " + budget + " intents" ) == std::string::npos )
+								if( joined.find( "At most " + budget + " sources" ) == std::string::npos )
 									planProblems.push_back( std::string( fname ) + ": does not state the "
-										"lighting-intent budget as `At most " + budget + " intents` -- the "
-										"harness cuts a longer plan to that number, and a surface naming a "
-										"different one (or none) advertises a contract the loop does not have" );
+										"light-source budget as `At most " + budget + " sources` -- the "
+										"harness cuts a longer enumeration to that number, and a surface "
+										"naming a different one (or none) advertises a contract the "
+										"enumeration does not have" );
 							}
 						}
 					}

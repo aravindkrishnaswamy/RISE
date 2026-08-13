@@ -4290,37 +4290,59 @@ namespace RISE
 			//----------------------------------------------------------------
 
 			//----------------------------------------------------------------
-			// ARC 83 SLICE 1 (2026-08-12): THE UNIT OF A LIGHTING CALL IS ONE
-			// LIGHT, NOT THE CATEGORY.
+			// ARC 83 SLICE 2 (2026-08-12): ENUMERATE THE SOURCES, THEN BUILD
+			// THEM ALL IN ONE GO.  Owner's direct design, verbatim: "What if
+			// we asked the model to think about the most physically correct
+			// lighting for the scenario and then build that in one go. So for
+			// a lamp on a desk it would be a light bulb that glows, for an
+			// outdoor scene it would be the hokie sky, for an interior room
+			// it would likely be a series of rectangles to emulate a bunch of
+			// ceiling lights."
 			// Design: docs/agentic-redesign/83-staged-construction-plan.md
-			// sec 1, 2 and 6.1; the measurement is 82 sec 10.4.
+			// sec 7 and its correction block.
 			//
-			// WHAT WAS MEASURED.  A single provider completion yields roughly
-			// ONE RESPONSE-WORTH of output whatever is asked of it:
-			// `build_element` runs FIVE completions per scene (one per
-			// element) and produces ~90-100 SDF parts; `light_scene` ran ONE
-			// (the whole category) and produced 6-8 lights with at most ONE of
-			// them an area light, in every run measured.  An area light is
-			// four chunks against an omni's one, and seven four-chunk chains
-			// do not fit the shape of one answer -- so the physical form lost
-			// on ROOM, not on preference.
+			// WHY SLICE 1 FAILED, AND WHY THE FAILURE WAS IN THE QUESTION, NOT
+			// THE LOOP.  83 sec 7's planning step asked a CINEMATOGRAPHY
+			// question -- "what lighting intents does this scene need" --
+			// whose native vocabulary is key/fill/rim, studio-instrument
+			// words.  Every measured run answered in that vocabulary even
+			// with the palette withheld from the planner and kind-naming
+			// forbidden in the prompt, so slice 1 shipped ZERO area lights
+			// across six planned intents where the single-call design it
+			// replaced had managed a few.  The question selects the
+			// vocabulary of the answer, and no amount of prompt engineering
+			// downstream of a bad question fixes that.
 			//
-			// WHAT CHANGED.  `light_scene` is still ONE model-facing verb with
-			// the same name and the same result shape, so the model's turn
-			// count does not grow.  INTERNALLY it is now a harness-driven
-			// loop: one PLANNING completion that enumerates this scene's
-			// lighting intents, then ONE FRESH COMPLETION PER INTENT, each
-			// authoring EXACTLY ONE light source.  Sec 6.1 is the load-bearing
-			// part: the unit must be sized so that one response is one unit's
-			// work, and for lighting that unit is one LIGHT SOURCE -- not "the
-			// lights for this intent".  A per-intent call allowed to author
-			// several lights would rebuild the exact bottleneck this removes.
+			// THE OWNER'S QUESTION HAS THINGS AS ANSWERS.  "What in this
+			// world physically emits light?" is answered with a bulb, a
+			// window opening, the sky, a row of ceiling panels, a glowing
+			// creature -- nouns, not instruments.  Things become emissive
+			// objects; the physics falls out of the vocabulary, with no
+			// preference language anywhere.
 			//
-			// WHAT DID NOT CHANGE, deliberately: kLightPalette's prose (it is
-			// the controlled variable of this measurement -- if the area-light
-			// share rises with the palette untouched, cost was the mechanism),
-			// the ambient refusal, the tonal fact, the forced-first-use gate,
-			// the per-session cap, and the phase seams.
+			// THE NEW SHAPE.  `light_scene` is still ONE model-facing verb
+			// with the same name; the wire result keeps every field that
+			// still means something.  Internally there are exactly TWO
+			// completions on the happy path, not a loop:
+			//   1. THE SOURCE ENUMERATION -- one cheap completion that lists
+			//      what physically emits light in this scenario, bounded at
+			//      kLightSourceBudget, forbidden from naming a renderer light
+			//      kind.
+			//   2. THE BUILD -- one completion that receives the source list
+			//      VERBATIM and writes the chunks for ALL of it in one
+			//      answer, with the palette, the inventory, the camera, the
+			//      world bounds and the lights that already exist.  The
+			//      one-light-per-answer rule slice 1 enforced is GONE: that
+			//      rule belonged to the per-intent loop, and the loop is what
+			//      is being replaced.  Admissibility, the ambient ban,
+			//      validated insertion and the ONE repair retry apply to the
+			//      WHOLE build answer, exactly as arc 81's original
+			//      single-call design worked before slice 1 split it.
+			//
+			// WHAT DID NOT CHANGE: kLightPalette's prose, the ambient
+			// refusal, the tonal fact, the forced-first-use gate, the
+			// per-session cap (now counting a smaller, bounded completion
+			// range per call), and the phase seams.
 			//----------------------------------------------------------------
 
 			//! Provider-reaching `light_scene` CALLS allowed per session.
@@ -4329,33 +4351,29 @@ namespace RISE
 			//! per scene, not one per element -- the same real-provider-money
 			//! rationale, a smaller natural number of calls.
 			//!
-			//! ARC 83 SLICE 1: "calls per session" and "completions per call"
-			//! are no longer the same number, and this cap counts CALLS.  One
-			//! call now spends ONE planning completion plus one per planned
-			//! intent, each of which may spend ONE repair retry -- so a single
-			//! call reaches the provider between 1 and
-			//! `1 + 2 * kLightIntentBudget` = 13 times, and a session's four
-			//! calls reach it at most 52 times.  The cap deliberately does not
-			//! distinguish any of that; what it bounds is how many times a
-			//! model may re-run the whole lighting design.  Every call reports
-			//! the completions it actually spent, so the real figure is a
+			//! ARC 83 SLICE 2: one call spends ONE enumeration completion plus
+			//! ONE build completion, and the build may spend ONE repair retry
+			//! -- so a single call reaches the provider between 1 (a failed
+			//! enumeration, which has no retry) and 3 times, and a session's
+			//! four calls reach it at most 12 times.  Every call reports the
+			//! completions it actually spent, so the real figure is a
 			//! measured number rather than an inferred one.
 			static constexpr int kLightSceneMaxPerSession = 4;
 
-			//! How many LIGHTING INTENTS one `light_scene` call will plan and
-			//! then build, one completion each.  Six because every run
-			//! measured converges on 6-8 lights (82 sec 10.4) -- the budget is
-			//! set at the low end of what the model already does, so the loop
-			//! changes the UNIT rather than the count.  The number is stated
-			//! in the planning prompt, and a longer plan is TRUNCATED with the
-			//! truncation stated in the result, never silently.
-			static constexpr int kLightIntentBudget = 6;
+			//! How many LIGHT SOURCES one `light_scene` call will enumerate
+			//! and then build.  Six because every run measured before this
+			//! redesign converged on 6-8 lights (82 sec 10.4) -- the budget is
+			//! set at the low end of what the model already does.  The number
+			//! is stated in the enumeration prompt, and a longer list is
+			//! TRUNCATED with the truncation stated in the result, never
+			//! silently.
+			static constexpr int kLightSourceBudget = 6;
 
-			//! The longest ONE planned intent line may be.  An intent is
-			//! provider-supplied text that this harness then interpolates into
-			//! the next prompt, so it is capped exactly as `notes` is, and any
-			//! truncation is STATED rather than silent.
-			static constexpr std::size_t kLightIntentMaxChars = 240;
+			//! The longest ONE enumerated source line may be.  A source is
+			//! provider-supplied text that this harness then interpolates
+			//! into the build prompt, so it is capped exactly as `notes` is,
+			//! and any truncation is STATED rather than silent.
+			static constexpr std::size_t kLightSourceMaxChars = 240;
 
 			//! The longest `notes` string a `light_scene` call may carry --
 			//! the ONE model-supplied span in the host-composed lighting
@@ -4413,37 +4431,6 @@ namespace RISE
 				std::string reason;   //!< why it was not soloed; empty when it was
 			};
 
-			//! ARC 83 SLICE 1: ONE lighting intent -- the line the planning
-			//! completion wrote for it, and what the ONE completion spent on
-			//! it actually did.  Per-intent numbers are first-class here for
-			//! 83 sec 6's standing rule: report per-unit figures, never a
-			//! category total that multiplies a stable per-unit number by a
-			//! variable unit count.
-			struct AgentLightIntentOutcome
-			{
-				std::string  intent;
-				unsigned int chunksExtracted = 0;
-				std::vector<std::string> landed;
-				std::vector<AgentLightSceneRejection> rejected;
-				//! At least one chunk landed for this intent.
-				bool         built = false;
-				bool         retryRan = false;
-				bool         retrySucceeded = false;
-				//! Completions this intent spent: 1, or 2 when the repair
-				//! retry ran.  0 is impossible once the intent is attempted.
-				int          completions = 0;
-				//! What FORM the light that landed takes, classified from the
-				//! chunks that actually landed rather than from what was
-				//! asked for: "area" (an object wearing an emissive material
-				//! -- a real emitting surface), "sky"
-				//! (hosek_wilkie_skylight), "zero-area" (omni / spot /
-				//! directional), "other light" (a Light chunk of some other
-				//! kind), or "" when nothing classifiable landed.
-				std::string  form;
-				//! Why the provider call failed, empty when it did not.
-				std::string  failure;
-			};
-
 			//! The structured result of LightScene.  `ok` means the builder
 			//! ANSWERED and its answer was processed -- NOT that everything
 			//! landed.  Partial success is first-class and honestly reported,
@@ -4458,49 +4445,47 @@ namespace RISE
 				std::vector<std::string> landed;
 				std::vector<AgentLightSceneRejection> rejected;
 				std::vector<AgentChunkResult> chunkResults;
-				//! TRUE when ANY intent spent its one repair retry, and when
-				//! any of those retries landed something -- the aggregate of
-				//! the per-intent flags below, kept because the wire and the
-				//! GUI have carried these two since arc 81.
+				//! TRUE when the build spent its one repair retry, and when
+				//! that retry landed something further -- kept because the
+				//! wire and the GUI have carried these two since arc 81.
 				bool        retryRan = false;
 				bool        retrySucceeded = false;
 
-				//---- ARC 83 SLICE 1: the plan step and the per-intent loop.
-				//! The intents this call planned and then built, AFTER the
-				//! kLightIntentBudget cut.
-				std::vector<std::string> intents;
-				//! How many intent lines the planning completion returned
+				//---- ARC 83 SLICE 2: the enumeration step and the one build.
+				//! The light sources this call enumerated and then built,
+				//! AFTER the kLightSourceBudget cut -- verbatim, in the order
+				//! the enumeration completion wrote them.
+				std::vector<std::string> sources;
+				//! How many source lines the enumeration completion returned
 				//! BEFORE the budget was applied, so a truncation is visible
 				//! as two numbers rather than inferred from a short list.
-				int         intentsReturned = 0;
-				//! The plan was longer than kLightIntentBudget and was cut to
-				//! its first kLightIntentBudget entries.
-				bool        intentsTruncated = false;
-				//! At least one intent line was longer than
-				//! kLightIntentMaxChars and was cut.
-				bool        intentLinesTruncated = false;
-				//! One entry per PLANNED intent, in plan order -- including
-				//! the intents that failed, which do not abort the loop.
-				std::vector<AgentLightIntentOutcome> perIntent;
-				//! Intents that landed at least one chunk.
-				int         intentsBuilt = 0;
-				//! Provider completions this ONE call spent: 1 for the plan
-				//! plus 1-2 per attempted intent.  Reported because the cap
-				//! above bounds CALLS, not completions.
+				int         sourcesReturned = 0;
+				//! The enumeration was longer than kLightSourceBudget and was
+				//! cut to its first kLightSourceBudget entries.
+				bool        sourcesTruncated = false;
+				//! At least one source line was longer than
+				//! kLightSourceMaxChars and was cut.
+				bool        sourceLinesTruncated = false;
+				//! Provider completions this ONE call spent: 1 for the
+				//! enumeration, plus 1-2 for the build (2 when the one repair
+				//! retry ran).  1 total when the enumeration itself failed --
+				//! the build never runs without a source list.  Reported
+				//! because the per-session cap bounds CALLS, not completions.
 				int         completionsSpent = 0;
 				//! How the lights this call built are FORMED, counted from
-				//! what landed.  `areaLightsBuilt` is the arc-83 headline:
-				//! 82 sec 10.4 predicts it rises sharply with no change to
-				//! the palette prose, and if it does not, cost was never the
-				//! mechanism.
+				//! what actually LANDED across the whole build (not from what
+				//! was asked for): one landed emissive material is one area
+				//! light, one landed hosek_wilkie_skylight is one sky light,
+				//! one landed omni/spot/directional is one zero-area light,
+				//! any other landed Light chunk is "other".
 				int         areaLightsBuilt = 0;
 				int         zeroAreaLightsBuilt = 0;
 				int         skyLightsBuilt = 0;
 				int         otherLightsBuilt = 0;
-				//! Why the PLANNING completion failed, empty when it did not.
-				//! When this is set no intent was attempted and no per-intent
+				//! Why the ENUMERATION completion failed, empty when it did
+				//! not.  When this is set the build never ran and no build
 				//! completion was spent.
-				std::string planFailure;
+				std::string enumerationFailure;
 
 				//! Every soloable light in the scene AFTER the pass, in
 				//! descending measured contribution, capped at
@@ -4521,16 +4506,18 @@ namespace RISE
 			//! Design this scene's lighting in FRESH minimal provider
 			//! contexts and validated-insert the result.
 			//!
-			//! ARC 83 SLICE 1: ONE call is a HARNESS-DRIVEN LOOP -- one
-			//! planning completion that enumerates at most kLightIntentBudget
-			//! lighting intents, then one fresh completion per intent, each
-			//! authoring EXACTLY ONE light source.  The model still makes ONE
-			//! call and reads one result, so its turn count does not grow with
-			//! the scene's lighting.  Insertion, admissibility and the ONE
-			//! repair retry are PER INTENT and reuse the arc-79 validated
-			//! insertion path unchanged.  A failed intent does not abort the
-			//! loop: the remaining intents still run and the result says which
-			//! failed and why.
+			//! ARC 83 SLICE 2: ONE call is exactly TWO completions on the
+			//! happy path.  First, THE SOURCE ENUMERATION: what in this
+			//! world physically emits light, bounded at kLightSourceBudget,
+			//! forbidden from naming a renderer light kind.  Second, THE
+			//! BUILD: given that source list verbatim, write the chunks for
+			//! ALL of it in one answer -- the one-light-per-answer rule
+			//! slice 1 enforced is gone.  Insertion, admissibility, the
+			//! ambient ban and the ONE repair retry apply to the WHOLE build
+			//! answer and reuse the arc-79 validated insertion path
+			//! unchanged.  A failed enumeration does not run the build at
+			//! all -- there is nothing to build without a source list, and
+			//! the enumeration step has no retry of its own.
 			//!
 			//! CALLABLE IN EVERY PHASE, and with the staged build protocol
 			//! off.  Unlike `build_element` it needs no active element --
@@ -4563,13 +4550,13 @@ namespace RISE
 			//! into the host-composed prompts (see kLightSceneMaxNotes); the
 			//! model NEVER supplies raw prompt text -- the inventory, the
 			//! camera, the world bounds, the palette, the syntax examples and
-			//! the output instruction are all composed HERE.  The planned
-			//! intents are provider-supplied text that the per-intent prompts
-			//! then carry, so they are capped and stated exactly as `notes`
-			//! is (see kLightIntentMaxChars).
+			//! the output instruction are all composed HERE.  The enumerated
+			//! sources are provider-supplied text that the build prompt then
+			//! carries verbatim, so they are capped and stated exactly as
+			//! `notes` is (see kLightSourceMaxChars).
 			//!
-			//! Blocking: ONE planning round trip, then per planned intent one
-			//! round trip and at most ONE repair retry, then up to
+			//! Blocking: ONE enumeration round trip, then ONE build round
+			//! trip and at most ONE repair retry, then up to
 			//! kLightSceneMaxSolos + 1 small internal renders.
 			AgentLightSceneResult LightScene( const std::string& notes = std::string() );
 
@@ -6900,56 +6887,56 @@ namespace RISE
 			//! strand exactly the session whose builder failed.
 			bool mLightSceneRan = false;
 
-			//! Arc 81, arc 83 slice 1: the SCENE FACTS both lighting prompts
+			//! Arc 81, arc 83 slice 2: the SCENE FACTS both lighting prompts
 			//! open with -- the session's imagined subject/mood, the arc-80
 			//! inventory, the camera, the world bounds and the lights that
-			//! already exist.  Shared by the planning prompt and the
-			//! per-intent prompt so the two cannot drift about what the scene
-			//! is.  `inventoryWhen` says WHEN the inventory was measured, and
-			//! is a parameter rather than a literal because the loop measures
-			//! it once and reuses it across intents -- "just now" would stop
-			//! being true at the second intent, and a false clause in a
-			//! model-facing payload is the class arc 79 sec 8.1 records the
-			//! cost of.
+			//! already exist.  Shared by the enumeration prompt and the build
+			//! prompt so the two cannot drift about what the scene is.
+			//! `inventoryWhen` says WHEN the inventory was measured; it is a
+			//! parameter rather than a literal purely so both call sites can
+			//! pass the SAME honest phrase ("at the start of this lighting
+			//! pass") -- nothing mutates the scene between the two
+			//! completions this call spends, so the one measurement stays
+			//! accurate for both, and a false clause in a model-facing
+			//! payload is the class arc 79 sec 8.1 records the cost of.
 			void AppendLightingSceneFacts_( std::string& p,
 			                                const std::string& inventoryText,
 			                                const char* inventoryWhen ) const;
 
-			//! Arc 83 slice 1: compose the PLANNING prompt host-side -- the
-			//! scene facts above, the caller's (already length-capped) notes,
-			//! the intent budget stated as a number, and the output
-			//! instruction.  It asks for a LIST OF INTENTS and no scene text
-			//! at all: the units, not the work.  It carries NO palette, since
+			//! Arc 83 slice 2: compose the SOURCE ENUMERATION prompt
+			//! host-side -- the scene facts above, the caller's
+			//! (already length-capped) notes, the source budget stated as a
+			//! number, and the output instruction.  It asks WHAT IN THIS
+			//! WORLD PHYSICALLY EMITS LIGHT -- things, not instruments -- and
+			//! writes no scene text at all: it carries NO palette, since
 			//! nothing it returns is a chunk, and no advice about how many
-			//! lights or what kind -- the count and the form are what this arc
-			//! MEASURES.
-			std::string ComposeLightingPlanPrompt_( const std::string& inventoryText,
-			                                        const std::string& notes ) const;
+			//! lights or what kind, only the FACT that every real scenario is
+			//! lit by the sun/sky, an opening, a fixture, or something that
+			//! itself glows.  Naming a renderer light kind is forbidden here
+			//! by rule -- see the owner's design note above LightScene's
+			//! declaration for why the question, not the loop, was slice 1's
+			//! defect.
+			std::string ComposeLightSourceEnumerationPrompt_( const std::string& inventoryText,
+			                                                  const std::string& notes ) const;
 
-			//! Arc 81, rebuilt for arc 83 slice 1: compose the ENTIRE
-			//! per-intent lighting prompt host-side -- the ONE intent this
-			//! completion authors, the scene facts, the lights EARLIER
-			//! ITERATIONS of this same loop already placed (so it complements
-			//! rather than duplicates), the light palette with its registry
-			//! grammar (area light FIRST and with the one complete worked
-			//! example -- see kLightPalette's doc for why the three zero-area
-			//! kinds carry none, and why ambient_light is absent), the
-			//! caller's notes, and the output instruction.
-			//!
-			//! `intentIndex` is 1-based and `intentCount` is the plan's size,
-			//! both stated to the model so it knows what share of the lighting
-			//! this one light is.  `placedLines` is one pre-formatted line per
-			//! earlier intent.  `rejectionText` empty builds the FIRST prompt;
-			//! non-empty builds the ONE repair retry's, which is the first
-			//! plus the exact rejection text and a request for the corrected
-			//! set whole -- ComposeBuilderPrompt_'s contract, unchanged.
+			//! Arc 81, rebuilt for arc 83 slice 2: compose the WHOLE build
+			//! prompt host-side -- the enumerated `sources` verbatim, the
+			//! scene facts, the light palette with its registry grammar (area
+			//! light FIRST and with the one complete worked example -- see
+			//! kLightPalette's doc for why the three zero-area kinds carry
+			//! none, and why ambient_light is absent), the caller's notes,
+			//! and the output instruction.  Asks for the chunks of EVERY
+			//! source in `sources`, all in ONE answer -- there is no
+			//! one-light-per-answer cap here; that rule belonged to slice 1's
+			//! per-intent loop and does not survive it.  `rejectionText`
+			//! empty builds the FIRST prompt; non-empty builds the ONE repair
+			//! retry's, which is the first plus the exact rejection text and
+			//! a request for the corrected set whole -- ComposeBuilderPrompt_'s
+			//! contract, unchanged.
 			std::string ComposeLightingPrompt_( const std::string& inventoryText,
 			                                    const std::string& notes,
 			                                    const std::string& rejectionText,
-			                                    const std::string& intent,
-			                                    int intentIndex,
-			                                    int intentCount,
-			                                    const std::vector<std::string>& placedLines ) const;
+			                                    const std::vector<std::string>& sources ) const;
 
 			//! Arc 81: fill LightScene's `contributions` / `soloableLightCount`
 			//! / `soloedCount` / `allLightsMeanLuma` by SOLOING each light --
