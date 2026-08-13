@@ -4690,6 +4690,38 @@ namespace RISE
 			return true;
 		}
 
+		inline bool ValidateFrozenMethaneSourcePacketLedger(
+			const MethaneCellState& beginning,
+			const MethaneReactionStep& reactionStep,
+			const FireSimulationMethaneRecord& fuel,
+			const MethaneSourcePacket& packet,
+			std::string* error=0
+			)
+		{
+			double massResidual=0.0,elementResidual=0.0;
+			for(const double delta:packet.constituentDelta)massResidual+=delta;
+			const std::vector<double>& element=fuel.ElementMassFractionMatrix();
+			for(std::size_t row=0;row<fuel.ElementOrder().size();++row){double residual=0.0;
+				for(std::size_t species=0;species<MethaneSpeciesCount;++species)residual+=
+					element[row*MethaneSpeciesCount+species]*packet.constituentDelta[species];
+				elementResidual=std::max(elementResidual,std::fabs(residual));}
+			const double tolerance=4096.0*std::numeric_limits<double>::epsilon()*
+				std::max(1.0,beginning.TotalDensity());
+			const double expectedEnergy=packet.reactedFuelKGPerM3*
+				fuel.LowerHeatingValueJPerKG()+packet.oxidizedCarbonKGPerM3*
+				fuel.SootHeatReleaseJPerKGCarbon()-reactionStep.deltaTimeS*
+				packet.radiativeCoolingWPerM3;
+			const double oxygenExpected=fuel.StoichiometricOxygenKGPerKGFuel()*
+				packet.reactedFuelKGPerM3+fuel.SootOxygenKGPerKGCarbon()*
+				packet.oxidizedCarbonKGPerM3;
+			const double energyTolerance=4096.0*std::numeric_limits<double>::epsilon()*
+				std::max(1.0,std::fabs(expectedEnergy));
+			return (std::fabs(massResidual)<=tolerance&&elementResidual<=tolerance&&
+				std::fabs(packet.sensibleEnergyDeltaJPerM3-expectedEnergy)<=energyTolerance&&
+				std::fabs(-packet.constituentDelta[MethaneO2]-oxygenExpected)<=tolerance)||
+				Fail(error,"fire solver frozen source packet failed its mass/element/chemical-potential ledger");
+		}
+
 		inline bool BuildFrozenMethaneSourcePacket(
 			const MethaneCellState& beginning,
 			const MethaneReactionStep& reactionStep,
@@ -4719,27 +4751,7 @@ namespace RISE
 			result.sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
 				beginning.sensibleEnergyJPerM3;
 			result.radiativeCoolingWPerM3 = signedCoolingWPerM3;
-			double massResidual = 0.0;
-			for( const double delta : result.constituentDelta ) massResidual += delta;
-			double elementResidual = 0.0;
-			const std::vector<double>& element = fuel.ElementMassFractionMatrix();
-			for( std::size_t row=0; row<fuel.ElementOrder().size(); ++row ) {
-				double residual = 0.0;
-				for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
-					residual += element[row*MethaneSpeciesCount+species]*
-						result.constituentDelta[species];
-				}
-				elementResidual = std::max(elementResidual,std::fabs(residual));
-			}
-			const double scale = std::max(1.0,beginning.TotalDensity());
-			const double tolerance = 4096.0*std::numeric_limits<double>::epsilon()*scale;
-			const double expectedEnergy = reaction.sensibleEnergyDeltaJPerM3-
-				reactionStep.deltaTimeS*signedCoolingWPerM3;
-			const double energyTolerance = 4096.0*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,std::fabs(expectedEnergy));
-			return (std::fabs(massResidual) <= tolerance && elementResidual <= tolerance &&
-				std::fabs(result.sensibleEnergyDeltaJPerM3-expectedEnergy) <= energyTolerance) ||
-				Fail(error,"fire solver frozen source packet failed its mass/element/energy ledger");
+			return ValidateFrozenMethaneSourcePacketLedger(beginning,reactionStep,fuel,result,error);
 		}
 
 		inline bool BuildFrozenMethaneSourcePackets(
@@ -4800,6 +4812,8 @@ namespace RISE
 				candidateResult[cell].sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
 					beginning[cell].sensibleEnergyJPerM3;
 				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
+				if(!ValidateFrozenMethaneSourcePacketLedger(beginning[cell],reactionStep[cell],fuel,
+					candidateResult[cell],error))return false;
 			}
 			result.swap(candidateResult);
 			factor = candidateFactor;
