@@ -3408,8 +3408,31 @@ int main()
 		expansionRate[MethaneMassStateDimension]=
 			expansionPacket.sensibleEnergyDeltaJPerM3/deltaTime;
 		double analyticDivergence=0.0;
-		if(!DivergenceFromDiscreteRate(ToConservativeVector(expansionBeginning),expansionRate,
-			expansionBeginning.temperatureK,thermochemistry,analyticDivergence,&error))return false;
+		static const char* expansionSpecies[MethaneSpeciesCount]={
+			"CH4","O2","N2","CO2","H2O","CO","C(gr)"};
+		double expansionGasDensity=0.0,inverseWeight=0.0,heatCapacity=0.0;
+		std::array<double,MethaneSpeciesCount> expansionEnthalpy={};
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(
+				expansionSpecies[species]);double cp=0.0;
+			if(!property||!thermochemistry.CpJPerKGK(expansionSpecies[species],
+				expansionBeginning.temperatureK,cp,&error)||
+				!thermochemistry.SensibleEnthalpyJPerKG(expansionSpecies[species],
+					expansionBeginning.temperatureK,expansionEnthalpy[species],&error))return false;
+			heatCapacity+=expansionBeginning.constituent[species]*cp;
+			if(species<MethaneCarbon){expansionGasDensity+=expansionBeginning.constituent[species];
+				inverseWeight+=expansionBeginning.constituent[species]/
+					property->molecularWeightKGPerKMol;}}
+		const double meanWeight=expansionGasDensity/inverseWeight,
+			heatCapacityTemperature=heatCapacity*expansionBeginning.temperatureK;
+		analyticDivergence=expansionRate[MethaneMassStateDimension]/heatCapacityTemperature;
+		for(std::size_t species=0;species<MethaneCarbon;++species){
+			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(
+				expansionSpecies[species]);analyticDivergence+=(meanWeight/(expansionGasDensity*
+				property->molecularWeightKGPerKMol)-expansionEnthalpy[species]/
+				heatCapacityTemperature)*expansionRate[1+species];}
+		analyticDivergence-=expansionEnthalpy[MethaneCarbon]/heatCapacityTemperature*
+			expansionRate[1+MethaneCarbon];
 		const std::size_t count=openShape3D.CellCount();
 		const std::vector<ConservativeVector> initial(count,ToConservativeVector(expansionBeginning));
 		std::vector<MethaneSourcePacket> packets(count,expansionPacket);
@@ -3422,7 +3445,9 @@ int main()
 		expansionConfig.injectedTemperatureK=expansionBeginning.temperatureK;
 		expansionConfig.openBoundary.ambientState=ToConservativeVector(expansionBeginning);
 		expansionConfig.openBoundary.ambientDensityKGPerM3=expansionBeginning.GasDensity();
-		expansionConfig.openBoundary.kind.fill(PressureOpenBoundary3D);
+		expansionConfig.openBoundary.kind.fill(AdiabaticWallBoundary3D);
+		expansionConfig.openBoundary.kind[0]=PressureOpenBoundary3D;
+		expansionConfig.openBoundary.kind[1]=PressureOpenBoundary3D;
 		expansionConfig.openBoundary.bottomFuelMask.clear();
 		expansionConfig.retainStageDiagnostics=true;
 		OpenConservativeAdvance3DResult advanced;
@@ -3470,7 +3495,9 @@ int main()
 			ledgerResidual=std::max(ledgerResidual,std::fabs(globalAfter[component]-
 				globalBefore[component]-globalSource[component]-boundaryChange)/ledgerScale);}
 		double outwardVolumeFlux=0.0;
-		for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;
+		const double expectedBoundarySpeed=analyticDivergence*openShape3D.cellWidthM*
+			openShape3D.nx/2.0;
+		for(unsigned int side=0;side<2;++side){const unsigned int axis=side/2;
 			const std::size_t firstCount=side<2?openShape3D.ny:openShape3D.nx,
 				secondCount=side<4?openShape3D.nz:openShape3D.ny;
 			for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;
@@ -3481,7 +3508,9 @@ int main()
 					const double velocity=advanced.r0.projection.velocityMPerS.component[axis]
 						[OpenMACFaceIndex3D(openShape3D,axis,x,y,z)];
 					outwardVolumeFlux+=(side%2?1.0:-1.0)*velocity*
-						openShape3D.cellWidthM*openShape3D.cellWidthM;}}
+						openShape3D.cellWidthM*openShape3D.cellWidthM;
+					analyticResidual=std::max(analyticResidual,std::fabs(velocity-
+						(side%2?expectedBoundarySpeed:-expectedBoundarySpeed)));}}
 		const double domainVolume=count*std::pow(openShape3D.cellWidthM,3.0);
 		analyticResidual=std::max(analyticResidual,std::fabs(
 			outwardVolumeFlux/domainVolume-analyticDivergence));
@@ -3968,7 +3997,7 @@ int main()
 					GasDensity(),FromConservativeVector(state[right]).GasDensity());
 				momentum.component[axis][OpenMACFaceIndex3D(historyShape,axis,x,y,z)]=
 					density*transportVelocity;
-			}}
+		}}
 		ConservativeAdvance3DConfig historyConfig=ownerConfig;
 		historyConfig.periodicBoundaries=false;historyConfig.dns=true;
 		historyConfig.transport.cellWidthM=historyShape.cellWidthM;
@@ -4029,7 +4058,7 @@ int main()
 				state.swap(advanced.conservative);momentum.component.swap(
 					advanced.momentumKGPerM2S.component);
 			}
-				history.heatReleaseW.push_back(sampleHeat);history.frontM.push_back(front);
+			history.heatReleaseW.push_back(sampleHeat);history.frontM.push_back(front);
 		}
 		return true;
 	};
