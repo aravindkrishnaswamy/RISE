@@ -1,0 +1,15 @@
+{
+ "//": "Arc-83 shape_light + zero-area-budget live test (2026-08-12): the language now has one-chunk lights for panels (rect_light) AND glowing solids (shape_light: sphere/ellipsoid/box/cylinder), and a scene has a free budget of 2 zero-area lights -- past it each request is refused once with facts and lands on re-issue (light_scene retry is the confirm). THE measurement: does the glowing-creature source class (jellyfish/fish/anemones -- omnis in every prior run) now land as shape_lights? Priors: area per run 1/0/0/0/2, 0/11, 0/7, 1/10. Watch: shape_light count, zero-area count vs budget, whether the retry-confirm fires, completions (2-3), and the render.",
+ "scenarios": [
+  "evals/scenarios/battery/imagine_undersea_mermaid.json"
+ ],
+ "providers": [
+  {
+   "provider": "gemini",
+   "model": "gemini-3.6-flash",
+   "keyEnvVar": "GEMINI_API_KEY"
+  }
+ ],
+ "repeats": 1,
+ "runDir": "evals/runs/imagine_s13_shapelight"
+}

@@ -464,3 +464,30 @@ material, which the builders already do in construction.  That suggests the
 eventual bridge is between the enumeration's "things that glow" and the
 EXISTING objects' materials (make-this-object-emit), not another light
 chunk.  Recorded as the next hypothesis, unmeasured.
+
+## 12. shape_light + the zero-area budget: THE DISTRIBUTION FLIPPED (2026-08-12, N=1)
+
+`evals/runs/imagine_s13_shapelight`.  Five of six sources landed as PHYSICAL
+lights, no retry, no confirm needed -- the model went physical voluntarily:
+the water surface as a 6x6 rect_light facing down, the mermaid / jellyfish /
+anemone / coral as glowing ellipsoids and a sphere.  One spot survived for
+the caustic shaft (a legitimate special case, inside the free budget).
+
+The full ledger on one line each:
+  palette order + sole example ......... 1/0/0/0/2 of ~7
+  one completion per light ............. 0 of 11
+  source-first vocabulary .............. 0 of 7
+  rect_light alone ..................... 1 of 10
+  shape_light + budget ................. **5 of 6**
+
+What flipped it was the combination the owner designed: a one-chunk PHYSICAL
+form for every shape the enumeration actually names (glowing creatures are
+solids, not rectangles) + a cost on the zero-area path (free budget of 2,
+then refuse-once-confirm).  Availability alone (rect_light) moved it 1/10;
+availability for the right SHAPES plus a price moved it 5/6.
+
+Caveats, honest: N=1; the render composition has regressed (subjects
+clustered small, heavy black surround -- lighting got physical while framing
+got worse, and framing is a later slice); and whether the budget's friction
+or shape coverage did more of the work is not separable in this run and does
+not need to be -- both are shipped policy now, not competing hypotheses.
