@@ -1072,3 +1072,35 @@ it was already tried and refuted here.
   visible thermal continuum — correct physics, and it makes methane an
   excellent solver bring-up fuel but a poor visual one until §4.4 chem is
   enabled. Record: `docs/data/fire_fuel_methane_v1.draft.json`.
+
+- **r53 (2026-08-13):** **Phase C engineering is complete** — all five §7.0
+  Phase C gates green at `e7ff026d`, recorded at the completion handback
+  (the r47 convention). Gates 1–3: the §3.2–§3.7 solver core (low-Mach
+  variable-density projection with 3D pressure-open geometric multigrid;
+  the single owning conservative R0/R1/R2 Heun/FCT advance consuming frozen
+  reaction/radiation packets with the exact N_C flux projection; two-rate
+  reaction closure with flood-fill ignition; withheld-stream soot ledger;
+  budgeted escape-factor radiation) verified by the full V1–V6 tier,
+  including the adversarial cases doing their jobs — V3(c)'s negative
+  control fails for the debug MacCormack path as designed, V3(d) holds
+  ≥1.8-order convergence with active high-order fluxes, V5's hot-carbon
+  leg reproduces the f_v(T⁵−T∞⁵) law against an independent wavelength
+  integral and its gas leg runs the r50 thin-limit Planck-mean comparison
+  against the adopted HITEMP record, V6 proves eligibility-graph
+  determinism under reconstructed state. Gate 4: the §8 sequence contract
+  (canonical manifest with one-preimage sequence_id, unconditional
+  loadability with reject-never-repair RED fixtures, time mapping,
+  fire_medium binding, residency, and the sequence_backed provenance
+  variant finally exercised with real data). Gate 5: the freeze/
+  prepared-input seam with the per-frame grid/majorant/emission-CDF
+  rebuild scheduled in the frame-advance step — closing the obligation
+  r49 re-gated here from Phase B. Solver bring-up ran on the complete
+  physical methane record per r51/r52. Evidence at the milestone: 241
+  tests reconciled green, warning-free make + Xcode Deployment + Opto,
+  three fresh orthogonal reviews at zero P1s. The arc's dataset
+  decisions (r50–r52) held through implementation without amendment.
+  **Predictive-label status is unchanged by this milestone**: output
+  remains preview with reason codes — the label still waits on the §12
+  data items exactly as §7.0 separates the two. Next: the §3.9 case
+  contract (case_record_id) and the first end-to-end preview-labelled
+  methane sim→grid→renderer run.
