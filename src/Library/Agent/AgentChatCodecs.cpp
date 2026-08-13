@@ -2729,7 +2729,7 @@ namespace RISE
 
 		const char* GeminiChatCodec::ProviderName() const { return "gemini"; }
 
-		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.6-flash"; }
+		const char* GeminiChatCodec::DefaultModelId() const { return "gemini-3.7-flash"; }
 
 		std::string GeminiChatCodec::MakeUserEntry(
 			const std::string& text, const std::vector<ChatAttachment>& attachments ) const
@@ -4849,7 +4849,7 @@ namespace RISE
 			if( providerName == "anthropic" )
 				return ImageEnvOr_( "RISE_BUILDER_MODEL_ANTHROPIC", "claude-sonnet-5" );
 			if( providerName == "gemini" )
-				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-3.6-flash" );
+				return ImageEnvOr_( "RISE_BUILDER_MODEL_GEMINI", "gemini-3.7-flash" );
 			if( providerName == "openai" )
 				return ImageEnvOr_( "RISE_BUILDER_MODEL_OPENAI", "gpt-5.6-terra" );
 			if( providerName == "xai" )

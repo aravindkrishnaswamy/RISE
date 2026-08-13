@@ -1096,7 +1096,7 @@ namespace RISE
 		//! that provider's own chat default, overridden by an environment
 		//! variable so a hand test can retarget without recompiling:
 		//!   anthropic -> RISE_BUILDER_MODEL_ANTHROPIC (default "claude-sonnet-5")
-		//!   gemini    -> RISE_BUILDER_MODEL_GEMINI    (default "gemini-3.6-flash")
+		//!   gemini    -> RISE_BUILDER_MODEL_GEMINI    (default "gemini-3.7-flash")
 		//!   openai    -> RISE_BUILDER_MODEL_OPENAI    (default "gpt-5.6-terra")
 		//!   xai       -> RISE_BUILDER_MODEL_XAI       (default "grok-4.5")
 		//! The defaults are the SAME ids the four chat codecs declare as
