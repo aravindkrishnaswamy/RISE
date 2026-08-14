@@ -962,6 +962,41 @@ namespace RISE
 			out.push_back( pad[ nCtrl ] );
 		}
 
+		// Periodic (closed-loop) twin of SampleCatmullRom3: instead of reflective
+		// end padding, consecutive pairs WRAP (control point nCtrl-1 connects back
+		// to control point 0), so nCtrl control points make nCtrl segments (not
+		// nCtrl-1) and every neighbor lookup is modulo nCtrl.  No trailing
+		// duplicate of the first point is appended -- the ring closes implicitly
+		// when the caller's ring-stitching wraps station (n-1) back to station 0.
+		void SampleCatmullRom3Periodic(
+			const double* ctrl, const unsigned int nCtrl, const int nLen,
+			std::vector<SweepV3>& out )
+		{
+			std::vector<SweepV3> raw( nCtrl );
+			for( unsigned int i = 0; i < nCtrl; i++ ) {
+				raw[i].x = ctrl[ 3*i ]; raw[i].y = ctrl[ 3*i + 1 ]; raw[i].z = ctrl[ 3*i + 2 ];
+			}
+			const int segs = int(nCtrl);
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const SweepV3& p0 = raw[ ( sgi - 1 + segs ) % segs ];
+				const SweepV3& p1 = raw[ sgi % segs ];
+				const SweepV3& p2 = raw[ ( sgi + 1 ) % segs ];
+				const SweepV3& p3 = raw[ ( sgi + 2 ) % segs ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					SweepV3 q;
+					q.x = Scalar(0.5) * ( 2*p1.x + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3 );
+					q.y = Scalar(0.5) * ( 2*p1.y + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3 );
+					q.z = Scalar(0.5) * ( 2*p1.z + (-p0.z+p2.z)*t + (2*p0.z-5*p1.z+4*p2.z-p3.z)*t2 + (-p0.z+3*p1.z-3*p2.z+p3.z)*t3 );
+					out.push_back( q );
+				}
+			}
+		}
+
 		// Catmull-Rom through 1D control VALUES, using the IDENTICAL reflective
 		// padding + per-segment (segs, per) scheme as SampleCatmullRom3 so an
 		// interpolated scalar track (e.g. a per-station width multiplier) lands in
@@ -993,22 +1028,58 @@ namespace RISE
 			out.push_back( pad[ nCtrl ] );
 		}
 
-		// Per-sample tangents (central differences, one-sided ends) and
-		// rotation-minimizing frames.  B = binormal (profile x axis),
-		// N = B x T (profile h axis).  The initial binormal comes from the
-		// caller's hint, or auto-picks the world axis most perpendicular to
-		// the start tangent (a planar path in YZ therefore gets the fixed
+		// Periodic (closed-loop) twin of SampleCatmullRom1 -- same wrap
+		// convention as SampleCatmullRom3Periodic, and 1:1 station lockstep
+		// with it (nCtrl control VALUES over nCtrl segments, no trailing point).
+		void SampleCatmullRom1Periodic(
+			const std::vector<Scalar>& ctrl, const int nLen,
+			std::vector<Scalar>& out )
+		{
+			const int nCtrl = (int)ctrl.size();
+			const int segs = nCtrl;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const Scalar p0 = ctrl[ ( sgi - 1 + segs ) % segs ];
+				const Scalar p1 = ctrl[ sgi % segs ];
+				const Scalar p2 = ctrl[ ( sgi + 1 ) % segs ];
+				const Scalar p3 = ctrl[ ( sgi + 2 ) % segs ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					out.push_back( Scalar(0.5) * ( 2*p1 + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3 ) );
+				}
+			}
+		}
+
+		// Per-sample tangents (central differences, one-sided ends unless
+		// `closed`) and rotation-minimizing frames.  B = binormal (profile x
+		// axis), N = B x T (profile h axis).  The initial binormal comes from
+		// the caller's hint, or auto-picks the world axis most perpendicular
+		// to the start tangent (a planar path in YZ therefore gets the fixed
 		// world-X width axis the retired band generator used).
+		//
+		// `closed`: the path is a loop (station n-1 is adjacent to station 0).
+		// Tangents use periodic (wrapped) central differences instead of
+		// one-sided ends, and after the usual double-reflection propagation
+		// (stations 0..n-1, open-path order -- unchanged) an EXTRA wrap step
+		// (n-1 -> 0) measures the signed holonomy angle theta between the
+		// transported binormal and the frame this function already assigned
+		// to B[0]; every station's frame is then corrected by a linearly
+		// growing counter-rotation -theta*(i/n) about its own tangent so the
+		// seam closes up smoothly (Wang et al. 2008 sec 4, closed-curve RMF
+		// adjustment) instead of leaving a visible twist at the wrap edge.
 		void BuildPathFrames(
 			const std::vector<SweepV3>& path,
-			const SweepV3& hint, const bool haveHint,
+			const SweepV3& hint, const bool haveHint, const bool closed,
 			std::vector<SweepV3>& T, std::vector<SweepV3>& B, std::vector<SweepV3>& N )
 		{
 			const size_t n = path.size();
 			T.resize( n ); B.resize( n ); N.resize( n );
 			for( size_t i = 0; i < n; i++ ) {
-				const SweepV3& a = path[ i > 0 ? i - 1 : 0 ];
-				const SweepV3& b = path[ i + 1 < n ? i + 1 : n - 1 ];
+				const SweepV3& a = closed ? path[ ( i + n - 1 ) % n ] : path[ i > 0 ? i - 1 : 0 ];
+				const SweepV3& b = closed ? path[ ( i + 1 ) % n ]     : path[ i + 1 < n ? i + 1 : n - 1 ];
 				SweepV3 t = svSub( b, a );
 				const Scalar l = svLen( t );
 				if( l > 0 ) {
@@ -1063,6 +1134,35 @@ namespace RISE
 				b = svNorm( svSub( b, svScale( T[i+1], svDot( b, T[i+1] ) ) ) );
 				B[i+1] = b;
 				N[i+1] = svCross( B[i+1], T[i+1] );
+			}
+			if( closed && n > 1 ) {
+				// one more double-reflection step, from the last station back
+				// to the first -- the wrap edge the loop above never takes.
+				SweepV3 bWrap;
+				const SweepV3 v1 = svSub( path[0], path[n-1] );
+				const Scalar c1 = svDot( v1, v1 );
+				if( c1 <= 0 ) {
+					bWrap = svNorm( svSub( B[n-1], svScale( T[0], svDot( B[n-1], T[0] ) ) ) );
+				} else {
+					const SweepV3 bL = svSub( B[n-1], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, B[n-1] ) ) );
+					const SweepV3 tL = svSub( T[n-1], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, T[n-1] ) ) );
+					const SweepV3 v2 = svSub( T[0], tL );
+					const Scalar c2 = svDot( v2, v2 );
+					SweepV3 b = ( c2 > 0 ) ? svSub( bL, svScale( v2, ( Scalar(2)/c2 ) * svDot( v2, bL ) ) ) : bL;
+					bWrap = svNorm( svSub( b, svScale( T[0], svDot( b, T[0] ) ) ) );
+				}
+				// signed angle from B[0] to bWrap about T[0], decomposed in the
+				// (B[0], N[0]) orthonormal plane: bWrap == cos(theta)*B[0] + sin(theta)*N[0]
+				const Scalar theta = atan2( svDot( bWrap, N[0] ), svDot( bWrap, B[0] ) );
+				if( fabs( theta ) > Scalar(1e-12) ) {
+					for( size_t i = 0; i < n; i++ ) {
+						const Scalar phi = -theta * ( Scalar(i) / Scalar(n) );
+						const Scalar cp = cos( phi ), sp = sin( phi );
+						const SweepV3 bi = B[i], ni = N[i];
+						B[i] = svAdd( svScale( bi, cp ), svScale( ni, sp ) );
+						N[i] = svAdd( svScale( ni, cp ), svScale( bi, -sp ) );
+					}
+				}
 			}
 		}
 
@@ -1181,6 +1281,49 @@ namespace RISE
 			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: end_scale_x / end_scale_y must be > 0" );
 			return false;
 		}
+		if( desc.pathClosed ) {
+			if( desc.numPathPoints < 3 ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"RISE_API_CreateSweepGeometry: path_closed needs at least 3 `point` path control points (got %u)",
+					desc.numPathPoints );
+				return false;
+			}
+			const double dx = desc.pathPoints[0] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 0 ];
+			const double dy = desc.pathPoints[1] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 1 ];
+			const double dz = desc.pathPoints[2] - desc.pathPoints[ 3*(desc.numPathPoints-1) + 2 ];
+			// SCALE-RELATIVE coincidence threshold: an absolute 1e-9 is too
+			// tight for a path authored at, say, kilometre scale (legitimately
+			// distinct points a millimetre apart would fail this check).
+			// Scale by the control points' own bounding-box diagonal, floored
+			// to 1 -- so a small-scale path (diagonal <= 1, including a
+			// degenerate single-point-scale path where everything is already
+			// clustered near the origin) keeps the original 1e-9 absolute
+			// behaviour byte-identical.  (Only the large-scale case is
+			// actually addressed here; there is no separate micron-scale
+			// tightening.)
+			double bMinX = desc.pathPoints[0], bMaxX = desc.pathPoints[0];
+			double bMinY = desc.pathPoints[1], bMaxY = desc.pathPoints[1];
+			double bMinZ = desc.pathPoints[2], bMaxZ = desc.pathPoints[2];
+			for( unsigned int pj = 1; pj < desc.numPathPoints; pj++ ) {
+				const double px = desc.pathPoints[3*pj+0], py = desc.pathPoints[3*pj+1], pz = desc.pathPoints[3*pj+2];
+				if( px < bMinX ) bMinX = px; if( px > bMaxX ) bMaxX = px;
+				if( py < bMinY ) bMinY = py; if( py > bMaxY ) bMaxY = py;
+				if( pz < bMinZ ) bMinZ = pz; if( pz > bMaxZ ) bMaxZ = pz;
+			}
+			const double diagX = bMaxX - bMinX, diagY = bMaxY - bMinY, diagZ = bMaxZ - bMinZ;
+			const double diag = sqrt( diagX*diagX + diagY*diagY + diagZ*diagZ );
+			const double coincidentTol = 1e-9 * ( diag > 1.0 ? diag : 1.0 );
+			if( dx*dx + dy*dy + dz*dz < coincidentTol*coincidentTol ) {
+				GlobalLog()->Print( eLog_Error,
+					"RISE_API_CreateSweepGeometry: path_closed TRUE with the first and last `point` authored coincident -- drop the duplicate, the loop closes itself" );
+				return false;
+			}
+			if( !( desc.endScaleX == 1.0 ) || !( desc.endScaleY == 1.0 ) ) {
+				GlobalLog()->Print( eLog_Error,
+					"RISE_API_CreateSweepGeometry: end_scale_x / end_scale_y must stay 1.0 with path_closed (a loop has no end to taper toward)" );
+				return false;
+			}
+		}
 		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
 		if( nLen != desc.nLen ) {
 			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSweepGeometry: n_len %d clamped to %d", desc.nLen, nLen );
@@ -1235,13 +1378,17 @@ namespace RISE
 		}
 
 		std::vector<SweepV3> path;
-		SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		if( desc.pathClosed ) {
+			SampleCatmullRom3Periodic( desc.pathPoints, desc.numPathPoints, nLen, path );
+		} else {
+			SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		}
 		const size_t n = path.size();
 
 		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
 		const bool haveHint = svLen( hint ) > 0;
 		std::vector<SweepV3> T, B, N;
-		BuildPathFrames( path, hint, haveHint, T, B, N );
+		BuildPathFrames( path, hint, haveHint, desc.pathClosed, T, B, N );
 
 		// OPTIONAL per-station width track: Catmull-Rom interpolate the per-
 		// control-point width multipliers onto the path samples (1:1 with `path`),
@@ -1269,7 +1416,11 @@ namespace RISE
 				}
 				wCtrl[j] = (Scalar)desc.pointWidths[j];
 			}
-			SampleCatmullRom1( wCtrl, nLen, widthMul );
+			if( desc.pathClosed ) {
+				SampleCatmullRom1Periodic( wCtrl, nLen, widthMul );
+			} else {
+				SampleCatmullRom1( wCtrl, nLen, widthMul );
+			}
 			// widthMul is a dimensionless MULTIPLIER on the profile x-extent, so it
 			// must stay strictly positive or the ring inverts (negative scale flips
 			// the winding + normals).  Catmull-Rom can dip below the smallest authored
@@ -1287,17 +1438,66 @@ namespace RISE
 			}
 		}
 
+		// OPTIONAL per-station UNIFORM (both profile axes) scale track --
+		// same sampler, same padding/validation/floor idiom as the width
+		// track above, just applied to BOTH sx and sy instead of x only.
+		// This is the round-taper control (point_width alone can only
+		// flatten, since it only ever touches x); the two compose
+		// multiplicatively (see the ring-emission loop below).  Empty =>
+		// uniform 1.0 (exact no-op, byte-identical to a sweep authored
+		// without point_scale).
+		std::vector<Scalar> scaleMul;
+		if( desc.numPointScales > 0 ) {
+			if( !desc.pointScales ) {
+				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: numPointScales > 0 but pointScales is null" );
+				return false;
+			}
+			if( desc.numPointScales > desc.numPathPoints ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"RISE_API_CreateSweepGeometry: %u point scales exceed %u path points (one per point; pad the rest with 1.0)",
+					desc.numPointScales, desc.numPathPoints );
+				return false;
+			}
+			std::vector<Scalar> sCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointScales; j++ ) {
+				if( !( desc.pointScales[j] > 0 ) ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"RISE_API_CreateSweepGeometry: point scale %u (%g) must be > 0", j, desc.pointScales[j] );
+					return false;
+				}
+				sCtrl[j] = (Scalar)desc.pointScales[j];
+			}
+			if( desc.pathClosed ) {
+				SampleCatmullRom1Periodic( sCtrl, nLen, scaleMul );
+			} else {
+				SampleCatmullRom1( sCtrl, nLen, scaleMul );
+			}
+			// same non-monotone-undershoot floor as widthMul -- see its comment.
+			bool scaleClamped = false;
+			for( size_t i = 0; i < scaleMul.size(); i++ ) {
+				if( !( scaleMul[i] > 0 ) ) { scaleMul[i] = Scalar(1e-4); scaleClamped = true; }
+			}
+			if( scaleClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station scale undershot <= 0 (aggressive non-monotone point scales); floored to avoid ring inversion" );
+			}
+		}
+
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
 		pGeom->BeginIndexedTriangles();
 
-		// rings
+		// rings.  frac doubles as the linear-taper parameter and the V texture
+		// coordinate; a closed loop has no start/end to taper toward (end_scale_x/y
+		// are forced to 1.0 above) so it uses i/n (wraps at the seam with no
+		// duplicated ring, matching the profile U convention) instead of i/(n-1).
 		int vc = 0;
 		for( size_t i = 0; i < n; i++ ) {
-			const Scalar frac = Scalar(i) / Scalar( n - 1 );
+			const Scalar frac = desc.pathClosed ? ( Scalar(i) / Scalar(n) ) : ( Scalar(i) / Scalar( n - 1 ) );
 			const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
-			const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm;
-			const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
+			const Scalar sm = scaleMul.empty() ? Scalar(1) : scaleMul[i];
+			const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm * sm;
+			const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * sm;
 			for( unsigned int k = 0; k < nProf; k++ ) {
 				const Scalar lx = px[k] * sx;
 				const Scalar lh = ph[k] * sy;
@@ -1321,10 +1521,14 @@ namespace RISE
 		}
 
 		// side quads between consecutive rings (cyclic over the profile);
-		// winding gives outward-facing triangles for a CCW profile.
-		for( size_t i = 0; i + 1 < n; i++ ) {
+		// winding gives outward-facing triangles for a CCW profile.  A closed
+		// path additionally wraps ring (n-1) to ring 0 (no open-path "ends"),
+		// so it walks all n rings instead of stopping at n-1.
+		const size_t sideRingCount = desc.pathClosed ? n : ( n - 1 );
+		for( size_t i = 0; i < sideRingCount; i++ ) {
+			const size_t i1 = desc.pathClosed ? ( ( i + 1 ) % n ) : ( i + 1 );
 			const int r0 = int(i) * int(nProf);
-			const int r1 = int(i+1) * int(nProf);
+			const int r1 = int(i1) * int(nProf);
 			for( unsigned int k = 0; k < nProf; k++ ) {
 				const unsigned int kn = ( k + 1 ) % nProf;
 				const int a = r0 + int(k);
@@ -1341,8 +1545,11 @@ namespace RISE
 			}
 		}
 
-		// end caps: ear-clipped, duplicated vertices with the flat cap normal
-		if( desc.capStart || desc.capEnd ) {
+		// end caps: ear-clipped, duplicated vertices with the flat cap normal.
+		// A closed loop has no ends -- never emit caps regardless of capStart/
+		// capEnd (the parser rejects an explicit TRUE for either alongside
+		// path_closed; this guard is the structural belt-and-suspenders).
+		if( !desc.pathClosed && ( desc.capStart || desc.capEnd ) ) {
 			std::vector<unsigned int> capTris;
 			if( !EarClipProfile( px, ph, capTris ) ) {
 				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: profile triangulation failed (self-intersecting or degenerate polygon)" );
@@ -1367,8 +1574,9 @@ namespace RISE
 				const size_t i = isStart ? 0 : n - 1;
 				const Scalar frac = Scalar(i) / Scalar( n - 1 );
 				const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
-				const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm;
-				const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
+				const Scalar sm = scaleMul.empty() ? Scalar(1) : scaleMul[i];
+				const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm * sm;
+				const Scalar sy = ( Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac ) * sm;
 				// cap faces along -T at the start, +T at the end
 				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
 				const Normal capN( sgn * T[i].x, sgn * T[i].y, sgn * T[i].z );
@@ -1472,7 +1680,7 @@ namespace RISE
 		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
 		const bool haveHint = svLen( hint ) > 0;
 		std::vector<SweepV3> T, B, N;
-		BuildPathFrames( path, hint, haveHint, T, B, N );
+		BuildPathFrames( path, hint, haveHint, false, T, B, N );	// path_instances_geometry has no closed-loop mode (C2 scope: sweep_geometry only)
 
 		const Scalar slant = desc.slantDeg * PI / Scalar(180);
 		const Scalar cs = cos( slant ), sn = sin( slant );

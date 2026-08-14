@@ -40,6 +40,11 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/RISE_API.h"
+// C2 fix round (2026-08-14), Fix 2: real-parser coverage for the
+// profile_circle/profile_rect conveniences needs the concrete mesh type's
+// getVertices()/getFaces() accessors -- ITriangleMeshGeometryIndexed alone
+// only exposes numPoints().
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -211,10 +216,101 @@ static void TestRejections()
 		  "malformed point_width rejects" },
 		{ "pw_nonpos",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_width 0\n}\n",
 		  "point_width 0 rejects" },
+		// C2 slice: profile_circle / profile_rect mutual exclusion + validation,
+		// and path_closed structural validation.
+		{ "prof_pt_circ",  "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_point + profile_circle together rejects (mutually exclusive)" },
+		{ "circ_rect",     "sweep_geometry\n{\nname b\nprofile_circle 1.0\nprofile_rect 2 2\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_circle + profile_rect together rejects (mutually exclusive)" },
+		{ "circ_bad_r",    "sweep_geometry\n{\nname b\nprofile_circle 0\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_circle radius <= 0 rejects" },
+		{ "rect_r_toobig", "sweep_geometry\n{\nname b\nprofile_rect 2 2 5\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_rect corner radius > min(w,h)/2 rejects" },
+		{ "closed_2pts",   "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 0 0 10\npath_closed TRUE\n}\n",
+		  "path_closed with only 2 path points rejects" },
+		{ "closed_dup",    "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 5 5 0\npoint 0 0 0\npath_closed TRUE\n}\n",
+		  "path_closed with the first and last point authored coincident rejects" },
+		{ "closed_scale",  "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 5 5 0\npoint 10 0 0\npath_closed TRUE\nend_scale_x 0.5\n}\n",
+		  "path_closed with end_scale_x != 1.0 rejects" },
+		{ "closed_cap",    "sweep_geometry\n{\nname b\nprofile_circle 1.0\npoint 0 0 0\npoint 5 5 0\npoint 10 0 0\npath_closed TRUE\ncap_start TRUE\n}\n",
+		  "path_closed with cap_start explicitly TRUE rejects" },
+		// C2 fix round: point_scale (Fix 1) mirrors point_width's own
+		// validation rows exactly -- repeatable, <= path point count,
+		// exactly one number per line, > 0.
+		{ "ps_toomany",   "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_scale 0.7\npoint_scale 0.8\npoint_scale 0.9\n}\n",
+		  "more point_scale than path points rejects" },
+		{ "ps_badnum",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_scale abc\n}\n",
+		  "malformed point_scale rejects" },
+		{ "ps_nonpos",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_scale 0\n}\n",
+		  "point_scale 0 rejects" },
+		// C2 fix round, Fix 4/5 (comment corrected 2026-08-14): NaN is
+		// actually rejected by the TOKEN-level finiteness gate
+		// (AllTokensAreFiniteNumbers, checked before the sscanf/range-check
+		// even runs) -- "nan" is not a finite-number token, so this row
+		// never reaches the range check at all.  The range check's own
+		// negated-idiom form `!( r >= 0.0 && r <= halfMin )` (vs. the old
+		// `r < 0 || r > halfMin`, which passes NaN through both branches)
+		// is still correct and kept as DEFENSE IN DEPTH for any future
+		// caller that reaches Finalize with a NaN past the token gate.
+		{ "rect_r_nan",   "sweep_geometry\n{\nname b\nprofile_rect 2 2 nan\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_rect corner radius nan rejects" },
+		// C2 fix round, Fix 5: profile_circle / profile_rect have OPTIONAL
+		// trailing fields, so a bare sscanf conversion count can't tell
+		// "the optional field was omitted" from "garbage is glued onto the
+		// last field sscanf could parse" -- `1.0abc` stops the radius %lf
+		// at `1.0`, leaving `abc` for the `n` %lf to fail on, and sscanf
+		// halts there instead of erroring (so the "n" field just silently
+		// defaults, dropping "abc" on the floor).  Same trap for
+		// profile_rect's optional corner radius.
+		{ "circ_trailing", "sweep_geometry\n{\nname b\nprofile_circle 1.0abc\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_circle radius with glued trailing garbage rejects" },
+		{ "rect_trailing", "sweep_geometry\n{\nname b\nprofile_rect 2 2extra\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "profile_rect height with glued trailing garbage rejects" },
 	};
 	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
 		Check( !ParseBody( rows[i].tag, rows[i].body ), rows[i].what );
 	}
+}
+
+static void TestProfileConveniencesAndClosedLoop()
+{
+	std::cout << "Test 3b: profile_circle / profile_rect conveniences + path_closed -- happy paths" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const bool ok = ParseBody( "conveniences",
+		// profile_circle
+		"sweep_geometry\n{\nname circg\nprofile_circle 2.0 16\npoint 0 0 0\npoint 0 0 10\n}\n"
+		// profile_rect, sharp
+		"sweep_geometry\n{\nname rectg\nprofile_rect 2.0 1.0\npoint 0 0 0\npoint 0 0 10\n}\n"
+		// profile_rect, rounded
+		"sweep_geometry\n{\nname rrectg\nprofile_rect 2.0 1.0 0.3\npoint 0 0 0\npoint 0 0 10\n}\n"
+		// path_closed loop (circular profile, non-coincident first/last point)
+		"sweep_geometry\n{\nname loopg\nprofile_circle 1.0\npoint 0 0 0\npoint 5 5 0\npoint 10 0 0\npath_closed TRUE\n}\n"
+		// C2 fix round, Fix 1: point_scale -- a per-station UNIFORM (both
+		// axes) taper, composed multiplicatively with point_width (x only)
+		// and end_scale -- on an OPEN path, exercising it alongside
+		// point_width so both tracks resolve in the same chunk.
+		"sweep_geometry\n{\nname scaleg\nprofile_circle 1.0\npoint 0 0 0\npoint 0 5 2\npoint 0 8 6\n"
+		"point_width 1.0\npoint_width 0.7\npoint_width 0.5\n"
+		"point_scale 1.0\npoint_scale 0.8\npoint_scale 0.4\n}\n"
+		// point_scale on a CLOSED loop (periodic sampling) -- point_scale
+		// stays legal there even though end_scale must not (a loop has no
+		// end to taper toward, but per-station scale is still periodic).
+		"sweep_geometry\n{\nname scaleloopg\nprofile_circle 1.0\npoint 0 0 0\npoint 5 5 0\npoint 10 0 0\npath_closed TRUE\n"
+		"point_scale 1.0\npoint_scale 0.6\npoint_scale 0.8\n}\n",
+		*job );
+	Check( ok, "profile_circle / profile_rect / path_closed / point_scale scene parses" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	Check( priv != 0, "IJobPriv available" );
+	if( priv ) {
+		Check( priv->GetGeometries()->GetItem( "circg" ) != 0,  "profile_circle sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "rectg" ) != 0,  "profile_rect (sharp) sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "rrectg" ) != 0, "profile_rect (rounded) sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "loopg" ) != 0,  "path_closed loop sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "scaleg" ) != 0, "point_scale x point_width (open path) sweep registered" );
+		Check( priv->GetGeometries()->GetItem( "scaleloopg" ) != 0, "point_scale on a closed loop sweep registered" );
+	}
+	job->release();
 }
 
 static void TestFunction2DColorPainter()
@@ -239,6 +335,133 @@ static void TestFunction2DColorPainter()
 	// rejection: a function2d_painter referencing a missing source
 	Check( !ParseBody( "missing_fn2d", "function2d_painter\n{\nname p\nfunction2d nope\n}\n" ),
 		"function2d_painter missing source rejects" );
+}
+
+// C2 fix round (2026-08-14), Fix 2: real-parser coverage for the profile
+// conveniences.  Test 3b above only asserts the geometry REGISTERED; the
+// parser's own profile_rect corner-arc tessellation + conditional dedup
+// (ChunkParserRegistry.cpp's `profile_rect` branch, ~ line 5766) had zero
+// coverage through the actual chunk-parse path -- ProceduralMeshTest's
+// coverage of that same expansion algebra is a hand-copied re-derivation
+// of the formula, which validates itself, not the parser.  Every fixture
+// here uses a straight 2-point path along +Z with `n_len 2` (the minimum
+// the descriptor accepts) and caps off, so the station count is exactly 3
+// (segs=1, per=max(2,2)=2, out=segs*per+1=3) and ring 0 is exactly the
+// first NP vertices in mesh order -- deterministic, no re-derivation of
+// BuildPathFrames needed.
+static void TestProfileConvenienceRealParserCoverage()
+{
+	std::cout << "Test 3c: profile_rect / profile_circle conveniences -- REAL PARSER vertex-count + ring-integrity coverage" << std::endl;
+
+	auto ringCheck = [&]( const TriangleMeshGeometryIndexed* mesh, unsigned int NP, const char* label ) {
+		// no two CONSECUTIVE ring-0 points (cyclically) are coincident, and
+		// the ring's signed area (shoelace, in the path's local x/y plane --
+		// the path here is a straight +Z line with no frame_hint, so
+		// BuildPathFrames picks B[0] = world +X (the axis-tie-break falls to
+		// x first) and N[0] = cross(B[0], T[0]) = world -Y; the mesh vertex
+		// x/y are therefore (px, -ph), NOT (px, ph) directly) is NEGATIVE --
+		// i.e. still CCW in the profile's OWN (px, ph) frame after the
+		// parser's dedup (matching the descriptor's documented convention,
+		// CCW = outward normals), which appears CW once embedded because
+		// cross(B, N) = -T always (B _|_ T, so B x (B x T) = -T) -- the
+		// sweep's (B, N) basis is structurally left-handed relative to T,
+		// not a fixture-specific quirk of this path.
+		bool noCoincident = true;
+		Scalar area2 = 0;
+		for( unsigned int k = 0; k < NP; ++k ) {
+			const unsigned int k1 = ( k + 1 ) % NP;
+			const Vertex& p0 = mesh->getVertices()[k];
+			const Vertex& p1 = mesh->getVertices()[k1];
+			const Scalar dx = p1.x - p0.x, dy = p1.y - p0.y;
+			if( std::fabs( dx ) < 1e-9 && std::fabs( dy ) < 1e-9 ) noCoincident = false;
+			area2 += p0.x * p1.y - p1.x * p0.y;
+		}
+		std::string coincLabel = std::string( label ) + ": ring 0 has no consecutive coincident points";
+		std::string areaLabel  = std::string( label ) + ": ring 0 has negative embedded shoelace area (CCW in the profile's own frame, mirrored by B x N = -T)";
+		Check( noCoincident, coincLabel.c_str() );
+		Check( area2 < 0, areaLabel.c_str() );
+	};
+
+	// profile_rect 4 2 1: r == min(w,h)/2 (a capsule -- the two collapsed
+	// sides are along the SHORTER dimension), NP = 18 pins the conditional
+	// per-corner dedup (4 corners * 5 raw samples = 20, minus the two
+	// coincident boundaries where adjacent corners share a centre).
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "prof_rect_18",
+			"sweep_geometry\n{\nname r18\nprofile_rect 4 2 1\npoint 0 0 0\npoint 0 0 10\nn_len 2\ncap_start FALSE\ncap_end FALSE\n}\n", *job );
+		Check( ok, "profile_rect 4 2 1 parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "r18" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh != 0, "profile_rect 4 2 1: concrete mesh type available" );
+			if( mesh ) {
+				const unsigned int NP = 18;
+				Check( mesh->numPoints() == 3 * NP,
+					"profile_rect 4 2 1: MONEY ASSERTION: total vertex count pins NP == 18 through the REAL parser" );
+				ringCheck( mesh, NP, "profile_rect 4 2 1" );
+			}
+		} else {
+			Check( false, "IJobPriv available" );
+		}
+		job->release();
+	}
+
+	// profile_rect 2 2 1: r == min(w,h)/2 AND w == h -- the full-collapse
+	// case (all four corners share one centre, a circle from 4 quarter
+	// arcs).  NP = 16 pins BOTH the 3 consecutive-boundary dedups AND the
+	// separate cyclic wrap-around dedup (first/last point coincide too).
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "prof_rect_16",
+			"sweep_geometry\n{\nname r16\nprofile_rect 2 2 1\npoint 0 0 0\npoint 0 0 10\nn_len 2\ncap_start FALSE\ncap_end FALSE\n}\n", *job );
+		Check( ok, "profile_rect 2 2 1 parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "r16" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh != 0, "profile_rect 2 2 1: concrete mesh type available" );
+			if( mesh ) {
+				const unsigned int NP = 16;
+				Check( mesh->numPoints() == 3 * NP,
+					"profile_rect 2 2 1: MONEY ASSERTION: total vertex count pins NP == 16 (dedup + cyclic-wrap dedup) through the REAL parser" );
+				ringCheck( mesh, NP, "profile_rect 2 2 1" );
+			}
+		} else {
+			Check( false, "IJobPriv available" );
+		}
+		job->release();
+	}
+
+	// profile_circle 2.0 (no n): NP = 24 pins the descriptor's documented
+	// default n (24, clamped 3..512) through the real parser -- a deleted
+	// default or a changed clamp would silently drift this without a
+	// parse-path assertion.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "prof_circ_24",
+			"sweep_geometry\n{\nname c24\nprofile_circle 2.0\npoint 0 0 0\npoint 0 0 10\nn_len 2\ncap_start FALSE\ncap_end FALSE\n}\n", *job );
+		Check( ok, "profile_circle 2.0 (no n) parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "c24" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh != 0, "profile_circle 2.0: concrete mesh type available" );
+			if( mesh ) {
+				const unsigned int NP = 24;
+				Check( mesh->numPoints() == 3 * NP,
+					"profile_circle 2.0: MONEY ASSERTION: total vertex count pins the default n == 24 through the REAL parser" );
+				ringCheck( mesh, NP, "profile_circle 2.0" );
+			}
+		} else {
+			Check( false, "IJobPriv available" );
+		}
+		job->release();
+	}
 }
 
 static void TestExpressionAndDisplacement()
@@ -279,6 +502,8 @@ int main( int, char** )
 	TestHappyPath();
 	TestCartesianDiskValidation();
 	TestRejections();
+	TestProfileConveniencesAndClosedLoop();
+	TestProfileConvenienceRealParserCoverage();
 	TestFunction2DColorPainter();
 	TestExpressionAndDisplacement();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;

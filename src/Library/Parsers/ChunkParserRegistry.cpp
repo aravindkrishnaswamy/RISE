@@ -5671,27 +5671,196 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name", "noname" );
 
-					// repeatable 2D profile + 3D path lines
+					// The profile is authored EXACTLY one of three ways: repeatable
+					// `profile_point` lines (hand-authored polygon), OR the
+					// `profile_circle` convenience (regular n-gon), OR the
+					// `profile_rect` convenience (box, optionally rounded).
 					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
-					if( profLines.size() < 3 ) {
+					const bool hasCircle = bag.Has( "profile_circle" );
+					const bool hasRect   = bag.Has( "profile_rect" );
+					const int profileFormCount = ( profLines.empty() ? 0 : 1 ) + ( hasCircle ? 1 : 0 ) + ( hasRect ? 1 : 0 );
+					if( profileFormCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
-							name.c_str(), (unsigned int)profLines.size() );
+							"sweep_geometry `%s`: missing profile -- supply repeatable `profile_point <x> <h>` lines, OR `profile_circle <r> [n]`, OR `profile_rect <w> <h> [r]`",
+							name.c_str() );
 						return false;
 					}
+					if( profileFormCount > 1 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"sweep_geometry `%s`: profile_point, profile_circle, and profile_rect are mutually exclusive -- author exactly ONE profile source",
+							name.c_str() );
+						return false;
+					}
+
 					std::vector<double> prof;
-					prof.reserve( profLines.size() * 2 );
-					for( std::size_t i = 0; i < profLines.size(); ++i ) {
-						double x = 0, h = 0;
-						char trailing[8] = {0};
-						if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
+					if( !profLines.empty() ) {
+						if( profLines.size() < 3 ) {
 							GlobalLog()->PrintEx( eLog_Error,
-								"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
-								name.c_str(), (unsigned int)i, profLines[i].c_str() );
+								"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
+								name.c_str(), (unsigned int)profLines.size() );
 							return false;
 						}
-						prof.push_back( x );
-						prof.push_back( h );
+						prof.reserve( profLines.size() * 2 );
+						for( std::size_t i = 0; i < profLines.size(); ++i ) {
+							double x = 0, h = 0;
+							char trailing[8] = {0};
+							if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
+									name.c_str(), (unsigned int)i, profLines[i].c_str() );
+								return false;
+							}
+							prof.push_back( x );
+							prof.push_back( h );
+						}
+					} else if( hasCircle ) {
+						// profile_circle <r> [n]: a regular CCW n-gon of radius r
+						// centred at the profile origin -- the same winding /
+						// (x,h)=(r cos, r sin) convention a hand-authored circular
+						// profile_point ring already uses elsewhere in the codebase.
+						const std::string cs = bag.GetString( "profile_circle", "" );
+						// profile_circle has OPTIONAL arity (`<r>` or `<r> <n>`), so a
+						// bare sscanf conversion count can't tell "n legitimately
+						// omitted" from "garbage glued onto r" (`1.0abc` stops %lf at
+						// `1.0`, leaving `abc` for the next %lf to fail on -- sscanf
+						// halts there instead of erroring, silently dropping the
+						// glued text).  AllTokensAreFiniteNumbers TEXT-validates the
+						// whole string first: exact whitespace-separated token count,
+						// no trailing garbage, no nan/inf spellings.
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( cs.c_str(), &nTok ) || nTok < 1 || nTok > 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_circle `%s` must be `<r>` or `<r> <n>` (finite numbers, no trailing garbage)",
+								name.c_str(), cs.c_str() );
+							return false;
+						}
+						double r = 0, nD = 24;
+						const int nf = sscanf( cs.c_str(), "%lf %lf", &r, &nD );
+						if( !( r > 0 ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_circle radius (%g) must be > 0", name.c_str(), r );
+							return false;
+						}
+						// nD is already finite (AllTokensAreFiniteNumbers above), but an
+						// absurdly large magnitude is still UB to (int)-cast -- reject
+						// outright rather than clamp-and-warn like the in-range case.
+						if( nf == 2 && fabs( nD ) >= 1e9 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_circle n (%g) is absurdly out of range", name.c_str(), nD );
+							return false;
+						}
+						int n = ( nf == 2 ) ? (int)( nD + 0.5 ) : 24;
+						if( n < 3 || n > 512 ) {
+							const int clamped = n < 3 ? 3 : 512;
+							GlobalLog()->PrintEx( eLog_Warning,
+								"sweep_geometry `%s`: profile_circle n (%d) clamped to %d", name.c_str(), n, clamped );
+							n = clamped;
+						}
+						prof.reserve( (std::size_t)n * 2 );
+						for( int k = 0; k < n; ++k ) {
+							const double a = TWO_PI * k / n;
+							prof.push_back( r * cos( a ) );
+							prof.push_back( r * sin( a ) );
+						}
+					} else {
+						// profile_rect <w> <h> [r]: a CCW box of width w (binormal
+						// axis) and height h (normal axis) centred at the profile
+						// origin, with an optional corner radius r.  r > 0 rounds
+						// each corner with a 5-point (4-interval) quarter-circle arc;
+						// the four corners are emitted in CCW order BR -> TR -> TL ->
+						// BL, matching the sharp box's corner order at r == 0.
+						const std::string rs = bag.GetString( "profile_rect", "" );
+						// Same optional-arity trailing-garbage trap as profile_circle
+						// above (`2 2extra` -> w=2, h=2, the "extra" silently dropped
+						// because the 3rd %lf's parse failure halts sscanf before it
+						// ever reaches a trailing %s catch-all) -- TEXT-validate first.
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( rs.c_str(), &nTok ) || nTok < 2 || nTok > 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_rect `%s` must be `<w> <h>` or `<w> <h> <r>` (finite numbers, no trailing garbage)",
+								name.c_str(), rs.c_str() );
+							return false;
+						}
+						double w = 0, h = 0, r = 0;
+						const int nf = sscanf( rs.c_str(), "%lf %lf %lf", &w, &h, &r );
+						if( nf == 2 ) { r = 0; }
+						if( !( w > 0 ) || !( h > 0 ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_rect width/height (%g, %g) must both be > 0", name.c_str(), w, h );
+							return false;
+						}
+						const double halfMin = ( w < h ? w : h ) * 0.5;
+						// C2 fix round (comment corrected 2026-08-14): a NaN corner
+						// radius (e.g. `profile_rect 2 2 nan`) is actually rejected
+						// ABOVE by AllTokensAreFiniteNumbers -- the TEXT-layer gate,
+						// since "nan" is not a finite-number token, never lets a NaN
+						// literal reach this line at all.  This negated-idiom range
+						// check (`!( r >= 0.0 && r <= halfMin )`, vs. the naive
+						// `r < 0 || r > halfMin` which passes a NaN r through both
+						// branches) is DEFENSE IN DEPTH, not the primary guard.
+						if( !( r >= 0.0 && r <= halfMin ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_rect corner radius (%g) must be in [0, min(w,h)/2] = [0, %g]",
+								name.c_str(), r, halfMin );
+							return false;
+						}
+						const double hw = w * 0.5, hh = h * 0.5;
+						if( r <= 0 ) {
+							prof.push_back(  hw ); prof.push_back( -hh );
+							prof.push_back(  hw ); prof.push_back(  hh );
+							prof.push_back( -hw ); prof.push_back(  hh );
+							prof.push_back( -hw ); prof.push_back( -hh );
+						} else {
+							const double cx[4] = {  hw-r,  hw-r, -(hw-r), -(hw-r) };
+							const double cy[4] = { -(hh-r), hh-r,  hh-r, -(hh-r) };
+							const double startDeg[4] = { -90, 0, 90, 180 };
+							prof.reserve( 4 * 5 * 2 );
+							for( int c = 0; c < 4; ++c ) {
+								for( int k = 0; k <= 4; ++k ) {
+									const double a = ( startDeg[c] + 22.5 * k ) * DEG_TO_RAD;
+									prof.push_back( cx[c] + r * cos( a ) );
+									prof.push_back( cy[c] + r * sin( a ) );
+								}
+							}
+							// A corner arc's own closing point (its true 90-degree end,
+							// computed off ITS OWN centre) coincides EXACTLY with the
+							// following corner's opening point (computed off THAT
+							// corner's own, different, centre) only when the straight
+							// edge between them has collapsed to zero length -- which
+							// happens per-SIDE, not globally: at r == min(w,h)/2 the two
+							// sides along the SHORTER dimension collapse (a capsule),
+							// and if w == h too (a full circle from 4 quarter arcs
+							// sharing one centre) all four sides collapse.  A blanket
+							// "drop every corner's last sample" would also cut the real,
+							// still-finite sides on a capsule (e.g. profile_rect 4 2 1),
+							// so dedup CONDITIONALLY: drop a sample only when it is
+							// actually coincident with its predecessor, checked cyclically
+							// so the wrap edge (corner 3 -> corner 0) is covered too.
+							const double eps = 1e-9 * ( ( hw > hh ? hw : hh ) + r );
+							std::vector<double> deduped;
+							deduped.reserve( prof.size() );
+							for( std::size_t k = 0; k < prof.size(); k += 2 ) {
+								const double x = prof[k], y = prof[k+1];
+								if( !deduped.empty() ) {
+									const double px = deduped[ deduped.size() - 2 ];
+									const double py = deduped[ deduped.size() - 1 ];
+									if( fabs( x - px ) < eps && fabs( y - py ) < eps ) {
+										continue;
+									}
+								}
+								deduped.push_back( x );
+								deduped.push_back( y );
+							}
+							if( deduped.size() >= 4 ) {
+								const double x0 = deduped[0], y0 = deduped[1];
+								const double xn = deduped[ deduped.size() - 2 ], yn = deduped[ deduped.size() - 1 ];
+								if( fabs( x0 - xn ) < eps && fabs( y0 - yn ) < eps ) {
+									deduped.pop_back();
+									deduped.pop_back();
+								}
+							}
+							prof.swap( deduped );
+						}
 					}
 
 					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
@@ -5745,9 +5914,41 @@ namespace RISE
 						}
 					}
 
+					// OPTIONAL repeatable per-control-point UNIFORM (both profile
+					// axes) scale multipliers, one per `point` (the rest pad with
+					// 1.0) -- the ROUND-taper twin of `point_width` (which only
+					// ever scales x).  Same validation/error idiom as point_width.
+					const std::vector<std::string>& scaleLines = bag.GetRepeatable( "point_scale" );
+					std::vector<double> scales;
+					if( !scaleLines.empty() ) {
+						if( scaleLines.size() > pointLines.size() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: %u `point_scale` entries exceed %u `point` path control points (one scale per point; pad with 1.0)",
+								name.c_str(), (unsigned int)scaleLines.size(), (unsigned int)pointLines.size() );
+							return false;
+						}
+						scales.reserve( scaleLines.size() );
+						for( std::size_t i = 0; i < scaleLines.size(); ++i ) {
+							double s = 0;
+							char trailing[8] = {0};
+							if( sscanf( scaleLines[i].c_str(), "%lf %7s", &s, trailing ) != 1 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_scale %u (`%s`) must be exactly one number `<s>`",
+									name.c_str(), (unsigned int)i, scaleLines[i].c_str() );
+								return false;
+							}
+							if( !( s > 0 ) ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_scale %u (%g) must be > 0", name.c_str(), (unsigned int)i, s );
+								return false;
+							}
+							scales.push_back( s );
+						}
+					}
+
 					SweepDescriptor d;
 					d.profilePoints    = &prof[0];
-					d.numProfilePoints = (unsigned int)profLines.size();
+					d.numProfilePoints = (unsigned int)( prof.size() / 2 );
 					d.pathPoints       = &pts[0];
 					d.numPathPoints    = (unsigned int)pointLines.size();
 					d.nLen             = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
@@ -5755,9 +5956,33 @@ namespace RISE
 					d.endScaleY        = bag.GetDouble( "end_scale_y", d.endScaleY );
 					d.capStart         = bag.GetBool( "cap_start", d.capStart );
 					d.capEnd           = bag.GetBool( "cap_end",   d.capEnd );
+					d.pathClosed       = bag.GetBool( "path_closed", d.pathClosed );
+					if( d.pathClosed ) {
+						// cap_start / cap_end are ignored for a closed loop (there is
+						// no start/end cross-section) -- bag.Has() distinguishes an
+						// explicitly-authored TRUE from the untouched TRUE default, so
+						// silently drop the default but reject an explicit contradiction
+						// rather than silently ignoring authored intent.
+						if( bag.Has( "cap_start" ) && bag.GetBool( "cap_start", true ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: cap_start TRUE is incompatible with path_closed (a closed loop has no start cross-section)",
+								name.c_str() );
+							return false;
+						}
+						if( bag.Has( "cap_end" ) && bag.GetBool( "cap_end", true ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: cap_end TRUE is incompatible with path_closed (a closed loop has no end cross-section)",
+								name.c_str() );
+							return false;
+						}
+					}
 					if( !widths.empty() ) {
 						d.pointWidths    = &widths[0];
 						d.numPointWidths = (unsigned int)widths.size();
+					}
+					if( !scales.empty() ) {
+						d.pointScales    = &scales[0];
+						d.numPointScales = (unsigned int)scales.size();
 					}
 					{
 						const std::string fh = bag.GetString( "frame_hint", "" );
@@ -5779,18 +6004,22 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), optional NON-linear per-station width (repeatable point_width multipliers, Catmull-Rom interpolated, composed multiplicatively with end_scale_x), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
+						cd.description = "Sweeps a CLOSED 2D profile (profile_point lines, or profile_circle/profile_rect) along a 3D Catmull-Rom path (point lines) with rotation-minimizing frames.  x -> binormal, h -> normal; UV = (profile arc frac, path frac), U wraps seamlessly.  Optional end_scale taper, per-station point_width (x only) and point_scale (both axes, round taper), composed multiplicatively.  Optional ear-clipped caps.  path_closed TRUE: seamless closed loop (periodic sampling, holonomy-corrected frame, cyclic stitching, no caps; end_scale forced 1.0, point_width/point_scale still periodic).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` in the sweep frame (repeatable, polygon order; at least 3; CCW = outward normals).  Duplicate a point to harden an edge"; }
-						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2).  The profile sweeps a Catmull-Rom spline through these"; }
-						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-control-point width (x-axis) multiplier `<sx>` (repeatable, path order; one per `point`, missing padded with 1.0; > 0).  Catmull-Rom interpolated along the path and composed MULTIPLICATIVELY with end_scale_x -- a NON-linear width profile (e.g. neck in at one end).  Catmull-Rom can over/undershoot between non-monotone widths (add path points to tighten; interpolated widths are floored to > 0).  Omit = uniform 1.0"; }
-						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1)"; p.defaultValueHint = "64"; }
-						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` for the rotation-minimizing frame (omit = world axis most perpendicular to the start tangent)"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` (repeatable, >= 3, CCW = outward normals).  Exclusive with profile_circle/profile_rect"; }
+						{ auto& p = P(); p.name = "profile_circle"; p.kind = ValueKind::String; p.description = "Convenience profile `<r> [n]`: CCW n-gon, r > 0, n default 24 (clamped 3..512).  Exclusive with profile_point/profile_rect"; }
+						{ auto& p = P(); p.name = "profile_rect";  p.kind = ValueKind::String; p.description = "Convenience profile `<w> <h> [r]`: CCW rect, w/h > 0, optional corner radius r (default 0, <= min(w,h)/2).  Exclusive with profile_point/profile_circle"; }
+						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable; >= 2, or >= 3 when path_closed).  Catmull-Rom spline through these"; }
+						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point x-axis width `<sx>` (repeatable, > 0, missing padded 1.0; periodic when path_closed).  Composed multiplicatively with end_scale_x and point_scale.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "point_scale";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-point UNIFORM scale `<s>` (repeatable, > 0, missing padded 1.0; same sampler as point_width) -- composed with point_width (x) and end_scale.  ROUND taper; point_width alone only flattens.  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at path end (taper from 1).  Must stay 1.0 when path_closed"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at path end (taper from 1).  Must stay 1.0 when path_closed"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped).  Must not be explicitly TRUE when path_closed"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped).  Must not be explicitly TRUE when path_closed"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` (omit = world axis most perpendicular to the start tangent)"; }
+						{ auto& p = P(); p.name = "path_closed";   p.kind = ValueKind::Bool;   p.description = "Sweep a seamless CLOSED loop: periodic path sampling, holonomy-corrected frame (no seam twist), cyclic ring stitching, no caps.  Needs >= 3 point entries, first/last not coincident.  end_scale must stay 1.0; cap_start/cap_end must not be TRUE"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;

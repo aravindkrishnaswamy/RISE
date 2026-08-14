@@ -43,6 +43,9 @@ namespace RISE
 		double frameHintX, frameHintY, frameHintZ;	//!< initial binormal hint (0,0,0 = auto: world axis most perpendicular to the start tangent)
 		const double* pointWidths;	//!< OPTIONAL per-control-point width (x/binormal axis) multipliers, one per path point (count <= numPathPoints; missing padded with 1.0).  Catmull-Rom interpolated onto the path samples and composed MULTIPLICATIVELY with the linear end_scale_x taper.  NULL/0 = uniform width (byte-identical to the linear-taper-only sweep)
 		unsigned int  numPointWidths;	//!< number of pointWidths entries (0 = per-station width OFF)
+		const double* pointScales;	//!< OPTIONAL per-control-point UNIFORM (both profile axes) scale multipliers, one per path point (count <= numPathPoints; missing padded with 1.0).  Catmull-Rom interpolated onto the path samples with the SAME sampler as pointWidths, and composed MULTIPLICATIVELY with pointWidths (x only) and the linear end_scale taper -- use pointScales for a ROUND varying radius (a tapered tentacle/tendril); pointWidths remains the deliberate-flattening (x-only) control.  NULL/0 = uniform scale (byte-identical to a sweep without it)
+		unsigned int  numPointScales;	//!< number of pointScales entries (0 = per-station scale OFF)
+		bool   pathClosed;				//!< sweep a CLOSED loop: periodic Catmull-Rom path sampling (segments wrap point[n-1]->point[0]), a periodic rotation-minimizing frame with a holonomy correction removing the seam twist, and cyclic ring stitching (no end caps).  Requires numPathPoints >= 3 and the first/last point NOT authored coincident.  end_scale_x/end_scale_y must stay 1.0 (point_scale IS allowed -- it samples periodically like point_width).  Default FALSE = the existing open-path behaviour, byte-identical
 
 		SweepDescriptor() :
 			profilePoints( 0 ), numProfilePoints( 0 ),
@@ -51,7 +54,9 @@ namespace RISE
 			endScaleX( 1.0 ), endScaleY( 1.0 ),
 			capStart( true ), capEnd( true ),
 			frameHintX( 0.0 ), frameHintY( 0.0 ), frameHintZ( 0.0 ),
-			pointWidths( 0 ), numPointWidths( 0 )
+			pointWidths( 0 ), numPointWidths( 0 ),
+			pointScales( 0 ), numPointScales( 0 ),
+			pathClosed( false )
 		{
 		}
 	};

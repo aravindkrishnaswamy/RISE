@@ -1,0 +1,154 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sweep_loop.RISEscene                                                                    #
+#   Description:    C2 sweep affordances: profile conveniences + closed-loop path mode.                    #
+#                     - a WREATH: rounded-rect profile (profile_rect with a corner radius), swept along     #
+#                       a CLOSED circular path (path_closed TRUE) -- a seamless ring with no end caps       #
+#                     - a TUBE: circular profile (profile_circle convenience) swept along an OPEN 3D        #
+#                       S-curve path, exactly like sweep_instances.RISEscene's hand-authored tube but       #
+#                       authored with the profile_circle convenience instead of 16 profile_point lines      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sweep_loop
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			512
+	height			512
+}
+
+pinhole_camera
+{
+	location			0 -26 14
+	lookat				0 0 1
+	up					0 0 1
+	fov					42.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_bronze
+	color				0.72 0.5 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_teal
+	color				0.2 0.55 0.5
+}
+
+lambertian_material
+{
+	name				mat_bronze
+	reflectance			pnt_bronze
+}
+
+lambertian_material
+{
+	name				mat_teal
+	reflectance			pnt_teal
+}
+
+##################################################
+# A WREATH: rounded-rect profile (profile_rect with a corner radius) swept
+# along a CLOSED circular path (path_closed TRUE).  The periodic Catmull-Rom
+# path sampling + holonomy-corrected rotation-minimizing frame + cyclic ring
+# stitching close the loop seamlessly -- no explicit closing point, no caps.
+##################################################
+sweep_geometry
+{
+	name				wreathgeom
+	profile_rect			0.7 0.35 0.12
+	point				5.0 0.0 0.0
+	point				4.05 2.94 0.6
+	point				1.55 4.76 -0.6
+	point				-1.55 4.76 0.6
+	point				-4.05 2.94 -0.6
+	point				-5.0 0.0 0.0
+	point				-4.05 -2.94 0.6
+	point				-1.55 -4.76 -0.6
+	point				1.55 -4.76 0.6
+	point				4.05 -2.94 -0.6
+	n_len				160
+	path_closed			TRUE
+}
+
+standard_object
+{
+	name				wreath
+	geometry			wreathgeom
+	material			mat_bronze
+	position			0 4 2
+}
+
+##################################################
+# A TUBE: circular profile via the profile_circle convenience, swept along a
+# 3D S-curve (the same path sweep_instances.RISEscene's hand-authored
+# 16-profile_point tube uses, but authored with one profile_circle line
+# instead).  OPEN path (path_closed defaults FALSE): both end caps close it.
+##################################################
+sweep_geometry
+{
+	name				tubegeom
+	profile_circle			0.7 20
+	point				-9 -3 0
+	point				-5 3 1
+	point				0 -3 3
+	point				5 3 1
+	point				9 -3 0
+	n_len				96
+}
+
+standard_object
+{
+	name				tube
+	geometry			tubegeom
+	material			mat_teal
+	position			0 -6 -3
+}
+
+##################################################
+# Light
+##################################################
+omni_light
+{
+	name				keylight
+	power				2800
+	color				1.0 1.0 1.0
+	position			-12 -18 22
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				1.0 1.0 1.0
+	position			14 -10 8
+}
