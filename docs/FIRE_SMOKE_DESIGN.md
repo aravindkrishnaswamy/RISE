@@ -586,9 +586,14 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     whose centers lie in the annulus [D/2, D/2 + 2δx] around the source
     axis — the fuel/air interface ring where a physical pilot sits and
     where both reactants are available to the eligibility graph.
-  - **Power:** exactly **0.01·Q̇_ref**, distributed uniformly per mask
-    cell. Small enough not to contaminate any empirical row; ample to
-    take a two-cell ring past T_pilot.
+  - **Power (amended r57):** a fixed volumetric density of exactly
+    **1 MW/m³** over the mask cells — an *intensive* pin, physically the
+    heat-release density of a small pilot flame. The original r55 form
+    (0.01·Q̇_ref total, spread over the mask) diluted with burner size:
+    wider annuli at fixed fractional power never crossed T_pilot. A
+    density pin heats any mask cell at the same ~10³ K/s regardless of
+    case scale, and total pilot power scales with ring volume exactly as
+    a physical pilot ring does. Ledger/exclusion rules unchanged.
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
@@ -1675,12 +1680,39 @@ following; two conforming tools must derive identical bytes:
    exactly the authored value, scaled by amplitude **a = 0.01**, and
    applied **constantly for the entire run** (a slightly non-uniform
    burner — no time discontinuity, fully deterministic).
-7. **Pilot (r55).** The prescribed pilot energy source of §3.3: mask =
-   first layer above the bed, centers in the annulus [D/2, D/2 + 2δx];
-   power exactly 0.01·Q̇_ref uniform per mask cell; active from run start
-   for exactly 1·t_ft; ledgered in ℋ_s but excluded from Q̇_tot. The
-   pilot block is echoed in the derived fields and is part of
+7. **Pilot (r55, amended r57).** The prescribed pilot energy source of
+   §3.3: mask = first layer above the bed, centers in the annulus
+   [D/2, D/2 + 2δx]; power = a fixed volumetric density of exactly
+   **1 MW/m³** over the mask (intensive — scale-invariant heating;
+   the r55 fractional form diluted with burner size); active from run
+   start for exactly 1·t_ft; ledgered in ℋ_s but excluded from Q̇_tot.
+   The pilot block is echoed in the derived fields and is part of
    `case_record_id`.
+7a. **Case admissibility — the mixing-limited scale gate (r57).** The
+   §3.3 closure is a plume-scale, resolution-limited combustion model
+   (FDS lineage); it is not a laminar flame-structure model. A case is
+   admissible only if the derived grid resolves its burner:
+   **δx ≤ D/4**, checked after pin 3 and failing case generation with a
+   diagnostic naming the smallest admissible tier. The capstone lesson
+   is recorded: a 10 mm burner at tier 6 gives δx/D = 0.40 (2.5 cells
+   across the burner) and produced honest marginal ignition followed by
+   permanent extinction, with the γ-branch's unbudgeted cooling
+   accelerating the quench — the machinery behaving correctly on a case
+   outside the closure's validity. Laminar micro-flames (candle-class,
+   §2.4's DNS-resolved regime) are a **separate future case class** with
+   its own resolution rule; §3.9's D*-tier derivation must not be
+   applied to them.
+7b. **The capstone case (r57).** The Phase-C capstone runs **McCaffrey's
+   own configuration: a 0.30 m methane burner at Q̇_ref = 33.0 kW**
+   (one of the published McCaffrey series points), plume-law tagged.
+   This puts the §3.8 McCaffrey centerline row at the *measured*
+   configuration rather than a scaling extrapolation, makes the puffing
+   expectation directly 1.5/√0.30 ≈ 2.7 Hz, and sits squarely inside
+   the closure's validated scale — at trivial cost (tier 6 ≈ 214k
+   cells; tier 10 ≈ 1M). χ_r: the fuel default 0.20 applies with **no
+   case override**; the §3.8 integrated-χ_r gate compares against 0.20
+   with the fuel record's measured spread (0.07–0.28, Hamins-class
+   burners at this scale) as its tolerance context.
 8. **Thread count and reduction mode are NOT identity-bearing.** The
    requirement is on the output: the solver must produce **bit-identical
    sequences regardless of effective thread count**, via fixed-order

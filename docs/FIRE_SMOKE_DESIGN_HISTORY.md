@@ -1190,3 +1190,37 @@ it was already tried and refuted here.
   methane record, and case identities regenerate downstream —
   pre-release, no compatibility surface. The run-time envelope stays
   fixed and fail-closed: it caught this.
+
+- **r57 (2026-08-14):** capstone scale ruling and pilot amendment, from
+  the sustained-combustion stop. The tested 10 mm cases were outside the
+  model's validity envelope, and the numbers prove it three ways: at
+  tier 6 a 10 mm burner gets 2.5 cells across its diameter (δx/D = 0.40)
+  — the §3.3 closure is a plume-scale mixing-limited model, not a laminar
+  flame-structure model; the observed integrated χ_r of 0.423 against a
+  declared 0.07 is the γ-branch's intentionally unbudgeted post-fire
+  cooling engaging during marginal burning and accelerating the quench
+  (the machinery behaving correctly on an inadmissible case); and the
+  tiny case was *stiffer and costlier per physical second* than a
+  properly scaled one. Disposition: the agent's option 2, sharpened —
+  the capstone becomes **McCaffrey's own configuration** (0.30 m methane
+  burner, Q̇_ref = 33.0 kW, plume-law tagged), which pins the McCaffrey
+  centerline row at its measured configuration, gives a directly
+  checkable 2.7 Hz puffing expectation, and costs only ~214k cells at
+  tier 6. χ_r stays at the fuel default 0.20, no override, gated against
+  the measured 0.07–0.28 spread. Option 3 (accepting extinction as the
+  capstone) rejected — it validates fail-closed machinery but does not
+  deliver the arc's goal; option 1 alone (pilot tweaks) rejected as
+  masking a validity-envelope problem with ignition crutches. Two
+  supporting pins: **case admissibility δx ≤ D/4** (fail generation with
+  the smallest admissible tier named; laminar candle-class micro-flames
+  are a separate future case class with their own resolution rule — the
+  §2.4 DNS-resolved regime), and the **r55 pilot power re-pinned as an
+  intensive 1 MW/m³ density** over the mask (the fractional 0.01·Q̇_ref
+  form diluted with burner size and never crossed T_pilot on wide
+  annuli; a density heats any mask cell identically at any scale, and
+  total pilot power then scales with ring volume exactly as a physical
+  pilot ring does). Also noted from the same stop: the five red V2/V3/V6
+  manufactured gates after r56 regeneration are fixtures carrying
+  constants derived from the OLD kernel — the fix is record-derived
+  fixtures, never tolerance changes; the agent's refusal to weaken
+  tolerances was correct.
