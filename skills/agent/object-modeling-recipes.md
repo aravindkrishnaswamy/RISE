@@ -24,7 +24,7 @@ not listed here.
 | `clippedplane_geometry` | bounded floors, area-light quads, framed backdrops | cheap analytic | four explicit corners; vertex WINDING picks which side renders/emits |
 | `csg_object` | booleans of two already-declared objects | cost of both operands + one more test | **no `scale` parameter** -- size the operands, not the CSG result |
 | `sdf_geometry` | **TURNED/LATHE PROFILES (bottles, jars, vases, mortars, goblets -- see "Turned forms" below)**; melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp and turned-vessel recipes below for the field layout |
-| `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); OPEN paths only -- a closed loop needs `torus_geometry`, not a sweep with matching endpoints |
+| `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
 | `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson) |
 | `circulardisk_geometry`, `cartesian_disk_geometry` | flat disks (dials, coins, disk-shaped bases) | cheap | `cartesian_disk_geometry` has uniform Cartesian UV density; the polar disk does not -- pick by what you're displacing/texturing onto it |
@@ -72,15 +72,25 @@ Two things the profile approach needs:
   box's top face sits at the intended base plane -- one line, and the
   bottom is flat.  (A round-bottomed florence flask genuinely wants the
   cap; leave it in that one case.)
-- **`sweep_geometry` is NOT the lathe verb.**  It sweeps a FIXED profile
-  polygon along a path, and its only per-station control, `point_width`,
-  scales the profile's x-axis alone (`end_scale_y` on the other axis is
-  linear-only) -- so a varying-radius sweep goes ELLIPTICAL, not round.
-  What `sweep_geometry` is genuinely the right verb for is a TUBE THAT
-  FOLLOWS A CURVE at roughly constant bore: a retort's curved neck, a
-  spout, a handle, a bail, a cable.  A retort is therefore both verbs --
-  an SDF profile for the bulb, a sweep for the neck.  Recipe 4 shows the
-  pair.
+- **`sweep_geometry` is still NOT the lathe verb, even though it now has
+  a round per-station taper.**  `point_scale` (per-station, UNIFORM on
+  BOTH profile axes, composed multiplicatively with `point_width` and
+  `end_scale`) gives a genuinely ROUND varying radius -- a tapered
+  tentacle, a tendril that thins toward its tip -- without going
+  elliptical; use it for that.  `point_width` remains the OTHER,
+  deliberate-flattening control: x-axis only, for when you actually
+  want an oval/flattened cross-section (a strap, a ribbon).  Neither
+  one makes `sweep_geometry` a lathe: it still sweeps a FIXED profile
+  SHAPE along a path (only its overall scale varies per station, not
+  the shape itself), so it cannot produce a profile whose OUTLINE
+  changes character station to station (a belly that a neck doesn't
+  share).  What `sweep_geometry` is genuinely the right verb for is a
+  TUBE THAT FOLLOWS A CURVE at roughly constant bore, optionally
+  tapering smoothly: a retort's curved neck, a spout, a handle, a bail,
+  a cable, a tapered tentacle.  A retort is therefore both verbs -- an
+  SDF profile for the bulb, a sweep for the neck.  Recipe 4 shows the
+  pair.  For a round cross-section, `profile_circle <r> [n]` writes the
+  bore in one line instead of a hand-listed `profile_point` N-gon.
 
 **When a cylinder IS the right answer** -- do not cargo-cult this into
 banning cylinders.  `cylinder_geometry` is correct, and cheaper and
@@ -815,7 +825,11 @@ Three things to notice in the part list:
    it CURVES -- an eight-point circular `profile_point` polygon (radius
    0.035) swept along a five-point Catmull-Rom path.  Its first path
    point sits at `0.16 0.62 0`, inside the body's surface at that
-   height, so it reads as joined rather than floating alongside.
+   height, so it reads as joined rather than floating alongside.  (A
+   hand-authored N-gon like this one is no longer necessary for a round
+   bore -- `profile_circle <r> [n]` emits the same ring in one line; the
+   snippet below keeps the explicit `profile_point` form as the general
+   pattern for a NON-circular cross-section.)
 
 ```rise
 RISE ASCII SCENE 7
@@ -984,7 +998,10 @@ you still wire the material and `standard_object` yourself.
 Recipe 4's sweep is scenario-glued to the flask's neck; this is the
 generic form -- a closed profile tapered at both ends via
 `end_scale_x`/`end_scale_y`, carried along a short 3-point path, with
-no cross-object coordination required.
+no cross-object coordination required.  The square profile below uses
+the `profile_rect 1.0 1.0` convenience (a hand-listed four-corner
+`profile_point` form gives the identical shape -- see the vessel
+recipes above); a round rail would be `profile_circle <r> [n]` instead.
 
 ```rise
 RISE ASCII SCENE 7
@@ -1058,10 +1075,7 @@ standard_object
 sweep_geometry
 {
 	name			rail1geom
-	profile_point	0.5 0.5
-	profile_point	-0.5 0.5
-	profile_point	-0.5 -0.5
-	profile_point	0.5 -0.5
+	profile_rect	1.0 1.0
 	point			-3 0 0
 	point			0 0 1.2
 	point			3 0 0

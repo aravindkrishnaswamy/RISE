@@ -10558,6 +10558,169 @@ static void TestCleanRoomBuildElementHappyPath()
 		       p.find( "standard_object" ) != std::string::npos,
 		       "S2a the grammar comes from the descriptor registry (ReadSchema), not a second "
 		       "hand-written copy that could drift from the parser" );
+		// C2 (2026-08-14): the sweep worked example is GATED on the declared
+		// construction method -- WizardOnlyPlan declares "csg" above, so it
+		// must not appear here.  TestCleanRoomSweepWorkedExample below is the
+		// positive half of this same gate.
+		Check( p.find( "WORKED EXAMPLE for the sweep method" ) == std::string::npos,
+		       "S2a MONEY ASSERTION: the sweep worked example is NOT spliced in for a "
+		       "non-sweep (\"csg\") construction method" );
+		// C2 fix round (2026-08-14): sweep_geometry's SCHEMA is now gated on
+		// the declared construction method too (it left kBuilderGrammarKeywords
+		// and rides the same construction=="sweep" block as the worked
+		// example) -- so a non-sweep element must not see it either.  The
+		// distinctive substring is the JSON-quoted schema key
+		// `"keyword":"sweep_geometry"`, which only SchemaGenForChunk emits
+		// (the worked example's raw scene text has an unquoted bare
+		// `sweep_geometry` keyword line instead, so this cannot alias it).
+		Check( p.find( "\"keyword\":\"sweep_geometry\"" ) == std::string::npos,
+		       "S2a MONEY ASSERTION: the sweep_geometry SCHEMA is NOT sent for a non-sweep "
+		       "(\"csg\") construction method" );
+	}
+}
+
+//! C2 (2026-08-14): the sweep-method worked example -- gated on the
+//! plan's DECLARED CONSTRUCTION METHOD being exactly "sweep" (S2a above
+//! is the negative half: a "csg" plan never sees it), built with the
+//! element's real chunk-name prefix, and, per this arc's law ("one
+//! worked example that PARSES"), actually parses with zero diagnostics
+//! through the same CST derive path a hand-authored scene goes through
+//! (RISE::Cst::ParseToCst + DeriveToJob, GuillocheChunkParseTest's own
+//! pattern for sweep_geometry's parse-level contract).
+static void TestCleanRoomSweepWorkedExample()
+{
+	std::printf( "S2j: the sweep worked example is gated on construction==\"sweep\" and parses...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2j.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2j fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	// A well-formed builder answer wearing the "tentacle_" prefix -- what
+	// the fake completer answers with is independent of the PROMPT this
+	// test is examining, so any prefix-clean trio will do to let
+	// BuildElement complete normally.
+	static const char* const kTentacleAnswer =
+		"uniformcolor_painter\n{\n\tname tentacle_skin_pnt\n\tcolor 0.3 0.5 0.3\n}\n"
+		"lambertian_material\n{\n\tname tentacle_skin_mat\n\treflectance tentacle_skin_pnt\n}\n"
+		"box_geometry\n{\n\tname tentacle_body_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n"
+		"standard_object\n{\n\tname tentacle_obj\n\tgeometry tentacle_body_box\n"
+		"\tmaterial tentacle_skin_mat\n\tposition 0 0 0\n}\n";
+
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+	Agent::AgentSession::AgentBuildPlanEntry e;
+	e.element = "tentacle";
+	e.pieces.push_back( "body" );
+	e.construction = "sweep";
+	e.outline = "0 0; 1 0; 1 3; 0 3";
+	plan.push_back( e );
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kTentacleAnswer }, nullptr, &prompts ) );
+	Check( sess->FileBuildPlan( plan ).ok, "S2j the sweep plan files" );
+
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "tentacle", 4.0 );
+	Check( r.ok, "S2j build_element still completes normally with the example present" );
+	Check( prompts.size() == 1, "S2j one prompt was composed" );
+	if( prompts.empty() ) return;
+	const std::string& p = prompts[0];
+
+	Check( p.find( "DECLARED CONSTRUCTION METHOD: sweep" ) != std::string::npos,
+	       "S2j the construction method is restated as \"sweep\"" );
+	// C2 fix round (2026-08-14): the sweep_geometry SCHEMA rides the same
+	// construction=="sweep" gate as the worked example (it left the
+	// unconditional kBuilderGrammarKeywords list) -- assert it IS present
+	// here, the positive half of S2a's negative assertion.  The JSON-quoted
+	// `"keyword":"sweep_geometry"` key is schema-only (the worked example's
+	// raw scene text has an unquoted bare keyword line instead).
+	Check( p.find( "\"keyword\":\"sweep_geometry\"" ) != std::string::npos,
+	       "S2j MONEY ASSERTION: the sweep_geometry SCHEMA IS sent when construction==\"sweep\"" );
+	const std::size_t markerPos = p.find( "WORKED EXAMPLE for the sweep method" );
+	Check( markerPos != std::string::npos,
+	       "S2j MONEY ASSERTION: the worked example IS spliced in when construction==\"sweep\"" );
+	if( markerPos == std::string::npos ) return;
+
+	// Lift the example out of the composed prompt exactly as the model
+	// would read it -- from the end of the intro line to the blank line
+	// before the next section (OUTLINE SKETCH, since this plan's outline
+	// is non-empty and G3a makes `outline` required on every entry, so
+	// that section always follows the construction-method block).
+	const std::size_t introEnd = p.find( '\n', markerPos );
+	Check( introEnd != std::string::npos, "S2j found the end of the intro line" );
+	if( introEnd == std::string::npos ) return;
+	const std::size_t chunkStart = introEnd + 1;
+	const std::size_t chunkEnd = p.find( "\n\nOUTLINE SKETCH", chunkStart );
+	Check( chunkEnd != std::string::npos, "S2j found the end of the worked-example block" );
+	if( chunkEnd == std::string::npos ) return;
+	const std::string example = p.substr( chunkStart, chunkEnd - chunkStart );
+
+	Check( example.find( "sweep_geometry" ) != std::string::npos &&
+	       example.find( "lambertian_material" ) != std::string::npos &&
+	       example.find( "standard_object" ) != std::string::npos,
+	       "S2j the lifted example carries all three chunks of the trio" );
+	Check( example.find( "tentacle_body_sweep" ) != std::string::npos &&
+	       example.find( "tentacle_body_mat" ) != std::string::npos &&
+	       example.find( "tentacle_body_sweep_obj" ) != std::string::npos,
+	       "S2j MONEY ASSERTION: every name in the example is built from the element's REAL "
+	       "chunk-name prefix, not a placeholder" );
+
+	// THE PARSE, not a syntax guess: the lifted text goes through the
+	// same CST parse + derive a hand-authored scene uses, on a fresh Job,
+	// with ZERO diagnostics -- "one worked example that PARSES" is the
+	// law this slice exists to satisfy.
+	Job* freshJob = new Job();
+	std::vector<std::string> diags;
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( "RISE ASCII SCENE 7\n" + example + "\n" );
+	const int applied = RISE::Cst::DeriveToJob( doc, *freshJob, &diags );
+	for( std::size_t d = 0; d < diags.size(); ++d )
+		std::printf( "    S2j DIAGNOSTIC: %s\n", diags[d].c_str() );
+	Check( diags.empty(), "S2j MONEY ASSERTION: the worked example parses with ZERO diagnostics" );
+	Check( applied == 3, "S2j all three chunks of the trio applied (got " +
+	       std::to_string( applied ) + ")" );
+	IGeometryManager* geoms = freshJob->GetGeometries();
+	Check( geoms && geoms->GetItem( "tentacle_body_sweep" ) != nullptr,
+	       "S2j the sweep_geometry actually registered" );
+	IMaterialManager* mats = freshJob->GetMaterials();
+	Check( mats && mats->GetItem( "tentacle_body_mat" ) != nullptr,
+	       "S2j the lambertian_material actually registered" );
+	IObjectManager* objs = freshJob->GetObjects();
+	Check( objs && objs->GetItem( "tentacle_body_sweep_obj" ) != nullptr,
+	       "S2j the standard_object actually registered" );
+	freshJob->release();
+
+	// C2 fix round (2026-08-14): the CST-level parse above proves the TEXT
+	// is well-formed, but not that it survives the REAL agent path -- the
+	// validated-insert machinery (prefix checks, balance checks, the
+	// first-geometry gate, etc) that InsertChunks actually runs.  Feed the
+	// lifted example text back in as a SECOND session's fake-completer
+	// answer and drive it through the genuine BuildElement/InsertChunks
+	// route, on a fresh Job so this run starts clean.  This also exercises
+	// the new `point_scale` grammar (Fix 1) end-to-end, since the example
+	// now uses it.
+	{
+		const std::string tmp2 = TempPath( "agentcrud_s2j_real.RISEscene" );
+		Job* pJob2 = LoadScene( kScene, tmp2 );
+		Check( pJob2 != nullptr, "S2j/real fixture loads" );
+		if( !pJob2 ) return;
+		std::unique_ptr<Agent::AgentSession> sess2 = WrapJobGateArmed( pJob2 );
+
+		std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan2;
+		Agent::AgentSession::AgentBuildPlanEntry e2;
+		e2.element = "tentacle";
+		e2.pieces.push_back( "body" );
+		e2.construction = "sweep";
+		e2.outline = "0 0; 1 0; 1 3; 0 3";
+		plan2.push_back( e2 );
+
+		sess2->SetTextCompleter( MakeFakeCompleter( { example }, nullptr, nullptr ) );
+		Check( sess2->FileBuildPlan( plan2 ).ok, "S2j/real the sweep plan files" );
+
+		const Agent::AgentSession::AgentBuildElementResult r2 = sess2->BuildElement( "tentacle", 4.0 );
+		Check( r2.ok, "S2j/real MONEY ASSERTION: the lifted example, fed back through the REAL "
+		       "BuildElement/InsertChunks path (not just a raw CST parse), completes cleanly" );
+		Check( r2.landed.size() == 3, "S2j/real all three chunks of the trio landed (got " +
+		       std::to_string( r2.landed.size() ) + ")" );
+		Check( r2.rejected.empty(), "S2j/real with nothing rejected" );
 	}
 }
 
@@ -17302,6 +17465,7 @@ int main()
 	TestBuildProtocolWireShape();
 	// S2 (2026-08-11): clean-room construction.
 	TestCleanRoomBuildElementHappyPath();
+	TestCleanRoomSweepWorkedExample();
 	TestCleanRoomValidatedInsertion();
 	TestCleanRoomRepairRetry();
 	TestCleanRoomBuildElementRefusals();

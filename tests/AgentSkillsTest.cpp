@@ -917,11 +917,12 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 	// instead is the failure mode this whole change exists to fix.
 	Check( omr.find( "roundcone" ) != std::string::npos && omr.find( "smin" ) != std::string::npos,
 	       "S3c: object-modeling-recipes prescribes sdf_geometry roundcone parts joined by smin" );
-	// And the honest scope limit: sweep_geometry sweeps a FIXED
-	// cross-section (point_width scales the x axis alone, end_scale_y is
-	// linear-only), so it is the curved-tube verb, NOT the lathe verb.
+	// And the honest scope limit: sweep_geometry sweeps a FIXED profile
+	// SHAPE along a path -- point_scale/point_width vary its overall
+	// scale per station (round or x-only respectively), but never its
+	// outline -- so it is the curved-tube verb, NOT the lathe verb.
 	// Getting this backwards would send a model to a chunk that cannot
-	// express a varying-radius revolve at all.
+	// express a varying-OUTLINE revolve at all.
 	Check( omr.find( "NOT the lathe verb" ) != std::string::npos,
 	       "S3c: object-modeling-recipes states that sweep_geometry is not the lathe verb" );
 	// Not blanket cargo-culting: cylinders stay right for constant-radius

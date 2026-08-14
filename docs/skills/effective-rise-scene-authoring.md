@@ -278,20 +278,34 @@ self-contained, and live-rebind in the GUI like any named geometry.
 ### The catalog
 
 - **`sweep_geometry`** — an arbitrary CLOSED 2D profile polygon
-  (repeatable `profile_point <x> <h>` lines) swept along an arbitrary
-  3D Catmull-Rom path (repeatable `point <x> <y> <z>` lines) with
-  rotation-minimizing frames.  Tubes, rails, mouldings, bands, cables,
-  straps.  Knobs: `n_len` (path samples), `end_scale_x` / `end_scale_y`
-  (linear per-axis taper, e.g. a 20→16 mm strap is
-  `end_scale_x 0.7997`), `cap_start` / `cap_end` (ear-clipped caps —
-  non-convex profiles like grooved straps are fine), `frame_hint <x y z>`
-  (initial binormal; omit = world axis most perpendicular to the start
-  tangent — a planar YZ path therefore gets world X as the width axis).
-  Conventions: profile **CCW = outward normals**; profile `x` maps to
-  the frame binormal, `h` to the normal; UV = (profile arc fraction,
-  path fraction).  Caveats: the path sampler is OPEN (reflective end
-  padding) — a closed loop's two seam segments deviate from the ideal
-  curve; sharp path corners get rounded by Catmull-Rom (author more
+  (repeatable `profile_point <x> <h>` lines, or the `profile_circle <r>
+  [n]` / `profile_rect <w> <h> [r]` convenience) swept along an
+  arbitrary 3D Catmull-Rom path (repeatable `point <x> <y> <z>` lines)
+  with rotation-minimizing frames.  Tubes, rails, mouldings, bands,
+  cables, straps, handles, wreaths.  Knobs: `n_len` (path samples),
+  `end_scale_x` / `end_scale_y` (linear per-axis taper, e.g. a 20→16 mm
+  strap is `end_scale_x 0.7997`), `point_width` (repeatable, one per
+  `point`, x-axis-only multiplier — a NON-linear taper, e.g. neck in at
+  one end; deliberately flattens since it only ever scales x),
+  `point_scale` (repeatable, one per `point`, UNIFORM both-axes
+  multiplier, composed with `point_width` and `end_scale` — use this
+  one for a ROUND varying radius, e.g. a tapered tentacle), `cap_start`
+  / `cap_end` (ear-clipped caps — non-convex profiles like grooved
+  straps are fine), `frame_hint <x y z>` (initial binormal; omit =
+  world axis most perpendicular to the start tangent — a planar YZ path
+  therefore gets world X as the width axis).  Conventions: profile
+  **CCW = outward normals**; profile `x` maps to the frame binormal,
+  `h` to the normal; UV = (profile arc fraction, path fraction) — U
+  wraps with no duplicated seam vertex.  `path_closed TRUE` sweeps a
+  SEAMLESS closed loop instead of the default open path: periodic
+  Catmull-Rom path sampling (no reflective-end padding, so there is no
+  seam segment to deviate — the loop is exact all the way around, V
+  wraps with no duplicated seam ring), a holonomy-corrected periodic
+  rotation-minimizing frame (removes any seam twist on a torsional
+  path), and cyclic ring stitching with no end caps; `end_scale_x/y`
+  must stay 1.0 there (a loop has no end to taper toward), but
+  `point_width` / `point_scale` still work, sampled periodically.
+  Caveat: sharp path corners get rounded by Catmull-Rom (author more
   control points to tighten).
 - **`path_instances_geometry`** — a named TEMPLATE geometry stamped
   along a 3D Catmull-Rom path at arc-length `pitch`.  Fence posts,

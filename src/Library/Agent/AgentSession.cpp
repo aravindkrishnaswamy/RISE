@@ -13352,10 +13352,13 @@ namespace RISE
 			//! richness (18.0 SDF parts at short context, 7.7 with 60k of
 			//! skills prepended), so a builder prompt that grew to a full
 			//! grammar dump would destroy the very effect it exists to capture.
-			//! These five cover the contract's requirements: a rich implicit
+			//! These six cover the contract's requirements: a rich implicit
 			//! geometry, a simple explicit one, two materials at two levels of
 			//! detail, a painter, and the standard_object every element must
-			//! finish with.
+			//! finish with.  sweep_geometry is NOT here -- its schema rides
+			//! the declared construction method instead (see the
+			//! construction == "sweep" gate below), so it only enters the
+			//! prompt when the element actually needs it.
 			//!
 			//! THE TEXT IS THE DESCRIPTOR REGISTRY'S OWN, fetched through the
 			//! same ReadSchema the `read_schema` tool answers with -- there is
@@ -13411,6 +13414,73 @@ namespace RISE
 				}
 				if( !entry->construction.empty() ) {
 					p += "DECLARED CONSTRUCTION METHOD: " + entry->construction + "\n\n";
+					// C2 (2026-08-14): ONE worked example, gated on the declared
+					// method being exactly "sweep" -- the summoning mechanics this
+					// arc's journal measured (laws 8/9/12) are an EXAMPLE moves
+					// what a model writes, prose measures ~0, and context volume
+					// collapses richness -- so this is short, literal, and only
+					// present when it is the method actually declared. Every name
+					// resolves inside the example itself (the populate-example
+					// lesson above: an unresolved name burns the one repair
+					// retry), so `reflectance none` -- the always-present null
+					// painter -- stands in for a real colour the builder should
+					// replace.
+					if( entry->construction == "sweep" ) {
+						// C2 fix round (2026-08-14): sweep_geometry's schema is
+						// sent here, gated on the declared construction method,
+						// rather than unconditionally in kBuilderGrammarKeywords
+						// above -- the schema and its worked example ride the
+						// same declared-construction gate so a non-sweep element
+						// never pays the context-volume cost of a chunk kind it
+						// won't use (the context-volume law this file's other
+						// comments describe: prompt growth measurably collapses
+						// construction richness).
+						p += "\n";
+						p += ReadSchema( "sweep_geometry" );
+						p += "\n";
+						// C2 fix round (2026-08-14): the prior example composed
+						// point_width (x only) with end_scale_y, which is exactly
+						// the x-only-scaling trap point_scale exists to avoid --
+						// it rendered a 2.9:1 ELLIPTICAL tip, not the round taper
+						// the prose promised.  point_scale (both axes) is the
+						// correct grammar for a round non-linear taper, so the
+						// new example uses ONLY that -- no point_width, no
+						// end_scale lines (both default 1.0, omitted).  The path
+						// also now satisfies LocalFrameContract (lowest point at
+						// y=0): it starts at the origin with a near-vertical
+						// initial tangent (the first two points differ far more
+						// in y than in x/z) so the base ring lies ~in the ground
+						// plane, then rises and curves forward.
+						p += "WORKED EXAMPLE for the sweep method (adapt values; delete nothing you need):\n"
+						     "sweep_geometry\n"
+						     "{\n"
+						     "\tname " + prefix + "body_sweep\n"
+						     "\tprofile_circle 0.18 10\n"
+						     "\tpoint 0 0 0\n"
+						     "\tpoint 0.02 0.55 0.08\n"
+						     "\tpoint 0.1 1.0 0.3\n"
+						     "\tpoint 0.18 1.3 0.65\n"
+						     "\tpoint 0.15 1.45 1.0\n"
+						     "\tpoint_scale 1.0\n"
+						     "\tpoint_scale 0.8\n"
+						     "\tpoint_scale 0.6\n"
+						     "\tpoint_scale 0.45\n"
+						     "\tpoint_scale 0.3\n"
+						     "\tn_len 32\n"
+						     "}\n"
+						     "lambertian_material\n"
+						     "{\n"
+						     "\tname " + prefix + "body_mat\n"
+						     "\treflectance none\n"
+						     "}\n"
+						     "standard_object\n"
+						     "{\n"
+						     "\tname " + prefix + "body_sweep_obj\n"
+						     "\tgeometry " + prefix + "body_sweep\n"
+						     "\tmaterial " + prefix + "body_mat\n"
+						     "\tposition 0 0 0\n"
+						     "}\n\n";
+					}
 				}
 				if( !entry->outline.empty() ) {
 					p += "OUTLINE SKETCH of the element's silhouette, as \"x y\" points (";

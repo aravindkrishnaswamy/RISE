@@ -386,10 +386,17 @@ how good the lighting and materials are.  Author it as a PROFILE
 instead: a chain of `sdf_geometry` `roundcone` parts (each one a
 `<r1> <r2> <h>` frustum = one height/radius span) joined with `smin`,
 whose blend radius fillets the joints into a continuous curve.
-`sweep_geometry` is NOT the lathe verb -- it sweeps a FIXED
-cross-section along a path, so it is right for a tube that FOLLOWS A
-CURVE (a retort's neck, a spout, a handle) and wrong for a
-varying-radius body.  A cylinder is still exactly right when the real
+`sweep_geometry` is NOT the lathe verb -- it sweeps a FIXED profile
+SHAPE along a path (`point_scale` can taper that shape's overall size
+per station, round or via `point_width`'s deliberate x-only flattening,
+but never changes the outline itself), so it is right for a tube that
+FOLLOWS A CURVE and may thin along the way (a retort's neck, a spout, a
+handle, a tapered tentacle) and wrong for a body whose outline changes
+character station to station (a belly a neck doesn't share).  Its
+cross-section is `profile_circle <r> [n]` or `profile_rect <w> <h> [r]`
+(one line each) instead of a hand-listed `profile_point` polygon, and
+`path_closed TRUE` sweeps a seamless loop (a handle, a wreath) without
+matching endpoints.  A cylinder is still exactly right when the real
 object's radius does not change along its axis: a straight shaft, a
 peg, a pipe, a cork, a candle, a coin.  Full rule, the flat-bottom cut,
 and a rendered profile recipe: object-modeling-recipes, "Turned forms
