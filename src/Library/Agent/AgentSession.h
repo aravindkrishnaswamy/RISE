@@ -7877,6 +7877,65 @@ namespace RISE
 			//! the camera arm, for mLightSceneRan's reason exactly.
 			bool mFrameSceneRan = false;
 
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 6 POSTSCRIPT (2026-08-14): frame_scene now runs
+			// AFTER populate_scene.  The owner's dragon+wizard run (journal
+			// Postscript 2, trajectory 20260814T125800Z) measured the gap
+			// this closes: frame_scene ran against a 21-object scene,
+			// populate_scene then added 11 more, and the final inventory
+			// showed 10 of 28 objects off-frame because the reframe was
+			// judged against a scene that no longer existed.  Framing frames
+			// what the scene CONTAINS, so it has to run after the pass that
+			// changes what the scene contains.
+			//----------------------------------------------------------------
+
+			//! Is `frame_scene` itself refused because `populate_scene` has
+			//! not reached the provider yet?  "" unless ALL of: the protocol
+			//! is on and has not given up, the session is in the COMPOSE
+			//! phase (frame_scene carries no phase check of its own, so this
+			//! arm supplies the one that matters -- population is a
+			//! COMPOSE-phase concept and this ordering rule exists only
+			//! where that concept applies), the host installed a text
+			//! completer (a path that does not exist cannot be forced; and
+			//! FrameScene's own capability check already returned its own
+			//! message before this arm is ever reached, so this repeats that
+			//! test only for the same defense-in-depth reason every sibling
+			//! arm does), this arm has not already fired once in this
+			//! session, and `populate_scene` has not reached the provider.
+			//! Otherwise the refusal, naming `populate_scene`.  Shares
+			//! RefuseForPhase_'s counter, cap and give-up with the other six
+			//! arms, and dies with `--agent-build-protocol=off` like all of
+			//! them.
+			//!
+			//! IT FIRES AT MOST ONCE PER SESSION (mFrameScenePopulateGateFired),
+			//! the render arm's and the camera arm's rule rather than the
+			//! light arm's: `frame_scene` is itself a repeat-refusable call
+			//! (up to kFrameSceneMaxPerSession passes), so a repeat-refusable
+			//! arm here would burn the whole shared 3-refusal budget on
+			//! attempt after attempt and trip the give-up, silently
+			//! disarming every sibling gate for the rest of the session.
+			//!
+			//! THE PING-PONG WORST CASE this bounds: a camera edit is refused
+			//! toward frame_scene (CheckFrameSceneBeforeCameraEdit_, one
+			//! slot), frame_scene is then refused toward populate_scene (this
+			//! arm, one slot), populate_scene runs, and frame_scene succeeds.
+			//! Two slots spent, not a loop -- both arms are one-shot, so a
+			//! third attempt at either proceeds regardless of what ran.  Left
+			//! as the accepted bound rather than engineered around further.
+			//!
+			//! THE SEAM: a frame_scene call outside COMPOSE (unusual, since
+			//! nothing routes one there, but the verb itself carries no
+			//! phase check) is untouched -- population is a compose-phase
+			//! concept and this ordering rule exists only where that concept
+			//! applies.
+			std::string CheckPopulateSceneBeforeFrameScene_( const char* verb,
+			                                                 std::string* outGiveUpNotice );
+
+			//! Arc 83 slice 6 postscript: has the ordering arm above already
+			//! refused once in this session?  See its doc for why one is the
+			//! whole budget.
+			bool mFrameScenePopulateGateFired = false;
+
 			//! Arc 83 slice 6: true iff `chunkText` parses to at least one
 			//! top-level chunk whose keyword is one of the five CAMERA chunk
 			//! kinds -- the exact sibling of ChunkTextCreatesLight_, and a

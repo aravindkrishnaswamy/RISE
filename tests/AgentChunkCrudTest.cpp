@@ -15138,18 +15138,21 @@ static void TestComposePhaseFirstRenderRefusal()
 	}
 }
 
-//! A82e: THE COMPOSE-ARM CAP INTERACTION.  SIX arms now share
-//! RefuseForPhase_'s 3-refusal counter, FOUR of which live in COMPOSE: arc
+//! A82e: THE COMPOSE-ARM CAP INTERACTION.  SEVEN arms now share
+//! RefuseForPhase_'s 3-refusal counter, FIVE of which live in COMPOSE: arc
 //! 80's delete ban, arc 81's first-light gate, arc 82's first-render gate
-//! (widened by arc 83 slice 5 into the before-you-judge CHECKLIST) and arc
-//! 83 slice 6's first-camera gate.  A session that hits all four must not
-//! be starved -- and the ONE-SHOT on the render arm and on the camera arm
-//! is what bounds each one's share of a budget four arms now draw on.
+//! (widened by arc 83 slice 5 into the before-you-judge CHECKLIST), arc 83
+//! slice 6's first-camera gate, and the arc 83 slice 6 POSTSCRIPT
+//! (2026-08-14)'s frame_scene-ordering gate.  A session that hits all five
+//! must not be starved -- and the ONE-SHOT on the render arm, the camera
+//! arm and the ordering arm is what bounds each one's share of a budget
+//! five arms now draw on.
 //!
-//! ARC 83 SLICE 6 EXTENDED THIS CASE rather than adding a sibling: the
+//! ARC 83 SLICE 6 EXTENDED THIS CASE rather than adding a sibling, and the
+//! 2026-08-14 POSTSCRIPT EXTENDED IT AGAIN for the same reason: the
 //! property under test is a property of the SHARED counter, and a second
-//! test that counted three of the four arms would be a test that passes
-//! while the fourth starves them.
+//! test that counted fewer than all of the arms would be a test that
+//! passes while the rest starve them.
 //!
 //! Every light chunk below is an AREA light (A81AreaLight, a rect_light),
 //! not an omni: 2026-08-13, the zero-area CONFIRMATION gate runs AHEAD of
@@ -15157,7 +15160,7 @@ static void TestComposePhaseFirstRenderRefusal()
 //! new omni, which would mask the phase counter this case is about.
 static void TestComposeArmsShareOneCap()
 {
-	std::printf( "A82e: the four compose-phase arms share one cap without starving anyone...\n" );
+	std::printf( "A82e: the five compose-phase arms share one cap without starving anyone...\n" );
 	const std::string tmp = TempPath( "agentcrud_a82e.RISEscene" );
 
 	// (1) ALL THREE FIRE, one slot each, then the FOURTH refusable call
@@ -15261,6 +15264,44 @@ static void TestComposeArmsShareOneCap()
 		       !sess->RemoveChunk( "obj_sph" ).applied,
 		       "A82e/cam which they then use, both still intercepting" );
 		Check( sess->BuildPhaseRefusalCount() == 3, "A82e/cam the cap is reached, exactly" );
+		pJob->release();
+	}
+
+	// (2c) 2026-08-14 POSTSCRIPT: THE ORDERING ARM'S SHARE IS BOUNDED AT ONE
+	//      TOO -- proved at frame_scene's OWN scale rather than the
+	//      render/camera arms' ten-call scale, because frame_scene already
+	//      carries its own small per-session cap (kFrameSceneMaxPerSession)
+	//      that a ten-call loop would trip on its own and conflate with the
+	//      ordering arm's one-shot.  Two calls is the right size: the first
+	//      is refused by the ordering arm (populate_scene has not run), the
+	//      second proceeds even though populate_scene STILL has not run --
+	//      frame_scene is itself a repeat-refusable call, so a
+	//      repeat-refusable ordering arm here would burn the whole shared
+	//      cap on attempt after attempt.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82e/frame fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		// A valid camera answer, inline: kGoodFramingAnswer (arc 83 slice 6's
+		// own fixture) is declared further down this file, after frame_scene's
+		// own tests, so this arc-82 block cannot see it yet.
+		static const char* const kA82eFramingAnswer =
+			"pinhole_camera\n{\n\tlocation 0 1.2 7.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { kA82eFramingAnswer } ) );
+
+		Check( !sess->FrameScene().ok, "A82e/frame the ordering arm refuses the first call" );
+		Check( sess->BuildPhaseRefusalCount() == 1 && !sess->BuildPhaseGaveUp(),
+		       "A82e/frame one slot spent, two left for the other four arms" );
+		Check( sess->FrameScene().ok,
+		       "A82e/frame MONEY ASSERTION: the SECOND frame_scene call proceeds even though "
+		       "populate_scene still has not run -- the one-shot is what stops the arm a model "
+		       "retries from eating the whole shared budget" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "A82e/frame and no second slot was spent" );
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_f_key" ) ).applied &&
+		       !sess->RemoveChunk( "obj_sph" ).applied,
+		       "A82e/frame which they then use, both still intercepting" );
+		Check( sess->BuildPhaseRefusalCount() == 3, "A82e/frame the cap is reached, exactly" );
 		pJob->release();
 	}
 
@@ -16390,6 +16431,19 @@ static const char* const kReplaceFramingAnswer =
 	"orthographic_camera\n{\n\tname a83p_ortho\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n"
 	"\tviewport_scale 2 2\n}\n";
 
+//! 2026-08-14 postscript helper: run `populate_scene` to completion on
+//! `sess`, on a throwaway completer, so the new ordering arm
+//! (CheckPopulateSceneBeforeFrameScene_ -- frame_scene refused while
+//! populate_scene has not run) never fires as a side effect in a test that
+//! is not about THAT arm.  Every existing frame_scene test below that
+//! expects the pass to actually run calls this first; the ordering arm gets
+//! its own dedicated coverage in TestFrameSceneOrderingBeforePopulate.
+static void RunPopulateSceneFirst_( Agent::AgentSession& sess )
+{
+	sess.SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+	sess.PopulateScene();
+}
+
 //! A83P/a: the happy path -- the existing camera is PATCHED, the prompt
 //! carries the full inventory and the camera verbatim, and coverage is
 //! measured on both sides.
@@ -16401,6 +16455,7 @@ static void TestFrameSceneHappyPath()
 	Check( pJob != nullptr, "A83P/a fixture loads" );
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
 
 	int calls = 0;
 	std::vector<std::string> prompts;
@@ -16508,6 +16563,7 @@ static void TestFrameSceneFewerObjectsIsReportedNotReverted()
 	Check( pJob != nullptr, "A83P/b fixture loads" );
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
 	sess->SetTextCompleter( MakeFakeCompleter( { kCloseUpFramingAnswer } ) );
 
 	const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
@@ -16543,6 +16599,7 @@ static void TestFrameSceneAdmissibilityAndReplace()
 		Check( pJob != nullptr, "A83P/c1 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		const std::string answer =
 			std::string( "film\n{\n\twidth 512\n\theight 512\n}\n" ) +
 			"sphere_geometry\n{\n\tname a83p_extra\n\tradius 1\n}\n" +
@@ -16573,6 +16630,7 @@ static void TestFrameSceneAdmissibilityAndReplace()
 		Check( pJob != nullptr, "A83P/c2 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		const std::string answer = std::string( kGoodFramingAnswer ) +
 			"pinhole_camera\n{\n\tname a83p_second\n\tlocation 9 9 9\n\tlookat 0 0 0\n\tfov 20\n}\n";
 		sess->SetTextCompleter( MakeFakeCompleter( { answer } ) );
@@ -16598,6 +16656,7 @@ static void TestFrameSceneAdmissibilityAndReplace()
 		Check( pJob != nullptr, "A83P/c3 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		sess->SetTextCompleter( MakeFakeCompleter( { kReplaceFramingAnswer } ) );
 		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
 		Check( r.ok, "A83P/c3 the pass ran" );
@@ -16683,12 +16742,15 @@ static void TestComposePhaseFirstCameraRefusal()
 		Check( pJob != nullptr, "A83P/d3 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
 		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
 		Check( r.ok && r.action == "patched",
 		       "A83P/d3 MONEY ASSERTION: frame_scene's OWN edit is exempt from the gate it arms -- "
 		       "the mechanism must not refuse the verb it names" );
-		Check( sess->BuildPhaseRefusalCount() == 0, "A83P/d3 and no refusal was spent" );
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "A83P/d3 and no refusal was spent (populate_scene ran first, on its own completer, so "
+		       "the 2026-08-14 ordering arm never fires here either)" );
 		Agent::AgentSetPatch sp;
 		sp.target = "";
 		sp.kind   = "camera";
@@ -16706,6 +16768,7 @@ static void TestComposePhaseFirstCameraRefusal()
 		Check( pJob != nullptr, "A83P/d4 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		Agent::AgentSession::AgentTextCompleter c;
 		c.supported    = true;
 		c.providerName = "mock";
@@ -16767,9 +16830,11 @@ static void TestComposePhaseFirstCameraRefusal()
 		sp.value  = "65.0";
 		Check( sess->ProposePatch( sp ).applied,
 		       "A83P/d6 MONEY ASSERTION: with --agent-build-protocol=off the camera arm dies with "
-		       "the protocol, like all five of its siblings" );
+		       "the protocol, like all six of its siblings" );
 		Check( sess->FrameScene().ok,
-		       "A83P/d6 and frame_scene STILL WORKS there -- it consults no phase gate of its own" );
+		       "A83P/d6 and frame_scene STILL WORKS there -- populate_scene has not run either, but "
+		       "its own 2026-08-14 ordering arm dies with the protocol too, like every other "
+		       "RefuseForPhase_ arm" );
 		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 	}
 
@@ -16823,6 +16888,12 @@ static void TestFrameSceneCapabilityAndCap()
 		Check( pJob != nullptr, "A83P/e2 fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		// 2026-08-14 postscript: populate_scene runs FIRST, on its own
+		// completer, so the ordering arm below never fires here and this
+		// loop measures the PER-SESSION CAP in isolation -- exactly what it
+		// measured before that arm existed.
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+		sess->PopulateScene();
 		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
 		for( int i = 0; i < Agent::AgentSession::kFrameSceneMaxPerSession; ++i )
 			sess->FrameScene();
@@ -16847,6 +16918,7 @@ static void TestFramingExampleParses()
 		Check( pJob != nullptr, "A83P/f/compose fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		std::vector<std::string> prompts;
 		std::vector<std::string>* sink = &prompts;
 		Agent::AgentSession::AgentTextCompleter c;
@@ -16881,6 +16953,7 @@ static void TestFramingExampleParses()
 		Check( pJob != nullptr, "A83P/f/apply fixture loads" );
 		if( !pJob ) return;
 		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
 		sess->SetTextCompleter( MakeFakeCompleter( { example } ) );
 		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
 		Check( r.ok && r.action == "patched",
@@ -16903,6 +16976,7 @@ static void TestFrameSceneWireShape()
 	Check( pJob != nullptr, "A83P/g fixture loads" );
 	if( !pJob ) return;
 	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	RunPopulateSceneFirst_( *sess );
 	sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
 	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
 
@@ -16935,6 +17009,204 @@ static void TestFrameSceneWireShape()
 			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"frame_scene\",\"params\":{\"notes\":7}}" );
 		Check( resp.find( "-32602" ) != std::string::npos,
 		       "A83P/g a non-string `notes` is a schema error" );
+	}
+}
+
+//! A83Q (2026-08-14 postscript): THE ORDERING ARM -- frame_scene frames what
+//! the scene CONTAINS, so it is itself refused in COMPOSE while
+//! populate_scene has not yet reached the provider.  The owner's
+//! dragon+wizard run (journal Postscript 2, trajectory 20260814T125800Z)
+//! measured the gap this arm closes: frame_scene ran against a 21-object
+//! scene, populate_scene then added 11 more, and the final inventory showed
+//! 10 of 28 objects off-frame because the reframe was judged against a
+//! scene that no longer existed.
+static void TestFrameSceneOrderingBeforePopulate()
+{
+	std::printf( "A83Q: frame_scene is gated on populate_scene having run first...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83q.RISEscene" );
+
+	// (1) REFUSED, WITH THE FACTS, BEFORE populate_scene HAS RUN.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( !r.ok,
+		       "A83Q/1 MONEY ASSERTION: frame_scene itself is refused while populate_scene has not "
+		       "run in this session" );
+		Check( r.message.find( "populate_scene" ) != std::string::npos,
+		       "A83Q/1 and the refusal NAMES populate_scene" );
+		Check( r.message.find( "frame_scene frames what the scene CONTAINS" ) != std::string::npos,
+		       "A83Q/1 MONEY ASSERTION: with the fact stated -- framing frames what the scene "
+		       "contains, and objects populate_scene has not yet placed cannot influence it" );
+		Check( r.message.find( "populate_scene first" ) != std::string::npos,
+		       "A83Q/1 and the ordering that avoids reframing the same scene twice" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A83Q/1 it burns exactly one slot of the SHARED phase counter (the seventh arm)" );
+		Check( r.completionsSpent == 0,
+		       "A83Q/1 MONEY ASSERTION: and spends NO completion -- it fires before anything below "
+		       "would spend one" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) PROCEEDS ONCE populate_scene HAS RUN -- keyed on "reached the
+	//     provider", not on how many objects landed.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		RunPopulateSceneFirst_( *sess );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok && r.action == "patched",
+		       "A83Q/2 MONEY ASSERTION: frame_scene proceeds once populate_scene has reached the "
+		       "provider in this session" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83Q/2 and no refusal was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2b) A FAILED populate_scene PASS LIFTS IT TOO -- the gate keys on
+	//      "reached the provider", not on "did anything land".
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/2b fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		Agent::AgentSession::AgentTextCompleter failing;
+		failing.supported    = true;
+		failing.providerName = "mock";
+		failing.modelId      = "mock-populate-1";
+		failing.complete = []( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "mock refuses";
+			return o;
+		};
+		sess->SetTextCompleter( failing );
+		Check( !sess->PopulateScene().ok, "A83Q/2b the population pass did not complete" );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Check( sess->FrameScene().ok,
+		       "A83Q/2b MONEY ASSERTION: and frame_scene proceeds anyway -- a failed clean room must "
+		       "not leave a session unable to frame its own scene" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) ONE-SHOT: the SECOND frame_scene call proceeds even though
+	//     populate_scene STILL has not run.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Check( !sess->FrameScene().ok, "A83Q/3 the first call is refused" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "A83Q/3 one slot spent" );
+		const Agent::AgentSession::AgentFrameSceneResult r2 = sess->FrameScene();
+		Check( r2.ok,
+		       "A83Q/3 MONEY ASSERTION: the SECOND frame_scene call proceeds even though "
+		       "populate_scene still has not run -- a repeat-refusable arm here would burn the whole "
+		       "shared cap on a call frame_scene's own per-session cap already bounds" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "A83Q/3 and no second slot was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (4) THE GIVE-UP: three OTHER arms exhaust the cap first, and the
+	//     fourth refusable call -- frame_scene, still with no populate_scene
+	//     -- proceeds and folds the give-up notice into its own result.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/4 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Check( !sess->InsertChunk( A81AreaLight( "a83q4_1" ) ).applied, "A83Q/4 slot 1 (light arm)" );
+		Check( !sess->InsertChunk( A81AreaLight( "a83q4_2" ) ).applied, "A83Q/4 slot 2 (light arm)" );
+		Check( !sess->InsertChunk( A81AreaLight( "a83q4_3" ) ).applied, "A83Q/4 slot 3 (light arm)" );
+		Check( sess->BuildPhaseRefusalCount() == 3 && !sess->BuildPhaseGaveUp(),
+		       "A83Q/4 the cap is reached by the light arm alone" );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok,
+		       "A83Q/4 MONEY ASSERTION: frame_scene PROCEEDS -- an arm that arrives after the shared "
+		       "budget is spent lets the call through and triggers the give-up; it can never block "
+		       "one forever" );
+		Check( sess->BuildPhaseGaveUp(), "A83Q/4 and the session has given up" );
+		Check( r.message.find( "stopped intercepting" ) != std::string::npos,
+		       "A83Q/4 MONEY ASSERTION: with the give-up notice folded into frame_scene's OWN result, "
+		       "so a trajectory census sees the event rather than only a log line" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (5) BuildCapable() FALSE NEVER PRODUCES AN UNDISCHARGEABLE DEMAND --
+	//     frame_scene's own capability refusal fires FIRST (it names
+	//     frame_scene, not populate_scene) and this arm is never reached.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/5 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( !r.ok && r.capabilityRefusal,
+		       "A83Q/5 a session with no completer answers with a capability statement" );
+		Check( r.message.find( "populate_scene" ) == std::string::npos,
+		       "A83Q/5 MONEY ASSERTION: the message does NOT name populate_scene -- this arm never "
+		       "runs on behalf of a path that does not exist" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83Q/5 and no refusal was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (6) THE SEAM: PIECES-phase frame_scene calls are never refused for
+	//     this reason -- nothing routes one there, but the verb itself
+	//     carries no phase check, and population is a compose-phase concept.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/6 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A83Q/6 the plan files" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+		       "A83Q/6 the session is in the pieces phase" );
+		Check( sess->FrameScene().ok,
+		       "A83Q/6 MONEY ASSERTION: a PIECES-phase frame_scene call is never refused for this "
+		       "reason -- population is a compose-phase concept" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83Q/6 and spends no refusal" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (7) PROTOCOL OFF: the arm dies with the protocol, like every sibling.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/7 fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Check( sess->FrameScene().ok,
+		       "A83Q/7 MONEY ASSERTION: with --agent-build-protocol=off frame_scene proceeds with no "
+		       "populate_scene run -- the ordering arm dies with the protocol like all its siblings" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83Q/7 and spends no refusal" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (8) REFINING: the gate is INERT, and the verb stays available.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83Q/8 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+		       "A83Q/8 the fixture carries form, so the session is REFINING" );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		ArcEightyToCompose( *sess );
+		Check( sess->FrameScene().ok,
+		       "A83Q/8 MONEY ASSERTION: in REFINING frame_scene proceeds with no populate_scene run -- "
+		       "a user who opened a finished scene is not building anything" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83Q/8 and no refusal was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
 	}
 }
 
@@ -17140,6 +17412,10 @@ int main()
 	TestFrameSceneCapabilityAndCap();
 	TestFramingExampleParses();
 	TestFrameSceneWireShape();
+
+	// Arc 83 slice 6 postscript (2026-08-14): frame_scene now runs AFTER
+	// populate_scene -- the seventh arm on the shared phase-refusal counter.
+	TestFrameSceneOrderingBeforePopulate();
 
 	// Arc 83 sec 4.1 (2026-08-13): the SESSION MODE -- compulsion belongs to
 	// the first build; availability is forever.

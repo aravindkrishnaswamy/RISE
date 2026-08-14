@@ -9252,6 +9252,57 @@ namespace RISE
 			return clause;
 		}
 
+		std::string AgentSession::CheckPopulateSceneBeforeFrameScene_( const char* verb,
+		                                                               std::string* outGiveUpNotice )
+		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			// THE SEAM: population is a COMPOSE-phase concept (arc 82's whole
+			// point is that a composed scene is populated before it is
+			// judged), and frame_scene carries no phase check of its own --
+			// so this arm is the one that scopes the ordering rule to where
+			// the concept it enforces actually applies.
+			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST -- the
+			// same capability-conditional rule every other arm follows.
+			// FrameScene's own capability check already returned its own
+			// message before this arm is ever reached, so BuildCapable() is
+			// already guaranteed true here; the test is repeated anyway for
+			// the same defense-in-depth reason the other arms carry it.
+			if( !BuildCapable() )                              return std::string();
+			// ONE turn in the clean room lifts this permanently, whatever
+			// came of it (see mPopulateSceneRan): a pass whose chunks were
+			// all rejected still had its turn, and a failed pass must not
+			// leave a session unable to frame its own scene.
+			if( mPopulateSceneRan )                            return std::string();
+			// AND IT FIRES AT MOST ONCE, the render arm's and the camera
+			// arm's rule rather than the light arm's: frame_scene is itself
+			// a repeat-refusable call (up to kFrameSceneMaxPerSession
+			// passes this session), so a repeat-refusable arm here would
+			// burn the whole shared 3-refusal budget on attempt after
+			// attempt and trip the give-up, taking every sibling gate down
+			// with it.
+			if( mFrameScenePopulateGateFired )                 return std::string();
+
+			const std::string body =
+				"frame_scene frames what the scene CONTAINS, and populate_scene has not run in this "
+				"session -- the objects it would place are not in the scene yet, so they cannot "
+				"influence this framing. The order that avoids reframing the same scene twice is "
+				"populate_scene first, then frame_scene. This is the ONLY frame_scene call this rule "
+				"will ever refuse in this session: the next one proceeds whether or not populate_scene "
+				"has run, and frame_scene calls in the pieces phase are never refused for this reason.";
+			const std::string clause = RefuseForPhase_( verb, body, outGiveUpNotice );
+			// LATCHED ON THE REFUSAL, not on reaching this line -- the render
+			// arm's and the camera arm's rule and their reason exactly: when
+			// RefuseForPhase_ returns "" it did NOT refuse (the protocol gave
+			// up on this very call, or was already spent), and burning the
+			// one-shot on a call that let frame_scene through would silently
+			// retire the mechanism without it ever having fired.
+			if( !clause.empty() ) mFrameScenePopulateGateFired = true;
+			return clause;
+		}
+
 		std::string AgentSession::CheckBuildPlanGate_( const char* verb, std::string* outGiveUpNotice )
 		{
 			// The armed-ness test is factored into BuildPlanGateArmed_ so the
@@ -23795,9 +23846,16 @@ namespace RISE
 			AgentFrameSceneResult out;
 			out.providerName = mTextCompleter.providerName;
 			out.modelId      = mTextCompleter.modelId;
-			// NO GIVE-UP FOLD, for LightScene's reason exactly: this verb
-			// consults no phase gate of its own, and its own edit is exempt
-			// from the one arm that could fire on it (see mInFrameSceneEdit).
+			// ARC 83 SLICE 6 POSTSCRIPT (2026-08-14): UNLIKE LightScene, this
+			// verb now consults ONE phase gate of its own -- the ordering arm
+			// below, which refuses frame_scene itself while populate_scene
+			// has not yet run.  BuildPlanGiveUpFold_ folds that arm's give-up
+			// notice into `out.message` no matter which of this function's
+			// returns fires, exactly like every other RefuseForPhase_ caller.
+			// frame_scene's own edit stays exempt from the OTHER arm that can
+			// fire on it (the camera-edit arm, mInFrameSceneEdit); that
+			// exemption is unrelated to this fold.
+			BuildPlanGiveUpFold_ orderFold{ out.message, std::string() };
 
 			//------------------------------------------------------------------
 			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
@@ -23829,6 +23887,24 @@ namespace RISE
 				out.message = capBuf;
 				return out;
 			}
+
+			//------------------------------------------------------------------
+			// THE ORDERING GATE (2026-08-14, arc 83 slice 6 postscript).  NOT
+			// a do-nothing case -- it shares RefuseForPhase_'s counter, cap
+			// and give-up with the other six arms -- but exactly as cheap: it
+			// runs before mFrameSceneCalls is incremented, so a refused call
+			// spends none of the per-session cap either, and it fires before
+			// anything below spends a completion.
+			//------------------------------------------------------------------
+			{
+				const std::string clause =
+					CheckPopulateSceneBeforeFrameScene_( "frame_scene", &orderFold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
 			++mFrameSceneCalls;
 			// THE GATE LIFTS HERE, before the completion rather than after it.
 			// A provider failure must not leave hand-authored camera edits

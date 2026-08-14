@@ -1006,3 +1006,50 @@ same shape as every prior slice's: an imagine-and-build run whose environment
 pass produces a non-zero tonal spread against a scene that previously rendered
 on a flat field, and whose framing pass raises the object-coverage figure it
 now reports on both sides.
+
+## 15.10 POSTSCRIPT (2026-08-14): frame_scene now runs after populate_scene
+
+The owner's dragon+wizard run (journal Postscript 2, trajectory
+`20260814T125800Z`) was the first live use of `frame_scene` end to end, and it
+measured the gap this postscript closes: `frame_scene` ran against a
+21-object scene (coverage 4→9 of 21), `populate_scene` then added 11 more
+objects, and the final inventory showed 10 of 28 objects off-frame -- the
+reframe had been judged against a scene that no longer existed by the time
+population finished.  Framing frames what the scene CONTAINS, so it has to
+run after the pass that changes what the scene contains.
+
+**The fix is a seventh arm on `RefuseForPhase_`'s shared counter** --
+`CheckPopulateSceneBeforeFrameScene_`, called from inside `FrameScene` itself
+(not from a caller gating some other verb, which is what all six existing
+arms do) -- placed after the three existing do-nothing checks and before
+anything that would spend a completion.  It refuses `frame_scene` ONCE,
+COMPOSE-only, while `populate_scene` has not yet reached the provider this
+session, naming `populate_scene`; `mPopulateSceneRan` lifts it permanently the
+moment that verb reaches the provider, a failed pass included, for
+`mLightSceneRan`'s reason exactly.  It is one-shot
+(`mFrameScenePopulateGateFired`) for the render arm's and the camera arm's
+reason: `frame_scene` is itself a repeat-refusable call (up to
+`kFrameSceneMaxPerSession` passes), so a repeat-refusable ordering arm would
+burn the whole shared 3-refusal budget by itself.  `FrameScene` did not
+previously carry a give-up fold (its doc comment said so, citing
+`LightScene`'s reason: neither verb consulted a phase gate of its own) --
+that is no longer true for `frame_scene`, so it now carries a
+`BuildPlanGiveUpFold_` exactly like every other `RefuseForPhase_` caller.
+
+**The bounded ping-pong.**  A camera edit can be refused toward `frame_scene`
+(the existing camera arm), `frame_scene` can then be refused toward
+`populate_scene` (this arm), `populate_scene` runs, and the retried
+`frame_scene` succeeds -- two refusals, not a loop, because both arms are
+one-shot and every attempt after the first at either proceeds regardless of
+what ran.  Accepted as-is rather than engineered around further.
+
+**Seven arms now share `RefuseForPhase_`'s 3-refusal counter, five of them in
+COMPOSE** (delete ban, first-light, the render/checklist arm, first-camera,
+and this ordering arm).  `TestComposeArmsShareOneCap` was extended rather
+than duplicated, for the same reason §15.6 gives: the property under test is
+a property of the shared counter.
+
+Both tool-description surfaces (`AgentMcpAdapter.cpp`, `AgentChatCodecs.cpp`)
+gained one sentence each stating the ordering fact, and
+`tests/SourceHygieneTest.cpp`'s framing pin set grew from four facts to five.
+No wire shape changed; `AgentFrameSceneResult` is unchanged.

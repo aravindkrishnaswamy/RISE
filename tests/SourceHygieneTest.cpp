@@ -1814,9 +1814,9 @@ int main()
 					}
 				}
 
-				// ---- ARC 83 SLICE 6 (2026-08-13): the CLEAN-ROOM FRAMING
-				//      surface pins.  The framing verb's four unrecoverable
-				//      facts:
+				// ---- ARC 83 SLICE 6 (2026-08-13), EXTENDED BY THE 2026-08-14
+				//      POSTSCRIPT: the CLEAN-ROOM FRAMING surface pins.  The
+				//      framing verb's five unrecoverable facts:
 				//   * WHAT IT RETURNS.  One camera and nothing else -- and
 				//     `film` in particular is refused, which is surprising
 				//     enough (it is where width and height live) that a model
@@ -1829,6 +1829,11 @@ int main()
 				//     slice moves, and it is reported.
 				//   * THE FEWER-OBJECTS CASE.  A model that expects the harness
 				//     to undo a close-up will not author one.
+				//   * THE ORDERING (2026-08-14 postscript).  frame_scene is
+				//     itself refused while populate_scene has not run -- a
+				//     model that does not know this cannot tell why its OWN
+				//     call to frame_scene came back refused, nor what to call
+				//     first.
 				{
 					struct A83FramePin { const char* text; const char* why; };
 					static const A83FramePin kA83FramePins[] = {
@@ -1858,7 +1863,15 @@ int main()
 						{ "a closer view of fewer things is a framing decision, not an error",
 						  "does not state that a reframe covering FEWER objects is reported and NOT "
 						  "reverted -- a model that expects the harness to undo a deliberate close-up "
-						  "will not author one" }
+						  "will not author one" },
+						{ "frame_scene frames what the scene CONTAINS, and in the COMPOSE phase, while "
+						  "populate_scene has not yet reached the provider, frame_scene is refused ONCE "
+						  "and names populate_scene",
+						  "does not state that frame_scene ITSELF is refused while populate_scene has "
+						  "not run -- 2026-08-14 postscript: framing frames what the scene contains, so "
+						  "a model that reframes before populating judges a scene that has not finished "
+						  "changing, and a model not told the ordering cannot read why its own call was "
+						  "refused" }
 					};
 					for( const char* fname : kPlanSurfaces ) {
 						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
