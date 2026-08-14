@@ -360,3 +360,35 @@ big improvement from where we started 2 weeks ago."*  N=1, as always — but
 every mechanism in the stack fired exactly once, nothing was refused,
 nothing was destroyed, and the numbers meet or exceed the reference on
 three of four axes.  A reasonable place to end the chapter.
+
+## Postscript 2: the full stack, end to end (2026-08-14)
+
+The owner's dragon+wizard run on the completed arc-83 stack — every
+mechanism from the fortnight firing in one 43-turn session:
+
+- **164 SDF parts** (wizard 39 — the two-week journey now reads 1 → 4 → 10 →
+  22 → 36 → 39; dragon 64), zero destroyed.
+- **7 of 7 light sources physical**; mid-compose the model REMOVED four of
+  its light-objects to relight — allowed, because the light-object exemption
+  had landed that morning.  A relight happened live for the first time.
+- **environment_scene's first live use**: a 12-chunk psychedelic nebula dome
+  (four colour painters through a gradient ramp and blend stack) plus a mist
+  medium.  The flat backdrop era ended on the first call.
+- **frame_scene's first live use, and its measured payload earning its
+  keep**: coverage 4-of-21 objects before the reframe, 9-of-21 after, the
+  five recovered objects named in the result.
+- **The scene itself was recovered from the trajectory's own document
+  snapshot** — the durability fix from the near-lost jellyfish, landed by a
+  parallel session, meant this scene could be rendered without the owner
+  ever pressing Save.
+
+Room that remains, honestly: the final inventory still shows 10 of 28
+objects off-frame (frame_scene ran before populate added its repeats — an
+ordering question for a future slice), and figure anatomy is now the
+frontier: the wizard reads instantly, the dragon reads as mass and wings
+rather than creature.  But the harness story the journal set out to tell is
+complete: every axis that measured behind the frontier two weeks ago —
+parts, objects, reuse, physical lighting, environment, framing — now has a
+mechanism that measurably moves it, and the failure modes that destroyed
+work (compose deletion, lost scenes, misleading probes) each have a
+structural fix with a test pinning it.
