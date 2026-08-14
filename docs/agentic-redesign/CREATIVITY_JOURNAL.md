@@ -392,3 +392,42 @@ parts, objects, reuse, physical lighting, environment, framing — now has a
 mechanism that measurably moves it, and the failure modes that destroyed
 work (compose deletion, lost scenes, misleading probes) each have a
 structural fix with a test pinning it.
+
+## Closing: cross-provider confirmation, and the pivot (2026-08-14)
+
+The owner's final two runs, back to back on the completed stack:
+
+| | gemini-3.7-flash | gpt-5.6-terra |
+|---|---|---|
+| SDF parts built | 98 | 143 |
+| area / zero-area lights | **16 / 0** | (lighting pass empty) |
+| populate | 47 → 55 objects | not called |
+| frame_scene coverage | ran post-populate | **4/35 → 23/35** |
+| final visibility | 35/47 | 24/38 |
+
+Both providers drive every mechanism; the ordering arm behaved exactly as
+designed on the provider that skipped populate (one bounce, then proceed —
+a nudge, not a wall).  Sixteen physical lights and zero idealizations on
+gemini is the strongest lighting result the workstream has produced.
+
+The owner's verdict closes the workstream: *"it seems like things are
+working.  I think we've tapped what we can here — the next step is to build
+even more expressive geometry and procedural textures within RISE itself so
+that the models can generate more realistic objects."*
+
+That reading matches the data.  The remaining visible gaps — a dragon that
+reads as mass and wings rather than creature, tentacles that want to droop —
+are not attention, context, cost, or vocabulary problems.  The builders are
+spending a full response per element and producing 20–70 parts; what limits
+realism now is what a `part` line can EXPRESS.  The harness work is done;
+the expressiveness work begins.
+
+And the fortnight's laws transfer directly to it.  The lighting saga's
+ending is the design guide for the next primitives: `sweep_geometry` exists
+and no builder has ever used it, for the same reason area lights went unused
+— it is not a one-chunk affordance in the category the builders reach for,
+with a copyable example in front of them.  Whatever new expressiveness RISE
+grows — tapered sweeps, skeleton chains, richer displacement, procedural
+texture families — the adoption mechanics are already measured: put it in
+the summoned category, price the inferior path if one exists, give exactly
+one worked example that parses, and let the census say whether it moved.
