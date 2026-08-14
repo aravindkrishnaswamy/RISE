@@ -358,7 +358,23 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 29 existing AgentRpc verbs,
+			//! Arc 83 slices 5 and 6 (2026-08-13): the EIGHTH and NINTH
+			//! siblings, same rationale and same shape.  environment_scene
+			//! mutates (it inserts painter / function / medium chunks and
+			//! appends the rasterizer chunk that carries its dome binding);
+			//! frame_scene mutates (it patches or replaces the camera chunk).
+			//! Both are deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb.
+			const std::string kEnvironmentSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: environment_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+			const std::string kFrameSceneProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: frame_scene is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
+			//! Build the `tools/list` result: the 34 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -1116,6 +1132,142 @@ namespace RISE
 					tools.push_back( MakeTool( "populate_scene", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// environment_scene (Arc 83 slice 5, 2026-08-13) -- the
+				// clean-room ENVIRONMENT verb.  It MUTATES (it inserts painter /
+				// function / medium chunks and appends the rasterizer chunk
+				// carrying its dome binding), so it is not read-safe, and it is
+				// additionally excluded from AgentRpc's Propose-autonomy
+				// allowlist exactly like light_scene, carrying the matching
+				// note.  THE CODEC TEXT IS CANONICAL AND THIS MIRRORS IT, for
+				// the drift-class reason recorded on file_build_plan above.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the environment pass alongside the inventory and "
+						"the camera -- anything about the place or the weather this scene's own state "
+						"does not already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kEnvironmentSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Author the scene's SURROUND: what fills the frame where no object is, and the "
+						"medium light travels through. This call asks the session's provider, in a "
+						"FRESH context that contains nothing but this scene's object inventory (every "
+						"object, its screen footprint and its world position), the camera, the scene's "
+						"world bounds, the lights that already exist, the imagined description if the "
+						"session has one, and WHAT ENVIRONMENT THIS SCENE ALREADY HAS, to write the "
+						"environment. It is ONE request, because there is one environment. What comes "
+						"back is split into chunks, checked, and inserted here. THE PALETTE IS TWO "
+						"FAMILIES. THE DOME is a PAINTER -- there is no environment chunk in this "
+						"language -- evaluated at a u,v derived from the ray direction, and a graded "
+						"one is two colours plus an expression_function2d ramp plus a blend_painter "
+						"mixing them, while a noise painter gives cloud or foam structure and an "
+						"hdr_painter or exr_painter names an image file. THE MEDIUM is a "
+						"homogeneous_medium (absorption, scattering, and phase on one line as either "
+						"`isotropic` or `hg <g>`) or a painter_heterogeneous_medium, plus a "
+						"global_medium chunk naming it, which is how this renderer spells fog, haze, "
+						"underwater depth falloff and shafts of light. THE BINDING IS MADE FOR THE "
+						"MODEL: the LAST painter the answer lands is bound as the scene's radiance map "
+						"with the camera background on, by a rasterizer chunk this call appends "
+						"carrying every parameter the previous one had -- so any painter written "
+						"before it is an input that one is built from, and the document ends with two "
+						"rasterizer chunks of which the last is live. IT ACCEPTS painter, function and "
+						"medium chunks and NOTHING ELSE: a geometry or a standard_object is rejected "
+						"by name, because a backdrop plane or a sky dome built as a shape is FORM and "
+						"making new form is build_element's job, not this one's; a camera, a film, a "
+						"rasterizer and a shader op are rejected too; and hosek_wilkie_skylight is "
+						"rejected because it is a light chunk that installs a dome itself and belongs "
+						"to light_scene -- on a scene that already carries one, this pass authors no "
+						"dome at all and writes only the medium. It is HALF of the way the FIRST "
+						"compose-phase render gets earned: in the COMPOSE phase the first full-scene "
+						"render is refused ONCE and names whichever of populate_scene and "
+						"environment_scene have not yet run -- one refusal for the whole checklist, "
+						"shared with the other build-phase rules and capped with them, after which "
+						"every render proceeds whether or not either ran; renders in the pieces phase "
+						"are never refused, and neither is a render with `isolate`. A name already "
+						"used in the scene is rejected and NOT renamed. If anything is rejected, ONE "
+						"repair retry runs automatically with the exact rejection text -- one, then it "
+						"stops, and whatever landed stays landed. Nothing is ever dropped silently. "
+						"The result reports what landed, what was bound, whether the scene has a dome "
+						"and a global medium before and after, and the frame's TONAL DISTRIBUTION "
+						"measured before and after -- a mean, a spread and two percentiles of the same "
+						"small internal render, compared to nothing. On a provider that cannot run a "
+						"separate completion this returns ok:false with a plain statement, nothing "
+						"else changes, and authoring painter and medium chunks by hand is not blocked. "
+						"Returns {ok,provider,model,chunksExtracted,landed,"
+						"rejected:[{name,kind,reason}],chunkResults,patchResults,retryRan,"
+						"retrySucceeded,"
+						"completions,painters,media,boundPainter,bindingApplied,bindingReason,"
+						"rasterizer,radianceMapBefore,radianceMapAfter,globalMediumBefore,"
+						"globalMediumAfter,toneBefore:{lumaMean,lumaStdDev,lumaP1,lumaP99},"
+						"toneAfter:{...},message}." );
+					tools.push_back( MakeTool( "environment_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// frame_scene (Arc 83 slice 6, 2026-08-13) -- the clean-room
+				// FRAMING verb.  It MUTATES (it patches or replaces the camera
+				// chunk), so it is not read-safe, and it is additionally
+				// excluded from AgentRpc's Propose-autonomy allowlist exactly
+				// like light_scene, carrying the matching note.  THE CODEC TEXT
+				// IS CANONICAL AND THIS MIRRORS IT.
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "notes", StringProp(
+						"Optional free text passed to the framing pass alongside the inventory and the "
+						"current camera -- anything about the shot that this scene's own state does "
+						"not already say. Nothing checks what it says." ) );
+					const std::vector<std::string> required;   // no required params
+
+					const std::string desc =
+						( readOnly ? kAutonomyReadNote
+						            : proposeOnly ? kFrameSceneProposeRefusedNote
+						                          : std::string() ) +
+						std::string(
+						"Frame the scene: decide where the camera goes and what it looks at. This call "
+						"asks the session's provider, in a FRESH context that contains nothing but THE "
+						"FULL INVENTORY OF THIS SCENE -- every object, its screen footprint, where it "
+						"sits in the frame and, for the ones covering no pixels, WHY (its bounding box "
+						"is behind the camera, or projects entirely off-frame in a named direction, or "
+						"crosses the camera plane) -- plus the current camera chunk VERBATIM and its "
+						"resolved pose, the scene's world bounds, the frame's measured tone, the "
+						"imagined description if the session has one, and the camera palette with each "
+						"kind's own parameters. It is ONE request, because there is one camera. IT "
+						"RETURNS CAMERA PARAMETERS ONLY: exactly ONE camera chunk is accepted, a "
+						"second is rejected with that reason, and a geometry, a light, a material or a "
+						"`film` chunk is rejected by name -- film carries width, height and pixelAR, "
+						"which is raster-size policy rather than framing, and this call never changes "
+						"them. If the camera it writes is the SAME KIND the scene already has, each "
+						"parameter it names is applied to that chunk as one patch batch -- one head "
+						"bump, one undo step -- and any parameter it leaves out keeps the value it "
+						"has; a DIFFERENT kind is inserted and the previous camera chunk then removed, "
+						"in that order so a failed insert can never leave the scene with no camera. "
+						"THE RESULT IS MEASURED, NOT ASSERTED: the same object-coverage pass runs "
+						"through the camera before the edit and again through the camera after it, and "
+						"the result states how many objects covered at least one pixel on each side, "
+						"naming the ones brought into the picture and the ones no longer in it. If the "
+						"new camera covers FEWER objects that is stated plainly and NOTHING is "
+						"reverted -- a closer view of fewer things is a framing decision, not an "
+						"error. It is the way the FIRST framing of a composed scene gets made: in the "
+						"COMPOSE phase, while frame_scene has not run, the first camera-authoring edit "
+						"-- an insert or a patch of a camera chunk -- is refused ONCE and names this "
+						"tool; one refusal, shared with the other build-phase rules and capped with "
+						"them, after which every camera edit proceeds whether or not this ran. Camera "
+						"edits in the pieces phase are never refused. If anything is rejected, ONE "
+						"repair retry runs automatically with the exact rejection text -- one, then it "
+						"stops. Nothing is ever dropped silently. On a provider that cannot run a "
+						"separate completion this returns ok:false with a plain statement, nothing "
+						"else changes, and editing the camera by hand is not blocked. Returns {ok,"
+						"provider,model,chunksExtracted,action,cameraKindBefore,cameraNameBefore,"
+						"cameraKindAfter,cameraNameAfter,paramsApplied,rejected:[{name,kind,reason}],"
+						"patchResults,chunkResults,retryRan,retrySucceeded,completions,objectsBefore,"
+						"coveredBefore,objectsAfter,coveredAfter,broughtIntoFrame,pushedOutOfFrame,"
+						"message}." );
+					tools.push_back( MakeTool( "frame_scene", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// imagine_scene (Arc 77 Phase 2, 2026-08-11) -- READ-SAFE (on
 				// IsReadSafeVerb, so it dispatches under Read and Propose
 				// exactly as under Commit; no autonomy note).
@@ -1792,7 +1944,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 29 tool names this adapter recognizes --
+			//! The list of the 34 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -1812,6 +1964,8 @@ namespace RISE
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory
 					"light_scene",       // Arc 81 (2026-08-12): MUTATING, the clean-room lighting pass
 					"populate_scene",    // Arc 82 (2026-08-12): MUTATING, the clean-room population pass
+					"environment_scene", // Arc 83 slice 5 (2026-08-13): MUTATING, the clean-room environment pass
+					"frame_scene",       // Arc 83 slice 6 (2026-08-13): MUTATING, the clean-room framing pass
 					"compare_to_reference",
 					"list_proposals", "resolve_proposal"
 				};

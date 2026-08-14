@@ -1026,6 +1026,107 @@
 //                                            either, exactly like light_scene.  TAKES
 //                                            NO REQUIRED PARAMS; the only -32602 is a
 //                                            non-string `notes`.)
+//      environment_scene {notes?}        -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,landed:[string],
+//                                            rejected:[{name?,kind?,reason}],
+//                                            chunkResults,patchResults,retryRan,
+//                                            retrySucceeded,completions,painters,media,
+//                                            boundPainter?,bindingApplied,
+//                                            bindingReason?,rasterizer?,
+//                                            radianceMapBefore,radianceMapAfter,
+//                                            globalMediumBefore,globalMediumAfter,
+//                                            toneBefore?:{lumaMean,lumaStdDev,
+//                                            lumaP1,lumaP99},toneAfter?:{...},message}
+//                                           (Arc 83 slice 5 (2026-08-13): the
+//                                            CLEAN-ROOM ENVIRONMENT pass -- the
+//                                            scene's SURROUND, which is what fills
+//                                            the frame where no object is plus the
+//                                            medium light travels through.  ONE fresh
+//                                            minimal completion (plus at most one
+//                                            repair retry), given the arc-80 scene
+//                                            inventory, the camera, the world bounds,
+//                                            the lights that already exist, whatever
+//                                            environment state the scene already has,
+//                                            and a palette of two families: the DOME
+//                                            (a painter -- a graded expression_function2d
+//                                            + blend_painter ramp, a noise field, or an
+//                                            hdr_painter / exr_painter image) and the
+//                                            MEDIUM (homogeneous_medium /
+//                                            painter_heterogeneous_medium plus
+//                                            global_medium).  HARD CONTRACT: painter,
+//                                            function and medium chunks only -- a
+//                                            geometry or standard_object is refused by
+//                                            name (a backdrop plane is FORM and belongs
+//                                            to build_element), and so is
+//                                            hosek_wilkie_skylight, which is a light
+//                                            chunk light_scene owns; on a scene that
+//                                            already carries one, this pass authors no
+//                                            dome at all.  THE BINDING IS THE HARNESS'S:
+//                                            there is no `environment` chunk, so after
+//                                            the insert this call appends a rasterizer
+//                                            chunk carrying `radiance_map` naming the
+//                                            LAST painter the answer landed (an APPEND,
+//                                            not a patch -- a patched earlier rasterizer
+//                                            naming a later painter derives to a SILENT
+//                                            no-dome).  It reports the frame's tonal
+//                                            distribution before and after, measured.
+//                                            It is one HALF of the before-you-judge
+//                                            checklist the FIRST compose-phase `render`
+//                                            is refused on (once per session, shared
+//                                            with populate_scene and with the
+//                                            build-phase refusal cap).  MUTATING: not
+//                                            read-safe, and deliberately not on the
+//                                            Propose allowlist either, exactly like
+//                                            light_scene.  TAKES NO REQUIRED PARAMS;
+//                                            the only -32602 is a non-string `notes`.)
+//      frame_scene {notes?}              -> {ok,capabilityRefusal?,provider,model,
+//                                            chunksExtracted,action,
+//                                            cameraKindBefore?,cameraNameBefore?,
+//                                            cameraKindAfter?,cameraNameAfter?,
+//                                            paramsApplied:[string],
+//                                            rejected:[{name?,kind?,reason}],
+//                                            patchResults,chunkResults,retryRan,
+//                                            retrySucceeded,completions,
+//                                            objectsBefore?,coveredBefore?,
+//                                            objectsAfter?,coveredAfter?,
+//                                            broughtIntoFrame:[string],
+//                                            pushedOutOfFrame:[string],message}
+//                                           (Arc 83 slice 6 (2026-08-13): the CLEAN-ROOM
+//                                            FRAMING pass.  ONE fresh minimal completion
+//                                            (plus at most one repair retry), given the
+//                                            FULL arc-80 inventory -- every object, its
+//                                            footprint, its position in the frame and,
+//                                            for the ones covering nothing, WHY (behind
+//                                            the camera, off-frame in a named direction,
+//                                            straddling the camera plane) -- plus the
+//                                            current camera chunk VERBATIM, its resolved
+//                                            pose, the world bounds, the frame's tonal
+//                                            fact and the camera palette.  IT RETURNS
+//                                            CAMERA PARAMETERS ONLY: exactly ONE camera
+//                                            chunk is admissible, a second is rejected,
+//                                            and geometry / lights / `film` are refused
+//                                            by name (film is raster-size policy, not
+//                                            framing).  Applied as a PATCH of the
+//                                            existing camera chunk when the kind matches
+//                                            (one batch, one head bump, one undo step,
+//                                            unnamed parameters untouched) and as an
+//                                            insert-then-remove REPLACEMENT when it does
+//                                            not.  The inventory is measured on BOTH
+//                                            sides, so the payload states how many
+//                                            objects the reframe really brought into the
+//                                            picture -- and states it plainly when the
+//                                            new camera covers FEWER, which is never
+//                                            auto-reverted (a close-up covers fewer
+//                                            objects on purpose).  It forces its own
+//                                            first use by refusing the FIRST
+//                                            camera-authoring edit in COMPOSE (once per
+//                                            session, sharing the build-phase refusal
+//                                            cap; pieces-phase camera edits are never
+//                                            refused).  MUTATING: not read-safe, and
+//                                            deliberately not on the Propose allowlist
+//                                            either, exactly like light_scene.  TAKES NO
+//                                            REQUIRED PARAMS; the only -32602 is a
+//                                            non-string `notes`.)
 //      compare_to_reference {reference,camera?,visual?,samples?}
 //                                        -> {ok,error?,badReference?,rmse,
 //                                            channelDelta:{r,g,b},

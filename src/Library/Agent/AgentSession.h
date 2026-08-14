@@ -4858,7 +4858,7 @@ namespace RISE
 			//! refusing it there would be the over-refusal arc 78 sec 2.3
 			//! names as this design family's worst failure mode.  What IS
 			//! phase-scoped is the gate that forces its first use -- see
-			//! CheckPopulateBeforeComposeRender_.
+			//! CheckBuildChecklistBeforeComposeRender_.
 			//!
 			//! WHAT THE PASS IS GIVEN: arc 80's scene inventory (so a repeat
 			//! is placed in relation to real geometry), the camera and the
@@ -4882,6 +4882,351 @@ namespace RISE
 			//! Blocking: one provider round trip, at most ONE repair retry.
 			//! It fires NO render of its own.
 			AgentPopulateSceneResult PopulateScene( const std::string& notes = std::string() );
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 5 (2026-08-13): `environment_scene` -- A CLEAN-ROOM
+			// ENVIRONMENT PASS.
+			// Design: docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 3.2 and the sec 15 AS BUILT block.
+			//
+			// THE MEASUREMENT.  No agent run has EVER authored an environment
+			// gradient, fog, or god-rays.  Agent scenes sit on flat colour
+			// fields or a black void (82 sec 8's gpt run), while the
+			// hand-authored frontier benchmark has graded water with depth
+			// falloff.  In the latest dragon run the figures stand against a
+			// flat backdrop.
+			//
+			// SINGLE-UNIT STEP.  There is ONE environment, so ONE completion
+			// is the correct unit (83 sec 1's sizing rule) -- no enumeration,
+			// no loop, unlike `light_scene`'s two-completion source-first
+			// shape.
+			//
+			// WHAT THE ENVIRONMENT ACTUALLY IS IN THIS SCENE LANGUAGE, and
+			// why the verb has to do more than insert chunks: there is no
+			// `environment` chunk.  The surround is TWO things --
+			//   (1) THE DOME: a PAINTER, bound as the active rasterizer's
+			//       `radiance_map` (+ `radiance_background`), which is a
+			//       PARAMETER GROUP on the rasterizer chunk and not a chunk of
+			//       its own.  So this verb inserts the painter(s) and then
+			//       makes the BINDING itself, by patching the rasterizer --
+			//       the same division of labour `rect_light` uses, where the
+			//       model writes the intent and the harness performs the
+			//       mechanical expansion.
+			//   (2) THE MEDIUM: a `homogeneous_medium` /
+			//       `painter_heterogeneous_medium` plus a `global_medium`
+			//       chunk naming it, which is how this renderer spells fog,
+			//       haze and god-rays.
+			//
+			// THE HOSEK DECISION, stated once and enforced.
+			// `hosek_wilkie_skylight` is a LIGHT-category chunk that installs
+			// a global radiance map ITSELF (Job::AddHosekWilkieSkylight calls
+			// the same SetGlobalRadianceMap the rasterizer's `radiance_map`
+			// does -- LAST WRITER WINS, so a scene carrying both silently
+			// discards one).  It belongs to `light_scene`, which already
+			// carries it in kLightPalette with its schema and worked example,
+			// and it is REFUSED here by name.  The two verbs share it by ONE
+			// of them owning it: environment_scene is TOLD whether the
+			// document already carries a hosek chunk, and when it does this
+			// call makes NO dome binding at all -- it confines itself to the
+			// medium half rather than replacing a sky another verb authored.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `environment_scene` calls allowed per
+			//! session.  TWO, not four: there is exactly ONE environment per
+			//! scene, so this is a per-session BACKSTOP that allows one redo
+			//! and nothing more -- a bound sized so nothing legitimate hits
+			//! it, the philosophy kBuildElementMaxPerSession uses.
+			static constexpr int kEnvironmentSceneMaxPerSession = 2;
+
+			//! The longest `notes` string an `environment_scene` call may
+			//! carry -- the ONE model-supplied span in the host-composed
+			//! prompt, capped for kLightSceneMaxNotes' reason and TRUNCATED
+			//! with the truncation stated, never silently.
+			static constexpr std::size_t kEnvironmentSceneMaxNotes = 2000;
+
+			//! The long edge of the two tonal-measurement renders (before and
+			//! after).  Small on purpose, for kLightSceneSoloLongEdge's reason
+			//! exactly: the measurement is a whole-frame distribution, which
+			//! converges far faster than a picture does.
+			static constexpr unsigned int kEnvironmentSceneToneLongEdge = 64;
+
+			//! One chunk the environment pass returned that was NOT inserted,
+			//! with the reason.  Never a silent drop -- the same contract and
+			//! the same struct shape AgentLightSceneRejection carries.
+			struct AgentEnvironmentSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! The frame's tonal distribution at ONE moment, as
+			//! ComputeFrameTone_ measures it.  `measured` false means the
+			//! render or the decode did not succeed, in which case NO field
+			//! here is a measurement and `reason` says what happened -- the
+			//! same omit-rather-than-fabricate rule the inventory's frame
+			//! positions follow.
+			struct AgentFrameToneReading
+			{
+				bool        measured = false;
+				double      lumaMean = 0.0;
+				double      lumaStdDev = 0.0;
+				double      lumaP1 = 0.0;
+				double      lumaP99 = 0.0;
+				std::string reason;
+			};
+
+			//! The structured result of EnvironmentScene.  `ok` means the
+			//! pass ANSWERED and its answer was processed -- NOT that
+			//! everything landed.  Partial success is first-class and
+			//! honestly reported, exactly as in AgentLightSceneResult.
+			struct AgentEnvironmentSceneResult
+			{
+				bool         ok = false;
+				bool         capabilityRefusal = false;
+				std::string  providerName;
+				std::string  modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<std::string> landed;
+				std::vector<AgentEnvironmentSceneRejection> rejected;
+				std::vector<AgentChunkResult> chunkResults;
+				//! The two parameter edits the DOME BINDING is made of, when
+				//! this call made one -- empty when it did not (see
+				//! `bindingReason`).
+				std::vector<AgentPatchResult> patchResults;
+				bool         retryRan = false;
+				bool         retrySucceeded = false;
+				//! Provider completions this ONE call spent: 1, or 2 when the
+				//! one repair retry ran.
+				int          completionsSpent = 0;
+
+				//---- THE DOME.  `boundPainter` is the painter this call bound
+				//! as the scene's environment radiance map -- by the stated
+				//! contract, the LAST painter chunk the answer landed.  Empty
+				//! when nothing was bound, in which case `bindingReason` says
+				//! why (no painter landed; the scene's sky is a
+				//! hosek_wilkie_skylight; the active rasterizer takes no
+				//! radiance_map; the patch itself was rejected).
+				std::string  boundPainter;
+				bool         bindingApplied = false;
+				std::string  bindingReason;
+				//! The active rasterizer's chunk keyword at the time of the
+				//! binding, so the reader can see WHAT was patched.
+				std::string  rasterizerKind;
+				//! Did the live scene carry a global radiance map before this
+				//! call, and does it after?  Measured from the scene, both
+				//! times, so the difference is a fact about the renderer
+				//! rather than a count of what this pass believes it did.
+				bool         radianceMapBefore = false;
+				bool         radianceMapAfter = false;
+				//! The same, for the global participating medium.
+				bool         globalMediumBefore = false;
+				bool         globalMediumAfter = false;
+				//! How many Medium-category chunks this call landed.
+				int          mediaBuilt = 0;
+				//! How many Painter/Function chunks this call landed.
+				int          paintersBuilt = 0;
+
+				//---- THE HEADLINE (83 sec 6: "tonal spread for environment").
+				//! The same small frame, measured before the pass and after
+				//! it.  Facts only: a mean, a spread and the 1st/99th
+				//! percentiles, with no verdict and no target.
+				AgentFrameToneReading toneBefore;
+				AgentFrameToneReading toneAfter;
+				std::string  message;
+			};
+
+			//! Author this scene's SURROUND in a FRESH minimal provider
+			//! context and validated-insert the result: what fills the frame
+			//! where no object is, and the medium light travels through.
+			//!
+			//! ONE completion (plus at most ONE repair retry) -- there is one
+			//! environment, so one completion is the correct unit.
+			//!
+			//! WHAT THE PASS IS GIVEN: arc 80's scene inventory, the camera,
+			//! the scene's world bounds, the lights that already exist, the
+			//! imagined description if the session has one, WHAT ENVIRONMENT
+			//! STATE ALREADY EXISTS (a bound radiance map, a global medium, a
+			//! hosek sky), and the environment palette -- the gradient dome
+			//! (an `expression_function2d` ramp over the direction-derived
+			//! u,v plus a `blend_painter`), the image dome (`hdr_painter` /
+			//! `exr_painter`), and the atmosphere (`homogeneous_medium` or
+			//! `painter_heterogeneous_medium`, plus `global_medium`) -- each
+			//! with the descriptor registry's own parameter list and ONE
+			//! literal worked example proven to parse.
+			//!
+			//! ADMISSIBILITY: Painter, Function and Medium chunks, and
+			//! nothing else.  A GEOMETRY or an OBJECT is refused by name --
+			//! a backdrop plane or a sky dome built as a mesh is FORM, and
+			//! form belongs to `build_element`.  A camera, a film, a
+			//! rasterizer, a shader op and `hosek_wilkie_skylight` are each
+			//! refused by name too (see the block comment above for the
+			//! hosek decision).
+			//!
+			//! THE BINDING IS THE HARNESS'S, not the model's: after the
+			//! insert, this call patches the ACTIVE rasterizer's
+			//! `radiance_map` to the LAST painter the answer landed and sets
+			//! `radiance_background TRUE`, so the dome is what the camera
+			//! sees where no object is.  The contract is STATED in the prompt
+			//! and the painter actually bound is reported.
+			//!
+			//! `notes` is optional free text from the caller, interpolated
+			//! into the host-composed prompt (see kEnvironmentSceneMaxNotes);
+			//! the model NEVER supplies raw prompt text.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry,
+			//! plus TWO small internal tonal renders (before and after).
+			AgentEnvironmentSceneResult EnvironmentScene( const std::string& notes = std::string() );
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 6 (2026-08-13): `frame_scene` -- A CLEAN-ROOM
+			// CAMERA / FRAMING PASS.
+			// Design: docs/agentic-redesign/83-staged-construction-plan.md
+			// sec 3.2 and the sec 15 AS BUILT block.
+			//
+			// THE MEASUREMENT.  In trajectory 20260813T231623Z, 13 of 54
+			// objects covered ZERO pixels and the dragon overshot its height
+			// budget by 4x -- a quarter of the built scene is not in the
+			// picture.  Framing is authored inline today, never as a
+			// considered step, and arc 80's inventory -- which knows exactly
+			// which objects miss the frame and why -- exists precisely to
+			// feed this.
+			//
+			// SINGLE-UNIT STEP.  There is ONE camera, so ONE completion.
+			//
+			// WHAT COMES BACK IS A CAMERA AND NOTHING ELSE.  No geometry, no
+			// lights, and no `film`: film is RASTER-SIZE policy (width /
+			// height / pixelAR, scene format v6's Camera/Film split), not
+			// framing, and a pass that could change it would silently
+			// re-budget every render this session makes.
+			//
+			// PATCH OR REPLACE.  The answer's chunk keyword decides: the same
+			// kind as the scene's active camera is applied as a PATCH of that
+			// chunk's parameters (one batch, one head bump, one undo step); a
+			// DIFFERENT kind is INSERTED and the old camera chunk then
+			// REMOVED -- in that order, so a failed insert can never leave the
+			// scene with no camera at all.
+			//
+			// THE RESULT IS MEASURED, NOT ASSERTED.  The arc-80 inventory is
+			// run BEFORE the edit and again AFTER it, so the payload states
+			// how many objects the reframe actually brought into the picture
+			// -- and states it plainly when the new camera covers FEWER.  It
+			// does NOT auto-revert: a deliberate close-up covers fewer
+			// objects on purpose, and a harness that undid it would be
+			// overriding the judgement it just asked for.
+			//----------------------------------------------------------------
+
+			//! Provider-reaching `frame_scene` calls allowed per session.
+			//! TWO, for kEnvironmentSceneMaxPerSession's reason exactly: one
+			//! camera per scene, and one redo.
+			static constexpr int kFrameSceneMaxPerSession = 2;
+
+			//! The longest `notes` string a `frame_scene` call may carry.
+			static constexpr std::size_t kFrameSceneMaxNotes = 2000;
+
+			//! How many inventory lines the FRAMING prompt prints, per group
+			//! (covered / covered-nothing).  Far larger than the render
+			//! payload's own caps (12 / 40) and deliberately so: for every
+			//! other consumer the inventory is context beside a picture,
+			//! while for THIS one the per-object list IS the input -- an
+			//! object cut from the listing is an object the reframe cannot
+			//! know it is missing.  Still bounded (arc 79 sec 1: prepended
+			//! text competes with what follows it), and any truncation is
+			//! STATED by the formatter itself.
+			static constexpr std::size_t kFrameSceneInventoryLines = 120;
+
+			//! One chunk the framing pass returned that was NOT inserted,
+			//! with the reason.  Never a silent drop.
+			struct AgentFrameSceneRejection
+			{
+				std::string name;
+				std::string kind;
+				std::string reason;
+			};
+
+			//! The structured result of FrameScene.
+			struct AgentFrameSceneResult
+			{
+				bool         ok = false;
+				bool         capabilityRefusal = false;
+				std::string  providerName;
+				std::string  modelId;
+				unsigned int chunksExtracted = 0;
+				std::vector<AgentFrameSceneRejection> rejected;
+				std::vector<AgentPatchResult> patchResults;
+				std::vector<AgentChunkResult> chunkResults;
+				bool         retryRan = false;
+				bool         retrySucceeded = false;
+				int          completionsSpent = 0;
+
+				//! What this call did to the camera: "patched", "replaced",
+				//! "inserted", or "" when nothing was applied.
+				std::string  action;
+				//! The camera chunk keyword and name before and after.  A
+				//! name is empty when the chunk declares none (an unnamed
+				//! camera is addressed by KIND, which is what this call then
+				//! patches through).
+				std::string  cameraKindBefore;
+				std::string  cameraNameBefore;
+				std::string  cameraKindAfter;
+				std::string  cameraNameAfter;
+				//! The parameter names actually applied, in the order they
+				//! were applied.  A parameter the answer did not name keeps
+				//! whatever value it had.
+				std::vector<std::string> paramsApplied;
+
+				//---- THE MEASUREMENT (83 sec 6: "subject coverage for
+				//! camera").  The arc-80 inventory, run before the edit and
+				//! again after it.  `measuredBefore` / `measuredAfter` false
+				//! means that identity pass did not succeed, in which case
+				//! the counts beside it are NOT measurements.
+				bool         measuredBefore = false;
+				bool         measuredAfter = false;
+				int          objectsBefore = 0;
+				int          objectsAfter = 0;
+				int          coveredBefore = 0;
+				int          coveredAfter = 0;
+				//! Objects that covered NO pixels before and DO after, and
+				//! the reverse -- by name, so the claim is checkable.
+				std::vector<std::string> broughtIntoFrame;
+				std::vector<std::string> pushedOutOfFrame;
+				//! The frame's tonal distribution as this call measured it
+				//! BEFORE the edit -- the same reading it put in the prompt,
+				//! reported so a census can see the fact the pass was given
+				//! rather than having to re-derive it.
+				AgentFrameToneReading toneBefore;
+				std::string  message;
+			};
+
+			//! Frame this scene in a FRESH minimal provider context: decide
+			//! where the camera goes and what it looks at, and apply that as
+			//! ONE camera edit.
+			//!
+			//! WHAT THE PASS IS GIVEN: the FULL arc-80 inventory (every
+			//! object, its footprint, its in-frame position and, for the ones
+			//! that covered nothing, WHY -- behind the camera, off-frame in a
+			//! named direction, straddling the camera plane), the current
+			//! camera chunk VERBATIM plus its resolved pose, the scene's
+			//! world bounds, the frame's TONAL FACT measured just now (the
+			//! same MeasureFrameTone_ reading environment_scene takes, rather
+			//! than "whatever the last render happened to be" -- a stale
+			//! figure beside a live inventory would be the false-clause class
+			//! arc 79 sec 8.1 records the cost of), the imagined subject if
+			//! this session has one, and the camera palette with the
+			//! descriptor registry's own parameter list per kind and ONE
+			//! literal worked example.
+			//!
+			//! IT RETURNS CAMERA PARAMETERS ONLY.  Exactly one camera chunk
+			//! is admissible; a second is rejected with that reason, and a
+			//! chunk of any other kind -- geometry, a light, a `film` -- is
+			//! rejected by name.
+			//!
+			//! `notes` is optional free text from the caller (see
+			//! kFrameSceneMaxNotes); the model NEVER supplies raw prompt text.
+			//!
+			//! Blocking: one provider round trip, at most ONE repair retry,
+			//! plus TWO small internal identity passes (before and after).
+			AgentFrameSceneResult FrameScene( const std::string& notes = std::string() );
 
 			//! The balanced-brace CHUNK EXTRACTOR (design sec 2.2), exposed
 			//! static so a test can drive it on hostile input without a
@@ -7186,21 +7531,31 @@ namespace RISE
 			//! strand exactly the session whose builder failed.
 			bool mLightSceneRan = false;
 
-			//! Arc 81, arc 83 slice 2: the SCENE FACTS both lighting prompts
-			//! open with -- the session's imagined subject/mood, the arc-80
-			//! inventory, the camera, the world bounds and the lights that
-			//! already exist.  Shared by the enumeration prompt and the build
-			//! prompt so the two cannot drift about what the scene is.
+			//! Arc 81, arc 83 slices 2 and 5: the SCENE FACTS a clean-room
+			//! prompt opens with -- the session's imagined subject/mood, the
+			//! arc-80 inventory, the camera, the world bounds and the lights
+			//! that already exist.  Shared by BOTH lighting prompts (the
+			//! enumeration and the build) and by `environment_scene`'s single
+			//! prompt, so no two of them can drift about what the scene is.
+			//! (`frame_scene` deliberately does NOT use it: its inventory is
+			//! printed at a far larger line cap and its camera is shown as the
+			//! chunk's own text rather than as a resolved pose -- see
+			//! ComposeFramingPrompt_.)
+			//!
+			//! WHY THE LIGHTS BELONG HERE EVEN FOR THE ENVIRONMENT PASS: a
+			//! `hosek_wilkie_skylight` in that list IS the scene's sky, and
+			//! the environment prompt's dome half turns on whether one exists.
+			//!
 			//! `inventoryWhen` says WHEN the inventory was measured; it is a
-			//! parameter rather than a literal purely so both call sites can
-			//! pass the SAME honest phrase ("at the start of this lighting
-			//! pass") -- nothing mutates the scene between the two
-			//! completions this call spends, so the one measurement stays
-			//! accurate for both, and a false clause in a model-facing
-			//! payload is the class arc 79 sec 8.1 records the cost of.
-			void AppendLightingSceneFacts_( std::string& p,
-			                                const std::string& inventoryText,
-			                                const char* inventoryWhen ) const;
+			//! parameter rather than a literal purely so every call site can
+			//! pass its own honest phrase -- nothing mutates the scene between
+			//! the two completions a lighting call spends, so the one
+			//! measurement stays accurate for both, and a false clause in a
+			//! model-facing payload is the class arc 79 sec 8.1 records the
+			//! cost of.
+			void AppendSceneFacts_( std::string& p,
+			                        const std::string& inventoryText,
+			                        const char* inventoryWhen ) const;
 
 			//! Arc 83 slice 2: compose the SOURCE ENUMERATION prompt
 			//! host-side -- the scene facts above, the caller's
@@ -7255,38 +7610,55 @@ namespace RISE
 			// ARC 82 (2026-08-12): the population pass's private surface.
 			//----------------------------------------------------------------
 
-			//! Arc 82: the FIFTH arm of the phase refusals -- is this
-			//! full-scene RENDER refused because `populate_scene` has not run
-			//! yet?  "" unless ALL of: the protocol is on and has not given
-			//! up, the session is in the COMPOSE phase, the host installed a
-			//! text completer (a path that does not exist cannot be forced;
-			//! and PopulateScene itself answers with a capability statement
-			//! there), this arm has not already fired once in this session,
-			//! and PopulateScene has not reached the provider.  Otherwise the
-			//! refusal, naming `populate_scene`.  Shares RefuseForPhase_'s
-			//! counter, cap and give-up with the other four arms, and dies
-			//! with `--agent-build-protocol=off` like all of them.
+			//! Arc 82, WIDENED BY ARC 83 SLICE 5 (2026-08-13): the FIFTH arm of
+			//! the phase refusals -- is this full-scene RENDER refused because
+			//! the BEFORE-YOU-JUDGE CHECKLIST is not yet satisfied?  "" unless
+			//! ALL of: the protocol is on and has not given up, the session is
+			//! in the COMPOSE phase, the host installed a text completer (a
+			//! path that does not exist cannot be forced; and both checklist
+			//! verbs answer with a capability statement there), this arm has
+			//! not already fired once in this session, and at least ONE of the
+			//! checklist verbs has not reached the provider.  Otherwise the
+			//! refusal, naming exactly the ones that have NOT run.
 			//!
-			//! WHY A RENDER AND NOT AN EDIT.  Population belongs BEFORE you
-			//! judge the picture, and the first compose render is the exact
-			//! moment the model turns to judging it.  There is no
-			//! "population-creating edit" to hang this on the way the light
-			//! arm hangs on a light chunk: a repeat is an ordinary
-			//! standard_object, indistinguishable from a first placement.
+			//! THE CHECKLIST, in the order the refusal names them:
+			//!   * `populate_scene` (arc 82) -- a composed scene is POPULATED
+			//!     before it is judged.
+			//!   * `environment_scene` (arc 83 slice 5) -- and it has a
+			//!     SURROUND before it is judged; the measured defect is a
+			//!     finished scene standing against a black void.
+			//! Each item lifts INDEPENDENTLY and PERMANENTLY the moment its own
+			//! verb reaches the provider, for mPopulateSceneRan's reason
+			//! exactly (a pass whose chunks were all rejected still had its
+			//! turn).  A refusal names only the outstanding ones, so a model
+			//! that has run one of the two is never told to run it again.
 			//!
-			//! IT FIRES AT MOST ONCE PER SESSION (mPopulateRenderGateFired),
-			//! which is stricter than the other four arms and deliberately
-			//! so: a refused EDIT leaves a model able to look at its scene,
-			//! while a refused RENDER leaves it blind.  One refusal names the
-			//! verb; after that every render proceeds whether or not the pass
-			//! was run.  The direct consequence for the shared budget is that
-			//! this arm can consume AT MOST ONE of the three refusals.
+			//! WHY A RENDER AND NOT AN EDIT.  Population and the surround both
+			//! belong BEFORE you judge the picture, and the first compose
+			//! render is the exact moment the model turns to judging it.
+			//! Neither has a "creating edit" to hang a gate on the way the
+			//! light arm hangs on a light chunk: a repeat is an ordinary
+			//! standard_object indistinguishable from a first placement, and
+			//! an environment is a painter plus a rasterizer parameter.
+			//!
+			//! IT IS STILL EXACTLY ONE REFUSAL FOR THE WHOLE CHECKLIST
+			//! (mPopulateRenderGateFired), not one per item, and that is
+			//! load-bearing rather than lenient: 82 sec 6 measured that a
+			//! repeat-refusable render arm burns the whole shared 3-refusal
+			//! budget by itself and trips the give-up, silently disarming
+			//! every sibling gate.  A refused EDIT leaves a model able to look
+			//! at its scene; a refused RENDER leaves it blind.  One refusal
+			//! names whatever is outstanding; every render after that proceeds
+			//! whether or not either verb ran.  The direct consequence for the
+			//! shared budget is unchanged: this arm consumes AT MOST ONE of
+			//! the three refusals, however many checklist items are added to
+			//! it.
 			//!
 			//! THE SEAM: PIECES-phase renders are untouched (the arm returns
 			//! "" outside COMPOSE) -- arc 78 sec 2.3's rule that a model must
 			//! always be able to look at the part it is building.
-			std::string CheckPopulateBeforeComposeRender_( const char* verb,
-			                                               std::string* outGiveUpNotice );
+			std::string CheckBuildChecklistBeforeComposeRender_( const char* verb,
+			                                                     std::string* outGiveUpNotice );
 
 			//! Arc 82: everything Render(params) did before the population gate
 			//! was put in front of it -- the target resolve, the scene-target
@@ -7376,6 +7748,199 @@ namespace RISE
 			                                      const std::string& example,
 			                                      const std::string& notes,
 			                                      const std::string& rejectionText ) const;
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 5 (2026-08-13): the environment pass's private
+			// surface.
+			//----------------------------------------------------------------
+
+			//! Arc 83 slice 5: true while EnvironmentScene is submitting its
+			//! own extracted chunks through InsertChunks, and while it is
+			//! patching the rasterizer to bind the dome.  Consulted by the
+			//! rasterizer-allowlist gate's PATCH arm for the same reason
+			//! LightSceneInsertGuard_ exists: the binding IS this verb's
+			//! mechanism, and a gate that refused it would refuse the verb it
+			//! names.  Set by an RAII guard, exactly like its two siblings.
+			bool mInEnvironmentSceneEdit = false;
+			struct EnvironmentSceneEditGuard_
+			{
+				AgentSession& session;
+				explicit EnvironmentSceneEditGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInEnvironmentSceneEdit = true;
+				}
+				~EnvironmentSceneEditGuard_() { session.mInEnvironmentSceneEdit = false; }
+			};
+
+			//! Arc 83 slice 5 spend cap: EnvironmentScene calls that actually
+			//! reached the completer this session.  Capability and schema
+			//! refusals never count.  See kEnvironmentSceneMaxPerSession.
+			int mEnvironmentSceneCalls = 0;
+
+			//! Arc 83 slice 5: has `environment_scene` reached the provider in
+			//! this session?  This -- not "did anything land" -- is one of the
+			//! two items the compose-render checklist reads, for
+			//! mPopulateSceneRan's reason exactly.
+			bool mEnvironmentSceneRan = false;
+
+			//! Arc 83 slice 5: compose the ENTIRE environment prompt
+			//! host-side -- the shared scene facts, WHAT ENVIRONMENT STATE
+			//! ALREADY EXISTS, the environment palette with the registry's own
+			//! grammar and its literal worked examples, the stated binding
+			//! contract, the caller's (already length-capped) notes and the
+			//! output instruction.  `rejectionText` empty builds the FIRST
+			//! prompt; non-empty builds the ONE repair retry's.
+			//! `hosekPresent` suppresses the dome half entirely -- see the
+			//! hosek decision above EnvironmentScene's declaration.
+			std::string ComposeEnvironmentPrompt_( const std::string& inventoryText,
+			                                       const std::string& notes,
+			                                       const std::string& rejectionText,
+			                                       bool hosekPresent ) const;
+
+			//! Arc 83 slice 5: render ONE small frame and read its tonal
+			//! distribution, for the before/after headline.  Internal and
+			//! ephemeral -- it reaches neither the GUI's Last Render pane nor
+			//! the session image cache, exactly like the inventory's identity
+			//! pass and light_scene's solos.  Never throws and never refuses:
+			//! a failed render or decode comes back `measured == false` with
+			//! the reason stated.
+			AgentFrameToneReading MeasureFrameTone_();
+
+			//! Arc 83 slice 5: does the retained CST carry a
+			//! `hosek_wilkie_skylight` chunk?  The one question the dome half
+			//! of this verb is gated on -- asked of the DOCUMENT rather than
+			//! of the live scene, because what collides is the chunk's
+			//! SetGlobalRadianceMap call on the next derive, not the map
+			//! currently installed.
+			bool DocumentCarriesHosekSkylight_() const;
+
+			//----------------------------------------------------------------
+			// ARC 83 SLICE 6 (2026-08-13): the framing pass's private surface.
+			//----------------------------------------------------------------
+
+			//! Arc 83 slice 6: the SIXTH arm of the phase refusals -- is this
+			//! CAMERA-authoring edit refused because `frame_scene` has not run
+			//! yet?  "" unless ALL of: the protocol is on and has not given
+			//! up, the session is in the COMPOSE phase, the host installed a
+			//! text completer (a path that does not exist cannot be forced),
+			//! this call is not FrameScene's own edit, this arm has not
+			//! already fired once in this session, and FrameScene has not
+			//! reached the provider.  Otherwise the refusal, naming
+			//! `frame_scene`.  Shares RefuseForPhase_'s counter, cap and
+			//! give-up with the other five arms, and dies with
+			//! `--agent-build-protocol=off` like all of them.
+			//!
+			//! IT FIRES AT MOST ONCE PER SESSION (mCameraEditGateFired), which
+			//! is the RENDER arm's rule rather than the light arm's, and the
+			//! reason is 82 sec 6's measured finding applied in advance: a
+			//! repeat-refusable arm on a call a model makes CONSTANTLY burns
+			//! the whole shared 3-refusal budget by itself and trips the
+			//! give-up, silently disarming its siblings (arc 80's delete ban,
+			//! arc 81's light gate, arc 82's render gate) for the rest of the
+			//! session.  Every measured run patches the camera repeatedly, so
+			//! this arm is exactly that hazard; one refusal names the verb and
+			//! every camera edit after it proceeds.
+			//!
+			//! THE SEAM: PIECES-phase camera edits are untouched (the arm
+			//! returns "" outside COMPOSE) -- arc 78 sec 2.3 exempts the whole
+			//! Camera category from element-window rules precisely because a
+			//! model that cannot re-aim at the part it is building cannot see
+			//! it, and this must not take that back.
+			std::string CheckFrameSceneBeforeCameraEdit_( const char* verb,
+			                                              std::string* outGiveUpNotice );
+
+			//! Arc 83 slice 6: has the camera arm above already refused once in
+			//! this session?  See its doc for why one is the whole budget.
+			bool mCameraEditGateFired = false;
+
+			//! Arc 83 slice 6: true while FrameScene is applying its own camera
+			//! edit (the patch batch, or the insert-then-remove of a
+			//! replacement).  The arm above consults it so the mechanism cannot
+			//! refuse the verb it names -- LightSceneInsertGuard_'s rule.
+			bool mInFrameSceneEdit = false;
+			struct FrameSceneEditGuard_
+			{
+				AgentSession& session;
+				explicit FrameSceneEditGuard_( AgentSession& s ) : session( s )
+				{
+					session.mInFrameSceneEdit = true;
+				}
+				~FrameSceneEditGuard_() { session.mInFrameSceneEdit = false; }
+			};
+
+			//! Arc 83 slice 6 spend cap: FrameScene calls that actually reached
+			//! the completer this session.  See kFrameSceneMaxPerSession.
+			int mFrameSceneCalls = 0;
+
+			//! Arc 83 slice 6: has `frame_scene` reached the provider in this
+			//! session?  This -- not "did the camera change" -- is what lifts
+			//! the camera arm, for mLightSceneRan's reason exactly.
+			bool mFrameSceneRan = false;
+
+			//! Arc 83 slice 6: true iff `chunkText` parses to at least one
+			//! top-level chunk whose keyword is one of the five CAMERA chunk
+			//! kinds -- the exact sibling of ChunkTextCreatesLight_, and a
+			//! NAMED LIST rather than a category test for the reason
+			//! IsZeroAreaLightKeyword_ is one: `ChunkCategory::Camera` also
+			//! covers the non-camera helper chunks `scene_options` (world
+			//! scale) and `camera_defaults` (thinlens fallbacks), and refusing
+			//! a scene-unit declaration on behalf of a framing verb would be
+			//! exactly the over-refusal arc 78 names as this design family's
+			//! worst failure mode.
+			static bool ChunkTextCreatesCamera_( const std::string& chunkText,
+			                                     std::string* outKind = nullptr,
+			                                     std::string* outName = nullptr );
+
+			//! Arc 83 slice 6: does this `propose_patch` aim at a CAMERA
+			//! chunk?  The patch-path sibling of ChunkTextCreatesCamera_ --
+			//! needed because the ordinary way a model re-aims is a PATCH, not
+			//! an insert, so a camera gate wired only to the insert verbs
+			//! would be a gate with a one-word bypass.
+			//!
+			//! Two routes, in order.  (1) THE KIND the caller supplied:
+			//! `camera` -- the generic suffix constraint
+			//! RISE::Cst::RoleMatchesKindConstraint honours, and the ONLY way
+			//! an UNNAMED camera is addressable at all -- or any of the five
+			//! camera keywords.  (2) THE DOCUMENT, for a bare `target`:
+			//! resolved through RISE::Cst::DocFindByNameAnyRole, the same
+			//! resolver the real patch uses, with the caller's own `kind`
+			//! passed through so this cannot narrow differently from the edit
+			//! it is gating.  An unresolvable target is NOT a camera -- under-
+			//! refusing is the correct direction of error for a phase rule.
+			bool PatchTargetIsCamera_( const std::string& target, const std::string& kind ) const;
+
+			//! Arc 83 slice 6: the scene's ACTIVE camera chunk, as the
+			//! retained CST holds it.  `outKeyword` is its chunk keyword,
+			//! `outName` its `name` parameter (EMPTY when it declares none --
+			//! an unnamed camera is addressed by KIND, which is what
+			//! ProposePatch's own resolver does), and `outText` the chunk
+			//! serialized back to text so the framing prompt can show it
+			//! VERBATIM.  False when the document carries no camera chunk at
+			//! all.
+			//!
+			//! RESOLUTION ORDER, and why: the live active camera NAME first
+			//! (Job::GetActiveCameraName, the name the render actually uses),
+			//! then -- when no chunk carries that name, which is the ordinary
+			//! case for an unnamed camera whose derived name is "default" --
+			//! the LAST camera chunk in the document, because Scene::AddCamera
+			//! is "last added wins" and a full derive walks the document in
+			//! order.
+			bool FindActiveCameraChunk_( std::string& outKeyword, std::string& outName,
+			                             std::string& outText ) const;
+
+			//! Arc 83 slice 6: compose the ENTIRE framing prompt host-side --
+			//! the subject, the FULL inventory (see kFrameSceneInventoryLines),
+			//! the current camera chunk verbatim and its resolved pose, the
+			//! world bounds, the last render's tonal fact if there is one, the
+			//! camera palette with the registry's own grammar, the caller's
+			//! (already length-capped) notes and the output instruction.
+			//! `rejectionText` empty builds the FIRST prompt; non-empty builds
+			//! the ONE repair retry's.
+			std::string ComposeFramingPrompt_( const std::string& inventoryText,
+			                                   const std::string& cameraText,
+			                                   const std::string& toneText,
+			                                   const std::string& notes,
+			                                   const std::string& rejectionText ) const;
 
 			//! S2: true while BuildElement is submitting its own extracted
 			//! chunks through InsertChunks.  The clean-room refusal above

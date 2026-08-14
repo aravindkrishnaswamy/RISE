@@ -14595,6 +14595,22 @@ static const char* const kGoodPopulationAnswer =
 	"standard_object\n{\n\tname pop_sph_c\n\tgeometry sph\n\tmaterial mat_diffuse\n"
 	"\tposition 0.3 -0.9 -2.0\n\tscale 0.8\n}\n";
 
+//! A well-formed ENVIRONMENT answer (arc 83 slice 5): a graded dome built
+//! the way the palette's worked example builds one -- two colours, an
+//! expression_function2d ramp and a blend_painter mixing them -- plus a
+//! global haze.  Declared HERE, beside kGoodPopulationAnswer, because the
+//! compose-render CHECKLIST arm below needs both verbs to have run and a
+//! fixture that lives only in the arc-83 block would not be visible there.
+static const char* const kGoodEnvironmentAnswer =
+	"uniformcolor_painter\n{\n\tname a83_pole\n\tcolor 0.04 0.10 0.26\n}\n"
+	"uniformcolor_painter\n{\n\tname a83_horizon\n\tcolor 0.52 0.62 0.74\n}\n"
+	"expression_function2d\n{\n\tname a83_ramp\n\texpr smoothstep( 0.0, 1.0, v )\n}\n"
+	"blend_painter\n{\n\tname a83_dome\n\tcolora a83_pole\n\tcolorb a83_horizon\n"
+	"\tmask a83_ramp\n}\n"
+	"homogeneous_medium\n{\n\tname a83_haze\n\tabsorption 0.008 0.010 0.014\n"
+	"\tscattering 0.055 0.055 0.050\n\tphase hg 0.4\n}\n"
+	"global_medium\n{\n\tmedium a83_haze\n}\n";
+
 //! A scene with geometry and material but NO standard_object -- the one
 //! state in which a population pass has nothing to work from.
 static const char* const kNoObjectScene =
@@ -14956,6 +14972,12 @@ static void TestComposePhaseFirstRenderRefusal()
 		Check( r1.message.find( "populate_scene" ) != std::string::npos &&
 		       r1.message.find( "render refused" ) != std::string::npos,
 		       "A82d and the refusal names the verb and says what happened" );
+		// ARC 83 SLICE 5: the arm is now a CHECKLIST, and with neither item
+		// run the one refusal names BOTH.
+		Check( r1.message.find( "environment_scene" ) != std::string::npos,
+		       "A83N/checklist MONEY ASSERTION: the same single refusal also names "
+		       "environment_scene -- the arm widened into a before-you-judge checklist, and a "
+		       "model told about only half of it would satisfy that half and be refused again" );
 		Check( sess->BuildPhaseRefusalCount() == 1,
 		       "A82d it burns exactly one slot of the SHARED phase counter (the fifth arm)" );
 
@@ -14983,11 +15005,24 @@ static void TestComposePhaseFirstRenderRefusal()
 
 		const Agent::AgentSession::AgentPopulateSceneResult pr = sess->PopulateScene();
 		Check( pr.ok && pr.created.size() == 3, "A82d/lift the pass runs and lands its repeats" );
+		// ARC 83 SLICE 5: with only HALF the checklist done the render is
+		// still refused -- and the refusal names ONLY the outstanding half.
+		// A model told to re-run a verb it already ran would reasonably
+		// conclude the harness is broken, so this is the money assertion of
+		// the widened arm.
+		const Agent::AgentRenderResult half = sess->Render( A82ModelRender() );
+		Check( !half.ok,
+		       "A83N/checklist the render is still refused with one checklist item outstanding" );
+		Check( half.message.find( "environment_scene" ) != std::string::npos &&
+		       half.message.find( "populate_scene" ) == std::string::npos,
+		       "A83N/checklist MONEY ASSERTION: and the refusal names ONLY environment_scene -- "
+		       "populate_scene has had its turn and is not named again" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A83N/checklist that refusal spent exactly one slot" );
+		sess->EnvironmentScene();
 		Check( sess->Render( A82ModelRender() ).ok,
-		       "A82d/lift MONEY ASSERTION: once populate_scene has run, the very first render "
-		       "proceeds -- population through the clean room, judgement in the model's hands" );
-		Check( sess->BuildPhaseRefusalCount() == 0,
-		       "A82d/lift and no refusal was ever spent" );
+		       "A82d/lift MONEY ASSERTION: once BOTH checklist verbs have run, the render "
+		       "proceeds -- construction through the clean rooms, judgement in the model's hands" );
 		pJob->release();
 	}
 
@@ -15013,6 +15048,10 @@ static void TestComposePhaseFirstRenderRefusal()
 		sess->SetTextCompleter( c );
 		const Agent::AgentSession::AgentPopulateSceneResult pr = sess->PopulateScene();
 		Check( !pr.ok, "A82d/failed the pass did not complete" );
+		const Agent::AgentSession::AgentEnvironmentSceneResult er = sess->EnvironmentScene();
+		Check( !er.ok,
+		       "A82d/failed MONEY ASSERTION: and neither did the environment pass -- both "
+		       "checklist items key on REACHING THE PROVIDER, not on landing anything" );
 		Check( sess->Render( A82ModelRender() ).ok,
 		       "A82d/failed MONEY ASSERTION: and the render still proceeds -- a failed clean room "
 		       "must not leave a session unable to look at its own scene" );
@@ -15084,6 +15123,12 @@ static void TestComposePhaseFirstRenderRefusal()
 		Check( sess->Render( A82ModelRender() ).ok,
 		       "A82d/off MONEY ASSERTION: a render is NOT refused with --agent-build-protocol=off -- "
 		       "the gate dies with the protocol like its four siblings" );
+		const Agent::AgentSession::AgentEnvironmentSceneResult eoff = sess->EnvironmentScene();
+		Check( eoff.ok || !eoff.rejected.empty(),
+		       "A82d/off MONEY ASSERTION: environment_scene STILL RUNS with the protocol off -- "
+		       "it consults no phase gate at all, and refusing it on a session that has no phases "
+		       "would be exactly the over-refusal arc 78 sec 2.3 names as this design family's "
+		       "worst failure mode" );
 		const Agent::AgentSession::AgentPopulateSceneResult pr = sess->PopulateScene();
 		Check( pr.ok,
 		       "A82d/off MONEY ASSERTION: and populate_scene STILL WORKS with the protocol off -- "
@@ -15093,19 +15138,26 @@ static void TestComposePhaseFirstRenderRefusal()
 	}
 }
 
-//! A82e: THE THREE-ARM CAP INTERACTION.  Five arms now share
-//! RefuseForPhase_'s 3-refusal counter, three of which live in COMPOSE:
-//! arc 80's delete ban, arc 81's first-light gate and arc 82's first-render
-//! gate.  A session that hits all three must not be starved -- and the
-//! render arm's one-shot is what bounds its share of the budget.
+//! A82e: THE COMPOSE-ARM CAP INTERACTION.  SIX arms now share
+//! RefuseForPhase_'s 3-refusal counter, FOUR of which live in COMPOSE: arc
+//! 80's delete ban, arc 81's first-light gate, arc 82's first-render gate
+//! (widened by arc 83 slice 5 into the before-you-judge CHECKLIST) and arc
+//! 83 slice 6's first-camera gate.  A session that hits all four must not
+//! be starved -- and the ONE-SHOT on the render arm and on the camera arm
+//! is what bounds each one's share of a budget four arms now draw on.
+//!
+//! ARC 83 SLICE 6 EXTENDED THIS CASE rather than adding a sibling: the
+//! property under test is a property of the SHARED counter, and a second
+//! test that counted three of the four arms would be a test that passes
+//! while the fourth starves them.
 //!
 //! Every light chunk below is an AREA light (A81AreaLight, a rect_light),
 //! not an omni: 2026-08-13, the zero-area CONFIRMATION gate runs AHEAD of
 //! the phase arms this test counts and fires unconditionally on a brand
 //! new omni, which would mask the phase counter this case is about.
-static void TestThreeComposeArmsShareOneCap()
+static void TestComposeArmsShareOneCap()
 {
-	std::printf( "A82e: the three compose-phase arms share one cap without starving anyone...\n" );
+	std::printf( "A82e: the four compose-phase arms share one cap without starving anyone...\n" );
 	const std::string tmp = TempPath( "agentcrud_a82e.RISEscene" );
 
 	// (1) ALL THREE FIRE, one slot each, then the FOURTH refusable call
@@ -15130,10 +15182,20 @@ static void TestThreeComposeArmsShareOneCap()
 		       "model that cannot work the protocol must not have to exhaust three separate ones" );
 		Check( !sess->BuildPhaseGaveUp(), "A82e/all3 three is the cap, not the give-up" );
 
-		const Agent::AgentChunkResult r4 = sess->InsertChunk( A81AreaLight( "a82e_hand_2" ) );
+		// THE FOURTH REFUSABLE CALL is arc 83 slice 6's CAMERA arm, chosen
+		// deliberately over a second light: it proves the NEW arm draws on
+		// the same exhausted budget and triggers the same global give-up
+		// rather than opening a fourth slot of its own.
+		Agent::AgentSetPatch camPatch;
+		camPatch.target = "";
+		camPatch.kind   = "camera";
+		camPatch.param  = "fov";
+		camPatch.value  = "55.0";
+		const Agent::AgentPatchResult r4 = sess->ProposePatch( camPatch );
 		Check( r4.applied && sess->BuildPhaseGaveUp(),
-		       "A82e/all3 MONEY ASSERTION: the FOURTH refusable call GIVES UP and proceeds -- the "
-		       "give-up is a GLOBAL release, so no arrangement of the three can strand a session" );
+		       "A82e/all3 MONEY ASSERTION: the FOURTH refusable call -- a CAMERA patch, arc 83 "
+		       "slice 6's arm -- GIVES UP and proceeds; the give-up is a GLOBAL release, so no "
+		       "arrangement of the four can strand a session" );
 		Check( sess->Render( A82ModelRender() ).ok &&
 		       sess->RemoveChunk( "obj_sph" ).applied,
 		       "A82e/all3 and every arm has stopped intercepting, render included" );
@@ -15164,6 +15226,41 @@ static void TestThreeComposeArmsShareOneCap()
 		       !sess->RemoveChunk( "obj_sph" ).applied,
 		       "A82e/bound which they then use, both still intercepting" );
 		Check( sess->BuildPhaseRefusalCount() == 3, "A82e/bound the cap is reached, exactly" );
+		pJob->release();
+	}
+
+	// (2b) THE CAMERA ARM'S SHARE IS BOUNDED AT ONE TOO, and this is the
+	//      arm where it matters most: every measured run patches the camera
+	//      repeatedly, so a repeat-refusable arm here would burn the whole
+	//      shared cap on its own and trip the give-up -- silently disarming
+	//      arc 80's delete ban and arc 81's light gate for the rest of the
+	//      session.  That is 82 sec 6's measured finding, applied in advance.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A82e/cam fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodPopulationAnswer } ) );
+
+		int refusedPatches = 0;
+		for( int i = 0; i < 10; ++i ) {
+			Agent::AgentSetPatch sp;
+			sp.target = "";
+			sp.kind   = "camera";
+			sp.param  = "fov";
+			sp.value  = ( i % 2 ) ? std::string( "48.0" ) : std::string( "52.0" );
+			if( !sess->ProposePatch( sp ).applied ) ++refusedPatches;
+		}
+		Check( refusedPatches == 1,
+		       "A82e/cam MONEY ASSERTION: TEN camera patches produce exactly ONE refusal (got " +
+		       std::to_string( refusedPatches ) + ") -- the one-shot is what stops the arm a model "
+		       "trips constantly from eating the whole shared budget" );
+		Check( sess->BuildPhaseRefusalCount() == 1 && !sess->BuildPhaseGaveUp(),
+		       "A82e/cam and two slots are left for the other three arms" );
+		Check( !sess->InsertChunk( A81AreaLight( "a82e_c_key" ) ).applied &&
+		       !sess->RemoveChunk( "obj_sph" ).applied,
+		       "A82e/cam which they then use, both still intercepting" );
+		Check( sess->BuildPhaseRefusalCount() == 3, "A82e/cam the cap is reached, exactly" );
 		pJob->release();
 	}
 
@@ -15793,6 +15890,1055 @@ static void TestRefiningKeepsRendererPolicy()
 	}
 }
 
+//----------------------------------------------------------------------
+// ARC 83 SLICE 5 (2026-08-13): `environment_scene`, THE CLEAN-ROOM
+// ENVIRONMENT PASS.  Design: docs/agentic-redesign/83-staged-construction-
+// plan.md sec 3.2 and its sec 15 AS BUILT block.
+//
+// EVERY TEST HERE USES A MOCKED TEXT COMPLETER, through the same
+// AgentSession::SetTextCompleter seam every other clean-room arc's tests
+// use: no live provider call is ever made, and the assertions are about
+// what the harness does with an answer.
+//----------------------------------------------------------------------
+
+//! A83N/a: the happy path -- a graded dome and a global haze land, the
+//! harness makes the BINDING, and the frame's tone is measured on both
+//! sides rather than asserted.
+static void TestEnvironmentSceneHappyPath()
+{
+	std::printf( "A83N/a: environment_scene authors a dome and a medium, and binds the dome...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83n_a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83N/a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+	int calls = 0;
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodEnvironmentAnswer }, &calls, &prompts ) );
+
+	const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+	Check( r.ok, "A83N/a environment_scene succeeds" );
+	Check( calls == 1 && r.completionsSpent == 1,
+	       "A83N/a MONEY ASSERTION: ONE completion for ONE call -- there is one environment, so "
+	       "one completion is the correct unit and there is no enumeration step and no loop" );
+	Check( !r.retryRan, "A83N/a and no repair retry ran -- nothing was rejected" );
+	Check( r.landed.size() == 6,
+	       "A83N/a all six chunks landed (two colours, the ramp, the blend, the medium and the "
+	       "global_medium)" );
+	Check( r.paintersBuilt == 4 && r.mediaBuilt == 2,
+	       "A83N/a and they are counted by family from what LANDED -- four painter/function chunks "
+	       "and two medium chunks" );
+
+	// ---- THE BINDING, which is the half that makes a dome painter more
+	// than an inert chunk.
+	Check( r.boundPainter == "a83_dome",
+	       "A83N/a MONEY ASSERTION: the LAST landed PAINTER is what got bound -- not the "
+	       "expression_function2d ramp, which is a Function chunk that exists to be the blend's "
+	       "MASK; binding the ramp would have made a greyscale gradient the sky (got \"" +
+	       r.boundPainter + "\")" );
+	Check( r.bindingApplied, "A83N/a and the binding was actually applied" );
+	Check( r.rasterizerKind == "pathtracing_pel_rasterizer",
+	       "A83N/a on the scene's own active rasterizer" );
+	Check( sess->ReadDocument().find( "radiance_map" ) != std::string::npos &&
+	       sess->ReadDocument().find( "radiance_background" ) != std::string::npos,
+	       "A83N/a MONEY ASSERTION: and the document really carries the binding" );
+	{
+		// THE ORDERING PROPERTY THE BINDING DEPENDS ON: a painter must be
+		// declared BEFORE the rasterizer chunk that names it, or the derive
+		// resolves nothing and Job::SetPixelBasedRasterizer answers with a LOG
+		// WARNING rather than a failure -- a head that commits, derives, and
+		// has NO DOME.  Job::ApplyCstInsertChunk's tier-0 positioning is what
+		// makes it hold (a Painter / Function chunk is placed ahead of the
+		// first material / geometry / shader, not appended), and asserting it
+		// here is what would catch that classification changing under this
+		// verb.
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "a83_dome" ) < doc.rfind( "radiance_map" ),
+		       "A83N/a MONEY ASSERTION: the dome painter is declared BEFORE the rasterizer chunk "
+		       "that names it -- patching the EARLIER rasterizer instead would have produced a "
+		       "silently dome-less head, which is the one failure this surface's contracts exist "
+		       "to make impossible" );
+	}
+	Check( !r.radianceMapBefore && r.radianceMapAfter,
+	       "A83N/a MONEY ASSERTION: the LIVE scene had no environment dome before this call and "
+	       "has one after -- measured from the scene, not inferred from what was inserted" );
+	Check( !r.globalMediumBefore && r.globalMediumAfter,
+	       "A83N/a and the same for the global medium" );
+
+	// ---- THE HEADLINE: a measurement, on both sides.
+	Check( r.toneBefore.measured && r.toneAfter.measured,
+	       "A83N/a MONEY ASSERTION: the frame's tonal distribution was MEASURED before and after -- "
+	       "83 sec 6's headline for this step, and the affordable-once-per-scene renders that make "
+	       "it a fact rather than a claim" );
+	Check( r.message.find( "Frame tone before this call" ) != std::string::npos &&
+	       r.message.find( "compared to anything" ) != std::string::npos,
+	       "A83N/a and the report states both readings and says outright that neither is compared "
+	       "to a reference" );
+
+	// ---- THE PROMPT.
+	Check( prompts.size() == 1, "A83N/a one prompt was composed" );
+	if( !prompts.empty() ) {
+		const std::string& p = prompts[0];
+		Check( p.find( "SCENE INVENTORY" ) != std::string::npos &&
+		       p.find( "obj_sph" ) != std::string::npos,
+		       "A83N/a the arc-80 inventory is in the prompt, naming the scene's actual objects" );
+		Check( p.find( "THE CAMERA:" ) != std::string::npos &&
+		       p.find( "WORLD BOUNDS" ) != std::string::npos,
+		       "A83N/a and so are the camera and the world bounds" );
+		Check( p.find( "THE ENVIRONMENT THIS SCENE ALREADY HAS" ) != std::string::npos &&
+		       p.find( "No dome." ) != std::string::npos &&
+		       p.find( "No global medium" ) != std::string::npos,
+		       "A83N/a MONEY ASSERTION: and WHAT ENVIRONMENT ALREADY EXISTS -- the one fact a fresh "
+		       "context cannot see and the one this verb's own admissibility turns on" );
+		Check( p.find( "the LAST painter you write is bound" ) != std::string::npos,
+		       "A83N/a MONEY ASSERTION: the BINDING CONTRACT is stated -- which painter becomes the "
+		       "dome is positional and decided here, and a model not told cannot know which of its "
+		       "painters will be the sky" );
+		Check( p.find( "1. THE DOME" ) != std::string::npos &&
+		       p.find( "2. THE MEDIUM" ) != std::string::npos,
+		       "A83N/a the palette is the two families, in order" );
+		Check( p.find( "expression_function2d\n{\n" ) != std::string::npos &&
+		       p.find( "blend_painter\n{\n" ) != std::string::npos &&
+		       p.find( "homogeneous_medium\n{\n" ) != std::string::npos &&
+		       p.find( "global_medium\n{\n" ) != std::string::npos,
+		       "A83N/a MONEY ASSERTION: both families carry a LITERAL example -- arc 79 sec 8.1 "
+		       "records a session's mechanism lost to a syntax slip that prose did not prevent and "
+		       "a literal example did, and A83N/e proves these really parse" );
+		Check( p.find( "hdr_painter" ) != std::string::npos &&
+		       p.find( "exr_painter" ) != std::string::npos,
+		       "A83N/a the image-dome painters are named with their schemas" );
+		Check( p.find( "hdr_painter\n{" ) == std::string::npos &&
+		       p.find( "exr_painter\n{" ) == std::string::npos,
+		       "A83N/a MONEY ASSERTION: but they carry NO worked example -- one would have to name a "
+		       "file this scene does not have, and an example that fails to insert spends the "
+		       "model's one repair retry on the harness's own placeholder" );
+		Check( p.find( "is FORM" ) != std::string::npos &&
+		       p.find( "hosek_wilkie_skylight" ) != std::string::npos,
+		       "A83N/a and the two boundary cases are stated before they are met" );
+	}
+
+	// NO ADVICE, on the one prompt this call sends.  What this slice
+	// MEASURES is whether an environment appears at all and what it does to
+	// the frame's tonal spread, so advice about either would contaminate the
+	// measurement -- and advice measures ~0 in this workstream anyway.
+	{
+		static const char* const kBannedAdvice[] = {
+			"dramatic", "atmospheric", "moody", "be bold", "should use", "rich colours",
+			"more interesting", "beautiful" };
+		for( std::size_t q = 0; q < prompts.size(); ++q )
+			for( std::size_t i = 0; i < sizeof( kBannedAdvice ) / sizeof( kBannedAdvice[0] ); ++i )
+				Check( prompts[q].find( kBannedAdvice[i] ) == std::string::npos,
+				       std::string( "A83N/a MONEY ASSERTION: prompt " ) + std::to_string( q ) +
+				       " never says \"" + kBannedAdvice[i] +
+				       "\" -- it gives the palette, the scene and the syntax, and nothing else" );
+	}
+
+	// FACTS ONLY in the result, exactly as its three siblings are.
+	static const char* const kBannedVerdict[] = { "consider", "should", "too ", "needs" };
+	for( std::size_t i = 0; i < sizeof( kBannedVerdict ) / sizeof( kBannedVerdict[0] ); ++i )
+		Check( r.message.find( kBannedVerdict[i] ) == std::string::npos,
+		       std::string( "A83N/a the result never says \"" ) + kBannedVerdict[i] +
+		       "\" -- it reports what landed and what the frame measures, and stops" );
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! A83N/b: THE ADMISSIBILITY RULE, including the boundary case the design
+//! had to decide -- a backdrop plane is FORM.
+static void TestEnvironmentSceneAdmissibility()
+{
+	std::printf( "A83N/b: environment_scene refuses form, lights, cameras and rasterizers...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83n_b.RISEscene" );
+
+	// (1) FORM -- the boundary case.  A backdrop plane is the obvious way to
+	//     make a background and it is exactly what this pass must refuse.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/b1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const char* const answer =
+			"uniformcolor_painter\n{\n\tname a83b_sky\n\tcolor 0.2 0.3 0.5\n}\n"
+			"clippedplane_geometry\n{\n\tname a83b_backdrop\n\tpta -9 -9 -9\n\tptb 9 -9 -9\n"
+			"\tptc 9 9 -9\n\tptd -9 9 -9\n}\n"
+			"standard_object\n{\n\tname a83b_backdrop_obj\n\tgeometry a83b_backdrop\n"
+			"\tmaterial mat_diffuse\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer } ) );
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( r.ok, "A83N/b1 the pass answered and its answer was processed" );
+		Check( r.landed.size() == 1 && r.landed[0] == "a83b_sky",
+		       "A83N/b1 the painter landed" );
+		bool sawForm = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "is FORM" ) != std::string::npos ) sawForm = true;
+		Check( sawForm,
+		       "A83N/b1 MONEY ASSERTION: the backdrop geometry and its object were REFUSED and the "
+		       "reason names the rule -- a backdrop plane is form, and making new form is "
+		       "build_element's job; a second verb that could create it would be a second builder "
+		       "with none of the first one's checks" );
+		Check( sess->ReadDocument().find( "a83b_backdrop" ) == std::string::npos,
+		       "A83N/b1 and neither is in the document" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) THE HOSEK DIVISION.  A light chunk that installs a dome itself
+	//     belongs to light_scene, and the refusal says why.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/b2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const char* const answer =
+			"hosek_wilkie_skylight\n{\n\tsolar_elevation 22\n\tsolar_azimuth 135\n\tturbidity 4\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer } ) );
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( r.landed.empty(), "A83N/b2 nothing landed" );
+		bool sawHosek = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "belongs to the lighting pass" ) != std::string::npos )
+				sawHosek = true;
+		Check( sawHosek,
+		       "A83N/b2 MONEY ASSERTION: hosek_wilkie_skylight is refused BY NAME and pointed at "
+		       "light_scene -- two passes installing a dome by different routes would silently "
+		       "discard one of them, and the last one to derive wins" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) CAMERA / FILM / RASTERIZER, each refused with the general reason.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/b3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const char* const answer =
+			"pinhole_camera\n{\n\tname a83b_cam\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tfov 30\n}\n"
+			"film\n{\n\twidth 64\n\theight 64\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer } ) );
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( r.landed.empty(), "A83N/b3 nothing landed" );
+		Check( r.rejected.size() >= 2,
+		       "A83N/b3 MONEY ASSERTION: both the camera and the film were refused -- re-aiming the "
+		       "camera and re-sizing the raster are not the environment, and neither is silently "
+		       "dropped" );
+		Check( sess->ReadDocument().find( "a83b_cam" ) == std::string::npos,
+		       "A83N/b3 and the camera is not in the document" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83N/c: THE HOSEK SUPPRESSION.  On a scene whose sky is already a
+//! hosek_wilkie_skylight this pass authors NO dome at all -- the palette's
+//! dome entry is suppressed and nothing is bound.
+static void TestEnvironmentSceneHosekSuppression()
+{
+	std::printf( "A83N/c: with a hosek sky present, environment_scene writes only the medium...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83n_c.RISEscene" );
+	const std::string scene = std::string( kScene ) +
+		"\nhosek_wilkie_skylight\n{\n\tsolar_elevation 30\n\tsolar_azimuth 90\n\tturbidity 3\n}\n";
+	Job* pJob = LoadScene( scene.c_str(), tmp );
+	Check( pJob != nullptr, "A83N/c fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodEnvironmentAnswer }, nullptr, &prompts ) );
+	const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+	Check( r.ok, "A83N/c the pass ran" );
+	Check( !r.bindingApplied && r.boundPainter.empty(),
+	       "A83N/c MONEY ASSERTION: NOTHING was bound as a dome -- the scene's sky is a "
+	       "hosek_wilkie_skylight, which installs the global radiance map itself, and a second dome "
+	       "would replace it rather than add to it" );
+	Check( r.bindingReason.find( "hosek_wilkie_skylight" ) != std::string::npos,
+	       "A83N/c and the reason says so plainly" );
+	Check( r.mediaBuilt == 2,
+	       "A83N/c while the MEDIUM half still ran -- the suppression is of the dome, not of the "
+	       "call" );
+	if( !prompts.empty() ) {
+		Check( prompts[0].find( "The sky is a hosek_wilkie_skylight" ) != std::string::npos,
+		       "A83N/c the prompt states the fact" );
+		Check( prompts[0].find( "1. THE MEDIUM" ) != std::string::npos &&
+		       prompts[0].find( "THE DOME" ) == std::string::npos,
+		       "A83N/c MONEY ASSERTION: and the DOME entry is not in the palette at all -- offering "
+		       "a model a form this call will then refuse is the false-clause class arc 79 sec 8.1 "
+		       "records the cost of" );
+	}
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! A83N/d: capability, cap, do-nothing, and REFINING / protocol-off
+//! inertness -- the four state answers that must change nothing.
+static void TestEnvironmentSceneCapabilityAndCap()
+{
+	std::printf( "A83N/d: environment_scene's capability answer, its cap, and its inertness...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83n_d.RISEscene" );
+
+	// (1) NO TEXT COMPLETER -> a capability statement, and nothing else
+	//     changes.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/d1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string before = sess->ReadDocument();
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( !r.ok && r.capabilityRefusal,
+		       "A83N/d1 a session with no completer answers with a capability statement" );
+		Check( r.message.find( "is not blocked by this" ) != std::string::npos,
+		       "A83N/d1 and says what is still available" );
+		Check( sess->ReadDocument() == before, "A83N/d1 the document is byte-identical" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) THE PER-SESSION CAP.  A capability refusal never counts toward it,
+	//     which is why the arm above could not have consumed one.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/d2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodEnvironmentAnswer } ) );
+		for( int i = 0; i < Agent::AgentSession::kEnvironmentSceneMaxPerSession; ++i )
+			sess->EnvironmentScene();
+		const Agent::AgentSession::AgentEnvironmentSceneResult over = sess->EnvironmentScene();
+		Check( !over.ok && over.message.find( "per-session cap" ) != std::string::npos,
+		       "A83N/d2 MONEY ASSERTION: the call past the cap does nothing and says why -- there is "
+		       "one environment per scene, so the bound is a runaway backstop rather than a ration" );
+		Check( over.completionsSpent == 0, "A83N/d2 and it spends no completion" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) REFINING and PROTOCOL-OFF: the verb is AVAILABLE in both, because
+	//     it consults no phase gate at all.  Arc 83 sec 4.1's rule --
+	//     compulsion belongs to the first build; availability is forever.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/d3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+		       "A83N/d3 the fixture carries form, so the session is REFINING" );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodEnvironmentAnswer } ) );
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( r.ok && r.bindingApplied,
+		       "A83N/d3 MONEY ASSERTION: environment_scene runs normally in REFINING -- a mode that "
+		       "disarms COMPULSION must not disarm AVAILABILITY" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/d4 fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodEnvironmentAnswer } ) );
+		Check( !sess->BuildProtocolActive(), "A83N/d4 the protocol is inactive for this session" );
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( r.ok && r.bindingApplied,
+		       "A83N/d4 MONEY ASSERTION: and with --agent-build-protocol=off too" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83N/e: THE EXAMPLES PARSE.  Both worked examples are EXTRACTED FROM THE
+//! SHIPPED PROMPT (not retyped here, which would only prove the copy
+//! parses) and pushed through the real validated insertion path.  A81h's
+//! approach and A82g's, applied to this arc's two examples: an example that
+//! does not insert is worse than none, because it spends the model's one
+//! repair retry on the harness's own typo.
+static void TestEnvironmentExamplesParse()
+{
+	std::printf( "A83N/e: environment_scene's worked examples really insert...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83n_e.RISEscene" );
+
+	// ---- Lift the examples out of the prompt this surface actually sends.
+	std::string prompt;
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/e/compose fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::vector<std::string> prompts;
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-env-1";
+		std::vector<std::string>* sink = &prompts;
+		c.complete = [sink]( const std::string& p )
+			-> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			sink->push_back( p );
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "captured";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+		sess->EnvironmentScene();
+		Check( !prompts.empty(), "A83N/e the environment prompt was composed" );
+		if( !prompts.empty() ) prompt = prompts[0];
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+	if( prompt.empty() ) return;
+
+	// The blocks are located by their own first line, and each runs to the
+	// blank line that follows it -- which is exactly the separation the
+	// prompt composer maintains so each block stays independently LIFTABLE.
+	auto lift = [&]( const char* firstLine ) -> std::string
+	{
+		const std::size_t at = prompt.find( firstLine );
+		if( at == std::string::npos ) return std::string();
+		const std::size_t end = prompt.find( "\n\n", at );
+		return prompt.substr( at, ( end == std::string::npos ) ? std::string::npos : ( end - at ) );
+	};
+	const std::string domeExample   = lift( "uniformcolor_painter\n{\n\tname\t\ta83" );
+	const std::string domeExample2  = lift( "uniformcolor_painter\n{\n\tname\t\tenv_pole" );
+	const std::string mediumExample = lift( "homogeneous_medium\n{\n\tname\t\tenv_haze" );
+	Check( !domeExample2.empty(), "A83N/e the graded-dome example block is locatable in the prompt" );
+	Check( !mediumExample.empty(), "A83N/e the medium example block is locatable in the prompt" );
+	Check( domeExample.empty(),
+	       "A83N/e RED-PROVE: the lift really is finding the PROMPT's block and not a test literal" );
+
+	// ---- Push each through the REAL insertion path.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83N/e/insert fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { domeExample2 + "\n" + mediumExample } ) );
+		const Agent::AgentSession::AgentEnvironmentSceneResult r = sess->EnvironmentScene();
+		Check( r.ok, "A83N/e the shipped examples were processed" );
+		Check( r.landed.size() == 6,
+		       "A83N/e MONEY ASSERTION: every chunk of BOTH shipped examples LANDS through the real "
+		       "validated insertion path (got " + std::to_string( r.landed.size() ) + ")" );
+		Check( !r.retryRan, "A83N/e with no repair retry -- nothing was rejected to repair" );
+		Check( r.bindingApplied && r.boundPainter == "env_dome",
+		       "A83N/e MONEY ASSERTION: and the example's own blend_painter is what the binding "
+		       "contract picks -- the example demonstrates the rule it is shipped beside" );
+		Check( r.globalMediumAfter,
+		       "A83N/e and the medium example really reaches the live scene as the global medium" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83N/f: environment_scene over JSON-RPC -- the wire shape and the one
+//! schema error it has.
+static void TestEnvironmentSceneWireShape()
+{
+	std::printf( "A83N/f: environment_scene over JSON-RPC...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83n_f.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83N/f fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodEnvironmentAnswer } ) );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"environment_scene\",\"params\":{}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "A83N/f environment_scene returns a result object" );
+		Check( result.get( "ok" ).asBool( false ), "A83N/f ok:true" );
+		Check( result.get( "landed" ).isArray() && result.get( "landed" ).size() == 6,
+		       "A83N/f the landed list rides the wire" );
+		Check( result.get( "boundPainter" ).asString() == "a83_dome" &&
+		       result.get( "bindingApplied" ).asBool( false ),
+		       "A83N/f MONEY ASSERTION: with the BINDING as a STRUCTURED fact, not only prose -- a "
+		       "census that has to parse the message to learn what became the sky will drift" );
+		Check( result.get( "rasterizer" ).asString() == "pathtracing_pel_rasterizer",
+		       "A83N/f and the rasterizer it was bound on" );
+		Check( result.get( "radianceMapAfter" ).asBool( false ) &&
+		       result.get( "globalMediumAfter" ).asBool( false ),
+		       "A83N/f and the live-scene before/after facts" );
+		Check( result.get( "patchResults" ).isArray() &&
+		       result.get( "patchResults" ).size() == 2,
+		       "A83N/f MONEY ASSERTION: the TWO parameter edits the binding is made of ride the wire "
+		       "in the same per-patch shape every other patching verb emits -- the binding is an "
+		       "edit, and an edit this surface made but did not report would be a silent mutation" );
+		Check( result.get( "toneBefore" ).isObject() && result.get( "toneAfter" ).isObject(),
+		       "A83N/f MONEY ASSERTION: and BOTH tonal readings, as structure" );
+		Check( result.get( "toneAfter" ).get( "lumaMean" ).isNumber(),
+		       "A83N/f each carrying its mean" );
+		Check( result.get( "completions" ).asNumber( -1 ) == 1.0, "A83N/f and the completion count" );
+	}
+	// The ONE schema defect: a non-string `notes`.
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"environment_scene\",\"params\":{\"notes\":7}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "A83N/f a non-string `notes` is a schema error" );
+	}
+}
+
+//----------------------------------------------------------------------
+// ARC 83 SLICE 6 (2026-08-13): `frame_scene`, THE CLEAN-ROOM FRAMING PASS.
+//----------------------------------------------------------------------
+
+//! A pinhole camera that pulls back and widens -- the SAME kind kScene's
+//! camera is, so this exercises the PATCH path.
+static const char* const kGoodFramingAnswer =
+	"pinhole_camera\n{\n\tlocation 0 1.2 7.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 55.0\n}\n";
+
+//! A camera that pushes IN hard -- a deliberate close-up, which is the case
+//! the "covers fewer objects" honesty rule exists for.
+static const char* const kCloseUpFramingAnswer =
+	"pinhole_camera\n{\n\tlocation 0 0 1.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 12.0\n}\n";
+
+//! A camera of a DIFFERENT kind, carrying a name -- the REPLACE path.
+static const char* const kReplaceFramingAnswer =
+	"orthographic_camera\n{\n\tname a83p_ortho\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n"
+	"\tviewport_scale 2 2\n}\n";
+
+//! A83P/a: the happy path -- the existing camera is PATCHED, the prompt
+//! carries the full inventory and the camera verbatim, and coverage is
+//! measured on both sides.
+static void TestFrameSceneHappyPath()
+{
+	std::printf( "A83P/a: frame_scene patches the scene's camera and measures both sides...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_a.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83P/a fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+
+	int calls = 0;
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer }, &calls, &prompts ) );
+
+	const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+	Check( r.ok, "A83P/a frame_scene succeeds" );
+	Check( calls == 1 && r.completionsSpent == 1,
+	       "A83P/a MONEY ASSERTION: ONE completion for ONE call -- there is one camera" );
+	Check( !r.retryRan, "A83P/a and no repair retry ran" );
+	Check( r.action == "patched",
+	       "A83P/a MONEY ASSERTION: the SAME camera kind is applied as a PATCH of the chunk the "
+	       "scene already has -- one head bump, one undo step (got \"" + r.action + "\")" );
+	Check( r.cameraKindBefore == "pinhole_camera" && r.cameraNameBefore.empty(),
+	       "A83P/a the fixture's camera is an UNNAMED pinhole, addressed by kind" );
+	Check( r.paramsApplied.size() == 4,
+	       "A83P/a all four parameters applied (got " + std::to_string( r.paramsApplied.size() ) + ")" );
+	Check( sess->ReadDocument().find( "7.5" ) != std::string::npos &&
+	       sess->ReadDocument().find( "55.0" ) != std::string::npos,
+	       "A83P/a MONEY ASSERTION: and the document really carries the new pose" );
+	{
+		// EXACTLY ONE camera chunk, still -- the patch path must not clone.
+		const std::string doc = sess->ReadDocument();
+		std::size_t n = 0, at = 0;
+		while( ( at = doc.find( "pinhole_camera", at ) ) != std::string::npos ) { ++n; at += 4; }
+		Check( n == 1, "A83P/a and the document still holds exactly ONE camera chunk" );
+	}
+
+	// ---- THE MEASUREMENT.
+	Check( r.measuredBefore && r.measuredAfter,
+	       "A83P/a MONEY ASSERTION: object coverage was MEASURED through the camera before the edit "
+	       "and again through the camera after it -- 83 sec 6's headline for this step, and the "
+	       "reason the payload can state what the reframe did rather than assert that it helped" );
+	Check( r.objectsBefore == r.objectsAfter && r.objectsBefore > 0,
+	       "A83P/a the object count itself is unchanged -- framing moves the camera, not the scene" );
+	Check( r.message.find( "Object coverage, measured through the camera BEFORE this call" )
+	           != std::string::npos,
+	       "A83P/a and the report states both sides" );
+
+	// ---- THE PROMPT.
+	Check( prompts.size() == 1, "A83P/a one prompt was composed" );
+	if( !prompts.empty() ) {
+		const std::string& p = prompts[0];
+		Check( p.find( "EVERY OBJECT IN THIS SCENE AND WHERE IT LANDS IN THE FRAME" ) != std::string::npos &&
+		       p.find( "obj_sph" ) != std::string::npos,
+		       "A83P/a MONEY ASSERTION: the FULL inventory is the prompt's input -- for this verb "
+		       "the per-object list is not context beside a picture, it IS the thing being acted on" );
+		Check( p.find( "THE CAMERA THIS SCENE HAS RIGHT NOW, exactly as the scene file holds it" )
+		           != std::string::npos &&
+		       p.find( "\tlocation 0 0 3.5" ) != std::string::npos,
+		       "A83P/a MONEY ASSERTION: and the current camera chunk VERBATIM -- this pass edits "
+		       "that chunk, so it needs its exact kind and parameters, not a paraphrase" );
+		Check( p.find( "Resolved, that camera is at" ) != std::string::npos,
+		       "A83P/a with its resolved pose beside it" );
+		Check( p.find( "THE FRAME is 24 by 24 pixels" ) != std::string::npos &&
+		       p.find( "this call does not change them" ) != std::string::npos,
+		       "A83P/a MONEY ASSERTION: the frame size is stated AND declared out of scope -- film "
+		       "is raster-size policy, and a framing pass that quietly re-sized every render would "
+		       "be changing the budget rather than the shot" );
+		Check( p.find( "THE FRAME'S TONE through that camera, measured just now" ) != std::string::npos,
+		       "A83P/a and the tonal fact, measured rather than remembered" );
+		Check( p.find( "1. pinhole_camera" ) != std::string::npos &&
+		       p.find( "2. thinlens_camera" ) != std::string::npos &&
+		       p.find( "5. onb_pinhole_camera" ) != std::string::npos,
+		       "A83P/a the camera palette carries every kind the registry accepts" );
+		Check( p.find( "pinhole_camera\n{\n\tlocation\t0 1.6 6.5" ) != std::string::npos,
+		       "A83P/a MONEY ASSERTION: with a LITERAL worked example on the one kind a fresh "
+		       "context should reach for first -- what is copyable IS the policy" );
+		Check( p.find( "thinlens_camera\n{" ) == std::string::npos,
+		       "A83P/a and NO example on the others, whose schema is still printed" );
+		Check( p.find( "EXACTLY ONE camera chunk, and nothing else" ) != std::string::npos,
+		       "A83P/a the contract is stated" );
+	}
+
+	// NO ADVICE.  Object coverage is exactly what this slice MEASURES, and a
+	// deliberate close-up that covers fewer objects is a legitimate answer
+	// this harness must not have argued against in advance.
+	{
+		static const char* const kBannedAdvice[] = {
+			"rule of thirds", "get more objects", "centre the subject", "center the subject",
+			"should use", "be dramatic", "fill the frame", "wider is better" };
+		for( std::size_t q = 0; q < prompts.size(); ++q )
+			for( std::size_t i = 0; i < sizeof( kBannedAdvice ) / sizeof( kBannedAdvice[0] ); ++i )
+				Check( prompts[q].find( kBannedAdvice[i] ) == std::string::npos,
+				       std::string( "A83P/a MONEY ASSERTION: prompt " ) + std::to_string( q ) +
+				       " never says \"" + kBannedAdvice[i] +
+				       "\" -- coverage is what this slice measures, so no prompt may ask for it" );
+	}
+	static const char* const kBannedVerdict[] = { "consider", "should", "better", "needs" };
+	for( std::size_t i = 0; i < sizeof( kBannedVerdict ) / sizeof( kBannedVerdict[0] ); ++i )
+		Check( r.message.find( kBannedVerdict[i] ) == std::string::npos,
+		       std::string( "A83P/a the result never says \"" ) + kBannedVerdict[i] + "\"" );
+
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! A83P/b: THE FEWER-OBJECTS CASE, which is the honesty rule this verb was
+//! specified around: a deliberate close-up is reported plainly and NEVER
+//! auto-reverted.
+static void TestFrameSceneFewerObjectsIsReportedNotReverted()
+{
+	std::printf( "A83P/b: a close-up that covers fewer objects is stated, not undone...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_b.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83P/b fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kCloseUpFramingAnswer } ) );
+
+	const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+	Check( r.ok && r.action == "patched", "A83P/b the close-up was applied" );
+	Check( r.measuredBefore && r.measuredAfter, "A83P/b and both sides were measured" );
+	Check( r.coveredAfter <= r.coveredBefore,
+	       "A83P/b the close-up covers no more than the wide shot did (before " +
+	       std::to_string( r.coveredBefore ) + ", after " + std::to_string( r.coveredAfter ) + ")" );
+	Check( sess->ReadDocument().find( "1.2" ) != std::string::npos,
+	       "A83P/b MONEY ASSERTION: and NOTHING was reverted -- the close-up is in the document. A "
+	       "harness that undid it would be overriding the judgement it just paid a completion to "
+	       "obtain" );
+	if( r.coveredAfter < r.coveredBefore ) {
+		Check( r.message.find( "covers FEWER objects" ) != std::string::npos,
+		       "A83P/b MONEY ASSERTION: and the payload SAYS SO plainly, with the number -- what the "
+		       "reader is owed is the fact, not a verdict on it" );
+		Check( !r.pushedOutOfFrame.empty(),
+		       "A83P/b naming what is no longer in the picture" );
+	}
+	sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+}
+
+//! A83P/c: ADMISSIBILITY -- one camera and nothing else, and the REPLACE
+//! path when the kind differs.
+static void TestFrameSceneAdmissibilityAndReplace()
+{
+	std::printf( "A83P/c: frame_scene refuses non-cameras and second cameras, and replaces...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_c.RISEscene" );
+
+	// (1) A LIGHT, A FILM AND A GEOMETRY are each refused by name.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/c1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string answer =
+			std::string( "film\n{\n\twidth 512\n\theight 512\n}\n" ) +
+			"sphere_geometry\n{\n\tname a83p_extra\n\tradius 1\n}\n" +
+			A81AreaLight( "a83p_key" ) + "\n" + kGoodFramingAnswer;
+		sess->SetTextCompleter( MakeFakeCompleter( { answer } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok && r.action == "patched", "A83P/c1 the camera in the same answer still applied" );
+		Check( r.rejected.size() >= 3,
+		       "A83P/c1 MONEY ASSERTION: the film, the geometry and the light were each refused and "
+		       "each reason recorded -- nothing is dropped silently" );
+		bool sawFilmReason = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "raster-size policy" ) != std::string::npos )
+				sawFilmReason = true;
+		Check( sawFilmReason,
+		       "A83P/c1 MONEY ASSERTION: and the FILM refusal states why -- width and height live "
+		       "there, so a model reframing a shot will reach for it, and changing it would "
+		       "re-budget every render this session makes" );
+		Check( sess->ReadDocument().find( "512" ) == std::string::npos &&
+		       sess->ReadDocument().find( "a83p_extra" ) == std::string::npos,
+		       "A83P/c1 and none of them is in the document" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) A SECOND CAMERA is refused with that reason; the FIRST is used.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/c2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string answer = std::string( kGoodFramingAnswer ) +
+			"pinhole_camera\n{\n\tname a83p_second\n\tlocation 9 9 9\n\tlookat 0 0 0\n\tfov 20\n}\n";
+		sess->SetTextCompleter( MakeFakeCompleter( { answer } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok && r.action == "patched", "A83P/c2 the first camera was used" );
+		bool sawSecond = false;
+		for( std::size_t i = 0; i < r.rejected.size(); ++i )
+			if( r.rejected[i].reason.find( "a second camera chunk" ) != std::string::npos )
+				sawSecond = true;
+		Check( sawSecond,
+		       "A83P/c2 MONEY ASSERTION: the SECOND camera is refused with that exact reason -- this "
+		       "scene has one camera and this call authors exactly one" );
+		Check( sess->ReadDocument().find( "a83p_second" ) == std::string::npos,
+		       "A83P/c2 and it is not in the document" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) THE REPLACE PATH: a DIFFERENT kind is inserted and the old chunk
+	//     removed, in that order, and the new one really becomes the live
+	//     camera.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/c3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kReplaceFramingAnswer } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok, "A83P/c3 the pass ran" );
+		Check( r.action == "replaced",
+		       "A83P/c3 MONEY ASSERTION: a DIFFERENT camera kind REPLACES rather than patches (got \"" +
+		       r.action + "\")" );
+		Check( r.cameraKindAfter == "orthographic_camera" && r.cameraNameAfter == "a83p_ortho",
+		       "A83P/c3 and the camera the scene now has is READ BACK, not assumed (got \"" +
+		       r.cameraKindAfter + "\"/\"" + r.cameraNameAfter + "\")" );
+		const std::string doc = sess->ReadDocument();
+		Check( doc.find( "orthographic_camera" ) != std::string::npos &&
+		       doc.find( "pinhole_camera" ) == std::string::npos,
+		       "A83P/c3 MONEY ASSERTION: the old pinhole chunk is GONE -- removing it is what makes "
+		       "the new one live, because a full re-derive restores the previously active camera by "
+		       "name and would otherwise leave the inserted camera in the document but not "
+		       "rendering" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83P/d: THE CAMERA GATE -- it fires on an insert AND on a patch, exactly
+//! once, and frame_scene lifts it.
+static void TestComposePhaseFirstCameraRefusal()
+{
+	std::printf( "A83P/d: in compose, the first camera edit is gated on frame_scene...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_d.RISEscene" );
+
+	// (1) A PATCH is refused -- the arm that matters, because re-aiming is a
+	//     patch in every run this workstream has measured.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Agent::AgentSetPatch sp;
+		sp.target = "";
+		sp.kind   = "camera";
+		sp.param  = "fov";
+		sp.value  = "60.0";
+		const Agent::AgentPatchResult pr = sess->ProposePatch( sp );
+		Check( !pr.applied,
+		       "A83P/d1 MONEY ASSERTION: a hand-authored camera PATCH is refused in compose while "
+		       "frame_scene has not run -- a camera gate wired only to the insert verbs would be a "
+		       "gate with a one-word bypass" );
+		Check( pr.message.find( "frame_scene" ) != std::string::npos,
+		       "A83P/d1 and the refusal names the verb" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A83P/d1 it burns exactly one slot of the SHARED phase counter (the sixth arm)" );
+
+		// ONE-SHOT: the next camera edit proceeds.
+		Agent::AgentSetPatch sp2 = sp;
+		sp2.value = "61.0";
+		Check( sess->ProposePatch( sp2 ).applied,
+		       "A83P/d1 MONEY ASSERTION: the SECOND camera edit proceeds even though frame_scene "
+		       "still has not run -- models patch cameras constantly, and a repeat-refusable arm "
+		       "here would burn the whole shared cap and silently disarm its siblings (82 sec 6)" );
+		Check( sess->BuildPhaseRefusalCount() == 1, "A83P/d1 and no second slot was spent" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (2) AN INSERT is refused on the same terms.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		const Agent::AgentChunkResult ir = sess->InsertChunk(
+			"pinhole_camera\n{\n\tname a83p_hand\n\tlocation 0 0 9\n\tlookat 0 0 0\n\tfov 30\n}" );
+		Check( !ir.applied && ir.message.find( "frame_scene" ) != std::string::npos,
+		       "A83P/d2 MONEY ASSERTION: a hand-authored camera INSERT is refused too, and names the "
+		       "verb" );
+		Check( ir.kind == "pinhole_camera",
+		       "A83P/d2 with the identity echo the insert contract requires even on a refusal" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (3) RUNNING frame_scene LIFTS IT -- and the pass's own edit is never
+	//     refused by the gate it arms.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d3 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok && r.action == "patched",
+		       "A83P/d3 MONEY ASSERTION: frame_scene's OWN edit is exempt from the gate it arms -- "
+		       "the mechanism must not refuse the verb it names" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83P/d3 and no refusal was spent" );
+		Agent::AgentSetPatch sp;
+		sp.target = "";
+		sp.kind   = "camera";
+		sp.param  = "fov";
+		sp.value  = "62.0";
+		Check( sess->ProposePatch( sp ).applied,
+		       "A83P/d3 and a hand-authored camera edit afterwards is never refused again" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (4) A FAILED PASS LIFTS IT TOO -- the gate keys on "reached the
+	//     provider", not on "did anything change".
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d4 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-frame-1";
+		c.complete = []( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "mock refuses";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+		Check( !sess->FrameScene().ok, "A83P/d4 the pass did not complete" );
+		Agent::AgentSetPatch sp;
+		sp.target = "";
+		sp.kind   = "camera";
+		sp.param  = "fov";
+		sp.value  = "63.0";
+		Check( sess->ProposePatch( sp ).applied,
+		       "A83P/d4 MONEY ASSERTION: and the camera edit still proceeds -- a failed clean room "
+		       "must not leave a session unable to aim its own camera" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (5) THE SEAMS: PIECES-phase camera edits are never refused, and the
+	//     protocol-off session gates nothing at all.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d5 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Check( sess->FileBuildPlan( WizardOnlyPlan() ).ok, "A83P/d5 the plan files" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+		       "A83P/d5 the session is in the pieces phase" );
+		Agent::AgentSetPatch sp;
+		sp.target = "";
+		sp.kind   = "camera";
+		sp.param  = "fov";
+		sp.value  = "64.0";
+		Check( sess->ProposePatch( sp ).applied,
+		       "A83P/d5 MONEY ASSERTION: a PIECES-phase camera edit is NEVER refused -- arc 78 sec "
+		       "2.3 exempts the whole Camera category from element-window rules precisely so a model "
+		       "can re-aim at the part it is building, and this arm must not take that back" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83P/d5 and spends no refusal" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d6 fixture loads" );
+		if( !pJob ) return;
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( false );
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		Agent::AgentSession::SetBuildProtocolDefaultEnabled( true );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		Agent::AgentSetPatch sp;
+		sp.target = "";
+		sp.kind   = "camera";
+		sp.param  = "fov";
+		sp.value  = "65.0";
+		Check( sess->ProposePatch( sp ).applied,
+		       "A83P/d6 MONEY ASSERTION: with --agent-build-protocol=off the camera arm dies with "
+		       "the protocol, like all five of its siblings" );
+		Check( sess->FrameScene().ok,
+		       "A83P/d6 and frame_scene STILL WORKS there -- it consults no phase gate of its own" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+
+	// (7) REFINING: the gate is INERT, and the verb stays available.
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/d7 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmedClassified( pJob );
+		Check( sess->SessionMode() == Agent::AgentSession::AgentSessionMode::Refining,
+		       "A83P/d7 the fixture carries form, so the session is REFINING" );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		ArcEightyToCompose( *sess );
+		Agent::AgentSetPatch sp;
+		sp.target = "";
+		sp.kind   = "camera";
+		sp.param  = "fov";
+		sp.value  = "66.0";
+		Check( sess->ProposePatch( sp ).applied,
+		       "A83P/d7 MONEY ASSERTION: in REFINING the camera gate never fires -- a user who "
+		       "opened a finished scene and asked for a different angle is not building anything" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A83P/d7 and no refusal was spent" );
+		Check( sess->FrameScene().ok,
+		       "A83P/d7 while the verb itself stays AVAILABLE -- compulsion belongs to the first "
+		       "build; availability is forever" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83P/e: capability and cap.
+static void TestFrameSceneCapabilityAndCap()
+{
+	std::printf( "A83P/e: frame_scene's capability answer and its per-session cap...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_e.RISEscene" );
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/e1 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		const std::string before = sess->ReadDocument();
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( !r.ok && r.capabilityRefusal,
+		       "A83P/e1 a session with no completer answers with a capability statement" );
+		Check( r.message.find( "is not blocked by this" ) != std::string::npos,
+		       "A83P/e1 and says what is still available" );
+		Check( sess->ReadDocument() == before, "A83P/e1 the document is byte-identical" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/e2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+		for( int i = 0; i < Agent::AgentSession::kFrameSceneMaxPerSession; ++i )
+			sess->FrameScene();
+		const Agent::AgentSession::AgentFrameSceneResult over = sess->FrameScene();
+		Check( !over.ok && over.message.find( "per-session cap" ) != std::string::npos,
+		       "A83P/e2 MONEY ASSERTION: the call past the cap does nothing and says why" );
+		Check( over.completionsSpent == 0, "A83P/e2 and it spends no completion" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83P/f: THE EXAMPLE PARSES.  The camera palette's one worked example is
+//! lifted from the SHIPPED prompt and pushed through the real path.
+static void TestFramingExampleParses()
+{
+	std::printf( "A83P/f: frame_scene's worked example really applies...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_f.RISEscene" );
+
+	std::string prompt;
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/f/compose fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		std::vector<std::string> prompts;
+		std::vector<std::string>* sink = &prompts;
+		Agent::AgentSession::AgentTextCompleter c;
+		c.supported    = true;
+		c.providerName = "mock";
+		c.modelId      = "mock-frame-1";
+		c.complete = [sink]( const std::string& p )
+			-> Agent::AgentSession::AgentTextCompletionOutcome
+		{
+			sink->push_back( p );
+			Agent::AgentSession::AgentTextCompletionOutcome o;
+			o.error = "captured";
+			return o;
+		};
+		sess->SetTextCompleter( c );
+		sess->FrameScene();
+		Check( !prompts.empty(), "A83P/f the framing prompt was composed" );
+		if( !prompts.empty() ) prompt = prompts[0];
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+	if( prompt.empty() ) return;
+
+	const std::size_t at = prompt.find( "pinhole_camera\n{\n\tlocation\t0 1.6 6.5" );
+	Check( at != std::string::npos, "A83P/f the worked example is locatable in the prompt" );
+	if( at == std::string::npos ) return;
+	const std::size_t end = prompt.find( "\n\n", at );
+	const std::string example = prompt.substr( at, ( end == std::string::npos ) ? std::string::npos
+	                                                                            : ( end - at ) );
+
+	{
+		Job* pJob = LoadScene( kScene, tmp );
+		Check( pJob != nullptr, "A83P/f/apply fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+		sess->SetTextCompleter( MakeFakeCompleter( { example } ) );
+		const Agent::AgentSession::AgentFrameSceneResult r = sess->FrameScene();
+		Check( r.ok && r.action == "patched",
+		       "A83P/f MONEY ASSERTION: the shipped example APPLIES through the real path -- an "
+		       "example that did not would spend the model's one repair retry on this harness's own "
+		       "typo" );
+		Check( r.rejected.empty(), "A83P/f with nothing rejected" );
+		Check( sess->ReadDocument().find( "0 1.6 6.5" ) != std::string::npos,
+		       "A83P/f and the example's own pose is what the document holds" );
+		sess.reset(); pJob->release(); std::remove( tmp.c_str() );
+	}
+}
+
+//! A83P/g: frame_scene over JSON-RPC.
+static void TestFrameSceneWireShape()
+{
+	std::printf( "A83P/g: frame_scene over JSON-RPC...\n" );
+	const std::string tmp = TempPath( "agentcrud_a83p_g.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "A83P/g fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = A82ComposeSession( pJob );
+	sess->SetTextCompleter( MakeFakeCompleter( { kGoodFramingAnswer } ) );
+	Agent::AgentRpcDispatcher rpc( std::move( sess ) );
+
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"frame_scene\",\"params\":{}}" );
+		Agent::JsonValue result;
+		Check( JsonResultObj( resp, result ), "A83P/g frame_scene returns a result object" );
+		Check( result.get( "ok" ).asBool( false ), "A83P/g ok:true" );
+		Check( result.get( "action" ).asString() == "patched",
+		       "A83P/g the action rides the wire as a structured fact" );
+		Check( result.get( "cameraKindBefore" ).asString() == "pinhole_camera" &&
+		       result.get( "cameraKindAfter" ).asString() == "pinhole_camera",
+		       "A83P/g and the camera kind on both sides" );
+		Check( result.get( "paramsApplied" ).isArray() &&
+		       result.get( "paramsApplied" ).size() == 4,
+		       "A83P/g and which parameters were applied" );
+		Check( result.get( "patchResults" ).isArray() &&
+		       result.get( "patchResults" ).size() == 4,
+		       "A83P/g MONEY ASSERTION: with the per-patch results in the SAME shape every other "
+		       "patching verb emits" );
+		Check( result.get( "coveredBefore" ).isNumber() && result.get( "coveredAfter" ).isNumber(),
+		       "A83P/g MONEY ASSERTION: and the measured coverage on both sides, as numbers" );
+		Check( result.get( "broughtIntoFrame" ).isArray() &&
+		       result.get( "pushedOutOfFrame" ).isArray(),
+		       "A83P/g with the per-object deltas named" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"frame_scene\",\"params\":{\"notes\":7}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "A83P/g a non-string `notes` is a schema error" );
+	}
+}
+
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -15972,9 +17118,28 @@ int main()
 	TestPopulateSceneContractAndRetry();
 	TestPopulateSceneCapabilityCapAndNoStock();
 	TestComposePhaseFirstRenderRefusal();
-	TestThreeComposeArmsShareOneCap();
+	TestComposeArmsShareOneCap();
 	TestPopulateSceneWireShape();
 	TestPopulationExampleInserts();
+
+	// Arc 83 slice 5 (2026-08-13): the clean-room environment pass, its
+	// admissibility and the checklist half of the compose-render gate.
+	TestEnvironmentSceneHappyPath();
+	TestEnvironmentSceneAdmissibility();
+	TestEnvironmentSceneHosekSuppression();
+	TestEnvironmentSceneCapabilityAndCap();
+	TestEnvironmentExamplesParse();
+	TestEnvironmentSceneWireShape();
+
+	// Arc 83 slice 6 (2026-08-13): the clean-room framing pass and its
+	// camera gate.
+	TestFrameSceneHappyPath();
+	TestFrameSceneFewerObjectsIsReportedNotReverted();
+	TestFrameSceneAdmissibilityAndReplace();
+	TestComposePhaseFirstCameraRefusal();
+	TestFrameSceneCapabilityAndCap();
+	TestFramingExampleParses();
+	TestFrameSceneWireShape();
 
 	// Arc 83 sec 4.1 (2026-08-13): the SESSION MODE -- compulsion belongs to
 	// the first build; availability is forever.

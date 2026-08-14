@@ -551,6 +551,29 @@ namespace RISE
 			//! finish_element, so its attributed set was stated nowhere at all.
 			//! A PLAIN FACT, never a judgement: it says which window a chunk was
 			//! made in, nothing about whether it was a good chunk.
+			//! ARC 83 SLICE 6 (2026-08-13): ONE `AgentPatchResult` as the
+			//! per-element JSON shape the wire has always emitted for a patch.
+			//! It EXISTED IN TWO INLINE COPIES before this slice
+			//! (`propose_patches` and `place_element`, the second carrying a
+			//! comment noting there was "no shared helper to call"), and this
+			//! slice needed a third for `frame_scene`.  Three copies of a wire
+			//! shape is exactly the drift surface this file's own
+			//! IsReadSafeVerb doc argues against, so the two existing sites now
+			//! call this and the new one does too -- the emitted keys are
+			//! unchanged, byte for byte, from what both copies produced.
+			JsonValue PatchResultJson( const AgentPatchResult& pr )
+			{
+				JsonValue itemRes = JsonValue::MakeObject();
+				itemRes.set( "applied",   JsonValue::MakeBool( pr.applied ) );
+				itemRes.set( "rawCode",   JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
+				itemRes.set( "status",    JsonValue::MakeString( pr.status ) );
+				itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
+				itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
+				itemRes.set( "message",   JsonValue::MakeString( pr.message ) );
+				if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
+				return itemRes;
+			}
+
 			JsonValue ChunkResultJson( const AgentChunkResult& cr,
 			                           const std::string& element = std::string() )
 			{
@@ -1272,6 +1295,22 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// Arc 83 slices 5 and 6 (2026-08-13): environment_scene and
+					// frame_scene are the clean-room ENVIRONMENT and FRAMING
+					// verbs.  BOTH mutate -- environment_scene inserts through
+					// InsertChunks and appends the rasterizer chunk carrying its
+					// dome binding, frame_scene patches or replaces the camera
+					// chunk -- so both are excluded from IsProposeSafeVerb for
+					// exactly the reason light_scene is, with the same message
+					// shape.
+					if( m == "environment_scene" || m == "frame_scene" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; " + m +
+							" is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					if( m == "build_element" || m == "place_element" ) {
 						return MakeProposeAutonomyRefusedError( idValue, m,
 							"refused: this session runs with --agent-autonomy=propose; " + m +
@@ -1817,15 +1856,7 @@ namespace RISE
 					JsonValue resultsArr = JsonValue::MakeArray();
 					for( const AgentPatchResult& pr : results ) {
 						if( pr.applied ) ++appliedCount;
-						JsonValue itemRes = JsonValue::MakeObject();
-						itemRes.set( "applied", JsonValue::MakeBool( pr.applied ) );
-						itemRes.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
-						itemRes.set( "status",  JsonValue::MakeString( pr.status ) );
-						itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
-						itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
-						itemRes.set( "message", JsonValue::MakeString( pr.message ) );
-						if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
-						resultsArr.push_back( itemRes );
+						resultsArr.push_back( PatchResultJson( pr ) );
 					}
 					JsonValue outRes = JsonValue::MakeObject();
 					outRes.set( "applied", JsonValue::MakeNumber( static_cast<double>( appliedCount ) ) );
@@ -2503,22 +2534,12 @@ namespace RISE
 						skipArr.push_back( o );
 					}
 					result.set( "skipped", skipArr );
-					// The SAME per-element shape propose_patches emits (there is
-					// no shared helper to call -- that verb builds it inline
-					// too; the fields are pinned by AgentPatchResult's doc).
+					// The SAME per-element shape propose_patches emits -- arc 83
+					// slice 6 made PatchResultJson the one definition of it, and
+					// the keys are unchanged from the inline copy that stood here.
 					JsonValue prArr = JsonValue::MakeArray();
-					for( std::size_t i = 0; i < prr.patchResults.size(); ++i ) {
-						const AgentPatchResult& pr = prr.patchResults[i];
-						JsonValue itemRes = JsonValue::MakeObject();
-						itemRes.set( "applied", JsonValue::MakeBool( pr.applied ) );
-						itemRes.set( "rawCode", JsonValue::MakeNumber( static_cast<double>( pr.rawCode ) ) );
-						itemRes.set( "status",  JsonValue::MakeString( pr.status ) );
-						itemRes.set( "retriable", JsonValue::MakeBool( pr.retriable ) );
-						itemRes.set( "headVersion", HeadVersionJson( pr.headVersion ) );
-						itemRes.set( "message", JsonValue::MakeString( pr.message ) );
-						if( !pr.issues.empty() ) itemRes.set( "issues", IssuesJson( pr.issues ) );
-						prArr.push_back( itemRes );
-					}
+					for( std::size_t i = 0; i < prr.patchResults.size(); ++i )
+						prArr.push_back( PatchResultJson( prr.patchResults[i] ) );
 					result.set( "patchResults", prArr );
 					result.set( "patchesApplied",
 						JsonValue::MakeNumber( static_cast<double>( prr.patchesApplied ) ) );
@@ -2767,6 +2788,247 @@ namespace RISE
 							JsonValue::MakeNumber( static_cast<double>( pr.objectCountAfter ) ) );
 					}
 					result.set( "message", JsonValue::MakeString( pr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// environment_scene {notes?}
+				//   -> {ok, capabilityRefusal?, provider, model, chunksExtracted,
+				//       landed:[string], rejected:[{name?,kind?,reason}],
+				//       chunkResults, patchResults, retryRan, retrySucceeded, completions,
+				//       painters, media, boundPainter?, bindingApplied,
+				//       bindingReason, rasterizer?, radianceMapBefore,
+				//       radianceMapAfter, globalMediumBefore, globalMediumAfter,
+				//       toneBefore?:{lumaMean,lumaStdDev,lumaP1,lumaP99},
+				//       toneAfter?:{...}, message}
+				//   Arc 83 slice 5 (2026-08-13), the clean-room ENVIRONMENT pass
+				//   -- ONE completion (plus at most one repair retry) authoring
+				//   the scene's SURROUND: the dome that fills the frame where no
+				//   object is, and the medium light travels through.  It inserts
+				//   painter / function / medium chunks through the ordinary
+				//   InsertChunks path and then MAKES THE DOME BINDING itself by
+				//   appending a rasterizer chunk that carries `radiance_map` --
+				//   see AgentSession::EnvironmentScene for why an append rather
+				//   than a patch (an appended painter referenced from an EARLIER
+				//   rasterizer chunk would derive to a silent no-dome).
+				//   MUTATING: not read-safe, and deliberately not on the Propose
+				//   allowlist either, exactly like light_scene.
+				//   THE ONLY -32602 is a non-string `notes`.
+				//--------------------------------------------------------------
+				if( m == "environment_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentEnvironmentSceneResult er = s->EnvironmentScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( er.ok ) );
+					if( er.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !er.providerName.empty() ) result.set( "provider", JsonValue::MakeString( er.providerName ) );
+					if( !er.modelId.empty() )      result.set( "model",    JsonValue::MakeString( er.modelId ) );
+					if( er.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( er.chunksExtracted ) ) );
+						JsonValue landedArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.landed.size(); ++i )
+							landedArr.push_back( JsonValue::MakeString( er.landed[i] ) );
+						result.set( "landed", landedArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !er.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( er.rejected[i].name ) );
+							if( !er.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( er.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( er.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.chunkResults.size(); ++i ) {
+							crArr.push_back( ChunkResultJson( er.chunkResults[i],
+								s->ChunkElement( er.chunkResults[i].name ) ) );
+						}
+						result.set( "chunkResults", crArr );
+						// The TWO parameter edits the dome binding is made of,
+						// in the same per-patch shape every other patching verb
+						// emits -- an empty array when no binding was made, in
+						// which case `bindingReason` says why.
+						JsonValue prArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < er.patchResults.size(); ++i )
+							prArr.push_back( PatchResultJson( er.patchResults[i] ) );
+						result.set( "patchResults", prArr );
+						result.set( "retryRan",       JsonValue::MakeBool( er.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( er.retrySucceeded ) );
+						result.set( "completions",
+							JsonValue::MakeNumber( static_cast<double>( er.completionsSpent ) ) );
+						result.set( "painters",
+							JsonValue::MakeNumber( static_cast<double>( er.paintersBuilt ) ) );
+						result.set( "media",
+							JsonValue::MakeNumber( static_cast<double>( er.mediaBuilt ) ) );
+						// OMITTED rather than sent empty, the inventory's
+						// omit-rather-than-fabricate rule: no painter was bound,
+						// so there is no name to report and `bindingReason` says
+						// why.
+						if( !er.boundPainter.empty() )
+							result.set( "boundPainter", JsonValue::MakeString( er.boundPainter ) );
+						result.set( "bindingApplied", JsonValue::MakeBool( er.bindingApplied ) );
+						if( !er.bindingReason.empty() )
+							result.set( "bindingReason", JsonValue::MakeString( er.bindingReason ) );
+						if( !er.rasterizerKind.empty() )
+							result.set( "rasterizer", JsonValue::MakeString( er.rasterizerKind ) );
+						result.set( "radianceMapBefore",  JsonValue::MakeBool( er.radianceMapBefore ) );
+						result.set( "radianceMapAfter",   JsonValue::MakeBool( er.radianceMapAfter ) );
+						result.set( "globalMediumBefore", JsonValue::MakeBool( er.globalMediumBefore ) );
+						result.set( "globalMediumAfter",  JsonValue::MakeBool( er.globalMediumAfter ) );
+						// THE HEADLINE, as STRUCTURE and not only as prose -- a
+						// census that has to parse the message to read a tonal
+						// spread is a census that will drift.  Each reading is
+						// OMITTED ENTIRELY when it was not measured: zeros here
+						// would read as a black frame rather than as an absent
+						// measurement.
+						if( er.toneBefore.measured ) {
+							JsonValue t = JsonValue::MakeObject();
+							t.set( "lumaMean",   JsonValue::MakeNumber( er.toneBefore.lumaMean ) );
+							t.set( "lumaStdDev", JsonValue::MakeNumber( er.toneBefore.lumaStdDev ) );
+							t.set( "lumaP1",     JsonValue::MakeNumber( er.toneBefore.lumaP1 ) );
+							t.set( "lumaP99",    JsonValue::MakeNumber( er.toneBefore.lumaP99 ) );
+							result.set( "toneBefore", t );
+						}
+						if( er.toneAfter.measured ) {
+							JsonValue t = JsonValue::MakeObject();
+							t.set( "lumaMean",   JsonValue::MakeNumber( er.toneAfter.lumaMean ) );
+							t.set( "lumaStdDev", JsonValue::MakeNumber( er.toneAfter.lumaStdDev ) );
+							t.set( "lumaP1",     JsonValue::MakeNumber( er.toneAfter.lumaP1 ) );
+							t.set( "lumaP99",    JsonValue::MakeNumber( er.toneAfter.lumaP99 ) );
+							result.set( "toneAfter", t );
+						}
+					}
+					result.set( "message", JsonValue::MakeString( er.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// frame_scene {notes?}
+				//   -> {ok, capabilityRefusal?, provider, model, chunksExtracted,
+				//       action, cameraKindBefore?, cameraNameBefore?,
+				//       cameraKindAfter?, cameraNameAfter?, paramsApplied:[string],
+				//       rejected:[{name?,kind?,reason}], patchResults, chunkResults,
+				//       retryRan, retrySucceeded, completions,
+				//       objectsBefore?, coveredBefore?, objectsAfter?, coveredAfter?,
+				//       broughtIntoFrame:[string], pushedOutOfFrame:[string],
+				//       message}
+				//   Arc 83 slice 6 (2026-08-13), the clean-room FRAMING pass --
+				//   ONE completion (plus at most one repair retry) returning ONE
+				//   camera chunk, applied as a PATCH of the scene's existing
+				//   camera when the kind matches and as an insert-then-remove
+				//   REPLACEMENT when it does not.  The arc-80 inventory is run on
+				//   BOTH sides of the edit, so the coverage figures are measured
+				//   rather than asserted, and a reframe that covers FEWER objects
+				//   is reported plainly and never auto-reverted.
+				//   MUTATING: not read-safe, and deliberately not on the Propose
+				//   allowlist either, exactly like light_scene.
+				//   THE ONLY -32602 is a non-string `notes`.
+				//--------------------------------------------------------------
+				if( m == "frame_scene" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string notes;
+					{
+						const JsonValue* nVal = params.find( "notes" );
+						if( nVal ) {
+							if( !nVal->isString() ) {
+								return MakeError( idValue, kInvalidParams,
+									"Invalid params: 'notes', when present, must be a string" );
+							}
+							notes = nVal->asString();
+						}
+					}
+
+					const AgentSession::AgentFrameSceneResult fr = s->FrameScene( notes );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok", JsonValue::MakeBool( fr.ok ) );
+					if( fr.capabilityRefusal )
+						result.set( "capabilityRefusal", JsonValue::MakeBool( true ) );
+					if( !fr.providerName.empty() ) result.set( "provider", JsonValue::MakeString( fr.providerName ) );
+					if( !fr.modelId.empty() )      result.set( "model",    JsonValue::MakeString( fr.modelId ) );
+					if( fr.ok ) {
+						result.set( "chunksExtracted",
+							JsonValue::MakeNumber( static_cast<double>( fr.chunksExtracted ) ) );
+						result.set( "action", JsonValue::MakeString( fr.action ) );
+						if( !fr.cameraKindBefore.empty() )
+							result.set( "cameraKindBefore", JsonValue::MakeString( fr.cameraKindBefore ) );
+						if( !fr.cameraNameBefore.empty() )
+							result.set( "cameraNameBefore", JsonValue::MakeString( fr.cameraNameBefore ) );
+						if( !fr.cameraKindAfter.empty() )
+							result.set( "cameraKindAfter", JsonValue::MakeString( fr.cameraKindAfter ) );
+						if( !fr.cameraNameAfter.empty() )
+							result.set( "cameraNameAfter", JsonValue::MakeString( fr.cameraNameAfter ) );
+						JsonValue paramArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.paramsApplied.size(); ++i )
+							paramArr.push_back( JsonValue::MakeString( fr.paramsApplied[i] ) );
+						result.set( "paramsApplied", paramArr );
+						JsonValue rejArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.rejected.size(); ++i ) {
+							JsonValue o = JsonValue::MakeObject();
+							if( !fr.rejected[i].name.empty() )
+								o.set( "name", JsonValue::MakeString( fr.rejected[i].name ) );
+							if( !fr.rejected[i].kind.empty() )
+								o.set( "kind", JsonValue::MakeString( fr.rejected[i].kind ) );
+							o.set( "reason", JsonValue::MakeString( fr.rejected[i].reason ) );
+							rejArr.push_back( o );
+						}
+						result.set( "rejected", rejArr );
+						JsonValue prArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.patchResults.size(); ++i )
+							prArr.push_back( PatchResultJson( fr.patchResults[i] ) );
+						result.set( "patchResults", prArr );
+						JsonValue crArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.chunkResults.size(); ++i ) {
+							crArr.push_back( ChunkResultJson( fr.chunkResults[i],
+								s->ChunkElement( fr.chunkResults[i].name ) ) );
+						}
+						result.set( "chunkResults", crArr );
+						result.set( "retryRan",       JsonValue::MakeBool( fr.retryRan ) );
+						result.set( "retrySucceeded", JsonValue::MakeBool( fr.retrySucceeded ) );
+						result.set( "completions",
+							JsonValue::MakeNumber( static_cast<double>( fr.completionsSpent ) ) );
+						// OMITTED when the identity pass did not succeed: a 0
+						// coverage count would read as "nothing is in frame"
+						// rather than as "this was not measured".
+						if( fr.measuredBefore ) {
+							result.set( "objectsBefore",
+								JsonValue::MakeNumber( static_cast<double>( fr.objectsBefore ) ) );
+							result.set( "coveredBefore",
+								JsonValue::MakeNumber( static_cast<double>( fr.coveredBefore ) ) );
+						}
+						if( fr.measuredAfter ) {
+							result.set( "objectsAfter",
+								JsonValue::MakeNumber( static_cast<double>( fr.objectsAfter ) ) );
+							result.set( "coveredAfter",
+								JsonValue::MakeNumber( static_cast<double>( fr.coveredAfter ) ) );
+						}
+						JsonValue inArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.broughtIntoFrame.size(); ++i )
+							inArr.push_back( JsonValue::MakeString( fr.broughtIntoFrame[i] ) );
+						result.set( "broughtIntoFrame", inArr );
+						JsonValue outArr = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < fr.pushedOutOfFrame.size(); ++i )
+							outArr.push_back( JsonValue::MakeString( fr.pushedOutOfFrame[i] ) );
+						result.set( "pushedOutOfFrame", outArr );
+					}
+					result.set( "message", JsonValue::MakeString( fr.message ) );
 					return MakeSuccess( idValue, result );
 				}
 

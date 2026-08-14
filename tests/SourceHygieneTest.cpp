@@ -1754,6 +1754,121 @@ int main()
 					}
 				}
 
+				// ---- ARC 83 SLICE 5 (2026-08-13): the CLEAN-ROOM ENVIRONMENT
+				//      surface pins.  Four things a model cannot recover by
+				//      experiment, and each is a FACT about what the code does
+				//      rather than advice about what to write:
+				//   * THERE IS NO ENVIRONMENT CHUNK.  The dome is a painter,
+				//     and a model that expects `environment { ... }` will
+				//     spend its answer on a keyword this language does not
+				//     have.
+				//   * THE BINDING IS THE HARNESS'S, and it is positional --
+				//     the LAST painter is the dome.  A model not told that
+				//     cannot know which of its painters becomes the sky, and
+				//     the one it meant might end up as the mask.
+				//   * THE HARD CONTRACT, and its boundary case.  A backdrop
+				//     plane is the obvious way to make a background and it is
+				//     exactly what this pass refuses; a model told nothing
+				//     writes one and loses a turn.
+				//   * THE HOSEK DIVISION.  Two verbs can install a dome and
+				//     the last one to derive wins, so which verb owns the sky
+				//     has to be stated on both surfaces.
+				{
+					struct A83EnvPin { const char* text; const char* why; };
+					static const A83EnvPin kA83EnvPins[] = {
+						{ "environment_scene",
+						  "never mentions environment_scene -- one of the two verbs the compose-phase "
+						  "render checklist names; a model that cannot name it cannot lift the refusal" },
+						{ "there is no environment chunk in this language",
+						  "does not state that there IS no environment chunk -- the dome is a PAINTER, "
+						  "and a model that assumes a dedicated keyword will spend its one answer on "
+						  "syntax this parser does not have" },
+						{ "the LAST painter the answer lands is bound as the scene's radiance map",
+						  "does not state the BINDING CONTRACT -- which painter becomes the dome is "
+						  "positional and decided by the harness, and a model that does not know it "
+						  "cannot tell which of its painters will be the sky and which the mask" },
+						{ "a backdrop plane or a sky dome built as a shape is FORM",
+						  "does not state the boundary case this pass REFUSES -- a backdrop plane is "
+						  "the obvious way to make a background, it is form rather than environment, "
+						  "and a model told nothing writes one and loses a turn discovering it" },
+						{ "hosek_wilkie_skylight is rejected because it is a light chunk",
+						  "does not state WHICH verb owns the sun-and-sky -- two passes can install a "
+						  "dome and the last one to derive wins, so a surface that leaves the division "
+						  "unstated invites the scene to silently lose one of them" },
+						{ "how this renderer spells fog, haze, underwater depth falloff and shafts of "
+						  "light",
+						  "does not say what the MEDIUM half is FOR -- `homogeneous_medium` plus "
+						  "`global_medium` reads as bookkeeping unless a surface says those two chunks "
+						  "are the fog, the haze and the visible shaft" },
+						{ "the frame's TONAL DISTRIBUTION measured before and after",
+						  "does not state that the result MEASURES the frame's tone on both sides -- "
+						  "the one figure this slice moves, and a model that does not know it is "
+						  "reported cannot read its own result" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA83EnvPins ) / sizeof( kA83EnvPins[0] ); ++k ) {
+							if( joined.find( kA83EnvPins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA83EnvPins[k].why );
+						}
+					}
+				}
+
+				// ---- ARC 83 SLICE 6 (2026-08-13): the CLEAN-ROOM FRAMING
+				//      surface pins.  The framing verb's four unrecoverable
+				//      facts:
+				//   * WHAT IT RETURNS.  One camera and nothing else -- and
+				//     `film` in particular is refused, which is surprising
+				//     enough (it is where width and height live) that a model
+				//     told nothing will try it.
+				//   * PATCH-OR-REPLACE, and what an omitted parameter does.  A
+				//     model that believes an omitted `fov` resets to a default
+				//     will write every parameter defensively; one that knows it
+				//     is preserved can make a one-line change.
+				//   * THE MEASUREMENT.  Coverage before and after is what this
+				//     slice moves, and it is reported.
+				//   * THE FEWER-OBJECTS CASE.  A model that expects the harness
+				//     to undo a close-up will not author one.
+				{
+					struct A83FramePin { const char* text; const char* why; };
+					static const A83FramePin kA83FramePins[] = {
+						{ "frame_scene",
+						  "never mentions frame_scene -- the verb the compose-phase camera refusal "
+						  "names; a model that cannot name it cannot lift the refusal" },
+						{ "exactly ONE camera chunk is accepted",
+						  "does not state that this pass authors exactly ONE camera -- a model that "
+						  "writes two gets one of them rejected and has no way to know which" },
+						{ "which is raster-size policy rather than framing",
+						  "does not state that `film` is REFUSED and why -- width and height live "
+						  "there, so a model reframing a shot will reach for it, and a refusal whose "
+						  "reason is unstated reads as a broken harness" },
+						{ "any parameter it leaves out keeps the value it has",
+						  "does not state what an OMITTED parameter does on the patch path -- a model "
+						  "that believes omission resets to a default will rewrite every parameter "
+						  "defensively instead of making the one change it means" },
+						{ "the previous camera chunk then removed, in that order so a failed insert "
+						  "can never leave the scene with no camera",
+						  "does not state the REPLACE mechanism or its ordering -- a model that "
+						  "changes camera kind is entitled to know its old camera goes and that a "
+						  "failure leaves the scene intact" },
+						{ "how many objects covered at least one pixel on each side",
+						  "does not state that object coverage is MEASURED before and after -- the one "
+						  "number this slice moves, and a model that does not know it is reported "
+						  "cannot read its own result" },
+						{ "a closer view of fewer things is a framing decision, not an error",
+						  "does not state that a reframe covering FEWER objects is reported and NOT "
+						  "reverted -- a model that expects the harness to undo a deliberate close-up "
+						  "will not author one" }
+					};
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						for( std::size_t k = 0; k < sizeof( kA83FramePins ) / sizeof( kA83FramePins[0] ); ++k ) {
+							if( joined.find( kA83FramePins[k].text ) == std::string::npos )
+								planProblems.push_back( std::string( fname ) + ": " + kA83FramePins[k].why );
+						}
+					}
+				}
+
 				for( const char* fname : kPlanSurfaces ) {
 					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
 					if( joined.find( "imagine_scene" ) == std::string::npos ) {

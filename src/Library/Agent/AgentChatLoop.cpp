@@ -463,6 +463,19 @@ namespace RISE
 			       // one, so there is nothing here that could be mistaken for
 			       // an observation.
 			       v == "populate_scene" ||
+		       // Arc 83 slices 5 and 6 (2026-08-13): ONE environment_scene
+		       // call and ONE frame_scene call are each ONE blind mutation,
+		       // for light_scene's reason exactly -- each applies a whole
+		       // design with no visual observation in between.  Neither is a
+		       // LOOK: environment_scene's two tonal renders and frame_scene's
+		       // two identity passes are internal and ephemeral and no pixel of
+		       // them reaches the model, so treating either as an observation
+		       // would hand every model a free, image-free streak reset -- the
+		       // same call light_scene's solo renders, file_build_plan's sketch
+		       // echo and imagine_scene's generated image each got, and for the
+		       // same reason.
+		       v == "environment_scene" ||
+		       v == "frame_scene" ||
 				       v == "propose_patch" || v == "propose_patches" ||
 				       v == "remove_chunk" ||
 				       // R1a (2026-08-09): ONE remove_chunks call is ONE

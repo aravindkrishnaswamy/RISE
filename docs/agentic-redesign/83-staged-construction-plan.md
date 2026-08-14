@@ -705,3 +705,304 @@ CstIncrementalDeriveTest 24/0 — all zero failures.  No eval run: this slice
 was explicitly scoped without provider calls, so the live claim "a refining
 user's instruction is no longer refused" is proved by unit test and by the
 scenario-scene audit in §14.2, not by a measured run.
+
+## 15. §3.2 AS BUILT — the ENVIRONMENT and CAMERA steps (2026-08-13)
+
+§3.2's two remaining steps are implemented.  What follows is what actually
+landed, including the two places the design as sketched could not be built
+as specified and the mechanism that replaced each.
+
+### 15.1 The two verbs, as coded
+
+Both are SINGLE-UNIT steps and both are exactly **one completion** on the
+happy path (plus at most one repair retry) — §1's sizing rule: there is one
+environment and one camera, so a loop would be the wrong unit.
+
+| | `environment_scene` (slice 5) | `frame_scene` (slice 6) |
+|---|---|---|
+| completions | 1 (+1 repair) | 1 (+1 repair) |
+| per-session cap | 2 | 2 |
+| what it writes | painter / function / medium chunks | ONE camera chunk |
+| what the harness adds | the DOME BINDING onto the rasterizer | PATCH-or-REPLACE of the camera chunk |
+| measured headline | frame TONE before and after | object COVERAGE before and after |
+| its gate | half of the compose-render checklist | the first COMPOSE camera edit |
+
+Both take only `notes` (capped at 2000, truncation stated), both are
+BuildCapable-gated with a capability statement, both are MUTATE on the wire
+(not read-safe, not on the Propose allowlist), both are mirrored on the
+canonical chat codec and the MCP adapter, and both are REFINING-inert as
+*compulsion* while staying AVAILABLE as *verbs* — §14's rule unchanged.
+
+### 15.2 The environment palette, verified against the registry
+
+Surveyed from `ChunkParserRegistry.cpp`'s descriptors, not from prose.  The
+headline finding: **there is no `environment` chunk in this language.**  The
+surround is two things and neither is a dedicated keyword.
+
+**Shipped, with the registry's own schema printed via `ReadSchema`:**
+
+- **THE DOME — a PAINTER bound as the rasterizer's `radiance_map`.**  Worked
+  example: `uniformcolor_painter` ×2 + `expression_function2d` (the ramp over
+  the direction-derived `u,v`) + `blend_painter`.  Schemas printed:
+  `expression_function2d`, `blend_painter`, `hdr_painter`, `exr_painter`,
+  `uniformcolor_painter`.  Noise domes (`perlin2d_painter`,
+  `perlinworley3d_painter`, `turbulence3d_painter`, `curlnoise3d_painter`)
+  are named in the headline as the same two-colour shape.
+- **THE MEDIUM — `homogeneous_medium` + `global_medium`.**  Worked example
+  ships both.  `painter_heterogeneous_medium`'s schema is printed beside them
+  for structured cloud / god-ray density.  The headline states the one thing
+  a parameter list cannot carry: `phase` is a composite token
+  (`isotropic` or `hg <g>` on ONE line), and absorption/scattering are
+  per-unit-distance so they scale with the scene.
+
+**Verified and deliberately NOT shipped, each for a stated reason:**
+
+| family | why not |
+|---|---|
+| `hdr_painter` / `exr_painter` **worked example** | schemas yes, example no: an example must name a FILE, and one naming a file the scene does not have would fail to insert and spend the model's one repair retry on this harness's own placeholder (A82g's finding in the negative) |
+| `ambient_light` | already banned outright on every creating path; and it fills *illumination*, not the *frame* — a missed primary ray is still black |
+| per-object `radiance_map` on `standard_object` / `csg_object` | object-local, not the surround — and it rides a FORM chunk |
+| `file_rasterizeroutput`'s `exposure` / `display_transform` | output-side tone mapping, not environment |
+| `gerstnerwave_painter`, `iridescent_painter` | a water *surface* and a view-dependent term; neither is a dome |
+| a backdrop plane / sky sphere / water mesh | **FORM.** Refused by name — see 15.4 |
+
+Two registry traps the admissibility had to know about, both confirmed in
+code: `expression_function2d` is `ChunkCategory::**Function**` (it
+dual-registers as a painter *reference*), so the accept set is
+Painter ∪ Function ∪ Medium; and the two MLT rasterizers do **not** declare
+`radiance_map` at all, which `RasterizerAcceptsRadianceMap_` asks the
+descriptor rather than a hand-kept list.
+
+### 15.3 The hosek decision — one verb owns the sky
+
+`hosek_wilkie_skylight` is in `light_scene`'s palette and is **refused by
+name** in `environment_scene`.  The reason is mechanical, not tidiness:
+`Job::AddHosekWilkieSkylight` and `Job::SetPixelBasedRasterizer` both call
+`Job::SetGlobalRadianceMap`, **last writer wins**, so a scene carrying both a
+hosek chunk and a rasterizer `radiance_map` silently discards one.  Two verbs
+installing a dome by different routes is exactly how that happens.
+
+So the sharing rule is that ONE of them owns it, and the other is told:
+`environment_scene` reads the DOCUMENT (not the live scene — what collides is
+the chunk's call on the *next* derive) for a hosek chunk, and when one is
+present it **suppresses the whole DOME palette entry** and makes no binding at
+all, writing only the medium.  The prompt says so as a fact.  Offering a model
+a form the call will then refuse is the false-clause class §8.1 of arc 79
+records the cost of.
+
+**Known residual, named:** if `light_scene` runs *after* `environment_scene`
+and authors a hosek, it will replace the painter dome.  Nothing here detects
+that ordering; it is stated rather than fixed.
+
+### 15.4 Where the design could not be built as sketched — TWO places
+
+**(a) THE DOME BINDING IS A PATCH, NOT A SECOND RASTERIZER CHUNK.**  The
+plan assumed "bind a painter as `radiance_map`" was an insert.  It is not:
+`radiance_map` is a *parameter group on the rasterizer chunk*, so something
+has to write it.  The first implementation appended a fresh rasterizer chunk
+carrying the binding — and `Job::ApplyCstInsertChunk` **refuses a second
+unnamed chunk of the same keyword outright** (the duplicate would mask the
+original last-wins and bare-name `remove_chunk` could never delete it).
+Unnamed rasterizer chunks are also unremovable.  So a rasterizer chunk is
+editable **in place and in no other way**, and the binding is a two-parameter
+patch (`radiance_map`, `radiance_background TRUE`) against the kind-addressed
+singleton.
+
+The forward-reference hazard this raised is real and turned out to be already
+handled: references resolve in DOCUMENT ORDER and an unresolvable
+`radiance_map` is a **log warning, not a failure** — so a wrong-order patch
+would commit, derive, and install no dome, silently.  It does not happen
+because `ApplyCstInsertChunk` **positions** a Painter/Function chunk ahead of
+the first material/geometry/shader (its tier-0 rule) rather than appending it.
+A83N/a asserts that ordering directly, so a change to that classification
+fails a test instead of quietly un-binding every dome.  And the call
+**verifies** rather than assumes: it reads `IScene::GetGlobalRadianceMap` back
+and, in the one case where the patch commits and no dome exists, says exactly
+that and names the fix.
+
+**(b) WHICH PAINTER IS THE DOME IS POSITIONAL, AND STATED.**  A graded dome is
+a chain (two colours → a ramp → a blend), so "bind the painter" is ambiguous.
+The contract is: **the LAST chunk the answer lands whose descriptor category
+is `Painter` is the dome** — strictly Painter, not Painter-or-Function, because
+`radiance_map` is declared `Reference -> {Painter}` and the
+`expression_function2d` ramp exists to be the blend's MASK.  Binding the ramp
+would make a greyscale gradient the sky.  The prompt states the rule; the
+result reports the painter actually bound; A83N/a pins that the blend and not
+the ramp is what got picked.
+
+### 15.5 `frame_scene` — patch or replace, and the ordering that is load-bearing
+
+The five camera keywords are a **named list** (`IsCameraKeyword_`), not a
+`ChunkCategory::Camera` test, because the registry files two non-cameras under
+that category — `scene_options` (world scale) and `camera_defaults` (thinlens
+fallbacks).  Cst.cpp's own classifier says so.  Refusing a scene-unit
+declaration on behalf of a framing verb would be the over-refusal arc 78 names
+as this family's worst failure mode.  Same named-list precedent as
+`IsZeroAreaLightKeyword_`.
+
+- **PATCH** when the answer's kind matches the scene's camera: one
+  `ProposePatches` batch — one head bump, one undo step — of every parameter
+  the answer names except `name` (there is no rename verb; patching a chunk's
+  own name would break every reference to it).  A parameter the answer omits
+  keeps its value, and the prompt says so.
+- **REPLACE** when the kind differs: **insert first, remove second**, so a
+  failed insert can never leave the scene with no camera.  Removing the old
+  chunk is not tidiness — `Job::RederiveCstDocumentFull_` restores the
+  previously active camera BY NAME across the re-derive, so until the old chunk
+  is gone the inserted camera is in the document but is not the one rendering.
+  An unnamed old camera is removed by its LIVE derived name under the generic
+  `camera` kind, the one address the resolver's unnamed-camera fallback
+  accepts.  The camera that ended up live is **read back**, never assumed.
+- **`film` is refused by name.**  Width/height/pixelAR moved to `film` in
+  scene format v6; it is raster-size policy, and a framing pass that quietly
+  re-sized every render would be changing the budget, not the shot.
+
+The measurement is `ComputeSceneInventory_` run BEFORE the edit and again
+AFTER, with the per-object on-screen flags diffed by name.  A reframe that
+covers FEWER objects is stated plainly, with the number and the names, and is
+**never auto-reverted** — a close-up covers fewer objects on purpose, and a
+harness that undid it would be overriding the judgement it just paid a
+completion to obtain.
+
+One further change the FULL inventory forced: `FormatSceneInventory_`'s two
+line caps (12 on-screen / 40 zero) became **parameters** defaulted to those
+same constants, and `frame_scene` passes 120/120.  For every other consumer
+the inventory is context beside a picture; for this one the per-object list IS
+the input, and an object cut from the listing is an object the reframe cannot
+know it is missing.  One formatter, two caps — a second formatter would have
+been the drift surface.
+
+### 15.6 The two gates
+
+**The compose-render arm became a CHECKLIST**, not a second arm.
+`CheckPopulateBeforeComposeRender_` → `CheckBuildChecklistBeforeComposeRender_`.
+The first agent-surface COMPOSE render is refused **ONCE for the whole
+checklist** — not once per item — naming exactly the ones that have not yet
+reached the provider.  Each item lifts independently and permanently; a model
+that has run one is never told to run it again.  The one-shot is load-bearing
+and does **not** loosen as items are added: §6's finding is that a
+repeat-refusable render arm burns the whole shared 3-refusal budget by itself
+and trips the give-up, silently disarming every sibling gate.
+
+**The camera arm (`CheckFrameSceneBeforeCameraEdit_`) is ALSO one-shot**, which
+is the render arm's rule rather than the light arm's, and the reason is §6's
+finding applied *in advance*: every measured run patches the camera
+repeatedly.  A repeat-refusable arm on a call a model makes constantly is
+precisely the starvation hazard.  It fires on an INSERT of a camera chunk and
+on a PATCH aimed at one — the patch arm being the one that matters, since
+re-aiming is a patch in every run measured, and an insert-only gate would be a
+gate with a one-word bypass.  COMPOSE-only (arc 78 §2.3 exempts the whole
+Camera category from element-window rules so a model can re-aim at the part it
+is building); inert in REFINING; dead with `--agent-build-protocol=off`;
+exempt for `frame_scene`'s own edit.
+
+Six arms now share `RefuseForPhase_`'s 3-refusal counter, four of them in
+COMPOSE.  A82e was **extended rather than duplicated** — the property under
+test is a property of the shared counter, and a test that counted three of
+four would pass while the fourth starved them.
+
+### 15.7 One wire-shape dedup this slice paid for
+
+`AgentPatchResult`'s per-element JSON shape existed in **two inline copies**
+(`propose_patches` and `place_element`, the second carrying a comment noting
+there was "no shared helper to call").  This slice needed a third.  Three
+copies of a wire shape is the drift surface `IsReadSafeVerb`'s own doc argues
+against, so `PatchResultJson` is now the one definition and both existing
+sites call it; the emitted keys are unchanged byte for byte.
+
+### 15.8 Tests
+
+All in `tests/AgentChunkCrudTest.cpp` unless noted.
+
+- **A83N/a** `TestEnvironmentSceneHappyPath` — one completion; six chunks land;
+  the LAST **painter** (not the Function ramp) is what gets bound; the document
+  really carries the binding AND the painter really precedes the rasterizer;
+  the live scene's dome and global medium flip false→true; the frame tone is
+  measured on both sides; the prompt carries the inventory, the camera, the
+  bounds, what environment already exists, the binding contract, both literal
+  examples, and the two image-painter schemas *without* examples; the
+  advice-vocabulary ban on the prompt and the verdict ban on the result.
+- **A83N/b** `TestEnvironmentSceneAdmissibility` — a backdrop plane and its
+  object refused with "is FORM"; `hosek_wilkie_skylight` refused and pointed at
+  `light_scene`; a camera and a `film` both refused; none reaches the document.
+- **A83N/c** `TestEnvironmentSceneHosekSuppression` — with a hosek chunk present
+  nothing is bound, the reason says why, the medium half still runs, and the
+  DOME palette entry is absent from the prompt entirely.
+- **A83N/d** `TestEnvironmentSceneCapabilityAndCap` — capability statement +
+  byte-identical document; the cap (capability refusals never count); available
+  and working in REFINING and with the protocol off.
+- **A83N/e** `TestEnvironmentExamplesParse` — both worked examples LIFTED FROM
+  THE SHIPPED PROMPT and pushed through the real insertion path: all six chunks
+  land, no repair retry, and the example's own `blend_painter` is what the
+  binding contract picks.  Includes a RED-PROVE that the lift is reading the
+  prompt and not a test literal.
+- **A83N/f** `TestEnvironmentSceneWireShape` — the JSON-RPC shape including
+  `boundPainter` / `bindingApplied` / `rasterizer` / both tonal readings /
+  `patchResults`; the one `-32602`.
+- **A83N/checklist** (inside A82d) — the single refusal names BOTH verbs;
+  after `populate_scene` alone it names ONLY `environment_scene`; after both,
+  the render proceeds; a failed pass on either still lifts its item.
+- **A83P/a** `TestFrameSceneHappyPath` — one completion; `action == "patched"`;
+  four parameters applied; still exactly ONE camera chunk; coverage measured on
+  both sides; the prompt carries the FULL inventory, the camera chunk VERBATIM,
+  its resolved pose, the frame size declared out of scope, the tonal fact, all
+  five camera kinds and one literal example (and no example on the other four);
+  advice and verdict bans.
+- **A83P/b** `TestFrameSceneFewerObjectsIsReportedNotReverted` — the close-up
+  lands, nothing is reverted, and the payload says "covers FEWER objects" with
+  the names.
+- **A83P/c** `TestFrameSceneAdmissibilityAndReplace` — a film, a geometry and a
+  light refused (the film refusal naming "raster-size policy"); a SECOND camera
+  refused with the first still used; the REPLACE path leaving the old pinhole
+  chunk gone and the ortho read back as live.
+- **A83P/d** `TestComposePhaseFirstCameraRefusal` — the gate fires on a PATCH
+  and on an INSERT, exactly once each session; `frame_scene` lifts it; a FAILED
+  pass lifts it too; PIECES-phase camera edits never refused; protocol-off dead;
+  REFINING inert with the verb still available.
+- **A83P/e** `TestFrameSceneCapabilityAndCap`, **A83P/f**
+  `TestFramingExampleParses` (the palette's example lifted from the shipped
+  prompt and applied through the real path), **A83P/g**
+  `TestFrameSceneWireShape`.
+- **A82e** `TestComposeArmsShareOneCap` (renamed from
+  `TestThreeComposeArmsShareOneCap`) — the fourth refusable call is now the
+  camera arm and it triggers the same global give-up; a new arm proves ten
+  camera patches produce exactly ONE refusal, leaving two slots for the others.
+- **`tests/SourceHygieneTest.cpp`** — seven pins per verb on BOTH tool
+  surfaces: for the environment, that there is no environment chunk, the
+  positional binding contract, the FORM boundary case, the hosek division, what
+  the medium half is for, and the tonal measurement; for framing, one camera
+  only, `film` refused and why, what an omitted parameter does, the replace
+  ordering, the coverage measurement, and the fewer-objects rule.
+
+### 15.9 Verification
+
+`make -C build/make/rise clean && make -C build/make/rise -j8 all &&
+make -C build/make/rise -j8 tests` — clean rebuild, **warning-free**.
+
+Verbatim: AgentChunkCrudTest **3372/0** (was 3156/0 before this slice's tests
+and 2982/0 at §14), SourceHygieneTest **146/0**, AgentAutonomyPolicyTest
+**388/0**, AgentMcpAdapterTest **283/0**, AgentChatLoopTest **1738/0**,
+AgentSkillsTest **450/0**, AgentMcpStdioSmokeTest **21/0**, AgentEvalCheckTest
+**1909/0**, AgentEvalLiveTransportTest **452/0**, AgentEvalReplayTest **263/0**,
+AgentFirstSliceTest **350/0**, AgentFrameStoreIsolationTest **562/0**,
+AgentHeadVersionTest **56/0**, AgentLiveCommitTest **871/0**,
+AgentLoopbackHttpTest **166/0**, AgentObjectMapTest **252/0**,
+AgentProposeRenderTest **485/0**, AgentReadValidateTest **185/0**,
+AgentRenderAsyncTest **849/0**, AgentStdioSmokeTest **13/0**,
+AgentTrajectoryTest **180/0**, AgentViewModeRenderTest **657/0**,
+AgentViewportReadTest **340/0**, RectLightChunkTest **56/0**,
+ShapeLightChunkTest **71/0**, CstSaveFidelityTest **29/0**,
+CstIncrementalDeriveTest **24/0**.  All zero failures.
+
+Tool-surface counts moved with the two verbs: MCP `tools/list` 32 → **34**,
+chat tool definitions 27 → **29**, read-refusal-annotated tools 13 → **15**.
+
+**No eval run.**  This slice was scoped without provider calls, so nothing here
+claims a measured result about what a model does with either verb.  What is
+established is that both verbs work end-to-end against the real insertion,
+patch and remove paths; that both worked-example families really parse and
+apply; and that both gates fire, lift and stay bounded.  The falsifiers are the
+same shape as every prior slice's: an imagine-and-build run whose environment
+pass produces a non-zero tonal spread against a scene that previously rendered
+on a flat field, and whose framing pass raises the object-coverage figure it
+now reports on both sides.

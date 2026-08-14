@@ -2413,6 +2413,58 @@ namespace RISE
 				return k == "omni_light" || k == "spot_light" || k == "directional_light";
 			}
 
+			//! ARC 83 SLICE 6: is this keyword one of the five CAMERA chunk
+			//! kinds?  A NAMED LIST for IsZeroAreaLightKeyword_'s reason
+			//! exactly -- `ChunkCategory::Camera` is NOT the answer, because
+			//! the registry files two non-cameras under it: `scene_options`
+			//! (the world's metres-per-unit) and `camera_defaults` (thinlens
+			//! sensor / focal-length / f-stop fallbacks).  Cst.cpp's own
+			//! classifier says so in as many words.  Framing must not refuse,
+			//! nor accept as "a camera", a chunk that is neither.
+			//!
+			//! Shared by ChunkTextCreatesCamera_ (the gate arm's predicate),
+			//! FrameScene's admissibility check and FindActiveCameraChunk_'s
+			//! document walk, so no two of them can disagree about what a
+			//! camera is.
+			bool IsCameraKeyword_( const std::string& k )
+			{
+				return k == "pinhole_camera"     || k == "onb_pinhole_camera" ||
+				       k == "thinlens_camera"    || k == "fisheye_camera"     ||
+				       k == "orthographic_camera";
+			}
+
+			//! ARC 83 SLICE 5: the keyword whose Finalize installs a global
+			//! radiance map of its OWN, colliding with a rasterizer's
+			//! `radiance_map` binding on a last-writer-wins basis
+			//! (Job::AddHosekWilkieSkylight and Job::SetPixelBasedRasterizer
+			//! both call Job::SetGlobalRadianceMap).  One name, but it is
+			//! consulted from three places -- environment_scene's
+			//! admissibility, its dome-suppression rule and its report -- so
+			//! it is a function rather than three string literals.
+			bool IsSkylightKeyword_( const std::string& k )
+			{
+				return k == "hosek_wilkie_skylight";
+			}
+
+			//! ARC 83 SLICE 5: does this rasterizer keyword accept the
+			//! `radiance_map` parameter group?  TEN of the twelve do; the two
+			//! MLT rasterizers do NOT declare it (ChunkParserRegistry.cpp --
+			//! `AddRadianceMapParams` is called by every rasterizer except
+			//! `mlt_rasterizer` and `mlt_spectral_rasterizer`), so patching
+			//! one would be refused by the descriptor and the pass must say
+			//! so instead of trying.  Asked of the DESCRIPTOR, not of a list:
+			//! the registry is the authority on what a chunk accepts, and a
+			//! hand-kept list of ten would drift the moment an integrator is
+			//! added.
+			bool RasterizerAcceptsRadianceMap_( const std::string& keyword )
+			{
+				const ChunkDescriptor* d = DescriptorForKeyword( String( keyword.c_str() ) );
+				if( !d || d->category != ChunkCategory::Rasterizer ) return false;
+				for( std::size_t i = 0; i < d->parameters.size(); ++i )
+					if( d->parameters[i].name == "radiance_map" ) return true;
+				return false;
+			}
+
 			//! The cheap literal pre-filter -- the ambient ban's, in triplicate.
 			//! A zero-area light chunk's keyword has to appear VERBATIM in the
 			//! bytes for a parse to produce one, so a text carrying none of the
@@ -3284,6 +3336,35 @@ namespace RISE
 			{
 				const std::string clause = CheckElementWindowForEdit_( "propose_patch", patch.target,
 				                                                        &s1Fold.notice );
+				if( !clause.empty() ) {
+					r.applied     = false;
+					r.retriable   = false;   // see the G2 arm above for why
+					r.rawCode     = 0;
+					r.status      = "rejected";
+					r.headVersion = ReadHeadVersion();
+					r.message     = clause;
+					return r;
+				}
+			}
+
+			// ARC 83 SLICE 6 (2026-08-13, clean-room framing): THE PATCH ARM of
+			// the first-camera refusal, and it is the arm that matters.  Arc
+			// 81's light gate needed no patch arm -- a light is CREATED by an
+			// insert and editing an existing one was never the point -- but
+			// re-aiming a camera is a PATCH in every run this workstream has
+			// measured, so a camera gate wired only to the insert verbs would
+			// be a gate with a one-word bypass.  Same shared counter, same
+			// retriable=false, COMPOSE-only, and one-shot (see the arm).
+			//
+			// It runs AFTER the cross-element arm above deliberately: that one
+			// is a pure attribution lookup with no document access, while this
+			// one may resolve a name through the retained CST.  Cameras are
+			// phase-EXEMPT for the cross-element rule, so the two can never
+			// both fire on one call.
+			if( mBuildPhase == AgentBuildPhase::Compose &&
+			    PatchTargetIsCamera_( patch.target, patch.kind ) ) {
+				const std::string clause =
+					CheckFrameSceneBeforeCameraEdit_( "propose_patch", &s1Fold.notice );
 				if( !clause.empty() ) {
 					r.applied     = false;
 					r.retriable   = false;   // see the G2 arm above for why
@@ -5114,6 +5195,33 @@ namespace RISE
 				}
 			}
 
+			// ARC 83 SLICE 6 (2026-08-13, clean-room framing): the FIRST-CAMERA
+			// refusal -- in the COMPOSE phase, while frame_scene has not run,
+			// authoring a camera chunk by hand is refused ONCE and names it.
+			// The SIXTH arm of the same shared counter, on the SAME terms as
+			// the four above (camera-creating text only, same cap, same
+			// retriable=false), COMPOSE-only for arc 78 sec 2.3's reason (the
+			// whole Camera category is exempt from element-window rules
+			// precisely so a model can re-aim at the part it is building).
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				std::string s6Kind, s6Name;
+				if( ChunkTextCreatesCamera_( chunkText, &s6Kind, &s6Name ) ) {
+					const std::string clause =
+						CheckFrameSceneBeforeCameraEdit_( "insert_chunk", &s1Fold.notice );
+					if( !clause.empty() ) {
+						r.applied     = false;
+						r.retriable   = false;
+						r.rawCode     = 0;
+						r.status      = "rejected";
+						r.headVersion = ReadHeadVersion();
+						r.kind        = s6Kind;
+						r.name        = s6Name;
+						r.message     = clause;
+						return r;
+					}
+				}
+			}
+
 			// R1c (2026-08-09, agent rasterizer allowlist): the InsertChunk arm
 			// of the gate, FIRST -- before E1's and before the authority
 			// branching -- because it is the cheapest of the three (a CST parse
@@ -5559,6 +5667,36 @@ namespace RISE
 				if( createsLight ) {
 					const std::string clause =
 						CheckFirstLightThroughCleanRoom_( "insert_chunks", &s1GiveUpNotice );
+					if( !clause.empty() ) {
+						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
+						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
+							AgentChunkResult e;
+							e.applied     = false;
+							e.retriable   = false;   // see InsertChunk's arm for why
+							e.rawCode     = 0;
+							e.status      = "rejected";
+							e.headVersion = head;
+							e.message     = clause;
+							if( !g2GiveUpNotice.empty() ) e.message += "  " + g2GiveUpNotice;
+							out.push_back( e );
+						}
+						return out;
+					}
+				}
+			}
+
+			// ARC 83 SLICE 6 (2026-08-13, clean-room framing): the FIRST-CAMERA
+			// refusal's batch arm, the exact sibling of the light arm directly
+			// above -- an up-front whole-batch scan, sharing s1GiveUpNotice
+			// because it is the same counter, and COMPOSE-only for the same
+			// reason.
+			if( mBuildPhase == AgentBuildPhase::Compose ) {
+				bool createsCamera = false;
+				for( std::size_t i = 0; i < chunkTexts.size() && !createsCamera; ++i )
+					createsCamera = ChunkTextCreatesCamera_( chunkTexts[i] );
+				if( createsCamera ) {
+					const std::string clause =
+						CheckFrameSceneBeforeCameraEdit_( "insert_chunks", &s1GiveUpNotice );
 					if( !clause.empty() ) {
 						const RISE::Cst::CstHeadVersion head = ReadHeadVersion();
 						for( std::size_t i = 0; i < chunkTexts.size(); ++i ) {
@@ -8989,6 +9127,129 @@ namespace RISE
 				}
 			}
 			return false;
+		}
+
+		bool AgentSession::ChunkTextCreatesCamera_( const std::string& chunkText,
+		                                            std::string* outKind, std::string* outName )
+		{
+			// A NAMED LIST, not a ChunkCategory test -- and the reason is a
+			// fact about the registry, not a style preference.
+			// `ChunkCategory::Camera` also carries two chunks that are not
+			// cameras at all: `scene_options` (the world's metres-per-unit)
+			// and `camera_defaults` (thinlens sensor/focal/fstop fallbacks).
+			// Cst.cpp says so at its own classifier ("ChunkCategory::Camera
+			// also covers non-camera helper chunks").  A framing gate that
+			// refused a scene-unit declaration would be exactly the
+			// over-refusal arc 78 names as this design family's worst failure
+			// mode -- so this is the same named-list precedent
+			// IsZeroAreaLightKeyword_ and IsAreaLightKeyword_ set, for the
+			// same reason: the question is about what the chunk IS, and the
+			// category does not carry it.
+			//
+			// The list is the five camera chunks the registry accepts
+			// (ChunkParserRegistry.cpp's camera block).  A camera kind added
+			// later needs an entry here, which is the honest cost of the
+			// category not being usable.
+			if( chunkText.empty() ) return false;
+			const RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunkText );
+			const int n = RISE::Cst::DocItemCount( doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				if( !IsCameraKeyword_( it->role ) ) continue;
+				// AND it must really be a registered chunk -- a keyword this
+				// build does not have could never be inserted anyway, and
+				// refusing on behalf of one would be a refusal with no verb
+				// behind it.
+				if( !DescriptorForKeyword( String( it->role.c_str() ) ) ) continue;
+				if( outKind ) *outKind = it->role;
+				if( outName ) *outName = ChunkParamString_( it, "name" );
+				return true;
+			}
+			return false;
+		}
+
+		bool AgentSession::PatchTargetIsCamera_( const std::string& target,
+		                                          const std::string& kind ) const
+		{
+			// (1) THE KIND, when the caller supplied one.  `camera` is the
+			// generic suffix constraint RoleMatchesKindConstraint honours, and
+			// it is how an UNNAMED camera is addressed at all (there is no
+			// name to pass); the five keywords are the specific forms.  A
+			// non-camera kind constraint means the patch is not aimed at a
+			// camera however the name resolves, so route (2) narrows with the
+			// caller's own kind rather than ignoring it.
+			if( kind == "camera" || IsCameraKeyword_( kind ) ) return true;
+
+			// (2) THE DOCUMENT, for a bare name -- through the SAME resolver
+			// the real patch uses, so this gate cannot narrow differently from
+			// the edit it gates.  `uniqueFallback` is false: the unnamed-
+			// singleton fallback needs a kind, and route (1) already answered
+			// every case that supplies one.
+			if( target.empty() ) return false;
+			IJobPriv* job = mJob;
+			if( !job ) return false;
+			const RISE::Cst::Document* doc = job->GetCstDocument();
+			if( !doc ) return false;
+			int occ = 0;
+			const RISE::Cst::NodeId id =
+				RISE::Cst::DocFindByNameAnyRole( *doc, target, &occ, kind, /*uniqueFallback*/ false );
+			if( id == 0 ) return false;
+			const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( *doc, id );
+			return it && IsCameraKeyword_( it->role );
+		}
+
+		std::string AgentSession::CheckFrameSceneBeforeCameraEdit_( const char* verb,
+		                                                            std::string* outGiveUpNotice )
+		{
+			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
+			if( !ConstructionCompulsionActive_() )             return std::string();
+			if( !BuildProtocolActive_() || mBuildPhaseGaveUp ) return std::string();
+			// THE SEAM.  Arc 78 sec 2.3 DELIBERATELY exempts the whole Camera
+			// category from element-window rules -- a model that cannot re-aim
+			// at the part it is building cannot see it -- so this arm exists
+			// only in COMPOSE and never reaches back into PIECES.
+			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
+			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST -- the same
+			// capability-conditional rule every other arm follows.
+			if( !BuildCapable() )                              return std::string();
+			// FrameScene's OWN edit is the clean room; refusing it would have
+			// the mechanism refuse the verb it names.
+			if( mInFrameSceneEdit )                            return std::string();
+			// ONE turn in the clean room lifts this permanently, whatever came
+			// of it (see mFrameSceneRan).
+			if( mFrameSceneRan )                               return std::string();
+			// AND IT FIRES AT MOST ONCE, which is the RENDER arm's rule rather
+			// than the light arm's.  See the header for the full argument; the
+			// short version is 82 sec 6's measured finding applied in advance.
+			// Every run this workstream has measured patches the camera
+			// repeatedly, so a repeat-refusable arm here would burn the whole
+			// shared 3-refusal budget on its own and trip the give-up, taking
+			// arc 80's delete ban and arc 81's light gate down with it.
+			if( mCameraEditGateFired )                         return std::string();
+
+			const std::string body =
+				"frame_scene has not run in this session, and the framing of a composed scene is "
+				"designed by frame_scene -- one call, in which " +
+				( mTextCompleter.providerName.empty() ? std::string( "this session's provider" )
+				                                      : ( "`" + mTextCompleter.providerName + "`" ) ) +
+				" is given every object in this scene with its screen footprint, its position in the "
+				"frame and, for the ones covering no pixels, why -- plus the current camera and the "
+				"world bounds -- in a fresh context, and returns the camera; the result is applied "
+				"here and the object coverage is measured before and after. This is the ONLY camera "
+				"edit this rule will ever refuse in this session: the next one proceeds whether or "
+				"not frame_scene has run, and camera edits in the pieces phase are never refused at "
+				"all.";
+			const std::string clause = RefuseForPhase_( verb, body, outGiveUpNotice );
+			// LATCHED ON THE REFUSAL, not on reaching this line -- the render
+			// arm's rule and its reason exactly: when RefuseForPhase_ returns
+			// "" it did NOT refuse (the protocol gave up on this very call, or
+			// was already spent), and burning the one-shot on a call that let
+			// the edit through would silently retire the mechanism without it
+			// ever having fired.
+			if( !clause.empty() ) mCameraEditGateFired = true;
+			return clause;
 		}
 
 		std::string AgentSession::CheckBuildPlanGate_( const char* verb, std::string* outGiveUpNotice )
@@ -12806,7 +13067,7 @@ namespace RISE
 			return RefuseForPhase_( verb, body, outGiveUpNotice );
 		}
 
-		std::string AgentSession::CheckPopulateBeforeComposeRender_( const char* verb,
+		std::string AgentSession::CheckBuildChecklistBeforeComposeRender_( const char* verb,
 		                                                             std::string* outGiveUpNotice )
 		{
 			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
@@ -12817,38 +13078,68 @@ namespace RISE
 			// is building, and this arm must not take that back.  It exists
 			// only in COMPOSE, which is where a model turns from building to
 			// judging the picture -- and judging a picture is exactly what
-			// population belongs BEFORE.
+			// population and the surround both belong BEFORE.
 			if( mBuildPhase != AgentBuildPhase::Compose )      return std::string();
 			// NEVER REFUSE ON BEHALF OF A PATH THAT DOES NOT EXIST -- the same
 			// capability-conditional rule the geometry and light arms follow.
-			// PopulateScene answers with a capability statement on a host with
-			// no text completer, so forcing a render through it there would
-			// strand the session outright.
+			// BOTH checklist verbs answer with a capability statement on a
+			// host with no text completer, so forcing a render through either
+			// there would strand the session outright.
 			if( !BuildCapable() )                              return std::string();
-			// ONE turn in the clean room lifts this permanently, whatever came
-			// of it (see mPopulateSceneRan): a pass whose chunks were all
-			// rejected still had its turn, and a failed pass must not leave a
-			// session unable to look at its own scene.
-			if( mPopulateSceneRan )                            return std::string();
-			// AND IT FIRES AT MOST ONCE, which is stricter than the other four
-			// arms on purpose.  A refused EDIT leaves a model able to look at
-			// its scene; a refused RENDER leaves it blind, and a model that
-			// declines the redirection must still be able to see.  One refusal
-			// names the verb; every render after that proceeds.  The direct
-			// consequence for the shared 3-refusal budget is that this arm can
-			// consume AT MOST ONE slot of it.
+			// ONE turn in the clean room lifts each item permanently, whatever
+			// came of it (see mPopulateSceneRan / mEnvironmentSceneRan): a
+			// pass whose chunks were all rejected still had its turn, and a
+			// failed pass must not leave a session unable to look at its own
+			// scene.
+			//
+			// ARC 83 SLICE 5: the condition is now a CHECKLIST, and it is
+			// satisfied when EVERY item has had its turn -- but each item
+			// lifts independently, so the refusal below names only what is
+			// actually outstanding.  A model told to run a verb it already ran
+			// would reasonably conclude the harness is broken.
+			const bool needPopulate    = !mPopulateSceneRan;
+			const bool needEnvironment = !mEnvironmentSceneRan;
+			if( !needPopulate && !needEnvironment )            return std::string();
+			// AND IT FIRES AT MOST ONCE FOR THE WHOLE CHECKLIST -- not once
+			// per item -- which is stricter than the other arms on purpose and
+			// does NOT loosen as items are added.  A refused EDIT leaves a
+			// model able to look at its scene; a refused RENDER leaves it
+			// blind, and a model that declines the redirection must still be
+			// able to see.  82 sec 6 measured the other failure directly: a
+			// repeat-refusable render arm burns the whole shared 3-refusal
+			// budget by itself and trips the give-up, silently disarming every
+			// sibling gate.  One refusal names whatever is outstanding; every
+			// render after that proceeds.  The direct consequence for the
+			// shared 3-refusal budget is that this arm can consume AT MOST ONE
+			// slot of it, however long the checklist grows.
 			if( mPopulateRenderGateFired )                     return std::string();
 
-			const std::string body =
-				"populate_scene has not run in this session, and a composed scene is populated before "
-				"it is judged -- one call, in which " +
+			const std::string who =
 				( mTextCompleter.providerName.empty() ? std::string( "this session's provider" )
-				                                      : ( "`" + mTextCompleter.providerName + "`" ) ) +
-				" is given this scene's object inventory, its camera, and the geometries and "
-				"materials it already has, in a fresh context, and places more standard_objects using "
-				"them; the result is checked and inserted here. This is the ONLY render this rule "
-				"will ever refuse in this session: the next one proceeds whether or not "
-				"populate_scene has run, and renders in the pieces phase are never refused at all.";
+				                                      : ( "`" + mTextCompleter.providerName + "`" ) );
+			// THE OUTSTANDING ITEMS, each stated as what it does and why it
+			// comes before judgement.  Facts only -- no advice about what to
+			// put in the scene, which is exactly what these two verbs measure.
+			std::string body = "a composed scene is populated and given its surround before it is "
+				"judged, and ";
+			if( needPopulate && needEnvironment ) body += "neither of those has run in this session. ";
+			else                                  body += "one of those has not run in this session. ";
+			body += "Still outstanding: ";
+			if( needPopulate ) {
+				body += "populate_scene -- one call, in which " + who + " is given this scene's object "
+					"inventory, its camera, and the geometries and materials it already has, in a fresh "
+					"context, and places more standard_objects using them";
+			}
+			if( needPopulate && needEnvironment ) body += "; ";
+			if( needEnvironment ) {
+				body += "environment_scene -- one call, in which " + who + " is given the same scene "
+					"facts plus whatever environment state already exists, in a fresh context, and "
+					"authors what fills the frame where no object is and the medium light travels "
+					"through";
+			}
+			body += ". Each result is checked and applied here. This is the ONLY render this rule will "
+				"ever refuse in this session: the next one proceeds whether or not either has run, and "
+				"renders in the pieces phase are never refused at all.";
 			const std::string clause = RefuseForPhase_( verb, body, outGiveUpNotice );
 			// LATCHED ON THE REFUSAL, not on reaching this line: when
 			// RefuseForPhase_ returns "" it did NOT refuse (the protocol gave
@@ -13873,7 +14164,7 @@ namespace RISE
 			if( params.fromAgentSurface && params.isolate.empty() ) {
 				std::string giveUpNotice;
 				const std::string clause =
-					CheckPopulateBeforeComposeRender_( "render", &giveUpNotice );
+					CheckBuildChecklistBeforeComposeRender_( "render", &giveUpNotice );
 				if( !clause.empty() ) {
 					AgentRenderResult refused;
 					refused.ok      = false;
@@ -19252,7 +19543,17 @@ namespace RISE
 			//! both read this string, so the two surfaces cannot describe the
 			//! same scene differently.  See kInventoryMaxOnScreenLines for the
 			//! bounding rules.
-			std::string FormatSceneInventory_( const AgentSession::AgentSceneInventoryResult& inv )
+			//! ARC 83 SLICE 6: the two line caps are now PARAMETERS, defaulted
+			//! to the constants every existing caller was already getting, so
+			//! there is still exactly ONE inventory formatter.  `frame_scene`
+			//! passes a far larger cap because for THAT consumer the per-object
+			//! list is not context beside a picture -- it IS the input, and an
+			//! object cut from the listing is an object the reframe cannot know
+			//! it is missing.  A second formatter would have been the drift
+			//! surface this file spends most of its comments avoiding.
+			std::string FormatSceneInventory_( const AgentSession::AgentSceneInventoryResult& inv,
+			                                    std::size_t maxOnScreenLines = kInventoryMaxOnScreenLines,
+			                                    std::size_t maxZeroLines     = kInventoryMaxZeroLines )
 			{
 				std::string t = "SCENE INVENTORY -- " + std::to_string( inv.objectCount ) +
 					( inv.objectCount == 1 ? " object; " : " objects; " );
@@ -19312,7 +19613,7 @@ namespace RISE
 					const AgentSession::AgentSceneInventoryEntry& e = inv.entries[i];
 					if( e.onScreen ) {
 						++onScreenTotal;
-						if( onScreenShown >= kInventoryMaxOnScreenLines ) continue;
+						if( onScreenShown >= maxOnScreenLines ) continue;
 						++onScreenShown;
 						onScreenTail += "\n  " + e.name + " -- " + std::to_string( e.pixelCount ) +
 							" px, " + InventoryPercent_( e.frameFraction );
@@ -19327,7 +19628,7 @@ namespace RISE
 					}
 					else {
 						++zeroTotal;
-						if( zeroShown >= kInventoryMaxZeroLines ) continue;
+						if( zeroShown >= maxZeroLines ) continue;
 						++zeroShown;
 						std::string where;
 						if     ( e.placement == "behind" )    where = "its bounding box is entirely behind the camera";
@@ -20438,7 +20739,7 @@ namespace RISE
 			}
 		}
 
-		void AgentSession::AppendLightingSceneFacts_( std::string& p,
+		void AgentSession::AppendSceneFacts_( std::string& p,
 		                                               const std::string& inventoryText,
 		                                               const char* inventoryWhen ) const
 		{
@@ -20551,7 +20852,7 @@ namespace RISE
 			     "text in this answer -- you are listing the LIGHT SOURCES this scenario physically "
 			     "has, as things in the world, not as lighting equipment.\n\n";
 
-			AppendLightingSceneFacts_( p, inventoryText, "at the start of this lighting pass" );
+			AppendSceneFacts_( p, inventoryText, "at the start of this lighting pass" );
 
 			if( !notes.empty() ) {
 				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such --
@@ -20624,7 +20925,7 @@ namespace RISE
 			     "as one light chunk or one emissive object, whichever the palette form actually "
 			     "needs.\n\n";
 
-			AppendLightingSceneFacts_( p, inventoryText, "at the start of this lighting pass" );
+			AppendSceneFacts_( p, inventoryText, "at the start of this lighting pass" );
 
 			p += "NAMING: every chunk you write needs a `name` that is not already used in this "
 			     "scene (hosek_wilkie_skylight is the one kind that takes no name). There is no "
@@ -22213,6 +22514,1816 @@ namespace RISE
 			return out;
 		}
 
+		//======================================================================
+		// ARC 83 SLICE 5 (2026-08-13) -- `environment_scene`, A CLEAN-ROOM
+		// ENVIRONMENT PASS.
+		// Design: docs/agentic-redesign/83-staged-construction-plan.md sec 3.2
+		// and the sec 15 AS BUILT block.
+		//
+		// Modelled on arc 81's `light_scene` and arc 82's `populate_scene`: the
+		// same host-mediated transport (mTextCompleter), the same validated
+		// insertion through InsertChunks, the same ONE repair retry, the same
+		// honest partial-success report and the same never-a-silent-drop rule.
+		// SINGLE-UNIT, so there is no enumeration completion and no loop --
+		// there is one environment.
+		//======================================================================
+
+		namespace
+		{
+			//! ONE entry of the environment palette.  Same shape and the same
+			//! reasons as kLightPalette's entry: `headline` states the FACTS a
+			//! fresh context cannot recover from a parameter list, `keyword*`
+			//! are registry keywords whose schema is fetched through the SAME
+			//! ReadSchema the `read_schema` tool answers with (so there is no
+			//! second hand-written grammar in this file that could drift from
+			//! the parser), and `example` is a complete, literally parseable
+			//! block -- or NULL where this entry deliberately ships without
+			//! one.
+			//!
+			//! WHY ONE ENTRY SHIPS NO EXAMPLE.  The image dome
+			//! (`hdr_painter` / `exr_painter`) needs a FILE, and a worked
+			//! example naming a file the scene does not have would be an
+			//! example that fails to insert -- spending the model's one repair
+			//! retry on this harness's own placeholder.  That is arc 82's A82g
+			//! finding stated in the negative, and it is the same rule that
+			//! leaves the three zero-area light kinds without an example: what
+			//! is copyable must be copyable HERE.  Their registry schema is
+			//! still printed.
+			struct EnvironmentPaletteEntry_
+			{
+				const char* headline;
+				const char* keyword;    //!< registry keyword whose schema is fetched, or null
+				const char* keyword2;   //!< a second, or null
+				const char* keyword3;   //!< a third, or null
+				const char* keyword4;   //!< a fourth, or null
+				const char* exampleNote;//!< the line introducing `example`, or null
+				const char* example;    //!< complete parseable chunk text, or null
+				//! TRUE when this entry authors the DOME, so the whole entry is
+				//! suppressed on a scene whose sky is already a
+				//! hosek_wilkie_skylight -- offering a model a form this call
+				//! will then refuse is the false-clause class arc 79 sec 8.1
+				//! records the cost of.
+				bool        isDome;
+			};
+
+			const EnvironmentPaletteEntry_ kEnvironmentPalette[] = {
+				// FIRST, and the entry that closes the measured gap: agent
+				// scenes sit on a flat colour field or a black void, and the
+				// hand-authored benchmark has a graded dome.
+				{ "THE DOME -- what the camera sees where no object is, and what lights the scene from "
+				  "every direction. There is no `environment` chunk in this language: the dome is a "
+				  "PAINTER, evaluated at a u,v derived from the RAY DIRECTION (an angular map whose "
+				  "centre is -Z), and THIS CALL makes the binding for you -- the LAST painter you write "
+				  "is bound as the scene's environment radiance map, with the camera background turned "
+				  "on, so any painter you write before it is an input that one is built from. A GRADED "
+				  "dome is three parts: two colours, a ramp over u,v written as an "
+				  "`expression_function2d` (its `expr` is arithmetic over `u` and `v`, with the usual "
+				  "functions -- sin, cos, pow, hypot, atan2, smoothstep, clamp -- and `def` lines for "
+				  "named sub-expressions), and a `blend_painter` mixing the two colours by that ramp "
+				  "per channel. A ramp in `v` runs from one pole of the sky to the other, which is what "
+				  "makes a sky lighter at the horizon than overhead, or water darker with depth. A "
+				  "NOISE painter (perlin2d_painter, perlinworley3d_painter, turbulence3d_painter, "
+				  "curlnoise3d_painter) takes the same two-colour shape and gives cloud, foam or "
+				  "nebula structure instead of a smooth ramp. An IMAGE dome is one chunk, `hdr_painter` "
+				  "or `exr_painter`, naming a Radiance HDR or OpenEXR file -- there is no worked "
+				  "example for those two because an example naming a file this scene does not have "
+				  "would fail to insert.",
+				  "expression_function2d", "blend_painter", "hdr_painter", "exr_painter",
+				  "A graded dome -- deep overhead, pale at the horizon:",
+				  "uniformcolor_painter\n"
+				  "{\n"
+				  "\tname\t\tenv_pole\n"
+				  "\tcolor\t\t0.04 0.10 0.26\n"
+				  "}\n"
+				  "uniformcolor_painter\n"
+				  "{\n"
+				  "\tname\t\tenv_horizon\n"
+				  "\tcolor\t\t0.52 0.62 0.74\n"
+				  "}\n"
+				  "expression_function2d\n"
+				  "{\n"
+				  "\tname\t\tenv_ramp\n"
+				  "\texpr\t\tsmoothstep( 0.0, 1.0, v )\n"
+				  "}\n"
+				  "blend_painter\n"
+				  "{\n"
+				  "\tname\t\tenv_dome\n"
+				  "\tcolora\t\tenv_pole\n"
+				  "\tcolorb\t\tenv_horizon\n"
+				  "\tmask\t\tenv_ramp\n"
+				  "}",
+				  /*isDome=*/true },
+				// SECOND: the medium.  This is the half that produces shafts,
+				// haze and depth falloff, and no agent run has ever authored it.
+				{ "THE MEDIUM -- what light travels THROUGH between the camera and the scene. A medium "
+				  "chunk defines the coefficients and a `global_medium` chunk naming it makes it fill "
+				  "all of space, which is how this renderer spells fog, haze, underwater depth falloff "
+				  "and shafts of light: a beam is visible because the medium scatters some of it back "
+				  "toward the camera. `absorption` removes light per unit distance and TINTS by "
+				  "removing channels unequally -- water absorbs red first, which is why depth reads as "
+				  "blue; `scattering` redirects it, which is what makes the air itself visible. Both "
+				  "are per-unit-distance, so the numbers that read as a light haze over a 10-unit scene "
+				  "are ten times smaller than the ones that read the same over a 1-unit scene. `phase` "
+				  "is either `isotropic` or `hg <g>` on ONE line, where g in (-1,1) is how forward "
+				  "(positive) or backward (negative) the scattering leans -- 0.4 gives the forward bias "
+				  "that makes a shaft brighten as you look toward its source. For structured density "
+				  "-- clouds, a fog bank, god-rays with shape -- `painter_heterogeneous_medium` takes a "
+				  "`density_painter` and a bounding box instead of a uniform coefficient.",
+				  "homogeneous_medium", "global_medium", "painter_heterogeneous_medium", nullptr,
+				  "A thin haze filling the whole scene, forward-scattering:",
+				  "homogeneous_medium\n"
+				  "{\n"
+				  "\tname\t\tenv_haze\n"
+				  "\tabsorption\t0.008 0.010 0.014\n"
+				  "\tscattering\t0.055 0.055 0.050\n"
+				  "\tphase\t\thg 0.4\n"
+				  "}\n"
+				  "global_medium\n"
+				  "{\n"
+				  "\tmedium\t\tenv_haze\n"
+				  "}",
+				  /*isDome=*/false }
+			};
+			const std::size_t kEnvironmentPaletteCount =
+				sizeof( kEnvironmentPalette ) / sizeof( kEnvironmentPalette[0] );
+		}
+
+		bool AgentSession::DocumentCarriesHosekSkylight_() const
+		{
+			// THE DOCUMENT, not the live scene, and the difference is the whole
+			// point: what collides with a rasterizer `radiance_map` binding is
+			// the hosek chunk's OWN SetGlobalRadianceMap call on the NEXT
+			// derive, not whichever map happens to be installed right now.  A
+			// scene whose hosek chunk is currently being out-written by a
+			// later rasterizer would still clobber a fresh binding the moment
+			// anything re-derives.
+			IJobPriv* job = mJob;
+			if( !job ) return false;
+			const RISE::Cst::Document* doc = job->GetCstDocument();
+			if( !doc ) return false;
+			const int n = RISE::Cst::DocItemCount( *doc );
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				if( IsSkylightKeyword_( it->role ) ) return true;
+			}
+			return false;
+		}
+
+		AgentSession::AgentFrameToneReading AgentSession::MeasureFrameTone_()
+		{
+			AgentFrameToneReading t;
+			if( !mJob ) {
+				t.reason = "no head is loaded";
+				return t;
+			}
+
+			// The scene's own aspect at a small fixed long edge -- the frame
+			// TONE is a whole-frame distribution, which converges far faster
+			// than a picture does, so this is a real measurement at a tiny
+			// cost.  MeasureLightContributions_'s sizing, verbatim in shape.
+			unsigned int pw = kEnvironmentSceneToneLongEdge, ph = kEnvironmentSceneToneLongEdge;
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob->GetScene() ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				if( !( fw > 0 && fh > 0 ) ) { fw = 4; fh = 3; }
+				double s = static_cast<double>( kEnvironmentSceneToneLongEdge ) /
+					static_cast<double>( fw >= fh ? fw : fh );
+				if( s > 1.0 ) s = 1.0;   // never upscale past the scene's own dims
+				pw = static_cast<unsigned int>( std::lround( s * fw ) );
+				ph = static_cast<unsigned int>( std::lround( s * fh ) );
+				if( pw < 8 ) pw = 8;
+				if( ph < 8 ) ph = 8;
+			}
+
+			AgentRenderParams p;
+			p.quality          = AgentRenderQuality::Production;   // draft ignores the environment entirely
+			p.samples          = 4;
+			p.width            = pw;
+			p.height           = ph;
+			p.perception       = false;
+			p.imageMaxEdge     = 0;
+			// THIS PASS IS OURS, NOT THE CALLER'S.  The same two protections
+			// ComputeSceneInventory_ and MeasureLightContributions_ take:
+			// `internalEphemeral` keeps it out of the GUI's Last Render pane
+			// and the guard keeps it out of the session image cache, so a
+			// following `read_image` still serves whatever the model last
+			// actually looked at.
+			p.internalEphemeral = true;
+
+			EphemeralRenderCacheGuard cacheGuard( mAsyncCacheMutex, *mImageCache,
+			                                      mLastAsyncRenderResult, mLastAsyncRenderResultJobId );
+			const AgentRenderResult r = RenderCore_( p, /*assumeParked=*/false,
+			                                          /*forcedJobId=*/0, /*resolvedTarget=*/nullptr );
+			if( !r.ok ) {
+				t.reason = r.message.empty()
+					? std::string( "the measuring render did not succeed and gave no reason" )
+					: r.message;
+				return t;
+			}
+			std::vector<unsigned char> rgb;
+			unsigned int dw = 0, dh = 0;
+			if( !DecodePngRgbAll_( r.png, rgb, dw, dh ) ) {
+				t.reason = "the measuring render's image bytes could not be decoded";
+				return t;
+			}
+			const FrameToneStats_ s = ComputeFrameTone_( rgb, dw, dh );
+			if( !s.ok ) {
+				t.reason = "the measuring render decoded to no pixels";
+				return t;
+			}
+			t.measured   = true;
+			t.lumaMean   = s.mean;
+			t.lumaStdDev = s.stdDev;
+			t.lumaP1     = static_cast<double>( s.p1 );
+			t.lumaP99    = static_cast<double>( s.p99 );
+			return t;
+		}
+
+		namespace
+		{
+			//! ONE tonal reading as a sentence.  FACTS ONLY -- a mean, a
+			//! spread and the two percentiles, on the stated scale, with no
+			//! verdict and no target.  Unmeasured says so and states why,
+			//! never a zero that would read as a black frame.
+			std::string FormatToneReading_( const AgentSession::AgentFrameToneReading& t )
+			{
+				if( !t.measured )
+					return "not measured (" +
+						( t.reason.empty() ? std::string( "no reason given" ) : t.reason ) + ")";
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"mean Rec.709 luma %.1f on the 0-255 scale, standard deviation %.1f, "
+					"1st percentile %.0f, 99th percentile %.0f",
+					t.lumaMean, t.lumaStdDev, t.lumaP1, t.lumaP99 );
+				return buf;
+			}
+		}
+
+		std::string AgentSession::ComposeEnvironmentPrompt_( const std::string& inventoryText,
+		                                                      const std::string& notes,
+		                                                      const std::string& rejectionText,
+		                                                      bool hosekPresent ) const
+		{
+			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE, exactly as
+			// ComposeLightingPrompt_ and ComposePopulationPrompt_ compose
+			// theirs.  The model supplies `notes` and nothing else; every other
+			// span is this function's own text, the descriptor registry's, or a
+			// measurement of the live scene.
+			//
+			// WHAT IS DELIBERATELY ABSENT: any instruction to make the
+			// environment dramatic, colourful, moody or atmospheric, and any
+			// number of chunks.  What this slice MEASURES is whether an
+			// environment appears at all and what it does to the frame's tonal
+			// spread, so advice about either would manufacture the result --
+			// and advice measures ~0 in this workstream anyway (83 sec 9).
+			std::string p;
+			p += "You are authoring the ENVIRONMENT of a finished 3D scene in the RISE scene language: "
+			     "what fills the frame where no object is, and the medium light travels through. The "
+			     "geometry, materials, lights and camera already exist and are not yours to change.\n\n";
+
+			AppendSceneFacts_( p, inventoryText, "just now" );
+
+			// ---- WHAT ENVIRONMENT ALREADY EXISTS.  The one fact this pass
+			// cannot see and cannot recover, and the fact its own admissibility
+			// turns on.  Stated as three plain answers rather than as advice.
+			{
+				const IScenePriv* scene = mJob ? mJob->GetScene() : nullptr;
+				const bool haveMap    = scene && scene->GetGlobalRadianceMap() != nullptr;
+				const bool haveMedium = scene && scene->GetGlobalMedium() != nullptr;
+				p += "THE ENVIRONMENT THIS SCENE ALREADY HAS:\n";
+				if( hosekPresent ) {
+					p += "  The sky is a hosek_wilkie_skylight -- an analytic sun-and-sky chunk that "
+					     "installs the scene's dome itself. This call therefore authors NO dome: a "
+					     "second one would replace that sky rather than add to it. The medium is still "
+					     "yours to write.\n";
+				}
+				else if( haveMap ) {
+					p += "  A dome is bound. Writing a new one REPLACES it; writing none leaves it "
+					     "alone.\n";
+				}
+				else {
+					p += "  No dome. A ray that hits nothing returns black, so the frame's empty "
+					     "region is black right now.\n";
+				}
+				p += haveMedium
+					? "  A global medium is set. Writing a new one replaces it.\n"
+					: "  No global medium: light travels between the camera and the scene through "
+					  "vacuum, so nothing attenuates with distance and no beam is visible in the air.\n";
+				p += "\n";
+			}
+
+			p += "NAMING: every chunk you write needs a `name` that is not already used in this scene "
+			     "(global_medium is the one kind here that takes no name -- it names the medium it "
+			     "makes global). A name that collides is rejected and NOT renamed, because renaming "
+			     "would break the references between your own chunks.\n\n";
+
+			// ---- THE PALETTE.  Each entry's parameter list is the parser's
+			// own, fetched through ReadSchema, so it is exactly what that chunk
+			// accepts.
+			p += "WHAT THIS PASS CAN AUTHOR. Each entry's parameter list below is the parser's own, so "
+			     "it is exactly what that chunk accepts.\n";
+			int shown = 0;
+			for( std::size_t i = 0; i < kEnvironmentPaletteCount; ++i ) {
+				const EnvironmentPaletteEntry_& e = kEnvironmentPalette[i];
+				if( e.isDome && hosekPresent ) continue;   // see the block above
+				++shown;
+				p += "\n";
+				p += std::to_string( shown );
+				p += ". ";
+				p += e.headline;
+				p += "\n";
+				const char* const kw[4] = { e.keyword, e.keyword2, e.keyword3, e.keyword4 };
+				for( int k = 0; k < 4; ++k ) {
+					if( !kw[k] ) continue;
+					p += ReadSchema( kw[k] );
+					p += "\n";
+				}
+				// Blank lines around the block keep it independently LIFTABLE
+				// -- the A81h-style test extracts each example from the shipped
+				// prompt and pushes it through the real insertion path, which it
+				// could not do if two were glued together by a sentence.
+				if( e.exampleNote ) {
+					p += "\n";
+					p += e.exampleNote;
+					p += "\n";
+				}
+				if( e.example ) {
+					p += "\n";
+					p += e.example;
+					p += "\n";
+				}
+			}
+			// The two colour painters the graded-dome example is built from.
+			p += "\nThe painter kind the examples above build their colours from:\n\n";
+			p += ReadSchema( "uniformcolor_painter" );
+			p += "\n";
+
+			if( !notes.empty() ) {
+				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such --
+				// ComposeBuilderPrompt_'s rule and its reasons, unchanged.  It
+				// is length-capped before it gets here and JSON-escaped by the
+				// request builder, so it cannot reach the endpoint, the headers
+				// or the key.
+				p += "\nNOTES FROM THE CALLER:\n";
+				p += notes;
+				p += "\n";
+			}
+
+			p += "\nWHAT THIS REQUEST WILL ACCEPT: painter chunks, function chunks and medium chunks, "
+			     "and nothing else. It will NOT accept a geometry or a standard_object -- a backdrop "
+			     "plane, a sky dome built as a sphere or a water surface built as a mesh is FORM, and "
+			     "form is built elsewhere; it will not accept a camera, a film, a rasterizer or a "
+			     "shader op; and it will not accept hosek_wilkie_skylight, which is a light chunk and "
+			     "belongs to the lighting pass.\n";
+
+			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- a sequence of complete chunks, each in "
+			     "the form\n"
+			     "keyword\n"
+			     "{\n"
+			     "\tparameter value\n"
+			     "}\n"
+			     "with the braces on their own lines. A chunk that another chunk references must "
+			     "come first. No prose, no explanation, no markdown fences, no scene header.\n";
+
+			if( !rejectionText.empty() ) {
+				// THE ONE REPAIR RETRY.  The rejection text is this harness's
+				// own, verbatim, so the pass is corrected by facts about what
+				// happened rather than by a paraphrase of them.
+				p += "\nA PREVIOUS ANSWER TO THIS SAME REQUEST WAS PARTLY REJECTED:\n";
+				p += rejectionText;
+				p += "\nReturn the CORRECTED SET WHOLE -- every chunk this scene's environment needs, "
+				     "including the ones that were accepted, in one answer.\n";
+			}
+			return p;
+		}
+
+		AgentSession::AgentEnvironmentSceneResult AgentSession::EnvironmentScene( const std::string& notes )
+		{
+			AgentEnvironmentSceneResult out;
+			out.providerName = mTextCompleter.providerName;
+			out.modelId      = mTextCompleter.modelId;
+			// NO GIVE-UP FOLD, for LightScene's reason exactly: this verb
+			// consults no phase gate of its own (it is callable in every phase
+			// and with the protocol off), and the one gate its chunks could
+			// still meet fires inside InsertChunks, whose per-chunk results are
+			// carried out verbatim through `chunkResults` and `rejected`.
+
+			//------------------------------------------------------------------
+			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
+			// state, mutates no document, costs no budget and is never counted.
+			//------------------------------------------------------------------
+			if( !mJob ) {
+				out.message = "environment_scene did nothing: no head is loaded, so there is no scene "
+				              "to give an environment to.";
+				return out;
+			}
+			if( !BuildCapable() ) {
+				out.capabilityRefusal = true;
+				const std::string who = mTextCompleter.providerName.empty()
+					? std::string( "this session's provider" )
+					: ( "`" + mTextCompleter.providerName + "`" );
+				out.message = "environment_scene is not available: " + who + " does not run a separate "
+					"completion through this build, so there is no fresh context to design the "
+					"environment in. Nothing was changed and nothing else about this session changes -- "
+					"authoring painter and medium chunks directly with insert_chunk or insert_chunks is "
+					"not blocked by this.";
+				return out;
+			}
+			if( mEnvironmentSceneCalls >= kEnvironmentSceneMaxPerSession ) {
+				char capBuf[288];
+				std::snprintf( capBuf, sizeof( capBuf ),
+					"environment_scene has already run %d environment passes this session -- the "
+					"per-session cap. There is one environment per scene, so this bound exists to stop "
+					"a runaway loop, not to ration the work. Nothing was changed; the document is "
+					"unchanged.",
+					kEnvironmentSceneMaxPerSession );
+				out.message = capBuf;
+				return out;
+			}
+			++mEnvironmentSceneCalls;
+			// THE CHECKLIST ITEM LIFTS HERE, before the completion rather than
+			// after it.  A provider failure must not leave the session unable
+			// to render for the rest of its life -- the clean room has had its
+			// turn either way (see mEnvironmentSceneRan).
+			mEnvironmentSceneRan = true;
+
+			// The caller's notes, length-capped BEFORE composition and with the
+			// truncation stated rather than silent.
+			std::string useNotes = notes;
+			bool notesTruncated = false;
+			if( useNotes.size() > kEnvironmentSceneMaxNotes ) {
+				useNotes.resize( kEnvironmentSceneMaxNotes );
+				notesTruncated = true;
+			}
+
+			//------------------------------------------------------------------
+			// THE BEFORE MEASUREMENTS.  Two facts about the live scene and one
+			// small render, all taken BEFORE anything is inserted.
+			//------------------------------------------------------------------
+			{
+				const IScenePriv* scene = mJob->GetScene();
+				out.radianceMapBefore  = scene && scene->GetGlobalRadianceMap() != nullptr;
+				out.globalMediumBefore = scene && scene->GetGlobalMedium() != nullptr;
+			}
+			out.toneBefore = MeasureFrameTone_();
+
+			const bool hosekPresent = DocumentCarriesHosekSkylight_();
+
+			// The arc-80 inventory, measured NOW.  One small identity pass,
+			// affordable because this verb runs once per scene rather than once
+			// per render.
+			std::string inventoryText;
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob->GetScene() ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				const AgentSceneInventoryResult inv =
+					ComputeSceneInventory_( AgentRenderParams(), fw, fh, /*assumeParked=*/false );
+				if( inv.ok ) inventoryText = inv.text;
+			}
+
+			//------------------------------------------------------------------
+			// ONE ATTEMPT = one completion, extract, classify, insert.  The
+			// shape is LightScene's runAttempt with its admissibility rule
+			// replaced by this verb's own.
+			//------------------------------------------------------------------
+			std::vector<std::string> landedNames;
+			std::vector<std::string> landedKinds;
+			std::vector<std::string> rejectionLines;
+			std::string providerFailure;
+			std::vector<std::string> unquotedNames;
+			std::string lastCompletionText;
+
+			const auto runAttempt = [&]( const std::string& prompt ) -> bool
+			{
+				const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+				if( !comp.ok || comp.text.empty() ) {
+					providerFailure = comp.error.empty()
+						? std::string( "the provider returned no text and no reason" )
+						: comp.error;
+					return false;
+				}
+				lastCompletionText = comp.text;
+
+				std::vector<std::string> chunks, problems;
+				ExtractChunkTexts( comp.text, chunks, problems );
+				out.chunksExtracted += static_cast<unsigned int>( chunks.size() );
+				for( std::size_t i = 0; i < problems.size(); ++i ) {
+					AgentEnvironmentSceneRejection r;
+					r.reason = problems[i];
+					out.rejected.push_back( r );
+					rejectionLines.push_back( problems[i] );
+				}
+				if( chunks.empty() ) {
+					if( problems.empty() ) {
+						const std::string why =
+							"the answer contained no complete chunk (no `keyword { ... }` block)";
+						AgentEnvironmentSceneRejection r;
+						r.reason = why;
+						out.rejected.push_back( r );
+						rejectionLines.push_back( why );
+					}
+					return false;
+				}
+
+				std::vector<std::string> submit;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
+					std::string kind, name;
+					RISE::Cst::NodeId nodeId = 0;
+					{
+						const int n = RISE::Cst::DocItemCount( doc );
+						for( int c = 0; c < n; ++c ) {
+							const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( doc, c );
+							const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, nid );
+							if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+							kind   = it->role;
+							name   = ChunkParamString_( it, "name" );
+							nodeId = nid;
+							break;
+						}
+					}
+					const ChunkDescriptor* d = DescriptorForKeyword( String( kind.c_str() ) );
+					if( !d ) {
+						AgentEnvironmentSceneRejection r;
+						r.kind   = kind;
+						r.reason = "`" + ( kind.empty() ? std::string( "(unnamed keyword)" ) : kind ) +
+							"` is not a chunk kind this scene language has, so it was not inserted";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
+					// THE ADMISSIBILITY RULE, stated once.  This request may
+					// land PAINTERS (the dome and whatever it is built from),
+					// FUNCTIONS (an expression_function2d ramp is a Function
+					// chunk that dual-registers as a painter reference) and
+					// MEDIA (the coefficients plus the global_medium that makes
+					// them fill space).  Everything else is refused BY NAME,
+					// because a refusal that leaves a model with nothing to do
+					// instead is a refusal it will spend turns arguing with.
+					//
+					// THE BOUNDARY CASE, decided and enforced: a backdrop plane,
+					// a sky sphere or a water-surface mesh is FORM.  It is
+					// build_element's, not this pass's -- and the reason is not
+					// tidiness: form is what the compose-phase delete ban
+					// protects and what place_element moves, and a second verb
+					// that could create it would be a second builder with none
+					// of the first one's checks (arc 82's HARD CONTRACT rule,
+					// applied here).
+					const bool isPainter  = ( d->category == ChunkCategory::Painter );
+					const bool isFunction = ( d->category == ChunkCategory::Function );
+					const bool isMedium   = ( d->category == ChunkCategory::Medium );
+					if( IsSkylightKeyword_( kind ) ) {
+						AgentEnvironmentSceneRejection r;
+						r.name   = name;
+						r.kind   = kind;
+						r.reason = "a `" + kind + "` chunk was not inserted: it is a LIGHT chunk that "
+							"installs the scene's dome itself, so it belongs to the lighting pass "
+							"(light_scene offers it there with its parameters and an example). Two "
+							"passes installing a dome by different routes would silently discard one "
+							"of them -- the last one to derive wins";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					if( d->category == ChunkCategory::Geometry || d->category == ChunkCategory::Object ) {
+						AgentEnvironmentSceneRejection r;
+						r.name   = name;
+						r.kind   = kind;
+						r.reason = "a `" + kind + "` chunk was not inserted: a backdrop plane, a sky "
+							"dome built as a shape or a water surface built as a mesh is FORM, and "
+							"making new form is build_element's job, not this one's. The environment "
+							"here is a painter bound as the scene's dome and a medium filling space, "
+							"neither of which is an object";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					if( !isPainter && !isFunction && !isMedium ) {
+						AgentEnvironmentSceneRejection r;
+						r.name   = name;
+						r.kind   = kind;
+						r.reason = "a `" + kind + "` chunk is not part of an environment pass, so it "
+							"was not inserted -- environment_scene accepts painter, function and "
+							"medium chunks, and the binding of the dome onto the scene's rasterizer is "
+							"made by this call rather than written by hand";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+
+					// A QUOTED name -- `name "env_dome"` -- is tolerated, not
+					// rejected: this scene language has no quoted-string syntax
+					// at all, and the answer's own references to the chunk are
+					// bare tokens.  Arc 79 sec 8.1's live-run defect and its fix.
+					if( name.size() >= 2 && name.front() == '"' && name.back() == '"' ) {
+						const std::string stripped = name.substr( 1, name.size() - 2 );
+						doc = RISE::Cst::DocSetParamValue( doc, nodeId, "name", 0, stripped );
+						chunks[i] = RISE::Cst::SerializeCst( doc );
+						unquotedNames.push_back( stripped );
+						name = stripped;
+					}
+
+					// A name that already landed in an EARLIER attempt is not
+					// re-submitted: the repair retry is asked for the corrected
+					// set WHOLE, so it legitimately repeats what worked.
+					if( !name.empty() ) {
+						bool already = false;
+						for( std::size_t l = 0; l < landedNames.size() && !already; ++l )
+							already = ( landedNames[l] == name );
+						if( already ) continue;
+					}
+
+					submit.push_back( chunks[i] );
+				}
+				if( submit.empty() ) return false;
+
+				std::vector<AgentChunkResult> results;
+				{
+					// The clean room's own insertion is exempt from the gate it
+					// arms, exactly as LightScene's is.
+					EnvironmentSceneEditGuard_ guard( *this );
+					results = InsertChunks( submit );
+				}
+				bool landedAny = false;
+				for( std::size_t i = 0; i < results.size(); ++i ) {
+					out.chunkResults.push_back( results[i] );
+					if( results[i].applied ) {
+						landedNames.push_back( results[i].name );
+						landedKinds.push_back( results[i].kind );
+						out.landed.push_back( results[i].name );
+						landedAny = true;
+					}
+					else {
+						AgentEnvironmentSceneRejection r;
+						r.name   = results[i].name;
+						r.kind   = results[i].kind;
+						r.reason = results[i].message.empty()
+							? std::string( "the insertion was rejected with no reason given" )
+							: results[i].message;
+						out.rejected.push_back( r );
+						rejectionLines.push_back(
+							( r.name.empty() ? std::string( "a chunk" ) : ( "the chunk \"" + r.name + "\"" ) ) +
+							" was rejected: " + r.reason );
+					}
+				}
+				return landedAny;
+			};
+
+			++out.completionsSpent;
+			runAttempt( ComposeEnvironmentPrompt_( inventoryText, useNotes, std::string(), hosekPresent ) );
+
+			// THE ONE REPAIR RETRY, on LightScene's exact terms: it fires when
+			// the pass rejected ANYTHING or when the provider itself failed.
+			// Exactly one, then stop, whatever the outcome.
+			if( !rejectionLines.empty() || !providerFailure.empty() ) {
+				std::string rejectionText;
+				if( !providerFailure.empty() )
+					rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
+				for( std::size_t i = 0; i < rejectionLines.size(); ++i )
+					rejectionText += "- " + rejectionLines[i] + "\n";
+
+				const std::size_t landedBefore = landedNames.size();
+				out.retryRan = true;
+				providerFailure.clear();
+				rejectionLines.clear();
+				++out.completionsSpent;
+				runAttempt( ComposeEnvironmentPrompt_( inventoryText, useNotes, rejectionText,
+				                                        hosekPresent ) );
+				out.retrySucceeded = ( landedNames.size() > landedBefore );
+			}
+
+			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
+			// because no answer was ever parsed) is NOT an ok result -- `ok`
+			// means the pass answered and its answer was processed.
+			if( out.landed.empty() && out.rejected.empty() ) {
+				out.message = "environment_scene did not complete: " +
+					( providerFailure.empty()
+						? std::string( "the pass returned nothing this harness could read as a chunk" )
+						: providerFailure ) +
+					". Nothing was inserted and the document is unchanged" +
+					( out.retryRan ? std::string( "; the one repair retry ran and did not complete "
+					                              "either, and there is no second retry." )
+					               : std::string( "." ) );
+				return out;
+			}
+
+			out.ok = true;
+
+			// ---- WHAT LANDED, classified from what actually LANDED rather
+			// than from what was asked for.
+			std::string domePainter;
+			for( std::size_t k = 0; k < landedKinds.size(); ++k ) {
+				const ChunkDescriptor* ld = DescriptorForKeyword( String( landedKinds[k].c_str() ) );
+				if( !ld ) continue;
+				if( ld->category == ChunkCategory::Medium ) { ++out.mediaBuilt; continue; }
+				if( ld->category == ChunkCategory::Painter || ld->category == ChunkCategory::Function )
+					++out.paintersBuilt;
+				// THE DOME IS THE LAST LANDED **PAINTER**, by the contract the
+				// prompt states -- and PAINTER strictly, not painter-or-
+				// function: `radiance_map` is declared
+				// `Reference -> {ChunkCategory::Painter}`, and an
+				// expression_function2d ramp is a Function chunk that exists to
+				// be the MASK of the blend, never the dome itself.  Binding the
+				// ramp would bind a greyscale gradient as the sky.
+				if( ld->category == ChunkCategory::Painter && !landedNames[k].empty() )
+					domePainter = landedNames[k];
+			}
+
+			//------------------------------------------------------------------
+			// THE BINDING.  The harness's half of the deal, and the reason this
+			// verb is more than an insert: there is no `environment` chunk, so
+			// a dome painter that nothing references is inert.
+			//
+			// IT IS A PATCH OF THE SCENE'S EXISTING RASTERIZER CHUNK, addressed
+			// as the KIND-ADDRESSED SINGLETON an unnamed chunk is reachable as
+			// (Job::ApplyCstParamEditImpl_'s documented rule: an empty name plus
+			// a non-empty kind resolves the sole chunk of that kind, which is
+			// exactly how this surface already addresses the unnamed film and
+			// rasterizer chunks).
+			//
+			// A SECOND RASTERIZER CHUNK CARRYING THE BINDING WAS THE OBVIOUS
+			// ALTERNATIVE AND IT IS NOT AVAILABLE: Job::ApplyCstInsertChunk
+			// refuses a second UNNAMED chunk of the same keyword outright,
+			// because the duplicate would mask the original last-wins and
+			// bare-name-addressed remove_chunk could never delete it again.
+			// Rasterizer chunks are therefore editable in place and in no
+			// other way, so the patch is not a preference here -- it is the
+			// only mechanism the format has.
+			//
+			// WHY THE FORWARD-REFERENCE TRAP DOES NOT FIRE, stated because it
+			// LOOKS like it should: this renderer resolves a chunk's
+			// references in DOCUMENT ORDER, so a painter declared after the
+			// rasterizer that names it would resolve to nothing.  It cannot
+			// happen on this path because Job::ApplyCstInsertChunk POSITIONS a
+			// Painter / Function chunk ahead of the first material, geometry
+			// or shader rather than appending it (its "tier 0" rule, added so
+			// the taught rename recipe derives), and the rasterizer chunk is
+			// never earlier than those.  A83N/a asserts that ordering directly,
+			// so a change to that classification fails a test rather than
+			// quietly un-binding every dome.
+			//
+			// AND THE RESULT IS VERIFIED, NOT ASSUMED.  Job::SetPixelBasedRasterizer
+			// answers an unresolvable `radiance_map` name with a LOG WARNING
+			// rather than a failure, so a patch could in principle commit
+			// cleanly, derive cleanly and install NO DOME.  This call therefore
+			// reads IScene::GetGlobalRadianceMap back afterwards and reports
+			// what it finds -- a silent no-dome is the one outcome this
+			// surface's contracts exist to make impossible, and a verification
+			// that only ever passes is exactly the one worth keeping.
+			//------------------------------------------------------------------
+			if( hosekPresent ) {
+				out.bindingReason = "no dome was bound: this scene's sky is a hosek_wilkie_skylight, "
+					"which installs the global radiance map itself, and a second dome would replace it "
+					"rather than add to it";
+			}
+			else if( domePainter.empty() ) {
+				out.bindingReason = "no dome was bound: this pass landed no painter chunk to bind";
+			}
+			else {
+				out.boundPainter = domePainter;
+				out.rasterizerKind = mJob->GetActiveRasterizerName();
+				if( out.rasterizerKind.empty() ) {
+					out.bindingReason = "the painter \"" + domePainter + "\" was not bound as the "
+						"scene's dome: this session has no active rasterizer to bind it on, so nothing "
+						"references it and it does not light the scene";
+				}
+				else if( !RasterizerAcceptsRadianceMap_( out.rasterizerKind ) ) {
+					out.bindingReason = "the painter \"" + domePainter + "\" was not bound as the "
+						"scene's dome: this scene's rasterizer is `" + out.rasterizerKind + "`, which "
+						"does not accept a `radiance_map` parameter at all, so there is no binding to "
+						"make -- switching to a rasterizer that does would make the painter live";
+				}
+				else {
+					std::vector<AgentSetPatch> patches;
+					{
+						AgentSetPatch sp;
+						sp.target = std::string();               // the kind-addressed singleton
+						sp.kind   = out.rasterizerKind;
+						sp.param  = "radiance_map";
+						sp.value  = domePainter;
+						patches.push_back( sp );
+						// THE BACKGROUND IS PART OF THE BINDING, not a separate
+						// choice: this verb exists to fill the frame where no
+						// object is, and a radiance map with the background off
+						// lights the scene while leaving those pixels black --
+						// which is the exact defect 83 sec 3.2 records.
+						sp.param  = "radiance_background";
+						sp.value  = "TRUE";
+						patches.push_back( sp );
+					}
+					std::vector<AgentPatchResult> results;
+					{
+						EnvironmentSceneEditGuard_ guard( *this );
+						results = ProposePatches( patches );
+					}
+					bool allApplied = true;
+					std::string firstFailure;
+					for( std::size_t i = 0; i < results.size(); ++i ) {
+						out.patchResults.push_back( results[i] );
+						if( results[i].applied ) continue;
+						allApplied = false;
+						if( firstFailure.empty() )
+							firstFailure = results[i].message.empty()
+								? std::string( "no reason was given" ) : results[i].message;
+					}
+					// THE VERIFICATION, and it is the load-bearing half of this
+					// block.  A committed patch does NOT mean an installed dome.
+					const IScenePriv* scene = mJob->GetScene();
+					const bool live = scene && scene->GetGlobalRadianceMap() != nullptr;
+					if( allApplied && live ) {
+						out.bindingApplied = true;
+						out.bindingReason  = "the painter \"" + domePainter + "\" is bound as this "
+							"scene's environment radiance map, with the camera background on, on its "
+							"`" + out.rasterizerKind + "` chunk -- and the live scene really carries a "
+							"global radiance map now, which was read back rather than assumed";
+					}
+					else if( allApplied && !live ) {
+						// THE ORDER TRAP, stated rather than swallowed.  This is
+						// the only way the patch can succeed and the dome still
+						// not exist, and a payload that reported success here
+						// would be the false-clause class arc 79 sec 8.1 records
+						// the cost of.
+						out.bindingReason = "the `" + out.rasterizerKind + "` chunk now names \"" +
+							domePainter + "\" as its `radiance_map`, but the live scene still carries "
+							"NO global radiance map: this renderer resolves a chunk's references in "
+							"DOCUMENT ORDER, and an inserted painter is appended AFTER the rasterizer "
+							"chunk that names it, so the reference resolves to nothing. Moving the "
+							"painter chunk above the rasterizer chunk in the scene text activates it";
+					}
+					else {
+						out.bindingReason = "the painter \"" + domePainter + "\" was NOT bound as the "
+							"scene's dome: patching the `" + out.rasterizerKind + "` chunk was "
+							"rejected -- " + firstFailure + ". The painter is in the document but "
+							"nothing references it, so it does not light the scene";
+					}
+				}
+			}
+
+			//------------------------------------------------------------------
+			// THE AFTER MEASUREMENTS, taken exactly as the before ones were.
+			//------------------------------------------------------------------
+			{
+				const IScenePriv* scene = mJob->GetScene();
+				out.radianceMapAfter  = scene && scene->GetGlobalRadianceMap() != nullptr;
+				out.globalMediumAfter = scene && scene->GetGlobalMedium() != nullptr;
+			}
+			out.toneAfter = MeasureFrameTone_();
+
+			//------------------------------------------------------------------
+			// THE REPORT: facts only.  What landed, what did not and why, what
+			// was bound, and what the frame's tonal distribution measured before
+			// and after.  No characterization of the environment, no advice, no
+			// score.
+			//------------------------------------------------------------------
+			std::string m = "environment_scene authored this scene's surround in one pass on " +
+				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". It spent " +
+				std::to_string( out.completionsSpent ) +
+				( out.completionsSpent == 1 ? " completion" : " completions" ) + ".";
+
+			m += " Chunks inserted: ";
+			if( out.landed.empty() ) m += "none";
+			else {
+				for( std::size_t i = 0; i < out.landed.size(); ++i ) {
+					if( i ) m += ", ";
+					// A CHUNK WITH NO NAME IS NAMED BY ITS KIND HERE.
+					// `global_medium` declares no `name` parameter at all, so
+					// its landed name is legitimately empty -- and a list that
+					// rendered it as nothing would read as a trailing comma
+					// before a full stop, which is a defect in the one payload
+					// the model reads.  (`landed` on the wire keeps the real,
+					// empty name; `chunkResults` carries the kind beside it,
+					// so a census loses nothing.)
+					m += !out.landed[i].empty()
+						? out.landed[i]
+						: ( "an unnamed " + ( i < landedKinds.size() ? landedKinds[i]
+						                                            : std::string( "chunk" ) ) );
+				}
+			}
+			m += ".";
+			if( !out.rejected.empty() ) {
+				m += " Not inserted: ";
+				for( std::size_t i = 0; i < out.rejected.size(); ++i ) {
+					if( i ) m += "; ";
+					m += out.rejected[i].reason;
+				}
+				m += ".";
+			}
+			if( out.retryRan ) {
+				m += out.retrySucceeded
+					? std::string( " One repair retry ran and inserted more chunks; there is no second "
+					               "retry." )
+					: std::string( " One repair retry ran and inserted nothing further; there is no "
+					               "second retry." );
+			}
+			if( !providerFailure.empty() )
+				m += " The last completion did not complete: " + providerFailure + ".";
+			if( !unquotedNames.empty() ) {
+				m += " This harness stripped a wrapping pair of double quotes from the `name` value of ";
+				for( std::size_t i = 0; i < unquotedNames.size(); ++i ) {
+					if( i ) m += ", ";
+					m += unquotedNames[i];
+				}
+				m += " before inserting.";
+			}
+			if( out.landed.empty() && !lastCompletionText.empty() ) {
+				// TOTAL rejection ONLY (the pure provider-failure case already
+				// returned above), so the pass's own answer is shown rather
+				// than retained nowhere -- arc 79's Fix 3.
+				m += " Nothing landed; the pass's last answer, before this harness's own truncation, "
+				     "began:\n";
+				m += ExcerptWholeLines_( lastCompletionText, 400 );
+			}
+
+			m += " It landed " + std::to_string( out.paintersBuilt ) +
+				( out.paintersBuilt == 1 ? " painter or function chunk and "
+				                         : " painter and function chunks and " ) +
+				std::to_string( out.mediaBuilt ) +
+				( out.mediaBuilt == 1 ? " medium chunk." : " medium chunks." );
+			// LABELLED, not spliced: `bindingReason` is also a wire field and
+			// reads there as a lowercase clause, so pasting it straight after a
+			// full stop would start a sentence in lower case.
+			if( !out.bindingReason.empty() ) m += " Binding: " + out.bindingReason + ".";
+
+			m += " The scene " +
+				std::string( out.radianceMapBefore ? "had" : "had no" ) +
+				" environment dome before this call and " +
+				std::string( out.radianceMapAfter ? "has one" : "has none" ) + " after it; it " +
+				std::string( out.globalMediumBefore ? "had" : "had no" ) +
+				" global medium before and " +
+				std::string( out.globalMediumAfter ? "has one" : "has none" ) + " after.";
+
+			// THE HEADLINE, and it is a MEASUREMENT of the same small frame at
+			// two moments -- not a judgement of the environment, and not a
+			// comparison to any reference.
+			m += " Frame tone before this call: " + FormatToneReading_( out.toneBefore ) +
+				". After: " + FormatToneReading_( out.toneAfter ) +
+				". Both readings are of the same small internal render at the scene's own aspect; "
+				"neither is compared to anything.";
+
+			if( notesTruncated ) {
+				char nb[144];
+				std::snprintf( nb, sizeof( nb ),
+					" The `notes` string was truncated to the first %u characters before it was sent.",
+					static_cast<unsigned int>( kEnvironmentSceneMaxNotes ) );
+				m += nb;
+			}
+			out.message = m;
+			return out;
+		}
+
+
+		//======================================================================
+		// ARC 83 SLICE 6 (2026-08-13) -- `frame_scene`, A CLEAN-ROOM FRAMING
+		// PASS.
+		// Design: docs/agentic-redesign/83-staged-construction-plan.md sec 3.2
+		// and the sec 15 AS BUILT block.
+		//
+		// The same host-mediated pattern as its three siblings.  What it adds
+		// is the part none of them has: the arc-80 inventory measured on BOTH
+		// SIDES of its own edit, so the result reports how many objects the
+		// reframe actually brought into the picture rather than asserting that
+		// it improved anything.
+		//======================================================================
+
+		namespace
+		{
+			//! ONE entry of the camera palette.  kLightPalette's shape and its
+			//! reasons: `headline` states the facts a parameter list does not
+			//! carry, the schema is the REGISTRY'S own through ReadSchema, and
+			//! only the entry a fresh context should reach for first carries a
+			//! literal worked example -- what is copyable IS the policy, the
+			//! one lever this workstream has measured (83 sec 9).
+			struct CameraPaletteEntry_
+			{
+				const char* keyword;
+				const char* headline;
+				const char* example;   //!< complete parseable chunk text, or null
+			};
+
+			const CameraPaletteEntry_ kCameraPalette[] = {
+				{ "pinhole_camera",
+				  "pinhole_camera -- a straight perspective camera, and the only kind this surface can "
+				  "measure a frame position through. `location` is the eye, `lookat` the point it aims "
+				  "at, `up` the world direction that ends up pointing up in the image, and `fov` the "
+				  "VERTICAL field of view in DEGREES: smaller is a longer lens and a tighter frame, "
+				  "larger is wider and takes in more. Distance and fov together set how much of the "
+				  "world lands in the picture, so pulling back and narrowing the fov keeps the subject "
+				  "the same size while flattening the perspective.",
+				  "pinhole_camera\n"
+				  "{\n"
+				  "\tlocation\t0 1.6 6.5\n"
+				  "\tlookat\t\t0 1.2 0\n"
+				  "\tup\t\t\t0 1 0\n"
+				  "\tfov\t\t\t45.0\n"
+				  "}" },
+				{ "thinlens_camera",
+				  "thinlens_camera -- the same pose parameters, plus a real lens with depth of field, "
+				  "specified photographically rather than by field of view: `sensor_size` and "
+				  "`focal_length` in MILLIMETRES (those two together are the field of view -- there is "
+				  "no `fov` parameter here and writing one fails the load), `fstop`, and "
+				  "`focus_distance` in SCENE UNITS, which is REQUIRED and has no default. It also "
+				  "takes tilt and shift. Its pose cannot be read back by this surface's own "
+				  "measurements the way a pinhole's can, so choosing it means the object-coverage "
+				  "figures after this call come from the rendered pass only.",
+				  nullptr },
+				{ "orthographic_camera",
+				  "orthographic_camera -- a parallel projection with no perspective at all; "
+				  "`viewport_scale` is TWO numbers, the half-width and half-height of the world "
+				  "volume the frame covers, and `fov` does not apply.",
+				  nullptr },
+				{ "fisheye_camera",
+				  "fisheye_camera -- an equidistant fisheye; `scale` is its one own parameter.",
+				  nullptr },
+				{ "onb_pinhole_camera",
+				  "onb_pinhole_camera -- a pinhole given by two basis vectors (`va`, `vb`, "
+				  "`components`) instead of a `lookat`. It takes no lookat and no up, and this "
+				  "surface cannot read its pose back at all, so every camera-derived measurement "
+				  "reported afterwards is suppressed rather than estimated.",
+				  nullptr }
+			};
+			const std::size_t kCameraPaletteCount =
+				sizeof( kCameraPalette ) / sizeof( kCameraPalette[0] );
+
+			//! Every parameter name a chunk node carries, in document order,
+			//! first occurrence only.  ChunkParamString_ answers "what is the
+			//! value of X"; this answers "which X are there", which is what a
+			//! patch-the-whole-chunk edit needs and what nothing else in this
+			//! file needed before.
+			std::vector<std::string> CollectChunkParamNames_( const RISE::Cst::NodeRef& chunkItem )
+			{
+				std::vector<std::string> out;
+				if( !chunkItem ) return out;
+				for( const RISE::Cst::NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+					for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
+						if( tk->role != "pname" ) continue;
+						bool already = false;
+						for( std::size_t i = 0; i < out.size() && !already; ++i )
+							already = ( out[i] == tk->text );
+						if( !already ) out.push_back( tk->text );
+						break;
+					}
+				}
+				return out;
+			}
+		}
+
+		bool AgentSession::FindActiveCameraChunk_( std::string& outKeyword, std::string& outName,
+		                                            std::string& outText ) const
+		{
+			outKeyword.clear();
+			outName.clear();
+			outText.clear();
+			IJobPriv* job = mJob;
+			if( !job ) return false;
+			const RISE::Cst::Document* doc = job->GetCstDocument();
+			if( !doc ) return false;
+
+			const std::string active = job->GetActiveCameraName();
+			const int n = RISE::Cst::DocItemCount( *doc );
+
+			// PASS 1: the chunk whose `name` IS the live active camera's.  That
+			// is the camera the render actually uses, so when it exists in the
+			// document there is nothing to guess.
+			for( int i = 0; i < n && !active.empty(); ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				if( !IsCameraKeyword_( it->role ) ) continue;
+				if( ChunkParamString_( it, "name" ) != active ) continue;
+				outKeyword = it->role;
+				outName    = active;
+				outText    = RISE::Cst::SerializeNode( it );
+				return true;
+			}
+
+			// PASS 2: the LAST camera chunk in the document.  This is the
+			// ordinary case, not an exotic one: a camera that declares no
+			// `name` derives as "default", so pass 1 finds nothing and the
+			// document's own order is the answer -- Scene::AddCamera is
+			// documented "last added wins" and a full derive walks the document
+			// in order, so the last camera chunk IS the active one.
+			bool found = false;
+			for( int i = 0; i < n; ++i ) {
+				const RISE::Cst::NodeRef it =
+					RISE::Cst::DocResolveNodeId( *doc, RISE::Cst::DocNodeIdAt( *doc, i ) );
+				if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+				if( !IsCameraKeyword_( it->role ) ) continue;
+				outKeyword = it->role;
+				outName    = ChunkParamString_( it, "name" );
+				outText    = RISE::Cst::SerializeNode( it );
+				found      = true;
+			}
+			return found;
+		}
+
+		std::string AgentSession::ComposeFramingPrompt_( const std::string& inventoryText,
+		                                                  const std::string& cameraText,
+		                                                  const std::string& toneText,
+		                                                  const std::string& notes,
+		                                                  const std::string& rejectionText ) const
+		{
+			// THE WHOLE PROMPT IS COMPOSED HERE, HOST-SIDE.  The model supplies
+			// `notes` and nothing else.
+			//
+			// WHAT IS DELIBERATELY ABSENT: any instruction to get more objects
+			// into frame, to centre the subject, or to pick a particular fov.
+			// Object coverage is exactly what this slice MEASURES, so a target
+			// in the prompt would manufacture the result -- and a close-up that
+			// covers fewer objects on purpose is a legitimate answer this
+			// harness must not have argued against in advance.
+			std::string p;
+			p += "You are FRAMING a finished 3D scene in the RISE scene language: deciding where the "
+			     "camera goes and what it looks at. Everything else already exists -- the geometry, the "
+			     "materials, the lights, the environment -- and none of it is yours to change. The only "
+			     "thing you write is the camera.\n\n";
+
+			// ---- The subject, if this session has one.  Here it carries the
+			// judgement about what the picture is OF.
+			if( mSceneTarget && !mSceneTarget->description.empty() ) {
+				p += "WHAT THIS SCENE IS MEANT TO BE (the description its author wrote):\n";
+				p += mSceneTarget->description;
+				p += "\n\n";
+			}
+
+			// ---- THE FULL INVENTORY.  For every other consumer this is
+			// context beside a picture; for this one it IS the input, which is
+			// why it is printed at kFrameSceneInventoryLines rather than at the
+			// render payload's own caps.
+			if( !inventoryText.empty() ) {
+				p += "EVERY OBJECT IN THIS SCENE AND WHERE IT LANDS IN THE FRAME, measured from the "
+				     "live scene just now through the camera below:\n";
+				p += inventoryText;
+				p += "\n\n";
+			}
+
+			// ---- THE CAMERA, verbatim AND resolved.  Verbatim because this
+			// pass edits that chunk and needs its exact kind and parameters;
+			// resolved because a pose in three numbers is what a fresh context
+			// can actually reason about.
+			if( !cameraText.empty() ) {
+				p += "THE CAMERA THIS SCENE HAS RIGHT NOW, exactly as the scene file holds it:\n";
+				p += cameraText;
+				p += "\n";
+			}
+			else {
+				p += "THE CAMERA THIS SCENE HAS RIGHT NOW: none -- this document carries no camera "
+				     "chunk at all, so the one you write is the scene's first.\n";
+			}
+			{
+				unsigned int fw = 0, fh = 0;
+				if( const IScenePriv* scene = mJob ? mJob->GetScene() : nullptr ) {
+					if( const IFilm* film = scene->GetFilm() ) {
+						fw = film->GetWidth();
+						fh = film->GetHeight();
+					}
+				}
+				double eye[3] = { 0, 0, 0 }, tgt[3] = { 0, 0, -1 }, up[3] = { 0, 1, 0 };
+				double tanHalfV = 0.0, aspect = 1.0;
+				std::string why;
+				if( ResolveInventoryCamera_( AgentRenderParams(), fw, fh, eye, tgt, up,
+				                              tanHalfV, aspect, why ) ) {
+					const double vfovDeg = 2.0 * std::atan( tanHalfV ) * 180.0 /
+						3.14159265358979323846;
+					p += "Resolved, that camera is at (" + FormatVec3_( eye ) + "), looking at (" +
+						FormatVec3_( tgt ) + "), up (" + FormatVec3_( up ) +
+						"), vertical field of view " + FormatScalar_( vfovDeg ) + " degrees.\n";
+				}
+				else {
+					// STATED, NOT GUESSED -- the inventory's own suppression
+					// contract.  A wrong pose would produce confidently wrong
+					// framing geometry.
+					p += "Its pose was not resolved for this prompt (" + why + ").\n";
+				}
+				if( fw > 0 && fh > 0 ) {
+					p += "THE FRAME is " + std::to_string( fw ) + " by " + std::to_string( fh ) +
+					     " pixels. Those dimensions belong to the scene's `film` chunk, not to the "
+					     "camera, and this call does not change them.\n";
+				}
+			}
+
+			// ---- The world the frame has to contain.
+			{
+				double wmin[3], wmax[3];
+				if( SceneWorldBounds_( mJob ? mJob->GetObjects() : nullptr, wmin, wmax ) ) {
+					const double size[3] = { wmax[0]-wmin[0], wmax[1]-wmin[1], wmax[2]-wmin[2] };
+					p += "THE SCENE'S WORLD BOUNDS: (" + FormatVec3_( wmin ) + ") to (" +
+						FormatVec3_( wmax ) + "), so it is " + FormatVec3_( size ) +
+						" units across in X Y Z. +Y is up.\n";
+				}
+				else {
+					p += "THE SCENE'S WORLD BOUNDS: no object with a usable bounding box, so they "
+					     "were not measured. +Y is up.\n";
+				}
+			}
+			if( !toneText.empty() ) {
+				p += "THE FRAME'S TONE through that camera, measured just now: " + toneText + ".\n";
+			}
+			p += "\n";
+
+			// ---- THE PALETTE.
+			p += "THE CAMERA KINDS THIS SCENE LANGUAGE HAS. Each entry's parameter list below is the "
+			     "parser's own, so it is exactly what that chunk accepts. None of them carries "
+			     "`width`, `height` or `pixelAR`: raster dimensions moved to the `film` chunk, and a "
+			     "camera that declares one fails the load.\n";
+			for( std::size_t i = 0; i < kCameraPaletteCount; ++i ) {
+				p += "\n";
+				p += std::to_string( i + 1 );
+				p += ". ";
+				p += kCameraPalette[i].headline;
+				p += "\n";
+				p += ReadSchema( kCameraPalette[i].keyword );
+				p += "\n";
+				// An entry with no example is not an omission to apologise for
+				// -- see kCameraPalette's doc -- so nothing is printed in its
+				// place.
+				if( kCameraPalette[i].example ) {
+					p += "\nExample:\n";
+					p += kCameraPalette[i].example;
+					p += "\n";
+				}
+			}
+
+			if( !notes.empty() ) {
+				// THE ONE MODEL-SUPPLIED SPAN, clearly labelled as such.
+				p += "\nNOTES FROM THE CALLER:\n";
+				p += notes;
+				p += "\n";
+			}
+
+			p += "\nWHAT THIS REQUEST WILL ACCEPT: EXACTLY ONE camera chunk, and nothing else. A "
+			     "second camera is rejected, and so is a geometry, a light, a material, a rasterizer "
+			     "or a `film`. Write the camera WHOLE, with every parameter you want it to have: if "
+			     "its kind matches the one this scene already has, each parameter you write is applied "
+			     "to that chunk and any parameter you leave out keeps the value it has now; if you "
+			     "write a DIFFERENT kind, that camera replaces the current one, and it needs a `name` "
+			     "that is not already used in this scene.\n";
+
+			p += "\nWRITE YOUR ANSWER AS SCENE TEXT ONLY -- one complete chunk, in the form\n"
+			     "keyword\n"
+			     "{\n"
+			     "\tparameter value\n"
+			     "}\n"
+			     "with the braces on their own lines. No prose, no explanation, no markdown fences, "
+			     "no scene header.\n";
+
+			if( !rejectionText.empty() ) {
+				// THE ONE REPAIR RETRY, on its siblings' exact terms.
+				p += "\nA PREVIOUS ANSWER TO THIS SAME REQUEST WAS REJECTED:\n";
+				p += rejectionText;
+				p += "\nReturn the CORRECTED camera WHOLE, as one chunk.\n";
+			}
+			return p;
+		}
+
+		AgentSession::AgentFrameSceneResult AgentSession::FrameScene( const std::string& notes )
+		{
+			AgentFrameSceneResult out;
+			out.providerName = mTextCompleter.providerName;
+			out.modelId      = mTextCompleter.modelId;
+			// NO GIVE-UP FOLD, for LightScene's reason exactly: this verb
+			// consults no phase gate of its own, and its own edit is exempt
+			// from the one arm that could fire on it (see mInFrameSceneEdit).
+
+			//------------------------------------------------------------------
+			// THE DO-NOTHING CASES.  None is a phase refusal: each changes no
+			// state, mutates no document, costs no budget and is never counted.
+			//------------------------------------------------------------------
+			if( !mJob ) {
+				out.message = "frame_scene did nothing: no head is loaded, so there is no scene to "
+				              "frame.";
+				return out;
+			}
+			if( !BuildCapable() ) {
+				out.capabilityRefusal = true;
+				const std::string who = mTextCompleter.providerName.empty()
+					? std::string( "this session's provider" )
+					: ( "`" + mTextCompleter.providerName + "`" );
+				out.message = "frame_scene is not available: " + who + " does not run a separate "
+					"completion through this build, so there is no fresh context to design the framing "
+					"in. Nothing was changed and nothing else about this session changes -- editing the "
+					"camera directly with propose_patch or insert_chunk is not blocked by this.";
+				return out;
+			}
+			if( mFrameSceneCalls >= kFrameSceneMaxPerSession ) {
+				char capBuf[288];
+				std::snprintf( capBuf, sizeof( capBuf ),
+					"frame_scene has already run %d framing passes this session -- the per-session cap. "
+					"There is one camera per scene, so this bound exists to stop a runaway loop, not to "
+					"ration the work. Nothing was changed; the document is unchanged.",
+					kFrameSceneMaxPerSession );
+				out.message = capBuf;
+				return out;
+			}
+			++mFrameSceneCalls;
+			// THE GATE LIFTS HERE, before the completion rather than after it.
+			// A provider failure must not leave hand-authored camera edits
+			// refused for the rest of the session -- the clean room has had its
+			// turn either way (see mFrameSceneRan).
+			mFrameSceneRan = true;
+
+			// The caller's notes, length-capped BEFORE composition and with the
+			// truncation stated rather than silent.
+			std::string useNotes = notes;
+			bool notesTruncated = false;
+			if( useNotes.size() > kFrameSceneMaxNotes ) {
+				useNotes.resize( kFrameSceneMaxNotes );
+				notesTruncated = true;
+			}
+
+			//------------------------------------------------------------------
+			// THE BEFORE MEASUREMENT.  The arc-80 inventory through the camera
+			// the scene has right now -- both the prompt's input and the first
+			// half of this call's own honesty check.
+			//------------------------------------------------------------------
+			unsigned int fw = 0, fh = 0;
+			if( const IScenePriv* scene = mJob->GetScene() ) {
+				if( const IFilm* film = scene->GetFilm() ) {
+					fw = film->GetWidth();
+					fh = film->GetHeight();
+				}
+			}
+			std::string inventoryText;
+			std::map<std::string, bool> onScreenBefore;
+			{
+				const AgentSceneInventoryResult inv =
+					ComputeSceneInventory_( AgentRenderParams(), fw, fh, /*assumeParked=*/false );
+				if( inv.ok ) {
+					out.measuredBefore = true;
+					out.objectsBefore  = inv.objectCount;
+					out.coveredBefore  = inv.coveredCount;
+					inventoryText      = FormatSceneInventory_( inv, kFrameSceneInventoryLines,
+					                                             kFrameSceneInventoryLines );
+					for( std::size_t i = 0; i < inv.entries.size(); ++i )
+						onScreenBefore[ inv.entries[i].name ] = inv.entries[i].onScreen;
+				}
+			}
+			out.toneBefore = MeasureFrameTone_();
+
+			// THE LIVE ACTIVE CAMERA'S NAME, captured before anything moves.
+			// It is what an UNNAMED camera chunk must be REMOVED by: the remove
+			// verb refuses an empty target outright, and the resolver's
+			// camera fallback (DocCameraUniqueFallbackPermitted) is gated on
+			// the name being empty, the ACTIVE camera's registered name, or a
+			// single-camera document -- so the derived name ("default" for a
+			// chunk that declares none) is the address that resolves the sole
+			// unnamed camera chunk even once a second, named one has been
+			// inserted beside it.
+			const std::string activeCameraName = mJob->GetActiveCameraName();
+			FindActiveCameraChunk_( out.cameraKindBefore, out.cameraNameBefore, out.cameraKindAfter );
+			// FindActiveCameraChunk_'s third output is the chunk TEXT; it was
+			// borrowed above only to avoid a second local, so move it into the
+			// local the prompt uses and clear the result field, which holds the
+			// AFTER kind and is filled from a fresh read at the end.
+			const std::string cameraTextBefore = out.cameraKindAfter;
+			out.cameraKindAfter.clear();
+
+			//------------------------------------------------------------------
+			// ONE ATTEMPT = one completion, extract, classify, apply.
+			//------------------------------------------------------------------
+			std::vector<std::string> rejectionLines;
+			std::string providerFailure;
+			std::string lastCompletionText;
+			bool applied = false;
+
+			const auto runAttempt = [&]( const std::string& prompt ) -> bool
+			{
+				const AgentTextCompletionOutcome comp = mTextCompleter.complete( prompt );
+				if( !comp.ok || comp.text.empty() ) {
+					providerFailure = comp.error.empty()
+						? std::string( "the provider returned no text and no reason" )
+						: comp.error;
+					return false;
+				}
+				lastCompletionText = comp.text;
+
+				std::vector<std::string> chunks, problems;
+				ExtractChunkTexts( comp.text, chunks, problems );
+				out.chunksExtracted += static_cast<unsigned int>( chunks.size() );
+				for( std::size_t i = 0; i < problems.size(); ++i ) {
+					AgentFrameSceneRejection r;
+					r.reason = problems[i];
+					out.rejected.push_back( r );
+					rejectionLines.push_back( problems[i] );
+				}
+				if( chunks.empty() ) {
+					if( problems.empty() ) {
+						const std::string why =
+							"the answer contained no complete chunk (no `keyword { ... }` block)";
+						AgentFrameSceneRejection r;
+						r.reason = why;
+						out.rejected.push_back( r );
+						rejectionLines.push_back( why );
+					}
+					return false;
+				}
+
+				// ---- ADMISSIBILITY: EXACTLY ONE CAMERA CHUNK.  The first
+				// camera in the answer is the one; anything else is rejected
+				// BY NAME, never dropped.
+				std::string chosenText, chosenKind, chosenName;
+				RISE::Cst::Document chosenDoc;
+				RISE::Cst::NodeId chosenId = 0;
+				for( std::size_t i = 0; i < chunks.size(); ++i ) {
+					RISE::Cst::Document doc = RISE::Cst::ParseToCst( chunks[i] );
+					std::string kind, name;
+					RISE::Cst::NodeId nodeId = 0;
+					{
+						const int n = RISE::Cst::DocItemCount( doc );
+						for( int c = 0; c < n; ++c ) {
+							const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( doc, c );
+							const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, nid );
+							if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+							kind   = it->role;
+							name   = ChunkParamString_( it, "name" );
+							nodeId = nid;
+							break;
+						}
+					}
+					if( !IsCameraKeyword_( kind ) ||
+					    !DescriptorForKeyword( String( kind.c_str() ) ) ) {
+						AgentFrameSceneRejection r;
+						r.name   = name;
+						r.kind   = kind;
+						r.reason = "a `" + ( kind.empty() ? std::string( "(unnamed keyword)" ) : kind ) +
+							"` chunk is not a camera, so it was not applied -- frame_scene returns "
+							"camera parameters and nothing else. A `film` chunk in particular is "
+							"raster-size policy rather than framing, and changing it would re-budget "
+							"every render this session makes";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					if( chosenId != 0 ) {
+						AgentFrameSceneRejection r;
+						r.name   = name;
+						r.kind   = kind;
+						r.reason = "a second camera chunk (`" + kind + "`) was not applied: this scene "
+							"has ONE camera, and this call authors exactly one -- the first camera in "
+							"the answer is the one that was used";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						continue;
+					}
+					chosenText = chunks[i];
+					chosenKind = kind;
+					chosenName = name;
+					chosenDoc  = doc;
+					chosenId   = nodeId;
+				}
+				if( chosenId == 0 ) return false;
+
+				// A QUOTED name is tolerated, not rejected -- arc 79 sec 8.1's
+				// live-run defect and its fix.
+				if( chosenName.size() >= 2 && chosenName.front() == '"' && chosenName.back() == '"' ) {
+					const std::string stripped = chosenName.substr( 1, chosenName.size() - 2 );
+					chosenDoc  = RISE::Cst::DocSetParamValue( chosenDoc, chosenId, "name", 0, stripped );
+					chosenText = RISE::Cst::SerializeCst( chosenDoc );
+					chosenName = stripped;
+				}
+
+				const RISE::Cst::NodeRef chosenItem =
+					RISE::Cst::DocResolveNodeId( chosenDoc, chosenId );
+
+				//----------------------------------------------------------
+				// PATCH OR REPLACE.  The answer's KIND decides.
+				//----------------------------------------------------------
+				if( !out.cameraKindBefore.empty() && chosenKind == out.cameraKindBefore ) {
+					// PATCH: one batch of parameter edits onto the chunk the
+					// scene already has -- ONE head bump and ONE undo step,
+					// and nothing the answer left out is disturbed.
+					//
+					// `name` is EXCLUDED deliberately: there is no rename verb
+					// on this surface, and patching a chunk's own name would
+					// silently break every reference to it.  A model that
+					// wanted a different name wrote a different chunk, which is
+					// the replace path below.
+					std::vector<AgentSetPatch> patches;
+					std::vector<std::string>   names;
+					const std::vector<std::string> params = CollectChunkParamNames_( chosenItem );
+					for( std::size_t i = 0; i < params.size(); ++i ) {
+						if( params[i] == "name" ) continue;
+						const std::string value = ChunkParamString_( chosenItem, params[i] );
+						if( value.empty() ) continue;   // an empty value is refused downstream anyway
+						AgentSetPatch sp;
+						// The chunk's OWN name when it has one, else the
+						// kind-addressed singleton form -- which is how an
+						// UNNAMED camera is addressable at all
+						// (Job::ApplyCstParamEditImpl_'s documented rule).
+						sp.target = out.cameraNameBefore;
+						sp.kind   = out.cameraNameBefore.empty() ? std::string( "camera" )
+						                                         : out.cameraKindBefore;
+						sp.param  = params[i];
+						sp.value  = value;
+						patches.push_back( sp );
+						names.push_back( params[i] );
+					}
+					if( patches.empty() ) {
+						AgentFrameSceneRejection r;
+						r.kind   = chosenKind;
+						r.reason = "the camera chunk carried no parameter to apply -- an empty camera "
+							"is not a reframe";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+						return false;
+					}
+					std::vector<AgentPatchResult> results;
+					{
+						FrameSceneEditGuard_ guard( *this );
+						results = ProposePatches( patches );
+					}
+					bool any = false;
+					for( std::size_t i = 0; i < results.size(); ++i ) {
+						out.patchResults.push_back( results[i] );
+						if( results[i].applied ) {
+							out.paramsApplied.push_back( names[i] );
+							any = true;
+						}
+						else {
+							AgentFrameSceneRejection r;
+							r.kind   = chosenKind;
+							r.name   = names[i];
+							r.reason = "the camera's `" + names[i] + "` was not applied: " +
+								( results[i].message.empty()
+									? std::string( "no reason was given" ) : results[i].message );
+							out.rejected.push_back( r );
+							rejectionLines.push_back( r.reason );
+						}
+					}
+					if( any ) {
+						out.action  = "patched";
+						applied     = true;
+					}
+					return any;
+				}
+
+				// REPLACE (or, on a document with no camera at all, INSERT).
+				//
+				// ORDER IS LOAD-BEARING: insert FIRST, remove second.  A failed
+				// insert then leaves the scene exactly as it was, whereas
+				// removing first and failing to insert would leave a scene with
+				// no camera at all -- a state nothing else on this surface can
+				// produce and nothing downstream expects.
+				AgentChunkResult ir;
+				{
+					FrameSceneEditGuard_ guard( *this );
+					ir = InsertChunk( chosenText );
+				}
+				out.chunkResults.push_back( ir );
+				if( !ir.applied ) {
+					AgentFrameSceneRejection r;
+					r.name   = chosenName;
+					r.kind   = chosenKind;
+					r.reason = "the camera was not inserted: " +
+						( ir.message.empty() ? std::string( "no reason was given" ) : ir.message );
+					out.rejected.push_back( r );
+					rejectionLines.push_back( r.reason );
+					return false;
+				}
+				applied    = true;
+				out.action = out.cameraKindBefore.empty() ? "inserted" : "replaced";
+				if( !out.cameraKindBefore.empty() ) {
+					// REMOVING THE OLD ONE IS WHAT MAKES THE NEW ONE LIVE, and
+					// that is a mechanism rather than tidiness: a full
+					// re-derive RESTORES the previously active camera by name
+					// (Job::RederiveCstDocumentFull_ captures GetActiveCameraName
+					// across the ClearAll), so while the old chunk is still
+					// there the inserted camera is in the document but NOT the
+					// one that renders.  Once the old chunk is gone that
+					// restore finds nothing and the derive's own "last camera
+					// chunk wins" leaves the new one active.
+					AgentChunkResult rr;
+					{
+						FrameSceneEditGuard_ guard( *this );
+						// A chunk that declares a `name` is removed by it; one
+						// that does not is removed by the LIVE name its derive
+						// gave it, under the generic `camera` kind -- the one
+						// address the resolver's unnamed-camera fallback
+						// accepts (see activeCameraName's note above).
+						rr = out.cameraNameBefore.empty()
+							? RemoveChunk( activeCameraName, std::string( "camera" ) )
+							: RemoveChunk( out.cameraNameBefore, out.cameraKindBefore );
+					}
+					out.chunkResults.push_back( rr );
+					if( !rr.applied ) {
+						AgentFrameSceneRejection r;
+						r.name   = out.cameraNameBefore;
+						r.kind   = out.cameraKindBefore;
+						r.reason = "the new camera was inserted but the previous `" +
+							out.cameraKindBefore + "` chunk could NOT be removed (" +
+							( rr.message.empty() ? std::string( "no reason was given" ) : rr.message ) +
+							"), so this document now holds two cameras; which one renders is reported "
+							"below from a fresh read rather than assumed";
+						out.rejected.push_back( r );
+						rejectionLines.push_back( r.reason );
+					}
+				}
+				return true;
+			};
+
+			++out.completionsSpent;
+			runAttempt( ComposeFramingPrompt_( inventoryText, cameraTextBefore,
+			                                    FormatToneReading_( out.toneBefore ),
+			                                    useNotes, std::string() ) );
+
+			// THE ONE REPAIR RETRY, on its siblings' exact terms: it fires when
+			// the pass rejected ANYTHING or when the provider itself failed --
+			// but NOT once a camera has actually been applied, because a second
+			// camera edit is a second answer to a question already answered,
+			// and this verb's whole contract is ONE camera edit.
+			if( !applied && ( !rejectionLines.empty() || !providerFailure.empty() ) ) {
+				std::string rejectionText;
+				if( !providerFailure.empty() )
+					rejectionText += "- the previous attempt did not complete: " + providerFailure + "\n";
+				for( std::size_t i = 0; i < rejectionLines.size(); ++i )
+					rejectionText += "- " + rejectionLines[i] + "\n";
+
+				out.retryRan = true;
+				providerFailure.clear();
+				rejectionLines.clear();
+				++out.completionsSpent;
+				runAttempt( ComposeFramingPrompt_( inventoryText, cameraTextBefore,
+				                                    FormatToneReading_( out.toneBefore ),
+				                                    useNotes, rejectionText ) );
+				out.retrySucceeded = applied;
+			}
+
+			// A PURE PROVIDER FAILURE (nothing applied AND nothing rejected,
+			// because no answer was ever parsed) is NOT an ok result.
+			if( !applied && out.rejected.empty() ) {
+				out.message = "frame_scene did not complete: " +
+					( providerFailure.empty()
+						? std::string( "the pass returned nothing this harness could read as a chunk" )
+						: providerFailure ) +
+					". The camera is unchanged" +
+					( out.retryRan ? std::string( "; the one repair retry ran and did not complete "
+					                              "either, and there is no second retry." )
+					               : std::string( "." ) );
+				return out;
+			}
+
+			out.ok = true;
+
+			//------------------------------------------------------------------
+			// THE AFTER MEASUREMENT.  The SAME identity pass, through whatever
+			// camera the scene now has -- so the coverage claim below is a
+			// measurement of the real edit rather than a restatement of what
+			// was asked for.  Both the camera identity and the counts are READ
+			// BACK, never assumed: the replace path can legitimately end with
+			// two camera chunks in the document, and only a fresh read knows
+			// which one renders.
+			//------------------------------------------------------------------
+			{
+				std::string afterText;
+				FindActiveCameraChunk_( out.cameraKindAfter, out.cameraNameAfter, afterText );
+			}
+			if( applied ) {
+				const AgentSceneInventoryResult inv =
+					ComputeSceneInventory_( AgentRenderParams(), fw, fh, /*assumeParked=*/false );
+				if( inv.ok ) {
+					out.measuredAfter = true;
+					out.objectsAfter  = inv.objectCount;
+					out.coveredAfter  = inv.coveredCount;
+					for( std::size_t i = 0; i < inv.entries.size(); ++i ) {
+						const std::map<std::string, bool>::const_iterator f =
+							onScreenBefore.find( inv.entries[i].name );
+						if( f == onScreenBefore.end() ) continue;   // not present before: no delta to claim
+						if( !f->second && inv.entries[i].onScreen )
+							out.broughtIntoFrame.push_back( inv.entries[i].name );
+						else if( f->second && !inv.entries[i].onScreen )
+							out.pushedOutOfFrame.push_back( inv.entries[i].name );
+					}
+				}
+			}
+
+			//------------------------------------------------------------------
+			// THE REPORT: facts only, and the coverage figures are MEASURED on
+			// both sides rather than asserted.
+			//
+			// A REFRAME THAT COVERS FEWER OBJECTS IS REPORTED PLAINLY AND NOT
+			// UNDONE.  A deliberate close-up covers fewer objects on purpose,
+			// and a harness that auto-reverted would be overriding the
+			// judgement it just paid a completion to obtain.  What it owes the
+			// reader is the number, not a verdict on it.
+			//------------------------------------------------------------------
+			std::string m = "frame_scene framed this scene in one pass on " +
+				mTextCompleter.providerName + "/" + mTextCompleter.modelId + ". It spent " +
+				std::to_string( out.completionsSpent ) +
+				( out.completionsSpent == 1 ? " completion" : " completions" ) + ".";
+
+			if( out.action == "patched" ) {
+				m += " It patched the scene's existing `" + out.cameraKindBefore + "` camera";
+				if( !out.cameraNameBefore.empty() ) m += " \"" + out.cameraNameBefore + "\"";
+				m += ", setting ";
+				for( std::size_t i = 0; i < out.paramsApplied.size(); ++i ) {
+					if( i ) m += ", ";
+					m += out.paramsApplied[i];
+				}
+				m += "; every other parameter keeps the value it had.";
+			}
+			else if( out.action == "replaced" ) {
+				m += " It replaced the scene's `" + out.cameraKindBefore + "` camera with a `" +
+					out.cameraKindAfter + "` one";
+				if( !out.cameraNameAfter.empty() ) m += " named \"" + out.cameraNameAfter + "\"";
+				m += ".";
+			}
+			else if( out.action == "inserted" ) {
+				m += " It inserted this scene's first camera, a `" + out.cameraKindAfter + "`";
+				if( !out.cameraNameAfter.empty() ) m += " named \"" + out.cameraNameAfter + "\"";
+				m += ".";
+			}
+			else {
+				m += " No camera edit was applied.";
+			}
+
+			if( !out.rejected.empty() ) {
+				m += " Not applied: ";
+				for( std::size_t i = 0; i < out.rejected.size(); ++i ) {
+					if( i ) m += "; ";
+					m += out.rejected[i].reason;
+				}
+				m += ".";
+			}
+			if( out.retryRan ) {
+				m += out.retrySucceeded
+					? std::string( " One repair retry ran and applied the camera; there is no second "
+					               "retry." )
+					: std::string( " One repair retry ran and applied nothing; there is no second "
+					               "retry." );
+			}
+			if( !providerFailure.empty() )
+				m += " The last completion did not complete: " + providerFailure + ".";
+			if( !applied && !lastCompletionText.empty() ) {
+				m += " Nothing was applied; the pass's last answer, before this harness's own "
+				     "truncation, began:\n";
+				m += ExcerptWholeLines_( lastCompletionText, 400 );
+			}
+
+			// ---- THE MEASUREMENT.
+			if( out.measuredBefore && out.measuredAfter ) {
+				m += " Object coverage, measured through the camera BEFORE this call and again "
+				     "through the camera AFTER it: " + std::to_string( out.coveredBefore ) + " of " +
+					std::to_string( out.objectsBefore ) +
+					( out.objectsBefore == 1 ? " object covered" : " objects covered" ) +
+					" at least one pixel before, " + std::to_string( out.coveredAfter ) + " of " +
+					std::to_string( out.objectsAfter ) + " after.";
+				if( !out.broughtIntoFrame.empty() ) {
+					m += " Brought into the picture (" +
+						std::to_string( out.broughtIntoFrame.size() ) + "): ";
+					for( std::size_t i = 0; i < out.broughtIntoFrame.size(); ++i ) {
+						if( i ) m += ", ";
+						m += out.broughtIntoFrame[i];
+					}
+					m += ".";
+				}
+				if( !out.pushedOutOfFrame.empty() ) {
+					m += " No longer covering any pixel (" +
+						std::to_string( out.pushedOutOfFrame.size() ) + "): ";
+					for( std::size_t i = 0; i < out.pushedOutOfFrame.size(); ++i ) {
+						if( i ) m += ", ";
+						m += out.pushedOutOfFrame[i];
+					}
+					m += ".";
+				}
+				if( out.coveredAfter < out.coveredBefore ) {
+					m += " This camera covers FEWER objects than the one before it (" +
+						std::to_string( out.coveredBefore - out.coveredAfter ) + " fewer). Nothing "
+						"was reverted: that is what the pass returned, and a closer view of fewer "
+						"things is a framing decision rather than an error.";
+				}
+			}
+			else {
+				m += " Object coverage was not measured on both sides of this call (" +
+					std::string( out.measuredBefore ? "the after" : "the before" ) +
+					" identity pass did not succeed), so no coverage change is reported.";
+			}
+
+			if( notesTruncated ) {
+				char nb[144];
+				std::snprintf( nb, sizeof( nb ),
+					" The `notes` string was truncated to the first %u characters before it was sent.",
+					static_cast<unsigned int>( kFrameSceneMaxNotes ) );
+				m += nb;
+			}
+			out.message = m;
+			return out;
+		}
+
+
 		// Model-B F2 slice S2a -------------------------------------------------
 
 		AgentSession::AgentRenderAsyncResult AgentSession::RenderAsync( const AgentRenderParams& params )
@@ -22242,7 +24353,7 @@ namespace RISE
 			// and nothing is queued.
 			if( params.fromAgentSurface && params.isolate.empty() ) {
 				const std::string clause =
-					CheckPopulateBeforeComposeRender_( "render", &a82Fold.notice );
+					CheckBuildChecklistBeforeComposeRender_( "render", &a82Fold.notice );
 				if( !clause.empty() ) {
 					out.accepted = false;
 					out.message  = clause;
