@@ -7005,8 +7005,21 @@ namespace RISE
 			//! outright, and names which targets triggered it, so the model
 			//! knows exactly what happened to the rest.  `remove_chunk` passes
 			//! a one-element list.
+			//!
+			//! `kinds` is PARALLEL to `targets` (same size; an empty entry
+			//! means "no kind constraint", exactly like `RemoveChunk`'s own
+			//! `kind` parameter) -- P1-1 fix round (2026-08-13): threaded
+			//! through so `TargetIsFormBearing_`'s Document resolution can
+			//! narrow by kind the SAME WAY the real remove resolver
+			//! (`Job.cpp`'s `CstResolveRemoveTarget_`) does, so the gate's
+			//! verdict and the delete's target can never diverge on a
+			//! cross-category name collision.  `remove_chunk` passes the
+			//! caller's one `kind`; `remove_chunks` has no per-target kind at
+			//! all (its engine call always passes `nullptr` per target --
+			//! "bare names only"), so it passes an all-empty parallel vector.
 			std::string CheckComposePhaseForRemove_( const char* verb,
 			                                         const std::vector<std::string>& targets,
+			                                         const std::vector<std::string>& kinds,
 			                                         std::string* outGiveUpNotice );
 
 			//! Arc 80: true for the FORM-BEARING registry categories --
@@ -7020,19 +7033,66 @@ namespace RISE
 			//! no edit here.
 			static bool KindIsFormBearing_( const std::string& kind );
 
-			//! Arc 80: does `target` name a form-bearing chunk?  Answers from
-			//! two cheap, lock-free sources, in order: the session's own
-			//! chunk-to-element attribution (which records the KIND of every
-			//! chunk created in an element window), then the live scene's
-			//! object and geometry managers (the same caller-thread manager
-			//! reads ElementWorldBounds_ and QueryObjectAt already do).  It
-			//! deliberately does NOT parse the Document: an unresolvable name
-			//! returns false, i.e. it is never refused -- under-refusing is
-			//! the correct direction of error for a phase rule.
-			//! `outWhat` receives a short factual noun for the refusal text
-			//! ("the geometry chunk `sdf_geometry`", "an object in the
+			//! Arc 80, extended by the arc 80 postscript (2026-08-13, light-
+			//! object exemption) and its P1-1 fix round (2026-08-13): does
+			//! `target` name a form-bearing chunk?  `kind` is the caller's
+			//! OPTIONAL kind constraint ("" = none, exactly `RemoveChunk`'s
+			//! own `kind` parameter) -- REQUIRED so this resolves the
+			//! Document the SAME WAY the real remove resolver does; see (2)
+			//! below for why an unthreaded kind is a correctness bug, not
+			//! just an imprecision.  Answers from three sources, in order:
+			//!  (1) the session's own chunk-to-element attribution (which
+			//!      records the KIND of every chunk created in an element
+			//!      window) -- a recorded form-bearing kind is FINAL, no
+			//!      light-object override, so element-attributed form stays
+			//!      protected even if emissive;
+			//!  (2) for an UNATTRIBUTED name, a READ of the retained CST head
+			//!      (`mJob->GetCstDocument()` -- the document already parsed
+			//!      once at load, not a re-parse), resolved via
+			//!      `RISE::Cst::DocFindByNameAnyRole` with the SAME
+			//!      (name, kind) arguments `Job.cpp`'s `CstResolveRemoveTarget_`
+			//!      passes to it for the real remove -- RISE chunk names are
+			//!      unique only PER CATEGORY (a separate `GenericManager` per
+			//!      category; the insert-time collision check is per-kind+
+			//!      name), so a `uniformcolor_painter` and a `standard_object`
+			//!      can legally share a name, and resolving by first-match-
+			//!      any-category (the pre-fix behaviour) could silently
+			//!      classify the WRONG chunk.  A chunk whose descriptor
+			//!      category is neither Geometry nor Object is never form-
+			//!      bearing (fixes the rect_light / shape_light "shadow
+			//!      trap" -- their Light-category CST chunk expands into a
+			//!      same-named live OBJECT, which (3) below would otherwise
+			//!      find and refuse); an Object-category chunk is form-
+			//!      bearing UNLESS it is a LIGHT-OBJECT (a luminaire material
+			//!      wrapping no other material -- see the light-object rule
+			//!      at TargetIsFormBearing_'s definition, cpp, and the arc 80
+			//!      postscript in docs/agentic-redesign/80-composition-arc.md
+			//!      sec 4); a Geometry-category chunk is form-bearing UNLESS
+			//!      every Document chunk that references it is itself a
+			//!      light-object Object chunk (zero references stays form-
+			//!      bearing -- a decided conservative bound, not an
+			//!      oversight).  When the resolver reports AMBIGUITY (more
+			//!      than one Document chunk shares the name, and `kind` does
+			//!      not narrow to a single match), this function is
+			//!      CONSERVATIVE rather than falling through to (3):  every
+			//!      same-named Document chunk is classified, and the target
+			//!      is form-bearing if ANY of them is a non-exempt Geometry/
+			//!      Object chunk -- the real remove will itself refuse the
+			//!      same ambiguity honestly, or act on the one kind-narrowed
+			//!      match, but this gate must never UNDER-protect just
+			//!      because the name happens to collide;
+			//!  (3) the DEFENSIVE FALLBACK for a name the Document does not
+			//!      carry at all (or no Document at all): the live scene's
+			//!      object and geometry managers (the same caller-thread
+			//!      manager reads ElementWorldBounds_ and QueryObjectAt
+			//!      already do).
+			//! An unresolvable name returns false, i.e. it is never refused --
+			//! under-refusing is the correct direction of error for a phase
+			//! rule.  `outWhat` receives a short factual noun for the refusal
+			//! text ("the geometry chunk `sdf_geometry`", "an object in the
 			//! scene").
-			bool TargetIsFormBearing_( const std::string& target, std::string& outWhat ) const;
+			bool TargetIsFormBearing_( const std::string& target, const std::string& kind,
+			                           std::string& outWhat ) const;
 
 			//! S2 (2026-08-11): the THIRD arm of the phase refusals (design
 			//! sec 4) -- is HAND-AUTHORING this geometry chunk refused because

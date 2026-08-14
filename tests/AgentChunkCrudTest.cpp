@@ -11330,14 +11330,37 @@ static const char* const kComposeRemoveScene =
 
 //! Take a gate-armed session from PLAN to COMPOSE with one geometry chunk
 //! and one standard_object attributed to the first element.
+//!
+//! P2-4 fix round (2026-08-13): SELF-SUFFICIENT.  This used to hardcode
+//! `material mat_diffuse` on wizard_obj -- only kComposeRemoveScene declares
+//! that material.  Every other fixture this helper is now called against
+//! (the arc-80-postscript light-object scenes) does NOT, so the
+//! standard_object insert failed SILENTLY there ("Material not found
+//! 'mat_diffuse'", `.applied` never checked) -- wizard_obj never actually
+//! entered the Document, and the caller still reached the Compose phase
+//! only because FinishElement advances phase regardless of what was
+//! inserted.  Inserting its own painter + material sidesteps the
+//! dependency entirely.  The self-supplied material MUST stay an ORDINARY
+//! (non-luminaire) one -- lambertian_material carries no `exitance`, so
+//! DescriptorIsEmissiveMaterial_ never classifies it -- or wizard_obj would
+//! itself become a light-object and every test that relies on it staying
+//! form-bearing would silently stop testing what it claims to.
 static void ArcEightyToCompose( Agent::AgentSession& sess )
 {
 	sess.FileBuildPlan( TwoElementPlan() );
-	sess.InsertChunk( S1Box( "wizard_body" ) );
-	sess.InsertChunk( "standard_object\n{\n\tname wizard_obj\n\tgeometry wizard_body\n"
-	                  "\tmaterial mat_diffuse\n}" );
+	Check( sess.InsertChunk( "uniformcolor_painter\n{\n\tname arc80wc_pnt\n\tcolor 0.5 0.5 0.5\n}" ).applied,
+	       "ArcEightyToCompose: self-supplied painter insert applies" );
+	Check( sess.InsertChunk( "lambertian_material\n{\n\tname arc80wc_mat\n\treflectance arc80wc_pnt\n}" ).applied,
+	       "ArcEightyToCompose: self-supplied ORDINARY (non-luminaire) material insert applies" );
+	Check( sess.InsertChunk( S1Box( "wizard_body" ) ).applied,
+	       "ArcEightyToCompose: wizard_body geometry insert applies" );
+	Check( sess.InsertChunk( "standard_object\n{\n\tname wizard_obj\n\tgeometry wizard_body\n"
+	                         "\tmaterial arc80wc_mat\n}" ).applied,
+	       "ArcEightyToCompose: wizard_obj insert applies" );
 	sess.FinishElement();
 	sess.FinishElement();
+	Check( sess.BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+	       "ArcEightyToCompose: the session actually reached compose" );
 }
 
 static void TestComposePhaseRefusesRemovingForm()
@@ -11519,6 +11542,680 @@ static void TestComposePhaseRemoveMixedBatchAndGiveUp()
 		       "own geometry -- this arm fires only in compose, so revision during construction "
 		       "is untouched" );
 		Check( sess->BuildPhaseRefusalCount() == 0, "A80b/pieces and no refusal was spent" );
+		pJob->release();
+	}
+}
+
+
+//----------------------------------------------------------------------
+// Arc 80 postscript (2026-08-13): THE COMPOSE DELETE-BAN MUST TREAT
+// LIGHT-OBJECTS AS LIGHTS, NOT FORM.
+//
+// docs/agentic-redesign/80-composition-arc.md's postscript records the
+// live trajectory this closes: a model built 10 area lights via
+// `light_scene` in COMPOSE, then tried `remove_chunks` on 9 of them to
+// redo the lighting -- refused, "9 of the 9 chunks named are form-bearing".
+// Arc-78 sec 2.3 deliberately exempts the Light CATEGORY from compose
+// refusals (lighting rework is COMPOSE's job), but arc-81's physics makes
+// area lights out of Object-category chunks (standard_object + luminaire
+// material), so the category-only exemption stopped covering the scene's
+// actual lights.  TargetIsFormBearing_ now consults the live Document
+// between the attribution check and the live-manager fallback; see its
+// definition (AgentSession.cpp) for the light-object rule this pins.
+//----------------------------------------------------------------------
+
+//! The unattributed 4-chunk area-light expansion (painter / luminaire
+//! material / geometry / standard_object) that `light_scene` and a hand
+//! author both produce -- pre-existing scene content, exactly as
+//! kComposeRemoveScene's `obj_sph` is, because COMPOSE refuses creating
+//! GEOMETRY (a separate, untouched gate) so this shape cannot be built by
+//! an in-session insert once the session is already in compose.
+static const char* const kLightObjectExpansionScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname lop_pnt\n\tcolor 2 2 2\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname lop_mat\n\texitance lop_pnt\n\tmaterial none\n\tscale 10\n}\n\n"
+	"sphere_geometry\n{\n\tname lop_geo\n\tradius 0.4\n}\n\n"
+	"standard_object\n{\n\tname lop_obj\n\tgeometry lop_geo\n\tmaterial lop_mat\n}\n";
+
+//! A standard_object whose material glows via `emissive` on an ORDINARY
+//! ggx_material -- NOT a luminaire-kind descriptor (it carries `emissive`,
+//! not `exitance`), so DescriptorIsEmissiveMaterial_ never classifies it
+//! and ChunkIsLightObject_ can never fire.  Story glow stays form.
+static const char* const kGgxGlowObjectScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname glow_pnt\n\tcolor 5 5 5\n}\n\n"
+	"ggx_material\n{\n\tname glow_mat\n\trd glow_pnt\n\trs glow_pnt\n\talphax 0.2\n\talphay 0.2\n"
+	"\tior 1.5\n\textinction 0.0\n\temissive glow_pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname glow_geo\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname glow_obj\n\tgeometry glow_geo\n\tmaterial glow_mat\n}\n";
+
+//! A luminaire material that WRAPS a real base material (`material
+//! base_real`, not "none") -- the emissive-only clause fails, so this
+//! object is a glowing surface with real underlying reflectance, not a
+//! light fixture, and stays form.
+static const char* const kWrappedLuminaireObjectScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname wrap_pnt\n\tcolor 0.4 0.4 0.4\n}\n\n"
+	"lambertian_material\n{\n\tname base_real\n\treflectance wrap_pnt\n}\n\n"
+	"uniformcolor_painter\n{\n\tname wrap_glowpnt\n\tcolor 3 3 3\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname wrap_mat\n\texitance wrap_glowpnt\n\tmaterial base_real\n\tscale 5\n}\n\n"
+	"sphere_geometry\n{\n\tname wrap_geo\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname wrap_obj\n\tgeometry wrap_geo\n\tmaterial wrap_mat\n}\n";
+
+//! One geometry shared by a light-object AND a plain, non-light object --
+//! "every referencing chunk is a light-object" must fail here, so the
+//! geometry stays form regardless of the light-object sharing it.
+static const char* const kSharedGeometryScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname shg_pnt\n\tcolor 3 3 3\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname shg_lummat\n\texitance shg_pnt\n\tmaterial none\n\tscale 8\n}\n\n"
+	"sphere_geometry\n{\n\tname shg_geo\n\tradius 0.5\n}\n\n"
+	"standard_object\n{\n\tname shg_light_obj\n\tgeometry shg_geo\n\tmaterial shg_lummat\n}\n\n"
+	"uniformcolor_painter\n{\n\tname shg_plainpnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname shg_plainmat\n\treflectance shg_plainpnt\n}\n\n"
+	"standard_object\n{\n\tname shg_plain_obj\n\tgeometry shg_geo\n\tmaterial shg_plainmat\n}\n";
+
+//! P1-1 fix round (2026-08-13): a `uniformcolor_painter` and an ORDINARY
+//! (non-luminaire) `standard_object` deliberately share the bare name
+//! "Collide" -- legal, because names are unique only PER CATEGORY.  The
+//! painter is declared FIRST, so a category-blind first-match resolver
+//! (the pre-fix bug) reads the painter and reports "not form", while the
+//! real remove resolves the OBJECT.  Pre-existing content, unattributed.
+static const char* const kCollisionShadowScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname Collide\n\tcolor 0.2 0.2 0.2\n}\n\n"
+	"uniformcolor_painter\n{\n\tname coll_pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname coll_mat\n\treflectance coll_pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname coll_geo\n\tradius 0.4\n}\n\n"
+	"standard_object\n{\n\tname Collide\n\tgeometry coll_geo\n\tmaterial coll_mat\n}\n";
+
+//! P1-1 fix round mirror: the SAME shape of collision (a painter and a
+//! standard_object sharing a bare name, painter declared first), but this
+//! time the object IS a genuine light-object -- the collision must not
+//! itself defeat the exemption.
+static const char* const kCollisionLightObjectScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname CollideLight\n\tcolor 0.2 0.2 0.2\n}\n\n"
+	"uniformcolor_painter\n{\n\tname cl_pnt\n\tcolor 5 5 5\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname cl_mat\n\texitance cl_pnt\n\tmaterial none\n\tscale 8\n}\n\n"
+	"sphere_geometry\n{\n\tname cl_geo\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname CollideLight\n\tgeometry cl_geo\n\tmaterial cl_mat\n}\n";
+
+//! P1-2 fix round: the luminaire's BASE material name ("BaseX") collides
+//! with an earlier-declared, non-Material `uniformcolor_painter` of the
+//! SAME name -- a real `lambertian_material` named "BaseX" also exists
+//! (declared after the painter).  A category-blind first-match resolver
+//! (the pre-fix bug) reads the painter, decides the base does not resolve
+//! to a real material, and wrongly calls the luminaire emissive-only; the
+//! fix must find the REAL Material-category "BaseX" and keep the object
+//! form (it genuinely wraps a real base material).
+static const char* const kWrappedLuminaireCollisionScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname BaseX\n\tcolor 0.9 0.9 0.9\n}\n\n"
+	"uniformcolor_painter\n{\n\tname wlc_base_pnt\n\tcolor 0.4 0.4 0.4\n}\n\n"
+	"lambertian_material\n{\n\tname BaseX\n\treflectance wlc_base_pnt\n}\n\n"
+	"uniformcolor_painter\n{\n\tname wlc_glow_pnt\n\tcolor 3 3 3\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname wlc_lummat\n\texitance wlc_glow_pnt\n\tmaterial BaseX\n\tscale 6\n}\n\n"
+	"sphere_geometry\n{\n\tname wlc_geo\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname wlc_obj\n\tgeometry wlc_geo\n\tmaterial wlc_lummat\n}\n";
+
+//! P2-1 fix round: a geometry literally named "auto" -- coincidentally the
+//! SAME text as the rasterizer's `oidn_quality auto` (an Enum-kind param,
+//! NOT Reference-kind).  Pre-fix, CollectChunksReferencingName_ matched
+//! ANY param's joined value, so the rasterizer counted as a "referencer"
+//! of the geometry -- a non-Object referencer that defeated the light-
+//! object exemption's "every referencing chunk is a light-object" test,
+//! spuriously refusing the geometry even though its only REAL referencer
+//! (the `geometry` Reference-kind param on the light-object below) is a
+//! light-object.  Fixed: only Reference-kind params count.
+static const char* const kReferenceKindRestrictionScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n\toidn_quality auto\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname rk_pnt\n\tcolor 6 6 6\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname rk_mat\n\texitance rk_pnt\n\tmaterial none\n\tscale 8\n}\n\n"
+	"sphere_geometry\n{\n\tname auto\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname rk_obj\n\tgeometry auto\n\tmaterial rk_mat\n}\n";
+
+//! P3-2 fix round: a csg_object whose `material` names a bare luminaire.
+//! Rule 1 of the light-object definition excludes csg_object outright (csg
+//! COMPOSES other objects rather than owning geometry directly), so this
+//! must stay form-bearing regardless of what its material is.
+static const char* const kCsgLightExclusionScene =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+	"omni_light\n{\n\tname key\n\tposition 0 2 4\n\tpower 40\n\tcolor 1 1 1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname csg_plainpnt\n\tcolor 0.5 0.5 0.5\n}\n\n"
+	"lambertian_material\n{\n\tname csg_plainmat\n\treflectance csg_plainpnt\n}\n\n"
+	"sphere_geometry\n{\n\tname csg_geo_a\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname csg_opa\n\tgeometry csg_geo_a\n\tmaterial csg_plainmat\n}\n\n"
+	"sphere_geometry\n{\n\tname csg_geo_b\n\tradius 0.3\n}\n\n"
+	"standard_object\n{\n\tname csg_opb\n\tgeometry csg_geo_b\n\tmaterial csg_plainmat\n\tposition 0.2 0 0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname csg_lum_pnt\n\tcolor 6 6 6\n}\n\n"
+	"lambertian_luminaire_material\n{\n\tname csg_lum_mat\n\texitance csg_lum_pnt\n\tmaterial none\n\tscale 8\n}\n\n"
+	"csg_object\n{\n\tname csg_light_obj\n\tobja csg_opa\n\tobjb csg_opb\n\toperation union\n\tmaterial csg_lum_mat\n}\n";
+
+static void TestComposePhaseLightObjectExemption()
+{
+	std::printf( "A80c: the compose delete-ban treats light-objects as lights, not form...\n" );
+
+	// ---- (1) THE SHADOW TRAP: bare rect_light / shape_light, single and
+	//      batch.  Inserted directly in COMPOSE (Light category, so the
+	//      untouched creation ban never sees them) then removed. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_bare.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80c/bare fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+
+		Check( sess->InsertChunk( "rect_light\n{\n\tname a80c_rect\n\tcenter 0 3 0\n\tsize 1 1\n"
+		                          "\tfacing 0 -1 0\n\tcolor 1 1 1\n\texitance 20\n}" ).applied,
+		       "A80c/bare a rect_light inserts cleanly in compose" );
+		Check( sess->InsertChunk( "shape_light\n{\n\tname a80c_shape\n\tshape sphere\n\tcenter 2 3 0\n"
+		                          "\tsize 0.3\n\texitance 50\n}" ).applied,
+		       "A80c/bare a shape_light inserts cleanly too" );
+
+		const std::string docBeforeSingle = sess->ReadDocument();
+		const Agent::AgentChunkResult r1 = sess->RemoveChunk( "a80c_rect", "" );
+		Check( r1.applied,
+		       "A80c/bare MONEY ASSERTION: removing a bare rect_light in compose SUCCEEDS -- its "
+		       "Document chunk is Light-category even though its derive creates a same-named "
+		       "OBJECT the live manager would otherwise find and refuse" );
+		Check( sess->ReadDocument() != docBeforeSingle,
+		       "A80c/bare and the document actually changed" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A80c/bare and no refusal was spent" );
+
+		Check( sess->InsertChunk( "rect_light\n{\n\tname a80c_rect2\n\tcenter 0 3 1\n\tsize 1 1\n"
+		                          "\tfacing 0 -1 0\n\tcolor 1 1 1\n\texitance 20\n}" ).applied,
+		       "A80c/bare a second rect_light inserts, for the BATCH arm" );
+		const std::string docBeforeBatch = sess->ReadDocument();
+		std::vector<std::string> batch;
+		batch.push_back( "a80c_shape" );
+		batch.push_back( "a80c_rect2" );
+		Check( sess->RemoveChunks( batch ).applied,
+		       "A80c/bare MONEY ASSERTION: the BATCH arm succeeds too -- both targets are lights, "
+		       "not form" );
+		Check( sess->ReadDocument() != docBeforeBatch,
+		       "A80c/bare P2-3: and the document actually changed for the BATCH arm too" );
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "A80c/bare and neither arm spent a refusal" );
+		pJob->release();
+	}
+
+	// ---- (2) THE GENERAL FORM: the 4-chunk expansion, unattributed. ----
+	// (2a) batch remove of all four succeeds.
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_expansion_batch.RISEscene" );
+		Job* pJob = LoadScene( kLightObjectExpansionScene, tmp );
+		Check( pJob != nullptr, "A80c/expansion fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		std::vector<std::string> four;
+		four.push_back( "lop_pnt" );
+		four.push_back( "lop_mat" );
+		four.push_back( "lop_geo" );
+		four.push_back( "lop_obj" );
+		const Agent::AgentSession::AgentRemoveBatchResult br = sess->RemoveChunks( four );
+		Check( br.applied,
+		       "A80c/expansion MONEY ASSERTION: batch remove of the WHOLE unattributed 4-chunk "
+		       "area-light expansion succeeds in compose -- the painter and material were already "
+		       "removable (arc 78 sec 2.3), and the geometry and object now are too" );
+		Check( sess->ReadDocument() != docBefore, "A80c/expansion and the document changed" );
+		Check( sess->BuildPhaseRefusalCount() == 0, "A80c/expansion and no refusal was spent" );
+		pJob->release();
+	}
+	// (2b) object-only remove succeeds; the now-orphaned geometry is
+	//      refused -- the decided conservative bound, pinned so the
+	//      decision is visible rather than accidental.
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_expansion_orphan.RISEscene" );
+		Job* pJob = LoadScene( kLightObjectExpansionScene, tmp );
+		Check( pJob != nullptr, "A80c/orphan fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+
+		Check( sess->RemoveChunk( "lop_obj", "" ).applied,
+		       "A80c/orphan the standard_object alone removes cleanly (light-object)" );
+		const std::string docBeforeGeo = sess->ReadDocument();
+		const Agent::AgentChunkResult rGeo = sess->RemoveChunk( "lop_geo", "" );
+		Check( !rGeo.applied && rGeo.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/orphan MONEY ASSERTION: the now-orphaned geometry (zero referencing chunks "
+		       "left) is REFUSED -- the decided conservative bound: a geometry nobody yet "
+		       "references is not provably a light's geometry" );
+		Check( sess->ReadDocument() == docBeforeGeo,
+		       "A80c/orphan P2-3 RED-PROVE: the refused geometry remove is byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 1,
+		       "A80c/orphan and that refusal spent exactly one" );
+		pJob->release();
+	}
+
+	// ---- (3) STORY GLOW via an ORDINARY material stays form. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_ggxglow.RISEscene" );
+		Job* pJob = LoadScene( kGgxGlowObjectScene, tmp );
+		Check( pJob != nullptr, "A80c/ggxglow fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "glow_obj", "" );
+		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/ggxglow MONEY ASSERTION: an object whose material glows via `emissive` on an "
+		       "ORDINARY ggx_material is REFUSED -- that descriptor carries `emissive`, not "
+		       "`exitance`, so it is never luminaire-kind and the light-object rule cannot fire" );
+		Check( sess->ReadDocument() == docBefore, "A80c/ggxglow RED-PROVE: byte-identical" );
+		pJob->release();
+	}
+
+	// ---- (4) A LUMINAIRE WRAPPING A REAL BASE MATERIAL stays form. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_wrapped.RISEscene" );
+		Job* pJob = LoadScene( kWrappedLuminaireObjectScene, tmp );
+		Check( pJob != nullptr, "A80c/wrapped fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "wrap_obj", "" );
+		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/wrapped MONEY ASSERTION: a luminaire material that WRAPS a real base material "
+		       "(glowing skin over a base) fails the emissive-only clause, so the object is REFUSED "
+		       "-- it is a surface with real reflectance, not a light fixture" );
+		Check( sess->ReadDocument() == docBefore, "A80c/wrapped RED-PROVE: byte-identical" );
+		pJob->release();
+	}
+
+	// ---- (5) ELEMENT-ATTRIBUTED emissive-only object: attribution wins,
+	//      and the cross-element seam is untouched. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_attributed.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80c/attributed fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+		Check( sess->FileBuildPlan( TwoElementPlan() ).ok, "A80c/attributed the plan files" );
+		// Build the 4-chunk expansion INSIDE the "wizard" element window,
+		// so every one of the four is attributed to "wizard".
+		Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname a80c_att_pnt\n\tcolor 2 2 2\n}" ).applied,
+		       "A80c/attributed painter insert applies inside the element window" );
+		Check( sess->InsertChunk( "lambertian_luminaire_material\n{\n\tname a80c_att_mat\n"
+		                          "\texitance a80c_att_pnt\n\tmaterial none\n\tscale 10\n}" ).applied,
+		       "A80c/attributed luminaire material insert applies" );
+		Check( sess->InsertChunk( "sphere_geometry\n{\n\tname a80c_att_geo\n\tradius 0.4\n}" ).applied,
+		       "A80c/attributed geometry insert applies" );
+		Check( sess->InsertChunk( "standard_object\n{\n\tname a80c_att_obj\n\tgeometry a80c_att_geo\n"
+		                          "\tmaterial a80c_att_mat\n}" ).applied,
+		       "A80c/attributed standard_object insert applies" );
+		Check( sess->ChunkElement( "a80c_att_obj" ) == "wizard",
+		       "A80c/attributed and the object is attributed to the wizard element" );
+
+		// finish_element moves the active element to "terrain" -- still
+		// PIECES, but a DIFFERENT element's window.  The cross-element gate
+		// must still refuse the wizard-attributed object: this seam is
+		// UNTOUCHED by the light-object exemption (see the comment at
+		// CheckElementWindowForEdit_).
+		Check( sess->FinishElement().ok, "A80c/attributed finish_element closes wizard" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Pieces,
+		       "A80c/attributed still PIECES -- terrain has not finished yet" );
+		const std::string docBeforeCross = sess->ReadDocument();
+		const Agent::AgentChunkResult rCross = sess->RemoveChunk( "a80c_att_obj", "" );
+		Check( !rCross.applied && rCross.message.find( "was created while the element" ) != std::string::npos,
+		       "A80c/attributed MONEY ASSERTION: cross-element edit from terrain's window still "
+		       "refuses the wizard-attributed emissive-only object -- the light-object exemption "
+		       "does not apply here, seam pinned" );
+		Check( sess->ReadDocument() == docBeforeCross,
+		       "A80c/attributed P2-3 RED-PROVE: the cross-element refusal is byte-identical" );
+
+		Check( sess->FinishElement().ok, "A80c/attributed finish_element closes terrain -> compose" );
+		Check( sess->BuildPhase() == Agent::AgentSession::AgentBuildPhase::Compose,
+		       "A80c/attributed now in compose" );
+		const std::string docBeforeCompose = sess->ReadDocument();
+		const Agent::AgentChunkResult rCompose = sess->RemoveChunk( "a80c_att_obj", "" );
+		Check( !rCompose.applied && rCompose.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/attributed MONEY ASSERTION: in COMPOSE the SAME emissive-only object is still "
+		       "refused -- attribution wins outright, no light-object override (rule 1)" );
+		Check( sess->ReadDocument() == docBeforeCompose,
+		       "A80c/attributed P2-3 RED-PROVE: the compose-phase refusal is byte-identical" );
+		pJob->release();
+	}
+
+	// ---- (6) A GEOMETRY SHARED by a light-object AND a plain object stays
+	//      form -- "every referencing chunk is a light-object" fails. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_shared.RISEscene" );
+		Job* pJob = LoadScene( kSharedGeometryScene, tmp );
+		Check( pJob != nullptr, "A80c/shared fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBeforeShared = sess->ReadDocument();
+
+		// The light-object half removes cleanly on its own -- sharing the
+		// geometry with a non-light object does not stop the OBJECT chunk
+		// itself from being a light-object.
+		Check( sess->RemoveChunk( "shg_light_obj", "" ).applied,
+		       "A80c/shared the light-object half removes on its own" );
+		Check( sess->ReadDocument() != docBeforeShared,
+		       "A80c/shared P2-3: and the document actually changed" );
+		pJob->release();
+	}
+	// A SEPARATE fixture load for the geometry itself, so the refusal below
+	// is attributed to sharing rather than to (already having removed)
+	// shg_light_obj in the block above.
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_shared2.RISEscene" );
+		Job* pJob = LoadScene( kSharedGeometryScene, tmp );
+		Check( pJob != nullptr, "A80c/shared2 fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "shg_geo", "" );
+		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/shared2 MONEY ASSERTION: a geometry referenced by BOTH a light-object and a "
+		       "non-light object is REFUSED -- not every referencing chunk is a light-object" );
+		Check( sess->ReadDocument() == docBefore, "A80c/shared2 RED-PROVE: byte-identical" );
+		pJob->release();
+	}
+
+	// ---- (7) THE UPDATED REFUSAL TEXT names reopen_element and states
+	//      light-object removability, in the same facts-only register. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_text.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80c/text fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "wizard_obj", "" );
+		Check( !r.applied, "A80c/text the ordinary form-bearing refusal still fires" );
+		Check( r.message.find( "reopen_element" ) != std::string::npos,
+		       "A80c/text and still names reopen_element" );
+		Check( r.message.find( "as can an area light's chunks" ) != std::string::npos &&
+		       r.message.find( "luminaire material wrapping no other material" ) != std::string::npos,
+		       "A80c/text MONEY ASSERTION: and now states that an area light's chunks are "
+		       "removable too, with the TRUE clause that defines what counts as one here" );
+		Check( r.message.find( "a csg_object never qualifies" ) != std::string::npos,
+		       "A80c/text P2-2 MONEY ASSERTION: and the reworded clause is TRUE -- it now says which "
+		       "Object kind can be a light here (standard_object) and states the csg exclusion, "
+		       "instead of the false pre-fix claim that ANY object qualifies" );
+		pJob->release();
+	}
+
+	// ---- (8) P3-2: PIN THE csg_object EXCLUSION.  Rule 1 of the
+	//      light-object definition excludes csg_object outright -- no test
+	//      exercised it before this fix round. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_csgexclusion.RISEscene" );
+		Job* pJob = LoadScene( kCsgLightExclusionScene, tmp );
+		Check( pJob != nullptr, "A80c/csgexclusion fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "csg_light_obj", "" );
+		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/csgexclusion P3-2 MONEY ASSERTION: a csg_object whose `material` names a bare "
+		       "luminaire is STILL REFUSED -- rule 1 excludes csg_object outright (it composes other "
+		       "objects rather than owning geometry directly), so the light-object rule can never fire "
+		       "for it regardless of what its material is" );
+		Check( sess->ReadDocument() == docBefore, "A80c/csgexclusion RED-PROVE: byte-identical" );
+		pJob->release();
+	}
+
+	// ---- (9) THE DOCUMENTED-HOLE ADDENDUM (arbitrated decision): edit-
+	//      then-remove.  Repointing a story object's `material` at an
+	//      existing bare luminaire via an ORDINARY compose-phase edit, then
+	//      removing it, SUCCEEDS -- same class as arc-80 sec 4's
+	//      reopen_element hole: the ban makes destruction deliberate, not
+	//      impossible, because the live-document definition ("material
+	//      actually worn") was chosen over provenance bookkeeping by
+	//      design.  See docs/agentic-redesign/80-composition-arc.md sec 4.
+	//      MUST target an UNATTRIBUTED object -- rule 1 (attribution) wins
+	//      outright and never consults the Document, so this uses
+	//      kComposeRemoveScene's own PRE-EXISTING `obj_sph` (loaded with
+	//      the scene, no element window ever built it), not wizard_obj
+	//      (ArcEightyToCompose attributes wizard_obj to the "wizard"
+	//      element, which would make this a no-op test of rule 1 instead). ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_editthenremove.RISEscene" );
+		Job* pJob = LoadScene( kComposeRemoveScene, tmp );
+		Check( pJob != nullptr, "A80c/editthenremove fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+
+		// A bare luminaire material is freely insertable in compose -- only
+		// GEOMETRY creation is banned there (CheckComposePhaseForCreate_).
+		Check( sess->InsertChunk( "uniformcolor_painter\n{\n\tname a80c_eh_pnt\n\tcolor 4 4 4\n}" ).applied,
+		       "A80c/editthenremove luminaire painter inserts in compose" );
+		Check( sess->InsertChunk( "lambertian_luminaire_material\n{\n\tname a80c_eh_mat\n"
+		                          "\texitance a80c_eh_pnt\n\tmaterial none\n\tscale 8\n}" ).applied,
+		       "A80c/editthenremove bare luminaire material inserts in compose" );
+
+		Agent::AgentSetPatch p;
+		p.target = "obj_sph";
+		p.kind   = "standard_object";
+		p.param  = "material";
+		p.value  = "a80c_eh_mat";
+		Check( sess->ProposePatch( p ).applied,
+		       "A80c/editthenremove the material re-point applies -- an ORDINARY edit, not creation, "
+		       "so nothing here refuses it" );
+
+		Check( sess->RemoveChunk( "obj_sph", "" ).applied,
+		       "A80c/editthenremove MONEY ASSERTION (documented deliberate hole): after the re-point "
+		       "obj_sph IS, by the live-document definition, a light-object -- its material actually "
+		       "worn is the bare luminaire -- so the delete-ban no longer protects it; the ban makes "
+		       "destroying a story object's form deliberate, not impossible, same class as the "
+		       "reopen_element hole" );
+		pJob->release();
+	}
+
+	// ---- (10) P1-1: THE COLLISION SHADOW.  A painter and an ORDINARY
+	//      standard_object share a bare name; the painter is declared
+	//      first.  The gate must resolve the SAME chunk the real remove
+	//      does -- with kind given, and with kind empty. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_collision.RISEscene" );
+		Job* pJob = LoadScene( kCollisionShadowScene, tmp );
+		Check( pJob != nullptr, "A80c/collision fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult rKind = sess->RemoveChunk( "Collide", "object" );
+		Check( !rKind.applied && rKind.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/collision P1-1 MONEY ASSERTION (kind given): `kind=\"object\"` resolves the SAME "
+		       "chunk the real remove would (kind-narrowed) -- not the painter that shadows it by "
+		       "declaration order -- so the ordinary standard_object is REFUSED" );
+		Check( sess->ReadDocument() == docBefore,
+		       "A80c/collision RED-PROVE: kind-given refusal is byte-identical" );
+
+		const Agent::AgentChunkResult rNoKind = sess->RemoveChunk( "Collide", "" );
+		Check( !rNoKind.applied && rNoKind.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/collision P1-1 MONEY ASSERTION (kind empty): with NO kind the bare name is "
+		       "genuinely ambiguous (a painter and a standard_object both named \"Collide\") -- the "
+		       "conservative ambiguity arm still REFUSES, because one of the ambiguous matches (the "
+		       "object) is a non-exempt Geometry/Object chunk, so this gate never under-protects on a "
+		       "cross-category collision" );
+		Check( sess->ReadDocument() == docBefore,
+		       "A80c/collision RED-PROVE: kind-empty refusal is byte-identical too" );
+		pJob->release();
+	}
+
+	// ---- (11) P1-1 MIRROR: a collision where the object IS a genuine
+	//      light-object must NOT lose its exemption.  Two SEPARATE fixture
+	//      loads (same reason block (6)'s "shared"/"shared2" split does):
+	//      removing the object in the first sub-block would leave only the
+	//      painter behind, making the second sub-block's ambiguity claim
+	//      vacuous.  BOTH sub-blocks are SAFETY NETS, not fix
+	//      discriminators -- pre-fix the gate mis-allowed these calls for
+	//      the wrong reason and the ENGINE's own kind-narrowing /
+	//      ambiguity refusal produced the identical observable outcome,
+	//      so they pin against a future over-tightening rather than prove
+	//      the fix.  The genuine P1-1/P1-2 discriminators are blocks (10)
+	//      and (12). ----
+	// (11a) kind="object": the collision must not defeat the exemption.
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_collision_light_kind.RISEscene" );
+		Job* pJob = LoadScene( kCollisionLightObjectScene, tmp );
+		Check( pJob != nullptr, "A80c/collisionlight/kind fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult rKind = sess->RemoveChunk( "CollideLight", "object" );
+		Check( rKind.applied,
+		       "A80c/collisionlight/kind P1-1 MIRROR safety net (same outcome pre-fix via the "
+		       "engine's own kind-narrowing): kind-narrowed resolution finds the light-object "
+		       "despite the painter sharing its name -- the collision itself must not defeat the "
+		       "exemption" );
+		Check( sess->ReadDocument() != docBefore,
+		       "A80c/collisionlight/kind and the document actually changed" );
+		pJob->release();
+	}
+	// (11b) kind="": the bare name is genuinely ambiguous (painter + light-
+	//       object).  The phase GATE must not refuse -- neither ambiguous
+	//       match is a non-exempt Geometry/Object chunk (the painter is not
+	//       Geometry/Object at all, and the object IS a light-object) -- so
+	//       the call reaches the real engine, which refuses the ambiguity
+	//       HONESTLY (a different reason than "form-bearing", and no phase
+	//       refusal is spent for it).
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_collision_light_nokind.RISEscene" );
+		Job* pJob = LoadScene( kCollisionLightObjectScene, tmp );
+		Check( pJob != nullptr, "A80c/collisionlight/nokind fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult rNoKind = sess->RemoveChunk( "CollideLight", "" );
+		Check( !rNoKind.applied && rNoKind.message.find( "form-bearing" ) == std::string::npos &&
+		       rNoKind.message.find( "ambiguous" ) != std::string::npos,
+		       "A80c/collisionlight/nokind P1-1 MIRROR safety net (same outcome pre-fix: the engine "
+		       "refuses the ambiguity either way): with no kind the phase gate does NOT refuse (no "
+		       "ambiguous match is non-exempt form) -- the call reaches the engine, which refuses "
+		       "the genuine name ambiguity on its own honest terms, not as a phase rule" );
+		Check( sess->ReadDocument() == docBefore,
+		       "A80c/collisionlight/nokind RED-PROVE: the engine-level ambiguity refusal is "
+		       "byte-identical" );
+		Check( sess->BuildPhaseRefusalCount() == 0,
+		       "A80c/collisionlight/nokind and no PHASE refusal was spent for the ambiguity -- it is "
+		       "not a form-bearing refusal at all" );
+		pJob->release();
+	}
+
+	// ---- (12) P1-2: WRAPPED-LUMINAIRE COLLISION.  The luminaire's base
+	//      material name collides with an earlier non-Material chunk; a
+	//      real Material chunk of that name also exists -- the object must
+	//      stay REFUSED (it genuinely wraps a real base material). ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_wrappedcollision.RISEscene" );
+		Job* pJob = LoadScene( kWrappedLuminaireCollisionScene, tmp );
+		Check( pJob != nullptr, "A80c/wrappedcollision fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		const Agent::AgentChunkResult r = sess->RemoveChunk( "wlc_obj", "" );
+		Check( !r.applied && r.message.find( "form-bearing" ) != std::string::npos,
+		       "A80c/wrappedcollision P1-2 MONEY ASSERTION: the base-material lookup resolves the "
+		       "REAL Material-category chunk (not the earlier-declared, same-named painter that "
+		       "shadows it) -- the luminaire genuinely wraps a real base material, so the object "
+		       "stays form and is REFUSED" );
+		Check( sess->ReadDocument() == docBefore, "A80c/wrappedcollision RED-PROVE: byte-identical" );
+		pJob->release();
+	}
+
+	// ---- (13) P2-1: REFERENCE-KIND RESTRICTION.  A geometry named "auto"
+	//      coincidentally matches the rasterizer's `oidn_quality auto`
+	//      (Enum, not Reference) -- that must NOT count as a referencer, so
+	//      the geometry's only REAL referencer (a light-object's `geometry`
+	//      Reference-kind param) is what decides the exemption.  BATCH
+	//      remove of [geometry, light-object] together, same reason block
+	//      (2a) removes its whole 4-chunk expansion in one call rather than
+	//      the geometry alone: removing a geometry a live object STILL
+	//      references fails referential integrity regardless of the phase
+	//      gate's verdict -- that failure mode is orthogonal to what this
+	//      case is pinning, so both leave in the SAME atomic re-derive. ----
+	{
+		const std::string tmp = TempPath( "agentcrud_a80c_refkind.RISEscene" );
+		Job* pJob = LoadScene( kReferenceKindRestrictionScene, tmp );
+		Check( pJob != nullptr, "A80c/refkind fixture loads" );
+		if( !pJob ) return;
+		std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+		ArcEightyToCompose( *sess );
+		const std::string docBefore = sess->ReadDocument();
+
+		std::vector<std::string> refkindBatch;
+		refkindBatch.push_back( "auto" );
+		refkindBatch.push_back( "rk_obj" );
+		const Agent::AgentSession::AgentRemoveBatchResult r = sess->RemoveChunks( refkindBatch );
+		Check( r.applied,
+		       "A80c/refkind P2-1 MONEY ASSERTION: batch-removing the geometry named \"auto\" together "
+		       "with its light-object is not refused by the phase gate, even though the rasterizer's "
+		       "`oidn_quality auto` shares the geometry's name -- that param is Enum-kind, not "
+		       "Reference-kind, so it is not counted as a referencer, and the geometry's only REAL "
+		       "referencer (the light-object's `geometry` param) makes it exempt (was spuriously "
+		       "refused before this fix round, when every param's joined value counted)" );
+		Check( sess->ReadDocument() != docBefore, "A80c/refkind and the document actually changed" );
 		pJob->release();
 	}
 }
@@ -15242,6 +15939,7 @@ int main()
 	// Arc 80 (2026-08-12): the compose phase may not delete form.
 	TestComposePhaseRefusesRemovingForm();
 	TestComposePhaseRemoveMixedBatchAndGiveUp();
+	TestComposePhaseLightObjectExemption();
 
 	// Arc 81 (2026-08-12): the clean-room lighting pass and its gate.
 	TestLightSceneHappyPath();

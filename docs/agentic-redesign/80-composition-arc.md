@@ -216,3 +216,156 @@ background.  **Answered by the census itself in §6.1: the scene is not empty.**
 contains 17 visible objects at ~3% contrast, which is indistinguishable from
 empty to the eye and to a model.  Everything ruled out above was ruled out
 correctly; the remaining axis was the one never suspected.
+
+## Postscript: the light-object exemption (2026-08-13)
+
+§4's Light-category exemption ("Lights, cameras, film, rasterizers, materials
+and painters stay removable") is arc-78 §2.3's rule, stated in terms of
+`ChunkCategory`.  It stopped covering the scene's actual lights once arc-81's
+physics moved area lights into **Object**-category chunks — a
+`standard_object` bound to a luminaire material, which is exactly what
+`rect_light`, `shape_light` and `light_scene`'s builder produce (arc-81 §7.2).
+
+**The trajectory that surfaced it** (live GUI, `20260813T231623Z-267620ce.jsonl`):
+a model built 10 area lights via `light_scene` in COMPOSE, then tried
+`remove_chunks` on 9 of them to redo the lighting.  Refused: "9 of the 9
+chunks named are form-bearing."  A model that cannot re-light its own scene
+cannot compose it — the exact failure §4 exists to prevent, on the one
+category §4's classifier never anticipated.
+
+**Two concrete routes, both closed:**
+
+1. **The shadow trap.**  A `rect_light` / `shape_light` chunk persists in the
+   CST as a Light-category chunk named `<name>` (parse-time sugar), but its
+   derive ALSO creates an OBJECT of the same name in the live object manager.
+   `TargetIsFormBearing_`'s live-manager fallback found that object and
+   refused a chunk that is literally Light-category in the Document.
+2. **The general form.**  `light_scene` and hand authors emit the 4-chunk
+   expansion (painter / luminaire material / geometry / standard_object) as
+   REAL Document chunks.  The object and geometry chunks are genuinely
+   Object/Geometry category and, unattributed, were refused outright.
+
+**The fix.**  `TargetIsFormBearing_` (`src/Library/Agent/AgentSession.cpp`)
+now consults the live Document (a READ of the retained CST head, not a
+re-parse) between the attribution check and the live-manager fallback.  For
+an unattributed name the Document carries, the DOCUMENT KIND wins: a chunk
+whose descriptor category is neither Geometry nor Object is never form-bearing
+(closes the shadow trap outright — every plain light / material / painter
+chunk, including rect_light/shape_light's own Light-category chunk, is
+covered here); an Object-category chunk is form-bearing UNLESS it is a
+**light-object**; a Geometry-category chunk is form-bearing UNLESS every
+Document chunk that references it is itself a light-object Object chunk
+(zero references stays form-bearing — a decided conservative bound, not an
+oversight: the shared 3-refusal cap and `reopen_element` are the escape).
+
+**Light-object, the rule.**  A Document chunk is a light-object iff ALL of:
+its descriptor category is Object and its kind is not `csg_object` (csg
+composes other objects; it does not itself carry the light's geometry);
+its `material` param names a Document chunk that the registry classifies as
+a luminaire material (an `exitance` parameter on the descriptor — the SAME
+rule `light_scene`'s admissibility check already uses, arc-81 §7.2); and
+that luminaire chunk is EMISSIVE-ONLY — its own base-material param is
+absent, `none`, or does not resolve to a real Material-category chunk.
+`rect_light` / `shape_light` always pass a `none` base, so they always
+qualify; a story object whose luminaire WRAPS a real surface material
+(glowing skin over a base) fails the emissive-only clause and stays form.
+
+**Boundary rationale.**  Story glow via `emissive` on ggx/pbr materials is
+NOT luminaire-kind (those descriptors carry `emissive`, not `exitance`) — it
+stays form, by construction, without any special case.  Attribution wins
+unconditionally: a light-object built inside an element window is that
+element's own form (rule 1 of `TargetIsFormBearing_`), so the light-object
+exemption only ever applies to UNATTRIBUTED chunks — the cross-element gate
+in `CheckElementWindowForEdit_` needed no change, and a comment there records
+that this seam was checked, not skipped.  Under-refusal remains the correct
+direction of error (zero-reference geometry, and any name the Document does
+not carry at all), bounded by the existing 3-refusal cap and give-up.
+
+Regression coverage: `tests/AgentChunkCrudTest.cpp` (the A80-series compose-
+phase-remove tests), pinning both the shadow trap and the general 4-chunk
+form, the conservative orphan-geometry bound, the story-glow and wrapped-
+luminaire non-exemptions, and the cross-element seam.
+
+### Fix round (2026-08-13): cross-category collisions, the reference scan, and the documented hole
+
+A review pass on the postscript's implementation found two correctness bugs
+in how it resolved names against the Document, one over-eager reference
+scan, and confirmed a deliberate gap in what the exemption protects.  All
+four are folded in here because they change what the rule above actually
+means on a real (collision-bearing) scene, not just how it is implemented.
+
+**Collision handling now matches the real remove resolver, exactly.**  RISE
+chunk names are unique only PER CATEGORY — each category has its own
+`GenericManager`, and the insert-time collision check is per-kind+name — so
+`uniformcolor_painter { name Hero }` and `standard_object { name Hero }`
+coexist legally.  `TargetIsFormBearing_`'s Document lookup used to resolve
+the FIRST same-named chunk in document order, regardless of category: a
+painter `Hero` declared before an object `Hero` made `remove_chunk("Hero",
+kind="object")` sail through the gate reading the painter (non-form → not
+refused) while the real removal deleted the OBJECT — the gate and the delete
+had silently diverged.  The gate now resolves via
+`RISE::Cst::DocFindByNameAnyRole`, the SAME kind-aware, ambiguity-aware
+resolver `Job.cpp`'s `CstResolveRemoveTarget_` calls for the real remove,
+passed the SAME `(name, kind)` the caller passed to the real remove — so the
+two can no longer disagree.  When the resolver reports genuine AMBIGUITY
+(more than one Document chunk shares the name, and `kind` does not narrow to
+one), the gate is CONSERVATIVE rather than falling back to the live-manager
+read: it classifies every same-named candidate, and the target is
+form-bearing if ANY of them is a non-exempt Geometry/Object chunk — the real
+remove is left to refuse the same ambiguity honestly (or act on its own
+kind-narrowed match) once the gate has decided nothing here needs
+protecting.  The same category-blindness existed one layer down: the
+light-object classifier's two material lookups (the object's `material` →
+the luminaire chunk, and the luminaire's own base `material` → the wrapped
+material) also resolved the first same-named chunk of ANY category — a
+non-Material chunk sharing either name could shadow the real material and
+falsify the "wraps a real base material stays form" guarantee.  Both lookups
+now require the resolved chunk's descriptor category to be Material.
+
+**The light-object rule, restated precisely.**  Of the three Object-category
+chunk kinds (`standard_object`, `csg_object`, `override_object`), only a
+`standard_object` can ever be a light-object: `csg_object` is excluded by
+rule 1 outright, and `override_object` declares no `material` param at all
+(it only overrides an existing object's transform), so the classifier's
+`material`-lookup clause can never fire for it.  The compose-phase refusal
+text now says this plainly — "a standard_object is a light here when its
+material is a luminaire material wrapping no other material, e.g. what
+rect_light, shape_light and light_scene produce; a csg_object never
+qualifies" — replacing an earlier "an object is a light here" phrasing that
+was literally false for a `csg_object` carrying a bare luminaire (rule 1
+already refused it; the text just failed to say so).
+
+**The geometry-reference scan is now kind-restricted.**  The Geometry-clause
+walk (does every Document chunk that references a geometry come from a
+light-object?) used to compare EVERY param's joined value against the
+geometry's name, on every chunk in the Document — so a rasterizer's
+`oidn_quality auto` could make a geometry literally named `auto` look
+"referenced" by a non-Object chunk, defeating the exemption on a pure text
+coincidence (a spurious refusal, safe in direction but wrong in fact).  The
+scan now counts a param only when the chunk's registry descriptor declares
+that param `ValueKind::Reference` — the same metadata the parser itself uses
+to know a value names another chunk.
+
+**The documented hole (arbitrated decision), same class as `reopen_element`.**
+An UNATTRIBUTED story object's `material` can be repointed at an existing
+bare luminaire via an ordinary `propose_patch` edit — edits are never banned
+in compose, only geometry CREATION and (now) non-light-object FORM removal
+are — and the object then reads, by the live-document definition, as a
+light-object: nothing protects it from `remove_chunk` on the next call.
+This is ACCEPTED, not closed.  §4's `reopen_element` escape already makes
+the point that this ban is about making destruction of form deliberate, not
+about making it impossible; provenance bookkeeping (remembering that an
+object was "really" built as story form even after its material no longer
+says so) would be a second, heavier mechanism to defend a boundary the rule
+already defines honestly by what the Document currently says.  The
+live-document definition — "form-bearing iff its material currently makes
+it form" — was chosen on purpose.  Pinned by a regression test that patches
+a pre-existing object's material to a bare luminaire, then removes it, and
+asserts success.
+
+Regression coverage for this round: `tests/AgentChunkCrudTest.cpp`'s
+`TestComposePhaseLightObjectExemption`, extended with the cross-category
+collision pairs (both kind-given and kind-empty, and the mirror where the
+collision must not itself break the exemption), the wrapped-luminaire base-
+material collision, the reference-kind-restricted geometry case, the
+`csg_object` exclusion, and the documented edit-then-remove hole.

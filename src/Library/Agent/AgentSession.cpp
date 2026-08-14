@@ -58,7 +58,7 @@
 #include "../Interfaces/ICameraManager.h"
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
-#include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12): TargetIsFormBearing_ asks the live scene whether a name is a geometry, with no Document parse
+#include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12, live-manager fallback extended 2026-08-13): TargetIsFormBearing_'s defensive fallback asks the live scene whether a name is a geometry when the Document does not carry it; the primary answer walks the retained CST head (a READ of the document already parsed once at load, not a re-parse)
 #include "../Interfaces/IMaterialManager.h" // Arc 82 (2026-08-12): PopulateScene asks the live scene whether the material a repeat names already exists
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
 #include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
@@ -1247,6 +1247,279 @@ namespace RISE
 					if( !name.empty() ) out.push_back( name );
 				}
 				return out;
+			}
+
+			//! Does this chunk descriptor EMIT?  Registry-classified, by the
+			//! presence of an `exitance` parameter in the descriptor -- which
+			//! is exactly and only what the luminaire materials carry
+			//! (lambertian_luminaire_material, phong_luminaire_material), so a
+			//! luminaire material added later is recognised with no edit here.
+			//! Arc 80 postscript (2026-08-13, light-object exemption): moved up
+			//! from its original spot far below TargetIsFormBearing_ (the
+			//! IsZeroAreaLightKeyword_ relocation a few thousand lines below is
+			//! the same precedent -- a classification and the refusal that
+			//! reads it must consult the SAME definition, so light_scene's
+			//! admissibility check and TargetIsFormBearing_'s light-object rule
+			//! share this ONE function rather than each keeping its own copy).
+			bool DescriptorIsEmissiveMaterial_( const ChunkDescriptor* d )
+			{
+				if( !d || d->category != ChunkCategory::Material ) return false;
+				for( std::size_t i = 0; i < d->parameters.size(); ++i )
+					if( d->parameters[i].name == "exitance" ) return true;
+				return false;
+			}
+
+			//! The Document chunk item named `name` ("name" param match) whose
+			//! descriptor category is `requiredCategory`, or null if none
+			//! does.  Same CollectItems + ChunkParamString_ walk as
+			//! CollectCsgObjectsReferencingMaterial_ above -- the Document
+			//! does not index by name for an agent-side reader, so every
+			//! by-name lookup in this file pays this O(chunk count) scan.
+			//!
+			//! P1-1/P1-2 fix round (2026-08-13): THE TRUTH about RISE chunk
+			//! names, replacing this comment's former (false) claim that a
+			//! duplicate name is a derive-time failure the load path already
+			//! refuses.  Names are unique only PER CATEGORY: each category
+			//! has its OWN `GenericManager`, and the insert-time collision
+			//! check is per-kind+name -- so `uniformcolor_painter { name
+			//! Hero }` and `standard_object { name Hero }` coexist legally.
+			//! A category-BLIND first-match walk (this function's pre-fix
+			//! shape) can therefore silently resolve to the WRONG chunk when
+			//! an earlier-declared chunk of a different category shadows the
+			//! real target.  `requiredCategory` is the fix: every caller of
+			//! this function already knows what category it is resolving
+			//! (`ChunkIsLightObject_`'s two lookups both want Material), so
+			//! the category is a REQUIRED filter, not an optional narrowing
+			//! -- there is no remaining caller that wants "first match, any
+			//! category" (that resolution now goes through
+			//! `RISE::Cst::DocFindByNameAnyRole`, which is kind-aware AND
+			//! ambiguity-aware, in `TargetIsFormBearing_`).
+			NodeRef FindDocumentChunkByName_( const Document& doc, const std::string& name,
+			                                   ChunkCategory requiredCategory )
+			{
+				if( name.empty() ) return NodeRef();
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk ) continue;
+					if( ChunkParamString_( it, "name" ) != name ) continue;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
+					if( d && d->category == requiredCategory ) return it;
+				}
+				return NodeRef();
+			}
+
+			//! EVERY Document chunk named `name` ("name" param match), across
+			//! ALL categories -- P1-1 fix round (2026-08-13):
+			//! TargetIsFormBearing_'s AMBIGUOUS arm (RISE::Cst::
+			//! DocFindByNameAnyRole reports more than one same-named chunk
+			//! and `kind` does not narrow to a single match) must classify
+			//! EVERY candidate conservatively, since the ambiguity itself is
+			//! proof that per-category uniqueness alone cannot resolve the
+			//! name to one chunk.  Same by-name walk as
+			//! FindDocumentChunkByName_, collecting every hit instead of
+			//! stopping at the first (or the first of a required category).
+			std::vector<NodeRef> FindAllDocumentChunksByName_( const Document& doc, const std::string& name )
+			{
+				std::vector<NodeRef> out;
+				if( name.empty() ) return out;
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk ) continue;
+					if( ChunkParamString_( it, "name" ) == name ) out.push_back( it );
+				}
+				return out;
+			}
+
+			//! Every Document chunk that REFERENCES `name` -- arc 80
+			//! postscript's light-object rule, geometry clause ("References
+			//! = any param value equal to the geometry's name, on any
+			//! chunk").  A chunk's OWN `name` declaration is excluded (that
+			//! is the chunk BEING named, not a reference to something else).
+			//!
+			//! P2-1 fix round (2026-08-13): restricted to params whose
+			//! REGISTRY DESCRIPTOR ENTRY is Reference-kind (ValueKind::
+			//! Reference) -- the pre-fix walk compared EVERY param's joined
+			//! value against `name`, so e.g. `integrator auto` on a
+			//! rasterizer chunk made a geometry literally named `auto` look
+			//! "referenced" (a false referencer -- the safe direction, but a
+			//! spurious refusal all the same: a light-object's geometry that
+			//! coincidentally shares text with an unrelated enum token would
+			//! never lose its form-bearing status).  Every Reference-kind
+			//! param that can target Geometry/Object/Material is a single
+			//! token (confirmed against the registry), so the existing
+			//! whitespace-joined `val` read is unaffected by the filter --
+			//! it just now only ACCEPTS matches on params the registry
+			//! itself calls references.  The walk still covers every chunk
+			//! and every one of ITS params (not just a hardcoded `geometry`
+			//! name), because a csg_object or another geometry can compose a
+			//! target geometry through a param this file does not enumerate
+			//! by name -- only the KIND filter narrows, not which param.
+			std::vector<NodeRef> CollectChunksReferencingName_( const Document& doc, const std::string& name )
+			{
+				std::vector<NodeRef> out;
+				if( name.empty() ) return out;
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk ) continue;
+					if( ChunkParamString_( it, "name" ) == name ) continue;   // self-declaration, not a reference
+					const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
+					bool referenced = false;
+					for( const NodeRef& kid : it->kids ) {
+						if( !kid || kid->kind != NodeKind::Param ) continue;
+						std::string pname, val;
+						for( const NodeRef& tk : kid->kids ) {
+							if( !tk || tk->kind != NodeKind::Token ) continue;
+							if( tk->role == "pname" ) pname = tk->text;
+							else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+						}
+						if( pname.empty() ) continue;
+						const ParameterDescriptor* pd = d ? FindParam( *d, pname ) : nullptr;
+						if( !pd || pd->kind != ValueKind::Reference ) continue;   // only Reference-kind params count
+						if( val == name ) { referenced = true; break; }
+					}
+					if( referenced ) out.push_back( it );
+				}
+				return out;
+			}
+
+			//! Arc 80 postscript (2026-08-13): is `objItem` (a Document chunk
+			//! already known to be ChunkCategory::Object) a LIGHT-OBJECT -- the
+			//! physical form rect_light, shape_light and light_scene's builder
+			//! all produce?  ALL THREE must hold:
+			//!  (1) its kind is NOT csg_object.  csg COMPOSES other objects
+			//!      rather than owning geometry directly -- the same
+			//!      keyword-restricted bound CollectNullGeometryEmitters_'s
+			//!      "csg_object is the sole null-geometry Object class"
+			//!      comment establishes above (cpp ~1150), read here as "the
+			//!      one Object kind this classifier must not touch".
+			//!  (2) its `material` param names a Document chunk that
+			//!      DescriptorIsEmissiveMaterial_ classifies as a luminaire
+			//!      material -- the SAME registry rule light_scene's
+			//!      admissibility check already uses (arc 81 sec 7.2: "detected
+			//!      by the descriptor registry (`exitance`), so a luminaire
+			//!      material added later is covered with no edit").
+			//!  (3) that luminaire chunk is EMISSIVE-ONLY: its own `material`
+			//!      param (the base/underlying material lambertian_luminaire_
+			//!      material and phong_luminaire_material both carry -- the
+			//!      ChunkDescriptor's literal parameter name is `material`,
+			//!      not the shorthand "mat") is absent, "none", or does not
+			//!      resolve to a real Material-category chunk in the
+			//!      Document.  rect_light and shape_light always pass "none"
+			//!      (NullMaterial, GetBSDF()==0); a story object whose
+			//!      luminaire WRAPS a real surface material (glowing skin over
+			//!      a base) fails this clause and stays form.
+			//!
+			//! P1-2 fix round (2026-08-13): BOTH material lookups below now
+			//! REQUIRE ChunkCategory::Material (FindDocumentChunkByName_'s
+			//! filtered form) rather than resolving the first same-named
+			//! Document chunk of ANY category.  Pre-fix, a non-Material chunk
+			//! declared earlier under the same name would SHADOW the real
+			//! material -- the base lookup's first-match-any-category answer
+			//! could land on a Geometry or Object chunk, whose category is
+			//! trivially not Material, and the old `!(bd && bd->category ==
+			//! Material)` test would then read that as "does not resolve to
+			//! a real material" and return true (emissive-only) even though
+			//! a REAL Material-category base chunk of that name existed
+			//! elsewhere in the Document -- falsifying the documented
+			//! boundary guarantee (a luminaire wrapping a real base material
+			//! must stay form).  With the lookup itself category-filtered,
+			//! "resolved" now means "resolved to a Material chunk", so the
+			//! final check collapses to a plain has/has-not.
+			bool ChunkIsLightObject_( const NodeRef& objItem, const Document& doc )
+			{
+				if( !objItem || objItem->kind != NodeKind::Chunk ) return false;
+				if( objItem->role == "csg_object" ) return false;
+
+				const std::string materialName = ChunkParamString_( objItem, "material" );
+				if( materialName.empty() ) return false;
+				const NodeRef matItem = FindDocumentChunkByName_( doc, materialName, ChunkCategory::Material );
+				if( !matItem ) return false;   // no Material-category chunk of that name -- unresolved, not a light-object
+				const ChunkDescriptor* md = DescriptorForKeyword( String( matItem->role.c_str() ) );
+				if( !DescriptorIsEmissiveMaterial_( md ) ) return false;
+
+				const std::string baseMaterialName = ChunkParamString_( matItem, "material" );
+				if( baseMaterialName.empty() || baseMaterialName == "none" ) return true;
+				const NodeRef baseItem = FindDocumentChunkByName_( doc, baseMaterialName, ChunkCategory::Material );
+				// No Material-category chunk resolves -- unresolved, so the
+				// emissive-only clause HOLDS (keep current unresolved
+				// semantics, just made category-correct); a chunk DOES
+				// resolve here only when it is genuinely Material category
+				// (guaranteed by the filtered lookup), so it always means
+				// "wraps a real base material" -- stays form.
+				return !baseItem;
+			}
+
+			//! P1-1 fix round (2026-08-13): the arc 80 postscript's Document-
+			//! kind classification for ONE already-resolved chunk, extracted
+			//! so TargetIsFormBearing_'s unique-match arm and its
+			//! ambiguous-fan-out arm (multiple same-named Document chunks --
+			//! see that function) share ONE classifier instead of two copies
+			//! that could drift.  `chunkItem` is a Document chunk already
+			//! known to be named `target`; `outWhat` is set to the refusal
+			//! noun on a true verdict, cleared otherwise.
+			//!
+			//! P3-1 fix round: when the chunk's role has no registered
+			//! descriptor, this returns FALSE OUTRIGHT (does not signal "try
+			//! the live-manager fallback") -- the Document carries the name,
+			//! so "Document kind wins" per the postscript's stated rule, and
+			//! the caller must not fall through to the live-manager fallback
+			//! that the postscript's shadow-trap fix exists to bypass.
+			//! Believed UNREACHABLE in practice: every parser that can put a
+			//! chunk in a derivable Document is descriptor-driven (see
+			//! src/Library/Parsers/README.md), so a resolvable role always
+			//! has a registered ChunkDescriptor.  Kept as a definite
+			//! under-refusal (not a crash, not a silent over-refusal) purely
+			//! as defense-in-depth against a future non-descriptor-driven
+			//! parser path.
+			bool ClassifyDocumentChunkForFormBearing_( const NodeRef& chunkItem, const Document& doc,
+			                                            const std::string& target, std::string& outWhat )
+			{
+				outWhat.clear();
+				if( !chunkItem ) return false;
+				const ChunkDescriptor* d = DescriptorForKeyword( String( chunkItem->role.c_str() ) );
+				if( !d ) return false;   // P3-1: descriptor-less -- Document kind wins, definite false, no fallback
+				if( d->category != ChunkCategory::Geometry && d->category != ChunkCategory::Object ) {
+					// Every plain light / material / painter chunk, and
+					// rect_light / shape_light's own Light-category chunk --
+					// the shadow trap the postscript's fix (2) exists for.
+					return false;
+				}
+				if( d->category == ChunkCategory::Object ) {
+					if( ChunkIsLightObject_( chunkItem, doc ) ) return false;
+					outWhat = "the " + chunkItem->role + " chunk \"" + target + "\"";
+					return true;
+				}
+				// ChunkCategory::Geometry.  Form-bearing UNLESS at least one
+				// Document chunk references it AND every referencing chunk
+				// is a light-object Object chunk -- e.g. the standard_object
+				// a rect_light / light_scene expansion binds it to.  ZERO
+				// references stays form-bearing: this is the decided
+				// conservative bound (a geometry nobody yet references is
+				// not provably a light's geometry), and it is bounded by the
+				// shared 3-refusal cap and reopen_element, exactly as the
+				// UNRESOLVABLE arm is bounded for names the Document does
+				// not carry at all.  This also keeps a geometry composed by
+				// another geometry or by a csg_object protected -- neither
+				// is a light-object Object chunk, so the "every referencing
+				// chunk" test fails and the geometry stays form.
+				const std::vector<NodeRef> referencers = CollectChunksReferencingName_( doc, target );
+				bool allLightObjects = !referencers.empty();
+				for( const NodeRef& r : referencers ) {
+					const ChunkDescriptor* rd = DescriptorForKeyword( String( r->role.c_str() ) );
+					if( !rd || rd->category != ChunkCategory::Object || !ChunkIsLightObject_( r, doc ) ) {
+						allLightObjects = false;
+						break;
+					}
+				}
+				if( allLightObjects ) return false;
+				outWhat = "the " + chunkItem->role + " chunk \"" + target + "\"";
+				return true;
 			}
 
 			//! The actionable refusal clause for CREATING the construct --
@@ -9193,8 +9466,14 @@ namespace RISE
 				std::string clause = CheckElementWindowForEdit_( "remove_chunk", target,
 				                                                  &s1Fold.notice );
 				if( clause.empty() )
+					// P1-1 fix round (2026-08-13): thread the CALLER's `kind`
+					// through -- the single-target arm has one to give
+					// (RemoveChunk's own `kind` parameter, "" when the
+					// caller didn't narrow), and the gate must resolve the
+					// Document the same kind-aware way the real remove does.
 					clause = CheckComposePhaseForRemove_( "remove_chunk",
 					                                       std::vector<std::string>( 1, target ),
+					                                       std::vector<std::string>( 1, kind ),
 					                                       &s1Fold.notice );
 				if( !clause.empty() ) {
 					r.applied     = false;
@@ -9431,7 +9710,15 @@ namespace RISE
 				for( std::size_t u = 0; u < unique.size() && s1Clause.empty(); ++u )
 					s1Clause = CheckElementWindowForEdit_( "remove_chunks", unique[u], &s1Fold.notice );
 				if( s1Clause.empty() )
-					s1Clause = CheckComposePhaseForRemove_( "remove_chunks", unique, &s1Fold.notice );
+					// P1-1 fix round (2026-08-13): `remove_chunks` has no
+					// per-target kind at all -- its own engine call two
+					// phases down always passes `nullptr` per target ("bare
+					// names only", see the comment there) -- so the parallel
+					// kinds vector is all-empty, matching what the real
+					// remove resolver is given for every batch target.
+					s1Clause = CheckComposePhaseForRemove_( "remove_chunks", unique,
+					                                         std::vector<std::string>( unique.size() ),
+					                                         &s1Fold.notice );
 				if( !s1Clause.empty() ) {
 					r.applied     = false;
 					r.retriable   = false;   // see InsertChunk's G2 arm for why
@@ -11527,6 +11814,21 @@ namespace RISE
 			if( target.empty() )                               return std::string();
 			if( mActiveElement >= mBuildPlan.size() )          return std::string();
 
+			// Arc 80 postscript (2026-08-13, light-object exemption): checked
+			// at the time this seam landed and DELIBERATELY left unchanged.
+			// This gate fires only on ATTRIBUTED targets (the `if( !a )`
+			// return just below) and only in the Pieces phase; the light-
+			// object exemption lives in TargetIsFormBearing_ and never
+			// overrides an attribution record (rule 1 there: element-
+			// attributed form stays protected even if emissive).  So a
+			// light-object built inside an element window -- light_scene
+			// called from that window, per arc 81 sec 7.2 -- is that
+			// element's own content, and belongs to the cross-element gate
+			// exactly as any other attributed chunk does; reopen_element is
+			// its route back, same as for any other attributed form.  Only an
+			// UNATTRIBUTED light-object gets the compose-phase delete
+			// exemption, and this function never sees those (they return ""
+			// two lines below, before reaching this rule at all).
 			const ChunkAttribution_* a = FindChunkAttribution_( target );
 			// NO ATTRIBUTION IS ALWAYS ALLOWED.  Pre-existing scene content and
 			// anything created before the first window opened belong to no
@@ -11592,7 +11894,7 @@ namespace RISE
 			       d->category == ChunkCategory::Object;
 		}
 
-		bool AgentSession::TargetIsFormBearing_( const std::string& target,
+		bool AgentSession::TargetIsFormBearing_( const std::string& target, const std::string& kind,
 		                                          std::string& outWhat ) const
 		{
 			outWhat.clear();
@@ -11602,23 +11904,134 @@ namespace RISE
 			// element window has its KIND recorded (AttributeChunkToActiveElement_),
 			// which is both the cheapest source and the one that covers the
 			// case this rule exists for: an element's own geometry, built in
-			// the pieces phase, being deleted in compose.
+			// the pieces phase, being deleted in compose.  A recorded
+			// form-bearing kind is FINAL here -- no light-object override:
+			// element-attributed form stays protected even if emissive (a
+			// glowing creature built in an element window is that element's
+			// form; reopen_element is the stated route).  This is the
+			// story-object protection for everything session-built, and it is
+			// also why CheckElementWindowForEdit_'s cross-element gate never
+			// needs a light-object exemption of its own -- see the comment
+			// there.
 			if( const ChunkAttribution_* a = FindChunkAttribution_( target ) ) {
 				if( KindIsFormBearing_( a->kind ) ) {
 					outWhat = "the " + a->kind + " chunk \"" + target + "\"";
 					return true;
 				}
 				// A recorded NON-form-bearing kind is a definite answer: no
-				// need to consult the scene, and no refusal.
+				// need to consult the scene, and no refusal.  A rect_light /
+				// shape_light chunk inserted while an element was active is
+				// attributed with kind "rect_light" / "shape_light" (Light
+				// category) -- already false here, before the Document walk
+				// below ever runs.
 				if( !a->kind.empty() ) return false;
 			}
 
-			// (2) THE LIVE SCENE.  A chunk created OUTSIDE an element window
-			// (in the plan phase, in compose itself, or before the session
-			// began) carries no attribution, so ask the managers the derive
-			// populated.  These are the same caller-thread manager reads
-			// ElementWorldBounds_ and QueryObjectAt's resolution already
-			// perform; neither parses the Document.
+			// (2) THE LIVE DOCUMENT.  Arc 80 postscript (2026-08-13, light-
+			// object exemption): a chunk created OUTSIDE an element window
+			// carries no attribution, and arc 78 sec 2.3's Light-category
+			// exemption ("lighting rework is COMPOSE's job") stopped covering
+			// the scene's actual lights once arc 81's physics moved area
+			// lights into Object-category chunks (a standard_object bound to
+			// a luminaire material) -- rect_light, shape_light and
+			// light_scene's builder all produce that shape.  Two failure
+			// routes this closes:
+			//   * THE SHADOW TRAP: a rect_light / shape_light chunk persists
+			//     in the CST as a Light-category chunk named `<name>` (parse-
+			//     time sugar), but its derive ALSO creates an OBJECT of the
+			//     same name in the live object manager.  Without this step,
+			//     the live-manager fallback below (3) would find that object
+			//     and refuse a chunk that is literally Light-category in the
+			//     Document.
+			//   * THE GENERAL FORM: the 4-chunk expansion (painter / luminaire
+			//     material / geometry / standard_object) emitted as REAL
+			//     Document chunks, unattributed -- the object and geometry
+			//     chunks are genuinely Object/Geometry category, and (3)
+			//     would refuse them with no way to tell a fixture panel from
+			//     a story object.
+			// So for a name the Document DOES carry, its DOCUMENT KIND wins
+			// outright over whatever the derived managers say -- this is a
+			// READ of the retained CST head (a document already parsed once
+			// at load), not a re-parse.  `mJob->GetCstDocument()` may be
+			// null (defensive); a null Document or a name the Document does
+			// not carry falls through to (3) unchanged.
+			//
+			// P1-1 fix round (2026-08-13): resolved via RISE::Cst::
+			// DocFindByNameAnyRole -- THE SAME resolver Job.cpp's
+			// CstResolveRemoveTarget_ calls for the real remove, passed the
+			// SAME (name, kind) the caller of this function passed to the
+			// real remove.  RISE chunk names are unique only PER CATEGORY
+			// (a separate GenericManager per category; the insert-time
+			// collision check is per-kind+name), so a `uniformcolor_painter`
+			// and a `standard_object` can legally share a name -- the old
+			// first-match-any-category walk (FindDocumentChunkByName_, pre
+			// this fix) could resolve to the WRONG chunk (repro: a painter
+			// `Hero` declared before an object `Hero` made `remove_chunk
+			// ("Hero", kind="object")` sail through this gate reading the
+			// painter, while the real removal deleted the object).
+			// Deliberately `uniqueFallback=false` -- NOT the camera / the
+			// unnamed-repeatable positional fallback the real resolver also
+			// supports: that fallback only ever resolves a Camera- or
+			// Animation-category chunk addressed BY BARE KEYWORD (the sole
+			// always-unnamed-addressable kinds; `gltf_import` is the one
+			// Geometry-category `unnamedRepeatable` kind, but it declares no
+			// `name` param at all, so it can never be a bareName match here
+			// in the first place), and neither category is ever form-
+			// bearing -- so this fallback could never change this
+			// function's verdict either way, and skipping it keeps the call
+			// a pure by-name resolve.
+			if( IJobPriv* job = mJob ) {
+				if( const RISE::Cst::Document* doc = job->GetCstDocument() ) {
+					int occ = 0;
+					const RISE::Cst::NodeId id =
+						RISE::Cst::DocFindByNameAnyRole( *doc, target, &occ, kind, /*uniqueFallback*/ false );
+					if( id != 0 ) {
+						const NodeRef chunkItem = RISE::Cst::DocResolveNodeId( *doc, id );
+						// chunkItem null is unreachable (a NodeId DocFindByNameAnyRole
+						// just resolved always resolves back via DocResolveNodeId) --
+						// ClassifyDocumentChunkForFormBearing_ returns false on a
+						// null chunkItem defensively, matching this arm's contract:
+						// a Document-resolved id is DEFINITIVE, never a fallback cue.
+						std::string what;
+						const bool formBearing = ClassifyDocumentChunkForFormBearing_( chunkItem, *doc, target, what );
+						if( formBearing ) outWhat = what;
+						return formBearing;
+					}
+					if( occ > 1 ) {
+						// AMBIGUOUS: more than one Document chunk shares the
+						// name (raw, when `kind` is empty; kind-narrowed,
+						// when it is not) and neither narrows to a single
+						// match.  The real remove resolver will itself
+						// refuse this same ambiguity honestly (or act on a
+						// kind-narrowed unique match it finds on its own
+						// call) -- but THIS gate must not UNDER-protect just
+						// because the name collides, so it is CONSERVATIVE
+						// instead of falling through to (3): classify EVERY
+						// same-named Document chunk, and the target is
+						// form-bearing if ANY of them is a non-exempt
+						// Geometry/Object chunk.  Zero non-exempt matches
+						// means nothing here needs this gate's protection,
+						// so the ambiguity is left to the remove resolver.
+						for( const NodeRef& candidate : FindAllDocumentChunksByName_( *doc, target ) ) {
+							std::string what;
+							if( ClassifyDocumentChunkForFormBearing_( candidate, *doc, target, what ) ) {
+								outWhat = what;
+								return true;
+							}
+						}
+						return false;
+					}
+					// occ == 0: the name is absent from the Document under
+					// any category (or absent under the requested kind) --
+					// falls through to (3) unchanged, same as before.
+				}
+			}
+
+			// (3) THE LIVE SCENE (defensive fallback).  A name the Document
+			// does not carry -- or no Document at all -- falls back to the
+			// managers the derive populated.  These are the same caller-
+			// thread manager reads ElementWorldBounds_ and QueryObjectAt's
+			// resolution already perform.
 			if( IJobPriv* job = mJob ) {
 				if( IObjectManager* objs = job->GetObjects() ) {
 					if( objs->GetItem( target.c_str() ) ) {
@@ -11643,6 +12056,7 @@ namespace RISE
 
 		std::string AgentSession::CheckComposePhaseForRemove_( const char* verb,
 		                                                        const std::vector<std::string>& targets,
+		                                                        const std::vector<std::string>& kinds,
 		                                                        std::string* outGiveUpNotice )
 		{
 			// ARC 83 sec 4.1: inert in REFINING (see ConstructionCompulsionActive_).
@@ -11653,13 +12067,20 @@ namespace RISE
 
 			// Which of them are form-bearing?  Listed in the order the caller
 			// named them, capped, and counted -- so a batch refusal states
-			// exactly what triggered it rather than "one of these".
+			// exactly what triggered it rather than "one of these".  `kinds`
+			// is PARALLEL to `targets` (P1-1 fix round, 2026-08-13) -- see
+			// the header doc for why an unthreaded kind is a correctness bug
+			// (a cross-category name collision could make this gate's
+			// verdict diverge from the real remove resolver's).  Indexed
+			// defensively (an out-of-range entry reads as "no constraint");
+			// both call sites always pass a same-size vector.
 			static const std::size_t kMaxNamed = 6;
 			std::size_t   formBearing = 0;
 			std::string   listing;
 			for( std::size_t i = 0; i < targets.size(); ++i ) {
+				const std::string& k = ( i < kinds.size() ) ? kinds[i] : std::string();
 				std::string what;
-				if( !TargetIsFormBearing_( targets[i], what ) ) continue;
+				if( !TargetIsFormBearing_( targets[i], k, what ) ) continue;
 				++formBearing;
 				if( formBearing <= kMaxNamed ) {
 					if( !listing.empty() ) listing += "; ";
@@ -11687,9 +12108,12 @@ namespace RISE
 			body +=
 				"this session is in the compose phase, which places elements rather than removing "
 				"their form. Lights, cameras, film, rasterizers, materials and painters can still be "
-				"removed here, and every chunk can still be edited. reopen_element with the name of "
-				"an element re-enters that element's window, where removing its geometry and objects "
-				"is allowed again.";
+				"removed here, as can an area light's chunks (a standard_object is a light here when "
+				"its material is a luminaire material wrapping no other material, e.g. what "
+				"rect_light, shape_light and light_scene produce; a csg_object never qualifies), and "
+				"every chunk can still be edited. reopen_element with the name of an element "
+				"re-enters that element's window, where removing its geometry and objects is allowed "
+				"again.";
 			return RefuseForPhase_( verb, body, outGiveUpNotice );
 		}
 
@@ -19843,18 +20267,16 @@ namespace RISE
 				return true;
 			}
 
-			//! Does this material chunk EMIT?  Registry-classified, by the
-			//! presence of an `exitance` parameter in the descriptor -- which
-			//! is exactly and only what the luminaire materials carry
-			//! (lambertian_luminaire_material, phong_luminaire_material), so a
-			//! luminaire material added later is recognised with no edit here.
-			bool DescriptorIsEmissiveMaterial_( const ChunkDescriptor* d )
-			{
-				if( !d || d->category != ChunkCategory::Material ) return false;
-				for( std::size_t i = 0; i < d->parameters.size(); ++i )
-					if( d->parameters[i].name == "exitance" ) return true;
-				return false;
-			}
+			// `DescriptorIsEmissiveMaterial_` USED TO BE DEFINED HERE.  The arc
+			// 80 postscript (2026-08-13, light-object exemption) moved it up
+			// near CollectCsgObjectsReferencingMaterial_ (cpp ~1264), because
+			// TargetIsFormBearing_'s light-object rule needed the SAME
+			// definition light_scene's admissibility check (below) already
+			// used -- exactly the ARC 83 SLICE 1 `IsZeroAreaLightKeyword_`
+			// precedent immediately below this comment: a classification and
+			// the refusal that reads it must never carry two copies of the
+			// list.  Still an unnamed-namespace free function in this TU, so
+			// the call sites below are unchanged.
 
 			// ARC 83 SLICE 1's `IsZeroAreaLightKeyword_` USED TO BE DEFINED
 			// HERE.  Slice 4 moved it to the ZERO-AREA LIGHT CONFIRMATION block
