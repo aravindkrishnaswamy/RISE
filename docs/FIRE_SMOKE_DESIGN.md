@@ -598,6 +598,21 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
     the measured envelope or any statistics window.
+  - **Thermostat ceiling (r58):** within the active window, the pilot
+    term applies in a mask cell **only while that cell's accepted
+    beginning-of-step temperature is below exactly 900 K**; at or above,
+    the cell's pilot contribution is zero for that step (pure threshold,
+    no hysteresis — deterministic on the accepted state). Rationale: a
+    pilot ignites reactants; it does not superheat products. Without the
+    ceiling, pilot + combustion superposition in already-burning ring
+    cells drove the capstone to 2406–2500 K — **super-adiabatic** for
+    methane–air (T_ad ≈ 2230 K) — and the opacity record's certified
+    2500 K domain correctly rejected the unphysical state. The ceiling
+    sits above every T_AIT in scope (≤ 873 K), so ignition still seeds
+    robustly into the spontaneous-eligibility regime, and far below any
+    flame temperature, so no product cell is ever pilot-heated. The
+    certified opacity domain is **unchanged** — its rejection was the
+    system working — and no out-of-domain provisional treatment exists.
   - **Ledger:** pilot energy enters ℋ_s conservation like any source
     term and appears as its own diagnostic line; it is **not** heat of
     combustion and is therefore excluded from Q̇_tot (χ_r's budget and
@@ -1685,9 +1700,11 @@ following; two conforming tools must derive identical bytes:
    [D/2, D/2 + 2δx]; power = a fixed volumetric density of exactly
    **1 MW/m³** over the mask (intensive — scale-invariant heating;
    the r55 fractional form diluted with burner size); active from run
-   start for exactly 1·t_ft; ledgered in ℋ_s but excluded from Q̇_tot.
-   The pilot block is echoed in the derived fields and is part of
-   `case_record_id`.
+   start for exactly 1·t_ft, **per-cell only while the accepted
+   beginning-of-step T < 900 K exactly (r58 thermostat — a pilot ignites
+   reactants, never superheats products)**; ledgered in ℋ_s but excluded
+   from Q̇_tot. The pilot block is echoed in the derived fields and is
+   part of `case_record_id`.
 7a. **Case admissibility — the mixing-limited scale gate (r57).** The
    §3.3 closure is a plume-scale, resolution-limited combustion model
    (FDS lineage); it is not a laminar flame-structure model. A case is

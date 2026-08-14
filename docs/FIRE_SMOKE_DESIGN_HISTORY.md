@@ -1224,3 +1224,27 @@ it was already tried and refuted here.
   constants derived from the OLD kernel — the fix is record-derived
   fixtures, never tolerance changes; the agent's refusal to weaken
   tolerances was correct.
+
+- **r58 (2026-08-14):** pilot thermostat, from the capstone's
+  opacity-domain stop — and a case where the certified domain caught a
+  physics bug rather than a data gap. The McCaffrey runs ignited and then
+  reached 2406–2500 K, exceeding methane–air's adiabatic flame
+  temperature (~2230 K); no radiating diffusion flame can be
+  super-adiabatic, so the state itself was unphysical. Mechanism: the
+  r55/r57 pilot kept applying 1 MW/m³ to mask cells that were already
+  burning — at 2000 K product density that is ~4400 K/s of additional
+  heating stacked on combustion, comfortably explaining the +180–270 K
+  excess. Fix: **a per-cell thermostat at exactly 900 K** on the accepted
+  beginning-of-step temperature — the pilot heats a cell only while it is
+  below the ceiling (pure threshold, no hysteresis, deterministic). The
+  ceiling exceeds every in-scope T_AIT (≤873 K), so ignition still seeds
+  into the spontaneous-eligibility regime, and sits far below any flame
+  temperature, so products are never pilot-heated; physically it is the
+  thermostat idealization of a pilot flame that ignites reactants and is
+  irrelevant once the main flame holds. Explicitly REJECTED: extending
+  the certified opacity domain (it would have let the super-adiabatic
+  artifact pass silently — the domain guards physical validity, and every
+  physical methane state sits far inside 2500 K) and any provisional
+  out-of-domain radiation treatment (clamping physics under another
+  name). The agent's refusal to clamp, weaken feasibility, or add an
+  early shutoff was correct on all three counts.
