@@ -1319,3 +1319,32 @@ it was already tried and refuted here.
   test required. The agent's conduct was again correct: no restart, no
   tier substitution, partial output quarantined out of the final
   directory.
+
+- **r61 (2026-08-15):** run persistence, from the capstone's
+  incremental-persistence stop. r60 landed clean (single predicate
+  across 1D/periodic-3D/open-3D; producer union derived at 2384·ε and
+  rounded to κ = 4096; the recorded −5.40472×10⁻¹³ exhaustion trace is
+  0.5943 of the minimal envelope, covered without tuning; signed
+  envelope values stored, no clamping; structured solver errors gate
+  downstream writes; zero P1s; 617/617 green), but the agent correctly
+  refused to launch tier 10: the run holds every frame memory-resident
+  and writes only after all solver calls return, so a late death
+  preserves nothing — and the buffering itself is a memory-pressure
+  death risk on a ~1M-cell day-scale run. Disposition: **authorize the
+  seam** — §3.9 pin 8a places frame streaming and checkpoint/resume in
+  pin 8's class (run infrastructure, NOT identity-bearing), with the
+  requirement on the output: bit-transparency, enforced by a
+  complete-vs-(checkpoint+kill+resume-at-different-thread-count)
+  fixture demanding identical frame digests. Checkpoint cadence and
+  indices are run metadata only; checkpoint writes are pure
+  serialization of accepted inter-step state and never perturb the
+  trajectory; sufficiency is certified by the fixture, not a field
+  list. Reproduction-only stays a valid mode (determinism is the
+  ultimate fallback), but day-scale runs use the seam.
+  Reproduction-only launch was REJECTED because one mid-run death had
+  already cost a day and the memory-resident structure makes a second
+  more likely, not less. Also accepted: r60's verification against the
+  recorded scalar and the universally minimal scale (the quarantined
+  r59 VDB lacks the full conservative cell) — any true accumulation
+  scale only increases margin, and the exhaustion fixture carries the
+  forward-looking guarantee.

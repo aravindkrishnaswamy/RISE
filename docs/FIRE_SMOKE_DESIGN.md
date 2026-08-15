@@ -1852,6 +1852,27 @@ following; two conforming tools must derive identical bytes:
    and N threads → identical frame digests) enforces the requirement.
    Same case + same build + same seed reproduces the sequence bitwise,
    independent of thread count.
+8a. **Run persistence (r61) — frame streaming and checkpoint/resume are
+   pin-8-class run infrastructure, not identity-bearing.** Motivated by
+   the capstone's persistence stop: a day-scale run that buffers every
+   frame memory-resident until completion preserves no prefix on death
+   and is itself a memory-pressure death risk — the structure that
+   fails to protect the run also endangers it. Pins: (i) sequence
+   frames are **streamed to durable storage as produced**, never
+   buffered to run end; (ii) a **checkpoint/resume seam** serializes
+   the complete accepted inter-step state so an interrupted run resumes
+   from the last checkpoint. Both are producer/run machinery in
+   pin 8's class: checkpoint cadence, count, and step indices are run
+   metadata only, and the requirement is on the output —
+   **bit-transparency**, enforced by a fixture that runs a small case
+   to completion, then reruns it with checkpoint + process kill +
+   resume (at a *different* thread count, compounding with pin 8) and
+   demands identical frame digests. Checkpoint sufficiency is certified
+   by that fixture, not by an enumerated field list; checkpoint writes
+   must be pure serialization of accepted state between steps, never
+   perturbing the trajectory. Reproduction-only operation (no
+   checkpointing) remains a valid run mode — determinism is the
+   ultimate fallback — but day-scale runs use the seam.
 - **Looping is explicitly out of scope.** A physically simulated fire never
   tiles in time; authoring a loop (cross-fade selection, phase-aligned cuts
   on the puffing period) is a content-tooling problem over finished
