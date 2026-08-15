@@ -10576,6 +10576,16 @@ static void TestCleanRoomBuildElementHappyPath()
 		Check( p.find( "\"keyword\":\"sweep_geometry\"" ) == std::string::npos,
 		       "S2a MONEY ASSERTION: the sweep_geometry SCHEMA is NOT sent for a non-sweep "
 		       "(\"csg\") construction method" );
+		// C1 (2026-08-14): skeleton_geometry's schema + worked example ride the
+		// same construction=="chain" gate as sweep's -- the negative half of
+		// this same check, mirrored.  TestCleanRoomChainWorkedExample below is
+		// the positive half.
+		Check( p.find( "WORKED EXAMPLE for the chain method" ) == std::string::npos,
+		       "S2a MONEY ASSERTION: the chain worked example is NOT spliced in for a "
+		       "non-chain (\"csg\") construction method" );
+		Check( p.find( "\"keyword\":\"skeleton_geometry\"" ) == std::string::npos,
+		       "S2a MONEY ASSERTION: the skeleton_geometry SCHEMA is NOT sent for a non-chain "
+		       "(\"csg\") construction method" );
 	}
 }
 
@@ -10721,6 +10731,148 @@ static void TestCleanRoomSweepWorkedExample()
 		Check( r2.landed.size() == 3, "S2j/real all three chunks of the trio landed (got " +
 		       std::to_string( r2.landed.size() ) + ")" );
 		Check( r2.rejected.empty(), "S2j/real with nothing rejected" );
+	}
+}
+
+//! C1 (2026-08-14): the chain-method worked example -- the exact analogue
+//! of TestCleanRoomSweepWorkedExample (S2j) above, now that
+//! skeleton_geometry exists.  Gated on the plan's DECLARED CONSTRUCTION
+//! METHOD being exactly "chain" (S2a above is the negative half: a "csg"
+//! plan never sees it), built with the element's real chunk-name prefix,
+//! and proven to parse with zero diagnostics through the same CST derive
+//! path a hand-authored scene goes through -- then, same as S2j/real, fed
+//! back through the REAL BuildElement/InsertChunks route on a second
+//! fresh session, proving "one worked example that PARSES" holds for the
+//! genuine agent-edit path, not just a raw CST parse.
+static void TestCleanRoomChainWorkedExample()
+{
+	std::printf( "S2k: the chain worked example is gated on construction==\"chain\" and parses...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2k.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2k fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	// A well-formed builder answer wearing the "critter_" prefix -- what the
+	// fake completer answers with is independent of the PROMPT this test is
+	// examining, so any prefix-clean trio will do to let BuildElement
+	// complete normally.
+	static const char* const kCritterAnswer =
+		"uniformcolor_painter\n{\n\tname critter_skin_pnt\n\tcolor 0.4 0.3 0.2\n}\n"
+		"lambertian_material\n{\n\tname critter_skin_mat\n\treflectance critter_skin_pnt\n}\n"
+		"box_geometry\n{\n\tname critter_body_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n"
+		"standard_object\n{\n\tname critter_obj\n\tgeometry critter_body_box\n"
+		"\tmaterial critter_skin_mat\n\tposition 0 0 0\n}\n";
+
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+	Agent::AgentSession::AgentBuildPlanEntry e;
+	e.element = "critter";
+	e.pieces.push_back( "tail" );
+	e.construction = "chain";
+	e.outline = "0 0; 1 0; 1 3; 0 3";
+	plan.push_back( e );
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kCritterAnswer }, nullptr, &prompts ) );
+	Check( sess->FileBuildPlan( plan ).ok, "S2k the chain plan files" );
+
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "critter", 4.0 );
+	Check( r.ok, "S2k build_element still completes normally with the example present" );
+	Check( prompts.size() == 1, "S2k one prompt was composed" );
+	if( prompts.empty() ) return;
+	const std::string& p = prompts[0];
+
+	Check( p.find( "DECLARED CONSTRUCTION METHOD: chain" ) != std::string::npos,
+	       "S2k the construction method is restated as \"chain\"" );
+	// C1: skeleton_geometry's SCHEMA rides the same construction=="chain"
+	// gate as the worked example -- assert it IS present here, the
+	// positive half of S2a's negative assertion.
+	Check( p.find( "\"keyword\":\"skeleton_geometry\"" ) != std::string::npos,
+	       "S2k MONEY ASSERTION: the skeleton_geometry SCHEMA IS sent when construction==\"chain\"" );
+	const std::size_t markerPos = p.find( "WORKED EXAMPLE for the chain method" );
+	Check( markerPos != std::string::npos,
+	       "S2k MONEY ASSERTION: the worked example IS spliced in when construction==\"chain\"" );
+	if( markerPos == std::string::npos ) return;
+
+	// Lift the example out of the composed prompt exactly as the model
+	// would read it -- from the end of the intro line to the blank line
+	// before the next section (OUTLINE SKETCH, since this plan's outline
+	// is non-empty and G3a makes `outline` required on every entry, so
+	// that section always follows the construction-method block).
+	const std::size_t introEnd = p.find( '\n', markerPos );
+	Check( introEnd != std::string::npos, "S2k found the end of the intro line" );
+	if( introEnd == std::string::npos ) return;
+	const std::size_t chunkStart = introEnd + 1;
+	const std::size_t chunkEnd = p.find( "\n\nOUTLINE SKETCH", chunkStart );
+	Check( chunkEnd != std::string::npos, "S2k found the end of the worked-example block" );
+	if( chunkEnd == std::string::npos ) return;
+	const std::string example = p.substr( chunkStart, chunkEnd - chunkStart );
+
+	Check( example.find( "skeleton_geometry" ) != std::string::npos &&
+	       example.find( "lambertian_material" ) != std::string::npos &&
+	       example.find( "standard_object" ) != std::string::npos,
+	       "S2k the lifted example carries all three chunks of the trio" );
+	Check( example.find( "critter_tail_skel" ) != std::string::npos &&
+	       example.find( "critter_tail_mat" ) != std::string::npos &&
+	       example.find( "critter_tail_obj" ) != std::string::npos,
+	       "S2k MONEY ASSERTION: every name in the example is built from the element's REAL "
+	       "chunk-name prefix, not a placeholder" );
+
+	// THE PARSE, not a syntax guess: the lifted text goes through the same
+	// CST parse + derive a hand-authored scene uses, on a fresh Job, with
+	// ZERO diagnostics -- "one worked example that PARSES" is the law this
+	// slice exists to satisfy.
+	Job* freshJob = new Job();
+	std::vector<std::string> diags;
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( "RISE ASCII SCENE 7\n" + example + "\n" );
+	const int applied = RISE::Cst::DeriveToJob( doc, *freshJob, &diags );
+	for( std::size_t d = 0; d < diags.size(); ++d )
+		std::printf( "    S2k DIAGNOSTIC: %s\n", diags[d].c_str() );
+	Check( diags.empty(), "S2k MONEY ASSERTION: the worked example parses with ZERO diagnostics" );
+	Check( applied == 3, "S2k all three chunks of the trio applied (got " +
+	       std::to_string( applied ) + ")" );
+	IGeometryManager* geoms = freshJob->GetGeometries();
+	Check( geoms && geoms->GetItem( "critter_tail_skel" ) != nullptr,
+	       "S2k the skeleton_geometry actually registered" );
+	IMaterialManager* mats = freshJob->GetMaterials();
+	Check( mats && mats->GetItem( "critter_tail_mat" ) != nullptr,
+	       "S2k the lambertian_material actually registered" );
+	IObjectManager* objs = freshJob->GetObjects();
+	Check( objs && objs->GetItem( "critter_tail_obj" ) != nullptr,
+	       "S2k the standard_object actually registered" );
+	freshJob->release();
+
+	// C1: the CST-level parse above proves the TEXT is well-formed, but not
+	// that it survives the REAL agent path -- the validated-insert
+	// machinery (prefix checks, balance checks, the first-geometry gate,
+	// etc) that InsertChunks actually runs.  Feed the lifted example text
+	// back in as a SECOND session's fake-completer answer and drive it
+	// through the genuine BuildElement/InsertChunks route, on a fresh Job
+	// so this run starts clean.
+	{
+		const std::string tmp2 = TempPath( "agentcrud_s2k_real.RISEscene" );
+		Job* pJob2 = LoadScene( kScene, tmp2 );
+		Check( pJob2 != nullptr, "S2k/real fixture loads" );
+		if( !pJob2 ) return;
+		std::unique_ptr<Agent::AgentSession> sess2 = WrapJobGateArmed( pJob2 );
+
+		std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan2;
+		Agent::AgentSession::AgentBuildPlanEntry e2;
+		e2.element = "critter";
+		e2.pieces.push_back( "tail" );
+		e2.construction = "chain";
+		e2.outline = "0 0; 1 0; 1 3; 0 3";
+		plan2.push_back( e2 );
+
+		sess2->SetTextCompleter( MakeFakeCompleter( { example }, nullptr, nullptr ) );
+		Check( sess2->FileBuildPlan( plan2 ).ok, "S2k/real the chain plan files" );
+
+		const Agent::AgentSession::AgentBuildElementResult r2 = sess2->BuildElement( "critter", 4.0 );
+		Check( r2.ok, "S2k/real MONEY ASSERTION: the lifted example, fed back through the REAL "
+		       "BuildElement/InsertChunks path (not just a raw CST parse), completes cleanly" );
+		Check( r2.landed.size() == 3, "S2k/real all three chunks of the trio landed (got " +
+		       std::to_string( r2.landed.size() ) + ")" );
+		Check( r2.rejected.empty(), "S2k/real with nothing rejected" );
 	}
 }
 
@@ -17466,6 +17618,7 @@ int main()
 	// S2 (2026-08-11): clean-room construction.
 	TestCleanRoomBuildElementHappyPath();
 	TestCleanRoomSweepWorkedExample();
+	TestCleanRoomChainWorkedExample();
 	TestCleanRoomValidatedInsertion();
 	TestCleanRoomRepairRetry();
 	TestCleanRoomBuildElementRefusals();

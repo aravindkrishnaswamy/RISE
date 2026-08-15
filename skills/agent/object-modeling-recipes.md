@@ -24,6 +24,7 @@ not listed here.
 | `clippedplane_geometry` | bounded floors, area-light quads, framed backdrops | cheap analytic | four explicit corners; vertex WINDING picks which side renders/emits |
 | `csg_object` | booleans of two already-declared objects | cost of both operands + one more test | **no `scale` parameter** -- size the operands, not the CSG result |
 | `sdf_geometry` | **TURNED/LATHE PROFILES (bottles, jars, vases, mortars, goblets -- see "Turned forms" below)**; melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp and turned-vessel recipes below for the field layout |
+| `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius>` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; still just roundcones -- a non-circular cross-section or a flat-cut base needs the manual `sdf_geometry` `part` grammar (see "Turned forms" below), which remains the fallback for anything the joint graph can't express |
 | `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
 | `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson) |
@@ -57,6 +58,24 @@ in world units, and it is the whole point: `smin` fillets the joint
 between two segments into a continuous curve, so the silhouette flows
 where a hard `union` (or a cylinder stack) would step.  Pick `k` around
 a third of the local radius; larger `k` = softer shoulder.
+
+**A BRANCHING body (a creature, not a single profile) has its own
+chunk now: `skeleton_geometry`.**  Hand-chaining `roundcone` parts this
+way is still the right tool for a single continuous profile that runs
+straight up one axis (a lathe form) or for a shape the joint graph
+can't express (a non-circular cross-section, a flat-cut base, a
+hollow interior).  But a body with more than one limb meeting at a
+shared joint -- a hip branching into two legs and a tail, a hand's
+finger tree -- is a GRAPH, not a chain, and hand-authoring it as
+`sdf_geometry` `part` lines means re-deriving each bone's position,
+length, and orientation by hand.  `skeleton_geometry` takes the graph
+directly: one `joint <name> <parent|none> <x> <y> <z> <radius>` line
+per joint (a bone is implied between every joint and its parent), and
+it expands into the same `roundcone`-chain-joined-by-smin `sdf_geometry`
+this section teaches, so everything below about profile-reading and
+flat-bottom cuts still applies to how each individual bone is shaped --
+`skeleton_geometry` only automates the graph assembly, not the
+primitive vocabulary.  See the geometry vocabulary table above.
 
 Reading a profile off a reference is mechanical.  Write down (height,
 radius) pairs from the bottom up -- base, belly, shoulder, neck, lip --

@@ -13360,7 +13360,10 @@ namespace RISE
 			//! finish with.  sweep_geometry is NOT here -- its schema rides
 			//! the declared construction method instead (see the
 			//! construction == "sweep" gate below), so it only enters the
-			//! prompt when the element actually needs it.
+			//! prompt when the element actually needs it.  skeleton_geometry
+			//! follows the identical discipline under construction == "chain"
+			//! (see that gate further below) -- also absent from this list
+			//! for the same reason.
 			//!
 			//! THE TEXT IS THE DESCRIPTOR REGISTRY'S OWN, fetched through the
 			//! same ReadSchema the `read_schema` tool answers with -- there is
@@ -13480,6 +13483,53 @@ namespace RISE
 						     "\tname " + prefix + "body_sweep_obj\n"
 						     "\tgeometry " + prefix + "body_sweep\n"
 						     "\tmaterial " + prefix + "body_mat\n"
+						     "\tposition 0 0 0\n"
+						     "}\n\n";
+					}
+					// C1 (2026-08-14, F4 fix round 2026-08-14): the exact analogue
+					// for "chain", now that skeleton_geometry exists -- same
+					// gate, same reasoning as the sweep block above (schema +
+					// ONE worked example ride the declared-construction gate,
+					// and every name in the example resolves via `prefix`).  A
+					// short tapering tail (5 joints, root -> tip) gives a
+					// visibly curved creature limb from a handful of `joint`
+					// lines -- exactly the shape sdf_geometry's raw part-line
+					// grammar made tedious enough that this chunk exists.
+					// LocalFrameContract rule 1 counts the RADIUS, not just the
+					// centre: root's CENTRE sits at y=0.28 (its own radius) so
+					// its bottom cap touches y=0 (verified: min over all 5
+					// joints of joint.y-joint.r is exactly 0.0, at root).  x
+					// stays within +-0.05 of 0 (horizontally centred) while y
+					// rises 1.57 units and z sweeps 1.3 units end to end --
+					// genuine curvature in y AND z with no dominant x motion
+					// (the prior example's comment claimed this but its actual
+					// deltas were Dx=1.8, Dy=1.0, Dz=0.05 -- dominant X, not
+					// y/z).
+					if( entry->construction == "chain" ) {
+						p += "\n";
+						p += ReadSchema( "skeleton_geometry" );
+						p += "\n";
+						p += "WORKED EXAMPLE for the chain method (adapt values; delete nothing you need):\n"
+						     "skeleton_geometry\n"
+						     "{\n"
+						     "\tname " + prefix + "tail_skel\n"
+						     "\tjoint root none 0 0.28 0 0.28\n"
+						     "\tjoint j1 root 0.02 0.7 0.15 0.22\n"
+						     "\tjoint j2 j1 0.05 1.15 0.45 0.16\n"
+						     "\tjoint j3 j2 0.02 1.55 0.85 0.10\n"
+						     "\tjoint j4 j3 -0.05 1.85 1.3 0.05\n"
+						     "\tblend 0.4\n"
+						     "}\n"
+						     "lambertian_material\n"
+						     "{\n"
+						     "\tname " + prefix + "tail_mat\n"
+						     "\treflectance none\n"
+						     "}\n"
+						     "standard_object\n"
+						     "{\n"
+						     "\tname " + prefix + "tail_obj\n"
+						     "\tgeometry " + prefix + "tail_skel\n"
+						     "\tmaterial " + prefix + "tail_mat\n"
 						     "\tposition 0 0 0\n"
 						     "}\n\n";
 					}

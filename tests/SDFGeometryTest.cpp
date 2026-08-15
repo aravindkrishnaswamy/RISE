@@ -1278,6 +1278,157 @@ static void TestKeyframeHeightfieldScale()
 	safe_release( field );
 }
 
+// Test 32: round cone local AABB (primLocalAABB, SDFGeometry.cpp) -- a
+// roundcone's envelope is the convex hull of its two end spheres (base
+// radius a at y=0, tip radius b at y=c), so its Y extent is
+// [min(-a,c-b), max(a,c+b)], not the naive "-a at the base paired with
+// c+b at the tip".  For a WELL-FORMED cone (|a-b| <= c, neither cap
+// sphere contains the other) the two forms are ALGEBRAICALLY IDENTICAL:
+//   c-b >= -a  <=>  b-a <= c   (both implied by |a-b| <= c)
+//   a <= c+b   <=>  a-b <= c   (both implied by |a-b| <= c)
+// so min(-a,c-b) == -a and max(a,c+b) == c+b whenever the cone is
+// well-formed -- the fix changes NOTHING for any scene's existing
+// bounds.  Only a DEGENERATE cone (|a-b| > c, e.g. a fat joint close to
+// a small one -- exactly what skeleton_geometry's bone chains can
+// produce) picks up the wider min/max term.
+static void TestRoundConeAABBIdentityForWellFormedCones()
+{
+	std::cout << "Test 32a: round cone AABB -- IDENTICAL to the old formula for every well-formed cone" << std::endl;
+
+	// (a, b, c) triples with |a-b| <= c, covering BOTH boundary ties
+	// independently: "a-b == c" (the max(a,c+b) tie, ry1 side) and
+	// "b-a == c" (the min(-a,c-b) tie, ry0 side) are different algebraic
+	// identities and must each be exercised on their own fixture.
+	//
+	// The true property for a well-formed cone is BIT-IDENTICAL equality
+	// between the old and new formulas -- verified by brute-force in
+	// Python doubles for every fixture below except the last: for
+	// { 0.5, 1.1, 0.6 } (the b-a==c tie), c-b == -0.5000000000000001
+	// while -a == -0.5 exactly -- a single ULP of rounding noise from
+	// computing c-b as two chained subtractions vs -a directly.  That one
+	// fixture keeps a tight IsClose tolerance; every other fixture below
+	// uses exact `==`.
+	struct Triple { Scalar a, b, c; bool exactBitwise; };
+	static const Triple table[] = {
+		{ 1.0, 1.0, 0.5, true },   // equal radii -- a true cylinder-capped shape
+		{ 1.0, 0.6, 0.4, true },   // a-b == c exactly (ry1-side boundary)
+		{ 0.5, 0.9, 0.6, true },
+		{ 2.0, 0.3, 1.7, true },   // a-b == c exactly (ry1-side boundary)
+		{ 0.3, 0.3, 0.01, true },  // near-cylinder, tiny height
+		{ 0.5, 1.1, 0.6, false },  // b-a == c exactly (ry0-side boundary) -- 1-ULP fragile, see above
+	};
+
+	for( std::size_t i = 0; i < sizeof(table)/sizeof(table[0]); ++i )
+	{
+		const Scalar a = table[i].a, b = table[i].b, c = table[i].c;
+		Check( std::fabs(a-b) <= c + Scalar(1e-9), "fixture is well-formed (|a-b| <= c)" );
+
+		// The OLD (pre-fix) formula: ry0=-a, ry1=c+b.  Assert it equals the
+		// new min/max form -- the algebraic identity this fix relies on.
+		const Scalar oldRy0 = -a, oldRy1 = c + b;
+		const Scalar newRy0 = std::min( -a, c - b ), newRy1 = std::max( a, c + b );
+		if( table[i].exactBitwise )
+		{
+			Check( oldRy0 == newRy0, "well-formed: new ry0 == old ry0 bit-exact" );
+			Check( oldRy1 == newRy1, "well-formed: new ry1 == old ry1 bit-exact" );
+		}
+		else
+		{
+			Check( IsClose( oldRy0, newRy0, Scalar(1e-9) ), "well-formed: new ry0 == old ry0 (1-ULP tolerance, see fixture comment)" );
+			Check( IsClose( oldRy1, newRy1, Scalar(1e-9) ), "well-formed: new ry1 == old ry1 (1-ULP tolerance, see fixture comment)" );
+		}
+
+		// And the ACTUAL bbox the geometry reports matches that same
+		// (unchanged) prediction -- not just the isolated formula.
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimRoundCone, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), a, b, c, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		BoundingBox bb = g->GenerateBoundingBox();
+		Check( bb.ll.y <= oldRy0 + Scalar(1e-6) && bb.ll.y >= oldRy0 - Scalar(0.01),
+		       "well-formed: reported bbox bottom matches the (unchanged) old prediction" );
+		Check( bb.ur.y >= oldRy1 - Scalar(1e-6) && bb.ur.y <= oldRy1 + Scalar(0.01),
+		       "well-formed: reported bbox top matches the (unchanged) old prediction" );
+		safe_release( g );
+	}
+}
+
+// Test 32b: a DEGENERATE round cone (|a-b| > c -- one cap sphere
+// contains the other) -- the exact repro from the skeleton_geometry bug
+// report: base radius a=1.0 at y=0, tip radius b=0.1 at y=c=0.5.  The
+// true field is (for any ray not exactly on the +/-Y axis, qx>0) the
+// base sphere of radius 1.0 centred at the origin -- sdRoundConeY's
+// k<0 branch fires whenever qx>0 here (b=(a-b)/c=1.8 clamps a=sqrt(max(
+// 1-b*b,0))=0, so k=-1.8*qx < 0 for any qx>0) -- so the true top of the
+// solid at (x,z)=(0.3,0.4) (radial dist 0.5 from the Y axis) is
+// y=sqrt(1-0.5^2)=sqrt(0.75)~=0.8660254, NOT y=c+b=0.6 (the pre-fix
+// box's top).  A ray descending straight down through that (x,z) column
+// must therefore hit near y=0.8660254; the pre-fix box (top at 0.6)
+// would have clipped the march before it ever reached that surface.
+static void TestRoundConeDegenerateAABBDoesNotClipSurface()
+{
+	std::cout << "Test 32c: DEGENERATE round cone (|a-b|>c) -- ray hits the true (uncapped) sphere surface" << std::endl;
+
+	const Scalar a = 1.0, b = 0.1, c = 0.5;    // |a-b| = 0.9 > c = 0.5
+	Check( std::fabs(a-b) > c, "fixture is genuinely degenerate (|a-b| > c)" );
+
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimRoundCone, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), a, b, c, 0 ) );
+	SDFGeometry* g = MakeGeom( parts );
+
+	// Sanity: the pre-fix box top (c+b=0.6) is provably BELOW the true
+	// surface height at this column -- if this weren't true the repro
+	// wouldn't demonstrate anything.
+	const Scalar qx = 0.5;   // sqrt(0.3^2+0.4^2)
+	const Scalar trueTopY = std::sqrt( a*a - qx*qx );   // sqrt(0.75)
+	Check( trueTopY > c + b, "sanity: the true surface sits above the old (buggy) box top" );
+
+	RayIntersectionGeometric ri = MkRI( Point3(0.3, 50, 0.4), Vector3(0,-1,0) );
+	g->IntersectRay( ri, true, true, false );
+	Check( ri.bHit, "MONEY ASSERTION -- the ray actually hits (a clipped-away box would miss or land on the old, wrong disc)" );
+	Check( ri.bHit && IsClose( ri.range, Scalar(50) - trueTopY, Scalar(0.02) ),
+	       "MONEY ASSERTION -- hit range matches the TRUE sphere surface (~49.134), not the old "
+	       "clipped-plane range (~49.4 at y=0.6)" );
+
+	safe_release( g );
+}
+
+// Test 32d: DEGENERATE round cone (|a-b|>c), probed EXACTLY ON the local
+// Y axis (qx==0) -- the FIELD sibling of 32c's bounds bug.  In the
+// degenerate regime b=(r1-r2)/h has |b|>1, so a=sqrt(max(1-b*b,0))
+// clamps to exactly 0 and k = qx*(-b) + qy*a collapses to -b*qx.  For
+// qx>0 that's still correctly signed (32c covers it), but for qx==0,
+// k==0 exactly -- neither "< 0" nor "> a*h == 0" -- so control fell
+// through to the lateral-wall branch qx*a + qy*b - r1 = qy*b - r1,
+// which is wrong in both sign and magnitude on the axis.  The true
+// solid here (r1=1.0 >= r2=0.1, tip sphere fully contained in the base
+// sphere -- see the sdRoundConeY degenerate branch) is just the base
+// sphere of radius r1 centred at the origin, so the true surface point
+// straight up the axis is y=r1=1.0, and a ray descending from y=50
+// must hit at range 50-1.0=49.0.
+static void TestRoundConeDegenerateOnAxisFieldMatchesSphere()
+{
+	std::cout << "Test 32d: DEGENERATE round cone (|a-b|>c), ON-AXIS probe -- field matches the true cap sphere" << std::endl;
+
+	const Scalar a = 1.0, b = 0.1, c = 0.5;    // |a-b| = 0.9 > c = 0.5
+	Check( std::fabs(a-b) > c, "fixture is genuinely degenerate (|a-b| > c)" );
+
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimRoundCone, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), a, b, c, 0 ) );
+	SDFGeometry* g = MakeGeom( parts );
+
+	RayIntersectionGeometric ri = MkRI( Point3(0, 50, 0), Vector3(0,-1,0) );
+	g->IntersectRay( ri, true, true, false );
+	Check( ri.bHit, "MONEY ASSERTION -- the on-axis ray hits the base cap sphere" );
+	Check( ri.bHit && IsClose( ri.range, Scalar(50) - a, Scalar(0.02) ),
+	       "MONEY ASSERTION -- on-axis hit range matches the true sphere top (50-1.0=49.0), not the "
+	       "lateral-wall fallthrough's wrong value" );
+
+	safe_release( g );
+}
+
 int main()
 {
 	std::cout << "SDFGeometryTest" << std::endl;
@@ -1315,6 +1466,9 @@ int main()
 	TestKeyframeBlendAndScale();
 	TestKeyframeRejectsBadParams();
 	TestKeyframeHeightfieldScale();
+	TestRoundConeAABBIdentityForWellFormedCones();
+	TestRoundConeDegenerateAABBDoesNotClipSurface();
+	TestRoundConeDegenerateOnAxisFieldMatchesSphere();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

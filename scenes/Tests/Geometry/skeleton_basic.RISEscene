@@ -1,0 +1,180 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           skeleton_basic.RISEscene                                                                #
+#   Description:    `skeleton_geometry` (C1): a JOINT GRAPH that expands at parse time into one             #
+#                    sdf_geometry -- a roundcone per bone, smin-blended, no separate sphere needed at        #
+#                    any joint that already sits on a bone's own end cap.  A small quadruped-ish creature:   #
+#                    a branching skeleton (hips -> shoulder -> neck -> head, hips -> tail -> tail tip,       #
+#                    hips -> back leg -> back foot, shoulder -> front leg -> front foot) alongside a         #
+#                    plain tentacle chain for comparison.                                                    #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/skeleton_basic
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			512
+	height			512
+}
+
+pinhole_camera
+{
+	location			0.6 4.0 14
+	lookat				0.6 1.3 0
+	up					0 1 0
+	fov					46.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_hide
+	color				0.65 0.5 0.3
+}
+
+lambertian_material
+{
+	name				mat_hide
+	reflectance			pnt_hide
+}
+
+uniformcolor_painter
+{
+	name				pnt_tentacle
+	color				0.25 0.55 0.5
+}
+
+lambertian_material
+{
+	name				mat_tentacle
+	reflectance			pnt_tentacle
+}
+
+##################################################
+# A branching quadruped-ish skeleton: hips is the root with THREE
+# children (shoulder, tail base, back leg); shoulder itself branches
+# again into neck and front leg.  Every non-root joint's bone supplies
+# its own end cap, so no joint here authors a separate sphere.
+##################################################
+skeleton_geometry
+{
+	name				quadruped_skel
+	joint				hips     none    0.0  1.0  0.0   0.50
+	joint				shoulder hips    1.5  1.1  0.0   0.45
+	joint				neck     shoulder 2.3 1.5  0.0   0.25
+	joint				head     neck    2.9  1.7  0.0   0.35
+	joint				tail1    hips   -1.3  1.2  0.0   0.30
+	joint				tail2    tail1  -2.3  1.6  0.0   0.12
+	joint				legfl1   shoulder 1.6 0.5  0.4   0.22
+	joint				legfl2   legfl1  1.65 0.0  0.45  0.12
+	joint				legbl1   hips   -0.3  0.5  0.4   0.24
+	joint				legbl2   legbl1 -0.35 0.0  0.45  0.13
+	blend				0.4
+}
+
+standard_object
+{
+	name				quadruped
+	geometry			quadruped_skel
+	material			mat_hide
+	position			-1.5 0 0
+}
+
+##################################################
+# A plain tentacle: a linear chain, no branching, tapering to a fine
+# tip -- the simple case the branching skeleton above builds on.
+##################################################
+skeleton_geometry
+{
+	name				tentacle_skel
+	joint				t0 none 0.0 0.0 0.0 0.35
+	joint				t1 t0   0.6 0.9 0.2 0.28
+	joint				t2 t1   1.0 1.9 0.1 0.20
+	joint				t3 t2   0.7 2.8 0.4 0.12
+	joint				t4 t3   0.2 3.5 0.3 0.05
+	blend				0.5
+}
+
+standard_object
+{
+	name				tentacle
+	geometry			tentacle_skel
+	material			mat_tentacle
+	position			4.0 0 -1
+}
+
+##################################################
+# Ground, for shadow/contact context
+##################################################
+uniformcolor_painter
+{
+	name				pnt_ground
+	color				0.4 0.4 0.42
+}
+
+lambertian_material
+{
+	name				mat_ground
+	reflectance			pnt_ground
+}
+
+clippedplane_geometry
+{
+	name				ground_geo
+	pta					-14 0 -10
+	ptb					 14 0 -10
+	ptc					 14 0  10
+	ptd					-14 0  10
+}
+
+standard_object
+{
+	name				ground
+	geometry			ground_geo
+	material			mat_ground
+}
+
+##################################################
+# Lights
+##################################################
+omni_light
+{
+	name				keylight
+	power				2400
+	color				1.0 1.0 1.0
+	position			-8 10 12
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				1.0 1.0 1.0
+	position			10 6 8
+}

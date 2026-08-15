@@ -31,6 +31,7 @@
 #include "Geometry.h"
 #include "../Interfaces/IFunction2D.h"	// heightfield mode field source (addref'd)
 #include <vector>
+#include <cstddef>		// std::size_t (NumParts() et al.) -- <vector> is not required to declare it
 #include <mutex>		// std::once_flag for the lazily-built surface-sampling structure
 #include <memory>		// std::unique_ptr<std::once_flag> -- resettable for animated fields
 
@@ -229,6 +230,18 @@ namespace RISE
 
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			Scalar GetArea() const;
+
+			//! Number of authored SDF primitives folded into this geometry's
+			//! field.  Exact and blend-independent (unlike GetArea(), which a
+			//! small smin-blended duplicate primitive can shift by less than
+			//! tessellation noise) -- the natural diagnostic for the O(parts)
+			//! per-march-step cost noted above, and for regression-guarding
+			//! "did this emit exactly the primitives it should have".
+			//! NB: the heightfield constructor leaves m_parts empty by design
+			//! (its field comes from the sampled height grid, not from
+			//! authored primitives), so NumParts() == 0 there even though the
+			//! geometry itself is non-empty -- don't read 0 as "no surface".
+			inline std::size_t NumParts() const { return m_parts.size(); }
 
 			//! Number of grid cells where the sampling mesher PROVABLY missed
 			//! surface (all 8 cell corners on one side of the zero set, cell

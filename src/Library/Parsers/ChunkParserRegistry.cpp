@@ -37,6 +37,8 @@
 #include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <cstdlib>   // strtod for the ar_layer numeric parse
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
+                     // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -5528,6 +5530,345 @@ namespace RISE
 				}
 			};
 
+			//! `skeleton_geometry` (C1, docs/agentic-redesign/85-geometry-
+			//! expressiveness-candidates.md) -- a JOINT GRAPH that expands, at
+			//! PARSE TIME, into a single `sdf_geometry`: one `roundcone` part
+			//! per bone (parent -> child), joined with `smin`, registered
+			//! under THIS chunk's own `name` -- so CST incremental apply/
+			//! remove works generically via RemoveGeometry(name), exactly like
+			//! a hand-authored sdf_geometry, and unlike the `__geo`-suffix
+			//! chunks (shape_light, rect_light) that need a Cst.cpp special
+			//! case.  Creature flesh authored the way an animator thinks
+			//! (joints and bones), not sdf_geometry's raw part-line grammar.
+			//!
+			//! A BONE'S END CAPS ARE ITS TWO JOINTS.  A roundcone's local +Y
+			//! axis runs base -> tip, and RISE's SDF round cone
+			//! (SDFGeometry.cpp's sdRoundConeY, the Quilez sphere-swept cone)
+			//! includes hemispherical caps of radius `a` (base) and `b` (tip)
+			//! at the two ends.  So a non-root joint needs NO sphere of its
+			//! own -- the incoming bone's tip cap already sits exactly at its
+			//! position with exactly its radius -- and a root WITH CHILDREN
+			//! needs none either, for the mirror reason (each outgoing bone's
+			//! base cap already covers it).  Only a joint that is BOTH
+			//! parentless AND childless (an isolated joint) would otherwise be
+			//! invisible, so that one case alone gets an explicit `sphere`
+			//! part.  DO NOT "fix" this by adding a sphere at every joint --
+			//! that would double-cover every bone-adjacent joint with a
+			//! redundant, blend-interacting primitive nobody asked for.
+			//!
+			//! DECLARE-BEFORE-USE, STRUCTURALLY CYCLE-FREE: `parent` must name
+			//! `none` or a joint already declared on an EARLIER `joint` line.
+			//! A joint can therefore never (directly or transitively) become
+			//! its own ancestor -- there is no legal walk that revisits an
+			//! index behind the one being declared, so no cycle check is
+			//! needed beyond this one ordering rule.
+			struct SkeletonGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Same one-place-both-diagnostics pattern as
+				//! ShapeLightAsciiChunkParser::Reject -- rect_light's Reject,
+				//! same reason.
+				static bool Reject( const std::string& why )
+				{
+					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					GlobalLog()->PrintEx( eLog_Error, "skeleton_geometry:: %s", why.c_str() );
+					return false;
+				}
+
+				//! One declared `joint <name> <parent|none> <x> <y> <z> <radius>` line.
+				struct JointDecl
+				{
+					std::string name;
+					std::string parent;
+					double x, y, z, r;
+					int    parentIndex;   // resolved index into the joints vector; -1 = root (parent "none")
+					JointDecl() : x(0), y(0), z(0), r(0), parentIndex(-1) {}
+				};
+
+				//! Formats a double with full IEEE-double round-trip precision.
+				//! This text is consumed ONCE, immediately, by
+				//! SDFGeometry::ParsePartLines -- it is never saved to disk or
+				//! shown to an author (the CST round-trip persists the SHORT
+				//! `skeleton_geometry` chunk, not this expansion) -- so exact
+				//! precision matters and brevity does not.
+				//! NB: this is the only place in this file that snprintf's a
+				//! double and hands the text straight back to a sscanf-based
+				//! parser (SDFGeometry::ParsePartLines).  Safe today because
+				//! both halves run under the same LC_NUMERIC (nothing in
+				//! src/ calls setlocale) -- '%.17g'/sscanf agree on '.' as
+				//! the decimal point only while that holds.  If a future
+				//! caller ever sets a locale with a different decimal
+				//! separator between format and parse, this round-trip
+				//! breaks silently.
+				static std::string Num( double v )
+				{
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "%.17g", v );
+					return buf;
+				}
+
+				//! One `part` line in SDFGeometry::ParsePartLines' 16-token
+				//! grammar: `<prim> <op> <k> <px py pz> <exDeg eyDeg ezDeg>
+				//! <sx sy sz> <a b c> <round>`.  Every bone/sphere this chunk
+				//! emits uses identity scale, so `sx sy sz` is hardcoded to
+				//! `1 1 1` rather than threading three more parameters nobody
+				//! would ever vary here.
+				static std::string PartLine( const char* prim, double k,
+					double px, double py, double pz, double exDeg, double eyDeg, double ezDeg,
+					double a, double b, double c )
+				{
+					return std::string( prim ) + " smin " + Num(k) + " " +
+						Num(px) + " " + Num(py) + " " + Num(pz) + " " +
+						Num(exDeg) + " " + Num(eyDeg) + " " + Num(ezDeg) + " " +
+						"1 1 1 " +
+						Num(a) + " " + Num(b) + " " + Num(c) + " 0";
+				}
+
+				//! Every OTHER chunk in this file forwards author-typed
+				//! numbers verbatim; this one SYNTHESIZES new numbers (bone
+				//! length from coordinate deltas, blend width from a radius
+				//! product) that individually-finite inputs can still
+				//! combine into a non-finite result (e.g. `dx*dx` overflows
+				//! for absurd joint coordinates even though `dx` itself was
+				//! a finite authored value).  `%.17g` on an inf/nan value
+				//! prints "inf"/"nan", and SDFGeometry::ParsePartLines'
+				//! `sscanf "%lf"` ACCEPTS that spelling -- so this chunk owns
+				//! the finiteness check that the plain per-token text
+				//! validation upstream (AllTokensAreFiniteNumbers) cannot
+				//! cover, because it runs before this arithmetic exists.
+				static bool AllFiniteD( std::initializer_list<double> vals )
+				{
+					for( double v : vals ) if( !std::isfinite( v ) ) return false;
+					return true;
+				}
+
+				//! Euler DEGREES (ex, ey; ez is always 0) that rotate local +Y
+				//! onto the given UNIT direction (dx,dy,dz) under RISE's SDF
+				//! part convention R = Rz(0)*Ry(ey)*Rx(ex) (SDFGeometry::
+				//! RecomputePartDerived: the rotation's SECOND COLUMN, the
+				//! world direction local +Y maps to, is (sin(ey)sin(ex),
+				//! cos(ex), cos(ey)sin(ex)) once ez=0).  So dy = cos(ex) and
+				//! sqrt(dx^2+dz^2) = sin(ex) (ex chosen in [0,180], where
+				//! sin(ex) >= 0), giving ex = atan2(sqrt(dx^2+dz^2), dy); then
+				//! dx = sin(ey)sin(ex), dz = cos(ey)sin(ex), giving
+				//! ey = atan2(dx, dz).  DEGENERATE at dx == dz == 0 (bone
+				//! parallel to +-Y, tested with a tolerance rather than exact
+				//! equality): ey is then free of any constraint (set 0) and
+				//! ex is 0 for d=+Y, 180 for d=-Y.
+				static void DirectionToEulerDeg( double dx, double dy, double dz, double& exDeg, double& eyDeg )
+				{
+					const double horiz = std::sqrt( dx*dx + dz*dz );
+					if( horiz < 1e-9 ) {
+						eyDeg = 0.0;
+						exDeg = ( dy >= 0.0 ) ? 0.0 : 180.0;
+						return;
+					}
+					exDeg = std::atan2( horiz, dy ) * RAD_TO_DEG;
+					eyDeg = std::atan2( dx, dz ) * RAD_TO_DEG;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name   = bag.GetString( "name", "noname" );
+					const double blend        = bag.GetDouble( "blend", 0.35 );
+					const unsigned int maxSteps      = bag.GetUInt( "maxsteps", 256 );
+					const double eps                 = bag.GetDouble( "epsilon", 0.0 );
+					const unsigned int samplingDetail = bag.GetUInt( "sampling_detail", 64 );
+
+					const std::vector<std::string>& jointLines = bag.GetRepeatable( "joint" );
+					if( jointLines.empty() ) {
+						return Reject( "at least one `joint` is required" );
+					}
+					if( blend < 0.0 ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%g", blend );
+						return Reject( std::string( "`blend` (" ) + buf + ") must be >= 0" );
+					}
+
+					std::vector<JointDecl> joints;
+					joints.reserve( jointLines.size() );
+					std::map<std::string,int> nameToIndex;
+
+					for( std::size_t i = 0; i < jointLines.size(); ++i ) {
+						const std::string& line = jointLines[i];
+
+						// Tokenize on whitespace -- a mixed identifier/number
+						// line, so the strict all-numeric AllTokensAreFiniteNumbers
+						// helper is applied only to the trailing 4-token numeric
+						// run (same mixed-line idiom sweep_geometry's
+						// `profile_circle` uses elsewhere in this file), and an
+						// exact-6-token count catches both too few and too many
+						// (trailing garbage glued as its own token).
+						std::vector<std::string> toks;
+						{
+							std::istringstream iss( line );
+							std::string t;
+							while( iss >> t ) toks.push_back( t );
+						}
+						if( toks.size() != 6 ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)toks.size() );
+							return Reject( "joint `" + line + "` must be exactly 6 tokens "
+								"`<name> <parent|none> <x> <y> <z> <radius>` -- got " + buf );
+						}
+
+						const std::string last4 = toks[2] + " " + toks[3] + " " + toks[4] + " " + toks[5];
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( last4.c_str(), &nTok ) || nTok != 4 ) {
+							return Reject( "joint `" + line + "`: the last four fields "
+								"(x y z radius) must be finite numbers, with no trailing garbage" );
+						}
+
+						JointDecl jd;
+						jd.name = toks[0];
+						jd.parent = toks[1];
+						std::sscanf( last4.c_str(), "%lf %lf %lf %lf", &jd.x, &jd.y, &jd.z, &jd.r );
+
+						if( nameToIndex.find( jd.name ) != nameToIndex.end() ) {
+							return Reject( "joint `" + jd.name + "` is declared more than once" );
+						}
+						if( jd.parent == jd.name ) {
+							return Reject( "joint `" + jd.name + "` names itself as `parent` -- "
+								"a joint cannot be its own parent" );
+						}
+						if( jd.parent != "none" ) {
+							std::map<std::string,int>::const_iterator it = nameToIndex.find( jd.parent );
+							if( it == nameToIndex.end() ) {
+								return Reject( "joint `" + jd.name + "`: parent `" + jd.parent +
+									"` is not a joint declared EARLIER in this chunk (declare-before-use -- "
+									"forward references and unknown names are both rejected the same way, "
+									"and this rule is exactly what makes a parent cycle impossible)" );
+							}
+							jd.parentIndex = it->second;
+						}
+						if( !( jd.r > 0.0 ) ) {
+							char buf[64];
+							std::snprintf( buf, sizeof(buf), "%g", jd.r );
+							return Reject( "joint `" + jd.name + "`: radius (" + buf + ") must be > 0" );
+						}
+						if( jd.parentIndex >= 0 ) {
+							const JointDecl& par = joints[jd.parentIndex];
+							const double dx = jd.x - par.x, dy = jd.y - par.y, dz = jd.z - par.z;
+							if( !( dx*dx + dy*dy + dz*dz > 1e-18 ) ) {
+								return Reject( "joint `" + jd.name + "` and its parent `" + par.name +
+									"` are at coincident positions -- a zero-length bone has no direction" );
+							}
+						}
+
+						nameToIndex[jd.name] = (int)joints.size();
+						joints.push_back( jd );
+					}
+
+					// Children count per joint -- ONLY a parentless, childless
+					// joint gets its own sphere part; see the struct-level
+					// comment for why every other joint needs none.
+					std::vector<int> childCount( joints.size(), 0 );
+					for( std::size_t i = 0; i < joints.size(); ++i )
+						if( joints[i].parentIndex >= 0 ) childCount[(std::size_t)joints[i].parentIndex]++;
+
+					// F6(b): a large skeleton (dozens of bones) with a
+					// systematically bad radius/length ratio would otherwise
+					// emit one eLog_Warning line per degenerate bone with no
+					// cap.  Follow the same first-N-then-summary shape as
+					// SDFGeometry.cpp's missed-feature-cells diagnostic
+					// (EnsureSamplingStructure): name the first few offenders
+					// so an author can start fixing immediately, then fold
+					// the rest into one summary line instead of flooding the
+					// log.
+					unsigned int degenerateBoneCount = 0;
+					static const unsigned int kMaxNamedDegenerateBones = 3;
+
+					std::string parts;
+					for( std::size_t i = 0; i < joints.size(); ++i ) {
+						const JointDecl& j = joints[i];
+						if( j.parentIndex >= 0 ) {
+							const JointDecl& par = joints[(std::size_t)j.parentIndex];
+							const double dx = j.x - par.x, dy = j.y - par.y, dz = j.z - par.z;
+							const double len = std::sqrt( dx*dx + dy*dy + dz*dz );
+							// F6(a): `dx*dx` etc. can overflow to inf for absurd joint
+							// coordinates even though dx itself was finite -- see the
+							// AllFiniteD comment above for why this chunk owns the check.
+							if( !AllFiniteD( { dx, dy, dz, len } ) ) {
+								return Reject( "joint `" + par.name + "` -> `" + j.name +
+									"`: the synthesized bone length is not finite (joint "
+									"coordinates are too large) -- reduce the joint positions" );
+							}
+							// Non-rejecting diagnostic (not a Reject -- the geometry is
+							// still well-defined, see SDFGeometry.cpp primLocalAABB's
+							// roundcone case): when one cap sphere's radius so exceeds
+							// the other that it swallows it whole (|rp-rc| > bone
+							// length), the bone's visible surface collapses to a plain
+							// sphere at the larger joint -- the smaller joint and the
+							// taper between them contribute no visible geometry.  Name
+							// both joints so an author who wanted a visible taper learns
+							// which bone degenerated, same warn-not-reject style as
+							// glint_modifier's coverage/fill clamp diagnostics above.
+							if( std::fabs( par.r - j.r ) > len ) {
+								if( degenerateBoneCount < kMaxNamedDegenerateBones ) {
+									GlobalLog()->PrintEx( eLog_Warning,
+										"skeleton_geometry `%s`: bone `%s` -> `%s` is degenerate "
+										"(|radius delta| %g > bone length %g) -- the smaller joint's "
+										"sphere is entirely contained in the larger one's, so this "
+										"bone collapses to a plain sphere at `%s` with no visible taper",
+										name.c_str(), par.name.c_str(), j.name.c_str(),
+										std::fabs( par.r - j.r ), len,
+										( par.r > j.r ? par.name.c_str() : j.name.c_str() ) );
+								}
+								degenerateBoneCount++;
+							}
+							double exDeg = 0.0, eyDeg = 0.0;
+							DirectionToEulerDeg( dx/len, dy/len, dz/len, exDeg, eyDeg );
+							const double k = blend * std::min( par.r, j.r );
+							if( !AllFiniteD( { exDeg, eyDeg, k } ) ) {
+								return Reject( "joint `" + par.name + "` -> `" + j.name +
+									"`: a synthesized bone value is not finite (blend * radius "
+									"or the direction-to-Euler conversion overflowed) -- reduce "
+									"`blend` or the joint radii" );
+							}
+							parts += PartLine( "roundcone", k, par.x, par.y, par.z,
+								exDeg, eyDeg, 0.0, par.r, j.r, len );
+							parts += "\n";
+						} else if( childCount[i] == 0 ) {
+							const double k = blend * j.r;
+							if( !AllFiniteD( { k } ) ) {
+								return Reject( "joint `" + j.name +
+									"`: the synthesized sphere blend width (blend * radius) is "
+									"not finite -- reduce `blend` or the joint radius" );
+							}
+							parts += PartLine( "sphere", k, j.x, j.y, j.z, 0.0, 0.0, 0.0, j.r, 0.0, 0.0 );
+							parts += "\n";
+						}
+						// else: root with children -- no part of its own (the
+						// struct-level comment explains why none is needed).
+					}
+					if( degenerateBoneCount > kMaxNamedDegenerateBones ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"skeleton_geometry `%s`: ...and %u more degenerate bones",
+							name.c_str(), degenerateBoneCount - kMaxNamedDegenerateBones );
+					}
+
+					return pJob.AddSDFGeometry( name.c_str(), "", parts.c_str(), maxSteps, eps, samplingDetail );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "skeleton_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A JOINT GRAPH that expands into ONE sdf_geometry: a roundcone per bone (parent -> child), smin-blended -- creature flesh authored the way an animator thinks (joints and bones), not sdf_geometry's raw part-line grammar. Each `joint` line is `<name> <parent|none> <x> <y> <z> <radius>`; every joint but a root must name an ALREADY-DECLARED joint as `parent` (declare-before-use), which is exactly what makes a parent cycle structurally impossible. A bone's end caps ARE its two joints -- the roundcone's spherical caps sit exactly at the parent's and child's positions with exactly their radii -- so joints need NO separate sphere of their own; the one exception is a joint with neither parent nor children (otherwise invisible), which gets a `sphere` part instead. `blend` multiplies min(parent radius, child radius) to give each bone's smin blend width (0 = hard union, visible creases at every joint). Registers under this chunk's OWN `name`, exactly like a hand-authored sdf_geometry. COST: parts = bones + isolated joints, NOT one part per joint -- each bone (parent -> child edge) expands to one roundcone part, each parentless childless joint expands to one sphere part, and a joint with children contributes no part of its own (its caps are supplied by its outgoing bone(s)), and Map() is O(parts) per sphere-trace step with no acceleration structure over parts -- a skeleton is a render-time budget, not a free abstraction; a hand-authored sdf_geometry typically has a handful of parts, a skeleton invites 30-70.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "joint"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One joint (repeatable; at least one required): `<name> <parent|none> <x> <y> <z> <radius>`. `parent` is `none` for a root, or the name of a joint declared on an EARLIER `joint` line -- forward references and unknown names are both rejected, and this ordering is what makes a cycle impossible. `radius` must be > 0, and a non-root joint may not sit exactly on top of its parent (a zero-length bone has no direction)"; }
+						{ auto& p = P(); p.name = "blend"; p.kind = ValueKind::Double;
+						  p.description = "Multiplier (unit-free) on min(parent radius, child radius) giving each bone's smin blend width in world units. 0 = hard union (visible creases at every joint); must be >= 0"; p.defaultValueHint = "0.35"; }
+						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt; p.description = "Sphere-trace step cap, passed through to the expanded sdf_geometry"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "epsilon"; p.kind = ValueKind::Double; p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto), passed through to the expanded sdf_geometry"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256), passed through to the expanded sdf_geometry"; p.defaultValueHint = "64"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct CartesianDiskGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -10861,6 +11202,7 @@ namespace RISE
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
 		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
+		add( "skeleton_geometry",                     new SkeletonGeometryAsciiChunkParser() );
 		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
 		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );

@@ -112,7 +112,24 @@ namespace
 		const Scalar qx = std::sqrt( x*x + z*z );
 		const Scalar qy = y;
 		const Scalar b  = ( r1 - r2 ) / std::max( h, Scalar(1e-8) );
-		const Scalar a  = std::sqrt( std::max( Scalar(1) - b*b, Scalar(0) ) );
+		const Scalar bb = b * b;
+		if( bb >= Scalar(1) )
+		{
+			// Degenerate regime: |r1-r2| > h, so one cap sphere fully
+			// contains the other and there is no lateral cone wall -- the
+			// solid IS the larger cap sphere, exactly.  The general formula
+			// below would clamp a = sqrt(max(1-b*b,0)) to exactly 0 here,
+			// collapsing k = qx*(-b) + qy*a to -b*qx: correctly signed for
+			// qx > 0, but exactly 0 on the local Y axis (qx == 0) where it
+			// neither satisfies k<0 nor k>a*h==0 and falls through to the
+			// lateral-wall branch with the wrong sign/magnitude.  Mirrors
+			// the degenerate-regime handling in this primitive's local
+			// bounds computation (ePrimRoundCone case, further down in
+			// this file) -- keep the two in sync.
+			return ( r1 >= r2 ) ? std::sqrt( qx*qx + qy*qy ) - r1
+			                     : std::sqrt( qx*qx + (qy-h)*(qy-h) ) - r2;
+		}
+		const Scalar a  = std::sqrt( Scalar(1) - bb );
 		const Scalar k  = qx * (-b) + qy * a;
 		if( k < Scalar(0) )   return std::sqrt( qx*qx + qy*qy ) - r1;
 		if( k > a * h )       { const Scalar dyt = qy - h; return std::sqrt( qx*qx + dyt*dyt ) - r2; }
@@ -183,7 +200,22 @@ namespace
 		case SDFGeometry::ePrimCylinder:  rx = rz = pt.a;            ry0 = -pt.b;        ry1 = pt.b;        break;
 		case SDFGeometry::ePrimTorus:     rx = rz = pt.a + pt.b;     ry0 = -pt.b;        ry1 = pt.b;        break;
 		case SDFGeometry::ePrimCapsule:   rx = rz = pt.a;            ry0 = -(pt.b+pt.a); ry1 = pt.b+pt.a;   break;
-		case SDFGeometry::ePrimRoundCone: rx = rz = std::max(pt.a,pt.b); ry0 = -pt.a;   ry1 = pt.c + pt.b; break;
+		case SDFGeometry::ePrimRoundCone:
+			// Envelope of a round cone (base cap radius a at y=0, tip cap
+			// radius b at y=c) is the convex hull of its two end spheres --
+			// so its Y extent is the union of BOTH spheres' own extents, not
+			// just the naive "-a at the base, c+b at the tip" pairing.  For a
+			// WELL-FORMED cone (|a-b| <= c, i.e. neither cap sphere contains
+			// the other) the two forms agree exactly: c-b >= -a <=> b-a <= c,
+			// and a <= c+b <=> a-b <= c, both guaranteed by |a-b| <= c.  For a
+			// DEGENERATE cone (|a-b| > c -- a fat joint close to a small one,
+			// which skeleton_geometry's bone chains can produce) the naive
+			// form under-bounds by |a-b|-c and clips real surface; min/max
+			// over both spheres is exact for both regimes.
+			rx = rz = std::max( pt.a, pt.b );
+			ry0 = std::min( -pt.a, pt.c - pt.b );
+			ry1 = std::max(  pt.a, pt.c + pt.b );
+			break;
 		default:                          rx = rz = pt.a;            ry0 = -pt.a;        ry1 = pt.a;        break;
 		}
 		// box geometry uses (a,b,c) per axis

@@ -347,6 +347,19 @@ regardless of `size`/`taper`/`detail`.  Unlike the other families,
 `blended_chain` takes `points` and `taper` INSTEAD of `aspect` -- the
 path itself is this family's creative essence.
 
+**When the body BRANCHES (more than one limb sharing a joint), reach
+for `skeleton_geometry` instead of chaining `blended_chain` calls.**
+`blended_chain` sweeps ONE spline through a single ordered list of
+points -- exactly right for one limb, but it cannot express two bones
+sharing a joint (a hip with two legs and a tail).  `skeleton_geometry`
+takes the joint GRAPH directly (`joint <name> <parent|none> <x> <y> <z>
+<radius>` per joint, a bone implied between every joint and its
+parent) and expands into one `sdf_geometry` chunk, same as this
+family does.  Use `blended_chain` for a single tapering protrusion;
+use `skeleton_geometry` the moment more than one bone needs to meet at
+the same joint.  See object-modeling-recipes' geometry vocabulary
+table for the chunk's full parameter list.
+
 **Revising a part's FORM is ONE call, exactly like revising its
 colour.**  When a render shows you that a shape is too plain, or the
 wrong form entirely -- the "wings" you built as a thin box, the
@@ -400,7 +413,11 @@ matching endpoints.  A cylinder is still exactly right when the real
 object's radius does not change along its axis: a straight shaft, a
 peg, a pipe, a cork, a candle, a coin.  Full rule, the flat-bottom cut,
 and a rendered profile recipe: object-modeling-recipes, "Turned forms
-are a PROFILE, never a stack of cylinders" and Recipe 4.
+are a PROFILE, never a stack of cylinders" and Recipe 4.  This
+roundcone-chain-plus-smin technique is exactly what `skeleton_geometry`
+now automates for a JOINT GRAPH (see above) -- keep hand-chaining parts
+here for a single straight-axis profile or anything the joint graph's
+per-bone roundcone-only vocabulary can't express.
 
 ## Placement and scale sanity
 

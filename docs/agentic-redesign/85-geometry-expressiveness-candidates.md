@@ -1,14 +1,19 @@
 # 85 — Geometry Expressiveness: Candidate Survey
 
-**Status: CANDIDATE SURVEY (2026-08-14).  C2 SHIPPED 2026-08-14** — see the
-C2 section; shipped as `profile_circle`/`profile_rect`/`point_scale`/
-`path_closed` on `sweep_geometry` (point_scale was added mid-slice when
-review proved the grammar could not express a round non-linear taper —
-the headline tentacle case), plus builder-prompt adoption gated on the
-plan's declared `construction == "sweep"` (schema + worked example ride
-the declaration; context-volume law respected).  Two review rounds to
-zero P1; adoption is wired but NOT yet measured live — the census on the
-next live runs is the C2 measurement.  Remaining candidates unstarted.
+**Status: CANDIDATE SURVEY (2026-08-14).  C2 SHIPPED 2026-08-14, C1
+SHIPPED 2026-08-14** — see the C2 and C1 sections below.  C2 shipped as
+`profile_circle`/`profile_rect`/`point_scale`/`path_closed` on
+`sweep_geometry` (point_scale was added mid-slice when review proved the
+grammar could not express a round non-linear taper — the headline
+tentacle case), plus builder-prompt adoption gated on the plan's
+declared `construction == "sweep"` (schema + worked example ride the
+declaration; context-volume law respected).  C1 shipped as the
+`skeleton_geometry` chunk (parse-time expansion into `sdf_geometry`
+`roundcone` parts, one per bone, `smin`-blended), plus the analogous
+adoption wiring gated on `construction == "chain"`.  Both: two review
+rounds to zero P1; adoption is wired but NOT yet measured live — the
+census on the next live runs is the measurement for each.  Remaining
+candidates (C3-C6) unstarted.
 This is the opening document of the workstream seeded by the
 creative-richness closing verdict ([CREATIVITY_JOURNAL.md](CREATIVITY_JOURNAL.md),
 Closing): *"what limits realism now is what a `part` line can EXPRESS"* —
@@ -91,32 +96,50 @@ Two proven, cheap implementation patterns exist:
 
 ## 3. Ranked candidates
 
-### C1. `skeleton_geometry` — sphere-mesh / bone-chain flesh (creatures) — **highest value**
+### C1. `skeleton_geometry` — sphere-mesh / bone-chain flesh (creatures) — **highest value** — **SHIPPED 2026-08-14**
 
 The one object class nothing current reaches: articulated creatures
 (the dragon that "reads as mass," drooping tentacles, limbs). Author a
 joint graph — `joint <name> <parent|none> <x y z> <radius>` — and the
 system generates flesh.
 
-Implementation is nearly free via **pattern 1**: each bone expands to an
-SDF `roundcone` (frustum between parent radius and child radius, posed
-along the bone) joined with `smin` at shared joints — i.e. the chunk
-expands into the existing `sdf_geometry` part grammar. Sphere-tracing,
-tessellation, displacement-base eligibility, area-light guards all
-inherited. A `blend` knob per joint controls smin radius; optional
-per-joint scale gives flattened limbs. This is literally the sphere-mesh
-representation from the literature (Thiery et al.), and it matches how a
-model already describes a creature in prose (a rig).
+Implemented via **pattern 1**: each bone expands to an SDF `roundcone`
+(frustum between parent radius and child radius, posed along the bone)
+joined with `smin` at shared joints — i.e. the chunk expands, at PARSE
+TIME, into the existing `sdf_geometry` part grammar, registered under
+the chunk's own `name` (unlike the `__geo`-suffix expansion
+`shape_light`/`rect_light` use). Sphere-tracing, tessellation,
+displacement-base eligibility, area-light guards all inherited. A
+`blend` knob multiplies the SMALLER of a bone's two joint radii to give
+its smin blend width (0 = hard union). A joint that already sits on an
+incident bone's own end cap needs no sphere of its own; only a fully
+isolated joint (no parent, no children) gets an explicit `sphere` part.
+This is literally the sphere-mesh representation from the literature
+(Thiery et al.), and it matches how a model already describes a
+creature in prose (a rig). Implementation:
+[ChunkParserRegistry.cpp](../../src/Library/Parsers/ChunkParserRegistry.cpp)'s
+`SkeletonGeometryAsciiChunkParser`; tests in
+[tests/SkeletonGeometryChunkTest.cpp](../../tests/SkeletonGeometryChunkTest.cpp);
+example scene
+[scenes/Tests/Geometry/skeleton_basic.RISEscene](../../scenes/Tests/Geometry/skeleton_basic.RISEscene).
 
-Note `file_build_plan`'s construction-method vocabulary already lists
-`chain` — the summoned category slot is pre-reserved. As of the Arc 83
-fix round (2026-08-14), `chain` now has an INTERIM backing: sdf_geometry
-parts joined with `smin` (see AgentChatCodecs.cpp / AgentMcpAdapter.cpp's
-`construction` gloss). C1 `skeleton_geometry` above is still the
-candidate that would make `chain` a first-class ONE-CHUNK verb (a joint
-graph instead of hand-authored smin parts); adoption for THAT remains:
-back the `chain` method with this chunk + one worked example (a
-quadruped or tentacle) in the build_element clean room.
+`file_build_plan`'s construction-method vocabulary already listed
+`chain` before this shipped — the summoned category slot was
+pre-reserved, and the Arc 83 fix round (2026-08-14) gave it an INTERIM
+backing (hand-authored `sdf_geometry` parts joined with `smin`). C1
+replaces that interim backing: `construction == "chain"` now sends the
+`skeleton_geometry` schema plus one worked example (a tapering tail) in
+the `build_element` clean room (AgentSession.cpp), the same
+declared-construction gate C2's sweep adoption uses.
+
+**What this chunk is NOT**: a first-class field implementation with its
+own graph-aware blending or a BVH over bones. The parse-time-expansion
+approach means `Map()` is still O(joint count) per sphere-trace step,
+with no acceleration structure over bones — fine for the handful-to-few-
+dozen joints a creature needs, but a real budget concern past that. If
+artifact quality or bone counts ever demand it, a dedicated field type
+(joint-graph-aware, its own BVH) remains the future option; nothing
+here forecloses it.
 
 Effort: S/M (parser expansion + pose math + tests). Risk: low.
 
@@ -212,11 +235,12 @@ Effort: XS–S. Risk: SDF distance-bound care under non-uniform scale.
 
 ## 4. Suggested sequencing
 
-1. **C2** (sweep adoption + profile conveniences) — smallest slice,
-   validates the adoption playbook with the census, and its emission
-   machinery is a dependency of C5.
-2. **C1** (`skeleton_geometry`) — the creature unlock; backs the
-   already-reserved `chain` construction method.
+1. **C2** (sweep adoption + profile conveniences) — **SHIPPED
+   2026-08-14** — smallest slice, validates the adoption playbook with
+   the census, and its emission machinery is a dependency of C5.
+2. **C1** (`skeleton_geometry`) — **SHIPPED 2026-08-14** — the creature
+   unlock; backs the `chain` construction method (replacing its interim
+   hand-authored-smin-parts backing).
 3. **C3** (`lathe_geometry`) → **C4** (first 4–6 macro-builders).
 4. **C5** (branching) and **C6** (superellipsoid) as satellites.
 
