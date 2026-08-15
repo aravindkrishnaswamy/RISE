@@ -1282,3 +1282,40 @@ it was already tried and refuted here.
   accepted class is recorded per step in run diagnostics. The agent's
   refusal to invent an unpinned convergence rule or weaken tolerance
   was correct.
+
+- **r60 (2026-08-15):** accepted-state feasibility envelope, from the
+  tier-10 capstone's Δt-independent infeasibility stop. The run earned
+  honest cold start, ignition, pilot-off at 2.085 s, and sustained
+  combustion with peak 2225.24 K — under the 2300 K physicality bound
+  and consistent with methane–air T_ad ≈ 2230 K, confirming the r58
+  thermostat produced physical peaks. It then died at step attempt 750,
+  t ≈ 2.717 s: an exhausted constituent converged to −5.40472×10⁻¹³ as
+  twenty halvings drove Δt from 3.966×10⁻³ to 7.565×10⁻⁹ s. The agent's
+  Δt-independence diagnosis was exact: the violation rode in the
+  *accepted beginning state*, so step N accepted bytes that step N+1's
+  gate rejected forever. Concrete mismatch found in code review of the
+  stop: the limiter's outward correction budget is 1024·ε·scale while
+  the feasibility gate is invoked with 4096·ε·scale′ on different
+  vectors with different scale functions — at unit scale those are
+  2.3×10⁻¹³ and 9.1×10⁻¹³, and the observed −5.4×10⁻¹³ sits *between*
+  them. Deeper cause: an inventory exhausted by accumulated subtraction
+  has a roundoff floor of order ε·(accumulated magnitude); a gate that
+  scales by the near-zero result reads that floor as an unbounded
+  relative violation. Fix (§3.7 r60 block): ONE gate predicate — single
+  implementation, one κ, accumulation-based forward-error scale —
+  shared verbatim by every feasibility gate; the envelope is DERIVED
+  from the union of producer certificates, never tuned (widening it to
+  swallow an observation is clamping's cousin, and verifying the
+  observed excursion sits inside the derived envelope is required);
+  composability (acceptance certifies the stored bytes; the next step's
+  precondition is the same pure predicate, so accepted states cannot be
+  retroactively rejected); consumers total on the envelope (stored
+  envelope-scale negatives carried honestly, rate/availability logic
+  consumes max(0,q), affine consumers certified by inspection).
+  Clamping and ledger-mutating projection remain forbidden. Also
+  ordered: the fail-fast defect — downstream stages continued after
+  solver failure and exited 139 — is a separate implementation bug; a
+  solver failure must abort the pipeline with a structured error, RED
+  test required. The agent's conduct was again correct: no restart, no
+  tier substitution, partial output quarantined out of the final
+  directory.

@@ -1321,6 +1321,61 @@ The most notorious practical trap in fire LES; specified accordingly:
      in run diagnostics; and §3.9 pin 8's thread-count bit-identity
      applies to the infimum exactly as to every other reduction.
 
+  **Accepted-state feasibility envelope (r60) — one gate predicate,
+  composable across steps.** The tier-10 capstone died Δt-independently
+  at t ≈ 2.72 s: an exhausted constituent's value converged to
+  −5.4×10⁻¹³ as twenty halvings drove Δt from 4×10⁻³ to 8×10⁻⁹ s, and
+  the low-order gate rejected every attempt. Δt-independence is the
+  fingerprint: the violation was carried in the *accepted beginning
+  state* — step N accepted those bytes, step N+1 rejected them, and no
+  timestep could intervene. Root structure: the design was carrying
+  **several differently-sized fp64 envelopes around the same feasible
+  polytope** — the limiter's outward correction budget (1024·ε·scale),
+  the low-order/accepted-state feasibility check (4096·ε·scale′), and
+  the nullspace projection's equality-residual envelope — evaluated on
+  different vectors with different scale functions. A state can sit
+  inside one envelope and outside another; and an inventory driven to
+  exhaustion by accumulated subtraction carries a roundoff floor of
+  order ε·(accumulated magnitude), which any gate that scales by the
+  near-zero *result* rather than by the accumulation reads as an
+  unbounded relative violation. This is the r56 lesson — one source of
+  truth — applied to feasibility. Pins:
+
+  1. **One gate predicate.** A single admissibility implementation
+     (r56 stored-row discipline) evaluates every inequality relaxed
+     outward by κ·ε·scale_r, with one pinned κ and one pinned scale
+     function, used verbatim by the low-order gate, the r59
+     corrected-state check, acceptance verification, the EOS/T-inversion
+     domain gates, and the beginning-of-step precondition. The
+     1024-vs-4096 split is the defect class this pin removes.
+  2. **scale_r is the certified forward-error scale of the row's
+     computation** — the magnitudes accumulated to produce the value —
+     never the magnitude of the near-zero result. An exhausted
+     inventory's floor is set by what was subtracted to exhaust it.
+  3. **The gate envelope is derived, not tuned.** κ·ε·scale_r must
+     dominate the union of the producers' certified worst-case
+     inequality excursions (the limiter's outward budget, the nullspace
+     projection's forward error, source-packet rounding, ledger
+     reduction trees), with the derivation recorded. Verifying that the
+     observed −5.4×10⁻¹³ lies inside the derived envelope for that
+     cell is REQUIRED; if it does not, a producer has a real bug and
+     the envelope must NOT be widened to swallow the observation —
+     envelope inflation is clamping's cousin.
+  4. **Composability.** Acceptance certifies the stored bytes; the next
+     step's precondition is the same predicate on the same bytes — a
+     pure function returning the same verdict — so an accepted state
+     can never be retroactively rejected.
+  5. **Consumers are total on the envelope.** Stored envelope-scale
+     negatives are carried honestly: never clamped, never projected
+     away (mutating the ledger remains forbidden). Rate laws and
+     min()-style availability logic consume the **positive part**
+     max(0, q) of an inventory — an envelope-negative inventory is
+     simply unavailable — while the stored value passes through
+     unchanged. Affine consumers (EOS sums, opacity, Z bounds,
+     T-inversion brackets) are certified total by inspection, with
+     envelope perturbations of inversion brackets bounded.
+  6. Identity-bearing; case records regenerate.
+
   Semi-Lagrangian MacCormack remains a visually useful **debug-only** fallback
   and may not be used for validation or predictive grids.
 - **Advection — momentum** (unstated in revision 2, flagged): a

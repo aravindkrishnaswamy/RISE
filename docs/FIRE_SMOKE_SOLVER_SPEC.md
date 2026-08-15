@@ -230,7 +230,20 @@ error and must be corrected.
      A fixed iteration count with an unconverged R0/R1/R2 or open-boundary solve is
      forbidden; failure rejects/reduces Δt. If the frozen packet makes either
      low-order state infeasible after fluxing, likewise reject/recompute rather
-     than clamp.
+     than clamp. "Feasible" everywhere in this contract means the single r60
+     envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
+     relaxation with accumulation-based forward-error scales, shared verbatim
+     by the low-order gate, the r59 corrected-state check, acceptance
+     verification, the EOS/T-inversion domain gates, and the beginning-of-step
+     precondition. Every producer's certified inequality excursion (limiter
+     outward budget, nullspace projection forward error, source-packet
+     rounding) must be dominated by that envelope, so an accepted state is an
+     admissible next-step input by construction and can never be retroactively
+     rejected. Stored envelope-scale negatives are carried unchanged — never
+     clamped or projected away — and rate/availability logic consumes only the
+     positive part max(0, q) of an inventory. A solver failure must abort the
+     run pipeline immediately with a structured error; no downstream stage may
+     execute on absent or partial state.
 
      V2's reacting manufactured case records every Picard residual and includes
      a limiter-active, varying-S_div nonzero heat/species source whose analytic expansion
