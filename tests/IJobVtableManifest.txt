@@ -286,3 +286,6 @@ ExchangeProgress
 ApplyCstCameraPoseEditWithBasis
 ApplyCstRemoveChunks
 ApplyCstReplaceDocumentText
+NoteGroupMembership
+GetGroupMembership
+IsGroupDeclared

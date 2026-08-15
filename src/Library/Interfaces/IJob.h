@@ -3839,6 +3839,47 @@ namespace RISE
 			return 0;
 		}
 
+		//! arc-86 slice 1 (docs/agentic-redesign/86-object-grouping.md): the GROUP MEMBERSHIP SIDE INDEX.
+		//! A `group` chunk creates NO manager entity -- it composes its transform G into every listed
+		//! member's transform stack at derive time, so a member's GetFinalTransformMatrix() afterwards
+		//! is `G * M` where M is the member's OWN authored transform.  Anything that ROUND-TRIPS or
+		//! OVERWRITES a member's transform therefore has to know G exists, and the object itself carries
+		//! no back-pointer to its group (§3 of the design: one-directional ownership, no child->parent
+		//! field).  This index is that missing direction, and it is the concrete form of the design's
+		//! "side index" decision.
+		//!
+		//! `GroupAsciiChunkParser::Finalize` calls NoteGroupMembership once per member, in document
+		//! order.  `groupMatrix` is 16 doubles in the same column-major encoding as AddObjectMatrix
+		//! (the Matrix4 `_00.._33` field order).  MULTI-GROUP members accumulate exactly as the
+		//! transform stack composes -- a later group lands OUTSIDE an earlier one, so the recorded
+		//! matrix is `G_last * ... * G_first`.  `groupName` is DIAGNOSTIC ONLY (for a multi-group
+		//! member the real Job records a comma-joined list, which is not a lookup key).
+		//!
+		//! Derive-scoped, exactly like NoteObjectOverride's counter: cleared in InitializeContainers
+		//! (per derive / per ClearAll), so a stale index cannot survive into the next derive.
+		//! NB: appended at the IJob tail (append-only vtable ABI).
+		virtual void NoteGroupMembership( const char* /*memberName*/, const char* /*groupName*/,
+		                                  const double /*groupMatrix*/[16] ) {}
+
+		//! Reads the side index above.  TRUE iff `memberName` is a member of at least one `group` in
+		//! the CURRENT derive; then `outGroupMatrix` (nullable) receives the accumulated G in the same
+		//! column-major encoding, and `outGroupName` (nullable) receives the owning group name(s),
+		//! NUL-terminated and truncated to `groupNameMax`.  FALSE leaves both untouched.
+		//! Default: no index (returns false); see the Job override.
+		virtual bool GetGroupMembership( const char* /*memberName*/, double* /*outGroupMatrix*/,
+		                                 char* /*outGroupName*/, const unsigned int /*groupNameMax*/ ) const
+		{
+			return false;
+		}
+
+		//! TRUE iff a `group` chunk named `groupName` has already Finalized in the CURRENT derive.
+		//! A group creates no manager entity, so this is the ONLY way to tell "this name is a group"
+		//! from "this name is unknown" -- which is what lets the `group` parser diagnose an attempted
+		//! NESTED group (V1 forbids groups containing groups, design doc §3 "Nesting depth") instead
+		//! of misattributing it to the declare-members-before-the-group ordering rule.  Same
+		//! derive-scoped lifetime as the membership index above.  Default: false; see the Job override.
+		virtual bool IsGroupDeclared( const char* /*groupName*/ ) const { return false; }
+
 	};
 
 

@@ -141,7 +141,14 @@ namespace RISE
 		PhotonGather,
 		IrradianceCache,
 		Animation,
-		SceneVariant
+		SceneVariant,
+		Group             // docs/agentic-redesign/86-object-grouping.md Slice 1: `group` -- composes a
+		                  // transform into named member objects at derive time.  No manager entity (the
+		                  // CST document is the index), so this category never appears in a manager-
+		                  // backed switch (DropChunkByCategory, EntityExists, CategoryForChunkKeyword,
+		                  // CandidateNamesForChunkCategory all correctly fall through to their existing
+		                  // `default:` arm for it -- see ChunkParserRegistry.cpp's GroupAsciiChunkParser
+		                  // comment for the full audit).
 	};
 
 	// Base class for per-chunk parse state.  In the registry-driven

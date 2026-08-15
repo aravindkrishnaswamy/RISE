@@ -4287,6 +4287,7 @@ namespace RISE
 						{ "irradiance_cache",  ChunkCategory::IrradianceCache },
 						{ "animation",         ChunkCategory::Animation },
 						{ "scene_variant",     ChunkCategory::SceneVariant },
+						{ "group",             ChunkCategory::Group },
 					};
 					for( const auto& kv : kNames ) {
 						if( name == kv.first ) { out = kv.second; return true; }

@@ -447,6 +447,8 @@ void Job::InitializeContainers()
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
+	m_groupMembership.clear();   // arc-86 slice 1: reset per derive/clear (group Finalize populates it); a stale index would mis-divide a later derive's transform commit
+	m_groupNames.clear();        // arc-86 slice 1: ditto -- the declared-group-name set is derive-scoped too
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
 	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
 
@@ -9864,6 +9866,58 @@ void Job::NoteObjectOverride()
 unsigned int Job::GetObjectOverrideCount() const
 {
 	return m_objectOverrideCount;
+}
+
+// arc-86 slice 1 (docs/agentic-redesign/86-object-grouping.md): the group-membership side index.
+// See IJob::NoteGroupMembership for the contract.  Called once per member, in DOCUMENT ORDER, by
+// GroupAsciiChunkParser::Finalize -- immediately after that member's PushBottomTransStack(G), so the
+// accumulation here mirrors the transform stack's own fold exactly: the stack folds front-to-back as
+// `(*i) * running`, and PushBottom appends, so a LATER group lands OUTSIDE an earlier one.  Composing
+// `G * accumulated` (new on the LEFT) reproduces that, giving `G_last * ... * G_first`.
+void Job::NoteGroupMembership( const char* memberName, const char* groupName, const double groupMatrix[16] )
+{
+	if( !memberName || !memberName[0] || !groupMatrix ) return;
+	const Matrix4 G(
+		groupMatrix[ 0], groupMatrix[ 1], groupMatrix[ 2], groupMatrix[ 3],
+		groupMatrix[ 4], groupMatrix[ 5], groupMatrix[ 6], groupMatrix[ 7],
+		groupMatrix[ 8], groupMatrix[ 9], groupMatrix[10], groupMatrix[11],
+		groupMatrix[12], groupMatrix[13], groupMatrix[14], groupMatrix[15] );
+	GroupMembership& rec = m_groupMembership[ std::string( memberName ) ];   // default-constructs identity
+	rec.accumulated = G * rec.accumulated;
+	if( groupName && groupName[0] ) {
+		if( !rec.groupNames.empty() ) rec.groupNames += ", ";
+		rec.groupNames += groupName;
+		m_groupNames.insert( std::string( groupName ) );
+	}
+}
+
+bool Job::IsGroupDeclared( const char* groupName ) const
+{
+	if( !groupName || !groupName[0] ) return false;
+	return m_groupNames.find( std::string( groupName ) ) != m_groupNames.end();
+}
+
+bool Job::GetGroupMembership( const char* memberName, double* outGroupMatrix,
+                              char* outGroupName, const unsigned int groupNameMax ) const
+{
+	if( !memberName || !memberName[0] ) return false;
+	const std::map<std::string, GroupMembership>::const_iterator it =
+		m_groupMembership.find( std::string( memberName ) );
+	if( it == m_groupMembership.end() ) return false;
+	if( outGroupMatrix ) {
+		const Matrix4& m = it->second.accumulated;
+		outGroupMatrix[ 0] = m._00; outGroupMatrix[ 1] = m._01; outGroupMatrix[ 2] = m._02; outGroupMatrix[ 3] = m._03;
+		outGroupMatrix[ 4] = m._10; outGroupMatrix[ 5] = m._11; outGroupMatrix[ 6] = m._12; outGroupMatrix[ 7] = m._13;
+		outGroupMatrix[ 8] = m._20; outGroupMatrix[ 9] = m._21; outGroupMatrix[10] = m._22; outGroupMatrix[11] = m._23;
+		outGroupMatrix[12] = m._30; outGroupMatrix[13] = m._31; outGroupMatrix[14] = m._32; outGroupMatrix[15] = m._33;
+	}
+	if( outGroupName && groupNameMax ) {
+		const std::string& n = it->second.groupNames;
+		const size_t copy = ( n.size() < (size_t)groupNameMax - 1 ) ? n.size() : (size_t)groupNameMax - 1;
+		memcpy( outGroupName, n.c_str(), copy );
+		outGroupName[ copy ] = '\0';
+	}
+	return true;
 }
 
 //! Removes all the rasterizer outputs

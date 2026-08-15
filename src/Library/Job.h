@@ -2815,6 +2815,12 @@ namespace RISE
 		void NoteObjectOverride();
 		unsigned int GetObjectOverrideCount() const;
 
+		//! Group-membership side index (see IJob; arc-86 slice 1).  No `override` (house style).
+		void NoteGroupMembership( const char* memberName, const char* groupName, const double groupMatrix[16] );
+		bool GetGroupMembership( const char* memberName, double* outGroupMatrix,
+		                         char* outGroupName, const unsigned int groupNameMax ) const;
+		bool IsGroupDeclared( const char* groupName ) const;
+
 		//! Enables/disables incremental re-point mode (see IJob).  No `override` to
 		//! match this file's house style.
 		void SetIncrementalRepointMode( bool b );
@@ -3217,6 +3223,35 @@ namespace RISE
 		//! Count of override_object chunks that modified an object in place this derive
 		//! (see IJob::NoteObjectOverride).  The CST incremental apply refuses when > 0.
 		unsigned int m_objectOverrideCount;
+
+		//! arc-86 slice 1: the GROUP MEMBERSHIP SIDE INDEX (see IJob::NoteGroupMembership for
+		//! the full contract).  Keyed by MEMBER OBJECT NAME; `accumulated` is the composed group
+		//! transform G the derive already pushed onto that member's transform stack (for a member
+		//! of several groups, `G_last * ... * G_first`, matching the stack's own fold order), and
+		//! `groupNames` is a comma-joined diagnostic list, NOT a lookup key.  Derive-scoped:
+		//! cleared in InitializeContainers alongside m_objectOverrideCount, so it can never go
+		//! stale across a re-derive.
+		//!
+		//! THREAD OWNERSHIP: bare `std::map`/`std::set`, no lock, no atomic.  Written only by
+		//! GroupAsciiChunkParser::Finalize (the single-threaded PASS-2 DeriveToJob/DeriveToJobIncremental
+		//! apply loop) and read only by the derive/edit path (SceneEditor.cpp's group-local-matrix
+		//! division, override_object's grouped-member refusal) -- both of those are the same
+		//! single-threaded caller that owns the Job during a derive or a GUI edit. NEVER read or
+		//! written from a render worker thread: the parallel rasterize pass only touches the immutable
+		//! Scene/IObject graph these maps were derived FROM, not the maps themselves (see
+		//! docs/ARCHITECTURE.md's scene-immutability discipline).  If that ever changes, this index
+		//! needs the same synchronization discipline as the rest of Job's derive-time state.
+		struct GroupMembership
+		{
+			std::string groupNames;
+			Matrix4     accumulated;   // Matrix4's default ctor is identity -- the correct seed
+		};
+		std::map<std::string, GroupMembership> m_groupMembership;
+
+		//! arc-86 slice 1: names of the `group` chunks that have Finalized THIS derive (see
+		//! IJob::IsGroupDeclared).  Cleared alongside m_groupMembership in InitializeContainers.
+		//! Same thread-ownership invariant as m_groupMembership above (derive/edit-path only).
+		std::set<std::string> m_groupNames;
 
 		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
 		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).

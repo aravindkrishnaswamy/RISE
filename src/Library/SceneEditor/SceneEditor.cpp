@@ -830,6 +830,28 @@ Scalar FinalColumnLength_( const Matrix4& m, int column )
 	return std::sqrt( v[0] * v[0] + v[1] * v[1] + v[2] * v[2] );
 }
 
+// H3(d) (2026-08-15): WORLD-SPACE SEMANTICS ON A GROUPED MEMBER.  This is the shared sink for
+// SetObjectOrientation, SetAbsoluteStretch_ (SetObjectScale / SetObjectStretch), and
+// ScaleObjectFromAnchor.  All four compute `m` FROM the object's current GetFinalTransformMatrix()
+// -- which on a grouped member already includes the group's composed transform G -- targeting a
+// WORLD-space result (e.g. SetAbsoluteStretch_ normalizes the columns to build an exact WORLD
+// scale).  SetFinalTransformMatrix -> ReplaceFinalStack_ then CLEARS the transform stack and
+// installs `m` as its sole entry, same as override_object's absolute arms (see the F2 refusal on
+// `override_object` above) -- except these four ops are refused NOWHERE, because at the instant of
+// the live edit `m` already equals the correct world-final matrix, so nothing renders differently.
+// The group's separate contribution is gone from the STACK, but not from the OUTCOME -- it has been
+// silently absorbed into this single matrix.
+//
+// That absorption becomes visible the next time the edit is COMMITTED to the CST:
+// SceneEditor::CommitPendingCstObjectTransforms reads the (still G-indexed) side index and divides
+// G back OUT of `m` to recover the member's own authored matrix (`G^-1 * m`).  Concretely: setting
+// a WORLD stretch of `1 1 1` on a member of a `scale 2` group leaves `m`'s world scale at exactly 1
+// (by design -- an absolute-world contract, consistent with SetObjectPosition's above), so the
+// commit's `G^-1 * m` bakes a compensating 0.5 scale into the member's OWN `matrix` param -- not a
+// bug, but exactly what a user will report as "it un-grouped my object" the moment they inspect the
+// saved scene text.  If a future op needs to preserve the member's LOCAL representation across a
+// grouped edit instead of its world result, it has to divide G out HERE, before computing `m`, not
+// only at commit time.
 void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 {
 	if( Implementation::Transformable* transformable =
@@ -1573,6 +1595,54 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 	return true;
 }
 
+// arc-86 slice 1 fix F1: divide a GROUP MEMBER's composed group transform back out before the transform
+// commit writes an ABSOLUTE matrix to the CST.
+//
+// WHY.  `group` composes its matrix G into each listed member at derive time (PushBottomTransStack), so a
+// member's GetFinalTransformMatrix() is `G * M`, where M is what the member's OWN chunk authors.  The commit
+// below writes the object's `matrix` param and the re-derive then applies BOTH that authored matrix AND the
+// group's push again.  Committing `G * M` verbatim therefore re-derives to `G * (G * M)` -- every gizmo drag
+// or transform-panel edit on a grouped member compounds ANOTHER G, without bound.  Dividing G out first makes
+// the round trip exact: the commit writes `G^-1 * final`, and the re-derive reproduces `G * G^-1 * final ==
+// final`.
+//
+// SINGULARITY.  Matrix4Ops::Inverse returns its INPUT UNCHANGED when the determinant is zero (MatricesOps.h),
+// so a degenerate group scale (`scale 0 1 1`) would otherwise hand us a "quotient" that is not an inverse at
+// all and silently corrupt the committed matrix.  Rather than trust the determinant against a magic epsilon,
+// VERIFY the inverse: require `G * G^-1 == I` to tight tolerance.  That catches the returned-input case by
+// construction (a singular G cannot satisfy det(G*G) == 1) and any other numerical failure with it.
+//
+// Returns: 0 = not a group member (`out` = `finalMatrix`, unchanged); 1 = member, G divided out into `out`;
+// 2 = member but G is not invertible -- the caller MUST refuse rather than commit `out`.  `outGroupName`
+// carries the owning group name(s) for the diagnostic in cases 1 and 2.
+static int GroupLocalTransformMatrix_( const IJob* job, const char* objectName, const Matrix4& finalMatrix,
+                                       Matrix4& out, std::string& outGroupName )
+{
+	out = finalMatrix;
+	outGroupName.clear();
+	if( !job || !objectName ) return 0;
+	double g16[16];
+	char gname[512] = {0};
+	if( !job->GetGroupMembership( objectName, g16, gname, (unsigned int)sizeof( gname ) ) ) return 0;
+	outGroupName = gname;
+	const Matrix4 G(
+		g16[ 0], g16[ 1], g16[ 2], g16[ 3],
+		g16[ 4], g16[ 5], g16[ 6], g16[ 7],
+		g16[ 8], g16[ 9], g16[10], g16[11],
+		g16[12], g16[13], g16[14], g16[15] );
+	const Matrix4 Ginv = Matrix4Ops::Inverse( G );
+	const Matrix4 shouldBeIdentity = G * Ginv;
+	const Matrix4 identity = Matrix4Ops::Identity();
+	const Scalar* ip = &shouldBeIdentity._00;
+	const Scalar* ep = &identity._00;
+	for( int k = 0; k < 16; ++k ) {
+		const double d = static_cast<double>( ip[k] ) - static_cast<double>( ep[k] );
+		if( !( std::fabs( d ) <= 1e-9 ) ) return 2;   // `!(<=)` also rejects NaN
+	}
+	out = Ginv * finalMatrix;
+	return 1;
+}
+
 // True for the object transform ops a non-matrix object (csg) CAN represent: pure translate / rotate (no scale).
 static inline bool IsObjectTranslateOrRotateOp( SceneEdit::Op op )
 {
@@ -1962,15 +2032,29 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 	// object: kind 1 (standard_object) commits the full `matrix`; kind 2 (csg_object) commits decomposed position +
 	// orientation (the editor's apply-gate + its post-mutate decomposability check already refused any csg
 	// scale/shear/gimbal-lock, so DecomposeRigid is guaranteed to succeed here).
-	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; };
+	struct Route { std::string name; int kind; std::string a; std::string b; bool ready; std::string refusal; };
 	std::vector<Route> work;
 	work.reserve( mPendingCstObjMatrix.size() );
 	for( std::unordered_set<std::string>::const_iterator it = mPendingCstObjMatrix.begin(); it != mPendingCstObjMatrix.end(); ++it ) {
 		IObjectPriv* obj = FindObject( String( it->c_str() ) );
 		if( !obj ) continue;
-		const Matrix4 M = obj->GetFinalTransformMatrix();
+		// arc-86 slice 1 fix F1: a GROUP MEMBER's final transform already carries the group's matrix G, and
+		// the re-derive re-applies G on top of whatever we commit -- so commit the GROUP-LOCAL matrix
+		// (G^-1 * final), never the composed one, else every commit squares in another G.  A non-invertible
+		// G (degenerate group scale) refuses THIS object's commit rather than writing a corrupt matrix.
+		Matrix4 M;
+		std::string groupName;
+		const int groupState = GroupLocalTransformMatrix_( mJob, it->c_str(), obj->GetFinalTransformMatrix(), M, groupName );
 		const int kind = mJob->CstObjectTransformKind( it->c_str() );
 		Route r; r.name = *it; r.kind = kind; r.ready = false;
+		if( groupState == 2 ) {
+			r.refusal = "it is a member of group `" + groupName + "`, whose composed transform is SINGULAR "
+				"(a zero or degenerate `scale` on the group) and therefore cannot be divided back out of the "
+				"object's final transform -- committing the composed matrix would re-apply the group's transform "
+				"a second time on the next derive. Fix the group's `scale`";
+			work.push_back( r );
+			continue;
+		}
 		if( kind == 1 ) {
 			r.a = FormatMatrix16( M );
 			r.ready = true;
@@ -1994,7 +2078,11 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 		}
 		if( !routed ) {
 			ok = false;
-			GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` -- the live edit stands; EITHER the Document did not record it (a later full re-derive will REVERT the live transform) OR it was recorded but the re-derive diagnosed; see the preceding log lines", work[i].name.c_str() );
+			if( !work[i].refusal.empty() ) {
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST REFUSED for `%s` -- %s. The live edit stands but the Document did not record it, so a later full re-derive will REVERT it.", work[i].name.c_str(), work[i].refusal.c_str() );
+			} else {
+				GlobalLog()->PrintEx( eLog_Error, "SceneEditor:: object transform commit to the CST failed for `%s` -- the live edit stands; EITHER the Document did not record it (a later full re-derive will REVERT the live transform) OR it was recorded but the re-derive diagnosed; see the preceding log lines", work[i].name.c_str() );
+			}
 		}
 	}
 	return ok;
@@ -2973,12 +3061,24 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		if( fwdOk && cstKind == 2 ) {
 			obj->FinalizeTransformations();   // ApplyObjectOpForward updates components/stack but not m_mxFinalTrans; compose it before reading
 			Vector3 dpos, dorient;
-			if( !DecomposeRigid( obj->GetFinalTransformMatrix(), dpos, dorient ) ) {
+			// arc-86 slice 1 fix F1: check the matrix the COMMIT will actually decompose.  On a grouped
+			// member that is the GROUP-LOCAL matrix (G divided out), not the composed one -- checking the
+			// composed matrix here would let a commit-time DecomposeRigid fail (or pass) on a different
+			// matrix than the one gated, breaking this block's "guaranteed success" contract.  A singular
+			// G is un-committable outright, so refuse it here too, before the live mutate is kept.
+			Matrix4 gateM;
+			std::string gateGroup;
+			const int gateGroupState = GroupLocalTransformMatrix_( mJob, edit.objectName.c_str(), obj->GetFinalTransformMatrix(), gateM, gateGroup );
+			if( gateGroupState == 2 || !DecomposeRigid( gateM, dpos, dorient ) ) {
 				RestoreObjectTransform( *obj, edit );
 				RunObjectInvariantChain( *obj );
 				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
 					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
-					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` rotation is not committable to a csg_object (gimbal-lock / non-decomposable to position+orientation); edit refused", edit.objectName.c_str() );
+					if( gateGroupState == 2 ) {
+						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` is a member of group `%s` whose composed transform is SINGULAR (degenerate group `scale`), so its group-local transform cannot be recovered for a csg_object commit; edit refused", edit.objectName.c_str(), gateGroup.c_str() );
+					} else {
+						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` rotation is not committable to a csg_object (gimbal-lock / non-decomposable to position+orientation); edit refused", edit.objectName.c_str() );
+					}
 				}
 				mLastScope = Dirty_ObjectTransform;
 				return false;
