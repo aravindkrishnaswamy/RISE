@@ -24,6 +24,15 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		bool CurrentRendererBuildIdentity(
+			RISECBOR64::Bytes& bytes,std::string& identity );
+		// OpenVDB writes a random archive UUID even when every grid byte is
+		// identical.  Sequence frames use a content-derived UUID so r54's
+		// cross-thread whole-file digest requirement is meaningful.
+		bool CanonicalizeOpenVDBFileIdentity(
+			const std::string& path,
+			std::string& error );
+
 		struct FireSequenceTimeMap
 		{
 			double simulationTimeOrigin = 0.0;
@@ -87,6 +96,8 @@ namespace RISE
 			std::string sourceKind_;
 			std::string physicalMapping_;
 			std::string sourceQualification_;
+			std::string caseRecordId_;
+			double referenceHeatReleaseRateW_ = 0.0;
 			std::string producerBuildId_;
 			std::vector<std::string> gateEvidenceIds_;
 			FireSequenceTimeMap timeMap_;
@@ -123,6 +134,8 @@ namespace RISE
 
 			bool IsValid() const { return valid_; }
 			const std::string& SequenceId() const { return sequenceId_; }
+			const std::string& CaseRecordId() const { return caseRecordId_; }
+			double ReferenceHeatReleaseRateW() const { return referenceHeatReleaseRateW_; }
 			const std::string& SourceKind() const { return sourceKind_; }
 			const std::string& PhysicalMapping() const { return physicalMapping_; }
 			const std::string& SourceQualification() const { return sourceQualification_; }

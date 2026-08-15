@@ -8,16 +8,19 @@
 
 #include "pch.h"
 #include "FireSequence.h"
+#include "FireCase.h"
 #include "FireSimulationRecords.h"
 #include "../Rendering/FrameStore.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <set>
+#include <sstream>
 
 #if defined(RISE_ENABLE_OPENVDB)
 #include <openvdb/openvdb.h>
@@ -411,6 +414,43 @@ namespace RISE
 #endif
 		}
 
+		bool CanonicalizeOpenVDBFileIdentity( const std::string& path, std::string& error )
+		{
+			std::ifstream input(path,std::ios::binary);
+			if( !input ) return Fail(error,"fire sequence producer cannot open its OpenVDB frame");
+			input.seekg(0,std::ios::end);
+			const std::streampos end=input.tellg();
+			input.seekg(0,std::ios::beg);
+			if( end < 57 ) return Fail(error,"fire sequence producer OpenVDB header is truncated");
+			RISECBOR64::Bytes bytes(static_cast<std::size_t>(end));
+			input.read(reinterpret_cast<char*>(bytes.data()),end);
+			if( !input || bytes[0]!=0x20u || bytes[1]!=0x42u || bytes[2]!=0x44u ||
+				bytes[3]!=0x56u || bytes[20]!=1u ) return Fail(error,
+				"fire sequence producer OpenVDB header is unsupported");
+			static const std::size_t uuidOffset=21u,uuidSize=36u;
+			for( std::size_t i=0;i<uuidSize;++i ) {
+				const unsigned char value=bytes[uuidOffset+i];
+				const bool hyphen=i==8u||i==13u||i==18u||i==23u;
+				if( hyphen ? value!='-' : !std::isxdigit(value) ) return Fail(error,
+					"fire sequence producer OpenVDB UUID field is malformed");
+				bytes[uuidOffset+i]=hyphen?static_cast<unsigned char>('-'):
+					static_cast<unsigned char>('0');
+			}
+			const std::string digest=RISECBOR64::SHA256Hex(bytes);
+			std::string uuid;
+			for( std::size_t i=0;i<32u;++i ) {
+				if( i==8u||i==12u||i==16u||i==20u ) uuid.push_back('-');
+				uuid.push_back(static_cast<char>(std::toupper(
+					static_cast<unsigned char>(digest[i]))));
+			}
+			std::fstream output(path,std::ios::binary|std::ios::in|std::ios::out);
+			if( !output ) return Fail(error,"fire sequence producer cannot canonicalize its OpenVDB frame");
+			output.seekp(static_cast<std::streamoff>(uuidOffset));
+			output.write(uuid.data(),static_cast<std::streamsize>(uuid.size()));
+			return static_cast<bool>(output) || Fail(error,
+				"fire sequence producer failed to publish its content-derived OpenVDB identity");
+		}
+
 		bool FireSequenceManifest::LoadCanonicalEnvelope(
 			const RISECBOR64::Bytes& envelope, const std::string& manifestDirectory,
 			std::string& error )
@@ -430,7 +470,7 @@ namespace RISE
 				RISECBOR64::SHA256Hex(canonicalPayload_) != sequenceId->GetText() ) return Fail(error,
 				"fire sequence_id does not bind the canonical payload bytes");
 
-			if( !ExactKeys(*payload,{"aerosol_thermochemistry_record","aerosol_thermochemistry_record_id","case_record_id",
+			if( !ExactKeys(*payload,{"aerosol_thermochemistry_record","aerosol_thermochemistry_record_id","case_record","case_record_id",
 				"channels","chem_record","end_policy","frames","fuel_record","fuel_record_id",
 				"chem_record_id",
 				"first_frame_index","frame_count",
@@ -439,7 +479,7 @@ namespace RISE
 				"gas_thermochemistry_record_id","gate_evidence_ids",
 				"last_frame_index",
 				"optical_record","optical_record_id","outside_halo_policy","physical_mapping",
-				"producer_build_id","producer_build_v1","producer_reason_codes",
+				"producer_build_id","producer_build_v1","producer_reason_codes","qdot_ref_W",
 				"scene_translation_m","scene_unit_meters",
 				"schema_version","source_kind","source_qualification","temperature_domain_K",
 				"time_map","transport_closure_record","transport_closure_record_id",
@@ -511,6 +551,8 @@ namespace RISE
 				"predictive-qualified sequence carries producer reason codes");
 			if( sourceQualification_ == "preview_only" && producerReasons.empty() ) return Fail(error,
 				"preview-only sequence lacks a producer reason code");
+			const bool caseGridBound=std::binary_search(producerReasons.begin(),producerReasons.end(),
+				"case_grid_bound");
 
 			const std::pair<const char*,const char*> embeddedRecords[] = {
 				{"aerosol_thermochemistry_record","aerosol_thermochemistry_record_id"},
@@ -520,6 +562,7 @@ namespace RISE
 				{"optical_record","optical_record_id"},
 				{"transport_closure_record","transport_closure_record_id"}
 			};
+			std::vector<std::string> embeddedRecordIds;
 			for( const auto& fields : embeddedRecords ) {
 				const Value* bytes = payload->Find(fields.first);
 				const Value* id = payload->Find(fields.second);
@@ -530,6 +573,7 @@ namespace RISE
 					id->GetText() != RISECBOR64::SHA256Hex(bytes->GetBytes()) ) return Fail(error,
 					std::string("fire sequence embedded record identity is invalid: ")+fields.first);
 				embeddedRecords_[fields.first] = bytes->GetBytes();
+				embeddedRecordIds.push_back(id->GetText());
 			}
 			opticalRecord_ = payload->Find("optical_record")->GetBytes();
 			FireSimulationMethaneRecord fuelRecord;
@@ -554,6 +598,34 @@ namespace RISE
 				if( !id || id->GetType() != Value::Text || !IsDigest(id->GetText()) ) return Fail(error,
 					std::string("fire sequence record ID is invalid: ")+key);
 			}
+			const Value* caseBytes=payload->Find("case_record");
+			if( !caseBytes || caseBytes->GetType()!=Value::ByteString ) return Fail(error,
+				"fire sequence case record is not embedded canonical bytes");
+			FireCase::RecordV1 caseRecord;
+			if( !FireCase::ValidateMethaneEnvelopeV1(caseBytes->GetBytes(),fuelRecord,caseRecord,error) ||
+				caseRecord.caseRecordId!=payload->Find("case_record_id")->GetText() ) return Fail(error,
+				"fire sequence case_record_id does not bind the embedded case record");
+			std::sort(embeddedRecordIds.begin(),embeddedRecordIds.end());
+			embeddedRecordIds.erase(std::unique(embeddedRecordIds.begin(),embeddedRecordIds.end()),
+				embeddedRecordIds.end());
+			if(caseRecord.referencedRecordIds!=embeddedRecordIds) {
+				std::ostringstream mismatch;
+				mismatch << "fire sequence embedded records differ from the case referenced_record_ids: case=";
+				for(const std::string& id:caseRecord.referencedRecordIds) mismatch << id << ',';
+				mismatch << " embedded=";
+				for(const std::string& id:embeddedRecordIds) mismatch << id << ',';
+				return Fail(error,mismatch.str());
+			}
+			Value caseEnvelope;
+			if( !RISECBOR64::DecodeCanonical(caseBytes->GetBytes(),caseEnvelope,&error) ) return false;
+			const Value* casePayload=caseEnvelope.Find("payload");
+			const Value* derived=casePayload?casePayload->Find("derived"):nullptr;
+			const Value* qdot=derived?derived->Find("qdot_ref_W"):nullptr;
+			if( !ReadFinite(payload->Find("qdot_ref_W"),referenceHeatReleaseRateW_) ||
+				referenceHeatReleaseRateW_<=0.0 || !qdot || qdot->GetType()!=Value::Float64 ||
+				qdot->GetFloat()!=referenceHeatReleaseRateW_ ) return Fail(error,
+				"fire sequence Qdot_ref echo differs from the case record");
+			caseRecordId_=caseRecord.caseRecordId;
 
 			const Value* timeMap = payload->Find("time_map");
 			if( !timeMap || !ExactKeys(*timeMap,{"alpha","delta_t_frame","i0",
@@ -566,6 +638,8 @@ namespace RISE
 				timeMap_.sceneToSimulationScale == 0.0 || timeMap_.frameStepSeconds <= 0.0 ) {
 				return Fail(error,"fire sequence time map is invalid");
 			}
+			if(timeMap_.frameStepSeconds!=1.0/caseRecord.authored.outputFramesPerS)
+				return Fail(error,"fire sequence frame cadence differs from the case output cadence");
 			const Value* endPolicy = payload->Find("end_policy");
 			const Value* outsideHalo = payload->Find("outside_halo_policy");
 			if( !endPolicy || endPolicy->GetType() != Value::Text ||
@@ -665,6 +739,17 @@ namespace RISE
 			}
 			if( !channelNames.count("carbon") || !channelNames.count("temperature") ) return Fail(error,
 				"fire sequence lacks the mandatory carbon/temperature channels");
+			if(caseGridBound) {
+				const auto carbon=std::find_if(channels_.begin(),channels_.end(),
+					[](const FireSequenceChannelDescriptor& channel){return channel.name=="carbon";});
+				if(carbon==channels_.end() || carbon->dimensions[0]!=caseRecord.derived.nx ||
+					carbon->dimensions[1]!=caseRecord.derived.ny ||
+					carbon->dimensions[2]!=caseRecord.derived.nz ||
+					carbon->voxelSizeMeters[0]!=caseRecord.derived.cellWidthM ||
+					carbon->voxelSizeMeters[1]!=caseRecord.derived.cellWidthM ||
+					carbon->voxelSizeMeters[2]!=caseRecord.derived.cellWidthM) return Fail(error,
+					"fire sequence lattice differs from the case-derived grid");
+			}
 			const std::set<std::string> allowedChannels = {"carbon","temperature","condensed",
 				"reaction","chem_CH","chem_C2","chem_CO2","velocity"};
 			for( const std::string& name : channelNames ) if( !allowedChannels.count(name) ) return Fail(error,

@@ -813,6 +813,70 @@ def orthonormalize_exact_columns(basis):
     return matrix_transpose(orthonormal)
 
 
+def exact_rank(matrix) -> int:
+    return len(exact_rref(matrix)[1])
+
+
+def maximal_independent_rows(matrix, row_order):
+    if len(matrix) != len(row_order):
+        raise ValueError("constraint row names do not match the exact matrix")
+    selected, selected_names = [], []
+    rank = 0
+    for name, row in zip(row_order, matrix):
+        candidate = selected + [row]
+        candidate_rank = exact_rank(candidate)
+        if candidate_rank > rank:
+            selected.append(row)
+            selected_names.append(name)
+            rank = candidate_rank
+    if rank != exact_rank(matrix):
+        raise ValueError("maximal independent-row extraction changed exact rank")
+    return selected, selected_names
+
+
+def verify_exact_physical_directions(constraint, directions):
+    """Fail generation unless every physical direction is exactly in ker(A_Q)."""
+    for direction in directions:
+        vector = direction["state_delta"]
+        if len(vector) != len(constraint[0]):
+            raise ValueError(f"physical direction {direction['name']} has wrong dimension")
+        residual = matrix_multiply(constraint, matrix_transpose([vector]))
+        if any(value != 0 for row in residual for value in row):
+            raise ValueError(
+                f"physical direction {direction['name']} fails exact A_Q identity")
+
+
+def singular_value_lower_bound_certificate(constraint):
+    """Exact proof for an outward-rounded positive sigma_min lower endpoint.
+
+    For full-row-rank A with m rows, product(sigma_i)^2=det(A A^T) and
+    every sigma_i^2 <= ||A||_F^2.  Therefore
+    sigma_min^2 >= det(A A^T)/||A||_F^(2(m-1)).  The binary64 endpoint is
+    rounded downward and its defining inequality is rechecked in Q.
+    """
+    gram = matrix_multiply(constraint, matrix_transpose(constraint))
+    determinant = matrix_determinant(gram)
+    frobenius_squared = sum((value * value for row in constraint for value in row),
+                            Fraction(0))
+    if determinant <= 0 or frobenius_squared <= 0:
+        raise ValueError("stored constraint rows lack a positive conditioning proof")
+    denominator_power = frobenius_squared ** (len(constraint) - 1)
+    estimate = math.sqrt(float(determinant / denominator_power))
+    lower = math.nextafter(estimate, -math.inf)
+    while lower > 0.0 and Fraction.from_float(lower) ** 2 * denominator_power > determinant:
+        lower = math.nextafter(lower, -math.inf)
+    if not math.isfinite(lower) or lower <= 0.0:
+        raise ValueError("could not outward-round a positive sigma_min lower bound")
+    return {
+        "method": "gram_determinant_frobenius_outward_interval_v1",
+        "outward_rounding": "binary64_lower_endpoint_toward_negative_infinity",
+        "smallest_singular_value_lower_bound": lower,
+        "lower_bound_exact_dyadic": rational(Fraction.from_float(lower)),
+        "gram_determinant": rational(determinant),
+        "frobenius_norm_squared": rational(frobenius_squared),
+    }
+
+
 def float_matrix(matrix):
     matrix = [[0.0 if value == 0.0 else value for value in row]
               for row in matrix]
@@ -828,7 +892,7 @@ def float_matrix(matrix):
 
 
 def nullspace_certificate(name: str, row_order: list[str], state_order: list[str],
-                          constraint):
+                          constraint, require_conditioning: bool = True):
     # The solver contract defines exact A as the canonical binary64 entries
     # interpreted as dyadic rationals, not as their source-decimal precursors.
     constraint = [[Fraction.from_float(float(value)) for value in row]
@@ -871,6 +935,15 @@ def nullspace_certificate(name: str, row_order: list[str], state_order: list[str
             1.0, max(sum(abs(float(value)) for value in row) for row in constraint)) or \
             orthonormality > 128.0 * eps:
         raise ValueError("numerical nullspace does not meet the §3.7 fp64 certificate")
+    conditioning = (singular_value_lower_bound_certificate(constraint)
+                    if require_conditioning else {
+                        "method": "gram_determinant_frobenius_outward_interval_v1",
+                        "outward_rounding": "binary64_lower_endpoint_toward_negative_infinity",
+                        "smallest_singular_value_lower_bound": 1.0,
+                        "lower_bound_exact_dyadic": rational(Fraction(1)),
+                        "gram_determinant": rational(Fraction(1)),
+                        "frobenius_norm_squared": rational(Fraction(1)),
+                    })
     return {
         "record_kind": name,
         "state_order": state_order,
@@ -891,6 +964,7 @@ def nullspace_certificate(name: str, row_order: list[str], state_order: list[str
             "pivot_minor_determinant": rational(null_det),
         },
         "exact_projector": rational_matrix(projector),
+        "conditioning_certificate": conditioning,
         "orthonormal_nullspace": float_matrix(numerical_basis),
         "residual_envelopes": {
             "A_N_infinity_factor_epsilon64": 128.0,
@@ -945,6 +1019,43 @@ def measured_or_config_envelope(entry: dict) -> dict:
     }
 
 
+def accepted_state_feasibility_certificate() -> dict:
+    terms = {
+        "limiter_outward_factor_epsilon64": 1024.0,
+        "row_accumulation_factor_epsilon64": 64.0,
+        "nullspace_projection_factor_epsilon64": 1040.0,
+        "source_packet_factor_epsilon64": 128.0,
+        "ledger_reduction_factor_epsilon64": 128.0,
+    }
+    return {
+        "certificate_version": "accepted_state_feasibility_envelope_v1",
+        "scale_rule": "scale_r=max(1,accumulation_bound_for_row_r)",
+        "mass_block_scale": "max(1,abs(rhoZ)+sum_j(abs(q_j)))",
+        "energy_block_scale": "max(1,abs(Hs)+sum_j(abs(h_lo_j*q_j))+sum_j(abs(h_hi_j*q_j)))",
+        "producer_bounds": terms,
+        "producer_bound_derivations": {
+            "limiter": "pinned_outward_reserve=1024",
+            "row_accumulation": "open3d_worst_path_units=48;gamma_48_over_epsilon<49<64",
+            "nullspace_projection": "projector_certificate_1024+two_matvec_rounding_lt16=1040",
+            "source_packet": "fixed_leaf_and_packet_expression_units<=127<128",
+            "ledger_reduction": "fixed_pairwise_tree_and_leaf_units<=127<128",
+        },
+        "derived_union_factor_epsilon64": sum(terms.values()),
+        "kappa_epsilon64": 4096.0,
+        "kappa_derivation": "next_power_of_two(2384)=4096",
+    }
+
+
+def validate_accepted_state_feasibility_certificate(certificate: dict) -> None:
+    expected = accepted_state_feasibility_certificate()
+    if certificate != expected:
+        raise ValueError("accepted-state feasibility envelope is not the canonical derivation")
+    union = certificate["derived_union_factor_epsilon64"]
+    kappa = certificate["kappa_epsilon64"]
+    if union != 2384.0 or not (union <= kappa < 2.0 * union):
+        raise ValueError("accepted-state feasibility envelope derivation changed")
+
+
 def methane_payload(snapshot: dict, constants: dict) -> dict:
     common_min, common_max, reference = 300.0, 5000.0, 300.0
     sources = {entry["name"]: entry
@@ -990,21 +1101,9 @@ def methane_payload(snapshot: dict, constants: dict) -> dict:
                              for column in range(len(METHANE_SPECIES)))
                          for row in range(len(METHANE_ELEMENTS))]
 
-    state_order = ["rho_tot_Z"] + [f"q:{name}" for name in METHANE_SPECIES]
-    reconstruction = [[-(injected_elements[row] - ambient_elements[row])] +
-                      [element_matrix[row][column] - ambient_elements[row]
-                       for column in range(len(METHANE_SPECIES))]
-                      for row in range(len(METHANE_ELEMENTS))]
-    flux_projection = reconstruction + [[Fraction(0)] +
-                                        [Fraction(1)] * len(METHANE_SPECIES)]
-    reconstruction_certificate = nullspace_certificate(
-        "conservative_reconstruction_v1", list(METHANE_ELEMENTS), state_order,
-        reconstruction)
-    flux_certificate = nullspace_certificate(
-        "nonadvective_flux_projection_v1",
-        list(METHANE_ELEMENTS) + ["sum_constituent_flux"], state_order,
-        flux_projection)
-
+    # Every mass/element/reaction quantity below comes from this one exact
+    # rational source.  No independently rounded molecular or atomic path is
+    # permitted to participate in the physical kernel.
     hf = {name: fraction(sources[name]["formation_enthalpy_J_per_kmol_298p15K"])
           for name in METHANE_SPECIES}
     reaction_enthalpy = hf["CO2"] + 2 * hf["H2O"] - hf["CH4"]
@@ -1021,10 +1120,53 @@ def methane_payload(snapshot: dict, constants: dict) -> dict:
         raise ValueError("methane primary reaction mass balance failed")
     reaction_delta = [Fraction(-1), -stoichiometric_oxygen, Fraction(0),
                       product_co2, product_h2o, Fraction(0), Fraction(0)]
-    for row in range(len(METHANE_ELEMENTS)):
-        if sum(element_matrix[row][column] * reaction_delta[column]
-               for column in range(len(METHANE_SPECIES))) != 0:
-            raise ValueError("methane primary reaction element balance failed")
+    soot_oxidation_delta = [Fraction(0), -soot_oxygen, Fraction(0),
+                            soot_product_co2, Fraction(0), Fraction(0), Fraction(-1)]
+    for direction in (reaction_delta, soot_oxidation_delta):
+        for row in range(len(METHANE_ELEMENTS)):
+            if sum(element_matrix[row][column] * direction[column]
+                   for column in range(len(METHANE_SPECIES))) != 0:
+                raise ValueError("methane physical direction element balance failed")
+        if sum(direction, Fraction(0)) != 0:
+            raise ValueError("methane physical direction mass balance failed")
+
+    state_order = ["rho_tot_Z"] + [f"q:{name}" for name in METHANE_SPECIES]
+    full_reconstruction = [[-(injected_elements[row] - ambient_elements[row])] +
+                           [element_matrix[row][column] - ambient_elements[row]
+                            for column in range(len(METHANE_SPECIES))]
+                           for row in range(len(METHANE_ELEMENTS))]
+    physical_directions = [
+        {"name": "injected_minus_ambient_stream",
+         "state_delta": [Fraction(1)] +
+                        [injected_mass[index] - ambient_mass[index]
+                         for index in range(len(METHANE_SPECIES))]},
+        {"name": "primary_combustion",
+         "state_delta": [Fraction(0)] + reaction_delta},
+        {"name": "withheld_soot_complete_oxidation",
+         "state_delta": [Fraction(0)] + soot_oxidation_delta},
+    ]
+    # r56: prove the physical Q-kernel before any binary64 conversion, then
+    # store only a maximal independent row set.  For methane the N relation is
+    # exactly the negative sum of C/H/O because total mass is the sum of the
+    # four element masses.
+    verify_exact_physical_directions(full_reconstruction, physical_directions)
+    reconstruction, reconstruction_rows = maximal_independent_rows(
+        full_reconstruction, list(METHANE_ELEMENTS))
+    if reconstruction_rows != ["C", "H", "O"]:
+        raise ValueError("methane canonical independent element row set changed")
+
+    flux_projection = reconstruction + [[Fraction(0)] +
+                                        [Fraction(1)] * len(METHANE_SPECIES)]
+    reconstruction_certificate = nullspace_certificate(
+        "conservative_reconstruction_v1", reconstruction_rows, state_order,
+        reconstruction)
+    flux_certificate = nullspace_certificate(
+        "nonadvective_flux_projection_v1",
+        reconstruction_rows + ["sum_constituent_flux"], state_order,
+        flux_projection)
+
+    feasibility_certificate = accepted_state_feasibility_certificate()
+    validate_accepted_state_feasibility_certificate(feasibility_certificate)
 
     constant_values = constants["values"]
     autoignition = measured_or_config_envelope(constant_values["T_AIT"])
@@ -1070,6 +1212,28 @@ def methane_payload(snapshot: dict, constants: dict) -> dict:
         "element_order": list(METHANE_ELEMENTS),
         "atomic_weights_kg_per_kmol": {key: rational(value)
                                         for key, value in atomic_weights.items()},
+        "physical_kernel_consistency": {
+            "certificate_version": "physical_kernel_consistency_v1",
+            "atomic_weight_source": {
+                "kind": "pinned_nasa_formula_weight_exact_rational_v1",
+                "source_snapshot_sha256": hashlib.sha256(encode(snapshot)).hexdigest(),
+                "values_kg_per_kmol": {key: rational(value)
+                                        for key, value in atomic_weights.items()},
+            },
+            "stored_independent_constraint_rows": reconstruction_rows,
+            "symbolic_derived_constraints": {
+                "omitted_element_row": "N=-(C+H+O)",
+                "mass": "sum_element_mass_fractions=1",
+                "b_of_Z": "b(Z)=b_ambient+Z*(b_injected-b_ambient)",
+            },
+            "physical_directions": [{
+                "name": direction["name"],
+                "state_delta": [rational(value) for value in direction["state_delta"]],
+                "exact_A_Q_residual": [rational(Fraction(0))
+                                         for _ in full_reconstruction],
+            } for direction in physical_directions],
+        },
+        "accepted_state_feasibility_envelope": feasibility_certificate,
         "element_mass_fraction_matrix": rational_matrix(element_matrix),
         "species": species,
         "ambient_state": {
@@ -1334,7 +1498,8 @@ def solver_fixture_payloads() -> list[tuple[str, dict]]:
     }
     near_rank_certificate = nullspace_certificate(
         "conservative_reconstruction_v1", ["r0", "r1"], ["x0", "x1"],
-        [[Fraction(1), Fraction(0)], [Fraction(0), Fraction(0)]])
+        [[Fraction(1), Fraction(0)], [Fraction(0), Fraction(0)]],
+        require_conditioning=False)
     # Keep every other certificate field structurally production-shaped, but
     # replace A with the true rank-two candidate.  The shared exact A=UV check
     # must be the reason this fixture is rejected.

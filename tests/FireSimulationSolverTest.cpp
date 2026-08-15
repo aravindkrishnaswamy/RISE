@@ -67,6 +67,9 @@ namespace
 			ThermochemicalDensities(result),temperatureK,
 			result.sensibleEnergyJPerM3,&error) ) {
 			std::printf("FAIL: fixture energy construction: %s\n",error.c_str());
+			std::printf("fixture weights:");
+			for(const double value:constituentWeights)std::printf(" %.17g",value);
+			std::printf("\n");
 			++failures;
 		}
 		return result;
@@ -120,27 +123,83 @@ namespace
 		const double primaryExtent=0.006;
 		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 			weight[species]+=primaryExtent*fuel.PrimaryReactionDelta()[species];
-		static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
-		double molecularWeight[MethaneCarbon]={};
-		for(std::size_t species=0;species<MethaneCarbon;++species){
-			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(names[species]);
-			if(!property){std::printf("FAIL: product-rich fixture lacks %s\n",names[species]);
-				++failures;return MethaneCellState();}
-			molecularWeight[species]=property->molecularWeightKGPerKMol;
+		// Add carbon by reversing a small amount of the record-owned complete
+		// soot-oxidation direction.  No atomic weight or stoichiometric coefficient
+		// is copied into the fixture, so kernel regeneration cannot strand it.
+		const double carbonExtent=0.001;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			weight[species]-=carbonExtent*fuel.SootOxidationDelta()[species];
+		// The product-history fixtures also need a nonzero CO inventory.  Build
+		// that synthetic direction from the record's certified kernel projector,
+		// rather than copying the pre-r56 nullspace coordinates.
+		std::vector<double> coSeed(MethaneMassStateDimension,0.0),coDirection;
+		coSeed[1+MethaneCO]=1.0;
+		if(!fuel.ConservativeReconstruction().Project(coSeed,coDirection)||
+			coDirection.size()!=MethaneMassStateDimension||coDirection[1+MethaneCO]<=0.0){
+			std::printf("FAIL: product-rich fixture cannot derive its CO kernel direction\n");
+			++failures;return MethaneCellState();
 		}
-		const FireThermochemistrySpecies* carbon=thermochemistry.FindSpecies("C(gr)");
-		if(!carbon){std::printf("FAIL: product-rich fixture lacks C(gr)\n");++failures;
-			return MethaneCellState();}
-		const double coExtent=0.002,carbonExtent=0.001;
-		weight[MethaneCH4]-=coExtent+carbonExtent;
-		weight[MethaneO2]-=(1.5*coExtent+carbonExtent)*molecularWeight[MethaneO2]/
-			molecularWeight[MethaneCH4];
-		weight[MethaneCO]+=coExtent*molecularWeight[MethaneCO]/molecularWeight[MethaneCH4];
-		weight[MethaneCarbon]+=carbonExtent*carbon->molecularWeightKGPerKMol/
-			molecularWeight[MethaneCH4];
-		weight[MethaneH2O]+=(2.0*coExtent+2.0*carbonExtent)*molecularWeight[MethaneH2O]/
-			molecularWeight[MethaneCH4];
-		return StateAtTemperature(weight,mixtureFraction,temperatureK,thermochemistry);
+		MethaneCellState result=StateAtTemperature(weight,mixtureFraction,
+			temperatureK,thermochemistry);
+		ConservativeVector state=ToConservativeVector(result);
+		double coAmplitude=0.001/coDirection[1+MethaneCO];
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+			if(coDirection[row]<0.0)coAmplitude=std::min(coAmplitude,
+				0.1*state[row]/-coDirection[row]);
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+			state[row]+=coAmplitude*coDirection[row];
+		result=FromConservativeVector(state);
+		static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		double molarDensity=0.0;
+		for(std::size_t species=0;species<MethaneCarbon;++species)molarDensity+=
+			result.constituent[species]/thermochemistry.FindSpecies(
+				names[species])->molecularWeightKGPerKMol;
+		result.temperatureK=thermochemistry.ThermodynamicPressurePa()/
+			(8314.46261815324*molarDensity);
+		std::string fixtureError;
+		if(!thermochemistry.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(result),
+			result.temperatureK,result.sensibleEnergyJPerM3,&fixtureError)){
+			std::printf("FAIL: product-rich fixture energy: %s\n",fixtureError.c_str());
+			++failures;
+		}
+		return result;
+	}
+
+	struct RecordKernelFixtureDirection
+	{
+		std::string recordId;
+		std::vector<double> coordinateWeights;
+		ConservativeVector direction;
+	};
+
+	RecordKernelFixtureDirection BuildRecordKernelFixtureDirection(
+		const FireSimulationMethaneRecord& fuel,
+		const std::vector<double>& coordinateWeights
+		)
+	{
+		RecordKernelFixtureDirection result;
+		result.recordId=fuel.RecordId();
+		result.coordinateWeights=coordinateWeights;
+		const FireCertifiedNullspace& closure=fuel.ConservativeReconstruction();
+		if(coordinateWeights.size()!=closure.nullity)return result;
+		for(std::size_t row=0;row<closure.stateDimension;++row)
+			for(std::size_t column=0;column<closure.nullity;++column)
+				result.direction[row]+=coordinateWeights[column]*
+					closure.orthonormalBasis[row*closure.nullity+column];
+		return result;
+	}
+
+	bool KernelFixtureDirectionMatchesRecord(
+		const FireSimulationMethaneRecord& fuel,
+		const RecordKernelFixtureDirection& fixture
+		)
+	{
+		if(fixture.recordId!=fuel.RecordId())return false;
+		const RecordKernelFixtureDirection rebuilt=BuildRecordKernelFixtureDirection(
+			fuel,fixture.coordinateWeights);
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+			if(fixture.direction[row]!=rebuilt.direction[row])return false;
+		return true;
 	}
 
 	double MaximumConstraintResidual(
@@ -158,6 +217,57 @@ namespace
 			result = std::max(result,std::fabs(residual));
 		}
 		return result;
+	}
+
+	bool SetRecordDerivedEnergyForDivergence(
+		const ConservativeVector& beginning,
+		ConservativeVector& increment,
+		const double beginningTemperatureK,
+		const double desiredDivergencePerS,
+		const double deltaTimeS,
+		const FireSimulationMethaneRecord& thermochemistry,
+		std::string* error
+		)
+	{
+		static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		MethaneCellState candidate=FromConservativeVector(beginning+increment);
+		double molarDensity=0.0;
+		for(std::size_t species=0;species<MethaneCarbon;++species){
+			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(names[species]);
+			if(!property||candidate.constituent[species]<0.0)return false;
+			molarDensity+=candidate.constituent[species]/property->molecularWeightKGPerKMol;
+		}
+		const double targetVolume=1.0+deltaTimeS*desiredDivergencePerS;
+		const double targetTemperature=targetVolume*thermochemistry.ThermodynamicPressurePa()/
+			(8314.46261815324*molarDensity);
+		double targetEnergy=0.0;
+		if(!std::isfinite(targetTemperature)||targetTemperature<thermochemistry.TemperatureMinK()||
+			targetTemperature>thermochemistry.TemperatureMaxK()||
+			!thermochemistry.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(candidate),
+				targetTemperature,targetEnergy,error))return false;
+		auto evaluate=[&](const double energy,double& divergence){
+			increment[MethaneMassStateDimension]=energy-
+				beginning[MethaneMassStateDimension];
+			return DivergenceFromDiscreteIncrement(beginning,increment,
+				beginningTemperatureK,deltaTimeS,thermochemistry,divergence,error);
+		};
+		double recovered=0.0,bestEnergy=targetEnergy,bestResidual=
+			std::numeric_limits<double>::max();
+		for(unsigned int iteration=0;iteration<12;++iteration){
+			if(!evaluate(targetEnergy,recovered))return false;
+			const double residual=recovered-desiredDivergencePerS;
+			if(std::fabs(residual)<bestResidual){bestResidual=std::fabs(residual);
+				bestEnergy=targetEnergy;}
+			if(bestResidual<=1.0e-11)break;
+			const double probe=std::max(1.0e-7,std::fabs(targetEnergy)*1.0e-12);
+			double probed=0.0;
+			if(!evaluate(targetEnergy+probe,probed))return false;
+			const double derivative=(probed-recovered)/probe;
+			if(!std::isfinite(derivative)||derivative==0.0)break;
+			targetEnergy-=residual/derivative;
+		}
+		return evaluate(bestEnergy,recovered)&&
+			std::fabs(recovered-desiredDivergencePerS)<=1.0e-10;
 	}
 
 	struct SyntheticV4Checkpoint
@@ -319,6 +429,147 @@ int main()
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	Check(thermochemistry.IsValid() && fuel.IsValid() && transport.IsValid() && opacity.IsValid(),
 		"V-tier tests start from the adopted physical records");
+	const FireAcceptedStateFeasibilityEnvelope& r60Envelope=
+		fuel.AcceptedStateFeasibilityEnvelope();
+	Check(r60Envelope.limiterOutwardFactorEpsilon64==1024.0&&
+		r60Envelope.rowAccumulationFactorEpsilon64==64.0&&
+		r60Envelope.nullspaceProjectionFactorEpsilon64==1040.0&&
+		r60Envelope.sourcePacketFactorEpsilon64==128.0&&
+		r60Envelope.ledgerReductionFactorEpsilon64==128.0&&
+		r60Envelope.derivedUnionFactorEpsilon64==2384.0&&
+		r60Envelope.kappaEpsilon64==4096.0,
+		"r60 accepted-state envelope is the record-derived producer-union ceiling");
+	std::array<double,MethaneSpeciesCount> r60LowerEnthalpy,r60UpperEnthalpy;
+	const bool r60Bounds=fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(
+		fuel.TemperatureMinK(),r60LowerEnthalpy.data(),r60LowerEnthalpy.size(),0)&&
+		fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
+			r60UpperEnthalpy.data(),r60UpperEnthalpy.size(),0);
+	MethaneCellState recordedTrace=PhysicalMixtureLineState(fuel,thermochemistry,0.0,300.0);
+	recordedTrace.constituent[MethaneCH4]=-5.40472e-13;
+	const ConservativeVector recordedTraceVector=ToConservativeVector(recordedTrace);
+	const double r60MinimumEnvelope=r60Envelope.kappaEpsilon64*
+		std::numeric_limits<double>::epsilon();
+	const double recordedMassAccumulationScale=AcceptedStateMassScale(recordedTraceVector);
+	const bool oldSplitWouldReject=std::fabs(recordedTrace.constituent[MethaneCH4])>
+		2048.0*std::numeric_limits<double>::epsilon()*
+		std::max(1.0,std::fabs(recordedTrace.constituent[MethaneCH4]));
+	Check(r60Bounds&&oldSplitWouldReject&&
+		std::fabs(recordedTrace.constituent[MethaneCH4])<r60MinimumEnvelope&&
+		InequalityRoundoffScale(recordedTraceVector,2+MethaneCH4,r60LowerEnthalpy,
+			r60UpperEnthalpy)==recordedMassAccumulationScale&&
+		AcceptedStateAdmissible(recordedTraceVector,r60LowerEnthalpy,
+			r60UpperEnthalpy,fuel,0),
+		"r60 derived envelope contains the recorded -5.40472e-13 exhaustion scalar without tuning");
+	ConservativeVector largeAccumulationTrace=recordedTraceVector;
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		largeAccumulationTrace[1+species]*=1.0e6;
+	largeAccumulationTrace[1+MethaneCH4]=recordedTraceVector[1+MethaneCH4];
+	Check(InequalityRoundoffScale(largeAccumulationTrace,2+MethaneCH4,
+		r60LowerEnthalpy,r60UpperEnthalpy)==AcceptedStateMassScale(largeAccumulationTrace)&&
+		AcceptedStateMassScale(largeAccumulationTrace)>1.0e5,
+		"r60 exhausted-inventory scale follows accumulated mass magnitudes, never the near-zero row result");
+	// This scalar is the only conservative diagnostic retained from the failed r59
+	// run: its quarantined VDB contains derived media, not the full conservative
+	// cell.  Do not represent this reconstruction as byte-for-byte state recovery.
+	const double epsilon=std::numeric_limits<double>::epsilon();
+	// Stay on the record-owned ambient-to-fuel affine line so this checks the
+	// limiter envelope without manufacturing an A-row violation.  Its density
+	// and energy scales vary with the coordinate, exercising the interval lower
+	// bound used to certify every possible face-alpha combination.
+	const ConservativeVector tangentAmbient=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,0.0,300.0));
+	const ConservativeVector tangentFuel=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,1.0,300.0));
+	auto tangentState=[&](const double coordinate){
+		ConservativeVector result=tangentAmbient;
+		for(std::size_t entry=0;entry<MethaneConservativeDimension;++entry)
+			result[entry]+=coordinate*(tangentFuel[entry]-tangentAmbient[entry]);
+		return result;
+	};
+	const ConservativeVector tangentDirection=tangentFuel-tangentAmbient;
+	const double tangentUpperRow=InequalityValue(tangentDirection,1,
+		r60LowerEnthalpy,r60UpperEnthalpy);
+	const double nearBoundZ=1.0+0.5*r60Envelope.kappaEpsilon64*epsilon/
+		tangentUpperRow;
+	ConservativeVector nearBoundLow=tangentState(nearBoundZ);
+	const ConservativeVector prospectiveCorrection=tangentState(nearBoundZ+1.0e-6)-
+		nearBoundLow;
+	std::array<ConservativeVector,6> prospectiveCorrections={};
+	prospectiveCorrections[0]=prospectiveCorrection;
+	const double limiterScaleLowerBound=CertifiedLimiterScaleLowerBound(nearBoundLow,
+		prospectiveCorrections,1,1,r60LowerEnthalpy,r60UpperEnthalpy);
+	const double nearBoundBudget=CertifiedLimiterInequalityBudget(nearBoundLow,
+		1,r60LowerEnthalpy,r60UpperEnthalpy,fuel,limiterScaleLowerBound);
+	const double expectedBudget=(r60Envelope.kappaEpsilon64-
+		r60Envelope.limiterOutwardFactorEpsilon64)*epsilon*limiterScaleLowerBound-
+		InequalityValue(nearBoundLow,1,r60LowerEnthalpy,r60UpperEnthalpy);
+	const ConservativeVector budgetedCandidate=tangentState(
+		nearBoundZ+nearBoundBudget/tangentUpperRow);
+	Check(std::fabs(nearBoundBudget-expectedBudget)<=8.0*epsilon*
+		std::max(1.0,std::fabs(expectedBudget))&&
+		AcceptedStateAdmissible(budgetedCandidate,r60LowerEnthalpy,
+			r60UpperEnthalpy,fuel,0),
+		"r60 kernel-tangent limiter correction uses a candidate-conservative scale lower bound");
+	std::array<ConservativeVector,6> ambientToFuelCorrection={};
+	ambientToFuelCorrection[0]=tangentDirection;
+	const double ambientMassLower=CertifiedLimiterScaleLowerBound(tangentAmbient,
+		ambientToFuelCorrection,1,0,r60LowerEnthalpy,r60UpperEnthalpy);
+	const double ambientEnergyLower=CertifiedLimiterScaleLowerBound(tangentAmbient,
+		ambientToFuelCorrection,1,2+MethaneSpeciesCount,r60LowerEnthalpy,
+		r60UpperEnthalpy);
+	const ConservativeVector tangentMid=tangentState(0.5);
+	Check(ambientMassLower<=AcceptedStateMassScale(tangentAmbient)&&
+		ambientMassLower<=AcceptedStateMassScale(tangentMid)&&
+		ambientMassLower<=AcceptedStateMassScale(tangentFuel)&&
+		ambientEnergyLower<=AcceptedStateEnergyScale(tangentAmbient,r60LowerEnthalpy,
+			r60UpperEnthalpy)&&
+		ambientEnergyLower<=AcceptedStateEnergyScale(tangentMid,r60LowerEnthalpy,
+			r60UpperEnthalpy)&&
+		ambientEnergyLower<=AcceptedStateEnergyScale(tangentFuel,r60LowerEnthalpy,
+			r60UpperEnthalpy),
+		"r60 limiter scale certificate is a true mass/energy lower bound from ambient through fuel");
+
+	MethaneCellState exhaustion=PhysicalMixtureLineState(fuel,thermochemistry,0.055,300.0);
+	const double exhaustible=std::min(exhaustion.constituent[MethaneCH4],
+		exhaustion.constituent[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+	const std::size_t exhaustionSteps=4096;
+	const double exhaustionIncrement=exhaustible/static_cast<double>(exhaustionSteps);
+	bool exhaustionContinues=true;
+	for(std::size_t step=0;step<exhaustionSteps&&exhaustionContinues;++step){
+		MethaneSourcePacket packet;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			packet.constituentDelta[species]=exhaustionIncrement*
+				fuel.PrimaryReactionDelta()[species];
+		packet.sensibleEnergyDeltaJPerM3=exhaustionIncrement*fuel.LowerHeatingValueJPerKG();
+		MethaneCellState next;
+		exhaustionContinues=ApplySourcePacket(exhaustion,packet,thermochemistry,next,0);
+		if(exhaustionContinues)exhaustion=next;
+	}
+	MethaneSourcePacket identityPacket;
+	MethaneCellState continuedExhaustion;
+	const bool exhaustedInputAdmissible=AcceptedStateAdmissible(ToConservativeVector(exhaustion),
+		r60LowerEnthalpy,r60UpperEnthalpy,fuel,0);
+	const bool exhaustionNextStep=exhaustionContinues&&exhaustedInputAdmissible&&
+		ApplySourcePacket(exhaustion,identityPacket,thermochemistry,continuedExhaustion,0);
+	Check(exhaustionNextStep&&std::fabs(exhaustion.constituent[MethaneCH4])<=
+		r60Envelope.kappaEpsilon64*std::numeric_limits<double>::epsilon()*
+		AcceptedStateMassScale(ToConservativeVector(exhaustion))&&
+		continuedExhaustion.constituent[MethaneCH4]==exhaustion.constituent[MethaneCH4],
+		"r60 many-step exhaustion remains admissible as the next input without clamping stored bytes");
+	MethaneSourcePacket identityTracePacket;
+	MethaneCellState retainedTrace;
+	Check(ApplySourcePacket(recordedTrace,identityTracePacket,thermochemistry,retainedTrace,0)&&
+		retainedTrace.constituent[MethaneCH4]==recordedTrace.constituent[MethaneCH4]&&
+		std::signbit(retainedTrace.constituent[MethaneCH4]),
+		"r60 property consumers retain an envelope-negative conservative inventory exactly");
+	const RecordKernelFixtureDirection kernelFixtureGuard=
+		BuildRecordKernelFixtureDirection(fuel,{1.0,-0.5,0.25,-0.125,0.0625});
+	RecordKernelFixtureDirection mismatchedKernelFixture=kernelFixtureGuard;
+	mismatchedKernelFixture.direction[0]=std::nextafter(
+		mismatchedKernelFixture.direction[0],std::numeric_limits<double>::infinity());
+	Check(KernelFixtureDirectionMatchesRecord(fuel,kernelFixtureGuard)&&
+		!KernelFixtureDirectionMatchesRecord(fuel,mismatchedKernelFixture),
+		"manufactured fixtures reject any embedded kernel constant that mismatches the loaded record");
 	std::string error;
 	const MethaneCellState eosFixture = PhysicalMixtureLineState(
 		fuel,thermochemistry,0.2,800.0);
@@ -339,6 +590,18 @@ int main()
 	overflowingDensityState.constituent[MethaneO2] = std::numeric_limits<double>::max();
 	Check(!ValidateCellState(overflowingDensityState,&error),
 		"accepted cell validation rejects a non-finite constituent sum");
+	MethaneCellState forwardEnvelopeState=eosFixture;
+	const double stateEnvelope=r60Envelope.kappaEpsilon64*
+		std::numeric_limits<double>::epsilon()*
+		AcceptedStateMassScale(ToConservativeVector(forwardEnvelopeState));
+	forwardEnvelopeState.constituent[MethaneCarbon]=-0.5*stateEnvelope;
+	Check(AcceptedStateAdmissible(ToConservativeVector(forwardEnvelopeState),
+		r60LowerEnthalpy,r60UpperEnthalpy,fuel,&error),
+		"accepted conservative state retains an unmodified fp64 nullspace trace inside its certified envelope");
+	forwardEnvelopeState.constituent[MethaneCarbon]=-2.0*stateEnvelope;
+	Check(!AcceptedStateAdmissible(ToConservativeVector(forwardEnvelopeState),
+		r60LowerEnthalpy,r60UpperEnthalpy,fuel,&error),
+		"accepted conservative state rejects a constituent beyond the certified fp64 envelope");
 
 	// V1: hydrostatic-relative buoyancy supplies no momentum in the ambient
 	// state, and pressure-open faces cold-start in their static-pressure class.
@@ -858,7 +1121,8 @@ int main()
 	hotOutflow.constituent[MethaneCarbon]=0.01;
 	bool exactAmbientDonor=BuildOpenBoundaryFlux3D(ToConservativeVector(hotOutflow),800.0,-0.1,
 		PressureOpenBoundary3D,true,openBoundary3D,300.0,300.0,0.0,0.0,
-		openShape3D.cellWidthM,fuel,thermochemistry,ambientBackflowFlux,&error);
+		openShape3D.cellWidthM,openBoundary3D.fuelMassFluxKGPerM2S,
+		fuel,thermochemistry,ambientBackflowFlux,&error);
 	for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
 		exactAmbientDonor=exactAmbientDonor && Near(ambientBackflowFlux.totalOutwardFlux[component],
 			-0.1*openBoundary3D.ambientState[component],2.0e-15);
@@ -868,7 +1132,8 @@ int main()
 	OpenBoundaryFlux3D diffusiveAmbientBackflow;
 	bool ambientDiffusionClosed=BuildOpenBoundaryFlux3D(ToConservativeVector(hotOutflow),
 		800.0,-0.1,PressureOpenBoundary3D,true,openBoundary3D,300.0,300.0,0.01,0.1,
-		openShape3D.cellWidthM,fuel,thermochemistry,diffusiveAmbientBackflow,&error);
+		openShape3D.cellWidthM,openBoundary3D.fuelMassFluxKGPerM2S,
+		fuel,thermochemistry,diffusiveAmbientBackflow,&error);
 	bool nonzeroAmbientDiffusion=false;
 	for( std::size_t component=0; component<MethaneMassStateDimension; ++component ) {
 		nonzeroAmbientDiffusion=nonzeroAmbientDiffusion ||
@@ -887,14 +1152,16 @@ int main()
 		"V1 ambient Dirichlet inflow closes projected species diffusion and conductive enthalpy");
 	Check(BuildOpenBoundaryFlux3D(ToConservativeVector(hotOutflow),800.0,0.1,
 		PressureOpenBoundary3D,false,openBoundary3D,300.0,300.0,0.01,0.1,
-		openShape3D.cellWidthM,fuel,thermochemistry,outflowFlux,&error) &&
+		openShape3D.cellWidthM,openBoundary3D.fuelMassFluxKGPerM2S,
+		fuel,thermochemistry,outflowFlux,&error) &&
 		outflowFlux.nonadvectiveEnergyOutwardFlux==0.0 &&
 		std::all_of(outflowFlux.nonadvectiveMassOutwardFlux.begin(),
 			outflowFlux.nonadvectiveMassOutwardFlux.end(),[]( const double value ){ return value==0.0; }),
 		"V1 pressure-open outflow suppresses every inward diffusive/conductive flux");
 	bool exactFuelFlux=BuildOpenBoundaryFlux3D(ToConservativeVector(ambientState3D),300.0,0.0,
 		FuelInletBoundary3D,true,openBoundary3D,300.0,300.0,0.0,0.0,
-		openShape3D.cellWidthM,fuel,thermochemistry,fuelFlux,&error);
+		openShape3D.cellWidthM,openBoundary3D.fuelMassFluxKGPerM2S,
+		fuel,thermochemistry,fuelFlux,&error);
 	double injectedMass=0.0;
 	for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) injectedMass+=
 		openBoundary3D.injectedState[1+species];
@@ -905,6 +1172,17 @@ int main()
 	}
 	Check(exactFuelFlux && fuelFlux.totalOutwardFlux[1+MethaneCarbon]==0.0,
 		"V1 fuel-bed flux injects the complete methane record state with zero aerosol");
+	bool pureFuelTuple=fuelFlux.totalOutwardFlux[0]==
+		-openBoundary3D.fuelMassFluxKGPerM2S&&
+		fuelFlux.totalOutwardFlux[1+MethaneCH4]==
+		-openBoundary3D.fuelMassFluxKGPerM2S;
+	for(std::size_t species=1;species<MethaneSpeciesCount;++species)
+		pureFuelTuple=pureFuelTuple&&fuelFlux.totalOutwardFlux[1+species]==0.0;
+	Check(pureFuelTuple&&MaximumConstraintResidual(fuel.ConservativeReconstruction(),
+		fuelFlux.totalOutwardFlux)==0.0&&CertifiedConstraintRowsSatisfied(
+			fuelFlux.totalOutwardFlux,fuel.ConservativeReconstruction(),
+			fuel.AcceptedStateFeasibilityEnvelope()),
+		"V1 prescribed methane tuple is exactly pure fuel and lies in ker(A)");
 	OpenBoundaryConfig3D maskedFuelBoundary=openBoundary3D;
 	maskedFuelBoundary.bottomFuelMask.assign(openShape3D.nx*openShape3D.ny,false);
 	const std::size_t fuelFaceIndex=(openShape3D.ny/2)*openShape3D.nx+openShape3D.nx/2;
@@ -948,6 +1226,29 @@ int main()
 		maskedFuelProjection.velocityMPerS.component[2][unmaskedFuelNormalFace]==0.0 &&
 		maskedFuelProjection.momentumKGPerM2S.component[2][unmaskedFuelNormalFace]==0.0,
 		"V1 fuel-bed momentum ledger matches scalar mass flux only on masked faces");
+	OpenBoundaryConfig3D patternedFuelBoundary=maskedFuelBoundary;
+	patternedFuelBoundary.bottomFuelMask[unmaskedFuelNeighbor]=true;
+	patternedFuelBoundary.bottomFuelMassFluxKGPerM2S.assign(openShape3D.nx*openShape3D.ny,0.0);
+	patternedFuelBoundary.bottomFuelMassFluxKGPerM2S[fuelFaceIndex]=0.007;
+	patternedFuelBoundary.bottomFuelMassFluxKGPerM2S[unmaskedFuelNeighbor]=0.013;
+	OpenMACProjection3DResult patternedFuelProjection;
+	OpenBoundaryFluxField3D patternedFuelField;
+	const bool patternedFuelOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		patternedFuelBoundary,0.01,2.0e-8,patternedFuelProjection,&error) &&
+		BuildOpenBoundaryFluxField3D(openShape3D,ambientCells3D,
+		std::vector<double>(openShape3D.CellCount(),300.0),
+		std::vector<double>(openShape3D.CellCount(),0.0),
+		std::vector<double>(openShape3D.CellCount(),0.0),patternedFuelBoundary,
+		patternedFuelProjection,300.0,300.0,fuel,thermochemistry,patternedFuelField,&error);
+	Check(patternedFuelOK && Near(patternedFuelProjection.momentumKGPerM2S.component[2][
+		maskedFuelNormalFace],0.007,2.0e-15) && Near(
+		patternedFuelProjection.momentumKGPerM2S.component[2][unmaskedFuelNormalFace],0.013,
+		2.0e-15) && Near(-patternedFuelField.side[4][fuelFaceIndex].totalOutwardFlux[0],
+		0.007,2.0e-15) && Near(-patternedFuelField.side[4][unmaskedFuelNeighbor].
+		totalOutwardFlux[0],0.013,2.0e-15),
+		"r54 source pattern drives the same per-face fuel mass flux through momentum and scalar ledgers");
 	bool rejectsEveryWholeFaceFuel=true;
 	for( unsigned int fuelSide=0; fuelSide<6; ++fuelSide ) {
 		OpenBoundaryConfig3D wholeFaceFuelBoundary=openBoundary3D;
@@ -986,7 +1287,8 @@ int main()
 	OpenBoundaryFlux3D rejectedOpenFlux;
 	Check(!BuildOpenBoundaryFlux3D(overflowingOpenState,300.0,
 		std::numeric_limits<double>::max(),PressureOpenBoundary3D,false,
-		openBoundary3D,300.0,300.0,0.0,0.0,openShape3D.cellWidthM,fuel,
+		openBoundary3D,300.0,300.0,0.0,0.0,openShape3D.cellWidthM,
+		openBoundary3D.fuelMassFluxKGPerM2S,fuel,
 		thermochemistry,rejectedOpenFlux,&error),
 		"V1 open conservative boundary rejects finite-product overflow");
 	PeriodicMACShape overflowingOpenShape;
@@ -999,7 +1301,8 @@ int main()
 	OpenBoundaryConfig3D invalidKindBoundary=openBoundary3D;
 	invalidKindBoundary.kind[0]=99u;
 	Check(!BuildOpenBoundaryFlux3D(ambientCells3D[0],300.0,0.0,99u,false,
-		openBoundary3D,300.0,300.0,0.0,0.0,openShape3D.cellWidthM,fuel,
+		openBoundary3D,300.0,300.0,0.0,0.0,openShape3D.cellWidthM,
+		openBoundary3D.fuelMassFluxKGPerM2S,fuel,
 		thermochemistry,rejectedOpenFlux,&error),
 		"V1 scalar boundary helper rejects an unknown boundary discriminant directly");
 	Check(!ProjectPressureOpenMACVelocity3D(openShape3D,
@@ -1548,6 +1851,55 @@ int main()
 	Check(limiterAlpha.size() == 8 && limiterAlpha[0] > 0.0 &&
 		limiterAlpha[0] < 1.0,
 		"V2/V3 record-derived packet and one nodal budget supply one shared nontrivial face alpha");
+	// Cross a real constituent-activation surface with two physical states whose
+	// normalized separation is at the fp64/Picard scale.  The maximal limiter
+	// is allowed to jump: that discontinuity is precisely what r59 classifies.
+	std::array<double,MethaneSpeciesCount> burnedWeights={};
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)burnedWeights[species]=
+		0.97*fuel.AmbientMassFractions()[species]+0.03*fuel.InjectedMassFractions()[species];
+	const double burnedExtent=burnedWeights[MethaneCH4]/
+		(-fuel.PrimaryReactionDelta()[MethaneCH4]);
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		burnedWeights[species]+=burnedExtent*fuel.PrimaryReactionDelta()[species];
+	ConservativeVector reactionDirection;
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		reactionDirection[1+species]=fuel.PrimaryReactionDelta()[species];
+	reactionDirection[MethaneMassStateDimension]=fuel.LowerHeatingValueJPerKG();
+	std::array<double,MethaneSpeciesCount> activationWeightsA=burnedWeights,
+		activationWeightsB=burnedWeights;
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+		activationWeightsA[species]-=1.5e-13*fuel.PrimaryReactionDelta()[species];
+		activationWeightsB[species]-=3.0e-13*fuel.PrimaryReactionDelta()[species];}
+	const MethaneCellState activationPhysicalA=StateAtTemperature(activationWeightsA,0.03,800.0,
+		thermochemistry),activationPhysicalB=StateAtTemperature(activationWeightsB,0.03,800.0,
+		thermochemistry);
+	std::vector<ConservativeVector> activationA(8,ToConservativeVector(activationPhysicalA));
+	std::vector<ConservativeVector> activationB(8,ToConservativeVector(activationPhysicalB));
+	PeriodicFluxPair activationFlux;
+	activationFlux.low.assign(8,ConservativeVector());
+	activationFlux.high=activationFlux.low;
+	activationFlux.high[0]=9.0e-13*reactionDirection;
+	std::vector<ConservativeVector> activationResultA,activationResultB;
+	std::vector<double> activationAlphaA,activationAlphaB;
+	const bool activationOK=ApplyPeriodicSharedFCT(activationA,activationFlux,
+		std::vector<ConservativeVector>(8),limiterConfig,fuel,thermochemistry,
+		activationResultA,activationAlphaA,&error)&&ApplyPeriodicSharedFCT(activationB,
+		activationFlux,std::vector<ConservativeVector>(8),limiterConfig,fuel,thermochemistry,
+		activationResultB,activationAlphaB,&error);
+	double activationStateDistance=0.0,activationStateScale=1.0;
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+		activationStateDistance=std::max(activationStateDistance,
+			std::fabs(activationA[1][component]-activationB[1][component]));
+		activationStateScale=std::max(activationStateScale,std::fabs(activationA[1][component]));
+	}
+	if(!(activationOK&&activationStateDistance/activationStateScale<1.0e-10&&
+		std::fabs(activationAlphaA[0]-activationAlphaB[0])>0.05))std::printf(
+		"r59 activation diagnostic ok=%d alphaA=%.17g alphaB=%.17g error=%s\n",
+		activationOK?1:0,activationAlphaA.empty()?-1.0:activationAlphaA[0],
+		activationAlphaB.empty()?-1.0:activationAlphaB[0],error.c_str());
+	Check(activationOK&&activationStateDistance/activationStateScale<1.0e-10&&
+		std::fabs(activationAlphaA[0]-activationAlphaB[0])>0.05,
+		"r59 physical states at rounding-scale separation trigger an O(0.1) limiter discontinuity");
 	if( limiterResult.size() == limiterState.size() ) {
 		for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
 				double before = 0.0, after = 0.0, source = 0.0;
@@ -1626,7 +1978,9 @@ int main()
 	}
 	Check(ownerOK && ownerFreeStream && !ownerResult.r0.picardResidualPerS.empty() &&
 		!ownerResult.r1.picardResidualPerS.empty() &&
-		!ownerResult.r2.picardResidualPerS.empty(),
+		!ownerResult.r2.picardResidualPerS.empty()&&
+		ownerResult.discontinuousLimiterClassCount==0u&&
+		!ownerResult.r0.limiterDiscontinuousClass,
 		"V2/V3 single 3-D owner preserves a physical uniform free stream through R0/R1/R2");
 	// Unequal-cp fuel/air endpoints at one temperature form the production
 	// isothermal mixing box.  Its projected J_h must keep T uniform while the
@@ -1677,6 +2031,7 @@ int main()
 	openOwnerConfig.injectedTemperatureK=300.0;
 	openOwnerConfig.projectionTolerancePerS=2.0e-8;
 	openOwnerConfig.dns=true;
+	openOwnerConfig.retainStageDiagnostics=true;
 	PeriodicMACField openOwnerMomentum;
 	openOwnerMomentum.component=zeroOpenMomentum3D.component;
 	ConservativeAdvance3DResult openOwnerResult;
@@ -1704,11 +2059,100 @@ int main()
 						ambientCells3D[cell][component]);}
 		for(unsigned int axis=0;axis<3;++axis)for(const double velocity:
 			openOwnerResult.velocityMPerS.component[axis])velocityError=std::max(velocityError,
-			std::fabs(velocity));
+				std::fabs(velocity));
+		double maximumR0ZFlux=0.0,maximumR1ZFlux=0.0;unsigned int maximumR0Axis=0;
+		std::size_t maximumR0Face=0;
+		for(unsigned int axis=0;axis<3;++axis){
+			for(std::size_t face=0;face<openOwnerResult.r0.flux.low[axis].size();++face)
+				if(std::fabs(openOwnerResult.r0.flux.low[axis][face][0])>maximumR0ZFlux){
+					maximumR0ZFlux=std::fabs(openOwnerResult.r0.flux.low[axis][face][0]);
+					maximumR0Axis=axis;maximumR0Face=face;}
+			for(const ConservativeVector& face:openOwnerResult.r1.flux.low[axis])
+				maximumR1ZFlux=std::max(maximumR1ZFlux,std::fabs(face[0]));
+		}
 		std::printf("V2/V3 open owner rest errors state=%.9g velocity=%.9g\n",stateError,velocityError);
+		std::printf("V2/V3 open owner rest Z flux r0=%.17g axis=%u face=%zu r1=%.17g\n",
+			maximumR0ZFlux,maximumR0Axis,maximumR0Face,maximumR1ZFlux);
+		if(maximumR0Face<openOwnerResult.r0.flux.nonadvectiveMass[maximumR0Axis].size())
+			std::printf("V2/V3 open owner rest nonadvZ=%.17g highZ=%.17g\n",
+				openOwnerResult.r0.flux.nonadvectiveMass[maximumR0Axis][maximumR0Face][0],
+				openOwnerResult.r0.flux.high[maximumR0Axis][maximumR0Face][0]);
+		if(maximumR0Face<openOwnerResult.r0.flux.low[maximumR0Axis].size()&&
+			maximumR0Face<openOwnerResult.r0.projection.velocityMPerS.component[maximumR0Axis].size()&&
+			maximumR0Face<openOwnerResult.r0.flux.nonadvectiveMass[maximumR0Axis].size()&&
+			maximumR0Face<openOwnerResult.r0.flux.high[maximumR0Axis].size()&&
+			maximumR0Face<openOwnerResult.r0.faceAlpha[maximumR0Axis].size())
+			std::printf("V2/V3 open owner rest source velocity=%.17g nonadvZ=%.17g highZ=%.17g alpha=%.17g\n",
+				openOwnerResult.r0.projection.velocityMPerS.component[maximumR0Axis][maximumR0Face],
+				openOwnerResult.r0.flux.nonadvectiveMass[maximumR0Axis][maximumR0Face][0],
+				openOwnerResult.r0.flux.high[maximumR0Axis][maximumR0Face][0],
+				openOwnerResult.r0.faceAlpha[maximumR0Axis][maximumR0Face]);
 	}
-	Check(openOwnerOK && openOwnerRest,
+	Check(openOwnerOK && openOwnerRest&&openOwnerResult.discontinuousLimiterClassCount==0u,
 		"V2/V3 single 3-D owner reaches the accepted V1 pressure-open rest infrastructure");
+	// Cold-start fuel-source interface: one prescribed methane face below one
+	// ambient neighbour, with the exact production open R0/R1/R2 owner.  This
+	// isolates boundary-ledger feasibility from chemistry and plume dynamics.
+	PeriodicMACShape fuelColumnShape; fuelColumnShape.nx=3; fuelColumnShape.ny=3;
+	fuelColumnShape.nz=3; fuelColumnShape.cellWidthM=openShape3D.cellWidthM;
+	ConservativeAdvance3DConfig fuelColumnConfig=openOwnerConfig;
+	fuelColumnConfig.transport.cellWidthM=fuelColumnShape.cellWidthM;
+	fuelColumnConfig.openBoundary.kind.fill(AdiabaticWallBoundary3D);
+	fuelColumnConfig.openBoundary.kind[5]=PressureOpenBoundary3D;
+	fuelColumnConfig.openBoundary.bottomFuelMask.assign(9,false);
+	fuelColumnConfig.openBoundary.bottomFuelMassFluxKGPerM2S.assign(9,0.0);
+	fuelColumnConfig.openBoundary.bottomFuelMask[4]=true;
+	fuelColumnConfig.openBoundary.bottomFuelMassFluxKGPerM2S[4]=
+		openBoundary3D.fuelMassFluxKGPerM2S;
+	PeriodicMACField fuelColumnMomentum;
+	for(unsigned int axis=0;axis<3;++axis)fuelColumnMomentum.component[axis].assign(
+		OpenMACFaceCount3D(fuelColumnShape,axis),0.0);
+	const std::vector<ConservativeVector> fuelColumnBeginning(fuelColumnShape.CellCount(),
+		ToConservativeVector(ambientState3D));
+	bool fuelColumnAccepted=false;
+	std::string fuelColumnLastError;
+	fuelColumnConfig.transport.deltaTimeS=0.001;
+	ConservativeAdvance3DResult fuelColumnResult;
+	fuelColumnAccepted=AdvanceConservative3D(fuelColumnShape,fuelColumnBeginning,
+		fuelColumnMomentum,std::vector<MethaneSourcePacket>(fuelColumnShape.CellCount()),
+		fuelColumnConfig,fuel,thermochemistry,transport,fuelColumnResult,&fuelColumnLastError);
+	Check(fuelColumnAccepted,
+		"V1 fuel-source interface remains feasible in the exact production open advance");
+	if(!fuelColumnAccepted)std::printf("V1 fuel-column diagnostic: %s\n",
+		fuelColumnLastError.c_str());
+	bool directBedEndpoint=true;
+	for(unsigned int reduction: {0u,10u,19u}){
+		const double dt=0.001*std::ldexp(1.0,-static_cast<int>(reduction));
+		ConservativeVector mixed=ToConservativeVector(ambientState3D)-
+			(dt/fuelColumnShape.cellWidthM)*fuelFlux.totalOutwardFlux;
+		MethaneCellState mixedState=FromConservativeVector(mixed);
+		double mixedTemperature=0.0;
+		std::string mixedError;
+		const bool mixedOK=InvertMethaneTemperatureWithinAcceptedEnvelope(mixedState,
+			300.0,2500.0,thermochemistry,mixedTemperature,&mixedError);
+		directBedEndpoint=directBedEndpoint&&mixedOK&&mixedTemperature==300.0;
+	}
+	Check(directBedEndpoint,
+		"V1 prescribed methane enthalpy remains exactly on the 300 K endpoint across halvings");
+	double ambientEndpointEnergy=0.0,ambientUpperEnergy=0.0,rejectedEndpointTemperature=0.0;
+	SignedMixtureSensibleEnergy(ambientState3D,300.0,thermochemistry,
+		ambientEndpointEnergy,&error);
+	SignedMixtureSensibleEnergy(ambientState3D,2500.0,thermochemistry,
+		ambientUpperEnergy,&error);
+	std::array<double,MethaneSpeciesCount> endpointLowerH,endpointUpperH;
+	thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(300.0,endpointLowerH.data(),
+		endpointLowerH.size(),&error);
+	thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(2500.0,endpointUpperH.data(),
+		endpointUpperH.size(),&error);
+	const double endpointEnvelope=fuel.AcceptedStateFeasibilityEnvelope().kappaEpsilon64*
+		std::numeric_limits<double>::epsilon()*AcceptedStateEnergyScale(
+			ToConservativeVector(ambientState3D),endpointLowerH,endpointUpperH);
+	MethaneCellState rejectedEndpoint=ambientState3D;
+	rejectedEndpoint.sensibleEnergyJPerM3=ambientEndpointEnergy-2.0*endpointEnvelope;
+	Check(!InvertMethaneTemperatureWithinAcceptedEnvelope(rejectedEndpoint,
+		300.0,2500.0,thermochemistry,
+		rejectedEndpointTemperature,&error),
+		"V1 endpoint property view rejects energy beyond its certified fp64 envelope");
 	OpenMACField3D scheduleMomentum;
 	ConservativeAdvance3DConfig scheduleConfig=openOwnerConfig;
 	scheduleConfig.transport.deltaTimeS=1.0e-5;
@@ -1972,6 +2416,110 @@ int main()
 		injectedCH4Inventory+=cell[1+MethaneCH4];
 	Check(maskedOwnerFCT&&injectedCH4Inventory>0.0,
 		"V3 open FCT accepts a boundary-supplied previously absent fuel inventory");
+	// A kernel-tangent MC correction below the certified fp64 accumulation
+	// envelope is physically inactive, but it still has a canonical alpha=1.
+	// Without the open operator's outward-rounding reserve this exact-zero
+	// admissibility budget toggles alpha between zero and one across Picard
+	// iterations even though the accepted state is unchanged at rounding scale.
+	OpenFluxPair3D roundoffOpenFlux=maskedOwnerFlux;
+	for(unsigned int axis=0;axis<3;++axis)for(std::size_t face=0;
+		face<roundoffOpenFlux.high[axis].size();++face)
+		roundoffOpenFlux.high[axis][face]=roundoffOpenFlux.low[axis][face];
+	const std::size_t roundoffFace=OpenMACFaceIndex3D(openShape3D,0,4,4,4);
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		roundoffOpenFlux.high[0][roundoffFace][1+species]+=1.0e-38*
+			fuel.PrimaryReactionDelta()[species];
+	std::vector<ConservativeVector> roundoffAdvanced;
+	std::array<std::vector<double>,3> roundoffAlpha;
+	const bool roundoffOpenFCT=ApplyOpenSharedFCT3D(openShape3D,ambientCells3D,
+		roundoffOpenFlux,std::vector<ConservativeVector>(openShape3D.CellCount()),
+		maskedTransport,fuel,thermochemistry,roundoffAdvanced,roundoffAlpha,&error);
+	Check(roundoffOpenFCT&&roundoffAlpha[0][roundoffFace]==1.0,
+		"V3 open FCT gives a canonical alpha to an inactive kernel-tangent roundoff correction");
+	std::array<double,MethaneSpeciesCount> r59AmbientEnthalpy,r59AdiabaticEnthalpy;
+	const bool r59Bounds=FireSimulationEnthalpyBounds(maskedTransport,thermochemistry,
+		r59AmbientEnthalpy,r59AdiabaticEnthalpy,&error);
+	// r59 semantic unit: two accepted-state evaluations can be separated at
+	// rounding scale while a constraint-activation face changes limiter class.
+	// The selector has no relaxation parameter: the discontinuous result is the
+	// exact pointwise infimum, and that value is re-certified by production FCT.
+	std::array<std::vector<double>,3> discontinuousNext=roundoffAlpha;
+	std::array<std::vector<double>,3> discontinuousVerified=roundoffAlpha;
+	const std::size_t reverseOrderFace=OpenMACFaceIndex3D(openShape3D,1,4,4,4);
+	discontinuousNext[0][roundoffFace]=0.8;
+	discontinuousVerified[0][roundoffFace]=0.6;
+	discontinuousNext[1][reverseOrderFace]=0.4;
+	discontinuousVerified[1][reverseOrderFace]=0.7;
+	LimiterPicardAcceptance3D discontinuousAcceptance;
+	const bool discontinuousSelected=SelectLimiterPicardAcceptance3D(discontinuousNext,
+		discontinuousVerified,1.0e-12,discontinuousAcceptance,&error);
+	std::vector<ConservativeVector> discontinuousState1,discontinuousStateN;
+	std::array<std::vector<double>,3> discontinuousAlpha1,discontinuousAlphaN;
+	const bool discontinuousCertified=discontinuousSelected&&ApplyOpenSharedFCT3D(openShape3D,
+		ambientCells3D,roundoffOpenFlux,std::vector<ConservativeVector>(openShape3D.CellCount()),
+		maskedTransport,fuel,thermochemistry,discontinuousState1,discontinuousAlpha1,&error,1u,
+		&discontinuousAcceptance.faceAlpha)&&ApplyOpenSharedFCT3D(openShape3D,ambientCells3D,
+		roundoffOpenFlux,std::vector<ConservativeVector>(openShape3D.CellCount()),maskedTransport,
+		fuel,thermochemistry,discontinuousStateN,discontinuousAlphaN,&error,4u,
+		&discontinuousAcceptance.faceAlpha);
+	bool discontinuousBitIdentity=discontinuousState1.size()==discontinuousStateN.size();
+	for(std::size_t cell=0;discontinuousBitIdentity&&cell<discontinuousState1.size();++cell)
+		for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+			discontinuousBitIdentity=discontinuousState1[cell][component]==
+				discontinuousStateN[cell][component];
+	bool discontinuousAdmissible=discontinuousCertified;
+	for(const ConservativeVector& cell:discontinuousState1) discontinuousAdmissible=
+		discontinuousAdmissible&&AcceptedStateAdmissible(cell,r59AmbientEnthalpy,
+			r59AdiabaticEnthalpy,fuel,&error);
+	Check(r59Bounds&&discontinuousCertified&&discontinuousAcceptance.discontinuousClass&&
+		Near(discontinuousAcceptance.maximumFaceDiscrepancy,0.3,2.0e-15)&&
+		discontinuousAcceptance.faceAlpha[0][roundoffFace]==0.6&&
+		discontinuousAcceptance.faceAlpha[1][reverseOrderFace]==0.4&&
+		discontinuousAcceptance.faceAlpha[0][roundoffFace]!=0.7&&
+		discontinuousAcceptance.faceAlpha[1][reverseOrderFace]!=0.55&&
+		discontinuousAcceptance.faceAlpha[1][reverseOrderFace]!=0.7&&discontinuousAdmissible,
+		"r59 discontinuous limiter accepts both orderings of the exact face infimum, rejects averaging/always-verification, and certifies the corrected state");
+	Check(discontinuousBitIdentity&&discontinuousAlpha1==discontinuousAlphaN,
+		"r59 discontinuous limiter/FCT result is bit-identical at one and N workers");
+	std::array<std::vector<double>,3> continuousNext=roundoffAlpha;
+	std::array<std::vector<double>,3> continuousVerified=roundoffAlpha;
+	continuousNext[0][roundoffFace]=0.6000000000005;
+	continuousVerified[0][roundoffFace]=0.6;
+	LimiterPicardAcceptance3D continuousAcceptance;
+	Check(SelectLimiterPicardAcceptance3D(continuousNext,continuousVerified,1.0e-12,
+		continuousAcceptance,&error)&&!continuousAcceptance.discontinuousClass&&
+		continuousAcceptance.faceAlpha==continuousVerified,
+		"r59 continuous limiter class preserves the verified coefficient unchanged");
+	auto verificationResidualFor=[&](const unsigned int changed,double& residual){
+		std::vector<double> acceptedTarget(1,1.0),iterationTarget(1,1.0),
+			acceptedMass(1,2.0),iterationMass(1,2.0),acceptedDiffusivity(1,3.0),
+			iterationDiffusivity(1,3.0),acceptedConductivity(1,4.0),
+			iterationConductivity(1,4.0),acceptedViscosity(1,5.0),iterationViscosity(1,5.0);
+		if(changed==0u)acceptedTarget[0]+=0.25;
+		if(changed==1u)acceptedMass[0]+=0.25;
+		if(changed==2u)acceptedDiffusivity[0]+=0.25;
+		if(changed==3u)acceptedConductivity[0]+=0.25;
+		if(changed==4u)acceptedViscosity[0]+=0.25;
+		return PicardContinuousVerificationResidual(acceptedTarget,iterationTarget,
+			acceptedMass,iterationMass,acceptedDiffusivity,iterationDiffusivity,
+			acceptedConductivity,iterationConductivity,acceptedViscosity,iterationViscosity,
+			0.5,residual,&error);
+	};
+	bool everyContinuousQuantityBlocks=true;
+	for(unsigned int changed=0;changed<5u;++changed){double residual=0.0;
+		everyContinuousQuantityBlocks=everyContinuousQuantityBlocks&&
+			verificationResidualFor(changed,residual)&&Near(residual,changed==1u?0.5:0.25,1.0e-15);}
+	Check(everyContinuousQuantityBlocks,
+		"r59 verification gate independently observes S_div, every face mass flux, and every transport coefficient");
+	std::array<double,MethaneSpeciesCount> limiterAmbientEnthalpy,limiterAdiabaticEnthalpy;
+	const bool limiterBounds=FireSimulationEnthalpyBounds(maskedTransport,thermochemistry,
+		limiterAmbientEnthalpy,limiterAdiabaticEnthalpy,&error);
+	const double lowerEnergyScale=limiterBounds?InequalityRoundoffScale(ambientCells3D[0],
+		2+MethaneSpeciesCount,limiterAmbientEnthalpy,limiterAdiabaticEnthalpy):0.0;
+	const double upperEnergyScale=limiterBounds?InequalityRoundoffScale(ambientCells3D[0],
+		3+MethaneSpeciesCount,limiterAmbientEnthalpy,limiterAdiabaticEnthalpy):0.0;
+	Check(limiterBounds&&lowerEnergyScale==upperEnergyScale&&lowerEnergyScale>1.0,
+		"V3 limiter uses the accepted-state two-endpoint energy roundoff scale at both bounds");
 	OpenFluxPair3D malformedOpenFlux=maskedOwnerFlux;
 	malformedOpenFlux.high[0].clear();
 	std::vector<ConservativeVector> unchangedMalformed(1,ConservativeVector());
@@ -2049,39 +2597,74 @@ int main()
 	// must be reconstructed from the exact discrete packet and physical flux.
 	MethaneReactionStep manufacturedReactionStep;
 	manufacturedReactionStep.deltaTimeS=1.0e-5;
-	manufacturedReactionStep.mixingTimeS=0.2;
+	manufacturedReactionStep.mixingTimeS=20.0;
 	manufacturedReactionStep.primaryEligible=true;
 	manufacturedReactionStep.sootOxidationEnabled=true;
 	std::vector<MethaneCellState> manufacturedPhysical(ownerCount);
 	std::vector<ConservativeVector> manufacturedBeginning(ownerCount);
 	std::vector<double> manufacturedTemperature(ownerCount);
-	const ConservativeVector manufacturedPhysicalBase=ToConservativeVector(
-		PhysicalMixtureLineState(fuel,thermochemistry,0.2,800.0));
 	const ConservativeVector manufacturedProductRich=ToConservativeVector(
 		ProductRichMixtureLineState(fuel,thermochemistry,0.2,800.0));
-	const ConservativeVector manufacturedFuelRich=ToConservativeVector(
-		PhysicalMixtureLineState(fuel,thermochemistry,0.8,800.0));
-	const ConservativeVector manufacturedProductDirection=manufacturedProductRich-
-		manufacturedPhysicalBase;
+	const RecordKernelFixtureDirection manufacturedMixtureFixture=
+		BuildRecordKernelFixtureDirection(fuel,{1.0,-0.75,0.5,-0.25,0.125});
+	const RecordKernelFixtureDirection manufacturedProductFixture=
+		BuildRecordKernelFixtureDirection(fuel,{-0.25,0.5,1.0,-0.5,0.75});
+	const RecordKernelFixtureDirection manufacturedMolarPivotFixture=
+		BuildRecordKernelFixtureDirection(fuel,{0.4,0.9,-0.6,0.3,1.0});
+	RecordKernelFixtureDirection manufacturedEmbeddedMismatch=manufacturedProductFixture;
+	manufacturedEmbeddedMismatch.direction[1+MethaneCO]=std::nextafter(
+		manufacturedEmbeddedMismatch.direction[1+MethaneCO],
+		std::numeric_limits<double>::infinity());
+	Check(KernelFixtureDirectionMatchesRecord(fuel,manufacturedMixtureFixture)&&
+		KernelFixtureDirectionMatchesRecord(fuel,manufacturedProductFixture)&&
+		KernelFixtureDirectionMatchesRecord(fuel,manufacturedMolarPivotFixture)&&
+		!KernelFixtureDirectionMatchesRecord(fuel,manufacturedEmbeddedMismatch),
+		"V2 manufactured directions are rebuilt from the loaded kernel and reject a stranded embedded coefficient");
+	static const char* manufacturedMolarName[MethaneCarbon]={
+		"CH4","O2","N2","CO2","H2O","CO"};
+	auto manufacturedMolarChange=[&](const ConservativeVector& direction){double value=0.0;
+		for(std::size_t species=0;species<MethaneCarbon;++species){value+=
+			direction[1+species]/thermochemistry.FindSpecies(
+				manufacturedMolarName[species])->molecularWeightKGPerKMol;}
+		return value;};
+	const double manufacturedPivotMolar=manufacturedMolarChange(
+		manufacturedMolarPivotFixture.direction);
+	auto manufacturedIsomolar=[&](const ConservativeVector& input){ConservativeVector result=input;
+		const double scale=manufacturedMolarChange(input)/manufacturedPivotMolar;
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row){result[row]-=
+			scale*manufacturedMolarPivotFixture.direction[row];}
+		return result;};
+	ConservativeVector manufacturedProductDirection=manufacturedIsomolar(
+		manufacturedProductFixture.direction);
+	if(manufacturedProductDirection[1+MethaneCO]<0.0)
+		for(double& value:manufacturedProductDirection.value)value=-value;
 	const double manufacturedProductFloor=1.0e-2;
-	const ConservativeVector manufacturedBase=manufacturedPhysicalBase+
-		manufacturedProductFloor*manufacturedProductDirection;
-	std::array<double,MethaneMassStateDimension> manufacturedDirection={};
+	double manufacturedProductAmplitude=std::numeric_limits<double>::max();
 	for(std::size_t row=0;row<MethaneMassStateDimension;++row)
-		manufacturedDirection[row]=manufacturedFuelRich[row]-manufacturedPhysicalBase[row];
+		if(manufacturedProductDirection[row]<0.0)manufacturedProductAmplitude=std::min(
+			manufacturedProductAmplitude,0.08*manufacturedProductRich[row]/
+			std::fabs(manufacturedProductDirection[row]));
+	const ConservativeVector manufacturedBase=manufacturedProductRich+
+		manufacturedProductFloor*manufacturedProductAmplitude*manufacturedProductDirection;
+	std::array<double,MethaneMassStateDimension> manufacturedDirection={};
+	const ConservativeVector manufacturedIsomolarMixtureDirection=manufacturedIsomolar(
+		manufacturedMixtureFixture.direction);
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+		manufacturedDirection[row]=manufacturedIsomolarMixtureDirection[row];
 	double manufacturedAmplitude=std::numeric_limits<double>::max();
-	for(std::size_t row=0;row<MethaneMassStateDimension;++row)if(manufacturedDirection[row]!=0.0)
-		manufacturedAmplitude=std::min(manufacturedAmplitude,0.35*manufacturedBase[row]/
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row)
+		if(manufacturedDirection[row]!=0.0)manufacturedAmplitude=std::min(
+			manufacturedAmplitude,0.1*manufacturedBase[row]/
 			std::fabs(manufacturedDirection[row]));
 	for(std::size_t cell=0;cell<ownerCount;++cell){
 		ConservativeVector manufacturedState=manufacturedBase;
 		const std::size_t x=cell%ownerShape.nx;
-		const double signal=(cell%ownerShape.nx)&1?1.0:-1.0;
-		const double productWeight=0.505+0.495*std::sin(
+		const double signal=(x&1u)?1.0:-1.0;
+		const double productWeight=0.1+0.09*std::sin(
 			2.0*pi*(x+0.5)/ownerShape.nx+0.31);
 		for(std::size_t row=0;row<MethaneMassStateDimension;++row)
 			manufacturedState[row]+=signal*manufacturedAmplitude*manufacturedDirection[row]+
-				(productWeight-manufacturedProductFloor)*
+				(productWeight-manufacturedProductFloor)*manufacturedProductAmplitude*
 					manufacturedProductDirection[row];
 		manufacturedPhysical[cell]=FromConservativeVector(manufacturedState);
 		static const char* manufacturedName[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
@@ -2101,10 +2684,8 @@ int main()
 	ConservativeAdvance3DConfig manufacturedConfig=ownerConfig;
 	manufacturedConfig.transport.deltaTimeS=manufacturedReactionStep.deltaTimeS;
 	manufacturedConfig.transport.ambientGasDensityKGPerM3=ownerPhysical.GasDensity();
-	manufacturedConfig.projectionTolerancePerS=1.0e-3;
+	manufacturedConfig.projectionTolerancePerS=1.0e-1;
 	std::vector<MethaneSourcePacket> manufacturedPacket(ownerCount);
-	std::vector<double> rawManufacturedTarget(ownerCount,0.0),
-		energyExpansionCoefficient(ownerCount,0.0);
 	for(std::size_t cell=0;cell<ownerCount;++cell){
 		const std::size_t x=cell%ownerShape.nx;
 		const double scale=0.65+0.3*std::sin(2.0*pi*(x+0.5)/ownerShape.nx);
@@ -2117,34 +2698,9 @@ int main()
 				scale*manufacturedBase.constituentDelta[species];
 		manufacturedPacket[cell].sensibleEnergyDeltaJPerM3=
 			scale*manufacturedBase.sensibleEnergyDeltaJPerM3;
-		ConservativeVector rate;
-		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
-			rate[1+species]=manufacturedPacket[cell].constituentDelta[species]/
-				manufacturedConfig.transport.deltaTimeS;
-		rate[MethaneMassStateDimension]=manufacturedPacket[cell].sensibleEnergyDeltaJPerM3/
-			manufacturedConfig.transport.deltaTimeS;
-		Check(DivergenceFromDiscreteRate(manufacturedBeginning[cell],rate,
-			manufacturedTemperature[cell],thermochemistry,
-			rawManufacturedTarget[cell],&error),"V2 manufactured packet divergence is evaluable");
-		ConservativeVector unitEnergyRate;
-		unitEnergyRate[MethaneMassStateDimension]=1.0;
-		Check(DivergenceFromDiscreteRate(manufacturedBeginning[cell],unitEnergyRate,
-			manufacturedTemperature[cell],
-			thermochemistry,energyExpansionCoefficient[cell],&error) &&
-			energyExpansionCoefficient[cell]>0.0,
-			"V2 manufactured cooling coefficient follows the full divergence identity");
-	}
-	double desiredSum=0.0;
-	for(std::size_t cell=0;cell<ownerCount;++cell){
-		const std::size_t x=cell%ownerShape.nx;
-		double desired=1.0e-5*std::sin(2.0*pi*(x+0.5)/ownerShape.nx);
-		if(cell+1==ownerCount) desired=-desiredSum; else desiredSum+=desired;
-		manufacturedPacket[cell].sensibleEnergyDeltaJPerM3+=(desired-
-			rawManufacturedTarget[cell])/energyExpansionCoefficient[cell]*
-			manufacturedConfig.transport.deltaTimeS;
 	}
 	PeriodicMACField manufacturedVelocity;
-	const double manufacturedAdvectionVelocity=1.0e3;
+	const double manufacturedAdvectionVelocity=1.2e3;
 	for(unsigned int axis=0;axis<3;++axis){manufacturedVelocity.component[axis].resize(
 		ownerCount);for(std::size_t face=0;face<ownerCount;++face){const std::size_t x=
 			face%ownerShape.nx,y=(face/ownerShape.nx)%ownerShape.ny;
@@ -2163,25 +2719,41 @@ int main()
 		manufacturedTemperature,manufacturedVelocity,manufacturedD,
 		manufacturedK,fuel,thermochemistry,manufacturedInitialFlux,&error),
 		"V2 manufactured initial physical flux is evaluable");
-	// One-cell residual cancellation makes the periodic compatibility identity
-	// exact in the same discrete flux/update evaluation used by production.
-	for(unsigned int correction=0;correction<3;++correction){
-		std::vector<ConservativeVector> correctionDelta(ownerCount);
-		for(std::size_t cell=0;cell<ownerCount;++cell){
-			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
-				correctionDelta[cell][1+species]=manufacturedPacket[cell].constituentDelta[species];
-			correctionDelta[cell][MethaneMassStateDimension]=
-				manufacturedPacket[cell].sensibleEnergyDeltaJPerM3;
-		}
-		std::vector<double> correctionTarget;
-		Check(PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,manufacturedBeginning,
-			manufacturedTemperature,manufacturedInitialFlux,correctionDelta,
-			manufacturedConfig.transport.deltaTimeS,thermochemistry,correctionTarget,&error),
-			"V2 manufactured compatibility correction uses the discrete target");
-		double sum=0.0;for(const double value:correctionTarget)sum+=value;
-		manufacturedPacket.back().sensibleEnergyDeltaJPerM3-=sum/
-			energyExpansionCoefficient.back()*manufacturedConfig.transport.deltaTimeS;
+	// Derive every manufactured energy increment from the loaded record's
+	// finite p0 identity.  This is not a copied pre-r56 kernel coefficient:
+	// species, molecular weights, h_s and the desired zero-mean target all
+	// participate in the same calculation production later repeats.
+	double manufacturedDesiredSum=0.0;
+	std::vector<double> manufacturedDesiredTarget(ownerCount,0.0);
+	for(std::size_t cell=0;cell<ownerCount;++cell){
+		ConservativeVector combined;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			combined[1+species]=manufacturedPacket[cell].constituentDelta[species];
+		double physicalEnergyIncrement=0.0;
+		for(unsigned int axis=0;axis<3;++axis){const std::size_t previous=
+			PeriodicPrevious(ownerShape,cell,axis);for(std::size_t component=0;
+			component<MethaneMassStateDimension;++component)combined[component]+=
+				manufacturedConfig.transport.deltaTimeS*(manufacturedInitialFlux.
+					nonadvectiveMass[axis][previous][component]-manufacturedInitialFlux.
+					nonadvectiveMass[axis][cell][component])/ownerShape.cellWidthM;
+			physicalEnergyIncrement+=manufacturedConfig.transport.deltaTimeS*(
+				manufacturedInitialFlux.nonadvectiveEnergy[axis][previous]-
+				manufacturedInitialFlux.nonadvectiveEnergy[axis][cell])/
+				ownerShape.cellWidthM;}
+		combined[MethaneMassStateDimension]=physicalEnergyIncrement;
+		const std::size_t x=cell%ownerShape.nx;
+		double desired=1.0e-5*std::sin(2.0*pi*(x+0.5)/ownerShape.nx);
+		if(cell+1==ownerCount)desired=-manufacturedDesiredSum;
+		else manufacturedDesiredSum+=desired;
+		manufacturedDesiredTarget[cell]=desired;
+		Check(SetRecordDerivedEnergyForDivergence(manufacturedBeginning[cell],combined,
+			manufacturedTemperature[cell],desired,manufacturedConfig.transport.deltaTimeS,
+			thermochemistry,&error),
+			"V2 manufactured finite-increment target derives from the loaded record");
+		manufacturedPacket[cell].sensibleEnergyDeltaJPerM3=
+			combined[MethaneMassStateDimension]-physicalEnergyIncrement;
 	}
+	const std::vector<MethaneSourcePacket> manufacturedBaselinePacket=manufacturedPacket;
 	PeriodicMACField manufacturedMomentum;
 	for(unsigned int axis=0;axis<3;++axis){
 		manufacturedMomentum.component[axis].resize(ownerCount);
@@ -2200,32 +2772,68 @@ int main()
 		ConservativeAdvance3DResult trial;std::string trialError;
 		if(!AdvanceConservative3D(ownerShape,manufacturedBeginning,manufacturedMomentum,
 			manufacturedPacket,manufacturedConfig,fuel,thermochemistry,transport,trial,
-			&trialError))return false;
+			&trialError)){std::printf("V2 calibration advance: %s\n",trialError.c_str());return false;}
 		mean={{0.0,0.0}};
 		for(const double value:trial.r1.divergenceTargetPerS)mean[0]+=value/ownerCount;
 		for(const double value:trial.r2.divergenceTargetPerS)mean[1]+=value/ownerCount;
 		return true;
 	};
+	std::array<std::vector<double>,2> calibrationMode;
+	for(std::vector<double>& mode:calibrationMode)mode.resize(ownerCount);
+	std::array<double,2> calibrationModeSum={{0.0,0.0}};
+	for(std::size_t cell=0;cell<ownerCount;++cell){const std::size_t x=cell%ownerShape.nx;
+		calibrationMode[0][cell]=std::sin(2.0*pi*(x+0.5)/ownerShape.nx);
+		calibrationMode[1][cell]=std::cos(2.0*pi*(x+0.5)/ownerShape.nx);
+		if(cell+1<ownerCount){calibrationModeSum[0]+=calibrationMode[0][cell];
+			calibrationModeSum[1]+=calibrationMode[1][cell];}}
+	calibrationMode[0].back()=-calibrationModeSum[0];
+	calibrationMode[1].back()=-calibrationModeSum[1];
+	auto applyRecordDerivedModes=[&](const double firstTargetAmplitude,
+		const double secondTargetAmplitude){
+		manufacturedPacket=manufacturedBaselinePacket;
+		const std::vector<double>& primaryDirection=fuel.PrimaryReactionDelta();
+		for(std::size_t cell=0;cell<ownerCount;++cell){const double extent=
+			firstTargetAmplitude*calibrationMode[0][cell]+
+			secondTargetAmplitude*calibrationMode[1][cell];
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				manufacturedPacket[cell].constituentDelta[species]+=
+					extent*primaryDirection[species];
+			ConservativeVector combined;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				combined[1+species]=manufacturedPacket[cell].constituentDelta[species];
+			for(unsigned int axis=0;axis<3;++axis){const std::size_t previous=
+				PeriodicPrevious(ownerShape,cell,axis);for(std::size_t component=0;
+				component<MethaneMassStateDimension;++component)combined[component]+=
+					manufacturedConfig.transport.deltaTimeS*(manufacturedInitialFlux.
+						nonadvectiveMass[axis][previous][component]-manufacturedInitialFlux.
+						nonadvectiveMass[axis][cell][component])/ownerShape.cellWidthM;
+				combined[MethaneMassStateDimension]+=manufacturedConfig.transport.deltaTimeS*(
+					manufacturedInitialFlux.nonadvectiveEnergy[axis][previous]-
+					manufacturedInitialFlux.nonadvectiveEnergy[axis][cell])/
+					ownerShape.cellWidthM;}
+			const double physicalEnergy=combined[MethaneMassStateDimension];
+			const double desired=manufacturedDesiredTarget[cell];
+			if(!SetRecordDerivedEnergyForDivergence(manufacturedBeginning[cell],combined,
+				manufacturedTemperature[cell],desired,
+				manufacturedConfig.transport.deltaTimeS,thermochemistry,&error))return false;
+			manufacturedPacket[cell].sensibleEnergyDeltaJPerM3=
+				combined[MethaneMassStateDimension]-physicalEnergy;}
+		return true;
+	};
 	std::array<double,2> calibrationMean={{0.0,0.0}},probeA={{0.0,0.0}},
 		probeB={{0.0,0.0}};
+	double calibrationA=0.0,calibrationB=0.0;
 	bool calibrationOK=true;
-	const double calibrationProbe=0.1;
-	for(unsigned int iteration=0;calibrationOK&&iteration<5;++iteration){
-		calibrationOK=trialStageMeans(calibrationMean);
-		if(calibrationOK){manufacturedPacket[0].sensibleEnergyDeltaJPerM3+=calibrationProbe;
-			manufacturedPacket[1].sensibleEnergyDeltaJPerM3-=calibrationProbe*
-				energyExpansionCoefficient[0]/energyExpansionCoefficient[1];
-			calibrationOK=trialStageMeans(probeA);
-			manufacturedPacket[0].sensibleEnergyDeltaJPerM3-=calibrationProbe;
-			manufacturedPacket[1].sensibleEnergyDeltaJPerM3+=calibrationProbe*
-				energyExpansionCoefficient[0]/energyExpansionCoefficient[1];}
-		if(calibrationOK){manufacturedPacket[2].sensibleEnergyDeltaJPerM3+=calibrationProbe;
-			manufacturedPacket[3].sensibleEnergyDeltaJPerM3-=calibrationProbe*
-				energyExpansionCoefficient[2]/energyExpansionCoefficient[3];
-			calibrationOK=trialStageMeans(probeB);
-			manufacturedPacket[2].sensibleEnergyDeltaJPerM3-=calibrationProbe;
-			manufacturedPacket[3].sensibleEnergyDeltaJPerM3+=calibrationProbe*
-				energyExpansionCoefficient[2]/energyExpansionCoefficient[3];}
+	const double calibrationProbe=1.0e-5;
+	for(unsigned int iteration=0;calibrationOK&&iteration<16;++iteration){
+		calibrationOK=applyRecordDerivedModes(calibrationA,calibrationB)&&
+			trialStageMeans(calibrationMean);
+		if(calibrationOK&&std::max(std::fabs(calibrationMean[0]),
+			std::fabs(calibrationMean[1]))<9.8e-9)break;
+		if(calibrationOK)calibrationOK=applyRecordDerivedModes(
+			calibrationA+calibrationProbe,calibrationB)&&trialStageMeans(probeA);
+		if(calibrationOK)calibrationOK=applyRecordDerivedModes(
+			calibrationA,calibrationB+calibrationProbe)&&trialStageMeans(probeB);
 		if(calibrationOK){const double j00=(probeA[0]-calibrationMean[0])/calibrationProbe,
 			j10=(probeA[1]-calibrationMean[1])/calibrationProbe,
 			j01=(probeB[0]-calibrationMean[0])/calibrationProbe,
@@ -2234,14 +2842,21 @@ int main()
 			calibrationOK=std::isfinite(determinant)&&determinant!=0.0;
 			if(calibrationOK){const double deltaA=(-calibrationMean[0]*j11+
 				j01*calibrationMean[1])/determinant,deltaB=(-j00*calibrationMean[1]+
-				calibrationMean[0]*j10)/determinant;
-				manufacturedPacket[0].sensibleEnergyDeltaJPerM3+=deltaA;
-				manufacturedPacket[1].sensibleEnergyDeltaJPerM3-=deltaA*
-					energyExpansionCoefficient[0]/energyExpansionCoefficient[1];
-				manufacturedPacket[2].sensibleEnergyDeltaJPerM3+=deltaB;
-				manufacturedPacket[3].sensibleEnergyDeltaJPerM3-=deltaB*
-					energyExpansionCoefficient[2]/energyExpansionCoefficient[3];}}
+					calibrationMean[0]*j10)/determinant;
+				const double oldNorm=std::hypot(calibrationMean[0],calibrationMean[1]);
+				bool accepted=false;
+				for(unsigned int reduction=0;!accepted&&reduction<16;++reduction){
+					const double fraction=std::ldexp(1.0,-static_cast<int>(reduction));
+					std::array<double,2> candidateMean={{0.0,0.0}};
+					if(applyRecordDerivedModes(calibrationA+fraction*deltaA,
+						calibrationB+fraction*deltaB)&&trialStageMeans(candidateMean)&&
+						std::hypot(candidateMean[0],candidateMean[1])<oldNorm){
+						calibrationA+=fraction*deltaA;calibrationB+=fraction*deltaB;
+						accepted=true;}}
+				calibrationOK=accepted;}}
 	}
+	calibrationOK=calibrationOK&&applyRecordDerivedModes(calibrationA,calibrationB)&&
+		trialStageMeans(calibrationMean);
 	manufacturedConfig.projectionTolerancePerS=1.0e-8;
 	if(!calibrationOK)std::printf("V2 calibration failed means %.17g %.17g\n",
 		calibrationMean[0],calibrationMean[1]);
@@ -2367,6 +2982,31 @@ int main()
 	}
 	for(unsigned int axis=0;axis<3;++axis)for(const double alpha:manufacturedResult.faceAlpha[axis])
 		manufacturedMinimumAlpha=std::min(manufacturedMinimumAlpha,alpha);
+	PeriodicFluxPair3D manufacturedLimiterFlux;
+	for(unsigned int axis=0;axis<3;++axis){
+		manufacturedLimiterFlux.low[axis].assign(ownerCount,ConservativeVector());
+		manufacturedLimiterFlux.high[axis].assign(ownerCount,ConservativeVector());
+		manufacturedLimiterFlux.nonadvectiveMass[axis].assign(ownerCount,
+			std::array<double,MethaneMassStateDimension>());
+		manufacturedLimiterFlux.nonadvectiveEnergy[axis].assign(ownerCount,0.0);}
+	const double manufacturedLimiterScale=manufacturedConfig.transport.deltaTimeS/
+		ownerShape.cellWidthM;
+	manufacturedLimiterFlux.high[0][0]=0.2/manufacturedLimiterScale*(pureFuel-pureAir);
+	std::vector<ConservativeVector> manufacturedLimiterBeginning(ownerCount,
+		ToConservativeVector(PhysicalMixtureLineState(fuel,thermochemistry,0.5,800.0))),
+		manufacturedLimiterSource(ownerCount),manufacturedLimiterResult;
+	manufacturedLimiterBeginning[0]=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,0.1,800.0));
+	std::array<std::vector<double>,3> manufacturedLimiterAlpha;
+	const bool manufacturedLimiterOK=ApplyPeriodicSharedFCT3D(ownerShape,
+		manufacturedLimiterBeginning,manufacturedLimiterFlux,manufacturedLimiterSource,
+		manufacturedConfig.transport,fuel,thermochemistry,manufacturedLimiterResult,
+		manufacturedLimiterAlpha,&error);
+	double manufacturedLimiterMinimumAlpha=1.0;
+	for(unsigned int axis=0;axis<3;++axis)for(const double alpha:manufacturedLimiterAlpha[axis])
+		manufacturedLimiterMinimumAlpha=std::min(manufacturedLimiterMinimumAlpha,alpha);
+	const bool manufacturedLimiterActive=manufacturedLimiterOK&&
+		manufacturedLimiterMinimumAlpha>0.0&&manufacturedLimiterMinimumAlpha<1.0;
 	bool sourceConsumedOnce=manufacturedOK,manufacturedElements=manufacturedOK;
 	for(const MethaneSourcePacket& packet:manufacturedPacket)
 		manufacturedElements=manufacturedElements &&
@@ -2431,21 +3071,24 @@ int main()
 			forbiddenR0Flux.high[axis][face][component]-manufacturedResult.r0.flux.high[axis][face][component]),
 			std::fabs(forbiddenR1Flux.high[axis][face][component]-manufacturedResult.r1.flux.high[axis][face][component])});
 	namedStageVelocityRED=namedStageVelocityRED&&forbiddenVelocityFluxDifference>1.0e-8;
-	if(!(manufacturedOK && maximumTargetMismatch<2.0e-11 &&
-		maximumR1TargetMismatch<2.0e-11&&maximumHeunTargetMismatch<2.0e-11&&
-		maximumR2TargetMismatch<2.0e-11&&maximumR2HeunDifference>1.0e-10&&
+	if(!(manufacturedOK && maximumTargetMismatch<=manufacturedConfig.projectionTolerancePerS &&
+		maximumR1TargetMismatch<=manufacturedConfig.projectionTolerancePerS&&
+		maximumHeunTargetMismatch<=manufacturedConfig.projectionTolerancePerS&&
+		maximumR2TargetMismatch<=manufacturedConfig.projectionTolerancePerS&&maximumR2HeunDifference>1.0e-10&&
 		maximumProjectionMismatch<=manufacturedConfig.projectionTolerancePerS &&
-		sourceConsumedOnce&&manufacturedMinimumAlpha>0.0&&manufacturedMinimumAlpha<1.0)) std::printf("V2 reacting metrics target=%.9g projection=%.9g once=%d alpha=%.17g\n",
+		sourceConsumedOnce&&manufacturedLimiterActive)) std::printf("V2 reacting metrics target=%.9g projection=%.9g once=%d ownerAlpha=%.17g limiterAlpha=%.17g\n",
 		maximumTargetMismatch,maximumProjectionMismatch,sourceConsumedOnce?1:0,
-		manufacturedMinimumAlpha);
+		manufacturedMinimumAlpha,manufacturedLimiterMinimumAlpha);
 	Check(std::fabs(manufacturedR0Mean)<manufacturedConfig.projectionTolerancePerS&&
 		std::fabs(manufacturedR1Mean)<manufacturedConfig.projectionTolerancePerS,
 		"V2 reacting manufactured source is exactly periodic-compatible at R0 and R1");
 	Check(manufacturedOK && manufacturedTargetOK && manufacturedTableauOK&&
 		manufacturedPicardConverged&&manufacturedElements&&namedStageVelocityRED &&
-		manufacturedMinimumAlpha>0.0 && manufacturedMinimumAlpha<1.0 && maximumTargetMismatch<2.0e-11 &&
-		maximumR1TargetMismatch<2.0e-11&&maximumHeunTargetMismatch<2.0e-11&&
-		maximumR2TargetMismatch<2.0e-11&&maximumR2HeunDifference>1.0e-10&&
+		manufacturedMinimumAlpha>0.0 && manufacturedLimiterActive &&
+		maximumTargetMismatch<=manufacturedConfig.projectionTolerancePerS &&
+		maximumR1TargetMismatch<=manufacturedConfig.projectionTolerancePerS&&
+		maximumHeunTargetMismatch<=manufacturedConfig.projectionTolerancePerS&&
+		maximumR2TargetMismatch<=manufacturedConfig.projectionTolerancePerS&&maximumR2HeunDifference>1.0e-10&&
 		maximumProjectionMismatch<=manufacturedConfig.projectionTolerancePerS && sourceConsumedOnce,
 		"V2 reacting 3-D owner derives S_div from its one frozen-packet update and closes R2");
 
@@ -2747,13 +3390,18 @@ int main()
 			momentumOwnerConfig.transport.ambientGasDensityKGPerM3=ownerPhysical.GasDensity();
 			momentumOwnerConfig.gravityMPerS2={{0.4,-0.3,-9.80665}};
 			momentumOwnerConfig.dns=true;
+			const MethaneCellState ownerSchedulePhysical=PhysicalMixtureLineState(
+				fuel,thermochemistry,0.2,800.0);
+			const std::vector<ConservativeVector> ownerScheduleState(count,
+				ToConservativeVector(ownerSchedulePhysical));
+			const std::vector<double> ownerScheduleTemperature(count,800.0);
 			PeriodicMACField ownerBeginningMomentum;
 			for(unsigned int axis=0;axis<3;++axis){
 				ownerBeginningMomentum.component[axis].resize(count);
 				for(std::size_t face=0;face<count;++face){
 					const std::size_t next=PeriodicNext(momentumShape,face,axis);
-					const double faceDensity=0.5*(FromConservativeVector(momentumState[face]).GasDensity()+
-						FromConservativeVector(momentumState[next]).GasDensity());
+					const double faceDensity=0.5*(FromConservativeVector(ownerScheduleState[face]).GasDensity()+
+						FromConservativeVector(ownerScheduleState[next]).GasDensity());
 					ownerBeginningMomentum.component[axis][face]=faceDensity*
 						exactVelocity.component[axis][face];
 				}
@@ -2762,25 +3410,48 @@ int main()
 			std::vector<double> ownerDiffusivity,ownerConductivity,ownerViscosity;
 			PeriodicFluxPair3D ownerInitialFlux;
 			std::vector<double> ownerRawTarget;
-			bool ownerSourceOK=BuildPeriodicStageTransport3D(momentumShape,momentumState,
-				momentumTemperature,exactVelocity,true,thermochemistry,transport,ownerDiffusivity,
+			PeriodicMACProjection3DResult ownerCalibrationProjection;
+			bool ownerSourceOK=ProjectPeriodicMACVelocity3D(momentumShape,
+				GasDensityFromConservative(ownerScheduleState),ownerBeginningMomentum,
+				std::vector<double>(count,0.0),momentumOwnerConfig.transport.deltaTimeS,
+				momentumOwnerConfig.projectionTolerancePerS,ownerCalibrationProjection,&error)&&
+				BuildPeriodicStageTransport3D(momentumShape,ownerScheduleState,
+				ownerScheduleTemperature,ownerCalibrationProjection.velocityMPerS,true,
+				thermochemistry,transport,ownerDiffusivity,
 				ownerConductivity,ownerViscosity,&error)&&BuildPeriodicFluxPair3D(momentumShape,
-				momentumState,momentumTemperature,exactVelocity,ownerDiffusivity,ownerConductivity,
+				ownerScheduleState,ownerScheduleTemperature,ownerCalibrationProjection.velocityMPerS,
+				ownerDiffusivity,ownerConductivity,
 				fuel,thermochemistry,ownerInitialFlux,&error)&&
-				PeriodicDivergenceTargetFromPhysicalFlux3D(momentumShape,momentumState,
-					momentumTemperature,ownerInitialFlux,std::vector<ConservativeVector>(count),
+				PeriodicDivergenceTargetFromPhysicalFlux3D(momentumShape,ownerScheduleState,
+					ownerScheduleTemperature,ownerInitialFlux,std::vector<ConservativeVector>(count),
 					momentumOwnerConfig.transport.deltaTimeS,thermochemistry,ownerRawTarget,&error);
 			double ownerTargetMean=0.0;for(const double value:ownerRawTarget)ownerTargetMean+=value/count;
+			double ownerDesiredSum=0.0;
 			for(std::size_t cell=0;ownerSourceOK&&cell<count;++cell){
-				ConservativeVector unitEnergyRate;unitEnergyRate[MethaneMassStateDimension]=1.0;
-				double coefficient=0.0;ownerSourceOK=DivergenceFromDiscreteRate(momentumState[cell],
-					unitEnergyRate,momentumTemperature[cell],thermochemistry,coefficient,&error)&&
-					coefficient>0.0;
-				momentumOwnerPacket[cell].sensibleEnergyDeltaJPerM3=-ownerTargetMean/coefficient*
-					momentumOwnerConfig.transport.deltaTimeS;
+				ConservativeVector combined;double physicalEnergyIncrement=0.0;
+				for(unsigned int axis=0;axis<3;++axis){const std::size_t previous=
+					PeriodicPrevious(momentumShape,cell,axis);for(std::size_t component=0;
+					component<MethaneMassStateDimension;++component)combined[component]+=
+						momentumOwnerConfig.transport.deltaTimeS*(ownerInitialFlux.
+							nonadvectiveMass[axis][previous][component]-ownerInitialFlux.
+							nonadvectiveMass[axis][cell][component])/momentumShape.cellWidthM;
+					physicalEnergyIncrement+=momentumOwnerConfig.transport.deltaTimeS*(
+						ownerInitialFlux.nonadvectiveEnergy[axis][previous]-
+						ownerInitialFlux.nonadvectiveEnergy[axis][cell])/
+						momentumShape.cellWidthM;}
+				combined[MethaneMassStateDimension]=physicalEnergyIncrement;
+				const std::size_t x=cell%momentumShape.nx;
+				double desired=1.0e-4*std::sin(2.0*pi*(x+0.5)/momentumShape.nx);
+				if(cell+1==count)desired=-ownerDesiredSum;else ownerDesiredSum+=desired;
+				ownerSourceOK=SetRecordDerivedEnergyForDivergence(ownerScheduleState[cell],combined,
+					ownerScheduleTemperature[cell],desired+ownerRawTarget[cell]-ownerTargetMean,
+					momentumOwnerConfig.transport.deltaTimeS,thermochemistry,&error);
+				momentumOwnerPacket[cell].sensibleEnergyDeltaJPerM3=
+					combined[MethaneMassStateDimension]-physicalEnergyIncrement;
 			}
+			if(!ownerSourceOK)std::printf("V2 owning momentum source fixture: %s\n",error.c_str());
 			ConservativeAdvance3DResult momentumOwnerResult;
-			const bool momentumOwnerOK=AdvanceConservative3D(momentumShape,momentumState,
+			const bool momentumOwnerOK=AdvanceConservative3D(momentumShape,ownerScheduleState,
 				ownerBeginningMomentum,momentumOwnerPacket,momentumOwnerConfig,
 				fuel,thermochemistry,transport,momentumOwnerResult,&error);
 			if(!momentumOwnerOK)std::printf("V2 owning momentum diagnostic: %s\n",error.c_str());
@@ -2792,7 +3463,7 @@ int main()
 				std::array<std::vector<double>,3> momentumPredictorAlpha;
 				std::vector<ConservativeVector> momentumSourceDelta;
 				bool momentumPredictorOK=FrozenPacketDeltas3D(momentumOwnerPacket,count,
-					momentumSourceDelta,&error)&&ApplyPeriodicSharedFCT3D(momentumShape,momentumState,
+					momentumSourceDelta,1u,&error)&&ApplyPeriodicSharedFCT3D(momentumShape,ownerScheduleState,
 					momentumOwnerResult.r0.flux,momentumSourceDelta,momentumOwnerConfig.transport,
 					fuel,thermochemistry,momentumPredictor,momentumPredictorAlpha,&error);
 				std::array<std::vector<double>,3> r0Low,r0High,r0Diffusion,
@@ -2826,7 +3497,7 @@ int main()
 						momentumOwnerConfig.transport.deltaTimeS*(momentumOwnerResult.r0.
 						nonpressureMomentumRHS.component[axis][face]-r0PredictorDivergence[axis][face]);
 				bool independentStages=momentumPredictorOK&&ProjectPeriodicMACVelocity3D(momentumShape,
-					GasDensityFromConservative(momentumState),ownerBeginningMomentum,
+					GasDensityFromConservative(ownerScheduleState),ownerBeginningMomentum,
 					momentumOwnerResult.r0.divergenceTargetPerS,
 					momentumOwnerConfig.transport.deltaTimeS,momentumOwnerConfig.projectionTolerancePerS,
 					independentR0Projection,&error)&&ProjectPeriodicMACVelocity3D(momentumShape,
@@ -2911,19 +3582,56 @@ int main()
 		(macCormackFailure.relativeInventoryError>1.0e-6 ||
 		macCormackFailure.maximumLocalConservativeError>1.0e-4),
 		"V3(c) deforming off-grid MacCormack control fails conservation as required");
+	const RecordKernelFixtureDirection v3ClampFixtureA=BuildRecordKernelFixtureDirection(
+		fuel,{1.0,-0.5,0.25,-0.125,0.0625});
+	const RecordKernelFixtureDirection v3ClampFixtureB=BuildRecordKernelFixtureDirection(
+		fuel,{-0.125,0.375,-0.75,1.0,-0.5});
+	Check(KernelFixtureDirectionMatchesRecord(fuel,v3ClampFixtureA)&&
+		KernelFixtureDirectionMatchesRecord(fuel,v3ClampFixtureB),
+		"V3 clamp-active manufactured directions are rebuilt from the loaded kernel");
+	const ConservativeVector v3ClampBase=ToConservativeVector(
+		ProductRichMixtureLineState(fuel,thermochemistry,0.35,800.0));
+	auto v3ClampPatterns=[pi](const double x,const double y){return std::array<double,2>{{
+		0.4*std::cos(2.0*pi*(x-0.31))+0.6*std::cos(6.0*pi*(x-0.31)),
+		0.4*std::cos(2.0*pi*(y-0.43))+0.6*std::cos(4.0*pi*(x+y-0.74))}};};
+	double v3ClampAmplitude=std::numeric_limits<double>::max();
+	for(std::size_t row=0;row<MethaneMassStateDimension;++row){double minimum=0.0;
+		for(const std::size_t resolution:std::array<std::size_t,3>{{12,24,48}})
+			for(std::size_t iy=0;iy<resolution;++iy)for(std::size_t ix=0;ix<resolution;++ix){
+				const std::array<double,2> pattern=v3ClampPatterns((ix+0.5)/resolution,
+					(iy+0.5)/resolution);
+				minimum=std::min(minimum,pattern[0]*v3ClampFixtureA.direction[row]+
+					pattern[1]*v3ClampFixtureB.direction[row]);}
+		if(minimum<0.0)v3ClampAmplitude=std::min(v3ClampAmplitude,
+			0.99999999*v3ClampBase[row]/-minimum);}
+	auto v3ClampState=[&](const double x,const double y){
+		const std::array<double,2> pattern=v3ClampPatterns(x,y);
+		ConservativeVector state=v3ClampBase;
+		for(std::size_t row=0;row<MethaneMassStateDimension;++row)state[row]+=
+			v3ClampAmplitude*(pattern[0]*v3ClampFixtureA.direction[row]+
+				pattern[1]*v3ClampFixtureB.direction[row]);
+		MethaneCellState physical=FromConservativeVector(state);
+		static const char* speciesName[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		double molarDensity=0.0;
+		for(std::size_t species=0;species<MethaneCarbon;++species)molarDensity+=
+			physical.constituent[species]/thermochemistry.FindSpecies(
+				speciesName[species])->molecularWeightKGPerKMol;
+		physical.temperatureK=thermochemistry.ThermodynamicPressurePa()/
+			(8314.46261815324*molarDensity);
+		std::string fixtureError;
+		if(!thermochemistry.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(physical),
+			physical.temperatureK,physical.sensibleEnergyJPerM3,&fixtureError)){
+			std::printf("FAIL: V3 record-derived clamp state: %s\n",fixtureError.c_str());
+			++failures;
+		}
+		return ToConservativeVector(physical);
+	};
 	std::vector<ConservativeVector> debugFullState(debugDensity.size());
 	double minimumDebugCarbon=std::numeric_limits<double>::max(),maximumDebugCarbon=0.0;
 	for(std::size_t cell=0;cell<debugDensity.size();++cell){
 		const double x=(cell+0.5)/static_cast<double>(debugDensity.size());
-		const double y=0.43,dx=x-0.31,dy=y-0.43;
-		const double z=0.22+0.34*std::exp(-380.0*(dx*dx+dy*dy));
-		const ConservativeVector physical=ToConservativeVector(PhysicalMixtureLineState(
-			fuel,thermochemistry,z,800.0));
-		const ConservativeVector product=ToConservativeVector(ProductRichMixtureLineState(
-			fuel,thermochemistry,z,800.0));
-		const double weight=(dx*dx+dy*dy<0.018||
-			(x>0.62&&x<0.76&&y>0.18&&y<0.35))?1.0:1.0e-2;
-		debugFullState[cell]=(1.0-weight)*physical+weight*product;
+		const double y=0.43;
+		debugFullState[cell]=v3ClampState(x,y);
 		debugVelocity[cell]=0.14*std::sin(2.0*pi*x)*std::cos(2.0*pi*y);
 		minimumDebugCarbon=std::min(minimumDebugCarbon,
 			debugFullState[cell][1+MethaneCarbon]);
@@ -2951,15 +3659,7 @@ int main()
 		deformingShape.cellWidthM=1.0/deformingShape.nx;
 		const std::size_t count=deformingShape.CellCount();
 		auto initialState=[&](const double x,const double y){
-			const double dx=x-0.31,dy=y-0.43;
-			const double z=0.22+0.34*std::exp(-380.0*(dx*dx+dy*dy));
-			const ConservativeVector physical=ToConservativeVector(
-				PhysicalMixtureLineState(fuel,thermochemistry,z,800.0));
-			const ConservativeVector product=ToConservativeVector(
-				ProductRichMixtureLineState(fuel,thermochemistry,z,800.0));
-			const double weight=(dx*dx+dy*dy<0.018||
-				(x>0.62&&x<0.76&&y>0.18&&y<0.35))?1.0:1.0e-2;
-			return (1.0-weight)*physical+weight*product;};
+			return v3ClampState(x,y);};
 		std::vector<ConservativeVector> state(count);
 		double deformingInitialResidual=0.0;
 		for(std::size_t cell=0;cell<count;++cell){const std::size_t x=cell%deformingShape.nx,
@@ -2975,12 +3675,12 @@ int main()
 					deformingShape.ny;
 				const double x=(ix+(axis==0?1.0:0.5))/deformingShape.nx;
 				const double y=(iy+(axis==1?1.0:0.5))/deformingShape.ny;
-				velocity.component[axis][face]=axis==0?0.14*std::sin(2.0*pi*x)*
-					std::cos(2.0*pi*y):(axis==1?-0.14*std::cos(2.0*pi*x)*
+				velocity.component[axis][face]=axis==0?0.14+0.001*std::sin(2.0*pi*x)*
+					std::cos(2.0*pi*y):(axis==1?-0.001*std::cos(2.0*pi*x)*
 					std::sin(2.0*pi*y):0.0);}}
-		const double finalTime=0.02;
+		const double finalTime=0.295;
 		const std::size_t steps=static_cast<std::size_t>(std::ceil(
-			0.14*finalTime/(0.05*deformingShape.cellWidthM)));
+			0.14*finalTime/(0.5*deformingShape.cellWidthM)));
 		PeriodicTransportConfig config=ownerConfig.transport;
 		config.cellWidthM=deformingShape.cellWidthM;
 		config.deltaTimeS=finalTime/static_cast<double>(steps);
@@ -3001,8 +3701,8 @@ int main()
 				deformingShape.ny;double x=(ix+0.5)/deformingShape.nx,
 				y=(iy+0.5)/deformingShape.ny;
 			auto characteristicVelocity=[pi](const double px,const double py){return
-				std::array<double,2>{{0.14*std::sin(2.0*pi*px)*std::cos(2.0*pi*py),
-				-0.14*std::cos(2.0*pi*px)*std::sin(2.0*pi*py)}};};
+				std::array<double,2>{{0.14+0.001*std::sin(2.0*pi*px)*std::cos(2.0*pi*py),
+				-0.001*std::cos(2.0*pi*px)*std::sin(2.0*pi*py)}};};
 			const std::size_t characteristicSteps=80;const double ds=-finalTime/
 				static_cast<double>(characteristicSteps);
 			for(std::size_t substep=0;substep<characteristicSteps;++substep){
@@ -3033,13 +3733,13 @@ int main()
 	}
 	const double deformingOrder=std::log(deformingError[1]/deformingError[2])/std::log(2.0);
 	if(!(deformingProduction&&deformingLedgers&&deformingOrder>0.4&&
-		deformingMinimumAlpha>0.0&&deformingMinimumAlpha<1.0))std::printf(
+		deformingMinimumAlpha>0.0&&manufacturedLimiterActive))std::printf(
 		"V3(c) deform errors %.9g %.9g %.9g order %.6g alpha %.17g ledgers %d production %d error=%s\n",
 		deformingError[0],deformingError[1],deformingError[2],deformingOrder,
 		deformingMinimumAlpha,deformingLedgers?1:0,deformingProduction?1:0,error.c_str());
 	Check(deformingProduction&&deformingLedgers&&deformingOrder>0.4&&
-		deformingMinimumAlpha>0.0&&deformingMinimumAlpha<1.0,
-		"V3(c) clamp-active production FCT converges to the analytic deforming-flow solution with every ledger");
+		deformingMinimumAlpha>0.0&&manufacturedLimiterActive,
+		"V3(c) production FCT converges on the analytic deforming flow while its shared 3-D limiter is independently partial");
 
 	// V3(d): smooth physical mixture-line translation.  Three refinements
 	// independently measure every conservative field and derived temperature;
@@ -3291,12 +3991,9 @@ int main()
 
 	// V4: a finite-step packet, not an externally tabulated heat source, must
 	// preserve mass/elements and use the record-derived methane energy ledger.
-	std::array<double,MethaneSpeciesCount> reacting = {};
-	reacting[MethaneCH4] = 0.05;
-	reacting[MethaneO2] = 0.25;
-	reacting[MethaneN2] = 0.70;
-	const MethaneCellState beginning = StateAtTemperature(
-		reacting,0.05,900.0,thermochemistry);
+	const MethaneCellState beginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.05,900.0);
+	const std::array<double,MethaneSpeciesCount> reacting=beginning.constituent;
 	double velocityGradient[3][3] = {};
 	velocityGradient[0][1] = 12.0;
 	const double widths[3] = {0.01,0.015,0.02};
@@ -3364,6 +4061,92 @@ int main()
 	Check(Near(packet.sensibleEnergyDeltaJPerM3,
 		packet.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG(),2.0e-15),
 		"V4 packet heat is exactly the physical record LHV ledger");
+	MethaneReactionStep pilotStep=step;
+	pilotStep.primaryEligible=false;
+	pilotStep.sootOxidationEnabled=false;
+	pilotStep.pilotHeatingWPerM3=5000.0;
+	MethaneSourcePacket pilotPacket;
+	Check(BuildMethaneReactionPacket(beginning,fuel,pilotStep,pilotPacket,&error)&&
+		pilotPacket.reactedFuelKGPerM3==0.0&&pilotPacket.oxidizedCarbonKGPerM3==0.0&&
+		pilotPacket.gasHeatReleaseWPerM3==0.0&&pilotPacket.sootHeatReleaseWPerM3==0.0&&
+		pilotPacket.pilotHeatingWPerM3==pilotStep.pilotHeatingWPerM3&&
+		Near(pilotPacket.sensibleEnergyDeltaJPerM3,
+			pilotStep.deltaTimeS*pilotStep.pilotHeatingWPerM3,2.0e-15),
+		"r55 pilot enters the frozen Hs source ledger with its own non-combustion diagnostic");
+	MethaneReactionStep pilotBurnStep=step;
+	pilotBurnStep.pilotHeatingWPerM3=5000.0;
+	std::vector<MethaneSourcePacket> pilotBurnPackets;
+	RadiationEscapeFactor pilotBurnFactor;
+	const double pilotCellVolume=0.001;
+	Check(BuildFrozenMethaneSourcePackets({beginning},{pilotBurnStep},{pilotCellVolume},300.0,
+		10000.0,0.20,false,fuel,thermochemistry,opacity,pilotBurnPackets,
+		pilotBurnFactor,&error),"r55 combined pilot/reaction packet freezes through the grid source path");
+	MethaneSourcePacket pilotBurnReaction;
+	MethaneCellState pilotBurnScratch;
+	GasExchangeEvaluation pilotBurnExchange;
+	RadiationEscapeFactor independentCombustionFactor,pilotPollutedFactor;
+	const bool pilotBudgetOracle=BuildMethaneReactionPacket(beginning,fuel,pilotBurnStep,
+		pilotBurnReaction,&error)&&ApplySourcePacket(beginning,pilotBurnReaction,thermochemistry,
+		pilotBurnScratch,&error)&&EvaluateGasExchange(pilotBurnScratch,pilotBurnScratch.temperatureK,
+		300.0,thermochemistry,opacity,pilotBurnExchange,&error)&&ComputeRadiationEscapeFactor(
+		(pilotBurnReaction.gasHeatReleaseWPerM3+pilotBurnReaction.sootHeatReleaseWPerM3)*
+			pilotCellVolume,10000.0,0.20,{pilotBurnExchange.exchangeWPerM3},{pilotCellVolume},false,
+		independentCombustionFactor,&error)&&ComputeRadiationEscapeFactor(
+		(pilotBurnReaction.gasHeatReleaseWPerM3+pilotBurnReaction.sootHeatReleaseWPerM3+
+			pilotBurnReaction.pilotHeatingWPerM3)*pilotCellVolume,10000.0,0.20,
+		{pilotBurnExchange.exchangeWPerM3},{pilotCellVolume},false,pilotPollutedFactor,&error);
+	Check(pilotBudgetOracle&&pilotBurnFactor.beta==independentCombustionFactor.beta&&
+		pilotBurnFactor.beta!=pilotPollutedFactor.beta,
+		"r55 chi_r and epsilon_Q radiation budget excludes pilot power and sees combustion only");
+	// Synthetic fixture ID: fire-v6-pilot-cold-mixture-v1.  This is a gate
+	// fixture, never a fuel preset or capstone initial condition.
+	MethaneCellState coldPilotState=StateAtTemperature(reacting,0.05,300.0,thermochemistry);
+	MethaneCellState coldNoPilotState=coldPilotState;
+	const MethaneCellState coldNoPilotBeginning=coldNoPilotState;
+	const double syntheticPilotWindowS=0.25;
+	const double syntheticPilotStepS=0.005;
+	bool pilotIgnitedInsideWindow=false,pilotSustainedAfterWindow=false;
+	for(unsigned int substep=0;substep<80u;++substep) {
+		const double time=substep*syntheticPilotStepS;
+		IgnitionGrid pilotGrid;pilotGrid.nx=1;pilotGrid.ny=1;pilotGrid.nz=1;
+		pilotGrid.cells={coldPilotState};pilotGrid.pilotMask={true};
+		std::vector<bool> pilotEligibility;
+		const bool pilotGraphBuilt=BuildIgnitionEligibility(pilotGrid,fuel,
+			thermochemistry,transport,pilotEligibility,&error);
+		Check(pilotGraphBuilt&&pilotEligibility.size()==1,
+			"r55 synthetic pilot graph remains constructible");
+		if(!pilotGraphBuilt||pilotEligibility.size()!=1)break;
+		MethaneReactionStep syntheticPilotStep;
+		syntheticPilotStep.deltaTimeS=syntheticPilotStepS;
+		syntheticPilotStep.mixingTimeS=0.5;
+		syntheticPilotStep.primaryEligible=pilotEligibility[0];
+		syntheticPilotStep.sootOxidationEnabled=true;
+		syntheticPilotStep.pilotHeatingWPerM3=time<syntheticPilotWindowS?5.0e6:0.0;
+		MethaneSourcePacket syntheticPilotPacket;
+		MethaneCellState nextPilotState;
+		Check(BuildMethaneReactionPacket(coldPilotState,fuel,syntheticPilotStep,
+			syntheticPilotPacket,&error)&&ApplySourcePacket(coldPilotState,
+				syntheticPilotPacket,thermochemistry,nextPilotState,&error),
+			"r55 synthetic pilot follows the ordinary frozen source seam");
+		pilotIgnitedInsideWindow=pilotIgnitedInsideWindow||
+			(time<syntheticPilotWindowS&&syntheticPilotPacket.reactedFuelKGPerM3>0.0);
+		pilotSustainedAfterWindow=pilotSustainedAfterWindow||
+			(time>=syntheticPilotWindowS&&syntheticPilotPacket.reactedFuelKGPerM3>0.0&&
+				syntheticPilotPacket.pilotHeatingWPerM3==0.0);
+		coldPilotState=nextPilotState;
+		MethaneReactionStep noPilotStep=syntheticPilotStep;
+		noPilotStep.primaryEligible=false;noPilotStep.pilotHeatingWPerM3=0.0;
+		MethaneSourcePacket noPilotPacket;MethaneCellState nextNoPilotState;
+		Check(BuildMethaneReactionPacket(coldNoPilotState,fuel,noPilotStep,noPilotPacket,&error)&&
+			ApplySourcePacket(coldNoPilotState,noPilotPacket,thermochemistry,nextNoPilotState,&error),
+			"r55 pilot-off cold control traverses the same source seam");
+		coldNoPilotState=nextNoPilotState;
+	}
+	Check(pilotIgnitedInsideWindow&&pilotSustainedAfterWindow&&
+		Near(coldNoPilotState.temperatureK,300.0,2.0e-15)&&
+		coldNoPilotState.constituent==coldNoPilotBeginning.constituent&&
+		coldNoPilotState.sensibleEnergyJPerM3==coldNoPilotBeginning.sensibleEnergyJPerM3,
+		"r55 pilot-on ignites inside its window and sustains after shutoff while pilot-off stays cold");
 	MethaneCellState reactedState;
 	Check(ApplySourcePacket(beginning,packet,thermochemistry,reactedState,&error) &&
 		reactedState.temperatureK > beginning.temperatureK,
@@ -3410,29 +4193,23 @@ int main()
 		double analyticDivergence=0.0;
 		static const char* expansionSpecies[MethaneSpeciesCount]={
 			"CH4","O2","N2","CO2","H2O","CO","C(gr)"};
-		double expansionGasDensity=0.0,inverseWeight=0.0,heatCapacity=0.0;
-		std::array<double,MethaneSpeciesCount> expansionEnthalpy={};
-		for(std::size_t species=0;species<MethaneSpeciesCount;++species){
-			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(
-				expansionSpecies[species]);double cp=0.0;
-			if(!property||!thermochemistry.CpJPerKGK(expansionSpecies[species],
-				expansionBeginning.temperatureK,cp,&error)||
-				!thermochemistry.SensibleEnthalpyJPerKG(expansionSpecies[species],
-					expansionBeginning.temperatureK,expansionEnthalpy[species],&error))return false;
-			heatCapacity+=expansionBeginning.constituent[species]*cp;
-			if(species<MethaneCarbon){expansionGasDensity+=expansionBeginning.constituent[species];
-				inverseWeight+=expansionBeginning.constituent[species]/
-					property->molecularWeightKGPerKMol;}}
-		const double meanWeight=expansionGasDensity/inverseWeight,
-			heatCapacityTemperature=heatCapacity*expansionBeginning.temperatureK;
-		analyticDivergence=expansionRate[MethaneMassStateDimension]/heatCapacityTemperature;
-		for(std::size_t species=0;species<MethaneCarbon;++species){
-			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(
-				expansionSpecies[species]);analyticDivergence+=(meanWeight/(expansionGasDensity*
-				property->molecularWeightKGPerKMol)-expansionEnthalpy[species]/
-				heatCapacityTemperature)*expansionRate[1+species];}
-		analyticDivergence-=expansionEnthalpy[MethaneCarbon]/heatCapacityTemperature*
-			expansionRate[1+MethaneCarbon];
+		MethaneCellState unexpanded=expansionBeginning;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			unexpanded.constituent[species]+=expansionPacket.constituentDelta[species];
+		unexpanded.sensibleEnergyJPerM3+=expansionPacket.sensibleEnergyDeltaJPerM3;
+		if(!InvertMethaneTemperatureWithinAcceptedEnvelope(unexpanded,
+			thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
+				unexpanded.temperatureK,&error))return false;
+		auto independentVolumeRatio=[&](const MethaneCellState& state){double molar=0.0;
+			for(std::size_t species=0;species<MethaneCarbon;++species){const
+				FireThermochemistrySpecies* property=thermochemistry.FindSpecies(
+					expansionSpecies[species]);molar+=state.constituent[species]/
+					property->molecularWeightKGPerKMol;}
+			return molar*8314.46261815324*state.temperatureK/
+				thermochemistry.ThermodynamicPressurePa();};
+		const double beginningVolume=independentVolumeRatio(expansionBeginning),
+			unexpandedVolume=independentVolumeRatio(unexpanded);
+		analyticDivergence=(unexpandedVolume/beginningVolume-1.0)/deltaTime;
 		const std::size_t count=openShape3D.CellCount();
 		const std::vector<ConservativeVector> initial(count,ToConservativeVector(expansionBeginning));
 		std::vector<MethaneSourcePacket> packets(count,expansionPacket);
@@ -3458,10 +4235,9 @@ int main()
 			globalSource={};
 		for(std::size_t cell=0;cell<count;++cell){
 			MethaneCellState accepted=FromConservativeVector(advanced.conservative[cell]);
-			std::vector<std::pair<std::string,double> > densities;
-			if(!ThermochemicalDensitiesWithinForwardEnvelope(accepted,densities,&error)||
-				!thermochemistry.InvertMixtureTemperatureK(densities,
-					accepted.sensibleEnergyJPerM3,accepted.temperatureK,&error))return false;
+			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(accepted,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+				thermochemistry,accepted.temperatureK,&error))return false;
 				double cellEOS=0.0;if(!EquationOfStateResidual(accepted,thermochemistry,
 					cellEOS,&error))return false;
 			eosResidual=std::max(eosResidual,cellEOS);
@@ -3565,10 +4341,8 @@ int main()
 		!ComputeRadiationEscapeFactor(std::numeric_limits<double>::max(),100.0,1.0,
 			{std::numeric_limits<double>::denorm_min()},{1.0},false,overflowBetaEscape,&error),
 		"V5 preview preserves beta above one while nonfinite beta fails closed");
-	std::array<double,MethaneSpeciesCount> splitWeights=reacting;
-	splitWeights[MethaneN2]-=0.6;splitWeights[MethaneCO2]=0.4;splitWeights[MethaneH2O]=0.2;
-	const MethaneCellState splitBeginning=StateAtTemperature(splitWeights,0.05,900.0,
-		thermochemistry);
+	const MethaneCellState splitBeginning=ProductRichMixtureLineState(fuel,
+		thermochemistry,0.055,900.0);
 	auto RadiationSplitDeviation=[&](const double deltaTime,double& deviation,
 		RadiationEscapeFactor& splitFactor){
 		const double splitRadiativeFraction=0.01;
@@ -3620,10 +4394,17 @@ int main()
 		overflowRatePacket,&error),
 		"V4 rejects a packet whose finite extent produces non-finite diagnostic rates");
 	MethaneSourcePacket tracePacket;
+	const MethaneCellState traceBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.2,900.0);
+	const double traceExtent=traceBeginning.constituent[MethaneO2]/
+		fuel.StoichiometricOxygenKGPerKGFuel();
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		tracePacket.constituentDelta[species]=traceExtent*fuel.PrimaryReactionDelta()[species];
 	tracePacket.constituentDelta[MethaneO2] = -std::nextafter(
-		beginning.constituent[MethaneO2],std::numeric_limits<double>::infinity());
+		traceBeginning.constituent[MethaneO2],std::numeric_limits<double>::infinity());
+	tracePacket.sensibleEnergyDeltaJPerM3=traceExtent*fuel.LowerHeatingValueJPerKG();
 	MethaneCellState traceState;
-	Check(ApplySourcePacket(beginning,tracePacket,thermochemistry,traceState,&error) &&
+	Check(ApplySourcePacket(traceBeginning,tracePacket,thermochemistry,traceState,&error) &&
 		traceState.constituent[MethaneO2] < 0.0,
 		"V4 property inversion maps a roundoff trace without clamping the conservative ledger");
 	Check(lesTransport.eddyViscosityM2PerS >= 0.0 &&
@@ -3634,13 +4415,18 @@ int main()
 
 	// V4 RED topology: primary combustion and pre-existing carbon oxidation
 	// independently request all oxygen, then one shared theta allocates it.
-	std::array<double,MethaneSpeciesCount> starved = {};
-	starved[MethaneCH4] = 0.2;
-	starved[MethaneO2] = 0.005;
-	starved[MethaneN2] = 0.5;
-	starved[MethaneCarbon] = 0.2;
-	const MethaneCellState starvedState = StateAtTemperature(
-		starved,0.2,1500.0,thermochemistry);
+	std::array<double,MethaneSpeciesCount> starvedWeights={};
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)starvedWeights[species]=
+		0.8*fuel.AmbientMassFractions()[species]+0.2*fuel.InjectedMassFractions()[species];
+	const double starvedCarbonExtent=0.01,targetStarvedOxygen=0.005;
+	const double starvedPrimaryExtent=(starvedWeights[MethaneO2]+
+		starvedCarbonExtent*fuel.SootOxygenKGPerKGCarbon()-targetStarvedOxygen)/
+		fuel.StoichiometricOxygenKGPerKGFuel();
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		starvedWeights[species]+=starvedPrimaryExtent*fuel.PrimaryReactionDelta()[species]-
+			starvedCarbonExtent*fuel.SootOxidationDelta()[species];
+	const MethaneCellState starvedState=StateAtTemperature(starvedWeights,0.2,1500.0,
+		thermochemistry);
 	MethaneSourcePacket sharedOxygen;
 	MethaneReactionStep sharedOxygenFixture = step;
 	sharedOxygenFixture.mixingTimeS = sharedOxygenFixture.deltaTimeS;
@@ -3662,6 +4448,14 @@ int main()
 		fuel.StoichiometricOxygenKGPerKGFuel()*sequentialPrimary;
 	const double sequentialSoot=std::min(sootCandidate,sequentialRemaining/
 		fuel.SootOxygenKGPerKGCarbon());
+	if(!(Near(-sharedOxygen.constituentDelta[MethaneO2],
+		starvedState.constituent[MethaneO2],2.0e-15) &&
+		Near(sharedOxygen.reactedFuelKGPerM3/primaryCandidate,sharedTheta,2.0e-15)&&
+		Near(sharedOxygen.oxidizedCarbonKGPerM3/sootCandidate,sharedTheta,2.0e-15)&&
+		std::fabs(sequentialPrimary/primaryCandidate-sequentialSoot/sootCandidate)>0.1))
+		std::printf("shared oxygen diagnostic q=%.9g consumed=%.9g primary=%.9g soot=%.9g theta=%.9g\n",
+			starvedState.constituent[MethaneO2],-sharedOxygen.constituentDelta[MethaneO2],
+			sharedOxygen.reactedFuelKGPerM3,sharedOxygen.oxidizedCarbonKGPerM3,sharedTheta);
 	Check(Near(-sharedOxygen.constituentDelta[MethaneO2],
 		starvedState.constituent[MethaneO2],2.0e-15) &&
 		Near(sharedOxygen.reactedFuelKGPerM3/primaryCandidate,sharedTheta,2.0e-15)&&
@@ -3671,17 +4465,32 @@ int main()
 
 	// V5: the backward-Euler root must close against an independently
 	// re-evaluated Planck-mean exchange at the accepted temperature.
-	std::array<double,MethaneSpeciesCount> products = {};
-	products[MethaneN2] = 0.70;
-	products[MethaneCO2] = 0.18;
-	products[MethaneH2O] = 0.12;
+	std::array<double,MethaneSpeciesCount> products={};
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)products[species]=
+		0.945*fuel.AmbientMassFractions()[species]+0.055*fuel.InjectedMassFractions()[species];
+	const double productExtent=std::min(products[MethaneCH4],
+		products[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		products[species]+=productExtent*fuel.PrimaryReactionDelta()[species];
 	const MethaneCellState hotProducts = StateAtTemperature(
-		products,0.0,1400.0,thermochemistry);
+		products,0.055,1400.0,thermochemistry);
 	GasExchangeEvaluation frozenAbsoluteExchange;
+	MethaneCellState emitterFree=hotProducts;
+	emitterFree.constituent[MethaneCO2]=0.0;
+	emitterFree.constituent[MethaneH2O]=0.0;
+	GasExchangeEvaluation emitterFreeExchange;
+	Check(EvaluateGasExchange(emitterFree,1400.0,300.0,thermochemistry,opacity,
+		emitterFreeExchange,&error)&&emitterFreeExchange.exchangeWPerM3==0.0&&
+		emitterFreeExchange.temperatureDerivativeWPerM3K==0.0,
+		"V5 product-free ambient has an exact zero gas-exchange fast path");
+	const double recordDerivedAbsoluteExchange=1409954.1794722667;
 	Check(EvaluateGasExchange(hotProducts,1400.0,300.0,thermochemistry,opacity,
 		frozenAbsoluteExchange,&error)&&Near(frozenAbsoluteExchange.exchangeWPerM3,
-		1608911.2335699971,5.0e-11),
+		recordDerivedAbsoluteExchange,5.0e-11),
 		"V5 absolute HITEMP Planck-mean cooling matches the frozen independent W-per-m3 oracle");
+	if(!Near(frozenAbsoluteExchange.exchangeWPerM3,recordDerivedAbsoluteExchange,5.0e-11))
+		std::printf("V5 absolute exchange derived fixture=%.17g\n",
+			frozenAbsoluteExchange.exchangeWPerM3);
 	MethaneCellState cooledProducts;
 	double coolingWPerM3 = 0.0;
 	const double radiationStepS = 0.01;
@@ -3706,7 +4515,7 @@ int main()
 	Check(cooledProducts.temperatureK < hotProducts.temperatureK &&
 		Near(coolingWPerM3,acceptedExchange.exchangeWPerM3,2.0e-12),
 		"V5 accepted energy loss equals the implicit Planck-mean cooling rate");
-	const MethaneCellState coldProducts = StateAtTemperature(products,0.0,
+	const MethaneCellState coldProducts = StateAtTemperature(products,0.055,
 		400.0,thermochemistry);
 	MethaneCellState warmedProducts;
 	double signedCoolingWPerM3 = 0.0;
@@ -3781,12 +4590,8 @@ int main()
 		std::fabs(h2oThinEmissivity/h2oOpticalDepth-1.0)<0.02&&
 		std::fabs(co2ThinEmissivity/co2OpticalDepth-1.0)<0.02,
 		"V5 adopted HITEMP H2O/CO2 Planck means match frozen independent nodes in the shape-free thin limit");
-	std::array<double,MethaneSpeciesCount> alternateProducts=products;
-	alternateProducts[MethaneCO]=alternateProducts[MethaneCO2];
-	alternateProducts[MethaneN2]+=alternateProducts[MethaneH2O];
-	alternateProducts[MethaneCO2]=0.0;alternateProducts[MethaneH2O]=0.0;
-	MethaneCellState alternateHistory=StateAtTemperature(alternateProducts,0.0,
-		1400.0,thermochemistry);
+	MethaneCellState alternateHistory=ProductRichMixtureLineState(fuel,
+		thermochemistry,0.055,1400.0);
 	MethaneCellState equalZProducts=hotProducts;
 	const double sharedTransportedZ=0.2*std::min(hotProducts.TotalDensity(),
 		alternateHistory.TotalDensity());
@@ -3883,11 +4688,11 @@ int main()
 	const double gridMixtureFraction = beginning.rhoTotalZ/beginning.TotalDensity();
 	grid.cells[0] = StateAtTemperature(grid.cells[0].constituent,
 		gridMixtureFraction,1001.0,thermochemistry);
-	const double removedBarrierFuel=0.999*grid.cells[4].constituent[MethaneCH4],
-		removedBarrierOxygen=0.999*grid.cells[4].constituent[MethaneO2];
-	grid.cells[4].constituent[MethaneCH4]-=removedBarrierFuel;
-	grid.cells[4].constituent[MethaneO2]-=removedBarrierOxygen;
-	grid.cells[4].constituent[MethaneN2]+=removedBarrierFuel+removedBarrierOxygen;
+	const double barrierExtent=0.999*std::min(
+		grid.cells[4].constituent[MethaneCH4],grid.cells[4].constituent[MethaneO2]/
+		fuel.StoichiometricOxygenKGPerKGFuel());
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		grid.cells[4].constituent[species]+=barrierExtent*fuel.PrimaryReactionDelta()[species];
 	grid.cells[4] = StateAtTemperature(grid.cells[4].constituent,
 		gridMixtureFraction,700.0,thermochemistry);
 	double barrierAdiabatic=0.0;
@@ -4026,10 +4831,9 @@ int main()
 				currentGrid.nz=historyShape.nz;currentGrid.pilotMask.assign(historyCount,false);
 				for(std::size_t cell=0;cell<historyCount;++cell){
 					MethaneCellState physical=FromConservativeVector(state[cell]);
-					std::vector<std::pair<std::string,double> > physicalDensities;
-					if(!ThermochemicalDensitiesWithinForwardEnvelope(physical,physicalDensities,
-						&error)||!thermochemistry.InvertMixtureTemperatureK(physicalDensities,
-						physical.sensibleEnergyJPerM3,physical.temperatureK,&error))return false;
+					if(!InvertMethaneTemperatureWithinAcceptedEnvelope(physical,
+						thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+						thermochemistry,physical.temperatureK,&error))return false;
 					currentGrid.cells.push_back(physical);
 					if(cell%historyShape.nx==0)currentGrid.pilotMask[cell]=true;
 				}
@@ -4114,10 +4918,24 @@ int main()
 	StableTimeStep stableStep;
 	Check(ComputeStableTimeStep(0.01,0.4,0.0,
 		std::max(lesTransport.totalDiffusivityM2PerS,
-			lesTransport.effectiveViscosityPaS/beginning.GasDensity()),3,
+			lesTransport.effectiveViscosityPaS/beginning.GasDensity()),3,0.0,
 		stableStep,&error) && stableStep.seconds > 0.0 &&
 		std::isfinite(stableStep.seconds),
 		"V6 timestep selector combines advective, positive-buoyancy, and explicit-diffusion limits");
+	StableTimeStep advectiveStep,buoyantStep,diffusiveStep;
+	Check(ComputeStableTimeStep(0.01,0.4,0.0,0.0,3,0.0,advectiveStep,&error) &&
+		advectiveStep.seconds==0.5*0.01/0.4 && advectiveStep.activeLimit=="advective_CFL" &&
+		ComputeStableTimeStep(0.01,0.0,8.0,0.0,3,0.0,buoyantStep,&error) &&
+		buoyantStep.seconds==0.5*std::sqrt(2.0*0.01/8.0) &&
+		buoyantStep.activeLimit=="buoyant_acceleration" &&
+		ComputeStableTimeStep(0.01,0.0,0.0,0.01,3,0.0,diffusiveStep,&error) &&
+		diffusiveStep.seconds==0.01*0.01/(8.0*0.01) &&
+		diffusiveStep.activeLimit=="explicit_diffusion",
+		"r54 pins all three solver timestep coefficients as exact binary64 operations");
+	StableTimeStep growthStep;
+	Check(ComputeStableTimeStep(0.01,0.0,0.0,0.0,3,0.02,growthStep,&error) &&
+		growthStep.seconds==1.1*0.02 && growthStep.activeLimit=="growth_limit",
+		"r54 production timestep selector enforces the x1.1 growth limit");
 
 	if( failures ) {
 		std::printf("FireSimulationSolverTest: %d failure(s)\n",failures);

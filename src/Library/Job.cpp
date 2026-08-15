@@ -1560,6 +1560,12 @@ namespace {
 
 namespace RISE
 {
+	bool Implementation::CurrentRendererBuildIdentity(
+		RISECBOR64::Bytes& bytes,std::string& identity )
+	{
+		return BuildRendererBuildIdentity(bytes,identity);
+	}
+
 	//! Creates a new empty job
 	bool RISE_CreateJob(
 			IJob** ppi										///< [out] Pointer to recieve the job

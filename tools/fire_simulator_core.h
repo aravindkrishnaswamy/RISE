@@ -19,6 +19,7 @@
 #include <queue>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -163,34 +164,103 @@ namespace RISE
 			return result;
 		}
 
-		inline bool ThermochemicalDensitiesWithinForwardEnvelope(
-			const MethaneCellState& state,
-			std::vector<std::pair<std::string,double> >& result,
-			std::string* error = 0
-			)
+		inline double AcceptedStateMassScale(const ConservativeVector& state)
 		{
-			static const char* names[MethaneSpeciesCount] = {
-				"CH4", "O2", "N2", "CO2", "H2O", "CO", "C(gr)"
-			};
-			double scale = 1.0;
-			for( const double density : state.constituent ) {
-				if( !std::isfinite(density) ) {
-					return Fail(error,"fire solver thermochemical property view is non-finite");
-				}
-				scale = std::max(scale,std::fabs(density));
+			double result=std::fabs(state[0]);
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				result+=std::fabs(state[1+species]);
+			return std::max(1.0,result);
+		}
+
+		inline double AcceptedStateEnergyScale(const ConservativeVector& state,
+			const std::array<double,MethaneSpeciesCount>& lowerEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& upperEnthalpy)
+		{
+			double result=std::fabs(state[MethaneMassStateDimension]);
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+				result+=std::fabs(lowerEnthalpy[species]*state[1+species]);
+				result+=std::fabs(upperEnthalpy[species]*state[1+species]);
 			}
-			const double tolerance = 2048.0*std::numeric_limits<double>::epsilon()*scale;
-			result.clear();
-			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
-				if( state.constituent[index] < -tolerance ) {
-					return Fail(error,"fire solver constituent exceeds the certified fp64 forward envelope");
-				}
-				// The conservative state is not modified.  Only the thermochemical
-				// property view maps a sign-roundoff trace to the boundary value.
-				result.push_back(std::make_pair(std::string(names[index]),
-					std::max(0.0,state.constituent[index])));
+			return std::max(1.0,result);
+		}
+
+		inline bool PositivePartThermochemicalDensitiesOrdered(
+			const MethaneCellState& state,
+			std::array<double,MethaneSpeciesCount>& result,
+			std::string* error=0 )
+		{
+			for(const double density:state.constituent) {
+				if(!std::isfinite(density)) return Fail(error,
+					"fire solver thermochemical density is non-finite");
 			}
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				result[species]=std::max(0.0,state.constituent[species]);
 			return true;
+		}
+
+		inline bool SignedMixtureSensibleEnergy(const MethaneCellState& state,
+			const double temperatureK,const FireSimulationMethaneRecord& thermochemistry,
+			double& result,std::string* error=0)
+		{
+			std::array<double,MethaneSpeciesCount> enthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(temperatureK,
+				enthalpy.data(),enthalpy.size(),error))return false;
+			result=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				result+=state.constituent[species]*enthalpy[species];
+			return std::isfinite(result)||Fail(error,
+				"fire solver signed sensible-energy evaluation overflowed");
+		}
+
+		inline bool AcceptedStateAdmissible(const ConservativeVector& state,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
+			const FireSimulationMethaneRecord& fuel,std::string* error);
+		inline bool AcceptedMethaneCellStateAdmissible(const MethaneCellState& state,
+			const FireSimulationMethaneRecord& fuel,std::string* error=0);
+		inline double MixtureCertifiedCpLowerJPerM3K(const MethaneCellState& state,
+			const double lowerK,const double upperK,
+			const FireSimulationMethaneRecord& thermochemistry);
+
+		inline bool InvertMethaneTemperatureWithinAcceptedEnvelope(
+			const MethaneCellState& state,
+			const double lowerTemperatureK,
+			const double upperTemperatureK,
+			const FireSimulationMethaneRecord& thermochemistry,
+			double& result,
+			std::string* error=0 )
+		{
+			if(!std::isfinite(lowerTemperatureK)||!std::isfinite(upperTemperatureK)||
+				lowerTemperatureK>=upperTemperatureK) return Fail(error,
+					"fire solver thermochemical inversion bounds are invalid");
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(lowerTemperatureK,
+				lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(upperTemperatureK,
+					upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!AcceptedStateAdmissible(ToConservativeVector(state),lowerEnthalpy,
+					upperEnthalpy,thermochemistry,error))return false;
+			double lowerEnergy=0.0,upperEnergy=0.0;
+			if(!SignedMixtureSensibleEnergy(state,lowerTemperatureK,thermochemistry,
+				lowerEnergy,error)||!SignedMixtureSensibleEnergy(state,upperTemperatureK,
+				thermochemistry,upperEnergy,error))return false;
+			if(!(MixtureCertifiedCpLowerJPerM3K(state,lowerTemperatureK,
+				upperTemperatureK,thermochemistry)>0.0))return Fail(error,
+				"fire solver signed inversion lacks a positive certified heat capacity");
+			const double tolerance=thermochemistry.AcceptedStateFeasibilityEnvelope().
+				kappaEpsilon64*std::numeric_limits<double>::epsilon()*
+				AcceptedStateEnergyScale(ToConservativeVector(state),lowerEnthalpy,upperEnthalpy);
+			if(state.sensibleEnergyJPerM3<=lowerEnergy+tolerance){result=lowerTemperatureK;return true;}
+			if(state.sensibleEnergyJPerM3>=upperEnergy-tolerance){result=upperTemperatureK;return true;}
+			double lower=lowerTemperatureK,upper=upperTemperatureK;
+			for(unsigned int iteration=0;iteration<96;++iteration){
+				const double midpoint=0.5*(lower+upper);double midpointEnergy=0.0;
+				if(midpoint==lower||midpoint==upper){result=midpoint;return true;}
+				if(!SignedMixtureSensibleEnergy(state,midpoint,thermochemistry,
+					midpointEnergy,error))return false;
+				if(midpointEnergy<state.sensibleEnergyJPerM3)lower=midpoint;else upper=midpoint;
+			}
+			result=0.5*(lower+upper);return std::isfinite(result)||Fail(error,
+				"fire solver signed temperature inversion is non-finite");
 		}
 
 		inline bool ValidateCellState(
@@ -198,23 +268,17 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			if( !std::isfinite(state.rhoTotalZ) || state.rhoTotalZ < 0.0 ||
-				!std::isfinite(state.sensibleEnergyJPerM3) ||
+			if( !std::isfinite(state.rhoTotalZ) || !std::isfinite(state.sensibleEnergyJPerM3) ||
 				!std::isfinite(state.temperatureK) || state.temperatureK <= 0.0 ) {
 				return Fail(error,"fire solver cell contains a non-finite or negative primary field");
 			}
-			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
-				const double density=state.constituent[species];
-				if( !std::isfinite(density) || density < 0.0 ) {
-					std::ostringstream message;
-					message << "fire solver cell contains an invalid constituent density: species="
-						<< species << " value=" << density;
-					return Fail(error,message.str());
-				}
+			for(const double density:state.constituent) {
+				if(!std::isfinite(density))return Fail(error,
+					"fire solver cell contains a non-finite constituent density");
 			}
 			const double total = state.TotalDensity();
-			return (std::isfinite(total) && total > 0.0 && state.rhoTotalZ <= total) ||
-				Fail(error,"fire solver mixture fraction is outside [0,1]");
+			return (std::isfinite(total) && total > 0.0) ||
+				Fail(error,"fire solver cell has no finite positive total density");
 		}
 
 		inline bool EquationOfStateResidual(
@@ -230,23 +294,21 @@ namespace RISE
 			if( !thermochemistry.IsValid() || !std::isfinite(state.temperatureK) ||
 				state.temperatureK <= 0.0 || !std::isfinite(state.rhoTotalZ) ) return Fail(error,
 				"fire solver EOS state is invalid");
-			double densityScale=1.0;
-			for(const double density:state.constituent)
-				densityScale=std::max(densityScale,std::fabs(density));
-			if(state.rhoTotalZ < -2048.0*std::numeric_limits<double>::epsilon()*densityScale)
-				return Fail(error,"fire solver EOS mixture fraction exceeds its fp64 envelope");
-			std::vector<std::pair<std::string,double> > propertyDensities;
-			if( !ThermochemicalDensitiesWithinForwardEnvelope(state,propertyDensities,error) ) {
-				return false;
-			}
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!AcceptedStateAdmissible(ToConservativeVector(state),lowerEnthalpy,
+					upperEnthalpy,thermochemistry,error))return false;
 			double gasDensity = 0.0;
 			double molarDensityKMolPerM3 = 0.0;
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
 				const FireThermochemistrySpecies* property =
 					thermochemistry.FindSpecies(names[species]);
 				if( !property ) return Fail(error,"fire solver EOS lacks a gas species");
-				gasDensity += propertyDensities[species].second;
-				molarDensityKMolPerM3 += propertyDensities[species].second/
+				gasDensity += state.constituent[species];
+				molarDensityKMolPerM3 += state.constituent[species]/
 					property->molecularWeightKGPerKMol;
 			}
 			if( gasDensity <= 0.0 || molarDensityKMolPerM3 <= 0.0 ) {
@@ -288,26 +350,28 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			static const char* names[MethaneCarbon] = {
-				"CH4", "O2", "N2", "CO2", "H2O", "CO"
-			};
-			if( !ValidateCellState(state,error) || !thermochemistry.IsValid() ||
+			if( !ValidateCellState(state,error) ||
+				!AcceptedMethaneCellStateAdmissible(state,thermochemistry,error) ||
+				!thermochemistry.IsValid() ||
 				!transport.IsValid() ) return false;
-			const double gasDensity = state.GasDensity();
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
+			double gasDensity=0.0;
+			for(std::size_t species=0;species<MethaneCarbon;++species)
+				gasDensity+=propertyDensities[species];
 			if( gasDensity <= 0.0 ) return Fail(error,"fire solver transport has no gas mass");
-			std::vector<std::pair<std::string,double> > massFractions;
+			std::array<double,MethaneCarbon> massFractions;
+			std::array<double,MethaneSpeciesCount> speciesCp;
+			if(!thermochemistry.CpBySpeciesOrderJPerKGK(state.temperatureK,speciesCp.data(),
+				speciesCp.size(),error))return false;
 			result = CellTransportEvaluation();
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
-				const double fraction = state.constituent[species]/gasDensity;
-				massFractions.push_back(std::make_pair(std::string(names[species]),fraction));
-				double cp = 0.0;
-				if( !thermochemistry.CpJPerKGK(names[species],state.temperatureK,cp,error) ) return false;
-				result.gasCpJPerKGK += fraction*cp;
+				massFractions[species]=propertyDensities[species]/gasDensity;
+				result.gasCpJPerKGK+=massFractions[species]*speciesCp[species];
 			}
-			if( !transport.MixtureViscosityPaS(massFractions,thermochemistry,
-				state.temperatureK,result.molecularViscosityPaS,error) ||
-				!transport.MixtureConductivityWPerMK(massFractions,thermochemistry,
-					state.temperatureK,result.molecularConductivityWPerMK,error) ) return false;
+			if(!transport.MixturePropertiesBySpeciesOrder(massFractions.data(),
+				massFractions.size(),thermochemistry,state.temperatureK,
+				result.molecularViscosityPaS,result.molecularConductivityWPerMK,error))return false;
 			if( dns ) {
 				result.eddyViscosityM2PerS = 0.0;
 			} else if( !transport.VremanEddyViscosityM2PerS(velocityGradientPerS,
@@ -371,6 +435,7 @@ namespace RISE
 			const double maximumPositiveReducedGravityMPerS2,
 			const double maximumKinematicTransportM2PerS,
 			const unsigned int dimensions,
+			const double previousStepS,
 			StableTimeStep& result,
 			std::string* error = 0
 			)
@@ -380,7 +445,8 @@ namespace RISE
 				!std::isfinite(maximumPositiveReducedGravityMPerS2) ||
 				maximumPositiveReducedGravityMPerS2 < 0.0 ||
 				!std::isfinite(maximumKinematicTransportM2PerS) ||
-				maximumKinematicTransportM2PerS < 0.0 || dimensions == 0 || dimensions > 3 ) {
+				maximumKinematicTransportM2PerS < 0.0 || dimensions == 0 || dimensions > 3 ||
+				(!std::isfinite(previousStepS) && previousStepS != 0.0) || previousStepS < 0.0 ) {
 				return Fail(error,"fire solver timestep inputs are invalid");
 			}
 			result.seconds = std::numeric_limits<double>::infinity();
@@ -392,16 +458,17 @@ namespace RISE
 				}
 			};
 			if( maximumVelocityMPerS > 0.0 ) {
-				accept(0.8*cellWidthM/maximumVelocityMPerS,"advective_CFL");
+				accept(0.5*cellWidthM/maximumVelocityMPerS,"advective_CFL");
 			}
 			if( maximumPositiveReducedGravityMPerS2 > 0.0 ) {
-				accept(std::sqrt(2.0*cellWidthM/maximumPositiveReducedGravityMPerS2),
+				accept(0.5*std::sqrt(2.0*cellWidthM/maximumPositiveReducedGravityMPerS2),
 					"buoyant_acceleration");
 			}
 			if( maximumKinematicTransportM2PerS > 0.0 ) {
-				accept(0.45*cellWidthM*cellWidthM/(static_cast<double>(dimensions)*
-					maximumKinematicTransportM2PerS),"explicit_diffusion");
+				accept(cellWidthM*cellWidthM/(8.0*maximumKinematicTransportM2PerS),
+					"explicit_diffusion");
 			}
+			if( previousStepS > 0.0 ) accept(1.1*previousStepS,"growth_limit");
 			return (result.seconds > 0.0 && !std::isnan(result.seconds)) ||
 				Fail(error,"fire solver timestep selection failed");
 		}
@@ -415,12 +482,14 @@ namespace RISE
 			double grossCarbonFormedKGPerM3;
 			double gasHeatReleaseWPerM3;
 			double sootHeatReleaseWPerM3;
+			double pilotHeatingWPerM3;
 			double radiativeCoolingWPerM3;
 
 			MethaneSourcePacket() : sensibleEnergyDeltaJPerM3(0.0),
 				reactedFuelKGPerM3(0.0), oxidizedCarbonKGPerM3(0.0),
 				grossCarbonFormedKGPerM3(0.0),
 				gasHeatReleaseWPerM3(0.0), sootHeatReleaseWPerM3(0.0),
+				pilotHeatingWPerM3(0.0),
 				radiativeCoolingWPerM3(0.0)
 			{
 				constituentDelta.fill(0.0);
@@ -431,10 +500,12 @@ namespace RISE
 		{
 			double deltaTimeS;
 			double mixingTimeS;
+			double pilotHeatingWPerM3;
 			bool primaryEligible;
 			bool sootOxidationEnabled;
 
 			MethaneReactionStep() : deltaTimeS(0.0), mixingTimeS(0.0),
+				pilotHeatingWPerM3(0.0),
 				primaryEligible(false),
 				sootOxidationEnabled(false) {}
 		};
@@ -450,18 +521,26 @@ namespace RISE
 			packet = MethaneSourcePacket();
 			if( !fuel.IsValid() || !ValidateCellState(beginning,error) ||
 				!std::isfinite(step.deltaTimeS) || step.deltaTimeS <= 0.0 ||
-				!std::isfinite(step.mixingTimeS) || step.mixingTimeS <= 0.0 ) {
+				!std::isfinite(step.mixingTimeS) || step.mixingTimeS <= 0.0 ||
+				!std::isfinite(step.pilotHeatingWPerM3) || step.pilotHeatingWPerM3 < 0.0 ) {
 				return Fail(error,"fire solver reaction step is outside its physical domain");
 			}
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
+				lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
+					upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
+					upperEnthalpy,fuel,error))return false;
 			const double relaxation = -std::expm1(-step.deltaTimeS/step.mixingTimeS);
-			const double oxygen = beginning.constituent[MethaneO2];
+			const double oxygen = std::max(0.0,beginning.constituent[MethaneO2]);
 			const double primaryCandidate = step.primaryEligible ? relaxation*std::min(
-				beginning.constituent[MethaneCH4],
+				std::max(0.0,beginning.constituent[MethaneCH4]),
 				oxygen/fuel.StoichiometricOxygenKGPerKGFuel()) : 0.0;
 			const bool oxidizes = step.sootOxidationEnabled &&
 				beginning.temperatureK > fuel.SootOxidationTemperatureK();
 			const double sootCandidate = oxidizes ? relaxation*std::min(
-				beginning.constituent[MethaneCarbon],
+				std::max(0.0,beginning.constituent[MethaneCarbon]),
 				oxygen/fuel.SootOxygenKGPerKGCarbon()) : 0.0;
 			const double oxygenDemand = fuel.StoichiometricOxygenKGPerKGFuel()*primaryCandidate+
 				fuel.SootOxygenKGPerKGCarbon()*sootCandidate;
@@ -486,17 +565,14 @@ namespace RISE
 				fuel.SootCO2KGPerKGCarbon()*oxidized;
 			packet.sensibleEnergyDeltaJPerM3 =
 				reacted*fuel.LowerHeatingValueJPerKG()+
-				oxidized*fuel.SootHeatReleaseJPerKGCarbon();
+				oxidized*fuel.SootHeatReleaseJPerKGCarbon()+
+				step.deltaTimeS*step.pilotHeatingWPerM3;
 			packet.gasHeatReleaseWPerM3 = reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
 			packet.sootHeatReleaseWPerM3 = oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
+			packet.pilotHeatingWPerM3 = step.pilotHeatingWPerM3;
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				if( !std::isfinite(packet.constituentDelta[index]) ) {
 					return Fail(error,"fire solver reaction packet contains a non-finite constituent delta");
-				}
-				if( beginning.constituent[index]+packet.constituentDelta[index] <
-					-64.0*std::numeric_limits<double>::epsilon()*
-					std::max(1.0,beginning.constituent[index]) ) {
-					return Fail(error,"fire solver shared oxygen allocation produced a negative inventory");
 				}
 			}
 			return (std::isfinite(packet.sensibleEnergyDeltaJPerM3) &&
@@ -504,7 +580,8 @@ namespace RISE
 				std::isfinite(packet.oxidizedCarbonKGPerM3) &&
 				std::isfinite(packet.grossCarbonFormedKGPerM3) &&
 				std::isfinite(packet.gasHeatReleaseWPerM3) &&
-				std::isfinite(packet.sootHeatReleaseWPerM3)) ||
+				std::isfinite(packet.sootHeatReleaseWPerM3) &&
+				std::isfinite(packet.pilotHeatingWPerM3)) ||
 				Fail(error,"fire solver reaction packet overflowed");
 		}
 
@@ -516,24 +593,24 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
+					upperEnthalpy,thermochemistry,error))return false;
 			MethaneCellState candidate = beginning;
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				candidate.constituent[index] += packet.constituentDelta[index];
 			}
 			candidate.sensibleEnergyJPerM3 += packet.sensibleEnergyDeltaJPerM3;
-			std::vector<std::pair<std::string,double> > propertyDensities;
-			if( !ThermochemicalDensitiesWithinForwardEnvelope(candidate,propertyDensities,error) ) {
-				return false;
-			}
-			if( !thermochemistry.InvertMixtureTemperatureK(
-				propertyDensities,candidate.sensibleEnergyJPerM3,
+			if( !InvertMethaneTemperatureWithinAcceptedEnvelope(candidate,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
 				candidate.temperatureK,error) ) return false;
-			const double total = candidate.TotalDensity();
-			return (std::isfinite(total) && total > 0.0 &&
-				std::isfinite(candidate.rhoTotalZ) && candidate.rhoTotalZ >= 0.0 &&
-				candidate.rhoTotalZ <= total && std::isfinite(candidate.temperatureK) &&
-				candidate.temperatureK > 0.0 && ((result=candidate),true)) ||
-				Fail(error,"fire solver source packet produced an invalid accepted state");
+			if(!ValidateCellState(candidate,error))return false;
+			result=candidate;
+			return true;
 		}
 
 		inline double MCScalarSlope( const double backward, const double forward )
@@ -714,32 +791,6 @@ namespace RISE
 			return true;
 		}
 
-		inline bool ConservativeStateFeasible(
-			const ConservativeVector& state,
-			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
-			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
-			const double roundoffMultiplier
-			)
-		{
-			double total = 0.0, lowerEnergy = 0.0, upperEnergy = 0.0;
-			for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
-				total += state[1+species];
-				lowerEnergy += state[1+species]*ambientEnthalpy[species];
-				upperEnergy += state[1+species]*adiabaticEnthalpy[species];
-			}
-			const double massTolerance=roundoffMultiplier*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,std::fabs(total));
-			const double energyTolerance=roundoffMultiplier*std::numeric_limits<double>::epsilon()*
-				std::max({1.0,std::fabs(state[MethaneMassStateDimension]),
-				std::fabs(lowerEnergy),std::fabs(upperEnergy)});
-			for( std::size_t species=0; species<MethaneSpeciesCount; ++species )
-				if( state[1+species] < -massTolerance ) return false;
-			return total > 0.0 && state[0] >= -massTolerance &&
-				state[0] <= total+massTolerance &&
-				state[MethaneMassStateDimension] >= lowerEnergy-energyTolerance &&
-				state[MethaneMassStateDimension] <= upperEnergy+energyTolerance;
-		}
-
 		inline double InequalityRoundoffScale(
 			const ConservativeVector& state,
 			const std::size_t inequality,
@@ -747,17 +798,8 @@ namespace RISE
 			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy
 			)
 		{
-			if( inequality < 2+MethaneSpeciesCount ) {
-				double total=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;
-					++species)total+=state[1+species];
-				return std::max({1.0,std::fabs(state[0]),std::fabs(total)});
-			}
-			double scale=std::max(1.0,std::fabs(state[MethaneMassStateDimension]));
-			const auto& enthalpy=inequality==2+MethaneSpeciesCount?
-				ambientEnthalpy:adiabaticEnthalpy;
-			double sum=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;++species)
-				sum+=std::fabs(enthalpy[species]*state[1+species]);
-			return std::max(scale,sum);
+			return inequality<2+MethaneSpeciesCount?AcceptedStateMassScale(state):
+				AcceptedStateEnergyScale(state,ambientEnthalpy,adiabaticEnthalpy);
 		}
 
 		inline bool FireSimulationEnthalpyBounds(
@@ -813,29 +855,127 @@ namespace RISE
 			return result;
 		}
 
-		inline bool CertifiedMassConstraintSatisfied(
-			const ConservativeVector& state,
-			const FireCertifiedNullspace& closure
+		inline double CertifiedLimiterInequalityBudget(
+			const ConservativeVector& low,
+			const std::size_t inequality,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
+			const FireSimulationMethaneRecord& fuel,
+			const double rowScaleLowerBound
 			)
 		{
-			double matrixNorm = 0.0, stateNorm = 0.0, residualNorm = 0.0;
-			for( std::size_t column=0; column<closure.stateDimension; ++column ) {
-				stateNorm = std::max(stateNorm,std::fabs(state[column]));
+			const FireAcceptedStateFeasibilityEnvelope& envelope=
+				fuel.AcceptedStateFeasibilityEnvelope();
+			if(!std::isfinite(rowScaleLowerBound)||rowScaleLowerBound<1.0)return 0.0;
+			const double epsilon=std::numeric_limits<double>::epsilon();
+			const double admissible=envelope.kappaEpsilon64*epsilon*rowScaleLowerBound;
+			const double assemblyReserve=envelope.limiterOutwardFactorEpsilon64*
+				epsilon*rowScaleLowerBound;
+			return std::max(0.0,admissible-assemblyReserve-
+				InequalityValue(low,inequality,ambientEnthalpy,adiabaticEnthalpy));
+		}
+
+		inline double CertifiedLimiterScaleLowerBound(
+			const ConservativeVector& low,
+			const std::array<ConservativeVector,6>& correction,
+			const std::size_t correctionCount,
+			const std::size_t inequality,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy
+			)
+		{
+			auto componentMinimumAbsolute=[&](const std::size_t component){
+				double lower=low[component],upper=low[component];
+				for(std::size_t direction=0;direction<correctionCount;++direction){
+					const double delta=correction[direction][component];
+					if(delta<0.0)lower+=delta;else upper+=delta;
+				}
+				return lower<=0.0&&upper>=0.0?0.0:
+					std::min(std::fabs(lower),std::fabs(upper));
+			};
+			if(inequality<2+MethaneSpeciesCount){
+				double result=componentMinimumAbsolute(0);
+				for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+					result+=componentMinimumAbsolute(1+species);
+				return std::max(1.0,result);
 			}
+			double result=componentMinimumAbsolute(MethaneMassStateDimension);
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				result+=(std::fabs(ambientEnthalpy[species])+
+					std::fabs(adiabaticEnthalpy[species]))*
+					componentMinimumAbsolute(1+species);
+			return std::max(1.0,result);
+		}
+
+		inline bool CertifiedConstraintRowsSatisfied(
+			const ConservativeVector& state,
+			const FireCertifiedNullspace& closure,
+			const FireAcceptedStateFeasibilityEnvelope& envelope
+			)
+		{
+			if(!std::isfinite(envelope.kappaEpsilon64)||envelope.kappaEpsilon64<=0.0||
+				closure.stateDimension>
+				MethaneMassStateDimension)return false;
 			for( std::size_t row=0; row<closure.constraintRows; ++row ) {
-				double rowNorm = 0.0, residual = 0.0;
+				double scale = 0.0, residual = 0.0;
 				for( std::size_t column=0; column<closure.stateDimension; ++column ) {
 					const double coefficient = closure.constraintMatrix[
 						row*closure.stateDimension+column];
-					rowNorm += std::fabs(coefficient);
-					residual += coefficient*state[column];
+					const double term=coefficient*state[column];
+					scale+=std::fabs(term);residual+=term;
 				}
-				matrixNorm = std::max(matrixNorm,rowNorm);
-				residualNorm = std::max(residualNorm,std::fabs(residual));
+				const double bound=envelope.kappaEpsilon64*
+					std::numeric_limits<double>::epsilon()*std::max(1.0,scale);
+				if(!std::isfinite(residual)||std::fabs(residual)>bound)return false;
 			}
-			const double bound = 4096.0*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,matrixNorm*stateNorm);
-			return residualNorm <= bound;
+			return true;
+		}
+
+		inline bool AcceptedStateAdmissible(
+			const ConservativeVector& state,
+			const std::array<double,MethaneSpeciesCount>& ambientEnthalpy,
+			const std::array<double,MethaneSpeciesCount>& adiabaticEnthalpy,
+			const FireSimulationMethaneRecord& fuel,
+			std::string* error=0 )
+		{
+			const FireAcceptedStateFeasibilityEnvelope& envelope=
+				fuel.AcceptedStateFeasibilityEnvelope();
+			if(!fuel.IsValid()||!std::isfinite(envelope.kappaEpsilon64)||
+				envelope.kappaEpsilon64<=0.0)return Fail(error,
+				"fire solver accepted-state envelope record is invalid");
+			double total=0.0;
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+				if(!std::isfinite(state[component]))return Fail(error,
+					"fire solver accepted state is non-finite");
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				total+=state[1+species];
+			if(!(total>0.0)||!std::isfinite(total))return Fail(error,
+				"fire solver accepted state has no finite positive mass");
+			for(std::size_t inequality=0;inequality<4+MethaneSpeciesCount;++inequality){
+				const double value=InequalityValue(state,inequality,ambientEnthalpy,
+					adiabaticEnthalpy);
+				const double bound=envelope.kappaEpsilon64*
+					std::numeric_limits<double>::epsilon()*InequalityRoundoffScale(state,
+						inequality,ambientEnthalpy,adiabaticEnthalpy);
+				if(!std::isfinite(value)||value>bound)return Fail(error,
+					"fire solver accepted state violates the single r60 feasibility envelope");
+			}
+			return CertifiedConstraintRowsSatisfied(state,fuel.ConservativeReconstruction(),
+				envelope)||Fail(error,"fire solver accepted state violates the certified affine rows");
+		}
+
+		inline bool AcceptedMethaneCellStateAdmissible(
+			const MethaneCellState& state,
+			const FireSimulationMethaneRecord& fuel,
+			std::string* error )
+		{
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			return fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
+				lowerEnthalpy.data(),lowerEnthalpy.size(),error)&&
+				fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
+					upperEnthalpy.data(),upperEnthalpy.size(),error)&&
+				AcceptedStateAdmissible(ToConservativeVector(state),lowerEnthalpy,
+					upperEnthalpy,fuel,error);
 		}
 
 		inline bool ApplyPeriodicSharedFCT(
@@ -847,7 +987,8 @@ namespace RISE
 			const FireSimulationMethaneRecord& thermochemistry,
 			std::vector<ConservativeVector>& result,
 			std::vector<double>& faceAlpha,
-			std::string* error = 0
+			std::string* error = 0,
+			const std::vector<double>* acceptedFaceAlpha = 0
 			)
 		{
 			const std::size_t count = beginning.size();
@@ -863,32 +1004,29 @@ namespace RISE
 			std::vector<ConservativeVector> low(count), leftCorrection(count), rightCorrection(count);
 			const double scale = config.deltaTimeS/config.cellWidthM;
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				if( !CertifiedMassConstraintSatisfied(beginning[cell],
-					fuel.ConservativeReconstruction()) ) {
-					return Fail(error,"fire solver FCT input violates the certified physical affine invariant");
-				}
+				if(!AcceptedStateAdmissible(beginning[cell],ambientEnthalpy,
+					adiabaticEnthalpy,fuel,error))return false;
 				const std::size_t leftFace = (cell+count-1)%count;
 				const std::size_t rightFace = cell;
 				low[cell] = beginning[cell]+config.deltaTimeS*sourcePerS[cell]+
 					scale*(flux.low[leftFace]-flux.low[rightFace]);
 				leftCorrection[cell] = scale*(flux.high[leftFace]-flux.low[leftFace]);
 				rightCorrection[cell] = -scale*(flux.high[rightFace]-flux.low[rightFace]);
-				if( !ConservativeStateFeasible(low[cell],ambientEnthalpy,
-					adiabaticEnthalpy,256.0) ) {
-					return Fail(error,"fire solver low-order FCT state is infeasible");
-				}
-				if( !CertifiedMassConstraintSatisfied(low[cell],
-					fuel.ConservativeReconstruction()) ) {
-					return Fail(error,"fire solver low-order FCT state violates the certified affine invariant");
-				}
+				if(!AcceptedStateAdmissible(low[cell],ambientEnthalpy,
+					adiabaticEnthalpy,fuel,error))return false;
 			}
 			const std::size_t inequalityCount = 4+MethaneSpeciesCount;
 			std::vector<std::vector<double> > ratio(count,
 				std::vector<double>(inequalityCount,1.0));
 			for( std::size_t cell=0; cell<count; ++cell ) {
+				std::array<ConservativeVector,6> limiterCorrection={};
+				limiterCorrection[0]=leftCorrection[cell];
+				limiterCorrection[1]=rightCorrection[cell];
 				for( std::size_t inequality=0; inequality<inequalityCount; ++inequality ) {
-					const double budget = std::max(0.0,-InequalityValue(low[cell],inequality,
-						ambientEnthalpy,adiabaticEnthalpy));
+					const double scaleLowerBound=CertifiedLimiterScaleLowerBound(low[cell],
+						limiterCorrection,2,inequality,ambientEnthalpy,adiabaticEnthalpy);
+					const double budget=CertifiedLimiterInequalityBudget(low[cell],inequality,
+						ambientEnthalpy,adiabaticEnthalpy,fuel,scaleLowerBound);
 					const double leftUse = InequalityValue(leftCorrection[cell],inequality,
 						ambientEnthalpy,adiabaticEnthalpy);
 					const double rightUse = InequalityValue(rightCorrection[cell],inequality,
@@ -913,6 +1051,16 @@ namespace RISE
 					}
 				}
 			}
+			if(acceptedFaceAlpha){
+				if(acceptedFaceAlpha->size()!=faceAlpha.size()) return Fail(error,
+					"fire solver accepted limiter shape is invalid");
+				for(std::size_t face=0;face<faceAlpha.size();++face){
+					const double accepted=(*acceptedFaceAlpha)[face];
+					if(!std::isfinite(accepted)||accepted<0.0||accepted>faceAlpha[face])
+						return Fail(error,"fire solver accepted limiter exceeds its certificate");
+				}
+				faceAlpha=*acceptedFaceAlpha;
+			}
 			result = low;
 			for( std::size_t face=0; face<count; ++face ) {
 				const std::size_t right = (face+1)%count;
@@ -922,43 +1070,47 @@ namespace RISE
 				result[right] = result[right]+correction;
 			}
 			for( std::size_t cell=0; cell<count; ++cell ) {
-				if( !ConservativeStateFeasible(result[cell],ambientEnthalpy,
-					adiabaticEnthalpy,1024.0) ) {
-					return Fail(error,"fire solver shared FCT result violates a nodal budget");
-				}
-				if( !CertifiedMassConstraintSatisfied(result[cell],
-					fuel.ConservativeReconstruction()) ) {
-					return Fail(error,"fire solver shared FCT result violates the certified affine invariant");
-				}
+				if(!AcceptedStateAdmissible(result[cell],ambientEnthalpy,
+					adiabaticEnthalpy,fuel,error))return false;
 			}
 			return true;
 		}
 
-		inline bool InvertPeriodicTemperatures(
+		inline bool InvertPeriodicTemperaturesWithinBounds(
 			const std::vector<ConservativeVector>& cells,
 			const FireSimulationMethaneRecord& thermochemistry,
+			const double lowerTemperatureK,
+			const double upperTemperatureK,
 			std::vector<double>& temperatureK,
-			std::string* error = 0
+			std::string* error = 0,
+			const unsigned int workerCount = 1u
 			)
 		{
-			temperatureK.assign(cells.size(),0.0);
-			for( std::size_t cell=0; cell<cells.size(); ++cell ) {
+			std::vector<double> candidate(cells.size(),0.0);
+			if(cells.empty()) { temperatureK.clear();return true; }
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(cells.size())));
+			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
+			std::vector<std::size_t> failureCell(workers,noFailure);
+			std::vector<std::string> failureMessage(workers);
+			std::vector<std::thread> threads;
+			for(unsigned int worker=0;worker<workers;++worker) threads.emplace_back([&,worker]() {
+				const std::size_t first=cells.size()*worker/workers;
+				const std::size_t last=cells.size()*(worker+1u)/workers;
+				for(std::size_t cell=first;cell<last;++cell) {
 				MethaneCellState state = FromConservativeVector(cells[cell]);
 				std::string inversionError;
-				std::vector<std::pair<std::string,double> > propertyDensities;
-				if( !ThermochemicalDensitiesWithinForwardEnvelope(state,propertyDensities,
-					&inversionError) ||
-					!thermochemistry.InvertMixtureTemperatureK(propertyDensities,
-					state.sensibleEnergyJPerM3,temperatureK[cell],&inversionError) ) {
+				if(!InvertMethaneTemperatureWithinAcceptedEnvelope(state,lowerTemperatureK,
+					upperTemperatureK,thermochemistry,candidate[cell],&inversionError)) {
 					std::ostringstream message;
 					message << "fire solver cell " << cell << " temperature inversion failed: "
 						<< inversionError << "; constituents=";
 					for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
 						message << (species ? "," : "") << state.constituent[species];
 					}
-					return Fail(error,message.str());
+					failureCell[worker]=cell;failureMessage[worker]=message.str();break;
 				}
-				state.temperatureK = temperatureK[cell];
+				state.temperatureK = candidate[cell];
 				double equationOfStateResidual = 0.0;
 				if( !EquationOfStateResidual(state,thermochemistry,
 					equationOfStateResidual,&inversionError) ||
@@ -970,10 +1122,30 @@ namespace RISE
 					for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
 						message << (species ? "," : "") << state.constituent[species];
 					}
-					return Fail(error,message.str());
+					failureCell[worker]=cell;failureMessage[worker]=message.str();break;
 				}
+				}
+			});
+			for(std::thread& thread:threads) thread.join();
+			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
+			for(unsigned int worker=0;worker<workers;++worker) if(failureCell[worker]<firstFailure) {
+				firstFailure=failureCell[worker];failedWorker=worker;
 			}
+			if(firstFailure!=noFailure) return Fail(error,failureMessage[failedWorker]);
+			temperatureK.swap(candidate);
 			return true;
+		}
+
+		inline bool InvertPeriodicTemperatures(
+			const std::vector<ConservativeVector>& cells,
+			const FireSimulationMethaneRecord& thermochemistry,
+			std::vector<double>& temperatureK,
+			std::string* error = 0
+			)
+		{
+			return InvertPeriodicTemperaturesWithinBounds(cells,thermochemistry,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+				temperatureK,error);
 		}
 
 		inline bool DivergenceFromDiscreteRate(
@@ -989,11 +1161,18 @@ namespace RISE
 				"CH4", "O2", "N2", "CO2", "H2O", "CO", "C(gr)"
 			};
 			const MethaneCellState state = FromConservativeVector(stateVector);
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!AcceptedStateAdmissible(stateVector,lowerEnthalpy,upperEnthalpy,
+					thermochemistry,error))return false;
 			double gasDensity = 0.0, inverseMeanWeightSum = 0.0;
 			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
 				const FireThermochemistrySpecies* property = thermochemistry.FindSpecies(names[species]);
 				if( !property ) return Fail(error,"fire solver divergence identity lacks a gas species");
-				const double density = std::max(0.0,state.constituent[species]);
+				const double density = state.constituent[species];
 				gasDensity += density;
 				inverseMeanWeightSum += density/property->molecularWeightKGPerKMol;
 			}
@@ -1009,7 +1188,7 @@ namespace RISE
 				if( !thermochemistry.CpJPerKGK(names[species],temperatureK,cp,error) ||
 					!thermochemistry.SensibleEnthalpyJPerKG(names[species],temperatureK,
 						enthalpy[species],error) ) return false;
-				heatCapacity += std::max(0.0,state.constituent[species])*cp;
+				heatCapacity += state.constituent[species]*cp;
 			}
 			if( heatCapacity <= 0.0 || !std::isfinite(heatCapacity) ) {
 				return Fail(error,"fire solver divergence identity lacks positive C_T");
@@ -1027,6 +1206,59 @@ namespace RISE
 				nonadvectiveAndSourceRate[1+MethaneCarbon];
 			return std::isfinite(result) ||
 				Fail(error,"fire solver divergence identity overflowed");
+		}
+
+		inline bool DivergenceFromDiscreteIncrement(
+			const ConservativeVector& stateVector,
+			const ConservativeVector& nonadvectiveAndSourceIncrement,
+			const double temperatureK,
+			const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,
+			double& result,
+			std::string* error = 0
+			)
+		{
+			if(!std::isfinite(deltaTimeS)||deltaTimeS<=0.0||
+				!std::isfinite(temperatureK)||temperatureK<=0.0)
+				return Fail(error,"fire solver finite-increment divergence input is invalid");
+			bool zero=true;
+			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+				const double value=nonadvectiveAndSourceIncrement[component];
+				if(!std::isfinite(value))return Fail(error,
+					"fire solver finite-increment divergence input is non-finite");
+				zero=zero&&value==0.0;
+			}
+			if(zero){result=0.0;return true;}
+			static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+			auto volumeRatio=[&](const MethaneCellState& state,const double temperature,
+				double& ratio)->bool{
+				double molarDensity=0.0;
+				for(std::size_t species=0;species<MethaneCarbon;++species){
+					const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(names[species]);
+					if(!property)return Fail(error,"fire solver finite-increment divergence lacks a gas species");
+					molarDensity+=state.constituent[species]/
+						property->molecularWeightKGPerKMol;
+				}
+				ratio=molarDensity*8314.46261815324*temperature/
+					thermochemistry.ThermodynamicPressurePa();
+				return (std::isfinite(ratio)&&ratio>0.0)||Fail(error,
+					"fire solver finite-increment volume ratio is invalid");
+			};
+			ConservativeVector candidateVector=stateVector+nonadvectiveAndSourceIncrement;
+			MethaneCellState candidate=FromConservativeVector(candidateVector);
+			double candidateTemperature=0.0;
+			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(candidate,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+				thermochemistry,candidateTemperature,error))return false;
+			double candidateVolume=0.0;
+			if(!volumeRatio(candidate,candidateTemperature,candidateVolume))return false;
+			// The constrained cell represents one fixed Eulerian volume.  Refer the
+			// finite update to that p0 manifold, rather than preserving a prior
+			// accepted-state residual; the next coupled advection then removes its
+			// own fp/splitting residual instead of accumulating it step by step.
+			result=(candidateVolume-1.0)/deltaTimeS;
+			return std::isfinite(result)||Fail(error,
+				"fire solver finite-increment divergence overflowed");
 		}
 
 		inline bool PeriodicDivergenceTargetFromPhysicalFlux(
@@ -1136,6 +1368,26 @@ namespace RISE
 			std::array<std::vector<double>,3> component;
 		};
 
+		template<typename SliceFunction>
+		inline void ParallelFireSlices(
+			const std::size_t sliceCount,
+			const unsigned int workerCount,
+			const SliceFunction& function
+			)
+		{
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(sliceCount)));
+			if(workers==1u){for(std::size_t slice=0;slice<sliceCount;++slice)function(slice);return;}
+			std::vector<std::thread> threads;
+			threads.reserve(workers);
+			for(unsigned int worker=0;worker<workers;++worker)threads.emplace_back([&,worker](){
+				const std::size_t first=sliceCount*worker/workers;
+				const std::size_t last=sliceCount*(worker+1u)/workers;
+				for(std::size_t slice=first;slice<last;++slice)function(slice);
+			});
+			for(std::thread& thread:threads)thread.join();
+		}
+
 		struct PeriodicMACProjection3DResult
 		{
 			PeriodicMACField faceDensityKGPerM3;
@@ -1162,6 +1414,7 @@ namespace RISE
 			std::array<unsigned int,6> kind;
 			std::array<std::vector<bool>,6> priorInflow;
 			std::vector<bool> bottomFuelMask;
+			std::vector<double> bottomFuelMassFluxKGPerM2S;
 			ConservativeVector ambientState;
 			ConservativeVector injectedState;
 			double ambientDensityKGPerM3;
@@ -1177,6 +1430,16 @@ namespace RISE
 				kind[4] = AdiabaticWallBoundary3D;
 			}
 		};
+
+		inline double OpenBoundaryFuelMassFluxKGPerM2S(
+			const OpenBoundaryConfig3D& boundary,
+			const unsigned int side,
+			const std::size_t boundaryIndex )
+		{
+			return side==4u && !boundary.bottomFuelMassFluxKGPerM2S.empty() ?
+				boundary.bottomFuelMassFluxKGPerM2S[boundaryIndex] :
+				boundary.fuelMassFluxKGPerM2S;
+		}
 
 		struct OpenMACProjection3DResult
 		{
@@ -1219,6 +1482,7 @@ namespace RISE
 			const double rhoDiffusivityKGPerMS,
 			const double conductivityWPerMK,
 			const double cellWidthM,
+			const double fuelMassFluxKGPerM2S,
 			const FireSimulationMethaneRecord& fuel,
 			const FireSimulationMethaneRecord& thermochemistry,
 			OpenBoundaryFlux3D& result,
@@ -1234,8 +1498,7 @@ namespace RISE
 				!std::isfinite(rhoDiffusivityKGPerMS) || rhoDiffusivityKGPerMS < 0.0 ||
 				!std::isfinite(conductivityWPerMK) || conductivityWPerMK < 0.0 ||
 				!std::isfinite(cellWidthM) || cellWidthM <= 0.0 ||
-				!std::isfinite(boundary.fuelMassFluxKGPerM2S) ||
-				boundary.fuelMassFluxKGPerM2S < 0.0 ||
+				!std::isfinite(fuelMassFluxKGPerM2S) || fuelMassFluxKGPerM2S < 0.0 ||
 				!fuel.IsValid() || !thermochemistry.IsValid() ) {
 				return Fail(error,"fire solver open scalar-boundary input is invalid");
 			}
@@ -1254,17 +1517,30 @@ namespace RISE
 				if( injectedTotal <= 0.0 || !std::isfinite(injectedTotal) ) return Fail(error,
 					"fire solver injected conservative ghost is invalid");
 				for( std::size_t component=0; component<MethaneMassStateDimension; ++component ) {
-					result.totalOutwardFlux[component] = -boundary.fuelMassFluxKGPerM2S*
+					result.totalOutwardFlux[component] = -fuelMassFluxKGPerM2S*
 						boundary.injectedState[component]/injectedTotal;
 					if( !std::isfinite(result.totalOutwardFlux[component]) ) return Fail(error,
 						"fire solver fuel-bed constituent flux overflowed");
 				}
 				result.totalOutwardFlux[MethaneMassStateDimension] =
-					-boundary.fuelMassFluxKGPerM2S*
+					-fuelMassFluxKGPerM2S*
 					boundary.injectedState[MethaneMassStateDimension]/injectedTotal;
 				if( !std::isfinite(result.totalOutwardFlux[MethaneMassStateDimension]) ) {
 					return Fail(error,"fire solver fuel-bed enthalpy flux overflowed");
 				}
+				// A prescribed bed tuple is not the ordinary interior MAC donor flux.
+				// The pressure solve already carries outwardVelocity*interior as its
+				// volume displacement; only the difference between that carrier and
+				// the imposed pure-fuel tuple belongs in the physical-flux divergence
+				// identity.  Keeping the full imposed tuple in low/high preserves the
+				// exact one-sided conservative ledger.
+				for( std::size_t component=0; component<MethaneMassStateDimension; ++component ) {
+					result.nonadvectiveMassOutwardFlux[component] =
+						result.totalOutwardFlux[component]-outwardVelocityMPerS*interior[component];
+				}
+				result.nonadvectiveEnergyOutwardFlux =
+					result.totalOutwardFlux[MethaneMassStateDimension]-
+					outwardVelocityMPerS*interior[MethaneMassStateDimension];
 				return true;
 			}
 			const ConservativeVector& donor = inflow ? boundary.ambientState : interior;
@@ -1438,7 +1714,8 @@ namespace RISE
 					if( !BuildOpenBoundaryFlux3D(cellState[cell],temperatureK[cell],
 						outwardVelocity,kind,projection.inflow[side][boundaryIndex],boundary,
 						ambientTemperatureK,injectedTemperatureK,rhoDiffusivityKGPerMS[cell],
-						conductivityWPerMK[cell],shape.cellWidthM,fuel,thermochemistry,
+						conductivityWPerMK[cell],shape.cellWidthM,
+						OpenBoundaryFuelMassFluxKGPerM2S(boundary,side,boundaryIndex),fuel,thermochemistry,
 						result.side[side][boundaryIndex],error) ) return false;
 				}
 			}
@@ -1455,12 +1732,13 @@ namespace RISE
 			const PeriodicMACShape& shape,
 			const OpenPressureOperator3D& pressureOperator,
 			const std::vector<double>& input,
-			std::vector<double>& output
+			std::vector<double>& output,
+			const unsigned int workerCount = 1u
 			)
 		{
 			const double inverseWidth2 = 1.0/(shape.cellWidthM*shape.cellWidthM);
 			output.assign(shape.CellCount(),0.0);
-			for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0;
+			const auto applySlice=[&](const std::size_t z) { for( std::size_t y=0;
 				y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
 				const std::size_t cell = shape.Index(x,y,z);
 				const std::size_t xLeft = OpenMACFaceIndex3D(shape,0,x,y,z);
@@ -1487,7 +1765,8 @@ namespace RISE
 					std::size_t,double>& entry : pressureOperator.rowExtra[cell] ) {
 					output[cell]+=entry.second*input[entry.first];
 				}
-			}
+			}};
+			ParallelFireSlices(shape.nz,workerCount,applySlice);
 		}
 
 		inline void SmoothOpenPressureOperator3D(
@@ -1495,37 +1774,44 @@ namespace RISE
 			const OpenPressureOperator3D& pressureOperator,
 			const std::vector<double>& rightHandSide,
 			const std::size_t iterations,
-			std::vector<double>& solution
+			std::vector<double>& solution,
+			const unsigned int workerCount = 1u
 			)
 		{
 			const double inverseWidth2 = 1.0/(shape.cellWidthM*shape.cellWidthM);
-			std::vector<double> applied, next(shape.CellCount(),0.0);
+			std::vector<double> applied, next(shape.CellCount(),0.0),
+				diagonal(shape.CellCount(),0.0);
+			const auto buildDiagonalSlice=[&](const std::size_t z) { for( std::size_t y=0;
+				y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
+				const std::size_t cell = shape.Index(x,y,z);
+				diagonal[cell] += pressureOperator.faceCoefficient.component[0][
+					OpenMACFaceIndex3D(shape,0,x,y,z)];
+				diagonal[cell] += pressureOperator.faceCoefficient.component[0][
+					OpenMACFaceIndex3D(shape,0,x+1,y,z)];
+				diagonal[cell] += pressureOperator.faceCoefficient.component[1][
+					OpenMACFaceIndex3D(shape,1,x,y,z)];
+				diagonal[cell] += pressureOperator.faceCoefficient.component[1][
+					OpenMACFaceIndex3D(shape,1,x,y+1,z)];
+				diagonal[cell] += pressureOperator.faceCoefficient.component[2][
+					OpenMACFaceIndex3D(shape,2,x,y,z)];
+				diagonal[cell] += pressureOperator.faceCoefficient.component[2][
+					OpenMACFaceIndex3D(shape,2,x,y,z+1)];
+				diagonal[cell] *= inverseWidth2;
+				if( cell<pressureOperator.rowExtra.size() ) for( const std::pair<
+					std::size_t,double>& entry : pressureOperator.rowExtra[cell] ) {
+					if( entry.first==cell ) diagonal[cell]+=entry.second;
+				}
+			}};
+			ParallelFireSlices(shape.nz,workerCount,buildDiagonalSlice);
 			for( std::size_t iteration=0; iteration<iterations; ++iteration ) {
-				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied);
-				for( std::size_t z=0; z<shape.nz; ++z ) for( std::size_t y=0;
+				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied,workerCount);
+				const auto updateSlice=[&](const std::size_t z) { for( std::size_t y=0;
 					y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
 					const std::size_t cell = shape.Index(x,y,z);
-					double diagonal = 0.0;
-					diagonal += pressureOperator.faceCoefficient.component[0][
-						OpenMACFaceIndex3D(shape,0,x,y,z)];
-					diagonal += pressureOperator.faceCoefficient.component[0][
-						OpenMACFaceIndex3D(shape,0,x+1,y,z)];
-					diagonal += pressureOperator.faceCoefficient.component[1][
-						OpenMACFaceIndex3D(shape,1,x,y,z)];
-					diagonal += pressureOperator.faceCoefficient.component[1][
-						OpenMACFaceIndex3D(shape,1,x,y+1,z)];
-					diagonal += pressureOperator.faceCoefficient.component[2][
-						OpenMACFaceIndex3D(shape,2,x,y,z)];
-					diagonal += pressureOperator.faceCoefficient.component[2][
-						OpenMACFaceIndex3D(shape,2,x,y,z+1)];
-					diagonal *= inverseWidth2;
-					if( cell<pressureOperator.rowExtra.size() ) for( const std::pair<
-						std::size_t,double>& entry : pressureOperator.rowExtra[cell] ) {
-						if( entry.first==cell ) diagonal+=entry.second;
-					}
 					next[cell] = solution[cell]+(2.0/3.0)*
-						(rightHandSide[cell]-applied[cell])/diagonal;
-				}
+						(rightHandSide[cell]-applied[cell])/diagonal[cell];
+				}};
+				ParallelFireSlices(shape.nz,workerCount,updateSlice);
 				solution.swap(next);
 			}
 		}
@@ -1586,11 +1872,12 @@ namespace RISE
 			const PeriodicMACShape& fineShape,
 			const PeriodicMACShape& coarseShape,
 			const std::vector<double>& fine,
-			std::vector<double>& coarse
+			std::vector<double>& coarse,
+			const unsigned int workerCount = 1u
 			)
 		{
 			coarse.assign(coarseShape.CellCount(),0.0);
-			for( std::size_t z=0; z<coarseShape.nz; ++z ) for( std::size_t y=0;
+			const auto restrictSlice=[&](const std::size_t z){for( std::size_t y=0;
 				y<coarseShape.ny; ++y ) for( std::size_t x=0; x<coarseShape.nx; ++x ) {
 				double sum = 0.0, sampleCount=0.0;
 				for( std::size_t dz=0; dz<2; ++dz ) for( std::size_t dy=0; dy<2; ++dy )
@@ -1600,17 +1887,19 @@ namespace RISE
 						sampleCount+=1.0;
 					}
 				coarse[coarseShape.Index(x,y,z)] = sum/sampleCount;
-			}
+			}};
+			ParallelFireSlices(coarseShape.nz,workerCount,restrictSlice);
 		}
 
 		inline void ProlongOpenCorrection3D(
 			const PeriodicMACShape& fineShape,
 			const PeriodicMACShape& coarseShape,
 			const std::vector<double>& coarse,
-			std::vector<double>& fine
+			std::vector<double>& fine,
+			const unsigned int workerCount = 1u
 			)
 		{
-			for( std::size_t z=0; z<fineShape.nz; ++z ) for( std::size_t y=0;
+			const auto prolongSlice=[&](const std::size_t z){for( std::size_t y=0;
 				y<fineShape.ny; ++y ) for( std::size_t x=0; x<fineShape.nx; ++x ) {
 				const std::size_t cx=x/2, cy=y/2, cz=z/2;
 				const double tx=(x%2)*0.5,ty=(y%2)*0.5,tz=(z%2)*0.5;
@@ -1624,34 +1913,65 @@ namespace RISE
 							coarse[coarseShape.Index(qx,qy,qz)];
 					}
 				fine[fineShape.Index(x,y,z)] += value;
-			}
+			}};
+			ParallelFireSlices(fineShape.nz,workerCount,prolongSlice);
 		}
 
 		inline void OpenPressureMultigridVCycle3D(
 			const PeriodicMACShape& shape,
 			const OpenPressureOperator3D& pressureOperator,
 			const std::vector<double>& rightHandSide,
-			std::vector<double>& solution
+			std::vector<double>& solution,
+			const unsigned int workerCount = 1u
 			)
 		{
 			PeriodicMACShape coarseShape;
 			OpenPressureOperator3D coarseOperator;
 			if( !CoarsenOpenPressureOperator3D(shape,pressureOperator,coarseShape,
 				coarseOperator) ) {
-				SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,60,solution);
+				SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,60,solution,workerCount);
 				return;
 			}
-			SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,4,solution);
+			SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,4,solution,workerCount);
 			std::vector<double> applied,residual(shape.CellCount(),0.0),coarseRight;
-			ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied);
+			ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied,workerCount);
 			for( std::size_t cell=0; cell<shape.CellCount(); ++cell ) residual[cell] =
 				rightHandSide[cell]-applied[cell];
-			RestrictOpenResidual3D(shape,coarseShape,residual,coarseRight);
+			RestrictOpenResidual3D(shape,coarseShape,residual,coarseRight,workerCount);
 			std::vector<double> coarseCorrection(coarseShape.CellCount(),0.0);
 			OpenPressureMultigridVCycle3D(coarseShape,coarseOperator,coarseRight,
-				coarseCorrection);
-			ProlongOpenCorrection3D(shape,coarseShape,coarseCorrection,solution);
-			SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,4,solution);
+				coarseCorrection,1u);
+			ProlongOpenCorrection3D(shape,coarseShape,coarseCorrection,solution,workerCount);
+			SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,4,solution,workerCount);
+		}
+
+		inline void OpenPressureMultigridHierarchyVCycle3D(
+			const std::vector<PeriodicMACShape>& shape,
+			const std::vector<OpenPressureOperator3D>& pressureOperator,
+			const std::size_t level,
+			const std::vector<double>& rightHandSide,
+			std::vector<double>& solution,
+			const unsigned int workerCount = 1u
+			)
+		{
+			if(level+1u==shape.size()) {
+				SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
+					rightHandSide,60,solution,workerCount);
+				return;
+			}
+			SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
+				rightHandSide,4,solution,workerCount);
+			std::vector<double> applied,residual(shape[level].CellCount(),0.0),coarseRight;
+			ApplyOpenPressureOperator3D(shape[level],pressureOperator[level],solution,applied,workerCount);
+			for(std::size_t cell=0;cell<shape[level].CellCount();++cell) residual[cell]=
+				rightHandSide[cell]-applied[cell];
+			RestrictOpenResidual3D(shape[level],shape[level+1u],residual,coarseRight,workerCount);
+			std::vector<double> coarseCorrection(shape[level+1u].CellCount(),0.0);
+			OpenPressureMultigridHierarchyVCycle3D(shape,pressureOperator,level+1u,
+				coarseRight,coarseCorrection,1u);
+			ProlongOpenCorrection3D(shape[level],shape[level+1u],coarseCorrection,solution,workerCount);
+			SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
+				rightHandSide,4,solution,workerCount);
 		}
 
 		inline double OpenVectorDot3D(
@@ -1670,15 +1990,16 @@ namespace RISE
 			const std::vector<double>& rightHandSide,
 			const double tolerance,
 			std::vector<double>& solution,
-			std::vector<double>& residualHistory
+			std::vector<double>& residualHistory,
+			const unsigned int workerCount = 1u
 			)
 		{
 			const std::size_t count=shape.CellCount();
 			solution.assign(count,0.0);
 			std::vector<double> applied;
 			for( std::size_t cycle=0; cycle<128; ++cycle ) {
-				OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,solution);
-				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied);
+				OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,solution,workerCount);
+				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied,workerCount);
 				double maximum=0.0;
 				for( std::size_t i=0; i<count; ++i ) maximum=std::max(maximum,
 					std::fabs(rightHandSide[i]-applied[i]));
@@ -1700,8 +2021,8 @@ namespace RISE
 				if( !std::isfinite(beta) ) return false;
 				for( std::size_t i=0; i<count; ++i ) p[i]=r[i]+beta*(p[i]-omega*v[i]);
 				pHat.assign(count,0.0);
-				OpenPressureMultigridVCycle3D(shape,pressureOperator,p,pHat);
-				ApplyOpenPressureOperator3D(shape,pressureOperator,pHat,v);
+				OpenPressureMultigridVCycle3D(shape,pressureOperator,p,pHat,workerCount);
+				ApplyOpenPressureOperator3D(shape,pressureOperator,pHat,v,workerCount);
 				const double denominator=OpenVectorDot3D(rHat,v);
 				if( !std::isfinite(denominator) || denominator==0.0 ) return false;
 				alpha=rho/denominator;
@@ -1714,8 +2035,8 @@ namespace RISE
 					return true;
 				}
 				sHat.assign(count,0.0);
-				OpenPressureMultigridVCycle3D(shape,pressureOperator,s,sHat);
-				ApplyOpenPressureOperator3D(shape,pressureOperator,sHat,t);
+				OpenPressureMultigridVCycle3D(shape,pressureOperator,s,sHat,workerCount);
+				ApplyOpenPressureOperator3D(shape,pressureOperator,sHat,t,workerCount);
 				const double tSquared=OpenVectorDot3D(t,t);
 				if( !std::isfinite(tSquared) || tSquared==0.0 ) return false;
 				omega=OpenVectorDot3D(t,s)/tSquared;
@@ -1795,6 +2116,16 @@ namespace RISE
 			if( !boundary.bottomFuelMask.empty() &&
 				boundary.bottomFuelMask.size() != shape.nx*shape.ny ) {
 				return Fail(error,"fire solver 3-D fuel-mask shape is invalid");
+			}
+			if( !boundary.bottomFuelMassFluxKGPerM2S.empty() &&
+				(boundary.bottomFuelMassFluxKGPerM2S.size()!=shape.nx*shape.ny ||
+				 boundary.bottomFuelMask.size()!=shape.nx*shape.ny) ) return Fail(error,
+				"fire solver 3-D fuel-flux pattern shape is invalid");
+			for( std::size_t face=0;face<boundary.bottomFuelMassFluxKGPerM2S.size();++face ) {
+				if( !std::isfinite(boundary.bottomFuelMassFluxKGPerM2S[face]) ||
+					boundary.bottomFuelMassFluxKGPerM2S[face]<0.0 ||
+					(!boundary.bottomFuelMask[face] && boundary.bottomFuelMassFluxKGPerM2S[face]!=0.0) )
+					return Fail(error,"fire solver 3-D fuel-flux pattern is invalid");
 			}
 			if( !boundary.bottomFuelMask.empty() &&
 				boundary.kind[4]!=AdiabaticWallBoundary3D ) return Fail(error,
@@ -2092,7 +2423,8 @@ namespace RISE
 							if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
 							const std::size_t face=OpenMACFaceIndex3D(shape,axis,x,y,z);
 							result.velocityMPerS.component[axis][face]=kind==AdiabaticWallBoundary3D?
-								0.0:((positive?-1.0:1.0)*boundary.fuelMassFluxKGPerM2S/
+								0.0:((positive?-1.0:1.0)*OpenBoundaryFuelMassFluxKGPerM2S(
+									boundary,side,index)/
 								boundary.injectedGasDensityKGPerM3);
 						}
 					}
@@ -2123,9 +2455,11 @@ namespace RISE
 								continue;
 							}
 							if( kind==FuelInletBoundary3D ) {
+								const double fuelFlux=OpenBoundaryFuelMassFluxKGPerM2S(
+									boundary,side,boundaryIndex);
 								result.velocityMPerS.component[axis][face]=sign<0.0?
-									boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3:
-									-boundary.fuelMassFluxKGPerM2S/boundary.injectedGasDensityKGPerM3;
+									fuelFlux/boundary.injectedGasDensityKGPerM3:
+									-fuelFlux/boundary.injectedGasDensityKGPerM3;
 								continue;
 							}
 							const double density=result.faceDensityKGPerM3.component[axis][face];
@@ -2321,7 +2655,8 @@ namespace RISE
 			std::vector<double> r=rightHandSide,rHat=r,p(count,0.0),v(count,0.0),
 				s(count,0.0),t(count,0.0),pHat,sHat;
 			double rhoPrevious=1.0,alpha=1.0,omega=1.0;
-			for( std::size_t iteration=0; iteration<512; ++iteration ) {
+			static const std::size_t maximumIterations=28u;
+			for( std::size_t iteration=0; iteration<maximumIterations; ++iteration ) {
 				double maximum=0.0;
 				for(const double value:r) maximum=std::max(maximum,std::fabs(value));
 				if(maximum<=tolerance) return true;
@@ -2361,7 +2696,8 @@ namespace RISE
 			const double deltaTimeS,
 			const double absoluteTolerancePerS,
 			OpenMACProjection3DResult& result,
-			std::string* error = 0
+			std::string* error = 0,
+			const unsigned int workerCount = 1u
 			)
 		{
 			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
@@ -2458,26 +2794,37 @@ namespace RISE
 						candidate.faceDensityKGPerM3.component[axis][face];
 				}
 			}
+			std::vector<PeriodicMACShape> preconditionerShape(1u,shape);
+			std::vector<OpenPressureOperator3D> preconditionerHierarchy;
+			preconditionerHierarchy.push_back(std::move(preconditionerOperator));
+			for(;;) {
+				PeriodicMACShape coarseShape;
+				OpenPressureOperator3D coarseOperator;
+				if(!CoarsenOpenPressureOperator3D(preconditionerShape.back(),
+					preconditionerHierarchy.back(),coarseShape,coarseOperator)) break;
+				preconditionerShape.push_back(coarseShape);
+				preconditionerHierarchy.push_back(std::move(coarseOperator));
+			}
 			std::vector<double> unknown(layout.unknownCount,0.0);
 			std::vector<std::vector<unsigned char> > activeHistory;
 			auto evaluateVelocity=[&](const std::vector<double>& value,OpenMACField3D& velocity){
 				for(unsigned int axis=0;axis<3;++axis)velocity.component[axis].assign(
 					OpenMACFaceCount3D(shape,axis),0.0);
-				for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
-					for(std::size_t x=1;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,0,x,y,z);
+				ParallelFireSlices(shape.nz,workerCount,[&](const std::size_t z){for(std::size_t y=0;
+					y<shape.ny;++y)for(std::size_t x=1;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,0,x,y,z);
 					velocity.component[0][f]=unprojectedMomentumKGPerM2S.component[0][f]/
 					candidate.faceDensityKGPerM3.component[0][f]-deltaTimeS*(value[shape.Index(x,y,z)]-
-					value[shape.Index(x-1,y,z)])/(candidate.faceDensityKGPerM3.component[0][f]*shape.cellWidthM);}
-				for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=1;y<shape.ny;++y)
-					for(std::size_t x=0;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,1,x,y,z);
+					value[shape.Index(x-1,y,z)])/(candidate.faceDensityKGPerM3.component[0][f]*shape.cellWidthM);}});
+				ParallelFireSlices(shape.nz,workerCount,[&](const std::size_t z){for(std::size_t y=1;
+					y<shape.ny;++y)for(std::size_t x=0;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,1,x,y,z);
 					velocity.component[1][f]=unprojectedMomentumKGPerM2S.component[1][f]/
 					candidate.faceDensityKGPerM3.component[1][f]-deltaTimeS*(value[shape.Index(x,y,z)]-
-					value[shape.Index(x,y-1,z)])/(candidate.faceDensityKGPerM3.component[1][f]*shape.cellWidthM);}
-				for(std::size_t z=1;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
-					for(std::size_t x=0;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,2,x,y,z);
+					value[shape.Index(x,y-1,z)])/(candidate.faceDensityKGPerM3.component[1][f]*shape.cellWidthM);}});
+				ParallelFireSlices(shape.nz,workerCount,[&](const std::size_t z){if(!z)return;for(std::size_t y=0;
+					y<shape.ny;++y)for(std::size_t x=0;x<shape.nx;++x){const std::size_t f=OpenMACFaceIndex3D(shape,2,x,y,z);
 					velocity.component[2][f]=unprojectedMomentumKGPerM2S.component[2][f]/
 					candidate.faceDensityKGPerM3.component[2][f]-deltaTimeS*(value[shape.Index(x,y,z)]-
-					value[shape.Index(x,y,z-1)])/(candidate.faceDensityKGPerM3.component[2][f]*shape.cellWidthM);}
+					value[shape.Index(x,y,z-1)])/(candidate.faceDensityKGPerM3.component[2][f]*shape.cellWidthM);}});
 				for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
 					const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
 					for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
@@ -2491,7 +2838,8 @@ namespace RISE
 						OpenMACFaceIndex3D(shape,axis,x,y,z);const double sign=positive?1.0:-1.0;
 						if(kind==AdiabaticWallBoundary3D){velocity.component[axis][f]=0.0;continue;}
 						if(kind==FuelInletBoundary3D){velocity.component[axis][f]=(positive?-1.0:1.0)*
-						boundary.fuelMassFluxKGPerM2S/candidate.faceDensityKGPerM3.component[axis][f];continue;}
+						OpenBoundaryFuelMassFluxKGPerM2S(boundary,side,index)/
+						candidate.faceDensityKGPerM3.component[axis][f];continue;}
 						const std::size_t cx=axis==0?(positive?shape.nx-1:0):x,cy=axis==1?
 						(positive?shape.ny-1:0):y,cz=axis==2?(positive?shape.nz-1:0):z;
 						const std::size_t cell=shape.Index(cx,cy,cz),bindex=layout.boundaryUnknown[side][index];
@@ -2507,9 +2855,10 @@ namespace RISE
 			};
 			auto evaluateResidual=[&](const std::vector<double>& value,OpenMACField3D& velocity,
 				std::vector<double>& residual){if(!evaluateVelocity(value,velocity))return false;
-				residual.assign(layout.unknownCount,0.0);for(std::size_t z=0;z<shape.nz;++z)
-				for(std::size_t y=0;y<shape.ny;++y)for(std::size_t x=0;x<shape.nx;++x){const std::size_t cell=
-				shape.Index(x,y,z);residual[cell]=OpenMACDivergence3D(shape,velocity,x,y,z)-divergenceTargetPerS[cell];}
+				residual.assign(layout.unknownCount,0.0);ParallelFireSlices(shape.nz,workerCount,
+				[&](const std::size_t z){for(std::size_t y=0;y<shape.ny;++y)for(std::size_t x=0;
+				x<shape.nx;++x){const std::size_t cell=shape.Index(x,y,z);residual[cell]=
+				OpenMACDivergence3D(shape,velocity,x,y,z)-divergenceTargetPerS[cell];}});
 				for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
 				const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
 				for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
@@ -2530,7 +2879,7 @@ namespace RISE
 					return Fail(error,"fire solver augmented 3-D active set cycled");
 				}
 				activeHistory.push_back(activeState);
-				bool converged=false;for(std::size_t nonlinear=0;nonlinear<40;++nonlinear){OpenMACField3D velocity;
+				bool converged=false;for(std::size_t nonlinear=0;nonlinear<12;++nonlinear){OpenMACField3D velocity;
 					std::vector<double> residual;
 					if(!evaluateResidual(unknown,velocity,residual)) return Fail(error,
 						"fire solver augmented residual overflowed");
@@ -2541,14 +2890,18 @@ namespace RISE
 					candidate.nonlinearResidualHistory.push_back(norm);if(maximumDivergence<=absoluteTolerancePerS &&
 					maximumHead<=boundary.pressureTolerancePa){candidate.velocityMPerS=velocity;candidate.maximumDivergenceResidualPerS=
 					maximumDivergence;candidate.maximumBoundaryHeadResidualPa=maximumHead;converged=true;break;}
+					OpenMACField3D affineVelocity;
+					std::vector<double> zeroDirection(layout.unknownCount,0.0);
+					if(!evaluateVelocity(zeroDirection,affineVelocity)) return Fail(error,
+						"fire solver augmented affine velocity overflowed");
 					auto applyJ=[&](const std::vector<double>& direction,std::vector<double>& output){
 						OpenMACField3D dVelocity;if(!evaluateVelocity(direction,dVelocity))return false;
 						// evaluateVelocity is affine; remove the unprojected/prescribed constant.
-						OpenMACField3D zeroVelocity;std::vector<double> zero(layout.unknownCount,0.0);
-						if(!evaluateVelocity(zero,zeroVelocity))return false;for(unsigned int axis=0;axis<3;++axis)
-						for(std::size_t f=0;f<dVelocity.component[axis].size();++f)dVelocity.component[axis][f]-=zeroVelocity.component[axis][f];
-						output.assign(layout.unknownCount,0.0);for(std::size_t z=0;z<shape.nz;++z)for(std::size_t y=0;y<shape.ny;++y)
-						for(std::size_t x=0;x<shape.nx;++x)output[shape.Index(x,y,z)]=OpenMACDivergence3D(shape,dVelocity,x,y,z);
+						for(unsigned int axis=0;axis<3;++axis)
+						for(std::size_t f=0;f<dVelocity.component[axis].size();++f)dVelocity.component[axis][f]-=affineVelocity.component[axis][f];
+						output.assign(layout.unknownCount,0.0);ParallelFireSlices(shape.nz,workerCount,
+						[&](const std::size_t z){for(std::size_t y=0;y<shape.ny;++y)for(std::size_t x=0;
+						x<shape.nx;++x)output[shape.Index(x,y,z)]=OpenMACDivergence3D(shape,dVelocity,x,y,z);});
 						for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
 						const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
 						for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
@@ -2566,8 +2919,8 @@ namespace RISE
 						output.assign(layout.unknownCount,0.0);
 						std::vector<double> cellRight(rhs.begin(),rhs.begin()+cellCount);
 						std::vector<double> cellSolution(cellCount,0.0);
-						OpenPressureMultigridVCycle3D(shape,preconditionerOperator,
-							cellRight,cellSolution);
+						OpenPressureMultigridHierarchyVCycle3D(preconditionerShape,
+							preconditionerHierarchy,0u,cellRight,cellSolution,workerCount);
 						for( std::size_t cell=0; cell<cellCount; ++cell ) output[cell]=
 							cellSolution[cell]/deltaTimeS;
 						for( std::size_t i=cellCount; i<layout.unknownCount; ++i ) {
@@ -2621,7 +2974,8 @@ namespace RISE
 			const double deltaTimeS,
 			const double absoluteTolerancePerS,
 			OpenMACProjection3DResult& publishedResult,
-			std::string* error = 0
+			std::string* error = 0,
+			const unsigned int workerCount = 1u
 			)
 		{
 			if( !ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
@@ -2799,7 +3153,7 @@ namespace RISE
 						if(kind==AdiabaticWallBoundary3D){result.velocityMPerS.component[axis][face]=0.0;
 							continue;}
 						if(kind==FuelInletBoundary3D){result.velocityMPerS.component[axis][face]=
-							-sign*boundary.fuelMassFluxKGPerM2S/
+							-sign*OpenBoundaryFuelMassFluxKGPerM2S(boundary,side,index)/
 							result.faceDensityKGPerM3.component[axis][face];continue;}
 						const double density=result.faceDensityKGPerM3.component[axis][face];
 						const double outwardUnprojected=sign*unprojectedMomentumKGPerM2S.
@@ -2832,7 +3186,7 @@ namespace RISE
 				if(maximum<=absoluteTolerancePerS){result.maximumDivergenceResidualPerS=maximum;break;}
 				std::vector<double> correction,linearHistory;
 				if( !SolveOpenPressureMultigrid3D(shape,pressureOperator,rightHandSide,
-					absoluteTolerancePerS/deltaTimeS,correction,linearHistory) ) return Fail(error,
+					absoluteTolerancePerS/deltaTimeS,correction,linearHistory,workerCount) ) return Fail(error,
 					"fire solver final 3-D open multigrid did not converge");
 				for( const double value : linearHistory ) result.multigridResidualHistoryPerS.
 					push_back(deltaTimeS*value);
@@ -2960,10 +3314,18 @@ namespace RISE
 				conductivityWPerMK.size()!=count || !std::isfinite(deltaTimeS) ||
 				deltaTimeS<=0.0 ) return Fail(error,
 				"fire solver 3-D open boundary-stage arrays are malformed");
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error))
+				return false;
 			for( std::size_t cell=0; cell<count; ++cell ) {
 				MethaneCellState physical=FromConservativeVector(cellState[cell]);
 				physical.temperatureK=temperatureK[cell];
 				if( !ValidateCellState(physical,error) ||
+					!AcceptedStateAdmissible(cellState[cell],lowerEnthalpy,upperEnthalpy,
+						thermochemistry,error) ||
 					!std::isfinite(rhoDiffusivityKGPerMS[cell]) ||
 					rhoDiffusivityKGPerMS[cell]<0.0 ||
 					!std::isfinite(conductivityWPerMK[cell]) || conductivityWPerMK[cell]<0.0 ) {
@@ -3256,7 +3618,7 @@ namespace RISE
 			targetMean /= static_cast<double>(count);
 			if( std::fabs(targetMean) > std::max(absoluteTolerancePerS,
 				128.0*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,targetMaximum)) ) {
+					std::max(1.0,targetMaximum)) ) {
 				return Fail(error,"fire solver 3-D periodic divergence target violates compatibility");
 			}
 			std::vector<double> rightHandSide(count,0.0);
@@ -3957,6 +4319,47 @@ namespace RISE
 			return true;
 		}
 
+		inline bool PicardContinuousVerificationResidual(
+			const std::vector<double>& acceptedTarget,
+			const std::vector<double>& iterationTarget,
+			const std::vector<double>& acceptedFaceMass,
+			const std::vector<double>& iterationFaceMass,
+			const std::vector<double>& acceptedDiffusivity,
+			const std::vector<double>& iterationDiffusivity,
+			const std::vector<double>& acceptedConductivity,
+			const std::vector<double>& iterationConductivity,
+			const std::vector<double>& acceptedViscosity,
+			const std::vector<double>& iterationViscosity,
+			const double cellWidthM,
+			double& result,
+			std::string* error=0)
+		{
+			if(acceptedTarget.size()!=iterationTarget.size()||
+				acceptedFaceMass.size()!=iterationFaceMass.size()||
+				acceptedDiffusivity.size()!=iterationDiffusivity.size()||
+				acceptedConductivity.size()!=iterationConductivity.size()||
+				acceptedViscosity.size()!=iterationViscosity.size()||
+				!std::isfinite(cellWidthM)||cellWidthM<=0.0) return Fail(error,
+					"fire solver Picard verification shape is invalid");
+			double candidate=0.0;
+			auto compare=[&](const std::vector<double>& accepted,
+				const std::vector<double>& iteration,const double scale){
+				for(std::size_t i=0;i<accepted.size();++i){
+					if(!std::isfinite(accepted[i])||!std::isfinite(iteration[i]))return false;
+					candidate=std::max(candidate,std::fabs(accepted[i]-iteration[i])*scale);
+				}
+				return true;
+			};
+			if(!compare(acceptedTarget,iterationTarget,1.0)||
+				!compare(acceptedFaceMass,iterationFaceMass,1.0/cellWidthM)||
+				!compare(acceptedDiffusivity,iterationDiffusivity,1.0)||
+				!compare(acceptedConductivity,iterationConductivity,1.0)||
+				!compare(acceptedViscosity,iterationViscosity,1.0)) return Fail(error,
+					"fire solver Picard verification value is nonfinite");
+			result=candidate;
+			return true;
+		}
+
 		struct PeriodicCoupledStage
 		{
 			PeriodicFluxPair flux;
@@ -3968,7 +4371,37 @@ namespace RISE
 			std::vector<double> diffusivityM2PerS;
 			std::vector<double> conductivityWPerMK;
 			std::vector<double> dynamicViscosityPaS;
+			double maximumLimiterClassDiscrepancy=0.0;
+			bool limiterDiscontinuousClass=false;
 		};
+
+		inline bool SelectLimiterPicardAcceptance(
+			const std::vector<double>& acceptingIteration,
+			const std::vector<double>& verification,
+			const double projectionTolerance,
+			std::vector<double>& accepted,
+			double& maximumDiscrepancy,
+			bool& discontinuousClass,
+			std::string* error=0)
+		{
+			if(acceptingIteration.size()!=verification.size()||
+				!std::isfinite(projectionTolerance)||projectionTolerance<0.0)
+				return Fail(error,"fire solver limiter acceptance input is malformed");
+			maximumDiscrepancy=0.0;
+			for(std::size_t face=0;face<verification.size();++face){
+				const double next=acceptingIteration[face],verified=verification[face];
+				if(!std::isfinite(next)||!std::isfinite(verified)||next<0.0||next>1.0||
+					verified<0.0||verified>1.0) return Fail(error,
+						"fire solver limiter acceptance coefficient is invalid");
+				maximumDiscrepancy=std::max(maximumDiscrepancy,std::fabs(next-verified));
+			}
+			discontinuousClass=maximumDiscrepancy>projectionTolerance;
+			accepted.resize(verification.size());
+			for(std::size_t face=0;face<verification.size();++face) accepted[face]=
+				discontinuousClass?std::min(acceptingIteration[face],verification[face]):
+					verification[face];
+			return true;
+		}
 
 		inline bool BuildPeriodicStageTransport(
 			const std::vector<ConservativeVector>& state,
@@ -4028,7 +4461,6 @@ namespace RISE
 			std::vector<double> temperature;
 			if( !InvertPeriodicTemperatures(state,thermochemistry,temperature,error) ) return false;
 			std::vector<double> target(state.size(),0.0), priorMassFlux(state.size(),0.0);
-			std::vector<double> priorAlpha(state.size(),0.0);
 			std::vector<double> priorDiffusivity(state.size(),0.0),
 				priorConductivity(state.size(),0.0),priorViscosity(state.size(),0.0);
 			result.picardResidualPerS.clear();
@@ -4054,7 +4486,7 @@ namespace RISE
 				std::vector<double> nextTarget;
 				if( !PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,flux,
 					frozenSourcePerS,config.cellWidthM,thermochemistry,nextTarget,error) ) return false;
-				double residual = 0.0, massFluxResidual = 0.0, alphaResidual = 0.0,
+				double residual = 0.0, massFluxResidual = 0.0,
 					coefficientResidual = 0.0;
 				for( std::size_t cell=0; cell<state.size(); ++cell ) {
 					residual = std::max(residual,std::fabs(nextTarget[cell]-target[cell]));
@@ -4063,19 +4495,16 @@ namespace RISE
 					if( iteration ) massFluxResidual = std::max(massFluxResidual,
 						std::fabs(massFlux-priorMassFlux[cell]));
 					priorMassFlux[cell] = massFlux;
-					if( solvePredictorLimiter && iteration ) alphaResidual = std::max(
-						alphaResidual,std::fabs(nextAlpha[cell]-priorAlpha[cell]));
 					if( iteration ) coefficientResidual = std::max({coefficientResidual,
 						std::fabs(diffusivityM2PerS[cell]-priorDiffusivity[cell]),
 						std::fabs(conductivityWPerMK[cell]-priorConductivity[cell]),
 						std::fabs(dynamicViscosityPaS[cell]-priorViscosity[cell])});
 				}
-				if( solvePredictorLimiter ) priorAlpha = nextAlpha;
 				priorDiffusivity = diffusivityM2PerS;
 				priorConductivity = conductivityWPerMK;
 				priorViscosity = dynamicViscosityPaS;
 				result.picardResidualPerS.push_back(std::max({residual,massFluxResidual/
-					std::max(config.cellWidthM,1.0e-300),alphaResidual,coefficientResidual}));
+					std::max(config.cellWidthM,1.0e-300),coefficientResidual}));
 				target = nextTarget;
 				result.flux = flux;
 				result.projection = projection;
@@ -4089,14 +4518,55 @@ namespace RISE
 					result.nonpressureMomentumRHS,error) ) return false;
 				if( residual <= projectionTolerancePerS &&
 					(!iteration || (massFluxResidual/config.cellWidthM <= projectionTolerancePerS &&
-						alphaResidual <= projectionTolerancePerS &&
 						coefficientResidual <= projectionTolerancePerS)) ) {
 					if( iteration ) {
 						PeriodicProjectionResult acceptedProjection;
 						if( !ProjectPeriodicMACVelocity(GasDensityFromConservative(state),
 							unprojectedMomentum,target,config.cellWidthM,config.deltaTimeS,
 							projectionTolerancePerS,acceptedProjection,error) ) return false;
-						result.projection = acceptedProjection;
+						std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
+						if(!BuildPeriodicStageTransport(state,temperature,acceptedProjection.velocityMPerS,
+							config.cellWidthM,dns,thermochemistry,transport,acceptedDiffusivity,
+							acceptedConductivity,acceptedViscosity,error)) return false;
+						PeriodicFluxPair acceptedFlux;
+						if(!BuildPeriodicFluxPair(state,temperature,acceptedProjection.velocityMPerS,
+							acceptedDiffusivity,acceptedConductivity,config.cellWidthM,fuel,
+							thermochemistry,acceptedFlux,error)) return false;
+						std::vector<double> verifiedTarget;
+						if(!PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,acceptedFlux,
+							frozenSourcePerS,config.cellWidthM,thermochemistry,verifiedTarget,error))
+							return false;
+						double verification=0.0;
+						if(!PicardContinuousVerificationResidual(verifiedTarget,target,
+							acceptedProjection.momentumKGPerM2S,projection.momentumKGPerM2S,
+							acceptedDiffusivity,diffusivityM2PerS,acceptedConductivity,
+							conductivityWPerMK,acceptedViscosity,dynamicViscosityPaS,
+							config.cellWidthM,verification,error)) return false;
+						if(verification>projectionTolerancePerS){target=verifiedTarget;continue;}
+						std::vector<double> verifiedAlpha;
+						if(solvePredictorLimiter){
+							std::vector<ConservativeVector> verifiedPredictor;
+							if(!ApplyPeriodicSharedFCT(state,acceptedFlux,frozenSourcePerS,config,fuel,
+								thermochemistry,verifiedPredictor,verifiedAlpha,error)) return false;
+							if(!SelectLimiterPicardAcceptance(nextAlpha,verifiedAlpha,
+								projectionTolerancePerS,result.faceAlpha,
+								result.maximumLimiterClassDiscrepancy,
+								result.limiterDiscontinuousClass,error)) return false;
+							std::vector<ConservativeVector> certifiedPredictor;
+							std::vector<double> certifiedAlpha;
+							if(!ApplyPeriodicSharedFCT(state,acceptedFlux,frozenSourcePerS,config,fuel,
+								thermochemistry,certifiedPredictor,certifiedAlpha,error,
+								&result.faceAlpha)) return false;
+						}
+						result.projection=acceptedProjection;
+						result.flux=acceptedFlux;
+						result.divergenceTargetPerS=verifiedTarget;
+						result.diffusivityM2PerS=acceptedDiffusivity;
+						result.conductivityWPerMK=acceptedConductivity;
+						result.dynamicViscosityPaS=acceptedViscosity;
+						if(!RemainingMomentumRHS(state,acceptedProjection.velocityMPerS,
+							acceptedViscosity,frozenSourcePerS,config,
+							result.nonpressureMomentumRHS,error)) return false;
 						return true;
 					}
 				}
@@ -4142,7 +4612,8 @@ namespace RISE
 			std::vector<ConservativeVector> predictor;
 			std::vector<double> predictorAlpha;
 			if( !ApplyPeriodicSharedFCT(beginning,result.r0.flux,frozenSourcePerS,
-				config,fuel,thermochemistry,predictor,predictorAlpha,error) ) return false;
+				config,fuel,thermochemistry,predictor,predictorAlpha,error,
+				&result.r0.faceAlpha) ) return false;
 			std::vector<double> low0, high0, diffusion0;
 			GasPrimalSubfluxes(result.r0.flux,low0,high0,diffusion0);
 			std::vector<double> predictorAcceptedGas(count,0.0);
@@ -4221,18 +4692,18 @@ namespace RISE
 				!ValidateCellState(beginning,error) ) {
 				return Fail(error,"fire solver trial adiabatic state lacks valid records");
 			}
-			const double extent = std::min(beginning.constituent[MethaneCH4],
-				beginning.constituent[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+			const double extent = std::min(std::max(0.0,beginning.constituent[MethaneCH4]),
+				std::max(0.0,beginning.constituent[MethaneO2])/
+					fuel.StoichiometricOxygenKGPerKGFuel());
 			MethaneCellState trial = beginning;
 			const std::vector<double>& delta = fuel.PrimaryReactionDelta();
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				trial.constituent[index] += extent*delta[index];
 			}
 			trial.sensibleEnergyJPerM3 += extent*fuel.LowerHeatingValueJPerKG();
-			std::vector<std::pair<std::string,double> > propertyDensities;
-			return ThermochemicalDensitiesWithinForwardEnvelope(trial,propertyDensities,error)&&
-				thermochemistry.InvertMixtureTemperatureK(propertyDensities,
-				trial.sensibleEnergyJPerM3,result,error) &&
+			return InvertMethaneTemperatureWithinAcceptedEnvelope(trial,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+				thermochemistry,result,error) &&
 				(std::isfinite(result) || Fail(error,"fire solver trial adiabatic temperature is non-finite"));
 		}
 
@@ -4269,7 +4740,8 @@ namespace RISE
 			std::vector<bool> vertex(count,false), seed(count,false);
 			for( std::size_t index=0; index<count; ++index ) {
 				const MethaneCellState& state = grid.cells[index];
-				if( !ValidateCellState(state,error) ) return false;
+				if( !ValidateCellState(state,error) ||
+					!AcceptedMethaneCellStateAdmissible(state,thermochemistry,error) ) return false;
 				if( state.constituent[MethaneCH4] <= 0.0 ||
 					state.constituent[MethaneO2] <= 0.0 ||
 					state.temperatureK <= fuel.PilotTemperatureK() ) continue;
@@ -4427,6 +4899,10 @@ namespace RISE
 			const char* ids[2] = {"CO2", "H2O"};
 			const std::size_t indices[2] = {MethaneCO2,MethaneH2O};
 			for( std::size_t speciesIndex=0; speciesIndex<2; ++speciesIndex ) {
+				// The cold ambient occupies almost the entire plume lattice and
+				// contains neither modeled emitter.  Its contribution is exactly
+				// zero, so do not perform four table interpolations per empty cell.
+				if( state.constituent[indices[speciesIndex]] == 0.0 ) continue;
 				const FireThermochemistrySpecies* species = thermochemistry.FindSpecies(ids[speciesIndex]);
 				if( !species ) return Fail(error,"fire solver gas opacity species lacks thermochemistry");
 				const double moleculesPerM3 = state.constituent[indices[speciesIndex]]/
@@ -4469,13 +4945,24 @@ namespace RISE
 				const FireThermochemistrySpecies* species = thermochemistry.FindSpecies(names[index]);
 				if( !species ) return -1.0;
 				double speciesLower = std::numeric_limits<double>::infinity();
+				double speciesUpper = 0.0;
 				for( const FireThermochemistrySegment& segment : species->segments ) {
 					if( segment.temperatureMaxK >= lowerK && segment.temperatureMinK <= upperK ) {
 						speciesLower = std::min(speciesLower,segment.certifiedCpLowerJPerKGK);
+						const double boundedUpper=std::min(upperK,segment.temperatureMaxK);
+						double power=1.0,absolutePolynomial=0.0;
+						for(std::size_t coefficient=0;coefficient<5;++coefficient){
+							absolutePolynomial+=std::fabs(segment.coefficients[coefficient])*power;
+							power*=boundedUpper;
+						}
+						speciesUpper=std::max(speciesUpper,absolutePolynomial*8314.46261815324/
+							species->molecularWeightKGPerKMol);
 					}
 				}
-				if( !std::isfinite(speciesLower) ) return -1.0;
-				result += state.constituent[index]*speciesLower;
+				if( !std::isfinite(speciesLower)||!std::isfinite(speciesUpper) ) return -1.0;
+				result += state.constituent[index]>=0.0?
+					state.constituent[index]*speciesLower:
+					state.constituent[index]*speciesUpper;
 			}
 			return result;
 		}
@@ -4489,6 +4976,15 @@ namespace RISE
 		{
 			return std::min(std::min(firstMinimum*secondMinimum,
 				firstMinimum*secondMaximum),std::min(firstMaximum*secondMinimum,
+				firstMaximum*secondMaximum));
+		}
+
+		inline double IntervalProductUpper(
+			const double firstMinimum,const double firstMaximum,
+			const double secondMinimum,const double secondMaximum)
+		{
+			return std::max(std::max(firstMinimum*secondMinimum,
+				firstMinimum*secondMaximum),std::max(firstMaximum*secondMinimum,
 				firstMaximum*secondMaximum));
 		}
 
@@ -4516,6 +5012,7 @@ namespace RISE
 			const double lower2 = lowerK*lowerK;
 			const double upper2 = upperK*upperK;
 			const double lower3 = lower2*lowerK;
+			const double upper3 = upper2*upperK;
 			const double lower4 = lower2*lower2;
 			const double upper4 = upper2*upper2;
 			const double ambient2 = ambientTemperatureK*ambientTemperatureK;
@@ -4548,10 +5045,15 @@ namespace RISE
 				const double hotLipschitz = std::max(std::fabs(hotDerivativeMinimum),
 					std::fabs(hotDerivativeMaximum));
 				const double hotMinimum = std::max(0.0,hot-hotLipschitz*radius);
+				const double hotMaximum = std::max(0.0,hot+hotLipschitz*radius);
 				const double hotTermLower = IntervalProductLower(hotDerivativeMinimum,
 					hotDerivativeMaximum,lower4,upper4)+4.0*hotMinimum*lower3;
-				const double speciesLower = 4.0*sigmaSB*moleculesPerM3*
-					(hotTermLower-ambientGasMaximum*ambient4);
+				const double hotTermUpper = IntervalProductUpper(hotDerivativeMinimum,
+					hotDerivativeMaximum,lower4,upper4)+4.0*hotMaximum*upper3;
+				const double innerLower=hotTermLower-ambientGasMaximum*ambient4;
+				const double innerUpper=hotTermUpper-ambientGasMinimum*ambient4;
+				const double speciesLower = 4.0*sigmaSB*(moleculesPerM3>=0.0?
+					moleculesPerM3*innerLower:moleculesPerM3*innerUpper);
 				if( !std::isfinite(speciesLower) ) {
 					return Fail(error,"fire solver gas-exchange derivative enclosure overflowed");
 				}
@@ -4604,12 +5106,27 @@ namespace RISE
 			auto residual=[&](const double temperature,double& value){
 				double sensible=0.0,radiative=0.0;
 				if(!energy(temperature,sensible)||!exchange(temperature,radiative))return false;
-				value=sensible-initialEnergyJPerM3+deltaTimeS*escapeFactor*radiative;
+				// At T=T* the sensible difference is the exact algebraic zero.
+				// Re-evaluating and subtracting two referenced enthalpies can flip the
+				// endpoint sign in the near-T_ref limit and destroy a valid bracket.
+				const double sensibleDelta=temperature==initialTemperatureK ? 0.0 :
+					sensible-initialEnergyJPerM3;
+				value=sensibleDelta+deltaTimeS*escapeFactor*radiative;
 				return std::isfinite(value);
 			};
 			double fLower=0.0,fUpper=0.0;
-			if(!residual(lower,fLower)||!residual(upper,fUpper)||fLower>0.0||fUpper<0.0){
-				return Fail(error,"fire solver radiation map lacks its certified endpoint sign change");
+			if(!residual(lower,fLower)||!residual(upper,fUpper))return false;
+			const double endpointScale=std::max({1.0,std::fabs(initialEnergyJPerM3),
+				heatCapacityLowerJPerM3K*std::max(std::fabs(lower),std::fabs(upper))});
+			const double endpointEnvelope=64.0*std::numeric_limits<double>::epsilon()*endpointScale;
+			if(std::fabs(fLower)<=endpointEnvelope)fLower=0.0;
+			if(std::fabs(fUpper)<=endpointEnvelope)fUpper=0.0;
+			if(fLower>0.0||fUpper<0.0){
+				std::ostringstream message;
+				message << "fire solver radiation map lacks its certified endpoint sign change: lower="
+					<< lower << " upper=" << upper << " f_lower=" << fLower << " f_upper=" << fUpper
+					<< " initial_T=" << initialTemperatureK << " initial_E=" << initialEnergyJPerM3;
+				return Fail(error,message.str());
 			}
 			double lo=lower,hi=upper;
 			for(std::size_t iteration=0;iteration<160;++iteration){
@@ -4619,13 +5136,32 @@ namespace RISE
 				if(hi-lo<=8.0*std::numeric_limits<double>::epsilon()*
 					std::max(1.0,midpoint))break;
 			}
-			acceptedTemperatureK=0.5*(lo+hi);double finalEnergy=0.0,finalResidual=0.0;
-			if(!energy(acceptedTemperatureK,finalEnergy)||!residual(acceptedTemperatureK,
-				finalResidual))return false;
+			const double midpoint=0.5*(lo+hi);
+			double fLo=0.0,fHi=0.0,fMid=0.0;
+			if(!residual(lo,fLo)||!residual(hi,fHi)||!residual(midpoint,fMid))return false;
+			acceptedTemperatureK=midpoint;double finalResidual=fMid;
+			if(std::fabs(fLo)<std::fabs(finalResidual)) {
+				acceptedTemperatureK=lo;finalResidual=fLo;
+			}
+			if(std::fabs(fHi)<std::fabs(finalResidual)) {
+				acceptedTemperatureK=hi;finalResidual=fHi;
+			}
+			double finalEnergy=0.0;
+			if(!energy(acceptedTemperatureK,finalEnergy))return false;
+			// Sensible enthalpy is referenced to T_ref and can therefore be near
+			// zero even though each polynomial term being subtracted is O(C_T*T).
+			// Use that operation's natural scale for the fp64 inversion residual;
+			// scaling only by the referenced result makes a representable root
+			// impossible in the cold, near-T_ref limit.
 			const double energyScale=std::max({1.0,std::fabs(initialEnergyJPerM3),
-				std::fabs(finalEnergy)});
+				std::fabs(finalEnergy),heatCapacityLowerJPerM3K*
+					std::max(std::fabs(initialTemperatureK),std::fabs(ambientTemperatureK))});
 			if(std::fabs(finalResidual)>64.0*std::numeric_limits<double>::epsilon()*energyScale){
-				return Fail(error,"fire solver radiation root misses its energy residual tolerance");
+				std::ostringstream message;
+				message << "fire solver radiation root misses its energy residual tolerance: residual="
+					<< finalResidual << ", scale=" << energyScale << ", T="
+					<< acceptedTemperatureK << ", bracket=" << lo << "," << hi;
+				return Fail(error,message.str());
 			}
 			acceptedCoolingWPerM3=(initialEnergyJPerM3-finalEnergy)/deltaTimeS;
 			return (std::isfinite(acceptedTemperatureK)&&std::isfinite(acceptedCoolingWPerM3))||
@@ -4647,19 +5183,42 @@ namespace RISE
 			if( !ValidateCellState(preRadiation,error) || !std::isfinite(deltaTimeS) ||
 				deltaTimeS <= 0.0 || !std::isfinite(escapeFactor) || escapeFactor < 0.0 ||
 				ambientTemperatureK < opacity.TemperatureMinK() ||
-				ambientTemperatureK > opacity.TemperatureMaxK() ||
-				preRadiation.temperatureK < opacity.TemperatureMinK() ||
-				preRadiation.temperatureK > opacity.TemperatureMaxK() ) {
+				ambientTemperatureK > opacity.TemperatureMaxK() ) {
 				return Fail(error,"fire solver radiation map is outside its certified domain");
 			}
-			if( preRadiation.temperatureK == ambientTemperatureK || escapeFactor == 0.0 ) {
+			double radiationTemperatureK=0.0;
+			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(preRadiation,
+				opacity.TemperatureMinK(),opacity.TemperatureMaxK(),thermochemistry,
+				radiationTemperatureK,error))return false;
+			if( radiationTemperatureK == ambientTemperatureK || escapeFactor == 0.0 ) {
 				result = preRadiation; acceptedCoolingWPerM3 = 0.0; return true;
 			}
-			const double lower = std::min(ambientTemperatureK,preRadiation.temperatureK);
-			const double upper = std::max(ambientTemperatureK,preRadiation.temperatureK);
+			const double lower = std::min(ambientTemperatureK,radiationTemperatureK);
+			const double upper = std::max(ambientTemperatureK,radiationTemperatureK);
 			const double cpLower = MixtureCertifiedCpLowerJPerM3K(
 				preRadiation,lower,upper,thermochemistry);
 			if( cpLower <= 0.0 ) return Fail(error,"fire solver radiation map lacks a positive C_T bound");
+			double ambientEnergy=0.0;
+			if(!SignedMixtureSensibleEnergy(preRadiation,ambientTemperatureK,
+				thermochemistry,ambientEnergy,error))return false;
+			const double representableEnergyEnvelope=64.0*std::numeric_limits<double>::epsilon()*
+				std::max({1.0,std::fabs(ambientEnergy),std::fabs(preRadiation.sensibleEnergyJPerM3),
+					cpLower*std::max(std::fabs(ambientTemperatureK),
+						std::fabs(radiationTemperatureK))});
+			if(std::fabs(preRadiation.sensibleEnergyJPerM3-ambientEnergy)<=
+				representableEnergyEnvelope) {
+				// The conservative energy is retained.  Only the derived temperature
+				// separation is below one fp64 thermochemical resolution element, so
+				// no nonzero radiative exchange can be certified yet.
+				result=preRadiation;acceptedCoolingWPerM3=0.0;return true;
+			}
+			if(preRadiation.sensibleEnergyJPerM3>=ambientEnergy&&
+				radiationTemperatureK<=ambientTemperatureK) {
+				// Conservative energy is the authoritative source state.  A derived
+				// temperature rounded to the ambient endpoint cannot justify a
+				// cooling sign; defer the sink until inversion resolves T*>T_inf.
+				result=preRadiation;acceptedCoolingWPerM3=0.0;return true;
+			}
 			const FireGasOpacitySpecies* co2 = opacity.FindSpecies("CO2");
 			const FireGasOpacitySpecies* h2o = opacity.FindSpecies("H2O");
 			if( !co2 || !h2o ) return Fail(error,"fire solver radiation record is incomplete");
@@ -4669,8 +5228,8 @@ namespace RISE
 			for( const double value : h2o->gasTemperatureAxisK ) if( value > lower && value < upper ) knots.push_back(value);
 			for( const double value : h2o->radiationTemperatureAxisK ) if( value > lower && value < upper ) knots.push_back(value);
 			auto energy=[&](const double temperature,double& value){
-				return thermochemistry.MixtureSensibleEnergyJPerM3(
-					ThermochemicalDensities(preRadiation),temperature,value,error);
+				return SignedMixtureSensibleEnergy(preRadiation,temperature,
+					thermochemistry,value,error);
 			};
 			auto exchange=[&](const double temperature,double& value){
 				GasExchangeEvaluation evaluation;
@@ -4683,7 +5242,7 @@ namespace RISE
 					ambientTemperatureK,thermochemistry,opacity,value,error);
 			};
 			MethaneCellState candidate = preRadiation;
-			if(!CertifiedScalarRadiationBackwardEuler(preRadiation.temperatureK,
+			if(!CertifiedScalarRadiationBackwardEuler(radiationTemperatureK,
 				ambientTemperatureK,preRadiation.sensibleEnergyJPerM3,cpLower,deltaTimeS,
 				escapeFactor,knots,energy,exchange,derivative,candidate.temperatureK,
 				acceptedCoolingWPerM3,error))return false;
@@ -4700,45 +5259,71 @@ namespace RISE
 			std::string* error=0
 			)
 		{
-			double massResidual=0.0,elementResidual=0.0;
-			for(const double delta:packet.constituentDelta)massResidual+=delta;
+			if(!ValidateCellState(beginning,error))return false;
+			double massResidual=0.0,massScale=0.0,elementRatio=0.0;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+				const double delta=packet.constituentDelta[species];massResidual+=delta;
+				massScale+=std::fabs(beginning.constituent[species])+std::fabs(
+					beginning.constituent[species]+delta);}
 			const std::vector<double>& element=fuel.ElementMassFractionMatrix();
-			for(std::size_t row=0;row<fuel.ElementOrder().size();++row){double residual=0.0;
-				for(std::size_t species=0;species<MethaneSpeciesCount;++species)residual+=
-					element[row*MethaneSpeciesCount+species]*packet.constituentDelta[species];
-				elementResidual=std::max(elementResidual,std::fabs(residual));}
-			const double tolerance=4096.0*std::numeric_limits<double>::epsilon()*
-				std::max(1.0,beginning.TotalDensity());
+			for(std::size_t row=0;row<fuel.ElementOrder().size();++row){double residual=0.0,
+				scale=0.0;for(std::size_t species=0;species<MethaneSpeciesCount;++species){
+					const double coefficient=element[row*MethaneSpeciesCount+species];
+					const double term=coefficient*packet.constituentDelta[species];residual+=term;
+					scale+=std::fabs(coefficient*beginning.constituent[species])+std::fabs(
+						coefficient*(beginning.constituent[species]+packet.constituentDelta[species]));}
+				elementRatio=std::max(elementRatio,std::fabs(residual)/std::max(1.0,scale));}
+			const double factor=fuel.AcceptedStateFeasibilityEnvelope().
+				sourcePacketFactorEpsilon64*std::numeric_limits<double>::epsilon();
+			const double massRatio=std::fabs(massResidual)/std::max(1.0,massScale);
 			const double expectedEnergy=packet.reactedFuelKGPerM3*
 				fuel.LowerHeatingValueJPerKG()+packet.oxidizedCarbonKGPerM3*
-				fuel.SootHeatReleaseJPerKGCarbon()-reactionStep.deltaTimeS*
+				fuel.SootHeatReleaseJPerKGCarbon()+reactionStep.deltaTimeS*
+				packet.pilotHeatingWPerM3-reactionStep.deltaTimeS*
 				packet.radiativeCoolingWPerM3;
 			const double oxygenExpected=fuel.StoichiometricOxygenKGPerKGFuel()*
 				packet.reactedFuelKGPerM3+fuel.SootOxygenKGPerKGCarbon()*
 				packet.oxidizedCarbonKGPerM3;
-			const double energyTolerance=4096.0*std::numeric_limits<double>::epsilon()*
-				std::max({1.0,std::fabs(expectedEnergy),
-					std::fabs(beginning.sensibleEnergyJPerM3)});
+			const double energyScale=std::max(1.0,
+				std::fabs(beginning.sensibleEnergyJPerM3)+
+				std::fabs(beginning.sensibleEnergyJPerM3+packet.sensibleEnergyDeltaJPerM3)+
+				std::fabs(packet.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG())+
+				std::fabs(packet.oxidizedCarbonKGPerM3*fuel.SootHeatReleaseJPerKGCarbon())+
+				std::fabs(reactionStep.deltaTimeS*packet.pilotHeatingWPerM3)+
+				std::fabs(reactionStep.deltaTimeS*packet.radiativeCoolingWPerM3));
+			const double energyRatio=std::fabs(packet.sensibleEnergyDeltaJPerM3-
+				expectedEnergy)/energyScale;
+			const double oxygenScale=std::max(1.0,
+				std::fabs(beginning.constituent[MethaneO2])+std::fabs(
+					beginning.constituent[MethaneO2]+packet.constituentDelta[MethaneO2])+
+				std::fabs(oxygenExpected));
+			const double oxygenRatio=std::fabs(-packet.constituentDelta[MethaneO2]-
+				oxygenExpected)/oxygenScale;
 			const double expectedGasRate=packet.reactedFuelKGPerM3*
 				fuel.LowerHeatingValueJPerKG()/reactionStep.deltaTimeS;
 			const double expectedSootRate=packet.oxidizedCarbonKGPerM3*
 				fuel.SootHeatReleaseJPerKGCarbon()/reactionStep.deltaTimeS;
-			const double rateTolerance=4096.0*std::numeric_limits<double>::epsilon()*
-				std::max({1.0,std::fabs(expectedGasRate),std::fabs(expectedSootRate)});
-			const bool closes=std::fabs(massResidual)<=tolerance&&elementResidual<=tolerance&&
-				std::fabs(packet.sensibleEnergyDeltaJPerM3-expectedEnergy)<=energyTolerance&&
-				std::fabs(-packet.constituentDelta[MethaneO2]-oxygenExpected)<=tolerance&&
+			const double gasRateRatio=std::fabs(packet.gasHeatReleaseWPerM3-expectedGasRate)/
+				std::max(1.0,std::fabs(packet.gasHeatReleaseWPerM3)+std::fabs(expectedGasRate));
+			const double sootRateRatio=std::fabs(packet.sootHeatReleaseWPerM3-expectedSootRate)/
+				std::max(1.0,std::fabs(packet.sootHeatReleaseWPerM3)+std::fabs(expectedSootRate));
+			const double pilotRateRatio=std::fabs(packet.pilotHeatingWPerM3-
+				reactionStep.pilotHeatingWPerM3)/std::max(1.0,
+				std::fabs(packet.pilotHeatingWPerM3)+std::fabs(reactionStep.pilotHeatingWPerM3));
+			const bool closes=massRatio<=factor&&elementRatio<=factor&&energyRatio<=factor&&
+				oxygenRatio<=factor&&
 				std::isfinite(packet.gasHeatReleaseWPerM3)&&
 				std::isfinite(packet.sootHeatReleaseWPerM3)&&
-				std::fabs(packet.gasHeatReleaseWPerM3-expectedGasRate)<=rateTolerance&&
-				std::fabs(packet.sootHeatReleaseWPerM3-expectedSootRate)<=rateTolerance;
+				std::isfinite(packet.pilotHeatingWPerM3)&&
+				gasRateRatio<=factor&&sootRateRatio<=factor&&pilotRateRatio<=factor;
 			if(closes)return true;
 			std::ostringstream message;message<<"fire solver frozen source packet failed its ledger: mass="
-				<<massResidual<<", element="<<elementResidual<<", oxygen="
+				<<massResidual<<", element_ratio="<<elementRatio<<", oxygen="
 				<<(-packet.constituentDelta[MethaneO2]-oxygenExpected)<<", energy="
 				<<(packet.sensibleEnergyDeltaJPerM3-expectedEnergy)<<", gas-rate="
 				<<(packet.gasHeatReleaseWPerM3-expectedGasRate)<<", soot-rate="
-				<<(packet.sootHeatReleaseWPerM3-expectedSootRate);
+				<<(packet.sootHeatReleaseWPerM3-expectedSootRate)<<", pilot-rate="
+				<<(packet.pilotHeatingWPerM3-reactionStep.pilotHeatingWPerM3);
 			return Fail(error,message.str());
 		}
 
@@ -4757,7 +5342,12 @@ namespace RISE
 			MethaneSourcePacket reaction;
 			if( !BuildMethaneReactionPacket(beginning,fuel,reactionStep,reaction,error) ) return false;
 			MethaneCellState postReaction;
-			if( !ApplySourcePacket(beginning,reaction,thermochemistry,postReaction,error) ) return false;
+			bool identityReaction=reaction.sensibleEnergyDeltaJPerM3==0.0;
+			for(const double delta:reaction.constituentDelta)identityReaction=
+				identityReaction&&delta==0.0;
+			if(identityReaction)postReaction=beginning;
+			else if( !ApplySourcePacket(beginning,reaction,thermochemistry,postReaction,error) )
+				return false;
 			MethaneCellState finalScratch;
 			double signedCoolingWPerM3 = 0.0;
 			if( !ApplyGasRadiationBackwardEuler(postReaction,ambientTemperatureK,
@@ -4787,7 +5377,8 @@ namespace RISE
 			const FireSimulationGasOpacityRecord& opacity,
 			std::vector<MethaneSourcePacket>& result,
 			RadiationEscapeFactor& factor,
-			std::string* error = 0
+			std::string* error = 0,
+			const unsigned int workerCount = 1u
 			)
 		{
 			const std::size_t count = beginning.size();
@@ -4797,15 +5388,44 @@ namespace RISE
 			std::vector<double> unscaledExchange(count,0.0);
 			std::vector<MethaneSourcePacket> reaction(count);
 			std::vector<MethaneCellState> postReaction(count);
-			double totalHeatReleaseW = 0.0;
-			for( std::size_t cell=0; cell<count; ++cell ) {
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(count)));
+			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
+			std::vector<std::size_t> failureCell(workers,noFailure);
+			std::vector<std::string> failureMessage(workers);
+			std::vector<std::thread> threads;
+			for(unsigned int worker=0;worker<workers;++worker) threads.emplace_back([&,worker]() {
+				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+				for(std::size_t cell=first;cell<last;++cell) {
+				std::string cellError;
 				if( !BuildMethaneReactionPacket(beginning[cell],fuel,reactionStep[cell],
-					reaction[cell],error) || !ApplySourcePacket(beginning[cell],reaction[cell],
-					thermochemistry,postReaction[cell],error) ) return false;
+					reaction[cell],&cellError) ) {
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+				}
+				bool identityReaction=reaction[cell].sensibleEnergyDeltaJPerM3==0.0;
+				for(const double delta:reaction[cell].constituentDelta)identityReaction=
+					identityReaction&&delta==0.0;
+				if(identityReaction)postReaction[cell]=beginning[cell];
+				else if(!ApplySourcePacket(beginning[cell],reaction[cell],thermochemistry,
+					postReaction[cell],&cellError)) {
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+				}
 				GasExchangeEvaluation exchange;
 				if( !EvaluateGasExchange(postReaction[cell],postReaction[cell].temperatureK,
-					ambientTemperatureK,thermochemistry,opacity,exchange,error) ) return false;
+					ambientTemperatureK,thermochemistry,opacity,exchange,&cellError) ) {
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+				}
 				unscaledExchange[cell] = exchange.exchangeWPerM3;
+				}
+			});
+			for(std::thread& thread:threads) thread.join();
+			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
+			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+				firstFailure=failureCell[worker];failedWorker=worker;
+			}
+			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
+			double totalHeatReleaseW = 0.0;
+			for( std::size_t cell=0; cell<count; ++cell ) {
 				const double heatRelease = (reaction[cell].gasHeatReleaseWPerM3+
 					reaction[cell].sootHeatReleaseWPerM3)*cellVolumeM3[cell];
 				if( !std::isfinite(heatRelease) || !std::isfinite(totalHeatReleaseW+heatRelease) ) {
@@ -4818,12 +5438,22 @@ namespace RISE
 				radiativeFraction,unscaledExchange,cellVolumeM3,predictive,
 				candidateFactor,error) ) return false;
 			std::vector<MethaneSourcePacket> candidateResult(count);
-			for( std::size_t cell=0; cell<count; ++cell ) {
+			std::fill(failureCell.begin(),failureCell.end(),noFailure);
+			std::fill(failureMessage.begin(),failureMessage.end(),std::string());
+			threads.clear();
+			for(unsigned int worker=0;worker<workers;++worker) threads.emplace_back([&,worker]() {
+				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+				for(std::size_t cell=first;cell<last;++cell) {
 				MethaneCellState finalScratch;
 				double signedCoolingWPerM3 = 0.0;
-				if( !ApplyGasRadiationBackwardEuler(postReaction[cell],ambientTemperatureK,
+				std::string cellError;
+				if(unscaledExchange[cell]==0.0) {
+					finalScratch=postReaction[cell];signedCoolingWPerM3=0.0;
+				} else if( !ApplyGasRadiationBackwardEuler(postReaction[cell],ambientTemperatureK,
 					reactionStep[cell].deltaTimeS,candidateFactor.accepted,thermochemistry,opacity,
-					finalScratch,signedCoolingWPerM3,error) ) return false;
+					finalScratch,signedCoolingWPerM3,&cellError) ) {
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+				}
 				candidateResult[cell] = reaction[cell];
 				for( std::size_t species=0; species<MethaneSpeciesCount; ++species ) {
 					candidateResult[cell].constituentDelta[species] = finalScratch.constituent[species]-
@@ -4833,8 +5463,17 @@ namespace RISE
 					beginning[cell].sensibleEnergyJPerM3;
 				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
 				if(!ValidateFrozenMethaneSourcePacketLedger(beginning[cell],reactionStep[cell],fuel,
-					candidateResult[cell],error))return false;
+					candidateResult[cell],&cellError)) {
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+				}
+				}
+			});
+			for(std::thread& thread:threads) thread.join();
+			firstFailure=noFailure;failedWorker=0u;
+			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+				firstFailure=failureCell[worker];failedWorker=worker;
 			}
+			if(firstFailure!=noFailure)return Fail(error,failureMessage[failedWorker]);
 			result.swap(candidateResult);
 			factor = candidateFactor;
 			return true;

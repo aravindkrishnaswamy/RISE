@@ -775,6 +775,7 @@
 		FC11000131DD000100000001 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
 		FC11000131DD000100000002 /* FireSimulationRecords.h in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD00010000000A /* FireSimulationRecords.h */; };
 		F512000131EE000100000001 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
+		F513000131EE000100000001 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
 		F512000131EE000100000002 /* FireSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
 		FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
 		FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
@@ -1435,6 +1436,8 @@
 		FC11000131DD000100000003 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
 		FC11000131DD000100000004 /* FireSimulationRecords.h in Headers */ = {isa = PBXBuildFile; fileRef = FC11000131DD00010000000A /* FireSimulationRecords.h */; };
 		F512000131EE000100000003 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
+		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
+		F513000131EE000100000004 /* FireCase.h in Headers */ = {isa = PBXBuildFile; fileRef = F513000131EE00010000000A /* FireCase.h */; };
 		F512000131EE000100000004 /* FireSequence.h in Headers */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
 		FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */; };
 		FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */ = {isa = PBXBuildFile; fileRef = FB37000131BB000100000006 /* GaussLegendreQuadrature.h */; };
@@ -2646,6 +2649,8 @@
 		FC11000131DD000100000009 /* FireSimulationRecords.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSimulationRecords.cpp; sourceTree = "<group>"; };
 		FC11000131DD00010000000A /* FireSimulationRecords.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSimulationRecords.h; sourceTree = "<group>"; };
 		F512000131EE000100000009 /* FireSequence.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSequence.cpp; sourceTree = "<group>"; };
+		F513000131EE000100000009 /* FireCase.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireCase.cpp; sourceTree = "<group>"; };
+		F513000131EE00010000000A /* FireCase.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireCase.h; sourceTree = "<group>"; };
 		F512000131EE00010000000A /* FireSequence.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSequence.h; sourceTree = "<group>"; };
 		FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GaussLegendreQuadrature.cpp; sourceTree = "<group>"; };
 		FB37000131BB000100000006 /* GaussLegendreQuadrature.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GaussLegendreQuadrature.h; sourceTree = "<group>"; };
@@ -4121,6 +4126,8 @@
 				FC11000131DD000100000009 /* FireSimulationRecords.cpp */,
 				FC11000131DD00010000000A /* FireSimulationRecords.h */,
 				F512000131EE000100000009 /* FireSequence.cpp */,
+				F513000131EE000100000009 /* FireCase.cpp */,
+				F513000131EE00010000000A /* FireCase.h */,
 				F512000131EE00010000000A /* FireSequence.h */,
 				FB37000131BB000100000005 /* GaussLegendreQuadrature.cpp */,
 				FB37000131BB000100000006 /* GaussLegendreQuadrature.h */,
@@ -4929,6 +4936,7 @@
 				FD86000131CC000100000008 /* FireOptics.h in Headers */,
 				FC11000131DD000100000004 /* FireSimulationRecords.h in Headers */,
 				F512000131EE000100000004 /* FireSequence.h in Headers */,
+				F513000131EE000100000004 /* FireCase.h in Headers */,
 				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
 				F27F0C8A069C42910069C9E5 /* OrthonormalBasis3D.h in Headers */,
 				F27F0C8B069C42910069C9E5 /* PEL.h in Headers */,
@@ -5462,6 +5470,7 @@
 				FD86000131CC000100000007 /* FireOptics.cpp in Sources */,
 				FC11000131DD000100000003 /* FireSimulationRecords.cpp in Sources */,
 				F512000131EE000100000003 /* FireSequence.cpp in Sources */,
+				F513000131EE000100000003 /* FireCase.cpp in Sources */,
 				FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */,
 				F27F0C89069C42910069C9E5 /* OrthonormalBasis3D.cpp in Sources */,
 				F27F0C8E069C42910069C9E5 /* ProbabilityDensityFunction.cpp in Sources */,
@@ -6379,6 +6388,7 @@
 				FC11000131DD000100000001 /* FireSimulationRecords.cpp in Sources */,
 				FC11000131DD000100000002 /* FireSimulationRecords.h in Sources */,
 				F512000131EE000100000001 /* FireSequence.cpp in Sources */,
+				F513000131EE000100000001 /* FireCase.cpp in Sources */,
 				F512000131EE000100000002 /* FireSequence.h in Sources */,
 				FB37000131BB000100000001 /* GaussLegendreQuadrature.cpp in Sources */,
 				FB37000131BB000100000002 /* GaussLegendreQuadrature.h in Sources */,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import sys
 import unittest
 from fractions import Fraction
@@ -62,8 +63,8 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
 
     def test_real_A_and_C_have_exact_certified_ranks(self) -> None:
         for key, expected_rank in (
-                ("conservative_reconstruction_v1", 4),
-                ("nonadvective_flux_projection_v1", 5)):
+                ("conservative_reconstruction_v1", 3),
+                ("nonadvective_flux_projection_v1", 4)):
             certificate = self.record[key]
             matrix = decoded_matrix(certificate["constraint_matrix"])
             basis = decoded_matrix(certificate["exact_nullspace"]["basis"])
@@ -79,6 +80,128 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
             projector = decoded_matrix(certificate["exact_projector"])
             self.assertEqual(projector, records.matrix_multiply(projector, projector))
             self.assertEqual(basis, records.matrix_multiply(projector, basis))
+            conditioning = certificate["conditioning_certificate"]
+            lower = decoded_rational(conditioning["lower_bound_exact_dyadic"])
+            determinant = decoded_rational(conditioning["gram_determinant"])
+            frobenius = decoded_rational(conditioning["frobenius_norm_squared"])
+            self.assertGreater(lower, 0)
+            self.assertLessEqual(lower * lower * frobenius ** (expected_rank - 1),
+                                 determinant)
+
+    def test_r56_physical_kernel_exact_source_and_dependent_row_red(self) -> None:
+        physical = self.record["physical_kernel_consistency"]
+        self.assertEqual(["C", "H", "O"],
+                         physical["stored_independent_constraint_rows"])
+        full = []
+        element = decoded_matrix(self.record["element_mass_fraction_matrix"])
+        ambient = [decoded_rational(value) for value in
+                   self.record["ambient_state"]["element_mass_fractions"]]
+        injected = [decoded_rational(value) for value in
+                    self.record["injected_fuel_state"]["element_mass_fractions"]]
+        for row in range(4):
+            full.append([-(injected[row] - ambient[row])] +
+                        [value - ambient[row] for value in element[row]])
+        directions = [{"name": entry["name"],
+                       "state_delta": [decoded_rational(value)
+                                       for value in entry["state_delta"]]}
+                      for entry in physical["physical_directions"]]
+        records.verify_exact_physical_directions(full, directions)
+
+        # RED for the shipped defect: independently rounding the exactly
+        # dependent N row makes the physical reaction miss the dyadic kernel.
+        bad = [row[:] for row in full[:3]]
+        bad.append([Fraction.from_float(float(value)) for value in full[3]])
+        with self.assertRaisesRegex(ValueError, "fails exact A_Q identity"):
+            records.verify_exact_physical_directions(bad, directions)
+
+        # Sustained-combustion RED: the exact rational source has zero
+        # per-step bias, hence its cumulative envelope is no worse than
+        # sqrt(steps) round-off (zero is the strongest instance).  Recreating
+        # the released four-row, entrywise-rounded A produces a fixed-sign
+        # primary residual whose cumulative error is exactly linear.
+        primary = next(direction for direction in directions
+                       if direction["name"] == "primary_combustion")
+        good_residual = records.matrix_multiply(
+            full, records.matrix_transpose([primary["state_delta"]]))
+        self.assertTrue(all(value == 0 for row in good_residual for value in row))
+        separately_rounded = [[Fraction.from_float(float(value)) for value in row]
+                              for row in full]
+        released_residual = records.matrix_multiply(
+            separately_rounded,
+            records.matrix_transpose([primary["state_delta"]]))
+        per_step = max(abs(row[0]) for row in released_residual)
+        self.assertGreater(per_step, 0)
+        steps = 4096
+        self.assertGreater(steps * per_step,
+                           32 * (steps ** 0.5) * per_step)
+
+    def test_r60_single_feasibility_envelope_and_mutation_reds(self) -> None:
+        certificate = self.record["accepted_state_feasibility_envelope"]
+        records.validate_accepted_state_feasibility_certificate(certificate)
+        self.assertEqual(2384.0, certificate["derived_union_factor_epsilon64"])
+        self.assertEqual(4096.0, certificate["kappa_epsilon64"])
+        second_kappa = copy.deepcopy(certificate)
+        second_kappa["producer_bounds"]["limiter_outward_factor_epsilon64"] = 1023.0
+        with self.assertRaisesRegex(ValueError, "canonical derivation"):
+            records.validate_accepted_state_feasibility_certificate(second_kappa)
+        result_scaled = copy.deepcopy(certificate)
+        result_scaled["mass_block_scale"] = "max(1,abs(row_result))"
+        with self.assertRaisesRegex(ValueError, "canonical derivation"):
+            records.validate_accepted_state_feasibility_certificate(result_scaled)
+        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
+        advance = (ROOT / "tools/fire_simulator_3d_advance.h").read_text(encoding="utf-8")
+        combined = core + advance
+        self.assertNotIn("ConservativeStateFeasible", combined)
+        self.assertNotIn("ThermochemicalDensitiesWithinForwardEnvelope", combined)
+        self.assertNotIn("roundoffMultiplier", combined)
+        self.assertNotIn("candidate[cell][component]=0.0", combined)
+        self.assertEqual(4, combined.count("CertifiedLimiterInequalityBudget("))
+        budget_body = combined[combined.index(
+            "inline double CertifiedLimiterInequalityBudget("):]
+        budget_body = budget_body[:budget_body.index("\n\t\tinline ", 1)]
+        self.assertIn("envelope.kappaEpsilon64*epsilon*rowScaleLowerBound", budget_body)
+        self.assertIn("envelope.limiterOutwardFactorEpsilon64*", budget_body)
+        self.assertIn("rowScaleLowerBound<1.0", budget_body)
+        scale_body = combined[combined.index("inline double InequalityRoundoffScale("):]
+        scale_body = scale_body[:scale_body.index("\n\t\tinline ", 1)]
+        self.assertIn("AcceptedStateMassScale(state)", scale_body)
+        self.assertIn("AcceptedStateEnergyScale(state,ambientEnthalpy,adiabaticEnthalpy)",
+                      scale_body)
+        self.assertNotIn("InequalityValue", scale_body)
+
+        def inline_body(source: str, name: str) -> str:
+            start = source.index("inline bool " + name + "(")
+            end = source.find("\n\t\tinline ", start + 1)
+            return source[start:] if end < 0 else source[start:end]
+
+        canonical_gate_sites = (
+            (core, "InvertMethaneTemperatureWithinAcceptedEnvelope"),
+            (core, "EvaluateCellTransport"),
+            (core, "EquationOfStateResidual"),
+            (core, "ApplyPeriodicSharedFCT"),
+            (core, "DivergenceFromDiscreteRate"),
+            (core, "BuildMethaneReactionPacket"),
+            (core, "ApplySourcePacket"),
+            (core, "BuildOpenBoundaryStage3D"),
+            (core, "BuildIgnitionEligibility"),
+            (advance, "ApplyPeriodicSharedFCT3D"),
+            (advance, "ApplyOpenSharedFCT3D"),
+        )
+        for source, name in canonical_gate_sites:
+            body = inline_body(source, name)
+            self.assertTrue("AcceptedStateAdmissible(" in body or
+                            "AcceptedMethaneCellStateAdmissible(" in body,
+                            name + " bypasses the canonical r60 predicate")
+            self.assertNotRegex(
+                body,
+                r"(?:256|512|1024|2048|4096)\.0\s*\*[^;\n]*epsilon",
+                name + " adds a second literal feasibility envelope")
+            self.assertNotRegex(
+                body,
+                r"(?:row_result|rowResult|result_scale|resultScale)",
+                name + " adds a result-scaled feasibility envelope")
+        self.assertNotRegex(combined,
+                            r"ConservativeStateFeasible\s*\([^)]*,\s*(256|512|1024|2048|4096)")
 
     def test_generated_include_is_current(self) -> None:
         generated = records.generate(self.snapshot_path,self.constants_path)

@@ -53,6 +53,31 @@ namespace RISE
 			std::vector<double>& output,
 			std::string* error = 0
 			) const;
+		//! Allocation-free projection for fixed-size solver face tuples.
+		bool Project(
+			const double* input,
+			std::size_t inputCount,
+			double* output,
+			std::size_t outputCount,
+			std::string* error = 0
+			) const;
+	};
+
+	struct FireAcceptedStateFeasibilityEnvelope
+	{
+		double limiterOutwardFactorEpsilon64;
+		double rowAccumulationFactorEpsilon64;
+		double nullspaceProjectionFactorEpsilon64;
+		double sourcePacketFactorEpsilon64;
+		double ledgerReductionFactorEpsilon64;
+		double derivedUnionFactorEpsilon64;
+		double kappaEpsilon64;
+
+		FireAcceptedStateFeasibilityEnvelope() :
+			limiterOutwardFactorEpsilon64(0.0), rowAccumulationFactorEpsilon64(0.0),
+			nullspaceProjectionFactorEpsilon64(0.0), sourcePacketFactorEpsilon64(0.0),
+			ledgerReductionFactorEpsilon64(0.0), derivedUnionFactorEpsilon64(0.0),
+			kappaEpsilon64(0.0) {}
 	};
 
 	//! Canonical synthetic RED inputs.  These records are deliberately not
@@ -104,8 +129,10 @@ namespace RISE
 		std::vector<double> m_ambientMassFractions;
 		std::vector<double> m_injectedMassFractions;
 		std::vector<double> m_primaryReactionDelta;
+		std::vector<double> m_sootOxidationDelta;
 		FireCertifiedNullspace m_reconstruction;
 		FireCertifiedNullspace m_nonadvectiveFluxProjection;
+		FireAcceptedStateFeasibilityEnvelope m_acceptedStateFeasibilityEnvelope;
 		std::vector<std::string> m_predictiveBlockers;
 
 		bool LoadSemanticRecord(
@@ -167,13 +194,39 @@ namespace RISE
 		const FireThermochemistrySpecies* FindSpecies( const char* id ) const;
 		bool CpJPerKGK( const char* speciesId, double temperatureK,
 			double& result, std::string* error = 0 ) const;
+		//! Evaluates cp for the complete record order without name lookups or allocation.
+		bool CpBySpeciesOrderJPerKGK(
+			double temperatureK, double* result, std::size_t count,
+			std::string* error = 0 ) const;
 		bool SensibleEnthalpyJPerKG( const char* speciesId, double temperatureK,
 			double& result, std::string* error = 0 ) const;
+		//! Allocation-free species lookup in the record's exact SpeciesOrder().
+		bool SensibleEnthalpyBySpeciesOrderJPerKG(
+			std::size_t speciesIndex,
+			double temperatureK,
+			double& result,
+			std::string* error = 0
+			) const;
+		//! Evaluates the complete record order with shared temperature powers.
+		bool SensibleEnthalpiesBySpeciesOrderJPerKG(
+			double temperatureK,
+			double* result,
+			std::size_t count,
+			std::string* error = 0
+			) const;
 		bool MixtureSensibleEnergyJPerM3(
 			const std::vector<std::pair<std::string,double> >& massDensitiesKGPerM3,
 			double temperatureK, double& result, std::string* error = 0 ) const;
+		//! Allocation-free equivalent for solver cells in the record's exact SpeciesOrder().
+		bool MixtureSensibleEnergyBySpeciesOrderJPerM3(
+			const double* massDensitiesKGPerM3, std::size_t count,
+			double temperatureK, double& result, std::string* error = 0 ) const;
 		bool InvertMixtureTemperatureK(
 			const std::vector<std::pair<std::string,double> >& massDensitiesKGPerM3,
+			double sensibleEnergyJPerM3, double& result, std::string* error = 0 ) const;
+		//! Allocation-free equivalent for solver cells in the record's exact SpeciesOrder().
+		bool InvertMixtureTemperatureBySpeciesOrderK(
+			const double* massDensitiesKGPerM3, std::size_t count,
 			double sensibleEnergyJPerM3, double& result, std::string* error = 0 ) const;
 		const std::vector<std::string>& ElementOrder() const { return m_elementOrder; }
 		const std::vector<double>& ElementMassFractionMatrix() const
@@ -192,6 +245,10 @@ namespace RISE
 		{
 			return m_primaryReactionDelta;
 		}
+		const std::vector<double>& SootOxidationDelta() const
+		{
+			return m_sootOxidationDelta;
+		}
 		const FireCertifiedNullspace& ConservativeReconstruction() const
 		{
 			return m_reconstruction;
@@ -199,6 +256,10 @@ namespace RISE
 		const FireCertifiedNullspace& NonadvectiveFluxProjection() const
 		{
 			return m_nonadvectiveFluxProjection;
+		}
+		const FireAcceptedStateFeasibilityEnvelope& AcceptedStateFeasibilityEnvelope() const
+		{
+			return m_acceptedStateFeasibilityEnvelope;
 		}
 		const std::vector<std::string>& PredictiveBlockers() const
 		{
@@ -379,6 +440,13 @@ namespace RISE
 			double temperatureK,
 			double& result,
 			std::string* error = 0
+			) const;
+		//! Allocation-free Wilke/WMS evaluation in the methane record's species order.
+		bool MixturePropertiesBySpeciesOrder(
+			const double* massFractions, std::size_t count,
+			const FireSimulationMethaneRecord& thermochemistry,
+			double temperatureK, double& viscosityPaS,
+			double& conductivityWPerMK, std::string* error = 0
 			) const;
 		bool VremanEddyViscosityM2PerS(
 			const double velocityGradientPerS[3][3],

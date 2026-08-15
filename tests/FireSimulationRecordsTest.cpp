@@ -262,11 +262,39 @@ int main()
 		"methane record owns the exact r51 species order");
 	Check(methane.ElementOrder() == std::vector<std::string>({"C","H","O","N"}),
 		"methane record carries every conserved element");
-	Check(methane.ConservativeReconstruction().declaredRank == 4 &&
-		methane.ConservativeReconstruction().nullity == 4 &&
-		methane.NonadvectiveFluxProjection().declaredRank == 5 &&
-		methane.NonadvectiveFluxProjection().nullity == 3,
-		"real methane canonical binary64-dyadic A and C carry their exact ranks");
+	Check(methane.ConservativeReconstruction().declaredRank == 3 &&
+		methane.ConservativeReconstruction().nullity == 5 &&
+		methane.NonadvectiveFluxProjection().declaredRank == 4 &&
+		methane.NonadvectiveFluxProjection().nullity == 4,
+		"real methane r56 independent-row A and C carry their exact ranks");
+	const FireAcceptedStateFeasibilityEnvelope& feasibility=
+		methane.AcceptedStateFeasibilityEnvelope();
+	Check(feasibility.derivedUnionFactorEpsilon64==2384.0&&
+		feasibility.kappaEpsilon64==4096.0&&
+		feasibility.limiterOutwardFactorEpsilon64+
+		feasibility.rowAccumulationFactorEpsilon64+
+		feasibility.nullspaceProjectionFactorEpsilon64+
+		feasibility.sourcePacketFactorEpsilon64+
+		feasibility.ledgerReductionFactorEpsilon64==
+			feasibility.derivedUnionFactorEpsilon64,
+		"methane record carries the exact r60 accepted-state producer-union certificate");
+	std::vector<double> physicalReactionDelta(1,0.0);
+	physicalReactionDelta.insert(physicalReactionDelta.end(),
+		methane.PrimaryReactionDelta().begin(),methane.PrimaryReactionDelta().end());
+	std::vector<double> projectedReactionDelta;
+	double projectionDisplacement = 0.0;
+	Check(methane.ConservativeReconstruction().Project(
+		physicalReactionDelta,projectedReactionDelta) &&
+		projectedReactionDelta.size() == physicalReactionDelta.size(),
+		"r56 physical reaction direction projects through the certified kernel");
+	if( projectedReactionDelta.size() == physicalReactionDelta.size() ) {
+		for( std::size_t index=0; index<physicalReactionDelta.size(); ++index ) {
+			projectionDisplacement = std::max(projectionDisplacement,
+				std::fabs(projectedReactionDelta[index]-physicalReactionDelta[index]));
+		}
+	}
+	Check(projectionDisplacement <= 8.0*std::numeric_limits<double>::epsilon(),
+		"r56 physical reaction projection is a rounding-level no-op, never a repair");
 	Check(std::fabs(methane.LowerHeatingValueJPerKG()-50027364.88044851) < 0.1 &&
 		std::fabs(methane.StoichiometricOxygenKGPerKGFuel()-3.989263492008084) < 1.0e-12,
 		"methane LHV and oxygen coefficient derive from the pinned CEA formation data");
@@ -335,14 +363,30 @@ int main()
 	const std::vector<std::pair<std::string,double> > methaneMixture = {
 		{"CH4",0.1},{"O2",0.2},{"N2",0.7}
 	};
-	double methaneEnergy = 0.0;
+	const double orderedMethaneMixture[7]={0.1,0.2,0.7,0.0,0.0,0.0,0.0};
+	double orderedMethaneCp[7]={};
+	double methaneEnergy = 0.0,orderedMethaneEnergy=0.0,orderedMethaneTemperature=0.0;
 	Check(methane.CpJPerKGK("CH4",1000.0,methaneCp) && methaneCp > 0.0 &&
+		methane.CpBySpeciesOrderJPerKGK(1000.0,orderedMethaneCp,7) &&
+		orderedMethaneCp[0]==methaneCp &&
 		methane.SensibleEnthalpyJPerKG("CO2",1000.0,methaneHs) && methaneHs > 0.0 &&
 		methane.MixtureSensibleEnergyJPerM3(methaneMixture,1000.0,methaneEnergy) &&
 		methane.InvertMixtureTemperatureK(methaneMixture,methaneEnergy,
 			methaneRecoveredTemperature) &&
+		methane.MixtureSensibleEnergyBySpeciesOrderJPerM3(orderedMethaneMixture,7,
+			1000.0,orderedMethaneEnergy) && orderedMethaneEnergy==methaneEnergy &&
+		methane.InvertMixtureTemperatureBySpeciesOrderK(orderedMethaneMixture,7,
+			orderedMethaneEnergy,orderedMethaneTemperature) &&
+		orderedMethaneTemperature==methaneRecoveredTemperature &&
 		std::fabs(methaneRecoveredTemperature-1000.0) < 1.0e-9,
-		"the physical methane record independently owns cp, h_s and inversion");
+		"the physical methane record's ordered and named cp, h_s and inversion paths agree bitwise");
+	double namedMethaneMu=0.0,namedMethaneK=0.0,orderedMethaneMu=0.0,orderedMethaneK=0.0;
+	Check(transport.MixtureViscosityPaS(methaneMixture,methane,1000.0,namedMethaneMu)&&
+		transport.MixtureConductivityWPerMK(methaneMixture,methane,1000.0,namedMethaneK)&&
+		transport.MixturePropertiesBySpeciesOrder(orderedMethaneMixture,6,methane,1000.0,
+			orderedMethaneMu,orderedMethaneK)&&orderedMethaneMu==namedMethaneMu&&
+		orderedMethaneK==namedMethaneK,
+		"the methane transport record's ordered Wilke/WMS path is bitwise identical");
 	Check(!transport.IsPredictiveQualified(),"transport fit uncertainty remains preview-only");
 	Check(thermo.PredictiveBlockers().size() == 7,
 		"thermochemistry exposes every unresolved licensed/estimation field");

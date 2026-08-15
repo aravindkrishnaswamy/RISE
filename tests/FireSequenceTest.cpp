@@ -1,4 +1,5 @@
 #include "../src/Library/Utilities/FireSequence.h"
+#include "../src/Library/Utilities/FireCase.h"
 #include "../src/Library/Rendering/FrameStore.h"
 #include "../src/Library/Rendering/PixelBasedRasterizerHelper.h"
 #include "../src/Library/Materials/HeterogeneousMedium.h"
@@ -10,17 +11,35 @@
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Utilities/FireSimulationRecords.h"
 #include "../src/Library/Utilities/Reference.h"
+#include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
 
 #include <cmath>
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <csignal>
+#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <iomanip>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <type_traits>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <process.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #if defined(RISE_ENABLE_OPENVDB)
 #include <openvdb/openvdb.h>
@@ -32,6 +51,13 @@ using namespace RISE::Implementation;
 
 namespace
 {
+	constexpr double CapstonePoolDiameterM=0.30;
+	constexpr double CapstoneHeatReleaseRateKW=33.0;
+	// McCaffrey, NBSIR 79-1910, Table 1, adopted 33 kW plume row.
+	constexpr double McCaffrey33KWVelocityCoefficient=1.13;
+	constexpr double McCaffrey33KWTemperatureCoefficientK=23.3;
+
+	using namespace RISE::FireSim;
 	int failures = 0;
 
 	class FrozenPainterProbe final : public Perlin3DPainter
@@ -92,6 +118,1171 @@ namespace
 		float value = 0.0f;
 		std::memcpy(&value,&bits,sizeof(value));
 		return value;
+	}
+	RISECBOR64::Bytes AerosolRecord();
+	RISECBOR64::Bytes SyntheticChemRecord();
+
+	struct SolverFrameValues
+	{
+		bool succeeded=false;
+		std::string structuredError;
+		std::array<std::size_t,3> dimensions={{0,0,0}};
+		double cellWidthM=0.5;
+		std::string caseRecordId;
+		float temperatureK=900.0f,reactionWPerM3=0.0f;
+		std::vector<float> temperature, reaction, carbon;
+		std::vector<std::array<float,3> > velocity;
+		double realizedHeatReleaseW=0.0, fuelConsumptionKGPerS=0.0;
+		double realizedRadiativeFraction=0.0, acceptedEscapeFactor=0.0;
+		double selectedTimeStepS=0.0,acceptedTimeStepS=0.0;
+		double simulatedTimeS=0.0,flowThroughTimeS=0.0,pilotEnergyJ=0.0;
+		double expectedPilotEnergyJ=0.0;
+		double maximumTemperatureK=0.0;
+		double maximumLimiterClassDiscrepancy=0.0;
+		unsigned int discontinuousLimiterClassSteps=0u;
+		bool discontinuousClassThreadIdentity=true;
+		bool discontinuousClassThreadIdentityChecked=false;
+		double statisticsStartS=0.0,puffingFrequencyHz=0.0,puffingRelativeError=0.0;
+		double firstStatisticsStepStartS=0.0;
+		double integratedHeatReleaseJ=0.0,integratedRadiativeLossJ=0.0;
+		double integratedFuelConsumptionKG=0.0,integratedRadiativeFraction=0.0;
+		double effectiveRadiativeFraction=0.0;
+		double centerlineTemperatureExponent=0.0,centerlineFitRMSE=0.0;
+		double characteristicDiameterM=0.0,mccaffreyFlameTipHeightM=0.0;
+		double mccaffreyMaximumTemperatureRelativeError=0.0;
+		double mccaffreyMaximumVelocityRelativeError=0.0;
+		std::size_t mccaffreyPlumeStationCount=0u;
+		std::vector<double> probeTimeS,probeCenterlineHeatReleaseW;
+		std::vector<double> stationProbeTimeS,stationProbeHeightM;
+		std::vector<double> stationProbeTemperatureK,stationProbeReactionWPerM3;
+		std::vector<double> stationProbeVerticalVelocityMPerS;
+		std::vector<double> centerlineHeightM,centerlineTemperatureK,centerlineVelocityMPerS;
+		bool ignitedDuringPilot=false,sustainedAfterPilot=false;
+		bool statisticsBoundaryObserved=false;
+		double checkpointCadenceWallS=0.0;
+		std::vector<std::uint64_t> checkpointStepIndices;
+		bool resumedFromCheckpoint=false;
+		std::uint64_t resumedFromStep=0u;
+		std::uint64_t streamedFrameCount=0u;
+	};
+
+	struct RunPersistenceOptions
+	{
+		std::filesystem::path checkpointPath;
+		double checkpointCadenceWallS=0.0;
+		std::uint64_t streamedFrameCountAtStart=0u;
+		bool resume=false;
+		bool killAfterFirstCheckpoint=false;
+	};
+
+	class CheckpointWriter
+	{
+	public:
+		explicit CheckpointWriter(const std::filesystem::path& path) :
+			output_(path,std::ios::binary|std::ios::trunc) {}
+		bool Good() const { return static_cast<bool>(output_); }
+		bool HeaderBytes(const void* data,const std::size_t size)
+		{
+			output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
+			return static_cast<bool>(output_);
+		}
+		bool SeekHeader(const std::streamoff offset)
+		{
+			output_.seekp(offset);return static_cast<bool>(output_);
+		}
+		template<typename T> bool Pod(const T& value)
+		{
+			static_assert(std::is_arithmetic<T>::value,"checkpoint POD must be arithmetic");
+			return Bytes(&value,sizeof(value));
+		}
+		bool Bytes(const void* data,const std::size_t size)
+		{
+			if(!output_)return false;
+			output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
+			const unsigned char* byte=static_cast<const unsigned char*>(data);
+			for(std::size_t i=0;i<size;++i){checksum_^=byte[i];checksum_*=1099511628211ull;}
+			payloadBytes_+=static_cast<std::uint64_t>(size);return static_cast<bool>(output_);
+		}
+		bool String(const std::string& value)
+		{
+			const std::uint64_t size=static_cast<std::uint64_t>(value.size());
+			return Pod(size)&&(size==0u||Bytes(value.data(),value.size()));
+		}
+		bool Finish()
+		{
+			output_.flush();output_.close();return !output_.fail();
+		}
+		std::uint64_t Checksum() const { return checksum_; }
+		std::uint64_t PayloadBytes() const { return payloadBytes_; }
+	private:
+		std::ofstream output_;
+		std::uint64_t checksum_=1469598103934665603ull,payloadBytes_=0u;
+	};
+
+	class CheckpointReader
+	{
+	public:
+		explicit CheckpointReader(const std::filesystem::path& path) :
+			input_(path,std::ios::binary) {}
+		bool Good() const { return static_cast<bool>(input_); }
+		bool HeaderBytes(void* data,const std::size_t size)
+		{
+			input_.read(static_cast<char*>(data),static_cast<std::streamsize>(size));
+			return static_cast<bool>(input_);
+		}
+		template<typename T> bool Pod(T& value)
+		{
+			static_assert(std::is_arithmetic<T>::value,"checkpoint POD must be arithmetic");
+			return Bytes(&value,sizeof(value));
+		}
+		bool Bytes(void* data,const std::size_t size)
+		{
+			if(!input_||consumed_+size>limit_)return false;
+			input_.read(static_cast<char*>(data),static_cast<std::streamsize>(size));
+			if(!input_)return false;
+			const unsigned char* byte=static_cast<const unsigned char*>(data);
+			for(std::size_t i=0;i<size;++i){checksum_^=byte[i];checksum_*=1099511628211ull;}
+			consumed_+=static_cast<std::uint64_t>(size);return true;
+		}
+		bool String(std::string& value)
+		{
+			std::uint64_t size=0u;if(!Pod(size)||size>16u*1024u*1024u)return false;
+			value.assign(static_cast<std::size_t>(size),'\0');
+			return size==0u||Bytes(&value[0],static_cast<std::size_t>(size));
+		}
+		void SetLimit(const std::uint64_t limit){limit_=limit;}
+		bool Finished(const std::uint64_t checksum) const
+			{return consumed_==limit_&&checksum_==checksum;}
+	private:
+		std::ifstream input_;
+		std::uint64_t checksum_=1469598103934665603ull,consumed_=0u;
+		std::uint64_t limit_=std::numeric_limits<std::uint64_t>::max();
+	};
+
+	template<typename T> bool WriteArithmeticVector(CheckpointWriter& writer,
+		const std::vector<T>& value)
+	{
+		const std::uint64_t size=static_cast<std::uint64_t>(value.size());
+		if(!writer.Pod(size))return false;
+		for(const T& item:value)if(!writer.Pod(item))return false;
+		return true;
+	}
+	template<typename T> bool ReadArithmeticVector(CheckpointReader& reader,
+		std::vector<T>& value,const std::uint64_t maximum=200000000u)
+	{
+		std::uint64_t size=0u;if(!reader.Pod(size)||size>maximum)return false;
+		value.resize(static_cast<std::size_t>(size));
+		for(T& item:value)if(!reader.Pod(item))return false;
+		return true;
+	}
+
+	bool WriteSolverFrameValues(CheckpointWriter& w,const SolverFrameValues& v)
+	{
+		if(!w.Pod(v.succeeded)||!w.String(v.structuredError))return false;
+		for(const std::size_t dimension:v.dimensions){const std::uint64_t encoded=dimension;
+			if(!w.Pod(encoded))return false;}
+		if(!w.Pod(v.cellWidthM)||!w.String(v.caseRecordId)||!w.Pod(v.temperatureK)||
+			!w.Pod(v.reactionWPerM3)||!WriteArithmeticVector(w,v.temperature)||
+			!WriteArithmeticVector(w,v.reaction)||!WriteArithmeticVector(w,v.carbon))return false;
+		const std::uint64_t velocityCount=v.velocity.size();if(!w.Pod(velocityCount))return false;
+		for(const auto& velocity:v.velocity)for(const float component:velocity)
+			if(!w.Pod(component))return false;
+#define WRITE_CHECKPOINT_FIELD(field) if(!w.Pod(v.field))return false
+		WRITE_CHECKPOINT_FIELD(realizedHeatReleaseW);WRITE_CHECKPOINT_FIELD(fuelConsumptionKGPerS);
+		WRITE_CHECKPOINT_FIELD(realizedRadiativeFraction);WRITE_CHECKPOINT_FIELD(acceptedEscapeFactor);
+		WRITE_CHECKPOINT_FIELD(selectedTimeStepS);WRITE_CHECKPOINT_FIELD(acceptedTimeStepS);
+		WRITE_CHECKPOINT_FIELD(simulatedTimeS);WRITE_CHECKPOINT_FIELD(flowThroughTimeS);
+		WRITE_CHECKPOINT_FIELD(pilotEnergyJ);WRITE_CHECKPOINT_FIELD(expectedPilotEnergyJ);
+		WRITE_CHECKPOINT_FIELD(maximumTemperatureK);WRITE_CHECKPOINT_FIELD(maximumLimiterClassDiscrepancy);
+		WRITE_CHECKPOINT_FIELD(discontinuousLimiterClassSteps);
+		WRITE_CHECKPOINT_FIELD(discontinuousClassThreadIdentity);
+		WRITE_CHECKPOINT_FIELD(discontinuousClassThreadIdentityChecked);
+		WRITE_CHECKPOINT_FIELD(statisticsStartS);WRITE_CHECKPOINT_FIELD(puffingFrequencyHz);
+		WRITE_CHECKPOINT_FIELD(puffingRelativeError);WRITE_CHECKPOINT_FIELD(firstStatisticsStepStartS);
+		WRITE_CHECKPOINT_FIELD(integratedHeatReleaseJ);WRITE_CHECKPOINT_FIELD(integratedRadiativeLossJ);
+		WRITE_CHECKPOINT_FIELD(integratedFuelConsumptionKG);WRITE_CHECKPOINT_FIELD(integratedRadiativeFraction);
+		WRITE_CHECKPOINT_FIELD(effectiveRadiativeFraction);WRITE_CHECKPOINT_FIELD(centerlineTemperatureExponent);
+		WRITE_CHECKPOINT_FIELD(centerlineFitRMSE);WRITE_CHECKPOINT_FIELD(characteristicDiameterM);
+		WRITE_CHECKPOINT_FIELD(mccaffreyFlameTipHeightM);
+		WRITE_CHECKPOINT_FIELD(mccaffreyMaximumTemperatureRelativeError);
+		WRITE_CHECKPOINT_FIELD(mccaffreyMaximumVelocityRelativeError);
+		{const std::uint64_t count=v.mccaffreyPlumeStationCount;if(!w.Pod(count))return false;}
+		WRITE_CHECKPOINT_FIELD(ignitedDuringPilot);WRITE_CHECKPOINT_FIELD(sustainedAfterPilot);
+		WRITE_CHECKPOINT_FIELD(statisticsBoundaryObserved);WRITE_CHECKPOINT_FIELD(checkpointCadenceWallS);
+		WRITE_CHECKPOINT_FIELD(resumedFromCheckpoint);WRITE_CHECKPOINT_FIELD(resumedFromStep);
+		WRITE_CHECKPOINT_FIELD(streamedFrameCount);
+#undef WRITE_CHECKPOINT_FIELD
+		return WriteArithmeticVector(w,v.probeTimeS)&&WriteArithmeticVector(w,v.probeCenterlineHeatReleaseW)&&
+			WriteArithmeticVector(w,v.stationProbeTimeS)&&WriteArithmeticVector(w,v.stationProbeHeightM)&&
+			WriteArithmeticVector(w,v.stationProbeTemperatureK)&&WriteArithmeticVector(w,v.stationProbeReactionWPerM3)&&
+			WriteArithmeticVector(w,v.stationProbeVerticalVelocityMPerS)&&
+			WriteArithmeticVector(w,v.centerlineHeightM)&&WriteArithmeticVector(w,v.centerlineTemperatureK)&&
+			WriteArithmeticVector(w,v.centerlineVelocityMPerS)&&
+			WriteArithmeticVector(w,v.checkpointStepIndices);
+	}
+
+	bool ReadSolverFrameValues(CheckpointReader& r,SolverFrameValues& v)
+	{
+		if(!r.Pod(v.succeeded)||!r.String(v.structuredError))return false;
+		for(std::size_t& dimension:v.dimensions){std::uint64_t encoded=0u;
+			if(!r.Pod(encoded)||encoded>std::numeric_limits<std::size_t>::max())return false;
+			dimension=static_cast<std::size_t>(encoded);}
+		if(!r.Pod(v.cellWidthM)||!r.String(v.caseRecordId)||!r.Pod(v.temperatureK)||
+			!r.Pod(v.reactionWPerM3)||!ReadArithmeticVector(r,v.temperature)||
+			!ReadArithmeticVector(r,v.reaction)||!ReadArithmeticVector(r,v.carbon))return false;
+		std::uint64_t velocityCount=0u;if(!r.Pod(velocityCount)||velocityCount>200000000u)return false;
+		v.velocity.resize(static_cast<std::size_t>(velocityCount));
+		for(auto& velocity:v.velocity)for(float& component:velocity)if(!r.Pod(component))return false;
+#define READ_CHECKPOINT_FIELD(field) if(!r.Pod(v.field))return false
+		READ_CHECKPOINT_FIELD(realizedHeatReleaseW);READ_CHECKPOINT_FIELD(fuelConsumptionKGPerS);
+		READ_CHECKPOINT_FIELD(realizedRadiativeFraction);READ_CHECKPOINT_FIELD(acceptedEscapeFactor);
+		READ_CHECKPOINT_FIELD(selectedTimeStepS);READ_CHECKPOINT_FIELD(acceptedTimeStepS);
+		READ_CHECKPOINT_FIELD(simulatedTimeS);READ_CHECKPOINT_FIELD(flowThroughTimeS);
+		READ_CHECKPOINT_FIELD(pilotEnergyJ);READ_CHECKPOINT_FIELD(expectedPilotEnergyJ);
+		READ_CHECKPOINT_FIELD(maximumTemperatureK);READ_CHECKPOINT_FIELD(maximumLimiterClassDiscrepancy);
+		READ_CHECKPOINT_FIELD(discontinuousLimiterClassSteps);
+		READ_CHECKPOINT_FIELD(discontinuousClassThreadIdentity);
+		READ_CHECKPOINT_FIELD(discontinuousClassThreadIdentityChecked);
+		READ_CHECKPOINT_FIELD(statisticsStartS);READ_CHECKPOINT_FIELD(puffingFrequencyHz);
+		READ_CHECKPOINT_FIELD(puffingRelativeError);READ_CHECKPOINT_FIELD(firstStatisticsStepStartS);
+		READ_CHECKPOINT_FIELD(integratedHeatReleaseJ);READ_CHECKPOINT_FIELD(integratedRadiativeLossJ);
+		READ_CHECKPOINT_FIELD(integratedFuelConsumptionKG);READ_CHECKPOINT_FIELD(integratedRadiativeFraction);
+		READ_CHECKPOINT_FIELD(effectiveRadiativeFraction);READ_CHECKPOINT_FIELD(centerlineTemperatureExponent);
+		READ_CHECKPOINT_FIELD(centerlineFitRMSE);READ_CHECKPOINT_FIELD(characteristicDiameterM);
+		READ_CHECKPOINT_FIELD(mccaffreyFlameTipHeightM);
+		READ_CHECKPOINT_FIELD(mccaffreyMaximumTemperatureRelativeError);
+		READ_CHECKPOINT_FIELD(mccaffreyMaximumVelocityRelativeError);
+		{std::uint64_t count=0u;if(!r.Pod(count)||count>std::numeric_limits<std::size_t>::max())return false;
+			v.mccaffreyPlumeStationCount=static_cast<std::size_t>(count);}
+		READ_CHECKPOINT_FIELD(ignitedDuringPilot);READ_CHECKPOINT_FIELD(sustainedAfterPilot);
+		READ_CHECKPOINT_FIELD(statisticsBoundaryObserved);READ_CHECKPOINT_FIELD(checkpointCadenceWallS);
+		READ_CHECKPOINT_FIELD(resumedFromCheckpoint);READ_CHECKPOINT_FIELD(resumedFromStep);
+		READ_CHECKPOINT_FIELD(streamedFrameCount);
+#undef READ_CHECKPOINT_FIELD
+		return ReadArithmeticVector(r,v.probeTimeS)&&ReadArithmeticVector(r,v.probeCenterlineHeatReleaseW)&&
+			ReadArithmeticVector(r,v.stationProbeTimeS)&&ReadArithmeticVector(r,v.stationProbeHeightM)&&
+			ReadArithmeticVector(r,v.stationProbeTemperatureK)&&ReadArithmeticVector(r,v.stationProbeReactionWPerM3)&&
+			ReadArithmeticVector(r,v.stationProbeVerticalVelocityMPerS)&&
+			ReadArithmeticVector(r,v.centerlineHeightM)&&ReadArithmeticVector(r,v.centerlineTemperatureK)&&
+			ReadArithmeticVector(r,v.centerlineVelocityMPerS)&&
+			ReadArithmeticVector(r,v.checkpointStepIndices,1000000u);
+	}
+
+	struct MethaneRunCheckpoint
+	{
+		std::string caseRecordId;
+		std::string producerBuildId;
+		std::array<std::size_t,3> dimensions={{0u,0u,0u}};
+		double cellWidthM=0.0;
+		std::vector<MethaneCellState> states;
+		PeriodicMACField momentum;
+		PeriodicMACField velocity;
+		SolverFrameValues values;
+		std::vector<double> centerlineTemperatureIntegral;
+		std::vector<double> centerlineVelocityIntegral;
+		std::vector<double> planeHeatReleaseIntegral;
+		double centerlineStatisticsDurationS=0.0;
+		double simulationTimeS=0.0,previousStepS=0.0,lastAcceptedStepS=0.0;
+		std::uint64_t acceptedSteps=0u;
+	};
+
+	bool WriteCellStates(CheckpointWriter& writer,const std::vector<MethaneCellState>& states)
+	{
+		const std::uint64_t count=states.size();if(!writer.Pod(count))return false;
+		for(const MethaneCellState& state:states){
+			if(!writer.Pod(state.rhoTotalZ))return false;
+			for(const double value:state.constituent)if(!writer.Pod(value))return false;
+			if(!writer.Pod(state.sensibleEnergyJPerM3)||!writer.Pod(state.temperatureK))return false;
+		}
+		return true;
+	}
+
+	bool ReadCellStates(CheckpointReader& reader,std::vector<MethaneCellState>& states)
+	{
+		std::uint64_t count=0u;if(!reader.Pod(count)||count>100000000u)return false;
+		states.resize(static_cast<std::size_t>(count));
+		for(MethaneCellState& state:states){
+			if(!reader.Pod(state.rhoTotalZ))return false;
+			for(double& value:state.constituent)if(!reader.Pod(value))return false;
+			if(!reader.Pod(state.sensibleEnergyJPerM3)||!reader.Pod(state.temperatureK))return false;
+		}
+		return true;
+	}
+
+	template<typename Field> bool WriteMACField(CheckpointWriter& writer,const Field& field)
+	{
+		for(unsigned int axis=0;axis<3;++axis)
+			if(!WriteArithmeticVector(writer,field.component[axis]))return false;
+		return true;
+	}
+	template<typename Field> bool ReadMACField(CheckpointReader& reader,Field& field)
+	{
+		for(unsigned int axis=0;axis<3;++axis)
+			if(!ReadArithmeticVector(reader,field.component[axis]))return false;
+		return true;
+	}
+
+	bool WriteCheckpointPayload(CheckpointWriter& writer,const MethaneRunCheckpoint& checkpoint)
+	{
+		if(!writer.String(checkpoint.caseRecordId)||!writer.String(checkpoint.producerBuildId))return false;
+		for(const std::size_t dimension:checkpoint.dimensions){const std::uint64_t encoded=dimension;
+			if(!writer.Pod(encoded))return false;}
+		return writer.Pod(checkpoint.cellWidthM)&&WriteCellStates(writer,checkpoint.states)&&
+			WriteMACField(writer,checkpoint.momentum)&&WriteMACField(writer,checkpoint.velocity)&&
+			WriteSolverFrameValues(writer,checkpoint.values)&&
+			WriteArithmeticVector(writer,checkpoint.centerlineTemperatureIntegral)&&
+			WriteArithmeticVector(writer,checkpoint.centerlineVelocityIntegral)&&
+			WriteArithmeticVector(writer,checkpoint.planeHeatReleaseIntegral)&&
+			writer.Pod(checkpoint.centerlineStatisticsDurationS)&&
+			writer.Pod(checkpoint.simulationTimeS)&&writer.Pod(checkpoint.previousStepS)&&
+			writer.Pod(checkpoint.lastAcceptedStepS)&&writer.Pod(checkpoint.acceptedSteps);
+	}
+
+	bool ReadCheckpointPayload(CheckpointReader& reader,MethaneRunCheckpoint& checkpoint)
+	{
+		if(!reader.String(checkpoint.caseRecordId)||!reader.String(checkpoint.producerBuildId))return false;
+		for(std::size_t& dimension:checkpoint.dimensions){std::uint64_t encoded=0u;
+			if(!reader.Pod(encoded)||encoded>std::numeric_limits<std::size_t>::max())return false;
+			dimension=static_cast<std::size_t>(encoded);}
+		return reader.Pod(checkpoint.cellWidthM)&&ReadCellStates(reader,checkpoint.states)&&
+			ReadMACField(reader,checkpoint.momentum)&&ReadMACField(reader,checkpoint.velocity)&&
+			ReadSolverFrameValues(reader,checkpoint.values)&&
+			ReadArithmeticVector(reader,checkpoint.centerlineTemperatureIntegral)&&
+			ReadArithmeticVector(reader,checkpoint.centerlineVelocityIntegral)&&
+			ReadArithmeticVector(reader,checkpoint.planeHeatReleaseIntegral)&&
+			reader.Pod(checkpoint.centerlineStatisticsDurationS)&&
+			reader.Pod(checkpoint.simulationTimeS)&&reader.Pod(checkpoint.previousStepS)&&
+			reader.Pod(checkpoint.lastAcceptedStepS)&&reader.Pod(checkpoint.acceptedSteps);
+	}
+
+	bool DurableSyncFileAndDirectory(const std::filesystem::path& path,std::string& error)
+	{
+#if defined(_WIN32)
+		HANDLE file=CreateFileW(path.wstring().c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,
+			OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+		if(file==INVALID_HANDLE_VALUE){error="cannot open durable run file";return false;}
+		const bool ok=FlushFileBuffers(file)!=0;CloseHandle(file);
+		if(!ok)error="cannot flush durable run file";return ok;
+#else
+		const int fd=::open(path.c_str(),O_RDONLY);
+		if(fd<0){error="cannot open durable run file";return false;}
+		const bool ok=::fsync(fd)==0;::close(fd);
+		if(!ok){error="cannot fsync durable run file";return false;}
+		const std::filesystem::path directory=path.has_parent_path()?path.parent_path():".";
+		const int directoryFd=::open(directory.c_str(),O_RDONLY);
+		if(directoryFd>=0){::fsync(directoryFd);::close(directoryFd);}
+		return true;
+#endif
+	}
+
+	bool AtomicReplaceCheckpoint(const std::filesystem::path& temporary,
+		const std::filesystem::path& target,std::string& error)
+	{
+#if defined(_WIN32)
+		if(!MoveFileExW(temporary.wstring().c_str(),target.wstring().c_str(),
+			MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){
+			error="cannot atomically replace run checkpoint";return false;}
+		return true;
+#else
+		if(::rename(temporary.c_str(),target.c_str())!=0){error="cannot atomically replace run checkpoint";return false;}
+		const std::filesystem::path directory=target.has_parent_path()?target.parent_path():".";
+		const int directoryFd=::open(directory.c_str(),O_RDONLY);
+		if(directoryFd>=0){::fsync(directoryFd);::close(directoryFd);}
+		return true;
+#endif
+	}
+
+	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
+		const MethaneRunCheckpoint& checkpoint,std::string& error)
+	{
+		if(path.has_parent_path())std::filesystem::create_directories(path.parent_path());
+#if defined(_WIN32)
+		const long long processId=static_cast<long long>(::_getpid());
+#else
+		const long long processId=static_cast<long long>(::getpid());
+#endif
+		const std::filesystem::path temporary=path.string()+".tmp."+std::to_string(processId);
+		CheckpointWriter writer(temporary);if(!writer.Good()){error="cannot open run checkpoint";return false;}
+		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
+		const std::uint64_t version=1u,endian=0x0102030405060708ull,zero=0u;
+		auto rejectTemporary=[&temporary](){std::error_code ignored;
+			std::filesystem::remove(temporary,ignored);};
+		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
+			!writer.HeaderBytes(&endian,sizeof(endian))||!writer.HeaderBytes(&zero,sizeof(zero))||
+			!writer.HeaderBytes(&zero,sizeof(zero))||!WriteCheckpointPayload(writer,checkpoint)){
+			error="cannot serialize complete run checkpoint";rejectTemporary();return false;}
+		const std::uint64_t payloadBytes=writer.PayloadBytes(),checksum=writer.Checksum();
+		if(!writer.SeekHeader(32)||!writer.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
+			!writer.HeaderBytes(&checksum,sizeof(checksum))||!writer.Finish()){
+			error="cannot finalize run checkpoint";rejectTemporary();return false;}
+		if(!DurableSyncFileAndDirectory(temporary,error)||
+			!AtomicReplaceCheckpoint(temporary,path,error)){rejectTemporary();return false;}
+		return true;
+	}
+
+	bool LoadMethaneRunCheckpoint(const std::filesystem::path& path,
+		MethaneRunCheckpoint& checkpoint,std::string& error)
+	{
+		std::error_code sizeError;
+		const std::uintmax_t exactFileBytes=std::filesystem::file_size(path,sizeError);
+		CheckpointReader reader(path);if(!reader.Good()){error="cannot open run checkpoint";return false;}
+		char magic[16]={};std::uint64_t version=0u,endian=0u,payloadBytes=0u,checksum=0u;
+		const char expected[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
+		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
+			!reader.HeaderBytes(&version,sizeof(version))||version!=1u||
+			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
+			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
+			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
+			sizeError||exactFileBytes!=48ull+payloadBytes){
+			error="run checkpoint header is invalid";return false;}
+		reader.SetLimit(payloadBytes);
+		if(!ReadCheckpointPayload(reader,checkpoint)||!reader.Finished(checksum)){
+			error="run checkpoint payload is incomplete or corrupt";return false;}
+		return true;
+	}
+
+	[[noreturn]] void HardKillCurrentProcess()
+	{
+#if defined(_WIN32)
+		TerminateProcess(GetCurrentProcess(),91u);
+#else
+		::raise(SIGKILL);
+#endif
+		std::_Exit(91);
+	}
+
+	double DominantUniformResampledFrequency( const std::vector<double>& time,
+		const std::vector<double>& signal )
+	{
+		if(time.size()<8u||time.size()!=signal.size()||!(time.back()>time.front())) return 0.0;
+		constexpr std::size_t sampleCount=512u;
+		std::array<double,sampleCount> uniform={{0.0}};
+		const double duration=time.back()-time.front();
+		std::size_t right=1u;
+		for(std::size_t sample=0;sample<sampleCount;++sample) {
+			const double target=time.front()+duration*static_cast<double>(sample)/
+				static_cast<double>(sampleCount-1u);
+			while(right<time.size()&&time[right]<target) ++right;
+			if(right>=time.size()) uniform[sample]=signal.back();
+			else {
+				const double span=time[right]-time[right-1u];
+				const double fraction=span>0.0?(target-time[right-1u])/span:0.0;
+				uniform[sample]=signal[right-1u]+fraction*(signal[right]-signal[right-1u]);
+			}
+		}
+		// Remove the least-squares affine trend before applying a Hann window.  The
+		// direct DFT below is an independent harness calculation, not a solver path.
+		double sumX=0.0,sumY=0.0,sumXX=0.0,sumXY=0.0;
+		for(std::size_t sample=0;sample<sampleCount;++sample) {
+			const double x=static_cast<double>(sample);
+			sumX+=x;sumY+=uniform[sample];sumXX+=x*x;sumXY+=x*uniform[sample];
+		}
+		const double denominator=static_cast<double>(sampleCount)*sumXX-sumX*sumX;
+		const double slope=denominator!=0.0?
+			(static_cast<double>(sampleCount)*sumXY-sumX*sumY)/denominator:0.0;
+		const double intercept=(sumY-slope*sumX)/static_cast<double>(sampleCount);
+		double detrendedEnergy=0.0,signalScale=0.0;
+		for(std::size_t sample=0;sample<sampleCount;++sample) {
+			const double residual=uniform[sample]-intercept-slope*static_cast<double>(sample);
+			detrendedEnergy+=residual*residual;
+			signalScale=std::max(signalScale,std::fabs(uniform[sample]));
+		}
+		if(!(detrendedEnergy>64.0*std::numeric_limits<double>::epsilon()*
+			std::max(1.0,signalScale*signalScale))) return 0.0;
+		double bestPower=-1.0;std::size_t bestBin=0u;
+		for(std::size_t bin=1u;bin<sampleCount/2u;++bin) {
+			double real=0.0,imaginary=0.0;
+			for(std::size_t sample=0;sample<sampleCount;++sample) {
+				const double window=0.5-0.5*std::cos(2.0*3.14159265358979323846*
+					static_cast<double>(sample)/static_cast<double>(sampleCount-1u));
+				const double value=(uniform[sample]-intercept-slope*static_cast<double>(sample))*window;
+				const double angle=2.0*3.14159265358979323846*static_cast<double>(bin*sample)/
+					static_cast<double>(sampleCount);
+				real+=value*std::cos(angle);imaginary-=value*std::sin(angle);
+			}
+			const double power=real*real+imaginary*imaginary;
+			if(power>bestPower) {bestPower=power;bestBin=bin;}
+		}
+		return static_cast<double>(bestBin)*static_cast<double>(sampleCount-1u)/
+			(static_cast<double>(sampleCount)*duration);
+	}
+
+	void FitCenterlineTemperaturePowerLaw( SolverFrameValues& values )
+	{
+		if(values.centerlineHeightM.size()!=values.centerlineTemperatureK.size()) return;
+		double bestError=std::numeric_limits<double>::infinity(),bestSlope=0.0;
+		const double spacing=values.cellWidthM;
+		for(unsigned int originStep=0;originStep<32u;++originStep) {
+			const double origin=-2.0*spacing+4.0*spacing*static_cast<double>(originStep)/31.0;
+			double sx=0.0,sy=0.0,sxx=0.0,sxy=0.0,syy=0.0;std::size_t count=0u;
+			for(std::size_t i=0;i<values.centerlineHeightM.size();++i) {
+				const double distance=values.centerlineHeightM[i]-origin;
+				const double excess=values.centerlineTemperatureK[i]-300.0;
+				if(values.centerlineHeightM[i]<=values.mccaffreyFlameTipHeightM||
+					distance<=2.0*spacing||excess<=1.0) continue;
+				const double x=std::log(distance),y=std::log(excess);
+				sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;syy+=y*y;++count;
+			}
+			if(count<4u) continue;
+			const double divisor=static_cast<double>(count)*sxx-sx*sx;
+			if(divisor==0.0) continue;
+			const double fittedSlope=(static_cast<double>(count)*sxy-sx*sy)/divisor;
+			const double fittedIntercept=(sy-fittedSlope*sx)/static_cast<double>(count);
+			const double squared=syy+static_cast<double>(count)*fittedIntercept*fittedIntercept+
+				fittedSlope*fittedSlope*sxx+2.0*fittedIntercept*fittedSlope*sx-
+				2.0*fittedIntercept*sy-2.0*fittedSlope*sxy;
+			const double error=std::sqrt(std::max(0.0,squared/static_cast<double>(count)));
+			if(error<bestError) {bestError=error;bestSlope=fittedSlope;}
+		}
+		if(std::isfinite(bestError)) {
+			values.centerlineTemperatureExponent=bestSlope;
+			values.centerlineFitRMSE=bestError;
+		}
+	}
+
+	void EvaluateMcCaffreyPlumeStations( SolverFrameValues& values,
+		const double heatReleaseRateKW )
+	{
+		if(values.centerlineHeightM.size()!=values.centerlineTemperatureK.size()||
+			values.centerlineHeightM.size()!=values.centerlineVelocityMPerS.size()||
+			!(heatReleaseRateKW>0.0)) return;
+		// McCaffrey, NBSIR 79-1910: compare to the adopted absolute 33 kW
+		// plume row, rather than re-deriving rounded constants from one another.
+		const double qTwoFifths=std::pow(heatReleaseRateKW,0.4);
+		const double qOneFifth=std::pow(heatReleaseRateKW,0.2);
+		const double top=values.centerlineHeightM.empty()?0.0:
+			values.centerlineHeightM.back()+0.5*values.cellWidthM;
+		const double maximumUncontaminatedHeight=top-0.5*values.characteristicDiameterM;
+		const double minimumHeight=std::max(values.mccaffreyFlameTipHeightM,
+			0.2*qTwoFifths);
+		for(std::size_t station=0;station<values.centerlineHeightM.size();++station){
+			const double height=values.centerlineHeightM[station];
+			if(!(height>minimumHeight&&height<=maximumUncontaminatedHeight)) continue;
+			const double normalizedHeight=height/qTwoFifths;
+			const double expectedVelocity=McCaffrey33KWVelocityCoefficient*qOneFifth*
+				std::pow(normalizedHeight,-1.0/3.0);
+			const double expectedTemperatureRise=McCaffrey33KWTemperatureCoefficientK*
+				std::pow(normalizedHeight,-5.0/3.0);
+			const double observedTemperatureRise=values.centerlineTemperatureK[station]-300.0;
+			values.mccaffreyMaximumTemperatureRelativeError=std::max(
+				values.mccaffreyMaximumTemperatureRelativeError,
+				std::fabs(observedTemperatureRise-expectedTemperatureRise)/
+					expectedTemperatureRise);
+			values.mccaffreyMaximumVelocityRelativeError=std::max(
+				values.mccaffreyMaximumVelocityRelativeError,
+				std::fabs(values.centerlineVelocityMPerS[station]-expectedVelocity)/
+					expectedVelocity);
+			++values.mccaffreyPlumeStationCount;
+		}
+	}
+	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
+		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
+		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
+		const double resolutionTier=6.0,const double poolDiameterM=CapstonePoolDiameterM,
+		const double heatReleaseRateKW=CapstoneHeatReleaseRateKW,
+		const bool injectSolverFailure=false,
+		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
+	{
+		SolverFrameValues values;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		MethaneCellState state; state.temperatureK=300.0;
+		for(std::size_t i=0;i<MethaneSpeciesCount;++i)
+			state.constituent[i]=fuel.AmbientMassFractions()[i];
+		double invW=0.0;
+		for(std::size_t i=0;i<MethaneCarbon;++i) {
+			const FireThermochemistrySpecies* s=fuel.FindSpecies(fuel.SpeciesOrder()[i].c_str());
+			if(s) invW+=state.constituent[i]/s->molecularWeightKGPerKMol;
+		}
+		const double rho=fuel.ThermodynamicPressurePa()/(8314.46261815324*state.temperatureK*invW);
+		for(double& x:state.constituent) x*=rho;
+		state.rhoTotalZ=0.0;
+		std::string error;
+		Check(fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(state),state.temperatureK,
+			state.sensibleEnergyJPerM3,&error),"capstone initial methane state closes thermochemistry");
+		FireCase::AuthoredV1 authored;
+		authored.fuelRecordId=fuel.RecordId(); authored.poolDiameterM=poolDiameterM;
+		authored.heatReleaseRateKW=heatReleaseRateKW; authored.envelope={{0.0,1.0}};
+		authored.durationS=caseDurationS; authored.quality="dstar";
+		authored.numericDStarTier=resolutionTier; authored.seed=1234;
+		authored.outputFramesPerS=caseFramesPerS;
+		authored.plumeLaw=true;
+		FireCase::RecordV1 caseRecord;
+		const RISECBOR64::Bytes aerosol=AerosolRecord();
+		const RISECBOR64::Bytes chem=SyntheticChemRecord();
+		const bool caseBuilt=FireCase::BuildMethaneV1(authored,fuel,{RISECBOR64::SHA256Hex(fuel.RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationThermochemistryRecord::OpenSubsetV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationTransportRecord::OpenV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireOpticsPreset::PredictiveV1().RecordBytes()),RISECBOR64::SHA256Hex(aerosol),
+			RISECBOR64::SHA256Hex(chem)},caseRecord,error);
+		Check(caseBuilt,
+			"capstone solver consumes the canonical r57 methane case");
+		if(!caseBuilt) {
+			std::fprintf(stderr,"capstone case derivation rejected: %s\n",error.c_str());
+			values.structuredError="case_derivation_failure:"+error;
+			return values;
+		}
+		RISECBOR64::Bytes currentBuildBytes;
+		std::string currentBuildId;
+		if(!persistence.checkpointPath.empty()&&
+			!CurrentRendererBuildIdentity(currentBuildBytes,currentBuildId)){
+			values.structuredError="checkpoint_build_identity_failure";return values;
+		}
+		PeriodicMACShape shape; shape.nx=caseRecord.derived.nx;shape.ny=caseRecord.derived.ny;
+		shape.nz=caseRecord.derived.nz;shape.cellWidthM=caseRecord.derived.cellWidthM;
+		const std::array<std::size_t,2> centerXIndex={{(shape.nx-1u)/2u,shape.nx/2u}},
+			centerYIndex={{(shape.ny-1u)/2u,shape.ny/2u}};
+		const std::size_t centerXCount=centerXIndex[0]==centerXIndex[1]?1u:2u,
+			centerYCount=centerYIndex[0]==centerYIndex[1]?1u:2u;
+		const double centerSampleCount=static_cast<double>(centerXCount*centerYCount);
+		values.effectiveRadiativeFraction=caseRecord.derived.effectiveRadiativeFraction;
+		const bool reportCapstoneProgress=std::getenv("RISE_FIRE_CAPSTONE_OUTPUT")!=nullptr;
+		if(reportCapstoneProgress) std::fprintf(stderr,
+			"capstone probe workers=%u target=%.9g grid=%zux%zux%zu dx=%.9g t_ft=%.9g\n",
+			workerCount,targetTimeS,shape.nx,shape.ny,shape.nz,shape.cellWidthM,
+			caseRecord.derived.flowThroughTimeS);
+		const double zeroGradient[3][3]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
+		const double widths[3]={shape.cellWidthM,shape.cellWidthM,shape.cellWidthM};
+		CellTransportEvaluation transportEvaluation;
+		Check(EvaluateCellTransport(state,zeroGradient,widths,false,fuel,
+			FireSimulationTransportRecord::OpenV1(),transportEvaluation,&error),
+			"capstone evaluates physical methane transport from the adopted record");
+		StableTimeStep selectedStep;
+		const double maximumTransport=std::max(transportEvaluation.totalDiffusivityM2PerS,
+			transportEvaluation.effectiveViscosityPaS/state.GasDensity());
+		const double positiveReducedGravity=std::max(0.0,9.80665*(rho-state.GasDensity())/
+			state.GasDensity());
+		Check(ComputeStableTimeStep(shape.cellWidthM,0.0,positiveReducedGravity,
+			maximumTransport,3,0.0,selectedStep,&error),
+			"capstone consumes the production r54 timestep selector");
+		MethaneReactionStep reaction; reaction.deltaTimeS=selectedStep.seconds;
+		Check(ComputeMixingTimeS(state,transportEvaluation,FireSimulationTransportRecord::OpenV1(),
+			shape.cellWidthM,rho,9.80665,false,reaction.mixingTimeS,&error),
+			"capstone derives mixing time instead of authoring a closure constant");
+		std::vector<MethaneCellState> states(shape.CellCount(),state);
+		std::vector<MethaneReactionStep> reactions(shape.CellCount(),reaction);
+		std::vector<MethaneSourcePacket> packets;
+		RadiationEscapeFactor escape;
+		const double cellVolume=shape.cellWidthM*shape.cellWidthM*shape.cellWidthM;
+		PeriodicMACField momentum; for(unsigned int axis=0;axis<3;++axis)
+			momentum.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
+		ConservativeAdvance3DConfig config; config.transport.cellWidthM=shape.cellWidthM;
+		config.transport.deltaTimeS=reaction.deltaTimeS; config.transport.ambientTemperatureK=300.0;
+		config.transport.adiabaticTemperatureK=2500.0; config.transport.ambientGasDensityKGPerM3=rho;
+		const double projectionReferenceVelocityMPerS=std::sqrt(9.80665*
+			caseRecord.derived.characteristicDiameterM);
+		const double projectionReferenceLengthM=std::max({caseRecord.derived.extentXM,
+			caseRecord.derived.extentYM,caseRecord.derived.extentZM});
+		config.projectionTolerancePerS=1.0e-3*projectionReferenceVelocityMPerS/
+			projectionReferenceLengthM;
+		config.dns=false; config.workerCount=workerCount;
+		config.periodicBoundaries=false;
+		config.injectedTemperatureK=300.0;
+		MethaneCellState ambient; ambient.temperatureK=300.0;
+		for(std::size_t i=0;i<MethaneSpeciesCount;++i)
+			ambient.constituent[i]=fuel.AmbientMassFractions()[i];
+		double ambientInvW=0.0;
+		for(std::size_t i=0;i<MethaneCarbon;++i) {
+			const FireThermochemistrySpecies* species=fuel.FindSpecies(fuel.SpeciesOrder()[i].c_str());
+			if(species) ambientInvW+=ambient.constituent[i]/species->molecularWeightKGPerKMol;
+		}
+		const double ambientRho=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+			ambient.temperatureK*ambientInvW);
+		for(double& x:ambient.constituent) x*=ambientRho;
+		ambient.rhoTotalZ=0.0;
+		Check(fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(ambient),
+			ambient.temperatureK,ambient.sensibleEnergyJPerM3,&error),
+			"capstone ambient state closes thermochemistry");
+		MethaneCellState injected; injected.temperatureK=300.0;
+		for(std::size_t i=0;i<MethaneSpeciesCount;++i)
+			injected.constituent[i]=fuel.InjectedMassFractions()[i];
+		double injectedInvW=0.0;
+		for(std::size_t i=0;i<MethaneCarbon;++i) {
+			const FireThermochemistrySpecies* species=fuel.FindSpecies(fuel.SpeciesOrder()[i].c_str());
+			if(species) injectedInvW+=injected.constituent[i]/species->molecularWeightKGPerKMol;
+		}
+		const double injectedRho=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+			injected.temperatureK*injectedInvW);
+		for(double& x:injected.constituent) x*=injectedRho;
+		injected.rhoTotalZ=injected.TotalDensity();
+		Check(fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(injected),
+			injected.temperatureK,injected.sensibleEnergyJPerM3,&error),
+			"capstone injected methane state closes thermochemistry");
+		config.openBoundary.ambientDensityKGPerM3=ambient.GasDensity();
+		config.openBoundary.injectedGasDensityKGPerM3=injected.GasDensity();
+		config.openBoundary.ambientState=ToConservativeVector(ambient);
+		config.openBoundary.injectedState=ToConservativeVector(injected);
+		config.openBoundary.fuelMassFluxKGPerM2S=0.0;
+		std::vector<double> sourcePattern;
+		Check(FireCase::BuildSourcePattern(authored,caseRecord.derived,sourcePattern,error),
+			"capstone solver installs the case's exact SplitMix64 source pattern");
+		config.openBoundary.bottomFuelMask.resize(shape.nx*shape.ny,false);
+		config.openBoundary.bottomFuelMassFluxKGPerM2S.resize(shape.nx*shape.ny,0.0);
+		for(std::size_t face=0;face<sourcePattern.size();++face) if(sourcePattern[face]!=0.0) {
+			config.openBoundary.bottomFuelMask[face]=true;
+			config.openBoundary.bottomFuelMassFluxKGPerM2S[face]=
+				caseRecord.derived.nominalFuelFluxKGPerM2S*sourcePattern[face];
+		}
+		std::vector<std::uint8_t> canonicalPilotMask;
+		Check(FireCase::BuildPilotMask(authored,caseRecord.derived,canonicalPilotMask,error),
+			"capstone installs the canonical r57 intensive pilot annulus");
+		const double pilotEndS=caseRecord.derived.pilotDurationMultiplier*
+			caseRecord.derived.flowThroughTimeS;
+		values.maximumTemperatureK=state.temperatureK;
+		values.statisticsStartS=5.0*caseRecord.derived.flowThroughTimeS;
+		values.characteristicDiameterM=caseRecord.derived.characteristicDiameterM;
+		std::vector<double> centerlineTemperatureIntegral(shape.nz,0.0),
+			centerlineVelocityIntegral(shape.nz,0.0),
+			planeHeatReleaseIntegral(shape.nz,0.0);
+		double centerlineStatisticsDurationS=0.0;
+		config.openBoundary.velocityToleranceMPerS=1.0e-3*projectionReferenceVelocityMPerS;
+		config.openBoundary.pressureTolerancePa=ambient.GasDensity()*
+			projectionReferenceVelocityMPerS*config.openBoundary.velocityToleranceMPerS;
+		Check(config.openBoundary.velocityToleranceMPerS==
+			config.projectionTolerancePerS*projectionReferenceLengthM&&
+			config.openBoundary.pressureTolerancePa==ambient.GasDensity()*
+				projectionReferenceVelocityMPerS*config.openBoundary.velocityToleranceMPerS,
+			"capstone pressure-open deadband derives from the pinned epsilon_abs scene scale");
+		ConservativeAdvance3DResult advanced;
+		bool advancedOK=minimumStepCount>0u || targetTimeS==0.0;
+		double simulationTimeS=0.0,previousStepS=0.0;
+		unsigned int acceptedSteps=0u;
+		values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
+		values.streamedFrameCount=persistence.streamedFrameCountAtStart;
+		if(persistence.resume&&!persistence.checkpointPath.empty()&&
+			std::filesystem::exists(persistence.checkpointPath)){
+			MethaneRunCheckpoint checkpoint;
+			if(!LoadMethaneRunCheckpoint(persistence.checkpointPath,checkpoint,error)||
+				checkpoint.caseRecordId!=caseRecord.caseRecordId||
+				checkpoint.producerBuildId!=currentBuildId||
+				checkpoint.dimensions!=std::array<std::size_t,3>{{shape.nx,shape.ny,shape.nz}}||
+				checkpoint.cellWidthM!=shape.cellWidthM||checkpoint.states.size()!=shape.CellCount()||
+				checkpoint.acceptedSteps>std::numeric_limits<unsigned int>::max()||
+				checkpoint.centerlineTemperatureIntegral.size()!=shape.nz||
+				checkpoint.centerlineVelocityIntegral.size()!=shape.nz||
+				checkpoint.planeHeatReleaseIntegral.size()!=shape.nz){
+				values.structuredError="checkpoint_resume_failure:"+error;return values;
+			}
+			for(unsigned int axis=0;axis<3;++axis)if(
+				checkpoint.momentum.component[axis].size()!=OpenMACFaceCount3D(shape,axis)||
+				checkpoint.velocity.component[axis].size()!=OpenMACFaceCount3D(shape,axis)){
+				values.structuredError="checkpoint_resume_failure:checkpoint MAC shape mismatch";
+				return values;
+			}
+			states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
+			advanced.velocityMPerS=std::move(checkpoint.velocity);
+			values=std::move(checkpoint.values);
+			centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
+			centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
+			planeHeatReleaseIntegral=std::move(checkpoint.planeHeatReleaseIntegral);
+			centerlineStatisticsDurationS=checkpoint.centerlineStatisticsDurationS;
+			simulationTimeS=checkpoint.simulationTimeS;previousStepS=checkpoint.previousStepS;
+			reaction.deltaTimeS=checkpoint.lastAcceptedStepS;
+			acceptedSteps=static_cast<unsigned int>(checkpoint.acceptedSteps);
+			values.resumedFromCheckpoint=true;values.resumedFromStep=acceptedSteps;
+			values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
+			if(reportCapstoneProgress)std::fprintf(stderr,
+				"capstone resumed checkpoint step=%u time=%.17g path=%s\n",acceptedSteps,
+				simulationTimeS,persistence.checkpointPath.string().c_str());
+		}
+		auto lastCheckpointWall=std::chrono::steady_clock::now();
+		while(advancedOK&&(acceptedSteps<minimumStepCount||simulationTimeS<targetTimeS)) {
+			if(acceptedSteps>=65536u) { advancedOK=false;error="capstone exceeded its deterministic step cap";break; }
+			IgnitionGrid eligibilityGrid;
+			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;eligibilityGrid.nz=shape.nz;
+			eligibilityGrid.cells=states;eligibilityGrid.pilotMask.resize(shape.CellCount(),false);
+			std::vector<double> pilotPowerDensity(shape.CellCount(),0.0);
+			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
+				if(!FireCase::EvaluatePilotPowerDensityWPerM3(caseRecord.derived,
+					canonicalPilotMask[cell]!=0u,simulationTimeS,states[cell].temperatureK,
+					pilotPowerDensity[cell],error)) {advancedOK=false;break;}
+				eligibilityGrid.pilotMask[cell]=pilotPowerDensity[cell]>0.0;
+			}
+			if(!advancedOK) break;
+			std::vector<bool> eligibility;
+			advancedOK=BuildIgnitionEligibility(eligibilityGrid,fuel,fuel,
+				FireSimulationTransportRecord::OpenV1(),eligibility,&error);
+			if(!advancedOK) break;
+			double maximumSpeed=0.0;
+			for(unsigned int axis=0;axis<3;++axis) for(const double velocity:
+				(advanced.velocityMPerS.component[axis].empty()?momentum.component[axis]:
+					advanced.velocityMPerS.component[axis])) maximumSpeed=std::max(maximumSpeed,
+					std::fabs(velocity));
+			std::vector<ConservativeVector> currentConservative;
+			std::vector<double> currentTemperature;
+			currentConservative.reserve(shape.CellCount());
+			currentTemperature.reserve(shape.CellCount());
+			for(const MethaneCellState& cell:states) {
+				currentConservative.push_back(ToConservativeVector(cell));
+				currentTemperature.push_back(cell.temperatureK);
+			}
+			OpenMACField3D currentVelocity;
+			for(unsigned int axis=0;axis<3;++axis) currentVelocity.component[axis]=
+				advanced.velocityMPerS.component[axis].empty()?momentum.component[axis]:
+				advanced.velocityMPerS.component[axis];
+			std::vector<CellTransportEvaluation> cellTransportEvaluations;
+			advancedOK=BuildOpenStageTransportEvaluations3D(shape,currentConservative,
+				currentTemperature,currentVelocity,config.openBoundary,config.dns,fuel,
+				FireSimulationTransportRecord::OpenV1(),cellTransportEvaluations,&error,workerCount);
+			if(!advancedOK) break;
+			double maximumReducedGravity=0.0,maximumActiveDiffusivity=0.0;
+			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
+				const CellTransportEvaluation& cellTransport=cellTransportEvaluations[cell];
+				if(!ComputeMixingTimeS(states[cell],cellTransport,
+					FireSimulationTransportRecord::OpenV1(),shape.cellWidthM,
+					ambient.GasDensity(),9.80665,false,reactions[cell].mixingTimeS,&error)) {
+					advancedOK=false;break;
+				}
+				maximumActiveDiffusivity=std::max({maximumActiveDiffusivity,
+					cellTransport.totalDiffusivityM2PerS,
+					cellTransport.effectiveViscosityPaS/states[cell].GasDensity(),
+					cellTransport.effectiveConductivityWPerMK/
+						(states[cell].GasDensity()*cellTransport.gasCpJPerKGK)});
+				maximumReducedGravity=std::max(maximumReducedGravity,
+					std::max(0.0,9.80665*(ambient.GasDensity()-states[cell].GasDensity())/
+						states[cell].GasDensity()));
+			}
+			if(!advancedOK) break;
+			const double chosenStep=FireCase::SelectTimeStepS(shape.cellWidthM,maximumSpeed,
+				maximumReducedGravity,maximumActiveDiffusivity,previousStepS);
+			if(reportCapstoneProgress && acceptedSteps<4u) std::fprintf(stderr,
+				"capstone step-start=%u speed=%.9g gprime=%.9g nu=%.9g selected=%.9g previous=%.9g\n",
+				acceptedSteps,maximumSpeed,maximumReducedGravity,maximumActiveDiffusivity,
+				chosenStep,previousStepS);
+			if(!(chosenStep>0.0)) {advancedOK=false;error="capstone pinned timestep is unbounded";break;}
+			double eventStep=chosenStep;
+			if(simulationTimeS<pilotEndS) eventStep=std::min(eventStep,pilotEndS-simulationTimeS);
+			if(simulationTimeS<values.statisticsStartS)
+				eventStep=std::min(eventStep,values.statisticsStartS-simulationTimeS);
+			if(targetTimeS>simulationTimeS) eventStep=std::min(eventStep,targetTimeS-simulationTimeS);
+			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
+				reactions[cell].primaryEligible=eligibility[cell];
+				reactions[cell].sootOxidationEnabled=true;
+				reactions[cell].pilotHeatingWPerM3=pilotPowerDensity[cell];
+			}
+			std::vector<ConservativeVector> beginning;
+			for(const MethaneCellState& cell:states) beginning.push_back(ToConservativeVector(cell));
+			advancedOK=false;
+			std::string lastAdvanceError;
+			double trialStep=eventStep;
+			for(unsigned int reduction=0;reduction<20u&&!advancedOK;++reduction) {
+				if(injectSolverFailure){lastAdvanceError="injected_solver_failure";break;}
+				for(MethaneReactionStep& cellReaction:reactions) cellReaction.deltaTimeS=trialStep;
+				config.transport.deltaTimeS=trialStep;
+				const bool packetOK=BuildFrozenMethaneSourcePackets(states,reactions,
+					std::vector<double>(shape.CellCount(),cellVolume),300.0,
+					caseRecord.derived.referenceHeatReleaseRateW,
+					caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
+					FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,
+					workerCount);
+				advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
+					config,fuel,fuel,FireSimulationTransportRecord::OpenV1(),advanced,&error);
+				if(!advancedOK) {
+					lastAdvanceError=error;
+					if(reportCapstoneProgress) std::fprintf(stderr,
+						"capstone retry reduction=%u dt=%.9g reason=%s\n",reduction,
+						trialStep,error.c_str());
+					trialStep*=0.5; error.clear();
+				}
+			}
+			if(!advancedOK) error=lastAdvanceError;
+			reaction.deltaTimeS=config.transport.deltaTimeS;
+			if(advancedOK) {
+				if(workerCount>1u&&advanced.discontinuousLimiterClassCount>0u&&
+					!values.discontinuousClassThreadIdentityChecked){
+					ConservativeAdvance3DConfig serialConfig=config;
+					serialConfig.workerCount=1u;
+					ConservativeAdvance3DResult serialAdvanced;
+					std::string serialError;
+					const bool serialOK=AdvanceConservative3D(shape,beginning,momentum,packets,
+						serialConfig,fuel,fuel,FireSimulationTransportRecord::OpenV1(),
+						serialAdvanced,&serialError);
+					bool identical=serialOK&&serialAdvanced.conservative.size()==
+						advanced.conservative.size()&&serialAdvanced.faceAlpha==advanced.faceAlpha&&
+						serialAdvanced.divergenceHeunPerS==advanced.divergenceHeunPerS&&
+						serialAdvanced.maximumLimiterClassDiscrepancy==
+							advanced.maximumLimiterClassDiscrepancy&&
+						serialAdvanced.discontinuousLimiterClassCount==
+							advanced.discontinuousLimiterClassCount;
+					for(std::size_t cell=0;identical&&cell<advanced.conservative.size();++cell)
+						for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+							identical=identical&&serialAdvanced.conservative[cell][component]==
+								advanced.conservative[cell][component];
+					for(unsigned int axis=0;axis<3;++axis)identical=identical&&
+						serialAdvanced.momentumKGPerM2S.component[axis]==
+							advanced.momentumKGPerM2S.component[axis]&&
+						serialAdvanced.velocityMPerS.component[axis]==
+							advanced.velocityMPerS.component[axis];
+					values.discontinuousClassThreadIdentity=identical;
+					values.discontinuousClassThreadIdentityChecked=true;
+					if(!identical&&reportCapstoneProgress)std::fprintf(stderr,
+						"capstone r59 discontinuous-class 1-vs-N mismatch: %s\n",
+						serialError.c_str());
+				}
+				values.maximumLimiterClassDiscrepancy=std::max(
+					values.maximumLimiterClassDiscrepancy,
+					advanced.maximumLimiterClassDiscrepancy);
+				values.discontinuousLimiterClassSteps+=
+					advanced.discontinuousLimiterClassCount;
+				double expectedStepPilotEnergyJ=0.0;
+				for(const double powerDensity:pilotPowerDensity)
+					expectedStepPilotEnergyJ+=powerDensity*cellVolume*reaction.deltaTimeS;
+				const double priorMaximumTemperatureK=values.maximumTemperatureK;
+				std::vector<double> acceptedTemperature;
+				advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
+					300.0,2500.0,acceptedTemperature,&error,workerCount);
+				states.clear(); states.reserve(shape.CellCount());
+				for(std::size_t acceptedCell=0;advancedOK&&acceptedCell<advanced.conservative.size();
+					++acceptedCell) {
+					const ConservativeVector& conservative=advanced.conservative[acceptedCell];
+					MethaneCellState accepted=FromConservativeVector(conservative);
+					accepted.temperatureK=acceptedTemperature[acceptedCell];
+					values.maximumTemperatureK=std::max(values.maximumTemperatureK,
+						accepted.temperatureK);
+					states.push_back(accepted);
+				}
+				values.expectedPilotEnergyJ+=expectedStepPilotEnergyJ;
+				if(reportCapstoneProgress&&values.maximumTemperatureK>
+					std::max(2250.0,priorMaximumTemperatureK)) {
+					const std::size_t hottest=static_cast<std::size_t>(std::max_element(
+						acceptedTemperature.begin(),acceptedTemperature.end())-
+						acceptedTemperature.begin());
+					std::fprintf(stderr,"capstone new physical peak cell=%zu xyz=%zu,%zu,%zu "
+						"T0=%.9g T1=%.9g pilot=%.9g reacted=%.9g qgas=%.9g dt=%.9g\n",
+						hottest,hottest%shape.nx,(hottest/shape.nx)%shape.ny,
+						hottest/(shape.nx*shape.ny),currentTemperature[hottest],
+						acceptedTemperature[hottest],pilotPowerDensity[hottest],
+						packets[hottest].reactedFuelKGPerM3,
+						packets[hottest].gasHeatReleaseWPerM3,reaction.deltaTimeS);
+				}
+				momentum=advanced.momentumKGPerM2S;
+				double stepHeatReleaseW=0.0,stepRadiativeLossW=0.0;
+				double stepFuelConsumptionKGPerS=0.0,centerlineHeatReleaseW=0.0;
+				for(const MethaneSourcePacket& acceptedPacket:packets) {
+					values.pilotEnergyJ+=acceptedPacket.pilotHeatingWPerM3*cellVolume*reaction.deltaTimeS;
+					stepHeatReleaseW+=acceptedPacket.gasHeatReleaseWPerM3*cellVolume;
+					stepRadiativeLossW+=acceptedPacket.radiativeCoolingWPerM3*cellVolume;
+					stepFuelConsumptionKGPerS+=-acceptedPacket.constituentDelta[MethaneCH4]*
+						cellVolume/reaction.deltaTimeS;
+					if(acceptedPacket.reactedFuelKGPerM3>0.0) {
+						if(simulationTimeS<pilotEndS) values.ignitedDuringPilot=true;
+						else values.sustainedAfterPilot=true;
+					}
+				}
+				for(std::size_t z=0;z<shape.nz;++z)for(std::size_t cy=0;cy<centerYCount;++cy)
+					for(std::size_t cx=0;cx<centerXCount;++cx){const std::size_t center=
+						centerXIndex[cx]+shape.nx*(centerYIndex[cy]+shape.ny*z);
+						centerlineHeatReleaseW+=packets[center].gasHeatReleaseWPerM3*cellVolume/
+							centerSampleCount;}
+				const double stepEndS=simulationTimeS+reaction.deltaTimeS;
+				const double statisticsDuration=std::max(0.0,stepEndS-
+					std::max(simulationTimeS,values.statisticsStartS));
+				if(statisticsDuration>0.0) {
+					if(!values.statisticsBoundaryObserved) {
+						values.statisticsBoundaryObserved=true;
+						values.firstStatisticsStepStartS=simulationTimeS;
+					}
+					values.integratedHeatReleaseJ+=stepHeatReleaseW*statisticsDuration;
+					values.integratedRadiativeLossJ+=stepRadiativeLossW*statisticsDuration;
+					values.integratedFuelConsumptionKG+=stepFuelConsumptionKGPerS*statisticsDuration;
+					values.probeTimeS.push_back(stepEndS);
+					values.probeCenterlineHeatReleaseW.push_back(centerlineHeatReleaseW);
+					centerlineStatisticsDurationS+=statisticsDuration;
+					for(std::size_t z=0;z<shape.nz;++z){
+						double stationTemperatureK=0.0,stationVelocityMPerS=0.0;
+						double stationReactionWPerM3=0.0;
+						for(std::size_t cy=0;cy<centerYCount;++cy)for(std::size_t cx=0;
+							cx<centerXCount;++cx){const std::size_t center=centerXIndex[cx]+
+								shape.nx*(centerYIndex[cy]+shape.ny*z);
+							stationTemperatureK+=states[center].temperatureK/centerSampleCount;
+							stationReactionWPerM3+=packets[center].gasHeatReleaseWPerM3/
+								centerSampleCount;
+							const std::size_t stationLower=OpenLowerFaceForCell3D(shape,center,2),
+								stationUpper=OpenUpperFaceForCell3D(shape,center,2);
+							stationVelocityMPerS+=0.5*(advanced.velocityMPerS.component[2][stationLower]+
+								advanced.velocityMPerS.component[2][stationUpper])/centerSampleCount;
+							centerlineTemperatureIntegral[z]+=states[center].temperatureK*
+								statisticsDuration/centerSampleCount;
+							const std::size_t lower=OpenLowerFaceForCell3D(shape,center,2),
+								upper=OpenUpperFaceForCell3D(shape,center,2);
+							centerlineVelocityIntegral[z]+=0.5*(advanced.velocityMPerS.component[2][lower]+
+								advanced.velocityMPerS.component[2][upper])*statisticsDuration/
+								centerSampleCount;
+						}
+						values.stationProbeTimeS.push_back(stepEndS);
+						values.stationProbeHeightM.push_back((static_cast<double>(z)+0.5)*
+							shape.cellWidthM);
+						values.stationProbeTemperatureK.push_back(stationTemperatureK);
+						values.stationProbeReactionWPerM3.push_back(stationReactionWPerM3);
+						values.stationProbeVerticalVelocityMPerS.push_back(stationVelocityMPerS);
+						for(std::size_t y=0;y<shape.ny;++y)for(std::size_t x=0;x<shape.nx;++x){
+							const std::size_t planeCell=x+shape.nx*(y+shape.ny*z);
+							planeHeatReleaseIntegral[z]+=packets[planeCell].gasHeatReleaseWPerM3*
+								cellVolume*statisticsDuration;
+						}
+					}
+				}
+				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
+				const bool moreWork=acceptedSteps<minimumStepCount||simulationTimeS<targetTimeS;
+				const double checkpointElapsedS=std::chrono::duration<double>(
+					std::chrono::steady_clock::now()-lastCheckpointWall).count();
+				const bool checkpointDue=moreWork&&!persistence.checkpointPath.empty()&&
+					(persistence.checkpointCadenceWallS<=0.0||
+						checkpointElapsedS>=persistence.checkpointCadenceWallS);
+				if(checkpointDue){
+					values.checkpointStepIndices.push_back(acceptedSteps);
+					MethaneRunCheckpoint checkpoint;
+					checkpoint.caseRecordId=caseRecord.caseRecordId;
+					checkpoint.producerBuildId=currentBuildId;
+					checkpoint.dimensions={{shape.nx,shape.ny,shape.nz}};
+					checkpoint.cellWidthM=shape.cellWidthM;checkpoint.states=std::move(states);
+					checkpoint.momentum=std::move(momentum);
+					checkpoint.velocity=std::move(advanced.velocityMPerS);
+					checkpoint.values=std::move(values);
+					checkpoint.centerlineTemperatureIntegral=std::move(centerlineTemperatureIntegral);
+					checkpoint.centerlineVelocityIntegral=std::move(centerlineVelocityIntegral);
+					checkpoint.planeHeatReleaseIntegral=std::move(planeHeatReleaseIntegral);
+					checkpoint.centerlineStatisticsDurationS=centerlineStatisticsDurationS;
+					checkpoint.simulationTimeS=simulationTimeS;
+					checkpoint.previousStepS=previousStepS;
+					checkpoint.lastAcceptedStepS=reaction.deltaTimeS;
+					checkpoint.acceptedSteps=acceptedSteps;
+					const bool checkpointSaved=SaveMethaneRunCheckpoint(
+						persistence.checkpointPath,checkpoint,error);
+					states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
+					advanced.velocityMPerS=std::move(checkpoint.velocity);
+					values=std::move(checkpoint.values);
+					centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
+					centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
+					planeHeatReleaseIntegral=std::move(checkpoint.planeHeatReleaseIntegral);
+					if(!checkpointSaved){
+						advancedOK=false;break;
+					}
+					lastCheckpointWall=std::chrono::steady_clock::now();
+					if(reportCapstoneProgress)std::fprintf(stderr,
+						"capstone durable checkpoint count=%zu step=%u time=%.17g path=%s\n",
+						values.checkpointStepIndices.size(),acceptedSteps,simulationTimeS,
+						persistence.checkpointPath.string().c_str());
+					if(persistence.killAfterFirstCheckpoint)HardKillCurrentProcess();
+				}
+				if(reportCapstoneProgress && (acceptedSteps<=4u || acceptedSteps%10u==0u ||
+					simulationTimeS>=targetTimeS)) {
+					double maximumTemperatureK=0.0,maximumReactionWPerM3=0.0;
+					for(std::size_t diagnosticCell=0;diagnosticCell<states.size();++diagnosticCell) {
+						maximumTemperatureK=std::max(maximumTemperatureK,
+							states[diagnosticCell].temperatureK);
+						maximumReactionWPerM3=std::max(maximumReactionWPerM3,
+							packets[diagnosticCell].gasHeatReleaseWPerM3);
+					}
+					std::fprintf(stderr,"capstone accepted step=%u time=%.9g dt=%.9g Tmax=%.9g "
+						"qmax=%.9g limiter_class=%s limiter_discrepancy=%.9g\n",acceptedSteps,
+						simulationTimeS,reaction.deltaTimeS,maximumTemperatureK,
+						maximumReactionWPerM3,advanced.discontinuousLimiterClassCount?
+						"discontinuous":"continuous",advanced.maximumLimiterClassDiscrepancy);
+				}
+			}
+		}
+		if(!advancedOK) {
+			values.structuredError="solver_failure:"+error;
+			std::fprintf(stderr,"capstone solver diagnostic steps=%u time=%.17g: %s\n",
+				acceptedSteps,simulationTimeS,values.structuredError.c_str());
+			return values;
+		}
+		if(reportCapstoneProgress&&advancedOK) {
+			double pilotMaximumTemperatureK=0.0,pilotMaximumMethaneKGPerM3=0.0,
+				pilotMaximumOxygenKGPerM3=0.0;
+			for(std::size_t cell=0;cell<states.size();++cell) if(canonicalPilotMask[cell]) {
+				pilotMaximumTemperatureK=std::max(pilotMaximumTemperatureK,
+					states[cell].temperatureK);
+				pilotMaximumMethaneKGPerM3=std::max(pilotMaximumMethaneKGPerM3,
+					states[cell].constituent[MethaneCH4]);
+				pilotMaximumOxygenKGPerM3=std::max(pilotMaximumOxygenKGPerM3,
+					states[cell].constituent[MethaneO2]);
+			}
+			std::fprintf(stderr,"capstone pilot diagnostic Tmax=%.9g CH4max=%.9g O2max=%.9g\n",
+				pilotMaximumTemperatureK,pilotMaximumMethaneKGPerM3,
+				pilotMaximumOxygenKGPerM3);
+		}
+		values.succeeded=true;
+		Check(advanced.conservative.empty() ||
+			advanced.effectiveWorkerCount==std::max(1u,std::min(workerCount,
+			static_cast<unsigned int>(shape.CellCount()))),
+			"capstone one-vs-N fixture selects the owning solver worker path");
+		if(advancedOK) {
+			values.dimensions={{shape.nx,shape.ny,shape.nz}}; values.cellWidthM=shape.cellWidthM;
+			values.caseRecordId=caseRecord.caseRecordId;
+			values.temperature.resize(shape.CellCount());
+			values.reaction.resize(shape.CellCount());
+			values.carbon.resize(shape.CellCount());
+			values.velocity.resize(shape.CellCount());
+			for(std::size_t cell=0;cell<shape.CellCount();++cell) {
+				const MethaneCellState& accepted=states[cell];
+				values.temperature[cell]=static_cast<float>(accepted.temperatureK);
+				values.reaction[cell]=static_cast<float>(packets.empty()?0.0:
+					packets[cell].gasHeatReleaseWPerM3);
+				values.carbon[cell]=static_cast<float>(std::max(0.0,
+					accepted.constituent[MethaneCarbon]));
+				std::array<float,3> velocity={{0.0f,0.0f,0.0f}};
+				for(unsigned int axis=0;axis<3&&!advanced.velocityMPerS.component[axis].empty();++axis) {
+					const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
+					const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
+					velocity[axis]=static_cast<float>(0.5*(advanced.velocityMPerS.component[axis][lower]+
+						advanced.velocityMPerS.component[axis][upper]));
+				}
+				values.velocity[cell]=velocity;
+				if(!packets.empty()) {
+					values.realizedHeatReleaseW+=packets[cell].gasHeatReleaseWPerM3*cellVolume;
+					values.fuelConsumptionKGPerS+=-packets[cell].constituentDelta[MethaneCH4]*
+						cellVolume/reaction.deltaTimeS;
+				}
+			}
+			values.temperatureK=*std::max_element(values.temperature.begin(),values.temperature.end());
+			values.reactionWPerM3=*std::max_element(values.reaction.begin(),values.reaction.end());
+			values.acceptedEscapeFactor=escape.accepted;
+			values.selectedTimeStepS=selectedStep.seconds;
+			values.acceptedTimeStepS=reaction.deltaTimeS;
+			values.simulatedTimeS=simulationTimeS;
+			values.flowThroughTimeS=caseRecord.derived.flowThroughTimeS;
+			double coolingW=0.0;
+			for(const MethaneSourcePacket& packet:packets)
+				coolingW+=packet.radiativeCoolingWPerM3*cellVolume;
+			values.realizedRadiativeFraction=values.realizedHeatReleaseW>0.0?
+				coolingW/values.realizedHeatReleaseW:0.0;
+			values.integratedRadiativeFraction=values.integratedHeatReleaseJ>0.0?
+				values.integratedRadiativeLossJ/values.integratedHeatReleaseJ:0.0;
+			values.puffingFrequencyHz=DominantUniformResampledFrequency(values.probeTimeS,
+				values.probeCenterlineHeatReleaseW);
+			const double expectedPuffing=1.5/std::sqrt(CapstonePoolDiameterM);
+			values.puffingRelativeError=expectedPuffing>0.0?
+				std::fabs(values.puffingFrequencyHz-expectedPuffing)/expectedPuffing:0.0;
+			double peakMeanPlaneHeatReleaseW=0.0;
+			for(const double integral:planeHeatReleaseIntegral)peakMeanPlaneHeatReleaseW=
+				std::max(peakMeanPlaneHeatReleaseW,centerlineStatisticsDurationS>0.0?
+					integral/centerlineStatisticsDurationS:0.0);
+			if(peakMeanPlaneHeatReleaseW>0.0)for(std::size_t z=0;z<shape.nz;++z)if(
+				planeHeatReleaseIntegral[z]/centerlineStatisticsDurationS>=
+					0.01*peakMeanPlaneHeatReleaseW)values.mccaffreyFlameTipHeightM=
+					(static_cast<double>(z)+0.5)*shape.cellWidthM;
+			for(std::size_t z=0;z<shape.nz;++z) {
+				double fallbackTemperature=0.0,fallbackVelocity=0.0;
+				for(std::size_t cy=0;cy<centerYCount;++cy)for(std::size_t cx=0;
+					cx<centerXCount;++cx){const std::size_t center=centerXIndex[cx]+
+						shape.nx*(centerYIndex[cy]+shape.ny*z);
+					fallbackTemperature+=states[center].temperatureK/centerSampleCount;
+					fallbackVelocity+=values.velocity[center][2]/centerSampleCount;}
+				values.centerlineHeightM.push_back((static_cast<double>(z)+0.5)*shape.cellWidthM);
+				values.centerlineTemperatureK.push_back(centerlineStatisticsDurationS>0.0?
+					centerlineTemperatureIntegral[z]/centerlineStatisticsDurationS:
+					fallbackTemperature);
+				values.centerlineVelocityMPerS.push_back(centerlineStatisticsDurationS>0.0?
+					centerlineVelocityIntegral[z]/centerlineStatisticsDurationS:
+					fallbackVelocity);
+			}
+			FitCenterlineTemperaturePowerLaw(values);
+			if(heatReleaseRateKW==CapstoneHeatReleaseRateKW)
+				EvaluateMcCaffreyPlumeStations(values,heatReleaseRateKW);
+		}
+		return values;
 	}
 
 	RISECBOR64::Bytes CanonicalRecord( const char* kind )
@@ -190,32 +1381,53 @@ namespace
 	}
 
 	RISECBOR64::Value Channel( const char* name, const char* type,
-		const char* units, const char* semantics, const std::vector<double>& background )
+		const char* units, const char* semantics, const std::vector<double>& background,
+		const std::array<std::uint64_t,3> scalarDimensions={{2u,2u,2u}},
+		const double voxelSize=0.5 )
 	{
 		using RISECBOR64::Value;
 		Value::Values bg;
 		for( const double value : background ) bg.push_back(Value::Float(value));
 		const bool velocity = std::strcmp(name,"velocity") == 0;
+		const double origin=velocity?-voxelSize:0.0;
+		const double lower=-0.5*voxelSize;
 		return Value::MapValue({
 			{"background_value",Value::ArrayValue(bg)},
-			{"core_face_bounds_m",Value::ArrayValue({Value::Float(-0.25),Value::Float(-0.25),
-				Value::Float(-0.25),Value::Float(0.75),Value::Float(0.75),Value::Float(0.75)})},
-			{"dimensions",Value::ArrayValue({Value::Unsigned(velocity ? 4 : 2),Value::Unsigned(velocity ? 4 : 2),Value::Unsigned(velocity ? 4 : 2)})},
+			{"core_face_bounds_m",Value::ArrayValue({Value::Float(lower),Value::Float(lower),
+				Value::Float(lower),Value::Float((scalarDimensions[0]-0.5)*voxelSize),
+				Value::Float((scalarDimensions[1]-0.5)*voxelSize),
+				Value::Float((scalarDimensions[2]-0.5)*voxelSize)})},
+			{"dimensions",Value::ArrayValue({Value::Unsigned(scalarDimensions[0]+(velocity?2u:0u)),
+				Value::Unsigned(scalarDimensions[1]+(velocity?2u:0u)),
+				Value::Unsigned(scalarDimensions[2]+(velocity?2u:0u))})},
 			{"name",Value::String(name)},
-			{"origin_m",Value::ArrayValue({Value::Float(velocity ? -0.5 : 0),Value::Float(velocity ? -0.5 : 0),Value::Float(velocity ? -0.5 : 0)})},
+			{"origin_m",Value::ArrayValue({Value::Float(origin),Value::Float(origin),Value::Float(origin)})},
 			{"temporal_semantics",Value::String(semantics)},
 			{"units",Value::String(units)},
 			{"value_type",Value::String(type)},
-			{"voxel_size_m",Value::ArrayValue({Value::Float(0.5),Value::Float(0.5),Value::Float(0.5)})}
+			{"voxel_size_m",Value::ArrayValue({Value::Float(voxelSize),Value::Float(voxelSize),
+				Value::Float(voxelSize)})}
 		});
 	}
 
 	RISECBOR64::Bytes ManifestBytes( const std::string& firstDigest,
 		const std::string& secondDigest, const char* endPolicy="hold",
-		const bool useProductionOptics=false, const bool syntheticChem=false )
+		const bool useProductionOptics=false, const bool syntheticChem=false,
+		const std::array<std::uint64_t,3> scalarDimensions={{2u,2u,2u}},
+		const double voxelSize=0.5,
+		const double simulationTimeOrigin=1.0, const double frameStepSeconds=0.25,
+		const double sceneToSimulationScale=2.0, const double sceneTimeOrigin=10.0,
+		const bool caseGridBound=false, const double casePoolDiameterM=0.02,
+		const double caseHeatReleaseRateKW=0.10,
+		const bool caseHasRadiativeFractionOverride=false,
+		const double caseRadiativeFractionOverride=0.0,
+		const double caseResolutionTier=6.0,const bool casePlumeLaw=false )
 	{
 		using RISECBOR64::Value;
-		const RISECBOR64::Bytes build = FireOutputMetadataTestFixture::RendererBuild();
+		std::string error;
+		RISECBOR64::Bytes build; std::string buildId;
+		Check(CurrentRendererBuildIdentity(build,buildId),
+			"sequence producer embeds the current executable build identity");
 		const RISECBOR64::Bytes optics = FireOpticsPreset::PredictiveV1().RecordBytes();
 		const RISECBOR64::Bytes thermo =
 			FireSimulationThermochemistryRecord::OpenSubsetV1().RecordBytes();
@@ -226,23 +1438,44 @@ namespace
 			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().RecordBytes();
 		const RISECBOR64::Bytes chem = syntheticChem ? SyntheticChemRecord() : ChemNoneRecord();
 		const RISECBOR64::Bytes fuel = FireSimulationMethaneRecord::PhysicalV1().RecordBytes();
-		const std::string hash64(64u,'a');
+		const RISECBOR64::Bytes gateEvidenceBytes={'p','h','a','s','e','_','c','_','r','5','3'};
+		const std::string gateEvidenceId=RISECBOR64::SHA256Hex(gateEvidenceBytes);
+		FireCase::AuthoredV1 caseAuthored;
+		caseAuthored.fuelRecordId=FireSimulationMethaneRecord::PhysicalV1().RecordId();
+		caseAuthored.poolDiameterM=casePoolDiameterM;
+		caseAuthored.heatReleaseRateKW=caseHeatReleaseRateKW;
+		caseAuthored.envelope={{0.0,1.0}}; caseAuthored.durationS=std::max(1.0,frameStepSeconds);
+		caseAuthored.quality=caseGridBound?"dstar":"standard";
+		caseAuthored.numericDStarTier=caseGridBound?caseResolutionTier:0.0; caseAuthored.seed=1234;
+		caseAuthored.outputFramesPerS=1.0/frameStepSeconds;
+		caseAuthored.plumeLaw=casePlumeLaw;
+		caseAuthored.hasRadiativeFractionOverride=caseHasRadiativeFractionOverride;
+		caseAuthored.radiativeFractionOverride=caseRadiativeFractionOverride;
+		FireCase::RecordV1 caseRecord;
+		const bool caseBuilt=FireCase::BuildMethaneV1(caseAuthored,
+			FireSimulationMethaneRecord::PhysicalV1(),
+			{RISECBOR64::SHA256Hex(thermo),RISECBOR64::SHA256Hex(transport),
+			 RISECBOR64::SHA256Hex(opacity),RISECBOR64::SHA256Hex(optics),
+			 RISECBOR64::SHA256Hex(aerosol),RISECBOR64::SHA256Hex(chem),
+			 RISECBOR64::SHA256Hex(fuel)},caseRecord,error);
+		Check(caseBuilt,"test sequence case record derives canonically");
 		Value::Values channels={
-			Channel("carbon","float32","g/m3","frozen_material_advection",{0.0}),
-			Channel("temperature","float32","K","frozen_material_advection",{300.0}),
-			Channel("reaction","float32","W/m3","derived_eulerian_source",{0.0}),
-			Channel("velocity","vec3_float32","m/s","frozen_material_advection",{0.0,0.0,0.0})
+			Channel("carbon","float32","g/m3","frozen_material_advection",{0.0},scalarDimensions,voxelSize),
+			Channel("temperature","float32","K","frozen_material_advection",{300.0},scalarDimensions,voxelSize),
+			Channel("reaction","float32","W/m3","derived_eulerian_source",{0.0},scalarDimensions,voxelSize),
+			Channel("velocity","vec3_float32","m/s","frozen_material_advection",{0.0,0.0,0.0},scalarDimensions,voxelSize)
 		};
 		if( syntheticChem ) {
-			channels.push_back(Channel("chem_CH","float32","W/m3","derived_eulerian_source",{0.0}));
-			channels.push_back(Channel("chem_C2","float32","W/m3","derived_eulerian_source",{0.0}));
-			channels.push_back(Channel("chem_CO2","float32","W/m3","derived_eulerian_source",{0.0}));
+			channels.push_back(Channel("chem_CH","float32","W/m3","derived_eulerian_source",{0.0},scalarDimensions,voxelSize));
+			channels.push_back(Channel("chem_C2","float32","W/m3","derived_eulerian_source",{0.0},scalarDimensions,voxelSize));
+			channels.push_back(Channel("chem_CO2","float32","W/m3","derived_eulerian_source",{0.0},scalarDimensions,voxelSize));
 		}
 		const bool preview=useProductionOptics || syntheticChem;
 		const Value payload = Value::MapValue({
 			{"aerosol_thermochemistry_record",Value::BytesValue(aerosol)},
 			{"aerosol_thermochemistry_record_id",Value::String(RISECBOR64::SHA256Hex(aerosol))},
-			{"case_record_id",Value::String(hash64)},
+			{"case_record",Value::BytesValue(caseRecord.envelopeBytes)},
+			{"case_record_id",Value::String(caseRecord.caseRecordId)},
 			{"channels",Value::ArrayValue(channels)},
 			{"chem_record",Value::BytesValue(chem)},
 			{"chem_record_id",Value::String(RISECBOR64::SHA256Hex(chem))},
@@ -262,36 +1495,37 @@ namespace
 			{"gas_opacity_record_id",Value::String(RISECBOR64::SHA256Hex(opacity))},
 			{"gas_thermochemistry_record",Value::BytesValue(thermo)},
 			{"gas_thermochemistry_record_id",Value::String(RISECBOR64::SHA256Hex(thermo))},
-			{"gate_evidence_ids",Value::ArrayValue({Value::String(hash64)})},
+			{"gate_evidence_ids",Value::ArrayValue({Value::String(gateEvidenceId)})},
 			{"last_frame_index",Value::Unsigned(5)},
 			{"optical_record",Value::BytesValue(optics)},
 			{"optical_record_id",Value::String(RISECBOR64::SHA256Hex(optics))},
 			{"outside_halo_policy",Value::String("reject_outside_declared_halo")},
 			{"physical_mapping",Value::String("absolute_si")},
-			{"producer_build_id",Value::String(RISECBOR64::SHA256Hex(build))},
+			{"producer_build_id",Value::String(buildId)},
 			{"producer_build_v1",Value::BytesValue(build)},
-			{"producer_reason_codes",Value::ArrayValue(preview ? Value::Values{
-				Value::String(syntheticChem ? "synthetic_chem_fixture" :
-					"open_subset_records_preview")} : Value::Values{})},
+			{"producer_reason_codes",Value::ArrayValue(preview ? (caseGridBound ? Value::Values{
+				Value::String("case_grid_bound"),Value::String(syntheticChem ? "synthetic_chem_fixture" :
+					"open_subset_records_preview")} : Value::Values{Value::String(syntheticChem ?
+					"synthetic_chem_fixture":"open_subset_records_preview")}) : Value::Values{})},
 			{"scene_translation_m",Value::ArrayValue({Value::Float(0),Value::Float(0),Value::Float(0)})},
+			{"qdot_ref_W",Value::Float(caseRecord.derived.referenceHeatReleaseRateW)},
 			{"scene_unit_meters",Value::Float(1.0)},
 			{"schema_version",Value::Unsigned(1)},
 			{"source_kind",Value::String("rise_simulation")},
 			{"source_qualification",Value::String(preview ? "preview_only" : "predictive_qualified")},
 			{"temperature_domain_K",Value::ArrayValue({Value::Float(300),Value::Float(2500)})},
 			{"time_map",Value::MapValue({
-				{"alpha",Value::Float(2.0)},
-				{"delta_t_frame",Value::Float(0.25)},
+				{"alpha",Value::Float(sceneToSimulationScale)},
+				{"delta_t_frame",Value::Float(frameStepSeconds)},
 				{"i0",Value::Unsigned(4)},
-				{"t0",Value::Float(1.0)},
-				{"t_scene_0",Value::Float(10.0)}
+				{"t0",Value::Float(simulationTimeOrigin)},
+				{"t_scene_0",Value::Float(sceneTimeOrigin)}
 			})},
 			{"transport_closure_record",Value::BytesValue(transport)},
 			{"transport_closure_record_id",Value::String(RISECBOR64::SHA256Hex(transport))},
-			{"velocity_halo_width_m",Value::Float(0.5)}
+			{"velocity_halo_width_m",Value::Float(voxelSize)}
 		});
 		RISECBOR64::Bytes payloadBytes, envelope;
-		std::string error;
 		Check(RISECBOR64::Encode(payload,payloadBytes,&error),"sequence payload encodes");
 		Check(RISECBOR64::Encode(Value::MapValue({
 			{"payload",payload},
@@ -303,12 +1537,155 @@ namespace
 	std::string DigestFile( const std::filesystem::path& path )
 	{
 		std::ifstream input(path,std::ios::binary);
+		if(!input)return std::string();
 		input.seekg(0,std::ios::end);
 		const std::streampos end = input.tellg();
+		if(end<0)return std::string();
 		input.seekg(0,std::ios::beg);
 		RISECBOR64::Bytes bytes(static_cast<std::size_t>(end));
 		if( end > 0 ) input.read(reinterpret_cast<char*>(bytes.data()),end);
 		return RISECBOR64::SHA256Hex(bytes);
+	}
+
+	bool DurableCopyPublishedFile(const std::filesystem::path& source,
+		const std::filesystem::path& target,std::string& error)
+	{
+		if(target.has_parent_path())std::filesystem::create_directories(target.parent_path());
+#if defined(_WIN32)
+		const long long processId=static_cast<long long>(::_getpid());
+#else
+		const long long processId=static_cast<long long>(::getpid());
+#endif
+		const std::filesystem::path temporary=target.string()+".tmp."+std::to_string(processId);
+		std::error_code copyError;
+		std::filesystem::copy_file(source,temporary,
+			std::filesystem::copy_options::overwrite_existing,copyError);
+		if(copyError){error="cannot copy durable run artifact";return false;}
+		if(!DurableSyncFileAndDirectory(temporary,error)||
+			!AtomicReplaceCheckpoint(temporary,target,error)){
+			std::error_code ignored;std::filesystem::remove(temporary,ignored);return false;
+		}
+		return true;
+	}
+
+	bool DurableWritePublishedBytes(const RISECBOR64::Bytes& bytes,
+		const std::filesystem::path& target,std::string& error)
+	{
+		if(target.has_parent_path())std::filesystem::create_directories(target.parent_path());
+#if defined(_WIN32)
+		const long long processId=static_cast<long long>(::_getpid());
+#else
+		const long long processId=static_cast<long long>(::getpid());
+#endif
+		const std::filesystem::path temporary=target.string()+".tmp."+std::to_string(processId);
+		{
+			std::ofstream output(temporary,std::ios::binary|std::ios::trunc);
+			if(!output){error="cannot open durable run metadata";return false;}
+			output.write(reinterpret_cast<const char*>(bytes.data()),
+				static_cast<std::streamsize>(bytes.size()));
+			output.flush();
+			if(!output){error="cannot write durable run metadata";return false;}
+		}
+		if(!DurableSyncFileAndDirectory(temporary,error)||
+			!AtomicReplaceCheckpoint(temporary,target,error)){
+			std::error_code ignored;std::filesystem::remove(temporary,ignored);return false;
+		}
+		return true;
+	}
+
+	RISECBOR64::Bytes ReadFileBytes( const std::filesystem::path& path )
+	{
+		std::ifstream input(path,std::ios::binary);
+		if(!input) return RISECBOR64::Bytes();
+		input.seekg(0,std::ios::end);
+		const std::streampos end=input.tellg();
+		if(end<0) return RISECBOR64::Bytes();
+		input.seekg(0,std::ios::beg);
+		RISECBOR64::Bytes bytes(static_cast<std::size_t>(end));
+		if(end>0) input.read(reinterpret_cast<char*>(bytes.data()),end);
+		if(!input&&end>0) return RISECBOR64::Bytes();
+		return bytes;
+	}
+
+	RISECBOR64::Bytes RunMetadataEnvelope(const SolverFrameValues& values,
+		const unsigned int workerCount,const std::string& frame4Digest,
+		const std::string& frame5Digest,const std::string& sequenceId,
+		std::string& metadataId)
+	{
+		using RISECBOR64::Value;
+		Value::Values steps;
+		for(const std::uint64_t step:values.checkpointStepIndices)
+			steps.push_back(Value::Unsigned(step));
+		const Value payload=Value::MapValue({
+			{"checkpoint_cadence_wall_s",Value::Float(values.checkpointCadenceWallS)},
+			{"checkpoint_count",Value::Unsigned(values.checkpointStepIndices.size())},
+			{"checkpoint_step_indices",Value::ArrayValue(steps)},
+			{"effective_worker_count",Value::Unsigned(workerCount)},
+			{"frame4_sha256",Value::String(frame4Digest)},
+			{"frame5_sha256",Value::String(frame5Digest)},
+			{"record_kind",Value::String("fire-simulation-run-metadata-v1")},
+			{"resumed_from_checkpoint",Value::Bool(values.resumedFromCheckpoint)},
+			{"resumed_from_step",Value::Unsigned(values.resumedFromStep)},
+			{"schema_version",Value::Unsigned(1)},
+			{"sequence_id",Value::String(sequenceId)},
+			{"streamed_frame_count",Value::Unsigned(values.streamedFrameCount)}
+		});
+		std::string error;RISECBOR64::Bytes payloadBytes,envelope;
+		if(!RISECBOR64::Encode(payload,payloadBytes,&error))return envelope;
+		metadataId=RISECBOR64::SHA256Hex(payloadBytes);
+		RISECBOR64::Encode(Value::MapValue({{"payload",payload},
+			{"run_metadata_id",Value::String(metadataId)}}),envelope,&error);
+		return envelope;
+	}
+
+	std::string TextArrayCSV( const RISECBOR64::Value* value )
+	{
+		if(!value || value->GetType()!=RISECBOR64::Value::Array) return std::string();
+		std::string result;
+		for(const RISECBOR64::Value& item:value->GetArray()) {
+			if(item.GetType()!=RISECBOR64::Value::Text) continue;
+			if(!result.empty()) result.push_back(',');
+			result+=item.GetText();
+		}
+		return result;
+	}
+	void WriteJSON( std::ostream& output, const RISECBOR64::Value& value )
+	{
+		using RISECBOR64::Value;
+		switch(value.GetType()) {
+		case Value::Null: output << "null"; break;
+		case Value::Boolean: output << (value.GetBoolean()?"true":"false"); break;
+		case Value::UnsignedInteger: output << value.GetIntegerArgument(); break;
+		case Value::NegativeInteger: output << (-1-static_cast<std::int64_t>(
+			value.GetIntegerArgument())); break;
+		case Value::Float64: output << std::setprecision(17) << value.GetFloat(); break;
+		case Value::Text: {
+			output << '"';
+			for(const unsigned char c:value.GetText()) {
+				if(c=='"'||c=='\\') output << '\\' << static_cast<char>(c);
+				else if(c=='\n') output << "\\n";
+				else if(c=='\r') output << "\\r";
+				else if(c=='\t') output << "\\t";
+				else if(c<0x20u) output << "\\u" << std::hex << std::setw(4) <<
+					std::setfill('0') << static_cast<unsigned int>(c) << std::dec;
+				else output << static_cast<char>(c);
+			}
+			output << '"'; break;
+		}
+		case Value::ByteString:
+			output << '"'; for(const unsigned char byte:value.GetBytes()) output << std::hex <<
+				std::setw(2) << std::setfill('0') << static_cast<unsigned int>(byte);
+			output << std::dec << '"'; break;
+		case Value::Array:
+			output << '['; for(std::size_t i=0;i<value.GetArray().size();++i) {
+				if(i) output << ','; WriteJSON(output,value.GetArray()[i]);
+			} output << ']'; break;
+		case Value::Map:
+			output << '{'; for(std::size_t i=0;i<value.GetMap().size();++i) {
+				if(i) output << ','; WriteJSON(output,Value::String(value.GetMap()[i].first));
+				output << ':'; WriteJSON(output,value.GetMap()[i].second);
+			} output << '}'; break;
+		}
 	}
 
 #if defined(RISE_ENABLE_OPENVDB)
@@ -322,11 +1699,14 @@ namespace
 	};
 
 	void WriteFrame( const std::filesystem::path& path, const FrameMutation mutation,
-		const float carbonValue, const bool includeChem=false )
+		const float carbonValue, const bool includeChem=false,
+		const SolverFrameValues solver=SolverFrameValues(),const float chemScale=1.0f )
 	{
 		openvdb::initialize();
+		const bool solverGrid=solver.dimensions[0]&&solver.dimensions[1]&&solver.dimensions[2];
+		const double voxelSize=solverGrid?solver.cellWidthM:0.5;
 		const openvdb::math::Transform::Ptr transform =
-			openvdb::math::Transform::createLinearTransform(0.5);
+			openvdb::math::Transform::createLinearTransform(voxelSize);
 		openvdb::FloatGrid::Ptr carbon = openvdb::FloatGrid::create(0.0f);
 		openvdb::FloatGrid::Ptr temperature = openvdb::FloatGrid::create(300.0f);
 		openvdb::FloatGrid::Ptr reaction = openvdb::FloatGrid::create(0.0f);
@@ -340,17 +1720,48 @@ namespace
 			grid->setTransform(transform->copy());
 		}
 		openvdb::math::Transform::Ptr velocityTransform = transform->copy();
-		velocityTransform->postTranslate(openvdb::Vec3d(-0.5));
+		velocityTransform->postTranslate(openvdb::Vec3d(-voxelSize));
 		velocity->setTransform(velocityTransform);
 		carbon->setName("carbon"); temperature->setName("temperature");
 		reaction->setName("reaction"); velocity->setName("velocity");
 		chemCH->setName("chem_CH"); chemC2->setName("chem_C2"); chemCO2->setName("chem_CO2");
-		carbon->tree().setValueOn(openvdb::Coord(0,0,0),carbonValue);
-		temperature->tree().setValueOn(openvdb::Coord(0,0,0),900.0f);
+		if(solverGrid && solver.temperature.size()==solver.dimensions[0]*solver.dimensions[1]*
+			solver.dimensions[2] && solver.reaction.size()==solver.temperature.size() &&
+			solver.carbon.size()==solver.temperature.size() &&
+			solver.velocity.size()==solver.temperature.size()) {
+			for(std::size_t z=0;z<solver.dimensions[2];++z)
+				for(std::size_t y=0;y<solver.dimensions[1];++y)
+				for(std::size_t x=0;x<solver.dimensions[0];++x) {
+					const std::size_t index=(z*solver.dimensions[1]+y)*solver.dimensions[0]+x;
+					const openvdb::Coord scalar(static_cast<int>(x),static_cast<int>(y),
+						static_cast<int>(z));
+					carbon->tree().setValueOn(scalar,solver.carbon[index]);
+					temperature->tree().setValueOn(scalar,solver.temperature[index]);
+					reaction->tree().setValueOn(scalar,solver.reaction[index]);
+					const std::array<float,3>& v=solver.velocity[index];
+					velocity->tree().setValueOn(openvdb::Coord(static_cast<int>(x+1),
+						static_cast<int>(y+1),static_cast<int>(z+1)),openvdb::Vec3f(v[0],v[1],v[2]));
+				}
+		} else {
+			carbon->tree().setValueOn(openvdb::Coord(0,0,0),carbonValue);
+			temperature->tree().setValueOn(openvdb::Coord(0,0,0),solver.temperatureK);
+			reaction->tree().setValueOn(openvdb::Coord(0,0,0),solver.reactionWPerM3);
+		}
 		if( includeChem ) {
-			chemCH->tree().setValueOn(openvdb::Coord(0,0,0),120.0f);
-			chemC2->tree().setValueOn(openvdb::Coord(0,0,0),50.0f);
-			chemCO2->tree().setValueOn(openvdb::Coord(0,0,0),8.0f);
+			if(solverGrid) for(std::size_t z=0;z<solver.dimensions[2];++z)
+				for(std::size_t y=0;y<solver.dimensions[1];++y)
+					for(std::size_t x=0;x<solver.dimensions[0];++x) {
+						const openvdb::Coord fixture(static_cast<int>(x),static_cast<int>(y),
+							static_cast<int>(z));
+						chemCH->tree().setValueOn(fixture,chemScale*120.0f);
+						chemC2->tree().setValueOn(fixture,chemScale*50.0f);
+						chemCO2->tree().setValueOn(fixture,chemScale*8.0f);
+					}
+			else {
+				chemCH->tree().setValueOn(openvdb::Coord(0,0,0),chemScale*120.0f);
+				chemC2->tree().setValueOn(openvdb::Coord(0,0,0),chemScale*50.0f);
+				chemCO2->tree().setValueOn(openvdb::Coord(0,0,0),chemScale*8.0f);
+			}
 		}
 		if( mutation.kind == FrameMutation::NegativeActiveCarbon ) {
 			carbon->tree().setValueOn(openvdb::Coord(1,0,0),-1.0f);
@@ -389,12 +1800,69 @@ namespace
 		openvdb::io::File file(path.string());
 		file.write(grids);
 		file.close();
+		std::string canonicalError;
+		Check(CanonicalizeOpenVDBFileIdentity(path.string(),canonicalError),
+			"producer replaces OpenVDB's random UUID with a content-derived identity");
+		Check(DurableSyncFileAndDirectory(path,canonicalError),
+			"produced sequence frame is durable before the next simulation step");
+	}
+
+	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& framePath,const unsigned int workerCount)
+	{
+		if(mode!="baseline"&&mode!="kill"&&mode!="resume")return 96;
+		RunPersistenceOptions persistence;
+		if(mode!="baseline"){
+			persistence.checkpointPath=checkpointPath;
+			persistence.checkpointCadenceWallS=0.0;
+			persistence.resume=mode=="resume";
+			persistence.killAfterFirstCheckpoint=mode=="kill";
+		}
+		SolverFrameValues result=RunMethaneFrameProbe(workerCount,3u,0.0,1.0,4.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		if(!result.succeeded){std::fprintf(stderr,"checkpoint child failed: %s\n",
+			result.structuredError.c_str());return 93;}
+		WriteFrame(framePath,FrameMutation{},0.0f,true,result);
+		std::string error;
+		if(!DurableSyncFileAndDirectory(framePath,error)){std::fprintf(stderr,
+			"checkpoint child frame durability failed: %s\n",error.c_str());return 94;}
+		return failures?95:0;
+	}
+
+	std::string QuoteSubprocessArgument(const std::string& value)
+	{
+#if defined(_WIN32)
+		std::string result="\"";
+		for(const char c:value){if(c=='\"')result+='\\';result+=c;}
+		return result+'\"';
+#else
+		std::string result="'";
+		for(const char c:value){if(c=='\'')result+="'\\''";else result+=c;}
+		return result+'\'';
+#endif
+	}
+
+	int RunCheckpointSubprocess(const std::filesystem::path& executable,const char* mode,
+		const std::filesystem::path& checkpoint,const std::filesystem::path& frame,
+		const unsigned int workers)
+	{
+		const std::string command=QuoteSubprocessArgument(executable.string())+
+			" --fire-checkpoint-child "+mode+" "+QuoteSubprocessArgument(checkpoint.string())+
+			" "+QuoteSubprocessArgument(frame.string())+" "+std::to_string(workers);
+		return std::system(command.c_str());
 	}
 #endif
 }
 
-int main()
+int main(int argc,char** argv)
 {
+#if defined(RISE_ENABLE_OPENVDB)
+	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
+		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
+		if(parsed==0u||parsed>64u)return 92;
+		return RunCheckpointChild(argv[2],argv[3],argv[4],static_cast<unsigned int>(parsed));
+	}
+#endif
 	PointLight* directLight=new PointLight(1.0,RISEPel(1,1,1),false);
 	IKeyframeParameter* lightEnergy=directLight->KeyframeFromParameters("energy","7");
 	UniformColorPainter* colorA=new UniformColorPainter(RISEPel(0,0,0));
@@ -463,6 +1931,42 @@ int main()
 		("rise-fire-sequence-test-"+std::to_string(static_cast<unsigned long long>(
 			std::chrono::high_resolution_clock::now().time_since_epoch().count())));
 	std::filesystem::create_directories(root);
+	const std::filesystem::path checkpointFixture=root/"checkpoint_fixture";
+	std::filesystem::create_directories(checkpointFixture);
+	const std::filesystem::path checkpointPath=checkpointFixture/"run.checkpoint";
+	const std::filesystem::path baselineCheckpointFrame=checkpointFixture/"baseline.vdb";
+	const std::filesystem::path resumedCheckpointFrame=checkpointFixture/"resumed.vdb";
+	const std::filesystem::path self=std::filesystem::absolute(argv[0]);
+	const int baselineCheckpointExit=RunCheckpointSubprocess(self,"baseline",checkpointPath,
+		baselineCheckpointFrame,1u);
+	const int killedCheckpointExit=RunCheckpointSubprocess(self,"kill",checkpointPath,
+		resumedCheckpointFrame,2u);
+	Check(baselineCheckpointExit==0&&killedCheckpointExit!=0&&
+		std::filesystem::exists(checkpointPath)&&!std::filesystem::exists(resumedCheckpointFrame),
+		"r61 fixture durably checkpoints then hard-kills before a frame can be published");
+	const int resumedCheckpointExit=RunCheckpointSubprocess(self,"resume",checkpointPath,
+		resumedCheckpointFrame,4u);
+	MethaneRunCheckpoint resumedCheckpointMetadata;std::string checkpointFixtureError;
+	const bool checkpointMetadataLoaded=LoadMethaneRunCheckpoint(checkpointPath,
+		resumedCheckpointMetadata,checkpointFixtureError);
+	Check(resumedCheckpointExit==0&&DigestFile(baselineCheckpointFrame)==
+		DigestFile(resumedCheckpointFrame)&&checkpointMetadataLoaded&&
+		resumedCheckpointMetadata.values.resumedFromCheckpoint&&
+		resumedCheckpointMetadata.values.resumedFromStep==1u&&
+		!resumedCheckpointMetadata.producerBuildId.empty()&&
+		resumedCheckpointMetadata.values.checkpointCadenceWallS==0.0&&
+		resumedCheckpointMetadata.values.checkpointStepIndices==
+			std::vector<std::uint64_t>({1u,2u}),
+		"r61 checkpoint plus hard kill plus different-thread resume is frame-bit-transparent and records run events");
+	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
+	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
+	const std::filesystem::path corruptedCheckpointPath=checkpointFixture/"corrupt.checkpoint";
+	{std::ofstream output(corruptedCheckpointPath,std::ios::binary|std::ios::trunc);
+		output.write(reinterpret_cast<const char*>(corruptedCheckpoint.data()),
+			static_cast<std::streamsize>(corruptedCheckpoint.size()));}
+	MethaneRunCheckpoint rejectedCheckpoint;
+	Check(!LoadMethaneRunCheckpoint(corruptedCheckpointPath,rejectedCheckpoint,
+		checkpointFixtureError),"r61 corrupt checkpoint fails closed before resume");
 	const std::filesystem::path frame4 = root/"frame4.vdb";
 	const std::filesystem::path frame5 = root/"frame5.vdb";
 	WriteFrame(frame4,FrameMutation{},1.0f);
@@ -782,12 +2286,177 @@ int main()
 		"between-render frame advance rebuilds both real derived structures once");
 	medium->release();
 
+	const bool capstoneArtifactRun=std::getenv("RISE_FIRE_CAPSTONE_OUTPUT")!=nullptr;
+	const std::filesystem::path capstoneOutputDirectory=capstoneArtifactRun?
+		std::filesystem::path(std::getenv("RISE_FIRE_CAPSTONE_OUTPUT")):std::filesystem::path();
+	const bool capstoneValidationOnly=capstoneArtifactRun&&
+		std::getenv("RISE_FIRE_CAPSTONE_VALIDATE_ONLY")!=nullptr;
+	const unsigned int capstoneWorkerCount=std::max(4u,std::thread::hardware_concurrency());
+	const double runDiameterM=capstoneArtifactRun?CapstonePoolDiameterM:0.03;
+	const double runHeatReleaseRateKW=capstoneArtifactRun?CapstoneHeatReleaseRateKW:0.40;
+	const SolverFrameValues injectedFailure=RunMethaneFrameProbe(1u,1u,0.0,1.0,4.0,
+		6.0,0.03,0.40,true);
+	Check(!injectedFailure.succeeded&&injectedFailure.temperature.empty()&&
+		injectedFailure.structuredError.find("solver_failure:injected_solver_failure")==0,
+		"solver failure aborts the run pipeline with a structured error before any frame state exists");
+	const SolverFrameValues tier6PipelinePreview=RunMethaneFrameProbe(1u,0u,0.0,1.0,4.0,6.0,
+		runDiameterM,runHeatReleaseRateKW);
+	if(!tier6PipelinePreview.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
+		tier6PipelinePreview.structuredError.c_str());return 1;}
+	double reportedResolutionTier=capstoneArtifactRun?10.0:6.0;
+	if(const char* tier=std::getenv("RISE_FIRE_CAPSTONE_TIER"))
+		reportedResolutionTier=std::strtod(tier,nullptr);
+	const SolverFrameValues capstoneCasePreview=capstoneArtifactRun?
+		RunMethaneFrameProbe(1u,0u,0.0,1.0,4.0,reportedResolutionTier,
+			runDiameterM,runHeatReleaseRateKW):tier6PipelinePreview;
+	if(!capstoneCasePreview.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
+		capstoneCasePreview.structuredError.c_str());return 1;}
+	const double expectedPuffingHz=1.5/std::sqrt(CapstonePoolDiameterM);
+	// Forty reference periods leave at least thirty observed periods even at
+	// the allowed -20% frequency edge and after the first post-window step.
+	double capstoneTargetS=5.0*capstoneCasePreview.flowThroughTimeS+40.0/expectedPuffingHz;
+	if(capstoneValidationOnly)
+		capstoneTargetS=1.1*capstoneCasePreview.flowThroughTimeS;
+	if(const char* target=std::getenv("RISE_FIRE_CAPSTONE_TARGET_S"))
+		capstoneTargetS=std::strtod(target,nullptr);
+	const double caseDurationS=capstoneArtifactRun?std::max(1.0,capstoneTargetS):1.0;
+	const double caseFramesPerS=capstoneArtifactRun?1.0/capstoneTargetS:4.0;
+	const SolverFrameValues methaneFrame=RunMethaneFrameProbe(1u,0u,0.0,
+		caseDurationS,caseFramesPerS,reportedResolutionTier,runDiameterM,runHeatReleaseRateKW);
+	if(!methaneFrame.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
+		methaneFrame.structuredError.c_str());return 1;}
+	const unsigned int determinismStepCount=capstoneArtifactRun&&!capstoneValidationOnly?1u:0u;
+	const SolverFrameValues deterministicOne=RunMethaneFrameProbe(1u,determinismStepCount,0.0,
+		caseDurationS,caseFramesPerS,6.0,runDiameterM,runHeatReleaseRateKW);
+	if(!deterministicOne.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
+		deterministicOne.structuredError.c_str());return 1;}
+	const SolverFrameValues methaneFrameParallel=RunMethaneFrameProbe(capstoneWorkerCount,
+		determinismStepCount,0.0,
+		caseDurationS,caseFramesPerS,6.0,runDiameterM,runHeatReleaseRateKW);
+	if(!methaneFrameParallel.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
+		methaneFrameParallel.structuredError.c_str());return 1;}
+	const std::filesystem::path deterministicOneFrame=root/"frame_deterministic_one.vdb";
+	const std::filesystem::path deterministicParallelFrame=root/"frame_deterministic_parallel.vdb";
+	WriteFrame(deterministicOneFrame,FrameMutation{},0.0f,true,deterministicOne);
+	WriteFrame(deterministicParallelFrame,FrameMutation{},0.0f,true,methaneFrameParallel);
+	const std::string singleWorkerDigest=DigestFile(deterministicOneFrame);
+	const std::string parallelWorkerDigest=DigestFile(deterministicParallelFrame);
+	Check(!singleWorkerDigest.empty()&&singleWorkerDigest==parallelWorkerDigest,
+		"r57 same methane case at one and N workers produces identical frame bytes");
+	WriteFrame(frame4,FrameMutation{},0.0f,true,methaneFrame);
+	std::string durableArtifactError;
+	if(capstoneArtifactRun&&(
+		!DurableCopyPublishedFile(deterministicOneFrame,
+			capstoneOutputDirectory/"frame_single_worker.vdb",durableArtifactError)||
+		!DurableCopyPublishedFile(frame4,capstoneOutputDirectory/"frame4.vdb",durableArtifactError))){
+		std::fprintf(stderr,"capstone frame streaming failed: %s\n",durableArtifactError.c_str());
+		return 1;
+	}
+	RunPersistenceOptions capstonePersistence;
+	if(capstoneArtifactRun){
+		capstonePersistence.checkpointPath=capstoneOutputDirectory/"tier10.run.checkpoint";
+		capstonePersistence.checkpointCadenceWallS=900.0;
+		capstonePersistence.streamedFrameCountAtStart=1u;
+		capstonePersistence.resume=true;
+	}
+	SolverFrameValues methaneFrameNext=capstoneArtifactRun?
+		RunMethaneFrameProbe(capstoneWorkerCount,1u,capstoneTargetS,caseDurationS,caseFramesPerS,
+			reportedResolutionTier,runDiameterM,runHeatReleaseRateKW,false,capstonePersistence):
+		methaneFrameParallel;
+	if(!methaneFrameNext.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
+		methaneFrameNext.structuredError.c_str());return 1;}
+	WriteFrame(frame5,FrameMutation{},0.0f,true,methaneFrameNext,0.8f);
+	methaneFrameNext.streamedFrameCount=2u;
+	if(capstoneArtifactRun&&!DurableCopyPublishedFile(frame5,
+		capstoneOutputDirectory/"frame5.vdb",durableArtifactError)){
+		std::fprintf(stderr,"capstone frame streaming failed: %s\n",durableArtifactError.c_str());
+		return 1;
+	}
+	const bool capstoneIgnition=!capstoneArtifactRun||(methaneFrameNext.temperatureK>800.0f&&
+		methaneFrameNext.reactionWPerM3>0.0f&&
+		methaneFrameNext.ignitedDuringPilot&&methaneFrameNext.sustainedAfterPilot&&
+		std::fabs(methaneFrameNext.pilotEnergyJ-methaneFrameNext.expectedPilotEnergyJ)<=
+			2.0e-12*std::max(1.0,methaneFrameNext.expectedPilotEnergyJ));
+	if(!capstoneIgnition) std::printf("capstone ignition diagnostic T=%.9g Tmax=%.9g reaction=%.9g inside=%d sustained=%d pilot=%.17g expected=%.17g time=%.17g tft=%.17g\n",
+		methaneFrameNext.temperatureK,methaneFrameNext.maximumTemperatureK,
+		methaneFrameNext.reactionWPerM3,
+		methaneFrameNext.ignitedDuringPilot?1:0,methaneFrameNext.sustainedAfterPilot?1:0,
+		methaneFrameNext.pilotEnergyJ,methaneFrameNext.expectedPilotEnergyJ,
+		methaneFrameNext.simulatedTimeS,methaneFrameNext.flowThroughTimeS);
+	Check(capstoneIgnition,
+		"capstone cold domain ignites with the r58 thermostat, sustains after shutoff, and ledgers exact pilot energy");
+	Check(!capstoneArtifactRun||methaneFrameNext.maximumTemperatureK<
+		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().TemperatureMaxK(),
+		"capstone thermostat keeps every tier inside the unchanged certified opacity domain");
+	Check(!capstoneArtifactRun||reportedResolutionTier<10.0||
+		methaneFrameNext.maximumTemperatureK<2300.0,
+		"reported tier-10 McCaffrey run stays below the 2300 K methane physicality bound");
+	Check(!capstoneArtifactRun||capstoneValidationOnly||reportedResolutionTier<10.0||(
+		methaneFrameNext.discontinuousLimiterClassSteps>0u&&
+		methaneFrameNext.discontinuousClassThreadIdentityChecked&&
+		methaneFrameNext.discontinuousClassThreadIdentity),
+		"r59 tier-10 owner enters the discontinuous class and produces bit-identical 1-vs-N accepted bytes at that step");
+	Check(!capstoneArtifactRun||capstoneValidationOnly||(
+		methaneFrameNext.statisticsBoundaryObserved&&
+		methaneFrameNext.firstStatisticsStepStartS==methaneFrameNext.statisticsStartS),
+		"capstone timestep event-splits exactly at 5*t_ft before accumulating empirical rows");
+	const double integratedFuelEnergy=methaneFrameNext.integratedFuelConsumptionKG*
+		FireSimulationMethaneRecord::PhysicalV1().LowerHeatingValueJPerKG();
+	Check(!capstoneArtifactRun||capstoneValidationOnly||(methaneFrameNext.probeTimeS.size()>=64u&&
+		methaneFrameNext.simulatedTimeS>=capstoneTargetS&&
+		std::isfinite(methaneFrameNext.puffingFrequencyHz)&&
+		methaneFrameNext.puffingFrequencyHz>0.0&&
+		methaneFrameNext.puffingRelativeError<=0.20&&
+		(methaneFrameNext.probeTimeS.back()-methaneFrameNext.probeTimeS.front())*
+			methaneFrameNext.puffingFrequencyHz>=30.0),
+		"capstone exports thirty measured puffing periods and matches 1.5/sqrt(D) within 20 percent");
+	Check(!capstoneArtifactRun||capstoneValidationOnly||(methaneFrameNext.integratedHeatReleaseJ>0.0&&
+		std::fabs(methaneFrameNext.integratedHeatReleaseJ-integratedFuelEnergy)<=
+			2.0e-10*methaneFrameNext.integratedHeatReleaseJ),
+		"capstone statistics-window HRR equals fuel consumption times record LHV");
+	Check(!capstoneArtifactRun||capstoneValidationOnly||(
+		std::fabs(methaneFrameNext.integratedRadiativeFraction-0.20)<=0.02&&
+		methaneFrameNext.integratedRadiativeFraction>=0.07&&
+		methaneFrameNext.integratedRadiativeFraction<=0.28),
+		"capstone statistics-window radiative fraction matches the methane default within its recorded spread");
+	Check(!capstoneArtifactRun||capstoneValidationOnly||(methaneFrameNext.centerlineHeightM.size()==
+		methaneFrameNext.dimensions[2]&&std::isfinite(methaneFrameNext.centerlineTemperatureExponent)&&
+		methaneFrameNext.mccaffreyPlumeStationCount>=4u&&
+		methaneFrameNext.mccaffreyMaximumTemperatureRelativeError<=0.10&&
+		methaneFrameNext.mccaffreyMaximumVelocityRelativeError<=0.10),
+		"capstone time-averaged above-tip centerline T and velocity match McCaffrey NBSIR 79-1910 within 10 percent");
+	bool stationArchiveComplete=true;
+	const std::size_t expectedStationRows=methaneFrameNext.probeTimeS.size()*
+		methaneFrameNext.dimensions[2];
+	stationArchiveComplete=expectedStationRows==methaneFrameNext.stationProbeTimeS.size()&&
+		methaneFrameNext.stationProbeHeightM.size()==expectedStationRows&&
+		methaneFrameNext.stationProbeTemperatureK.size()==expectedStationRows&&
+		methaneFrameNext.stationProbeReactionWPerM3.size()==expectedStationRows&&
+		methaneFrameNext.stationProbeVerticalVelocityMPerS.size()==expectedStationRows;
+	for(std::size_t sample=0;stationArchiveComplete&&sample<methaneFrameNext.probeTimeS.size();
+		++sample) for(std::size_t station=0;station<methaneFrameNext.dimensions[2];++station) {
+		const std::size_t row=sample*methaneFrameNext.dimensions[2]+station;
+		stationArchiveComplete=stationArchiveComplete&&
+			methaneFrameNext.stationProbeTimeS[row]==methaneFrameNext.probeTimeS[sample]&&
+			methaneFrameNext.stationProbeHeightM[row]==
+				(static_cast<double>(station)+0.5)*methaneFrameNext.cellWidthM;
+	}
+	Check(!capstoneArtifactRun||capstoneValidationOnly||stationArchiveComplete,
+		"capstone archives timestamped T, reaction-rate, and velocity at every fixed centerline station");
 	const std::filesystem::path manifestPath = root/"sequence.rise-fire.cbor";
 	const RISECBOR64::Bytes productionEnvelope = ManifestBytes(
-		DigestFile(frame4),DigestFile(frame5),"hold",true);
+		DigestFile(frame4),DigestFile(frame5),"hold",true,true,
+		{{static_cast<std::uint64_t>(methaneFrame.dimensions[0]),
+		  static_cast<std::uint64_t>(methaneFrame.dimensions[1]),
+		  static_cast<std::uint64_t>(methaneFrame.dimensions[2])}},methaneFrame.cellWidthM,
+		0.0,capstoneArtifactRun?capstoneTargetS:0.25,1.0,10.0,true,
+		runDiameterM,runHeatReleaseRateKW,false,0.0,
+		reportedResolutionTier,true);
 	FireSequenceManifest productionManifest;
 	Check(productionManifest.LoadCanonicalEnvelope(productionEnvelope,root.string(),error),
 		"production-shaped Job manifest validates independently");
+	Check(productionManifest.CaseRecordId()==methaneFrame.caseRecordId,
+		"solver lattice and sequence manifest bind the identical case_record_id");
 	{
 		std::ofstream output(manifestPath,std::ios::binary);
 		output.write(reinterpret_cast<const char*>(productionEnvelope.data()),
@@ -819,7 +2488,8 @@ int main()
 	}
 	IJob* job = nullptr;
 	Check(RISE_CreateJob(&job) && job,"sequence binding test creates a Job");
-	Check(job && job->AddFireMedium("sequence_fire",manifestPath.string().c_str()) &&
+	Check(job && job->AddFireMediumBound("sequence_fire",manifestPath.string().c_str(),
+		"carbon","temperature","","reaction","chem_CH","chem_C2","chem_CO2","velocity",false) &&
 		job->SetGlobalMedium("sequence_fire"),
 		"fire_medium creates a named manager entry and binds through global_medium");
 	if( job ) job->release();
@@ -832,6 +2502,13 @@ int main()
 #endif
 	{
 		std::ofstream scene(scenePath);
+		const double cameraCenterX=0.5*static_cast<double>(methaneFrame.dimensions[0])*
+			methaneFrame.cellWidthM;
+		const double cameraCenterY=0.5*static_cast<double>(methaneFrame.dimensions[1])*
+			methaneFrame.cellWidthM;
+		const double cameraDepth=std::max({static_cast<double>(methaneFrame.dimensions[0]),
+			static_cast<double>(methaneFrame.dimensions[1]),
+			static_cast<double>(methaneFrame.dimensions[2])})*methaneFrame.cellWidthM;
 		scene << "RISE ASCII SCENE 7\n\n"
 			<< "scene_options\n{\nscene_unit 1\nfidelity_mode preview\n}\n\n"
 			<< "standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
@@ -841,14 +2518,19 @@ int main()
 			<< "file_rasterizeroutput\n{\npattern sequence_render"
 			<< "\ntype EXR\nbpp 32\ncolor_space Rec709RGB_Linear"
 			<< "\nexposure 0\ndisplay_transform none\nexr_compression piz\n}\n\n"
+			<< "file_rasterizeroutput\n{\npattern sequence_display\ntype PNG\nbpp 16\n"
+			<< "color_space sRGB\nexposure 20\ndisplay_transform aces\n}\n\n"
 			<< "film\n{\nwidth 3\nheight 3\n}\n\n"
-			<< "pinhole_camera\n{\nname camera\nlocation 0 0 -2\nlookat 0 0 0\n"
+			<< "pinhole_camera\n{\nname camera\nlocation " << cameraCenterX << ' ' <<
+			cameraCenterY << ' ' << -cameraDepth << "\n"
+			<< "lookat " << cameraCenterX << ' ' << cameraCenterY << ' ' << 0.5*cameraDepth << "\n"
 			<< "up 0 1 0\nfov 45\nexposure 0.04\nscanning_rate -0.1\n"
 			<< "pixel_rate 0.02\n}\n\nfire_medium\n{\n"
 			<< "name sequence_fire\nfidelity_mode preview\nsequence_manifest "
 			<< manifestPath.string() << "\nchannel_carbon carbon\n"
 			<< "channel_temperature temperature\nchannel_reaction reaction\n"
-			<< "chem_model none\nchannel_velocity velocity\n}\n\n"
+			<< "channel_chem_ch chem_CH\nchannel_chem_c2 chem_C2\n"
+			<< "channel_chem_co2 chem_CO2\nchannel_velocity velocity\n}\n\n"
 			<< "global_medium\n{\nmedium sequence_fire\n}\n";
 	}
 	IJobPriv* parsedJob = nullptr;
@@ -868,24 +2550,42 @@ int main()
 		std::fabs(oddFieldSupport.open-9.98)<1e-12 &&
 		std::fabs(oddFieldSupport.close-10.06)<1e-12,
 		"prepared time support is sign-aware over exposure, scan, pixels, and field parity");
-	Check(parsedJob && parsedJob->SetFilm(1,1,1.0),
-		"render fixture reduces to one pixel after qualifying time-support geometry");
+	Check(parsedJob && parsedJob->SetFilm(32,32,1.0),
+		"capstone renders a small inspectable spectral frame after qualifying time support");
 	const MultichannelHeterogeneousMedium* parsedMedium = parsedJob ?
 		dynamic_cast<const MultichannelHeterogeneousMedium*>(parsedJob->GetMedium("sequence_fire")) : nullptr;
 	const unsigned long long beforeRenderMajorant = parsedMedium ?
 		parsedMedium->ForTest_FireMajorantGeneration() : 0u;
-	Check(parsedJob && parsedJob->SetAnimationOptions(10.0,10.25,2,false,false) &&
+	const double firstProductionRenderTime=capstoneArtifactRun?
+		10.0+capstoneTargetS+0.2:10.0;
+	Check(parsedJob && parsedJob->SetAnimationOptions(firstProductionRenderTime,
+		firstProductionRenderTime,1,false,false) &&
 		parsedJob->Rasterize(),
 		"sequence-backed Job render enters the prepared rasterizer seam and completes");
 	const IRasterizer* parsedRasterizer = parsedJob ? parsedJob->GetRasterizer() : nullptr;
 	const FrameStore* parsedStore = parsedRasterizer ? parsedRasterizer->GetFrameStore() : nullptr;
 	const FrameStore::Metadata parsedMetadata = parsedStore ? parsedStore->Meta() :
 		FrameStore::Metadata();
+	double maximumPreviewRadiance=0.0,maximumPreviewBlue=0.0,maximumPreviewRed=0.0;
+	if(parsedStore) for(unsigned int y=0;y<parsedStore->AsBeautyRasterImage().GetHeight();++y)
+		for(unsigned int x=0;x<parsedStore->AsBeautyRasterImage().GetWidth();++x) {
+			const RISEColor pixel=parsedStore->AsBeautyRasterImage().GetPEL(x,y);
+			Check(std::isfinite(pixel.base.r)&&std::isfinite(pixel.base.g)&&
+				std::isfinite(pixel.base.b),"capstone spectral output pixels are finite");
+			maximumPreviewRadiance=std::max(maximumPreviewRadiance,
+				static_cast<double>(pixel.base.r+pixel.base.g+pixel.base.b));
+			maximumPreviewRed=std::max(maximumPreviewRed,static_cast<double>(pixel.base.r));
+			maximumPreviewBlue=std::max(maximumPreviewBlue,static_cast<double>(pixel.base.b));
+		}
+	Check(maximumPreviewRadiance>0.0 && maximumPreviewBlue>maximumPreviewRed,
+		"capstone spectral path emits a nonzero bluish synthetic-chem preview");
 	const bool publishedSequence = parsedStore && parsedMetadata.activeFireMedia.size()==1u &&
 		parsedMetadata.activeFireMedia[0].mediaKind=="sequence_backed" &&
 		parsedMetadata.activeFireMedia[0].sequenceId==productionManifest.SequenceId() &&
-		parsedMetadata.activeFireMedia[0].selectedBaseFrameIndex==4 &&
-		parsedMetadata.activeFireMedia[0].wholeFileDigest==DigestFile(frame4) &&
+		parsedMetadata.activeFireMedia[0].selectedBaseFrameIndex==
+			(capstoneArtifactRun?5u:4u) &&
+		parsedMetadata.activeFireMedia[0].wholeFileDigest==DigestFile(
+			capstoneArtifactRun?frame5:frame4) &&
 		!parsedMetadata.activeFireMedia[0].preparedInputId.empty();
 	Check(publishedSequence,
 		"actual prepared render publishes the sequence-backed provenance variant");
@@ -916,18 +2616,221 @@ int main()
 		renderedMedia->GetArray()[0].Find("whole_file_digest") &&
 		renderedMedia->GetArray()[0].Find("prepared_input_id"),
 		"real sequence render writes the ratified sequence_backed provenance sidecar");
+	const char* capstoneOutput=std::getenv("RISE_FIRE_CAPSTONE_OUTPUT");
+	if(capstoneOutput && *capstoneOutput && renderedEnvelopeValid &&
+		std::filesystem::exists(renderBase.string()+".exr") &&
+		std::filesystem::exists(renderBase.string()+".exr.provenance.cbor")) {
+		const std::filesystem::path destination(capstoneOutput);
+		std::filesystem::create_directories(destination);
+		std::filesystem::copy_file(renderBase.string()+".exr",destination/"methane_preview.exr",
+			std::filesystem::copy_options::overwrite_existing);
+		std::filesystem::copy_file(renderBase.string()+".exr.provenance.cbor",
+			destination/"methane_preview.exr.provenance.cbor",
+			std::filesystem::copy_options::overwrite_existing);
+		if(std::filesystem::exists(root/"sequence_display.png"))
+			std::filesystem::copy_file(root/"sequence_display.png",
+				destination/"methane_preview_display.png",
+				std::filesystem::copy_options::overwrite_existing);
+		if(std::filesystem::exists(root/"sequence_display.png.provenance.cbor"))
+			std::filesystem::copy_file(root/"sequence_display.png.provenance.cbor",
+				destination/"methane_preview_display.png.provenance.cbor",
+				std::filesystem::copy_options::overwrite_existing);
+		Check(DigestFile(destination/"frame4.vdb")==DigestFile(frame4)&&
+			DigestFile(destination/"frame5.vdb")==DigestFile(frame5),
+			"streamed capstone frames remain identical to the completed sequence inputs");
+		Check(DurableCopyPublishedFile(manifestPath,
+			destination/"sequence_manifest.rise-fire.cbor",error),
+			"published capstone manifest is durable");
+		std::string runMetadataId;
+		const RISECBOR64::Bytes runMetadata=RunMetadataEnvelope(methaneFrameNext,
+			capstoneWorkerCount,DigestFile(frame4),DigestFile(frame5),
+			productionManifest.SequenceId(),runMetadataId);
+		Check(!runMetadata.empty()&&DurableWritePublishedBytes(runMetadata,
+			destination/"run_metadata.rise-fire-run.cbor",error),
+			"checkpoint cadence, step indices, resume event, and frame streaming enter durable run metadata only");
+		FireSequenceManifest copiedManifest;
+		FireSequencePreparedFrame copiedFrame;
+		const RISECBOR64::Bytes copiedEnvelope=ReadFileBytes(
+			destination/"sequence_manifest.rise-fire.cbor");
+		Check(!copiedEnvelope.empty()&&
+			copiedManifest.LoadCanonicalEnvelope(copiedEnvelope,destination.string(),error)&&
+			copiedManifest.LoadFrame(4,copiedFrame,error)&&copiedManifest.LoadFrame(5,copiedFrame,error),
+			"published capstone manifest resolves and verifies both copied frame paths");
+		Check(std::filesystem::exists(destination/"methane_preview_display.png")&&
+			std::filesystem::exists(destination/"methane_preview_display.png.provenance.cbor"),
+			"published display derivative carries its own provenance sidecar");
+		RISECBOR64::Value productionDecoded;
+		if(RISECBOR64::DecodeCanonical(productionEnvelope,productionDecoded,&error)) {
+			const RISECBOR64::Value* sequencePayload=productionDecoded.Find("payload");
+			const RISECBOR64::Value* caseBytes=sequencePayload?sequencePayload->Find("case_record"):nullptr;
+			if(caseBytes && caseBytes->GetType()==RISECBOR64::Value::ByteString) {
+				std::ofstream caseOutput(destination/"case_record.rise-fire-case.cbor",std::ios::binary);
+				caseOutput.write(reinterpret_cast<const char*>(caseBytes->GetBytes().data()),
+					static_cast<std::streamsize>(caseBytes->GetBytes().size()));
+			}
+		}
+		const double hrrFromFuelW=methaneFrameNext.fuelConsumptionKGPerS*
+			FireSimulationMethaneRecord::PhysicalV1().LowerHeatingValueJPerKG();
+		const RISECBOR64::Value* provenanceId=renderedEnvelope.Find("provenance_id");
+		const RISECBOR64::Value* artifactFidelity=renderedPayload?
+			renderedPayload->Find("artifact_fidelity"):nullptr;
+		const RISECBOR64::Value* artifactDigest=renderedPayload?
+			renderedPayload->Find("artifact_sha256"):nullptr;
+		const RISECBOR64::Value* rendererBuild=renderedPayload?
+			renderedPayload->Find("renderer_build_id"):nullptr;
+		const RISECBOR64::Value* configurationId=renderedPayload?
+			renderedPayload->Find("resolved_render_configuration_id"):nullptr;
+		const RISECBOR64::Value* sidecarMedium=renderedMedia&&
+			renderedMedia->GetType()==RISECBOR64::Value::Array&&!renderedMedia->GetArray().empty()?
+			&renderedMedia->GetArray()[0]:nullptr;
+		const bool empiricalRowsQualified=capstoneArtifactRun&&!capstoneValidationOnly&&
+			reportedResolutionTier>=10.0;
+		std::ofstream report(destination/"capstone_report.txt");
+		std::ofstream json(destination/"methane_preview.exr.provenance.json");
+		std::ofstream probes(destination/"centerline_probes.csv");
+		probes << "time_s,height_m,temperature_K,reaction_W_per_m3,vertical_velocity_m_per_s,"
+			"centerline_heat_release_W\n";
+		for(std::size_t row=0;row<methaneFrameNext.stationProbeTimeS.size();++row) {
+			const std::size_t sample=methaneFrameNext.dimensions[2]>0u?
+				row/methaneFrameNext.dimensions[2]:0u;
+			probes << std::setprecision(17) << methaneFrameNext.stationProbeTimeS[row] << ',' <<
+				methaneFrameNext.stationProbeHeightM[row] << ',' <<
+				methaneFrameNext.stationProbeTemperatureK[row] << ',' <<
+				methaneFrameNext.stationProbeReactionWPerM3[row] << ',' <<
+				methaneFrameNext.stationProbeVerticalVelocityMPerS[row] << ',' <<
+				(sample<methaneFrameNext.probeCenterlineHeatReleaseW.size()?
+					methaneFrameNext.probeCenterlineHeatReleaseW[sample]:0.0) << '\n';
+		}
+		std::ofstream profile(destination/"centerline_final_profile.csv");
+		profile << "height_m,temperature_K,vertical_velocity_m_per_s\n";
+		for(std::size_t sample=0;sample<methaneFrameNext.centerlineHeightM.size();++sample)
+			profile << std::setprecision(17) << methaneFrameNext.centerlineHeightM[sample] << ',' <<
+				methaneFrameNext.centerlineTemperatureK[sample] << ',' <<
+				methaneFrameNext.centerlineVelocityMPerS[sample] << '\n';
+		WriteJSON(json,renderedEnvelope); json << '\n';
+		report.precision(17);
+		report << "artifact_fidelity=" << (artifactFidelity?artifactFidelity->GetText():"") << "\n"
+			<< "render_fidelity_status=" << (renderedPayload&&renderedPayload->Find(
+				"render_fidelity_status")?renderedPayload->Find("render_fidelity_status")->GetText():"") << "\n"
+			<< "render_reason_codes=" << TextArrayCSV(renderedPayload?
+				renderedPayload->Find("render_reason_codes"):nullptr) << "\n"
+			<< "artifact_reason_codes=" << TextArrayCSV(renderedPayload?
+				renderedPayload->Find("artifact_reason_codes"):nullptr) << "\n"
+			<< "capstone_reason_codes=preview_primary,synthetic_chem_fixture,"
+				"methane_zero_soot_yield,cold_start_r58_thermostatic_pilot,"
+				"r59_two_class_limiter\n"
+			<< "empirical_rows_status=" << (empiricalRowsQualified?
+				"capstone_tier10":"pipeline_validation_only") << "\n"
+			<< "provenance_id=" << (provenanceId?provenanceId->GetText():"") << "\n"
+			<< "sidecar_artifact_sha256=" << (artifactDigest?artifactDigest->GetText():"") << "\n"
+			<< "renderer_build_id=" << (rendererBuild?rendererBuild->GetText():"") << "\n"
+			<< "resolved_render_configuration_id=" <<
+				(configurationId?configurationId->GetText():"") << "\n"
+			<< "case_record_id=" << productionManifest.CaseRecordId() << "\n"
+			<< "sequence_id=" << productionManifest.SequenceId() << "\n"
+			<< "run_metadata_id=" << runMetadataId << "\n"
+			<< "checkpoint_cadence_wall_s=" << methaneFrameNext.checkpointCadenceWallS << "\n"
+			<< "checkpoint_count=" << methaneFrameNext.checkpointStepIndices.size() << "\n"
+			<< "checkpoint_step_indices=";
+		for(std::size_t checkpoint=0;checkpoint<methaneFrameNext.checkpointStepIndices.size();
+			++checkpoint)report << (checkpoint?",":"") <<
+				methaneFrameNext.checkpointStepIndices[checkpoint];
+		report << "\n"
+			<< "resumed_from_checkpoint=" <<
+				(methaneFrameNext.resumedFromCheckpoint?"true":"false") << "\n"
+			<< "resumed_from_step=" << methaneFrameNext.resumedFromStep << "\n"
+			<< "streamed_frame_count=" << methaneFrameNext.streamedFrameCount << "\n"
+			<< "prepared_input_id=" << (sidecarMedium&&sidecarMedium->Find("prepared_input_id")?
+				sidecarMedium->Find("prepared_input_id")->GetText():"") << "\n"
+			<< "selected_base_frame_index=" << (sidecarMedium&&
+				sidecarMedium->Find("selected_base_frame_index")?
+				sidecarMedium->Find("selected_base_frame_index")->GetIntegerArgument():0u) << "\n"
+			<< "frame4_sha256=" << DigestFile(frame4) << "\n"
+			<< "frame5_sha256=" << DigestFile(frame5) << "\n"
+			<< "frame5_policy=honest_cold_start_sustained_solver_state_with_synthetic_chem_fixture\n"
+			<< "thread_determinism_workers=1," << capstoneWorkerCount << "\n"
+			<< "thread_determinism_digest=" << singleWorkerDigest << "\n"
+			<< "r59_discontinuous_limiter_steps=" <<
+				methaneFrameNext.discontinuousLimiterClassSteps << "\n"
+			<< "r59_maximum_limiter_face_discrepancy=" <<
+				methaneFrameNext.maximumLimiterClassDiscrepancy << "\n"
+			<< "r59_discontinuous_class_thread_identity=" <<
+				(methaneFrameNext.discontinuousClassThreadIdentityChecked&&
+				methaneFrameNext.discontinuousClassThreadIdentity?"true":"not_exercised") << "\n"
+			<< "r54_pinned_selected_timestep_s=" << methaneFrameNext.selectedTimeStepS << "\n"
+			<< "r57_resolution_tier=" << reportedResolutionTier << "\n"
+			<< "accepted_final_timestep_s=" << methaneFrameNext.acceptedTimeStepS << "\n"
+			<< "simulated_time_s=" << methaneFrameNext.simulatedTimeS << "\n"
+			<< "flow_through_time_s=" << methaneFrameNext.flowThroughTimeS << "\n"
+			<< "pilot_energy_J=" << methaneFrameNext.pilotEnergyJ << "\n"
+			<< "pilot_ignited_during_window=" << (methaneFrameNext.ignitedDuringPilot?"true":"false") << "\n"
+			<< "combustion_sustained_after_pilot=" << (methaneFrameNext.sustainedAfterPilot?"true":"false") << "\n"
+			<< "rendered_exr_sha256=" << DigestFile(renderBase.string()+".exr") << "\n"
+			<< "sidecar_sha256=" << DigestFile(renderBase.string()+".exr.provenance.cbor") << "\n"
+			<< "display_preview=PNG_ACES_exposure_plus20_non_primary_derivative\n";
+		if(empiricalRowsQualified) {
+			const double observationSpanS=methaneFrameNext.probeTimeS.empty()?0.0:
+				methaneFrameNext.probeTimeS.back()-methaneFrameNext.probeTimeS.front();
+			report << "puffing_status=capstone_tier10_evaluated\n"
+				<< "puffing_reference_Hz=" << expectedPuffingHz << "\n"
+				<< "statistics_start_s=" << methaneFrameNext.statisticsStartS << "\n"
+				<< "statistics_duration_s=" << std::max(0.0,methaneFrameNext.simulatedTimeS-
+					methaneFrameNext.statisticsStartS) << "\n"
+				<< "puffing_observation_span_s=" << observationSpanS << "\n"
+				<< "puffing_observed_Hz=" << methaneFrameNext.puffingFrequencyHz << "\n"
+				<< "puffing_observed_cycles=" << observationSpanS*
+					methaneFrameNext.puffingFrequencyHz << "\n"
+				<< "puffing_relative_error=" << methaneFrameNext.puffingRelativeError << "\n"
+				<< "puffing_observation=preview_single_diameter_at_least_30_observed_cycles_full_three_diameter_refinement_gate_remains_separate\n"
+				<< "mccaffrey_status=capstone_tier10_evaluated\n"
+				<< "mccaffrey_temperature_power_exponent=" << methaneFrameNext.centerlineTemperatureExponent << "\n"
+				<< "mccaffrey_temperature_log_fit_RMSE=" << methaneFrameNext.centerlineFitRMSE << "\n"
+				<< "mccaffrey_flame_tip_height_m=" << methaneFrameNext.mccaffreyFlameTipHeightM << "\n"
+				<< "mccaffrey_plume_station_count=" << methaneFrameNext.mccaffreyPlumeStationCount << "\n"
+				<< "mccaffrey_max_temperature_relative_error=" <<
+					methaneFrameNext.mccaffreyMaximumTemperatureRelativeError << "\n"
+				<< "mccaffrey_max_velocity_relative_error=" <<
+					methaneFrameNext.mccaffreyMaximumVelocityRelativeError << "\n"
+				<< "mccaffrey_observation=time_averaged_above_reaction_tip_NBSIR_79_1910_Table_1_33_kW_absolute_T_and_u\n"
+				<< "hrr_status=capstone_tier10_evaluated\n"
+				<< "realized_HRR_W=" << methaneFrameNext.realizedHeatReleaseW << "\n"
+				<< "fuel_consumption_times_LHV_W=" << hrrFromFuelW << "\n"
+				<< "HRR_relative_ledger_error=" << std::fabs(methaneFrameNext.realizedHeatReleaseW-
+					hrrFromFuelW)/std::max(1.0,methaneFrameNext.realizedHeatReleaseW) << "\n"
+				<< "radiative_fraction_status=capstone_tier10_evaluated\n"
+				<< "declared_chi_r=" << methaneFrameNext.effectiveRadiativeFraction << "\n"
+				<< "realized_step_radiative_fraction=" << methaneFrameNext.realizedRadiativeFraction << "\n"
+				<< "statistics_integrated_heat_release_J=" << methaneFrameNext.integratedHeatReleaseJ << "\n"
+				<< "statistics_integrated_radiative_loss_J=" << methaneFrameNext.integratedRadiativeLossJ << "\n"
+				<< "statistics_integrated_fuel_consumption_kg=" << methaneFrameNext.integratedFuelConsumptionKG << "\n"
+				<< "statistics_integrated_fuel_times_LHV_J=" << methaneFrameNext.integratedFuelConsumptionKG*
+					FireSimulationMethaneRecord::PhysicalV1().LowerHeatingValueJPerKG() << "\n"
+				<< "statistics_integrated_radiative_fraction=" << methaneFrameNext.integratedRadiativeFraction << "\n"
+				<< "accepted_escape_factor=" << methaneFrameNext.acceptedEscapeFactor << "\n"
+				<< "radiative_status=preview_final_step_combustion_only_chi_r_diagnostic\n";
+		} else {
+			report << "puffing_status=not_evaluated_pipeline_validation_only\n"
+				<< "mccaffrey_status=not_evaluated_pipeline_validation_only\n"
+				<< "hrr_status=not_evaluated_pipeline_validation_only\n"
+				<< "radiative_fraction_status=not_evaluated_pipeline_validation_only\n";
+		}
+		report << "visible_expectation=faint_methane_y_s_zero_with_bluish_synthetic_chem_fixture\n";
+	}
 	Check(parsedMedium && parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+1u,
 		"actual render schedules exactly one per-frame majorant/CDF rebuild");
 	const std::string jobFirstPrepared = parsedStore &&
 		!parsedMetadata.activeFireMedia.empty() ?
 		parsedMetadata.activeFireMedia[0].preparedInputId : std::string();
-	Check(parsedJob && parsedJob->SetAnimationOptions(10.25,10.25,1,false,false) &&
+	const double secondProductionRenderTime=capstoneArtifactRun?10.0:10.25;
+	Check(parsedJob && parsedJob->SetAnimationOptions(secondProductionRenderTime,
+		secondProductionRenderTime,1,false,false) &&
 		parsedJob->Rasterize(),
 		"between-render scene-time advance prepares the next immutable frame");
 	const FrameStore::Metadata advancedMetadata = parsedStore ? parsedStore->Meta() :
 		FrameStore::Metadata();
 	Check(parsedStore && advancedMetadata.activeFireMedia.size()==1u &&
-		advancedMetadata.activeFireMedia[0].selectedBaseFrameIndex==5 &&
+		advancedMetadata.activeFireMedia[0].selectedBaseFrameIndex==
+			(capstoneArtifactRun?4u:5u) &&
 		advancedMetadata.activeFireMedia[0].preparedInputId!=jobFirstPrepared &&
 		parsedMedium && parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+2u,
 		"frame advance atomically swaps grid, majorant, CDF, and provenance between renders");
@@ -939,12 +2842,20 @@ int main()
 		parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+2u,
 		"mid-render Job mutation is detected while the prepared grid/majorant/CDF stay frozen");
 	if( mutationOutput ) mutationOutput->release();
-	Check(parsedJob && !parsedJob->RasterizeAnimation(10.0,10.25,2,true,false) &&
-		parsedMedium && parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+2u,
-		"cadence-crossing interlaced fields reject before one artifact can misstate its base frame");
-	Check(parsedJob && parsedJob->RasterizeAnimation(10.25,10.25,1,true,false) &&
-		parsedMedium && parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+2u,
-		"same-base-frame interlaced fields reuse one truthful prepared identity");
+	// The adversarial interlace fixture has its own fixed 0.25 s cadence.  The
+	// capstone manifest intentionally uses the much longer empirical-window
+	// cadence and is not a substitute for that timing construction.
+	if(!capstoneArtifactRun) {
+		const double interlaceFixtureFrameStepS=0.25;
+		Check(parsedJob && !parsedJob->RasterizeAnimation(10.0,
+			10.0+2.0*interlaceFixtureFrameStepS,2,true,false) && parsedMedium &&
+			parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+2u,
+			"cadence-crossing interlaced fields reject before one artifact can misstate its base frame");
+		Check(parsedJob && parsedJob->RasterizeAnimation(10.0+interlaceFixtureFrameStepS,
+			10.0+interlaceFixtureFrameStepS,1,true,false) && parsedMedium &&
+			parsedMedium->ForTest_FireMajorantGeneration()==beforeRenderMajorant+2u,
+			"same-base-frame interlaced fields reuse one truthful prepared identity");
+	}
 	const IFireRasterizerState* preparedState=parsedRasterizer ?
 		dynamic_cast<const IFireRasterizerState*>(parsedRasterizer) : nullptr;
 	if( parsedRasterizer && parsedJob && parsedJob->GetScene() )
