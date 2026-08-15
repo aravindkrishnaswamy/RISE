@@ -824,6 +824,23 @@ namespace RISE
 					inv.set( "passWidth",  JsonValue::MakeNumber( static_cast<double>( rr.inventoryPassWidth ) ) );
 					inv.set( "passHeight", JsonValue::MakeNumber( static_cast<double>( rr.inventoryPassHeight ) ) );
 					inv.set( "text", JsonValue::MakeString( rr.inventoryText ) );
+					// Arc 83 (2026-08-14): emissive objects this render measured
+					// as NOT selected by NEE area-light sampling, and why -- see
+					// AgentSceneNotAreaSampledEntry.  Same omit-when-empty
+					// convention as `issues`/`legend` elsewhere: absent rather
+					// than an empty array when every emissive object passed, so
+					// an existing caller sees an unchanged response shape.
+					if( !rr.inventoryNotAreaSampled.empty() ) {
+						JsonValue nas = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < rr.inventoryNotAreaSampled.size(); ++i ) {
+							const AgentSceneNotAreaSampledEntry& e = rr.inventoryNotAreaSampled[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name",   JsonValue::MakeString( e.name ) );
+							o.set( "reason", JsonValue::MakeString( e.reason ) );
+							nas.push_back( o );
+						}
+						inv.set( "notAreaSampled", nas );
+					}
 					result.set( "inventory", inv );
 				}
 				// Arc 81 (2026-08-12): THE TONAL FACT -- the frame's own luma
@@ -4816,6 +4833,26 @@ namespace RISE
 						entries.push_back( o );
 					}
 					result.set( "entries", entries );
+					// F9(b) fix round (2026-08-14): AgentSession.h documents
+					// `AgentRenderResult::inventoryNotAreaSampled` as carrying
+					// "the same fact in machine form" as `inventoryText` -- that
+					// claim was only true on the render payload's `inventory`
+					// block (see above), not here.  `si` is the SAME
+					// AgentSceneInventoryResult struct (ComputeSceneInventory_
+					// populates both), so si.notAreaSampled is already there for
+					// free; mirror the render path's serialization so the two
+					// surfaces cannot drift.  Same omit-when-empty convention.
+					if( !si.notAreaSampled.empty() ) {
+						JsonValue nas = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < si.notAreaSampled.size(); ++i ) {
+							const AgentSceneNotAreaSampledEntry& e = si.notAreaSampled[i];
+							JsonValue o = JsonValue::MakeObject();
+							o.set( "name",   JsonValue::MakeString( e.name ) );
+							o.set( "reason", JsonValue::MakeString( e.reason ) );
+							nas.push_back( o );
+						}
+						result.set( "notAreaSampled", nas );
+					}
 					result.set( "text",    JsonValue::MakeString( si.text ) );
 					result.set( "message", JsonValue::MakeString( si.message ) );
 					return MakeSuccess( idValue, result );

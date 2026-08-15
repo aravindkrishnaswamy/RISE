@@ -933,6 +933,30 @@ namespace RISE
 		//! rather than leaving the reader to assume one.
 		static constexpr unsigned int kTonalConcentrationBand = 5;
 
+		//! Arc 83 (2026-08-14): ONE emissive object that this render's
+		//! LuminaryManager did NOT register as an NEE area light, and why --
+		//! see LuminaryManager::AddToLuminaryList's two refusal branches (no
+		//! directly-owned geometry, e.g. a csg_object; or
+		//! IGeometry::CanBeAreaLight() == false, e.g. an sdf_geometry whose
+		//! sampling mesh provably missed a feature).  The object still
+		//! renders -- it contributes emission on direct camera view and on a
+		//! BSDF-sampled hit -- it is just never SELECTED by light sampling.
+		//! This is MIRRORED, not read: the inventory walk does not call
+		//! LuminaryManager::getLuminaries() and re-evaluates the same two
+		//! refusal branches independently against the live object/material
+		//! (LuminaryManager.cpp is the AUTHORITY on the gate; the mirrored
+		//! predicate at the inventory walk's call site carries a pointer
+		//! back so a THIRD refusal branch added there gets mirrored here
+		//! too, not silently desynced).  Still evaluated fresh per render
+		//! rather than predicted from the CST at insert time, because
+		//! whether an SDF's sampling mesh resolves a thin feature is not
+		//! knowable before a real render tessellates and checks it.
+		struct AgentSceneNotAreaSampledEntry
+		{
+			std::string name;
+			std::string reason;
+		};
+
 		struct AgentRenderResult
 		{
 			bool                       ok = false;
@@ -1394,6 +1418,14 @@ namespace RISE
 			unsigned int               inventoryPassWidth = 0;
 			unsigned int               inventoryPassHeight = 0;
 			std::string                inventoryText;
+			//! Arc 83 (2026-08-14): emissive objects THIS render measured as
+			//! not selected by NEE area-light sampling, and why -- see
+			//! AgentSceneNotAreaSampledEntry.  Meaningful only when
+			//! `inventoryApplied` is true (same gate as every other
+			//! `inventory*` field); empty when every emissive object in the
+			//! scene passed CanBeAreaLight().  `inventoryText` already states
+			//! this fact in prose -- this is the same fact in machine form.
+			std::vector<AgentSceneNotAreaSampledEntry> inventoryNotAreaSampled;
 			//! Arc 81 (2026-08-12): THE TONAL FACT -- the frame's own luma
 			//! distribution, riding the render result beside the inventory.
 			//!
@@ -6255,14 +6287,25 @@ namespace RISE
 				//! (IObject::GetGeometry), so two objects naming the same
 				//! geometry chunk are the same geometry here by construction.
 				//! `geometryUnreadCount` is how many objects were NOT counted
-				//! because their geometry could not be read -- a legend name
-				//! that resolves to no manager item (a generator-synthesized
-				//! instance) or an object kind that exposes none.  Stated in
-				//! the text rather than folded away, the same
-				//! omit-rather-than-fabricate rule the frame positions follow.
+				//! because their geometry could not be read -- an object kind
+				//! that exposes none (IObject::GetGeometry() returning null
+				//! is not itself an error; see IsNullGeometryEmitter_'s doc
+				//! comment in AgentSession.cpp for the csg_object case), or
+				//! the rarer case of a legend name that does not resolve to
+				//! a manager item at all (a generator-synthesized instance
+				//! name DOES resolve to a real manager item -- see the F9(c)
+				//! comment on that lookup in AgentSession.cpp -- so this is
+				//! some other, rarer non-resolution).  Stated in the text
+				//! rather than folded away, the same omit-rather-than-
+				//! fabricate rule the frame positions follow.
 				int          distinctGeometryCount = 0;
 				int          sharedGeometryCount = 0;
 				int          geometryUnreadCount = 0;
+				//! ARC 83 (2026-08-14): emissive objects the walk below found
+				//! NOT selected for NEE area-light sampling, and why -- see
+				//! AgentSceneNotAreaSampledEntry.  Also free: the same walk
+				//! already reads each object's material and geometry.
+				std::vector<AgentSceneNotAreaSampledEntry> notAreaSampled;
 				//! One entry per world-visible object, in DESCENDING pixel
 				//! count then ascending name -- so the objects that covered
 				//! nothing are last and complete.

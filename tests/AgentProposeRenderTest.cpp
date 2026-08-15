@@ -3112,6 +3112,667 @@ static void RunSceneInventoryTests()
 		pJob->release();
 		std::remove( scenePath.c_str() );
 	}
+
+	// ---- (f) ARC 83 (2026-08-14): THE NOT-AREA-SAMPLED FACT. -------------
+	//
+	// LuminaryManager::AddToLuminaryList (LuminaryManager.cpp) refuses to
+	// register an emissive object as an NEE area light when it has no
+	// directly-owned geometry (a csg_object) or when its geometry's
+	// CanBeAreaLight() is false (e.g. an sdf_geometry whose sampling mesh
+	// provably missed a feature).  The object still renders -- direct
+	// camera view and a BSDF-sampled hit still carry its emission -- it is
+	// simply never SELECTED by light sampling.  This is a MEASUREMENT from
+	// THIS render's AttachScene (not a prediction from the CST), riding
+	// the same inventory the rest of this file exercises.
+	{
+		// (f1) THE CONTROL: an ordinary emissive sphere_geometry object
+		// PASSES CanBeAreaLight() -- it must not be named by the new fact
+		// at all.
+		{
+			static const char* const kControlScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_glow\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname obj_glow\n\tgeometry sph_glow\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_control.RISEscene", kControlScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f1) Job loads the control (ordinary emissive sphere) scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok && r.inventoryApplied, "(f1) the control render carries the inventory" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) == std::string::npos,
+			       "MONEY ASSERTION: an ordinary emissive object that PASSES CanBeAreaLight() is "
+			       "not named by the not-area-sampled fact at all" );
+			Check( r.inventoryNotAreaSampled.empty(),
+			       "and the structured list is empty to match" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f2a) THE GENUINE MISSED-FEATURE CASE: a MESHED emissive
+		// sdf_geometry (nonzero triangles, nonzero GetArea()) that STILL
+		// fails CanBeAreaLight() because SuspectedMissedFeatureCells() > 0
+		// -- the second clause of `GetArea() > 0 &&
+		// SuspectedMissedFeatureCells() == 0`, exercised for real rather
+		// than short-circuited by the first.  A prior version of this
+		// fixture (a 0.1-thick hollow-shell SDF plus a tiny sphere) never
+		// reached that second clause: the whole shell evaded BOTH the
+		// marching-tets corner test AND the missed-feature centre probe
+		// (its wall is thinner than half a grid cell in every direction
+		// that matters), so the mesh was 0 triangles / 0 area and
+		// CanBeAreaLight() was already false before the tiny sphere
+		// mattered -- deleting the sphere would not have changed the
+		// verdict.  Confirmed directly against the RISE CLI on an
+		// isolated copy of that scene: `SDFGeometry:: sampling structure
+		// built: 0 triangles, corrected surface area 0.000000 (detail 8,
+		// J-clamped 0, missed-cells 0)` even WITH the tiny sphere present
+		// (see (f2b) below, which keeps that fixture honestly relabelled).
+		//
+		// This fixture instead unions a big sphere (radius 2.5 -- meshes
+		// cleanly at sampling_detail 8) with a tiny sphere (radius 0.1)
+		// placed OUTSIDE the big sphere's solid, at grid cell (7,7,7)'s
+		// exact centre.  ComputeBounds pads the big sphere's local AABB
+		// (a cube of half-extent 2.5) by `pad = max(1e-3, 3*eps0)`,
+		// `eps0 = diag0*5e-5`, `diag0 = sqrt(3*5^2)` -- giving bbox
+		// [-2.5012990381, 2.5012990381]^3, cell width
+		// 5.0025980763/8 = 0.6253247595, and cell(7,7,7)'s centre at
+		// (2.1886366586, 2.1886366586, 2.1886366586) on every axis --
+		// distance from the origin ~3.79, well outside the r=2.5 solid,
+		// so it is a genuinely isolated feature, not a redundant union
+		// inside the big sphere. Every one of that cell's 8 corners
+		// (~1.876 to ~2.501 per axis) is >0.49 units from the tiny
+		// sphere's centre (outside it) and >0.75 units from the origin
+		// minus 2.5 (outside the big sphere too) -- all 8 read OUTSIDE the
+		// solid -- while the cell's OWN centre sits inside the tiny
+		// sphere (radius 0.1 comfortably covers the sub-millimetre
+		// float slop in the hand-derived centre).  Confirmed directly
+		// against the RISE CLI on an isolated copy of this scene:
+		// `SDFGeometry:: sampling structure built: 1656 triangles,
+		// corrected surface area 78.827673 (detail 8, J-clamped 0,
+		// missed-cells 1)` -- nonzero triangles/area (the big sphere) AND
+		// a provable miss (the tiny one), exactly the state the prior
+		// fixture's comment claimed but did not construct.
+		{
+			static const char* const kMissedFeatureScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 20\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_missed\n\tsampling_detail 8\n"
+				"\tpart sphere union 0 0 0 0 0 0 0 1 1 1 2.5 0 0 0\n"
+				"\tpart sphere union 0 2.188637 2.188637 2.188637 0 0 0 1 1 1 0.1 0 0 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname obj_missed\n\tgeometry sdf_missed\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_sdf_missed.RISEscene", kMissedFeatureScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f2a) Job loads the meshed-plus-missed-feature sdf_geometry scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f2a) the render succeeds" );
+			Check( r.inventoryApplied, "(f2a) and carries the inventory" );
+			std::printf( "---- inventory text, genuine-missed-feature not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "obj_missed" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive sdf_geometry whose sampling mesh MESHED (nonzero "
+			       "area) but still provably missed the isolated tiny-sphere feature is named by "
+			       "the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "obj_missed",
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "sampling_detail" ) != std::string::npos,
+			       "MONEY ASSERTION: the reason names sampling_detail -- the actionable parameter "
+			       "for an sdf_geometry (reason: " +
+			       ( r.inventoryNotAreaSampled.empty() ? std::string( "<none>" )
+			                                            : r.inventoryNotAreaSampled[0].reason ) + ")" );
+			// NO ADVICE, NO VERDICT -- same rule as the rest of the inventory.
+			Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+			       r.inventoryText.find( "should" )   == std::string::npos &&
+			       r.inventoryText.find( "missing" )  == std::string::npos &&
+			       r.inventoryText.find( "broken" )   == std::string::npos &&
+			       r.inventoryText.find( "wrong" )    == std::string::npos,
+			       "the not-area-sampled fact advises nothing and calls nothing missing or broken" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f2b) THE ZERO-AREA CASE: an emissive sdf_geometry whose mesh is
+		// entirely EMPTY (0 triangles), so GetArea() == 0 and
+		// CanBeAreaLight()'s FIRST clause (`GetArea() > 0`) already fails
+		// -- the missed-feature clause is never exercised here, unlike
+		// (f2a) above.  `sampling_detail 8` (the minimum) puts an 8x8x8
+		// grid over a bbox that is a hollow shell (a roundbox union'd
+		// solid, then a slightly smaller roundbox subtracted out of it --
+		// see SDFGeometry::ComputeBounds, which skips subtract parts when
+		// folding the bound, so the bbox stays close to the OUTER
+		// roundbox's [-4,4]^3), giving ~1-unit cells.  The shell wall is
+		// only 0.1 units thick -- thinner than half a cell in every
+		// direction -- so it evades BOTH the marching-tets corner test
+		// (the wall's two faces both read "outside": one from the hollow
+		// interior via the subtract, one from beyond the outer surface,
+		// so no cell corner pair disagrees in sign across it) AND the
+		// missed-feature centre probe (a sub-half-cell feature can evade
+		// the centre too -- see SDFGeometry.h's own doc on
+		// SuspectedMissedFeatureCells()).  The union'd tiny sphere
+		// (radius 0.05 at (0.5, 0.5, 0.5)) IS caught by the missed-feature
+		// probe on its own (its enclosing cell's corners all read outside
+		// while the centre reads inside), but that is not what fails
+		// CanBeAreaLight() here -- GetArea() is already 0 without it.
+		// Confirmed directly against the RISE CLI: WITH the tiny sphere,
+		// `SDFGeometry:: sampling structure built: 0 triangles, corrected
+		// surface area 0.000000 (detail 8, J-clamped 0, missed-cells 1)`;
+		// with the tiny sphere part deleted entirely, the same command
+		// against the bare shell gives `0 triangles, corrected surface
+		// area 0.000000 (detail 8, J-clamped 0, missed-cells 0)` -- the
+		// verdict (0 triangles, CanBeAreaLight() false) is unchanged
+		// either way, which is the point of keeping this a SEPARATE,
+		// honestly-labelled fixture from (f2a) rather than claiming it
+		// demonstrates the missed-feature clause.
+		{
+			static const char* const kZeroAreaSdfScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 20\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_thin\n\tsampling_detail 8\n"
+				"\tpart roundbox union 0 0 0 0 0 0 0 1 1 1 4 4 4 0\n"
+				"\tpart roundbox subtract 0 0 0 0 0 0 0 1 1 1 3.9 3.9 3.9 0\n"
+				"\tpart sphere union 0 0.5 0.5 0.5 0 0 0 1 1 1 0.05 0 0 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname obj_thinsdf\n\tgeometry sdf_thin\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_sdf_zeroarea.RISEscene", kZeroAreaSdfScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f2b) Job loads the zero-area sdf_geometry scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f2b) the zero-area render succeeds" );
+			Check( r.inventoryApplied, "(f2b) and carries the inventory" );
+			std::printf( "---- inventory text, zero-area not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "obj_thinsdf" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive sdf_geometry whose mesh is entirely empty (0 "
+			       "triangles, 0 area) is named by the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "obj_thinsdf",
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "sampling_detail" ) != std::string::npos,
+			       "MONEY ASSERTION: the reason names sampling_detail -- the actionable parameter "
+			       "for an sdf_geometry (reason: " +
+			       ( r.inventoryNotAreaSampled.empty() ? std::string( "<none>" )
+			                                            : r.inventoryNotAreaSampled[0].reason ) + ")" );
+			// NO ADVICE, NO VERDICT -- same rule as the rest of the inventory.
+			Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+			       r.inventoryText.find( "should" )   == std::string::npos &&
+			       r.inventoryText.find( "missing" )  == std::string::npos &&
+			       r.inventoryText.find( "broken" )   == std::string::npos &&
+			       r.inventoryText.find( "wrong" )    == std::string::npos,
+			       "the not-area-sampled fact advises nothing and calls nothing missing or broken" );
+
+			// (f2b suppression) an ISOLATE render of the SAME session
+			// carries no inventory at all, hence no not-area-sampled fact
+			// either -- the new fact rides the same qualification rule as
+			// every other inventory field, with no second rule of its own.
+			{
+				AgentRenderParams p;
+				p.isolate = "obj_thinsdf";
+				const AgentRenderResult iso = session->Render( p );
+				Check( iso.ok && iso.isolateApplied && !iso.inventoryApplied,
+				       "(f2b suppression) an isolate render carries no inventory" );
+				Check( iso.inventoryNotAreaSampled.empty(),
+				       "MONEY ASSERTION: and therefore no not-area-sampled entries either -- the "
+				       "new fact inherits the inventory's existing suppression rule automatically, "
+				       "with no second rule of its own" );
+			}
+
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f3) THE NULL-GEOMETRY CASE: an emissive csg_object.  A
+		// csg_object has no directly-owned IGeometry* (its shape is
+		// synthesized from its two operand objects), so
+		// IObject::GetGeometry() returns null for it -- the OTHER
+		// LuminaryManager refusal branch.  The insert-time gate would
+		// refuse CREATING this binding without `allow_non_sampling_emitter
+		// TRUE` (see AgentChunkCrudTest.cpp's E1 suite); a scene FILE load
+		// only warns, but the fixture carries the flag anyway to match the
+		// acknowledged-construct convention kCsgReadyScene there uses.
+		{
+			static const char* const kCsgNullGeomScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tmaterial matte\n\tscale 3.0\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+				"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition 0.35 0 0\n\tmaterial matte\n}\n\n"
+				"csg_object\n{\n\tname csg_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+				"\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_csg.RISEscene", kCsgNullGeomScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f3) Job loads the null-geometry csg_object scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f3) the csg render succeeds" );
+			Check( r.inventoryApplied, "(f3) and carries the inventory" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "csg_glow" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive csg_object (no directly-owned geometry) is named "
+			       "by the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "csg_glow" &&
+			       r.inventoryNotAreaSampled[0].reason.find( "no directly-owned geometry" ) !=
+			           std::string::npos,
+			       "and the structured entry names csg_glow with the null-geometry reason" );
+			Check( r.inventoryText.find( "consider" ) == std::string::npos &&
+			       r.inventoryText.find( "should" )   == std::string::npos &&
+			       r.inventoryText.find( "missing" )  == std::string::npos &&
+			       r.inventoryText.find( "broken" )   == std::string::npos &&
+			       r.inventoryText.find( "wrong" )    == std::string::npos,
+			       "the not-area-sampled fact advises nothing and calls nothing missing or broken, "
+			       "even for the null-geometry case" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f4) THE EMISSIVE GATE, RED-PROVED: TWO non-emissive objects --
+		// a csg_object (null geometry, same shape as (f3)'s object) AND a
+		// coarse sdf_geometry (same shape as (f2b)'s zero-area object) --
+		// both bound to a plain `matte` material instead of `mat_glow`,
+		// plus a properly registered emissive control sphere AND (H5 fix
+		// round, 2026-08-14) an EMISSIVE twin bound to the SAME
+		// sdf_matte_shell geometry as the non-emissive sdf_matte_coarse.
+		// `AddToLuminaryList` -- and this mirrored walk -- only ever
+		// evaluate the null-geometry / CanBeAreaLight() branches for an
+		// object with `pMat && pMat->GetEmitter()`; neither non-emissive
+		// object is a luminary candidate at all and neither must appear
+		// here.
+		//
+		// H4 fix round (2026-08-14): the walk's null-geometry branch is now
+		// `if( !pObjGeom )` -- a structural mirror of LuminaryManager's own
+		// gate -- rather than a call into the shared IsNullGeometryEmitter_
+		// helper (see that function's doc comment: it is back to a TWO-
+		// consumer predicate).  That also changes what "dropping the outer
+		// gate" means for THIS fixture: with the current code neither
+		// inner branch has an independent emitter check of its own, so
+		// mutating `if( pMat && pMat->GetEmitter() )` to `if( true )` would
+		// make BOTH csg_matte and sdf_matte_coarse spuriously appear, not
+		// only the CanBeAreaLight() one. Both objects are kept anyway --
+		// together they exercise BOTH refusal branches this walk mirrors
+		// (not just one), which is the coverage that actually matters now.
+		//
+		// H5 fix round (2026-08-14): `Check(!foundSdfMatte)` only means
+		// something if sdf_matte_shell's CanBeAreaLight() genuinely IS
+		// false -- nothing else in this fixture asserted that, so a future
+		// mesher change that made the shell mesh cleanly could silence this
+		// whole branch without failing anything.  sdf_shell_glow_twin binds
+		// the IDENTICAL geometry chunk to `mat_glow` instead of `matte` and
+		// its MONEY ASSERTION below requires it to BE reported -- pinning
+		// the precondition the negative assertions on csg_matte /
+		// sdf_matte_coarse depend on, inside the same fixture that depends
+		// on it.
+		//
+		// H6 fix round (2026-08-14): sdf_matte_shell's centre moved from
+		// (0,0,8) -- INSIDE the shell's own hollow interior, since the
+		// camera sits at `location 0 0 8` -- to (-7,0,0), clear of the
+		// camera, the csg spheres (x in [-2.6,-1.05]) and the control
+		// sphere (x=2), so the comment above (and this one) describing
+		// separate objects actually matches the scene laid out below.
+		{
+			static const char* const kNonEmissiveGateScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tposition -2 0 0\n\tmaterial matte\n}\n\n"
+				"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition -1.65 0 0\n\tmaterial matte\n}\n\n"
+				"csg_object\n{\n\tname csg_matte\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+				"\tmaterial matte\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_matte_shell\n\tsampling_detail 8\n"
+				"\tpart roundbox union 0 -7 0 0 0 0 0 1 1 1 4 4 4 0\n"
+				"\tpart roundbox subtract 0 -7 0 0 0 0 0 1 1 1 3.9 3.9 3.9 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname sdf_matte_coarse\n\tgeometry sdf_matte_shell\n"
+				"\tmaterial matte\n}\n\n"
+				"standard_object\n{\n\tname sdf_shell_glow_twin\n\tgeometry sdf_matte_shell\n"
+				"\tposition 0 6 0\n\tmaterial mat_glow\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_glow\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname obj_glow_control\n\tgeometry sph_glow\n\tposition 2 0 0\n"
+				"\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_nonemissive.RISEscene", kNonEmissiveGateScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f4) Job loads the non-emissive-gate-plus-control scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f4) the render succeeds" );
+			Check( r.inventoryApplied, "(f4) and carries the inventory" );
+			std::printf( "---- inventory text, non-emissive gate ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			// csg_matte and sdf_matte_coarse legitimately DO appear in the
+			// inventory's ordinary per-object listing ("Covered
+			// pixels..."/"Covered no pixels..." below) -- they are real,
+			// non-emissive, world-visible objects and that listing is not
+			// gated on emissive status at all.  The MONEY ASSERTIONS are
+			// narrower and different: neither must appear inside the
+			// NOT-AREA-SAMPLED FACT specifically, which is gated on
+			// `pMat && pMat->GetEmitter()`.
+			bool foundCsgMatte = false, foundSdfMatte = false, foundGlowTwin = false;
+			for( std::size_t i = 0; i < r.inventoryNotAreaSampled.size(); ++i ) {
+				if( r.inventoryNotAreaSampled[i].name == "csg_matte" )       foundCsgMatte = true;
+				if( r.inventoryNotAreaSampled[i].name == "sdf_matte_coarse" ) foundSdfMatte = true;
+				if( r.inventoryNotAreaSampled[i].name == "sdf_shell_glow_twin" ) foundGlowTwin = true;
+			}
+			Check( !foundCsgMatte,
+			       "the NON-emissive csg_object (null geometry, same shape as (f3)'s reported "
+			       "object) carries no not-area-sampled entry -- the emissive gate excludes it" );
+			Check( !foundSdfMatte,
+			       "MONEY ASSERTION: the NON-emissive coarse sdf_geometry (same shape as (f2b)'s "
+			       "reported object, CanBeAreaLight() == false) carries no not-area-sampled entry "
+			       "either -- this is the branch with NO independent emitter check of its own, so "
+			       "this assertion is the one that actually catches a dropped outer gate" );
+			Check( foundGlowTwin,
+			       "H5 MONEY ASSERTION: the EMISSIVE twin bound to the identical sdf_matte_shell "
+			       "geometry IS reported not-area-sampled -- pinning the precondition that "
+			       "CanBeAreaLight() on this geometry really is false, which is what makes "
+			       "!foundCsgMatte / !foundSdfMatte above a meaningful red-proof rather than a "
+			       "vacuous one" );
+			// The control sphere is an ordinary emissive object that PASSES
+			// CanBeAreaLight() -- with both non-emissive objects
+			// (csg_matte, sdf_matte_coarse) correctly excluded by the gate,
+			// exactly the emissive twin should be reported not-area-sampled.
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "sdf_shell_glow_twin" ) != std::string::npos,
+			       "and the not-area-sampled fact fires for exactly the emissive twin" );
+			Check( r.inventoryNotAreaSampled.size() == 1,
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// ---- (f5)/(f6) H1 fix round (2026-08-14): the grouping/cap code's
+		// own coverage. -----------------------------------------------
+		//
+		// Every (f) fixture above yields notAreaSampled.size() 0 or 1, so
+		// FormatSceneInventory_'s "; "-joined multi-group separator, the
+		// per-group "N with <reason>" count, the kInventoryMaxNotAreaSampled-
+		// Lines cap (`std::min`), the ", and N more" elision arithmetic, and
+		// the plural HEADER branch ("N objects bind ... are") are all
+		// unexercised by (f1)-(f4).  (f5) exercises TWO simultaneous groups;
+		// (f6) exercises the per-group cap.  Object enumeration for the
+		// inventory legend (and therefore notAreaSampled's first-seen group
+		// order) walks GenericManager's name-keyed std::map, i.e.
+		// ALPHABETICAL by object name, not scene-declaration order -- both
+		// fixtures below name their objects with that in mind.
+
+		// (f5) TWO GROUPS: one emissive csg_object (null geometry, same
+		// mechanism as (f3)) plus one emissive coarse sdf_geometry (same
+		// zero-area shell as (f2b)) in the SAME scene, so both reasons fire
+		// together and the ONLY prior multi-object (f) fixture with more
+		// than one notAreaSampled entry (f4) never actually reached this --
+		// (f4)'s two non-emissive objects are excluded by the emissive
+		// gate.  "csg_no_geom_glow" sorts before "sdf_zero_area_glow", so
+		// the null-geometry group is group 0 and the CanBeAreaLight() group
+		// is group 1 -- a fixed, assertable order.
+		{
+			static const char* const kTwoGroupScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 20\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname opmat\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_a\n\tradius 0.6\n}\n\n"
+				"sphere_geometry\n{\n\tname sph_b\n\tradius 0.6\n}\n\n"
+				"standard_object\n{\n\tname csg_opA\n\tgeometry sph_a\n\tposition -6 0 0\n\tmaterial opmat\n}\n\n"
+				"standard_object\n{\n\tname csg_opB\n\tgeometry sph_b\n\tposition -5.65 0 0\n\tmaterial opmat\n}\n\n"
+				"csg_object\n{\n\tname csg_no_geom_glow\n\tobja csg_opA\n\tobjb csg_opB\n\toperation union\n"
+				"\tmaterial mat_glow\n\tallow_non_sampling_emitter TRUE\n}\n\n"
+				"sdf_geometry\n{\n\tname sdf_thin_shape\n\tsampling_detail 8\n"
+				"\tpart roundbox union 0 6 0 0 0 0 0 1 1 1 4 4 4 0\n"
+				"\tpart roundbox subtract 0 6 0 0 0 0 0 1 1 1 3.9 3.9 3.9 0\n"
+				"}\n\n"
+				"standard_object\n{\n\tname sdf_zero_area_glow\n\tgeometry sdf_thin_shape\n"
+				"\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_twogroup.RISEscene", kTwoGroupScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f5) Job loads the two-group scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f5) the render succeeds" );
+			Check( r.inventoryApplied, "(f5) and carries the inventory" );
+			std::printf( "---- inventory text, TWO-GROUP not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryNotAreaSampled.size() == 2,
+			       "MONEY ASSERTION: both the null-geometry csg_object and the zero-area "
+			       "sdf_geometry are reported (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED: 2 objects bind an emissive material "
+			                              "but are not selected" ) != std::string::npos,
+			       "MONEY ASSERTION: the PLURAL header branch (\"2 objects ... are\") fires -- "
+			       "every prior (f) fixture only ever exercised the singular (\"1 object ... is\") "
+			       "branch" );
+			Check( r.inventoryText.find( "1 with no directly-owned geometry: csg_no_geom_glow" ) !=
+			           std::string::npos,
+			       "MONEY ASSERTION: group 0 carries its own count and name" );
+			Check( r.inventoryText.find(
+			           "1 with geometry cannot be uniformly area-sampled" ) != std::string::npos &&
+			       r.inventoryText.find( "sdf_zero_area_glow" ) != std::string::npos,
+			       "MONEY ASSERTION: group 1 carries its own count and name" );
+			Check( r.inventoryText.find( "csg_no_geom_glow; 1 with geometry cannot be uniformly "
+			                              "area-sampled" ) != std::string::npos,
+			       "MONEY ASSERTION: the two groups are joined by the \"; \" separator, exactly "
+			       "once, between group 0's last name and group 1's count" );
+			bool foundNullGeom = false, foundZeroArea = false;
+			for( std::size_t i = 0; i < r.inventoryNotAreaSampled.size(); ++i ) {
+				const AgentSceneNotAreaSampledEntry& e = r.inventoryNotAreaSampled[i];
+				if( e.name == "csg_no_geom_glow" ) {
+					foundNullGeom = true;
+					Check( e.reason.find( "no directly-owned geometry" ) != std::string::npos,
+					       "the structured entry for csg_no_geom_glow carries the null-geometry "
+					       "reason" );
+				}
+				if( e.name == "sdf_zero_area_glow" ) {
+					foundZeroArea = true;
+					Check( e.reason.find( "sampling_detail" ) != std::string::npos,
+					       "the structured entry for sdf_zero_area_glow carries the sdf-specific "
+					       "reason" );
+				}
+			}
+			Check( foundNullGeom && foundZeroArea,
+			       "both structured entries are present by name" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f6) THE CAP: 13 emissive csg_objects (null geometry, each
+		// acknowledged via allow_non_sampling_emitter TRUE), all sharing
+		// ONE reason and therefore ONE group -- exercising
+		// kInventoryMaxNotAreaSampledLines (12) for real.  Names are
+		// zero-padded ("csg_glow_01".."csg_glow_13") so alphabetical
+		// object-manager order matches numeric order: csg_glow_01..12 are
+		// the first 12 seen and shown; csg_glow_13 is the 13th, elided.
+		{
+			std::string kCapScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 80\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+				"lambertian_material\n{\n\tname opmat\n\treflectance albedo\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n";
+			for( int i = 1; i <= 13; ++i ) {
+				char suf[4];
+				std::snprintf( suf, sizeof( suf ), "%02d", i );
+				const std::string s( suf );
+				const double x = -60.0 + 5.0 * i;
+				kCapScene += "sphere_geometry\n{\n\tname sph_a_" + s + "\n\tradius 0.4\n}\n\n";
+				kCapScene += "sphere_geometry\n{\n\tname sph_b_" + s + "\n\tradius 0.4\n}\n\n";
+				kCapScene += "standard_object\n{\n\tname csg_opA_" + s + "\n\tgeometry sph_a_" + s +
+					"\n\tposition " + std::to_string( x ) + " 0 0\n\tmaterial opmat\n}\n\n";
+				kCapScene += "standard_object\n{\n\tname csg_opB_" + s + "\n\tgeometry sph_b_" + s +
+					"\n\tposition " + std::to_string( x + 0.35 ) + " 0 0\n\tmaterial opmat\n}\n\n";
+				kCapScene += "csg_object\n{\n\tname csg_glow_" + s + "\n\tobja csg_opA_" + s +
+					"\n\tobjb csg_opB_" + s + "\n\toperation union\n\tmaterial mat_glow\n"
+					"\tallow_non_sampling_emitter TRUE\n}\n\n";
+			}
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_cap.RISEscene", kCapScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f6) Job loads the 13-csg cap scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f6) the render succeeds" );
+			Check( r.inventoryApplied, "(f6) and carries the inventory" );
+			std::printf( "---- inventory text, CAP not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryNotAreaSampled.size() == 13,
+			       "MONEY ASSERTION: the structured list is UNCAPPED -- all 13 entries are present "
+			       "(got " + std::to_string( r.inventoryNotAreaSampled.size() ) + "); only the "
+			       "formatted TEXT truncates" );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED: 13 objects bind an emissive material "
+			                              "but are not selected" ) != std::string::npos,
+			       "MONEY ASSERTION: the header states the TRUE total, 13, not the capped 12" );
+			Check( r.inventoryText.find( "13 with no directly-owned geometry: " ) != std::string::npos,
+			       "MONEY ASSERTION: the single group's own line also states 13" );
+			// Narrow to just the NOT-AREA-SAMPLED clause: the ORDINARY
+			// per-object listing further down ("Covered pixels (largest
+			// first):" / "Covered no pixels:") legitimately names EVERY
+			// object including csg_glow_13 -- that listing is not gated on
+			// the cap at all, so searching the whole inventoryText for
+			// "csg_glow_13" would find it there and falsely fail this
+			// elision check.
+			const std::size_t clauseStart = r.inventoryText.find( "NOT AREA-SAMPLED:" );
+			const std::size_t clauseEnd   = r.inventoryText.find( "\nCovered", clauseStart );
+			Check( clauseStart != std::string::npos && clauseEnd != std::string::npos &&
+			       clauseEnd > clauseStart,
+			       "(f6) the not-area-sampled clause is bounded so it can be searched in isolation" );
+			const std::string clause = r.inventoryText.substr( clauseStart, clauseEnd - clauseStart );
+			for( int i = 1; i <= 12; ++i ) {
+				char suf[4];
+				std::snprintf( suf, sizeof( suf ), "%02d", i );
+				Check( clause.find( std::string( "csg_glow_" ) + suf ) != std::string::npos,
+				       std::string( "csg_glow_" ) + suf + " (within the first 12 alphabetically) "
+				       "is named in the capped clause" );
+			}
+			Check( clause.find( "csg_glow_13" ) == std::string::npos,
+			       "MONEY ASSERTION: csg_glow_13, the 13th object alphabetically, is the one "
+			       "ELIDED name -- it does not appear in the capped not-area-sampled clause (it "
+			       "legitimately still appears further down, in the ordinary per-object listing)" );
+			Check( clause.find( ", and 1 more" ) != std::string::npos,
+			       "MONEY ASSERTION: the elision arithmetic (13 total - 12 shown = 1 more) is "
+			       "stated, not silent" );
+			pJob->release();
+			std::remove( scenePath.c_str() );
+		}
+
+		// (f7) H7(d) fix round (2026-08-14): the `isSdf == false` arm of
+		// the hedged CanBeAreaLight() reason -- the entire point of the F1
+		// fix -- never executed anywhere else in this suite, because every
+		// other CanBeAreaLight()-false fixture above ((f2a), (f2b), (f5),
+		// via sdf_geometry) is an sdf_geometry.  BilinearPatchGeometry is
+		// the OTHER class overriding CanBeAreaLight() (`!patches.empty()
+		// && dTotalArea > 0`), with no `sampling_detail` knob at all.  A
+		// `bilinearpatch_geometry` chunk takes no inline points -- only a
+		// `file` reference to an external patch file (0 patches -- and 0
+		// area -- is a ONE-LINE file: just the patch count) -- so this
+		// needs a second temp file alongside the scene text.
+		{
+			const std::string patchPath =
+				WriteTemp( "rise_agent_inventory_nas_bilinear.bilinear", "0\n" );
+			Check( !patchPath.empty(), "(f7) wrote the zero-patch .bilinear file" );
+			const std::string kBilinearScene =
+				"RISE ASCII SCENE 7\n"
+				"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+				"pathtracing_pel_rasterizer\n{\n\tsamples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+				"film\n{\n\twidth 24\n\theight 24\n}\n\n"
+				"pinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+				"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"
+				"lambertian_luminaire_material\n{\n\tname mat_glow\n\texitance pnt_glow\n\tscale 3.0\n\tmaterial none\n}\n\n"
+				"bilinearpatch_geometry\n{\n\tname bp_empty\n\tfile " + patchPath + "\n"
+				"\tmaxpolygons 10\n\tmaxdepth 4\n\tbsp FALSE\n}\n\n"
+				"standard_object\n{\n\tname obj_bp_glow\n\tgeometry bp_empty\n\tmaterial mat_glow\n}\n";
+			const std::string scenePath =
+				WriteTemp( "rise_agent_inventory_nas_bilinear.RISEscene", kBilinearScene );
+			Job* pJob = new Job();
+			Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ),
+			       "(f7) Job loads the zero-patch bilinearpatch_geometry scene via the CST path" );
+			std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+			const AgentRenderResult r = session->Render( AgentRenderParams() );
+			Check( r.ok, "(f7) the render succeeds" );
+			Check( r.inventoryApplied, "(f7) and carries the inventory" );
+			std::printf( "---- inventory text, bilinearpatch not-area-sampled ----\n%s\n----\n",
+			             r.inventoryText.c_str() );
+			Check( r.inventoryText.find( "NOT AREA-SAMPLED" ) != std::string::npos &&
+			       r.inventoryText.find( "obj_bp_glow" ) != std::string::npos,
+			       "MONEY ASSERTION: the emissive bilinearpatch_geometry with zero patches (hence "
+			       "zero area) is named by the not-area-sampled fact" );
+			Check( r.inventoryNotAreaSampled.size() == 1 &&
+			       r.inventoryNotAreaSampled[0].name == "obj_bp_glow",
+			       "and the structured list carries exactly that one entry (got " +
+			       std::to_string( r.inventoryNotAreaSampled.size() ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "sampling_detail" ) == std::string::npos,
+			       "MONEY ASSERTION: the reason does NOT name sampling_detail for a "
+			       "bilinearpatch_geometry -- the hedged, generic phrasing is used instead (reason: " +
+			       ( r.inventoryNotAreaSampled.empty() ? std::string( "<none>" )
+			                                            : r.inventoryNotAreaSampled[0].reason ) + ")" );
+			Check( !r.inventoryNotAreaSampled.empty() &&
+			       r.inventoryNotAreaSampled[0].reason.find( "degenerate zero-area field" ) !=
+			           std::string::npos,
+			       "and the generic clause of the reason is present" );
+			pJob->release();
+			std::remove( patchPath.c_str() );
+			std::remove( scenePath.c_str() );
+		}
+	}
 }
 
 //======================================================================

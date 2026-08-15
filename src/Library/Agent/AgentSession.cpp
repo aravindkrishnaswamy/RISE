@@ -58,6 +58,8 @@
 #include "../Interfaces/ICameraManager.h"
 #include "../Interfaces/IObjectManager.h"   // Toolkit slice 3a (objectmap): enumerate scene objects for the identity registry
 #include "../Interfaces/IObject.h"          // Toolkit slice 3a (objectmap): const IObject* registry key
+#include "../Interfaces/IGeometry.h"        // Arc 83 (2026-08-14): CanBeAreaLight() on the inventory's per-object walk needs the full IGeometry definition, not just IObject.h's forward declaration
+#include "../Geometry/SDFGeometry.h"        // Arc 83 fix round (2026-08-14, F1): the not-area-sampled reason only names `sampling_detail` when the geometry really is an sdf_geometry -- the same dynamic_cast idiom as CSGObject.h below
 #include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12, live-manager fallback extended 2026-08-13): TargetIsFormBearing_'s defensive fallback asks the live scene whether a name is a geometry when the Document does not carry it; the primary answer walks the retained CST head (a READ of the document already parsed once at load, not a re-parse)
 #include "../Interfaces/IMaterialManager.h" // Arc 82 (2026-08-12): PopulateScene asks the live scene whether the material a repeat names already exists
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
@@ -19498,6 +19500,13 @@ namespace RISE
 			//! Both truncations are STATED in the text, never silent.
 			const std::size_t kInventoryMaxOnScreenLines = 12;
 			const std::size_t kInventoryMaxZeroLines     = 40;
+			//! ARC 83 fix round (2026-08-14, F4): the not-area-sampled fact's
+			//! per-GROUP object-name cap (see FormatSceneInventory_'s
+			//! grouped-by-reason emission) -- the same order of magnitude as
+			//! kInventoryMaxOnScreenLines, so one pathological scene (e.g.
+			//! 50 emissive csg_objects) cannot prepend an unbounded amount of
+			//! text ahead of the capped lists below it.
+			const std::size_t kInventoryMaxNotAreaSampledLines = 12;
 
 			//! How a world AABB sits relative to a pinhole view.
 			enum class InventoryPlacement_
@@ -19664,7 +19673,7 @@ namespace RISE
 			//! both read this string, so the two surfaces cannot describe the
 			//! same scene differently.  See kInventoryMaxOnScreenLines for the
 			//! bounding rules.
-			//! ARC 83 SLICE 6: the two line caps are now PARAMETERS, defaulted
+			//! ARC 83 SLICE 6: the line caps are now PARAMETERS, defaulted
 			//! to the constants every existing caller was already getting, so
 			//! there is still exactly ONE inventory formatter.  `frame_scene`
 			//! passes a far larger cap because for THAT consumer the per-object
@@ -19672,9 +19681,17 @@ namespace RISE
 			//! object cut from the listing is an object the reframe cannot know
 			//! it is missing.  A second formatter would have been the drift
 			//! surface this file spends most of its comments avoiding.
+			//! H7(b) fix round (2026-08-14): `maxNotAreaSampledLines` joins
+			//! the other two as a parameter for the same reason -- so
+			//! `frame_scene` can raise the not-area-sampled per-group cap
+			//! too, rather than that one list staying silently pinned at the
+			//! smaller `scene_inventory`-sized default while its siblings
+			//! scale up.
 			std::string FormatSceneInventory_( const AgentSession::AgentSceneInventoryResult& inv,
 			                                    std::size_t maxOnScreenLines = kInventoryMaxOnScreenLines,
-			                                    std::size_t maxZeroLines     = kInventoryMaxZeroLines )
+			                                    std::size_t maxZeroLines     = kInventoryMaxZeroLines,
+			                                    std::size_t maxNotAreaSampledLines =
+			                                        kInventoryMaxNotAreaSampledLines )
 			{
 				std::string t = "SCENE INVENTORY -- " + std::to_string( inv.objectCount ) +
 					( inv.objectCount == 1 ? " object; " : " objects; " );
@@ -19712,6 +19729,52 @@ namespace RISE
 							? std::string( " object's geometry could not be read, so it is" )
 							: std::string( " objects' geometry could not be read, so they are" ) ) +
 						" not in those two counts.";
+				}
+				// ARC 83 (2026-08-14): THE NOT-AREA-SAMPLED FACT.  Free, same
+				// walk as the population fact above.  This block MIRRORS
+				// LuminaryManager::AddToLuminaryList's gate independently for
+				// THIS render (see AgentSceneNotAreaSampledEntry's doc
+				// comment) -- names the object and the reason and stops; no
+				// adjective, no fix suggested.
+				//
+				// F4 fix round (2026-08-14): GROUPED by reason, capped per
+				// group, the same discipline every sibling list in this
+				// formatter already follows (kInventoryMaxOnScreenLines /
+				// kInventoryMaxZeroLines) -- this block used to repeat a
+				// ~130-char reason literal once PER OBJECT with no bound at
+				// all, ahead of both capped lists below it.
+				if( !inv.notAreaSampled.empty() ) {
+					t += " NOT AREA-SAMPLED: " + std::to_string( inv.notAreaSampled.size() ) +
+						( inv.notAreaSampled.size() == 1
+							? std::string( " object binds an emissive material but is" )
+							: std::string( " objects bind an emissive material but are" ) ) +
+						" not selected by light sampling (emission still shows on direct view "
+						"and BSDF hits): ";
+
+					// First-seen-order grouping -- most scenes that trip this
+					// share ONE mechanism (e.g. every csg_object in the
+					// scene), so the common case is one group.
+					std::vector<std::pair<std::string, std::vector<std::string>>> groups;
+					for( std::size_t i = 0; i < inv.notAreaSampled.size(); ++i ) {
+						const AgentSceneNotAreaSampledEntry& e = inv.notAreaSampled[i];
+						std::size_t g = 0;
+						for( ; g < groups.size(); ++g ) if( groups[g].first == e.reason ) break;
+						if( g == groups.size() ) groups.push_back( { e.reason, std::vector<std::string>() } );
+						groups[g].second.push_back( e.name );
+					}
+					for( std::size_t g = 0; g < groups.size(); ++g ) {
+						if( g > 0 ) t += "; ";
+						t += std::to_string( groups[g].second.size() ) + " with " + groups[g].first + ": ";
+						const std::size_t shown =
+							std::min( groups[g].second.size(), maxNotAreaSampledLines );
+						for( std::size_t n = 0; n < shown; ++n ) {
+							if( n > 0 ) t += ", ";
+							t += groups[g].second[n];
+						}
+						if( shown < groups[g].second.size() )
+							t += ", and " + std::to_string( groups[g].second.size() - shown ) + " more";
+					}
+					t += ".";
 				}
 				if( !inv.framePositionComputed && inv.coveredCount < inv.objectCount ) {
 					t += " Where an object that covered no pixels lies relative to the view was NOT "
@@ -20037,23 +20100,30 @@ namespace RISE
 
 				// The object's world bounding box -- the "where is it, then?"
 				// for anything that covered nothing, and the input to the
-				// analytic classification.  A legend name that does not
-				// resolve to a manager item (a generator-synthesized instance
-				// name, e.g. "grid[0,1]") honestly reports no box rather than
-				// a fabricated one.
+				// analytic classification.  F9(c) fix (2026-08-14): a
+				// generator-synthesized instance name (e.g. "grid[0,1]" from
+				// an instance_array) DOES resolve to a real manager item --
+				// ExpandInstanceArray (Cst.cpp) synthesizes an actual
+				// standard_object under that exact "name[i,j]" name and
+				// Finalize's it into the ObjectManager, it is not a
+				// display-only legend label.  A legend name that does NOT
+				// resolve here is some other, rarer case (this branch stays
+				// as a defensive fallback); when it happens, this honestly
+				// reports no box rather than a fabricated one.
 				double bbMin[3] = { 0, 0, 0 }, bbMax[3] = { 0, 0, 0 };
 				bool bboxUsable = false;
 				bool geometryRead = false;
 				if( IObjectPriv* obj = objs ? objs->GetItem( le.name.c_str() ) : nullptr ) {
+					const IObject* iobj = static_cast<const IObject*>( obj );
 					// Arc 82: the population tally's one read.  A null here is
 					// an honest "this object exposes no geometry" (IObject's
 					// own default), not an error.
-					if( const void* g = static_cast<const void*>(
-						static_cast<const IObject*>( obj )->GetGeometry() ) ) {
+					const IGeometry* pObjGeom = iobj->GetGeometry();
+					if( const void* g = static_cast<const void*>( pObjGeom ) ) {
 						++geoUsers[g];
 						geometryRead = true;
 					}
-					const BoundingBox bb = static_cast<const IObject*>( obj )->getBoundingBox();
+					const BoundingBox bb = iobj->getBoundingBox();
 					bbMin[0] = bb.ll.x; bbMin[1] = bb.ll.y; bbMin[2] = bb.ll.z;
 					bbMax[0] = bb.ur.x; bbMax[1] = bb.ur.y; bbMax[2] = bb.ur.z;
 					bboxUsable = true;
@@ -20062,6 +20132,92 @@ namespace RISE
 						if( !RISE::IsFiniteDouble( bbMin[a] ) || !RISE::IsFiniteDouble( bbMax[a] ) ||
 							!( ext >= 0.0 ) || ext > 1.0e12 ) {
 							bboxUsable = false;
+						}
+					}
+
+					// ARC 83 (2026-08-14): THE NOT-AREA-SAMPLED FACT.  Only for
+					// an EMISSIVE object -- LuminaryManager::AddToLuminaryList
+					// (src/Library/Rendering/LuminaryManager.cpp) is the
+					// AUTHORITY on this gate; this block MIRRORS its two
+					// refusal branches rather than reading its result back
+					// (LuminaryManager keeps no persistent registry of
+					// refusals to read), so a THIRD refusal branch added
+					// there must be mirrored here too -- see
+					// AgentSceneNotAreaSampledEntry's doc comment.
+					//
+					// H4 fix round (2026-08-14): this walk deliberately does
+					// NOT call the shared IsNullGeometryEmitter_ (see that
+					// function's doc comment -- it stays a TWO-consumer
+					// predicate) even though its condition happens to match
+					// today.  This walk must mirror LuminaryManager's
+					// STRUCTURAL gate -- "does this object's geometry pointer
+					// exist" -- not a csg_object-specific predicate that
+					// happens to compute the same thing today; the branches
+					// below are `if( !pObjGeom )` / `else if`, exhaustive by
+					// construction, so a future narrowing of the shared
+					// helper (its own doc already asserts csg_object is the
+					// SOLE null-geometry Object class) cannot make an
+					// emissive null-geometry object silently vanish from a
+					// fact whose text states a TOTAL count.
+					//
+					// PERFORMANCE (do not reorder this ahead of the emitter
+					// check): IGeometry::CanBeAreaLight() on an SDFGeometry
+					// lazily calls EnsureSamplingStructure() -- a marching-
+					// tetrahedra tessellation at sampling_detail^3 plus a
+					// missed-feature scan, cached on the SDFGeometry object
+					// itself (owned by the scene, outliving any one render).
+					// Gating the call behind `pMat->GetEmitter()` means it
+					// only runs for objects some AttachScene has already
+					// evaluated: on a full beauty render that AttachScene
+					// belongs to the beauty pass; on the standalone
+					// scene_inventory verb (no beauty render at all) it is
+					// THIS call's own internal objectmap pass, which
+					// completes inside RenderCore_ strictly before this walk
+					// runs (see ComputeSceneInventory_) -- either way,
+					// LuminaryManager::AttachScene already called
+					// CanBeAreaLight() on every emissive object to decide
+					// luminary-list membership, so by the time this second
+					// call runs it is a cache hit, not a fresh tessellation.
+					// Worst case (the first render of the session) that
+					// tessellation happens once, immediately before this
+					// line, not for free -- it is simply not CAUSED by this
+					// line.  Calling CanBeAreaLight() for every object
+					// regardless of emitter status would additionally
+					// tessellate every non-emissive SDF in the scene, which
+					// this gate avoids.
+					const IMaterial* pMat = iobj->GetMaterial();
+					if( pMat && pMat->GetEmitter() ) {
+						AgentSceneNotAreaSampledEntry notSampled;
+						notSampled.name = le.name;
+						if( !pObjGeom ) {
+							notSampled.reason = "no directly-owned geometry";
+							inv.notAreaSampled.push_back( notSampled );
+						}
+						else if( !pObjGeom->CanBeAreaLight() ) {
+							// F1: `sampling_detail` is a real parameter ONLY
+							// on sdf_geometry (ChunkParserRegistry.cpp) -- the
+							// OTHER class that overrides CanBeAreaLight(),
+							// BilinearPatchGeometry, has no such knob (its
+							// gate is `!patches.empty() && dTotalArea > 0`).
+							// Name the actual mechanism generically, the way
+							// LuminaryManager's own log line
+							// (LuminaryManager.cpp) hedges it, and only add
+							// the sdf_geometry-specific clause when this
+							// object's geometry chunk really is one.
+							const bool isSdf = ( dynamic_cast<const RISE::Implementation::SDFGeometry*>( pObjGeom ) != nullptr );
+							// Keep the whole reason inside ONE parenthetical --
+							// the F4 grouped-list format appends `: name, ...`
+							// straight after this string, and a dangling
+							// un-parenthesized clause read ambiguously against
+							// that trailing colon.
+							notSampled.reason = "geometry cannot be uniformly area-sampled "
+								"(CanBeAreaLight() == false -- e.g. a degenerate zero-area field, or "
+								"an sdf_geometry whose sampling mesh provably missed renderable "
+								"surface" +
+								std::string( isSdf
+									? "; sampling_detail is the controlling parameter here)"
+									: ")" );
+							inv.notAreaSampled.push_back( notSampled );
 						}
 					}
 				}
@@ -20236,6 +20392,7 @@ namespace RISE
 			rr.inventoryPassWidth   = inv.passWidth;
 			rr.inventoryPassHeight  = inv.passHeight;
 			rr.inventoryText        = inv.text;
+			rr.inventoryNotAreaSampled = inv.notAreaSampled;
 		}
 
 		void AgentSession::ApplyTonalFact_( const AgentRenderParams& params, AgentRenderResult& rr )
@@ -24013,6 +24170,7 @@ namespace RISE
 					out.objectsBefore  = inv.objectCount;
 					out.coveredBefore  = inv.coveredCount;
 					inventoryText      = FormatSceneInventory_( inv, kFrameSceneInventoryLines,
+					                                             kFrameSceneInventoryLines,
 					                                             kFrameSceneInventoryLines );
 					for( std::size_t i = 0; i < inv.entries.size(); ++i )
 						onScreenBefore[ inv.entries[i].name ] = inv.entries[i].onScreen;

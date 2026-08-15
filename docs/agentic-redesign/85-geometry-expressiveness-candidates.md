@@ -109,9 +109,14 @@ representation from the literature (Thiery et al.), and it matches how a
 model already describes a creature in prose (a rig).
 
 Note `file_build_plan`'s construction-method vocabulary already lists
-`chain` — the summoned category slot is pre-reserved; today nothing
-backs it. Adoption: back the `chain` method with this chunk + one worked
-example (a quadruped or tentacle) in the build_element clean room.
+`chain` — the summoned category slot is pre-reserved. As of the Arc 83
+fix round (2026-08-14), `chain` now has an INTERIM backing: sdf_geometry
+parts joined with `smin` (see AgentChatCodecs.cpp / AgentMcpAdapter.cpp's
+`construction` gloss). C1 `skeleton_geometry` above is still the
+candidate that would make `chain` a first-class ONE-CHUNK verb (a joint
+graph instead of hand-authored smin parts); adoption for THAT remains:
+back the `chain` method with this chunk + one worked example (a
+quadruped or tentacle) in the build_element clean room.
 
 Effort: S/M (parser expansion + pose math + tests). Risk: low.
 
