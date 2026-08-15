@@ -1263,6 +1263,64 @@ The most notorious practical trap in fire LES; specified accordingly:
   every schema element, and total sensible energy are globally conservative to fp64 reduction
   tolerance. Independent per-component clipping or post-advection temperature
   clamping is forbidden: either destroys the coupled element/energy ledger.
+
+  **Limiter acceptance under Picard coupling (r59) — the two-class rule.**
+  α_face is a *derived* control, not a state variable of the coupled R0
+  fixed point: the loop's true unknowns are S_div, the projected face
+  mass fluxes, the transport coefficients, and the open-face active set;
+  nothing inside the loop's map consumes α. And α is genuinely
+  **discontinuous** in the state — the a_r·A_cf>0 activation indicators
+  and the P_cr→0 boundary are codimension-1 surfaces across which
+  R_cr=min(1,Q_cr/P_cr) jumps, so two iterates separated by 10⁻¹³ can
+  produce face coefficients separated by O(0.1). Requiring Cauchy
+  convergence of α therefore demands a continuity the discretization
+  does not possess, and Δt reduction relocates an activation boundary
+  without removing it (the tier-10 capstone exhibited exactly this Zeno:
+  continuous residuals at 10⁻¹¹–10⁻¹³, one face's α cycling 0.18–0.30,
+  accepted Δt driven below 10⁻⁵ s and still shrinking). The resolution
+  rests on a theorem this section's construction already contains: every
+  constraint row is affine, P_cr accumulates only positive projections,
+  and the corrected state is affine in each α_face — so for any
+  α′ ≤ α̂(S) pointwise, every nodal budget still holds. **The limiter's
+  value is the maximal admissible blend; the entire interval [0, α̂(S)]
+  is admissible at S, and pointwise reduction is conservative (more
+  low-order dissipation), never unsafe.** The pinned acceptance rule:
+
+  1. The R0 convergence gate tests the **continuous quantities only** —
+     cellwise S_div, every projected face mass flux, the transport
+     coefficients, and an unchanged open-face active set. α leaves the
+     gate. (R1/R2 have no α by construction; the Heun combined FCT solve
+     is single-shot and unaffected.)
+  2. The acceptance verification re-evaluates the full map at the
+     accepted state as before; its blocking residual likewise covers the
+     continuous quantities and active set only.
+  3. With α_next the accepting iteration's limiter evaluation and α_ver
+     the verification's re-evaluation: if max_face|α_ver−α_next| ≤ the
+     projection tolerance, the limiter is in its **continuous class** and
+     α_ver is accepted (behaviour unchanged from r58). Otherwise the
+     limiter is in its **discontinuous class** and the accepted
+     coefficient is the **pointwise face infimum
+     α_acc = min(α_next, α_ver)** — deterministic, parameter-free,
+     order- and thread-independent, and admissible at the accepted state
+     because α_acc ≤ α_ver pointwise.
+  4. The direct certificate stays fail-closed: the corrected state
+     assembled with the accepted α must pass the same admissibility
+     inequalities and certified affine constraints as the low-order
+     state; failure rejects the step into the existing Δt-reduction
+     path. (The interval theorem guarantees this check passes; it
+     remains as defense in depth.)
+  5. **REJECTED alternatives:** prescribed under-relaxation
+     ωα̂+(1−ω)α introduces a tunable with no certificate — a convex
+     combination of coefficients admissible at *different* iterates is
+     not bounded by α̂ at the accepted state, and a damped iteration on
+     a discontinuous map still need not converge. Raising the α
+     tolerance is likewise rejected: a 0.3 jump is not "almost
+     converged"; it is a different class, and the design names it.
+  6. The rule is identity-bearing (case records regenerate); the
+     accepted class and the max face discrepancy are recorded per step
+     in run diagnostics; and §3.9 pin 8's thread-count bit-identity
+     applies to the infimum exactly as to every other reduction.
+
   Semi-Lagrangian MacCormack remains a visually useful **debug-only** fallback
   and may not be used for validation or predictive grids.
 - **Advection — momentum** (unstated in revision 2, flagged): a

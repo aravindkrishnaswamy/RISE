@@ -1248,3 +1248,37 @@ it was already tried and refuted here.
   out-of-domain radiation treatment (clamping physics under another
   name). The agent's refusal to clamp, weaken feasibility, or add an
   early shutoff was correct on all three counts.
+
+- **r59 (2026-08-14):** two-class limiter acceptance, from the tier-10
+  capstone's Picard Zeno stop. The coupled R0 solve converged every
+  continuous quantity (S_div ≈10⁻¹¹, face mass ≈10⁻¹², transport
+  coefficients ≈10⁻¹³, active set stable) while one FCT face
+  coefficient cycled 0.18–0.30, and the fail-closed Δt reduction drove
+  accepted steps below 10⁻⁵ s without escape. Diagnosis: α is a
+  *derived* output of the R0 map (nothing in the loop consumes it), and
+  the §3.7 limiter R_cr=min(1,Q_cr/P_cr) with strict a_r·A_cf>0
+  activation indicators is discontinuous exactly on
+  constraint-activation boundaries — codimension-1 surfaces that time
+  refinement relocates but generically re-crosses. Demanding Cauchy
+  convergence of a discontinuous derived map was a proxy certificate; a
+  hope, not a theorem. Fix: **α leaves the convergence gate; acceptance
+  classifies the limiter** — continuous class (verification
+  re-evaluation agrees within tolerance → accept it, unchanged
+  behaviour) or discontinuous class (accept the pointwise face infimum
+  min(α_next, α_ver)). The certificate is direct and already latent in
+  §3.7's construction: all constraint rows are affine and P_cr sums
+  positive parts, so the limiter value is the *maximal* admissible
+  blend and the entire interval [0, α̂] is admissible — pointwise
+  reduction is conservative, never unsafe. The corrected state under
+  the accepted α must still pass low-order admissibility and the
+  certified affine constraints, fail-closed into Δt reduction.
+  Explicitly REJECTED: prescribed under-relaxation (a tunable with no
+  certificate — convex combinations of coefficients from different
+  iterates are not bounded by α̂ at the accepted state, and damping a
+  discontinuous map still need not converge) and raising the α
+  tolerance (a 0.3 jump is not "almost converged"; it is a different
+  class and the design names it). The rule is parameter-free,
+  deterministic, identity-bearing (case records regenerate), and the
+  accepted class is recorded per step in run diagnostics. The agent's
+  refusal to invent an unpinned convergence rule or weaken tolerance
+  was correct.

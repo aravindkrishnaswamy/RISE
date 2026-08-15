@@ -190,8 +190,21 @@ error and must be corrected.
      from f_N,1 plus S̄_src, and repeat. No α₁ exists: the corrector-stage
      advective candidate is needed later by the combined Heun FCT solve, but it
      is irrelevant to the instantaneous divergence target. R0 converges when
-     cellwise S_div, every projected face mass flux, and α₀ change below the
-     projection/EOS tolerances; R1 uses the same criteria without α.
+     cellwise S_div, every projected face mass flux, and the transport
+     coefficients change below the projection/EOS tolerances with an unchanged
+     open-face active set; R1 uses the same criteria. **α₀ is a derived control
+     outside the convergence gate (r59):** the limiter map is discontinuous on
+     constraint-activation boundaries, so its Cauchy convergence is not
+     required — see §3.7's two-class rule. At acceptance, if the verification
+     re-evaluation α_ver agrees with the accepting iteration's α_next within
+     the projection tolerance, the limiter is continuous-class and α_ver is
+     accepted; otherwise the accepted coefficient is the pointwise face infimum
+     min(α_next, α_ver), admissible at the accepted state because every
+     constraint row is affine and the limiter value is the maximal admissible
+     blend — the whole interval [0, α̂] is certified. The corrected state under
+     the accepted α must still pass the low-order admissibility and certified
+     affine constraints; failure rejects/reduces Δt as before. Under-relaxation
+     or averaging of α is forbidden.
 
      After both stage loops converge, the Heun commit performs the new combined
      (f₀+f₁)/2 FCT solve once, forms Qⁿ⁺¹, and derives **S_div,Heun only from
