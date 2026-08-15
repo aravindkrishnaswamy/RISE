@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -38,6 +39,7 @@
 #include <process.h>
 #else
 #include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -59,6 +61,7 @@ namespace
 
 	using namespace RISE::FireSim;
 	int failures = 0;
+	bool forcePostRenameDirectorySyncFailureForTest=false;
 
 	class FrozenPainterProbe final : public Perlin3DPainter
 	{
@@ -161,6 +164,8 @@ namespace
 		bool statisticsBoundaryObserved=false;
 		double checkpointCadenceWallS=0.0;
 		std::vector<std::uint64_t> checkpointStepIndices;
+		std::vector<std::uint64_t> workerCountHistory;
+		std::string reductionMode="fixed_order_tree_v1";
 		bool resumedFromCheckpoint=false;
 		std::uint64_t resumedFromStep=0u;
 		std::uint64_t streamedFrameCount=0u;
@@ -278,7 +283,7 @@ namespace
 
 	bool WriteSolverFrameValues(CheckpointWriter& w,const SolverFrameValues& v)
 	{
-		if(!w.Pod(v.succeeded)||!w.String(v.structuredError))return false;
+		if(!w.Pod(v.succeeded)||!w.String(v.structuredError)||!w.String(v.reductionMode))return false;
 		for(const std::size_t dimension:v.dimensions){const std::uint64_t encoded=dimension;
 			if(!w.Pod(encoded))return false;}
 		if(!w.Pod(v.cellWidthM)||!w.String(v.caseRecordId)||!w.Pod(v.temperatureK)||
@@ -318,12 +323,13 @@ namespace
 			WriteArithmeticVector(w,v.stationProbeVerticalVelocityMPerS)&&
 			WriteArithmeticVector(w,v.centerlineHeightM)&&WriteArithmeticVector(w,v.centerlineTemperatureK)&&
 			WriteArithmeticVector(w,v.centerlineVelocityMPerS)&&
-			WriteArithmeticVector(w,v.checkpointStepIndices);
+			WriteArithmeticVector(w,v.checkpointStepIndices)&&
+			WriteArithmeticVector(w,v.workerCountHistory);
 	}
 
 	bool ReadSolverFrameValues(CheckpointReader& r,SolverFrameValues& v)
 	{
-		if(!r.Pod(v.succeeded)||!r.String(v.structuredError))return false;
+		if(!r.Pod(v.succeeded)||!r.String(v.structuredError)||!r.String(v.reductionMode))return false;
 		for(std::size_t& dimension:v.dimensions){std::uint64_t encoded=0u;
 			if(!r.Pod(encoded)||encoded>std::numeric_limits<std::size_t>::max())return false;
 			dimension=static_cast<std::size_t>(encoded);}
@@ -365,7 +371,8 @@ namespace
 			ReadArithmeticVector(r,v.stationProbeVerticalVelocityMPerS)&&
 			ReadArithmeticVector(r,v.centerlineHeightM)&&ReadArithmeticVector(r,v.centerlineTemperatureK)&&
 			ReadArithmeticVector(r,v.centerlineVelocityMPerS)&&
-			ReadArithmeticVector(r,v.checkpointStepIndices,1000000u);
+			ReadArithmeticVector(r,v.checkpointStepIndices,1000000u)&&
+			ReadArithmeticVector(r,v.workerCountHistory,1000000u);
 	}
 
 	struct MethaneRunCheckpoint
@@ -458,19 +465,25 @@ namespace
 	bool DurableSyncFileAndDirectory(const std::filesystem::path& path,std::string& error)
 	{
 #if defined(_WIN32)
-		HANDLE file=CreateFileW(path.wstring().c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,
+		HANDLE file=CreateFileW(path.wstring().c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,
 			OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
 		if(file==INVALID_HANDLE_VALUE){error="cannot open durable run file";return false;}
-		const bool ok=FlushFileBuffers(file)!=0;CloseHandle(file);
-		if(!ok)error="cannot flush durable run file";return ok;
+		const bool flushed=FlushFileBuffers(file)!=0;
+		const bool closed=CloseHandle(file)!=0;
+		if(!flushed||!closed)error="cannot flush durable run file";
+		return flushed&&closed;
 #else
 		const int fd=::open(path.c_str(),O_RDONLY);
 		if(fd<0){error="cannot open durable run file";return false;}
-		const bool ok=::fsync(fd)==0;::close(fd);
-		if(!ok){error="cannot fsync durable run file";return false;}
+		const bool fileSynced=::fsync(fd)==0;
+		const bool fileClosed=::close(fd)==0;
+		if(!fileSynced||!fileClosed){error="cannot fsync durable run file";return false;}
 		const std::filesystem::path directory=path.has_parent_path()?path.parent_path():".";
 		const int directoryFd=::open(directory.c_str(),O_RDONLY);
-		if(directoryFd>=0){::fsync(directoryFd);::close(directoryFd);}
+		if(directoryFd<0){error="cannot open durable run directory";return false;}
+		const bool directorySynced=::fsync(directoryFd)==0;
+		const bool directoryClosed=::close(directoryFd)==0;
+		if(!directorySynced||!directoryClosed){error="cannot fsync durable run directory";return false;}
 		return true;
 #endif
 	}
@@ -482,12 +495,18 @@ namespace
 		if(!MoveFileExW(temporary.wstring().c_str(),target.wstring().c_str(),
 			MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){
 			error="cannot atomically replace run checkpoint";return false;}
+		if(forcePostRenameDirectorySyncFailureForTest){
+			error="cannot fsync replaced-run directory";return false;}
 		return true;
 #else
 		if(::rename(temporary.c_str(),target.c_str())!=0){error="cannot atomically replace run checkpoint";return false;}
 		const std::filesystem::path directory=target.has_parent_path()?target.parent_path():".";
 		const int directoryFd=::open(directory.c_str(),O_RDONLY);
-		if(directoryFd>=0){::fsync(directoryFd);::close(directoryFd);}
+		if(directoryFd<0){error="cannot open replaced-run directory";return false;}
+		const bool directorySynced=!forcePostRenameDirectorySyncFailureForTest&&
+			::fsync(directoryFd)==0;
+		const bool directoryClosed=::close(directoryFd)==0;
+		if(!directorySynced||!directoryClosed){error="cannot fsync replaced-run directory";return false;}
 		return true;
 #endif
 	}
@@ -520,6 +539,28 @@ namespace
 		return true;
 	}
 
+	bool VerifyCheckpointPayloadChecksum(const std::filesystem::path& path,
+		const std::uint64_t payloadBytes,const std::uint64_t expected,std::string& error)
+	{
+		std::ifstream input(path,std::ios::binary);
+		if(!input){error="cannot open run checkpoint for checksum";return false;}
+		input.seekg(48,std::ios::beg);
+		if(!input){error="cannot seek run checkpoint payload";return false;}
+		std::array<unsigned char,65536u> buffer={{0u}};
+		std::uint64_t remaining=payloadBytes;
+		std::uint64_t checksum=1469598103934665603ull;
+		while(remaining>0u){
+			const std::size_t chunk=static_cast<std::size_t>(std::min<std::uint64_t>(
+				remaining,buffer.size()));
+			input.read(reinterpret_cast<char*>(buffer.data()),static_cast<std::streamsize>(chunk));
+			if(!input){error="run checkpoint payload is incomplete";return false;}
+			for(std::size_t i=0;i<chunk;++i){checksum^=buffer[i];checksum*=1099511628211ull;}
+			remaining-=chunk;
+		}
+		if(checksum!=expected){error="run checkpoint checksum mismatch";return false;}
+		return true;
+	}
+
 	bool LoadMethaneRunCheckpoint(const std::filesystem::path& path,
 		MethaneRunCheckpoint& checkpoint,std::string& error)
 	{
@@ -535,6 +576,7 @@ namespace
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
 			sizeError||exactFileBytes!=48ull+payloadBytes){
 			error="run checkpoint header is invalid";return false;}
+		if(!VerifyCheckpointPayloadChecksum(path,payloadBytes,checksum,error))return false;
 		reader.SetLimit(payloadBytes);
 		if(!ReadCheckpointPayload(reader,checkpoint)||!reader.Finished(checksum)){
 			error="run checkpoint payload is incomplete or corrupt";return false;}
@@ -849,12 +891,14 @@ namespace
 		unsigned int acceptedSteps=0u;
 		values.checkpointCadenceWallS=persistence.checkpointCadenceWallS;
 		values.streamedFrameCount=persistence.streamedFrameCountAtStart;
+		values.workerCountHistory.push_back(workerCount);
 		if(persistence.resume&&!persistence.checkpointPath.empty()&&
 			std::filesystem::exists(persistence.checkpointPath)){
 			MethaneRunCheckpoint checkpoint;
 			if(!LoadMethaneRunCheckpoint(persistence.checkpointPath,checkpoint,error)||
 				checkpoint.caseRecordId!=caseRecord.caseRecordId||
 				checkpoint.producerBuildId!=currentBuildId||
+				checkpoint.values.reductionMode!="fixed_order_tree_v1"||
 				checkpoint.dimensions!=std::array<std::size_t,3>{{shape.nx,shape.ny,shape.nz}}||
 				checkpoint.cellWidthM!=shape.cellWidthM||checkpoint.states.size()!=shape.CellCount()||
 				checkpoint.acceptedSteps>std::numeric_limits<unsigned int>::max()||
@@ -872,6 +916,7 @@ namespace
 			states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
 			advanced.velocityMPerS=std::move(checkpoint.velocity);
 			values=std::move(checkpoint.values);
+			values.workerCountHistory.push_back(workerCount);
 			centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
 			centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
 			planeHeatReleaseIntegral=std::move(checkpoint.planeHeatReleaseIntegral);
@@ -1616,6 +1661,9 @@ namespace
 		Value::Values steps;
 		for(const std::uint64_t step:values.checkpointStepIndices)
 			steps.push_back(Value::Unsigned(step));
+		Value::Values workerHistory;
+		for(const std::uint64_t workers:values.workerCountHistory)
+			workerHistory.push_back(Value::Unsigned(workers));
 		const Value payload=Value::MapValue({
 			{"checkpoint_cadence_wall_s",Value::Float(values.checkpointCadenceWallS)},
 			{"checkpoint_count",Value::Unsigned(values.checkpointStepIndices.size())},
@@ -1624,11 +1672,13 @@ namespace
 			{"frame4_sha256",Value::String(frame4Digest)},
 			{"frame5_sha256",Value::String(frame5Digest)},
 			{"record_kind",Value::String("fire-simulation-run-metadata-v1")},
+			{"reduction_mode",Value::String(values.reductionMode)},
 			{"resumed_from_checkpoint",Value::Bool(values.resumedFromCheckpoint)},
 			{"resumed_from_step",Value::Unsigned(values.resumedFromStep)},
 			{"schema_version",Value::Unsigned(1)},
 			{"sequence_id",Value::String(sequenceId)},
-			{"streamed_frame_count",Value::Unsigned(values.streamedFrameCount)}
+			{"streamed_frame_count",Value::Unsigned(values.streamedFrameCount)},
+			{"worker_count_history",Value::ArrayValue(workerHistory)}
 		});
 		std::string error;RISECBOR64::Bytes payloadBytes,envelope;
 		if(!RISECBOR64::Encode(payload,payloadBytes,&error))return envelope;
@@ -1698,7 +1748,7 @@ namespace
 			NaNInactiveTile, NegativeActiveChem, NaNInactiveChem } kind = Valid;
 	};
 
-	void WriteFrame( const std::filesystem::path& path, const FrameMutation mutation,
+	bool WriteFrame( const std::filesystem::path& path, const FrameMutation mutation,
 		const float carbonValue, const bool includeChem=false,
 		const SolverFrameValues solver=SolverFrameValues(),const float chemScale=1.0f )
 	{
@@ -1801,55 +1851,85 @@ namespace
 		file.write(grids);
 		file.close();
 		std::string canonicalError;
-		Check(CanonicalizeOpenVDBFileIdentity(path.string(),canonicalError),
+		const bool canonical=CanonicalizeOpenVDBFileIdentity(path.string(),canonicalError);
+		Check(canonical,
 			"producer replaces OpenVDB's random UUID with a content-derived identity");
-		Check(DurableSyncFileAndDirectory(path,canonicalError),
+		const bool durable=canonical&&DurableSyncFileAndDirectory(path,canonicalError);
+		Check(durable,
 			"produced sequence frame is durable before the next simulation step");
+		return canonical&&durable;
 	}
 
 	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
-		if(mode!="baseline"&&mode!="kill"&&mode!="resume")return 96;
+		if(mode!="baseline"&&mode!="kill"&&mode!="resume"&&mode!="syncfail")return 96;
+		forcePostRenameDirectorySyncFailureForTest=mode=="syncfail";
 		RunPersistenceOptions persistence;
 		if(mode!="baseline"){
 			persistence.checkpointPath=checkpointPath;
 			persistence.checkpointCadenceWallS=0.0;
 			persistence.resume=mode=="resume";
-			persistence.killAfterFirstCheckpoint=mode=="kill";
+			persistence.killAfterFirstCheckpoint=mode=="kill"||mode=="syncfail";
 		}
 		SolverFrameValues result=RunMethaneFrameProbe(workerCount,3u,0.0,1.0,4.0,6.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		if(mode=="syncfail"){
+			forcePostRenameDirectorySyncFailureForTest=false;
+			if(result.succeeded||result.structuredError.find("cannot fsync replaced-run directory")==
+				std::string::npos)return 97;
+			std::ofstream marker(framePath,std::ios::binary|std::ios::trunc);
+			marker << result.structuredError;marker.close();return marker?0:98;
+		}
 		if(!result.succeeded){std::fprintf(stderr,"checkpoint child failed: %s\n",
 			result.structuredError.c_str());return 93;}
-		WriteFrame(framePath,FrameMutation{},0.0f,true,result);
+		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,result))return 94;
 		std::string error;
 		if(!DurableSyncFileAndDirectory(framePath,error)){std::fprintf(stderr,
 			"checkpoint child frame durability failed: %s\n",error.c_str());return 94;}
 		return failures?95:0;
 	}
 
+#if defined(_WIN32)
 	std::string QuoteSubprocessArgument(const std::string& value)
 	{
-#if defined(_WIN32)
 		std::string result="\"";
 		for(const char c:value){if(c=='\"')result+='\\';result+=c;}
 		return result+'\"';
-#else
-		std::string result="'";
-		for(const char c:value){if(c=='\'')result+="'\\''";else result+=c;}
-		return result+'\'';
-#endif
 	}
+#endif
 
 	int RunCheckpointSubprocess(const std::filesystem::path& executable,const char* mode,
 		const std::filesystem::path& checkpoint,const std::filesystem::path& frame,
 		const unsigned int workers)
 	{
+#if defined(_WIN32)
 		const std::string command=QuoteSubprocessArgument(executable.string())+
 			" --fire-checkpoint-child "+mode+" "+QuoteSubprocessArgument(checkpoint.string())+
 			" "+QuoteSubprocessArgument(frame.string())+" "+std::to_string(workers);
 		return std::system(command.c_str());
+#else
+		const pid_t child=::fork();
+		if(child<0)return -1;
+		if(child==0){
+			const std::string workerText=std::to_string(workers);
+			::execl(executable.c_str(),executable.c_str(),"--fire-checkpoint-child",mode,
+				checkpoint.c_str(),frame.c_str(),workerText.c_str(),static_cast<char*>(nullptr));
+			::_exit(127);
+		}
+		int status=0;
+		while(::waitpid(child,&status,0)<0){if(errno!=EINTR)return -1;}
+		return status;
+#endif
+	}
+
+	bool CheckpointSubprocessWasHardKilled(const int status)
+	{
+#if defined(_WIN32)
+		return status==91;
+#else
+		return WIFSIGNALED(status)&&WTERMSIG(status)==SIGKILL;
+#endif
 	}
 #endif
 }
@@ -1939,14 +2019,26 @@ int main(int argc,char** argv)
 	const std::filesystem::path self=std::filesystem::absolute(argv[0]);
 	const int baselineCheckpointExit=RunCheckpointSubprocess(self,"baseline",checkpointPath,
 		baselineCheckpointFrame,1u);
+	std::string checkpointFixtureError;
+	const std::filesystem::path streamedPrefixFrame=checkpointFixture/"streamed_prefix_frame4.vdb";
+	const bool streamedPrefixPublished=baselineCheckpointExit==0&&
+		DurableCopyPublishedFile(baselineCheckpointFrame,streamedPrefixFrame,
+			checkpointFixtureError);
+	const std::filesystem::path syncFailureCheckpoint=checkpointFixture/"sync_failure.checkpoint";
+	const std::filesystem::path syncFailureReturnedMarker=checkpointFixture/"sync_failure.returned";
+	const int syncFailureExit=RunCheckpointSubprocess(self,"syncfail",syncFailureCheckpoint,
+		syncFailureReturnedMarker,2u);
+	Check(syncFailureExit==0&&std::filesystem::exists(syncFailureReturnedMarker),
+		"r61 post-rename directory-sync failure returns a structured error instead of reporting durability or killing");
 	const int killedCheckpointExit=RunCheckpointSubprocess(self,"kill",checkpointPath,
 		resumedCheckpointFrame,2u);
-	Check(baselineCheckpointExit==0&&killedCheckpointExit!=0&&
+	Check(baselineCheckpointExit==0&&CheckpointSubprocessWasHardKilled(killedCheckpointExit)&&
+		streamedPrefixPublished&&DigestFile(streamedPrefixFrame)==DigestFile(baselineCheckpointFrame)&&
 		std::filesystem::exists(checkpointPath)&&!std::filesystem::exists(resumedCheckpointFrame),
-		"r61 fixture durably checkpoints then hard-kills before a frame can be published");
+		"r61 streamed prefix survives a hard kill before the final frame is published");
 	const int resumedCheckpointExit=RunCheckpointSubprocess(self,"resume",checkpointPath,
 		resumedCheckpointFrame,4u);
-	MethaneRunCheckpoint resumedCheckpointMetadata;std::string checkpointFixtureError;
+	MethaneRunCheckpoint resumedCheckpointMetadata;
 	const bool checkpointMetadataLoaded=LoadMethaneRunCheckpoint(checkpointPath,
 		resumedCheckpointMetadata,checkpointFixtureError);
 	Check(resumedCheckpointExit==0&&DigestFile(baselineCheckpointFrame)==
@@ -1956,7 +2048,10 @@ int main(int argc,char** argv)
 		!resumedCheckpointMetadata.producerBuildId.empty()&&
 		resumedCheckpointMetadata.values.checkpointCadenceWallS==0.0&&
 		resumedCheckpointMetadata.values.checkpointStepIndices==
-			std::vector<std::uint64_t>({1u,2u}),
+			std::vector<std::uint64_t>({1u,2u})&&
+		resumedCheckpointMetadata.values.workerCountHistory==
+			std::vector<std::uint64_t>({2u,4u})&&
+		resumedCheckpointMetadata.values.reductionMode=="fixed_order_tree_v1",
 		"r61 checkpoint plus hard kill plus different-thread resume is frame-bit-transparent and records run events");
 	RISECBOR64::Bytes corruptedCheckpoint=ReadFileBytes(checkpointPath);
 	if(!corruptedCheckpoint.empty())corruptedCheckpoint.back()^=0x01u;
@@ -1967,6 +2062,68 @@ int main(int argc,char** argv)
 	MethaneRunCheckpoint rejectedCheckpoint;
 	Check(!LoadMethaneRunCheckpoint(corruptedCheckpointPath,rejectedCheckpoint,
 		checkpointFixtureError),"r61 corrupt checkpoint fails closed before resume");
+	RISECBOR64::Bytes corruptEarlySize=ReadFileBytes(checkpointPath);
+	if(corruptEarlySize.size()>48u)corruptEarlySize[48]^=0xffu;
+	const std::filesystem::path corruptEarlySizePath=checkpointFixture/"corrupt_early_size.checkpoint";
+	{std::ofstream output(corruptEarlySizePath,std::ios::binary|std::ios::trunc);
+		output.write(reinterpret_cast<const char*>(corruptEarlySize.data()),
+			static_cast<std::streamsize>(corruptEarlySize.size()));}
+	Check(!LoadMethaneRunCheckpoint(corruptEarlySizePath,rejectedCheckpoint,
+		checkpointFixtureError)&&checkpointFixtureError=="run checkpoint checksum mismatch",
+		"r61 validates the payload checksum before a corrupted size can allocate memory");
+	const std::filesystem::path trailingCheckpointPath=checkpointFixture/"trailing.checkpoint";
+	corruptedCheckpoint=ReadFileBytes(checkpointPath);corruptedCheckpoint.push_back(0u);
+	{std::ofstream output(trailingCheckpointPath,std::ios::binary|std::ios::trunc);
+		output.write(reinterpret_cast<const char*>(corruptedCheckpoint.data()),
+			static_cast<std::streamsize>(corruptedCheckpoint.size()));}
+	Check(!LoadMethaneRunCheckpoint(trailingCheckpointPath,rejectedCheckpoint,
+		checkpointFixtureError),"r61 checkpoint rejects a valid payload with trailing bytes");
+	auto ValidMutatedCheckpointRejects=[&](const char* name,
+		const MethaneRunCheckpoint& mutated)->bool{
+		const std::filesystem::path path=checkpointFixture/(std::string(name)+".checkpoint");
+		if(!SaveMethaneRunCheckpoint(path,mutated,checkpointFixtureError))return false;
+		RunPersistenceOptions persistence;persistence.checkpointPath=path;persistence.resume=true;
+		const SolverFrameValues attempt=RunMethaneFrameProbe(3u,3u,0.0,1.0,4.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		return !attempt.succeeded&&attempt.structuredError.find("checkpoint_resume_failure:")==0;
+	};
+	MethaneRunCheckpoint bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.producerBuildId=std::string(64u,'0');
+	Check(ValidMutatedCheckpointRejects("wrong_build",bindingMutation),
+		"r61 resume rejects a checksummed checkpoint from a different executable build");
+	bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.caseRecordId=std::string(64u,'0');
+	Check(ValidMutatedCheckpointRejects("wrong_case",bindingMutation),
+		"r61 resume rejects a checksummed checkpoint for a different case identity");
+	bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.values.reductionMode="unordered_reduction";
+	Check(ValidMutatedCheckpointRejects("wrong_reduction",bindingMutation),
+		"r61 resume rejects a checksummed checkpoint with a different reduction mode");
+	SolverFrameValues metadataFixture=resumedCheckpointMetadata.values;
+	metadataFixture.streamedFrameCount=2u;
+	std::string fixtureRunMetadataId;
+	const RISECBOR64::Bytes fixtureRunMetadata=RunMetadataEnvelope(metadataFixture,4u,
+		DigestFile(streamedPrefixFrame),DigestFile(resumedCheckpointFrame),std::string(64u,'b'),
+		fixtureRunMetadataId);
+	RISECBOR64::Value decodedRunMetadata;
+	std::string runMetadataError;
+	const RISECBOR64::Value* runMetadataPayload=nullptr;
+	RISECBOR64::Bytes runMetadataPayloadBytes;
+	const bool runMetadataDecoded=RISECBOR64::DecodeCanonical(fixtureRunMetadata,
+		decodedRunMetadata,&runMetadataError);
+	if(runMetadataDecoded)runMetadataPayload=decodedRunMetadata.Find("payload");
+	Check(runMetadataPayload&&RISECBOR64::Encode(*runMetadataPayload,
+		runMetadataPayloadBytes,&runMetadataError)&&
+		fixtureRunMetadataId==RISECBOR64::SHA256Hex(runMetadataPayloadBytes)&&
+		!runMetadataPayload->Find("case_record_id")&&
+		runMetadataPayload->Find("checkpoint_step_indices")&&
+		runMetadataPayload->Find("reduction_mode")&&
+		runMetadataPayload->Find("reduction_mode")->GetText()=="fixed_order_tree_v1"&&
+		runMetadataPayload->Find("worker_count_history")&&
+		runMetadataPayload->Find("worker_count_history")->GetArray().size()==2u&&
+		runMetadataPayload->Find("streamed_frame_count")&&
+		runMetadataPayload->Find("streamed_frame_count")->GetIntegerArgument()==2u,
+		"r61 run events are canonical companion metadata and do not enter case identity");
 	const std::filesystem::path frame4 = root/"frame4.vdb";
 	const std::filesystem::path frame5 = root/"frame5.vdb";
 	WriteFrame(frame4,FrameMutation{},1.0f);
@@ -2325,6 +2482,15 @@ int main(int argc,char** argv)
 		caseDurationS,caseFramesPerS,reportedResolutionTier,runDiameterM,runHeatReleaseRateKW);
 	if(!methaneFrame.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
 		methaneFrame.structuredError.c_str());return 1;}
+	if(!WriteFrame(frame4,FrameMutation{},0.0f,true,methaneFrame)){
+		std::fprintf(stderr,"capstone fail-fast: initial frame serialization failed\n");return 1;
+	}
+	std::string durableArtifactError;
+	if(capstoneArtifactRun&&!DurableCopyPublishedFile(frame4,
+		capstoneOutputDirectory/"frame4.vdb",durableArtifactError)){
+		std::fprintf(stderr,"capstone frame streaming failed: %s\n",durableArtifactError.c_str());
+		return 1;
+	}
 	const unsigned int determinismStepCount=capstoneArtifactRun&&!capstoneValidationOnly?1u:0u;
 	const SolverFrameValues deterministicOne=RunMethaneFrameProbe(1u,determinismStepCount,0.0,
 		caseDurationS,caseFramesPerS,6.0,runDiameterM,runHeatReleaseRateKW);
@@ -2337,18 +2503,16 @@ int main(int argc,char** argv)
 		methaneFrameParallel.structuredError.c_str());return 1;}
 	const std::filesystem::path deterministicOneFrame=root/"frame_deterministic_one.vdb";
 	const std::filesystem::path deterministicParallelFrame=root/"frame_deterministic_parallel.vdb";
-	WriteFrame(deterministicOneFrame,FrameMutation{},0.0f,true,deterministicOne);
-	WriteFrame(deterministicParallelFrame,FrameMutation{},0.0f,true,methaneFrameParallel);
+	if(!WriteFrame(deterministicOneFrame,FrameMutation{},0.0f,true,deterministicOne)||
+		!WriteFrame(deterministicParallelFrame,FrameMutation{},0.0f,true,methaneFrameParallel)){
+		std::fprintf(stderr,"capstone fail-fast: deterministic frame serialization failed\n");return 1;
+	}
 	const std::string singleWorkerDigest=DigestFile(deterministicOneFrame);
 	const std::string parallelWorkerDigest=DigestFile(deterministicParallelFrame);
 	Check(!singleWorkerDigest.empty()&&singleWorkerDigest==parallelWorkerDigest,
 		"r57 same methane case at one and N workers produces identical frame bytes");
-	WriteFrame(frame4,FrameMutation{},0.0f,true,methaneFrame);
-	std::string durableArtifactError;
-	if(capstoneArtifactRun&&(
-		!DurableCopyPublishedFile(deterministicOneFrame,
-			capstoneOutputDirectory/"frame_single_worker.vdb",durableArtifactError)||
-		!DurableCopyPublishedFile(frame4,capstoneOutputDirectory/"frame4.vdb",durableArtifactError))){
+	if(capstoneArtifactRun&&!DurableCopyPublishedFile(deterministicOneFrame,
+		capstoneOutputDirectory/"frame_single_worker.vdb",durableArtifactError)){
 		std::fprintf(stderr,"capstone frame streaming failed: %s\n",durableArtifactError.c_str());
 		return 1;
 	}
@@ -2365,7 +2529,9 @@ int main(int argc,char** argv)
 		methaneFrameParallel;
 	if(!methaneFrameNext.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
 		methaneFrameNext.structuredError.c_str());return 1;}
-	WriteFrame(frame5,FrameMutation{},0.0f,true,methaneFrameNext,0.8f);
+	if(!WriteFrame(frame5,FrameMutation{},0.0f,true,methaneFrameNext,0.8f)){
+		std::fprintf(stderr,"capstone fail-fast: final frame serialization failed\n");return 1;
+	}
 	methaneFrameNext.streamedFrameCount=2u;
 	if(capstoneArtifactRun&&!DurableCopyPublishedFile(frame5,
 		capstoneOutputDirectory/"frame5.vdb",durableArtifactError)){
@@ -2750,6 +2916,11 @@ int main(int argc,char** argv)
 			<< "frame5_policy=honest_cold_start_sustained_solver_state_with_synthetic_chem_fixture\n"
 			<< "thread_determinism_workers=1," << capstoneWorkerCount << "\n"
 			<< "thread_determinism_digest=" << singleWorkerDigest << "\n"
+			<< "run_reduction_mode=" << methaneFrameNext.reductionMode << "\n"
+			<< "run_worker_count_history=";
+		for(std::size_t segment=0;segment<methaneFrameNext.workerCountHistory.size();++segment)
+			report << (segment?",":"") << methaneFrameNext.workerCountHistory[segment];
+		report << "\n"
 			<< "r59_discontinuous_limiter_steps=" <<
 				methaneFrameNext.discontinuousLimiterClassSteps << "\n"
 			<< "r59_maximum_limiter_face_discrepancy=" <<
