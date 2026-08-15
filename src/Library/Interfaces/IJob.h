@@ -3880,6 +3880,65 @@ namespace RISE
 		//! derive-scoped lifetime as the membership index above.  Default: false; see the Job override.
 		virtual bool IsGroupDeclared( const char* /*groupName*/ ) const { return false; }
 
+		//! arc-86 slice 4 (docs/agentic-redesign/86-object-grouping.md): the FORWARD direction of the
+		//! group side index -- `group name -> its members`, the direction the three virtuals above
+		//! deliberately do NOT provide.  `GetGroupMembership`'s `outGroupName` is documented as a
+		//! DIAGNOSTIC (a comma-joined list for a multi-group member), so it is not parseable as a
+		//! lookup key; answering "which objects does group X contain?" needs this index instead.
+		//! The design's §3 addressing decision (side index, NOT a phantom `IObjectPriv`) is what makes
+		//! this the right shape: a group has no manager entity, so there is nothing to enumerate but
+		//! the derive's own record of what it composed.
+		//!
+		//! Enumerates the names of every `group` chunk that Finalized in the CURRENT derive.  Iteration
+		//! order is LEXICOGRAPHIC by group name (the real Job backs this with a std::map), matching the
+		//! sorted convention the manager-backed UI categories already enumerate under -- NOT document
+		//! order.  MEMBER order within a group is a different question and IS authored order; see
+		//! GetGroupMemberName.  Same derive-scoped lifetime as the membership index above (cleared in
+		//! InitializeContainers).  Mirrors EnumerateGeometryNames / EnumerateMediumNames.
+		//! Default: enumerates nothing; see the Job override.
+		//! NB: appended at the IJob tail (append-only vtable ABI).
+		virtual void EnumerateGroupNames(
+			IEnumCallback<const char*>& /*cb*/						///< [in] Functor called once per declared group name
+			) const {}
+
+		//! Number of `member` entries the named group declared, or 0 if `groupName` is not a group in
+		//! the current derive.  Count+index pair (rather than returning a container) to match the
+		//! C-friendly shape of the rest of this tail region.  Default: 0; see the Job override.
+		virtual unsigned int GetGroupMemberCount( const char* /*groupName*/ ) const { return 0; }
+
+		//! The `idx`-th member OBJECT NAME of the named group, in AUTHORED ORDER -- the order the
+		//! `member` lines appear in the `group` chunk, deliberately NOT sorted, so an outliner tree
+		//! shows a group's contents as the author wrote them.  Returns FALSE (leaving `outName`
+		//! untouched) when the group is unknown, `idx` is out of range, or the name plus its NUL
+		//! does not FIT in `nameMax` -- the name is never TRUNCATED, because a truncated object
+		//! name is not an object name and a shell rendering it would offer a row selecting an
+		//! object that does not exist.  Otherwise writes the complete NUL-terminated name.
+		//! Default: false; see the Job override.
+		virtual bool GetGroupMemberName( const char* /*groupName*/, unsigned int /*idx*/,
+		                                 char* /*outName*/, const unsigned int /*nameMax*/ ) const
+		{
+			return false;
+		}
+
+		//! The named group's OWN composed transform -- `Translation(position) * Rotation(orientation)
+		//! * Stretch(scale)`, exactly the matrix `GroupAsciiChunkParser::Finalize` pushed onto each
+		//! member -- in the same column-major encoding as AddObjectMatrix (the Matrix4 `_00.._33`
+		//! field order).  DISTINCT FROM `GetGroupMembership`'s matrix, which is keyed by MEMBER and
+		//! is the ACCUMULATED product `G_last * ... * G_first` over every group that member belongs
+		//! to.  This one is the single group's own G, which is what a group-level gizmo needs for a
+		//! pivot.  Returns FALSE (leaving `outMatrix` untouched) when the group is unknown, and
+		//! ALSO when the name is AMBIGUOUS -- two `group` chunks may legally share a `name` (the
+		//! parser has no cross-chunk collision check), and when they declare different transforms
+		//! there is no single matrix that is right for both chunks' members, so this refuses
+		//! instead of serving the first-wins one.  (The member LIST is still served: concatenating
+		//! is the honest answer to "which objects are in a group called X".)  A single warning is
+		//! logged when the collision is DETECTED, at derive time -- not per call, since this is a
+		//! UI poll.  Default: false; see the Job override.
+		virtual bool GetGroupOwnTransform( const char* /*groupName*/, double* /*outMatrix*/ ) const
+		{
+			return false;
+		}
+
 	};
 
 

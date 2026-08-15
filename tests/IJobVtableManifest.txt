@@ -289,3 +289,7 @@ ApplyCstReplaceDocumentText
 NoteGroupMembership
 GetGroupMembership
 IsGroupDeclared
+EnumerateGroupNames
+GetGroupMemberCount
+GetGroupMemberName
+GetGroupOwnTransform

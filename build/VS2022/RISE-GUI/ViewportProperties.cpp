@@ -347,6 +347,7 @@ QString ViewportProperties::categoryTitle(Category cat)
     case Category::SceneVariant: return tr("Variants");
     case Category::Painter:      return tr("Painters");
     case Category::Geometry:     return tr("Geometry");
+    case Category::Group:        return tr("Groups");   // arc-86 slice 5
     case Category::None:
     default:                     return tr("Scene");
     }
@@ -375,6 +376,7 @@ QString ViewportProperties::categoryIconName(Category cat)
     case Category::SceneVariant: return QStringLiteral("layers");
 	case Category::Painter:      return QStringLiteral("paintbrush");
 	case Category::Geometry:     return QStringLiteral("scale-3d");
+	case Category::Group:        return QStringLiteral("folder");   // arc-86 slice 5 (bundled: resources.qrc)
     case Category::None:
     default:                     return QString();   // no dedicated icon -- "•" text fallback
     }

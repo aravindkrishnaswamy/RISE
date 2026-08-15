@@ -22,7 +22,11 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Cameras/`: isolated camera-model checks (sensor-format presets, tilt-shift, named-camera selection)
 - `ChunkCoverage/`: minimal parser-chunk acceptance and derive coverage
 - `Caustics/`: compact caustic and SMS comparison scenes
-- `Geometry/`: primitive and CSG sanity scenes
+- `Geometry/`: primitive and CSG sanity scenes, plus `group_gallery` — a
+  ten-specimen inspection gallery for the `group` chunk (translation, rotation,
+  non-uniform scale, full TRS, a member in two groups showing document-order
+  composition, and the ordering/override rules), laid out in a labelled 2x5
+  grid to be read by eye in the GUI rather than diffed
 - `GlobalIllumination/`: focused GI baselines such as final gather
 - `Importers/`: glTF import regression scenes (Khronos sample assets, alpha modes, embedded textures, light-control)
 - `LightBVH/`: many-light regression scenes comparing alias-table sampling vs. light BVH (corridor 20/100 lights, spotlights stage, BDPT mixed-light Cornell)
@@ -54,6 +58,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ## Recommended Quick Checks
 
 - Geometry sanity: `Geometry/shapes.RISEscene`
+- `group` chunk behaviour by eye: `Geometry/group_gallery.RISEscene`
 - CST/parser sanity: `Parser/loops.RISEscene` (a flattened native-v7 fixture;
   the filename and historical header comment predate retirement of the
   streaming loop language)

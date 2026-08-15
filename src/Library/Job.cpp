@@ -448,7 +448,7 @@ void Job::InitializeContainers()
 	lightSampleRRThreshold = 0;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
 	m_groupMembership.clear();   // arc-86 slice 1: reset per derive/clear (group Finalize populates it); a stale index would mis-divide a later derive's transform commit
-	m_groupNames.clear();        // arc-86 slice 1: ditto -- the declared-group-name set is derive-scoped too
+	m_groupsByName.clear();      // arc-86 slice 1/4: ditto -- the forward (group -> members + own matrix) index, which also backs IsGroupDeclared, is derive-scoped too; a stale entry would let a deleted group keep enumerating members in the outliner
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
 	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
 
@@ -9868,6 +9868,20 @@ unsigned int Job::GetObjectOverrideCount() const
 	return m_objectOverrideCount;
 }
 
+namespace {
+	// Exact field-by-field Matrix4 compare (Matrix4 declares no operator==).  Used ONLY by
+	// NoteGroupMembership's duplicate-group-name ambiguity check, where an epsilon would be
+	// wrong: the values compared within one `group` chunk are bit-identical copies of the same
+	// composed Matrix4, so any difference at all means a genuinely different chunk.
+	bool Matrix4FieldsEqual( const Matrix4& a, const Matrix4& b )
+	{
+		const Scalar* pa = &a._00;
+		const Scalar* pb = &b._00;
+		for( int k = 0; k < 16; ++k ) if( pa[k] != pb[k] ) return false;
+		return true;
+	}
+}
+
 // arc-86 slice 1 (docs/agentic-redesign/86-object-grouping.md): the group-membership side index.
 // See IJob::NoteGroupMembership for the contract.  Called once per member, in DOCUMENT ORDER, by
 // GroupAsciiChunkParser::Finalize -- immediately after that member's PushBottomTransStack(G), so the
@@ -9887,14 +9901,100 @@ void Job::NoteGroupMembership( const char* memberName, const char* groupName, co
 	if( groupName && groupName[0] ) {
 		if( !rec.groupNames.empty() ) rec.groupNames += ", ";
 		rec.groupNames += groupName;
-		m_groupNames.insert( std::string( groupName ) );
+		// arc-86 slice 4: the FORWARD (group -> members) half, derived from the SAME call rather
+		// than from a second parser hook -- every argument it needs is already here, so there is no
+		// way for the two directions to disagree about what the derive composed.  `members` grows in
+		// call order, which the parser makes in document order, so it is authored order by
+		// construction.  `own` is set ONCE (see the Job.h member doc's duplicate-group-name note):
+		// this call fires once PER MEMBER with the SAME G, so composing here instead would give G^N.
+		GroupRecord& grp = m_groupsByName[ std::string( groupName ) ];
+		if( grp.members.empty() ) {
+			grp.own = G;
+		} else if( !grp.ownAmbiguous && !Matrix4FieldsEqual( grp.own, G ) ) {
+			// A SECOND `group` chunk sharing this name arrived with a DIFFERENT transform
+			// (the parser performs no cross-chunk name-collision check -- see the `group`
+			// descriptor).  The record's single `own` cannot be right for both chunks'
+			// members, so flag it: GetGroupOwnTransform refuses from here on.  Exact field
+			// compare, not an epsilon: within ONE chunk this fires once per member with the
+			// bit-identical Matrix4 the parser composed, so any difference at all means a
+			// genuinely different chunk.  Logged HERE, at detection, which is exactly once
+			// per derive per group -- GetGroupOwnTransform is a const UI poll and must not
+			// spam the log on every frame it refuses.
+			grp.ownAmbiguous = true;
+			GlobalLog()->PrintEx( eLog_Warning,
+				"group `%s`: two `group` chunks share this name and declare DIFFERENT "
+				"transforms. Their member lists have been merged, but the group's own "
+				"transform is now ambiguous -- a group-level transform read (GUI gizmo "
+				"pivot / properties panel) will refuse rather than serve a matrix that is "
+				"wrong for one of the two chunks' members. Give the two `group` chunks "
+				"distinct names.", groupName );
+		}
+		grp.members.push_back( std::string( memberName ) );
 	}
 }
 
 bool Job::IsGroupDeclared( const char* groupName ) const
 {
 	if( !groupName || !groupName[0] ) return false;
-	return m_groupNames.find( std::string( groupName ) ) != m_groupNames.end();
+	return m_groupsByName.find( std::string( groupName ) ) != m_groupsByName.end();
+}
+
+// arc-86 slice 4: readers of the forward index.  See IJob for the contracts.
+void Job::EnumerateGroupNames( IEnumCallback<const char*>& cb ) const
+{
+	for( std::map<std::string, GroupRecord>::const_iterator it = m_groupsByName.begin();
+	     it != m_groupsByName.end(); ++it )
+	{
+		const char* n = it->first.c_str();
+		if( !cb( n ) ) return;
+	}
+}
+
+unsigned int Job::GetGroupMemberCount( const char* groupName ) const
+{
+	if( !groupName || !groupName[0] ) return 0;
+	const std::map<std::string, GroupRecord>::const_iterator it =
+		m_groupsByName.find( std::string( groupName ) );
+	if( it == m_groupsByName.end() ) return 0;
+	return static_cast<unsigned int>( it->second.members.size() );
+}
+
+bool Job::GetGroupMemberName( const char* groupName, unsigned int idx,
+                              char* outName, const unsigned int nameMax ) const
+{
+	if( !groupName || !groupName[0] || !outName || nameMax == 0 ) return false;
+	const std::map<std::string, GroupRecord>::const_iterator it =
+		m_groupsByName.find( std::string( groupName ) );
+	if( it == m_groupsByName.end() ) return false;
+	if( idx >= it->second.members.size() ) return false;
+	const std::string& n = it->second.members[ idx ];
+	// REFUSE rather than half-succeed on an over-long name.  A truncated name is not an object
+	// name: a shell that rendered it would offer a clickable row selecting an object that does
+	// not exist.  Every other refusal on this surface (unknown group, out-of-range index) returns
+	// false and leaves `outName` untouched; truncation joins them.
+	if( n.size() + 1 > (size_t)nameMax ) return false;
+	memcpy( outName, n.c_str(), n.size() );
+	outName[ n.size() ] = '\0';
+	return true;
+}
+
+bool Job::GetGroupOwnTransform( const char* groupName, double* outMatrix ) const
+{
+	if( !groupName || !groupName[0] || !outMatrix ) return false;
+	const std::map<std::string, GroupRecord>::const_iterator it =
+		m_groupsByName.find( std::string( groupName ) );
+	if( it == m_groupsByName.end() ) return false;
+	// Two same-named `group` chunks declared different transforms -- there is no single correct
+	// answer, so refuse (the warning was already logged once, at detection in
+	// NoteGroupMembership).  Same degrade-safely posture the properties path takes on a duplicate
+	// name; a caller that wants the member LIST still gets it from GetGroupMemberCount/Name.
+	if( it->second.ownAmbiguous ) return false;
+	const Matrix4& m = it->second.own;
+	outMatrix[ 0] = m._00; outMatrix[ 1] = m._01; outMatrix[ 2] = m._02; outMatrix[ 3] = m._03;
+	outMatrix[ 4] = m._10; outMatrix[ 5] = m._11; outMatrix[ 6] = m._12; outMatrix[ 7] = m._13;
+	outMatrix[ 8] = m._20; outMatrix[ 9] = m._21; outMatrix[10] = m._22; outMatrix[11] = m._23;
+	outMatrix[12] = m._30; outMatrix[13] = m._31; outMatrix[14] = m._32; outMatrix[15] = m._33;
+	return true;
 }
 
 bool Job::GetGroupMembership( const char* memberName, double* outGroupMatrix,

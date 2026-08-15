@@ -2821,6 +2821,14 @@ namespace RISE
 		                         char* outGroupName, const unsigned int groupNameMax ) const;
 		bool IsGroupDeclared( const char* groupName ) const;
 
+		//! Forward (group -> members) direction of the group side index (see IJob; arc-86 slice 4).
+		//! No `override` (house style).
+		void EnumerateGroupNames( IEnumCallback<const char*>& cb ) const;
+		unsigned int GetGroupMemberCount( const char* groupName ) const;
+		bool GetGroupMemberName( const char* groupName, unsigned int idx,
+		                         char* outName, const unsigned int nameMax ) const;
+		bool GetGroupOwnTransform( const char* groupName, double* outMatrix ) const;
+
 		//! Enables/disables incremental re-point mode (see IJob).  No `override` to
 		//! match this file's house style.
 		void SetIncrementalRepointMode( bool b );
@@ -3248,10 +3256,41 @@ namespace RISE
 		};
 		std::map<std::string, GroupMembership> m_groupMembership;
 
-		//! arc-86 slice 1: names of the `group` chunks that have Finalized THIS derive (see
-		//! IJob::IsGroupDeclared).  Cleared alongside m_groupMembership in InitializeContainers.
-		//! Same thread-ownership invariant as m_groupMembership above (derive/edit-path only).
-		std::set<std::string> m_groupNames;
+		//! arc-86 slice 4: the FORWARD half of the same side index -- keyed by GROUP NAME (see
+		//! IJob::EnumerateGroupNames / GetGroupMemberCount / GetGroupMemberName /
+		//! GetGroupOwnTransform).  Also the set of groups that have Finalized THIS derive, so it
+		//! backs IJob::IsGroupDeclared too -- it replaced a separate `m_groupNames` std::set, whose
+		//! keys were by construction exactly this map's keys (one source of truth, no drift).
+		//!
+		//! `members` is AUTHORED order (push_back per NoteGroupMembership call, which the group
+		//! parser makes in document order); `own` is this group's OWN composed transform, NOT the
+		//! member-keyed ACCUMULATED product above.  `std::map` (not unordered) so
+		//! EnumerateGroupNames iterates LEXICOGRAPHICALLY, matching the sorted convention the
+		//! manager-backed UI categories enumerate under.
+		//!
+		//! DUPLICATE GROUP NAMES: two `group` chunks may legally share a `name` (a group creates no
+		//! manager entity, so the parser performs no cross-chunk name-collision check -- see the
+		//! `group` descriptor).  In that case members from both chunks fold into ONE record: `members`
+		//! concatenates and `own` is FIRST-WINS.  A first-wins `own` is simply WRONG for the second
+		//! chunk's members, so when a later chunk of the same name arrives with a DIFFERENT G the
+		//! record is marked `ownAmbiguous` and GetGroupOwnTransform then REFUSES (returns false)
+		//! rather than hand out a matrix that is right for only some of the members -- matching how
+		//! the properties path already degrades on a duplicate name (DocFindByNameAnyRole finds 2,
+		//! returns 0, the panel blanks and the edit is refused).  `members` and IsGroupDeclared stay
+		//! usable: concatenating the member lists of two same-named groups is still the honest answer
+		//! to "which objects are in a group called X".  Two same-named chunks with the SAME transform
+		//! are NOT ambiguous -- the one matrix is correct for every member.
+		//!
+		//! Cleared alongside m_groupMembership in InitializeContainers, and carries the SAME thread-
+		//! ownership invariant as m_groupMembership above (derive/edit-path only, never a render
+		//! worker).
+		struct GroupRecord
+		{
+			std::vector<std::string> members;          // authored (document) order -- NOT sorted
+			Matrix4                  own;              // Matrix4's default ctor is identity
+			bool                     ownAmbiguous = false;  // two same-named `group` chunks disagreed about G
+		};
+		std::map<std::string, GroupRecord> m_groupsByName;
 
 		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
 		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).

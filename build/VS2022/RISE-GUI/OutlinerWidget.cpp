@@ -29,6 +29,21 @@
 
 namespace {
 
+// Tree indentation (arc-86 slice 5).  Level 1 (category headers) uses the
+// list layout's own 8px margin; level 2 (entities, and the group rows that
+// sit at the same depth) indents to kChildIndent; level 3 (a group's
+// members) indents to kMemberIndent, just past the width a group row's
+// disclosure control plus the 7px row spacing occupy (30 + 10 + 7 = 47), so
+// a member's name starts flush under its group's name.  The literal 48
+// matches OutlinerView.swift's `leadingIndent: 48` exactly rather than
+// being re-derived here -- the two shells are hand-mirrored, and a 1px
+// drift between them is the kind of thing nobody ever reconciles later.
+// kDiscloseSize matches both the category header's own chevron QLabel
+// (setFixedSize(10, 10)) and the Mac group row's triangle frame width.
+constexpr int kChildIndent  = 30;
+constexpr int kDiscloseSize = 10;
+constexpr int kMemberIndent = 48;
+
 // A row that reports a plain left-click via a std::function callback.
 // No Q_OBJECT / signals -- mirrors ViewportProperties.cpp's ScrubHandle
 // and TopBar.cpp's TopBarLogoSwatch, which document why a pure-input
@@ -228,6 +243,12 @@ void OutlinerWidget::setBridge(ViewportBridge* bridge)
     m_bridge = bridge;
     m_lastEpoch = 0;   // force a fresh entity-list pull on the next refresh()
     m_entitiesByCategory.clear();
+    // arc-86 slice 5: a new bridge means a new scene -- drop both group-tree
+    // caches so group names from the OLD scene can't leak into the new one's
+    // tree (m_membersByGroup) or silently pre-expand a same-named group in it
+    // (m_expandedGroups).
+    m_membersByGroup.clear();
+    m_expandedGroups.clear();
     refresh();
 }
 
@@ -235,6 +256,7 @@ void OutlinerWidget::refresh()
 {
     if (!m_bridge) {
         m_entitiesByCategory.clear();
+        m_membersByGroup.clear();
         rebuild();
         return;
     }
@@ -246,11 +268,62 @@ void OutlinerWidget::refresh()
         static const Category cats[] = {
             Category::Rasterizer, Category::Camera, Category::Light, Category::Object,
             Category::Material, Category::Painter, Category::Medium, Category::Geometry,
+            // arc-86 slice 5.  Kept in the same slot kCategories in rebuild()
+            // puts it (end of the entity block, before the singleton rows);
+            // this list only decides WHAT is pulled, not the display order,
+            // but keeping the two in step is what stops the next category
+            // from being silently omitted here the way Group nearly was.
+            Category::Group,
             Category::Film, Category::Animation, Category::SceneVariant,
         };
         for (Category c : cats) {
             m_entitiesByCategory.insert(static_cast<int>(c), m_bridge->categoryEntities(c));
         }
+
+        // arc-86 slice 5 / P2 fix (F1, GUI-fix-round): second level.  Drop
+        // the WHOLE cache on an epoch change -- a group's membership can
+        // only change alongside a structural edit, so any group that
+        // survives the edit still needs a FRESH pull (not just groups that
+        // vanished): a stale-but-still-declared entry would otherwise keep
+        // serving its PRE-EDIT member list forever.  This clear does not by
+        // itself repopulate anything; the unconditional prime loop just
+        // below -- which runs on every refresh() call, not only on an epoch
+        // change -- does that, one groupMembers() call per declared group.
+        // Splitting the drop from the (re)fill is what fixes the actual P2
+        // bug: that loop only CACHES a NON-empty pull, so a group whose pull
+        // bails right here (mRenderOwnsScene, or a lost mMutex try_lock)
+        // is left UNPRIMED instead of caching an empty result behind this
+        // epoch stamp -- the old code called groupMembers() and inserted
+        // its result unconditionally right in this block, baking in the
+        // empty read until the NEXT epoch bump.  Left unprimed, it simply
+        // retries on the very next refresh() call (every preview frame),
+        // self-healing within one frame instead of freezing at count 0
+        // with no disclosure triangle until the next structural edit.
+        m_membersByGroup.clear();
+        // m_expandedGroups is DELIBERATELY not re-keyed to the group list here
+        // (matching OutlinerView.swift, which documents the same choice):
+        // the controller serves group data from a snapshot that is skipped
+        // while a render owns the scene and falls back to the previous one on
+        // lock contention, so this list can legitimately be momentarily stale
+        // or short -- pruning against it would silently collapse rows the user
+        // opened.  A stale key costs one bool; setBridge() clears the whole
+        // hash on scene change, which is the only point it actually matters.
+    }
+
+    // arc-86 P2 fix (F1): prime any group not yet cached, EVERY refresh()
+    // call -- independent of the epoch gate above.  Only fills in MISSING
+    // keys (never overwrites an already-cached, presumed-good entry), and
+    // only caches a NON-empty pull -- see the comment above for why an empty
+    // pull must never be cached.  This is what lets a group whose pull
+    // bailed on the epoch-change frame (setBridge() during a production
+    // render, or a contended mMutex) retry on the very next preview frame
+    // instead of freezing empty until the next structural edit.
+    const QStringList currentGroupNames =
+        m_entitiesByCategory.value(static_cast<int>(Category::Group));
+    for (const QString& groupName : currentGroupNames) {
+        if (m_membersByGroup.contains(groupName)) continue;
+        const QStringList members = m_bridge->groupMembers(groupName);
+        if (!members.isEmpty()) m_membersByGroup.insert(groupName, members);
     }
 
     rebuild();
@@ -290,6 +363,20 @@ void OutlinerWidget::selectChild(Category cat, const QString& name)
     refresh();
 }
 
+void OutlinerWidget::toggleGroup(const QString& groupName)
+{
+    // arc-86 slice 5.  Unlike toggleCategory() this makes NO bridge call and
+    // emits NO selectionActivated(): the controller has no per-ENTITY
+    // expansion concept (isSectionExpanded/collapseSection are per-CATEGORY),
+    // and opening a group changes nothing about what is selected -- so the
+    // properties panel has nothing to re-read.  Local state + a direct
+    // rebuild() is the whole operation; going through refresh() would be a
+    // pointless sceneEpoch() round-trip that can only short-circuit anyway.
+    if (groupName.isEmpty()) return;
+    m_expandedGroups.insert(groupName, !m_expandedGroups.value(groupName, false));
+    rebuild();
+}
+
 void OutlinerWidget::rebuild()
 {
     // Full rebuild on every call -- mirrors OutlinerView.swift's
@@ -324,6 +411,17 @@ void OutlinerWidget::rebuild()
         // OutlinerView ordering (after Media, before the singleton rows);
         // catObject is the conceptual neighbour, same fallback as Mac.
         { Category::Geometry,     "Geometry",        "GEO", Theme::catObject },
+        // Groups (arc-86 slice 5): `group` chunks, each a named set of
+        // objects carrying one shared transform, and the ONLY category
+        // here whose rows expand to a THIRD level (their member objects).
+        // Appended at the end of the entity block -- the same place
+        // Geometry was added -- rather than next to Objects, so the
+        // established ordering above is undisturbed; matches
+        // OutlinerView.swift's kOutlinerCategories exactly.  Theme.h has
+        // no dedicated group token (owned by a parallel workstream);
+        // catObject's hue is the conceptual neighbour, since a group is a
+        // composition OF objects -- the same fallback the Mac slice uses.
+        { Category::Group,        "Groups",          "GRP", Theme::catObject },
         { Category::Film,         "Output Settings", "FLM", Theme::catFilm },
         { Category::Animation,    "Animation",       "ANM", Theme::catAnimation },
         { Category::SceneVariant, "Variants",         "VAR", Theme::catVariant },
@@ -429,44 +527,73 @@ void OutlinerWidget::rebuild()
 
         m_listLayout->addWidget(headerRow);
 
-        if (expanded) {
+        // arc-86 slice 5: the Group category is the only THREE-level branch --
+        // group rows, and under an expanded group its member rows.  Every
+        // other category keeps the flat two-level shape below, unchanged.
+        if (expanded && def.category == Category::Group) {
+            for (const QString& groupName : children) {
+                const QStringList members = m_membersByGroup.value(groupName);
+                const bool groupExpanded = m_expandedGroups.value(groupName, false);
+                const bool groupSelected = (selCat == Category::Group && selName == groupName);
+
+                // static_cast: QStringList::size() is qsizetype (64-bit in
+                // Qt 6) and buildGroupRow takes an int -- narrowing it here
+                // explicitly rather than letting the call site do it
+                // implicitly, so no MSVC C4267 shows up in a clean rebuild.
+                m_listLayout->addWidget(
+                    buildGroupRow(groupName, static_cast<int>(members.size()),
+                                  groupExpanded, groupSelected));
+
+                if (!groupExpanded) continue;
+
+                for (const QString& memberName : members) {
+                    // A member is an ORDINARY object: selected as
+                    // Category::Object (never Group), so the existing object
+                    // properties panel and the viewport gizmo act on it with
+                    // no special-casing, and its selection highlight stays in
+                    // sync with the SAME object's row in the flat Objects
+                    // list (both rows tint when either is picked -- correct,
+                    // they are one entity shown twice).
+                    const bool memberSelected =
+                        (selCat == Category::Object && selName == memberName);
+                    // Object has no scene-level "active entity" concept
+                    // (activeNameForCategory is documented to return empty
+                    // for it), so no member row can ever carry the ACTIVE
+                    // badge -- passed as a literal false rather than
+                    // recomputing an always-empty comparison per member.
+                    //
+                    // Reveal and Duplicate are offered with EXACTLY the gate
+                    // the flat Objects list uses (Object is neither Rasterizer
+                    // nor Film, so the flag collapses to m_sceneEditable).
+                    //
+                    // DELETE IS DISABLED HERE, and only here.  Removing a
+                    // standard_object chunk that a `group` chunk still names as
+                    // a `member` cannot succeed: ApplyCstRemoveChunk's dry-run
+                    // re-derive fails on the group's unresolvable member, so the
+                    // core refuses.  Offering the item would produce a
+                    // guaranteed confirm-dialog-then-failure-dialog pair every
+                    // time.  It stays ENABLED on the SAME object's row in the
+                    // flat Objects list -- not an inconsistency to fix by
+                    // re-enabling it here, but the honest state of the two
+                    // views: from the flat list the object's group membership
+                    // is not visible, whereas this row exists BECAUSE of that
+                    // membership, so this is the one place the widget can
+                    // explain the refusal instead of letting the core produce
+                    // it.  The tooltip carries the explanation.
+                    m_listLayout->addWidget(
+                        buildEntityRow(Category::Object, memberName, kMemberIndent,
+                                       memberSelected, false,
+                                       m_sceneEditable, m_sceneEditable,
+                                       /*canDelete*/ false,
+                                       tr("Remove this object from the `group` chunk's "
+                                          "`member` list first -- a still-referenced member "
+                                          "cannot be deleted.")));
+                }
+            }
+        } else if (expanded) {
             for (const QString& childName : children) {
                 const bool isSelected = (selCat == def.category && selName == childName);
                 const bool isActive = !activeName.isEmpty() && activeName == childName;
-
-                auto* childRow = new ClickableRow(
-                    [this, cat = def.category, childName]() { selectChild(cat, childName); }, m_listHolder);
-                childRow->setStyleSheet(QStringLiteral(
-                    "background-color: %1; border-radius: %2px;")
-                    .arg(isSelected
-                        ? Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(),
-                                              Theme::accent.blue(), static_cast<int>(0.14 * 255)))
-                        : QStringLiteral("transparent"))
-                    .arg(Theme::radiusSmall));
-                auto* childLayout = new QHBoxLayout(childRow);
-                childLayout->setContentsMargins(30, 4, 8, 4);
-                childLayout->setSpacing(7);
-
-                auto* childLabel = new QLabel(childName, childRow);
-                childLabel->setFont(Theme::sans(11));
-                // Selected text is Theme::textPrimary, not the Mac's literal
-                // `.white` (OutlinerView.swift:296): the selected fill is only
-                // a 14%-alpha accent tint over bgPanel, so pure white is
-                // unreadable on the Light palette's near-white bgPanel.
-                // textPrimary is near-white in Dark (matches the Mac look)
-                // and flips to near-black in Light.
-                childLabel->setStyleSheet(QStringLiteral("color: %1;")
-                    .arg(Theme::hex(isSelected ? Theme::textPrimary : Theme::textMuted)));
-                childLabel->setToolTip(childName);
-                childLayout->addWidget(childLabel);
-                childLayout->addStretch(1);
-
-                if (isActive) {
-                    auto* activeBadge = new QLabel(tr("ACTIVE"), childRow);
-                    activeBadge->setFont(Theme::mono(9));
-                    activeBadge->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::accentLight)));
-                    childLayout->addWidget(activeBadge);
-                }
 
                 // "Reveal in scene file" context-menu item (item 3):
                 // Rasterizer/Film rows have no chunk address (registry/
@@ -488,31 +615,196 @@ void OutlinerWidget::rebuild()
                 // canMutate split so a future divergence between the two
                 // gates doesn't require touching every call site.
                 const bool canMutate = canReveal;
-                childRow->setContextMenuPolicy(Qt::CustomContextMenu);
-                connect(childRow, &QWidget::customContextMenuRequested, this,
-                        [this, childRow, cat = def.category, childName, canReveal, canMutate](const QPoint& pos) {
-                    QMenu menu(childRow);
-                    QAction* revealAction = menu.addAction(tr("Reveal in scene file"));
-                    revealAction->setEnabled(canReveal);
-                    menu.addSeparator();
-                    QAction* duplicateAction = menu.addAction(tr("Duplicate"));
-                    duplicateAction->setEnabled(canMutate);
-                    QAction* deleteAction = menu.addAction(tr("Delete"));
-                    deleteAction->setEnabled(canMutate);
-                    QAction* triggered = menu.exec(childRow->mapToGlobal(pos));
-                    if (triggered == revealAction) {
-                        emit revealRequested(cat, childName);
-                    } else if (triggered == duplicateAction) {
-                        emit duplicateRequested(cat, childName);
-                    } else if (triggered == deleteAction) {
-                        emit deleteRequested(cat, childName);
-                    }
-                });
 
-                m_listLayout->addWidget(childRow);
+                m_listLayout->addWidget(
+                    buildEntityRow(def.category, childName, kChildIndent,
+                                   isSelected, isActive, canReveal, canMutate));
             }
         }
     }
 
     m_countLabel->setText(tr("%1 entities").arg(totalEntities));
+}
+
+// ============================================================
+// Row builders (arc-86 slice 5)
+// ============================================================
+//
+// Factored out of rebuild() so a group's MEMBER rows are literally the
+// same row as a flat category child -- mirroring OutlinerView.swift,
+// which reuses `OutlinerChildRow` for members instead of growing a
+// second row type.  Both builders parent to m_listHolder (like every
+// other row rebuild() creates) and are pure constructors: they read no
+// state rebuild() hasn't already resolved, so rebuild() stays the single
+// place that decides WHAT is on screen.
+
+QWidget* OutlinerWidget::buildEntityRow(Category selectCat, const QString& name, int leftIndent,
+                                        bool isSelected, bool isActive,
+                                        bool canReveal, bool canMutate,
+                                        bool canDelete, const QString& deleteDisabledTip)
+{
+    auto* childRow = new ClickableRow(
+        [this, selectCat, name]() { selectChild(selectCat, name); }, m_listHolder);
+    childRow->setStyleSheet(QStringLiteral(
+        "background-color: %1; border-radius: %2px;")
+        .arg(isSelected
+            ? Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(),
+                                  Theme::accent.blue(), static_cast<int>(0.14 * 255)))
+            : QStringLiteral("transparent"))
+        .arg(Theme::radiusSmall));
+    auto* childLayout = new QHBoxLayout(childRow);
+    childLayout->setContentsMargins(leftIndent, 4, 8, 4);
+    childLayout->setSpacing(7);
+
+    auto* childLabel = new QLabel(name, childRow);
+    childLabel->setFont(Theme::sans(11));
+    // Selected text is Theme::textPrimary, not the Mac's literal
+    // `.white` (OutlinerView.swift:296): the selected fill is only
+    // a 14%-alpha accent tint over bgPanel, so pure white is
+    // unreadable on the Light palette's near-white bgPanel.
+    // textPrimary is near-white in Dark (matches the Mac look)
+    // and flips to near-black in Light.
+    childLabel->setStyleSheet(QStringLiteral("color: %1;")
+        .arg(Theme::hex(isSelected ? Theme::textPrimary : Theme::textMuted)));
+    childLabel->setToolTip(name);
+    childLayout->addWidget(childLabel);
+    childLayout->addStretch(1);
+
+    if (isActive) {
+        auto* activeBadge = new QLabel(tr("ACTIVE"), childRow);
+        activeBadge->setFont(Theme::mono(9));
+        activeBadge->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::accentLight)));
+        childLayout->addWidget(activeBadge);
+    }
+
+    childRow->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(childRow, &QWidget::customContextMenuRequested, this,
+            [this, childRow, selectCat, name, canReveal, canMutate,
+             canDelete, deleteDisabledTip](const QPoint& pos) {
+        QMenu menu(childRow);
+        // Action tooltips are OFF by default in QMenu; the disabled-Delete
+        // case is the only reason this row's menu has one, and a disabled
+        // item that cannot say WHY is exactly the dead control this fix
+        // exists to remove.
+        menu.setToolTipsVisible(true);
+        QAction* revealAction = menu.addAction(tr("Reveal in scene file"));
+        revealAction->setEnabled(canReveal);
+        menu.addSeparator();
+        QAction* duplicateAction = menu.addAction(tr("Duplicate"));
+        duplicateAction->setEnabled(canMutate);
+        QAction* deleteAction = menu.addAction(tr("Delete"));
+        deleteAction->setEnabled(canMutate && canDelete);
+        if (!canDelete && !deleteDisabledTip.isEmpty()) deleteAction->setToolTip(deleteDisabledTip);
+        QAction* triggered = menu.exec(childRow->mapToGlobal(pos));
+        if (triggered == revealAction) {
+            emit revealRequested(selectCat, name);
+        } else if (triggered == duplicateAction) {
+            emit duplicateRequested(selectCat, name);
+        } else if (triggered == deleteAction) {
+            emit deleteRequested(selectCat, name);
+        }
+    });
+
+    return childRow;
+}
+
+QWidget* OutlinerWidget::buildGroupRow(const QString& groupName, int memberCount,
+                                       bool expanded, bool isSelected)
+{
+    // Selection behaves exactly like any other entity row: a click anywhere
+    // on the row that is NOT the disclosure control selects the group as
+    // Category::Group, which is what drives the group's own
+    // position/orientation/scale panel.
+    auto* row = new ClickableRow(
+        [this, groupName]() { selectChild(Category::Group, groupName); }, m_listHolder);
+    row->setStyleSheet(QStringLiteral(
+        "background-color: %1; border-radius: %2px;")
+        .arg(isSelected
+            ? Theme::rgba(QColor(Theme::accent.red(), Theme::accent.green(),
+                                  Theme::accent.blue(), static_cast<int>(0.14 * 255)))
+            : QStringLiteral("transparent"))
+        .arg(Theme::radiusSmall));
+    auto* rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(kChildIndent, 4, 8, 4);
+    rowLayout->setSpacing(7);
+
+    // Disclosure control.  A QToolButton (not a QLabel like the category
+    // header's chevron) precisely BECAUSE it accepts mouse events: it
+    // consumes the click instead of letting it fall through to the
+    // ClickableRow underneath, which is what keeps "open the group" and
+    // "select the group" as two separate gestures on one row.  Same
+    // icon-only autoRaise recipe as the category header's "+" button above.
+    if (memberCount > 0) {
+        auto* disclose = new QToolButton(row);
+        disclose->setIcon(Theme::icon(
+            expanded ? QStringLiteral("chevron-down") : QStringLiteral("chevron-right"),
+            9, Theme::textDim, Theme::textDisabled, Theme::textPrimary));
+        disclose->setIconSize(QSize(9, 9));
+        disclose->setAutoRaise(true);
+        disclose->setCursor(Qt::PointingHandCursor);
+        disclose->setFixedSize(kDiscloseSize, kDiscloseSize);
+        disclose->setStyleSheet(QStringLiteral("QToolButton { border: none; padding: 0; }"));
+        disclose->setToolTip(expanded ? tr("Collapse group") : tr("Expand group"));
+        connect(disclose, &QToolButton::clicked, this,
+                [this, groupName]() { toggleGroup(groupName); });
+        rowLayout->addWidget(disclose);
+    } else {
+        // Empty group: no control, but the same width reserved so its name
+        // stays column-aligned with the groups that do have one.
+        auto* spacer = new QWidget(row);
+        spacer->setFixedSize(kDiscloseSize, kDiscloseSize);
+        rowLayout->addWidget(spacer);
+    }
+
+    auto* label = new QLabel(groupName, row);
+    label->setFont(Theme::sans(11));
+    label->setStyleSheet(QStringLiteral("color: %1;")
+        .arg(Theme::hex(isSelected ? Theme::textPrimary : Theme::textMuted)));
+    label->setToolTip(groupName);
+    rowLayout->addWidget(label);
+    rowLayout->addStretch(1);
+
+    // Member count, styled like the category headers' count for the same
+    // reason: a group row is a container row, not a leaf.
+    auto* count = new QLabel(QString::number(memberCount), row);
+    count->setFont(Theme::mono(10));
+    count->setStyleSheet(QStringLiteral("color: %1;").arg(Theme::hex(Theme::textDisabled)));
+    rowLayout->addWidget(count);
+
+    // Context menu: "Reveal in scene file" ONLY.  Duplicate and Delete are
+    // DELIBERATELY omitted (not merely disabled) -- same decision as
+    // OutlinerView.swift's groupRow, and for two concrete reasons on top of
+    // its "a control that may half-work is worse than none":
+    //
+    //  * Duplicate copies the chunk bytes verbatim and only rewrites its
+    //    `name` (SceneEditController::DuplicateEntity), so the copy would
+    //    list the SAME `member` objects.  Both groups then push their matrix
+    //    onto those objects at derive time (G_dup x G_orig x M) and every
+    //    member silently double-transforms.  A correct group duplicate has
+    //    to deep-copy the members too -- a core-side verb this slice lacks.
+    //  * Delete removes the `group` chunk, which does NOT delete anything
+    //    the user can see: the members survive as ordinary objects and
+    //    merely lose the group's transform, i.e. they all JUMP to their
+    //    authored positions.  That is an "Ungroup" verb wearing a "Delete"
+    //    label.  When an Ungroup verb exists it belongs here under its own
+    //    name.
+    //
+    // Group CRUD stays with the scene text this slice.  NB the two routes
+    // are not blocked at the core -- Stage A wired Category::Group into
+    // RoleKindSuffixForCategory, so DuplicateEntity/RemoveEntity WOULD
+    // apply if a shell called them; this widget simply does not offer them.
+    row->setContextMenuPolicy(Qt::CustomContextMenu);
+    const bool canReveal = m_sceneEditable;
+    connect(row, &QWidget::customContextMenuRequested, this,
+            [this, row, groupName, canReveal](const QPoint& pos) {
+        QMenu menu(row);
+        QAction* revealAction = menu.addAction(tr("Reveal in scene file"));
+        revealAction->setEnabled(canReveal);
+        QAction* triggered = menu.exec(row->mapToGlobal(pos));
+        if (triggered == revealAction) {
+            emit revealRequested(Category::Group, groupName);
+        }
+    });
+
+    return row;
 }

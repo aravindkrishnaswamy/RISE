@@ -1781,6 +1781,51 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return out;
 }
 
+- (NSArray<NSString *> *)groupMembers:(NSString *)groupName {
+    if (!_controller || !groupName || groupName.length == 0) return @[];
+    const char* utf8 = [groupName UTF8String];
+    if (!utf8) return @[];
+    // GroupMemberNames (the LIST accessor), not GroupMemberCount + N x
+    // GroupMemberName: the count+N pattern reads the controller's snapshot N+1
+    // separate times, so a structural edit landing between the count read and
+    // the name reads yields a short list padded with empty names -- and it made
+    // every one of those N+1 calls a snapshot query.  One call, one lock hold,
+    // internally consistent.  Mirrors ViewportBridge::groupMembers on Qt.
+    const std::vector<String> members = _controller->GroupMemberNames(String(utf8));
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:members.size()];
+    for (const String& member : members) {
+        // Same byte-preserving decode -categoryEntities: uses: a member name is
+        // an object name and can carry non-UTF8 bytes.
+        NSString *s = NamedViewDisplayName(member.c_str());
+        // NamedViewDisplayName("") returns a NON-nil @"" -- a bare `if (s)`
+        // would let it through and the outliner would render a blank but
+        // CLICKABLE row that selects the object named "".  The Qt twin guards
+        // with `!qname.isEmpty()`; this is that guard.  (The controller already
+        // drops unreadable members, so this should be unreachable -- it is the
+        // second of the two belts, kept because the failure mode is a live
+        // control that addresses nothing.)
+        if (s.length > 0) [out addObject:s];
+    }
+    return out;
+}
+
+- (BOOL)groupOwnTransform:(NSString *)groupName outMatrix:(double *)outMatrix {
+    if (!_controller || !groupName || groupName.length == 0 || !outMatrix) return NO;
+    // P3 fix (F4a, GUI-fix-round): zero-fill BEFORE the call.  SceneEditController::
+    // GroupOwnTransform's header contract is to leave `outMatrix` UNTOUCHED on refusal
+    // (unknown group; not yet primed; AMBIGUOUS group) "so a caller that pre-filled it
+    // with a sensible default keeps that default" -- this shim has no caller yet (no
+    // group gizmo wired up), so without a pre-fill here, a future caller that reads
+    // `outMatrix` without checking the BOOL return inherits an uninitialised stack read.
+    // Zero, not identity: RefreshGroupSnapshot_ zero-fills its own `own` field for the
+    // same reason (a stray read is unmistakably wrong rather than a plausible-looking
+    // identity matrix), so this matches the convention already established one layer down.
+    memset(outMatrix, 0, sizeof(double) * 16);
+    const char* utf8 = [groupName UTF8String];
+    if (!utf8) return NO;
+    return _controller->GroupOwnTransform(String(utf8), outMatrix) ? YES : NO;
+}
+
 - (NSString *)activeNameForCategory:(RISEViewportCategory)category {
     if (!_controller) return @"";
     const int catInt = static_cast<int>(category);
@@ -1807,6 +1852,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 9: return RISEViewportCategorySceneVariant;
         case 10: return RISEViewportCategoryPainter;
         case 11: return RISEViewportCategoryGeometry;   // GUI redesign 2026-07-22
+        case 12: return RISEViewportCategoryGroup;      // arc-86 slice 5
         default: return RISEViewportCategoryNone;
     }
 }

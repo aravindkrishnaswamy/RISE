@@ -1,0 +1,801 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           group_gallery.RISEscene                                                                 #
+#   Description:    A functional evaluation gallery for the `group` chunk shipped in arc 86 slice 1          #
+#                    (docs/agentic-redesign/86-object-grouping.md).  Open this in the RISE GUI and look at   #
+#                    it; it is an inspection instrument, not a benchmark.  Ten labelled specimens sit in a   #
+#                    2x5 grid (`g1_`..`g10_` name prefixes), each a self-contained demonstration of one      #
+#                    facet of group behaviour:                                                               #
+#                                                                                                             #
+#                      g1  Translation only.  A two-part "car" (body + yellow nose ball, authored at LOCAL   #
+#                          coordinates around its own origin) placed by a group with `position` only.        #
+#                          Correct = the car sits, unrotated, at this cell's slot.                            #
+#                      g2  Rotation + translation.  The SAME car shape, placed by a group with `orientation  #
+#                          0 90 0` in addition to `position`.  Correct = the nose ball has swung off the      #
+#                          +X facing of g1 onto a different world axis -- non-commuting composition is the    #
+#                          whole point, and this is the specimen that makes it visible: body and nose move    #
+#                          together as one rigid unit, rotated as a whole, not independently re-aimed.        #
+#                      g3  Scale.  The car placed by a group with non-uniform `scale 1.8 1 0.5` (no           #
+#                          rotation).  Correct = the whole assembly is visibly stretched in X and squashed    #
+#                          in Z -- both the box's geometry AND the nose's offset distance scale together      #
+#                          (scale is baked into the SAME composed matrix as position/orientation, so it       #
+#                          does not treat "shape" and "layout" differently).                                 #
+#                      g4  Full TRS.  The car placed by one group with `position` + `orientation 0 45 0` +    #
+#                          non-uniform `scale 1.3 1 0.6` all at once.  Correct = rotated AND stretched,       #
+#                          still one rigid unit.                                                              #
+#                      g5  A member in TWO groups.  A single box (g5_obj) is listed as a member of BOTH       #
+#                          `g5_inner` (a pure local translation, +2 on X, declared FIRST) and `g5_outer` (a   #
+#                          90-degree Y rotation plus this cell's `position`, declared SECOND).  Per the       #
+#                          `group` descriptor, "their transforms compose in document order" -- the LATER     #
+#                          group is outermost, so the finalized transform is g5_outer * g5_inner * M: the     #
+#                          box is shifted +2 along local X FIRST, and only THEN does the outer group's        #
+#                          rotation carry that shifted position around with it.  A small dark PIN marker      #
+#                          (g5_pin_obj, no group, not a specimen) sits at exactly g5_outer's authored          #
+#                          `position` -- the literal slot centre.  Correct = the box is visibly OFFSET from   #
+#                          the pin (along Z, not along X), because the inner translation got swept around by  #
+#                          the outer rotation before either was placed at the slot.  If composition were      #
+#                          commutative (order-independent) the box would sit displaced along X instead, on    #
+#                          the same side every time regardless of declaration order -- it does not.           #
+#                      g6  Single-member group.  A group naming exactly one `member` is legal on its own      #
+#                          (distinct from g5's two-groups-one-member case).  Correct = an ordinary rotated,   #
+#                          translated box, no different in kind from a multi-member group.                   #
+#                      g7  Grouped `csg_object`.  A sphere-minus-box CSG shape is itself the group's sole     #
+#                          member.  `csg_object` has no `scale` parameter of its own, and per the task brief  #
+#                          this group ALSO omits `scale` (defaults to 1 1 1) -- only `position` +             #
+#                          `orientation` are exercised here, deliberately.  Correct = the notched CSG shape   #
+#                          appears rotated and translated as a whole, proving group composition is agnostic   #
+#                          to what kind of object chunk the member is.                                        #
+#                      g8  Grouped matrix-authored member.  g8_obj is authored with a `matrix` param (a bare  #
+#                          translation matrix, not position/orientation/scale) instead of the usual fields,   #
+#                          then placed by a group with its own rotation + translation.  Correct = the group's #
+#                          rotation and translation still land correctly on top of the matrix-authored local  #
+#                          offset -- group composition does not care how the member's own local transform     #
+#                          was spelled.                                                                       #
+#                      g9  Mixed geometry kinds in one group.  A primitive sphere, a `sweep_geometry` rod,    #
+#                          and a `skeleton_geometry` limb -- three different geometry kinds shipped this      #
+#                          week and last -- are grouped together and rotated 15 degrees as one unit.           #
+#                          Correct = all three sub-parts keep their relative local layout and rotate/         #
+#                          translate together; none of them is treated specially by the group chunk.          #
+#                      g10 Ungrouped control.  The IDENTICAL "car" shape and IDENTICAL local coordinates as   #
+#                          g1 (same materials, too -- g10 reuses g1's own painters/materials so any colour    #
+#                          divergence would itself be a bug), but placed by HAND: each member's `position`    #
+#                          is authored as `local_offset + this_cell's_slot`, computed with no `group` chunk   #
+#                          at all.  Since g1's group is translation-only, this is the exact arithmetic a      #
+#                          translate-only group performs internally.  THIS IS THE SINGLE CLEAREST CHECK IN    #
+#                          THE SCENE: g1 and g10 sit in the SAME row (same distance from camera, so the same  #
+#                          perspective scale applies to both -- only their X slot differs), separated by      #
+#                          three other cells so both stay individually legible, built from the same local     #
+#                          shape and the same per-member offset arithmetic -- one via `group`, one by hand.   #
+#                          Crop the g1 cell and the g10 cell out of the render and diff them (after shifting  #
+#                          by the constant X offset between the two cells' slot positions) -- they should be  #
+#                          pixel-for-pixel identical.  If they are not, either the group chunk's derive-time  #
+#                          composition or this scene's hand arithmetic is wrong.                              #
+#                                                                                                             #
+#                    Lighting is two shadow-free-of-falloff DIRECTIONAL lights (not this repo's usual         #
+#                    area-light convention) specifically so g1 and g10, which sit at opposite corners of a    #
+#                    32-unit-wide grid, receive IDENTICAL illumination -- an omni/area light's 1/r^2 falloff  #
+#                    would itself introduce a few-percent brightness difference between the two corners and   #
+#                    confound the pixel-diff check above with a lighting artifact rather than a grouping one. #
+#                    This is a deliberate one-off exception to SCENE_CONVENTIONS.md's "area lights are the    #
+#                    norm" guidance, made for this specific measurement need.                                 #
+#                                                                                                             #
+#                    WHAT YOU CAN AND CANNOT EVALUATE IN THE GUI TODAY: groups are NOT in the outliner --     #
+#                    there is no `ChunkCategory::Group` -> `ViewportBridge::Category` mapping, the outliner   #
+#                    is a flat category->entity list, so there is no group node, no tree, and no way to       #
+#                    select or move an assembly as a unit.  What IS evaluable: every member (g1_body_obj,     #
+#                    g1_nose_obj, g5_obj, g7_csg, g9_skel_obj, ...) appears individually as an ordinary        #
+#                    object in the flat outliner; every member renders at its correctly composed transform    #
+#                    (that is what this whole gallery demonstrates); and -- the important regression check    #
+#                    -- dragging a grouped member with the viewport gizmo must NOT jump by an extra copy of   #
+#                    the group's transform.  That was a real P1 found in the arc-86 slice-1 fix round:        #
+#                    `SceneEditor::CommitPendingCstObjectTransforms` used to snapshot the member's already-    #
+#                    composed `G * M` transform and write it straight back as the object's `matrix` param, so #
+#                    the next derive re-applied the group's push ON TOP of that, giving `G * G * M` --        #
+#                    squaring the group's transform on every single commit, unbounded, on every gizmo drag or #
+#                    transform-panel edit.  It was fixed by dividing the side-index's `G` back out before      #
+#                    writing (`G^-1 * final`).  To confirm the fix by hand: open this scene in the GUI, grab  #
+#                    any grouped member (e.g. g1_body_obj or g4_nose_obj) with the transform gizmo, nudge it   #
+#                    slightly, and release -- it should move by exactly the nudge, not jump or drift; repeat  #
+#                    the drag a few times in a row and confirm it does not walk or compound.                  #
+#                                                                                                              #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#                                                                                                             #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/group_gallery
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1200
+	height			700
+}
+
+pinhole_camera
+{
+	location			0 15.5 12
+	lookat				0 0.6 -3.8
+	up					0 1 0
+	fov					62.0
+}
+
+##################################################
+# Painters + materials -- one pair per specimen part.  g10 (the
+# ungrouped control) deliberately REUSES g1's body/nose materials
+# rather than declaring its own, so any colour drift between the two
+# would itself be a visible bug.
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_g1_body
+	color				0.75 0.2 0.15
+}
+lambertian_material
+{
+	name				mat_g1_body
+	reflectance			pnt_g1_body
+}
+
+uniformcolor_painter
+{
+	name				pnt_nose
+	color				0.95 0.85 0.15
+}
+lambertian_material
+{
+	name				mat_nose
+	reflectance			pnt_nose
+}
+
+uniformcolor_painter
+{
+	name				pnt_g2_body
+	color				0.2 0.45 0.8
+}
+lambertian_material
+{
+	name				mat_g2_body
+	reflectance			pnt_g2_body
+}
+
+uniformcolor_painter
+{
+	name				pnt_g3_body
+	color				0.3 0.68 0.32
+}
+lambertian_material
+{
+	name				mat_g3_body
+	reflectance			pnt_g3_body
+}
+
+uniformcolor_painter
+{
+	name				pnt_g4_body
+	color				0.62 0.28 0.72
+}
+lambertian_material
+{
+	name				mat_g4_body
+	reflectance			pnt_g4_body
+}
+
+uniformcolor_painter
+{
+	name				pnt_g5
+	color				0.9 0.5 0.12
+}
+lambertian_material
+{
+	name				mat_g5
+	reflectance			pnt_g5
+}
+
+uniformcolor_painter
+{
+	name				pnt_pin
+	color				0.05 0.05 0.05
+}
+lambertian_material
+{
+	name				mat_pin
+	reflectance			pnt_pin
+}
+
+uniformcolor_painter
+{
+	name				pnt_g6
+	color				0.55 0.75 0.22
+}
+lambertian_material
+{
+	name				mat_g6
+	reflectance			pnt_g6
+}
+
+uniformcolor_painter
+{
+	name				pnt_g7
+	color				0.8 0.4 0.6
+}
+lambertian_material
+{
+	name				mat_g7
+	reflectance			pnt_g7
+}
+
+uniformcolor_painter
+{
+	name				pnt_g8
+	color				0.25 0.72 0.75
+}
+lambertian_material
+{
+	name				mat_g8
+	reflectance			pnt_g8
+}
+
+uniformcolor_painter
+{
+	name				pnt_g9_prim
+	color				0.9 0.6 0.18
+}
+lambertian_material
+{
+	name				mat_g9_prim
+	reflectance			pnt_g9_prim
+}
+
+uniformcolor_painter
+{
+	name				pnt_g9_sweep
+	color				0.5 0.5 0.9
+}
+lambertian_material
+{
+	name				mat_g9_sweep
+	reflectance			pnt_g9_sweep
+}
+
+uniformcolor_painter
+{
+	name				pnt_g9_skel
+	color				0.9 0.3 0.5
+}
+lambertian_material
+{
+	name				mat_g9_skel
+	reflectance			pnt_g9_skel
+}
+
+uniformcolor_painter
+{
+	name				pnt_ground
+	color				0.4 0.4 0.42
+}
+lambertian_material
+{
+	name				mat_ground
+	reflectance			pnt_ground
+}
+
+##################################################
+# g1 -- TRANSLATION ONLY.  "Car" body + nose authored at LOCAL
+# coordinates around the assembly's own origin; the group applies
+# `position` only (orientation/scale left at their identity defaults).
+##################################################
+
+box_geometry
+{
+	name				g1_body_geo
+	width				2.0
+	height				0.5
+	depth				0.8
+}
+standard_object
+{
+	name				g1_body_obj
+	geometry			g1_body_geo
+	material			mat_g1_body
+	position			0 0.25 0
+}
+
+sphere_geometry
+{
+	name				g1_nose_geo
+	radius				0.3
+}
+standard_object
+{
+	name				g1_nose_obj
+	geometry			g1_nose_geo
+	material			mat_nose
+	position			1.3 0.3 0
+}
+
+group
+{
+	name			g1_group
+	member			g1_body_obj
+	member			g1_nose_obj
+	position		-16 0 -8
+}
+
+##################################################
+# g2 -- ROTATION + TRANSLATION.  Same local car shape as g1; the group
+# adds `orientation 0 90 0`, swinging the nose off its g1 (+X) facing.
+##################################################
+
+box_geometry
+{
+	name				g2_body_geo
+	width				2.0
+	height				0.5
+	depth				0.8
+}
+standard_object
+{
+	name				g2_body_obj
+	geometry			g2_body_geo
+	material			mat_g2_body
+	position			0 0.25 0
+}
+
+sphere_geometry
+{
+	name				g2_nose_geo
+	radius				0.3
+}
+standard_object
+{
+	name				g2_nose_obj
+	geometry			g2_nose_geo
+	material			mat_nose
+	position			1.3 0.3 0
+}
+
+group
+{
+	name			g2_group
+	member			g2_body_obj
+	member			g2_nose_obj
+	position		-8 0 -8
+	orientation		0 90 0
+}
+
+##################################################
+# g3 -- SCALE.  Same local car shape; the group applies a non-uniform
+# `scale 1.8 1 0.5` with no rotation -- both the box geometry and the
+# nose's offset distance stretch/squash together.
+##################################################
+
+box_geometry
+{
+	name				g3_body_geo
+	width				2.0
+	height				0.5
+	depth				0.8
+}
+standard_object
+{
+	name				g3_body_obj
+	geometry			g3_body_geo
+	material			mat_g3_body
+	position			0 0.25 0
+}
+
+sphere_geometry
+{
+	name				g3_nose_geo
+	radius				0.3
+}
+standard_object
+{
+	name				g3_nose_obj
+	geometry			g3_nose_geo
+	material			mat_nose
+	position			1.3 0.3 0
+}
+
+group
+{
+	name			g3_group
+	member			g3_body_obj
+	member			g3_nose_obj
+	position		0 0 -8
+	scale			1.8 1 0.5
+}
+
+##################################################
+# g4 -- FULL TRS.  Same local car shape; the group applies `position`
+# + `orientation 0 45 0` + non-uniform `scale 1.3 1 0.6` together.
+##################################################
+
+box_geometry
+{
+	name				g4_body_geo
+	width				2.0
+	height				0.5
+	depth				0.8
+}
+standard_object
+{
+	name				g4_body_obj
+	geometry			g4_body_geo
+	material			mat_g4_body
+	position			0 0.25 0
+}
+
+sphere_geometry
+{
+	name				g4_nose_geo
+	radius				0.3
+}
+standard_object
+{
+	name				g4_nose_obj
+	geometry			g4_nose_geo
+	material			mat_nose
+	position			1.3 0.3 0
+}
+
+group
+{
+	name			g4_group
+	member			g4_body_obj
+	member			g4_nose_obj
+	position		8 0 -8
+	orientation		0 45 0
+	scale			1.3 1 0.6
+}
+
+##################################################
+# g5 -- A MEMBER IN TWO GROUPS, non-commuting.  g5_obj is a member of
+# BOTH g5_inner (pure local translation, declared FIRST) and g5_outer
+# (rotation + this cell's placement, declared SECOND).  Per the
+# `group` descriptor, "their transforms compose in document order" --
+# the later group is outermost, so the finalized transform is
+# g5_outer * g5_inner * M: the +2-on-local-X shift happens BEFORE the
+# 90-degree rotation, so the rotation carries that shifted position
+# around with it.  g5_pin_obj (an ordinary standalone object, not part
+# of either group) marks g5_outer's raw `position` for comparison --
+# correct behaviour is g5_obj sitting visibly OFF the pin.
+##################################################
+
+box_geometry
+{
+	name				g5_geo
+	width				1.2
+	height				0.4
+	depth				0.6
+}
+standard_object
+{
+	name				g5_obj
+	geometry			g5_geo
+	material			mat_g5
+	position			0 0.2 0
+}
+
+group
+{
+	name			g5_inner
+	member			g5_obj
+	position		2 0 0
+}
+
+group
+{
+	name			g5_outer
+	member			g5_obj
+	position		16 0 0
+	orientation		0 90 0
+}
+
+sphere_geometry
+{
+	name				g5_pin_geo
+	radius				0.15
+}
+standard_object
+{
+	name				g5_pin_obj
+	geometry			g5_pin_geo
+	material			mat_pin
+	position			16 0.15 0
+}
+
+##################################################
+# g6 -- SINGLE-MEMBER GROUP.  A group naming exactly one `member` is
+# legal on its own (distinct from g5's two-groups-one-member case).
+##################################################
+
+box_geometry
+{
+	name				g6_geo
+	width				1.4
+	height				0.5
+	depth				0.8
+}
+standard_object
+{
+	name				g6_obj
+	geometry			g6_geo
+	material			mat_g6
+	position			0 0.25 0
+}
+
+group
+{
+	name			g6_group
+	member			g6_obj
+	position		-16 0 0
+	orientation		0 60 0
+}
+
+##################################################
+# g7 -- GROUPED csg_object.  A sphere-minus-box CSG shape is the
+# group's sole member.  `csg_object` has no `scale` parameter of its
+# own, and per the task brief this group ALSO omits `scale`
+# (defaults to 1 1 1) -- only `position` + `orientation` exercised.
+##################################################
+
+sphere_geometry
+{
+	name				g7_a_geo
+	radius				0.75
+}
+standard_object
+{
+	name				g7_a_obj
+	geometry			g7_a_geo
+	material			mat_g7
+	position			0 0.5 0
+}
+
+box_geometry
+{
+	name				g7_b_geo
+	width				1.0
+	height				1.0
+	depth				1.0
+}
+standard_object
+{
+	name				g7_b_obj
+	geometry			g7_b_geo
+	material			mat_g7
+	position			0.45 0.65 0.25
+}
+
+csg_object
+{
+	name				g7_csg
+	obja				g7_a_obj
+	objb				g7_b_obj
+	operation			subtraction
+	material			mat_g7
+}
+
+group
+{
+	name			g7_group
+	member			g7_csg
+	position		-8 0 0
+	orientation		0 30 0
+}
+
+##################################################
+# g8 -- GROUPED MATRIX-AUTHORED MEMBER.  g8_obj is authored with a
+# `matrix` param (a bare translation, not position/orientation/scale)
+# instead of the usual fields; the group's own rotation + translation
+# must still land correctly on top of it.
+##################################################
+
+box_geometry
+{
+	name				g8_geo
+	width				1.0
+	height				0.6
+	depth				1.0
+}
+standard_object
+{
+	name				g8_obj
+	geometry			g8_geo
+	material			mat_g8
+	matrix				1 0 0 0  0 1 0 0  0 0 1 0  0.5 0.3 0 1
+}
+
+group
+{
+	name			g8_group
+	member			g8_obj
+	position		0 0 0
+	orientation		0 -30 0
+}
+
+##################################################
+# g9 -- MIXED GEOMETRY KINDS IN ONE GROUP.  A primitive sphere, a
+# sweep_geometry rod, and a skeleton_geometry limb, grouped together
+# and rotated 15 degrees as one unit.
+##################################################
+
+sphere_geometry
+{
+	name				g9_prim_geo
+	radius				0.4
+}
+standard_object
+{
+	name				g9_prim_obj
+	geometry			g9_prim_geo
+	material			mat_g9_prim
+	position			-1.6 0.4 0
+}
+
+sweep_geometry
+{
+	name				g9_sweep_geo
+	profile_point			0.15 0.15
+	profile_point			-0.15 0.15
+	profile_point			-0.15 -0.15
+	profile_point			0.15 -0.15
+	point				-0.6 0.3 0
+	point				0.2 0.6 0.25
+	point				1.0 0.3 0
+	n_len				24
+}
+standard_object
+{
+	name				g9_sweep_obj
+	geometry			g9_sweep_geo
+	material			mat_g9_sweep
+}
+
+skeleton_geometry
+{
+	name				g9_skel_geo
+	joint				j0 none 1.2 0.3 0    0.22
+	joint				j1 j0   1.7 0.8 0.15 0.16
+	joint				j2 j1   2.0 1.3 0.05 0.08
+	blend				0.5
+}
+standard_object
+{
+	name				g9_skel_obj
+	geometry			g9_skel_geo
+	material			mat_g9_skel
+}
+
+group
+{
+	name			g9_group
+	member			g9_prim_obj
+	member			g9_sweep_obj
+	member			g9_skel_obj
+	position		8 0 0
+	orientation		0 15 0
+}
+
+##################################################
+# g10 -- UNGROUPED CONTROL.  The identical "car" shape and identical
+# local coordinates as g1 (same materials, too), but each member's
+# `position` is authored BY HAND as `local_offset + this cell's slot
+# (16 0 -8)` -- no `group` chunk at all.  Since g1's group is
+# translation-only, this is the exact arithmetic a translate-only
+# group performs internally.  g10 shares g1's Z (same camera distance,
+# same perspective scale) so the two are a fair pixel-for-pixel
+# comparison -- crop the g1 cell and the g10 cell and diff them (after
+# shifting by the constant X offset between the two cells) -- they
+# should be pixel-for-pixel identical.
+##################################################
+
+box_geometry
+{
+	name				g10_body_geo
+	width				2.0
+	height				0.5
+	depth				0.8
+}
+standard_object
+{
+	name				g10_body_obj
+	geometry			g10_body_geo
+	material			mat_g1_body
+	position			16 0.25 -8
+}
+
+sphere_geometry
+{
+	name				g10_nose_geo
+	radius				0.3
+}
+standard_object
+{
+	name				g10_nose_obj
+	geometry			g10_nose_geo
+	material			mat_nose
+	position			17.3 0.3 -8
+}
+
+##################################################
+# Ground, for shadow/contact context across the whole gallery.
+##################################################
+
+clippedplane_geometry
+{
+	name				ground_geo
+	pta					-22 0 -14
+	ptb					 22 0 -14
+	ptc					 22 0  10
+	ptd					-22 0  10
+}
+
+standard_object
+{
+	name				ground
+	geometry			ground_geo
+	material			mat_ground
+}
+
+##################################################
+# Lights -- two DIRECTIONAL lights (no distance falloff), deliberately
+# chosen over this repo's usual area-light convention so g1 and g10,
+# at opposite corners of a 32-unit-wide grid, receive identical
+# illumination for the pixel-diff correctness check.  `direction` is
+# FROM-surface-TO-light per SCENE_CONVENTIONS.md.
+##################################################
+
+directional_light
+{
+	name				keylight
+	power				3.0
+	color				1.0 1.0 1.0
+	direction			0.35 0.85 0.35
+}
+
+directional_light
+{
+	name				filllight
+	power				1.1
+	color				1.0 1.0 1.0
+	direction			-0.4 0.5 -0.55
+}
+
+directional_light
+{
+	name				rimlight
+	power				0.8
+	color				1.0 1.0 1.0
+	direction			0.6 0.35 -0.7
+}
+
+directional_light
+{
+	name				toplight
+	power				0.6
+	color				1.0 1.0 1.0
+	direction			0.05 0.97 0.08
+}

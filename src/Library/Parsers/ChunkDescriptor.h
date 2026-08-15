@@ -144,11 +144,15 @@ namespace RISE
 		SceneVariant,
 		Group             // docs/agentic-redesign/86-object-grouping.md Slice 1: `group` -- composes a
 		                  // transform into named member objects at derive time.  No manager entity (the
-		                  // CST document is the index), so this category never appears in a manager-
-		                  // backed switch (DropChunkByCategory, EntityExists, CategoryForChunkKeyword,
+		                  // CST document is the index), so this category never appears in a MANAGER-
+		                  // BACKED switch: DropChunkByCategory, EntityExists and
 		                  // CandidateNamesForChunkCategory all correctly fall through to their existing
 		                  // `default:` arm for it -- see ChunkParserRegistry.cpp's GroupAsciiChunkParser
-		                  // comment for the full audit).
+		                  // comment for the full audit.  Slice 5 UPDATE: `group` IS now a UI-addressable
+		                  // SceneEditController::Category (enumerated from the Job's derive-time group
+		                  // side index, still not from a manager), so CategoryForChunkKeyword -- which
+		                  // maps a chunk keyword to a UI category, not to a manager -- DOES have a Group
+		                  // arm now; it is no longer part of the fall-through list above.
 	};
 
 	// Base class for per-chunk parse state.  In the registry-driven

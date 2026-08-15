@@ -5606,12 +5606,23 @@ namespace RISE
 					return buf;
 				}
 
-				//! One `part` line in SDFGeometry::ParsePartLines' 16-token
-				//! grammar: `<prim> <op> <k> <px py pz> <exDeg eyDeg ezDeg>
-				//! <sx sy sz> <a b c> <round>`.  Every bone/sphere this chunk
-				//! emits uses identity scale, so `sx sy sz` is hardcoded to
-				//! `1 1 1` rather than threading three more parameters nobody
-				//! would ever vary here.
+				// PLAIN `//`, not Doxygen `//!`: this documents a file-static
+				// helper inside an anonymous-namespace parser struct, not public
+				// API, and the grammar it has to quote contains `<a b c>` --
+				// which clang's -Wdocumentation-html (Xcode GUI build; the make
+				// build does not enable it) parses as an unclosed HTML <a> anchor
+				// inside a Doxygen comment.  Escaping the brackets would leave the
+				// one escaped code span in a file whose siblings are all
+				// unescaped; demoting the comment removes the whole class of
+				// problem instead, and loses nothing -- nothing generates docs
+				// from a local helper.
+				//
+				// One `part` line in SDFGeometry::ParsePartLines' 16-token
+				// grammar: `<prim> <op> <k> <px py pz> <exDeg eyDeg ezDeg>
+				// <sx sy sz> <a b c> <round>`.  Every bone/sphere this chunk
+				// emits uses identity scale, so `sx sy sz` is hardcoded to
+				// `1 1 1` rather than threading three more parameters nobody
+				// would ever vary here.
 				static std::string PartLine( const char* prim, double k,
 					double px, double py, double pz, double exDeg, double eyDeg, double ezDeg,
 					double a, double b, double c )
