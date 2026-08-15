@@ -3977,7 +3977,7 @@ void SceneEditController::RefreshGroupSnapshot_() const
 		if( mUi.groupsPrimed
 		 && mUi.groupsStampUuid  == hv.uuid
 		 && mUi.groupsStampRev   == hv.revision
-		 /* RED-PROVE F3: epoch term temporarily removed */ ) return;                    // already current: no rebuild
+		 && mUi.groupsStampEpoch == epoch ) return;                    // already current: no rebuild
 	}
 
 	// Build into a local while holding mMutex; publish with a brief leaf hold.
