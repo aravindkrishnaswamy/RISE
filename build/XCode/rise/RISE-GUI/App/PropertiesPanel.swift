@@ -99,7 +99,6 @@ private func categoryTitle(_ cat: RISEViewportCategory) -> String {
     case .sceneVariant: return "Variants"
     case .painter:      return "Painters"
     case .geometry:     return "Geometry"
-    case .group:        return "Groups"      // arc-86 slice 5
     case .none:         return "Scene"
     default:            return "Scene"
     }
@@ -123,7 +122,6 @@ private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     case .sceneVariant: return "⧉"
     case .painter:      return "▧"
     case .geometry:     return "◇"
-    case .group:        return "❏"          // arc-86 slice 5: a group is a container of objects
     case .none:         return "•"
     default:            return "•"
     }

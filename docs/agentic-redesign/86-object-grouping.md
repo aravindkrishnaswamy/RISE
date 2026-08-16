@@ -1,6 +1,22 @@
 # 86 — Hierarchical Object Grouping
 
-**Status: DESIGN (2026-08-14) — no code.**  Successor concern to the
+> **⚠ SUPERSEDED 2026-08-15 by [87 — Recursive Scene Graph](87-recursive-scene-graph.md),
+> and the slice-1 code it describes as SHIPPED has been DELETED from the tree
+> (87 §3, step 0).**  There is no `group` chunk, no `ChunkCategory::Group`, no
+> `IJob` group virtual, no group side index, and no group row in either
+> outliner.  Read this document as HISTORY only: everything below describing
+> shipped behaviour is false as of 87 step 0.  It is kept in tree for one
+> reason — §3's record of the two P1 hazards (the GUI transform commit
+> squaring the group matrix; `override_object` erasing it).  Both came from
+> composing transforms at derive time onto a transform stack that never
+> self-clears, and 87's rule that composition MUST go through
+> `FinalizeTransformations( parentWorld )` — never the stack — exists to make
+> that bug class structurally impossible.
+
+**Status when written: DESIGN (2026-08-14) — no code.**  (Slice 1 later
+shipped, and was then deleted again by 87 step 0 — see the banner above; the
+"SHIPPED" claims in §3 and §4 describe code that is no longer in the tree.)
+Successor concern to the
 geometry-expressiveness work in [85](85-geometry-expressiveness-candidates.md):
 richer geometry made individual objects better; grouping makes SETS of
 objects addressable, placeable, and reusable — by the agent, by the GUI,

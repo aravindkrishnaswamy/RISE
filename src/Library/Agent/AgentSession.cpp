@@ -4205,7 +4205,6 @@ namespace RISE
 					case ChunkCategory::IrradianceCache:    return "irradiance_cache";
 					case ChunkCategory::Animation:           return "animation";
 					case ChunkCategory::SceneVariant:        return "scene_variant";
-					case ChunkCategory::Group:               return "group";
 				}
 				return "chunk";
 			}

@@ -3328,14 +3328,6 @@ bool SelectionStillResolves( const IJobPriv& job,
 		IGeometryManager* m = const_cast<IJobPriv&>( job ).GetGeometries();
 		return m && m->GetItem( name.c_str() ) != 0;
 	}
-	case Cat::Group: {
-		// arc-86 slice 5: a `group` has NO manager entity, so the Job's derive-time
-		// side index is the only record that it exists -- validate against that, so
-		// an Undo that removes the `group` chunk drops the stale selection exactly
-		// like a removed geometry does.  (Falling through to `default: return true`
-		// would leave the panel addressing a group that no longer derives.)
-		return job.IsGroupDeclared( name.c_str() );
-	}
 	case Cat::Rasterizer:
 	case Cat::Film:
 	case Cat::None:
@@ -3938,169 +3930,6 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	return mUi.activeNames[ci];
 }
 
-// arc-86 slice 5 (stage B): the group-membership snapshot refresh.  Policy is
-// character-for-character RefreshEnumSnapshot_'s, and deliberately so -- the
-// hazard is identical.  Job::m_groupsByName is a bare std::map written by the
-// derive/edit path with no synchronization of its own, so a UI poll reading it
-// live would race a re-derive's clear-and-rebuild (InitializeContainers wipes
-// the map, then every `group` Finalize repopulates it); a std::map rebuild
-// under an unsynchronized read is a UAF, not merely a stale answer.  Hence:
-//   * skip while a render owns the scene   -> serve the last known tree
-//   * try_lock, never block                -> no UI freeze, no deadlock if a
-//                                             dirty-changed listener re-enters
-//                                             on the mutating thread
-//   * publish under the leaf snapshot lock -> readers never touch mMutex
-// Unlike the per-category enum snapshot this rebuilds ALL groups at once: an
-// outliner walks every group each frame regardless, one lock acquisition keeps
-// the whole tree from one derive (no interleaving), and it makes PRUNING
-// natural -- the fresh map REPLACES the old one, so a group deleted by an edit
-// stops being served instead of lingering forever behind a name-keyed cache.
-//
-// And -- the reason this one is stamp-gated where RefreshEnumSnapshot_ is not
-// -- an all-groups rebuild on EVERY getter would be O(G^2 x M) per outliner
-// walk.  See the header doc for the stamp's three components and why they are
-// exhaustive.  The stamp is read (and the Job's version queried) UNDER mMutex,
-// so there is no unsynchronized read of mCstHeadVersion and no separate torn-
-// read window; the cost of the fast path is the try_lock plus three compares.
-void SceneEditController::RefreshGroupSnapshot_() const
-{
-	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
-	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
-	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
-
-	// Cheap validity stamp.  Both reads happen under mMutex, matching the rule
-	// the ApplyCst* commit paths already follow for mCstHeadVersion.
-	const RISE::Cst::CstHeadVersion hv = mJob.GetCstHeadVersion();
-	const unsigned int epoch = mSceneEpoch.load( std::memory_order_acquire );
-	{
-		std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
-		if( mUi.groupsPrimed
-		 && mUi.groupsStampUuid  == hv.uuid
-		 && mUi.groupsStampRev   == hv.revision
-		 && mUi.groupsStampEpoch == epoch ) return;                    // already current: no rebuild
-	}
-
-	// Build into a local while holding mMutex; publish with a brief leaf hold.
-	std::map<std::string, EditorUiSnapshot::GroupSnapshot> fresh;
-	CollectNamesCallback cb;
-	mJob.EnumerateGroupNames( cb );
-	for( const String& gname : cb.names ) {
-		const std::string key( gname.c_str() );
-		EditorUiSnapshot::GroupSnapshot snap;
-		const unsigned int n = mJob.GetGroupMemberCount( key.c_str() );
-		snap.members.reserve( n );
-		for( unsigned int i = 0; i < n; ++i ) {
-			char buf[512] = { 0 };
-			// A member the Job declines to write (out of range because the index
-			// moved under us, or a name too long to fit) is DROPPED, not stored as
-			// an empty string: an empty entry would render as a blank, clickable,
-			// unaddressable outliner row.
-			if( mJob.GetGroupMemberName( key.c_str(), i, buf, sizeof( buf ) ) ) {
-				if( buf[0] ) snap.members.push_back( String( buf ) );
-				// else: the Job returned true with a genuinely empty name (a
-				// defensive belt, not the truncation case below) -- drop
-				// silently, matching the pre-existing behaviour.
-			} else {
-				// P3 fix (F4b, GUI-fix-round): `i < n` is guaranteed in range (n was
-				// read moments ago under the SAME mMutex hold this whole rebuild runs
-				// under, and nothing else can mutate the document while we hold it), so
-				// the only realistic reason GetGroupMemberName refuses here is the
-				// documented one: the name plus its NUL does not fit the 512-byte
-				// outliner buffer (Job::GetGroupMemberName "REFUSE rather than
-				// half-succeed on an over-long name").  That member silently vanishes
-				// from every outliner build from here on with no way for the user to
-				// tell why their row disappeared -- warn once per (group, index) so
-				// they have somewhere to look.  Once, not every rebuild: this runs on
-				// every structural edit to ANY part of the scene (the stamp gates the
-				// whole snapshot, not just this group), so an unconditional warning
-				// would spam the log for the lifetime of the session.
-				const std::string warnKey = key + "#" + std::to_string( i );
-				if( mGroupMemberTruncationWarned.insert( warnKey ).second ) {
-					// Diagnostic-only recovery of a (possibly still-truncated) preview of
-					// the offending name, via a buffer far larger than any outliner needs --
-					// this does NOT change what gets stored in `snap.members` above (still
-					// dropped either way); it exists purely to make the warning actionable.
-					char diag[4096] = { 0 };
-					const bool gotDiag = mJob.GetGroupMemberName( key.c_str(), i, diag, sizeof( diag ) );
-					GlobalLog()->PrintEx( eLog_Warning,
-						"group `%s`: member #%u's name is too long to fit the outliner's 512-byte "
-						"buffer and was silently dropped from the group's row -- %s", key.c_str(), i,
-						gotDiag ? diag : "(name too long even for the diagnostic buffer)" );
-				}
-			}
-		}
-		// `own` is left ZEROED (not identity) when the Job declines -- an unknown
-		// or AMBIGUOUS group (two same-named `group` chunks with different
-		// transforms).  `ownValid` is the real signal; the zero fill just makes a
-		// stray read unmistakable rather than plausible, which an identity fill
-		// would not.
-		for( int k = 0; k < 16; ++k ) snap.own[k] = 0.0;
-		snap.ownValid = mJob.GetGroupOwnTransform( key.c_str(), snap.own );
-		fresh.emplace( key, std::move( snap ) );
-	}
-
-	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );              // leaf lock: never held across mMutex
-	mUi.groups.swap( fresh );
-	mUi.groupsPrimed     = true;
-	mUi.groupsStampUuid  = hv.uuid;
-	mUi.groupsStampRev   = hv.revision;
-	mUi.groupsStampEpoch = epoch;
-}
-
-unsigned int SceneEditController::GroupMemberCount( const String& groupName ) const
-{
-	if( groupName.size() <= 1 ) return 0;   // RISE String::size() counts the NUL
-	RefreshGroupSnapshot_();
-	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
-	const std::map<std::string, EditorUiSnapshot::GroupSnapshot>::const_iterator it =
-		mUi.groups.find( std::string( groupName.c_str() ) );
-	if( it == mUi.groups.end() ) return 0;
-	return static_cast<unsigned int>( it->second.members.size() );
-}
-
-String SceneEditController::GroupMemberName( const String& groupName, unsigned int idx ) const
-{
-	if( groupName.size() <= 1 ) return String();
-	RefreshGroupSnapshot_();
-	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
-	const std::map<std::string, EditorUiSnapshot::GroupSnapshot>::const_iterator it =
-		mUi.groups.find( std::string( groupName.c_str() ) );
-	if( it == mUi.groups.end() ) return String();
-	return idx < it->second.members.size() ? it->second.members[idx] : String();
-}
-
-// THE accessor an outliner should use: one refresh, one leaf-lock hold, one
-// internally-consistent list -- no count-then-N-names window for the member
-// list to change in.
-std::vector<String> SceneEditController::GroupMemberNames( const String& groupName ) const
-{
-	std::vector<String> out;
-	if( groupName.size() <= 1 ) return out;
-	RefreshGroupSnapshot_();
-	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
-	const std::map<std::string, EditorUiSnapshot::GroupSnapshot>::const_iterator it =
-		mUi.groups.find( std::string( groupName.c_str() ) );
-	if( it == mUi.groups.end() ) return out;
-	out = it->second.members;   // snapshot builder already dropped unreadable members
-	return out;
-}
-
-bool SceneEditController::GroupOwnTransform( const String& groupName, double outMatrix[16] ) const
-{
-	if( groupName.size() <= 1 || !outMatrix ) return false;
-	RefreshGroupSnapshot_();
-	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
-	const std::map<std::string, EditorUiSnapshot::GroupSnapshot>::const_iterator it =
-		mUi.groups.find( std::string( groupName.c_str() ) );
-	if( it == mUi.groups.end() ) return false;
-	// The Job declined for this group (unknown at build time, or an AMBIGUOUS
-	// duplicate name).  Refuse, leaving `outMatrix` untouched -- the header
-	// promises exactly that, and copying the zero fill would break it.
-	if( !it->second.ownValid ) return false;
-	for( int k = 0; k < 16; ++k ) outMatrix[k] = it->second.own[k];
-	return true;
-}
-
 unsigned int SceneEditController::CategoryEntityCountLocked_( Category cat ) const
 {
 	const IScene* scene = mJob.GetScene();
@@ -4181,26 +4010,6 @@ unsigned int SceneEditController::CategoryEntityCountLocked_( Category cat ) con
 		};
 		Count cb;
 		mJob.EnumerateGeometryNames( cb );
-		return cb.n;
-	}
-	case Category::Group: {
-		// arc-86 slice 5: a `group` chunk creates NO manager entity (design §3 --
-		// side index, deliberately NOT a phantom IObjectPriv), so this is the one
-		// category sourced from the Job's derive-time group index rather than from
-		// a GenericManager.  Enumeration is LEX-ordered (IJob::EnumerateGroupNames
-		// is backed by a std::map), matching every other name-managed category
-		// here.  Member order WITHIN a group is a separate question and stays
-		// AUTHORED order -- see IJob::GetGroupMemberName, which the outliner tree
-		// (stage B/C) reads; it is deliberately not sorted.
-		struct Count : public IEnumCallback<const char*> {
-			unsigned int n = 0;
-			bool operator()( const char* const& name ) override {
-				if( name ) ++n;
-				return true;
-			}
-		};
-		Count cb;
-		mJob.EnumerateGroupNames( cb );
 		return cb.n;
 	}
 	case Category::None:
@@ -4288,13 +4097,6 @@ String SceneEditController::CategoryEntityNameLocked_( Category cat, unsigned in
 		if( idx >= cb.names.size() ) return String();
 		return cb.names[idx];
 	}
-	case Category::Group: {
-		// arc-86 slice 5 -- see the matching arm in CategoryEntityCountLocked_.
-		CollectNamesCallback cb;
-		mJob.EnumerateGroupNames( cb );
-		if( idx >= cb.names.size() ) return String();
-		return cb.names[idx];
-	}
 	case Category::None:
 	default:
 		return String();
@@ -4348,7 +4150,6 @@ String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 	case Category::Medium:
 	case Category::Painter:
 	case Category::Geometry:
-	case Category::Group:
 	case Category::None:
 	default:
 		return String();
@@ -8237,7 +8038,6 @@ bool RoleKindSuffixForCategory( SceneEditController::Category cat, std::string& 
 	case Category::SceneVariant: outSuffix = "scene_variant";   return true;
 	case Category::Painter:      outSuffix = "painter";         return true;   // matches every "*_painter" chunk keyword (endsWith), same convention as ClassifyCstEntityKind's "_material"/"_light"/"_medium" suffixes
 	case Category::Geometry:     outSuffix = "geometry";        return true;   // matches every "*_geometry" chunk keyword (endsWith) -- GUI redesign 2026-07-22
-	case Category::Group:        outSuffix = "group";           return true;   // arc-86 slice 5: `group` is the sole chunk of this kind, matched by RoleMatchesKindConstraint's `role == roleKindSuffix` fast path -- no Cst.cpp registry arm needed
 	case Category::Rasterizer:
 	case Category::Film:
 	case Category::None:
@@ -8315,7 +8115,6 @@ SceneEditController::Category CategoryForChunkKeyword( const std::string& kw )
 			case ChunkCategory::Light:        return Cat::Light;
 			case ChunkCategory::Animation:    return Cat::Animation;
 			case ChunkCategory::SceneVariant: return Cat::SceneVariant;
-			case ChunkCategory::Group:        return Cat::Group;     // arc-86 slice 5: `group` is UI-addressable (enumerated from the Job's group side index, not a manager)
 			default:                          return Cat::None;      // not a UI-addressable category
 			}
 		};
@@ -9416,13 +9215,6 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		// see buildRowsFor's Painter case and this method's own header
 		// doc on Category::Painter).
 		return PanelMode::None;
-	case Category::Group:
-		// arc-86 slice 5: same convention as Painter/Geometry -- no dedicated
-		// PanelMode, so CurrentPanelHeader stays empty for a selected group and the
-		// shells read mUi.propertiesByCategory[Group] directly.  Listed explicitly
-		// (Geometry falls through to `default`) because this is a deliberate choice,
-		// not an oversight.
-		return PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -9653,23 +9445,6 @@ void SceneEditController::RefreshProperties()
 				"geometry", "Geometry chunk keyword" );
 			break;
 		}
-		case Category::Group: {
-			// arc-86 slice 5: identical surface to Painter/Geometry, and for the
-			// identical reason -- a `group` creates NO manager entity, so there is
-			// no live per-parameter getter at all; the CST chunk is the only source
-			// of truth for its position/orientation/scale.
-			//
-			// The `member` lines do NOT appear here: CstIntrospection::Inspect skips
-			// REPEATABLE descriptor params (occ-0 editing has no meaning for a
-			// repeated param), and `member` is repeatable.  That is the intended
-			// split -- members are a TREE, shown by the outliner (stage B/C) via
-			// IJob::GetGroupMemberCount / GetGroupMemberName in AUTHORED order, not
-			// a flat row in a properties panel.
-			if( selName.size() <= 1 ) break;
-			out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
-				"group", "Group chunk keyword" );
-			break;
-		}
 		case Category::None:
 		default:
 			break;
@@ -9724,12 +9499,8 @@ void SceneEditController::RefreshProperties()
 		// have inherited it.  Deliberately NOT extended to Animation /
 		// SceneVariant: their empty primary snapshot drives the shells'
 		// explanatory "selecting activates..." message.
-		// arc-86 slice 5: Group joins Painter/Geometry for the same reason --
-		// it too has no dedicated PanelMode, and a selected group with an empty
-		// primary snapshot would show the shells the same blank panel.
 		if( mSelectionCategory == Category::Painter
-		 || mSelectionCategory == Category::Geometry
-		 || mSelectionCategory == Category::Group )
+		 || mSelectionCategory == Category::Geometry )
 		{
 			primaryRows = byCat[ static_cast<int>( mSelectionCategory ) ];
 		}
@@ -14410,21 +14181,6 @@ bool SceneEditController::SetPropertyInner_(
 		if( targetName.size() <= 1 ) return false;
 		const AgentCommitResult r = ApplyAgentParamEditInner_(
 			targetName, String( "geometry" ), name, valueStr, nullptr );
-		return r.applied;
-	}
-
-	case Category::Group: {
-		// arc-86 slice 5: identical route to Painter/Geometry.  A group has no
-		// manager entity and therefore no live setter surface either -- the CST
-		// chunk IS the group.  Editing its position/orientation/scale re-derives
-		// (Cst.cpp's incremental guard always falls back to a FULL derive when a
-		// `group` is anywhere in the closure), which is exactly what has to happen:
-		// the group's transform is composed into every member at derive time, and a
-		// partial re-apply would double-compose it onto the members that were not
-		// in the closure.
-		if( targetName.size() <= 1 ) return false;
-		const AgentCommitResult r = ApplyAgentParamEditInner_(
-			targetName, String( "group" ), name, valueStr, nullptr );
 		return r.applied;
 	}
 

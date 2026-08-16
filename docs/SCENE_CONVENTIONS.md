@@ -423,16 +423,6 @@ hand-authored scenes use the Euler form for simplicity.
 
 `scale` is per-axis (`Vector3`, not scalar).
 
-**`group` member ordering:** a `group` chunk composes ONE transform
-(`position` * `orientation` * `scale`, the same composition as
-`standard_object`'s own fields above) into every object named by its
-`member` list.  Every `member` must be declared with a
-`standard_object`/`csg_object` chunk **before** the `group` chunk that
-places it — chunk references resolve by immediate manager lookup in
-document order, so a forward reference to a not-yet-declared object
-fails the load (same convention as `file_rasterizeroutput` needing its
-rasterizer chunk first, §10).
-
 ---
 
 ## 6. Coordinate system
@@ -574,8 +564,6 @@ rasterizer chunk must appear **before** it (same convention as
 `camera_defaults` before cameras).  A scene that declares
 `file_rasterizeroutput` first — or omits the rasterizer chunk
 entirely — fails to load with a "no rasterizer is set" diagnostic.
-(The `group` chunk has the same declare-before-reference trap on its
-`member` list — see §5.)
 
 ```
 # HDR primary — the integrator's verbatim radiometric output.

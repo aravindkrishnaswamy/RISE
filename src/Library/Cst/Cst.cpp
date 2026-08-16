@@ -1752,30 +1752,6 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		switch( cat ) {                                          // categories the apply handles
 			case ChunkCategory::Material: case ChunkCategory::Geometry:
 			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
-			// group guard (docs/agentic-redesign/86-object-grouping.md Slice 1, CORRECTED
-			// 2026-08-15 block): a `group` composes its transform into EVERY listed member's
-			// transform stack, and FinalizeTransformations never clears m_transformstack --
-			// only a MEMBER's own re-apply does, via Job::AddObject's ClearAllTransforms.
-			// This closure can contain a group two ways: (a) the group itself was edited
-			// directly, whose closure is {group} ALONE (nothing references a group, so the
-			// static reference graph's reverse-adjacency `dependents` has no forward-closure
-			// primitive to pull its members in) -- re-applying just the group would push a
-			// SECOND group matrix onto every member's ALREADY-composed stack; (b) a MEMBER
-			// was edited, correctly pulling the group in as its dependent -- but the group's
-			// Finalize touches EVERY member it lists, not just the one that triggered the
-			// closure, so re-applying {editedMember, group} without an untouched SIBLING
-			// member would double-compose the group's (unchanged) transform onto that
-			// sibling's stack, which nothing in this closure re-cleared. Both cases refuse
-			// to a full derive, which re-applies every chunk in document order and is
-			// therefore always correct.
-			case ChunkCategory::Group:
-				diags.push_back( node->role + " '" + name + "': a `group` composes its transform "
-					"into every listed member's transform stack, and only a member's OWN "
-					"re-apply clears that stack (FinalizeTransformations never does) -- an "
-					"incremental re-apply of a closure containing a group would double-compose "
-					"the group's transform onto a member not also re-applied in this closure; "
-					"fall back to a full derive" );
-				return 0;
 			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a scalar_painter has no colour-painter-manager entry for RemovePainter to drop); fall back to a full derive" ); return 0;
 		}
 		// Reversibility is PER-PARSER, not per-category (review P1.3/P1.5): refuse the

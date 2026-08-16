@@ -39,10 +39,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
-#include <map>
 #include <mutex>
-#include <set>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -290,33 +287,17 @@ namespace RISE
 			                  ///< this category this slice (no dedicated PanelMode value) —
 			                  ///< property rows are read via PropertyCountFor/PropertyNameFor
 			                  ///< (indexed directly by Category, not by the current panel).
-			Geometry   = 11,  ///< Geometry section (IGeometryManager; every "*_geometry"
+			Geometry   = 11   ///< Geometry section (IGeometryManager; every "*_geometry"
 			                  ///< chunk).  GUI redesign 2026-07-22: enumerated via
 			                  ///< IJob::EnumerateGeometryNames; property rows are the
 			                  ///< generic descriptor+CST surface (CstIntrospection); edits
 			                  ///< route through ApplyAgentParamEdit (entityKind
 			                  ///< "geometry").  Same PanelMode::None convention as Painter.
-			Group      = 12   ///< Groups section (`group` chunks; arc-86 slice 5, see
-			                  ///< docs/agentic-redesign/86-object-grouping.md).  A group
-			                  ///< creates NO manager entity, so this category is NOT
-			                  ///< manager-backed like the others -- it enumerates from the
-			                  ///< Job's derive-time group side index
-			                  ///< (IJob::EnumerateGroupNames, lex-ordered), and a group's
-			                  ///< MEMBERS are read in AUTHORED order via
-			                  ///< IJob::GetGroupMemberCount / GetGroupMemberName for the
-			                  ///< outliner tree.  Property rows and edits are the same
-			                  ///< generic descriptor+CST surface Painter/Geometry use
-			                  ///< (CstIntrospection::Inspect + ApplyAgentParamEdit with
-			                  ///< entityKind "group"), and the same PanelMode::None
-			                  ///< convention.  NB `member` rows do NOT appear in the
-			                  ///< properties panel: CstIntrospection::Inspect skips
-			                  ///< REPEATABLE params by design, and the outliner tree is
-			                  ///< where members belong.
 		};
 
-		//! Category array bound (None..Group).  PUBLIC so free helpers
+		//! Category array bound (None..Geometry).  PUBLIC so free helpers
 		//! (PropsForCat) and shells never mirror it as a stale literal.
-		static constexpr int kNumCategories = 13;
+		static constexpr int kNumCategories = 12;
 
 		//! Model-B F2 slice S1: render IDENTITY.  A monotonic id assigned to
 		//! every render this controller (or a headless AgentSession wrapping
@@ -2029,64 +2010,6 @@ namespace RISE
 
 		unsigned int CategoryEntityCount( Category cat ) const;
 		String       CategoryEntityName( Category cat, unsigned int idx ) const;
-
-		// Group membership (arc-86 slice 5, stage B) -----------------
-		//! The TREE level below Category::Group's entity list: the member
-		//! OBJECT NAMES of one group, in AUTHORED order (see
-		//! IJob::GetGroupMemberName -- deliberately NOT sorted, unlike the
-		//! lex-ordered group list CategoryEntityName serves).  A shell renders
-		//! these as a third outliner level under the group row, and selects a
-		//! clicked member as `Category::Object` (a member IS an ordinary object;
-		//! only the group row itself selects as Category::Group).
-		//!
-		//! SAME snapshot discipline as CategoryEntityCount/Name and for the same
-		//! reason: the Job's group index is a bare `std::map` mutated by the
-		//! derive/edit path with no synchronization of its own, so a UI poll must
-		//! never read it live.  These serve a per-group snapshot refreshed under
-		//! the mMutex try_lock, skipped entirely while `mRenderOwnsScene`, with
-		//! the PRIOR snapshot served on contention (stale beats empty, never
-		//! blocks, never deadlocks) -- see RefreshGroupSnapshot_.
-		//!
-		//! Consequence a caller must expect: immediately after a structural edit
-		//! that lands on another thread, one poll may still return the previous
-		//! member list.  The shells already re-poll on `SceneEpoch()`, which the
-		//! same edit bumps, so the next refresh converges.
-		//!
-		//! PREFER `GroupMemberNames` below for an outliner walk.  These two are
-		//! kept for callers that genuinely want one index (and for C-shaped
-		//! bindings), but the count-then-N-names pattern reads the snapshot N+1
-		//! separate times, and the member list can legitimately CHANGE between
-		//! the count read and the name reads (a structural edit landing on
-		//! another thread) -- so that pattern can index past the end and get an
-		//! empty name back.  The list accessor takes the leaf lock ONCE and is
-		//! internally consistent by construction.
-		unsigned int GroupMemberCount( const String& groupName ) const;
-		String       GroupMemberName( const String& groupName, unsigned int idx ) const;
-
-		//! THE outliner's read: one group's whole member list, in AUTHORED order,
-		//! from ONE snapshot refresh under ONE leaf-lock hold.  Empty vector for
-		//! an unknown/empty group name, for a group with no members, and -- per
-		//! the snapshot discipline above -- only ever the LAST KNOWN list while a
-		//! render owns the scene (never a spuriously blank one).  Never contains
-		//! an empty string: a member whose name could not be read is dropped by
-		//! the snapshot builder rather than served as a blank, unaddressable row.
-		std::vector<String> GroupMemberNames( const String& groupName ) const;
-
-		//! The named group's OWN composed transform (`T(position) * R(orientation)
-		//! * S(scale)` -- the exact matrix the derive pushed onto each member),
-		//! written column-major into `outMatrix` in Matrix4's `_00.._33` field
-		//! order, matching RISE_API_AddObjectMatrix.  This is NOT the member-keyed
-		//! ACCUMULATED product a multi-group member carries (see
-		//! IJob::GetGroupOwnTransform); it is the single group's own G, which is
-		//! what a group-level gizmo needs for its pivot.  Returns false LEAVING
-		//! `outMatrix` UNTOUCHED for an unknown group; for a group whose snapshot
-		//! has not been primed yet (a render owns the scene, or the refresh lost
-		//! the try_lock); and for an AMBIGUOUS group -- two `group` chunks sharing
-		//! one `name` but declaring different transforms, which the Job refuses to
-		//! resolve (IJob::GetGroupOwnTransform).  In every one of those cases the
-		//! caller's buffer is left exactly as it was, so a caller that pre-filled
-		//! it with a sensible default keeps that default.
-		bool         GroupOwnTransform( const String& groupName, double outMatrix[16] ) const;
 
 		//! Scene-level active entity for a category, independent of the
 		//! UI selection.  Camera → IScene::GetActiveCameraName; Rasterizer
@@ -4870,42 +4793,6 @@ namespace RISE
 		//! acquires mMutex (or anything else) while holding it.
 		void RefreshEnumSnapshot_( Category cat ) const;
 
-		//! arc-86 slice 5 (stage B): the group-membership twin of
-		//! RefreshEnumSnapshot_, with the IDENTICAL policy (skip while
-		//! mRenderOwnsScene, try_lock mMutex, publish under the leaf
-		//! mUiSnapshotMutex, serve the prior snapshot on contention).  Keyed by
-		//! GROUP NAME rather than by category, because the number of groups is
-		//! unbounded -- so unlike the fixed `[kNumCategories]` arrays this one
-		//! is a map, PRUNED on each successful refresh to the groups the Job
-		//! still declares (otherwise a deleted group's members would linger in
-		//! the snapshot forever and the outliner would keep offering rows for a
-		//! group that no longer derives).  A refresh rebuilds EVERY group's entry
-		//! in one lock acquisition: an outliner walks all of them per frame
-		//! anyway, and one pass keeps the whole tree internally consistent
-		//! instead of interleaving snapshots from different derives.
-		//!
-		//! CHEAP-VALIDITY STAMP (the reason this is not quadratic).  Every public
-		//! group getter calls this, and rebuilding all G groups x M members on
-		//! each of them would make one outliner walk O(G^2 x M) -- at G=50/M=100
-		//! that is tens of millions of member reads per structural edit, on the
-		//! UI thread.  So the rebuild is gated on a stamp taken UNDER mMutex:
-		//! `(CstHeadVersion.uuid, CstHeadVersion.revision, mSceneEpoch)`.  The
-		//! group index is a pure function of the derived document, and those
-		//! three cover every way it can change -- `revision` bumps on any
-		//! committed CST content edit (Job::BumpCstHeadRevision, incl. the group
-		//! param edits and their undos), `uuid` is re-minted on every load, and
-		//! `mSceneEpoch` covers the re-derives that reuse the same document text
-		//! (a scene-variant switch) plus every chunk CRUD.  Conservative by
-		//! construction: any of the three moving forces a rebuild, so the failure
-		//! mode of a future un-stamped mutation is a redundant rebuild, never a
-		//! silently frozen tree -- provided that mutation moves at least one of
-		//! them, which is also what the shells' own `SceneEpoch()` caching
-		//! already assumes.  The stamp is NOT recorded when the refresh bails
-		//! (render owns the scene / lost the try_lock), so those retry.
-		//! Post-gate cost per getter is one uncontended try_lock plus three
-		//! integer compares; the rebuild happens once per actual change.
-		void RefreshGroupSnapshot_() const;
-
 		//! Document-first ADR phase 2: THE unified UI read surface.  Every
 		//! public read accessor (properties, enumeration, jump rows) serves
 		//! this one struct under the one leaf mUiSnapshotMutex; the writers
@@ -4919,51 +4806,9 @@ namespace RISE
 			std::vector<CameraProperty> propertiesByCategory[kNumCategories];
 			std::vector<String>         entityNames[kNumCategories];
 			String                      activeNames[kNumCategories];
-
-			//! arc-86 slice 5 (stage B): one entry per DECLARED group, keyed by
-			//! group name -- the outliner's third tree level.  `members` is
-			//! AUTHORED order (never sorted); `own` is the group's own composed
-			//! matrix in Matrix4 `_00.._33` column-major field order, meaningful
-			//! ONLY when `ownValid` -- the Job declines to resolve an AMBIGUOUS
-			//! group (two same-named `group` chunks with different transforms),
-			//! and a false `ownValid` is what makes GroupOwnTransform refuse
-			//! instead of handing back the zero matrix the builder left behind.
-			//! Rebuilt wholesale (and pruned) by RefreshGroupSnapshot_;
-			//! `std::map` so a debug walk is deterministic, matching the lex
-			//! order the Job enumerates groups in.
-			struct GroupSnapshot
-			{
-				std::vector<String> members;
-				double              own[16];
-				bool                ownValid = false;
-			};
-			std::map<std::string, GroupSnapshot> groups;
-
-			//! Validity stamp for `groups` -- see RefreshGroupSnapshot_'s doc for
-			//! why the rebuild is gated rather than run per getter.  `groupsPrimed`
-			//! false means "never successfully built", which no stamp value can
-			//! encode (a freshly loaded Job legitimately sits at revision 0).
-			bool          groupsPrimed      = false;
-			std::uint64_t groupsStampUuid   = 0;
-			std::uint64_t groupsStampRev    = 0;
-			unsigned int  groupsStampEpoch  = 0;
 		};
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;
-
-		//! P3 fix (F4b, GUI-fix-round): one-time-per-(group,index) dedup set for the
-		//! over-long-member-name warning RefreshGroupSnapshot_ logs when
-		//! IJob::GetGroupMemberName refuses a name that doesn't fit its 512-byte
-		//! outliner buffer.  Guarded by mMutex (NOT mUiSnapshotMutex): every access
-		//! is inside RefreshGroupSnapshot_'s rebuild, which runs entirely under the
-		//! mMutex unique_lock -- a second leaf lock here would buy nothing.  Keyed
-		//! `"<groupName>#<index>"` rather than just the group name, so a group with
-		//! several over-long members gets a warning for each, not just the first.
-		//! Grows unboundedly only in the pathological case of a scene with many
-		//! distinct over-long member names -- accepted, matching the "logged once,
-		//! at detection" posture NoteGroupMembership's ambiguous-group warning
-		//! already uses elsewhere in this same subsystem.
-		mutable std::set<std::string> mGroupMemberTruncationWarned;
 
 		//! External-review P1 (2026-07-22): general reference-target guard for
 		//! GUI property edits.  Returns true (== "reject this edit") ONLY when

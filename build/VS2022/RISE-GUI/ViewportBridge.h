@@ -949,14 +949,7 @@ public:
         Animation  = 8,   ///< Named animation paths (pick to activate; no editable properties)
         SceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
         Painter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
-        Geometry   = 11,  ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
-        Group      = 12   ///< Groups (`group` chunks -- arc-86 slice 5).  Unlike every
-                          ///< other value here this category is NOT manager-backed: a
-                          ///< `group` creates no manager entity, so the controller
-                          ///< enumerates it from the Job's derive-time group side index
-                          ///< (LEX-ordered, like every other category).  A group's
-                          ///< MEMBERS are a second level, read via `groupMembers()`
-                          ///< below in AUTHORED order -- they are NOT a Category.
+        Geometry   = 11   ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
     };
 
     PanelMode panelMode() const;
@@ -998,18 +991,6 @@ public:
     /// lights, chunk-name for rasterizers).  Empty list when the
     /// scene has nothing in that category.
     QStringList categoryEntities(Category cat) const;
-
-    /// arc-86 slice 5: the SECOND level of the outliner tree -- the
-    /// object names a `group` chunk lists as `member`, in AUTHORED
-    /// order (deliberately NOT sorted; `categoryEntities(Group)` above
-    /// is lex-ordered, member order inside a group is the author's).
-    /// Empty list for a null controller, an empty/unknown group name,
-    /// or a group with no members.  Members stay ORDINARY objects --
-    /// they also appear in `categoryEntities(Category::Object)`, and
-    /// they are selected as `Category::Object` (there is no "member"
-    /// category), so the existing object properties panel and gizmo
-    /// keep working on them unchanged.
-    QStringList groupMembers(const QString& groupName) const;
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →

@@ -3457,12 +3457,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_SceneVariant = 9,///< scene_variant overlays (Category::SceneVariant)
 		SceneEditCategory_Painter   = 10,  ///< Painters (union of the IPainter + IScalarPainter
 		                                   ///< managers; Category::Painter)
-		SceneEditCategory_Geometry  = 11,  ///< Geometry (IGeometryManager; every "*_geometry" chunk;
+		SceneEditCategory_Geometry  = 11   ///< Geometry (IGeometryManager; every "*_geometry" chunk;
 		                                   ///< Category::Geometry -- GUI redesign 2026-07-22)
-		SceneEditCategory_Group     = 12   ///< Groups (`group` chunks; Category::Group -- arc-86
-		                                   ///< slice 5).  Enumerated from the Job's derive-time
-		                                   ///< group side index, not a manager; members are read
-		                                   ///< in authored order via IJob::GetGroupMemberName.
 	};
 
 	//! Construct a SceneEditController over an existing job.

@@ -1516,35 +1516,6 @@ QStringList ViewportBridge::categoryEntities(Category cat) const
     return out;
 }
 
-QStringList ViewportBridge::groupMembers(const QString& groupName) const
-{
-    // arc-86 slice 5.  Structurally identical to categoryEntities() above,
-    // including its "reach past the C-API and call the controller directly"
-    // convention -- the C-API is not a wall for the Qt shell, which links the
-    // library and already holds a SceneEditController*.  Order is AUTHORED
-    // (the controller does not sort members); see the header doc.
-    //
-    // GroupMemberNames (the LIST accessor), not GroupMemberCount + N x
-    // GroupMemberName: the count+N pattern reads the controller's snapshot N+1
-    // separate times, so a structural edit landing between the count read and
-    // the name reads yields a short list padded with empty names -- and it made
-    // every one of those N+1 calls a snapshot query.  One call, one lock hold,
-    // internally consistent.
-    QStringList out;
-    if (!m_controller || groupName.isEmpty()) return out;
-    const QByteArray utf8 = groupName.toUtf8();
-    const std::vector<String> members = m_controller->GroupMemberNames(String(utf8.constData()));
-    out.reserve(static_cast<int>(members.size()));
-    for (const String& name : members) {
-        const QString qname = QString::fromUtf8(name.c_str());
-        // Belt-and-braces: the controller already drops unreadable members, but
-        // an empty row would be an unclickable dead entry in the tree, so never
-        // render one regardless of where it came from.
-        if (!qname.isEmpty()) out.append(qname);
-    }
-    return out;
-}
-
 QString ViewportBridge::activeNameForCategory(Category cat) const
 {
     if (!m_controller) return QString();
@@ -1572,7 +1543,6 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 9: return Category::SceneVariant;
         case 10: return Category::Painter;
         case 11: return Category::Geometry;   // GUI redesign 2026-07-22
-        case 12: return Category::Group;      // arc-86 slice 5
         default: return Category::None;
     }
 }
@@ -1959,12 +1929,6 @@ bool ViewportBridge::propertyJumpTargetFor(Category cat, int index,
         case 7:  *outCat = Category::Medium;   break;
         case 10: *outCat = Category::Painter;  break;
         case 11: *outCat = Category::Geometry; break;
-        // arc-86 slice 5: Category::Group (12) is DELIBERATELY absent.  This
-        // switch translates a REFERENCE row's target category, and nothing in
-        // the scene language references a `group` -- the reference direction is
-        // group -> member, and those `member` rows never reach a property
-        // snapshot anyway (CstIntrospection::Inspect skips REPEATABLE params).
-        // Fail closed here rather than add an arm that can never fire.
         default: return false;
     }
     *outName = QString::fromUtf8(nameBuf);

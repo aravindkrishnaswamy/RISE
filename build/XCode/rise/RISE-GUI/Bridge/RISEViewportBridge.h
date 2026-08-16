@@ -710,11 +710,6 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategorySceneVariant = 9, ///< scene_variant overlays (pick to re-derive that variant active)
     RISEViewportCategoryPainter    = 10,  ///< Painters (union of the IPainter + IScalarPainter managers)
     RISEViewportCategoryGeometry   = 11,  ///< Geometry (every "*_geometry" chunk -- GUI redesign 2026-07-22)
-    RISEViewportCategoryGroup      = 12,  ///< Groups (`group` chunks -- arc-86 slice 5).  Unlike every
-                                          ///< other case here, a group has NO manager entity: the list
-                                          ///< comes from the Job's derive-time group side index, and a
-                                          ///< group's MEMBERS are a further tree level read via
-                                          ///< -groupMembers: (NOT -categoryEntities:).
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -769,39 +764,6 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Display names of the entries in `category`.  Pulled by the
 /// accordion's list view; the platform UI caches by sceneEpoch.
 - (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category;
-
-/// arc-86 slice 5: the member OBJECT NAMES of one group -- the third
-/// outliner level, below the Group category header and its group rows.
-/// Order is AUTHORED (the order the `member` lines appear in the `group`
-/// chunk), deliberately NOT sorted, unlike the LEX-ordered group list
-/// -categoryEntities:RISEViewportCategoryGroup returns.
-///
-/// A returned name addresses an ORDINARY OBJECT: a shell must select a
-/// clicked member with RISEViewportCategoryObject, not ...Group, so the
-/// object property panel and the viewport gizmo keep working on it
-/// unchanged.  Only the group row itself selects as ...Group.
-///
-/// Empty array for an unknown/empty name, and -- per the controller's
-/// snapshot discipline -- while a render owns the scene the LAST KNOWN
-/// list is served rather than a blank one.  Cache by `sceneEpoch` the way
-/// the category lists are cached.
-- (NSArray<NSString *> *)groupMembers:(NSString *)groupName
-    NS_SWIFT_NAME(groupMembers(_:));
-
-/// arc-86 slice 5: the named group's OWN composed transform (`T * R * S`,
-/// the matrix the derive pushed onto each member), written column-major
-/// into `outMatrix` in Matrix4 `_00.._33` field order.  NOT the
-/// accumulated product a member of several groups carries.  Returns NO for
-/// an unknown group or an unprimed snapshot; `outMatrix` is ZERO-FILLED
-/// (not left as whatever the caller passed in) in that case -- P3 fix
-/// (F4a, GUI-fix-round): this method has no caller yet, so a pre-fill at
-/// this boundary is what keeps a future caller that skips the BOOL check
-/// from reading uninitialised stack memory instead of a well-defined zero
-/// matrix.  Provided for a future group-level gizmo pivot; the outliner
-/// tree itself does not need it.
-- (BOOL)groupOwnTransform:(NSString *)groupName
-                outMatrix:(double *)outMatrix
-    NS_SWIFT_NAME(groupOwnTransform(_:outMatrix:));
 
 /// Phase 4b: per-category panel selection.  Returns the entity
 /// name picked in `category`'s section, or empty when nothing is

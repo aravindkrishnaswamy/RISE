@@ -111,49 +111,6 @@ private:
     void toggleCategory(const CategoryDef& def);
     void selectChild(Category cat, const QString& name);
 
-    // arc-86 slice 5: toggle ONE group's member disclosure.  Deliberately
-    // does NOT touch the bridge: the controller tracks expansion per
-    // CATEGORY (isSectionExpanded/collapseSection), not per entity, so
-    // per-group disclosure is purely local UI state -- see
-    // m_expandedGroups below for why it must live on the widget and not
-    // on the row.
-    void toggleGroup(const QString& groupName);
-
-    // arc-86 slice 5: the two child-level row builders, factored out of
-    // rebuild() so the group tree's MEMBER rows reuse the exact same row
-    // as the flat category lists -- mirroring OutlinerView.swift, which
-    // reuses its `OutlinerChildRow` for members rather than growing a
-    // second row type.  Both return the freshly-created row widget
-    // (parented to m_listHolder, like every other row rebuild() makes);
-    // the caller adds it to m_listLayout.  QWidget* rather than the
-    // concrete type because the row class is file-local to the .cpp
-    // (anonymous namespace, no moc registration -- see ClickableRow).
-    //
-    // buildEntityRow: one selectable entity.  `selectCat` is the category
-    // the click SELECTS AS, which for a group member is Category::Object
-    // (not Group) -- that is what keeps the existing object properties
-    // panel and gizmo working on members unchanged.  `leftIndent` is the
-    // row's left content margin, which is the ONLY thing distinguishing a
-    // top-level child (30) from a group member (48) -- the same knob
-    // OutlinerView.swift added to OutlinerChildRow as `leadingIndent`.
-    //
-    // `canDelete` is a SECOND gate on top of `canMutate`, defaulting to
-    // "same as canMutate": the only caller that lowers it is the group
-    // MEMBER row, where deleting the object is guaranteed to be refused by
-    // the core while the `group` chunk still names it (see that call site).
-    // `deleteDisabledTip` is shown on the disabled item -- a disabled
-    // control that cannot say why is the dead control this avoids.
-    QWidget* buildEntityRow(Category selectCat, const QString& name, int leftIndent,
-                            bool isSelected, bool isActive, bool canReveal, bool canMutate,
-                            bool canDelete = true, const QString& deleteDisabledTip = QString());
-
-    // buildGroupRow: a `group` row inside the Group category -- an entity
-    // row (clicking it selects the group as Category::Group) that ALSO
-    // carries a disclosure control for its members.  See the definition
-    // for the Duplicate/Delete decision.
-    QWidget* buildGroupRow(const QString& groupName, int memberCount,
-                           bool expanded, bool isSelected);
-
     // LIVE THEME-SWITCH CONTRACT (Theme.h): re-applies this widget's
     // PERSISTENT-CHROME token-dependent styling (this widget's own
     // palette + border-bottom stylesheet, the "Scene" title label, the
@@ -192,24 +149,6 @@ private:
     // ViewportProperties::rebuildEntityLists.
     QHash<int, QStringList> m_entitiesByCategory;
     unsigned int             m_lastEpoch = 0;
-
-    // arc-86 slice 5: the tree's SECOND level -- group name -> its member
-    // object names, in AUTHORED order.  Pulled inside the SAME epoch-gated
-    // block that fills m_entitiesByCategory (one groupMembers() call per
-    // declared group), so rebuild() -- which runs on every preview frame --
-    // never pays a per-group engine round-trip.
-    QHash<QString, QStringList> m_membersByGroup;
-
-    // arc-86 slice 5: per-group disclosure state, group name -> expanded.
-    // MUST live here rather than on the row widgets: rebuild() deleteLater()s
-    // and recreates EVERY row on every call (theme switch, selection change,
-    // each refresh()), so anything stored on a row is destroyed before the
-    // next frame.  Absent key == collapsed, so groups start collapsed on
-    // first sight.  Deliberately NOT pruned to the currently-declared groups
-    // on each entity-list re-pull -- see the comment at that site in
-    // refresh(); OutlinerView.swift documents the same choice.  Cleared
-    // wholesale in setBridge(), which is the point it actually matters.
-    QHash<QString, bool> m_expandedGroups;
 
     // "Reveal in scene file" (item 3): see setSceneEditable's doc.
     // Consulted by rebuild() to compute each child row's canReveal.
