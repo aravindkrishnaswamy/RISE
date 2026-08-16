@@ -25,6 +25,9 @@
 #include "../Acceleration/BVH.h"
 #include "../Octree.h"
 
+#include <map>
+#include <set>
+
 namespace RISE
 {
 	namespace Implementation
@@ -51,6 +54,26 @@ namespace RISE
 			const unsigned int nMaxTreeDepth;
 
 			RMutex treeCreationMutex;
+
+			//! The AUTHORED graph: child name -> parent name.  Only non-root
+			//! objects appear.  See IObjectManager's block comment for why this
+			//! is by name and one-directional.
+			std::map<String,String> parentByName;
+
+			//! Did the LAST walk actually compose anything against a
+			//! non-identity parent?  This is what makes the "no links -> no
+			//! work" fast path SOUND.  Without it, un-parenting the last child
+			//! (a detach, or removing its parent) would empty `parentByName`
+			//! and the fast path would then skip the one walk that still had to
+			//! run -- leaving the ex-child rendering at its old composed pose
+			//! forever.
+			mutable bool anyComposedAgainstParent;
+
+			//! Names whose recorded parent has since disappeared from the
+			//! manager.  Warned about once each (a dangling link is treated as
+			//! "root"), so a per-frame compose cannot turn one authoring
+			//! mistake into a log flood.
+			mutable std::set<String> danglingParentWarned;
 
 			// Shadow cache: per-slot last occluder, padded to avoid false sharing.
 			// Each thread hashes into a slot; collisions are harmless (just a stale hint).
@@ -106,6 +129,18 @@ namespace RISE
 
 			//! Tells all the objects to reset any runtime data
 			void ResetRuntimeData() const;
+
+			bool SetObjectParent( const char* child, const char* parent );
+			const char* GetObjectParent( const char* child ) const;
+			bool ComposeWorldTransforms() const;
+
+			//! Removing an object also retires its place in the authored graph:
+			//! its own parent link goes, and any object that named it as parent
+			//! is RE-ROOTED.  Doing it here rather than leaving the link to
+			//! dangle keeps `parentByName` an exact description of the live
+			//! object set -- which is what lets ComposeWorldTransforms treat a
+			//! dangling link as a genuine anomaly worth a warning.
+			bool RemoveItem( const char* szName );
 
 			void PrepareForRendering() const;
 			void InvalidateSpatialStructure() const;

@@ -88,6 +88,12 @@ public:
 	void FinalizeTransformations() {}
 	Matrix4 const GetFinalTransformMatrix() const { return Matrix4(); }
 	Matrix4 const GetFinalInverseTransformMatrix() const { return Matrix4(); }
+	// 87 recursive scene graph: mock carries no transform -- identity / pass-through.
+	void FinalizeTransformations( const Matrix4& ) {}
+	Matrix4 const GetLocalTransformMatrix() const { return Matrix4(); }
+	Matrix4 const GetParentWorldTransformMatrix() const { return Matrix4Ops::Identity(); }
+	bool IsParentWorldInvertible() const { return true; }
+	Matrix4 const WorldToLocal( const Matrix4& m ) const { return m; }
 	void TranslateObject( const Vector3& ) {}
 	void SetPosition( const Point3& ) {}
 

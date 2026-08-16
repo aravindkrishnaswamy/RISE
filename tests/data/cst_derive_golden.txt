@@ -132,8 +132,11 @@ scenes/Tests/Geometry/gerstner_plane.RISEscene  25c286ed0f04317d5855b4f83b6b1526
 scenes/Tests/Geometry/gltf_box.RISEscene  40198da6146b3f66b5b137d0b34af03c44b9e37713e212867c70dad74fa0d44d  945  22
 scenes/Tests/Geometry/gltf_duck.RISEscene  6cf447a4838d97384017c293f3d4003635e7483d6d262f951a4b396c49216b00  970  22
 scenes/Tests/Geometry/gltf_normal_mapped.RISEscene  4b32eb98492913dfe936c090a77e91d010f76d68e93ee80d7d5bbfad419cd0dc  1259  24
+scenes/Tests/Geometry/object_parenting.RISEscene  b0f71475f95fa32d8a4495d1d36e13ce62dc2e642575501745aeddd8d6ed4fbf  4058  42
 scenes/Tests/Geometry/shapes.RISEscene  3930c11ce08ed2ad21dc9416a91aa3495eb17477028091be870e03b56fffe674  7085  57
+scenes/Tests/Geometry/skeleton_basic.RISEscene  50cf5eb81d8d6d9afbb866dc0b2ce803d9c31989684c672c6cab39abf5577fc4  1658  30
 scenes/Tests/Geometry/sweep_instances.RISEscene  a4ab239afc2bbccd2bbda27aa3891382013e1216dd1b931fe197f3fc5a1ab5ff  1967  35
+scenes/Tests/Geometry/sweep_loop.RISEscene  587c7ea7225eef2c0abd000b9981b5a0902c65372fddb853ff9f33faed4366df  1312  26
 scenes/Tests/Geometry/teapot_analytic.RISEscene  797bfcfb83b470512c81b52481e3e3fbc989298cee98858ad76a36aa032e60b3  970  33
 scenes/Tests/Geometry/vertex_colors_quad.RISEscene  7995a1566daafc9c2fb9c0e7f890def2018bbf3bbecaef3f14e1c36960bf5fc0  685  21
 scenes/Tests/Geometry/vertex_colors_quad_bdpt.RISEscene  7995a1566daafc9c2fb9c0e7f890def2018bbf3bbecaef3f14e1c36960bf5fc0  685  21

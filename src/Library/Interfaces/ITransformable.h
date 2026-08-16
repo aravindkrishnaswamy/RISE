@@ -62,12 +62,59 @@ namespace RISE
 	public:
 		//! Clears all transforms
 		virtual void ClearAllTransforms( ) = 0;
-		//! Finalizes all transformations and computes the final matrix
+		//! Finalizes all transformations and computes the final matrix.
+		//! Re-composes against the parent world transform this node was LAST
+		//! given, so a caller that knows nothing about the scene graph (every
+		//! pre-hierarchy caller) keeps a parented node correctly composed.
 		virtual void FinalizeTransformations( ) = 0;
-		//! Retreives the transformation matrix
+		//! Retreives the transformation matrix.  This is the WORLD transform:
+		//! `parentWorld * local` for a parented node, `local` for a root.
 		virtual Matrix4 const GetFinalTransformMatrix( ) const = 0;
 		//! Retreives the inverse transformation matrix
 		virtual Matrix4 const GetFinalInverseTransformMatrix( ) const = 0;
+
+		// ---- recursive scene graph (docs/agentic-redesign/87-recursive-scene-graph.md)
+		// Appended at this interface's TAIL, per the repo's append-only vtable
+		// convention.
+
+		//! Finalize against an EXPLICIT parent world transform:
+		//! `world = parentWorld * local`, where `local` is this node's own
+		//! authored position / orientation / stretch / scale folded with its
+		//! transform stack.
+		//!
+		//! This is the ONLY sanctioned way to compose a hierarchy.  Do NOT push
+		//! a parent's matrix onto the transform stack instead: the stack never
+		//! self-clears, so a second push composes `P * P * local` and every
+		//! subsequent re-apply squares in another factor.  That is the entire
+		//! bug class recorded in docs/agentic-redesign/86-object-grouping.md §3.
+		//! Passing `parentWorld` as an ARGUMENT makes re-composition idempotent
+		//! by construction — calling this twice with the same argument, or with
+		//! a new one, always yields exactly `parentWorld * local`.
+		virtual void FinalizeTransformations( const Matrix4& parentWorld ) = 0;
+
+		//! This node's OWN transform, WITHOUT any parent contribution — i.e.
+		//! exactly what its authoring chunk stores.  Equal to
+		//! GetFinalTransformMatrix() for an unparented node.  Anything that
+		//! persists a transform back to the scene document, or that captures a
+		//! transform to restore later, wants THIS, not the final matrix.
+		virtual Matrix4 const GetLocalTransformMatrix( ) const = 0;
+
+		//! The parent world transform most recently composed into this node
+		//! (identity for a root).  Exposed so a caller holding a WORLD-space
+		//! operation can conjugate it into this node's parent frame.
+		virtual Matrix4 const GetParentWorldTransformMatrix( ) const = 0;
+
+		//! Is the stored parent world transform invertible?  False only for a
+		//! degenerate parent (a zero or collapsed `scale` somewhere up the
+		//! chain).  When false, WorldToLocal() cannot be trusted and callers
+		//! must refuse rather than write a corrupt transform.
+		virtual bool IsParentWorldInvertible( ) const = 0;
+
+		//! Express a WORLD-space matrix in this node's LOCAL frame:
+		//! `parentWorld^-1 * worldMatrix`.  Returns `worldMatrix` unchanged
+		//! when the parent is identity (the common case) or non-invertible —
+		//! check IsParentWorldInvertible() first when correctness matters.
+		virtual Matrix4 const WorldToLocal( const Matrix4& worldMatrix ) const = 0;
 	};
 
 	//! Provides a flexible transformation stack

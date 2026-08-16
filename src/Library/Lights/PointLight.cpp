@@ -133,10 +133,10 @@ Scalar PointLight::ComputeDirectLightingNM(
 	return lightLum * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
 }
 
-void PointLight::FinalizeTransformations( )
+void PointLight::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	// Tells out transform helper to finalize transformations
-	Transformable::FinalizeTransformations();
+	Transformable::FinalizeTransformations( parentWorld );
 
 	// Then calculate the real-world position of this light...
 	ptPosition = Point3Ops::Transform( m_mxFinalTrans, Point3( 0, 0, 0 ) );

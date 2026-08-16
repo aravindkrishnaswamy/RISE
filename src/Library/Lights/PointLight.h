@@ -37,35 +37,35 @@ namespace RISE
 			virtual ~PointLight( );
 
 		public:
-			inline bool CanGeneratePhotons() const
+			inline bool CanGeneratePhotons() const override
 			{
 				return bShootPhotons;
 			}
 
-			inline void SetCanGeneratePhotons( bool b ) { bShootPhotons = b; }
+			inline void SetCanGeneratePhotons( bool b ) override { bShootPhotons = b; }
 
-			inline bool IsPositionalLight() const { return true; }
+			inline bool IsPositionalLight() const override { return true; }
 
-			inline RISEPel radiantExitance() const
+			inline RISEPel radiantExitance() const override
 			{
 				return (cColor * radiantEnergy * FOUR_PI);
 			}
 
-			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
+			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{
 				return (cColor * radiantEnergy);
 			}
 
-			inline Point3 position() const
+			inline Point3 position() const override
 			{
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const  { return cColor; }
-			inline Scalar    emissionEnergy() const { return radiantEnergy; }
-			inline LightType lightType() const      { return LightType::Point; }
+			inline RISEPel   emissionColor() const override  { return cColor; }
+			inline Scalar    emissionEnergy() const override { return radiantEnergy; }
+			inline LightType lightType() const override      { return LightType::Point; }
 
-			inline Ray generateRandomPhoton( const Point3& ptrand ) const
+			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
 			{
 				// Uniform sampling on the full sphere
 				const Scalar cosTheta = 1.0 - 2.0 * ptrand.x;
@@ -75,7 +75,7 @@ namespace RISE
 					Vector3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta ) );
 			}
 
-			inline Scalar pdfDirection( const Vector3& ) const
+			inline Scalar pdfDirection( const Vector3& ) const override
 			{
 				return Scalar(1.0) / FOUR_PI;
 			}
@@ -86,7 +86,7 @@ namespace RISE
 				const bool shootPhotons
 				);
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const override;
 
 			//! Per-wavelength direct lighting.  Overrides the ILight default
 			//! (which projects the RGB ComputeDirectLighting to luminance and
@@ -95,13 +95,15 @@ namespace RISE
 			//! SPECIFIC Fresnel transmittance (CastShadowRayAuto bNM=true) rather
 			//! than a representative RGB IOR.  Matches DirectionalLight /
 			//! AmbientLight; keeps every light's spectral NEE consistent.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const;
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const override;
 
-			void	FinalizeTransformations();
+			// Overrides the PARENT-COMPOSED overload only -- see SpotLight.h.
+			void	FinalizeTransformations( const Matrix4& parentWorld ) override;
+			using Transformable::FinalizeTransformations;
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
 		};
 	}
 }

@@ -18,6 +18,8 @@
 #include "../Utilities/Profiling.h"
 #include <atomic>
 #include <cstdint>
+#include <vector>
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -147,6 +149,7 @@ ObjectManager::ObjectManager(
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
   nMaxTreeDepth( nMaxTreeDepth_ ),
+  anyComposedAgainstParent( false ),
   shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() )
 {
 	if( bUseBSPtree && bUseOctree ) {
@@ -399,6 +402,224 @@ void ObjectManager::ResetRuntimeData() const
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		i->second.first->ResetRuntimeData();
 	}
+}
+
+bool ObjectManager::SetObjectParent( const char* child, const char* parent )
+{
+	if( !child || !child[0] ) {
+		GlobalLog()->PrintEasyError( "ObjectManager::SetObjectParent:: child name is empty" );
+		return false;
+	}
+	const String childName( child );
+	if( !GetItem( child ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::SetObjectParent:: `%s` is not a registered object", child );
+		return false;
+	}
+
+	// Detach.
+	if( !parent || !parent[0] ) {
+		parentByName.erase( childName );
+		return true;
+	}
+
+	const String parentName( parent );
+	if( parentName == childName ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::SetObjectParent:: `%s` cannot be its own parent", child );
+		return false;
+	}
+	if( !GetItem( parent ) ) {
+		// Declare-before-use.  At parse time this IS the cycle guard: a cycle
+		// needs a link back to something not yet declared, and a reference the
+		// engine has not registered yet cannot resolve.  The ancestor walk
+		// below is the guard for a RUNTIME reparent, where both endpoints
+		// already exist.
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::SetObjectParent:: parent `%s` of `%s` is not a registered object "
+			"-- a `parent` must be DECLARED BEFORE the object that names it", parent, child );
+		return false;
+	}
+
+	// Cycle guard: walk up from the PROPOSED parent.  If we reach the child,
+	// the link would close a loop and ComposeWorldTransforms would never
+	// terminate (or, with the reachability fallback, would silently drop the
+	// whole loop to root).  Bounded by the link count, so a pre-existing loop
+	// in the map cannot hang this walk either.
+	{
+		String cursor = parentName;
+		size_t guard = parentByName.size() + 1;
+		while( guard-- > 0 ) {
+			if( cursor == childName ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"ObjectManager::SetObjectParent:: parenting `%s` to `%s` would close a cycle "
+					"(`%s` is already a descendant of `%s`); link refused", child, parent, parent, child );
+				return false;
+			}
+			const std::map<String,String>::const_iterator up = parentByName.find( cursor );
+			if( up == parentByName.end() ) break;   // reached a root: no cycle
+			cursor = up->second;
+		}
+	}
+
+	parentByName[childName] = parentName;
+	return true;
+}
+
+bool ObjectManager::RemoveItem( const char* szName )
+{
+	const bool ok = GenericManager<IObjectPriv>::RemoveItem( szName );
+	if( !ok || !szName ) return ok;
+
+	const String gone( szName );
+	parentByName.erase( gone );
+	danglingParentWarned.erase( gone );
+
+	// Re-root the orphans.  Their world transforms change (they lose the
+	// removed node's contribution), which is the only possible answer once the
+	// parent is gone -- but say so once, because the alternative reading is
+	// that they moved for no reason.
+	unsigned int orphans = 0;
+	for( std::map<String,String>::iterator i = parentByName.begin(); i != parentByName.end(); ) {
+		if( i->second == gone ) { parentByName.erase( i++ ); ++orphans; }
+		else                    { ++i; }
+	}
+	if( orphans ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"ObjectManager::RemoveItem:: `%s` was the parent of %u object(s); they are now roots "
+			"and no longer carry its transform", szName, orphans );
+	}
+	return ok;
+}
+
+const char* ObjectManager::GetObjectParent( const char* child ) const
+{
+	if( !child ) return "";
+	const std::map<String,String>::const_iterator i = parentByName.find( String( child ) );
+	return ( i == parentByName.end() ) ? "" : i->second.c_str();
+}
+
+bool ObjectManager::ComposeWorldTransforms() const
+{
+	// FAST PATH: a flat scene is the overwhelmingly common case and must cost
+	// nothing -- every object's parent is identity, which is what its last
+	// finalize already used, so there is nothing to re-bake.  The second term
+	// is load-bearing: "no links" is only equivalent to "nothing to do" once a
+	// walk has actually PUT every node back on identity.  Detaching the last
+	// child, or removing its parent, empties the map while the ex-child is
+	// still carrying its old composed parent matrix.
+	if( parentByName.empty() && !anyComposedAgainstParent ) {
+		return false;
+	}
+
+	// Children lists.  Ordered by REGISTRATION SERIAL, which for a scene load
+	// is document order -- 87's "child order for display comes from declaration
+	// order".  The composed matrices do not depend on sibling order at all
+	// (each child composes against its parent alone), but a stable, meaningful
+	// order is what a tree UI needs, and deriving it here means the UI does not
+	// have to keep a parallel index.
+	std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > > childrenOf;
+	std::vector<IObjectPriv*> roots;
+	std::map<const IObjectPriv*, String> nameOf;
+
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+		IObjectPriv* obj = i->second.first;
+		nameOf[obj] = i->first;
+		const std::map<String,String>::const_iterator link = parentByName.find( i->first );
+		if( link == parentByName.end() ) {
+			roots.push_back( obj );
+			continue;
+		}
+		if( items.find( link->second ) == items.end() ) {
+			// The recorded parent is gone (removed from the manager after the
+			// link was made).  Treat the child as a root rather than dropping
+			// it from the render list -- it is still a real object -- and warn
+			// once per name so a per-frame compose cannot flood the log.
+			if( danglingParentWarned.insert( i->first ).second ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ObjectManager::ComposeWorldTransforms:: object `%s` names parent `%s`, which is "
+					"no longer a registered object; treating `%s` as a root",
+					i->first.c_str(), link->second.c_str(), i->first.c_str() );
+			}
+			roots.push_back( obj );
+			continue;
+		}
+		childrenOf[link->second].push_back( std::make_pair( GetItemSerial( i->first.c_str() ), obj ) );
+	}
+	for( std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > >::iterator c = childrenOf.begin();
+		c != childrenOf.end(); ++c ) {
+		std::sort( c->second.begin(), c->second.end() );
+	}
+
+	// Iterative parent-before-child walk.  `visited` also bounds the walk
+	// against a cycle that somehow evaded SetObjectParent's guard (e.g. links
+	// recorded through a future path that forgets to call it): a node is
+	// composed at most once, so a loop terminates instead of hanging.
+	std::set<const IObjectPriv*> visited;
+	std::vector<IObjectPriv*> stack( roots.rbegin(), roots.rend() );
+	size_t composed = 0;
+	bool anyChanged = false;
+	bool sawParented = false;
+	while( !stack.empty() ) {
+		IObjectPriv* node = stack.back();
+		stack.pop_back();
+		if( !visited.insert( node ).second ) continue;
+
+		// A root composes against identity -- byte-identical to the pre-
+		// hierarchy behaviour.  A child composes against its parent's ALREADY
+		// FINAL world matrix, which the parent-before-child order guarantees
+		// is current.
+		const std::map<const IObjectPriv*, String>::const_iterator nm = nameOf.find( node );
+		const std::map<String,String>::const_iterator link =
+			( nm == nameOf.end() ) ? parentByName.end() : parentByName.find( nm->second );
+		Matrix4 parentWorld = Matrix4Ops::Identity();
+		if( link != parentByName.end() ) {
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( link->second );
+			if( p != items.end() ) parentWorld = p->second.first->GetFinalTransformMatrix();
+		}
+		// EXACT comparison, deliberately: the caller uses this to decide
+		// whether to throw away the TLAS, and a tolerance would let a genuine
+		// sub-epsilon move keep a stale acceleration structure.  Same rule as
+		// the incremental apply's own BBoxEqual gate.
+		const Matrix4 before = node->GetFinalTransformMatrix();
+		if( link != parentByName.end() ) sawParented = true;
+		node->FinalizeTransformations( parentWorld );
+		if( !anyChanged ) {
+			const Matrix4 after = node->GetFinalTransformMatrix();
+			const Scalar* b = &before._00;
+			const Scalar* a2 = &after._00;
+			for( int k = 0; k < 16; ++k ) { if( b[k] != a2[k] ) { anyChanged = true; break; } }
+		}
+		++composed;
+
+		if( nm != nameOf.end() ) {
+			const std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > >::const_iterator kids =
+				childrenOf.find( nm->second );
+			if( kids != childrenOf.end() ) {
+				// Pushed in reverse so the LIFO stack pops them in declaration order.
+				for( std::vector<std::pair<unsigned long long, IObjectPriv*> >::const_reverse_iterator k = kids->second.rbegin();
+					k != kids->second.rend(); ++k ) {
+					stack.push_back( k->second );
+				}
+			}
+		}
+	}
+
+	if( composed != items.size() ) {
+		// Only reachable if the link map contains a cycle -- SetObjectParent
+		// refuses those, so this is a guard against a future writer that
+		// bypasses it.  The unreached nodes keep whatever world transform they
+		// last had; say so loudly rather than rendering a silently stale scene.
+		GlobalLog()->PrintEx( eLog_Error,
+			"ObjectManager::ComposeWorldTransforms:: composed %u of %u objects -- the remainder are "
+			"unreachable from any root, which means the parent links contain a CYCLE; their world "
+			"transforms are stale",
+			(unsigned int)composed, (unsigned int)items.size() );
+	}
+
+	anyComposedAgainstParent = sawParented;
+	return anyChanged;
 }
 
 void ObjectManager::PrepareForRendering() const

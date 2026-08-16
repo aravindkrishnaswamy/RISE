@@ -2984,6 +2984,16 @@ namespace RISE
 		int ApplyCstRemoveItemsAt( int atIndex, int count, char* outDiag, unsigned int diagMax,
 		                           const char* expectedChunkBytes = nullptr );
 
+		//! 87 recursive scene graph: record a parent link / bake world transforms.
+		//! Contracts documented on the IJob virtuals.
+		// NB: no `override` keyword.  Job.h predates the convention and marks
+		// none of its ~650 IJob implementations; adding it to just these two
+		// would trip -Winconsistent-missing-override across the whole class.
+		// The IJob vtable is pinned mechanically instead, by
+		// tests/IJobVtableManifest.txt (SourceHygieneTest).
+		bool SetObjectParent( const char* child, const char* parent );
+		bool ComposeObjectHierarchy( );
+
 		//! P5: the retained canonical CST (null unless the scene was loaded via LoadAsciiSceneViaCst).
 		const RISE::Cst::Document*	GetCstDocument() const { return pCstDocument.get(); }
 

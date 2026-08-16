@@ -423,6 +423,47 @@ hand-authored scenes use the Euler form for simplicity.
 
 `scale` is per-axis (`Vector3`, not scalar).
 
+### `parent` — the transform is LOCAL, relative to the parent
+
+A `standard_object` is the scene-graph node
+([87](agentic-redesign/87-recursive-scene-graph.md)).  It carries either a
+`geometry` (a leaf shape) or no geometry at all (a pure CONTAINER: a transform
+that other objects hang off, invisible to the renderer, never a luminaire, not
+in the acceleration structure), plus an optional `parent`:
+
+```text
+standard_object          # a container -- note: NO `geometry` line
+{
+    name        dragon
+    position    3 0 -2
+    orientation 0 40 0
+}
+
+standard_object
+{
+    name        dragon_head
+    parent      dragon
+    geometry    head_mesh
+    material    scales
+    position    0 1.4 2.1   # LOCAL: relative to `dragon`
+}
+```
+
+- The node's world transform is `parent.world × local`.  **Everything the
+  chunk authors — `position`, `orientation`, `quaternion`, `matrix`, `scale` —
+  describes the LOCAL transform**, so a child's `position 1 0 0` under a parent
+  with `scale 2 2 2` lands two units out, not one.
+- Nesting is arbitrary.  Moving or animating any node moves its whole subtree,
+  which is what makes hierarchical animation work with no extra authoring.
+- **A parent must be DECLARED BEFORE the object that names it** — the same rule
+  `standard_shader`'s `shaderop` references live under.  A forward reference is
+  a hard parse error.  It also makes a cycle impossible at parse time; a
+  runtime reparent is guarded separately.
+- The GUI transform panel shows and edits these LOCAL values.  The gizmo still
+  drags in world space.
+
+Worked example: `scenes/Tests/Geometry/object_parenting.RISEscene`.
+
 ---
 
 ## 6. Coordinate system

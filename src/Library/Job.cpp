@@ -5570,6 +5570,63 @@ bool Job::AddGlintModifier(
 // Adding objects
 //
 
+//! 87 recursive scene graph: is this `geometry` reference the "no geometry"
+//! form?  A `standard_object` that names no geometry (or the universal
+//! no-reference sentinel `none`) is a CONTAINER node -- a pure transform in the
+//! authored tree.  Note this is a real semantic change: before 87, an object
+//! chunk that omitted `geometry` hard-failed with "Geometry not found `none`".
+static inline bool IsContainerGeometryRef_( const char* geom )
+{
+	return !geom || !geom[0] || ( strcmp( geom, "none" ) == 0 );
+}
+
+//! Create either an ordinary geometry-bearing object or a CONTAINER node.
+//!
+//! A container is world-INVISIBLE, following `CSGObject`'s precedent for a node
+//! that exists in the manager but must not appear in the world: that single
+//! flag is what keeps all nine world-visible enumeration consumers -- the
+//! luminary list, both light-sampler scans, the SMS caustic-caster scan, the
+//! auto-rasterizer's integrator choice, BDPT setup, the two extent scans and
+//! the editor -- from ever seeing a geometry-less node.  It is also what keeps
+//! it out of the TLAS, whose leaf contract is a real intersectable.
+static void RISE_API_CreateObjectOrContainer_( IObjectPriv** ppObject, const IGeometry* pGeometry, const bool bContainer )
+{
+	if( bContainer ) {
+		RISE_API_CreateContainerObject( ppObject );
+		if( *ppObject ) (*ppObject)->SetWorldVisible( false );
+		return;
+	}
+	RISE_API_CreateObject( ppObject, pGeometry );
+}
+
+//! Re-point an EXISTING object between the geometry-bearing and container
+//! forms.  Visibility is only touched when the form actually CHANGES: a
+//! re-pointed CSG operand is a geometry-bearing object that `Job::AddCSGObject`
+//! deliberately hid, and unconditionally re-showing it here would resurrect
+//! every operand into the world.
+static void ApplyGeometryOrContainer_( IObjectPriv& object, const IGeometry* pGeometry,
+                                       const bool bContainer, const bool wasContainer )
+{
+	if( bContainer ) {
+		object.ClearGeometry();
+		if( !wasContainer ) object.SetWorldVisible( false );
+		return;
+	}
+	if( pGeometry ) object.AssignGeometry( *pGeometry );
+	if( wasContainer ) object.SetWorldVisible( true );
+}
+
+bool Job::SetObjectParent( const char* child, const char* parent )
+{
+	if( !pObjectManager ) return false;
+	return pObjectManager->SetObjectParent( child, parent );
+}
+
+bool Job::ComposeObjectHierarchy( )
+{
+	return pObjectManager ? pObjectManager->ComposeWorldTransforms() : false;
+}
+
 //! Adds an object
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddObject(
@@ -5590,8 +5647,9 @@ bool Job::AddObject(
 	// missing material/modifier/shader/radiance-painter must fail the WHOLE call without
 	// having created a new object OR half-re-pointed an existing one.  Only once all
 	// references resolve do we create-or-re-point and assign.
-	IGeometry* pGeometry = pGeomManager->GetItem( geom );
-	if( !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObject:: Geometry not found `%s`", geom ); return false; }
+	const bool bContainer = IsContainerGeometryRef_( geom );
+	IGeometry* pGeometry = bContainer ? 0 : pGeomManager->GetItem( geom );
+	if( !bContainer && !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObject:: Geometry not found `%s`", geom ); return false; }
 	IMaterial* pMat = 0;
 	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Material not found `%s`", material ); return false; } }
 	IRayIntersectionModifier* pMod = 0;
@@ -5611,8 +5669,9 @@ bool Job::AddObject(
 		object = pObjectManager->GetItem( name );
 		repoint = ( object != 0 );
 	}
-	if( repoint ) object->AssignGeometry( *pGeometry );      // create binds geometry via the ctor; re-point swaps it
-	else          RISE_API_CreateObject( &object, pGeometry );
+	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
+	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );  // re-point swaps geometry (or clears it)
+	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );        // create binds geometry via the ctor
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 	if( pMat )       object->AssignMaterial( *pMat );
@@ -5659,8 +5718,9 @@ bool Job::AddObjectMatrix(
 	)
 {
 	// RESOLVE every reference FIRST, before any mutation (review P1.7 atomicity) -- see AddObject.
-	IGeometry* pGeometry = pGeomManager->GetItem( geom );
-	if( !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom ); return false; }
+	const bool bContainer = IsContainerGeometryRef_( geom );
+	IGeometry* pGeometry = bContainer ? 0 : pGeomManager->GetItem( geom );
+	if( !bContainer && !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom ); return false; }
 	IMaterial* pMat = 0;
 	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Material not found `%s`", material ); return false; } }
 	IRayIntersectionModifier* pMod = 0;
@@ -5676,8 +5736,9 @@ bool Job::AddObjectMatrix(
 		object = pObjectManager->GetItem( name );
 		repoint = ( object != 0 );
 	}
-	if( repoint ) object->AssignGeometry( *pGeometry );
-	else          RISE_API_CreateObject( &object, pGeometry );
+	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
+	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );
+	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 	if( pMat )       object->AssignMaterial( *pMat );
@@ -10366,8 +10427,10 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	return fdiags.empty() ? 2 : 3;
 }
 
-// P5 Slice 3 expansion (object transform): commit an object's NET world transform to the retained CST as the
-// authoritative `matrix` param (16 col-major doubles). If legacy same-name override_object chunks follow the
+// P5 Slice 3 expansion (object transform): commit an object's transform to the retained CST as the
+// authoritative `matrix` param (16 col-major doubles).  87: the caller passes the object's LOCAL
+// matrix -- what the chunk itself authors -- NOT its composed world matrix; a parented object's
+// world transform is re-composed from this on every derive. If legacy same-name override_object chunks follow the
 // base, write the LAST override layer: committing only the base would let a later partial absolute override
 // mask the GUI edit on re-derive. Strips the now-dead position/orientation/quaternion/scale params from the
 // chosen owner first. Uniform for panel + gizmo edits -> avoids param/matrix mixing. Same 0/1/2/3 contract.
@@ -10443,7 +10506,7 @@ int Job::CstObjectTransformKind( const char* name ) const
 	return 0;
 }
 
-// P5 Slice 3 expansion (csg transform): commit a components-only object's (csg_object) NET translate+rotate as
+// P5 Slice 3 expansion (csg transform): commit a components-only object's (csg_object) LOCAL translate+rotate as
 // its position + orientation (Euler degrees) chunk params.  The caller (editor) decomposes the final transform
 // and refuses anything a csg can't represent (scale / shear / gimbal) BEFORE the live mutate, so this only ever
 // receives a representable pose.  Strips matrix/quaternion defensively (no-op on a csg).  Same 0/1/2/3 contract.

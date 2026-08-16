@@ -1601,6 +1601,12 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// chunk's Finalize); reconcile the Job's active-variant record with the forced decision ("" => base).
 	if( diags.empty() && activeVariantOverride )
 		pJob.SetActiveSceneVariant( svActiveName.c_str() );
+	// 87 structural flatten: derive RECORDS parent links and composes nothing;
+	// this is where the authored tree is walked once, parent before child, to
+	// bake `world = parent.world * local` into the flat render list.  It runs
+	// after PASS-2 and after instance-array expansion so the whole object graph
+	// exists, and it is a no-op for a scene with no parent links.
+	pJob.ComposeObjectHierarchy();
 	return count;
 }
 
@@ -2032,7 +2038,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// preserved (P1.2 dissolved).  Bump the light-topology generation iff the emitter set
 	// may have changed: a re-pointed object whose material emits (its luminary footprint
 	// may have moved or its emission changed), or any Light chunk recreated in the closure.
-	bool spatial = false;
+	// 87: re-bake the hierarchy BEFORE the bbox comparison.  A re-applied object
+	// re-runs ClearAllTransforms + the component setters + finalize, which
+	// rebuilds its LOCAL transform from scratch -- correct, but composed against
+	// whatever parent world it happened to be holding.  Walking the tree here
+	// also pushes the change down to DESCENDANTS the closure never touched,
+	// which is why 87 needs no group-style incremental refusal: composition is
+	// simply not part of the closure's job.  Those descendants are absent from
+	// `objStates`, so their moved bounding boxes cannot be caught by the loop
+	// below -- the walk's own "did any world matrix change" answer is what
+	// makes the spatial gate sound.
+	bool spatial = pJob.ComposeObjectHierarchy();
 	bool emitter = false;
 	for( const ObjState& s : objStates ) {
 		if( !BBoxEqual( s.bbox, s.obj->getBoundingBox() ) ) spatial = true;

@@ -4,8 +4,10 @@
 //    The invariant chain for a transform edit is:
 //
 //      1. Look up the IObjectPriv* via ObjectManager::GetItem(name)
-//      2. Capture obj->GetFinalTransformMatrix() as prevTransform
-//         (this is what we'll restore on undo)
+//      2. Capture obj->GetLocalTransformMatrix() as prevTransform
+//         (this is what we'll restore on undo).  LOCAL, not world: undo
+//         must restore what the object itself carries, so that restoring
+//         a child does not bake its parent's transform into it (87).
 //      3. Apply the forward op (TranslateObject, RotateObjectArbAxis,
 //         SetPosition, ...)
 //      4. obj->FinalizeTransformations()  -- recompute world matrix
@@ -830,6 +832,17 @@ Scalar FinalColumnLength_( const Matrix4& m, int column )
 	return std::sqrt( v[0] * v[0] + v[1] * v[1] + v[2] * v[2] );
 }
 
+//! Replace an object's LOCAL transform -- what its authoring chunk stores --
+//! with `m`.  Under 87 the object's WORLD matrix becomes `parentWorld * m` at
+//! the next finalize; for an unparented object (parentWorld == identity) the
+//! two are the same and this behaves exactly as it always did.
+//!
+//! Every caller below therefore computes `m` from GetLocalTransformMatrix(),
+//! never from GetFinalTransformMatrix().  That is deliberate: the absolute
+//! setters this feeds (SetObjectOrientation, SetObjectScale / SetObjectStretch,
+//! ScaleObjectFromAnchor) are the transform PANEL's ops, and the panel edits
+//! the node's own authored values.  The gizmo's DELTA ops are the world-space
+//! ones, and they go through PushWorldOp_ instead.
 void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 {
 	if( Implementation::Transformable* transformable =
@@ -839,6 +852,18 @@ void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 		obj.ClearAllTransforms();
 		obj.PushTopTransStack( m );
 	}
+}
+
+//! Apply a WORLD-space operation `worldOp` to an object whose transform stack
+//! is LOCAL.  Conjugating by the parent world transform,
+//! `parentWorld^-1 * worldOp * parentWorld`, is what makes the composed result
+//! come out as `worldOp * world_old` -- i.e. the gizmo moves the object by
+//! exactly the world delta the pointer described, whatever frame its parent is
+//! in.  For a root, parentWorld is identity and this is `worldOp` verbatim, so
+//! the unparented path is byte-identical to the pre-87 code.
+void PushWorldOp_( IObjectPriv& obj, const Matrix4& worldOp )
+{
+	obj.PushBottomTransStack( obj.WorldToLocal( worldOp * obj.GetParentWorldTransformMatrix() ) );
 }
 
 Matrix4 ScaleFreeAffineBase_( const Matrix4& current )
@@ -868,7 +893,10 @@ Matrix4 ScaleFreeAffineBase_( const Matrix4& current )
 
 void SetAbsoluteStretch_( IObjectPriv& obj, const Vector3& target )
 {
-	const Matrix4 base = ScaleFreeAffineBase_( obj.GetFinalTransformMatrix() );
+	// LOCAL: an absolute scale is a property of the node's own transform.  A
+	// parented node inherits its parent's scale on top of this, which is what
+	// a scene graph is for.
+	const Matrix4 base = ScaleFreeAffineBase_( obj.GetLocalTransformMatrix() );
 	ReplaceFinalTransform_( obj, base * Matrix4Ops::Stretch( target ) );
 }
 
@@ -880,7 +908,11 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	switch( edit.op )
 	{
 	case SceneEdit::TranslateObject:
-		obj.TranslateObject( edit.v3a );
+		// The gizmo's translate drag produces a WORLD-space delta (see
+		// SceneEditController::OnPointerMove), and Transformable::TranslateObject
+		// would push it onto the LOCAL stack -- under a rotated or scaled parent
+		// that moves the object somewhere else entirely.  Conjugate first.
+		PushWorldOp_( obj, Matrix4Ops::Translation( edit.v3a ) );
 		break;
 	case SceneEdit::RotateObjectArb:
 		{
@@ -898,23 +930,31 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 			// the leftmost factor in the finalized matrix. This preserves any
 			// existing scale/shear/stack representation and keeps undo capture
 			// lossless while matching the gizmo's visible pivot.
+			// The pivot and the axis are both WORLD quantities (the gizmo draws
+			// world-axis rings around the object's world origin), so `aboutPivot`
+			// is a world operation and goes through PushWorldOp_ -- which pushes
+			// its parent-frame conjugate onto the LOCAL stack.
 			const Matrix4 current = obj.GetFinalTransformMatrix();
 			const Vector3 pivot( current._30, current._31, current._32 );
 			const Matrix4 aboutPivot =
 				Matrix4Ops::Translation( pivot )
 			  * Matrix4Ops::Rotation( edit.v3a, edit.s )
 			  * Matrix4Ops::Translation( Vector3( -pivot.x, -pivot.y, -pivot.z ) );
-			obj.PushBottomTransStack( aboutPivot );
+			PushWorldOp_( obj, aboutPivot );
 		}
 		break;
 	case SceneEdit::SetObjectPosition:
 		{
-			// SetObjectPosition is an absolute WORLD-space contract. Editor
-			// rotations/translations can live in the outer transform stack, so
-			// replacing only the inner position component would still let those
-			// matrices move the requested point. Apply the world-space correction
-			// to the finalized origin instead, regardless of transform provenance.
-			const Matrix4 current = obj.GetFinalTransformMatrix();
+			// SetObjectPosition is an ABSOLUTE setter -- the transform panel's
+			// `position` row, i.e. the chunk's own authored value -- so under 87
+			// it is a LOCAL contract, parent-relative.  For a root (the only
+			// case that existed before 87) local == world and this is the same
+			// absolute world contract it always was.  Editor rotations and
+			// translations can live in the outer transform stack, so replacing
+			// only the inner position component would still let those matrices
+			// move the requested point: apply the correction to the composed
+			// LOCAL origin instead, regardless of transform provenance.
+			const Matrix4 current = obj.GetLocalTransformMatrix();
 			obj.TranslateObject( Vector3(
 				edit.v3a.x - current._30,
 				edit.v3a.y - current._31,
@@ -923,7 +963,8 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		break;
 	case SceneEdit::SetObjectOrientation:
 		{
-			const Matrix4 current = obj.GetFinalTransformMatrix();
+			// Absolute setter -> LOCAL, for the same reason as SetObjectPosition.
+			const Matrix4 current = obj.GetLocalTransformMatrix();
 			const Vector3 position(
 				current._30,
 				current._31,
@@ -1038,8 +1079,11 @@ void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edi
 			if( t->RestoreTransformStateV2( edit.prevTransformState ) ) return;
 		}
 	}
-	// Fallback (ITransformable composes final = position * orientation *
+	// Fallback (ITransformable composes local = position * orientation *
 	// stretch * scale * stack; zero components + push the captured matrix).
+	// `prevTransform` is the captured LOCAL matrix, and the stack is local, so
+	// this restores the node's own transform and leaves its parent link's
+	// contribution to the next compose.
 	obj.ClearAllTransforms();
 	obj.PushTopTransStack( edit.prevTransform );
 }
@@ -1968,7 +2012,15 @@ bool SceneEditor::CommitPendingCstObjectTransforms()
 	for( std::unordered_set<std::string>::const_iterator it = mPendingCstObjMatrix.begin(); it != mPendingCstObjMatrix.end(); ++it ) {
 		IObjectPriv* obj = FindObject( String( it->c_str() ) );
 		if( !obj ) continue;
-		const Matrix4 M = obj->GetFinalTransformMatrix();
+		// 87: commit the LOCAL matrix -- what the chunk actually authors.  The
+		// re-derive re-composes `parentWorld * local`, so committing the WORLD
+		// matrix of a parented object would bake its parent's transform into
+		// its own chunk and the next derive would apply that transform a SECOND
+		// time.  That is precisely the failure 86 hit (§3, "the GUI transform
+		// commit SQUARED the group matrix") and had to paper over with a G^-1
+		// division that could not be done at all when G was singular.  Reading
+		// the local matrix back needs no inverse and has no degenerate case.
+		const Matrix4 M = obj->GetLocalTransformMatrix();
 		const int kind = mJob->CstObjectTransformKind( it->c_str() );
 		Route r; r.name = *it; r.kind = kind; r.ready = false;
 		if( kind == 1 ) {
@@ -2116,7 +2168,13 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 		// controller-supplied drag-start anchor in prevTransform -- never
 		// overwrite it).
 		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
-			edit.prevTransform = obj->GetFinalTransformMatrix();
+			// LOCAL (87): RestoreObjectTransform's fallback pushes this straight
+			// back onto the LOCAL transform stack, and ScaleObjectFromAnchor
+			// multiplies it by a stretch and hands the product to
+			// ReplaceFinalTransform_, which is also LOCAL.  Capturing the WORLD
+			// matrix here would bake the parent's transform into the child on
+			// the first undo.  For a root the two are identical.
+			edit.prevTransform = obj->GetLocalTransformMatrix();
 			if( const Implementation::Transformable* t = dynamic_cast<const Implementation::Transformable*>( obj ) ) {
 				edit.prevTransformState = t->CaptureTransformStateV2();
 				edit.hasTransformState  = true;
@@ -2972,8 +3030,11 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// guaranteed success.
 		if( fwdOk && cstKind == 2 ) {
 			obj->FinalizeTransformations();   // ApplyObjectOpForward updates components/stack but not m_mxFinalTrans; compose it before reading
+			// Check the matrix the COMMIT will actually decompose -- the LOCAL
+			// one (see CommitPendingCstObjectTransforms) -- so the gate passes
+			// or refuses on the same matrix that gets written.
 			Vector3 dpos, dorient;
-			if( !DecomposeRigid( obj->GetFinalTransformMatrix(), dpos, dorient ) ) {
+			if( !DecomposeRigid( obj->GetLocalTransformMatrix(), dpos, dorient ) ) {
 				RestoreObjectTransform( *obj, edit );
 				RunObjectInvariantChain( *obj );
 				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {

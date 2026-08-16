@@ -6994,7 +6994,15 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name     = bag.GetString( "name",     "noname" );
+					// 87: `geometry` is OPTIONAL.  Absent (or the universal
+					// no-reference sentinel `none`) means this object is a
+					// CONTAINER node -- a pure transform other objects parent
+					// to.  Job::AddObject turns that into a geometry-less,
+					// world-INVISIBLE object.  NB this is a real semantic
+					// change: before 87 an object chunk with no `geometry`
+					// hard-failed with "Geometry not found `none`".
 					std::string geometry = bag.GetString( "geometry", "none" );
+					std::string parent   = bag.GetString( "parent",   "" );
 					std::string material = bag.GetString( "material", "none" );
 					std::string modifier = bag.GetString( "modifier", "none" );
 					std::string shader   = bag.GetString( "shader",   "none" );
@@ -7087,6 +7095,28 @@ namespace RISE
 						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
 					}
 
+					// 87 recursive scene graph: record the parent LINK.  Nothing
+					// is composed here -- `world = parent.world * local` is baked
+					// by the derive's tail walk -- which is what makes editing a
+					// container an ordinary one-chunk param edit and makes
+					// hierarchical animation fall out for free.
+					//
+					// A refused link FAILS the chunk rather than silently
+					// dropping the object out of its tree.  IJob::SetObjectParent
+					// logs the specific reason (undeclared parent, self-parent,
+					// cycle); mirror it into the CST diagnostic sink so the
+					// scene author sees it at the load, not only in the log.
+					if( bRet && !parent.empty() && parent != "none" ) {
+						if( !pJob.SetObjectParent( name.c_str(), parent.c_str() ) ) {
+							if( RISE::g_cstFinalizeDiagSink ) {
+								*RISE::g_cstFinalizeDiagSink = "standard_object `" + name + "`: `parent " + parent +
+									"` was refused -- the parent must be a DECLARED-EARLIER object, must not be "
+									"this object, and must not already be one of its descendants";
+							}
+							bRet = false;
+						}
+					}
+
 					return bRet;
 				}
 
@@ -7094,14 +7124,21 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "standard_object"; cd.category = ChunkCategory::Object;
-						cd.description = "Scene object instancing a geometry with material, modifier, and shader.  "
+						cd.description = "Scene-graph node.  With a `geometry` it is a LEAF shape (with material, "
+							"modifier and shader); with no `geometry` it is a pure CONTAINER -- a transform that "
+							"other objects are parented to, invisible to the renderer itself.  `parent` names "
+							"another object, declared EARLIER in the file, whose transform this one composes "
+							"into: the node's world transform is `parent.world * local`, so moving or animating "
+							"a parent moves its whole subtree.  Nesting is arbitrary; a cycle is refused.  "
 							"Transform precedence: `matrix` > `quaternion` > `orientation` (Euler).  "
 							"`matrix` (16 doubles, column-major) bypasses the position / orientation / scale "
 							"composition entirely; `quaternion` (xyzw, glTF convention) replaces Euler "
-							"rotation but still composes with `position` and `scale`.";
+							"rotation but still composes with `position` and `scale`.  All of them describe "
+							"the node's LOCAL transform, relative to its parent.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to instance"; }
+						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to instance; omit for a pure container node"; }
+						{ auto& p = P(); p.name = "parent";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this one to (must be declared earlier)"; }
 						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
 						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }
 						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Shader override"; }

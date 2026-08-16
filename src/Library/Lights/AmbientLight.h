@@ -40,41 +40,41 @@ namespace RISE
 		public:
 			AmbientLight( Scalar radiantEnergy_, const RISEPel& c  ) : radiantEnergy( radiantEnergy_ ), cColor( c ){};
 
-			inline bool CanGeneratePhotons() const
+			inline bool CanGeneratePhotons() const override
 			{
 				return false;
 			}
 
-			inline RISEPel radiantExitance() const
+			inline RISEPel radiantExitance() const override
 			{
 				return RISEPel(0,0,0);
 			}
 
-			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
+			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{
 				return (cColor * radiantEnergy);
 			}
 
-			inline Point3 position() const
+			inline Point3 position() const override
 			{
 				return Point3( 0, 0, 0 );
 			}
 
-			inline RISEPel   emissionColor() const  { return cColor; }
-			inline Scalar    emissionEnergy() const { return radiantEnergy; }
-			inline LightType lightType() const      { return LightType::Ambient; }
+			inline RISEPel   emissionColor() const override  { return cColor; }
+			inline Scalar    emissionEnergy() const override { return radiantEnergy; }
+			inline LightType lightType() const override      { return LightType::Ambient; }
 
-			inline Ray generateRandomPhoton( const Point3& ptrand ) const
+			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
 			{
 				return Ray();
 			}
 
-			inline Scalar pdfDirection( const Vector3& ) const
+			inline Scalar pdfDirection( const Vector3& ) const override
 			{
 				return 0;
 			}
 
-			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount ) const
+			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount ) const override
 			{
 				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
 			}
@@ -92,7 +92,7 @@ namespace RISE
 				const IBSDF& brdf,
 				const bool,
 				const Scalar nm
-				) const
+				) const override
 			{
 				const Scalar lightLum =
 					Scalar(0.2126) * cColor.r +
@@ -101,7 +101,12 @@ namespace RISE
 				return lightLum * radiantEnergy * brdf.valueNM( ri.vNormal, ri, nm );
 			}
 
-			inline void	FinalizeTransformations(){Transformable::FinalizeTransformations();};
+			// No light-specific state to refresh; the base composition is all an
+			// ambient light needs.  Declared explicitly (rather than left to
+			// inheritance) only to keep the parity with the other two lights
+			// obvious to the next reader.
+			inline void	FinalizeTransformations( const Matrix4& parentWorld ) override { Transformable::FinalizeTransformations( parentWorld ); };
+			using Transformable::FinalizeTransformations;
 
 			// For keyframamble interface
 			// Keyframe parameter IDs.  The IDs MUST match between
@@ -116,7 +121,7 @@ namespace RISE
 			static const unsigned int kColorID  = 100;
 			static const unsigned int kEnergyID = 101;
 
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value )
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override
 			{
 				IKeyframeParameter* p = 0;
 
@@ -140,7 +145,7 @@ namespace RISE
 				return p;
 			}
 
-			void SetIntermediateValue( const IKeyframeParameter& val )
+			void SetIntermediateValue( const IKeyframeParameter& val ) override
 			{
 				switch( val.getID() )
 				{

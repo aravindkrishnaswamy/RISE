@@ -2431,7 +2431,11 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					const IObjectManager* objs = sceneForObj ? sceneForObj->GetObjects() : 0;
 					IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
 					if( obj ) {
-						mGizmoDrag.dragStartMatrix = obj->GetFinalTransformMatrix();
+						// LOCAL (87): this anchor is fed to SceneEdit::ScaleObjectFromAnchor,
+					// whose Apply does `anchor * Stretch(factor)` and installs the result as
+					// the object's LOCAL transform.  A world anchor would bake the parent's
+					// transform into the child on the first scale drag.
+					mGizmoDrag.dragStartMatrix = obj->GetLocalTransformMatrix();
 						// Capture exact stack representation and authoritative metadata
 						// so undo restores subsequent Push/Pop and setter semantics.
 						mGizmoDrag.dragStartStateValid = false;
@@ -2496,7 +2500,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 				const IScene* sceneForObj = mJob.GetScene();
 				const IObjectManager* objs = sceneForObj ? sceneForObj->GetObjects() : 0;
 				IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
-				mGizmoDrag.dragStartMatrix = obj ? obj->GetFinalTransformMatrix() : Matrix4Ops::Identity();
+				mGizmoDrag.dragStartMatrix = obj ? obj->GetLocalTransformMatrix() : Matrix4Ops::Identity();   // LOCAL -- see the handle-drag capture above
 				mGizmoDrag.dragStartStateValid = false;
 				if( Implementation::Transformable* tt = dynamic_cast<Implementation::Transformable*>( obj ) ) {
 					mGizmoDrag.dragStartState = tt->CaptureTransformStateV2();

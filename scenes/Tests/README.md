@@ -22,7 +22,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Cameras/`: isolated camera-model checks (sensor-format presets, tilt-shift, named-camera selection)
 - `ChunkCoverage/`: minimal parser-chunk acceptance and derive coverage
 - `Caustics/`: compact caustic and SMS comparison scenes
-- `Geometry/`: primitive and CSG sanity scenes
+- `Geometry/`: primitive and CSG sanity scenes, plus the object-parenting scene-graph check
 - `GlobalIllumination/`: focused GI baselines such as final gather
 - `Importers/`: glTF import regression scenes (Khronos sample assets, alpha modes, embedded textures, light-control)
 - `LightBVH/`: many-light regression scenes comparing alias-table sampling vs. light BVH (corridor 20/100 lights, spotlights stage, BDPT mixed-light Cornell)
@@ -54,6 +54,9 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ## Recommended Quick Checks
 
 - Geometry sanity: `Geometry/shapes.RISEscene`
+- Scene-graph parenting: `Geometry/object_parenting.RISEscene` (an articulated
+  arm built from container nodes; the hand's `scale` is authored once and
+  inherited by the fingers through composition)
 - CST/parser sanity: `Parser/loops.RISEscene` (a flattened native-v7 fixture;
   the filename and historical header comment predate retirement of the
   streaming loop language)

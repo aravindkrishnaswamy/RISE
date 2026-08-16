@@ -130,6 +130,20 @@ namespace RISE
 		virtual void ClearModifier() = 0;
 		virtual void ClearShader() = 0;
 		virtual void ClearRadianceMap() = 0;
+
+		//! Drop the object's geometry entirely, turning it into a CONTAINER
+		//! node -- a pure transform in the authored scene graph
+		//! (docs/agentic-redesign/87-recursive-scene-graph.md).  Same reason
+		//! the four Clear* above exist: the CST incremental apply re-points a
+		//! STABLE object in place, and an edit that removes the chunk's
+		//! `geometry` cannot be expressed through AssignGeometry's reference
+		//! signature.  Appended at this interface's TAIL, so no existing slot
+		//! shifts.
+		//!
+		//! Callers must also hide the object (SetWorldVisible(false)) -- this
+		//! method only owns the geometry slot.  Every consumer that walks the
+		//! world-visible list assumes a real intersectable.
+		virtual void ClearGeometry() = 0;
 	};
 }
 

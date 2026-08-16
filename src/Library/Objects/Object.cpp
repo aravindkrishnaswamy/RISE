@@ -161,6 +161,16 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	dst.m_mxFinalTrans    = m_mxFinalTrans;
 	dst.m_mxInvFinalTrans = m_mxInvFinalTrans;
 	dst.m_mxInvTranspose  = m_mxInvTranspose;
+
+	// --- 87 scene graph: the LOCAL matrix and the parent world it was
+	//     composed against.  Without these the clone's world matrix would be
+	//     right but its local/parent state identity, so the very first
+	//     re-finalize on the clone (any absolute setter, a restore, the
+	//     animator) would collapse it back to an unparented pose.
+	dst.m_mxLocalTrans           = m_mxLocalTrans;
+	dst.m_mxParentWorld          = m_mxParentWorld;
+	dst.m_mxParentWorldInv       = m_mxParentWorldInv;
+	dst.m_bParentWorldInvertible = m_bParentWorldInvertible;
 }
 
 Object* Object::CloneSnapshot() const
@@ -288,6 +298,15 @@ void Object::ClearRadianceMap()
 	pRadianceMap = 0;
 }
 
+void Object::ClearGeometry()
+{
+	// 87 recursive scene graph: a CONTAINER node is an Object with no geometry.
+	// The null-geometry guards throughout this file are what make that safe;
+	// see getBoundingBox()'s comment for the (now reachable) call-graph note.
+	safe_release( pGeometry );
+	pGeometry = 0;
+}
+
 const IMaterial* Object::GetMaterial() const
 {
 	return pMaterial;
@@ -339,18 +358,19 @@ bool Object::ComputeAnalyticalDerivatives(
 
 const BoundingBox Object::getBoundingBox() const
 {
-	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, audit pass): pGeometry is
-	// null for a CSGObject, but CSGObject OVERRIDES getBoundingBox()
-	// entirely (CSGObject::getBoundingBox unions/intersects its two operand
-	// objects' boxes) and never calls this base-class version -- CSGObject
-	// is the sole Object subclass in the tree, and Job::AddObject hard-fails
-	// (returns false, no object created) when a standard_object's geometry
-	// reference doesn't resolve, so a base `Object` instance can never carry
-	// a null pGeometry in a realized scene either.  This branch is therefore
-	// UNREACHABLE in the current call graph; guarded anyway (empty box,
-	// matching CSGObject::getBoundingBox's own no-operand fallback) for
-	// defense-in-depth against a future Object subclass that doesn't
-	// override this.
+	// NULL-GEOMETRY GUARD.  This branch is REACHABLE as of 87 (recursive scene
+	// graph): a `standard_object` with no `geometry` is a CONTAINER node -- a
+	// pure transform other objects are parented to -- and Job::AddObject
+	// creates it with no geometry at all.  (Before 87 the only null-geometry
+	// object was a CSGObject, which overrides getBoundingBox() entirely and
+	// never reaches here, so this used to be dead defensive code; the
+	// 2026-07-31 audit-round comment that said so is superseded.)
+	//
+	// A container is world-INVISIBLE, so nothing in the render path asks it
+	// for a box: CreateBVH/CreateOctree filter on IsWorldVisible() before
+	// calling GetElementBoundingBox.  The empty box is what a caller outside
+	// that gate gets, matching CSGObject::getBoundingBox's own no-operand
+	// fallback.
 	if( !pGeometry ) {
 		return BoundingBox( Point3( 0, 0, 0 ), Point3( 0, 0, 0 ) );
 	}
@@ -394,12 +414,10 @@ const BoundingBox Object::getBoundingBox() const
 
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
-	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, audit pass): see
-	// getBoundingBox()'s doc comment above -- CSGObject overrides
-	// IntersectRay() completely and is the only Object subclass, and
-	// Job::AddObject never creates a base Object with null geometry, so this
-	// branch is UNREACHABLE in the current call graph.  Guarded anyway (no
-	// hit) for defense-in-depth.  P3 CORRECTION (fix round 3): this does
+	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as
+	// of 87 for a CONTAINER node, though the world-visible gate in
+	// ObjectManager::RayElementIntersection means no ray reaches a container
+	// through the normal traversal.  No hit.  P3 CORRECTION (fix round 3): this does
 	// NOT match CSGObject::IntersectRay's own no-operand fallback -- CSG's
 	// `if( !pObjectA || !pObjectB ) { ...; return; }` fires BEFORE it ever
 	// sets `ri.geometric.bHit = false`, so it returns WITHOUT touching
@@ -654,12 +672,10 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
-	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, audit pass): see
-	// getBoundingBox()'s doc comment above -- CSGObject overrides this
-	// method completely and is the only Object subclass, and Job::AddObject
-	// never creates a base Object with null geometry, so this branch is
-	// UNREACHABLE in the current call graph.  Guarded anyway (no
-	// intersection) for defense-in-depth.
+	// NULL-GEOMETRY GUARD: see getBoundingBox()'s comment above.  Reachable as
+	// of 87 for a CONTAINER node; the world-visible + casts-shadows gate in
+	// ObjectManager::RayElementIntersection_IntersectionOnly keeps shadow rays
+	// away from one.  No intersection.
 	if( !pGeometry ) {
 		return false;
 	}
@@ -718,8 +734,11 @@ bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar
 void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2, caller list corrected
-	// fix round 3): pGeometry is null for a CSGObject (see GetArea()'s doc
-	// comment above).  Every known caller of UniformRandomPoint on an
+	// fix round 3; 87: a geometry-less CONTAINER node is now a second source
+	// of a null pGeometry, and it reaches these callers no more than a
+	// CSGObject does -- a container is world-INVISIBLE, so it never lands on
+	// the luminaries list or in any world-visible scan): pGeometry is null
+	// for a CSGObject (see GetArea()'s doc comment above).  Every known caller of UniformRandomPoint on an
 	// IObject now refuses to reach here with a null pGeometry:
 	// LightSampler (safe by LUMINARIES-LIST MEMBERSHIP -- see GetArea()'s
 	// doc comment's class (2) argument, not a local check);
@@ -778,7 +797,8 @@ Scalar Object::GetArea( ) const
 	// NULL-GEOMETRY GUARD (2026-07-31 fix round 2): pGeometry is null for a
 	// CSGObject (its shape is synthesized from two operand objects rather
 	// than owned directly -- see CSGObject.h/.cpp, which overrides
-	// IntersectRay/getBoundingBox but NOT GetArea()).  Returns 0 -- an area
+	// IntersectRay/getBoundingBox but NOT GetArea()) and, as of 87, for a
+	// geometry-less CONTAINER node.  Returns 0 -- an area
 	// of zero is the same "cannot be uniformly area-sampled" signal every
 	// caller already checks for CanBeAreaLight()==false: `area > 0` gates
 	// all of them, so 0 flows through as "not sampleable" without a
@@ -857,9 +877,14 @@ void Object::ResetRuntimeData() const
 	}
 }
 
-void Object::FinalizeTransformations( )
+void Object::FinalizeTransformations( const Matrix4& parentWorld )
 {
-	Transformable::FinalizeTransformations();
+	Transformable::FinalizeTransformations( parentWorld );
+
+	// Everything below is derived from m_mxFinalTrans, which is now the
+	// COMPOSED world matrix `parentWorld * local`.  That is what makes the
+	// three caches correct under hierarchy by construction rather than by a
+	// separate recompute pass: there is one finalize, and it is this one.
 	m_mxInvTranspose = Matrix4Ops::Transpose( m_mxInvFinalTrans );
 
 	// Sign of the chirality flip the world-space transform applies to

@@ -312,7 +312,15 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 	const IMaterialManager* materials, const IShaderManager* shaders,
 	const IJob* job )
 {
-	const Matrix4 m = obj.GetFinalTransformMatrix();
+	// LOCAL (87): these rows ARE the chunk's `position` / `orientation` /
+	// `scale` params, so they must show what the chunk stores -- the node's own
+	// transform, relative to its parent.  Showing the composed world transform
+	// under a parent-relative label would both mislead and round-trip wrong:
+	// the write side (SetObjectPosition / SetObjectOrientation /
+	// SetObjectStretch) is an absolute LOCAL setter for the same reason.  For
+	// an unparented object local == world, which is every object that existed
+	// before hierarchy.
+	const Matrix4 m = obj.GetLocalTransformMatrix();
 	char buf[256];
 
 	if( paramName == String( "position" ) ) {

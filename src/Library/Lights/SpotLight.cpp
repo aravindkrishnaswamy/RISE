@@ -164,10 +164,10 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	return base * tt * tt;
 }
 
-void SpotLight::FinalizeTransformations( )
+void SpotLight::FinalizeTransformations( const Matrix4& parentWorld )
 {
 	// Tells out transform helper to finalize transformations
-	Transformable::FinalizeTransformations();
+	Transformable::FinalizeTransformations( parentWorld );
 
 	// Then calculate the real-world position of this light...
 	ptPosition = Point3Ops::Transform( m_mxFinalTrans, Point3( 0, 0, 0 ) );

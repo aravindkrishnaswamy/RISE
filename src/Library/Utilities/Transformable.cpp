@@ -209,10 +209,16 @@ bool TransformStateV2IsValid_( const TransformStateV2& state )
 } // namespace
 
 Transformable::Transformable( ) :
+	m_mxFinalTrans( Matrix4Ops::Identity() ),
+	m_mxInvFinalTrans( Matrix4Ops::Identity() ),
 	m_mxPosition( Matrix4Ops::Identity() ),
 	m_mxOrientation( Matrix4Ops::Identity() ),
 	m_mxScale( Matrix4Ops::Identity() ),
-	m_mxStretch( Matrix4Ops::Identity() )
+	m_mxStretch( Matrix4Ops::Identity() ),
+	m_mxLocalTrans( Matrix4Ops::Identity() ),
+	m_mxParentWorld( Matrix4Ops::Identity() ),
+	m_mxParentWorldInv( Matrix4Ops::Identity() ),
+	m_bParentWorldInvertible( true )
 {
 }
 
@@ -269,6 +275,11 @@ void Transformable::PopBottomTransStack( )
 
 void Transformable::ClearAllTransforms( )
 {
+	// Clears the LOCAL transform only.  m_mxParentWorld is deliberately NOT
+	// reset: a node's place in the scene graph is not one of its transforms,
+	// and Job::AddObject calls this on every re-apply -- resetting the parent
+	// here would silently un-parent every object an incremental edit touches
+	// until the next compose walk.
 	m_transformstack.clear( );
 	m_mxPosition = Matrix4Ops::Identity();
 	m_mxOrientation = Matrix4Ops::Identity();
@@ -435,17 +446,59 @@ void Transformable::ReplaceFinalStack_( const Matrix4& matrix )
 
 void Transformable::FinalizeTransformations( )
 {
-	m_mxFinalTrans = Matrix4Ops::Identity();
+	// Re-compose against the parent world transform this node was LAST given.
+	// Every pre-hierarchy caller (Job::AddObject, the editor's op apply, the
+	// animator's RegenerateData) reaches finalize through this overload and
+	// keeps a parented node correctly composed without knowing the graph
+	// exists.  A root's m_mxParentWorld is identity, so this is byte-identical
+	// to the historical implementation for an unparented node.
+	FinalizeTransformations( m_mxParentWorld );
+}
 
+void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
+{
+	// ---- LOCAL: this node's own authored transform, no parent contribution.
 	// First apply the scale, orientation and position matrices
-	m_mxFinalTrans = m_mxPosition * m_mxOrientation * m_mxStretch * m_mxScale;
+	m_mxLocalTrans = m_mxPosition * m_mxOrientation * m_mxStretch * m_mxScale;
 
 	// Go through the transformation stack and multiply the transformations...
 	TransformStackType::const_iterator		i;
 	for( i=m_transformstack.begin(); i<m_transformstack.end(); i++ ) {
-		m_mxFinalTrans = (*i) * m_mxFinalTrans;
+		m_mxLocalTrans = (*i) * m_mxLocalTrans;
 	}
 
+	// ---- PARENT: stored by VALUE and re-supplied on every call, never pushed
+	// onto m_transformstack.  The stack has no self-clearing step, so a pushed
+	// parent matrix would compose a second time on the next re-apply and
+	// square in another factor without bound -- the 86 §3 bug class.  As an
+	// argument it is idempotent: this function always yields exactly
+	// `parentWorld * local`, however many times it runs.
+	m_mxParentWorld = parentWorld;
+
+	// VERIFY the inverse rather than trusting a determinant epsilon:
+	// Matrix4Ops::Inverse returns its INPUT UNCHANGED when the determinant is
+	// zero, so a degenerate parent (`scale 0 1 1` anywhere up the chain) would
+	// otherwise hand back a "quotient" that is not an inverse at all and let
+	// WorldToLocal silently corrupt a committed transform.
+	m_mxParentWorldInv = Matrix4Ops::Inverse( m_mxParentWorld );
+	{
+		const Matrix4 shouldBeIdentity = m_mxParentWorld * m_mxParentWorldInv;
+		const Matrix4 identity = Matrix4Ops::Identity();
+		const Scalar* ip = &shouldBeIdentity._00;
+		const Scalar* ep = &identity._00;
+		m_bParentWorldInvertible = true;
+		for( int k = 0; k < 16; ++k ) {
+			const double d = static_cast<double>( ip[k] ) - static_cast<double>( ep[k] );
+			if( !( std::fabs( d ) <= 1e-9 ) ) {          // `!(<=)` also rejects NaN
+				m_bParentWorldInvertible = false;
+				m_mxParentWorldInv = Matrix4Ops::Identity();
+				break;
+			}
+		}
+	}
+
+	// ---- WORLD.
+	m_mxFinalTrans = m_mxParentWorld * m_mxLocalTrans;
 	m_mxInvFinalTrans = Matrix4Ops::Inverse( m_mxFinalTrans );
 }
 

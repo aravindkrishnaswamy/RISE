@@ -4752,6 +4752,22 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateContainerObject(
+							IObjectPriv** ppi					///< [out] Pointer to recieve object
+							)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// The no-argument Object ctor, deliberately: Object(const IGeometry*)
+		// logs a source ERROR for a null pointer, because for a LEAF a null
+		// geometry is a bug.  For a container it is the whole point.
+		(*ppi) = new Object();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "container object" );
+		return true;
+	}
+
 	//! Creates a CSG object
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCSGObject(

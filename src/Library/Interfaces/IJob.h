@@ -3839,6 +3839,34 @@ namespace RISE
 			return 0;
 		}
 
+		// ---- Recursive scene graph (docs/agentic-redesign/87-recursive-scene-graph.md).
+		// NB: appended at the IJob tail (append-only vtable ABI, pinned by
+		// tests/IJobVtableManifest.txt).
+
+		//! Record `child`'s parent in the AUTHORED scene graph.  A null / empty
+		//! `parent` detaches the child.  This records a LINK and nothing else:
+		//! no transform is composed here, which is precisely what makes a
+		//! container's transform edit an ordinary one-chunk param edit and
+		//! makes hierarchical animation work.  Composition happens later, in
+		//! ComposeObjectHierarchy.
+		//!
+		//! Refuses (returning FALSE, changing nothing) when either name is not
+		//! a declared object, when they are the same object, or when the link
+		//! would close a cycle.  The parent must be DECLARED BEFORE the child,
+		//! the same rule `standard_shader`'s `shaderop` references live under.
+		/// \return TRUE if the link was recorded, FALSE if refused
+		virtual bool SetObjectParent(
+			const char* /*child*/,								///< [in] Name of the child object
+			const char* /*parent*/								///< [in] Name of the parent object, or null / "" to detach
+			) { return false; }
+
+		//! Bake `world = parent.world * local` into every object, parent before
+		//! child.  Call once the whole object graph exists -- the scene derive
+		//! does this at its tail.  Idempotent and cheap (a no-op when the scene
+		//! has no parent links at all).
+		//! \return TRUE if any object's world matrix actually changed.
+		virtual bool ComposeObjectHierarchy( ) { return false; }
+
 	};
 
 

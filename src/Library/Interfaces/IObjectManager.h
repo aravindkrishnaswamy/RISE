@@ -73,6 +73,52 @@ namespace RISE
 		//! this to rebuild with current transforms.
 		virtual void InvalidateSpatialStructure() const = 0;
 
+		// ---- Authored scene graph (docs/agentic-redesign/87-recursive-scene-graph.md)
+		//
+		// TWO REPRESENTATIONS, SEPARATE JOBS.  The manager's item map is the
+		// FLAT RENDER LIST: every entry carries a fully composed world
+		// transform, and it is what the TLAS is built over and what all nine
+		// world-visible enumeration consumers walk.  The parent links below are
+		// the AUTHORED GRAPH: a side index that says nothing about rendering
+		// and exists so ComposeWorldTransforms can bake the flat list's world
+		// transforms, and so the outliner can show a tree.
+		//
+		// Links are stored BY NAME, one direction only (child -> parent name).
+		// No pointer is retained, so no lifetime cycle is possible and a
+		// removed parent degrades to "treat the child as a root" rather than
+		// to a dangling deref.
+
+		//! Record `child`'s parent.  A null / empty `parent` DETACHES the child
+		//! (it becomes a root).  Refuses -- with a diagnostic, changing
+		//! nothing -- when the child or the parent is not a registered object,
+		//! when they are the same object, or when the link would close a cycle.
+		//! \return TRUE if the link was recorded (or cleared), FALSE if refused.
+		virtual bool SetObjectParent(
+			const char* child,							///< [in] Name of the child object
+			const char* parent							///< [in] Name of the parent object, or null / "" to detach
+			) = 0;
+
+		//! The recorded parent name for `child`, or "" when it is a root or
+		//! not a registered object.  The returned pointer is owned by the
+		//! manager and is valid until the next SetObjectParent call.
+		virtual const char* GetObjectParent(
+			const char* child							///< [in] Name of the child object
+			) const = 0;
+
+		//! Walk the authored graph and bake `world = parent.world * local` into
+		//! every object, in parent-before-child order, via
+		//! ITransformable::FinalizeTransformations( parentWorld ).  Idempotent:
+		//! composition is an ARGUMENT, never a stack push, so running this
+		//! twice yields the same matrices.  Objects with no parent link are
+		//! finalized against identity, which is exactly what they did before
+		//! hierarchy existed.
+		//! \return TRUE if ANY object's world matrix actually changed.  The CST
+		//! incremental apply uses this as its spatial gate: a re-parented or
+		//! re-posed container moves DESCENDANTS that the edit closure never
+		//! contains, so their bounding boxes cannot be compared pairwise -- this
+		//! answer is what makes the TLAS invalidation sound.
+		virtual bool ComposeWorldTransforms() const = 0;
+
 		//! Monotonic counter advanced every time InvalidateSpatialStructure() runs.
 		//! A consumer reads it across an edit to confirm whether the top-level
 		//! acceleration was invalidated: the CST incremental apply's closure-gated

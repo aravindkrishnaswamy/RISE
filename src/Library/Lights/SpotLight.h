@@ -44,19 +44,19 @@ namespace RISE
 
 		public:
 
-			inline bool CanGeneratePhotons() const
+			inline bool CanGeneratePhotons() const override
 			{
 				return bShootPhotons;
 			}
 
-			inline void SetCanGeneratePhotons( bool b ) { bShootPhotons = b; }
+			inline void SetCanGeneratePhotons( bool b ) override { bShootPhotons = b; }
 
-			inline bool IsPositionalLight() const { return true; }
+			inline bool IsPositionalLight() const override { return true; }
 
-			inline Vector3 emissionDirection() const { return vDirection; }
-			inline Scalar emissionConeHalfAngle() const { return dOuterAngle / 2.0; }
+			inline Vector3 emissionDirection() const override { return vDirection; }
+			inline Scalar emissionConeHalfAngle() const override { return dOuterAngle / 2.0; }
 
-			inline RISEPel radiantExitance() const
+			inline RISEPel radiantExitance() const override
 			{
 				// Integrate emittedRadiance over the emission solid angle.
 				// dInnerAngle/dOuterAngle are full cone angles; half-angles
@@ -83,19 +83,19 @@ namespace RISE
 				return cColor * radiantEnergy * TWO_PI * solidAngle;
 			}
 
-			inline Point3 position() const
+			inline Point3 position() const override
 			{
 				return ptPosition;
 			}
 
-			inline RISEPel   emissionColor() const  { return cColor; }
-			inline Scalar    emissionEnergy() const { return radiantEnergy; }
-			inline LightType lightType() const      { return LightType::Spot; }
-			inline Point3    emissionTarget() const { return ptTarget; }
-			inline Scalar    emissionInnerAngle() const { return dInnerAngle; }
-			inline Scalar    emissionOuterAngle() const { return dOuterAngle; }
+			inline RISEPel   emissionColor() const override  { return cColor; }
+			inline Scalar    emissionEnergy() const override { return radiantEnergy; }
+			inline LightType lightType() const override      { return LightType::Spot; }
+			inline Point3    emissionTarget() const override { return ptTarget; }
+			inline Scalar    emissionInnerAngle() const override { return dInnerAngle; }
+			inline Scalar    emissionOuterAngle() const override { return dOuterAngle; }
 
-			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
+			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{
 				// Find the angle between the light out and vDirection.
 				// dInnerAngle/dOuterAngle are full cone angles, so we
@@ -122,7 +122,7 @@ namespace RISE
 				return RISEPel(0,0,0);
 			}
 
-			inline Ray generateRandomPhoton( const Point3& ptrand ) const
+			inline Ray generateRandomPhoton( const Point3& ptrand ) const override
 			{
 				// Uniform solid angle sampling within the outer half-cone
 				const Scalar halfOuter = dOuterAngle / 2.0;
@@ -143,7 +143,7 @@ namespace RISE
 					onb.u().z*localDir.x + onb.v().z*localDir.y + onb.w().z*localDir.z ) );
 			}
 
-			inline Scalar pdfDirection( const Vector3& dir ) const
+			inline Scalar pdfDirection( const Vector3& dir ) const override
 			{
 				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cost = Vector3Ops::Dot( dir, vDirection );
@@ -161,19 +161,23 @@ namespace RISE
 				const bool shootPhotons
 				);
 
-			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
+			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const override;
 
 			//! Per-wavelength direct lighting (cone falloff + wavelength-
 			//! specific transparent-shadow Fresnel).  See PointLight /
 			//! DirectionalLight; overrides the ILight RGB-projection default.
-			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const;
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const override;
 
-			void	FinalizeTransformations();
+			// Overrides the PARENT-COMPOSED overload only -- Transformable's
+			// no-argument form delegates here, so ptPosition / vDirection are
+			// refreshed on every finalize, hierarchy-composed or not.
+			void	FinalizeTransformations( const Matrix4& parentWorld ) override;
+			using Transformable::FinalizeTransformations;
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData()
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData() override
 			{
 				Transformable::RegenerateData();
 				vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));

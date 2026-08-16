@@ -2106,6 +2106,16 @@ namespace RISE
 							const IGeometry* geom				///< [in] Geometry making up this objectzz
 							);
 
+	//! Creates a CONTAINER object -- a scene-graph node with NO geometry, used
+	//! as a pure transform that other objects are parented to
+	//! (docs/agentic-redesign/87-recursive-scene-graph.md).  The caller must
+	//! also hide it (SetWorldVisible(false)); every consumer that walks the
+	//! world-visible object list assumes a real intersectable.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateContainerObject(
+							IObjectPriv** ppi					///< [out] Pointer to recieve object
+							);
+
 	//! Creates a CSG object
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCSGObject(

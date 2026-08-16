@@ -286,3 +286,5 @@ ExchangeProgress
 ApplyCstCameraPoseEditWithBasis
 ApplyCstRemoveChunks
 ApplyCstReplaceDocumentText
+SetObjectParent
+ComposeObjectHierarchy

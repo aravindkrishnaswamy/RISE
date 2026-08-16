@@ -138,6 +138,7 @@ namespace RISE
 			virtual void ClearMaterial() override;
 			virtual void ClearModifier() override;
 			virtual void ClearRadianceMap() override;
+			virtual void ClearGeometry() override;
 
 			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
@@ -180,7 +181,17 @@ namespace RISE
 
 			virtual void ResetRuntimeData() const override;
 
-			void FinalizeTransformations( ) override;
+			//! Object overrides ONLY the parent-composed overload, never the
+			//! no-argument one: Transformable's no-argument form delegates
+			//! here, so there is exactly ONE code path that refreshes
+			//! m_mxInvTranspose / m_tangentFrameSign / m_worldAreaScale.  An
+			//! override of the no-argument form instead would leave those three
+			//! caches STALE for every hierarchy-composed finalize -- which is
+			//! wrong normals, wrong mirrored-tangent handedness, and wrong
+			//! emitter / SSS position PDFs (the world-area Jacobian bug fixed
+			//! 2026-08-13).
+			void FinalizeTransformations( const Matrix4& parentWorld ) override;
+			using Transformable::FinalizeTransformations;   // keep the no-arg overload visible
 		};
 	}
 }

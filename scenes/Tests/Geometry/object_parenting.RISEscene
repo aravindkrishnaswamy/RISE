@@ -1,0 +1,294 @@
+RISE ASCII SCENE 7
+#
+# object_parenting.RISEscene -- docs/agentic-redesign/87-recursive-scene-graph.md
+#
+# A `standard_object` is the scene-graph node.  It carries a `geometry` (a leaf
+# shape) or no geometry at all (a pure CONTAINER -- a transform that other
+# objects hang off, invisible to the renderer), plus an optional `parent`.
+# A node's world transform is `parent.world * local`, so every authored
+# position / orientation / scale here is LOCAL, relative to its parent.
+#
+# The scene is a little articulated arm, deliberately built so the picture
+# READS the composition rather than merely exercising it:
+#
+#   pedestal_root            container at the world origin, rotated 20 deg
+#     +-- pedestal           the cylinder you can see
+#     +-- shoulder           container, lifted to the top of the pedestal
+#           +-- upper_arm    a stretched sphere
+#           +-- elbow        container, at the far end of the upper arm
+#                 +-- fore_arm
+#                 +-- hand_root         container, scaled 0.6
+#                       +-- palm
+#                       +-- finger_a / finger_b / finger_c
+#
+# Because the whole chain hangs off `pedestal_root`, the single `orientation`
+# on that container swings the entire arm.  Because `hand_root` carries a
+# `scale`, the three fingers are 0.6x WITHOUT any of them saying so -- which is
+# the property a flat scene graph cannot express, and the reason 86's
+# single-level grouping was replaced.
+#
+# Parents must be DECLARED BEFORE the objects that name them, the same rule
+# `standard_shader`'s `shaderop` references live under.  That reads top-down --
+# an assembly is declared before its parts -- and it makes a cycle impossible
+# at parse time.
+#
+# Deterministic regression coverage for the composition itself lives in
+# tests/SceneGraphParentTest.cpp; this scene is the visual / round-trip check.
+#
+
+film
+{
+width 640
+height 480
+}
+
+pinhole_camera
+{
+name cam
+location 5.5 5.2 12
+lookat 2.2 2.5 0
+up 0 1 0
+}
+
+# ---------------------------------------------------------------- materials
+
+uniformcolor_painter
+{
+name pnt_metal
+color 0.62 0.64 0.70
+}
+
+uniformcolor_painter
+{
+name pnt_accent
+color 0.85 0.35 0.18
+}
+
+uniformcolor_painter
+{
+name pnt_floor
+color 0.55 0.55 0.55
+}
+
+lambertian_material
+{
+name mat_metal
+reflectance pnt_metal
+}
+
+lambertian_material
+{
+name mat_accent
+reflectance pnt_accent
+}
+
+lambertian_material
+{
+name mat_floor
+reflectance pnt_floor
+}
+
+# ---------------------------------------------------------------- geometry
+
+infiniteplane_geometry
+{
+name geo_floor
+xtile 4
+ytile 4
+}
+
+cylinder_geometry
+{
+name geo_column
+axis y
+radius 0.45
+height 2.4
+}
+
+sphere_geometry
+{
+name geo_ball
+radius 0.5
+}
+
+box_geometry
+{
+name geo_bar
+width 2.2
+height 0.28
+depth 0.28
+}
+
+# ---------------------------------------------------------------- the floor
+
+standard_object
+{
+name floor
+geometry geo_floor
+material mat_floor
+position 0 0 0
+orientation -90 0 0
+}
+
+# ------------------------------------------------- the arm, as a real tree
+#
+# The container has no `geometry` line at all.  That is what makes it a
+# container: it never renders, it is not a luminaire, and it is not in the
+# top-level acceleration structure -- it exists purely to carry a transform
+# that its subtree composes against.
+
+standard_object
+{
+name pedestal_root
+position 0 0 0
+orientation 0 20 0
+}
+
+standard_object
+{
+name pedestal
+parent pedestal_root
+geometry geo_column
+material mat_metal
+position 0 1.2 0
+}
+
+standard_object
+{
+name shoulder
+parent pedestal_root
+position 0 2.4 0
+}
+
+standard_object
+{
+name upper_arm
+parent shoulder
+geometry geo_bar
+material mat_metal
+position 1.1 0 0
+orientation 0 0 25
+}
+
+standard_object
+{
+name shoulder_joint
+parent shoulder
+geometry geo_ball
+material mat_accent
+scale 0.55 0.55 0.55
+}
+
+standard_object
+{
+name elbow
+parent shoulder
+position 2.0 0.93 0
+}
+
+standard_object
+{
+name elbow_joint
+parent elbow
+geometry geo_ball
+material mat_accent
+scale 0.5 0.5 0.5
+}
+
+standard_object
+{
+name fore_arm
+parent elbow
+geometry geo_bar
+material mat_metal
+position 0.95 -0.35 0
+orientation 0 0 -20
+}
+
+# hand_root's `scale` is the point of the whole scene: it is authored ONCE,
+# here, and every finger below inherits it through composition.
+
+standard_object
+{
+name hand_root
+parent elbow
+position 1.9 -0.7 0
+scale 0.6 0.6 0.6
+}
+
+standard_object
+{
+name palm
+parent hand_root
+geometry geo_ball
+material mat_accent
+}
+
+standard_object
+{
+name finger_a
+parent hand_root
+geometry geo_ball
+material mat_metal
+position 0.75 0.30 0
+scale 0.45 0.45 0.45
+}
+
+standard_object
+{
+name finger_b
+parent hand_root
+geometry geo_ball
+material mat_metal
+position 0.85 0 0
+scale 0.45 0.45 0.45
+}
+
+standard_object
+{
+name finger_c
+parent hand_root
+geometry geo_ball
+material mat_metal
+position 0.75 -0.30 0
+scale 0.45 0.45 0.45
+}
+
+# ---------------------------------------------------------------- lighting
+#
+# `direction` is the vector FROM the surface TO the light (see
+# docs/SCENE_CONVENTIONS.md), so a camera at +Z needs a positive Z here.
+
+directional_light
+{
+name key
+power 2.2
+color 1 0.97 0.92
+direction 0.4 0.75 0.5
+}
+
+ambient_light
+{
+name fill
+power 0.18
+color 0.55 0.62 0.78
+}
+
+standard_shader
+{
+name global
+shaderop DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+samples 32
+}
+
+file_rasterizeroutput
+{
+pattern rendered/object_parenting
+type PNG
+bpp 8
+color_space sRGB
+}
