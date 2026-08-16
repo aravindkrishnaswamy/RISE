@@ -289,7 +289,27 @@ error and must be corrected.
      signature (monotonically creeping accepted residuals) and is the
      binding RED for this rule. V2's manufactured order gates must be
      re-verified with the restoration term active — it is proportional to
-     accumulated discretization error and must not alter formal order. "Feasible" everywhere in this contract means the single r60
+     accumulated discretization error and must not alter formal order.
+     **Manifold-exact acceptance (r70):** the coupled Picard target
+     recompute additionally includes the advective volume anomaly — the
+     divergence target converges to the value at which the candidate
+     accepted state lies on the P₀ manifold within the projection/EOS
+     tolerance (the scalar/EOS analog of the momentum compatibility
+     identity D_i I_i = I_ρ,i D). The r69 absolute term is the fixed
+     point's first iterate. Binding RED: removing the advective-anomaly
+     term must reproduce the invariant ~1.03×10⁻³ stationary hot/cold
+     contrast signature at a receiver cell. **Pilot command ramp (r70):**
+     the pilot map holds to the time-continuous command
+     T_cmd(t) = T_amb·(900/T_amb)^min(1, 10·t/t_ft) (map
+     T ← max(T_accepted, T_cmd(t_end-of-step)) at fixed composition); its
+     per-step increments are ∝ Δt in both phases, making it
+     relaxation-class — a per-accepted-step dose ratio is forbidden as a
+     source definition (it is a 1/Δt stiffness engine: Δt-invariant
+     receiver Courants and a CFL death spiral on the projection's own
+     velocities). The 17/16 per-step cap and drain bound remain as
+     admissibility backstops. Binding REDs: halving Δt must halve the
+     pilot's per-step packet (Δt-continuity), and the tier-6 prefix must
+     hold physical Δt (no 2.1 s → 1 ms collapse). "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance

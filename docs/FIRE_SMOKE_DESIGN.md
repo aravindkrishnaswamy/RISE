@@ -793,6 +793,38 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     (1.68×10⁻³, gate-failing); the r65 mechanism fixtures are deleted
     with the mechanism. Machinery after r67: setpoint map + cap +
     exact pair emission + production gates — each earning its place.
+  - **Continuous command ramp (r70) — the per-step dose becomes a
+    rate.** The instrumented tier-6 budget (r70 investigation) proved
+    the per-accepted-step cap is a 1/Δt stiffness engine: a 17/16
+    ratio applied per step regardless of Δt makes the mask's S_div
+    scale as 1/Δt, drives projected velocities to 10⁵ m/s under
+    halving, renders every receiver's per-step exchange Courant
+    Δt-invariant (~0.02 per hot face — the direct source of the
+    invariant 1.031×10⁻³ family), and feeds the CFL selector those
+    same velocities, collapsing Δt 2.1 s → 1 ms with the ×1.1 growth
+    cap preventing recovery. Physical sources are rates; a per-step
+    ratio is a discretization artifact. Pin: the pilot holds to a
+    **time-continuous commanded trajectory**
+    T_cmd(t) = T_amb·(900 K/T_amb)^min(1, 10·t/t_ft) — geometric ramp
+    completing in exactly **t_ft/10** (derived from the r54 t_ft; no
+    new physical scale), then the constant 900 K hold; the map is
+    **T ← max(T_accepted, T_cmd(t_end-of-step))** at fixed
+    composition. Per-step increments are then ∝ Δt in both phases
+    (command motion during the ramp; re-assertion of Δt-scaled
+    advective losses at the hold), so **the pilot becomes a genuine
+    relaxation-class map** (the r63 projection-class taxonomy stays
+    pinned but its population drops to zero), ramp velocities are
+    bounded and physical (~δx·ln 3·10/t_ft ≈ 0.2 m/s), Δt-refinement
+    converges honestly, and the CFL death spiral is eliminated.
+    Distinction from the r63 τ-rejection, recorded: the rejected
+    relaxation-τ was a POWER balance whose steady temperature depended
+    on τ; a moving state-command is re-asserted each step regardless
+    of losses, so the achieved kernel temperature is T_cmd(t) by
+    construction and the ramp constant shapes only the approach
+    window. The 17/16 per-step cap and the r63 drain bound remain as
+    rarely-binding admissibility backstops (at physical Δt the
+    per-step ratio is ~1.03); the r64 exact pair applies unchanged to
+    the now-small increments.
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
@@ -1714,6 +1746,37 @@ The most notorious practical trap in fire LES; specified accordingly:
   restoration. Every constraint has a restoration or exact-preservation
   mechanism; a future constraint added with only a gate is a design
   error by this audit.
+
+  **Manifold-exact acceptance (r70) — the divergence target's fixed
+  point is the accepted state's manifold membership.** The r70
+  instrumented budget (worktree probe; update reproduced to ≤7×10⁻²¹)
+  proved r69's restoration flawless in its own model — with cell-mean
+  (self-donor) transport the failing cell lands at |dev| < 7×10⁻⁵ —
+  and located the recreated residual in the **advective donor-mismatch
+  volume anomaly**: the projection drains geometric div(u) volume
+  while the FCT update transports donor-upwind states, and
+  re-inverting T through the convex h(T) after donor-carried hot
+  influx leaves a contrast-proportional represented-pressure excess
+  (+8.7×10⁻⁴ mixing convexity + 1.6×10⁻⁴ off-manifold MUSCL face
+  states at the failure configuration) that the tangent-plus-
+  restoration target cannot see. Momentum already carries the discrete
+  compatibility identity (D_i I_i = I_ρ,i D); the scalar/EOS side
+  lacked its analog. Pin: the coupled Picard target recompute includes
+  the **advective volume anomaly** — the divergence target converges
+  to the value at which the CANDIDATE ACCEPTED STATE lies on the P₀
+  manifold within the projection/EOS tolerance, at any contrast.
+  Acceptance is then manifold-exact by construction: mixing convexity,
+  off-manifold reconstruction, and cp(T) nonlinearity are all closed
+  by the fixed point rather than modeled term by term. r69's absolute
+  restoration term is subsumed as the fixed point's first iterate and
+  stays; the EOS gate is unchanged and returns to catching genuine
+  structural inconsistencies. Recorded as moot/not-required by this
+  closure: a separate manifold-consistent MUSCL reconstruction (the
+  fixed point absorbs its bias) and the Vreman-strain 1/Δt exposure
+  (with the r70 pilot ramp, strain-rate inputs are physical
+  velocities). The binding RED: removing the advective-anomaly term
+  from the recompute must reproduce the invariant ~1.03×10⁻³
+  stationary-contrast signature.
 
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:

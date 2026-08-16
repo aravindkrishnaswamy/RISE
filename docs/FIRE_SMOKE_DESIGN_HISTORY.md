@@ -1645,3 +1645,47 @@ it was already tried and refuted here.
   design error by this audit. This closes the class, not the
   instance: no receiver-by-receiver ruling can recur, because no cell
   of any kind can accumulate manifold deviation anymore.
+
+- **r70 (2026-08-16):** continuous pilot command ramp + manifold-exact
+  acceptance, from the instrumented tier-6 budget — the first stop in
+  this arc resolved by measurement rather than modeling, after the
+  owner directed a stop to the ruling ping-pong. An isolated-worktree
+  probe reproduced the failure exactly (limit 1.03122×10⁻³ to all
+  printed digits; dump reproduces the solver update to ≤7×10⁻²¹) and
+  decomposed the failing step at cell (22,21,0). Findings: (1) the
+  bed-wall hypothesis is REFUTED — the z=0 face contributes exactly
+  zero; the floor fails first only because the annulus lives there and
+  a wall removes one dilution face. (2) r69's restoration is flawless
+  in its own model — with self-donor (cell-mean) transport the cell
+  lands at |dev| < 7×10⁻⁵. (3) The invariant limit is an identity:
+  1.031×10⁻³ = donor-vs-self advective volume anomaly = 8.7×10⁻⁴
+  h(T)-convexity mixing bias + 1.6×10⁻⁴ off-manifold MUSCL face
+  states, recreated per step at Δt-invariant exchange Courants
+  (~0.02/hot face). (4) The Courants are Δt-invariant because the
+  17/16 cap doses per ACCEPTED STEP — a 1/Δt stiffness engine that
+  also drives the projected velocities into the CFL selector,
+  collapsing Δt 2.1 s → 1 ms with the ×1.1 growth cap preventing
+  recovery. Two pins follow. **Ramp:** the pilot holds to
+  T_cmd(t) = T_amb·(900/T_amb)^min(1,10t/t_ft) — approach in exactly
+  t_ft/10, then the hold; per-step increments ∝ Δt in both phases, so
+  the pilot becomes a genuine relaxation-class map (the r63
+  projection class is now unpopulated but stays pinned), ramp
+  velocities are physical (~0.2 m/s), and the death spiral is gone.
+  Distinguished from the r63 τ-rejection: that was a power balance
+  whose steady temperature depended on τ; a moving state-command is
+  re-asserted regardless of losses, so the ramp constant shapes only
+  the approach window and is derived (t_ft/10), not tuned.
+  **Manifold-exact acceptance:** the Picard target recompute includes
+  the advective volume anomaly, converging the divergence target to
+  the value at which the candidate accepted state lies ON the P₀
+  manifold — the scalar/EOS analog of the momentum compatibility
+  identity D_i I_i = I_ρ,i D that the design already mandates; r69's
+  absolute term is the fixed point's first iterate; mixing convexity,
+  off-manifold reconstruction, and cp(T) nonlinearity are closed by
+  construction at any contrast. Recorded moot/not-required: separate
+  manifold-consistent reconstruction; the Vreman 1/Δt-strain exposure.
+  The probe's instrumentation (env-gated RISE_FIRE_BUDGET_PROBE
+  shortcut, per-face budget dumps) lives in the investigation
+  worktree for adoption as a permanent diagnostic. The agent's
+  stop-and-report classification ("per-step inconsistency, not
+  license to weaken the gate") was again correct.
