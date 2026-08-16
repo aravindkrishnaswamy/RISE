@@ -70,7 +70,7 @@ int main()
 		record.derived.pilotMaskRule==
 			"first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx"&&
 		record.derived.pilotSetpointTemperatureK==900.0&&
-		record.derived.pilotExpansionVolumeRatioCap==1.25&&
+		record.derived.pilotExpansionVolumeRatioCap==17.0/16.0&&
 		record.derived.pilotDurationMultiplier==1.0,
 		"r64 pilot block pins the exact-pair annulus, setpoint, expansion cap, and duration");
 	Check(record.derived.limiterAcceptanceModelVersion=="two_class_face_infimum_v1",

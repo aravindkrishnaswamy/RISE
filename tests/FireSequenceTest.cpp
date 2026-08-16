@@ -141,6 +141,7 @@ namespace
 		double simulatedTimeS=0.0,flowThroughTimeS=0.0,pilotEnergyJ=0.0;
 		double expectedPilotEnergyJ=0.0;
 		double maximumTemperatureK=0.0;
+		double maximumPilotApproachEOSResidual=0.0;
 		double maximumLimiterClassDiscrepancy=0.0;
 		unsigned int discontinuousLimiterClassSteps=0u;
 		bool discontinuousClassThreadIdentity=true;
@@ -162,6 +163,7 @@ namespace
 		std::vector<double> centerlineHeightM,centerlineTemperatureK,centerlineVelocityMPerS;
 		bool ignitedDuringPilot=false,sustainedAfterPilot=false;
 		bool pilotHoldBandObserved=false,pilotHoldBandSatisfied=true;
+		bool pilotApproachComplete=false;
 		bool statisticsBoundaryObserved=false;
 		double checkpointCadenceWallS=0.0;
 		std::vector<std::uint64_t> checkpointStepIndices;
@@ -299,7 +301,9 @@ namespace
 		WRITE_CHECKPOINT_FIELD(selectedTimeStepS);WRITE_CHECKPOINT_FIELD(acceptedTimeStepS);
 		WRITE_CHECKPOINT_FIELD(simulatedTimeS);WRITE_CHECKPOINT_FIELD(flowThroughTimeS);
 		WRITE_CHECKPOINT_FIELD(pilotEnergyJ);WRITE_CHECKPOINT_FIELD(expectedPilotEnergyJ);
-		WRITE_CHECKPOINT_FIELD(maximumTemperatureK);WRITE_CHECKPOINT_FIELD(maximumLimiterClassDiscrepancy);
+		WRITE_CHECKPOINT_FIELD(maximumTemperatureK);
+		WRITE_CHECKPOINT_FIELD(maximumPilotApproachEOSResidual);
+		WRITE_CHECKPOINT_FIELD(maximumLimiterClassDiscrepancy);
 		WRITE_CHECKPOINT_FIELD(discontinuousLimiterClassSteps);
 		WRITE_CHECKPOINT_FIELD(discontinuousClassThreadIdentity);
 		WRITE_CHECKPOINT_FIELD(discontinuousClassThreadIdentityChecked);
@@ -315,6 +319,7 @@ namespace
 		{const std::uint64_t count=v.mccaffreyPlumeStationCount;if(!w.Pod(count))return false;}
 		WRITE_CHECKPOINT_FIELD(ignitedDuringPilot);WRITE_CHECKPOINT_FIELD(sustainedAfterPilot);
 		WRITE_CHECKPOINT_FIELD(pilotHoldBandObserved);WRITE_CHECKPOINT_FIELD(pilotHoldBandSatisfied);
+		WRITE_CHECKPOINT_FIELD(pilotApproachComplete);
 		WRITE_CHECKPOINT_FIELD(statisticsBoundaryObserved);WRITE_CHECKPOINT_FIELD(checkpointCadenceWallS);
 		WRITE_CHECKPOINT_FIELD(resumedFromCheckpoint);WRITE_CHECKPOINT_FIELD(resumedFromStep);
 		WRITE_CHECKPOINT_FIELD(streamedFrameCount);
@@ -347,7 +352,9 @@ namespace
 		READ_CHECKPOINT_FIELD(selectedTimeStepS);READ_CHECKPOINT_FIELD(acceptedTimeStepS);
 		READ_CHECKPOINT_FIELD(simulatedTimeS);READ_CHECKPOINT_FIELD(flowThroughTimeS);
 		READ_CHECKPOINT_FIELD(pilotEnergyJ);READ_CHECKPOINT_FIELD(expectedPilotEnergyJ);
-		READ_CHECKPOINT_FIELD(maximumTemperatureK);READ_CHECKPOINT_FIELD(maximumLimiterClassDiscrepancy);
+		READ_CHECKPOINT_FIELD(maximumTemperatureK);
+		READ_CHECKPOINT_FIELD(maximumPilotApproachEOSResidual);
+		READ_CHECKPOINT_FIELD(maximumLimiterClassDiscrepancy);
 		READ_CHECKPOINT_FIELD(discontinuousLimiterClassSteps);
 		READ_CHECKPOINT_FIELD(discontinuousClassThreadIdentity);
 		READ_CHECKPOINT_FIELD(discontinuousClassThreadIdentityChecked);
@@ -364,6 +371,7 @@ namespace
 			v.mccaffreyPlumeStationCount=static_cast<std::size_t>(count);}
 		READ_CHECKPOINT_FIELD(ignitedDuringPilot);READ_CHECKPOINT_FIELD(sustainedAfterPilot);
 		READ_CHECKPOINT_FIELD(pilotHoldBandObserved);READ_CHECKPOINT_FIELD(pilotHoldBandSatisfied);
+		READ_CHECKPOINT_FIELD(pilotApproachComplete);
 		READ_CHECKPOINT_FIELD(statisticsBoundaryObserved);READ_CHECKPOINT_FIELD(checkpointCadenceWallS);
 		READ_CHECKPOINT_FIELD(resumedFromCheckpoint);READ_CHECKPOINT_FIELD(resumedFromStep);
 		READ_CHECKPOINT_FIELD(streamedFrameCount);
@@ -526,7 +534,7 @@ namespace
 		const std::filesystem::path temporary=path.string()+".tmp."+std::to_string(processId);
 		CheckpointWriter writer(temporary);if(!writer.Good()){error="cannot open run checkpoint";return false;}
 		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
-		const std::uint64_t version=2u,endian=0x0102030405060708ull,zero=0u;
+		const std::uint64_t version=3u,endian=0x0102030405060708ull,zero=0u;
 		auto rejectTemporary=[&temporary](){std::error_code ignored;
 			std::filesystem::remove(temporary,ignored);};
 		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
@@ -573,7 +581,7 @@ namespace
 		char magic[16]={};std::uint64_t version=0u,endian=0u,payloadBytes=0u,checksum=0u;
 		const char expected[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
 		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
-			!reader.HeaderBytes(&version,sizeof(version))||version!=2u||
+			!reader.HeaderBytes(&version,sizeof(version))||version!=3u||
 			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
 			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
@@ -1095,28 +1103,46 @@ namespace
 				std::vector<double> acceptedTemperature;
 				advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
 					300.0,2500.0,acceptedTemperature,&error,workerCount);
-				states.clear(); states.reserve(shape.CellCount());
+				const bool measurePilotApproach=!values.pilotApproachComplete&&
+					simulationTimeS<pilotEndS;
+				bool allActivePilotTargetsAtSetpoint=true,activePilotCellObserved=false;
+				std::vector<MethaneCellState> acceptedStates;
+				acceptedStates.reserve(shape.CellCount());
 				for(std::size_t acceptedCell=0;advancedOK&&acceptedCell<advanced.conservative.size();
 					++acceptedCell) {
 					const ConservativeVector& conservative=advanced.conservative[acceptedCell];
 					MethaneCellState accepted=FromConservativeVector(conservative);
 					accepted.temperatureK=acceptedTemperature[acceptedCell];
+					double acceptedEOSResidual=0.0;
+					if(!EquationOfStateResidual(accepted,fuel,acceptedEOSResidual,&error)){
+						advancedOK=false;break;
+					}
+					if(measurePilotApproach)values.maximumPilotApproachEOSResidual=std::max(
+						values.maximumPilotApproachEOSResidual,acceptedEOSResidual);
 					values.maximumTemperatureK=std::max(values.maximumTemperatureK,
 						accepted.temperatureK);
 					if(pilotSetpointTemperatureK[acceptedCell]>0.0){
+						activePilotCellObserved=true;
 						MethanePilotProjectionMap pilotMap;
 						if(!ComputeMethanePilotProjectionMap(states[acceptedCell],fuel,
 							pilotSetpointTemperatureK[acceptedCell],
 							reactions[acceptedCell].pilotExpansionVolumeRatioCap,pilotMap,&error)){
 							advancedOK=false;break;
 						}
+						allActivePilotTargetsAtSetpoint=allActivePilotTargetsAtSetpoint&&
+							pilotMap.targetTemperatureK==pilotSetpointTemperatureK[acceptedCell];
 						if(pilotMap.targetTemperatureK==pilotSetpointTemperatureK[acceptedCell]){
 							values.pilotHoldBandObserved=true;
 							values.pilotHoldBandSatisfied=values.pilotHoldBandSatisfied&&
 								accepted.temperatureK>=899.0&&accepted.temperatureK<=900.0;
 						}
 					}
-					states.push_back(accepted);
+					acceptedStates.push_back(accepted);
+				}
+				if(advancedOK){
+					states=std::move(acceptedStates);
+					values.pilotApproachComplete=values.pilotApproachComplete||
+						(activePilotCellObserved&&allActivePilotTargetsAtSetpoint);
 				}
 				if(advancedOK&&!values.pilotHoldBandSatisfied){
 					advancedOK=false;error="pilot_hold_band_violation";break;
@@ -1260,9 +1286,10 @@ namespace
 							packets[diagnosticCell].gasHeatReleaseWPerM3);
 					}
 					std::fprintf(stderr,"capstone accepted step=%u time=%.9g dt=%.9g Tmax=%.9g "
-						"qmax=%.9g limiter_class=%s limiter_discrepancy=%.9g\n",acceptedSteps,
+						"qmax=%.9g approach_eos_max=%.9g limiter_class=%s limiter_discrepancy=%.9g\n",acceptedSteps,
 						simulationTimeS,reaction.deltaTimeS,maximumTemperatureK,
-						maximumReactionWPerM3,advanced.discontinuousLimiterClassCount?
+						maximumReactionWPerM3,values.maximumPilotApproachEOSResidual,
+						advanced.discontinuousLimiterClassCount?
 						"discontinuous":"continuous",advanced.maximumLimiterClassDiscrepancy);
 				}
 			}
@@ -1284,9 +1311,10 @@ namespace
 				pilotMaximumOxygenKGPerM3=std::max(pilotMaximumOxygenKGPerM3,
 					states[cell].constituent[MethaneO2]);
 			}
-			std::fprintf(stderr,"capstone pilot diagnostic Tmax=%.9g CH4max=%.9g O2max=%.9g\n",
+			std::fprintf(stderr,"capstone pilot diagnostic Tmax=%.9g CH4max=%.9g O2max=%.9g "
+				"approach_eos_max=%.9g\n",
 				pilotMaximumTemperatureK,pilotMaximumMethaneKGPerM3,
-				pilotMaximumOxygenKGPerM3);
+				pilotMaximumOxygenKGPerM3,values.maximumPilotApproachEOSResidual);
 		}
 		values.succeeded=true;
 		Check(advanced.conservative.empty() ||
@@ -2584,12 +2612,13 @@ int main(int argc,char** argv)
 		methaneFrameNext.pilotHoldBandObserved&&methaneFrameNext.pilotHoldBandSatisfied&&
 		std::fabs(methaneFrameNext.pilotEnergyJ-methaneFrameNext.expectedPilotEnergyJ)<=
 			2.0e-12*std::max(1.0,methaneFrameNext.expectedPilotEnergyJ));
-	if(!capstoneIgnition) std::printf("capstone ignition diagnostic T=%.9g Tmax=%.9g reaction=%.9g inside=%d sustained=%d hold_seen=%d hold_ok=%d pilot=%.17g expected=%.17g time=%.17g tft=%.17g\n",
+	if(!capstoneIgnition) std::printf("capstone ignition diagnostic T=%.9g Tmax=%.9g reaction=%.9g inside=%d sustained=%d hold_seen=%d hold_ok=%d approach_eos_max=%.9g pilot=%.17g expected=%.17g time=%.17g tft=%.17g\n",
 		methaneFrameNext.temperatureK,methaneFrameNext.maximumTemperatureK,
 		methaneFrameNext.reactionWPerM3,
 		methaneFrameNext.ignitedDuringPilot?1:0,methaneFrameNext.sustainedAfterPilot?1:0,
 		methaneFrameNext.pilotHoldBandObserved?1:0,
 		methaneFrameNext.pilotHoldBandSatisfied?1:0,
+		methaneFrameNext.maximumPilotApproachEOSResidual,
 		methaneFrameNext.pilotEnergyJ,methaneFrameNext.expectedPilotEnergyJ,
 		methaneFrameNext.simulatedTimeS,methaneFrameNext.flowThroughTimeS);
 	Check(capstoneIgnition,
@@ -2997,6 +3026,8 @@ int main(int argc,char** argv)
 			<< "accepted_final_timestep_s=" << methaneFrameNext.acceptedTimeStepS << "\n"
 			<< "simulated_time_s=" << methaneFrameNext.simulatedTimeS << "\n"
 			<< "flow_through_time_s=" << methaneFrameNext.flowThroughTimeS << "\n"
+			<< "r68_maximum_pilot_approach_eos_residual=" <<
+				methaneFrameNext.maximumPilotApproachEOSResidual << "\n"
 			<< "pilot_energy_J=" << methaneFrameNext.pilotEnergyJ << "\n"
 			<< "pilot_ignited_during_window=" << (methaneFrameNext.ignitedDuringPilot?"true":"false") << "\n"
 			<< "combustion_sustained_after_pilot=" << (methaneFrameNext.sustainedAfterPilot?"true":"false") << "\n"

@@ -4079,19 +4079,25 @@ int main()
 	pilotStep.primaryEligible=false;
 	pilotStep.sootOxidationEnabled=false;
 	pilotStep.pilotSetpointTemperatureK=900.0;
-	pilotStep.pilotExpansionVolumeRatioCap=1.25;
+	pilotStep.pilotExpansionVolumeRatioCap=17.0/16.0;
 	const MethaneCellState pilotBeginning=PhysicalMixtureLineState(fuel,
 		thermochemistry,0.05,300.0);
-	const std::array<double,5> cappedPilotTemperatures={{375.0,468.75,585.9375,
-		732.421875,900.0}};
 	MethaneCellState pilotMappedState=pilotBeginning;
-	bool cappedPilotSequence=true;
-	for(const double expectedTemperatureK:cappedPilotTemperatures){
+	bool cappedPilotSequence=true,terminalPilotSetpoint=false;
+	unsigned int cappedPilotStepCount=0u;
+	while(!terminalPilotSetpoint&&cappedPilotStepCount<64u){
+		MethanePilotProjectionMap expectedMap;
+		const bool expectedMapOK=ComputeMethanePilotProjectionMap(pilotMappedState,
+			thermochemistry,pilotStep.pilotSetpointTemperatureK,
+			pilotStep.pilotExpansionVolumeRatioCap,expectedMap,&error);
+		const double expectedTemperatureK=expectedMap.targetTemperatureK;
+		const bool terminalTarget=expectedTemperatureK==pilotStep.pilotSetpointTemperatureK;
 		double targetEnergyJPerM3=0.0,thermochemicalBeginningEnergyJPerM3=0.0,
 			scaledDivergence=0.0;
 		MethaneSourcePacket pilotPacket;
 		const double volumeRatio=expectedTemperatureK/pilotMappedState.temperatureK;
 		const bool cappedStepOK=
+			expectedMapOK&&volumeRatio>1.0&&volumeRatio<=17.0/16.0&&
 			thermochemistry.MixtureSensibleEnergyJPerM3(
 				ThermochemicalDensities(pilotMappedState),expectedTemperatureK,
 				targetEnergyJPerM3,&error)&&
@@ -4133,10 +4139,13 @@ int main()
 			"actual=%.17g scaled=%.17g H=%.17g targetH=%.17g eos=%.17g error=%s\n",
 			expectedTemperatureK,nextPilotState.temperatureK,scaledDivergence,
 			nextPilotState.sensibleEnergyJPerM3,targetEnergyJPerM3,eosResidual,error.c_str());
-		if(cappedStepOK&&acceptedExact)pilotMappedState=nextPilotState;
+		if(cappedStepOK&&acceptedExact){pilotMappedState=nextPilotState;
+			terminalPilotSetpoint=terminalTarget&&Near(nextPilotState.temperatureK,
+				pilotStep.pilotSetpointTemperatureK,2.0e-15);}
+		++cappedPilotStepCount;
 	}
-	Check(cappedPilotSequence,
-		"r64 pilot approaches 900 K through exact finite-source pairs on the EOS manifold");
+	Check(cappedPilotSequence&&terminalPilotSetpoint&&cappedPilotStepCount==19u,
+		"r68 pilot reaches 900 K through nineteen ratio-17/16 exact finite-source pairs");
 	double uncappedEnergyJPerM3=0.0;
 	MethaneSourcePacket uncappedPilotPacket;
 	Check(thermochemistry.MixtureSensibleEnergyJPerM3(
@@ -4161,7 +4170,7 @@ int main()
 	Check(BuildMethaneReactionPacket(pilotBeginning,fuel,pilotStep,wrongLinearizedPair,&error),
 		"r64 mutation RED constructs the canonical capped pilot pair");
 	const MethaneSourcePacket canonicalCappedPair=wrongLinearizedPair;
-	wrongLinearizedPair.pilotExpansionIntegral=1.25-1.0;
+	wrongLinearizedPair.pilotExpansionIntegral=17.0/16.0-1.0;
 	ConservativeVector wrongAccepted=ToConservativeVector(pilotBeginning);
 	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
 		wrongAccepted[component]-=wrongLinearizedPair.pilotExpansionIntegral*
@@ -4176,15 +4185,15 @@ int main()
 	const bool wrongLinearizedEOSOK=wrongLinearizedInvert&&EquationOfStateResidual(
 		wrongLinearizedState,thermochemistry,wrongLinearizedEOS,&error);
 	Check(!wrongLinearizedEOSOK||wrongLinearizedEOS>1.0e-6||
-		!Near(wrongLinearizedTemperature,375.0,2.0e-15),
+		!Near(wrongLinearizedTemperature,318.75,2.0e-15),
 		"r64 RED rejects V-prime-minus-one in place of one-minus-inverse-V-prime");
 	MethaneSourcePacket wrongFixedVolumePair=wrongLinearizedPair;
-	wrongFixedVolumePair.pilotExpansionIntegral=1.0-1.0/1.25;
-	double capped375EnergyJPerM3=0.0;
+	wrongFixedVolumePair.pilotExpansionIntegral=1.0-16.0/17.0;
+	double cappedFirstStepEnergyJPerM3=0.0;
 	Check(thermochemistry.MixtureSensibleEnergyJPerM3(
-		ThermochemicalDensities(pilotBeginning),375.0,capped375EnergyJPerM3,&error),
+		ThermochemicalDensities(pilotBeginning),318.75,cappedFirstStepEnergyJPerM3,&error),
 		"r64 fixed-volume mutation RED constructs the capped target energy");
-	wrongFixedVolumePair.pilotEnergyDeltaJPerM3=capped375EnergyJPerM3-
+	wrongFixedVolumePair.pilotEnergyDeltaJPerM3=cappedFirstStepEnergyJPerM3-
 		pilotBeginning.sensibleEnergyJPerM3;
 	wrongFixedVolumePair.sensibleEnergyDeltaJPerM3=
 		wrongFixedVolumePair.pilotEnergyDeltaJPerM3;
@@ -4203,7 +4212,7 @@ int main()
 	const bool wrongFixedEOSOK=wrongFixedInvert&&EquationOfStateResidual(wrongFixedState,
 		thermochemistry,wrongFixedEOS,&error);
 	Check(!wrongFixedEOSOK||wrongFixedEOS>1.0e-6||
-		!Near(wrongFixedTemperature,375.0,2.0e-15),
+		!Near(wrongFixedTemperature,318.75,2.0e-15),
 		"r64 RED rejects restoration of the fixed-volume pilot packet");
 	ConservativeAdvance3DConfig uncappedOwnerConfig=openOwnerConfig;
 	uncappedOwnerConfig.transport.deltaTimeS=pilotStep.deltaTimeS;
@@ -4250,7 +4259,7 @@ int main()
 		exactPairOwnerOK=exactPairOwnerOK&&EquationOfStateResidual(acceptedState,
 			thermochemistry,residual,&error);
 		if(acceptedCell==exactPairSourceCell)exactPairSourceTemperatureError=
-			std::fabs(acceptedState.temperatureK-375.0);
+			std::fabs(acceptedState.temperatureK-318.75);
 		exactPairMaximumEOSResidual=std::max(exactPairMaximumEOSResidual,residual);
 		exactPairOwnerOK=exactPairOwnerOK&&AcceptedMethaneCellStateAdmissible(
 			acceptedState,thermochemistry,&error);
@@ -4274,7 +4283,7 @@ int main()
 		"r62 pilot leaves a cell at the 900 K setpoint untouched and ledgers zero");
 	MethaneReactionStep pilotBurnStep=step;
 	pilotBurnStep.pilotSetpointTemperatureK=900.0;
-	pilotBurnStep.pilotExpansionVolumeRatioCap=1.25;
+	pilotBurnStep.pilotExpansionVolumeRatioCap=17.0/16.0;
 	const MethaneCellState pilotBurnBeginning=PhysicalMixtureLineState(fuel,
 		thermochemistry,0.05,700.0);
 	std::vector<MethaneSourcePacket> pilotBurnPackets;
@@ -4326,7 +4335,7 @@ int main()
 		syntheticPilotStep.sootOxidationEnabled=true;
 		syntheticPilotStep.pilotSetpointTemperatureK=time<syntheticPilotWindowS?900.0:0.0;
 		syntheticPilotStep.pilotExpansionVolumeRatioCap=
-			syntheticPilotStep.pilotSetpointTemperatureK>0.0?1.25:0.0;
+			syntheticPilotStep.pilotSetpointTemperatureK>0.0?17.0/16.0:0.0;
 		MethaneSourcePacket syntheticPilotPacket;
 		MethaneCellState nextPilotState;
 		Check(BuildMethaneReactionPacket(coldPilotState,fuel,syntheticPilotStep,

@@ -538,7 +538,7 @@ namespace RISE
 				return Fail(error,"fire solver pilot setpoint is invalid");
 			if(setpointTemperatureK==0.0||beginning.temperatureK>=setpointTemperatureK)
 				return true;
-			if(expansionVolumeRatioCap!=1.25)
+			if(expansionVolumeRatioCap!=17.0/16.0)
 				return Fail(error,"fire solver pilot expansion cap is not canonical");
 			if(setpointTemperatureK<thermochemistry.TemperatureMinK()||
 				setpointTemperatureK>thermochemistry.TemperatureMaxK())

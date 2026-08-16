@@ -133,7 +133,7 @@ bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
 	result=0.0;
 	if(!FinitePositive(derived.pilotSetpointTemperatureK) ||
 		!FinitePositive(derived.pilotExpansionVolumeRatioCap) ||
-		derived.pilotExpansionVolumeRatioCap!=1.25 ||
+		derived.pilotExpansionVolumeRatioCap!=17.0/16.0 ||
 		!FinitePositive(derived.pilotDurationMultiplier) ||
 		!FinitePositive(derived.flowThroughTimeS) ||
 		!std::isfinite(simulationTimeS) || simulationTimeS<0.0)
@@ -208,7 +208,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	d.pilotModelVersion="prescribed_isothermal_kernel_ordinary_tableau_v4";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
 	d.pilotSetpointTemperatureK=900.0;
-	d.pilotExpansionVolumeRatioCap=1.25;
+	d.pilotExpansionVolumeRatioCap=17.0/16.0;
 	d.pilotDurationMultiplier=1.0;
 	d.sourceAreaM2=sourceArea;
 	d.referenceHeatReleaseRateW=1000.0*nominalHeatReleaseKW*peak;
