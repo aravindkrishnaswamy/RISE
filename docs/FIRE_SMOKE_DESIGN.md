@@ -842,12 +842,23 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     measurement point. Pins: (i) **command fidelity** is gated by the
     quiescent unit fixture, where [899, 900] K on the accepted state
     is valid and catches r64-class map defects; (ii) **production**
-    gates the record-derived floor — during the hold phase, every
-    active mask cell's accepted temperature must EXCEED the highest
-    in-scope T_AIT, **873 K exactly** (the kernel must remain a
-    spontaneous-eligibility seed; the value comes from the fuel
-    record, not from tuning), with the unchanged 900 K command
-    ceiling; observed hold temperatures clear the floor by ~23 K.
+    gates the record-derived floor — **amended by r72**: during the
+    hold phase, every active mask cell's accepted temperature must
+    EXCEED **T_pilot = 600 K exactly** (the pilot-route threshold from
+    the fuel record). The r71 selection of the spontaneous threshold
+    (873 K, highest in-scope T_AIT) was a derivation error, owned: it
+    imported r58's "seeds robustly into spontaneous eligibility"
+    nicety as if it were the pilot's function, and the hold's temporal
+    minimum (871.4 K as pre-ignition entrainment strengthens) is
+    genuine physics beneath it. The pilot's DEFINED function in the
+    §3.3 eligibility graph is the pilot route — the mask IS that
+    route's source by definition — so the floor derives from T_pilot.
+    Rule recorded: **a gate's value must derive from the function the
+    gated object serves.** Observed hold minimum clears the corrected
+    floor by ~271 K, and the worst-case bound closes structurally:
+    accepted T ≥ 900 − C·(900 − 300) with the advective CFL pinning
+    C ≤ ½ meets 600 K exactly at the degenerate extreme. The 900 K
+    command ceiling is unchanged.
     (iii) The functional production gate remains ignition itself:
     first sustained heat release inside the 1·t_ft pilot window.
     `pilotApproachComplete` / `pilotHoldBandObserved` diagnostics

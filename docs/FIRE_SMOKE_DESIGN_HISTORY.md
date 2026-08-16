@@ -1719,3 +1719,25 @@ it was already tried and refuted here.
   the agent's report: an R1 limiter-publication bug (α now published
   from the verified flux) was found and fixed in their worktree during
   r70 implementation.
+
+- **r72 (2026-08-16):** hold-floor derivation corrected to T_pilot,
+  from the r71 tier-6 gate failure — a mask cell's accepted hold
+  temperature reached 871.44 K at t = 0.228 s (pre-ignition, as
+  entrainment strengthens), under the r71 floor of 873 K; EOS stayed
+  bounded at ≤2.6×10⁻⁶ and nothing else was wrong. The floor's
+  derivation was the defect, owned as the third slip in this gate's
+  history: r71 selected the SPONTANEOUS-route threshold (highest
+  in-scope T_AIT, 873 K) by importing r58's "seeds robustly into
+  spontaneous eligibility" nicety as if it were the pilot's function.
+  The pilot's defined function in §3.3's eligibility graph is the
+  PILOT route, whose source the mask is by definition; the matching
+  record value is T_pilot = 600 K (design_pinned_exact). Corrected
+  floor: accepted hold-phase mask minimum strictly above 600 K —
+  cleared by ~271 K observed, and structurally consistent at the
+  degenerate extreme (accepted T ≥ 900 − C·600 with advective CFL
+  C ≤ ½ meets 600 K exactly). Ceiling and functional ignition gate
+  unchanged; quiescent [899, 900] fixture unchanged. Rule pinned in
+  design and spec: a gate's value must derive from the function the
+  gated object serves. The agent's conduct — no tolerance change, no
+  timestep change, no floor change without ruling — remains exactly
+  right.
