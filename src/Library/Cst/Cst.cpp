@@ -2011,7 +2011,27 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// entities and report nothing-applied.  Because the failure is always at an entity (the
 	// slot-precise preflight keeps objects from failing, and objects are recreated last), no
 	// object has been re-pointed yet -- so restoring the entities fully restores the Job.
-	if( failed ) { rollbackEntities(); releaseCaps(); return 0; }
+	if( failed ) {
+		rollbackEntities();
+		releaseCaps();
+		// 87 step 2: compose before bailing.  PART A's rollback is ENTITY-only,
+		// and an object chunk's Finalize now has a second mutating step after
+		// AddObject -- SetObjectParent, called UNCONDITIONALLY, including with
+		// no parent, i.e. it DETACHES.  So a closure whose first object chunk
+		// drops its `parent` line and whose second chunk then fails would leave
+		// a detached ex-child holding a live stale parent world, which nothing
+		// downstream repairs any more: the per-frame walk is link-sized and can
+		// no longer see a node that has left the link map.  Before step 2 the
+		// next PrepareForRendering self-healed it.
+		//
+		// Argued unreachable (the slot-precise preflight keeps objects from
+		// failing, and no `parent` value can be edited through this path today)
+		// -- but this file already carries two other unreachability arguments
+		// propping up the same entity-only rollback, and this is the cheapest
+		// possible way not to add a third.
+		pJob.ComposeObjectHierarchy();
+		return 0;
+	}
 	releaseCaps();   // success: the new entities are live; drop the capture refs on the originals
 
 	// OPTIONAL-SLOT REMOVAL (workstream #3): every entity + object re-point succeeded, so clear

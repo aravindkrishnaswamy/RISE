@@ -162,6 +162,7 @@ ObjectManager::ObjectManager(
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
   nMaxTreeDepth( nMaxTreeDepth_ ),
   anyComposedAgainstParent( false ),
+  rebakeIncompleteWarned( false ),
   shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() )
 {
 	if( bUseBSPtree && bUseOctree ) {
@@ -429,9 +430,23 @@ bool ObjectManager::SetObjectParent( const char* child, const char* parent )
 		return false;
 	}
 
-	// Detach.
+	// Detach.  Re-compose IMMEDIATELY, and with the FULL walk -- this is the one
+	// mutation the per-frame RebakeHierarchy structurally cannot repair.  The
+	// ex-child has just left `parentByName`, so the narrow walk can no longer
+	// SEE it, while its `m_mxParentWorld` still holds the parent it just left:
+	// it would render at its ex-parent's composed pose forever.  Measured
+	// exactly that way through `IJob::SetObjectParent( name, 0 )`, whose own doc
+	// advertises detach as a public operation and says nothing about owing a
+	// compose afterwards.
+	//
+	// Doing it here rather than asking callers makes the manager
+	// self-consistent: RemoveItem already composes for the same reason (its
+	// orphans also leave the map), and the ADD direction needs no help because a
+	// new link IS visible to the narrow walk.  A detach is a structural edit, so
+	// paying one full walk for it is not a per-frame cost.
 	if( !parent || !parent[0] ) {
-		parentByName.erase( childName );
+		const bool had = ( parentByName.erase( childName ) > 0 );
+		if( had ) ComposeWorldTransforms();
 		return true;
 	}
 
@@ -595,7 +610,15 @@ bool ObjectManager::RebakeHierarchy() const
 					"ObjectManager::RebakeHierarchy:: object `%s` names parent `%s`, which is no longer a "
 					"registered object; it is composed as a root", it->first.c_str(), it->second.c_str() );
 			}
-			continue;   // nothing to compose it against; its own finalize already put it on identity
+			// COMPOSE IT ANYWAY, against identity, exactly as the full walk does
+			// -- do not `continue`.  Its m_mxParentWorld still holds the parent
+			// that vanished, and nothing else will clear it; skipping here on
+			// the grounds that "its own finalize already put it on identity"
+			// would be the same false assumption that made a detached ex-child
+			// render at its ex-parent's pose.  It is a member with no link, so
+			// the seeding loop below treats it as a root.
+			members[it->first] = ci->second.first;
+			continue;
 		}
 		childrenOf[it->second].push_back( std::make_pair( GetItemSerial( it->first.c_str() ), it->first ) );
 		isChild.insert( it->first );
@@ -669,7 +692,8 @@ bool ObjectManager::RebakeHierarchy() const
 		// Deduped by the SAME set the dangling-parent warning uses -- this runs
 		// once per frame, and the full walk's equivalent diagnostic is not
 		// deduped, which would write one line per frame for a whole animation.
-		if( danglingParentWarned.insert( String( "__rebake_incomplete__" ) ).second ) {
+		if( !rebakeIncompleteWarned ) {
+			rebakeIncompleteWarned = true;
 			GlobalLog()->PrintEx( eLog_Error,
 				"ObjectManager::RebakeHierarchy:: composed %u of %u hierarchy nodes -- a cycle in the "
 				"link map is the expected cause; the unreached nodes keep the world transform they last had",

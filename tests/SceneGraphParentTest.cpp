@@ -65,6 +65,8 @@
 //    Y -- STEP 2: a timeline on a PARENT carries its subtree, scrubbing back
 //         returns it (the stored parent world is not a latch), and re-baking
 //         the same frame repeatedly is idempotent.
+//    AA -- DETACH then render: the node has left the link map, so the
+//         per-frame walk cannot see it and the manager must re-root it itself.
 //    Z -- and the configurations Y does not reach: a 3-LEVEL chain animated at
 //         the top, a ROTATING parent (the child must ORBIT, not spin), and a
 //         SCALED parent carrying an EMITTER, whose GetArea() -- and therefore
@@ -519,9 +521,18 @@ int main()
 		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 21 ),
 		       "E3: c now composes against a, so it sits at x=21" );
 		Check( j->SetObjectParent( "c", 0 ), "E3: detaching c is allowed" );
-		Check( j->ComposeObjectHierarchy(), "E3: the detach MOVED c" );
+		// 87 step 2 CHANGED THIS, and the new contract is the stronger one: the
+		// detach re-roots IMMEDIATELY, inside SetObjectParent, instead of
+		// leaving it to a compose the caller might not make.  It has to -- the
+		// per-frame walk is sized by the link map, so once `c` leaves it that
+		// walk can never see `c` again.  The old assertion here was that a
+		// FOLLOWING ComposeObjectHierarchy reported a move; that now finds
+		// nothing left to do, which is the point.
 		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 1 ),
-		       "E3: a detached c falls back to its own local transform, x=1 not 21" );
+		       "E3: the detach ITSELF re-rooted c to its own local transform (x=1, not 21), with no "
+		       "explicit compose in between" );
+		Check( !j->ComposeObjectHierarchy(),
+		       "E3: ... so a following compose finds nothing left to move" );
 		j->release();
 		std::remove( sC );
 	}
@@ -2295,6 +2306,57 @@ int main()
 
 		j->release();
 		std::remove( sZ );
+	}
+
+	// =================================================================
+	// AA -- DETACH, then RENDER.  The divergence the two-walk split created.
+	//
+	// Step 2's per-frame walk is sized by the LINK map, so it structurally
+	// cannot see a node that has just LEFT that map -- while that node's stored
+	// parent world still holds the parent it left.  `IJob::SetObjectParent(
+	// name, 0 )` is public API whose own doc advertises detach, and a caller who
+	// tests RE-parenting sees it work (a new link IS visible to the narrow
+	// walk), which makes the asymmetry a trap.
+	//
+	// Measured before the fix: the child stayed at its ex-parent's composed pose
+	// through PrepareForRendering, forever.
+	// =================================================================
+	{
+		const char* sAA = "sg_parent_detach_render.RISEscene";
+		WriteScene( sAA,
+			"sphere_geometry\n{\nname ga\nradius 1\n}\n"
+			"standard_object\n{\nname base\nposition 10 0 0\n}\n"
+			"standard_object\n{\nname held\ngeometry ga\nparent base\nposition 1 0 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sAA ), "AA: scene loads" );
+		IScenePriv* scene = 0;
+		if( IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) ) ) scene = jp->GetScene();
+		Check( scene != 0, "AA: (sanity) the scene is reachable" );
+		auto HeldX = [&]() -> Scalar {
+			IObjectPriv* o = Obj( *j, "held" );
+			return o ? o->GetFinalTransformMatrix()._30 : -12345.0;
+		};
+
+		Check( Close( HeldX(), 11.0 ),
+		       "AA: (baseline) composed at the derive tail -- 10 + 1" );
+
+		// DETACH through the public API, then do exactly what a render does.
+		Check( j->SetObjectParent( "held", 0 ), "AA: the detach is accepted" );
+		if( scene ) scene->GetObjects()->PrepareForRendering();
+		Check( Close( HeldX(), 1.0 ),
+		       "AA: the detached child is back on its OWN local transform -- a detach leaves the link "
+		       "map, so the per-frame walk cannot see it, and the manager must re-root it itself" );
+
+		// The ADD direction needs no help -- a NEW link is visible to the
+		// per-frame walk -- but assert it so the pair is pinned together and a
+		// future fix cannot trade one for the other.
+		Check( j->SetObjectParent( "held", "base" ), "AA: re-parenting is accepted" );
+		if( scene ) scene->GetObjects()->PrepareForRendering();
+		Check( Close( HeldX(), 11.0 ),
+		       "AA: ... and re-parenting composes again on the next prepare" );
+
+		j->release();
+		std::remove( sAA );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

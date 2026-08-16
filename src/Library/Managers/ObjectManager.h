@@ -94,6 +94,13 @@ namespace RISE
 			//! mistake into a log flood.
 			mutable std::set<String> danglingParentWarned;
 
+			//! One-shot latch for RebakeHierarchy's "composed N of M" diagnostic.
+			//! A dedicated flag rather than a sentinel key in the set above: that
+			//! set is keyed by OBJECT NAME, so a sentinel shares a keyspace with
+			//! real names -- an object actually so named would silence the
+			//! diagnostic, and RemoveItem's erase-by-name would re-arm it.
+			mutable bool rebakeIncompleteWarned;
+
 			// Shadow cache: per-slot last occluder, padded to avoid false sharing.
 			// Each thread hashes into a slot; collisions are harmless (just a stale hint).
 			static const unsigned int kShadowCacheSlots = 64;
