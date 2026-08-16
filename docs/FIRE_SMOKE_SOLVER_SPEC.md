@@ -262,9 +262,13 @@ error and must be corrected.
      r66 gates — unchanged production EOS/feasibility acceptance green
      through the hold, the pilot ledger bit-exact against the emitted packet
      (the drain is ordinary advection, covered by the global conservation
-     ledgers), active mask cells inside the exact [899 K, 900 K] hold band
-     once the approach completes, and conservation ledgers closed to fp64
-     reduction tolerance. Requiring the coupled step to reproduce the
+     ledgers), active mask cells during the hold phase above the
+     record-derived floor of exactly 873 K (the highest in-scope T_AIT —
+     the r71 measurement-point correction; the [899 K, 900 K] band governs
+     the quiescent unit fixture only, where it catches r64-class map
+     defects) and at or below the 900 K command ceiling, first sustained
+     heat release inside the 1·t_ft pilot window, and conservation ledgers
+     closed to fp64 reduction tolerance. Requiring the coupled step to reproduce the
      isolated-map endpoint to the r60 envelope is explicitly NOT a
      requirement (r66): coupling-order deviations are genuine, bounded,
      non-accumulating physics of a projection map in company.

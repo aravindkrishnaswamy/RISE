@@ -1689,3 +1689,33 @@ it was already tried and refuted here.
   worktree for adoption as a permanent diagnostic. The agent's
   stop-and-report classification ("per-step inconsistency, not
   license to weaken the gate") was again correct.
+
+- **r71 (2026-08-16):** hold-band measurement point, from the first
+  r70 gravity run — a stop whose evidence was mostly triumph: manifold
+  closure plateaued at 0.20–3.57×10⁻⁶ (three orders under the gate,
+  the r70 fixed point working), Δt stayed physical at 7–13 ms (death
+  spiral gone), and the kernel IGNITED at 0.31 s inside the pilot
+  window — the arc's first honest gravity-on ignition. The only red:
+  accepted mask temperatures at the hold were 896.1–897.7 K against
+  the r66 production band [899, 900] K. Diagnosis: genuine physics —
+  the map re-asserts T_cmd, then ordinary Heun transport at Courant
+  ~0.25 against a ~600 K contrast removes 2–4 K before acceptance,
+  Δt-refinable and harmless. The r66 band is hereby owned as a second
+  instance of the r65 category error: its "50× margin" was computed
+  from the quiescent coupling scale and applied to the coupled
+  accepted state, making the band a hidden Δt bound. The agent's
+  refusal to choose among accepted-state compensation, a
+  gate-serving Δt bound, or a reinterpreted band was correct — all
+  three are rejected. Fix is the measurement point: command fidelity
+  is gated by the quiescent unit fixture ([899, 900] K valid there,
+  catching r64-class defects); production gates the RECORD-DERIVED
+  floor — accepted mask temperatures during the hold must exceed
+  873 K exactly, the highest in-scope T_AIT, so the kernel remains a
+  spontaneous-eligibility seed (observed clears by ~23 K) — plus the
+  unchanged 900 K command ceiling and the functional gate: first
+  sustained heat release inside the 1·t_ft pilot window (already
+  achieved at 0.31 s). No compensation, no new constants (the floor
+  comes from the fuel record), no semantics change. Also noted from
+  the agent's report: an R1 limiter-publication bug (α now published
+  from the verified flux) was found and fixed in their worktree during
+  r70 implementation.

@@ -746,10 +746,11 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     through the hold; the pilot ledger bit-exact against the emitted
     packet + frozen drain; every active mask cell's accepted
     temperature, once the approach completes, in the exact band
-    **[899 K, 900 K]** (~50× margin over the observed coupling scale,
-    far from the 600 K ignition gate, and coarse enough that an
-    r64-class 9 K defect trips it — the band IS the regression net);
-    and conservation ledgers closed to fp64 reduction tolerance.
+    ~~[899 K, 900 K]~~ **(band measurement point corrected by r71 —
+    see the r71 bullet: [899, 900] governs the QUIESCENT unit fixture;
+    production gates the record-derived floor T > 873 K with the 900 K
+    command ceiling)**; and conservation ledgers closed to fp64
+    reduction tolerance.
     REJECTED: the parallel no-pilot trajectory (new tableau machinery,
     regress); crossflow suppression during the hold (alters real
     pilot-plus-crossflow physics to satisfy a fixture — inverted
@@ -825,6 +826,32 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     rarely-binding admissibility backstops (at physical Δt the
     per-step ratio is ~1.03); the r64 exact pair applies unchanged to
     the now-small increments.
+  - **Hold-band measurement point (r71).** The first r70 gravity run
+    delivered the arc's goal — manifold closure at 10⁻⁶, physical Δt,
+    **ignition at 0.31 s inside the pilot window** — and failed only
+    the r66 production band [899, 900] K: accepted mask temperatures
+    at the hold were 896.1–897.7 K. That is genuine physics: the map
+    re-asserts T_cmd, then ordinary Heun transport at Courant ~0.25
+    against a ~600 K contrast removes 2–4 K before acceptance —
+    Δt-refinable, harmless. The r66 band was a second instance of the
+    r65 category error, owned as such: its "50× margin" was computed
+    from the QUIESCENT coupling scale (0.02 K) and applied to the
+    coupled accepted state, making it a hidden Δt bound. Every repair
+    (accepted-state compensation, a Δt bound in service of a gate,
+    band reinterpretation by tolerance) is rejected — the fix is the
+    measurement point. Pins: (i) **command fidelity** is gated by the
+    quiescent unit fixture, where [899, 900] K on the accepted state
+    is valid and catches r64-class map defects; (ii) **production**
+    gates the record-derived floor — during the hold phase, every
+    active mask cell's accepted temperature must EXCEED the highest
+    in-scope T_AIT, **873 K exactly** (the kernel must remain a
+    spontaneous-eligibility seed; the value comes from the fuel
+    record, not from tuning), with the unchanged 900 K command
+    ceiling; observed hold temperatures clear the floor by ~23 K.
+    (iii) The functional production gate remains ignition itself:
+    first sustained heat release inside the 1·t_ft pilot window.
+    `pilotApproachComplete` / `pilotHoldBandObserved` diagnostics
+    repoint to these gates.
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
