@@ -1250,19 +1250,20 @@ static bool TryEvalExprValue( const std::string& value, std::string& outLit,
 	return true;
 }
 
-static const IAsciiChunkParser* ResolveChunkParams(
-	const NodeRef& c,
-	const std::map<std::string, const IAsciiChunkParser*>& registry,
-	IAsciiChunkParser::ParamsList& plist,
-	std::vector<std::string>& diags,
-	const LetBindings& lets )
+//! A chunk's parameters as ORDERED (pname, value) pairs, with `expr(...)` values
+//! evaluated -- the normalisation ResolveChunkParams applies, exposed as PAIRS so
+//! 87 step 3's `source` expansion can MERGE two chunks' parameters BY NAME.
+//!
+//! Reads the CST TOKENS directly, and everything downstream of it must keep doing
+//! so: `ResolveChunkParams` evaluates `expr(...)` with i=j=u=v=0 BEFORE any
+//! ParseStateBag exists, so a bag-driven expansion would silently freeze every
+//! per-instance expression at instance zero.  3a has no per-instance exprs, but
+//! 3c does, and it inherits this code path.
+static void ChunkParamPairs( const NodeRef& c, const LetBindings& lets,
+                             std::vector<std::string>& diags,
+                             std::vector<std::pair<std::string,std::string> >& out )
 {
 	const std::string& kw = c->role;
-	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
-	if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); return nullptr; }
-	for( const auto& kid : c->kids )
-		if( kid->kind == NodeKind::Token && kid->role == "pname" )
-			diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
 	for( const auto& kid : c->kids )
 		if( kid->kind == NodeKind::Param ) {
 			std::string pname, value;
@@ -1276,10 +1277,30 @@ static const IAsciiChunkParser* ResolveChunkParams(
 			// value is passed through verbatim, so non-expr scenes stay byte-identical to legacy.
 			std::string lit;
 			if( TryEvalExprValue( value, lit, diags, kw, pname, lets ) ) value = lit;
-			std::string line = pname;
-			if( !value.empty() ) { line += ' '; line += value; }
-			plist.push_back( String( line.c_str() ) );
+			out.push_back( std::make_pair( pname, value ) );
 		}
+}
+
+static const IAsciiChunkParser* ResolveChunkParams(
+	const NodeRef& c,
+	const std::map<std::string, const IAsciiChunkParser*>& registry,
+	IAsciiChunkParser::ParamsList& plist,
+	std::vector<std::string>& diags,
+	const LetBindings& lets )
+{
+	const std::string& kw = c->role;
+	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
+	if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); return nullptr; }
+	for( const auto& kid : c->kids )
+		if( kid->kind == NodeKind::Token && kid->role == "pname" )
+			diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
+	std::vector<std::pair<std::string,std::string> > pairs;
+	ChunkParamPairs( c, lets, diags, pairs );
+	for( std::size_t i = 0; i < pairs.size(); ++i ) {
+		std::string line = pairs[i].first;
+		if( !pairs[i].second.empty() ) { line += ' '; line += pairs[i].second; }
+		plist.push_back( String( line.c_str() ) );
+	}
 	return it->second;
 }
 
@@ -1398,9 +1419,324 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 			ParseStateBag bag( &stdObj->Describe() );
 			if( !DispatchChunkParameters( stdObj->Describe(), bag, plist ) ) { diags.push_back( "instance_array '" + name + "': a synthesized standard_object has invalid params (see log)" ); return false; }
 			if( !stdObj->Finalize( bag, pJob ) ) { diags.push_back( "instance_array '" + name + "': object Finalize failed (template geometry / a referenced material missing?)" ); return false; }
+			// 87 step 3: `g[i,j]` is a SYNTHESIZED name -- record where it came from, so
+			// consumers map it back to the generator by a MAP LOOKUP instead of probing
+			// the spelling of the name for a `[`.  No source NODE: this generator's
+			// template is a GEOMETRY, so the second field is empty.
+			if( objMgr ) objMgr->SetObjectProvenance( nm, name.c_str(), "" );
 			++made;
 		}
 	}
+	return true;
+}
+
+//! 87 step 3a: the parameters that say WHERE a node is and WHAT IT IS CALLED,
+//! as opposed to what it IS.  These are NEVER inherited through `source`.
+//!
+//! This is the choice that makes `position` on an instancing chunk mean "where
+//! the copy goes" instead of "where the copy goes relative to wherever the
+//! original happened to be": the source's local transform is DROPPED, not
+//! composed.  `name` and `parent` are the instance's own for the same reason --
+//! an instance is a node in its own right, placeable anywhere in the tree --
+//! and `source` itself is consumed by the expansion.
+static bool IsInstanceOwnParam( const std::string& pname )
+{
+	return pname == "name"        || pname == "parent"      || pname == "source"
+	    || pname == "position"    || pname == "orientation" || pname == "quaternion"
+	    || pname == "matrix"      || pname == "scale";
+}
+
+//! An O(N) index of the document's OBJECT-CREATING chunks, built ONCE per derive
+//! and shared by every `source` expansion in it (87 step 3a).
+struct ObjectChunkIndex
+{
+	//! name -> the item indices declaring it.  MORE THAN ONE is an authored
+	//! duplicate, which the collision scan reports naming both.  `override_object`
+	//! is deliberately absent: it names an EXISTING object BY DESIGN, so counting
+	//! it would report every override as a collision.
+	std::map<std::string, std::vector<std::size_t> > byName;
+	//! Names that some object chunk declares as its `parent` -- i.e. the nodes
+	//! that HAVE children.  87 step 3a instances a SINGLE node; a source with
+	//! children is subtree instancing, which is step 3b.
+	std::set<std::string> hasChildren;
+};
+
+static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChunkIndex& out )
+{
+	for( std::size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( !c || c->kind != NodeKind::Chunk ) continue;
+		if( c->role != "standard_object" && c->role != "csg_object" ) continue;
+		std::string nm;
+		if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) out.byName[ nm ].push_back( i );
+		std::string pr;
+		if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.hasChildren.insert( pr );
+	}
+}
+
+//! 87 step 3a -- expand a `standard_object` carrying `source` into exactly ONE
+//! object, under the instancing chunk's OWN name.  This is the COLLAPSE case: a
+//! SINGLE-NODE source (a leaf, a container, or a csg_object).  A source that has
+//! children is refused, not silently root-only-instanced -- subtree expansion is
+//! step 3b.
+//!
+//! WHERE THIS RUNS, AND WHY THAT IS THE DESIGN.  Not as a trailing post-pass
+//! like ExpandInstanceArray, and not inside the parser's Finalize, but at the
+//! instancing chunk's OWN POSITION in DeriveToJob's PASS-2 loop, inside the
+//! window where the D35 reference sinks are armed.  Three properties follow from
+//! that placement and from nowhere else:
+//!   (a) declare-before-use still holds for `parent` ON the instancing node: the
+//!       object exists exactly when its document position says it does, so a
+//!       later chunk can parent to it and an earlier one cannot -- which is the
+//!       precondition ObjectManager::SetObjectParent's cycle guard relies on;
+//!   (b) a later `timeline` can name it, for the same reason;
+//!   (c) the geometry / material / modifier / ... this expansion resolves are
+//!       recorded as DEPENDENTS of this chunk, so editing one of them puts the
+//!       instance in the incremental edit closure.  The `GetItem( source )` probe
+//!       below is load-bearing for the same reason and not only for its refusal:
+//!       resolving the source OBJECT through the manager records the source's
+//!       chunk as a producer this chunk consumes, so editing the SOURCE also
+//!       re-derives the instance.
+//!
+//! `source` COPIES; IT DOES NOT MOVE OR HIDE ANYTHING.  The source subtree keeps
+//! rendering exactly as it did.  RISE has one hide-on-reference mechanism --
+//! CSGObject::AssignObjects, which SetWorldVisible(false)s its two operands --
+//! and that is OWNERSHIP: the composite CONSUMES the operand, which has no
+//! independent existence afterwards.  `source` consumes nothing, so it hides
+//! nothing, and the two must not be reasoned about as the same mechanism.
+//!
+//! READS RAW CST TOKENS, NEVER A ParseStateBag.  ResolveChunkParams evaluates
+//! `expr(...)` with i=j=u=v=0 before any bag is built, so a bag-driven expansion
+//! would freeze every per-instance expression at instance zero.  3a authors no
+//! per-instance exprs -- but 3c does, and it inherits this code path.
+static bool ExpandSourceInstance(
+	const std::vector<NodeRef>& items,
+	std::size_t instIndex,
+	const ObjectChunkIndex& index,
+	const LetBindings& lets,
+	const std::map<std::string, const IAsciiChunkParser*>& registry,
+	IJob& pJob,
+	std::vector<std::string>& diags )
+{
+	const NodeRef& inst = items[ instIndex ];
+
+	std::vector<std::pair<std::string,std::string> > instParams;
+	ChunkParamPairs( inst, lets, diags, instParams );
+
+	std::string instName, srcName, instGeometry;
+	ParamValue( inst.get(), "name",     instName );
+	ParamValue( inst.get(), "source",   srcName );
+	ParamValue( inst.get(), "geometry", instGeometry );
+
+	const std::string who = "standard_object `" + instName + "`";
+
+	if( instName.empty() ) {
+		diags.push_back( "standard_object: a chunk carrying `source` needs a `name` -- the instance IS a node, and every node is addressable" );
+		return false;
+	}
+	// Mutually exclusive forms, counted and refused BEFORE any mutation, the same
+	// shape sweep_geometry uses for profile_point / profile_circle / profile_rect.
+	// ZERO forms is legal here (that is the container); TWO never is.
+	const int formCount = ( ( !instGeometry.empty() && instGeometry != "none" ) ? 1 : 0 )
+	                    + ( ( !srcName.empty()      && srcName      != "none" ) ? 1 : 0 );
+	if( formCount > 1 ) {
+		diags.push_back( who + ": `geometry` and `source` are mutually exclusive -- a node is EITHER a leaf "
+			"shape (`geometry`) OR an instance of another node (`source`), never both.  Drop one." );
+		return false;
+	}
+	if( srcName == instName ) {
+		diags.push_back( who + ": `source " + srcName + "` names the chunk ITSELF.  An instance is a copy of "
+			"ANOTHER node; a node cannot be a copy of itself." );
+		return false;
+	}
+
+	// DECLARED EARLIER.  This is also the RECURSION GUARD: `source` links point
+	// strictly backwards in the document, so a chain of them is acyclic by
+	// construction and a mutual pair (`A source B`, `B source A`) is impossible --
+	// one of the two would have to reference forward.
+	const std::map<std::string, std::vector<std::size_t> >::const_iterator si = index.byName.find( srcName );
+	if( si == index.byName.end() || si->second.empty() || si->second.front() >= instIndex ) {
+		diags.push_back( who + ": `source " + srcName + "` must name an object DECLARED EARLIER in the file"
+			+ ( ( si == index.byName.end() || si->second.empty() )
+			      ? std::string( " -- no `standard_object` / `csg_object` of that name exists" )
+			      : std::string( " -- it is declared LATER (a forward reference; that ordering rule is also what "
+			                     "makes a `source` cycle impossible)" ) ) );
+		return false;
+	}
+
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
+	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;
+	if( !objMgr ) {
+		diags.push_back( who + ": `source` needs the object manager to resolve `" + srcName + "`, and this Job has none" );
+		return false;
+	}
+	// Resolves the source through the manager -- which is BOTH the CSG-operand
+	// discriminator below AND (see (c) above) the recorded dependency edge that
+	// puts this instance in the closure of an edit to the SOURCE.
+	IObjectPriv* srcObj = objMgr->GetItem( srcName.c_str() );
+	if( !srcObj ) {
+		diags.push_back( who + ": `source " + srcName + "` is declared earlier but did not produce an object "
+			"(its own chunk failed, or it was dropped by a scene variant)" );
+		return false;
+	}
+	// A CSG OPERAND is hidden by its composite and its matrix is interpreted in
+	// the COMPOSITE's local frame, not the world -- so a copy of it, placed by a
+	// world-space `position`, would not mean what it looks like it means.  Same
+	// discriminator ObjectManager's IsContainerNode_ and SetObjectParent's operand
+	// guards use: hidden AND not a container, where "not a container" needs the
+	// CSGObject test as well as the geometry test, because a NESTED composite used
+	// as an operand is hidden and geometry-less too.
+	{
+		const bool hidden    = !static_cast<const IObject*>( srcObj )->IsWorldVisible();
+		const bool container = ( srcObj->GetGeometry() == 0 )
+		                    && ( dynamic_cast<const Implementation::CSGObject*>( srcObj ) == 0 );
+		if( hidden && !container ) {
+			diags.push_back( who + ": `source " + srcName + "` is a CSG OPERAND.  Its transform is interpreted in "
+				"its composite's local frame, not the world, so a copy of it placed by a world `position` would "
+				"not land where the number says.  Instance the csg_object instead." );
+			return false;
+		}
+	}
+	// A source WITH CHILDREN is a multi-node subtree.  Refuse rather than quietly
+	// instancing only its root, which would produce a copy missing most of what
+	// the author pointed at.
+	if( index.hasChildren.count( srcName ) ) {
+		diags.push_back( who + ": `source " + srcName + "` has CHILDREN -- instancing a multi-node subtree is 87 "
+			"step 3b and is not implemented yet.  3a instances a SINGLE node (a leaf, a container, or a "
+			"csg_object).  Instancing only its root would silently drop the rest of the subtree, so it is refused." );
+		return false;
+	}
+
+	// Walk the `source` chain back to the ROOT chunk -- the one that declares what
+	// the thing actually IS.  `I source S` where `S source T` is legal and means
+	// "another copy of T, with S's overrides on top of it".  Terminates by the
+	// declare-earlier rule above (each link is strictly earlier); the depth cap is
+	// a belt against a future apply path that admits a link this function never saw.
+	std::vector<std::size_t> chain;   // nearest source first
+	{
+		std::size_t cursor = si->second.front();
+		for( unsigned int guard = 0; guard < 256u; ++guard ) {
+			chain.push_back( cursor );
+			std::string nextSrc;
+			if( !ParamValue( items[cursor].get(), "source", nextSrc ) || nextSrc.empty() || nextSrc == "none" ) break;
+			const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nextSrc );
+			if( ni == index.byName.end() || ni->second.empty() || ni->second.front() >= cursor ) break;
+			cursor = ni->second.front();
+		}
+		if( chain.size() >= 256u ) {
+			diags.push_back( who + ": `source` chain is deeper than 256 links" );
+			return false;
+		}
+	}
+
+	// MERGE, root-first, so a nearer chunk's binding overrides a farther one's and
+	// the INSTANCING chunk's own parameters override everything -- "any binding
+	// written explicitly on the instancing chunk wins".  Insertion order is kept
+	// so the synthesized parameter list is deterministic.
+	std::vector<std::string> order;
+	std::map<std::string, std::string> merged;
+	auto put = [&order, &merged]( const std::string& k, const std::string& v ) {
+		if( merged.find( k ) == merged.end() ) order.push_back( k );
+		merged[ k ] = v;
+	};
+	for( std::size_t ci = chain.size(); ci-- > 0; ) {
+		std::vector<std::pair<std::string,std::string> > sp;
+		ChunkParamPairs( items[ chain[ci] ], lets, diags, sp );
+		for( std::size_t k = 0; k < sp.size(); ++k )
+			if( !IsInstanceOwnParam( sp[k].first ) ) put( sp[k].first, sp[k].second );
+	}
+	for( std::size_t k = 0; k < instParams.size(); ++k )
+		if( instParams[k].first != "source" ) put( instParams[k].first, instParams[k].second );
+
+	// The instance is built through the SOURCE's own chunk type: a csg_object
+	// source yields a csg_object, so `obja` / `objb` / `operation` come along and
+	// the two composites share their operands (read-only at render time, each
+	// transforming rays into its OWN local frame first -- see
+	// CSGObject::IntersectRay).
+	const std::string targetRole = items[ chain.back() ]->role;
+	const std::map<std::string, const IAsciiChunkParser*>::const_iterator ti = registry.find( targetRole );
+	if( ti == registry.end() || !ti->second ) {
+		diags.push_back( who + ": `source " + srcName + "` resolves to a `" + targetRole + "` chunk, which the parser registry does not know" );
+		return false;
+	}
+	const IAsciiChunkParser* targetParser = ti->second;
+
+	// Every merged parameter must be one the TARGET's descriptor accepts.  The one
+	// way this fires in practice: a csg_object source plus a `matrix` / `quaternion`
+	// / `scale` on the instancing chunk, which a csg_object chunk has no way to
+	// express.  Name the offenders instead of letting DispatchChunkParameters emit
+	// an undeclared-parameter error with no mention of `source`.
+	{
+		std::set<std::string> accepted;
+		const ChunkDescriptor& td = targetParser->Describe();
+		for( std::size_t k = 0; k < td.parameters.size(); ++k ) accepted.insert( td.parameters[k].name );
+		std::string rejected;
+		for( std::size_t k = 0; k < order.size(); ++k )
+			if( !accepted.count( order[k] ) ) { if( !rejected.empty() ) rejected += ", "; rejected += "`" + order[k] + "`"; }
+		if( !rejected.empty() ) {
+			diags.push_back( who + ": `source " + srcName + "` resolves to a `" + targetRole + "` node, and an "
+				"instance is built through the SOURCE's own chunk type -- so it accepts exactly that chunk's "
+				"parameters, which do not include " + rejected + "." );
+			return false;
+		}
+	}
+
+	// COLLISION, both kinds.  3a's collapse case synthesizes no NEW name (the entry
+	// is the instancing chunk's own), so what this catches today is a duplicate
+	// object declaration; the shape is what 3b's `name[i]` entries need.
+	//
+	// (1) MANAGER-level.  AddItem already rejects a duplicate and Job::AddObject
+	//     honours its bool, but that diagnostic names neither the instancing chunk
+	//     nor which synthesized entry clashed.  Pre-check for the chunk-localized
+	//     message, exactly as ExpandInstanceArray does.
+	if( objMgr->GetItem( instName.c_str() ) ) {
+		diags.push_back( who + ": the entry `" + instName + "` this instance would create already exists as an object" );
+		return false;
+	}
+	// (2) DOCUMENT-level, which (1) structurally CANNOT see.  An authored chunk
+	//     whose name equals a synthesized one makes DocFindByNameAnyRole resolve a
+	//     picked instance to the WRONG chunk -- so the editor writes an edit into a
+	//     chunk that has nothing to do with what the author clicked.  The manager
+	//     pre-check misses it whenever that authored chunk is declared AFTER the
+	//     instancing one: it does not exist yet.  Scan the document, and name BOTH
+	//     chunks so the author can see which two to reconcile.
+	{
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator ci = index.byName.find( instName );
+		if( ci != index.byName.end() && ci->second.size() > 1 ) {
+			char pos[128];
+			std::snprintf( pos, sizeof(pos), "item %u and item %u",
+				(unsigned int)ci->second[0], (unsigned int)ci->second[1] );
+			diags.push_back( who + ": the entry name `" + instName + "` is declared by MORE THAN ONE object chunk ("
+				+ pos + ").  A picked instance would resolve back to whichever the name lookup finds first, so an "
+				"edit could land in the wrong chunk.  Rename one." );
+			return false;
+		}
+	}
+
+	IAsciiChunkParser::ParamsList plist;
+	plist.push_back( String( ( std::string( "name " ) + instName ).c_str() ) );
+	for( std::size_t k = 0; k < order.size(); ++k ) {
+		if( order[k] == "name" ) continue;   // already emitted first
+		std::string line = order[k];
+		if( !merged[ order[k] ].empty() ) { line += ' '; line += merged[ order[k] ]; }
+		plist.push_back( String( line.c_str() ) );
+	}
+
+	ParseStateBag bag( &targetParser->Describe() );
+	if( !DispatchChunkParameters( targetParser->Describe(), bag, plist ) ) {
+		diags.push_back( who + ": the synthesized `" + targetRole + "` has invalid params (see log)" );
+		return false;
+	}
+	if( !targetParser->Finalize( bag, pJob ) ) {
+		diags.push_back( who + ": `source " + srcName + "` expanded, but applying the synthesized `" + targetRole + "` failed (see log)" );
+		return false;
+	}
+
+	// PROVENANCE.  Recorded even in the collapse case, where the entry name and the
+	// instancing chunk name are the same string: consumers ask ONE question ("where
+	// did this entry come from?") and get one answer, instead of each re-deriving
+	// the relationship from the spelling of the name.
+	objMgr->SetObjectProvenance( instName.c_str(), instName.c_str(), srcName.c_str() );
 	return true;
 }
 
@@ -1445,7 +1781,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// no-space line, an undeclared parameter name, or a non-finite/non-numeric
 	// numeric value -- see its doc in IAsciiChunkParser.h). Collect each
 	// chunk's populated bag; if ANY chunk fails, apply NOTHING (refuse-all).
-	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; std::string keyword; NodeId nodeId; };
+	// `itemIndex` + `isSourceInstance`: 87 step 3a expands a `source` chunk at its OWN
+	// position in PASS-2 (see ExpandSourceInstance), which needs the CST node, not the bag.
+	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; std::string keyword; NodeId nodeId; std::size_t itemIndex; bool isSourceInstance; };
 	std::vector<Pending> pending;
 	pending.reserve( items.size() );
 	for( size_t i = 0; i < items.size(); ++i ) {
@@ -1462,7 +1800,12 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			diags.push_back( c->role + ": invalid parameter(s) (see log)" );
 			continue;
 		}
-		pending.push_back( Pending{ parser, std::move(bag), c->role, DocNodeIdAt( doc, (int)i ) } );   // nodeId: D35 recording attribution
+		// 87 step 3a: read `source` off the CST TOKEN, not the bag -- the expansion is
+		// deliberately bag-free (ExpandSourceInstance's header says why), and so is its trigger.
+		std::string srcRef;
+		const bool isSrc = ( c->role == "standard_object" )
+		               && ParamValue( c.get(), "source", srcRef ) && !srcRef.empty() && srcRef != "none";
+		pending.push_back( Pending{ parser, std::move(bag), c->role, DocNodeIdAt( doc, (int)i ), i, isSrc } );   // nodeId: D35 recording attribution
 	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
@@ -1540,6 +1883,13 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	struct SinkGuard { ~SinkGuard() { g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr; g_cstFinalizeDiagSink = nullptr; } } sinkGuard;
 	(void)sinkGuard;
 
+	// 87 step 3a: ONE O(N) pass over the document's object-creating chunks, shared by
+	// every `source` expansion below (name -> declaring items, and the set of names
+	// that have children).  Built here rather than per-expansion so N sources cost
+	// O(N), not O(N^2).
+	ObjectChunkIndex objIndex;
+	BuildObjectChunkIndex( items, objIndex );
+
 	int count = 0;
 	for( Pending& p : pending ) {
 		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
@@ -1560,7 +1910,19 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		// specific reason instead of the generic "apply failed" message below.
 		std::string finalizeDiag;
 		g_cstFinalizeDiagSink = &finalizeDiag;
-		const bool ok = applyP->parser->Finalize( applyP->bag, pJob );
+		// 87 step 3a: a `source` chunk EXPANDS here -- at its own document position,
+		// inside this armed-sink window -- instead of going through its own Finalize.
+		// ExpandSourceInstance's header records why the position and the window are
+		// both load-bearing.  It pushes its own, specific diagnostic on failure, so
+		// the generic "apply failed" line below is suppressed for it.
+		bool expandDiagnosed = false;
+		bool ok;
+		if( applyP->isSourceInstance ) {
+			ok = ExpandSourceInstance( items, applyP->itemIndex, objIndex, lets, registry, pJob, diags );
+			expandDiagnosed = !ok;
+		} else {
+			ok = applyP->parser->Finalize( applyP->bag, pJob );
+		}
 		g_cstFinalizeDiagSink = nullptr;
 		if( outRecorded ) {
 			g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr;   // no GetItem between here and the next set
@@ -1572,9 +1934,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			}
 		}
 		if( ok ) { ++count; continue; }
-		diags.push_back( finalizeDiag.empty()
-			? applyP->keyword + ": apply failed (e.g. unresolved reference); see log"
-			: applyP->keyword + ": " + finalizeDiag );
+		if( !expandDiagnosed )
+			diags.push_back( finalizeDiag.empty()
+				? applyP->keyword + ": apply failed (e.g. unresolved reference); see log"
+				: applyP->keyword + ": " + finalizeDiag );
 		break;
 	}
 	// #5 slice 4: expand instance_array generators AFTER the normal entities (so their template
@@ -1770,6 +2133,25 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		if( node->role == "translucent_material" ) {            // re-Finalize reads the ambient painter-colour cache
 			diags.push_back( node->role + " '" + name + "': re-Finalize reads ambient thread-local parser state (the painter-colour cache); not yet incrementally re-derivable -- fall back to a full derive" );
 			return 0;
+		}
+		{	// 87 step 3a: a `standard_object` carrying `source` is not applied by its own
+			// Finalize at all -- Cst::DeriveToJob EXPANDS it at PASS-2, merging the source
+			// chunk's bindings in.  Re-Finalizing it here would refuse (the parser's own
+			// unexpanded-`source` backstop) or, worse under a future relaxation, build a
+			// bare CONTAINER where the author asked for a copy.  Refuse -> full derive,
+			// which re-expands from the document.  PER-CHUNK, matching the three refusals
+			// below; the document-wide guard that would also cover "edit the SOURCE and
+			// the instance must re-expand" is not needed here, because the expansion
+			// resolves the source object THROUGH the manager and so records the source's
+			// chunk as a traced dependency (see ExpandSourceInstance (c)).
+			std::string srcRef;
+			if( node->role == "standard_object"
+			 && ParamValue( node.get(), "source", srcRef ) && !srcRef.empty() && srcRef != "none" ) {
+				diags.push_back( node->role + " '" + name + "': carries `source " + srcRef + "` -- an INSTANCE, "
+					"expanded by the full derive at PASS-2 rather than by this chunk's own Finalize; "
+					"fall back to a full derive" );
+				return 0;
+			}
 		}
 		if( node->role == "gltf_import" ) {                      // a single chunk whose Finalize spawns many entries
 			diags.push_back( node->role + ": a bulk importer -- one chunk creates many objects/materials/painters/lights, which a typed RemoveGeometry cannot undo; fall back to a full derive" );

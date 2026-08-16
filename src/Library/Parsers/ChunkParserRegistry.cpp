@@ -6994,6 +6994,40 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name     = bag.GetString( "name",     "noname" );
+
+					// 87 step 3a: a node carries at most ONE of `geometry` (a leaf
+					// shape) and `source` (an instance of another node).  Count the
+					// forms and refuse BEFORE any mutation, exactly as sweep_geometry
+					// does for profile_point / profile_circle / profile_rect -- with
+					// the one difference that ZERO forms is LEGAL here: that is the
+					// CONTAINER node.
+					const bool hasGeometryForm = bag.Has( "geometry" ) && bag.GetString( "geometry", "none" ) != "none";
+					const bool hasSourceForm   = bag.Has( "source" )   && bag.GetString( "source",   "none" ) != "none";
+					if( hasGeometryForm && hasSourceForm ) {
+						const std::string diag = "standard_object `" + name + "`: `geometry` and `source` are mutually "
+							"exclusive -- a node is EITHER a leaf shape (`geometry`) OR an instance of another node "
+							"(`source`), never both.  Drop one.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						return false;
+					}
+					// A LONE `source` must never reach here: Cst::DeriveToJob EXPANDS it
+					// at the instancing chunk's own position in PASS-2 and hands this
+					// Finalize a bag with `source` already consumed.  Arriving with one
+					// still on the bag means the chunk was applied by a path that does
+					// NOT expand instances -- which would silently build a CONTAINER
+					// where the author asked for a copy.  Refuse loudly instead.
+					// (DeriveToJobIncremental refuses such a chunk up front, so this is
+					// a backstop against a future third apply path, not a live case.)
+					if( hasSourceForm ) {
+						const std::string diag = "standard_object `" + name + "`: `source` reached the parser UNEXPANDED "
+							"-- this chunk was applied by a path that does not expand instances (Cst::DeriveToJob PASS-2 is "
+							"the only one that does).  Re-derive the whole scene.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						return false;
+					}
+
 					// 87: `geometry` is OPTIONAL.  Absent (or the universal
 					// no-reference sentinel `none`) means this object is a
 					// CONTAINER node -- a pure transform other objects parent
@@ -7165,6 +7199,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to instance; omit for a pure container node"; }
+						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object (declared EARLIER) to INSTANCE: this node takes a copy of that object's bindings -- geometry / material / modifier / shader / radiance map / interior medium / shadow flags -- while its OWN position, orientation and scale say where the copy goes.  The source keeps rendering; `source` copies, it does not move or hide anything.  Mutually exclusive with `geometry`"; }
 						{ auto& p = P(); p.name = "parent";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this one to (must be declared earlier)"; }
 						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
 						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }

@@ -76,6 +76,28 @@ namespace RISE
 			//!    and the re-add cannot know they were there.
 			std::map<String,String> parentByName;
 
+			//! 87 step 3: where a SYNTHESIZED entry came from.
+			//! `entry name -> (instancing chunk name, source node name)`.
+			//!
+			//! Populated by the derive whenever an object is produced by an
+			//! expansion rather than by a chunk of its own name: a
+			//! `standard_object` carrying `source` (step 3a -- entry name ==
+			//! instancing chunk name, the collapse case), and the
+			//! `instance_array` generator (entry `g[i,j]` -> instancing chunk
+			//! `g`, no source NODE -- its template is a geometry, so the second
+			//! field is empty there).
+			//!
+			//! This is the ONLY sanctioned way to get from a rendered entry
+			//! back to the chunk an author can edit.  Every consumer does a MAP
+			//! LOOKUP -- nobody may split the name on `.` or probe for a `[`,
+			//! because a synthesized name is an opaque token whose spelling is
+			//! the expansion's business and nobody else's.
+			//!
+			//! Lives and dies with the manager, exactly like `parentByName`
+			//! above, and is retired by the same two hooks (`RemoveItem` for one
+			//! entry, `Shutdown` for the lot).
+			std::map<String, std::pair<String,String> > provenanceByName;
+
 			//! Did the LAST walk compose anything against a parent LINK?  (Not
 			//! "against a non-identity matrix" -- a link whose parent happens
 			//! to be identity still counts.  Conservative in the safe
@@ -159,6 +181,8 @@ namespace RISE
 			bool SetObjectParent( const char* child, const char* parent );
 			const char* GetObjectParent( const char* child ) const;
 			bool HasChildren( const char* parent ) const;
+			bool SetObjectProvenance( const char* entry, const char* instancingChunk, const char* sourceNode );
+			bool GetObjectProvenance( const char* entry, const char** outInstancingChunk, const char** outSourceNode ) const;
 			bool ComposeWorldTransforms() const;
 
 			//! The PER-FRAME half of composition: re-bake ONLY the nodes that are

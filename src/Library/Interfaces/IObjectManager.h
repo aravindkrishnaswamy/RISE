@@ -163,6 +163,41 @@ namespace RISE
 		//! edit skips the TLAS" property (docs/agentic-redesign/21-stable-apply-and-
 		//! resolver.md slices 3-4).
 		virtual unsigned long long GetSpatialStructureGeneration() const = 0;
+
+		//! 87 step 3: record that `entry` was SYNTHESIZED -- produced by an
+		//! expansion rather than by a chunk of its own name.
+		//! `instancingChunk` is the name on the chunk an author can edit;
+		//! `sourceNode` is the object that chunk instanced, or "" when the
+		//! expansion had no source OBJECT (the `instance_array` generator's
+		//! template is a geometry).
+		//!
+		//! Appended at the interface TAIL, with its getter, because this repo
+		//! pins vtable order (tests/IJobVtableManifest.txt pins IJob; the
+		//! convention is append-only everywhere).
+		//! \return FALSE for a null/empty `entry`.
+		virtual bool SetObjectProvenance(
+			const char* entry,							///< [in] Name of the synthesized entry
+			const char* instancingChunk,				///< [in] Name on the chunk that produced it
+			const char* sourceNode						///< [in] Object it instanced, or null / "" if none
+			) = 0;
+
+		//! Where did `entry` come from?  FALSE -- and both out-pointers
+		//! untouched -- when `entry` is an ordinary authored object, which is
+		//! the overwhelmingly common answer.
+		//!
+		//! THE ONLY SANCTIONED WAY to map a rendered entry back to an editable
+		//! chunk.  Callers must NOT reconstruct the relationship from the name
+		//! itself (splitting on `.`, probing for a `[`): a synthesized name's
+		//! spelling belongs to the expansion that made it.
+		//!
+		//! The returned pointers are owned by the manager and are invalidated
+		//! by anything that changes the provenance map -- SetObjectProvenance,
+		//! RemoveItem, Shutdown.  Consume them immediately.
+		virtual bool GetObjectProvenance(
+			const char* entry,							///< [in] Name of the entry to trace
+			const char** outInstancingChunk,			///< [out] Chunk name; may be null if not wanted
+			const char** outSourceNode					///< [out] Source object name ("" if none); may be null
+			) const = 0;
 	};
 }
 

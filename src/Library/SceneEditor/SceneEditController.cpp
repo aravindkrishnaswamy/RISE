@@ -8260,14 +8260,34 @@ namespace {
 // round-7 gated camera fallback (DocCameraUniqueFallbackPermitted).
 RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
 	SceneEditController::Category cat, const std::string& name, const std::string& activeRasterizerKind,
-	const std::string& activeCameraName )
+	const std::string& activeCameraName, const IObjectManager* objMgr )
 {
 	std::string suffix; bool uf = false;
+	// 87 step 3: a SYNTHESIZED entry has no chunk of its own name -- it was produced
+	// by an expansion.  Its editable chunk is the INSTANCING chunk, and the manager's
+	// provenance map is the only sanctioned way to get there.  Resolve through it
+	// FIRST, so a picked instance traces to text the author can actually edit.
+	// (In 3a's collapse case the two names are equal and this is an identity step;
+	// it is 3b's `name[i]` entries that need it to be here.)
+	std::string lookupName = name;
+	if( objMgr && cat == SceneEditController::Category::Object && !name.empty() ) {
+		const char* instancing = 0;
+		if( objMgr->GetObjectProvenance( name.c_str(), &instancing, 0 ) && instancing && instancing[0] )
+			lookupName = instancing;
+	}
 	if( RoleKindSuffixForCategory( cat, suffix, uf ) ) {
 		if( cat == SceneEditController::Category::Camera && uf )
 			uf = RISE::Cst::DocCameraUniqueFallbackPermitted( doc, name, activeCameraName );
-		if( name.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
-		return RISE::Cst::DocFindByNameAnyRole( doc, name, nullptr, suffix, uf );
+		if( lookupName.empty() && !uf ) return 0;   // an empty name resolves only via the unique-fallback
+		const RISE::Cst::NodeId direct = RISE::Cst::DocFindByNameAnyRole( doc, lookupName, nullptr, suffix, uf );
+		if( direct != 0 || lookupName == name ) return direct;
+		// The instancing chunk exists but its ROLE does not carry this category's
+		// keyword suffix -- an `instance_array` generator, whose entries are Objects
+		// while its own chunk is neither `*_object` nor anything else the suffix map
+		// knows.  Fall back to a role-agnostic name lookup: provenance already
+		// established that this name IS the producing chunk, so there is nothing to
+		// disambiguate.
+		return RISE::Cst::DocFindByNameAnyRole( doc, lookupName, nullptr, std::string(), false );
 	}
 	// Singletons RoleKindSuffixForCategory rejects.  Film is a single unnamed
 	// chunk (resolve by kind).  Rasterizer chunks are unnamed and identified by
@@ -8402,7 +8422,7 @@ bool SceneEditController::ResolveSourceSpan( Category cat, const String& name, c
 	const std::string activeRast = mJob.GetActiveRasterizerName();
 	const RISE::Cst::NodeId chunkId =
 		ResolveSourceChunkId( *doc, cat, std::string( name.c_str() ), activeRast,
-		                      mJob.GetActiveCameraName() );
+		                      mJob.GetActiveCameraName(), mJob.GetObjects() );
 	if( chunkId == 0 ) return false;   // unresolvable ref (removed entity / ambiguous / no such singleton)
 
 	size_t off = 0, len = 0;
@@ -9915,7 +9935,7 @@ bool SceneEditController::WouldPersistDanglingReference_(
 	// Resolve the entity's chunk + the edited param's descriptor.
 	const RISE::Cst::NodeId id = ResolveSourceChunkId(
 		*doc, cat, std::string( entityName.c_str() ), std::string(),
-		mJob.GetActiveCameraName() );
+		mJob.GetActiveCameraName(), mJob.GetObjects() );
 	if( id == 0 ) return false;
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;

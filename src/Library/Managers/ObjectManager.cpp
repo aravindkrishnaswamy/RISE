@@ -549,9 +549,28 @@ bool ObjectManager::HasChildren( const char* parent ) const
 	return false;
 }
 
+bool ObjectManager::SetObjectProvenance( const char* entry, const char* instancingChunk, const char* sourceNode )
+{
+	if( !entry || !entry[0] ) return false;
+	provenanceByName[ String( entry ) ] =
+		std::make_pair( String( instancingChunk ? instancingChunk : "" ), String( sourceNode ? sourceNode : "" ) );
+	return true;
+}
+
+bool ObjectManager::GetObjectProvenance( const char* entry, const char** outInstancingChunk, const char** outSourceNode ) const
+{
+	if( !entry || !entry[0] ) return false;
+	const std::map<String, std::pair<String,String> >::const_iterator i = provenanceByName.find( String( entry ) );
+	if( i == provenanceByName.end() ) return false;
+	if( outInstancingChunk ) *outInstancingChunk = i->second.first.c_str();
+	if( outSourceNode )      *outSourceNode      = i->second.second.c_str();
+	return true;
+}
+
 void ObjectManager::Shutdown()
 {
 	parentByName.clear();
+	provenanceByName.clear();
 	danglingParentWarned.clear();
 	anyComposedAgainstParent = false;
 	// The latch used to live INSIDE danglingParentWarned and was cleared for
@@ -567,6 +586,7 @@ bool ObjectManager::RemoveItem( const char* szName )
 
 	const String gone( szName );
 	parentByName.erase( gone );
+	provenanceByName.erase( gone );   // 87 step 3: the entry is gone, so is the record of where it came from
 	danglingParentWarned.erase( gone );
 
 	// Re-root the orphans.  Their world transforms change (they lose the

@@ -159,6 +159,47 @@ session-only element ledger — is replaced by real parent links.
   intervals) — it cannot be flattened away. Its operands SHOULD become
   visible as children in the UI tree.
 
+### Step 3 met three code facts the design did not anticipate
+
+Recorded here before the work lands, so they are decisions rather than
+discoveries.
+
+- **§3's "killing its document-wide incremental-derive refusal" is NOT
+  achievable by folding `instance_array` into `source`.** The refusal exists
+  because the generator's input edges are untraced. Making `source` a
+  `ValueKind::Reference` does get it traced — but only to the ROOT of the source
+  subtree. `DocEditClosure` is a reverse-BFS over `dependents`, and the edge
+  direction inside a subtree is child → parent (`parent` is a Reference on the
+  child), so editing a DESCENDANT's geometry reaches that descendant's chunk and
+  stops: nothing references the descendant, so the instancing chunk is never
+  reached, and the incremental apply would re-point the source's descendant
+  while N stale clones keep the old binding — exactly the divergence the refusal
+  prevents. Closing it needs a transitive structural edge (source → every
+  `parent`-descendant), which breaks `MaintainedReferenceGraph`'s incremental
+  premise: `SetParamValue` re-runs `ComputeChunkRefs` for the edited chunk only,
+  while a `parent` edit anywhere changes subtree membership for every ancestor
+  `source`. **The refusal survives step 3, renamed**, and retiring it is its own
+  arc — it also needs a typed "drop this chunk's N synthesized objects"
+  primitive, which the provenance map is the inverse index for.
+- **Animation does not compose with instancing.** §1 pairs them ("hierarchical
+  transforms give hierarchical animation. One subtree may be instanced many
+  times"), but an instance is a COPY, not a live view, and
+  `Job::AddKeyframeToAnimation` caches a raw `IKeyframable*` resolved from one
+  name. A timeline on the source moves the source only; its instances stand
+  still. Targeting each instance means hand-writing N timelines. This is a real
+  hole in the §1 pairing, not an implementation gap.
+- **Subtree instancing is a step-function regression against step 2's cost
+  model.** Today's `instance_array` produces FLAT objects — zero links — so a
+  10,000-instance grid costs one predicate per frame. Under `source`, 10,000
+  instances of a 5-node subtree is 50,000 links re-baked every frame through a
+  string-keyed walk. This is what decides the open semantics question: the
+  instancing node IS the clone of the source root, so `source <leaf>` collapses
+  to exactly one object under the chunk's own name and the common array case
+  costs ZERO links. It also keeps `name[i,j]` byte-compatible with the
+  object-map tests that already pin it, and gives every instance a real
+  CST-backed name the properties panel and the gizmo can edit — which today's
+  `instance_array` entries do not have.
+
 ### A creation rule is not a history rule
 
 The container rule — "a node with no `geometry` takes no surface binding" — is
@@ -281,8 +322,24 @@ what was authored, live material included).
 2. **Per-frame re-bake** in `PrepareForRendering`. Delivers hierarchical
    animation. Do NOT re-flatten structurally per frame (that churns the
    name map) — re-walk into already-allocated entries.
-3. **Instancing via `source`**, folding in `instance_array`. Needs the
-   provenance/naming decision (`name[i]`).
+3. **Instancing via `source`**, folding in `instance_array`.
+   **Provenance/naming — DECIDED 2026-08-16:**
+   - The instancing node IS the clone of the source root, so `source <leaf>`
+     collapses to exactly one object under the chunk's own name. See the
+     cost argument above for why this, and not "compose the source's own
+     local transform in".
+   - A multi-node subtree instance names its descendants `I.X` — one level
+     of qualification, because descendant names are already globally unique
+     in the manager, so nesting composes without a path. `.` not `/`:
+     `ChunkNamePath` keys the document index as `role + "/" + name`.
+   - With counts: `I[i,j]` and `I[i,j].X`, keeping today's `instance_array`
+     legend entries byte-compatible.
+   - Provenance is a MAP (`entry -> (instancing chunk, source node)`) on
+     ObjectManager, never a string-split on `.` — an author may legitimately
+     write `name my.object`.
+   Slices: 3a `source` single-node + refusals + provenance; 3b subtree
+   expansion; 3c `count_u`/`count_v` + per-instance exprs; 3d delete
+   `instance_array`.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
    real tree model, Swift to `OutlineGroup`; expand state keyed by tree

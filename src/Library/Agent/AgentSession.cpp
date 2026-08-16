@@ -11547,14 +11547,22 @@ namespace RISE
 				return true;
 			}
 
-			// Generator prefix?  ("grid" when the scene holds "grid[0,0]", ...)
+			// An INSTANCING CHUNK name?  ("grid" when the scene holds "grid[0,0]", ...)
+			// 87 step 3: asked of the manager's PROVENANCE map, not of the spelling of
+			// the names.  The old form probed for `name` followed by a literal `[`,
+			// which hard-coded one expansion's naming scheme into a caller that has no
+			// business knowing it -- it answered for `instance_array` and would have
+			// silently answered "not a generator" for every other expansion.  The
+			// provenance lookup asks the real question ("which entries did this chunk
+			// produce?") and stays right whatever the entries end up being called.
 			const std::vector<std::string> names = CollectObjectNames( objMgr );
 			std::string instances;
 			unsigned int instanceCount = 0;
 			for( std::size_t i = 0; i < names.size(); ++i ) {
-				if( names[i].size() > name.size() + 1 &&
-					names[i].compare( 0, name.size(), name ) == 0 &&
-					names[i][ name.size() ] == '[' )
+				const char* instancingChunk = 0;
+				if( names[i] != name
+				 && objMgr->GetObjectProvenance( names[i].c_str(), &instancingChunk, 0 )
+				 && instancingChunk && name == instancingChunk )
 				{
 					++instanceCount;
 					if( instanceCount <= 8 ) {
@@ -11569,8 +11577,8 @@ namespace RISE
 				char tail[64];
 				std::snprintf( tail, sizeof( tail ), " (%u instance%s in total)",
 					instanceCount, instanceCount == 1 ? "" : "s" );
-				outMessage = "isolate \"" + name + "\" is AMBIGUOUS -- it is a generator name, not a single "
-					"object; the scene holds " + instances + tail +
+				outMessage = "isolate \"" + name + "\" is AMBIGUOUS -- it names a chunk that EXPANDS into several "
+					"objects, not a single object; the scene holds " + instances + tail +
 					".  Isolate ONE instance by its full name.";
 				return false;
 			}

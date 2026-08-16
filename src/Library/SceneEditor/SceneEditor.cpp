@@ -3340,7 +3340,24 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 				if( !committable ) {
 					if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
 						mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
-						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), ( cstKind == 2 ) ? "csg_object has no scale param -- only translate/rotate are committable" : "object has no CST `matrix` param and is not a csg_object" );
+						// 87 step 3: a SYNTHESIZED entry has no chunk of its own name, so
+						// "no CST `matrix` param and not a csg_object" is a non-sequitur --
+						// literally true and completely unhelpful, because the author never
+						// wrote a chunk for this entry at all.  Name the INSTANCING chunk,
+						// which IS the thing they can edit.  Provenance is a map lookup; the
+						// entry name is an opaque token and must never be picked apart.
+						std::string why = ( cstKind == 2 )
+							? std::string( "csg_object has no scale param -- only translate/rotate are committable" )
+							: std::string( "object has no CST `matrix` param and is not a csg_object" );
+						const IObjectManager* objsForProv = mScene ? mScene->GetObjects() : 0;
+						const char* instancingChunk = 0;
+						if( objsForProv && objsForProv->GetObjectProvenance( edit.objectName.c_str(), &instancingChunk, 0 )
+						 && instancingChunk && instancingChunk[0]
+						 && std::string( instancingChunk ) != std::string( edit.objectName.c_str() ) ) {
+							why = std::string( "it is an INSTANCE synthesized by `" ) + instancingChunk
+							    + "` and has no chunk of its own -- move `" + instancingChunk + "` instead";
+						}
+						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), why.c_str() );
 					}
 					return false;
 				}
