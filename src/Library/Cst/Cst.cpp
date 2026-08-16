@@ -2048,8 +2048,19 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// `objStates`, so their moved bounding boxes cannot be caught by the loop
 	// below -- the walk's own "did any world matrix change" answer is what
 	// makes the spatial gate sound.
-	bool spatial = pJob.ComposeObjectHierarchy();
-	bool emitter = false;
+	const bool composeMoved = pJob.ComposeObjectHierarchy();
+	bool spatial = composeMoved;
+	// The same argument that made `spatial` need the compose's answer applies to
+	// the EMITTER gate, and for the same reason: the objects the compose moved
+	// are DESCENDANTS, which are absent from `objStates`, so the loop below
+	// cannot see that one of them emits.  Dragging a container that happens to
+	// parent a lamp would otherwise re-render the lamp's geometry at its new
+	// place while the light sampler kept sampling the old one.  Deliberately
+	// CONSERVATIVE -- we do not know whether any moved descendant is emissive,
+	// and the cost of being wrong in this direction is one sampler rebuild,
+	// while the cost of being wrong in the other is a silent geometry/light
+	// desync for the rest of the session.
+	bool emitter = composeMoved;
 	for( const ObjState& s : objStates ) {
 		if( !BBoxEqual( s.bbox, s.obj->getBoundingBox() ) ) spatial = true;
 		const IMaterial* m = s.obj->GetMaterial();

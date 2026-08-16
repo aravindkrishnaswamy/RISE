@@ -1150,9 +1150,19 @@ namespace RISE
 
 			//! Every csg_object in `doc` that IsNullGeometryEmitter_ flags in
 			//! `job`, each paired with whether its own chunk acknowledges the
-			//! gap.  csg_object is the sole null-geometry Object class (see
-			//! LuminaryManager::AddToLuminaryList), so restricting the walk to
-			//! that keyword is exhaustive, not a heuristic.  `job` must already
+			//! gap.  Restricting the walk to that keyword is exhaustive, not a
+			//! heuristic -- but the REASON changed with 87 and is worth stating
+			//! precisely, because the old one ("csg_object is the sole
+			//! null-geometry Object class") is no longer true.  87 added a
+			//! second null-geometry Object: a CONTAINER node (a
+			//! `standard_object` naming no `geometry`).  A container cannot be
+			//! an EMITTER, though, because `Job::AddObject` refuses to bind a
+			//! material to one at all (DropContainerSurfaceBindings_) -- a
+			//! container has no surface.  So csg_object remains the only chunk
+			//! that can produce a null-geometry object with an emissive
+			//! material, and this walk stays complete.  If a future slice ever
+			//! lets a geometry-less node carry a material, this walk must widen
+			//! with it.  `job` must already
 			//! be a completed DeriveToJob of `doc` (or of a document that
 			//! extends it while preserving every existing csg_object's
 			//! registered name) -- this function does not derive anything
@@ -11347,6 +11357,30 @@ namespace RISE
 
 		//! Collect every object name the manager knows, in the manager's own
 		//! deterministic (sorted, std::map) order.
+		//! Every REGISTERED object name, including the world-invisible ones (CSG
+		//! operands and 87's container nodes).  Callers that mean "objects a ray
+		//! can land on" -- a rendered count, a legend, a palette -- want
+		//! FormatRenderableObjectNames / BuildObjectMapPalette instead, which
+		//! filter on IsWorldVisible().  This one is deliberately unfiltered: its
+		//! consumers resolve NAMES (the instance-generator prefix probe, the
+		//! isolate suggestion list), and a name has to be findable whether or
+		//! not the thing it names is visible.
+		//! How many objects a ray can actually land on.  `populate_scene` reports
+		//! this to the model as its before/after object count, so it must NOT
+		//! include world-invisible bookkeeping nodes -- 87's containers (pure
+		//! transforms) or CSG operands (consumed by their composite).  Counting
+		//! them would tell the model it added objects the render does not show.
+		std::size_t CountRenderableObjects_( const IObjectManager* objMgr )
+		{
+			struct VisibleCounter : public IEnumCallback<IObject>
+			{
+				std::size_t n = 0;
+				bool operator()( const IObject& ) override { ++n; return true; }
+			} counter;
+			if( objMgr ) objMgr->EnumerateObjects( counter );
+			return counter.n;
+		}
+
 		std::vector<std::string> CollectObjectNames( IObjectManager* objMgr )
 		{
 			struct NameCollector : public IEnumCallback<const char*>
@@ -11439,13 +11473,22 @@ namespace RISE
 			if( obj ) {
 				if( !static_cast<const IObject*>( obj )->IsWorldVisible() ) {
 					// World-invisible means "no ray ever lands on this object
-					// directly".  The only in-tree writer of that flag (outside
-					// this feature's own transient solo) is
-					// CSGObject::AssignObjects on its operands, so naming the
-					// composite case is accurate rather than a guess -- but the
-					// message leads with the OBSERVED fact, not the inferred
-					// cause, so it stays honest if a future producer of
-					// world-invisible objects appears.
+					// directly".  There are now TWO in-tree writers of that flag
+					// (outside this feature's own transient solo):
+					// CSGObject::AssignObjects on its operands, and 87's
+					// CONTAINER nodes -- a `standard_object` naming no
+					// `geometry`, which is a pure transform other objects are
+					// parented to.  They are told apart by geometry: an operand
+					// HAS geometry and is hidden; a container has none.  Naming
+					// the wrong one would send the author hunting for a CSG
+					// composite that does not exist.
+					if( !obj->GetGeometry() ) {
+						outMessage = "isolate \"" + name + "\" is not renderable -- it is a CONTAINER node "
+							"(a `standard_object` with no `geometry`), i.e. a transform its children are "
+							"parented to, with no surface of its own.  Isolate one of its children instead.  "
+							"Available: " + FormatRenderableObjectNames( objMgr );
+						return false;
+					}
 					outMessage = "isolate \"" + name + "\" is not independently renderable -- it is marked "
 						"world-invisible, so no ray lands on it directly.";
 					const std::string parentName = FindCsgParentName( objMgr, obj );
@@ -22514,7 +22557,7 @@ namespace RISE
 			// either way (see mPopulateSceneRan).
 			mPopulateSceneRan = true;
 
-			out.objectCountBefore = static_cast<int>( CollectObjectNames( mJob->GetObjects() ).size() );
+			out.objectCountBefore = static_cast<int>( CountRenderableObjects_( mJob->GetObjects() ) );
 
 			// The caller's notes, length-capped BEFORE composition and with the
 			// truncation stated rather than silent.
@@ -22751,7 +22794,7 @@ namespace RISE
 				out.retrySucceeded = ( landedNames.size() > landedBefore );
 			}
 
-			out.objectCountAfter = static_cast<int>( CollectObjectNames( mJob->GetObjects() ).size() );
+			out.objectCountAfter = static_cast<int>( CountRenderableObjects_( mJob->GetObjects() ) );
 
 			// A PURE PROVIDER FAILURE (nothing landed AND nothing was rejected,
 			// because no answer was ever parsed) is NOT an ok result -- `ok`

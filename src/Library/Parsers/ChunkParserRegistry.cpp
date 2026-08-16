@@ -7106,8 +7106,17 @@ namespace RISE
 					// logs the specific reason (undeclared parent, self-parent,
 					// cycle); mirror it into the CST diagnostic sink so the
 					// scene author sees it at the load, not only in the log.
-					if( bRet && !parent.empty() && parent != "none" ) {
-						if( !pJob.SetObjectParent( name.c_str(), parent.c_str() ) ) {
+					// ALWAYS call, including with no parent: this Finalize also runs
+					// on an INCREMENTAL re-apply, where the edit may have REMOVED
+					// the `parent` line.  Skipping the call in that case would
+					// leave the old link in the authored graph -- the object would
+					// keep rendering under a parent its own chunk no longer names,
+					// until a save + reload silently moved it.  `parent none` is
+					// the explicit form of the same request, matching `geometry
+					// none`'s "no reference" sentinel.
+					const bool wantsParent = !parent.empty() && parent != "none";
+					if( bRet ) {
+						if( !pJob.SetObjectParent( name.c_str(), wantsParent ? parent.c_str() : 0 ) && wantsParent ) {
 							if( RISE::g_cstFinalizeDiagSink ) {
 								*RISE::g_cstFinalizeDiagSink = "standard_object `" + name + "`: `parent " + parent +
 									"` was refused -- the parent must be a DECLARED-EARLIER object, must not be "

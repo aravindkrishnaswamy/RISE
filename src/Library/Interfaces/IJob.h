@@ -3382,7 +3382,8 @@ namespace RISE
 		//! NB: appended at the IJob tail per the append-only ABI convention (preserves every prior vtable slot).
 		virtual int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue ) { return 0; }
 
-		//! P5 Slice 3 expansion (object transform): commit an object's NET world transform as the authoritative
+		//! P5 Slice 3 expansion (object transform): commit an object's LOCAL transform -- what its chunk authors;
+		//! 87 re-composes a parented object's world matrix from it on every derive -- as the authoritative
 		//! standard_object `matrix` param.  Default no-op (legacy jobs have no retained CST).  See Job override.
 		virtual int ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 ) { return 0; }
 

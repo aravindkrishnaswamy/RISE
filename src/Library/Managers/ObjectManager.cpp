@@ -16,6 +16,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
+#include "../Objects/CSGObject.h"   // telling a CSG operand from a container node (both are hidden)
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -38,6 +39,17 @@ namespace {
 // ("advanced every time InvalidateSpatialStructure() runs", equality
 // stable across non-spatial edits) is preserved -- consumers compare for
 // equality/inequality, never arithmetic.
+//! A hidden node is either a 87 CONTAINER (a pure transform: no geometry, no
+//! operands) or a CSG OPERAND (hidden by its composite).  Only the first is a
+//! scene-graph node.  A CSGObject also has null geometry -- its shape comes
+//! from its operands, and nested CSG makes an inner composite a legitimate
+//! operand -- so "no geometry" alone does not identify a container.
+bool IsContainerNode_( const IObjectPriv* obj )
+{
+	if( !obj || obj->GetGeometry() ) return false;
+	return dynamic_cast<const Implementation::CSGObject*>( obj ) == 0;
+}
+
 unsigned long long NextSpatialGeneration()
 {
 	static std::atomic<unsigned long long> sCounter{ 0 };
@@ -423,11 +435,45 @@ bool ObjectManager::SetObjectParent( const char* child, const char* parent )
 		return true;
 	}
 
+	// A CSG OPERAND is not a scene-graph node.  CSGObject::IntersectRay
+	// transforms the world ray into ITS frame and only then hands it to each
+	// operand, so an operand's `m_mxFinalTrans` is CSG-LOCAL, not world.
+	// Parenting TO one would place the child as if the CSG's own transform were
+	// identity; parenting one would bake a world matrix into a slot the CSG
+	// re-interprets as local, silently pushing the ancestor's translation
+	// through the CSG's transform.  Neither is what anyone means.  An operand
+	// is identifiable without a back-pointer: it is the one node that is hidden
+	// yet HAS geometry (a container is hidden and has none).
+	//
+	// Parenting to the csg_object ITSELF is fine and is NOT refused here -- a
+	// CSG composite is world-visible and its final matrix really is its world
+	// transform.
+	{
+		const IObjectPriv* childObj = GetItem( child );
+		if( childObj && !childObj->IsWorldVisible() && !IsContainerNode_( childObj ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"ObjectManager::SetObjectParent:: `%s` is a CSG operand, whose transform is interpreted in "
+				"its csg_object's frame, not the world's; it cannot take a `parent`.  Parent the csg_object "
+				"instead.", child );
+			return false;
+		}
+	}
+
 	const String parentName( parent );
 	if( parentName == childName ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"ObjectManager::SetObjectParent:: `%s` cannot be its own parent", child );
 		return false;
+	}
+	{
+		const IObjectPriv* parentObj = GetItem( parent );
+		if( parentObj && !parentObj->IsWorldVisible() && !IsContainerNode_( parentObj ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"ObjectManager::SetObjectParent:: `%s` is a CSG operand -- its transform is interpreted in "
+				"its csg_object's frame, not the world's, so anything parented to it would be placed as if "
+				"that csg_object had no transform.  Parent to the csg_object instead.", parent );
+			return false;
+		}
 	}
 	if( !GetItem( parent ) ) {
 		// Declare-before-use.  At parse time this IS the cycle guard: a cycle

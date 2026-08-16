@@ -453,8 +453,22 @@ standard_object
   chunk authors — `position`, `orientation`, `quaternion`, `matrix`, `scale` —
   describes the LOCAL transform**, so a child's `position 1 0 0` under a parent
   with `scale 2 2 2` lands two units out, not one.
-- Nesting is arbitrary.  Moving or animating any node moves its whole subtree,
-  which is what makes hierarchical animation work with no extra authoring.
+- Nesting is arbitrary.  Moving a node moves its whole subtree — on load, on
+  any scene-document edit, and on any interactive transform edit.  (Animating
+  a parent does **not** yet move its children frame-to-frame; the per-frame
+  re-bake that delivers hierarchical animation is
+  [87](agentic-redesign/87-recursive-scene-graph.md) §5 step 2 and has not
+  landed.)
+- A container takes **no surface bindings**.  A `material`, `modifier`,
+  `shader` or `radiance_map` on a geometry-less object is ignored with a
+  warning — a container has no surface, and an emissive material on one would
+  be a light that nothing can ever sample.  Put them on a child that has
+  geometry.
+- A container is **not a CSG operand** either (a boolean needs a shape), and a
+  CSG operand cannot take a `parent`: an operand's transform is interpreted in
+  its `csg_object`'s frame, not the world's.  Parent the `csg_object` itself.
+- Removing the `parent` line — or writing `parent none` — detaches the object
+  back to a root.
 - **A parent must be DECLARED BEFORE the object that names it** — the same rule
   `standard_shader`'s `shaderop` references live under.  A forward reference is
   a hard parse error.  It also makes a cycle impossible at parse time; a

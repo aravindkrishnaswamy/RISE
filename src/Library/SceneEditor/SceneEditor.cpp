@@ -861,9 +861,26 @@ void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 //! exactly the world delta the pointer described, whatever frame its parent is
 //! in.  For a root, parentWorld is identity and this is `worldOp` verbatim, so
 //! the unparented path is byte-identical to the pre-87 code.
-void PushWorldOp_( IObjectPriv& obj, const Matrix4& worldOp )
+//! \return FALSE when the parent world transform is not invertible, in which
+//! case NOTHING is pushed.  WorldToLocal returns its input unchanged in that
+//! state, and pushing that would compose `P * worldOp * P * local` -- an extra
+//! parent factor, which for a far-from-origin container is a teleport, and
+//! which CommitPendingCstObjectTransforms would then write into the chunk.
+//! Refusing mirrors what 86 section 3 got right about its own singular-`G`
+//! case: a diagnostic beats a corrupt matrix.  A degenerate parent means the
+//! whole subtree is already non-renderable (zero world area, zero-determinant
+//! transform), so there is no correct edit to perform here.
+bool PushWorldOp_( IObjectPriv& obj, const Matrix4& worldOp )
 {
+	if( !obj.IsParentWorldInvertible() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"SceneEditor:: world-space transform op REFUSED -- this object's parent chain composes to a "
+			"NON-INVERTIBLE transform (a zero or collapsed `scale` on an ancestor), so a world-space "
+			"delta cannot be expressed in its local frame.  Fix the ancestor's scale." );
+		return false;
+	}
 	obj.PushBottomTransStack( obj.WorldToLocal( worldOp * obj.GetParentWorldTransformMatrix() ) );
+	return true;
 }
 
 Matrix4 ScaleFreeAffineBase_( const Matrix4& current )
@@ -912,7 +929,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// SceneEditController::OnPointerMove), and Transformable::TranslateObject
 		// would push it onto the LOCAL stack -- under a rotated or scaled parent
 		// that moves the object somewhere else entirely.  Conjugate first.
-		PushWorldOp_( obj, Matrix4Ops::Translation( edit.v3a ) );
+		ok = PushWorldOp_( obj, Matrix4Ops::Translation( edit.v3a ) );
 		break;
 	case SceneEdit::RotateObjectArb:
 		{
@@ -940,7 +957,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 				Matrix4Ops::Translation( pivot )
 			  * Matrix4Ops::Rotation( edit.v3a, edit.s )
 			  * Matrix4Ops::Translation( Vector3( -pivot.x, -pivot.y, -pivot.z ) );
-			PushWorldOp_( obj, aboutPivot );
+			ok = PushWorldOp_( obj, aboutPivot );
 		}
 		break;
 	case SceneEdit::SetObjectPosition:
@@ -1095,6 +1112,20 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 	const IObjectManager* objs = mScene->GetObjects();
 	if( objs )
 	{
+		// 87: re-bake the whole authored graph, not just the edited node.
+		// obj's finalize above updated ITS world matrix; every DESCENDANT is
+		// still holding the parent world it was last composed against, along
+		// with the three caches derived from it (inverse-transpose, tangent
+		// sign, world-area Jacobian).  Without this walk a gizmo drag on a
+		// container moves the container and leaves its subtree behind -- and
+		// the InvalidateSpatialStructure below would then rebuild the TLAS
+		// from those stale boxes.  The derive-time compose cannot cover this:
+		// a live edit does not re-derive, and on a scene with no retained CST
+		// Document (or a refused commit) it never will.
+		//
+		// Free for a flat scene: ComposeWorldTransforms returns immediately
+		// when the graph has no links and none are outstanding.
+		objs->ComposeWorldTransforms();
 		objs->InvalidateSpatialStructure();
 	}
 	// Re-review finding B: a spatial change to an EMISSIVE object (move /
@@ -1987,7 +2018,8 @@ bool SceneEditor::ApplyCstObjectComponents_( const std::string& name, const std:
 	return r == 1 || r == 2;
 }
 
-// P5 Slice 3 expansion (object transform): commit every pending object's NET world transform to the retained CST
+// P5 Slice 3 expansion (object transform): commit every pending object's LOCAL transform -- what its chunk
+// authors, NOT its composed world matrix (87; see the body) -- to the retained CST
 // as the authoritative `matrix` param.  Called by the CONTROLLER at a render-thread-PARKED boundary (a commit
 // re-derives, which on a variant scene ClearAll's the live scene -- it must NOT race a render worker).  The
 // per-frame gizmo edits only NOTE objects (NoteCstObjectTransform_); this single flush at drag-end / panel-edit /

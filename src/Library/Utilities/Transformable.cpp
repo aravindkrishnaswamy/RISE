@@ -285,9 +285,16 @@ void Transformable::ClearAllTransforms( )
 	m_mxOrientation = Matrix4Ops::Identity();
 	m_mxScale = Matrix4Ops::Identity();
 	m_mxStretch = Matrix4Ops::Identity();
-	m_mxFinalTrans = Matrix4Ops::Identity();
-	m_mxInvFinalTrans = Matrix4Ops::Identity();
 	ClearFinalMetadata_( this );
+	// Re-finalize rather than hand-assigning the two matrices: that also
+	// refreshes m_mxLocalTrans AND the subclass caches (Object's
+	// inverse-transpose / tangent sign / world-area Jacobian) through the
+	// virtual one-argument overload, so there is no window in which
+	// GetLocalTransformMatrix() or GetArea() still describes the PREVIOUS
+	// transform while GetFinalTransformMatrix() describes identity.  87 made
+	// the local matrix a first-class read (the CST transform commit uses it),
+	// so that window would be a live hazard rather than an academic one.
+	FinalizeTransformations();
 }
 
 void Transformable::ClearTransformStack( )
@@ -478,18 +485,48 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	// VERIFY the inverse rather than trusting a determinant epsilon:
 	// Matrix4Ops::Inverse returns its INPUT UNCHANGED when the determinant is
 	// zero, so a degenerate parent (`scale 0 1 1` anywhere up the chain) would
-	// otherwise hand back a "quotient" that is not an inverse at all and let
-	// WorldToLocal silently corrupt a committed transform.
+	// otherwise hand back a "quotient" that is not an inverse at all.
+	//
+	// The test is the COMPONENTWISE BACKWARD ERROR, |P*P^-1 - I| <= tol*|P|*|P^-1|
+	// (absolute-value matrices, ordinary product), not an absolute epsilon on
+	// the residual.  An absolute epsilon is not scale-invariant and gets this
+	// wrong in BOTH directions: the residual in an affine matrix's translation
+	// column grows like ||t||*eps, so a perfectly well-conditioned container at
+	// `position 1e7 0 0` with any rotation produces a residual near 1e-9 and
+	// would be declared singular, while a tiny near-singular linear part
+	// produces a small residual and would be accepted.  Normalising by
+	// |P|*|P^-1| is the standard backward-error form and is exactly
+	// scale-invariant; a truly singular P (where Inverse handed back its own
+	// input) fails it by construction, because the bound collapses to 0 wherever
+	// the corresponding entry of |P|*|P^-1| is 0.
 	m_mxParentWorldInv = Matrix4Ops::Inverse( m_mxParentWorld );
 	{
 		const Matrix4 shouldBeIdentity = m_mxParentWorld * m_mxParentWorldInv;
 		const Matrix4 identity = Matrix4Ops::Identity();
 		const Scalar* ip = &shouldBeIdentity._00;
 		const Scalar* ep = &identity._00;
+
+		// |P| * |P^-1|, componentwise-abs operands, ordinary matrix product.
+		// Written out against RISE's `_<col><row>` layout: the flat index of
+		// (col c, row r) is c*4 + r, and (A*B)[c][r] = sum_k A[k][r] * B[c][k].
+		const Scalar* pp = &m_mxParentWorld._00;
+		const Scalar* pi = &m_mxParentWorldInv._00;
+		double bound[16];
+		for( int c = 0; c < 4; ++c ) {
+			for( int r = 0; r < 4; ++r ) {
+				double acc = 0;
+				for( int k = 0; k < 4; ++k ) {
+					acc += std::fabs( static_cast<double>( pp[k * 4 + r] ) )
+					     * std::fabs( static_cast<double>( pi[c * 4 + k] ) );
+				}
+				bound[c * 4 + r] = acc;
+			}
+		}
+
 		m_bParentWorldInvertible = true;
 		for( int k = 0; k < 16; ++k ) {
 			const double d = static_cast<double>( ip[k] ) - static_cast<double>( ep[k] );
-			if( !( std::fabs( d ) <= 1e-9 ) ) {          // `!(<=)` also rejects NaN
+			if( !( std::fabs( d ) <= 1e-9 * bound[k] ) ) {   // `!(<=)` also rejects NaN
 				m_bParentWorldInvertible = false;
 				m_mxParentWorldInv = Matrix4Ops::Identity();
 				break;

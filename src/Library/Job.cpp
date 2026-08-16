@@ -5599,6 +5599,39 @@ static void RISE_API_CreateObjectOrContainer_( IObjectPriv** ppObject, const IGe
 	RISE_API_CreateObject( ppObject, pGeometry );
 }
 
+//! Is this object a 87 CONTAINER -- a pure transform node?  Distinguished from
+//! the OTHER null-geometry object in the tree, a CSGObject, whose shape comes
+//! from its two operands rather than from a geometry slot.  Nested CSG is
+//! supported, so "no geometry" on its own would wrongly reject an inner
+//! composite used as an operand.
+static bool IsContainerObject_( const IObjectPriv* obj )
+{
+	if( !obj ) return false;
+	if( obj->GetGeometry() ) return false;
+	return dynamic_cast<const Implementation::CSGObject*>( obj ) == 0;
+}
+
+//! Null out any surface binding named on a CONTAINER chunk, with one warning
+//! that names the object and the slots dropped.  Silently ignoring them would
+//! be worse: a container with an emissive `material` would look, in the scene
+//! text, exactly like a light that never lights anything.
+static void DropContainerSurfaceBindings_( const char* name, const bool bContainer,
+                                           IMaterial*& pMat, IRayIntersectionModifier*& pMod,
+                                           IShader*& pShaderObj, IPainter*& pRadPnt )
+{
+	if( !bContainer ) return;
+	if( !pMat && !pMod && !pShaderObj && !pRadPnt ) return;
+	GlobalLog()->PrintEx( eLog_Warning,
+		"Job:: object `%s` names no `geometry`, so it is a CONTAINER node -- a pure transform with no "
+		"surface.  Its %s%s%s%s binding(s) are IGNORED; put them on a child object that has geometry.",
+		name ? name : "(unnamed)",
+		pMat       ? "material "       : "",
+		pMod       ? "modifier "       : "",
+		pShaderObj ? "shader "         : "",
+		pRadPnt    ? "radiance_map "   : "" );
+	pMat = 0; pMod = 0; pShaderObj = 0; pRadPnt = 0;
+}
+
 //! Re-point an EXISTING object between the geometry-bearing and container
 //! forms.  Visibility is only touched when the form actually CHANGES: a
 //! re-pointed CSG operand is a geometry-bearing object that `Job::AddCSGObject`
@@ -5673,6 +5706,14 @@ bool Job::AddObject(
 	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );  // re-point swaps geometry (or clears it)
 	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );        // create binds geometry via the ctor
 
+	// A CONTAINER has no surface, so it takes no surface bindings.  Dropping
+	// them (loudly) rather than assigning them is what keeps "an object with
+	// null geometry and an emissive material" a csg_object-only shape -- the
+	// premise the agent's non-sampling-emitter audit is built on.  A container
+	// carrying an emissive material would be an emitter that no light sampler
+	// can ever sample, which is exactly the class that audit exists to catch.
+	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );
+
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 	if( pMat )       object->AssignMaterial( *pMat );
 	if( pMod )       object->AssignModifier( *pMod );
@@ -5739,6 +5780,8 @@ bool Job::AddObjectMatrix(
 	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
 	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );
 	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );
+
+	DropContainerSurfaceBindings_( name, bContainer, pMat, pMod, pShaderObj, pRadPnt );   // see AddObject
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 	if( pMat )       object->AssignMaterial( *pMat );
@@ -6179,6 +6222,21 @@ bool Job::AddCSGObject(
 	if( !pA ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A not found `%s`", objA ); return false; }
 	IObjectPriv* pB = pObjectManager->GetItem( objB );
 	if( !pB ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand B not found `%s`", objB ); return false; }
+	// 87: a CONTAINER (a `standard_object` with no `geometry`) is a pure
+	// transform, not a shape, so it cannot be a CSG operand -- the boolean has
+	// nothing to intersect.  Refuse rather than accept it: `AssignObjects`
+	// un-hides an OUTGOING operand on a re-point, which would flip a container
+	// to world-visible and leak a zero-area, zero-extent node into the TLAS and
+	// into every world-visible enumeration.
+	//
+	// "No geometry" alone is NOT the test.  A CSGObject also carries a null
+	// pGeometry -- its shape is synthesized from its own two operands -- and
+	// NESTED CSG is a supported, in-corpus construction
+	// (scenes/Tests/Geometry/csg_comprehensive.RISEscene's `csg_nested` takes
+	// `r3c_inner_csg` as an operand).  A container is the node that has neither
+	// geometry NOR operands.
+	if( IsContainerObject_( pA ) ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A `%s` is a container node (a transform with no geometry and no operands), not a shape", objA ); return false; }
+	if( IsContainerObject_( pB ) ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand B `%s` is a container node (a transform with no geometry and no operands), not a shape", objB ); return false; }
 	IMaterial* pMat = 0;
 	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Material not found `%s`", material ); return false; } }
 	IRayIntersectionModifier* pMod = 0;

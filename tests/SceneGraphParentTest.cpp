@@ -15,11 +15,12 @@
 //  reintroduces exactly the same hazard one level up.
 //
 //  Cases:
-//    A -- exact composed world matrices down a 3-level chain, and the LOCAL
+//    A -- exact composed world matrices down a 3-level chain, a ROTATED
+//         parent (which is what pins composition ORDER), and the LOCAL
 //         accessor still reporting the authored transform.
 //    B -- the three FinalizeTransformations caches under a composed matrix:
-//         world area (analytic), inverse-transpose (normal stays perpendicular
-//         to the world tangent plane), bounding box.
+//         world area (|det|^(2/3), analytic), inverse-transpose (the world
+//         normal against a closed-form ellipsoid normal), bounding box.
 //    C -- IDEMPOTENCE.  Re-composing, and re-deriving, must not compound.
 //         This is the 86 §3 bug class: that design pushed the parent matrix
 //         onto a transform stack that never self-clears, so every re-apply
@@ -29,6 +30,12 @@
 //         zero area, still composable and still parentable.
 //    E -- refusals: forward reference, self-parent, unknown parent, and
 //         2-/3-cycles at runtime reparent.
+//    G -- a LIVE edit re-composes the whole subtree, not only the node the
+//         editor was handed.
+//    H -- deleting a `parent` line actually DETACHES on an incremental apply.
+//    I -- a CSG operand is refused at both ends of a parent link.
+//    J -- the parent-invertibility test is scale-invariant: a well-conditioned
+//         container at x=1e7 is accepted, a collapsed scale is not.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -52,6 +59,7 @@
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/IGeometry.h"
+#include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
 
@@ -241,6 +249,43 @@ int main()
 	}
 
 	// =================================================================
+	// A5 -- a ROTATED parent.  Every other case here uses a translation-only
+	// or axis-aligned-scale parent, and those cannot distinguish a whole family
+	// of composition mistakes: composing the parent's rotation on the wrong
+	// side of the child's scale, transposing the linear part, or rotating the
+	// child's translation but not its basis.  With `spin` at 90 degrees about
+	// Z and a child one unit out along +X:
+	//   child world origin = Rz(90) * (1,0,0) = (0,1,0)
+	//   child world X basis = Rz(90) * (1,0,0) = (0,1,0)
+	//   child world Y basis = Rz(90) * (0,1,0) = (-1,0,0)
+	// =================================================================
+	const char* sRot = "sg_parent_rotated.RISEscene";
+	{
+		WriteScene( sRot,
+			"standard_object\n{\nname spin\norientation 0 0 90\n}\n"
+			"standard_object\n{\nname flag\nparent spin\ngeometry g\nmaterial m\nposition 1 0 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sRot ), "A5: rotated-parent scene loads" );
+		IObjectPriv* flag = Obj( *j, "flag" );
+		Check( flag != 0, "A5: child registered" );
+		if( flag ) {
+			const Matrix4 w = flag->GetFinalTransformMatrix();
+			Check( Close( Origin( w ).x, 0, 1e-12 ) && Close( Origin( w ).y, 1, 1e-12 )
+			    && Close( Origin( w ).z, 0, 1e-12 ),
+			       "A5: a 90-degree parent rotation carries the child's +X offset onto world +Y" );
+			// Column 0 of the world matrix is the image of the local +X axis.
+			Check( Close( w._00, 0, 1e-12 ) && Close( w._01, 1, 1e-12 ) && Close( w._02, 0, 1e-12 ),
+			       "A5: the child's BASIS is rotated too, not just its origin" );
+			Check( Close( w._10, -1, 1e-12 ) && Close( w._11, 0, 1e-12 ) && Close( w._12, 0, 1e-12 ),
+			       "A5: the child's +Y basis lands on world -X" );
+			Check( Close( flag->GetLocalTransformMatrix()._00, 1, 1e-12 ),
+			       "A5: the child's own LOCAL basis is still unrotated" );
+		}
+		j->release();
+		std::remove( sRot );
+	}
+
+	// =================================================================
 	// D -- container nodes.
 	// =================================================================
 	{
@@ -265,13 +310,24 @@ int main()
 	// =================================================================
 	// B2 -- inverse-transpose under a NON-UNIFORMLY scaled parent.
 	//
-	// A normal is transformed by (M^-1)^T, not by M, precisely so it stays
-	// perpendicular to the surface under anisotropic scaling.  With the
-	// parent scaling x by 3 and y by 1, a sphere's world surface is an
-	// ellipsoid and the two transforms differ.  The invariant checked is
-	// geometric and does not restate the implementation: the returned world
-	// normal must be perpendicular to BOTH world tangents.  Computing the
-	// inverse-transpose from the un-composed local matrix breaks it.
+	// A normal is transformed by (M^-1)^T, not by M, so it stays perpendicular
+	// to the surface under anisotropic scaling.  With the parent scaling x by
+	// 3, a unit-sphere child's world surface is the ellipsoid
+	// (px/3)^2 + py^2 + pz^2 = 1, whose outward normal at a surface point p is
+	// exactly normalize( px/9, py, pz ).  THAT is the oracle: a closed form
+	// that mentions only the world POSITION, and therefore cannot be satisfied
+	// by an inverse-transpose built from the wrong matrix.
+	//
+	// NOT an oracle, and the reason this comment is long: "the world normal is
+	// perpendicular to the world tangents" is an ALGEBRAIC IDENTITY here, not
+	// a test.  ComputeAnalyticalDerivatives transforms the tangents by M and
+	// the normal by (M^-1)^T, and
+	//     ((M^-1)^T n) . (M t) = n^T M^-1 M t = n . t = 0
+	// for ANY invertible M -- the composed one, the un-composed local one, or
+	// any other.  A perpendicularity check here is self-consistent by
+	// construction and discriminates nothing.  An earlier revision of this
+	// file asserted exactly that and claimed it caught the local-matrix bug;
+	// it did not, and the step-1 commit message repeated the claim.
 	// =================================================================
 	const char* sB = "sg_parent_aniso.RISEscene";
 	{
@@ -283,23 +339,49 @@ int main()
 		IObjectPriv* ball = Obj( *j, "ball" );
 		Check( ball != 0, "B2: child registered" );
 		if( ball ) {
-			bool anyEvaluated = false, allPerp = true, allUnit = true;
+			int evaluated = 0;
+			bool allMatchAnalytic = true, allUnit = true, anyDiscriminating = false;
+			Scalar worstErr = 0;
 			const Point2 uvs[4] = { Point2( 0.17, 0.31 ), Point2( 0.42, 0.63 ),
 			                        Point2( 0.71, 0.22 ), Point2( 0.88, 0.79 ) };
 			for( int i = 0; i < 4; ++i ) {
 				Point3 wp; Vector3 wn, dpdu, dpdv, dndu, dndv;
 				if( !ball->ComputeAnalyticalDerivatives( uvs[i], 0, wp, wn, dpdu, dpdv, dndu, dndv ) ) continue;
-				anyEvaluated = true;
-				const Scalar lu = Vector3Ops::Magnitude( dpdu );
-				const Scalar lv = Vector3Ops::Magnitude( dpdv );
-				if( lu > 1e-6 && !Close( Vector3Ops::Dot( wn, dpdu ) / lu, 0, 1e-7 ) ) allPerp = false;
-				if( lv > 1e-6 && !Close( Vector3Ops::Dot( wn, dpdv ) / lv, 0, 1e-7 ) ) allPerp = false;
+				++evaluated;
 				if( !Close( Vector3Ops::Magnitude( wn ), 1, 1e-7 ) ) allUnit = false;
+
+				// Closed-form ellipsoid normal at the RETURNED world point.
+				const Vector3 expect = Vector3Ops::Normalize(
+					Vector3( wp.x / Scalar( 9 ), wp.y, wp.z ) );
+				// The inward/outward sense is the geometry's business, not this
+				// test's -- compare up to sign.
+				const Scalar d = Scalar( std::fabs( static_cast<double>( Vector3Ops::Dot( wn, expect ) ) ) );
+				if( 1 - d > worstErr ) worstErr = 1 - d;
+				if( !Close( d, 1, 1e-7 ) ) allMatchAnalytic = false;
+
+				// Guard against a degenerate sample set: on the x=0 or yz=0
+				// axes the WRONG (local-matrix) normal coincides with the right
+				// one, so at least one sample must be off-axis enough to tell
+				// them apart.  normalize(px/3,py,pz) is what the wrong answer
+				// would be; require it to differ measurably somewhere.
+				const Vector3 wrong = Vector3Ops::Normalize(
+					Vector3( wp.x / Scalar( 3 ), wp.y, wp.z ) );
+				if( std::fabs( static_cast<double>( Vector3Ops::Dot( expect, wrong ) ) ) < 0.999 ) {
+					anyDiscriminating = true;
+				}
 			}
-			Check( anyEvaluated, "B2: the sphere answered the analytical-derivative query" );
-			Check( allPerp, "B2: the world normal stays perpendicular to both world tangents under a "
-			                "non-uniformly-scaled PARENT (inverse-transpose built from the COMPOSED matrix)" );
+			Check( evaluated == 4, "B2: the ellipsoid answered all four analytical-derivative queries" );
 			Check( allUnit, "B2: the world normal is unit length" );
+			Check( anyDiscriminating,
+			       "B2: at least one sample is off-axis enough that a local-matrix normal would differ "
+			       "(otherwise the next assertion would be vacuous)" );
+			if( !allMatchAnalytic ) {
+				std::cout << "    (B2 worst |1 - dot(n, analytic)| = "
+				          << static_cast<double>( worstErr ) << ")" << std::endl;
+			}
+			Check( allMatchAnalytic,
+			       "B2: the world normal equals the closed-form ellipsoid normal normalize(px/9, py, pz) -- "
+			       "the inverse-transpose is built from the COMPOSED matrix, not the local one" );
 
 			// Area under a non-uniform parent.  The composed determinant is 3
 			// (the child is identity, the parent scales x by 3), so the world
@@ -460,6 +542,182 @@ int main()
 		       "LOCAL matrix, so the parent was not applied twice" );
 		j->release();
 		std::remove( sE );
+	}
+
+	// =================================================================
+	// G -- a LIVE edit re-composes the SUBTREE, not just the edited node.
+	//
+	// SceneEditor::RunObjectInvariantChain finalizes the object it was handed.
+	// Under hierarchy that is not enough: every descendant is still holding the
+	// parent world it was last composed against, plus the three caches derived
+	// from it -- and the same function then invalidates the TLAS, which would
+	// rebuild from those stale boxes.
+	//
+	// Built through the API, NOT loaded from a scene file, deliberately: with a
+	// retained CST Document an object transform edit commits and re-derives at
+	// the edit boundary, and the re-derive's own compose would mask the bug.
+	// The un-masked case is real and reachable -- a mid-drag gizmo frame, an
+	// API/Blender/PRISE host, or any scene whose commit is refused -- and it is
+	// the one where the subtree stays detached for the rest of the session.
+	// =================================================================
+	{
+		Job* j = new Job();
+		const double white[3] = { 1, 1, 1 };
+		Check( j->AddUniformColorPainter( "p", white, "sRGB" ), "G: painter added" );
+		Check( j->AddLambertianMaterial( "m", "p" ), "G: material added" );
+		Check( j->AddSphereGeometry( "g", 1.0 ), "G: geometry added" );
+
+		const double zero[3] = { 0, 0, 0 };
+		const double one[3]  = { 1, 1, 1 };
+		const double up[3]   = { 0, 1, 0 };
+		RadianceMapConfig noMap;
+		Check( j->AddObject( "hub2", 0, 0, 0, 0, noMap, zero, zero, one, true, true ),
+		       "G: container added through the API (null geometry)" );
+		Check( j->AddObject( "kid", "g", "m", 0, 0, noMap, up, zero, one, true, true ),
+		       "G: child added" );
+		Check( j->SetObjectParent( "kid", "hub2" ), "G: link recorded" );
+		j->ComposeObjectHierarchy();
+
+		IObjectPriv* kid = Obj( *j, "kid" );
+		Check( kid && Close( Origin( kid->GetFinalTransformMatrix() ).x, 0 )
+		           && Close( Origin( kid->GetFinalTransformMatrix() ).y, 1 ),
+		       "G: kid starts at world (0,1,0)" );
+
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Object, String( "hub2" ) );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "6 0 0" ) ),
+		       "G: the PARENT's position edit applies" );
+		kid = Obj( *j, "kid" );
+		Check( kid && Close( Origin( kid->GetFinalTransformMatrix() ).x, 6 )
+		           && Close( Origin( kid->GetFinalTransformMatrix() ).y, 1 ),
+		       "G: the CHILD followed its parent to world (6,1,0) -- the live edit re-composed the subtree" );
+		j->release();
+	}
+
+	// =================================================================
+	// H -- REMOVING the `parent` line detaches.  The object chunk's Finalize
+	// runs again on an incremental re-apply, and if it only calls
+	// SetObjectParent when a parent is PRESENT, the old link survives an edit
+	// that deleted it: the object keeps rendering under a parent its own chunk
+	// no longer names, until a save and reload silently move it.
+	// =================================================================
+	{
+		const char* sH = "sg_parent_detach.RISEscene";
+		WriteScene( sH,
+			"standard_object\n{\nname anchor\nposition 9 0 0\n}\n"
+			"standard_object\n{\nname hanger\nparent anchor\ngeometry g\nmaterial m\nposition 0 2 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sH ), "H: scene loads" );
+		IObjectPriv* hanger = Obj( *j, "hanger" );
+		Check( hanger && Close( Origin( hanger->GetFinalTransformMatrix() ).x, 9 ),
+		       "H: hanger starts composed at x=9" );
+
+		// Remove the `parent` param through the ordinary incremental edit path.
+		const int rc = j->ApplyCstParamRemoveChecked( "hanger", "standard_object", "parent", 0 );
+		Check( rc != 0, "H: the `parent` param removal is accepted" );
+		hanger = Obj( *j, "hanger" );
+		Check( hanger && Close( Origin( hanger->GetFinalTransformMatrix() ).x, 0 )
+		              && Close( Origin( hanger->GetFinalTransformMatrix() ).y, 2 ),
+		       "H: removing the `parent` line DETACHES -- the object falls back to its own (0,2,0)" );
+		const IScene* scH = j->GetScene();
+		const IObjectManager* omH = scH ? scH->GetObjects() : 0;
+		Check( omH && std::string( omH->GetObjectParent( "hanger" ) ).empty(),
+		       "H: and the authored graph no longer records the link" );
+		j->release();
+		std::remove( sH );
+	}
+
+	// =================================================================
+	// I -- a CSG OPERAND is not a scene-graph node.  Its transform is
+	// interpreted in its csg_object's frame, not the world's, so parenting in
+	// either direction would place things in a frame nobody asked for.
+	// =================================================================
+	{
+		const char* sI = "sg_parent_csg.RISEscene";
+		WriteScene( sI,
+			"standard_object\n{\nname opA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname opB\ngeometry g\nmaterial m\nposition 0.5 0 0\n}\n"
+			"csg_object\n{\nname cut\nobja opA\nobjb opB\noperation union\nmaterial m\n}\n"
+			"standard_object\n{\nname perch2\nposition 3 0 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sI ), "I: csg scene loads" );
+		Check( !j->SetObjectParent( "opA", "perch2" ),
+		       "I: a CSG operand cannot take a parent" );
+		Check( !j->SetObjectParent( "perch2", "opB" ),
+		       "I: nothing can be parented TO a CSG operand" );
+		// The csg_object ITSELF is a world-visible node and IS parentable.
+		Check( j->SetObjectParent( "cut", "perch2" ),
+		       "I: the csg_object itself is an ordinary scene-graph node" );
+		// And a container is still refused as a CSG operand -- but "no
+		// geometry" alone must NOT be the test, because a CSGObject has none
+		// either and NESTED CSG (an inner composite as an operand) is a
+		// supported construction the corpus actually uses.
+		const IScene* scI = j->GetScene();
+		const IObjectManager* omI = scI ? scI->GetObjects() : 0;
+		Check( omI && omI->GetItem( "nested" ) == 0, "I: `nested` not yet present" );
+		RadianceMapConfig noMapI;
+		const double zeroI[3] = { 0, 0, 0 };
+		Check( j->AddCSGObject( "nested", "cut", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		       "I: a csg_object may take another csg_object as an operand (nested CSG still works)" );
+		Check( !j->AddCSGObject( "bad", "perch2", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		       "I: a CONTAINER is refused as a CSG operand (it is a transform, not a shape)" );
+		j->release();
+		std::remove( sI );
+	}
+
+	// =================================================================
+	// J -- the parent-invertibility test must be SCALE-INVARIANT.
+	//
+	// It exists to catch the one documented failure mode of Matrix4Ops::Inverse
+	// (it returns its INPUT at zero determinant), and it decides whether a
+	// world-space editor op can be expressed in the node's local frame.  An
+	// ABSOLUTE epsilon on |P*P^-1 - I| gets it wrong in both directions,
+	// because the residual in an affine matrix's translation column grows like
+	// ||t||*eps: a perfectly well-conditioned container far from the origin
+	// would be declared singular (and its children's world-space edits then
+	// composed with an extra parent factor -- a teleport), while a tiny
+	// near-singular linear part would sail through.  The committed test is the
+	// componentwise backward error, which is exactly scale-invariant.
+	// =================================================================
+	{
+		// Swept over five decades rather than pinned to one distance: the
+		// property under test is SCALE-INVARIANCE, and any single distance is
+		// just a threshold this machine's arithmetic happens to sit under.
+		const char* kDistances[5] = { "1000", "100000", "10000000", "1000000000", "100000000000" };
+		for( int d = 0; d < 5; ++d ) {
+			const char* sJ = "sg_parent_farfield.RISEscene";
+			WriteScene( sJ,
+				std::string( "standard_object\n{\nname faraway\nposition " ) + kDistances[d] +
+				" 0 0\norientation 0 0 40\n}\n"
+				"standard_object\n{\nname speck\nparent faraway\ngeometry g\nmaterial m\nposition 0 1 0\n}\n" );
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( sJ );
+			IObjectPriv* speck = loaded ? Obj( *j, "speck" ) : 0;
+			if( !( speck && speck->IsParentWorldInvertible() ) ) {
+				std::cout << "    (J: rejected at distance " << kDistances[d] << ")" << std::endl;
+			}
+			Check( speck && speck->IsParentWorldInvertible(),
+			       "J: a rotated container remains INVERTIBLE at every distance decade "
+			       "(an absolute residual epsilon rejects the far ones)" );
+			j->release();
+			std::remove( sJ );
+		}
+	}
+	{
+		// The genuinely degenerate case must still be caught.
+		const char* sK = "sg_parent_degenerate.RISEscene";
+		WriteScene( sK,
+			"standard_object\n{\nname flattened\nscale 0 1 1\n}\n"
+			"standard_object\n{\nname onit\nparent flattened\ngeometry g\nmaterial m\nposition 0 1 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sK ), "J: degenerate-parent scene loads" );
+		IObjectPriv* onit = Obj( *j, "onit" );
+		Check( onit && !onit->IsParentWorldInvertible(),
+		       "J: a collapsed parent scale IS reported non-invertible" );
+		Check( onit && Close( onit->GetArea(), 0 ),
+		       "J: and the child's world area collapses to zero, so it is never area-sampled" );
+		j->release();
+		std::remove( sK );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

@@ -2432,10 +2432,19 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
 					if( obj ) {
 						// LOCAL (87): this anchor is fed to SceneEdit::ScaleObjectFromAnchor,
-					// whose Apply does `anchor * Stretch(factor)` and installs the result as
-					// the object's LOCAL transform.  A world anchor would bake the parent's
-					// transform into the child on the first scale drag.
-					mGizmoDrag.dragStartMatrix = obj->GetLocalTransformMatrix();
+						// whose Apply does `anchor * Stretch(factor)` and installs the result
+						// as the object's LOCAL transform.  A world anchor would bake the
+						// parent's transform into the child on the first scale drag.
+						//
+						// KNOWN, and unchanged by 87: `factor` is derived from screen motion
+						// against WORLD-projected handles, while the stretch is applied on the
+						// right, i.e. along the object's LOCAL axes.  Under a rotated or
+						// non-uniformly-scaled frame the object therefore does not track the
+						// pointer exactly.  That is the pre-87 behaviour for an object with
+						// its OWN rotation; hierarchy merely adds ancestors as a second source
+						// of the same mismatch.  Reconciling the scale gizmo with a
+						// parent-relative frame belongs with the tree UI (87 section 5 step 4).
+						mGizmoDrag.dragStartMatrix = obj->GetLocalTransformMatrix();
 						// Capture exact stack representation and authoritative metadata
 						// so undo restores subsequent Push/Pop and setter semantics.
 						mGizmoDrag.dragStartStateValid = false;
