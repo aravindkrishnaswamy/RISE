@@ -2809,6 +2809,29 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 
+		// 87: the container rule holds on the UNDO path too, and it must sit
+		// ABOVE the CST routing below -- that routing RETURNS, so a gate placed
+		// after it would be dead on every retained-CST scene, i.e. on the
+		// dominant GUI/agent edit model.  The forward path gates on both its
+		// arms; so does this.  Without it, undoing a binding edit on an object
+		// that has since become a container writes the prior binding back into
+		// the container's chunk and reports SUCCESS: no bad live state (the
+		// derive drops it), but a Document permanently carrying a param that can
+		// never take effect and warns on every load.
+		//
+		// A BIND is refused; a CLEAR is always allowed, so a stale binding can
+		// still be undone off a container.
+		if( IsContainerNodeForEdit_( *obj )
+		 && IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
+		 && !edit.prevBindingWasNull
+		 && edit.prevPropertyValue.size() > 1
+		 && edit.prevPropertyValue != String( "none" ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor:: cannot restore a surface binding onto `%s` -- it is now a container node "
+				"(no geometry); the undo is PARTIAL", edit.objectName.c_str() );
+			return false;
+		}
+
 		// P5 Slice 3 expansion (object): CST-route the INVERSE per-op object edit too (replays the PREV value
 		// through the same CST path), so undo stays Document-consistent.  A cleared prior binding routes "none"
 		// (the standard_object unbind sentinel the load-time parser honours: material/shader/interior "none" == 0).
@@ -2845,23 +2868,6 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// success while the edited binding stays live.  Transform ops restore from
 		// the captured matrix and always succeed.
 		bool restored = true;
-		// 87: the container rule holds on the UNDO path too.  The forward gates
-		// mean this state can no longer be CREATED, so a revert can only
-		// re-create it from a capture taken before those gates existed, or from
-		// an edit sequence that turned a leaf into a container in between.
-		// Narrow -- but this arc's whole lesson is that a rule applied at some
-		// sites and not others is the shape the defects take, so it is applied
-		// here as well.  A CLEAR is always allowed; only a BIND is refused.
-		if( IsContainerNodeForEdit_( *obj )
-		 && IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
-		 && !edit.prevBindingWasNull
-		 && edit.prevPropertyValue.size() > 1
-		 && edit.prevPropertyValue != String( "none" ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor:: cannot restore a surface binding onto `%s` -- it is now a container node "
-				"(no geometry); the undo is PARTIAL", edit.objectName.c_str() );
-			return false;
-		}
 		switch( edit.op ) {
 		case SceneEdit::SetObjectMaterial:
 			if( edit.prevBindingWasNull ) {
@@ -3220,15 +3226,21 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			// it with a warning on this and every later derive, and the edit
 			// would report SUCCESS -- leaving the Document permanently carrying
 			// a param that can never take effect.
-			// CLEARING an interior medium stays allowed, matching the direct-mutate
-			// arm below: an object that BECAME a container can be tidied up, and
-			// refusing the clear would be refusing to remove exactly the binding
-			// this gate exists to keep off it.
-			const bool clearingMedium = ( edit.op == SceneEdit::SetObjectInteriorMedium )
-			                         && ( edit.propertyValue.size() <= 1
-			                           || edit.propertyValue == String( "none" ) );
+			// CLEARING stays allowed: an object that BECAME a container can be
+			// tidied up, and refusing the clear would refuse the one edit that
+			// removes the stale line the derive warns about on every load.
+			//
+			// On THIS route `"none"` is the unbind sentinel for material and
+			// shader as well as for the medium -- it is what the revert path a
+			// few hundred lines up writes, and what the load-time parser honours
+			// (`material=="none" ? 0 : ...`).  That is route-specific: on the
+			// direct-mutate arm below, `"none"` resolves through the manager to
+			// the REGISTERED `none` material, which is a real bind and is
+			// correctly refused there.
+			const bool clearingBinding =
+				( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) );
 			if( IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
-			 && !clearingMedium
+			 && !clearingBinding
 			 && IsContainerNodeForEdit_( *obj ) ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"SceneEditor:: `%s` is a container node (no geometry), so it takes no surface binding; "

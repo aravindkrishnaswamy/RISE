@@ -6231,12 +6231,11 @@ bool Job::SetObjectInteriorMedium(
 	}
 
 	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
-	// derive refuses this (DropContainerSurfaceBindings_) and so does the
-	// editor, but THESE are the API the non-CST embedding binds through -- and
-	// the shipped console command `modify object <name> interior_medium <name2>` routes
-	// straight here.  Without the gate, "a container never carries a material"
-	// -- the premise the agent's non-sampling-emitter audit is written against
-	// -- was true of AddObject and false of this.
+	// derive refuses this (the parser skips `interior_medium` for a container)
+	// and so does the editor, but THIS is the API the non-CST embedding binds
+	// through.  (No console form reaches here -- `modify object` supports only
+	// `material` and `shader` -- but IJob is public surface and the sibling
+	// setters ARE console-reachable, so the rule holds at all three.)
 	if( IsContainerObject_( pObj ) ) {
 		GlobalLog()->PrintEx( eLog_Error,
 			"Job::SetObjectInteriorMedium:: `%s` is a container node (no geometry), so it takes no interior medium (no surface means no interior to be inside of); "

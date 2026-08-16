@@ -53,6 +53,8 @@
 //    S -- `rect_light` / `shape_light` compose against a parent.
 //    T -- the container binding refusal holds at the IJob layer, which is the
 //         one the non-CST hosts and the console command bind through.
+//    U -- and on the UNDO path, above the CST routing (which returns, so a
+//         gate below it is dead on every retained-CST scene).
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -71,6 +73,7 @@
 #include <cmath>
 
 #include "../src/Library/Job.h"
+#include "../src/Library/Cst/Cst.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Scene.h"
@@ -83,6 +86,7 @@
 #include "../src/Library/Interfaces/IObjectPriv.h"
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/Interfaces/IJob.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
 #include "../src/Library/Utilities/FiniteMath.h"
@@ -1427,6 +1431,148 @@ int main()
 		       "T: and that binding really took effect" );
 		j->release();
 		std::remove( sT2 );
+	}
+
+	// =================================================================
+	// U -- the container rule on the UNDO path.
+	//
+	// ApplyRevertMutation restores a CAPTURED prior binding, so it is a fourth
+	// place a material can land on an object -- and the forward gates cannot
+	// stop it, because the capture predates them.  Reachable when an edit
+	// sequence turns a leaf into a container between the bind and the undo.
+	//
+	// The gate has to sit ABOVE the CST routing: that routing RETURNS, so a
+	// check placed after it is dead on every retained-CST scene, which is the
+	// dominant GUI/agent edit model.  This case therefore drives a CST-loaded
+	// scene deliberately -- an API-built one would pass either way.
+	// =================================================================
+	{
+		const char* sU2 = "sg_parent_undo_bind.RISEscene";
+		WriteScene( sU2,
+			"scene_variant\n{\nname night\n}\n"
+			"uniformcolor_painter\n{\nname p3\ncolor 1 0 0\n}\n"
+			"lambertian_material\n{\nname m3\nreflectance p3\n}\n"
+			"standard_object\n{\nname morph\ngeometry g\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sU2 ), "U: scene loads (retained CST document)" );
+		Check( j->HasRetainedCstDocument(),
+		       "U: (sanity) the scene really does have a retained CST Document, so the CST routing arm "
+		       "is the one under test" );
+
+		SceneEditController c( *j, 0 );
+		c.SetSelection( Cat::Object, String( "morph" ) );
+		// 1. Bind a different material while the object is still a LEAF.
+		Check( c.SetPropertyForCategory( Cat::Object, String( "material" ), String( "m3" ) ),
+		       "U: the material edit applies while the object still has geometry" );
+		// 2. Turn it into a CONTAINER by removing its `geometry` line.  This has
+		//    to go through the Job primitive: the editor's own edit vocabulary
+		//    has no "clear geometry" op (SceneEdit::SetObjectGeometry only ever
+		//    binds a NAMED geometry), so a container can only be made by
+		//    removing the param from the Document.
+		const int rc = j->ApplyCstParamRemoveChecked( "morph", "standard_object", "geometry", 0 );
+		Check( rc != 0, "U: the geometry removal is accepted" );
+		// A code >=2 removal is a D2: it ClearAll'd and rebuilt the Scene and
+		// every manager, so the editor's BORROWED mScene / manager pointers now
+		// dangle.  Production never has to think about this because the
+		// removal goes through SceneEditor::RouteCstParamRemove_, which calls
+		// RebindToJob_ on >=2.  This test calls the Job primitive underneath
+		// that, so it owes the same rebind by hand -- otherwise the very next
+		// FindObject reads a freed Scene (observed: a jump through a garbage
+		// vptr, layout-dependent, so it survived instrumentation).
+		{
+			IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) );
+			Check( jp != 0, "U: (sanity) the Job exposes its private interface for the rebind" );
+			if( jp ) {
+				if( IScenePriv* sc = jp->GetScene() ) c.Editor().RebindScene( *sc );
+				c.Editor().SetMaterialManager( jp->GetMaterials() );
+				c.Editor().SetShaderManager( jp->GetShaders() );
+				c.Editor().SetPainterManager( jp->GetPainters() );
+				c.Editor().SetScalarPainterManager( jp->GetScalarPainters() );
+			}
+		}
+		IObjectPriv* morph = Obj( *j, "morph" );
+		Check( morph && morph->GetGeometry() == 0,
+		       "U: the object is now a container" );
+		// 3. UNDO the material edit.  Its captured prior value is a real
+		//    material name, and the object it would land on is now a container.
+		c.Undo();
+		morph = Obj( *j, "morph" );
+		Check( morph && morph->GetGeometry() == 0,
+		       "U: (sanity) still a container after the undo" );
+		Check( morph && morph->GetMaterial() == 0,
+		       "U: the undo left no material on the live container" );
+
+		// THE DECIDING OBSERVABLE IS THE DOCUMENT, not the live object.  On this
+		// route the derive drops a container's material either way
+		// (DropContainerSurfaceBindings_), so live state cannot tell a refused
+		// undo from an accepted one.  What the gate prevents is a `material`
+		// line being written into the container's chunk -- a param that can
+		// never take effect and warns on every later load.  So read the text.
+		// Read `morph`'s chunk out of the serialized Document, and the value of a
+		// named param within it.
+		//
+		// The param reader is deliberately line-exact rather than a substring
+		// probe.  The chunk text ends immediately BEFORE its closing brace, so
+		// its last param line carries no trailing newline -- the first draft of
+		// this case tested `chunk.find( "material m\n" )`, which therefore never
+		// matched, and the case passed with the revert gate deleted outright.
+		auto ChunkOf = []( const RISE::Cst::Document& d, const char* objName ) -> std::string {
+			const std::string text = RISE::Cst::SerializeCst( d );
+			const std::string key  = std::string( "name " ) + objName;
+			const size_t at = text.find( key );
+			if( at == std::string::npos ) return std::string();
+			const size_t end = text.find( "\n}", at );
+			return text.substr( at, ( end == std::string::npos ? text.size() : end ) - at );
+		};
+		auto ParamValue = []( const std::string& chunk, const char* key ) -> std::string {
+			const std::string needle = std::string( "\n" ) + key + " ";
+			std::string out;
+			size_t p = chunk.find( needle );
+			while( p != std::string::npos ) {
+				const size_t vs = p + needle.size();
+				const size_t ve = chunk.find( '\n', vs );
+				out = chunk.substr( vs, ( ve == std::string::npos ? chunk.size() : ve ) - vs );
+				p = chunk.find( needle, vs );
+			}
+			return out;
+		};
+
+		const RISE::Cst::Document* doc = j->GetCstDocument();
+		Check( doc != 0, "U: the Document is retained" );
+		if( doc ) {
+			const std::string chunk = ChunkOf( *doc, "morph" );
+			Check( !chunk.empty(), "U: found the object's chunk in the Document" );
+			// The chunk still carries `material m3` -- written back in step 1,
+			// while the object was still a leaf, which was a legitimate edit.
+			// What the gate must prevent is the UNDO overwriting it with
+			// `material m`: a NEW binding written onto something that is a
+			// container now.  So the test is that the value is UNCHANGED, not
+			// that the line is absent -- the gate's job is to not make it worse,
+			// and the CLEAR exemption below is what lets the author remove it.
+			const std::string mat = ParamValue( chunk, "material" );
+			if( mat != "m3" ) std::cout << "    (U: chunk text was:\n" << chunk << "\n)" << std::endl;
+			Check( mat == "m3",
+			       "U: the refused undo wrote NOTHING to the Document -- the container's chunk still "
+			       "carries the binding it had, not the restored one" );
+		}
+
+		// And the CLEAR is still allowed on a container, so the stale line CAN
+		// be removed.  Refusing this would refuse the one edit that fixes the
+		// warning every later derive emits.
+		c.SetSelection( Cat::Object, String( "morph" ) );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "material" ), String( "none" ) ),
+		       "U: an explicit CLEAR is accepted on a container, so a stale binding can be removed" );
+		{
+			const RISE::Cst::Document* doc2 = j->GetCstDocument();
+			Check( doc2 != 0, "U: (sanity) the Document survived the clear" );
+			if( doc2 ) {
+				const std::string mat2 = ParamValue( ChunkOf( *doc2, "morph" ), "material" );
+				Check( mat2 != "m3",
+				       "U: and the stale `material m3` binding is gone from the Document" );
+			}
+		}
+		j->release();
+		std::remove( sU2 );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;
