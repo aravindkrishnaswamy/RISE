@@ -267,10 +267,17 @@ error and must be corrected.
      threshold — r72 correcting r71's mistaken selection of the
      spontaneous-route 873 K; the [899 K, 900 K] band governs the
      quiescent unit fixture only, where it catches r64-class map defects)
-     and at or below the 900 K command ceiling, first sustained heat
-     release inside the 1·t_ft pilot window, and conservation ledgers
-     closed to fp64 reduction tolerance. A gate's value must derive from
-     the function the gated object serves. Requiring the coupled step to reproduce the
+     first sustained heat release inside the 1·t_ft pilot window, and
+     conservation ledgers closed to fp64 reduction tolerance. The 900 K
+     ceiling constrains the PILOT, not the accepted state (r73): the
+     pilot's per-cell ledgered increment never exceeds the energy to reach
+     exactly 900 K at fixed composition and is exactly zero for cells at
+     or above 900 K — gated on the bit-exact pilot ledger per cell per
+     step; accepted mask cells may exceed 900 K once chemistry ignites
+     (production's temperature ceiling is the physicality bound). The
+     accepted-state ≤ 900 K check lives only in the quiescent unit
+     fixture. A gate's value must derive from the function the gated
+     object serves. Requiring the coupled step to reproduce the
      isolated-map endpoint to the r60 envelope is explicitly NOT a
      requirement (r66): coupling-order deviations are genuine, bounded,
      non-accumulating physics of a projection map in company.

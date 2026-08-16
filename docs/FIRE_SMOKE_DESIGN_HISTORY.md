@@ -1741,3 +1741,23 @@ it was already tried and refuted here.
   gated object serves. The agent's conduct — no tolerance change, no
   timestep change, no floor change without ruling — remains exactly
   right.
+
+- **r73 (2026-08-16):** ceiling measurement point, from the tier-6
+  stop where pilot-to-900 superposed with same-packet ignition
+  (combustion 6.85 MW/m³) carried mask cell (24,29,0) to 910.8 K
+  against the r66 "accepted ≤ 900 K" ceiling. The map was behaving
+  exactly as pinned (beginning 858 K < 900, capped increment
+  19094 J/m³); the gate was measuring the wrong object — the same
+  error class as r71/r72, on the ceiling side. r58's thermostat is
+  and always was a constraint on the PILOT (a pilot never superheats
+  products), not on what chemistry does on top: a flame in the ring
+  exceeding 900 K is physical and bounded by T_ad and the 2300 K
+  physicality gate. Corrected: the ceiling is gated on the bit-exact
+  pilot ledger (per-cell increment ≤ energy-to-reach-900, exactly
+  zero at ≥900 K); the accepted-state ≤900 check lives only in the
+  quiescent fixture; production's temperature ceiling is the
+  physicality bound. This is the final owner ruling of the
+  one-stop-one-ruling era: design-amendment authority for capstone
+  completion is delegated to the implementation agent by the r73
+  charter (recorded in the continuation prompt), with owner-locked
+  invariants listed there.

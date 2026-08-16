@@ -857,8 +857,19 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     gated object serves.** Observed hold minimum clears the corrected
     floor by ~271 K, and the worst-case bound closes structurally:
     accepted T ≥ 900 − C·(900 − 300) with the advective CFL pinning
-    C ≤ ½ meets 600 K exactly at the degenerate extreme. The 900 K
-    command ceiling is unchanged.
+    C ≤ ½ meets 600 K exactly at the degenerate extreme. **Ceiling
+    corrected by r73 — it constrains the PILOT, not the accepted
+    state:** once chemistry ignites inside the ring, pilot-to-900
+    superposed with combustion legitimately carries a mask cell past
+    900 K (bounded by T_ad and the 2300 K physicality gate); r58's
+    thermostat is a map invariant — the pilot's per-cell ledgered
+    increment never exceeds the energy to reach exactly 900 K at
+    fixed composition and is exactly zero for cells at or above
+    900 K — gated on the bit-exact pilot ledger, per cell, per step.
+    The accepted-state ≤ 900 K check lives only in the quiescent
+    unit fixture (no chemistry there); production's temperature
+    ceiling is the physicality bound (T_max < 2300 K), as it always
+    was for every other cell.
     (iii) The functional production gate remains ignition itself:
     first sustained heat release inside the 1·t_ft pilot window.
     `pilotApproachComplete` / `pilotHoldBandObserved` diagnostics
