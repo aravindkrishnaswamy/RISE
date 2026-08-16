@@ -154,6 +154,41 @@ session-only element ledger — is replaced by real parent links.
   intervals) — it cannot be flattened away. Its operands SHOULD become
   visible as children in the UI tree.
 
+### A creation rule is not a history rule
+
+The container rule — "a node with no `geometry` takes no surface binding" — is
+enforced on every FORWARD path: the derive, the `IJob` setters, the editor's
+forward mutation, the agent param commit, the agent chunk insert. It is
+**deliberately absent from Undo and Redo**, and that asymmetry is the design,
+not an oversight.
+
+Two review rounds added a gate to `SceneEditor::ApplyRevertMutation`. The second
+was wrong in a way that cost the user their scene:
+
+1. `set_param(O, geometry, none)` — permitted; `geometry` is not a binding. `O`
+   becomes a container, the derive warns and drops its material, the Document
+   still carries it.
+2. `set_param(O, material, none)` — permitted, deliberately: a container that
+   acquired a stale binding has to stay tidyable.
+3. Cmd-Z. The gated revert refused. `PopForUndo` had already moved the record,
+   so it was pushed back — and every later Cmd-Z re-popped and re-failed. Step 1
+   and everything older became permanently unreachable.
+
+A refused revert wedges the undo stack with no escape (unlike Redo, which any
+new edit clears). And what the gate refuses is not the creation of a novel
+state: it is the RESTORATION of a document state that existed moments earlier,
+one the derive already tolerates — warn, drop the binding, carry on — because
+that is the contract for every scene file ever authored.
+
+The alternative considered and rejected was an "honest partial": skip the write
+but let the undo consume its record. That avoids the wedge but makes undo
+LOSSY — undoing further to restore the `geometry` would then leave the object a
+leaf with no material, when the authored scene had one. Undo must be lossless.
+
+Regression guards: `SceneGraphParentTest` cases U, V step 5, and W (W drives
+the exact three-step sequence above and asserts two Cmd-Zs return the scene to
+what was authored, live material included).
+
 ### Known, accepted, NOT fixed by step 1
 
 - **An interactive edit rebases an ANIMATED parent's subtree, permanently for

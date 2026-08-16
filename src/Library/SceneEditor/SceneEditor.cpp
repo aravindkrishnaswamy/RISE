@@ -883,30 +883,6 @@ bool IsContainerNodeForEdit_( const IObjectPriv& obj )
 	return dynamic_cast<const Implementation::CSGObject*>( &obj ) == 0;
 }
 
-//! 87: would writing `value` into `param` on the entity named `name` BIND a
-//! surface binding onto a CONTAINER node?  The agent-param Undo and Redo arms
-//! replay a captured value through the raw CST route, which has no gate of its
-//! own -- so undoing an ALLOWED clear (`material none` on a container, which
-//! the forward gate deliberately permits) would otherwise write the prior
-//! binding straight back onto it.  The forward direction refusing while the
-//! inverse does not is worse than neither gating: it makes the pair
-//! inconsistent.
-//!
-//! `kind` narrows the lookup the same way the agent path does.  A non-empty
-//! kind that is not `standard_object` is never an object, so it is skipped --
-//! otherwise a shaderop and an object sharing a name would let a legitimate
-//! `shader` edit on the shaderop be refused because the OBJECT of that name is
-//! a container.  An EMPTY kind that resolves ambiguously is rejected by the
-//! Document lookup downstream anyway.
-static bool AgentParamWouldBindOnContainer_(
-	const IObjectPriv* obj, const String& kind, const String& param, const String& value )
-{
-	if( !obj ) return false;
-	if( kind.size() > 1 && kind != String( "standard_object" ) ) return false;
-	if( !RISE::IsObjectSurfaceBindingParamName( param ) ) return false;
-	if( value.size() <= 1 || value == String( "none" ) ) return false;   // a CLEAR is always allowed
-	return IsContainerNodeForEdit_( *obj );
-}
 
 
 //! Apply a WORLD-space operation `worldOp` to an object whose transform stack
@@ -2830,6 +2806,41 @@ bool SceneEditor::Undo()
 	return true;
 }
 
+// 87 -- A CREATION RULE MUST NOT BE APPLIED TO A HISTORY REPLAY.
+//
+// The container rule ("a node with no geometry takes no surface binding") is
+// enforced on every FORWARD path: the derive, the IJob setters, this editor's
+// forward mutation, the agent param commit, the agent chunk insert.  It is
+// deliberately NOT enforced here, nor on the Redo path.  Two review rounds put
+// a gate on this function; both were wrong, and the second was wrong in a way
+// that cost the user their scene:
+//
+//   1. `set_param(O, geometry, none)`  -- O becomes a container; the derive
+//      warns and drops its material, but the DOCUMENT still carries it.
+//   2. `set_param(O, material, none)`  -- permitted, deliberately: a container
+//      that acquired a stale binding must stay tidyable.
+//   3. Cmd-Z.  The gated revert refused, so PopForUndo's record was pushed
+//      BACK onto the undo stack -- and every later Cmd-Z re-popped it and
+//      re-failed.  Step 1 and everything OLDER than it became permanently
+//      unreachable.  The user could not get back to the scene they authored.
+//
+// A refused revert wedges the undo stack; there is no escape, because unlike
+// the redo direction no new edit clears it.  And the thing being refused is
+// not the creation of a novel state -- it is the RESTORATION of a document
+// state that existed moments earlier, one the derive already knows how to
+// tolerate (warn, drop the binding, carry on) because that is the contract for
+// every scene file ever authored.  Trading a cosmetic load-time warning for an
+// unrecoverable history is the wrong trade.
+//
+// The alternative considered and rejected: skip the write but let the undo
+// consume its record ("honest partial", which this file uses elsewhere when a
+// captured dependency has vanished).  That avoids the wedge but makes undo
+// LOSSY -- undoing further to restore the `geometry` would then leave the
+// object a leaf with no material, when the authored scene had one.  Undo must
+// be lossless.
+//
+// So: the forward gates stop the agent CREATING this state.  History replay is
+// exempt.  Do not add a gate here.
 bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 {
 
@@ -2853,28 +2864,9 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 
-		// 87: the container rule holds on the UNDO path too, and it must sit
-		// ABOVE the CST routing below -- that routing RETURNS, so a gate placed
-		// after it would be dead on every retained-CST scene, i.e. on the
-		// dominant GUI/agent edit model.  The forward path gates on both its
-		// arms; so does this.  Without it, undoing a binding edit on an object
-		// that has since become a container writes the prior binding back into
-		// the container's chunk and reports SUCCESS: no bad live state (the
-		// derive drops it), but a Document permanently carrying a param that can
-		// never take effect and warns on every load.
-		//
-		// A BIND is refused; a CLEAR is always allowed, so a stale binding can
-		// still be undone off a container.
-		if( IsContainerNodeForEdit_( *obj )
-		 && IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
-		 && !edit.prevBindingWasNull
-		 && edit.prevPropertyValue.size() > 1
-		 && edit.prevPropertyValue != String( "none" ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor:: cannot restore a surface binding onto `%s` -- it is now a container node "
-				"(no geometry); the undo is PARTIAL", edit.objectName.c_str() );
-			return false;
-		}
+		// 87 -- DELIBERATELY NO CONTAINER GATE HERE.  See the block comment
+		// above ApplyRevertMutation for why a creation rule must not be
+		// applied to a history replay.
 
 		// P5 Slice 3 expansion (object): CST-route the INVERSE per-op object edit too (replays the PREV value
 		// through the same CST path), so undo stays Document-consistent.  A cleared prior binding routes "none"
@@ -3160,17 +3152,6 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// the GUI's ungated fast path here (Model-B F5's agent chunk-CRUD verbs can mutate the Document between
 		// this edit's original Apply and this Undo without leaving an mHistory record to invalidate).
 		if( !mJob ) return false;
-		// 87: the inverse of a permitted CLEAR is a BIND.  Refuse it on a
-		// container, exactly as the forward agent gate does -- see
-		// AgentParamWouldBindOnContainer_.
-		if( AgentParamWouldBindOnContainer_( FindObject( edit.objectName ), edit.cstEntityKind,
-		                                     edit.propertyName, edit.prevPropertyValue ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor:: cannot restore `%s %s` onto `%s` -- it is a container node (no geometry), "
-				"so it takes no surface binding; the undo is PARTIAL",
-				edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), edit.objectName.c_str() );
-			return false;
-		}
 		const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
 		bool diagnosed = false;
 		// P1-2 fix (round 1): occ=0 -- the agent path's fixed occ convention (ApplyAgentParamEdit always
@@ -3586,19 +3567,6 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// that helper's doc for why an agent-originated edit cannot safely
 		// share the GUI property panel's ungated fast path here.
 		if( !mJob ) return false;
-		// 87: same gate as the Undo arm and the forward agent commit.  A Redo
-		// replays the FORWARD value, which the forward gate already vetted --
-		// but the object can have BECOME a container in between (an agent
-		// `geometry none` edit, or a GUI geometry removal), so the vetting does
-		// not carry over.
-		if( AgentParamWouldBindOnContainer_( FindObject( edit.objectName ), edit.cstEntityKind,
-		                                     edit.propertyName, edit.propertyValue ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor:: cannot re-apply `%s %s` onto `%s` -- it is now a container node (no geometry), "
-				"so it takes no surface binding; the redo is REFUSED",
-				edit.propertyName.c_str(), edit.propertyValue.c_str(), edit.objectName.c_str() );
-			return false;
-		}
 		{
 			bool diagnosed = false;
 			if( !RouteCstParamEditChecked_( edit.objectName.c_str(),

@@ -78,9 +78,9 @@ IObjectPriv* Object::CloneFull()
 	// 87: same container handling as CloneSnapshot -- a container has no
 	// geometry, and Object(const IGeometry*) logs a source ERROR for a null
 	// one.  World visibility is copied rather than left at the ctor's `true`:
-	// a clone that came out VISIBLE with null geometry is the exact fingerprint
-	// ObjectManager::SetObjectParent reads as "CSG operand", so such a clone
-	// would be refused a parent with a diagnostic naming the wrong cause.
+	// a container is created HIDDEN (see RISE_API_CreateObjectOrContainer_), so
+	// a clone that came out visible with null geometry would enter every
+	// world-visible enumeration containers are deliberately kept out of.
 	// (Both clone entry points are currently dead public surface -- no caller
 	// repo-wide -- but they are CloneSnapshot's siblings and the whole lesson
 	// of this arc is that the sibling is where the defect lives.)

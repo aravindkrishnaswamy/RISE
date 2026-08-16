@@ -4950,6 +4950,38 @@ std::string TrimAsciiSpace_( const std::string& s )
 }  // namespace
 
 namespace {
+// 87: the value the PARSER will see for `pname` on this chunk -- the LAST
+// occurrence, not the first.  ParseStateBag::SetSingle is an unconditional
+// `mSingles[key] = value` for every non-repeatable param, and Cst::ParamValue
+// documents the same rule ("On a repeated param, LAST occurrence wins"); no
+// layer refuses a duplicated non-repeatable param.  AgentReadFirstParamValue
+// answers a DIFFERENT question -- "which occurrence does an occ=0 edit
+// address" -- and using it to predict the parse is a two-line bypass:
+// `material none` followed by `material mv` reads as a clear and derives as a
+// bind.  It also refuses legitimate text in the other order.
+std::string ReadParamValueAsParsed_( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
+{
+	if( outPresent ) *outPresent = false;
+	std::string last;
+	bool seen = false;
+	for( const auto& kid : chunk ? chunk->kids : std::vector<RISE::Cst::NodeRef>() )
+	{
+		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+		std::string nm, val;
+		bool inVal = false;
+		for( const auto& tk : kid->kids )
+		{
+			if( !tk ) continue;
+			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
+			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
+			if( inVal ) val += tk->text;
+		}
+		if( nm == pname ) { last = val; seen = true; }
+	}
+	if( outPresent ) *outPresent = seen;
+	return last;
+}
+
 // 87: does this candidate INSERT text declare a CONTAINER `standard_object`
 // (no `geometry`, or `geometry none`) that ALSO names a surface binding?
 // Returns the offending param's name, or empty for "fine".
@@ -4974,14 +5006,14 @@ std::string ContainerBindingInChunkText_( const String& chunkText )
 	if( !chunk || chunk->role != "standard_object" ) return std::string();
 
 	bool present = false;
-	const std::string geom = TrimAsciiSpace_( AgentReadFirstParamValue( chunk, "geometry", &present ) );
+	const std::string geom = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, "geometry", &present ) );
 	const bool isContainer = !present || geom.empty() || geom == "none";
 	if( !isContainer ) return std::string();
 
 	static const char* kBindings[] = { "material", "modifier", "shader", "radiance_map", "interior_medium" };
 	for( size_t i = 0; i < sizeof( kBindings ) / sizeof( kBindings[0] ); ++i ) {
 		bool bound = false;
-		const std::string v = TrimAsciiSpace_( AgentReadFirstParamValue( chunk, kBindings[i], &bound ) );
+		const std::string v = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, kBindings[i], &bound ) );
 		if( bound && !v.empty() && v != "none" ) return std::string( kBindings[i] );
 	}
 	return std::string();
@@ -5014,7 +5046,7 @@ bool SceneEditController::AgentTargetIsContainerObject_( const String& entityNam
 	// derive would drop the binding with a warning, which is exactly the state
 	// this gate exists to prevent.
 	bool present = false;
-	const std::string geom = TrimAsciiSpace_( AgentReadFirstParamValue( chunk, "geometry", &present ) );
+	const std::string geom = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, "geometry", &present ) );
 	if( !present ) return true;
 	return geom.empty() || geom == "none";
 }

@@ -56,12 +56,13 @@
 //    V -- and on the AGENT commit path, which is where the derive's
 //         drop-with-a-warning is invisible (a warning is not a diagnostic, so
 //         the derivability gate passes and the agent is told `applied`) --
-//         including chunk INSERT, and including the UNDO of a permitted clear,
-//         whose inverse is a bind.
-//    W -- and the REDO twin, where the object BECAME a container between the
-//         original apply and the replay.
-//    U -- and on the UNDO path, above the CST routing (which returns, so a
-//         gate below it is dead on every retained-CST scene).
+//         including chunk INSERT.
+//    W -- but NOT on the history-replay paths: undo must be lossless and must
+//         not wedge.  Two rounds gated the revert and both were wrong; W is
+//         the sequence that proved it.
+//    U -- and the UNDO path RESTORES rather than refusing: it replays a
+//         document state that existed moments earlier, which the derive
+//         already tolerates.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -1534,34 +1535,20 @@ int main()
 		IObjectPriv* morph = Obj( *j, "morph" );
 		Check( morph && morph->GetGeometry() == 0,
 		       "U: the object is now a container" );
-		// 3. UNDO the material edit.  Its captured prior value is a real
-		//    material name, and the object it would land on is now a container.
+		// 3. UNDO the material edit.  It MUST SUCCEED.  The captured prior value
+		//    is a real material name and the object it lands on is now a
+		//    container -- and that is fine: undo RESTORES a document state that
+		//    existed moments earlier, one the derive already tolerates (warn,
+		//    drop the binding, carry on), which is the contract for every scene
+		//    file ever authored.  Refusing it would wedge the undo stack, since
+		//    a refused revert is pushed back and re-fails forever.
 		c.Undo();
 		morph = Obj( *j, "morph" );
 		Check( morph && morph->GetGeometry() == 0,
 		       "U: (sanity) still a container after the undo" );
 		Check( morph && morph->GetMaterial() == 0,
-		       "U: the undo left no material on the live container" );
+		       "U: the derive still drops a container's material -- the LIVE object carries none" );
 
-		// THE DECIDING OBSERVABLE IS THE DOCUMENT, not the live object.  On this
-		// route the derive drops a container's material either way
-		// (DropContainerSurfaceBindings_), so live state cannot tell a refused
-		// undo from an accepted one.  What the gate prevents is a `material`
-		// line being written into the container's chunk -- a param that can
-		// never take effect and warns on every later load.  So read the text.
-		// Read `morph`'s chunk out of the serialized Document, and the value of a
-		// named param within it.
-		//
-		// BOTH readers are line-exact rather than substring probes, because a
-		// probe that silently never matches reads exactly like a passing
-		// assertion.  The chunk text ends immediately BEFORE its closing brace,
-		// so its last param line carries no trailing newline -- the first draft
-		// of this case tested `chunk.find( "material m\n" )`, which therefore
-		// never matched, and the case passed with the revert gate deleted
-		// outright.  The chunk locator has the same hazard one level up: a bare
-		// `find( "name morph" )` is a PREFIX match, so a document that also held
-		// an object named `morphology` would hand back the wrong chunk.  Require
-		// the name to end the line.
 		auto ChunkOf = []( const RISE::Cst::Document& d, const char* objName ) -> std::string {
 			const std::string text = RISE::Cst::SerializeCst( d );
 			const std::string key  = std::string( "name " ) + objName;
@@ -1588,26 +1575,23 @@ int main()
 			return out;
 		};
 
+		// THE DECIDING OBSERVABLE IS THE DOCUMENT.  Live state cannot tell a
+		// refused undo from an accepted one here -- the derive drops a
+		// container's material either way -- so read the text and require the
+		// AUTHORED value back.  A refused undo would leave `m3` standing.
 		const RISE::Cst::Document* doc = j->GetCstDocument();
 		Check( doc != 0, "U: the Document is retained" );
 		if( doc ) {
 			const std::string chunk = ChunkOf( *doc, "morph" );
 			Check( !chunk.empty(), "U: found the object's chunk in the Document" );
-			// The chunk still carries `material m3` -- written back in step 1,
-			// while the object was still a leaf, which was a legitimate edit.
-			// What the gate must prevent is the UNDO overwriting it with
-			// `material m`: a NEW binding written onto something that is a
-			// container now.  So the test is that the value is UNCHANGED, not
-			// that the line is absent -- the gate's job is to not make it worse,
-			// and the CLEAR exemption below is what lets the author remove it.
 			const std::string mat = ParamValue( chunk, "material" );
-			if( mat != "m3" ) std::cout << "    (U: chunk text was:\n" << chunk << "\n)" << std::endl;
-			Check( mat == "m3",
-			       "U: the refused undo wrote NOTHING to the Document -- the container's chunk still "
-			       "carries the binding it had, not the restored one" );
+			if( mat != "m" ) std::cout << "    (U: chunk text was:\n" << chunk << "\n)" << std::endl;
+			Check( mat == "m",
+			       "U: the undo RESTORED the authored binding -- it is not refused, and the undo stack "
+			       "is not wedged" );
 		}
 
-		// And the CLEAR is still allowed on a container, so the stale line CAN
+		// And the CLEAR is still allowed on a container, so a stale binding CAN
 		// be removed.  Refusing this would refuse the one edit that fixes the
 		// warning every later derive emits.
 		c.SetSelection( Cat::Object, String( "morph" ) );
@@ -1618,8 +1602,8 @@ int main()
 			Check( doc2 != 0, "U: (sanity) the Document survived the clear" );
 			if( doc2 ) {
 				const std::string mat2 = ParamValue( ChunkOf( *doc2, "morph" ), "material" );
-				Check( mat2 != "m3",
-				       "U: and the stale `material m3` binding is gone from the Document" );
+				Check( mat2 != "m",
+				       "U: and the stale binding is gone from the Document" );
 			}
 		}
 		j->release();
@@ -1712,6 +1696,11 @@ int main()
 				String( "material" ), String( "mv2" ), /*baseVersionOrNull*/ 0 );
 			Check( !r.applied,
 			       "V: `geometry none` is a container too -- the BIND is refused there as well" );
+			Check( r.status == String( "rejected" ),
+			       "V: ... as a `rejected`, not a resolution failure" );
+			Check( std::string( r.message.c_str() ).find( "container" ) != std::string::npos,
+			       "V: ... naming the container as the cause, so this cannot pass because the chunk "
+			       "merely failed to resolve" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
 			if( d ) {
 				Check( ParamValue( ChunkOf( *d, "sentinel" ), "material" ) != "mv2",
@@ -1766,21 +1755,20 @@ int main()
 			}
 		}
 
-		// 5. THE INVERSE OF THAT PERMITTED CLEAR IS A BIND.  Undoing it replays
-		//    `material mv` through the raw CST route -- which has no gate of its
-		//    own -- so the forward direction refusing while the inverse does not
-		//    would put the binding straight back onto the container and report a
-		//    clean undo.  Worse than gating neither: the pair disagrees.
+		// 5. UNDOING that permitted clear RESTORES the binding, and must.  The
+		//    forward gate exists to stop the agent CREATING this state; undo is
+		//    a history replay of a state that already existed, and gating it
+		//    wedges the stack -- a refused revert is pushed back onto the undo
+		//    stack and re-fails on every later Cmd-Z, stranding everything
+		//    older.  See the block comment above SceneEditor::ApplyRevertMutation.
 		{
-			// SceneEditController::Undo() returns void, so -- as in case U --
-			// the DOCUMENT is the deciding observable, not a return value.
 			c.Undo();
 			const RISE::Cst::Document* d = j->GetCstDocument();
-			Check( d != 0, "V: (sanity) the Document survived the refused undo" );
+			Check( d != 0, "V: (sanity) the Document survived the undo" );
 			if( d ) {
-				Check( ParamValue( ChunkOf( *d, "hollow" ), "material" ) != "mv",
-				       "V: undoing the permitted clear did NOT put the binding back on the container -- "
-				       "the inverse of an allowed clear is a bind, and it is gated too" );
+				Check( ParamValue( ChunkOf( *d, "hollow" ), "material" ) == "mv",
+				       "V: undoing the permitted clear RESTORED the prior binding -- history replay is "
+				       "exempt from the creation gate, so the undo stack cannot wedge" );
 			}
 		}
 
@@ -1799,6 +1787,33 @@ int main()
 				       "V: ... and nothing was inserted" );
 			}
 		}
+		// 6b. LAST OCCURRENCE WINS, because that is what the parser does
+		//     (ParseStateBag::SetSingle is an unconditional overwrite, and
+		//     nothing refuses a duplicated non-repeatable param).  Reading the
+		//     FIRST occurrence instead makes the gate a two-line bypass in one
+		//     direction and a false refusal in the other -- so both are here.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentInsertChunk(
+				String( "standard_object\n{\nname dupe\nmaterial none\nmaterial mv\n}\n" ),
+				/*baseVersionOrNull*/ 0 );
+			Check( !r.applied,
+			       "V: a container whose LAST `material` is a real bind is refused, even though its "
+			       "first reads as a clear" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) Check( ChunkOf( *d, "dupe" ).empty(), "V: ... and nothing was inserted" );
+		}
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentInsertChunk(
+				String( "standard_object\n{\nname undupe\ngeometry none\ngeometry gv\nmaterial mv\n}\n" ),
+				/*baseVersionOrNull*/ 0 );
+			Check( r.applied,
+			       "V: and one whose LAST `geometry` resolves is a LEAF, so its material is accepted -- "
+			       "reading the first would have refused a perfectly ordinary object" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) Check( ParamValue( ChunkOf( *d, "undupe" ), "material" ) == "mv",
+			               "V: ... and it landed" );
+		}
+
 		// The SAME chunk with a geometry is accepted -- the insert gate is about
 		// the container-ness, not about naming a material.
 		{
@@ -1818,23 +1833,25 @@ int main()
 	}
 
 	// =================================================================
-	// W -- the REDO twin of V's step 5.
+	// W -- UNDO IS LOSSLESS AND CANNOT WEDGE, on the agent path.
 	//
-	// A Redo replays the FORWARD value, which the forward gate already vetted
-	// -- so it is tempting to argue the vetting carries over.  It does not: the
-	// object can have BECOME a container between the original apply and the
-	// redo.  Reaching that state needs a mutation that pushes NO history record
-	// (anything that did would clear the redo stack), which is why this drives
-	// the Job's param-remove primitive directly, and owes the editor the same
-	// manual rebind case U does.
+	// This is the sequence that killed the gate two rounds put on the revert
+	// path.  Both agent edits are permitted; both are the ones the design
+	// intends to permit.  What must hold at the end is that TWO Cmd-Zs return
+	// the scene to exactly what was authored -- geometry back, material back,
+	// and the material LIVE again now that the object is a leaf.
+	//
+	// Under the gated revert, step 4's first undo was refused, PopForUndo
+	// pushed its record back, and every later undo re-popped and re-failed:
+	// step 3 and everything older became permanently unreachable.
 	// =================================================================
 	{
-		const char* sW = "sg_parent_agent_redo.RISEscene";
+		const char* sW = "sg_parent_agent_undo_lossless.RISEscene";
 		WriteScene( sW,
 			"uniformcolor_painter\n{\nname pw\ncolor 0 0 1\n}\n"
-			"lambertian_material\n{\nname mw2\nreflectance pw\n}\n"
+			"lambertian_material\n{\nname mw\nreflectance pw\n}\n"
 			"sphere_geometry\n{\nname gw\nradius 1\n}\n"
-			"standard_object\n{\nname swap\ngeometry gw\n}\n" );
+			"standard_object\n{\nname swap\ngeometry gw\nmaterial mw\n}\n" );
 		Job* j = new Job();
 		Check( j->LoadAsciiSceneViaCst( sW ), "W: scene loads" );
 		SceneEditController c( *j, 0 );
@@ -1865,45 +1882,50 @@ int main()
 			return out;
 		};
 
-		// 1. Bind while it is a LEAF -- accepted, and it pushes a history record.
+		// Positive control FIRST: the object starts as a leaf carrying `mw`.
+		{
+			IObjectPriv* sw = Obj( *j, "swap" );
+			Check( sw && sw->GetGeometry() != 0 && sw->GetMaterial() != 0,
+			       "W: (baseline) the authored object is a leaf with a live material" );
+		}
+		// 1. Make it a container.  `geometry` is not a surface binding, so this
+		//    is permitted -- and it is how an agent reaches the state at all.
 		{
 			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
 				String( "swap" ), String( "standard_object" ),
-				String( "material" ), String( "mw2" ), /*baseVersionOrNull*/ 0 );
-			Check( r.applied, "W: the bind applies while the object is a leaf" );
-		}
-		// 2. Undo it, so there is something to redo.
-		c.Undo();
-		{
-			const RISE::Cst::Document* d = j->GetCstDocument();
-			if( d ) Check( ParamValue( ChunkOf( *d, "swap" ), "material" ) != "mw2",
-			               "W: (sanity) the undo removed the binding" );
-		}
-		// 3. Make it a container behind the editor's back -- no history record,
-		//    so the redo entry survives.  Then rebind, as production's own
-		//    RouteCstParamRemove_ does on a D2.
-		{
-			const int rc = j->ApplyCstParamRemoveChecked( "swap", "standard_object", "geometry", 0 );
-			Check( rc != 0, "W: the geometry removal is accepted" );
-			IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) );
-			if( jp ) {
-				if( IScenePriv* sc = jp->GetScene() ) c.Editor().RebindScene( *sc );
-				c.Editor().SetMaterialManager( jp->GetMaterials() );
-				c.Editor().SetShaderManager( jp->GetShaders() );
-				c.Editor().SetPainterManager( jp->GetPainters() );
-				c.Editor().SetScalarPainterManager( jp->GetScalarPainters() );
-			}
+				String( "geometry" ), String( "none" ), /*baseVersionOrNull*/ 0 );
+			Check( r.applied, "W: `geometry none` applies -- it is not a surface binding" );
 			IObjectPriv* sw = Obj( *j, "swap" );
 			Check( sw && sw->GetGeometry() == 0, "W: the object is now a container" );
 		}
-		// 4. REDO -- refused, because the vetting the forward gate did no longer
-		//    describes the object.
-		c.Redo();
+		// 2. Clear the now-stale material.  Permitted by the CLEAR carve-out.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "swap" ), String( "standard_object" ),
+				String( "material" ), String( "none" ), /*baseVersionOrNull*/ 0 );
+			Check( r.applied, "W: clearing the stale binding off the container is accepted" );
+		}
+		// 3. Cmd-Z, Cmd-Z.  Back to exactly what was authored.
+		c.Undo();
+		c.Undo();
 		{
 			const RISE::Cst::Document* d = j->GetCstDocument();
-			Check( d != 0, "W: (sanity) the Document survived the refused redo" );
-			if( d ) Check( ParamValue( ChunkOf( *d, "swap" ), "material" ) != "mw2",
-			               "W: the redo did NOT re-apply the binding onto what is now a container" );
+			Check( d != 0, "W: (sanity) the Document survived two undos" );
+			if( d ) {
+				const std::string chunk = ChunkOf( *d, "swap" );
+				const std::string geom = ParamValue( chunk, "geometry" );
+				const std::string mat  = ParamValue( chunk, "material" );
+				if( geom != "gw" || mat != "mw" )
+					std::cout << "    (W: chunk text was:\n" << chunk << "\n)" << std::endl;
+				Check( geom == "gw", "W: the second undo restored the `geometry` -- the stack did NOT wedge" );
+				Check( mat  == "mw", "W: and the first undo restored the `material`" );
+			}
+			IObjectPriv* sw = Obj( *j, "swap" );
+			Check( sw && sw->GetGeometry() != 0,
+			       "W: the LIVE object is a leaf again" );
+			Check( sw && sw->GetMaterial() != 0,
+			       "W: ... carrying its material again -- undo was LOSSLESS.  A revert that skipped "
+			       "the binding write to keep the container clean would leave this null forever" );
 		}
 		j->release();
 		std::remove( sW );
