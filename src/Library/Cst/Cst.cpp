@@ -1861,7 +1861,8 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// EITHER manager) -- this is what makes an OBJECT re-point unable to fail mid-apply
 			// (Part A atomicity: objects are re-pointed AFTER the entities are recreated; an
 			// object failure would strand already-re-pointed prior objects, which the
-			// entity-only rollback below cannot restore -- so objects must never fail).
+			// entity-only rollback below cannot restore -- so objects must never fail;
+			// see the 87 caveat at the apply loop about `parent`).
 			if( pd.name == "radiance_map" )
 				resolves = ( priv->GetPainters() != 0 && priv->GetPainters()->GetItem( val.c_str() ) != 0 );
 			else
@@ -2022,6 +2023,14 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// topology bump (else a reused LightSampler keeps a now-dark luminary).  (Slot removals don't
 	// change the bbox -- it is geometry-derived -- so they stay non-spatial.)  Safe without
 	// rollback: objects never fail (slot-precise preflight) and clears cannot.
+	// 87 CAVEAT: an object chunk's Finalize now has a SECOND mutating step after
+	// AddObject/AddCSGObject -- SetObjectParent -- whose three semantic refusals
+	// (self-parent, cycle, CSG operand) the preflight does not model; it only
+	// checks that the parent NAME resolves.  No divergence is reachable today,
+	// because the same refusals also fail the D2 full-derive dry-run that this
+	// path falls back to.  It becomes reachable the moment something can change
+	// a `parent` value without going through a dry run -- a `set_parent` agent
+	// verb, or the tree UI's reparent (87 step 4).  Extend the preflight then.
 	for( const ObjState& s : objStates ) {
 		if( s.clearMat )    s.obj->ClearMaterial();
 		if( s.clearMod )    s.obj->ClearModifier();

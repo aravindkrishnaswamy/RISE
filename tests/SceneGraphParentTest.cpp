@@ -48,6 +48,9 @@
 //         order the language actually forces.
 //    P -- `csg_object`'s own `parent` end to end, and `parent none`.
 //    Q -- a non-finite composed parent world is never behind a TRUE flag.
+//    R -- descriptor integrity across EVERY chunk (an empty description is the
+//         signature of a P() reference invalidated by a nested emplace_back).
+//    S -- `rect_light` / `shape_light` compose against a parent.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -1204,6 +1207,136 @@ int main()
 		}
 		j->release();
 		std::remove( sZ );
+	}
+	{
+		// Q2 -- the OUTPUT side.  The un-normalisation runs AFTER both tests:
+		// L^-1 = Lh^-1/frob blows up for a tiny `frob`, and -L^-1 t multiplies
+		// that by the translation.  Both are finite INPUTS composing to a
+		// non-finite INVERSE, so checking the input alone leaves a TRUE flag
+		// fronting a NaN matrix -- the same "validate one thing, store another"
+		// shape this guard has already been bitten by once.
+		const char* sZ2 = "sg_parent_invoverflow.RISEscene";
+		WriteScene( sZ2,
+			"standard_object\n{\nname faroff\nposition 1e200 0 0\n}\n"
+			"standard_object\n{\nname shrunk\nparent faroff\nscale 1e-150 1e-150 1e-150\n}\n"
+			"standard_object\n{\nname tip\nparent shrunk\ngeometry g\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sZ2 ), "Q2: inverse-overflow scene loads" );
+		IObjectPriv* tip = Obj( *j, "tip" );
+		Check( tip != 0, "Q2: grandchild registered" );
+		if( tip ) {
+			const Matrix4 P = tip->GetParentWorldTransformMatrix();
+			bool inputFinite = true;
+			{
+				const Scalar* pp = &P._00;
+				for( int k = 0; k < 16; ++k ) {
+					if( !IsFiniteDouble( static_cast<double>( pp[k] ) ) ) { inputFinite = false; break; }
+				}
+			}
+			Check( inputFinite, "Q2: (sanity) the parent world itself is entirely FINITE" );
+			// Whatever the verdict, the stored inverse must never be non-finite
+			// behind a TRUE flag.
+			if( tip->IsParentWorldInvertible() ) {
+				const Matrix4 back = P * tip->WorldToLocal( Matrix4Ops::Translation( Vector3( 2, -3, 5 ) ) );
+				const Scalar* b2 = &back._00;
+				bool finiteOut = true;
+				for( int k = 0; k < 16; ++k ) {
+					if( !IsFiniteDouble( static_cast<double>( b2[k] ) ) ) { finiteOut = false; break; }
+				}
+				Check( finiteOut,
+				       "Q2: a TRUE flag never fronts a non-finite inverse -- the un-normalisation's own "
+				       "result is checked, not just its inputs" );
+			} else {
+				Check( true, "Q2: refused, which is also a correct answer for an inverse that overflows" );
+			}
+		}
+		j->release();
+		std::remove( sZ2 );
+	}
+
+	// =================================================================
+	// R -- DESCRIPTOR INTEGRITY.  Nothing in this file looked at descriptor
+	// TEXT, and that is how a heap use-after-free shipped through 156 green
+	// assertions: a `parent` entry spliced INSIDE a still-open `name` block
+	// made P()'s emplace_back reallocate, so the outer `p` reference dangled
+	// and the description that followed was written into freed memory.  The
+	// observable is a description that comes back EMPTY, which is also a real
+	// regression on its own -- SchemaGen emits it to the agent and the panel
+	// shows it.
+	//
+	// Checked for EVERY registered chunk, not just the ones this arc touched:
+	// the bug is a C++ idiom trap, not a fact about parenting, and the next
+	// person to add a param anywhere can fall into it.
+	// =================================================================
+	{
+		const std::vector<ChunkParserEntry> parsers = CreateAllChunkParsers();
+		Check( parsers.size() > 100, "R: the parser registry loaded" );
+		int emptyDesc = 0, emptyName = 0;
+		std::string firstBad;
+		for( size_t e = 0; e < parsers.size(); ++e ) {
+			if( !parsers[e].parser ) continue;
+			const ChunkDescriptor& d = parsers[e].parser->Describe();
+			for( size_t k = 0; k < d.parameters.size(); ++k ) {
+				if( d.parameters[k].name.empty() ) {
+					++emptyName;
+					if( firstBad.empty() ) firstBad = d.keyword + " (a parameter has no name)";
+				} else if( d.parameters[k].description.empty() ) {
+					++emptyDesc;
+					if( firstBad.empty() ) firstBad = d.keyword + "." + d.parameters[k].name;
+				}
+			}
+		}
+		if( emptyDesc || emptyName ) {
+			std::cout << "    (R: first offender: " << firstBad << ")" << std::endl;
+		}
+		Check( emptyName == 0, "R: every declared parameter has a name" );
+		Check( emptyDesc == 0,
+		       "R: every declared parameter has a non-empty description -- an empty one is the "
+		       "signature of a P() reference invalidated by a nested emplace_back" );
+	}
+
+	// =================================================================
+	// S -- the one-chunk area lights are scene-graph nodes too.
+	// =================================================================
+	{
+		const char* sS2 = "sg_parent_lights.RISEscene";
+		WriteScene( sS2,
+			"standard_object\n{\nname gantry\nposition 6 4 0\n}\n"
+			"rect_light\n{\nname panel\nparent gantry\ncenter 0 1 0\nsize 2 1\nfacing 0 -1 0\n"
+			"exitance 40\ncolor 1 1 1\n}\n"
+			"shape_light\n{\nname bulb2\nparent gantry\nshape sphere\ncenter 0 -1 0\nsize 0.3\n"
+			"exitance 15\ncolor 1 1 1\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sS2 ), "S: parented area lights load" );
+		IObjectPriv* panel = Obj( *j, "panel" );
+		IObjectPriv* bulb2 = Obj( *j, "bulb2" );
+		// The two chunks place their geometry DIFFERENTLY, which is worth
+		// pinning: `shape_light` passes `center` to the object as its position,
+		// so its transform origin composes; `rect_light` bakes `center` into
+		// the clipped-plane's four CORNERS and gives the object an identity
+		// transform.  So the rect_light's own origin is the parent's origin,
+		// and the panel's placement shows up in its world BOUNDING BOX -- which
+		// is the observable that actually matters, and the one that proves the
+		// parent transform reached the geometry.
+		Check( panel && Close( Origin( panel->GetFinalTransformMatrix() ).x, 6 )
+		             && Close( Origin( panel->GetFinalTransformMatrix() ).y, 4 ),
+		       "S: a rect_light's object origin is its parent's origin (it bakes `center` into geometry)" );
+		if( panel ) {
+			const BoundingBox pb = panel->getBoundingBox();
+			const Scalar cx = ( pb.ll.x + pb.ur.x ) * Scalar( 0.5 );
+			const Scalar cy = ( pb.ll.y + pb.ur.y ) * Scalar( 0.5 );
+			Check( Close( cx, 6, 1e-6 ) && Close( cy, 5, 1e-6 ),
+			       "S: and its world bounding box is centred at (6,5,0) -- the parent transform reached "
+			       "the baked geometry" );
+		}
+		Check( bulb2 && Close( Origin( bulb2->GetFinalTransformMatrix() ).x, 6 )
+		             && Close( Origin( bulb2->GetFinalTransformMatrix() ).y, 3 ),
+		       "S: and so does a shape_light -- world (6,3,0)" );
+		// They are still EMITTERS after being parented.
+		Check( panel && panel->GetMaterial() && panel->GetMaterial()->GetEmitter(),
+		       "S: the parented rect_light is still an emitter" );
+		j->release();
+		std::remove( sS2 );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

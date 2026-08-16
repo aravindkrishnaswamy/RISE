@@ -645,7 +645,21 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 						const double li2 = inv[2 * 3 + r] / frob;
 						q[12 + r] = static_cast<Scalar>( -( li0 * tx + li1 * ty + li2 * tz ) );
 					}
-					m_mxParentWorldInv = pinv;
+					// The un-normalisation itself can overflow: L^-1 = Lh^-1/frob
+					// blows up for a tiny `frob`, and -L^-1 t multiplies that by
+					// the translation.  Both run AFTER the two tests above, so
+					// without this a TRUE flag could front a non-finite inverse
+					// -- exactly the "validate one thing, store another" shape
+					// this block already fixed once.  Check what is stored.
+					bool pinvFinite = true;
+					{
+						const Scalar* qq = &pinv._00;
+						for( int k = 0; k < 16; ++k ) {
+							if( !IsFiniteDouble( static_cast<double>( qq[k] ) ) ) { pinvFinite = false; break; }
+						}
+					}
+					if( pinvFinite ) m_mxParentWorldInv = pinv;
+					else             wellConditioned  = false;
 				}
 			}
 		}

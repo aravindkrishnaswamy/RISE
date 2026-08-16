@@ -1174,10 +1174,18 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		if( mJob ) {
 			const IGeometry* g = mJob->GetGeometry( edit.propertyValue.c_str() );
 			if( g ) {
-				// 87: giving a CONTAINER geometry makes it a real shape, so it
-				// must become world-visible too.  Left hidden it would be a
-				// hidden node WITH geometry -- which is exactly the fingerprint
+				// 87: giving a CONTAINER geometry would make it a real shape, so
+				// it would have to become world-visible too -- otherwise it is a
+				// hidden node WITH geometry, which is exactly the fingerprint
 				// ObjectManager::SetObjectParent uses to identify a CSG operand.
+				//
+				// That state is UNREACHABLE from here: CaptureForApply refuses a
+				// SetObjectGeometry on an object whose current geometry has no
+				// name, and a container's is null.  The visibility flip is done
+				// anyway, because relying on a guard three call frames away to
+				// keep this branch correct is how the dead-guard bugs in this
+				// arc happened.  The DERIVE path's equivalent is
+				// ApplyGeometryOrContainer_ in Job.cpp.
 				const bool wasContainer = ( obj.GetGeometry() == 0 );
 				obj.AssignGeometry( *g );
 				if( wasContainer ) obj.SetWorldVisible( true );
@@ -1238,9 +1246,10 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 		// COST, stated honestly rather than asserted away.  On a FLAT scene this
 		// is free -- ComposeWorldTransforms returns immediately when the graph
 		// has no links and none are outstanding, which is every scene that
-		// existed before 87.  On a scene with even one parent link it is O(N)
-		// over the WHOLE object list, per edit, and an edit here means a
-		// gizmo-drag pointer-move.  That is a real cost and it is not hidden:
+		// existed before 87.  On a scene with even one parent link it is
+		// O(N log N) over the WHOLE object list -- three heap containers built
+		// per call, plus a serial lookup per parented child -- once per edit,
+		// and an edit here means a gizmo-drag pointer-move.  That is a real cost and it is not hidden:
 		// the named refinement is a subtree-scoped compose (walk down from the
 		// edited node only, since its own parent's world is already current),
 		// which is a strictly smaller version of this same walk.  It is not
@@ -3154,6 +3163,21 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// route + return instead of the direct mutate.  TRANSFORM ops fall through to the direct mutate here and are
 		// committed to the authoritative `matrix` param at the composite/edit boundary (Stage B).
 		if( mJob && mJob->HasRetainedCstDocument() ) {
+			// 87: refuse a surface binding on a CONTAINER *before* routing it.
+			// The gate in ApplyObjectOpForward is downstream of this early
+			// return, so on a CST scene the panel would otherwise write a
+			// `material` line into the container's chunk, the derive would drop
+			// it with a warning on this and every later derive, and the edit
+			// would report SUCCESS -- leaving the Document permanently carrying
+			// a param that can never take effect.
+			if( IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
+			 && obj->GetGeometry() == 0
+			 && !dynamic_cast<const Implementation::CSGObject*>( obj ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor:: `%s` is a container node (no geometry), so it takes no surface binding; "
+					"bind it to a child that has geometry", edit.objectName.c_str() );
+				return false;
+			}
 			if( IsObjectBindingOp( edit.op ) ) {
 				String val = edit.propertyValue;
 				if( edit.op == SceneEdit::SetObjectInteriorMedium

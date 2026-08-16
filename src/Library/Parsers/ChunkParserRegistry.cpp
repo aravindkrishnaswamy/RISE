@@ -910,7 +910,7 @@ namespace RISE
 			template<typename PushFn>
 			static void AddCameraCommonParams( PushFn P ) {
 				{ auto& p = P(); p.name = "name";               p.kind = ValueKind::String;     p.description = "Optional identifier; defaults to \"default\" with auto-suffix on collision."; p.defaultValueHint = "default"; }
-				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "Position, LOCAL to `parent` (world-space when unparented)"; }
+				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "World-space position"; }
 				{ auto& p = P(); p.name = "lookat";             p.kind = ValueKind::DoubleVec3; p.description = "Look-at target point"; }
 				{ auto& p = P(); p.name = "up";                 p.kind = ValueKind::DoubleVec3; p.description = "Up vector"; p.defaultValueHint = "0 1 0"; }
 				// width / height / pixelAR moved to the `film` chunk
@@ -7533,7 +7533,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "Position, LOCAL to `parent` (world-space when unparented)";             p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
 						return cd;
@@ -7572,7 +7572,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";  p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)"; p.defaultValueHint = "45"; }
 						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
-						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "Position, LOCAL to `parent` (world-space when unparented)";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
@@ -7902,10 +7902,10 @@ namespace RISE
 							"It has real area, so it casts soft shadows and falls off with distance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.required = true;
-						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
 						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
+						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
 						{ auto& p = P(); p.name = "center";   p.kind = ValueKind::DoubleVec3; p.required = true;
-						  p.description = "World-space centre of the panel"; }
+						  p.description = "Centre of the panel, LOCAL to `parent` (world-space when unparented)"; }
 						{ auto& p = P(); p.name = "size";     p.kind = ValueKind::Double;     p.required = true;
 						  p.tupleKinds = {ValueKind::Double, ValueKind::Double};
 						  p.description = "Two positive numbers: width and height, in scene units"; p.unitLabel = "scene units"; }
@@ -8202,13 +8202,13 @@ namespace RISE
 							"distance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
-						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
 						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
+						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
 						{ auto& p = P(); p.name = "shape";       p.kind = ValueKind::Enum;       p.required = true;
 						  p.enumValues = {"sphere","ellipsoid","box","cylinder"};
 						  p.description = "Which closed solid emits.  It also fixes how many numbers `size` takes: " + ShapeLightValidShapes(); }
 						{ auto& p = P(); p.name = "center";      p.kind = ValueKind::DoubleVec3; p.required = true;
-						  p.description = "World-space centre of the solid.  Every shape is built centred on its own origin and placed here"; }
+						  p.description = "Centre of the solid, LOCAL to `parent` (world-space when unparented).  Every shape is built centred on its own origin and placed here"; }
 						{ auto& p = P(); p.name = "size";        p.kind = ValueKind::Double;     p.required = true;
 						  p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double};
 						  p.description = "Positive numbers in scene units, as many as the chosen `shape` takes: " + ShapeLightValidShapes(); p.unitLabel = "scene units"; }

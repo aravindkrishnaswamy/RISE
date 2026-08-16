@@ -1,6 +1,11 @@
 # 87 — Recursive Scene Graph
 
-**Status: DESIGN, decided 2026-08-15. No code.**
+**Status: decided 2026-08-15.  §5 steps 0 and 1 are IMPLEMENTED; steps 2–4 are
+not.**  The prose below is the DESIGN as decided and is deliberately left
+as-written — in particular §2's "composition happens in the per-frame prepare
+pass" describes the END STATE, which §5 step 2 delivers; step 1 composes at the
+derive tail and on every live edit, and animating a parent does not yet move its
+children (see `docs/SCENE_CONVENTIONS.md` §5).
 Supersedes and DELETES the single-level grouping shipped in
 [86](86-object-grouping.md) (`48ab06b1`, `da0b6839`, `16b160a6`).
 

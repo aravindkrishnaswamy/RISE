@@ -178,7 +178,10 @@ Object* Object::CloneSnapshot() const
 	// See Object.h for the rationale.  Build a fresh Object that shares the
 	// immutable geometry leaf (the ctor addrefs it), then deep-copy the
 	// mutable state.
-	Object* pClone = new Object( pGeometry );
+	// 87: a CONTAINER has no geometry, and Object(const IGeometry*) logs a
+	// source ERROR for a null one -- correct for a leaf, noise for a container.
+	// Pick the ctor that matches what this object actually is.
+	Object* pClone = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "snapshot clone" );
 
 	CopySnapshotStateInto( *pClone );
