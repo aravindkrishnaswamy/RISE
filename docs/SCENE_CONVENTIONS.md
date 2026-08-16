@@ -476,6 +476,14 @@ standard_object
 - The GUI transform panel shows and edits these LOCAL values.  The gizmo still
   drags in world space.
 
+One asymmetry to know about if you mix `parent` with `instance_array`: the
+generator expands AFTER every ordinary object, wherever its chunk sits in the
+file, so a generated instance may name a parent declared textually after the
+generator — while an ordinary object can never name a generated `name[i,j]`
+instance, because no instance exists yet when ordinary objects are applied.
+Composition is correct either way (the tree is walked after both passes) and
+cycles are still refused.
+
 Worked example: `scenes/Tests/Geometry/object_parenting.RISEscene`.
 
 ---

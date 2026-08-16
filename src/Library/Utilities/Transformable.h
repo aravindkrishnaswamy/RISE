@@ -116,6 +116,16 @@ namespace RISE
 			//! `parentWorld * matrix` after the next finalize.  A caller
 			//! holding a WORLD matrix must convert with WorldToLocal() first
 			//! (having checked IsParentWorldInvertible()).
+			//!
+			//! THE CALLER MUST FINALIZE.  This installs the matrix on the
+			//! transform STACK and updates the authoritative-matrix metadata;
+			//! it does NOT recompute m_mxLocalTrans, m_mxFinalTrans, or the
+			//! Object caches.  Until FinalizeTransformations() runs, every
+			//! accessor still describes the PREVIOUS transform.  Every call
+			//! site in tree finalizes immediately afterward -- Job::AddObjectMatrix,
+			//! override_object's two arms, and SceneEditor's ReplaceFinalTransform_
+			//! (whose callers all reach RunObjectInvariantChain).  A new one that
+			//! forgets would read stale matrices with no diagnostic.
 			void SetFinalTransformMatrix( const Matrix4& matrix );
 
 			// Retrieves the transformation matrix

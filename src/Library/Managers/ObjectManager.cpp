@@ -531,6 +531,15 @@ bool ObjectManager::RemoveItem( const char* szName )
 		else                    { ++i; }
 	}
 	if( orphans ) {
+		// RE-COMPOSE, do not merely re-book.  Erasing the links above changes
+		// only `parentByName`; each orphan's world matrix, inverse, and all
+		// three Object caches still hold the composition against the object
+		// that was just deleted.  Nothing else would fix it on this path --
+		// Job::RemoveObject does not compose, and the per-frame re-bake is 87
+		// step 2 -- so `remove object` from the console would leave the
+		// orphans rendering at their old pose indefinitely.  This makes the
+		// log line below true rather than aspirational.
+		ComposeWorldTransforms();
 		GlobalLog()->PrintEx( eLog_Info,
 			"ObjectManager::RemoveItem:: `%s` was the parent of %u object(s); they are now roots "
 			"and no longer carry its transform", szName, orphans );
@@ -558,15 +567,15 @@ bool ObjectManager::ComposeWorldTransforms() const
 		return false;
 	}
 
-	// Children lists.  Ordered by REGISTRATION SERIAL.  On a full derive that IS
-	// document order, which is 87's "child order for display comes from
-	// declaration order".  It is NOT after an incremental apply: a re-pointed
-	// object keeps its old serial, but an object the edit INSERTED gets a fresh
-	// one at the end, so a child inserted mid-file sorts last among its
-	// siblings until the next full derive puts it back.  Composition does not
-	// care -- each child composes against its parent alone -- but the tree UI
-	// (87 section 5 step 4) will, and should read order from the CST document
-	// rather than from here if it needs to be exact between reloads.  The composed matrices do not depend on sibling order at all
+	// Children lists, ordered by REGISTRATION SERIAL.  On a full derive that IS
+	// document order, i.e. 87's "child order for display comes from declaration
+	// order"; after an INCREMENTAL apply it is not, because a re-pointed object
+	// keeps its old serial while an inserted one gets a fresh serial at the
+	// end, so a child inserted mid-file sorts last among its siblings until the
+	// next full derive.  Composition is indifferent to sibling order -- each
+	// child composes against its parent alone -- so this matters only to the
+	// tree UI (87 section 5 step 4), which should read order from the CST
+	// document if it needs to be exact across a reload.  The composed matrices do not depend on sibling order at all
 	// (each child composes against its parent alone), but a stable, meaningful
 	// order is what a tree UI needs, and deriving it here means the UI does not
 	// have to keep a parallel index.

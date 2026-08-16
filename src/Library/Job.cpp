@@ -5599,6 +5599,34 @@ static void RISE_API_CreateObjectOrContainer_( IObjectPriv** ppObject, const IGe
 	RISE_API_CreateObject( ppObject, pGeometry );
 }
 
+//! Is `obj` currently an OPERAND of some csg_object in this manager?  Operands
+//! are hidden by their composite and have geometry; a container is hidden and
+//! has none, so the two are told apart by geometry -- but only while the
+//! operand still HAS geometry, which is exactly what a leaf -> container
+//! re-point would take away.  Hence this direct scan: it is the only way to
+//! catch the edit before it makes the two indistinguishable.
+static bool IsLiveCsgOperand_( const IObjectManager* objMgr, const IObjectPriv* obj )
+{
+	if( !objMgr || !obj ) return false;
+	struct Scan : public IEnumCallback<IObjectPriv>
+	{
+		const IObjectPriv* target = 0;
+		bool found = false;
+		bool operator()( const IObjectPriv& candidate ) override
+		{
+			const Implementation::CSGObject* csg =
+				dynamic_cast<const Implementation::CSGObject*>( &candidate );
+			if( csg && ( csg->GetOperandA() == target || csg->GetOperandB() == target ) ) found = true;
+			return !found;
+		}
+	} scan;
+	scan.target = obj;
+	// EnumerateObjects filters on world-visibility, which is what we want: a
+	// csg_object is visible, its operands are not.
+	objMgr->EnumerateObjects( scan );
+	return scan.found;
+}
+
 //! Is this object a 87 CONTAINER -- a pure transform node?  Distinguished from
 //! the OTHER null-geometry object in the tree, a CSGObject, whose shape comes
 //! from its two operands rather than from a geometry slot.  Nested CSG is
@@ -5714,6 +5742,17 @@ bool Job::AddObject(
 		repoint = ( object != 0 );
 	}
 	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
+	// An edit that DELETES an operand's `geometry` line would turn it into a
+	// container while its csg_object still holds it -- a boolean over a shape
+	// that no longer exists, silently wrong rather than a crash (Object's null
+	// guards return no hit).  Before 87 that edit hard-failed on the missing
+	// geometry reference; keep it failing.
+	if( repoint && bContainer && !wasContainer && IsLiveCsgOperand_( pObjectManager, object ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObject:: `%s` is an operand of a csg_object, so it cannot drop its `geometry` and "
+			"become a container node -- the boolean would have nothing to intersect", name );
+		return false;
+	}
 	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );  // re-point swaps geometry (or clears it)
 	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );        // create binds geometry via the ctor
 
@@ -5789,6 +5828,12 @@ bool Job::AddObjectMatrix(
 		repoint = ( object != 0 );
 	}
 	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
+	if( repoint && bContainer && !wasContainer && IsLiveCsgOperand_( pObjectManager, object ) ) {   // see AddObject
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddObjectMatrix:: `%s` is an operand of a csg_object, so it cannot drop its `geometry` "
+			"and become a container node", name );
+		return false;
+	}
 	if( repoint ) ApplyGeometryOrContainer_( *object, pGeometry, bContainer, wasContainer );
 	else          RISE_API_CreateObjectOrContainer_( &object, pGeometry, bContainer );
 

@@ -1142,8 +1142,21 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 		// which is a strictly smaller version of this same walk.  It is not
 		// built yet because correctness came first and because the next render
 		// pays a whole TLAS rebuild for the same edit regardless.
-		objs->ComposeWorldTransforms();
+		const bool subtreeMoved = objs->ComposeWorldTransforms();
 		objs->InvalidateSpatialStructure();
+		if( subtreeMoved ) {
+			// The DESCENDANTS the walk moved are not `obj`, so the
+			// emitter check below -- which reads the edited object's own
+			// material -- cannot see that one of them emits.  For a
+			// CONTAINER it is a guaranteed no-op: a container carries no
+			// material at all.  So dragging a container that parents a
+			// lamp would re-render the lamp's geometry at its new place
+			// while the light sampler kept sampling the old one.  Same
+			// argument, and the same conservative answer, as the
+			// incremental apply's gate in Cst.cpp: one extra sampler
+			// rebuild beats a silent geometry/light desync.
+			BumpSceneLightGeneration();
+		}
 	}
 	// Re-review finding B: a spatial change to an EMISSIVE object (move /
 	// rotate / scale / geometry swap) changes its luminary area + world

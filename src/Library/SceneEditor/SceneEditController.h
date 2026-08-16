@@ -187,6 +187,14 @@ namespace RISE
 		//! unresolvable.
 		bool ForTest_GetSelectionPivotWorld( double& wx, double& wy, double& wz ) const;
 
+		//! Test/debug hook: apply the WORLD-space translate op the gizmo's
+		//! translate drag produces, to the current Object selection.  Exists so
+		//! the world-delta path -- which under 87 conjugates the op into the
+		//! object's PARENT frame -- can be regression-tested without
+		//! synthesising a pointer gesture and a camera projection.  Returns
+		//! false if no Object is selected or the edit was refused.
+		bool ForTest_TranslateSelectedObjectWorld( double dx, double dy, double dz );
+
 		//! Hit-test the current gizmo handle array against an image-
 		//! pixel-space pointer position.  Returns the index of the
 		//! closest handle whose screen-space proximity is within its
@@ -3659,7 +3667,9 @@ namespace RISE
 			double  axisDirY[3];      ///< pixels per world unit, y component
 			bool    axisOk[3];        ///< false if axis colinear with view at drag-start
 			Vector3 prevOrient;       ///< object Euler at drag-start (for Rotate)
-			Matrix4 dragStartMatrix;  ///< authoritative final-matrix anchor for scale drag.
+			Matrix4 dragStartMatrix;  ///< authoritative LOCAL-matrix anchor for scale drag (87: the
+			                          ///< scale is applied along the node's own axes, so a world
+			                          ///< anchor would bake a parent's transform into a child).
 			TransformStateV2 dragStartState;  ///< exact components, stack entries, and
 			                                ///< authoritative-matrix metadata at drag-start.
 			bool    dragStartStateValid;    ///< F6: dragStartState captured this drag.

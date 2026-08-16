@@ -11355,8 +11355,6 @@ namespace RISE
 		// ObjectSoloRestoreGuard (declared with the other render guards) is
 		// the restore step.
 
-		//! Collect every object name the manager knows, in the manager's own
-		//! deterministic (sorted, std::map) order.
 		//! How many objects a ray can actually land on.  `populate_scene` reports
 		//! this to the model as its before/after object count, so it must NOT
 		//! include world-invisible bookkeeping nodes -- 87's containers (pure
@@ -11373,7 +11371,8 @@ namespace RISE
 			return counter.n;
 		}
 
-		//! Every REGISTERED object name, including the world-invisible ones (CSG
+		//! Every REGISTERED object name, in the manager's own deterministic
+		//! (sorted, std::map) order -- including the world-invisible ones (CSG
 		//! operands and 87's container nodes).  Callers that mean "objects a ray
 		//! can land on" -- a rendered count, a legend, a palette -- want
 		//! FormatRenderableObjectNames / BuildObjectMapPalette instead, which

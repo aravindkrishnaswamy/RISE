@@ -34,8 +34,11 @@
 //         editor was handed.
 //    H -- deleting a `parent` line actually DETACHES on an incremental apply.
 //    I -- a CSG operand is refused at both ends of a parent link.
-//    J -- the parent-invertibility test is scale-invariant: a well-conditioned
-//         container at x=1e7 is accepted, a collapsed scale is not.
+//    J -- the parent-invertibility test: a well-conditioned container at
+//         x=1e7 is accepted at every distance decade, a collapsed scale is
+//         not, and neither is a COMPOSED singular parent at depth 2.
+//    K -- multi-child fan-out (the tree mechanism itself).
+//    L -- a WORLD-space delta under a rotated, scaled parent.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -479,13 +482,17 @@ int main()
 		Check( perch && Close( Origin( perch->GetFinalTransformMatrix() ).x, 7 ),
 		       "E5: perch starts composed at x=7" );
 		Check( j->RemoveObject( "base" ), "E5: the parent is removed" );
-		Check( j->ComposeObjectHierarchy(), "E5: the removal moved the orphan" );
+		// RemoveObject alone must leave the orphan CORRECT -- no explicit
+		// compose.  Nothing else would do it on this path: Job::RemoveObject
+		// does not compose, and the per-frame re-bake is 87 step 2.  The
+		// `remove object` console command reaches exactly here, so an orphan
+		// left holding its old composed pose would render there indefinitely.
 		perch = Obj( *j, "perch" );
 		Check( perch && Close( Origin( perch->GetFinalTransformMatrix() ).x, 0 )
 		             && Close( Origin( perch->GetFinalTransformMatrix() ).y, 2 ),
-		       "E5: the orphan is re-rooted onto its own local transform (0,2,0)" );
+		       "E5: the orphan is re-rooted onto its own local transform (0,2,0) BY THE REMOVAL ITSELF" );
 		Check( !j->ComposeObjectHierarchy(),
-		       "E5: a second compose is a clean no-op" );
+		       "E5: and a compose afterwards finds nothing left to move" );
 		// The link must be RETIRED, not left dangling: a dangling link makes
 		// every later compose take the fallback path and warn, and keeps the
 		// authored graph describing an object that no longer exists.
@@ -750,6 +757,97 @@ int main()
 		       "J: and the child's world area collapses to zero, so it is never area-sampled" );
 		j->release();
 		std::remove( sK );
+	}
+
+	// =================================================================
+	// K -- MULTI-CHILD FAN-OUT.  Every other case in this file gives each node
+	// at most ONE child, which means the actual tree mechanism -- the
+	// per-parent child list, its ordering, and the walk that descends into all
+	// of it -- has no assertion behind it.  An implementation that composed
+	// only childrenOf[parent][0] would pass every one of them.  This is the
+	// thing 87 adds over 86, so it gets its own case.
+	// =================================================================
+	{
+		const char* sM = "sg_parent_fanout.RISEscene";
+		WriteScene( sM,
+			"standard_object\n{\nname trunk\nposition 0 5 0\nscale 2 2 2\n}\n"
+			"standard_object\n{\nname limb_a\nparent trunk\ngeometry g\nmaterial m\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname limb_b\nparent trunk\ngeometry g\nmaterial m\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname limb_c\nparent trunk\ngeometry g\nmaterial m\nposition 0 0 1\n}\n"
+			"standard_object\n{\nname twig\nparent limb_c\ngeometry g\nmaterial m\nposition 0 0 1\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sM ), "K: fan-out scene loads" );
+		IObjectPriv* a1 = Obj( *j, "limb_a" );
+		IObjectPriv* b1 = Obj( *j, "limb_b" );
+		IObjectPriv* c1 = Obj( *j, "limb_c" );
+		IObjectPriv* tw = Obj( *j, "twig" );
+		Check( a1 && b1 && c1 && tw, "K: all four descendants registered" );
+		if( a1 && b1 && c1 && tw ) {
+			// trunk.world = T(0,5,0)*S(2).  Each limb is one unit out along a
+			// different local axis, so each lands 2 units out along that axis.
+			Check( Close( Origin( a1->GetFinalTransformMatrix() ).x, 2 )
+			    && Close( Origin( a1->GetFinalTransformMatrix() ).y, 5 ),
+			       "K: sibling 1 of 3 composed" );
+			Check( Close( Origin( b1->GetFinalTransformMatrix() ).y, 7 )
+			    && Close( Origin( b1->GetFinalTransformMatrix() ).x, 0 ),
+			       "K: sibling 2 of 3 composed -- not just the first child" );
+			Check( Close( Origin( c1->GetFinalTransformMatrix() ).z, 2 )
+			    && Close( Origin( c1->GetFinalTransformMatrix() ).y, 5 ),
+			       "K: sibling 3 of 3 composed" );
+			// And the walk descends past a sibling: twig hangs off the LAST limb.
+			Check( Close( Origin( tw->GetFinalTransformMatrix() ).z, 4 )
+			    && Close( Origin( tw->GetFinalTransformMatrix() ).y, 5 ),
+			       "K: a grandchild under the THIRD sibling composes (the walk descends past siblings)" );
+		}
+		j->release();
+		std::remove( sM );
+	}
+
+	// =================================================================
+	// L -- the WORLD-SPACE delta path under a NON-IDENTITY parent.  The
+	// absolute setters (cases F, G) are local-space and never touch
+	// PushWorldOp_'s conjugation, so without this the one piece of math 87
+	// singles out -- `parentWorld^-1 * worldOp * parentWorld` -- ships with no
+	// regression coverage at all, and a swapped multiply order or an inverted
+	// WorldToLocal would be invisible.
+	//
+	// The parent is rotated 90 degrees about Z and scaled 2, so its frame is
+	// genuinely different from the world's: a WORLD +X translation of 3 must
+	// move the child by 3 along WORLD +X regardless.
+	// =================================================================
+	{
+		const char* sN = "sg_parent_worldop.RISEscene";
+		WriteScene( sN,
+			"standard_object\n{\nname turret\norientation 0 0 90\nscale 2 2 2\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname barrel\nparent turret\ngeometry g\nmaterial m\nposition 1 0 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sN ), "L: rotated+scaled-parent scene loads" );
+		IObjectPriv* barrel = Obj( *j, "barrel" );
+		Check( barrel != 0, "L: child registered" );
+		if( barrel ) {
+			const Matrix4 before = barrel->GetFinalTransformMatrix();
+			const Point3 p0 = Origin( before );
+			Check( barrel->IsParentWorldInvertible(), "L: the parent frame is invertible" );
+
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "barrel" ) );
+			// The gizmo's translate drag is a WORLD delta.  Drive the same op
+			// the drag produces, directly.
+			Check( c.ForTest_TranslateSelectedObjectWorld( 3, 0, 0 ),
+			       "L: a WORLD-space translate op applies" );
+			IObjectPriv* after = Obj( *j, "barrel" );
+			const Point3 p1 = after ? Origin( after->GetFinalTransformMatrix() ) : Point3( 0, 0, 0 );
+			Check( after && Close( p1.x - p0.x, 3, 1e-9 )
+			             && Close( p1.y - p0.y, 0, 1e-9 )
+			             && Close( p1.z - p0.z, 0, 1e-9 ),
+			       "L: the child moved by exactly the WORLD delta, not the parent-rotated/scaled one" );
+			// The parent's own frame is unchanged by a child edit.
+			IObjectPriv* turret = Obj( *j, "turret" );
+			Check( turret && Close( Origin( turret->GetFinalTransformMatrix() ).x, 1 ),
+			       "L: the parent did not move" );
+		}
+		j->release();
+		std::remove( sN );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

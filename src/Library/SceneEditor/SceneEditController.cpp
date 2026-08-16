@@ -1979,6 +1979,19 @@ bool SceneEditController::ForTest_ProjectWorldToScreen(
 		outSx, outSy );
 }
 
+bool SceneEditController::ForTest_TranslateSelectedObjectWorld( double dx, double dy, double dz )
+{
+	if( mInDestructorTeardown.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex );
+	CancelAndParkRender_( lk );
+	if( mSelectionCategory != Category::Object || mSelectionName.empty() ) return false;
+	SceneEdit edit;
+	edit.op         = SceneEdit::TranslateObject;
+	edit.objectName = mSelectionName;
+	edit.v3a        = Vector3( dx, dy, dz );
+	return mEditor.Apply( edit );
+}
+
 bool SceneEditController::ForTest_GetSelectionPivotWorld(
 	double& wx, double& wy, double& wz ) const
 {
