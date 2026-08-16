@@ -460,11 +460,17 @@ standard_object
   own, and a container (a transform with no `geometry`) is keyframable exactly
   like any other object.
 - The one place hierarchy is **not** re-composed is a per-sample motion-blur
-  sample.  Those read the frame's base-time bake, which is the same limitation
-  the top-level acceleration structure already has
-  ([docs/ARCHITECTURE.md](ARCHITECTURE.md)) — so this makes an existing
-  inconsistency uniform rather than adding one.  Sub-frame motion of a PARENT
-  does not reach its children; sub-frame motion of a leaf works as before.
+  sample.  Those read the frame's base-time bake: sub-frame motion of a leaf
+  blurs as before, but sub-frame motion of a **parent** does not reach its
+  children, so within one shutter an assembly visibly separates — a body smears
+  away from its wheels.  This is related to the stale-TLAS limitation
+  ([docs/ARCHITECTURE.md](ARCHITECTURE.md)) but is **not** the same shape, and
+  it is worth being precise: the TLAS one is *uniform* (every object's bound is
+  equally stale), this one is *differential between objects*.  No energy or PDF
+  consequence — each object's area scale and emitter sampling stay
+  self-consistent with its own current matrix — but if you are blurring a
+  hierarchy, expect it to come apart.  Animate the leaf, or accept the
+  separation.
 - **`rect_light` and `shape_light` take a `parent` too.**  Each synthesizes an
   ordinary scene-graph object, so a lamp can be carried by an assembly: parent
   it to the fixture and the fixture's transform moves the light with it.  Their

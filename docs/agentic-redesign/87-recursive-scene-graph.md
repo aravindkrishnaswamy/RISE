@@ -212,6 +212,25 @@ what was authored, live material included).
   the parent and hides the bug.  The test uses a live transform op for that
   reason.)
 
+- **The light sampler's cached selection weights are one attach stale for any
+  ANIMATED emitter, hierarchy or not.** `LightSampler::Prepare()` caches each
+  luminary's `exitance` and representative position once, at
+  `RayCaster::AttachScene()` — which runs BEFORE the per-frame animation loop
+  starts. Emitter surface sampling and `GetArea()` are queried live, so the
+  estimator stays unbiased; what freezes is the alias-table weight and the RIS
+  representative position, i.e. it is a variance issue, not a bias one. This
+  predates 87 and applies equally to a flat animated emitter — but step 2 makes
+  it reachable through a container (animate the fixture, the lamp rides along),
+  and §2 names `LightSampler` as one of the nine consumers of the composed
+  matrix, so it belongs on this list. Note a fix would still be one frame late
+  as long as `AttachScene` precedes `PrepareForRendering`.
+- **The interactive depth view's extent cache is one pass stale on a parented,
+  animated scene.** `InteractivePelRasterizer` reads
+  `GetSpatialStructureGeneration()` inside `AttachScene`, which the helper runs
+  BEFORE `PrepareForRendering` — so the re-bake bumps the generation after the
+  cache key was read, and frame N normalizes depth against frame N−1's
+  transforms. Self-corrects on the next refinement pass; visible only while
+  scrubbing.
 - **A rank-deficient container silently widens an existing hazard to its
   whole subtree.** `Transformable::FinalizeTransformations` ends with
   `m_mxInvFinalTrans = Matrix4Ops::Inverse( m_mxFinalTrans )`, and

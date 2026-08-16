@@ -10714,6 +10714,22 @@ namespace RISE
 			//!      hidden objects at the LEAF test, which is both correct
 			//!      and free -- no invalidation, no rebuild, in either
 			//!      direction.
+			//!
+			//!      87 STEP 2 WEAKENED THAT PROOF and it is restated here
+			//!      honestly.  PrepareForRendering is no longer purely
+			//!      additive: it re-bakes the hierarchy and, if anything
+			//!      MOVED, invalidates -- so the render's own
+			//!      PrepareForRendering can now destroy and rebuild the TLAS
+			//!      *while the scene is isolated*, which is exactly the
+			//!      one-object-BVH this invariant exists to prevent.  It is
+			//!      unreachable today (nothing between the isolate-time
+			//!      prepare and the render-time prepare moves an object, so
+			//!      the re-bake reports no change), but "unreachable" is a
+			//!      weaker guarantee than "additive", and the combination
+			//!      that would break it -- an isolate render of a PARENTED,
+			//!      ANIMATED subtree -- is precisely what step 2 enables.
+			//!      The destructor therefore invalidates unconditionally
+			//!      rather than relying on it.
 			//!   2. The Scene's light-topology generation is bumped on BOTH
 			//!      the apply and the restore (this guard does the restore
 			//!      half).  A caster's LuminaryManager is rebuilt from
@@ -10757,6 +10773,22 @@ namespace RISE
 						if( RISE::Implementation::Scene* concrete =
 								dynamic_cast<RISE::Implementation::Scene*>( mScene ) ) {
 							concrete->BumpLightTopologyGeneration();
+						}
+						// Invariant 1, since 87 step 2 (see the class doc): a
+						// TLAS built or rebuilt WHILE the scene was isolated
+						// contains one object and would survive this restore,
+						// deleting every other object from all later renders of
+						// this Scene.  Under step 1 that was impossible --
+						// PrepareForRendering only ever ADDED a structure -- so
+						// the guard could prove it away.  It re-bakes now, so
+						// the proof is replaced with the cheap unconditional
+						// act: throw the structure away and let the next
+						// PrepareForRendering build it over the restored set.
+						// Costs one TLAS rebuild per isolate render, which is
+						// already the least expensive thing an isolate render
+						// does.
+						if( mScene && mScene->GetObjects() ) {
+							mScene->GetObjects()->InvalidateSpatialStructure();
 						}
 					}
 					catch( ... ) {

@@ -573,6 +573,114 @@ const char* ObjectManager::GetObjectParent( const char* child ) const
 	return ( i == parentByName.end() ) ? "" : i->second.c_str();
 }
 
+bool ObjectManager::RebakeHierarchy() const
+{
+	// See the header for why this exists next to ComposeWorldTransforms.
+	if( parentByName.empty() ) return false;
+
+	// Both containers are sized by the LINK count, not the object count.
+	std::map<String, std::vector<std::pair<unsigned long long, String> > > childrenOf;
+	std::set<String> isChild;
+	std::map<String, IObjectPriv*> members;
+
+	for( std::map<String,String>::const_iterator it = parentByName.begin(); it != parentByName.end(); ++it ) {
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator ci = items.find( it->first );
+		if( ci == items.end() ) continue;   // the child itself is gone; the structural path owns that
+		const GenericManager<IObjectPriv>::ItemListType::const_iterator pi = items.find( it->second );
+		if( pi == items.end() ) {
+			// Dangling parent.  Warned once per name -- the same dedupe the full
+			// walk uses, and for the same reason: this runs every frame.
+			if( danglingParentWarned.insert( it->first ).second ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"ObjectManager::RebakeHierarchy:: object `%s` names parent `%s`, which is no longer a "
+					"registered object; it is composed as a root", it->first.c_str(), it->second.c_str() );
+			}
+			continue;   // nothing to compose it against; its own finalize already put it on identity
+		}
+		childrenOf[it->second].push_back( std::make_pair( GetItemSerial( it->first.c_str() ), it->first ) );
+		isChild.insert( it->first );
+		members[it->first]  = ci->second.first;
+		members[it->second] = pi->second.first;
+	}
+	if( childrenOf.empty() ) return false;
+	for( std::map<String, std::vector<std::pair<unsigned long long, String> > >::iterator c = childrenOf.begin();
+		c != childrenOf.end(); ++c ) {
+		std::sort( c->second.begin(), c->second.end() );
+	}
+
+	// Seed from the hierarchy's own roots -- members that are nobody's child.
+	std::vector<String> stack;
+	for( std::map<String, IObjectPriv*>::const_iterator m = members.begin(); m != members.end(); ++m ) {
+		if( isChild.find( m->first ) == isChild.end() ) stack.push_back( m->first );
+	}
+	std::reverse( stack.begin(), stack.end() );   // pop in name order, matching the full walk's determinism
+
+	std::set<String> visited;
+	bool anyChanged = false;
+	size_t composed = 0;
+	while( !stack.empty() ) {
+		const String name = stack.back();
+		stack.pop_back();
+		if( !visited.insert( name ).second ) continue;   // cycle bound, same as the full walk
+		const std::map<String, IObjectPriv*>::const_iterator mi = members.find( name );
+		if( mi == members.end() || !mi->second ) continue;
+		IObjectPriv* node = mi->second;
+
+		Matrix4 parentWorld = Matrix4Ops::Identity();
+		const std::map<String,String>::const_iterator link = parentByName.find( name );
+		if( link != parentByName.end() ) {
+			const GenericManager<IObjectPriv>::ItemListType::const_iterator p = items.find( link->second );
+			if( p != items.end() ) parentWorld = p->second.first->GetFinalTransformMatrix();
+		}
+
+		// EXACT compare -- the caller decides whether to throw away the TLAS on
+		// this answer, and a tolerance would let a genuine sub-epsilon move keep
+		// a stale acceleration structure.
+		const Matrix4 before = node->GetFinalTransformMatrix();
+		node->FinalizeTransformations( parentWorld );
+		const Matrix4 after = node->GetFinalTransformMatrix();
+		const Scalar* b = &before._00;
+		const Scalar* a2 = &after._00;
+		for( int k = 0; k < 16; ++k ) {
+			if( b[k] != a2[k] ) {
+				anyChanged = true;
+				node->ResetRuntimeData();   // the caches this node's new matrix invalidates
+				break;
+			}
+		}
+		++composed;
+
+		// Children are held BY NAME, so pushing them is a copy -- this walk is
+		// name-keyed throughout, which is also what lets `visited` bound a cycle
+		// without a second pointer-keyed map.  Reversed so the LIFO stack pops
+		// them in registration-serial order, matching the full walk.
+		const std::map<String, std::vector<std::pair<unsigned long long, String> > >::const_iterator kids =
+			childrenOf.find( name );
+		if( kids != childrenOf.end() ) {
+			for( std::vector<std::pair<unsigned long long, String> >::const_reverse_iterator k = kids->second.rbegin();
+				k != kids->second.rend(); ++k ) {
+				stack.push_back( k->second );
+			}
+		}
+	}
+
+	if( composed != members.size() ) {
+		// Only reachable through a cycle that evaded SetObjectParent's guard.
+		// Deduped by the SAME set the dangling-parent warning uses -- this runs
+		// once per frame, and the full walk's equivalent diagnostic is not
+		// deduped, which would write one line per frame for a whole animation.
+		if( danglingParentWarned.insert( String( "__rebake_incomplete__" ) ).second ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"ObjectManager::RebakeHierarchy:: composed %u of %u hierarchy nodes -- a cycle in the "
+				"link map is the expected cause; the unreached nodes keep the world transform they last had",
+				static_cast<unsigned int>( composed ), static_cast<unsigned int>( members.size() ) );
+		}
+	}
+
+	if( anyChanged ) anyComposedAgainstParent = true;
+	return anyChanged;
+}
+
 bool ObjectManager::ComposeWorldTransforms() const
 {
 	// FAST PATH: a flat scene is the overwhelmingly common case and must cost
@@ -751,7 +859,7 @@ void ObjectManager::PrepareForRendering() const
 	// actually been composed against.  A scene WITH links pays a full walk per
 	// frame; that is bounded by the TLAS rebuild happening a few lines below,
 	// which is strictly more expensive.
-	if( ComposeWorldTransforms() ) {
+	if( RebakeHierarchy() ) {
 		// The walk MOVED something, so any acceleration structure built from
 		// the old bounding boxes is stale.  The animation loop invalidates
 		// before calling us and has usually done this already; repeating it

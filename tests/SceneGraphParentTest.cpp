@@ -65,6 +65,11 @@
 //    Y -- STEP 2: a timeline on a PARENT carries its subtree, scrubbing back
 //         returns it (the stored parent world is not a latch), and re-baking
 //         the same frame repeatedly is idempotent.
+//    Z -- and the configurations Y does not reach: a 3-LEVEL chain animated at
+//         the top, a ROTATING parent (the child must ORBIT, not spin), and a
+//         SCALED parent carrying an EMITTER, whose GetArea() -- and therefore
+//         every pdfPosition derived from it -- has to track the composed
+//         matrix per frame.
 //    U -- and the UNDO path RESTORES rather than refusing: it replays a
 //         document state that existed moments earlier, which the derive
 //         already tolerates.
@@ -2131,13 +2136,21 @@ int main()
 		       "Y: ... and its LOCAL offset is preserved, not overwritten (world = parent * local, "
 		       "not parent alone)" );
 
-		// Scrub BACK.  This is the half that proves the stored parent world is
-		// no longer a LATCH: re-baking every frame means it is recomputed, not
-		// accumulated.  A latch would leave the child at y=10 forever.
+		// Scrub BACK.  Stated honestly, this assertion is IMPLIED by the one
+		// above rather than independent of it: nothing in the composition path
+		// is direction-sensitive (FinalizeTransformations overwrites
+		// m_mxParentWorld unconditionally, and ComposeWorldTransforms' only
+		// fast-path exit is "no links at all"), so a walk that recomposes
+		// correctly forward recomposes correctly backward by the same code.  No
+		// single-line mutation flips this one while leaving the last one
+		// passing.  It is kept as a sequence check, not as the latch proof --
+		// the LATCH proof is the edit-then-scrub block at the end of this case,
+		// which is the only thing here that creates the asymmetric stored state
+		// a latch actually produces.
 		Frame( 0.0 );
 		Check( Close( TipY(), 0.0 ),
-		       "Y: scrubbing BACK returns the child -- the parent world is recomputed each frame, "
-		       "not latched" );
+		       "Y: scrubbing BACK returns the child (sequence check -- see the edit-then-scrub block "
+		       "below for the assertion that actually pins the latch fix)" );
 
 		// And re-baking the SAME frame is IDEMPOTENT, BIT-FOR-BIT.  Composition
 		// is `parentWorld * local` with parentWorld an ARGUMENT, never a stack
@@ -2192,6 +2205,96 @@ int main()
 
 		j->release();
 		std::remove( sY );
+	}
+
+	// =================================================================
+	// Z -- STEP 2, the configurations case Y does not reach.
+	//
+	// Y is one 2-level, translate-only scene.  Everything below renders
+	// correctly today; these exist so a regression in any of them is CAUGHT,
+	// because none of it was covered by anything.
+	//
+	//   Z1  a 3-LEVEL chain animated at the top -- the walk's parent-before-
+	//       child ordering has to hold past one level, and nothing tested that.
+	//   Z2  a ROTATING parent -- the child must ORBIT, not merely spin in
+	//       place.  Y only ever animates `position`, which cannot tell the two
+	//       apart.
+	//   Z3  a SCALED parent carrying an EMITTER -- Object::GetArea() returns
+	//       objArea * m_worldAreaScale (|det|^(2/3)), and every emitter's
+	//       pdfPosition is 1/GetArea().  87 §4 names this as the cache that
+	//       must be recomputed for every node whose world transform changes,
+	//       and 87 §2 names LightSampler as a consumer.  A per-frame re-bake
+	//       that moved objects but left this cache stale would light the scene
+	//       with the wrong PDF and converge to the wrong image -- silently.
+	// =================================================================
+	{
+		const char* sZ = "sg_parent_anim_configs.RISEscene";
+		WriteScene( sZ,
+			"uniformcolor_painter\n{\nname pz\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance pz\nscale 10\n}\n"
+			"sphere_geometry\n{\nname gz\nradius 1\n}\n"
+			// Z1: root -> mid -> leaf, animated at the ROOT only.
+			"standard_object\n{\nname root\nposition 0 0 0\n}\n"
+			"standard_object\n{\nname mid\nparent root\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname leaf\ngeometry gz\nparent mid\nposition 1 0 0\n}\n"
+			// Z2: a parent that ROTATES; the child sits off-axis so an orbit is
+			// distinguishable from a spin.
+			"standard_object\n{\nname pivot\nposition 0 0 0\n}\n"
+			"standard_object\n{\nname rider\ngeometry gz\nparent pivot\nposition 2 0 0\n}\n"
+			// Z3: a parent that SCALES, carrying an emitter.
+			"standard_object\n{\nname riser\nposition 0 0 0\n}\n"
+			"standard_object\n{\nname lamp\ngeometry gz\nmaterial lum\nparent riser\nposition 0 0 0\n}\n"
+			"timeline\n{\nelement root\nparam position\ntime 0.0\nvalue 0 0 0\ntime 1.0\nvalue 0 7 0\n}\n"
+			"timeline\n{\nelement pivot\nparam orientation\ntime 0.0\nvalue 0 0 0\ntime 1.0\nvalue 0 0 90\n}\n"
+			"timeline\n{\nelement riser\nparam scale\ntime 0.0\nvalue 1 1 1\ntime 1.0\nvalue 3 3 3\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sZ ), "Z: scene loads" );
+		IScenePriv* scene = 0;
+		if( IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) ) ) scene = jp->GetScene();
+		Check( scene != 0, "Z: (sanity) the scene is reachable" );
+		auto Frame = [&]( const Scalar t ) {
+			if( !scene ) return;
+			scene->GetAnimator()->EvaluateAtTime( t );
+			scene->GetObjects()->InvalidateSpatialStructure();
+			scene->GetObjects()->PrepareForRendering();
+		};
+		auto WorldOf = [&]( const char* n ) -> Matrix4 {
+			IObjectPriv* o = Obj( *j, n );
+			return o ? o->GetFinalTransformMatrix() : Matrix4();
+		};
+
+		// Baseline, so every assertion below is a CHANGE from a known state.
+		Frame( 0.0 );
+		Check( Close( WorldOf( "leaf" )._30, 2.0 ) && Close( WorldOf( "leaf" )._31, 0.0 ),
+		       "Z1: (baseline) the 3-level leaf sits at the sum of the local offsets" );
+		const Scalar areaAtOne = Obj( *j, "lamp" ) ? Obj( *j, "lamp" )->GetArea() : -1.0;
+		Check( areaAtOne > 0.0, "Z3: (baseline) the emitter reports a positive area" );
+
+		Frame( 1.0 );
+
+		// Z1 -- two levels below the animated node.
+		Check( Close( WorldOf( "leaf" )._31, 7.0 ),
+		       "Z1: a timeline on the ROOT carries a grandchild two levels down" );
+		Check( Close( WorldOf( "leaf" )._30, 2.0 ),
+		       "Z1: ... and both local offsets still compose (1 + 1 on X)" );
+
+		// Z2 -- the child ORBITS.  A parent rotated 90 degrees about Z sends a
+		// child at local (2,0,0) to world (0,2,0).  A child that merely span in
+		// place would still read (2,0,0), so this separates the two.
+		Check( Close( WorldOf( "rider" )._30, 0.0, 1e-9 ) && Close( WorldOf( "rider" )._31, 2.0, 1e-9 ),
+		       "Z2: a ROTATING parent makes the child ORBIT (local (2,0,0) -> world (0,2,0) at 90 "
+		       "degrees), not spin in place" );
+
+		// Z3 -- the emitter's AREA tracks the composed matrix.  A uniform
+		// stretch of 3 has |det| = 27, and m_worldAreaScale is |det|^(2/3) = 9.
+		const Scalar areaAtThree = Obj( *j, "lamp" ) ? Obj( *j, "lamp" )->GetArea() : -1.0;
+		Check( areaAtThree > 0.0 && Close( areaAtThree / areaAtOne, 9.0, 1e-6 ),
+		       "Z3: an animated SCALE on the parent updates the emitter child's world AREA by "
+		       "|det|^(2/3) -- every emitter pdfPosition is 1/GetArea(), so a stale cache here "
+		       "lights the scene with the wrong PDF and converges to the wrong image" );
+
+		j->release();
+		std::remove( sZ );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

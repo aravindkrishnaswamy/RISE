@@ -154,6 +154,32 @@ namespace RISE
 			bool HasChildren( const char* parent ) const;
 			bool ComposeWorldTransforms() const;
 
+			//! The PER-FRAME half of composition: re-bake ONLY the nodes that are
+			//! part of a hierarchy, and leave every unparented, childless object
+			//! alone.
+			//!
+			//! ComposeWorldTransforms walks EVERY registered object, which is right
+			//! for the structural calls (a derive, a detach, a removal -- where an
+			//! object that just LEFT the graph still has to be put back on identity)
+			//! and wrong once per render pass: a single `parent` line anywhere made
+			//! a 16k-object scene re-finalize all 16k every pass, measured at
+			//! +3.5 ms/pass, with nothing amortizing it -- the TLAS rebuild that was
+			//! supposed to dwarf it is exactly what does NOT run when the walk
+			//! reports no change.
+			//!
+			//! Sized by the number of LINKS, not the number of objects: one link in
+			//! a 16k scene touches two nodes.  Skipping the rest is not an
+			//! approximation -- an unparented, childless object composes against
+			//! identity, which is what its own last finalize already used, so the
+			//! full walk's visit to it is a no-op by construction (its before/after
+			//! compare never fires).
+			//!
+			//! DEPENDS on every structural site continuing to call
+			//! ComposeWorldTransforms: a detach removes the ex-child from the link
+			//! map, so this walk can no longer see it, and it is the full walk that
+			//! puts it back on identity.
+			bool RebakeHierarchy() const;
+
 			//! Removing an object also retires its place in the authored graph:
 			//! its own parent link goes, and any object that named it as parent
 			//! is RE-ROOTED.  Doing it here rather than leaving the link to
