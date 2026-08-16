@@ -3848,8 +3848,10 @@ namespace RISE
 		//! `parent` detaches the child.  This records a LINK and nothing else:
 		//! no transform is composed here, which is precisely what makes a
 		//! container's transform edit an ordinary one-chunk param edit and
-		//! makes hierarchical animation work.  Composition happens later, in
-		//! ComposeObjectHierarchy.
+		//! is what will make hierarchical animation work once the per-frame
+		//! re-bake lands (87 section 5 step 2 -- NOT yet: animating a parent
+		//! does not move its children frame-to-frame today).  Composition
+		//! happens in ComposeObjectHierarchy.
 		//!
 		//! Refuses (returning FALSE, changing nothing) when either name is not
 		//! a declared object, when they are the same object, when the link

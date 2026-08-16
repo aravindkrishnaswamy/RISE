@@ -5608,23 +5608,29 @@ static void RISE_API_CreateObjectOrContainer_( IObjectPriv** ppObject, const IGe
 static bool IsLiveCsgOperand_( const IObjectManager* objMgr, const IObjectPriv* obj )
 {
 	if( !objMgr || !obj ) return false;
-	struct Scan : public IEnumCallback<IObjectPriv>
+	// EnumerateItemNames + GetItem rather than EnumerateObjects: the latter
+	// filters on world-visibility, and a NESTED composite is itself hidden by
+	// its outer csg_object -- so its own operands would be invisible to the
+	// scan and slip past this guard.
+	struct NameScan : public IEnumCallback<const char*>
 	{
+		const IObjectManager* mgr = 0;
 		const IObjectPriv* target = 0;
 		bool found = false;
-		bool operator()( const IObjectPriv& candidate ) override
+		bool operator()( const char* const& n ) override
 		{
+			if( !n || !mgr ) return true;
+			const IObjectPriv* cand = mgr->GetItem( n );
 			const Implementation::CSGObject* csg =
-				dynamic_cast<const Implementation::CSGObject*>( &candidate );
+				dynamic_cast<const Implementation::CSGObject*>( cand );
 			if( csg && ( csg->GetOperandA() == target || csg->GetOperandB() == target ) ) found = true;
 			return !found;
 		}
-	} scan;
-	scan.target = obj;
-	// EnumerateObjects filters on world-visibility, which is what we want: a
-	// csg_object is visible, its operands are not.
-	objMgr->EnumerateObjects( scan );
-	return scan.found;
+	} nameScan;
+	nameScan.mgr    = objMgr;
+	nameScan.target = obj;
+	const_cast<IObjectManager*>( objMgr )->EnumerateItemNames( nameScan );
+	return nameScan.found;
 }
 
 //! Is this object a 87 CONTAINER -- a pure transform node?  Distinguished from
@@ -5692,11 +5698,27 @@ bool Job::SetObjectParent( const char* child, const char* parent )
 {
 	if( !pObjectManager ) return false;
 	return pObjectManager->SetObjectParent( child, parent );
+	// Deliberately does NOT compose: a caller wiring up a graph makes many
+	// links and wants ONE walk afterwards, which is what the derive tail does.
+	// ComposeObjectHierarchy is where the consequences are handled.
 }
 
 bool Job::ComposeObjectHierarchy( )
 {
-	return pObjectManager ? pObjectManager->ComposeWorldTransforms() : false;
+	if( !pObjectManager ) return false;
+	const bool moved = pObjectManager->ComposeWorldTransforms();
+	if( moved ) {
+		// Moving objects changes their world bounding boxes and may move an
+		// emitter, and this is the entry point an API host uses directly -- it
+		// has no SceneEditor and no derive to do it.  The two in-tree callers
+		// (Cst's incremental apply, SceneEditor's invariant chain) drive their
+		// own gates off the RETURN value and would otherwise do this twice;
+		// InvalidateSpatialStructure is idempotent and BumpSceneLightGen is a
+		// counter, so a duplicate is harmless.
+		pObjectManager->InvalidateSpatialStructure();
+		BumpSceneLightGen( pScene );
+	}
+	return moved;
 }
 
 //! Adds an object
@@ -6293,6 +6315,35 @@ bool Job::AddCSGObject(
 	// geometry NOR operands.
 	if( IsContainerObject_( pA ) ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A `%s` is a container node (a transform with no geometry and no operands), not a shape", objA ); return false; }
 	if( IsContainerObject_( pB ) ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand B `%s` is a container node (a transform with no geometry and no operands), not a shape", objB ); return false; }
+
+	// 87: an operand is not a scene-graph node -- CSGObject::IntersectRay reads
+	// its matrix as CSG-LOCAL, so composing a world parent into it puts the
+	// operand somewhere nobody asked for.  ObjectManager::SetObjectParent
+	// refuses that, but it identifies an operand as "hidden and not a
+	// container", and an operand is only hidden once ITS csg_object is
+	// applied -- which declare-before-use forces to come AFTER it.  From a
+	// scene file the child-side gate can therefore never fire.  This is the
+	// reciprocal check, at the point where operand-ness is actually decided.
+	{
+		const char* const names[2] = { objA, objB };
+		for( int k = 0; k < 2; ++k ) {
+			const char* pn = pObjectManager->GetObjectParent( names[k] );
+			if( pn && pn[0] ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddCSGObject:: `%s` cannot be a CSG operand -- it is parented to `%s`, and an "
+					"operand's transform is interpreted in this csg_object's frame, not the world's.  "
+					"Parent the csg_object instead.", names[k], pn );
+				return false;
+			}
+			if( pObjectManager->HasChildren( names[k] ) ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddCSGObject:: `%s` cannot be a CSG operand -- other objects are parented to it, "
+					"and they would be placed as if this csg_object had no transform.  Parent them to the "
+					"csg_object instead.", names[k] );
+				return false;
+			}
+		}
+	}
 	IMaterial* pMat = 0;
 	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Material not found `%s`", material ); return false; } }
 	IRayIntersectionModifier* pMod = 0;
@@ -9612,9 +9663,15 @@ bool Job::SetObjectPosition(
 	// transform change moves this node's DESCENDANTS, changes world bounding
 	// boxes, and may move an emitter.  These are public IJob surface for the
 	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
-	ComposeObjectHierarchy();
+	// The compose's ANSWER, not just the call: this node may be a CONTAINER,
+	// which cannot carry a material at all, so gating the light bump on its own
+	// material would make it a guaranteed no-op for exactly the case hierarchy
+	// exists for -- moving a container that parents an emitter.  Same argument
+	// as the three sibling gates (Cst.cpp's incremental apply, SceneEditor's
+	// live edit, Job::RemoveObject).
+	const bool subtreeMoved = ComposeObjectHierarchy();
 	pObjectManager->InvalidateSpatialStructure();
-	if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) BumpSceneLightGen( pScene );
+	if( subtreeMoved || ( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -9641,9 +9698,15 @@ bool Job::SetObjectOrientation(
 	// transform change moves this node's DESCENDANTS, changes world bounding
 	// boxes, and may move an emitter.  These are public IJob surface for the
 	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
-	ComposeObjectHierarchy();
+	// The compose's ANSWER, not just the call: this node may be a CONTAINER,
+	// which cannot carry a material at all, so gating the light bump on its own
+	// material would make it a guaranteed no-op for exactly the case hierarchy
+	// exists for -- moving a container that parents an emitter.  Same argument
+	// as the three sibling gates (Cst.cpp's incremental apply, SceneEditor's
+	// live edit, Job::RemoveObject).
+	const bool subtreeMoved = ComposeObjectHierarchy();
 	pObjectManager->InvalidateSpatialStructure();
-	if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) BumpSceneLightGen( pScene );
+	if( subtreeMoved || ( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -9670,9 +9733,15 @@ bool Job::SetObjectScale(
 	// transform change moves this node's DESCENDANTS, changes world bounding
 	// boxes, and may move an emitter.  These are public IJob surface for the
 	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
-	ComposeObjectHierarchy();
+	// The compose's ANSWER, not just the call: this node may be a CONTAINER,
+	// which cannot carry a material at all, so gating the light bump on its own
+	// material would make it a guaranteed no-op for exactly the case hierarchy
+	// exists for -- moving a container that parents an emitter.  Same argument
+	// as the three sibling gates (Cst.cpp's incremental apply, SceneEditor's
+	// live edit, Job::RemoveObject).
+	const bool subtreeMoved = ComposeObjectHierarchy();
 	pObjectManager->InvalidateSpatialStructure();
-	if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) BumpSceneLightGen( pScene );
+	if( subtreeMoved || ( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) ) BumpSceneLightGen( pScene );
 	return true;
 }
 

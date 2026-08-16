@@ -31,6 +31,7 @@
 
 #include "pch.h"
 #include "SceneEditor.h"
+#include "../Objects/CSGObject.h"   // container-vs-CSG discrimination on the runtime binders
 #include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
 #include "ObjectIntrospection.h"
@@ -906,19 +907,28 @@ bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& wo
 	// predicate was redundant, and deleting it would silently drop the whole
 	// conditioning bound.
 	//
-	//   This check is a RANK / arithmetic test.  A collapsed frame gives an
-	//   O(1) residual and is caught.  It is structurally BLIND to conditioning,
-	//   because the residual is normalised by ONE Frobenius norm over all 16
-	//   entries, which the largest column dominates: error along a direction
-	//   the parent COMPRESSES is invisible, and gets MORE invisible as the
-	//   spread grows (measured 1.0e-16 at spread 1e10, 4.8e-24 at 1e14).
+	//   This check catches GROSS arithmetic failure -- a conjugation that did
+	//   not happen at all.  Its sensitivity is NOT unconditional, and the limit
+	//   is worth naming precisely because it is the same one formulation (1) in
+	//   Transformable.cpp was rejected for: the residual is normalised by ONE
+	//   Frobenius norm over all 16 entries, so it scales as
+	//   |worldOp| / |parentWorld|.  Measured with the predicate bypassed, a
+	//   fully rank-1 parent gives 0.71 at translation 1, 3e-6 at 1e6 and 3e-10
+	//   at 1e10 -- i.e. a far-from-origin collapsed frame would slip through
+	//   this check alone.  It is likewise blind to CONDITIONING: the residual
+	//   SHRINKS as the axis spread grows (1.0e-16 at 1e10, 4.8e-24 at 1e14),
+	//   because error along a direction the parent compresses never reaches the
+	//   norm that divides it.
 	//
 	//   IsParentWorldInvertible() carries the CONDITIONING bound -- the half
 	//   this cannot see.
 	//
-	// Keep both.  The predicate has been wrong five times about rank and scale,
-	// and this measurement cannot be wrong about those; the predicate is the
-	// one that can see conditioning.
+	// So the PREDICATE is the primary gate -- it normalises the linear part
+	// first and is therefore sensitive to rank and conditioning independently
+	// of translation and scale -- and this is the backstop that measures the
+	// arithmetic actually about to be committed.  Neither subsumes the other,
+	// and the predicate has been wrong five times, which is why the backstop
+	// exists.  Nothing here reaches the object unless BOTH agree.
 	//
 	// IsParentWorldInvertible() is a PREDICTION about a matrix, and predicting
 	// this has been got wrong five times in review -- an absolute residual
@@ -1098,7 +1108,16 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
 			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
-			if( mat ) {
+			if( mat && obj.GetGeometry() == 0 && !dynamic_cast<const Implementation::CSGObject*>( &obj ) ) {
+				// 87: a CONTAINER has no surface, so it takes no material -- the
+				// same rule Job::AddObject applies at derive time, and the one
+				// that keeps "null geometry + emissive material" a csg_object-
+				// only shape for the agent's non-sampling-emitter audit.
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor:: `%s` is a container node (no geometry), so it takes no material; "
+					"bind the material to a child that has geometry", edit.objectName.c_str() );
+				ok = false;
+			} else if( mat ) {
 				// P1-4: capture the PRIOR binding before the swap so we can
 				// detect an emitter-set change and bump the light-topology
 				// generation (a reused RayCaster then rebuilds its
@@ -1154,7 +1173,15 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// OpNeedsSpatialRebuild branch.
 		if( mJob ) {
 			const IGeometry* g = mJob->GetGeometry( edit.propertyValue.c_str() );
-			if( g ) obj.AssignGeometry( *g );
+			if( g ) {
+				// 87: giving a CONTAINER geometry makes it a real shape, so it
+				// must become world-visible too.  Left hidden it would be a
+				// hidden node WITH geometry -- which is exactly the fingerprint
+				// ObjectManager::SetObjectParent uses to identify a CSG operand.
+				const bool wasContainer = ( obj.GetGeometry() == 0 );
+				obj.AssignGeometry( *g );
+				if( wasContainer ) obj.SetWorldVisible( true );
+			}
 			else    ok = false;   // P1: forward geometry removed
 		} else {
 			ok = false;

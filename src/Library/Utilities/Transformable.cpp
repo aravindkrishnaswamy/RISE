@@ -524,9 +524,11 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	//      ||Lh||_F == 1 IS the Frobenius condition number.  1e9 keeps ~7 of
 	//      double's ~16 digits through `P^-1 * worldOp * P`.
 	//
-	// Normalising also removes the under/overflow edge the earlier forms had:
-	// a uniform scale of 1e-120 or 1e120 is perfectly conditioned and is now
-	// accepted, where forms (3) and (4) rejected it because det underflowed.
+	// Normalising also removes the under/overflow edge the earlier forms had --
+	// but ONLY with a max-magnitude normaliser.  A Frobenius normaliser sums
+	// squares and so has an edge of its own at ~1e+-154; it did not remove the
+	// earlier forms' edge, it moved it, and a perfectly conditioned uniform
+	// `scale 1e-170` was still refused.  See the normaliser below.
 	//
 	// Verified by sweep against these exact formulas: 0/4000 composed rank-1
 	// accepted, 0/4000 rank-2, 4000/4000 healthy; the anisotropic 1e16 and
@@ -546,16 +548,33 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 		const Scalar* p = &m_mxParentWorld._00;
 		double L[9];
 		bool finite = true;
-		double frob = 0;
+		double biggest = 0;
 		for( int c = 0; c < 3; ++c ) {
 			for( int r = 0; r < 3; ++r ) {
 				const double v = static_cast<double>( p[c * 4 + r] );
 				if( !IsFiniteDouble( v ) ) finite = false;
 				L[c * 3 + r] = v;
-				frob += v * v;
+				const double a2 = std::fabs( v );
+				if( a2 > biggest ) biggest = a2;
 			}
 		}
-		frob = std::sqrt( frob );
+		// The TRANSLATION column too (_30.._32 = p[12..14]).  It is not part of
+		// the linear part and cannot make an affine map singular, but it IS fed
+		// into the stored inverse's own translation below, so a non-finite one
+		// would produce a NaN "inverse" behind a TRUE flag.  An earlier revision
+		// checked only the 3x3 and did exactly that.
+		for( int k = 12; k < 15; ++k ) {
+			if( !IsFiniteDouble( static_cast<double>( p[k] ) ) ) finite = false;
+		}
+		// Normalise by the LARGEST MAGNITUDE ENTRY, not the Frobenius norm.
+		// Frobenius sums squares, so it overflows above ~1e154 and underflows
+		// below ~1e-154 -- it did not remove the earlier forms' under/overflow
+		// edge, it moved it, and a perfectly conditioned uniform `scale 1e-170`
+		// was still refused.  max|entry| is exact and cannot overflow, and it
+		// leaves ||Lh||_F in [1, 3], so `normInv` below is the Frobenius
+		// condition number to within a factor of 3 -- immaterial against a 1e9
+		// bound.
+		const double frob = biggest;
 		const bool affine = ( p[3] == Scalar( 0 ) ) && ( p[7] == Scalar( 0 ) )
 		                 && ( p[11] == Scalar( 0 ) ) && ( p[15] == Scalar( 1 ) );
 

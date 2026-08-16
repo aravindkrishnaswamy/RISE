@@ -910,7 +910,7 @@ namespace RISE
 			template<typename PushFn>
 			static void AddCameraCommonParams( PushFn P ) {
 				{ auto& p = P(); p.name = "name";               p.kind = ValueKind::String;     p.description = "Optional identifier; defaults to \"default\" with auto-suffix on collision."; p.defaultValueHint = "default"; }
-				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "World-space position"; }
+				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "Position, LOCAL to `parent` (world-space when unparented)"; }
 				{ auto& p = P(); p.name = "lookat";             p.kind = ValueKind::DoubleVec3; p.description = "Look-at target point"; }
 				{ auto& p = P(); p.name = "up";                 p.kind = ValueKind::DoubleVec3; p.description = "Up vector"; p.defaultValueHint = "0 1 0"; }
 				// width / height / pixelAR moved to the `film` chunk
@@ -7109,8 +7109,9 @@ namespace RISE
 					// 87 recursive scene graph: record the parent LINK.  Nothing
 					// is composed here -- `world = parent.world * local` is baked
 					// by the derive's tail walk -- which is what makes editing a
-					// container an ordinary one-chunk param edit and makes
-					// hierarchical animation fall out for free.
+					// container an ordinary one-chunk param edit, and is what
+					// will make hierarchical animation fall out for free once
+					// the per-frame re-bake lands (87 step 2; not yet).
 					//
 					// A refused link FAILS the chunk rather than silently
 					// dropping the object out of its tree.  IJob::SetObjectParent
@@ -7148,8 +7149,8 @@ namespace RISE
 							"modifier and shader); with no `geometry` it is a pure CONTAINER -- a transform that "
 							"other objects are parented to, invisible to the renderer itself.  `parent` names "
 							"another object, declared EARLIER in the file, whose transform this one composes "
-							"into: the node's world transform is `parent.world * local`, so moving or animating "
-							"a parent moves its whole subtree.  Nesting is arbitrary; a cycle is refused.  "
+							"into: the node's world transform is `parent.world * local`, so moving a parent moves "
+							"its whole subtree.  Nesting is arbitrary; a cycle is refused.  "
 							"Transform precedence: `matrix` > `quaternion` > `orientation` (Euler).  "
 							"`matrix` (16 doubles, column-major) bypasses the position / orientation / scale "
 							"composition entirely; `quaternion` (xyzw, glTF convention) replaces Euler "
@@ -7162,10 +7163,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
 						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }
 						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Shader override"; }
-						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "Position, LOCAL to `parent` (world-space when unparented)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
-						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 world transform, column-major (overrides position/orientation/quaternion/scale)"; }
+						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 transform, column-major, LOCAL to `parent` (overrides position/orientation/quaternion/scale)"; }
 						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
@@ -7337,13 +7338,13 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
 						  p.description = "Name of the existing object to override."; }
 						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3; p.required = false;
-						  p.description = "World-space position; matches standard_object semantics."; }
+						  p.description = "Position, LOCAL to `parent`; matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3; p.required = false;
 						  p.description = "Euler orientation in DEGREES; matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "quaternion";  p.kind = ValueKind::DoubleVec4; p.required = false;
 						  p.description = "Rotation quaternion (xyzw, glTF); matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "matrix";      p.kind = ValueKind::DoubleMat4; p.required = false;
-						  p.description = "Full 4x4 world transform, column-major; overrides "
+						  p.description = "Full 4x4 transform, column-major, LOCAL to `parent`; overrides "
 						                  "position/orientation/quaternion/scale.  The pre-CST "
 						                  "byte-splice save (deleted in Slice 6d) emitted this for "
 						                  "objects whose transform was not decomposable into "
@@ -7442,7 +7443,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "material";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override material"; }
 						{ auto& p = P(); p.name = "modifier";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Override modifier"; }
 						{ auto& p = P(); p.name = "shader";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Override shader"; }
-						{ auto& p = P(); p.name = "position";        p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";        p.kind = ValueKind::DoubleVec3;p.description = "Position, LOCAL to `parent` (world-space when unparented)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "casts_shadows";   p.kind = ValueKind::Bool;      p.description = "Casts shadows"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows";p.kind = ValueKind::Bool;      p.description = "Receives shadows"; p.defaultValueHint = "TRUE"; }
@@ -7532,7 +7533,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "Position, LOCAL to `parent` (world-space when unparented)";             p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
 						return cd;
@@ -7571,7 +7572,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";  p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)"; p.defaultValueHint = "45"; }
 						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
-						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "Position, LOCAL to `parent` (world-space when unparented)";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
 						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
@@ -7863,6 +7864,19 @@ namespace RISE
 						               "` -- the usual cause is that a chunk of that name already exists" );
 					}
 
+					// 87: the object this chunk synthesizes is an ordinary
+					// scene-graph node, so a lamp can be carried by an assembly.
+					// Unconditional, so deleting the line detaches.
+					{
+						const std::string lightParent = bag.GetString( "parent", "" );
+						const bool wants = !lightParent.empty() && lightParent != "none";
+						if( !pJob.SetObjectParent( name.c_str(), wants ? lightParent.c_str() : 0 ) && wants ) {
+							return Reject( "`parent " + lightParent + "` was refused -- the parent must be a "
+							               "DECLARED-EARLIER object, must not be this object, and must not "
+							               "already be one of its descendants" );
+						}
+					}
+
 					return true;
 				}
 
@@ -7888,6 +7902,7 @@ namespace RISE
 							"It has real area, so it casts soft shadows and falls off with distance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.required = true;
+						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
 						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
 						{ auto& p = P(); p.name = "center";   p.kind = ValueKind::DoubleVec3; p.required = true;
 						  p.description = "World-space centre of the panel"; }
@@ -8142,6 +8157,19 @@ namespace RISE
 						               "` -- the usual cause is that a chunk of that name already exists" );
 					}
 
+					// 87: the object this chunk synthesizes is an ordinary
+					// scene-graph node, so a lamp can be carried by an assembly.
+					// Unconditional, so deleting the line detaches.
+					{
+						const std::string lightParent = bag.GetString( "parent", "" );
+						const bool wants = !lightParent.empty() && lightParent != "none";
+						if( !pJob.SetObjectParent( name.c_str(), wants ? lightParent.c_str() : 0 ) && wants ) {
+							return Reject( "`parent " + lightParent + "` was refused -- the parent must be a "
+							               "DECLARED-EARLIER object, must not be this object, and must not "
+							               "already be one of its descendants" );
+						}
+					}
+
 					return true;
 				}
 
@@ -8174,6 +8202,7 @@ namespace RISE
 							"distance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
+						{ auto& p = P(); p.name = "parent"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent the emitted object to (must be declared earlier); its transform is then LOCAL to that parent"; }
 						  p.description = "Unique name.  Names the OBJECT; the painter, material and geometry this chunk also creates are `<name>__pnt`, `<name>__mat` and `<name>__geo`"; }
 						{ auto& p = P(); p.name = "shape";       p.kind = ValueKind::Enum;       p.required = true;
 						  p.enumValues = {"sphere","ellipsoid","box","cylinder"};

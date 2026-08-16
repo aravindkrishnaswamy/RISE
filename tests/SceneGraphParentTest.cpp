@@ -44,6 +44,10 @@
 //    M -- the stored parent inverse IS the matrix the flag vouches for.
 //    N -- the ACCEPT side of the bound: a world op through an ordinary
 //         rotated, moderately anisotropic parent applies exactly.
+//    O -- the CSG-operand refusal fires from a SCENE FILE, in the declaration
+//         order the language actually forces.
+//    P -- `csg_object`'s own `parent` end to end, and `parent none`.
+//    Q -- a non-finite composed parent world is never behind a TRUE flag.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -75,6 +79,7 @@
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
+#include "../src/Library/Utilities/FiniteMath.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -453,7 +458,10 @@ int main()
 		// cannot cover, because both endpoints already exist.
 		const char* sC = "sg_parent_cycle.RISEscene";
 		WriteScene( sC,
-			"standard_object\n{\nname a\ngeometry g\nmaterial m\n}\n"
+			// `a` carries a NON-IDENTITY transform deliberately: with `a` at the
+			// origin, "c parented to a" and "c detached" both land at x=1 and
+			// the detach assertion below is vacuous.
+			"standard_object\n{\nname a\ngeometry g\nmaterial m\nposition 20 0 0\n}\n"
 			"standard_object\n{\nname b\nparent a\ngeometry g\nmaterial m\nposition 1 0 0\n}\n"
 			"standard_object\n{\nname c\nparent b\ngeometry g\nmaterial m\nposition 1 0 0\n}\n" );
 		Job* j = new Job();
@@ -471,20 +479,20 @@ int main()
 		// A refused reparent must not have half-applied: c still hangs off b,
 		// so it still sits at (2,0,0), and a further compose is a no-op.
 		IObjectPriv* c = Obj( *j, "c" );
-		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 2 ),
-		       "E3: the refused reparents left the chain intact (c is still at x=2)" );
+		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 22 ),
+		       "E3: the refused reparents left the chain intact (c is still at x=22)" );
 		Check( !j->ComposeObjectHierarchy(),
 		       "E3: nothing moved -- the refusals changed no link" );
 
 		// A LEGAL reparent works, and detaching restores the root pose.
 		Check( j->SetObjectParent( "c", "a" ), "E3: reparenting c under a is allowed" );
 		Check( j->ComposeObjectHierarchy(), "E3: the legal reparent moved something" );
-		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 1 ),
-		       "E3: c now composes against a, so it sits at x=1" );
+		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 21 ),
+		       "E3: c now composes against a, so it sits at x=21" );
 		Check( j->SetObjectParent( "c", 0 ), "E3: detaching c is allowed" );
-		j->ComposeObjectHierarchy();
+		Check( j->ComposeObjectHierarchy(), "E3: the detach MOVED c" );
 		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 1 ),
-		       "E3: a detached c falls back to its own local transform" );
+		       "E3: a detached c falls back to its own local transform, x=1 not 21" );
 		j->release();
 		std::remove( sC );
 	}
@@ -711,9 +719,27 @@ int main()
 		       "I: a CSG operand cannot take a parent" );
 		Check( !j->SetObjectParent( "perch2", "opB" ),
 		       "I: nothing can be parented TO a CSG operand" );
+		// NESTED CSG still works.  Checked BEFORE `cut` is parented, because a
+		// parented composite is itself refused as an operand (below) -- and
+		// note "no geometry" alone must NOT be the operand/container test,
+		// since a CSGObject has none either.
+		const IScene* scI = j->GetScene();
+		const IObjectManager* omI = scI ? scI->GetObjects() : 0;
+		Check( omI && omI->GetItem( "nested" ) == 0, "I: `nested` not yet present" );
+		RadianceMapConfig noMapI;
+		const double zeroI[3] = { 0, 0, 0 };
+		Check( j->AddCSGObject( "nested", "cut", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		       "I: a csg_object may take another csg_object as an operand (nested CSG still works)" );
+		Check( !j->AddCSGObject( "bad", "perch2", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		       "I: a CONTAINER is refused as a CSG operand (it is a transform, not a shape)" );
+
 		// The csg_object ITSELF is a world-visible node and IS parentable.
-		Check( j->SetObjectParent( "cut", "perch2" ),
-		       "I: the csg_object itself is an ordinary scene-graph node" );
+		// Use the OUTERMOST composite: `cut` is now an operand of `nested`, so
+		// it is correctly refused for the same reason opA was.
+		Check( !j->SetObjectParent( "cut", "perch2" ),
+		       "I: a composite CONSUMED as an operand is refused, like any other operand" );
+		Check( j->SetObjectParent( "nested", "perch2" ),
+		       "I: the outermost csg_object is an ordinary scene-graph node" );
 		// And that link is AUTHORABLE, so it can persist: a runtime-only link
 		// would be silently reverted by the next full re-derive.
 		bool csgHasParent = false;
@@ -731,19 +757,12 @@ int main()
 		Check( csgHasParent,
 		       "I: and `csg_object` declares a `parent` param, so that link can be written to the "
 		       "document rather than living only in memory" );
-		// And a container is still refused as a CSG operand -- but "no
-		// geometry" alone must NOT be the test, because a CSGObject has none
-		// either and NESTED CSG (an inner composite as an operand) is a
-		// supported construction the corpus actually uses.
-		const IScene* scI = j->GetScene();
-		const IObjectManager* omI = scI ? scI->GetObjects() : 0;
-		Check( omI && omI->GetItem( "nested" ) == 0, "I: `nested` not yet present" );
-		RadianceMapConfig noMapI;
-		const double zeroI[3] = { 0, 0, 0 };
-		Check( j->AddCSGObject( "nested", "cut", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
-		       "I: a csg_object may take another csg_object as an operand (nested CSG still works)" );
-		Check( !j->AddCSGObject( "bad", "perch2", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
-		       "I: a CONTAINER is refused as a CSG operand (it is a transform, not a shape)" );
+		// A composite that IS parented cannot then be consumed as an operand:
+		// an operand's matrix is read in its composite's frame, so the world
+		// parent would be applied in the wrong space.
+		Check( !j->AddCSGObject( "nested2", "nested", "opB", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		       "I: a PARENTED composite is refused as an operand -- its matrix would be read in the "
+		       "outer composite's frame, applying the world parent in the wrong space" );
 		j->release();
 		std::remove( sI );
 	}
@@ -1004,8 +1023,16 @@ int main()
 	// true, so that is what this asserts, at both ends of the exponent range.
 	// =================================================================
 	{
-		const char* kScales[4] = { "1e-120", "1e-40", "1e40", "1e120" };
-		for( int i = 0; i < 4; ++i ) {
+		// The exponents deliberately straddle where a FROBENIUS normaliser
+		// breaks.  Squaring 1e-180 underflows to exactly 0 and squaring 1e180
+		// overflows to inf, so a Frobenius normaliser refuses both -- while the
+		// frames are perfectly conditioned uniform scales.  The committed
+		// normaliser is max|entry|, which cannot do either.  The outermost two
+		// exponents are what pin that choice; the inner ones would pass under
+		// either.
+		const char* kScales[8] = { "1e-180", "1e-170", "1e-120", "1e-40",
+		                           "1e40", "1e120", "1e170", "1e180" };
+		for( int i = 0; i < 8; ++i ) {
 			const char* sT = "sg_parent_tiny.RISEscene";
 			WriteScene( sT,
 				std::string( "standard_object\n{\nname microscale\nscale " ) + kScales[i] + " " +
@@ -1067,6 +1094,116 @@ int main()
 		}
 		j->release();
 		std::remove( sU );
+	}
+
+	// =================================================================
+	// O -- the CSG operand refusal must fire FROM A SCENE FILE.
+	//
+	// ObjectManager::SetObjectParent identifies an operand as "hidden and not
+	// a container", but an operand is only HIDDEN once its csg_object is
+	// applied -- which declare-before-use forces to come AFTER the operand's
+	// own chunk.  So from scene text the child-side gate can never fire, and
+	// the reciprocal check has to live where operand-ness is actually decided.
+	// The render consequence is silent: CSGObject::IntersectRay reads the
+	// operand's matrix as CSG-LOCAL, so a world parent moves the operand
+	// somewhere nobody asked for and the boolean quietly changes shape.
+	// =================================================================
+	{
+		const char* sV = "sg_parent_csg_authored.RISEscene";
+		WriteScene( sV,
+			"standard_object\n{\nname mount\nposition 3 0 0\n}\n"
+			"standard_object\n{\nname pA\ngeometry g\nmaterial m\nparent mount\n}\n"
+			"standard_object\n{\nname pB\ngeometry g\nmaterial m\nposition 0.5 0 0\n}\n"
+			"csg_object\n{\nname carved\nobja pA\nobjb pB\noperation union\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( !j->LoadAsciiSceneViaCst( sV ),
+		       "O: a scene that parents an object and THEN makes it a CSG operand is refused at load" );
+		j->release();
+		std::remove( sV );
+	}
+	{
+		// The other direction: something parented TO an object that later
+		// becomes an operand.
+		const char* sW = "sg_parent_csg_authored2.RISEscene";
+		WriteScene( sW,
+			"standard_object\n{\nname qA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname rider\ngeometry g\nmaterial m\nparent qA\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname qB\ngeometry g\nmaterial m\nposition 0.5 0 0\n}\n"
+			"csg_object\n{\nname welded\nobja qA\nobjb qB\noperation union\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( !j->LoadAsciiSceneViaCst( sW ),
+		       "O: and a scene that parents something TO an object which then becomes an operand" );
+		j->release();
+		std::remove( sW );
+	}
+	{
+		// P -- `csg_object`'s own `parent`, end to end from a scene file, and
+		// `parent none` as the explicit detach form.  Case I only checks that
+		// the descriptor DECLARES the param.
+		const char* sX = "sg_parent_csg_parented.RISEscene";
+		WriteScene( sX,
+			"standard_object\n{\nname rig2\nposition 3 1 -2\n}\n"
+			"standard_object\n{\nname sA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname sB\ngeometry g\nmaterial m\nposition 0.5 0 0\n}\n"
+			"csg_object\n{\nname gadget\nobja sA\nobjb sB\noperation union\nmaterial m\n"
+			"parent rig2\nposition 0.5 -0.25 0.75\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sX ), "P: a parented csg_object loads" );
+		IObjectPriv* gadget = Obj( *j, "gadget" );
+		Check( gadget && Close( Origin( gadget->GetFinalTransformMatrix() ).x, 3.5, 1e-9 )
+		              && Close( Origin( gadget->GetFinalTransformMatrix() ).y, 0.75, 1e-9 )
+		              && Close( Origin( gadget->GetFinalTransformMatrix() ).z, -1.25, 1e-9 ),
+		       "P: the composite composes against its parent -- world (3.5, 0.75, -1.25)" );
+		j->release();
+		std::remove( sX );
+	}
+	{
+		const char* sY = "sg_parent_none.RISEscene";
+		WriteScene( sY,
+			"standard_object\n{\nname holder\nposition 8 0 0\n}\n"
+			"standard_object\n{\nname freed\ngeometry g\nmaterial m\nparent none\nposition 0 1 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sY ), "P: `parent none` loads" );
+		IObjectPriv* freed = Obj( *j, "freed" );
+		Check( freed && Close( Origin( freed->GetFinalTransformMatrix() ).x, 0 ),
+		       "P: `parent none` is the explicit no-parent sentinel, matching `geometry none`" );
+		j->release();
+		std::remove( sY );
+	}
+
+	// =================================================================
+	// Q -- a NON-FINITE parent world must not sit behind a TRUE flag.
+	//
+	// The translation column is not part of the linear part and cannot make an
+	// affine map singular -- but it IS fed into the stored inverse's own
+	// translation, so an infinite one produces a NaN "inverse".  An earlier
+	// revision checked finiteness over the 3x3 only and did exactly that.  No
+	// non-finite literal is needed to reach it: the parser rejects those, and
+	// composition produces one anyway.
+	// =================================================================
+	{
+		const char* sZ = "sg_parent_overflow.RISEscene";
+		WriteScene( sZ,
+			"standard_object\n{\nname gp\nscale 1e150 1e150 1e150\n}\n"
+			"standard_object\n{\nname midz\nparent gp\nscale 1e-150 1e-150 1e-150\nposition 1e200 0 0\n}\n"
+			"standard_object\n{\nname kidz\nparent midz\ngeometry g\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sZ ), "Q: overflow-composing scene loads" );
+		IObjectPriv* kidz = Obj( *j, "kidz" );
+		Check( kidz != 0, "Q: grandchild registered" );
+		if( kidz ) {
+			const Matrix4 P = kidz->GetParentWorldTransformMatrix();
+			const bool parentFinite = IsFiniteDouble( static_cast<double>( P._30 ) )
+			                       && IsFiniteDouble( static_cast<double>( P._31 ) )
+			                       && IsFiniteDouble( static_cast<double>( P._32 ) );
+			Check( !parentFinite,
+			       "Q: (sanity) the composed parent world really does have a non-finite translation" );
+			Check( !kidz->IsParentWorldInvertible(),
+			       "Q: and the flag is FALSE -- a non-finite translation cannot sit behind a TRUE flag, "
+			       "because it is what the stored inverse's own translation is built from" );
+		}
+		j->release();
+		std::remove( sZ );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;
