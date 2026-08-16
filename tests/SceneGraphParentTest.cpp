@@ -613,8 +613,15 @@ int main()
 		       "H: hanger starts composed at x=9" );
 
 		// Remove the `parent` param through the ordinary incremental edit path.
+		// The 0/1/2/3 contract: 1 = INCREMENTAL apply, 2 = full re-derive (clean),
+		// 3 = full re-derive that DIAGNOSED (a failure), 0 = refused.  `!= 0`
+		// would accept 3, and would also let a regression that pushed this edit
+		// onto the full-re-derive fallback pass silently -- and a full re-derive
+		// builds a fresh ObjectManager, which drops every link for free and
+		// makes the detach assertions below vacuous.  This case exists to pin
+		// the INCREMENTAL detach, so it pins exactly that code.
 		const int rc = j->ApplyCstParamRemoveChecked( "hanger", "standard_object", "parent", 0 );
-		Check( rc != 0, "H: the `parent` param removal is accepted" );
+		Check( rc == 1, "H: the `parent` param removal goes through the INCREMENTAL apply (rc == 1)" );
 		hanger = Obj( *j, "hanger" );
 		Check( hanger && Close( Origin( hanger->GetFinalTransformMatrix() ).x, 0 )
 		              && Close( Origin( hanger->GetFinalTransformMatrix() ).y, 2 ),
@@ -702,6 +709,31 @@ int main()
 			j->release();
 			std::remove( sJ );
 		}
+	}
+	{
+		// DEPTH-2 degeneracy.  A flattened GRANDPARENT composes into a
+		// grandchild's parent world as a matrix whose true determinant is zero
+		// but whose COMPUTED determinant is a rounding residue (~1e-17), not
+		// exactly 0 -- so Matrix4Ops::Inverse does not return its input, it
+		// returns an adjugate/det "inverse" with entries ~1e16.  A residual or
+		// backward-error test accepts that (the backward error of a garbage
+		// inverse is small by construction); a conditioning test does not.
+		// This is the depth hierarchy ADDS, so a guard that only works at
+		// depth 1 is a guard that only works on the scenes 87 did not enable.
+		const char* sL = "sg_parent_deep_degenerate.RISEscene";
+		WriteScene( sL,
+			"standard_object\n{\nname flat_gp\norientation -94 16 -47\nposition 1 1.26 -4.3\nscale 0 1 1\n}\n"
+			"standard_object\n{\nname mid_p\nparent flat_gp\norientation 147 -11 18\nposition -3 2.2 0.4\n"
+			"scale 1.739 1.312 2.611\n}\n"
+			"standard_object\n{\nname grandkid\nparent mid_p\ngeometry g\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sL ), "J: depth-2 degenerate scene loads" );
+		IObjectPriv* gk = Obj( *j, "grandkid" );
+		Check( gk && !gk->IsParentWorldInvertible(),
+		       "J: a COMPOSED singular parent is caught at depth 2, where its determinant is a rounding "
+		       "residue rather than exactly zero" );
+		j->release();
+		std::remove( sL );
 	}
 	{
 		// The genuinely degenerate case must still be caught.

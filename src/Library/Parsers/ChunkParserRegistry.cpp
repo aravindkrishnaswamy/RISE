@@ -7091,8 +7091,19 @@ namespace RISE
 							radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
 					}
 
-					if( bRet && !(interior_medium == "none") ) {
+					// A CONTAINER has no interior either -- it has no surface to be
+					// inside of.  Job::AddObject drops the other four surface
+					// bindings; `interior_medium` comes through a separate call, so
+					// it is skipped here, keeping "a container takes no surface
+					// bindings" literally true.
+					const bool isContainer = ( geometry.empty() || geometry == "none" );
+					if( bRet && !isContainer && !(interior_medium == "none") ) {
 						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
+					} else if( bRet && isContainer && !(interior_medium == "none") ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"standard_object `%s`: names no `geometry`, so it is a CONTAINER node -- its "
+							"`interior_medium` binding is IGNORED (a container has no surface to be inside of)",
+							name.c_str() );
 					}
 
 					// 87 recursive scene graph: record the parent LINK.  Nothing

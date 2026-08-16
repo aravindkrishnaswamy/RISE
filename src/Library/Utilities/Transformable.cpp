@@ -482,55 +482,59 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	// `parentWorld * local`, however many times it runs.
 	m_mxParentWorld = parentWorld;
 
-	// VERIFY the inverse rather than trusting a determinant epsilon:
-	// Matrix4Ops::Inverse returns its INPUT UNCHANGED when the determinant is
-	// zero, so a degenerate parent (`scale 0 1 1` anywhere up the chain) would
-	// otherwise hand back a "quotient" that is not an inverse at all.
+	// IS THE PARENT INVERTIBLE, well enough to express a world-space operation
+	// in this node's local frame?  Two formulations were tried and are wrong,
+	// so the reasoning is recorded rather than the conclusion alone.
 	//
-	// The test is the COMPONENTWISE BACKWARD ERROR, |P*P^-1 - I| <= tol*|P|*|P^-1|
-	// (absolute-value matrices, ordinary product), not an absolute epsilon on
-	// the residual.  An absolute epsilon is not scale-invariant and gets this
-	// wrong in BOTH directions: the residual in an affine matrix's translation
-	// column grows like ||t||*eps, so a perfectly well-conditioned container at
-	// `position 1e7 0 0` with any rotation produces a residual near 1e-9 and
-	// would be declared singular, while a tiny near-singular linear part
-	// produces a small residual and would be accepted.  Normalising by
-	// |P|*|P^-1| is the standard backward-error form and is exactly
-	// scale-invariant; a truly singular P (where Inverse handed back its own
-	// input) fails it by construction, because the bound collapses to 0 wherever
-	// the corresponding entry of |P|*|P^-1| is 0.
+	// NOT an absolute residual epsilon on |P*P^-1 - I|.  The residual in an
+	// affine matrix's translation column grows like ||t||*eps, so a
+	// well-conditioned container at `position 1e7 0 0` with any rotation gets
+	// rejected while a tiny near-singular linear part sails through.
+	//
+	// NOT the componentwise backward error |P*P^-1 - I| <= tol*|P|*|P^-1|
+	// either, even though that IS scale-invariant.  Backward error is small BY
+	// CONSTRUCTION for the computed inverse of a singular matrix: once the
+	// determinant underflows to ~1e-17 instead of exactly 0 -- which is what a
+	// COMPOSED transform does, where a flattened grandparent's exact zero
+	// becomes a rounding residue two multiplies later -- the adjugate/det
+	// inverse has entries ~1e16, the bound becomes ~1e16, and an O(1) residual
+	// passes at any tolerance.  It rejects a degenerate parent at depth 1 (det
+	// lands on exactly 0.0) and accepts it at depth 2, which is precisely the
+	// depth hierarchy adds.
+	//
+	// The question is CONDITIONING of the linear part -- translation cannot
+	// make an affine map singular -- and the dimensionless measure of it is the
+	// HADAMARD RATIO, |det(L)| / (||c0|| ||c1|| ||c2||).  It is exactly 1 for an
+	// orthogonal frame, exactly 0 when the columns are linearly dependent, and
+	// invariant under any per-axis scaling, so it carries no units to pick an
+	// epsilon in: the cutoff below says "accept up to roughly 1e9 conditioning",
+	// which is where double precision still leaves ~7 good digits, and it means
+	// the same thing for a millimetre scene and an astronomical one.
 	m_mxParentWorldInv = Matrix4Ops::Inverse( m_mxParentWorld );
 	{
-		const Matrix4 shouldBeIdentity = m_mxParentWorld * m_mxParentWorldInv;
-		const Matrix4 identity = Matrix4Ops::Identity();
-		const Scalar* ip = &shouldBeIdentity._00;
-		const Scalar* ep = &identity._00;
-
-		// |P| * |P^-1|, componentwise-abs operands, ordinary matrix product.
-		// Written out against RISE's `_<col><row>` layout: the flat index of
-		// (col c, row r) is c*4 + r, and (A*B)[c][r] = sum_k A[k][r] * B[c][k].
-		const Scalar* pp = &m_mxParentWorld._00;
-		const Scalar* pi = &m_mxParentWorldInv._00;
-		double bound[16];
-		for( int c = 0; c < 4; ++c ) {
-			for( int r = 0; r < 4; ++r ) {
-				double acc = 0;
-				for( int k = 0; k < 4; ++k ) {
-					acc += std::fabs( static_cast<double>( pp[k * 4 + r] ) )
-					     * std::fabs( static_cast<double>( pi[c * 4 + k] ) );
-				}
-				bound[c * 4 + r] = acc;
+		const Scalar* p = &m_mxParentWorld._00;
+		double colLen[3];
+		bool finite = true;
+		for( int c = 0; c < 3; ++c ) {
+			double acc = 0;
+			for( int r = 0; r < 3; ++r ) {
+				const double v = static_cast<double>( p[c * 4 + r] );
+				if( !IsFiniteDouble( v ) ) finite = false;
+				acc += v * v;
 			}
+			colLen[c] = std::sqrt( acc );
 		}
-
-		m_bParentWorldInvertible = true;
-		for( int k = 0; k < 16; ++k ) {
-			const double d = static_cast<double>( ip[k] ) - static_cast<double>( ep[k] );
-			if( !( std::fabs( d ) <= 1e-9 * bound[k] ) ) {   // `!(<=)` also rejects NaN
-				m_bParentWorldInvertible = false;
-				m_mxParentWorldInv = Matrix4Ops::Identity();
-				break;
-			}
+		const double det = static_cast<double>( Matrix4Ops::Determinant( m_mxParentWorld ) );
+		const double denom = colLen[0] * colLen[1] * colLen[2];
+		// `!(>)` also rejects NaN, in either the determinant or a column.
+		const bool wellConditioned = finite && IsFiniteDouble( det ) && denom > 0
+			&& ( std::fabs( det ) / denom ) > 1e-9;
+		m_bParentWorldInvertible = wellConditioned;
+		if( !wellConditioned ) {
+			// A garbage "inverse" is worse than none: WorldToLocal returns its
+			// input in this state, and its one caller is required to check the
+			// flag and refuse rather than compose with it.
+			m_mxParentWorldInv = Matrix4Ops::Identity();
 		}
 	}
 

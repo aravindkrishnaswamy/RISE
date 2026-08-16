@@ -11357,14 +11357,6 @@ namespace RISE
 
 		//! Collect every object name the manager knows, in the manager's own
 		//! deterministic (sorted, std::map) order.
-		//! Every REGISTERED object name, including the world-invisible ones (CSG
-		//! operands and 87's container nodes).  Callers that mean "objects a ray
-		//! can land on" -- a rendered count, a legend, a palette -- want
-		//! FormatRenderableObjectNames / BuildObjectMapPalette instead, which
-		//! filter on IsWorldVisible().  This one is deliberately unfiltered: its
-		//! consumers resolve NAMES (the instance-generator prefix probe, the
-		//! isolate suggestion list), and a name has to be findable whether or
-		//! not the thing it names is visible.
 		//! How many objects a ray can actually land on.  `populate_scene` reports
 		//! this to the model as its before/after object count, so it must NOT
 		//! include world-invisible bookkeeping nodes -- 87's containers (pure
@@ -11381,6 +11373,14 @@ namespace RISE
 			return counter.n;
 		}
 
+		//! Every REGISTERED object name, including the world-invisible ones (CSG
+		//! operands and 87's container nodes).  Callers that mean "objects a ray
+		//! can land on" -- a rendered count, a legend, a palette -- want
+		//! FormatRenderableObjectNames / BuildObjectMapPalette instead, which
+		//! filter on IsWorldVisible().  This one is deliberately unfiltered: its
+		//! consumers resolve NAMES (the instance-generator prefix probe, the
+		//! isolate suggestion list), and a name has to be findable whether or
+		//! not the thing it names is visible.
 		std::vector<std::string> CollectObjectNames( IObjectManager* objMgr )
 		{
 			struct NameCollector : public IEnumCallback<const char*>

@@ -8,8 +8,12 @@
 //    it here.
 //
 //    Read-back routes through IObject virtuals (GetMaterial,
-//    GetShader, GetFinalTransformMatrix, DoesCastShadows,
-//    DoesReceiveShadows).  Write-back routes through SceneEdit ops
+//    GetShader, GetLocalTransformMatrix, DoesCastShadows,
+//    DoesReceiveShadows).  LOCAL, not final: since 87 an object's final
+//    matrix is `parentWorld * local`, and the position / orientation /
+//    scale rows here ARE the chunk's own params, which are parent-
+//    relative.  Showing the composed world transform under a
+//    parent-relative label would mislead and would not round-trip.  Write-back routes through SceneEdit ops
 //    (SetObjectPosition / Orientation / Stretch / Scale /
 //    SetObjectMaterial / SetObjectShader / SetObjectGeometry /
 //    SetObjectShadowFlags),

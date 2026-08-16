@@ -5642,6 +5642,17 @@ static void ApplyGeometryOrContainer_( IObjectPriv& object, const IGeometry* pGe
 {
 	if( bContainer ) {
 		object.ClearGeometry();
+		// Also drop any binding the object held as a LEAF.  DropContainerSurfaceBindings_
+		// only stops NEW ones being assigned; without this, an object re-pointed
+		// leaf -> container by an edit that deleted its `geometry` line keeps its old
+		// material -- and "a container never carries a material" is the premise the
+		// agent's non-sampling-emitter audit rests on (AgentSession's
+		// CollectNullGeometryEmitters_).
+		object.ClearMaterial();
+		object.ClearModifier();
+		object.ClearShader();
+		object.ClearRadianceMap();
+		object.ClearInteriorMedium();
 		if( !wasContainer ) object.SetWorldVisible( false );
 		return;
 	}

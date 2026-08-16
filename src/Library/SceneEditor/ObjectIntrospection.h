@@ -5,7 +5,8 @@
 //
 //    Phase 1: returns a small fixed list of {name, kind, value-as-
 //    string, description} tuples — Name, Geometry name, Material name,
-//    final-transform position.  Every row is `editable=false`; full
+//    LOCAL-transform position (parent-relative since 87; see the .cpp
+//    header).  Every row is `editable=false`; full
 //    descriptor-driven object editing arrives in Phase 2 (would need
 //    object-side ChunkDescriptors and a SetObjectProperty SceneEdit
 //    op so undo/redo work end-to-end with the camera path).

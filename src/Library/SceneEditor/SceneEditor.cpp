@@ -870,13 +870,21 @@ void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 //! case: a diagnostic beats a corrupt matrix.  A degenerate parent means the
 //! whole subtree is already non-renderable (zero world area, zero-determinant
 //! transform), so there is no correct edit to perform here.
-bool PushWorldOp_( IObjectPriv& obj, const Matrix4& worldOp )
+bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& worldOp )
 {
 	if( !obj.IsParentWorldInvertible() ) {
-		GlobalLog()->PrintEx( eLog_Error,
-			"SceneEditor:: world-space transform op REFUSED -- this object's parent chain composes to a "
-			"NON-INVERTIBLE transform (a zero or collapsed `scale` on an ancestor), so a world-space "
-			"delta cannot be expressed in its local frame.  Fix the ancestor's scale." );
+		// ONCE per object, not once per pointer-move: this fires from inside a
+		// gizmo drag, which would otherwise emit ~60 identical errors a second.
+		// Every neighbouring diagnostic in this file dedupes the same way.
+		static std::set<std::string> warned;
+		const std::string key( objectName.c_str() );
+		if( warned.insert( key ).second ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"SceneEditor:: world-space transform op REFUSED for `%s` -- its parent chain composes to a "
+				"transform that is singular or too ill-conditioned to invert (an ancestor with a zero, "
+				"collapsed or extreme `scale`), so a world-space delta cannot be expressed in its local "
+				"frame.  Fix the ancestor's scale.", key.c_str() );
+		}
 		return false;
 	}
 	obj.PushBottomTransStack( obj.WorldToLocal( worldOp * obj.GetParentWorldTransformMatrix() ) );
@@ -929,7 +937,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// SceneEditController::OnPointerMove), and Transformable::TranslateObject
 		// would push it onto the LOCAL stack -- under a rotated or scaled parent
 		// that moves the object somewhere else entirely.  Conjugate first.
-		ok = PushWorldOp_( obj, Matrix4Ops::Translation( edit.v3a ) );
+		ok = PushWorldOp_( obj, edit.objectName, Matrix4Ops::Translation( edit.v3a ) );
 		break;
 	case SceneEdit::RotateObjectArb:
 		{
@@ -957,7 +965,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 				Matrix4Ops::Translation( pivot )
 			  * Matrix4Ops::Rotation( edit.v3a, edit.s )
 			  * Matrix4Ops::Translation( Vector3( -pivot.x, -pivot.y, -pivot.z ) );
-			ok = PushWorldOp_( obj, aboutPivot );
+			ok = PushWorldOp_( obj, edit.objectName, aboutPivot );
 		}
 		break;
 	case SceneEdit::SetObjectPosition:
@@ -1123,8 +1131,17 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 		// a live edit does not re-derive, and on a scene with no retained CST
 		// Document (or a refused commit) it never will.
 		//
-		// Free for a flat scene: ComposeWorldTransforms returns immediately
-		// when the graph has no links and none are outstanding.
+		// COST, stated honestly rather than asserted away.  On a FLAT scene this
+		// is free -- ComposeWorldTransforms returns immediately when the graph
+		// has no links and none are outstanding, which is every scene that
+		// existed before 87.  On a scene with even one parent link it is O(N)
+		// over the WHOLE object list, per edit, and an edit here means a
+		// gizmo-drag pointer-move.  That is a real cost and it is not hidden:
+		// the named refinement is a subtree-scoped compose (walk down from the
+		// edited node only, since its own parent's world is already current),
+		// which is a strictly smaller version of this same walk.  It is not
+		// built yet because correctness came first and because the next render
+		// pays a whole TLAS rebuild for the same edit regardless.
 		objs->ComposeWorldTransforms();
 		objs->InvalidateSpatialStructure();
 	}
@@ -3081,7 +3098,13 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran
 		// the chain unconditionally, costing a spurious BSP
 		// invalidation per material/shader/shadow redo.
-		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
+		//
+		// 87: gated on fwdOk too.  A transform op can now FAIL -- PushWorldOp_
+		// refuses a world-space delta on a node whose parent chain is not
+		// invertible -- and an op that mutated nothing must not throw away the
+		// TLAS or mark the scene dirty.  Before hierarchy the two transform ops
+		// that route through it could not fail at all.
+		const bool needsSpatialRebuild = fwdOk && SceneEdit::OpNeedsSpatialRebuild( edit.op );
 		if( needsSpatialRebuild ) {
 			RunObjectInvariantChain( *obj );
 			// Phase 6.3 (§7.3): single-op redo marks dirty.

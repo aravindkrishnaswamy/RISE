@@ -558,9 +558,15 @@ bool ObjectManager::ComposeWorldTransforms() const
 		return false;
 	}
 
-	// Children lists.  Ordered by REGISTRATION SERIAL, which for a scene load
-	// is document order -- 87's "child order for display comes from declaration
-	// order".  The composed matrices do not depend on sibling order at all
+	// Children lists.  Ordered by REGISTRATION SERIAL.  On a full derive that IS
+	// document order, which is 87's "child order for display comes from
+	// declaration order".  It is NOT after an incremental apply: a re-pointed
+	// object keeps its old serial, but an object the edit INSERTED gets a fresh
+	// one at the end, so a child inserted mid-file sorts last among its
+	// siblings until the next full derive puts it back.  Composition does not
+	// care -- each child composes against its parent alone -- but the tree UI
+	// (87 section 5 step 4) will, and should read order from the CST document
+	// rather than from here if it needs to be exact between reloads.  The composed matrices do not depend on sibling order at all
 	// (each child composes against its parent alone), but a stable, meaningful
 	// order is what a tree UI needs, and deriving it here means the UI does not
 	// have to keep a parallel index.
@@ -631,11 +637,21 @@ bool ObjectManager::ComposeWorldTransforms() const
 		const Matrix4 before = node->GetFinalTransformMatrix();
 		if( link != parentByName.end() ) sawParented = true;
 		node->FinalizeTransformations( parentWorld );
-		if( !anyChanged ) {
+		{
 			const Matrix4 after = node->GetFinalTransformMatrix();
 			const Scalar* b = &before._00;
 			const Scalar* a2 = &after._00;
-			for( int k = 0; k < 16; ++k ) { if( b[k] != a2[k] ) { anyChanged = true; break; } }
+			bool moved = false;
+			for( int k = 0; k < 16; ++k ) { if( b[k] != a2[k] ) { moved = true; break; } }
+			if( moved ) {
+				anyChanged = true;
+				// A node the walk MOVED needs its per-object runtime caches
+				// dropped, exactly as the edited node does in
+				// SceneEditor::RunObjectInvariantChain.  The editor only knows
+				// about the node it was handed; the descendants it moved
+				// through this walk are ours to reset.
+				node->ResetRuntimeData();
+			}
 		}
 		++composed;
 
@@ -653,14 +669,18 @@ bool ObjectManager::ComposeWorldTransforms() const
 	}
 
 	if( composed != items.size() ) {
-		// Only reachable if the link map contains a cycle -- SetObjectParent
-		// refuses those, so this is a guard against a future writer that
-		// bypasses it.  The unreached nodes keep whatever world transform they
-		// last had; say so loudly rather than rendering a silently stale scene.
+		// A cycle in the link map is the expected cause -- SetObjectParent
+		// refuses those, so this guards a future writer that bypasses it.  The
+		// count can also fall short if one object were ever registered under
+		// two names (the walk visits by POINTER, the count is over NAMES), so
+		// the message reports the observed fact and names the likely cause
+		// rather than asserting it.  Either way the unreached nodes keep
+		// whatever world transform they last had, which is worth saying loudly.
 		GlobalLog()->PrintEx( eLog_Error,
-			"ObjectManager::ComposeWorldTransforms:: composed %u of %u objects -- the remainder are "
-			"unreachable from any root, which means the parent links contain a CYCLE; their world "
-			"transforms are stale",
+			"ObjectManager::ComposeWorldTransforms:: composed %u of %u registered objects -- the "
+			"remainder were not reached from any root, so their world transforms are STALE.  The usual "
+			"cause is a cycle in the parent links; a single object registered under two names would "
+			"also do it.",
 			(unsigned int)composed, (unsigned int)items.size() );
 	}
 
