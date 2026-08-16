@@ -1,11 +1,12 @@
 # 87 — Recursive Scene Graph
 
-**Status: decided 2026-08-15.  §5 steps 0 and 1 are IMPLEMENTED; steps 2–4 are
-not.**  The prose below is the DESIGN as decided and is deliberately left
-as-written — in particular §2's "composition happens in the per-frame prepare
-pass" describes the END STATE, which §5 step 2 delivers; step 1 composes at the
-derive tail and on every live edit, and animating a parent does not yet move its
-children (see `docs/SCENE_CONVENTIONS.md` §5).
+**Status: decided 2026-08-15.  §5 steps 0, 1 and 2 are IMPLEMENTED; steps 3–4
+are not.**  §2's "composition happens in the per-frame prepare pass" is now
+literally true: step 2 re-bakes the hierarchy in
+`ObjectManager::PrepareForRendering()`, so a timeline on a parent carries its
+subtree.  Step 1's derive-tail and live-edit composes remain — they are what
+keeps a non-rendering edit correct — and the per-frame walk is what stops the
+stored parent world being a latch.
 Supersedes and DELETES the single-level grouping shipped in
 [86](86-object-grouping.md) (`48ab06b1`, `da0b6839`, `16b160a6`).
 
@@ -198,21 +199,18 @@ what was authored, live material included).
 
 ### Known, accepted, NOT fixed by step 1
 
-- **An interactive edit rebases an ANIMATED parent's subtree, permanently for
-  the session.** `SceneEditor::RunObjectInvariantChain` calls
-  `ComposeWorldTransforms()`, which is global, not subtree-scoped. It reads
-  each parent's world matrix as it stands *at that instant* — the animated pose
-  when the user is parked at `t = T` — and stores it into every child's
-  `m_mxParentWorld`. Scrub back to `t = 0` and the subtree is displaced by
-  `parentWorld(T)·parentWorld(0)⁻¹`, and every later frame composes against `T`
-  as well. Live-session only: local matrices are untouched, nothing is
-  committed for the displaced descendants, and a reload restores the scene.
-  **This is step 2's absence showing through, and step 2 is its fix** — a
-  per-frame re-bake recomputes every child's parent world from the current
-  pose, so the stored value stops being a latch. There is no worthwhile partial
-  fix: "compose against the parent's pose right now" is what composition means,
-  and any narrower policy here would be replaced wholesale by step 2. Warned
-  about in `docs/SCENE_CONVENTIONS.md` §5 until then.
+- ~~**An interactive edit rebases an ANIMATED parent's subtree.**~~ **CLOSED by
+  step 2.**  The global compose an interactive edit runs read the parent's world
+  as it stood at the parked time and stored it into every child, so scrubbing
+  back left the subtree displaced for the rest of the session.  Re-baking every
+  frame recomputes that stored value instead of inheriting it, so it is no
+  longer a latch.  Regression guard: `SceneGraphParentTest` case Y drives the
+  exact sequence — park at an animated `t=1`, apply a live gizmo-shaped
+  transform to an unrelated object, scrub back — and it is red without the
+  per-frame walk.  (A panel/param edit does NOT reproduce it: that routes
+  through the CST and re-derives at the animator's default time, which resets
+  the parent and hides the bug.  The test uses a live transform op for that
+  reason.)
 
 - **A rank-deficient container silently widens an existing hazard to its
   whole subtree.** `Transformable::FinalizeTransformations` ends with

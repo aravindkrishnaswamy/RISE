@@ -454,30 +454,17 @@ standard_object
   describes the LOCAL transform**, so a child's `position 1 0 0` under a parent
   with `scale 2 2 2` lands two units out, not one.
 - Nesting is arbitrary.  Moving a node moves its whole subtree — on load, on
-  any scene-document edit, and on any interactive transform edit.  (Animating
-  a parent does **not** yet move its children frame-to-frame; the per-frame
-  re-bake that delivers hierarchical animation is
-  [87](agentic-redesign/87-recursive-scene-graph.md) §5 step 2 and has not
-  landed.)
-- **Do not animate a parent and interactively edit in the same session, until
-  step 2 lands.**  Those two statements interact, and the interaction is the
-  surprising part.  An interactive transform edit runs a GLOBAL re-compose,
-  which reads each parent's world matrix *as it is at that instant* — the
-  ANIMATED pose if you are parked at `t = T` — and stores it in every child.
-  Scrub back to `t = 0` and the subtree is displaced by
-  `parentWorld(T)·parentWorld(0)⁻¹`, and stays that way: the subtree's pose
-  becomes a function of when you happened to nudge something.  It is a LIVE
-  SESSION artifact only — the local transforms are untouched, nothing is
-  written to the document for the displaced children, and a reload restores
-  the scene.  The per-frame re-bake fixes it properly by recomputing every
-  child's parent world each frame; there is no partial fix worth having in the
-  meantime, because "compose against the parent's current pose" is exactly what
-  composition means.
-- A container takes **no surface bindings**.  A `material`, `modifier`,
-  `shader` or `radiance_map` on a geometry-less object is ignored with a
-  warning — a container has no surface, and an emissive material on one would
-  be a light that nothing can ever sample.  Put them on a child that has
-  geometry.
+  any scene-document edit, on any interactive transform edit, and **on every
+  animated frame**.  A `timeline` on a parent therefore carries its children:
+  animate the assembly, not each part.  The children need no timeline of their
+  own, and a container (a transform with no `geometry`) is keyframable exactly
+  like any other object.
+- The one place hierarchy is **not** re-composed is a per-sample motion-blur
+  sample.  Those read the frame's base-time bake, which is the same limitation
+  the top-level acceleration structure already has
+  ([docs/ARCHITECTURE.md](ARCHITECTURE.md)) — so this makes an existing
+  inconsistency uniform rather than adding one.  Sub-frame motion of a PARENT
+  does not reach its children; sub-frame motion of a leaf works as before.
 - **`rect_light` and `shape_light` take a `parent` too.**  Each synthesizes an
   ordinary scene-graph object, so a lamp can be carried by an assembly: parent
   it to the fixture and the fixture's transform moves the light with it.  Their

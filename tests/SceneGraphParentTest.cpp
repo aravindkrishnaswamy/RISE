@@ -62,6 +62,9 @@
 //         the sequence that proved it.
 //    X -- and the exemption reaches the COMPOSITE redo loop, not just the
 //         single-edit one.
+//    Y -- STEP 2: a timeline on a PARENT carries its subtree, scrubbing back
+//         returns it (the stored parent world is not a latch), and re-baking
+//         the same frame repeatedly is idempotent.
 //    U -- and the UNDO path RESTORES rather than refusing: it replays a
 //         document state that existed moments earlier, which the derive
 //         already tolerates.
@@ -86,6 +89,7 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Interfaces/IAnimator.h"
 #include "../src/Library/Scene.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IEmitter.h"
@@ -2063,6 +2067,131 @@ int main()
 		}
 		j->release();
 		std::remove( sX );
+	}
+
+	// =================================================================
+	// Y -- 87 STEP 2: HIERARCHICAL ANIMATION.
+	//
+	// A timeline on a PARENT carries its whole subtree, with no animation code
+	// of its own -- the per-frame re-bake in ObjectManager::PrepareForRendering
+	// recomposes every child against its parent's CURRENT world.  Under step 1
+	// the child never moved: it kept the parent world it was handed at derive.
+	//
+	// The parent here is a CONTAINER (no geometry), which is the case the whole
+	// design exists for -- an assembly that carries its parts -- and the case a
+	// geometry-bearing test would not have covered.
+	//
+	// Driven exactly as the production loop drives it
+	// (PixelBasedRasterizerHelper: EvaluateAtTime -> InvalidateSpatialStructure
+	// -> PrepareForRendering), because WHERE the re-bake happens is part of what
+	// is under test: the animator alone does not do it.
+	// =================================================================
+	{
+		const char* sY = "sg_parent_animated.RISEscene";
+		WriteScene( sY,
+			"sphere_geometry\n{\nname gy\nradius 1\n}\n"
+			"standard_object\n{\nname arm\nposition 0 0 0\n}\n"
+			"standard_object\n{\nname tip\ngeometry gy\nparent arm\nposition 2 0 0\n}\n"
+			"standard_object\n{\nname bystander\ngeometry gy\nposition -5 0 0\n}\n"
+			"timeline\n{\nelement arm\nparam position\n"
+			"time 0.0\nvalue 0 0 0\n"
+			"time 1.0\nvalue 0 10 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sY ), "Y: scene loads" );
+		IScenePriv* scene = 0;
+		if( IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) ) ) scene = jp->GetScene();
+		Check( scene != 0, "Y: (sanity) the scene is reachable" );
+
+		auto TipY = [&]() -> Scalar {
+			IObjectPriv* tip = Obj( *j, "tip" );
+			return tip ? tip->GetFinalTransformMatrix()._31 : -12345.0;
+		};
+		auto TipX = [&]() -> Scalar {
+			IObjectPriv* tip = Obj( *j, "tip" );
+			return tip ? tip->GetFinalTransformMatrix()._30 : -12345.0;
+		};
+		auto Frame = [&]( const Scalar t ) {
+			if( !scene ) return;
+			scene->GetAnimator()->EvaluateAtTime( t );
+			scene->GetObjects()->InvalidateSpatialStructure();
+			scene->GetObjects()->PrepareForRendering();
+		};
+
+		// Baseline: composed at the derive tail, parent at the origin.
+		Check( Close( TipX(), 2.0 ) && Close( TipY(), 0.0 ),
+		       "Y: (baseline) the child sits at its LOCAL offset while the parent is at the origin" );
+
+		// t = 1: the parent's timeline has moved it to y=10.  The child must
+		// follow -- it has no timeline of its own.
+		Frame( 1.0 );
+		Check( Close( TipY(), 10.0 ),
+		       "Y: a timeline on the PARENT carries the child -- the child has no timeline of its own, "
+		       "and under step 1 it did not move at all" );
+		Check( Close( TipX(), 2.0 ),
+		       "Y: ... and its LOCAL offset is preserved, not overwritten (world = parent * local, "
+		       "not parent alone)" );
+
+		// Scrub BACK.  This is the half that proves the stored parent world is
+		// no longer a LATCH: re-baking every frame means it is recomputed, not
+		// accumulated.  A latch would leave the child at y=10 forever.
+		Frame( 0.0 );
+		Check( Close( TipY(), 0.0 ),
+		       "Y: scrubbing BACK returns the child -- the parent world is recomputed each frame, "
+		       "not latched" );
+
+		// And re-baking the SAME frame is IDEMPOTENT, BIT-FOR-BIT.  Composition
+		// is `parentWorld * local` with parentWorld an ARGUMENT, never a stack
+		// push, so it cannot accumulate -- that is the 86 bug class the design
+		// exists to make structurally impossible, and step 2 is what starts
+		// running it hundreds of times per render.  Exact equality, not a
+		// tolerance: a tolerance here would hide exactly the slow drift this is
+		// guarding against.
+		Frame( 1.0 );
+		Matrix4 afterFirst;
+		if( IObjectPriv* tip = Obj( *j, "tip" ) ) afterFirst = tip->GetFinalTransformMatrix();
+		Frame( 1.0 );
+		Frame( 1.0 );
+		IObjectPriv* tipAfter = Obj( *j, "tip" );
+		Check( tipAfter && Mat4Exact( tipAfter->GetFinalTransformMatrix(), afterFirst ),
+		       "Y: re-baking the SAME frame three times is BIT-FOR-BIT idempotent -- composition takes "
+		       "the parent world as an argument, so it cannot accumulate" );
+		Check( Close( TipY(), 10.0 ) && Close( TipX(), 2.0 ),
+		       "Y: ... and still at the right place" );
+
+		// THE DOCUMENTED STEP-1 GAP, CLOSED.  87 §4 recorded this as "known,
+		// accepted": an interactive edit while parked at an animated t=T ran a
+		// GLOBAL compose, which read the parent's world AS IT WAS AT T and
+		// stored it into every child.  Scrubbing back then left the subtree
+		// displaced by parentWorld(T)*parentWorld(0)^-1 -- for the rest of the
+		// session, because nothing recomputed it.  Per-frame re-baking is why
+		// that is now unreachable, so the scenario is exercised rather than
+		// left as prose.
+		{
+			Frame( 1.0 );
+			Check( Close( TipY(), 10.0 ), "Y: (setup) parked at t=1 with the subtree carried" );
+
+			// A GIZMO-shaped edit specifically: a live transform op mutates the
+			// object in place and runs RunObjectInvariantChain, whose global
+			// compose is what read the animated parent's pose.  A panel/param
+			// edit would NOT reproduce it -- that routes through the CST and
+			// re-derives the whole scene at the animator's default time, which
+			// resets the parent and hides the bug.
+			SceneEditController c( *j, 0 );
+			SceneEdit e;
+			e.op         = SceneEdit::TranslateObject;
+			e.objectName = String( "bystander" );
+			e.v3a        = Vector3( 1, 0, 0 );
+			Check( c.Editor().Apply( e ),
+			       "Y: a live TRANSFORM edit on an UNRELATED object applies while parked at t=1" );
+
+			Frame( 0.0 );
+			Check( Close( TipY(), 0.0 ) && Close( TipX(), 2.0 ),
+			       "Y: scrubbing back after that edit returns the child EXACTLY -- the edit's global "
+			       "compose no longer latches the animated parent's pose into the subtree" );
+		}
+
+		j->release();
+		std::remove( sY );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

@@ -727,6 +727,43 @@ void ObjectManager::PrepareForRendering() const
 	// realize pass, and this is the funnel they share.  Idempotent.
 	RealizeAllObjects();
 
+	// 87 step 2: RE-BAKE the hierarchy, every frame.  This is the whole of
+	// hierarchical animation.  On the animation path EvaluateAtTime runs
+	// immediately before every call to this function, moving whatever this
+	// frame's keyframes drive; each of those nodes finalized against the parent
+	// world it was LAST handed, which is the PREVIOUS frame's.  Re-walking here
+	// recomposes every child against its parent's CURRENT world, so a timeline
+	// on a parent carries its whole subtree with no animation code of its own --
+	// `Transformable` already implements IKeyframable, so a container node is
+	// keyframable for free.
+	//
+	// It also stops the stored parent world being a LATCH.  Under step 1 an
+	// interactive edit while the user was parked at an animated t=T wrote
+	// parentWorld(T) into every child and left it there, so scrubbing back
+	// displaced the subtree for the rest of the session.  Recomputing it every
+	// frame is the fix, and it is why no narrower one was worth having.
+	//
+	// NOT a structural re-flatten, per 87 §5 step 2: the object list and the
+	// name map are untouched.  This walks into already-allocated entries.
+	//
+	// A scene with no `parent` links pays one predicate for this --
+	// ComposeWorldTransforms' fast path returns immediately unless a link has
+	// actually been composed against.  A scene WITH links pays a full walk per
+	// frame; that is bounded by the TLAS rebuild happening a few lines below,
+	// which is strictly more expensive.
+	if( ComposeWorldTransforms() ) {
+		// The walk MOVED something, so any acceleration structure built from
+		// the old bounding boxes is stale.  The animation loop invalidates
+		// before calling us and has usually done this already; repeating it
+		// makes the postcondition -- "on return, the spatial structure matches
+		// the world transforms" -- true for EVERY caller, including the GUI
+		// production-render and picking paths that arrive here directly.  It
+		// costs nothing when nothing moved: the walk's change test is an exact
+		// 16-word matrix compare, so a static parented scene answers false on
+		// every frame after the first.
+		InvalidateSpatialStructure();
+	}
+
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH ) {
 		CreateBVH();
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {
