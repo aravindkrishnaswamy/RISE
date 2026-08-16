@@ -205,7 +205,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 
 	DerivedV1 d; d.resolutionTier=tierValue; d.peakEnvelope=peak;
 	d.limiterAcceptanceModelVersion="two_class_face_infimum_v1";
-	d.pilotModelVersion="prescribed_isothermal_kernel_ordinary_tableau_v4";
+	d.pilotModelVersion="prescribed_isothermal_kernel_ordinary_tableau_restored_manifold_v5";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
 	d.pilotSetpointTemperatureK=900.0;
 	d.pilotExpansionVolumeRatioCap=17.0/16.0;

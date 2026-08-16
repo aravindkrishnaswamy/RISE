@@ -210,6 +210,20 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         self.assertEqual(committed, generated)
         self.assertIn("kFireSimMethanePhysicalV1SHA256", generated)
 
+    def test_r69_manifold_restoration_has_no_zero_increment_bypass(self) -> None:
+        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
+        start = core.index("inline bool DivergenceFromDiscreteIncrement(")
+        end = core.index("\n\t\tinline ", start + 1)
+        body = core[start:end]
+        self.assertNotRegex(body, r"if\s*\(\s*zero\s*\).*result\s*=\s*0\.0")
+        self.assertIn("candidateVector=stateVector+nonadvectiveAndSourceIncrement", body)
+        self.assertIn("result=(candidateVolume-1.0)/deltaTimeS", body)
+        one_d_start = core.index("inline bool PeriodicDivergenceTargetFromPhysicalFlux(")
+        one_d_end = core.index("\n\t\tinline ", one_d_start + 1)
+        one_d_body = core[one_d_start:one_d_end]
+        self.assertIn("DivergenceFromDiscreteIncrement", one_d_body)
+        self.assertNotIn("DivergenceFromDiscreteRate", one_d_body)
+
     def test_r52_operational_constant_taxonomy(self) -> None:
         ignition = self.record["ignition_gate"]
         pilot = ignition["pilot_temperature_K"]

@@ -1299,14 +1299,11 @@ namespace RISE
 			if(!std::isfinite(deltaTimeS)||deltaTimeS<=0.0||
 				!std::isfinite(temperatureK)||temperatureK<=0.0)
 				return Fail(error,"fire solver finite-increment divergence input is invalid");
-			bool zero=true;
 			for(std::size_t component=0;component<MethaneConservativeDimension;++component){
 				const double value=nonadvectiveAndSourceIncrement[component];
 				if(!std::isfinite(value))return Fail(error,
 					"fire solver finite-increment divergence input is non-finite");
-				zero=zero&&value==0.0;
 			}
-			if(zero){result=0.0;return true;}
 			static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
 			auto volumeRatio=[&](const MethaneCellState& state,const double temperature,
 				double& ratio)->bool{
@@ -1374,6 +1371,7 @@ namespace RISE
 			const PeriodicFluxPair& flux,
 			const std::vector<ConservativeVector>& frozenSourcePerS,
 			const double cellWidthM,
+			const double deltaTimeS,
 			const FireSimulationMethaneRecord& thermochemistry,
 			std::vector<double>& result,
 			std::string* error = 0
@@ -1381,20 +1379,22 @@ namespace RISE
 		{
 			const std::size_t count = state.size();
 			if( count < 3 || temperatureK.size() != count || flux.nonadvectiveMass.size() != count ||
-				flux.nonadvectiveEnergy.size() != count || frozenSourcePerS.size() != count ) {
+				flux.nonadvectiveEnergy.size() != count || frozenSourcePerS.size() != count ||
+				!std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ) {
 				return Fail(error,"fire solver divergence target arrays are malformed");
 			}
 			result.assign(count,0.0);
 			for( std::size_t cell=0; cell<count; ++cell ) {
 				const std::size_t leftFace = (cell+count-1)%count;
-				ConservativeVector rate = frozenSourcePerS[cell];
+				ConservativeVector increment = deltaTimeS*frozenSourcePerS[cell];
 				for( std::size_t component=0; component<MethaneMassStateDimension; ++component ) {
-					rate[component] += (flux.nonadvectiveMass[leftFace][component]-
+					increment[component] += deltaTimeS*(flux.nonadvectiveMass[leftFace][component]-
 						flux.nonadvectiveMass[cell][component])/cellWidthM;
 				}
-				rate[MethaneMassStateDimension] += (flux.nonadvectiveEnergy[leftFace]-
+				increment[MethaneMassStateDimension] += deltaTimeS*(flux.nonadvectiveEnergy[leftFace]-
 					flux.nonadvectiveEnergy[cell])/cellWidthM;
-				if( !DivergenceFromDiscreteRate(state[cell],rate,temperatureK[cell],
+				if( !DivergenceFromDiscreteIncrement(state[cell],increment,temperatureK[cell],
+					deltaTimeS,
 					thermochemistry,result[cell],error) ) return false;
 			}
 			return true;
@@ -4592,7 +4592,8 @@ namespace RISE
 				}
 				std::vector<double> nextTarget;
 				if( !PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,flux,
-					frozenSourcePerS,config.cellWidthM,thermochemistry,nextTarget,error) ) return false;
+					frozenSourcePerS,config.cellWidthM,config.deltaTimeS,thermochemistry,
+					nextTarget,error) ) return false;
 				double residual = 0.0, massFluxResidual = 0.0,
 					coefficientResidual = 0.0;
 				for( std::size_t cell=0; cell<state.size(); ++cell ) {
@@ -4641,7 +4642,8 @@ namespace RISE
 							thermochemistry,acceptedFlux,error)) return false;
 						std::vector<double> verifiedTarget;
 						if(!PeriodicDivergenceTargetFromPhysicalFlux(state,temperature,acceptedFlux,
-							frozenSourcePerS,config.cellWidthM,thermochemistry,verifiedTarget,error))
+							frozenSourcePerS,config.cellWidthM,config.deltaTimeS,thermochemistry,
+							verifiedTarget,error))
 							return false;
 						double verification=0.0;
 						if(!PicardContinuousVerificationResidual(verifiedTarget,target,
@@ -4759,7 +4761,8 @@ namespace RISE
 			if( !InvertPeriodicTemperatures(result.conservative,thermochemistry,
 				heunTemperature,error) || !PeriodicDivergenceTargetFromPhysicalFlux(
 					result.conservative,heunTemperature,averaged,frozenSourcePerS,
-					config.cellWidthM,thermochemistry,result.divergenceHeunPerS,error) ) return false;
+					config.cellWidthM,config.deltaTimeS,thermochemistry,
+					result.divergenceHeunPerS,error) ) return false;
 			std::vector<double> low1, high1, diffusion1;
 			GasPrimalSubfluxes(result.r1.flux,low1,high1,diffusion1);
 			std::vector<double> accepted0(count), accepted1(count);

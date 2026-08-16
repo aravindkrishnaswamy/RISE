@@ -4276,6 +4276,73 @@ int main()
 		exactPairPackets[exactPairSourceCell].sensibleEnergyDeltaJPerM3==
 		canonicalCappedPair.sensibleEnergyDeltaJPerM3,
 		"r67 pilot ledger is bit-exact against the emitted packet alone");
+	PeriodicMACShape restorationShape;
+	restorationShape.nx=3;restorationShape.ny=3;restorationShape.nz=3;
+	restorationShape.cellWidthM=0.05;
+	ConservativeAdvance3DConfig restorationConfig=exactPairConfig;
+	restorationConfig.transport.cellWidthM=restorationShape.cellWidthM;
+	restorationConfig.transport.deltaTimeS=0.001;
+	restorationConfig.retainStageDiagnostics=false;
+	restorationConfig.openBoundary.kind.fill(AdiabaticWallBoundary3D);
+	restorationConfig.openBoundary.kind[5]=PressureOpenBoundary3D;
+	restorationConfig.openBoundary.bottomFuelMask.clear();
+	restorationConfig.openBoundary.bottomFuelMassFluxKGPerM2S.clear();
+	std::vector<ConservativeVector> restorationStates(restorationShape.CellCount(),
+		ToConservativeVector(pilotBeginning));
+	OpenMACField3D restorationMomentum;
+	for(unsigned int axis=0;axis<3;++axis)restorationMomentum.component[axis].assign(
+		OpenMACFaceCount3D(restorationShape,axis),0.0);
+	const std::size_t restorationSource=restorationShape.Index(1,1,0);
+	std::vector<double> restorationResidualHistory;
+	bool restorationRunOK=true,restorationHoldObserved=false;
+	for(unsigned int restorationStepIndex=0;restorationStepIndex<200u&&restorationRunOK;
+		++restorationStepIndex){
+		MethaneCellState sourceState=FromConservativeVector(restorationStates[restorationSource]);
+		restorationRunOK=InvertMethaneTemperatureWithinAcceptedEnvelope(sourceState,
+			thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
+			sourceState.temperatureK,&error);
+		MethaneReactionStep restorationPilotStep=pilotStep;
+		restorationPilotStep.deltaTimeS=restorationConfig.transport.deltaTimeS;
+		std::vector<MethaneSourcePacket> restorationPackets(restorationShape.CellCount());
+		restorationRunOK=restorationRunOK&&BuildMethaneReactionPacket(sourceState,fuel,
+			restorationPilotStep,restorationPackets[restorationSource],&error);
+		OpenConservativeAdvance3DResult restorationAdvanced;
+		restorationRunOK=restorationRunOK&&AdvanceOpenConservative3DImplementation(
+			restorationShape,restorationStates,restorationMomentum,restorationPackets,
+			restorationConfig,fuel,thermochemistry,transport,restorationAdvanced,&error);
+		double stepMaximumResidual=0.0;
+		for(std::size_t cell=0;restorationRunOK&&cell<restorationStates.size();++cell){
+			MethaneCellState accepted=FromConservativeVector(restorationAdvanced.conservative[cell]);
+			restorationRunOK=InvertMethaneTemperatureWithinAcceptedEnvelope(accepted,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+				thermochemistry,accepted.temperatureK,&error);
+			double residual=0.0;
+			restorationRunOK=restorationRunOK&&EquationOfStateResidual(accepted,
+				thermochemistry,residual,&error);
+			stepMaximumResidual=std::max(stepMaximumResidual,residual);
+			if(cell==restorationSource&&accepted.temperatureK>=899.0&&
+				accepted.temperatureK<=900.0)restorationHoldObserved=true;
+		}
+		if(restorationRunOK){
+			restorationResidualHistory.push_back(stepMaximumResidual);
+			restorationStates=std::move(restorationAdvanced.conservative);
+			restorationMomentum=std::move(restorationAdvanced.momentumKGPerM2S);
+		}
+	}
+	double firstHalfMaximum=0.0,lastHalfMaximum=0.0;
+	bool postApproachDecrease=false;
+	for(std::size_t sample=0;sample<restorationResidualHistory.size();++sample){
+		if(sample<100u)firstHalfMaximum=std::max(firstHalfMaximum,
+			restorationResidualHistory[sample]);
+		else lastHalfMaximum=std::max(lastHalfMaximum,restorationResidualHistory[sample]);
+		if(sample>20u&&restorationResidualHistory[sample]<
+			restorationResidualHistory[sample-1u])postApproachDecrease=true;
+	}
+	Check(restorationRunOK&&restorationResidualHistory.size()==200u&&
+		restorationHoldObserved&&postApproachDecrease&&lastHalfMaximum<=
+			1.25*std::max(firstHalfMaximum,1.0e-15)&&lastHalfMaximum<1.0e-3,
+		"r69 pilot approach and hold plateaus at per-step EOS scale for 200 production steps");
+	if(!restorationRunOK)std::printf("r69 restoration plateau diagnostic: %s\n",error.c_str());
 	MethaneSourcePacket thermostatPacket;
 	Check(BuildMethaneReactionPacket(beginning,fuel,pilotStep,thermostatPacket,&error)&&
 		thermostatPacket.pilotEnergyDeltaJPerM3==0.0&&
@@ -4390,7 +4457,75 @@ int main()
 		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedGasRate,&error)&&
 		!ValidateFrozenMethaneSourcePacketLedger(beginning,step,fuel,corruptedSootRate,&error),
 		"V4 frozen-packet validator rejects mass/atom, Hs/chemical-potential, oxygen, and heat-rate corruption");
-		auto ConstantPressurePacketGate=[&](const double deltaTime,double& eosResidual,
+	// r69 binds the zero-packet branch to the same absolute P0 reference as
+	// every nonzero packet.  The independent recurrence is the rejected
+	// mutation's signature: returning zero leaves each finite dose behind and
+	// its accepted residual grows monotonically instead of being restored.
+	MethaneCellState restorationBeginning=ProductRichMixtureLineState(fuel,
+		thermochemistry,0.08,900.0);
+	const double imposedVolumeDeviation=2.0e-4;
+	restorationBeginning.rhoTotalZ*=1.0+imposedVolumeDeviation;
+	for(double& density:restorationBeginning.constituent)
+		density*=1.0+imposedVolumeDeviation;
+	restorationBeginning.sensibleEnergyJPerM3*=1.0+imposedVolumeDeviation;
+	Check(InvertMethaneTemperatureWithinAcceptedEnvelope(restorationBeginning,
+		thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+		thermochemistry,restorationBeginning.temperatureK,&error),
+		"r69 zero-restoration RED constructs an accepted off-manifold beginning state");
+	const auto independentVolumeRatio=[&](const MethaneCellState& state){
+		static const char* names[MethaneCarbon]={"CH4","O2","N2","CO2","H2O","CO"};
+		double molarDensity=0.0;
+		for(std::size_t species=0;species<MethaneCarbon;++species){
+			const FireThermochemistrySpecies* property=thermochemistry.FindSpecies(names[species]);
+			molarDensity+=state.constituent[species]/property->molecularWeightKGPerKMol;
+		}
+		return molarDensity*8314.46261815324*state.temperatureK/
+			thermochemistry.ThermodynamicPressurePa();
+	};
+	const double restorationStepS=0.01;
+	ConservativeVector zeroRestorationIncrement;
+	double zeroPacketRestorationPerS=0.0;
+	const double beginningRestorationVolume=independentVolumeRatio(restorationBeginning);
+	bool secularMutationSignature=true;
+	double unrestoredResidual=0.0;
+	for(unsigned int repeatedDose=0;repeatedDose<16u;++repeatedDose){
+		const double prior=unrestoredResidual;
+		unrestoredResidual+=beginningRestorationVolume-1.0;
+		secularMutationSignature=secularMutationSignature&&unrestoredResidual>prior;
+	}
+	const bool zeroPacketRestorationOK=DivergenceFromDiscreteIncrement(
+		ToConservativeVector(restorationBeginning),
+		zeroRestorationIncrement,restorationBeginning.temperatureK,restorationStepS,
+		thermochemistry,zeroPacketRestorationPerS,&error);
+	const double independentZeroRestorationPerS=(beginningRestorationVolume-1.0)/
+		restorationStepS;
+	Check(zeroPacketRestorationOK&&
+		Near(zeroPacketRestorationPerS,(beginningRestorationVolume-1.0)/restorationStepS,
+			2.0e-15)&&secularMutationSignature,
+		"r69 zero-packet cells restore the absolute P0 manifold instead of accumulating secular creep");
+	if(!zeroPacketRestorationOK||!Near(zeroPacketRestorationPerS,
+		independentZeroRestorationPerS,2.0e-15))std::printf(
+		"r69 zero-restoration diagnostic actual=%.17g expected=%.17g error=%s\n",
+		zeroPacketRestorationPerS,independentZeroRestorationPerS,error.c_str());
+	ConservativeVector finiteRestorationIncrement;
+	finiteRestorationIncrement[MethaneMassStateDimension]=10.0;
+	MethaneCellState restorationCandidate=FromConservativeVector(
+		ToConservativeVector(restorationBeginning)+finiteRestorationIncrement);
+	Check(InvertMethaneTemperatureWithinAcceptedEnvelope(restorationCandidate,
+		thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+		thermochemistry,restorationCandidate.temperatureK,&error),
+		"r69 double-restoration RED constructs its finite packet candidate");
+	const double candidateRestorationVolume=independentVolumeRatio(restorationCandidate);
+	double finitePacketRestorationPerS=0.0;
+	const double doubleRestorationPerS=(beginningRestorationVolume-1.0+
+		candidateRestorationVolume-1.0)/restorationStepS;
+	Check(DivergenceFromDiscreteIncrement(ToConservativeVector(restorationBeginning),
+		finiteRestorationIncrement,restorationBeginning.temperatureK,restorationStepS,
+		thermochemistry,finitePacketRestorationPerS,&error)&&
+		Near(finitePacketRestorationPerS,(candidateRestorationVolume-1.0)/restorationStepS,
+			2.0e-15)&&!Near(finitePacketRestorationPerS,doubleRestorationPerS,2.0e-15),
+		"r69 packet cells carry the beginning deviation exactly once in the absolute target");
+	auto ConstantPressurePacketGate=[&](const double deltaTime,double& eosResidual,
 		double& divergenceResidual,double& ledgerResidual,double& analyticResidual){
 		MethaneCellState expansionBeginning=ProductRichMixtureLineState(fuel,
 			thermochemistry,0.08,900.0);

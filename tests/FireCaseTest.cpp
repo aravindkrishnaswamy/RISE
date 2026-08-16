@@ -66,7 +66,7 @@ int main()
 			}
 	Check(pilotCells>0&&pilotOnlyFirstLayer&&pilotAnnulusExact&&
 		record.derived.pilotModelVersion==
-			"prescribed_isothermal_kernel_ordinary_tableau_v4"&&
+			"prescribed_isothermal_kernel_ordinary_tableau_restored_manifold_v5"&&
 		record.derived.pilotMaskRule==
 			"first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx"&&
 		record.derived.pilotSetpointTemperatureK==900.0&&
