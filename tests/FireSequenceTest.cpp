@@ -811,6 +811,10 @@ namespace
 		ConservativeAdvance3DConfig config; config.transport.cellWidthM=shape.cellWidthM;
 		config.transport.deltaTimeS=reaction.deltaTimeS; config.transport.ambientTemperatureK=300.0;
 		config.transport.adiabaticTemperatureK=2500.0; config.transport.ambientGasDensityKGPerM3=rho;
+		config.gravityMPerS2={{0.0,0.0,-9.80665}};
+		Check(config.gravityMPerS2[0]==0.0&&config.gravityMPerS2[1]==0.0&&
+			config.gravityMPerS2[2]==-9.80665,
+			"capstone owning advance receives the pinned vertical gravitational acceleration");
 		const double projectionReferenceVelocityMPerS=std::sqrt(9.80665*
 			caseRecord.derived.characteristicDiameterM);
 		const double projectionReferenceLengthM=std::max({caseRecord.derived.extentXM,
@@ -1120,6 +1124,11 @@ namespace
 						centerlineHeatReleaseW+=packets[center].gasHeatReleaseWPerM3*cellVolume/
 							centerSampleCount;}
 				const double stepEndS=simulationTimeS+reaction.deltaTimeS;
+				if(stepEndS>=pilotEndS&&!values.ignitedDuringPilot) {
+					advancedOK=false;
+					error="pilot_window_expired_without_ignition";
+					break;
+				}
 				const double statisticsDuration=std::max(0.0,stepEndS-
 					std::max(simulationTimeS,values.statisticsStartS));
 				if(statisticsDuration>0.0) {
@@ -2609,6 +2618,27 @@ int main(int argc,char** argv)
 	}
 	Check(!capstoneArtifactRun||capstoneValidationOnly||stationArchiveComplete,
 		"capstone archives timestamped T, reaction-rate, and velocity at every fixed centerline station");
+	if(capstoneArtifactRun&&!capstoneValidationOnly) {
+		const double puffingSpanS=methaneFrameNext.probeTimeS.size()>1u?
+			methaneFrameNext.probeTimeS.back()-methaneFrameNext.probeTimeS.front():0.0;
+		const bool puffingQualified=methaneFrameNext.probeTimeS.size()>=64u&&
+			std::isfinite(methaneFrameNext.puffingFrequencyHz)&&
+			methaneFrameNext.puffingFrequencyHz>0.0&&methaneFrameNext.puffingRelativeError<=0.20&&
+			puffingSpanS*methaneFrameNext.puffingFrequencyHz>=30.0;
+		const bool mccaffreyQualified=methaneFrameNext.mccaffreyPlumeStationCount>=4u&&
+			methaneFrameNext.mccaffreyMaximumTemperatureRelativeError<=0.10&&
+			methaneFrameNext.mccaffreyMaximumVelocityRelativeError<=0.10;
+		if(!puffingQualified||!mccaffreyQualified) {
+			std::fprintf(stderr,"capstone empirical qualification failed: puffing_Hz=%.17g "
+				"puffing_error=%.17g observed_cycles=%.17g McCaffrey_T_error=%.17g "
+				"McCaffrey_u_error=%.17g\n",methaneFrameNext.puffingFrequencyHz,
+				methaneFrameNext.puffingRelativeError,
+				puffingSpanS*methaneFrameNext.puffingFrequencyHz,
+				methaneFrameNext.mccaffreyMaximumTemperatureRelativeError,
+				methaneFrameNext.mccaffreyMaximumVelocityRelativeError);
+			return 1;
+		}
+	}
 	const std::filesystem::path manifestPath = root/"sequence.rise-fire.cbor";
 	const RISECBOR64::Bytes productionEnvelope = ManifestBytes(
 		DigestFile(frame4),DigestFile(frame5),"hold",true,true,
