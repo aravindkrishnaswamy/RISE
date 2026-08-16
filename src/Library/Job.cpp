@@ -5783,6 +5783,15 @@ bool Job::AddObject(
 		// object chunk that is not standard_object / csg_object), but
 		// AddCSGObject's mirror-image lookup already requires
 		// dynamic_cast<CSGObject*>; this is the sibling that did not.
+		//
+		// It is also the SECOND unreachability argument the incremental apply's
+		// atomicity now rests on.  That loop's rollback is entity-only, and its
+		// stated justification is that a re-Finalize failure is ALWAYS at an
+		// entity, BEFORE any object is re-pointed (Cst.cpp, "PART A atomicity").
+		// A partial object re-point is exactly what it cannot undo.  The first
+		// such argument is written up in Cst.cpp's "87 CAVEAT" block
+		// (SetObjectParent's semantic refusals); this is the second.  If either
+		// becomes reachable, that rollback needs to cover objects too.
 		if( object && dynamic_cast<Implementation::CSGObject*>( object ) != 0 ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"Job::AddObject:: `%s` already names a csg_object, so a standard_object cannot re-point it",
@@ -5892,6 +5901,15 @@ bool Job::AddObjectMatrix(
 		// object chunk that is not standard_object / csg_object), but
 		// AddCSGObject's mirror-image lookup already requires
 		// dynamic_cast<CSGObject*>; this is the sibling that did not.
+		//
+		// It is also the SECOND unreachability argument the incremental apply's
+		// atomicity now rests on.  That loop's rollback is entity-only, and its
+		// stated justification is that a re-Finalize failure is ALWAYS at an
+		// entity, BEFORE any object is re-pointed (Cst.cpp, "PART A atomicity").
+		// A partial object re-point is exactly what it cannot undo.  The first
+		// such argument is written up in Cst.cpp's "87 CAVEAT" block
+		// (SetObjectParent's semantic refusals); this is the second.  If either
+		// becomes reachable, that rollback needs to cover objects too.
 		if( object && dynamic_cast<Implementation::CSGObject*>( object ) != 0 ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"Job::AddObjectMatrix:: `%s` already names a csg_object, so a standard_object cannot re-point it",

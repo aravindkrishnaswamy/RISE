@@ -2041,6 +2041,16 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// UNGATED route: a `set_parent` agent verb wired to ApplyCstParamEdit, or
 	// the tree UI's reparent (87 step 4).  Extend the preflight then -- do not
 	// assume a dry run is standing behind you.
+	//
+	// This is not the only such argument any more.  Job::AddObject /
+	// AddObjectMatrix's incremental re-point carries a second one (it refuses a
+	// name held by a CSGObject, unreachable because a chunk cannot change
+	// keyword).  BOTH prop up PART A's entity-only rollback, whose whole premise
+	// is that a re-Finalize failure lands at an ENTITY, before any object has
+	// been re-pointed -- a partial object re-point is precisely what it cannot
+	// undo.  If either argument stops holding, that rollback has to cover
+	// objects too; a new refusal inside an object's Finalize is not a local
+	// change.
 	for( const ObjState& s : objStates ) {
 		if( s.clearMat )    s.obj->ClearMaterial();
 		if( s.clearMod )    s.obj->ClearModifier();
