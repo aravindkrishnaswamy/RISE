@@ -512,6 +512,16 @@ bool ObjectManager::SetObjectParent( const char* child, const char* parent )
 	return true;
 }
 
+bool ObjectManager::HasChildren( const char* parent ) const
+{
+	if( !parent || !parent[0] ) return false;
+	const String parentName( parent );
+	for( std::map<String,String>::const_iterator i = parentByName.begin(); i != parentByName.end(); ++i ) {
+		if( i->second == parentName ) return true;
+	}
+	return false;
+}
+
 bool ObjectManager::RemoveItem( const char* szName )
 {
 	const bool ok = GenericManager<IObjectPriv>::RemoveItem( szName );

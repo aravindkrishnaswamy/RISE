@@ -483,16 +483,16 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	m_mxParentWorld = parentWorld;
 
 	// IS THE PARENT INVERTIBLE, well enough to express a world-space operation
-	// in this node's local frame?  THREE formulations were tried and are wrong;
-	// the reasoning is recorded because the next reader will otherwise reach
-	// for one of them.
+	// in this node's local frame?  FOUR formulations were tried and are wrong.
+	// The reasoning is recorded because each of them looks obviously right, and
+	// three of them were reached for in successive review rounds.
 	//
-	// NOT an absolute residual epsilon on |P*P^-1 - I|.  The residual in an
+	// (1) NOT an absolute residual epsilon on |P*P^-1 - I|.  The residual in an
 	// affine matrix's translation column grows like ||t||*eps, so a
 	// well-conditioned container at `position 1e7 0 0` with any rotation gets
 	// rejected while a tiny near-singular linear part sails through.
 	//
-	// NOT the componentwise backward error |P*P^-1 - I| <= tol*|P|*|P^-1|,
+	// (2) NOT the componentwise backward error |P*P^-1 - I| <= tol*|P|*|P^-1|,
 	// though that IS scale-invariant.  Backward error is small BY CONSTRUCTION
 	// for the computed inverse of a singular matrix: once the determinant
 	// underflows to ~1e-17 instead of exactly 0 -- which is what COMPOSITION
@@ -500,68 +500,102 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	// two multiplies later -- the adjugate/det inverse has entries ~1e16, the
 	// bound becomes ~1e16, and an O(1) residual passes at any tolerance.
 	//
-	// NOT the Hadamard ratio |det L| / (||c0|| ||c1|| ||c2||) either.  It is a
-	// real degeneracy measure and it does kill the depth-2 case above, but it
-	// measures COLUMN DEPENDENCE, not conditioning: it is invariant under
-	// per-axis scaling, which is exactly the operation that sends the condition
-	// number to infinity.  `Rz(45) * diag(1e8, 1e-8, 1)` has ratio 1.000 and
-	// condition number 1e16 -- accepted, wrongly.  And computing det and the
-	// column-norm product UNNORMALISED makes it reject a perfectly conditioned
-	// uniform scale below ~1e-103 purely by underflow.
+	// (3) NOT the Hadamard ratio |det L| / (||c0|| ||c1|| ||c2||).  It measures
+	// COLUMN DEPENDENCE, not conditioning: it is invariant under per-axis
+	// scaling, the very operation that sends the condition number to infinity.
+	// `Rz(45) * diag(1e8, 1e-8, 1)` has ratio 1.000 and condition number 1e16.
 	//
-	// What the caller actually needs is a bound on how much precision
-	// `parentWorld^-1 * worldOp * parentWorld` destroys, and that is the
-	// CONDITION NUMBER of the linear part -- translation cannot make an affine
-	// map singular, and a condition number is dimensionless, so the cutoff
-	// carries no units: 1e9 says "keep at least ~7 of double's ~16 digits".
-	// Frobenius norms are used because they need no eigenvalue solve and bound
-	// the spectral condition number within a factor of 3 in 3D.
+	// (4) NOT a condition number built from the adjugate inverse of the RAW
+	// linear part either.  For a RANK-1 matrix every 2x2 cofactor is zero in
+	// exact arithmetic, so det and every adjugate entry are rounding residue of
+	// the SAME order, their quotient is O(1), and the computed condition number
+	// comes out ~20 -- noise divided by noise.  Measured: 80% of composed
+	// rank-1 parents accepted.  Rank 2 was caught, rank 1 was not.
 	//
-	// The 3x3 inverse is computed HERE from the linear part rather than lifted
-	// out of the 4x4 inverse, and the projective row is required to be
-	// (0,0,0,1): `matrix` takes 16 free doubles, so a projective parent is
-	// authorable, and for one of those neither the 4x4's upper 3x3 nor its
-	// determinant means what this test would be reading them as.  A projective
-	// parent is refused rather than guessed at.
+	// What works is to NORMALISE the linear part first and then ask both
+	// questions of the normalised matrix, where every quantity is O(1) and an
+	// absolute tolerance is therefore meaningful:
+	//
+	//   a. IS THE COMPUTED INVERSE ACTUALLY AN INVERSE?  ||Lh*Lh^-1 - I||_F.
+	//      For any rank-deficient Lh this is O(1) (measured 4.5 to 8.6), and
+	//      for a healthy one it is ~1e-16.  This is the rank test, and it works
+	//      at rank 1 and rank 2 alike because it never divides two residues.
+	//   b. WILL CONJUGATION KEEP ENOUGH PRECISION?  ||Lh^-1||_F, which with
+	//      ||Lh||_F == 1 IS the Frobenius condition number.  1e9 keeps ~7 of
+	//      double's ~16 digits through `P^-1 * worldOp * P`.
+	//
+	// Normalising also removes the under/overflow edge the earlier forms had:
+	// a uniform scale of 1e-120 or 1e120 is perfectly conditioned and is now
+	// accepted, where forms (3) and (4) rejected it because det underflowed.
+	//
+	// Verified by sweep against these exact formulas: 0/4000 composed rank-1
+	// accepted, 0/4000 rank-2, 4000/4000 healthy; the anisotropic 1e16 and
+	// 1e10 cases rejected, 1e6 accepted; reflection and shear accepted.
+	//
+	// The projective row must be (0,0,0,1): `matrix` takes 16 free doubles, so
+	// a projective parent is authorable, and for one of those the upper 3x3 is
+	// not the whole story.  Refused rather than guessed at.
 	m_mxParentWorldInv = Matrix4Ops::Inverse( m_mxParentWorld );
 	{
 		const Scalar* p = &m_mxParentWorld._00;
 		double L[9];
 		bool finite = true;
+		double frob = 0;
 		for( int c = 0; c < 3; ++c ) {
 			for( int r = 0; r < 3; ++r ) {
 				const double v = static_cast<double>( p[c * 4 + r] );
 				if( !IsFiniteDouble( v ) ) finite = false;
 				L[c * 3 + r] = v;
+				frob += v * v;
 			}
 		}
-		// Projective row (_03, _13, _23, _33) must be (0,0,0,1).
+		frob = std::sqrt( frob );
 		const bool affine = ( p[3] == Scalar( 0 ) ) && ( p[7] == Scalar( 0 ) )
 		                 && ( p[11] == Scalar( 0 ) ) && ( p[15] == Scalar( 1 ) );
 
-		// det of the 3x3, and its adjugate-based inverse.
-		const double d0 = L[4] * L[8] - L[7] * L[5];
-		const double d1 = L[7] * L[2] - L[1] * L[8];
-		const double d2 = L[1] * L[5] - L[4] * L[2];
-		const double det3 = L[0] * d0 + L[3] * d1 + L[6] * d2;
-
 		bool wellConditioned = false;
-		if( finite && affine && IsFiniteDouble( det3 ) && det3 != 0.0 ) {
-			double inv[9];
-			inv[0] = d0;                            inv[3] = L[6] * L[5] - L[3] * L[8]; inv[6] = L[3] * L[7] - L[6] * L[4];
-			inv[1] = d1;                            inv[4] = L[0] * L[8] - L[6] * L[2]; inv[7] = L[6] * L[1] - L[0] * L[7];
-			inv[2] = d2;                            inv[5] = L[3] * L[2] - L[0] * L[5]; inv[8] = L[0] * L[4] - L[3] * L[1];
-			// Transposed adjugate layout: normalise and accumulate both norms.
-			double nL = 0, nI = 0;
-			for( int k = 0; k < 9; ++k ) {
-				nL += L[k] * L[k];
-				const double e = inv[k] / det3;
-				nI += e * e;
+		if( finite && affine && IsFiniteDouble( frob ) && frob > 0 ) {
+			// Normalise: every entry of Lh is now O(1).
+			double Lh[9];
+			for( int k = 0; k < 9; ++k ) Lh[k] = L[k] / frob;
+
+			// det and adjugate of the NORMALISED matrix (column-major, so
+			// Lh[c*3+r] is column c, row r).
+			const double d0 = Lh[4] * Lh[8] - Lh[7] * Lh[5];
+			const double d1 = Lh[7] * Lh[2] - Lh[1] * Lh[8];
+			const double d2 = Lh[1] * Lh[5] - Lh[4] * Lh[2];
+			const double det = Lh[0] * d0 + Lh[3] * d1 + Lh[6] * d2;
+
+			if( IsFiniteDouble( det ) && det != 0.0 ) {
+				double inv[9];
+				inv[0] = d0;
+				inv[1] = d1;
+				inv[2] = d2;
+				inv[3] = Lh[6] * Lh[5] - Lh[3] * Lh[8];
+				inv[4] = Lh[0] * Lh[8] - Lh[6] * Lh[2];
+				inv[5] = Lh[3] * Lh[2] - Lh[0] * Lh[5];
+				inv[6] = Lh[3] * Lh[7] - Lh[6] * Lh[4];
+				inv[7] = Lh[6] * Lh[1] - Lh[0] * Lh[7];
+				inv[8] = Lh[0] * Lh[4] - Lh[3] * Lh[1];
+				double normInv = 0;
+				for( int k = 0; k < 9; ++k ) { inv[k] /= det; normInv += inv[k] * inv[k]; }
+				normInv = std::sqrt( normInv );
+
+				// (a) residual of the product against identity.
+				double residual = 0;
+				for( int c = 0; c < 3; ++c ) {
+					for( int r = 0; r < 3; ++r ) {
+						double acc = 0;
+						for( int k = 0; k < 3; ++k ) acc += Lh[k * 3 + r] * inv[c * 3 + k];
+						const double e = acc - ( c == r ? 1.0 : 0.0 );
+						residual += e * e;
+					}
+				}
+				residual = std::sqrt( residual );
+
+				wellConditioned = IsFiniteDouble( residual ) && residual <= 1e-6      // (a) rank
+				               && IsFiniteDouble( normInv )  && normInv  <= 1e9;      // (b) conditioning
 			}
-			const double kappaF = std::sqrt( nL ) * std::sqrt( nI );
-			// `!(>)`-free form: an explicit finite check first, so NaN cannot
-			// slip through as "small".
-			wellConditioned = IsFiniteDouble( kappaF ) && kappaF <= 1e9;
 		}
 
 		m_bParentWorldInvertible = wellConditioned;

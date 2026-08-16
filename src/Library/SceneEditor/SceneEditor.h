@@ -32,6 +32,7 @@
 #include "../Cst/Cst.h"   // Document-first ADR phase 1: CstHeadVersion (derived dirty)
 #include <functional>
 #include <unordered_set>
+#include <set>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -721,6 +722,15 @@ namespace RISE
 		// for lacking a `matrix` param (csg_object).  Used to log the refusal once per distinct object instead of
 		// per gizmo drag-frame.  UI-thread-only.
 		std::string mLastNonRoutableTransformObj;
+		//! Objects whose world-space transform op has already been refused (the
+		//! parent chain is singular or too ill-conditioned to invert).  PER
+		//! INSTANCE and under this editor's own serialization, NOT a function-local
+		//! static: a static would be shared by every SceneEditor in the process and
+		//! mutated without a lock, and RISE_API_CreateSceneEditController is public
+		//! surface for exactly the multi-instance embedding that makes that a data
+		//! race.  Exists to stop a gizmo drag emitting the same error ~60 times a
+		//! second.
+		std::set<std::string> mWorldOpRefusalWarned;
 
 		// Model-B (code-3 re-render fix): "did a CST re-derive during the LAST Apply CHANGE the live scene?", i.e.
 		// did any route helper see Job::DeriveEditedCstDocument_ return a mutating code (1 incremental / 2 replaced-

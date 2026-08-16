@@ -104,10 +104,13 @@ namespace RISE
 		//! operation can conjugate it into this node's parent frame.
 		virtual Matrix4 const GetParentWorldTransformMatrix( ) const = 0;
 
-		//! Is the stored parent world transform invertible?  False only for a
-		//! degenerate parent (a zero or collapsed `scale` somewhere up the
-		//! chain).  When false, WorldToLocal() cannot be trusted and callers
-		//! must refuse rather than write a corrupt transform.
+		//! Is the stored parent world transform usable as a change of frame?
+		//! FALSE for a collapsed or rank-deficient ancestor (a zero or
+		//! near-zero `scale` anywhere up the chain), for an anisotropy extreme
+		//! enough that conjugating through it would destroy precision, for a
+		//! non-finite entry, and for a projective row.  When false,
+		//! WorldToLocal() returns its input unchanged and callers must REFUSE
+		//! rather than write a corrupt transform.
 		virtual bool IsParentWorldInvertible( ) const = 0;
 
 		//! Express a WORLD-space matrix in this node's LOCAL frame:

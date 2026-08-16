@@ -105,6 +105,15 @@ namespace RISE
 			const char* child							///< [in] Name of the child object
 			) const = 0;
 
+		//! Does any registered object name `parent` as its parent?  Cheap query
+		//! over the link map.  Removing such an object MOVES its children (they
+		//! fall back to their own local transforms), which is a spatial and
+		//! potentially a light-topology change that no per-object check can
+		//! see -- the children are not the object being removed.
+		virtual bool HasChildren(
+			const char* parent							///< [in] Name of the candidate parent
+			) const = 0;
+
 		//! Walk the authored graph and bake `world = parent.world * local` into
 		//! every object, in parent-before-child order, via
 		//! ITransformable::FinalizeTransformations( parentWorld ).  Idempotent:

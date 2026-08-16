@@ -9986,8 +9986,18 @@ bool Job::RemoveObject(
 	// set changes -> bump so a reused caster rebuilds.
 	IObjectPriv* pRObj = pObjectManager->GetItem( name );
 	const bool wasEmissive = ( pRObj && pRObj->GetMaterial() && pRObj->GetMaterial()->GetEmitter() );
+	// 87: removing a PARENT re-roots its children, which MOVES them --
+	// ObjectManager::RemoveItem re-composes them on the way out.  Those children
+	// are not the object being removed, so `wasEmissive` cannot see that one of
+	// them emits, and their world bounding boxes changed too.  This is the same
+	// argument, and the same conservative answer, as the incremental apply's
+	// gate in Cst.cpp and the live-edit gate in SceneEditor: an extra sampler
+	// rebuild and TLAS rebuild beat a light sampler emitting from a position
+	// where no geometry is any more.
+	const bool hadChildren = pObjectManager->HasChildren( name );
 	const bool ok = pObjectManager->RemoveItem( name );
-	if( ok && wasEmissive ) BumpSceneLightGen( pScene );
+	if( ok && ( wasEmissive || hadChildren ) ) BumpSceneLightGen( pScene );
+	if( ok && hadChildren ) pObjectManager->InvalidateSpatialStructure();
 	return ok;
 }
 

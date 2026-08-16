@@ -29,7 +29,8 @@
 //    D -- container nodes (no `geometry`): world-invisible, unenumerated,
 //         zero area, still composable and still parentable.
 //    E -- refusals: forward reference, self-parent, unknown parent, and
-//         2-/3-cycles at runtime reparent.
+//         2-/3-cycles at runtime reparent; plus removal re-rooting its
+//         children, including telling the light sampler when one emits.
 //    G -- a LIVE edit re-composes the whole subtree, not only the node the
 //         editor was handed.
 //    H -- deleting a `parent` line actually DETACHES on an incremental apply.
@@ -58,6 +59,9 @@
 #include "../src/Library/Job.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Interfaces/IScene.h"
+#include "../src/Library/Scene.h"
+#include "../src/Library/Interfaces/IMaterial.h"
+#include "../src/Library/Interfaces/IEmitter.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
@@ -98,6 +102,16 @@ static bool Mat4Close( const Matrix4& a, const Matrix4& b, Scalar eps = 1e-9 )
 	const Scalar* pb = &b._00;
 	for( int i = 0; i < 16; ++i ) if( !Close( pa[i], pb[i], eps ) ) return false;
 	return true;
+}
+
+//! The scene's light-topology generation.  The ray caster compares this across
+//! an AttachScene to decide whether to rebuild its light samplers, so it is the
+//! observable for "was the sampler told the luminary set moved".
+static unsigned int SceneLightGenerationForTest( const IScene* scene )
+{
+	const RISE::Implementation::Scene* concrete =
+		dynamic_cast<const RISE::Implementation::Scene*>( scene );
+	return concrete ? concrete->GetLightTopologyGeneration() : 0u;
 }
 
 static IObjectPriv* Obj( Job& j, const char* name )
@@ -503,6 +517,38 @@ int main()
 		j->release();
 		std::remove( sR );
 	}
+	{
+		// E6 -- a removed PARENT moves its children, and a moved child may be
+		// an EMITTER.  No per-object check on the REMOVED object can see that:
+		// the emitter is not the object being removed.  The ray caster rebuilds
+		// its light samplers off the scene's light-topology generation, so if
+		// that does not advance, NEE keeps emitting from a position where no
+		// geometry is any more.  Third site to need this argument, after the
+		// incremental apply and the live edit.
+		const char* sR2 = "sg_parent_remove_emitter.RISEscene";
+		WriteScene( sR2,
+			"uniformcolor_painter\n{\nname pe\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname glow\nexitance pe\nscale 4\n}\n"
+			"standard_object\n{\nname rig\nposition 5 0 0\n}\n"
+			"standard_object\n{\nname bulb\nparent rig\ngeometry g\nmaterial glow\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sR2 ), "E6: emissive-child scene loads" );
+		IObjectPriv* bulb = Obj( *j, "bulb" );
+		Check( bulb && Close( Origin( bulb->GetFinalTransformMatrix() ).x, 5 ),
+		       "E6: the emitter starts composed at x=5" );
+		Check( bulb && bulb->GetMaterial() && bulb->GetMaterial()->GetEmitter(),
+		       "E6: (sanity) the child really is an emitter" );
+		const unsigned int genBefore = SceneLightGenerationForTest( j->GetScene() );
+		Check( j->RemoveObject( "rig" ), "E6: the NON-emissive parent is removed" );
+		bulb = Obj( *j, "bulb" );
+		Check( bulb && Close( Origin( bulb->GetFinalTransformMatrix() ).x, 0 ),
+		       "E6: the emitter moved to x=0 when its parent went away" );
+		Check( SceneLightGenerationForTest( j->GetScene() ) != genBefore,
+		       "E6: the light-topology generation ADVANCED -- a reused ray caster rebuilds its sampler "
+		       "instead of emitting from where the bulb used to be" );
+		j->release();
+		std::remove( sR2 );
+	}
 
 	// =================================================================
 	// F -- the editor commits the LOCAL matrix.
@@ -690,8 +736,12 @@ int main()
 	// ||t||*eps: a perfectly well-conditioned container far from the origin
 	// would be declared singular (and its children's world-space edits then
 	// composed with an extra parent factor -- a teleport), while a tiny
-	// near-singular linear part would sail through.  The committed test is the
-	// componentwise backward error, which is exactly scale-invariant.
+	// near-singular linear part would sail through.  The committed test
+	// NORMALISES the linear part and then asks two questions of it: is the
+	// computed inverse actually an inverse (a rank test that works at rank 1 as
+	// well as rank 2), and is it well enough conditioned to conjugate through.
+	// Transformable.cpp records the four formulations tried and rejected before
+	// it, each with the case that defeats it.
 	// =================================================================
 	{
 		// Swept over five decades rather than pinned to one distance: the
@@ -718,18 +768,24 @@ int main()
 		}
 	}
 	{
-		// DEPTH-2 degeneracy.  A flattened GRANDPARENT composes into a
+		// DEPTH-2 degeneracy, at RANK 1.  A collapsed GRANDPARENT composes into a
 		// grandchild's parent world as a matrix whose true determinant is zero
-		// but whose COMPUTED determinant is a rounding residue (~1e-17), not
-		// exactly 0 -- so Matrix4Ops::Inverse does not return its input, it
-		// returns an adjugate/det "inverse" with entries ~1e16.  A residual or
-		// backward-error test accepts that (the backward error of a garbage
-		// inverse is small by construction); a conditioning test does not.
-		// This is the depth hierarchy ADDS, so a guard that only works at
-		// depth 1 is a guard that only works on the scenes 87 did not enable.
+		// but whose COMPUTED determinant is a rounding residue, so
+		// Matrix4Ops::Inverse does not return its input -- it returns an
+		// adjugate/det "inverse" that is not an inverse of anything.
+		//
+		// RANK 1 specifically, not rank 2: for a rank-1 matrix EVERY 2x2 cofactor
+		// is zero in exact arithmetic, so the determinant and the whole adjugate
+		// are residue of the same order and their quotient is O(1).  A guard that
+		// forms a condition number from that quotient sees ~20 and accepts -- it
+		// is dividing noise by noise.  A guard that asks "is this computed
+		// inverse actually an inverse" sees a residual of O(1) and refuses.
+		// Measured before the fix: 80%% of composed rank-1 parents accepted, 0%%
+		// of rank-2.  The guard worked exactly one rank too shallow, so this
+		// case uses `scale 0 0 1`, not `scale 0 1 1`.
 		const char* sL = "sg_parent_deep_degenerate.RISEscene";
 		WriteScene( sL,
-			"standard_object\n{\nname flat_gp\norientation -94 16 -47\nposition 1 1.26 -4.3\nscale 0 1 1\n}\n"
+			"standard_object\n{\nname flat_gp\norientation -94 16 -47\nposition 1 1.26 -4.3\nscale 0 0 1\n}\n"
 			"standard_object\n{\nname mid_p\nparent flat_gp\norientation 147 -11 18\nposition -3 2.2 0.4\n"
 			"scale 1.739 1.312 2.611\n}\n"
 			"standard_object\n{\nname grandkid\nparent mid_p\ngeometry g\nmaterial m\n}\n" );
@@ -737,10 +793,39 @@ int main()
 		Check( j->LoadAsciiSceneViaCst( sL ), "J: depth-2 degenerate scene loads" );
 		IObjectPriv* gk = Obj( *j, "grandkid" );
 		Check( gk && !gk->IsParentWorldInvertible(),
-		       "J: a COMPOSED singular parent is caught at depth 2, where its determinant is a rounding "
-		       "residue rather than exactly zero" );
+		       "J: a COMPOSED RANK-1 parent is caught at depth 2 -- the case where the determinant AND "
+		       "the whole adjugate are rounding residue, so their quotient looks well-conditioned" );
 		j->release();
 		std::remove( sL );
+	}
+	{
+		// EXTREME ANISOTROPY.  Nothing is singular here -- a ground-plane
+		// container at `scale 1e5 1e-5 1e5` has determinant 1e5 and renders
+		// perfectly well -- but conjugating a world delta through a frame whose
+		// axis scales differ by 1e10 keeps almost none of double's digits, so
+		// the world-space editor op is refused rather than silently mangled.
+		// The moderate case one thousand times gentler is accepted, so this is
+		// a bound and not a blanket ban on non-uniform scale.
+		const char* sP = "sg_parent_aniso_extreme.RISEscene";
+		WriteScene( sP,
+			"standard_object\n{\nname slab\nscale 100000 0.00001 100000\n}\n"
+			"standard_object\n{\nname onslab\nparent slab\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname mild\nscale 1000 0.001 1\n}\n"
+			"standard_object\n{\nname onmild\nparent mild\ngeometry g\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sP ), "J: anisotropy scene loads" );
+		IObjectPriv* onslab = Obj( *j, "onslab" );
+		IObjectPriv* onmild = Obj( *j, "onmild" );
+		Check( onslab && !onslab->IsParentWorldInvertible(),
+		       "J: an ancestor with a ~1e10 axis-scale spread is refused as a change of frame" );
+		Check( onmild && onmild->IsParentWorldInvertible(),
+		       "J: a ~1e6 spread is still accepted -- this is a conditioning bound, not a ban on "
+		       "non-uniform scale" );
+		// Both still RENDER: the refusal is about editing, not about visibility.
+		Check( onslab && onslab->IsWorldVisible() && onslab->GetArea() > 0,
+		       "J: the ill-conditioned subtree is still perfectly renderable" );
+		j->release();
+		std::remove( sP );
 	}
 	{
 		// The genuinely degenerate case must still be caught.

@@ -867,23 +867,32 @@ void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 //! parent factor, which for a far-from-origin container is a teleport, and
 //! which CommitPendingCstObjectTransforms would then write into the chunk.
 //! Refusing mirrors what 86 section 3 got right about its own singular-`G`
-//! case: a diagnostic beats a corrupt matrix.  A degenerate parent means the
-//! whole subtree is already non-renderable (zero world area, zero-determinant
-//! transform), so there is no correct edit to perform here.
-bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& worldOp )
+//! case: a diagnostic beats a corrupt matrix.  Note the refusal is NOT limited
+//! to subtrees that are already non-renderable: an extreme but non-degenerate
+//! anisotropy (a ground-plane container at `scale 100000 0.00001 100000`, say)
+//! renders perfectly well and is still refused here, because conjugating a
+//! world delta through a frame that ill-conditioned would keep almost none of
+//! double's digits.  The diagnostic says which of the two it is.
+bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& worldOp,
+                   std::set<std::string>& alreadyWarned )
 {
 	if( !obj.IsParentWorldInvertible() ) {
 		// ONCE per object, not once per pointer-move: this fires from inside a
 		// gizmo drag, which would otherwise emit ~60 identical errors a second.
-		// Every neighbouring diagnostic in this file dedupes the same way.
-		static std::set<std::string> warned;
+		// The set is the CALLER's per-editor member, matching
+		// ObjectManager::danglingParentWarned.  A function-local `static` would
+		// be shared by every SceneEditor in the process and mutated with no
+		// lock -- and RISE_API_CreateSceneEditController is public surface for
+		// exactly the multi-instance embedding that makes that a data race on
+		// std::set's internal tree, not merely a duplicated log line.
 		const std::string key( objectName.c_str() );
-		if( warned.insert( key ).second ) {
+		if( alreadyWarned.insert( key ).second ) {
 			GlobalLog()->PrintEx( eLog_Error,
 				"SceneEditor:: world-space transform op REFUSED for `%s` -- its parent chain composes to a "
-				"transform that is singular or too ill-conditioned to invert (an ancestor with a zero, "
-				"collapsed or extreme `scale`), so a world-space delta cannot be expressed in its local "
-				"frame.  Fix the ancestor's scale.", key.c_str() );
+				"frame that cannot be inverted usefully: an ancestor is either COLLAPSED (a zero or "
+				"near-zero `scale`, so the subtree has no world extent) or extremely ANISOTROPIC (axis "
+				"scales differing by more than ~1e9, which renders fine but leaves too few digits to "
+				"conjugate a world delta through).  Rebalance that ancestor's `scale`.", key.c_str() );
 		}
 		return false;
 	}
@@ -937,7 +946,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// SceneEditController::OnPointerMove), and Transformable::TranslateObject
 		// would push it onto the LOCAL stack -- under a rotated or scaled parent
 		// that moves the object somewhere else entirely.  Conjugate first.
-		ok = PushWorldOp_( obj, edit.objectName, Matrix4Ops::Translation( edit.v3a ) );
+		ok = PushWorldOp_( obj, edit.objectName, Matrix4Ops::Translation( edit.v3a ), mWorldOpRefusalWarned );
 		break;
 	case SceneEdit::RotateObjectArb:
 		{
@@ -965,7 +974,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 				Matrix4Ops::Translation( pivot )
 			  * Matrix4Ops::Rotation( edit.v3a, edit.s )
 			  * Matrix4Ops::Translation( Vector3( -pivot.x, -pivot.y, -pivot.z ) );
-			ok = PushWorldOp_( obj, edit.objectName, aboutPivot );
+			ok = PushWorldOp_( obj, edit.objectName, aboutPivot, mWorldOpRefusalWarned );
 		}
 		break;
 	case SceneEdit::SetObjectPosition:

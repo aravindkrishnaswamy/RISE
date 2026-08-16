@@ -58,6 +58,22 @@ namespace RISE
 			//! The AUTHORED graph: child name -> parent name.  Only non-root
 			//! objects appear.  See IObjectManager's block comment for why this
 			//! is by name and one-directional.
+			//!
+			//! LIVES AND DIES WITH THE MANAGER.  Two consequences worth knowing
+			//! before 87 step 3 (instancing) makes them hotter:
+			//!  - Job::SetPrimaryAcceleration REPLACES the manager, so it drops
+			//!    every link along with every object.  Its existing contract
+			//!    ("call before adding objects") already covers this.
+			//!  - Scene::RestoreFromSnapshot (marked EXPERIMENTAL, not a
+			//!    production path) clears the manager name-by-name and re-adds
+			//!    clones, so the links do not survive it.  The clones carry the
+			//!    right composed matrices, so the scene LOOKS right until the
+			//!    next compose finds every node a root and flattens the
+			//!    hierarchy to local poses.  Restoring the link map alongside
+			//!    the objects is the fix if that path is ever productionised.
+			//!  - RemoveItem + a re-add under the SAME name leaves the ex-
+			//!    children rooted: the removal retires their links by design,
+			//!    and the re-add cannot know they were there.
 			std::map<String,String> parentByName;
 
 			//! Did the LAST walk actually compose anything against a
@@ -132,6 +148,7 @@ namespace RISE
 
 			bool SetObjectParent( const char* child, const char* parent );
 			const char* GetObjectParent( const char* child ) const;
+			bool HasChildren( const char* parent ) const;
 			bool ComposeWorldTransforms() const;
 
 			//! Removing an object also retires its place in the authored graph:

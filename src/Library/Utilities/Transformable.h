@@ -56,10 +56,15 @@ namespace RISE
 			Matrix4		m_mxParentWorld;
 			Matrix4		m_mxParentWorldInv;
 
-			//! Did `m_mxParentWorld * m_mxParentWorldInv == I` verify?
-			//! Matrix4Ops::Inverse returns its INPUT unchanged at zero
-			//! determinant, so a determinant epsilon is not enough -- the
-			//! product is checked against identity directly.
+			//! Is the parent world transform usable as a change of frame?  TRUE
+			//! only when its NORMALISED linear part passes both halves of the
+			//! test in FinalizeTransformations: the computed inverse really is
+			//! an inverse (a rank test), and it is well enough conditioned to
+			//! conjugate a world-space operation through.  FALSE for a
+			//! collapsed or rank-deficient ancestor, for an extreme anisotropy,
+			//! for a non-finite entry, and for a projective row.  Four earlier
+			//! formulations of this test are recorded at the implementation,
+			//! each with the input that defeats it.
 			bool		m_bParentWorldInvertible;
 
 			Matrix4 CollapsedTransformStack_( ) const;
