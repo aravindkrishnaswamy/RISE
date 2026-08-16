@@ -1665,6 +1665,56 @@ The most notorious practical trap in fire LES; specified accordingly:
   stage-inconsistent finite doses to the receiving cell and is
   reverted.
 
+  **Manifold restoration (r69) — every cell's divergence target carries
+  exactly one absolute P₀ reference per step.** Root cause of the
+  r65/r67/r68 receiver-stop family, found in code: the solver had TWO
+  divergence-target paths with different constraint discipline. The
+  finite-increment (packet) path computes the ABSOLUTE volume ratio of
+  the candidate state against the P₀ manifold, (V_candidate − 1)/Δt —
+  its in-tree comment states the reason: refer the update to the
+  manifold "rather than preserving a prior accepted-state residual …
+  instead of accumulating it step by step." But its zero-increment
+  branch returned exactly 0, and the rate path is a pure tangent-space
+  formula — so every packet-FREE cell kept its accumulated off-manifold
+  pressure deviation forever. The manifold was enforced only as a gate
+  for those cells, never restored, and systematic first-order dose
+  errors at a projection map's receivers accumulate secularly until the
+  1.0×10⁻³ EOS gate trips. This one mechanism explains the entire
+  evidence trail: Δt-invariance (per-map-step doses), the r68
+  e-invariance falsification (first-order per-dose errors TELESCOPE —
+  the accumulated total scales with total expansion, not per-step
+  size), both r67/r68 runs dying at the same ~537 K ring temperature
+  (same accumulated total), floor-layer worst cells (largest doses,
+  least venting), monotonically creeping accepted residuals (max
+  8.47×10⁻⁴ by step 10), the clean quiescent r64 fixtures (they watched
+  the mask cell, which HAS restoration), and the healthy 2.7 s zero-g
+  burn (burning cells carry chemistry packets and restore every step;
+  their neighbors' per-step errors were Δt-scaled, ~10⁻⁷ × 540 steps ≈
+  5×10⁻⁵, under the gate). Pin: the combined nonadvective+source
+  divergence target for EVERY cell is assembled as tangent rate terms
+  (f_N) **plus the absolute beginning-referenced term
+  (V(Qⁿ + ΔU_src) − 1)/Δt** with ΔU_src possibly zero — one formula, no
+  special cases, exactly one absolute reference per cell per step (the
+  packet path's existing form is this formula's nonzero-packet case;
+  double-restoration is RED). The term is frozen (beginning state +
+  frozen packet), stage-identical under the exactly-once source
+  contract, and realized through the ordinary projection and
+  advection — no state overwrite, no gate change. With it, deviations
+  plateau at per-step discretization scale (~10⁻⁵) instead of
+  accumulating; the unchanged EOS gate returns to catching genuine
+  per-step inconsistencies (its r63/r64 role). The r68 cap re-size's
+  EOS-magnitude justification is superseded (accumulation was
+  e-independent); the 17/16 value STANDS on donor survival and
+  transient shaping, retained to avoid churn. **Constraint-closure
+  audit (r69), recorded:** elemental affine constraints — closed each
+  step by nullspace projection; momentum/scalar density compatibility —
+  preserved to roundoff by the commuting identity; inventory bounds —
+  preserved by FCT + the r60 envelope; the P₀ manifold — was the ONLY
+  continuous-time constraint enforced by detector alone, now closed by
+  restoration. Every constraint has a restoration or exact-preservation
+  mechanism; a future constraint added with only a gate is a design
+  error by this audit.
+
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:
   low/high face-flux candidates that **differ only in advection** (donor vs

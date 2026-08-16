@@ -271,7 +271,25 @@ error and must be corrected.
      Stage-specific divergence rules, separate finite-map commits,
      tableau-preimage drain emission, parallel no-pilot shadow trajectories,
      crossflow suppression during the hold, and frozen drain-flux channels
-     are all forbidden. "Feasible" everywhere in this contract means the single r60
+     are all forbidden. **Manifold restoration (r69):** the combined
+     nonadvective+source divergence target for EVERY cell is assembled as
+     the tangent rate terms plus the absolute beginning-referenced term
+     (V(Qⁿ + ΔU_src) − 1)/Δt with ΔU_src possibly zero, where V is the
+     absolute volume ratio of the state against the P₀ manifold (the same
+     functional the finite-increment packet path already uses). Exactly one
+     absolute reference per cell per step — the zero-packet branch must
+     return (V(Qⁿ) − 1)/Δt, never 0, and double-restoration is RED. The
+     term is frozen per step (beginning state + frozen packet),
+     stage-identical across R0/R1/R2 under the exactly-once source contract,
+     and realized through the ordinary projection and advection. The
+     accepted-state EOS gate is unchanged; with restoration, accumulated
+     deviations plateau at per-step discretization scale and the gate
+     catches genuine per-step inconsistencies only. A mutation restoring the
+     zero branch to 0 must reproduce the r68 secular-accumulation failure
+     signature (monotonically creeping accepted residuals) and is the
+     binding RED for this rule. V2's manufactured order gates must be
+     re-verified with the restoration term active — it is proportional to
+     accumulated discretization error and must not alter formal order. "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance

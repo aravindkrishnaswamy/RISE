@@ -1604,3 +1604,44 @@ it was already tried and refuted here.
   (patching downstream; the r67 stop showed the class surfaces at
   whichever neighbor is worst); freezing/suppressing anything
   (alters real physics).
+
+- **r69 (2026-08-16):** manifold restoration — the root cause of the
+  entire r65/r67/r68 receiver-stop family, found by reading the solver
+  rather than modeling it, at the owner's direction to make the design
+  solid before further implementation ping-pong. The r68 falsification
+  was decisive and correct: shrinking e from 0.2 to 1/17 moved the
+  rejection limit only 1.0365×10⁻³ → 1.0310×10⁻³, and both gravity
+  runs died at the same ~537 K ring temperature. Code reading then
+  found the mechanism: the EOS residual is the ACCEPTED STATE's
+  |P_rep/P₀ − 1| (fire_simulator_core.h:320), and the solver had two
+  divergence-target paths with different constraint discipline — the
+  finite-increment packet path refers its cells to the ABSOLUTE P₀
+  manifold each step, (V_candidate − 1)/Δt, with an in-tree comment
+  naming step-by-step accumulation as the reason; but its
+  zero-increment branch returned exactly 0 (fire_simulator_core.h:1309)
+  and the rate path is tangent-only, so packet-free cells NEVER shed
+  accumulated off-manifold deviation. First-order dose errors at the
+  pilot's receivers telescope — the accumulated total scales with
+  total expansion, not per-step size — which is precisely why the r68
+  cap change could not help, why failures recur at the same ring
+  temperature, why floor-layer cells fail first, why accepted
+  residuals crept monotonically (8.47×10⁻⁴ by step 10), why r64's
+  quiescent mask-cell fixtures were clean, and why the zero-g burn
+  (chemistry packets restoring every burning cell; Δt-scaled neighbor
+  errors ≈ 5×10⁻⁵ total) never tripped. Fix: every cell's divergence
+  target carries exactly one absolute P₀ reference per step —
+  assembly = tangent rate terms + (V(Qⁿ + ΔU_src) − 1)/Δt with ΔU_src
+  possibly zero; frozen, stage-identical, realized through ordinary
+  projection/advection; no state overwrite; EOS gate unchanged;
+  double-restoration RED; the binding mutation RED is restoring the
+  zero branch and reproducing the secular-creep signature. The r68
+  cap justification is superseded (the 17/16 value stands on donor
+  survival, retained against churn). Recorded alongside: the
+  constraint-closure audit — elemental constraints (nullspace
+  projection), momentum/density compatibility (commuting identity),
+  inventory bounds (FCT + r60 envelope) all had restoration or exact
+  preservation; the P₀ manifold was the only constraint enforced by
+  detector alone. A future constraint added with only a gate is a
+  design error by this audit. This closes the class, not the
+  instance: no receiver-by-receiver ruling can recur, because no cell
+  of any kind can accumulate manifold deviation anymore.
