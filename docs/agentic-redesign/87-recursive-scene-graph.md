@@ -340,6 +340,32 @@ what was authored, live material included).
    Slices: 3a `source` single-node + refusals + provenance; 3b subtree
    expansion; 3c `count_u`/`count_v` + per-instance exprs; 3d delete
    `instance_array`.
+
+   **3a review round 1 (2026-08-16) settled four refusal rules that the
+   first implementation got subtly wrong. They are semantics, not
+   phrasing, so they are recorded here:**
+   - **`geometry none` on an instancing chunk is a SECOND FORM**, not zero
+     forms. Only `source` is dropped from the instancing chunk's own
+     params before the merge, so a `geometry none` written there overrides
+     the geometry inherited from the source and the "copy" derives as an
+     empty container. `none` is the container spelling only when there is
+     no `source` to contradict.
+   - **The CSG-operand refusal is a DOCUMENT scan** (`obja` / `objb` over
+     every `csg_object` chunk), never the live `IsWorldVisible()` state:
+     visibility only goes false once the composite's `Finalize` has run,
+     which would make the rule depend on declaration order. Its reason is
+     that the composite CONSUMES the operand (the `SetObjectParent` rule) —
+     *not* "the operand's matrix is CSG-local", which is false here because
+     the collapse semantics drop the source's matrix entirely.
+   - **`source S` + `parent S` is its own refusal.** It makes `S` appear to
+     have children (the instance is its own source's only child), so the
+     3b has-children rule fires on a scene with no subtree. Detect
+     "the only child is this instancing chunk" and report the recursive
+     definition the author's `parent` line created.
+   - **Any `source` edit — `none` included — takes the full re-derive.**
+     Clearing the slot derives fine incrementally, but provenance is
+     retired only by `RemoveItem` / `Shutdown`, so an in-place re-point
+     leaves a stale `(I, S)` row on an object that is no longer an instance.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
    real tree model, Swift to `OutlineGroup`; expand state keyed by tree

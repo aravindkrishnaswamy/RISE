@@ -18,17 +18,37 @@
 //    [inherit]     bindings come across; [override] an explicit binding on the instance wins.
 //    [container]   a container source; [csg] a csg_object source; [chain] `I source S source T`.
 //    [parent]      `source` + `parent` is ALLOWED (an instance must be placeable in the tree).
-//    [refuse]      geometry+source / undeclared / forward-reference / self / CSG operand /
-//                  source-with-children (3b) / duplicate document-level name -- each separately.
+//    [refuse]      geometry+source (BOTH spellings, `geometry none` included) / undeclared /
+//                  forward-reference / self / CSG operand (in BOTH declaration orders) /
+//                  source-with-children (3b) / `source S parent S` / duplicate document-level
+//                  name -- each separately, each with its own TRUE reason.
 //    [provenance]  the manager records (entry -> instancing chunk, source node); the source
-//                  itself has none.
+//                  itself has none; an unknown name leaves the out-pointers untouched.
 //    [visible]     the source still renders after being instanced.
-//    [incremental] an edit to a `source` chunk refuses -> full-derive fallback.
+//    [area]        an instanced emitter's GetArea() tracks the INSTANCE's transform, not the
+//                  source's -- the one property with a documented bug history (2026-08-13).
+//    [incremental] an edit to a `source` chunk refuses -> full-derive fallback; SETTING `source
+//                  none` does too, so the stale provenance row is retired.
+//
+//  A NOTE ON WHAT `DumpJob` CAN SEE.  It prints geometry / material / modifier / shader /
+//  radiance_map / interior_medium / visible / bbox and nothing else -- so `casts_shadows`,
+//  `receives_shadows` and `GetArea()` are INVISIBLE to a dump-vs-dump compare (two scenes
+//  differing only in a shadow flag produce byte-identical dumps).  Those are asserted on the
+//  IObject directly, via DeriveJob() below.
 //
 //////////////////////////////////////////////////////////////////////
 
 #include "CstRenderEquivalence.h"
 #include "../src/Library/Cst/Cst.h"
+
+#include <cmath>
+#include <cstdlib>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid() -- per-process temp scene filenames
+#endif
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -75,6 +95,39 @@ static bool RefusedWith( const std::string& scene, const char* needle, std::stri
 	for( std::size_t i = 0; i < diags.size(); ++i ) { all += diags[i]; all += "\n"; }
 	if( outAll ) *outAll = all;
 	return all.find( needle ) != std::string::npos;
+}
+
+// Derive a scene into a Job the CALLER owns (and must release).  The route to everything
+// DumpJob is blind to -- the shadow flags and GetArea() (see the header note).
+static Job* DeriveJob( const std::string& scene, std::vector<std::string>* outDiags = nullptr )
+{
+	Job* j = new Job();
+	Document d = ParseToCst( scene );
+	std::vector<std::string> diags;
+	DeriveToJob( d, *j, &diags );
+	if( outDiags ) *outDiags = diags;
+	return j;
+}
+
+static IObject* Obj( Job* j, const char* name )
+{
+	return ( j && j->GetObjects() ) ? j->GetObjects()->GetItem( name ) : 0;
+}
+
+// Job::ApplyCstParamEdit / ...Checked read the RETAINED CST head, which only
+// LoadAsciiSceneViaCst installs -- and that takes a FILENAME.  Per-process name so two
+// copies of this binary (a hand run alongside the suite, a repeat-run flake hunt) cannot
+// clobber each other's fixture mid-load.
+static std::string WriteTempScene( const char* name, const std::string& text )
+{
+	const char* base = std::getenv( "TMPDIR" );
+	std::string dir = base ? base : "/tmp";
+	if( !dir.empty() && dir.back() != '/' ) dir += '/';
+	const std::string path = dir + std::to_string( (long)getpid() ) + "_" + name;
+	std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
+	f << text;
+	f.close();
+	return path;
 }
 
 int main()
@@ -157,12 +210,93 @@ int main()
 		Check( got != inh,  "override: ... and the result really differs from the inherited binding" );
 	}
 
-	// [inherit] the non-obvious slots come across too: modifier + shadow flags.
+	// [inherit] `modifier` comes across -- that one IS in the dump compare.
 	{
-		const std::string src = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nmodifier bump\ncasts_shadows FALSE\n}\n";
+		const std::string src = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nmodifier bump\n}\n";
 		const std::string got  = DumpCst( Scene( src + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
-		const std::string want = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nmodifier bump\ncasts_shadows FALSE\nposition 5 0 0\n}\n" ) );
-		Check( got == want, "inherit: `modifier` and the shadow flags come across with the rest" );
+		const std::string want = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nmodifier bump\nposition 5 0 0\n}\n" ) );
+		const std::string bare = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n" ) );
+		Check( got == want, "inherit: `modifier` comes across with the rest" );
+		Check( got != bare, "inherit: ... and the modifier compare is not vacuous (an instance without it dumps differently)" );
+	}
+
+	// [inherit] the SHADOW FLAGS, asserted on the IObject.  A dump-vs-dump compare cannot pin
+	// these: DumpJob never prints them, so two scenes differing ONLY in `casts_shadows` produce
+	// byte-identical dumps and the compare would pass with the flags dropped entirely.
+	{
+		const std::string src = "standard_object\n{\nname S\ngeometry geo\nmaterial m\ncasts_shadows FALSE\nreceives_shadows FALSE\n}\n";
+		Job* j = DeriveJob( Scene( src + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		IObject* S = Obj( j, "S" ); IObject* I = Obj( j, "I" );
+		Check( S && !S->DoesCastShadows() && !S->DoesReceiveShadows(),
+		       "inherit: (control) the SOURCE really carries both shadow flags OFF" );
+		Check( I && !I->DoesCastShadows(),    "inherit: `casts_shadows FALSE` is inherited by the instance" );
+		Check( I && !I->DoesReceiveShadows(), "inherit: `receives_shadows FALSE` is inherited by the instance" );
+		j->release();
+
+		// The control that makes those two non-vacuous: both flags DEFAULT to TRUE, so an
+		// expansion that dropped them would read `true` here, not `false`.
+		Job* j2 = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		IObject* I2 = Obj( j2, "I" );
+		Check( I2 && I2->DoesCastShadows() && I2->DoesReceiveShadows(),
+		       "inherit: ... and an instance of a DEFAULT-flagged source reads TRUE/TRUE (the pins above are not vacuous)" );
+		j2->release();
+
+		// [override] and an explicit flag on the instancing chunk beats the inherited one,
+		// per-parameter -- the other flag stays inherited.
+		Job* j3 = DeriveJob( Scene( src + "standard_object\n{\nname I\nsource S\ncasts_shadows TRUE\nposition 5 0 0\n}\n" ) );
+		IObject* I3 = Obj( j3, "I" );
+		Check( I3 && I3->DoesCastShadows() && !I3->DoesReceiveShadows(),
+		       "override: `casts_shadows TRUE` on the instance beats the inherited FALSE, and `receives_shadows` stays inherited" );
+		j3->release();
+	}
+
+	// [inherit] the remaining reference slots -- `shader`, `radiance_map` (+ its scale) and
+	// `interior_medium`.  These ARE printed by DumpJob, so the pin is one scene that binds all
+	// three on the source and nothing on the instance, against a bare instance that proves the
+	// compare would notice their absence.
+	{
+		const std::string prelude = "pathtracing_shaderop\n{\nname pop\n}\n"
+		                            "standard_shader\n{\nname sh\nshaderop pop\n}\n"
+		                            "homogeneous_medium\n{\nname med\nabsorption 0.1 0.1 0.1\nscattering 0.2 0.2 0.2\n}\n";
+		const std::string src = prelude + "standard_object\n{\nname S\ngeometry geo\nmaterial m\nshader sh\n"
+		                                  "radiance_map p2\nradiance_scale 2.5\ninterior_medium med\n}\n";
+		std::vector<std::string> diags;
+		const std::string got  = DumpCst( Scene( src + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ), &diags );
+		const std::string want = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nshader sh\n"
+		                                               "radiance_map p2\nradiance_scale 2.5\ninterior_medium med\nposition 5 0 0\n}\n" ) );
+		const std::string bare = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n" ) );
+		Check( diags.empty() && got == want, "inherit: `shader`, `radiance_map` (+ `radiance_scale`) and `interior_medium` come across" );
+		Check( got != bare, "inherit: ... and the compare is not vacuous (a bare instance dumps differently)" );
+	}
+
+	// [area] an instanced EMITTER's GetArea().  This is what LuminaryManager samples, it is
+	// derived from the object's COMPOSED transform (Object::GetArea folds in |det|^(2/3) -- the
+	// 2026-08-13 fix), and DumpJob does not print it, so nothing else here would catch an
+	// instance whose area came from the SOURCE's transform.  Unit sphere: 4*pi = 12.566.
+	{
+		const double kUnitSphereArea = 4.0 * 3.14159265358979323846;
+		const std::string emis = "lambertian_luminaire_material\n{\nname lum\nexitance p\n}\n";
+		const std::string src  = emis + "standard_object\n{\nname S\ngeometry geo\nmaterial lum\nposition 2 0 0\n}\n";
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( src + "standard_object\n{\nname I\nsource S\nscale 2 2 2\n}\n" ), &diags );
+		IObject* S = Obj( j, "S" ); IObject* I = Obj( j, "I" );
+		Check( diags.empty() && S && std::fabs( (double)S->GetArea() - kUnitSphereArea ) < 1e-6,
+		       "area: the source unit-sphere emitter has area 4*pi (12.566)" );
+		Check( I && std::fabs( (double)I->GetArea() - 4.0 * kUnitSphereArea ) < 1e-6,
+		       "area: the INSTANCE's own `scale 2 2 2` scales its area by |det|^(2/3) = 4 -> 50.265" );
+		j->release();
+
+		// The mirror: the SOURCE's scale is not inherited, so a bare instance is back at 4*pi
+		// while the source itself really is scaled -- the control that makes 12.566 a result
+		// rather than a coincidence.
+		const std::string src3 = emis + "standard_object\n{\nname S\ngeometry geo\nmaterial lum\nscale 3 3 3\n}\n";
+		Job* j2 = DeriveJob( Scene( src3 + "standard_object\n{\nname I\nsource S\n}\n" ) );
+		IObject* S3 = Obj( j2, "S" ); IObject* I3 = Obj( j2, "I" );
+		Check( S3 && std::fabs( (double)S3->GetArea() - 9.0 * kUnitSphereArea ) < 1e-5,
+		       "area: (control) the source's OWN `scale 3 3 3` really does scale its area by 9" );
+		Check( I3 && std::fabs( (double)I3->GetArea() - kUnitSphereArea ) < 1e-6,
+		       "area: a bare instance of a scaled source is UNSCALED (4*pi) -- transforms are the instance's own" );
+		j2->release();
 	}
 
 	// [visible] `source` COPIES.  The source subtree keeps rendering -- unlike a CSG operand,
@@ -250,6 +384,48 @@ int main()
 		       "refuse: `geometry` and `source` on one chunk" );
 	}
 
+	// [refuse] `geometry none` + `source` -- the SAME rule, the other spelling.  `none` is the
+	// container spelling and is zero forms on its own, but on an instancing chunk it is NOT
+	// inert: the merge drops only `source` from the instancing chunk's own params, so a
+	// `geometry none` written there OVERRIDES the geometry inherited from the source and the
+	// "copy" derives as an empty, invisible container.  A form count that reads `none` as zero
+	// forms lets that through with no diagnostic at all -- while a REAL geometry on the same
+	// chunk is refused.  Both spellings must reach the same answer.
+	{
+		const std::string body = SRC_LEAF + "standard_object\n{\nname I\nsource S\ngeometry none\n}\n";
+		std::string all;
+		Check( RefusedWith( Scene( body ), "mutually exclusive", &all ),
+		       "refuse: `geometry none` + `source` is refused exactly as a REAL geometry is" );
+		Check( all.find( "not inert" ) != std::string::npos,
+		       "refuse: ... and the message says why `none` is not a way to spell 'leave the geometry alone' here" );
+		std::vector<std::string> diags;
+		const std::string dump = DumpCst( Scene( body ), &diags );
+		Check( dump.find( "  I " ) == std::string::npos,
+		       "refuse: ... and no `I` is created -- the state this exists to prevent is a silent geometry-less container" );
+	}
+
+	// [refuse] ... and the same refusal is reachable through the LIVE EDIT path, which is where
+	// it matters.  Writing `geometry none` onto an instancing chunk through the agent-gated edit
+	// used to COMMIT and leave a chunk carrying BOTH forms -- precisely the state exclusivity
+	// exists to make unreachable.
+	{
+		const std::string scene = Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" );
+		const std::string path  = WriteTempScene( "cst_source_instance_geomnone.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "live-edit: the `geometry none` fixture loads with a retained CST head" );
+		if( loaded ) {
+			const int rc = j->ApplyCstParamEditChecked( "I", "object", "geometry", 0, "none" );
+			Check( rc == 0, "live-edit: `geometry none` onto an instancing chunk is REFUSED (rc=0), head and live scene untouched" );
+			IObject* I = Obj( j, "I" );
+			Check( I && I->GetGeometry() != 0, "live-edit: ... and `I` still has the geometry it inherited" );
+			Check( j->GetCstDocument() && SerializeCst( *j->GetCstDocument() ).find( "geometry none" ) == std::string::npos,
+			       "live-edit: ... and the retained head never grew a second form" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
 	// [refuse] a source that does not exist at all.
 	{
 		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource nosuch\n}\n" ),
@@ -276,14 +452,30 @@ int main()
 		       "refuse: `source` naming the chunk itself" );
 	}
 
-	// [refuse] a CSG OPERAND: its matrix is interpreted in the composite's local frame, not the
-	// world, so a copy placed by a world `position` would not land where the number says.
+	// [refuse] a CSG OPERAND -- in BOTH declaration orders.  An operand is CONSUMED by its
+	// composite (CSGObject::AssignObjects takes ownership and hides it), so it is a term in a
+	// boolean expression, not a shape that stands on its own -- the same rule
+	// ObjectManager::SetObjectParent applies.  That is a DOCUMENT property, so the answer must
+	// not depend on where the `csg_object` chunk sits: a live `IsWorldVisible()` test only sees
+	// the operand as hidden once the composite's Finalize has run, which would refuse the
+	// composite-first spelling and wave the composite-last one through.
 	{
-		const std::string body = "standard_object\n{\nname a\ngeometry geo\nmaterial m\n}\n"
-		                         "standard_object\n{\nname b\ngeometry boxg\nmaterial m\n}\n"
-		                         "csg_object\n{\nname C\nobja a\nobjb b\noperation union\n}\n"
-		                         "standard_object\n{\nname I\nsource a\n}\n";
-		Check( RefusedWith( Scene( body ), "is a CSG OPERAND" ), "refuse: `source` naming a CSG operand" );
+		const std::string ab   = "standard_object\n{\nname a\ngeometry geo\nmaterial m\n}\n"
+		                         "standard_object\n{\nname b\ngeometry boxg\nmaterial m\n}\n";
+		const std::string csg  = "csg_object\n{\nname C\nobja a\nobjb b\noperation union\n}\n";
+		const std::string inst = "standard_object\n{\nname I\nsource a\n}\n";
+		std::string before, after;
+		Check( RefusedWith( Scene( ab + csg + inst ), "is a CSG OPERAND", &before ),
+		       "refuse: `source` naming a CSG operand -- composite declared BEFORE the instancing chunk" );
+		Check( RefusedWith( Scene( ab + inst + csg ), "is a CSG OPERAND", &after ),
+		       "refuse: `source` naming a CSG operand -- composite declared AFTER it too (the rule is order-INDEPENDENT)" );
+		Check( before.find( "CONSUMES" ) != std::string::npos && before.find( "Instance the `csg_object` itself" ) != std::string::npos,
+		       "refuse: ... and the reason given is the TRUE one (the composite consumes the operand) with the way out" );
+		Check( before.find( "would not land where the number says" ) == std::string::npos,
+		       "refuse: ... and NOT the false CSG-local-matrix reason -- the collapse semantics drop the source's matrix entirely" );
+		// `objb` is scanned as well as `obja`, so the rule covers both slots.
+		Check( RefusedWith( Scene( ab + csg + "standard_object\n{\nname I\nsource b\n}\n" ), "is a CSG OPERAND" ),
+		       "refuse: ... and the `objb` slot is scanned too, not just `obja`" );
 	}
 
 	// [refuse] a source WITH CHILDREN is a multi-node subtree -- refused, not silently
@@ -297,17 +489,54 @@ int main()
 		Check( all.find( "has CHILDREN" ) != std::string::npos, "refuse: ... and the message says so plainly" );
 	}
 
+	// [refuse] `source S` + `parent S` on ONE chunk.  This makes S appear to HAVE CHILDREN --
+	// the instance is its own source's only child -- so the 3b rule fires on a scene with no
+	// subtree in it at all, and an author sent to look for S's children finds none.  The real
+	// cause is the author's own `parent` line, and the message must say that.
+	{
+		std::string all;
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nparent S\n}\n" ),
+		                    "recursive definition", &all ),
+		       "refuse: `source S parent S` is refused for the REAL reason -- a copy of S parented under S" );
+		Check( all.find( "step 3b" ) == std::string::npos || all.find( "`parent S`" ) != std::string::npos,
+		       "refuse: ... naming the `parent` line as the cause, not sending the author after a subtree that does not exist" );
+		Check( all.find( "has CHILDREN -- instancing a multi-node subtree" ) == std::string::npos,
+		       "refuse: ... and NOT with the has-children message" );
+		// A source with a REAL other child still gets the 3b message, even when the instance
+		// also parents to it -- the self-child detection must be exactly "the ONLY child is me".
+		Check( RefusedWith( Scene( SRC_LEAF
+		                         + "standard_object\n{\nname kid\ngeometry boxg\nmaterial m\nparent S\n}\n"
+		                         + "standard_object\n{\nname I\nsource S\nparent S\n}\n" ),
+		                    "has CHILDREN -- instancing a multi-node subtree" ),
+		       "refuse: ... while a source with a genuine OTHER child still gets the 3b message" );
+	}
+
 	// [refuse] DOCUMENT-level name collision: two object chunks declaring the entry name.  The
 	// manager pre-check alone cannot see this when the other chunk is declared AFTER -- it does
 	// not exist yet -- so the scan is over the document, and it names both chunks.
 	{
+		// COMMENTS ON PURPOSE.  The message exists to name BOTH chunks so the author can
+		// reconcile them, which means naming them in terms an author can COUNT TO.  A raw CST
+		// item index is not one: trivia (comments, blank lines) are items too, so in this scene
+		// -- whose colliding chunks are the 9th and 10th the author wrote -- the raw indices are
+		// nowhere near 9 and 10.  Without the comments the two numberings would coincide and
+		// this test would pass on the broken message.
 		const std::string body = SRC_LEAF
+		                       + "# a comment, so the raw item index and the chunk ordinal diverge\n"
+		                       + "\n"
+		                       + "# and another\n"
 		                       + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n"
+		                       + "\n# a third, between the two colliding chunks\n\n"
 		                       + "standard_object\n{\nname I\ngeometry boxg\nmaterial m\n}\n";
 		std::string all;
 		Check( RefusedWith( Scene( body ), "declared by MORE THAN ONE object chunk", &all ),
 		       "refuse: the entry name is also declared by a LATER authored chunk (document-level mis-targeting)" );
-		Check( all.find( "item " ) != std::string::npos, "refuse: ... and the message names the colliding items" );
+		Check( all.find( "chunk #9" ) != std::string::npos && all.find( "chunk #10" ) != std::string::npos,
+		       "refuse: ... naming both by their position among the file's CHUNKS (#9 and #10 here, comments not counted)" );
+		Check( all.find( "a `standard_object`" ) != std::string::npos,
+		       "refuse: ... and by role, so the author knows what to look for" );
+		Check( all.find( "item " ) == std::string::npos,
+		       "refuse: ... and never by raw CST item index (which counts comments and blank lines)" );
 	}
 
 	// [refuse] the SECOND implementation of the exclusivity rule -- the one in the parser's
@@ -321,12 +550,14 @@ int main()
 		const std::string dump = DumpCst( Scene( SRC_LEAF + "instance_array\n{\nname g\ntemplate geo\nmaterial m\nsource S\ncount_u 1\n}\n" ), &diags );
 		std::string all;
 		for( std::size_t i = 0; i < diags.size(); ++i ) { all += diags[i]; all += "\n"; }
-		// The parser's SPECIFIC text reaches the log, not `diags`: ExpandInstanceArray runs
-		// outside PASS-2's armed g_cstFinalizeDiagSink window, so all that comes back here is
-		// its own generic apply-failed line.  What this pins is the behaviour that matters --
-		// the chunk is refused and produces nothing.  (Red-proven by disabling BOTH of the
-		// parser's `source` gates: with them gone the object is built and this goes green->red.)
-		Check( !diags.empty(), "refuse: `geometry` + `source` reaching the PARSER (via instance_array pass-through) is refused" );
+		// WHAT THIS DOES AND DOES NOT CLAIM.  The parser's SPECIFIC text reaches the LOG, not
+		// `diags`: ExpandInstanceArray runs outside PASS-2's armed g_cstFinalizeDiagSink window,
+		// so all that comes back here is its own generic apply-failed line.  So this pins the
+		// BEHAVIOUR -- a `source` that reaches the parser is refused and builds nothing -- and
+		// deliberately does NOT claim which of the parser's two `source` gates (the
+		// geometry+source exclusivity one, or the lone-unexpanded-`source` backstop) fired.
+		// Distinguishing them from here is not possible without reading the log file.
+		Check( !diags.empty(), "refuse: a `source` reaching the PARSER (via instance_array pass-through) is refused" );
 		Check( dump.find( "  g[0,0] " ) == std::string::npos, "refuse: ... and no object is created by the refused chunk" );
 	}
 
@@ -346,9 +577,13 @@ int main()
 		const char* i2 = 0;
 		Check( objs && !objs->GetObjectProvenance( "S", &i2, 0 ),
 		       "provenance: the SOURCE is an ordinary authored object -- no provenance record" );
-		const char* i3 = 0;
-		Check( objs && !objs->GetObjectProvenance( "nosuch", &i3, 0 ),
-		       "provenance: an unknown name has no record" );
+		// An unknown name: FALSE, and -- the part of the contract worth a test -- BOTH
+		// out-pointers left UNTOUCHED, so a caller that reads them before checking the bool
+		// gets its own initializer back rather than a stale interior pointer.
+		static const char kSentinel[] = "untouched";
+		const char* i3 = kSentinel; const char* s3 = kSentinel;
+		Check( objs && !objs->GetObjectProvenance( "nosuch", &i3, &s3 ) && i3 == kSentinel && s3 == kSentinel,
+		       "provenance: an unknown name answers FALSE and leaves BOTH out-pointers untouched" );
 		j->release();
 	}
 
@@ -407,6 +642,52 @@ int main()
 		const int applied2 = DeriveToJobIncremental( d3, *j, std::vector<NodeId>( 1, sid ), &di2 );
 		Check( applied2 >= 1 && di2.empty(), "incremental: an ordinary standard_object still applies incrementally (no over-broad refusal)" );
 		j->release();
+	}
+
+	// [incremental] CLEARING the slot -- `source none` -- refuses too.  It is tempting to exempt
+	// it: the chunk then derives as a plain container, which the in-place re-point handles
+	// perfectly well.  But the manager entry still carries the PROVENANCE row the earlier
+	// expansion wrote, and provenance is retired only by RemoveItem / Shutdown -- neither of
+	// which an in-place re-point calls.  An incremental commit would leave GetObjectProvenance
+	// answering "(I, S)" for an object that is no longer an instance of anything.
+	{
+		Job* j = new Job();
+		Document d = ParseToCst( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		std::vector<std::string> diags;
+		DeriveToJob( d, *j, &diags );
+		const NodeId id = DocFindByName( d, "standard_object/I" );
+		Document d2 = DocSetParamValue( d, id, "source", 0, "none" );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d2, *j, std::vector<NodeId>( 1, id ), &di );
+		std::string all;
+		for( std::size_t i = 0; i < di.size(); ++i ) { all += di[i]; all += "\n"; }
+		Check( applied == 0 && all.find( "carries `source none`" ) != std::string::npos,
+		       "incremental: `source none` refuses too -- ANY `source` edit takes the full re-derive" );
+		j->release();
+	}
+
+	// [incremental] ... and the consequence, through the LIVE edit path: the full re-derive is
+	// what actually retires the stale row.
+	{
+		const std::string scene = Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" );
+		const std::string path  = WriteTempScene( "cst_source_instance_clear.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "incremental-clear: the fixture loads with a retained CST head" );
+		if( loaded ) {
+			const char* c0 = 0;
+			Check( j->GetObjects() && j->GetObjects()->GetObjectProvenance( "I", &c0, 0 ),
+			       "incremental-clear: (precondition) `I` starts with a provenance row" );
+			const int rc = j->ApplyCstParamEdit( "I", "object", "source", 0, "none" );
+			Check( rc == 2, "incremental-clear: `source none` takes the FULL re-derive (rc=2), not the incremental fast path (rc=1)" );
+			const char* c1 = 0;
+			Check( j->GetObjects() && !j->GetObjects()->GetObjectProvenance( "I", &c1, 0 ),
+			       "incremental-clear: ... so `I`'s provenance row is GONE -- it is not an instance of anything any more" );
+			IObject* I = Obj( j, "I" );
+			Check( I && I->GetGeometry() == 0, "incremental-clear: ... and `I` really did become a bare container" );
+		}
+		j->release();
+		std::remove( path.c_str() );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

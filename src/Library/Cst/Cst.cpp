@@ -1455,10 +1455,19 @@ struct ObjectChunkIndex
 	//! is deliberately absent: it names an EXISTING object BY DESIGN, so counting
 	//! it would report every override as a collision.
 	std::map<std::string, std::vector<std::size_t> > byName;
-	//! Names that some object chunk declares as its `parent` -- i.e. the nodes
-	//! that HAVE children.  87 step 3a instances a SINGLE node; a source with
-	//! children is subtree instancing, which is step 3b.
-	std::set<std::string> hasChildren;
+	//! parent-name -> the ITEM INDICES of the chunks naming it as their `parent`,
+	//! i.e. the nodes that HAVE children.  87 step 3a instances a SINGLE node; a
+	//! source with children is subtree instancing, which is step 3b.  Indices, not
+	//! a bare flag, because `I source S parent S` makes the INSTANCING chunk its
+	//! own source's only child -- an author's self-inflicted `parent` link, not the
+	//! multi-node subtree 3b is about, and the two need different diagnostics.
+	std::map<std::string, std::vector<std::size_t> > childrenOf;
+	//! Every name a `csg_object` chunk binds as `obja` / `objb` -- the CSG OPERANDS.
+	//! A DOCUMENT scan, deliberately, so the answer does not depend on WHERE the
+	//! composite sits relative to the chunk asking: the live `IsWorldVisible()`
+	//! state only becomes false once the `csg_object`'s Finalize has run, which
+	//! would make the operand refusal fire or not fire purely on declaration order.
+	std::set<std::string> csgOperands;
 };
 
 static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChunkIndex& out )
@@ -1470,8 +1479,26 @@ static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChun
 		std::string nm;
 		if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) out.byName[ nm ].push_back( i );
 		std::string pr;
-		if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.hasChildren.insert( pr );
+		if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.childrenOf[ pr ].push_back( i );
+		if( c->role == "csg_object" ) {
+			std::string op;
+			if( ParamValue( c.get(), "obja", op ) && !op.empty() && op != "none" ) out.csgOperands.insert( op );
+			op.clear();
+			if( ParamValue( c.get(), "objb", op ) && !op.empty() && op != "none" ) out.csgOperands.insert( op );
+		}
 	}
+}
+
+//! 1-based position of item `idx` among the document's CHUNK items; trivia
+//! (comments, blank lines) do not count.  Diagnostics quote THIS, never the raw
+//! item index -- an author counts chunks in the file they wrote, and a file with
+//! three comments in it puts the 6th chunk at item 16.
+static unsigned int ChunkOrdinal( const std::vector<NodeRef>& items, std::size_t idx )
+{
+	unsigned int n = 0;
+	for( std::size_t i = 0; i < items.size() && i <= idx; ++i )
+		if( items[i] && items[i]->kind == NodeKind::Chunk ) ++n;
+	return n;
 }
 
 //! 87 step 3a -- expand a `standard_object` carrying `source` into exactly ONE
@@ -1537,11 +1564,32 @@ static bool ExpandSourceInstance(
 	// Mutually exclusive forms, counted and refused BEFORE any mutation, the same
 	// shape sweep_geometry uses for profile_point / profile_circle / profile_rect.
 	// ZERO forms is legal here (that is the container); TWO never is.
-	const int formCount = ( ( !instGeometry.empty() && instGeometry != "none" ) ? 1 : 0 )
-	                    + ( ( !srcName.empty()      && srcName      != "none" ) ? 1 : 0 );
+	//
+	// `geometry none` COUNTS AS A FORM once `source` is present, and this asymmetry
+	// is the whole point.  On its own, `geometry none` is the container spelling --
+	// zero forms, no leaf shape, legal.  Alongside `source` it is not inert: the
+	// merge below drops only `source` from the instancing chunk's own params, so a
+	// `geometry none` written there OVERRIDES the geometry inherited from the
+	// source and the "copy" derives as an empty, invisible container -- with no
+	// diagnostic at all, because the count said one form.  Writing a REAL geometry
+	// onto the same chunk is refused; the two spellings must reach the same answer,
+	// and the answer that keeps `geometry none` meaningful is "that is a second
+	// form", not "the merge quietly ignores it".
+	//
+	// `srcForm` is always TRUE at today's only entry: PASS-2 only marks a chunk
+	// `isSourceInstance` when `source` names something real.  It stays written as a
+	// COUNT anyway so a future entry path (3b/3c) cannot silently re-open the hole.
+	const bool srcForm = ( !srcName.empty() && srcName != "none" );
+	const int formCount = ( ( !instGeometry.empty() && ( instGeometry != "none" || srcForm ) ) ? 1 : 0 )
+	                    + ( srcForm ? 1 : 0 );
 	if( formCount > 1 ) {
 		diags.push_back( who + ": `geometry` and `source` are mutually exclusive -- a node is EITHER a leaf "
-			"shape (`geometry`) OR an instance of another node (`source`), never both.  Drop one." );
+			"shape (`geometry`) OR an instance of another node (`source`), never both.  Drop one."
+			+ ( instGeometry == "none"
+			      ? std::string( "  `geometry none` is not inert here: it is merged onto the copy and would "
+			                     "override the geometry inherited from `" + srcName + "`, leaving an empty "
+			                     "container rather than an instance.  Delete the `geometry` line." )
+			      : std::string() ) );
 		return false;
 	}
 	if( srcName == instName ) {
@@ -1570,41 +1618,59 @@ static bool ExpandSourceInstance(
 		diags.push_back( who + ": `source` needs the object manager to resolve `" + srcName + "`, and this Job has none" );
 		return false;
 	}
-	// Resolves the source through the manager -- which is BOTH the CSG-operand
-	// discriminator below AND (see (c) above) the recorded dependency edge that
-	// puts this instance in the closure of an edit to the SOURCE.
+	// Resolves the source through the manager -- (c) above: the recorded dependency
+	// edge that puts this instance in the closure of an edit to the SOURCE.
 	IObjectPriv* srcObj = objMgr->GetItem( srcName.c_str() );
 	if( !srcObj ) {
 		diags.push_back( who + ": `source " + srcName + "` is declared earlier but did not produce an object "
 			"(its own chunk failed, or it was dropped by a scene variant)" );
 		return false;
 	}
-	// A CSG OPERAND is hidden by its composite and its matrix is interpreted in
-	// the COMPOSITE's local frame, not the world -- so a copy of it, placed by a
-	// world-space `position`, would not mean what it looks like it means.  Same
-	// discriminator ObjectManager's IsContainerNode_ and SetObjectParent's operand
-	// guards use: hidden AND not a container, where "not a container" needs the
-	// CSGObject test as well as the geometry test, because a NESTED composite used
-	// as an operand is hidden and geometry-less too.
-	{
-		const bool hidden    = !static_cast<const IObject*>( srcObj )->IsWorldVisible();
-		const bool container = ( srcObj->GetGeometry() == 0 )
-		                    && ( dynamic_cast<const Implementation::CSGObject*>( srcObj ) == 0 );
-		if( hidden && !container ) {
-			diags.push_back( who + ": `source " + srcName + "` is a CSG OPERAND.  Its transform is interpreted in "
-				"its composite's local frame, not the world, so a copy of it placed by a world `position` would "
-				"not land where the number says.  Instance the csg_object instead." );
-			return false;
-		}
+	// A CSG OPERAND is CONSUMED by its composite: CSGObject::AssignObjects takes
+	// ownership and SetWorldVisible(false)s it, so it has no existence as a
+	// standalone shape -- it is a term in someone else's boolean expression, not a
+	// node.  The same coherent rule ObjectManager::SetObjectParent applies when it
+	// refuses to let an operand take (or be) a parent.
+	//
+	// A DOCUMENT scan, not the live `IsWorldVisible()` state.  Visibility only goes
+	// false once the `csg_object`'s own Finalize has run, so a live-state test would
+	// refuse when the composite is declared BEFORE the instancing chunk and let the
+	// identical scene through when it is declared after -- an order-dependent rule
+	// where every other refusal in this function is a document scan.
+	//
+	// (The reason this refusal ORIGINALLY gave -- "its matrix is CSG-local, so a
+	// copy placed by a world `position` would not land where the number says" -- is
+	// not true under the collapse semantics: IsInstanceOwnParam drops the source's
+	// matrix entirely, so nothing CSG-local is ever carried into the copy.)
+	if( index.csgOperands.count( srcName ) ) {
+		diags.push_back( who + ": `source " + srcName + "` is a CSG OPERAND -- a `csg_object` in this file names it "
+			"as `obja` / `objb`, which CONSUMES it: the composite owns it and hides it, so it is a term in a "
+			"boolean expression rather than a shape that stands on its own.  Instance the `csg_object` itself "
+			"(that IS a node), or instance the geometry directly with a `geometry` binding." );
+		return false;
 	}
 	// A source WITH CHILDREN is a multi-node subtree.  Refuse rather than quietly
 	// instancing only its root, which would produce a copy missing most of what
 	// the author pointed at.
-	if( index.hasChildren.count( srcName ) ) {
-		diags.push_back( who + ": `source " + srcName + "` has CHILDREN -- instancing a multi-node subtree is 87 "
-			"step 3b and is not implemented yet.  3a instances a SINGLE node (a leaf, a container, or a "
-			"csg_object).  Instancing only its root would silently drop the rest of the subtree, so it is refused." );
-		return false;
+	{
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( srcName );
+		if( kids != index.childrenOf.end() && !kids->second.empty() ) {
+			// `I source S parent S` -- the ONLY child of S is this very chunk, put
+			// there by the author's own `parent` line.  There is no subtree; saying
+			// "3b" would send the author looking for children that do not exist.
+			if( kids->second.size() == 1 && kids->second.front() == instIndex ) {
+				diags.push_back( who + ": `source " + srcName + "` and `parent " + srcName + "` on the SAME chunk -- "
+					"the copy would be a CHILD of the very node it is a copy of, so `" + srcName + "`'s subtree "
+					"would contain a copy of `" + srcName + "`.  That is a recursive definition: subtree instancing "
+					"(87 step 3b) could not expand it, and today it is the only reason `" + srcName + "` has any "
+					"children at all.  Parent the instance to something other than its source." );
+				return false;
+			}
+			diags.push_back( who + ": `source " + srcName + "` has CHILDREN -- instancing a multi-node subtree is 87 "
+				"step 3b and is not implemented yet.  3a instances a SINGLE node (a leaf, a container, or a "
+				"csg_object).  Instancing only its root would silently drop the rest of the subtree, so it is refused." );
+			return false;
+		}
 	}
 
 	// Walk the `source` chain back to the ROOT chunk -- the one that declares what
@@ -1703,9 +1769,15 @@ static bool ExpandSourceInstance(
 	{
 		const std::map<std::string, std::vector<std::size_t> >::const_iterator ci = index.byName.find( instName );
 		if( ci != index.byName.end() && ci->second.size() > 1 ) {
-			char pos[128];
-			std::snprintf( pos, sizeof(pos), "item %u and item %u",
-				(unsigned int)ci->second[0], (unsigned int)ci->second[1] );
+			// Say WHICH TWO in terms the author can find: role + position among the
+			// file's CHUNKS.  The raw CST item index counts trivia, so a file with
+			// three comments in it would report the 6th and 7th chunks as "item 16
+			// and item 18" -- a pair of numbers nobody can count to.
+			const std::size_t a = ci->second[0], b = ci->second[1];
+			char pos[192];
+			std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`, and chunk #%u, a `%s`",
+				ChunkOrdinal( items, a ), items[a] ? items[a]->role.c_str() : "?",
+				ChunkOrdinal( items, b ), items[b] ? items[b]->role.c_str() : "?" );
 			diags.push_back( who + ": the entry name `" + instName + "` is declared by MORE THAN ONE object chunk ("
 				+ pos + ").  A picked instance would resolve back to whichever the name lookup finds first, so an "
 				"edit could land in the wrong chunk.  Rename one." );
@@ -2144,12 +2216,25 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// the instance must re-expand" is not needed here, because the expansion
 			// resolves the source object THROUGH the manager and so records the source's
 			// chunk as a traced dependency (see ExpandSourceInstance (c)).
+			//
+			// `source none` IS NOT EXEMPT, and that is deliberate.  Clearing the slot
+			// makes the chunk derive as a plain container, which the in-place re-point
+			// handles fine -- but the entry still carries the PROVENANCE row a previous
+			// expansion wrote, and provenance is retired only by RemoveItem / Shutdown,
+			// neither of which an in-place re-point calls.  An incremental commit would
+			// leave `GetObjectProvenance` still answering "(I, S)" for an object that
+			// is no longer an instance of anything.  ANY `source` edit therefore takes
+			// the full re-derive, which rebuilds provenance from scratch.
 			std::string srcRef;
 			if( node->role == "standard_object"
-			 && ParamValue( node.get(), "source", srcRef ) && !srcRef.empty() && srcRef != "none" ) {
-				diags.push_back( node->role + " '" + name + "': carries `source " + srcRef + "` -- an INSTANCE, "
-					"expanded by the full derive at PASS-2 rather than by this chunk's own Finalize; "
-					"fall back to a full derive" );
+			 && ParamValue( node.get(), "source", srcRef ) && !srcRef.empty() ) {
+				diags.push_back( node->role + " '" + name + "': carries `source " + srcRef + "` -- "
+					+ ( srcRef == "none"
+					      ? std::string( "a CLEARED instance slot, whose stale provenance row only a full "
+					                     "re-derive retires" )
+					      : std::string( "an INSTANCE, expanded by the full derive at PASS-2 rather than by "
+					                     "this chunk's own Finalize" ) )
+					+ "; fall back to a full derive" );
 				return 0;
 			}
 		}
