@@ -574,51 +574,60 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
   from burning spontaneously while letting the flame spread at a physical
   rate.
 
-  **The pilot is a prescribed energy source, fully pinned (r55).** The
-  "fixed pilot-source mask" above was named but never defined, leaving the
-  cold-start gate circular: piloted ignition needs resolved T > T_pilot,
-  and a 300 K domain with 300 K injection has no heat source until
-  reaction starts. The pilot is what a real pilot is — a small flame
-  heating the fuel/air interface — modelled as a prescribed volumetric
-  energy source through the ordinary source-packet/ℋ_s ledger (never a
-  state overwrite):
+  **The pilot is a prescribed isothermal kernel, fully pinned (r55,
+  reformulated r62).** The "fixed pilot-source mask" above was named but
+  never defined, leaving the cold-start gate circular: piloted ignition
+  needs resolved T > T_pilot, and a 300 K domain with 300 K injection
+  has no heat source until reaction starts. The pilot is what a real
+  pilot is — a small region *held at temperature* by its own chemistry,
+  heating the fuel/air interface — modelled as a finite-step local map
+  whose energy increment flows through the ordinary source-packet/ℋ_s
+  ledger exactly like chemistry and radiation (never an unledgered
+  overwrite):
   - **Mask (derived, canonical):** the first cell layer above the bed
     whose centers lie in the annulus [D/2, D/2 + 2δx] around the source
     axis — the fuel/air interface ring where a physical pilot sits and
     where both reactants are available to the eligibility graph.
-  - **Power (amended r57):** a fixed volumetric density of exactly
-    **1 MW/m³** over the mask cells — an *intensive* pin, physically the
-    heat-release density of a small pilot flame. The original r55 form
-    (0.01·Q̇_ref total, spread over the mask) diluted with burner size:
-    wider annuli at fixed fractional power never crossed T_pilot. A
-    density pin heats any mask cell at the same ~10³ K/s regardless of
-    case scale, and total pilot power scales with ring volume exactly as
-    a physical pilot ring does. Ledger/exclusion rules unchanged.
+  - **Setpoint (r62, replacing the r55/r57 power pins):** while active,
+    the pilot local map applies **T ← max(T_accepted, 900 K)** per mask
+    cell at fixed composition; the realizing ℋ_s increment is
+    differenced into ΔU_src and ledgered as pilot energy. **No power
+    constant exists.** History of the retired rate formulation: r55's
+    fractional 0.01·Q̇_ref diluted with burner size; r57's intensive
+    1 MW/m³ heated cold air at ~830 K/s, which sufficed only in the
+    zero-gravity regime an harness defect had silently created — under
+    physical buoyancy a heated cell develops g′ ≈ 3.6 m/s² by ~400 K,
+    clears the first layer in ~0.1 s, gains ~65 K per pass, and
+    plateaus near the observed 548 K, below the 600 K gate at *any*
+    duration. The r58 thermostat had already made power a **saturating
+    parameter** (any sufficient rate just holds the ceiling); r62
+    deletes the saturated constant and keeps the setpoint. The hold is
+    advection-robust by construction — replaced gas is re-asserted next
+    step — and scale-invariant in the way r57 intended: identical
+    kernel temperature at every tier and burner size, with total pilot
+    energy emerging from the flow instead of being pinned.
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
     the measured envelope or any statistics window.
-  - **Thermostat ceiling (r58):** within the active window, the pilot
-    term applies in a mask cell **only while that cell's accepted
-    beginning-of-step temperature is below exactly 900 K**; at or above,
-    the cell's pilot contribution is zero for that step (pure threshold,
-    no hysteresis — deterministic on the accepted state). Rationale: a
-    pilot ignites reactants; it does not superheat products. Without the
-    ceiling, pilot + combustion superposition in already-burning ring
-    cells drove the capstone to 2406–2500 K — **super-adiabatic** for
-    methane–air (T_ad ≈ 2230 K) — and the opacity record's certified
-    2500 K domain correctly rejected the unphysical state. The ceiling
-    sits above every T_AIT in scope (≤ 873 K), so ignition still seeds
-    robustly into the spontaneous-eligibility regime, and far below any
-    flame temperature, so no product cell is ever pilot-heated. The
-    certified opacity domain is **unchanged** — its rejection was the
-    system working — and no out-of-domain provisional treatment exists.
+  - **Thermostat ceiling (r58, absorbed by r62):** the max() form IS
+    the thermostat — cells at or above 900 K receive exactly zero pilot
+    energy (pure threshold on the accepted state, no hysteresis,
+    deterministic). Rationale unchanged: a pilot ignites reactants; it
+    does not superheat products. The r58 incident (pilot + combustion
+    superposition driving 2406–2500 K, super-adiabatic for methane–air
+    T_ad ≈ 2230 K, correctly rejected by the opacity record's certified
+    2500 K domain) remains the reason the ceiling exists; the ceiling
+    sits above every in-scope T_AIT (≤ 873 K) and far below any flame
+    temperature. The certified opacity domain is **unchanged**.
   - **Ledger:** pilot energy enters ℋ_s conservation like any source
     term and appears as its own diagnostic line; it is **not** heat of
     combustion and is therefore excluded from Q̇_tot (χ_r's budget and
-    ε_Q see combustion only).
-  - **Payload:** the pilot block (model version, mask rule, power
-    fraction, duration multiplier) is echoed into the §3.9 derived
+    ε_Q see combustion only). The isothermal form's per-step energy is
+    exactly the differenced increment — finite, flow-determined, and
+    fully accounted.
+  - **Payload:** the pilot block (model version, mask rule, setpoint,
+    duration multiplier) is echoed into the §3.9 derived
     fields, hence inside `case_record_id`. No new authored field exists;
     the pilot is universal and derived. Case schema v1 is amended in
     place to include the block — no persisted v1 record predates this
@@ -1808,16 +1817,18 @@ following; two conforming tools must derive identical bytes:
    exactly the authored value, scaled by amplitude **a = 0.01**, and
    applied **constantly for the entire run** (a slightly non-uniform
    burner — no time discontinuity, fully deterministic).
-7. **Pilot (r55, amended r57).** The prescribed pilot energy source of
-   §3.3: mask = first layer above the bed, centers in the annulus
-   [D/2, D/2 + 2δx]; power = a fixed volumetric density of exactly
-   **1 MW/m³** over the mask (intensive — scale-invariant heating;
-   the r55 fractional form diluted with burner size); active from run
-   start for exactly 1·t_ft, **per-cell only while the accepted
-   beginning-of-step T < 900 K exactly (r58 thermostat — a pilot ignites
-   reactants, never superheats products)**; ledgered in ℋ_s but excluded
-   from Q̇_tot. The pilot block is echoed in the derived fields and is
-   part of `case_record_id`.
+7. **Pilot (r55, amended r57/r58, reformulated r62).** The prescribed
+   isothermal pilot kernel of §3.3: mask = first layer above the bed,
+   centers in the annulus [D/2, D/2 + 2δx]; **setpoint semantics —
+   T ← max(T_accepted, 900 K)** per mask cell at fixed composition, the
+   realizing ℋ_s increment differenced into the source packet (no power
+   constant exists; the r57 1 MW/m³ rate plateaued at ~548 K under
+   physical buoyancy and was validated only in an accidental
+   zero-gravity regime); active from run start for exactly 1·t_ft. The
+   max() form is the r58 thermostat (a pilot ignites reactants, never
+   superheats products); ledgered in ℋ_s but excluded from Q̇_tot. The
+   pilot block is echoed in the derived fields and is part of
+   `case_record_id`.
 7a. **Case admissibility — the mixing-limited scale gate (r57).** The
    §3.3 closure is a plume-scale, resolution-limited combustion model
    (FDS lineage); it is not a laminar flame-structure model. A case is

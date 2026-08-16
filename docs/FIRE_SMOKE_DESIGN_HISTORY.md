@@ -1348,3 +1348,40 @@ it was already tried and refuted here.
   r59 VDB lacks the full conservative cell) — any true accumulation
   scale only increases margin, and the exhaustion fixture carries the
   forward-looking guarantee.
+
+- **r62 (2026-08-15):** isothermal pilot kernel, from the first
+  genuinely buoyant run — and an explicit anti-rathole reflection
+  requested by the owner. Background: the harness had left gravity at
+  zero (fixed by the agent in b8781fdd with fail-fast qualification),
+  which means every prior "successful ignition" (r55–r60) was validated
+  in a quiescent regime with infinite residence time. The empirical
+  gates caught the zero-g run exactly as designed — puffing 0.478 Hz vs
+  2.739 Hz expected, McCaffrey T/u errors ~100 %, while the HRR ledger
+  was round-off clean: a ledger-perfect, physically wrong run rejected
+  on measurements, which is the entire point of the V-tier. With
+  gravity on, the r57 1 MW/m³ pilot plateaued at ~548 K: heated gas
+  develops buoyancy by ~400 K, clears the first layer in ~0.1 s
+  (~65 K/pass against ~830 K/s heating), and no duration reaches the
+  600 K gate — a steady-state shortfall, not a marginal one. Rathole
+  diagnosis: this was the pilot power constant's third failure (r55
+  fractional, r57 intensive, now buoyant), each failure retuning a
+  rate; and the r58 thermostat had already made power a *saturating*
+  parameter — any sufficient rate merely holds the 900 K ceiling. r62
+  deletes the saturated constant and keeps the setpoint: the pilot is a
+  finite-step local map **T ← max(T_accepted, 900 K)** on the mask at
+  fixed composition, its realizing ℋ_s increment differenced into the
+  source packet and ledgered as pilot energy (excluded from Q̇_tot as
+  before). This is advection-robust by construction, scale-invariant in
+  the way r57 intended, more physical (a real pilot is a region held at
+  temperature by its own chemistry, not a volumetric wattage), and
+  removes the last tuned rate constant from the ignition path. The r58
+  products protection survives verbatim in the max() form. Rejected:
+  retuning power upward (converges to the hold with one extra arbitrary
+  constant), extending duration (steady-state shortfall), lowering the
+  600 K gate (measured record value), and skipping cold-start ignition
+  (the statistics window starts at 5·t_ft ≈ 10.4 s and the pilot dies
+  at 2.1 s, so ignition is narrative — but it is the narrative that
+  exercises §3.3's two-route gate honestly). Also answered: the
+  capstone arc itself is not the rathole — the gates keep catching real
+  defects, and the pilot was the last invented component in the physics
+  chain.
