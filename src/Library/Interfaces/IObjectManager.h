@@ -100,7 +100,9 @@ namespace RISE
 
 		//! The recorded parent name for `child`, or "" when it is a root or
 		//! not a registered object.  The returned pointer is owned by the
-		//! manager and is valid until the next SetObjectParent call.
+		//! manager and is invalidated by anything that changes the link map --
+		//! SetObjectParent, and also RemoveItem, which erases the removed
+		//! object's row AND re-roots every orphan.  Consume it immediately.
 		virtual const char* GetObjectParent(
 			const char* child							///< [in] Name of the child object
 			) const = 0;

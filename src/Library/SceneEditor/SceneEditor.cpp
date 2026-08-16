@@ -3203,7 +3203,15 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			// it with a warning on this and every later derive, and the edit
 			// would report SUCCESS -- leaving the Document permanently carrying
 			// a param that can never take effect.
+			// CLEARING an interior medium stays allowed, matching the direct-mutate
+			// arm below: an object that BECAME a container can be tidied up, and
+			// refusing the clear would be refusing to remove exactly the binding
+			// this gate exists to keep off it.
+			const bool clearingMedium = ( edit.op == SceneEdit::SetObjectInteriorMedium )
+			                         && ( edit.propertyValue.size() <= 1
+			                           || edit.propertyValue == String( "none" ) );
 			if( IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
+			 && !clearingMedium
 			 && IsContainerNodeForEdit_( *obj ) ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"SceneEditor:: `%s` is a container node (no geometry), so it takes no surface binding; "

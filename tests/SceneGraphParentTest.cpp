@@ -51,6 +51,8 @@
 //    R -- descriptor integrity across EVERY chunk (an empty description is the
 //         signature of a P() reference invalidated by a nested emplace_back).
 //    S -- `rect_light` / `shape_light` compose against a parent.
+//    T -- the container binding refusal holds at the IJob layer, which is the
+//         one the non-CST hosts and the console command bind through.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -1304,8 +1306,12 @@ int main()
 		// same use-after-free and leaves the check above green, so also assert
 		// the SHAPE invariants that the later fields have to satisfy: an Enum
 		// must offer values, a Reference must name categories, and no chunk may
-		// declare a parameter name twice.  Between them these cover every field
-		// a P() block writes.
+		// declare a parameter name twice.  These widen the check past
+		// `description` to the fields most P() blocks set after it; they are NOT
+		// exhaustive -- `required`, `defaultValueHint` and a corrupted `kind` on
+		// a parameter that is neither Enum nor Reference would still slip
+		// through.  The structurally complete check is a source-level lint for a
+		// second P() inside an open block; this is the runtime approximation.
 		int badEnum = 0, badRef = 0, dupName = 0;
 		std::string firstShapeBad;
 		for( size_t e = 0; e < parsers.size(); ++e ) {
@@ -1378,6 +1384,49 @@ int main()
 		       "S: the parented rect_light is still an emitter" );
 		j->release();
 		std::remove( sS2 );
+	}
+
+	// =================================================================
+	// T -- the container binding refusal must hold at the IJob layer too.
+	//
+	// Three layers can bind a surface slot to an object: the DERIVE
+	// (DropContainerSurfaceBindings_), the EDITOR (ApplyObjectOpForward and the
+	// CST pre-routing gate), and the public IJob setters.  The first two were
+	// gated in earlier rounds; the third is the API the non-CST embedding binds
+	// through, and the shipped console command `modify object <name> material
+	// <name2>` routes straight to it.  Ungated, "a container never carries a
+	// material" -- the premise the agent's non-sampling-emitter audit is
+	// written against -- was true of AddObject and false of SetObjectMaterial,
+	// which is how a world-invisible, zero-area EMITTER could be created with
+	// no diagnostic at all.
+	// =================================================================
+	{
+		const char* sT2 = "sg_parent_ijobbind.RISEscene";
+		WriteScene( sT2,
+			"uniformcolor_painter\n{\nname pe2\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname glow2\nexitance pe2\nscale 4\n}\n"
+			"standard_object\n{\nname hub3\nposition 2 0 0\n}\n"
+			"standard_object\n{\nname shape3\ngeometry g\nmaterial m\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sT2 ), "T: scene loads" );
+		IObjectPriv* hub3 = Obj( *j, "hub3" );
+		Check( hub3 && hub3->GetGeometry() == 0 && hub3->GetMaterial() == 0,
+		       "T: the container starts with no geometry and no material" );
+
+		Check( !j->SetObjectMaterial( "hub3", "glow2" ),
+		       "T: IJob::SetObjectMaterial REFUSES a container" );
+		Check( hub3 && hub3->GetMaterial() == 0,
+		       "T: and nothing was bound -- no world-invisible zero-area emitter was created" );
+
+		// The same call on a real shape still works, so the refusal is
+		// container-specific rather than a blanket breakage.
+		Check( j->SetObjectMaterial( "shape3", "glow2" ),
+		       "T: an object WITH geometry still binds normally" );
+		IObjectPriv* shape3 = Obj( *j, "shape3" );
+		Check( shape3 && shape3->GetMaterial() && shape3->GetMaterial()->GetEmitter(),
+		       "T: and that binding really took effect" );
+		j->release();
+		std::remove( sT2 );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

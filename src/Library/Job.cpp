@@ -6230,6 +6230,20 @@ bool Job::SetObjectInteriorMedium(
 		return false;
 	}
 
+	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
+	// derive refuses this (DropContainerSurfaceBindings_) and so does the
+	// editor, but THESE are the API the non-CST embedding binds through -- and
+	// the shipped console command `modify object <name> interior_medium <name2>` routes
+	// straight here.  Without the gate, "a container never carries a material"
+	// -- the premise the agent's non-sampling-emitter audit is written against
+	// -- was true of AddObject and false of this.
+	if( IsContainerObject_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectInteriorMedium:: `%s` is a container node (no geometry), so it takes no interior medium (no surface means no interior to be inside of); "
+			"bind it to a child that has geometry", object_name );
+		return false;
+	}
+
 	MediumMap::iterator it = mediaMap.find( medium_name );
 	if( it == mediaMap.end() ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectInteriorMedium:: Medium not found `%s`", medium_name );
@@ -9858,6 +9872,20 @@ bool Job::SetObjectMaterial(
 		return false;
 	}
 
+	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
+	// derive refuses this (DropContainerSurfaceBindings_) and so does the
+	// editor, but THESE are the API the non-CST embedding binds through -- and
+	// the shipped console command `modify object <name> material <name2>` routes
+	// straight here.  Without the gate, "a container never carries a material"
+	// -- the premise the agent's non-sampling-emitter audit is written against
+	// -- was true of AddObject and false of this.
+	if( IsContainerObject_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectMaterial:: `%s` is a container node (no geometry), so it takes no material; "
+			"bind it to a child that has geometry", objName );
+		return false;
+	}
+
 	IMaterial* pMat = pMatManager->GetItem( materialName );
 	if( !pMat ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: material not found `%s`", materialName );
@@ -9889,6 +9917,20 @@ bool Job::SetObjectShader(
 	IObjectPriv* pObj = pObjectManager->GetItem( objName );
 	if( !pObj ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: object not found `%s`", objName );
+		return false;
+	}
+
+	// 87: a CONTAINER has no surface, so it takes no surface binding.  The
+	// derive refuses this (DropContainerSurfaceBindings_) and so does the
+	// editor, but THESE are the API the non-CST embedding binds through -- and
+	// the shipped console command `modify object <name> shader <name2>` routes
+	// straight here.  Without the gate, "a container never carries a material"
+	// -- the premise the agent's non-sampling-emitter audit is written against
+	// -- was true of AddObject and false of this.
+	if( IsContainerObject_( pObj ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetObjectShader:: `%s` is a container node (no geometry), so it takes no shader; "
+			"bind it to a child that has geometry", objName );
 		return false;
 	}
 
