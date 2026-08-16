@@ -248,30 +248,30 @@ error and must be corrected.
      until the residual hides below the r60 envelope, is forbidden.
      Relaxation-class maps keep the linearized relation (second-order defect,
      governed by the unchanged gate and Δt reduction). Within the projected
-     Heun tableau (r65), a projection map's drain participates as a frozen
-     beginning-state donor flux carried in the shared centered nonadvective
-     flux component: computed once per step (e·qⁿ per mask cell, e = 1−1/V′,
-     exiting the canonical top face), consumed identically by R0, R1, and the
-     commit under the exactly-once source contract, and never FCT-limited.
-     It replaces the stage-advective realization of the map's S_div share at
-     the mask cell — realizing the drain through stage-state advection
-     composes to 1−e+e²/2 and misses the target (RED), as does consuming
-     both forms (double drain). The map's S_div share remains in the frozen
-     projection target so momentum and neighboring cells respond to the
-     expansion. The decomposition algebra is verified exactly at unit level
-     (the scalar-update formula with prescribed frozen inputs); in the full
-     production tableau the binding arbiters are the r66 gates — unchanged
-     production EOS/feasibility acceptance green through the hold, the pilot
-     ledger bit-exact against the emitted packet + frozen drain, active mask
-     cells inside the exact [899 K, 900 K] hold band once the approach
-     completes, and conservation ledgers closed to fp64 reduction tolerance.
-     Requiring the coupled step to reproduce the isolated-map endpoint to
-     the r60 envelope is explicitly NOT a requirement (r66): e²-order
-     momentum feedback and concurrent molecular transport are genuine,
-     bounded, non-accumulating physics of a projection map in company.
+     Heun tableau (r67, reverting the r65 frozen drain), a projection map
+     participates ORDINARILY: its S_div share enters the frozen projection
+     target, and its drain is realized by stage advection through the
+     projected velocity like every other expansion — no frozen drain flux,
+     no decomposition rule, no special slot. The Heun composition of the
+     drain (1−e+e²/2) is a bounded, non-accumulating discretization
+     deviation governed by the production gates (measured 1.75×10⁻⁴ EOS
+     residual at the worst approach step, 5.7× under the gate); the r65
+     frozen-flux channel delivered per-step-finite, stage-inconsistent doses
+     to the receiving cell (Δt-invariant 1.01×10⁻³ residual there) and is
+     reverted. In the full production tableau the binding arbiters are the
+     r66 gates — unchanged production EOS/feasibility acceptance green
+     through the hold, the pilot ledger bit-exact against the emitted packet
+     (the drain is ordinary advection, covered by the global conservation
+     ledgers), active mask cells inside the exact [899 K, 900 K] hold band
+     once the approach completes, and conservation ledgers closed to fp64
+     reduction tolerance. Requiring the coupled step to reproduce the
+     isolated-map endpoint to the r60 envelope is explicitly NOT a
+     requirement (r66): coupling-order deviations are genuine, bounded,
+     non-accumulating physics of a projection map in company.
      Stage-specific divergence rules, separate finite-map commits,
      tableau-preimage drain emission, parallel no-pilot shadow trajectories,
-     and crossflow suppression during the hold are all forbidden. "Feasible" everywhere in this contract means the single r60
+     crossflow suppression during the hold, and frozen drain-flux channels
+     are all forbidden. "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance

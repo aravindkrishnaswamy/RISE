@@ -662,7 +662,8 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     the r60 envelope (envelope-burial — the inconsistency remains,
     merely unobservable); state overwrite (forbidden); Δt reduction
     (the defect is Δt-invariant).
-  - **Tableau participation (r65):** the exact pair still failed
+  - **Tableau participation (r65 — REVERTED by r67; retained for the
+    record):** the exact pair still failed
     through the unchanged projected-Heun commit — the drain, realized
     as stage-state advection, composes to 1−e+e²/2 (the truncated
     exponential: 0.82 vs the required 1/V′ = 0.80 at the cap; observed
@@ -734,6 +735,43 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     priorities); post-transport packet retargeting (r64-forbidden);
     and any widening of production tolerances (nothing in production
     needed widening — production was already green).
+  - **Ordinary tableau participation (r67) — the frozen drain is
+    reverted.** The gravity-on tier-6 run failed the production EOS
+    gate at the RECEIVER of the frozen drain (cell above the ring;
+    residual 1.01×10⁻³ vs the 1.0×10⁻³ gate, Δt-invariant), before
+    ignition. Root cause is the r65 mechanism itself: the frozen flux
+    delivers a per-step-finite dose of *beginning-state* gas that is
+    not velocity/stage-consistent at the receiving cell, so the
+    Δt-invariance the freeze removed from the mask cell reappeared one
+    cell downstream — and every receiver-side correction is patching
+    a channel that should not exist (audited: re-counting the received
+    flux in S_div → residual 0.2; unrestricted pressure response →
+    0.158). The decisive evidence pair: the r64 implementation
+    WITHOUT the frozen drain measured EOS residual **1.75×10⁻⁴** in
+    production — green under the gate with 5.7× margin — and was
+    declared failing only against the r65 exactness fixture that r66
+    deleted as a category error; meanwhile ordinary stage-consistent
+    advection demonstrably passes these gates through 1700 K fronts
+    (the zero-g burn). r65 solved a problem r66 un-defined, and its
+    mechanism caused the new failure; r66 removed the fixture but not
+    the machine. Pins: (i) the r64 exact pair is UNCHANGED at
+    emission — S_div share (1−1/V′)/Δt into the projection target,
+    target-derived packet, Δq_j = 0; (ii) its drain is realized by
+    **ordinary stage advection** through the projected velocity, like
+    every other expansion in the solver — no frozen flux, no
+    decomposition rule, no special slot; (iii) the Heun composition of
+    the drain (1−e+e²/2 = 0.82 vs 0.80 at the worst approach step) is
+    a bounded, non-accumulating discretization deviation governed by
+    the unchanged r66 production gates — the hold band still closes
+    because the map is a controller whose per-step miss shrinks
+    quadratically as e→0 near the setpoint; (iv) the pilot ledger
+    line is the PACKET, bit-exact; the drain is ordinary advection
+    covered by the global conservation ledgers; (v) the r64
+    pair-emission REDs (linear V′−1 substitution, fixed-volume full
+    packet) are retained — they guard the real r63 defect
+    (1.68×10⁻³, gate-failing); the r65 mechanism fixtures are deleted
+    with the mechanism. Machinery after r67: setpoint map + cap +
+    exact pair emission + production gates — each earning its place.
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
@@ -1594,14 +1632,17 @@ The most notorious practical trap in fire LES; specified accordingly:
   target state on the constant-pressure manifold by construction, and
   the exact EOS gate verifies rather than tolerates. Relaxation maps
   keep the linearized relation; their defect is second-order in Δt·rate
-  and governed by the unchanged gate plus Δt reduction. **r65 pins the
-  pair's tableau participation:** the projection map's drain rides the
-  shared nonadvective flux component as a frozen beginning-state donor
-  flux (exactly-once by the existing source contract, identical across
-  R0/R1/commit, never FCT-limited), replacing — not supplementing — the
-  stage-advective realization of the map's S_div share at the mask
-  cell, so the committed drain is exactly e·qⁿ through the unchanged
-  projected-Heun tableau.
+  and governed by the unchanged gate plus Δt reduction. **Tableau
+  participation (r67, reverting r65's frozen drain):** the projection
+  map's S_div share enters the frozen projection target and its drain
+  is realized by ordinary stage advection through the projected
+  velocity — no frozen drain flux, no decomposition rule. The Heun
+  composition of the drain is a bounded, non-accumulating
+  discretization deviation governed by the r66 production gates
+  (measured 1.75×10⁻⁴ EOS residual at the worst approach step, 5.7×
+  under the gate); the r65 frozen-flux channel delivered
+  stage-inconsistent finite doses to the receiving cell and is
+  reverted.
 
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:

@@ -1527,3 +1527,42 @@ it was already tried and refuted here.
   simplification was subtraction — the pilot arc closes not with a
   fifth layer of machinery but by deleting an unattainable
   requirement; production had already converged.
+
+- **r67 (2026-08-16):** ordinary tableau participation — the r65
+  frozen drain is reverted, from the gravity-on tier-6 receiver stop.
+  The frozen flux delivered a per-step-finite dose of beginning-state
+  gas to the cell above the ring that is not velocity/stage-consistent,
+  reappearing the Δt-invariance one cell downstream: EOS residual
+  1.01×10⁻³ vs the 1.0×10⁻³ gate at cell (25,20,1), invariant through
+  20 halvings, pre-ignition. The agent's two audited receiver-side
+  repairs both quantified the same conclusion (re-counting the received
+  flux in S_div → 0.2; unrestricted pressure response → 0.158): every
+  correction was patching a channel that should not exist. The decisive
+  evidence pair, read across two stops: the r64 implementation WITHOUT
+  the frozen drain measured 1.75×10⁻⁴ in production — green under the
+  gate with 5.7× margin — and had been declared failing only against
+  the r65 exactness fixture that r66 later deleted as a category error;
+  and ordinary stage-consistent advection demonstrably passes these
+  gates through 1700 K fronts (the 2.7 s zero-g burn). Sequencing error
+  owned: r65 built a mechanism to satisfy a fixture, r66 removed the
+  fixture but kept the mechanism, and the mechanism then caused the
+  next failure. r67 removes the mechanism: the r64 exact pair is
+  unchanged at emission; its drain rides ordinary stage advection; the
+  Heun composition (0.82 vs 0.80 at the worst approach step) is a
+  bounded, non-accumulating deviation governed by the r66 gates; the
+  hold band closes because the map is a controller with quadratically
+  shrinking per-step miss near the setpoint; the pilot ledger line is
+  the packet, bit-exact, with the drain covered by the global
+  conservation ledgers. The r64 pair-emission REDs stay (they guard the
+  real r63 defect at 1.68×10⁻³); the r65 mechanism fixtures are deleted
+  with the mechanism. Machinery after r67: setpoint map + cap + exact
+  pair emission + production gates — four pieces, each with a
+  gate-failing counterexample justifying it. REJECTED: receiver-side
+  mixing-share corrections (patching downstream of the defect; and the
+  frozen/stage mismatch component is not computable at emission time);
+  widening the EOS gate (Δt-invariant floor would be buried, r60
+  lesson); freezing the column or suppressing crossflow (alters real
+  physics); switching to a co-flow inlet pilot (its velocity constant
+  is load-bearing for the achieved kernel temperature — the r55/r57
+  power rathole in velocity units; the isothermal hold exists precisely
+  because it is the parameter-free member of this family).
