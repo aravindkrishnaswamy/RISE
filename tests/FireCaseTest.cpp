@@ -65,29 +65,25 @@ int main()
 				pilotAnnulusExact=pilotAnnulusExact&&radius>=inner&&radius<=outer;
 			}
 	Check(pilotCells>0&&pilotOnlyFirstLayer&&pilotAnnulusExact&&
-		record.derived.pilotModelVersion=="prescribed_energy_source_v1"&&
+		record.derived.pilotModelVersion=="prescribed_isothermal_kernel_v3"&&
 		record.derived.pilotMaskRule==
 			"first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx"&&
-		record.derived.pilotPowerDensityWPerM3==1.0e6&&record.derived.pilotDurationMultiplier==1.0&&
-		record.derived.pilotBeginningTemperatureCeilingK==900.0,
-		"r58 pilot block pins the annulus, intensive power, duration, and thermostat");
+		record.derived.pilotSetpointTemperatureK==900.0&&
+		record.derived.pilotExpansionVolumeRatioCap==1.25&&
+		record.derived.pilotDurationMultiplier==1.0,
+		"r64 pilot block pins the exact-pair annulus, setpoint, expansion cap, and duration");
 	Check(record.derived.limiterAcceptanceModelVersion=="two_class_face_infimum_v1",
 		"r59 case identity echoes the canonical two-class limiter acceptance rule");
-	double pilotPower=0.0;
-	Check(FireCase::EvaluatePilotPowerDensityWPerM3(record.derived,true,0.0,899.0,
-		pilotPower,error)&&pilotPower==1.0e6,
-		"r58 pilot heats a masked accepted state below 900 K");
-	Check(FireCase::EvaluatePilotPowerDensityWPerM3(record.derived,true,0.0,900.0,
-		pilotPower,error)&&pilotPower==0.0,
-		"r58 pilot is off at the exact 900 K thermostat threshold");
-	Check(FireCase::EvaluatePilotPowerDensityWPerM3(record.derived,true,0.0,901.0,
-		pilotPower,error)&&pilotPower==0.0&&
-		FireCase::EvaluatePilotPowerDensityWPerM3(record.derived,true,0.0,899.0,
-			pilotPower,error)&&pilotPower==1.0e6,
-		"r58 pilot deterministically re-arms after an accepted state cools below 900 K");
-	Check(FireCase::EvaluatePilotPowerDensityWPerM3(record.derived,true,
-		record.derived.flowThroughTimeS,300.0,pilotPower,error)&&pilotPower==0.0,
-		"r58 pilot is off at the exact one-flow-through endpoint");
+	double pilotSetpoint=0.0;
+	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,true,0.0,
+		pilotSetpoint,error)&&pilotSetpoint==900.0,
+		"r62 pilot activates the 900 K setpoint in a masked cell");
+	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,false,0.0,
+		pilotSetpoint,error)&&pilotSetpoint==0.0,
+		"r62 pilot leaves an unmasked cell inactive");
+	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,true,
+		record.derived.flowThroughTimeS,pilotSetpoint,error)&&pilotSetpoint==0.0,
+		"r62 pilot is off at the exact one-flow-through endpoint");
 	std::vector<double> pattern;
 	Check(FireCase::BuildSourcePattern(authored,record.derived,pattern,error),
 		"SplitMix64 source pattern builds");
@@ -161,8 +157,20 @@ int main()
 			"case hash integrity cannot certify false methane derivations");
 		const RISECBOR64::Value* pilot=derived->Find("pilot");
 		if(pilot) {
-			const RISECBOR64::Value changedPilot=Replace(*pilot,"power_density_W_per_m3",
-				RISECBOR64::Value::Float(2.0e6));
+			const RISECBOR64::Value changedExpansionCap=Replace(*pilot,
+				"maximum_eos_volume_ratio_per_step",RISECBOR64::Value::Float(3.0));
+			const RISECBOR64::Value capDerived=Replace(*derived,"pilot",changedExpansionCap);
+			const RISECBOR64::Value capPayload=Replace(*payload,"derived",capDerived);
+			RISECBOR64::Bytes capPayloadBytes,capEnvelope;
+			Check(RISECBOR64::Encode(capPayload,capPayloadBytes,&error)&&
+				RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+					{"case_record_id",RISECBOR64::Value::String(
+						RISECBOR64::SHA256Hex(capPayloadBytes))},{"payload",capPayload}}),
+					capEnvelope,&error)&&!FireCase::ValidateMethaneEnvelopeV1(
+						capEnvelope,fuel,decoded,error),
+				"self-consistent pilot-cap mutation changes identity but fails r63 reproduction");
+			const RISECBOR64::Value changedPilot=Replace(*pilot,"setpoint_temperature_K",
+				RISECBOR64::Value::Float(901.0));
 			const RISECBOR64::Value pilotDerived=Replace(*derived,"pilot",changedPilot);
 			const RISECBOR64::Value pilotPayload=Replace(*payload,"derived",pilotDerived);
 			RISECBOR64::Bytes pilotPayloadBytes,pilotEnvelope;
@@ -172,9 +180,9 @@ int main()
 						RISECBOR64::SHA256Hex(pilotPayloadBytes))},{"payload",pilotPayload}}),
 					pilotEnvelope,&error)&&!FireCase::ValidateMethaneEnvelopeV1(
 						pilotEnvelope,fuel,decoded,error),
-				"self-consistent pilot mutation changes identity but fails r57 semantic reproduction");
+				"self-consistent pilot setpoint mutation changes identity but fails r63 semantic reproduction");
 			const RISECBOR64::Value changedThermostat=Replace(*pilot,
-				"beginning_temperature_ceiling_K",RISECBOR64::Value::Float(901.0));
+				"model_version",RISECBOR64::Value::String("retired_power_source_v1"));
 			const RISECBOR64::Value thermostatDerived=Replace(*derived,"pilot",changedThermostat);
 			const RISECBOR64::Value thermostatPayload=Replace(*payload,"derived",thermostatDerived);
 			RISECBOR64::Bytes thermostatPayloadBytes,thermostatEnvelope;
@@ -184,7 +192,7 @@ int main()
 						RISECBOR64::SHA256Hex(thermostatPayloadBytes))},
 					{"payload",thermostatPayload}}),thermostatEnvelope,&error)&&
 				!FireCase::ValidateMethaneEnvelopeV1(thermostatEnvelope,fuel,decoded,error),
-				"self-consistent thermostat mutation changes identity but fails r58 semantic reproduction");
+				"self-consistent pilot-model mutation changes identity but fails r63 semantic reproduction");
 		}
 		const RISECBOR64::Value* timestep=derived->Find("timestep_policy");
 		if(timestep) {

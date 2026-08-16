@@ -51,8 +51,8 @@ namespace RISE
 			std::string pilotModelVersion;
 			std::string pilotMaskRule;
 			std::string limiterAcceptanceModelVersion;
-			double pilotPowerDensityWPerM3=0.0,pilotDurationMultiplier=0.0;
-			double pilotBeginningTemperatureCeilingK=0.0;
+			double pilotSetpointTemperatureK=0.0,pilotExpansionVolumeRatioCap=0.0,
+				pilotDurationMultiplier=0.0;
 		};
 
 		struct RecordV1
@@ -72,9 +72,9 @@ namespace RISE
 		bool BuildPilotMask(
 			const AuthoredV1&,const DerivedV1&,std::vector<std::uint8_t>&,
 			std::string& error );
-		bool EvaluatePilotPowerDensityWPerM3(
+		bool EvaluatePilotSetpointTemperatureK(
 			const DerivedV1&,bool maskCell,double simulationTimeS,
-			double acceptedBeginningTemperatureK,double& powerDensityWPerM3,
+			double& setpointTemperatureK,
 			std::string& error );
 		bool BuildMethaneV1(
 			const AuthoredV1&,const FireSimulationMethaneRecord&,

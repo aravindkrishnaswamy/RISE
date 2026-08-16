@@ -306,6 +306,168 @@
 			return true;
 		}
 
+		inline bool FrozenPacketExpansionAdmissible3D(
+			const std::vector<ConservativeVector>& beginning,
+			const std::vector<MethaneSourcePacket>& packet,
+			const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const unsigned int workerCount,
+			std::string* error = 0
+			)
+		{
+			const std::size_t count=beginning.size();
+			if(count==0||packet.size()!=count||workerCount==0u)
+				return Fail(error,"fire solver source-expansion arrays are malformed");
+			std::vector<double> temperatureK;
+			if(!InvertPeriodicTemperaturesWithinBounds(beginning,thermochemistry,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+				temperatureK,error,workerCount))return false;
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(count)));
+			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
+			std::vector<std::size_t> failureCell(workers,noFailure);
+			std::vector<std::string> failureMessage(workers);
+			std::vector<std::thread> threads;
+			for(unsigned int worker=0;worker<workers;++worker)threads.emplace_back([&,worker](){
+				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+				for(std::size_t cell=first;cell<last;++cell){
+					std::string cellError;
+					if(!FrozenSourcePacketExpansionAdmissible(beginning[cell],temperatureK[cell],
+						packet[cell],deltaTimeS,thermochemistry,0,&cellError)){
+						failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+					}
+				}
+			});
+			for(std::thread& thread:threads)thread.join();
+			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
+			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+				firstFailure=failureCell[worker];failedWorker=worker;
+			}
+			if(firstFailure!=noFailure){
+				std::ostringstream message;message<<"fire solver source packet cell "<<firstFailure<<": "
+					<<failureMessage[failedWorker];return Fail(error,message.str());
+			}
+			return true;
+		}
+
+		inline void FrozenPacketProjectionPairs3D(
+			const std::vector<MethaneSourcePacket>& packet,
+			std::vector<double>& energyDeltaJPerM3,
+			std::vector<double>& expansionIntegral
+			)
+		{
+			energyDeltaJPerM3.resize(packet.size());
+			expansionIntegral.resize(packet.size());
+			for(std::size_t cell=0;cell<packet.size();++cell){
+				energyDeltaJPerM3[cell]=packet[cell].pilotEnergyDeltaJPerM3;
+				expansionIntegral[cell]=packet[cell].pilotExpansionIntegral;
+			}
+		}
+
+		struct FrozenProjectionDrain3D
+		{
+			std::array<std::vector<ConservativeVector>,3> faceFlux;
+			std::array<std::vector<double>,3> faceVelocityMPerS;
+			std::vector<ConservativeVector> cellDelta;
+			bool active=false;
+		};
+
+		inline bool BuildPeriodicFrozenProjectionDrain3D(
+			const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& beginning,
+			const std::vector<double>& expansionIntegral,
+			const double deltaTimeS,
+			FrozenProjectionDrain3D& result,
+			std::string* error=0)
+		{
+			const std::size_t count=shape.CellCount();
+			if(!ValidatePeriodicShape3D(shape,error)||beginning.size()!=count||
+				expansionIntegral.size()!=count||!std::isfinite(deltaTimeS)||deltaTimeS<=0.0)
+				return Fail(error,"fire solver periodic frozen-drain input is malformed");
+			FrozenProjectionDrain3D candidate;
+			for(unsigned int axis=0;axis<3;++axis){
+				candidate.faceFlux[axis].assign(count,ConservativeVector());
+				candidate.faceVelocityMPerS[axis].assign(count,0.0);
+			}
+			for(std::size_t cell=0;cell<count;++cell){
+				const double drain=expansionIntegral[cell];
+				if(!std::isfinite(drain)||drain<0.0||drain>0.5)return Fail(error,
+					"fire solver periodic frozen drain is outside its domain");
+				if(drain>0.0)return Fail(error,
+					"fire solver projection-class pilot requires an open top boundary");
+			}
+			candidate.cellDelta.assign(count,ConservativeVector());
+			const double updateScale=deltaTimeS/shape.cellWidthM;
+			for(std::size_t cell=0;cell<count;++cell){
+				const std::size_t lower=PeriodicPrevious(shape,cell,2);
+				candidate.cellDelta[cell]=updateScale*(candidate.faceFlux[2][lower]-
+					candidate.faceFlux[2][cell]);
+			}
+			result=std::move(candidate);return true;
+		}
+
+		template<class MACField>
+		inline bool AddFrozenProjectionDrainVelocity3D(
+			const FrozenProjectionDrain3D& drain,
+			MACField& velocity,
+			std::string* error=0)
+		{
+			for(unsigned int axis=0;axis<3;++axis){
+				if(drain.faceVelocityMPerS[axis].size()!=velocity.component[axis].size())
+					return Fail(error,"fire solver frozen-drain velocity shape is invalid");
+				for(std::size_t face=0;face<drain.faceVelocityMPerS[axis].size();++face)
+					velocity.component[axis][face]+=drain.faceVelocityMPerS[axis][face];
+			}
+			return true;
+		}
+
+		inline bool AddPeriodicFrozenProjectionDrain3D(
+			const FrozenProjectionDrain3D& drain,
+			PeriodicFluxPair3D& flux,
+			std::string* error=0)
+		{
+			for(unsigned int axis=0;axis<3;++axis){
+				if(drain.faceFlux[axis].size()!=flux.low[axis].size()||
+					drain.faceFlux[axis].size()!=flux.high[axis].size()||
+					drain.faceFlux[axis].size()!=flux.nonadvectiveMass[axis].size()||
+					drain.faceFlux[axis].size()!=flux.nonadvectiveEnergy[axis].size())
+					return Fail(error,"fire solver periodic frozen-drain shape is invalid");
+				for(std::size_t face=0;face<drain.faceFlux[axis].size();++face){
+					flux.low[axis][face]=flux.low[axis][face]+drain.faceFlux[axis][face];
+					flux.high[axis][face]=flux.high[axis][face]+drain.faceFlux[axis][face];
+					for(std::size_t component=0;component<MethaneMassStateDimension;++component)
+						flux.nonadvectiveMass[axis][face][component]+=
+							drain.faceFlux[axis][face][component];
+					flux.nonadvectiveEnergy[axis][face]+=
+						drain.faceFlux[axis][face][MethaneMassStateDimension];
+				}
+			}
+			return true;
+		}
+
+		inline bool ReplacePeriodicProjectionDrainAdvection3D(
+			const FrozenProjectionDrain3D& drain,
+			const PeriodicFluxPair3D& ordinary,
+			PeriodicFluxPair3D& flux,
+			std::string* error=0)
+		{
+			for(unsigned int axis=0;axis<3;++axis){
+				if(ordinary.low[axis].size()!=flux.low[axis].size()||
+					ordinary.high[axis].size()!=flux.high[axis].size()||
+					drain.faceFlux[axis].size()!=flux.low[axis].size())return Fail(error,
+						"fire solver periodic projection-drain flux is malformed");
+				for(std::size_t face=0;face<flux.low[axis].size();++face){
+					bool replace=false;for(std::size_t component=0;
+						component<MethaneConservativeDimension;++component)replace=replace||
+							drain.faceFlux[axis][face][component]!=0.0;
+					if(!replace)continue;
+					flux.low[axis][face]=ordinary.low[axis][face];
+					flux.high[axis][face]=ordinary.high[axis][face];
+				}
+			}
+			return true;
+		}
+
 		struct LimiterPicardAcceptance3D
 		{
 			std::array<std::vector<double>,3> faceAlpha;
@@ -744,7 +906,10 @@
 			const FireSimulationMethaneRecord& thermochemistry,
 			std::vector<double>& result,
 			std::string* error = 0,
-			const unsigned int workerCount = 1u
+			const unsigned int workerCount = 1u,
+			const std::vector<double>* projectionEnergyDeltaJPerM3 = 0,
+			const std::vector<double>* projectionExpansionIntegral = 0,
+			const std::vector<ConservativeVector>* projectionDrainCellDelta = 0
 			)
 		{
 			const std::size_t count = shape.CellCount();
@@ -752,6 +917,12 @@
 				sourceDelta.size() != count || !std::isfinite(deltaTimeS) || deltaTimeS <= 0.0 ) {
 				return Fail(error,"fire solver 3-D divergence target arrays are malformed");
 			}
+			if((projectionEnergyDeltaJPerM3==0)!=(projectionExpansionIntegral==0)||
+				(projectionEnergyDeltaJPerM3&&(projectionEnergyDeltaJPerM3->size()!=count||
+					projectionExpansionIntegral->size()!=count)))return Fail(error,
+					"fire solver 3-D projection-source pair is malformed");
+			if(projectionDrainCellDelta&&projectionDrainCellDelta->size()!=count)return Fail(error,
+				"fire solver 3-D frozen-drain delta is malformed");
 			for(unsigned int axis=0;axis<3;++axis) if(flux.nonadvectiveMass[axis].size()!=count ||
 				flux.nonadvectiveEnergy[axis].size()!=count) return Fail(error,
 					"fire solver 3-D physical flux shape is invalid");
@@ -765,7 +936,9 @@
 			for(unsigned int worker=0;worker<workers;++worker) threads.emplace_back([&,worker]() {
 				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
 				for(std::size_t cell=first;cell<last;++cell) {
-				ConservativeVector increment = sourceDelta[cell];
+					ConservativeVector increment = sourceDelta[cell];
+					if(projectionEnergyDeltaJPerM3)
+						increment[MethaneMassStateDimension]-=(*projectionEnergyDeltaJPerM3)[cell];
 				for( unsigned int axis=0; axis<3; ++axis ) {
 					const std::size_t previous = PeriodicPrevious(shape,cell,axis);
 					for( std::size_t component=0; component<MethaneMassStateDimension;
@@ -776,11 +949,15 @@
 						(flux.nonadvectiveEnergy[axis][previous]-
 						flux.nonadvectiveEnergy[axis][cell])/shape.cellWidthM;
 				}
+				if(projectionDrainCellDelta)increment=increment-
+					(*projectionDrainCellDelta)[cell];
 				std::string cellError;
 				if(!DivergenceFromDiscreteIncrement(state[cell],increment,temperatureK[cell],
 					deltaTimeS,thermochemistry,candidate[cell],&cellError)) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
+				if(projectionExpansionIntegral)candidate[cell]+=
+					(*projectionExpansionIntegral)[cell]/deltaTimeS;
 				}
 			});
 			for(std::thread& thread:threads) thread.join();
@@ -986,6 +1163,98 @@
 			const std::size_t y=(cell/shape.nx)%shape.ny;
 			const std::size_t z=cell/(shape.nx*shape.ny);
 			return OpenMACFaceIndex3D(shape,axis,x,y,z);
+		}
+
+		inline bool BuildOpenFrozenProjectionDrain3D(
+			const PeriodicMACShape& shape,
+			const std::vector<ConservativeVector>& beginning,
+			const std::vector<double>& expansionIntegral,
+			const double deltaTimeS,
+			FrozenProjectionDrain3D& result,
+			std::string* error=0)
+		{
+			const std::size_t count=shape.CellCount();
+			if(!ValidatePeriodicShape3D(shape,error)||beginning.size()!=count||
+				expansionIntegral.size()!=count||!std::isfinite(deltaTimeS)||deltaTimeS<=0.0)
+				return Fail(error,"fire solver open frozen-drain input is malformed");
+			FrozenProjectionDrain3D candidate;
+			for(unsigned int axis=0;axis<3;++axis){
+				candidate.faceFlux[axis].assign(OpenMACFaceCount3D(shape,axis),
+					ConservativeVector());
+				candidate.faceVelocityMPerS[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
+			}
+			const double rateScale=shape.cellWidthM/deltaTimeS;
+			for(std::size_t cell=0;cell<count;++cell){
+				const double drain=expansionIntegral[cell];
+				if(!std::isfinite(drain)||drain<0.0||drain>0.5)return Fail(error,
+					"fire solver open frozen drain is outside its domain");
+				candidate.active=candidate.active||drain>0.0;
+				const std::size_t top=OpenUpperFaceForCell3D(shape,cell,2);
+				for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+					candidate.faceFlux[2][top][component]+=rateScale*drain*
+						beginning[cell][component];
+				const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
+					z=cell/(shape.nx*shape.ny);
+				for(std::size_t faceZ=z+1;faceZ<=shape.nz;++faceZ)
+					candidate.faceVelocityMPerS[2][OpenMACFaceIndex3D(shape,2,x,y,faceZ)]+=
+						rateScale*drain;
+			}
+			candidate.cellDelta.assign(count,ConservativeVector());
+			const double updateScale=deltaTimeS/shape.cellWidthM;
+			for(std::size_t cell=0;cell<count;++cell){
+				const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,2);
+				const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,2);
+				candidate.cellDelta[cell]=updateScale*(candidate.faceFlux[2][lower]-
+					candidate.faceFlux[2][upper]);
+			}
+			result=std::move(candidate);return true;
+		}
+
+		inline bool AddOpenFrozenProjectionDrain3D(
+			const FrozenProjectionDrain3D& drain,
+			OpenFluxPair3D& flux,
+			std::string* error=0)
+		{
+			for(unsigned int axis=0;axis<3;++axis){
+				if(drain.faceFlux[axis].size()!=flux.low[axis].size()||
+					drain.faceFlux[axis].size()!=flux.high[axis].size()||
+					drain.faceFlux[axis].size()!=flux.nonadvectiveMass[axis].size()||
+					drain.faceFlux[axis].size()!=flux.nonadvectiveEnergy[axis].size())
+					return Fail(error,"fire solver open frozen-drain shape is invalid");
+				for(std::size_t face=0;face<drain.faceFlux[axis].size();++face){
+					flux.low[axis][face]=flux.low[axis][face]+drain.faceFlux[axis][face];
+					flux.high[axis][face]=flux.high[axis][face]+drain.faceFlux[axis][face];
+					for(std::size_t component=0;component<MethaneMassStateDimension;++component)
+						flux.nonadvectiveMass[axis][face][component]+=
+							drain.faceFlux[axis][face][component];
+					flux.nonadvectiveEnergy[axis][face]+=
+						drain.faceFlux[axis][face][MethaneMassStateDimension];
+				}
+			}
+			return true;
+		}
+
+		inline bool ReplaceOpenProjectionDrainAdvection3D(
+			const FrozenProjectionDrain3D& drain,
+			const OpenFluxPair3D& ordinary,
+			OpenFluxPair3D& flux,
+			std::string* error=0)
+		{
+			for(unsigned int axis=0;axis<3;++axis){
+				if(ordinary.low[axis].size()!=flux.low[axis].size()||
+					ordinary.high[axis].size()!=flux.high[axis].size()||
+					drain.faceFlux[axis].size()!=flux.low[axis].size())return Fail(error,
+						"fire solver open projection-drain flux is malformed");
+				for(std::size_t face=0;face<flux.low[axis].size();++face){
+					bool replace=false;for(std::size_t component=0;
+						component<MethaneConservativeDimension;++component)replace=replace||
+							drain.faceFlux[axis][face][component]!=0.0;
+					if(!replace)continue;
+					flux.low[axis][face]=ordinary.low[axis][face];
+					flux.high[axis][face]=ordinary.high[axis][face];
+				}
+			}
+			return true;
 		}
 
 		inline bool BuildOpenStageTransportEvaluations3D(
@@ -1540,13 +1809,22 @@
 			const FireSimulationMethaneRecord& thermochemistry,
 			std::vector<double>& result,
 			std::string* error=0,
-			const unsigned int workerCount=1u
+			const unsigned int workerCount=1u,
+			const std::vector<double>* projectionEnergyDeltaJPerM3=0,
+			const std::vector<double>* projectionExpansionIntegral=0,
+			const std::vector<ConservativeVector>* projectionDrainCellDelta=0
 			)
 		{
 			const std::size_t count=shape.CellCount();
 			if(state.size()!=count||temperature.size()!=count||sourceDelta.size()!=count||
 				!std::isfinite(deltaTimeS)||deltaTimeS<=0.0) return Fail(error,
 					"fire solver open divergence target arrays are malformed");
+			if((projectionEnergyDeltaJPerM3==0)!=(projectionExpansionIntegral==0)||
+				(projectionEnergyDeltaJPerM3&&(projectionEnergyDeltaJPerM3->size()!=count||
+					projectionExpansionIntegral->size()!=count)))return Fail(error,
+					"fire solver open projection-source pair is malformed");
+			if(projectionDrainCellDelta&&projectionDrainCellDelta->size()!=count)return Fail(error,
+				"fire solver open frozen-drain delta is malformed");
 			for(unsigned int axis=0;axis<3;++axis) if(flux.nonadvectiveMass[axis].size()!=
 				OpenMACFaceCount3D(shape,axis)||flux.nonadvectiveEnergy[axis].size()!=
 				OpenMACFaceCount3D(shape,axis)) return Fail(error,
@@ -1561,7 +1839,9 @@
 			for(unsigned int worker=0;worker<workers;++worker) threads.emplace_back([&,worker](){
 				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
 				for(std::size_t cell=first;cell<last;++cell){
-				ConservativeVector increment=sourceDelta[cell];
+					ConservativeVector increment=sourceDelta[cell];
+					if(projectionEnergyDeltaJPerM3)
+						increment[MethaneMassStateDimension]-=(*projectionEnergyDeltaJPerM3)[cell];
 				for(unsigned int axis=0;axis<3;++axis){
 					const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
 					const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
@@ -1571,11 +1851,15 @@
 					increment[MethaneMassStateDimension]+=deltaTimeS*(flux.nonadvectiveEnergy[axis][lower]-
 						flux.nonadvectiveEnergy[axis][upper])/shape.cellWidthM;
 				}
+				if(projectionDrainCellDelta)increment=increment-
+					(*projectionDrainCellDelta)[cell];
 				std::string cellError;
 				if(!DivergenceFromDiscreteIncrement(state[cell],increment,temperature[cell],
 					deltaTimeS,thermochemistry,candidate[cell],&cellError)){
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
+				if(projectionExpansionIntegral)candidate[cell]+=
+					(*projectionExpansionIntegral)[cell]/deltaTimeS;
 				}
 			});
 			for(std::thread& thread:threads)thread.join();
@@ -1740,6 +2024,7 @@
 		struct ConservativeStage3D
 		{
 			PeriodicFluxPair3D flux;
+			PeriodicFluxPair3D momentumFlux;
 			PeriodicMACProjection3DResult projection;
 			PeriodicMACField nonpressureMomentumRHS;
 			std::array<std::vector<double>,3> faceAlpha;
@@ -1763,7 +2048,10 @@
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
 			ConservativeStage3D& result,
-			std::string* error = 0
+			std::string* error = 0,
+			const std::vector<double>* projectionEnergyDeltaJPerM3 = 0,
+			const std::vector<double>* projectionExpansionIntegral = 0,
+			const FrozenProjectionDrain3D* projectionDrain = 0
 			)
 		{
 			const std::size_t count = shape.CellCount();
@@ -1780,14 +2068,37 @@
 				if( !ProjectPeriodicMACVelocity3D(shape,GasDensityFromConservative(state),
 					unprojectedMomentum,target,config.transport.deltaTimeS,
 					config.projectionTolerancePerS,projection,error) ) return false;
+				PeriodicMACProjection3DResult scalarProjection=projection;
+				if(projectionDrain){
+					if(!projectionExpansionIntegral||projectionExpansionIntegral->size()!=count)
+						return Fail(error,"fire solver periodic frozen-drain target is malformed");
+					std::vector<double> scalarTarget=target;
+					for(std::size_t cell=0;cell<count;++cell)scalarTarget[cell]-=
+						(*projectionExpansionIntegral)[cell]/config.transport.deltaTimeS;
+					if(!ProjectPeriodicMACVelocity3D(shape,GasDensityFromConservative(state),
+						unprojectedMomentum,scalarTarget,config.transport.deltaTimeS,
+						config.projectionTolerancePerS,scalarProjection,error))return false;
+				}
 				std::vector<double> diffusivity, conductivity, viscosity;
 				if( !BuildPeriodicStageTransport3D(shape,state,temperature,projection.velocityMPerS,
 					config.dns,thermochemistry,transport,diffusivity,conductivity,viscosity,error) )
 					return false;
 				PeriodicFluxPair3D flux;
-				if( !BuildPeriodicFluxPair3D(shape,state,temperature,projection.velocityMPerS,
+				PeriodicMACProjection3DResult drainProjection=scalarProjection;
+				if(projectionDrain&&!AddFrozenProjectionDrainVelocity3D(*projectionDrain,
+					drainProjection.velocityMPerS,error))return false;
+				if( !BuildPeriodicFluxPair3D(shape,state,temperature,drainProjection.velocityMPerS,
 					diffusivity,conductivity,fuel,thermochemistry,flux,error,
 					config.workerCount) ) return false;
+				if(projectionDrain){
+					PeriodicFluxPair3D ordinaryFlux;
+					if(!BuildPeriodicFluxPair3D(shape,state,temperature,
+						scalarProjection.velocityMPerS,diffusivity,conductivity,fuel,
+						thermochemistry,ordinaryFlux,error,config.workerCount)||
+						!ReplacePeriodicProjectionDrainAdvection3D(*projectionDrain,
+							ordinaryFlux,flux,error)||
+						!AddPeriodicFrozenProjectionDrain3D(*projectionDrain,flux,error))return false;
+				}
 				std::array<std::vector<double>,3> nextAlpha;
 				if( solvePredictorLimiter ) {
 					std::vector<ConservativeVector> predictor;
@@ -1797,7 +2108,8 @@
 				std::vector<double> nextTarget;
 				if( !PeriodicDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
 					frozenSourceDelta,config.transport.deltaTimeS,thermochemistry,nextTarget,error,
-					config.workerCount) )
+					config.workerCount,projectionEnergyDeltaJPerM3,projectionExpansionIntegral,
+					projectionDrain?&projectionDrain->cellDelta:0) )
 					return false;
 				double targetResidual = 0.0, massResidual = 0.0,
 					coefficientResidual = 0.0;
@@ -1831,14 +2143,44 @@
 						!BuildPeriodicStageTransport3D(shape,state,temperature,
 							result.projection.velocityMPerS,config.dns,thermochemistry,transport,
 							result.diffusivityM2PerS,result.conductivityWPerMK,
-							result.dynamicViscosityPaS,error) ||
-						!BuildPeriodicFluxPair3D(shape,state,temperature,result.projection.velocityMPerS,
-							result.diffusivityM2PerS,result.conductivityWPerMK,fuel,
-							thermochemistry,result.flux,error,config.workerCount) ) return false;
+							result.dynamicViscosityPaS,error) ) return false;
+					PeriodicMACProjection3DResult acceptedScalarProjection=result.projection;
+					if(projectionDrain){
+						std::vector<double> scalarTarget=target;
+						for(std::size_t cell=0;cell<count;++cell)scalarTarget[cell]-=
+							(*projectionExpansionIntegral)[cell]/config.transport.deltaTimeS;
+						if(!ProjectPeriodicMACVelocity3D(shape,GasDensityFromConservative(state),
+							unprojectedMomentum,scalarTarget,config.transport.deltaTimeS,
+							config.projectionTolerancePerS,acceptedScalarProjection,error))return false;
+					}
+					PeriodicMACProjection3DResult acceptedDrainProjection=
+						acceptedScalarProjection;
+					if(projectionDrain&&!AddFrozenProjectionDrainVelocity3D(*projectionDrain,
+						acceptedDrainProjection.velocityMPerS,error))return false;
+					if(!BuildPeriodicFluxPair3D(shape,state,temperature,
+						acceptedDrainProjection.velocityMPerS,result.diffusivityM2PerS,
+						result.conductivityWPerMK,fuel,thermochemistry,result.flux,error,
+						config.workerCount))return false;
+					if(projectionDrain){
+						PeriodicFluxPair3D ordinaryFlux;
+						if(!BuildPeriodicFluxPair3D(shape,state,temperature,
+							acceptedScalarProjection.velocityMPerS,result.diffusivityM2PerS,
+							result.conductivityWPerMK,fuel,thermochemistry,ordinaryFlux,error,
+							config.workerCount)||!ReplacePeriodicProjectionDrainAdvection3D(
+								*projectionDrain,ordinaryFlux,result.flux,error)||
+							!AddPeriodicFrozenProjectionDrain3D(*projectionDrain,result.flux,error))return false;
+					}
+					if(projectionDrain&&projectionDrain->active&&
+						!BuildPeriodicFluxPair3D(shape,state,temperature,
+							result.projection.velocityMPerS,result.diffusivityM2PerS,
+							result.conductivityWPerMK,fuel,thermochemistry,result.momentumFlux,
+							error,config.workerCount))return false;
 					std::vector<double> verifiedTarget;
 					if( !PeriodicDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,
 						result.flux,frozenSourceDelta,config.transport.deltaTimeS,
-						thermochemistry,verifiedTarget,error,config.workerCount) ) return false;
+						thermochemistry,verifiedTarget,error,config.workerCount,
+						projectionEnergyDeltaJPerM3,projectionExpansionIntegral,
+						projectionDrain?&projectionDrain->cellDelta:0) ) return false;
 					std::array<std::vector<double>,3> verifiedAlpha;
 					if( solvePredictorLimiter ) {
 						std::vector<ConservativeVector> verifiedPredictor;
@@ -1907,6 +2249,7 @@
 		struct OpenConservativeStage3D
 		{
 			OpenFluxPair3D flux;
+			OpenFluxPair3D momentumFlux;
 			OpenMACProjection3DResult projection;
 			OpenMACField3D nonpressureMomentumRHS;
 			std::array<std::vector<double>,3> faceAlpha;
@@ -2101,7 +2444,10 @@
 			const FireSimulationMethaneRecord& thermochemistry,
 			const FireSimulationTransportRecord& transport,
 			OpenConservativeStage3D& result,
-			std::string* error=0
+			std::string* error=0,
+			const std::vector<double>* projectionEnergyDeltaJPerM3=0,
+			const std::vector<double>* projectionExpansionIntegral=0,
+			const FrozenProjectionDrain3D* projectionDrain=0
 			)
 		{
 			const std::size_t count=shape.CellCount();std::vector<double> temperature;
@@ -2136,6 +2482,18 @@
 					config.transport.deltaTimeS,config.projectionTolerancePerS,projection,error,
 					config.workerCount);
 				if(!projectionOK) return false;
+				OpenMACProjection3DResult scalarProjection=projection;
+				if(projectionDrain){
+					if(!projectionExpansionIntegral||projectionExpansionIntegral->size()!=count)
+						return Fail(error,"fire solver open frozen-drain target is malformed");
+					std::vector<double> scalarTarget=target;
+					for(std::size_t cell=0;cell<count;++cell)scalarTarget[cell]-=
+						(*projectionExpansionIntegral)[cell]/config.transport.deltaTimeS;
+					if(!ProjectPressureOpenMACVelocity3D(shape,GasDensityFromConservative(state),
+						unprojected,scalarTarget,stageBoundary,config.transport.deltaTimeS,
+						config.projectionTolerancePerS,scalarProjection,error,config.workerCount))return false;
+					scalarProjection.inflow=projection.inflow;
+				}
 				std::vector<double> diffusivity,conductivity,viscosity;
 				if(!BuildOpenStageTransport3D(shape,state,temperature,projection.velocityMPerS,
 					stageBoundary,config.dns,thermochemistry,transport,diffusivity,conductivity,
@@ -2145,10 +2503,22 @@
 				if(!BuildOpenNonpressureMomentumRHS3D(shape,state,projection,viscosity,
 					sourceDelta,config,evaluatedNonpressure,error)) return false;
 				OpenFluxPair3D flux;
-				if(!BuildOpenFluxPair3D(shape,state,temperature,projection,diffusivity,conductivity,
+				OpenMACProjection3DResult drainProjection=scalarProjection;
+				if(projectionDrain&&!AddFrozenProjectionDrainVelocity3D(*projectionDrain,
+					drainProjection.velocityMPerS,error))return false;
+				if(!BuildOpenFluxPair3D(shape,state,temperature,drainProjection,diffusivity,conductivity,
 					stageBoundary,config.transport.ambientTemperatureK,
 					config.injectedTemperatureK,fuel,thermochemistry,flux,error,
 					config.workerCount)) return false;
+				if(projectionDrain){
+					OpenFluxPair3D ordinaryFlux;
+					if(!BuildOpenFluxPair3D(shape,state,temperature,scalarProjection,diffusivity,
+						conductivity,stageBoundary,config.transport.ambientTemperatureK,
+						config.injectedTemperatureK,fuel,thermochemistry,ordinaryFlux,error,
+						config.workerCount)||!ReplaceOpenProjectionDrainAdvection3D(
+							*projectionDrain,ordinaryFlux,flux,error)||
+						!AddOpenFrozenProjectionDrain3D(*projectionDrain,flux,error))return false;
+				}
 				std::array<std::vector<double>,3> nextAlpha;
 				if(predictorLimiter){std::vector<ConservativeVector> predictor;
 					if(!ApplyOpenSharedFCT3D(shape,state,flux,sourceDelta,config.transport,fuel,
@@ -2156,7 +2526,9 @@
 				std::vector<double> nextTarget;
 				if(!OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,flux,
 					sourceDelta,config.transport.deltaTimeS,thermochemistry,nextTarget,error,
-					config.workerCount)) return false;
+					config.workerCount,projectionEnergyDeltaJPerM3,projectionExpansionIntegral,
+					projectionDrain?&projectionDrain->cellDelta:0))
+					return false;
 				double residual=0.0,massResidual=0.0,
 					coefficientResidual=0.0;bool activeSetChanged=false;std::size_t offset=0;
 				if(iteration)for(unsigned int side=0;side<6;++side)
@@ -2201,20 +2573,51 @@
 						config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error,config.workerCount);
 					if(!acceptedOK) return false;
+					OpenMACProjection3DResult acceptedScalarProjection=acceptedProjection;
+					if(projectionDrain){
+						std::vector<double> scalarTarget=target;
+						for(std::size_t cell=0;cell<count;++cell)scalarTarget[cell]-=
+							(*projectionExpansionIntegral)[cell]/config.transport.deltaTimeS;
+						if(!ProjectPressureOpenMACVelocity3D(shape,GasDensityFromConservative(state),
+							unprojected,scalarTarget,stageBoundary,config.transport.deltaTimeS,
+							config.projectionTolerancePerS,acceptedScalarProjection,error,
+							config.workerCount))return false;
+						acceptedScalarProjection.inflow=acceptedProjection.inflow;
+					}
 					std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
 						acceptedProjection.velocityMPerS,stageBoundary,config.dns,thermochemistry,transport,
 						acceptedDiffusivity,acceptedConductivity,acceptedViscosity,error,
 						config.workerCount)) return false;
 					OpenFluxPair3D acceptedFlux;
-					if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedProjection,
+					OpenMACProjection3DResult acceptedDrainProjection=
+						acceptedScalarProjection;
+					if(projectionDrain&&!AddFrozenProjectionDrainVelocity3D(*projectionDrain,
+						acceptedDrainProjection.velocityMPerS,error))return false;
+					if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedDrainProjection,
 						acceptedDiffusivity,acceptedConductivity,stageBoundary,
 						config.transport.ambientTemperatureK,config.injectedTemperatureK,fuel,
-						thermochemistry,acceptedFlux,error,config.workerCount)) return false;
+						thermochemistry,acceptedFlux,error,config.workerCount))return false;
+					if(projectionDrain){
+						OpenFluxPair3D ordinaryFlux;
+						if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedScalarProjection,
+							acceptedDiffusivity,acceptedConductivity,stageBoundary,
+							config.transport.ambientTemperatureK,config.injectedTemperatureK,fuel,
+							thermochemistry,ordinaryFlux,error,config.workerCount)||
+							!ReplaceOpenProjectionDrainAdvection3D(*projectionDrain,
+								ordinaryFlux,acceptedFlux,error)||
+							!AddOpenFrozenProjectionDrain3D(*projectionDrain,acceptedFlux,error))return false;
+					}
+					if(projectionDrain&&projectionDrain->active&&
+						!BuildOpenFluxPair3D(shape,state,temperature,acceptedProjection,
+							acceptedDiffusivity,acceptedConductivity,stageBoundary,
+							config.transport.ambientTemperatureK,config.injectedTemperatureK,fuel,
+							thermochemistry,result.momentumFlux,error,config.workerCount))return false;
 					std::vector<double> verifiedTarget;
 					if(!OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,acceptedFlux,
 						sourceDelta,config.transport.deltaTimeS,thermochemistry,verifiedTarget,error,
-						config.workerCount))
+						config.workerCount,projectionEnergyDeltaJPerM3,
+						projectionExpansionIntegral,projectionDrain?&projectionDrain->cellDelta:0))
 						return false;
 					std::vector<double> acceptedMass,iterationMass;
 					for(unsigned int axis=0;axis<3;++axis){
@@ -2308,12 +2711,21 @@
 				beginningMomentum.component[axis].size() != count ) return Fail(error,
 				"fire solver owning 3-D momentum shape is invalid");
 			std::vector<ConservativeVector> sourceDelta;
-			if( !FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,config.workerCount,error) ) return false;
+			if(!FrozenPacketExpansionAdmissible3D(beginning,frozenPacket,
+				config.transport.deltaTimeS,thermochemistry,config.workerCount,error)||
+				!FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,config.workerCount,error))return false;
+			std::vector<double> projectionEnergyDeltaJPerM3,projectionExpansionIntegral;
+			FrozenPacketProjectionPairs3D(frozenPacket,projectionEnergyDeltaJPerM3,
+				projectionExpansionIntegral);
+			FrozenProjectionDrain3D projectionDrain;
+			if(!BuildPeriodicFrozenProjectionDrain3D(shape,beginning,
+				projectionExpansionIntegral,config.transport.deltaTimeS,projectionDrain,error))return false;
 			ConservativeAdvance3DResult candidate;
 			candidate.effectiveWorkerCount=std::max(1u,std::min(config.workerCount,
 				static_cast<unsigned int>(count)));
 			if( !SolveConservativeStage3D(shape,beginning,beginningMomentum,sourceDelta,config,
-				true,fuel,thermochemistry,transport,candidate.r0,error) ) return false;
+				true,fuel,thermochemistry,transport,candidate.r0,error,
+				&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,&projectionDrain) ) return false;
 			std::vector<ConservativeVector> predictor;
 			std::array<std::vector<double>,3> predictorAlpha;
 			if( !ApplyPeriodicSharedFCT3D(shape,beginning,candidate.r0.flux,sourceDelta,
@@ -2324,7 +2736,8 @@
 			candidate.discontinuousLimiterClassCount=
 				candidate.r0.limiterDiscontinuousClass?1u:0u;
 			std::array<std::vector<double>,3> low0, high0, diffusion0;
-			GasPrimalSubfluxes3D(candidate.r0.flux,low0,high0,diffusion0);
+			GasPrimalSubfluxes3D(projectionDrain.active?candidate.r0.momentumFlux:
+				candidate.r0.flux,low0,high0,diffusion0);
 			std::array<std::vector<double>,3> predictorAccepted;
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				predictorAccepted[axis].resize(count);
@@ -2344,7 +2757,8 @@
 					predictorDivergence[axis][face]);
 			}
 			if( !SolveConservativeStage3D(shape,predictor,predictorMomentum,sourceDelta,config,
-				false,fuel,thermochemistry,transport,candidate.r1,error) ) return false;
+				false,fuel,thermochemistry,transport,candidate.r1,error,
+				&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,&projectionDrain) ) return false;
 			PeriodicFluxPair3D averaged;
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				averaged.low[axis].resize(count); averaged.high[axis].resize(count);
@@ -2373,10 +2787,12 @@
 				acceptedTemperature,error,config.workerCount) || !PeriodicDivergenceTargetFromPhysicalFlux3D(shape,
 				candidate.conservative,acceptedTemperature,averaged,sourceDelta,
 				config.transport.deltaTimeS,thermochemistry,candidate.divergenceHeunPerS,error,
-				config.workerCount) )
+				config.workerCount,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,
+				&projectionDrain.cellDelta) )
 				return false;
 			std::array<std::vector<double>,3> low1, high1, diffusion1, accepted0, accepted1;
-			GasPrimalSubfluxes3D(candidate.r1.flux,low1,high1,diffusion1);
+			GasPrimalSubfluxes3D(projectionDrain.active?candidate.r1.momentumFlux:
+				candidate.r1.flux,low1,high1,diffusion1);
 			for( unsigned int axis=0; axis<3; ++axis ) {
 				accepted0[axis].resize(count); accepted1[axis].resize(count);
 				for( std::size_t face=0; face<count; ++face ) {
@@ -2406,7 +2822,8 @@
 				candidate.r1=ConservativeStage3D();
 			}
 			if( !SolveConservativeStage3D(shape,candidate.conservative,finalMomentum,sourceDelta,
-				config,false,fuel,thermochemistry,transport,candidate.r2,error) ) return false;
+				config,false,fuel,thermochemistry,transport,candidate.r2,error,
+				&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral) ) return false;
 			candidate.momentumKGPerM2S = candidate.r2.projection.momentumKGPerM2S;
 			candidate.velocityMPerS = candidate.r2.projection.velocityMPerS;
 			candidate.stepAverageDynamicPressurePa =
@@ -2441,10 +2858,19 @@
 				OpenMACFaceCount3D(shape,axis)) return Fail(error,
 				"fire solver owning open momentum shape is invalid");
 			std::vector<ConservativeVector> sourceDelta;
-			if(!FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,config.workerCount,error)) return false;
+			if(!FrozenPacketExpansionAdmissible3D(beginning,frozenPacket,
+				config.transport.deltaTimeS,thermochemistry,config.workerCount,error)||
+				!FrozenPacketDeltas3D(frozenPacket,count,sourceDelta,config.workerCount,error))return false;
+			std::vector<double> projectionEnergyDeltaJPerM3,projectionExpansionIntegral;
+			FrozenPacketProjectionPairs3D(frozenPacket,projectionEnergyDeltaJPerM3,
+				projectionExpansionIntegral);
+			FrozenProjectionDrain3D projectionDrain;
+			if(!BuildOpenFrozenProjectionDrain3D(shape,beginning,projectionExpansionIntegral,
+				config.transport.deltaTimeS,projectionDrain,error))return false;
 			OpenConservativeAdvance3DResult candidate;
 			if(!SolveOpenConservativeStage3D(shape,beginning,beginningMomentum,sourceDelta,
-				config,true,0,0,0,fuel,thermochemistry,transport,candidate.r0,error)) return false;
+				config,true,0,0,0,fuel,thermochemistry,transport,candidate.r0,error,
+				&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,&projectionDrain)) return false;
 			std::vector<ConservativeVector> predictor;
 			std::array<std::vector<double>,3> predictorAlpha;
 			if(!ApplyOpenSharedFCT3D(shape,beginning,candidate.r0.flux,sourceDelta,
@@ -2455,7 +2881,8 @@
 			candidate.discontinuousLimiterClassCount=
 				candidate.r0.limiterDiscontinuousClass?1u:0u;
 			const OpenMACField3D predictorAdvection=OpenCompatibleMomentumFluxDivergence3D(
-				shape,candidate.r0.flux,predictorAlpha,candidate.r0.projection.velocityMPerS,
+				shape,projectionDrain.active?candidate.r0.momentumFlux:candidate.r0.flux,
+				predictorAlpha,candidate.r0.projection.velocityMPerS,
 				&config.openBoundary);
 			OpenMACField3D predictorMomentum=beginningMomentum;
 			for(unsigned int axis=0;axis<3;++axis) for(std::size_t face=0;face<
@@ -2464,7 +2891,9 @@
 				predictorAdvection.component[axis][face]);
 			if(!SolveOpenConservativeStage3D(shape,predictor,predictorMomentum,sourceDelta,
 				config,false,&candidate.r0.projection.inflow,0,0,fuel,thermochemistry,transport,
-				candidate.r1,error)) return false;
+				candidate.r1,error,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,
+				&projectionDrain))
+				return false;
 			OpenFluxPair3D averaged;
 			for(std::size_t component=0;component<MethaneMassStateDimension;++component)
 				averaged.boundaryCanSupply[component]=candidate.r0.flux.boundaryCanSupply[component]||
@@ -2492,13 +2921,16 @@
 				acceptedTemperature,error,config.workerCount) || !OpenDivergenceTargetFromPhysicalFlux3D(shape,
 				candidate.conservative,acceptedTemperature,averaged,sourceDelta,
 				config.transport.deltaTimeS,thermochemistry,candidate.divergenceHeunPerS,error,
-				config.workerCount))
+				config.workerCount,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,
+				&projectionDrain.cellDelta))
 				return false;
 			const OpenMACField3D advection0=OpenCompatibleMomentumFluxDivergence3D(shape,
-				candidate.r0.flux,candidate.faceAlpha,candidate.r0.projection.velocityMPerS,
+				projectionDrain.active?candidate.r0.momentumFlux:candidate.r0.flux,
+				candidate.faceAlpha,candidate.r0.projection.velocityMPerS,
 				&config.openBoundary);
 			const OpenMACField3D advection1=OpenCompatibleMomentumFluxDivergence3D(shape,
-				candidate.r1.flux,candidate.faceAlpha,candidate.r1.projection.velocityMPerS,
+				projectionDrain.active?candidate.r1.momentumFlux:candidate.r1.flux,
+				candidate.faceAlpha,candidate.r1.projection.velocityMPerS,
 				&config.openBoundary);
 			OpenMACField3D finalMomentum=beginningMomentum;
 			for(unsigned int axis=0;axis<3;++axis) for(std::size_t face=0;face<
@@ -2508,6 +2940,8 @@
 					advection0.component[axis][face]-advection1.component[axis][face]);
 			if(!config.retainStageDiagnostics){
 				candidate.r0.flux=OpenFluxPair3D();candidate.r1.flux=OpenFluxPair3D();
+				candidate.r0.momentumFlux=OpenFluxPair3D();
+				candidate.r1.momentumFlux=OpenFluxPair3D();
 				candidate.r0.nonpressureMomentumRHS=OpenMACField3D();
 				candidate.r1.nonpressureMomentumRHS=OpenMACField3D();
 				candidate.r0.faceAlpha={};candidate.r1.faceAlpha={};
@@ -2518,11 +2952,13 @@
 			if(!SolveOpenConservativeStage3D(shape,candidate.conservative,finalMomentum,
 				sourceDelta,config,false,&candidate.r1.projection.inflow,&candidate.r0.projection,
 				&candidate.r1.projection,
-				fuel,thermochemistry,transport,candidate.r2,error)) return false;
+				fuel,thermochemistry,transport,candidate.r2,error,&projectionEnergyDeltaJPerM3,
+				&projectionExpansionIntegral)) return false;
 			candidate.momentumKGPerM2S=candidate.r2.projection.momentumKGPerM2S;
 			candidate.velocityMPerS=candidate.r2.projection.velocityMPerS;
 			candidate.stepAverageDynamicPressurePa=
 				candidate.r2.projection.stepAverageDynamicPressurePa;
+			if(!config.retainStageDiagnostics)candidate.r2=OpenConservativeStage3D();
 			result=std::move(candidate);return true;
 		}
 

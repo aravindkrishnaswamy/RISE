@@ -4044,7 +4044,7 @@ int main()
 			filterWidthM*filterWidthM/dnsTransport.totalDiffusivityM2PerS),2.0e-15),
 		"V4 LES and DNS mixing-time branches match the frozen equations");
 	MethaneReactionStep step;
-	step.deltaTimeS = 0.02;
+	step.deltaTimeS = 0.001;
 	step.mixingTimeS = lesMixingTimeS;
 	step.primaryEligible = true;
 	step.sootOxidationEnabled = true;
@@ -4061,43 +4061,301 @@ int main()
 	Check(Near(packet.sensibleEnergyDeltaJPerM3,
 		packet.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG(),2.0e-15),
 		"V4 packet heat is exactly the physical record LHV ledger");
+	ConservativeVector relaxationIncrement;
+	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+		relaxationIncrement[1+species]=packet.constituentDelta[species];
+	relaxationIncrement[MethaneMassStateDimension]=packet.sensibleEnergyDeltaJPerM3;
+	double legacyRelaxationDivergence=0.0,pairedRelaxationIntegral=0.0;
+	Check(packet.pilotEnergyDeltaJPerM3==0.0&&packet.pilotExpansionIntegral==0.0&&
+		DivergenceFromDiscreteIncrement(ToConservativeVector(beginning),relaxationIncrement,
+			beginning.temperatureK,step.deltaTimeS,thermochemistry,
+			legacyRelaxationDivergence,&error)&&
+		FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning),
+			beginning.temperatureK,packet,step.deltaTimeS,thermochemistry,
+			&pairedRelaxationIntegral,&error)&&
+		pairedRelaxationIntegral==step.deltaTimeS*legacyRelaxationDivergence,
+		"r64 leaves the chemistry/radiation relaxation divergence relation byte-identical");
 	MethaneReactionStep pilotStep=step;
 	pilotStep.primaryEligible=false;
 	pilotStep.sootOxidationEnabled=false;
-	pilotStep.pilotHeatingWPerM3=5000.0;
-	MethaneSourcePacket pilotPacket;
-	Check(BuildMethaneReactionPacket(beginning,fuel,pilotStep,pilotPacket,&error)&&
-		pilotPacket.reactedFuelKGPerM3==0.0&&pilotPacket.oxidizedCarbonKGPerM3==0.0&&
-		pilotPacket.gasHeatReleaseWPerM3==0.0&&pilotPacket.sootHeatReleaseWPerM3==0.0&&
-		pilotPacket.pilotHeatingWPerM3==pilotStep.pilotHeatingWPerM3&&
-		Near(pilotPacket.sensibleEnergyDeltaJPerM3,
-			pilotStep.deltaTimeS*pilotStep.pilotHeatingWPerM3,2.0e-15),
-		"r55 pilot enters the frozen Hs source ledger with its own non-combustion diagnostic");
+	pilotStep.pilotSetpointTemperatureK=900.0;
+	pilotStep.pilotExpansionVolumeRatioCap=1.25;
+	const MethaneCellState pilotBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.05,300.0);
+	const std::array<double,5> cappedPilotTemperatures={{375.0,468.75,585.9375,
+		732.421875,900.0}};
+	MethaneCellState pilotMappedState=pilotBeginning;
+	bool cappedPilotSequence=true;
+	for(const double expectedTemperatureK:cappedPilotTemperatures){
+		double targetEnergyJPerM3=0.0,thermochemicalBeginningEnergyJPerM3=0.0,
+			scaledDivergence=0.0;
+		MethaneSourcePacket pilotPacket;
+		const double volumeRatio=expectedTemperatureK/pilotMappedState.temperatureK;
+		const bool cappedStepOK=
+			thermochemistry.MixtureSensibleEnergyJPerM3(
+				ThermochemicalDensities(pilotMappedState),expectedTemperatureK,
+				targetEnergyJPerM3,&error)&&
+			thermochemistry.MixtureSensibleEnergyJPerM3(
+				ThermochemicalDensities(pilotMappedState),pilotMappedState.temperatureK,
+				thermochemicalBeginningEnergyJPerM3,&error)&&
+			BuildMethaneReactionPacket(pilotMappedState,fuel,pilotStep,pilotPacket,&error)&&
+			FrozenSourcePacketExpansionAdmissible(ToConservativeVector(pilotMappedState),
+				pilotMappedState.temperatureK,pilotPacket,pilotStep.deltaTimeS,
+				thermochemistry,&scaledDivergence,&error)&&scaledDivergence<=0.5&&
+			pilotPacket.reactedFuelKGPerM3==0.0&&pilotPacket.oxidizedCarbonKGPerM3==0.0&&
+			pilotPacket.gasHeatReleaseWPerM3==0.0&&pilotPacket.sootHeatReleaseWPerM3==0.0&&
+			Near(pilotPacket.pilotEnergyDeltaJPerM3,
+				(targetEnergyJPerM3-thermochemicalBeginningEnergyJPerM3)/volumeRatio,
+				2.0e-15)&&
+			pilotPacket.sensibleEnergyDeltaJPerM3==pilotPacket.pilotEnergyDeltaJPerM3&&
+			Near(pilotPacket.pilotExpansionIntegral,1.0-1.0/volumeRatio,2.0e-15);
+		ConservativeVector exactAccepted=ToConservativeVector(pilotMappedState);
+		const ConservativeVector beginningVector=exactAccepted;
+		for(std::size_t component=0;component<MethaneMassStateDimension;++component)
+			exactAccepted[component]-=pilotPacket.pilotExpansionIntegral*
+				beginningVector[component];
+		exactAccepted[MethaneMassStateDimension]-=pilotPacket.pilotExpansionIntegral*
+			beginningVector[MethaneMassStateDimension];
+		exactAccepted[MethaneMassStateDimension]+=pilotPacket.sensibleEnergyDeltaJPerM3;
+		MethaneCellState nextPilotState=FromConservativeVector(exactAccepted);
+		double eosResidual=std::numeric_limits<double>::infinity();
+		const bool acceptedExact=InvertMethaneTemperatureWithinAcceptedEnvelope(nextPilotState,
+			thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
+			nextPilotState.temperatureK,&error)&&EquationOfStateResidual(nextPilotState,
+				thermochemistry,eosResidual,&error)&&
+			Near(nextPilotState.temperatureK,expectedTemperatureK,2.0e-15)&&
+			eosResidual<=thermochemistry.AcceptedStateFeasibilityEnvelope().kappaEpsilon64*
+				std::numeric_limits<double>::epsilon();
+		bool nonnegative=true;
+		for(const double density:nextPilotState.constituent)nonnegative=nonnegative&&density>=0.0;
+		cappedPilotSequence=cappedPilotSequence&&cappedStepOK&&acceptedExact&&nonnegative;
+		if(!cappedStepOK||!acceptedExact||!nonnegative)std::printf("r64 capped-step diagnostic expected=%.17g "
+			"actual=%.17g scaled=%.17g H=%.17g targetH=%.17g eos=%.17g error=%s\n",
+			expectedTemperatureK,nextPilotState.temperatureK,scaledDivergence,
+			nextPilotState.sensibleEnergyJPerM3,targetEnergyJPerM3,eosResidual,error.c_str());
+		if(cappedStepOK&&acceptedExact)pilotMappedState=nextPilotState;
+	}
+	Check(cappedPilotSequence,
+		"r64 pilot approaches 900 K through exact finite-source pairs on the EOS manifold");
+	double uncappedEnergyJPerM3=0.0;
+	MethaneSourcePacket uncappedPilotPacket;
+	Check(thermochemistry.MixtureSensibleEnergyJPerM3(
+		ThermochemicalDensities(pilotBeginning),900.0,uncappedEnergyJPerM3,&error),
+		"r63 uncapped pilot RED constructs the independent 900 K energy");
+	const double uncappedVolumeRatio=900.0/pilotBeginning.temperatureK;
+	uncappedPilotPacket.sensibleEnergyDeltaJPerM3=(uncappedEnergyJPerM3-
+		pilotBeginning.sensibleEnergyJPerM3)/uncappedVolumeRatio;
+	uncappedPilotPacket.pilotEnergyDeltaJPerM3=
+		uncappedPilotPacket.sensibleEnergyDeltaJPerM3;
+	uncappedPilotPacket.pilotExpansionIntegral=1.0-1.0/uncappedVolumeRatio;
+	double uncappedScaledDivergence=0.0;
+	const bool uncappedAccepted=FrozenSourcePacketExpansionAdmissible(ToConservativeVector(pilotBeginning),
+		pilotBeginning.temperatureK,uncappedPilotPacket,pilotStep.deltaTimeS,
+		thermochemistry,&uncappedScaledDivergence,&error);
+	if(uncappedAccepted||!(uncappedScaledDivergence>0.5))std::printf(
+		"r63 uncapped diagnostic accepted=%d scaled=%.17g error=%s\n",
+		uncappedAccepted?1:0,uncappedScaledDivergence,error.c_str());
+	Check(!uncappedAccepted&&uncappedScaledDivergence>0.5,
+		"r64 rejects the exact but uncapped 300-to-900 K pair at the dt*S_div drain bound");
+	MethaneSourcePacket wrongLinearizedPair;
+	Check(BuildMethaneReactionPacket(pilotBeginning,fuel,pilotStep,wrongLinearizedPair,&error),
+		"r64 mutation RED constructs the canonical capped pilot pair");
+	const MethaneSourcePacket canonicalCappedPair=wrongLinearizedPair;
+	wrongLinearizedPair.pilotExpansionIntegral=1.25-1.0;
+	ConservativeVector wrongAccepted=ToConservativeVector(pilotBeginning);
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+		wrongAccepted[component]-=wrongLinearizedPair.pilotExpansionIntegral*
+			ToConservativeVector(pilotBeginning)[component];
+	wrongAccepted[MethaneMassStateDimension]+=wrongLinearizedPair.pilotEnergyDeltaJPerM3;
+	MethaneCellState wrongLinearizedState=FromConservativeVector(wrongAccepted);
+	double wrongLinearizedTemperature=0.0,wrongLinearizedEOS=0.0;
+	const bool wrongLinearizedInvert=InvertMethaneTemperatureWithinAcceptedEnvelope(
+		wrongLinearizedState,thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+		thermochemistry,wrongLinearizedTemperature,&error);
+	if(wrongLinearizedInvert)wrongLinearizedState.temperatureK=wrongLinearizedTemperature;
+	const bool wrongLinearizedEOSOK=wrongLinearizedInvert&&EquationOfStateResidual(
+		wrongLinearizedState,thermochemistry,wrongLinearizedEOS,&error);
+	Check(!wrongLinearizedEOSOK||wrongLinearizedEOS>1.0e-6||
+		!Near(wrongLinearizedTemperature,375.0,2.0e-15),
+		"r64 RED rejects V-prime-minus-one in place of one-minus-inverse-V-prime");
+	MethaneSourcePacket wrongFixedVolumePair=wrongLinearizedPair;
+	wrongFixedVolumePair.pilotExpansionIntegral=1.0-1.0/1.25;
+	double capped375EnergyJPerM3=0.0;
+	Check(thermochemistry.MixtureSensibleEnergyJPerM3(
+		ThermochemicalDensities(pilotBeginning),375.0,capped375EnergyJPerM3,&error),
+		"r64 fixed-volume mutation RED constructs the capped target energy");
+	wrongFixedVolumePair.pilotEnergyDeltaJPerM3=capped375EnergyJPerM3-
+		pilotBeginning.sensibleEnergyJPerM3;
+	wrongFixedVolumePair.sensibleEnergyDeltaJPerM3=
+		wrongFixedVolumePair.pilotEnergyDeltaJPerM3;
+	ConservativeVector wrongFixedAccepted=ToConservativeVector(pilotBeginning);
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+		wrongFixedAccepted[component]-=wrongFixedVolumePair.pilotExpansionIntegral*
+			ToConservativeVector(pilotBeginning)[component];
+	wrongFixedAccepted[MethaneMassStateDimension]+=
+		wrongFixedVolumePair.pilotEnergyDeltaJPerM3;
+	MethaneCellState wrongFixedState=FromConservativeVector(wrongFixedAccepted);
+	double wrongFixedTemperature=0.0,wrongFixedEOS=0.0;
+	const bool wrongFixedInvert=InvertMethaneTemperatureWithinAcceptedEnvelope(wrongFixedState,
+		thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
+		wrongFixedTemperature,&error);
+	if(wrongFixedInvert)wrongFixedState.temperatureK=wrongFixedTemperature;
+	const bool wrongFixedEOSOK=wrongFixedInvert&&EquationOfStateResidual(wrongFixedState,
+		thermochemistry,wrongFixedEOS,&error);
+	Check(!wrongFixedEOSOK||wrongFixedEOS>1.0e-6||
+		!Near(wrongFixedTemperature,375.0,2.0e-15),
+		"r64 RED rejects restoration of the fixed-volume pilot packet");
+	// r66 scopes exactness to the prescribed scalar update itself.  With the
+	// frozen beginning-state drain, the source and drain land exactly on the
+	// r64 target.  Stage-state advection, recomputing the donor at R1, or
+	// applying the frozen drain twice are different tableaux and must not be
+	// substituted for this formula.
+	const ConservativeVector unitBeginning=ToConservativeVector(pilotBeginning);
+	ConservativeVector unitExact=unitBeginning,unitStageAdvection=unitBeginning,
+		unitDoubleDrain=unitBeginning;
+	const double unitDrain=canonicalCappedPair.pilotExpansionIntegral;
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+		unitExact[component]-=unitDrain*unitBeginning[component];
+		unitStageAdvection[component]-=0.5*unitDrain*unitBeginning[component]+
+			0.5*unitDrain*(1.0-unitDrain)*unitBeginning[component];
+		unitDoubleDrain[component]-=2.0*unitDrain*unitBeginning[component];
+	}
+	unitExact[MethaneMassStateDimension]+=canonicalCappedPair.pilotEnergyDeltaJPerM3;
+	unitStageAdvection[MethaneMassStateDimension]+=
+		canonicalCappedPair.pilotEnergyDeltaJPerM3;
+	unitDoubleDrain[MethaneMassStateDimension]+=
+		canonicalCappedPair.pilotEnergyDeltaJPerM3;
+	ConservativeVector unitTarget=unitBeginning;
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
+		unitTarget[component]/=1.25;
+	unitTarget[MethaneMassStateDimension]=capped375EnergyJPerM3/1.25;
+	bool unitExactBits=true,stageMutationDiffers=false,doubleMutationDiffers=false;
+	for(std::size_t component=0;component<MethaneConservativeDimension;++component){
+		unitExactBits=unitExactBits&&unitExact[component]==unitTarget[component];
+		stageMutationDiffers=stageMutationDiffers||unitStageAdvection[component]!=
+			unitTarget[component];
+		doubleMutationDiffers=doubleMutationDiffers||unitDoubleDrain[component]!=
+			unitTarget[component];
+	}
+	Check(unitExactBits&&stageMutationDiffers&&doubleMutationDiffers,
+		"r66 unit scalar formula is exact and rejects stage-state, R1-recomputed, and double drains");
+	ConservativeAdvance3DConfig uncappedOwnerConfig=openOwnerConfig;
+	uncappedOwnerConfig.transport.deltaTimeS=pilotStep.deltaTimeS;
+	uncappedOwnerConfig.transport.ambientGasDensityKGPerM3=pilotBeginning.GasDensity();
+	uncappedOwnerConfig.openBoundary.ambientDensityKGPerM3=pilotBeginning.GasDensity();
+	uncappedOwnerConfig.openBoundary.ambientState=ToConservativeVector(pilotBeginning);
+	uncappedOwnerConfig.openBoundary.bottomFuelMask.clear();
+	uncappedOwnerConfig.openBoundary.bottomFuelMassFluxKGPerM2S.clear();
+	std::vector<MethaneSourcePacket> uncappedOwnerPackets(openShape3D.CellCount());
+	uncappedOwnerPackets[0]=uncappedPilotPacket;
+	ConservativeAdvance3DResult uncappedOwnerResult;
+	Check(!AdvanceConservative3D(openShape3D,std::vector<ConservativeVector>(
+		openShape3D.CellCount(),ToConservativeVector(pilotBeginning)),openOwnerMomentum,
+		uncappedOwnerPackets,uncappedOwnerConfig,fuel,thermochemistry,transport,
+		uncappedOwnerResult,&error),
+		"r63 production owner rejects a frozen packet that bypasses the projection-map self-limit");
+	ConservativeAdvance3DConfig exactPairConfig=uncappedOwnerConfig;
+	exactPairConfig.openBoundary.kind.fill(AdiabaticWallBoundary3D);
+	exactPairConfig.openBoundary.kind[5]=PressureOpenBoundary3D;
+	exactPairConfig.retainStageDiagnostics=true;
+	const std::size_t exactPairSourceCell=openShape3D.Index(openShape3D.nx/2,
+		openShape3D.ny/2,0);
+	std::vector<MethaneSourcePacket> exactPairPackets(openShape3D.CellCount());
+	exactPairPackets[exactPairSourceCell]=canonicalCappedPair;
+	OpenMACField3D exactPairMomentum;
+	for(unsigned int axis=0;axis<3;++axis)exactPairMomentum.component[axis].assign(
+		OpenMACFaceCount3D(openShape3D,axis),0.0);
+	OpenConservativeAdvance3DResult exactPairOwnerResult;
+	error.clear();
+	bool exactPairOwnerOK=AdvanceOpenConservative3DImplementation(openShape3D,
+		std::vector<ConservativeVector>(openShape3D.CellCount(),ToConservativeVector(pilotBeginning)),
+		exactPairMomentum,exactPairPackets,exactPairConfig,fuel,thermochemistry,transport,
+		exactPairOwnerResult,&error);
+	double exactPairSourceTemperatureError=std::numeric_limits<double>::infinity(),
+		exactPairMaximumEOSResidual=0.0;
+	if(exactPairOwnerOK)for(const ConservativeVector& acceptedVector:
+		exactPairOwnerResult.conservative){
+		const std::size_t acceptedCell=&acceptedVector-&exactPairOwnerResult.conservative[0];
+		MethaneCellState acceptedState=FromConservativeVector(acceptedVector);
+		exactPairOwnerOK=exactPairOwnerOK&&InvertMethaneTemperatureWithinAcceptedEnvelope(
+			acceptedState,thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),
+			thermochemistry,acceptedState.temperatureK,&error);
+		double residual=0.0;
+		exactPairOwnerOK=exactPairOwnerOK&&EquationOfStateResidual(acceptedState,
+			thermochemistry,residual,&error);
+		if(acceptedCell==exactPairSourceCell)exactPairSourceTemperatureError=
+			std::fabs(acceptedState.temperatureK-375.0);
+		exactPairMaximumEOSResidual=std::max(exactPairMaximumEOSResidual,residual);
+		exactPairOwnerOK=exactPairOwnerOK&&AcceptedMethaneCellStateAdmissible(
+			acceptedState,thermochemistry,&error);
+	}
+	// The converged production tableau includes its independently certified
+	// crossflow, pressure and transport coupling.  r66 records the observed
+	// one-step scale (0.0199 K and 2.34e-7 EOS residual) but does not redefine
+	// that coupled trajectory as the unit projection map.
+	Check(exactPairOwnerOK&&exactPairSourceTemperatureError<0.4&&
+		exactPairMaximumEOSResidual<5.0e-6,
+		"r66 production open owner accepts the coupled capped-pilot step inside its regression net");
+	FrozenProjectionDrain3D exactPairDrain;
+	std::vector<double> exactPairExpansion(openShape3D.CellCount(),0.0);
+	exactPairExpansion[exactPairSourceCell]=canonicalCappedPair.pilotExpansionIntegral;
+	bool exactDrainLedger=BuildOpenFrozenProjectionDrain3D(openShape3D,
+		std::vector<ConservativeVector>(openShape3D.CellCount(),unitBeginning),
+		exactPairExpansion,pilotStep.deltaTimeS,exactPairDrain,&error);
+	const std::size_t exactPairTopFace=OpenUpperFaceForCell3D(openShape3D,
+		exactPairSourceCell,2);
+	const double exactPairFluxScale=openShape3D.cellWidthM/pilotStep.deltaTimeS;
+	if(exactDrainLedger)for(std::size_t component=0;
+		component<MethaneMassStateDimension;++component){
+		const double expectedFlux=exactPairFluxScale*unitDrain*unitBeginning[component];
+		exactDrainLedger=exactDrainLedger&&exactPairDrain.faceFlux[2][exactPairTopFace][component]
+			==expectedFlux&&exactPairOwnerResult.r0.flux.nonadvectiveMass[2][exactPairTopFace][
+				component]==expectedFlux;
+	}
+	if(exactDrainLedger){
+		const double expectedEnergyFlux=exactPairFluxScale*unitDrain*
+			unitBeginning[MethaneMassStateDimension];
+		exactDrainLedger=exactPairDrain.faceFlux[2][exactPairTopFace][
+			MethaneMassStateDimension]==expectedEnergyFlux&&
+			exactPairOwnerResult.r0.flux.nonadvectiveEnergy[2][exactPairTopFace]==
+				expectedEnergyFlux;
+	}
+	Check(exactDrainLedger,
+		"r65 pilot ledger is bit-exact against the emitted packet and shared frozen drain");
+	MethaneSourcePacket thermostatPacket;
+	Check(BuildMethaneReactionPacket(beginning,fuel,pilotStep,thermostatPacket,&error)&&
+		thermostatPacket.pilotEnergyDeltaJPerM3==0.0&&
+		thermostatPacket.sensibleEnergyDeltaJPerM3==0.0,
+		"r62 pilot leaves a cell at the 900 K setpoint untouched and ledgers zero");
 	MethaneReactionStep pilotBurnStep=step;
-	pilotBurnStep.pilotHeatingWPerM3=5000.0;
+	pilotBurnStep.pilotSetpointTemperatureK=900.0;
+	pilotBurnStep.pilotExpansionVolumeRatioCap=1.25;
+	const MethaneCellState pilotBurnBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.05,700.0);
 	std::vector<MethaneSourcePacket> pilotBurnPackets;
 	RadiationEscapeFactor pilotBurnFactor;
 	const double pilotCellVolume=0.001;
-	Check(BuildFrozenMethaneSourcePackets({beginning},{pilotBurnStep},{pilotCellVolume},300.0,
+	Check(BuildFrozenMethaneSourcePackets({pilotBurnBeginning},{pilotBurnStep},{pilotCellVolume},300.0,
 		10000.0,0.20,false,fuel,thermochemistry,opacity,pilotBurnPackets,
 		pilotBurnFactor,&error),"r55 combined pilot/reaction packet freezes through the grid source path");
 	MethaneSourcePacket pilotBurnReaction;
 	MethaneCellState pilotBurnScratch;
 	GasExchangeEvaluation pilotBurnExchange;
 	RadiationEscapeFactor independentCombustionFactor,pilotPollutedFactor;
-	const bool pilotBudgetOracle=BuildMethaneReactionPacket(beginning,fuel,pilotBurnStep,
-		pilotBurnReaction,&error)&&ApplySourcePacket(beginning,pilotBurnReaction,thermochemistry,
+	const bool pilotBudgetOracle=BuildMethaneReactionPacket(pilotBurnBeginning,fuel,pilotBurnStep,
+		pilotBurnReaction,&error)&&ApplySourcePacket(pilotBurnBeginning,pilotBurnReaction,thermochemistry,
 		pilotBurnScratch,&error)&&EvaluateGasExchange(pilotBurnScratch,pilotBurnScratch.temperatureK,
 		300.0,thermochemistry,opacity,pilotBurnExchange,&error)&&ComputeRadiationEscapeFactor(
 		(pilotBurnReaction.gasHeatReleaseWPerM3+pilotBurnReaction.sootHeatReleaseWPerM3)*
 			pilotCellVolume,10000.0,0.20,{pilotBurnExchange.exchangeWPerM3},{pilotCellVolume},false,
 		independentCombustionFactor,&error)&&ComputeRadiationEscapeFactor(
 		(pilotBurnReaction.gasHeatReleaseWPerM3+pilotBurnReaction.sootHeatReleaseWPerM3+
-			pilotBurnReaction.pilotHeatingWPerM3)*pilotCellVolume,10000.0,0.20,
+			pilotBurnReaction.pilotEnergyDeltaJPerM3/pilotBurnStep.deltaTimeS)*pilotCellVolume,
+		10000.0,0.20,
 		{pilotBurnExchange.exchangeWPerM3},{pilotCellVolume},false,pilotPollutedFactor,&error);
 	Check(pilotBudgetOracle&&pilotBurnFactor.beta==independentCombustionFactor.beta&&
 		pilotBurnFactor.beta!=pilotPollutedFactor.beta,
-		"r55 chi_r and epsilon_Q radiation budget excludes pilot power and sees combustion only");
+		"r62 chi_r and epsilon_Q radiation budget excludes pilot energy and sees combustion only");
 	// Synthetic fixture ID: fire-v6-pilot-cold-mixture-v1.  This is a gate
 	// fixture, never a fuel preset or capstone initial condition.
 	MethaneCellState coldPilotState=StateAtTemperature(reacting,0.05,300.0,thermochemistry);
@@ -4121,7 +4379,9 @@ int main()
 		syntheticPilotStep.mixingTimeS=0.5;
 		syntheticPilotStep.primaryEligible=pilotEligibility[0];
 		syntheticPilotStep.sootOxidationEnabled=true;
-		syntheticPilotStep.pilotHeatingWPerM3=time<syntheticPilotWindowS?5.0e6:0.0;
+		syntheticPilotStep.pilotSetpointTemperatureK=time<syntheticPilotWindowS?900.0:0.0;
+		syntheticPilotStep.pilotExpansionVolumeRatioCap=
+			syntheticPilotStep.pilotSetpointTemperatureK>0.0?1.25:0.0;
 		MethaneSourcePacket syntheticPilotPacket;
 		MethaneCellState nextPilotState;
 		Check(BuildMethaneReactionPacket(coldPilotState,fuel,syntheticPilotStep,
@@ -4132,10 +4392,11 @@ int main()
 			(time<syntheticPilotWindowS&&syntheticPilotPacket.reactedFuelKGPerM3>0.0);
 		pilotSustainedAfterWindow=pilotSustainedAfterWindow||
 			(time>=syntheticPilotWindowS&&syntheticPilotPacket.reactedFuelKGPerM3>0.0&&
-				syntheticPilotPacket.pilotHeatingWPerM3==0.0);
+				syntheticPilotPacket.pilotEnergyDeltaJPerM3==0.0);
 		coldPilotState=nextPilotState;
 		MethaneReactionStep noPilotStep=syntheticPilotStep;
-		noPilotStep.primaryEligible=false;noPilotStep.pilotHeatingWPerM3=0.0;
+		noPilotStep.primaryEligible=false;noPilotStep.pilotSetpointTemperatureK=0.0;
+		noPilotStep.pilotExpansionVolumeRatioCap=0.0;
 		MethaneSourcePacket noPilotPacket;MethaneCellState nextNoPilotState;
 		Check(BuildMethaneReactionPacket(coldNoPilotState,fuel,noPilotStep,noPilotPacket,&error)&&
 			ApplySourcePacket(coldNoPilotState,noPilotPacket,thermochemistry,nextNoPilotState,&error),
@@ -4146,7 +4407,7 @@ int main()
 		Near(coldNoPilotState.temperatureK,300.0,2.0e-15)&&
 		coldNoPilotState.constituent==coldNoPilotBeginning.constituent&&
 		coldNoPilotState.sensibleEnergyJPerM3==coldNoPilotBeginning.sensibleEnergyJPerM3,
-		"r55 pilot-on ignites inside its window and sustains after shutoff while pilot-off stays cold");
+		"r62 pilot-on ignites inside its window and sustains after shutoff while pilot-off stays cold");
 	MethaneCellState reactedState;
 	Check(ApplySourcePacket(beginning,packet,thermochemistry,reactedState,&error) &&
 		reactedState.temperatureK > beginning.temperatureK,

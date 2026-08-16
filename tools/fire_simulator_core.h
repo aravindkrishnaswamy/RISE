@@ -482,14 +482,16 @@ namespace RISE
 			double grossCarbonFormedKGPerM3;
 			double gasHeatReleaseWPerM3;
 			double sootHeatReleaseWPerM3;
-			double pilotHeatingWPerM3;
+			double pilotEnergyDeltaJPerM3;
+			double pilotExpansionIntegral;
 			double radiativeCoolingWPerM3;
 
 			MethaneSourcePacket() : sensibleEnergyDeltaJPerM3(0.0),
 				reactedFuelKGPerM3(0.0), oxidizedCarbonKGPerM3(0.0),
 				grossCarbonFormedKGPerM3(0.0),
 				gasHeatReleaseWPerM3(0.0), sootHeatReleaseWPerM3(0.0),
-				pilotHeatingWPerM3(0.0),
+				pilotEnergyDeltaJPerM3(0.0),
+				pilotExpansionIntegral(0.0),
 				radiativeCoolingWPerM3(0.0)
 			{
 				constituentDelta.fill(0.0);
@@ -500,15 +502,82 @@ namespace RISE
 		{
 			double deltaTimeS;
 			double mixingTimeS;
-			double pilotHeatingWPerM3;
+			double pilotSetpointTemperatureK;
+			double pilotExpansionVolumeRatioCap;
 			bool primaryEligible;
 			bool sootOxidationEnabled;
 
 			MethaneReactionStep() : deltaTimeS(0.0), mixingTimeS(0.0),
-				pilotHeatingWPerM3(0.0),
+				pilotSetpointTemperatureK(0.0),
+				pilotExpansionVolumeRatioCap(0.0),
 				primaryEligible(false),
 				sootOxidationEnabled(false) {}
 		};
+
+		struct MethanePilotProjectionMap
+		{
+			double targetTemperatureK=0.0;
+			double volumeRatio=1.0;
+			double sensibleEnergyDeltaJPerM3=0.0;
+			double expansionIntegral=0.0;
+		};
+
+		inline bool ComputeMethanePilotProjectionMap(
+			const MethaneCellState& beginning,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const double setpointTemperatureK,
+			const double expansionVolumeRatioCap,
+			MethanePilotProjectionMap& result,
+			std::string* error = 0
+			)
+		{
+			result=MethanePilotProjectionMap();
+			result.targetTemperatureK=beginning.temperatureK;
+			if(!std::isfinite(setpointTemperatureK)||setpointTemperatureK<0.0||
+				!std::isfinite(expansionVolumeRatioCap)||expansionVolumeRatioCap<0.0)
+				return Fail(error,"fire solver pilot setpoint is invalid");
+			if(setpointTemperatureK==0.0||beginning.temperatureK>=setpointTemperatureK)
+				return true;
+			if(expansionVolumeRatioCap!=1.25)
+				return Fail(error,"fire solver pilot expansion cap is not canonical");
+			if(setpointTemperatureK<thermochemistry.TemperatureMinK()||
+				setpointTemperatureK>thermochemistry.TemperatureMaxK())
+				return Fail(error,"fire solver pilot setpoint is outside thermochemistry");
+			double cappedTemperatureK=std::min(setpointTemperatureK,
+				beginning.temperatureK*expansionVolumeRatioCap);
+			while(cappedTemperatureK/beginning.temperatureK>expansionVolumeRatioCap)
+				cappedTemperatureK=std::nextafter(cappedTemperatureK,beginning.temperatureK);
+			double beginningEnergyJPerM3=0.0,setpointEnergyJPerM3=0.0;
+			if(!SignedMixtureSensibleEnergy(beginning,beginning.temperatureK,
+				thermochemistry,beginningEnergyJPerM3,error)||
+				!SignedMixtureSensibleEnergy(beginning,cappedTemperatureK,
+					thermochemistry,setpointEnergyJPerM3,error))return false;
+			result.targetTemperatureK=cappedTemperatureK;
+			result.volumeRatio=cappedTemperatureK/beginning.temperatureK;
+			result.sensibleEnergyDeltaJPerM3=(setpointEnergyJPerM3-
+				beginningEnergyJPerM3)/result.volumeRatio;
+			result.expansionIntegral=1.0-1.0/result.volumeRatio;
+			return (std::isfinite(result.sensibleEnergyDeltaJPerM3)&&
+				result.sensibleEnergyDeltaJPerM3>=0.0&&
+				std::isfinite(result.expansionIntegral)&&result.expansionIntegral>=0.0&&
+				result.expansionIntegral<=0.5)||
+				Fail(error,"fire solver pilot energy increment is invalid");
+		}
+
+		inline bool ComputeMethanePilotEnergyDeltaJPerM3(
+			const MethaneCellState& beginning,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const double setpointTemperatureK,
+			const double expansionVolumeRatioCap,
+			double& result,
+			std::string* error = 0
+			)
+		{
+			MethanePilotProjectionMap map;
+			if(!ComputeMethanePilotProjectionMap(beginning,thermochemistry,
+				setpointTemperatureK,expansionVolumeRatioCap,map,error))return false;
+			result=map.sensibleEnergyDeltaJPerM3;return true;
+		}
 
 		inline bool BuildMethaneReactionPacket(
 			const MethaneCellState& beginning,
@@ -522,7 +591,10 @@ namespace RISE
 			if( !fuel.IsValid() || !ValidateCellState(beginning,error) ||
 				!std::isfinite(step.deltaTimeS) || step.deltaTimeS <= 0.0 ||
 				!std::isfinite(step.mixingTimeS) || step.mixingTimeS <= 0.0 ||
-				!std::isfinite(step.pilotHeatingWPerM3) || step.pilotHeatingWPerM3 < 0.0 ) {
+				!std::isfinite(step.pilotSetpointTemperatureK) ||
+				step.pilotSetpointTemperatureK < 0.0 ||
+				!std::isfinite(step.pilotExpansionVolumeRatioCap) ||
+				step.pilotExpansionVolumeRatioCap < 0.0 ) {
 				return Fail(error,"fire solver reaction step is outside its physical domain");
 			}
 			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
@@ -563,13 +635,18 @@ namespace RISE
 				fuel.SootOxygenKGPerKGCarbon()*oxidized;
 			packet.constituentDelta[MethaneCO2] +=
 				fuel.SootCO2KGPerKGCarbon()*oxidized;
+			MethanePilotProjectionMap pilotMap;
+			if(!ComputeMethanePilotProjectionMap(beginning,fuel,
+				step.pilotSetpointTemperatureK,step.pilotExpansionVolumeRatioCap,
+				pilotMap,error))return false;
 			packet.sensibleEnergyDeltaJPerM3 =
 				reacted*fuel.LowerHeatingValueJPerKG()+
 				oxidized*fuel.SootHeatReleaseJPerKGCarbon()+
-				step.deltaTimeS*step.pilotHeatingWPerM3;
+				pilotMap.sensibleEnergyDeltaJPerM3;
 			packet.gasHeatReleaseWPerM3 = reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
 			packet.sootHeatReleaseWPerM3 = oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
-			packet.pilotHeatingWPerM3 = step.pilotHeatingWPerM3;
+			packet.pilotEnergyDeltaJPerM3 = pilotMap.sensibleEnergyDeltaJPerM3;
+			packet.pilotExpansionIntegral = pilotMap.expansionIntegral;
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				if( !std::isfinite(packet.constituentDelta[index]) ) {
 					return Fail(error,"fire solver reaction packet contains a non-finite constituent delta");
@@ -581,7 +658,8 @@ namespace RISE
 				std::isfinite(packet.grossCarbonFormedKGPerM3) &&
 				std::isfinite(packet.gasHeatReleaseWPerM3) &&
 				std::isfinite(packet.sootHeatReleaseWPerM3) &&
-				std::isfinite(packet.pilotHeatingWPerM3)) ||
+				std::isfinite(packet.pilotEnergyDeltaJPerM3) &&
+				std::isfinite(packet.pilotExpansionIntegral)) ||
 				Fail(error,"fire solver reaction packet overflowed");
 		}
 
@@ -1259,6 +1337,35 @@ namespace RISE
 			result=(candidateVolume-1.0)/deltaTimeS;
 			return std::isfinite(result)||Fail(error,
 				"fire solver finite-increment divergence overflowed");
+		}
+
+		inline bool FrozenSourcePacketExpansionAdmissible(
+			const ConservativeVector& beginning,
+			const double beginningTemperatureK,
+			const MethaneSourcePacket& packet,
+			const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,
+			double* scaledDivergence = 0,
+			std::string* error = 0
+			)
+		{
+			ConservativeVector increment;
+			for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+				increment[1+species]=packet.constituentDelta[species];
+			increment[MethaneMassStateDimension]=packet.sensibleEnergyDeltaJPerM3-
+				packet.pilotEnergyDeltaJPerM3;
+			double divergencePerS=0.0;
+			if(!DivergenceFromDiscreteIncrement(beginning,increment,beginningTemperatureK,
+				deltaTimeS,thermochemistry,divergencePerS,error))return false;
+			const double scaled=deltaTimeS*divergencePerS+packet.pilotExpansionIntegral;
+			if(scaledDivergence)*scaledDivergence=scaled;
+			if(!std::isfinite(scaled)||scaled>0.5){
+				std::ostringstream message;
+				message<<"fire solver frozen source packet exceeds the expansion bound: dt*S_div="
+					<<scaled<<" limit=0.5";
+				return Fail(error,message.str());
+			}
+			return true;
 		}
 
 		inline bool PeriodicDivergenceTargetFromPhysicalFlux(
@@ -5276,10 +5383,16 @@ namespace RISE
 			const double factor=fuel.AcceptedStateFeasibilityEnvelope().
 				sourcePacketFactorEpsilon64*std::numeric_limits<double>::epsilon();
 			const double massRatio=std::fabs(massResidual)/std::max(1.0,massScale);
+			MethanePilotProjectionMap expectedPilotMap;
+			if(!ComputeMethanePilotProjectionMap(beginning,fuel,
+				reactionStep.pilotSetpointTemperatureK,
+				reactionStep.pilotExpansionVolumeRatioCap,expectedPilotMap,error))return false;
+			const double expectedPilotEnergyJPerM3=
+				expectedPilotMap.sensibleEnergyDeltaJPerM3;
 			const double expectedEnergy=packet.reactedFuelKGPerM3*
 				fuel.LowerHeatingValueJPerKG()+packet.oxidizedCarbonKGPerM3*
-				fuel.SootHeatReleaseJPerKGCarbon()+reactionStep.deltaTimeS*
-				packet.pilotHeatingWPerM3-reactionStep.deltaTimeS*
+				fuel.SootHeatReleaseJPerKGCarbon()+expectedPilotEnergyJPerM3-
+				reactionStep.deltaTimeS*
 				packet.radiativeCoolingWPerM3;
 			const double oxygenExpected=fuel.StoichiometricOxygenKGPerKGFuel()*
 				packet.reactedFuelKGPerM3+fuel.SootOxygenKGPerKGCarbon()*
@@ -5289,7 +5402,7 @@ namespace RISE
 				std::fabs(beginning.sensibleEnergyJPerM3+packet.sensibleEnergyDeltaJPerM3)+
 				std::fabs(packet.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG())+
 				std::fabs(packet.oxidizedCarbonKGPerM3*fuel.SootHeatReleaseJPerKGCarbon())+
-				std::fabs(reactionStep.deltaTimeS*packet.pilotHeatingWPerM3)+
+				std::fabs(expectedPilotEnergyJPerM3)+
 				std::fabs(reactionStep.deltaTimeS*packet.radiativeCoolingWPerM3));
 			const double energyRatio=std::fabs(packet.sensibleEnergyDeltaJPerM3-
 				expectedEnergy)/energyScale;
@@ -5307,23 +5420,27 @@ namespace RISE
 				std::max(1.0,std::fabs(packet.gasHeatReleaseWPerM3)+std::fabs(expectedGasRate));
 			const double sootRateRatio=std::fabs(packet.sootHeatReleaseWPerM3-expectedSootRate)/
 				std::max(1.0,std::fabs(packet.sootHeatReleaseWPerM3)+std::fabs(expectedSootRate));
-			const double pilotRateRatio=std::fabs(packet.pilotHeatingWPerM3-
-				reactionStep.pilotHeatingWPerM3)/std::max(1.0,
-				std::fabs(packet.pilotHeatingWPerM3)+std::fabs(reactionStep.pilotHeatingWPerM3));
+			const double pilotEnergyRatio=std::fabs(packet.pilotEnergyDeltaJPerM3-
+				expectedPilotEnergyJPerM3)/std::max(1.0,
+				std::fabs(packet.pilotEnergyDeltaJPerM3)+std::fabs(expectedPilotEnergyJPerM3));
+			const bool pilotExpansionExact=packet.pilotExpansionIntegral==
+				expectedPilotMap.expansionIntegral;
 			const bool closes=massRatio<=factor&&elementRatio<=factor&&energyRatio<=factor&&
 				oxygenRatio<=factor&&
 				std::isfinite(packet.gasHeatReleaseWPerM3)&&
 				std::isfinite(packet.sootHeatReleaseWPerM3)&&
-				std::isfinite(packet.pilotHeatingWPerM3)&&
-				gasRateRatio<=factor&&sootRateRatio<=factor&&pilotRateRatio<=factor;
+				std::isfinite(packet.pilotEnergyDeltaJPerM3)&&
+				gasRateRatio<=factor&&sootRateRatio<=factor&&pilotEnergyRatio<=factor&&
+				pilotExpansionExact;
 			if(closes)return true;
 			std::ostringstream message;message<<"fire solver frozen source packet failed its ledger: mass="
 				<<massResidual<<", element_ratio="<<elementRatio<<", oxygen="
 				<<(-packet.constituentDelta[MethaneO2]-oxygenExpected)<<", energy="
 				<<(packet.sensibleEnergyDeltaJPerM3-expectedEnergy)<<", gas-rate="
 				<<(packet.gasHeatReleaseWPerM3-expectedGasRate)<<", soot-rate="
-				<<(packet.sootHeatReleaseWPerM3-expectedSootRate)<<", pilot-rate="
-				<<(packet.pilotHeatingWPerM3-reactionStep.pilotHeatingWPerM3);
+				<<(packet.sootHeatReleaseWPerM3-expectedSootRate)<<", pilot-energy="
+				<<(packet.pilotEnergyDeltaJPerM3-expectedPilotEnergyJPerM3)<<", pilot-expansion="
+				<<(packet.pilotExpansionIntegral-expectedPilotMap.expansionIntegral);
 			return Fail(error,message.str());
 		}
 
@@ -5361,7 +5478,9 @@ namespace RISE
 			result.sensibleEnergyDeltaJPerM3 = finalScratch.sensibleEnergyJPerM3-
 				beginning.sensibleEnergyJPerM3;
 			result.radiativeCoolingWPerM3 = signedCoolingWPerM3;
-			return ValidateFrozenMethaneSourcePacketLedger(beginning,reactionStep,fuel,result,error);
+			return ValidateFrozenMethaneSourcePacketLedger(beginning,reactionStep,fuel,result,error)&&
+				FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning),
+					beginning.temperatureK,result,reactionStep.deltaTimeS,thermochemistry,0,error);
 		}
 
 		inline bool BuildFrozenMethaneSourcePackets(
@@ -5464,6 +5583,11 @@ namespace RISE
 				candidateResult[cell].radiativeCoolingWPerM3 = signedCoolingWPerM3;
 				if(!ValidateFrozenMethaneSourcePacketLedger(beginning[cell],reactionStep[cell],fuel,
 					candidateResult[cell],&cellError)) {
+					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
+				}
+				if(!FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning[cell]),
+					beginning[cell].temperatureK,candidateResult[cell],reactionStep[cell].deltaTimeS,
+					thermochemistry,0,&cellError)) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				}

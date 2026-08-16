@@ -127,23 +127,20 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 	return active>0 || Fail(error,"fire case pilot annulus contains no cell centres");
 }
 
-bool RISE::FireCase::EvaluatePilotPowerDensityWPerM3(const DerivedV1& derived,
-	const bool maskCell,const double simulationTimeS,
-	const double acceptedBeginningTemperatureK,double& result,std::string& error)
+bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
+	const bool maskCell,const double simulationTimeS,double& result,std::string& error)
 {
 	result=0.0;
-	if(!FinitePositive(derived.pilotPowerDensityWPerM3) ||
+	if(!FinitePositive(derived.pilotSetpointTemperatureK) ||
+		!FinitePositive(derived.pilotExpansionVolumeRatioCap) ||
+		derived.pilotExpansionVolumeRatioCap!=1.25 ||
 		!FinitePositive(derived.pilotDurationMultiplier) ||
 		!FinitePositive(derived.flowThroughTimeS) ||
-		!FinitePositive(derived.pilotBeginningTemperatureCeilingK) ||
-		!std::isfinite(simulationTimeS) || simulationTimeS<0.0 ||
-		!FinitePositive(acceptedBeginningTemperatureK))
+		!std::isfinite(simulationTimeS) || simulationTimeS<0.0)
 		return Fail(error,"fire case pilot evaluation has invalid inputs");
 	const double endS=derived.pilotDurationMultiplier*derived.flowThroughTimeS;
 	if(!std::isfinite(endS)) return Fail(error,"fire case pilot duration is invalid");
-	if(maskCell && simulationTimeS<endS &&
-		acceptedBeginningTemperatureK<derived.pilotBeginningTemperatureCeilingK)
-		result=derived.pilotPowerDensityWPerM3;
+	if(maskCell && simulationTimeS<endS) result=derived.pilotSetpointTemperatureK;
 	return true;
 }
 
@@ -208,11 +205,11 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 
 	DerivedV1 d; d.resolutionTier=tierValue; d.peakEnvelope=peak;
 	d.limiterAcceptanceModelVersion="two_class_face_infimum_v1";
-	d.pilotModelVersion="prescribed_energy_source_v1";
+	d.pilotModelVersion="prescribed_isothermal_kernel_v3";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
-	d.pilotPowerDensityWPerM3=1.0e6;
+	d.pilotSetpointTemperatureK=900.0;
+	d.pilotExpansionVolumeRatioCap=1.25;
 	d.pilotDurationMultiplier=1.0;
-	d.pilotBeginningTemperatureCeilingK=900.0;
 	d.sourceAreaM2=sourceArea;
 	d.referenceHeatReleaseRateW=1000.0*nominalHeatReleaseKW*peak;
 	d.nominalFuelFluxKGPerM2S=nominalFuelFlux;
@@ -313,11 +310,12 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 		{"fuel_mass_flux_kg_per_m2_s",Value::Float(d.nominalFuelFluxKGPerM2S)},
 		{"pre_roll_or_discard_s",Value::Float(d.preRollOrDiscardS)},
 		{"pilot",Value::MapValue({
-			{"beginning_temperature_ceiling_K",Value::Float(d.pilotBeginningTemperatureCeilingK)},
 			{"duration_multiplier_t_ft",Value::Float(d.pilotDurationMultiplier)},
 			{"mask_rule",Value::String(d.pilotMaskRule)},
+			{"maximum_eos_volume_ratio_per_step",Value::Float(
+				d.pilotExpansionVolumeRatioCap)},
 			{"model_version",Value::String(d.pilotModelVersion)},
-			{"power_density_W_per_m3",Value::Float(d.pilotPowerDensityWPerM3)}})},
+			{"setpoint_temperature_K",Value::Float(d.pilotSetpointTemperatureK)}})},
 		{"qdot_ref_W",Value::Float(d.referenceHeatReleaseRateW)},
 		{"resolution_tier",Value::Float(d.resolutionTier)}, {"source_area_m2",Value::Float(d.sourceAreaM2)},
 		{"source_pattern_sha256",Value::String(d.perturbationDigest)},
