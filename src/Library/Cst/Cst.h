@@ -470,6 +470,40 @@ namespace RISE
 		bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string& role,
 		                          int occ, size_t* outOffset, size_t* outLength );
 
+		//! Value of param `role` on `chunk` AS THE PARSER WILL READ IT -- on a
+		//! REPEATED param the LAST occurrence wins.  That is not a preference: the
+		//! descriptor-driven parser's non-repeatable branch is
+		//! `ParseStateBag::SetSingle`, an unconditional `mSingles[key] = value`
+		//! (ChunkParserRegistry.cpp), and the file-local `ParamValue` every derive
+		//! reads through implements the same rule -- so `geometry none` followed by
+		//! `geometry gv` derives an object bound to `gv`.  Nothing in the stack
+		//! refuses such a duplicate, so any reader that has to agree with the LIVE
+		//! scene (the editor's properties panel, an agent predicate about what the
+		//! text means) must ask THIS question.
+		//!
+		//! Multi-token values (`color 1 0 0`) are joined exactly as ParamNodeValue
+		//! joins them -- every kid from the first `pvalue` Token to the end of the
+		//! Param, Trivia included -- so a tuple reads back as "1 0 0", never "1" or
+		//! "100".  Separating / trailing trivia rides along; compare on a trimmed
+		//! copy when matching a bare word.
+		//!
+		//! `*outPresent` (if non-null) reports whether the param appears AT ALL,
+		//! distinct from "present but empty".  DELIBERATELY NOT the same question as
+		//! "which occurrence does an occ=0 edit address" -- that one is answered by
+		//! occurrence ZERO (SceneEditController.cpp's AgentReadFirstParamValue, whose
+		//! call sites implement the agent capture/restore convention).  Do not
+		//! substitute one for the other.  O(chunk kids).
+		std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role,
+		                                bool* outPresent = nullptr );
+
+		//! How many Params named `role` the chunk carries.  `> 1` on a param the
+		//! chunk's descriptor declares NON-repeatable is a malformed-but-accepted
+		//! document: every occurrence except the last is dead text, and the
+		//! occurrence a reader sees depends on which end it counts from -- the
+		//! condition ParamValueAsParsed exists to read correctly and that the edit
+		//! path refuses to write into.  0 when absent (or `chunk` is null).
+		int ParamOccurrenceCount( const NodeRef& chunk, const std::string& role );
+
 		//! Replace top-level item `index` with `newItem` (path-copy: O(log N) new
 		//! sequence nodes, the rest shared by pointer; aggregates recomputed along
 		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.

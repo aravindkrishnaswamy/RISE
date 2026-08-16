@@ -23,42 +23,13 @@
 #include "../Interfaces/IFunction2DManager.h"
 #include "../Interfaces/IScenePriv.h"
 #include <algorithm>
+#include <string>
 
 namespace RISE
 {
 
 namespace
 {
-	// Mirrors SceneEditController.cpp's anonymous-namespace
-	// AgentReadFirstParamValue (the same intentional small duplicate the
-	// painter original carried -- see the doc comment on
-	// SceneEditController::CaptureAgentPriorParamValue_).  Reads the
-	// FIRST occurrence of `pname` on `chunk`.
-	std::string ReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
-	{
-		if( outPresent ) *outPresent = false;
-		if( !chunk ) return std::string();
-		for( const auto& kid : chunk->kids )
-		{
-			if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-			std::string nm, val;
-			bool inVal = false;
-			for( const auto& tk : kid->kids )
-			{
-				if( !tk ) continue;
-				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
-				if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
-				if( inVal ) val += tk->text;
-			}
-			if( nm == pname )
-			{
-				if( outPresent ) *outPresent = true;
-				return val;
-			}
-		}
-		return std::string();
-	}
-
 	// Name-collecting IEnumCallback shared by every manager enumeration
 	// below (same shape as SceneEditController.cpp's CollectNamesCallback).
 	struct CollectNames : public IEnumCallback<const char*>
@@ -179,16 +150,43 @@ std::vector<CameraProperty> CstIntrospection::Inspect(
 		if( p.name == "name" ) continue;      // covered by the identity row above; renaming is a dedicated affordance
 		if( p.repeatable ) continue;          // see header doc -- occ-0 editing doesn't fit a repeated param
 
+		// LAST occurrence, not first: this row has to say what the LIVE entity is,
+		// and the parse this panel sits on top of is last-wins (Cst::
+		// ParamValueAsParsed's doc has the chain).  Reading occurrence 0 here made
+		// the panel disagree with the renderer on any chunk that spells a
+		// non-repeatable param twice -- `geometry none` above `geometry gv` showed
+		// `none` for an object that is bound to `gv`.
 		bool present = false;
-		const std::string raw = ReadFirstParamValue( chunk, p.name.c_str(), &present );
+		const std::string raw = RISE::Cst::ParamValueAsParsed( chunk, p.name, &present );
+
+		// ...and a duplicate makes the row UNWRITABLE, not merely mis-read.  The
+		// edit route underneath (ApplyAgentParamEdit / SceneEditor::Apply, both
+		// occ=0) addresses the FIRST occurrence, which is the dead one -- so an
+		// edit of this row would rewrite an invisible line and leave the displayed
+		// value untouched.  Job::ApplyCstParamEditImpl_ refuses that write; a
+		// read-only row keeps the panel from offering an edit it knows is refused,
+		// and the description says which line to delete.
+		const int occurrences = RISE::Cst::ParamOccurrenceCount( chunk, p.name );
 
 		CameraProperty row;
 		row.name        = String( p.name.c_str() );
 		row.kind         = p.kind;
 		row.value        = present ? String( raw.c_str() ) : String( p.defaultValueHint.c_str() );
 		row.description  = String( p.description.c_str() );
-		row.editable     = true;   // routed through ApplyAgentParamEdit -- see header doc
+		// 0 occurrences is EDITABLE, not read-only: the row is showing the
+		// descriptor default for a slot the scene text omits, and the edit route
+		// INSERTS it (DocSetOrAddParamValue).  Only a genuine duplicate is unwritable.
+		row.editable     = ( occurrences <= 1 );   // routed through ApplyAgentParamEdit -- see header doc
 		row.unitLabel    = String( p.unitLabel.c_str() );
+
+		if( occurrences > 1 )
+		{
+			row.description = String( ( std::string( p.description.c_str() )
+				+ "  [READ-ONLY: `" + p.name + "` is spelled " + std::to_string( occurrences )
+				+ " times in this chunk but is not a repeatable parameter.  The scene derives from"
+				  " the LAST one (shown here); the earlier ones are dead text.  Delete the"
+				  " duplicates in the scene file to make this row editable again.]" ).c_str() );
+		}
 
 		if( p.kind == ValueKind::Reference )
 		{
@@ -282,6 +280,19 @@ void CstIntrospection::AugmentWithCstRows(
 			// the edit route round-trips through.
 			existing->editable = true;
 			existing->value    = g.value;
+		}
+		else if( !g.editable )
+		{
+			// The reverse direction, and the reason it has to exist: Inspect
+			// clears `editable` only when the chunk spells this non-repeatable
+			// param more than once, which the CST edit route REFUSES to write
+			// (Job::ApplyCstParamEditImpl_).  A live row that looks editable
+			// would still route its edit through that refusal, so the live
+			// module's optimism has to yield to the CST's answer -- including
+			// the value, since last-wins is what the scene derived from.
+			existing->editable   = false;
+			existing->value      = g.value;
+			existing->description = g.description;
 		}
 		if( existing->referenceCategories.empty() && !g.referenceCategories.empty() )
 			existing->referenceCategories = g.referenceCategories;

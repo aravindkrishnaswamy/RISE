@@ -10610,6 +10610,42 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
 		return 0;
 	}
+	// AMBIGUOUS-OCCURRENCE REFUSAL.  Every caller of this function edits occurrence
+	// `occ` counted from the FRONT (0 = first), while the parse this edit will be
+	// re-derived through is last-wins for a non-repeatable param -- ParseStateBag::
+	// SetSingle is an unconditional overwrite, and Cst::ParamValue reads the same way.
+	// The two agree exactly as long as such a param appears ONCE.  When it appears
+	// twice, an occ=0 edit rewrites a line that has no effect on the derived scene
+	// and leaves the effective line alone: the render does not change, the properties
+	// panel (which now reads last-wins, Cst::ParamValueAsParsed) does not change, and
+	// the edit reports success.  That silent no-op is worse than a refusal, so refuse
+	// -- and say which parameter, so the author can delete the dead line.
+	//
+	// Scoped to what is actually ambiguous: only a role the chunk's own descriptor
+	// declares NON-repeatable, and only when it is genuinely duplicated.  A repeatable
+	// param (`part`, `cp`, `value`, `shaderop`) is SUPPOSED to occur many times and its
+	// callers pass a real occurrence index -- untouched.  A role with no descriptor
+	// entry is left alone too; the derive's own validation owns that case.
+	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
+	if( editTarget ) {
+		const ChunkDescriptor* editDesc = DescriptorForKeyword( String( editTarget->role.c_str() ) );
+		const ParameterDescriptor* editParam = nullptr;
+		if( editDesc )
+			for( const ParameterDescriptor& p : editDesc->parameters )
+				if( p.name == role ) { editParam = &p; break; }
+		if( editParam && !editParam->repeatable ) {
+			const int occurrences = RISE::Cst::ParamOccurrenceCount( editTarget, editParam->name );
+			if( occurrences > 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Job::ApplyCstParamEdit:: `%s` (kind `%s`) spells the non-repeatable parameter `%s` %d times; "
+					"the scene derives from the LAST one, but this edit addresses occurrence %d -- it would rewrite a "
+					"dead line and leave the live value unchanged. Edit rejected; delete the duplicate `%s` lines first.",
+					entityName, ekind.c_str(), role, occurrences, occ, role );
+				return 0;
+			}
+		}
+	}
+
 	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, role, occ, newValue );
 	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, requireFullDerivability );
 }
@@ -11269,6 +11305,16 @@ int Job::ApplyCstInsertChunk( const char* chunkText, char* outKeyword, unsigned 
 			return -1;
 		}
 	}
+
+	// NOT REFUSED HERE: a chunk that spells a non-repeatable param twice.  It is a real defect --
+	// every layer below accepts it and derives SILENTLY from the last occurrence -- and refusing it at
+	// the door was tried, but the insert gate is deliberately NOT where it gets caught.  Duplicated
+	// params are load-bearing INPUT to the container-vs-leaf gate above this layer, which has to read
+	// them last-wins in BOTH directions (SceneGraphParentTest V/6b: `geometry none` above `geometry gv`
+	// must INSERT, because the object it describes is an ordinary leaf); refusing the shape here makes
+	// the accepting half of that gate unreachable.  The defect is caught where it actually bites
+	// instead: Job::ApplyCstParamEditImpl_ refuses to EDIT such a param (it could only address the dead
+	// occurrence), and CstIntrospection surfaces the row read-only, saying so.
 
 	// Round-3 message precision: `none` is the scene language's RESERVED unbind sentinel --
 	// InitializeContainers pre-registers a "none" null entry in the material + painter managers

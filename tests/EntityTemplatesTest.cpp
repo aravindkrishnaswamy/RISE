@@ -46,6 +46,8 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IGeometryManager.h"
+#include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IScalarPainterManager.h"
@@ -428,6 +430,148 @@ namespace
 		pJob->release();
 		std::remove( tmp.c_str() );
 	}
+
+	//------------------------------------------------------------------
+	// T6: a DUPLICATED non-repeatable param -- the panel must agree with
+	//     the renderer about which occurrence is live, and must not offer
+	//     an edit that would rewrite the dead one.
+	//
+	//     Nothing in the stack refuses `color 1 0 0` followed by
+	//     `color 0 0 1`: ParseStateBag::SetSingle is an unconditional
+	//     overwrite, so the scene derives from the LAST occurrence.  The
+	//     panel used to read the FIRST (CstIntrospection's own
+	//     ReadFirstParamValue), so it displayed a value the renderer had
+	//     never used -- and because its edit route addresses occurrence 0
+	//     too, editing the displayed row rewrote the invisible line and
+	//     the panel appeared not to change.  Both halves are asserted
+	//     here; they only agree if both were fixed.
+	//------------------------------------------------------------------
+	const char* const kDupParamScene =
+		"RISE ASCII SCENE 7\n"
+		"standard_shader\n{\nname global\nshaderop DefaultPathTracing\n}\n\n"
+		"pathtracing_pel_rasterizer\n{\nsamples 8\npixel_filter box\noidn_denoise false\n}\n\n"
+		"film\n{\nwidth 24\nheight 24\n}\n\n"
+		"pinhole_camera\n{\nlocation 0 0 3.5\nlookat 0 0 0\nup 0 1 0\nfov 40.0\n}\n\n"
+		// The duplicated param under test: `color` is NOT repeatable.
+		"uniformcolor_painter\n{\nname pnt_dup\ncolor 1 0 0\ncolor 0 0 1\n}\n\n"
+		// Control: same chunk type, single occurrence -- must stay editable.
+		"uniformcolor_painter\n{\nname pnt_clean\ncolor 0.5 0.5 0.5\n}\n\n"
+		"lambertian_material\n{\nname mat_dup\nreflectance pnt_dup\n}\n\n"
+		"sphere_geometry\n{\nname geo_first\nradius 0.25\n}\n\n"
+		"sphere_geometry\n{\nname geo_last\nradius 0.9\n}\n\n"
+		// The reported repro shape, on the binding side.
+		"standard_object\n{\nname obj_dup\ngeometry geo_first\ngeometry geo_last\nmaterial mat_dup\n}\n";
+
+	// Copy the row named `which` into `out`; false when the row is absent.
+	bool FindRow( const std::vector<CameraProperty>& rows, const char* which, CameraProperty& out )
+	{
+		for( const CameraProperty& r : rows )
+			if( std::string( r.name.c_str() ) == which ) { out = r; return true; }
+		return false;
+	}
+
+	void TestDuplicateNonRepeatableParam()
+	{
+		std::printf( "T6: duplicated non-repeatable param -- panel agrees with the derive, edit refused...\n" );
+		const std::string tmp = TempPath( "entitytemplates_t6.RISEscene" );
+		Job* pJob = LoadScene( kDupParamScene, tmp );
+		Check( pJob != nullptr, "T6 fixture loads (a duplicated non-repeatable param is ACCEPTED, not refused)" );
+		if( !pJob ) return;
+
+		// (a) GROUND TRUTH, read from the live scene rather than from any
+		//     introspection code: the object bound the LAST `geometry`.
+		{
+			IScenePriv* scene = pJob->GetScene();
+			Check( scene != nullptr, "T6 scene present" );
+			const IObject* obj = scene && scene->GetObjects()
+				? const_cast<IObjectManager*>( scene->GetObjects() )->GetItem( "obj_dup" ) : nullptr;
+			Check( obj != nullptr, "obj_dup derived" );
+			const IGeometryManager* geos = pJob->GetGeometries();
+			const IGeometry* wantLast  = geos ? const_cast<IGeometryManager*>( geos )->GetItem( "geo_last" )  : nullptr;
+			const IGeometry* wantFirst = geos ? const_cast<IGeometryManager*>( geos )->GetItem( "geo_first" ) : nullptr;
+			Check( obj && wantLast && obj->GetGeometry() == wantLast,
+				"the LIVE object binds the LAST `geometry` occurrence (geo_last)" );
+			Check( obj && wantFirst && obj->GetGeometry() != wantFirst,
+				"the first `geometry` occurrence is dead text, not the binding" );
+		}
+
+		// (b) THE READ HALF: the panel row shows the occurrence the scene
+		//     derived from -- the LAST -- not the first.
+		std::vector<CameraProperty> dupRows =
+			CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_dup" ), "painter", "Painter chunk keyword" );
+		CameraProperty dupColor;
+		Check( FindRow( dupRows, "color", dupColor ), "a `color` row is surfaced for the duplicated painter" );
+		Check( std::string( dupColor.value.c_str() ) == "0 0 1",
+			"the `color` row shows the LAST occurrence, matching the derive (got `"
+				+ std::string( dupColor.value.c_str() ) + "`, want `0 0 1`)" );
+
+		// (c) THE WRITE HALF: the row is not offered as editable, because
+		//     the occ=0 edit route underneath cannot address the occurrence
+		//     the row displays.
+		Check( !dupColor.editable, "the duplicated `color` row is READ-ONLY (an occ=0 edit could not reach the live occurrence)" );
+		Check( std::string( dupColor.description.c_str() ).find( "READ-ONLY" ) != std::string::npos,
+			"the read-only row explains itself (description names the duplication)" );
+
+		// (d) ...and the refusal is enforced at the mutation boundary too,
+		//     not merely hidden in the panel: the write is rejected and the
+		//     live value is untouched.
+		SceneEditController ctrl( *pJob, nullptr );
+		Check( ctrl.SetSelection( Category::Painter, String( "pnt_dup" ) ), "SetSelection(Painter, pnt_dup) succeeds" );
+		Check( !ctrl.SetProperty( String( "color" ), String( "0 1 0" ) ),
+			"SetProperty on the duplicated param is REFUSED (not a silent no-op reported as success)" );
+		{
+			const std::vector<CameraProperty> after =
+				CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_dup" ), "painter", "Painter chunk keyword" );
+			CameraProperty row;
+			Check( FindRow( after, "color", row ) && std::string( row.value.c_str() ) == "0 0 1",
+				"the refused edit left the value unchanged" );
+		}
+		Check( pJob->ApplyCstParamEdit( "obj_dup", "standard_object", "geometry", 0, "geo_first" ) == 0,
+			"the Job-level edit path refuses the duplicated `geometry` too (every route, not just the panel)" );
+
+		// (d2) The insert gate deliberately does NOT refuse this shape -- see
+		//      Job::ApplyCstInsertChunk's comment and SceneGraphParentTest V/6b,
+		//      which requires a duplicated `geometry` to insert so the
+		//      container-vs-leaf gate can be proven last-wins in the ACCEPTING
+		//      direction.  Pinned here so a future "refuse it at the door"
+		//      attempt fails in BOTH files rather than silently making that
+		//      sibling coverage unreachable.
+		{
+			char kw[64] = {0}, nm[64] = {0}, diag[256] = {0};
+			int at = -1;
+			const int rc = pJob->ApplyCstInsertChunk(
+				"uniformcolor_painter\n{\nname pnt_new_dup\ncolor 1 1 0\ncolor 0 1 1\n}\n",
+				kw, sizeof( kw ), nm, sizeof( nm ), diag, sizeof( diag ), &at );
+			Check( rc > 0, "a chunk with a duplicated non-repeatable param still INSERTS (the gate is on the EDIT, not the insert)" );
+			const std::vector<CameraProperty> newRows =
+				CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_new_dup" ), "painter", "Painter chunk keyword" );
+			CameraProperty newColor;
+			Check( FindRow( newRows, "color", newColor ) && std::string( newColor.value.c_str() ) == "0 1 1",
+				"...and the panel reads its LAST occurrence immediately, without an edit first" );
+			Check( !newColor.editable, "...and surfaces it read-only, so the defect is visible where it bites" );
+		}
+
+		// (e) CONTROL: an identical chunk WITHOUT the duplicate is
+		//     unaffected -- read, editability, and the edit itself.
+		std::vector<CameraProperty> cleanRows =
+			CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_clean" ), "painter", "Painter chunk keyword" );
+		CameraProperty cleanColor;
+		Check( FindRow( cleanRows, "color", cleanColor ), "a `color` row is surfaced for the clean painter" );
+		Check( std::string( cleanColor.value.c_str() ) == "0.5 0.5 0.5", "the clean painter reads its single occurrence" );
+		Check( cleanColor.editable, "the clean `color` row stays EDITABLE (the refusal is scoped to the duplicate)" );
+		Check( ctrl.SetSelection( Category::Painter, String( "pnt_clean" ) ), "SetSelection(Painter, pnt_clean) succeeds" );
+		Check( ctrl.SetProperty( String( "color" ), String( "0.25 0.25 0.25" ) ), "SetProperty on the clean painter still applies" );
+		{
+			const std::vector<CameraProperty> after =
+				CstIntrospection::Inspect( pJob->GetCstDocument(), *pJob, String( "pnt_clean" ), "painter", "Painter chunk keyword" );
+			CameraProperty row;
+			Check( FindRow( after, "color", row ) && std::string( row.value.c_str() ) == "0.25 0.25 0.25",
+				"the clean painter's edit round-trips through the panel read" );
+		}
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
 }   // anonymous namespace
 
 int main()
@@ -439,6 +583,7 @@ int main()
 	TestRemoveReferencedRefusal();
 	TestPainterEnumerationAndEdit();
 	TestDerivedNameCollisionDedup();
+	TestDuplicateNonRepeatableParam();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

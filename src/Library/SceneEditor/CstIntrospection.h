@@ -11,10 +11,21 @@
 //    parser validates against -- single source of truth), and emit one
 //    typed CameraProperty row per declared parameter with the CURRENT
 //    text value read from the chunk (or the descriptor's
-//    defaultValueHint when the scene omitted it).  Every row is
+//    defaultValueHint when the scene omitted it).  "Current" means what
+//    the PARSER reads -- the LAST occurrence (Cst::ParamValueAsParsed) --
+//    so a row cannot disagree with the live scene it describes.  Rows are
 //    editable -- edits route through SceneEditController::
 //    ApplyAgentParamEdit (the generic, undoable, re-deriving CST
 //    param-edit path), so no per-family setter surface is needed.
+//
+//    ONE exception to "editable": a chunk that spells a NON-repeatable
+//    param more than once.  Nothing in the stack refuses that shape and
+//    the derive takes the LAST occurrence, but the edit route addresses
+//    occurrence 0 -- which is then dead text.  Such a write is refused at
+//    the boundary (Job::ApplyCstParamEditImpl_), so the row is surfaced
+//    READ-ONLY with a description naming the duplication, rather than
+//    offering an edit that would rewrite an invisible line and appear to
+//    do nothing.
 //
 //    Two enrichments over the painter original:
 //      1. Reference rows (ValueKind::Reference) carry the descriptor's

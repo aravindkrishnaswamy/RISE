@@ -4950,37 +4950,15 @@ std::string TrimAsciiSpace_( const std::string& s )
 }  // namespace
 
 namespace {
-// 87: the value the PARSER will see for `pname` on this chunk -- the LAST
-// occurrence, not the first.  ParseStateBag::SetSingle is an unconditional
-// `mSingles[key] = value` for every non-repeatable param, and Cst::ParamValue
-// documents the same rule ("On a repeated param, LAST occurrence wins"); no
-// layer refuses a duplicated non-repeatable param.  AgentReadFirstParamValue
-// answers a DIFFERENT question -- "which occurrence does an occ=0 edit
-// address" -- and using it to predict the parse is a two-line bypass:
-// `material none` followed by `material mv` reads as a clear and derives as a
-// bind.  It also refuses legitimate text in the other order.
-std::string ReadParamValueAsParsed_( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
-{
-	if( outPresent ) *outPresent = false;
-	std::string last;
-	bool seen = false;
-	for( const auto& kid : chunk ? chunk->kids : std::vector<RISE::Cst::NodeRef>() )
-	{
-		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-		std::string nm, val;
-		bool inVal = false;
-		for( const auto& tk : kid->kids )
-		{
-			if( !tk ) continue;
-			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pname" && nm.empty() ) { nm = tk->text; continue; }
-			if( !inVal && tk->kind == RISE::Cst::NodeKind::Token && tk->role == "pvalue" ) inVal = true;
-			if( inVal ) val += tk->text;
-		}
-		if( nm == pname ) { last = val; seen = true; }
-	}
-	if( outPresent ) *outPresent = seen;
-	return last;
-}
+// 87: the value the PARSER will see for `pname` on a chunk -- the LAST occurrence,
+// not the first -- is Cst::ParamValueAsParsed, which this file used to carry its own
+// copy of.  Exported (2026-08-16) so the properties panel could stop reading occurrence
+// 0 and start agreeing with the renderer; the copy is gone rather than kept in sync.
+// The distinction it turns on still matters here: AgentReadFirstParamValue above
+// answers a DIFFERENT question -- "which occurrence does an occ=0 edit address" -- and
+// using it to predict the parse is a two-line bypass (`material none` followed by
+// `material mv` reads as a clear and derives as a bind), so the two must not be
+// swapped for each other.
 
 // 87: does this candidate INSERT text declare a CONTAINER `standard_object`
 // (no `geometry`, or `geometry none`) that ALSO names a surface binding?
@@ -5006,7 +4984,7 @@ std::string ContainerBindingInChunkText_( const String& chunkText )
 	if( !chunk || chunk->role != "standard_object" ) return std::string();
 
 	bool present = false;
-	const std::string geom = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, "geometry", &present ) );
+	const std::string geom = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present ) );
 	const bool isContainer = !present || geom.empty() || geom == "none";
 	if( !isContainer ) return std::string();
 
@@ -5019,7 +4997,7 @@ std::string ContainerBindingInChunkText_( const String& chunkText )
 		const String pname( kid->role.c_str() );
 		if( !RISE::IsObjectSurfaceBindingParamName( pname ) ) continue;
 		bool bound = false;
-		const std::string v = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, kid->role.c_str(), &bound ) );
+		const std::string v = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, kid->role, &bound ) );
 		if( bound && !v.empty() && v != "none" ) return kid->role;
 	}
 	return std::string();
@@ -5052,7 +5030,7 @@ bool SceneEditController::AgentTargetIsContainerObject_( const String& entityNam
 	// derive would drop the binding with a warning, which is exactly the state
 	// this gate exists to prevent.
 	bool present = false;
-	const std::string geom = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, "geometry", &present ) );
+	const std::string geom = TrimAsciiSpace_( RISE::Cst::ParamValueAsParsed( chunk, "geometry", &present ) );
 	if( !present ) return true;
 	return geom.empty() || geom == "none";
 }
@@ -13482,8 +13460,14 @@ bool SceneEditController::GetEnvironment( EnvironmentInfo& out ) const
 				RISE::Cst::DocFindByNameAnyRole( *doc, mapName, nullptr, "painter", false );
 			if( pid != 0 ) {
 				const RISE::Cst::NodeRef pchunk = RISE::Cst::DocResolveNodeId( *doc, pid );
+				// LAST occurrence: this is a DISPLAY read -- "which file is the
+				// live environment actually using" -- not the agent's occ=0
+				// capture/restore convention, so it asks the parse's question.
+				// (The occ=0 readers a few thousand lines up are deliberate and
+				// stay; see Cst::ParamValueAsParsed's doc for why the two are
+				// not interchangeable.)
 				bool present = false;
-				const std::string f = AgentReadFirstParamValue( pchunk, "file", &present );
+				const std::string f = RISE::Cst::ParamValueAsParsed( pchunk, "file", &present );
 				if( present ) out.file = String( f.c_str() );
 			}
 		}

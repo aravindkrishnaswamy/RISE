@@ -3134,6 +3134,34 @@ bool DocByteRangeOfParam( const Document& doc, NodeId chunkId, const std::string
 	return false;   // no `occ`-th `role` param in this chunk
 }
 
+// The PUBLIC last-wins param read (see the header doc for why last, and for why it
+// is NOT interchangeable with an occurrence-0 read).  A thin export of the file-
+// local ParamValue/ParamNodeValue pair the derive itself reads through -- deliberately
+// delegating rather than re-walking the kids, so a reader outside this TU cannot drift
+// from the semantics the parse actually has.  Before the export there were three
+// hand-rolled copies of this kid-walk outside this TU and they did NOT agree: two
+// returned the FIRST occurrence, one the LAST.  One of the first-occurrence readers
+// was the properties panel, which is how the panel came to display a value the
+// renderer had never used.  (The surviving first-occurrence reader,
+// SceneEditController's AgentReadFirstParamValue, is deliberate -- it answers "which
+// occurrence does an occ=0 edit address", not "what does the parse see".)
+std::string ParamValueAsParsed( const NodeRef& chunk, const std::string& role, bool* outPresent )
+{
+	std::string v;
+	const bool found = ParamValue( chunk.get(), role, v );
+	if( outPresent ) *outPresent = found;
+	return found ? v : std::string();
+}
+
+int ParamOccurrenceCount( const NodeRef& chunk, const std::string& role )
+{
+	if( !chunk ) return 0;
+	int n = 0;
+	for( const NodeRef& k : chunk->kids )
+		if( k && k->kind == NodeKind::Param && k->role == role ) ++n;
+	return n;
+}
+
 Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits, std::vector<NodeId>* invalidated )
 {
 	if( visits ) *visits = 0;
