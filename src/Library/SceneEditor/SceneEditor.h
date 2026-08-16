@@ -46,6 +46,13 @@ namespace RISE
 	class IObjectPriv;
 	class IJob;
 
+	//! 87: does `param` name a `standard_object` surface binding that a
+	//! CONTAINER node (a pure transform with no geometry) cannot carry?
+	//! Defined ONCE, in SceneEditor.cpp, and shared with
+	//! SceneEditController's agent-commit gate -- two copies of the list is
+	//! how the next binding param ends up gated on one path and not the other.
+	bool IsObjectSurfaceBindingParamName( const String& param );
+
 	class SceneEditor
 	{
 	public:

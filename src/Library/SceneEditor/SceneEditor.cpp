@@ -621,6 +621,24 @@ IObjectPriv* SceneEditor::FindObject( const String& name ) const
 	return obj;
 }
 
+//! 87: the ONE definition of "which standard_object params are surface
+//! bindings a container cannot carry".  Exactly what the derive drops on a
+//! container -- Job.cpp's DropContainerSurfaceBindings_ (material / modifier /
+//! shader / radiance_map) plus the `interior_medium` the standard_object
+//! parser skips separately.  Shared with SceneEditController's agent-commit
+//! gate deliberately: two copies of this list is how the next binding param
+//! ends up gated on one path and not the other.
+namespace RISE {
+bool IsObjectSurfaceBindingParamName( const String& param )
+{
+	static const char* kBindings[] = { "material", "modifier", "shader", "radiance_map", "interior_medium" };
+	for( size_t i = 0; i < sizeof( kBindings ) / sizeof( kBindings[0] ); ++i ) {
+		if( param == String( kBindings[i] ) ) return true;
+	}
+	return false;
+}
+}  // namespace RISE
+
 namespace {
 
 // Trim surrounding whitespace + parse the common bool spellings the
@@ -864,6 +882,32 @@ bool IsContainerNodeForEdit_( const IObjectPriv& obj )
 	if( obj.GetGeometry() ) return false;
 	return dynamic_cast<const Implementation::CSGObject*>( &obj ) == 0;
 }
+
+//! 87: would writing `value` into `param` on the entity named `name` BIND a
+//! surface binding onto a CONTAINER node?  The agent-param Undo and Redo arms
+//! replay a captured value through the raw CST route, which has no gate of its
+//! own -- so undoing an ALLOWED clear (`material none` on a container, which
+//! the forward gate deliberately permits) would otherwise write the prior
+//! binding straight back onto it.  The forward direction refusing while the
+//! inverse does not is worse than neither gating: it makes the pair
+//! inconsistent.
+//!
+//! `kind` narrows the lookup the same way the agent path does.  A non-empty
+//! kind that is not `standard_object` is never an object, so it is skipped --
+//! otherwise a shaderop and an object sharing a name would let a legitimate
+//! `shader` edit on the shaderop be refused because the OBJECT of that name is
+//! a container.  An EMPTY kind that resolves ambiguously is rejected by the
+//! Document lookup downstream anyway.
+static bool AgentParamWouldBindOnContainer_(
+	const IObjectPriv* obj, const String& kind, const String& param, const String& value )
+{
+	if( !obj ) return false;
+	if( kind.size() > 1 && kind != String( "standard_object" ) ) return false;
+	if( !RISE::IsObjectSurfaceBindingParamName( param ) ) return false;
+	if( value.size() <= 1 || value == String( "none" ) ) return false;   // a CLEAR is always allowed
+	return IsContainerNodeForEdit_( *obj );
+}
+
 
 //! Apply a WORLD-space operation `worldOp` to an object whose transform stack
 //! is LOCAL.  Conjugating by the parent world transform,
@@ -3116,6 +3160,17 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// the GUI's ungated fast path here (Model-B F5's agent chunk-CRUD verbs can mutate the Document between
 		// this edit's original Apply and this Undo without leaving an mHistory record to invalidate).
 		if( !mJob ) return false;
+		// 87: the inverse of a permitted CLEAR is a BIND.  Refuse it on a
+		// container, exactly as the forward agent gate does -- see
+		// AgentParamWouldBindOnContainer_.
+		if( AgentParamWouldBindOnContainer_( FindObject( edit.objectName ), edit.cstEntityKind,
+		                                     edit.propertyName, edit.prevPropertyValue ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor:: cannot restore `%s %s` onto `%s` -- it is a container node (no geometry), "
+				"so it takes no surface binding; the undo is PARTIAL",
+				edit.propertyName.c_str(), edit.prevPropertyValue.c_str(), edit.objectName.c_str() );
+			return false;
+		}
 		const char* kind = edit.cstEntityKind.size() > 1 ? edit.cstEntityKind.c_str() : nullptr;
 		bool diagnosed = false;
 		// P1-2 fix (round 1): occ=0 -- the agent path's fixed occ convention (ApplyAgentParamEdit always
@@ -3531,6 +3586,19 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// that helper's doc for why an agent-originated edit cannot safely
 		// share the GUI property panel's ungated fast path here.
 		if( !mJob ) return false;
+		// 87: same gate as the Undo arm and the forward agent commit.  A Redo
+		// replays the FORWARD value, which the forward gate already vetted --
+		// but the object can have BECOME a container in between (an agent
+		// `geometry none` edit, or a GUI geometry removal), so the vetting does
+		// not carry over.
+		if( AgentParamWouldBindOnContainer_( FindObject( edit.objectName ), edit.cstEntityKind,
+		                                     edit.propertyName, edit.propertyValue ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor:: cannot re-apply `%s %s` onto `%s` -- it is now a container node (no geometry), "
+				"so it takes no surface binding; the redo is REFUSED",
+				edit.propertyName.c_str(), edit.propertyValue.c_str(), edit.objectName.c_str() );
+			return false;
+		}
 		{
 			bool diagnosed = false;
 			if( !RouteCstParamEditChecked_( edit.objectName.c_str(),

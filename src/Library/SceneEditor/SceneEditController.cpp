@@ -4936,6 +4936,59 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 // other role (a `csg_object` has no `geometry` param either, and is NOT a
 // container), or no retained Document all answer FALSE, leaving the edit to the
 // checks that already exist.
+namespace {
+// AgentReadFirstParamValue concatenates the value TOKENS verbatim, so a value
+// can arrive with the separating / trailing trivia attached.  Compare on the
+// bare word.
+std::string TrimAsciiSpace_( const std::string& s )
+{
+	size_t b = 0, e = s.size();
+	while( b < e && ( s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n' ) ) ++b;
+	while( e > b && ( s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n' ) ) --e;
+	return s.substr( b, e - b );
+}
+}  // namespace
+
+namespace {
+// 87: does this candidate INSERT text declare a CONTAINER `standard_object`
+// (no `geometry`, or `geometry none`) that ALSO names a surface binding?
+// Returns the offending param's name, or empty for "fine".
+//
+// Parsed into a throwaway Document exactly as Job::ApplyCstInsertChunk will
+// parse it, so the two agree on what the text says.  Anything that does not
+// parse to a single `standard_object` chunk answers "fine" and is left to the
+// refusals ApplyCstInsertChunk already has.
+std::string ContainerBindingInChunkText_( const String& chunkText )
+{
+	if( chunkText.size() <= 1 ) return std::string();
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( std::string( chunkText.c_str() ) );
+	const int nItems = RISE::Cst::DocItemCount( doc );
+	RISE::Cst::NodeRef chunk;
+	for( int i = 0; i < nItems; ++i ) {
+		const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+		if( it && it->kind == RISE::Cst::NodeKind::Chunk ) {
+			if( chunk ) return std::string();   // more than one chunk -- ApplyCstInsertChunk refuses it anyway
+			chunk = it;
+		}
+	}
+	if( !chunk || chunk->role != "standard_object" ) return std::string();
+
+	bool present = false;
+	const std::string geom = TrimAsciiSpace_( AgentReadFirstParamValue( chunk, "geometry", &present ) );
+	const bool isContainer = !present || geom.empty() || geom == "none";
+	if( !isContainer ) return std::string();
+
+	static const char* kBindings[] = { "material", "modifier", "shader", "radiance_map", "interior_medium" };
+	for( size_t i = 0; i < sizeof( kBindings ) / sizeof( kBindings[0] ); ++i ) {
+		bool bound = false;
+		const std::string v = TrimAsciiSpace_( AgentReadFirstParamValue( chunk, kBindings[i], &bound ) );
+		if( bound && !v.empty() && v != "none" ) return std::string( kBindings[i] );
+	}
+	return std::string();
+}
+}  // namespace
+
+
 bool SceneEditController::AgentTargetIsContainerObject_( const String& entityName, const String& entityKind )
 {
 	const RISE::Cst::Document* doc = mJob.GetCstDocument();
@@ -4951,23 +5004,21 @@ bool SceneEditController::AgentTargetIsContainerObject_( const String& entityNam
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
 	if( !chunk ) return false;
 	if( chunk->role != "standard_object" ) return false;
+	// "No geometry" means NOT RESOLVABLE, not merely absent.  `geometry none`
+	// is a first-class spelling of the same thing -- the standard_object parser
+	// treats it as a container (`geometry.empty() || geometry == "none"`), the
+	// derive's IsContainerGeometryRef_ agrees, and Cst skips `none` as a
+	// reference edge so such a document derives clean.  Testing only for
+	// PRESENCE would let `geometry none` past this gate while every other layer
+	// still calls it a container -- the agent would be told `applied` and the
+	// derive would drop the binding with a warning, which is exactly the state
+	// this gate exists to prevent.
 	bool present = false;
-	(void)AgentReadFirstParamValue( chunk, "geometry", &present );
-	return !present;
+	const std::string geom = TrimAsciiSpace_( AgentReadFirstParamValue( chunk, "geometry", &present ) );
+	if( !present ) return true;
+	return geom.empty() || geom == "none";
 }
 
-// 87: does `param` name one of the surface bindings a container cannot carry?
-// The list is exactly what the derive drops on a container -- Job.cpp's
-// DropContainerSurfaceBindings_ (material / modifier / shader / radiance_map)
-// plus the `interior_medium` the standard_object parser skips separately.
-bool SceneEditController::IsObjectSurfaceBindingParam_( const String& param )
-{
-	static const char* kBindings[] = { "material", "modifier", "shader", "radiance_map", "interior_medium" };
-	for( size_t i = 0; i < sizeof( kBindings ) / sizeof( kBindings[0] ); ++i ) {
-		if( param == String( kBindings[i] ) ) return true;
-	}
-	return false;
-}
 
 // Shared-undo U2: capture the exact bytes + top-level index of the chunk `ApplyAgentRemoveChunk` is about to
 // erase -- BEFORE the coming `Job::ApplyCstRemoveChunk` call mutates the Document.  Resolution mirrors Job's
@@ -5153,7 +5204,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 	// stays ALLOWED -- an object that BECAME a container must still be
 	// tidyable, and refusing the clear would refuse the one edit that removes
 	// the line the derive warns about.
-	if( IsObjectSurfaceBindingParam_( param )
+	if( IsObjectSurfaceBindingParamName( param )
 	 && value != String( "none" )
 	 && AgentTargetIsContainerObject_( entityName, entityKind ) )
 	{
@@ -7603,6 +7654,38 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentChunkCrud_
 			std::snprintf( buf, sizeof( buf ),
 				"baseHeadVersion does not match the current head (revision %llu) -- re-read and re-propose",
 				static_cast<unsigned long long>( cur.revision ) );
+			r.message = String( buf );
+			return r;
+		}
+	}
+
+	// 87: an INSERT is the most likely way an agent produces a container that
+	// names a surface binding -- writing a whole `standard_object` chunk is one
+	// call, and the param-edit gate can never see it.  The derive would resolve
+	// the binding, DROP it with a log warning, and still report success, so the
+	// agent would be told `applied` while the Document permanently carries a
+	// param that can never take effect.  Refuse it here, where there is a
+	// message to hand back.
+	//
+	// SCOPE, stated honestly: this covers `insert_chunk`.  A whole-document
+	// replace can still introduce the same shape, and is left alone
+	// deliberately -- that path is equivalent to loading a scene file, where
+	// warn-and-drop is the established contract for every file ever authored.
+	if( isInsert )
+	{
+		const std::string offending = ContainerBindingInChunkText_( a );
+		if( !offending.empty() )
+		{
+			r.applied = false;
+			r.rawCode = 0;
+			r.status  = String( "rejected" );
+			r.headVersion = mJob.GetCstHeadVersion();
+			char buf[320];
+			std::snprintf( buf, sizeof( buf ),
+				"the chunk names no `geometry`, so it is a container node -- a pure transform with no surface -- "
+				"and a container takes no `%s`.  Either give it a `geometry`, or drop the binding and put it on a "
+				"child object that has one.",
+				offending.c_str() );
 			r.message = String( buf );
 			return r;
 		}

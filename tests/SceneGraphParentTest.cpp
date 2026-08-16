@@ -55,7 +55,11 @@
 //         one the non-CST hosts and the console command bind through.
 //    V -- and on the AGENT commit path, which is where the derive's
 //         drop-with-a-warning is invisible (a warning is not a diagnostic, so
-//         the derivability gate passes and the agent is told `applied`).
+//         the derivability gate passes and the agent is told `applied`) --
+//         including chunk INSERT, and including the UNDO of a permitted clear,
+//         whose inverse is a bind.
+//    W -- and the REDO twin, where the object BECAME a container between the
+//         original apply and the replay.
 //    U -- and on the UNDO path, above the CST routing (which returns, so a
 //         gate below it is dead on every retained-CST scene).
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
@@ -1645,6 +1649,10 @@ int main()
 			"lambertian_material\n{\nname mv2\nreflectance pv\n}\n"
 			"sphere_geometry\n{\nname gv\nradius 1\n}\n"
 			"standard_object\n{\nname hollow\nposition 0 2 0\nmaterial mv\n}\n"
+			// `geometry none` is the OTHER spelling of "container".  A gate that
+			// tested only for the PRESENCE of a `geometry` line would call this
+			// object a leaf while every other layer calls it a container.
+			"standard_object\n{\nname sentinel\ngeometry none\nposition 0 4 0\n}\n"
 			"standard_object\n{\nname solid\ngeometry gv\nparent hollow\n}\n"
 			"standard_object\n{\nname cutA\ngeometry gv\n}\n"
 			"standard_object\n{\nname cutB\ngeometry gv\nposition 0.5 0 0\n}\n"
@@ -1697,6 +1705,20 @@ int main()
 			}
 		}
 
+		// 1b. Same, on the `geometry none` spelling.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "sentinel" ), String( "standard_object" ),
+				String( "material" ), String( "mv2" ), /*baseVersionOrNull*/ 0 );
+			Check( !r.applied,
+			       "V: `geometry none` is a container too -- the BIND is refused there as well" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "sentinel" ), "material" ) != "mv2",
+				       "V: ... and wrote nothing" );
+			}
+		}
+
 		// 2. The SAME edit onto the LEAF child is accepted.  Without this the
 		//    case would pass against a gate that refuses every material edit.
 		{
@@ -1744,8 +1766,147 @@ int main()
 			}
 		}
 
+		// 5. THE INVERSE OF THAT PERMITTED CLEAR IS A BIND.  Undoing it replays
+		//    `material mv` through the raw CST route -- which has no gate of its
+		//    own -- so the forward direction refusing while the inverse does not
+		//    would put the binding straight back onto the container and report a
+		//    clean undo.  Worse than gating neither: the pair disagrees.
+		{
+			// SceneEditController::Undo() returns void, so -- as in case U --
+			// the DOCUMENT is the deciding observable, not a return value.
+			c.Undo();
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document survived the refused undo" );
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "hollow" ), "material" ) != "mv",
+				       "V: undoing the permitted clear did NOT put the binding back on the container -- "
+				       "the inverse of an allowed clear is a bind, and it is gated too" );
+			}
+		}
+
+		// 6. INSERTING a whole container chunk that names a binding is refused
+		//    too.  This is the entry point the param-edit gate can never see --
+		//    and writing a whole object chunk is the most likely way an agent
+		//    produces this shape in the first place.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentInsertChunk(
+				String( "standard_object\n{\nname ghost\nposition 0 8 0\nmaterial mv\n}\n" ),
+				/*baseVersionOrNull*/ 0 );
+			Check( !r.applied, "V: inserting a container chunk that names a material is refused" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) {
+				Check( ChunkOf( *d, "ghost" ).empty(),
+				       "V: ... and nothing was inserted" );
+			}
+		}
+		// The SAME chunk with a geometry is accepted -- the insert gate is about
+		// the container-ness, not about naming a material.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentInsertChunk(
+				String( "standard_object\n{\nname real\ngeometry gv\nposition 0 8 0\nmaterial mv\n}\n" ),
+				/*baseVersionOrNull*/ 0 );
+			Check( r.applied, "V: the same chunk WITH a geometry inserts fine" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "real" ), "material" ) == "mv",
+				       "V: ... carrying its material" );
+			}
+		}
+
 		j->release();
 		std::remove( sV );
+	}
+
+	// =================================================================
+	// W -- the REDO twin of V's step 5.
+	//
+	// A Redo replays the FORWARD value, which the forward gate already vetted
+	// -- so it is tempting to argue the vetting carries over.  It does not: the
+	// object can have BECOME a container between the original apply and the
+	// redo.  Reaching that state needs a mutation that pushes NO history record
+	// (anything that did would clear the redo stack), which is why this drives
+	// the Job's param-remove primitive directly, and owes the editor the same
+	// manual rebind case U does.
+	// =================================================================
+	{
+		const char* sW = "sg_parent_agent_redo.RISEscene";
+		WriteScene( sW,
+			"uniformcolor_painter\n{\nname pw\ncolor 0 0 1\n}\n"
+			"lambertian_material\n{\nname mw2\nreflectance pw\n}\n"
+			"sphere_geometry\n{\nname gw\nradius 1\n}\n"
+			"standard_object\n{\nname swap\ngeometry gw\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sW ), "W: scene loads" );
+		SceneEditController c( *j, 0 );
+
+		auto ChunkOf = []( const RISE::Cst::Document& d, const char* objName ) -> std::string {
+			const std::string text = RISE::Cst::SerializeCst( d );
+			const std::string key  = std::string( "name " ) + objName;
+			size_t at = text.find( key );
+			while( at != std::string::npos ) {
+				const size_t after = at + key.size();
+				if( after >= text.size() || text[after] == '\n' || text[after] == '\r' ) break;
+				at = text.find( key, after );
+			}
+			if( at == std::string::npos ) return std::string();
+			const size_t end = text.find( "\n}", at );
+			return text.substr( at, ( end == std::string::npos ? text.size() : end ) - at );
+		};
+		auto ParamValue = []( const std::string& chunk, const char* key ) -> std::string {
+			const std::string needle = std::string( "\n" ) + key + " ";
+			std::string out;
+			size_t p = chunk.find( needle );
+			while( p != std::string::npos ) {
+				const size_t vs = p + needle.size();
+				const size_t ve = chunk.find( '\n', vs );
+				out = chunk.substr( vs, ( ve == std::string::npos ? chunk.size() : ve ) - vs );
+				p = chunk.find( needle, vs );
+			}
+			return out;
+		};
+
+		// 1. Bind while it is a LEAF -- accepted, and it pushes a history record.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "swap" ), String( "standard_object" ),
+				String( "material" ), String( "mw2" ), /*baseVersionOrNull*/ 0 );
+			Check( r.applied, "W: the bind applies while the object is a leaf" );
+		}
+		// 2. Undo it, so there is something to redo.
+		c.Undo();
+		{
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) Check( ParamValue( ChunkOf( *d, "swap" ), "material" ) != "mw2",
+			               "W: (sanity) the undo removed the binding" );
+		}
+		// 3. Make it a container behind the editor's back -- no history record,
+		//    so the redo entry survives.  Then rebind, as production's own
+		//    RouteCstParamRemove_ does on a D2.
+		{
+			const int rc = j->ApplyCstParamRemoveChecked( "swap", "standard_object", "geometry", 0 );
+			Check( rc != 0, "W: the geometry removal is accepted" );
+			IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) );
+			if( jp ) {
+				if( IScenePriv* sc = jp->GetScene() ) c.Editor().RebindScene( *sc );
+				c.Editor().SetMaterialManager( jp->GetMaterials() );
+				c.Editor().SetShaderManager( jp->GetShaders() );
+				c.Editor().SetPainterManager( jp->GetPainters() );
+				c.Editor().SetScalarPainterManager( jp->GetScalarPainters() );
+			}
+			IObjectPriv* sw = Obj( *j, "swap" );
+			Check( sw && sw->GetGeometry() == 0, "W: the object is now a container" );
+		}
+		// 4. REDO -- refused, because the vetting the forward gate did no longer
+		//    describes the object.
+		c.Redo();
+		{
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "W: (sanity) the Document survived the refused redo" );
+			if( d ) Check( ParamValue( ChunkOf( *d, "swap" ), "material" ) != "mw2",
+			               "W: the redo did NOT re-apply the binding onto what is now a container" );
+		}
+		j->release();
+		std::remove( sW );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

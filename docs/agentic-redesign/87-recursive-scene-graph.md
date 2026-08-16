@@ -156,6 +156,22 @@ session-only element ledger — is replaced by real parent links.
 
 ### Known, accepted, NOT fixed by step 1
 
+- **An interactive edit rebases an ANIMATED parent's subtree, permanently for
+  the session.** `SceneEditor::RunObjectInvariantChain` calls
+  `ComposeWorldTransforms()`, which is global, not subtree-scoped. It reads
+  each parent's world matrix as it stands *at that instant* — the animated pose
+  when the user is parked at `t = T` — and stores it into every child's
+  `m_mxParentWorld`. Scrub back to `t = 0` and the subtree is displaced by
+  `parentWorld(T)·parentWorld(0)⁻¹`, and every later frame composes against `T`
+  as well. Live-session only: local matrices are untouched, nothing is
+  committed for the displaced descendants, and a reload restores the scene.
+  **This is step 2's absence showing through, and step 2 is its fix** — a
+  per-frame re-bake recomputes every child's parent world from the current
+  pose, so the stored value stops being a latch. There is no worthwhile partial
+  fix: "compose against the parent's pose right now" is what composition means,
+  and any narrower policy here would be replaced wholesale by step 2. Warned
+  about in `docs/SCENE_CONVENTIONS.md` §5 until then.
+
 - **A rank-deficient container silently widens an existing hazard to its
   whole subtree.** `Transformable::FinalizeTransformations` ends with
   `m_mxInvFinalTrans = Matrix4Ops::Inverse( m_mxFinalTrans )`, and

@@ -3494,9 +3494,6 @@ namespace RISE
 		//! retained Document.
 		bool AgentTargetIsContainerObject_( const String& entityName, const String& entityKind );
 
-		//! 87: does `param` name a surface binding a container cannot carry?
-		//! Exactly the set the derive drops on one.
-		static bool IsObjectSurfaceBindingParam_( const String& param );
 
 		//! Model-B F5 slice S2: the SHARED body of ApplyAgentInsertChunk /
 		//! ApplyAgentRemoveChunk -- the two verbs differ ONLY in which Job

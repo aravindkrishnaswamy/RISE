@@ -2026,11 +2026,21 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// 87 CAVEAT: an object chunk's Finalize now has a SECOND mutating step after
 	// AddObject/AddCSGObject -- SetObjectParent -- whose three semantic refusals
 	// (self-parent, cycle, CSG operand) the preflight does not model; it only
-	// checks that the parent NAME resolves.  No divergence is reachable today,
-	// because the same refusals also fail the D2 full-derive dry-run that this
-	// path falls back to.  It becomes reachable the moment something can change
-	// a `parent` value without going through a dry run -- a `set_parent` agent
-	// verb, or the tree UI's reparent (87 step 4).  Extend the preflight then.
+	// checks that the parent NAME resolves.
+	//
+	// No divergence is reachable today, but NOT because a dry run catches it:
+	// Job::DeriveEditedCstDocument_ dry-runs ONLY when requireFullDerivability
+	// is set, and Job::ApplyCstParamEdit -- the GUI panel / gizmo route -- passes
+	// FALSE, so its D2 fallback happens AFTER this incremental path has already
+	// mutated the live Job.  The actual reason is narrower: NOTHING CAN EDIT A
+	// `parent` VALUE THROUGH THIS PATH.  The panel's `parent` row is read-only
+	// (ObjectIntrospection's IsRuntimeEditable omits it), and the one writer --
+	// the agent -- goes through the GATED ApplyCstParamEditChecked.
+	//
+	// So it becomes reachable the moment a `parent` value can be changed on the
+	// UNGATED route: a `set_parent` agent verb wired to ApplyCstParamEdit, or
+	// the tree UI's reparent (87 step 4).  Extend the preflight then -- do not
+	// assume a dry run is standing behind you.
 	for( const ObjState& s : objStates ) {
 		if( s.clearMat )    s.obj->ClearMaterial();
 		if( s.clearMod )    s.obj->ClearModifier();

@@ -75,8 +75,18 @@ Object::~Object( )
 
 IObjectPriv* Object::CloneFull()
 {
-	Object* pClone = new Object( pGeometry );
+	// 87: same container handling as CloneSnapshot -- a container has no
+	// geometry, and Object(const IGeometry*) logs a source ERROR for a null
+	// one.  World visibility is copied rather than left at the ctor's `true`:
+	// a clone that came out VISIBLE with null geometry is the exact fingerprint
+	// ObjectManager::SetObjectParent reads as "CSG operand", so such a clone
+	// would be refused a parent with a diagnostic naming the wrong cause.
+	// (Both clone entry points are currently dead public surface -- no caller
+	// repo-wide -- but they are CloneSnapshot's siblings and the whole lesson
+	// of this arc is that the sibling is where the defect lives.)
+	Object* pClone = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "Clone" );
+	pClone->bIsWorldVisible = bIsWorldVisible;
 
 	if( pMaterial ) {
 		pClone->AssignMaterial( *pMaterial );
@@ -99,8 +109,10 @@ IObjectPriv* Object::CloneFull()
 
 IObjectPriv* Object::CloneGeometric()
 {
-	Object* pMe = new Object( pGeometry );
+	// 87: see CloneFull -- container ctor selection and world visibility.
+	Object* pMe = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pMe, __FILE__, __LINE__, "cloned object" );
+	pMe->bIsWorldVisible = bIsWorldVisible;
 	return pMe;
 }
 

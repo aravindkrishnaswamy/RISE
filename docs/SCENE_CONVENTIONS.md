@@ -459,6 +459,20 @@ standard_object
   re-bake that delivers hierarchical animation is
   [87](agentic-redesign/87-recursive-scene-graph.md) §5 step 2 and has not
   landed.)
+- **Do not animate a parent and interactively edit in the same session, until
+  step 2 lands.**  Those two statements interact, and the interaction is the
+  surprising part.  An interactive transform edit runs a GLOBAL re-compose,
+  which reads each parent's world matrix *as it is at that instant* — the
+  ANIMATED pose if you are parked at `t = T` — and stores it in every child.
+  Scrub back to `t = 0` and the subtree is displaced by
+  `parentWorld(T)·parentWorld(0)⁻¹`, and stays that way: the subtree's pose
+  becomes a function of when you happened to nudge something.  It is a LIVE
+  SESSION artifact only — the local transforms are untouched, nothing is
+  written to the document for the displaced children, and a reload restores
+  the scene.  The per-frame re-bake fixes it properly by recomputing every
+  child's parent world each frame; there is no partial fix worth having in the
+  meantime, because "compose against the parent's current pose" is exactly what
+  composition means.
 - A container takes **no surface bindings**.  A `material`, `modifier`,
   `shader` or `radiance_map` on a geometry-less object is ignored with a
   warning — a container has no surface, and an emissive material on one would
