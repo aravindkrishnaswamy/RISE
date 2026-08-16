@@ -9678,6 +9678,16 @@ bool Job::SetObjectPosition(
 
 	pObj->SetPosition( Point3( pos ) );
 	pObj->FinalizeTransformations();
+	// The node's OWN per-object runtime caches, dropped here rather than by the
+	// walk below: the walk resets a node only when it observes the world matrix
+	// CHANGE, and this node was already finalized on the line above, so the walk
+	// sees before == after and skips it -- while resetting every descendant it
+	// moves.  Without this, a moved object keeps world-space caches sampled at
+	// its old pose (SubSurfaceScatteringShaderOp's irradiance point sets are the
+	// concrete one) and its CHILDREN come out right while it does not.
+	// SceneEditor::RunObjectInvariantChain does the same for the edited node;
+	// these three setters are the API/embedding surface that has no editor.
+	pObj->ResetRuntimeData();
 	// 87 + the invariants every other transform path already maintains: a
 	// transform change moves this node's DESCENDANTS, changes world bounding
 	// boxes, and may move an emitter.  These are public IJob surface for the
@@ -9713,6 +9723,16 @@ bool Job::SetObjectOrientation(
 
 	pObj->SetOrientation( Vector3( orient ) );
 	pObj->FinalizeTransformations();
+	// The node's OWN per-object runtime caches, dropped here rather than by the
+	// walk below: the walk resets a node only when it observes the world matrix
+	// CHANGE, and this node was already finalized on the line above, so the walk
+	// sees before == after and skips it -- while resetting every descendant it
+	// moves.  Without this, a moved object keeps world-space caches sampled at
+	// its old pose (SubSurfaceScatteringShaderOp's irradiance point sets are the
+	// concrete one) and its CHILDREN come out right while it does not.
+	// SceneEditor::RunObjectInvariantChain does the same for the edited node;
+	// these three setters are the API/embedding surface that has no editor.
+	pObj->ResetRuntimeData();
 	// 87 + the invariants every other transform path already maintains: a
 	// transform change moves this node's DESCENDANTS, changes world bounding
 	// boxes, and may move an emitter.  These are public IJob surface for the
@@ -9748,6 +9768,16 @@ bool Job::SetObjectScale(
 
 	pObj->SetScale( scale );
 	pObj->FinalizeTransformations();
+	// The node's OWN per-object runtime caches, dropped here rather than by the
+	// walk below: the walk resets a node only when it observes the world matrix
+	// CHANGE, and this node was already finalized on the line above, so the walk
+	// sees before == after and skips it -- while resetting every descendant it
+	// moves.  Without this, a moved object keeps world-space caches sampled at
+	// its old pose (SubSurfaceScatteringShaderOp's irradiance point sets are the
+	// concrete one) and its CHILDREN come out right while it does not.
+	// SceneEditor::RunObjectInvariantChain does the same for the edited node;
+	// these three setters are the API/embedding surface that has no editor.
+	pObj->ResetRuntimeData();
 	// 87 + the invariants every other transform path already maintains: a
 	// transform change moves this node's DESCENDANTS, changes world bounding
 	// boxes, and may move an emitter.  These are public IJob surface for the

@@ -154,6 +154,29 @@ session-only element ledger — is replaced by real parent links.
   intervals) — it cannot be flattened away. Its operands SHOULD become
   visible as children in the UI tree.
 
+### Known, accepted, NOT fixed by step 1
+
+- **A rank-deficient container silently widens an existing hazard to its
+  whole subtree.** `Transformable::FinalizeTransformations` ends with
+  `m_mxInvFinalTrans = Matrix4Ops::Inverse( m_mxFinalTrans )`, and
+  `Matrix4Ops::Inverse` returns its INPUT UNCHANGED when `det == 0.0`
+  (`MatricesOps.h`). Author `scale 0 0 0` on a leaf and that leaf's
+  `IntersectRay` transforms world rays with a singular matrix instead of
+  an inverse — projecting the ray onto a plane or line — while its
+  bounding box transforms forward into a degenerate-but-finite box the
+  TLAS still admits, so it yields arbitrary hits rather than none. That
+  is PRE-EXISTING and unchanged. What hierarchy adds is reach: the same
+  authoring mistake on a CONTAINER (itself invisible, so it looks
+  harmless) makes `det == 0` for every descendant at once.
+  `m_worldAreaScale` correctly goes to zero, so light sampling stays
+  safe; the exposure is intersection only.
+  There IS an invertibility guard two dozen lines above, but it protects
+  `m_mxParentWorldInv` — the change-of-frame used to conjugate a
+  world-space gizmo op — and has no counterpart on the final inverse.
+  Giving it one would change render behaviour for every existing scene
+  that authors a degenerate `scale`, which is out of step 1's scope and
+  wants its own measured change.
+
 ## 5. Sequencing
 
 0. **Delete §3.** Its own commit, first.

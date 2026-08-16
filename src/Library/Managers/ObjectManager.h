@@ -162,6 +162,16 @@ namespace RISE
 			//! dangling link as a genuine anomaly worth a warning.
 			bool RemoveItem( const char* szName );
 
+			//! The authored graph dies with the objects.  RemoveItem retires
+			//! links one at a time; this is the same rule for the wholesale
+			//! clear, and it is the ONE manager-lifecycle hook RemoveItem's
+			//! retirement does not otherwise cover.  Unreachable as a bug
+			//! today -- the sole caller (Job::SetPrimaryAcceleration) releases
+			//! the manager on the next line -- but a future "clear the scene in
+			//! place" that reused the manager would otherwise resurrect stale
+			//! parenting the moment a removed name was re-added.
+			void Shutdown();
+
 			void PrepareForRendering() const;
 			void InvalidateSpatialStructure() const;
 			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }

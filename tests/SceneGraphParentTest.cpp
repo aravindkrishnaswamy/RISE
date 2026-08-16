@@ -53,6 +53,9 @@
 //    S -- `rect_light` / `shape_light` compose against a parent.
 //    T -- the container binding refusal holds at the IJob layer, which is the
 //         one the non-CST hosts and the console command bind through.
+//    V -- and on the AGENT commit path, which is where the derive's
+//         drop-with-a-warning is invisible (a warning is not a diagnostic, so
+//         the derivability gate passes and the agent is told `applied`).
 //    U -- and on the UNDO path, above the CST routing (which returns, so a
 //         gate below it is dead on every retained-CST scene).
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
@@ -1344,6 +1347,40 @@ int main()
 		Check( badEnum == 0, "R: every Enum parameter offers enumValues" );
 		Check( badRef  == 0, "R: every Reference parameter names referenceCategories" );
 		Check( dupName == 0, "R: no chunk declares the same parameter name twice" );
+
+		// The sweep above is a CORRUPTION check: it catches a `parent` entry
+		// that got mangled, not one that was never declared.  Deleting the
+		// declaration outright leaves every aggregate above green (the chunk
+		// simply has one parameter fewer), so name the four chunks that must
+		// carry it and assert the entry is present AND well-formed.  A missing
+		// declaration would also break cases A / I / P / S at scene-load time,
+		// but those report it as "the scene failed to parse", which is a long
+		// way from "someone deleted a descriptor entry".
+		{
+			const char* kParentChunks[] = { "standard_object", "csg_object", "rect_light", "shape_light" };
+			for( size_t n = 0; n < sizeof(kParentChunks)/sizeof(kParentChunks[0]); ++n ) {
+				const ParameterDescriptor* found = 0;
+				for( size_t e = 0; e < parsers.size() && !found; ++e ) {
+					if( !parsers[e].parser ) continue;
+					const ChunkDescriptor& d = parsers[e].parser->Describe();
+					if( d.keyword != kParentChunks[n] ) continue;
+					for( size_t k = 0; k < d.parameters.size(); ++k ) {
+						if( d.parameters[k].name == "parent" ) { found = &d.parameters[k]; break; }
+					}
+				}
+				const std::string who = std::string( "R: `" ) + kParentChunks[n] + "` declares a `parent` parameter";
+				Check( found != 0, who.c_str() );
+				if( found ) {
+					Check( found->kind == ValueKind::Reference,
+					       ( who + ", as an object Reference" ).c_str() );
+					Check( !found->referenceCategories.empty()
+					    && found->referenceCategories[0] == ChunkCategory::Object,
+					       ( who + ", resolving against the Object category" ).c_str() );
+					Check( !found->description.empty(),
+					       ( who + ", with a non-empty description" ).c_str() );
+				}
+			}
+		}
 	}
 
 	// =================================================================
@@ -1511,15 +1548,25 @@ int main()
 		// Read `morph`'s chunk out of the serialized Document, and the value of a
 		// named param within it.
 		//
-		// The param reader is deliberately line-exact rather than a substring
-		// probe.  The chunk text ends immediately BEFORE its closing brace, so
-		// its last param line carries no trailing newline -- the first draft of
-		// this case tested `chunk.find( "material m\n" )`, which therefore never
-		// matched, and the case passed with the revert gate deleted outright.
+		// BOTH readers are line-exact rather than substring probes, because a
+		// probe that silently never matches reads exactly like a passing
+		// assertion.  The chunk text ends immediately BEFORE its closing brace,
+		// so its last param line carries no trailing newline -- the first draft
+		// of this case tested `chunk.find( "material m\n" )`, which therefore
+		// never matched, and the case passed with the revert gate deleted
+		// outright.  The chunk locator has the same hazard one level up: a bare
+		// `find( "name morph" )` is a PREFIX match, so a document that also held
+		// an object named `morphology` would hand back the wrong chunk.  Require
+		// the name to end the line.
 		auto ChunkOf = []( const RISE::Cst::Document& d, const char* objName ) -> std::string {
 			const std::string text = RISE::Cst::SerializeCst( d );
 			const std::string key  = std::string( "name " ) + objName;
-			const size_t at = text.find( key );
+			size_t at = text.find( key );
+			while( at != std::string::npos ) {
+				const size_t after = at + key.size();
+				if( after >= text.size() || text[after] == '\n' || text[after] == '\r' ) break;
+				at = text.find( key, after );
+			}
 			if( at == std::string::npos ) return std::string();
 			const size_t end = text.find( "\n}", at );
 			return text.substr( at, ( end == std::string::npos ? text.size() : end ) - at );
@@ -1573,6 +1620,132 @@ int main()
 		}
 		j->release();
 		std::remove( sU2 );
+	}
+
+	// =================================================================
+	// V -- the container rule on the AGENT commit path.
+	//
+	// The fourth and last layer that can write a binding into the Document.
+	// It matters more than the count suggests: this is the path an agent
+	// actually edits through, and it is the one where the derive's "drop it
+	// with a warning and report success" is INVISIBLE -- a log warning is not
+	// a diagnostic, so the full-derivability gate passes, the head commits,
+	// and the agent is told `applied`.
+	//
+	// Three assertions, and the third is what stops the case being vacuous:
+	// a BIND on a container is refused, a CLEAR on a container is accepted,
+	// and a BIND on a LEAF is still accepted (so the gate is discriminating,
+	// not just refusing every material edit).
+	// =================================================================
+	{
+		const char* sV = "sg_parent_agent_bind.RISEscene";
+		WriteScene( sV,
+			"uniformcolor_painter\n{\nname pv\ncolor 0 1 0\n}\n"
+			"lambertian_material\n{\nname mv\nreflectance pv\n}\n"
+			"lambertian_material\n{\nname mv2\nreflectance pv\n}\n"
+			"sphere_geometry\n{\nname gv\nradius 1\n}\n"
+			"standard_object\n{\nname hollow\nposition 0 2 0\nmaterial mv\n}\n"
+			"standard_object\n{\nname solid\ngeometry gv\nparent hollow\n}\n"
+			"standard_object\n{\nname cutA\ngeometry gv\n}\n"
+			"standard_object\n{\nname cutB\ngeometry gv\nposition 0.5 0 0\n}\n"
+			"csg_object\n{\nname carved\nobja cutA\nobjb cutB\noperation subtraction\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sV ), "V: scene loads" );
+		SceneEditController c( *j, 0 );
+
+		auto ChunkOf = []( const RISE::Cst::Document& d, const char* objName ) -> std::string {
+			const std::string text = RISE::Cst::SerializeCst( d );
+			const std::string key  = std::string( "name " ) + objName;
+			size_t at = text.find( key );
+			while( at != std::string::npos ) {
+				const size_t after = at + key.size();
+				if( after >= text.size() || text[after] == '\n' || text[after] == '\r' ) break;
+				at = text.find( key, after );
+			}
+			if( at == std::string::npos ) return std::string();
+			const size_t end = text.find( "\n}", at );
+			return text.substr( at, ( end == std::string::npos ? text.size() : end ) - at );
+		};
+		auto ParamValue = []( const std::string& chunk, const char* key ) -> std::string {
+			const std::string needle = std::string( "\n" ) + key + " ";
+			std::string out;
+			size_t p = chunk.find( needle );
+			while( p != std::string::npos ) {
+				const size_t vs = p + needle.size();
+				const size_t ve = chunk.find( '\n', vs );
+				out = chunk.substr( vs, ( ve == std::string::npos ? chunk.size() : ve ) - vs );
+				p = chunk.find( needle, vs );
+			}
+			return out;
+		};
+
+		// 1. BIND onto the container -> refused, and the Document is untouched.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "hollow" ), String( "standard_object" ),
+				String( "material" ), String( "mv2" ), /*baseVersionOrNull*/ 0 );
+			Check( !r.applied, "V: the agent's BIND onto a container is refused" );
+			Check( r.status == String( "rejected" ),
+			       "V: ... reported as `rejected`, not silently applied" );
+			Check( std::string( r.message.c_str() ).find( "container" ) != std::string::npos,
+			       "V: ... with a message that names the cause" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "hollow" ), "material" ) != "mv2",
+				       "V: and the refused bind wrote nothing -- the container's chunk did not gain it" );
+			}
+		}
+
+		// 2. The SAME edit onto the LEAF child is accepted.  Without this the
+		//    case would pass against a gate that refuses every material edit.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "solid" ), String( "standard_object" ),
+				String( "material" ), String( "mv2" ), /*baseVersionOrNull*/ 0 );
+			Check( r.applied, "V: the same bind onto a LEAF object IS accepted" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "solid" ), "material" ) == "mv2",
+				       "V: ... and landed in the Document" );
+			}
+		}
+
+		// 3. A `csg_object` is NOT a container -- it takes its shape from its
+		//    operands, so it names no `geometry` either, and a container test
+		//    that keyed on "no geometry param" alone would refuse every
+		//    material edit on every composite in the scene.  The role check is
+		//    what separates them, and this is what holds it in place.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "carved" ), String( "csg_object" ),
+				String( "material" ), String( "mv2" ), /*baseVersionOrNull*/ 0 );
+			Check( r.applied,
+			       "V: a bind onto a `csg_object` IS accepted -- it names no `geometry`, but it is a "
+			       "composite shape, not a container" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "carved" ), "material" ) == "mv2",
+				       "V: ... and landed in the Document" );
+			}
+		}
+
+		// 4. A CLEAR on the container is accepted, so the stale `material mv`
+		//    the scene authored can actually be removed.
+		{
+			const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+				String( "hollow" ), String( "standard_object" ),
+				String( "material" ), String( "none" ), /*baseVersionOrNull*/ 0 );
+			Check( r.applied, "V: an explicit CLEAR on the container IS accepted" );
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			if( d ) {
+				Check( ParamValue( ChunkOf( *d, "hollow" ), "material" ) != "mv",
+				       "V: ... and the stale binding is gone from the Document" );
+			}
+		}
+
+		j->release();
+		std::remove( sV );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

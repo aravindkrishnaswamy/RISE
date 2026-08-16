@@ -4926,6 +4926,49 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 	return true;
 }
 
+// 87: is the agent's target a CONTAINER node -- a `standard_object` that names no
+// `geometry`?  Answered from the DOCUMENT rather than the live managers, because
+// the Document is what this path is about to mutate, and because it resolves the
+// SAME chunk the edit will: the resolution below is CaptureAgentPriorParamValue_'s
+// verbatim (including the gated camera-unique fallback), so the two cannot drift.
+//
+// Fails SAFE in every ambiguous direction: an unresolvable target, a chunk of any
+// other role (a `csg_object` has no `geometry` param either, and is NOT a
+// container), or no retained Document all answer FALSE, leaving the edit to the
+// checks that already exist.
+bool SceneEditController::AgentTargetIsContainerObject_( const String& entityName, const String& entityKind )
+{
+	const RISE::Cst::Document* doc = mJob.GetCstDocument();
+	if( !doc ) return false;
+	const std::string ekind( entityKind.size() > 1 ? entityKind.c_str() : "" );
+	const char* bareName = entityName.size() > 1 ? entityName.c_str() : "";
+	const bool uniqueFallback = ( ekind == "camera" )
+		? RISE::Cst::DocCameraUniqueFallbackPermitted( *doc, bareName, mJob.GetActiveCameraName() )
+		: ( entityName.size() <= 1 && !ekind.empty() );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+		*doc, bareName, nullptr, ekind, uniqueFallback );
+	if( id == 0 ) return false;
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return false;
+	if( chunk->role != "standard_object" ) return false;
+	bool present = false;
+	(void)AgentReadFirstParamValue( chunk, "geometry", &present );
+	return !present;
+}
+
+// 87: does `param` name one of the surface bindings a container cannot carry?
+// The list is exactly what the derive drops on a container -- Job.cpp's
+// DropContainerSurfaceBindings_ (material / modifier / shader / radiance_map)
+// plus the `interior_medium` the standard_object parser skips separately.
+bool SceneEditController::IsObjectSurfaceBindingParam_( const String& param )
+{
+	static const char* kBindings[] = { "material", "modifier", "shader", "radiance_map", "interior_medium" };
+	for( size_t i = 0; i < sizeof( kBindings ) / sizeof( kBindings[0] ); ++i ) {
+		if( param == String( kBindings[i] ) ) return true;
+	}
+	return false;
+}
+
 // Shared-undo U2: capture the exact bytes + top-level index of the chunk `ApplyAgentRemoveChunk` is about to
 // erase -- BEFORE the coming `Job::ApplyCstRemoveChunk` call mutates the Document.  Resolution mirrors Job's
 // own (DocFindByNameAnyRole with the SAME camera-unique-fallback rule), so the captured chunk is guaranteed to
@@ -5093,6 +5136,39 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentParamEditI
 			r.message = String( buf );
 			return r;   // lk unlocks; render thread was parked but no edit landed -- no kick needed
 		}
+	}
+
+	// 87: a CONTAINER node (a `standard_object` naming no `geometry`) is a pure
+	// transform with no surface, so it takes no surface binding.  The derive
+	// DROPS one with a log warning and still reports success -- a warning is not
+	// a diagnostic, so the full-derivability gate below passes and the edit
+	// commits.  The end state is the one the GUI paths refuse to create: the
+	// retained Document permanently carrying a param that can never take
+	// effect and re-warns on every load, with the agent told "applied".
+	//
+	// Refused here rather than at the Job primitive because this is where the
+	// agent gets a MESSAGE back; the GUI's twin lives in
+	// SceneEditor::ApplyForwardMutation, and the undo twin in
+	// ApplyRevertMutation.  A CLEAR ("none", the unbind sentinel on this route)
+	// stays ALLOWED -- an object that BECAME a container must still be
+	// tidyable, and refusing the clear would refuse the one edit that removes
+	// the line the derive warns about.
+	if( IsObjectSurfaceBindingParam_( param )
+	 && value != String( "none" )
+	 && AgentTargetIsContainerObject_( entityName, entityKind ) )
+	{
+		r.applied = false;
+		r.rawCode = 0;
+		r.status  = String( "rejected" );
+		r.headVersion = mJob.GetCstHeadVersion();
+		char buf[320];
+		std::snprintf( buf, sizeof( buf ),
+			"`%s` is a container node (it names no `geometry`), so it takes no `%s` -- a container is a pure "
+			"transform with no surface.  Put the binding on a child object that has geometry, or give this "
+			"object a `geometry`.",
+			entityName.size() > 1 ? entityName.c_str() : "(unnamed)", param.c_str() );
+		r.message = String( buf );
+		return r;
 	}
 
 	// Shared-undo U1: capture the entity's CURRENT value of `param` (or its

@@ -2908,7 +2908,21 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		case SceneEdit::SetObjectGeometry:
 			if( mJob && edit.prevPropertyValue.size() > 1 ) {
 				const IGeometry* g = mJob->GetGeometry( edit.prevPropertyValue.c_str() );
-				if( g ) obj->AssignGeometry( *g );
+				if( g ) {
+					// 87: same visibility flip the FORWARD arm does, for the same
+					// reason and with the same caveat -- the container case is
+					// unreachable from here (CaptureForApply refuses a
+					// SetObjectGeometry whose prior geometry has no name), but
+					// the forward arm does it anyway rather than lean on a guard
+					// three frames away, and this is its sibling site.  Reached,
+					// the omission would leave a HIDDEN object WITH geometry:
+					// exactly the fingerprint ObjectManager::SetObjectParent
+					// reads as "CSG operand", so the node would afterwards be
+					// refused a parent with a diagnostic naming the wrong cause.
+					const bool wasContainer = ( obj->GetGeometry() == 0 );
+					obj->AssignGeometry( *g );
+					if( wasContainer ) obj->SetWorldVisible( true );
+				}
 				else    restored = false;   // P1: prior geometry removed
 			} else {
 				restored = false;

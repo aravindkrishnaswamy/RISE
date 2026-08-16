@@ -522,6 +522,14 @@ bool ObjectManager::HasChildren( const char* parent ) const
 	return false;
 }
 
+void ObjectManager::Shutdown()
+{
+	parentByName.clear();
+	danglingParentWarned.clear();
+	anyComposedAgainstParent = false;
+	GenericManager<IObjectPriv>::Shutdown();
+}
+
 bool ObjectManager::RemoveItem( const char* szName )
 {
 	const bool ok = GenericManager<IObjectPriv>::RemoveItem( szName );

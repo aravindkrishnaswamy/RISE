@@ -3486,6 +3486,18 @@ namespace RISE
 			const String& target, const String& kind,
 			String& outBytes, int& outIndex, bool& outWasRasterizer );
 
+		//! 87: is the agent's target a CONTAINER node -- a `standard_object`
+		//! that names no `geometry`?  Read from the DOCUMENT (which is what the
+		//! agent path mutates) using CaptureAgentPriorParamValue_'s verbatim
+		//! resolution, so the two cannot drift apart.  FALSE for an
+		//! unresolvable target, for any other chunk role, and when there is no
+		//! retained Document.
+		bool AgentTargetIsContainerObject_( const String& entityName, const String& entityKind );
+
+		//! 87: does `param` name a surface binding a container cannot carry?
+		//! Exactly the set the derive drops on one.
+		static bool IsObjectSurfaceBindingParam_( const String& param );
+
 		//! Model-B F5 slice S2: the SHARED body of ApplyAgentInsertChunk /
 		//! ApplyAgentRemoveChunk -- the two verbs differ ONLY in which Job
 		//! primitive runs inside the parked critical section and in their
