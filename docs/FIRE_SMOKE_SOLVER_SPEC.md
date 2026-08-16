@@ -237,7 +237,17 @@ error and must be corrected.
      projection-class maps (Δt-independent targets — the r62/r63 pilot hold)
      must self-limit their per-step increment (the pilot's 5/4 EOS
      volume-ratio cap), because their violation is Δt-invariant and reduction
-     cannot help. A projection map without a self-limit is a design error. "Feasible" everywhere in this contract means the single r60
+     cannot help. A projection map without a self-limit is a design error.
+     Additionally (r64), a projection-class map emits its packet and
+     divergence-target contribution as one jointly-exact, target-derived
+     pair: Δt·S_div = 1 − 1/V′ exactly (never the linearization V′−1), with
+     Δq_j = 0 and Δℋ_src = (1/V′)·Σ_j q_j·[h_{s,j}(T′) − h_{s,j}(T₀)] from
+     the record thermochemistry, so the accepted state is the capped target
+     on the constant-pressure manifold by construction. The exact EOS gate is
+     unchanged and remains the verifier; relaxing it, or shrinking the cap
+     until the residual hides below the r60 envelope, is forbidden.
+     Relaxation-class maps keep the linearized relation (second-order defect,
+     governed by the unchanged gate and Δt reduction). "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance

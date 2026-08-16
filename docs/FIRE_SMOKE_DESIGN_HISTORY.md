@@ -1419,3 +1419,35 @@ it was already tried and refuted here.
   projection (already forbidden by the spec). The setpoint, mask,
   timing, thermostat semantics, ledger, and exclusion rules of r62 all
   survive unchanged.
+
+- **r64 (2026-08-16):** exact finite-source pair, from the tier-6 stop
+  on the r63 capped map — the exact EOS gate's second correct catch in
+  a row, and the final layer of the projection-map semantics opened by
+  r62. The linearized pair (Δt·S_div = V′−1 with the full fixed-volume
+  packet) is inconsistent for a finite jump twice over. Analysis with
+  constant c_p exposes the sharper half: donor drains 25 % of mass and
+  enthalpy while the packet restores ALL the drained enthalpy, landing
+  ON the ideal-gas manifold but at 400 K instead of the capped 375 K
+  target — a setpoint overshoot that could spiral; the record's
+  T-dependent h_{s,j} then breaks even that accidental manifold
+  consistency, producing the observed Δt-invariant 0.00168 residual
+  (confirmed over 20 halvings, 2.106 s → 4.0×10⁻⁶ s, inventories
+  positive, the r63 drain check passing — every prior pin behaving).
+  Fix: projection maps emit a **jointly-exact, target-derived pair** —
+  Δt·S_div = 1 − 1/V′ (exact rational relation, never the
+  linearization) and packet = target minus survivor: Δq_j = 0 (pure
+  energy; expelled gas carries beginning composition, elemental
+  closure trivial), Δℋ_src = (1/V′)·Σ q_j[h_{s,j}(T′) − h_{s,j}(T₀)]
+  exact from the record tables. Verified closed-form: mass 0.8ρ₀,
+  enthalpy 300·c_p·ρ₀ → exactly (ρ₀/V′, 375 K, P₀) — the accepted
+  state IS the target state by construction. The exact EOS gate is
+  unchanged as verifier; the r63 cap and ≤½ drain check are unchanged
+  (drain at cap becomes 0.2). Relaxation maps keep the linearized
+  relation (second-order defect in Δt·rate, governed by the existing
+  gate + Δt reduction — no semantics change to chemistry/radiation).
+  REJECTED: relaxing/tolerancing the EOS gate; shrinking the cap until
+  the residual hides below the r60 envelope (envelope-burial); state
+  overwrite; Δt reduction (Δt-invariant defect). Arc note: r62 (what),
+  r63 (how much per step), r64 (exactly how) — the pilot projection
+  map is now fully determined: setpoint, mask, timing, thermostat,
+  cap, and pair, with nothing left underdetermined.

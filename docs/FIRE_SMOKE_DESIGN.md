@@ -632,6 +632,36 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     costs new inlet geometry, a velocity constant, and a mass-ledger
     change). Subcycling the map is likewise rejected — it is the same
     cap hidden inside a loop with more machinery.
+  - **Exact finite-source pair (r64):** the capped target still failed
+    the exact EOS gate, and the gate was right again. The linearized
+    pair — Δt·S_div = V′−1 with the full fixed-volume packet — is
+    inconsistent for a finite jump twice over: under ideal
+    constant-c_p thermochemistry it lands ON the manifold but at the
+    WRONG temperature (donor drains 25 % of mass while the packet
+    replaces all the drained enthalpy: the 375 K target arrives at
+    400 K — an overshoot that could spiral past the setpoint), and
+    under the record's T-dependent h_{s,j} it misses the manifold
+    outright (the observed Δt-invariant 0.00168 residual). A
+    projection map therefore emits a **jointly-exact, target-derived
+    pair**: with V′ from the EOS at the capped target T′ (fixed
+    composition, fixed pressure), the divergence target is the exact
+    rational relation **Δt·S_div = 1 − 1/V′** (never its linearization
+    V′−1), and the packet is target-minus-survivor: **Δq_j = 0** (pure
+    energy; mass leaves via advection carrying beginning composition,
+    so elemental closure is trivial) and
+    **Δℋ_src = (1/V′)·Σ_j q_j·[h_{s,j}(T′) − h_{s,j}(T₀)]**, exact
+    from the record thermochemistry. The accepted state is then the
+    target state (ρ₀/V′, T′, P₀) **by construction**; the exact EOS
+    gate is UNCHANGED and keeps its role as verifier; the r63 cap and
+    Δt·S_div ≤ ½ check are unchanged (drain at the 5/4 cap becomes
+    1 − 4/5 = 0.2). Relaxation maps keep the linearized relation:
+    their defect is second-order in Δt·rate and vanishes under the
+    existing gate + Δt reduction — no semantics change. REJECTED:
+    relaxing or tolerancing the EOS gate (it has now caught two real
+    inconsistencies); shrinking the cap until the residual hides below
+    the r60 envelope (envelope-burial — the inconsistency remains,
+    merely unobservable); state overwrite (forbidden); Δt reduction
+    (the defect is Δt-invariant).
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
@@ -1483,7 +1513,16 @@ The most notorious practical trap in fire LES; specified accordingly:
   §3.3). Any future projection-type map inherits this contract. A
   projection map without a self-limit is a design error, not a solver
   bug: the r63 stop (pilot 300→900 K in one packet, V ≈ 3, donor update
-  negating inventories at every Δt) is the canonical instance.
+  negating inventories at every Δt) is the canonical instance. **r64
+  completes the contract:** a projection map's packet and divergence
+  target are emitted as one jointly-exact, target-derived pair —
+  Δt·S_div = 1 − 1/V′ (the exact rational relation, never the
+  linearization V′−1) with the packet computed as target-minus-survivor
+  from the record thermochemistry — so the accepted state is the capped
+  target state on the constant-pressure manifold by construction, and
+  the exact EOS gate verifies rather than tolerates. Relaxation maps
+  keep the linearized relation; their defect is second-order in Δt·rate
+  and governed by the unchanged gate plus Δt reduction.
 
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:
