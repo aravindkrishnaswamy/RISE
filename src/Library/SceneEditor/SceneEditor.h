@@ -913,8 +913,13 @@ namespace RISE
 		//! already captured prevTransform.
 		//! `isReplay` -- see ApplyForwardMutation.  TRUE suppresses the 87
 		//! container gates, which are CREATION rules and must not refuse a
-		//! history replay.
-		bool ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit, bool isReplay = false );   ///< P1: false if a binding op's forward target no longer resolves
+		//! history replay.  NOTE those three gates are currently UNREACHABLE
+		//! with a container: on a retained-CST scene every binding op returns
+		//! at ApplyForwardMutation's routing block above this function, and on
+		//! a legacy scene nothing can turn a leaf INTO a container mid-session
+		//! (SetObjectGeometry only ever binds a NAMED geometry; there is no
+		//! clear-geometry op).  They are future-proofing, not load-bearing.
+		bool ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit, bool isReplay );   ///< P1: false if a binding op's forward target no longer resolves
 
 		//! Restore an object's transform from a captured matrix.
 		void RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit );
@@ -1005,7 +1010,10 @@ namespace RISE
 		//! refused replay pushes its record back and re-fails forever, stranding
 		//! everything older.  See the block comment above ApplyRevertMutation
 		//! for the full argument and the sequence that proved it.
-		bool ApplyForwardMutation( const SceneEdit& edit, bool isReplay = false );   // Redo direction
+		//! NOT defaulted, deliberately: a replay-shaped caller that forgets the
+		//! flag silently re-creates the wedge this exists to prevent, and the
+		//! compiler is the only reviewer guaranteed to be present.
+		bool ApplyForwardMutation( const SceneEdit& edit, bool isReplay );   // Redo direction
 		bool ApplyRevertMutation( const SceneEdit& edit );    // Undo direction
 
 		//! H2 Stage 3 (finishes P-WALK): the capture/validate HALF of a

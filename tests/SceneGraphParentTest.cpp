@@ -60,6 +60,8 @@
 //    W -- but NOT on the history-replay paths: undo must be lossless and must
 //         not wedge.  Two rounds gated the revert and both were wrong; W is
 //         the sequence that proved it.
+//    X -- and the exemption reaches the COMPOSITE redo loop, not just the
+//         single-edit one.
 //    U -- and the UNDO path RESTORES rather than refusing: it replays a
 //         document state that existed moments earlier, which the derive
 //         already tolerates.
@@ -1954,6 +1956,113 @@ int main()
 		}
 		j->release();
 		std::remove( sW );
+	}
+
+	// =================================================================
+	// X -- the replay exemption reaches the COMPOSITE loop.
+	//
+	// `isReplay` is threaded to three call sites.  Case U covers the
+	// single-edit redo; without this case, deleting the flag at the
+	// composite-redo loop leaves the entire suite green.
+	//
+	// The third site -- the composite-UNDO rollback -- remains uncovered.
+	// Reaching it needs an inner revert to FAIL after a later one already
+	// succeeded, i.e. a captured dependency destroyed out of history.  Its
+	// return value is ignored by design (the rollback is best-effort), so a
+	// gate firing there is LOSSY rather than unrecoverable.  Stated plainly
+	// here rather than left to be inferred from its absence.
+	// =================================================================
+	{
+		const char* sX = "sg_parent_composite_redo.RISEscene";
+		WriteScene( sX,
+			"uniformcolor_painter\n{\nname px\ncolor 1 1 0\n}\n"
+			"lambertian_material\n{\nname x1\nreflectance px\n}\n"
+			"lambertian_material\n{\nname x2\nreflectance px\n}\n"
+			"lambertian_material\n{\nname x3\nreflectance px\n}\n"
+			"sphere_geometry\n{\nname gx\nradius 1\n}\n"
+			"standard_object\n{\nname comp\ngeometry gx\nmaterial x1\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sX ), "X: scene loads" );
+		SceneEditController c( *j, 0 );
+
+		auto ChunkOf = []( const RISE::Cst::Document& d, const char* objName ) -> std::string {
+			const std::string text = RISE::Cst::SerializeCst( d );
+			const std::string key  = std::string( "name " ) + objName;
+			size_t at = text.find( key );
+			while( at != std::string::npos ) {
+				const size_t after = at + key.size();
+				if( after >= text.size() || text[after] == '\n' || text[after] == '\r' ) break;
+				at = text.find( key, after );
+			}
+			if( at == std::string::npos ) return std::string();
+			const size_t end = text.find( "\n}", at );
+			return text.substr( at, ( end == std::string::npos ? text.size() : end ) - at );
+		};
+		auto ParamValue = []( const std::string& chunk, const char* key ) -> std::string {
+			const std::string needle = std::string( "\n" ) + key + " ";
+			std::string out;
+			size_t p = chunk.find( needle );
+			while( p != std::string::npos ) {
+				const size_t vs = p + needle.size();
+				const size_t ve = chunk.find( '\n', vs );
+				out = chunk.substr( vs, ( ve == std::string::npos ? chunk.size() : ve ) - vs );
+				p = chunk.find( needle, vs );
+			}
+			return out;
+		};
+
+		// 1. TWO edits inside one composite, while the object is still a LEAF.
+		c.Editor().BeginComposite( "x-composite" );
+		c.SetSelection( Cat::Object, String( "comp" ) );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "material" ), String( "x2" ) ),
+		       "X: first inner edit applies" );
+		Check( c.SetPropertyForCategory( Cat::Object, String( "material" ), String( "x3" ) ),
+		       "X: second inner edit applies" );
+		c.Editor().EndComposite();
+		{
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "X: (sanity) Document retained" );
+			if( d ) Check( ParamValue( ChunkOf( *d, "comp" ), "material" ) == "x3",
+			               "X: (sanity) the composite left x3" );
+		}
+
+		// 2. Make it a container behind the editor's back -- no history record,
+		//    so the composite stays intact -- and rebind, as production does.
+		{
+			const int rc = j->ApplyCstParamRemoveChecked( "comp", "standard_object", "geometry", 0 );
+			Check( rc != 0, "X: the geometry removal is accepted" );
+			IJobPriv* jp = dynamic_cast<IJobPriv*>( static_cast<IJob*>( j ) );
+			if( jp ) {
+				if( IScenePriv* sc = jp->GetScene() ) c.Editor().RebindScene( *sc );
+				c.Editor().SetMaterialManager( jp->GetMaterials() );
+				c.Editor().SetShaderManager( jp->GetShaders() );
+				c.Editor().SetPainterManager( jp->GetPainters() );
+				c.Editor().SetScalarPainterManager( jp->GetScalarPainters() );
+			}
+			IObjectPriv* o = Obj( *j, "comp" );
+			Check( o && o->GetGeometry() == 0, "X: the object is now a container" );
+		}
+
+		// 3. Undo the composite -- both inners walk back.
+		c.Undo();
+		{
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "X: (sanity) Document retained after the composite undo" );
+			if( d ) Check( ParamValue( ChunkOf( *d, "comp" ), "material" ) == "x1",
+			               "X: the composite undo walked back BOTH inners onto the container" );
+		}
+
+		// 4. REDO the composite.  This is the loop the flag has to reach.
+		c.Redo();
+		{
+			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "X: (sanity) Document retained after the composite redo" );
+			if( d ) Check( ParamValue( ChunkOf( *d, "comp" ), "material" ) == "x3",
+			               "X: the composite REDO replayed both inners -- the replay exemption reaches "
+			               "the composite loop, not just the single-edit redo" );
+		}
+		j->release();
+		std::remove( sX );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

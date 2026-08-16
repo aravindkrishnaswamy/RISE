@@ -2729,7 +2729,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 	// cameraTargetName etc.  Undo/Redo re-resolve by name + compare to catch a
 	// remove+re-add that put a different instance under the same name.
 	edit.capturedTargetSerial = ResolveTargetSerial( edit );
-	if( !ApplyForwardMutation( edit ) )  return false;
+	if( !ApplyForwardMutation( edit, /*isReplay*/false ) )  return false;   // the ONE creation call site
 	mHistory.Push( edit );
 	return true;
 }
@@ -2784,6 +2784,14 @@ bool SceneEditor::Undo()
 			// Re-apply the reverts we already did, in original FORWARD order (reverse of the
 			// LIFO revert order), then move the whole popped group back redo->undo so the
 			// composite is intact + retryable.  Rollback re-applies are best-effort.
+			// isReplay: re-applying what we just reverted is a replay, not a new
+			// edit.  The return value is deliberately ignored here (this
+			// rollback is best-effort by design), so a gate firing would not
+			// wedge -- it would silently fail to restore an inner.  Lossy
+			// rather than unrecoverable, but wrong either way.  NOT covered by
+			// a test: reaching it needs an inner revert to fail AFTER a later
+			// one succeeded, which needs a captured dependency deliberately
+			// destroyed out of history.
 			for( std::vector<SceneEdit>::reverse_iterator it = reverted.rbegin(); it != reverted.rend(); ++it ) {
 				ApplyForwardMutation( *it, /*isReplay*/true );
 			}
