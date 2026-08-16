@@ -5599,12 +5599,18 @@ static void RISE_API_CreateObjectOrContainer_( IObjectPriv** ppObject, const IGe
 	RISE_API_CreateObject( ppObject, pGeometry );
 }
 
-//! Is `obj` currently an OPERAND of some csg_object in this manager?  Operands
-//! are hidden by their composite and have geometry; a container is hidden and
-//! has none, so the two are told apart by geometry -- but only while the
-//! operand still HAS geometry, which is exactly what a leaf -> container
-//! re-point would take away.  Hence this direct scan: it is the only way to
-//! catch the edit before it makes the two indistinguishable.
+//! Is `obj` currently an OPERAND of some csg_object in this manager?
+//!
+//! Answered by a DIRECT identity scan over the composites, not by inspecting
+//! `obj` itself, because no property of a single object answers it.  "Hidden
+//! and has geometry" does NOT mean operand -- a nested composite operand is
+//! hidden and has NONE (a CSGObject takes its shape from its operands and
+//! never assigns pGeometry), which is the same confusion that produced the
+//! isolate-diagnostic bug fixed in 1bb143c3.  And "hidden and has geometry"
+//! stops being true of a LEAF operand at exactly the moment that matters here:
+//! the leaf -> container re-point this predicate exists to catch is the edit
+//! that takes its geometry away.  See IsContainerObject_ below for the
+//! canonical container test.
 static bool IsLiveCsgOperand_( const IObjectManager* objMgr, const IObjectPriv* obj )
 {
 	if( !objMgr || !obj ) return false;
@@ -5766,6 +5772,23 @@ bool Job::AddObject(
 	bool repoint = false;
 	if( m_bIncrementalRepoint ) {
 		object = pObjectManager->GetItem( name );
+		// 87: re-point a plain Object only.  A name held by a CSGObject belongs
+		// to a different chunk kind, and re-pointing it would be actively
+		// destructive: a CSGObject has null geometry, so `wasContainer` below
+		// would be TRUE, and ApplyGeometryOrContainer_ would AssignGeometry over
+		// the composite and then SetWorldVisible( true ) -- resurrecting a hidden
+		// nested operand into the world, the exact resurrection that function's
+		// own doc exists to prevent.  Unreachable today (a param edit cannot
+		// change a chunk's keyword, and the incremental closure refuses any
+		// object chunk that is not standard_object / csg_object), but
+		// AddCSGObject's mirror-image lookup already requires
+		// dynamic_cast<CSGObject*>; this is the sibling that did not.
+		if( object && dynamic_cast<Implementation::CSGObject*>( object ) != 0 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddObject:: `%s` already names a csg_object, so a standard_object cannot re-point it",
+				name );
+			return false;
+		}
 		repoint = ( object != 0 );
 	}
 	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
@@ -5858,6 +5881,23 @@ bool Job::AddObjectMatrix(
 	bool repoint = false;
 	if( m_bIncrementalRepoint ) {
 		object = pObjectManager->GetItem( name );
+		// 87: re-point a plain Object only.  A name held by a CSGObject belongs
+		// to a different chunk kind, and re-pointing it would be actively
+		// destructive: a CSGObject has null geometry, so `wasContainer` below
+		// would be TRUE, and ApplyGeometryOrContainer_ would AssignGeometry over
+		// the composite and then SetWorldVisible( true ) -- resurrecting a hidden
+		// nested operand into the world, the exact resurrection that function's
+		// own doc exists to prevent.  Unreachable today (a param edit cannot
+		// change a chunk's keyword, and the incremental closure refuses any
+		// object chunk that is not standard_object / csg_object), but
+		// AddCSGObject's mirror-image lookup already requires
+		// dynamic_cast<CSGObject*>; this is the sibling that did not.
+		if( object && dynamic_cast<Implementation::CSGObject*>( object ) != 0 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddObjectMatrix:: `%s` already names a csg_object, so a standard_object cannot re-point it",
+				name );
+			return false;
+		}
 		repoint = ( object != 0 );
 	}
 	const bool wasContainer = repoint && ( object->GetGeometry() == 0 );
