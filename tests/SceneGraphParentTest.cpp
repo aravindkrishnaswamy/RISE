@@ -39,7 +39,8 @@
 //         x=1e7 is accepted at every distance decade, a collapsed scale is
 //         not, and neither is a COMPOSED singular parent at depth 2.
 //    K -- multi-child fan-out (the tree mechanism itself).
-//    L -- a WORLD-space delta under a rotated, scaled parent.
+//    L -- a WORLD-space delta under a rotated, scaled parent, and the refusal
+//         path: either the op applies exactly or nothing changes.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -933,6 +934,37 @@ int main()
 		}
 		j->release();
 		std::remove( sN );
+	}
+	{
+		// L2 -- the op REFUSES, and leaves the transform untouched, when the
+		// conjugation cannot be done.  The predicate that used to be the only
+		// gate here has been wrong four times in review, so PushWorldOp_ now
+		// verifies its own result -- `parentWorld * localOp == worldOp *
+		// parentWorld` -- rather than trusting a prediction about the parent.
+		// This case pins the invariant that actually matters: EITHER the op
+		// applies exactly, OR nothing changes.  There is no third outcome where
+		// a wrong matrix reaches the object.
+		const char* sQ = "sg_parent_refuse.RISEscene";
+		WriteScene( sQ,
+			"standard_object\n{\nname squashed\nscale 0 0 1\n}\n"
+			"standard_object\n{\nname doomed\nparent squashed\ngeometry g\nmaterial m\nposition 0 1 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sQ ), "L2: degenerate-parent scene loads" );
+		IObjectPriv* doomed = Obj( *j, "doomed" );
+		Check( doomed != 0, "L2: child registered" );
+		if( doomed ) {
+			const Matrix4 beforeLocal = doomed->GetLocalTransformMatrix();
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "doomed" ) );
+			Check( !c.ForTest_TranslateSelectedObjectWorld( 3, 0, 0 ),
+			       "L2: the world-space op is REFUSED under a collapsed parent" );
+			IObjectPriv* after = Obj( *j, "doomed" );
+			Check( after && Mat4Exact( after->GetLocalTransformMatrix(), beforeLocal ),
+			       "L2: and the object's LOCAL transform is byte-identical -- a refused op mutates "
+			       "nothing, so no corrupt matrix can reach the scene document" );
+		}
+		j->release();
+		std::remove( sQ );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

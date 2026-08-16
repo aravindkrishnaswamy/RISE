@@ -896,7 +896,63 @@ bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& wo
 		}
 		return false;
 	}
-	obj.PushBottomTransStack( obj.WorldToLocal( worldOp * obj.GetParentWorldTransformMatrix() ) );
+	// VERIFY THE RESULT, do not merely trust the predicate.
+	//
+	// HONEST NOTE ON REDUNDANCY: for every failure class currently KNOWN, this
+	// check and the IsParentWorldInvertible() gate above catch the same inputs,
+	// and a test can only red-prove them together (disable both and the refusal
+	// case fails; disable either alone and it still passes).  That redundancy
+	// is the point.  The predicate is a prediction about a matrix and has been
+	// wrong four times; this is a measurement of the arithmetic actually about
+	// to be committed, and there is nothing left for it to be wrong about.  If
+	// a fifth failure class of the predicate exists -- and the base rate says
+	// it might -- this is what stops a corrupt matrix reaching the document.
+	//
+	// IsParentWorldInvertible() is a PREDICTION about a matrix, and predicting
+	// this has now been got wrong four times in review -- an absolute residual
+	// epsilon, a componentwise backward error, a Hadamard ratio, and a
+	// condition number built from an adjugate quotient, each defeated by a
+	// different input class.  The quantity that actually matters is not any
+	// property of the parent: it is whether THIS conjugation came out right.
+	// So compute it and check it.
+	//
+	// The contract is `parentWorld * localOp == worldOp * parentWorld`, which
+	// is just the definition of the conjugate rearranged.  Comparing those two
+	// products tests the exact arithmetic that is about to be committed, in the
+	// exact frame it will be committed in, and cannot be wrong about rank,
+	// conditioning or scale -- there is nothing left to be wrong about.  The
+	// tolerance is RELATIVE to the magnitudes involved, so it means the same
+	// thing for a millimetre scene and an astronomical one.
+	const Matrix4 parentWorld = obj.GetParentWorldTransformMatrix();
+	const Matrix4 localOp     = obj.WorldToLocal( worldOp * parentWorld );
+	{
+		const Matrix4 lhs = parentWorld * localOp;   // what the next finalize will produce
+		const Matrix4 rhs = worldOp * parentWorld;   // what the caller asked for
+		const Scalar* l = &lhs._00;
+		const Scalar* r = &rhs._00;
+		double diff = 0, scale = 0;
+		for( int k = 0; k < 16; ++k ) {
+			const double a2 = static_cast<double>( l[k] );
+			const double b2 = static_cast<double>( r[k] );
+			diff  += ( a2 - b2 ) * ( a2 - b2 );
+			scale += b2 * b2;
+		}
+		diff  = std::sqrt( diff );
+		scale = std::sqrt( scale );
+		// `!(<=)` also rejects NaN, which a non-finite parent produces here.
+		if( !( diff <= 1e-9 * ( scale > 0 ? scale : 1.0 ) ) ) {
+			const std::string key( objectName.c_str() );
+			if( alreadyWarned.insert( key ).second ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SceneEditor:: world-space transform op REFUSED for `%s` -- the conjugation into its "
+					"parent frame did not verify (relative residual %g).  The parent chain composes to a "
+					"frame too degenerate or ill-conditioned to move an object through; rebalance the "
+					"ancestor's `scale`.", key.c_str(), scale > 0 ? diff / scale : diff );
+			}
+			return false;
+		}
+	}
+	obj.PushBottomTransStack( localOp );
 	return true;
 }
 
