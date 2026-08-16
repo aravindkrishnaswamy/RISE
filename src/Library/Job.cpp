@@ -10850,6 +10850,45 @@ int Job::RederiveCstDocumentFull_( RISE::Cst::Document&& editedDoc, const char* 
 	return fdiags.empty() ? 2 : 3;
 }
 
+// 87 step 3a: an INSTANCING chunk (a `standard_object` carrying `source`) is NOT built through its
+// own chunk type -- Cst::DeriveToJob expands it through the SOURCE's parser, so the params the
+// resulting entry can actually carry are the TARGET role's, not `standard_object`'s.  A `csg_object`
+// source therefore yields a node with `position` / `orientation` and NO `matrix` / `quaternion` /
+// `scale`, even though the chunk the author wrote is a `standard_object` (whose descriptor declares
+// all of them).  Every transform route below has to ask THIS question rather than the chunk's role,
+// or the gate admits a transform the expansion's descriptor check (Cst.cpp, "an instance is built
+// through the SOURCE's own chunk type") then refuses at commit -- the live/CST divergence the gate
+// exists to prevent.
+//
+// Walks the `source` chain to the ROOT chunk.  Termination: `source` links point strictly BACKWARDS
+// in the document (Cst::ExpandSourceInstance's declare-earlier rule), so the chain is acyclic by
+// construction; the 256 guard is a belt against a document that reached here without that check.
+// Returns the chunk's OWN role when there is no `source` -- and also when a link is unresolvable,
+// which is safe because such a document does not derive at all.
+static std::string CstTransformTargetRole_( const RISE::Cst::Document& doc, RISE::Cst::NodeId id )
+{
+	std::string role;
+	RISE::Cst::NodeId cursor = id;
+	for( unsigned int guard = 0; guard < 256u && cursor != 0; ++guard ) {
+		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( doc, cursor );
+		if( !chunk ) break;
+		role = chunk->role;
+		if( role != "standard_object" ) break;                 // only a standard_object can carry `source`
+		// ParamValueAsParsed reads the occurrence the PARSER reads (last wins) and carries
+		// separating/trailing trivia along -- trim before comparing against a bare word.
+		std::string src = RISE::Cst::ParamValueAsParsed( chunk, "source" );
+		const size_t b = src.find_first_not_of( " \t\r\n" );
+		const size_t e = src.find_last_not_of( " \t\r\n" );
+		src = ( b == std::string::npos ) ? std::string() : src.substr( b, e - b + 1 );
+		if( src.empty() || src == "none" ) break;
+		RISE::Cst::NodeId next = RISE::Cst::DocFindByNameAnyRole( doc, src, nullptr, "standard_object", false );
+		if( next == 0 ) next = RISE::Cst::DocFindByNameAnyRole( doc, src, nullptr, "csg_object", false );
+		if( next == 0 || next == cursor ) break;
+		cursor = next;
+	}
+	return role;
+}
+
 // P5 Slice 3 expansion (object transform): commit an object's transform to the retained CST as the
 // authoritative `matrix` param (16 col-major doubles).  87: the caller passes the object's LOCAL
 // matrix -- what the chunk itself authors -- NOT its composed world matrix; a parented object's
@@ -10881,6 +10920,15 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
 		if( !chunk || chunk->role != "standard_object" ) {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` is not a standard_object (no `matrix` param); transform commit rejected", objectName );
+			return 0;
+		}
+		// 87 step 3a, same defense-in-depth one level down: the chunk IS a standard_object, but if
+		// it carries `source` the entry is built through the SOURCE's chunk type, and a csg_object
+		// target has no `matrix` param -- writing one would fail the dry-run derive below and drop
+		// the transform.  CstObjectTransformKind routes such an object to the COMPONENTS edit.
+		const std::string target = CstTransformTargetRole_( *pCstDocument, id );
+		if( target != "standard_object" ) {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectMatrixEdit:: `%s` instances a `%s` (via `source`), which has no `matrix` param; transform commit rejected", objectName, target.c_str() );
 			return 0;
 		}
 	}
@@ -10919,7 +10967,16 @@ int Job::CstObjectTransformKind( const char* name ) const
 	RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "standard_object", false );
 	if( id != 0 ) {
 		const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
-		if( chunk && chunk->role == "standard_object" ) return 1;
+		if( chunk && chunk->role == "standard_object" ) {
+			// 87 step 3a: answer for the TARGET role, not the chunk's.  An instancing chunk is a
+			// standard_object whatever it points at, but the entry is built through the SOURCE's
+			// parser -- so `source <a csg_object>` yields a node that can only express
+			// translate+rotate, exactly like an authored csg_object.  Answering 1 here would
+			// declare a gizmo scale/shear COMMITTABLE, let SceneEditor mutate the live object, and
+			// then have ApplyCstObjectMatrixEdit refuse -- a live transform the CST never records
+			// and the next full re-derive silently reverts.
+			return ( CstTransformTargetRole_( *pCstDocument, id ) == "csg_object" ) ? 2 : 1;
+		}
 	}
 	id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, name, nullptr, "csg_object", false );
 	if( id != 0 ) {
@@ -10936,17 +10993,35 @@ int Job::CstObjectTransformKind( const char* name ) const
 int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation )
 {
 	if( !pCstDocument || !objectName || !position || !position[0] || !orientation || !orientation[0] ) return 0;
-	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "csg_object", false );
+	RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "csg_object", false );
+	if( id == 0 ) {
+		// 87 step 3a: the components route now also owns the INSTANCE of a csg_object -- a chunk
+		// whose own role is `standard_object` but whose entry is built through the source's
+		// csg_object parser (CstObjectTransformKind answers 2 for it).  `position`/`orientation`
+		// are exactly the two transform params BOTH roles declare, so the commit lands on the
+		// instancing chunk and the expansion merges them onto the synthesized csg_object.
+		const RISE::Cst::NodeId instId = RISE::Cst::DocFindByNameAnyRole( *pCstDocument, objectName, nullptr, "standard_object", false );
+		const RISE::Cst::NodeRef instChunk = instId ? RISE::Cst::DocResolveNodeId( *pCstDocument, instId ) : RISE::Cst::NodeRef();
+		if( instChunk && instChunk->role == "standard_object"
+		 && CstTransformTargetRole_( *pCstDocument, instId ) == "csg_object" ) {
+			id = instId;
+		}
+	}
 	if( id == 0 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` not found or ambiguous in the CST Document; edit rejected", objectName );
 		return 0;
 	}
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
-	if( !chunk || chunk->role != "csg_object" ) {
-		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` is not a csg_object; edit rejected", objectName );
+	if( !chunk || CstTransformTargetRole_( *pCstDocument, id ) != "csg_object" ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` is not a csg_object (nor an instance of one); edit rejected", objectName );
 		return 0;
 	}
+	// `scale` alongside matrix/quaternion: none of the three is expressible by the csg_object the
+	// commit derives through, on an authored csg (which declares none of them) or on an instancing
+	// chunk (whose standard_object descriptor declares all three, and whose expansion would then be
+	// refused by the target-descriptor check).  Strip all three so the committed chunk is clean.
 	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "matrix" );
+	d1 = RISE::Cst::DocRemoveParam( d1, id, "scale" );
 	d1 = RISE::Cst::DocRemoveParam( d1, id, "quaternion" );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "position", 0, position );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "orientation", 0, orientation );

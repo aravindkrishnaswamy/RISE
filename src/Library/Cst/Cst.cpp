@@ -1655,10 +1655,29 @@ static bool ExpandSourceInstance(
 	{
 		const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( srcName );
 		if( kids != index.childrenOf.end() && !kids->second.empty() ) {
-			// `I source S parent S` -- the ONLY child of S is this very chunk, put
-			// there by the author's own `parent` line.  There is no subtree; saying
-			// "3b" would send the author looking for children that do not exist.
-			if( kids->second.size() == 1 && kids->second.front() == instIndex ) {
+			// `I source S parent S` -- EVERY child of S is a chunk that instances S,
+			// put there by the author's own `parent` line(s).  There is no subtree;
+			// saying "3b" would send the author looking for children that do not
+			// exist.  The test is "every child is self-parented onto its own source",
+			// NOT "S has exactly one child": a second self-parenting instance
+			// (`I1 source S parent S` and `I2 source S parent S`) makes the count 2
+			// while leaving the diagnosis unchanged, and the count test would fall
+			// through to exactly the misdirection this branch exists to remove.  A
+			// source with a GENUINE other child still gets the 3b message.
+			bool selfChildrenOnly = false;
+			{
+				bool meAmongThem = false, allSelfSourced = true;
+				for( std::size_t k = 0; k < kids->second.size(); ++k ) {
+					const std::size_t ki = kids->second[k];
+					if( ki == instIndex ) { meAmongThem = true; continue; }   // this chunk, by construction
+					std::string kidSrc;
+					if( ki >= items.size() || !items[ki]
+					 || !ParamValue( items[ki].get(), "source", kidSrc ) || kidSrc != srcName )
+						allSelfSourced = false;
+				}
+				selfChildrenOnly = meAmongThem && allSelfSourced;
+			}
+			if( selfChildrenOnly ) {
 				diags.push_back( who + ": `source " + srcName + "` and `parent " + srcName + "` on the SAME chunk -- "
 					"the copy would be a CHILD of the very node it is a copy of, so `" + srcName + "`'s subtree "
 					"would contain a copy of `" + srcName + "`.  That is a recursive definition: subtree instancing "
@@ -2217,24 +2236,38 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// resolves the source object THROUGH the manager and so records the source's
 			// chunk as a traced dependency (see ExpandSourceInstance (c)).
 			//
-			// `source none` IS NOT EXEMPT, and that is deliberate.  Clearing the slot
-			// makes the chunk derive as a plain container, which the in-place re-point
-			// handles fine -- but the entry still carries the PROVENANCE row a previous
-			// expansion wrote, and provenance is retired only by RemoveItem / Shutdown,
-			// neither of which an in-place re-point calls.  An incremental commit would
-			// leave `GetObjectProvenance` still answering "(I, S)" for an object that
-			// is no longer an instance of anything.  ANY `source` edit therefore takes
-			// the full re-derive, which rebuilds provenance from scratch.
+			// CLEARING the slot needs the same fallback, for a DIFFERENT reason: the
+			// chunk then derives as a plain container, which the in-place re-point
+			// handles fine -- but the entry still carries the PROVENANCE row the
+			// earlier expansion wrote, and provenance is retired only by RemoveItem /
+			// Shutdown, neither of which an in-place re-point calls.  An incremental
+			// commit would leave `GetObjectProvenance` still answering "(I, S)" for an
+			// object that is no longer an instance of anything.
+			//
+			// That second gate keys on the LIVE PROVENANCE ROW, not on the `source`
+			// TEXT, and both halves of that matter.  Keying on the text's PRESENCE
+			// closes `source none` but NOT `source` DELETED -- and deleting the line
+			// is the spelling production actually reaches (SceneEditor's agent-Undo of
+			// an INSERTED `source` routes through ApplyCstParamRemoveChecked), which
+			// would leave exactly the stale row this gate exists to retire.  Keying on
+			// the text also OVER-applies in the other direction: `standard_object {
+			// name C  source none  position 5 0 0 }` is a plain container that never
+			// had provenance, and it would pay a ClearAll + full derive + manager
+			// rebind on every gizmo drag commit FOREVER for a retirement that has
+			// nothing to retire.  The row itself answers both questions exactly.
 			std::string srcRef;
-			if( node->role == "standard_object"
-			 && ParamValue( node.get(), "source", srcRef ) && !srcRef.empty() ) {
-				diags.push_back( node->role + " '" + name + "': carries `source " + srcRef + "` -- "
-					+ ( srcRef == "none"
-					      ? std::string( "a CLEARED instance slot, whose stale provenance row only a full "
-					                     "re-derive retires" )
-					      : std::string( "an INSTANCE, expanded by the full derive at PASS-2 rather than by "
-					                     "this chunk's own Finalize" ) )
-					+ "; fall back to a full derive" );
+			const bool carriesSource = ( node->role == "standard_object"
+			                          && ParamValue( node.get(), "source", srcRef )
+			                          && !srcRef.empty() && srcRef != "none" );
+			const bool hasProvenanceRow = ( cat == ChunkCategory::Object
+			                             && objMgr->GetObjectProvenance( name.c_str(), 0, 0 ) );
+			if( carriesSource || hasProvenanceRow ) {
+				const std::string why = carriesSource
+					? ( "carries `source " + srcRef + "` -- an INSTANCE, expanded by the full derive at PASS-2 "
+					    "rather than by this chunk's own Finalize" )
+					: std::string( "the live entry still carries the PROVENANCE row of an earlier `source` "
+					               "expansion, and only a full re-derive retires it" );
+				diags.push_back( node->role + " '" + name + "': " + why + "; fall back to a full derive" );
 				return 0;
 			}
 		}

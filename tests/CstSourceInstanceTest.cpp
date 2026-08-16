@@ -27,8 +27,12 @@
 //    [visible]     the source still renders after being instanced.
 //    [area]        an instanced emitter's GetArea() tracks the INSTANCE's transform, not the
 //                  source's -- the one property with a documented bug history (2026-08-13).
-//    [incremental] an edit to a `source` chunk refuses -> full-derive fallback; SETTING `source
-//                  none` does too, so the stale provenance row is retired.
+//    [incremental] an edit to a `source` chunk refuses -> full-derive fallback; so does an edit
+//                  to an entry that still carries a PROVENANCE row (`source none`, or the line
+//                  DELETED), which is how the stale row gets retired -- while a `source none`
+//                  chunk that was never an instance stays on the incremental path.
+//    [gizmo]       CstObjectTransformKind answers for the SOURCE's role, so the transform gate
+//                  and the transform commit cannot disagree (the live/CST divergence class).
 //
 //  A NOTE ON WHAT `DumpJob` CAN SEE.  It prints geometry / material / modifier / shader /
 //  radiance_map / interior_medium / visible / bbox and nothing else -- so `casts_shadows`,
@@ -112,6 +116,16 @@ static Job* DeriveJob( const std::string& scene, std::vector<std::string>* outDi
 static IObject* Obj( Job* j, const char* name )
 {
 	return ( j && j->GetObjects() ) ? j->GetObjects()->GetItem( name ) : 0;
+}
+
+// x of an object's world bounding-box centre.  The transform probe the gizmo tests use: IObject
+// exposes IBasicTransform, not the composed matrix, so a TRANSLATION is read as a bbox shift.
+// A missing object answers a value no delta assertion can accidentally satisfy.
+static double CenterX( IObject* o )
+{
+	if( !o ) return -1.0e30;
+	const BoundingBox bb = o->getBoundingBox();
+	return ( bb.ll.x + bb.ur.x ) * 0.5;
 }
 
 // Job::ApplyCstParamEdit / ...Checked read the RETAINED CST head, which only
@@ -498,17 +512,37 @@ int main()
 		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nparent S\n}\n" ),
 		                    "recursive definition", &all ),
 		       "refuse: `source S parent S` is refused for the REAL reason -- a copy of S parented under S" );
-		Check( all.find( "step 3b" ) == std::string::npos || all.find( "`parent S`" ) != std::string::npos,
+		// UNCONDITIONAL.  This was written as a disjunction ("no `step 3b` OR names `parent S`"),
+		// which a message mentioning NEITHER term satisfies -- so deleting both strings from the
+		// diagnostic would have left it green while violating the property it states.  It was also
+		// strictly weaker than the "recursive definition" pin above it.  The message must NAME the
+		// author's `parent` line, because that line is the cause.
+		Check( all.find( "`parent S`" ) != std::string::npos,
 		       "refuse: ... naming the `parent` line as the cause, not sending the author after a subtree that does not exist" );
 		Check( all.find( "has CHILDREN -- instancing a multi-node subtree" ) == std::string::npos,
 		       "refuse: ... and NOT with the has-children message" );
 		// A source with a REAL other child still gets the 3b message, even when the instance
-		// also parents to it -- the self-child detection must be exactly "the ONLY child is me".
+		// also parents to it -- the detection is "every child instances S", not "S has one child".
 		Check( RefusedWith( Scene( SRC_LEAF
 		                         + "standard_object\n{\nname kid\ngeometry boxg\nmaterial m\nparent S\n}\n"
 		                         + "standard_object\n{\nname I\nsource S\nparent S\n}\n" ),
 		                    "has CHILDREN -- instancing a multi-node subtree" ),
 		       "refuse: ... while a source with a genuine OTHER child still gets the 3b message" );
+		// TWO self-parenting instances.  A "S has exactly ONE child" test is defeated here: the
+		// count is 2, so it falls through to the 3b message -- which is precisely the misdirection
+		// this branch exists to remove, since there is still no subtree and both children are the
+		// author's own `parent` lines.  Every child instances S, so both get the recursive-
+		// definition message.
+		{
+			const std::string two = SRC_LEAF
+			                      + "standard_object\n{\nname I1\nsource S\nparent S\n}\n"
+			                      + "standard_object\n{\nname I2\nsource S\nparent S\n}\n";
+			std::string twoAll;
+			Check( RefusedWith( Scene( two ), "recursive definition", &twoAll ),
+			       "refuse: ... and a SECOND self-parenting instance does not defeat the rule (count is 2, still no subtree)" );
+			Check( twoAll.find( "has CHILDREN -- instancing a multi-node subtree" ) == std::string::npos,
+			       "refuse: ... neither of the two gets the 3b subtree message" );
+		}
 	}
 
 	// [refuse] DOCUMENT-level name collision: two object chunks declaring the entry name.  The
@@ -518,23 +552,30 @@ int main()
 		// COMMENTS ON PURPOSE.  The message exists to name BOTH chunks so the author can
 		// reconcile them, which means naming them in terms an author can COUNT TO.  A raw CST
 		// item index is not one: trivia (comments, blank lines) are items too, so in this scene
-		// -- whose colliding chunks are the 9th and 10th the author wrote -- the raw indices are
-		// nowhere near 9 and 10.  Without the comments the two numberings would coincide and
+		// -- whose colliding chunks are the 11th and 12th the author wrote -- the raw indices are
+		// nowhere near 11 and 12.  Without the comments the two numberings would coincide and
 		// this test would pass on the broken message.
+		//
+		// TWO DIFFERENT ROLES ON PURPOSE, too.  The message claims to print each chunk's role;
+		// with both colliding chunks a `standard_object` that claim is untestable -- a message
+		// that printed one hard-coded literal, or printed items[a]->role twice, reads identically.
+		// The second chunk is therefore a `csg_object`, and BOTH spellings are asserted.
 		const std::string body = SRC_LEAF
+		                       + "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+		                       + "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
 		                       + "# a comment, so the raw item index and the chunk ordinal diverge\n"
 		                       + "\n"
 		                       + "# and another\n"
 		                       + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n"
 		                       + "\n# a third, between the two colliding chunks\n\n"
-		                       + "standard_object\n{\nname I\ngeometry boxg\nmaterial m\n}\n";
+		                       + "csg_object\n{\nname I\nobja opa\nobjb opb\noperation union\n}\n";
 		std::string all;
 		Check( RefusedWith( Scene( body ), "declared by MORE THAN ONE object chunk", &all ),
 		       "refuse: the entry name is also declared by a LATER authored chunk (document-level mis-targeting)" );
-		Check( all.find( "chunk #9" ) != std::string::npos && all.find( "chunk #10" ) != std::string::npos,
-		       "refuse: ... naming both by their position among the file's CHUNKS (#9 and #10 here, comments not counted)" );
-		Check( all.find( "a `standard_object`" ) != std::string::npos,
-		       "refuse: ... and by role, so the author knows what to look for" );
+		Check( all.find( "chunk #11" ) != std::string::npos && all.find( "chunk #12" ) != std::string::npos,
+		       "refuse: ... naming both by their position among the file's CHUNKS (#11 and #12 here, comments not counted)" );
+		Check( all.find( "a `standard_object`" ) != std::string::npos && all.find( "a `csg_object`" ) != std::string::npos,
+		       "refuse: ... and by role -- BOTH roles, so the author knows what to look for" );
 		Check( all.find( "item " ) == std::string::npos,
 		       "refuse: ... and never by raw CST item index (which counts comments and blank lines)" );
 	}
@@ -644,12 +685,15 @@ int main()
 		j->release();
 	}
 
-	// [incremental] CLEARING the slot -- `source none` -- refuses too.  It is tempting to exempt
-	// it: the chunk then derives as a plain container, which the in-place re-point handles
-	// perfectly well.  But the manager entry still carries the PROVENANCE row the earlier
-	// expansion wrote, and provenance is retired only by RemoveItem / Shutdown -- neither of
-	// which an in-place re-point calls.  An incremental commit would leave GetObjectProvenance
-	// answering "(I, S)" for an object that is no longer an instance of anything.
+	// [incremental] CLEARING the slot -- `source none` -- refuses too, for a DIFFERENT reason.
+	// The chunk then derives as a plain container, which the in-place re-point handles perfectly
+	// well.  But the manager entry still carries the PROVENANCE row the earlier expansion wrote,
+	// and provenance is retired only by RemoveItem / Shutdown -- neither of which an in-place
+	// re-point calls.  An incremental commit would leave GetObjectProvenance answering "(I, S)"
+	// for an object that is no longer an instance of anything.
+	//
+	// The gate keys on THE LIVE ROW, not on the `source` text -- see the two tests below for the
+	// pair of spellings that proves why.
 	{
 		Job* j = new Job();
 		Document d = ParseToCst( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
@@ -661,9 +705,67 @@ int main()
 		const int applied = DeriveToJobIncremental( d2, *j, std::vector<NodeId>( 1, id ), &di );
 		std::string all;
 		for( std::size_t i = 0; i < di.size(); ++i ) { all += di[i]; all += "\n"; }
-		Check( applied == 0 && all.find( "carries `source none`" ) != std::string::npos,
-		       "incremental: `source none` refuses too -- ANY `source` edit takes the full re-derive" );
+		Check( applied == 0 && all.find( "PROVENANCE row" ) != std::string::npos,
+		       "incremental: `source none` refuses too -- the live provenance row is what only a full re-derive retires" );
 		j->release();
+	}
+
+	// [incremental] DELETING the `source` LINE -- the spelling a text-presence gate misses.  The
+	// chunk carries no `source` at all afterwards, so "does the text say `source`?" answers NO and
+	// the in-place re-point commits, leaving `I` a bare container with a live `(I, S)` provenance
+	// row.  Reachable in production: SceneEditor's agent-Undo of an agent-INSERTED `source` takes
+	// the `prevValueWasAbsent` arm, which routes RouteCstParamRemove_ -> ApplyCstParamRemoveChecked.
+	{
+		const std::string scene = Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" );
+		const std::string path  = WriteTempScene( "cst_source_instance_remove.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "incremental-remove: the fixture loads with a retained CST head" );
+		if( loaded ) {
+			const char* c0 = 0;
+			Check( j->GetObjects() && j->GetObjects()->GetObjectProvenance( "I", &c0, 0 ),
+			       "incremental-remove: (precondition) `I` starts with a provenance row" );
+			const int rc = j->ApplyCstParamRemoveChecked( "I", "standard_object", "source", 0 );
+			Check( rc == 2, "incremental-remove: REMOVING the `source` line takes the FULL re-derive (rc=2), not the in-place re-point (rc=1)" );
+			const char* c1 = 0;
+			Check( j->GetObjects() && !j->GetObjects()->GetObjectProvenance( "I", &c1, 0 ),
+			       "incremental-remove: ... so the stale provenance row is GONE -- `I` is a bare container now" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [incremental] ... and the OTHER direction: a `source none` line on a chunk that was NEVER an
+	// instance must NOT cost a full re-derive.  A text-presence gate charges this container a
+	// ClearAll + full derive + manager rebind on EVERY later edit, forever, for a retirement that
+	// has nothing to retire -- while the byte-identical chunk without the `source none` line goes
+	// incremental.  Pinned against the ordinary container as the control.
+	{
+		const std::string container = "standard_object\n{\nname C\nsource none\nposition 5 0 0\n}\n";
+		const std::string plain     = "standard_object\n{\nname C\nposition 5 0 0\n}\n";
+		Job* j = new Job();
+		Document d = ParseToCst( Scene( SRC_LEAF + container ) );
+		std::vector<std::string> diags;
+		DeriveToJob( d, *j, &diags );
+		const NodeId id = DocFindByName( d, "standard_object/C" );
+		Document d2 = DocSetParamValue( d, id, "position", 0, "9 0 0" );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d2, *j, std::vector<NodeId>( 1, id ), &di );
+		Check( diags.empty() && applied >= 1 && di.empty(),
+		       "incremental: a `source none` container that was never an instance still applies INCREMENTALLY (no forever-full-derive tax)" );
+		j->release();
+		// The control: the same chunk without the `source none` line behaves identically.
+		Job* j2 = new Job();
+		Document e = ParseToCst( Scene( SRC_LEAF + plain ) );
+		std::vector<std::string> ediags;
+		DeriveToJob( e, *j2, &ediags );
+		const NodeId eid = DocFindByName( e, "standard_object/C" );
+		Document e2 = DocSetParamValue( e, eid, "position", 0, "9 0 0" );
+		std::vector<std::string> ei;
+		const int applied2 = DeriveToJobIncremental( e2, *j2, std::vector<NodeId>( 1, eid ), &ei );
+		Check( applied2 >= 1 && ei.empty() && applied2 == applied,
+		       "incremental: ... exactly as the identical chunk WITHOUT the `source none` line does" );
+		j2->release();
 	}
 
 	// [incremental] ... and the consequence, through the LIVE edit path: the full re-derive is
@@ -685,6 +787,89 @@ int main()
 			       "incremental-clear: ... so `I`'s provenance row is GONE -- it is not an instance of anything any more" );
 			IObject* I = Obj( j, "I" );
 			Check( I && I->GetGeometry() == 0, "incremental-clear: ... and `I` really did become a bare container" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// ---------------------------------------------------------------- gizmo transform routing
+	// [gizmo] THE ONE WITH LIVE/CST DIVERGENCE.  An instancing chunk's own role is always
+	// `standard_object`, but the entry is built through the SOURCE's parser -- so `source <a
+	// csg_object>` yields a node that can express only translate+rotate, exactly like an authored
+	// csg_object.  CstObjectTransformKind is the gate SceneEditor consults BEFORE it mutates the
+	// live object, precisely so a transform it cannot record is never applied.  Answering on the
+	// CHUNK's role made it say 1 ("commit the full `matrix`"), SceneEditor declared the op
+	// committable and moved the object, and then ApplyCstObjectMatrixEdit refused at commit --
+	// leaving a live transform the Document never recorded, which the next full re-derive silently
+	// reverts (and the editor's own log says so: "a later full re-derive will REVERT the live
+	// transform").  The kind must answer for the TARGET role.
+	{
+		const std::string csgSrc =
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n";
+		const std::string scene = Scene( SRC_LEAF + csgSrc
+			+ "standard_object\n{\nname I\nsource C\n}\n"
+			+ "standard_object\n{\nname L\nsource S\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_gizmo.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "gizmo: the csg-source fixture loads with a retained CST head" );
+		if( loaded ) {
+			// THE BUG.  Pre-fix this was 1, and the gate and the commit disagreed.
+			Check( j->CstObjectTransformKind( "I" ) == 2,
+			       "gizmo: an instance of a `csg_object` classifies as COMPONENTS (2) -- the TARGET role decides, not the chunk's" );
+			// ... and the gate now agrees with the commit in BOTH directions.  A `matrix` write is
+			// refused (the csg target has no such param) -- which is what kind 1 would have
+			// promised -- while the components route the kind DOES promise succeeds.
+			Check( j->ApplyCstObjectMatrixEdit( "I", "1 0 0 0 0 1 0 0 0 0 1 0 5 0 0 1" ) == 0,
+			       "gizmo: ... so a `matrix` commit on it is refused, exactly as the kind now says" );
+			const double instBefore = CenterX( Obj( j, "I" ) );
+			const int rcInst = j->ApplyCstObjectComponentsEdit( "I", "5 0 0", "0 0 0" );
+			Check( rcInst >= 1, "gizmo: ... and the COMPONENTS commit the kind routes to SUCCEEDS (no live/CST divergence)" );
+			const double instAfter = CenterX( Obj( j, "I" ) );
+			Check( std::fabs( ( instAfter - instBefore ) - 5.0 ) < 1e-6,
+			       "gizmo: ... and the entry really MOVED by +5 in x (the commit was applied, not merely accepted)" );
+			// CONTROL 1: a LEAF-sourced instance is unaffected -- still kind 1, still commits its
+			// full matrix (rc=2, the full re-derive a `source` chunk's closure always takes).
+			Check( j->CstObjectTransformKind( "L" ) == 1,
+			       "gizmo: a LEAF-sourced instance still classifies as MATRIX (1)" );
+			const double leafBefore = CenterX( Obj( j, "L" ) );
+			Check( j->ApplyCstObjectMatrixEdit( "L", "1 0 0 0 0 1 0 0 0 0 1 0 7 0 0 1" ) == 2,
+			       "gizmo: ... and still commits its full matrix (rc=2)" );
+			Check( std::fabs( ( CenterX( Obj( j, "L" ) ) - leafBefore ) - 7.0 ) < 1e-6,
+			       "gizmo: ... moving it by +7 in x" );
+			// CONTROL 2: the properties-panel route (a typed param write) still refuses CLEANLY --
+			// `scale` is a `standard_object` param the csg target cannot express, the dry-run
+			// derive diagnoses, and nothing is committed or half-applied.
+			const double beforeRefusal = CenterX( Obj( j, "I" ) );
+			Check( j->ApplyCstParamEdit( "I", "object", "scale", 0, "2 2 2" ) == 0,
+			       "gizmo: the properties-panel route still refuses a `scale` on a csg-sourced instance (rc=0)" );
+			Check( std::fabs( CenterX( Obj( j, "I" ) ) - beforeRefusal ) < 1e-6,
+			       "gizmo: ... cleanly -- the refused edit left the live entry exactly where the committed one put it" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [gizmo] CONTROL 3: an AUTHORED csg_object takes the same kind-2 route it always did, and its
+	// components commit still goes through the INCREMENTAL apply (rc=1) -- the instance-aware
+	// resolution added to ApplyCstObjectComponentsEdit must not perturb the ordinary case.
+	{
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_csgctl.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "gizmo-control: the authored-csg fixture loads" );
+		if( loaded ) {
+			Check( j->CstObjectTransformKind( "C" ) == 2, "gizmo-control: an authored csg_object is still COMPONENTS (2)" );
+			Check( j->ApplyCstObjectComponentsEdit( "C", "0 4 0", "0 0 0" ) == 1,
+			       "gizmo-control: ... and its components commit still takes the INCREMENTAL apply (rc=1)" );
+			Check( j->ApplyCstObjectMatrixEdit( "C", "1 0 0 0 0 1 0 0 0 0 1 0 5 0 0 1" ) == 0,
+			       "gizmo-control: ... while a `matrix` commit on it is still refused" );
 		}
 		j->release();
 		std::remove( path.c_str() );

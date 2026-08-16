@@ -343,7 +343,10 @@ what was authored, live material included).
 
    **3a review round 1 (2026-08-16) settled four refusal rules that the
    first implementation got subtly wrong. They are semantics, not
-   phrasing, so they are recorded here:**
+   phrasing, so they are recorded here. Round 2 then narrowed the last
+   two of the four — as written they were each defeated by a spelling
+   round 1 had not enumerated — and both now read in their corrected
+   form:**
    - **`geometry none` on an instancing chunk is a SECOND FORM**, not zero
      forms. Only `source` is dropped from the instancing chunk's own
      params before the merge, so a `geometry none` written there overrides
@@ -360,12 +363,39 @@ what was authored, live material included).
    - **`source S` + `parent S` is its own refusal.** It makes `S` appear to
      have children (the instance is its own source's only child), so the
      3b has-children rule fires on a scene with no subtree. Detect
-     "the only child is this instancing chunk" and report the recursive
-     definition the author's `parent` line created.
-   - **Any `source` edit — `none` included — takes the full re-derive.**
-     Clearing the slot derives fine incrementally, but provenance is
-     retired only by `RemoveItem` / `Shutdown`, so an in-place re-point
-     leaves a stale `(I, S)` row on an object that is no longer an instance.
+     "EVERY child of `S` is a chunk that instances `S`" — *not* "`S` has
+     exactly one child", which a second self-parenting instance defeats,
+     falling straight back through to the misdirection the rule removes —
+     and report the recursive definition the author's `parent` line created.
+     A source with a genuine other child still gets the 3b message.
+   - **The full-re-derive gate is the LIVE PROVENANCE ROW, not the `source`
+     text.** Provenance is retired only by `RemoveItem` / `Shutdown`, so an
+     in-place re-point leaves a stale `(I, S)` row on an object that is no
+     longer an instance — but keying on the text closes `source none` and
+     misses `source` DELETED, which is the spelling production reaches
+     (SceneEditor's agent-Undo of an INSERTED `source` routes through
+     `ApplyCstParamRemoveChecked`). It also over-applies the other way: a
+     plain `standard_object { source none … }` container that never had
+     provenance would pay a ClearAll + full derive + manager rebind on every
+     later edit forever. So: a real `source` → full derive (it needs PASS-2
+     expansion); a live provenance row → full derive (one-shot, to retire
+     it); neither → incremental.
+
+   **3a review round 2 (2026-08-16) added a fifth, on the transform gate:**
+   - **`CstObjectTransformKind` answers for the SOURCE's role, not the
+     chunk's.** An instancing chunk is always a `standard_object`, but the
+     entry is built through the SOURCE's parser — so `source <a csg_object>`
+     yields a node with `position`/`orientation` and no
+     `matrix`/`quaternion`/`scale`. Answering on the chunk role said "kind 1,
+     commit the full `matrix`", `SceneEditor` declared the gizmo op
+     committable and mutated the live object, and the deferred
+     `ApplyCstObjectMatrixEdit` then hit the expansion's target-descriptor
+     check and refused — the exact live/CST divergence that gate exists to
+     make unreachable. `ApplyCstObjectComponentsEdit` correspondingly owns
+     the csg-sourced instance as well as the authored `csg_object`;
+     `position`/`orientation` are the two transform params both roles
+     declare, so the commit lands on the instancing chunk and the expansion
+     merges them onto the synthesized composite.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
    real tree model, Swift to `OutlineGroup`; expand state keyed by tree
