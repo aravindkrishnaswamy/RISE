@@ -1591,6 +1591,23 @@ int main()
 			       "is not wedged" );
 		}
 
+		// REDO is a history replay too, and Redo SHARES ApplyForwardMutation with
+		// the creation path -- so without an explicit "this is a replay" flag the
+		// forward container gate fires here and wedges the redo stack.  Escapable
+		// (any new edit clears redo) where the undo wedge is not, but the pair has
+		// to be symmetric or the block comment claiming it is, is a lie.
+		c.Redo();
+		{
+			const RISE::Cst::Document* doc3 = j->GetCstDocument();
+			Check( doc3 != 0, "U: (sanity) the Document survived the redo" );
+			if( doc3 ) {
+				const std::string mat3 = ParamValue( ChunkOf( *doc3, "morph" ), "material" );
+				Check( mat3 == "m3",
+				       "U: the REDO re-applied the edit onto the container -- history replay is exempt "
+				       "on both directions, not just Undo" );
+			}
+		}
+
 		// And the CLEAR is still allowed on a container, so a stale binding CAN
 		// be removed.  Refusing this would refuse the one edit that fixes the
 		// warning every later derive emits.
@@ -1702,6 +1719,7 @@ int main()
 			       "V: ... naming the container as the cause, so this cannot pass because the chunk "
 			       "merely failed to resolve" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) {
 				Check( ParamValue( ChunkOf( *d, "sentinel" ), "material" ) != "mv2",
 				       "V: ... and wrote nothing" );
@@ -1716,6 +1734,7 @@ int main()
 				String( "material" ), String( "mv2" ), /*baseVersionOrNull*/ 0 );
 			Check( r.applied, "V: the same bind onto a LEAF object IS accepted" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) {
 				Check( ParamValue( ChunkOf( *d, "solid" ), "material" ) == "mv2",
 				       "V: ... and landed in the Document" );
@@ -1735,6 +1754,7 @@ int main()
 			       "V: a bind onto a `csg_object` IS accepted -- it names no `geometry`, but it is a "
 			       "composite shape, not a container" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) {
 				Check( ParamValue( ChunkOf( *d, "carved" ), "material" ) == "mv2",
 				       "V: ... and landed in the Document" );
@@ -1749,6 +1769,7 @@ int main()
 				String( "material" ), String( "none" ), /*baseVersionOrNull*/ 0 );
 			Check( r.applied, "V: an explicit CLEAR on the container IS accepted" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) {
 				Check( ParamValue( ChunkOf( *d, "hollow" ), "material" ) != "mv",
 				       "V: ... and the stale binding is gone from the Document" );
@@ -1782,6 +1803,7 @@ int main()
 				/*baseVersionOrNull*/ 0 );
 			Check( !r.applied, "V: inserting a container chunk that names a material is refused" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) {
 				Check( ChunkOf( *d, "ghost" ).empty(),
 				       "V: ... and nothing was inserted" );
@@ -1800,6 +1822,7 @@ int main()
 			       "V: a container whose LAST `material` is a real bind is refused, even though its "
 			       "first reads as a clear" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) Check( ChunkOf( *d, "dupe" ).empty(), "V: ... and nothing was inserted" );
 		}
 		{
@@ -1810,6 +1833,7 @@ int main()
 			       "V: and one whose LAST `geometry` resolves is a LEAF, so its material is accepted -- "
 			       "reading the first would have refused a perfectly ordinary object" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) Check( ParamValue( ChunkOf( *d, "undupe" ), "material" ) == "mv",
 			               "V: ... and it landed" );
 		}
@@ -1822,6 +1846,7 @@ int main()
 				/*baseVersionOrNull*/ 0 );
 			Check( r.applied, "V: the same chunk WITH a geometry inserts fine" );
 			const RISE::Cst::Document* d = j->GetCstDocument();
+			Check( d != 0, "V: (sanity) the Document is retained" );
 			if( d ) {
 				Check( ParamValue( ChunkOf( *d, "real" ), "material" ) == "mv",
 				       "V: ... carrying its material" );

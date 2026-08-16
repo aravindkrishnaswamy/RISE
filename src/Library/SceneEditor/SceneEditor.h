@@ -911,7 +911,10 @@ namespace RISE
 
 		//! Apply a forward transform op to an object.  Caller has
 		//! already captured prevTransform.
-		bool ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit );   ///< P1: false if a binding op's forward target no longer resolves
+		//! `isReplay` -- see ApplyForwardMutation.  TRUE suppresses the 87
+		//! container gates, which are CREATION rules and must not refuse a
+		//! history replay.
+		bool ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit, bool isReplay = false );   ///< P1: false if a binding op's forward target no longer resolves
 
 		//! Restore an object's transform from a captured matrix.
 		void RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit );
@@ -996,7 +999,13 @@ namespace RISE
 		//! the loop.  Forward uses propertyValue / the new transform; revert
 		//! restores the captured prev* state.  Return false only on a
 		//! resolve/validation miss (target gone), matching the prior bodies.
-		bool ApplyForwardMutation( const SceneEdit& edit );   // Redo direction
+		//! `isReplay` = "this is a Redo or a composite-undo roll-forward, NOT a
+		//! new edit".  It suppresses the 87 container gates and ONLY those: a
+		//! creation rule must not be applied to a history replay, because a
+		//! refused replay pushes its record back and re-fails forever, stranding
+		//! everything older.  See the block comment above ApplyRevertMutation
+		//! for the full argument and the sequence that proved it.
+		bool ApplyForwardMutation( const SceneEdit& edit, bool isReplay = false );   // Redo direction
 		bool ApplyRevertMutation( const SceneEdit& edit );    // Undo direction
 
 		//! H2 Stage 3 (finishes P-WALK): the capture/validate HALF of a

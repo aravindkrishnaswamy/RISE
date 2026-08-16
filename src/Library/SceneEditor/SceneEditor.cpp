@@ -1048,7 +1048,7 @@ void SetAbsoluteStretch_( IObjectPriv& obj, const Vector3& target )
 
 }  // namespace
 
-bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
+bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit, bool isReplay )
 {
 	bool ok = true;   // P1: false if a binding op's forward target name no longer resolves
 	switch( edit.op )
@@ -1142,7 +1142,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
 			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
-			if( mat && IsContainerNodeForEdit_( obj ) ) {
+			if( mat && !isReplay && IsContainerNodeForEdit_( obj ) ) {
 				// 87: a CONTAINER has no surface, so it takes no material -- the
 				// same rule Job::AddObject applies at derive time, and the one
 				// that keeps "null geometry + emissive material" a csg_object-
@@ -1170,7 +1170,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		}
 		break;
 	case SceneEdit::SetObjectShader:
-		if( IsContainerNodeForEdit_( obj ) ) {
+		if( !isReplay && IsContainerNodeForEdit_( obj ) ) {
 			// 87: a container has no surface, so it takes no surface binding --
 			// the same rule the derive applies (DropContainerSurfaceBindings_).
 			// The pre-routing gate in ApplyForwardMutation covers every binding
@@ -1200,7 +1200,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// short-circuits the SetObjectInteriorMedium call entirely
 		// — see AsciiSceneParser.cpp StandardObjectAsciiChunkParser).
 		// Non-"none" non-empty resolves through IJob::GetMedium.
-		if( IsContainerNodeForEdit_( obj )
+		if( !isReplay && IsContainerNodeForEdit_( obj )
 		 && !( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) ) {
 			// 87: no surface means no interior to be inside of -- see the
 			// shader arm above.  CLEARING is still allowed, so an object that
@@ -2785,7 +2785,7 @@ bool SceneEditor::Undo()
 			// LIFO revert order), then move the whole popped group back redo->undo so the
 			// composite is intact + retryable.  Rollback re-applies are best-effort.
 			for( std::vector<SceneEdit>::reverse_iterator it = reverted.rbegin(); it != reverted.rend(); ++it ) {
-				ApplyForwardMutation( *it );
+				ApplyForwardMutation( *it, /*isReplay*/true );
 			}
 			for( int k = 0; k < redoMoves; ++k ) mHistory.RestoreLastUndoFromRedo();
 			mLastScope = Dirty_None;
@@ -2811,8 +2811,12 @@ bool SceneEditor::Undo()
 // The container rule ("a node with no geometry takes no surface binding") is
 // enforced on every FORWARD path: the derive, the IJob setters, this editor's
 // forward mutation, the agent param commit, the agent chunk insert.  It is
-// deliberately NOT enforced here, nor on the Redo path.  Two review rounds put
-// a gate on this function; both were wrong, and the second was wrong in a way
+// deliberately NOT enforced here, nor on Redo -- Redo shares
+// ApplyForwardMutation, which is why that function takes an `isReplay` flag
+// that suppresses exactly these gates and nothing else.  (An earlier draft of
+// this comment claimed the Redo path was ungated when it was not; the flag is
+// what makes the claim true rather than aspirational.)  Two review rounds put a
+// gate on THIS function; both were wrong, and the second was wrong in a way
 // that cost the user their scene:
 //
 //   1. `set_param(O, geometry, none)`  -- O becomes a container; the derive
@@ -2832,9 +2836,11 @@ bool SceneEditor::Undo()
 // every scene file ever authored.  Trading a cosmetic load-time warning for an
 // unrecoverable history is the wrong trade.
 //
-// The alternative considered and rejected: skip the write but let the undo
-// consume its record ("honest partial", which this file uses elsewhere when a
-// captured dependency has vanished).  That avoids the wedge but makes undo
+// The alternative considered and rejected: skip the write and let the undo
+// consume its record instead of restoring it.  (Note this is NOT what the
+// `restored = false` arms below do -- those return false, so Undo() restores
+// the record, i.e. they are the same wedge shape.  They are legacy-path-only:
+// on a retained-CST scene every binding op returns above the switch.)  That avoids the wedge but makes undo
 // LOSSY -- undoing further to restore the `geometry` would then leave the
 // object a leaf with no material, when the authored scene had one.  Undo must
 // be lossless.
@@ -3240,7 +3246,7 @@ SceneEditor::DirtyScope SceneEditor::AggregateCompositeScope( bool sawObjectOp, 
 	return Dirty_None;
 }
 
-bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
+bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 {
 
 	// P1: identity guard -- refuse if the captured target was removed and a DIFFERENT
@@ -3289,7 +3295,8 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			// correctly refused there.
 			const bool clearingBinding =
 				( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) );
-			if( IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
+			if( !isReplay
+			 && IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
 			 && !clearingBinding
 			 && IsContainerNodeForEdit_( *obj ) ) {
 				GlobalLog()->PrintEx( eLog_Warning,
@@ -3329,7 +3336,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 				}
 			}
 		}
-		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished
+		const bool fwdOk = ApplyObjectOpForward( *obj, edit, isReplay );   // P1: false if a redo target vanished
 		// POST-MUTATE: the op-level gate above admits a csg (kind 2) translate/rotate, but a ROTATE can land on
 		// GIMBAL-LOCK (~90 deg about Y) which DecomposeRigid cannot express as position/orientation.  The committable
 		// guarantee is therefore matrix-level, not op-level -- so VERIFY it here, after the mutate: if the csg result
@@ -3676,7 +3683,7 @@ bool SceneEditor::Redo()
 			if( inner.op == SceneEdit::CompositeBegin ) { ++depth; continue; }
 			if( inner.op == SceneEdit::CompositeEnd )   { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
-			if( !ApplyForwardMutation( inner ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			if( !ApplyForwardMutation( inner, /*isReplay*/true ) ) { failed = true; break; }   // P1: stop + roll back atomically
 			applied.push_back( inner );
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
@@ -3703,7 +3710,12 @@ bool SceneEditor::Redo()
 	// already moved this edit to the undo stack.  If the forward mutation FAILS (e.g.
 	// the redo's binding target vanished after capture), restore it to the redo stack --
 	// a failed redo must NOT advance the depth or leave a phantom no-op edit undoable.
-	if( !ApplyForwardMutation( edit ) ) {
+	// isReplay: a Redo is a history replay, so the 87 container gates are
+	// suppressed -- see ApplyForwardMutation's doc and the block comment above
+	// ApplyRevertMutation.  A refused redo is escapable (any new edit clears the
+	// redo stack) where a refused undo is not, but the argument is the same and
+	// the pair must be symmetric or the comment that says so is a lie.
+	if( !ApplyForwardMutation( edit, /*isReplay*/true ) ) {
 		mHistory.RestoreLastRedoFromUndo();
 		return false;
 	}

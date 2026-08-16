@@ -5010,11 +5010,17 @@ std::string ContainerBindingInChunkText_( const String& chunkText )
 	const bool isContainer = !present || geom.empty() || geom == "none";
 	if( !isContainer ) return std::string();
 
-	static const char* kBindings[] = { "material", "modifier", "shader", "radiance_map", "interior_medium" };
-	for( size_t i = 0; i < sizeof( kBindings ) / sizeof( kBindings[0] ); ++i ) {
+	// Walk the chunk's OWN params and ask the shared predicate, rather than
+	// re-listing the binding names here.  The duplicate this replaces sat ~200
+	// lines above a call to that very predicate -- which is precisely the
+	// failure its doc comment warns about.
+	for( const auto& kid : chunk->kids ) {
+		if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+		const String pname( kid->role.c_str() );
+		if( !RISE::IsObjectSurfaceBindingParamName( pname ) ) continue;
 		bool bound = false;
-		const std::string v = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, kBindings[i], &bound ) );
-		if( bound && !v.empty() && v != "none" ) return std::string( kBindings[i] );
+		const std::string v = TrimAsciiSpace_( ReadParamValueAsParsed_( chunk, kid->role.c_str(), &bound ) );
+		if( bound && !v.empty() && v != "none" ) return kid->role;
 	}
 	return std::string();
 }

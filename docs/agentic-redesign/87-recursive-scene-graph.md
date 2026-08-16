@@ -160,7 +160,10 @@ The container rule — "a node with no `geometry` takes no surface binding" — 
 enforced on every FORWARD path: the derive, the `IJob` setters, the editor's
 forward mutation, the agent param commit, the agent chunk insert. It is
 **deliberately absent from Undo and Redo**, and that asymmetry is the design,
-not an oversight.
+not an oversight.  Redo shares `ApplyForwardMutation` with the creation path,
+so that function takes an `isReplay` flag which suppresses exactly these gates
+and nothing else; Redo, the composite roll-forward and the composite-undo
+rollback all pass it.
 
 Two review rounds added a gate to `SceneEditor::ApplyRevertMutation`. The second
 was wrong in a way that cost the user their scene:
