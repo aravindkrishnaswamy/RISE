@@ -1489,3 +1489,41 @@ it was already tried and refuted here.
   (map → step → pair → commit), and the commit is the last layer:
   after r65 the projection map's journey from emission to accepted
   state has no remaining seams.
+
+- **r66 (2026-08-16):** production gates over isolated-endpoint
+  reproduction, from the r65 decomposition stop — and the round where
+  the rathole was the FIXTURE, not the solver. The decisive fact in
+  the agent's report: with the frozen drain implemented, PRODUCTION
+  acceptance is green — the r65 mechanism removed the real defect
+  (9.08 K → 0.0199 K target miss; EOS residual 1.75×10⁻⁴ → 2.34×10⁻⁷,
+  now inside the unchanged production EOS tolerance) — and the only
+  red is the r65 owner fixture demanding the coupled production step
+  reproduce the isolated-map endpoint to the r60 envelope (~10⁻¹³).
+  That fixture pin was a category error, owned as mine: the remaining
+  residual is e²-order momentum feedback (M*† legitimately carries the
+  R0 pilot response) plus ordinary molecular transport — genuine,
+  bounded, Δt-invariant but NON-accumulating physics (the map is a
+  feedback controller: each step re-emits its target from the accepted
+  state, re-absorbing coupling residuals instead of compounding them).
+  Both escalation options the fixture was forcing (a parallel no-pilot
+  shadow trajectory; suppressing source-cell crossflow) are an
+  infinite regress — every feedback level would demand another frozen
+  shadow at e³, e⁴, … Fix is a subtraction: no production semantics
+  change, no new machinery. The decomposition algebra keeps an
+  exactness fixture only at unit level, where exactness is defined;
+  the binding production arbiters become: unchanged EOS/feasibility
+  acceptance green through the hold; pilot ledger bit-exact vs emitted
+  packet + frozen drain; active mask cells in the exact hold band
+  [899 K, 900 K] once the approach completes (~50× margin over the
+  coupling scale, 300 K from the ignition gate, and coarse enough that
+  an r64-class 9 K defect trips it — the band is the regression net);
+  conservation ledgers to fp64 reduction tolerance. REJECTED: shadow
+  trajectory (regress), crossflow suppression (alters real physics to
+  satisfy a fixture), post-transport retargeting (r64-forbidden),
+  widening any production tolerance (production never needed it — it
+  was already green). No case-record regeneration beyond the agent's
+  preliminary a917258f… — r66 changes fixtures and gates, not map
+  semantics. Answer to the standing simplification question: the
+  simplification was subtraction — the pilot arc closes not with a
+  fifth layer of machinery but by deleting an unattainable
+  requirement; production had already converged.

@@ -686,10 +686,13 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     share — never both (double-drain) and never the stage-advective
     form alone (the e²/2 defect). The neighbor above receives the
     frozen donor-valued flux; its onward venting rides ordinary
-    advection (relaxation-class error). The enforcing arbiter is a
-    fixture, not plumbing prose: a single mask cell in quiescent
-    ambient, run through the FULL production tableau, must accept
-    exactly the target state within the r60 envelope. REJECTED: a
+    advection (relaxation-class error). ~~The enforcing arbiter is a
+    fixture: a single mask cell in quiescent ambient through the FULL
+    production tableau must accept exactly the target within the r60
+    envelope~~ — **superseded by r66**: that requirement was a category
+    error (see the next bullet); the binding arbiters are the r66
+    production gates, and the decomposition algebra is verified exactly
+    at unit level only. REJECTED: a
     stage-specific divergence rule (a second tableau by another name,
     touching everything that shares the R0/R1 loops); a distinct
     conservative finite-map commit (operator split needing its own
@@ -698,6 +701,39 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     ê = 1−√(2/V′−1) (composes to 1/V′ exactly only in the
     isolated-cell model — it bakes the tableau's polynomial into the
     pair and fails in company with ordinary advection).
+  - **What "exact" governs (r66) — production gates, not
+    isolated-endpoint reproduction.** The r65 frozen drain removed the
+    real defect (9.08 K → 0.0199 K; EOS residual 1.75×10⁻⁴ →
+    2.34×10⁻⁷) and the **unchanged production EOS/feasibility
+    acceptance is green in company**. The residual that remains is
+    e²-order momentum feedback (M*† legitimately carries the R0
+    pilot-driven response) plus ordinary molecular transport — genuine,
+    bounded physics of a projection map in a coupled step,
+    Δt-invariant but **non-accumulating**: the map is a feedback
+    controller, re-emitting its target from each accepted state, so
+    coupling residuals are re-absorbed every step rather than
+    compounding. Requiring the coupled step to reproduce the
+    *isolated-map* endpoint to the r60 envelope was a category error
+    in the r65 fixture pin, and chasing it (a parallel no-pilot shadow
+    trajectory; suppressing source-cell crossflow) is an infinite
+    regress — each feedback level would demand another frozen shadow.
+    Pins: (i) the decomposition algebra is verified **exactly at unit
+    level** — the scalar-update formula with prescribed frozen inputs,
+    where exactness is defined; (ii) the binding production arbiters
+    are: the unchanged production EOS/feasibility acceptance green
+    through the hold; the pilot ledger bit-exact against the emitted
+    packet + frozen drain; every active mask cell's accepted
+    temperature, once the approach completes, in the exact band
+    **[899 K, 900 K]** (~50× margin over the observed coupling scale,
+    far from the 600 K ignition gate, and coarse enough that an
+    r64-class 9 K defect trips it — the band IS the regression net);
+    and conservation ledgers closed to fp64 reduction tolerance.
+    REJECTED: the parallel no-pilot trajectory (new tableau machinery,
+    regress); crossflow suppression during the hold (alters real
+    pilot-plus-crossflow physics to satisfy a fixture — inverted
+    priorities); post-transport packet retargeting (r64-forbidden);
+    and any widening of production tolerances (nothing in production
+    needed widening — production was already green).
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps

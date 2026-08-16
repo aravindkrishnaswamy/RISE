@@ -258,11 +258,20 @@ error and must be corrected.
      composes to 1−e+e²/2 and misses the target (RED), as does consuming
      both forms (double drain). The map's S_div share remains in the frozen
      projection target so momentum and neighboring cells respond to the
-     expansion. The owner fixture — one mask cell, quiescent ambient, full
-     production tableau, accepted state exactly the target within the r60
-     envelope — is the binding arbiter of this decomposition. Stage-specific
-     divergence rules, separate finite-map commits, and tableau-preimage
-     drain emission are all forbidden. "Feasible" everywhere in this contract means the single r60
+     expansion. The decomposition algebra is verified exactly at unit level
+     (the scalar-update formula with prescribed frozen inputs); in the full
+     production tableau the binding arbiters are the r66 gates — unchanged
+     production EOS/feasibility acceptance green through the hold, the pilot
+     ledger bit-exact against the emitted packet + frozen drain, active mask
+     cells inside the exact [899 K, 900 K] hold band once the approach
+     completes, and conservation ledgers closed to fp64 reduction tolerance.
+     Requiring the coupled step to reproduce the isolated-map endpoint to
+     the r60 envelope is explicitly NOT a requirement (r66): e²-order
+     momentum feedback and concurrent molecular transport are genuine,
+     bounded, non-accumulating physics of a projection map in company.
+     Stage-specific divergence rules, separate finite-map commits,
+     tableau-preimage drain emission, parallel no-pilot shadow trajectories,
+     and crossflow suppression during the hold are all forbidden. "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance
