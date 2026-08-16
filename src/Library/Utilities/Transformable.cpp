@@ -535,7 +535,13 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 	// The projective row must be (0,0,0,1): `matrix` takes 16 free doubles, so
 	// a projective parent is authorable, and for one of those the upper 3x3 is
 	// not the whole story.  Refused rather than guessed at.
-	m_mxParentWorldInv = Matrix4Ops::Inverse( m_mxParentWorld );
+	// The inverse is built BELOW, from the same normalised quantities the test
+	// validates.  Matrix4Ops::Inverse is deliberately NOT used: it is the raw
+	// 4x4 adjugate/determinant, and that determinant under/overflows exactly
+	// where normalisation exists to stop it -- a uniform `scale 1e-120` gives
+	// det == 0.0 and Inverse then returns its INPUT, so the flag would say
+	// "invertible" while the stored matrix was P itself.  Validating one matrix
+	// and storing another is the shape of that bug; this stores what it checks.
 	{
 		const Scalar* p = &m_mxParentWorld._00;
 		double L[9];
@@ -595,6 +601,33 @@ void Transformable::FinalizeTransformations( const Matrix4& parentWorld )
 
 				wellConditioned = IsFiniteDouble( residual ) && residual <= 1e-6      // (a) rank
 				               && IsFiniteDouble( normInv )  && normInv  <= 1e9;      // (b) conditioning
+
+				if( wellConditioned ) {
+					// Un-normalise into the real inverse.  For an affine
+					// P = [ L | t ],  P^-1 = [ L^-1 | -L^-1 t ], and
+					// L^-1 = Lh^-1 / frob.  Every quantity here came out of the
+					// normalised computation that was just verified, so the
+					// stored matrix is exactly the one the flag vouches for --
+					// and it is immune to the determinant under/overflow that
+					// the raw 4x4 inverse suffers.
+					Matrix4 pinv = Matrix4Ops::Identity();
+					Scalar* q = &pinv._00;
+					for( int c = 0; c < 3; ++c ) {
+						for( int r = 0; r < 3; ++r ) {
+							q[c * 4 + r] = static_cast<Scalar>( inv[c * 3 + r] / frob );
+						}
+					}
+					const double tx = static_cast<double>( p[12] );
+					const double ty = static_cast<double>( p[13] );
+					const double tz = static_cast<double>( p[14] );
+					for( int r = 0; r < 3; ++r ) {
+						const double li0 = inv[0 * 3 + r] / frob;
+						const double li1 = inv[1 * 3 + r] / frob;
+						const double li2 = inv[2 * 3 + r] / frob;
+						q[12 + r] = static_cast<Scalar>( -( li0 * tx + li1 * ty + li2 * tz ) );
+					}
+					m_mxParentWorldInv = pinv;
+				}
 			}
 		}
 

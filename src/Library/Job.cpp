@@ -9608,6 +9608,13 @@ bool Job::SetObjectPosition(
 
 	pObj->SetPosition( Point3( pos ) );
 	pObj->FinalizeTransformations();
+	// 87 + the invariants every other transform path already maintains: a
+	// transform change moves this node's DESCENDANTS, changes world bounding
+	// boxes, and may move an emitter.  These are public IJob surface for the
+	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
+	ComposeObjectHierarchy();
+	pObjectManager->InvalidateSpatialStructure();
+	if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -9630,6 +9637,13 @@ bool Job::SetObjectOrientation(
 
 	pObj->SetOrientation( Vector3( orient ) );
 	pObj->FinalizeTransformations();
+	// 87 + the invariants every other transform path already maintains: a
+	// transform change moves this node's DESCENDANTS, changes world bounding
+	// boxes, and may move an emitter.  These are public IJob surface for the
+	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
+	ComposeObjectHierarchy();
+	pObjectManager->InvalidateSpatialStructure();
+	if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -9652,6 +9666,13 @@ bool Job::SetObjectScale(
 
 	pObj->SetScale( scale );
 	pObj->FinalizeTransformations();
+	// 87 + the invariants every other transform path already maintains: a
+	// transform change moves this node's DESCENDANTS, changes world bounding
+	// boxes, and may move an emitter.  These are public IJob surface for the
+	// API / Blender / PRISE embedding, which has no SceneEditor to do it.
+	ComposeObjectHierarchy();
+	pObjectManager->InvalidateSpatialStructure();
+	if( pObj->GetMaterial() && pObj->GetMaterial()->GetEmitter() ) BumpSceneLightGen( pScene );
 	return true;
 }
 
@@ -9997,7 +10018,14 @@ bool Job::RemoveObject(
 	const bool hadChildren = pObjectManager->HasChildren( name );
 	const bool ok = pObjectManager->RemoveItem( name );
 	if( ok && ( wasEmissive || hadChildren ) ) BumpSceneLightGen( pScene );
-	if( ok && hadChildren ) pObjectManager->InvalidateSpatialStructure();
+	// Invalidate UNCONDITIONALLY on a successful removal, not just when the
+	// object had children.  The top-level BVH stores raw IObjectPriv pointers
+	// and RemoveItem released the manager's reference, so a surviving TLAS
+	// holds a pointer to a freed object -- reachable live through the console's
+	// `remove object` on a Job that has already rendered.  (Pre-existing: the
+	// pre-87 body did not invalidate at all.  87 edited this line and closed
+	// only the hierarchy half, which read as if removal invalidated.)
+	if( ok ) pObjectManager->InvalidateSpatialStructure();
 	return ok;
 }
 

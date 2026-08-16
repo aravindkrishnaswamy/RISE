@@ -76,8 +76,11 @@ namespace RISE
 			//!    and the re-add cannot know they were there.
 			std::map<String,String> parentByName;
 
-			//! Did the LAST walk actually compose anything against a
-			//! non-identity parent?  This is what makes the "no links -> no
+			//! Did the LAST walk compose anything against a parent LINK?  (Not
+			//! "against a non-identity matrix" -- a link whose parent happens
+			//! to be identity still counts.  Conservative in the safe
+			//! direction: it can only cause an extra walk, never skip a needed
+			//! one.)  This is what makes the "no links -> no
 			//! work" fast path SOUND.  Without it, un-parenting the last child
 			//! (a detach, or removing its parent) would empty `parentByName`
 			//! and the fast path would then skip the one walk that still had to

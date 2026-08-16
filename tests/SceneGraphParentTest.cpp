@@ -41,6 +41,9 @@
 //    K -- multi-child fan-out (the tree mechanism itself).
 //    L -- a WORLD-space delta under a rotated, scaled parent, and the refusal
 //         path: either the op applies exactly or nothing changes.
+//    M -- the stored parent inverse IS the matrix the flag vouches for.
+//    N -- the ACCEPT side of the bound: a world op through an ordinary
+//         rotated, moderately anisotropic parent applies exactly.
 //    F -- the editor commits the LOCAL matrix to the CST, so a gizmo edit on
 //         a PARENTED object round-trips through a re-derive exactly.  Under
 //         86 the analogous commit wrote the composed matrix and squared the
@@ -63,6 +66,8 @@
 #include "../src/Library/Scene.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IEmitter.h"
+#include "../src/Library/Parsers/ChunkDescriptor.h"
+#include "../src/Library/Parsers/ChunkParserRegistry.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"
@@ -709,6 +714,23 @@ int main()
 		// The csg_object ITSELF is a world-visible node and IS parentable.
 		Check( j->SetObjectParent( "cut", "perch2" ),
 		       "I: the csg_object itself is an ordinary scene-graph node" );
+		// And that link is AUTHORABLE, so it can persist: a runtime-only link
+		// would be silently reverted by the next full re-derive.
+		bool csgHasParent = false;
+		{
+			const std::vector<ChunkParserEntry> parsers = CreateAllChunkParsers();
+			for( size_t e = 0; e < parsers.size(); ++e ) {
+				if( !parsers[e].parser ) continue;
+				const ChunkDescriptor& d = parsers[e].parser->Describe();
+				if( d.keyword != "csg_object" ) continue;
+				for( size_t k = 0; k < d.parameters.size(); ++k ) {
+					if( d.parameters[k].name == "parent" ) csgHasParent = true;
+				}
+			}
+		}
+		Check( csgHasParent,
+		       "I: and `csg_object` declares a `parent` param, so that link can be written to the "
+		       "document rather than living only in memory" );
 		// And a container is still refused as a CSG operand -- but "no
 		// geometry" alone must NOT be the test, because a CSGObject has none
 		// either and NESTED CSG (an inner composite as an operand) is a
@@ -965,6 +987,86 @@ int main()
 		}
 		j->release();
 		std::remove( sQ );
+	}
+
+	// =================================================================
+	// M -- the STORED inverse must be the one the flag vouches for.
+	//
+	// The guard validates a Frobenius-NORMALISED 3x3; the inverse handed to
+	// WorldToLocal must be built from those same quantities, not from the raw
+	// 4x4 adjugate/determinant.  A uniform `scale 1e-120` is perfectly
+	// conditioned and its 4x4 determinant is 1e-360, i.e. zero -- and
+	// Matrix4Ops::Inverse RETURNS ITS INPUT at zero determinant, so the flag
+	// would say "invertible" while the stored matrix was P itself.  Validating
+	// one matrix and storing another is the shape of that bug.
+	//
+	// The published contract is that WorldToLocal is usable when the flag is
+	// true, so that is what this asserts, at both ends of the exponent range.
+	// =================================================================
+	{
+		const char* kScales[4] = { "1e-120", "1e-40", "1e40", "1e120" };
+		for( int i = 0; i < 4; ++i ) {
+			const char* sT = "sg_parent_tiny.RISEscene";
+			WriteScene( sT,
+				std::string( "standard_object\n{\nname microscale\nscale " ) + kScales[i] + " " +
+				kScales[i] + " " + kScales[i] + "\n}\n"
+				"standard_object\n{\nname speckle\nparent microscale\ngeometry g\nmaterial m\n}\n" );
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( sT );
+			IObjectPriv* sp = loaded ? Obj( *j, "speckle" ) : 0;
+			const bool flag = sp && sp->IsParentWorldInvertible();
+			Check( flag, "M: a uniform scale is well-conditioned at any exponent, so the flag is TRUE" );
+			if( flag ) {
+				// The contract: P^-1 * P == I.  Round-trip a known matrix
+				// through WorldToLocal and back through the parent world.
+				const Matrix4 P = sp->GetParentWorldTransformMatrix();
+				const Matrix4 probe = Matrix4Ops::Translation( Vector3( 2, -3, 5 ) );
+				const Matrix4 back = P * sp->WorldToLocal( probe );
+				Check( Mat4Close( back, probe, 1e-9 ),
+				       "M: and WorldToLocal really inverts it -- the STORED inverse is the matrix the "
+				       "flag vouches for, not a raw 4x4 inverse whose determinant under/overflowed" );
+			}
+			j->release();
+			std::remove( sT );
+		}
+	}
+
+	// =================================================================
+	// N -- a world op through an ACCEPTED but non-trivially conditioned
+	// parent must apply EXACTLY.  Case L uses a parent with condition number
+	// ~1 and case L2 a rank-1 one; without something in between, tightening
+	// either threshold would pass every assertion in this file while making
+	// children of any ordinary rotated, moderately anisotropic container
+	// undraggable.  This pins the accept side of the bound.
+	//
+	// It also drives the OTHER op routed through the conjugation, the
+	// pivot-carrying rotate, which nothing else exercises under a parent.
+	// =================================================================
+	{
+		const char* sU = "sg_parent_midcond.RISEscene";
+		WriteScene( sU,
+			"standard_object\n{\nname bench\nscale 400 0.05 90\norientation 0 35 0\nposition 12 3 -7\n}\n"
+			"standard_object\n{\nname widget\nparent bench\ngeometry g\nmaterial m\nposition 0.5 1 0\n}\n" );
+		Job* j = new Job();
+		Check( j->LoadAsciiSceneViaCst( sU ), "N: mid-conditioned parent scene loads" );
+		IObjectPriv* w = Obj( *j, "widget" );
+		Check( w && w->IsParentWorldInvertible(),
+		       "N: an ordinary rotated, moderately anisotropic container is ACCEPTED" );
+		if( w ) {
+			const Point3 p0 = Origin( w->GetFinalTransformMatrix() );
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "widget" ) );
+			Check( c.ForTest_TranslateSelectedObjectWorld( -4, 2.5, 1 ),
+			       "N: the world-space op is ACCEPTED, not refused" );
+			IObjectPriv* after = Obj( *j, "widget" );
+			const Point3 p1 = after ? Origin( after->GetFinalTransformMatrix() ) : Point3( 0, 0, 0 );
+			Check( after && Close( p1.x - p0.x, -4, 1e-6 )
+			             && Close( p1.y - p0.y, 2.5, 1e-6 )
+			             && Close( p1.z - p0.z, 1, 1e-6 ),
+			       "N: and it moved by EXACTLY the world delta through that frame" );
+		}
+		j->release();
+		std::remove( sU );
 	}
 
 	std::cout << "  " << passCount << " passed, " << failCount << " failed" << std::endl;

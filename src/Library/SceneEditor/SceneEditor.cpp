@@ -896,25 +896,37 @@ bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& wo
 		}
 		return false;
 	}
-	// VERIFY THE RESULT, do not merely trust the predicate.
+	// VERIFY THE RESULT as well as trusting the predicate.
 	//
-	// HONEST NOTE ON REDUNDANCY: for every failure class currently KNOWN, this
-	// check and the IsParentWorldInvertible() gate above catch the same inputs,
-	// and a test can only red-prove them together (disable both and the refusal
-	// case fails; disable either alone and it still passes).  That redundancy
-	// is the point.  The predicate is a prediction about a matrix and has been
-	// wrong four times; this is a measurement of the arithmetic actually about
-	// to be committed, and there is nothing left for it to be wrong about.  If
-	// a fifth failure class of the predicate exists -- and the base rate says
-	// it might -- this is what stops a corrupt matrix reaching the document.
+	// THE TWO GATES ARE COMPLEMENTARY, NOT REDUNDANT.  An earlier revision of
+	// this comment claimed they catch the same inputs and that this measurement
+	// "cannot be wrong about rank, conditioning or scale".  Measured against 13
+	// real parent frames, 7 disagreed -- so the claim was false, and it was
+	// dangerous in the specific way it was wrong: it told the next reader the
+	// predicate was redundant, and deleting it would silently drop the whole
+	// conditioning bound.
+	//
+	//   This check is a RANK / arithmetic test.  A collapsed frame gives an
+	//   O(1) residual and is caught.  It is structurally BLIND to conditioning,
+	//   because the residual is normalised by ONE Frobenius norm over all 16
+	//   entries, which the largest column dominates: error along a direction
+	//   the parent COMPRESSES is invisible, and gets MORE invisible as the
+	//   spread grows (measured 1.0e-16 at spread 1e10, 4.8e-24 at 1e14).
+	//
+	//   IsParentWorldInvertible() carries the CONDITIONING bound -- the half
+	//   this cannot see.
+	//
+	// Keep both.  The predicate has been wrong five times about rank and scale,
+	// and this measurement cannot be wrong about those; the predicate is the
+	// one that can see conditioning.
 	//
 	// IsParentWorldInvertible() is a PREDICTION about a matrix, and predicting
-	// this has now been got wrong four times in review -- an absolute residual
-	// epsilon, a componentwise backward error, a Hadamard ratio, and a
-	// condition number built from an adjugate quotient, each defeated by a
-	// different input class.  The quantity that actually matters is not any
-	// property of the parent: it is whether THIS conjugation came out right.
-	// So compute it and check it.
+	// this has been got wrong five times in review -- an absolute residual
+	// epsilon, a componentwise backward error, a Hadamard ratio, a condition
+	// number built from an adjugate quotient, and a version that validated a
+	// normalised 3x3 while storing a raw 4x4 inverse -- each defeated by a
+	// different input class.  So do not rely on the prediction alone for the
+	// part that can be MEASURED: whether THIS conjugation came out right.
 	//
 	// The contract is `parentWorld * localOp == worldOp * parentWorld`, which
 	// is just the definition of the conjugate rearranged.  Comparing those two
@@ -945,9 +957,9 @@ bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& wo
 			if( alreadyWarned.insert( key ).second ) {
 				GlobalLog()->PrintEx( eLog_Error,
 					"SceneEditor:: world-space transform op REFUSED for `%s` -- the conjugation into its "
-					"parent frame did not verify (relative residual %g).  The parent chain composes to a "
-					"frame too degenerate or ill-conditioned to move an object through; rebalance the "
-					"ancestor's `scale`.", key.c_str(), scale > 0 ? diff / scale : diff );
+					"parent frame did not verify (relative residual %g).  An ancestor's `scale` COLLAPSES "
+					"the frame (a zero or near-zero axis), so a world-space delta has no local "
+					"equivalent.", key.c_str(), scale > 0 ? diff / scale : diff );
 			}
 			return false;
 		}

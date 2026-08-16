@@ -466,7 +466,8 @@ standard_object
   geometry.
 - A container is **not a CSG operand** either (a boolean needs a shape), and a
   CSG operand cannot take a `parent`: an operand's transform is interpreted in
-  its `csg_object`'s frame, not the world's.  Parent the `csg_object` itself.
+  its `csg_object`'s frame, not the world's.  Parent the `csg_object` itself —
+  it takes a `parent` param of its own and is an ordinary scene-graph node.
 - Removing the `parent` line — or writing `parent none` — detaches the object
   back to a root.
 - **A parent must be DECLARED BEFORE the object that names it** — the same rule

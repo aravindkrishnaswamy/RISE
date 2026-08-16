@@ -7405,7 +7405,27 @@ namespace RISE
 					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
 					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
 
-					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows );
+					if( !pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows ) ) {
+						return false;
+					}
+
+					// 87: a csg_object is an ordinary scene-graph node -- it is
+					// world-visible and its final matrix really is its world
+					// transform, so it can be parented (its OPERANDS cannot; see
+					// ObjectManager::SetObjectParent).  Same unconditional call as
+					// standard_object, so deleting the line detaches on an
+					// incremental re-apply.
+					const std::string csgParent = bag.GetString( "parent", "" );
+					const bool csgWantsParent = !csgParent.empty() && csgParent != "none";
+					if( !pJob.SetObjectParent( name.c_str(), csgWantsParent ? csgParent.c_str() : 0 ) && csgWantsParent ) {
+						if( RISE::g_cstFinalizeDiagSink ) {
+							*RISE::g_cstFinalizeDiagSink = "csg_object `" + name + "`: `parent " + csgParent +
+								"` was refused -- the parent must be a DECLARED-EARLIER object, must not be this "
+								"object, and must not already be one of its descendants";
+						}
+						return false;
+					}
+					return true;
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7415,6 +7435,7 @@ namespace RISE
 						cd.description = "Constructive solid geometry combining two objects by a boolean operation.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "parent";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this composite to (must be declared earlier); its transform is LOCAL, relative to that parent"; }
 						{ auto& p = P(); p.name = "obja";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "First operand object"; }
 						{ auto& p = P(); p.name = "objb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Second operand object"; }
 						{ auto& p = P(); p.name = "operation";   p.kind = ValueKind::Enum;      p.enumValues = {"union","intersection","subtraction"}; p.description = "CSG operation"; }

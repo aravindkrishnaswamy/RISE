@@ -3852,9 +3852,20 @@ namespace RISE
 		//! ComposeObjectHierarchy.
 		//!
 		//! Refuses (returning FALSE, changing nothing) when either name is not
-		//! a declared object, when they are the same object, or when the link
-		//! would close a cycle.  The parent must be DECLARED BEFORE the child,
-		//! the same rule `standard_shader`'s `shaderop` references live under.
+		//! a declared object, when they are the same object, when the link
+		//! would close a cycle, or when either end is a CSG OPERAND (whose
+		//! transform is interpreted in its composite's frame, not the world's;
+		//! the `csg_object` ITSELF is parentable).  The parent must be DECLARED
+		//! BEFORE the child, the same rule `standard_shader`'s `shaderop`
+		//! references live under.
+		//!
+		//! RUNTIME ONLY.  This changes the live object graph; it does NOT write
+		//! a `parent` param back to the scene document.  The document is the
+		//! source of truth on every full re-derive, so a link made only through
+		//! this call is reverted by the next one (a save + reload, a variant
+		//! switch, a material edit that falls back to a full derive).  A caller
+		//! that wants a reparent to PERSIST must also edit the child's chunk --
+		//! `standard_object` and `csg_object` both take a `parent` param.
 		/// \return TRUE if the link was recorded, FALSE if refused
 		virtual bool SetObjectParent(
 			const char* /*child*/,								///< [in] Name of the child object
