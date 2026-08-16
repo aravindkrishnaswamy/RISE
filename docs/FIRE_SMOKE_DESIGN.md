@@ -662,6 +662,42 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     the r60 envelope (envelope-burial — the inconsistency remains,
     merely unobservable); state overwrite (forbidden); Δt reduction
     (the defect is Δt-invariant).
+  - **Tableau participation (r65):** the exact pair still failed
+    through the unchanged projected-Heun commit — the drain, realized
+    as stage-state advection, composes to 1−e+e²/2 (the truncated
+    exponential: 0.82 vs the required 1/V′ = 0.80 at the cap; observed
+    9.08 K target miss, 1.75×10⁻⁴ EOS residual). The resolution is not
+    a new tableau; it is the completion of packet freezing using two
+    mechanisms the solver contract already guarantees: sources are
+    consumed **exactly once** inside Heun, and the **shared centered
+    nonadvective flux** is identical across R0/R1/commit and is never
+    FCT-limited away (the low/high pair differ only in advection).
+    Pin: the projection map's drain is a **frozen beginning-state
+    donor flux** carried in the shared nonadvective flux component —
+    for each mask cell, the entire drain e·qⁿ (e = 1 − 1/V′,
+    donor-valued at the accepted beginning state) exits the cell's
+    **top (+z) face** (canonical: the bed face is the inflow boundary
+    and expansion vents into the plume), computed once per step and
+    ridden verbatim by both stages and the commit, so the committed
+    drain is exactly e·qⁿ. The pilot's S_div share stays in the
+    projection target, frozen, so momentum and neighbors respond to
+    the expansion; the mask cell's scalar update consumes the frozen
+    flux **in place of** the stage-advective realization of that
+    share — never both (double-drain) and never the stage-advective
+    form alone (the e²/2 defect). The neighbor above receives the
+    frozen donor-valued flux; its onward venting rides ordinary
+    advection (relaxation-class error). The enforcing arbiter is a
+    fixture, not plumbing prose: a single mask cell in quiescent
+    ambient, run through the FULL production tableau, must accept
+    exactly the target state within the r60 envelope. REJECTED: a
+    stage-specific divergence rule (a second tableau by another name,
+    touching everything that shares the R0/R1 loops); a distinct
+    conservative finite-map commit (operator split needing its own
+    momentum/projection story, adjacent to the forbidden
+    fixed-volume-then-project); emitting the Heun-preimage drain
+    ê = 1−√(2/V′−1) (composes to 1/V′ exactly only in the
+    isolated-cell model — it bakes the tableau's polynomial into the
+    pair and fails in company with ordinary advection).
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
@@ -1522,7 +1558,14 @@ The most notorious practical trap in fire LES; specified accordingly:
   target state on the constant-pressure manifold by construction, and
   the exact EOS gate verifies rather than tolerates. Relaxation maps
   keep the linearized relation; their defect is second-order in Δt·rate
-  and governed by the unchanged gate plus Δt reduction.
+  and governed by the unchanged gate plus Δt reduction. **r65 pins the
+  pair's tableau participation:** the projection map's drain rides the
+  shared nonadvective flux component as a frozen beginning-state donor
+  flux (exactly-once by the existing source contract, identical across
+  R0/R1/commit, never FCT-limited), replacing — not supplementing — the
+  stage-advective realization of the map's S_div share at the mask
+  cell, so the committed drain is exactly e·qⁿ through the unchanged
+  projected-Heun tableau.
 
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:

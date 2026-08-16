@@ -247,7 +247,22 @@ error and must be corrected.
      unchanged and remains the verifier; relaxing it, or shrinking the cap
      until the residual hides below the r60 envelope, is forbidden.
      Relaxation-class maps keep the linearized relation (second-order defect,
-     governed by the unchanged gate and Δt reduction). "Feasible" everywhere in this contract means the single r60
+     governed by the unchanged gate and Δt reduction). Within the projected
+     Heun tableau (r65), a projection map's drain participates as a frozen
+     beginning-state donor flux carried in the shared centered nonadvective
+     flux component: computed once per step (e·qⁿ per mask cell, e = 1−1/V′,
+     exiting the canonical top face), consumed identically by R0, R1, and the
+     commit under the exactly-once source contract, and never FCT-limited.
+     It replaces the stage-advective realization of the map's S_div share at
+     the mask cell — realizing the drain through stage-state advection
+     composes to 1−e+e²/2 and misses the target (RED), as does consuming
+     both forms (double drain). The map's S_div share remains in the frozen
+     projection target so momentum and neighboring cells respond to the
+     expansion. The owner fixture — one mask cell, quiescent ambient, full
+     production tableau, accepted state exactly the target within the r60
+     envelope — is the binding arbiter of this decomposition. Stage-specific
+     divergence rules, separate finite-map commits, and tableau-preimage
+     drain emission are all forbidden. "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance

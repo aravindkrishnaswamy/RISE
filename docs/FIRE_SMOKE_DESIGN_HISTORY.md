@@ -1451,3 +1451,41 @@ it was already tried and refuted here.
   r63 (how much per step), r64 (exactly how) — the pilot projection
   map is now fully determined: setpoint, mask, timing, thermostat,
   cap, and pair, with nothing left underdetermined.
+
+- **r65 (2026-08-16):** frozen-drain tableau participation, from the
+  r64/Heun contract stop. The exact pair is correct locally but the
+  projected-Heun commit, realizing the drain through stage-state
+  advection, composes it to 1−e+e²/2 — the truncated exponential
+  (0.82 vs the required 1/V′ = 0.80 at the cap; observed 9.08 K
+  target miss and 1.75×10⁻⁴ EOS residual, Δt-invariant over 20
+  halvings). The agent's refusal to select a tableau implicitly was
+  correct: two of its three candidate options genuinely define new
+  tableaux. The ruling is the third — and it is not new semantics but
+  the completion of packet freezing, using two guarantees the spec
+  already makes: sources are consumed exactly once inside Heun, and
+  the shared centered nonadvective flux is identical across
+  R0/R1/commit and never FCT-limited (low/high differ only in
+  advection). The projection map's drain becomes a frozen
+  beginning-state donor flux in that slot — e·qⁿ per mask cell out the
+  canonical top (+z) face, computed once, ridden verbatim by both
+  stages and the commit — replacing (never supplementing) the
+  stage-advective realization of the map's S_div share at the mask
+  cell, while the S_div share stays in the frozen projection target so
+  momentum and neighbors respond. The binding arbiter is the owner
+  fixture: one mask cell, quiescent ambient, FULL production tableau,
+  accepted state exactly the target within the r60 envelope. REJECTED:
+  stage-specific divergence (a second tableau by another name);
+  a distinct conservative finite-map commit (its own
+  momentum/projection story, adjacent to forbidden
+  fixed-volume-then-project); the Heun-preimage drain
+  ê = 1−√(2/V′−1) (algebraically lands 0.800 exactly but only in the
+  isolated-cell model — it bakes the tableau's composition polynomial
+  into the pair and fails in company with ordinary advection);
+  cap-shrinking to bury the e²/2 defect below the envelope.
+  Calibration note, owned: r64's closing claim that any further
+  pilot-adjacent stop would indicate a different subsystem was
+  miscalibrated — "exactly how" also had to say "through which
+  tableau." The r62→r65 sequence is one design debt paid in layers
+  (map → step → pair → commit), and the commit is the last layer:
+  after r65 the projection map's journey from emission to accepted
+  state has no remaining seams.
