@@ -224,6 +224,26 @@ what was authored, live material included).
   and §2 names `LightSampler` as one of the nine consumers of the composed
   matrix, so it belongs on this list. Note a fix would still be one frame late
   as long as `AttachScene` precedes `PrepareForRendering`.
+
+  **Measured, so the bound is known rather than assumed** (2026-08-16, three
+  96×72 PT renders): an emissive sphere carried by an animated container, with
+  the sampler frozen at `t=0`, versus a fresh sampler at the same pose —
+  means 35.665 vs 35.708 (0.12 %), luminance centroids 0.03 px apart, and an
+  RMS to the static reference *lower* than the RMS between two independently
+  noisy renders of identical geometry. `LuminaryManager` holds only
+  `const IObject*` and reads the live composed transform, so sampling is
+  **unbiased**; what goes stale is `LightSampler::Prepare`'s cached selection
+  weight, its RIS representative position and the cached scene centre/radius —
+  variance, not correctness.
+
+  The same shape appears once more, on the ordering: `AttachScene` runs BEFORE
+  `PrepareForRendering` in every rasterizer, so the first render after a
+  re-parent builds the sampler from the pre-re-bake pose and
+  `builtLightGeneration = liveGen` then blocks a later rebuild. Also
+  variance-only, by the same measurement — but it is exactly the shape that was
+  a real bug on the TLAS side (a signal consumed before the thing that needed
+  it ran), and it becomes a correctness bug the day anything position-dependent
+  in `LightSampler::Prepare` stops being a pure selection heuristic.
 - **The interactive depth view's extent cache is one pass stale on a parented,
   animated scene.** `InteractivePelRasterizer` reads
   `GetSpatialStructureGeneration()` inside `AttachScene`, which the helper runs

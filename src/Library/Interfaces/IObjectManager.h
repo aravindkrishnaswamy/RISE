@@ -103,6 +103,13 @@ namespace RISE
 		//! per-frame compose.  Callers that own a Scene still owe the
 		//! LIGHT-TOPOLOGY bump on a real link change; this interface cannot
 		//! reach one.  See 87 §5 step 2.
+		//!
+		//! ASYMMETRY WORTH KNOWING: a DETACH is accepted on a CSG operand,
+		//! while every parenting form on that same node is refused.  That is
+		//! deliberate, not a missed guard -- an operand can only ever be
+		//! holding a link through a path that bypassed those refusals, and the
+		//! detach is precisely the repair for it.  Refusing here would make
+		//! such a node unrepairable.
 		virtual bool SetObjectParent(
 			const char* child,							///< [in] Name of the child object
 			const char* parent							///< [in] Name of the parent object, or null / "" to detach
