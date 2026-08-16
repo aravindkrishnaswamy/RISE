@@ -614,24 +614,45 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     O₂ = −0.273, N₂ = −0.899, exactly −qⁿ, invariant under 20
     halvings). The map therefore **self-limits its per-step
     expansion**: T′ = min(setpoint-hold target, the largest T′ with
-    V(T′)/V(T_accepted) ≤ **5/4** exactly) at fixed composition; cells
-    at or above 900 K remain untouched (identity map). The 5/4 cap is
-    a discretization-stability coefficient in the §3.9 pin-4 class,
-    not a physical tunable: it bounds the expansion drain to ¼ so the
-    combined worst-case donor drain (advective CFL ½ + expansion ¼ ≤
-    ¾) sits below 1 with margin, the same justification pattern as the
-    diffusive 1/8 pin. The approach runs 300→375→469→586→732→900 in
-    five Δt-scale steps (milliseconds, ≪ the ~0.1 s advective
-    residence), after which steady re-assertion increments are far
-    below the cap — the cap shapes a transient only and is never
-    load-bearing for whether the 600 K gate is crossed, which is what
-    distinguishes it from the rejected alternatives (a relaxation
-    time-constant τ is load-bearing: the τ-vs-advection steady balance
-    holds ~700 K at τ = 0.05 s but ~495 K at τ = 0.2 s — the power
-    rathole reborn; a hot co-flow pilot inlet avoids the spike but
-    costs new inlet geometry, a velocity constant, and a mass-ledger
-    change). Subcycling the map is likewise rejected — it is the same
-    cap hidden inside a loop with more machinery.
+    V(T′)/V(T_accepted) ≤ **17/16** exactly — r68; the original r63
+    value was 5/4) at fixed composition; cells at or above 900 K
+    remain untouched (identity map). The cap is a
+    discretization-stability coefficient in the §3.9 pin-4 class,
+    not a physical tunable, sized by TWO bounds (r68): (i) donor
+    survival — the expansion drain 1−16/17 ≈ 0.059 plus the advective
+    CFL ½ sits far below 1 (the original r63 bound, which any cap
+    ≤ 3/2 satisfies); and (ii) **EOS-deviation magnitude** — the
+    Δt-invariant finite-dose mixing deviation that a projection map
+    imprints on its neighborhood during the approach scales with the
+    per-step expansion e (measured ledger at e ≈ 0.2: mask cell
+    1.75×10⁻⁴ with the exact pair; nearest receivers 1.01×10⁻³ and
+    1.04×10⁻³, marginally over the 1.0×10⁻³ production EOS gate), so
+    the cap is sized to put the whole class under the gate with
+    margin: at e = 1/17, linear scaling predicts ≤ 3.1×10⁻⁴ (3.3×
+    margin), quadratic ~9×10⁻⁵ (11×). 17/16 = 1 + 2⁻⁴ is binary
+    exact. The approach becomes ~19 ratio-17/16 steps (milliseconds,
+    ≪ the ~0.1 s advective residence); at the hold, re-assertion
+    doses are Δt-scaled (advective cooling per step ∝ Δt), so the
+    Δt-invariant window is the approach ONLY. The cap shapes that
+    transient and is never load-bearing for whether the 600 K gate is
+    crossed, which is what distinguishes it from the rejected
+    alternatives (a relaxation time-constant τ is load-bearing: the
+    τ-vs-advection steady balance holds ~700 K at τ = 0.05 s but
+    ~495 K at τ = 0.2 s — the power rathole reborn; a hot co-flow
+    pilot inlet avoids the spike but costs new inlet geometry, a
+    velocity constant, and a mass-ledger change). Subcycling the map
+    is likewise rejected — the same cap hidden inside a loop.
+    **Boundary with the r64 cap-shrink rejection:** that rejection
+    stands for INCONSISTENCIES — a wrong discrete relation must be
+    fixed exactly, never buried under a tolerance (r64 fixed the pair
+    exactly first). Sizing the remaining *consistent, irreducible*
+    coupling term under a production tolerance is what stability
+    coefficients are FOR — the same pattern as the diffusive 1/8
+    sitting below δx²/6ν with margin. The r68 sizing carries a
+    falsifiable prediction, recorded: if the neighborhood deviation
+    class does NOT scale down with e (tier 6 fails again at ~10⁻³ at
+    cap 17/16), the class is not finite-dose mixing and a genuinely
+    different defect is present.
   - **Exact finite-source pair (r64):** the capped target still failed
     the exact EOS gate, and the gate was right again. The linearized
     pair — Δt·S_div = V′−1 with the full fixed-volume packet — is
@@ -653,8 +674,8 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     from the record thermochemistry. The accepted state is then the
     target state (ρ₀/V′, T′, P₀) **by construction**; the exact EOS
     gate is UNCHANGED and keeps its role as verifier; the r63 cap and
-    Δt·S_div ≤ ½ check are unchanged (drain at the 5/4 cap becomes
-    1 − 4/5 = 0.2). Relaxation maps keep the linearized relation:
+    Δt·S_div ≤ ½ check are unchanged (drain at the r68 17/16 cap becomes
+    1 − 16/17 ≈ 0.059; at the original r63 5/4 cap, 0.2). Relaxation maps keep the linearized relation:
     their defect is second-order in Δt·rate and vanishes under the
     existing gate + Δt reduction — no semantics change. REJECTED:
     relaxing or tolerancing the EOS gate (it has now caught two real
@@ -1619,7 +1640,7 @@ The most notorious practical trap in fire LES; specified accordingly:
   automatically. **Projection maps** (targets independent of Δt; the r62
   pilot hold is the only one in scope) get no help from Δt reduction —
   their violation is Δt-invariant — and MUST self-limit their per-step
-  increment to the expansion cap (the pilot's 5/4 volume-ratio cap in
+  increment to the expansion cap (the pilot's 17/16 volume-ratio cap in
   §3.3). Any future projection-type map inherits this contract. A
   projection map without a self-limit is a design error, not a solver
   bug: the r63 stop (pilot 300→900 K in one packet, V ≈ 3, donor update

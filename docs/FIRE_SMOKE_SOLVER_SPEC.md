@@ -235,7 +235,7 @@ error and must be corrected.
      the accepted Δt — as an explicit fail-closed check. Relaxation-class maps
      (Δt-continuous packets) reach this bound through ordinary Δt reduction;
      projection-class maps (Δt-independent targets — the r62/r63 pilot hold)
-     must self-limit their per-step increment (the pilot's 5/4 EOS
+     must self-limit their per-step increment (the pilot's 17/16 EOS
      volume-ratio cap), because their violation is Δt-invariant and reduction
      cannot help. A projection map without a self-limit is a design error.
      Additionally (r64), a projection-class map emits its packet and

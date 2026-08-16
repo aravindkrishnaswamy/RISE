@@ -1566,3 +1566,41 @@ it was already tried and refuted here.
   is load-bearing for the achieved kernel temperature — the r55/r57
   power rathole in velocity units; the isothermal hold exists precisely
   because it is the parameter-free member of this family).
+
+- **r68 (2026-08-16):** cap re-sized to 17/16 by the EOS-deviation
+  bound, from the r67 tier-6 lateral-receiver stop — and the round
+  where the arc's residual pattern finally named itself. Three stops
+  put the same number at the next-worst cell: r63 mask 1.68×10⁻³
+  (inconsistency — fixed exactly by the r64 pair), r65 receiver above
+  1.01×10⁻³ (stage-inconsistent channel — removed by r67), and now an
+  unmasked floor-layer ambient receiver laterally outside the ring at
+  1.04×10⁻³ vs the 1.0×10⁻³ gate, Δt-invariant, via ORDINARY
+  advection with consistent emission. That last datum falsifies r67's
+  empirical anchor as stated: the zero-g burn's fronts passed the
+  gates because their driving source was a relaxation map (halve Δt,
+  halve the dose); a projection map's per-step-finite expansion makes
+  every neighbor's dose Δt-invariant during the approach, so
+  finite-dose mixing with nonlinear thermochemistry leaves a
+  ~10⁻³-class manifold deviation SOMEWHERE in the ring's neighborhood
+  regardless of channel. The fixes so far relocated the class; r68
+  reduces it: the deviation scales with the per-step expansion e
+  (dose ∝ e, per-step contrast ∝ e), and the cap is the one knob that
+  is not load-bearing — it shapes only the approach transient (the
+  controller reaches the setpoint regardless; hold-phase re-assertion
+  doses are Δt-scaled since advective cooling per step ∝ Δt, so the
+  Δt-invariant window is the approach only). Cap re-pinned 5/4 →
+  **17/16** (= 1 + 2⁻⁴, binary exact; e = 1/17 ≈ 0.0588; ~19 approach
+  steps, still milliseconds): linear scaling from the measured ledger
+  predicts ≤ 3.1×10⁻⁴ (3.3× under the gate), quadratic ~9×10⁻⁵
+  (11×). Boundary with the r64 cap-shrink rejection drawn explicitly:
+  that rejection stands for INCONSISTENCIES (a wrong discrete
+  relation is fixed exactly, never buried); sizing the remaining
+  consistent, irreducible coupling term under a production tolerance
+  is what stability coefficients are FOR — the diffusive-1/8 pattern.
+  Falsifiable prediction recorded: if tier 6 fails again at ~10⁻³
+  with cap 17/16, the class does not scale with e and a genuinely
+  different defect is present. REJECTED: widening the EOS gate
+  (Δt-invariant floor burial); receiver-side S_div mixing shares
+  (patching downstream; the r67 stop showed the class surfaces at
+  whichever neighbor is worst); freezing/suppressing anything
+  (alters real physics).
