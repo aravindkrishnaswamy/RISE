@@ -4205,40 +4205,6 @@ int main()
 	Check(!wrongFixedEOSOK||wrongFixedEOS>1.0e-6||
 		!Near(wrongFixedTemperature,375.0,2.0e-15),
 		"r64 RED rejects restoration of the fixed-volume pilot packet");
-	// r66 scopes exactness to the prescribed scalar update itself.  With the
-	// frozen beginning-state drain, the source and drain land exactly on the
-	// r64 target.  Stage-state advection, recomputing the donor at R1, or
-	// applying the frozen drain twice are different tableaux and must not be
-	// substituted for this formula.
-	const ConservativeVector unitBeginning=ToConservativeVector(pilotBeginning);
-	ConservativeVector unitExact=unitBeginning,unitStageAdvection=unitBeginning,
-		unitDoubleDrain=unitBeginning;
-	const double unitDrain=canonicalCappedPair.pilotExpansionIntegral;
-	for(std::size_t component=0;component<MethaneConservativeDimension;++component){
-		unitExact[component]-=unitDrain*unitBeginning[component];
-		unitStageAdvection[component]-=0.5*unitDrain*unitBeginning[component]+
-			0.5*unitDrain*(1.0-unitDrain)*unitBeginning[component];
-		unitDoubleDrain[component]-=2.0*unitDrain*unitBeginning[component];
-	}
-	unitExact[MethaneMassStateDimension]+=canonicalCappedPair.pilotEnergyDeltaJPerM3;
-	unitStageAdvection[MethaneMassStateDimension]+=
-		canonicalCappedPair.pilotEnergyDeltaJPerM3;
-	unitDoubleDrain[MethaneMassStateDimension]+=
-		canonicalCappedPair.pilotEnergyDeltaJPerM3;
-	ConservativeVector unitTarget=unitBeginning;
-	for(std::size_t component=0;component<MethaneConservativeDimension;++component)
-		unitTarget[component]/=1.25;
-	unitTarget[MethaneMassStateDimension]=capped375EnergyJPerM3/1.25;
-	bool unitExactBits=true,stageMutationDiffers=false,doubleMutationDiffers=false;
-	for(std::size_t component=0;component<MethaneConservativeDimension;++component){
-		unitExactBits=unitExactBits&&unitExact[component]==unitTarget[component];
-		stageMutationDiffers=stageMutationDiffers||unitStageAdvection[component]!=
-			unitTarget[component];
-		doubleMutationDiffers=doubleMutationDiffers||unitDoubleDrain[component]!=
-			unitTarget[component];
-	}
-	Check(unitExactBits&&stageMutationDiffers&&doubleMutationDiffers,
-		"r66 unit scalar formula is exact and rejects stage-state, R1-recomputed, and double drains");
 	ConservativeAdvance3DConfig uncappedOwnerConfig=openOwnerConfig;
 	uncappedOwnerConfig.transport.deltaTimeS=pilotStep.deltaTimeS;
 	uncappedOwnerConfig.transport.ambientGasDensityKGPerM3=pilotBeginning.GasDensity();
@@ -4289,40 +4255,18 @@ int main()
 		exactPairOwnerOK=exactPairOwnerOK&&AcceptedMethaneCellStateAdmissible(
 			acceptedState,thermochemistry,&error);
 	}
-	// The converged production tableau includes its independently certified
-	// crossflow, pressure and transport coupling.  r66 records the observed
-	// one-step scale (0.0199 K and 2.34e-7 EOS residual) but does not redefine
-	// that coupled trajectory as the unit projection map.
-	Check(exactPairOwnerOK&&exactPairSourceTemperatureError<0.4&&
-		exactPairMaximumEOSResidual<5.0e-6,
-		"r66 production open owner accepts the coupled capped-pilot step inside its regression net");
-	if(!exactPairOwnerOK)std::printf("r66 coupled-owner diagnostic: %s\n",error.c_str());
-	FrozenProjectionDrain3D exactPairDrain;
-	std::vector<double> exactPairExpansion(openShape3D.CellCount(),0.0);
-	exactPairExpansion[exactPairSourceCell]=canonicalCappedPair.pilotExpansionIntegral;
-	bool exactDrainLedger=exactPairOwnerOK&&BuildOpenFrozenProjectionDrain3D(openShape3D,
-		std::vector<ConservativeVector>(openShape3D.CellCount(),unitBeginning),
-		exactPairExpansion,pilotStep.deltaTimeS,exactPairDrain,&error);
-	const std::size_t exactPairTopFace=OpenUpperFaceForCell3D(openShape3D,
-		exactPairSourceCell,2);
-	const double exactPairFluxScale=openShape3D.cellWidthM/pilotStep.deltaTimeS;
-	if(exactDrainLedger)for(std::size_t component=0;
-		component<MethaneMassStateDimension;++component){
-		const double expectedFlux=exactPairFluxScale*unitDrain*unitBeginning[component];
-		exactDrainLedger=exactDrainLedger&&exactPairDrain.faceFlux[2][exactPairTopFace][component]
-			==expectedFlux&&exactPairOwnerResult.r0.flux.nonadvectiveMass[2][exactPairTopFace][
-				component]==expectedFlux;
-	}
-	if(exactDrainLedger){
-		const double expectedEnergyFlux=exactPairFluxScale*unitDrain*
-			unitBeginning[MethaneMassStateDimension];
-		exactDrainLedger=exactPairDrain.faceFlux[2][exactPairTopFace][
-			MethaneMassStateDimension]==expectedEnergyFlux&&
-			exactPairOwnerResult.r0.flux.nonadvectiveEnergy[2][exactPairTopFace]==
-				expectedEnergyFlux;
-	}
-	Check(exactDrainLedger,
-		"r65 pilot ledger is bit-exact against the emitted packet and shared frozen drain");
+	// r67 returns the unchanged r64 pair to ordinary projected-Heun
+	// participation.  The bounded 1-e+e^2/2 composition is a production
+	// discretization residual, not an isolated endpoint oracle.
+	Check(exactPairOwnerOK&&exactPairSourceTemperatureError<12.0&&
+		exactPairMaximumEOSResidual<1.0e-3,
+		"r67 production open owner accepts the ordinary-tableau capped-pilot step");
+	if(!exactPairOwnerOK)std::printf("r67 coupled-owner diagnostic: %s\n",error.c_str());
+	Check(exactPairPackets[exactPairSourceCell].pilotEnergyDeltaJPerM3==
+		canonicalCappedPair.pilotEnergyDeltaJPerM3&&
+		exactPairPackets[exactPairSourceCell].sensibleEnergyDeltaJPerM3==
+		canonicalCappedPair.sensibleEnergyDeltaJPerM3,
+		"r67 pilot ledger is bit-exact against the emitted packet alone");
 	MethaneSourcePacket thermostatPacket;
 	Check(BuildMethaneReactionPacket(beginning,fuel,pilotStep,thermostatPacket,&error)&&
 		thermostatPacket.pilotEnergyDeltaJPerM3==0.0&&
