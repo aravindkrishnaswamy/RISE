@@ -1385,3 +1385,37 @@ it was already tried and refuted here.
   capstone arc itself is not the rathole — the gates keep catching real
   defects, and the pilot was the last invented component in the physics
   chain.
+
+- **r63 (2026-08-16):** expansion-capped pilot approach and the
+  source-expansion admissibility contract, from the tier-6 stop on the
+  r62 map — and a defect in r62 as pinned, owned as such: the max()
+  hold was the design's first Δt-*independent* (projection-type) local
+  map, and the source-packet doctrine had only ever implicitly assumed
+  Δt-continuous (relaxation-type) maps whose packets vanish with Δt. A
+  fixed-composition 300→900 K jump has EOS volume ratio V ≈ 3, giving
+  Δt·S_div = V−1 = 2 at EVERY Δt, so the donor update negated the
+  cell's inventories (observed O₂ = −0.273, N₂ = −0.899 ≈ −qⁿ,
+  invariant under 20 halvings from 2.106 s to 4.0×10⁻⁶ s) — the agent
+  correctly identified this as Δt-independent and earlier than mixing
+  or eligibility, and correctly refused to invent semantics. Fix, and
+  the simplification reflection re-run at the owner's request: (1) the
+  pilot map self-limits its per-step expansion to an exact **5/4 EOS
+  volume-ratio cap** — a §3.9 pin-4-class stability coefficient
+  (advective ½ + expansion ¼ ≤ ¾ combined donor drain, below 1 with
+  margin, same justification pattern as the diffusive 1/8), shaping a
+  ~5-step millisecond transient (300→375→469→586→732→900) and never
+  load-bearing for gate crossing; (2) the general contract: per cell,
+  packets must satisfy Δt·S_div ≤ ½ exactly, fail-closed —
+  relaxation-class maps reach it via ordinary Δt reduction,
+  projection-class maps must self-limit, and a projection map without a
+  self-limit is a design error. REJECTED alternatives: relaxation to
+  the setpoint with time constant τ (τ is load-bearing — the
+  τ-vs-advection steady balance holds ~700 K at τ = 0.05 s but ~495 K
+  at τ = 0.2 s: the power-constant rathole reborn under a new name); a
+  hot annular co-flow pilot inlet (no expansion spike, but new inlet
+  geometry + a velocity constant + a mass-ledger change — larger
+  surgery for no added physics); subcycling the map (the same cap
+  hidden inside a loop); fixed-volume application with post-hoc
+  projection (already forbidden by the spec). The setpoint, mask,
+  timing, thermostat semantics, ledger, and exclusion rules of r62 all
+  survive unchanged.

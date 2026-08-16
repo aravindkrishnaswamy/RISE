@@ -606,6 +606,32 @@ fresh mixtures — an adiabatically burnt cold stoichiometric pocket reaches
     step — and scale-invariant in the way r57 intended: identical
     kernel temperature at every tier and burner size, with total pilot
     energy emerging from the flow instead of being pinned.
+  - **Expansion-capped approach (r63):** the r62 map as first pinned
+    was Δt-*independent* — its packet does not shrink with Δt — and a
+    fixed-composition 300→900 K jump has EOS volume ratio V ≈ 3, so
+    the donor update q^L = qⁿ(1 − Δt·S_div) with Δt·S_div = V−1 = 2
+    negates the cell's inventories at every Δt (the tier-6 stop:
+    O₂ = −0.273, N₂ = −0.899, exactly −qⁿ, invariant under 20
+    halvings). The map therefore **self-limits its per-step
+    expansion**: T′ = min(setpoint-hold target, the largest T′ with
+    V(T′)/V(T_accepted) ≤ **5/4** exactly) at fixed composition; cells
+    at or above 900 K remain untouched (identity map). The 5/4 cap is
+    a discretization-stability coefficient in the §3.9 pin-4 class,
+    not a physical tunable: it bounds the expansion drain to ¼ so the
+    combined worst-case donor drain (advective CFL ½ + expansion ¼ ≤
+    ¾) sits below 1 with margin, the same justification pattern as the
+    diffusive 1/8 pin. The approach runs 300→375→469→586→732→900 in
+    five Δt-scale steps (milliseconds, ≪ the ~0.1 s advective
+    residence), after which steady re-assertion increments are far
+    below the cap — the cap shapes a transient only and is never
+    load-bearing for whether the 600 K gate is crossed, which is what
+    distinguishes it from the rejected alternatives (a relaxation
+    time-constant τ is load-bearing: the τ-vs-advection steady balance
+    holds ~700 K at τ = 0.05 s but ~495 K at τ = 0.2 s — the power
+    rathole reborn; a hot co-flow pilot inlet avoids the spike but
+    costs new inlet geometry, a velocity constant, and a mass-ledger
+    change). Subcycling the map is likewise rejected — it is the same
+    cap hidden inside a loop with more machinery.
   - **Timing:** active from run start (cold start or pre-roll start
     alike) for exactly **1·t_ft** (the r54 flow-through time), then off.
     The discard/pre-roll window is 5·t_ft, so no pilot energy overlaps
@@ -1441,6 +1467,23 @@ The most notorious practical trap in fire LES; specified accordingly:
   conservative advance that supplies expansion. Applying an accepted source
   update at fixed volume and projecting afterwards is a RED failure, as is
   re-running a finite-step map at an RK stage.
+
+  **Source-expansion admissibility (r63) — two map classes, one explicit
+  bound.** The coupled advance can realize only expansions the donor
+  update survives: per cell, the frozen packet must satisfy
+  **Δt·S_div ≤ ½** (exact) at the accepted Δt, an explicit fail-closed
+  check rather than an implicit hope. Local maps divide into two
+  admissible classes. **Relaxation maps** (chemistry, phase change,
+  backward-Euler radiation) are Δt-continuous — ΔU_src → 0 as Δt → 0 —
+  so the existing rejection/Δt-reduction machinery reaches admissibility
+  automatically. **Projection maps** (targets independent of Δt; the r62
+  pilot hold is the only one in scope) get no help from Δt reduction —
+  their violation is Δt-invariant — and MUST self-limit their per-step
+  increment to the expansion cap (the pilot's 5/4 volume-ratio cap in
+  §3.3). Any future projection-type map inherits this contract. A
+  projection map without a self-limit is a design error, not a solver
+  bug: the r63 stop (pilot 300→900 K in one packet, V ≈ 3, donor update
+  negating inventories at every Δt) is the canonical instance.
 
   The transport advance is **projected Heun** (predictor R0, corrector sample
   R1, commit) over the scalar/energy vector and conservative momentum, with:

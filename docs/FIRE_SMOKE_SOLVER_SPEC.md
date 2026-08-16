@@ -230,7 +230,14 @@ error and must be corrected.
      A fixed iteration count with an unconverged R0/R1/R2 or open-boundary solve is
      forbidden; failure rejects/reduces Δt. If the frozen packet makes either
      low-order state infeasible after fluxing, likewise reject/recompute rather
-     than clamp. "Feasible" everywhere in this contract means the single r60
+     than clamp. The packet must additionally satisfy the r63
+     source-expansion admissibility bound per cell — Δt·S_div ≤ ½ exactly at
+     the accepted Δt — as an explicit fail-closed check. Relaxation-class maps
+     (Δt-continuous packets) reach this bound through ordinary Δt reduction;
+     projection-class maps (Δt-independent targets — the r62/r63 pilot hold)
+     must self-limit their per-step increment (the pilot's 5/4 EOS
+     volume-ratio cap), because their violation is Δt-invariant and reduction
+     cannot help. A projection map without a self-limit is a design error. "Feasible" everywhere in this contract means the single r60
      envelope predicate (§3.7): one implementation, one κ·ε·scale_r outward
      relaxation with accumulation-based forward-error scales, shared verbatim
      by the low-order gate, the r59 corrected-state check, acceptance
