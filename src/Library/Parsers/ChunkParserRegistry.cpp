@@ -7115,9 +7115,13 @@ namespace RISE
 					//
 					// A refused link FAILS the chunk rather than silently
 					// dropping the object out of its tree.  IJob::SetObjectParent
-					// logs the specific reason (undeclared parent, self-parent,
-					// cycle); mirror it into the CST diagnostic sink so the
-					// scene author sees it at the load, not only in the log.
+					// logs the SPECIFIC reason (undeclared parent, self-parent,
+					// cycle, CSG operand at either end); the diagnostic sink below
+					// cannot reach it -- the bool return is all that comes back --
+					// so it enumerates the whole refusal set and points at the log
+					// line.  An earlier wording asserted three conditions as if
+					// they were the only ones, which read as a lie whenever the
+					// cause was the fourth.
 					// ALWAYS call, including with no parent: this Finalize also runs
 					// on an INCREMENTAL re-apply, where the edit may have REMOVED
 					// the `parent` line.  Skipping the call in that case would
@@ -7131,8 +7135,10 @@ namespace RISE
 						if( !pJob.SetObjectParent( name.c_str(), wantsParent ? parent.c_str() : 0 ) && wantsParent ) {
 							if( RISE::g_cstFinalizeDiagSink ) {
 								*RISE::g_cstFinalizeDiagSink = "standard_object `" + name + "`: `parent " + parent +
-									"` was refused -- the parent must be a DECLARED-EARLIER object, must not be "
-									"this object, and must not already be one of its descendants";
+									"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
+									"object; must not already be one of its descendants; and must not be a CSG "
+									"operand (parent the csg_object instead).  The log line immediately above names "
+									"WHICH of those it was.";
 							}
 							bRet = false;
 						}
@@ -7425,8 +7431,10 @@ namespace RISE
 					if( !pJob.SetObjectParent( name.c_str(), csgWantsParent ? csgParent.c_str() : 0 ) && csgWantsParent ) {
 						if( RISE::g_cstFinalizeDiagSink ) {
 							*RISE::g_cstFinalizeDiagSink = "csg_object `" + name + "`: `parent " + csgParent +
-								"` was refused -- the parent must be a DECLARED-EARLIER object, must not be this "
-								"object, and must not already be one of its descendants";
+								"` was refused.  A `parent` must be a DECLARED-EARLIER object; must not be this "
+								"object; must not already be one of its descendants; and must not be a CSG operand "
+								"(parent that csg_object instead).  The log line immediately above names WHICH of "
+								"those it was.";
 						}
 						return false;
 					}
@@ -7875,9 +7883,11 @@ namespace RISE
 						const std::string lightParent = bag.GetString( "parent", "" );
 						const bool wants = !lightParent.empty() && lightParent != "none";
 						if( !pJob.SetObjectParent( name.c_str(), wants ? lightParent.c_str() : 0 ) && wants ) {
-							return Reject( "`parent " + lightParent + "` was refused -- the parent must be a "
-							               "DECLARED-EARLIER object, must not be this object, and must not "
-							               "already be one of its descendants" );
+							return Reject( "`" + name + "`: `parent " + lightParent + "` was refused.  A `parent` "
+							               "must be a DECLARED-EARLIER object; must not be this object; must not "
+							               "already be one of its descendants; and must not be a CSG operand (parent "
+							               "the csg_object instead).  The log line immediately above names WHICH of "
+							               "those it was." );
 						}
 					}
 
@@ -8168,9 +8178,11 @@ namespace RISE
 						const std::string lightParent = bag.GetString( "parent", "" );
 						const bool wants = !lightParent.empty() && lightParent != "none";
 						if( !pJob.SetObjectParent( name.c_str(), wants ? lightParent.c_str() : 0 ) && wants ) {
-							return Reject( "`parent " + lightParent + "` was refused -- the parent must be a "
-							               "DECLARED-EARLIER object, must not be this object, and must not "
-							               "already be one of its descendants" );
+							return Reject( "`" + name + "`: `parent " + lightParent + "` was refused.  A `parent` "
+							               "must be a DECLARED-EARLIER object; must not be this object; must not "
+							               "already be one of its descendants; and must not be a CSG operand (parent "
+							               "the csg_object instead).  The log line immediately above names WHICH of "
+							               "those it was." );
 						}
 					}
 

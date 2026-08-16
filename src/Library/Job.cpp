@@ -5655,14 +5655,19 @@ static void DropContainerSurfaceBindings_( const char* name, const bool bContain
 {
 	if( !bContainer ) return;
 	if( !pMat && !pMod && !pShaderObj && !pRadPnt ) return;
+	// Comma-join the slots actually bound.  The earlier space-join left a
+	// double space before "binding(s)" and read as a run-on -- and this is the
+	// message for the single most common container mistake, so it is the one
+	// most likely to be pasted into a bug report or read by an agent.
+	std::string slots;
+	if( pMat )       { slots += "material"; }
+	if( pMod )       { if( !slots.empty() ) slots += ", "; slots += "modifier"; }
+	if( pShaderObj ) { if( !slots.empty() ) slots += ", "; slots += "shader"; }
+	if( pRadPnt )    { if( !slots.empty() ) slots += ", "; slots += "radiance_map"; }
 	GlobalLog()->PrintEx( eLog_Warning,
 		"Job:: object `%s` names no `geometry`, so it is a CONTAINER node -- a pure transform with no "
-		"surface.  Its %s%s%s%s binding(s) are IGNORED; put them on a child object that has geometry.",
-		name ? name : "(unnamed)",
-		pMat       ? "material "       : "",
-		pMod       ? "modifier "       : "",
-		pShaderObj ? "shader "         : "",
-		pRadPnt    ? "radiance_map "   : "" );
+		"surface.  Its `%s` binding(s) are IGNORED; put them on a child object that has geometry.",
+		name ? name : "(unnamed)", slots.c_str() );
 	pMat = 0; pMod = 0; pShaderObj = 0; pRadPnt = 0;
 }
 

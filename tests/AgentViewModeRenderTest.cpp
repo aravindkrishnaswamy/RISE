@@ -3552,7 +3552,17 @@ static const char* const kSceneIsolateCsg =
 	"sphere_geometry\n{\n\tname geo2\n\tradius 0.5\n}\n\n"
 	"standard_object\n{\n\tname op_c\n\tgeometry geo2\n\tmaterial mat\n\tposition -20.4 0 0\n}\n\n"
 	"standard_object\n{\n\tname op_d\n\tgeometry geo2\n\tmaterial mat\n\tposition -19.6 0 0\n}\n\n"
-	"csg_object\n{\n\tname csg_second\n\tobja op_c\n\tobjb op_d\n\toperation union\n\tmaterial mat\n}\n";
+	"csg_object\n{\n\tname csg_second\n\tobja op_c\n\tobjb op_d\n\toperation union\n\tmaterial mat\n}\n\n"
+	// 87: a NESTED composite used as an operand.  `csg_inner` is
+	// world-invisible (its outer composite hid it) AND geometry-less (a
+	// CSGObject takes its shape from its operands and never assigns
+	// pGeometry), so it is the one object for which "hidden and no geometry"
+	// does NOT mean "container node".
+	"standard_object\n{\n\tname op_e\n\tgeometry geo2\n\tmaterial mat\n\tposition 30.0 0 0\n}\n\n"
+	"standard_object\n{\n\tname op_f\n\tgeometry geo2\n\tmaterial mat\n\tposition 30.8 0 0\n}\n\n"
+	"csg_object\n{\n\tname csg_inner\n\tobja op_e\n\tobjb op_f\n\toperation union\n\tmaterial mat\n}\n\n"
+	"standard_object\n{\n\tname op_g\n\tgeometry geo2\n\tmaterial mat\n\tposition 30.4 0.6 0\n}\n\n"
+	"csg_object\n{\n\tname csg_outer\n\tobja csg_inner\n\tobjb op_g\n\toperation union\n\tmaterial mat\n}\n";
 
 // G1 fix-round (2026-08-10, FIX 5): a NORMAL object (`sph_obj`) plus a
 // DEGENERATE one (`degen_obj`, geometry radius 0 -- collapses its LOCAL
@@ -4032,6 +4042,25 @@ static void RunIsolateNameFailureTest()
 		rootP.isolate = "csg_root";
 		const AgentRenderResult rootR = session->Render( rootP );
 		Check( rootR.ok && rootR.isolateApplied, "the CSG composite itself isolates fine" );
+
+		// 87 REGRESSION (2026-08-16): a NESTED composite used as an operand is
+		// hidden AND geometry-less, so a "no geometry means container node"
+		// test misfiles it.  For a while it did: the author of `csg_inner` was
+		// told it was "a CONTAINER node (a standard_object with no geometry)"
+		// and to "isolate one of its children instead" -- children a composite
+		// does not have -- while its real consumer, `csg_outer`, went unnamed.
+		// The pre-87 message was correct; the container branch regressed it.
+		AgentRenderParams nestP;
+		nestP.renderTarget = AgentRenderTarget::ObjectMap;
+		nestP.isolate = "csg_inner";
+		const AgentRenderResult nestR = session->Render( nestP );
+		Check( !nestR.ok, "a NESTED composite used as an operand fails the render" );
+		Check( nestR.message.find( "CONTAINER" ) == std::string::npos,
+		       "MONEY ASSERTION (87): a nested composite operand is NOT reported as a container node -- "
+		       "it has no geometry, but its shape comes from its operands, so `no geometry` alone does "
+		       "not identify a container" );
+		Check( nestR.message.find( "\"csg_outer\"" ) != std::string::npos,
+		       "... and it names the composite that actually consumed it" );
 		pJob->release();
 	}
 

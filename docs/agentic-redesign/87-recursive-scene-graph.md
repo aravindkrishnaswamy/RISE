@@ -118,8 +118,12 @@ a half-migrated `member`/`parent` world is worse than either.
 - `override_object`'s grouped-member refusal
 - `Cst.cpp`'s group incremental-derive refusal
 - `tests/GroupChunkTest.cpp`, `tests/GroupPanelCategoryTest.cpp`
-- rewrite `scenes/Tests/Geometry/group_basic.RISEscene` and
-  `group_gallery.RISEscene` as parent-link scenes
+- `scenes/Tests/Geometry/group_basic.RISEscene` and
+  `group_gallery.RISEscene` — as implemented, both were DELETED and one new
+  scene, `object_parenting.RISEscene`, was written in their place (the two
+  group scenes demonstrated a single-level feature that no longer exists;
+  rewriting each as a parent-link scene would have produced two near-duplicates
+  of the same articulated-hierarchy demo)
 
 Also folded away by the new design: `instance_array` becomes the `source`
 + count/expression mode of `standard_object` (killing its document-wide

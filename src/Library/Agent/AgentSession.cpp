@@ -11477,11 +11477,21 @@ namespace RISE
 					// CSGObject::AssignObjects on its operands, and 87's
 					// CONTAINER nodes -- a `standard_object` naming no
 					// `geometry`, which is a pure transform other objects are
-					// parented to.  They are told apart by geometry: an operand
-					// HAS geometry and is hidden; a container has none.  Naming
-					// the wrong one would send the author hunting for a CSG
-					// composite that does not exist.
-					if( !obj->GetGeometry() ) {
+					// parented to.  Naming the wrong one would send the author
+					// hunting for a CSG composite that does not exist.
+					//
+					// "No geometry" alone does NOT tell them apart: a CSGObject
+					// takes its shape from its operands and never assigns
+					// pGeometry, so a NESTED composite used as an operand is
+					// world-invisible AND geometry-less.  An earlier draft of
+					// this block said an operand "HAS geometry and is hidden",
+					// which is true only of leaf operands -- it told the author
+					// of `csg_comprehensive.RISEscene`'s `r3c_inner_csg` that it
+					// was a container and to isolate children it does not have.
+					// Same guard as ObjectManager's IsContainerNode_ and Job's
+					// IsContainerObject_, which both carry this reasoning.
+					if( !obj->GetGeometry()
+					 && dynamic_cast<const Implementation::CSGObject*>( obj ) == 0 ) {
 						outMessage = "isolate \"" + name + "\" is not renderable -- it is a CONTAINER node "
 							"(a `standard_object` with no `geometry`), i.e. a transform its children are "
 							"parented to, with no surface of its own.  Isolate one of its children instead.  "

@@ -1177,7 +1177,8 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 			// op, but only on a scene with a retained CST Document; this is the
 			// API / Blender / PRISE path, which has none.
 			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor:: `%s` is a container node (no geometry), so it takes no shader",
+				"SceneEditor:: `%s` is a container node (no geometry), so it takes no shader; bind it to a "
+				"child that has geometry",
 				edit.objectName.c_str() );
 			ok = false;
 		} else if( mShaderManager ) {
@@ -1206,7 +1207,8 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit,
 			// shader arm above.  CLEARING is still allowed, so an object that
 			// became a container can be tidied up.
 			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor:: `%s` is a container node (no geometry), so it takes no interior medium",
+				"SceneEditor:: `%s` is a container node (no geometry), so it takes no interior medium (no "
+				"surface means no interior to be inside of); bind it to a child that has geometry",
 				edit.objectName.c_str() );
 			ok = false;
 		} else if( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) {

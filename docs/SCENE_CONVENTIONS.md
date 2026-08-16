@@ -478,6 +478,11 @@ standard_object
   warning — a container has no surface, and an emissive material on one would
   be a light that nothing can ever sample.  Put them on a child that has
   geometry.
+- **`rect_light` and `shape_light` take a `parent` too.**  Each synthesizes an
+  ordinary scene-graph object, so a lamp can be carried by an assembly: parent
+  it to the fixture and the fixture's transform moves the light with it.  Their
+  `center` is then LOCAL to that parent, exactly as a `standard_object`'s
+  `position` is.
 - A container is **not a CSG operand** either (a boolean needs a shape), and a
   CSG operand cannot take a `parent`: an operand's transform is interpreted in
   its `csg_object`'s frame, not the world's.  Parent the `csg_object` itself —

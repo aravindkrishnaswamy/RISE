@@ -482,8 +482,9 @@ bool ObjectManager::SetObjectParent( const char* child, const char* parent )
 		// below is the guard for a RUNTIME reparent, where both endpoints
 		// already exist.
 		GlobalLog()->PrintEx( eLog_Error,
-			"ObjectManager::SetObjectParent:: parent `%s` of `%s` is not a registered object "
-			"-- a `parent` must be DECLARED BEFORE the object that names it", parent, child );
+			"ObjectManager::SetObjectParent:: parent `%s` of `%s` is not a registered OBJECT "
+			"-- a `parent` must name an object (not a material, painter, geometry, ...) and it must "
+			"be DECLARED BEFORE the object that names it", parent, child );
 		return false;
 	}
 
@@ -593,10 +594,9 @@ bool ObjectManager::ComposeWorldTransforms() const
 	// next full derive.  Composition is indifferent to sibling order -- each
 	// child composes against its parent alone -- so this matters only to the
 	// tree UI (87 section 5 step 4), which should read order from the CST
-	// document if it needs to be exact across a reload.  The composed matrices do not depend on sibling order at all
-	// (each child composes against its parent alone), but a stable, meaningful
-	// order is what a tree UI needs, and deriving it here means the UI does not
-	// have to keep a parallel index.
+	// document if it needs to be exact across a reload.  A stable, meaningful
+	// order is still what a tree UI needs, and deriving it here means the UI
+	// does not have to keep a parallel index.
 	std::map<String, std::vector<std::pair<unsigned long long, IObjectPriv*> > > childrenOf;
 	std::vector<IObjectPriv*> roots;
 	std::map<const IObjectPriv*, String> nameOf;
