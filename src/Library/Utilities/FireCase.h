@@ -52,7 +52,8 @@ namespace RISE
 			std::string pilotMaskRule;
 			std::string limiterAcceptanceModelVersion;
 			double pilotSetpointTemperatureK=0.0,pilotExpansionVolumeRatioCap=0.0,
-				pilotDurationMultiplier=0.0;
+				pilotDurationMultiplier=0.0,pilotAmbientTemperatureK=0.0,
+				pilotRampExponentPerFlowThrough=0.0;
 		};
 
 		struct RecordV1
@@ -73,9 +74,10 @@ namespace RISE
 			const AuthoredV1&,const DerivedV1&,std::vector<std::uint8_t>&,
 			std::string& error );
 		bool EvaluatePilotSetpointTemperatureK(
-			const DerivedV1&,bool maskCell,double simulationTimeS,
+			const DerivedV1&,bool maskCell,double beginningTimeS,double endTimeS,
 			double& setpointTemperatureK,
 			std::string& error );
+		double PilotCommandMaximumStepS(const DerivedV1&);
 		bool BuildMethaneV1(
 			const AuthoredV1&,const FireSimulationMethaneRecord&,
 			const std::vector<std::string>& referencedRecordIds,

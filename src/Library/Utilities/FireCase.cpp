@@ -128,20 +128,44 @@ bool RISE::FireCase::BuildPilotMask(const AuthoredV1& authored,
 }
 
 bool RISE::FireCase::EvaluatePilotSetpointTemperatureK(const DerivedV1& derived,
-	const bool maskCell,const double simulationTimeS,double& result,std::string& error)
+	const bool maskCell,const double beginningTimeS,const double endTimeS,
+	double& result,std::string& error)
 {
 	result=0.0;
 	if(!FinitePositive(derived.pilotSetpointTemperatureK) ||
 		!FinitePositive(derived.pilotExpansionVolumeRatioCap) ||
 		derived.pilotExpansionVolumeRatioCap!=17.0/16.0 ||
 		!FinitePositive(derived.pilotDurationMultiplier) ||
+		!FinitePositive(derived.pilotAmbientTemperatureK) ||
+		!FinitePositive(derived.pilotRampExponentPerFlowThrough) ||
 		!FinitePositive(derived.flowThroughTimeS) ||
-		!std::isfinite(simulationTimeS) || simulationTimeS<0.0)
+		!std::isfinite(beginningTimeS) || beginningTimeS<0.0 ||
+		!std::isfinite(endTimeS) || endTimeS<beginningTimeS)
 		return Fail(error,"fire case pilot evaluation has invalid inputs");
-	const double endS=derived.pilotDurationMultiplier*derived.flowThroughTimeS;
-	if(!std::isfinite(endS)) return Fail(error,"fire case pilot duration is invalid");
-	if(maskCell && simulationTimeS<endS) result=derived.pilotSetpointTemperatureK;
+	const double pilotEndS=derived.pilotDurationMultiplier*derived.flowThroughTimeS;
+	if(!std::isfinite(pilotEndS)) return Fail(error,"fire case pilot duration is invalid");
+	if(maskCell && beginningTimeS<pilotEndS && endTimeS>beginningTimeS) {
+		const double commandTimeS=std::min(endTimeS,pilotEndS);
+		const double exponent=std::min(1.0,derived.pilotRampExponentPerFlowThrough*
+			commandTimeS/derived.flowThroughTimeS);
+		result=derived.pilotAmbientTemperatureK*std::pow(
+			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK,exponent);
+	}
 	return true;
+}
+
+double RISE::FireCase::PilotCommandMaximumStepS(const DerivedV1& derived)
+{
+	if(!FinitePositive(derived.pilotSetpointTemperatureK)||
+		!FinitePositive(derived.pilotAmbientTemperatureK)||
+		derived.pilotSetpointTemperatureK<=derived.pilotAmbientTemperatureK||
+		!FinitePositive(derived.pilotExpansionVolumeRatioCap)||
+		derived.pilotExpansionVolumeRatioCap<=1.0||
+		!FinitePositive(derived.pilotRampExponentPerFlowThrough)||
+		!FinitePositive(derived.flowThroughTimeS))return 0.0;
+	return derived.flowThroughTimeS*std::log(derived.pilotExpansionVolumeRatioCap)/
+		(derived.pilotRampExponentPerFlowThrough*std::log(
+			derived.pilotSetpointTemperatureK/derived.pilotAmbientTemperatureK));
 }
 
 double RISE::FireCase::SelectTimeStepS(const double dx,const double speed,
@@ -205,11 +229,13 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 
 	DerivedV1 d; d.resolutionTier=tierValue; d.peakEnvelope=peak;
 	d.limiterAcceptanceModelVersion="two_class_face_infimum_v1";
-	d.pilotModelVersion="prescribed_isothermal_kernel_ordinary_tableau_restored_manifold_v5";
+	d.pilotModelVersion="continuous_command_ramp_manifold_exact_acceptance_v6";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
 	d.pilotSetpointTemperatureK=900.0;
 	d.pilotExpansionVolumeRatioCap=17.0/16.0;
 	d.pilotDurationMultiplier=1.0;
+	d.pilotAmbientTemperatureK=fuel.ReferenceTemperatureK();
+	d.pilotRampExponentPerFlowThrough=10.0;
 	d.sourceAreaM2=sourceArea;
 	d.referenceHeatReleaseRateW=1000.0*nominalHeatReleaseKW*peak;
 	d.nominalFuelFluxKGPerM2S=nominalFuelFlux;
@@ -310,6 +336,8 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 		{"fuel_mass_flux_kg_per_m2_s",Value::Float(d.nominalFuelFluxKGPerM2S)},
 		{"pre_roll_or_discard_s",Value::Float(d.preRollOrDiscardS)},
 		{"pilot",Value::MapValue({
+			{"ambient_temperature_K",Value::Float(d.pilotAmbientTemperatureK)},
+			{"command_exponent_per_t_ft",Value::Float(d.pilotRampExponentPerFlowThrough)},
 			{"duration_multiplier_t_ft",Value::Float(d.pilotDurationMultiplier)},
 			{"mask_rule",Value::String(d.pilotMaskRule)},
 			{"maximum_eos_volume_ratio_per_step",Value::Float(

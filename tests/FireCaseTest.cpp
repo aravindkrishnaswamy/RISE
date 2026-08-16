@@ -66,25 +66,31 @@ int main()
 			}
 	Check(pilotCells>0&&pilotOnlyFirstLayer&&pilotAnnulusExact&&
 		record.derived.pilotModelVersion==
-			"prescribed_isothermal_kernel_ordinary_tableau_restored_manifold_v5"&&
+			"continuous_command_ramp_manifold_exact_acceptance_v6"&&
 		record.derived.pilotMaskRule==
 			"first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx"&&
 		record.derived.pilotSetpointTemperatureK==900.0&&
 		record.derived.pilotExpansionVolumeRatioCap==17.0/16.0&&
-		record.derived.pilotDurationMultiplier==1.0,
-		"r64 pilot block pins the exact-pair annulus, setpoint, expansion cap, and duration");
+		record.derived.pilotDurationMultiplier==1.0&&
+		record.derived.pilotAmbientTemperatureK==fuel.ReferenceTemperatureK()&&
+		record.derived.pilotRampExponentPerFlowThrough==10.0,
+		"r70 pilot block pins the command ramp, exact-pair annulus, expansion cap, and duration");
 	Check(record.derived.limiterAcceptanceModelVersion=="two_class_face_infimum_v1",
 		"r59 case identity echoes the canonical two-class limiter acceptance rule");
 	double pilotSetpoint=0.0;
 	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,true,0.0,
-		pilotSetpoint,error)&&pilotSetpoint==900.0,
-		"r62 pilot activates the 900 K setpoint in a masked cell");
+		record.derived.flowThroughTimeS/20.0,pilotSetpoint,error)&&
+		std::fabs(pilotSetpoint-std::sqrt(record.derived.pilotAmbientTemperatureK*
+			record.derived.pilotSetpointTemperatureK))<=2.0e-15*pilotSetpoint,
+		"r70 pilot follows its geometric command halfway through the ramp");
 	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,false,0.0,
+		record.derived.flowThroughTimeS/20.0,
 		pilotSetpoint,error)&&pilotSetpoint==0.0,
-		"r62 pilot leaves an unmasked cell inactive");
+		"r70 pilot leaves an unmasked cell inactive");
 	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,true,
-		record.derived.flowThroughTimeS,pilotSetpoint,error)&&pilotSetpoint==0.0,
-		"r62 pilot is off at the exact one-flow-through endpoint");
+		record.derived.flowThroughTimeS,record.derived.flowThroughTimeS,
+		pilotSetpoint,error)&&pilotSetpoint==0.0,
+		"r70 pilot is off for a step beginning at the exact one-flow-through endpoint");
 	std::vector<double> pattern;
 	Check(FireCase::BuildSourcePattern(authored,record.derived,pattern,error),
 		"SplitMix64 source pattern builds");

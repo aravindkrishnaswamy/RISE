@@ -2878,26 +2878,21 @@ int main()
 			manufacturedPacket[cell].sensibleEnergyDeltaJPerM3;
 	}
 	std::vector<double> independentlyManufacturedR0Target;
-	const bool manufacturedTargetOK=manufacturedOK&&PeriodicDivergenceTargetFromPhysicalFlux3D(
-		ownerShape,manufacturedBeginning,manufacturedTemperature,
-		manufacturedResult.r0.flux,manufacturedDelta,manufacturedConfig.transport.deltaTimeS,
-		thermochemistry,independentlyManufacturedR0Target,&error);
 	std::vector<ConservativeVector> independentlyManufacturedPredictor;
 	std::array<std::vector<double>,3> independentlyManufacturedAlpha;
 	std::vector<double> independentlyManufacturedPredictorTemperature,
 		independentlyManufacturedR1Target,independentlyManufacturedHeunTarget;
 	PeriodicFluxPair3D independentlyManufacturedAverage;
-	bool manufacturedTableauOK=manufacturedTargetOK&&ApplyPeriodicSharedFCT3D(ownerShape,
+	const bool manufacturedTargetOK=manufacturedOK&&ApplyPeriodicSharedFCT3D(ownerShape,
 		manufacturedBeginning,manufacturedResult.r0.flux,manufacturedDelta,
 		manufacturedConfig.transport,fuel,thermochemistry,independentlyManufacturedPredictor,
-		independentlyManufacturedAlpha,&error)&&InvertPeriodicTemperatures(
+		independentlyManufacturedAlpha,&error,&manufacturedResult.r0.faceAlpha)&&
+		ManifoldExactDivergenceTarget(manufacturedResult.r0.divergenceTargetPerS,
+			independentlyManufacturedPredictor,manufacturedConfig.transport.deltaTimeS,
+			thermochemistry,independentlyManufacturedR0Target,&error,true);
+	bool manufacturedTableauOK=manufacturedTargetOK&&InvertPeriodicTemperatures(
 		independentlyManufacturedPredictor,thermochemistry,
-		independentlyManufacturedPredictorTemperature,&error)&&
-		PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,
-			independentlyManufacturedPredictor,independentlyManufacturedPredictorTemperature,
-			manufacturedResult.r1.flux,manufacturedDelta,
-			manufacturedConfig.transport.deltaTimeS,thermochemistry,
-			independentlyManufacturedR1Target,&error);
+		independentlyManufacturedPredictorTemperature,&error);
 	for(unsigned int axis=0;manufacturedTableauOK&&axis<3;++axis){
 		independentlyManufacturedAverage.low[axis].resize(ownerCount);
 		independentlyManufacturedAverage.high[axis].resize(ownerCount);
@@ -2924,16 +2919,19 @@ int main()
 	manufacturedTableauOK=manufacturedTableauOK&&ApplyPeriodicSharedFCT3D(ownerShape,
 		manufacturedBeginning,independentlyManufacturedAverage,manufacturedDelta,
 		manufacturedConfig.transport,fuel,thermochemistry,independentlyManufacturedCommit,
-		independentlyManufacturedCommitAlpha,&error)&&InvertPeriodicTemperatures(
+		independentlyManufacturedCommitAlpha,&error,&manufacturedResult.r1.faceAlpha)&&
+		ManifoldExactDivergenceTarget(manufacturedResult.r1.divergenceTargetPerS,
+			independentlyManufacturedCommit,manufacturedConfig.transport.deltaTimeS,
+			thermochemistry,independentlyManufacturedR1Target,&error,true)&&
+		InvertPeriodicTemperatures(
 		manufacturedResult.conservative,thermochemistry,
 		independentlyManufacturedAcceptedTemperature,&error)&&
 		PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,
 			manufacturedResult.conservative,independentlyManufacturedAcceptedTemperature,
 			independentlyManufacturedAverage,manufacturedDelta,
 			manufacturedConfig.transport.deltaTimeS,thermochemistry,
-			independentlyManufacturedHeunTarget,&error)&&
-		PeriodicDivergenceTargetFromPhysicalFlux3D(ownerShape,
-			manufacturedResult.conservative,independentlyManufacturedAcceptedTemperature,
+			independentlyManufacturedHeunTarget,&error)&&PeriodicDivergenceTargetFromPhysicalFlux3D(
+			ownerShape,manufacturedResult.conservative,independentlyManufacturedAcceptedTemperature,
 			manufacturedResult.r2.flux,manufacturedDelta,
 			manufacturedConfig.transport.deltaTimeS,thermochemistry,
 			independentlyManufacturedR2Target,&error);
@@ -3076,9 +3074,13 @@ int main()
 		maximumHeunTargetMismatch<=manufacturedConfig.projectionTolerancePerS&&
 		maximumR2TargetMismatch<=manufacturedConfig.projectionTolerancePerS&&maximumR2HeunDifference>1.0e-10&&
 		maximumProjectionMismatch<=manufacturedConfig.projectionTolerancePerS &&
-		sourceConsumedOnce&&manufacturedLimiterActive)) std::printf("V2 reacting metrics target=%.9g projection=%.9g once=%d ownerAlpha=%.17g limiterAlpha=%.17g\n",
-		maximumTargetMismatch,maximumProjectionMismatch,sourceConsumedOnce?1:0,
-		manufacturedMinimumAlpha,manufacturedLimiterMinimumAlpha);
+		sourceConsumedOnce&&manufacturedLimiterActive)) std::printf("V2 reacting metrics target=%.9g "
+		"r1=%.9g heun=%.9g r2=%.9g r2_heun=%.9g projection=%.9g once=%d "
+		"picard=%d elements=%d velocity=%d ownerAlpha=%.17g limiterAlpha=%.17g\n",
+		maximumTargetMismatch,maximumR1TargetMismatch,maximumHeunTargetMismatch,
+		maximumR2TargetMismatch,maximumR2HeunDifference,maximumProjectionMismatch,
+		sourceConsumedOnce?1:0,manufacturedPicardConverged?1:0,manufacturedElements?1:0,
+		namedStageVelocityRED?1:0,manufacturedMinimumAlpha,manufacturedLimiterMinimumAlpha);
 	Check(std::fabs(manufacturedR0Mean)<manufacturedConfig.projectionTolerancePerS&&
 		std::fabs(manufacturedR1Mean)<manufacturedConfig.projectionTolerancePerS,
 		"V2 reacting manufactured source is exactly periodic-compatible at R0 and R1");
@@ -4078,20 +4080,58 @@ int main()
 	MethaneReactionStep pilotStep=step;
 	pilotStep.primaryEligible=false;
 	pilotStep.sootOxidationEnabled=false;
-	pilotStep.pilotSetpointTemperatureK=900.0;
 	pilotStep.pilotExpansionVolumeRatioCap=17.0/16.0;
 	const MethaneCellState pilotBeginning=PhysicalMixtureLineState(fuel,
 		thermochemistry,0.05,300.0);
+	const double pilotFlowThroughTimeS=2.0;
+	const double pilotRampDurationS=pilotFlowThroughTimeS/10.0;
+	const double pilotCommandMaximumStepS=pilotFlowThroughTimeS*std::log(17.0/16.0)/
+		(10.0*std::log(900.0/fuel.ReferenceTemperatureK()));
+	auto pilotCommand=[&](const double timeS){return fuel.ReferenceTemperatureK()*std::pow(
+		900.0/fuel.ReferenceTemperatureK(),std::min(1.0,10.0*timeS/pilotFlowThroughTimeS));};
+	MethaneReactionStep fullRampStep=pilotStep,halfRampStep=pilotStep;
+	fullRampStep.deltaTimeS=2.0e-5*pilotFlowThroughTimeS;
+	halfRampStep.deltaTimeS=0.5*fullRampStep.deltaTimeS;
+	fullRampStep.pilotSetpointTemperatureK=pilotCommand(fullRampStep.deltaTimeS);
+	halfRampStep.pilotSetpointTemperatureK=pilotCommand(halfRampStep.deltaTimeS);
+	MethaneSourcePacket fullRampPacket,halfRampPacket;
+	const bool rampPacketsOK=BuildMethaneReactionPacket(pilotBeginning,fuel,fullRampStep,
+		fullRampPacket,&error)&&BuildMethaneReactionPacket(pilotBeginning,fuel,halfRampStep,
+		halfRampPacket,&error);
+	const double rampPacketRatio=rampPacketsOK?halfRampPacket.pilotEnergyDeltaJPerM3/
+		fullRampPacket.pilotEnergyDeltaJPerM3:0.0;
+	Check(rampPacketsOK&&std::fabs(rampPacketRatio-0.5)<5.0e-5&&
+		fullRampPacket.pilotExpansionIntegral>halfRampPacket.pilotExpansionIntegral&&
+		std::fabs(halfRampPacket.pilotExpansionIntegral/
+			fullRampPacket.pilotExpansionIntegral-0.5)<5.0e-5,
+		"r70 halving dt halves the continuous pilot packet and expansion to first order");
+	MethaneSourcePacket frozenRampPacket;
+	const bool frozenRampPacketOK=BuildFrozenMethaneSourcePacket(pilotBeginning,
+		fullRampStep,300.0,0.0,fuel,thermochemistry,opacity,frozenRampPacket,&error);
+	MethaneSourcePacket corruptedPilotLedger=frozenRampPacket;
+	corruptedPilotLedger.pilotEnergyDeltaJPerM3=std::nextafter(
+		corruptedPilotLedger.pilotEnergyDeltaJPerM3,
+		std::numeric_limits<double>::infinity());
+	Check(frozenRampPacketOK&&frozenRampPacket.pilotEnergyDeltaJPerM3==
+		fullRampPacket.pilotEnergyDeltaJPerM3&&
+		!ValidateFrozenMethaneSourcePacketLedger(pilotBeginning,fullRampStep,fuel,
+			corruptedPilotLedger,&error),
+		"r73 gates the 900 K ceiling on the bit-exact pilot ledger, not coupled accepted temperature");
 	MethaneCellState pilotMappedState=pilotBeginning;
 	bool cappedPilotSequence=true,terminalPilotSetpoint=false;
 	unsigned int cappedPilotStepCount=0u;
 	while(!terminalPilotSetpoint&&cappedPilotStepCount<64u){
+		const double commandEndS=std::min(pilotRampDurationS,
+			(cappedPilotStepCount+1u)*pilotCommandMaximumStepS);
+		pilotStep.deltaTimeS=commandEndS-cappedPilotStepCount*pilotCommandMaximumStepS;
+		pilotStep.pilotSetpointTemperatureK=pilotCommand(commandEndS);
 		MethanePilotProjectionMap expectedMap;
 		const bool expectedMapOK=ComputeMethanePilotProjectionMap(pilotMappedState,
 			thermochemistry,pilotStep.pilotSetpointTemperatureK,
 			pilotStep.pilotExpansionVolumeRatioCap,expectedMap,&error);
 		const double expectedTemperatureK=expectedMap.targetTemperatureK;
-		const bool terminalTarget=expectedTemperatureK==pilotStep.pilotSetpointTemperatureK;
+		const bool terminalTarget=commandEndS==pilotRampDurationS&&
+			expectedTemperatureK==900.0;
 		double targetEnergyJPerM3=0.0,thermochemicalBeginningEnergyJPerM3=0.0,
 			scaledDivergence=0.0;
 		MethaneSourcePacket pilotPacket;
@@ -4145,7 +4185,9 @@ int main()
 		++cappedPilotStepCount;
 	}
 	Check(cappedPilotSequence&&terminalPilotSetpoint&&cappedPilotStepCount==19u,
-		"r68 pilot reaches 900 K through nineteen ratio-17/16 exact finite-source pairs");
+		"r70 pilot follows the continuous command to 900 K through cap-bounded exact pairs");
+	pilotStep.deltaTimeS=step.deltaTimeS;
+	pilotStep.pilotSetpointTemperatureK=900.0;
 	double uncappedEnergyJPerM3=0.0;
 	MethaneSourcePacket uncappedPilotPacket;
 	Check(thermochemistry.MixtureSensibleEnergyJPerM3(
@@ -4341,8 +4383,86 @@ int main()
 	Check(restorationRunOK&&restorationResidualHistory.size()==200u&&
 		restorationHoldObserved&&postApproachDecrease&&lastHalfMaximum<=
 			1.25*std::max(firstHalfMaximum,1.0e-15)&&lastHalfMaximum<1.0e-3,
-		"r69 pilot approach and hold plateaus at per-step EOS scale for 200 production steps");
+		"r71 quiescent command-fidelity fixture reaches [899,900] K while EOS drift plateaus");
 	if(!restorationRunOK)std::printf("r69 restoration plateau diagnostic: %s\n",error.c_str());
+
+	// r70 binding reproduction: a stationary hot/cold contrast with a 0.02
+	// exchange Courant leaves an O(1e-3) represented-pressure excess under the
+	// r69 first iterate.  The coupled target must instead close the fully accepted
+	// FCT candidate itself.
+	PeriodicMACShape contrastShape;contrastShape.nx=3;contrastShape.ny=3;contrastShape.nz=3;
+	contrastShape.cellWidthM=0.05;
+	const MethaneCellState contrastCold=PhysicalMixtureLineState(fuel,thermochemistry,0.0,377.0);
+	const MethaneCellState contrastHot=PhysicalMixtureLineState(fuel,thermochemistry,0.0,800.0);
+	std::vector<ConservativeVector> contrastState(contrastShape.CellCount(),
+		ToConservativeVector(contrastCold));
+	const std::size_t contrastDonor=contrastShape.Index(0,1,1);
+	const std::size_t contrastReceiver=contrastShape.Index(1,1,1);
+	contrastState[contrastDonor]=ToConservativeVector(contrastHot);
+	ConservativeAdvance3DConfig contrastConfig=exactPairConfig;
+	contrastConfig.transport.cellWidthM=contrastShape.cellWidthM;
+	contrastConfig.transport.deltaTimeS=0.001;
+	contrastConfig.transport.ambientTemperatureK=377.0;
+	contrastConfig.transport.adiabaticTemperatureK=2500.0;
+	contrastConfig.transport.ambientGasDensityKGPerM3=contrastCold.GasDensity();
+	contrastConfig.projectionTolerancePerS=1.0e-3;
+	contrastConfig.dns=true;contrastConfig.workerCount=1u;
+	contrastConfig.openBoundary.kind.fill(AdiabaticWallBoundary3D);
+	contrastConfig.openBoundary.kind[0]=PressureOpenBoundary3D;
+	contrastConfig.openBoundary.kind[1]=PressureOpenBoundary3D;
+	contrastConfig.openBoundary.ambientDensityKGPerM3=contrastCold.GasDensity();
+	contrastConfig.openBoundary.ambientState=ToConservativeVector(contrastCold);
+	contrastConfig.openBoundary.injectedState=ToConservativeVector(pilotBeginning);
+	contrastConfig.openBoundary.injectedGasDensityKGPerM3=pilotBeginning.GasDensity();
+	contrastConfig.openBoundary.bottomFuelMask.clear();
+	contrastConfig.openBoundary.bottomFuelMassFluxKGPerM2S.clear();
+	OpenMACField3D contrastMomentum;
+	for(unsigned int axis=0;axis<3;++axis)contrastMomentum.component[axis].assign(
+		OpenMACFaceCount3D(contrastShape,axis),axis==0?contrastCold.GasDensity():0.0);
+	std::vector<ConservativeVector> contrastSource(contrastShape.CellCount());
+	std::vector<double> contrastTemperature(contrastShape.CellCount(),377.0);
+	contrastTemperature[contrastDonor]=800.0;
+	std::vector<double> zeroContrastTarget(contrastShape.CellCount(),0.0);
+	OpenMACProjection3DResult legacyContrastProjection;
+	std::vector<double> contrastD,contrastK,contrastMu;
+	OpenFluxPair3D legacyContrastFlux;
+	std::array<std::vector<double>,3> legacyContrastAlpha;
+	std::vector<ConservativeVector> legacyContrastCandidate;
+	bool contrastLegacyOK=ProjectPressureOpenMACVelocity3D(contrastShape,
+		GasDensityFromConservative(contrastState),contrastMomentum,zeroContrastTarget,
+		contrastConfig.openBoundary,contrastConfig.transport.deltaTimeS,
+		contrastConfig.projectionTolerancePerS,legacyContrastProjection,&error,
+		contrastConfig.workerCount)&&BuildOpenStageTransport3D(contrastShape,contrastState,
+		contrastTemperature,legacyContrastProjection.velocityMPerS,contrastConfig.openBoundary,
+		contrastConfig.dns,thermochemistry,transport,contrastD,contrastK,contrastMu,&error)&&
+		BuildOpenFluxPair3D(contrastShape,contrastState,contrastTemperature,
+			legacyContrastProjection,contrastD,contrastK,contrastConfig.openBoundary,
+			contrastConfig.transport.ambientTemperatureK,300.0,fuel,thermochemistry,
+			legacyContrastFlux,&error)&&ApplyOpenSharedFCT3D(contrastShape,contrastState,
+			legacyContrastFlux,contrastSource,contrastConfig.transport,fuel,thermochemistry,
+			legacyContrastCandidate,legacyContrastAlpha,&error);
+	double legacyContrastVolume=1.0;
+	contrastLegacyOK=contrastLegacyOK&&AcceptedConservativeVolumeRatio(
+		legacyContrastCandidate[contrastReceiver],thermochemistry,legacyContrastVolume,&error);
+	OpenConservativeStage3D exactContrastStage;
+	bool exactContrastOK=SolveOpenConservativeStage3D(contrastShape,contrastState,
+		contrastMomentum,contrastSource,contrastConfig,true,0,0,0,fuel,thermochemistry,
+		transport,exactContrastStage,&error);
+	std::vector<ConservativeVector> exactContrastCandidate;
+	std::array<std::vector<double>,3> exactContrastAlpha;
+	exactContrastOK=exactContrastOK&&ApplyOpenSharedFCT3D(contrastShape,contrastState,
+		exactContrastStage.flux,contrastSource,contrastConfig.transport,fuel,thermochemistry,
+		exactContrastCandidate,exactContrastAlpha,&error,contrastConfig.workerCount,
+		&exactContrastStage.faceAlpha);
+	double exactContrastVolume=1.0;
+	exactContrastOK=exactContrastOK&&AcceptedConservativeVolumeRatio(
+		exactContrastCandidate[contrastReceiver],thermochemistry,exactContrastVolume,&error);
+	Check(contrastLegacyOK&&exactContrastOK&&std::fabs(legacyContrastVolume-1.0)>5.0e-4&&
+		std::fabs(legacyContrastVolume-1.0)<2.0e-3&&
+		std::fabs(exactContrastVolume-1.0)<=2.0*contrastConfig.transport.deltaTimeS*
+			contrastConfig.projectionTolerancePerS,
+		"r70 advective-volume anomaly closes the measured stationary hot/cold receiver signature");
+	if(!contrastLegacyOK||!exactContrastOK)std::printf("r70 contrast diagnostic: %s\n",error.c_str());
 	MethaneSourcePacket thermostatPacket;
 	Check(BuildMethaneReactionPacket(beginning,fuel,pilotStep,thermostatPacket,&error)&&
 		thermostatPacket.pilotEnergyDeltaJPerM3==0.0&&
