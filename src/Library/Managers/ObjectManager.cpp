@@ -446,7 +446,18 @@ bool ObjectManager::SetObjectParent( const char* child, const char* parent )
 	// paying one full walk for it is not a per-frame cost.
 	if( !parent || !parent[0] ) {
 		const bool had = ( parentByName.erase( childName ) > 0 );
-		if( had ) ComposeWorldTransforms();
+		if( had && ComposeWorldTransforms() ) {
+			// AND INVALIDATE.  Composing here CONSUMES the "moved" signal: the
+			// caller's own ComposeObjectHierarchy now correctly answers "nothing
+			// changed", and RebakeHierarchy cannot see the ex-child either, so
+			// without this line NOTHING invalidates -- the object keeps a stale
+			// TLAS leaf at its old world position and becomes unhittable and
+			// unpickable for the rest of the session.  Measured exactly that
+			// way.  RemoveItem's Job-layer caller compensates for the same
+			// swallowed signal with an unconditional invalidate; this path had
+			// no such compensation, so it does it itself.
+			InvalidateSpatialStructure();
+		}
 		return true;
 	}
 
@@ -543,6 +554,9 @@ void ObjectManager::Shutdown()
 	parentByName.clear();
 	danglingParentWarned.clear();
 	anyComposedAgainstParent = false;
+	// The latch used to live INSIDE danglingParentWarned and was cleared for
+	// free; moving it out of that keyspace lost the reset, so restore it here.
+	rebakeIncompleteWarned = false;
 	GenericManager<IObjectPriv>::Shutdown();
 }
 
@@ -625,7 +639,11 @@ bool ObjectManager::RebakeHierarchy() const
 		members[it->first]  = ci->second.first;
 		members[it->second] = pi->second.first;
 	}
-	if( childrenOf.empty() ) return false;
+	// NOT `childrenOf.empty()`: a scene whose ONLY link is a dangling one has no
+	// parent->child edges at all, and returning here would discard the very node
+	// the dangling branch above just added to `members` -- the case that branch
+	// exists for.
+	if( members.empty() ) return false;
 	for( std::map<String, std::vector<std::pair<unsigned long long, String> > >::iterator c = childrenOf.begin();
 		c != childrenOf.end(); ++c ) {
 		std::sort( c->second.begin(), c->second.end() );

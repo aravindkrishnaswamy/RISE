@@ -531,8 +531,13 @@ int main()
 		Check( c && Close( Origin( c->GetFinalTransformMatrix() ).x, 1 ),
 		       "E3: the detach ITSELF re-rooted c to its own local transform (x=1, not 21), with no "
 		       "explicit compose in between" );
-		Check( !j->ComposeObjectHierarchy(),
-		       "E3: ... so a following compose finds nothing left to move" );
+		// NOTE what is deliberately NOT asserted here.  An earlier draft pinned
+		// `!ComposeObjectHierarchy()` -- "a following compose finds nothing left
+		// to move" -- which is true and was exactly the wrong thing to lock in:
+		// the detach CONSUMES the moved signal the caller's gate runs off, and
+		// the real bug that hides is a TLAS nobody invalidates.  Case AA
+		// asserts the invalidation.  Left as a comment because a test that
+		// pins a symptom of a defect is worse than no test at all.
 		j->release();
 		std::remove( sC );
 	}
@@ -2323,10 +2328,23 @@ int main()
 	// =================================================================
 	{
 		const char* sAA = "sg_parent_detach_render.RISEscene";
-		WriteScene( sAA,
-			"sphere_geometry\n{\nname ga\nradius 1\n}\n"
-			"standard_object\n{\nname base\nposition 10 0 0\n}\n"
-			"standard_object\n{\nname held\ngeometry ga\nparent base\nposition 1 0 0\n}\n" );
+		{
+			// MORE THAN FOUR geometry-bearing objects, deliberately: the TLAS is
+			// only built above that threshold (Job::SetPrimaryAcceleration's
+			// nMaxObjectsPerNode gate), and a 2-object scene has no acceleration
+			// structure at all -- which is how the first draft of this case
+			// missed that the detach invalidated nothing.
+			std::string txt = "sphere_geometry\n{\nname ga\nradius 1\n}\n"
+				"standard_object\n{\nname base\nposition 10 0 0\n}\n"
+				"standard_object\n{\nname held\ngeometry ga\nparent base\nposition 1 0 0\n}\n";
+			for( int f = 0; f < 12; ++f ) {
+				char buf[160];
+				std::snprintf( buf, sizeof( buf ),
+					"standard_object\n{\nname filler%d\ngeometry ga\nposition %d 40 0\n}\n", f, f * 3 );
+				txt += buf;
+			}
+			WriteScene( sAA, txt.c_str() );
+		}
 		Job* j = new Job();
 		Check( j->LoadAsciiSceneViaCst( sAA ), "AA: scene loads" );
 		IScenePriv* scene = 0;
@@ -2341,19 +2359,36 @@ int main()
 		       "AA: (baseline) composed at the derive tail -- 10 + 1" );
 
 		// DETACH through the public API, then do exactly what a render does.
+		const unsigned long long genBefore =
+			scene ? scene->GetObjects()->GetSpatialStructureGeneration() : 0;
 		Check( j->SetObjectParent( "held", 0 ), "AA: the detach is accepted" );
 		if( scene ) scene->GetObjects()->PrepareForRendering();
 		Check( Close( HeldX(), 1.0 ),
 		       "AA: the detached child is back on its OWN local transform -- a detach leaves the link "
 		       "map, so the per-frame walk cannot see it, and the manager must re-root it itself" );
+		// THE ASSERTION THAT ACTUALLY MATTERS.  Moving the object is only half
+		// the job: the detach's own compose CONSUMES the moved signal that
+		// Job::ComposeObjectHierarchy gates invalidation on, and the per-frame
+		// walk cannot see the ex-child either -- so if nothing invalidates
+		// here, the object keeps a TLAS leaf bounding it at its OLD world
+		// position.  It is then unhittable at its new position AND rejected at
+		// its old one: gone from the render, and unpickable, for the rest of
+		// the session.
+		Check( scene && scene->GetObjects()->GetSpatialStructureGeneration() != genBefore,
+		       "AA: the detach INVALIDATED the spatial structure -- moving the object without this "
+		       "leaves a stale TLAS leaf and the object vanishes from the render" );
 
 		// The ADD direction needs no help -- a NEW link is visible to the
 		// per-frame walk -- but assert it so the pair is pinned together and a
 		// future fix cannot trade one for the other.
+		const unsigned long long genMid =
+			scene ? scene->GetObjects()->GetSpatialStructureGeneration() : 0;
 		Check( j->SetObjectParent( "held", "base" ), "AA: re-parenting is accepted" );
 		if( scene ) scene->GetObjects()->PrepareForRendering();
 		Check( Close( HeldX(), 11.0 ),
 		       "AA: ... and re-parenting composes again on the next prepare" );
+		Check( scene && scene->GetObjects()->GetSpatialStructureGeneration() != genMid,
+		       "AA: ... and invalidates too, so the TLAS follows it back" );
 
 		j->release();
 		std::remove( sAA );

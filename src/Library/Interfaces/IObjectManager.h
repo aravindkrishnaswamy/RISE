@@ -93,6 +93,16 @@ namespace RISE
 		//! nothing -- when the child or the parent is not a registered object,
 		//! when they are the same object, or when the link would close a cycle.
 		//! \return TRUE if the link was recorded (or cleared), FALSE if refused.
+		//!
+		//! NOT pure bookkeeping on the DETACH path.  An implementation must
+		//! re-compose the ex-child there and invalidate, because the ex-child
+		//! has just left the link map: no later walk can find it, and it would
+		//! otherwise render at its ex-parent's composed pose behind a TLAS leaf
+		//! bounding it at that old position -- unhittable and unpickable.  A
+		//! RE-parent needs neither: the new link is visible to the next
+		//! per-frame compose.  Callers that own a Scene still owe the
+		//! LIGHT-TOPOLOGY bump on a real link change; this interface cannot
+		//! reach one.  See 87 §5 step 2.
 		virtual bool SetObjectParent(
 			const char* child,							///< [in] Name of the child object
 			const char* parent							///< [in] Name of the parent object, or null / "" to detach
@@ -128,6 +138,13 @@ namespace RISE
 		//! re-posed container moves DESCENDANTS that the edit closure never
 		//! contains, so their bounding boxes cannot be compared pairwise -- this
 		//! answer is what makes the TLAS invalidation sound.
+		//!
+		//! THE SIGNAL IS CONSUMED BY WHOEVER CALLS THIS.  A second call returns
+		//! FALSE because the first one already did the work -- so an
+		//! implementation that composes INTERNALLY (SetObjectParent's detach
+		//! path does) owes the invalidation itself; its caller's gate will
+		//! correctly see "nothing changed" and skip.  That is not a subtlety,
+		//! it is how a detached object went unhittable once.
 		virtual bool ComposeWorldTransforms() const = 0;
 
 		//! Monotonic counter advanced every time InvalidateSpatialStructure() runs.

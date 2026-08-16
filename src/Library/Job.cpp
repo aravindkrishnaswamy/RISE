@@ -5707,11 +5707,37 @@ static void ApplyGeometryOrContainer_( IObjectPriv& object, const IGeometry* pGe
 
 bool Job::SetObjectParent( const char* child, const char* parent )
 {
-	// Deliberately does NOT compose: a caller wiring up a graph makes many
-	// links and wants ONE walk afterwards, which is what the derive tail does.
-	// ComposeObjectHierarchy is where the consequences are handled.
+	// Does not compose for a RE-PARENT: a caller wiring up a graph makes many
+	// links and wants ONE walk afterwards, which is what the derive tail does,
+	// and a new link is visible to the per-frame RebakeHierarchy anyway.  A
+	// DETACH is different and the manager composes it itself -- the ex-child
+	// has left the link map, so no later walk can find it.
+	//
+	// What this layer owes either way is the LIGHT-TOPOLOGY bump, which the
+	// manager cannot do (it has no Scene).  Detect a real link change by
+	// reading the link before and after rather than trusting the accepted-bool:
+	// the derive calls this once per object chunk, unconditionally, including
+	// with no parent, so "accepted" is true thousands of times for calls that
+	// changed nothing, and bumping on those would churn the light generation
+	// through every load.
+	//
+	// The TLAS half is handled underneath -- SetObjectParent's detach path
+	// invalidates, and a re-parent is caught by RebakeHierarchy at the next
+	// prepare -- but this bumps it too, for the same reason Job::RemoveObject
+	// invalidates unconditionally: a moved emitter with a stale LightSampler
+	// samples the luminaire at its old world position while the geometry
+	// renders at the new one.
 	if( !pObjectManager ) return false;
-	return pObjectManager->SetObjectParent( child, parent );
+	const char* prevRaw = pObjectManager->GetObjectParent( child );
+	const String before( prevRaw ? prevRaw : "" );
+	if( !pObjectManager->SetObjectParent( child, parent ) ) return false;
+	const char* nowRaw = pObjectManager->GetObjectParent( child );
+	const String after( nowRaw ? nowRaw : "" );
+	if( !( before == after ) ) {
+		pObjectManager->InvalidateSpatialStructure();
+		BumpSceneLightGen( pScene );
+	}
+	return true;
 }
 
 bool Job::ComposeObjectHierarchy( )
