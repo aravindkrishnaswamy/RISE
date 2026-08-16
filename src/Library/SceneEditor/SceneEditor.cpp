@@ -2845,6 +2845,23 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		// success while the edited binding stays live.  Transform ops restore from
 		// the captured matrix and always succeed.
 		bool restored = true;
+		// 87: the container rule holds on the UNDO path too.  The forward gates
+		// mean this state can no longer be CREATED, so a revert can only
+		// re-create it from a capture taken before those gates existed, or from
+		// an edit sequence that turned a leaf into a container in between.
+		// Narrow -- but this arc's whole lesson is that a rule applied at some
+		// sites and not others is the shape the defects take, so it is applied
+		// here as well.  A CLEAR is always allowed; only a BIND is refused.
+		if( IsContainerNodeForEdit_( *obj )
+		 && IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
+		 && !edit.prevBindingWasNull
+		 && edit.prevPropertyValue.size() > 1
+		 && edit.prevPropertyValue != String( "none" ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor:: cannot restore a surface binding onto `%s` -- it is now a container node "
+				"(no geometry); the undo is PARTIAL", edit.objectName.c_str() );
+			return false;
+		}
 		switch( edit.op ) {
 		case SceneEdit::SetObjectMaterial:
 			if( edit.prevBindingWasNull ) {
