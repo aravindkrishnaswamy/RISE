@@ -5696,11 +5696,11 @@ static void ApplyGeometryOrContainer_( IObjectPriv& object, const IGeometry* pGe
 
 bool Job::SetObjectParent( const char* child, const char* parent )
 {
-	if( !pObjectManager ) return false;
-	return pObjectManager->SetObjectParent( child, parent );
 	// Deliberately does NOT compose: a caller wiring up a graph makes many
 	// links and wants ONE walk afterwards, which is what the derive tail does.
 	// ComposeObjectHierarchy is where the consequences are handled.
+	if( !pObjectManager ) return false;
+	return pObjectManager->SetObjectParent( child, parent );
 }
 
 bool Job::ComposeObjectHierarchy( )
@@ -5805,6 +5805,12 @@ bool Job::AddObject(
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->SetStretch( Vector3( scale[0], scale[1], scale[2] ) );
+	// No ComposeObjectHierarchy here, unlike SetObjectPosition and friends.
+	// This runs inside a derive, where the whole graph is walked once at the
+	// tail (Cst.cpp) -- composing per object would be O(N^2) and would compose
+	// against links that do not exist yet.  The no-argument finalize still
+	// re-composes THIS node against its own stored parent world, so a re-point
+	// mid-derive is never left un-parented.
 	object->FinalizeTransformations();
 
 	if( repoint ) {

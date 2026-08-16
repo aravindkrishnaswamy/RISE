@@ -64,6 +64,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <set>
 #include <cstdio>
 #include <cmath>
 
@@ -1038,7 +1039,11 @@ int main()
 		for( int i = 0; i < 8; ++i ) {
 			const char* sT = "sg_parent_tiny.RISEscene";
 			WriteScene( sT,
-				std::string( "standard_object\n{\nname microscale\nscale " ) + kScales[i] + " " +
+				// A TRANSLATION as well as the scale, deliberately: with a pure
+				// diagonal parent the inverse's translation column is
+				// -(L^-1 * 0) = 0 and the half of the un-normalisation that BOTH
+				// fix rounds patched is never evaluated at all.
+				std::string( "standard_object\n{\nname microscale\nposition 3 -7 11\nscale " ) + kScales[i] + " " +
 				kScales[i] + " " + kScales[i] + "\n}\n"
 				"standard_object\n{\nname speckle\nparent microscale\ngeometry g\nmaterial m\n}\n" );
 			Job* j = new Job();
@@ -1293,6 +1298,42 @@ int main()
 		Check( emptyDesc == 0,
 		       "R: every declared parameter has a non-empty description -- an empty one is the "
 		       "signature of a P() reference invalidated by a nested emplace_back" );
+
+		// An empty description is the signature only when the post-realloc
+		// write lands on `description`.  The SAME splice one line lower is the
+		// same use-after-free and leaves the check above green, so also assert
+		// the SHAPE invariants that the later fields have to satisfy: an Enum
+		// must offer values, a Reference must name categories, and no chunk may
+		// declare a parameter name twice.  Between them these cover every field
+		// a P() block writes.
+		int badEnum = 0, badRef = 0, dupName = 0;
+		std::string firstShapeBad;
+		for( size_t e = 0; e < parsers.size(); ++e ) {
+			if( !parsers[e].parser ) continue;
+			const ChunkDescriptor& d = parsers[e].parser->Describe();
+			std::set<std::string> seen;
+			for( size_t k = 0; k < d.parameters.size(); ++k ) {
+				const ParameterDescriptor& pd = d.parameters[k];
+				if( pd.kind == ValueKind::Enum && pd.enumValues.empty() ) {
+					++badEnum;
+					if( firstShapeBad.empty() ) firstShapeBad = d.keyword + "." + pd.name + " (Enum, no values)";
+				}
+				if( pd.kind == ValueKind::Reference && pd.referenceCategories.empty() ) {
+					++badRef;
+					if( firstShapeBad.empty() ) firstShapeBad = d.keyword + "." + pd.name + " (Reference, no categories)";
+				}
+				if( !pd.name.empty() && !seen.insert( pd.name ).second ) {
+					++dupName;
+					if( firstShapeBad.empty() ) firstShapeBad = d.keyword + "." + pd.name + " (declared twice)";
+				}
+			}
+		}
+		if( badEnum || badRef || dupName ) {
+			std::cout << "    (R: first shape offender: " << firstShapeBad << ")" << std::endl;
+		}
+		Check( badEnum == 0, "R: every Enum parameter offers enumValues" );
+		Check( badRef  == 0, "R: every Reference parameter names referenceCategories" );
+		Check( dupName == 0, "R: no chunk declares the same parameter name twice" );
 	}
 
 	// =================================================================

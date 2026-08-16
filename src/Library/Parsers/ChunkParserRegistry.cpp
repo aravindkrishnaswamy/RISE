@@ -7338,13 +7338,17 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
 						  p.description = "Name of the existing object to override."; }
 						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3; p.required = false;
-						  p.description = "Position, LOCAL to `parent`; matches standard_object semantics."; }
+						  p.description = "Position, in the TARGET's own local frame -- world-space unless the "
+						                  "target's own chunk declares a `parent`.  This chunk has no `parent` "
+						                  "of its own; it edits the target's transform.  Matches "
+						                  "standard_object semantics."; }
 						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3; p.required = false;
 						  p.description = "Euler orientation in DEGREES; matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "quaternion";  p.kind = ValueKind::DoubleVec4; p.required = false;
 						  p.description = "Rotation quaternion (xyzw, glTF); matches standard_object semantics."; }
 						{ auto& p = P(); p.name = "matrix";      p.kind = ValueKind::DoubleMat4; p.required = false;
-						  p.description = "Full 4x4 transform, column-major, LOCAL to `parent`; overrides "
+						  p.description = "Full 4x4 transform, column-major, in the TARGET's own local frame "
+						                  "(world-space unless the target's chunk declares a `parent`); overrides "
 						                  "position/orientation/quaternion/scale.  The pre-CST "
 						                  "byte-splice save (deleted in Slice 6d) emitted this for "
 						                  "objects whose transform was not decomposable into "

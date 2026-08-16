@@ -855,6 +855,16 @@ void ReplaceFinalTransform_( IObjectPriv& obj, const Matrix4& m )
 	}
 }
 
+//! Is `obj` an 87 CONTAINER -- a pure transform node with no surface?  A
+//! CSGObject also has null geometry (its shape comes from its operands), so
+//! "no geometry" alone is not the test.  Mirrors Job.cpp's IsContainerObject_;
+//! kept local because SceneEditor has no business including Job.
+bool IsContainerNodeForEdit_( const IObjectPriv& obj )
+{
+	if( obj.GetGeometry() ) return false;
+	return dynamic_cast<const Implementation::CSGObject*>( &obj ) == 0;
+}
+
 //! Apply a WORLD-space operation `worldOp` to an object whose transform stack
 //! is LOCAL.  Conjugating by the parent world transform,
 //! `parentWorld^-1 * worldOp * parentWorld`, is what makes the composed result
@@ -974,6 +984,10 @@ bool PushWorldOp_( IObjectPriv& obj, const String& objectName, const Matrix4& wo
 			return false;
 		}
 	}
+	// SUCCESS clears the object's warn-once entry, so if the author rebalances
+	// the offending ancestor and a LATER op on the same object is refused for a
+	// different reason, that refusal is reported rather than swallowed.
+	alreadyWarned.erase( std::string( objectName.c_str() ) );
 	obj.PushBottomTransStack( localOp );
 	return true;
 }
@@ -1108,7 +1122,7 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
 			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
-			if( mat && obj.GetGeometry() == 0 && !dynamic_cast<const Implementation::CSGObject*>( &obj ) ) {
+			if( mat && IsContainerNodeForEdit_( obj ) ) {
 				// 87: a CONTAINER has no surface, so it takes no material -- the
 				// same rule Job::AddObject applies at derive time, and the one
 				// that keeps "null geometry + emissive material" a csg_object-
@@ -1136,7 +1150,17 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		}
 		break;
 	case SceneEdit::SetObjectShader:
-		if( mShaderManager ) {
+		if( IsContainerNodeForEdit_( obj ) ) {
+			// 87: a container has no surface, so it takes no surface binding --
+			// the same rule the derive applies (DropContainerSurfaceBindings_).
+			// The pre-routing gate in ApplyForwardMutation covers every binding
+			// op, but only on a scene with a retained CST Document; this is the
+			// API / Blender / PRISE path, which has none.
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor:: `%s` is a container node (no geometry), so it takes no shader",
+				edit.objectName.c_str() );
+			ok = false;
+		} else if( mShaderManager ) {
 			IShader* sh = mShaderManager->GetItem( edit.propertyValue.c_str() );
 			if( sh ) obj.AssignShader( *sh );
 			else     ok = false;   // P1: forward shader removed
@@ -1156,7 +1180,16 @@ bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		// short-circuits the SetObjectInteriorMedium call entirely
 		// — see AsciiSceneParser.cpp StandardObjectAsciiChunkParser).
 		// Non-"none" non-empty resolves through IJob::GetMedium.
-		if( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) {
+		if( IsContainerNodeForEdit_( obj )
+		 && !( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) ) {
+			// 87: no surface means no interior to be inside of -- see the
+			// shader arm above.  CLEARING is still allowed, so an object that
+			// became a container can be tidied up.
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor:: `%s` is a container node (no geometry), so it takes no interior medium",
+				edit.objectName.c_str() );
+			ok = false;
+		} else if( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) {
 			obj.ClearInteriorMedium();
 		} else if( mJob ) {
 			const IMedium* med = mJob->GetMedium( edit.propertyValue.c_str() );
@@ -3171,8 +3204,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			// would report SUCCESS -- leaving the Document permanently carrying
 			// a param that can never take effect.
 			if( IsObjectBindingOp( edit.op ) && edit.op != SceneEdit::SetObjectGeometry
-			 && obj->GetGeometry() == 0
-			 && !dynamic_cast<const Implementation::CSGObject*>( obj ) ) {
+			 && IsContainerNodeForEdit_( *obj ) ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"SceneEditor:: `%s` is a container node (no geometry), so it takes no surface binding; "
 					"bind it to a child that has geometry", edit.objectName.c_str() );
