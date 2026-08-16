@@ -4296,10 +4296,11 @@ int main()
 	Check(exactPairOwnerOK&&exactPairSourceTemperatureError<0.4&&
 		exactPairMaximumEOSResidual<5.0e-6,
 		"r66 production open owner accepts the coupled capped-pilot step inside its regression net");
+	if(!exactPairOwnerOK)std::printf("r66 coupled-owner diagnostic: %s\n",error.c_str());
 	FrozenProjectionDrain3D exactPairDrain;
 	std::vector<double> exactPairExpansion(openShape3D.CellCount(),0.0);
 	exactPairExpansion[exactPairSourceCell]=canonicalCappedPair.pilotExpansionIntegral;
-	bool exactDrainLedger=BuildOpenFrozenProjectionDrain3D(openShape3D,
+	bool exactDrainLedger=exactPairOwnerOK&&BuildOpenFrozenProjectionDrain3D(openShape3D,
 		std::vector<ConservativeVector>(openShape3D.CellCount(),unitBeginning),
 		exactPairExpansion,pilotStep.deltaTimeS,exactPairDrain,&error);
 	const std::size_t exactPairTopFace=OpenUpperFaceForCell3D(openShape3D,
