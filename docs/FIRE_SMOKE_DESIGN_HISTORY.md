@@ -1872,7 +1872,7 @@ it was already tried and refuted here.
 - **r79 (2026-08-17):** class-A performance campaign disposition, measured
   from the exact checkpoint-449 continuation under the r78 certificate. A
   clean eight-step baseline had median cost 22.105 s/accepted step (the
-  earlier sampling profile measured 23.1 s). Four separately committed,
+  earlier sampling profile measured 23.1 s). Six separately committed,
   bit-exact changes reduced the median to 15.728 s: a persistent indexed
   worker gang for the high-frequency fixed-range maps (21.952 s), parallel
   BiCGStab element maps with serial FP dot products plus reused smoother

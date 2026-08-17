@@ -235,6 +235,7 @@ namespace
 		bool isolatedEquivalenceProbe=false;
 		std::string isolatedExpectedCheckpointBuildId;
 		std::uint64_t stopAfterAdditionalAcceptedSteps=0u;
+		std::filesystem::path equivalenceSnapshotDirectory;
 	};
 
 	class CheckpointWriter
@@ -1261,6 +1262,7 @@ namespace
 				bool allActiveHoldCellsQualified=true,activeHoldCellObserved=false;
 				bool allPilotLedgerCeilingsQualified=true;
 				double stepAcceptedEOSMaximum=0.0;
+				double stepAcceptedMaximumTemperatureK=0.0;
 				double heldPilotMinimumTemperatureK=std::numeric_limits<double>::infinity();
 				double heldPilotMaximumTemperatureK=0.0;
 				std::size_t heldPilotMinimumCell=0u,heldPilotMaximumCell=0u;
@@ -1276,6 +1278,8 @@ namespace
 						advancedOK=false;break;
 					}
 					stepAcceptedEOSMaximum=std::max(stepAcceptedEOSMaximum,acceptedEOSResidual);
+					stepAcceptedMaximumTemperatureK=std::max(
+						stepAcceptedMaximumTemperatureK,accepted.temperatureK);
 					if(measurePilotApproach)values.maximumPilotApproachEOSResidual=std::max(
 						values.maximumPilotApproachEOSResidual,acceptedEOSResidual);
 					values.maximumTemperatureK=std::max(values.maximumTemperatureK,
@@ -1319,7 +1323,7 @@ namespace
 						values.maximumAcceptedEOSResidual,stepAcceptedEOSMaximum);
 					values.acceptedMaximumEOSResidualHistory.push_back(stepAcceptedEOSMaximum);
 					values.acceptedMaximumTemperatureHistoryK.push_back(
-						values.maximumTemperatureK);
+						stepAcceptedMaximumTemperatureK);
 					if(activeHoldCellObserved){
 						values.pilotApproachComplete=true;
 						values.pilotHoldBandObserved=true;
@@ -1452,9 +1456,12 @@ namespace
 				const bool moreWork=acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS;
 				const double checkpointElapsedS=std::chrono::duration<double>(
 					std::chrono::steady_clock::now()-lastCheckpointWall).count();
-				const bool checkpointDue=moreWork&&!persistence.checkpointPath.empty()&&
-					(persistence.checkpointCadenceWallS<=0.0||
-						checkpointElapsedS>=persistence.checkpointCadenceWallS);
+				const bool equivalenceSnapshotDue=
+					!persistence.equivalenceSnapshotDirectory.empty();
+				const bool checkpointDue=equivalenceSnapshotDue||
+					(moreWork&&!persistence.checkpointPath.empty()&&
+						(persistence.checkpointCadenceWallS<=0.0||
+							checkpointElapsedS>=persistence.checkpointCadenceWallS));
 				if(checkpointDue){
 					values.checkpointStepIndices.push_back(acceptedSteps);
 					MethaneRunCheckpoint checkpoint;
@@ -1473,8 +1480,14 @@ namespace
 					checkpoint.previousStepS=previousStepS;
 					checkpoint.lastAcceptedStepS=reaction.deltaTimeS;
 					checkpoint.acceptedSteps=acceptedSteps;
+					std::filesystem::path checkpointOutput=persistence.checkpointPath;
+					if(equivalenceSnapshotDue){
+						std::ostringstream snapshotName;snapshotName<<"step_"<<std::setw(2)<<
+							std::setfill('0')<<(acceptedSteps-values.resumedFromStep)<<".checkpoint";
+						checkpointOutput=persistence.equivalenceSnapshotDirectory/snapshotName.str();
+					}
 					const bool checkpointSaved=SaveMethaneRunCheckpoint(
-						persistence.checkpointPath,checkpoint,error);
+						checkpointOutput,checkpoint,error);
 					states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
 					advanced.velocityMPerS=std::move(checkpoint.velocity);
 					values=std::move(checkpoint.values);
@@ -1488,7 +1501,7 @@ namespace
 					if(reportCapstoneProgress)std::fprintf(stderr,
 						"capstone durable checkpoint count=%zu step=%u time=%.17g path=%s\n",
 						values.checkpointStepIndices.size(),acceptedSteps,simulationTimeS,
-						persistence.checkpointPath.string().c_str());
+						checkpointOutput.string().c_str());
 					if(persistence.killAfterFirstCheckpoint)HardKillCurrentProcess();
 				}
 				if(reportCapstoneProgress && (acceptedSteps<=4u || acceptedSteps%10u==0u ||
@@ -2099,15 +2112,39 @@ namespace
 			certificate.timeStepBits.size()==certificate.acceptedStepCount&&
 			certificate.maximumTemperatureBits.size()==certificate.acceptedStepCount&&
 			certificate.maximumEOSResidualBits.size()==certificate.acceptedStepCount&&
-			!certificate.frameDigests.empty();
+			certificate.frameDigests.size()==certificate.acceptedStepCount;
 		if(!valid)error="resume-equivalence certificate evidence is incomplete";
 		return valid;
+	}
+	bool ResumeTraceEvidenceComplete(const ResumeEquivalenceTrace& trace)
+	{
+		return trace.acceptedStepCount>=8u&&trace.checkpointDigest.size()==64u&&
+			trace.checkpointProducerBuildId.size()==64u&&trace.buildId.size()==64u&&
+			trace.executableDigest.size()==64u&&
+			trace.timeStepBits.size()==trace.acceptedStepCount&&
+			trace.maximumTemperatureBits.size()==trace.acceptedStepCount&&
+			trace.maximumEOSResidualBits.size()==trace.acceptedStepCount&&
+			trace.frameDigests.size()==trace.acceptedStepCount&&std::all_of(trace.frameDigests.begin(),
+				trace.frameDigests.end(),[](const std::string& digest){return digest.size()==64u;});
+	}
+	bool SaveResumeEquivalenceCertificate(const std::filesystem::path& path,
+		ResumeEquivalenceCertificate& certificate,std::string& error)
+	{
+		const RISECBOR64::Value payload=ResumeCertificatePayload(certificate);
+		RISECBOR64::Bytes payloadBytes,envelope;
+		if(!RISECBOR64::Encode(payload,payloadBytes,&error))return false;
+		certificate.certificateId=RISECBOR64::SHA256Hex(payloadBytes);
+		if(!RISECBOR64::Encode(RISECBOR64::Value::MapValue({{"payload",payload},
+			{"certificate_id",RISECBOR64::Value::String(certificate.certificateId)}}),
+			envelope,&error))return false;
+		return DurableWriteCanonical(path,envelope,error);
 	}
 	bool BuildResumeEquivalenceCertificate(const ResumeEquivalenceTrace& oldTrace,
 		const ResumeEquivalenceTrace& newTrace,const std::filesystem::path& path,
 		ResumeEquivalenceCertificate& certificate,std::string& error)
 	{
-		if(oldTrace.acceptedStepCount<8u||oldTrace.acceptedStepCount!=newTrace.acceptedStepCount||
+		if(!ResumeTraceEvidenceComplete(oldTrace)||!ResumeTraceEvidenceComplete(newTrace)||
+			oldTrace.acceptedStepCount!=newTrace.acceptedStepCount||
 			oldTrace.checkpointDigest!=newTrace.checkpointDigest||
 			oldTrace.checkpointProducerBuildId!=newTrace.checkpointProducerBuildId||
 			oldTrace.buildId!=oldTrace.checkpointProducerBuildId||
@@ -2131,14 +2168,7 @@ namespace
 		certificate.maximumTemperatureBits=oldTrace.maximumTemperatureBits;
 		certificate.maximumEOSResidualBits=oldTrace.maximumEOSResidualBits;
 		certificate.frameDigests=oldTrace.frameDigests;
-		const RISECBOR64::Value payload=ResumeCertificatePayload(certificate);
-		RISECBOR64::Bytes payloadBytes,envelope;
-		if(!RISECBOR64::Encode(payload,payloadBytes,&error))return false;
-		certificate.certificateId=RISECBOR64::SHA256Hex(payloadBytes);
-		if(!RISECBOR64::Encode(RISECBOR64::Value::MapValue({{"payload",payload},
-			{"certificate_id",RISECBOR64::Value::String(certificate.certificateId)}}),
-			envelope,&error))return false;
-		return DurableWriteCanonical(path,envelope,error);
+		return SaveResumeEquivalenceCertificate(path,certificate,error);
 	}
 
 	template<typename T> std::vector<T> FinalEvidenceValues(const std::vector<T>& values,
@@ -2510,21 +2540,22 @@ namespace
 		}
 		const std::string checkpointDigest=DigestFile(checkpointPath);
 		if(checkpointDigest.empty())return 92;
+		const std::filesystem::path snapshotDirectory=tracePath.string()+".snapshots";
+		std::error_code directoryError;
+		std::filesystem::create_directories(snapshotDirectory,directoryError);
+		if(directoryError)return 92;
 		RunPersistenceOptions persistence;
 		persistence.checkpointPath=checkpointPath;
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.resume=true;persistence.isolatedEquivalenceProbe=true;
 		persistence.isolatedExpectedCheckpointBuildId=expectedCheckpointBuildId;
 		persistence.stopAfterAdditionalAcceptedSteps=acceptedStepCount;
+		persistence.equivalenceSnapshotDirectory=snapshotDirectory;
 		const SolverFrameValues result=RunMethaneFrameProbe(workerCount,1u,0.0,
 			caseDurationS,caseFramesPerS,resolutionTier,poolDiameterM,heatReleaseRateKW,
 			false,persistence);
 		if(!result.succeeded){std::fprintf(stderr,"resume-equivalence continuation failed: %s\n",
 			result.structuredError.c_str());return 93;}
-		SolverFrameValues diagnostic=result;
-		diagnostic.reaction.assign(diagnostic.reaction.size(),0.0f);
-		diagnostic.reactionWPerM3=0.0f;
-		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,diagnostic))return 94;
 		RISECBOR64::Bytes buildRecord;std::string buildId,executableDigest;
 		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
 			!CurrentExecutableDigest(buildRecord,executableDigest,error))return 95;
@@ -2548,8 +2579,21 @@ namespace
 		for(const double value:timeSteps)trace.timeStepBits.push_back(DoubleBits(value));
 		for(const double value:temperatures)trace.maximumTemperatureBits.push_back(DoubleBits(value));
 		for(const double value:eosResiduals)trace.maximumEOSResidualBits.push_back(DoubleBits(value));
-		trace.frameDigests.push_back(DigestFile(framePath));
-		if(trace.frameDigests.back().empty()||!SaveResumeEquivalenceTrace(tracePath,trace,error)){
+		for(unsigned int evidenceStep=1u;evidenceStep<=acceptedStepCount;++evidenceStep){
+			std::ostringstream name;name<<"step_"<<std::setw(2)<<std::setfill('0')<<
+				evidenceStep<<".checkpoint";
+			MethaneRunCheckpoint snapshot;
+			if(!LoadMethaneRunCheckpoint(snapshotDirectory/name.str(),snapshot,error))return 94;
+			const SolverFrameValues diagnostic=CheckpointDiagnosticFrame(snapshot);
+			const std::filesystem::path evidenceFrame=evidenceStep==acceptedStepCount?framePath:
+				std::filesystem::path(framePath.string()+".step_"+std::to_string(evidenceStep)+".vdb");
+			if(!WriteFrame(evidenceFrame,FrameMutation{},0.0f,true,diagnostic))return 94;
+			trace.frameDigests.push_back(DigestFile(evidenceFrame));
+		}
+		if(trace.frameDigests.size()!=acceptedStepCount||
+			std::any_of(trace.frameDigests.begin(),trace.frameDigests.end(),
+				[](const std::string& digest){return digest.empty();})||
+			!SaveResumeEquivalenceTrace(tracePath,trace,error)){
 			std::fprintf(stderr,"resume-equivalence trace write failed: %s\n",error.c_str());
 			return 97;
 		}
@@ -2581,15 +2625,25 @@ namespace
 				snapshot.values.acceptedMaximumEOSResidualHistory.empty())return 92;
 			trace.timeStepBits.push_back(DoubleBits(
 				snapshot.values.acceptedTimeStepHistoryS.back()));
-			trace.maximumTemperatureBits.push_back(DoubleBits(snapshot.values.maximumTemperatureK));
+			double stepMaximumTemperatureK=0.0;
+			for(const MethaneCellState& state:snapshot.states)
+				stepMaximumTemperatureK=std::max(stepMaximumTemperatureK,state.temperatureK);
+			trace.maximumTemperatureBits.push_back(DoubleBits(stepMaximumTemperatureK));
 			trace.maximumEOSResidualBits.push_back(DoubleBits(
 				snapshot.values.acceptedMaximumEOSResidualHistory.back()));
+			const SolverFrameValues diagnostic=CheckpointDiagnosticFrame(snapshot);
+			const std::filesystem::path evidenceFrame=evidenceStep==8u?framePath:
+				std::filesystem::path(framePath.string()+".step_"+
+					std::to_string(evidenceStep)+".vdb");
+			if(!WriteFrame(evidenceFrame,FrameMutation{},0.0f,true,diagnostic))return 93;
+			trace.frameDigests.push_back(DigestFile(evidenceFrame));
 			finalCheckpoint=std::move(snapshot);
 		}
-		const SolverFrameValues diagnostic=CheckpointDiagnosticFrame(finalCheckpoint);
-		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,diagnostic))return 93;
-		trace.frameDigests.push_back(DigestFile(framePath));
-		if(trace.frameDigests.back().empty()||!SaveResumeEquivalenceTrace(tracePath,trace,error))
+		if(finalCheckpoint.acceptedSteps!=beginning.acceptedSteps+8u||
+			trace.frameDigests.size()!=8u||
+			std::any_of(trace.frameDigests.begin(),trace.frameDigests.end(),
+				[](const std::string& digest){return digest.empty();})||
+			!SaveResumeEquivalenceTrace(tracePath,trace,error))
 			return 94;
 		return 0;
 	}
@@ -2952,7 +3006,7 @@ int main(int argc,char** argv)
 		oldMigrationTrace.maximumTemperatureBits.push_back(DoubleBits(900.0+step));
 		oldMigrationTrace.maximumEOSResidualBits.push_back(DoubleBits(1.0e-7*(step+1u)));
 	}
-	oldMigrationTrace.frameDigests.push_back(DigestFile(resumedCheckpointFrame));
+	oldMigrationTrace.frameDigests.assign(8u,DigestFile(resumedCheckpointFrame));
 	newMigrationTrace=oldMigrationTrace;newMigrationTrace.buildId=migrationNewBuildId;
 	newMigrationTrace.executableDigest=migrationNewExecutableDigest;
 	const std::filesystem::path migrationCertificatePath=
@@ -2973,13 +3027,66 @@ int main(int argc,char** argv)
 		migrationSource.producerBuildId&&certifiedMigration.migrationNewBuildId==
 		migrationNewBuildId&&certifiedMigration.migrationAcceptedStepCount==8u,
 		"r78 a foreign checkpoint resumes only through its exact current-build certificate");
-	ResumeEquivalenceTrace mismatchedTrace=newMigrationTrace;
-	mismatchedTrace.maximumTemperatureBits[3]^=1u;
 	ResumeEquivalenceCertificate rejectedMigrationCertificate;
-	Check(!BuildResumeEquivalenceCertificate(oldMigrationTrace,mismatchedTrace,
-		checkpointFixture/"mismatched_resume_equivalence.cbor",rejectedMigrationCertificate,
-		checkpointFixtureError),
-		"r78 a one-bit continuation difference rejects the build migration certificate");
+	auto TraceMutationRejects=[&](const char* name,const ResumeEquivalenceTrace& trace)->bool{
+		return !BuildResumeEquivalenceCertificate(oldMigrationTrace,trace,
+			checkpointFixture/(std::string(name)+".cbor"),rejectedMigrationCertificate,
+			checkpointFixtureError);
+	};
+	ResumeEquivalenceTrace mismatchedTrace=newMigrationTrace;
+	mismatchedTrace.timeStepBits[3]^=1u;
+	Check(TraceMutationRejects("mismatched_dt",mismatchedTrace),
+		"r78 a one-bit timestep difference rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumTemperatureBits[3]^=1u;
+	Check(TraceMutationRejects("mismatched_temperature",mismatchedTrace),
+		"r78 a one-bit per-step T_max difference rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumEOSResidualBits[3]^=1u;
+	Check(TraceMutationRejects("mismatched_eos",mismatchedTrace),
+		"r78 a one-bit EOS-maximum difference rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.frameDigests[0]=std::string(64u,'c');
+	Check(TraceMutationRejects("mismatched_frame",mismatchedTrace),
+		"r78 a diagnostic-frame digest difference rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.timeStepBits.pop_back();
+	Check(TraceMutationRejects("missing_step",mismatchedTrace),
+		"r78 missing per-step evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumTemperatureBits.push_back(0u);
+	Check(TraceMutationRejects("extra_temperature",mismatchedTrace),
+		"r78 extra per-step evidence rejects build migration");
+	auto CertificateMutationRejects=[&](const char* name,
+		ResumeEquivalenceCertificate certificate)->bool{
+		const std::filesystem::path path=checkpointFixture/(std::string(name)+".cbor");
+		if(!SaveResumeEquivalenceCertificate(path,certificate,checkpointFixtureError))return false;
+		RunPersistenceOptions persistence;
+		persistence.checkpointPath=migrationCheckpoint;persistence.resume=true;
+		persistence.resumeEquivalenceCertificatePath=path;
+		const SolverFrameValues attempt=RunMethaneFrameProbe(3u,3u,0.0,1.0,4.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		return !attempt.succeeded&&
+			attempt.structuredError.find("checkpoint_resume_failure:")==0;
+	};
+	ResumeEquivalenceCertificate mutatedCertificate=migrationCertificate;
+	mutatedCertificate.checkpointDigest=std::string(64u,'c');
+	Check(CertificateMutationRejects("wrong_migration_checkpoint",mutatedCertificate),
+		"r78 production resume binds the certificate to the exact checkpoint digest");
+	mutatedCertificate=migrationCertificate;mutatedCertificate.oldBuildId=std::string(64u,'c');
+	Check(CertificateMutationRejects("wrong_migration_old_build",mutatedCertificate),
+		"r78 production resume binds the certificate to the checkpoint producer build");
+	mutatedCertificate=migrationCertificate;mutatedCertificate.newBuildId=std::string(64u,'c');
+	Check(CertificateMutationRejects("wrong_migration_new_build",mutatedCertificate),
+		"r78 production resume binds the certificate to the current build identity");
+	mutatedCertificate=migrationCertificate;
+	mutatedCertificate.newExecutableDigest=std::string(64u,'c');
+	Check(CertificateMutationRejects("wrong_migration_executable",mutatedCertificate),
+		"r78 production resume binds the certificate to the current executable digest");
+	mutatedCertificate=migrationCertificate;++mutatedCertificate.resumedFromStep;
+	Check(CertificateMutationRejects("wrong_migration_step",mutatedCertificate),
+		"r78 production resume binds the certificate to the exact resumed step");
+	mutatedCertificate=migrationCertificate;mutatedCertificate.acceptedStepCount=7u;
+	mutatedCertificate.timeStepBits.resize(7u);
+	mutatedCertificate.maximumTemperatureBits.resize(7u);
+	mutatedCertificate.maximumEOSResidualBits.resize(7u);
+	Check(CertificateMutationRejects("short_migration_evidence",mutatedCertificate),
+		"r78 production resume rejects fewer than eight certified accepted steps");
 	SolverFrameValues metadataFixture=resumedCheckpointMetadata.values;
 	metadataFixture.streamedFrameCount=2u;
 	metadataFixture.migrationCertificateId=certifiedMigration.migrationCertificateId;
