@@ -36,9 +36,12 @@
 //                  same-named `override_object` OWNS the pose, so the components commit walks to
 //                  it (else the drag reports SUCCESS and the re-derive puts the object back);
 //                  `matrix` / `quaternion` / `scale` are stripped SYMMETRICALLY from whichever
-//                  chunk the commit lands on; and each refusal names its own true cause -- the
-//                  author's `source` line rather than a chunk type their scene does not contain,
-//                  and a blocking non-unit SCALE rather than a rotation they never made.
+//                  chunk the commit lands on -- and from EVERY same-named layer, not merely the one
+//                  written, since an untouched layer's `scale` is applied on top of the flip the
+//                  written `orientation` already carries; and each refusal names its own true cause
+//                  -- the author's `source` line rather than a chunk type their scene does not
+//                  contain, a blocking non-unit SCALE rather than a rotation they never made, EVERY
+//                  defect when a matrix has more than one, and the `scale` param behind a REFLECTION.
 //    [end-to-end]  the same poses driven through SceneEditController -- the whole chain
 //                  (Apply -> the DecomposeRigid post-mutate gate -> CommitPendingCstObject
 //                  Transforms -> ApplyCstObjectComponentsEdit) -- asserting where the object
@@ -1214,6 +1217,31 @@ int main()
 			{ "e2e-instance-override",
 			  csgSrc + "standard_object\n{\nname I\nsource C\n}\n"
 			           "override_object\n{\nname I\nposition 0 2 0\n}\n",                              "I", 5.25 },
+			// ---- STACKED OVERRIDE LAYERS, round 5.  Both commit routes implement a LAST-WINS walk
+			// over same-named `override_object` chunks -- a walk that only means anything when there
+			// is more than one -- and nothing in this binary (nor, per a sweep, anywhere in tests/)
+			// drove a commit through such a document.  The strip was written to match the walk and
+			// went to the WRITE TARGET ONLY, so a `scale` on any layer the commit did not land on
+			// stayed live, while the `orientation` the commit writes already carried the flip that
+			// scale produced.  The flip was applied TWICE: live 4.75, committed 5.25, rc>=1, nothing
+			// logged.  One override was correct; two were not.
+			{ "e2e-stacked-signflip-first",
+			  csgSrc + "override_object\n{\nname C\nscale -1 -1 1\n}\n"
+			           "override_object\n{\nname C\nposition 0 0 0\n}\n",                              "C", 4.75 },
+			// ... and in the MIDDLE of three, so the fix cannot be "also strip the one before the
+			// owner".  Layer 0 carries an `orientation` the components strip deliberately leaves
+			// alone (the commit's own absolute `orientation` supersedes it).
+			{ "e2e-stacked-signflip-middle",
+			  csgSrc + "override_object\n{\nname C\norientation 0 0 0\n}\n"
+			           "override_object\n{\nname C\nscale -1 -1 1\n}\n"
+			           "override_object\n{\nname C\nposition 0 0 0\n}\n",                              "C", 4.75 },
+			// NO BASE-CHUNK CASE, and that is a finding rather than an omission.  The same pattern one
+			// hop down would be a flip on the BASE under an override -- but the components route's base
+			// is either an authored csg_object (no `scale` param) or a csg-SOURCED instance, and an
+			// instance accepts exactly the SOURCE chunk type's params, so `scale` on it does not derive
+			// ("`source C` resolves to a `csg_object` node ... which do not include `scale`").  The
+			// fixture was written, and refused to load.  The commit strips the base layer anyway, for
+			// uniformity with the override layers rather than for a reachable defect.
 		};
 		for( std::size_t k = 0; k < sizeof( cases ) / sizeof( cases[0] ); ++k ) {
 			const std::string fname = std::string( "cst_source_instance_" ) + cases[k].label + ".RISEscene";
@@ -1241,6 +1269,54 @@ int main()
 			j->release();
 			std::remove( path.c_str() );
 		}
+	}
+
+	// [end-to-end] THE MATRIX ROUTE ACROSS STACKED LAYERS -- the other half of the coverage gap.
+	// ApplyCstObjectMatrixEdit has the same last-wins walk and the same strip structure, and had the
+	// same "write target only" scope.  It is IMMUNE to the double-apply the components route suffered
+	// (its `matrix` on the last layer takes SetFinalTransformMatrix -> ReplaceFinalStack_, which
+	// clears any stretch an earlier layer set), but immune-by-accident is exactly what produced that
+	// defect three rounds running, so the strip is now symmetric on both routes and the shape is
+	// pinned here.
+	//
+	// RED-PROOF, and what it says about what this guards.  Against the PRE-round-5 structure -- the
+	// owner-only strip with the walk removed -- this goes red: the `matrix` lands on the base chunk
+	// and the trailing `position 0 0 0` masks it on re-derive, so the object stays at 0 while the
+	// commit reports success.  Against round 5 it survives the walk being removed ALONE, because the
+	// symmetric strip takes that `position` off the last layer too.  The two mechanisms are now
+	// belt-and-braces for this route; the assertion fails when BOTH go.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+			  "override_object\n{\nname S\nscale -1 -1 1\n}\n"
+			  "override_object\n{\nname S\nposition 0 0 0\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_matrix_stacked.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-matrix-stacked: the standard_object-plus-two-overrides fixture loads" );
+		if( loaded ) {
+			Check( j->CstObjectTransformKind( "S" ) == 1,
+			       "e2e-matrix-stacked: (precondition) a plain standard_object still routes to MATRIX (1)" );
+			const int matrixRefusalsBefore = pMatrixLog->MatchCount();
+			const int refusalsBefore       = pRefusalLog->MatchCount();
+			const int decomposesBefore     = pDecomposeLog->MatchCount();
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "S" ) );
+			Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
+			       "e2e-matrix-stacked: a translate through the CONTROLLER is accepted" );
+			// The unit sphere is flip-invariant, so this reads the TRANSLATION alone -- which is the
+			// thing the owner walk decides.  Committing to the base leaves it at 0.
+			Check( std::fabs( CenterX( Obj( j, "S" ) ) - 5.0 ) < 1e-6,
+			       "e2e-matrix-stacked: ... and the COMMITTED pose is where the user put it -- the `matrix` "
+			       "reached the LAST override layer, not the chunk under a later `position 0 0 0`" );
+			Check( pMatrixLog->MatchCount() == matrixRefusalsBefore
+			    && pRefusalLog->MatchCount() == refusalsBefore
+			    && pDecomposeLog->MatchCount() == decomposesBefore,
+			       "e2e-matrix-stacked: ... with nothing refused anywhere along the chain" );
+		}
+		j->release();
+		std::remove( path.c_str() );
 	}
 
 	// [end-to-end] and the refusal the OTHER gate emits, on the object it actually applies to.  A
@@ -1303,6 +1379,76 @@ int main()
 			       "e2e-gimbal-control: ... naming GIMBAL-LOCK, which here IS the cause" );
 			Check( msg.find( "SCALE" ) == std::string::npos,
 			       "e2e-gimbal-control: ... and not the scale reason, which is false here" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [end-to-end] TWO CAUSES AT ONCE, round 5.  The rejections are not mutually exclusive, and the
+	// reason was first-one-wins with a trailing claim about the ones that had not been reached:
+	// "a non-unit SCALE ... -- the translate/rotate itself is fine".  On `2 * Ry(90)` that claim is
+	// FALSE -- remove the scale and the gesture is still refused, on gimbal-lock.  Both are named now,
+	// and nothing affirms the rest of the matrix.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n"
+			  "override_object\n{\nname C\nscale 2 2 2\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_twocause.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-two-cause: the scaled-override fixture loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			const int decomposesBefore = pDecomposeLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "orientation" ), String( "0 90 0" ) ),
+			       "e2e-two-cause: a Y=90deg rotation on an object carrying a non-unit scale is refused" );
+			Check( pDecomposeLog->MatchCount() == decomposesBefore + 1, "e2e-two-cause: ... and reported" );
+			const std::string msg = pDecomposeLog->LastMatch();
+			Check( msg.find( "GIMBAL-LOCK" ) != std::string::npos && msg.find( "SCALE" ) != std::string::npos,
+			       "e2e-two-cause: ... naming BOTH defects -- this matrix has both, and un-scaling it would "
+			       "still be refused" );
+			Check( msg.find( "the translate/rotate itself is fine" ) == std::string::npos,
+			       "e2e-two-cause: ... and affirming NOTHING about the parts of the matrix it did not clear" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [end-to-end] and the REFLECTION reason, which the author reaches by writing a `scale` -- a
+	// negative one passes the magnitude test outright, so the old wording ("negative determinant")
+	// never mentioned the param they actually wrote.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n"
+			  "override_object\n{\nname C\nscale -1 1 1\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_reflection.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-reflection: the mirrored-override fixture loads" );
+		if( loaded ) {
+			const double before = CenterX( Obj( j, "C" ) );
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			const int decomposesBefore = pDecomposeLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
+			       "e2e-reflection: a pure TRANSLATE is refused (the override's mirror is in the local matrix)" );
+			Check( std::fabs( CenterX( Obj( j, "C" ) ) - before ) < 1e-6,
+			       "e2e-reflection: ... and the object did not move -- the refusal RESTORED it" );
+			Check( pDecomposeLog->MatchCount() == decomposesBefore + 1, "e2e-reflection: ... and the author is told" );
+			const std::string msg = pDecomposeLog->LastMatch();
+			Check( msg.find( "REFLECTION" ) != std::string::npos,
+			       "e2e-reflection: ... naming the REFLECTION, which is the actual blocker" );
+			Check( msg.find( "`scale`" ) != std::string::npos,
+			       "e2e-reflection: ... AND the `scale` param that produced it, which is what the author wrote" );
+			Check( msg.find( "GIMBAL-LOCK" ) == std::string::npos,
+			       "e2e-reflection: ... and not gimbal-lock, which is false here" );
 		}
 		j->release();
 		std::remove( path.c_str() );

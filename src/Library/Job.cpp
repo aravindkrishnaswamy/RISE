@@ -10889,6 +10889,52 @@ static std::string CstTransformTargetRole_( const RISE::Cst::Document& doc, RISE
 	return role;
 }
 
+// 87 step 3a round 5: collect EVERY chunk that authors object `objectName`'s transform, in DOCUMENT
+// ORDER -- the base chunk first, then each same-named `override_object` layer.  Both transform commit
+// routes WRITE to the LAST entry (the layer that decides the pose; committing under it lets a later
+// absolute override mask the edit on re-derive) and STRIP the now-dead transform params from ALL of
+// them.
+//
+// Stripping only the write target was a defect, three rounds running.  An `override_object`'s per-field
+// Finalize branch applies position / orientation / scale INDEPENDENTLY, so a `scale` on any layer the
+// commit does not touch stays live -- while the `orientation` the commit writes ALREADY carries that
+// scale's contribution (DecomposeRigid folds a unit sign flip into it, and the only scales that can
+// reach a commit are unit sign flips -- see ApplyCstObjectComponentsEdit).  The flip is then applied
+// TWICE and the object lands somewhere the user never dragged it.  Measured on a two-layer document,
+// `SetObjectPosition(5,0,0)` on a csg_object with `scale -1 -1 1` on the FIRST of two layers: live
+// 4.75, committed 5.25.
+//
+// The strip is safe on EVERY layer, including the base, because the position + orientation the
+// components route writes REPRODUCE the whole local matrix exactly (DecomposeRigid verifies the
+// rebuild before returning) and the matrix route's `matrix` is the whole local matrix by construction.
+// Every other transform param anywhere in the stack is therefore dead by definition, not merely
+// dead on the chunk being written.  Including the BASE chunk is for UNIFORMITY, not for a reachable
+// defect: on the components route the base is either an authored csg_object (which declares no
+// scale/matrix/quaternion) or a csg-sourced instance (which accepts exactly the SOURCE chunk type's
+// params, so those do not derive on it either) -- a base-layer fixture was written and would not load.
+//
+// KNOWN CONSEQUENCE: a layer whose ONLY params were transform params is left with just its `name`,
+// and the override_object parser logs "no override parameters present (empty block)" for it on every
+// subsequent derive.  The chunk is NOT deleted -- a transform commit silently removing a chunk the
+// author wrote, along with its comments and trivia, is a worse surprise than a log line.
+static void CstCollectObjectTransformLayers_(
+	const RISE::Cst::Document& doc, RISE::Cst::NodeId baseId, const char* objectName,
+	std::vector<RISE::Cst::NodeId>& outLayers )
+{
+	outLayers.clear();
+	if( baseId != 0 ) outLayers.push_back( baseId );
+	const std::string overridePath = std::string( "override_object/" ) + ( objectName ? objectName : "" );
+	const int count = RISE::Cst::DocItemCount( doc );
+	for( int index = 0; index < count; ++index ) {
+		const RISE::Cst::NodeId candidateId = RISE::Cst::DocNodeIdAt( doc, index );
+		if( candidateId == baseId ) continue;
+		const RISE::Cst::NodeRef candidate = RISE::Cst::DocResolveNodeId( doc, candidateId );
+		if( candidate && candidate->role == "override_object"
+		 && RISE::Cst::ChunkNamePath( candidate ) == overridePath )
+			outLayers.push_back( candidateId );
+	}
+}
+
 // P5 Slice 3 expansion (object transform): commit an object's transform to the retained CST as the
 // authoritative `matrix` param (16 col-major doubles).  87: the caller passes the object's LOCAL
 // matrix -- what the chunk itself authors -- NOT its composed world matrix; a parented object's
@@ -10932,21 +10978,24 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 			return 0;
 		}
 	}
-	RISE::Cst::NodeId ownerId = id;
-	const std::string overridePath = std::string( "override_object/" ) + objectName;
-	for( int index = RISE::Cst::DocItemCount( *pCstDocument ) - 1; index >= 0; --index ) {
-		const RISE::Cst::NodeId candidateId = RISE::Cst::DocNodeIdAt( *pCstDocument, index );
-		const RISE::Cst::NodeRef candidate = RISE::Cst::DocResolveNodeId( *pCstDocument, candidateId );
-		if( candidate && candidate->role == "override_object"
-		 && RISE::Cst::ChunkNamePath( candidate ) == overridePath ) {
-			ownerId = candidateId;
-			break;
-		}
+	// OWNER WALK + SYMMETRIC STRIP.  The `matrix` written below is the object's WHOLE local matrix, so
+	// every position / orientation / quaternion / scale param on EVERY layer -- the base chunk and each
+	// same-named `override_object` -- is dead once it lands.  Strip them all, not just the write target:
+	// a strip scoped to the owner leaves an earlier layer's `scale` live, and that is the shape that
+	// silently double-applied a sign flip on the components route (see CstCollectObjectTransformLayers_).
+	// This route is currently immune to that -- `matrix` on the last layer takes SetFinalTransformMatrix
+	// -> ReplaceFinalStack_, which clears the stretch -- but a structure that is only ACCIDENTALLY safe
+	// is what produced the components-route defect three rounds running, so keep the two identical.
+	std::vector<RISE::Cst::NodeId> layers;
+	CstCollectObjectTransformLayers_( *pCstDocument, id, objectName, layers );
+	const RISE::Cst::NodeId ownerId = layers.empty() ? id : layers.back();
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( std::size_t li = 0; li < layers.size(); ++li ) {
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "position" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "orientation" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "quaternion" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "scale" );
 	}
-	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "position" );
-	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "orientation" );
-	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
-	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "matrix", 0, matrix16 );
 	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "matrix" );
 }
@@ -11027,47 +11076,58 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 	// instance classified as kind 1 and went through the MATRIX route, which HAS this walk) -- so
 	// without it, step 3a converted a working drag on an overridden csg-sourced instance into a
 	// silent revert.
-	RISE::Cst::NodeId ownerId = id;
-	{
-		const std::string overridePath = std::string( "override_object/" ) + objectName;
-		for( int index = RISE::Cst::DocItemCount( *pCstDocument ) - 1; index >= 0; --index ) {
-			const RISE::Cst::NodeId candidateId = RISE::Cst::DocNodeIdAt( *pCstDocument, index );
-			const RISE::Cst::NodeRef candidate = RISE::Cst::DocResolveNodeId( *pCstDocument, candidateId );
-			if( candidate && candidate->role == "override_object"
-			 && RISE::Cst::ChunkNamePath( candidate ) == overridePath ) {
-				ownerId = candidateId;
-				break;
-			}
-		}
-	}
-	// `matrix` / `quaternion` / `scale` all go from whichever chunk the commit lands on, base or
-	// override alike.  For matrix/quaternion the reason is representational: on an override_object
-	// EITHER takes the whole-matrix branch of its Finalize and the per-field position/orientation
-	// this function writes would be IGNORED outright; on a base chunk neither is expressible by
-	// the csg_object the commit derives through.
+	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit performs, through the same shared helper, and
+	// for the same reason.  A same-named `override_object` is applied AFTER the base chunk and REPLACES
+	// the transform fields it names, so committing onto the base chunk when an override exists writes a
+	// value the re-derive then overwrites: the gizmo drag lands, the commit reports success, and the
+	// object snaps back.  Write to the LAST layer, which is the one that actually decides the pose.
 	//
-	// `scale` goes for a DIFFERENT reason, and it must go from the override too -- an earlier cut
-	// kept it there, reasoning that the override's per-field branch applies position, orientation
-	// and scale independently so a scale there is "live on the object being dragged".  That
-	// reasoning is excluded by this function's own contract, twice over:
+	// This route reached the instancing chunk only from 87 step 3a (before it, a csg-sourced
+	// instance classified as kind 1 and went through the MATRIX route, which HAS this walk) -- so
+	// without it, step 3a converted a working drag on an overridden csg-sourced instance into a
+	// silent revert.
+	std::vector<RISE::Cst::NodeId> layers;
+	CstCollectObjectTransformLayers_( *pCstDocument, id, objectName, layers );
+	const RISE::Cst::NodeId ownerId = layers.empty() ? id : layers.back();
+	// `matrix` / `quaternion` / `scale` go from EVERY layer -- base chunk and each same-named
+	// `override_object` alike -- not merely from the one the commit writes to.
+	//
+	// For matrix/quaternion the reason is representational: on an override_object EITHER takes the
+	// whole-matrix branch of its Finalize and the per-field position/orientation this function writes
+	// would be IGNORED outright; on a base chunk neither is expressible by the csg_object the commit
+	// derives through.
+	//
+	// `scale` goes for a DIFFERENT reason, and that reason applies to EVERY layer, which is what two
+	// earlier cuts got wrong in opposite directions.  One kept `scale` on an override entirely,
+	// reasoning that the override's per-field branch applies position, orientation and scale
+	// independently so a scale there is "live on the object being dragged".  The next stripped it, but
+	// only from the write target -- leaving any EARLIER same-named override's `scale` live, with the
+	// identical consequence.  Both are excluded by this function's contract, twice over:
 	//
 	//   (1) The caller (SceneEditor::CommitPendingCstObjectTransforms) derives the `position` and
 	//       `orientation` handed in here from DecomposeRigid, which REFUSES any non-unit column
 	//       magnitude -- and the editor's post-mutate gate has already restored-and-refused the
-	//       gesture before the commit runs.  A real `scale 2 2 2` on an override therefore cannot
+	//       gesture before the commit runs.  A real `scale 2 2 2` on any layer therefore cannot
 	//       reach this line at all; the gesture never happens.
 	//   (2) The only scales that DO reach it are unit sign flips -- (1,1,1), or a flip like
 	//       (-1,-1,1), which DecomposeRigid admits because the magnitudes are 1 and det > 0.  A
 	//       sign flip IS a 180-degree rotation, and DecomposeRigid has already FOLDED it into the
 	//       `orientation` string this function is about to write.  Keeping the `scale` that
-	//       produced it applies that rotation a SECOND time, so the re-derive lands the object
-	//       somewhere the user never dragged it (measured: live x = 4.75, re-derived x = 5.25).
+	//       produced it -- ANYWHERE in the stack, since the per-field branch never clears a stretch
+	//       it does not itself set -- applies that rotation a SECOND time, so the re-derive lands the
+	//       object somewhere the user never dragged it (measured: live x = 4.75, re-derived x = 5.25,
+	//       with the `scale` on either an only override or the first of two).
 	//
-	// So the strip is symmetric, and matches the matrix route -- which can strip `scale` because
-	// the `matrix` it writes carries it, exactly as the `orientation` written here does.
-	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "matrix" );
-	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
-	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
+	// The written position + orientation REPRODUCE the whole local matrix (DecomposeRigid verifies the
+	// rebuild before returning), so nothing is lost by clearing the rest of the stack -- and the strip
+	// is symmetric with the matrix route, which can strip for the same reason: the `matrix` it writes
+	// carries everything, exactly as the `orientation` written here does.
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( std::size_t li = 0; li < layers.size(); ++li ) {
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "matrix" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "quaternion" );
+		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "scale" );
+	}
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "position", 0, position );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "orientation", 0, orientation );
 	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "position/orientation" );

@@ -1806,27 +1806,47 @@ static std::string FormatPoint3( const Point3& p )
 // csg edit is refused, never mis-saved).  Used to commit a csg_object transform via its position/orientation params (csg
 // authors no matrix/scale param).  Non-unit scale returns false because csg has no scale param to persist it.
 //
-// `outWhy` (optional) receives a STATIC string naming WHICH of the five rejections fired.  The refusal the
-// author reads is built from it -- an editor gate that reports every one of them as "gimbal-lock" tells someone
-// who ran a pure TRANSLATE, on an object they never rotated, that their rotation hit a singularity.  The
-// commonest real cause by far is the non-unit SCALE, which has nothing to do with rotation at all.
-static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg, const char** outWhy = 0 )
+// `outWhy` (optional) receives the reason the decompose refused -- and it names EVERY independent defect that
+// fired, not just the first one to be reached.  The refusal the author reads is built from it, so an editor
+// gate that reports every one of them as "gimbal-lock" tells someone who ran a pure TRANSLATE, on an object
+// they never rotated, that their rotation hit a singularity.
+//
+// The SIX rejections (not-affine, SHEAR, REFLECTION, GIMBAL-LOCK, non-unit SCALE, reproduce-mismatch) are NOT
+// mutually exclusive, which is why first-one-wins was not enough on its own.  `2 * Ry(90)` trips both the scale
+// test and the gimbal test; reporting only the scale, with a trailing "the translate/rotate itself is fine",
+// told the author something FALSE -- remove the scale and the gesture is still refused.  That clause is gone,
+// and the reasons are ACCUMULATED so a multi-cause matrix is described as it actually is.
+//
+// The ORDER of the accumulated list is deliberate too.  A non-unit column magnitude is the check most likely
+// to fire INCIDENTALLY -- a classic shear (col1 = (1,1,0)) has magnitude sqrt(2), so the author's real defect
+// is the shear and the "scale" is a side effect of it -- so the scale reason is reported LAST when it shares
+// the list.  Alone (much the commonest case) it is still the whole message.  And REFLECTION names the negative
+// `scale` component that commonly produces it, since `scale -1 1 1` passes the magnitude test outright and the
+// author would otherwise never see the param they wrote mentioned at all.
+static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg, std::string* outWhy = 0 )
 {
-	struct Local {   // one place that both writes the reason and returns false, so the two cannot drift
-		static bool No( const char** out, const char* why ) { if( out ) *out = why; return false; }
+	struct Local {   // one place that both accumulates the reasons and returns false, so the two cannot drift
+		static void Add( std::string& w, const char* why ) { if( !w.empty() ) w += "; and "; w += why; }
+		static bool No( std::string* out, const std::string& w ) { if( out ) *out = w; return false; }
 	};
-	if( outWhy ) *outWhy = "";
+	std::string why;
+	if( outWhy ) outWhy->clear();
 	if( std::fabs( M._03 ) > 1e-9 || std::fabs( M._13 ) > 1e-9 ||
 	    std::fabs( M._23 ) > 1e-9 || std::fabs( M._33 - 1.0 ) > 1e-9 )
-		return Local::No( outWhy, "the transform is not affine (its bottom row is not 0 0 0 1)" );
+		Local::Add( why, "the transform is not affine (its bottom row is not 0 0 0 1)" );
 	const Vector3 c0( M._00, M._01, M._02 );
 	const Vector3 c1( M._10, M._11, M._12 );
 	const Vector3 c2( M._20, M._21, M._22 );
 	const double s0 = Vector3Ops::Magnitude( c0 );
 	const double s1 = Vector3Ops::Magnitude( c1 );
 	const double s2 = Vector3Ops::Magnitude( c2 );
-	if( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 )
-		return Local::No( outWhy, "a non-unit SCALE is baked into its transform and a csg_object has no `scale` param to carry one -- the translate/rotate itself is fine" );
+	const bool nonUnitScale = ( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 );
+	// A zero-length axis cannot be normalised, so the orientation tests below have nothing to run on -- report
+	// what is known and stop.  (It also trips the magnitude test, so this is never the ONLY thing reported.)
+	if( s0 < 1e-12 || s1 < 1e-12 || s2 < 1e-12 ) {
+		Local::Add( why, "its transform is SINGULAR (an axis of zero length), which position+orientation cannot express" );
+		return Local::No( outWhy, why );
+	}
 	const Vector3 r0( c0.x / s0, c0.y / s0, c0.z / s0 );
 	const Vector3 r1( c1.x / s1, c1.y / s1, c1.z / s1 );
 	const Vector3 r2( c2.x / s2, c2.y / s2, c2.z / s2 );
@@ -1834,14 +1854,17 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 	if( std::fabs( Vector3Ops::Dot( r0, r1 ) ) > tol ||
 	    std::fabs( Vector3Ops::Dot( r0, r2 ) ) > tol ||
 	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol )
-		return Local::No( outWhy, "its transform contains SHEAR, which position+orientation cannot express" );
+		Local::Add( why, "its transform contains SHEAR, which position+orientation cannot express" );
 	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 )
-		return Local::No( outWhy, "its transform contains a REFLECTION (negative determinant), which position+orientation cannot express" );
+		Local::Add( why, "its transform contains a REFLECTION -- a negative determinant, commonly a negative `scale` component -- which position+orientation cannot express" );
 	// Euler extraction for RISE's Rx*Ry*Rz (the cell-by-cell derivation originally lived in the byte-splice
 	// SaveEngine's §9.5 TryDecompose, deleted in Slice 6d).
 	const double sin_y = r2.x;
 	if( std::fabs( sin_y ) >= 1.0 - 1e-9 )
-		return Local::No( outWhy, "its ROTATION is at GIMBAL-LOCK (~90 degrees about Y), which Euler position+orientation cannot express" );
+		Local::Add( why, "its ROTATION is at GIMBAL-LOCK (~90 degrees about Y), which Euler position+orientation cannot express" );
+	if( nonUnitScale )   // reported LAST: see the ordering note above
+		Local::Add( why, "a non-unit SCALE is baked into its transform, and a csg_object has no `scale` param to carry one" );
+	if( !why.empty() ) return Local::No( outWhy, why );
 	const double cos_y = std::sqrt( 1.0 - sin_y * sin_y );
 	const double y_rad = std::atan2( sin_y, cos_y );
 	const double x_rad = std::atan2( -r2.y, r2.z );
@@ -1854,7 +1877,7 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 		const Scalar* cp = &cand._00; const Scalar* mp = &M._00;
 		const int k = col * 4 + row;
 		if( std::fabs( static_cast<double>( cp[k] ) - static_cast<double>( mp[k] ) ) > 1e-6 )
-			return Local::No( outWhy, "its transform does not reproduce from position+orientation (RISE composes position * XRot * YRot * ZRot)" );
+			return Local::No( outWhy, std::string( "its transform does not reproduce from position+orientation (RISE composes position * XRot * YRot * ZRot)" ) );
 	}
 	outPos       = pos;
 	outOrientDeg = Vector3( x_rad * 180.0 / PI, y_rad * 180.0 / PI, z_rad * 180.0 / PI );
@@ -3409,16 +3432,17 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 			// one (see CommitPendingCstObjectTransforms) -- so the gate passes
 			// or refuses on the same matrix that gets written.
 			Vector3 dpos, dorient;
-			// Report WHICH rejection fired.  A single "gimbal-lock / non-decomposable" line for all five told an
+			// Report WHICH rejection(s) fired.  A single "gimbal-lock / non-decomposable" line for all six told an
 			// author who ran a pure TRANSLATE, and never rotated anything, that their rotation hit a singularity --
 			// while the actual blocker (commonly a non-unit `scale` on a same-named override_object) went unnamed.
-			const char* decomposeWhy = "";
+			// DecomposeRigid names every defect it detected, since more than one can be true of one matrix.
+			std::string decomposeWhy;
 			if( !DecomposeRigid( obj->GetLocalTransformMatrix(), dpos, dorient, &decomposeWhy ) ) {
 				RestoreObjectTransform( *obj, edit );
 				RunObjectInvariantChain( *obj );
 				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
 					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
-					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform is not committable to a csg_object (%s); edit refused", edit.objectName.c_str(), decomposeWhy );
+					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform is not committable to a csg_object (%s); edit refused", edit.objectName.c_str(), decomposeWhy.c_str() );
 				}
 				mLastScope = Dirty_ObjectTransform;
 				return false;
