@@ -176,12 +176,17 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
 
         canonical_gate_sites = (
             (core, "InvertMethaneTemperatureWithinAcceptedEnvelope"),
-            (core, "EvaluateCellTransport"),
+            # Molecular transport is the state-consuming half of the split
+            # transport evaluation.  The cached and uncached paths both enter
+            # here; the gradient-only half consumes no conservative state.
+            (core, "EvaluateCellMolecularTransport"),
             (core, "EquationOfStateResidual"),
             (core, "ApplyPeriodicSharedFCT"),
             (core, "DivergenceFromDiscreteRate"),
             (core, "BuildMethaneReactionPacket"),
-            (core, "ApplySourcePacket"),
+            # ApplySourcePacket is a thin public wrapper; the noinline
+            # canonical routine is the byte-identical predicate/commit path.
+            (core, "CanonicalApplySourcePacket"),
             (core, "BuildOpenBoundaryStage3D"),
             (core, "BuildIgnitionEligibility"),
             (advance, "ApplyPeriodicSharedFCT3D"),
@@ -200,6 +205,10 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
                 body,
                 r"(?:row_result|rowResult|result_scale|resultScale)",
                 name + " adds a result-scaled feasibility envelope")
+        self.assertIn("EvaluateCellMolecularTransport(",
+                      inline_body(core, "EvaluateCellTransport"))
+        self.assertIn("CanonicalApplySourcePacket(",
+                      inline_body(core, "ApplySourcePacket"))
         self.assertNotRegex(combined,
                             r"ConservativeStateFeasible\s*\([^)]*,\s*(256|512|1024|2048|4096)")
 
