@@ -3023,41 +3023,59 @@ namespace RISE
 			const double tolerance,
 			const ApplyOperator& applyOperator,
 			const ApplyPreconditioner& applyPreconditioner,
-			std::vector<double>& solution
+			std::vector<double>& solution,
+			const unsigned int workerCount
 			)
 		{
 			const std::size_t count=rightHandSide.size();
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(std::min<std::size_t>(count,
+					std::numeric_limits<unsigned int>::max()))));
+			auto parallelMaximum=[&](const std::vector<double>& values){
+				std::vector<double> local(workers,0.0);
+				ParallelFireSlices(workers,workers,[&](const std::size_t worker){
+					const std::size_t first=count*worker/workers;
+					const std::size_t last=count*(worker+1u)/workers;
+					for(std::size_t i=first;i<last;++i)local[worker]=
+						std::max(local[worker],std::fabs(values[i]));});
+				double maximum=0.0;for(const double value:local)maximum=std::max(maximum,value);
+				return maximum;
+			};
 			solution.assign(count,0.0);
 			std::vector<double> r=rightHandSide,rHat=r,p(count,0.0),v(count,0.0),
 				s(count,0.0),t(count,0.0),pHat,sHat;
 			double rhoPrevious=1.0,alpha=1.0,omega=1.0;
 			static const std::size_t maximumIterations=28u;
 			for( std::size_t iteration=0; iteration<maximumIterations; ++iteration ) {
-				double maximum=0.0;
-				for(const double value:r) maximum=std::max(maximum,std::fabs(value));
+				const double maximum=parallelMaximum(r);
 				if(maximum<=tolerance) return true;
 				const double rho=OpenVectorDot3D(rHat,r);
 				if(!std::isfinite(rho) || rho==0.0) return false;
 				const double beta=(rho/rhoPrevious)*(alpha/omega);
 				if(!std::isfinite(beta)) return false;
-				for(std::size_t i=0;i<count;++i)p[i]=r[i]+beta*(p[i]-omega*v[i]);
+				ParallelFireSlices(count,workerCount,[&](const std::size_t i){
+					p[i]=r[i]+beta*(p[i]-omega*v[i]);});
 				if(!applyPreconditioner(p,pHat) || !applyOperator(pHat,v)) return false;
 				const double denominator=OpenVectorDot3D(rHat,v);
 				if(!std::isfinite(denominator) || denominator==0.0) return false;
 				alpha=rho/denominator;
-				for(std::size_t i=0;i<count;++i)s[i]=r[i]-alpha*v[i];
-				double sMaximum=0.0;
-				for(const double value:s)sMaximum=std::max(sMaximum,std::fabs(value));
-				if(sMaximum<=tolerance){for(std::size_t i=0;i<count;++i)solution[i]+=alpha*pHat[i];
+				ParallelFireSlices(count,workerCount,[&](const std::size_t i){
+					s[i]=r[i]-alpha*v[i];});
+				const double sMaximum=parallelMaximum(s);
+				if(sMaximum<=tolerance){ParallelFireSlices(count,workerCount,
+					[&](const std::size_t i){solution[i]+=alpha*pHat[i];});
 					return true;}
 				if(!applyPreconditioner(s,sHat) || !applyOperator(sHat,t))return false;
 				const double tSquared=OpenVectorDot3D(t,t);
 				if(!std::isfinite(tSquared) || tSquared==0.0)return false;
 				omega=OpenVectorDot3D(t,s)/tSquared;
 				if(!std::isfinite(omega) || omega==0.0)return false;
-				for(std::size_t i=0;i<count;++i){solution[i]+=alpha*pHat[i]+omega*sHat[i];
-					r[i]=s[i]-omega*t[i];if(!std::isfinite(solution[i]) ||
-					!std::isfinite(r[i]))return false;}
+				std::atomic<bool> finite(true);
+				ParallelFireSlices(count,workerCount,[&](const std::size_t i){
+					solution[i]+=alpha*pHat[i]+omega*sHat[i];r[i]=s[i]-omega*t[i];
+					if(!std::isfinite(solution[i])||!std::isfinite(r[i]))
+						finite.store(false,std::memory_order_relaxed);});
+				if(!finite.load(std::memory_order_relaxed))return false;
 				rhoPrevious=rho;
 			}
 			return false;
@@ -3308,7 +3326,8 @@ namespace RISE
 					};
 					std::vector<double> rhs=residual,update;for(double& v:rhs)v=-v;
 					const double linearTolerance=std::min(absoluteTolerancePerS,boundary.pressureTolerancePa)*0.1;
-					if(!SolveOpenAugmentedBiCGStab(rhs,linearTolerance,applyJ,precondition,update)) {
+					if(!SolveOpenAugmentedBiCGStab(rhs,linearTolerance,applyJ,precondition,update,
+						workerCount)) {
 						return Fail(error,"fire solver augmented Newton system did not converge");
 					}
 					double damping=1.0;bool accepted=false;
