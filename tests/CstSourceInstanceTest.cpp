@@ -35,8 +35,15 @@
 //                  and the transform commit cannot disagree (the live/CST divergence class); a
 //                  same-named `override_object` OWNS the pose, so the components commit walks to
 //                  it (else the drag reports SUCCESS and the re-derive puts the object back);
-//                  and the scale refusal names the author's own `source` line rather than a
-//                  chunk type their scene does not contain.
+//                  `matrix` / `quaternion` / `scale` are stripped SYMMETRICALLY from whichever
+//                  chunk the commit lands on; and each refusal names its own true cause -- the
+//                  author's `source` line rather than a chunk type their scene does not contain,
+//                  and a blocking non-unit SCALE rather than a rotation they never made.
+//    [end-to-end]  the same poses driven through SceneEditController -- the whole chain
+//                  (Apply -> the DecomposeRigid post-mutate gate -> CommitPendingCstObject
+//                  Transforms -> ApplyCstObjectComponentsEdit) -- asserting where the object
+//                  ENDS UP after the commit re-derives, which a direct Job::ApplyCst*Edit call
+//                  cannot: the direct route accepts inputs production can never produce.
 //
 //  A NOTE ON WHAT `DumpJob` CAN SEE.  It prints geometry / material / modifier / shader /
 //  radiance_map / interior_medium / visible / bbox and nothing else -- so `casts_shadows`,
@@ -227,6 +234,13 @@ int main()
 	RISE::GlobalLogPriv()->AddPrinter( pRefusalLogOwned );
 	CapturingLogPrinter* pRefusalLog = pRefusalLogOwned;
 	safe_release( pRefusalLogOwned );
+
+	// The POST-MUTATE gate's refusal (a different one -- the op-level gate above admitted the op,
+	// and the resulting MATRIX turned out not to decompose).  Read by the end-to-end block.
+	CapturingLogPrinter* pDecomposeLogOwned = new CapturingLogPrinter( "transform is not committable to a csg_object" );
+	RISE::GlobalLogPriv()->AddPrinter( pDecomposeLogOwned );
+	CapturingLogPrinter* pDecomposeLog = pDecomposeLogOwned;
+	safe_release( pDecomposeLogOwned );
 
 	const std::string SRC_LEAF = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n";
 
@@ -982,8 +996,14 @@ int main()
 		Check( loaded, "gizmo-control: the authored-csg fixture loads" );
 		if( loaded ) {
 			Check( j->CstObjectTransformKind( "C" ) == 2, "gizmo-control: an authored csg_object is still COMPONENTS (2)" );
-			Check( j->ApplyCstObjectComponentsEdit( "C", "0 4 0", "0 0 0" ) == 1,
+			const double beforeX = CenterX( Obj( j, "C" ) );
+			Check( j->ApplyCstObjectComponentsEdit( "C", "5 0 0", "0 0 0" ) == 1,
 			       "gizmo-control: ... and its components commit still takes the INCREMENTAL apply (rc=1)" );
+			// rc alone is an EMPTY assertion on this route -- the whole class of defect this file
+			// keeps finding is "reports success, object did not move" (see the override block
+			// below, where rc>=1 stayed green through a silent revert).  Assert the POSE.
+			Check( std::fabs( ( CenterX( Obj( j, "C" ) ) - beforeX ) - 5.0 ) < 1e-6,
+			       "gizmo-control: ... and the object really LANDED at the committed position, not merely rc=1" );
 			Check( j->ApplyCstObjectMatrixEdit( "C", "1 0 0 0 0 1 0 0 0 0 1 0 5 0 0 1" ) == 0,
 			       "gizmo-control: ... while a `matrix` commit on it is still refused" );
 		}
@@ -1033,33 +1053,50 @@ int main()
 	}
 
 	// [gizmo] the same walk on an AUTHORED csg_object -- the shape c18e54b6 correctly described as
-	// a pre-existing gap.  It is closed by the same code, so pin it here too.  Also pins the ONE
-	// asymmetry with the matrix route: `scale` is STRIPPED from a base chunk (unexpressible) but
-	// KEPT on an override_object, whose per-field branch applies position, orientation and scale
-	// INDEPENDENTLY -- so a translate must not silently un-scale the object.  (The matrix route
-	// may strip it because the `matrix` it writes carries the scale; position+orientation cannot.)
+	// a pre-existing gap.  It is closed by the same code, so pin it here too.
+	//
+	// AND the `scale` question the walk raises, ON THE ONLY FIXTURE THAT CAN REACH IT.  Round 3
+	// kept `scale` on an override_object (stripping it only from a base chunk), reasoning that the
+	// override's per-field branch applies position, orientation and scale independently so a scale
+	// there is live on the object being dragged.  It pinned that with `scale 2 2 2` -- a value that
+	// CANNOT REACH the code under test through production at all: the commit's caller derives its
+	// position/orientation from DecomposeRigid, which refuses any non-unit column magnitude, and
+	// the editor's post-mutate gate restores-and-refuses the gesture before the commit runs.
+	// (Measured: the panel gesture on that document is refused and the object does not move.)  So
+	// the old fixture reached the branch only by calling the commit DIRECTLY, and its "WITHOUT
+	// un-scaling it" assertion pinned the defect rather than the behaviour.
+	//
+	// The scales that DO reach it are unit SIGN FLIPS -- DecomposeRigid admits `scale -1 -1 1`
+	// (all magnitudes 1, det > 0) and FOLDS its 180-degree rotation into the `orientation` the
+	// commit writes.  Keeping the `scale` then applies that rotation a SECOND time.  Fixture
+	// re-cut to that, with the exact orientation DecomposeRigid produces for `position 5 0 0` on
+	// this document -- the object must land where the live drag put it (bbox centre 4.75), not
+	// half a unit past it (5.25, which is what the kept `scale` produced).
 	{
 		const std::string scene = Scene(
 			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
 			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
 			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n"
-			  "override_object\n{\nname C\nposition 0 2 0\nscale 2 2 2\n}\n" );
+			  "override_object\n{\nname C\nscale -1 -1 1\n}\n" );
 		const std::string path = WriteTempScene( "cst_source_instance_override_csg.RISEscene", scene );
 		Job* j = new Job();
 		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
 		Check( loaded, "override-csg: the authored-csg-plus-override fixture loads" );
 		if( loaded ) {
-			const double before  = CenterX( Obj( j, "C" ) );
-			const double widthBefore = Obj( j, "C" )
-				? ( Obj( j, "C" )->getBoundingBox().ur.x - Obj( j, "C" )->getBoundingBox().ll.x ) : -1.0;
-			Check( j->ApplyCstObjectComponentsEdit( "C", "5 0 0", "0 0 0" ) >= 1,
+			// Pre-edit: opa is a unit sphere at the origin, opb a unit box at x=1, so the union
+			// spans [-1, 1.5] -> centre 0.25; the sign flip mirrors it to [-1.5, 1] -> -0.25.
+			const double before = CenterX( Obj( j, "C" ) );
+			Check( std::fabs( before + 0.25 ) < 1e-6,
+			       "override-csg: (precondition) the override's sign flip is live on the pre-edit object" );
+			// `0 0 180` is what DecomposeRigid returns for T(5,0,0) * diag(-1,-1,1) -- the local
+			// matrix the live drag leaves behind.  Passing anything else would test a pose the
+			// production caller never produces.
+			Check( j->ApplyCstObjectComponentsEdit( "C", "5 0 0", "0 0 180" ) >= 1,
 			       "override-csg: the components commit on an overridden authored csg_object reports success" );
 			Check( std::fabs( ( CenterX( Obj( j, "C" ) ) - before ) - 5.0 ) < 1e-6,
-			       "override-csg: ... and the object really MOVED by +5 in x" );
-			const double widthAfter = Obj( j, "C" )
-				? ( Obj( j, "C" )->getBoundingBox().ur.x - Obj( j, "C" )->getBoundingBox().ll.x ) : -2.0;
-			Check( widthBefore > 0.0 && std::fabs( widthAfter - widthBefore ) < 1e-6,
-			       "override-csg: ... WITHOUT un-scaling it -- the override's `scale` survives a translate commit" );
+			       "override-csg: ... and the object really MOVED by +5 in x -- to 4.75, where the drag put it.  "
+			       "Keeping the override's `scale` re-applies the flip the written `orientation` already carries "
+			       "and lands it at 5.25 instead" );
 		}
 		j->release();
 		std::remove( path.c_str() );
@@ -1123,6 +1160,149 @@ int main()
 			Check( pRefusalLog->MatchCount() == before + 1, "refusal-msg-control: ... and reported" );
 			Check( pRefusalLog->LastMatch().find( "csg_object has no scale param -- only translate/rotate are committable" ) != std::string::npos,
 			       "refusal-msg-control: ... with the plain csg_object reason, which is the true one here" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// ------------------------------------------------------------------ END TO END, through the
+	// ------------------------------------------------------------------ chain a user actually drives
+	// EVERY transform assertion above calls Job::ApplyCstObject*Edit DIRECTLY.  That is the middle
+	// of the chain, and it is exactly where the last three rounds of defects hid: the direct call
+	// happily accepts inputs the real caller can never produce (`scale 2 2 2` -- see the
+	// override-csg block), so a green direct-route assertion says nothing about whether a user's
+	// gesture lands.  Nothing in this binary exercised
+	//
+	//     SceneEditController -> SceneEditor::Apply -> the DecomposeRigid post-mutate gate
+	//                         -> CommitPendingCstObjectTransforms -> ApplyCstObjectComponentsEdit
+	//
+	// end to end and then asked WHERE THE OBJECT IS.  These do.  The assertion is on the FINAL
+	// COMMITTED pose -- read back after the commit has re-derived -- because the whole defect
+	// class here is "live and committed disagree, silently".
+	//
+	// The panel route is used to drive it: SetPropertyForCategory( Object, "position", ... ) runs
+	// the live mutate, the gate, and then flushes the deferred CST commit under the same park,
+	// which is the complete chain.
+	//
+	// DELIBERATELY ABSENT: an authored csg_object with NO override.  That shape takes the
+	// INCREMENTAL apply, whose re-apply calls SetPosition without clearing the transform stack the
+	// live gesture pushed onto, so `position 5 0 0` commits to 10.25 -- a PRE-EXISTING double-apply
+	// on a different subsystem (it predates 87 step 3a; the csg-sourced shapes escape it only
+	// because a `source` chunk forces the full re-derive).  It is tracked separately and must not
+	// be pinned here in either direction.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string csgSrc =
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n";
+		struct Case {
+			const char* label;      // assertion prefix
+			std::string body;       // scene body
+			const char* target;     // object the user selects
+			double      expectX;    // bbox-centre x after the COMMIT
+		};
+		// Pre-edit centres: the union spans [-1, 1.5] -> 0.25; the sign-flip override mirrors it
+		// to [-1.5, 1] -> -0.25.  `position 5 0 0` therefore lands at 5.25 / 4.75 respectively.
+		const Case cases[] = {
+			{ "e2e-authored-csg",
+			  csgSrc + "override_object\n{\nname C\nposition 0 2 0\n}\n",                              "C", 5.25 },
+			{ "e2e-authored-csg-signflip",
+			  csgSrc + "override_object\n{\nname C\nscale -1 -1 1\n}\n",                               "C", 4.75 },
+			{ "e2e-instance",
+			  csgSrc + "standard_object\n{\nname I\nsource C\n}\n",                                    "I", 5.25 },
+			{ "e2e-instance-override",
+			  csgSrc + "standard_object\n{\nname I\nsource C\n}\n"
+			           "override_object\n{\nname I\nposition 0 2 0\n}\n",                              "I", 5.25 },
+		};
+		for( std::size_t k = 0; k < sizeof( cases ) / sizeof( cases[0] ); ++k ) {
+			const std::string fname = std::string( "cst_source_instance_" ) + cases[k].label + ".RISEscene";
+			const std::string path  = WriteTempScene( fname.c_str(), Scene( cases[k].body ) );
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, ( std::string( cases[k].label ) + ": the fixture loads with a retained CST head" ).c_str() );
+			if( loaded ) {
+				const int refusalsBefore   = pRefusalLog->MatchCount();
+				const int decomposesBefore = pDecomposeLog->MatchCount();
+				SceneEditController c( *j, 0 );
+				c.SetSelection( Cat::Object, String( cases[k].target ) );
+				Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
+				       ( std::string( cases[k].label ) + ": a translate through the CONTROLLER is accepted" ).c_str() );
+				// The pose the user is left with, after the commit's re-derive rebuilt the scene.
+				Check( std::fabs( CenterX( Obj( j, cases[k].target ) ) - cases[k].expectX ) < 1e-6,
+				       ( std::string( cases[k].label ) + ": ... and the COMMITTED pose is where the user put it, "
+				         "not where a re-derive re-decided" ).c_str() );
+				// A silent refusal is the other half of the failure shape -- an accepted-looking
+				// edit that logged a refusal somewhere in the chain is not a success.
+				Check( pRefusalLog->MatchCount() == refusalsBefore
+				    && pDecomposeLog->MatchCount() == decomposesBefore,
+				       ( std::string( cases[k].label ) + ": ... with nothing refused anywhere along the chain" ).c_str() );
+			}
+			j->release();
+			std::remove( path.c_str() );
+		}
+	}
+
+	// [end-to-end] and the refusal the OTHER gate emits, on the object it actually applies to.  A
+	// non-unit `scale` on the override blocks the commit -- but the blocker is the SCALE, and the
+	// author ran a pure TRANSLATE.  Round 3 answered them all with one line about ROTATION and
+	// GIMBAL-LOCK, for an author who neither rotated anything nor went near a singularity.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n"
+			  "override_object\n{\nname C\nscale 2 2 2\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_scaleblock.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-scale-blocked: the non-unit-scale-override fixture loads" );
+		if( loaded ) {
+			const double before = CenterX( Obj( j, "C" ) );
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			const int decomposesBefore = pDecomposeLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
+			       "e2e-scale-blocked: a pure TRANSLATE is refused (the override's non-unit scale is in the local matrix)" );
+			Check( std::fabs( CenterX( Obj( j, "C" ) ) - before ) < 1e-6,
+			       "e2e-scale-blocked: ... and the object did not move -- the refusal RESTORED it" );
+			Check( pDecomposeLog->MatchCount() == decomposesBefore + 1,
+			       "e2e-scale-blocked: ... and the author is told" );
+			const std::string msg = pDecomposeLog->LastMatch();
+			Check( msg.find( "SCALE" ) != std::string::npos,
+			       "e2e-scale-blocked: ... naming the SCALE, which is the actual blocker" );
+			Check( msg.find( "GIMBAL-LOCK" ) == std::string::npos && msg.find( "gimbal-lock" ) == std::string::npos,
+			       "e2e-scale-blocked: ... and NOT gimbal-lock, which this author neither caused nor can act on" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [end-to-end] CONTROL for the pair above: a genuine GIMBAL-LOCK rotation still says so.  Without
+	// this, collapsing every reason to the scale wording would pass the block above.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_gimbal.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-gimbal-control: the plain authored-csg fixture loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			const int decomposesBefore = pDecomposeLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "orientation" ), String( "0 90 0" ) ),
+			       "e2e-gimbal-control: a Y=90deg rotation on a csg_object is refused" );
+			Check( pDecomposeLog->MatchCount() == decomposesBefore + 1, "e2e-gimbal-control: ... and reported" );
+			const std::string msg = pDecomposeLog->LastMatch();
+			Check( msg.find( "GIMBAL-LOCK" ) != std::string::npos,
+			       "e2e-gimbal-control: ... naming GIMBAL-LOCK, which here IS the cause" );
+			Check( msg.find( "SCALE" ) == std::string::npos,
+			       "e2e-gimbal-control: ... and not the scale reason, which is false here" );
 		}
 		j->release();
 		std::remove( path.c_str() );

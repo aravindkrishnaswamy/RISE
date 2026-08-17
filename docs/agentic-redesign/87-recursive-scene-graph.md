@@ -416,14 +416,37 @@ what was authored, live material included).
      the walk and converted a working drag into a silent revert. A reroute
      is only safe once the destination carries every guarantee the origin
      did.
-   - **`scale` is the one param the two routes treat differently.** The
-     matrix route strips it from whichever chunk it lands on, because the
-     `matrix` it writes CARRIES the scale. The components route cannot —
-     `position`/`orientation` do not — and an `override_object`'s per-field
-     branch applies position, orientation and scale INDEPENDENTLY, so a
-     `scale` sitting there is live on the object being dragged. It is
-     therefore stripped from a BASE chunk (unexpressible by the `csg_object`
-     the commit derives through) and KEPT on an override.
+   - ~~**`scale` is the one param the two routes treat differently.**~~
+     **WITHDRAWN by round 3a (2026-08-16) — see the correction below.** Round 3
+     stripped `scale` only from a BASE chunk and KEPT it on an
+     `override_object`, reasoning that the override's per-field branch applies
+     position, orientation and scale independently so a `scale` there is live
+     on the object being dragged. **That reasoning is excluded by the
+     function's own contract and the guard preserved a wrong answer.** Both
+     halves were measured:
+     - The only production caller,
+       `SceneEditor::CommitPendingCstObjectTransforms`, derives the
+       `position`/`orientation` it passes from `DecomposeRigid`, which refuses
+       any non-unit column magnitude — and the editor's post-mutate gate has
+       already restored-and-refused the gesture before the commit runs. **A
+       real `scale 2 2 2` on an override cannot reach the kept-scale branch at
+       all**; the gesture is refused and the object never moves.
+     - The scales that DO reach it are unit SIGN FLIPS. `DecomposeRigid`
+       admits `scale -1 -1 1` (all magnitudes 1, det > 0) and FOLDS its
+       180-degree rotation into the `orientation` the commit writes; keeping
+       the `scale` applies that rotation a SECOND time. Measured on the full
+       production path with `override_object { name C  scale -1 -1 1 }` and a
+       panel `position 5 0 0`: live x = 4.75, committed x = 5.25 — silently
+       wrong by +0.5; with `scale` stripped, 4.75. (Not a regression from
+       round 3 — the pre-round-3 document derives 5.25 too — but the guard is
+       what PRESERVED the wrong answer.)
+
+     **The rule is therefore symmetric: `matrix`, `quaternion` and `scale` are
+     all stripped from whichever chunk the commit lands on**, base or override.
+     It is safe for the same reason the matrix route's strip is: the caller's
+     `DecomposeRigid` contract guarantees unit magnitudes, and a sign flip's
+     rotation content is already carried by the `orientation` being written,
+     exactly as the matrix route's `matrix` carries it.
    - **A refusal names what the AUTHOR wrote.** The kind-2 scale refusal on a
      csg-sourced instance said "csg_object has no scale param" for a chunk
      spelled `standard_object { name I  source C }` — a chunk type absent
@@ -433,6 +456,35 @@ what was authored, live material included).
      `instancingChunk != objectName`, and the collapse row is `I -> (I, S)`),
      so the message keys on the provenance row's SOURCE field instead — which
      IS populated there, and is empty for an `instance_array` entry.
+
+     **The gate one hop further in had the same defect (fixed 2026-08-16).**
+     The POST-MUTATE decomposability check answered all five `DecomposeRigid`
+     rejections with one line about ROTATION and GIMBAL-LOCK. A pure
+     `position 5 0 0` on an object whose only blocker is a non-unit `scale`
+     (from a same-named `override_object`) was refused with "rotation is not
+     committable … gimbal-lock" — for an author who neither rotated anything
+     nor went near a singularity. `DecomposeRigid` now reports WHICH rejection
+     fired (not-affine / non-unit scale / shear / reflection / gimbal-lock /
+     rebuild-mismatch) and the refusal is built from it.
+   - **The transform assertions are end-to-end now.** Every transform
+     assertion in `tests/CstSourceInstanceTest.cpp` used to call
+     `Job::ApplyCstObject*Edit` DIRECTLY — the middle of the chain, and where
+     three rounds of defects hid, because the direct call accepts inputs the
+     real caller can never produce (that is how the `scale 2 2 2` fixture
+     pinned the defect above). The file now also drives
+     `SceneEditController → SceneEditor::Apply → the DecomposeRigid gate →
+     CommitPendingCstObjectTransforms → ApplyCstObjectComponentsEdit` and
+     asserts the FINAL COMMITTED pose, for an authored `csg_object` and a
+     csg-sourced instance, with and without an override.
+   - **KNOWN, tracked separately, deliberately NOT pinned:** the components
+     commit DOUBLE-APPLIES a translation on the no-override path (authored
+     `csg_object`, no `source`: panel `position 5 0 0` commits to 10.25). The
+     live gesture pushes onto the transform STACK via
+     `TranslateObject`/`PushBottomTransStack`, then the INCREMENTAL re-apply
+     calls `SetPosition` without clearing the stack, so
+     `FinalizeTransformations` folds T(5)·T(5). Pre-existing and a different
+     subsystem; csg-sourced instances escape it only because a `source` chunk
+     forces the full re-derive.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
    real tree model, Swift to `OutlineGroup`; expand state keyed by tree

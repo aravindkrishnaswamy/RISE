@@ -11040,21 +11040,34 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 			}
 		}
 	}
-	// `matrix` / `quaternion` must go from whichever chunk the commit lands on: on an
-	// override_object EITHER of them takes the whole-matrix branch of its Finalize and the
-	// per-field position/orientation this function writes would be IGNORED outright; on a base
-	// chunk neither is expressible by the csg_object the commit derives through.
+	// `matrix` / `quaternion` / `scale` all go from whichever chunk the commit lands on, base or
+	// override alike.  For matrix/quaternion the reason is representational: on an override_object
+	// EITHER takes the whole-matrix branch of its Finalize and the per-field position/orientation
+	// this function writes would be IGNORED outright; on a base chunk neither is expressible by
+	// the csg_object the commit derives through.
+	//
+	// `scale` goes for a DIFFERENT reason, and it must go from the override too -- an earlier cut
+	// kept it there, reasoning that the override's per-field branch applies position, orientation
+	// and scale independently so a scale there is "live on the object being dragged".  That
+	// reasoning is excluded by this function's own contract, twice over:
+	//
+	//   (1) The caller (SceneEditor::CommitPendingCstObjectTransforms) derives the `position` and
+	//       `orientation` handed in here from DecomposeRigid, which REFUSES any non-unit column
+	//       magnitude -- and the editor's post-mutate gate has already restored-and-refused the
+	//       gesture before the commit runs.  A real `scale 2 2 2` on an override therefore cannot
+	//       reach this line at all; the gesture never happens.
+	//   (2) The only scales that DO reach it are unit sign flips -- (1,1,1), or a flip like
+	//       (-1,-1,1), which DecomposeRigid admits because the magnitudes are 1 and det > 0.  A
+	//       sign flip IS a 180-degree rotation, and DecomposeRigid has already FOLDED it into the
+	//       `orientation` string this function is about to write.  Keeping the `scale` that
+	//       produced it applies that rotation a SECOND time, so the re-derive lands the object
+	//       somewhere the user never dragged it (measured: live x = 4.75, re-derived x = 5.25).
+	//
+	// So the strip is symmetric, and matches the matrix route -- which can strip `scale` because
+	// the `matrix` it writes carries it, exactly as the `orientation` written here does.
 	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "matrix" );
 	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
-	// `scale` is NOT symmetric with those two, and NOT symmetric with the matrix route either.
-	// On the BASE chunk it goes: an authored csg_object does not declare it, and an instancing
-	// chunk that carries one has its expansion refused by the target-descriptor check.  On an
-	// override_object it STAYS: the per-field branch applies position, orientation and scale
-	// INDEPENDENTLY, so a scale there is live on the object this drag just moved -- stripping it
-	// would make the re-derive un-scale the object, which is the very data-loss this walk exists
-	// to prevent.  (The matrix route can strip it because the `matrix` it writes CARRIES the
-	// scale; position+orientation cannot.)
-	if( ownerId == id ) d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "position", 0, position );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "orientation", 0, orientation );
 	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "position/orientation" );

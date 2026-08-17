@@ -1805,29 +1805,43 @@ static std::string FormatPoint3( const Point3& p )
 // matrix RISE's way and compares, so a future composition-convention change fails SAFE (returns false -> the
 // csg edit is refused, never mis-saved).  Used to commit a csg_object transform via its position/orientation params (csg
 // authors no matrix/scale param).  Non-unit scale returns false because csg has no scale param to persist it.
-static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg )
+//
+// `outWhy` (optional) receives a STATIC string naming WHICH of the five rejections fired.  The refusal the
+// author reads is built from it -- an editor gate that reports every one of them as "gimbal-lock" tells someone
+// who ran a pure TRANSLATE, on an object they never rotated, that their rotation hit a singularity.  The
+// commonest real cause by far is the non-unit SCALE, which has nothing to do with rotation at all.
+static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrientDeg, const char** outWhy = 0 )
 {
+	struct Local {   // one place that both writes the reason and returns false, so the two cannot drift
+		static bool No( const char** out, const char* why ) { if( out ) *out = why; return false; }
+	};
+	if( outWhy ) *outWhy = "";
 	if( std::fabs( M._03 ) > 1e-9 || std::fabs( M._13 ) > 1e-9 ||
-	    std::fabs( M._23 ) > 1e-9 || std::fabs( M._33 - 1.0 ) > 1e-9 ) return false;   // not affine
+	    std::fabs( M._23 ) > 1e-9 || std::fabs( M._33 - 1.0 ) > 1e-9 )
+		return Local::No( outWhy, "the transform is not affine (its bottom row is not 0 0 0 1)" );
 	const Vector3 c0( M._00, M._01, M._02 );
 	const Vector3 c1( M._10, M._11, M._12 );
 	const Vector3 c2( M._20, M._21, M._22 );
 	const double s0 = Vector3Ops::Magnitude( c0 );
 	const double s1 = Vector3Ops::Magnitude( c1 );
 	const double s2 = Vector3Ops::Magnitude( c2 );
-	if( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 ) return false;   // non-unit scale -> csg has no scale param
+	if( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 )
+		return Local::No( outWhy, "a non-unit SCALE is baked into its transform and a csg_object has no `scale` param to carry one -- the translate/rotate itself is fine" );
 	const Vector3 r0( c0.x / s0, c0.y / s0, c0.z / s0 );
 	const Vector3 r1( c1.x / s1, c1.y / s1, c1.z / s1 );
 	const Vector3 r2( c2.x / s2, c2.y / s2, c2.z / s2 );
 	const double tol = 1e-6;
 	if( std::fabs( Vector3Ops::Dot( r0, r1 ) ) > tol ||
 	    std::fabs( Vector3Ops::Dot( r0, r2 ) ) > tol ||
-	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol ) return false;   // shear
-	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 ) return false;   // reflection
+	    std::fabs( Vector3Ops::Dot( r1, r2 ) ) > tol )
+		return Local::No( outWhy, "its transform contains SHEAR, which position+orientation cannot express" );
+	if( Vector3Ops::Dot( r0, Vector3Ops::Cross( r1, r2 ) ) < 0.0 )
+		return Local::No( outWhy, "its transform contains a REFLECTION (negative determinant), which position+orientation cannot express" );
 	// Euler extraction for RISE's Rx*Ry*Rz (the cell-by-cell derivation originally lived in the byte-splice
 	// SaveEngine's §9.5 TryDecompose, deleted in Slice 6d).
 	const double sin_y = r2.x;
-	if( std::fabs( sin_y ) >= 1.0 - 1e-9 ) return false;   // gimbal-lock
+	if( std::fabs( sin_y ) >= 1.0 - 1e-9 )
+		return Local::No( outWhy, "its ROTATION is at GIMBAL-LOCK (~90 degrees about Y), which Euler position+orientation cannot express" );
 	const double cos_y = std::sqrt( 1.0 - sin_y * sin_y );
 	const double y_rad = std::atan2( sin_y, cos_y );
 	const double x_rad = std::atan2( -r2.y, r2.z );
@@ -1839,7 +1853,8 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 	for( int col = 0; col < 4; ++col ) for( int row = 0; row < 4; ++row ) {
 		const Scalar* cp = &cand._00; const Scalar* mp = &M._00;
 		const int k = col * 4 + row;
-		if( std::fabs( static_cast<double>( cp[k] ) - static_cast<double>( mp[k] ) ) > 1e-6 ) return false;
+		if( std::fabs( static_cast<double>( cp[k] ) - static_cast<double>( mp[k] ) ) > 1e-6 )
+			return Local::No( outWhy, "its transform does not reproduce from position+orientation (RISE composes position * XRot * YRot * ZRot)" );
 	}
 	outPos       = pos;
 	outOrientDeg = Vector3( x_rad * 180.0 / PI, y_rad * 180.0 / PI, z_rad * 180.0 / PI );
@@ -3381,25 +3396,29 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 			}
 		}
 		const bool fwdOk = ApplyObjectOpForward( *obj, edit, isReplay );   // P1: false if a redo target vanished
-		// POST-MUTATE: the op-level gate above admits a csg (kind 2) translate/rotate, but a ROTATE can land on
-		// GIMBAL-LOCK (~90 deg about Y) which DecomposeRigid cannot express as position/orientation.  The committable
-		// guarantee is therefore matrix-level, not op-level -- so VERIFY it here, after the mutate: if the csg result
-		// is not decomposable, RESTORE the object (the edit carries the captured prev state) and reject, so the live
-		// transform never diverges from the un-committable CST.  (Translate always decomposes; this only ever fires
-		// on a near-singular rotation.)  Makes the commit-time DecomposeRigid in CommitPendingCstObjectTransforms a
-		// guaranteed success.
+		// POST-MUTATE: the op-level gate above admits a csg (kind 2) translate/rotate, but the RESULT can still be
+		// non-decomposable -- a rotate can land on GIMBAL-LOCK (~90 deg about Y), and a translate on an object that
+		// already carries a non-unit SCALE (from an `override_object`, say) leaves that scale in the local matrix.
+		// The committable guarantee is therefore matrix-level, not op-level -- so VERIFY it here, after the mutate:
+		// if the csg result is not decomposable, RESTORE the object (the edit carries the captured prev state) and
+		// reject, so the live transform never diverges from the un-committable CST.  Makes the commit-time
+		// DecomposeRigid in CommitPendingCstObjectTransforms a guaranteed success.
 		if( fwdOk && cstKind == 2 ) {
 			obj->FinalizeTransformations();   // ApplyObjectOpForward updates components/stack but not m_mxFinalTrans; compose it before reading
 			// Check the matrix the COMMIT will actually decompose -- the LOCAL
 			// one (see CommitPendingCstObjectTransforms) -- so the gate passes
 			// or refuses on the same matrix that gets written.
 			Vector3 dpos, dorient;
-			if( !DecomposeRigid( obj->GetLocalTransformMatrix(), dpos, dorient ) ) {
+			// Report WHICH rejection fired.  A single "gimbal-lock / non-decomposable" line for all five told an
+			// author who ran a pure TRANSLATE, and never rotated anything, that their rotation hit a singularity --
+			// while the actual blocker (commonly a non-unit `scale` on a same-named override_object) went unnamed.
+			const char* decomposeWhy = "";
+			if( !DecomposeRigid( obj->GetLocalTransformMatrix(), dpos, dorient, &decomposeWhy ) ) {
 				RestoreObjectTransform( *obj, edit );
 				RunObjectInvariantChain( *obj );
 				if( mLastNonRoutableTransformObj != std::string( edit.objectName.c_str() ) ) {
 					mLastNonRoutableTransformObj = std::string( edit.objectName.c_str() );
-					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` rotation is not committable to a csg_object (gimbal-lock / non-decomposable to position+orientation); edit refused", edit.objectName.c_str() );
+					GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform is not committable to a csg_object (%s); edit refused", edit.objectName.c_str(), decomposeWhy );
 				}
 				mLastScope = Dirty_ObjectTransform;
 				return false;
