@@ -1803,3 +1803,16 @@ it was already tried and refuted here.
   and a tuned temperature cutoff (discontinuous, composition-blind rathole).
   The model-version echo changes `case_record_id`; r60, the EOS gate, and
   the opacity domain are unchanged.
+
+- **r76 (2026-08-16):** strict binary64 ceiling representation, from the
+  first r75 unit RED. The uncapped 2299 K reacting fixture reached
+  3337.261156 K; headroom limiting made the directly evaluated 2300 K
+  energy row negative, but thermochemical inversion still rounded the
+  derived result to exactly 2300 K, violating the owner-locked strict
+  `T_max < 2300 K` relation. Ruling: evaluate the source-availability
+  endpoint at `nextafter(2300.0, -∞)`, the unique greatest binary64 value
+  satisfying that relation. The case echo stays exactly 2300.0. Rejected:
+  tuned margins, widened tolerances, accepting equality, and clamping the
+  inverted temperature. This merely makes r75's already-pinned strict
+  semantics representable; it adds no field and does not change
+  `case_record_id`.

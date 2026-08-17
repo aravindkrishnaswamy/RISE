@@ -2286,6 +2286,19 @@ following; two conforming tools must derive identical bytes:
    disabling all reaction above a tuned temperature (a discontinuous,
    composition-blind rathole). The model-version echo is identity-bearing
    and changes `case_record_id`.
+7e. **Strict binary64 ceiling representation (r76).** The word
+   *strictly* in pin 7d is implemented without an arbitrary margin: the
+   energy-availability row evaluates thermochemistry at
+   `nextafter(maximum_accepted_temperature_K, -∞)`, the unique greatest
+   binary64 temperature satisfying the case's strict `<` relation. Evidence:
+   the first r75 unit fixture reduced a 3337.261156 K uncapped reaction to a
+   directly negative 2300 K energy row, but the thermochemical inversion
+   still rounded the derived temperature to exactly 2300 K. The predecessor
+   makes row and derived-temperature semantics identical. Rejected: an
+   authored or tuned temperature margin (new knob), tolerance widening,
+   accepting equality despite the locked physical gate, and post-inversion
+   clamping. This is the exact representation of r75's existing strict
+   semantics, so it adds no case field and does not change `case_record_id`.
 8. **Thread count and reduction mode are NOT identity-bearing.** The
    requirement is on the output: the solver must produce **bit-identical
    sequences regardless of effective thread count**, via fixed-order

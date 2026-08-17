@@ -300,7 +300,11 @@ error and must be corrected.
      source availability, not accepted-state clamping. Repeated timestep
      reduction at an outward-pointing energy boundary, a minimum-step
      bypass, a compensating sink, and a hard temperature switch are
-     forbidden.
+     forbidden. **Strict binary64 endpoint (r76):** the headroom row uses
+     `nextafter(maximum_accepted_temperature_K, -∞)` as its thermochemical
+     upper endpoint. This is the unique representable implementation of the
+     locked `<` relation, not a safety margin or tolerance; the echoed case
+     value remains 2300.0 K.
      Stage-specific divergence rules, separate finite-map commits,
      tableau-preimage drain emission, parallel no-pilot shadow trajectories,
      crossflow suppression during the hold, and frozen drain-flux channels
