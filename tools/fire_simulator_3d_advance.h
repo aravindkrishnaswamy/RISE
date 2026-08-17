@@ -2284,6 +2284,11 @@
 			bool lastActiveSetChanged=false;
 			result.picardResidualPerS.clear();
 			for(std::size_t iteration=0;iteration<kMaximumCoupledPicardIterations;++iteration){
+				// The deadband is history-valued: each nonlinear iterate must retain the
+				// classification published by the immediately preceding iterate.  Passing
+				// the stage-entry seed forever makes a threshold face alternate while the
+				// convergence check compares against a history the projector never saw.
+				stageBoundary.priorInflow=priorInflow;
 				OpenMACProjection3DResult projection;
 				// The owning tableau has already assembled the fixed momentum passed to this
 				// stage: M^n for R0, M*dagger for R1, and M^{n+1,dagger} for R2.  The
@@ -2362,22 +2367,24 @@
 					massResidual<=config.projectionTolerancePerS&&
 					coefficientResidual<=config.projectionTolerancePerS&&!activeSetChanged){
 					OpenMACProjection3DResult acceptedProjection;
+					OpenBoundaryConfig3D acceptedBoundary=stageBoundary;
+					acceptedBoundary.priorInflow=projection.inflow;
 					const bool acceptedOK=finalStage?ProjectPressureOpenMACVelocity3DFinal(shape,
-						GasDensityFromConservative(state),unprojected,target,stageBoundary,
+						GasDensityFromConservative(state),unprojected,target,acceptedBoundary,
 						*stage0,*stage1,config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error,config.workerCount):ProjectPressureOpenMACVelocity3D(shape,
-						GasDensityFromConservative(state),unprojected,target,stageBoundary,
+						GasDensityFromConservative(state),unprojected,target,acceptedBoundary,
 						config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error,config.workerCount);
 					if(!acceptedOK) return false;
 					std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
-						acceptedProjection.velocityMPerS,stageBoundary,config.dns,thermochemistry,transport,
+						acceptedProjection.velocityMPerS,acceptedBoundary,config.dns,thermochemistry,transport,
 						acceptedDiffusivity,acceptedConductivity,acceptedViscosity,error,
 						config.workerCount)) return false;
 					OpenFluxPair3D acceptedFlux;
 					if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedProjection,
-						acceptedDiffusivity,acceptedConductivity,stageBoundary,
+						acceptedDiffusivity,acceptedConductivity,acceptedBoundary,
 						config.transport.ambientTemperatureK,config.injectedTemperatureK,fuel,
 						thermochemistry,acceptedFlux,error,config.workerCount))return false;
 					std::array<std::vector<double>,3> verifiedAlpha;
@@ -2640,7 +2647,8 @@
 			OpenConservativeAdvance3DResult candidate;
 			if(!SolveOpenConservativeStage3D(shape,beginning,beginningMomentum,sourceDelta,
 				config,true,0,0,0,fuel,thermochemistry,transport,candidate.r0,error,
-				&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral)) return false;
+				&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral)){
+				if(error)*error=std::string("R0: ")+*error;return false;}
 			std::vector<ConservativeVector> predictor;
 			std::array<std::vector<double>,3> predictorAlpha;
 			if(!ApplyOpenSharedFCT3D(shape,beginning,candidate.r0.flux,sourceDelta,
@@ -2663,7 +2671,7 @@
 				config,false,&candidate.r0.projection.inflow,0,0,fuel,thermochemistry,transport,
 				candidate.r1,error,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,
 				&beginning,&candidate.r0.flux,true))
-				return false;
+				{if(error)*error=std::string("R1: ")+*error;return false;}
 			OpenFluxPair3D averaged;
 			for(std::size_t component=0;component<MethaneMassStateDimension;++component)
 				averaged.boundaryCanSupply[component]=candidate.r0.flux.boundaryCanSupply[component]||
@@ -2720,7 +2728,8 @@
 				sourceDelta,config,false,&candidate.r1.projection.inflow,&candidate.r0.projection,
 				&candidate.r1.projection,
 				fuel,thermochemistry,transport,candidate.r2,error,&projectionEnergyDeltaJPerM3,
-				&projectionExpansionIntegral,0,0,false)) return false;
+				&projectionExpansionIntegral,0,0,false)){
+				if(error)*error=std::string("R2: ")+*error;return false;}
 			candidate.momentumKGPerM2S=candidate.r2.projection.momentumKGPerM2S;
 			candidate.velocityMPerS=candidate.r2.projection.velocityMPerS;
 			candidate.stepAverageDynamicPressurePa=

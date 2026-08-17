@@ -1016,6 +1016,36 @@ int main()
 	}
 	Check(allSideReversals,
 		"V1 every side reclassifies stale inflow and immediately uses interior outflow flux");
+	OpenBoundaryConfig3D picardSeedBoundary=openBoundary3D;
+	picardSeedBoundary.kind.fill(AdiabaticWallBoundary3D);
+	picardSeedBoundary.kind[0]=PressureOpenBoundary3D;
+	picardSeedBoundary.kind[1]=PressureOpenBoundary3D;
+	for(unsigned int side=0;side<6;++side)picardSeedBoundary.priorInflow[side].assign(
+		OpenBoundaryFaceCount3D(openShape3D,side),side==0u);
+	OpenMACField3D picardOutwardMomentum=zeroOpenMomentum3D;
+	for(double& value:picardOutwardMomentum.component[0])value=
+		-ambientState3D.GasDensity()*0.1;
+	OpenMACProjection3DResult picardOutflow,iteratedDeadband,staleDeadband;
+	const bool picardOutflowOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		picardOutwardMomentum,std::vector<double>(openShape3D.CellCount(),0.0),
+		picardSeedBoundary,0.01,2.0e-8,picardOutflow,&error);
+	OpenBoundaryConfig3D iteratedSeedBoundary=picardSeedBoundary;
+	iteratedSeedBoundary.priorInflow=picardOutflow.inflow;
+	const bool iteratedDeadbandOK=picardOutflowOK&&ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		iteratedSeedBoundary,0.01,2.0e-8,iteratedDeadband,&error);
+	const bool staleDeadbandOK=ProjectPressureOpenMACVelocity3D(openShape3D,
+		std::vector<double>(openShape3D.CellCount(),ambientState3D.GasDensity()),
+		zeroOpenMomentum3D,std::vector<double>(openShape3D.CellCount(),0.0),
+		picardSeedBoundary,0.01,2.0e-8,staleDeadband,&error);
+	Check(iteratedDeadbandOK&&staleDeadbandOK&&
+		std::none_of(iteratedDeadband.inflow[0].begin(),iteratedDeadband.inflow[0].end(),
+			[](const bool value){return value;})&&
+		std::all_of(staleDeadband.inflow[0].begin(),staleDeadband.inflow[0].end(),
+			[](const bool value){return value;}),
+		"open Picard deadband consumes the immediately preceding active-set classification");
 	bool allPositiveInflowHeads=true;
 	for( unsigned int normalAxis=0; normalAxis<3; ++normalAxis ) {
 		const unsigned int positiveSide=2*normalAxis+1;

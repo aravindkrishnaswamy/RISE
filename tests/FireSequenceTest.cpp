@@ -1316,6 +1316,8 @@ namespace
 				}
 				values.acceptedTimeStepHistoryS.push_back(reaction.deltaTimeS);
 				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
+				values.acceptedTimeStepS=reaction.deltaTimeS;
+				values.simulatedTimeS=simulationTimeS;
 				const bool moreWork=acceptedSteps<minimumStepCount||simulationTimeS<targetTimeS;
 				const double checkpointElapsedS=std::chrono::duration<double>(
 					std::chrono::steady_clock::now()-lastCheckpointWall).count();
@@ -2121,9 +2123,17 @@ int main(int argc,char** argv)
 			}
 			probeWorkers=static_cast<unsigned int>(parsed);
 		}
+		RunPersistenceOptions probePersistence;
+		if(const char* checkpointEnvironment=std::getenv("RISE_FIRE_BUDGET_CHECKPOINT")){
+			if(!*checkpointEnvironment){std::fprintf(stderr,
+				"RISE_FIRE_BUDGET_CHECKPOINT is empty\n");return 96;}
+			probePersistence.checkpointPath=checkpointEnvironment;
+			probePersistence.checkpointCadenceWallS=900.0;
+			probePersistence.resume=std::filesystem::exists(probePersistence.checkpointPath);
+		}
 		const SolverFrameValues probe=RunMethaneFrameProbe(probeWorkers,1u,targetS,
 			std::max(1.0,targetS),1.0/std::max(1.0,targetS),6.0,
-			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW);
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,probePersistence);
 		const double minimumAcceptedStep=probe.acceptedTimeStepHistoryS.empty()?0.0:
 			*std::min_element(probe.acceptedTimeStepHistoryS.begin(),
 				probe.acceptedTimeStepHistoryS.end());
