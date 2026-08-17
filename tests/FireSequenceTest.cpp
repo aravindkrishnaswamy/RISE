@@ -3049,9 +3049,27 @@ int main(int argc,char** argv)
 	mismatchedTrace=newMigrationTrace;mismatchedTrace.timeStepBits.pop_back();
 	Check(TraceMutationRejects("missing_step",mismatchedTrace),
 		"r78 missing per-step evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.timeStepBits.push_back(0u);
+	Check(TraceMutationRejects("extra_step",mismatchedTrace),
+		"r78 extra timestep evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumTemperatureBits.pop_back();
+	Check(TraceMutationRejects("missing_temperature",mismatchedTrace),
+		"r78 missing per-step T_max evidence rejects build migration");
 	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumTemperatureBits.push_back(0u);
 	Check(TraceMutationRejects("extra_temperature",mismatchedTrace),
 		"r78 extra per-step evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumEOSResidualBits.pop_back();
+	Check(TraceMutationRejects("missing_eos",mismatchedTrace),
+		"r78 missing per-step EOS evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.maximumEOSResidualBits.push_back(0u);
+	Check(TraceMutationRejects("extra_eos",mismatchedTrace),
+		"r78 extra per-step EOS evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.frameDigests.pop_back();
+	Check(TraceMutationRejects("missing_frame",mismatchedTrace),
+		"r78 missing per-step frame evidence rejects build migration");
+	mismatchedTrace=newMigrationTrace;mismatchedTrace.frameDigests.push_back(std::string(64u,'c'));
+	Check(TraceMutationRejects("extra_frame",mismatchedTrace),
+		"r78 extra per-step frame evidence rejects build migration");
 	auto CertificateMutationRejects=[&](const char* name,
 		ResumeEquivalenceCertificate certificate)->bool{
 		const std::filesystem::path path=checkpointFixture/(std::string(name)+".cbor");
