@@ -91,6 +91,7 @@
 #include "../src/Library/SceneEditor/SceneEditController.h"   // round-3: the gizmo-facing scale refusal and the message it prints
 #include "../src/Library/Objects/CSGObject.h"   // 3b: a csg_object in the subtree -- the operands must be SHARED, which is a pointer identity
 
+#include <algorithm>			// std::sort -- EntryNames()'s whole-set oracle
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -207,6 +208,27 @@ static std::string ParentOf( Job* j, const char* name )
 	if( !j || !j->GetObjects() ) return "(no manager)";
 	const char* p = j->GetObjects()->GetObjectParent( name );
 	return p ? std::string( p ) : std::string();
+}
+
+// EVERY object name the manager holds, sorted and joined with '|'.  The WHOLE-SET oracle the
+// revisit-guard fixtures below need: a false "recursive definition" refusal drops the entire
+// instance subtree, so what distinguishes it from a correct derive is the SET of entries, not
+// any one of them -- and a per-name `!= 0` sweep cannot notice an entry that should NOT exist.
+// Sorted rather than in registration order on purpose: sibling ORDER has its own fixtures
+// (GetItemSerial), and pinning it here too would make this oracle red for two unrelated reasons.
+static std::string EntryNames( Job* j )
+{
+	if( !j || !j->GetObjects() ) return "(no manager)";
+	struct Collect : public IEnumCallback<const char*>
+	{
+		std::vector<std::string> names;
+		bool operator()( const char* const& n ) override { if( n ) names.push_back( n ); return true; }
+	} c;
+	j->GetObjects()->EnumerateItemNames( c );
+	std::sort( c.names.begin(), c.names.end() );
+	std::string out;
+	for( std::size_t i = 0; i < c.names.size(); ++i ) { if( i ) out += '|'; out += c.names[i]; }
+	return out;
 }
 
 // " (got X)", for appending to a POSE assertion's message.  Costs nothing on a pass (Check prints
@@ -2391,6 +2413,108 @@ int main()
 		       "refuse: ... with the walk's own message, since no single `parent`+`source` pair explains it" );
 		Check( all.find( "on the SAME chunk" ) == std::string::npos,
 		       "refuse: ... and NOT the pre-walk message, which describes a `parent` line this scene does not have" );
+	}
+
+	// [allow][revisit] THE REVISIT GUARD'S *POSITIVE* CLAIM -- A LEGAL REPEAT VISIT IS
+	// ALLOWED.  Everything above proves the guard REFUSES a real cycle; nothing proved it
+	// PERMITS the ordinary thing, because every nested fixture in this file has exactly ONE
+	// instance per source on a LINEAR chain, so no chunk is ever reached twice in a single
+	// expansion.  `path` is therefore a PATH (push on entry, pop on exit) and not a
+	// visited-set, and the two `path.erase` lines at the tails of `ClonePlanBuilder::
+	// ClonedEntry` / `SourceSubtree` are the whole of that difference.  Delete either and a
+	// MAINSTREAM scene -- an assembly holding two copies of one part, then instanced itself,
+	// which is the canonical kit-bash and the shape `source` exists for -- is refused with a
+	// false "recursive definition" AND has its entire instance subtree silently dropped,
+	// while every other assertion in this file stays green.
+	//
+	// Two fixtures, one per erase, each red under ITS OWN deletion:
+	//
+	//   (a) THE DIAMOND -- pins `ClonedEntry`'s erase.  `B parent A`, `D parent B`,
+	//       `C parent A source B`.  Expanding `I source A` walks A's children in document
+	//       order: `B` (pushing B, then D, popping both) and then `C`, whose own `source B`
+	//       RE-ENTERS chunks B and D by a disjoint path to produce `I.C` / `I.C.D`.  The
+	//       second visit is legal -- neither chunk is on the path from `I` to it.
+	//   (b) TWO SIBLING INSTANCES OF ONE SOURCE -- pins `SourceSubtree`'s erase.  `P source
+	//       L` and `Q source L`, both `parent A`, then `I source A`.  Expanding `I` hops
+	//       across the `source` boundary onto `L` once for `P` and once for `Q`.  `L` is
+	//       deliberately a LEAF so the only chunk visited twice is the one `SourceSubtree`
+	//       pushes -- which is what keeps this fixture red under (b)'s deletion ALONE and
+	//       green under (a)'s, so the two proofs do not collapse into one.
+	//
+	// The oracle is the WHOLE ENTRY SET plus the deepest composed world position: a false
+	// refusal drops the instance subtree wholesale, so a per-name spot check is the weaker
+	// instrument, and the deepest position is what says the re-entered branch was copied
+	// through the right parent rather than merely existing.
+	{
+		// (a) THE DIAMOND.
+		const std::string diamond =
+			"standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+			"standard_object\n{\nname B\nparent A\ngeometry boxg\nmaterial m2\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname D\nparent B\ngeometry geo\nmaterial m\nposition 0 0 1\n}\n"
+			"standard_object\n{\nname C\nparent A\nsource B\nposition -4 0 0\n}\n"
+			"standard_object\n{\nname I\nsource A\nposition 0 5 0\n}\n";
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( diamond ), &diags );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(),
+		       ( std::string( "revisit-diamond: a diamond of `parent` + `source` derives CLEANLY -- the second visit "
+		         "to a chunk by a disjoint path is not a cycle (" ) + all + ")" ).c_str() );
+		// Five AUTHORED entries -- `A`, `B`, `D`, `C`, and `C.D` (which `C source B`
+		// produces on its own, with or without `I`) -- and five SYNTHESIZED ones.
+		const std::string wantSet =
+			"A|B|C|C.D|D|I|I.B|I.C|I.C.D|I.D";
+		const std::string gotSet = EntryNames( j );
+		Check( gotSet == wantSet,
+		       ( std::string( "MONEY ASSERTION (revisit-diamond): the WHOLE entry set is the ten objects the diamond "
+		         "describes -- five authored, five synthesized (got " ) + gotSet + ")" ).c_str() );
+		std::string got;
+		Check( CenterIs( Obj( j, "I.C.D" ), -4, 5, 1, &got ),
+		       ( std::string( "MONEY ASSERTION (revisit-diamond): the DEEPEST re-entered entry `I.C.D` composes "
+		         "through `I.C` through `I` (got " ) + got + ")" ).c_str() );
+		Check( ParentOf( j, "I.C.D" ) == "I.C" && ParentOf( j, "I.C" ) == "I" && ParentOf( j, "I.D" ) == "I.B",
+		       "revisit-diamond: ... and both re-entered branches are parented to the CLONE of their parent" );
+		// NON-VACUITY: the ORIGINAL diamond is untouched, so the set above is not ten copies
+		// of a mistake -- `C.D` is what `C source B` produced before `I` existed at all.
+		Check( CenterIs( Obj( j, "C.D" ), -4, 0, 1 ) && CenterIs( Obj( j, "D" ), 1, 0, 1 ),
+		       "revisit-diamond: (control) the authored diamond still stands where it was" );
+		j->release();
+	}
+	{
+		// (b) TWO SIBLING INSTANCES OF ONE SOURCE, inside one instanced subtree.
+		const std::string siblings =
+			"standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+			"standard_object\n{\nname L\ngeometry boxg\nmaterial m2\nposition 9 9 9\n}\n"
+			"standard_object\n{\nname P\nparent A\nsource L\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname Q\nparent A\nsource L\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname I\nsource A\nposition 0 0 6\n}\n";
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( siblings ), &diags );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(),
+		       ( std::string( "revisit-sibling: two sibling instances of ONE source, inside an instanced subtree, "
+		         "derive CLEANLY (" ) + all + ")" ).c_str() );
+		const std::string wantSet = "A|I|I.P|I.Q|L|P|Q";
+		const std::string gotSet  = EntryNames( j );
+		Check( gotSet == wantSet,
+		       ( std::string( "MONEY ASSERTION (revisit-sibling): the WHOLE entry set is the seven objects the scene "
+		         "describes -- the `source L` hop is taken TWICE in one expansion (got " ) + gotSet + ")" ).c_str() );
+		std::string got;
+		Check( CenterIs( Obj( j, "I.P" ), 1, 0, 6, &got ),
+		       ( std::string( "MONEY ASSERTION (revisit-sibling): the deepest entry of the FIRST hop composes "
+		         "through `I` (got " ) + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I.Q" ), 0, 1, 6, &got ),
+		       ( std::string( "MONEY ASSERTION (revisit-sibling): ... and so does the SECOND hop's, which is the one "
+		         "a visited-set would have refused (got " ) + got + ")" ).c_str() );
+		Check( ParentOf( j, "I.P" ) == "I" && ParentOf( j, "I.Q" ) == "I",
+		       "revisit-sibling: ... both under the instance root" );
+		// NON-VACUITY: `L`'s own transform is DROPPED by each instancing node (3a's rule), so
+		// (9,9,9) appearing anywhere would mean the copies took the SOURCE's pose.
+		Check( CenterIs( Obj( j, "P" ), 1, 0, 0 ) && CenterIs( Obj( j, "Q" ), 0, 1, 0 )
+		       && CenterIs( Obj( j, "L" ), 9, 9, 9 ),
+		       "revisit-sibling: (control) the two authored instances and the untouched source" );
+		j->release();
 	}
 
 	// [cap] NOT TESTED HERE, and the reason is worth recording rather than leaving as a

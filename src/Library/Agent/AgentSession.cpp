@@ -11632,10 +11632,6 @@ namespace RISE
 		//! Assumes the caller has already built the full-set TLAS -- see
 		//! ObjectSoloRestoreGuard's invariant 1.
 		//!
-		//! `outHiddenCount` is now just `hidden.size()`, and is kept as an
-		//! out-param because the caller MOVES the vector into the guard and then
-		//! still needs the number for the result message.
-		//!
 		//! RECORDING ONLY WHAT WE CHANGED is load-bearing, not tidiness.  The
 		//! `IsWorldVisible()` read below is COMPOSED (`bIsWorldVisible &&
 		//! nConsumedBy == 0` since 87 step 3b) while `SetWorldVisible` owns
@@ -11645,10 +11641,9 @@ namespace RISE
 		//! construction: `wasVisible` gates the hide, and composed-visible
 		//! implies base-visible.
 		std::vector<IObjectPriv*> ApplyObjectSolo(
-			IObjectManager* objMgr, IObjectPriv* keep, unsigned int& outHiddenCount )
+			IObjectManager* objMgr, IObjectPriv* keep )
 		{
 			std::vector<IObjectPriv*> hidden;
-			outHiddenCount = 0;
 			if( !objMgr ) return hidden;
 			const std::vector<std::string> names = CollectObjectNames( objMgr );
 			hidden.reserve( names.size() );
@@ -11659,7 +11654,6 @@ namespace RISE
 				if( obj != keep && wasVisible ) {
 					obj->SetWorldVisible( false );
 					hidden.push_back( obj );
-					++outHiddenCount;
 				}
 			}
 			return hidden;
@@ -16432,9 +16426,8 @@ namespace RISE
 					// caster that (re)builds during this render must see the
 					// ISOLATED luminary set, and the guard's matching bump on
 					// restore forces the full set back afterwards.
-					unsigned int hiddenCount = 0;
 					std::vector<IObjectPriv*> hiddenByIsolate =
-						ApplyObjectSolo( objMgrForIsolate, isolateObj, hiddenCount );
+						ApplyObjectSolo( objMgrForIsolate, isolateObj );
 					isolateGuard.Arm( std::move( hiddenByIsolate ) );
 					if( RISE::Implementation::Scene* concreteSceneForIsolate =
 							dynamic_cast<RISE::Implementation::Scene*>( mJob->GetScene() ) ) {

@@ -1927,6 +1927,16 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 			"instead, or move the generator out of the subtree." );
 		return false;
 	}
+	// `path` IS A PATH, NOT A VISITED-SET, and this line is the whole difference.  Deleting
+	// it turns the revisit guard above from "this chunk is on the path from the instancing
+	// node to here" -- a real cycle -- into "this chunk was reached at some point during
+	// this expansion", which refuses ordinary authoring: TWO SIBLING INSTANCES OF ONE
+	// SOURCE inside one instanced subtree (`P source L`, `Q source L`, both `parent A`,
+	// then `I source A`) hop onto `L` twice in the same expansion along two DISJOINT
+	// paths, and the second hop would be reported as a recursive definition while the
+	// whole instance subtree was dropped.  Pinned by CstSourceInstanceTest's
+	// "revisit-sibling" fixture; `ClonedEntry`'s matching erase is pinned by
+	// "revisit-diamond".
 	path.erase( srcChunkIdx );
 	return true;
 }
@@ -2076,10 +2086,26 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 			if( !ClonedEntry( kidsFound[k].first, kidCtx, cloneName, depth + 1 ) ) return false;
 		}
 	}
-	// The `instance_array` refusal reads the SAME key set, and it has to: a generator
-	// parented onto a synthesized entry (`parent I1.B`) would otherwise be invisible to
-	// this scan and its objects would be silently missing from the copy -- verbatim the
-	// outcome the refusal exists to prevent.
+	// The `instance_array` refusal, over the same key set -- and, like the override lookup
+	// above and UNLIKE the child walk between them, ONLY `keys[0]` IS REACHABLE TODAY.
+	// The rest of the loop is defensive, and the argument is the override site's, verbatim:
+	// a key at `ki > 0` is `JoinFrom(ctxParts, ki) + ownName`, which is `keys[0]` of the
+	// expansion rooted at the instancing chunk `ctxParts[ki-1]` -- and that chunk is
+	// necessarily EARLIER in the document (a `source` must name something declared above),
+	// so PASS-2 refuses there and `break`s before this deeper copy is ever planned.
+	//
+	// WHAT THIS COMMENT USED TO SAY, and why it was wrong: that the union "has to" be read
+	// because a generator written `parent I1.B` would otherwise be invisible here.  It
+	// would not -- `I1.B` IS `keys[0]` of the depth-2 expansion that catches it, so the
+	// example argued for the union while actually demonstrating `keys[0]`.  Narrowing this
+	// loop to `keys[0]` alone leaves CstSourceInstanceTest fully green (verified 327/0 at
+	// the round-3 count, 316/0 before it), and instrumentation confirms every generator
+	// refusal in the file fires at index 0.  Recorded rather than
+	// acted on for the same reason the override lookup keeps its own dead tail: the proof
+	// rests on "PASS-2 stops at the FIRST refusal", and a future diagnostic pass that
+	// collected every refusal instead would make these keys live.  The CHILD walk above is
+	// the one that genuinely needs the union at every index, and it has its own depth-3
+	// regression guard -- see `ChildKeysOf`.
 	for( std::size_t ki = 0; ki < keys.size(); ++ki ) {
 		const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( keys[ki].first );
 		if( gen == index.generatorChildrenOf.end() || gen->second.empty() ) continue;
@@ -2092,6 +2118,14 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 			"instead, or move the generator out of the subtree." );
 		return false;
 	}
+	// THE POP that matches the revisit guard's push, and the guard is only a cycle test
+	// because of it -- see the twin at `SourceSubtree`'s tail.  The shape this one admits
+	// is a DIAMOND: `B parent A`, `D parent B`, `C parent A source B`, then `I source A`.
+	// Expanding `I` visits `B` and `D` under `I.B`, pops both, and then reaches them AGAIN
+	// through `I.C` (whose `source B` re-enters the same two chunks by a disjoint path) to
+	// produce `I.C.D`.  Without the pop the second visit reads as recursion and the whole
+	// `I` subtree vanishes behind a false refusal.  Pinned by CstSourceInstanceTest's
+	// "revisit-diamond" fixture.
 	path.erase( chunkIdx );
 	return true;
 }

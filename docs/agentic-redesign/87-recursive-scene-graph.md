@@ -562,6 +562,90 @@ what was authored, live material included).
      match on a shorter name names the right entry — one expression, and the
      branch remains unreachable for the reason written at the site.
 
+   **3b review round 3 (2026-08-17) — no P1.  Every finding is a MISSING
+   REGRESSION GUARD on something a previous round had just fixed or just
+   widened, which is the pattern to notice: three rounds in, the code is right
+   and the evidence for it keeps lagging one commit behind.**
+   - **A GUARD'S *POSITIVE* CLAIM NEEDS ITS OWN FIXTURE.  The subtree walk's
+     revisit guard had two fixtures for "a real cycle is refused" and none for
+     "a legal repeat visit is ALLOWED"** — because every nested fixture in the
+     file had exactly ONE instance per source on a LINEAR chain, so no chunk was
+     ever reached twice in one expansion.  `path` is a PATH (push on entry, pop
+     on exit), and the two `path.erase` lines at the tails of
+     `ClonePlanBuilder::ClonedEntry` / `SourceSubtree` are the whole of that;
+     deleting EITHER turns the guard into a visited-set and refuses ORDINARY
+     AUTHORING with a false "recursive definition" while silently dropping the
+     entire instance subtree, at 316/0.  Both shapes are mainstream — an
+     assembly holding two copies of one part, then instanced itself, is the
+     canonical kit-bash and is what `source` is for.  Now pinned by two
+     fixtures, each red under ITS OWN deletion and green under the other's:
+     `revisit-diamond` (`B parent A`, `D parent B`, `C parent A source B`, then
+     `I source A` — `I`'s walk re-enters chunks B and D by a disjoint path to
+     produce `I.C.D`) pins `ClonedEntry`'s erase; `revisit-sibling` (`P source
+     L`, `Q source L`, both `parent A`, then `I source A`, with `L` deliberately
+     a LEAF so only the chunk `SourceSubtree` pushes is visited twice) pins
+     `SourceSubtree`'s.  The oracle is the WHOLE ENTRY SET plus the deepest
+     composed world position, because a false refusal drops the subtree
+     wholesale and a per-name spot check is the weaker instrument.
+   - **ROUND 2's NEW RETURN CONTRACT SHIPPED UNPINNED, and its natural one-line
+     violation resurrects every 87 CONTAINER.**  Round 2 replaced
+     capture-then-write-back with "record only what you actually hid, restore
+     `true`"; hoisting `hidden.push_back( obj )` above the
+     `if( obj != keep && wasVisible )` gate is *restore blanket-true*, the exact
+     shape the contract forbids, and left AgentViewModeRenderTest at 674/0.  The
+     G1-i tests structurally cannot catch it: since 3b a CSG operand's BASE flag
+     is already `true`, so writing `true` into it is a NO-OP.  **Only an object
+     hidden by its BASE flag distinguishes the two, and the scene language has
+     exactly one — a container** (geometry-less, created world-invisible by
+     `RISE_API_CreateObjectOrContainer_`, nothing composing over that flag).
+     Blanket-true resurrects it into the TLAS as a leaf with an EMPTY bounding
+     box, into the nine world-visible enumerations that flag exists to keep it
+     out of, and into the objectmap legend.  The isolate fixture now carries a
+     container plus a `parent` child, and asserts it is still hidden after the
+     restore, still hidden after TWO consecutive isolate renders, and absent
+     from a later plain objectmap render's legend — that last one a different
+     code path (`BuildObjectMapPalette`'s world-visible filter) and the
+     user-visible face of the corruption.  **Round 2 wrote "the isolate
+     red-proof cannot be a single line"; that was true of the OLD bug and false
+     of the NEW contract, which has one.**
+   - **AN ASSERT-ONLY TEST FILE VERIFIES NOTHING ON THE PROJECT'S DOCUMENTED
+     WINDOWS PATH — INCLUDING ITS OWN SETUP.**
+     `build/cmake/rise-tests/CMakeLists.txt` does not override
+     `CMAKE_CXX_FLAGS_RELEASE`, MSVC's default for that config carries
+     `/DNDEBUG`, and `run_all_tests.ps1` defaults to `-Config Release`.
+     `CSGObjectIdentityTest` — the consumption count's ONLY regression guard
+     anywhere in the tree, and the property both earlier rounds lean on — was
+     ~100 lines of pure `assert()`.  Demonstrated end-to-end: with the count
+     defect LIVE and `-DNDEBUG` set, the old file printed all three "Passed!"
+     and exited 0, and the log line `CSGObject::IntersectRay:: No subobjects for
+     this CSG object` proves the *setup* went with it (`assert(
+     pCSG->AssignObjects(...) )` compiles out, so no composite was ever
+     assigned and the case tested an unrelated scene).  Converted to the counted
+     `Check()` / tally / non-zero-exit style, with every side-effecting call on
+     its own line and only its RESULT checked; the same mutation is now red and
+     exits 1 under `-DNDEBUG`.  Assert-only is a pre-existing convention in
+     dozens of files under `tests/` (the review said 24; a crude grep here says
+     ~34, so treat the exact count as unestablished and the convention as
+     widespread) — the rule going forward is that a file carrying the sole guard
+     for a load-bearing invariant does not get to be one of them.  **The rest of
+     that convention is a standing latent gap, not something this round fixed.**
+   - **P3s.** The generator key-scan's comment asserted the OPPOSITE of the
+     correct reasoning already written 80 lines above for the identical key set:
+     it claimed the union "has to" be read because a generator at `parent I1.B`
+     would otherwise be invisible, but `I1.B` **is** `keys[0]` of the depth-2
+     expansion that catches it, so the example argued for the union while
+     demonstrating `keys[0]`.  Rewritten to the override site's actual argument
+     (a key at `ki > 0` is `keys[0]` of a shallower expansion, necessarily
+     earlier in the document, and PASS-2 breaks on the first refusal) and
+     labelled defensive.  **Naming the narrowing round 2's commit message left
+     unnamed: the obvious one — `keys[0]` only — is GREEN, verified at 327/0.**
+     The CHILD walk between them is the one that genuinely needs every index,
+     and it has the depth-3 guard.  Separately, `ApplyObjectSolo`'s
+     `outHiddenCount` out-param was write-only tree-wide (declared, passed,
+     never read; there is no such field on `AgentRenderResult` and the result
+     message carries no count) and round 2's comment justified keeping it with a
+     caller need that does not exist — deleted rather than re-justified.
+
    **3a review round 1 (2026-08-16) settled four refusal rules that the
    first implementation got subtly wrong. They are semantics, not
    phrasing, so they are recorded here. Round 2 then narrowed the last

@@ -3811,6 +3811,30 @@ static void RunIsolateOnlyNamedObjectRendersTest()
 // The probe is therefore: isolate-render, drop the composite, and ask the
 // two operands whether they are ordinary objects again.  The CONTROL is
 // the same scene with the isolate render skipped.
+//
+// ROUND 3 ADDS THE OTHER HALF, and it is the half that pins the RETURN
+// CONTRACT rather than the old bug.  The fix was "record only what you
+// actually hid, and restore `true` unconditionally"; its natural one-line
+// violation is to hoist `hidden.push_back( obj )` ABOVE the
+// `if( obj != keep && wasVisible )` gate -- i.e. record everything, keep
+// the unconditional restore -- which IS "restore blanket-true", the exact
+// shape the contract forbids.  Nothing above catches it: since 3b a CSG
+// operand's BASE flag is already `true`, so writing `true` into it is a
+// NO-OP, and every assertion here is about operands.
+//
+// Only an object hidden by its BASE FLAG distinguishes the two, and the
+// scene language has exactly one: an 87 CONTAINER (a geometry-less
+// grouping node, created world-invisible by
+// RISE_API_CreateObjectOrContainer_, with nothing composing over that
+// flag).  Blanket-true resurrects it -- and a visible container enters the
+// TLAS as a leaf with an EMPTY bounding box, enters the nine
+// world-visible enumerations that world-invisibility exists to keep it out
+// of, and appears in the objectmap legend.  So the fixture carries a
+// container, and the assertions are: it is STILL hidden after the restore,
+// still hidden after TWO consecutive isolate renders (the sequence a real
+// session produces), and absent from a later plain objectmap render's
+// legend -- that last one a genuinely different code path from an
+// IsWorldVisible() read, and the user-visible face of the corruption.
 //----------------------------------------------------------------------
 static const char* const kSceneCsgAndSphere =
 	"RISE ASCII SCENE 7\n"
@@ -3826,6 +3850,12 @@ static const char* const kSceneCsgAndSphere =
 	"standard_object\n{\n\tname opA\n\tgeometry op_geo\n\tmaterial mat\n\tposition 0 0.25 0\n}\n\n"
 	"standard_object\n{\n\tname opB\n\tgeometry op_geo\n\tmaterial mat\n\tposition 0 -0.25 0\n}\n\n"
 	"csg_object\n{\n\tname comp\n\tobja opA\n\tobjb opB\n\toperation union\n\tposition -1.6 0 0\n}\n\n"
+	// 87 CONTAINER: a geometry-less grouping node, plus a child parented into it.  A
+	// container is world-invisible by its BASE flag and nothing composes over that --
+	// which is what makes IT, and not a CSG operand, the object that separates "restore
+	// exactly what you hid" from "restore blanket-true".  See the money assertions below.
+	"standard_object\n{\n\tname grp\n\tposition 0 1.7 0\n}\n\n"
+	"standard_object\n{\n\tname kid\n\tparent grp\n\tgeometry op_geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
 	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
 
 // True when the named object exists AND reports itself world-visible.
@@ -3851,10 +3881,19 @@ static void RunIsolateLeavesCsgOperandsIntactTest()
 		       "csg-isolate control: (control) both operands start CONSUMED, hence not world-visible" );
 		Check( ObjVisible( pJob, "comp" ) && ObjVisible( pJob, "keep_obj" ),
 		       "csg-isolate control: (control) the composite and the bystander start visible" );
+		// The container half's baseline: `grp` is hidden by its BASE flag (nothing
+		// composes over it, unlike an operand), and its child is an ordinary object.
+		Check( !ObjVisible( pJob, "grp" ),
+		       "csg-isolate control: (control) the 87 container starts world-INVISIBLE, by its base flag" );
+		Check( ObjVisible( pJob, "kid" ),
+		       "csg-isolate control: (control) ... while its child is an ordinary visible object" );
 		Check( pJob->GetObjects() && pJob->GetObjects()->RemoveItem( "comp" ),
 		       "csg-isolate control: the composite is removed" );
 		Check( ObjVisible( pJob, "opA" ) && ObjVisible( pJob, "opB" ),
 		       "csg-isolate control: with nothing consuming them, both operands are ordinary visible objects again" );
+		Check( !ObjVisible( pJob, "grp" ),
+		       "csg-isolate control: (control) and the container is STILL hidden -- nothing in this arm touched it, "
+		       "which is what makes the arm below measure the isolate render and nothing else" );
 		pJob->release();
 	}
 
@@ -3883,6 +3922,53 @@ static void RunIsolateLeavesCsgOperandsIntactTest()
 	       "csg-isolate: after the render the composite and the bystander are visible again" );
 	Check( !ObjVisible( pJob, "opA" ) && !ObjVisible( pJob, "opB" ),
 	       "csg-isolate: ... and the operands are still hidden, because `comp` is still consuming them" );
+
+	// MONEY ASSERTION (the RETURN CONTRACT): the restore wrote `true` into the
+	// objects the hide pass HID, and into nothing else.  The container was
+	// already invisible, so the hide pass never recorded it and the restore
+	// must never have named it.  Record-everything-then-restore-true -- the
+	// one-line violation of the contract -- resurrects it here.
+	Check( ObjVisible( pJob, "kid" ),
+	       "csg-isolate: the container's CHILD was hidden by the isolate and is visible again" );
+	Check( !ObjVisible( pJob, "grp" ),
+	       "MONEY ASSERTION (G1-i3): the 87 CONTAINER is STILL world-invisible after the restore -- the hide pass "
+	       "never hid it, so the restore never wrote into it.  A blanket `true` over every enumerated object puts a "
+	       "geometry-less node into the TLAS, the nine world-visible enumerations, and the objectmap legend" );
+
+	// AND AFTER A SECOND CONSECUTIVE ISOLATE RENDER -- the sequence a real
+	// session produces, and the one that turns a single leak into a state the
+	// scene never recovers from without a full re-derive.
+	const AgentRenderResult isoR2 = session->Render( isoP );
+	Check( isoR2.ok && isoR2.isolateApplied,
+	       std::string( "csg-isolate: a SECOND isolate render succeeds: " ) + isoR2.message );
+	Check( !ObjVisible( pJob, "grp" ),
+	       "MONEY ASSERTION (G1-i4): ... and the container is still hidden after TWO consecutive isolate renders" );
+	Check( !ObjVisible( pJob, "opA" ) && !ObjVisible( pJob, "opB" ),
+	       "csg-isolate: ... with the operands still held by `comp` across both renders" );
+
+	// THE USER-VISIBLE FACE, on a different code path from an
+	// IsWorldVisible() read: BuildObjectMapPalette admits one legend entry per
+	// WORLD-VISIBLE object, so a resurrected container is a legend entry the
+	// agent can be told to select and a colour no ray can ever produce.
+	{
+		AgentRenderParams plainP;
+		plainP.renderTarget = AgentRenderTarget::ObjectMap;
+		plainP.camera.hasLocation = true; plainP.camera.location = "0 0 6";
+		plainP.camera.hasLookAt   = true; plainP.camera.lookAt   = "0 0 0";
+		plainP.camera.hasUp       = true; plainP.camera.up       = "0 1 0";
+		const AgentRenderResult plainR = session->Render( plainP );
+		Check( plainR.ok && !plainR.isolateApplied,
+		       std::string( "csg-isolate: a plain (non-isolate) objectmap render follows: " ) + plainR.message );
+		bool sawGrp = false, sawKid = false;
+		for( std::size_t i = 0; i < plainR.legend.size(); ++i ) {
+			if( plainR.legend[i].name == "grp" ) sawGrp = true;
+			if( plainR.legend[i].name == "kid" ) sawKid = true;
+		}
+		Check( sawKid, "csg-isolate: (control) the legend does list the container's ordinary CHILD, so it really was built" );
+		Check( !sawGrp,
+		       "MONEY ASSERTION (G1-i5): ... and does NOT list the container -- the isolate renders left the "
+		       "objectmap's world-visible filter answering the same way it did before them" );
+	}
 
 	// MONEY ASSERTION: drop the composite and the operands must come back.
 	Check( pJob->GetObjects() && pJob->GetObjects()->RemoveItem( "comp" ),
