@@ -3885,6 +3885,44 @@ NodeId DocFindByName( const Document& doc, const std::string& namePath, int* vis
 	return ( count == 1 ) ? id : 0;   // unique-or-refuse: an ambiguous duplicate name resolves to 0
 }
 
+// The five params whose precedence the object-chunk parsers implement (matrix > quaternion >
+// per-field).  A name test, deliberately: these are the params, not a category.
+static bool RoleIsObjectTransformParam_( const std::string& role )
+{
+	return role == "position" || role == "orientation" || role == "scale"
+	    || role == "matrix"   || role == "quaternion";
+}
+
+NodeId DocTransformOwnerId( const Document& doc, NodeId chunkId, const std::string& role, bool* outIsObjectTransform )
+{
+	if( outIsObjectTransform ) *outIsObjectTransform = false;
+	if( chunkId == 0 || !RoleIsObjectTransformParam_( role ) ) return chunkId;
+	const NodeRef chunk = DocResolveNodeId( doc, chunkId );
+	if( !chunk ) return chunkId;
+	// Descriptor-driven, like RoleMatchesKindConstraint's registry arm: ChunkCategory::Object is
+	// exactly standard_object / csg_object / override_object -- the chunks whose parsers rank these
+	// five params.  A keyword suffix test would not do: `override_object` and `standard_object`
+	// share one, while a future object keyword need not.
+	const std::map<std::string, const IAsciiChunkParser*>& reg = DescriptorRegistry();
+	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = reg.find( chunk->role );
+	if( it == reg.end() || it->second->Describe().category != ChunkCategory::Object ) return chunkId;
+	if( outIsObjectTransform ) *outIsObjectTransform = true;
+	if( chunk->role == "override_object" ) return chunkId;   // addressed directly -- do not redirect
+	const std::string namePath = ChunkNamePath( chunk );
+	const size_t slash = namePath.rfind( '/' );
+	const std::string bareName = ( slash == std::string::npos ) ? std::string() : namePath.substr( slash + 1 );
+	if( bareName.empty() ) return chunkId;                   // unnamed -- an override targets BY NAME
+	const std::string overridePath = std::string( "override_object/" ) + bareName;
+	// LAST wins: overrides are applied in document order, so the final one decides the pose.
+	for( int index = DocItemCount( doc ) - 1; index >= 0; --index ) {
+		const NodeId candidateId = DocNodeIdAt( doc, index );
+		const NodeRef candidate = DocResolveNodeId( doc, candidateId );
+		if( candidate && candidate->role == "override_object" && ChunkNamePath( candidate ) == overridePath )
+			return candidateId;
+	}
+	return chunkId;
+}
+
 bool RoleMatchesKindConstraint( const std::string& role, const std::string& roleKindSuffix )
 {
 	if( roleKindSuffix.empty() ) return true;                      // no constraint
