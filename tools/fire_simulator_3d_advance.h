@@ -2261,6 +2261,46 @@
 			return true;
 		}
 
+		inline bool ParallelOpenManifoldExactDivergenceTarget3D(
+			const std::vector<double>& currentTargetPerS,
+			const std::vector<ConservativeVector>& acceptedCandidate,
+			const double deltaTimeS,
+			const FireSimulationMethaneRecord& thermochemistry,
+			std::vector<double>& result,
+			std::string* error,
+			const unsigned int workerCount
+			)
+		{
+			if(currentTargetPerS.size()!=acceptedCandidate.size()||acceptedCandidate.empty())
+				return ManifoldExactDivergenceTarget(currentTargetPerS,acceptedCandidate,
+					deltaTimeS,thermochemistry,result,error);
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(acceptedCandidate.size())));
+			if(workers==1u)return ManifoldExactDivergenceTarget(currentTargetPerS,
+				acceptedCandidate,deltaTimeS,thermochemistry,result,error);
+			std::vector<std::vector<double> > targetChunk(workers),resultChunk(workers);
+			std::vector<std::vector<ConservativeVector> > candidateChunk(workers);
+			for(unsigned int worker=0;worker<workers;++worker){
+				const std::size_t first=acceptedCandidate.size()*worker/workers;
+				const std::size_t last=acceptedCandidate.size()*(worker+1u)/workers;
+				targetChunk[worker].assign(currentTargetPerS.begin()+first,
+					currentTargetPerS.begin()+last);
+				candidateChunk[worker].assign(acceptedCandidate.begin()+first,
+					acceptedCandidate.begin()+last);
+			}
+			std::vector<unsigned char> success(workers,0u);std::vector<std::string> message(workers);
+			FireWorkerPool().Run(workers,[&](const unsigned int worker){
+				success[worker]=ManifoldExactDivergenceTarget(targetChunk[worker],
+					candidateChunk[worker],deltaTimeS,thermochemistry,resultChunk[worker],
+					&message[worker]);});
+			for(unsigned int worker=0;worker<workers;++worker)if(!success[worker])
+				return Fail(error,message[worker]);
+			result.clear();result.reserve(acceptedCandidate.size());
+			for(unsigned int worker=0;worker<workers;++worker)result.insert(result.end(),
+				resultChunk[worker].begin(),resultChunk[worker].end());
+			return true;
+		}
+
 		inline bool SolveOpenConservativeStage3D(
 			const PeriodicMACShape& shape,
 			const std::vector<ConservativeVector>& state,
@@ -2385,8 +2425,9 @@
 						sourceDelta,config.transport.deltaTimeS,thermochemistry,nextTarget,error,
 						config.workerCount,projectionEnergyDeltaJPerM3,projectionExpansionIntegral))
 						return false;
-				}else if(!ManifoldExactDivergenceTarget(target,stageCandidate,
-					config.transport.deltaTimeS,thermochemistry,nextTarget,error))return false;
+				}else if(!ParallelOpenManifoldExactDivergenceTarget3D(target,stageCandidate,
+					config.transport.deltaTimeS,thermochemistry,nextTarget,error,
+					config.workerCount))return false;
 				double residual=0.0,massResidual=0.0,
 					coefficientResidual=0.0;bool activeSetChanged=false;std::size_t offset=0;
 				if(iteration)for(unsigned int side=0;side<6;++side)
@@ -2452,8 +2493,9 @@
 						return false;
 					}
 					if(scalarAcceptanceStage){
-						if(!ManifoldExactDivergenceTarget(target,verifiedCandidate,
-							config.transport.deltaTimeS,thermochemistry,verifiedTarget,error))return false;
+						if(!ParallelOpenManifoldExactDivergenceTarget3D(target,verifiedCandidate,
+							config.transport.deltaTimeS,thermochemistry,verifiedTarget,error,
+							config.workerCount))return false;
 					}else if(!OpenDivergenceTargetFromPhysicalFlux3D(shape,state,temperature,
 						acceptedFlux,sourceDelta,config.transport.deltaTimeS,thermochemistry,
 						verifiedTarget,error,config.workerCount,projectionEnergyDeltaJPerM3,
@@ -2488,8 +2530,9 @@
 							config.transport,fuel,thermochemistry,certifiedPredictor,certifiedAlpha,error,
 							config.workerCount,&limiterAcceptance.faceAlpha)) return false;
 						std::vector<double> certifiedTarget;
-						if(!ManifoldExactDivergenceTarget(target,certifiedPredictor,
-							config.transport.deltaTimeS,thermochemistry,certifiedTarget,error))return false;
+						if(!ParallelOpenManifoldExactDivergenceTarget3D(target,certifiedPredictor,
+							config.transport.deltaTimeS,thermochemistry,certifiedTarget,error,
+							config.workerCount))return false;
 						double certifiedResidual=0.0;
 						for(std::size_t cell=0;cell<count;++cell)certifiedResidual=std::max(
 							certifiedResidual,std::fabs(certifiedTarget[cell]-target[cell]));
