@@ -2367,6 +2367,56 @@ following; two conforming tools must derive identical bytes:
    perturbing the trajectory. Reproduction-only operation (no
    checkpointing) remains a valid run mode — determinism is the
    ultimate fallback — but day-scale runs use the seam.
+8b. **Checkpoint build migration (r78) — a foreign build is admitted only
+   by a resume-equivalence certificate.** The checkpoint's
+   `producer_build_id` remains a fail-closed binding to the executable
+   SHA-256 that wrote it; an environment variable, command-line override,
+   or unchecked loader branch may never bypass that binding. A replacement
+   build may adopt an existing checkpoint only through the following
+   transactional exception:
+
+   1. an isolated certificate runner binds the checkpoint whole-file
+      SHA-256, the old executable SHA-256, and the proposed executable
+      SHA-256, gives each executable an independent copy of the same
+      checkpoint, and advances both for **N >= 8 accepted steps**;
+   2. every accepted-step `dt`, `T_max`, and maximum EOS residual is compared
+      bit-for-bit, and every continuation frame digest produced in the
+      interval is identical (an empty frame list is valid only when neither
+      run crosses a frame event); any rejection, crash, extra/missing step,
+      or byte difference rejects the certificate;
+   3. the canonical certificate payload records the checkpoint digest,
+      both build IDs, N, the compared step records and frame digests, and is
+      wrapped by the existing one-preimage `{payload, certificate_id}` rule,
+      with `certificate_id = SHA-256(canonical(payload))`; and
+   4. production resume accepts the foreign checkpoint only when that exact
+      certificate validates against the checkpoint bytes and current
+      executable. The first subsequent durable checkpoint is written under
+      the new producer build ID. The migration event, both build IDs,
+      certificate ID, N, and resumed step are producer/run metadata.
+
+   Build migration is pin-8 run infrastructure: it changes neither the case
+   payload nor `case_record_id`. The certificate proves the continuation
+   actually used by the run, not general equivalence between binaries.
+   Rejected: a general `allow_foreign_build` escape hatch (silent semantic
+   substitution), source-revision or version-string matching (not executable
+   identity), tolerance-based comparison (class-B semantics), comparing only
+   the final state (can hide transient schedule differences), and rewriting
+   the old checkpoint before the certificate passes (destroys the recovery
+   root).
+
+   The capstone performance campaign that motivated this rule is restricted
+   to **class A** changes: fixed index ranges and fixed-order exact max
+   reductions may run concurrently, cached record lookups may replace
+   repeated string searches, a persistent parked-worker pool may replace
+   identical per-call gangs, projection element maps may be parallel while
+   floating-point dot products remain serial, stage-invariant projection
+   data may be hoisted, and state-only quantities may be reused while the
+   Vreman eddy term remains per-iterate. Each change is admitted separately
+   only if the r78 certificate and the existing 1-vs-N digest fixture remain
+   bit-identical. A change that cannot do so is class B and is reverted.
+   The measured 41,600 multigrid smoother sweeps per step are the largest
+   remaining compute sink, but altering their count or strategy is class B
+   and requires a future from-zero campaign.
 - **Looping is explicitly out of scope.** A physically simulated fire never
   tiles in time; authoring a loop (cross-fade selection, phase-aligned cuts
   on the puffing period) is a content-tooling problem over finished

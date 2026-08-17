@@ -1835,3 +1835,36 @@ it was already tried and refuted here.
   certificates, pilot-command capping, and accepted-state clamping. The
   headroom model echo and `case_record_id` change; r76's predecessor remains
   an accepted-polytope endpoint, not an inversion certificate.
+
+- **r78 (2026-08-17):** certified checkpoint build migration and the class-A
+  performance boundary, from the first honest tier-10 wall-time stop. The
+  r77 build reached durable checkpoint 9 at step 410 and t=1.46088723 s with
+  maximum EOS residual 3.14507019x10^-6 and no physics-gate failure, but its
+  measured continuation cost was 23.1 s/accepted step, only 16.5% parallel
+  efficiency, and approximately 79 h remaining at the then-current dt. A
+  sampling profile plus env-gated counters attributed 20--23% of a step to
+  the pure per-cell manifold-exact target, about 8% to the pure per-face
+  nonpressure momentum RHS, 0.5--1 s to repeated per-cell species-name
+  lookup, 4--9% to roughly 10,600 spawn/join gangs (about 169,000 thread
+  creations) per step, 7--11% to parallelizable projection maps and repeated
+  stage-invariant preconditioner construction, and 1--1.5 s to state-only
+  quantities rebuilt inside Picard. The largest structural sink was about
+  41,600 multigrid smoother sweeps per step.
+
+  Ruling: the producer-build SHA-256 remains mandatory, but a new executable
+  may adopt an old checkpoint after an isolated, canonical
+  resume-equivalence certificate advances old and new binaries from copies
+  of the exact checkpoint for at least eight accepted steps and proves
+  bit-identical dt, T_max, EOS maximum, and continuation frame digests. The
+  certificate binds the checkpoint digest and both build hashes; production
+  validates it before foreign-checkpoint admission, and records migration in
+  run metadata without changing case identity. Performance changes are
+  class A only when they pass that certificate and the 1-vs-N fixture
+  unchanged, one change at a time. Smoother-count or solver-strategy changes
+  are recorded as a future class-B, from-zero campaign. Rejected: the
+  profiler worktree's `allow_foreign_build` environment bypass (unproved
+  binary substitution), tolerance-based migration (not bit-exact), batching
+  optimizations (no attribution), parallel FP dot products (reordered
+  arithmetic), and changing multigrid strategy merely to finish this run.
+  Migration events are pin-8 run metadata and do not regenerate
+  `case_record_id`.
