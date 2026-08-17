@@ -1251,12 +1251,29 @@ int main()
 			{ "e2e-stacked-signflip-first",
 			  csgSrc + "override_object\n{\nname C\nscale -1 -1 1\n}\n"
 			           "override_object\n{\nname C\nposition 0 0 0\n}\n",                              "C", 4.75 },
-			// ... and in the MIDDLE of three, so the fix cannot be "also strip the one before the
-			// owner".  Layer 0 carries an `orientation` the components strip deliberately leaves
-			// alone (the commit's own absolute `orientation` supersedes it).
+			// ... and in the MIDDLE of three.  NOTE WHAT THIS DOES AND DOES NOT PIN: the flip is on
+			// the layer IMMEDIATELY BEFORE the owner here, exactly as in the two-layer case above, so
+			// like that case it separates "strip the owner" from "strip more than the owner" and
+			// NOTHING FURTHER.  An earlier comment claimed the `orientation 0 0 0` on layer 0 stopped
+			// a "strip the one before the owner too" fix from passing.  That was false: the components
+			// strip removes matrix/quaternion/scale and never `orientation`, so layer 0 is INERT and a
+			// last-two-layers strip passes this case unchanged (demonstrated -- that mutation gives
+			// 171 passed / 0 failed against the pre-existing suite).  The next case is the one that
+			// pins the distance.
 			{ "e2e-stacked-signflip-middle",
 			  csgSrc + "override_object\n{\nname C\norientation 0 0 0\n}\n"
 			           "override_object\n{\nname C\nscale -1 -1 1\n}\n"
+			           "override_object\n{\nname C\nposition 0 0 0\n}\n",                              "C", 4.75 },
+			// THE FLIP TWO LAYERS BEFORE THE OWNER -- the case that separates "strip EVERY layer" from
+			// "strip the last two".  Both fixtures above sit one layer from the owner, so a strip with
+			// any finite reach >= 1 satisfies them; this one is satisfied only by a strip with no reach
+			// limit at all.  Under the last-two-layers mutation the surviving `scale -1 -1 1` re-applies
+			// the flip that the committed `orientation` already carries and the object lands at 5.25 --
+			// silently, with rc >= 1 and nothing logged, which is the exact shape of the defect this
+			// whole family keeps re-presenting one layer further out.
+			{ "e2e-stacked-signflip-two-before",
+			  csgSrc + "override_object\n{\nname C\nscale -1 -1 1\n}\n"
+			           "override_object\n{\nname C\norientation 0 0 0\n}\n"
 			           "override_object\n{\nname C\nposition 0 0 0\n}\n",                              "C", 4.75 },
 			// NO BASE-CHUNK CASE, and that is a finding rather than an omission.  The same pattern one
 			// hop down would be a flip on the BASE under an override -- but the components route's base
@@ -1342,23 +1359,26 @@ int main()
 	}
 
 	// [end-to-end] THE MATRIX ROUTE ACROSS STACKED LAYERS -- the other half of the coverage gap.
-	// ApplyCstObjectMatrixEdit has the same last-wins walk and the same strip structure, and had the
-	// same "write target only" scope.  It is IMMUNE to the double-apply the components route suffered
-	// (its `matrix` on the last layer takes SetFinalTransformMatrix -> ReplaceFinalStack_, which
-	// clears any stretch an earlier layer set), but immune-by-accident is exactly what produced that
-	// defect three rounds running, so the strip is now symmetric on both routes and the shape is
-	// pinned here.
+	// ApplyCstObjectMatrixEdit shares the last-wins OWNER WALK with the components route, and this
+	// pins that walk: the `matrix` must reach the LAST layer, not the base under a later absolute
+	// `position 0 0 0`.
 	//
-	// RED-PROOF, and what it says about what this guards.  Against the PRE-round-5 structure -- the
-	// owner-only strip with the walk removed -- this goes red: the `matrix` lands on the base chunk
-	// and the trailing `position 0 0 0` masks it on re-derive, so the object stays at 0 while the
-	// commit reports success.  Against round 5 it survives the walk being removed ALONE, because the
-	// symmetric strip takes that `position` off the last layer too.  The two mechanisms are now
-	// belt-and-braces for this route; the assertion fails when BOTH go.
+	// WHAT IT DELIBERATELY DOES NOT PIN is an every-layer strip, because this route does not perform
+	// one and must not.  The surviving `scale -1 -1 1` on layer 1 is harmless here BY CONSTRUCTION,
+	// not by luck: a `matrix` on the last layer takes SetFinalTransformMatrix -> ReplaceFinalStack_,
+	// which clears the transform stack and the stretch outright, so every earlier layer is subsumed.
+	// The fixture keeps that `scale` precisely so the fixture ITSELF is the standing demonstration --
+	// the object lands at 5.0, flip and all, with the earlier layer untouched in the document.
+	//
+	// RED-PROOF: removing the owner walk (committing to the base chunk) reddens this -- the trailing
+	// `position 0 0 0` masks the `matrix` on re-derive and the object stays at 0 while the commit
+	// reports success.  It was briefly NOT red against that mutation, during the round-5 window when
+	// this route also stripped every layer and so removed that masking `position` as a side effect;
+	// the strip was reverted to owner-only and the walk is the single mechanism again.
 	{
 		using Cat = SceneEditController::Category;
 		const std::string scene = Scene(
-			  "standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 9 9 9\n}\n"
 			  "override_object\n{\nname S\nscale -1 -1 1\n}\n"
 			  "override_object\n{\nname S\nposition 0 0 0\n}\n" );
 		const std::string path = WriteTempScene( "cst_source_instance_e2e_matrix_stacked.RISEscene", scene );
@@ -1384,6 +1404,22 @@ int main()
 			    && pRefusalLog->MatchCount() == refusalsBefore
 			    && pDecomposeLog->MatchCount() == decomposesBefore,
 			       "e2e-matrix-stacked: ... with nothing refused anywhere along the chain" );
+			// THE COST OF THE EVERY-LAYER STRIP ON *THIS* ROUTE, pinned so it cannot come back as a
+			// consistency tidy-up.  Round 5 widened this strip to match the components route; the pose
+			// above is BYTE-IDENTICAL either way (ReplaceFinalStack_ subsumes the earlier layers), but
+			// the wide strip took the base's `position 9 9 9` and the whole of the `scale` layer with
+			// it -- and an override_object declares only name + the five transform params, so that
+			// layer is left as a name-only block that logs "no override parameters present" on every
+			// later derive.  Not a corner case: it is EVERY non-owner override layer, always.  The two
+			// params below are author-written and NOT live; surviving is exactly the point.
+			const RISE::Cst::Document* doc = j->GetCstDocument();
+			const std::string out = doc ? SerializeCst( *doc ) : std::string();
+			Check( out.find( "position 9 9 9" ) != std::string::npos,
+			       "e2e-matrix-stacked: ... and the BASE chunk's own `position` survives a commit that "
+			       "lands on a later layer -- the strip is OWNER-ONLY on the matrix route" );
+			Check( out.find( "scale -1 -1 1" ) != std::string::npos,
+			       "e2e-matrix-stacked: ... and the non-owner override layer keeps its `scale`, so it is "
+			       "not reduced to a name-only block the parser then complains about forever" );
 		}
 		j->release();
 		std::remove( path.c_str() );
@@ -1519,6 +1555,45 @@ int main()
 			       "e2e-reflection: ... AND the `scale` param that produced it, which is what the author wrote" );
 			Check( msg.find( "GIMBAL-LOCK" ) == std::string::npos,
 			       "e2e-reflection: ... and not gimbal-lock, which is false here" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [end-to-end] the SINGULAR reason, and the fact that it is reported ALONE.  Round 5's comment on
+	// the early-out claimed the opposite -- "it also trips the magnitude test, so this is never the
+	// ONLY thing reported" -- while the block RETURNS before the scale reason is appended.  A comment
+	// asserting behaviour nobody had run is this arc's recurring defect, so the behaviour is pinned
+	// here instead of described.
+	//
+	// The early-out is a MESSAGE-QUALITY choice, not a correctness one: delete it and `nonUnitScale`
+	// (unconditionally true when a column has zero magnitude) still refuses the gesture, only with the
+	// wrong words.  The second assertion is what makes that choice load-bearing -- it fails if the
+	// early-out is removed and the author is told a degenerate matrix has "a non-unit SCALE".
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n"
+			  "override_object\n{\nname C\nscale 0 1 1\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_singular.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-singular: the zero-axis-scale-override fixture loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			const int decomposesBefore = pDecomposeLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
+			       "e2e-singular: a pure TRANSLATE is refused (the override collapsed an axis)" );
+			Check( pDecomposeLog->MatchCount() == decomposesBefore + 1, "e2e-singular: ... and the author is told" );
+			const std::string msg = pDecomposeLog->LastMatch();
+			Check( msg.find( "SINGULAR" ) != std::string::npos,
+			       "e2e-singular: ... naming it SINGULAR, which describes a collapsed axis as what it is" );
+			Check( msg.find( "non-unit SCALE" ) == std::string::npos,
+			       "e2e-singular: ... and SINGULAR is the WHOLE message -- the early-out returns before the "
+			       "scale reason, which would describe a degenerate matrix as a merely resizeable one" );
 		}
 		j->release();
 		std::remove( path.c_str() );

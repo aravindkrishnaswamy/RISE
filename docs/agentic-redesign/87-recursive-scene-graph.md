@@ -159,6 +159,40 @@ session-only element ledger — is replaced by real parent links.
   intervals) — it cannot be flattened away. Its operands SHOULD become
   visible as children in the UI tree.
 
+### The two transform-commit routes are asymmetric, and must stay that way
+
+Recorded because three review rounds in a row got this wrong in one
+direction or the other, and the last one "unified" them on a symmetry
+argument that cost author content for zero behavioural gain.
+
+An object's pose can be authored across several chunks: its base chunk, then
+any number of same-named `override_object` layers. A gizmo commit writes to
+the LAST layer and must clear whatever earlier layers would otherwise still
+contribute.
+
+- **The matrix route strips the WRITE TARGET only.** A written `matrix` (or
+  `quaternion`) goes through `SetFinalTransformMatrix` → `ReplaceFinalStack_`,
+  which clears the transform stack *and* the position / orientation / scale /
+  stretch components outright. Every earlier layer is therefore subsumed by
+  construction, and stripping them buys nothing.
+- **The components route strips EVERY layer.** A written `position` +
+  `orientation` takes the per-field branch, whose `Set*` calls are independent
+  and never clear an earlier layer's `scale`. A sign-flip `scale` two layers
+  out survives and double-applies against the `orientation` being written —
+  measured at 5.25 where the user's gesture said 4.75, silently.
+
+Same mechanism, opposite conclusions. **Do not re-unify them.** The cost of
+getting it wrong in the permissive direction is a silent wrong pose; in the
+aggressive direction it is deleting params from chunks the author wrote, on
+an edit that changed nothing — `override_object` declares only transform
+params, so stripping every layer empties every non-owner layer, always.
+
+A related rule this arc settled: a commit may leave an `override_object`
+holding only its `name`, and may orphan a comment whose param it removed. It
+must NOT delete the chunk or the comment. Silently removing author-written
+prose during a gizmo drag is worse than leaving something the author can see
+and re-place.
+
 ### Step 3 met three code facts the design did not anticipate
 
 Recorded here before the work lands, so they are decisions rather than

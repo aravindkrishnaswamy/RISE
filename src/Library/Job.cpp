@@ -10626,6 +10626,8 @@ bool Job::RederiveCstWithVariant( const char* variantName )
 // incremental fast path, the D2 full-re-derive fallback, and the 0/1/2/3 return contract (documented there).
 // `entityKind` (e.g. "material") disambiguates a cross-category name clash; for an UNNAMED camera it also
 // enables a unique-in-kind resolve-by-position fallback (see DocFindByNameAnyRole).
+// A TRANSFORM param on an object chunk additionally targets a same-named `override_object` when one exists
+// (the owner walk in the impl), exactly as the two whole-pose routes do.
 int Job::ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue )
 {
 	// The UNCHECKED fast path (no full-derivability gate) -- the GUI property-panel / gizmo route
@@ -10684,14 +10686,35 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 	// callers pass a real occurrence index -- untouched.  A role with no descriptor
 	// entry is left alone too; the derive's own validation owns that case.
 	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
-	if( editTarget ) {
-		const ChunkDescriptor* editDesc = DescriptorForKeyword( String( editTarget->role.c_str() ) );
+
+	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit and ApplyCstObjectComponentsEdit perform, and
+	// for the same reason.  A same-named `override_object` is applied AFTER the chunk that created the
+	// object and REPLACES its transform fields, so writing a transform param onto the base chunk when an
+	// override exists writes a value the re-derive then overwrites: the typed edit lands in the Document,
+	// the commit reports success (rc 2 -- the override guard forces a D2), and the object does not move.
+	// A return-code assertion stays green through that, which is what kept it invisible.  Route the write
+	// to the LAST chunk that actually decides the pose.
+	//
+	// Cst::DocTransformOwnerId owns the rule (scoping, and the non-transform / non-object / unnamed /
+	// already-an-override cases) because this function is NOT the only site that has to obey it: the
+	// agent's prior-value capture and its Undo resolve the same edit, and a writer that walks while they
+	// do not just moves the silent failure into the history.  One function, three callers, no drift.
+	const std::string editRole = role;
+	bool objectTransformEdit = false;
+	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *pCstDocument, id, editRole, &objectTransformEdit );
+	const RISE::Cst::NodeRef ownerChunk = ( ownerId == id ) ? editTarget : RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
+
+	// The duplicate-occurrence refusal below reads the chunk the write will LAND on, not the one the
+	// caller addressed -- a doubled `position` line on the override is exactly the dead-line hazard it
+	// exists to catch, and the base chunk's own lines stop deciding anything once the walk fires.
+	if( ownerChunk ) {
+		const ChunkDescriptor* editDesc = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
 		const ParameterDescriptor* editParam = nullptr;
 		if( editDesc )
 			for( const ParameterDescriptor& p : editDesc->parameters )
 				if( p.name == role ) { editParam = &p; break; }
 		if( editParam && !editParam->repeatable ) {
-			const int occurrences = RISE::Cst::ParamOccurrenceCount( editTarget, editParam->name );
+			const int occurrences = RISE::Cst::ParamOccurrenceCount( ownerChunk, editParam->name );
 			if( occurrences > 1 ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"Job::ApplyCstParamEdit:: `%s` (kind `%s`) spells the non-repeatable parameter `%s` %d times; "
@@ -10703,8 +10726,57 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 		}
 	}
 
-	RISE::Cst::Document d1 = RISE::Cst::DocSetOrAddParamValue( *pCstDocument, id, role, occ, newValue );
-	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, requireFullDerivability );
+	// MASKING STRIP -- the other half of the sibling routes' semantics, evaluated PER-ROLE because this
+	// function writes ONE param where they write a whole pose.  Both the standard_object parser and the
+	// override_object parser rank their transform params matrix > quaternion > per-field, so a param that
+	// OUTRANKS the one being written makes the write a silent no-op on whichever chunk it lands on --
+	// which would just relocate the defect from "silently reverted under the override" to "silently
+	// ignored on it".  Strip exactly what outranks this role, and nothing else:
+	//
+	//   position / scale   <- `matrix` only.  The quaternion branch READS position and scale (it composes
+	//                         T*R*S from them), so the write is honoured with a quaternion present, and
+	//                         stripping one would discard a rotation this edit does not supply.
+	//   orientation        <- `matrix` and `quaternion`.  Both outrank Euler; dropping the quaternion is
+	//                         not data loss here because the typed orientation IS the replacement rotation.
+	//   quaternion         <- `matrix` only.
+	//   matrix             <- position / orientation / quaternion / scale, exactly as ApplyCstObjectMatrixEdit
+	//                         strips them: a 4x4 already encodes all four, so none of them is live after.
+	//
+	// `scale` is never stripped for a per-field write.  ApplyCstObjectComponentsEdit DOES strip it, and
+	// this route deliberately does not follow -- its two reasons for stripping are both properties of
+	// ITS caller, not of the params:
+	//   (1) that route's position/orientation come from DecomposeRigid, which REFUSES any non-unit
+	//       column magnitude, so a real `scale 2 2 2` can never reach it.  A typed edit has no such
+	//       filter: `scale 2 2 2` is an ordinary thing to have on the chunk being edited, and on both
+	//       chunk kinds it is live alongside what is written here (an override_object's per-field branch
+	//       applies position, orientation and scale INDEPENDENTLY; a standard_object composes `scale`
+	//       alongside quaternion / orientation).
+	//   (2) the only scales that DO reach that route are unit sign flips, which DecomposeRigid has
+	//       already folded into the `orientation` it writes -- so keeping one would apply that rotation
+	//       twice.  Nothing here folds anything into anything: this function writes the ONE param it was
+	//       given, so a `scale` it leaves alone is applied exactly once, as it was before the edit.
+	// Stripping it would make a typed translate silently un-scale the object -- the same class of
+	// unrequested mutation, in the opposite direction.
+	//
+	// Residual, stated rather than hidden: stripping a `matrix` to honour one typed component discards the
+	// rotation and scale that matrix encoded.  The alternative is the write reporting success and doing
+	// nothing, which is the defect class this whole path exists to close -- and it is what the two sibling
+	// routes already chose.
+	static const char* const kStripNone[]     = { nullptr };
+	static const char* const kStripMatrix[]   = { "matrix", nullptr };
+	static const char* const kStripMatQuat[]  = { "matrix", "quaternion", nullptr };
+	static const char* const kStripSubsumed[] = { "position", "orientation", "quaternion", "scale", nullptr };
+	const char* const* strip = kStripNone;
+	if( objectTransformEdit ) {
+		if(      editRole == "matrix"      ) strip = kStripSubsumed;
+		else if( editRole == "orientation" ) strip = kStripMatQuat;
+		else                                 strip = kStripMatrix;   // position / scale / quaternion
+	}
+
+	RISE::Cst::Document d1 = *pCstDocument;
+	for( const char* const* s = strip; *s; ++s ) d1 = RISE::Cst::DocRemoveParam( d1, ownerId, *s );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, role, occ, newValue );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, requireFullDerivability );
 }
 
 // Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution
@@ -10733,8 +10805,13 @@ int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityK
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamRemoveChecked:: `%s` (kind `%s`) not found or ambiguous in the CST Document; remove rejected", entityName, ekind.c_str() );
 		return 0;
 	}
-	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParamOcc( *pCstDocument, id, role, occ );
-	return DeriveEditedCstDocument_( std::move( d1 ), id, entityName, role, /*requireFullDerivability*/ true );
+	// Same owner walk as the edit it inverts (the "mirrors ApplyCstParamEditImpl_ exactly" promise this
+	// function's doc makes).  If the insert being undone went to a same-named `override_object`, the
+	// remove has to come off that chunk -- removing from the base would leave the inserted transform
+	// live and report success, which is the same silent failure the walk exists to close.
+	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *pCstDocument, id, std::string( role ) );
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParamOcc( *pCstDocument, ownerId, role, occ );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, /*requireFullDerivability*/ true );
 }
 
 // P5 Slice 3 expansion: shared re-derive tail for an already-edited CST Document `d1` whose edit closure is
@@ -10920,34 +10997,39 @@ static std::string CstTransformTargetRole_( const RISE::Cst::Document& doc, RISE
 	return role;
 }
 
-// 87 step 3a round 5: collect EVERY chunk that authors object `objectName`'s transform, in DOCUMENT
-// ORDER -- the base chunk first, then each same-named `override_object` layer.  Both transform commit
-// routes WRITE to the LAST entry (the layer that decides the pose; committing under it lets a later
-// absolute override mask the edit on re-derive) and STRIP the now-dead transform params from ALL of
-// them.
+// 87 step 3a: collect EVERY chunk that authors object `objectName`'s transform, in DOCUMENT ORDER --
+// the base chunk first, then each same-named `override_object` layer.  BOTH transform commit routes
+// use this for the OWNER WALK: they write to the LAST entry, the layer that actually decides the pose
+// (committing under a later absolute override would let the re-derive mask the edit).
 //
-// Stripping only the write target was a defect, three rounds running.  An `override_object`'s per-field
-// Finalize branch applies position / orientation / scale INDEPENDENTLY, so a `scale` on any layer the
-// commit does not touch stays live -- while the `orientation` the commit writes ALREADY carries that
-// scale's contribution (DecomposeRigid folds a unit sign flip into it, and the only scales that can
-// reach a commit are unit sign flips -- see ApplyCstObjectComponentsEdit).  The flip is then applied
-// TWICE and the object lands somewhere the user never dragged it.  Measured on a two-layer document,
-// `SetObjectPosition(5,0,0)` on a csg_object with `scale -1 -1 1` on the FIRST of two layers: live
-// 4.75, committed 5.25.
+// WHAT THE TWO ROUTES DO NOT SHARE IS THE STRIP, AND THE ASYMMETRY IS THE POINT -- see the two call
+// sites.  It comes from ONE mechanism, read in two directions:
 //
-// The strip is safe on EVERY layer, including the base, because the position + orientation the
-// components route writes REPRODUCE the whole local matrix exactly (DecomposeRigid verifies the
-// rebuild before returning) and the matrix route's `matrix` is the whole local matrix by construction.
-// Every other transform param anywhere in the stack is therefore dead by definition, not merely
-// dead on the chunk being written.  Including the BASE chunk is for UNIFORMITY, not for a reachable
-// defect: on the components route the base is either an authored csg_object (which declares no
-// scale/matrix/quaternion) or a csg-sourced instance (which accepts exactly the SOURCE chunk type's
-// params, so those do not derive on it either) -- a base-layer fixture was written and would not load.
+//   MATRIX route -> strips the OWNER ONLY.  A `matrix` (or `quaternion`) on an override_object takes
+//   the whole-matrix branch of its Finalize, i.e. Transformable::SetFinalTransformMatrix ->
+//   ReplaceFinalStack_, which CLEARS the transform stack and the position/orientation/scale/stretch
+//   matrices outright (the non-Transformable fallback does ClearAllTransforms + PushTopTransStack,
+//   same effect).  Every earlier layer is therefore subsumed BY CONSTRUCTION at derive time -- there
+//   is nothing for a wider strip to protect against.
 //
-// KNOWN CONSEQUENCE: a layer whose ONLY params were transform params is left with just its `name`,
-// and the override_object parser logs "no override parameters present (empty block)" for it on every
-// subsequent derive.  The chunk is NOT deleted -- a transform commit silently removing a chunk the
-// author wrote, along with its comments and trivia, is a worse surprise than a log line.
+//   COMPONENTS route -> strips EVERY layer.  A per-field `position`/`orientation` goes through the
+//   override's per-field branch, whose Set* calls are INDEPENDENT and which never clears a `scale` an
+//   earlier layer set.  That earlier `scale` stays live while the `orientation` the commit writes
+//   ALREADY carries its contribution (DecomposeRigid folds a unit sign flip into it, and unit sign
+//   flips are the only scales that can reach a commit), so the flip is applied TWICE and the object
+//   lands somewhere the user never dragged it.  Measured: `SetObjectPosition(5,0,0)` on a csg_object
+//   with `scale -1 -1 1` on the FIRST of two layers -- live 4.75, committed 5.25.
+//
+// DO NOT "UNIFY" THE TWO.  Round 5 of this arc made the matrix route symmetric with the components
+// route for consistency, and it is a pure cost there.  An override_object's descriptor declares only
+// name/position/orientation/quaternion/matrix/scale, so on THAT chunk type an every-layer strip does
+// not leave a name-only chunk in a corner case -- it leaves one for EVERY non-owner layer, ALWAYS,
+// discarding the author's params and stranding any comment they wrote beside them, and making the
+// parser log "no override parameters present (empty block)" on every later derive.  Measured on a
+// base + two overrides with a NO-OP matrix edit: the base `position` and an entire author-written
+// layer were gutted, while the owner-only strip produced the IDENTICAL pose.  The argument for not
+// DELETING an author's chunk (recorded at the components call site) applies just as much to not
+// GUTTING one.
 static void CstCollectObjectTransformLayers_(
 	const RISE::Cst::Document& doc, RISE::Cst::NodeId baseId, const char* objectName,
 	std::vector<RISE::Cst::NodeId>& outLayers )
@@ -11009,24 +11091,26 @@ int Job::ApplyCstObjectMatrixEdit( const char* objectName, const char* matrix16 
 			return 0;
 		}
 	}
-	// OWNER WALK + SYMMETRIC STRIP.  The `matrix` written below is the object's WHOLE local matrix, so
-	// every position / orientation / quaternion / scale param on EVERY layer -- the base chunk and each
-	// same-named `override_object` -- is dead once it lands.  Strip them all, not just the write target:
-	// a strip scoped to the owner leaves an earlier layer's `scale` live, and that is the shape that
-	// silently double-applied a sign flip on the components route (see CstCollectObjectTransformLayers_).
-	// This route is currently immune to that -- `matrix` on the last layer takes SetFinalTransformMatrix
-	// -> ReplaceFinalStack_, which clears the stretch -- but a structure that is only ACCIDENTALLY safe
-	// is what produced the components-route defect three rounds running, so keep the two identical.
+	// OWNER WALK (shared with the components route), then an OWNER-ONLY STRIP -- deliberately NOT the
+	// every-layer strip the components route performs.  The two are asymmetric for one reason read in
+	// two directions, spelled out at CstCollectObjectTransformLayers_: the `matrix` written below lands
+	// on the LAST layer and takes SetFinalTransformMatrix -> ReplaceFinalStack_, which CLEARS the
+	// transform stack, so every earlier layer is subsumed at derive time by construction.  A wider
+	// strip here protects against nothing and costs real author data: an override_object declares only
+	// name + the five transform params, so stripping all five from a non-owner layer empties it every
+	// time, not in a corner case.  Round 5 of this arc made this route symmetric "for consistency" and
+	// that was the wrong call; do not re-unify them.
+	//
+	// The strip on the OWNER is still required: position/orientation/quaternion/scale sitting beside
+	// the `matrix` on the same chunk are dead (the matrix branch of Finalize ignores them outright)
+	// and leaving them would let a hand-edit of the chunk silently contradict the committed pose.
 	std::vector<RISE::Cst::NodeId> layers;
 	CstCollectObjectTransformLayers_( *pCstDocument, id, objectName, layers );
 	const RISE::Cst::NodeId ownerId = layers.empty() ? id : layers.back();
-	RISE::Cst::Document d1 = *pCstDocument;
-	for( std::size_t li = 0; li < layers.size(); ++li ) {
-		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "position" );
-		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "orientation" );
-		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "quaternion" );
-		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "scale" );
-	}
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "position" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "orientation" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
 	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "matrix", 0, matrix16 );
 	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "matrix" );
 }
@@ -11097,16 +11181,6 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` is not a csg_object (nor an instance of one); edit rejected", objectName );
 		return 0;
 	}
-	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit performs, and for the same reason.  A
-	// same-named `override_object` is applied AFTER the base chunk and REPLACES its transform
-	// fields, so committing onto the base chunk when an override exists writes a value the
-	// re-derive then overwrites: the gizmo drag lands, the commit reports success, and the object
-	// snaps back.  Route the commit to the LAST chunk that actually decides the pose.
-	//
-	// This route reached the instancing chunk only from 87 step 3a (before it, a csg-sourced
-	// instance classified as kind 1 and went through the MATRIX route, which HAS this walk) -- so
-	// without it, step 3a converted a working drag on an overridden csg-sourced instance into a
-	// silent revert.
 	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit performs, through the same shared helper, and
 	// for the same reason.  A same-named `override_object` is applied AFTER the base chunk and REPLACES
 	// the transform fields it names, so committing onto the base chunk when an override exists writes a
@@ -11150,9 +11224,39 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 	//       with the `scale` on either an only override or the first of two).
 	//
 	// The written position + orientation REPRODUCE the whole local matrix (DecomposeRigid verifies the
-	// rebuild before returning), so nothing is lost by clearing the rest of the stack -- and the strip
-	// is symmetric with the matrix route, which can strip for the same reason: the `matrix` it writes
-	// carries everything, exactly as the `orientation` written here does.
+	// rebuild before returning), so nothing is LOST by clearing the rest of the stack.
+	//
+	// This is NOT symmetric with ApplyCstObjectMatrixEdit, which strips the OWNER ONLY, and the
+	// asymmetry is principled rather than an oversight -- CstCollectObjectTransformLayers_ carries the
+	// mechanism.  Short version: a written `matrix` routes through ReplaceFinalStack_, which clears the
+	// stack, so it subsumes every earlier layer without any strip at all; a written position +
+	// orientation routes through the per-field branch, which does NOT clear an earlier layer's `scale`.
+	// Same reason, opposite conclusions.  Widening the matrix route to match this one gutted author
+	// data for no behavioural gain and was reverted.
+	//
+	// TWO CONSEQUENCES OF THE EVERY-LAYER STRIP, both accepted knowingly, both bounded to THIS route.
+	//
+	//   (a) A layer whose ONLY params were transform params is left carrying just its `name`, and the
+	//       override_object parser then logs "no override parameters present (empty block -- likely a
+	//       bug in the writer)" for it on every subsequent derive.  The chunk is NOT deleted: a
+	//       transform commit silently removing a chunk the author wrote, with its comments and trivia,
+	//       is a worse surprise than a log line.  (Softening that parser message is the better fix and
+	//       is not attempted here.)
+	//   (b) A trailing comment on a stripped param line -- `scale -1 -1 1   # mirror the shell` --
+	//       outlives its param and is left indented inside the now-empty block.  It is left in place
+	//       DELIBERATELY, for the same reason as (a) and the stronger form of it: carrying the comment
+	//       away with its param means DELETING author-written prose during a gizmo drag, which is
+	//       strictly worse than orphaning it where the author can still read and re-place it.  Ugly,
+	//       recoverable, and never silent about the author's own words.
+	//
+	// A THIRD CONSEQUENCE THAT LOOKS LIVE AND IS NOT, checked rather than assumed.  The empty-block
+	// branch of the override_object parser returns BEFORE `pJob.NoteObjectOverride()`, and that count
+	// is what makes the CST incremental apply fall back to a full derive (Cst.cpp, the P1.3 guard) --
+	// so an emptied layer stops being counted.  The count cannot reach zero this way: `ownerId` is
+	// `layers.back()`, i.e. the LAST same-named override whenever any exists, and the owner is exactly
+	// the layer that RECEIVES the written params below.  At least one override_object therefore always
+	// survives non-empty for an object whose commit emptied one, and an override on a DIFFERENT object
+	// is never touched at all.  Unreachable, not merely unobserved.
 	RISE::Cst::Document d1 = *pCstDocument;
 	for( std::size_t li = 0; li < layers.size(); ++li ) {
 		d1 = RISE::Cst::DocRemoveParam( d1, layers[li], "matrix" );

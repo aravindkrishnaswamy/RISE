@@ -629,6 +629,24 @@ namespace RISE
 		//! not-found, never "ambiguous"), and the raw bare-name count when the suffix is empty.
 		NodeId DocFindByNameAnyRole( const Document& doc, const std::string& bareName, int* occurrences = nullptr, const std::string& roleKindSuffix = std::string(), bool uniqueFallback = false );
 
+		//! Which chunk actually DECIDES `role` for the object `chunkId` names -- `chunkId` itself, or the LAST
+		//! same-named `override_object` when one exists.  An `override_object` is applied AFTER the chunk that
+		//! created the object and REPLACES the transform fields it names, so a transform written to the base
+		//! chunk is overwritten by the very next derive: the edit lands in the Document, the call reports
+		//! SUCCESS, and the object does not move.  Every site that reads or writes an object transform through
+		//! the Document has to ask this question, and they must all get the SAME answer -- a writer that walks
+		//! while its prior-value capture or its Undo does not is the same silent defect one layer up.
+		//!
+		//! Answers `chunkId` unchanged (never 0) for everything else: a non-transform `role`, a chunk that is
+		//! not ChunkCategory::Object (a light also has a `position`, and nothing in a light chunk outranks it),
+		//! an UNNAMED chunk (an override targets its object BY NAME), a chunk that IS an `override_object`
+		//! (a caller that named one directly must not be redirected to a different one), and the ordinary case
+		//! of no override at all.  `*outIsObjectTransform` (optional) reports whether this was an
+		//! object-transform edit at all -- true even when no override exists -- which is what a caller needs to
+		//! decide whether the chunk's matrix > quaternion > per-field precedence applies to its write.
+		//! O(N) scan of the top-level items, taken only on the transform roles; discrete edits, not per-frame.
+		NodeId DocTransformOwnerId( const Document& doc, NodeId chunkId, const std::string& role, bool* outIsObjectTransform = nullptr );
+
 		//! True iff chunk keyword `role` satisfies the kind constraint `roleKindSuffix` -- the ONE narrowing
 		//! predicate DocFindByNameAnyRole enforces, exposed so defensive re-verification sites (e.g. the
 		//! destructive remove_chunk kind check) stay in lockstep with the resolver instead of re-deriving a

@@ -4892,7 +4892,8 @@ std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const cha
 // the retained CST Document -- BEFORE an agent edit mutates it.  `*outPresent` = false means the param is
 // ABSENT (a defaulted slot the scene text omits; the coming edit will INSERT it, so the inverse is a REMOVE, not
 // a re-SET -- see SceneEdit::prevValueWasAbsent).  Resolution uses the SAME DocFindByNameAnyRole call and
-// camera-unique-fallback rule as Job::ApplyCstParamEditImpl_, so a value read here always matches whatever the
+// camera-unique-fallback rule as Job::ApplyCstParamEditImpl_ -- AND its `override_object` owner walk
+// (Cst::DocTransformOwnerId) -- so a value read here always matches whatever the
 // upcoming ApplyCstParamEditChecked call will resolve against (both run under the SAME mMutex hold in
 // ApplyAgentParamEdit -- no TOCTOU between the read and the apply).  Returns false (no capture) if there is no
 // retained Document or the entity does not resolve -- callers must not push a history record in that case (the
@@ -4917,7 +4918,14 @@ bool SceneEditController::CaptureAgentPriorParamValue_(
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 		*doc, bareName, nullptr, ekind, uniqueFallback );
 	if( id == 0 ) return false;
-	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	// ... and the same OWNER WALK, for the same lockstep reason.  A transform param on an object that
+	// carries a same-named `override_object` is written to the OVERRIDE (Cst::DocTransformOwnerId), so
+	// the prior value has to be read from there too: capturing the base chunk's value would make Undo
+	// restore a pose the object never had, or -- when the base has the param and the override does not
+	// -- report the value as PRESENT when the coming edit will INSERT one, so the inverse would be a
+	// re-set instead of a remove and the undone transform would stay live.
+	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *doc, id, std::string( param.c_str() ) );
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, ownerId );
 	if( !chunk ) return false;
 	bool present = false;
 	const std::string val = AgentReadFirstParamValue( chunk, param.c_str(), &present );
