@@ -144,6 +144,32 @@ namespace RISE
 		//! method only owns the geometry slot.  Every consumer that walks the
 		//! world-visible list assumes a real intersectable.
 		virtual void ClearGeometry() = 0;
+
+		//! CONSUMPTION, which is a different thing from visibility and needs its own
+		//! state.  A `csg_object` CONSUMES its two operands: the composite owns them
+		//! and they have no existence as standalone shapes, which is expressed by
+		//! keeping them out of every world-visible enumeration.
+		//!
+		//! WHY A COUNT AND NOT THE `bIsWorldVisible` FLAG.  Since 87 step 3b an operand
+		//! is routinely consumed by MORE THAN ONE composite -- `source` on a subtree
+		//! containing a `csg_object` re-Finalizes that chunk with `obja` / `objb`
+		//! UNCHANGED, so N clones share one operand by pointer (which is correct: an
+		//! operand's matrix is CSG-local, read relative to whichever composite is
+		//! asking).  With a flag, the FIRST composite torn down or re-assigned
+		//! unconditionally re-showed the operand while the others were still consuming
+		//! it, and it then rendered as a standalone shape -- and, being visible, also
+		//! stopped looking like an operand to `ObjectManager::SetObjectParent`, which
+		//! identifies one as "hidden and has geometry".
+		//!
+		//! Balanced by the composite: `CSGObject::AssignObjects` adds, its destructor
+		//! and its re-assign path remove.  Never copied by a clone -- a clone's own
+		//! `AssignObjects` re-establishes it -- so a snapshot operand starts at zero
+		//! consumers and is immediately claimed by the composite that owns it.
+		//! Appended at this interface's TAIL, so no existing slot shifts.
+		virtual void AddConsumer() = 0;
+		virtual void RemoveConsumer() = 0;
+		//! True while at least one composite is consuming this object.
+		virtual bool IsConsumed() const = 0;
 	};
 }
 

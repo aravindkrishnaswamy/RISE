@@ -43,6 +43,13 @@ namespace RISE
 			bool											bCastsShadows;
 			bool											bReceivesShadows;
 
+			//! How many `csg_object` composites are CONSUMING this object as an
+			//! operand.  Orthogonal to `bIsWorldVisible`, which stays the authored
+			//! / container visibility -- see IObjectPriv::AddConsumer for why this
+			//! cannot be that flag.  Not copied by any clone: a clone's own
+			//! AssignObjects re-establishes it.
+			unsigned int									nConsumedBy;
+
 			Scalar											SURFACE_INTERSEC_ERROR;
 
 			// Transpose of the inverse matrix, used for normal transformations
@@ -143,8 +150,17 @@ namespace RISE
 			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			virtual bool IsWorldVisible() const override { return bIsWorldVisible; }
+			//! An object CONSUMED by a `csg_object` is never world-visible, whatever
+			//! its own flag says: it is a term in someone else's boolean expression.
+			//! The two states are kept apart so a composite's teardown restores
+			//! exactly what it took, and takes nothing away from a second composite
+			//! that is still consuming the same operand.
+			virtual bool IsWorldVisible() const override { return bIsWorldVisible && nConsumedBy == 0; }
 			virtual void SetWorldVisible( bool b ) override { bIsWorldVisible = b; }
+
+			virtual void AddConsumer() override { ++nConsumedBy; }
+			virtual void RemoveConsumer() override { if( nConsumedBy ) --nConsumedBy; }
+			virtual bool IsConsumed() const override { return nConsumedBy != 0; }
 
 			virtual bool DoesCastShadows() const override { return bCastsShadows; }
 			virtual bool DoesReceiveShadows() const override { return bReceivesShadows; }

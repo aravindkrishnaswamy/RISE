@@ -393,10 +393,26 @@ what was authored, live material included).
      So `I2.I1` and `I2.I1.A2` fall out of the same rule that gives `I.C`, with
      no path anywhere.
    - **The subtree walk is over the DOCUMENT, not over live `parentByName`.**
-     Both describe the same tree at derive time, but the document form gives
-     every member a chunk to re-Finalize; a live-entry walk would reach
-     synthesized entries that have no chunk of their own and would have to
-     recover one from provenance.
+     The document form gives every member a chunk to re-Finalize; a live-entry
+     walk would reach synthesized entries that have no chunk of their own and
+     would have to recover one from provenance.
+     **The two do NOT describe the same tree, and an earlier draft of this line
+     claiming they do was wrong — the bug it hid is recorded here because the
+     shape recurs.**  A document node may write `parent I1.B`, naming an entry
+     that some earlier expansion SYNTHESIZED.  The live tree then holds an
+     `I1.B -> X` link, while the document index is keyed by the parent NAMES as
+     written and so has a key `I1.B` that no chunk declares — and no key at all
+     under the member's own chunk name `B`.  A walk that looked a member's
+     children up by its bare chunk name therefore dropped that entire branch
+     with no diagnostic, and the same hole let an `instance_array` parented onto
+     a synthesized entry EVADE the generator refusal, deriving clean with the
+     generator's objects silently missing from the copy.  The walk now asks for
+     every key an entry can answer to (`ClonePlanBuilder::ChildKeysOf`): its
+     fully-qualified entry name, its bare chunk name, and every intermediate,
+     each paired with how much of the qualification a child found there
+     inherits.  It is a UNION and not a first-match fallback — both keys can be
+     non-empty at once (`parent B` and `parent I1.B` are both real children of
+     `I1.B`), so trying one and falling back to the other drops whichever loses.
    - **3a's has-children scan covered only `standard_object` / `csg_object`,
      which was a hole.**  A source whose only child was a `rect_light` or
      `shape_light` passed the refusal and instanced ROOT-ONLY, silently

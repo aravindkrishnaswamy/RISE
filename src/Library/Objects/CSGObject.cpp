@@ -26,12 +26,20 @@ CSGObject::CSGObject( const CSG_OP& op_ ) :
 
 CSGObject::~CSGObject( )
 {
+	// RELEASE OUR CONSUMPTION, not "make it visible again".  Since 87 step 3b an
+	// operand is routinely shared by N composites (a `source` instance of a subtree
+	// containing a `csg_object` re-Finalizes it with `obja` / `objb` unchanged), and
+	// an unconditional re-show here made the FIRST teardown resurrect an operand the
+	// other N-1 composites were still consuming -- it rendered as a standalone shape
+	// beside the composites that own it, and became parentable, since
+	// ObjectManager::SetObjectParent identifies an operand as "hidden and has
+	// geometry".  See IObjectPriv::AddConsumer.
 	if( pObjectA ) {
-		pObjectA->SetWorldVisible( true );
+		pObjectA->RemoveConsumer();
 	}
 
 	if( pObjectB ) {
-		pObjectB->SetWorldVisible( true );
+		pObjectB->RemoveConsumer();
 	}
 
 	safe_release( pObjectA );
@@ -105,8 +113,8 @@ Object* CSGObject::CloneSnapshot() const
 	CSGObject* pClone = new CSGObject( op );
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "snapshot CSG clone" );
 
-	// AssignObjects addrefs both operands (and hides them via
-	// SetWorldVisible(false), matching the live CSG).  We then drop our own
+	// AssignObjects addrefs both operands (and CONSUMES them, which keeps them
+	// out of every world-visible walk, matching the live CSG).  We then drop our own
 	// references so the clone is the sole owner of its operand clones.
 	if( cloneA && cloneB ) {
 		pClone->AssignObjects( cloneA, cloneB );
@@ -169,12 +177,15 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 		return false;
 	}
 
+	// Symmetric with the destructor: give up the consumption we held on the OUTGOING
+	// pair (which may leave them consumed by other composites) before claiming the
+	// incoming one.
 	if( pObjectA ) {
-		pObjectA->SetWorldVisible( true );
+		pObjectA->RemoveConsumer();
 	}
 
 	if( pObjectB ) {
-		pObjectB->SetWorldVisible( true );
+		pObjectB->RemoveConsumer();
 	}
 
 	safe_release( pObjectA );
@@ -186,9 +197,9 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 	pObjectA->addref();
 	pObjectB->addref();
 
-	pObjectA->SetWorldVisible( false );
-	pObjectB->SetWorldVisible( false );
-	
+	pObjectA->AddConsumer();
+	pObjectB->AddConsumer();
+
 	return true;
 }
 

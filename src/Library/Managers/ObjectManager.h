@@ -71,6 +71,22 @@ namespace RISE
 			//!    next compose finds every node a root and flattens the
 			//!    hierarchy to local poses.  Restoring the link map alongside
 			//!    the objects is the fix if that path is ever productionised.
+			//!    87 STEP 3b SCALES THE BLAST RADIUS, and `provenanceByName`
+			//!    (below) is dropped by the same path with the same effect.
+			//!    Before 3b a lost link stranded ONE authored child; a `source`
+			//!    instance of a subtree produces a whole synthesized SUBTREE
+			//!    whose members exist only as links to their clone-parents, so
+			//!    the flatten moves every one of them at once.  It is worst for
+			//!    a member whose LOCAL transform is identity -- a cloned
+			//!    `rect_light` places its panel through `center` / `facing`, not
+			//!    through a local matrix, so once its link to the instance root
+			//!    is gone it collapses to the WORLD ORIGIN rather than merely
+			//!    losing the instance's offset.  Losing `provenanceByName` on
+			//!    top of that leaves those entries unattributable: the editor
+			//!    can no longer answer "which chunk do I move to move this?"
+			//!    and the gizmo's own refusal message has nothing to name.
+			//!    Documented rather than fixed, deliberately -- this is not a
+			//!    production path, and the fix belongs with productionising it.
 			//!  - RemoveItem + a re-add under the SAME name leaves the ex-
 			//!    children rooted: the removal retires their links by design,
 			//!    and the re-add cannot know they were there.

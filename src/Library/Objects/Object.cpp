@@ -33,6 +33,7 @@ Object::Object( ) :
   bIsWorldVisible( true ),
   bCastsShadows( true ),
   bReceivesShadows( true ),
+  nConsumedBy( 0 ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 )
@@ -51,6 +52,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
   bIsWorldVisible( true ),
   bCastsShadows( true ),
   bReceivesShadows( true ),
+  nConsumedBy( 0 ),
   SURFACE_INTERSEC_ERROR( 1e-12 ),
   m_tangentFrameSign( 1.0 ),
   m_worldAreaScale( 1.0 )
@@ -150,6 +152,10 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	if( pUVGenerator )    { dst.SetUVGenerator( *pUVGenerator ); }
 
 	// --- Cheap value-typed flags ---
+	// `nConsumedBy` is deliberately NOT among them: it counts the LIVE composites
+	// consuming this object as a CSG operand, and a clone is consumed by whoever
+	// assigns it, not by whoever consumed the original.  CSGObject::CloneSnapshot's
+	// own AssignObjects establishes it for the operand clones it makes.
 	dst.bIsWorldVisible        = bIsWorldVisible;
 	dst.bCastsShadows          = bCastsShadows;
 	dst.bReceivesShadows       = bReceivesShadows;

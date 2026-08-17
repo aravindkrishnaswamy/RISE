@@ -1651,8 +1651,20 @@ static void MergeChunkParams(
 	// COMPOSITE's own frame before handing it to either operand, so the operand's
 	// own matrix is read relative to whichever composite is asking -- two
 	// composites at different world poses both get the right shape out of one
-	// shared operand.  Deep-cloning the operands would cost N copies for no
-	// behavioural difference, and it would also have to invent names for them.
+	// shared operand.  Deep-cloning the operands would cost N copies and would
+	// also have to invent names for them.
+	//
+	// SHARING IS NOT FREE OF CONSEQUENCES, and an earlier draft of this comment
+	// claimed "no behavioural difference", which was wrong.  Being an operand is
+	// recorded ON the operand, and 3b makes that an N-way relation: `CSGObject`
+	// used to express it with `SetWorldVisible(false)`, a plain bool, which its
+	// destructor and its re-assign path unconditionally set back to TRUE -- so
+	// removing ONE of the N composites (reachable live through the console's
+	// `remove object`) resurrected an operand that the other N-1 were still
+	// consuming.  It then rendered as a standalone shape, and became parentable,
+	// `ObjectManager::SetObjectParent` identifying an operand as "hidden and has
+	// geometry".  Consumption is therefore a COUNT (IObjectPriv::AddConsumer),
+	// orthogonal to visibility, and that is what makes the sharing below safe.
 	// (An operand can never itself BE a subtree member: `Job::AddCSGObject`
 	// refuses an operand that has a parent or children, and
 	// `ObjectManager::SetObjectParent` refuses it from the other side -- so the
@@ -1737,8 +1749,15 @@ static bool ApplySynthesizedNode(
 //! 87 step 3b -- the PLAN for one `source` expansion's subtree: one item per node in
 //! the source's subtree, PRE-ORDER, so a parent is always applied before its child
 //! (which is what `ObjectManager::SetObjectParent`'s declare-before-use guard needs)
-//! and siblings keep their document order (which is what step 2's per-parent
-//! registration-serial sort reads as child display order).
+//! and siblings come out in the order they have in the tree being copied (which is what
+//! step 2's per-parent registration-serial sort reads as child display order).
+//!
+//! SIBLING ORDER IS THE ORIGINAL'S ORDER, not "document order" flatly.  For a node
+//! whose siblings are all authored, the two are the same thing.  For a node that is
+//! itself an INSTANCE they are not: the entries ITS expansion made were registered at
+//! its own document position, while anything written `parent <it>` must be declared
+//! BELOW it -- so the synthesized siblings precede the authored ones, and the walk
+//! descends the `source` chain BEFORE walking document children to match.
 //!
 //! BUILT BEFORE ANYTHING IS APPLIED.  The collision scan has to be able to name
 //! EVERY entry the expansion would create while none of them exists yet -- both
@@ -1765,6 +1784,10 @@ struct SubtreeClonePlanItem
 //!
 //! `.` and not `/`: `ChunkNamePath` keys the document index as `role + "/" + name`,
 //! so a `/` in an entry name would collide with that separator.
+//!
+//! THE QUALIFICATION IS CARRIED AS COMPONENTS, not as one pre-joined string, and that
+//! is what makes `ChildKeysOf` below able to enumerate the document keys under which
+//! a SYNTHESIZED entry's children can be declared.  See its header.
 struct ClonePlanBuilder
 {
 	const std::vector<NodeRef>&  items;
@@ -1778,11 +1801,49 @@ struct ClonePlanBuilder
 	std::set<std::size_t>        path;          //!< chunk indices on the CURRENT clone path -- a revisit is a recursive definition
 
 	//! Clone the subtree of the ENTRY produced by chunk `srcChunkIdx`, whose clone is
-	//! called `cloneName`.  `ctxPrefix` qualifies the entry names of `srcChunkIdx`'s
+	//! called `cloneName`.  `ctxParts` qualifies the entry names of `srcChunkIdx`'s
 	//! own document children (empty at the top of a source tree).
-	bool SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName, const std::string& ctxPrefix, int depth );
+	bool SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName, const std::vector<std::string>& ctxParts, int depth );
 	//! Clone chunk `chunkIdx` (and everything under it) as a child of `parentClone`.
-	bool ClonedEntry( std::size_t chunkIdx, const std::string& ctxPrefix, const std::string& parentClone, int depth );
+	bool ClonedEntry( std::size_t chunkIdx, const std::vector<std::string>& ctxParts, const std::string& parentClone, int depth );
+
+	//! `ctxParts[from..]` joined with dots and a trailing dot, or "" when empty.
+	static std::string JoinFrom( const std::vector<std::string>& ctxParts, std::size_t from )
+	{
+		std::string s;
+		for( std::size_t i = from; i < ctxParts.size(); ++i ) { s += ctxParts[i]; s += '.'; }
+		return s;
+	}
+
+	//! EVERY `parent` key under which a document node can declare itself a child of the
+	//! entry `JoinFrom(ctxParts,0) + ownName`, paired with the ctxParts PREFIX LENGTH
+	//! that qualifies whatever is found there.
+	//!
+	//! THE WALK IS OVER THE DOCUMENT AND THE LIVE TREE IS NOT THE SAME SHAPE, which is
+	//! the whole reason this function exists.  Cloning the entry `I1.B` (`ownName` = `B`,
+	//! `ctxParts` = {`I1`}), the live children of `I1.B` come from TWO different document
+	//! keys and both are real:
+	//!   * `parent B`   -- a document child of the ORIGINAL `B`.  `I1`'s own expansion
+	//!                     copied it as `I1.Y`, so this copy must be `I2.I1.Y`: the find
+	//!                     keeps the WHOLE prefix `I1.`.
+	//!   * `parent I1.B`-- a document node parented onto the SYNTHESIZED entry directly.
+	//!                     Its entry name is its own (`X`), so this copy is `I2.X`: the
+	//!                     find consumes the prefix `I1.` and keeps NOTHING.
+	//! Every intermediate split is a real key too once the nesting is deeper than one
+	//! (`I2.I1.B` also answers to `I1.B` with `I2.` kept, and to `B` with `I2.I1.` kept).
+	//! A FIRST-MATCH FALLBACK CHAIN IS NOT A SUBSTITUTE, and this is the sharp edge:
+	//! the two keys above can be non-empty AT THE SAME TIME, so "try the entry name,
+	//! else the chunk name" answers with one branch and silently DROPS the other.
+	//! The `override_object` lookup below is a genuine first-match search because it
+	//! only needs to know WHETHER any layer exists; the child and generator walks need
+	//! the UNION, and get it.
+	void ChildKeysOf( const std::vector<std::string>& ctxParts, const std::string& ownName,
+	                  std::vector<std::pair<std::string, std::size_t> >& outKeys ) const
+	{
+		outKeys.clear();
+		for( std::size_t keep = 0; keep <= ctxParts.size(); ++keep )
+			outKeys.push_back( std::make_pair( JoinFrom( ctxParts, keep ) + ownName, keep ) );
+	}
 
 	bool DepthOk( int depth )
 	{
@@ -1793,22 +1854,63 @@ struct ClonePlanBuilder
 };
 
 bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName,
-                                     const std::string& ctxPrefix, int depth )
+                                     const std::vector<std::string>& ctxParts, int depth )
 {
 	if( !DepthOk( depth ) ) return false;
 	std::string srcOwnName;
 	ParamValue( items[srcChunkIdx].get(), "name", srcOwnName );
+	// DEFENSIVE, and deliberately kept: no scene can reach this guard TODAY, and the
+	// argument is worth writing down because it is not obvious and it is fragile.
+	// Reaching it needs a `source` hop back onto a chunk already on the clone path,
+	// i.e. a chunk `K` that instances an ancestor of itself in the document tree.  But
+	// `K`'s OWN expansion, which runs EARLIER in PASS-2 (a `source` must name something
+	// declared above), walks that same ancestor down to `K` and refuses there --
+	// `ClonedEntry`'s revisit guard or its declare-before-use one -- and PASS-2 `break`s
+	// on the first refusal, so the derive never gets as far as the instance that would
+	// trip THIS one.  Deleting it leaves the suite green; it stays because the argument
+	// rests on "PASS-2 stops at the first refusal", and a future diagnostic pass that
+	// collected every refusal instead would make this the only thing terminating the
+	// walk.  `ClonedEntry`'s guard is the reachable one, and is pinned by its own test.
 	if( !path.insert( srcChunkIdx ).second ) {
 		diags.push_back( who + ": expanding this instance would copy `" + srcOwnName + "` into its own subtree -- a "
 			"recursive definition with no fixed point.  The usual cause is a `parent` line that puts a node inside "
 			"the very subtree it instances." );
 		return false;
 	}
+	// THE SOURCE CHAIN FIRST, THEN THE DOCUMENT CHILDREN -- and the order is not
+	// arbitrary.  If this chunk is itself an INSTANCE, the entries ITS expansion made
+	// were registered at ITS OWN document position, whereas anything written `parent
+	// <it>` must be declared BELOW it (declare-before-use).  So in the ORIGINAL tree
+	// the synthesized siblings always precede the authored ones, and a walk that
+	// emitted document children first would hand the copy the reverse of the order the
+	// thing it copies has.  Sibling order is what step 2's per-parent registration-serial
+	// sort shows as child display order, so "the copy looks like the original" includes
+	// this.
+	//
+	// The qualification advances by one across the `source` boundary, because THAT is
+	// where the entry names being copied are themselves qualified.
+	std::string nested;
+	if( ParamValue( items[srcChunkIdx].get(), "source", nested ) && !nested.empty() && nested != "none" ) {
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nested );
+		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < srcChunkIdx ) {
+			std::vector<std::string> deeper = ctxParts;
+			deeper.push_back( srcOwnName );
+			if( !SourceSubtree( ni->second.front(), cloneName, deeper, depth + 1 ) ) return false;
+		}
+	}
 	// The source entry's own document children.
+	//
+	// ONE key here, not `ChildKeysOf`'s union, and the asymmetry with `ClonedEntry` is
+	// the point: this chunk's own name is NEVER an entry under a qualification.  It is
+	// either the top of the chain (whose entry name IS `srcOwnName`, so `ctxParts` is
+	// empty and the union would degenerate to this one key anyway) or a chunk reached
+	// ACROSS a `source` boundary, whose identity is subsumed into `cloneName` and which
+	// therefore mints no entry of its own for anything to be parented to.  Every entry
+	// that does get minted is minted by `ClonedEntry`, which does take the union.
 	const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( srcOwnName );
 	if( kids != index.childrenOf.end() ) {
 		for( std::size_t k = 0; k < kids->second.size(); ++k )
-			if( !ClonedEntry( kids->second[k], ctxPrefix, cloneName, depth + 1 ) ) return false;
+			if( !ClonedEntry( kids->second[k], ctxParts, cloneName, depth + 1 ) ) return false;
 	}
 	// An `instance_array` generator parented into the subtree would be dropped from
 	// the copy: generators expand in a trailing pass, after every `source` chunk, and
@@ -1825,22 +1927,11 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 			"instead, or move the generator out of the subtree." );
 		return false;
 	}
-	// The source entry may itself be an INSTANCE.  Its children then include the
-	// clones ITS own expansion made, whose entry names carry one more level of
-	// qualification -- so recurse one step down the `source` chain with the prefix
-	// advanced, rather than folding the whole chain into one level.
-	std::string nested;
-	if( ParamValue( items[srcChunkIdx].get(), "source", nested ) && !nested.empty() && nested != "none" ) {
-		const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nested );
-		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < srcChunkIdx ) {
-			if( !SourceSubtree( ni->second.front(), cloneName, ctxPrefix + srcOwnName + ".", depth + 1 ) ) return false;
-		}
-	}
 	path.erase( srcChunkIdx );
 	return true;
 }
 
-bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::string& ctxPrefix,
+bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std::string>& ctxParts,
                                    const std::string& parentClone, int depth )
 {
 	if( !DepthOk( depth ) ) return false;
@@ -1874,18 +1965,37 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::string& ctx
 			"it -- move the instance below the last member of the subtree." );
 		return false;
 	}
-	const std::string srcEntryName = ctxPrefix + ownName;
+	const std::string srcEntryName = JoinFrom( ctxParts, 0 ) + ownName;
 	const std::string cloneName    = instName + "." + srcEntryName;
+
+	// THE KEY SET this entry answers to -- its own qualified entry name, its bare chunk
+	// name, and every intermediate.  Read three times below (override layers, children,
+	// generators), because all three ask the same question: "what in the document is
+	// attached to the thing I am copying?"
+	std::vector<std::pair<std::string, std::size_t> > keys;
+	ChildKeysOf( ctxParts, ownName, keys );
 
 	// An `override_object` layer is applied to the LIVE object by NAME, after its
 	// base chunk -- so it never reaches a clone built by re-Finalizing that base
-	// chunk.  Both spellings are refused: a layer on the ENTRY (which is what makes
-	// the source node's pose what it is) and a layer on the underlying CHUNK when
+	// chunk.  Every spelling is refused: a layer on the ENTRY (which is what makes
+	// the source node's pose what it is), a layer on the underlying CHUNK when
 	// the entry is itself a nested clone (whose pose the layer likewise decided for
-	// the original but not for this copy).
+	// the original but not for this copy), and -- once the nesting is two deep -- the
+	// intermediate names in between, which are entries in their own right.
+	//
+	// ONLY THE FIRST KEY (the fully-qualified entry name) IS REACHABLE TODAY, and the
+	// rest are defensive.  An override on a member's BARE chunk name is always caught
+	// by the FIRST expansion that copies that member -- the one whose `ctxParts` is
+	// empty, so its first key already IS the bare name -- and that expansion is
+	// necessarily earlier in the document than any nested one, so PASS-2 `break`s
+	// before a qualified copy of the same member is ever planned.  The union is kept
+	// whole rather than trimmed to `keys[0]` because the CHILD walk below genuinely
+	// needs every key, and an override lookup that answered a different question about
+	// the same entry would be the kind of near-miss this arc keeps finding.
 	{
-		std::map<std::string, std::size_t>::const_iterator ov = index.overriddenNames.find( srcEntryName );
-		if( ov == index.overriddenNames.end() ) ov = index.overriddenNames.find( ownName );
+		std::map<std::string, std::size_t>::const_iterator ov = index.overriddenNames.end();
+		for( std::size_t ki = 0; ki < keys.size() && ov == index.overriddenNames.end(); ++ki )
+			ov = index.overriddenNames.find( keys[ki].first );
 		if( ov != index.overriddenNames.end() ) {
 			char pos[64];
 			std::snprintf( pos, sizeof(pos), "chunk #%u", ChunkOrdinal( items, ov->second ) );
@@ -1921,32 +2031,60 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::string& ctx
 	it.parentClone  = parentClone;
 	plan.push_back( it );
 
-	// This member's own document children keep the CURRENT qualification level --
-	// their entry names in the source tree are their own names.
-	const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( ownName );
-	if( kids != index.childrenOf.end() ) {
-		for( std::size_t k = 0; k < kids->second.size(); ++k )
-			if( !ClonedEntry( kids->second[k], ctxPrefix, cloneName, depth + 1 ) ) return false;
-	}
-	const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( ownName );
-	if( gen != index.generatorChildrenOf.end() && !gen->second.empty() ) {
-		std::string genName;
-		ParamValue( items[ gen->second.front() ].get(), "name", genName );
-		diags.push_back( who + ": the source subtree contains the `instance_array` generator `" + genName
-			+ "` (it names `" + ownName + "` as its `parent`).  A generator expands in a trailing pass, after "
-			"every `source` chunk, and its `parent` names the ORIGINAL node -- so its objects would stay attached "
-			"to the source and the copy would silently be missing them.  Author the repetition with `source` "
-			"instead, or move the generator out of the subtree." );
-		return false;
-	}
-	// If this member is ITSELF an instance, the entries its own expansion made are
-	// part of what we are copying too, one qualification level deeper.
+	// IF THIS MEMBER IS ITSELF AN INSTANCE, the entries its own expansion made are part
+	// of what we are copying too, one qualification level deeper -- and they come FIRST,
+	// for the reason SourceSubtree's own ordering comment gives: in the original tree
+	// they were registered at this chunk's position, while anything written `parent
+	// <this>` has to be declared below it.  Emitting them first is what makes the copy's
+	// sibling order the same as the original's.
 	std::string nested;
 	if( ParamValue( items[chunkIdx].get(), "source", nested ) && !nested.empty() && nested != "none" ) {
 		const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nested );
 		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < chunkIdx ) {
-			if( !SourceSubtree( ni->second.front(), cloneName, srcEntryName + ".", depth + 1 ) ) return false;
+			std::vector<std::string> deeper = ctxParts;
+			deeper.push_back( ownName );
+			if( !SourceSubtree( ni->second.front(), cloneName, deeper, depth + 1 ) ) return false;
 		}
+	}
+
+	// THIS ENTRY'S CHILDREN, over every document key that can name it -- see
+	// `ChildKeysOf`.  A node written `parent B` and a node written `parent I1.B` are
+	// BOTH children of the live entry `I1.B`, and the copy has to carry both; they
+	// differ only in how much of the qualification their own entry names already
+	// carry, which is what the paired prefix length records.
+	//
+	// SORTED BY CHUNK INDEX across the whole union, so siblings stay in DOCUMENT order
+	// no matter which key each was found under -- that order is the registration-serial
+	// order step 2's per-parent sort reads as child display order.
+	{
+		std::vector<std::pair<std::size_t, std::size_t> > kidsFound;   // (chunk index, prefix length to keep)
+		for( std::size_t ki = 0; ki < keys.size(); ++ki ) {
+			const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( keys[ki].first );
+			if( kids == index.childrenOf.end() ) continue;
+			for( std::size_t k = 0; k < kids->second.size(); ++k )
+				kidsFound.push_back( std::make_pair( kids->second[k], keys[ki].second ) );
+		}
+		std::sort( kidsFound.begin(), kidsFound.end() );
+		for( std::size_t k = 0; k < kidsFound.size(); ++k ) {
+			const std::vector<std::string> kidCtx( ctxParts.begin(), ctxParts.begin() + kidsFound[k].second );
+			if( !ClonedEntry( kidsFound[k].first, kidCtx, cloneName, depth + 1 ) ) return false;
+		}
+	}
+	// The `instance_array` refusal reads the SAME key set, and it has to: a generator
+	// parented onto a synthesized entry (`parent I1.B`) would otherwise be invisible to
+	// this scan and its objects would be silently missing from the copy -- verbatim the
+	// outcome the refusal exists to prevent.
+	for( std::size_t ki = 0; ki < keys.size(); ++ki ) {
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( keys[ki].first );
+		if( gen == index.generatorChildrenOf.end() || gen->second.empty() ) continue;
+		std::string genName;
+		ParamValue( items[ gen->second.front() ].get(), "name", genName );
+		diags.push_back( who + ": the source subtree contains the `instance_array` generator `" + genName
+			+ "` (it names `" + keys[ki].first + "` as its `parent`).  A generator expands in a trailing pass, after "
+			"every `source` chunk, and its `parent` names the ORIGINAL node -- so its objects would stay attached "
+			"to the source and the copy would silently be missing them.  Author the repetition with `source` "
+			"instead, or move the generator out of the subtree." );
+		return false;
 	}
 	path.erase( chunkIdx );
 	return true;
@@ -2146,7 +2284,7 @@ static bool ExpandSourceInstance(
 	{
 		ClonePlanBuilder b = { items, index, instName, who, instIndex, objMgr, diags, plan, std::set<std::size_t>() };
 		b.path.insert( instIndex );   // this chunk is on the path from the start -- see the recursive-definition guard
-		if( !b.SourceSubtree( chain.front(), instName, std::string(), 1 ) ) return false;
+		if( !b.SourceSubtree( chain.front(), instName, std::vector<std::string>(), 1 ) ) return false;
 	}
 
 	// THE DOCUMENT-WIDE ENTRY CAP.  `plan.size() + 1` counts the root, and the budget
