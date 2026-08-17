@@ -476,15 +476,32 @@ what was authored, live material included).
      CommitPendingCstObjectTransforms → ApplyCstObjectComponentsEdit` and
      asserts the FINAL COMMITTED pose, for an authored `csg_object` and a
      csg-sourced instance, with and without an override.
-   - **KNOWN, tracked separately, deliberately NOT pinned:** the components
-     commit DOUBLE-APPLIES a translation on the no-override path (authored
-     `csg_object`, no `source`: panel `position 5 0 0` commits to 10.25). The
+   - **FIXED (2026-08-16), and now pinned:** the components commit
+     DOUBLE-APPLIED a translation on the no-override path (authored
+     `csg_object`, no `source`: panel `position 5 0 0` committed to 10.25). The
      live gesture pushes onto the transform STACK via
      `TranslateObject`/`PushBottomTransStack`, then the INCREMENTAL re-apply
-     calls `SetPosition` without clearing the stack, so
-     `FinalizeTransformations` folds T(5)·T(5). Pre-existing and a different
-     subsystem; csg-sourced instances escape it only because a `source` chunk
-     forces the full re-derive.
+     called `SetPosition` without clearing the stack, so
+     `FinalizeTransformations` folded T(5)·T(5). Pre-existing (it predates step
+     3a — `CstObjectTransformKind` has always answered 2 for an authored
+     `csg_object`); csg-sourced instances escaped it only because a `source`
+     chunk forces the full re-derive, an accident of the incremental-refusal
+     rule rather than a guard, so anything that later restores an incremental
+     path for `source` chunks would have inherited it.
+     **Fix:** `Job::AddCSGObject` now calls `ClearAllTransforms()` before its
+     `SetPosition`/`SetOrientation` — the reset `Job::AddObject` has done since
+     review P1.1 and `AddObjectMatrix` gets for free from
+     `SetFinalTransformMatrix` → `ReplaceFinalStack_`. Those are the only three
+     in-place re-point sites (`m_bIncrementalRepoint`), so the family is closed.
+     Clearing — rather than writing the pose the way the MATRIX route does — is
+     what keeps this path off the stack, per §2's rule: a full derive builds a
+     fresh object with an EMPTY stack, so a surviving entry is live state the
+     document does not describe, and stacking a composed pose here would make
+     `override_object`'s per-field arm compose on top of a stacked translation
+     instead of replacing it. **Pinned** by `e2e-authored-csg-no-override` in
+     the `CstSourceInstanceTest` end-to-end table plus an `e2e-repeat` block
+     that drives a SECOND panel edit (under the bug the error changed sign:
+     5 → 10.25, then 3 → 1.25), both asserting the committed pose.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
    real tree model, Swift to `OutlineGroup`; expand state keyed by tree

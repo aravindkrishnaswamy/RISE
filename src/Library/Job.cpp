@@ -6494,6 +6494,37 @@ bool Job::AddCSGObject(
 		safe_release( pRadianceMap );
 	}
 
+	// Reset ALL transforms (stack + component) before the component form -- the same reset
+	// AddObject has done since review P1.1, and for one more reason than it had.  This function
+	// is BOTH the create path and the incremental re-point, and on the re-point the object it
+	// lands on is the LIVE one the user just dragged: SceneEditor's transform ops push their
+	// delta onto the transform STACK (SceneEdit::SetObjectPosition -> Transformable::
+	// TranslateObject -> PushBottomTransStack), and the commit that follows routes here through
+	// ApplyCstObjectComponentsEdit.  FinalizeTransformations folds the stack UNDER the component
+	// matrices and never clears it, so setting `position` while the gesture's T(5) is still on
+	// the stack composes T(5)*T(5) and the object commits to twice the pose the user asked for
+	// (measured: a panel `position 5 0 0` on an authored csg_object landed at bbox centre 10.25
+	// instead of 5.25, with the commit reporting success).  It compounds across gestures, and
+	// not by a constant factor -- the next absolute edit's delta is computed against the doubled
+	// pose, so the error changes SIGN (measured: a following `position 3 0 0` committed to 1.25).
+	//
+	// Clearing is the fix rather than subtracting the stack out, because the invariant that
+	// makes an incremental re-point sound is that it leaves the object where a FULL derive of
+	// the same document would: a full derive builds a fresh object with an EMPTY stack, so a
+	// surviving stack entry is by definition live state the document does not describe.  It is
+	// also why the pose must not instead be written the way the MATRIX route writes it
+	// (SetFinalTransformMatrix -> ReplaceFinalStack_): that route is immune only because the
+	// matrix it stores subsumes the stack, and putting a composed pose onto the stack here would
+	// spread the very pattern doc 87 forbids ("composition MUST go through FinalizeTransformations
+	// (parentWorld), never through the transform stack") into the path that authors position +
+	// orientation as components -- where `override_object`'s per-field arm, which replaces
+	// component matrices only, then composes on top of a stacked translation instead of
+	// replacing it.
+	//
+	// No-op on the create path (a fresh CSGObject has nothing to clear), and no-op on the FULL
+	// derive, which never re-points.  It does NOT reset m_mxParentWorld, so a re-pointed node
+	// keeps its place in the 87 scene graph (see Transformable::ClearAllTransforms).
+	object->ClearAllTransforms();
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->FinalizeTransformations();

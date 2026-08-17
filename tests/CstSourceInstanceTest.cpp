@@ -46,7 +46,11 @@
 //                  (Apply -> the DecomposeRigid post-mutate gate -> CommitPendingCstObject
 //                  Transforms -> ApplyCstObjectComponentsEdit) -- asserting where the object
 //                  ENDS UP after the commit re-derives, which a direct Job::ApplyCst*Edit call
-//                  cannot: the direct route accepts inputs production can never produce.
+//                  cannot: the direct route accepts inputs production can never produce.  That
+//                  includes the shape whose commit takes the INCREMENTAL re-apply (an authored
+//                  csg_object with neither `source` nor `override_object`): its re-point must
+//                  discard the transform stack the live gesture pushed onto, or the pose is
+//                  applied TWICE -- once from the stack, once from the committed `position`.
 //
 //  A NOTE ON WHAT `DumpJob` CAN SEE.  It prints geometry / material / modifier / shader /
 //  radiance_map / interior_medium / visible / bbox and nothing else -- so `casts_shadows`,
@@ -62,6 +66,7 @@
 #include "../src/Library/SceneEditor/SceneEditController.h"   // round-3: the gizmo-facing scale refusal and the message it prints
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #ifdef _WIN32
@@ -143,6 +148,16 @@ static double CenterX( IObject* o )
 	if( !o ) return -1.0e30;
 	const BoundingBox bb = o->getBoundingBox();
 	return ( bb.ll.x + bb.ur.x ) * 0.5;
+}
+
+// " (got X)", for appending to a POSE assertion's message.  Costs nothing on a pass (Check prints
+// only failures) and turns "the object is not where it should be" into the number it IS at, which
+// is what says WHICH defect fired -- a double-apply reads 10.25, a commit that never landed 0.25.
+static std::string Got( double x )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), " (got %.6g)", x );
+	return buf;
 }
 
 // Job::ApplyCstParamEdit / ...Checked read the RETAINED CST head, which only
@@ -1187,12 +1202,15 @@ int main()
 	// the live mutate, the gate, and then flushes the deferred CST commit under the same park,
 	// which is the complete chain.
 	//
-	// DELIBERATELY ABSENT: an authored csg_object with NO override.  That shape takes the
-	// INCREMENTAL apply, whose re-apply calls SetPosition without clearing the transform stack the
-	// live gesture pushed onto, so `position 5 0 0` commits to 10.25 -- a PRE-EXISTING double-apply
-	// on a different subsystem (it predates 87 step 3a; the csg-sourced shapes escape it only
-	// because a `source` chunk forces the full re-derive).  It is tracked separately and must not
-	// be pinned here in either direction.
+	// THE NO-OVERRIDE AUTHORED CSG IS NOW PINNED HERE (it was deliberately absent until the
+	// double-apply below it was fixed).  It is the ONLY shape in this table that reaches the
+	// INCREMENTAL apply -- every other case carries a `source` or an `override_object`, each of
+	// which forces a FULL re-derive that rebuilds the object from scratch and so cannot double
+	// anything.  Its re-apply (Job::AddCSGObject) used to call SetPosition WITHOUT clearing the
+	// transform stack the live gesture had pushed onto (SceneEdit::SetObjectPosition ->
+	// Transformable::TranslateObject -> PushBottomTransStack), so FinalizeTransformations folded
+	// T(5)*T(5) and `position 5 0 0` committed to 10.25.  Job::AddObject had cleared for exactly
+	// this reason since review P1.1; AddCSGObject was the sibling that had not.
 	{
 		using Cat = SceneEditController::Category;
 		const std::string csgSrc =
@@ -1208,6 +1226,11 @@ int main()
 		// Pre-edit centres: the union spans [-1, 1.5] -> 0.25; the sign-flip override mirrors it
 		// to [-1.5, 1] -> -0.25.  `position 5 0 0` therefore lands at 5.25 / 4.75 respectively.
 		const Case cases[] = {
+			// The INCREMENTAL-apply shape -- no `source`, no `override_object`, so nothing forces a
+			// full re-derive and the commit re-points the live object in place.  10.25 is the
+			// double-apply; 0.25 would be a commit that never landed.
+			{ "e2e-authored-csg-no-override",
+			  csgSrc,                                                                                 "C", 5.25 },
 			{ "e2e-authored-csg",
 			  csgSrc + "override_object\n{\nname C\nposition 0 2 0\n}\n",                              "C", 5.25 },
 			{ "e2e-authored-csg-signflip",
@@ -1257,9 +1280,10 @@ int main()
 				Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
 				       ( std::string( cases[k].label ) + ": a translate through the CONTROLLER is accepted" ).c_str() );
 				// The pose the user is left with, after the commit's re-derive rebuilt the scene.
-				Check( std::fabs( CenterX( Obj( j, cases[k].target ) ) - cases[k].expectX ) < 1e-6,
+				const double landed = CenterX( Obj( j, cases[k].target ) );
+				Check( std::fabs( landed - cases[k].expectX ) < 1e-6,
 				       ( std::string( cases[k].label ) + ": ... and the COMMITTED pose is where the user put it, "
-				         "not where a re-derive re-decided" ).c_str() );
+				         "not where a re-derive re-decided" + Got( landed ) ).c_str() );
 				// A silent refusal is the other half of the failure shape -- an accepted-looking
 				// edit that logged a refusal somewhere in the chain is not a success.
 				Check( pRefusalLog->MatchCount() == refusalsBefore
@@ -1269,6 +1293,52 @@ int main()
 			j->release();
 			std::remove( path.c_str() );
 		}
+	}
+
+	// [end-to-end] THE SECOND EDIT, on the incremental route.  One commit landing correctly is not
+	// enough: the defect was LIVE STATE (the gesture's transform stack) SURVIVING the re-apply, so
+	// it compounds across gestures and the drift is not even a constant factor.  Under the bug a
+	// first `position 5 0 0` committed to 10.25, and a SECOND `position 3 0 0` -- whose live gesture
+	// pushes T(-7) to correct for the doubled pose it is looking at -- committed to 1.25 (both
+	// measured against the reverted fix), i.e. the error changed SIGN.  A fix that merely subtracted
+	// one surviving stack entry out would pass the single-edit case and fail this one -- the second
+	// gesture leaves TWO.  Both edits go through the controller and each assertion
+	// reads the pose after that commit's re-derive.  Route coverage -- that this fixture is the
+	// INCREMENTAL apply (rc=1) rather than a full re-derive -- is pinned by `gizmo-control` above.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_e2e_repeat.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "e2e-repeat: the authored-csg fixture loads with a retained CST head" );
+		if( loaded ) {
+			const int refusalsBefore   = pRefusalLog->MatchCount();
+			const int decomposesBefore = pDecomposeLog->MatchCount();
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "5 0 0" ) ),
+			       "e2e-repeat: a translate through the CONTROLLER is accepted" );
+			const double first = CenterX( Obj( j, "C" ) );
+			Check( std::fabs( first - 5.25 ) < 1e-6,
+			       ( std::string( "e2e-repeat: ... and the COMMITTED pose is 5.25" ) + Got( first ) ).c_str() );
+			c.SetSelection( Cat::Object, String( "C" ) );   // a commit may have re-derived; re-assert the selection
+			Check( c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "3 0 0" ) ),
+			       "e2e-repeat: a SECOND translate is accepted" );
+			const double second = CenterX( Obj( j, "C" ) );
+			Check( std::fabs( second - 3.25 ) < 1e-6,
+			       ( std::string( "e2e-repeat: ... and lands at 3.25 -- `position` is ABSOLUTE, so the second "
+			         "commit replaces the first rather than composing with what the first left on the object" )
+			         + Got( second ) ).c_str() );
+			Check( pRefusalLog->MatchCount() == refusalsBefore
+			    && pDecomposeLog->MatchCount() == decomposesBefore,
+			       "e2e-repeat: ... with nothing refused anywhere along the chain" );
+		}
+		j->release();
+		std::remove( path.c_str() );
 	}
 
 	// [end-to-end] THE MATRIX ROUTE ACROSS STACKED LAYERS -- the other half of the coverage gap.
