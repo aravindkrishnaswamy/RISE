@@ -4856,11 +4856,20 @@ namespace {
 // (see the anonymous-namespace ParseChunk loop in Cst.cpp ~150-161). The old walk kept only the FIRST pvalue
 // token ("1" out of "1 1 1"), so an Undo of a multi-token param re-set it to a truncated single-component value
 // (measured: a `color 1 1 1` emitter param round-tripped through capture+undo landed as r=5 g=0 b=0 instead of
-// 5 5 5). Cst::ParamNodeValue (Cst.cpp ~183, file-local to that TU) is the correct accessor -- it is NOT
-// reachable from here (anonymous-namespace / not declared in Cst.h) -- so this walk is rewritten to match its
-// join semantics EXACTLY, token-by-token: once the first pvalue Token is seen, every subsequent kid's `text`
-// (Trivia AND Token alike) is appended verbatim until the Param node ends, reproducing "1 1 1" (not "111" or
-// "1") for a 3-token value.
+// 5 5 5). This walk therefore matches Cst::ParamNodeValue's join semantics EXACTLY, token-by-token: once the
+// first pvalue Token is seen, every subsequent kid's `text` (Trivia AND Token alike) is appended verbatim until
+// the Param node ends, reproducing "1 1 1" (not "111" or "1") for a 3-token value.
+//
+// WHY THIS STILL EXISTS.  The original reason was reachability -- Cst's accessors were file-local to that TU --
+// and since the 2026-08-16 export (c18f5a66) that reason is GONE: Cst::ParamValueAsParsed does this join for you.
+// What survives is the SEMANTIC difference, which is the whole point: that one returns the LAST occurrence
+// (what the PARSER reads), this one returns the FIRST (which occurrence an occ=0 edit will address).  This
+// function is the capture half of the agent's occ=0 capture/restore pair -- CaptureAgentPriorParamValue_ below
+// is its ONLY caller, and it must stay in lockstep with the occ=0 write in Job::ApplyCstParamEditImpl_, not with
+// the parse.  Do NOT "simplify" it away to ParamValueAsParsed: that would make an Undo restore the prior value
+// of a DIFFERENT occurrence than the one the edit wrote.  (A duplicated non-repeatable param is the only input
+// where the two disagree, and that case is refused at the edit boundary -- so this pairing is never exercised
+// against a document the two would answer differently, and it must stay that way.)
 std::string AgentReadFirstParamValue( const RISE::Cst::NodeRef& chunk, const char* pname, bool* outPresent )
 {
 	if( outPresent ) *outPresent = false;
