@@ -1841,8 +1841,16 @@ static bool DecomposeRigid( const Matrix4& M, Vector3& outPos, Vector3& outOrien
 	const double s1 = Vector3Ops::Magnitude( c1 );
 	const double s2 = Vector3Ops::Magnitude( c2 );
 	const bool nonUnitScale = ( std::fabs( s0 - 1.0 ) > 1e-6 || std::fabs( s1 - 1.0 ) > 1e-6 || std::fabs( s2 - 1.0 ) > 1e-6 );
-	// A zero-length axis cannot be normalised, so the orientation tests below have nothing to run on -- report
-	// what is known and stop.  (It also trips the magnitude test, so this is never the ONLY thing reported.)
+	// A zero-length axis cannot be normalised, so the orientation tests below have nothing to run on: dividing
+	// by it poisons r0/r1/r2 with inf/NaN, and every comparison that follows silently evaluates FALSE against a
+	// NaN, so they would contribute nothing but the risk of a garbage reason.  Report SINGULAR and stop.
+	//
+	// SINGULAR IS THEREFORE REPORTED ALONE -- it is the whole message for `scale 0 1 1`, and this early-out is
+	// the reason.  That is a MESSAGE-QUALITY choice, not a correctness one, and an earlier comment here claimed
+	// otherwise on both counts.  Delete this block and the gesture is still refused, by `nonUnitScale`, which is
+	// unconditionally true whenever a column has zero magnitude (|0 - 1| > 1e-6); only the wording changes.  It
+	// is kept because "its transform is SINGULAR (an axis of zero length)" tells the author what is actually
+	// wrong, where "a non-unit SCALE is baked in" describes a degenerate matrix as if it were a resizeable one.
 	if( s0 < 1e-12 || s1 < 1e-12 || s2 < 1e-12 ) {
 		Local::Add( why, "its transform is SINGULAR (an axis of zero length), which position+orientation cannot express" );
 		return Local::No( outWhy, why );
