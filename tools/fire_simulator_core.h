@@ -15,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -22,6 +23,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <functional>
+#include <mutex>
 #include <queue>
 #include <sstream>
 #include <string>
@@ -94,6 +97,63 @@ namespace RISE
 				c.nsRHS.exchange(0)*1.0e-6,c.nsFluxPair.exchange(0)*1.0e-6,
 				c.nsFCT.exchange(0)*1.0e-6,c.nsTarget.exchange(0)*1.0e-6,
 				c.nsInvertT.exchange(0)*1.0e-6,c.nsMGCoarsen.exchange(0)*1.0e-6);
+		}
+
+		class PersistentFireWorkerPool
+		{
+		public:
+			PersistentFireWorkerPool():generation_(0u),activeWorkers_(0u),finishedWorkers_(0u),
+				stopping_(false){}
+			~PersistentFireWorkerPool()
+			{
+				{std::lock_guard<std::mutex> lock(mutex_);stopping_=true;++generation_;}
+				workAvailable_.notify_all();
+				for(std::thread& worker:workers_)worker.join();
+			}
+			void Run(const unsigned int workerCount,const std::function<void(unsigned int)>& task)
+			{
+				std::lock_guard<std::mutex> submitLock(submitMutex_);
+				if(workerCount>workers_.size()){
+					std::uint64_t initialGeneration=0u;
+					{std::lock_guard<std::mutex> lock(mutex_);initialGeneration=generation_;}
+					const std::size_t previous=workers_.size();workers_.reserve(workerCount);
+					for(std::size_t worker=previous;worker<workerCount;++worker){
+						workers_.emplace_back([this,worker,initialGeneration](){
+							WorkerLoop(static_cast<unsigned int>(worker),initialGeneration);});
+					}
+					FireProfileIncrement(FireProfile().spawnCycles);
+					FireProfileIncrement(FireProfile().spawnThreads,workerCount-previous);
+				}
+				{std::lock_guard<std::mutex> lock(mutex_);task_=task;activeWorkers_=workerCount;
+					finishedWorkers_=0u;++generation_;}
+				workAvailable_.notify_all();
+				std::unique_lock<std::mutex> lock(mutex_);
+				workFinished_.wait(lock,[this](){return finishedWorkers_==activeWorkers_;});
+				task_=std::function<void(unsigned int)>();activeWorkers_=0u;
+			}
+		private:
+			void WorkerLoop(const unsigned int workerIndex,std::uint64_t observedGeneration)
+			{
+				for(;;){
+					std::function<void(unsigned int)> task;unsigned int active=0u;
+					{std::unique_lock<std::mutex> lock(mutex_);
+						workAvailable_.wait(lock,[&](){return stopping_||generation_!=observedGeneration;});
+						if(stopping_)return;observedGeneration=generation_;active=activeWorkers_;
+						if(workerIndex<active)task=task_;}
+					if(workerIndex>=active)continue;
+					task(workerIndex);
+					{std::lock_guard<std::mutex> lock(mutex_);++finishedWorkers_;
+						if(finishedWorkers_==activeWorkers_)workFinished_.notify_one();}
+				}
+			}
+			std::vector<std::thread> workers_;std::mutex mutex_,submitMutex_;
+			std::condition_variable workAvailable_,workFinished_;
+			std::function<void(unsigned int)> task_;
+			std::uint64_t generation_;unsigned int activeWorkers_,finishedWorkers_;bool stopping_;
+		};
+		inline PersistentFireWorkerPool& FireWorkerPool()
+		{
+			static PersistentFireWorkerPool pool;return pool;
 		}
 		enum MethaneSpeciesIndex
 		{
@@ -1688,16 +1748,11 @@ namespace RISE
 				for(std::size_t slice=0;slice<sliceCount;++slice)function(slice);return;}
 			FireProfileIncrement(FireProfile().sliceCalls);
 			FireProfileIncrement(FireProfile().sliceThreads,workers);
-			FireProfileIncrement(FireProfile().spawnCycles);
-			FireProfileIncrement(FireProfile().spawnThreads,workers);
-			std::vector<std::thread> threads;
-			threads.reserve(workers);
-			for(unsigned int worker=0;worker<workers;++worker)threads.emplace_back([&,worker](){
+			FireWorkerPool().Run(workers,[&](const unsigned int worker){
 				const std::size_t first=sliceCount*worker/workers;
 				const std::size_t last=sliceCount*(worker+1u)/workers;
 				for(std::size_t slice=first;slice<last;++slice)function(slice);
 			});
-			for(std::thread& thread:threads)thread.join();
 		}
 
 		struct PeriodicMACProjection3DResult
