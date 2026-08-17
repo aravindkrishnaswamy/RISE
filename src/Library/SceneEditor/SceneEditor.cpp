@@ -3351,11 +3351,28 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 							: std::string( "object has no CST `matrix` param and is not a csg_object" );
 						const IObjectManager* objsForProv = mScene ? mScene->GetObjects() : 0;
 						const char* instancingChunk = 0;
-						if( objsForProv && objsForProv->GetObjectProvenance( edit.objectName.c_str(), &instancingChunk, 0 )
-						 && instancingChunk && instancingChunk[0]
+						const char* sourceNode = 0;
+						const bool hasProv = objsForProv
+						 && objsForProv->GetObjectProvenance( edit.objectName.c_str(), &instancingChunk, &sourceNode );
+						if( hasProv && instancingChunk && instancingChunk[0]
 						 && std::string( instancingChunk ) != std::string( edit.objectName.c_str() ) ) {
 							why = std::string( "it is an INSTANCE synthesized by `" ) + instancingChunk
 							    + "` and has no chunk of its own -- move `" + instancingChunk + "` instead";
+						} else if( cstKind == 2 && hasProv && sourceNode && sourceNode[0] ) {
+							// 87 step 3a COLLAPSE case.  The chunk the author wrote is a
+							// `standard_object`; only its `source` makes it commit like a
+							// csg_object.  The generic kind-2 reason above names a chunk type
+							// that appears NOWHERE in what they wrote and never mentions the
+							// one line that produced the restriction -- so name the `source`
+							// and where it lands.  Keyed on the provenance row's SOURCE field,
+							// NOT on `instancingChunk != objectName`: in the collapse case the
+							// row is `I -> (I, S)`, so that test is false by construction and
+							// the branch above cannot fire here.  (An `instance_array` entry is
+							// `g[i,j] -> (g, "")`, so it takes the branch above on the name and
+							// would be excluded here anyway by its EMPTY source field.)
+							why = std::string( "its `source` names `" ) + sourceNode
+							    + "`, which resolves to a csg_object -- that chunk type has no `scale` param, so "
+							      "only translate/rotate are committable on this instance";
 						}
 						GlobalLog()->PrintEx( eLog_Warning, "SceneEditor:: object `%s` transform cannot be saved on a CST-loaded scene (%s); edit refused", edit.objectName.c_str(), why.c_str() );
 					}

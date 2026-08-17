@@ -396,6 +396,43 @@ what was authored, live material included).
      `position`/`orientation` are the two transform params both roles
      declare, so the commit lands on the instancing chunk and the expansion
      merges them onto the synthesized composite.
+
+   **3a review round 3 (2026-08-16) closed the hole that reroute opened, and
+   corrects what round 2 said about it:**
+   - **Every transform-commit route must perform the `override_object` owner
+     walk.** A same-named `override_object` is applied AFTER the base chunk
+     and REPLACES the transform fields it names, so a commit written to the
+     base chunk is overwritten by the very re-derive that follows it: the
+     gizmo moves the object, the commit returns SUCCESS, nothing is logged,
+     and the object snaps back. `ApplyCstObjectMatrixEdit` has walked to the
+     override for exactly this reason since long before 87;
+     `ApplyCstObjectComponentsEdit` now does too.
+     Round 2's commit message disclosed this asymmetry as pre-existing. That
+     is true for an AUTHORED `csg_object` and **false for a csg-sourced
+     instance**: at 469dc2c2/77969fd6 the instance answered kind 1 and its
+     drag went through the MATRIX route — which has the walk, and which
+     `override_object` can record (it declares `matrix`) — so the drag
+     WORKED. Re-answering the kind as 2 rerouted it to a function without
+     the walk and converted a working drag into a silent revert. A reroute
+     is only safe once the destination carries every guarantee the origin
+     did.
+   - **`scale` is the one param the two routes treat differently.** The
+     matrix route strips it from whichever chunk it lands on, because the
+     `matrix` it writes CARRIES the scale. The components route cannot —
+     `position`/`orientation` do not — and an `override_object`'s per-field
+     branch applies position, orientation and scale INDEPENDENTLY, so a
+     `scale` sitting there is live on the object being dragged. It is
+     therefore stripped from a BASE chunk (unexpressible by the `csg_object`
+     the commit derives through) and KEPT on an override.
+   - **A refusal names what the AUTHOR wrote.** The kind-2 scale refusal on a
+     csg-sourced instance said "csg_object has no scale param" for a chunk
+     spelled `standard_object { name I  source C }` — a chunk type absent
+     from their scene, and no mention of the `source` line that is the whole
+     reason for the restriction. The provenance-based rewrite beside it
+     cannot fire in the collapse case (it is gated on
+     `instancingChunk != objectName`, and the collapse row is `I -> (I, S)`),
+     so the message keys on the provenance row's SOURCE field instead — which
+     IS populated there, and is empty for an `instance_array` entry.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
    real tree model, Swift to `OutlineGroup`; expand state keyed by tree

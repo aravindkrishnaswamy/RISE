@@ -10990,6 +10990,7 @@ int Job::CstObjectTransformKind( const char* name ) const
 // its position + orientation (Euler degrees) chunk params.  The caller (editor) decomposes the final transform
 // and refuses anything a csg can't represent (scale / shear / gimbal) BEFORE the live mutate, so this only ever
 // receives a representable pose.  Strips matrix/quaternion defensively (no-op on a csg).  Same 0/1/2/3 contract.
+// Targets a same-named `override_object` when one exists (the owner walk below), exactly as the matrix route does.
 int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* position, const char* orientation )
 {
 	if( !pCstDocument || !objectName || !position || !position[0] || !orientation || !orientation[0] ) return 0;
@@ -11016,16 +11017,47 @@ int Job::ApplyCstObjectComponentsEdit( const char* objectName, const char* posit
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstObjectComponentsEdit:: `%s` is not a csg_object (nor an instance of one); edit rejected", objectName );
 		return 0;
 	}
-	// `scale` alongside matrix/quaternion: none of the three is expressible by the csg_object the
-	// commit derives through, on an authored csg (which declares none of them) or on an instancing
-	// chunk (whose standard_object descriptor declares all three, and whose expansion would then be
-	// refused by the target-descriptor check).  Strip all three so the committed chunk is clean.
-	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, id, "matrix" );
-	d1 = RISE::Cst::DocRemoveParam( d1, id, "scale" );
-	d1 = RISE::Cst::DocRemoveParam( d1, id, "quaternion" );
-	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "position", 0, position );
-	d1 = RISE::Cst::DocSetOrAddParamValue( d1, id, "orientation", 0, orientation );
-	return DeriveEditedCstDocument_( std::move( d1 ), id, objectName, "position/orientation" );
+	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit performs, and for the same reason.  A
+	// same-named `override_object` is applied AFTER the base chunk and REPLACES its transform
+	// fields, so committing onto the base chunk when an override exists writes a value the
+	// re-derive then overwrites: the gizmo drag lands, the commit reports success, and the object
+	// snaps back.  Route the commit to the LAST chunk that actually decides the pose.
+	//
+	// This route reached the instancing chunk only from 87 step 3a (before it, a csg-sourced
+	// instance classified as kind 1 and went through the MATRIX route, which HAS this walk) -- so
+	// without it, step 3a converted a working drag on an overridden csg-sourced instance into a
+	// silent revert.
+	RISE::Cst::NodeId ownerId = id;
+	{
+		const std::string overridePath = std::string( "override_object/" ) + objectName;
+		for( int index = RISE::Cst::DocItemCount( *pCstDocument ) - 1; index >= 0; --index ) {
+			const RISE::Cst::NodeId candidateId = RISE::Cst::DocNodeIdAt( *pCstDocument, index );
+			const RISE::Cst::NodeRef candidate = RISE::Cst::DocResolveNodeId( *pCstDocument, candidateId );
+			if( candidate && candidate->role == "override_object"
+			 && RISE::Cst::ChunkNamePath( candidate ) == overridePath ) {
+				ownerId = candidateId;
+				break;
+			}
+		}
+	}
+	// `matrix` / `quaternion` must go from whichever chunk the commit lands on: on an
+	// override_object EITHER of them takes the whole-matrix branch of its Finalize and the
+	// per-field position/orientation this function writes would be IGNORED outright; on a base
+	// chunk neither is expressible by the csg_object the commit derives through.
+	RISE::Cst::Document d1 = RISE::Cst::DocRemoveParam( *pCstDocument, ownerId, "matrix" );
+	d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "quaternion" );
+	// `scale` is NOT symmetric with those two, and NOT symmetric with the matrix route either.
+	// On the BASE chunk it goes: an authored csg_object does not declare it, and an instancing
+	// chunk that carries one has its expansion refused by the target-descriptor check.  On an
+	// override_object it STAYS: the per-field branch applies position, orientation and scale
+	// INDEPENDENTLY, so a scale there is live on the object this drag just moved -- stripping it
+	// would make the re-derive un-scale the object, which is the very data-loss this walk exists
+	// to prevent.  (The matrix route can strip it because the `matrix` it writes CARRIES the
+	// scale; position+orientation cannot.)
+	if( ownerId == id ) d1 = RISE::Cst::DocRemoveParam( d1, ownerId, "scale" );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "position", 0, position );
+	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, "orientation", 0, orientation );
+	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, objectName, "position/orientation" );
 }
 
 // P5 Slice 3 expansion (camera drag): commit a camera's NET pose to the retained CST.  A drag gesture

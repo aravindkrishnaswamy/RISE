@@ -32,7 +32,11 @@
 //                  DELETED), which is how the stale row gets retired -- while a `source none`
 //                  chunk that was never an instance stays on the incremental path.
 //    [gizmo]       CstObjectTransformKind answers for the SOURCE's role, so the transform gate
-//                  and the transform commit cannot disagree (the live/CST divergence class).
+//                  and the transform commit cannot disagree (the live/CST divergence class); a
+//                  same-named `override_object` OWNS the pose, so the components commit walks to
+//                  it (else the drag reports SUCCESS and the re-derive puts the object back);
+//                  and the scale refusal names the author's own `source` line rather than a
+//                  chunk type their scene does not contain.
 //
 //  A NOTE ON WHAT `DumpJob` CAN SEE.  It prints geometry / material / modifier / shader /
 //  radiance_map / interior_medium / visible / bbox and nothing else -- so `casts_shadows`,
@@ -44,9 +48,12 @@
 
 #include "CstRenderEquivalence.h"
 #include "../src/Library/Cst/Cst.h"
+#include "../src/Library/Interfaces/ILogPriv.h"   // round-3: pin a REFUSAL on its own reason, not on an rc every failure shares
+#include "../src/Library/SceneEditor/SceneEditController.h"   // round-3: the gizmo-facing scale refusal and the message it prints
 
 #include <cmath>
 #include <cstdlib>
+#include <mutex>
 #ifdef _WIN32
 	#include <process.h>
 	#define getpid _getpid
@@ -144,9 +151,82 @@ static std::string WriteTempScene( const char* name, const std::string& text )
 	return path;
 }
 
+// A minimal ILogPrinter that records every message containing `needle` (case-sensitive
+// substring).  Installed once via GlobalLogPriv()->AddPrinter and never removed -- no test in
+// this binary depends on log output being ABSENT, and RemoveAllPrinters would also kill the
+// default stdout/file printers for everything that runs afterwards.
+//
+// WHY A TEST NEEDS THE LOG AT ALL.  Several Job::ApplyCst*Edit refusals are indistinguishable
+// by RETURN CODE: a guard that refuses returns 0, and so does a write that sails past the guard
+// and then fails the dry-run derive (RederiveCstDocumentFull_ returns 0 on any diagnostic).  An
+// `== 0` assertion therefore pins the pair, not the guard -- it stays GREEN with the guard
+// deleted.  The guard's own REASON is the only thing that separates them.
+class CapturingLogPrinter : public virtual RISE::ILogPrinter, public virtual RISE::Implementation::Reference
+{
+public:
+	explicit CapturingLogPrinter( std::string needle ) : mNeedle( std::move( needle ) ) {}
+
+	void Print( const RISE::LogEvent& event ) override
+	{
+		const std::string msg( event.szMessage );
+		if( msg.find( mNeedle ) != std::string::npos ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			mMatches.push_back( msg );
+		}
+	}
+	void Flush() override {}
+
+	int MatchCount() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return static_cast<int>( mMatches.size() );
+	}
+	std::string LastMatch() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mMatches.empty() ? std::string() : mMatches.back();
+	}
+
+protected:
+	~CapturingLogPrinter() override {}
+
+private:
+	std::string                mNeedle;
+	mutable std::mutex         mMutex;
+	std::vector<std::string>   mMatches;
+};
+
+// Every diagnostic `DeriveToJob` raised for ONE chunk, joined.  A scene can hold two REFUSABLE
+// chunks whose reasons differ (a self-parenting instance beside an unparented sibling that merely
+// names the same source), and a whole-bag substring search could not tell which chunk got which
+// message.  Today the derive stops at the first refusal, so the bag holds one -- this keeps the
+// assertions meaningful if that ever changes.  `who` is "standard_object `NAME`: ...".
+static std::string DiagsForChunk( const std::string& scene, const char* chunkName )
+{
+	std::vector<std::string> diags;
+	DumpCst( scene, &diags );
+	const std::string prefix = std::string( "standard_object `" ) + chunkName + "`:";
+	std::string out;
+	for( std::size_t i = 0; i < diags.size(); ++i ) {
+		if( diags[i].compare( 0, prefix.size(), prefix ) == 0 ) { out += diags[i]; out += "\n"; }
+	}
+	return out;
+}
+
 int main()
 {
 	std::printf( "CstSourceInstanceTest -- 87 step 3a: `source` instancing, the collapse case\n" );
+
+	// Installed for the whole run; only the gizmo blocks below read them.
+	CapturingLogPrinter* pMatrixLogOwned = new CapturingLogPrinter( "ApplyCstObjectMatrixEdit" );
+	RISE::GlobalLogPriv()->AddPrinter( pMatrixLogOwned );
+	CapturingLogPrinter* pMatrixLog = pMatrixLogOwned;   // AddPrinter addref'd; keep a raw read handle
+	safe_release( pMatrixLogOwned );                     // drop OUR construction ref (safe_release nulls its arg)
+
+	CapturingLogPrinter* pRefusalLogOwned = new CapturingLogPrinter( "transform cannot be saved on a CST-loaded scene" );
+	RISE::GlobalLogPriv()->AddPrinter( pRefusalLogOwned );
+	CapturingLogPrinter* pRefusalLog = pRefusalLogOwned;
+	safe_release( pRefusalLogOwned );
 
 	const std::string SRC_LEAF = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n";
 
@@ -543,6 +623,30 @@ int main()
 			Check( twoAll.find( "has CHILDREN -- instancing a multi-node subtree" ) == std::string::npos,
 			       "refuse: ... neither of the two gets the 3b subtree message" );
 		}
+		// THE OTHER HALF OF THE CONDITION.  `selfChildrenOnly` is `meAmongThem && allSelfSourced`,
+		// and only `allSelfSourced` was pinned above -- so `meAmongThem` could be dropped and the
+		// suite would stay green.  This is the scene that separates them: `I source S` with NO
+		// `parent` line, and a SEPARATE `K source S parent S`.  Every child of S does instance S
+		// (allSelfSourced is true), but `I` is not among them -- for `I`, S genuinely HAS a child,
+		// and `I` must get the 3b message.  Without `meAmongThem`, `I` would be told its own
+		// `parent S` line created a recursive definition when it has no `parent` line at all,
+		// which is a worse misdirection than the one the branch was added to remove.
+		//
+		// `I` is declared BEFORE `K`, so `I` is the chunk this scene diagnoses.  (DeriveToJob stops
+		// at the FIRST refusal, so `K` raises nothing here -- measured, not assumed; the message
+		// `K` gets on its own is pinned by the single-chunk case at the top of this block.)  The
+		// assertions read `I`'s diagnostic SPECIFICALLY rather than the whole bag, so they keep
+		// their meaning if the derive ever continues past a refusal.
+		{
+			const std::string mixed = SRC_LEAF
+			                        + "standard_object\n{\nname I\nsource S\n}\n"
+			                        + "standard_object\n{\nname K\nsource S\nparent S\n}\n";
+			const std::string forI = DiagsForChunk( Scene( mixed ), "I" );
+			Check( forI.find( "has CHILDREN -- instancing a multi-node subtree" ) != std::string::npos,
+			       "refuse: an UNPARENTED instance of a source that has a self-parenting sibling gets the 3b message" );
+			Check( forI.find( "recursive definition" ) == std::string::npos,
+			       "refuse: ... and is NOT told its own `parent` line is the cause -- it has none" );
+		}
 	}
 
 	// [refuse] DOCUMENT-level name collision: two object chunks declaring the entry name.  The
@@ -822,8 +926,20 @@ int main()
 			// ... and the gate now agrees with the commit in BOTH directions.  A `matrix` write is
 			// refused (the csg target has no such param) -- which is what kind 1 would have
 			// promised -- while the components route the kind DOES promise succeeds.
+			//
+			// PINNED ON THE REASON, NOT ON rc.  `rc == 0` alone pins NOTHING here: delete the
+			// target-role guard and this call still answers 0, because it would then write
+			// `matrix` onto the instancing chunk, the dry-run derive would diagnose the param the
+			// csg_object target cannot express, and RederiveCstDocumentFull_ returns 0 on any
+			// dry-run diagnostic.  The rc assertion was green at 469dc2c2 and 77969fd6, before
+			// the guard existed at all.  Only the guard emits its own reason.
+			const int matrixLogBefore = pMatrixLog->MatchCount();
 			Check( j->ApplyCstObjectMatrixEdit( "I", "1 0 0 0 0 1 0 0 0 0 1 0 5 0 0 1" ) == 0,
 			       "gizmo: ... so a `matrix` commit on it is refused, exactly as the kind now says" );
+			Check( pMatrixLog->MatchCount() == matrixLogBefore + 1,
+			       "gizmo: ... refused by ApplyCstObjectMatrixEdit ITSELF (it logged), not silently by the dry-run derive" );
+			Check( pMatrixLog->LastMatch().find( "instances a `csg_object` (via `source`)" ) != std::string::npos,
+			       "gizmo: ... and for the GUARD's own reason -- the `source` resolves to a chunk type with no `matrix` param" );
 			const double instBefore = CenterX( Obj( j, "I" ) );
 			const int rcInst = j->ApplyCstObjectComponentsEdit( "I", "5 0 0", "0 0 0" );
 			Check( rcInst >= 1, "gizmo: ... and the COMPONENTS commit the kind routes to SUCCEEDS (no live/CST divergence)" );
@@ -870,6 +986,143 @@ int main()
 			       "gizmo-control: ... and its components commit still takes the INCREMENTAL apply (rc=1)" );
 			Check( j->ApplyCstObjectMatrixEdit( "C", "1 0 0 0 0 1 0 0 0 0 1 0 5 0 0 1" ) == 0,
 			       "gizmo-control: ... while a `matrix` commit on it is still refused" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// ---------------------------------------------------------------- override_object owner walk
+	// [gizmo] THE DRAG THAT UN-HAPPENS, ROUND 3.  A same-named `override_object` is applied AFTER
+	// the base chunk and REPLACES the transform fields it names, so a commit written to the base
+	// chunk is overwritten by the re-derive: the gizmo moves the object, the commit reports
+	// SUCCESS, nothing is logged, and the object is back where it started.  ApplyCstObjectMatrix
+	// Edit has walked to the override for exactly this reason since long before 87.
+	//
+	// FOR THE CSG-SOURCED INSTANCE THIS IS A REGRESSION, not a pre-existing gap: at 469dc2c2 and
+	// 77969fd6 the instance classified as kind 1 and its drag went through the MATRIX route, which
+	// HAS the walk -- and it worked.  Round 2 (c18e54b6) re-answered the kind as 2 and rerouted
+	// the commit to ApplyCstObjectComponentsEdit, which had no walk, turning a working drag into
+	// a silent revert.  (c18e54b6's own message disclosed the asymmetry as pre-existing.  That is
+	// true for an AUTHORED csg_object -- pinned below -- and false for the instance.)
+	{
+		const std::string csgSrc =
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n";
+		const std::string scene = Scene( csgSrc
+			+ "standard_object\n{\nname I\nsource C\n}\n"
+			+ "override_object\n{\nname I\nposition 0 2 0\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_override.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "override: the csg-sourced-instance-plus-override fixture loads with a retained CST head" );
+		if( loaded ) {
+			Check( j->CstObjectTransformKind( "I" ) == 2,
+			       "override: (precondition) the instance still routes to COMPONENTS (2)" );
+			const double before = CenterX( Obj( j, "I" ) );
+			const int rc = j->ApplyCstObjectComponentsEdit( "I", "5 0 0", "0 0 0" );
+			Check( rc >= 1, "override: the components commit reports success" );
+			// THE ASSERTION THAT WAS RED.  rc alone said SUCCESS while the object had not moved:
+			// `position 5 0 0` landed on the base instancing chunk and the full re-derive then
+			// re-applied the override's `position 0 2 0` straight over it.
+			Check( std::fabs( ( CenterX( Obj( j, "I" ) ) - before ) - 5.0 ) < 1e-6,
+			       "override: ... and the object really MOVED by +5 in x -- the commit reached the override_object, not the chunk under it" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [gizmo] the same walk on an AUTHORED csg_object -- the shape c18e54b6 correctly described as
+	// a pre-existing gap.  It is closed by the same code, so pin it here too.  Also pins the ONE
+	// asymmetry with the matrix route: `scale` is STRIPPED from a base chunk (unexpressible) but
+	// KEPT on an override_object, whose per-field branch applies position, orientation and scale
+	// INDEPENDENTLY -- so a translate must not silently un-scale the object.  (The matrix route
+	// may strip it because the `matrix` it writes carries the scale; position+orientation cannot.)
+	{
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n"
+			  "override_object\n{\nname C\nposition 0 2 0\nscale 2 2 2\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_override_csg.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "override-csg: the authored-csg-plus-override fixture loads" );
+		if( loaded ) {
+			const double before  = CenterX( Obj( j, "C" ) );
+			const double widthBefore = Obj( j, "C" )
+				? ( Obj( j, "C" )->getBoundingBox().ur.x - Obj( j, "C" )->getBoundingBox().ll.x ) : -1.0;
+			Check( j->ApplyCstObjectComponentsEdit( "C", "5 0 0", "0 0 0" ) >= 1,
+			       "override-csg: the components commit on an overridden authored csg_object reports success" );
+			Check( std::fabs( ( CenterX( Obj( j, "C" ) ) - before ) - 5.0 ) < 1e-6,
+			       "override-csg: ... and the object really MOVED by +5 in x" );
+			const double widthAfter = Obj( j, "C" )
+				? ( Obj( j, "C" )->getBoundingBox().ur.x - Obj( j, "C" )->getBoundingBox().ll.x ) : -2.0;
+			Check( widthBefore > 0.0 && std::fabs( widthAfter - widthBefore ) < 1e-6,
+			       "override-csg: ... WITHOUT un-scaling it -- the override's `scale` survives a translate commit" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// ---------------------------------------------------------------- the refusal an AUTHOR reads
+	// [gizmo] A SCALE on a csg-sourced instance is correctly refused -- but the reason the author
+	// is handed has to be about the scene they WROTE.  "csg_object has no scale param" names a
+	// chunk type that appears nowhere in `standard_object { name I  source C }` and never mentions
+	// the `source` line that is the entire reason for the restriction.  The provenance-based
+	// rewrite that sits next to it CANNOT fire here: it is gated on `instancingChunk != objectName`
+	// and the collapse row is `I -> (I, C)`, so that test is false by construction.  Key on the
+	// row's SOURCE field instead, which IS populated in the collapse case.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string csgSrc =
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n";
+		const std::string scene = Scene( csgSrc + "standard_object\n{\nname I\nsource C\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_refusalmsg.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "refusal-msg: the csg-sourced-instance fixture loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "I" ) );
+			const int before = pRefusalLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "scale" ), String( "2 2 2" ) ),
+			       "refusal-msg: a SCALE on a csg-sourced instance is refused (translate/rotate only)" );
+			Check( pRefusalLog->MatchCount() == before + 1, "refusal-msg: ... and the refusal is reported to the author" );
+			const std::string msg = pRefusalLog->LastMatch();
+			Check( msg.find( "`source`" ) != std::string::npos && msg.find( "`C`" ) != std::string::npos,
+			       "refusal-msg: ... naming the `source` line and the object it resolves to, which is what the author wrote" );
+			Check( msg.find( "csg_object has no scale param -- only translate/rotate are committable" ) == std::string::npos,
+			       "refusal-msg: ... NOT the bare csg_object reason, which names a chunk type this scene does not contain" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [gizmo] CONTROL: an AUTHORED csg_object has no provenance row, so it still gets the plain
+	// reason -- and there the chunk type it names IS the one the author wrote.  Pins that the
+	// rewrite above is keyed on provenance rather than applied to every kind-2 refusal.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene(
+			  "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 1 0 0\n}\n"
+			  "csg_object\n{\nname C\nobja opa\nobjb opb\noperation union\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_refusalmsg_ctl.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "refusal-msg-control: the authored-csg fixture loads" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "C" ) );
+			const int before = pRefusalLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "scale" ), String( "2 2 2" ) ),
+			       "refusal-msg-control: a SCALE on an authored csg_object is still refused" );
+			Check( pRefusalLog->MatchCount() == before + 1, "refusal-msg-control: ... and reported" );
+			Check( pRefusalLog->LastMatch().find( "csg_object has no scale param -- only translate/rotate are committable" ) != std::string::npos,
+			       "refusal-msg-control: ... with the plain csg_object reason, which is the true one here" );
 		}
 		j->release();
 		std::remove( path.c_str() );
