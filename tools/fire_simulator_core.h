@@ -2423,11 +2423,25 @@ namespace RISE
 		{
 			FireProfileIncrement(FireProfile().mgSolves);
 			const std::size_t count=shape.CellCount();
+			std::vector<PeriodicMACShape> shapeHierarchy(1u,shape);
+			std::vector<OpenPressureOperator3D> operatorHierarchy(1u,pressureOperator);
+			for(;;){PeriodicMACShape coarseShape;OpenPressureOperator3D coarseOperator;
+				FireProfileIncrement(FireProfile().coarsenCalls);
+				bool coarsened=false;{FireProfileScopedNs profileTimer(FireProfile().nsMGCoarsen);
+					coarsened=CoarsenOpenPressureOperator3D(shapeHierarchy.back(),
+						operatorHierarchy.back(),coarseShape,coarseOperator);}
+				if(!coarsened)break;shapeHierarchy.push_back(coarseShape);
+				operatorHierarchy.push_back(std::move(coarseOperator));}
+			std::vector<std::vector<double> > diagonalHierarchy(operatorHierarchy.size());
+			for(std::size_t level=0;level<operatorHierarchy.size();++level)
+				BuildOpenPressureDiagonal3D(shapeHierarchy[level],operatorHierarchy[level],
+					diagonalHierarchy[level],level?1u:workerCount);
 			solution.assign(count,0.0);
 			std::vector<double> applied;
 			for( std::size_t cycle=0; cycle<128; ++cycle ) {
 				FireProfileIncrement(FireProfile().mgOuterIters);
-				OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,solution,workerCount);
+				OpenPressureMultigridHierarchyVCycle3D(shapeHierarchy,operatorHierarchy,
+					diagonalHierarchy,0u,rightHandSide,solution,workerCount);
 				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied,workerCount);
 				double maximum=0.0;
 				for( std::size_t i=0; i<count; ++i ) maximum=std::max(maximum,
@@ -2450,7 +2464,8 @@ namespace RISE
 				if( !std::isfinite(beta) ) return false;
 				for( std::size_t i=0; i<count; ++i ) p[i]=r[i]+beta*(p[i]-omega*v[i]);
 				pHat.assign(count,0.0);
-				OpenPressureMultigridVCycle3D(shape,pressureOperator,p,pHat,workerCount);
+				OpenPressureMultigridHierarchyVCycle3D(shapeHierarchy,operatorHierarchy,
+					diagonalHierarchy,0u,p,pHat,workerCount);
 				ApplyOpenPressureOperator3D(shape,pressureOperator,pHat,v,workerCount);
 				const double denominator=OpenVectorDot3D(rHat,v);
 				if( !std::isfinite(denominator) || denominator==0.0 ) return false;
@@ -2464,7 +2479,8 @@ namespace RISE
 					return true;
 				}
 				sHat.assign(count,0.0);
-				OpenPressureMultigridVCycle3D(shape,pressureOperator,s,sHat,workerCount);
+				OpenPressureMultigridHierarchyVCycle3D(shapeHierarchy,operatorHierarchy,
+					diagonalHierarchy,0u,s,sHat,workerCount);
 				ApplyOpenPressureOperator3D(shape,pressureOperator,sHat,t,workerCount);
 				const double tSquared=OpenVectorDot3D(t,t);
 				if( !std::isfinite(tSquared) || tSquared==0.0 ) return false;
