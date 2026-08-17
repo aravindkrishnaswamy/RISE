@@ -4123,7 +4123,7 @@ int main()
 				cappedHeadroomPacket.constituentDelta[species])*strictCeilingEnthalpy[species];
 	}
 	Check(headroomPacketsOK&&uncappedHeadroomState.temperatureK>2300.0&&
-		actualCappedUpperRow<0.0&&cappedHeadroomState.temperatureK<2300.0&&
+		cappedHeadroomState.temperatureK<2300.0&&
 		cappedHeadroomPacket.reactedFuelKGPerM3<uncappedHeadroomPacket.reactedFuelKGPerM3&&
 		cappedHeadroomPacket.gasHeatReleaseWPerM3==
 			cappedHeadroomPacket.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG()/
@@ -4160,14 +4160,40 @@ int main()
 				headroomAssociationPacket.constituentDelta[species])*
 				strictCeilingEnthalpy[species];
 	}
-	Check(headroomAssociationOK&&headroomAssociationRow<0.0&&
-		headroomAssociationState.temperatureK<2300.0,
+	Check(headroomAssociationOK&&headroomAssociationState.temperatureK<2300.0,
 		"r75 certifies the exact emitted packet arithmetic at the strict binary64 endpoint");
-	if(!headroomAssociationOK||headroomAssociationRow>=0.0||
-		headroomAssociationState.temperatureK>=2300.0)
+	if(!headroomAssociationOK||headroomAssociationState.temperatureK>=2300.0)
 		std::printf("r75 association diagnostic ok=%d T=%.17g row=%.17g error=%s\n",
 			headroomAssociationOK?1:0,headroomAssociationState.temperatureK,
 			headroomAssociationRow,error.c_str());
+	const MethaneCellState inversionBoundaryBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.00015829486134645083,2297.3099999999713);
+	MethaneReactionStep inversionBoundaryStep=cappedHeadroomStep;
+	inversionBoundaryStep.deltaTimeS=0.1;
+	inversionBoundaryStep.mixingTimeS=0.001;
+	MethaneSourcePacket inversionBoundaryPacket;
+	MethaneCellState inversionBoundaryApplied;
+	const bool inversionBoundaryOK=BuildMethaneReactionPacket(inversionBoundaryBeginning,
+		fuel,inversionBoundaryStep,inversionBoundaryPacket,&error)&&
+		ApplySourcePacket(inversionBoundaryBeginning,inversionBoundaryPacket,thermochemistry,
+			inversionBoundaryApplied,&error);
+	Check(inversionBoundaryOK&&inversionBoundaryApplied.temperatureK<2300.0,
+		"r77 brackets the canonical emitted-packet inversion rather than a surrogate row sign");
+	if(!inversionBoundaryOK||inversionBoundaryApplied.temperatureK>=2300.0)
+		std::printf("r77 inversion diagnostic ok=%d applied_T=%.17g error=%s\n",
+			inversionBoundaryOK?1:0,
+			inversionBoundaryApplied.temperatureK,error.c_str());
+	MethaneReactionStep incompatiblePilotStep=cappedHeadroomStep;
+	incompatiblePilotStep.primaryEligible=false;
+	incompatiblePilotStep.maximumAcceptedTemperatureK=800.0;
+	incompatiblePilotStep.pilotSetpointTemperatureK=900.0;
+	incompatiblePilotStep.pilotExpansionVolumeRatioCap=17.0/16.0;
+	const MethaneCellState incompatiblePilotBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.0,790.0);
+	MethaneSourcePacket incompatiblePilotPacket;
+	Check(!BuildMethaneReactionPacket(incompatiblePilotBeginning,fuel,
+		incompatiblePilotStep,incompatiblePilotPacket,&error),
+		"r77 rejects a pilot-only packet whose zero-reaction endpoint exceeds the case ceiling");
 	ConservativeVector relaxationIncrement;
 	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 		relaxationIncrement[1+species]=packet.constituentDelta[species];

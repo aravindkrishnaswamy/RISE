@@ -79,8 +79,11 @@ int main()
 	Check(record.derived.limiterAcceptanceModelVersion=="two_class_face_infimum_v1",
 		"r59 case identity echoes the canonical two-class limiter acceptance rule");
 	Check(record.derived.reactionEnergyHeadroomModelVersion==
-		"strict_upper_energy_row_largest_fp64_v1",
-		"r75 case identity echoes the canonical reaction energy-headroom rule");
+		"canonical_emitted_temperature_lower_bracket_v2",
+		"r77 case identity echoes the canonical emitted-byte headroom bracket");
+	Check(record.derived.pilotSetpointTemperatureK<
+		record.derived.maximumAcceptedTemperatureK,
+		"r77 case generation proves the pilot command lies below the physical ceiling");
 	double pilotSetpoint=0.0;
 	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,true,0.0,
 		record.derived.flowThroughTimeS/20.0,pilotSetpoint,error)&&

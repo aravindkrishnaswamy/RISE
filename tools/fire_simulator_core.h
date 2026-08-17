@@ -583,12 +583,51 @@ namespace RISE
 			result=map.sensibleEnergyDeltaJPerM3;return true;
 		}
 
+#if defined(_MSC_VER)
+		__declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+		__attribute__((noinline))
+#endif
+		inline bool CanonicalApplySourcePacket(
+			const MethaneCellState& beginning,
+			const MethaneSourcePacket& packet,
+			const FireSimulationMethaneRecord& thermochemistry,
+			MethaneCellState& result,
+			std::string* error = 0
+			)
+		{
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
+					upperEnthalpy,thermochemistry,error))return false;
+			bool identity=packet.sensibleEnergyDeltaJPerM3==0.0;
+			for(const double delta:packet.constituentDelta)identity=identity&&delta==0.0;
+			if(identity) {
+				if(!ValidateCellState(beginning,error))return false;
+				result=beginning;
+				return true;
+			}
+			MethaneCellState candidate=beginning;
+			for(std::size_t index=0;index<MethaneSpeciesCount;++index)
+				candidate.constituent[index]+=packet.constituentDelta[index];
+			candidate.sensibleEnergyJPerM3+=packet.sensibleEnergyDeltaJPerM3;
+			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(candidate,
+				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
+				candidate.temperatureK,error)||!ValidateCellState(candidate,error))return false;
+			result=candidate;
+			return true;
+		}
+
 		inline bool BuildMethaneReactionPacket(
 			const MethaneCellState& beginning,
 			const FireSimulationMethaneRecord& fuel,
 			const MethaneReactionStep& step,
 			MethaneSourcePacket& packet,
-			std::string* error = 0
+			std::string* error = 0,
+			MethaneCellState* acceptedEndpoint = 0
 			)
 		{
 			packet = MethaneSourcePacket();
@@ -640,34 +679,52 @@ namespace RISE
 			if( primary.size() != MethaneSpeciesCount ) {
 				return Fail(error,"fire solver methane reaction vector has the wrong dimension");
 			}
-			auto reactionAtExtent=[&](const double extent,double& reacted,double& oxidized,
-				std::array<double,MethaneSpeciesCount>& delta,double& energy){
-				reacted=extent==1.0?fullReacted:extent*fullReacted;
-				oxidized=extent==1.0?fullOxidized:extent*fullOxidized;
+			auto packetAtExtent=[&](const double extent,MethaneSourcePacket& candidate){
+				candidate=MethaneSourcePacket();
+				const double reacted=extent==1.0?fullReacted:extent*fullReacted;
+				const double oxidized=extent==1.0?fullOxidized:extent*fullOxidized;
+				candidate.reactedFuelKGPerM3=reacted;
+				candidate.oxidizedCarbonKGPerM3=oxidized;
+				candidate.grossCarbonFormedKGPerM3=reacted*fuel.SootYieldKGPerKGFuel();
 				for(std::size_t index=0;index<MethaneSpeciesCount;++index)
-					delta[index]=reacted*primary[index];
-				delta[MethaneCarbon]+=reacted*fuel.SootYieldKGPerKGFuel()-oxidized;
-				delta[MethaneO2]-=fuel.SootOxygenKGPerKGCarbon()*oxidized;
-				delta[MethaneCO2]+=fuel.SootCO2KGPerKGCarbon()*oxidized;
-				energy=reacted*fuel.LowerHeatingValueJPerKG()+
-					oxidized*fuel.SootHeatReleaseJPerKGCarbon();
+					candidate.constituentDelta[index]=reacted*primary[index];
+				candidate.constituentDelta[MethaneCarbon]+=
+					candidate.grossCarbonFormedKGPerM3-oxidized;
+				candidate.constituentDelta[MethaneO2]-=
+					fuel.SootOxygenKGPerKGCarbon()*oxidized;
+				candidate.constituentDelta[MethaneCO2]+=
+					fuel.SootCO2KGPerKGCarbon()*oxidized;
+				candidate.sensibleEnergyDeltaJPerM3=
+					reacted*fuel.LowerHeatingValueJPerKG()+
+					oxidized*fuel.SootHeatReleaseJPerKGCarbon()+
+					pilotMap.sensibleEnergyDeltaJPerM3;
+				candidate.gasHeatReleaseWPerM3=
+					reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
+				candidate.sootHeatReleaseWPerM3=
+					oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
+				candidate.pilotEnergyDeltaJPerM3=pilotMap.sensibleEnergyDeltaJPerM3;
+				candidate.pilotExpansionIntegral=pilotMap.expansionIntegral;
 			};
-			auto upperEnergyRow=[&](const double extent){
-				double reacted=0.0,oxidized=0.0,reactionEnergy=0.0;
-				std::array<double,MethaneSpeciesCount> reactionDelta={};
-				reactionAtExtent(extent,reacted,oxidized,reactionDelta,reactionEnergy);
-				const double packetEnergy=reactionEnergy+pilotMap.sensibleEnergyDeltaJPerM3;
-				double row=beginning.sensibleEnergyJPerM3+packetEnergy;
-				for(std::size_t index=0;index<MethaneSpeciesCount;++index)
-					row-=(beginning.constituent[index]+reactionDelta[index])*
-						ceilingEnthalpy[index];
-				return row;
+			auto strictCandidate=[&](const MethaneSourcePacket& candidate,
+				MethaneCellState& endpoint){
+				std::string candidateError;
+				return CanonicalApplySourcePacket(beginning,candidate,fuel,endpoint,
+					&candidateError)&&endpoint.temperatureK<maximumAcceptedTemperatureK;
 			};
-			double energyExtent=1.0;
-			const double baseRow=upperEnergyRow(0.0),fullRow=upperEnergyRow(1.0);
-			if(fullRow>=0.0&&fullRow>baseRow) {
-				if(baseRow>=0.0)return Fail(error,
-					"fire solver reaction energy headroom has no strict interior extent");
+			MethaneSourcePacket fullPacket;
+			MethaneCellState fullEndpoint;
+			packetAtExtent(1.0,fullPacket);
+			MethaneCellState selectedEndpoint;
+			if(strictCandidate(fullPacket,fullEndpoint)) {
+				packet=fullPacket;
+				selectedEndpoint=fullEndpoint;
+			}
+			else {
+				MethaneSourcePacket lowerPacket;
+				MethaneCellState lowerEndpoint;
+				packetAtExtent(0.0,lowerPacket);
+				if(!strictCandidate(lowerPacket,lowerEndpoint))return Fail(error,
+					"fire solver combined pilot packet has no strict source headroom");
 				static_assert(sizeof(double)==sizeof(std::uint64_t),
 					"fire solver reaction extent requires binary64 storage");
 				static_assert(std::numeric_limits<double>::is_iec559,
@@ -685,44 +742,34 @@ namespace RISE
 				std::uint64_t lowerBits=extentBits(0.0),upperBits=extentBits(1.0);
 				while(upperBits-lowerBits>1u) {
 					const std::uint64_t midpointBits=lowerBits+(upperBits-lowerBits)/2u;
-					if(upperEnergyRow(extentFromBits(midpointBits))<0.0)
+					MethaneSourcePacket midpointPacket;
+					MethaneCellState midpointEndpoint;
+					packetAtExtent(extentFromBits(midpointBits),midpointPacket);
+					if(strictCandidate(midpointPacket,midpointEndpoint)) {
 						lowerBits=midpointBits;
-					else upperBits=midpointBits;
+						lowerPacket=midpointPacket;
+						lowerEndpoint=midpointEndpoint;
+					} else upperBits=midpointBits;
 				}
-				energyExtent=extentFromBits(lowerBits);
-				if(!(upperEnergyRow(energyExtent)<0.0)||
-					upperEnergyRow(extentFromBits(upperBits))<0.0)
-					return Fail(error,"fire solver reaction energy headroom search is uncertified");
+				packet=lowerPacket;
+				selectedEndpoint=lowerEndpoint;
 			}
-			double reacted=0.0,oxidized=0.0,reactionEnergy=0.0;
-			std::array<double,MethaneSpeciesCount> acceptedReactionDelta={};
-			reactionAtExtent(energyExtent,reacted,oxidized,acceptedReactionDelta,reactionEnergy);
-			packet.reactedFuelKGPerM3 = reacted;
-			packet.oxidizedCarbonKGPerM3 = oxidized;
-			packet.grossCarbonFormedKGPerM3 = reacted*fuel.SootYieldKGPerKGFuel();
-			packet.constituentDelta=acceptedReactionDelta;
-			packet.sensibleEnergyDeltaJPerM3 = reactionEnergy+
-				pilotMap.sensibleEnergyDeltaJPerM3;
-			packet.gasHeatReleaseWPerM3 = reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
-			packet.sootHeatReleaseWPerM3 = oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
-			packet.pilotEnergyDeltaJPerM3 = pilotMap.sensibleEnergyDeltaJPerM3;
-			packet.pilotExpansionIntegral = pilotMap.expansionIntegral;
-			if((fullReacted>0.0||fullOxidized>0.0)&&upperEnergyRow(energyExtent)>=0.0)
-				return Fail(error,"fire solver emitted reaction packet violates strict energy headroom");
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				if( !std::isfinite(packet.constituentDelta[index]) ) {
 					return Fail(error,"fire solver reaction packet contains a non-finite constituent delta");
 				}
 			}
-			return (std::isfinite(packet.sensibleEnergyDeltaJPerM3) &&
+			const bool finitePacket=std::isfinite(packet.sensibleEnergyDeltaJPerM3) &&
 				std::isfinite(packet.reactedFuelKGPerM3) &&
 				std::isfinite(packet.oxidizedCarbonKGPerM3) &&
 				std::isfinite(packet.grossCarbonFormedKGPerM3) &&
 				std::isfinite(packet.gasHeatReleaseWPerM3) &&
 				std::isfinite(packet.sootHeatReleaseWPerM3) &&
 				std::isfinite(packet.pilotEnergyDeltaJPerM3) &&
-				std::isfinite(packet.pilotExpansionIntegral)) ||
-				Fail(error,"fire solver reaction packet overflowed");
+				std::isfinite(packet.pilotExpansionIntegral);
+			if(!finitePacket)return Fail(error,"fire solver reaction packet overflowed");
+			if(acceptedEndpoint)*acceptedEndpoint=selectedEndpoint;
+			return true;
 		}
 
 		inline bool ApplySourcePacket(
@@ -733,24 +780,7 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
-			if(!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
-				thermochemistry.TemperatureMinK(),lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
-				!thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
-					thermochemistry.TemperatureMaxK(),upperEnthalpy.data(),upperEnthalpy.size(),error)||
-				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
-					upperEnthalpy,thermochemistry,error))return false;
-			MethaneCellState candidate = beginning;
-			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
-				candidate.constituent[index] += packet.constituentDelta[index];
-			}
-			candidate.sensibleEnergyJPerM3 += packet.sensibleEnergyDeltaJPerM3;
-			if( !InvertMethaneTemperatureWithinAcceptedEnvelope(candidate,
-				thermochemistry.TemperatureMinK(),thermochemistry.TemperatureMaxK(),thermochemistry,
-				candidate.temperatureK,error) ) return false;
-			if(!ValidateCellState(candidate,error))return false;
-			result=candidate;
-			return true;
+			return CanonicalApplySourcePacket(beginning,packet,thermochemistry,result,error);
 		}
 
 		inline double MCScalarSlope( const double backward, const double forward )
@@ -5591,15 +5621,12 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
+			if(fuel.RecordId()!=thermochemistry.RecordId())return Fail(error,
+				"fire solver source packet fuel and thermochemistry records differ");
 			MethaneSourcePacket reaction;
-			if( !BuildMethaneReactionPacket(beginning,fuel,reactionStep,reaction,error) ) return false;
 			MethaneCellState postReaction;
-			bool identityReaction=reaction.sensibleEnergyDeltaJPerM3==0.0;
-			for(const double delta:reaction.constituentDelta)identityReaction=
-				identityReaction&&delta==0.0;
-			if(identityReaction)postReaction=beginning;
-			else if( !ApplySourcePacket(beginning,reaction,thermochemistry,postReaction,error) )
-				return false;
+			if( !BuildMethaneReactionPacket(beginning,fuel,reactionStep,reaction,error,
+				&postReaction) ) return false;
 			MethaneCellState finalScratch;
 			double signedCoolingWPerM3 = 0.0;
 			if( !ApplyGasRadiationBackwardEuler(postReaction,ambientTemperatureK,
@@ -5639,6 +5666,8 @@ namespace RISE
 			if( count == 0 || reactionStep.size() != count || cellVolumeM3.size() != count ) {
 				return Fail(error,"fire solver grid source-packet arrays are malformed");
 			}
+			if(fuel.RecordId()!=thermochemistry.RecordId())return Fail(error,
+				"fire solver grid source packet fuel and thermochemistry records differ");
 			std::vector<double> unscaledExchange(count,0.0);
 			std::vector<MethaneSourcePacket> reaction(count);
 			std::vector<MethaneCellState> postReaction(count);
@@ -5653,15 +5682,7 @@ namespace RISE
 				for(std::size_t cell=first;cell<last;++cell) {
 				std::string cellError;
 				if( !BuildMethaneReactionPacket(beginning[cell],fuel,reactionStep[cell],
-					reaction[cell],&cellError) ) {
-					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
-				}
-				bool identityReaction=reaction[cell].sensibleEnergyDeltaJPerM3==0.0;
-				for(const double delta:reaction[cell].constituentDelta)identityReaction=
-					identityReaction&&delta==0.0;
-				if(identityReaction)postReaction[cell]=beginning[cell];
-				else if(!ApplySourcePacket(beginning[cell],reaction[cell],thermochemistry,
-					postReaction[cell],&cellError)) {
+					reaction[cell],&cellError,&postReaction[cell]) ) {
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				GasExchangeEvaluation exchange;

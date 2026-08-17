@@ -230,7 +230,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	DerivedV1 d; d.resolutionTier=tierValue; d.peakEnvelope=peak;
 	d.maximumAcceptedTemperatureK=2300.0;
 	d.limiterAcceptanceModelVersion="two_class_face_infimum_v1";
-	d.reactionEnergyHeadroomModelVersion="strict_upper_energy_row_largest_fp64_v1";
+	d.reactionEnergyHeadroomModelVersion="canonical_emitted_temperature_lower_bracket_v2";
 	d.pilotModelVersion="continuous_command_ramp_manifold_exact_acceptance_v6";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
 	d.pilotSetpointTemperatureK=900.0;
@@ -238,6 +238,8 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	d.pilotDurationMultiplier=1.0;
 	d.pilotAmbientTemperatureK=fuel.ReferenceTemperatureK();
 	d.pilotRampExponentPerFlowThrough=10.0;
+	if(!(d.pilotSetpointTemperatureK<d.maximumAcceptedTemperatureK))
+		return Fail(error,"fire case pilot setpoint is not below its physical temperature ceiling");
 	d.sourceAreaM2=sourceArea;
 	d.referenceHeatReleaseRateW=1000.0*nominalHeatReleaseKW*peak;
 	d.nominalFuelFluxKGPerM2S=nominalFuelFlux;
