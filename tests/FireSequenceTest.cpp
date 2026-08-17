@@ -1073,7 +1073,9 @@ namespace
 				simulationTimeS,persistence.checkpointPath.string().c_str());
 		}
 		auto lastCheckpointWall=std::chrono::steady_clock::now();
+		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
 		while(advancedOK&&(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
+			const auto profileStepStart=std::chrono::steady_clock::now();
 			if(acceptedSteps>=65536u) { advancedOK=false;error="capstone exceeded its deterministic step cap";break; }
 			IgnitionGrid eligibilityGrid;
 			eligibilityGrid.nx=shape.nx;eligibilityGrid.ny=shape.ny;eligibilityGrid.nz=shape.nz;
@@ -1259,7 +1261,6 @@ namespace
 				bool allActiveHoldCellsQualified=true,activeHoldCellObserved=false;
 				bool allPilotLedgerCeilingsQualified=true;
 				double stepAcceptedEOSMaximum=0.0;
-				double stepAcceptedMaximumTemperatureK=0.0;
 				double heldPilotMinimumTemperatureK=std::numeric_limits<double>::infinity();
 				double heldPilotMaximumTemperatureK=0.0;
 				std::size_t heldPilotMinimumCell=0u,heldPilotMaximumCell=0u;
@@ -1275,8 +1276,6 @@ namespace
 						advancedOK=false;break;
 					}
 					stepAcceptedEOSMaximum=std::max(stepAcceptedEOSMaximum,acceptedEOSResidual);
-					stepAcceptedMaximumTemperatureK=std::max(
-						stepAcceptedMaximumTemperatureK,accepted.temperatureK);
 					if(measurePilotApproach)values.maximumPilotApproachEOSResidual=std::max(
 						values.maximumPilotApproachEOSResidual,acceptedEOSResidual);
 					values.maximumTemperatureK=std::max(values.maximumTemperatureK,
@@ -1320,7 +1319,7 @@ namespace
 						values.maximumAcceptedEOSResidual,stepAcceptedEOSMaximum);
 					values.acceptedMaximumEOSResidualHistory.push_back(stepAcceptedEOSMaximum);
 					values.acceptedMaximumTemperatureHistoryK.push_back(
-						stepAcceptedMaximumTemperatureK);
+						values.maximumTemperatureK);
 					if(activeHoldCellObserved){
 						values.pilotApproachComplete=true;
 						values.pilotHoldBandObserved=true;
@@ -1441,6 +1440,12 @@ namespace
 					}
 				}
 				values.acceptedTimeStepHistoryS.push_back(reaction.deltaTimeS);
+				if(FireProfileEnabled()){
+					std::fprintf(stderr,"FIREPROFSTEP step=%u dt=%.17g wall_ms=%.3f\n",
+						acceptedSteps+1u,reaction.deltaTimeS,std::chrono::duration<double,std::milli>(
+							std::chrono::steady_clock::now()-profileStepStart).count());
+					FireProfileReportAndReset("step");
+				}
 				simulationTimeS+=reaction.deltaTimeS;previousStepS=reaction.deltaTimeS;++acceptedSteps;
 				values.acceptedTimeStepS=reaction.deltaTimeS;
 				values.simulatedTimeS=simulationTimeS;
@@ -2452,6 +2457,32 @@ namespace
 		return failures?95:0;
 	}
 
+	SolverFrameValues CheckpointDiagnosticFrame(const MethaneRunCheckpoint& checkpoint)
+	{
+		SolverFrameValues values;
+		PeriodicMACShape shape;shape.nx=checkpoint.dimensions[0];shape.ny=checkpoint.dimensions[1];
+		shape.nz=checkpoint.dimensions[2];shape.cellWidthM=checkpoint.cellWidthM;
+		values.dimensions=checkpoint.dimensions;values.cellWidthM=checkpoint.cellWidthM;
+		values.caseRecordId=checkpoint.caseRecordId;
+		values.temperature.resize(shape.CellCount());values.reaction.assign(shape.CellCount(),0.0f);
+		values.carbon.resize(shape.CellCount());values.velocity.resize(shape.CellCount());
+		for(std::size_t cell=0;cell<shape.CellCount();++cell){
+			values.temperature[cell]=static_cast<float>(checkpoint.states[cell].temperatureK);
+			values.carbon[cell]=static_cast<float>(std::max(0.0,
+				checkpoint.states[cell].constituent[MethaneCarbon]));
+			for(unsigned int axis=0;axis<3;++axis){
+				const std::size_t lower=OpenLowerFaceForCell3D(shape,cell,axis);
+				const std::size_t upper=OpenUpperFaceForCell3D(shape,cell,axis);
+				values.velocity[cell][axis]=static_cast<float>(0.5*(
+					checkpoint.velocity.component[axis][lower]+
+					checkpoint.velocity.component[axis][upper]));
+			}
+		}
+		values.temperatureK=*std::max_element(values.temperature.begin(),values.temperature.end());
+		values.reactionWPerM3=0.0f;values.succeeded=true;
+		return values;
+	}
+
 	bool ParseUnsignedArgument(const char* text,const unsigned long maximum,
 		unsigned long& value)
 	{
@@ -2490,7 +2521,10 @@ namespace
 			false,persistence);
 		if(!result.succeeded){std::fprintf(stderr,"resume-equivalence continuation failed: %s\n",
 			result.structuredError.c_str());return 93;}
-		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,result))return 94;
+		SolverFrameValues diagnostic=result;
+		diagnostic.reaction.assign(diagnostic.reaction.size(),0.0f);
+		diagnostic.reactionWPerM3=0.0f;
+		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,diagnostic))return 94;
 		RISECBOR64::Bytes buildRecord;std::string buildId,executableDigest;
 		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
 			!CurrentExecutableDigest(buildRecord,executableDigest,error))return 95;
@@ -2519,6 +2553,44 @@ namespace
 			std::fprintf(stderr,"resume-equivalence trace write failed: %s\n",error.c_str());
 			return 97;
 		}
+		return 0;
+	}
+
+	int RunLegacyCheckpointTraceChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& snapshotDirectory,const std::filesystem::path& tracePath,
+		const std::filesystem::path& framePath,const std::string& executableDigest)
+	{
+		MethaneRunCheckpoint beginning;std::string error;
+		if(executableDigest.size()!=64u||
+			!LoadMethaneRunCheckpoint(checkpointPath,beginning,error))return 91;
+		ResumeEquivalenceTrace trace;
+		trace.checkpointDigest=DigestFile(checkpointPath);
+		trace.checkpointProducerBuildId=beginning.producerBuildId;
+		trace.buildId=beginning.producerBuildId;trace.executableDigest=executableDigest;
+		trace.resumedFromStep=beginning.acceptedSteps;trace.acceptedStepCount=8u;
+		MethaneRunCheckpoint finalCheckpoint;
+		for(std::uint64_t evidenceStep=1u;evidenceStep<=8u;++evidenceStep){
+			std::ostringstream name;name<<"step_"<<std::setw(2)<<std::setfill('0')<<
+				evidenceStep<<".checkpoint";
+			MethaneRunCheckpoint snapshot;
+			if(!LoadMethaneRunCheckpoint(snapshotDirectory/name.str(),snapshot,error)||
+				snapshot.caseRecordId!=beginning.caseRecordId||
+				snapshot.producerBuildId!=beginning.producerBuildId||
+				snapshot.acceptedSteps!=beginning.acceptedSteps+evidenceStep||
+				snapshot.values.acceptedTimeStepHistoryS.empty()||
+				snapshot.values.acceptedMaximumEOSResidualHistory.empty())return 92;
+			trace.timeStepBits.push_back(DoubleBits(
+				snapshot.values.acceptedTimeStepHistoryS.back()));
+			trace.maximumTemperatureBits.push_back(DoubleBits(snapshot.values.maximumTemperatureK));
+			trace.maximumEOSResidualBits.push_back(DoubleBits(
+				snapshot.values.acceptedMaximumEOSResidualHistory.back()));
+			finalCheckpoint=std::move(snapshot);
+		}
+		const SolverFrameValues diagnostic=CheckpointDiagnosticFrame(finalCheckpoint);
+		if(!WriteFrame(framePath,FrameMutation{},0.0f,true,diagnostic))return 93;
+		trace.frameDigests.push_back(DigestFile(framePath));
+		if(trace.frameDigests.back().empty()||!SaveResumeEquivalenceTrace(tracePath,trace,error))
+			return 94;
 		return 0;
 	}
 
@@ -2588,6 +2660,30 @@ namespace
 int main(int argc,char** argv)
 {
 #if defined(RISE_ENABLE_OPENVDB)
+	if(const char* profileEnvironment=std::getenv("RISE_FIRE_PROFILE")){
+		if(std::strcmp(profileEnvironment,"1")!=0){
+			std::fprintf(stderr,"RISE_FIRE_PROFILE must be exactly 1\n");return 96;
+		}
+	}
+	if(argc==7&&std::strcmp(argv[1],"--fire-case-id")==0){
+		double duration=0.0,framesPerS=0.0,tier=0.0,diameter=0.0,heatRelease=0.0;
+		if(!ParsePositiveDoubleArgument(argv[2],duration)||
+			!ParsePositiveDoubleArgument(argv[3],framesPerS)||
+			!ParsePositiveDoubleArgument(argv[4],tier)||
+			!ParsePositiveDoubleArgument(argv[5],diameter)||
+			!ParsePositiveDoubleArgument(argv[6],heatRelease))return 90;
+		const SolverFrameValues identity=RunMethaneFrameProbe(1u,0u,0.0,duration,
+			framesPerS,tier,diameter,heatRelease);
+		if(!identity.succeeded)return 91;
+		const double fullTarget=5.0*identity.flowThroughTimeS+
+			40.0/(1.5/std::sqrt(CapstonePoolDiameterM));
+		std::fprintf(stdout,"case_record_id=%s flow_through_time_s=%.17g "
+			"full_target_s=%.17g full_frame_rate_per_s=%.17g\n",
+			identity.caseRecordId.c_str(),identity.flowThroughTimeS,fullTarget,1.0/fullTarget);
+		return 0;
+	}
+	if(argc==7&&std::strcmp(argv[1],"--fire-resume-equivalence-legacy-trace")==0)
+		return RunLegacyCheckpointTraceChild(argv[2],argv[3],argv[4],argv[5],argv[6]);
 	if(argc==13&&std::strcmp(argv[1],"--fire-resume-equivalence-trace")==0){
 		unsigned long workers=0u,steps=0u;double duration=0.0,framesPerS=0.0,tier=0.0,
 			diameter=0.0,heatRelease=0.0;

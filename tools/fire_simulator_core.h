@@ -13,6 +13,10 @@
 #include "../src/Library/Utilities/FireSimulationRecords.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +33,68 @@ namespace RISE
 {
 	namespace FireSim
 	{
+		struct FireProfileCounters
+		{
+			std::atomic<unsigned long long> sliceCalls{0},sliceSerialCalls{0},sliceThreads{0};
+			std::atomic<unsigned long long> spawnCycles{0},spawnThreads{0};
+			std::atomic<unsigned long long> vcycles{0},coarsenCalls{0},smoothSweeps{0};
+			std::atomic<unsigned long long> mgSolves{0},mgOuterIters{0},projCalls{0};
+			std::atomic<unsigned long long> picardIters{0},stageCalls{0},fctCalls{0};
+			std::atomic<unsigned long long> fluxPairCalls{0},transportCalls{0},invertTCalls{0};
+			std::atomic<unsigned long long> nsProjection{0},nsTransport{0},nsRHS{0};
+			std::atomic<unsigned long long> nsFluxPair{0},nsFCT{0},nsTarget{0};
+			std::atomic<unsigned long long> nsInvertT{0},nsMGCoarsen{0};
+		};
+		inline bool FireProfileEnabled()
+		{
+			static const bool enabled=std::getenv("RISE_FIRE_PROFILE")!=nullptr;
+			return enabled;
+		}
+		inline FireProfileCounters& FireProfile()
+		{
+			static FireProfileCounters counters;return counters;
+		}
+		inline void FireProfileIncrement(std::atomic<unsigned long long>& counter,
+			const unsigned long long amount=1u)
+		{
+			if(FireProfileEnabled())counter.fetch_add(amount,std::memory_order_relaxed);
+		}
+		class FireProfileScopedNs
+		{
+		public:
+			explicit FireProfileScopedNs(std::atomic<unsigned long long>& sink):sink_(sink),
+				active_(FireProfileEnabled()),begin_(std::chrono::steady_clock::now()) {}
+			~FireProfileScopedNs()
+			{
+				if(active_)sink_.fetch_add(static_cast<unsigned long long>(
+					std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::steady_clock::now()-begin_).count()),std::memory_order_relaxed);
+			}
+		private:
+			std::atomic<unsigned long long>& sink_;bool active_;
+			std::chrono::steady_clock::time_point begin_;
+		};
+		inline void FireProfileReportAndReset(const char* label)
+		{
+			if(!FireProfileEnabled())return;
+			FireProfileCounters& c=FireProfile();
+			std::fprintf(stderr,"FIREPROF %s slice_calls=%llu slice_serial=%llu slice_threads=%llu "
+				"spawn_cycles=%llu spawn_threads=%llu vcycles=%llu coarsen=%llu smooth_sweeps=%llu "
+				"mg_solves=%llu mg_outer=%llu proj=%llu picard=%llu stages=%llu fct=%llu "
+				"fluxpair=%llu transport=%llu invertT=%llu ms_proj=%.3f ms_transport=%.3f "
+				"ms_rhs=%.3f ms_fluxpair=%.3f ms_fct=%.3f ms_target=%.3f ms_invertT=%.3f "
+				"ms_mg_coarsen=%.3f\n",label,
+				c.sliceCalls.exchange(0),c.sliceSerialCalls.exchange(0),c.sliceThreads.exchange(0),
+				c.spawnCycles.exchange(0),c.spawnThreads.exchange(0),c.vcycles.exchange(0),
+				c.coarsenCalls.exchange(0),c.smoothSweeps.exchange(0),c.mgSolves.exchange(0),
+				c.mgOuterIters.exchange(0),c.projCalls.exchange(0),c.picardIters.exchange(0),
+				c.stageCalls.exchange(0),c.fctCalls.exchange(0),c.fluxPairCalls.exchange(0),
+				c.transportCalls.exchange(0),c.invertTCalls.exchange(0),
+				c.nsProjection.exchange(0)*1.0e-6,c.nsTransport.exchange(0)*1.0e-6,
+				c.nsRHS.exchange(0)*1.0e-6,c.nsFluxPair.exchange(0)*1.0e-6,
+				c.nsFCT.exchange(0)*1.0e-6,c.nsTarget.exchange(0)*1.0e-6,
+				c.nsInvertT.exchange(0)*1.0e-6,c.nsMGCoarsen.exchange(0)*1.0e-6);
+		}
 		enum MethaneSpeciesIndex
 		{
 			MethaneCH4 = 0,
@@ -1256,10 +1322,14 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			FireProfileIncrement(FireProfile().invertTCalls);
+			FireProfileScopedNs profileTimer(FireProfile().nsInvertT);
 			std::vector<double> candidate(cells.size(),0.0);
 			if(cells.empty()) { temperatureK.clear();return true; }
 			const unsigned int workers=std::max(1u,std::min(workerCount,
 				static_cast<unsigned int>(cells.size())));
+			FireProfileIncrement(FireProfile().spawnCycles);
+			FireProfileIncrement(FireProfile().spawnThreads,workers);
 			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
 			std::vector<std::size_t> failureCell(workers,noFailure);
 			std::vector<std::string> failureMessage(workers);
@@ -1444,6 +1514,7 @@ namespace RISE
 			const bool enforcePeriodicCompatibility = false
 			)
 		{
+			FireProfileScopedNs profileTimer(FireProfile().nsTarget);
 			if(currentTargetPerS.size()!=acceptedCandidate.size()||
 				!std::isfinite(deltaTimeS)||deltaTimeS<=0.0)return Fail(error,
 					"fire solver manifold-exact target input is malformed");
@@ -1613,7 +1684,12 @@ namespace RISE
 		{
 			const unsigned int workers=std::max(1u,std::min(workerCount,
 				static_cast<unsigned int>(sliceCount)));
-			if(workers==1u){for(std::size_t slice=0;slice<sliceCount;++slice)function(slice);return;}
+			if(workers==1u){FireProfileIncrement(FireProfile().sliceSerialCalls);
+				for(std::size_t slice=0;slice<sliceCount;++slice)function(slice);return;}
+			FireProfileIncrement(FireProfile().sliceCalls);
+			FireProfileIncrement(FireProfile().sliceThreads,workers);
+			FireProfileIncrement(FireProfile().spawnCycles);
+			FireProfileIncrement(FireProfile().spawnThreads,workers);
 			std::vector<std::thread> threads;
 			threads.reserve(workers);
 			for(unsigned int worker=0;worker<workers;++worker)threads.emplace_back([&,worker](){
@@ -2014,6 +2090,7 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			FireProfileIncrement(FireProfile().smoothSweeps,iterations);
 			const double inverseWidth2 = 1.0/(shape.cellWidthM*shape.cellWidthM);
 			std::vector<double> applied, next(shape.CellCount(),0.0),
 				diagonal(shape.CellCount(),0.0);
@@ -2161,10 +2238,15 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			FireProfileIncrement(FireProfile().vcycles);
 			PeriodicMACShape coarseShape;
 			OpenPressureOperator3D coarseOperator;
-			if( !CoarsenOpenPressureOperator3D(shape,pressureOperator,coarseShape,
-				coarseOperator) ) {
+			FireProfileIncrement(FireProfile().coarsenCalls);
+			bool coarsened=false;
+			{FireProfileScopedNs profileTimer(FireProfile().nsMGCoarsen);
+				coarsened=CoarsenOpenPressureOperator3D(shape,pressureOperator,coarseShape,
+					coarseOperator);}
+			if(!coarsened) {
 				SmoothOpenPressureOperator3D(shape,pressureOperator,rightHandSide,60,solution,workerCount);
 				return;
 			}
@@ -2190,6 +2272,7 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			if(level==0u)FireProfileIncrement(FireProfile().vcycles);
 			if(level+1u==shape.size()) {
 				SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
 					rightHandSide,60,solution,workerCount);
@@ -2230,10 +2313,12 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			FireProfileIncrement(FireProfile().mgSolves);
 			const std::size_t count=shape.CellCount();
 			solution.assign(count,0.0);
 			std::vector<double> applied;
 			for( std::size_t cycle=0; cycle<128; ++cycle ) {
+				FireProfileIncrement(FireProfile().mgOuterIters);
 				OpenPressureMultigridVCycle3D(shape,pressureOperator,rightHandSide,solution,workerCount);
 				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied,workerCount);
 				double maximum=0.0;
@@ -2936,6 +3021,8 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			FireProfileIncrement(FireProfile().projCalls);
+			FireProfileScopedNs profileTimer(FireProfile().nsProjection);
 			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
 				gasDensityKGPerM3.size()!=shape.CellCount() ||
 				divergenceTargetPerS.size()!=shape.CellCount() ||
@@ -3214,6 +3301,8 @@ namespace RISE
 			const unsigned int workerCount = 1u
 			)
 		{
+			FireProfileIncrement(FireProfile().projCalls);
+			FireProfileScopedNs profileTimer(FireProfile().nsProjection);
 			if( !ValidateOpenBoundaryConfig3D(shape,boundary,error) ||
 				gasDensityKGPerM3.size()!=shape.CellCount() ||
 				divergenceTargetPerS.size()!=shape.CellCount() ||

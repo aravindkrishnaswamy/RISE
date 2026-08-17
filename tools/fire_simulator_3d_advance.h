@@ -1171,8 +1171,10 @@
 			std::vector<double>& viscosity,
 			std::string* error=0,
 			const unsigned int workerCount=1u
-			)
+		)
 		{
+			FireProfileIncrement(FireProfile().transportCalls);
+			FireProfileScopedNs profileTimer(FireProfile().nsTransport);
 			std::vector<CellTransportEvaluation> evaluations;
 			if(!BuildOpenStageTransportEvaluations3D(shape,state,temperatureK,faceVelocity,
 				boundary,dns,thermochemistry,transport,evaluations,error,workerCount)) return false;
@@ -1204,6 +1206,8 @@
 			const unsigned int workerCount=1u
 		)
 		{
+			FireProfileIncrement(FireProfile().fluxPairCalls);
+			FireProfileScopedNs profileTimer(FireProfile().nsFluxPair);
 			result.boundaryCanSupply.fill(false);
 			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error) || state.size()!=shape.CellCount() ||
 				temperatureK.size()!=shape.CellCount() || diffusivity.size()!=shape.CellCount() ||
@@ -1461,6 +1465,8 @@
 			const std::array<std::vector<double>,3>* acceptedAlpha=0
 			)
 		{
+			FireProfileIncrement(FireProfile().fctCalls);
+			FireProfileScopedNs profileTimer(FireProfile().nsFCT);
 			if(!ValidatePeriodicShape3D(shape,error))return false;
 			const std::size_t count=shape.CellCount();
 			if(beginning.size()!=count || sourceDelta.size()!=count ||
@@ -1889,6 +1895,7 @@
 			};
 			result.picardResidualPerS.clear();
 			for( std::size_t iteration=0; iteration<kMaximumCoupledPicardIterations; ++iteration ) {
+				FireProfileIncrement(FireProfile().picardIters);
 				PeriodicMACProjection3DResult projection;
 				if( !ProjectPeriodicMACVelocity3D(shape,GasDensityFromConservative(state),
 					unprojectedMomentum,target,config.transport.deltaTimeS,
@@ -2064,6 +2071,7 @@
 			std::string* error=0
 		)
 		{
+			FireProfileScopedNs profileTimer(FireProfile().nsRHS);
 			const std::size_t expectedCellCount=shape.CellCount();
 			if(state.size()!=expectedCellCount || viscosity.size()!=expectedCellCount ||
 				sourceDelta.size()!=expectedCellCount || !std::isfinite(config.transport.deltaTimeS) ||
@@ -2233,6 +2241,7 @@
 			const bool scalarAcceptanceStage=true
 			)
 		{
+			FireProfileIncrement(FireProfile().stageCalls);
 			const std::size_t count=shape.CellCount();std::vector<double> temperature;
 			if(!InvertPeriodicTemperaturesWithinBounds(state,thermochemistry,
 				config.transport.ambientTemperatureK,config.transport.adiabaticTemperatureK,
@@ -2284,6 +2293,7 @@
 			bool lastActiveSetChanged=false;
 			result.picardResidualPerS.clear();
 			for(std::size_t iteration=0;iteration<kMaximumCoupledPicardIterations;++iteration){
+				FireProfileIncrement(FireProfile().picardIters);
 				// The deadband is history-valued: each nonlinear iterate must retain the
 				// classification published by the immediately preceding iterate.  Passing
 				// the stage-entry seed forever makes a threshold face alternate while the
