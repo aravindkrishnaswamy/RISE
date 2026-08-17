@@ -4093,6 +4093,40 @@ int main()
 	Check(Near(packet.sensibleEnergyDeltaJPerM3,
 		packet.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG(),2.0e-15),
 		"V4 packet heat is exactly the physical record LHV ledger");
+	const MethaneCellState headroomBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.05,2299.0);
+	MethaneReactionStep uncappedHeadroomStep=step;
+	uncappedHeadroomStep.deltaTimeS=0.01;
+	uncappedHeadroomStep.mixingTimeS=0.01;
+	uncappedHeadroomStep.sootOxidationEnabled=false;
+	MethaneReactionStep cappedHeadroomStep=uncappedHeadroomStep;
+	cappedHeadroomStep.maximumAcceptedTemperatureK=2300.0;
+	MethaneSourcePacket uncappedHeadroomPacket,cappedHeadroomPacket;
+	MethaneCellState uncappedHeadroomState,cappedHeadroomState;
+	const bool headroomPacketsOK=BuildMethaneReactionPacket(headroomBeginning,fuel,
+		uncappedHeadroomStep,uncappedHeadroomPacket,&error)&&
+		BuildMethaneReactionPacket(headroomBeginning,fuel,cappedHeadroomStep,
+			cappedHeadroomPacket,&error)&&
+		ApplySourcePacket(headroomBeginning,uncappedHeadroomPacket,thermochemistry,
+			uncappedHeadroomState,&error)&&
+		ApplySourcePacket(headroomBeginning,cappedHeadroomPacket,thermochemistry,
+			cappedHeadroomState,&error);
+	Check(headroomPacketsOK&&uncappedHeadroomState.temperatureK>2300.0&&
+		cappedHeadroomState.temperatureK<2300.0&&
+		cappedHeadroomPacket.reactedFuelKGPerM3<uncappedHeadroomPacket.reactedFuelKGPerM3&&
+		cappedHeadroomPacket.gasHeatReleaseWPerM3==
+			cappedHeadroomPacket.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG()/
+				cappedHeadroomStep.deltaTimeS&&
+		Near(cappedHeadroomPacket.sensibleEnergyDeltaJPerM3,
+			cappedHeadroomPacket.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG(),2.0e-15),
+		"r75 energy-headroom availability prevents boundary Zeno while preserving the packet ledger");
+	if(!headroomPacketsOK||uncappedHeadroomState.temperatureK<=2300.0||
+		cappedHeadroomState.temperatureK>=2300.0)
+		std::printf("r75 headroom diagnostic ok=%d uncapped_T=%.17g capped_T=%.17g "
+			"uncapped_extent=%.17g capped_extent=%.17g error=%s\n",headroomPacketsOK?1:0,
+			uncappedHeadroomState.temperatureK,cappedHeadroomState.temperatureK,
+			uncappedHeadroomPacket.reactedFuelKGPerM3,
+			cappedHeadroomPacket.reactedFuelKGPerM3,error.c_str());
 	ConservativeVector relaxationIncrement;
 	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 		relaxationIncrement[1+species]=packet.constituentDelta[species];

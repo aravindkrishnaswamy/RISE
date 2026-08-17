@@ -502,12 +502,14 @@ namespace RISE
 		{
 			double deltaTimeS;
 			double mixingTimeS;
+			double maximumAcceptedTemperatureK;
 			double pilotSetpointTemperatureK;
 			double pilotExpansionVolumeRatioCap;
 			bool primaryEligible;
 			bool sootOxidationEnabled;
 
 			MethaneReactionStep() : deltaTimeS(0.0), mixingTimeS(0.0),
+				maximumAcceptedTemperatureK(0.0),
 				pilotSetpointTemperatureK(0.0),
 				pilotExpansionVolumeRatioCap(0.0),
 				primaryEligible(false),
@@ -591,19 +593,28 @@ namespace RISE
 			if( !fuel.IsValid() || !ValidateCellState(beginning,error) ||
 				!std::isfinite(step.deltaTimeS) || step.deltaTimeS <= 0.0 ||
 				!std::isfinite(step.mixingTimeS) || step.mixingTimeS <= 0.0 ||
+				!std::isfinite(step.maximumAcceptedTemperatureK) ||
+				step.maximumAcceptedTemperatureK < 0.0 ||
 				!std::isfinite(step.pilotSetpointTemperatureK) ||
 				step.pilotSetpointTemperatureK < 0.0 ||
 				!std::isfinite(step.pilotExpansionVolumeRatioCap) ||
 				step.pilotExpansionVolumeRatioCap < 0.0 ) {
 				return Fail(error,"fire solver reaction step is outside its physical domain");
 			}
-			std::array<double,MethaneSpeciesCount> lowerEnthalpy,upperEnthalpy;
+			const double maximumAcceptedTemperatureK=step.maximumAcceptedTemperatureK>0.0?
+				step.maximumAcceptedTemperatureK:fuel.TemperatureMaxK();
+			if(maximumAcceptedTemperatureK<fuel.TemperatureMinK()||
+				maximumAcceptedTemperatureK>fuel.TemperatureMaxK())
+				return Fail(error,"fire solver reaction energy ceiling is outside thermochemistry");
+			const double strictMaximumAcceptedTemperatureK=std::nextafter(
+				maximumAcceptedTemperatureK,-std::numeric_limits<double>::infinity());
+			std::array<double,MethaneSpeciesCount> lowerEnthalpy,ceilingEnthalpy;
 			if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
 				lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
-				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
-					upperEnthalpy.data(),upperEnthalpy.size(),error)||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(strictMaximumAcceptedTemperatureK,
+					ceilingEnthalpy.data(),ceilingEnthalpy.size(),error)||
 				!AcceptedStateAdmissible(ToConservativeVector(beginning),lowerEnthalpy,
-					upperEnthalpy,fuel,error))return false;
+					ceilingEnthalpy,fuel,error))return false;
 			const double relaxation = -std::expm1(-step.deltaTimeS/step.mixingTimeS);
 			const double oxygen = std::max(0.0,beginning.constituent[MethaneO2]);
 			const double primaryCandidate = step.primaryEligible ? relaxation*std::min(
@@ -617,15 +628,54 @@ namespace RISE
 			const double oxygenDemand = fuel.StoichiometricOxygenKGPerKGFuel()*primaryCandidate+
 				fuel.SootOxygenKGPerKGCarbon()*sootCandidate;
 			const double theta = oxygenDemand > 0.0 ? std::min(1.0,oxygen/oxygenDemand) : 1.0;
-			const double reacted = theta*primaryCandidate;
-			const double oxidized = theta*sootCandidate;
-			packet.reactedFuelKGPerM3 = reacted;
-			packet.oxidizedCarbonKGPerM3 = oxidized;
-			packet.grossCarbonFormedKGPerM3 = reacted*fuel.SootYieldKGPerKGFuel();
+			const double fullReacted = theta*primaryCandidate;
+			const double fullOxidized = theta*sootCandidate;
+			MethanePilotProjectionMap pilotMap;
+			if(!ComputeMethanePilotProjectionMap(beginning,fuel,
+				step.pilotSetpointTemperatureK,step.pilotExpansionVolumeRatioCap,
+				pilotMap,error))return false;
 			const std::vector<double>& primary = fuel.PrimaryReactionDelta();
 			if( primary.size() != MethaneSpeciesCount ) {
 				return Fail(error,"fire solver methane reaction vector has the wrong dimension");
 			}
+			std::array<double,MethaneSpeciesCount> fullReactionDelta={};
+			for(std::size_t index=0;index<MethaneSpeciesCount;++index)
+				fullReactionDelta[index]=fullReacted*primary[index];
+			fullReactionDelta[MethaneCarbon]+=fullReacted*fuel.SootYieldKGPerKGFuel()-
+				fullOxidized;
+			fullReactionDelta[MethaneO2]-=fuel.SootOxygenKGPerKGCarbon()*fullOxidized;
+			fullReactionDelta[MethaneCO2]+=fuel.SootCO2KGPerKGCarbon()*fullOxidized;
+			const double fullReactionEnergy=fullReacted*fuel.LowerHeatingValueJPerKG()+
+				fullOxidized*fuel.SootHeatReleaseJPerKGCarbon();
+			auto upperEnergyRow=[&](const double extent){
+				double row=beginning.sensibleEnergyJPerM3+pilotMap.sensibleEnergyDeltaJPerM3+
+					extent*fullReactionEnergy;
+				for(std::size_t index=0;index<MethaneSpeciesCount;++index)
+					row-=(beginning.constituent[index]+extent*fullReactionDelta[index])*
+						ceilingEnthalpy[index];
+				return row;
+			};
+			double energyExtent=1.0;
+			const double baseRow=upperEnergyRow(0.0),fullRow=upperEnergyRow(1.0);
+			if(fullRow>=0.0&&fullRow>baseRow) {
+				if(baseRow>=0.0)return Fail(error,
+					"fire solver reaction energy headroom has no strict interior extent");
+				double lowerExtent=0.0,upperExtent=1.0;
+				for(unsigned int iteration=0;iteration<128u;++iteration){
+					const double midpoint=0.5*(lowerExtent+upperExtent);
+					if(midpoint==lowerExtent||midpoint==upperExtent)break;
+					if(upperEnergyRow(midpoint)<0.0)lowerExtent=midpoint;
+					else upperExtent=midpoint;
+				}
+				energyExtent=lowerExtent;
+				const double next=std::nextafter(energyExtent,1.0);
+				if(next<=1.0&&upperEnergyRow(next)<0.0)energyExtent=next;
+			}
+			const double reacted=energyExtent==1.0?fullReacted:energyExtent*fullReacted;
+			const double oxidized=energyExtent==1.0?fullOxidized:energyExtent*fullOxidized;
+			packet.reactedFuelKGPerM3 = reacted;
+			packet.oxidizedCarbonKGPerM3 = oxidized;
+			packet.grossCarbonFormedKGPerM3 = reacted*fuel.SootYieldKGPerKGFuel();
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				packet.constituentDelta[index] = reacted*primary[index];
 			}
@@ -635,10 +685,6 @@ namespace RISE
 				fuel.SootOxygenKGPerKGCarbon()*oxidized;
 			packet.constituentDelta[MethaneCO2] +=
 				fuel.SootCO2KGPerKGCarbon()*oxidized;
-			MethanePilotProjectionMap pilotMap;
-			if(!ComputeMethanePilotProjectionMap(beginning,fuel,
-				step.pilotSetpointTemperatureK,step.pilotExpansionVolumeRatioCap,
-				pilotMap,error))return false;
 			packet.sensibleEnergyDeltaJPerM3 =
 				reacted*fuel.LowerHeatingValueJPerKG()+
 				oxidized*fuel.SootHeatReleaseJPerKGCarbon()+

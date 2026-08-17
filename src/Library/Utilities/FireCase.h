@@ -52,6 +52,7 @@ namespace RISE
 			std::string pilotModelVersion;
 			std::string pilotMaskRule;
 			std::string limiterAcceptanceModelVersion;
+			std::string reactionEnergyHeadroomModelVersion;
 			double pilotSetpointTemperatureK=0.0,pilotExpansionVolumeRatioCap=0.0,
 				pilotDurationMultiplier=0.0,pilotAmbientTemperatureK=0.0,
 				pilotRampExponentPerFlowThrough=0.0;

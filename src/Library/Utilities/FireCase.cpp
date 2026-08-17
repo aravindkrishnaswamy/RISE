@@ -230,6 +230,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 	DerivedV1 d; d.resolutionTier=tierValue; d.peakEnvelope=peak;
 	d.maximumAcceptedTemperatureK=2300.0;
 	d.limiterAcceptanceModelVersion="two_class_face_infimum_v1";
+	d.reactionEnergyHeadroomModelVersion="strict_upper_energy_row_largest_fp64_v1";
 	d.pilotModelVersion="continuous_command_ramp_manifold_exact_acceptance_v6";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
 	d.pilotSetpointTemperatureK=900.0;
@@ -352,7 +353,9 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 		{"timestep_policy",Value::MapValue({{"advective_cfl",Value::Float(0.5)},
 			{"buoyant_coefficient",Value::Float(0.5)},{"diffusive_denominator",Value::Float(8.0)},
 			{"growth_limit",Value::Float(1.1)},
-			{"limiter_acceptance",Value::String(d.limiterAcceptanceModelVersion)}})},
+			{"limiter_acceptance",Value::String(d.limiterAcceptanceModelVersion)},
+			{"reaction_energy_headroom",Value::String(
+				d.reactionEnergyHeadroomModelVersion)}})},
 		{"window_kind",Value::String(d.windowKind)} });
 	const Value payload=Value::MapValue({{"authored",authored},{"derived",derived},
 		{"record_kind",Value::String("fire-case-v1")},{"referenced_record_ids",Value::ArrayValue(refs)},

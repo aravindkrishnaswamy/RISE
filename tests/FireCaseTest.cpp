@@ -78,6 +78,9 @@ int main()
 		"r70 pilot block pins the command ramp, exact-pair annulus, expansion cap, and duration");
 	Check(record.derived.limiterAcceptanceModelVersion=="two_class_face_infimum_v1",
 		"r59 case identity echoes the canonical two-class limiter acceptance rule");
+	Check(record.derived.reactionEnergyHeadroomModelVersion==
+		"strict_upper_energy_row_largest_fp64_v1",
+		"r75 case identity echoes the canonical reaction energy-headroom rule");
 	double pilotSetpoint=0.0;
 	Check(FireCase::EvaluatePilotSetpointTemperatureK(record.derived,true,0.0,
 		record.derived.flowThroughTimeS/20.0,pilotSetpoint,error)&&
@@ -228,6 +231,19 @@ int main()
 					{"payload",timestepPayload}}),timestepEnvelope,&error)&&
 				!FireCase::ValidateMethaneEnvelopeV1(timestepEnvelope,fuel,decoded,error),
 				"self-consistent limiter mutation changes identity but fails r59 semantic reproduction");
+			const RISECBOR64::Value changedHeadroom=Replace(*timestep,
+				"reaction_energy_headroom",RISECBOR64::Value::String("temperature_switch_rejected"));
+			const RISECBOR64::Value headroomDerived=Replace(*derived,"timestep_policy",
+				changedHeadroom);
+			const RISECBOR64::Value headroomPayload=Replace(*payload,"derived",headroomDerived);
+			RISECBOR64::Bytes headroomPayloadBytes,headroomEnvelope;
+			Check(RISECBOR64::Encode(headroomPayload,headroomPayloadBytes,&error)&&
+				RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+					{"case_record_id",RISECBOR64::Value::String(
+						RISECBOR64::SHA256Hex(headroomPayloadBytes))},{"payload",headroomPayload}}),
+					headroomEnvelope,&error)&&!FireCase::ValidateMethaneEnvelopeV1(
+						headroomEnvelope,fuel,decoded,error),
+				"r75 rejects a self-consistent reaction headroom model mutation");
 		}
 	}
 	std::printf("FireCaseTest: %d failures\n",failures);

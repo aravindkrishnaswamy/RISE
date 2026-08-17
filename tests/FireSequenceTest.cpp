@@ -824,6 +824,7 @@ namespace
 			maximumTransport,3,0.0,selectedStep,&error),
 			"capstone consumes the production r54 timestep selector");
 		MethaneReactionStep reaction; reaction.deltaTimeS=selectedStep.seconds;
+		reaction.maximumAcceptedTemperatureK=caseRecord.derived.maximumAcceptedTemperatureK;
 		Check(ComputeMixingTimeS(state,transportEvaluation,FireSimulationTransportRecord::OpenV1(),
 			shape.cellWidthM,rho,9.80665,false,reaction.mixingTimeS,&error),
 			"capstone derives mixing time instead of authoring a closure constant");
