@@ -1761,3 +1761,24 @@ it was already tried and refuted here.
   completion is delegated to the implementation agent by the r73
   charter (recorded in the continuation prompt), with owner-locked
   invariants listed there.
+
+- **r74 (2026-08-16):** physical ceiling ownership, from the first
+  completed r73 gravity-on tier-6 run. The run was otherwise healthy:
+  ignition at 0.310107861 s, reaction still active after the exact
+  2.10637286 s pilot endpoint, EOS residual bounded by
+  3.571783974×10⁻⁶, and physical timesteps throughout. After the pilot
+  was off, however, cell (26,24,1) reached 2319.18033 K (with intermediate
+  accepted values 2271.23895, 2293.45171, 2309.36046, and 2317.94324 K)
+  against the owner-locked T_max < 2300 K capstone gate. The harness had
+  supplied 2500 K to `PeriodicTransportConfig::adiabaticTemperatureK`:
+  that number is the opacity table's certified evaluation-domain maximum,
+  not methane's physical accepted-state ceiling. Ruling: case schema v1
+  gains the identity-bearing derived echo
+  `maximum_accepted_temperature_K=2300.0`; the existing conservative
+  energy-polytope upper row consumes it at every canonical admissibility
+  site, so over-energetic packets reject/reduce Δt before acceptance.
+  Rejected: clamping or projecting accepted state (ledger corruption), a
+  pilot/chemistry-only cap (wrong layer and incomplete), widening the
+  physical gate, or conflating a record's numerical evaluation domain with
+  a physical flame bound. This changes `case_record_id`; the opacity domain
+  and the 1.0×10⁻³ EOS gate are unchanged.

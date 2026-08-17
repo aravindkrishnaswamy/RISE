@@ -2239,6 +2239,28 @@ following; two conforming tools must derive identical bytes:
    case override**; the §3.8 integrated-χ_r gate compares against 0.20
    with the fuel record's measured spread (0.07–0.28, Hamins-class
    burners at this scale) as its tolerance context.
+7c. **Accepted physical-temperature ceiling (r74).** The methane
+   capstone's derived case echoes
+   **`maximum_accepted_temperature_K = 2300.0`** exactly. This is the
+   upper temperature used by the existing conservative energy-polytope
+   row, H_s ≤ Σ_j q_j h_{s,j}(T_max); it is distinct from the gas-opacity
+   record's 2500 K certified *evaluation domain*. Evidence: the r73
+   gravity-on tier-6 run was ledger-clean, ignited at 0.310107861 s,
+   remained self-sustaining after the 2.10637286 s pilot endpoint, and
+   held the EOS residual to 3.571783974×10⁻⁶, yet accepted a post-pilot
+   cell at (26,24,1) up to 2319.18033 K because the harness had supplied
+   the opacity-domain maximum, 2500 K, as the conservative adiabatic
+   bound. The ruling wires the physical gate into the polytope that
+   already governs accepted states. A source/transport step whose
+   low-order or corrected state crosses the row rejects and reduces
+   Δt through the existing fail-closed path; accepted bytes are never
+   clamped or overwritten. Rejected: post-step temperature clamping or
+   energy projection (breaks the ledger and hides the producer), a
+   pilot/chemistry-only temperature limiter (wrong ownership and misses
+   transport combinations), widening the 2300 K physical gate, and
+   treating the 2500 K opacity-domain certificate as a physical flame
+   limit. This derived echo is identity-bearing and therefore changes
+   `case_record_id`.
 8. **Thread count and reduction mode are NOT identity-bearing.** The
    requirement is on the output: the solver must produce **bit-identical
    sequences regardless of effective thread count**, via fixed-order

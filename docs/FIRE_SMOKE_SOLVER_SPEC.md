@@ -277,7 +277,15 @@ error and must be corrected.
      (production's temperature ceiling is the physicality bound). The
      accepted-state ≤ 900 K check lives only in the quiescent unit
      fixture. A gate's value must derive from the function the gated
-     object serves. Requiring the coupled step to reproduce the
+     object serves. **Accepted physical-temperature ceiling (r74):** the
+     case-derived `maximum_accepted_temperature_K` (2300.0 K for the
+     methane capstone) is the upper endpoint supplied to the canonical
+     accepted-state energy row. It is not the opacity record's 2500 K
+     certified evaluation-domain maximum. Low-order, corrected, verification,
+     and next-step beginning states all use that same row and reject through
+     the existing timestep path if it is crossed; no temperature clamp,
+     state overwrite, chemistry-only limiter, or post-acceptance energy
+     projection is permitted. Requiring the coupled step to reproduce the
      isolated-map endpoint to the r60 envelope is explicitly NOT a
      requirement (r66): coupling-order deviations are genuine, bounded,
      non-accumulating physics of a projection map in company.
