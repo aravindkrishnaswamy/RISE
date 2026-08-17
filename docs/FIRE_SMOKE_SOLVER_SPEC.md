@@ -289,6 +289,18 @@ error and must be corrected.
      isolated-map endpoint to the r60 envelope is explicitly NOT a
      requirement (r66): coupling-order deviations are genuine, bounded,
      non-accumulating physics of a projection map in company.
+     **Reaction energy-headroom availability (r75):** after the existing
+     shared-O₂ allocation, primary and soot-oxidation extents receive one
+     additional common factor λ_E: the greatest representable value in
+     [0,1] for which the frozen post-reaction/pilot packet lies strictly
+     inside the case-derived upper energy row. All packet deltas,
+     heat-release rates, and ledgers derive from the reduced extents;
+     unaccepted reactants remain in conservative state. The full candidate
+     remains byte-identical wherever it fits or points inward. This is
+     source availability, not accepted-state clamping. Repeated timestep
+     reduction at an outward-pointing energy boundary, a minimum-step
+     bypass, a compensating sink, and a hard temperature switch are
+     forbidden.
      Stage-specific divergence rules, separate finite-map commits,
      tableau-preimage drain emission, parallel no-pilot shadow trajectories,
      crossflow suppression during the hold, and frozen drain-flux channels

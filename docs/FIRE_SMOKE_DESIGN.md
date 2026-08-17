@@ -2261,6 +2261,31 @@ following; two conforming tools must derive identical bytes:
    treating the 2500 K opacity-domain certificate as a physical flame
    limit. This derived echo is identity-bearing and therefore changes
    `case_record_id`.
+7d. **Reaction energy-headroom availability (r75).** A frozen reaction
+   packet is admissible only to the largest representable common extent
+   λ_E ∈ [0,1] for which its post-packet state remains strictly inside
+   the case's upper energy row at `maximum_accepted_temperature_K`.
+   Primary and soot-oxidation candidates first share O₂ through the
+   existing common θ, then both are multiplied by the same λ_E; every
+   constituent delta, heat-release term, and diagnostic ledger line is
+   recomputed from that accepted extent. Where the full candidate points
+   inward or fits, λ_E = 1 bit-exactly. Where it points outward, λ_E is
+   the greatest binary64 value whose directly evaluated row is negative;
+   unreacted inventory remains stored for later transport or cooling.
+   Evidence: the first r74 replay reached cell (26,24,1) at 2299.98262 K
+   and reduced Δt from 9.38220002×10⁻⁵ s through 1.46596875×10⁻⁶ s
+   while the reaction source remained outward at approximately 3.07 MW/m³;
+   the next accepted state was 2299.99350 K. This is boundary Zeno:
+   reducing Δt changes the increment but not the cumulative source
+   trajectory, so the r74 rejection gate alone cannot advance past the
+   physical polytope. The ruling makes the energy row an availability
+   constraint, like finite fuel and O₂, rather than adding a sink or
+   repairing state. Rejected: timestep reduction alone or a minimum-Δt
+   escape (non-progress/fail-open), clamping temperature or H_s (ledger
+   violation), widening 2300 K, invented compensating cooling, and
+   disabling all reaction above a tuned temperature (a discontinuous,
+   composition-blind rathole). The model-version echo is identity-bearing
+   and changes `case_record_id`.
 8. **Thread count and reduction mode are NOT identity-bearing.** The
    requirement is on the output: the solver must produce **bit-identical
    sequences regardless of effective thread count**, via fixed-order

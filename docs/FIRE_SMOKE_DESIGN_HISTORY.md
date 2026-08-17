@@ -1782,3 +1782,24 @@ it was already tried and refuted here.
   physical gate, or conflating a record's numerical evaluation domain with
   a physical flame bound. This changes `case_record_id`; the opacity domain
   and the 1.0×10⁻³ EOS gate are unchanged.
+
+- **r75 (2026-08-16):** reaction energy-headroom availability, from the
+  r74 confirmation replay. The r74 gate first worked exactly: it rejected
+  a 2.25567544 ms candidate above 2300 K and accepted the rebuilt
+  1.12783772 ms packet at 2298.19213 K without clamping. The next cell
+  history then proved rejection alone incomplete: at cell (26,24,1),
+  accepted T advanced 2299.98262 → 2299.99350 K while trial Δt collapsed
+  from 9.38220002×10⁻⁵ through 1.46596875×10⁻⁶ s and the reaction
+  source remained outward at about 3.07 MW/m³. This is a cumulative
+  boundary Zeno, not fp noise and not a reason to weaken the gate. Ruling:
+  the upper energy row joins fuel, oxygen, and soot as a source-availability
+  constraint. After shared-O₂ allocation, primary and soot extents take
+  the same largest-representable factor λ_E whose directly evaluated frozen
+  post-packet row is strictly negative; all species/energy/rate ledgers are
+  rebuilt from that extent and the unreacted inventory remains stored. Full
+  candidates that fit or point inward remain bit-identical. Rejected:
+  timestep reduction or minimum-Δt bypass (cannot progress honestly), state
+  clamping/projection (ledger corruption), widening 2300 K, invented cooling,
+  and a tuned temperature cutoff (discontinuous, composition-blind rathole).
+  The model-version echo changes `case_record_id`; r60, the EOS gate, and
+  the opacity domain are unchanged.
