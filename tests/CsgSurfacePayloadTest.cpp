@@ -90,10 +90,31 @@
 //  P2-d's vTangent/bitangentSign promotion half is exercised by
 //  inspection of CSGObject.cpp rather than a dedicated test.
 //
+//
+//  WHY THIS FILE USES A FAILURE TALLY AND NOT `assert` (2026-08-17).
+//  Same NDEBUG hazard as CSGObjectIdentityTest.cpp: build/cmake/rise-tests/
+//  CMakeLists.txt never overrides CMAKE_CXX_FLAGS_RELEASE, MSVC's Release
+//  default carries `/DNDEBUG`, and run_all_tests.ps1 defaults to
+//  `-Config Release` -- so on that path every `assert` in this file used
+//  to compile to nothing and its 150+ checks verified NOTHING.
+//
+//  Worse: this file's setup calls `csg->AssignObjects(...)` -- a
+//  SIDE-EFFECTING call that actually builds the CSG composite's operand
+//  assignment -- and roughly fifteen of those calls sat INSIDE
+//  `assert(...)`.  Under NDEBUG the composite was never assigned and
+//  every check that followed ran against an unassigned CSG object instead
+//  of failing loudly.  Every such call is now made on its own line, with
+//  only its RESULT checked, so the setup always runs regardless of build
+//  configuration.
+//
+//  Style follows CSGObjectIdentityTest.cpp / CstSourceInstanceTest: a
+//  counted Check(), a printed tally, and a non-zero exit on any failure --
+//  exactly what run_all_tests.{sh,ps1} judge.
+//
 //////////////////////////////////////////////////////////////////////
 
-#include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 
 #include "../src/Library/Functions/ConstantFunctions.h"
@@ -110,6 +131,9 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
 
 namespace
 {
@@ -173,46 +197,46 @@ void TestIntersection_AEntersFirst_EntryIsWhollyB()
 	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
 
 	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-	assert( csg->AssignObjects( outer, inner ) );   // pObjectA = outer, pObjectB = inner
+	const bool assigned = csg->AssignObjects( outer, inner );   // pObjectA = outer, pObjectB = inner
+	Check( assigned, "Test1: composite takes outer(A)/inner(B) operands" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test1: (control) ray hits the composite at all" );
 
 	// Reference: intersect the SAME inner-box object directly, standalone.
 	RayIntersection refInner( r, nullRasterizerState );
 	Hit( inner, r, refInner );
-	assert( refInner.geometric.bHit );
+	Check( refInner.geometric.bHit, "Test1: (control) ray hits standalone inner box" );
 
 	// Reference: intersect the outer box too, to build a negative check.
 	RayIntersection refOuter( r, nullRasterizerState );
 	Hit( outer, r, refOuter );
-	assert( refOuter.geometric.bHit );
+	Check( refOuter.geometric.bHit, "Test1: (control) ray hits standalone outer box" );
 
 	// Sanity: the two boxes really do produce distinct UV / object-space
 	// points at this ray (otherwise the test wouldn't be discriminating).
-	assert( !Point2Close( refInner.geometric.ptCoord, refOuter.geometric.ptCoord ) );
-	assert( !PointClose( refInner.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refInner.geometric.ptCoord, refOuter.geometric.ptCoord ), "Test1: (sanity) inner/outer ptCoord are distinct" );
+	Check( !PointClose( refInner.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ), "Test1: (sanity) inner/outer ptObjIntersec are distinct" );
 
 	// The composite entry must be wholly B's (inner's) surface.
-	assert( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ) );
-	assert( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ) );
-	assert( ri.geometric.derivatives.valid == refInner.geometric.derivatives.valid );
-	assert( ri.geometric.bHasVertexColor == refInner.geometric.bHasVertexColor );
-	assert( ri.geometric.bHasTangent == refInner.geometric.bHasTangent );
+	Check( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ), "Test1: composite vNormal matches inner's" );
+	Check( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ), "Test1: composite vGeomNormal matches inner's" );
+	Check( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ), "Test1: composite ptCoord matches inner's" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ), "Test1: composite ptObjIntersec matches inner's" );
+	Check( ri.geometric.derivatives.valid == refInner.geometric.derivatives.valid, "Test1: composite derivatives.valid matches inner's" );
+	Check( ri.geometric.bHasVertexColor == refInner.geometric.bHasVertexColor, "Test1: composite bHasVertexColor matches inner's" );
+	Check( ri.geometric.bHasTangent == refInner.geometric.bHasTangent, "Test1: composite bHasTangent matches inner's" );
 
 	// Negative check: NOT A's (outer's) UV / object-space point -- this is
 	// exactly what the bug produced (B's normal paired with A's payload).
-	assert( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ) );
+	Check( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ), "Test1: composite ptCoord is NOT outer's (the P1-a bug)" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ), "Test1: composite ptObjIntersec is NOT outer's (the P1-a bug)" );
 
 	safe_release( csg );
 	safe_release( outer );
 	safe_release( inner );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -246,37 +270,37 @@ void TestIntersection_BEntersFirst_EntryIsWhollyA()
 	// but is now the FIRST-listed operand), pObjectB = outer.  Outer still
 	// enters first physically (its near face is farther out), so this
 	// exercises the "B enters first" branch instead of "A enters first".
-	assert( csg->AssignObjects( inner, outer ) );
+	const bool assigned = csg->AssignObjects( inner, outer );
+	Check( assigned, "Test2: composite takes inner(A)/outer(B) operands (roles swapped)" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test2: (control) ray hits the composite at all" );
 
 	RayIntersection refInner( r, nullRasterizerState );
 	Hit( inner, r, refInner );
-	assert( refInner.geometric.bHit );
+	Check( refInner.geometric.bHit, "Test2: (control) ray hits standalone inner box" );
 
 	RayIntersection refOuter( r, nullRasterizerState );
 	Hit( outer, r, refOuter );
-	assert( refOuter.geometric.bHit );
+	Check( refOuter.geometric.bHit, "Test2: (control) ray hits standalone outer box" );
 
 	// The composite entry must still be wholly the INNER box's surface
 	// (it's the operand that enters second / is nested), regardless of
 	// which CSG operand slot (A or B) it was assigned to.
-	assert( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ) );
-	assert( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ) );
-	assert( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ) );
+	Check( VecClose( ri.geometric.vNormal, refInner.geometric.vNormal ), "Test2: composite vNormal matches inner's" );
+	Check( VecClose( ri.geometric.vGeomNormal, refInner.geometric.vGeomNormal ), "Test2: composite vGeomNormal matches inner's" );
+	Check( Point2Close( ri.geometric.ptCoord, refInner.geometric.ptCoord ), "Test2: composite ptCoord matches inner's" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refInner.geometric.ptObjIntersec ), "Test2: composite ptObjIntersec matches inner's" );
 
 	// Negative check: NOT the outer box's payload.
-	assert( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ) );
+	Check( !Point2Close( ri.geometric.ptCoord, refOuter.geometric.ptCoord ), "Test2: composite ptCoord is NOT outer's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refOuter.geometric.ptObjIntersec ), "Test2: composite ptObjIntersec is NOT outer's" );
 
 	safe_release( csg );
 	safe_release( outer );
 	safe_release( inner );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -309,40 +333,40 @@ void TestSubtraction_VisibleBoundaryIsSubtractedOperand()
 	Ray r( Point3( 0, 0, -1.5 ), Vector3( 0, 0, 1 ) );
 
 	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test3: composite takes A/B operands" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test3: (control) ray hits the composite at all" );
 
 	// Reference: standalone B at the same ray (unflipped).
 	RayIntersection refB( r, nullRasterizerState );
 	Hit( oB, r, refB );
-	assert( refB.geometric.bHit );
+	Check( refB.geometric.bHit, "Test3: (control) ray hits standalone B" );
 
 	RayIntersection refA( r, nullRasterizerState );
 	Hit( oA, r, refA );
-	assert( refA.geometric.bHit );
+	Check( refA.geometric.bHit, "Test3: (control) ray hits standalone A" );
 
 	// Sanity: A and B produce distinct UV / object-space points here.
-	assert( !PointClose( refA.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ) );
+	Check( !PointClose( refA.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ), "Test3: (sanity) A/B ptObjIntersec are distinct" );
 
 	// The composite boundary is B's surface, normal flipped (we're
 	// leaving A's solid into the void B carved out of it).
-	assert( VecClose( ri.geometric.vNormal, Vector3( -refB.geometric.vNormal.x, -refB.geometric.vNormal.y, -refB.geometric.vNormal.z ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( -refB.geometric.vGeomNormal.x, -refB.geometric.vGeomNormal.y, -refB.geometric.vGeomNormal.z ) ) );
+	Check( VecClose( ri.geometric.vNormal, Vector3( -refB.geometric.vNormal.x, -refB.geometric.vNormal.y, -refB.geometric.vNormal.z ) ), "Test3: composite vNormal is B's normal, flipped" );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( -refB.geometric.vGeomNormal.x, -refB.geometric.vGeomNormal.y, -refB.geometric.vGeomNormal.z ) ), "Test3: composite vGeomNormal is B's geom normal, flipped" );
 	// UV and object-space point are NOT sign-flipped -- they're B's own.
-	assert( Point2Close( ri.geometric.ptCoord, refB.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refB.geometric.ptCoord ), "Test3: composite ptCoord matches B's (unflipped)" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refB.geometric.ptObjIntersec ), "Test3: composite ptObjIntersec matches B's (unflipped)" );
 
 	// Negative check: not A's payload.
-	assert( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ) );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test3: composite ptObjIntersec is NOT A's" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -377,35 +401,36 @@ void TestSubtraction_ExitDesignatedBoundary_ProbedPayloadMatchesRealFace()
 	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
 
 	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test4 (P2-e): composite takes A/B operands" );
 	csg->FinalizeTransformations();
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test4 (P2-e): (control) ray hits the composite at all" );
 
 	RayIntersection refA( r, nullRasterizerState );
 	Hit( oA, r, refA );
-	assert( refA.geometric.bHit );
+	Check( refA.geometric.bHit, "Test4 (P2-e): (control) ray hits standalone A" );
 
 	// B's ENTRY-face payload (the pre-P2-e "honestly wrong face" answer)
 	// -- used below only as a NEGATIVE reference.
 	RayIntersection refBEntry( r, nullRasterizerState );
 	Hit( oB, r, refBEntry );
-	assert( refBEntry.geometric.bHit );
+	Check( refBEntry.geometric.bHit, "Test4 (P2-e): (control) ray hits standalone B" );
 
 	// Sanity: confirm we actually hit the exit-designated branch, i.e.
 	// the composite range lands on B's EXIT (range2), not B's entry
 	// (range) nor A's entry.
-	assert( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ) );
-	assert( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ) );
-	assert( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ) );
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test4 (P2-e): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test4 (P2-e): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test4 (P2-e): (sanity) composite range != A's entry range" );
 
 	// Normal is B's EXIT normal, flipped -- untouched by the P2-e probe
 	// (the branch's own normal fields are authoritative; the probe only
 	// ever supplies the AUXILIARY payload, never range/vNormal/vGeomNormal).
-	assert( VecClose( ri.geometric.vNormal, Vector3( -refBEntry.geometric.vNormal2.x, -refBEntry.geometric.vNormal2.y, -refBEntry.geometric.vNormal2.z ) ) );
-	assert( VecClose( ri.geometric.vGeomNormal, Vector3( -refBEntry.geometric.vGeomNormal2.x, -refBEntry.geometric.vGeomNormal2.y, -refBEntry.geometric.vGeomNormal2.z ) ) );
+	Check( VecClose( ri.geometric.vNormal, Vector3( -refBEntry.geometric.vNormal2.x, -refBEntry.geometric.vNormal2.y, -refBEntry.geometric.vNormal2.z ) ), "Test4 (P2-e): composite vNormal is B's exit normal, flipped" );
+	Check( VecClose( ri.geometric.vGeomNormal, Vector3( -refBEntry.geometric.vGeomNormal2.x, -refBEntry.geometric.vGeomNormal2.y, -refBEntry.geometric.vGeomNormal2.z ) ), "Test4 (P2-e): composite vGeomNormal is B's exit geom normal, flipped" );
 
 	// P2-e reference: probe B's EXIT face DIRECTLY from the outside --
 	// an INDEPENDENT ray starting just past world z=-2 (B's +Z face)
@@ -415,29 +440,28 @@ void TestSubtraction_ExitDesignatedBoundary_ProbedPayloadMatchesRealFace()
 	Ray probeRef( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refBExit( probeRef, nullRasterizerState );
 	Hit( oB, probeRef, refBExit );
-	assert( refBExit.geometric.bHit );
+	Check( refBExit.geometric.bHit, "Test4 (P2-e): (control) direct probe hits B's exit face" );
 
 	// Sanity: the probe reference actually lands on a DIFFERENT UV than
 	// B's entry face (box UV mapping is per-face) -- otherwise this
 	// test isn't discriminating between "entry payload" and "real exit
 	// payload".
-	assert( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ) );
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test4 (P2-e): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
 
 	// The composite's payload must be the REAL exit-face data (P2-e),
 	// not B's entry-face data (the pre-fix "honestly wrong face").
-	assert( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test4 (P2-e): composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test4 (P2-e): composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test4 (P2-e): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test4 (P2-e): composite ptObjIntersec is NOT B's entry-face data" );
 
 	// Never A's payload either.
-	assert( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ) );
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test4 (P2-e): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test4 (P2-e): composite ptObjIntersec is NOT A's" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -483,19 +507,20 @@ void TestIntersection_CrossOperandMaterialBindingFollowsOwner()
 		inner->FinalizeTransformations();
 
 		CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-		assert( csg->AssignObjects( outer, inner ) );   // A = outer/matA, B = inner/matB
+		const bool assigned = csg->AssignObjects( outer, inner );   // A = outer/matA, B = inner/matB
+		Check( assigned, "Test5 case1: composite takes outer(A)/inner(B) operands" );
 
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test5 case1: (control) ray hits the composite at all" );
 
 		// Composite entry is wholly B's (inner's) surface -- material
 		// must be B's (matB), NOT A's (matA, the operand `ri` started
 		// life as a whole-record copy of -- the exact P1-a bug).
-		assert( ri.pMaterial == matB );
-		assert( ri.pMaterial != matA );
+		Check( ri.pMaterial == matB, "Test5 case1: composite ri.pMaterial == matB (owning operand)" );
+		Check( ri.pMaterial != matA, "Test5 case1: composite ri.pMaterial != matA (the P1-a bug)" );
 
 		safe_release( csg );
 		safe_release( outer );
@@ -522,18 +547,19 @@ void TestIntersection_CrossOperandMaterialBindingFollowsOwner()
 
 		CSGObject* csg = new CSGObject( CSG_INTERSECTION );
 		// Roles swapped: pObjectA = inner/matB, pObjectB = outer/matA.
-		assert( csg->AssignObjects( inner, outer ) );
+		const bool assigned = csg->AssignObjects( inner, outer );
+		Check( assigned, "Test5 case2: composite takes inner(A)/outer(B) operands (roles swapped)" );
 
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test5 case2: (control) ray hits the composite at all" );
 
 		// Composite entry is still wholly the inner box's surface --
 		// material must be matB regardless of which CSG slot it's in.
-		assert( ri.pMaterial == matB );
-		assert( ri.pMaterial != matA );
+		Check( ri.pMaterial == matB, "Test5 case2: composite ri.pMaterial == matB regardless of CSG slot" );
+		Check( ri.pMaterial != matA, "Test5 case2: composite ri.pMaterial != matA" );
 
 		safe_release( csg );
 		safe_release( outer );
@@ -544,7 +570,6 @@ void TestIntersection_CrossOperandMaterialBindingFollowsOwner()
 	safe_release( matB );
 	safe_release( painterA );
 	safe_release( painterB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -576,7 +601,7 @@ void TestSubtraction_DisjointBothSides_CompositeIsAAlone()
 
 	RayIntersection refA( r, nullRasterizerState );
 	Hit( oA, r, refA );
-	assert( refA.geometric.bHit );
+	Check( refA.geometric.bHit, "Test6: (control) ray hits standalone A" );
 
 	// -- (i) B wholly BEFORE A: half-extent 0.5 box spanning z in
 	//    [-5.5,-4.5], well before A's entry at z=-2. --
@@ -588,18 +613,19 @@ void TestSubtraction_DisjointBothSides_CompositeIsAAlone()
 		oB->FinalizeTransformations();
 
 		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-		assert( csg->AssignObjects( oA, oB ) );
+		const bool assigned = csg->AssignObjects( oA, oB );
+		Check( assigned, "Test6 (i) B-before-A: composite takes A/B operands" );
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test6 (i) B-before-A: (control) ray hits the composite at all" );
 
-		assert( Close( ri.geometric.range, refA.geometric.range ) );
-		assert( Close( ri.geometric.range2, refA.geometric.range2 ) );
-		assert( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ) );
-		assert( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ) );
-		assert( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ) );
+		Check( Close( ri.geometric.range, refA.geometric.range ), "Test6 (i) B-before-A: composite range == A's range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range2 ), "Test6 (i) B-before-A: composite range2 == A's range2" );
+		Check( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ), "Test6 (i) B-before-A: composite vNormal == A's vNormal" );
+		Check( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ), "Test6 (i) B-before-A: composite vGeomNormal == A's vGeomNormal" );
+		Check( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test6 (i) B-before-A: composite ptCoord == A's ptCoord" );
 
 		safe_release( csg );
 		safe_release( oB );
@@ -615,25 +641,25 @@ void TestSubtraction_DisjointBothSides_CompositeIsAAlone()
 		oB->FinalizeTransformations();
 
 		CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
-		assert( csg->AssignObjects( oA, oB ) );
+		const bool assigned = csg->AssignObjects( oA, oB );
+		Check( assigned, "Test6 (ii) B-after-A: composite takes A/B operands" );
 		csg->FinalizeTransformations();
 
 		RayIntersection ri( r, nullRasterizerState );
 		Hit( csg, r, ri );
-		assert( ri.geometric.bHit );
+		Check( ri.geometric.bHit, "Test6 (ii) B-after-A: (control) ray hits the composite at all" );
 
-		assert( Close( ri.geometric.range, refA.geometric.range ) );
-		assert( Close( ri.geometric.range2, refA.geometric.range2 ) );
-		assert( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ) );
-		assert( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ) );
-		assert( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ) );
+		Check( Close( ri.geometric.range, refA.geometric.range ), "Test6 (ii) B-after-A: composite range == A's range" );
+		Check( Close( ri.geometric.range2, refA.geometric.range2 ), "Test6 (ii) B-after-A: composite range2 == A's range2" );
+		Check( VecClose( ri.geometric.vNormal, refA.geometric.vNormal ), "Test6 (ii) B-after-A: composite vNormal == A's vNormal" );
+		Check( VecClose( ri.geometric.vGeomNormal, refA.geometric.vGeomNormal ), "Test6 (ii) B-after-A: composite vGeomNormal == A's vGeomNormal" );
+		Check( Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test6 (ii) B-after-A: composite ptCoord == A's ptCoord" );
 
 		safe_release( csg );
 		safe_release( oB );
 	}
 
 	safe_release( oA );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -672,7 +698,8 @@ void TestIntersectionOnly_ScaledOperandNoShadowLeak()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_INTERSECTION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test7 (P1-c): composite takes A/B operands" );
 	csg->FinalizeTransformations();
 
 	Ray r( Point3( 0, 0, -100 ), Vector3( 0, 0, 1 ) );
@@ -682,18 +709,17 @@ void TestIntersectionOnly_ScaledOperandNoShadowLeak()
 	// says the composite IS hit, well within dHowFar (entry ~98).
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.range < dHowFar );
-	assert( ri.geometric.range > 90.0 && ri.geometric.range < 100.0 );
+	Check( ri.geometric.bHit, "Test7 (P1-c): (control) full IntersectRay hits the composite" );
+	Check( ri.geometric.range < dHowFar, "Test7 (P1-c): (control) hit range is within dHowFar" );
+	Check( ri.geometric.range > 90.0 && ri.geometric.range < 100.0, "Test7 (P1-c): (control) hit range is ~98 (B's span)" );
 
 	// IntersectRay_IntersectionOnly must agree.
 	const bool occluded = csg->IntersectRay_IntersectionOnly( r, dHowFar, true, true );
-	assert( occluded );
+	Check( occluded, "Test7 (P1-c): MONEY ASSERTION -- IntersectionOnly agrees, no shadow leak from scaled operand" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 namespace
@@ -761,7 +787,8 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 	b->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( a, b ) );
+	const bool assigned = csg->AssignObjects( a, b );
+	Check( assigned, "Test8 (P2-d): composite takes mesh(A)/far-sphere(B) operands" );
 	const Scalar angle = 0.6981317007977318;   // ~40 degrees, radians
 	csg->RotateObjectZAxis( angle );
 	csg->FinalizeTransformations();
@@ -779,8 +806,8 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.derivatives.valid );
+	Check( ri.geometric.bHit, "Test8 (P2-d): (control) ray hits the rotated CSG" );
+	Check( ri.geometric.derivatives.valid, "Test8 (P2-d): (control) composite derivatives.valid" );
 
 	// Reference: a STANDALONE Object wrapping an independently-built
 	// (but geometrically identical) copy of the same triangle, with the
@@ -793,24 +820,23 @@ void TestUnion_TransformedCsgDerivativesMatchStandaloneRotated()
 
 	RayIntersection refRi( r, nullRasterizerState );
 	Hit( ref, r, refRi );
-	assert( refRi.geometric.bHit );
-	assert( refRi.geometric.derivatives.valid );
+	Check( refRi.geometric.bHit, "Test8 (P2-d): (control) ray hits the standalone rotated reference" );
+	Check( refRi.geometric.derivatives.valid, "Test8 (P2-d): (control) reference derivatives.valid" );
 
 	// Sanity: dpdu is actually non-degenerate, so this comparison is
 	// discriminating (a zero vector would trivially "match" whether or
 	// not promotion happened).
-	assert( Vector3Ops::SquaredModulus( refRi.geometric.derivatives.dpdu ) > 1e-6 );
+	Check( Vector3Ops::SquaredModulus( refRi.geometric.derivatives.dpdu ) > 1e-6, "Test8 (P2-d): (sanity) reference dpdu is non-degenerate" );
 
-	assert( VecClose( ri.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdu, 1e-4 ) );
-	assert( VecClose( ri.geometric.derivatives.dpdv, refRi.geometric.derivatives.dpdv, 1e-4 ) );
-	assert( VecClose( ri.geometric.derivatives.dndu, refRi.geometric.derivatives.dndu, 1e-4 ) );
-	assert( VecClose( ri.geometric.derivatives.dndv, refRi.geometric.derivatives.dndv, 1e-4 ) );
+	Check( VecClose( ri.geometric.derivatives.dpdu, refRi.geometric.derivatives.dpdu, 1e-4 ), "Test8 (P2-d): composite dpdu matches standalone rotated reference" );
+	Check( VecClose( ri.geometric.derivatives.dpdv, refRi.geometric.derivatives.dpdv, 1e-4 ), "Test8 (P2-d): composite dpdv matches standalone rotated reference" );
+	Check( VecClose( ri.geometric.derivatives.dndu, refRi.geometric.derivatives.dndu, 1e-4 ), "Test8 (P2-d): composite dndu matches standalone rotated reference" );
+	Check( VecClose( ri.geometric.derivatives.dndv, refRi.geometric.derivatives.dndv, 1e-4 ), "Test8 (P2-d): composite dndv matches standalone rotated reference" );
 
 	safe_release( csg );
 	safe_release( a );
 	safe_release( b );
 	safe_release( ref );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -846,7 +872,8 @@ void TestIntersectionOnly_NonUniformScale_DirectionTrueFactor()
 	oB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( oA, oB ) );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test9 (P1 item1): composite takes A(box)/B(far sphere) operands" );
 	// Non-uniform stretch on the CSG object itself: tiny in X, huge in Z.
 	// World span of A (local half-extent 2, box[-2,2]) becomes
 	// x in [-0.02,0.02], y in [-2,2], z in [-200,200].
@@ -862,19 +889,18 @@ void TestIntersectionOnly_NonUniformScale_DirectionTrueFactor()
 	// puts the entry at world z=-200, i.e. range ~100 from z=-300.
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.range > 95.0 && ri.geometric.range < 105.0 );
+	Check( ri.geometric.bHit, "Test9 (P1 item1): (control) full IntersectRay hits the composite" );
+	Check( ri.geometric.range > 95.0 && ri.geometric.range < 105.0, "Test9 (P1 item1): (control) hit range is ~100 (world z=-200 entry)" );
 
 	// A "light" at world distance 90 is CLOSER than the occluder's entry
 	// (~100) -- the occluder must NOT report as blocking it.
 	const Scalar dHowFarTest = 90.0;
 	const bool occluded = csg->IntersectRay_IntersectionOnly( r, dHowFarTest, true, true );
-	assert( !occluded );
+	Check( !occluded, "Test9 (P1 item1): MONEY ASSERTION -- not falsely occluded under non-uniform scale w/ direction-true factor" );
 
 	safe_release( csg );
 	safe_release( oA );
 	safe_release( oB );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -918,20 +944,21 @@ void TestUnion_CsgHonoursShadingTangentFromGeometry()
 	farB->FinalizeTransformations();
 
 	CSGObject* csg = new CSGObject( CSG_UNION );
-	assert( csg->AssignObjects( aOperand, farB ) );
+	const bool assigned = csg->AssignObjects( aOperand, farB );
+	Check( assigned, "Test10 (P2 item2): composite takes aOperand(A)/farB(B) operands" );
 	csg->FinalizeTransformations();
 
 	Ray r( Point3( 0.3, 0.2, 5.0 ), Vector3( 0, 0, -1 ) );
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( csg, r, ri );
-	assert( ri.geometric.bHit );
-	assert( ri.geometric.bShadingTangentFromGeometry );
+	Check( ri.geometric.bHit, "Test10 (P2 item2): (control) ray hits the composite" );
+	Check( ri.geometric.bShadingTangentFromGeometry, "Test10 (P2 item2): (control) composite bShadingTangentFromGeometry set" );
 
 	RayIntersection refRi( r, nullRasterizerState );
 	Hit( standalone, r, refRi );
-	assert( refRi.geometric.bHit );
-	assert( refRi.geometric.bShadingTangentFromGeometry );
+	Check( refRi.geometric.bHit, "Test10 (P2 item2): (control) ray hits the standalone reference" );
+	Check( refRi.geometric.bShadingTangentFromGeometry, "Test10 (P2 item2): (control) reference bShadingTangentFromGeometry set" );
 
 	// Sanity: the flag really does route to the WORLD-X-PROJECTED branch
 	// (CreateFromWU), not the default CreateFromW axis -- for an exact +Z
@@ -939,18 +966,17 @@ void TestUnion_CsgHonoursShadingTangentFromGeometry()
 	// the geometry-aware branch picks U=(+1,0,0) (world-X projected into
 	// the normal plane, which for n=(0,0,1) is just world-X itself).  If
 	// these coincided the test wouldn't discriminate.
-	assert( VecClose( refRi.geometric.onb.u(), Vector3( 1, 0, 0 ) ) );
-	assert( !VecClose( refRi.geometric.onb.u(), Vector3( -1, 0, 0 ) ) );
+	Check( VecClose( refRi.geometric.onb.u(), Vector3( 1, 0, 0 ) ), "Test10 (P2 item2): (sanity) reference onb.u() is world-X-projected" );
+	Check( !VecClose( refRi.geometric.onb.u(), Vector3( -1, 0, 0 ) ), "Test10 (P2 item2): (sanity) reference onb.u() is NOT the CreateFromW default" );
 
-	assert( VecClose( ri.geometric.onb.u(), refRi.geometric.onb.u() ) );
-	assert( VecClose( ri.geometric.onb.v(), refRi.geometric.onb.v() ) );
-	assert( VecClose( ri.geometric.onb.w(), refRi.geometric.onb.w() ) );
+	Check( VecClose( ri.geometric.onb.u(), refRi.geometric.onb.u() ), "Test10 (P2 item2): composite onb.u() matches standalone reference" );
+	Check( VecClose( ri.geometric.onb.v(), refRi.geometric.onb.v() ), "Test10 (P2 item2): composite onb.v() matches standalone reference" );
+	Check( VecClose( ri.geometric.onb.w(), refRi.geometric.onb.w() ), "Test10 (P2 item2): composite onb.w() matches standalone reference" );
 
 	safe_release( csg );
 	safe_release( aOperand );
 	safe_release( farB );
 	safe_release( standalone );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -998,11 +1024,13 @@ void TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe()
 	decoyLobe->FinalizeTransformations();
 
 	CSGObject* nestedB = new CSGObject( CSG_UNION );
-	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	const bool nestedAssigned = nestedB->AssignObjects( realLobe, decoyLobe );
+	Check( nestedAssigned, "Test11 (P2 item3): nestedB takes realLobe/decoyLobe operands" );
 	nestedB->FinalizeTransformations();
 
 	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
-	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	const bool outerAssigned = outerCsg->AssignObjects( oA, nestedB );
+	Check( outerAssigned, "Test11 (P2 item3): outerCsg takes oA/nestedB operands" );
 	outerCsg->FinalizeTransformations();
 
 	// LONG camera range: exitRangeCsgLocal (the CSG-local distance from
@@ -1016,40 +1044,39 @@ void TestSubtraction_ExitProbe_DoesNotOvershootToADifferentLobe()
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( outerCsg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test11 (P2 item3): (control) ray hits the composite at long camera range" );
 
 	// Ground truth: the REAL exit face, probed directly (independent of
 	// production code) -- exactly the P2-e test's own oracle pattern.
 	Ray probeRefReal( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
 	Hit( realLobe, probeRefReal, refRealExit );
-	assert( refRealExit.geometric.bHit );
+	Check( refRealExit.geometric.bHit, "Test11 (P2 item3): (control) direct probe hits realLobe's exit face" );
 
 	// The WRONG answer an overshooting probe lands on: the decoy lobe's
 	// near face, probed directly.
 	Ray probeDecoy( Point3( 0.1, 0.05, -1.0 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
 	Hit( decoyLobe, probeDecoy, refDecoy );
-	assert( refDecoy.geometric.bHit );
+	Check( refDecoy.geometric.bHit, "Test11 (P2 item3): (control) direct probe hits decoyLobe's near face" );
 
 	// Sanity: the two candidate faces produce distinct UV / object-space
 	// points, so this test is discriminating.
-	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test11 (P2 item3): (sanity) real-exit/decoy ptCoord are distinct" );
+	Check( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test11 (P2 item3): (sanity) real-exit/decoy ptObjIntersec are distinct" );
 
 	// The composite's recovered payload must be the REAL exit face, never
 	// the decoy.
-	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ), "Test11 (P2 item3): MONEY ASSERTION -- composite ptCoord matches the REAL exit face" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ), "Test11 (P2 item3): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit face" );
+	Check( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test11 (P2 item3): composite ptCoord did NOT overshoot to the decoy lobe" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test11 (P2 item3): composite ptObjIntersec did NOT overshoot to the decoy lobe" );
 
 	safe_release( outerCsg );
 	safe_release( oA );
 	safe_release( nestedB );
 	safe_release( realLobe );
 	safe_release( decoyLobe );
-	std::cout << "  Passed." << std::endl;
 }
 
 namespace
@@ -1112,7 +1139,8 @@ namespace
 			oFarSphere->FinalizeTransformations();
 
 			csg = new CSGObject( CSG_UNION );
-			assert( csg->AssignObjects( oCylinder, oFarSphere ) );
+			const bool assigned = csg->AssignObjects( oCylinder, oFarSphere );
+			Check( assigned, "CompressedCsgScenario: composite takes oCylinder(A)/oFarSphere(B) operands" );
 			csg->SetScale( 0.1 );   // uniform 10x compress -- world span z in [-1,1]
 			csg->FinalizeTransformations();
 		}
@@ -1147,14 +1175,12 @@ void TestIntersectionOnly_CompressedCsg_NoShadowLeakThroughOperandPretest()
 	// within the test light's range.
 	RayIntersection ri( s.worldRay, nullRasterizerState );
 	Hit( s.csg, s.worldRay, ri );
-	assert( ri.geometric.bHit );
-	assert( Close( ri.geometric.range, 99.0, 1e-3 ) );
-	assert( ri.geometric.range < s.worldDHowFar );
+	Check( ri.geometric.bHit, "Test12 (review r3, item1a): (control) full IntersectRay hits the occluder" );
+	Check( Close( ri.geometric.range, 99.0, 1e-3 ), "Test12 (review r3, item1a): (control) hit range is ~99" );
+	Check( ri.geometric.range < s.worldDHowFar, "Test12 (review r3, item1a): (control) occluder is within worldDHowFar" );
 
 	const bool occluded = s.csg->IntersectRay_IntersectionOnly( s.worldRay, s.worldDHowFar, true, true );
-	assert( occluded );
-
-	std::cout << "  Passed." << std::endl;
+	Check( occluded, "Test12 (review r3, item1a): MONEY ASSERTION -- occluded, no shadow-ray light leak through operand pretest" );
 }
 
 //
@@ -1188,10 +1214,8 @@ void TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest()
 	// (unconverted) local-frame comparison would tolerate.
 	s.csg->IntersectRay( ri, s.worldDHowFar, true, true, true );
 
-	assert( ri.geometric.bHit );
-	assert( Close( ri.geometric.range, 99.0, 1e-3 ) );
-
-	std::cout << "  Passed." << std::endl;
+	Check( ri.geometric.bHit, "Test13 (review r3, item1b): closest hit found (not culled by operand pretest)" );
+	Check( Close( ri.geometric.range, 99.0, 1e-3 ), "Test13 (review r3, item1b): MONEY ASSERTION -- closest hit range is ~99, not culled" );
 }
 
 //
@@ -1254,11 +1278,13 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 	decoyLobe->FinalizeTransformations();
 
 	CSGObject* nestedB = new CSGObject( CSG_UNION );
-	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	const bool nestedAssigned = nestedB->AssignObjects( realLobe, decoyLobe );
+	Check( nestedAssigned, "Test14 (review r4, item2): nestedB takes realLobe/decoyLobe operands" );
 	nestedB->FinalizeTransformations();
 
 	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
-	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	const bool outerAssigned = outerCsg->AssignObjects( oA, nestedB );
+	Check( outerAssigned, "Test14 (review r4, item2): outerCsg takes oA/nestedB operands" );
 	outerCsg->FinalizeTransformations();
 
 	// Ray travels along +Z (dir.x == dir.y == 0) -- the probe's own
@@ -1271,26 +1297,26 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( outerCsg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test14 (review r4, item2): (control) ray hits the composite at BIG_X" );
 
 	// Ground truth: the REAL exit face, probed directly (independent of
 	// production code) -- same oracle pattern as Test 4/11.
 	Ray probeRefReal( Point3( BIG_X, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
 	Hit( realLobe, probeRefReal, refRealExit );
-	assert( refRealExit.geometric.bHit );
+	Check( refRealExit.geometric.bHit, "Test14 (review r4, item2): (control) direct probe hits realLobe's exit face" );
 
 	// The WRONG answer an overshooting (OLD-margin) probe lands on: the
 	// decoy lobe's near face, probed directly.
 	Ray probeDecoy( Point3( BIG_X, 0.05, -1.98 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
 	Hit( decoyLobe, probeDecoy, refDecoy );
-	assert( refDecoy.geometric.bHit );
+	Check( refDecoy.geometric.bHit, "Test14 (review r4, item2): (control) direct probe hits decoyLobe's near face" );
 
 	// Sanity: the two candidate faces produce distinct UV / object-space
 	// points, so this test is discriminating.
-	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test14 (review r4, item2): (sanity) real-exit/decoy ptCoord are distinct" );
+	Check( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test14 (review r4, item2): (sanity) real-exit/decoy ptObjIntersec are distinct" );
 
 	// The composite's recovered payload must be the REAL exit face, never
 	// the decoy -- this is the money assertion: it FAILS under the OLD
@@ -1299,17 +1325,16 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 	// BIG_X=1e12 (~0.0142) comfortably overshoots the 0.01-unit gap to
 	// the decoy, while the NEW direction-weighted margin (~1e-12, since
 	// dir.x==dir.y==0 here) does not.
-	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ), "Test14 (review r4, item2): MONEY ASSERTION -- composite ptCoord matches the REAL exit face" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ), "Test14 (review r4, item2): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit face" );
+	Check( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test14 (review r4, item2): composite ptCoord did NOT overshoot to decoy (transverse coord)" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test14 (review r4, item2): composite ptObjIntersec did NOT overshoot to decoy (transverse coord)" );
 
 	safe_release( outerCsg );
 	safe_release( oA );
 	safe_release( nestedB );
 	safe_release( realLobe );
 	safe_release( decoyLobe );
-	std::cout << "  Passed." << std::endl;
 }
 
 //
@@ -1402,25 +1427,27 @@ void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 	decoyLobe->FinalizeTransformations();
 
 	CSGObject* nestedB = new CSGObject( CSG_UNION );
-	assert( nestedB->AssignObjects( realLobe, decoyLobe ) );
+	const bool nestedAssigned = nestedB->AssignObjects( realLobe, decoyLobe );
+	Check( nestedAssigned, "Test15 (review r6, item2): nestedB takes realLobe/decoyLobe operands" );
 	nestedB->FinalizeTransformations();
 
 	CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
-	assert( outerCsg->AssignObjects( oA, nestedB ) );
+	const bool outerAssigned = outerCsg->AssignObjects( oA, nestedB );
+	Check( outerAssigned, "Test15 (review r6, item2): outerCsg takes oA/nestedB operands" );
 	outerCsg->FinalizeTransformations();
 
 	Ray r( Point3( 0.1, 0.05, -10 ), Vector3( 0, 0, 1 ) );
 
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( outerCsg, r, ri );
-	assert( ri.geometric.bHit );
+	Check( ri.geometric.bHit, "Test15 (review r6, item2): (control) ray hits the composite" );
 
 	// Ground truth: the REAL exit face, probed directly (independent of
 	// production code) -- same oracle pattern as Tests 4/11/14.
 	Ray probeRefReal( Point3( 0.1, 0.05, -1.9 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refRealExit( probeRefReal, nullRasterizerState );
 	Hit( realLobe, probeRefReal, refRealExit );
-	assert( refRealExit.geometric.bHit );
+	Check( refRealExit.geometric.bHit, "Test15 (review r6, item2): (control) direct probe hits realLobe's exit face" );
 
 	// The WRONG answer an overshooting (r5-floor) probe lands on: the
 	// decoy lobe's near face, probed directly.  Probe starts well before
@@ -1430,12 +1457,12 @@ void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 	Ray probeDecoy( Point3( 0.1, 0.05, -1.0 ), Vector3( 0, 0, -1 ) );
 	RayIntersection refDecoy( probeDecoy, nullRasterizerState );
 	Hit( decoyLobe, probeDecoy, refDecoy );
-	assert( refDecoy.geometric.bHit );
+	Check( refDecoy.geometric.bHit, "Test15 (review r6, item2): (control) direct probe hits decoyLobe's near face" );
 
 	// Sanity: the two candidate faces produce distinct UV / object-space
 	// points, so this test is discriminating.
-	assert( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( !Point2Close( refRealExit.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test15 (review r6, item2): (sanity) real-exit/decoy ptCoord are distinct" );
+	Check( !PointClose( refRealExit.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test15 (review r6, item2): (sanity) real-exit/decoy ptObjIntersec are distinct" );
 
 	// The composite's recovered payload must be the REAL exit face, never
 	// the decoy -- this is the money assertion.  It FAILS with the r5
@@ -1443,17 +1470,16 @@ void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 	// the derivation above), because that margin's accept window
 	// (~2.1e-9) comfortably overshoots the 5e-10 gap to the decoy, while
 	// the reverted 1e-12 floor's window (~2.1e-12) does not.
-	assert( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ) );
-	assert( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ) );
-	assert( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ) );
-	assert( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ) );
+	Check( Point2Close( ri.geometric.ptCoord, refRealExit.geometric.ptCoord ), "Test15 (review r6, item2): MONEY ASSERTION -- composite ptCoord matches the REAL exit face" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refRealExit.geometric.ptObjIntersec ), "Test15 (review r6, item2): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit face" );
+	Check( !Point2Close( ri.geometric.ptCoord, refDecoy.geometric.ptCoord ), "Test15 (review r6, item2): composite ptCoord did NOT overshoot to the tiny-gap decoy" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refDecoy.geometric.ptObjIntersec ), "Test15 (review r6, item2): composite ptObjIntersec did NOT overshoot to the tiny-gap decoy" );
 
 	safe_release( outerCsg );
 	safe_release( oA );
 	safe_release( nestedB );
 	safe_release( realLobe );
 	safe_release( decoyLobe );
-	std::cout << "  Passed." << std::endl;
 }
 
 int main()
@@ -1473,6 +1499,6 @@ int main()
 	TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest();
 	TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin();
 	TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor();
-	std::cout << "\nAll CsgSurfacePayloadTest cases passed." << std::endl;
-	return 0;
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
 }
