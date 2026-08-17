@@ -2136,19 +2136,15 @@ namespace RISE
 			ParallelFireSlices(shape.nz,workerCount,applySlice);
 		}
 
-		inline void SmoothOpenPressureOperator3D(
+		inline void BuildOpenPressureDiagonal3D(
 			const PeriodicMACShape& shape,
 			const OpenPressureOperator3D& pressureOperator,
-			const std::vector<double>& rightHandSide,
-			const std::size_t iterations,
-			std::vector<double>& solution,
-			const unsigned int workerCount = 1u
+			std::vector<double>& diagonal,
+			const unsigned int workerCount
 			)
 		{
-			FireProfileIncrement(FireProfile().smoothSweeps,iterations);
 			const double inverseWidth2 = 1.0/(shape.cellWidthM*shape.cellWidthM);
-			std::vector<double> applied, next(shape.CellCount(),0.0),
-				diagonal(shape.CellCount(),0.0);
+			diagonal.assign(shape.CellCount(),0.0);
 			const auto buildDiagonalSlice=[&](const std::size_t z) { for( std::size_t y=0;
 				y<shape.ny; ++y ) for( std::size_t x=0; x<shape.nx; ++x ) {
 				const std::size_t cell = shape.Index(x,y,z);
@@ -2171,6 +2167,24 @@ namespace RISE
 				}
 			}};
 			ParallelFireSlices(shape.nz,workerCount,buildDiagonalSlice);
+		}
+
+		inline void SmoothOpenPressureOperator3D(
+			const PeriodicMACShape& shape,
+			const OpenPressureOperator3D& pressureOperator,
+			const std::vector<double>& rightHandSide,
+			const std::size_t iterations,
+			std::vector<double>& solution,
+			const unsigned int workerCount = 1u,
+			const std::vector<double>* preparedDiagonal = 0
+			)
+		{
+			FireProfileIncrement(FireProfile().smoothSweeps,iterations);
+			std::vector<double> computedDiagonal;
+			if(!preparedDiagonal)BuildOpenPressureDiagonal3D(shape,pressureOperator,
+				computedDiagonal,workerCount);
+			const std::vector<double>& diagonal=preparedDiagonal?*preparedDiagonal:computedDiagonal;
+			std::vector<double> applied,next(shape.CellCount(),0.0);
 			for( std::size_t iteration=0; iteration<iterations; ++iteration ) {
 				ApplyOpenPressureOperator3D(shape,pressureOperator,solution,applied,workerCount);
 				const auto updateSlice=[&](const std::size_t z) { for( std::size_t y=0;
@@ -2321,6 +2335,7 @@ namespace RISE
 		inline void OpenPressureMultigridHierarchyVCycle3D(
 			const std::vector<PeriodicMACShape>& shape,
 			const std::vector<OpenPressureOperator3D>& pressureOperator,
+			const std::vector<std::vector<double> >& diagonal,
 			const std::size_t level,
 			const std::vector<double>& rightHandSide,
 			std::vector<double>& solution,
@@ -2330,22 +2345,22 @@ namespace RISE
 			if(level==0u)FireProfileIncrement(FireProfile().vcycles);
 			if(level+1u==shape.size()) {
 				SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
-					rightHandSide,60,solution,workerCount);
+					rightHandSide,60,solution,workerCount,&diagonal[level]);
 				return;
 			}
 			SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
-				rightHandSide,4,solution,workerCount);
+				rightHandSide,4,solution,workerCount,&diagonal[level]);
 			std::vector<double> applied,residual(shape[level].CellCount(),0.0),coarseRight;
 			ApplyOpenPressureOperator3D(shape[level],pressureOperator[level],solution,applied,workerCount);
 			for(std::size_t cell=0;cell<shape[level].CellCount();++cell) residual[cell]=
 				rightHandSide[cell]-applied[cell];
 			RestrictOpenResidual3D(shape[level],shape[level+1u],residual,coarseRight,workerCount);
 			std::vector<double> coarseCorrection(shape[level+1u].CellCount(),0.0);
-			OpenPressureMultigridHierarchyVCycle3D(shape,pressureOperator,level+1u,
+			OpenPressureMultigridHierarchyVCycle3D(shape,pressureOperator,diagonal,level+1u,
 				coarseRight,coarseCorrection,1u);
 			ProlongOpenCorrection3D(shape[level],shape[level+1u],coarseCorrection,solution,workerCount);
 			SmoothOpenPressureOperator3D(shape[level],pressureOperator[level],
-				rightHandSide,4,solution,workerCount);
+				rightHandSide,4,solution,workerCount,&diagonal[level]);
 		}
 
 		inline double OpenVectorDot3D(
@@ -3201,6 +3216,12 @@ namespace RISE
 				preconditionerShape.push_back(coarseShape);
 				preconditionerHierarchy.push_back(std::move(coarseOperator));
 			}
+			std::vector<std::vector<double> > preconditionerDiagonal(
+				preconditionerHierarchy.size());
+			for(std::size_t level=0;level<preconditionerHierarchy.size();++level)
+				BuildOpenPressureDiagonal3D(preconditionerShape[level],
+					preconditionerHierarchy[level],preconditionerDiagonal[level],
+					level?1u:workerCount);
 			std::vector<double> unknown(layout.unknownCount,0.0);
 			std::vector<std::vector<unsigned char> > activeHistory;
 			auto evaluateVelocity=[&](const std::vector<double>& value,OpenMACField3D& velocity){
@@ -3316,7 +3337,8 @@ namespace RISE
 						std::vector<double> cellRight(rhs.begin(),rhs.begin()+cellCount);
 						std::vector<double> cellSolution(cellCount,0.0);
 						OpenPressureMultigridHierarchyVCycle3D(preconditionerShape,
-							preconditionerHierarchy,0u,cellRight,cellSolution,workerCount);
+							preconditionerHierarchy,preconditionerDiagonal,0u,cellRight,
+							cellSolution,workerCount);
 						for( std::size_t cell=0; cell<cellCount; ++cell ) output[cell]=
 							cellSolution[cell]/deltaTimeS;
 						for( std::size_t i=cellCount; i<layout.unknownCount; ++i ) {
