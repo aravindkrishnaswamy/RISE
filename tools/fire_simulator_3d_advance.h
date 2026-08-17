@@ -1056,6 +1056,40 @@
 			return OpenMACFaceIndex3D(shape,axis,x,y,z);
 		}
 
+		inline bool BuildCellMolecularTransportEvaluations3D(
+			const std::vector<ConservativeVector>& state,
+			const std::vector<double>& temperatureK,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			std::vector<CellMolecularTransportEvaluation>& evaluations,
+			std::string* error,
+			const unsigned int workerCount
+			)
+		{
+			if(state.empty()||temperatureK.size()!=state.size())return Fail(error,
+				"fire solver molecular transport arrays are malformed");
+			const std::size_t count=state.size();evaluations.assign(count,
+				CellMolecularTransportEvaluation());
+			const unsigned int workers=std::max(1u,std::min(workerCount,
+				static_cast<unsigned int>(count)));
+			const std::size_t noFailure=std::numeric_limits<std::size_t>::max();
+			std::vector<std::size_t> failureCell(workers,noFailure);
+			std::vector<std::string> failureMessage(workers);
+			ParallelFireSlices(workers,workers,[&](const std::size_t worker){
+				const std::size_t first=count*worker/workers,last=count*(worker+1u)/workers;
+				for(std::size_t cell=first;cell<last;++cell){
+					MethaneCellState physical=FromConservativeVector(state[cell]);
+					physical.temperatureK=temperatureK[cell];std::string cellError;
+					if(!EvaluateCellMolecularTransport(physical,thermochemistry,transport,
+						evaluations[cell],&cellError)){failureCell[worker]=cell;
+						failureMessage[worker]=cellError;break;}}
+			});
+			std::size_t firstFailure=noFailure;unsigned int failedWorker=0u;
+			for(unsigned int worker=0;worker<workers;++worker)if(failureCell[worker]<firstFailure){
+				firstFailure=failureCell[worker];failedWorker=worker;}
+			return firstFailure==noFailure||Fail(error,failureMessage[failedWorker]);
+		}
+
 		inline bool BuildOpenStageTransportEvaluations3D(
 			const PeriodicMACShape& shape,
 			const std::vector<ConservativeVector>& state,
@@ -1067,12 +1101,14 @@
 			const FireSimulationTransportRecord& transport,
 			std::vector<CellTransportEvaluation>& evaluations,
 			std::string* error=0,
-			const unsigned int workerCount=1u
+			const unsigned int workerCount=1u,
+			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0
 			)
 		{
 			const std::size_t count=shape.CellCount();
 			if(!ValidateOpenBoundaryConfig3D(shape,boundary,error)||state.size()!=count ||
-				temperatureK.size()!=count) return Fail(error,
+				temperatureK.size()!=count||(molecularEvaluations&&
+				molecularEvaluations->size()!=count)) return Fail(error,
 				"fire solver open stage transport shape is invalid");
 			std::array<std::vector<double>,3> cellVelocity;
 			for(unsigned int component=0;component<3;++component){
@@ -1142,8 +1178,12 @@
 					}
 				}
 				std::string cellError;
-				if(!EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
-					transport,evaluations[cell],&cellError)){
+				const bool evaluated=molecularEvaluations?
+					EvaluateCellTransportFromMolecular((*molecularEvaluations)[cell],gradient,
+						widths,dns,transport,evaluations[cell],&cellError):
+					EvaluateCellTransport(physical,gradient,widths,dns,thermochemistry,
+						transport,evaluations[cell],&cellError);
+				if(!evaluated){
 					failureCell[worker]=cell;failureMessage[worker]=cellError;break;
 				}
 				}
@@ -1170,14 +1210,16 @@
 			std::vector<double>& conductivity,
 			std::vector<double>& viscosity,
 			std::string* error=0,
-			const unsigned int workerCount=1u
+			const unsigned int workerCount=1u,
+			const std::vector<CellMolecularTransportEvaluation>* molecularEvaluations=0
 		)
 		{
 			FireProfileIncrement(FireProfile().transportCalls);
 			FireProfileScopedNs profileTimer(FireProfile().nsTransport);
 			std::vector<CellTransportEvaluation> evaluations;
 			if(!BuildOpenStageTransportEvaluations3D(shape,state,temperatureK,faceVelocity,
-				boundary,dns,thermochemistry,transport,evaluations,error,workerCount)) return false;
+				boundary,dns,thermochemistry,transport,evaluations,error,workerCount,
+				molecularEvaluations)) return false;
 			diffusivity.resize(evaluations.size());
 			conductivity.resize(evaluations.size());
 			viscosity.resize(evaluations.size());
@@ -2252,6 +2294,7 @@
 			std::array<std::vector<bool>,6> priorInflow=stageBoundary.priorInflow;
 			std::vector<double> priorDiffusivity(count,0.0),priorConductivity(count,0.0),
 				priorViscosity(count,0.0);
+			std::vector<CellMolecularTransportEvaluation> molecularTransport;
 			if((heunBeginning==0)!=(firstStageFlux==0)||
 				(heunBeginning&&heunBeginning->size()!=count))return Fail(error,
 					"fire solver open manifold candidate context is malformed");
@@ -2314,10 +2357,13 @@
 					config.transport.deltaTimeS,config.projectionTolerancePerS,projection,error,
 					config.workerCount);
 				if(!projectionOK) return false;
+				if(molecularTransport.empty()&&!BuildCellMolecularTransportEvaluations3D(state,
+					temperature,thermochemistry,transport,molecularTransport,error,
+					config.workerCount))return false;
 				std::vector<double> diffusivity,conductivity,viscosity;
 				if(!BuildOpenStageTransport3D(shape,state,temperature,projection.velocityMPerS,
 					stageBoundary,config.dns,thermochemistry,transport,diffusivity,conductivity,
-					viscosity,error,config.workerCount))
+					viscosity,error,config.workerCount,&molecularTransport))
 					return false;
 				OpenMACField3D evaluatedNonpressure;
 				if(!BuildOpenNonpressureMomentumRHS3D(shape,state,projection,viscosity,
@@ -2391,7 +2437,7 @@
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
 						acceptedProjection.velocityMPerS,acceptedBoundary,config.dns,thermochemistry,transport,
 						acceptedDiffusivity,acceptedConductivity,acceptedViscosity,error,
-						config.workerCount)) return false;
+						config.workerCount,&molecularTransport)) return false;
 					OpenFluxPair3D acceptedFlux;
 					if(!BuildOpenFluxPair3D(shape,state,temperature,acceptedProjection,
 						acceptedDiffusivity,acceptedConductivity,acceptedBoundary,

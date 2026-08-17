@@ -467,6 +467,71 @@ namespace RISE
 				effectiveConductivityWPerMK(0.0) {}
 		};
 
+		struct CellMolecularTransportEvaluation
+		{
+			double gasDensityKGPerM3;
+			double gasCpJPerKGK;
+			double molecularViscosityPaS;
+			double molecularConductivityWPerMK;
+			CellMolecularTransportEvaluation():gasDensityKGPerM3(0.0),gasCpJPerKGK(0.0),
+				molecularViscosityPaS(0.0),molecularConductivityWPerMK(0.0){}
+		};
+
+		inline bool EvaluateCellMolecularTransport(
+			const MethaneCellState& state,
+			const FireSimulationMethaneRecord& thermochemistry,
+			const FireSimulationTransportRecord& transport,
+			CellMolecularTransportEvaluation& result,
+			std::string* error = 0
+			)
+		{
+			if(!ValidateCellState(state,error)||
+				!AcceptedMethaneCellStateAdmissible(state,thermochemistry,error)||
+				!thermochemistry.IsValid()||!transport.IsValid())return false;
+			std::array<double,MethaneSpeciesCount> propertyDensities;
+			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
+			result=CellMolecularTransportEvaluation();
+			for(std::size_t species=0;species<MethaneCarbon;++species)
+				result.gasDensityKGPerM3+=propertyDensities[species];
+			if(result.gasDensityKGPerM3<=0.0)return Fail(error,
+				"fire solver transport has no gas mass");
+			std::array<double,MethaneCarbon> massFractions;
+			std::array<double,MethaneSpeciesCount> speciesCp;
+			if(!thermochemistry.CpBySpeciesOrderJPerKGK(state.temperatureK,speciesCp.data(),
+				speciesCp.size(),error))return false;
+			for(std::size_t species=0;species<MethaneCarbon;++species){
+				massFractions[species]=propertyDensities[species]/result.gasDensityKGPerM3;
+				result.gasCpJPerKGK+=massFractions[species]*speciesCp[species];}
+			return transport.MixturePropertiesBySpeciesOrder(massFractions.data(),
+				massFractions.size(),thermochemistry,state.temperatureK,
+				result.molecularViscosityPaS,result.molecularConductivityWPerMK,error);
+		}
+
+		inline bool EvaluateCellTransportFromMolecular(
+			const CellMolecularTransportEvaluation& molecular,
+			const double velocityGradientPerS[3][3],
+			const double directionalWidthsM[3],
+			const bool dns,
+			const FireSimulationTransportRecord& transport,
+			CellTransportEvaluation& result,
+			std::string* error = 0
+			)
+		{
+			result=CellTransportEvaluation();
+			result.gasCpJPerKGK=molecular.gasCpJPerKGK;
+			result.molecularViscosityPaS=molecular.molecularViscosityPaS;
+			result.molecularConductivityWPerMK=molecular.molecularConductivityWPerMK;
+			if(dns)result.eddyViscosityM2PerS=0.0;
+			else if(!transport.VremanEddyViscosityM2PerS(velocityGradientPerS,
+				directionalWidthsM,result.eddyViscosityM2PerS,error))return false;
+			return transport.EffectiveTransport(result.molecularViscosityPaS,
+				result.molecularConductivityWPerMK,molecular.gasDensityKGPerM3,
+				result.gasCpJPerKGK,result.eddyViscosityM2PerS,dns,
+				result.molecularDiffusivityM2PerS,result.sgsDiffusivityM2PerS,
+				result.totalDiffusivityM2PerS,result.effectiveViscosityPaS,
+				result.effectiveConductivityWPerMK,error);
+		}
+
 		inline bool EvaluateCellTransport(
 			const MethaneCellState& state,
 			const double velocityGradientPerS[3][3],
@@ -478,37 +543,10 @@ namespace RISE
 			std::string* error = 0
 			)
 		{
-			if( !ValidateCellState(state,error) ||
-				!AcceptedMethaneCellStateAdmissible(state,thermochemistry,error) ||
-				!thermochemistry.IsValid() ||
-				!transport.IsValid() ) return false;
-			std::array<double,MethaneSpeciesCount> propertyDensities;
-			if(!PositivePartThermochemicalDensitiesOrdered(state,propertyDensities,error))return false;
-			double gasDensity=0.0;
-			for(std::size_t species=0;species<MethaneCarbon;++species)
-				gasDensity+=propertyDensities[species];
-			if( gasDensity <= 0.0 ) return Fail(error,"fire solver transport has no gas mass");
-			std::array<double,MethaneCarbon> massFractions;
-			std::array<double,MethaneSpeciesCount> speciesCp;
-			if(!thermochemistry.CpBySpeciesOrderJPerKGK(state.temperatureK,speciesCp.data(),
-				speciesCp.size(),error))return false;
-			result = CellTransportEvaluation();
-			for( std::size_t species=0; species<MethaneCarbon; ++species ) {
-				massFractions[species]=propertyDensities[species]/gasDensity;
-				result.gasCpJPerKGK+=massFractions[species]*speciesCp[species];
-			}
-			if(!transport.MixturePropertiesBySpeciesOrder(massFractions.data(),
-				massFractions.size(),thermochemistry,state.temperatureK,
-				result.molecularViscosityPaS,result.molecularConductivityWPerMK,error))return false;
-			if( dns ) {
-				result.eddyViscosityM2PerS = 0.0;
-			} else if( !transport.VremanEddyViscosityM2PerS(velocityGradientPerS,
-				directionalWidthsM,result.eddyViscosityM2PerS,error) ) return false;
-			return transport.EffectiveTransport(result.molecularViscosityPaS,
-				result.molecularConductivityWPerMK,gasDensity,result.gasCpJPerKGK,
-				result.eddyViscosityM2PerS,dns,result.molecularDiffusivityM2PerS,
-				result.sgsDiffusivityM2PerS,result.totalDiffusivityM2PerS,
-				result.effectiveViscosityPaS,result.effectiveConductivityWPerMK,error);
+			CellMolecularTransportEvaluation molecular;
+			return EvaluateCellMolecularTransport(state,thermochemistry,transport,molecular,error)&&
+				EvaluateCellTransportFromMolecular(molecular,velocityGradientPerS,directionalWidthsM,
+					dns,transport,result,error);
 		}
 
 		inline bool ComputeMixingTimeS(
