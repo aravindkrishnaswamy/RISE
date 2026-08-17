@@ -1868,3 +1868,40 @@ it was already tried and refuted here.
   arithmetic), and changing multigrid strategy merely to finish this run.
   Migration events are pin-8 run metadata and do not regenerate
   `case_record_id`.
+
+- **r79 (2026-08-17):** class-A performance campaign disposition, measured
+  from the exact checkpoint-449 continuation under the r78 certificate. A
+  clean eight-step baseline had median cost 22.105 s/accepted step (the
+  earlier sampling profile measured 23.1 s). Four separately committed,
+  bit-exact changes reduced the median to 15.728 s: a persistent indexed
+  worker gang for the high-frequency fixed-range maps (21.952 s), parallel
+  BiCGStab element maps with serial FP dot products plus reused smoother
+  diagonals (21.385 s), stage-cached molecular transport with per-iterate
+  Vreman retained (20.401 s), unchanged-kernel chunked manifold restoration
+  (15.844 s), and solve-local reuse of the final-projection multigrid
+  hierarchy (15.728 s). Every admitted point reproduced checkpoint steps
+  450--457 bit-for-bit in dt, T_max, EOS maximum, and diagnostic-frame
+  digest. The final measured speedup is 28.9% from the clean baseline and
+  31.9% from the original profile.
+
+  Ruling: these changes are class A and may migrate the durable run only
+  through the final r78 certificate. All other attempted work remains out of
+  the capstone continuation. A direct parallel rewrite of the manifold map
+  was fast (17.25 s on its first measured step) but changed step 451 dt by
+  three ulps; retaining the certified serial kernel inside fixed chunks was
+  the admissible formulation. Direct momentum-RHS parallelism improved its
+  trial step by about 5.8% but changed continuation dt by seven ulps. Direct
+  species-index call-site substitution changed the same continuation bits;
+  a caller-preserving record lookup was bit-exact but 0.6% slower after the
+  molecular cache removed that path from the wall-time critical path. A
+  stage-wide projection cache was bit-exact but 0.5% slower, parallelizing
+  the residual max norm was neutral, and moving the remaining low-frequency
+  explicit gangs onto the parked pool was 0.7% slower; each was reverted.
+  Rejected: ulp-tolerant equivalence (not pin-8 identity), retaining a fast
+  but divergent candidate, combining changes to hide attribution, changing
+  the 41,600-sweep multigrid strategy, or shortening/substituting the tier-10
+  evidence. At the final class-A rate the profiler's approximately 79 h
+  continuation projects to about 53.8 h, still beyond the standing 40 h
+  launch ceiling. The durable checkpoint remains the recovery root; the
+  next campaign, if authorized, is class B and starts from zero. No case or
+  solver semantics changed, so `case_record_id` is unchanged.
