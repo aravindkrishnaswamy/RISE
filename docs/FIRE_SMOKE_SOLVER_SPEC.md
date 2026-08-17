@@ -304,7 +304,19 @@ error and must be corrected.
      `nextafter(maximum_accepted_temperature_K, -∞)` as its thermochemical
      upper endpoint. This is the unique representable implementation of the
      locked `<` relation, not a safety margin or tolerance; the echoed case
-     value remains 2300.0 K.
+     value remains 2300.0 K. **Canonical emitted-byte bracket (r77):** the
+     r75 global-largest claim is superseded. Materialize each candidate
+     packet in its final operation order and evaluate it only through the
+     same canonical non-inlined inversion routine used to construct the
+     source endpoint. `P(lambda)` means that inversion succeeds with
+     T strictly below the case ceiling. Return the byte-identical full packet
+     when `P(1)`; otherwise require `P(0)`, maintain a feasible lower and
+     infeasible upper ordered-binary64 key until adjacent, and emit the stored
+     lower packet bytes without recomputation. A pilot-only `P(0)` failure is
+     a normal fail-closed timestep rejection; the pilot target is not capped.
+     Case generation requires pilot setpoint < physical ceiling. Direct row
+     sign, algebraically equivalent packet construction, tuned margins,
+     exhaustive ulp scans, and post-inversion clamping are forbidden.
      Stage-specific divergence rules, separate finite-map commits,
      tableau-preimage drain emission, parallel no-pilot shadow trajectories,
      crossflow suppression during the hold, and frozen drain-flux channels

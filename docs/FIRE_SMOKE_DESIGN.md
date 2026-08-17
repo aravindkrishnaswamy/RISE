@@ -2299,6 +2299,44 @@ following; two conforming tools must derive identical bytes:
    accepting equality despite the locked physical gate, and post-inversion
    clamping. This is the exact representation of r75's existing strict
    semantics, so it adds no case field and does not change `case_record_id`.
+7f. **Canonical emitted-byte headroom bracket (r77).** The r75 phrase
+   *largest representable* is replaced by a deterministic lower-bracket
+   certificate because the directly rounded energy row is not monotone in
+   ordered binary64 reaction extent, and neither is a separately inlined
+   temperature inversion at the last ulps. The candidate at extent lambda is
+   first materialized with the exact constituent and energy operation order
+   that would be emitted. One canonical, non-inlined source-state inversion
+   routine then defines `P(lambda)`: inversion succeeds and its derived
+   temperature is strictly below `maximum_accepted_temperature_K`. If
+   `P(1)` holds, the full candidate remains byte-identical. Otherwise
+   `P(0)` is required, ordered-binary64 bisection maintains a stored feasible
+   lower candidate and infeasible upper candidate until their keys are
+   adjacent, and the already-materialized lower packet bytes are emitted.
+   No algebraic restatement may certify those bytes and no post-search
+   recomputation may replace them. This rule is fixed-cost, bit-deterministic,
+   strict, and makes no false global-maximality claim; ulp-scale feasible
+   islands above an infeasible neighbor are intentionally irrelevant to the
+   canonical bracket.
+
+   Evidence under the production Opto flags: at Z=0.0001 and T=2297.68 K,
+   the r76 row search returned lambda=0.58247944924553696 although a negative
+   row existed 617 ulps higher; at Z=0.005 and T=2280 K, 46 later negative-row
+   islands occurred in the next million extents. Worse, at
+   Z=0.00015829486134645083 and T=2297.3099999999713 K the emitted row was
+   -5.8207660913467407e-11 while the production inversion returned exactly
+   2300 K. The canonical inversion bracket returns
+   lambda=0.42675705362906491 and 2299.9999999999991 K for that case.
+   A combined packet whose pilot-only candidate makes `P(0)` false rejects
+   through the existing timestep path; the pilot target is never capped.
+   Case generation also requires the derived pilot setpoint to be strictly
+   below the physical ceiling (900 K < 2300 K for methane), so intrinsic
+   incompatibility fails before a run. Rejected: exhaustive scanning of all
+   binary64 extents (unbounded production cost), a tuned temperature margin
+   (new knob), accepting a negative surrogate row as an inversion certificate
+   (falsified above), capping the pilot command (changes the pinned map), and
+   clamping the accepted state. The headroom model-version echo changes and
+   therefore regenerates `case_record_id`; r76's predecessor remains the
+   accepted-polytope endpoint but is not a source-inversion certificate.
 8. **Thread count and reduction mode are NOT identity-bearing.** The
    requirement is on the output: the solver must produce **bit-identical
    sequences regardless of effective thread count**, via fixed-order

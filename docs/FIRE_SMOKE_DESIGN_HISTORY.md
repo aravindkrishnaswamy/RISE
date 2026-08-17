@@ -1816,3 +1816,22 @@ it was already tried and refuted here.
   inverted temperature. This merely makes r75's already-pinned strict
   semantics representable; it adds no field and does not change
   `case_record_id`.
+
+- **r77 (2026-08-16):** canonical emitted-byte headroom bracket, from the
+  fresh r75/r76 Opto review. Exact measured counterexamples falsified the
+  r75 global-maximality certificate: at Z=0.0001, T=2297.68 K a negative-row
+  island remained 617 ulps above the bisection boundary, and at Z=0.005,
+  T=2280 K 46 such islands appeared in the next million extents. The stronger
+  promised equivalence also failed: at Z=0.00015829486134645083,
+  T=2297.3099999999713 K the emitted row was
+  -5.8207660913467407e-11 while the production inversion returned exactly
+  2300 K. Ruling: selection is the invariant-preserving ordered-binary64
+  lower bracket of the actual emitted packet evaluated by one canonical
+  non-inlined source inversion; its feasible packet bytes are stored and
+  emitted, never algebraically reconstructed. The full candidate remains
+  byte-identical when strict. Pilot-only infeasibility rejects, and case
+  generation requires its derived 900 K setpoint below the 2300 K physical
+  ceiling. Rejected: exhaustive global scans, tuned margins, surrogate row
+  certificates, pilot-command capping, and accepted-state clamping. The
+  headroom model echo and `case_record_id` change; r76's predecessor remains
+  an accepted-polytope endpoint, not an inversion certificate.
