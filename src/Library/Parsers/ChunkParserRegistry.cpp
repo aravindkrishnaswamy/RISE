@@ -7195,11 +7195,13 @@ namespace RISE
 							"`matrix` (16 doubles, column-major) bypasses the position / orientation / scale "
 							"composition entirely; `quaternion` (xyzw, glTF convention) replaces Euler "
 							"rotation but still composes with `position` and `scale`.  All of them describe "
-							"the node's LOCAL transform, relative to its parent.";
+							"the node's LOCAL transform, relative to its parent.  "
+							"`source` instead of `geometry` makes the node an INSTANCE of another node's "
+							"subtree -- see that parameter.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to instance; omit for a pure container node"; }
-						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object (declared EARLIER) to INSTANCE: this node takes a copy of that object's bindings -- geometry / material / modifier / shader / radiance map / interior medium / shadow flags -- while its OWN position, orientation and scale say where the copy goes.  The source keeps rendering; `source` copies, it does not move or hide anything.  Mutually exclusive with `geometry`"; }
+						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object (declared EARLIER) to INSTANCE: this node takes a copy of that object's bindings -- geometry / material / modifier / shader / radiance map / interior medium / shadow flags -- while its OWN position, orientation and scale say where the copy goes.  If the source has CHILDREN its whole SUBTREE is copied too: each descendant becomes one further object named `<this name>.<that node's name>`, parented to the copy of its own parent, so the assembly arrives intact and moving this node moves all of it.  The source keeps rendering; `source` copies, it does not move or hide anything.  The whole subtree must be declared before this chunk.  Mutually exclusive with `geometry`"; }
 						{ auto& p = P(); p.name = "parent";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this one to (must be declared earlier)"; }
 						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
 						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }

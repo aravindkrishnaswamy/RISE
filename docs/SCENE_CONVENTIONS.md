@@ -499,6 +499,66 @@ cycles are still refused.
 
 Worked example: `scenes/Tests/Geometry/object_parenting.RISEscene`.
 
+### Instancing a subtree — `source`
+
+A `standard_object` may carry **`source <object-name>`** instead of `geometry`.
+The node is then a COPY of that object: it takes the source's bindings
+(geometry / material / modifier / shader / radiance map / interior medium /
+shadow flags) while its own `position` / `orientation` / `scale` say where the
+copy goes.  **The source's own local transform is DROPPED, not composed** — so
+`position 5 0 0` means "the copy sits at x=5", not "5 units from wherever the
+original happened to be".  The source keeps rendering; `source` copies, it does
+not move or hide anything.
+
+If the source has **children**, its whole subtree is copied.  Each descendant
+becomes one further object named `<instance>.<descendant>`, parented to the copy
+of its own parent — so moving the instancing node moves the whole assembly:
+
+```text
+standard_object { name lamp        position 0 0 0 }          # the assembly root
+standard_object { name lamp_base   parent lamp   geometry base_mesh   material brass }
+standard_object { name lamp_arm    parent lamp   geometry arm_mesh    material brass  position 0 0.4 0 }
+rect_light      { name lamp_glow   parent lamp_arm  center 0 0.9 0  size 0.2 0.2  facing 0 -1 0  color 1 0.9 0.7  exitance 40 }
+
+standard_object { name lamp_b  source lamp  position 3 0 0 }
+```
+
+That last chunk produces four more objects: `lamp_b`, `lamp_b.lamp_base`,
+`lamp_b.lamp_arm` and `lamp_b.lamp_glow` (whose painter, luminaire material and
+panel geometry are renamed with it, as `lamp_b.lamp_glow__pnt` and friends).
+Things worth knowing:
+
+- **One level of qualification, always.**  A grandchild is
+  `lamp_b.lamp_glow`, never a path `lamp_b.lamp_arm.lamp_glow` — descendant
+  names are already unique, so the copy needs no path.  Instancing something
+  that itself contains an instance composes the same way: the copied entry's
+  name already carried a level, so it reads `outer.inner.part`.
+- **The whole subtree must be declared before the instancing chunk.**  A
+  `parent` line added BELOW the instance is refused rather than silently left
+  out of the copy.
+- **A `csg_object` in the subtree shares its operands** with the original.  That
+  is correct: an operand's transform is read in its composite's own frame, so
+  one operand serves composites at different world poses.
+- **An `override_object` layer on a subtree member is refused.**  An override is
+  applied to the live object by name after its base chunk, so a copy built from
+  that base chunk would carry the un-overridden pose.  Fold it into the base
+  chunk.
+- **An `instance_array` parented into the subtree is refused** for the mirror
+  reason: generators expand last and their `parent` names the original node, so
+  their objects would stay behind.
+- **Animation does not follow an instance.**  A `timeline` on the source moves
+  the source only — an instance is a copy, not a live view.  Give each instance
+  its own timeline, or animate a container the instances are parented to.
+- **Per-frame cost.**  A `source` naming a LEAF (or a container with no
+  children) costs nothing: it collapses to one object with no parent link.  A
+  SUBTREE instance costs one parent link per copied descendant, and the
+  per-frame hierarchy re-bake is sized by link count — measured at ~1.4 µs per
+  link per render pass, i.e. ~5.5 ms/pass for 1000 instances of a 5-node
+  subtree.  Authoring the same 5000 objects flat costs ~0.2 ms/pass.  That is a
+  property of hierarchy, not of instancing (5000 hand-parented objects measure
+  the same), but subtree instancing is the easiest way to author thousands of
+  links by accident.
+
 ---
 
 ## 6. Coordinate system

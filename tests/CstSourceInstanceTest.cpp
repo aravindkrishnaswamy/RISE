@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  CstSourceInstanceTest.cpp - 87 step 3a: `source` on a `standard_object`, the COLLAPSE case.
+//  CstSourceInstanceTest.cpp - 87 step 3a/3b: `source` on a `standard_object`.
 //
 //  `standard_object { name I  source S  position ... }` INSTANCES a single-node source (a leaf,
 //  a container, or a csg_object), producing exactly ONE object under the instancing chunk's own
@@ -20,8 +20,8 @@
 //    [parent]      `source` + `parent` is ALLOWED (an instance must be placeable in the tree).
 //    [refuse]      geometry+source (BOTH spellings, `geometry none` included) / undeclared /
 //                  forward-reference / self / CSG operand (in BOTH declaration orders) /
-//                  source-with-children (3b) / `source S parent S` / duplicate document-level
-//                  name -- each separately, each with its own TRUE reason.
+//                  `source S parent S` / duplicate document-level name -- each separately,
+//                  each with its own TRUE reason.
 //    [provenance]  the manager records (entry -> instancing chunk, source node); the source
 //                  itself has none; an unknown name leaves the out-pointers untouched.
 //    [visible]     the source still renders after being instanced.
@@ -42,6 +42,31 @@
 //                  -- the author's `source` line rather than a chunk type their scene does not
 //                  contain, a blocking non-unit SCALE rather than a rotation they never made, EVERY
 //                  defect when a matrix has more than one, and the `scale` param behind a REFLECTION.
+//
+//  87 STEP 3b adds SUBTREE instancing -- `source S` where S has CHILDREN -- and its blocks
+//  are grouped at the END of main(), under a banner.  What they lock in:
+//    [subtree]     a 2-level expansion == the two hand-written objects it stands for (names,
+//                  bindings, LINKS and world bboxes, via the DumpJob oracle); a 3-level one
+//                  composes through the middle clone; each clone is parented to the CLONE of
+//                  its parent, not to the original's parent nor flat to the instance root.
+//    [naming]      ONE level of qualification: `I.D`, never the path `I.C.D`.
+//    [light]       a `rect_light` in the subtree -- all FOUR of its entities are renamed by
+//                  remapping the one `name`, which is why clones are built by re-Finalizing
+//                  the member's own CHUNK rather than by cloning the live object.
+//    [csg]         a `csg_object` in the subtree -- the operands are SHARED BY POINTER (an
+//                  operand's matrix is CSG-LOCAL, so it reads correctly relative to whichever
+//                  composite asks) and the result equals a hand-written csg over the same two.
+//    [nested]      an instance INSIDE an instanced subtree: `I2.I1` and `I2.I1.A2`, and the
+//                  provenance chain lands on a live entry at every hop.
+//    [collision]   a synthesized name colliding with an authored chunk, in BOTH declaration
+//                  orders (the manager pre-check cannot see the AFTER case) and for a
+//                  `rect_light` collider, which the source-resolvable role scan cannot see.
+//    [refuse]      an `override_object` on a subtree member; a member declared BELOW the
+//                  instance; an `instance_array` parented into the subtree; a recursion
+//                  reached through a TRANSITIVE descendant.
+//    [gizmo]       a synthesized entry is not transform-routable, and the refusal names the
+//                  INSTANCING chunk -- the message 3a shipped unreachable.
+//
 //    [end-to-end]  the same poses driven through SceneEditController -- the whole chain
 //                  (Apply -> the DecomposeRigid post-mutate gate -> CommitPendingCstObject
 //                  Transforms -> ApplyCstObjectComponentsEdit) -- asserting where the object
@@ -64,6 +89,7 @@
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/ILogPriv.h"   // round-3: pin a REFUSAL on its own reason, not on an rc every failure shares
 #include "../src/Library/SceneEditor/SceneEditController.h"   // round-3: the gizmo-facing scale refusal and the message it prints
+#include "../src/Library/Objects/CSGObject.h"   // 3b: a csg_object in the subtree -- the operands must be SHARED, which is a pointer identity
 
 #include <cmath>
 #include <cstdio>
@@ -148,6 +174,39 @@ static double CenterX( IObject* o )
 	if( !o ) return -1.0e30;
 	const BoundingBox bb = o->getBoundingBox();
 	return ( bb.ll.x + bb.ur.x ) * 0.5;
+}
+
+// The world bbox CENTRE of an object, as three numbers -- the transform probe every 87
+// step 3b subtree assertion uses.  `IObject` exposes IBasicTransform, not the composed
+// matrix, so a COMPOSED position is read as a bbox shift; the geometry in these scenes is
+// a unit sphere / unit box centred on the node, so the centre IS the composed position.
+// A missing object answers a value no assertion can accidentally satisfy.
+static bool CenterIs( IObject* o, double x, double y, double z, std::string* outGot = nullptr )
+{
+	if( !o ) { if( outGot ) *outGot = "(no such object)"; return false; }
+	const BoundingBox bb = o->getBoundingBox();
+	const double cx = ( bb.ll.x + bb.ur.x ) * 0.5;
+	const double cy = ( bb.ll.y + bb.ur.y ) * 0.5;
+	const double cz = ( bb.ll.z + bb.ur.z ) * 0.5;
+	if( outGot ) {
+		char buf[96];
+		std::snprintf( buf, sizeof( buf ), "%.6g %.6g %.6g", cx, cy, cz );
+		*outGot = buf;
+	}
+	// 1e-9 -- these are exact translations through a composed matrix, so the only slack
+	// needed is FP noise from the multiply, not tolerance for a different answer.
+	return std::fabs( cx - x ) < 1.0e-9 && std::fabs( cy - y ) < 1.0e-9 && std::fabs( cz - z ) < 1.0e-9;
+}
+
+// An object's recorded parent NAME (the authored graph), or "(no manager)".  The link
+// structure -- not just the world pose -- is what a subtree expansion has to get right:
+// a flattened expansion that parented every clone to the instance root would still put a
+// one-level subtree in the right place.
+static std::string ParentOf( Job* j, const char* name )
+{
+	if( !j || !j->GetObjects() ) return "(no manager)";
+	const char* p = j->GetObjects()->GetObjectParent( name );
+	return p ? std::string( p ) : std::string();
 }
 
 // " (got X)", for appending to a POSE assertion's message.  Costs nothing on a pass (Check prints
@@ -240,7 +299,7 @@ static std::string DiagsForChunk( const std::string& scene, const char* chunkNam
 
 int main()
 {
-	std::printf( "CstSourceInstanceTest -- 87 step 3a: `source` instancing, the collapse case\n" );
+	std::printf( "CstSourceInstanceTest -- 87 step 3a/3b: `source` instancing, collapse + subtree\n" );
 
 	// Installed for the whole run; only the gizmo blocks below read them.
 	CapturingLogPrinter* pMatrixLogOwned = new CapturingLogPrinter( "ApplyCstObjectMatrixEdit" );
@@ -604,15 +663,20 @@ int main()
 		       "refuse: ... and the `objb` slot is scanned too, not just `obja`" );
 	}
 
-	// [refuse] a source WITH CHILDREN is a multi-node subtree -- refused, not silently
-	// root-only-instanced, which would drop most of what the author pointed at.
+	// [subtree] 87 step 3b: a source WITH CHILDREN is EXPANDED.  3a refused this and named 3b;
+	// the refusal is gone and the whole subtree is copied.  Kept here, at the position 3a's
+	// refusal test held, so the replacement is visible in the diff.
 	{
 		const std::string body = SRC_LEAF
 		                       + "standard_object\n{\nname kid\ngeometry boxg\nmaterial m\nparent S\n}\n"
 		                       + "standard_object\n{\nname I\nsource S\n}\n";
+		std::vector<std::string> diags;
+		DumpCst( Scene( body ), &diags );
 		std::string all;
-		Check( RefusedWith( Scene( body ), "step 3b", &all ), "refuse: `source` naming a node that HAS CHILDREN (subtree instancing is 3b)" );
-		Check( all.find( "has CHILDREN" ) != std::string::npos, "refuse: ... and the message says so plainly" );
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "subtree: a source WITH CHILDREN now expands rather than refusing (" ) + all + ")" ).c_str() );
+		Check( all.find( "step 3b" ) == std::string::npos && all.find( "has CHILDREN" ) == std::string::npos,
+		       "subtree: ... and the 3a not-implemented-yet refusal is gone" );
 	}
 
 	// [refuse] `source S` + `parent S` on ONE chunk.  This makes S appear to HAVE CHILDREN --
@@ -631,15 +695,24 @@ int main()
 		// author's `parent` line, because that line is the cause.
 		Check( all.find( "`parent S`" ) != std::string::npos,
 		       "refuse: ... naming the `parent` line as the cause, not sending the author after a subtree that does not exist" );
-		Check( all.find( "has CHILDREN -- instancing a multi-node subtree" ) == std::string::npos,
-		       "refuse: ... and NOT with the has-children message" );
-		// A source with a REAL other child still gets the 3b message, even when the instance
-		// also parents to it -- the detection is "every child instances S", not "S has one child".
+		// THE SPECIFIC MESSAGE, not the walk's generic one.  ClonePlanBuilder's revisit guard
+		// would ALSO catch this scene (the instancing chunk is on the clone path from the start,
+		// so cloning it as its own source's child trips the guard) -- and its message says only
+		// "expanding this instance would copy `S` into its own subtree", which is true but never
+		// mentions the one `parent` line that caused it.  The pre-walk check exists to say that,
+		// so the assertion pins WHICH of the two fired.
+		Check( all.find( "on the SAME chunk" ) != std::string::npos,
+		       "refuse: ... via the pre-walk check that knows the cause, not the walk's generic revisit guard" );
+		Check( all.find( "would copy" ) == std::string::npos,
+		       "refuse: ... so the author is not left with a message that omits their `parent` line" );
+		// A source with a REAL other child is EXPANDED under 3b -- but a self-parenting instance
+		// of it is still a recursive definition, and that check fires first.  (Under 3a this
+		// scene got the has-children/3b message, which no longer exists.)
 		Check( RefusedWith( Scene( SRC_LEAF
 		                         + "standard_object\n{\nname kid\ngeometry boxg\nmaterial m\nparent S\n}\n"
 		                         + "standard_object\n{\nname I\nsource S\nparent S\n}\n" ),
-		                    "has CHILDREN -- instancing a multi-node subtree" ),
-		       "refuse: ... while a source with a genuine OTHER child still gets the 3b message" );
+		                    "recursive definition" ),
+		       "refuse: ... and a genuine OTHER child does not stop the self-parent refusal (the subtree is real, the recursion still is)" );
 		// TWO self-parenting instances.  A "S has exactly ONE child" test is defeated here: the
 		// count is 2, so it falls through to the 3b message -- which is precisely the misdirection
 		// this branch exists to remove, since there is still no subtree and both children are the
@@ -655,14 +728,12 @@ int main()
 			Check( twoAll.find( "has CHILDREN -- instancing a multi-node subtree" ) == std::string::npos,
 			       "refuse: ... neither of the two gets the 3b subtree message" );
 		}
-		// THE OTHER HALF OF THE CONDITION.  `selfChildrenOnly` is `meAmongThem && allSelfSourced`,
-		// and only `allSelfSourced` was pinned above -- so `meAmongThem` could be dropped and the
-		// suite would stay green.  This is the scene that separates them: `I source S` with NO
-		// `parent` line, and a SEPARATE `K source S parent S`.  Every child of S does instance S
-		// (allSelfSourced is true), but `I` is not among them -- for `I`, S genuinely HAS a child,
-		// and `I` must get the 3b message.  Without `meAmongThem`, `I` would be told its own
-		// `parent S` line created a recursive definition when it has no `parent` line at all,
-		// which is a worse misdirection than the one the branch was added to remove.
+		// THE REFUSAL IS PER-CHUNK, NOT PER-SOURCE.  `I source S` with NO `parent` line, beside a
+		// SEPARATE `K source S parent S`.  S therefore has a child, so under 3b `I` has a real
+		// subtree to copy -- and `K` is declared AFTER `I`, so what `I` gets is the
+		// declared-after refusal.  What it must NOT get is the self-parent one: `I` has no
+		// `parent` line at all, and being told its own `parent S` created a recursive definition
+		// is exactly the misdirection this arc has repeatedly had to remove.
 		//
 		// `I` is declared BEFORE `K`, so `I` is the chunk this scene diagnoses.  (DeriveToJob stops
 		// at the FIRST refusal, so `K` raises nothing here -- measured, not assumed; the message
@@ -674,8 +745,8 @@ int main()
 			                        + "standard_object\n{\nname I\nsource S\n}\n"
 			                        + "standard_object\n{\nname K\nsource S\nparent S\n}\n";
 			const std::string forI = DiagsForChunk( Scene( mixed ), "I" );
-			Check( forI.find( "has CHILDREN -- instancing a multi-node subtree" ) != std::string::npos,
-			       "refuse: an UNPARENTED instance of a source that has a self-parenting sibling gets the 3b message" );
+			Check( forI.find( "is declared AFTER this instancing chunk" ) != std::string::npos,
+			       "refuse: an instance whose source acquires a child BELOW it is refused for that reason" );
 			Check( forI.find( "recursive definition" ) == std::string::npos,
 			       "refuse: ... and is NOT told its own `parent` line is the cause -- it has none" );
 		}
@@ -1594,6 +1665,402 @@ int main()
 			Check( msg.find( "non-unit SCALE" ) == std::string::npos,
 			       "e2e-singular: ... and SINGULAR is the WHOLE message -- the early-out returns before the "
 			       "scale reason, which would describe a degenerate matrix as a merely resizeable one" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// ================================================================ 87 step 3b
+	// SUBTREE INSTANCING.  `source S` where S HAS CHILDREN expands into the instancing
+	// chunk's own entry plus one clone per node in S's subtree, named `I.X` and parented
+	// to the clone of X's parent.  Everything below is new in 3b.
+
+	// The two fixtures every subtree assertion below builds on.  DIFFERENT geometry and
+	// material on the child, so a clone that inherited the ROOT's bindings instead of the
+	// child's own would be caught by the dump compare rather than passing on a coincidence.
+	const std::string SUB2 = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n"
+	                         "standard_object\n{\nname C\nparent S\ngeometry boxg\nmaterial m2\nposition 0 1 0\n}\n";
+	const std::string SUB3 = SUB2 + "standard_object\n{\nname D\nparent C\ngeometry geo\nmaterial m\nposition 0 0 1\n}\n";
+
+	// [subtree] A 2-LEVEL subtree expansion is INDISTINGUISHABLE from the pair of objects
+	// it stands for -- same names, same bindings, same link structure, same world bboxes.
+	// This is the strongest oracle in the file: DumpJob prints every object's geometry,
+	// material, modifier, shader, radiance map, interior medium, visibility and WORLD
+	// bounding box, so an expansion that got any of those wrong on any entry diverges.
+	{
+		std::vector<std::string> diags;
+		const std::string got  = DumpCst( Scene( SUB2 + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ), &diags );
+		const std::string want = DumpCst( Scene( SUB2
+			+ "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n"
+			  "standard_object\n{\nname I.C\nparent I\ngeometry boxg\nmaterial m2\nposition 0 1 0\n}\n" ) );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "subtree: a 2-level subtree instance derives cleanly (" ) + all + ")" ).c_str() );
+		Check( got == want, "subtree: the expansion == the two hand-written objects it stands for (names, bindings, links, world bboxes)" );
+		// NON-VACUITY, and it is the specific wrong answer worth excluding: parenting the
+		// clone to the SOURCE's parent instead of to the clone of it.  The child's LOCAL
+		// transform is identical either way, so only the composed world position separates
+		// them -- the clone would sit on top of the original's child at (2,1,0).
+		const std::string flat = DumpCst( Scene( SUB2
+			+ "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n"
+			  "standard_object\n{\nname I.C\nparent S\ngeometry boxg\nmaterial m2\nposition 0 1 0\n}\n" ) );
+		Check( got != flat, "subtree: ... and the clone is parented to the CLONE of its parent, not to the original's parent" );
+	}
+
+	// [subtree] A 3-LEVEL subtree: the LINK STRUCTURE and the composed world transform of
+	// the DEEPEST node.  A one-level test cannot separate "parented to the clone of my
+	// parent" from "parented to the instance root" -- at depth 1 those are the same node.
+	{
+		Job* j = DeriveJob( Scene( SUB3 + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		std::string got;
+		Check( CenterIs( Obj( j, "I" ), 5, 0, 0, &got ), ( "subtree3: the instance root lands at its own `position` (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I.C" ), 5, 1, 0, &got ), ( "subtree3: `I.C` composes C's local (0,1,0) onto it (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I.D" ), 5, 1, 1, &got ), ( "subtree3: `I.D` composes THROUGH `I.C` (got " + got + ")" ).c_str() );
+		Check( ParentOf( j, "I" ).empty(),          "subtree3: the instance root is a root (it took no `parent` of its own)" );
+		Check( ParentOf( j, "I.C" ) == "I",         "subtree3: `I.C` is parented to the instance root" );
+		Check( ParentOf( j, "I.D" ) == "I.C",       "subtree3: `I.D` is parented to `I.C` -- the CLONE of D's parent, not the root" );
+		// ONE LEVEL OF QUALIFICATION.  D's entry name in the source tree is `D`, so its
+		// clone is `I.D`; a path-style name would be `I.C.D`, which the design rejects
+		// because descendant names are already globally unique in the manager.
+		Check( Obj( j, "I.C.D" ) == 0,              "subtree3: the name is `I.D`, NOT a path `I.C.D`" );
+		// `source` COPIES.  The whole original subtree still renders where it was.
+		Check( CenterIs( Obj( j, "S" ), 2, 0, 0 ) && CenterIs( Obj( j, "C" ), 2, 1, 0 ) && CenterIs( Obj( j, "D" ), 2, 1, 1 ),
+		       "subtree3: the SOURCE subtree is untouched -- `source` copies, it does not move or hide" );
+		j->release();
+
+		// AND THE INSTANCE'S OWN `parent` STILL APPLIES.  The instancing node is a node in
+		// its own right, placeable anywhere in the tree, and the clone loop must not
+		// clobber the root's own link on its way to setting the clones'.  A whole
+		// instanced assembly therefore composes through its host: move the host, the
+		// copy and everything in it moves.
+		Job* j2 = DeriveJob( Scene( "standard_object\n{\nname host\nposition 0 0 20\n}\n" + SUB3
+			+ "standard_object\n{\nname I\nsource S\nparent host\nposition 5 0 0\n}\n" ) );
+		std::string g2;
+		Check( ParentOf( j2, "I" ) == "host", "subtree3: the instance keeps its OWN `parent`" );
+		Check( CenterIs( Obj( j2, "I" ), 5, 0, 20, &g2 ), ( "subtree3: ... so the instance root composes through it (got " + g2 + ")" ).c_str() );
+		Check( CenterIs( Obj( j2, "I.D" ), 5, 1, 21, &g2 ), ( "subtree3: ... and so does the deepest clone (got " + g2 + ")" ).c_str() );
+		j2->release();
+	}
+
+	// [provenance] every synthesized entry records the node it is a COPY OF, which is what
+	// makes it traceable to something an author can edit.  `I.C -> (I, C)`: the instancing
+	// chunk plus the source-side node.
+	{
+		Job* j = DeriveJob( Scene( SUB3 + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		IObjectManager* objs = j->GetObjects();
+		const char* inst = 0; const char* src = 0;
+		const bool got = objs && objs->GetObjectProvenance( "I.D", &inst, &src );
+		Check( got && inst && std::string( inst ) == "I", "provenance: a synthesized entry names the INSTANCING chunk" );
+		Check( got && src && std::string( src ) == "D",   "provenance: ... and the SOURCE NODE it is a copy of" );
+		// The source node it names must be a LIVE entry, or "traceable" is a claim about
+		// a string rather than about the scene.
+		Check( objs && objs->GetItem( "D" ) != 0, "provenance: ... and that source node really is an entry in the manager" );
+		// The source subtree's own members have NO provenance -- they were declared, not synthesized.
+		const char* i2 = 0;
+		Check( objs && !objs->GetObjectProvenance( "D", &i2, 0 ), "provenance: an authored subtree member has none" );
+		j->release();
+	}
+
+	// [subtree][light] a `rect_light` INSIDE the subtree.  Its Finalize synthesizes FOUR
+	// entities -- `<name>__pnt`, `<name>__mat`, `<name>__geo` and the object `<name>` --
+	// so remapping the one `name` renames all four for free.  That is the reason clones are
+	// built by re-`Finalize`ing the member's own CHUNK: an object-level clone walk would
+	// duplicate the object and collide on all three helpers.
+	//
+	// It is also the case 3a got WRONG: its has-children scan covered only
+	// `standard_object` / `csg_object`, so a source whose only child was a `rect_light`
+	// passed the refusal and instanced ROOT-ONLY, silently dropping the lamp.
+	{
+		const std::string body = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n"
+		                         "rect_light\n{\nname L\nparent S\ncenter 0 3 0\nsize 2 1\nfacing 0 -1 0\ncolor 1 1 1\nexitance 60\n}\n"
+		                         "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n";
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( body ), &diags );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "subtree-light: a subtree containing a rect_light expands cleanly (" ) + all + ")" ).c_str() );
+		std::string got;
+		Check( CenterIs( Obj( j, "I.L" ), 5, 3, 0, &got ),
+		       ( "subtree-light: the lamp's object is cloned as `I.L` and rides the instance (got " + got + ")" ).c_str() );
+		Check( ParentOf( j, "I.L" ) == "I", "subtree-light: ... parented to the instance root" );
+		Check( j->GetGeometries() && j->GetGeometries()->GetItem( "I.L__geo" ) != 0,
+		       "subtree-light: the panel GEOMETRY is renamed with it (`I.L__geo`)" );
+		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "I.L__mat" ) != 0,
+		       "subtree-light: the luminaire MATERIAL too (`I.L__mat`)" );
+		Check( j->GetPainters() && j->GetPainters()->GetItem( "I.L__pnt" ) != 0,
+		       "subtree-light: and the colour PAINTER (`I.L__pnt`)" );
+		// The original four are all still there -- four names, not four names moved.
+		Check( Obj( j, "L" ) != 0 && j->GetGeometries()->GetItem( "L__geo" ) != 0
+		    && j->GetMaterials()->GetItem( "L__mat" ) != 0 && j->GetPainters()->GetItem( "L__pnt" ) != 0,
+		       "subtree-light: ... and the source lamp keeps all four of its own entities" );
+		// The clone is a REAL emitter, not just an object with a name: its material carries
+		// an emitter, which is what LuminaryManager collects.
+		IMaterial* mat = j->GetMaterials() ? j->GetMaterials()->GetItem( "I.L__mat" ) : 0;
+		Check( mat && mat->GetEmitter() != 0, "subtree-light: the cloned material is a real LUMINAIRE (it has an emitter)" );
+		j->release();
+	}
+
+	// [subtree][csg] a `csg_object` INSIDE the subtree.  Re-Finalized with `obja` / `objb`
+	// UNCHANGED, so the two composites SHARE their operands.
+	//
+	// SHARING IS CORRECT AND IT IS NOT OBVIOUS.  `CSGObject::IntersectRay` transforms the
+	// world ray into the COMPOSITE's own frame BEFORE handing it to either operand, so an
+	// operand's matrix is CSG-LOCAL and reads correctly relative to whichever composite is
+	// asking -- two composites at different world poses get the right solid out of one
+	// shared operand.  Nothing here should ever be "fixed" into a deep clone.
+	//
+	// An operand can never itself BE a subtree member: Job::AddCSGObject refuses an operand
+	// that has a parent or children, and ObjectManager::SetObjectParent refuses it from the
+	// other side -- so the walk cannot reach one.
+	{
+		const std::string body = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n"
+		                         "standard_object\n{\nname opa\ngeometry geo\nmaterial m\n}\n"
+		                         "standard_object\n{\nname opb\ngeometry boxg\nmaterial m\nposition 2 0 0\n}\n"
+		                         "csg_object\n{\nname X\nparent S\nobja opa\nobjb opb\noperation union\nposition 0 2 0\n}\n";
+		std::vector<std::string> diags;
+		const std::string got  = DumpCst( Scene( body + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ), &diags );
+		// The reference semantics, hand-written: a second csg_object over the SAME two
+		// operands, parented to the instance.  DumpJob equality over the whole scene is
+		// this file's render-equivalence oracle (see its header), so this is the
+		// "renders equivalently" assertion.
+		const std::string want = DumpCst( Scene( body
+			+ "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n"
+			  "csg_object\n{\nname I.X\nparent I\nobja opa\nobjb opb\noperation union\nposition 0 2 0\n}\n" ) );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "subtree-csg: a subtree containing a csg_object expands cleanly (" ) + all + ")" ).c_str() );
+		Check( got == want, "subtree-csg: the cloned composite == a hand-written csg_object over the same operands at the same pose" );
+
+		Job* j = DeriveJob( Scene( body + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		Implementation::CSGObject* origin = dynamic_cast<Implementation::CSGObject*>( Obj( j, "X" ) );
+		Implementation::CSGObject* clone  = dynamic_cast<Implementation::CSGObject*>( Obj( j, "I.X" ) );
+		Check( origin && clone, "subtree-csg: the clone is itself a CSGObject (built through the SOURCE member's own chunk type)" );
+		if( origin && clone ) {
+			Check( clone->GetOperandA() == origin->GetOperandA() && clone->GetOperandB() == origin->GetOperandB(),
+			       "subtree-csg: the operands are SHARED BY POINTER, not deep-copied" );
+		}
+		Check( Obj( j, "I.opa" ) == 0 && Obj( j, "I.opb" ) == 0,
+		       "subtree-csg: ... so no operand copies were synthesized (an operand is not a subtree member)" );
+		std::string ctr;
+		// (-1..1) from the sphere at the origin unioned with (1.5..2.5) from the box at
+		// x=2 gives a bbox centre of x=0.75 in the composite's own frame -- deliberately
+		// ASYMMETRIC, so this number cannot be reached with either operand missing (the
+		// sphere alone centres at 0, the box alone at 2).
+		Check( CenterIs( Obj( j, "I.X" ), 5.75, 2, 0, &ctr ),
+		       ( "subtree-csg: BOTH shared operands still produce the composite at the CLONE's pose (got " + ctr + ")" ).c_str() );
+		j->release();
+	}
+
+	// [subtree][nested] AN INSTANCE INSIDE AN INSTANCED SUBTREE.  This is where the naming
+	// rule earns the words "one level": `I1`'s own expansion already produced `I1.A2`, so
+	// instancing the container that holds `I1` adds ONE more level to a name that had one
+	// -- `I2.I1` and `I2.I1.A2` -- rather than re-deriving a path from the tree shape.
+	{
+		const std::string body = "standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+		                         "standard_object\n{\nname A2\nparent A\ngeometry boxg\nmaterial m2\nposition 0 1 0\n}\n"
+		                         "standard_object\n{\nname Sroot\n}\n"
+		                         "standard_object\n{\nname I1\nsource A\nparent Sroot\nposition 1 0 0\n}\n"
+		                         "standard_object\n{\nname I2\nsource Sroot\nposition 10 0 0\n}\n";
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( body ), &diags );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "nested: an instance nested inside an instanced subtree derives cleanly (" ) + all + ")" ).c_str() );
+		std::string got;
+		Check( CenterIs( Obj( j, "I1" ),      1,  0, 0, &got ), ( "nested: (control) the inner instance itself (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I1.A2" ),   1,  1, 0, &got ), ( "nested: (control) and its own synthesized child (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I2.I1" ),   11, 0, 0, &got ), ( "nested: `I2.I1` -- the clone of an entry that is itself an instance (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I2.I1.A2" ),11, 1, 0, &got ), ( "nested: `I2.I1.A2` -- the clone of an already-synthesized entry (got " + got + ")" ).c_str() );
+		Check( ParentOf( j, "I2.I1" ) == "I2" && ParentOf( j, "I2.I1.A2" ) == "I2.I1",
+		       "nested: the cloned links follow the cloned tree" );
+		// The qualification is added to the ENTRY name, so it is NOT `I2.A2`: that name
+		// would claim `A2` is a direct member of what `I2` copied, which it is not.
+		Check( Obj( j, "I2.A2" ) == 0, "nested: ... and NOT `I2.A2` -- the copied entry's own name already carried a level" );
+		// PROVENANCE THROUGH THE NEST: each hop names a LIVE entry, so a consumer can walk
+		// from a rendered pixel back to an editable chunk one step at a time.
+		IObjectManager* objs = j->GetObjects();
+		const char* inst = 0; const char* src = 0;
+		const bool prov = objs && objs->GetObjectProvenance( "I2.I1.A2", &inst, &src );
+		Check( prov && inst && std::string( inst ) == "I2", "nested: provenance names the OUTER instancing chunk" );
+		Check( prov && src && std::string( src ) == "I1.A2",
+		       "nested: ... and the source ENTRY it copied, which is itself a synthesized name" );
+		Check( objs && objs->GetItem( "I1.A2" ) != 0, "nested: ... and that name really is a live entry, so the trace continues" );
+		j->release();
+	}
+
+	// [collision] A SYNTHESIZED name colliding with an AUTHORED chunk, BOTH directions.
+	// The two failure modes are genuinely different and neither guard covers the other.
+	{
+		const std::string inst = "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n";
+		// (a) The authored chunk is declared AFTER the instancing chunk.  The manager
+		// pre-check CANNOT see this -- the colliding object does not exist yet -- and the
+		// consequence is the silent one: DocFindByNameAnyRole would resolve a pick on the
+		// synthesized `I.C` to the authored chunk, so an edit lands somewhere unrelated.
+		{
+			std::string all;
+			Check( RefusedWith( Scene( SUB2 + inst + "standard_object\n{\nname I.C\ngeometry geo\nmaterial m\n}\n" ),
+			                    "the document ALREADY declares an object of that name", &all ),
+			       "collision: an authored chunk named like a synthesized entry, declared AFTER, is refused by the DOCUMENT scan" );
+			Check( all.find( "`I.C`" ) != std::string::npos && all.find( "chunk #" ) != std::string::npos,
+			       "collision: ... naming the entry and the chunk the author has to go find" );
+		}
+		// (b) Declared BEFORE.  Now the object exists when the expansion runs, so the
+		// manager pre-check fires first -- and its message says which SUBTREE MEMBER the
+		// clashing entry was being synthesized for, which the raw AddItem duplicate-name
+		// error does not.
+		{
+			std::string all;
+			Check( RefusedWith( Scene( SUB2 + "standard_object\n{\nname I.C\ngeometry geo\nmaterial m\n}\n" + inst ),
+			                    "already exists as an object", &all ),
+			       "collision: ... and declared BEFORE, by the MANAGER pre-check" );
+			// WHICH GUARD.  Both messages name the subtree member, so a bare
+			// "for the subtree member `C`" search is satisfied by the DOCUMENT scan's
+			// message too -- it stays green with the manager pre-check deleted (measured).
+			// The manager one is the only one that says the object EXISTS.
+			Check( all.find( "for the subtree member `C`" ) != std::string::npos,
+			       "collision: ... naming the subtree member whose clone collided" );
+			Check( all.find( "the document ALREADY declares" ) == std::string::npos,
+			       "collision: ... and it is the MANAGER pre-check that answers, not the document scan standing in for it" );
+		}
+		// (c) The collider is a `rect_light`, declared AFTER.  Its object entry claims the
+		// name `I.C` exactly as a `standard_object` would, but it is NOT a role a `source`
+		// can name -- so a scan restricted to the source-resolvable roles misses it and the
+		// clone silently mis-targets.  This is the case the separate ENTRY-name keyspace exists for.
+		{
+			Check( RefusedWith( Scene( SUB2 + inst
+			                         + "rect_light\n{\nname I.C\ncenter 0 3 0\nsize 2 1\nfacing 0 -1 0\ncolor 1 1 1\nexitance 60\n}\n" ),
+			                    "the document ALREADY declares an object of that name" ),
+			       "collision: ... and a `rect_light` claiming a synthesized entry name is caught too" );
+		}
+	}
+
+	// [refuse] an `override_object` layer on a subtree member.  An override is applied to
+	// the LIVE object by name AFTER its base chunk, so it never reaches a clone built from
+	// that base chunk -- the copy would silently carry the un-overridden pose.  Overlaying
+	// the override's params onto the merge is not equivalent either (a base `matrix` plus an
+	// override `position` COMPOSES on the live object but would be swallowed by
+	// standard_object's matrix-wins precedence in one merged param list), so this refuses
+	// rather than approximating.
+	{
+		std::string all;
+		Check( RefusedWith( Scene( SUB2 + "override_object\n{\nname C\nposition 0 9 0\n}\n"
+		                                + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ),
+		                    "has an `override_object` layer", &all ),
+		       "refuse: a subtree member with an `override_object` layer is refused, not silently un-overridden" );
+		Check( all.find( "UN-overridden pose" ) != std::string::npos && all.find( "chunk #" ) != std::string::npos,
+		       "refuse: ... saying what the copy would have been, and where the override is" );
+		// The SOURCE ROOT's own override is irrelevant and must NOT refuse: `override_object`
+		// declares only transform params, and the collapse semantics drop the source's
+		// transform entirely, so nothing an override on S could say survives into the copy.
+		{
+			std::vector<std::string> diags;
+			DumpCst( Scene( SUB2 + "override_object\n{\nname S\nposition 9 0 0\n}\n"
+			                     + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ), &diags );
+			std::string d2;
+			for( std::size_t i = 0; i < diags.size(); ++i ) d2 += diags[i];
+			Check( d2.find( "override_object` layer" ) == std::string::npos,
+			       "refuse: ... while an override on the source ROOT is not refused (its transform is dropped anyway)" );
+		}
+	}
+
+	// [refuse] a subtree member declared AFTER the instancing chunk.  The expansion runs at
+	// the instancing chunk's own document position, so a later member does not exist yet --
+	// and copying "the part of the subtree that happens to precede me" is the silent partial
+	// copy 3a refused to make.
+	{
+		std::string all;
+		Check( RefusedWith( Scene( SUB2.substr( 0, SUB2.find( "standard_object\n{\nname C" ) )
+		                         + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n"
+		                         + "standard_object\n{\nname C\nparent S\ngeometry boxg\nmaterial m2\nposition 0 1 0\n}\n" ),
+		                    "is declared AFTER this instancing chunk", &all ),
+		       "refuse: a subtree member declared below the instance is refused, not silently omitted from the copy" );
+		Check( all.find( "`C`" ) != std::string::npos, "refuse: ... naming the member" );
+	}
+
+	// [refuse] an `instance_array` generator parented into the subtree.  Generators expand
+	// in a trailing pass, after every `source` chunk, and their `parent` names the ORIGINAL
+	// node -- so their objects stay attached to the source and the copy would silently be
+	// missing them.
+	{
+		Check( RefusedWith( Scene( "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n"
+		                         + std::string( "instance_array\n{\nname g\ntemplate geo\nmaterial m\nparent S\ncount_u 3\n}\n" )
+		                         + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ),
+		                    "contains the `instance_array` generator" ),
+		       "refuse: an `instance_array` parented into the subtree is refused, not silently dropped from the copy" );
+	}
+
+	// [refuse] a RECURSIVE definition the pre-walk self-parent check CANNOT see, because
+	// the instancing chunk is not a DIRECT child of its own source.  `C source M parent M2`
+	// where `M2 parent M`: expanding `C` clones `M2` (fine), then walks M2's children and
+	// finds `C` itself -- which would have to be copied into its own output, forever.  The
+	// walk's revisit guard is the only thing that terminates this, so this scene is what
+	// proves that guard is not dead code.
+	{
+		const std::string body = "standard_object\n{\nname M\ngeometry geo\nmaterial m\n}\n"
+		                         "standard_object\n{\nname M2\nparent M\ngeometry boxg\nmaterial m2\nposition 0 1 0\n}\n"
+		                         "standard_object\n{\nname C\nsource M\nparent M2\nposition 0 0 1\n}\n";
+		std::string all;
+		Check( RefusedWith( Scene( body ), "recursive definition", &all ),
+		       "refuse: a recursion through a TRANSITIVE descendant is caught by the walk's revisit guard" );
+		Check( all.find( "into its own subtree" ) != std::string::npos,
+		       "refuse: ... with the walk's own message, since no single `parent`+`source` pair explains it" );
+		Check( all.find( "on the SAME chunk" ) == std::string::npos,
+		       "refuse: ... and NOT the pre-walk message, which describes a `parent` line this scene does not have" );
+	}
+
+	// [cap] NOT TESTED HERE, and the reason is worth recording rather than leaving as a
+	// gap.  The document-wide synthesized-entry budget (kMaxSynthesizedEntries, 10,000,000
+	// -- the same magnitude as the per-generator `instance_array` cap it subsumes) can only
+	// be crossed by actually MATERIALIZING ten million objects: `instance_array` clamps
+	// each of `count_u` / `count_v` to 1e6, so the only way to spend the budget is with
+	// generators that each pass their own cap and build, and a `source` expansion's plan
+	// would need a ten-million-node subtree.  A test that crossed it would take minutes and
+	// gigabytes.  The arithmetic and the threading were instead verified by temporarily
+	// lowering the constant and confirming a three-entry subtree refuses with the
+	// source-side message -- a red/green proof in the opposite direction, run by hand.
+
+	// [round-trip] a 3b scene round-trips byte-for-byte.  The expansion is a DERIVE-time
+	// act, so the file the author wrote is the file they get back -- no synthesized chunk
+	// is ever written into the document.
+	{
+		const std::string scene = Scene( SUB3 + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" );
+		Check( SerializeCst( ParseToCst( scene ) ) == scene, "round-trip: a subtree-instancing scene round-trips byte-for-byte" );
+		// And the serialized form holds no trace of the clones.
+		const std::string out = SerializeCst( ParseToCst( scene ) );
+		Check( out.find( "I.C" ) == std::string::npos && out.find( "I.D" ) == std::string::npos,
+		       "round-trip: ... and the synthesized entries appear nowhere in it" );
+	}
+
+	// [gizmo] A SYNTHESIZED entry has no chunk of its own name, so a transform edit on it
+	// is not committable -- and the refusal must name the INSTANCING chunk, which is the
+	// thing the author can actually move.  3a shipped this message unreachable (its collapse
+	// entry always has its own chunk, so CstObjectTransformKind answered 1); 3b's clones are
+	// the first entries that reach it.
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene( SUB3 + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_3b_gizmo.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "gizmo-3b: the subtree fixture loads through the retained-CST path" );
+		if( loaded ) {
+			Check( j->CstObjectTransformKind( "I.C" ) == 0,
+			       "gizmo-3b: a synthesized entry is NOT transform-routable (it has no chunk of its own name)" );
+			Check( j->CstObjectTransformKind( "I" ) == 1,
+			       "gizmo-3b: ... while the instancing chunk itself is (the control that makes the line above mean something)" );
+			SceneEditController c( *j, 0 );
+			c.SetSelection( Cat::Object, String( "I.C" ) );
+			const int before = pRefusalLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "0 5 0" ) ),
+			       "gizmo-3b: a transform edit on a synthesized entry is refused" );
+			Check( pRefusalLog->MatchCount() == before + 1, "gizmo-3b: ... and the author is told" );
+			const std::string msg = pRefusalLog->LastMatch();
+			Check( msg.find( "INSTANCE synthesized by `I`" ) != std::string::npos,
+			       "gizmo-3b: ... naming the INSTANCING chunk, resolved through provenance" );
+			Check( msg.find( "move `I` instead" ) != std::string::npos,
+			       "gizmo-3b: ... and saying what to move instead" );
+			Check( msg.find( "no CST `matrix` param" ) == std::string::npos,
+			       "gizmo-3b: ... not the generic reason, which is true but useless for a chunk the author never wrote" );
 		}
 		j->release();
 		std::remove( path.c_str() );

@@ -1332,6 +1332,19 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 	}
 }
 
+//! 87 step 3b: the DOCUMENT-WIDE cap on SYNTHESIZED OBJECT ENTRIES -- every object an
+//! expansion creates that no chunk of its own name declares, summed over every
+//! `source` chunk and every `instance_array` generator in the document.
+//!
+//! ENTRIES, not instances, and that is the whole point of the number.  A generator's
+//! own `count_u * count_v <= 10,000,000` bounds how many times IT repeats, which was
+//! an adequate proxy while every repetition was exactly one flat object.  A subtree
+//! instance produces `count x subtree size` entries, so the per-generator cap stops
+//! bounding what actually reaches the TLAS, the luminary list, `parentByName` and
+//! every per-frame walk.  Same magnitude as the per-generator cap it subsumes, so no
+//! scene that derives today can hit it.
+static const long long kMaxSynthesizedEntries = 10000000LL;
+
 //! #5 slice 4: expand an `instance_array` generator (§2.6.1) into N standard_objects.  The generator
 //! is NOT an engine entity -- the CST stores it; DeriveToJob expands it here (the canonical derive)
 //! AFTER the normal entities so the template geometry + referenced materials exist.  Params: name +
@@ -1346,7 +1359,7 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 //! whenever the document holds ANY instance_array -- its O(1) Document `instanceArrayCount` guard (P1-A) --
 //! so full == incremental until the generator's input edges are traced (Facet-2).
 static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, const IAsciiChunkParser* stdObj,
-                                 IJob& pJob, std::vector<std::string>& diags, int& made )
+                                 IJob& pJob, long long& entryBudget, std::vector<std::string>& diags, int& made )
 {
 	made = 0;
 	std::string name, templ, countU_raw, countV_raw;
@@ -1392,6 +1405,14 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 	const int countV = countV_raw.empty() ? 1 : evalCount( countV_raw, "count_v" );
 	if( !countOk ) return false;
 	if( (long long)countU * (long long)countV > 10000000LL ) { diags.push_back( "instance_array '" + name + "': count_u*count_v exceeds 10,000,000 instances" ); return false; }
+	// 87 step 3b: the generator's own cap above bounds THIS generator; the shared
+	// budget bounds the DOCUMENT.  Both apply -- see kMaxSynthesizedEntries for why
+	// entries, and not per-generator instance counts, are the number that matters.
+	if( (long long)countU * (long long)countV > entryBudget ) {
+		diags.push_back( "instance_array '" + name + "': the document has room for only " + std::to_string( entryBudget )
+			+ " more synthesized objects (of " + std::to_string( kMaxSynthesizedEntries ) + " document-wide)" );
+		return false;
+	}
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );          // collision pre-check: emit a generator-localized diagnostic
 	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;     // (names the exact generated index that clashes) BEFORE building
 	                                                            // the synthesized object.  Job::AddObject now also rejects a
@@ -1425,6 +1446,7 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 			// template is a GEOMETRY, so the second field is empty.
 			if( objMgr ) objMgr->SetObjectProvenance( nm, name.c_str(), "" );
 			++made;
+			--entryBudget;
 		}
 	}
 	return true;
@@ -1446,21 +1468,45 @@ static bool IsInstanceOwnParam( const std::string& pname )
 	    || pname == "matrix"      || pname == "scale";
 }
 
+//! Is `role` a chunk type whose Finalize registers a scene-graph OBJECT that can
+//! carry a `parent`?  Four parsers call `IJob::SetObjectParent`: `standard_object`,
+//! `csg_object`, and the two area-light sugars `rect_light` / `shape_light`, each of
+//! which synthesizes one object (plus three helper entities named after it).
+//!
+//! 87 step 3b walks a source's SUBTREE, so this set decides what a subtree can
+//! CONTAIN -- and a `rect_light` parented to an assembly is the motivating case for
+//! parenting a light in the first place (see SCENE_CONVENTIONS).  3a scanned only
+//! `standard_object` / `csg_object`, which is why a source whose only child was a
+//! `rect_light` slipped past its has-children refusal and instanced root-only,
+//! silently dropping the lamp.
+static bool RoleDeclaresGraphObject( const std::string& role )
+{
+	return role == "standard_object" || role == "csg_object"
+	    || role == "rect_light"      || role == "shape_light";
+}
+
 //! An O(N) index of the document's OBJECT-CREATING chunks, built ONCE per derive
-//! and shared by every `source` expansion in it (87 step 3a).
+//! and shared by every `source` expansion in it (87 step 3a/3b).
 struct ObjectChunkIndex
 {
-	//! name -> the item indices declaring it.  MORE THAN ONE is an authored
+	//! name -> the item indices declaring it, restricted to the two roles a `source`
+	//! may NAME (`standard_object` / `csg_object`).  MORE THAN ONE is an authored
 	//! duplicate, which the collision scan reports naming both.  `override_object`
 	//! is deliberately absent: it names an EXISTING object BY DESIGN, so counting
 	//! it would report every override as a collision.
 	std::map<std::string, std::vector<std::size_t> > byName;
+	//! name -> declaring item indices over EVERY object-producing role
+	//! (RoleDeclaresGraphObject).  This is the ENTRY-NAME keyspace, so it is what
+	//! 3b's collision scan tests a synthesized name against: a `rect_light` named
+	//! `I.C` collides with a clone called `I.C` just as surely as a
+	//! `standard_object` would, and `byName` above cannot see it.
+	std::map<std::string, std::vector<std::size_t> > entryByName;
 	//! parent-name -> the ITEM INDICES of the chunks naming it as their `parent`,
-	//! i.e. the nodes that HAVE children.  87 step 3a instances a SINGLE node; a
-	//! source with children is subtree instancing, which is step 3b.  Indices, not
-	//! a bare flag, because `I source S parent S` makes the INSTANCING chunk its
-	//! own source's only child -- an author's self-inflicted `parent` link, not the
-	//! multi-node subtree 3b is about, and the two need different diagnostics.
+	//! i.e. the nodes that HAVE children, over every object-producing role.  This
+	//! is the edge set 3b's subtree walk follows.  Indices, not a bare flag,
+	//! because `I source S parent S` makes the INSTANCING chunk its own source's
+	//! only child -- an author's self-inflicted `parent` link, not the multi-node
+	//! subtree 3b expands, and the two need different diagnostics.
 	std::map<std::string, std::vector<std::size_t> > childrenOf;
 	//! Every name a `csg_object` chunk binds as `obja` / `objb` -- the CSG OPERANDS.
 	//! A DOCUMENT scan, deliberately, so the answer does not depend on WHERE the
@@ -1468,6 +1514,22 @@ struct ObjectChunkIndex
 	//! state only becomes false once the `csg_object`'s Finalize has run, which
 	//! would make the operand refusal fire or not fire purely on declaration order.
 	std::set<std::string> csgOperands;
+	//! Every name an `override_object` layer targets, and the item index of the
+	//! first such layer.  A subtree member carrying one cannot be faithfully
+	//! CLONED: the clone is built by re-`Finalize`ing the member's own chunk, and
+	//! `override_object` is applied to the LIVE object afterwards by name -- so the
+	//! clone would silently be the un-overridden pose.  Overlaying the override's
+	//! params onto the merge is not equivalent either (a base `matrix` plus an
+	//! override `position` COMPOSES on the live object and would be swallowed by
+	//! `standard_object`'s matrix-wins precedence in a merged param list), so 3b
+	//! refuses instead of approximating.
+	std::map<std::string, std::size_t> overriddenNames;
+	//! parent-name -> item indices of `instance_array` GENERATORS naming it as
+	//! their `parent`.  Generators expand in a trailing pass, AFTER every `source`
+	//! chunk, so their entries cannot be walked as subtree members -- and their
+	//! `parent` names the ORIGINAL node, so they would attach to the source and not
+	//! to any clone.  3b refuses rather than silently dropping them from the copy.
+	std::map<std::string, std::vector<std::size_t> > generatorChildrenOf;
 };
 
 static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChunkIndex& out )
@@ -1475,9 +1537,22 @@ static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChun
 	for( std::size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( !c || c->kind != NodeKind::Chunk ) continue;
-		if( c->role != "standard_object" && c->role != "csg_object" ) continue;
+		if( c->role == "override_object" ) {
+			std::string nm;
+			if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) out.overriddenNames.insert( std::make_pair( nm, i ) );
+			continue;
+		}
+		if( c->role == "instance_array" ) {
+			std::string pr;
+			if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.generatorChildrenOf[ pr ].push_back( i );
+			continue;
+		}
+		if( !RoleDeclaresGraphObject( c->role ) ) continue;
 		std::string nm;
-		if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) out.byName[ nm ].push_back( i );
+		if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) {
+			out.entryByName[ nm ].push_back( i );
+			if( c->role == "standard_object" || c->role == "csg_object" ) out.byName[ nm ].push_back( i );
+		}
 		std::string pr;
 		if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.childrenOf[ pr ].push_back( i );
 		if( c->role == "csg_object" ) {
@@ -1501,11 +1576,390 @@ static unsigned int ChunkOrdinal( const std::vector<NodeRef>& items, std::size_t
 	return n;
 }
 
-//! 87 step 3a -- expand a `standard_object` carrying `source` into exactly ONE
-//! object, under the instancing chunk's OWN name.  This is the COLLAPSE case: a
-//! SINGLE-NODE source (a leaf, a container, or a csg_object).  A source that has
-//! children is refused, not silently root-only-instanced -- subtree expansion is
-//! step 3b.
+//! The `source` chain of chunk `idx`, NEAREST SOURCE FIRST: the chunk it instances,
+//! the chunk THAT one instances, and so on.  Empty when the chunk carries no
+//! `source`.  Terminates by the declare-earlier rule (every link points strictly
+//! backwards in the document, so a cycle is impossible by construction); the depth
+//! cap is a belt against a future apply path that admits a link this walk never saw.
+//!
+//! Returns false on a link that does not resolve (no such chunk, or a forward
+//! reference) and on a chain deeper than the cap -- the CALLER turns that into its
+//! own diagnostic, because the two entry points want different wording.
+static bool SourceChainOf( const std::vector<NodeRef>& items, const ObjectChunkIndex& index,
+                           std::size_t idx, std::vector<std::size_t>& chain )
+{
+	chain.clear();
+	std::string src;
+	if( !ParamValue( items[idx].get(), "source", src ) || src.empty() || src == "none" ) return true;
+	std::size_t cursor = idx;
+	for( unsigned int guard = 0; guard < 256u; ++guard ) {
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator si = index.byName.find( src );
+		if( si == index.byName.end() || si->second.empty() || si->second.front() >= cursor ) return false;
+		cursor = si->second.front();
+		chain.push_back( cursor );
+		src.clear();
+		if( !ParamValue( items[cursor].get(), "source", src ) || src.empty() || src == "none" ) return true;
+	}
+	return false;   // deeper than the cap
+}
+
+//! Merge a chunk's OWN parameters with everything it inherits through `source`, and
+//! answer the chunk type the result must be built through.
+//!
+//! ONE function for the 3a collapse root and every 3b subtree clone, which is what
+//! makes an instance NESTED inside an instanced subtree inherit by exactly the rule
+//! the top-level instancing chunk does.  Root-first, so a nearer chunk's binding
+//! overrides a farther one's and the chunk's OWN parameters override everything.
+//! Insertion order is kept so the synthesized parameter list is deterministic.
+//!
+//! `IsInstanceOwnParam` is applied to the INHERITED chunks only: the source's name,
+//! parent and local transform are DROPPED, never composed (see its own header).  The
+//! chunk's own params come through whole except `source`, which the expansion consumes.
+static void MergeChunkParams(
+	const std::vector<NodeRef>& items,
+	const LetBindings& lets,
+	std::size_t chunkIdx,
+	const std::vector<std::size_t>& chain,
+	std::vector<std::string>& order,
+	std::map<std::string, std::string>& merged,
+	std::string& targetRole,
+	std::vector<std::string>& diags )
+{
+	order.clear();
+	merged.clear();
+	auto put = [&order, &merged]( const std::string& k, const std::string& v ) {
+		if( merged.find( k ) == merged.end() ) order.push_back( k );
+		merged[ k ] = v;
+	};
+	for( std::size_t ci = chain.size(); ci-- > 0; ) {
+		std::vector<std::pair<std::string,std::string> > sp;
+		ChunkParamPairs( items[ chain[ci] ], lets, diags, sp );
+		for( std::size_t k = 0; k < sp.size(); ++k )
+			if( !IsInstanceOwnParam( sp[k].first ) ) put( sp[k].first, sp[k].second );
+	}
+	std::vector<std::pair<std::string,std::string> > own;
+	ChunkParamPairs( items[ chunkIdx ], lets, diags, own );
+	for( std::size_t k = 0; k < own.size(); ++k )
+		if( own[k].first != "source" ) put( own[k].first, own[k].second );
+
+	// The clone is built through the SOURCE's own chunk type -- so a csg_object
+	// source yields a csg_object, `obja` / `objb` / `operation` come along
+	// UNCHANGED, and the two composites SHARE their operands.
+	//
+	// SHARING IS CORRECT HERE AND IT IS NOT OBVIOUS: an operand's matrix is
+	// CSG-LOCAL.  `CSGObject::IntersectRay` transforms the world ray into the
+	// COMPOSITE's own frame before handing it to either operand, so the operand's
+	// own matrix is read relative to whichever composite is asking -- two
+	// composites at different world poses both get the right shape out of one
+	// shared operand.  Deep-cloning the operands would cost N copies for no
+	// behavioural difference, and it would also have to invent names for them.
+	// (An operand can never itself BE a subtree member: `Job::AddCSGObject`
+	// refuses an operand that has a parent or children, and
+	// `ObjectManager::SetObjectParent` refuses it from the other side -- so the
+	// transitive-`parent` definition of "subtree" excludes operands
+	// self-consistently, and nothing in the walk below can reach one.)
+	targetRole = items[ chain.empty() ? chunkIdx : chain.back() ]->role;
+}
+
+//! Build + apply ONE synthesized node from a merged parameter set: force its `name`
+//! (and, for a 3b clone, its `parent`), validate every param against the TARGET
+//! chunk's descriptor, then run that chunk type's own `Finalize`.
+//!
+//! `parentOverride` is null for the 3a collapse root (whose `parent` is the
+//! instancing chunk's own, already in `merged`) and non-null for a 3b clone, whose
+//! parent must be the CLONE of its source-side parent rather than the original.
+static bool ApplySynthesizedNode(
+	const std::map<std::string, const IAsciiChunkParser*>& registry,
+	IJob& pJob,
+	std::vector<std::string>& order,
+	std::map<std::string, std::string>& merged,
+	const std::string& targetRole,
+	const std::string& entryName,
+	const std::string* parentOverride,
+	const std::string& who,
+	const std::string& srcName,
+	std::vector<std::string>& diags )
+{
+	const std::map<std::string, const IAsciiChunkParser*>::const_iterator ti = registry.find( targetRole );
+	if( ti == registry.end() || !ti->second ) {
+		diags.push_back( who + ": `source " + srcName + "` resolves to a `" + targetRole + "` chunk, which the parser registry does not know" );
+		return false;
+	}
+	const IAsciiChunkParser* targetParser = ti->second;
+
+	if( parentOverride ) {
+		if( merged.find( "parent" ) == merged.end() ) order.push_back( "parent" );
+		merged[ "parent" ] = *parentOverride;
+	}
+
+	// Every merged parameter must be one the TARGET's descriptor accepts.  The one
+	// way this fires in practice: a csg_object source plus a `matrix` / `quaternion`
+	// / `scale` on the instancing chunk, which a csg_object chunk has no way to
+	// express.  Name the offenders instead of letting DispatchChunkParameters emit
+	// an undeclared-parameter error with no mention of `source`.
+	{
+		std::set<std::string> accepted;
+		const ChunkDescriptor& td = targetParser->Describe();
+		for( std::size_t k = 0; k < td.parameters.size(); ++k ) accepted.insert( td.parameters[k].name );
+		std::string rejected;
+		for( std::size_t k = 0; k < order.size(); ++k )
+			if( !accepted.count( order[k] ) ) { if( !rejected.empty() ) rejected += ", "; rejected += "`" + order[k] + "`"; }
+		if( !rejected.empty() ) {
+			diags.push_back( who + ": `source " + srcName + "` resolves to a `" + targetRole + "` node, and an "
+				"instance is built through the SOURCE's own chunk type -- so it accepts exactly that chunk's "
+				"parameters, which do not include " + rejected + "." );
+			return false;
+		}
+	}
+
+	IAsciiChunkParser::ParamsList plist;
+	plist.push_back( String( ( std::string( "name " ) + entryName ).c_str() ) );
+	for( std::size_t k = 0; k < order.size(); ++k ) {
+		if( order[k] == "name" ) continue;   // already emitted first
+		std::string line = order[k];
+		if( !merged[ order[k] ].empty() ) { line += ' '; line += merged[ order[k] ]; }
+		plist.push_back( String( line.c_str() ) );
+	}
+
+	ParseStateBag bag( &targetParser->Describe() );
+	if( !DispatchChunkParameters( targetParser->Describe(), bag, plist ) ) {
+		diags.push_back( who + ": the synthesized `" + targetRole + "` `" + entryName + "` has invalid params (see log)" );
+		return false;
+	}
+	if( !targetParser->Finalize( bag, pJob ) ) {
+		diags.push_back( who + ": `source " + srcName + "` expanded, but applying the synthesized `" + targetRole
+			+ "` `" + entryName + "` failed (see log)" );
+		return false;
+	}
+	return true;
+}
+
+//! 87 step 3b -- the PLAN for one `source` expansion's subtree: one item per node in
+//! the source's subtree, PRE-ORDER, so a parent is always applied before its child
+//! (which is what `ObjectManager::SetObjectParent`'s declare-before-use guard needs)
+//! and siblings keep their document order (which is what step 2's per-parent
+//! registration-serial sort reads as child display order).
+//!
+//! BUILT BEFORE ANYTHING IS APPLIED.  The collision scan has to be able to name
+//! EVERY entry the expansion would create while none of them exists yet -- both
+//! against the live manager and against the document -- so a colliding scene refuses
+//! with nothing half-applied rather than failing on the fourth of nine clones.
+struct SubtreeClonePlanItem
+{
+	std::size_t chunkIdx;      //!< the source-subtree chunk this clone is a copy of
+	std::string srcEntryName;  //!< that node's ENTRY name in the source tree (itself qualified, when it is a nested instance's clone)
+	std::string cloneName;     //!< `I` + "." + srcEntryName
+	std::string parentClone;   //!< the clone this one is parented to
+};
+
+//! The recursive walk that fills a SubtreeClonePlan.
+//!
+//! NAMING -- ONE LEVEL OF QUALIFICATION, and the recursion is what makes that
+//! literally true.  A clone is `I` + "." + the copied node's ENTRY name, never a
+//! path: `I.C` for a direct child, `I.D` (not `I.C.D`) for its grandchild, because
+//! `D`'s entry name in the source tree is just `D`.  The qualification advances by
+//! ONE step only when the walk crosses a `source` boundary, because THAT is where
+//! the entry name it is copying is itself qualified: instancing `S`, which contains
+//! an instance `I1` whose own expansion produced `I1.A`, as `I2` gives `I2.I1` and
+//! `I2.I1.A` -- one level added to each, on top of a name that already had one.
+//!
+//! `.` and not `/`: `ChunkNamePath` keys the document index as `role + "/" + name`,
+//! so a `/` in an entry name would collide with that separator.
+struct ClonePlanBuilder
+{
+	const std::vector<NodeRef>&  items;
+	const ObjectChunkIndex&      index;
+	const std::string&           instName;      //!< `I`
+	const std::string&           who;
+	std::size_t                  instIndex;     //!< the instancing chunk's own item index -- every subtree member must precede it
+	IObjectManager*              objMgr;
+	std::vector<std::string>&    diags;
+	std::vector<SubtreeClonePlanItem>& plan;
+	std::set<std::size_t>        path;          //!< chunk indices on the CURRENT clone path -- a revisit is a recursive definition
+
+	//! Clone the subtree of the ENTRY produced by chunk `srcChunkIdx`, whose clone is
+	//! called `cloneName`.  `ctxPrefix` qualifies the entry names of `srcChunkIdx`'s
+	//! own document children (empty at the top of a source tree).
+	bool SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName, const std::string& ctxPrefix, int depth );
+	//! Clone chunk `chunkIdx` (and everything under it) as a child of `parentClone`.
+	bool ClonedEntry( std::size_t chunkIdx, const std::string& ctxPrefix, const std::string& parentClone, int depth );
+
+	bool DepthOk( int depth )
+	{
+		if( depth <= 64 ) return true;
+		diags.push_back( who + ": the source subtree nests deeper than 64 levels of instancing; refusing to expand it" );
+		return false;
+	}
+};
+
+bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName,
+                                     const std::string& ctxPrefix, int depth )
+{
+	if( !DepthOk( depth ) ) return false;
+	std::string srcOwnName;
+	ParamValue( items[srcChunkIdx].get(), "name", srcOwnName );
+	if( !path.insert( srcChunkIdx ).second ) {
+		diags.push_back( who + ": expanding this instance would copy `" + srcOwnName + "` into its own subtree -- a "
+			"recursive definition with no fixed point.  The usual cause is a `parent` line that puts a node inside "
+			"the very subtree it instances." );
+		return false;
+	}
+	// The source entry's own document children.
+	const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( srcOwnName );
+	if( kids != index.childrenOf.end() ) {
+		for( std::size_t k = 0; k < kids->second.size(); ++k )
+			if( !ClonedEntry( kids->second[k], ctxPrefix, cloneName, depth + 1 ) ) return false;
+	}
+	// An `instance_array` generator parented into the subtree would be dropped from
+	// the copy: generators expand in a trailing pass, after every `source` chunk, and
+	// their `parent` names the ORIGINAL node.  Refuse rather than copy a subtree that
+	// silently lacks part of what the author put in it.
+	const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( srcOwnName );
+	if( gen != index.generatorChildrenOf.end() && !gen->second.empty() ) {
+		std::string genName;
+		ParamValue( items[ gen->second.front() ].get(), "name", genName );
+		diags.push_back( who + ": the source subtree contains the `instance_array` generator `" + genName
+			+ "` (it names `" + srcOwnName + "` as its `parent`).  A generator expands in a trailing pass, after "
+			"every `source` chunk, and its `parent` names the ORIGINAL node -- so its objects would stay attached "
+			"to the source and the copy would silently be missing them.  Author the repetition with `source` "
+			"instead, or move the generator out of the subtree." );
+		return false;
+	}
+	// The source entry may itself be an INSTANCE.  Its children then include the
+	// clones ITS own expansion made, whose entry names carry one more level of
+	// qualification -- so recurse one step down the `source` chain with the prefix
+	// advanced, rather than folding the whole chain into one level.
+	std::string nested;
+	if( ParamValue( items[srcChunkIdx].get(), "source", nested ) && !nested.empty() && nested != "none" ) {
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nested );
+		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < srcChunkIdx ) {
+			if( !SourceSubtree( ni->second.front(), cloneName, ctxPrefix + srcOwnName + ".", depth + 1 ) ) return false;
+		}
+	}
+	path.erase( srcChunkIdx );
+	return true;
+}
+
+bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::string& ctxPrefix,
+                                   const std::string& parentClone, int depth )
+{
+	if( !DepthOk( depth ) ) return false;
+	std::string ownName;
+	if( !ParamValue( items[chunkIdx].get(), "name", ownName ) || ownName.empty() ) {
+		diags.push_back( who + ": a `" + items[chunkIdx]->role + "` in the source subtree has no `name`, so the copy "
+			"has nothing to be called" );
+		return false;
+	}
+	// The revisit guard runs BEFORE the declare-before-use one below, and the order is
+	// load-bearing: the INSTANCING chunk is seeded onto the path, and it is also
+	// trivially "not declared before itself", so a scene that puts a node inside the
+	// subtree it instances would otherwise be told to move its instance further down
+	// the file -- advice that cannot fix a recursive definition.
+	if( !path.insert( chunkIdx ).second ) {
+		diags.push_back( who + ": expanding this instance would copy `" + ownName + "` into its own subtree -- a "
+			"recursive definition with no fixed point.  The usual cause is a `parent` line that puts a node inside "
+			"the very subtree it instances." );
+		return false;
+	}
+	// DECLARE-BEFORE-USE applies to the WHOLE subtree, not only to its root.  The
+	// expansion runs at the instancing chunk's own document position, so a subtree
+	// member declared LATER has not produced an object yet and cannot be copied --
+	// and instancing "the part of the subtree that happens to precede me" is exactly
+	// the silent partial copy 3a refused to make.  Its own message, because
+	// "declared earlier but produced no object" would be a lie about the cause.
+	if( chunkIdx >= instIndex ) {
+		diags.push_back( who + ": the source subtree member `" + ownName + "` (chunk #"
+			+ std::to_string( ChunkOrdinal( items, chunkIdx ) ) + ") is declared AFTER this instancing chunk, so it "
+			"does not exist yet when the copy is made.  A whole subtree must be declared before anything instances "
+			"it -- move the instance below the last member of the subtree." );
+		return false;
+	}
+	const std::string srcEntryName = ctxPrefix + ownName;
+	const std::string cloneName    = instName + "." + srcEntryName;
+
+	// An `override_object` layer is applied to the LIVE object by NAME, after its
+	// base chunk -- so it never reaches a clone built by re-Finalizing that base
+	// chunk.  Both spellings are refused: a layer on the ENTRY (which is what makes
+	// the source node's pose what it is) and a layer on the underlying CHUNK when
+	// the entry is itself a nested clone (whose pose the layer likewise decided for
+	// the original but not for this copy).
+	{
+		std::map<std::string, std::size_t>::const_iterator ov = index.overriddenNames.find( srcEntryName );
+		if( ov == index.overriddenNames.end() ) ov = index.overriddenNames.find( ownName );
+		if( ov != index.overriddenNames.end() ) {
+			char pos[64];
+			std::snprintf( pos, sizeof(pos), "chunk #%u", ChunkOrdinal( items, ov->second ) );
+			diags.push_back( who + ": the source subtree member `" + srcEntryName + "` has an `override_object` layer ("
+				+ pos + ").  An override is applied to the LIVE object by name, after its base chunk, so a copy built "
+				"from that base chunk would silently carry the UN-overridden pose.  Fold the override into the base "
+				"chunk, or instance a subtree without one." );
+			return false;
+		}
+	}
+
+	// Resolve the SOURCE-SIDE entry through the manager.  Two jobs, both load-bearing:
+	//   (1) it verifies the subtree member actually produced an object (a member whose
+	//       own chunk failed would otherwise be cloned from params nothing validated);
+	//   (2) it RECORDS the dependency edge.  The reference graph's `parent` edge runs
+	//       child -> parent, so editing a subtree MEMBER reaches that member's chunk
+	//       and stops -- nothing references it, so the instancing chunk would never
+	//       enter the edit closure and the incremental apply would re-point the
+	//       member while N stale clones kept the old binding.  Resolving the member
+	//       HERE, inside the derive's armed resolution sink, makes its chunk a
+	//       producer this expansion consumes, so the closure reaches `I`, and `I`
+	//       carries `source` -- which the incremental gate turns into a full derive.
+	if( objMgr && !objMgr->GetItem( srcEntryName.c_str() ) ) {
+		diags.push_back( who + ": the source subtree member `" + srcEntryName + "` is declared earlier but did not "
+			"produce an object (its own chunk failed, or it was dropped by a scene variant)" );
+		return false;
+	}
+
+	SubtreeClonePlanItem it;
+	it.chunkIdx     = chunkIdx;
+	it.srcEntryName = srcEntryName;
+	it.cloneName    = cloneName;
+	it.parentClone  = parentClone;
+	plan.push_back( it );
+
+	// This member's own document children keep the CURRENT qualification level --
+	// their entry names in the source tree are their own names.
+	const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( ownName );
+	if( kids != index.childrenOf.end() ) {
+		for( std::size_t k = 0; k < kids->second.size(); ++k )
+			if( !ClonedEntry( kids->second[k], ctxPrefix, cloneName, depth + 1 ) ) return false;
+	}
+	const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( ownName );
+	if( gen != index.generatorChildrenOf.end() && !gen->second.empty() ) {
+		std::string genName;
+		ParamValue( items[ gen->second.front() ].get(), "name", genName );
+		diags.push_back( who + ": the source subtree contains the `instance_array` generator `" + genName
+			+ "` (it names `" + ownName + "` as its `parent`).  A generator expands in a trailing pass, after "
+			"every `source` chunk, and its `parent` names the ORIGINAL node -- so its objects would stay attached "
+			"to the source and the copy would silently be missing them.  Author the repetition with `source` "
+			"instead, or move the generator out of the subtree." );
+		return false;
+	}
+	// If this member is ITSELF an instance, the entries its own expansion made are
+	// part of what we are copying too, one qualification level deeper.
+	std::string nested;
+	if( ParamValue( items[chunkIdx].get(), "source", nested ) && !nested.empty() && nested != "none" ) {
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nested );
+		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < chunkIdx ) {
+			if( !SourceSubtree( ni->second.front(), cloneName, srcEntryName + ".", depth + 1 ) ) return false;
+		}
+	}
+	path.erase( chunkIdx );
+	return true;
+}
+
+//! 87 step 3a/3b -- expand a `standard_object` carrying `source` into the instancing
+//! chunk's own entry plus one clone per node in the source's SUBTREE.
+//!
+//! The instancing node IS the clone of the source ROOT: `I` takes S's bindings and
+//! its OWN local transform (S's is dropped), so `source <leaf>` collapses to exactly
+//! one object under the chunk's own name and costs ZERO parent links.  Each
+//! transitive `parent`-descendant `X` of `S` becomes one further entry `I.X`,
+//! parented to the clone of `X`'s parent (`I` for S's direct children).
 //!
 //! WHERE THIS RUNS, AND WHY THAT IS THE DESIGN.  Not as a trailing post-pass
 //! like ExpandInstanceArray, and not inside the parser's Finalize, but at the
@@ -1536,6 +1990,11 @@ static unsigned int ChunkOrdinal( const std::vector<NodeRef>& items, std::size_t
 //! `expr(...)` with i=j=u=v=0 before any bag is built, so a bag-driven expansion
 //! would freeze every per-instance expression at instance zero.  3a authors no
 //! per-instance exprs -- but 3c does, and it inherits this code path.
+//!
+//! `entryBudget` is the DOCUMENT-WIDE remaining synthesized-entry allowance, shared
+//! with the `instance_array` generator.  Entries, not instances, are what the cap has
+//! to count: a subtree instance produces `count x subtreeSize` of them, and it is the
+//! entry count that reaches the TLAS, the luminary list and every per-frame walk.
 static bool ExpandSourceInstance(
 	const std::vector<NodeRef>& items,
 	std::size_t instIndex,
@@ -1543,12 +2002,10 @@ static bool ExpandSourceInstance(
 	const LetBindings& lets,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
 	IJob& pJob,
+	long long& entryBudget,
 	std::vector<std::string>& diags )
 {
 	const NodeRef& inst = items[ instIndex ];
-
-	std::vector<std::pair<std::string,std::string> > instParams;
-	ChunkParamPairs( inst, lets, diags, instParams );
 
 	std::string instName, srcName, instGeometry;
 	ParamValue( inst.get(), "name",     instName );
@@ -1649,145 +2106,89 @@ static bool ExpandSourceInstance(
 			"(that IS a node), or instance the geometry directly with a `geometry` binding." );
 		return false;
 	}
-	// A source WITH CHILDREN is a multi-node subtree.  Refuse rather than quietly
-	// instancing only its root, which would produce a copy missing most of what
-	// the author pointed at.
+	// `I source S parent S` -- the copy would be a CHILD of the very node it is a
+	// copy of, so `S`'s subtree would contain a copy of `S`.  That is a recursive
+	// definition with no fixed point, and it is refused HERE, before the subtree walk,
+	// because it is worth its own diagnosis: the walk's generic revisit guard would
+	// name the recursion but not the one `parent` line that created it.
+	//
+	// The test is "the instancing chunk is itself among the source's children", not
+	// "every child of S instances S": under 3b a source with a GENUINE other child is
+	// expanded rather than refused, so the round-1 "all children are self-sourced"
+	// shape no longer separates anything -- what matters is only whether THIS chunk
+	// is inside the subtree THIS chunk is copying.
 	{
 		const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( srcName );
-		if( kids != index.childrenOf.end() && !kids->second.empty() ) {
-			// `I source S parent S` -- EVERY child of S is a chunk that instances S,
-			// put there by the author's own `parent` line(s).  There is no subtree;
-			// saying "3b" would send the author looking for children that do not
-			// exist.  The test is "every child is self-parented onto its own source",
-			// NOT "S has exactly one child": a second self-parenting instance
-			// (`I1 source S parent S` and `I2 source S parent S`) makes the count 2
-			// while leaving the diagnosis unchanged, and the count test would fall
-			// through to exactly the misdirection this branch exists to remove.  A
-			// source with a GENUINE other child still gets the 3b message.
-			bool selfChildrenOnly = false;
-			{
-				bool meAmongThem = false, allSelfSourced = true;
-				for( std::size_t k = 0; k < kids->second.size(); ++k ) {
-					const std::size_t ki = kids->second[k];
-					if( ki == instIndex ) { meAmongThem = true; continue; }   // this chunk, by construction
-					std::string kidSrc;
-					if( ki >= items.size() || !items[ki]
-					 || !ParamValue( items[ki].get(), "source", kidSrc ) || kidSrc != srcName )
-						allSelfSourced = false;
-				}
-				selfChildrenOnly = meAmongThem && allSelfSourced;
-			}
-			if( selfChildrenOnly ) {
+		if( kids != index.childrenOf.end() ) {
+			for( std::size_t k = 0; k < kids->second.size(); ++k ) {
+				if( kids->second[k] != instIndex ) continue;
 				diags.push_back( who + ": `source " + srcName + "` and `parent " + srcName + "` on the SAME chunk -- "
 					"the copy would be a CHILD of the very node it is a copy of, so `" + srcName + "`'s subtree "
-					"would contain a copy of `" + srcName + "`.  That is a recursive definition: subtree instancing "
-					"(87 step 3b) could not expand it, and today it is the only reason `" + srcName + "` has any "
-					"children at all.  Parent the instance to something other than its source." );
+					"would contain a copy of `" + srcName + "`.  That is a recursive definition with no fixed point: "
+					"the subtree expansion would have to copy this chunk into its own output, forever.  Parent the "
+					"instance to something other than its source." );
 				return false;
 			}
-			diags.push_back( who + ": `source " + srcName + "` has CHILDREN -- instancing a multi-node subtree is 87 "
-				"step 3b and is not implemented yet.  3a instances a SINGLE node (a leaf, a container, or a "
-				"csg_object).  Instancing only its root would silently drop the rest of the subtree, so it is refused." );
-			return false;
 		}
 	}
 
 	// Walk the `source` chain back to the ROOT chunk -- the one that declares what
 	// the thing actually IS.  `I source S` where `S source T` is legal and means
-	// "another copy of T, with S's overrides on top of it".  Terminates by the
-	// declare-earlier rule above (each link is strictly earlier); the depth cap is
-	// a belt against a future apply path that admits a link this function never saw.
+	// "another copy of T, with S's overrides on top of it".
 	std::vector<std::size_t> chain;   // nearest source first
-	{
-		std::size_t cursor = si->second.front();
-		for( unsigned int guard = 0; guard < 256u; ++guard ) {
-			chain.push_back( cursor );
-			std::string nextSrc;
-			if( !ParamValue( items[cursor].get(), "source", nextSrc ) || nextSrc.empty() || nextSrc == "none" ) break;
-			const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( nextSrc );
-			if( ni == index.byName.end() || ni->second.empty() || ni->second.front() >= cursor ) break;
-			cursor = ni->second.front();
-		}
-		if( chain.size() >= 256u ) {
-			diags.push_back( who + ": `source` chain is deeper than 256 links" );
-			return false;
-		}
-	}
-
-	// MERGE, root-first, so a nearer chunk's binding overrides a farther one's and
-	// the INSTANCING chunk's own parameters override everything -- "any binding
-	// written explicitly on the instancing chunk wins".  Insertion order is kept
-	// so the synthesized parameter list is deterministic.
-	std::vector<std::string> order;
-	std::map<std::string, std::string> merged;
-	auto put = [&order, &merged]( const std::string& k, const std::string& v ) {
-		if( merged.find( k ) == merged.end() ) order.push_back( k );
-		merged[ k ] = v;
-	};
-	for( std::size_t ci = chain.size(); ci-- > 0; ) {
-		std::vector<std::pair<std::string,std::string> > sp;
-		ChunkParamPairs( items[ chain[ci] ], lets, diags, sp );
-		for( std::size_t k = 0; k < sp.size(); ++k )
-			if( !IsInstanceOwnParam( sp[k].first ) ) put( sp[k].first, sp[k].second );
-	}
-	for( std::size_t k = 0; k < instParams.size(); ++k )
-		if( instParams[k].first != "source" ) put( instParams[k].first, instParams[k].second );
-
-	// The instance is built through the SOURCE's own chunk type: a csg_object
-	// source yields a csg_object, so `obja` / `objb` / `operation` come along and
-	// the two composites share their operands (read-only at render time, each
-	// transforming rays into its OWN local frame first -- see
-	// CSGObject::IntersectRay).
-	const std::string targetRole = items[ chain.back() ]->role;
-	const std::map<std::string, const IAsciiChunkParser*>::const_iterator ti = registry.find( targetRole );
-	if( ti == registry.end() || !ti->second ) {
-		diags.push_back( who + ": `source " + srcName + "` resolves to a `" + targetRole + "` chunk, which the parser registry does not know" );
+	if( !SourceChainOf( items, index, instIndex, chain ) || chain.empty() ) {
+		diags.push_back( who + ": `source` chain from `" + srcName + "` does not resolve (a broken link, or deeper than 256 links)" );
 		return false;
 	}
-	const IAsciiChunkParser* targetParser = ti->second;
 
-	// Every merged parameter must be one the TARGET's descriptor accepts.  The one
-	// way this fires in practice: a csg_object source plus a `matrix` / `quaternion`
-	// / `scale` on the instancing chunk, which a csg_object chunk has no way to
-	// express.  Name the offenders instead of letting DispatchChunkParameters emit
-	// an undeclared-parameter error with no mention of `source`.
+	// THE SUBTREE PLAN, built before anything is applied.  See ClonePlanBuilder.
+	std::vector<SubtreeClonePlanItem> plan;
 	{
-		std::set<std::string> accepted;
-		const ChunkDescriptor& td = targetParser->Describe();
-		for( std::size_t k = 0; k < td.parameters.size(); ++k ) accepted.insert( td.parameters[k].name );
-		std::string rejected;
-		for( std::size_t k = 0; k < order.size(); ++k )
-			if( !accepted.count( order[k] ) ) { if( !rejected.empty() ) rejected += ", "; rejected += "`" + order[k] + "`"; }
-		if( !rejected.empty() ) {
-			diags.push_back( who + ": `source " + srcName + "` resolves to a `" + targetRole + "` node, and an "
-				"instance is built through the SOURCE's own chunk type -- so it accepts exactly that chunk's "
-				"parameters, which do not include " + rejected + "." );
-			return false;
-		}
+		ClonePlanBuilder b = { items, index, instName, who, instIndex, objMgr, diags, plan, std::set<std::size_t>() };
+		b.path.insert( instIndex );   // this chunk is on the path from the start -- see the recursive-definition guard
+		if( !b.SourceSubtree( chain.front(), instName, std::string(), 1 ) ) return false;
 	}
 
-	// COLLISION, both kinds.  3a's collapse case synthesizes no NEW name (the entry
-	// is the instancing chunk's own), so what this catches today is a duplicate
-	// object declaration; the shape is what 3b's `name[i]` entries need.
+	// THE DOCUMENT-WIDE ENTRY CAP.  `plan.size() + 1` counts the root, and the budget
+	// is shared with every other expansion in this document -- because what has to be
+	// bounded is the number of entries reaching the TLAS, not the number of times any
+	// one generator repeats.
+	if( (long long)plan.size() + 1 > entryBudget ) {
+		char cap[128];
+		std::snprintf( cap, sizeof(cap), "%lld more (of %lld document-wide)", entryBudget, (long long)kMaxSynthesizedEntries );
+		diags.push_back( who + ": expanding `source " + srcName + "` would synthesize "
+			+ std::to_string( plan.size() + 1 ) + " objects, and this document has room for only "
+			+ cap + ".  A subtree instance costs one entry per subtree NODE, so the total is count x subtree size." );
+		return false;
+	}
+
+	// COLLISION, both kinds, over the WHOLE entry-name set this expansion would
+	// create -- the root plus every clone.
 	//
 	// (1) MANAGER-level.  AddItem already rejects a duplicate and Job::AddObject
 	//     honours its bool, but that diagnostic names neither the instancing chunk
 	//     nor which synthesized entry clashed.  Pre-check for the chunk-localized
 	//     message, exactly as ExpandInstanceArray does.
-	if( objMgr->GetItem( instName.c_str() ) ) {
-		diags.push_back( who + ": the entry `" + instName + "` this instance would create already exists as an object" );
-		return false;
-	}
 	// (2) DOCUMENT-level, which (1) structurally CANNOT see.  An authored chunk
 	//     whose name equals a synthesized one makes DocFindByNameAnyRole resolve a
 	//     picked instance to the WRONG chunk -- so the editor writes an edit into a
 	//     chunk that has nothing to do with what the author clicked.  The manager
 	//     pre-check misses it whenever that authored chunk is declared AFTER the
 	//     instancing one: it does not exist yet.  Scan the document, and name BOTH
-	//     chunks so the author can see which two to reconcile.
+	//     items so the author can see which two to reconcile.  Tested over the ENTRY
+	//     keyspace (`entryByName`), not the source-resolvable one, because a
+	//     `rect_light` named `I.C` claims the entry name `I.C` just as a
+	//     `standard_object` would.
 	{
-		const std::map<std::string, std::vector<std::size_t> >::const_iterator ci = index.byName.find( instName );
-		if( ci != index.byName.end() && ci->second.size() > 1 ) {
+		// The root's own name: it IS the instancing chunk's name, so the document
+		// test is "declared more than once"; a clone's name is synthesized, so the
+		// test there is "declared at all".
+		if( objMgr->GetItem( instName.c_str() ) ) {
+			diags.push_back( who + ": the entry `" + instName + "` this instance would create already exists as an object" );
+			return false;
+		}
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator ci = index.entryByName.find( instName );
+		if( ci != index.entryByName.end() && ci->second.size() > 1 ) {
 			// Say WHICH TWO in terms the author can find: role + position among the
 			// file's CHUNKS.  The raw CST item index counts trivia, so a file with
 			// three comments in it would report the 6th and 7th chunks as "item 16
@@ -1802,32 +2203,88 @@ static bool ExpandSourceInstance(
 				"edit could land in the wrong chunk.  Rename one." );
 			return false;
 		}
+		std::set<std::string> planned;
+		planned.insert( instName );
+		for( std::size_t k = 0; k < plan.size(); ++k ) {
+			const std::string& nm = plan[k].cloneName;
+			// A BELT, not a live case: two subtree nodes can only resolve to one entry
+			// name if an authored chunk is named exactly like some earlier expansion's
+			// synthesized entry -- which the document scan below refuses at THAT
+			// expansion, before this one runs.  Kept because it is the one check whose
+			// absence would let a copy silently REPLACE another copy rather than fail.
+			if( !planned.insert( nm ).second ) {
+				diags.push_back( who + ": expanding `source " + srcName + "` would synthesize the entry name `" + nm
+					+ "` TWICE.  Two nodes in the subtree resolve to the same entry name, so one copy would silently "
+					"replace the other." );
+				return false;
+			}
+			if( objMgr->GetItem( nm.c_str() ) ) {
+				diags.push_back( who + ": the entry `" + nm + "` this instance would synthesize for the subtree member `"
+					+ plan[k].srcEntryName + "` already exists as an object" );
+				return false;
+			}
+			const std::map<std::string, std::vector<std::size_t> >::const_iterator di = index.entryByName.find( nm );
+			if( di != index.entryByName.end() && !di->second.empty() ) {
+				const std::size_t a = di->second[0];
+				char pos[128];
+				std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`",
+					ChunkOrdinal( items, a ), items[a] ? items[a]->role.c_str() : "?" );
+				diags.push_back( who + ": this instance would synthesize the entry `" + nm + "` for the subtree member `"
+					+ plan[k].srcEntryName + "`, but the document ALREADY declares an object of that name (" + pos
+					+ ").  A pick on the synthesized entry would resolve back to that chunk, so an edit could land in "
+					"something unrelated.  Rename one." );
+				return false;
+			}
+		}
 	}
 
-	IAsciiChunkParser::ParamsList plist;
-	plist.push_back( String( ( std::string( "name " ) + instName ).c_str() ) );
-	for( std::size_t k = 0; k < order.size(); ++k ) {
-		if( order[k] == "name" ) continue;   // already emitted first
-		std::string line = order[k];
-		if( !merged[ order[k] ].empty() ) { line += ' '; line += merged[ order[k] ]; }
-		plist.push_back( String( line.c_str() ) );
+	// APPLY.  The root first -- its clones are parented to it, and
+	// ObjectManager::SetObjectParent requires the parent to exist already.
+	{
+		std::vector<std::string> order;
+		std::map<std::string, std::string> merged;
+		std::string targetRole;
+		MergeChunkParams( items, lets, instIndex, chain, order, merged, targetRole, diags );
+		if( !ApplySynthesizedNode( registry, pJob, order, merged, targetRole, instName,
+		                           /*parentOverride*/ 0, who, srcName, diags ) )
+			return false;
 	}
-
-	ParseStateBag bag( &targetParser->Describe() );
-	if( !DispatchChunkParameters( targetParser->Describe(), bag, plist ) ) {
-		diags.push_back( who + ": the synthesized `" + targetRole + "` has invalid params (see log)" );
-		return false;
-	}
-	if( !targetParser->Finalize( bag, pJob ) ) {
-		diags.push_back( who + ": `source " + srcName + "` expanded, but applying the synthesized `" + targetRole + "` failed (see log)" );
-		return false;
-	}
-
 	// PROVENANCE.  Recorded even in the collapse case, where the entry name and the
 	// instancing chunk name are the same string: consumers ask ONE question ("where
 	// did this entry come from?") and get one answer, instead of each re-deriving
 	// the relationship from the spelling of the name.
 	objMgr->SetObjectProvenance( instName.c_str(), instName.c_str(), srcName.c_str() );
+	--entryBudget;
+
+	// Then the subtree, pre-order, each clone built by re-`Finalize`ing the node's OWN
+	// chunk with `name` and `parent` remapped.  Re-Finalizing rather than deep-copying
+	// the live object is what makes a chunk whose Finalize synthesizes MORE THAN ONE
+	// entity come out right for free: a `rect_light` names its painter / material /
+	// geometry `<name>__pnt` / `__mat` / `__geo`, so remapping the one `name` renames
+	// all four, where an object-level clone walk would collide on all three helpers.
+	for( std::size_t k = 0; k < plan.size(); ++k ) {
+		std::vector<std::size_t> kidChain;
+		if( !SourceChainOf( items, index, plan[k].chunkIdx, kidChain ) ) {
+			diags.push_back( who + ": the subtree member `" + plan[k].srcEntryName + "` has a `source` chain that does "
+				"not resolve (a broken link, or deeper than 256 links)" );
+			return false;
+		}
+		std::vector<std::string> order;
+		std::map<std::string, std::string> merged;
+		std::string targetRole;
+		MergeChunkParams( items, lets, plan[k].chunkIdx, kidChain, order, merged, targetRole, diags );
+		std::string kidSrc;
+		ParamValue( items[ plan[k].chunkIdx ].get(), "source", kidSrc );
+		if( !ApplySynthesizedNode( registry, pJob, order, merged, targetRole, plan[k].cloneName,
+		                           &plan[k].parentClone, who, kidSrc.empty() ? srcName : kidSrc, diags ) )
+			return false;
+		// `I.X -> (I, X)`: the node this entry is a COPY OF, which is what makes the
+		// entry traceable to something an author can edit.  X is the SOURCE-SIDE
+		// ENTRY name, which for a nested instance's clone is itself qualified -- so a
+		// consumer that follows the chain lands on a real live entry at every hop.
+		objMgr->SetObjectProvenance( plan[k].cloneName.c_str(), instName.c_str(), plan[k].srcEntryName.c_str() );
+		--entryBudget;
+	}
 	return true;
 }
 
@@ -1981,6 +2438,11 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	ObjectChunkIndex objIndex;
 	BuildObjectChunkIndex( items, objIndex );
 
+	// 87 step 3b: ONE document-wide synthesized-entry allowance, shared by every
+	// `source` expansion AND every `instance_array` generator below.  See
+	// kMaxSynthesizedEntries for why the budget is in entries.
+	long long entryBudget = kMaxSynthesizedEntries;
+
 	int count = 0;
 	for( Pending& p : pending ) {
 		// scene_variant bake (doc 63): apply the ACTIVE definition per material name.  An active override is applied at
@@ -2009,7 +2471,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		bool expandDiagnosed = false;
 		bool ok;
 		if( applyP->isSourceInstance ) {
-			ok = ExpandSourceInstance( items, applyP->itemIndex, objIndex, lets, registry, pJob, diags );
+			ok = ExpandSourceInstance( items, applyP->itemIndex, objIndex, lets, registry, pJob, entryBudget, diags );
 			expandDiagnosed = !ok;
 		} else {
 			ok = applyP->parser->Finalize( applyP->bag, pJob );
@@ -2041,7 +2503,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			if( c->kind != NodeKind::Chunk || c->role != "instance_array" ) continue;
 			if( !stdObj ) { diags.push_back( "instance_array: the standard_object parser is unavailable" ); break; }
 			int made = 0;
-			if( !ExpandInstanceArray( c, lets, stdObj, pJob, diags, made ) ) break;
+			if( !ExpandInstanceArray( c, lets, stdObj, pJob, entryBudget, diags, made ) ) break;
 			count += made;
 		}
 	}

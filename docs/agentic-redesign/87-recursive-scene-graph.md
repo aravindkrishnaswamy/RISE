@@ -1,7 +1,8 @@
 # 87 — Recursive Scene Graph
 
-**Status: decided 2026-08-15.  §5 steps 0, 1 and 2 are IMPLEMENTED; steps 3–4
-are not.**  §2's "composition happens in the per-frame prepare pass" is now
+**Status: decided 2026-08-15.  §5 steps 0, 1 and 2 are IMPLEMENTED, and so are
+step 3's slices 3a (`source`, single-node) and 3b (subtree expansion); 3c
+(`count_u`/`count_v`) , 3d (delete `instance_array`) and step 4 are not.**  §2's "composition happens in the per-frame prepare pass" is now
 literally true: step 2 re-bakes the hierarchy in
 `ObjectManager::PrepareForRendering()`, so a timeline on a parent carries its
 subtree.  Step 1's derive-tail and live-edit composes remain — they are what
@@ -223,7 +224,8 @@ discoveries.
   still. Targeting each instance means hand-writing N timelines. This is a real
   hole in the §1 pairing, not an implementation gap.
 - **Subtree instancing is a step-function regression against step 2's cost
-  model.** Today's `instance_array` produces FLAT objects — zero links — so a
+  model.**  **CONFIRMED BY MEASUREMENT in 3b — ~26x, and the numbers, the
+  attribution and a proposed fix are in §5 step 3's 3b block.** Today's `instance_array` produces FLAT objects — zero links — so a
   10,000-instance grid costs one predicate per frame. Under `source`, 10,000
   instances of a 5-node subtree is 50,000 links re-baked every frame through a
   string-keyed walk. This is what decides the open semantics question: the
@@ -374,6 +376,112 @@ what was authored, live material included).
    Slices: 3a `source` single-node + refusals + provenance; 3b subtree
    expansion; 3c `count_u`/`count_v` + per-instance exprs; 3d delete
    `instance_array`.
+
+   **3b (2026-08-17) — subtree expansion, IMPLEMENTED.**  The 3a
+   has-children refusal is replaced by a real expansion.  Mechanics: build the
+   clone by re-`Finalize`ing each subtree node's OWN chunk through the registry
+   parser for that node's role, with `name` and `parent` remapped.  That choice
+   is what makes a `rect_light` in the subtree come out right for free —
+   remapping the one `name` renames all four of the entities its Finalize
+   synthesizes — where an object-level clone walk would collide on all three
+   helpers.  Six things met the code and are recorded because they are
+   decisions, not details:
+   - **The naming recursion advances only across a `source` boundary.**  A
+     document child of a cloned node keeps the current qualification level
+     (`I.D`, not `I.C.D`); crossing into a nested instance's source advances it
+     by one, which is exactly where the copied ENTRY name is itself qualified.
+     So `I2.I1` and `I2.I1.A2` fall out of the same rule that gives `I.C`, with
+     no path anywhere.
+   - **The subtree walk is over the DOCUMENT, not over live `parentByName`.**
+     Both describe the same tree at derive time, but the document form gives
+     every member a chunk to re-Finalize; a live-entry walk would reach
+     synthesized entries that have no chunk of their own and would have to
+     recover one from provenance.
+   - **3a's has-children scan covered only `standard_object` / `csg_object`,
+     which was a hole.**  A source whose only child was a `rect_light` or
+     `shape_light` passed the refusal and instanced ROOT-ONLY, silently
+     dropping the lamp.  3b indexes all four object-producing roles, and the
+     document collision scan now runs over that same ENTRY-name keyspace — a
+     `rect_light` named `I.C` claims that entry name just as a
+     `standard_object` would.
+   - **DECLARE-BEFORE-USE applies to the whole subtree.**  A member declared
+     BELOW the instancing chunk does not exist when the copy is made; copying
+     "the part that happens to precede me" is the silent partial copy 3a
+     refused, so it is refused with its own message.
+   - **An `override_object` layer on a subtree MEMBER is refused; one on the
+     source ROOT is not.**  An override is applied to the live object by name
+     after its base chunk, so it never reaches a clone built from that chunk.
+     Overlaying its params onto the merge is NOT equivalent — a base `matrix`
+     plus an override `position` COMPOSES on the live object but would be
+     swallowed by `standard_object`'s matrix-wins precedence in one merged
+     param list.  The root is exempt by construction: `override_object`
+     declares only transform params, and the collapse semantics drop the
+     source's transform entirely.
+   - **The `source S parent S` refusal survives, and a second guard joins it.**
+     Round 1's "every child of S instances S" test no longer separates anything
+     (a source with a genuine other child is now expanded, not refused), so the
+     pre-walk check is simply "is the instancing chunk itself among the
+     source's children".  A recursion through a TRANSITIVE descendant
+     (`C source M parent M2` where `M2 parent M`) is invisible to that check and
+     is caught by the walk's own path-revisit guard, which is why both exist and
+     why their messages differ.
+
+   **The incremental-derive trace was closed for subtree MEMBERS, one hop
+   further than 3a.**  The reference graph's `parent` edge runs child → parent,
+   so editing a member reaches that member's chunk and stops — the instancing
+   chunk never enters the closure, and the incremental apply would re-point the
+   member while N stale clones kept the old binding.  The plan walk therefore
+   resolves each member through `objMgr->GetItem` inside the derive's armed
+   resolution sink, which records the member's chunk as a producer the expansion
+   consumes.  Editing a member now reaches `I`, and `I` carries `source`, which
+   the existing per-chunk gate turns into a full derive.  Chunk INSERT and
+   REMOVE never took the incremental path at all (`Job::ApplyCstInsertChunk` /
+   `ApplyCstRemoveChunk` both route through `RederiveCstDocumentFull_`), so the
+   structural half needs nothing.
+
+   **THE PER-FRAME COST, MEASURED (2026-08-17, `renderanimation` at 8x8,
+   200 frames, load subtracted, 3 reps; same harness as step 2's table):**
+
+   | scene | objects | links | ms/pass |
+   |---|---|---|---|
+   | flat, 16 000 objects | 16 000 | 0 | 0.19 – 0.23 |
+   | one single-node `source` instance in that scene | 16 000 | 0 | 0.18 – 0.20 |
+   | 100 instances of a 5-node subtree | 505 | 404 | 0.45 – 0.46 |
+   | 1000 instances of a 5-node subtree | 5 005 | 4 004 | 5.53 – 5.55 |
+   | 2000 instances of a 5-node subtree | 10 005 | 8 004 | 12.0 – 12.2 |
+   | **the same 5 005 objects / 4 004 links authored BY HAND, no `source`** | 5 005 | 4 004 | **5.50 – 5.52** |
+
+   Read in order, those say three things.  (1) **The collapse case really is
+   free** — a `source` naming a leaf costs zero links and measures at or below
+   the flat baseline, which is the property the semantics were chosen for.
+   (2) **It IS a step-function against `instance_array`'s cost model, and by
+   ~26x**: 5000 objects flat cost ~0.2 ms/pass, the same 5000 reached through
+   subtree instancing cost ~5.5 ms/pass, and the curve is linear in LINKS
+   (~1.4 µs per link per pass; 2x links → 2.2x time).  (3) **3b adds nothing of
+   its own** — the hand-authored hierarchy with the identical link count
+   measures the same to within 1 %.  The cost belongs to step 2's
+   `RebakeHierarchy`, which per pass rebuilds three string-keyed containers,
+   sorts each child list, and walks with a string-keyed visited set and a
+   String-copying stack.  3b did not create it; it makes thousands of links easy
+   to author, which is how it becomes visible.
+
+   **Proposed fix, NOT implemented (it is step-2 work, and the brief for 3b was
+   to measure rather than optimise speculatively):** memoize the walk.
+   `parentByName` changes only through `SetObjectParent` / `RemoveItem` /
+   `Shutdown`, every one of which already calls the STRUCTURAL
+   `ComposeWorldTransforms` — so `RebakeHierarchy` can cache a flat,
+   pointer-keyed topological plan (`vector<pair<IObjectPriv*, IObjectPriv*>>`)
+   behind a link-generation counter and, on the common pass, do one pointer walk
+   with one `FinalizeTransformations` per link and no map or String traffic at
+   all.  That should take the 1.4 µs/link to well under 0.2 µs.  Measure before
+   and after with the table above.
+
+   **Also NOT done in 3b, stated plainly:** the document-wide synthesized-entry
+   cap (`kMaxSynthesizedEntries`, 10 000 000, shared with `instance_array` and
+   counting ENTRIES rather than per-generator instances) has no cheap regression
+   test — `instance_array` clamps each count to 1e6, so crossing the budget
+   means materialising ten million objects.  Its arithmetic was verified by
+   temporarily lowering the constant.
 
    **3a review round 1 (2026-08-16) settled four refusal rules that the
    first implementation got subtly wrong. They are semantics, not
