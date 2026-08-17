@@ -15,6 +15,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <queue>
 #include <sstream>
@@ -638,20 +640,26 @@ namespace RISE
 			if( primary.size() != MethaneSpeciesCount ) {
 				return Fail(error,"fire solver methane reaction vector has the wrong dimension");
 			}
-			std::array<double,MethaneSpeciesCount> fullReactionDelta={};
-			for(std::size_t index=0;index<MethaneSpeciesCount;++index)
-				fullReactionDelta[index]=fullReacted*primary[index];
-			fullReactionDelta[MethaneCarbon]+=fullReacted*fuel.SootYieldKGPerKGFuel()-
-				fullOxidized;
-			fullReactionDelta[MethaneO2]-=fuel.SootOxygenKGPerKGCarbon()*fullOxidized;
-			fullReactionDelta[MethaneCO2]+=fuel.SootCO2KGPerKGCarbon()*fullOxidized;
-			const double fullReactionEnergy=fullReacted*fuel.LowerHeatingValueJPerKG()+
-				fullOxidized*fuel.SootHeatReleaseJPerKGCarbon();
-			auto upperEnergyRow=[&](const double extent){
-				double row=beginning.sensibleEnergyJPerM3+pilotMap.sensibleEnergyDeltaJPerM3+
-					extent*fullReactionEnergy;
+			auto reactionAtExtent=[&](const double extent,double& reacted,double& oxidized,
+				std::array<double,MethaneSpeciesCount>& delta,double& energy){
+				reacted=extent==1.0?fullReacted:extent*fullReacted;
+				oxidized=extent==1.0?fullOxidized:extent*fullOxidized;
 				for(std::size_t index=0;index<MethaneSpeciesCount;++index)
-					row-=(beginning.constituent[index]+extent*fullReactionDelta[index])*
+					delta[index]=reacted*primary[index];
+				delta[MethaneCarbon]+=reacted*fuel.SootYieldKGPerKGFuel()-oxidized;
+				delta[MethaneO2]-=fuel.SootOxygenKGPerKGCarbon()*oxidized;
+				delta[MethaneCO2]+=fuel.SootCO2KGPerKGCarbon()*oxidized;
+				energy=reacted*fuel.LowerHeatingValueJPerKG()+
+					oxidized*fuel.SootHeatReleaseJPerKGCarbon();
+			};
+			auto upperEnergyRow=[&](const double extent){
+				double reacted=0.0,oxidized=0.0,reactionEnergy=0.0;
+				std::array<double,MethaneSpeciesCount> reactionDelta={};
+				reactionAtExtent(extent,reacted,oxidized,reactionDelta,reactionEnergy);
+				const double packetEnergy=reactionEnergy+pilotMap.sensibleEnergyDeltaJPerM3;
+				double row=beginning.sensibleEnergyJPerM3+packetEnergy;
+				for(std::size_t index=0;index<MethaneSpeciesCount;++index)
+					row-=(beginning.constituent[index]+reactionDelta[index])*
 						ceilingEnthalpy[index];
 				return row;
 			};
@@ -660,39 +668,47 @@ namespace RISE
 			if(fullRow>=0.0&&fullRow>baseRow) {
 				if(baseRow>=0.0)return Fail(error,
 					"fire solver reaction energy headroom has no strict interior extent");
-				double lowerExtent=0.0,upperExtent=1.0;
-				for(unsigned int iteration=0;iteration<128u;++iteration){
-					const double midpoint=0.5*(lowerExtent+upperExtent);
-					if(midpoint==lowerExtent||midpoint==upperExtent)break;
-					if(upperEnergyRow(midpoint)<0.0)lowerExtent=midpoint;
-					else upperExtent=midpoint;
+				static_assert(sizeof(double)==sizeof(std::uint64_t),
+					"fire solver reaction extent requires binary64 storage");
+				static_assert(std::numeric_limits<double>::is_iec559,
+					"fire solver reaction extent requires IEEE-754 binary64 ordering");
+				auto extentBits=[](const double value){
+					std::uint64_t bits=0;
+					std::memcpy(&bits,&value,sizeof(bits));
+					return bits;
+				};
+				auto extentFromBits=[](const std::uint64_t bits){
+					double value=0.0;
+					std::memcpy(&value,&bits,sizeof(value));
+					return value;
+				};
+				std::uint64_t lowerBits=extentBits(0.0),upperBits=extentBits(1.0);
+				while(upperBits-lowerBits>1u) {
+					const std::uint64_t midpointBits=lowerBits+(upperBits-lowerBits)/2u;
+					if(upperEnergyRow(extentFromBits(midpointBits))<0.0)
+						lowerBits=midpointBits;
+					else upperBits=midpointBits;
 				}
-				energyExtent=lowerExtent;
-				const double next=std::nextafter(energyExtent,1.0);
-				if(next<=1.0&&upperEnergyRow(next)<0.0)energyExtent=next;
+				energyExtent=extentFromBits(lowerBits);
+				if(!(upperEnergyRow(energyExtent)<0.0)||
+					upperEnergyRow(extentFromBits(upperBits))<0.0)
+					return Fail(error,"fire solver reaction energy headroom search is uncertified");
 			}
-			const double reacted=energyExtent==1.0?fullReacted:energyExtent*fullReacted;
-			const double oxidized=energyExtent==1.0?fullOxidized:energyExtent*fullOxidized;
+			double reacted=0.0,oxidized=0.0,reactionEnergy=0.0;
+			std::array<double,MethaneSpeciesCount> acceptedReactionDelta={};
+			reactionAtExtent(energyExtent,reacted,oxidized,acceptedReactionDelta,reactionEnergy);
 			packet.reactedFuelKGPerM3 = reacted;
 			packet.oxidizedCarbonKGPerM3 = oxidized;
 			packet.grossCarbonFormedKGPerM3 = reacted*fuel.SootYieldKGPerKGFuel();
-			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
-				packet.constituentDelta[index] = reacted*primary[index];
-			}
-			packet.constituentDelta[MethaneCarbon] += packet.grossCarbonFormedKGPerM3;
-			packet.constituentDelta[MethaneCarbon] -= oxidized;
-			packet.constituentDelta[MethaneO2] -=
-				fuel.SootOxygenKGPerKGCarbon()*oxidized;
-			packet.constituentDelta[MethaneCO2] +=
-				fuel.SootCO2KGPerKGCarbon()*oxidized;
-			packet.sensibleEnergyDeltaJPerM3 =
-				reacted*fuel.LowerHeatingValueJPerKG()+
-				oxidized*fuel.SootHeatReleaseJPerKGCarbon()+
+			packet.constituentDelta=acceptedReactionDelta;
+			packet.sensibleEnergyDeltaJPerM3 = reactionEnergy+
 				pilotMap.sensibleEnergyDeltaJPerM3;
 			packet.gasHeatReleaseWPerM3 = reacted*fuel.LowerHeatingValueJPerKG()/step.deltaTimeS;
 			packet.sootHeatReleaseWPerM3 = oxidized*fuel.SootHeatReleaseJPerKGCarbon()/step.deltaTimeS;
 			packet.pilotEnergyDeltaJPerM3 = pilotMap.sensibleEnergyDeltaJPerM3;
 			packet.pilotExpansionIntegral = pilotMap.expansionIntegral;
+			if((fullReacted>0.0||fullOxidized>0.0)&&upperEnergyRow(energyExtent)>=0.0)
+				return Fail(error,"fire solver emitted reaction packet violates strict energy headroom");
 			for( std::size_t index=0; index<MethaneSpeciesCount; ++index ) {
 				if( !std::isfinite(packet.constituentDelta[index]) ) {
 					return Fail(error,"fire solver reaction packet contains a non-finite constituent delta");

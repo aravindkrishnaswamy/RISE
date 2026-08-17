@@ -4094,7 +4094,7 @@ int main()
 		packet.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG(),2.0e-15),
 		"V4 packet heat is exactly the physical record LHV ledger");
 	const MethaneCellState headroomBeginning=PhysicalMixtureLineState(fuel,
-		thermochemistry,0.05,2299.0);
+		thermochemistry,0.05,2299.9);
 	MethaneReactionStep uncappedHeadroomStep=step;
 	uncappedHeadroomStep.deltaTimeS=0.01;
 	uncappedHeadroomStep.mixingTimeS=0.01;
@@ -4111,8 +4111,19 @@ int main()
 			uncappedHeadroomState,&error)&&
 		ApplySourcePacket(headroomBeginning,cappedHeadroomPacket,thermochemistry,
 			cappedHeadroomState,&error);
+	std::array<double,MethaneSpeciesCount> strictCeilingEnthalpy={};
+	double actualCappedUpperRow=std::numeric_limits<double>::infinity();
+	if(headroomPacketsOK&&thermochemistry.SensibleEnthalpiesBySpeciesOrderJPerKG(
+		std::nextafter(2300.0,-std::numeric_limits<double>::infinity()),
+		strictCeilingEnthalpy.data(),strictCeilingEnthalpy.size(),&error)) {
+		actualCappedUpperRow=headroomBeginning.sensibleEnergyJPerM3+
+			cappedHeadroomPacket.sensibleEnergyDeltaJPerM3;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			actualCappedUpperRow-=(headroomBeginning.constituent[species]+
+				cappedHeadroomPacket.constituentDelta[species])*strictCeilingEnthalpy[species];
+	}
 	Check(headroomPacketsOK&&uncappedHeadroomState.temperatureK>2300.0&&
-		cappedHeadroomState.temperatureK<2300.0&&
+		actualCappedUpperRow<0.0&&cappedHeadroomState.temperatureK<2300.0&&
 		cappedHeadroomPacket.reactedFuelKGPerM3<uncappedHeadroomPacket.reactedFuelKGPerM3&&
 		cappedHeadroomPacket.gasHeatReleaseWPerM3==
 			cappedHeadroomPacket.reactedFuelKGPerM3*fuel.LowerHeatingValueJPerKG()/
@@ -4123,10 +4134,40 @@ int main()
 	if(!headroomPacketsOK||uncappedHeadroomState.temperatureK<=2300.0||
 		cappedHeadroomState.temperatureK>=2300.0)
 		std::printf("r75 headroom diagnostic ok=%d uncapped_T=%.17g capped_T=%.17g "
-			"uncapped_extent=%.17g capped_extent=%.17g error=%s\n",headroomPacketsOK?1:0,
+			"row=%.17g uncapped_extent=%.17g capped_extent=%.17g error=%s\n",headroomPacketsOK?1:0,
 			uncappedHeadroomState.temperatureK,cappedHeadroomState.temperatureK,
+			actualCappedUpperRow,
 			uncappedHeadroomPacket.reactedFuelKGPerM3,
 			cappedHeadroomPacket.reactedFuelKGPerM3,error.c_str());
+	const MethaneCellState headroomAssociationBeginning=PhysicalMixtureLineState(fuel,
+		thermochemistry,0.001,2280.0);
+	MethaneReactionStep headroomAssociationStep=cappedHeadroomStep;
+	headroomAssociationStep.deltaTimeS=0.1;
+	headroomAssociationStep.mixingTimeS=0.001;
+	MethaneSourcePacket headroomAssociationPacket;
+	MethaneCellState headroomAssociationState;
+	double headroomAssociationRow=std::numeric_limits<double>::infinity();
+	const bool headroomAssociationOK=BuildMethaneReactionPacket(
+		headroomAssociationBeginning,fuel,headroomAssociationStep,
+		headroomAssociationPacket,&error)&&
+		ApplySourcePacket(headroomAssociationBeginning,headroomAssociationPacket,
+			thermochemistry,headroomAssociationState,&error);
+	if(headroomAssociationOK) {
+		headroomAssociationRow=headroomAssociationBeginning.sensibleEnergyJPerM3+
+			headroomAssociationPacket.sensibleEnergyDeltaJPerM3;
+		for(std::size_t species=0;species<MethaneSpeciesCount;++species)
+			headroomAssociationRow-=(headroomAssociationBeginning.constituent[species]+
+				headroomAssociationPacket.constituentDelta[species])*
+				strictCeilingEnthalpy[species];
+	}
+	Check(headroomAssociationOK&&headroomAssociationRow<0.0&&
+		headroomAssociationState.temperatureK<2300.0,
+		"r75 certifies the exact emitted packet arithmetic at the strict binary64 endpoint");
+	if(!headroomAssociationOK||headroomAssociationRow>=0.0||
+		headroomAssociationState.temperatureK>=2300.0)
+		std::printf("r75 association diagnostic ok=%d T=%.17g row=%.17g error=%s\n",
+			headroomAssociationOK?1:0,headroomAssociationState.temperatureK,
+			headroomAssociationRow,error.c_str());
 	ConservativeVector relaxationIncrement;
 	for(std::size_t species=0;species<MethaneSpeciesCount;++species)
 		relaxationIncrement[1+species]=packet.constituentDelta[species];
