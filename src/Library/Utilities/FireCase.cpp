@@ -228,6 +228,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 			return Fail(error,"fire case envelope knots are closer than one puffing period");
 
 	DerivedV1 d; d.resolutionTier=tierValue; d.peakEnvelope=peak;
+	d.maximumAcceptedTemperatureK=2300.0;
 	d.limiterAcceptanceModelVersion="two_class_face_infimum_v1";
 	d.pilotModelVersion="continuous_command_ramp_manifold_exact_acceptance_v6";
 	d.pilotMaskRule="first_layer_center_annulus_D_over_2_to_D_over_2_plus_2dx";
@@ -334,6 +335,7 @@ bool RISE::FireCase::BuildMethaneV1(const AuthoredV1& a,
 		{"flame_height_heskestad_m",Value::Float(d.flameHeightM)},
 		{"flow_through_time_s",Value::Float(d.flowThroughTimeS)},
 		{"fuel_mass_flux_kg_per_m2_s",Value::Float(d.nominalFuelFluxKGPerM2S)},
+		{"maximum_accepted_temperature_K",Value::Float(d.maximumAcceptedTemperatureK)},
 		{"pre_roll_or_discard_s",Value::Float(d.preRollOrDiscardS)},
 		{"pilot",Value::MapValue({
 			{"ambient_temperature_K",Value::Float(d.pilotAmbientTemperatureK)},

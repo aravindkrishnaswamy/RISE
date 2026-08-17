@@ -43,6 +43,7 @@ namespace RISE
 			double effectiveRadiativeFraction=0.0;
 			double flameHeightM=0.0, effectiveFlameHeightM=0.0;
 			double characteristicDiameterM=0.0, cellWidthM=0.0,resolutionTier=0.0;
+			double maximumAcceptedTemperatureK=0.0;
 			std::uint64_t nx=0,ny=0,nz=0;
 			double extentXM=0.0,extentYM=0.0,extentZM=0.0;
 			double flowThroughTimeS=0.0,preRollOrDiscardS=0.0;

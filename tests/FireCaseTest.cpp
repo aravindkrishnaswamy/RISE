@@ -42,8 +42,9 @@ int main()
 		static_cast<unsigned long long>(record.derived.nz),record.derived.cellWidthM,
 		record.derived.referenceHeatReleaseRateW);
 	Check(record.derived.windowKind=="none" && record.derived.preRollOrDiscardS==0.0 &&
-		record.derived.effectiveRadiativeFraction==fuel.DefaultRadiativeFraction(),
-		"cold-start window and inherited methane chi_r derive exactly");
+		record.derived.effectiveRadiativeFraction==fuel.DefaultRadiativeFraction()&&
+		record.derived.maximumAcceptedTemperatureK==2300.0,
+		"cold-start window, inherited methane chi_r, and r74 physical ceiling derive exactly");
 	std::vector<std::uint8_t> pilotMask;
 	Check(FireCase::BuildPilotMask(authored,record.derived,pilotMask,error),
 		"r55 pilot mask derives from the canonical lattice");
@@ -162,6 +163,17 @@ int main()
 		Check(FireCase::ValidateEnvelopeV1(changed,decoded,error) &&
 			!FireCase::ValidateMethaneEnvelopeV1(changed,fuel,decoded,error),
 			"case hash integrity cannot certify false methane derivations");
+		const RISECBOR64::Value changedPhysicalCeiling=Replace(*derived,
+			"maximum_accepted_temperature_K",RISECBOR64::Value::Float(2500.0));
+		const RISECBOR64::Value ceilingPayload=Replace(*payload,"derived",changedPhysicalCeiling);
+		RISECBOR64::Bytes ceilingPayloadBytes,ceilingEnvelope;
+		Check(RISECBOR64::Encode(ceilingPayload,ceilingPayloadBytes,&error)&&
+			RISECBOR64::Encode(RISECBOR64::Value::MapValue({
+				{"case_record_id",RISECBOR64::Value::String(
+					RISECBOR64::SHA256Hex(ceilingPayloadBytes))},{"payload",ceilingPayload}}),
+				ceilingEnvelope,&error)&&!FireCase::ValidateMethaneEnvelopeV1(
+					ceilingEnvelope,fuel,decoded,error),
+			"r74 rejects a self-consistent mutation that substitutes the opacity-domain ceiling");
 		const RISECBOR64::Value* pilot=derived->Find("pilot");
 		if(pilot) {
 			const RISECBOR64::Value changedExpansionCap=Replace(*pilot,

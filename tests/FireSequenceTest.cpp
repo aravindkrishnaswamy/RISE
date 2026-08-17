@@ -836,7 +836,12 @@ namespace
 			momentum.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
 		ConservativeAdvance3DConfig config; config.transport.cellWidthM=shape.cellWidthM;
 		config.transport.deltaTimeS=reaction.deltaTimeS; config.transport.ambientTemperatureK=300.0;
-		config.transport.adiabaticTemperatureK=2500.0; config.transport.ambientGasDensityKGPerM3=rho;
+		config.transport.adiabaticTemperatureK=caseRecord.derived.maximumAcceptedTemperatureK;
+		config.transport.ambientGasDensityKGPerM3=rho;
+		Check(config.transport.adiabaticTemperatureK==2300.0&&
+			config.transport.adiabaticTemperatureK<
+				FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().TemperatureMaxK(),
+			"r74 capstone owner separates the case physical ceiling from the opacity domain");
 		config.gravityMPerS2={{0.0,0.0,-9.80665}};
 		Check(config.gravityMPerS2[0]==0.0&&config.gravityMPerS2[1]==0.0&&
 			config.gravityMPerS2[2]==-9.80665,
@@ -1069,6 +1074,19 @@ namespace
 					workerCount);
 				advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
 					config,fuel,fuel,FireSimulationTransportRecord::OpenV1(),advanced,&error);
+				if(advancedOK) {
+					std::vector<double> trialTemperature;
+					advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
+						config.transport.ambientTemperatureK,
+						caseRecord.derived.maximumAcceptedTemperatureK,trialTemperature,&error,
+						workerCount);
+					if(advancedOK&&std::any_of(trialTemperature.begin(),trialTemperature.end(),
+						[&caseRecord](const double temperatureK){return !std::isfinite(temperatureK)||
+							temperatureK>=caseRecord.derived.maximumAcceptedTemperatureK;})) {
+						advancedOK=false;
+						error="accepted_physical_temperature_ceiling_violation";
+					}
+				}
 				if(!advancedOK) {
 					lastAdvanceError=error;
 					if(reportCapstoneProgress) std::fprintf(stderr,
@@ -1131,7 +1149,9 @@ namespace
 				const double priorMaximumTemperatureK=values.maximumTemperatureK;
 				std::vector<double> acceptedTemperature;
 				advancedOK=InvertPeriodicTemperaturesWithinBounds(advanced.conservative,fuel,
-					300.0,2500.0,acceptedTemperature,&error,workerCount);
+					config.transport.ambientTemperatureK,
+					caseRecord.derived.maximumAcceptedTemperatureK,acceptedTemperature,&error,
+					workerCount);
 				const bool measurePilotApproach=!values.pilotApproachComplete&&
 					simulationTimeS<pilotEndS;
 				const bool holdPhase=simulationTimeS>=pilotRampEndS&&simulationTimeS<pilotEndS;
@@ -2789,9 +2809,9 @@ int main(int argc,char** argv)
 	Check(!capstoneArtifactRun||methaneFrameNext.maximumTemperatureK<
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().TemperatureMaxK(),
 		"capstone thermostat keeps every tier inside the unchanged certified opacity domain");
-	Check(!capstoneArtifactRun||reportedResolutionTier<10.0||
+	Check(!capstoneArtifactRun||
 		methaneFrameNext.maximumTemperatureK<2300.0,
-		"reported tier-10 McCaffrey run stays below the 2300 K methane physicality bound");
+		"every capstone tier stays below the r74 case-derived methane physicality bound");
 	Check(!capstoneArtifactRun||capstoneValidationOnly||reportedResolutionTier<10.0||(
 		methaneFrameNext.discontinuousLimiterClassSteps>0u&&
 		methaneFrameNext.discontinuousClassThreadIdentityChecked&&
