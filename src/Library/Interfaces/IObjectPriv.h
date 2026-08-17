@@ -166,7 +166,24 @@ namespace RISE
 		//! `AssignObjects` re-establishes it -- so a snapshot operand starts at zero
 		//! consumers and is immediately claimed by the composite that owns it.
 		//! Appended at this interface's TAIL, so no existing slot shifts.
+		//!
+		//! ⚠ THE COST OF SPLITTING ONE BIT INTO TWO PIECES OF STATE, and it came due
+		//! immediately: `IsWorldVisible()` is now a COMPOSED read (`bIsWorldVisible &&
+		//! nConsumedBy == 0`) while `SetWorldVisible` still owns only the base flag, so
+		//! THE GETTER NO LONGER ROUND-TRIPS THROUGH THE SETTER.  Any code that captured
+		//! `IsWorldVisible()` and later wrote it back through `SetWorldVisible` was
+		//! silently correct before the split and silently corrupting after it -- it
+		//! zeroes a consumed operand's base flag, which stays invisible behind the count
+		//! until the count drops and then never comes back.  The agent's isolate
+		//! save/restore (`AgentSession.cpp`, `ObjectSoloRestoreGuard`) was exactly that
+		//! shape and shipped broken; it now records only the objects it actually hid and
+		//! restores them to `true`, which has no round-trip obligation.  If a THIRD
+		//! piece of state ever joins this composition, that is the pattern to grep for
+		//! -- capture-then-write-back of a composed getter -- not the setter.
 		virtual void AddConsumer() = 0;
+		//! Releasing a claim that was never taken is logged, not silently absorbed --
+		//! see `Object::RemoveConsumer` for why an under-count is the failure this
+		//! count exists to prevent, one composite later.
 		virtual void RemoveConsumer() = 0;
 		//! True while at least one composite is consuming this object.
 		virtual bool IsConsumed() const = 0;

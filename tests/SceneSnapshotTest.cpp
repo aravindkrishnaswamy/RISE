@@ -453,6 +453,48 @@ static void TestSnapshotPreservesCSGType()
 		       "[csg] cloned CSG bbox centered at the captured transform (y~3)" );
 	}
 
+	// --- ASSERT: the STANDALONE clones of the operands are not renderable. ---
+	// CreateSnapshot clones every manager item BY NAME, so `operA` / `operB` are
+	// each cloned twice: once underneath the composite's own clone (correctly
+	// hidden -- the clone's AssignObjects consumes them) and once on their own
+	// account, right here.  87 step 3b made "is an operand" a CONSUMPTION COUNT
+	// rather than a cleared visibility flag, and `CopySnapshotStateInto`
+	// deliberately does not copy that count -- so a standalone clone that copied
+	// the BASE flag came out WORLD-VISIBLE: a second, renderable copy of a shape
+	// that has no standalone existence (zero such clones before 3b, one per
+	// operand after).  The helper copies the COMPOSED `IsWorldVisible()` instead.
+	//
+	// EXPERIMENTAL PATH, no production caller (see the banner on
+	// Scene::CreateSnapshot) -- pinned anyway because the whole point of that
+	// banner is that the path is retained for a future isolated-render use, and
+	// this defect is exactly the kind that would ship with it.
+	{
+		const Object* cloneOperA = 0;
+		const Object* cloneOperB = 0;
+		for( size_t i = 0; i < snap->GetObjectCount(); ++i ) {
+			if( strcmp( snap->GetObjectName( i ).c_str(), "operA" ) == 0 ) cloneOperA = snap->GetClonedObject( i );
+			if( strcmp( snap->GetObjectName( i ).c_str(), "operB" ) == 0 ) cloneOperB = snap->GetClonedObject( i );
+		}
+		// (control) the standalone clones really are made -- otherwise the two
+		// assertions below would be satisfied by their absence.
+		Check( cloneOperA != nullptr && cloneOperB != nullptr,
+		       "[csg] (control) the snapshot carries a STANDALONE clone of each operand (cloned by name)" );
+		// (control) the LIVE operands are hidden, so the clones have something
+		// truthful to copy.
+		Check( objs->GetItem( "operA" ) && !static_cast<const IObject*>( objs->GetItem( "operA" ) )->IsWorldVisible()
+		    && objs->GetItem( "operB" ) && !static_cast<const IObject*>( objs->GetItem( "operB" ) )->IsWorldVisible(),
+		       "[csg] (control) the LIVE operands are not world-visible, being consumed by `csg`" );
+		// (control) visibility is not simply lost by cloning -- the composite's
+		// own clone is visible, so a blanket-hidden snapshot would fail here.
+		Check( clonedCsg && clonedCsg->IsWorldVisible(),
+		       "[csg] (control) the composite's OWN clone is world-visible, so the clone path does not blanket-hide" );
+		Check( cloneOperA && !cloneOperA->IsWorldVisible(),
+		       "[csg] MONEY: the standalone clone of `operA` is NOT world-visible -- a consumed operand does not "
+		       "become a renderable standalone shape by being snapshotted" );
+		Check( cloneOperB && !cloneOperB->IsWorldVisible(),
+		       "[csg] MONEY: ... and neither does `operB`" );
+	}
+
 	safe_release( snap );
 	pJob->release();
 }

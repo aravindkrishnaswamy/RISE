@@ -3788,6 +3788,120 @@ static void RunIsolateOnlyNamedObjectRendersTest()
 }
 
 //----------------------------------------------------------------------
+// (G1-i) AN ISOLATE RENDER MUST LEAVE THE CSG OPERANDS IT NEVER TOUCHED
+// ALONE.  87 step 3b made "being a CSG operand" a CONSUMPTION COUNT on
+// the object rather than a cleared visibility flag, so `IsWorldVisible()`
+// became COMPOSED (`bIsWorldVisible && nConsumedBy == 0`) while
+// `SetWorldVisible` kept owning only the base flag.  The isolate
+// save/restore captured the composed GETTER and wrote it back through the
+// base SETTER, which used to round-trip exactly (an operand read `false`
+// and was restored to `false`) and now silently flips every operand's base
+// flag `true -> false` -- for every operand in the scene, whatever was
+// isolated, on every isolate render.
+//
+// IT IS INVISIBLE UNTIL THE COUNT DROPS, which is what makes it worth a
+// test rather than a comment: the operands stay hidden either way while a
+// composite is consuming them.  Remove the composite (reachable from the
+// console `remove object`) and the corrupted base flag is all that is
+// left -- the operands are now permanently hidden, and, being hidden with
+// geometry, are also still read as operands by
+// `ObjectManager::SetObjectParent`, which refuses to parent them.  Only a
+// full re-derive heals it.
+//
+// The probe is therefore: isolate-render, drop the composite, and ask the
+// two operands whether they are ordinary objects again.  The CONTROL is
+// the same scene with the isolate render skipped.
+//----------------------------------------------------------------------
+static const char* const kSceneCsgAndSphere =
+	"RISE ASCII SCENE 7\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n\n"
+	"film\n{\n\twidth 48\n\theight 36\n}\n\n"
+	"pinhole_camera\n{\n\tname cam\n\tlocation 0 0 6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
+	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+	"sphere_geometry\n{\n\tname keep_geo\n\tradius 0.9\n}\n\n"
+	"standard_object\n{\n\tname keep_obj\n\tgeometry keep_geo\n\tmaterial mat\n\tposition 1.6 0 0\n}\n\n"
+	"sphere_geometry\n{\n\tname op_geo\n\tradius 0.6\n}\n\n"
+	"standard_object\n{\n\tname opA\n\tgeometry op_geo\n\tmaterial mat\n\tposition 0 0.25 0\n}\n\n"
+	"standard_object\n{\n\tname opB\n\tgeometry op_geo\n\tmaterial mat\n\tposition 0 -0.25 0\n}\n\n"
+	"csg_object\n{\n\tname comp\n\tobja opA\n\tobjb opB\n\toperation union\n\tposition -1.6 0 0\n}\n\n"
+	"omni_light\n{\n\tname lgt\n\tpower 3.0\n\tcolor 1 1 1\n\tposition 0 3 4\n}\n";
+
+// True when the named object exists AND reports itself world-visible.
+static bool ObjVisible( Job* pJob, const char* name )
+{
+	if( !pJob || !pJob->GetObjects() ) return false;
+	const IObjectPriv* o = pJob->GetObjects()->GetItem( name );
+	return o && static_cast<const IObject*>( o )->IsWorldVisible();
+}
+
+static void RunIsolateLeavesCsgOperandsIntactTest()
+{
+	std::printf( "=== AgentViewModeRenderTest: (G1-i) an isolate render does not zero CSG operand base visibility ===\n" );
+	const std::string scenePath = WriteTemp( "rise_isolate_csg.RISEscene", kSceneCsgAndSphere );
+
+	// ---- CONTROL: the same scene, NO isolate render.  Establishes that
+	// dropping the composite is what un-hides its operands, so the arm below
+	// is measuring the isolate render and nothing else.
+	{
+		Job* pJob = new Job();
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "csg-isolate control: scene loads" );
+		Check( !ObjVisible( pJob, "opA" ) && !ObjVisible( pJob, "opB" ),
+		       "csg-isolate control: (control) both operands start CONSUMED, hence not world-visible" );
+		Check( ObjVisible( pJob, "comp" ) && ObjVisible( pJob, "keep_obj" ),
+		       "csg-isolate control: (control) the composite and the bystander start visible" );
+		Check( pJob->GetObjects() && pJob->GetObjects()->RemoveItem( "comp" ),
+		       "csg-isolate control: the composite is removed" );
+		Check( ObjVisible( pJob, "opA" ) && ObjVisible( pJob, "opB" ),
+		       "csg-isolate control: with nothing consuming them, both operands are ordinary visible objects again" );
+		pJob->release();
+	}
+
+	// ---- ARM: one isolate render first, on an object that is NOT the
+	// composite and NOT an operand.
+	Job* pJob = new Job();
+	Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "csg-isolate: scene loads" );
+	std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
+	Check( session != nullptr, "csg-isolate: session wraps" );
+	if( !session ) { pJob->release(); return; }
+
+	AgentRenderParams isoP;
+	isoP.renderTarget = AgentRenderTarget::ObjectMap;
+	isoP.isolate = "keep_obj";
+	isoP.camera.hasLocation = true; isoP.camera.location = "0 0 6";
+	isoP.camera.hasLookAt   = true; isoP.camera.lookAt   = "0 0 0";
+	isoP.camera.hasUp       = true; isoP.camera.up       = "0 1 0";
+	const AgentRenderResult isoR = session->Render( isoP );
+	Check( isoR.ok, std::string( "csg-isolate: the isolate render succeeds: " ) + isoR.message );
+	Check( isoR.isolateApplied, "csg-isolate: ... and reports isolateApplied=true, so the hide pass really ran" );
+
+	// The restore put back what it hid: the composite and the bystander are
+	// visible, and the operands are still hidden -- by their CONSUMPTION, which
+	// is the only thing that should be hiding them.
+	Check( ObjVisible( pJob, "comp" ) && ObjVisible( pJob, "keep_obj" ),
+	       "csg-isolate: after the render the composite and the bystander are visible again" );
+	Check( !ObjVisible( pJob, "opA" ) && !ObjVisible( pJob, "opB" ),
+	       "csg-isolate: ... and the operands are still hidden, because `comp` is still consuming them" );
+
+	// MONEY ASSERTION: drop the composite and the operands must come back.
+	Check( pJob->GetObjects() && pJob->GetObjects()->RemoveItem( "comp" ),
+	       "csg-isolate: the composite is removed" );
+	Check( ObjVisible( pJob, "opA" ) && ObjVisible( pJob, "opB" ),
+	       "MONEY ASSERTION (G1-i1): with the composite gone the operands are visible again -- the isolate "
+	       "render's restore wrote nothing into a base flag it never cleared" );
+
+	// The second face of the same corruption, and a genuinely different code
+	// path: `SetObjectParent` identifies a CSG operand as "hidden and has
+	// geometry", so a permanently-hidden ex-operand is refused as though it
+	// were still one.
+	Check( pJob->GetObjects() && pJob->GetObjects()->SetObjectParent( "opB", "opA" ),
+	       "MONEY ASSERTION (G1-i2): ... and an ex-operand is parentable again, not still misread as an operand" );
+
+	pJob->release();
+}
+
+//----------------------------------------------------------------------
 // (G1-b) AUTO-FRAMING actually frames.  Measured with the objectmap
 // pixel tally (exact, not a proxy): sph_obj's share of the frame must
 // jump from a few percent whole-scene to a large fraction isolated.
@@ -5746,6 +5860,7 @@ int main()
 	RunIndirectModeDiffuseUnderEnvSuppressedTest();
 	// G1 (2026-08-10) `render{isolate:}`
 	RunIsolateOnlyNamedObjectRendersTest();
+	RunIsolateLeavesCsgOperandsIntactTest();
 	RunIsolateAutoFramingTest();
 	RunIsolateComposesWithModesTest();
 	RunIsolateNameFailureTest();

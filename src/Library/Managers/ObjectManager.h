@@ -87,6 +87,20 @@ namespace RISE
 			//!    and the gizmo's own refusal message has nothing to name.
 			//!    Documented rather than fixed, deliberately -- this is not a
 			//!    production path, and the fix belongs with productionising it.
+			//!    A THIRD 3b CONSEQUENCE ON THE SAME PATH, this one FIXED rather
+			//!    than documented: `Scene::CreateSnapshot` clones every manager
+			//!    item BY NAME, so a `csg_object`'s operands are cloned once on
+			//!    their own account as well as underneath the composite's clone.
+			//!    Once being an operand became a CONSUMPTION COUNT (87 step 3b)
+			//!    rather than a cleared visibility flag, and since
+			//!    `Object::CopySnapshotStateInto` deliberately does not copy that
+			//!    count, the standalone clone came out WORLD-VISIBLE -- a second,
+			//!    renderable copy of a shape that has no standalone existence
+			//!    (zero such clones before 3b, one per operand after).  That
+			//!    helper now copies the COMPOSED `IsWorldVisible()` rather than
+			//!    the base flag, which restores the pre-3b outcome exactly; see
+			//!    the comment at the assignment.  Restoring the link map remains
+			//!    the outstanding item above.
 			//!  - RemoveItem + a re-add under the SAME name leaves the ex-
 			//!    children rooted: the removal retires their links by design,
 			//!    and the re-add cannot know they were there.

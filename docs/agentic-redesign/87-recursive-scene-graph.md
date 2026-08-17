@@ -499,6 +499,69 @@ what was authored, live material included).
    means materialising ten million objects.  Its arithmetic was verified by
    temporarily lowering the constant.
 
+   **3b review round 2 (2026-08-17) — no P1.  One durable rule, and two claims
+   that were TRUE but UNPINNED:**
+   - **SPLITTING ONE BIT INTO TWO PIECES OF STATE BREAKS EVERY
+     CAPTURE-THEN-WRITE-BACK OF THE COMPOSED GETTER, and round 1 walked into
+     that on the very interface it was being careful about.**  Round 1 gave CSG
+     operands a separate consumption COUNT and said, in its own commit message,
+     that it was deliberately NOT overloading `SetWorldVisible` into a counter
+     *because the agent's isolate save/restore restores a captured boolean*.  It
+     dodged the counting-SETTER trap and landed in the capturing-GETTER one:
+     `IsWorldVisible()` became `bIsWorldVisible && nConsumedBy == 0` while
+     `SetWorldVisible` still owned only the base flag, so
+     `AgentSession`'s `ApplyObjectSolo` / `ObjectSoloRestoreGuard` — which
+     captured the composed value for EVERY object and wrote it back through the
+     setter — began zeroing the base flag of every operand in the scene on every
+     `isolate` render.  Invisible while a composite still consumed them; once
+     the count dropped (console `remove object`) the operands were permanently
+     hidden AND still misread as operands by `SetObjectParent`, healed only by a
+     full re-derive.  **The fix is structural, not a corrected capture:** the
+     hide pass records ONLY the objects it actually hid and the restore writes
+     `true`, which has no round-trip obligation at all.  Capturing the BASE flag
+     was rejected — it needs a new accessor and still writes into every object,
+     so the next state this pair splits re-opens the same hole.  **The rule to
+     carry forward: when a getter starts composing state a setter does not own,
+     grep for capture-then-write-back of the GETTER; the setter is not where the
+     hazard is.**  Two smaller consequences of the same split, both fixed here:
+     `Object::CopySnapshotStateInto` (and its `CloneFull` / `CloneGeometric`
+     siblings) copied the BASE flag into a clone that starts at ZERO consumers,
+     so `Scene::CreateSnapshot` — which clones every manager item by name — gave
+     a consumed operand a second, WORLD-VISIBLE standalone clone (zero such
+     clones before 3b, one per operand after); they copy the composed value now,
+     which is exactly the pre-3b outcome.  And `Object::RemoveConsumer` clamped
+     an unbalanced release to zero in silence, turning the very failure the
+     count exists to prevent into an unexplained extra shape in a render; the
+     clamp stays (wrapping an `unsigned` would pin the operand invisible
+     forever) but the zero branch is now logged.
+   - **"Correct at arbitrary depth" and "siblings keep document order across
+     keys" were both TRUE and both UNPINNED, because every 3b fixture was at
+     most ONE qualification level deep** — where an entry's key set is exactly
+     {fully-qualified, bare} and nothing distinguishes the union from a two-key
+     special case.  Deleting the cross-key `std::sort` left the whole suite
+     green while a copy's child list came out reversed against the original's;
+     trimming `ChildKeysOf` to the outer two keys left the suite green while a
+     depth-3 scene lost a WHOLE BRANCH with zero diagnostics — round 1's P1
+     re-created exactly one level deeper.  There is now a three-level fixture
+     (`I1 source A` / `X parent I1.B` / `I2 source I1` / `Z parent I2.I1.B` /
+     `I3 source I2`) asserting all three branches — `I3.I2.I1.Y` via the bare
+     key, `I3.I2.X` via the INTERMEDIATE key, `I3.Z` via the fully-qualified one
+     — their parents, the three different amounts of qualification in their
+     names, and their serial order.
+   - **NOT CLAIMED: the `instance_array` refusal on an INTERMEDIATE key has no
+     distinguishing test, and the reason is structural.**  A key that is
+     intermediate at depth 3 is `keys[0]` of the depth-2 expansion; that
+     expansion is necessarily earlier in the document (declare-before-use) and
+     PASS-2 breaks on the first refusal — so the scene is refused with the
+     identical message whether or not the deeper walk would have caught it.
+     Same shape as the override-lookup unreachability argued at that site.  What
+     IS pinned is the generator refusal on a TWO-level synthesized entry
+     (`parent I2.I1.B` with `I3 source I2`), which no shallower expansion can
+     see.  Also unpinned by construction: the override refusal now prints the
+     key that actually matched (`ov->first`) rather than always `keys[0]`, so a
+     match on a shorter name names the right entry — one expression, and the
+     branch remains unreachable for the reason written at the site.
+
    **3a review round 1 (2026-08-16) settled four refusal rules that the
    first implementation got subtly wrong. They are semantics, not
    phrasing, so they are recorded here. Round 2 then narrowed the last

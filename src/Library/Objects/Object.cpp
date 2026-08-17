@@ -75,6 +75,29 @@ Object::~Object( )
 	safe_release( pInteriorMedium );
 }
 
+void Object::RemoveConsumer()
+{
+	// SATURATION IS A BUG REPORT, NOT A RECOVERY.  Every AddConsumer has exactly
+	// one matching RemoveConsumer (CSGObject::AssignObjects pairs with the
+	// destructor and with the outgoing branch of a re-assign), so reaching here
+	// at zero means some composite released a claim it never took -- and the
+	// balance being off by one in that direction means a LATER release will drive
+	// a still-consumed operand to zero and let it render as a standalone shape
+	// beside the composite that owns it.  That is precisely the failure the count
+	// replaced a bool to prevent, so it must not pass silently; the clamp stays
+	// because wrapping an `unsigned int` would pin the operand invisible forever,
+	// which is the worse of the two.
+	if( !nConsumedBy ) {
+		GlobalLog()->PrintSourceError(
+			"Object::RemoveConsumer:: unbalanced release -- this object is not consumed by any "
+			"csg_object, so a composite has released a claim it never took.  The consumption "
+			"count is now under-counted and some operand will later be un-hidden while a live "
+			"composite is still using it", __FILE__, __LINE__ );
+		return;
+	}
+	--nConsumedBy;
+}
+
 IObjectPriv* Object::CloneFull()
 {
 	// 87: same container handling as CloneSnapshot -- a container has no
@@ -85,10 +108,12 @@ IObjectPriv* Object::CloneFull()
 	// world-visible enumeration containers are deliberately kept out of.
 	// (Both clone entry points are currently dead public surface -- no caller
 	// repo-wide -- but they are CloneSnapshot's siblings and the whole lesson
-	// of this arc is that the sibling is where the defect lives.)
+	// of this arc is that the sibling is where the defect lives.)  The COMPOSED
+	// value for the reason spelled out in CopySnapshotStateInto: the clone has no
+	// consumers, so its base flag has to carry the whole answer.
 	Object* pClone = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "Clone" );
-	pClone->bIsWorldVisible = bIsWorldVisible;
+	pClone->bIsWorldVisible = IsWorldVisible();
 
 	if( pMaterial ) {
 		pClone->AssignMaterial( *pMaterial );
@@ -114,7 +139,7 @@ IObjectPriv* Object::CloneGeometric()
 	// 87: see CloneFull -- container ctor selection and world visibility.
 	Object* pMe = pGeometry ? new Object( pGeometry ) : new Object();
 	GlobalLog()->PrintNew( pMe, __FILE__, __LINE__, "cloned object" );
-	pMe->bIsWorldVisible = bIsWorldVisible;
+	pMe->bIsWorldVisible = IsWorldVisible();
 	return pMe;
 }
 
@@ -156,7 +181,21 @@ void Object::CopySnapshotStateInto( Object& dst ) const
 	// consuming this object as a CSG operand, and a clone is consumed by whoever
 	// assigns it, not by whoever consumed the original.  CSGObject::CloneSnapshot's
 	// own AssignObjects establishes it for the operand clones it makes.
-	dst.bIsWorldVisible        = bIsWorldVisible;
+	//
+	// WHICH IS EXACTLY WHY THE COMPOSED `IsWorldVisible()` IS COPIED HERE AND NOT THE
+	// BASE FLAG.  The clone starts at zero consumers, so the base flag is the ONLY
+	// thing left holding its visibility; copying a consumed operand's base flag
+	// (which is `true` since 87 step 3b -- being an operand is the COUNT now, not the
+	// flag) would hand the clone a world-VISIBLE standalone copy of something that
+	// has no existence as a standalone shape.  `Scene::CreateSnapshot` reaches that
+	// case directly: it clones every manager item BY NAME, so a `csg_object`'s
+	// operands are cloned once on their own account and again, correctly hidden,
+	// underneath the composite's own clone.  Copying the composed value restores the
+	// pre-3b outcome exactly (before the count, a consumed operand's base flag WAS
+	// `false`, so this line already copied `false`), and it stays right for the
+	// operand clones CSGObject::CloneSnapshot makes: their AssignObjects consumes
+	// them a moment later, so they are hidden either way.
+	dst.bIsWorldVisible        = IsWorldVisible();
 	dst.bCastsShadows          = bCastsShadows;
 	dst.bReceivesShadows       = bReceivesShadows;
 	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;

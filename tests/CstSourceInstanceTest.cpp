@@ -2229,6 +2229,30 @@ int main()
 		       ( "synth-child: ... AND the branch reached by the SYNTHESIZED entry name (got " + got + ")" ).c_str() );
 		Check( ParentOf( j, "I2.I1.Y" ) == "I2.I1.B" && ParentOf( j, "I2.X" ) == "I2.I1.B",
 		       "synth-child: ... both parented to the clone of `I1.B`, which is the node they hung off" );
+		// AND IN THE RIGHT ORDER, which is the half of the union that nothing was
+		// asserting.  The union is assembled key by key -- the SYNTHESIZED key `I1.B`
+		// first, the bare `B` second -- so its natural order is by KEY, not by document
+		// position, and the two disagree here: `Y` is written above `X`, but `Y` is
+		// found under the SECOND key.  The `std::sort` over (chunk index, prefix length)
+		// is the only thing that puts them back; delete that one line and the suite is
+		// otherwise entirely green while this copy's child list comes out REVERSED
+		// against the original's.  Sibling order is registration-serial order, which is
+		// what step 2's per-parent sort shows as child display order in the outliner --
+		// so this is user-visible, not bookkeeping.
+		IObjectManager* sObjs = j->GetObjects();
+		const unsigned long long oY = sObjs ? sObjs->GetItemSerial( "I1.Y" )    : 0;
+		const unsigned long long oX = sObjs ? sObjs->GetItemSerial( "X" )       : 0;
+		const unsigned long long cY = sObjs ? sObjs->GetItemSerial( "I2.I1.Y" ) : 0;
+		const unsigned long long cX = sObjs ? sObjs->GetItemSerial( "I2.X" )    : 0;
+		// (control) the ORDER TO MATCH, read off the ORIGINAL rather than assumed --
+		// `I1.Y` and `X` are the two children of the live entry `I1.B`.
+		Check( ParentOf( j, "I1.Y" ) == "I1.B",
+		       "synth-child: (control) `I1.Y` is the ORIGINAL's other child of `I1.B`" );
+		Check( oY && oX && oY < oX,
+		       "synth-child: (control) in the ORIGINAL the `B`-keyed sibling precedes the `I1.B`-keyed one" );
+		Check( cY && cX && cY < cX,
+		       "synth-child: ... and the COPY reproduces that order ACROSS THE TWO KEYS, so the union is "
+		       "sorted by document position and not by which key each branch was found under" );
 		// ONE LEVEL OF QUALIFICATION, applied to each branch's OWN entry name: `Y`'s entry
 		// name in the source tree is already `I1.Y`, so its copy is `I2.I1.Y`; `X`'s is
 		// just `X`, so its copy is `I2.X`.  Getting this from a single prefix would give
@@ -2236,6 +2260,118 @@ int main()
 		Check( Obj( j, "I2.Y" ) == 0 && Obj( j, "I2.I1.X" ) == 0,
 		       "synth-child: ... each named from its OWN entry name, not from one shared prefix" );
 		j->release();
+	}
+
+	// [subtree][depth-3] THE KEY UNION AT ARBITRARY DEPTH -- the claim 2917fbe2 made and
+	// did not pin.  Every fixture above is at most ONE qualification level deep, where an
+	// entry's key set is exactly {fully-qualified, bare}: `keys[0]` and `keys.back()` ARE
+	// the whole set, so nothing in the suite could tell the union apart from a two-key
+	// special case.  Add a third level and the INTERMEDIATE keys become load-bearing:
+	//
+	//   A / B parent A / Y parent B          -- the authored tree
+	//   I1 source A                          -- mints `I1.B`, `I1.Y`
+	//   X parent I1.B                        -- authored onto a 1-level synthesized entry
+	//   I2 source I1                         -- mints `I2.I1.B`, `I2.I1.Y`, `I2.X`
+	//   Z parent I2.I1.B                     -- authored onto a 2-level synthesized entry
+	//   I3 source I2                         -- must carry ALL THREE branches
+	//
+	// Cloning `I2.I1.B` (ownName `B`, ctxParts {`I2`,`I1`}) the entry answers to THREE
+	// document keys at once, each with its own prefix inheritance:
+	//   `I2.I1.B` -> `Z` keeps nothing        -> `I3.Z`
+	//   `I1.B`    -> `X` keeps `I2.`          -> `I3.I2.X`        <-- THE INTERMEDIATE
+	//   `B`       -> `Y` keeps `I2.I1.`       -> `I3.I2.I1.Y`
+	// Keeping only the outer two re-creates round 1's P1 exactly one level deeper, and
+	// just as silently: the derive comes back clean with `I3.I2.X` and everything under
+	// it simply absent.
+	{
+		const std::string body = "standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+		                         "standard_object\n{\nname B\nparent A\ngeometry geo\nmaterial m\nposition 0 2 0\n}\n"
+		                         "standard_object\n{\nname Y\nparent B\ngeometry boxg\nmaterial m2\nposition 0 0 1\n}\n"
+		                         "standard_object\n{\nname I1\nsource A\nposition 5 0 0\n}\n"
+		                         "standard_object\n{\nname X\nparent I1.B\ngeometry boxg\nmaterial m2\nposition 0 0 3\n}\n"
+		                         "standard_object\n{\nname I2\nsource I1\nposition -5 0 0\n}\n"
+		                         "standard_object\n{\nname Z\nparent I2.I1.B\ngeometry boxg\nmaterial m2\nposition 0 0 -4\n}\n"
+		                         "standard_object\n{\nname I3\nsource I2\nposition 0 7 0\n}\n";
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( body ), &diags );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "depth3: the three-level fixture derives cleanly (" ) + all + ")" ).c_str() );
+		std::string got;
+		// CONTROLS -- the two-level tree `I3` copies, so a failure below is about the
+		// THIRD level and not about the thing it copies.
+		Check( CenterIs( Obj( j, "I2.I1.B" ), -5, 2,  0, &got ), ( "depth3: (control) `I2.I1.B` (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I2.I1.Y" ), -5, 2,  1, &got ), ( "depth3: (control) `I2.I1.Y` (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I2.X" ),    -5, 2,  3, &got ), ( "depth3: (control) `I2.X` (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "Z" ),       -5, 2, -4, &got ), ( "depth3: (control) `Z` hangs off `I2.I1.B` (got " + got + ")" ).c_str() );
+		Check( ParentOf( j, "Z" ) == "I2.I1.B", "depth3: (control) ... by a real link in the live tree" );
+		// THE COPY: all three branches, each named from its OWN entry name.
+		Check( CenterIs( Obj( j, "I3.I2.I1.B" ), 0, 9,  0, &got ), ( "depth3: the copied 3-level member (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I3.I2.I1.Y" ), 0, 9,  1, &got ),
+		       ( "depth3: the branch reached by the BARE key `B` (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I3.I2.X" ),    0, 9,  3, &got ),
+		       ( "depth3: MONEY ASSERTION -- the branch reached by the INTERMEDIATE key `I1.B`, which "
+		         "is neither the fully-qualified name nor the bare one (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I3.Z" ),       0, 9, -4, &got ),
+		       ( "depth3: the branch reached by the FULLY-QUALIFIED key `I2.I1.B` (got " + got + ")" ).c_str() );
+		Check( ParentOf( j, "I3.I2.I1.Y" ) == "I3.I2.I1.B"
+		    && ParentOf( j, "I3.I2.X" )    == "I3.I2.I1.B"
+		    && ParentOf( j, "I3.Z" )       == "I3.I2.I1.B",
+		       "depth3: ... all three parented to the clone of `I2.I1.B`, which is the node they hung off" );
+		// Each branch's copy is named from ITS OWN entry name, so the three names carry
+		// three DIFFERENT amounts of qualification -- a single shared prefix would give
+		// at least two of them a name the other should have had.
+		Check( Obj( j, "I3.I2.I1.X" ) == 0 && Obj( j, "I3.X" ) == 0
+		    && Obj( j, "I3.I2.Z" ) == 0 && Obj( j, "I3.I2.Y" ) == 0,
+		       "depth3: ... and from no shared prefix -- none of the mis-qualified spellings exists" );
+		// SIBLING ORDER ACROSS THREE KEYS.  The union is assembled key-first (fully-
+		// qualified, then intermediate, then bare), which is the exact REVERSE of the
+		// document order here, so the sort is doing real work at every position.
+		IObjectManager* objs = j->GetObjects();
+		const unsigned long long dY = objs ? objs->GetItemSerial( "I3.I2.I1.Y" ) : 0;
+		const unsigned long long dX = objs ? objs->GetItemSerial( "I3.I2.X" )    : 0;
+		const unsigned long long dZ = objs ? objs->GetItemSerial( "I3.Z" )       : 0;
+		const unsigned long long oY = objs ? objs->GetItemSerial( "I2.I1.Y" )    : 0;
+		const unsigned long long oX = objs ? objs->GetItemSerial( "I2.X" )       : 0;
+		const unsigned long long oZ = objs ? objs->GetItemSerial( "Z" )          : 0;
+		// NOT AN INDEPENDENT CONTROL, and saying so is the point: two of these three
+		// (`I2.I1.Y`, `I2.X`) are themselves produced by the union at depth 2, so this
+		// line and the one below go red together under a broken sort.  It is asserted
+		// because the depth-2 copy has to be right too, not because it isolates the
+		// depth-3 claim -- the branch-EXISTENCE assertions above are what do that.
+		Check( oY && oX && oZ && oY < oX && oX < oZ,
+		       "depth3: the ORIGINAL's three children of `I2.I1.B` are in document order" );
+		Check( dY && dX && dZ && dY < dX && dX < dZ,
+		       "depth3: ... and the copy reproduces it, so the union is sorted by document position and "
+		       "not by which of the THREE keys each branch was found under" );
+		j->release();
+	}
+
+	// [refuse][depth-3] AND THE `instance_array` REFUSAL READS THE SAME THREE-KEY SET.
+	// A generator parented onto a TWO-level synthesized entry (`I2.I1.B`) is invisible to
+	// every shallower expansion -- `I2`'s own walk knows that entry as `I1.B` / `B`, never
+	// as `I2.I1.B` -- so `I3`'s expansion is the FIRST and ONLY place this can be caught.
+	// Miss it and the copy silently lacks the generator's objects, which is verbatim the
+	// outcome the refusal exists to prevent.
+	//
+	// NOT CLAIMED, and worth saying plainly: the same refusal on an INTERMEDIATE key
+	// (`parent I1.B` with `I3 source I2` present) has NO distinguishing test, because a
+	// key that is intermediate at depth 3 is `keys[0]` of the depth-2 expansion, that
+	// expansion is necessarily earlier in the document, and PASS-2 breaks on the first
+	// refusal -- so the scene is refused with the identical message whether or not the
+	// deeper walk would have caught it.  Same shape as the override-lookup unreachability
+	// argued at that site.  The key set is pinned at the intermediate position by the
+	// depth-3 child fixture above instead.
+	{
+		Check( RefusedWith( Scene( "standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+		                         + std::string( "standard_object\n{\nname B\nparent A\ngeometry geo\nmaterial m\nposition 0 2 0\n}\n" )
+		                         + "standard_object\n{\nname I1\nsource A\nposition 5 0 0\n}\n"
+		                         + "standard_object\n{\nname I2\nsource I1\nposition -5 0 0\n}\n"
+		                         + "instance_array\n{\nname g\ntemplate geo\nmaterial m\nparent I2.I1.B\ncount_u 2\n}\n"
+		                         + "standard_object\n{\nname I3\nsource I2\nposition 0 7 0\n}\n" ),
+		                    "contains the `instance_array` generator" ),
+		       "refuse: ... including one parented onto a TWO-level synthesized entry, which only the "
+		       "third-level expansion's fully-qualified key can see" );
 	}
 
 	// [refuse] a RECURSIVE definition the pre-walk self-parent check CANNOT see, because

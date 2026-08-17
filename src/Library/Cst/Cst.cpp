@@ -1999,7 +1999,13 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 		if( ov != index.overriddenNames.end() ) {
 			char pos[64];
 			std::snprintf( pos, sizeof(pos), "chunk #%u", ChunkOrdinal( items, ov->second ) );
-			diags.push_back( who + ": the source subtree member `" + srcEntryName + "` has an `override_object` layer ("
+			// NAME THE ENTRY THE LAYER IS ACTUALLY ON -- `ov->first`, the key that
+			// matched -- not `srcEntryName`, which is only `keys[0]`.  The two differ
+			// whenever a non-zero key matches, and the message would then assert the
+			// layer is on the fully-qualified entry when it is on a shorter name, i.e.
+			// send the author to the wrong line to fix it.  Unreachable today for the
+			// reason argued above; costs one expression to be right if that changes.
+			diags.push_back( who + ": the source subtree member `" + ov->first + "` has an `override_object` layer ("
 				+ pos + ").  An override is applied to the LIVE object by name, after its base chunk, so a copy built "
 				"from that base chunk would silently carry the UN-overridden pose.  Fold the override into the base "
 				"chunk, or instance a subtree without one." );

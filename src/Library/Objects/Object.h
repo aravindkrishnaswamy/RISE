@@ -159,7 +159,16 @@ namespace RISE
 			virtual void SetWorldVisible( bool b ) override { bIsWorldVisible = b; }
 
 			virtual void AddConsumer() override { ++nConsumedBy; }
-			virtual void RemoveConsumer() override { if( nConsumedBy ) --nConsumedBy; }
+			//! The clamp keeps an unbalanced release from wrapping an `unsigned int`
+			//! to 4 billion, which would pin the operand invisible forever.  But a
+			//! release with nothing to release is ITSELF the failure this count
+			//! exists to prevent, one composite earlier: the balance is off, so some
+			//! LATER release will drive a still-consumed operand to zero and it will
+			//! render as a standalone shape beside the composite that owns it.
+			//! Saturating silently turns that into an unexplained extra shape in a
+			//! render; out of line so the diagnostic can reach GlobalLog without
+			//! this header pulling it in.
+			virtual void RemoveConsumer() override;
 			virtual bool IsConsumed() const override { return nConsumedBy != 0; }
 
 			virtual bool DoesCastShadows() const override { return bCastsShadows; }

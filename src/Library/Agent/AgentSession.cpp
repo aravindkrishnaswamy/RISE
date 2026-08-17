@@ -10740,9 +10740,41 @@ namespace RISE
 			//!      render of the same Scene pointer (RayCaster::AttachScene
 			//!      only rebuilds when the generation moved).
 			//!
-			//! `mPrior` holds the pre-isolate flag of EVERY object the
-			//! manager reported, so a CSG operand (already world-invisible)
-			//! is restored to invisible, not blanket-true.
+			//! `mHidden` holds ONLY the objects this render actually hid --
+			//! never the whole manager -- and the restore therefore only ever
+			//! writes `true`, into a flag that was `true` when we took it.
+			//!
+			//! IT USED TO HOLD EVERY OBJECT AND ITS CAPTURED FLAG, and that was
+			//! a latent corruption once 87 step 3b gave CSG operands a
+			//! CONSUMPTION COUNT.  The capture read `IsWorldVisible()`, which is
+			//! the COMPOSED value (`bIsWorldVisible && nConsumedBy == 0`); the
+			//! restore wrote it back through `SetWorldVisible`, which is the BASE
+			//! flag.  Before the count those were the same bit, so an operand
+			//! captured `false` and was restored to `false` -- a no-op round
+			//! trip.  After it, an operand's BASE flag is `true` while
+			//! `IsWorldVisible()` is `false`, so the restore silently flipped
+			//! the base `true -> false` for EVERY operand in the scene, whatever
+			//! was isolated.  It stayed invisible (the count still hid it) until
+			//! the count dropped -- remove one composite from the console and
+			//! its operands were now permanently hidden AND misread as operands
+			//! by `ObjectManager::SetObjectParent`.  Only a full re-derive healed
+			//! it.
+			//!
+			//! THE IRONY IS WORTH KEEPING: 2917fbe2 chose a separate count
+			//! precisely so it would not have to overload `SetWorldVisible` into
+			//! a counter, citing THIS save/restore as the reason.  It dodged the
+			//! counting-SETTER trap and walked into the capturing-GETTER one, on
+			//! the same pair of methods, in the very code it named.  A getter that
+			//! composes two pieces of state cannot round-trip through a setter
+			//! that owns one of them; recording only what we changed is the shape
+			//! that has no such obligation.
+			//!
+			//! (The alternative -- capturing the BASE flag -- was rejected: it
+			//! needs a new base-flag accessor on the interface, and it still
+			//! writes a value into every object in the scene on every isolate
+			//! render, so the next state this pair splits in two re-opens the
+			//! same hole.  "Restore exactly what you took, and nothing else" is
+			//! invariant under that change.)
 			class ObjectSoloRestoreGuard
 			{
 			public:
@@ -10751,12 +10783,12 @@ namespace RISE
 				{
 				}
 
-				//! Takes ownership of the captured (object, priorVisible)
-				//! list and makes the destructor's restore live.  Called
-				//! only once the hide pass has actually run.
-				void Arm( std::vector<std::pair<IObjectPriv*, bool> >&& prior )
+				//! Takes ownership of the list of objects the hide pass
+				//! actually hid and makes the destructor's restore live.
+				//! Called only once that pass has run.
+				void Arm( std::vector<IObjectPriv*>&& hidden )
 				{
-					mPrior = std::move( prior );
+					mHidden = std::move( hidden );
 					mArmed = true;
 				}
 
@@ -10764,8 +10796,12 @@ namespace RISE
 				{
 					if( !mArmed ) return;
 					try {
-						for( std::size_t i = 0; i < mPrior.size(); ++i ) {
-							if( mPrior[i].first ) mPrior[i].first->SetWorldVisible( mPrior[i].second );
+						// Unconditionally `true`, and that is the whole point:
+						// every entry in this list was world-visible when we
+						// took it (the hide pass records nothing else), so its
+						// BASE flag was `true` too.  Nothing else is written.
+						for( std::size_t i = 0; i < mHidden.size(); ++i ) {
+							if( mHidden[i] ) mHidden[i]->SetWorldVisible( true );
 						}
 						// Invariant 2 (see the class doc): force every caster
 						// to rebuild its luminary list against the restored,
@@ -10807,9 +10843,9 @@ namespace RISE
 				ObjectSoloRestoreGuard( const ObjectSoloRestoreGuard& );             // deleted
 				ObjectSoloRestoreGuard& operator=( const ObjectSoloRestoreGuard& );  // deleted
 
-				IScenePriv*     mScene;
-				std::vector<std::pair<IObjectPriv*, bool> > mPrior;
-				bool            mArmed;
+				IScenePriv*                 mScene;
+				std::vector<IObjectPriv*>   mHidden;
+				bool                        mArmed;
 			};
 
 			//! Offscreen isolation for agent/LLM renders: RAII restore of the
@@ -11591,29 +11627,42 @@ namespace RISE
 			return false;
 		}
 
-		//! Hide every object EXCEPT `keep`, returning the (object, prior
-		//! world-visible) list the restore guard needs.  Reports how many
-		//! objects were actually hidden.  Assumes the caller has already
-		//! built the full-set TLAS -- see ObjectSoloRestoreGuard's invariant 1.
-		std::vector<std::pair<IObjectPriv*, bool> > ApplyObjectSolo(
+		//! Hide every object EXCEPT `keep`, returning ONLY the objects it
+		//! actually hid -- which is exactly the list the restore guard needs.
+		//! Assumes the caller has already built the full-set TLAS -- see
+		//! ObjectSoloRestoreGuard's invariant 1.
+		//!
+		//! `outHiddenCount` is now just `hidden.size()`, and is kept as an
+		//! out-param because the caller MOVES the vector into the guard and then
+		//! still needs the number for the result message.
+		//!
+		//! RECORDING ONLY WHAT WE CHANGED is load-bearing, not tidiness.  The
+		//! `IsWorldVisible()` read below is COMPOSED (`bIsWorldVisible &&
+		//! nConsumedBy == 0` since 87 step 3b) while `SetWorldVisible` owns
+		//! only the base flag, so an object we DIDN'T hide cannot be "restored"
+		//! from that read without corrupting it -- see ObjectSoloRestoreGuard's
+		//! header for the bug that shipped.  An object we DID hide is safe by
+		//! construction: `wasVisible` gates the hide, and composed-visible
+		//! implies base-visible.
+		std::vector<IObjectPriv*> ApplyObjectSolo(
 			IObjectManager* objMgr, IObjectPriv* keep, unsigned int& outHiddenCount )
 		{
-			std::vector<std::pair<IObjectPriv*, bool> > prior;
+			std::vector<IObjectPriv*> hidden;
 			outHiddenCount = 0;
-			if( !objMgr ) return prior;
+			if( !objMgr ) return hidden;
 			const std::vector<std::string> names = CollectObjectNames( objMgr );
-			prior.reserve( names.size() );
+			hidden.reserve( names.size() );
 			for( std::size_t i = 0; i < names.size(); ++i ) {
 				IObjectPriv* obj = objMgr->GetItem( names[i].c_str() );
 				if( !obj ) continue;
 				const bool wasVisible = static_cast<const IObject*>( obj )->IsWorldVisible();
-				prior.push_back( std::make_pair( obj, wasVisible ) );
 				if( obj != keep && wasVisible ) {
 					obj->SetWorldVisible( false );
+					hidden.push_back( obj );
 					++outHiddenCount;
 				}
 			}
-			return prior;
+			return hidden;
 		}
 
 		//! The auto-framing vantage.  A FIXED three-quarter direction --
@@ -16384,9 +16433,9 @@ namespace RISE
 					// ISOLATED luminary set, and the guard's matching bump on
 					// restore forces the full set back afterwards.
 					unsigned int hiddenCount = 0;
-					std::vector<std::pair<IObjectPriv*, bool> > priorVisibility =
+					std::vector<IObjectPriv*> hiddenByIsolate =
 						ApplyObjectSolo( objMgrForIsolate, isolateObj, hiddenCount );
-					isolateGuard.Arm( std::move( priorVisibility ) );
+					isolateGuard.Arm( std::move( hiddenByIsolate ) );
 					if( RISE::Implementation::Scene* concreteSceneForIsolate =
 							dynamic_cast<RISE::Implementation::Scene*>( mJob->GetScene() ) ) {
 						concreteSceneForIsolate->BumpLightTopologyGeneration();
