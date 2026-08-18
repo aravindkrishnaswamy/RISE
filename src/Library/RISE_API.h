@@ -4294,6 +4294,24 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// every re-parent goes through a document chunk edit.  DRAG-TO-REPARENT
 	// must bump the scene epoch itself -- it changes the TREE without
 	// changing any category's entity LIST, so nothing else would notice.
+	//
+	// THE `ByHandle` SUFFIX IS A DELIBERATE LINK BREAK, not a hint that
+	// some other addressing mode exists -- a handle is the only way to
+	// name a node.  Five entry points here took an `unsigned int` INDEX in
+	// af83e5e4 and take a generation-tagged 64-bit handle now.  For THREE
+	// of them (TreeRootNode, TreeChildNode, TreeNodeParent) the OUT-pointer
+	// widened too, and `unsigned int*` does not convert to
+	// `unsigned long long*`, so a caller written against the old signature
+	// already fails to compile.  For the other TWO -- child count and name
+	// -- the handle is the only changed parameter, `unsigned int` converts
+	// to `unsigned long long` implicitly, and that caller would have kept
+	// COMPILING and silently degraded to "every node is a childless row"
+	// (a raw index leaves the generation tag 0, which matches no published
+	// generation).  That degradation is indistinguishable from a
+	// legitimately flat category, which is exactly the kind of wrong a
+	// shell sits on for a long time.  So those two, and only those two,
+	// are renamed: a stale caller now fails to build on every path.  If the
+	// handle encoding ever changes again, rename again.
 
 	//! Total nodes in `category`'s tree.  0 on null controller or an
 	//! unknown category.
@@ -4320,7 +4338,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		unsigned long long* outNode );
 
 	//! How many children `node` has.  0 for an unknown or STALE handle.
-	unsigned int RISE_API_SceneEditController_TreeChildCount(
+	//! (`ByHandle`: see the LINK BREAK note above.)
+	unsigned int RISE_API_SceneEditController_TreeChildCountByHandle(
 		SceneEditController* p, int category, unsigned long long node );
 
 	//! Handle of `node`'s `childIdx`-th child.  Returns false -- leaving
@@ -4340,9 +4359,22 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! `node`'s entity name -- what a row displays and what
 	//! RISE_API_SceneEditController_SetSelection takes.  Returns false on
 	//! null controller or an unknown / stale handle.
-	bool RISE_API_SceneEditController_TreeNodeName(
+	//! (`ByHandle`: see the LINK BREAK note above.)
+	bool RISE_API_SceneEditController_TreeNodeNameByHandle(
 		SceneEditController* p, int category, unsigned long long node,
 		char* buf, unsigned int bufLen );
+
+	// NO `ReadTree` AND NO `HandleFor` ON THIS SURFACE, and that is not an
+	// omission to be corrected.  `SceneEditController::AuthoredTree` is a
+	// nested C++ type; this header only FORWARD-DECLARES the controller
+	// (`class SceneEditController;`, above the SceneEditController block)
+	// and cannot name it without pulling SceneEditController.h into the
+	// most-included header in the tree.  A caller that has no
+	// ReadTree has no raw index either -- every handle it holds came out of
+	// TreeRootNode or TreeChildNode already tagged -- so the way back that
+	// `SceneEditController::HandleFor` provides has nothing to answer here.
+	// A C++ shell (Qt ViewportBridge) reaches both through the controller
+	// directly.
 
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache

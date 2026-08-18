@@ -61,6 +61,23 @@
 //         one lock hold), and an idle refresh neither republishes nor
 //         invalidates an outstanding handle.
 //    P -- the sibling sort's tie-break-by-name branch.
+//    Q -- a RENAME that leaves the tree's SHAPE alone still republishes.
+//         Equivalence is defined on observable CONTENT, and a name is
+//         content: without the name half of the compare a rename keeps the
+//         generation, so every outstanding handle keeps resolving to the OLD
+//         name while the flat surface reports the new one.
+//    S -- a REPLACEMENT under the same name invalidates handles.  Remove an
+//         entity and re-add a DIFFERENT instance under the SAME name and
+//         every structural member of its row -- and its name -- compares
+//         equal, so only the registration serial can tell the tree changed.
+//    R -- there is a WAY BACK from a ReadTree row to the per-node getters.
+//         ReadTree is what every multi-node consumer is told to use and it
+//         yields RAW indices; without HandleFor a shell that follows the
+//         advice has to re-walk (losing the transactional property) or
+//         hand-roll the handle layout (losing the encapsulation).  C++-only:
+//         the C-ABI surface has no ReadTree to pair it with, because
+//         AuthoredTree is a nested C++ type RISE_API.h cannot name without
+//         including SceneEditController.h.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -80,6 +97,8 @@
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IObjectPriv.h"   // Q: addref/release around the rename's drop + re-register
+#include "../src/Library/Interfaces/IMaterialManager.h" // S: the flat-category half of the replacement case
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -571,17 +590,27 @@ int main()
 	// =================================================================
 	// K -- the C-ABI surface.
 	//
-	// THE FIXTURE IS THE TEST HERE.  An earlier version used just
-	// `root` + `kid`, where `root` is the only root AND the
-	// first-registered object, so its node index is 0 -- and 0 is also
-	// what a wrapper that simply zeroed its out-parameter would produce.
-	// Two numbering schemes coincided, and `*outNode = 0;` in
-	// TreeRootNode, and `*outParent = 0;` in TreeNodeParent, both left the
-	// suite fully green.  (Verified; the same mutation on TreeChildNode
-	// WAS caught, because `kid`'s child handle is 1.)  So the fixture now
-	// declares `aaa` FIRST: the root under test is the SECOND root and the
-	// second-registered node, `kid`'s parent handle is not 0, and neither
-	// coincides with a zeroed out-param.
+	// THE FIXTURE IS THE TEST HERE, but NOT for the reason this comment
+	// used to give.  It was written against the pre-handle API, where a
+	// node's address was a raw INDEX and the first-registered root's index
+	// was 0 -- the same value a wrapper that merely zeroed its out-param
+	// produces -- so `*outNode = 0;` in TreeRootNode and `*outParent = 0;`
+	// in TreeNodeParent both left the suite green.  Generation tagging
+	// retired that: a published tree's generation starts at 1, so a real
+	// handle is never 0 and NO fixture can make a zeroed out-param look
+	// right.  Both zeroing mutations are caught on the single-root fixture
+	// too; that is no longer what this shape buys.
+	//
+	// What it buys is INDEX DISCRIMINATION.  Mutate TreeRootNode to ignore
+	// `rootIdx` and always answer a properly encoded `roots[0]`: a
+	// single-root fixture cannot see that AT ALL -- there is only one root,
+	// so ignoring the index and honouring it are the same answer, by
+	// construction and not by luck.  With `aaa` declared first the node
+	// under test is the SECOND root, and that mutation reddens the walk
+	// wholesale: measured 30 assertions red across A, B, F, G, H, I, J, K,
+	// M, N, Q and S, six of them inside K itself.  The same argument
+	// applies to `kid`'s parent, which must not be the first-registered
+	// node.  Do not "simplify" the fixture back to one root.
 	// =================================================================
 	{
 		const char* s = "sgnode_cabi.RISEscene";
@@ -605,27 +634,27 @@ int main()
 			Check( RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 0, &firstRoot ),
 			       "K: root 0 resolves" );
 			char buf[128] = { 0 };
-			Check( RISE_API_SceneEditController_TreeNodeName( &c, OBJ, firstRoot, buf, sizeof(buf) )
+			Check( RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, firstRoot, buf, sizeof(buf) )
 			    && std::string( buf ) == "aaa", "K: root 0 is `aaa` -- the first-registered object" );
 
 			unsigned long long rootNode = 0xDEADull;
 			Check( RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 1, &rootNode ),
 			       "K: root 1 resolves" );
 			buf[0] = 0;
-			Check( RISE_API_SceneEditController_TreeNodeName( &c, OBJ, rootNode, buf, sizeof(buf) )
+			Check( RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, rootNode, buf, sizeof(buf) )
 			    && std::string( buf ) == "root", "K: root 1's name comes back as `root`" );
 			Check( rootNode != firstRoot,
 			       "K: the two roots have DIFFERENT handles -- TreeRootNode is not answering a constant" );
 
-			Check( RISE_API_SceneEditController_TreeChildCount( &c, OBJ, rootNode ) == 1,
+			Check( RISE_API_SceneEditController_TreeChildCountByHandle( &c, OBJ, rootNode ) == 1,
 			       "K: `root` has one child" );
-			Check( RISE_API_SceneEditController_TreeChildCount( &c, OBJ, firstRoot ) == 0,
+			Check( RISE_API_SceneEditController_TreeChildCountByHandle( &c, OBJ, firstRoot ) == 0,
 			       "K: `aaa` has none -- the child count is per node, not a constant" );
 			unsigned long long kidNode = 0xDEADull;
 			Check( RISE_API_SceneEditController_TreeChildNode( &c, OBJ, rootNode, 0, &kidNode ),
 			       "K: child 0 resolves" );
 			buf[0] = 0;
-			Check( RISE_API_SceneEditController_TreeNodeName( &c, OBJ, kidNode, buf, sizeof(buf) )
+			Check( RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, kidNode, buf, sizeof(buf) )
 			    && std::string( buf ) == "kid", "K: the child's name comes back as `kid`" );
 
 			unsigned long long par = 0xDEADull;
@@ -647,7 +676,7 @@ int main()
 			Check( !RISE_API_SceneEditController_TreeNodeParent( &c, OBJ, rootNode, &sentinel )
 			    && sentinel == 0xBEEFull, "K: a ROOT reports NO parent and writes nothing" );
 			buf[0] = 'z';
-			Check( !RISE_API_SceneEditController_TreeNodeName( &c, OBJ, 999, buf, sizeof(buf) ),
+			Check( !RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, 999, buf, sizeof(buf) ),
 			       "K: an unknown handle has no name" );
 
 			// Null-controller hardening, the same contract every other
@@ -656,10 +685,10 @@ int main()
 			Check( RISE_API_SceneEditController_TreeRootCount( 0, OBJ ) == 0, "K: null controller -> 0 roots" );
 			Check( RISE_API_SceneEditController_TreeGeneration( 0, OBJ ) == 0, "K: null controller -> generation 0" );
 			Check( !RISE_API_SceneEditController_TreeRootNode( 0, OBJ, 0, &sentinel ), "K: null controller -> no root" );
-			Check( RISE_API_SceneEditController_TreeChildCount( 0, OBJ, 0 ) == 0, "K: null controller -> 0 children" );
+			Check( RISE_API_SceneEditController_TreeChildCountByHandle( 0, OBJ, 0 ) == 0, "K: null controller -> 0 children" );
 			Check( !RISE_API_SceneEditController_TreeChildNode( 0, OBJ, 0, 0, &sentinel ), "K: null controller -> no child" );
 			Check( !RISE_API_SceneEditController_TreeNodeParent( 0, OBJ, 0, &sentinel ), "K: null controller -> no parent" );
-			Check( !RISE_API_SceneEditController_TreeNodeName( 0, OBJ, 0, buf, sizeof(buf) ), "K: null controller -> no name" );
+			Check( !RISE_API_SceneEditController_TreeNodeNameByHandle( 0, OBJ, 0, buf, sizeof(buf) ), "K: null controller -> no name" );
 			Check( !RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 0, 0 ), "K: null out-pointer is refused" );
 		}
 		j->release();
@@ -818,7 +847,7 @@ int main()
 
 			char buf[128] = { 0 };
 			buf[0] = 'z';
-			Check( !RISE_API_SceneEditController_TreeNodeName( &c, OBJ, h, buf, sizeof(buf) ),
+			Check( !RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, h, buf, sizeof(buf) ),
 			       "N: the C ABI reports the stale handle as a FAILURE, not as a row" );
 			unsigned long long sentinel = 0xBEEFull;
 			Check( !RISE_API_SceneEditController_TreeNodeParent( &c, OBJ, h, &sentinel )
@@ -917,6 +946,332 @@ int main()
 		CheckEq( RawDump( t ), "cat|ant|bee",
 		         "P: `order` decides first, and equal orders break by NAME -- not by the order the "
 		         "seeds happened to arrive in" );
+	}
+
+	// =================================================================
+	// Q -- A RENAME REPUBLISHES, EVEN THOUGH IT MOVES NOTHING.
+	//
+	// Equivalence is defined on observable CONTENT (TreesEquivalent), and
+	// a NAME is content -- it is the row label and the selection identity.
+	// A rename is, at the manager level, a DROP plus a RE-REGISTER under a
+	// new name, and a fresh registration serial keeps the entity in the
+	// same sort position.  So the rebuilt tree has the same size, the same
+	// parents, the same roots and the same child slices as the published
+	// one: every STRUCTURAL comparison agrees, and the row differs only in
+	// the two CONTENT members.
+	//
+	// TWO HALVES, because the object half does NOT isolate the name.  A
+	// manager-level rename moves the registration SERIAL as well (that is
+	// what a drop plus a re-register does), so once the serial joined the
+	// equivalence -- case S -- the serial catches the object half on its
+	// own.  Measured: with the serial in place, deleting the name compare
+	// leaves the object half green.  That is not a reason to drop the name
+	// compare; it is a reason to test it where it is the ONLY thing that
+	// can differ.
+	//
+	// It is the only thing that can differ wherever no serial is
+	// available: Medium, Rasterizer, Film, Animation and SceneVariant all
+	// seed 0, because none is reached through an IManager.  So the second
+	// half renames a SCENE VARIANT.  Delete the name compare and that
+	// rename republishes nothing -- the generation stands, the handle
+	// taken before it keeps resolving, and it answers the OLD variant name
+	// while the flat surface reports the new one.
+	// =================================================================
+	{
+		const char* s = "sgnode_rename.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname AAA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname BBB\ngeometry g\nmaterial m\nposition 2 0 0\n}\n",
+			"Q: rename scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const int OBJ = static_cast<int>( Cat::Object );
+			CheckEq( TreeDump( c, Cat::Object ), "AAA|BBB", "Q: the tree starts as declared" );
+
+			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
+			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "BBB",
+			         "Q: the captured handle names `BBB` before the rename" );
+			const unsigned long long genBefore = c.TreeGeneration( Cat::Object );
+
+			// THE RENAME.  Drop and re-register the SAME object under a new
+			// name -- which is what a rename is here, since the manager keys
+			// on the name.  addref across the drop because RemoveItem
+			// releases the manager's own reference; AddItem takes a fresh
+			// one, so the local ref is handed back immediately after.
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			IObjectPriv* moved = om ? om->GetItem( "BBB" ) : 0;
+			Check( moved != 0, "Q: `BBB` is live before the rename" );
+			if( moved ) {
+				moved->addref();
+				Check( om->RemoveItem( "BBB" ), "Q: `BBB` is dropped from the manager" );
+				Check( om->AddItem( moved, "CCC" ), "Q: ... and re-registered as `CCC`" );
+				moved->release();
+			}
+
+			// THE PREMISE: nothing structural moved.  Same node count, and
+			// the new name lands in the same sort position (a fresh serial is
+			// higher than `AAA`'s, so it stays last) -- so a shape-only
+			// comparison would call the two trees equivalent.
+			Check( c.TreeNodeCount( Cat::Object ) == 2,
+			       "Q: the premise -- the rename left the node COUNT alone (a count getter refreshes)" );
+			Check( c.TreeRootCount( Cat::Object ) == 2,
+			       "Q: ... and the root count, so nothing structural changed at all" );
+
+			Check( c.TreeGeneration( Cat::Object ) != genBefore,
+			       "Q: the rename REPUBLISHES -- the snapshot generation advanced on a change that "
+			       "moved no node" );
+			Check( c.TreeNodeName( Cat::Object, h ).size() <= 1,
+			       "Q: so the handle captured before the rename FAILS -- it does not keep naming an "
+			       "entity the manager no longer holds" );
+			char buf[128] = { 0 };
+			buf[0] = 'z';
+			Check( !RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, h, buf, sizeof(buf) ),
+			       "Q: and the C ABI refuses it too, rather than reporting a row" );
+
+			CheckEq( TreeDump( c, Cat::Object ), "AAA|CCC",
+			         "Q: a fresh walk shows the NEW name, in the position the old one held" );
+
+			std::set<std::string> flat, tree;
+			for( unsigned int i = 0; i < c.CategoryEntityCount( Cat::Object ); ++i )
+				flat.insert( c.CategoryEntityName( Cat::Object, i ).c_str() );
+			SceneEditController::AuthoredTree t;
+			c.ReadTree( Cat::Object, t );
+			for( std::size_t i = 0; i < t.nodes.size(); ++i ) tree.insert( t.nodes[i].name.c_str() );
+			Check( flat == tree && flat.size() == 2 && flat.count( "AAA" ) && flat.count( "CCC" ),
+			       "Q: the FLAT and TREE surfaces agree on the new name -- neither is still serving "
+			       "the old one" );
+
+			// THE SERIAL-LESS HALF.  SceneVariant is an index-addressed list
+			// with no IManager behind it, so every row seeds serial 0 and the
+			// NAME is the only member of the row that can change.  Rename the
+			// one declared variant and the row count, the row order and every
+			// index stay put; delete the name compare and nothing
+			// republishes.
+			Check( j->DeclareSceneVariant( "vA", "cam" ), "Q: a scene variant is declared" );
+			CheckEq( TreeDump( c, Cat::SceneVariant ), "(base)|vA",
+			         "Q: the SceneVariant tree lists the base entry and the variant" );
+			const SceneEditController::TreeNodeHandle hv = c.TreeRootNode( Cat::SceneVariant, 1 );
+			CheckEq( std::string( c.TreeNodeName( Cat::SceneVariant, hv ).c_str() ), "vA",
+			         "Q: and a handle on the variant row resolves" );
+			const unsigned long long varGen = c.TreeGeneration( Cat::SceneVariant );
+			j->ClearSceneVariants();
+			Check( j->DeclareSceneVariant( "vB", "cam" ), "Q: the variant is RENAMED (cleared and re-declared)" );
+			Check( c.TreeNodeCount( Cat::SceneVariant ) == 2,
+			       "Q: the premise -- same row count, and this category seeds NO serial, so the name "
+			       "is the only member that differs" );
+			Check( c.TreeGeneration( Cat::SceneVariant ) != varGen,
+			       "Q: the rename republishes on the strength of the NAME comparison alone" );
+			Check( c.TreeNodeName( Cat::SceneVariant, hv ).size() <= 1,
+			       "Q: so the variant handle taken before the rename fails" );
+			CheckEq( TreeDump( c, Cat::SceneVariant ), "(base)|vB",
+			         "Q: and a fresh walk shows the new variant name" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// R -- THE WAY BACK: a raw ReadTree index -> a per-node handle.
+	//
+	// ReadTree is documented as the transactional read every multi-node
+	// consumer should use, and 4b/4c will drive selection and property
+	// edits off tree ROWS.  But ReadTree yields RAW INDICES while the
+	// per-node getters take generation-tagged HANDLES whose layout is
+	// deliberately private, so without `HandleFor` a shell that follows
+	// the advice has exactly two ways out of a model row, and both are
+	// bad: re-walk with the per-node getters (surrendering the
+	// transactional property it took ReadTree for), or hand-roll
+	// `(generation << 32) | index` in shell code (breaking the invariant
+	// that two functions know the layout).
+	//
+	// The VALIDITY claim is asserted, not just documented: a handle minted
+	// from a copy resolves for exactly as long as that copy is still the
+	// published tree.
+	// =================================================================
+	{
+		const char* s = "sgnode_handlefor.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname hub\n}\n"
+			"standard_object\n{\nname arm\nparent hub\ngeometry g\nmaterial m\nposition 0 1 0\n}\n",
+			"R: handle-for scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			SceneEditController::AuthoredTree t;
+			c.ReadTree( Cat::Object, t );
+			Check( t.nodes.size() == 2 && t.roots.size() == 1 && t.generation != 0,
+			       "R: the fixture is one published root with one child" );
+
+			bool allNamed = ( t.nodes.size() > 0 );
+			for( std::size_t i = 0; i < t.nodes.size(); ++i ) {
+				const SceneEditController::TreeNodeHandle hh =
+					SceneEditController::HandleFor( t, static_cast<unsigned int>( i ) );
+				if( std::string( c.TreeNodeName( Cat::Object, hh ).c_str() )
+				 != std::string( t.nodes[i].name.c_str() ) ) allNamed = false;
+			}
+			Check( allNamed,
+			       "R: HandleFor turns EVERY raw ReadTree index into a handle the per-node getters "
+			       "resolve to that same row" );
+			Check( SceneEditController::HandleFor( t, t.roots[0] ) == c.TreeRootNode( Cat::Object, 0 ),
+			       "R: and it is bit-for-bit the handle TreeRootNode mints -- ONE encoding, not a "
+			       "second one that happens to agree today" );
+			Check( c.TreeChildCount( Cat::Object, SceneEditController::HandleFor( t, t.roots[0] ) ) == 1,
+			       "R: a handle made from the copy drives the OTHER getters too" );
+
+			Check( SceneEditController::HandleFor( t, 999 ) == SceneEditController::kInvalidTreeNode,
+			       "R: an out-of-range index mints the INVALID handle, not a plausible-looking one" );
+			std::vector<Seed> soloSeeds;
+			soloSeeds.push_back( MakeSeed( "solo", "", 1 ) );
+			const SceneEditController::AuthoredTree unpub =
+				SceneEditController::BuildAuthoredTree( soloSeeds );
+			Check( unpub.nodes.size() == 1 && unpub.generation == 0,
+			       "R: the premise -- BuildAuthoredTree leaves a tree UNPUBLISHED" );
+			Check( SceneEditController::HandleFor( unpub, 0 ) == SceneEditController::kInvalidTreeNode,
+			       "R: no handle is minted from a tree that was never published -- one could never "
+			       "resolve, so handing one back would be a lie" );
+
+			// VALIDITY -- the copy's handles die exactly when the copy stops
+			// being the published tree.
+			Check( j->SetObjectParent( "arm", 0 ), "R: `arm` detached on the live manager" );
+			Check( c.TreeNodeCount( Cat::Object ) == 2, "R: a count getter refreshes and republishes" );
+			Check( c.TreeNodeName( Cat::Object, SceneEditController::HandleFor( t, 0 ) ).size() <= 1,
+			       "R: a handle minted from the OLD copy no longer resolves -- validity is that "
+			       "copy's generation still being the published one" );
+			SceneEditController::AuthoredTree t2;
+			c.ReadTree( Cat::Object, t2 );
+			Check( t2.nodes.size() == 2
+			    && std::string( c.TreeNodeName( Cat::Object,
+			           SceneEditController::HandleFor( t2, 0 ) ).c_str() )
+			       == std::string( t2.nodes[0].name.c_str() ),
+			       "R: while one minted from a FRESH copy does" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// S -- A REPLACEMENT IS NOT A NO-OP.  Name is not identity; the
+	//      registration SERIAL is.
+	//
+	// Remove `victim` and re-add a DIFFERENT IObjectPriv under the SAME
+	// name.  The rebuilt tree has the same node count, the same names, the
+	// same parents, the same roots, the same child slices -- and the fresh
+	// serial is still the highest, so even the sort position holds.  Every
+	// member TreesEquivalent compares EXCEPT the serial says "identical".
+	//
+	// Without the serial the generation stands and the handle captured
+	// before the swap keeps resolving, reporting `victim` -- an instance
+	// the manager no longer holds.  That reads as benign because SELECTION
+	// is by name, so a shell that only selects through the stale handle
+	// still hits the live object; the defect is that handle validity would
+	// then rest on a WEAKER relation (name equality) than the one the
+	// editor enforces one layer down.  `IManager::GetItemSerial` exists to
+	// draw exactly this distinction ("detect a remove + re-add under the
+	// SAME name (a DIFFERENT instance)"), and SceneEditor.cpp's
+	// capture/apply gate already refuses an op whose target serial moved.
+	// Anything keyed on the handle rather than the name -- 4b/4c expand
+	// state, a selection cache held across event-loop turns -- would
+	// transfer silently onto the replacement.
+	// =================================================================
+	{
+		const char* s = "sgnode_replace.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname AAA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname victim\ngeometry g\nmaterial m\nposition 2 0 0\n}\n"
+			"lambertian_material\n{\nname m2\nreflectance p\n}\n",   // referenced by nothing: safe to swap
+			"S: replacement scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const int OBJ = static_cast<int>( Cat::Object );
+			CheckEq( TreeDump( c, Cat::Object ), "AAA|victim", "S: the tree starts as declared" );
+
+			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
+			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "victim",
+			         "S: the captured handle names `victim` before the swap" );
+			const unsigned long long genBefore = c.TreeGeneration( Cat::Object );
+
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			IObjectPriv* before = om ? om->GetItem( "victim" ) : 0;
+			const unsigned long long serialBefore = om ? om->GetItemSerial( "victim" ) : 0;
+			Check( before != 0 && serialBefore != 0, "S: `victim` is live, with a registration serial" );
+			// HOLD A REFERENCE across the swap.  RemoveItem drops the
+			// manager's own ref, the object is destroyed, and the allocator
+			// hands the SAME address straight back to the replacement -- so
+			// without this the "different instance" premise below compares
+			// two equal pointers and fails on a true statement.
+			if( before ) before->addref();
+
+			// THE REPLACEMENT.  RemoveItem drops the entry AND its serial;
+			// AddObject builds a NEW IObjectPriv and registers it, taking a
+			// fresh serial off the manager's counter.
+			Check( om && om->RemoveItem( "victim" ), "S: `victim` removed" );
+			RadianceMapConfig nilRMap;
+			const double pos[3] = { 2, 0, 0 }, orient[3] = { 0, 0, 0 }, one3[3] = { 1, 1, 1 };
+			Check( j->AddObject( "victim", "g", "m", 0, 0, nilRMap, pos, orient, one3, true, true ),
+			       "S: ... and a DIFFERENT object re-registered under the same name" );
+			const IObjectPriv* after = om ? om->GetItem( "victim" ) : 0;
+			Check( after != 0 && after != before,
+			       "S: the premise -- the live `victim` is a different instance now" );
+			Check( om && om->GetItemSerial( "victim" ) != serialBefore,
+			       "S: ... which the manager records as a new registration serial" );
+			if( before ) before->release();
+
+			// THE PREMISE: everything the tree can see about SHAPE is
+			// unchanged, so only the serial can carry the difference.
+			Check( c.TreeNodeCount( Cat::Object ) == 2,
+			       "S: the swap left the node count alone (a count getter refreshes)" );
+			Check( c.TreeRootCount( Cat::Object ) == 2, "S: ... and the root count" );
+			CheckEq( TreeDump( c, Cat::Object ), "AAA|victim",
+			         "S: ... and the walk is identical, name for name and position for position" );
+
+			Check( c.TreeGeneration( Cat::Object ) != genBefore,
+			       "S: the REPLACEMENT republishes -- the generation advanced on a change no "
+			       "structural comparison and no name comparison can see" );
+			Check( c.TreeNodeName( Cat::Object, h ).size() <= 1,
+			       "S: so the handle captured before the swap FAILS -- it does not silently transfer "
+			       "onto the replacement" );
+			Check( c.TreeNodeParent( Cat::Object, h ) == SceneEditController::kInvalidTreeNode,
+			       "S: and neither does a parent read through it" );
+			char buf[128] = { 0 };
+			buf[0] = 'z';
+			Check( !RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, h, buf, sizeof(buf) ),
+			       "S: the C ABI refuses it too" );
+
+			const SceneEditController::TreeNodeHandle fresh = c.TreeRootNode( Cat::Object, 1 );
+			CheckEq( std::string( c.TreeNodeName( Cat::Object, fresh ).c_str() ), "victim",
+			         "S: control -- a handle taken AFTER the swap resolves, so the API is refusing "
+			         "staleness and not refusing to work" );
+
+			// AND THE SAME FOR A FLAT CATEGORY.  Objects get their serial for
+			// free (it is already the display-order key); every other
+			// manager-backed category needs a separate lookup, and without
+			// this the whole of CategoryEntitySerialLocked_ would be
+			// unexercised code.  `m2` is referenced by nothing, so removing
+			// it fires no deleted-callback into the objects.
+			Check( c.TreeNodeCount( Cat::Material ) > 0, "S: the Material tree publishes" );
+			const unsigned int mi = c.TreeRootCount( Cat::Material );
+			SceneEditController::TreeNodeHandle hm = SceneEditController::kInvalidTreeNode;
+			for( unsigned int i = 0; i < mi; ++i ) {
+				const SceneEditController::TreeNodeHandle t2h = c.TreeRootNode( Cat::Material, i );
+				if( std::string( c.TreeNodeName( Cat::Material, t2h ).c_str() ) == "m2" ) hm = t2h;
+			}
+			Check( hm != SceneEditController::kInvalidTreeNode, "S: `m2` has a Material row" );
+			const unsigned long long matGenBefore = c.TreeGeneration( Cat::Material );
+			IMaterialManager* mm = j->GetMaterials();
+			Check( mm && mm->RemoveItem( "m2" ), "S: `m2` removed from the material manager" );
+			Check( j->AddLambertianMaterial( "m2", "p" ),
+			       "S: ... and a different material re-registered under the same name" );
+			Check( c.TreeNodeCount( Cat::Material ) == mi,
+			       "S: the Material tree is the same size and shape as before" );
+			Check( c.TreeGeneration( Cat::Material ) != matGenBefore,
+			       "S: a FLAT category's replacement republishes too -- the serial is looked up per "
+			       "category, not only for Objects" );
+			Check( c.TreeNodeName( Cat::Material, hm ).size() <= 1,
+			       "S: so the Material handle taken before the swap fails as well" );
+		}
+		j->release();
+		std::remove( s );
 	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

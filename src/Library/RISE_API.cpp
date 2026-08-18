@@ -8752,7 +8752,7 @@ namespace RISE
 		return true;
 	}
 
-	unsigned int RISE_API_SceneEditController_TreeChildCount(
+	unsigned int RISE_API_SceneEditController_TreeChildCountByHandle(
 		SceneEditController* p, int category, unsigned long long node )
 	{
 		if( !p ) return 0;
@@ -8786,7 +8786,7 @@ namespace RISE
 		return true;
 	}
 
-	bool RISE_API_SceneEditController_TreeNodeName(
+	bool RISE_API_SceneEditController_TreeNodeNameByHandle(
 		SceneEditController* p, int category, unsigned long long node,
 		char* buf, unsigned int bufLen )
 	{

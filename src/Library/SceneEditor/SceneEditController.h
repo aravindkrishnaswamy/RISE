@@ -2124,8 +2124,15 @@ namespace RISE
 		unsigned int TreeRootCount( Category cat ) const;
 		//! The generation of `cat`'s currently published tree.  Does NOT
 		//! refresh.  A caller that wants to know whether a walk it just did
-		//! spanned a republish reads this before and after and compares; 0
-		//! means nothing has ever been published for this category.
+		//! spanned a republish reads this before and after and compares.
+		//!
+		//! 0 means NOTHING IS PUBLISHED, which is not quite "nothing has ever
+		//! been published": a category that is legitimately EMPTY stays at 0
+		//! for the life of the controller, because an empty rebuild compares
+		//! equivalent to the default-constructed tree and so is never
+		//! published.  Both readings agree on what a caller may do with it --
+		//! there are no nodes and no handle can resolve -- so this is a
+		//! precision note, not a case to branch on.
 		unsigned long long TreeGeneration( Category cat ) const;
 		//! Handle of the `rootIdx`-th root, or kInvalidTreeNode.
 		TreeNodeHandle TreeRootNode( Category cat, unsigned int rootIdx ) const;
@@ -2151,6 +2158,24 @@ namespace RISE
 			unsigned int parent;       //!< kInvalidNodeIndex for a root
 			unsigned int firstChild;   //!< offset into AuthoredTree::childIndices
 			unsigned int childCount;   //!< length of that slice
+			//! REGISTRATION IDENTITY -- `IManager::GetItemSerial` for the
+			//! entity behind this row, 0 when the backing store has no
+			//! serial (see TreeNodeSeed::serial).  Carried so that
+			//! TreesEquivalent can tell a REPLACEMENT from a no-op: a
+			//! remove + re-add under the SAME name is a different instance
+			//! with the same name, same parent and the same sort position,
+			//! so every other member of this row compares equal and the
+			//! generation would stand -- leaving an outstanding handle
+			//! resolving onto an object the manager no longer holds.  This
+			//! is the identity model `SceneEditor.cpp`'s capture/apply
+			//! serial gate already enforces one layer down; a name-only
+			//! equivalence here would contradict it.
+			//!
+			//! NOT part of the public handle surface and deliberately not
+			//! exposed by a getter -- it is an equivalence input, not a row
+			//! property a shell should key on.  (A shell keys on the NAME,
+			//! which is what selection takes.)
+			unsigned long long serial = 0;
 		};
 
 		//! ONE STRUCT, READ AND PUBLISHED UNDER ONE LOCK HOLD, and it must
@@ -2196,7 +2221,9 @@ namespace RISE
 		//! trees the way a sequence of per-node getters can.  The returned
 		//! indices (`roots`, `TreeNodeRow::parent`, `childIndices`) are RAW
 		//! indices into `out.nodes` -- not handles -- because the caller owns
-		//! the copy and nothing can republish underneath it.
+		//! the copy and nothing can republish underneath it.  `HandleFor`
+		//! below is the way back from one of those indices to a handle the
+		//! per-node getters accept.
 		//!
 		//! This is an API PROPERTY, not an accident of how a given shell
 		//! happens to be written: ViewportBridge::categoryTree and 4b's
@@ -2204,14 +2231,59 @@ namespace RISE
 		//! rediscover it by reasoning about the getters.
 		void ReadTree( Category cat, AuthoredTree& out ) const;
 
+		//! THE WAY BACK from a `ReadTree` row to the per-node getters.
+		//!
+		//! `ReadTree` is what every multi-node consumer is told to use, and it
+		//! yields RAW INDICES -- while `TreeNodeName` / `TreeChildCount` /
+		//! `TreeNodeParent` take generation-tagged HANDLES, and the encoding is
+		//! deliberately private.  Without this a shell that follows the advice
+		//! has only two ways out of its own model row: re-walk with the
+		//! per-node getters (surrendering the transactional property it took
+		//! ReadTree for), or hand-roll the `(generation << 32) | index` layout
+		//! in shell code (breaking the "two places know the layout" invariant
+		//! that makes the tag changeable at all).  So: one function, on this
+		//! side of the wall.
+		//!
+		//! VALIDITY.  The handle carries `t.generation`, and every getter
+		//! compares that against the CURRENTLY PUBLISHED generation for the
+		//! category -- so a handle minted from a copy resolves for exactly as
+		//! long as that copy is still the published tree, and FAILS (rather
+		//! than naming some other node) once a real change republishes.  An
+		//! idle refresh does not republish, so a handle minted from a copy
+		//! survives a UI poll.
+		//!
+		//! Returns kInvalidTreeNode for an out-of-range index, and for a tree
+		//! that was never published (`generation == 0` -- e.g. one straight
+		//! out of `BuildAuthoredTree`), because no such handle could ever
+		//! resolve.
+		//!
+		//! PURE and static: it reads only the tree it is handed, so it takes
+		//! no lock and does not care which controller the copy came from.
+		static TreeNodeHandle HandleFor( const AuthoredTree& t, unsigned int index );
+
 		//! The input to the pure tree assembler: one record per node that is
 		//! to APPEAR in the tree, already resolved out of whatever the
 		//! category's backing store is.
 		struct TreeNodeSeed
 		{
 			String             name;
-			String             parent;   //!< "" -- or a name that is not itself a seed -- means ROOT
-			unsigned long long order;    //!< sibling display order key (registration serial)
+			String             parent;      //!< "" -- or a name that is not itself a seed -- means ROOT
+			unsigned long long order  = 0;  //!< sibling display order key
+			//! Registration identity of the entity behind this seed, or 0
+			//! when its backing store does not provide one.  DISTINCT from
+			//! `order`, which is only a display key: for the flat categories
+			//! `order` is the entity's position in the enumeration, while
+			//! this is `IManager::GetItemSerial`.  They coincide for
+			//! Category::Object, where the serial IS the declaration order.
+			//!
+			//! 0 means "this store cannot tell a replacement from the
+			//! original" -- Medium, Rasterizer, Film, Animation and
+			//! SceneVariant, none of which is reached through an IManager
+			//! from here.  For those categories a remove + re-add under the
+			//! same name does NOT bump the tree generation, and an
+			//! outstanding handle keeps resolving.  Said out loud rather
+			//! than left for a reader to infer from a silent 0.
+			unsigned long long serial = 0;
 		};
 
 		//! Assemble an AuthoredTree from seeds.  PURE and static: it touches
@@ -5022,6 +5094,12 @@ namespace RISE
 		//! is meant to REPLACE the flat one and must not inherit its worst
 		//! property, so both go through this.  REQUIRES mMutex held.
 		void CategoryEntityNamesLocked_( Category cat, std::vector<String>& out ) const;
+
+		//! Registration serial of `name` in `cat`'s backing store, or 0 when
+		//! that store is not an IManager reachable from here (Medium,
+		//! Rasterizer, Film, Animation, SceneVariant) -- see
+		//! TreeNodeSeed::serial for what a 0 costs.  mMutex must be held.
+		unsigned long long CategoryEntitySerialLocked_( Category cat, const String& name ) const;
 
 		//! Round-4 structural fix (the "UI reads live managers" P1 class): the
 		//! PUBLIC enumeration getters serve a per-category SNAPSHOT with a

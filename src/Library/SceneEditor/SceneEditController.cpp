@@ -63,6 +63,7 @@
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/IGeometryManager.h"   // 87 step 4a: GetItemSerial for the Geometry category's tree seeds
 #include "../Interfaces/IFilm.h"
 #include "../RISE_API.h"			// for RISE_API_CreateFilm (preview-scale Film swap)
 #include "../Cameras/CameraCommon.h"
@@ -84,6 +85,7 @@
 #include <algorithm>      // Model-B F2 slice S2a: std::min for WaitForRenderJob's bounded wait_until slices
 #include <chrono>
 #include <cstdio>
+#include <cstring>        // 87 step 4a: strcmp in TreesEquivalent -- an allocation-free name compare under two locks
 #include <ctime>          // for time() used by CloneActiveCamera dedup fallback
 #include <exception>      // Model-B F2 slice S2a: std::exception_ptr / current_exception / rethrow_exception
 #include <memory>
@@ -4185,6 +4187,65 @@ void SceneEditController::CategoryEntityNamesLocked_( Category cat, std::vector<
 	for( unsigned int i = 0; i < n; ++i ) out.push_back( CategoryEntityNameLocked_( cat, i ) );
 }
 
+unsigned long long SceneEditController::CategoryEntitySerialLocked_( Category cat, const String& name ) const
+{
+	if( name.size() <= 1 ) return 0;                       // String carries its NUL
+	const IScene* scene = mJob.GetScene();
+	switch( cat ) {
+	case Category::Camera: {
+		const ICameraManager* m = scene ? scene->GetCameras() : 0;
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Object: {
+		const IObjectManager* m = scene ? scene->GetObjects() : 0;
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Light: {
+		const ILightManager* m = scene ? scene->GetLights() : 0;
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Material: {
+		const IMaterialManager* m = mJob.GetMaterials();
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Geometry: {
+		const IGeometryManager* m = mJob.GetGeometries();
+		return m ? m->GetItemSerial( name.c_str() ) : 0;
+	}
+	case Category::Painter: {
+		// The Painter list is the UNION of two managers, each with its own
+		// serial counter.  Probe in the same order the union is built and
+		// take the first that answers -- a name lives in exactly one of them
+		// (CollectPainterUnionNames concatenates), so the two counters never
+		// have to be reconciled.
+		if( const IPainterManager* m = mJob.GetPainters() ) {
+			const unsigned long long v = m->GetItemSerial( name.c_str() );
+			if( v ) return v;
+		}
+		if( const IScalarPainterManager* m = mJob.GetScalarPainters() ) {
+			const unsigned long long v = m->GetItemSerial( name.c_str() );
+			if( v ) return v;
+		}
+		return 0;
+	}
+	case Category::Medium:
+	case Category::Rasterizer:
+	case Category::Film:
+	case Category::Animation:
+	case Category::SceneVariant:
+	case Category::None:
+	default:
+		// NO SERIAL AVAILABLE, and that is a real limitation rather than an
+		// oversight: none of these is reached through an IManager from here
+		// (Medium goes through IJob::EnumerateMediumNames; the rest are
+		// index-addressed lists).  A remove + re-add under the same name in
+		// one of them leaves the tree equivalent and does NOT invalidate an
+		// outstanding handle.  Closing it means exposing those stores as
+		// managers, which is a bigger change than this API.
+		return 0;
+	}
+}
+
 String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 {
 	switch( cat ) {
@@ -4259,12 +4320,53 @@ namespace {
 //! RefreshTreeSnapshot_'s compare-then-publish: if the rebuilt tree says the
 //! same thing as the published one, nothing is republished and no outstanding
 //! handle is invalidated.  Compares everything a reader can observe -- name,
-//! parent, child slice, the flattened child index, the root list -- because
-//! anything left out here would be a change that silently keeps the old
-//! generation, i.e. a stale handle that resolves.
+//! parent, child slice, the flattened child index, the root list -- PLUS the
+//! registration serial, which a reader cannot observe but which is the only
+//! thing that separates a REPLACED entity from an untouched one.  Anything
+//! left out here would be a change that silently keeps the old generation,
+//! i.e. a stale handle that resolves.
+//!
+//! The NAME and SERIAL comparisons are not decoration.  They are the two
+//! members that carry CONTENT rather than shape, and each has a mutation that
+//! nothing else in the suite catches.
+//!
+//! SERIAL is IDENTITY.  A remove plus a re-add under the SAME name -- an
+//! object REPLACED -- keeps the name, the parent, the sort position and every
+//! index in the tree.  Without the serial the rebuild compares equivalent, the
+//! generation stands, and a handle captured before the swap keeps resolving,
+//! now denoting an instance the manager no longer holds.  Selection is by
+//! name, so a shell that only SELECTS through a stale handle would still hit
+//! the live object -- which is why this looks benign and is not: anything
+//! keyed on the handle itself (4b/4c expand state, a selection cache held
+//! across event-loop turns) transfers silently across the replacement.
+//! `IManager::GetItemSerial` exists for exactly this distinction and
+//! `SceneEditor.cpp`'s capture/apply gate already refuses an op whose target
+//! serial moved, so a name-only equivalence here would be a weaker identity
+//! relation than the layer below enforces.  (Measured; case S.)
+//!
+//! The NAME comparison is not decoration either.  A rename that leaves the tree's
+//! SHAPE alone -- drop an entity and re-register it under a new name, which is
+//! what a rename IS at the manager level -- produces a rebuilt tree with the
+//! same size, parents, roots and child slices.  Without the name compare the
+//! republish is skipped, the generation stands, and every outstanding handle
+//! keeps resolving to the OLD name while the flat surface reports the new one.
+//! (Measured; case Q.)
+//!
+//! `strcmp` and not two `std::string`s: this runs once per node on every
+//! refresh, with the leaf lock nested inside a still-held `mMutex`, so a pair
+//! of allocations per node lengthens a hold that every other snapshot getter
+//! `try_to_lock`s against.  `String` is NUL-terminated, so the meaning is
+//! identical.
 bool TreesEquivalent( const SceneEditController::AuthoredTree& a,
                       const SceneEditController::AuthoredTree& b )
 {
+	// The size compare is a BOUNDS GUARD for the loop below, not a
+	// discriminator: every node is either a root or somebody's child, so a
+	// changed node count always shows up in `roots` or in `childIndices`
+	// first.  Measured -- deleting this line alone leaves the whole suite
+	// green.  It stays because without it the loop reads `b.nodes[i]` past
+	// the end when `b` is the shorter tree, and no behavioural test can pin
+	// that (the failure is UB, not a wrong answer).
 	if( a.nodes.size() != b.nodes.size() ) return false;
 	if( a.childIndices != b.childIndices ) return false;
 	if( a.roots        != b.roots )        return false;
@@ -4272,7 +4374,8 @@ bool TreesEquivalent( const SceneEditController::AuthoredTree& a,
 		const SceneEditController::TreeNodeRow& x = a.nodes[i];
 		const SceneEditController::TreeNodeRow& y = b.nodes[i];
 		if( x.parent != y.parent || x.firstChild != y.firstChild || x.childCount != y.childCount ) return false;
-		if( std::string( x.name.c_str() ) != std::string( y.name.c_str() ) ) return false;
+		if( x.serial != y.serial ) return false;
+		if( std::strcmp( x.name.c_str(), y.name.c_str() ) != 0 ) return false;
 	}
 	return true;
 }
@@ -4292,7 +4395,21 @@ SceneEditController::TreeNodeHandle EncodeTreeHandle( unsigned long long generat
 bool DecodeTreeHandle( const SceneEditController::AuthoredTree& t,
                        SceneEditController::TreeNodeHandle h, unsigned int& outIndex )
 {
+	// BELT-AND-BRACES, and DEAD as the code stands -- kept, labelled, the way
+	// TreeChildNode's `slot >= childIndices.size()` bound is.  Only
+	// RefreshTreeSnapshot_ ever writes a tree and it always stamps >= 1, and a
+	// default-constructed tree has `nodes.empty()`, so the index check below
+	// already rejects every handle against one.  It is here because "generation
+	// 0 means nothing is published" is a rule this file states in three places
+	// and a future edit that publishes an empty-but-real tree, or that seeds
+	// the counter from 0, would make it live.
 	if( t.generation == 0 ) return false;                 // nothing published yet
+	// The tag is the generation's LOW 32 BITS on both sides -- Encode shifts
+	// them up, this masks them off -- so the comparison is exact for the first
+	// 2^32 republishes of a category and aliases after that.  A republish
+	// happens only on a real change, so that bound is not reachable in a
+	// session; it is stated because it is the one way a stale handle could
+	// resolve again.
 	if( ( h >> 32 ) != ( t.generation & 0xFFFFFFFFull ) ) return false;   // a handle from another snapshot
 	const unsigned int idx = static_cast<unsigned int>( h & 0xFFFFFFFFull );
 	if( idx >= t.nodes.size() ) return false;
@@ -4336,6 +4453,7 @@ SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 		out.nodes[k].parent     = kInvalidNodeIndex;
 		out.nodes[k].firstChild = 0;
 		out.nodes[k].childCount = 0;
+		out.nodes[k].serial     = s.serial;
 		byName.insert( std::make_pair( std::string( s.name.c_str() ), static_cast<unsigned int>( k ) ) );
 	}
 
@@ -4576,7 +4694,13 @@ void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>
 		TreeNodeSeed s;
 		s.name   = String( visible[i].c_str() );
 		s.parent = String( parent.c_str() );
+		// ONE read, TWO jobs: for Objects the registration serial is both the
+		// declaration-order key (87 section 2) and the identity that tells a
+		// replacement from the original.  They are separate FIELDS because
+		// they are separate ideas -- the flat categories below have an order
+		// that is not a serial -- but here they are the same number.
 		s.order  = m->GetItemSerial( visible[i].c_str() );
+		s.serial = s.order;
 		outSeeds.push_back( s );
 	}
 	for( std::map<std::string, unsigned long long>::const_iterator s = synthOrder.begin();
@@ -4584,7 +4708,13 @@ void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>
 		TreeNodeSeed seed;
 		seed.name   = String( s->first.c_str() );
 		seed.parent = String( resolve( synthParent[ s->first ] ).c_str() );
+		// A SYNTHESIZED chunk node has no live entry of its own, so it
+		// borrows the identity of the lowest-serial repetition that folds
+		// into it -- which is the first entry the expansion built.  A
+		// re-expansion re-registers those repetitions and moves that serial,
+		// which is exactly when the chunk row's handle should stop resolving.
 		seed.order  = s->second;
+		seed.serial = s->second;
 		outSeeds.push_back( seed );
 	}
 }
@@ -4610,8 +4740,13 @@ SceneEditController::AuthoredTree SceneEditController::BuildCategoryTreeLocked_(
 		seeds.reserve( names.size() );
 		for( std::size_t i = 0; i < names.size(); ++i ) {
 			TreeNodeSeed s;
-			s.name  = names[i];
-			s.order = i;                    // preserve the flat list's own order exactly
+			s.name   = names[i];
+			s.order  = i;                    // preserve the flat list's own order exactly
+			// NOT `i`.  The order key above is a POSITION, which is stable
+			// across a replacement and so says nothing about identity; the
+			// serial is what makes a remove + re-add republish.  0 where the
+			// store has no serial -- see TreeNodeSeed::serial.
+			s.serial = CategoryEntitySerialLocked_( cat, names[i] );
 			seeds.push_back( s );
 		}
 	}
@@ -4649,6 +4784,18 @@ void SceneEditController::ReadTree( Category cat, AuthoredTree& out ) const
 	RefreshTreeSnapshot_( cat );
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	out = mUi.trees[ci];              // ONE locked pass: the copy cannot mix two trees
+}
+
+SceneEditController::TreeNodeHandle SceneEditController::HandleFor(
+	const AuthoredTree& t, unsigned int index )
+{
+	if( index >= t.nodes.size() ) return kInvalidTreeNode;
+	// A tree that was never PUBLISHED (BuildAuthoredTree leaves `generation`
+	// 0) cannot address anything: a handle minted from it would be refused by
+	// every getter anyway, so mint nothing rather than hand back a value that
+	// looks like a handle and is not.
+	if( t.generation == 0 ) return kInvalidTreeNode;
+	return EncodeTreeHandle( t.generation, index );
 }
 
 unsigned long long SceneEditController::TreeGeneration( Category cat ) const
