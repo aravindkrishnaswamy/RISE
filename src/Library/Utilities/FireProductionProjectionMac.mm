@@ -580,7 +580,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				std::fill_n(static_cast<float*>([diagnostics contents]),12u,0.0f);
 
 				id<MTLCommandBuffer> command=[context.queue commandBuffer];
-				if( InjectedFailure("command") ) command=nil;
+				if( InjectedFailure("command_buffer") ) command=nil;
 				if( !command ) {if( error ) *error="production fire projection command allocation failed";return false;}
 				id<MTLComputeCommandEncoder> encoder=nil;
 				for( std::size_t index=0;index<hierarchy.size();++index ) {
@@ -671,7 +671,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				[encoder setBuffer:fineLevel.parameters offset:0 atIndex:5];Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,1u,true,error) ) return false;
 				[command commit];[command waitUntilCompleted];
-				if( [command status]!=MTLCommandBufferStatusCompleted ) {
+				if( [command status]!=MTLCommandBufferStatusCompleted||InjectedFailure("command") ) {
 					if( error ) *error=MetalError("production fire projection command failed",[command error]);return false;}
 
 				result.pressurePa.assign(static_cast<const float*>([fineLevel.pressure contents]),
@@ -697,7 +697,13 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				float maximumVelocity=0.0f;
 				for( unsigned int axis=0;axis<3u;++axis )
 					for( std::size_t face=0;face<result.velocityMPerS[axis].size();++face ) {
-						maximumVelocity=std::max(maximumVelocity,std::fabs(
+						const std::size_t coordinate=axis==0u?face%(shape.nx+1u):
+							(axis==1u?(face/shape.nx)%(shape.ny+1u):face/(shape.nx*shape.ny));
+						const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+						const bool wall=(coordinate==0u||coordinate==extent)&&
+							request.boundary[2u*axis+(coordinate?1u:0u)]==
+								FireProductionProjectionWall;
+						if( !wall ) maximumVelocity=std::max(maximumVelocity,std::fabs(
 							request.provisionalMomentumKGPerM2S[axis][face]/
 							result.faceDensityKGPerM3[axis][face]));
 						maximumVelocity=std::max(maximumVelocity,
@@ -729,6 +735,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					maximumVelocity,length,result.validationPassed) ) {
 					result=FireProductionProjectionResult();if( error ) *error="production fire projection validation band overflowed";return false;}
 				result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				if( InjectedFailure("output")&&!result.pressurePa.empty() )
+					result.pressurePa[0]=std::numeric_limits<float>::quiet_NaN();
 			}
 			if( !AllFinite(result.pressurePa)||!std::isfinite(result.deviceElapsedMS)||
 			!std::isfinite(result.maximumPreProjectionResidualPerS)||

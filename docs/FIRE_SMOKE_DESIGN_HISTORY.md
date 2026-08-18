@@ -2123,3 +2123,21 @@ it was already tried and refuted here.
   comparisons now bind those claims.  The repaired on-device run retained
   the scientific ratio 1.15506 and measured 10.967 ms device p95 and 23.923 ms
   completed-call p95.
+
+  A second fresh review found one comparator inconsistency and two evidence
+  gaps before P2 was closed.  Metal's monitored-acceptance scale included raw
+  wall-normal momentum even though the prescribed wall map had already
+  discarded it; a closed box with residual `0.4 s^-1` and arbitrarily large
+  wall input could therefore fail on CPU and pass on Metal.  The ruling is to
+  measure provisional velocity only after the same wall classification on
+  both paths.  The replacement RED fills and inspects every face on all six
+  wall planes, then combines discarded `1e20` wall momentum with the
+  incompatible residual and requires identical monitored rejection.
+  Independent recomputation now binds pre/post residuals and pressure-open
+  complementarity, the cancellation-sensitive mean runs on Metal, and the
+  published density/momentum/velocity relation is checked directly.  Separate
+  post-commit status and output-corruption seams bind command execution failure
+  and nonfinite-output clearing without stale diagnostics.  The repaired M4
+  Max run preserved the oracle ratio `1.15506`, with `10.855 ms` device p95 and
+  `23.306 ms` completed-call p95.  These are validation-evidence repairs, not
+  new operator semantics; case identity remains unchanged.

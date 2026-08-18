@@ -146,12 +146,15 @@ namespace
 		const RISE::FireProductionProjectionResult& result )
 	{
 		for( unsigned int axis=0;axis<3u;++axis ) {
+			const std::size_t ex=axis==0u?request.shape.nx+1u:request.shape.nx;
+			const std::size_t ey=axis==1u?request.shape.ny+1u:request.shape.ny;
+			const std::size_t ez=axis==2u?request.shape.nz+1u:request.shape.nz;
 			const std::size_t extent=axis==0u?request.shape.nx:
 				(axis==1u?request.shape.ny:request.shape.nz);
-			for( const std::size_t coordinate : {std::size_t(0u),extent} ) {
-				std::size_t x=1u,y=1u,z=1u;
-				if( axis==0u ) x=coordinate;if( axis==1u ) y=coordinate;
-				if( axis==2u ) z=coordinate;
+			for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
+				for( std::size_t x=0;x<ex;++x ) {
+				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+				if( coordinate!=0u&&coordinate!=extent ) continue;
 				const std::size_t face=Face(request.shape,axis,x,y,z);
 				if( result.faceDensityKGPerM3[axis][face]!=2.0f||
 					result.momentumKGPerM2S[axis][face]!=0.0f||
@@ -176,6 +179,16 @@ namespace
 		return count;
 	}
 
+	bool WithinTwoULPs( float value, float reference )
+	{
+		float low=reference,high=reference;
+		for( unsigned int step=0;step<2u;++step ) {
+			low=std::nextafter(low,-std::numeric_limits<float>::infinity());
+			high=std::nextafter(high,std::numeric_limits<float>::infinity());
+		}
+		return value>=low&&value<=high;
+	}
+
 	float IndependentResidual( const RISE::FireProductionProjectionRequest& request,
 		const RISE::FireProductionProjectionResult& result )
 	{
@@ -193,6 +206,68 @@ namespace
 					maximum=std::max(maximum,std::fabs(residual));
 				}
 		return maximum;
+	}
+
+	float IndependentPreProjectionResidual( const RISE::FireProductionProjectionRequest& request )
+	{
+		std::array<std::vector<float>,3> velocity;
+		for( unsigned int axis=0;axis<3u;++axis ) {
+			velocity[axis].resize(request.provisionalMomentumKGPerM2S[axis].size());
+			const std::size_t ex=axis==0u?request.shape.nx+1u:request.shape.nx;
+			const std::size_t ey=axis==1u?request.shape.ny+1u:request.shape.ny;
+			const std::size_t ez=axis==2u?request.shape.nz+1u:request.shape.nz;
+			const std::size_t extent=axis==0u?request.shape.nx:
+				(axis==1u?request.shape.ny:request.shape.nz);
+			for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
+				for( std::size_t x=0;x<ex;++x ) {
+					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+					const unsigned int side=2u*axis+(coordinate?1u:0u);
+					const bool wall=(coordinate==0u||coordinate==extent)&&
+						request.boundary[side]==RISE::FireProductionProjectionWall;
+					const std::size_t face=Face(request.shape,axis,x,y,z);
+					velocity[axis][face]=wall?0.0f:
+						request.provisionalMomentumKGPerM2S[axis][face]/
+						IndependentFaceDensity(request,axis,x,y,z);
+				}
+		}
+		RISE::FireProductionProjectionResult provisional;
+		provisional.velocityMPerS=std::move(velocity);
+		return IndependentResidual(request,provisional);
+	}
+
+	float IndependentOpenComplementarity(
+		const RISE::FireProductionProjectionRequest& request,
+		const RISE::FireProductionProjectionResult& result )
+	{
+		float maximum=0.0f;
+		for( unsigned int side=0;side<6u;++side ) {
+			if( request.boundary[side]!=RISE::FireProductionProjectionPressureOpen ) continue;
+			const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+			const std::size_t firstCount=axis==0u?request.shape.ny:request.shape.nx;
+			const std::size_t secondCount=axis==2u?request.shape.ny:request.shape.nz;
+			for( std::size_t second=0;second<secondCount;++second )
+				for( std::size_t first=0;first<firstCount;++first ) {
+					std::size_t x=0u,y=0u,z=0u;
+					if( axis==0u ) {x=positive?request.shape.nx:0u;y=first;z=second;}
+					if( axis==1u ) {x=first;y=positive?request.shape.ny:0u;z=second;}
+					if( axis==2u ) {x=first;y=second;z=positive?request.shape.nz:0u;}
+					const float outward=(positive?1.0f:-1.0f)*
+						result.velocityMPerS[axis][Face(request.shape,axis,x,y,z)];
+					const bool inflow=result.pressureOpenInflow[side][second*firstCount+first]!=0u;
+					maximum=std::max(maximum,inflow?std::max(0.0f,outward):
+						std::max(0.0f,-outward));
+				}
+		}
+		return maximum;
+	}
+
+	bool MomentumVelocityIdentity( const RISE::FireProductionProjectionResult& result )
+	{
+		for( unsigned int axis=0;axis<3u;++axis )
+			for( std::size_t face=0;face<result.velocityMPerS[axis].size();++face )
+				if( result.velocityMPerS[axis][face]!=result.momentumKGPerM2S[axis][face]/
+					result.faceDensityKGPerM3[axis][face] ) return false;
+		return true;
 	}
 
 	bool EveryPeriodicSeamExact( const RISE::FireProductionProjectionShape& shape,
@@ -587,12 +662,15 @@ int main()
 	SetBoundary(wallOverwrite,FireProductionProjectionWall);
 	std::fill(wallOverwrite.gasDensityKGPerM3.begin(),wallOverwrite.gasDensityKGPerM3.end(),2.0f);
 	for( unsigned int axis=0;axis<3u;++axis ) {
+		const std::size_t ex=axis==0u?wallOverwrite.shape.nx+1u:wallOverwrite.shape.nx;
+		const std::size_t ey=axis==1u?wallOverwrite.shape.ny+1u:wallOverwrite.shape.ny;
+		const std::size_t ez=axis==2u?wallOverwrite.shape.nz+1u:wallOverwrite.shape.nz;
 		const std::size_t extent=axis==0u?wallOverwrite.shape.nx:
 			(axis==1u?wallOverwrite.shape.ny:wallOverwrite.shape.nz);
-		for( const std::size_t coordinate : {std::size_t(0u),extent} ) {
-			std::size_t x=1u,y=1u,z=1u;
-			if( axis==0u ) x=coordinate;if( axis==1u ) y=coordinate;
-			if( axis==2u ) z=coordinate;
+		for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
+			for( std::size_t x=0;x<ex;++x ) {
+			const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+			if( coordinate!=0u&&coordinate!=extent ) continue;
 			wallOverwrite.provisionalMomentumKGPerM2S[axis][Face(
 				wallOverwrite.shape,axis,x,y,z)]=7.0f+static_cast<float>(2u*axis)+
 					static_cast<float>(coordinate!=0u);
@@ -609,6 +687,46 @@ int main()
 	Check(ProjectFireProductionMetal(wallOverwrite,wallOverwriteMetal,&error)&&
 		EveryWallFaceOverwritten(wallOverwrite,wallOverwriteMetal),
 		"P2 Metal overwrites all six nonzero wall-normal faces exactly");
+#endif
+
+	FireProductionProjectionRequest discardedWallVelocity=wallOverwrite;
+	std::fill(discardedWallVelocity.divergenceTargetPerS.begin(),
+		discardedWallVelocity.divergenceTargetPerS.end(),0.4f);
+	for( unsigned int axis=0;axis<3u;++axis )
+		for( float& momentum : discardedWallVelocity.provisionalMomentumKGPerM2S[axis] )
+			momentum=0.0f;
+	for( unsigned int axis=0;axis<3u;++axis ) {
+		const std::size_t ex=axis==0u?discardedWallVelocity.shape.nx+1u:
+			discardedWallVelocity.shape.nx;
+		const std::size_t ey=axis==1u?discardedWallVelocity.shape.ny+1u:
+			discardedWallVelocity.shape.ny;
+		const std::size_t ez=axis==2u?discardedWallVelocity.shape.nz+1u:
+			discardedWallVelocity.shape.nz;
+		const std::size_t extent=axis==0u?discardedWallVelocity.shape.nx:
+			(axis==1u?discardedWallVelocity.shape.ny:discardedWallVelocity.shape.nz);
+		for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
+			for( std::size_t x=0;x<ex;++x ) {
+				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+				if( coordinate!=0u&&coordinate!=extent ) continue;
+				discardedWallVelocity.provisionalMomentumKGPerM2S[axis][Face(
+					discardedWallVelocity.shape,axis,x,y,z)]=1.0e20f;
+			}
+	}
+	FireProductionProjectionResult discardedWallVelocityCPU;
+	const bool discardedWallVelocityCPUOK=ProjectFireProductionCPU(
+		discardedWallVelocity,discardedWallVelocityCPU,&error);
+	Check(discardedWallVelocityCPUOK&&!discardedWallVelocityCPU.validationPassed&&
+		discardedWallVelocityCPU.maximumPostProjectionResidualPerS==0.4f&&
+		EveryWallFaceOverwritten(discardedWallVelocity,discardedWallVelocityCPU),
+		"P2 validation scale excludes prescribed-away wall-normal velocity");
+#ifdef __APPLE__
+	FireProductionProjectionResult discardedWallVelocityMetal;
+	Check(ProjectFireProductionMetal(discardedWallVelocity,discardedWallVelocityMetal,&error)&&
+		!discardedWallVelocityMetal.validationPassed&&
+		discardedWallVelocityMetal.maximumPostProjectionResidualPerS==
+			discardedWallVelocityCPU.maximumPostProjectionResidualPerS&&
+		EveryWallFaceOverwritten(discardedWallVelocity,discardedWallVelocityMetal),
+		"P2 Metal excludes discarded wall-normal velocity from monitored acceptance");
 #endif
 
 	FireProductionProjectionRequest manufactured=EmptyRequest(17u,9u,7u);
@@ -718,8 +836,22 @@ int main()
 			maximumMetalVelocityDifference=std::max(maximumMetalVelocityDifference,std::fabs(
 				manufacturedMetal.velocityMPerS[axis][face]-
 				manufacturedResult.velocityMPerS[axis][face]));
+	if( manufacturedMetalOK&&(
+		manufacturedMetal.faceDensityKGPerM3!=manufacturedResult.faceDensityKGPerM3||
+		!MomentumVelocityIdentity(manufacturedMetal)||
+		!WithinTwoULPs(manufacturedMetal.maximumPreProjectionResidualPerS,
+			IndependentPreProjectionResidual(manufactured))) )
+		std::cerr << "Metal evidence detail: density=" <<
+			(manufacturedMetal.faceDensityKGPerM3==manufacturedResult.faceDensityKGPerM3) <<
+			" momentum_velocity=" << MomentumVelocityIdentity(manufacturedMetal) <<
+			" pre=" << manufacturedMetal.maximumPreProjectionResidualPerS <<
+			" independent_pre=" << IndependentPreProjectionResidual(manufactured) << '\n';
 	Check(manufacturedMetalOK&&manufacturedMetalRepeatOK&&
 		manufacturedMetal.validationPassed&&
+		manufacturedMetal.faceDensityKGPerM3==manufacturedResult.faceDensityKGPerM3&&
+		MomentumVelocityIdentity(manufacturedMetal)&&
+		WithinTwoULPs(manufacturedMetal.maximumPreProjectionResidualPerS,
+			IndependentPreProjectionResidual(manufactured))&&
 		manufacturedMetal.maximumPostProjectionResidualPerS==metalResidual&&
 		manufacturedMetal.executedVCycleCount==12u&&
 		manufacturedMetal.executedJacobiSweepCount==600u&&
@@ -863,7 +995,11 @@ int main()
 	if( expansionMetalOK ) for( const float value : expansionMetal.pressurePa )
 		expansionMetalPressure=std::max(expansionMetalPressure,std::fabs(value));
 	Check(expansionMetalOK&&expansionMetal.validationPassed&&
+		expansionMetal.maximumPreProjectionResidualPerS==
+			IndependentPreProjectionResidual(expansion)&&
 		expansionMetal.maximumPostProjectionResidualPerS<=1.0e-5f&&
+		expansionMetal.maximumOpenComplementarityDiscrepancyMPerS==
+			IndependentOpenComplementarity(expansion,expansionMetal)&&
 		expansionMetalPressure<=1.0e-6f&&
 		std::all_of(expansionMetal.pressureOpenInflow.begin(),
 			expansionMetal.pressureOpenInflow.end(),[](const std::vector<unsigned char>& side){
@@ -942,7 +1078,11 @@ int main()
 					std::fabs(value-expectedVelocity));
 		}
 		Check(totalHeadMetalOK&&totalHeadMetal.validationPassed&&
+			totalHeadMetal.maximumPreProjectionResidualPerS==
+				IndependentPreProjectionResidual(totalHead)&&
 			totalHeadMetal.maximumPostProjectionResidualPerS<=2.5e-4f&&
+			totalHeadMetal.maximumOpenComplementarityDiscrepancyMPerS==
+				IndependentOpenComplementarity(totalHead,totalHeadMetal)&&
 			metalPressureError<=2.0e-4f&&metalVelocityError<=3.0e-5f&&
 			std::all_of(totalHeadMetal.pressureOpenInflow[0].begin(),
 				totalHeadMetal.pressureOpenInflow[0].end(),[&](unsigned char value){
@@ -1019,6 +1159,15 @@ int main()
 	Check(ProjectFireProductionCPU(cancellation,cancellationResult,&error)&&
 		cancellationResult.removedFineRightHandSideMean==0.0f,
 		"P2 nullspace mean uses the cancellation-sensitive pinned Blelloch tree");
+#ifdef __APPLE__
+	FireProductionProjectionResult cancellationMetal;
+	Check(ProjectFireProductionMetal(cancellation,cancellationMetal,&error)&&
+		cancellationMetal.removedFineRightHandSideMean==
+			cancellationResult.removedFineRightHandSideMean&&
+		cancellationMetal.maximumPreProjectionResidualPerS==
+			IndependentPreProjectionResidual(cancellation),
+		"P2 Metal publishes the independently bound cancellation-sensitive diagnostics");
+#endif
 	FireProductionProjectionRequest toleranceOverflow=EmptyRequest(4u,4u,4u);
 	SetBoundary(toleranceOverflow,FireProductionProjectionPeriodic);
 	toleranceOverflow.shape.cellWidthM=1.0e-18f;toleranceOverflow.timeStepS=1.0f;
@@ -1067,14 +1216,22 @@ int main()
 	denyTestAllocations=false;
 	Check(!metalAllocationReturned&&metalAllocationFailure.pressurePa.empty(),
 		"P2 Metal persistent allocator denial returns false with no partial result or escaped exception");
-	for( const char* injectedStage : {"buffer","command"} ) {
+	for( const char* injectedStage : {"buffer","command_buffer","command","output"} ) {
 		setenv("RISE_FIRE_PROJECTION_TEST_FAILURE",injectedStage,1);
 		FireProductionProjectionResult injectedResult;injectedResult.pressurePa.push_back(7.0f);
+		error.clear();
 		const bool injectedReturned=ProjectFireProductionMetal(
 			allocationFailure,injectedResult,&error);
 		unsetenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
-		Check(!injectedReturned&&injectedResult.pressurePa.empty()&&!error.empty(),
-			"P2 Metal buffer and command failures return no partial result");
+		const bool expectedDiagnostic=std::string(injectedStage)=="buffer"?
+			error.find("buffer allocation failed")!=std::string::npos:
+			(std::string(injectedStage)=="command_buffer"?
+				error.find("command allocation failed")!=std::string::npos:
+				(std::string(injectedStage)=="command"?
+					error.find("command failed")!=std::string::npos:
+					error.find("nonfinite output")!=std::string::npos));
+		Check(!injectedReturned&&injectedResult.pressurePa.empty()&&expectedDiagnostic,
+			"P2 Metal buffer, committed-command, and output failures return no partial result");
 	}
 #endif
 	FireProductionProjectionRequest seam=EmptyRequest(4u,4u,4u);
@@ -1177,6 +1334,11 @@ int main()
 		Count(metalSource,"EncodeSmooth(context,command,level,3u")==2u&&
 		metalSource.find("(2.0f/3.0f)*")!=std::string::npos&&
 		Count(metalSource,"options.mathMode=MTLMathModeSafe")==1u&&
+		metalSource.find("[command status]!=MTLCommandBufferStatusCompleted||"
+			"InjectedFailure(\"command\")")!=std::string::npos&&
+		metalSource.find("InjectedFailure(\"output\")&&!result.pressurePa.empty()")!=
+			std::string::npos&&
+		metalSource.find("!AllFinite(result.pressurePa)")!=std::string::npos&&
 		metalSource.find("MTLMathModeFast")==std::string::npos&&
 		metalSource.find("MTLMathModeRelaxed")==std::string::npos&&
 		metalCycleBody.find("break")==std::string::npos&&
