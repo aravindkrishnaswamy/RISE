@@ -114,6 +114,47 @@ namespace
 		return count;
 	}
 
+	float IndependentResidual( const RISE::FireProductionProjectionRequest& request,
+		const RISE::FireProductionProjectionResult& result )
+	{
+		float maximum=0.0f;
+		for( std::size_t z=0;z<request.shape.nz;++z )
+			for( std::size_t y=0;y<request.shape.ny;++y )
+				for( std::size_t x=0;x<request.shape.nx;++x ) {
+					const float residual=(result.velocityMPerS[0][Face(request.shape,0u,x+1u,y,z)]-
+						result.velocityMPerS[0][Face(request.shape,0u,x,y,z)]+
+						result.velocityMPerS[1][Face(request.shape,1u,x,y+1u,z)]-
+						result.velocityMPerS[1][Face(request.shape,1u,x,y,z)]+
+						result.velocityMPerS[2][Face(request.shape,2u,x,y,z+1u)]-
+						result.velocityMPerS[2][Face(request.shape,2u,x,y,z)])/
+						request.shape.cellWidthM-request.divergenceTargetPerS[Cell(request.shape,x,y,z)];
+					maximum=std::max(maximum,std::fabs(residual));
+				}
+		return maximum;
+	}
+
+	bool EveryPeriodicSeamExact( const RISE::FireProductionProjectionShape& shape,
+		const RISE::FireProductionProjectionResult& result )
+	{
+		for( unsigned int axis=0;axis<3u;++axis ) {
+			const std::size_t firstCount=axis==0u?shape.ny:shape.nx;
+			const std::size_t secondCount=axis==2u?shape.ny:shape.nz;
+			for( std::size_t second=0;second<secondCount;++second )
+				for( std::size_t first=0;first<firstCount;++first ) {
+					std::size_t x0=0u,y0=0u,z0=0u,x1=0u,y1=0u,z1=0u;
+					if( axis==0u ) {x1=shape.nx;y0=y1=first;z0=z1=second;}
+					if( axis==1u ) {y1=shape.ny;x0=x1=first;z0=z1=second;}
+					if( axis==2u ) {z1=shape.nz;x0=x1=first;y0=y1=second;}
+					const std::size_t low=Face(shape,axis,x0,y0,z0);
+					const std::size_t high=Face(shape,axis,x1,y1,z1);
+					if( result.faceDensityKGPerM3[axis][low]!=result.faceDensityKGPerM3[axis][high]||
+						result.momentumKGPerM2S[axis][low]!=result.momentumKGPerM2S[axis][high]||
+						result.velocityMPerS[axis][low]!=result.velocityMPerS[axis][high] ) return false;
+				}
+		}
+		return true;
+	}
+
 	struct DoubleLevel
 	{
 		std::size_t nx,ny,nz;
@@ -447,13 +488,35 @@ int main()
 
 	FireProductionProjectionRequest wallOverwrite=EmptyRequest(4u,4u,4u);
 	SetBoundary(wallOverwrite,FireProductionProjectionWall);
-	wallOverwrite.gasDensityKGPerM3[Cell(wallOverwrite.shape,0u,0u,0u)]=2.0f;
-	wallOverwrite.provisionalMomentumKGPerM2S[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]=7.0f;
+	std::fill(wallOverwrite.gasDensityKGPerM3.begin(),wallOverwrite.gasDensityKGPerM3.end(),2.0f);
+	for( unsigned int axis=0;axis<3u;++axis ) {
+		const std::size_t extent=axis==0u?wallOverwrite.shape.nx:
+			(axis==1u?wallOverwrite.shape.ny:wallOverwrite.shape.nz);
+		for( const std::size_t coordinate : {std::size_t(0u),extent} ) {
+			std::size_t x=1u,y=1u,z=1u;
+			if( axis==0u ) x=coordinate;if( axis==1u ) y=coordinate;
+			if( axis==2u ) z=coordinate;
+			wallOverwrite.provisionalMomentumKGPerM2S[axis][Face(
+				wallOverwrite.shape,axis,x,y,z)]=7.0f+static_cast<float>(2u*axis)+
+					static_cast<float>(coordinate!=0u);
+		}
+	}
 	FireProductionProjectionResult wallOverwriteResult;
-	Check(ProjectFireProductionCPU(wallOverwrite,wallOverwriteResult,&error)&&
-		wallOverwriteResult.faceDensityKGPerM3[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]==2.0f&&
-		wallOverwriteResult.momentumKGPerM2S[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]==0.0f&&
-		wallOverwriteResult.velocityMPerS[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]==0.0f,
+	bool everyWallOverwritten=ProjectFireProductionCPU(wallOverwrite,wallOverwriteResult,&error);
+	for( unsigned int axis=0;everyWallOverwritten&&axis<3u;++axis ) {
+		const std::size_t extent=axis==0u?wallOverwrite.shape.nx:
+			(axis==1u?wallOverwrite.shape.ny:wallOverwrite.shape.nz);
+		for( const std::size_t coordinate : {std::size_t(0u),extent} ) {
+			std::size_t x=1u,y=1u,z=1u;
+			if( axis==0u ) x=coordinate;if( axis==1u ) y=coordinate;
+			if( axis==2u ) z=coordinate;
+			const std::size_t face=Face(wallOverwrite.shape,axis,x,y,z);
+			everyWallOverwritten=wallOverwriteResult.faceDensityKGPerM3[axis][face]==2.0f&&
+				wallOverwriteResult.momentumKGPerM2S[axis][face]==0.0f&&
+				wallOverwriteResult.velocityMPerS[axis][face]==0.0f;
+		}
+	}
+	Check(everyWallOverwritten,
 		"P2 wall output preserves adjacent density and overwrites nonzero normal momentum exactly");
 
 	FireProductionProjectionRequest manufactured=EmptyRequest(17u,9u,7u);
@@ -532,10 +595,16 @@ int main()
 		std::cerr << "Manufactured projection detail: " << error << " post=" <<
 			manufacturedResult.maximumPostProjectionResidualPerS << " pressure_error=" <<
 			maximumPressureError << '\n';
+	const float independentlyMeasuredResidual=manufacturedOK?
+		IndependentResidual(manufactured,manufacturedResult):0.0f;
 	Check(manufacturedOK&&repeatedOK&&manufacturedResult.validationPassed&&
 		maximumPressureError<=0.025f&&
+		manufacturedResult.maximumPostProjectionResidualPerS==independentlyMeasuredResidual&&
+		manufacturedResult.executedVCycleCount==12u&&
+		manufacturedResult.executedJacobiSweepCount==600u&&
 		manufacturedResult.pressurePa==repeatedResult.pressurePa&&
-		manufacturedResult.velocityMPerS==repeatedResult.velocityMPerS,
+		manufacturedResult.velocityMPerS==repeatedResult.velocityMPerS&&
+		EveryPeriodicSeamExact(manufactured.shape,manufacturedResult),
 		"P2 odd-grid variable-density manufactured projection is accurate and byte deterministic");
 	FireSim::PeriodicMACShape oracleShape;oracleShape.nx=manufactured.shape.nx;
 	oracleShape.ny=manufactured.shape.ny;oracleShape.nz=manufactured.shape.nz;
@@ -572,7 +641,7 @@ int main()
 			FireSim::PeriodicMACDivergence3D(oracleShape,oracleResult.velocityMPerS,cell)-
 			oracleTarget[cell]));
 	Check(oracleOK&&oracleMaximumResidual>0.0&&oracleMaximumResidual<=oracleTolerance&&
-		manufacturedResult.maximumPostProjectionResidualPerS<=
+		independentlyMeasuredResidual<=
 		1.25f*static_cast<float>(oracleMaximumResidual),
 		"P2 manufactured residual is no worse than 1.25 times the fp64 oracle error");
 
@@ -727,6 +796,34 @@ int main()
 		incompatibleResult.maximumPostProjectionResidualPerS==0.4f&&
 		!incompatibleResult.pressurePa.empty(),
 		"P2 finite validation miss publishes diagnostics without retry or structural abort");
+	bool justBelow=false,justAbove=true;
+	const float exactBand=0.005f*2.0f/4.0f;
+	Check(FireProductionProjectionResidualWithinBand(std::nextafter(exactBand,0.0f),
+		2.0f,4.0f,justBelow)&&justBelow&&
+		FireProductionProjectionResidualWithinBand(std::nextafter(exactBand,
+			std::numeric_limits<float>::infinity()),2.0f,4.0f,justAbove)&&!justAbove,
+		"P2 validation band straddles the exact 0.005 U/L boundary");
+	FireProductionProjectionRequest cancellation=EmptyRequest(4u,4u,4u);
+	SetBoundary(cancellation,FireProductionProjectionPeriodic);
+	cancellation.divergenceTargetPerS[0]=1.0e6f;
+	cancellation.divergenceTargetPerS[1]=0.01f;
+	cancellation.divergenceTargetPerS[2]=-1.0e6f;
+	cancellation.divergenceTargetPerS[3]=0.01f;
+	FireProductionProjectionResult cancellationResult;
+	Check(ProjectFireProductionCPU(cancellation,cancellationResult,&error)&&
+		cancellationResult.removedFineRightHandSideMean==0.0f,
+		"P2 nullspace mean uses the cancellation-sensitive pinned Blelloch tree");
+	FireProductionProjectionRequest toleranceOverflow=EmptyRequest(4u,4u,4u);
+	SetBoundary(toleranceOverflow,FireProductionProjectionPeriodic);
+	toleranceOverflow.shape.cellWidthM=1.0e-18f;toleranceOverflow.timeStepS=1.0f;
+	for( unsigned int axis=0;axis<3u;++axis )
+		std::fill(toleranceOverflow.provisionalMomentumKGPerM2S[axis].begin(),
+			toleranceOverflow.provisionalMomentumKGPerM2S[axis].end(),1.0e30f);
+	FireProductionProjectionResult toleranceOverflowResult;
+	Check(!ProjectFireProductionCPU(toleranceOverflow,toleranceOverflowResult,&error)&&
+		toleranceOverflowResult.pressurePa.empty()&&
+		error.find("validation band overflowed")!=std::string::npos,
+		"P2 finite inputs fail structurally when the derived validation band overflows");
 
 	FireProductionProjectionRequest invalid=manufactured;
 	invalid.gasDensityKGPerM3[0]=std::numeric_limits<float>::quiet_NaN();
@@ -752,21 +849,41 @@ int main()
 	Check(!ValidateFireProductionProjectionRequest(oversized,&error)&&
 		error.find("2 GiB")!=std::string::npos,
 		"P2 rejects the complete peak working set before allocating arrays");
+	FireProductionProjectionShape nearUnder,nearOver;
+	nearUnder.nx=264u;nearUnder.ny=266u;nearUnder.nz=281u;nearUnder.cellWidthM=0.1f;
+	nearOver.nx=260u;nearOver.ny=274u;nearOver.nz=277u;nearOver.cellWidthM=0.1f;
+	std::uint64_t nearUnderBytes=0u,nearOverBytes=0u;
+	Check(FireProductionProjectionWorkingSetBytes(nearUnder,nearUnderBytes)&&
+		FireProductionProjectionWorkingSetBytes(nearOver,nearOverBytes)&&
+		nearUnderBytes==UINT64_C(2147440808)&&nearOverBytes==UINT64_C(2147512068)&&
+		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
+		"P2 complete working-set accounting binds the independent final-42-KiB boundary pair");
 
 	const std::string source=ReadFile("src/Library/Utilities/FireProductionProjection.cpp");
 	const std::string makefile=ReadFile("build/make/rise/Makefile");
 	const std::string android=ReadFile("build/cmake/rise-android/CMakeLists.txt");
 	const std::string visualStudio=ReadFile("build/VS2022/Library/Library.vcxproj");
 	const std::string xcode=ReadFile("build/XCode/rise/rise.xcodeproj/project.pbxproj");
+	const std::size_t cycleLoop=source.find("for( unsigned int cycle=0;cycle<12u;++cycle )");
+	const std::size_t cycleLoopEnd=cycleLoop==std::string::npos?std::string::npos:
+		source.find("result.pressurePa=",cycleLoop);
+	const std::string cycleBody=cycleLoop==std::string::npos?std::string():
+		source.substr(cycleLoop,cycleLoopEnd-cycleLoop);
 	Check(Count(source,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
-		Count(source,"Smooth(level,boundary,3u,nullspace)")==2u&&
-		Count(source,"Smooth(level,boundary,32u,nullspace)")==1u&&
+		Count(source,"Smooth(level,boundary,3u,nullspace,sweepCounter)")==2u&&
+		Count(source,"Smooth(level,boundary,32u,nullspace,sweepCounter)")==1u&&
 		Count(source,"const float omega=2.0f/3.0f;")==1u&&
-		source.find("BlellochSum")!=std::string::npos,
+		Count(source,"VCycle(hierarchy,0u,request.boundary,nullspace,")==1u&&
+		cycleBody.find("break") == std::string::npos&&
+		source.find("const float mean=BlellochSum(values)")!=std::string::npos,
 		"P2 source guard binds 12 cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
-	Check(makefile.find("FireProductionProjection.o :")!=std::string::npos&&
-		makefile.find("$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off")!=
-			std::string::npos&&android.find("FireProductionProjection.cpp\"\n    PROPERTIES "
+	const std::size_t makeRule=makefile.find("FireProductionProjection.o :");
+	const std::size_t makeRuleEnd=makeRule==std::string::npos?std::string::npos:
+		makefile.find("\n\n",makeRule);
+	const std::string projectionMakeRule=makeRule==std::string::npos?std::string():
+		makefile.substr(makeRule,makeRuleEnd-makeRule);
+	Check(projectionMakeRule.find("$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math "
+		"-ffp-contract=off")!=std::string::npos&&android.find("FireProductionProjection.cpp\"\n    PROPERTIES "
 			"COMPILE_OPTIONS \"-fno-fast-math;-ffp-contract=off\"")!=std::string::npos&&
 		visualStudio.find("FireProductionProjection.cpp\">\n      <FloatingPointModel>Strict")!=
 			std::string::npos&&Count(xcode,"FireProductionProjection.cpp in Sources */ = "

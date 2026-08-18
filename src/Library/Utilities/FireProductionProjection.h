@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -58,17 +59,32 @@ namespace RISE
 		float maximumPreProjectionResidualPerS;
 		float maximumPostProjectionResidualPerS;
 		float maximumOpenComplementarityDiscrepancyMPerS;
+		float removedFineRightHandSideMean;
+		std::uint32_t executedVCycleCount;
+		std::uint64_t executedJacobiSweepCount;
 		bool validationPassed;
 		double deviceElapsedMS;
 
 		FireProductionProjectionResult() : maximumPreProjectionResidualPerS(0.0f),
 			maximumPostProjectionResidualPerS(0.0f),
-			maximumOpenComplementarityDiscrepancyMPerS(0.0f),validationPassed(false),
+			maximumOpenComplementarityDiscrepancyMPerS(0.0f),
+			removedFineRightHandSideMean(0.0f),executedVCycleCount(0u),
+			executedJacobiSweepCount(0u),validationPassed(false),
 			deviceElapsedMS(0.0) {}
 	};
 
 	std::size_t FireProductionProjectionFaceCount(
 		const FireProductionProjectionShape& shape, unsigned int axis );
+
+	bool FireProductionProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
+	bool FireProductionProjectionResidualWithinBand(
+		float maximumResidualPerS,
+		float maximumVelocityMPerS,
+		float domainLengthM,
+		bool& withinBand );
 
 	bool ValidateFireProductionProjectionRequest(
 		const FireProductionProjectionRequest& request,

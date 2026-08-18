@@ -85,9 +85,9 @@ namespace RISE
 				static_cast<std::uint64_t>(nx)*ny*(nz+1u);
 		}
 
-		bool ProjectionWorkingSetWithinLimit( const FireProductionProjectionShape& shape )
+		bool ProjectionWorkingSetBytes( const FireProductionProjectionShape& shape,
+			std::uint64_t& bytes )
 		{
-			const std::uint64_t limit=UINT64_C(1)<<31u;
 			std::uint64_t total=0u;
 			std::size_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
 			const std::uint64_t fineCells=static_cast<std::uint64_t>(nx)*ny*nz;
@@ -115,7 +115,7 @@ namespace RISE
 				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
 				!AddBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(float),total)||
 				!AddBytes(largestCoarseCells,sizeof(unsigned int),total) ) return false;
-			return total<=limit;
+			bytes=total;return true;
 		}
 
 		float BlellochSum( const std::vector<float>& values )
@@ -129,10 +129,11 @@ namespace RISE
 			return scratch.back();
 		}
 
-		void RemoveMean( std::vector<float>& values )
+		float RemoveMean( std::vector<float>& values )
 		{
 			const float mean=BlellochSum(values)/static_cast<float>(values.size());
 			for( float& value : values ) value-=mean;
+			return mean;
 		}
 
 		bool HasOpenBoundary( const std::array<FireProductionProjectionBoundary,6>& boundary )
@@ -312,10 +313,11 @@ namespace RISE
 
 		void Smooth( Level& level,
 			const std::array<FireProductionProjectionBoundary,6>& boundary,
-			unsigned int sweeps, bool nullspace )
+			unsigned int sweeps, bool nullspace, std::uint64_t& sweepCounter )
 		{
 			const float omega=2.0f/3.0f;
 			for( unsigned int sweep=0;sweep<sweeps;++sweep ) {
+				++sweepCounter;
 				ApplyOperator(level,boundary,level.pressure,level.temporary);
 				for( std::size_t cell=0;cell<level.pressure.size();++cell )
 					level.residual[cell]=level.pressure[cell]+omega*
@@ -385,13 +387,14 @@ namespace RISE
 		}
 
 		void VCycle( std::vector<Level>& hierarchy, std::size_t levelIndex,
-			const std::array<FireProductionProjectionBoundary,6>& boundary, bool nullspace )
+			const std::array<FireProductionProjectionBoundary,6>& boundary, bool nullspace,
+			std::uint64_t& sweepCounter )
 		{
 			Level& level=hierarchy[levelIndex];
 			if( levelIndex+1u==hierarchy.size() ) {
-				Smooth(level,boundary,32u,nullspace);return;
+				Smooth(level,boundary,32u,nullspace,sweepCounter);return;
 			}
-			Smooth(level,boundary,3u,nullspace);
+			Smooth(level,boundary,3u,nullspace,sweepCounter);
 			ApplyOperator(level,boundary,level.pressure,level.temporary);
 			for( std::size_t cell=0;cell<level.rhs.size();++cell )
 				level.residual[cell]=level.rhs[cell]-level.temporary[cell];
@@ -399,9 +402,9 @@ namespace RISE
 			RestrictAverage(level,coarse,level.residual,coarse.rhs);
 			if( nullspace ) RemoveMean(coarse.rhs);
 			std::fill(coarse.pressure.begin(),coarse.pressure.end(),0.0f);
-			VCycle(hierarchy,levelIndex+1u,boundary,nullspace);
+			VCycle(hierarchy,levelIndex+1u,boundary,nullspace,sweepCounter);
 			ProlongateAndAdd(coarse,level);
-			Smooth(level,boundary,3u,nullspace);
+			Smooth(level,boundary,3u,nullspace,sweepCounter);
 		}
 
 		float CellCenteredVelocity( const FireProductionProjectionRequest& request,
@@ -424,6 +427,28 @@ namespace RISE
 		return shape.nx*shape.ny*(shape.nz+1u);
 	}
 
+	bool FireProductionProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx==0u||shape.ny==0u||shape.nz==0u||
+			shape.nx>std::numeric_limits<std::size_t>::max()/shape.ny||
+			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz ) return false;
+		return ProjectionWorkingSetBytes(shape,bytes);
+	}
+
+	bool FireProductionProjectionResidualWithinBand( float maximumResidualPerS,
+		float maximumVelocityMPerS,float domainLengthM,bool& withinBand )
+	{
+		withinBand=false;
+		if( !std::isfinite(maximumResidualPerS)||maximumResidualPerS<0.0f||
+			!std::isfinite(maximumVelocityMPerS)||maximumVelocityMPerS<0.0f||
+			!std::isfinite(domainLengthM)||!(domainLengthM>0.0f) ) return false;
+		const float tolerance=0.005f*maximumVelocityMPerS/domainLengthM;
+		if( !std::isfinite(tolerance) ) return false;
+		withinBand=maximumResidualPerS<=tolerance;return true;
+	}
+
 	bool ValidateFireProductionProjectionRequest( const FireProductionProjectionRequest& request,
 		std::string* error )
 	{
@@ -436,7 +461,9 @@ namespace RISE
 		if( shape.nx>std::numeric_limits<std::size_t>::max()/shape.ny||
 			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz )
 			return Fail(error,"production projection dimensions overflow");
-		if( !ProjectionWorkingSetWithinLimit(shape) )
+		std::uint64_t workingSetBytes=0u;
+		if( !ProjectionWorkingSetBytes(shape,workingSetBytes)||
+			workingSetBytes>(UINT64_C(1)<<31u) )
 			return Fail(error,"production projection working set exceeds 2 GiB");
 		const std::size_t cells=shape.CellCount();
 		for( const FireProductionProjectionBoundary value : request.boundary )
@@ -590,7 +617,7 @@ namespace RISE
 				}
 			}
 		const bool nullspace=!HasOpenBoundary(request.boundary);
-		if( nullspace ) RemoveMean(fine.rhs);
+		if( nullspace ) result.removedFineRightHandSideMean=RemoveMean(fine.rhs);
 		fine.pressure.assign(cells,0.0f);fine.temporary.assign(cells,0.0f);
 		fine.residual.assign(cells,0.0f);
 		std::vector<Level> hierarchy;hierarchy.push_back(std::move(fine));
@@ -613,7 +640,9 @@ namespace RISE
 			hierarchy.push_back(std::move(coarse));
 		}
 		for( unsigned int cycle=0;cycle<12u;++cycle ) {
-			VCycle(hierarchy,0u,request.boundary,nullspace);
+			VCycle(hierarchy,0u,request.boundary,nullspace,
+				result.executedJacobiSweepCount);
+			++result.executedVCycleCount;
 			if( nullspace ) RemoveMean(hierarchy[0].pressure);
 		}
 		result.pressurePa=hierarchy[0].pressure;
@@ -714,8 +743,12 @@ namespace RISE
 		}
 		const float length=shape.cellWidthM*static_cast<float>(
 			std::max(nx,std::max(ny,nz)));
-		const float tolerance=0.005f*maximumVelocity/length;
-		result.validationPassed=result.maximumPostProjectionResidualPerS<=tolerance;
+		if( !FireProductionProjectionResidualWithinBand(
+			result.maximumPostProjectionResidualPerS,maximumVelocity,length,
+			result.validationPassed) ) {
+			result=FireProductionProjectionResult();
+			return Fail(error,"production projection validation band overflowed");
+		}
 		for( const float value : result.pressurePa ) if( !std::isfinite(value) ) {
 			result=FireProductionProjectionResult();
 			return Fail(error,"production projection produced nonfinite pressure");
