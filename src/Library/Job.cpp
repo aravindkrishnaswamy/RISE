@@ -10474,22 +10474,13 @@ bool Job::LoadAsciiSceneAuto(
 void Job::RefreshCstLoadFileIdentity( const char* path )
 {
 	if( !path ) return;
-	struct stat fileStats = {};
-	if( ::stat( path, &fileStats ) != 0 ) return;
-	RISE::FileIdentity ident;
-	ident.filePath  = path;
-	ident.mtimeSec  = static_cast<long long>( fileStats.st_mtime );
-#if defined(__APPLE__)
-	ident.mtimeNsec = static_cast<long long>( fileStats.st_mtimespec.tv_nsec );
-#elif defined(__linux__) || defined(__unix__)
-	ident.mtimeNsec = static_cast<long long>( fileStats.st_mtim.tv_nsec );
-#else
-	ident.mtimeNsec = 0;
-#endif
-	ident.sizeBytes = static_cast<long long>( fileStats.st_size );
-	ident.deviceId  = static_cast<long long>( fileStats.st_dev );
-	ident.fileId    = static_cast<long long>( fileStats.st_ino );
-	ident.captured  = true;
+	// CaptureFileIdentity (FileIdentity.h; defined in SaveEngine.cpp) is the
+	// single capture implementation -- on Windows it uses the real file
+	// handle (volume serial + NTFS file index + 100ns write time) because
+	// CRT stat's st_ino is always 0 there, which made the replacement
+	// detection a silent no-op.
+	const RISE::FileIdentity ident = RISE::CaptureFileIdentity( path );
+	if( !ident.captured ) return;
 	mCstLoadFileIdentity = ident;                                   // survives ClearAll; the CST-save guard reads it via GetCstLoadFileIdentity
 }
 

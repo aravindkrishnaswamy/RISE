@@ -41,6 +41,8 @@
 // POSIX `getpid` is in `<unistd.h>`.
 #if defined(_WIN32)
 #include <process.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>   // CaptureFileIdentity: GetFileInformationByHandle
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -48,6 +50,54 @@
 
 namespace RISE
 {
+
+// See the declaration's doc in FileIdentity.h: the single sanctioned
+// FileIdentity capture implementation, shared by the load-time baseline
+// (Job::RefreshCstLoadFileIdentity) and the save-time guard below.
+FileIdentity CaptureFileIdentity( const char* path )
+{
+	FileIdentity ident;
+	if( !path || !*path ) return ident;
+#if defined(_WIN32)
+	// Metadata-only open; FILE_SHARE_DELETE so a concurrent atomic-rename
+	// replace is not blocked by this momentary handle.
+	const HANDLE h = ::CreateFileA( path, 0,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr );
+	if( h == INVALID_HANDLE_VALUE ) return ident;
+	BY_HANDLE_FILE_INFORMATION info = {};
+	const bool ok = ::GetFileInformationByHandle( h, &info ) != 0;
+	::CloseHandle( h );
+	if( !ok ) return ident;
+	const unsigned long long writeTicks =                            // 100ns ticks since 1601
+		( static_cast<unsigned long long>( info.ftLastWriteTime.dwHighDateTime ) << 32 )
+		| info.ftLastWriteTime.dwLowDateTime;
+	ident.mtimeSec  = static_cast<long long>( writeTicks / 10000000ULL );
+	ident.mtimeNsec = static_cast<long long>( ( writeTicks % 10000000ULL ) * 100ULL );
+	ident.sizeBytes = static_cast<long long>(
+		( static_cast<unsigned long long>( info.nFileSizeHigh ) << 32 ) | info.nFileSizeLow );
+	ident.deviceId  = static_cast<long long>( info.dwVolumeSerialNumber );
+	ident.fileId    = static_cast<long long>(
+		( static_cast<unsigned long long>( info.nFileIndexHigh ) << 32 ) | info.nFileIndexLow );
+#else
+	struct ::stat fileStats = {};
+	if( ::stat( path, &fileStats ) != 0 ) return ident;
+	ident.mtimeSec  = static_cast<long long>( fileStats.st_mtime );
+#if defined(__APPLE__)
+	ident.mtimeNsec = static_cast<long long>( fileStats.st_mtimespec.tv_nsec );
+#elif defined(__linux__) || defined(__unix__)
+	ident.mtimeNsec = static_cast<long long>( fileStats.st_mtim.tv_nsec );
+#else
+	ident.mtimeNsec = 0;
+#endif
+	ident.sizeBytes = static_cast<long long>( fileStats.st_size );
+	ident.deviceId  = static_cast<long long>( fileStats.st_dev );
+	ident.fileId    = static_cast<long long>( fileStats.st_ino );
+#endif
+	ident.filePath = path;
+	ident.captured = true;
+	return ident;
+}
 
 namespace {
 
@@ -282,22 +332,16 @@ SaveResult SaveEngine::Save()
         const FileIdentity& cstLoadIdent = mLoadedFileIdentity;
         if( cstLoadIdent.captured
             && CanonicalSavePath( cstLoadIdent.filePath ) == canonicalTarget ) {
-            struct ::stat cur = {};
-            if( ::stat( mResolvedFilePath.c_str(), &cur ) == 0 ) {
-                const long long curSize  = static_cast<long long>( cur.st_size );
-                const long long curMtime = static_cast<long long>( cur.st_mtime );
-                const long long curDevice = static_cast<long long>( cur.st_dev );
-                const long long curFileId = static_cast<long long>( cur.st_ino );
-                long long curMtimeNsec = 0;
-#if defined(__APPLE__)
-                curMtimeNsec = static_cast<long long>( cur.st_mtimespec.tv_nsec );
-#elif defined(__linux__) || defined(__unix__)
-                curMtimeNsec = static_cast<long long>( cur.st_mtim.tv_nsec );
-#endif
-                if( curSize != cstLoadIdent.sizeBytes || curMtime != cstLoadIdent.mtimeSec
-                    || curMtimeNsec != cstLoadIdent.mtimeNsec
-                    || curDevice != cstLoadIdent.deviceId
-                    || curFileId != cstLoadIdent.fileId ) {
+            // Same capture implementation as the load-time baseline
+            // (CaptureFileIdentity above) so every field compares
+            // like-for-like -- including on Windows, where stat()'s
+            // st_ino==0 previously made the file-id comparison vacuous.
+            const FileIdentity cur = CaptureFileIdentity( mResolvedFilePath.c_str() );
+            if( cur.captured ) {
+                if( cur.sizeBytes != cstLoadIdent.sizeBytes || cur.mtimeSec != cstLoadIdent.mtimeSec
+                    || cur.mtimeNsec != cstLoadIdent.mtimeNsec
+                    || cur.deviceId != cstLoadIdent.deviceId
+                    || cur.fileId != cstLoadIdent.fileId ) {
                     result.status = SaveResult::Status::Refused;
                     result.errorMessage =
                         "scene file '" + mFilePath + "' was modified externally between load and save "
