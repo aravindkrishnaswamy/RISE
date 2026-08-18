@@ -255,6 +255,26 @@ fresh zero-P1 review before the next dependency is built.
    extract locked empirical rows, render preview-primary output, and publish the
    oracle-comparison report.
 
+### 7.1 P0 landing pins (r83)
+
+P0 is a library capability, not a test-local shell probe. The platform API
+returns an explicit `available` result, device name/registry ID/family, maximum
+threadgroup width, and unified-memory status. On Metal hosts it must compile and
+dispatch an embedded fp32 identity-map kernel and verify the returned bytes;
+device discovery without command execution is insufficient. Non-Metal builds
+compile an honest capability-unavailable stub and retain all CPU table gates.
+
+The first table manifest contains record-ordered species sensible enthalpy/cp
+tables and CO2/H2O Planck-mean tables. Thermochemistry subdivision continues
+until midpoint interpolation error is no more than the record cp lower bound
+times 0.25 K (one quarter of the P0 1 K equivalent table gate). Opacity
+subdivision/error evaluation must remain below 0.5% relative (one quarter of
+V5's 2% ceiling), with a scale from the evaluated endpoint/midpoint magnitudes
+rather than a near-zero result. Those derived thresholds are compiler semantics,
+not caller knobs. The canonical manifest binds source record IDs, domains,
+all emitted knot/value fp32 bytes, measured fp64 error bounds, compiler version,
+and its one-preimage table ID. Runtime lookup rejects out-of-domain input.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
@@ -267,4 +287,3 @@ fresh zero-P1 review before the next dependency is built.
   recreates the stalls this architecture is meant to remove.
 - Altering the reference multigrid's measured 41,600 smoother sweeps/step:
   remains a separate class-B oracle campaign and is not part of production.
-

@@ -2005,3 +2005,22 @@ it was already tried and refuted here.
   (restores stalls), and changing the oracle's measured 41,600 multigrid sweeps
   per step (separate class-B campaign). The companion contract is
   `FIRE_SMOKE_PRODUCTION_SOLVER.md`.
+
+- **r83 (2026-08-18):** production P0 capability and certified-table landing
+  pins. A credible GPU baseline must execute work: the platform capability API
+  compiles and dispatches an embedded fp32 identity kernel and verifies returned
+  bytes, while non-Metal platforms expose an honest unavailable stub. Device
+  name/registry/family, threadgroup width, and unified-memory status are
+  producer evidence. Discovery-only probes were rejected because they cannot
+  establish command/pipeline viability; a test-only Objective-C++ executable
+  was rejected because later production kernels need one owned library seam.
+
+  The table compiler consumes only canonical thermochemistry/opacity records.
+  Species h_s/cp midpoint error is capped at cp_min times 0.25 K, one quarter of
+  a 1 K-equivalent P0 gate; Planck-mean relative error is capped at 0.5%, one
+  quarter of V5's 2% ceiling. These are derived compiler semantics, not tuning
+  arguments. The one-preimage manifest binds source IDs, domains, every fp32
+  knot/value byte, measured fp64 error bounds, and compiler version. Runtime
+  extrapolation is rejected. Hand-copied constants, discovery without dispatch,
+  caller-selected tolerances, and silent CPU fallback under a Metal producer
+  tag are rejected.
