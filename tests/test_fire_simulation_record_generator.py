@@ -225,14 +225,14 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         projector = inline_body(core, "ProjectPressureOpenMACVelocity3D")
         self.assertIn("activeSetDiscontinuousClass=true", projector)
         self.assertIn("OpenActiveSetComplementarityDiscrepancy3D", projector)
-        self.assertIn("activeHistory[i]<activeHistory[selected]", projector)
+        self.assertIn("OpenActiveSetCanonicalHistoryIndex3D", projector)
         self.assertIn("error,1u,true", projector)
         self.assertNotIn("augmented 3-D active set cycled", projector)
 
         owner = inline_body(advance, "SolveOpenConservativeStage3D")
         self.assertIn("OpenActiveSetCanonicalBefore3D", owner)
         self.assertIn("outerActiveSetHistory", owner)
-        self.assertIn("provedOuterCycle.assign", owner)
+        self.assertGreaterEqual(owner.count("provedOuterCycle.assign"), 2)
         self.assertIn("activeSetMismatch&&!cycleProved", owner)
         self.assertIn("activeSetDiscontinuousEventCount=activeSetDiscontinuousEvents", owner)
         self.assertGreaterEqual(owner.count("1u,true"), 1)
@@ -243,16 +243,27 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         self.assertNotRegex(owner, r"activeSetCycleLength\s*=\s*std::max<[^>]+>\([^;]*2u")
 
         scalar_flux = inline_body(core, "BuildOpenBoundaryFlux3D")
-        self.assertIn("outwardVelocityMPerS < -boundary.velocityToleranceMPerS",
-                      scalar_flux)
-        self.assertIn("outwardVelocityMPerS > boundary.velocityToleranceMPerS",
-                      scalar_flux)
+        self.assertIn("OpenScalarInflow3D", scalar_flux)
         self.assertIn("const ConservativeVector& donor = scalarInflow ?", scalar_flux)
+        self.assertIn("if( !scalarInflow ) return true", scalar_flux)
+        self.assertNotIn("if( !inflow ) return true", scalar_flux)
+
+        scalar_classification = inline_body(core, "OpenScalarInflow3D")
+        self.assertIn("outwardVelocityMPerS < -velocityToleranceMPerS",
+                      scalar_classification)
+        self.assertIn("outwardVelocityMPerS > velocityToleranceMPerS",
+                      scalar_classification)
+
+        flux_pair = inline_body(advance, "BuildOpenFluxPair3D")
+        self.assertIn("OpenScalarInflow3D", flux_pair)
+        self.assertNotIn("kind==PressureOpenBoundary3D&&projection.inflow", flux_pair)
 
         sequence = (ROOT / "tests/FireSequenceTest.cpp").read_text(encoding="utf-8")
-        self.assertIn('activeSetAlgorithmVersion="open_active_set_two_class_r81_v2"',
-                      sequence)
+        self.assertIn('return "open_active_set_two_class_r81_v2"', sequence)
+        self.assertIn("CurrentActiveSetAlgorithmVersion()", sequence)
         self.assertIn('"active_set_algorithm_version"', sequence)
+        self.assertIn('"active_set_prior_algorithm_version"', sequence)
+        self.assertIn("active_set_thread_identity_mismatch", sequence)
         self.assertIn("discontinuousActiveSetEvents+=", sequence)
     def test_generated_include_is_current(self) -> None:
         generated = records.generate(self.snapshot_path,self.constants_path)

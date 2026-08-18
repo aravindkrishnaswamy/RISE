@@ -163,6 +163,22 @@ namespace
 	bool BuildResumeEquivalenceCertificate(const ResumeEquivalenceTrace& oldTrace,
 		const ResumeEquivalenceTrace& newTrace,const std::filesystem::path& path,
 		ResumeEquivalenceCertificate& certificate,std::string& error);
+	const char* CurrentActiveSetAlgorithmVersion()
+	{
+		return "open_active_set_two_class_r81_v2";
+	}
+	const char* LegacyActiveSetAlgorithmVersion()
+	{
+		return "legacy_pre_r80_active_set";
+	}
+	bool DiscontinuousThreadIdentityAccepted(const bool identical,
+		const bool activeSetChecked,std::string& error)
+	{
+		if(identical)return true;
+		error=activeSetChecked?"active_set_thread_identity_mismatch":
+			"limiter_thread_identity_mismatch";
+		return false;
+	}
 
 	struct SolverFrameValues
 	{
@@ -188,7 +204,8 @@ namespace
 		unsigned int discontinuousLimiterClassSteps=0u;
 		bool discontinuousClassThreadIdentity=true;
 		bool discontinuousClassThreadIdentityChecked=false;
-		std::string activeSetAlgorithmVersion="open_active_set_two_class_r81_v2";
+		std::string activeSetAlgorithmVersion=CurrentActiveSetAlgorithmVersion();
+		std::string priorActiveSetAlgorithmVersion;
 		double maximumActiveSetComplementarityDiscrepancyMPerS=0.0;
 		unsigned int discontinuousActiveSetEvents=0u;
 		std::size_t maximumActiveSetCycleLength=0u;
@@ -460,6 +477,7 @@ namespace
 
 	struct MethaneRunCheckpoint
 	{
+		std::uint64_t checkpointFormatVersion=0u;
 		std::string caseRecordId;
 		std::string producerBuildId;
 		std::array<std::size_t,3> dimensions={{0u,0u,0u}};
@@ -538,7 +556,8 @@ namespace
 			writer.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
 			writer.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
 			writer.Pod(checkpoint.values.activeSetThreadIdentity)&&
-			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
+			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked)&&
+			writer.String(checkpoint.values.priorActiveSetAlgorithmVersion);
 	}
 
 	bool ReadCheckpointPayload(CheckpointReader& reader,MethaneRunCheckpoint& checkpoint,
@@ -548,7 +567,7 @@ namespace
 		for(std::size_t& dimension:checkpoint.dimensions){std::uint64_t encoded=0u;
 			if(!reader.Pod(encoded)||encoded>std::numeric_limits<std::size_t>::max())return false;
 			dimension=static_cast<std::size_t>(encoded);}
-		return reader.Pod(checkpoint.cellWidthM)&&ReadCellStates(reader,checkpoint.states)&&
+		const bool decoded=reader.Pod(checkpoint.cellWidthM)&&ReadCellStates(reader,checkpoint.states)&&
 			ReadMACField(reader,checkpoint.momentum)&&ReadMACField(reader,checkpoint.velocity)&&
 			ReadSolverFrameValues(reader,checkpoint.values)&&
 			ReadArithmeticVector(reader,checkpoint.centerlineTemperatureIntegral)&&
@@ -570,7 +589,14 @@ namespace
 					reader.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
 					reader.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
 					reader.Pod(checkpoint.values.activeSetThreadIdentity)&&
-					reader.Pod(checkpoint.values.activeSetThreadIdentityChecked)))));
+					reader.Pod(checkpoint.values.activeSetThreadIdentityChecked)&&
+					(version<8u||reader.String(
+						checkpoint.values.priorActiveSetAlgorithmVersion))))));
+		if(!decoded)return false;
+		checkpoint.checkpointFormatVersion=version;
+		if(version<7u)checkpoint.values.activeSetAlgorithmVersion=
+			LegacyActiveSetAlgorithmVersion();
+		return true;
 	}
 
 	bool DurableSyncFileAndDirectory(const std::filesystem::path& path,std::string& error)
@@ -634,7 +660,7 @@ namespace
 		const std::filesystem::path temporary=path.string()+".tmp."+std::to_string(processId);
 		CheckpointWriter writer(temporary);if(!writer.Good()){error="cannot open run checkpoint";return false;}
 		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
-		const std::uint64_t version=7u,endian=0x0102030405060708ull,zero=0u;
+		const std::uint64_t version=8u,endian=0x0102030405060708ull,zero=0u;
 		auto rejectTemporary=[&temporary](){std::error_code ignored;
 			std::filesystem::remove(temporary,ignored);};
 		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
@@ -682,7 +708,7 @@ namespace
 		const char expected[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
 		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
 			!reader.HeaderBytes(&version,sizeof(version))||
-				(version!=5u&&version!=6u&&version!=7u)||
+				(version!=5u&&version!=6u&&version!=7u&&version!=8u)||
 			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
 			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
@@ -1045,9 +1071,14 @@ namespace
 					migration.newExecutableDigest==currentExecutableDigest&&
 					migration.resumedFromStep==checkpoint.acceptedSteps;
 			}
+			const bool currentActiveSetCheckpoint=checkpoint.checkpointFormatVersion>=7u&&
+				checkpoint.values.activeSetAlgorithmVersion==CurrentActiveSetAlgorithmVersion();
+			const bool legacyActiveSetCheckpoint=checkpoint.checkpointFormatVersion<7u&&
+				checkpoint.values.activeSetAlgorithmVersion==LegacyActiveSetAlgorithmVersion();
 			if(checkpoint.caseRecordId!=caseRecord.caseRecordId||
 				(!sameBuild&&!isolatedProbe&&!certifiedMigration)||
 				checkpoint.values.reductionMode!="fixed_order_tree_v1"||
+				(!currentActiveSetCheckpoint&&!legacyActiveSetCheckpoint)||
 				checkpoint.dimensions!=std::array<std::size_t,3>{{shape.nx,shape.ny,shape.nz}}||
 				checkpoint.cellWidthM!=shape.cellWidthM||checkpoint.states.size()!=shape.CellCount()||
 				checkpoint.acceptedSteps>std::numeric_limits<unsigned int>::max()||
@@ -1066,6 +1097,9 @@ namespace
 			states=std::move(checkpoint.states);momentum=std::move(checkpoint.momentum);
 			advanced.velocityMPerS=std::move(checkpoint.velocity);
 			values=std::move(checkpoint.values);
+			if(legacyActiveSetCheckpoint)values.priorActiveSetAlgorithmVersion=
+				LegacyActiveSetAlgorithmVersion();
+			values.activeSetAlgorithmVersion=CurrentActiveSetAlgorithmVersion();
 			values.workerCountHistory.push_back(workerCount);
 			centerlineTemperatureIntegral=std::move(checkpoint.centerlineTemperatureIntegral);
 			centerlineVelocityIntegral=std::move(checkpoint.centerlineVelocityIntegral);
@@ -1273,7 +1307,10 @@ namespace
 					if(!identical&&reportCapstoneProgress)std::fprintf(stderr,
 						"capstone discontinuous-class 1-vs-N mismatch: %s\n",
 						serialError.c_str());
+					advancedOK=DiscontinuousThreadIdentityAccepted(identical,
+						checkActiveSetIdentity,error);
 				}
+				if(!advancedOK)break;
 				values.maximumLimiterClassDiscrepancy=std::max(
 					values.maximumLimiterClassDiscrepancy,
 					advanced.maximumLimiterClassDiscrepancy);
@@ -2320,6 +2357,8 @@ namespace
 			});
 		const Value payload=Value::MapValue({
 			{"active_set_algorithm_version",Value::String(values.activeSetAlgorithmVersion)},
+			{"active_set_prior_algorithm_version",Value::String(
+				values.priorActiveSetAlgorithmVersion)},
 			{"active_set_discontinuous_event_count",Value::Unsigned(
 				values.discontinuousActiveSetEvents)},
 			{"active_set_maximum_complementarity_discrepancy_m_per_s",Value::Float(
@@ -2757,6 +2796,8 @@ namespace
 			final.values.acceptedTimeStepHistoryS.empty()||
 			final.values.acceptedTimeStepHistoryS.back()<4.0e-5||
 			final.values.discontinuousActiveSetEvents==0u||
+			final.values.activeSetAlgorithmVersion!=CurrentActiveSetAlgorithmVersion()||
+			final.values.priorActiveSetAlgorithmVersion!=LegacyActiveSetAlgorithmVersion()||
 			!final.values.activeSetThreadIdentityChecked||
 			!final.values.activeSetThreadIdentity){
 			std::fprintf(stderr,"r80 golden continuation failed: %s steps=%llu dt=%.17g "
@@ -2929,6 +2970,11 @@ int main(int argc,char** argv)
 		return probe.succeeded?0:97;
 	}
 #endif
+	std::string identityFailure;
+	Check(!DiscontinuousThreadIdentityAccepted(false,true,identityFailure)&&
+		identityFailure=="active_set_thread_identity_mismatch"&&
+		DiscontinuousThreadIdentityAccepted(true,true,identityFailure),
+		"r81 active-set 1-vs-N mismatch is a structured fail-closed run error");
 	PointLight* directLight=new PointLight(1.0,RISEPel(1,1,1),false);
 	IKeyframeParameter* lightEnergy=directLight->KeyframeFromParameters("energy","7");
 	UniformColorPainter* colorA=new UniformColorPainter(RISEPel(0,0,0));
@@ -3098,6 +3144,10 @@ int main(int argc,char** argv)
 	bindingMutation.values.reductionMode="unordered_reduction";
 	Check(ValidMutatedCheckpointRejects("wrong_reduction",bindingMutation),
 		"r61 resume rejects a checksummed checkpoint with a different reduction mode");
+	bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.values.activeSetAlgorithmVersion="mutated_active_set_algorithm";
+	Check(ValidMutatedCheckpointRejects("wrong_active_set_algorithm",bindingMutation),
+		"r81 resume rejects a checksummed checkpoint with different active-set semantics");
 	RISECBOR64::Bytes migrationBuildRecord;std::string migrationNewBuildId,
 		migrationNewExecutableDigest;
 	Check(CurrentRendererBuildIdentity(migrationBuildRecord,migrationNewBuildId)&&
@@ -3232,6 +3282,7 @@ int main(int argc,char** argv)
 	metadataFixture.maximumActiveSetCycleLength=2u;
 	metadataFixture.maximumActiveSetDifferingFaceCount=4u;
 	metadataFixture.activeSetThreadIdentityChecked=true;
+	metadataFixture.priorActiveSetAlgorithmVersion=LegacyActiveSetAlgorithmVersion();
 	std::string fixtureRunMetadataId;
 	const RISECBOR64::Bytes fixtureRunMetadata=RunMetadataEnvelope(metadataFixture,4u,
 		DigestFile(streamedPrefixFrame),DigestFile(resumedCheckpointFrame),std::string(64u,'b'),
@@ -3253,6 +3304,9 @@ int main(int argc,char** argv)
 		runMetadataPayload->Find("active_set_algorithm_version")&&
 		runMetadataPayload->Find("active_set_algorithm_version")->GetText()==
 			"open_active_set_two_class_r81_v2"&&
+		runMetadataPayload->Find("active_set_prior_algorithm_version")&&
+		runMetadataPayload->Find("active_set_prior_algorithm_version")->GetText()==
+			"legacy_pre_r80_active_set"&&
 		runMetadataPayload->Find("active_set_discontinuous_event_count")&&
 		runMetadataPayload->Find("active_set_discontinuous_event_count")->
 			GetIntegerArgument()==3u&&
@@ -3720,6 +3774,11 @@ int main(int argc,char** argv)
 		methaneFrameNext.discontinuousClassThreadIdentityChecked&&
 		methaneFrameNext.discontinuousClassThreadIdentity),
 		"r59 tier-10 owner enters the discontinuous class and produces bit-identical 1-vs-N accepted bytes at that step");
+	Check(!capstoneArtifactRun||capstoneValidationOnly||reportedResolutionTier<10.0||
+		methaneFrameNext.discontinuousActiveSetEvents==0u||(
+			methaneFrameNext.activeSetThreadIdentityChecked&&
+			methaneFrameNext.activeSetThreadIdentity),
+		"r81 every discontinuous active-set event is fail-closed on a 1-vs-N byte mismatch");
 	Check(!capstoneArtifactRun||capstoneValidationOnly||(
 		methaneFrameNext.statisticsBoundaryObserved&&
 		methaneFrameNext.firstStatisticsStepStartS==methaneFrameNext.statisticsStartS),
@@ -4125,6 +4184,9 @@ int main(int argc,char** argv)
 				methaneFrameNext.discontinuousClassThreadIdentity?"true":"not_exercised") << "\n"
 			<< "r81_active_set_algorithm_version=" <<
 				methaneFrameNext.activeSetAlgorithmVersion << "\n"
+			<< "r81_prior_active_set_algorithm_version=" <<
+				(methaneFrameNext.priorActiveSetAlgorithmVersion.empty()?"none":
+					methaneFrameNext.priorActiveSetAlgorithmVersion) << "\n"
 			<< "r81_discontinuous_active_set_events=" <<
 				methaneFrameNext.discontinuousActiveSetEvents << "\n"
 			<< "r81_maximum_active_set_complementarity_discrepancy_m_per_s=" <<

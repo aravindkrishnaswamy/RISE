@@ -1139,6 +1139,16 @@ int main()
 		r80CrossA,r80CrossB)&&!OpenActiveSetCanonicalBefore3D(r80ComparatorShape,
 		r80ComparatorBoundary,r80CrossB,r80CrossA),
 		"r80 canonical comparator independently selects a solved crossing branch, not union or intersection");
+	const std::vector<std::vector<unsigned char> > r81CrossingHistory={
+		std::vector<unsigned char>({1u,0u}),std::vector<unsigned char>({0u,1u})};
+	const std::vector<unsigned char> r81Union={1u,1u},r81Intersection={0u,0u};
+	const std::size_t r81MinimumDiscrepancy=OpenActiveSetCanonicalHistoryIndex3D(
+		std::vector<double>({0.25,0.5}),r81CrossingHistory,0u);
+	const std::size_t r81EqualDiscrepancy=OpenActiveSetCanonicalHistoryIndex3D(
+		std::vector<double>({0.25,0.25}),r81CrossingHistory,0u);
+	Check(r81MinimumDiscrepancy==0u&&r81CrossingHistory[r81MinimumDiscrepancy]!=r81Union&&
+		r81CrossingHistory[r81MinimumDiscrepancy]!=r81Intersection&&r81EqualDiscrepancy==1u,
+		"r81 canonical history selection rejects union/intersection and breaks exact ties lexicographically outflow-first");
 	bool r80BitIdentity=r80OneOK&&r80ManyOK;
 	for(unsigned int axis=0;r80BitIdentity&&axis<3;++axis)r80BitIdentity=
 		r80OneWorker.velocityMPerS.component[axis]==r80ManyWorkers.velocityMPerS.component[axis]&&
@@ -1198,6 +1208,77 @@ int main()
 					r80Boundary.ambientState[1+MethaneN2]:interior[1+MethaneN2]);}}
 	Check(r81DonorFound&&r81DonorCorrect,
 		"r81 resolved scalar donor follows accepted velocity sign, not discontinuous pressure bit");
+	OpenBoundaryConfig3D r81ScalarBoundary=openBoundary3D;
+	r81ScalarBoundary.kind.fill(AdiabaticWallBoundary3D);
+	r81ScalarBoundary.kind[0]=PressureOpenBoundary3D;
+	r81ScalarBoundary.velocityToleranceMPerS=1.0e-10;
+	r81ScalarBoundary.ambientState=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,0.0,300.0));
+	const ConservativeVector r81Interior=ToConservativeVector(
+		PhysicalMixtureLineState(fuel,thermochemistry,0.2,350.0));
+	OpenBoundaryFlux3D r81ResolvedOutflow,r81ResolvedInflow;
+	const bool r81ResolvedOutflowOK=BuildOpenBoundaryFlux3D(r81Interior,350.0,0.2,
+		PressureOpenBoundary3D,true,r81ScalarBoundary,300.0,300.0,0.01,0.2,1.0,
+		0.0,fuel,thermochemistry,r81ResolvedOutflow,&error);
+	const bool r81ResolvedInflowOK=BuildOpenBoundaryFlux3D(r81Interior,350.0,-0.2,
+		PressureOpenBoundary3D,false,r81ScalarBoundary,300.0,300.0,0.01,0.2,1.0,
+		0.0,fuel,thermochemistry,r81ResolvedInflow,&error);
+	bool r81OutflowDiffusionClosed=r81ResolvedOutflowOK;
+	for(const double value:r81ResolvedOutflow.nonadvectiveMassOutwardFlux)
+		r81OutflowDiffusionClosed=r81OutflowDiffusionClosed&&value==0.0;
+	Check(r81OutflowDiffusionClosed&&r81ResolvedOutflow.nonadvectiveEnergyOutwardFlux==0.0&&
+		r81ResolvedOutflow.totalOutwardFlux[1+MethaneCH4]==0.2*r81Interior[1+MethaneCH4]&&
+		r81ResolvedInflowOK&&r81ResolvedInflow.totalOutwardFlux[1+MethaneCH4]!=
+			-0.2*r81Interior[1+MethaneCH4]&&
+		r81ResolvedInflow.nonadvectiveEnergyOutwardFlux!=0.0,
+		"r81 resolved sign controls pressure-open diffusion and conduction as well as the advective donor");
+	PeriodicMACShape r81GhostShape;r81GhostShape.nx=3u;r81GhostShape.ny=3u;
+	r81GhostShape.nz=3u;r81GhostShape.cellWidthM=1.0;
+	std::vector<ConservativeVector> r81GhostState(r81GhostShape.CellCount());
+	for(std::size_t z=0;z<r81GhostShape.nz;++z)for(std::size_t y=0;y<r81GhostShape.ny;
+		++y)for(std::size_t x=0;x<r81GhostShape.nx;++x)r81GhostState[
+		r81GhostShape.Index(x,y,z)]=ToConservativeVector(PhysicalMixtureLineState(fuel,
+			thermochemistry,x==0u?0.1:0.2,300.0));
+	OpenBoundaryConfig3D r81GhostBoundary=r81ScalarBoundary;
+	r81GhostBoundary.bottomFuelMask.assign(r81GhostShape.nx*r81GhostShape.ny,false);
+	r81GhostBoundary.bottomFuelMassFluxKGPerM2S.assign(
+		r81GhostShape.nx*r81GhostShape.ny,0.0);
+	OpenMACProjection3DResult r81GhostProjection;
+	for(unsigned int side=0;side<6;++side){const std::size_t sideCount=
+		OpenBoundaryFaceCount3D(r81GhostShape,side);
+		r81GhostProjection.inflow[side].assign(sideCount,false);
+		r81GhostBoundary.priorInflow[side].assign(sideCount,false);}
+	std::fill(r81GhostProjection.inflow[0].begin(),r81GhostProjection.inflow[0].end(),true);
+	r81GhostProjection.velocityMPerS.component[0].assign(
+		OpenMACFaceCount3D(r81GhostShape,0u),0.0);
+	for(std::size_t z=0;z<r81GhostShape.nz;++z)for(std::size_t y=0;y<r81GhostShape.ny;
+		++y){r81GhostProjection.velocityMPerS.component[0][OpenMACFaceIndex3D(
+		r81GhostShape,0u,0u,y,z)]=-0.2;
+		r81GhostProjection.velocityMPerS.component[0][OpenMACFaceIndex3D(
+			r81GhostShape,0u,1u,y,z)]=0.2;
+		r81GhostProjection.velocityMPerS.component[0][OpenMACFaceIndex3D(
+			r81GhostShape,0u,2u,y,z)]=0.2;}
+	r81GhostProjection.velocityMPerS.component[1].assign(
+		OpenMACFaceCount3D(r81GhostShape,1u),0.0);
+	r81GhostProjection.velocityMPerS.component[2].assign(
+		OpenMACFaceCount3D(r81GhostShape,2u),0.0);
+	OpenFluxPair3D r81GhostFlux;
+	const bool r81GhostOK=BuildOpenFluxPair3D(r81GhostShape,r81GhostState,
+		std::vector<double>(r81GhostShape.CellCount(),300.0),r81GhostProjection,
+		std::vector<double>(r81GhostShape.CellCount(),0.0),
+		std::vector<double>(r81GhostShape.CellCount(),0.0),r81GhostBoundary,300.0,300.0,fuel,
+		thermochemistry,r81GhostFlux,&error);
+	const std::size_t r81FirstInteriorFace=OpenMACFaceIndex3D(r81GhostShape,0u,1u,0u,0u);
+	if(!r81GhostOK)std::printf("r81 ghost diagnostic error=%s\n",error.c_str());
+	if(r81GhostOK&&r81GhostFlux.high[0][r81FirstInteriorFace][0]!=
+		r81GhostFlux.low[0][r81FirstInteriorFace][0])std::printf(
+		"r81 ghost diagnostic low=%.17g high=%.17g state=%.17g velocity=%.17g\n",
+		r81GhostFlux.low[0][r81FirstInteriorFace][0],
+		r81GhostFlux.high[0][r81FirstInteriorFace][0],r81GhostState[0][0],
+		r81GhostProjection.velocityMPerS.component[0][r81FirstInteriorFace]);
+	Check(r81GhostOK&&r81GhostFlux.high[0][r81FirstInteriorFace][0]==
+		r81GhostFlux.low[0][r81FirstInteriorFace][0],
+		"r81 high-order pressure-open ghost follows the resolved scalar sign and preserves the outflow zero slope");
 	bool allPositiveInflowHeads=true;
 	for( unsigned int normalAxis=0; normalAxis<3; ++normalAxis ) {
 		const unsigned int positiveSide=2*normalAxis+1;

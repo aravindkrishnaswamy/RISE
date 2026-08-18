@@ -1902,6 +1902,16 @@ namespace RISE
 			}
 		};
 
+		inline bool OpenScalarInflow3D(
+			const double outwardVelocityMPerS,
+			const bool pressureInflow,
+			const double velocityToleranceMPerS )
+		{
+			if(outwardVelocityMPerS < -velocityToleranceMPerS)return true;
+			if(outwardVelocityMPerS > velocityToleranceMPerS)return false;
+			return pressureInflow;
+		}
+
 		inline bool BuildOpenBoundaryFlux3D(
 			const ConservativeVector& interior,
 			const double interiorTemperatureK,
@@ -1975,13 +1985,9 @@ namespace RISE
 					outwardVelocityMPerS*interior[MethaneMassStateDimension];
 				return true;
 			}
-			bool scalarInflow=inflow;
-			if(kind==PressureOpenBoundary3D){
-				if(outwardVelocityMPerS < -boundary.velocityToleranceMPerS)
-					scalarInflow=true;
-				else if(outwardVelocityMPerS > boundary.velocityToleranceMPerS)
-					scalarInflow=false;
-			}
+			const bool scalarInflow=kind==PressureOpenBoundary3D?
+				OpenScalarInflow3D(outwardVelocityMPerS,inflow,
+					boundary.velocityToleranceMPerS):inflow;
 			const ConservativeVector& donor = scalarInflow ? boundary.ambientState : interior;
 			for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
 				result.totalOutwardFlux[component] = outwardVelocityMPerS*donor[component];
@@ -2136,6 +2142,18 @@ namespace RISE
 				return firstDiscrepancy<secondDiscrepancy;
 			return FlattenOpenActiveSet3D(first.inflow)<
 				FlattenOpenActiveSet3D(second.inflow);
+		}
+
+		inline std::size_t OpenActiveSetCanonicalHistoryIndex3D(
+			const std::vector<double>& discrepancy,
+			const std::vector<std::vector<unsigned char> >& bits,
+			const std::size_t first )
+		{
+			std::size_t selected=first;
+			for(std::size_t i=first+1u;i<bits.size();++i)if(
+				discrepancy[i]<discrepancy[selected]||
+				(discrepancy[i]==discrepancy[selected]&&bits[i]<bits[selected]))selected=i;
+			return selected;
 		}
 
 		struct OpenBoundaryFluxField3D
@@ -3456,11 +3474,8 @@ namespace RISE
 				if(repeated!=activeHistory.end()) {
 					const std::size_t cycleFirst=static_cast<std::size_t>(repeated-
 						activeHistory.begin());
-					std::size_t selected=cycleFirst;
-					for(std::size_t i=cycleFirst+1u;i<activeHistory.size();++i)if(
-						activeDiscrepancyHistory[i]<activeDiscrepancyHistory[selected]||
-						(activeDiscrepancyHistory[i]==activeDiscrepancyHistory[selected]&&
-						activeHistory[i]<activeHistory[selected]))selected=i;
+					const std::size_t selected=OpenActiveSetCanonicalHistoryIndex3D(
+						activeDiscrepancyHistory,activeHistory,cycleFirst);
 					OpenBoundaryConfig3D frozenBoundary=boundary;
 					frozenBoundary.priorInflow=activeSetHistory[selected];
 					OpenMACProjection3DResult frozen;

@@ -1276,8 +1276,14 @@
 				if(side==4&&!boundary.bottomFuelMask.empty()&&boundary.bottomFuelMask[index])
 					kind=FuelInletBoundary3D;
 				if(kind==FuelInletBoundary3D) return boundary.injectedState;
-				if(kind==PressureOpenBoundary3D&&projection.inflow[side][index])
-					return boundary.ambientState;
+				if(kind==PressureOpenBoundary3D){
+					const std::size_t face=positive?OpenUpperFaceForCell3D(shape,cell,axis):
+						OpenLowerFaceForCell3D(shape,cell,axis);
+					const double outward=(positive?1.0:-1.0)*
+						projection.velocityMPerS.component[axis][face];
+					if(OpenScalarInflow3D(outward,projection.inflow[side][index],
+						boundary.velocityToleranceMPerS))return boundary.ambientState;
+				}
 				return state[cell];
 			};
 			PeriodicMACField periodicVelocity;
@@ -2522,16 +2528,20 @@
 					if(!acceptedOK) return false;
 					observeActiveSet(acceptedProjection);
 					const bool activeSetMismatch=acceptedProjection.inflow!=projection.inflow;
-					const bool cycleProved=!provedOuterCycle.empty()||
+					bool cycleProved=!provedOuterCycle.empty()||
 						projection.activeSetDiscontinuousClass||
 						acceptedProjection.activeSetDiscontinuousClass;
 					if(!finalStage&&activeSetMismatch&&!cycleProved){
 						// A first transition is ordinary Picard history, not a two-cycle.
-						priorInflow=acceptedProjection.inflow;
-						if(std::find(outerActiveSetHistory.begin(),outerActiveSetHistory.end(),
-							acceptedProjection.inflow)==outerActiveSetHistory.end())
+						const auto repeated=std::find(outerActiveSetHistory.begin(),
+							outerActiveSetHistory.end(),acceptedProjection.inflow);
+						if(repeated==outerActiveSetHistory.end()){
 							outerActiveSetHistory.push_back(acceptedProjection.inflow);
-						continue;
+							priorInflow=acceptedProjection.inflow;
+							continue;
+						}
+						provedOuterCycle.assign(repeated,outerActiveSetHistory.end());
+						cycleProved=true;
 					}
 					if(!finalStage&&cycleProved){
 						std::vector<std::array<std::vector<bool>,6> > branches=provedOuterCycle;
