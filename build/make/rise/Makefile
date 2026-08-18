@@ -256,6 +256,10 @@ $(PATHLIBRARY)Utilities/FireProductionAdvection.o : $(PATHLIBRARY)Utilities/Fire
 	@echo "Compiling (safe fp32): $<"
 	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
+$(PATHLIBRARY)Utilities/FireProductionProjection.o : $(PATHLIBRARY)Utilities/FireProductionProjection.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 .cpp.o:
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@

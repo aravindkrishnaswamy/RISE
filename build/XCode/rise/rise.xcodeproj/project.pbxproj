@@ -781,6 +781,8 @@
 		FA84000131FF000100000001 /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FA84000131FF000100000002 /* FireProductionAdvection.h in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000008 /* FireProductionAdvection.h */; };
 		FA84000131FF000100000003 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; };
+		FB86000131FF000100000001 /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FB86000131FF000100000002 /* FireProductionProjection.h in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000008 /* FireProductionProjection.h */; };
 		FA83000131FF000100000011 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
 		FA83000131FF000100000012 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
 		F512000131EE000100000001 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
@@ -1451,6 +1453,8 @@
 		FA84000131FF000100000004 /* FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
 		FA84000131FF000100000005 /* FireProductionAdvection.h in Headers */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000008 /* FireProductionAdvection.h */; };
 		FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */; };
+		FB86000131FF000100000003 /* FireProductionProjection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000007 /* FireProductionProjection.cpp */; settings = {COMPILER_FLAGS = "-fno-fast-math -ffp-contract=off"; }; };
+		FB86000131FF000100000004 /* FireProductionProjection.h in Headers */ = {isa = PBXBuildFile; fileRef = FB86000131FF000100000008 /* FireProductionProjection.h */; };
 		F512000131EE000100000003 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
 		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
 		F513000131EE000100000004 /* FireCase.h in Headers */ = {isa = PBXBuildFile; fileRef = F513000131EE00010000000A /* FireCase.h */; };
@@ -2672,6 +2676,8 @@
 		FA84000131FF000100000007 /* FireProductionAdvection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionAdvection.cpp; sourceTree = "<group>"; };
 		FA84000131FF000100000008 /* FireProductionAdvection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionAdvection.h; sourceTree = "<group>"; };
 		FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionAdvectionMac.mm; sourceTree = "<group>"; };
+		FB86000131FF000100000007 /* FireProductionProjection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionProjection.cpp; sourceTree = "<group>"; };
+		FB86000131FF000100000008 /* FireProductionProjection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionProjection.h; sourceTree = "<group>"; };
 		F512000131EE000100000009 /* FireSequence.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSequence.cpp; sourceTree = "<group>"; };
 		F513000131EE000100000009 /* FireCase.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireCase.cpp; sourceTree = "<group>"; };
 		F513000131EE00010000000A /* FireCase.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireCase.h; sourceTree = "<group>"; };
@@ -4159,6 +4165,8 @@
 				FA84000131FF000100000007 /* FireProductionAdvection.cpp */,
 				FA84000131FF000100000008 /* FireProductionAdvection.h */,
 				FA84000131FF000100000009 /* FireProductionAdvectionMac.mm */,
+				FB86000131FF000100000007 /* FireProductionProjection.cpp */,
+				FB86000131FF000100000008 /* FireProductionProjection.h */,
 				F512000131EE000100000009 /* FireSequence.cpp */,
 				F513000131EE000100000009 /* FireCase.cpp */,
 				F513000131EE00010000000A /* FireCase.h */,
@@ -4972,6 +4980,7 @@
 				FA83000131FF000100000006 /* FireProductionTables.h in Headers */,
 				FA83000131FF000100000007 /* FireProductionCompute.h in Headers */,
 				FA84000131FF000100000005 /* FireProductionAdvection.h in Headers */,
+				FB86000131FF000100000004 /* FireProductionProjection.h in Headers */,
 				F512000131EE000100000004 /* FireSequence.h in Headers */,
 				F513000131EE000100000004 /* FireCase.h in Headers */,
 				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
@@ -5509,6 +5518,7 @@
 				FA83000131FF000100000005 /* FireProductionTables.cpp in Sources */,
 				FA83000131FF000100000008 /* FireProductionComputeMac.mm in Sources */,
 				FA84000131FF000100000004 /* FireProductionAdvection.cpp in Sources */,
+				FB86000131FF000100000003 /* FireProductionProjection.cpp in Sources */,
 				FA84000131FF000100000006 /* FireProductionAdvectionMac.mm in Sources */,
 				F512000131EE000100000003 /* FireSequence.cpp in Sources */,
 				F513000131EE000100000003 /* FireCase.cpp in Sources */,
@@ -6435,6 +6445,8 @@
 				FA84000131FF000100000001 /* FireProductionAdvection.cpp in Sources */,
 				FA84000131FF000100000002 /* FireProductionAdvection.h in Sources */,
 				FA84000131FF000100000003 /* FireProductionAdvectionMac.mm in Sources */,
+				FB86000131FF000100000001 /* FireProductionProjection.cpp in Sources */,
+				FB86000131FF000100000002 /* FireProductionProjection.h in Sources */,
 				F512000131EE000100000001 /* FireSequence.cpp in Sources */,
 				F513000131EE000100000001 /* FireCase.cpp in Sources */,
 				F512000131EE000100000002 /* FireSequence.h in Sources */,

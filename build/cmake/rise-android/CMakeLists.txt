@@ -126,6 +126,10 @@ set_source_files_properties(
     "${RISE_LIB}/Utilities/FireProductionAdvection.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
+set_source_files_properties(
+    "${RISE_LIB}/Utilities/FireProductionProjection.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
 
 # Link rise against vendored libpng + zlib so PNG reader/writer resolve.
 target_link_libraries(rise PUBLIC png_local z_local)

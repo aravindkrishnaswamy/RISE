@@ -83,6 +83,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/FireSimulationRecords.cpp		\
 	$(PATHLIBRARY)Utilities/FireProductionTables.cpp		\
 	$(PATHLIBRARY)Utilities/FireProductionAdvection.cpp	\
+	$(PATHLIBRARY)Utilities/FireProductionProjection.cpp	\
 	$(PATHLIBRARY)Utilities/FireCase.cpp			\
 	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
