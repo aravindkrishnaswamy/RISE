@@ -489,13 +489,11 @@ standard_object
 - The GUI transform panel shows and edits these LOCAL values.  The gizmo still
   drags in world space.
 
-One asymmetry to know about if you mix `parent` with `instance_array`: the
-generator expands AFTER every ordinary object, wherever its chunk sits in the
-file, so a generated instance may name a parent declared textually after the
-generator — while an ordinary object can never name a generated `name[i,j]`
-instance, because no instance exists yet when ordinary objects are applied.
-Composition is correct either way (the tree is walked after both passes) and
-cycles are still refused.
+An object may also name a SYNTHESIZED entry as its `parent` — `name[i,j]` from
+a counted `source`, or `I.X` from a copied subtree — as long as the instancing
+chunk that mints it is declared earlier, the same rule every other reference
+lives under.  Composition is correct either way (the tree is walked after the
+whole document is applied) and cycles are still refused.
 
 Worked example: `scenes/Tests/Geometry/object_parenting.RISEscene`.
 
@@ -543,9 +541,6 @@ Things worth knowing:
   applied to the live object by name after its base chunk, so a copy built from
   that base chunk would carry the un-overridden pose.  Fold it into the base
   chunk.
-- **An `instance_array` parented into the subtree is refused** for the mirror
-  reason: generators expand last and their `parent` names the original node, so
-  their objects would stay behind.
 - **Animation does not follow an instance.**  A `timeline` on the source moves
   the source only — an instance is a copy, not a live view.  Give each instance
   its own timeline, or animate a container the instances are parented to.
@@ -588,7 +583,7 @@ orientation 0 expr(u * 15) 0
 - **Per-instance expressions.**  Every OTHER parameter on the instancing chunk
   may use per-component `expr(...)` over four variables: `i` and `j` (the
   indices) and `u` and `v` (the same, normalized into `[0,1]`; `0` when that
-  count is 1).  This is the same expression scope `instance_array` has.
+  count is 1).
 - **The counts vary THIS chunk only.**  A member of the copied subtree is not
   per-instance variable — its parameters are the same in every repetition.
 - **Refused, each with its own message:** counts without a `source`; `count_v`

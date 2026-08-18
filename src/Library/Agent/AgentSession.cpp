@@ -2866,7 +2866,7 @@ namespace RISE
 				}
 				else {
 					// Any other apply-time message (unresolved reference, a
-					// scene_variant / let / instance_array error, ...) is kept
+					// scene_variant / let / source-expansion error, ...) is kept
 					// verbatim under the generic DERIVE_ERROR code.
 					d.code = AgentDiagnosticCode::DERIVE_ERROR;
 				}
@@ -11517,9 +11517,10 @@ namespace RISE
 		//! contract.  Four distinguishable failures, each with its own
 		//! actionable text:
 		//!   * no object manager at all (no scene loaded);
-		//!   * the name is a GENERATOR PREFIX -- the scene has "<name>[i,j]"
-		//!     instances but no object literally called "<name>" (the
-		//!     instance_array case objectmap's legend already warns about);
+		//!   * the name is an INSTANCING-CHUNK name -- the scene has
+		//!     "<name>[i,j]" repetitions but no object literally called
+		//!     "<name>" (the counted-`source` case objectmap's legend already
+		//!     warns about);
 		//!   * the name resolves to an object that is NOT independently
 		//!     renderable (a CSGObject operand, world-invisible by
 		//!     construction) -- name the SPECIFIC composite that consumes it
@@ -11587,8 +11588,9 @@ namespace RISE
 			// 87 step 3: asked of the manager's PROVENANCE map, not of the spelling of
 			// the names.  The old form probed for `name` followed by a literal `[`,
 			// which hard-coded one expansion's naming scheme into a caller that has no
-			// business knowing it -- it answered for `instance_array` and would have
-			// silently answered "not a generator" for every other expansion.  The
+			// business knowing it -- it answered for the `instance_array` generator 87
+			// step 3d deleted, and would have silently answered "not a generator" for
+			// every other expansion.  The
 			// provenance lookup asks the real question ("which entries did this chunk
 			// produce?") and stays right whatever the entries end up being called.
 			const std::vector<std::string> names = CollectObjectNames( objMgr );
@@ -11954,7 +11956,7 @@ namespace RISE
 		//! Compile + evaluate one expr BODY over the numeric `lets` + PI/E
 		//! (added after the lets, matching Cst.cpp's EvalExprBody so a let
 		//! cannot shadow them either).  u/v are bound to 0 -- a scene-level
-		//! expr (unlike an instance_array component) has no per-instance
+		//! expr (unlike an instancing chunk's component) has no per-instance
 		//! coordinate.  Returns false (never a silent 0) on a compile error or
 		//! a non-finite result.
 		bool LocalEvalExprBody( const std::string& body, const LocalLetBindings& lets, double& outVal )
@@ -20285,10 +20287,10 @@ namespace RISE
 				// The object's world bounding box -- the "where is it, then?"
 				// for anything that covered nothing, and the input to the
 				// analytic classification.  F9(c) fix (2026-08-14): a
-				// generator-synthesized instance name (e.g. "grid[0,1]" from
-				// an instance_array) DOES resolve to a real manager item --
-				// ExpandInstanceArray (Cst.cpp) synthesizes an actual
-				// standard_object under that exact "name[i,j]" name and
+				// synthesized instance name (e.g. "grid[0,1]" from a `source`
+				// chunk carrying count_u / count_v) DOES resolve to a real
+				// manager item -- ExpandSourceInstance (Cst.cpp) synthesizes an
+				// actual standard_object under that exact "name[i,j]" name and
 				// Finalize's it into the ObjectManager, it is not a
 				// display-only legend label.  A legend name that does NOT
 				// resolve here is some other, rarer case (this branch stays

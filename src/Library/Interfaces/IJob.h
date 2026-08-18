@@ -3366,7 +3366,7 @@ namespace RISE
 			const unsigned int seed									///< [in] hash seed (distinct fleck fields on otherwise identical objects)
 			) = 0;
 		//! P5 Slice 3 (edit-model pivot): apply ONE param-value edit to the retained CST Document, then re-derive
-		//! (incrementally for the common case; a FULL document re-derive for variant / animated / instance_array
+		//! (incrementally for the common case; a FULL document re-derive for variant / animated / source-instance
 		//! scenes).  `entityName` = the chunk's bare name (unique-or-refuse); `entityKind` = a keyword-suffix that
 		//! disambiguates a cross-category name clash -- reliable ONLY for materials today ("material"; every
 		//! material keyword is "material" or ends in "_material").  geometry/light/camera keywords have exceptions

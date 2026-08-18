@@ -497,11 +497,11 @@
 //                                            box-downscale blends identity colours
 //                                            and breaks legend matching.  `legend`
 //                                            is present ONLY for an objectmap
-//                                            render.  A generator-synthesized legend
-//                                            name (e.g. "grid[0,1]" from an
-//                                            instance_array) identifies the instance
+//                                            render.  A synthesized legend name (e.g.
+//                                            "grid[0,1]" from a `source` chunk with
+//                                            count_u / count_v) identifies the instance
 //                                            in the map but is NOT a CST chunk -- to
-//                                            EDIT it, target the GENERATOR chunk
+//                                            EDIT it, target the INSTANCING chunk
 //                                            (strip the "[i,j]" suffix: "grid"), not
 //                                            the instance name.
 //                                           (GUI render modes P1 (docs/gui/

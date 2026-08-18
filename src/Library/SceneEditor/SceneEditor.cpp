@@ -3413,9 +3413,9 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 							// and where it lands.  Keyed on the provenance row's SOURCE field,
 							// NOT on `instancingChunk != objectName`: in the collapse case the
 							// row is `I -> (I, S)`, so that test is false by construction and
-							// the branch above cannot fire here.  (An `instance_array` entry is
-							// `g[i,j] -> (g, "")`, so it takes the branch above on the name and
-							// would be excluded here anyway by its EMPTY source field.)
+							// the branch above cannot fire here.  (Every other provenance row --
+							// a subtree clone `I.X`, a repetition `I[i,j]` -- has
+							// `instancingChunk != objectName` and so takes the branch above.)
 							why = std::string( "its `source` names `" ) + sourceNode
 							    + "`, which resolves to a csg_object -- that chunk type has no `scale` param, so "
 							      "only translate/rotate are committable on this instance";

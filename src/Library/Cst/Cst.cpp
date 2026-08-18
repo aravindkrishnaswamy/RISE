@@ -1020,7 +1020,6 @@ Document ParseToCst( const std::string& bytes )
 		d.byId = IdMapSet( d.byId, id, items[k], label );
 		std::string np = ChunkNamePath( items[k] );
 		if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
-		if( items[k]->kind == NodeKind::Chunk && items[k]->role == "instance_array" ) ++d.instanceArrayCount;   // P1-A: the O(1) incremental-refuse signal
 	}
 	d.idseq  = IdBuild( ids, labels, 0, (int)ids.size() );
 	d.nextId = (NodeId)items.size() + 1;
@@ -1112,7 +1111,7 @@ static bool IsExprValue( const std::string& value, std::string& body )
 //! set (a compile error, or a non-finite result -- rejected by a compiler-opaque scan of the %.17g
 //! string -- this derive path formats r to %.17g anyway, so the byte scan is the free check here;
 //! ExpressionProgram::IsFinite is now volatile-hardened and is the equivalent hot-path guard).  u/v are the evaluator's query coordinates --
-//! bound to the instance_array i/j-derived u,v (slice 4); a let / scene expr passes u=v=0 (a constant).
+//! bound to an instancing chunk's i/j-derived u,v (87 step 3c); a let / scene expr passes u=v=0 (a constant).
 //!
 //! THE NON-FINITE GUARD DOES NOT COVER DIVISION OR MODULO BY ZERO, and reading it as "an expr
 //! is protected against a bad divisor" is wrong.  `ExpressionEval.h`'s `kDiv` / `kMod` return
@@ -1130,7 +1129,7 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 	b.AddParam( "PI", (Scalar)3.14159265358979323846 );
 	b.AddParam( "E",  (Scalar)2.71828182845904523536 );
 	if( !b.Finalize( body, prog ) || !prog.IsValid() ) { err = "failed to compile: " + prog.Error(); return false; }
-	const Scalar r = prog.Eval( (Scalar)u, (Scalar)v );   // u/v = the query coordinates (instance vars for instance_array; 0 for a constant expr)
+	const Scalar r = prog.Eval( (Scalar)u, (Scalar)v );   // u/v = the query coordinates (instance vars for a counted `source`; 0 for a constant expr)
 	char buf[64];
 	// %.17g round-trips the double EXACTLY (C-locale '.' decimal, shared with the sscanf("%lf")/strtod
 	// parse-back path).  A finite %.17g is only [0-9.eE+-]; an 'n'(an)/'i'(nf) char marks nan/inf.
@@ -1174,7 +1173,7 @@ static std::vector<std::string> SplitComponents( const std::string& value )
 	return out;
 }
 
-//! #5 slice 4: evaluate a multi-component instance_array param VALUE for ONE instance (i,j indices +
+//! Evaluate a multi-component instancing-chunk param VALUE for ONE instance (i,j indices +
 //! u,v in [0,1] in scope) -- each component is an `expr(...)` (evaluated) or a literal (kept verbatim);
 //! the components are re-joined single-spaced.  i/j are passed as numeric bindings; u/v via the
 //! evaluator's query coordinates (they are pre-registered slots, so they CANNOT be AddParam'd).
@@ -1213,10 +1212,8 @@ struct InstanceVars
 
 //! Validate ONE count (`count_u` / `count_v`) for a repetition generator.
 //!
-//! MOVED HERE VERBATIM from `ExpandInstanceArray`'s `evalCount` lambda so `instance_array`
-//! and 87 step 3c's `source` counts share one implementation rather than two that drift.
-//! ONLY the diagnostic PREFIX is parameterised (`who`), which is what keeps the
-//! `instance_array` messages byte-identical to what they were.
+//! The diagnostic PREFIX is parameterised (`who`) so one implementation can serve every
+//! caller; 87 step 3d left `source` counts as the only one.
 //!
 //! THE ARITHMETIC ENCODES TWO PRIOR P1 FIXES AND MUST NOT BE "CLEANED UP":
 //!   * the `(long long)` round-trip rejects a FRACTIONAL count (P1-B) -- silently rounding
@@ -1318,14 +1315,13 @@ static bool TryEvalExprValue( const std::string& value, std::string& outLit,
 //! `iv` (87 step 3c) is the per-instance context: NON-NULL for a repetition of an
 //! instancing chunk, in which case EVERY value is evaluated PER COMPONENT through
 //! `EvalInstanceValue` (so `position expr(i*2) 0 0` is three components, one of them an
-//! expr, exactly as `instance_array` reads it) with i/j/u/v in scope.  NULL keeps the
+//! expr) with i/j/u/v in scope.  NULL keeps the
 //! whole-value-only handling every other chunk has always had, and is byte-identical to
 //! it for a value with no `expr(` in it: `EvalInstanceValue` re-joins the components
 //! single-spaced, which is what the token loop below already produced.
 //!
 //! Returns false ONLY when `iv` is non-null and a per-instance eval failed (the caller
-//! must then stop -- `instance_array` does the same, and a partial expansion is worse
-//! than none).  A whole-value expr failure under `iv == 0` keeps the legacy shape:
+//! must then stop -- a partial expansion is worse than none).  A whole-value expr failure under `iv == 0` keeps the legacy shape:
 //! diagnosed, value left verbatim, refuse-all upstream.
 static bool ChunkParamPairs( const NodeRef& c, const LetBindings& lets,
                              std::vector<std::string>& diags,
@@ -1415,9 +1411,9 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 
 //! 87 step 3b: the DOCUMENT-WIDE cap on SYNTHESIZED OBJECT ENTRIES -- every object an
 //! expansion creates that no chunk of its own name declares, summed over every
-//! `source` chunk and every `instance_array` generator in the document.
+//! `source` chunk in the document.
 //!
-//! ENTRIES, not instances, and that is the whole point of the number.  A generator's
+//! ENTRIES, not instances, and that is the whole point of the number.  A chunk's
 //! own `count_u * count_v <= 10,000,000` bounds how many times IT repeats, which was
 //! an adequate proxy while every repetition was exactly one flat object.  A subtree
 //! instance produces `count x subtree size` entries, so the per-generator cap stops
@@ -1425,111 +1421,6 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 //! every per-frame walk.  Same magnitude as the per-generator cap it subsumes, so no
 //! scene that derives today can hit it.
 static const long long kMaxSynthesizedEntries = 10000000LL;
-
-//! 87 step 3c: the repetition-root entry name, `<name>[i,j]`.  Forward-declared because
-//! `ExpandInstanceArray` (below) and the `source` expansion (far below) must spell a
-//! generated name IDENTICALLY -- they used to hold two copies of one snprintf, and the
-//! copies were free to drift (they did: only one of them truncated safely).  Defined with
-//! the rest of the 87 step 3c helpers.
-static std::string InstanceBaseName( const std::string& instName, bool counted, int i, int j );
-
-//! #5 slice 4: expand an `instance_array` generator (§2.6.1) into N standard_objects.  The generator
-//! is NOT an engine entity -- the CST stores it; DeriveToJob expands it here (the canonical derive)
-//! AFTER the normal entities so the template geometry + referenced materials exist.  Params: name +
-//! template (-> the object's geometry) + count_u (+ optional count_v, default 1); EVERY OTHER param
-//! (material / position / orientation / scale / ...) is passed through to each object with PER-COMPONENT
-//! expr eval (instance vars: i,j indices; u=i/(count_u-1), v=j/(count_v-1) in [0,1]).  Each object is
-//! named `name[i,j]`.  Errors are apply-time (a partial apply, like DeriveToJob's other Finalize
-//! failures); the editor's incremental re-expansion + the generated objects' reference-graph tracing are
-//! deferred (Facet-2).  Because the static graph SKIPS instance_array (not a registry chunk), editing the
-//! array's TEMPLATE geometry / a referenced MATERIAL / a painter is NOT traced to the array (the closure
-//! never includes the generator or its g[i,j] objects).  DeriveToJobIncremental therefore REFUSES globally
-//! whenever the document holds ANY instance_array -- its O(1) Document `instanceArrayCount` guard (P1-A) --
-//! so full == incremental until the generator's input edges are traced (Facet-2).
-static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, const IAsciiChunkParser* stdObj,
-                                 IJob& pJob, long long& entryBudget, std::vector<std::string>& diags, int& made )
-{
-	made = 0;
-	std::string name, templ, countU_raw, countV_raw;
-	std::vector<std::pair<std::string,std::string> > pass;   // params passed through to each generated object
-	for( const NodeRef& kid : chunk->kids ) {
-		if( kid->kind != NodeKind::Param ) continue;
-		std::string pn, pv; bool first = true;
-		for( const NodeRef& tk : kid->kids )
-			if( tk->kind == NodeKind::Token ) {
-				if( first ) { pn = tk->text; first = false; }
-				else { if( !pv.empty() ) pv += ' '; pv += tk->text; }
-			}
-		if( pn == "name" ) name = pv;
-		else if( pn == "template" ) templ = pv;
-		else if( pn == "count_u" ) countU_raw = pv;
-		else if( pn == "count_v" ) countV_raw = pv;
-		else pass.push_back( std::make_pair( pn, pv ) );
-	}
-	if( name.empty() )       { diags.push_back( "instance_array: needs a `name`" ); return false; }
-	if( templ.empty() )      { diags.push_back( "instance_array '" + name + "': needs a `template` geometry" ); return false; }
-	if( countU_raw.empty() ) { diags.push_back( "instance_array '" + name + "': needs `count_u`" ); return false; }
-	// The count validator is SHARED with 87 step 3c's `source` counts -- see EvalInstanceCount,
-	// which is this generator's own arithmetic moved out verbatim, prior P1 fixes and all.
-	const std::string who = "instance_array '" + name + "'";
-	// BOTH are evaluated even when the first fails, so a scene with two bad counts reports
-	// two diagnostics -- the shape the lambda this replaced had.
-	int countU = 0, countV = 1;
-	bool countOk = EvalInstanceCount( countU_raw, lets, who, "count_u", diags, countU );
-	if( !countV_raw.empty() && !EvalInstanceCount( countV_raw, lets, who, "count_v", diags, countV ) ) countOk = false;
-	if( !countOk ) return false;
-	if( (long long)countU * (long long)countV > 10000000LL ) { diags.push_back( "instance_array '" + name + "': count_u*count_v exceeds 10,000,000 instances" ); return false; }
-	// 87 step 3b: the generator's own cap above bounds THIS generator; the shared
-	// budget bounds the DOCUMENT.  Both apply -- see kMaxSynthesizedEntries for why
-	// entries, and not per-generator instance counts, are the number that matters.
-	if( (long long)countU * (long long)countV > entryBudget ) {
-		diags.push_back( "instance_array '" + name + "': the document has room for only " + std::to_string( entryBudget )
-			+ " more synthesized objects (of " + std::to_string( kMaxSynthesizedEntries ) + " document-wide)" );
-		return false;
-	}
-	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );          // collision pre-check: emit a generator-localized diagnostic
-	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;     // (names the exact generated index that clashes) BEFORE building
-	                                                            // the synthesized object.  Job::AddObject now also rejects a
-	                                                            // duplicate name (honors AddItem's bool), so this is the clearer
-	                                                            // early diagnostic, no longer the sole guard against a silent first-win.
-	for( int j = 0; j < countV; ++j ) {
-		for( int i = 0; i < countU; ++i ) {
-			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
-			const double v = ( countV > 1 ) ? (double)j / (double)( countV - 1 ) : 0.0;
-			IAsciiChunkParser::ParamsList plist;
-			// The SAME spelling `source`'s counted form uses, and now literally the same
-			// function: this generator had its own `char[256]` snprintf copy, which
-			// TRUNCATED a long template name and collapsed two repetitions onto one
-			// generated name (see InstanceBaseName).  Retired by 3d, fixed here anyway so
-			// the two do not disagree while both exist.
-			const std::string nm = InstanceBaseName( name, /*counted*/true, i, j );
-			if( objMgr && objMgr->GetItem( nm.c_str() ) ) { diags.push_back( "instance_array '" + name + "': generated object '" + nm + "' collides with an existing object" ); return false; }
-			plist.push_back( String( ( std::string( "name " ) + nm ).c_str() ) );
-			plist.push_back( String( ( std::string( "geometry " ) + templ ).c_str() ) );
-			bool ok = true;
-			for( const std::pair<std::string,std::string>& op : pass ) {
-				std::string ev, e;
-				if( !EvalInstanceValue( op.second, lets, i, j, u, v, ev, e ) ) {
-					char where[64]; std::snprintf( where, sizeof(where), "[%d,%d]", i, j );
-					diags.push_back( "instance_array '" + name + "' " + where + ": " + op.first + " " + e ); ok = false; break;
-				}
-				plist.push_back( String( ( op.first + " " + ev ).c_str() ) );
-			}
-			if( !ok ) return false;
-			ParseStateBag bag( &stdObj->Describe() );
-			if( !DispatchChunkParameters( stdObj->Describe(), bag, plist ) ) { diags.push_back( "instance_array '" + name + "': a synthesized standard_object has invalid params (see log)" ); return false; }
-			if( !stdObj->Finalize( bag, pJob ) ) { diags.push_back( "instance_array '" + name + "': object Finalize failed (template geometry / a referenced material missing?)" ); return false; }
-			// 87 step 3: `g[i,j]` is a SYNTHESIZED name -- record where it came from, so
-			// consumers map it back to the generator by a MAP LOOKUP instead of probing
-			// the spelling of the name for a `[`.  No source NODE: this generator's
-			// template is a GEOMETRY, so the second field is empty.
-			if( objMgr ) objMgr->SetObjectProvenance( nm.c_str(), name.c_str(), "" );
-			++made;
-			--entryBudget;
-		}
-	}
-	return true;
-}
 
 //! 87 step 3a: the parameters that say WHERE a node is and WHAT IT IS CALLED,
 //! as opposed to what it IS.  These are NEVER inherited through `source`.
@@ -1564,11 +1455,10 @@ static bool ChunkCarriesCounts( const Node* c )
 }
 
 //! 87 step 3c: the ENTRY name of ONE repetition's root -- `I` when the chunk carries no
-//! counts, `I[i,j]` when it does.  `<name>[i,j]` is `ExpandInstanceArray`'s own spelling,
-//! and that generator now CALLS this function rather than holding a second copy of it -- so
-//! an objectmap legend, a saved isolate name or a `parent` line written against an
-//! `instance_array` grid means the same thing after 3d retires it, by construction rather
-//! than by two implementations agreeing.
+//! counts, `I[i,j]` when it does.  `<name>[i,j]` is the spelling the retired
+//! `instance_array` generator used, kept deliberately so an objectmap legend, a saved
+//! isolate name or a `parent` line written against one of its grids means the same thing
+//! now that 87 step 3d has replaced it with a counted `source`.
 //!
 //! BUILT WITH `std::string`, NOT A FIXED BUFFER, AND THAT IS LOAD-BEARING.  A chunk name
 //! is unbounded, and the collision scan's whole argument rests on this function being
@@ -1640,12 +1530,6 @@ struct ObjectChunkIndex
 	//! `standard_object`'s matrix-wins precedence in a merged param list), so 3b
 	//! refuses instead of approximating.
 	std::map<std::string, std::size_t> overriddenNames;
-	//! parent-name -> item indices of `instance_array` GENERATORS naming it as
-	//! their `parent`.  Generators expand in a trailing pass, AFTER every `source`
-	//! chunk, so their entries cannot be walked as subtree members -- and their
-	//! `parent` names the ORIGINAL node, so they would attach to the source and not
-	//! to any clone.  3b refuses rather than silently dropping them from the copy.
-	std::map<std::string, std::vector<std::size_t> > generatorChildrenOf;
 };
 
 static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChunkIndex& out )
@@ -1656,11 +1540,6 @@ static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChun
 		if( c->role == "override_object" ) {
 			std::string nm;
 			if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) out.overriddenNames.insert( std::make_pair( nm, i ) );
-			continue;
-		}
-		if( c->role == "instance_array" ) {
-			std::string pr;
-			if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.generatorChildrenOf[ pr ].push_back( i );
 			continue;
 		}
 		if( !RoleDeclaresGraphObject( c->role ) ) continue;
@@ -1715,10 +1594,9 @@ static unsigned int ChunkOrdinal( const std::vector<NodeRef>& items, std::size_t
 //! name belongs to a counted chunk.  The document scan can, and it also names the working
 //! spelling -- `parent I[0,0]` is the intended idiom, not an error at all.
 //!
-//! Scanned over EVERY chunk role, not just the graph-object ones: `instance_array`'s own
-//! `parent` reaches the identical dead end (it would refuse with "object Finalize failed
-//! (template geometry / a referenced material missing?)"), and a `source` chunk's `parent`
-//! is the same line on the same role.
+//! Scanned over EVERY chunk role, not just the graph-object ones: any role that declares a
+//! `parent` reaches the identical dead end, and a `source` chunk's `parent` is the same line
+//! on the same role.
 //!
 //! `byName` is the right keyspace: only `standard_object` may carry counts (the parser
 //! refuses counts without a `source`), and `byName` holds exactly the `standard_object` /
@@ -1794,8 +1672,8 @@ static bool SourceChainOf( const std::vector<NodeRef>& items, const ObjectChunkI
 //! the expansion consumes.
 //!
 //! `iv` (87 step 3c) applies PER-INSTANCE EXPRESSIONS -- and it applies to THIS CHUNK'S
-//! OWN PARAMS ONLY, never to the inherited chain.  That is the same scope
-//! `instance_array` has always had: `i`/`j`/`u`/`v` vary the parameters of the chunk
+//! OWN PARAMS ONLY, never to the inherited chain.  That is the same scope the retired
+//! `instance_array` generator had: `i`/`j`/`u`/`v` vary the parameters of the chunk
 //! that carries the counts, and a DESCENDANT's parameters are not per-instance
 //! variable.  (Nor could they be by accident: a subtree member is an ordinary
 //! `standard_object`, and PASS-1 rejects `position expr(i) 0 0` on one because a
@@ -2118,21 +1996,6 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 		for( std::size_t k = 0; k < kids->second.size(); ++k )
 			if( !ClonedEntry( kids->second[k], ctxParts, parentRel, depth + 1 ) ) return false;
 	}
-	// An `instance_array` generator parented into the subtree would be dropped from
-	// the copy: generators expand in a trailing pass, after every `source` chunk, and
-	// their `parent` names the ORIGINAL node.  Refuse rather than copy a subtree that
-	// silently lacks part of what the author put in it.
-	const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( srcOwnName );
-	if( gen != index.generatorChildrenOf.end() && !gen->second.empty() ) {
-		std::string genName;
-		ParamValue( items[ gen->second.front() ].get(), "name", genName );
-		diags.push_back( who + ": the source subtree contains the `instance_array` generator `" + genName
-			+ "` (it names `" + srcOwnName + "` as its `parent`).  A generator expands in a trailing pass, after "
-			"every `source` chunk, and its `parent` names the ORIGINAL node -- so its objects would stay attached "
-			"to the source and the copy would silently be missing them.  Author the repetition with `source` "
-			"instead, or move the generator out of the subtree." );
-		return false;
-	}
 	// `path` IS A PATH, NOT A VISITED-SET, and this line is the whole difference.  Deleting
 	// it turns the revisit guard above from "this chunk is on the path from the instancing
 	// node to here" -- a real cycle -- into "this chunk was reached at some point during
@@ -2302,38 +2165,6 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 			if( !ClonedEntry( kidsFound[k].first, kidCtx, srcEntryName, depth + 1 ) ) return false;
 		}
 	}
-	// The `instance_array` refusal, over the same key set -- and, like the override lookup
-	// above and UNLIKE the child walk between them, ONLY `keys[0]` IS REACHABLE TODAY.
-	// The rest of the loop is defensive, and the argument is the override site's, verbatim:
-	// a key at `ki > 0` is `JoinFrom(ctxParts, ki) + ownName`, which is `keys[0]` of the
-	// expansion rooted at the instancing chunk `ctxParts[ki-1]` -- and that chunk is
-	// necessarily EARLIER in the document (a `source` must name something declared above),
-	// so PASS-2 refuses there and `break`s before this deeper copy is ever planned.
-	//
-	// WHAT THIS COMMENT USED TO SAY, and why it was wrong: that the union "has to" be read
-	// because a generator written `parent I1.B` would otherwise be invisible here.  It
-	// would not -- `I1.B` IS `keys[0]` of the depth-2 expansion that catches it, so the
-	// example argued for the union while actually demonstrating `keys[0]`.  Narrowing this
-	// loop to `keys[0]` alone leaves CstSourceInstanceTest fully green (verified 327/0 at
-	// the round-3 count, 316/0 before it), and instrumentation confirms every generator
-	// refusal in the file fires at index 0.  Recorded rather than
-	// acted on for the same reason the override lookup keeps its own dead tail: the proof
-	// rests on "PASS-2 stops at the FIRST refusal", and a future diagnostic pass that
-	// collected every refusal instead would make these keys live.  The CHILD walk above is
-	// the one that genuinely needs the union at every index, and it has its own depth-3
-	// regression guard -- see `ChildKeysOf`.
-	for( std::size_t ki = 0; ki < keys.size(); ++ki ) {
-		const std::map<std::string, std::vector<std::size_t> >::const_iterator gen = index.generatorChildrenOf.find( keys[ki].first );
-		if( gen == index.generatorChildrenOf.end() || gen->second.empty() ) continue;
-		std::string genName;
-		ParamValue( items[ gen->second.front() ].get(), "name", genName );
-		diags.push_back( who + ": the source subtree contains the `instance_array` generator `" + genName
-			+ "` (it names `" + keys[ki].first + "` as its `parent`).  A generator expands in a trailing pass, after "
-			"every `source` chunk, and its `parent` names the ORIGINAL node -- so its objects would stay attached "
-			"to the source and the copy would silently be missing them.  Author the repetition with `source` "
-			"instead, or move the generator out of the subtree." );
-		return false;
-	}
 	// THE POP that matches the revisit guard's push, and the guard is only a cycle test
 	// because of it -- see the twin at `SourceSubtree`'s tail.  The shape this one admits
 	// is a DIAMOND: `B parent A`, `D parent B`, `C parent A source B`, then `I source A`.
@@ -2355,8 +2186,8 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 //! transitive `parent`-descendant `X` of `S` becomes one further entry `I.X`,
 //! parented to the clone of `X`'s parent (`I` for S's direct children).
 //!
-//! WHERE THIS RUNS, AND WHY THAT IS THE DESIGN.  Not as a trailing post-pass
-//! like ExpandInstanceArray, and not inside the parser's Finalize, but at the
+//! WHERE THIS RUNS, AND WHY THAT IS THE DESIGN.  Not as a trailing post-pass,
+//! and not inside the parser's Finalize, but at the
 //! instancing chunk's OWN POSITION in DeriveToJob's PASS-2 loop, inside the
 //! window where the D35 reference sinks are armed.  Three properties follow from
 //! that placement and from nowhere else:
@@ -2385,9 +2216,9 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 //! would freeze every per-instance expression at instance zero.  3a authors no
 //! per-instance exprs -- but 3c does, and it inherits this code path.
 //!
-//! `entryBudget` is the DOCUMENT-WIDE remaining synthesized-entry allowance, shared
-//! with the `instance_array` generator.  Entries, not instances, are what the cap has
-//! to count: a subtree instance produces `count x subtreeSize` of them, and it is the
+//! `entryBudget` is the DOCUMENT-WIDE remaining synthesized-entry allowance, and since
+//! 87 step 3d this function is its ONLY writer.  Entries, not instances, are what the cap
+//! has to count: a subtree instance produces `count x subtreeSize` of them, and it is the
 //! entry count that reaches the TLAS, the luminary list and every per-frame walk.
 static bool ExpandSourceInstance(
 	const std::vector<NodeRef>& items,
@@ -2548,11 +2379,11 @@ static bool ExpandSourceInstance(
 	// not `I` -- because the value may be an `expr(...)` of a `let`, and a naming scheme
 	// that flipped when a constant went from 2 to 1 would silently dangle every `parent
 	// I[0,0]` in the file.  It also keeps the entry names byte-compatible with the
-	// `instance_array` generator this replaces, which names its single-instance case
-	// `g[0,0]` for the same reason.
+	// `instance_array` generator this replaced (87 step 3d), which named its
+	// single-instance case `g[0,0]` for the same reason.
 	//
-	// A count of ZERO is legal and produces NO entries, exactly as `instance_array`'s
-	// shared validator has always allowed.
+	// A count of ZERO is legal and produces NO entries, exactly as the shared validator
+	// has always allowed.
 	std::string countU_raw, countV_raw;
 	const bool hasCountU = ParamValue( inst.get(), "count_u", countU_raw ) && !countU_raw.empty();
 	const bool hasCountV = ParamValue( inst.get(), "count_v", countV_raw ) && !countV_raw.empty();
@@ -2565,8 +2396,9 @@ static bool ExpandSourceInstance(
 	}
 	int countU = 1, countV = 1;
 	if( counted ) {
-		// The SHARED validator -- `instance_array`'s own, moved out verbatim.  Both counts
-		// are evaluated even when the first fails, so two bad counts report twice.
+		// The shared validator (`instance_array`'s own before 87 step 3d retired it, moved
+		// out verbatim).  Both counts are evaluated even when the first fails, so two bad
+		// counts report twice.
 		bool countOk = EvalInstanceCount( countU_raw, lets, who, "count_u", diags, countU );
 		if( hasCountV && !EvalInstanceCount( countV_raw, lets, who, "count_v", diags, countV ) ) countOk = false;
 		if( !countOk ) return false;
@@ -2600,7 +2432,7 @@ static bool ExpandSourceInstance(
 	// repeats.  No overflow: EvalInstanceCount clamps each count to 1e6, so the product
 	// is at most 1e12, and `perInstance` is bounded by the document's chunk count.
 	//
-	// The per-count 1e6 clamp is `instance_array`'s and is kept deliberately (it comes
+	// The per-count 1e6 clamp came from `instance_array` and is kept deliberately (it comes
 	// with the shared validator): without it a `count_u 1e12` on a subtree whose plan is
 	// EMPTY-but-for-the-root would be refused only by this budget line, and the refusal
 	// would be the only thing between the author and a 1e12-iteration loop.  There is no
@@ -2640,7 +2472,7 @@ static bool ExpandSourceInstance(
 	// (1) MANAGER-level.  AddItem already rejects a duplicate and Job::AddObject
 	//     honours its bool, but that diagnostic names neither the instancing chunk
 	//     nor which synthesized entry clashed.  Pre-check for the chunk-localized
-	//     message, exactly as ExpandInstanceArray does.
+	//     message.
 	// (2) DOCUMENT-level, which (1) structurally CANNOT see.  An authored chunk
 	//     whose name equals a synthesized one makes DocFindByNameAnyRole resolve a
 	//     picked instance to the WRONG chunk -- so the editor writes an edit into a
@@ -2791,9 +2623,9 @@ static bool ExpandSourceInstance(
 	// to exist already.
 	for( int j = 0; j < countV; ++j )
 		for( int i = 0; i < countU; ++i ) {
-			// The instance variables, EXACTLY as ExpandInstanceArray defines them: u and v
-			// are the index normalized into [0,1], and a count of 1 gives 0 rather than a
-			// 0/0 NaN.
+			// The instance variables, EXACTLY as `instance_array` defined them before 87
+			// step 3d retired it: u and v are the index normalized into [0,1], and a count
+			// of 1 gives 0 rather than a 0/0 NaN.
 			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
 			const double v = ( countV > 1 ) ? (double)j / (double)( countV - 1 ) : 0.0;
 			const InstanceVars iv = { i, j, u, v };
@@ -2918,7 +2750,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
-		if( c->role == "let" || c->role == "instance_array" ) continue;   // #5 slice 3/4: CST-level (let) / generator (instance_array) -- not 1:1 engine chunks
+		if( c->role == "let" ) continue;   // #5 slice 3: CST-level, not a 1:1 engine chunk
 		// 87 step 3a: read `source` off the CST TOKEN, not the bag -- the expansion is
 		// deliberately bag-free (ExpandSourceInstance's header says why), and so is its trigger.
 		// Read BEFORE the params are resolved, because 87 step 3c makes the resolution itself
@@ -2936,7 +2768,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		// expansion ever ran.  Evaluating at (i,j,u,v) = 0 gives the descriptor a real
 		// value to check the arity and kind of, which is validation this chunk would
 		// otherwise lose entirely; the values the SCENE gets are computed per repetition
-		// in ExpandSourceInstance, from the raw tokens, exactly as `instance_array` does.
+		// in ExpandSourceInstance, from the raw tokens.
 		// The bag built here is never applied for such a chunk -- PASS-2 expands instead
 		// of calling its Finalize.
 		const InstanceVars instZero = { 0, 0, 0.0, 0.0 };
@@ -3041,9 +2873,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// failure, and half a scene is no better here than it is there.
 	if( !RefuseBareReferencesToCountedChunks( items, objIndex, diags ) ) return 0;
 
-	// 87 step 3b: ONE document-wide synthesized-entry allowance, shared by every
-	// `source` expansion AND every `instance_array` generator below.  See
-	// kMaxSynthesizedEntries for why the budget is in entries.
+	// 87 step 3b: ONE document-wide synthesized-entry allowance, spent by every
+	// `source` expansion below -- and, since 87 step 3d deleted the `instance_array`
+	// generator, by nothing else.  See kMaxSynthesizedEntries for why it is in entries.
 	long long entryBudget = kMaxSynthesizedEntries;
 
 	int count = 0;
@@ -3095,20 +2927,6 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 				? applyP->keyword + ": apply failed (e.g. unresolved reference); see log"
 				: applyP->keyword + ": " + finalizeDiag );
 		break;
-	}
-	// #5 slice 4: expand instance_array generators AFTER the normal entities (so their template
-	// geometry + referenced materials exist).  Skipped if a pending apply already failed.
-	if( diags.empty() ) {
-		std::map<std::string, const IAsciiChunkParser*>::const_iterator soi = registry.find( "standard_object" );
-		const IAsciiChunkParser* stdObj = ( soi != registry.end() ) ? soi->second : nullptr;
-		for( size_t i = 0; i < items.size(); ++i ) {
-			const NodeRef& c = items[i];
-			if( c->kind != NodeKind::Chunk || c->role != "instance_array" ) continue;
-			if( !stdObj ) { diags.push_back( "instance_array: the standard_object parser is unavailable" ); break; }
-			int made = 0;
-			if( !ExpandInstanceArray( c, lets, stdObj, pJob, entryBudget, diags, made ) ) break;
-			count += made;
-		}
 	}
 	// scene_variant: apply the active variant's camera (its material overrides were baked above).
 	// `none` is the universal no-reference sentinel (cf. `material none`) -> no camera override, NOT a
@@ -3223,19 +3041,6 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// the resolver traces String object references.
 	if( pJob.GetObjectOverrideCount() > 0 ) {
 		diags.push_back( "incremental: the Job has override_object(s) whose String target reference the static graph cannot trace; fall back to a full derive" );
-		return 0;
-	}
-
-	// instance_array guard (P1-A): the static reference graph SKIPS instance_array generators (they are
-	// not registry chunks), so editing an array's TEMPLATE geometry / a referenced MATERIAL / a painter does
-	// NOT put the generator -- or its generated g[i,j] objects -- in the edit closure.  An incremental apply
-	// would then replace the producer entity while the generated objects keep their OLD binding, diverging
-	// from a full derive's re-expansion.  Until the generator's input edges are traced (Facet-2), refuse
-	// globally whenever the document holds ANY instance_array.  O(1): a Document-level count maintained at
-	// parse / replace / insert / erase / reparse -- NOT a per-edit O(N) doc scan (which would fail the ~flat-in-N gate,
-	// exactly as the animation guard above warns).
-	if( doc.instanceArrayCount > 0 ) {
-		diags.push_back( "incremental: the document contains an instance_array generator whose template/material/painter dependencies are not yet traced; fall back to a full derive" );
 		return 0;
 	}
 
@@ -4763,8 +4568,6 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	int iv = 0; const NodeId id = IdAt( doc.idseq, index, iv );    // the persisting id
 	int v = 0;
 	Document d = doc;                                              // carry idseq / byName / byId / paramIds / nextId
-	d.instanceArrayCount += ( ( newChunk && newChunk->kind == NodeKind::Chunk && newChunk->role == "instance_array" ) ? 1 : 0 )   // P1: a whole-item replace can FLIP the role
-	                      - ( ( oldChunk && oldChunk->kind == NodeKind::Chunk && oldChunk->role == "instance_array" ) ? 1 : 0 );  // (normal <-> instance_array); a same-role value/name edit nets 0
 	d.byId  = IdMapRepoint( d.byId, id, newItem );               // reverse index -> the new node (label unchanged)
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
@@ -4808,7 +4611,6 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
 	d.nextId = src.nextId + 1;
 	AddChunkParams( d.paramIds, d.byId, id, newChunk, d.nextId );        // param occurrence ids
-	d.instanceArrayCount = doc.instanceArrayCount + ( ( newChunk && newChunk->kind == NodeKind::Chunk && newChunk->role == "instance_array" ) ? 1 : 0 );   // P1-A
 	if( visits ) *visits = v;
 	return d;
 }
@@ -4823,7 +4625,6 @@ Document DocEraseItem( const Document& doc, int index, int* visits, std::vector<
 	int iv = 0; const NodeId eid = IdAt( doc.idseq, index, iv );   // the erased item's id
 	int v = 0;
 	Document d = doc;
-	if( oldChunk && oldChunk->kind == NodeKind::Chunk && oldChunk->role == "instance_array" && d.instanceArrayCount > 0 ) --d.instanceArrayCount;   // P1-A
 	d.items  = SeqEraseAt( doc.items, index, v );                  // O(log N) WBT
 	d.idseq  = IdEraseAt( doc.idseq, index );                      // O(log N) lockstep splice
 	d.byId   = IdMapErase( d.byId, eid );                          // reverse index drops the id
@@ -5316,7 +5117,6 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	NodeId mx = pnext;                                 // nextId strictly above every live id
 	for( NodeId id : carried ) if( id + 1 > mx ) mx = id + 1;
 	d.nextId = mx;
-	d.instanceArrayCount = fresh.instanceArrayCount;   // P1-A: the reparsed items' generator count (fresh has it from ParseToCst)
 	return d;
 }
 

@@ -26,8 +26,8 @@
 //    * document byte-identity across an objectmap render.
 //    * camera-override composition: aiming at one object makes its
 //      pixelCount dominate.
-//    * instance_array -> 4 distinct <gen>[i,j] legend entries; CSG -> a
-//      single root entry.
+//    * a counted `source` -> 4 distinct <chunk>[i,j] legend entries plus the
+//      source itself (which keeps rendering); CSG -> a single root entry.
 //    * PARTICIPATING MEDIUM (2026-08-12 regression): the identity render is
 //      exact and reproducible inside a `global_medium` -- every pixel is a
 //      legend colour, each object's image count equals its shader tally, and
@@ -148,8 +148,15 @@ static const char* const kScene3 =
 	"standard_object\n{\n\tname sph_b\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
 	"standard_object\n{\n\tname sph_c\n\tgeometry geo\n\tmaterial mat\n\tposition 1.7 0 0\n}\n";
 
-// A 2x2 instance_array named `grid` -> grid[0,0], grid[1,0], grid[0,1],
-// grid[1,1] (the `%s[%d,%d]` synthesized-name format from Cst.cpp).
+// A 2x2 counted `source` named `grid` -> grid[0,0], grid[1,0], grid[0,1],
+// grid[1,1] (Cst.cpp's `InstanceBaseName` `<name>[i,j]` spelling, unchanged
+// from the `instance_array` generator 87 step 3d deleted -- these very
+// assertions are why it was kept byte-compatible).
+//
+// `src` is the SOURCE, and it is a fifth WORLD-VISIBLE object: `source`
+// COPIES, it does not move or hide anything, so the legend carries it too.
+// It sits at the origin, in the hole the 2x2 grid leaves, so every legend
+// entry here still covers real pixels.
 static const char* const kSceneInstances =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -159,7 +166,8 @@ static const char* const kSceneInstances =
 	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
 	"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
-	"instance_array\n{\n\tname grid\n\ttemplate geo\n\tcount_u 2\n\tcount_v 2\n\tmaterial mat\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
+	"standard_object\n{\n\tname src\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname grid\n\tsource src\n\tcount_u 2\n\tcount_v 2\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
 
 // Two spheres that OVERLAP in screen space (one partly occludes the other),
 // so a boundary pixel's sub-pixel samples straddle TWO distinct objects.  The
@@ -542,11 +550,12 @@ static void RunCameraOverrideTest()
 }
 
 //----------------------------------------------------------------------
-// (8a) instance_array -> 4 distinct <gen>[i,j] entries.
+// (8a) a counted `source` -> 4 distinct <chunk>[i,j] entries, plus the
+// source object itself.
 //----------------------------------------------------------------------
 static void RunInstanceArrayTest()
 {
-	std::printf( "=== AgentObjectMapTest: instance_array legend ===\n" );
+	std::printf( "=== AgentObjectMapTest: counted-source legend ===\n" );
 	const std::string scenePath = WriteTemp( "rise_objmap_inst.RISEscene", kSceneInstances );
 	Job* pJob = new Job();
 	if( !pJob->LoadAsciiSceneViaCst( scenePath.c_str() ) ) { pJob->release(); Check( false, "instance scene loads" ); return; }
@@ -556,11 +565,24 @@ static void RunInstanceArrayTest()
 	AgentRenderParams p;
 	p.renderTarget = AgentRenderTarget::ObjectMap;
 	AgentRenderResult r = session->Render( p );
-	Check( r.ok && r.renderMode == "objectmap", "instance_array objectmap render succeeds" );
-	Check( r.legend.size() == 4, "instance_array of 2x2 yields exactly 4 legend entries" );
+	Check( r.ok && r.renderMode == "objectmap", "counted-source objectmap render succeeds" );
 	Check( FindLegend( r, "grid[0,0]" ) && FindLegend( r, "grid[1,0]" )
 	    && FindLegend( r, "grid[0,1]" ) && FindLegend( r, "grid[1,1]" ),
-	    "each instance carries its synthesized <gen>[i,j] name" );
+	    "each repetition carries its synthesized <chunk>[i,j] name" );
+	// EXACTLY four repetitions, counted by name rather than by legend size, so
+	// the SOURCE entry below is a separate claim instead of slack in this one.
+	std::size_t repetitions = 0;
+	for( std::size_t k = 0; k < r.legend.size(); ++k )
+		if( r.legend[k].name.compare( 0, 5, "grid[" ) == 0 ) ++repetitions;
+	Check( repetitions == 4, "a 2x2 counted `source` yields exactly 4 synthesized entries" );
+	// AND THE SOURCE IS STILL THERE.  `source` copies; it does not move or hide
+	// anything, so `src` is a fifth world-visible object with pixels of its own.
+	// (The `instance_array` generator this fixture replaced had no source OBJECT
+	// -- its `template` was a geometry -- which is why the old assertion read 4.)
+	const LegendEntry* srcEntry = FindLegend( r, "src" );
+	Check( srcEntry && srcEntry->pixelCount > 0,
+	       "the SOURCE object keeps rendering alongside its four copies" );
+	Check( r.legend.size() == 5, "... and it is the only other entry: 4 repetitions + 1 source" );
 	pJob->release();
 }
 

@@ -1,9 +1,9 @@
 # 87 — Recursive Scene Graph
 
-**Status: decided 2026-08-15.  §5 steps 0, 1 and 2 are IMPLEMENTED, and so are
-step 3's slices 3a (`source`, single-node), 3b (subtree expansion) and 3c
-(`count_u`/`count_v` + per-instance exprs); 3d (delete `instance_array`) and
-step 4 are not.**  §2's "composition happens in the per-frame prepare pass" is now
+**Status: decided 2026-08-15.  §5 steps 0, 1, 2 and 3 are IMPLEMENTED — step 3
+in all four slices: 3a (`source`, single-node), 3b (subtree expansion), 3c
+(`count_u`/`count_v` + per-instance exprs) and 3d (delete `instance_array`).
+Step 4 is not.**  §2's "composition happens in the per-frame prepare pass" is now
 literally true: step 2 re-bakes the hierarchy in
 `ObjectManager::PrepareForRendering()`, so a timeline on a parent carries its
 subtree.  Step 1's derive-tail and live-edit composes remain — they are what
@@ -214,9 +214,14 @@ discoveries.
   `parent`-descendant), which breaks `MaintainedReferenceGraph`'s incremental
   premise: `SetParamValue` re-runs `ComputeChunkRefs` for the edited chunk only,
   while a `parent` edit anywhere changes subtree membership for every ancestor
-  `source`. **The refusal survives step 3, renamed**, and retiring it is its own
+  `source`. **The refusal survives step 3**, and retiring it is its own
   arc — it also needs a typed "drop this chunk's N synthesized objects"
   primitive, which the provenance map is the inverse index for.
+  **CORRECTED BY 3d: "renamed" was wrong.**  What survives is 3a/3b's PER-CHUNK
+  pair in `DeriveToJobIncremental` (a closure chunk carrying a real `source`; a
+  closure object still holding a live provenance row), not a renamed
+  document-wide count.  The document-wide `instanceArrayCount` form is DELETED
+  with its subject, and nothing replaced it — see step 3's 3d block.
 - **Animation does not compose with instancing.** §1 pairs them ("hierarchical
   transforms give hierarchical animation. One subtree may be instanced many
   times"), but an instance is a COPY, not a live view, and
@@ -376,10 +381,70 @@ what was authored, live material included).
      write `name my.object`.
    Slices: 3a `source` single-node + refusals + provenance; 3b subtree
    expansion; 3c `count_u`/`count_v` + per-instance exprs; 3d delete
-   `instance_array`.  3a, 3b and 3c are IMPLEMENTED.
+   `instance_array`.  ALL FOUR ARE IMPLEMENTED.
 
-   **3d CHECKLIST (accumulated by earlier slices' reviews; do these, not just
-   the deletion):**
+   **3d (2026-08-17) — `instance_array` DELETED, IMPLEMENTED.**  `Cst::Expand
+   InstanceArray` and its trailing expansion loop, the `instance_array` role skip
+   in the PASS-1 collect walk, `Document::instanceArrayCount` and all five of its
+   maintenance sites, the `generatorChildrenOf` index and BOTH subtree-walk
+   refusals that read it, the `instanceArrayCount`-keyed incremental-derive
+   refusal, and `tests/CstInstanceArrayTest.cpp`.  The corpus had ZERO uses
+   (verified: 0 of 3914 `.RISEscene` files under the repo), and
+   `CstDeriveGoldenTest` reports 383 MATCH / 0 DRIFT, so no golden output moved.
+   Four things met the code:
+   - **THERE WAS NO CHUNK PARSER TO DELETE.**  The 3d brief called for removing
+     the `instance_array` `IAsciiChunkParser` subclass and its
+     `CreateAllChunkParsers()` registration.  Neither exists: the generator was
+     always CST-only (recorded in
+     [61](61-v6v7-parser-cutover-execution-plan.md) §"`instance_array` is
+     CST-only"), which is exactly why PASS-1 skipped its chunks and why its
+     inputs were untraced in the first place.  Deleting the role skip is what
+     retires the keyword: an `instance_array` chunk now reaches the registry
+     lookup and is refused as an unknown chunk type.
+   - **THE LEDGER IS DOCUMENT-ORDER AGAIN.**  `grep -n 'entryBudget'
+     src/Library/Cst/Cst.cpp` now shows one declaration, `ExpandSourceInstance`'s
+     parameter, its cap read (two lines) and its two `--entryBudget` sites — one
+     writer.  That is what turns 3c review round 1's `source`-path ledger
+     assertions from partial into total, and it also deletes 3c review round 2's
+     expansion-order-vs-document-order discrepancy: the only remaining expansion
+     runs at its own PASS-2 position, so an earlier chunk's spend is on the ledger
+     when a later refusal quotes it.  Both decrements re-red-proved on the
+     post-deletion tree (deleting either moves the quoted remainder and fails two
+     `count-cap-ledger` assertions).
+   - **THE ERANGE OVERFLOW TERM IS NOW DEAD, AND ONLY THE UNDERFLOW HALF IS
+     LIVE.**  3c recorded that the shared count validator's `errno == ERANGE`
+     term stayed reachable both ways "from `instance_array`, which PASS-1 skips".
+     With the generator gone, the counts are only ever read from a
+     descriptor-declared numeric slot, whose PASS-1 string-layer check refuses
+     `1e999` first.  The term is kept — strtod reports both directions through one
+     errno, and UNDERFLOW (`1e-999`) is caught by nothing else — but its overflow
+     half is unreachable and the fixture comment says so.
+   - **TWO REFUSALS SURVIVE, AND ONE OF THEM IS NOT THE ONE §4 PREDICTED.**  §4
+     said "the refusal survives step 3, renamed".  What survives is 3a/3b's
+     PER-CHUNK pair in `DeriveToJobIncremental` — a closure chunk that carries a
+     real `source`, and one that still holds a live PROVENANCE row — not a
+     renamed document-wide count.  The document-wide form is gone with its
+     subject, and it is not needed: `source` is a descriptor-declared Reference,
+     so editing the source reaches the instancing chunk, and 3b closed the
+     subtree-MEMBER hop by resolving each member through the manager inside the
+     derive's armed sink.
+   Migrated, not deleted: the `grid[i,j]` legend fixtures in
+   `AgentObjectMapTest` and `AgentViewModeRenderTest` are now counted `source`
+   chunks.  The names are byte-identical, which is what 3c's naming decision was
+   for — but the SOURCE object is a fifth world-visible entry (a `source` copies;
+   it does not hide the original), where the generator's `template` was a
+   geometry and produced only four.  The count assertion says 5 and names `src`
+   explicitly rather than leaving the difference as slack.
+   NOT MIGRATED, stated plainly: the one fixture that reached
+   `standard_object`'s PARSER-side `source` gates (it fed a `source` through the
+   generator's param pass-through, arriving at `Finalize` alongside a `geometry`
+   from `template`).  Both gates are now unreachable from any document — PASS-2
+   routes every `source`-carrying chunk to the expansion — so they are backstops
+   with no test, which is what their own comments already claim they are.  The
+   EXPANSION's copy of the exclusivity rule, the reachable one, keeps its
+   fixture.
+
+   **3d CHECKLIST (accumulated by earlier slices' reviews; done in 3d):**
    - After removing `ExpandInstanceArray`, verify there is **exactly one writer**
      to the shared entry ledger: `grep -n 'entryBudget' src/Library/Cst/Cst.cpp`
      must show only the declaration in `DeriveToJob`, `ExpandSourceInstance`'s

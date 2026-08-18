@@ -167,9 +167,10 @@ namespace RISE
 		//! 87 step 3: record that `entry` was SYNTHESIZED -- produced by an
 		//! expansion rather than by a chunk of its own name.
 		//! `instancingChunk` is the name on the chunk an author can edit;
-		//! `sourceNode` is the object that chunk instanced, or "" when the
-		//! expansion had no source OBJECT (the `instance_array` generator's
-		//! template is a geometry).
+		//! `sourceNode` is the object that chunk instanced.  "" is accepted and
+		//! means "no source OBJECT"; no expansion produces that today (87 step
+		//! 3d deleted the one that did), so it is a tolerated input, not a
+		//! live case.
 		//!
 		//! Appended at the interface TAIL, with its getter, because this repo
 		//! pins vtable order (tests/IJobVtableManifest.txt pins IJob; the

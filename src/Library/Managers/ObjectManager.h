@@ -110,12 +110,12 @@ namespace RISE
 			//! `entry name -> (instancing chunk name, source node name)`.
 			//!
 			//! Populated by the derive whenever an object is produced by an
-			//! expansion rather than by a chunk of its own name: a
-			//! `standard_object` carrying `source` (step 3a -- entry name ==
-			//! instancing chunk name, the collapse case), and the
-			//! `instance_array` generator (entry `g[i,j]` -> instancing chunk
-			//! `g`, no source NODE -- its template is a geometry, so the second
-			//! field is empty there).
+			//! expansion rather than by a chunk of its own name -- i.e. by a
+			//! `standard_object` carrying `source`: the collapse case (step 3a,
+			//! entry name == instancing chunk name), each subtree clone `I.X`
+			//! (step 3b) and each repetition `I[i,j]` / `I[i,j].X` (step 3c).
+			//! The `sourceNode` field is always populated now that step 3d has
+			//! deleted the one expansion that had no source OBJECT.
 			//!
 			//! This is the ONLY sanctioned way to get from a rendered entry
 			//! back to the chunk an author can edit.  Every consumer does a MAP

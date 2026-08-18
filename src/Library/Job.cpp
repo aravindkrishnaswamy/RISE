@@ -10821,7 +10821,7 @@ int Job::ApplyCstParamRemoveChecked( const char* entityName, const char* entityK
 // entity GROUPS = 4 chunks each).  Fine for DISCRETE panel edits; the per-frame gizmo path commits ONCE at the
 // drag boundary (not per frame) for exactly this reason.  Atomic: DeriveToJobIncremental rolls the Job back on
 // a diagnostic, so a refusal leaves the live scene byte-identical.
-// FALLBACK (D2): when the incremental refuses (a scene_variant / animation / instance_array / override_object /
+// FALLBACK (D2): when the incremental refuses (a scene_variant / animation / source-instance / override_object /
 // composed material in the closure -- e.g. watch_dial, which DECLARES a variant) OR errors, re-derive the WHOLE
 // edited document (forcing the active variant).  This derives TWICE: a validate-before-destroy dry-run into a
 // throwaway Job (so a genuinely invalid edit leaves the live scene intact) THEN the real ClearAll+re-derive --

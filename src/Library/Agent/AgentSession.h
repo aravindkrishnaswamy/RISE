@@ -897,8 +897,8 @@ namespace RISE
 		//! Toolkit slice 3a: one entry of an objectmap render's colour
 		//! LEGEND -- the mapping a caller uses to decode the segmentation
 		//! PNG.  `name` is the object's manager name (its scene-file chunk
-		//! `name`, or the `<gen>[i,j]` synthesized name for an
-		//! instance_array element); `colorHex` is the EXACT "#RRGGBB" 8-bit
+		//! `name`, or the `<chunk>[i,j]` synthesized name for one repetition
+		//! of a counted `source`); `colorHex` is the EXACT "#RRGGBB" 8-bit
 		//! sRGB byte triple that object's pixels carry in the PNG (byte-for-
 		//! byte -- match on these bytes, at NATIVE image size); `pixelCount`
 		//! is how many pixels that object covers in this render.

@@ -3507,14 +3507,16 @@ static void RunIndirectModeDiffuseUnderEnvSuppressedTest()
 // so an objectmap render gives an EXACT per-object pixel tally to
 // measure isolation and framing against -- no MC noise, no thresholds
 // pulled out of the air.  Two extra fixtures below cover the two
-// name-resolution failures the mesh+sphere scene cannot express (a
-// generator prefix; a CSG operand) and one covers the R1b agent caps
+// name-resolution failures the mesh+sphere scene cannot express (an
+// instancing-chunk name; a CSG operand) and one covers the R1b agent caps
 // (a film above the 256px cap + an authored sample count above 16).
 //======================================================================
 
-// A 2x2 instance_array -> grid[0,0]/grid[1,0]/grid[0,1]/grid[1,1]: the
+// A 2x2 counted `source` -> grid[0,0]/grid[1,0]/grid[0,1]/grid[1,1]: the
 // AMBIGUOUS-name case (`isolate:"grid"` names four objects, not one).
-// Mirrors tests/AgentObjectMapTest.cpp's kSceneInstances.
+// Mirrors tests/AgentObjectMapTest.cpp's kSceneInstances, including the
+// SOURCE object `src` -- `source` copies without hiding anything, so the
+// scene holds five world-visible objects, not four.
 static const char* const kSceneIsolateInstances =
 	"RISE ASCII SCENE 7\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
@@ -3524,7 +3526,8 @@ static const char* const kSceneIsolateInstances =
 	"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
 	"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
 	"sphere_geometry\n{\n\tname geo\n\tradius 0.5\n}\n\n"
-	"instance_array\n{\n\tname grid\n\ttemplate geo\n\tcount_u 2\n\tcount_v 2\n\tmaterial mat\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
+	"standard_object\n{\n\tname src\n\tgeometry geo\n\tmaterial mat\n\tposition 0 0 0\n}\n\n"
+	"standard_object\n{\n\tname grid\n\tsource src\n\tcount_u 2\n\tcount_v 2\n\tposition expr(u*3.0-1.5) expr(v*3.0-1.5) 0\n}\n";
 
 // TWO CSG unions, each consuming a DIFFERENT pair of operands
 // (op_a/op_b under csg_root; op_c/op_d under csg_second) -- both pairs
@@ -4168,22 +4171,32 @@ static void RunIsolateNameFailureTest()
 		pJob->release();
 	}
 
-	// (d2) an instance_array generator name covers FOUR objects.
+	// (d2) an INSTANCING-CHUNK name covers FOUR objects.  `grid` is a real CST
+	// chunk, but a counted one, so it mints `grid[i,j]` and NO entry called
+	// `grid` -- the same shape the `instance_array` generator had before 87
+	// step 3d retired it, which is why the names were kept byte-compatible.
 	{
 		const std::string scenePath = WriteTemp( "rise_isolate_ambig.RISEscene", kSceneIsolateInstances );
 		Job* pJob = new Job();
-		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "instance-array scene loads" );
+		Check( pJob->LoadAsciiSceneViaCst( scenePath.c_str() ), "counted-source scene loads" );
 		std::unique_ptr<AgentSession> session = AgentSession::WrapJob( pJob );
-		if( !session ) { pJob->release(); Check( false, "instance-array session wraps" ); return; }
+		if( !session ) { pJob->release(); Check( false, "counted-source session wraps" ); return; }
 
 		AgentRenderParams p;
 		p.renderTarget = AgentRenderTarget::ObjectMap;
 		p.isolate = "grid";
 		const AgentRenderResult r = session->Render( p );
-		Check( !r.ok, "a generator name FAILS the render rather than picking an instance" );
+		Check( !r.ok, "an instancing-chunk name FAILS the render rather than picking an instance" );
 		Check( r.message.find( "AMBIGUOUS" ) != std::string::npos &&
 		       r.message.find( "grid[0,0]" ) != std::string::npos,
 		       "MONEY ASSERTION (G1-d2): the failure says AMBIGUOUS and names the real instances" );
+		// NON-VACUITY: the scene really does hold five world-visible objects, so
+		// `isolate:"grid[0,0]"` below is hiding four, not one.
+		AgentRenderParams allP;
+		allP.renderTarget = AgentRenderTarget::ObjectMap;
+		const AgentRenderResult allR = session->Render( allP );
+		Check( allR.ok && allR.legend.size() == 5,
+		       "(control) the counted source derived four repetitions AND left its source rendering" );
 
 		// ...and one instance BY ITS FULL NAME resolves cleanly.
 		AgentRenderParams okP;

@@ -8299,11 +8299,15 @@ RISE::Cst::NodeId ResolveSourceChunkId( const RISE::Cst::Document& doc,
 		const RISE::Cst::NodeId direct = RISE::Cst::DocFindByNameAnyRole( doc, lookupName, nullptr, suffix, uf );
 		if( direct != 0 || lookupName == name ) return direct;
 		// The instancing chunk exists but its ROLE does not carry this category's
-		// keyword suffix -- an `instance_array` generator, whose entries are Objects
-		// while its own chunk is neither `*_object` nor anything else the suffix map
-		// knows.  Fall back to a role-agnostic name lookup: provenance already
-		// established that this name IS the producing chunk, so there is nothing to
-		// disambiguate.
+		// keyword suffix.  DEFENSIVE since 87 step 3d: the only expansion left is a
+		// `standard_object` carrying `source`, whose role DOES carry the `object`
+		// suffix, so the direct lookup above always answers and this line is
+		// unreachable today.  It was live for the `instance_array` generator, whose
+		// entries were Objects while its own chunk was neither `*_object` nor anything
+		// else the suffix map knew.  Kept for the next expansion that mints entries
+		// from a chunk of some other role: a role-agnostic name lookup is right here
+		// because provenance already established that this name IS the producing
+		// chunk, so there is nothing to disambiguate.
 		return RISE::Cst::DocFindByNameAnyRole( doc, lookupName, nullptr, std::string(), false );
 	}
 	// Singletons RoleKindSuffixForCategory rejects.  Film is a single unnamed

@@ -62,8 +62,7 @@
 //                  orders (the manager pre-check cannot see the AFTER case) and for a
 //                  `rect_light` collider, which the source-resolvable role scan cannot see.
 //    [refuse]      an `override_object` on a subtree member; a member declared BELOW the
-//                  instance; an `instance_array` parented into the subtree; a recursion
-//                  reached through a TRANSITIVE descendant.
+//                  instance; a recursion reached through a TRANSITIVE descendant.
 //    [gizmo]       a synthesized entry is not transform-routable, and the refusal names the
 //                  INSTANCING chunk -- the message 3a shipped unreachable.
 //
@@ -855,27 +854,17 @@ int main()
 		       "refuse: ... and never by raw CST item index (which counts comments and blank lines)" );
 	}
 
-	// [refuse] the SECOND implementation of the exclusivity rule -- the one in the parser's
-	// own Finalize, which the expansion path never reaches because it consumes `source` first.
-	// `instance_array` passes every non-generator param through to the standard_object it
-	// synthesizes, alongside a `geometry` from its `template`, so a `source` there arrives at
-	// Finalize together with a geometry.  That is the reachable path to the parser-side gate,
-	// and it must refuse rather than pick one silently.
-	{
-		std::vector<std::string> diags;
-		const std::string dump = DumpCst( Scene( SRC_LEAF + "instance_array\n{\nname g\ntemplate geo\nmaterial m\nsource S\ncount_u 1\n}\n" ), &diags );
-		std::string all;
-		for( std::size_t i = 0; i < diags.size(); ++i ) { all += diags[i]; all += "\n"; }
-		// WHAT THIS DOES AND DOES NOT CLAIM.  The parser's SPECIFIC text reaches the LOG, not
-		// `diags`: ExpandInstanceArray runs outside PASS-2's armed g_cstFinalizeDiagSink window,
-		// so all that comes back here is its own generic apply-failed line.  So this pins the
-		// BEHAVIOUR -- a `source` that reaches the parser is refused and builds nothing -- and
-		// deliberately does NOT claim which of the parser's two `source` gates (the
-		// geometry+source exclusivity one, or the lone-unexpanded-`source` backstop) fired.
-		// Distinguishing them from here is not possible without reading the log file.
-		Check( !diags.empty(), "refuse: a `source` reaching the PARSER (via instance_array pass-through) is refused" );
-		Check( dump.find( "  g[0,0] " ) == std::string::npos, "refuse: ... and no object is created by the refused chunk" );
-	}
+	// [refuse] THE PARSER-SIDE `source` GATES ARE NOW UNREACHABLE FROM A SCENE FILE, and
+	// that is RECORDED here rather than tested, because 87 step 3d removed the only route
+	// to them.  `standard_object`'s Finalize carries two -- the geometry+source exclusivity
+	// refusal and the lone-unexpanded-`source` backstop -- and PASS-2 hands every chunk
+	// carrying a real `source` to ExpandSourceInstance instead of to Finalize, so neither
+	// can fire from a document.  The `instance_array` generator used to reach them by
+	// passing a `source` straight through into the standard_object it synthesized,
+	// alongside a `geometry` from its `template`; that generator is gone.  The EXPANSION's
+	// own copy of the exclusivity rule -- the reachable one -- is pinned by the
+	// `[refuse] geometry + source` block far above.  The parser's two are backstops
+	// against a future third apply path, exactly as their own comments say.
 
 	// ---------------------------------------------------------------- provenance
 	// [provenance] the manager records where a synthesized entry came from.  A MAP LOOKUP:
@@ -921,8 +910,9 @@ int main()
 	}
 
 	// [closure] the property that lets 3a get away with a PER-CHUNK incremental refusal where
-	// `instance_array` needed a document-wide one: `source` is a descriptor-declared Reference,
-	// so editing the SOURCE puts the instancing chunk in the edit closure.  Without this the
+	// the `instance_array` generator 87 step 3d deleted needed a document-wide one: `source`
+	// is a descriptor-declared Reference, so editing the SOURCE puts the instancing chunk in
+	// the edit closure.  Without this the
 	// incremental apply would re-point S while I kept its stale copy of S's bindings.
 	{
 		Document d = ParseToCst( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
@@ -2212,32 +2202,13 @@ int main()
 		Check( all.find( "`C`" ) != std::string::npos, "refuse: ... naming the member" );
 	}
 
-	// [refuse] an `instance_array` generator parented into the subtree.  Generators expand
-	// in a trailing pass, after every `source` chunk, and their `parent` names the ORIGINAL
-	// node -- so their objects stay attached to the source and the copy would silently be
-	// missing them.
-	{
-		Check( RefusedWith( Scene( "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n"
-		                         + std::string( "instance_array\n{\nname g\ntemplate geo\nmaterial m\nparent S\ncount_u 3\n}\n" )
-		                         + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ),
-		                    "contains the `instance_array` generator" ),
-		       "refuse: an `instance_array` parented into the subtree is refused, not silently dropped from the copy" );
-		// AND THE SAME REFUSAL WHEN THE GENERATOR HANGS OFF A SYNTHESIZED ENTRY.  `I1`'s
-		// own expansion minted `I1.B`; a generator written `parent I1.B` is a child of
-		// that live entry exactly as `parent B` is a child of `B`.  The subtree walk asks
-		// the DOCUMENT index, whose keys are the parent NAMES as written -- so a walk that
-		// only ever looked up a member's bare chunk name had no key for this at all and
-		// let the scene derive clean, with the generator's objects silently missing from
-		// the copy.  That is verbatim the outcome the refusal above exists to prevent, so
-		// the refusal has to read the same key set the child walk does.
-		Check( RefusedWith( Scene( "standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
-		                         + std::string( "standard_object\n{\nname B\nparent A\ngeometry geo\nmaterial m\nposition 0 2 0\n}\n" )
-		                         + "standard_object\n{\nname I1\nsource A\nposition 5 0 0\n}\n"
-		                         + "instance_array\n{\nname g\ntemplate geo\nmaterial m\nparent I1.B\ncount_u 2\n}\n"
-		                         + "standard_object\n{\nname I2\nsource I1\nposition -5 0 0\n}\n" ),
-		                    "contains the `instance_array` generator" ),
-		       "refuse: ... including one parented onto a SYNTHESIZED entry, which the bare-name-only walk could not see" );
-	}
+	// [refuse] GONE WITH `instance_array` (87 step 3d).  The two fixtures that stood here
+	// pinned the subtree walk's refusal of a generator parented into the copied subtree --
+	// at depth 1, and onto a SYNTHESIZED entry.  The generator, the `generatorChildrenOf`
+	// index and both refusal sites were deleted with it.  What those fixtures ALSO
+	// exercised -- that the walk reads a member's fully-qualified entry name as well as its
+	// bare chunk name -- is pinned independently, and more strongly, by the depth-3 CHILD
+	// fixture below, which asserts which of the three key kinds carried each branch.
 
 	// [subtree][nested] A DOCUMENT NODE PARENTED ONTO A SYNTHESIZED ENTRY is a live
 	// transitive descendant and must be copied.  `I1 source A` mints `I1.B`; `X parent
@@ -2399,32 +2370,12 @@ int main()
 		j->release();
 	}
 
-	// [refuse][depth-3] AND THE `instance_array` REFUSAL READS THE SAME THREE-KEY SET.
-	// A generator parented onto a TWO-level synthesized entry (`I2.I1.B`) is invisible to
-	// every shallower expansion -- `I2`'s own walk knows that entry as `I1.B` / `B`, never
-	// as `I2.I1.B` -- so `I3`'s expansion is the FIRST and ONLY place this can be caught.
-	// Miss it and the copy silently lacks the generator's objects, which is verbatim the
-	// outcome the refusal exists to prevent.
-	//
-	// NOT CLAIMED, and worth saying plainly: the same refusal on an INTERMEDIATE key
-	// (`parent I1.B` with `I3 source I2` present) has NO distinguishing test, because a
-	// key that is intermediate at depth 3 is `keys[0]` of the depth-2 expansion, that
-	// expansion is necessarily earlier in the document, and PASS-2 breaks on the first
-	// refusal -- so the scene is refused with the identical message whether or not the
-	// deeper walk would have caught it.  Same shape as the override-lookup unreachability
-	// argued at that site.  The key set is pinned at the intermediate position by the
-	// depth-3 child fixture above instead.
-	{
-		Check( RefusedWith( Scene( "standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
-		                         + std::string( "standard_object\n{\nname B\nparent A\ngeometry geo\nmaterial m\nposition 0 2 0\n}\n" )
-		                         + "standard_object\n{\nname I1\nsource A\nposition 5 0 0\n}\n"
-		                         + "standard_object\n{\nname I2\nsource I1\nposition -5 0 0\n}\n"
-		                         + "instance_array\n{\nname g\ntemplate geo\nmaterial m\nparent I2.I1.B\ncount_u 2\n}\n"
-		                         + "standard_object\n{\nname I3\nsource I2\nposition 0 7 0\n}\n" ),
-		                    "contains the `instance_array` generator" ),
-		       "refuse: ... including one parented onto a TWO-level synthesized entry, which only the "
-		       "third-level expansion's fully-qualified key can see" );
-	}
+	// [refuse][depth-3] GONE WITH `instance_array` (87 step 3d).  This fixture parented a
+	// generator onto a TWO-level synthesized entry (`I2.I1.B`) -- the one position only the
+	// third-level expansion's fully-qualified key can see.  The refusal it pinned no longer
+	// exists.  The KEY SET it incidentally exercised is pinned by the depth-3 CHILD fixture
+	// above, which is the stronger instrument anyway: it names which branch each of the
+	// three key kinds carried, rather than only asserting that some refusal fired.
 
 	// [refuse] a RECURSIVE definition the pre-walk self-parent check CANNOT see, because
 	// the instancing chunk is not a DIRECT child of its own source.  `C source M parent M2`
@@ -2549,11 +2500,11 @@ int main()
 
 	// [cap] NOT TESTED HERE, and the reason is worth recording rather than leaving as a
 	// gap.  The document-wide synthesized-entry budget (kMaxSynthesizedEntries, 10,000,000
-	// -- the same magnitude as the per-generator `instance_array` cap it subsumes) can only
-	// be crossed by actually MATERIALIZING ten million objects: `instance_array` clamps
-	// each of `count_u` / `count_v` to 1e6, so the only way to spend the budget is with
-	// generators that each pass their own cap and build, and a `source` expansion's plan
-	// would need a ten-million-node subtree.  A test that crossed it would take minutes and
+	// -- the same magnitude as the per-generator `instance_array` cap it subsumed) can only
+	// be crossed by actually MATERIALIZING ten million objects: the shared count validator
+	// clamps each of `count_u` / `count_v` to 1e6, so the only way to spend the budget is
+	// with expansions that each pass their own cap and build, and a `source` expansion's
+	// plan would need a ten-million-node subtree.  A test that crossed it would take minutes and
 	// gigabytes.  The arithmetic and the threading were instead verified by temporarily
 	// lowering the constant and confirming a three-entry subtree refuses with the
 	// source-side message -- a red/green proof in the opposite direction, run by hand.
@@ -2629,7 +2580,7 @@ int main()
 	// THE DECISION THIS SLICE HAD TO MAKE, recorded here and pinned below: PRESENCE of a
 	// count selects the repeated naming, not its VALUE.  `count_u 1` derives `I[0,0]`, NOT
 	// `I`.  Two reasons, and the second is the load-bearing one: it keeps the entry names
-	// byte-compatible with the `instance_array` generator 3d retires (which names its
+	// byte-compatible with the `instance_array` generator 3d retired (which named its
 	// one-instance case `g[0,0]`), and a count may be an `expr(...)` over a `let`, so a
 	// value-keyed rule would silently re-name every entry -- dangling every `parent
 	// I[0,0]` in the file -- when a constant went from 2 to 1.
@@ -2650,9 +2601,9 @@ int main()
 		Check( got == want, "count-1d: `count_u 2` == the two hand-written `I[i,j]` objects it stands for" );
 	}
 
-	// [count][2-D] + [count_v] a grid, with `i` FASTEST -- the same traversal order
-	// `instance_array` has, so a legend or a `parent` line written against one means the
-	// same thing after the other replaces it.
+	// [count][2-D] + [count_v] a grid, with `i` FASTEST -- the traversal order
+	// `instance_array` had, so a legend or a `parent` line written against one of its
+	// grids means the same thing now that 87 step 3d has replaced it.
 	{
 		std::vector<std::string> diags;
 		Job* j = DeriveJob( Scene( SRC_LEAF
@@ -2698,9 +2649,9 @@ int main()
 		j2->release();
 	}
 
-	// [count==0] a zero count produces NO entries.  `instance_array`'s shared validator has
-	// always admitted a zero count (non-negative, integral), and 3c inherits it verbatim
-	// rather than inventing a different rule for the same word.
+	// [count==0] a zero count produces NO entries.  The shared count validator has always
+	// admitted a zero count (non-negative, integral), and 3c inherits it verbatim rather
+	// than inventing a different rule for the same word.
 	{
 		std::vector<std::string> diags;
 		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 0\n}\n" ), &diags );
@@ -2737,7 +2688,7 @@ int main()
 
 	// [count][u/v] the NORMALIZED instance variables, and the divide-by-zero they must not
 	// do.  `u = i/(count_u-1)` across a row of three is 0, 0.5, 1; with a count of ONE it
-	// is 0, not a 0/0 NaN.  Both come across from `instance_array` unchanged.
+	// is 0, not a 0/0 NaN.  Both came across from `instance_array` unchanged.
 	{
 		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 3\nposition expr(u) 0 0\n}\n" ) );
 		std::string got;
@@ -2759,9 +2710,9 @@ int main()
 		// reason).  `I[0,1]` pins j WITH i held at 0; `I[1,2]` pins the far corner, so a
 		// transposed pair cannot satisfy both.
 		//
-		// IT HAS TO LIVE HERE, on the `source` path.  Until now the only `v`-discriminating
-		// fixtures in the tree were on the `instance_array` copy of this arithmetic --
-		// which 87 step 3d deletes.
+		// IT HAS TO LIVE HERE, on the `source` path.  Before 3c review round 1 added it the
+		// only `v`-discriminating fixtures in the tree were on the `instance_array` copy of
+		// this arithmetic -- which 87 step 3d has since deleted, along with that copy.
 		Job* j3 = DeriveJob( Scene( SRC_LEAF
 			+ "standard_object\n{\nname I\nsource S\ncount_u 2\ncount_v 3\nposition expr(u) expr(v) 0\n}\n" ) );
 		Check( CenterIs( Obj( j3, "I[0,1]" ), 0, 0.5, 0, &got ),
@@ -3014,12 +2965,14 @@ int main()
 	// told 9999994.  With the repetition-root decrement deleted it reads 9999996; with the
 	// clone decrement deleted, 9999998.
 	//
-	// THE LEDGER IS EXPANSION-ORDER, NOT DOCUMENT-ORDER, so both fixtures below put a
-	// `source` first on purpose: `instance_array` chunks are SKIPPED by the PASS-2 walk and
-	// expanded in a trailing loop afterwards, so a generator declared ABOVE a `source` has
-	// spent nothing by the time that `source`'s refusal is composed and the number quoted
-	// there is the full allowance.  The global cap still holds -- the generators check last,
-	// against whatever is left -- so this is message accuracy, not over-allocation.
+	// THE LEDGER IS DOCUMENT-ORDER, and 87 step 3d is what made that true.  Until it landed,
+	// `instance_array` chunks were SKIPPED by the PASS-2 walk and expanded in a trailing
+	// loop afterwards, so a generator declared ABOVE a `source` had spent nothing by the
+	// time that `source`'s refusal was composed, and the number quoted there was the full
+	// allowance.  With the generator gone, `ExpandSourceInstance` is the ONLY writer to
+	// `entryBudget` and it runs at each instancing chunk's own PASS-2 position -- so every
+	// entry an earlier chunk in the file spent is already on the ledger when a later
+	// refusal quotes it, which is exactly what these two fixtures assert.
 	{
 		std::string all;
 		const bool refused = RefusedWith( Scene( SUB3
@@ -3043,9 +2996,10 @@ int main()
 		       "count-cap-ledger: ... and neither refusal still claims the full document allowance" );
 	}
 
-	// [count][clamp] the PER-COUNT clamp `instance_array` has always had, inherited with the
-	// shared validator: 1e6 on EACH axis.  Without it a `count_u 1e12` would be refused only
-	// by the budget line above -- one arithmetic slip away from a 1e12-iteration loop.
+	// [count][clamp] the PER-COUNT clamp inherited with the shared validator (it was
+	// `instance_array`'s before 87 step 3d retired it): 1e6 on EACH axis.  Without it a
+	// `count_u 1e12` would be refused only by the budget line above -- one arithmetic slip
+	// away from a 1e12-iteration loop.
 	{
 		// The counts here would ALSO cross the document budget (2e8 entries), so the
 		// assertion separates the two refusals: with the clamp removed this scene is still
@@ -3081,10 +3035,12 @@ int main()
 	// which passes the range test AND the integrality test.  Drop the `errno == ERANGE`
 	// term and this scene silently becomes `count 0`: no objects, no diagnostic, no clue.
 	//
-	// (Its OVERFLOW sibling, `1e999`, never reaches here from a `standard_object`: the
-	// descriptor declares the counts numeric, so PASS-1's string-layer overflow check
-	// refuses first.  It stays reachable through `instance_array`, which PASS-1 skips
-	// entirely -- so the term guards both, and only underflow separates it here.)
+	// (Its OVERFLOW sibling, `1e999`, never reaches here at all any more: the descriptor
+	// declares the counts numeric, so PASS-1's string-layer overflow check refuses first,
+	// and 87 step 3d deleted `instance_array` -- the one caller PASS-1 skipped entirely and
+	// so the one route by which overflow could still reach ERANGE.  The term is therefore
+	// load-bearing for UNDERFLOW only now, which is the half this fixture pins; its
+	// overflow half is dead code kept because strtod reports both through one errno.)
 	{
 		std::string all;
 		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 1e-999\n}\n" ),
@@ -3283,8 +3239,9 @@ int main()
 
 	// [count][scope] PER-INSTANCE VARIATION IS THE INSTANCING CHUNK'S OWN PARAMS ONLY.  A
 	// subtree MEMBER is an ordinary `standard_object`, so PASS-1 refuses a per-component
-	// expr on it -- `instance_array` never offered per-descendant variation either (it had
-	// no descendants at all), so this is a documented limit and not a regression.
+	// expr on it -- the `instance_array` generator 3d deleted never offered per-descendant
+	// variation either (it had no descendants at all), so this is a documented limit and
+	// not a regression.
 	{
 		const int numericBefore = pNumericLog->MatchCount();
 		Check( RefusedWith( Scene(
