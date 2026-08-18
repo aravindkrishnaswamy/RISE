@@ -231,11 +231,29 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
 
         owner = inline_body(advance, "SolveOpenConservativeStage3D")
         self.assertIn("OpenActiveSetCanonicalBefore3D", owner)
-        self.assertGreaterEqual(owner.count("1u,true"), 2)
+        self.assertIn("outerActiveSetHistory", owner)
+        self.assertIn("provedOuterCycle.assign", owner)
+        self.assertIn("activeSetMismatch&&!cycleProved", owner)
+        self.assertIn("activeSetDiscontinuousEventCount=activeSetDiscontinuousEvents", owner)
+        self.assertGreaterEqual(owner.count("1u,true"), 1)
         self.assertNotIn("coefficientResidual<=config.projectionTolerancePerS&&!activeSetChanged",
                          owner)
         self.assertNotIn("verification>config.projectionTolerancePerS||!verifiedActiveSet",
                          owner)
+        self.assertNotRegex(owner, r"activeSetCycleLength\s*=\s*std::max<[^>]+>\([^;]*2u")
+
+        scalar_flux = inline_body(core, "BuildOpenBoundaryFlux3D")
+        self.assertIn("outwardVelocityMPerS < -boundary.velocityToleranceMPerS",
+                      scalar_flux)
+        self.assertIn("outwardVelocityMPerS > boundary.velocityToleranceMPerS",
+                      scalar_flux)
+        self.assertIn("const ConservativeVector& donor = scalarInflow ?", scalar_flux)
+
+        sequence = (ROOT / "tests/FireSequenceTest.cpp").read_text(encoding="utf-8")
+        self.assertIn('activeSetAlgorithmVersion="open_active_set_two_class_r81_v2"',
+                      sequence)
+        self.assertIn('"active_set_algorithm_version"', sequence)
+        self.assertIn("discontinuousActiveSetEvents+=", sequence)
     def test_generated_include_is_current(self) -> None:
         generated = records.generate(self.snapshot_path,self.constants_path)
         committed = (ROOT / "src/Library/Utilities/FireSimulationRecordData.inc").read_text(

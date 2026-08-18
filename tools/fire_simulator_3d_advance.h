@@ -2100,6 +2100,7 @@
 			double maximumLimiterClassDiscrepancy=0.0;
 			bool limiterDiscontinuousClass=false;
 			double maximumActiveSetComplementarityDiscrepancyMPerS=0.0;
+			unsigned int activeSetDiscontinuousEventCount=0u;
 			std::size_t activeSetCycleLength=0u;
 			std::size_t activeSetDifferingFaceCount=0u;
 			bool activeSetDiscontinuousClass=false;
@@ -2393,6 +2394,21 @@
 			double lastTargetResidual=0.0,lastMassResidual=0.0,
 				lastCoefficientResidual=0.0;
 			bool lastActiveSetChanged=false;
+			double maximumActiveSetDiscrepancy=0.0;
+			unsigned int activeSetDiscontinuousEvents=0u;
+			std::size_t maximumActiveSetCycleLength=0u,
+				maximumActiveSetDifferingFaceCount=0u;
+			std::vector<std::array<std::vector<bool>,6> > outerActiveSetHistory;
+			std::vector<std::array<std::vector<bool>,6> > provedOuterCycle;
+			auto observeActiveSet=[&](const OpenMACProjection3DResult& observed){
+				maximumActiveSetDiscrepancy=std::max(maximumActiveSetDiscrepancy,
+					observed.maximumActiveSetComplementarityDiscrepancyMPerS);
+				maximumActiveSetCycleLength=std::max(maximumActiveSetCycleLength,
+					observed.activeSetCycleLength);
+				maximumActiveSetDifferingFaceCount=std::max(
+					maximumActiveSetDifferingFaceCount,observed.activeSetDifferingFaceCount);
+				activeSetDiscontinuousEvents+=observed.activeSetDiscontinuousClass?1u:0u;
+			};
 			result.picardResidualPerS.clear();
 			for(std::size_t iteration=0;iteration<kMaximumCoupledPicardIterations;++iteration){
 				FireProfileIncrement(FireProfile().picardIters);
@@ -2416,6 +2432,7 @@
 					config.transport.deltaTimeS,config.projectionTolerancePerS,projection,error,
 					config.workerCount);
 				if(!projectionOK) return false;
+				observeActiveSet(projection);
 				if(molecularTransport.empty()&&!BuildCellMolecularTransportEvaluations3D(state,
 					temperature,thermochemistry,transport,molecularTransport,error,
 					config.workerCount))return false;
@@ -2451,6 +2468,14 @@
 					coefficientResidual=0.0;bool activeSetChanged=false;std::size_t offset=0;
 				if(iteration)for(unsigned int side=0;side<6;++side)
 					activeSetChanged=activeSetChanged||projection.inflow[side]!=priorInflow[side];
+				if(!iteration)outerActiveSetHistory.push_back(projection.inflow);
+				else if(activeSetChanged&&provedOuterCycle.empty()){
+					const auto repeated=std::find(outerActiveSetHistory.begin(),
+						outerActiveSetHistory.end(),projection.inflow);
+					if(repeated==outerActiveSetHistory.end())
+						outerActiveSetHistory.push_back(projection.inflow);
+					else provedOuterCycle.assign(repeated,outerActiveSetHistory.end());
+				}
 				for(std::size_t cell=0;cell<count;++cell) residual=std::max(residual,
 					std::fabs(nextTarget[cell]-target[cell]));
 				for(std::size_t cell=0;cell<count;++cell){
@@ -2479,7 +2504,9 @@
 				target.swap(nextTarget);
 				priorInflow=projection.inflow;
 				result.dynamicViscosityPaS=viscosity;
-				if(iteration&&residual<=config.projectionTolerancePerS&&
+				const bool activeSetAcceptable=!activeSetChanged||
+					projection.activeSetDiscontinuousClass||!provedOuterCycle.empty();
+				if(iteration&&activeSetAcceptable&&residual<=config.projectionTolerancePerS&&
 					massResidual<=config.projectionTolerancePerS&&
 					coefficientResidual<=config.projectionTolerancePerS){
 					OpenMACProjection3DResult acceptedProjection;
@@ -2493,35 +2520,56 @@
 						config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error,config.workerCount);
 					if(!acceptedOK) return false;
-					if(!finalStage&&acceptedProjection.inflow!=projection.inflow){
-						OpenBoundaryConfig3D iterationBranchBoundary=acceptedBoundary;
-						iterationBranchBoundary.priorInflow=projection.inflow;
-						OpenBoundaryConfig3D verifiedBranchBoundary=acceptedBoundary;
-						verifiedBranchBoundary.priorInflow=acceptedProjection.inflow;
-						OpenMACProjection3DResult iterationBranch,verifiedBranch;
-						if(!ProjectPressureOpenMACVelocity3D(shape,
-							GasDensityFromConservative(state),unprojected,target,
-							iterationBranchBoundary,config.transport.deltaTimeS,
-							config.projectionTolerancePerS,iterationBranch,error,
-							1u,true)||!ProjectPressureOpenMACVelocity3D(shape,
-							GasDensityFromConservative(state),unprojected,target,
-							verifiedBranchBoundary,config.transport.deltaTimeS,
-							config.projectionTolerancePerS,verifiedBranch,error,
-							1u,true))return false;
-						const std::size_t differing=OpenActiveSetDifferingFaceCount3D(
-							iterationBranch.inflow,verifiedBranch.inflow);
-						if(OpenActiveSetCanonicalBefore3D(shape,acceptedBoundary,
-							iterationBranch,verifiedBranch))
-							acceptedProjection=std::move(iterationBranch);
-						else acceptedProjection=std::move(verifiedBranch);
+					observeActiveSet(acceptedProjection);
+					const bool activeSetMismatch=acceptedProjection.inflow!=projection.inflow;
+					const bool cycleProved=!provedOuterCycle.empty()||
+						projection.activeSetDiscontinuousClass||
+						acceptedProjection.activeSetDiscontinuousClass;
+					if(!finalStage&&activeSetMismatch&&!cycleProved){
+						// A first transition is ordinary Picard history, not a two-cycle.
+						priorInflow=acceptedProjection.inflow;
+						if(std::find(outerActiveSetHistory.begin(),outerActiveSetHistory.end(),
+							acceptedProjection.inflow)==outerActiveSetHistory.end())
+							outerActiveSetHistory.push_back(acceptedProjection.inflow);
+						continue;
+					}
+					if(!finalStage&&cycleProved){
+						std::vector<std::array<std::vector<bool>,6> > branches=provedOuterCycle;
+						auto addBranch=[&](const std::array<std::vector<bool>,6>& branch){
+							if(std::find(branches.begin(),branches.end(),branch)==branches.end())
+								branches.push_back(branch);
+						};
+						addBranch(projection.inflow);addBranch(acceptedProjection.inflow);
+						std::vector<OpenMACProjection3DResult> solved;
+						solved.reserve(branches.size());
+						for(const auto& branch:branches){
+							OpenBoundaryConfig3D frozenBoundary=acceptedBoundary;
+							frozenBoundary.priorInflow=branch;
+							OpenMACProjection3DResult frozen;
+							if(!ProjectPressureOpenMACVelocity3D(shape,
+								GasDensityFromConservative(state),unprojected,target,
+								frozenBoundary,config.transport.deltaTimeS,
+								config.projectionTolerancePerS,frozen,error,1u,true))return false;
+							solved.push_back(std::move(frozen));
+						}
+						std::size_t selected=0u;
+						for(std::size_t branch=1u;branch<solved.size();++branch)
+							if(OpenActiveSetCanonicalBefore3D(shape,acceptedBoundary,
+								solved[branch],solved[selected]))selected=branch;
+						acceptedProjection=std::move(solved[selected]);
 						acceptedProjection.activeSetDiscontinuousClass=true;
-						acceptedProjection.activeSetCycleLength=std::max<std::size_t>(
-							acceptedProjection.activeSetCycleLength,2u);
-						acceptedProjection.activeSetDifferingFaceCount=std::max(
-							acceptedProjection.activeSetDifferingFaceCount,differing);
+						acceptedProjection.activeSetCycleLength=branches.size();
+						for(unsigned int side=0;side<6;++side)for(std::size_t face=0;
+							face<acceptedProjection.inflow[side].size();++face){
+							bool differs=false;
+							for(const auto& branch:branches)differs=differs||
+								branch[side][face]!=acceptedProjection.inflow[side][face];
+							acceptedProjection.activeSetDifferingFaceCount+=differs?1u:0u;
+						}
 						acceptedProjection.maximumActiveSetComplementarityDiscrepancyMPerS=
 							OpenActiveSetComplementarityDiscrepancy3D(shape,acceptedBoundary,
 								acceptedProjection);
+						observeActiveSet(acceptedProjection);
 					}
 					std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
@@ -2595,12 +2643,11 @@
 					result.limiterDiscontinuousClass=predictorLimiter&&
 						limiterAcceptance.discontinuousClass;
 					result.maximumActiveSetComplementarityDiscrepancyMPerS=
-						result.projection.maximumActiveSetComplementarityDiscrepancyMPerS;
-					result.activeSetCycleLength=result.projection.activeSetCycleLength;
-					result.activeSetDifferingFaceCount=
-						result.projection.activeSetDifferingFaceCount;
-					result.activeSetDiscontinuousClass=
-						result.projection.activeSetDiscontinuousClass;
+						maximumActiveSetDiscrepancy;
+					result.activeSetDiscontinuousEventCount=activeSetDiscontinuousEvents;
+					result.activeSetCycleLength=maximumActiveSetCycleLength;
+					result.activeSetDifferingFaceCount=maximumActiveSetDifferingFaceCount;
+					result.activeSetDiscontinuousClass=activeSetDiscontinuousEvents>0u;
 					result.divergenceTargetPerS=std::move(verifiedTarget);
 					result.diffusivityM2PerS=acceptedDiffusivity;
 					result.conductivityWPerMK=acceptedConductivity;
@@ -2817,6 +2864,13 @@
 				candidate.r0.maximumLimiterClassDiscrepancy;
 			candidate.discontinuousLimiterClassCount=
 				candidate.r0.limiterDiscontinuousClass?1u:0u;
+			candidate.maximumActiveSetComplementarityDiscrepancyMPerS=
+				candidate.r0.maximumActiveSetComplementarityDiscrepancyMPerS;
+			candidate.discontinuousActiveSetClassCount=
+				candidate.r0.activeSetDiscontinuousEventCount;
+			candidate.maximumActiveSetCycleLength=candidate.r0.activeSetCycleLength;
+			candidate.maximumActiveSetDifferingFaceCount=
+				candidate.r0.activeSetDifferingFaceCount;
 			const OpenMACField3D predictorAdvection=OpenCompatibleMomentumFluxDivergence3D(
 				shape,candidate.r0.flux,
 				predictorAlpha,candidate.r0.projection.velocityMPerS,
@@ -2835,7 +2889,7 @@
 				candidate.maximumActiveSetComplementarityDiscrepancyMPerS,
 				candidate.r1.maximumActiveSetComplementarityDiscrepancyMPerS);
 			candidate.discontinuousActiveSetClassCount+=
-				candidate.r1.activeSetDiscontinuousClass?1u:0u;
+				candidate.r1.activeSetDiscontinuousEventCount;
 			candidate.maximumActiveSetCycleLength=std::max(
 				candidate.maximumActiveSetCycleLength,candidate.r1.activeSetCycleLength);
 			candidate.maximumActiveSetDifferingFaceCount=std::max(

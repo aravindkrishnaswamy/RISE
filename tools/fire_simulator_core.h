@@ -1975,13 +1975,20 @@ namespace RISE
 					outwardVelocityMPerS*interior[MethaneMassStateDimension];
 				return true;
 			}
-			const ConservativeVector& donor = inflow ? boundary.ambientState : interior;
+			bool scalarInflow=inflow;
+			if(kind==PressureOpenBoundary3D){
+				if(outwardVelocityMPerS < -boundary.velocityToleranceMPerS)
+					scalarInflow=true;
+				else if(outwardVelocityMPerS > boundary.velocityToleranceMPerS)
+					scalarInflow=false;
+			}
+			const ConservativeVector& donor = scalarInflow ? boundary.ambientState : interior;
 			for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
 				result.totalOutwardFlux[component] = outwardVelocityMPerS*donor[component];
 				if( !std::isfinite(result.totalOutwardFlux[component]) ) return Fail(error,
 					"fire solver open advective flux overflowed");
 			}
-			if( !inflow ) return true; // zero-gradient outflow suppresses every inward diffusive flux.
+			if( !scalarInflow ) return true; // zero-gradient outflow suppresses every inward diffusive flux.
 			bool identicalAmbient=true;
 			for( std::size_t component=0; component<MethaneConservativeDimension; ++component ) {
 				identicalAmbient=identicalAmbient && interior[component]==boundary.ambientState[component];

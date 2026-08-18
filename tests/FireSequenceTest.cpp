@@ -188,6 +188,13 @@ namespace
 		unsigned int discontinuousLimiterClassSteps=0u;
 		bool discontinuousClassThreadIdentity=true;
 		bool discontinuousClassThreadIdentityChecked=false;
+		std::string activeSetAlgorithmVersion="open_active_set_two_class_r81_v2";
+		double maximumActiveSetComplementarityDiscrepancyMPerS=0.0;
+		unsigned int discontinuousActiveSetEvents=0u;
+		std::size_t maximumActiveSetCycleLength=0u;
+		std::size_t maximumActiveSetDifferingFaceCount=0u;
+		bool activeSetThreadIdentity=true;
+		bool activeSetThreadIdentityChecked=false;
 		double statisticsStartS=0.0,puffingFrequencyHz=0.0,puffingRelativeError=0.0;
 		double firstStatisticsStepStartS=0.0;
 		double integratedHeatReleaseJ=0.0,integratedRadiativeLossJ=0.0;
@@ -524,7 +531,14 @@ namespace
 			writer.String(checkpoint.values.migrationOldBuildId)&&
 			writer.String(checkpoint.values.migrationNewBuildId)&&
 			writer.Pod(checkpoint.values.migrationAcceptedStepCount)&&
-			writer.Pod(checkpoint.values.migrationResumedFromStep);
+			writer.Pod(checkpoint.values.migrationResumedFromStep)&&
+			writer.String(checkpoint.values.activeSetAlgorithmVersion)&&
+			writer.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)&&
+			writer.Pod(checkpoint.values.discontinuousActiveSetEvents)&&
+			writer.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
+			writer.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
+			writer.Pod(checkpoint.values.activeSetThreadIdentity)&&
+			writer.Pod(checkpoint.values.activeSetThreadIdentityChecked);
 	}
 
 	bool ReadCheckpointPayload(CheckpointReader& reader,MethaneRunCheckpoint& checkpoint,
@@ -549,7 +563,14 @@ namespace
 				reader.String(checkpoint.values.migrationOldBuildId)&&
 				reader.String(checkpoint.values.migrationNewBuildId)&&
 				reader.Pod(checkpoint.values.migrationAcceptedStepCount)&&
-				reader.Pod(checkpoint.values.migrationResumedFromStep)));
+				reader.Pod(checkpoint.values.migrationResumedFromStep)&&
+				(version<7u||(reader.String(checkpoint.values.activeSetAlgorithmVersion)&&
+					reader.Pod(checkpoint.values.maximumActiveSetComplementarityDiscrepancyMPerS)&&
+					reader.Pod(checkpoint.values.discontinuousActiveSetEvents)&&
+					reader.Pod(checkpoint.values.maximumActiveSetCycleLength)&&
+					reader.Pod(checkpoint.values.maximumActiveSetDifferingFaceCount)&&
+					reader.Pod(checkpoint.values.activeSetThreadIdentity)&&
+					reader.Pod(checkpoint.values.activeSetThreadIdentityChecked)))));
 	}
 
 	bool DurableSyncFileAndDirectory(const std::filesystem::path& path,std::string& error)
@@ -613,7 +634,7 @@ namespace
 		const std::filesystem::path temporary=path.string()+".tmp."+std::to_string(processId);
 		CheckpointWriter writer(temporary);if(!writer.Good()){error="cannot open run checkpoint";return false;}
 		const char magic[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
-		const std::uint64_t version=6u,endian=0x0102030405060708ull,zero=0u;
+		const std::uint64_t version=7u,endian=0x0102030405060708ull,zero=0u;
 		auto rejectTemporary=[&temporary](){std::error_code ignored;
 			std::filesystem::remove(temporary,ignored);};
 		if(!writer.HeaderBytes(magic,sizeof(magic))||!writer.HeaderBytes(&version,sizeof(version))||
@@ -660,7 +681,8 @@ namespace
 		char magic[16]={};std::uint64_t version=0u,endian=0u,payloadBytes=0u,checksum=0u;
 		const char expected[16]={'R','I','S','E','F','I','R','E','C','H','K','P','T','1',0,0};
 		if(!reader.HeaderBytes(magic,sizeof(magic))||std::memcmp(magic,expected,sizeof(magic))!=0||
-			!reader.HeaderBytes(&version,sizeof(version))||(version!=5u&&version!=6u)||
+			!reader.HeaderBytes(&version,sizeof(version))||
+				(version!=5u&&version!=6u&&version!=7u)||
 			!reader.HeaderBytes(&endian,sizeof(endian))||endian!=0x0102030405060708ull||
 			!reader.HeaderBytes(&payloadBytes,sizeof(payloadBytes))||
 			!reader.HeaderBytes(&checksum,sizeof(checksum))||payloadBytes>64ull*1024ull*1024ull*1024ull||
@@ -1202,9 +1224,13 @@ namespace
 			if(!advancedOK) error=lastAdvanceError;
 			reaction.deltaTimeS=config.transport.deltaTimeS;
 			if(advancedOK) {
-				if(workerCount>1u&&(advanced.discontinuousLimiterClassCount>0u||
-					advanced.discontinuousActiveSetClassCount>0u)&&
-					!values.discontinuousClassThreadIdentityChecked){
+				const bool checkLimiterIdentity=workerCount>1u&&
+					advanced.discontinuousLimiterClassCount>0u&&
+					!values.discontinuousClassThreadIdentityChecked;
+				const bool checkActiveSetIdentity=workerCount>1u&&
+					advanced.discontinuousActiveSetClassCount>0u&&
+					!values.activeSetThreadIdentityChecked;
+				if(checkLimiterIdentity||checkActiveSetIdentity){
 					ConservativeAdvance3DConfig serialConfig=config;
 					serialConfig.workerCount=1u;
 					ConservativeAdvance3DResult serialAdvanced;
@@ -1236,10 +1262,16 @@ namespace
 							advanced.momentumKGPerM2S.component[axis]&&
 						serialAdvanced.velocityMPerS.component[axis]==
 							advanced.velocityMPerS.component[axis];
-					values.discontinuousClassThreadIdentity=identical;
-					values.discontinuousClassThreadIdentityChecked=true;
+					if(checkLimiterIdentity){
+						values.discontinuousClassThreadIdentity=identical;
+						values.discontinuousClassThreadIdentityChecked=true;
+					}
+					if(checkActiveSetIdentity){
+						values.activeSetThreadIdentity=identical;
+						values.activeSetThreadIdentityChecked=true;
+					}
 					if(!identical&&reportCapstoneProgress)std::fprintf(stderr,
-						"capstone r59 discontinuous-class 1-vs-N mismatch: %s\n",
+						"capstone discontinuous-class 1-vs-N mismatch: %s\n",
 						serialError.c_str());
 				}
 				values.maximumLimiterClassDiscrepancy=std::max(
@@ -1247,6 +1279,16 @@ namespace
 					advanced.maximumLimiterClassDiscrepancy);
 				values.discontinuousLimiterClassSteps+=
 					advanced.discontinuousLimiterClassCount;
+				values.maximumActiveSetComplementarityDiscrepancyMPerS=std::max(
+					values.maximumActiveSetComplementarityDiscrepancyMPerS,
+					advanced.maximumActiveSetComplementarityDiscrepancyMPerS);
+				values.discontinuousActiveSetEvents+=
+					advanced.discontinuousActiveSetClassCount;
+				values.maximumActiveSetCycleLength=std::max(
+					values.maximumActiveSetCycleLength,advanced.maximumActiveSetCycleLength);
+				values.maximumActiveSetDifferingFaceCount=std::max(
+					values.maximumActiveSetDifferingFaceCount,
+					advanced.maximumActiveSetDifferingFaceCount);
 				double expectedStepPilotEnergyJ=0.0;
 				for(std::size_t cell=0;cell<shape.CellCount();++cell){
 					double pilotEnergyJPerM3=0.0;
@@ -2277,6 +2319,18 @@ namespace
 				{"resumed_from_step",Value::Unsigned(values.migrationResumedFromStep)}
 			});
 		const Value payload=Value::MapValue({
+			{"active_set_algorithm_version",Value::String(values.activeSetAlgorithmVersion)},
+			{"active_set_discontinuous_event_count",Value::Unsigned(
+				values.discontinuousActiveSetEvents)},
+			{"active_set_maximum_complementarity_discrepancy_m_per_s",Value::Float(
+				values.maximumActiveSetComplementarityDiscrepancyMPerS)},
+			{"active_set_maximum_cycle_length",Value::Unsigned(
+				values.maximumActiveSetCycleLength)},
+			{"active_set_maximum_differing_face_count",Value::Unsigned(
+				values.maximumActiveSetDifferingFaceCount)},
+			{"active_set_thread_identity_checked",Value::Bool(
+				values.activeSetThreadIdentityChecked)},
+			{"active_set_thread_identity",Value::Bool(values.activeSetThreadIdentity)},
 			{"build_migration",buildMigration},
 			{"checkpoint_cadence_wall_s",Value::Float(values.checkpointCadenceWallS)},
 			{"checkpoint_count",Value::Unsigned(values.checkpointStepIndices.size())},
@@ -2284,11 +2338,11 @@ namespace
 			{"effective_worker_count",Value::Unsigned(workerCount)},
 			{"frame4_sha256",Value::String(frame4Digest)},
 			{"frame5_sha256",Value::String(frame5Digest)},
-			{"record_kind",Value::String("fire-simulation-run-metadata-v2")},
+			{"record_kind",Value::String("fire-simulation-run-metadata-v3")},
 			{"reduction_mode",Value::String(values.reductionMode)},
 			{"resumed_from_checkpoint",Value::Bool(values.resumedFromCheckpoint)},
 			{"resumed_from_step",Value::Unsigned(values.resumedFromStep)},
-			{"schema_version",Value::Unsigned(2)},
+			{"schema_version",Value::Unsigned(3)},
 			{"sequence_id",Value::String(sequenceId)},
 			{"streamed_frame_count",Value::Unsigned(values.streamedFrameCount)},
 			{"worker_count_history",Value::ArrayValue(workerHistory)}
@@ -2683,6 +2737,49 @@ namespace
 		return 0;
 	}
 
+	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
+	{
+		static const char* checkpointDigest=
+			"1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947";
+		static const char* checkpointBuild=
+			"8fb5e3eb14566f29266013487be77bbbb64fa745383d7ec2af62c55f4f37cd56";
+		if(DigestFile(checkpointPath)!=checkpointDigest){std::fprintf(stderr,
+			"r80 golden continuation checkpoint digest mismatch\n");return 90;}
+		const double targetS=25.032480502915522;
+		const int status=RunResumeEquivalenceTraceChild(checkpointPath,tracePath,framePath,
+			16u,8u,targetS,1.0/targetS,10.0,0.30,33.0,checkpointBuild);
+		if(status!=0||DigestFile(checkpointPath)!=checkpointDigest)return status?status:91;
+		const std::filesystem::path finalSnapshot=tracePath.string()+
+			".snapshots/step_08.checkpoint";
+		MethaneRunCheckpoint final;std::string error;
+		if(!LoadMethaneRunCheckpoint(finalSnapshot,final,error)||final.acceptedSteps!=3487u||
+			final.values.acceptedTimeStepHistoryS.empty()||
+			final.values.acceptedTimeStepHistoryS.back()<4.0e-5||
+			final.values.discontinuousActiveSetEvents==0u||
+			!final.values.activeSetThreadIdentityChecked||
+			!final.values.activeSetThreadIdentity){
+			std::fprintf(stderr,"r80 golden continuation failed: %s steps=%llu dt=%.17g "
+				"events=%u thread_checked=%d thread_identical=%d\n",error.c_str(),
+				static_cast<unsigned long long>(final.acceptedSteps),
+				final.values.acceptedTimeStepHistoryS.empty()?0.0:
+					final.values.acceptedTimeStepHistoryS.back(),
+				final.values.discontinuousActiveSetEvents,
+				final.values.activeSetThreadIdentityChecked?1:0,
+				final.values.activeSetThreadIdentity?1:0);
+			return 92;
+		}
+		std::fprintf(stderr,"r80 golden continuation passed step=%llu dt=%.17g events=%u "
+			"cycle=%zu faces=%zu discrepancy=%.17g\n",
+			static_cast<unsigned long long>(final.acceptedSteps),
+			final.values.acceptedTimeStepHistoryS.back(),
+			final.values.discontinuousActiveSetEvents,
+			final.values.maximumActiveSetCycleLength,
+			final.values.maximumActiveSetDifferingFaceCount,
+			final.values.maximumActiveSetComplementarityDiscrepancyMPerS);
+		return 0;
+	}
+
 #if defined(_WIN32)
 	std::string QuoteSubprocessArgument(const std::string& value)
 	{
@@ -2770,6 +2867,8 @@ int main(int argc,char** argv)
 	}
 	if(argc==6&&std::strcmp(argv[1],"--fire-resume-equivalence-certify")==0)
 		return RunResumeEquivalenceCertificateChild(argv[2],argv[3],argv[4],argv[5]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r80-golden-continuation")==0)
+		return RunR80GoldenContinuationFixture(argv[2],argv[3],argv[4]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;
@@ -3128,6 +3227,11 @@ int main(int argc,char** argv)
 	metadataFixture.migrationNewBuildId=certifiedMigration.migrationNewBuildId;
 	metadataFixture.migrationAcceptedStepCount=certifiedMigration.migrationAcceptedStepCount;
 	metadataFixture.migrationResumedFromStep=certifiedMigration.migrationResumedFromStep;
+	metadataFixture.maximumActiveSetComplementarityDiscrepancyMPerS=0.0025;
+	metadataFixture.discontinuousActiveSetEvents=3u;
+	metadataFixture.maximumActiveSetCycleLength=2u;
+	metadataFixture.maximumActiveSetDifferingFaceCount=4u;
+	metadataFixture.activeSetThreadIdentityChecked=true;
 	std::string fixtureRunMetadataId;
 	const RISECBOR64::Bytes fixtureRunMetadata=RunMetadataEnvelope(metadataFixture,4u,
 		DigestFile(streamedPrefixFrame),DigestFile(resumedCheckpointFrame),std::string(64u,'b'),
@@ -3146,6 +3250,18 @@ int main(int argc,char** argv)
 		runMetadataPayload->Find("checkpoint_step_indices")&&
 		runMetadataPayload->Find("reduction_mode")&&
 		runMetadataPayload->Find("reduction_mode")->GetText()=="fixed_order_tree_v1"&&
+		runMetadataPayload->Find("active_set_algorithm_version")&&
+		runMetadataPayload->Find("active_set_algorithm_version")->GetText()==
+			"open_active_set_two_class_r81_v2"&&
+		runMetadataPayload->Find("active_set_discontinuous_event_count")&&
+		runMetadataPayload->Find("active_set_discontinuous_event_count")->
+			GetIntegerArgument()==3u&&
+		runMetadataPayload->Find("active_set_maximum_cycle_length")&&
+		runMetadataPayload->Find("active_set_maximum_cycle_length")->
+			GetIntegerArgument()==2u&&
+		runMetadataPayload->Find("active_set_maximum_differing_face_count")&&
+		runMetadataPayload->Find("active_set_maximum_differing_face_count")->
+			GetIntegerArgument()==4u&&
 		runMetadataPayload->Find("worker_count_history")&&
 		runMetadataPayload->Find("worker_count_history")->GetArray().size()==2u&&
 		runMetadataPayload->Find("build_migration")&&
@@ -4007,6 +4123,19 @@ int main(int argc,char** argv)
 			<< "r59_discontinuous_class_thread_identity=" <<
 				(methaneFrameNext.discontinuousClassThreadIdentityChecked&&
 				methaneFrameNext.discontinuousClassThreadIdentity?"true":"not_exercised") << "\n"
+			<< "r81_active_set_algorithm_version=" <<
+				methaneFrameNext.activeSetAlgorithmVersion << "\n"
+			<< "r81_discontinuous_active_set_events=" <<
+				methaneFrameNext.discontinuousActiveSetEvents << "\n"
+			<< "r81_maximum_active_set_complementarity_discrepancy_m_per_s=" <<
+				methaneFrameNext.maximumActiveSetComplementarityDiscrepancyMPerS << "\n"
+			<< "r81_maximum_active_set_cycle_length=" <<
+				methaneFrameNext.maximumActiveSetCycleLength << "\n"
+			<< "r81_maximum_active_set_differing_face_count=" <<
+				methaneFrameNext.maximumActiveSetDifferingFaceCount << "\n"
+			<< "r81_active_set_thread_identity=" <<
+				(methaneFrameNext.activeSetThreadIdentityChecked&&
+				methaneFrameNext.activeSetThreadIdentity?"true":"not_exercised") << "\n"
 			<< "r54_pinned_selected_timestep_s=" << methaneFrameNext.selectedTimeStepS << "\n"
 			<< "r57_resolution_tier=" << reportedResolutionTier << "\n"
 			<< "accepted_final_timestep_s=" << methaneFrameNext.acceptedTimeStepS << "\n"

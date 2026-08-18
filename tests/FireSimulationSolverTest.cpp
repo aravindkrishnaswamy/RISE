@@ -1114,6 +1114,31 @@ int main()
 	const bool r80ReversedOK=r80OtherOK&&ProjectPressureOpenMACVelocity3D(r80Shape,
 		std::vector<double>(r80Shape.CellCount(),1.18),r80Momentum,r80Target,
 		r80OtherBoundary,0.01,2.0e-8,r80ReversedVisit,&error,1u);
+	const std::vector<unsigned char> r80ExpectedSelected={0,1,1,0,1,0,1,1,0,1,0,1,
+		1,1,1,0,0,0,0,0,0,0,1,1};
+	const std::vector<unsigned char> r80ExpectedOther={0,1,1,0,1,0,1,1,0,1,0,1,
+		1,1,1,0,0,0,0,0,1,0,1,1};
+	PeriodicMACShape r80ComparatorShape;r80ComparatorShape.nx=1;r80ComparatorShape.ny=1;
+	r80ComparatorShape.nz=1;r80ComparatorShape.cellWidthM=1.0;
+	OpenBoundaryConfig3D r80ComparatorBoundary;r80ComparatorBoundary.kind.fill(
+		AdiabaticWallBoundary3D);r80ComparatorBoundary.kind[0]=PressureOpenBoundary3D;
+	r80ComparatorBoundary.kind[1]=PressureOpenBoundary3D;
+	r80ComparatorBoundary.velocityToleranceMPerS=1.0e-10;
+	OpenMACProjection3DResult r80CrossA,r80CrossB;
+	for(unsigned int side=0;side<6;++side){const std::size_t count=
+		OpenBoundaryFaceCount3D(r80ComparatorShape,side);
+		r80CrossA.inflow[side].assign(count,false);r80CrossB.inflow[side].assign(count,false);}
+	r80CrossA.inflow[0][0]=true;r80CrossB.inflow[1][0]=true;
+	r80CrossA.velocityMPerS.component[0]={1.0,1.0};
+	r80CrossB.velocityMPerS.component[0]=r80CrossA.velocityMPerS.component[0];
+	r80CrossA.velocityMPerS.component[1].assign(2u,0.0);
+	r80CrossB.velocityMPerS.component[1].assign(2u,0.0);
+	r80CrossA.velocityMPerS.component[2].assign(2u,0.0);
+	r80CrossB.velocityMPerS.component[2].assign(2u,0.0);
+	Check(OpenActiveSetCanonicalBefore3D(r80ComparatorShape,r80ComparatorBoundary,
+		r80CrossA,r80CrossB)&&!OpenActiveSetCanonicalBefore3D(r80ComparatorShape,
+		r80ComparatorBoundary,r80CrossB,r80CrossA),
+		"r80 canonical comparator independently selects a solved crossing branch, not union or intersection");
 	bool r80BitIdentity=r80OneOK&&r80ManyOK;
 	for(unsigned int axis=0;r80BitIdentity&&axis<3;++axis)r80BitIdentity=
 		r80OneWorker.velocityMPerS.component[axis]==r80ManyWorkers.velocityMPerS.component[axis]&&
@@ -1132,7 +1157,12 @@ int main()
 		r80OneWorker.activeSetDiscontinuousClass&&r80ReversedVisit.activeSetDiscontinuousClass&&
 		r80OneWorker.activeSetCycleLength==2u&&r80OneWorker.activeSetDifferingFaceCount==1u&&
 		OpenActiveSetDifferingFaceCount3D(r80OneWorker.inflow,r80OtherBranch.inflow)==1u&&
-		OpenActiveSetCanonicalBefore3D(r80Shape,r80Boundary,r80OneWorker,r80OtherBranch)&&
+		FlattenOpenActiveSet3D(r80OneWorker.inflow)==r80ExpectedSelected&&
+		FlattenOpenActiveSet3D(r80OtherBranch.inflow)==r80ExpectedOther&&
+		OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OneWorker)==
+			0.0029506166530252633&&
+		OpenActiveSetComplementarityDiscrepancy3D(r80Shape,r80Boundary,r80OtherBranch)==
+			0.038419987516982668&&
 		r80OneWorker.inflow==r80ReversedVisit.inflow&&
 		r80OneWorker.velocityMPerS.component==r80ReversedVisit.velocityMPerS.component&&
 		r80OneWorker.maximumDivergenceResidualPerS<=2.0e-8&&
@@ -1142,6 +1172,32 @@ int main()
 		r80OneWorker.maximumActiveSetComplementarityDiscrepancyMPerS==
 			r80ManyWorkers.maximumActiveSetComplementarityDiscrepancyMPerS,
 		"r80 discontinuous active-set selection is bit-identical at one and N workers");
+	bool r81DonorFound=false,r81DonorCorrect=false;
+	for(unsigned int side=0;side<6&&!r81DonorFound;++side){const unsigned int axis=side/2;
+		const bool positive=side%2;for(std::size_t second=0;second<(side<4?r80Shape.nz:r80Shape.ny)&&
+			!r81DonorFound;++second)for(std::size_t first=0;first<(side<2?r80Shape.ny:r80Shape.nx)&&
+			!r81DonorFound;++first){const std::size_t index=OpenBoundaryFaceLinearIndex3D(
+			r80Shape,side,first,second);std::size_t x=0,y=0,z=0;
+			if(axis==0){x=positive?r80Shape.nx:0;y=first;z=second;}
+			if(axis==1){x=first;y=positive?r80Shape.ny:0;z=second;}
+			if(axis==2){x=first;y=second;z=positive?r80Shape.nz:0;}
+			const double outward=(positive?1.0:-1.0)*r80OneWorker.velocityMPerS.
+				component[axis][OpenMACFaceIndex3D(r80Shape,axis,x,y,z)];
+			const bool velocityInflow=outward < -r80Boundary.velocityToleranceMPerS;
+			if(std::fabs(outward)<=r80Boundary.velocityToleranceMPerS||
+				velocityInflow==r80OneWorker.inflow[side][index])continue;
+			ConservativeVector interior=r80Boundary.ambientState;
+			interior[1+MethaneN2]=0.59;
+			OpenBoundaryFlux3D scalarFlux;
+			r81DonorFound=true;
+			r81DonorCorrect=BuildOpenBoundaryFlux3D(interior,300.0,outward,
+				PressureOpenBoundary3D,r80OneWorker.inflow[side][index],r80Boundary,
+				300.0,300.0,0.0,0.0,1.0,0.0,FireSimulationMethaneRecord::PhysicalV1(),
+				FireSimulationMethaneRecord::PhysicalV1(),scalarFlux,&error)&&
+				scalarFlux.totalOutwardFlux[1+MethaneN2]==outward*(velocityInflow?
+					r80Boundary.ambientState[1+MethaneN2]:interior[1+MethaneN2]);}}
+	Check(r81DonorFound&&r81DonorCorrect,
+		"r81 resolved scalar donor follows accepted velocity sign, not discontinuous pressure bit");
 	bool allPositiveInflowHeads=true;
 	for( unsigned int normalAxis=0; normalAxis<3; ++normalAxis ) {
 		const unsigned int positiveSide=2*normalAxis+1;
