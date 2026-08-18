@@ -1530,9 +1530,14 @@ static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
 	// Different imageMaxEdge per round: the retention checks below need the
 	// two renders' bytes to DIFFER, and two renders of an unchanged scene can
 	// legitimately come back byte-identical (QMC sampling is deterministic;
-	// the only cross-call entropy is thread interleaving).  Different output
-	// dimensions make the PNGs structurally distinct every run.
-	const char* const edges[] = { "32", "24" };
+	// the only cross-call entropy is thread interleaving).  imageMaxEdge only
+	// DOWNSCALES (AgentRpc.cpp render handler), and the fixture film is 24x24,
+	// so the second round must sit BELOW the native edge: 16 (the param's
+	// clamp floor) forces 24x24 -> 16x16, making the PNGs structurally
+	// distinct every run.  (A first attempt used 32/24 -- neither downscales
+	// 24x24, and the fixture-sanity check below caught the two renders coming
+	// back byte-identical.)
+	const char* const edges[] = { "32", "16" };
 	for( int round = 0; round < 2; ++round ) {
 		const std::string fx = AnthropicFixture(
 			std::string( "[{\"type\":\"tool_use\",\"id\":\"" ) + ids[round] +
