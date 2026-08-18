@@ -1935,3 +1935,27 @@ it was already tried and refuted here.
   semantics, not physical case authorship; it is recorded in producer/run
   metadata and does not change `case_record_id`, preserving the stopped prefix
   as an oracle under its original producer identity.
+
+- **r81 (2026-08-18):** cycle proof, diagnostic persistence, and scalar-donor
+  separation for the r80 reference-solver active-set rule. Fresh adversarial
+  review measured the compact cycling fixture's selected pressure branch at a
+  2.9506166530252633e-3 m/s complementarity discrepancy against the 1e-10 m/s
+  deadband. The implementation then reused that Boolean pressure bit as the
+  scalar donor, which could copy ambient material outward or interior material
+  inward at resolved speed. The same review showed that the outer Picard path
+  called any acceptance/verification disagreement a two-cycle, even on a first
+  ordinary transition, and allowed later stable solves to erase earlier cycle
+  diagnostics.
+
+  Ruling: a cycle requires a repeated solved classification. First visits and
+  verification-only changes continue the ordinary Picard history; after a
+  repeat, every distinct cycle state is solved frozen at the accepted target and
+  ordered by r80. Pressure classification governs the pressure equation only.
+  Scalar upwinding follows the accepted velocity sign outside the deadband and
+  retains the pressure class only inside it. Cycle diagnostics accumulate
+  monotonically through stage, step, checkpoint, and run metadata under a
+  versioned algorithm tag. Rejected: first-transition canonicalization (changes
+  stable paths), pressure-bit scalar donation (wrong resolved donor), velocity
+  clipping (changes the accepted solve), and last-solve-only diagnostics (loses
+  trajectory-changing evidence). This is reference-run semantics and does not
+  change `case_record_id`.

@@ -201,7 +201,18 @@ error and must be corrected.
      Acceptance verification applies the same canonical ordering to disagreeing
      branches at the accepted target, then rechecks every continuous residual;
      first/last wins, Boolean union/intersection, tolerance inflation, and
-     relaxation are forbidden. **α₀ is a derived control
+     relaxation are forbidden. A classification change is not a cycle (r81):
+     continue after every first visit, and invoke canonical selection only
+     after the outer history repeats a solved classification or the projector
+     supplies its own repeated-state proof. At an outer cycle, re-solve every
+     distinct cycle state frozen at the accepted continuous target before
+     ordering them. A verification-only mismatch without a repeat continues
+     Picard iteration. Accumulate cycle diagnostics over every projection in
+     the stage and every stage in the step. The selected pressure bit does not
+     override scalar upwinding: use the accepted outward-velocity sign outside
+     `u_bc,tol`, retaining the selected bit only inside the deadband. Persist
+     the algorithm version and monotone event diagnostics in checkpoint/run
+     metadata. **α₀ is a derived control
      outside the convergence gate (r59):** the limiter map is discontinuous on
      constraint-activation boundaries, so its Cauchy convergence is not
      required — see §3.7's two-class rule. At acceptance, if the verification

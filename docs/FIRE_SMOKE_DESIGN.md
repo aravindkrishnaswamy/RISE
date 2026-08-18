@@ -1422,6 +1422,42 @@ The most notorious practical trap in fire LES; specified accordingly:
   change `case_record_id`; the preserved r77--r79 prefix remains a valid oracle
   artifact under its original producer metadata.
 
+  **Cycle proof and scalar-donor separation (r81).** A changed classification
+  is not by itself a cycle. R0/R1 retain the original iteration rule through
+  every first visit: a one-time change, including a change discovered by the
+  acceptance re-solve, advances the Picard history and must subsequently become
+  stable or repeat a previously solved classification. The discontinuous
+  selector is enabled only by that repeated-state proof (or by the pressure
+  projector's own repeated-state proof); verification disagreement without a
+  proof continues the iteration. When a proved outer cycle is accepted, every
+  distinct state in the cycle is re-solved frozen at the accepted continuous
+  target before the r80 ordering is applied. Diagnostics are monotone over all
+  projector calls in the stage and all stages in the step: no later stable
+  solve may erase an earlier cycle, and run checkpoints record the algorithm
+  version, event count, maximum cycle length, differing-face count, and maximum
+  discrepancy.
+
+  The selected Boolean branch governs only the nonlinear pressure boundary
+  equation. It is not an override of the conservative scalar upwind direction.
+  After the accepted pressure solve, each pressure-open scalar face uses the
+  sign of its published outward velocity whenever `|u_n|>u_bc,tol`; only a
+  velocity inside the deadband retains the selected pressure class. This
+  preserves the ambient donor for resolved inflow and the interior donor for
+  resolved outflow even when the canonical pressure branch has nonzero
+  complementarity discrepancy. The compact r80 cycle measured a
+  2.9506166530252633e-3 m/s discrepancy against a 1e-10 m/s deadband, making
+  the distinction load-bearing. Pressure diagnostics continue to report
+  disagreement against the selected pressure branch; scalar donor choice is
+  separately reproducible from the accepted velocity and deadband.
+
+  **REJECTED alternatives:** treating the first transition as a two-cycle
+  changes stable trajectories; using the selected pressure bit as the scalar
+  donor can copy ambient material outward or interior material inward at a
+  resolved speed; clipping the discrepancy to the deadband changes the accepted
+  velocity; and clearing diagnostics after a later stable solve destroys the
+  run record. This amendment is reference-solver run semantics and changes the
+  run-metadata algorithm version only, not `case_record_id`.
+
   Only after this acceptance is that stage's scalar upwinding selected. The endpoint u₂ class
   uses its sign with the same band, retaining I₁ inside the band, and seeds the
   next step; it does not reopen π₂. On inflow, advective ghost state is the complete frozen ambient
