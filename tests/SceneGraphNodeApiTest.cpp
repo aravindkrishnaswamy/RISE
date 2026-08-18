@@ -97,6 +97,20 @@
 //         Generations come from a process-global counter, so no two
 //         published trees anywhere share one; while the counter was a
 //         per-controller member seeded at 1, A's handle named B's node.
+//    X -- SetPrimaryAcceleration is the SECOND site that must bump the
+//         container-rebuild count: it replaces the ObjectManager without
+//         going through InitializeContainers, and the fresh manager restarts
+//         its serial counter -- the precondition the count exists to detect.
+//    Y -- the STRUCTURE the outliner shells reshape ReadTree into (step 4b):
+//         roots+children is a total, duplicate-free, in-bounds partition that
+//         agrees with each row's `parent`, over every shape the assembler can
+//         produce including its two hostile inputs.
+//    Z -- a row the tree OFFERS must INSPECT (step 4b review).  A counted
+//         instancing chunk's node has no live object of its own, and the
+//         properties panel's Object arm inspected the live object only -- so
+//         the one row whose whole justification is "it has a chunk to edit"
+//         published an EMPTY panel.  Now it falls back to the chunk, and the
+//         edit route follows.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -275,9 +289,19 @@ static std::string TreeShapeViolation( const SceneEditController::AuthoredTree& 
 		seen[cur] = 1;
 		const SceneEditController::TreeNodeRow& row = t.nodes[cur];
 		// (4) PARENT AGREEMENT.  `parent` and the child slices are two
-		// independent descriptions of one edge set; a shell reads BOTH (the
-		// slice to nest a row, `parent` to build its expand-state PATH), so
-		// they disagreeing would draw two different trees at once.
+		// INDEPENDENT descriptions of one edge set, written by two different
+		// passes of the assembler, so a disagreement means one of them is
+		// wrong and only comparing them can say so.
+		//
+		// NOT because the macOS shell reads both -- it does not.  4b's
+		// `outlinerFlatten` walks `children` only and accumulates each row's
+		// expand-state path on the way down, and `RISESceneTreeNode.parent`
+		// has no reader in any Swift file; the bridge merely WRITES it.  It
+		// stays pinned because it is published API that a consumer may read
+		// (the Qt tree of 87 step 4c carries the same field, and re-deriving
+		// roots by scanning for parent == -1 is exactly the shape 4b's commit
+		// flagged as tempting), and because a `parent` that disagrees with the
+		// slices would make selection-reveal and nesting name different trees.
 		for( unsigned int k = row.childCount; k > 0; --k ) {
 			const unsigned int child = t.childIndices[ row.firstChild + k - 1 ];
 			if( t.nodes[child].parent != cur ) return "a child's `parent` is not the row it hangs under";
@@ -1837,6 +1861,130 @@ int main()
 			         "Y: ... and a BROKEN cycle is still a partition -- the outliner draws each of "
 			         "those nodes exactly once, which is the whole reason the break exists" );
 		}
+	}
+
+	// =================================================================
+	// Z -- A ROW THE TREE OFFERS MUST INSPECT (step 4b review).
+	//
+	//      Case H established that a COUNTED instancing chunk gets a node
+	//      of its own because it is the row that HAS a chunk to edit.  That
+	//      node's whole justification is editability, and until this case
+	//      nothing checked it: `I count_u 2` puts `I[0,0]` / `I[1,0]` in the
+	//      object manager and NO `I`, so the properties panel's Object arm --
+	//      which inspects the LIVE object -- found nothing and published an
+	//      EMPTY row set.  The shell drew an Object section with zero rows:
+	//      a row that selects, highlights, and then inspects to nothing.
+	//      Pre-4b the outliner listed `I[0,0]` / `I[1,0]` instead, and those
+	//      DID inspect, so the tree traded a working panel for a tidier list.
+	//
+	//      The honest inspection of a synthesized node is its CHUNK, which is
+	//      what the generic descriptor+CST surface reports.  Asserted through
+	//      the CONTROLLER (SetSelection -> RefreshProperties -> the panel
+	//      accessors), not through CstIntrospection directly, because the
+	//      defect was in the arm's routing and a direct call would have
+	//      passed all along.  Both shells read these accessors, so this is
+	//      the one place the fix could go that covers 4b and 4c at once.
+	// =================================================================
+	{
+		const char* s = "sgnode_synthpanel.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i*3) 0 0\n}\n",
+			"Z: counted-instance scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+
+			// The PREMISE, both halves: the tree offers a row named `I`, and
+			// the object manager has never heard of it.  Without the second
+			// half the case would not be testing the synthesized path at all.
+			SceneEditController::AuthoredTree t;
+			c.ReadTree( Cat::Object, t );
+			bool haveI = false;
+			for( std::size_t i = 0; i < t.nodes.size(); ++i )
+				if( std::string( t.nodes[i].name.c_str() ) == "I" ) haveI = true;
+			Check( haveI, "Z: the premise -- the authored tree offers a row for the instancing chunk `I`" );
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			Check( om != 0 && om->GetItem( "I" ) == 0,
+			       "Z: ... and NO live object carries that name, so live introspection has nothing "
+			       "to inspect" );
+			Check( om != 0 && om->GetItem( "I[0,0]" ) != 0 && om->GetItem( "I[1,0]" ) != 0,
+			       "Z: ... while the repetitions the fold hid ARE live" );
+
+			// THE DEFECT: selecting the row and refreshing must produce rows.
+			Check( c.SetSelection( Cat::Object, String( "I" ) ), "Z: the synthesized row selects" );
+			c.RefreshProperties();
+			const unsigned int nRows = c.PropertyCountFor( Cat::Object );
+			Check( nRows > 0,
+			       "Z: selecting a SYNTHESIZED node fills the Object panel -- an empty row set here is "
+			       "the outliner offering a row that inspects to nothing" );
+			Check( c.PropertyCount() == nRows,
+			       "Z: ... and the PRIMARY snapshot the single-panel shells read carries the same rows" );
+
+			// The rows are the CHUNK's, and they carry its AUTHORED values --
+			// a non-empty row set built from some other entity would pass the
+			// count check above.  `count_u`/`source` say which chunk, and the
+			// values say it is read from the document rather than defaulted.
+			std::string countU = "<absent>", source = "<absent>", boundsRow = "<absent>",
+			            typeRow = "<absent>";
+			for( unsigned int i = 0; i < nRows; ++i ) {
+				const std::string rn( c.PropertyNameFor( Cat::Object, i ).c_str() );
+				if( rn == "count_u" ) countU = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
+				if( rn == "source"  ) source  = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
+				if( rn == "Bounds"  ) boundsRow = "present";
+				if( rn == "type"    ) typeRow = std::string( c.PropertyValueFor( Cat::Object, i ).c_str() );
+			}
+			CheckEq( countU, "2", "Z: the rows are the INSTANCING CHUNK's -- `count_u` reads what the "
+			                      "author wrote" );
+			CheckEq( source, "S", "Z: ... and so does `source`" );
+			CheckEq( typeRow, "standard_object",
+			         "Z: ... and the leading row names the chunk keyword, which is how the generic "
+			         "CST surface labels what it is showing" );
+
+			// CONTROL: a LIVE object still inspects through the LIVE path.
+			// Without this the fix could have replaced live introspection
+			// wholesale and every assertion above would still pass.
+			//
+			// The discriminator is NOT the descriptor params -- ObjectIntrospection
+			// ALREADY emits the whole standard_object param set for a live object,
+			// which is why the synthesized panel looks familiar rather than alien.
+			// It is the two rows only a LIVE object can have: `Name` and `Bounds`
+			// are computed from the instantiated object (its world extent), and no
+			// chunk text can produce them.
+			CheckEq( boundsRow, "<absent>",
+			         "Z: the synthesized panel has NO live-only row -- there is no instantiated object "
+			         "to measure" );
+			Check( c.SetSelection( Cat::Object, String( "S" ) ), "Z: a live object selects" );
+			c.RefreshProperties();
+			bool liveHasBounds = false, liveHasTypeRow = false;
+			const unsigned int nLive = c.PropertyCountFor( Cat::Object );
+			for( unsigned int i = 0; i < nLive; ++i ) {
+				const std::string rn( c.PropertyNameFor( Cat::Object, i ).c_str() );
+				if( rn == "Bounds" ) liveHasBounds = true;
+				if( rn == "type"   ) liveHasTypeRow = true;
+			}
+			Check( nLive > 0, "Z: the control -- a LIVE object still fills the panel" );
+			Check( liveHasBounds && !liveHasTypeRow,
+			       "Z: ... through the LIVE introspection path, not the chunk one -- it has the "
+			       "live-only `Bounds` row and not the CST surface's `type` row, so the fallback "
+			       "really is only a fallback" );
+
+			// AND THE ROWS WORK.  The panel offers them as editable; an edit
+			// that silently did nothing would be a worse defect than the empty
+			// panel it replaced.  Editing the chunk's `count_u` re-derives the
+			// array, which the live manager reports.
+			Check( c.SetSelection( Cat::Object, String( "I" ) ), "Z: re-select the synthesized row" );
+			Check( c.SetPropertyForCategory( Cat::Object, String( "count_u" ), String( "3" ) ),
+			       "Z: an edit to a synthesized node's chunk row APPLIES -- the SceneEdit ops the "
+			       "Object arm normally uses all address a live object, and there is none" );
+			// The re-derive replaces the manager, so re-read it.
+			const IScene* sc2 = j->GetScene();
+			IObjectManager* om2 = sc2 ? const_cast<IObjectManager*>( sc2->GetObjects() ) : 0;
+			Check( om2 != 0 && om2->GetItem( "I[2,0]" ) != 0,
+			       "Z: ... and the array really grew -- a third repetition exists" );
+		}
+		j->release();
+		std::remove( s );
 	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

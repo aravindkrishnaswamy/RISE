@@ -98,8 +98,10 @@ private struct OutlinerNode {
     /// is a UTF-8→String conversion rather than a cosmetic transform, so
     /// there is no display/raw split to keep apart here.
     let name: String
-    /// Expand-state key: this node's ANCESTRY within its category.  See
-    /// `outlinerPathKey` for the encoding and for why a name key is wrong.
+    /// Expand-state key AND the row's `ForEach` id: this node's ANCESTRY
+    /// within its category, plus a disambiguator when a sibling shares its
+    /// name.  See `outlinerPathKey` for the encoding, for why a name key is
+    /// wrong, and for the honest scope of the injectivity claim.
     let path: String
     /// 0 for a root; the nesting level the row is drawn at.
     let depth: Int
@@ -109,17 +111,21 @@ private struct OutlinerNode {
     let hasChildren: Bool
 }
 
-/// Build the expand-state key for a node from its ANCESTRY.
+/// The key a category's ROOTS extend.  Every node's key starts here, so the
+/// category qualifies the whole tree (see `outlinerPathKey`).
+private func outlinerPathRoot(_ category: RISEViewportCategory) -> String {
+    return "\(category.rawValue)"
+}
+
+/// Extend a PARENT's key by one component, naming this node.
 ///
 /// 87 §5 step 4 keys expand state on the tree PATH, NOT on the node
 /// name, and both halves of that matter:
 ///
 ///  - A NAME KEY WOULD COLLIDE.  A name is unique only within one
 ///    manager, and this view draws eleven categories side by side — a
-///    Material and an Object may both be called `glass`, and
-///    `RISEViewportCategoryPainter` is itself a UNION of two managers
-///    with independent contents (SceneEditController.h, TreeNodeRow::serial).
-///    One `Set<String>` keyed by bare name would tie unrelated rows'
+///    Material and an Object may both be called `glass`.  One
+///    `Set<String>` keyed by bare name would tie unrelated rows'
 ///    disclosure state together, so the key is category-qualified and
 ///    then ancestry-qualified.
 ///  - A PATH KEY IS WHAT SURVIVES A REFRESH.  The array is rebuilt from
@@ -132,15 +138,46 @@ private struct OutlinerNode {
 /// rather than separator-joined, because names may legitimately contain
 /// any separator one might pick — 87 §5 step 3 records that an author
 /// may write `name my.object`, and step 3's instanced descendants are
-/// named `I.X` by construction.  A length prefix makes the composition
-/// injective whatever the bytes are, so two distinct paths can never
-/// produce one key.
-private func outlinerPathKey(category: RISEViewportCategory, ancestry: [String]) -> String {
-    var key = "\(category.rawValue)"
-    for component in ancestry {
-        key += "/\(component.utf8.count):\(component)"
-    }
-    return key
+/// named `I.X` by construction.
+///
+/// NAMES ALONE ARE NOT INJECTIVE OVER NODES, which is why `occurrence` is
+/// here and not an afterthought.  `RISEViewportCategoryPainter` is a UNION
+/// of two managers (colour + physical-scalar, CLAUDE.md's IScalarPainter
+/// split) and `CollectPainterUnionEntries` deliberately does NOT dedup, so
+/// `uniformcolor_painter { name DUP }` + `scalar_painter { name DUP }` are
+/// two DIFFERENT, separately-addressable entities that arrive as two
+/// same-named sibling roots (SceneGraphNodeApiTest case T).  A key made of
+/// names alone gives them ONE string — and `ForEach(rows, id: \.path)` with
+/// a duplicated id is undefined behaviour in SwiftUI, so one of the two rows
+/// would simply not be drawn while the header counted both.  So the k-th
+/// node to claim a given `<parent>/<len>:<name>` stem gets `#k` appended
+/// (k > 0).  That suffix cannot be confused with part of a name: the length
+/// prefix already fixes where the name ends.
+///
+/// The counter is per-STEM, so it is per-sibling-list (a stem embeds the
+/// parent's whole key, which is node-unique).  DELIBERATELY not a plain
+/// sibling ordinal: a bare ordinal would re-key every later sibling when an
+/// unrelated one is inserted ahead of it, silently collapsing their
+/// disclosure state.  Only rows that actually share a name with an earlier
+/// sibling carry a suffix, so the common case is insertion-stable.
+///
+/// HONEST SCOPE OF THE INJECTIVITY CLAIM: the composition is injective over
+/// the key BYTES.  Keys are compared as Swift `String`s, which compare by
+/// Unicode CANONICAL EQUIVALENCE, so two byte-distinct but canonically
+/// equivalent names of equal UTF-8 length — `q` + U+0307 + U+0323 against
+/// `q` + U+0323 + U+0307, five bytes either way — still produce keys Swift
+/// treats as equal, and their two nodes would share disclosure state.  So
+/// the guarantee is byte-injectivity, NOT `String`-injectivity.  Exotic, and
+/// pre-existing — the flat `ForEach(children, id: \.self)` this replaced
+/// compared bare names the same way — so it is recorded here rather than
+/// claimed away; a byte-array key type would not earn its cost.
+private func outlinerPathKey(base: String,
+                             name: String,
+                             occurrence: inout [String: Int]) -> String {
+    let stem = base + "/\(name.utf8.count):\(name)"
+    let seen = occurrence[stem, default: 0]
+    occurrence[stem] = seen + 1
+    return seen == 0 ? stem : stem + "#\(seen)"
 }
 
 /// Flatten one category's tree into DEPTH-FIRST display order.
@@ -153,19 +190,31 @@ private func outlinerPathKey(category: RISEViewportCategory, ancestry: [String])
 /// Roots and each child list are consumed IN THE ORDER THE BRIDGE GIVES
 /// THEM — that order is 87 §2's "child order for display comes from
 /// declaration order" and is not re-sorted here.
+///
+/// The stack carries the parent's ROW INDEX, not a copy of its ancestry:
+/// a key is built by appending ONE component to the parent's already-built
+/// key, which is still in `out` and cannot move (the array only grows).
+/// Ancestry copies made this O(depth²) in both time AND live stack memory
+/// on a deep chain — SceneGraphNodeApiTest case E4 pins 4096 levels as
+/// supported.  Now the stack is O(depth) and the total key-building work
+/// equals the size of the keys themselves, which path keying makes
+/// unavoidable.
 private func outlinerFlatten(_ tree: RISESceneTree,
                              category: RISEViewportCategory) -> [OutlinerNode] {
     let bridgeNodes = tree.nodes
     var out: [OutlinerNode] = []
     out.reserveCapacity(bridgeNodes.count)
 
-    // (index, depth, ancestry-so-far).  Reversed pushes so the stack pops
-    // siblings in declaration order.
-    var stack: [(index: Int, depth: Int, ancestry: [String])] = []
+    // (index, depth, parent's row in `out`; -1 for a root).  Reversed pushes
+    // so the stack pops siblings in declaration order.
+    var stack: [(index: Int, depth: Int, parentRow: Int)] = []
     for root in tree.roots.reversed() {
-        stack.append((Int(truncating: root), 0, []))
+        stack.append((Int(truncating: root), 0, -1))
     }
     var visited = Set<Int>()
+    // Same-name-sibling disambiguation; see `outlinerPathKey`.  One entry per
+    // emitted row, so it is the same order of memory as `out` itself.
+    var occurrence: [String: Int] = [:]
 
     while let top = stack.popLast() {
         guard top.index >= 0 && top.index < bridgeNodes.count else { continue }
@@ -175,13 +224,16 @@ private func outlinerFlatten(_ tree: RISESceneTree,
         guard visited.insert(top.index).inserted else { continue }
 
         let node = bridgeNodes[top.index]
-        let ancestry = top.ancestry + [node.name]
+        let base = top.parentRow >= 0 ? out[top.parentRow].path : outlinerPathRoot(category)
+        let row = out.count
         out.append(OutlinerNode(name: node.name,
-                                path: outlinerPathKey(category: category, ancestry: ancestry),
+                                path: outlinerPathKey(base: base,
+                                                      name: node.name,
+                                                      occurrence: &occurrence),
                                 depth: top.depth,
                                 hasChildren: !node.children.isEmpty))
         for child in node.children.reversed() {
-            stack.append((Int(truncating: child), top.depth + 1, ancestry))
+            stack.append((Int(truncating: child), top.depth + 1, row))
         }
     }
 
@@ -192,11 +244,16 @@ private func outlinerFlatten(_ tree: RISESceneTree,
     // entity would silently VANISH from the outliner, which reads as a
     // deleted object rather than as a bug.  So anything the walk missed is
     // shown as a root instead of being lost.
+    // A salvaged row keys as a root, and goes through the SAME `occurrence`
+    // counter as the walk did — so if it collides with a real root's name it
+    // gets a `#k` suffix rather than a duplicate `ForEach` id.
     if visited.count != bridgeNodes.count {
         for index in bridgeNodes.indices where !visited.contains(index) {
             let node = bridgeNodes[index]
             out.append(OutlinerNode(name: node.name,
-                                    path: outlinerPathKey(category: category, ancestry: [node.name]),
+                                    path: outlinerPathKey(base: outlinerPathRoot(category),
+                                                          name: node.name,
+                                                          occurrence: &occurrence),
                                     depth: 0,
                                     hasChildren: false))
         }
@@ -528,9 +585,16 @@ private struct OutlinerChildRow: View {
             }
             .frame(width: 8, alignment: .center)
             .contentShape(Rectangle())
-            // Inner gesture wins over the row-level one below, so hitting
-            // the glyph discloses and hitting anywhere else selects.
-            .onTapGesture { if hasChildren { onToggle() } }
+            // The inner gesture WINS over the row-level one below, so this
+            // closure must handle BOTH cases: on a childless row the gutter
+            // is still hit-tested (the `Color.clear` branch fills it and
+            // `contentShape` makes it tappable), the tap is recognised HERE,
+            // and an `if hasChildren`-only body would swallow it — the row
+            // would refuse to select anywhere in the 8pt gutter.  That is not
+            // a corner: EVERY row of all ten flat categories is childless,
+            // and so is every leaf Object.  Pre-4b the same x-range was part
+            // of the row's own 30pt leading inset and selected normally.
+            .onTapGesture { if hasChildren { onToggle() } else { onSelect() } }
             Text(name)
                 .font(Theme.sans(11.5))
                 .foregroundColor(isSelected ? .white : Theme.textMuted)

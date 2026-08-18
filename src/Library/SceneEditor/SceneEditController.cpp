@@ -10435,7 +10435,27 @@ void SceneEditController::RefreshProperties()
 			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
 			if( !objs ) break;
 			const IObject* obj = objs->GetItem( selName.c_str() );
-			if( !obj ) break;
+			// 87 step 4b: A SELECTABLE OBJECT ROW NEED NOT HAVE A LIVE ENTRY.
+			// The outliner draws the AUTHORED graph, and a COUNTED instancing
+			// chunk (`I count_u 2`) is a node named `I` while the manager holds
+			// only `I[0,0]` / `I[1,0]` -- see BuildObjectTreeSeedsLocked_ PASS 2,
+			// which mints that node precisely so the chunk the author wrote gets
+			// a row.  Selecting it is by NAME (handles never leave a walk), so
+			// this arm is reached with a name no live object carries, and the
+			// live-introspection path below has nothing to inspect.  Before this
+			// fallback the panel then showed an Object section with ZERO rows --
+			// the row was selectable and inspected to nothing.
+			//
+			// The honest inspection of a synthesized node is its CHUNK, which is
+			// exactly what the generic descriptor+CST surface reports (the same
+			// one Painter / Geometry use, and the same descriptor the parser
+			// validates against).  Fixed HERE rather than in a shell so both
+			// outliners get it -- the Qt tree (87 step 4c) has the same node.
+			if( !obj ) {
+				out = CstIntrospection::Inspect( mJob.GetCstDocument(), mJob, selName,
+					"standard_object", "Object chunk keyword" );
+				break;
+			}
 			out = ObjectIntrospection::Inspect( selName, *obj,
 				mJob.GetMaterials(), mJob.GetShaders(), &mJob );
 			// GUI redesign 2026-07-22: jump-to-definition metadata only
@@ -14814,6 +14834,36 @@ bool SceneEditController::SetPropertyInner_(
 		// op.  Every path goes through SceneEditor::Apply so undo /
 		// redo work end-to-end alongside drag-driven transform edits.
 		if( targetName.size() <= 1 ) return false;
+
+		// 87 step 4b: A SYNTHESIZED NODE HAS NO LIVE OBJECT TO EDIT.  The
+		// counted-instancing row (`I count_u 2` -> nodes `I`, entries
+		// `I[0,0]` / `I[1,0]`) is a real, selectable Object row whose panel
+		// rows come from the CHUNK, not from live introspection -- see the
+		// matching fallback in RefreshProperties' Object arm.  Every SceneEdit
+		// op below addresses a LIVE object by name, so without this the rows
+		// the panel just offered would all fail: the author would type a new
+		// `count_u` and watch nothing happen.  Route them the way Painter and
+		// Geometry (which have no live setter surface either) already do --
+		// the generic agent CST param-edit path, which cancel-and-parks,
+		// captures the prior value for undo/redo, re-derives, and kicks the
+		// re-render itself.  `standard_object` is the same role suffix this
+		// category's chunk addressing uses everywhere else
+		// (RoleKindSuffixForCategory), and it is the only chunk kind that
+		// mints synthesized entries today (87 step 3d).
+		{
+			bool live = false;
+			{
+				std::lock_guard<std::mutex> lk( mMutex );
+				const IScene* sc = mJob.GetScene();
+				IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+				live = om && om->GetItem( targetName.c_str() ) != 0;
+			}
+			if( !live ) {
+				const AgentCommitResult r = ApplyAgentParamEditInner_(
+					targetName, String( "standard_object" ), name, valueStr, nullptr );
+				return r.applied;
+			}
+		}
 
 		SceneEdit edit;
 		edit.objectName = targetName;
