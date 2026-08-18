@@ -595,6 +595,13 @@ orientation 0 expr(u * 15) 0
   without `count_u`; a fractional, negative or out-of-range count (never
   rounded); instancing a chunk that itself carries counts, or copying a subtree
   that contains one (either would silently copy just one of its N entries).
+- **Refer to a repetition BY ITS OWN NAME, never by the chunk's.**  A counted
+  chunk called `fence` produces `fence[0,0]` … and NO object called `fence` at
+  all, so `parent fence` and `override_object { name fence }` both refuse —
+  each naming that as the cause and spelling the working form
+  (`parent fence[0,0]`, `name fence[0,0]`).  That form is the intended idiom,
+  not a workaround: a repetition's entry parents and overrides like any other
+  object.
 - **Cost.**  Repeating a LEAF is free — 10 000 repetitions of a leaf source
   measure at the flat baseline, because the collapse case has no parent links
   at all.  Repeating a SUBTREE costs `count x (subtree size - 1)` links, and the

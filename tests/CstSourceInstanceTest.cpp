@@ -361,6 +361,16 @@ int main()
 	CapturingLogPrinter* pUndeclaredLog = pUndeclaredLogOwned;
 	safe_release( pUndeclaredLogOwned );
 
+	// 87 step 3c review: `override_object`'s target-missing message, which is the one a
+	// bare reference to a counted chunk USED to land on.  It is a LOG line -- the parser
+	// returns false and PASS-2 turns that into the generic "apply failed (e.g. unresolved
+	// reference); see log" -- so a diagnostics-only assertion could not see whether the
+	// misleading three-cause message was still being printed.  Read by DELTA.
+	CapturingLogPrinter* pOverrideMissingLogOwned = new CapturingLogPrinter( "not found in scene" );
+	RISE::GlobalLogPriv()->AddPrinter( pOverrideMissingLogOwned );
+	CapturingLogPrinter* pOverrideMissingLog = pOverrideMissingLogOwned;
+	safe_release( pOverrideMissingLogOwned );
+
 	const std::string SRC_LEAF = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n";
 
 	// ---------------------------------------------------------------- round-trip
@@ -3003,6 +3013,13 @@ int main()
 	// 2 x 3 = SIX -- two repetition roots and four clones -- so the next generator must be
 	// told 9999994.  With the repetition-root decrement deleted it reads 9999996; with the
 	// clone decrement deleted, 9999998.
+	//
+	// THE LEDGER IS EXPANSION-ORDER, NOT DOCUMENT-ORDER, so both fixtures below put a
+	// `source` first on purpose: `instance_array` chunks are SKIPPED by the PASS-2 walk and
+	// expanded in a trailing loop afterwards, so a generator declared ABOVE a `source` has
+	// spent nothing by the time that `source`'s refusal is composed and the number quoted
+	// there is the full allowance.  The global cap still holds -- the generators check last,
+	// against whatever is left -- so this is message accuracy, not over-allocation.
 	{
 		std::string all;
 		const bool refused = RefusedWith( Scene( SUB3
@@ -3151,6 +3168,92 @@ int main()
 			  "standard_object\n{\nname M\nparent S\nsource L\ncount_u 3\n}\n"
 			  "standard_object\n{\nname I\nsource S\n}\n" ), "carries `count_u` / `count_v`" ),
 		       "count-refuse: a counted MEMBER of a copied subtree is refused too" );
+	}
+
+	// [count][refuse] THE OTHER TWO WAYS TO NAME A COUNTED CHUNK BY ITS BARE NAME, and both
+	// of them landed on a pre-existing diagnostic that enumerates causes NONE of which is
+	// the real one.  `source A` got its own refusal above; `parent A` and
+	// `override_object { name A }` did not.
+	//
+	// The negative half of each pair carries the claim.  Refusing at all is easy -- both
+	// scenes were ALREADY refused, which is exactly why the gap was invisible: `parent I`
+	// with "A `parent` must be a DECLARED-EARLIER object; must not be this object; must not
+	// already be one of its descendants; and must not be a CSG operand", four causes and `I`
+	// satisfies every one of them; `override_object` with "target `I` not found in scene.
+	// Possible causes: (a) ... BEFORE the chunk that creates the target (b) ... deleted
+	// (c) ... typo", none of them either.  So the assertions that the OLD text is GONE are
+	// what distinguishes the fix from the status quo ante.
+	//
+	// And the positive control is the point: `parent I[0,0]` is not an error at all, it is
+	// the intended idiom -- so the refusal has to name it rather than merely refuse.
+	{
+		const std::string COUNTED = SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n";
+
+		std::string all;
+		Check( RefusedWith( Scene( COUNTED + "standard_object\n{\nname Z\nparent I\ngeometry boxg\nmaterial m2\n}\n" ),
+		                    "names a chunk carrying `count_u` / `count_v`", &all ),
+		       ( "count-refuse: `parent <counted chunk>` is refused for its REAL cause -- `I` is a repetition, "
+		         "so there is no entry called `I` to attach to (got: " + all + ")" ).c_str() );
+		Check( all.find( "`parent I[0,0]`" ) != std::string::npos,
+		       ( "count-refuse: ... and the refusal spells the WORKING form, which is the intended idiom rather "
+		         "than an error (got: " + all + ")" ).c_str() );
+		Check( all.find( "must be a DECLARED-EARLIER object" ) == std::string::npos,
+		       "count-refuse: ... and NOT with the four-cause `parent` message, whose every clause `I` satisfies" );
+
+		// POSITIVE CONTROL, and it is the sentence the refusal points at: the repetition's
+		// own entry name parents perfectly well.  Without this the refusal above could be
+		// recommending something that does not work.
+		{
+			std::vector<std::string> diags;
+			Job* j = DeriveJob( Scene( COUNTED + "standard_object\n{\nname Z\nparent I[0,0]\ngeometry boxg\nmaterial m2\n}\n" ), &diags );
+			Check( diags.empty(), "count-refuse: (control) `parent I[0,0]` -- the form the refusal recommends -- DERIVES" );
+			Check( ParentOf( j, "Z" ) == "I[0,0]", "count-refuse: (control) ... and really does attach to that repetition" );
+			j->release();
+		}
+
+		// `override_object { name I }`, the same shape through the other reference.
+		const int overrideMissingBefore = pOverrideMissingLog->MatchCount();
+		std::string all2;
+		Check( RefusedWith( Scene( COUNTED + "override_object\n{\nname I\nposition 9 0 0\n}\n" ),
+		                    "names a chunk carrying `count_u` / `count_v`", &all2 ),
+		       ( "count-refuse: `override_object` on a counted chunk is refused for its REAL cause (got: " + all2 + ")" ).c_str() );
+		Check( all2.find( "`name I[0,0]`" ) != std::string::npos,
+		       ( "count-refuse: ... naming the layer that WOULD work (got: " + all2 + ")" ).c_str() );
+		Check( all2.find( "apply failed" ) == std::string::npos,
+		       "count-refuse: ... and not as a generic PASS-2 apply failure" );
+		// The misleading three-cause message is LOG-only, so `all2` could never have held it:
+		// the delta on the log is the only thing that can say it is no longer printed.
+		Check( pOverrideMissingLog->MatchCount() == overrideMissingBefore,
+		       ( "count-refuse: ... and the three-cause `not found in scene` LOG line is not printed either (last: "
+		         + pOverrideMissingLog->LastMatch() + ")" ).c_str() );
+
+		// NON-VACUITY of that log delta: the SAME override against a genuinely absent name
+		// still prints it, so the assertion above is reading a real signal.
+		{
+			const int before = pOverrideMissingLog->MatchCount();
+			RefusedWith( Scene( SRC_LEAF + "override_object\n{\nname NoSuchThing\nposition 9 0 0\n}\n" ), "zzz-never" );
+			Check( pOverrideMissingLog->MatchCount() == before + 1,
+			       "count-refuse: (control) an override of a name that really is absent DOES still print it" );
+		}
+
+		// POSITIVE CONTROL for the override side too.
+		{
+			std::vector<std::string> diags;
+			Job* j = DeriveJob( Scene( COUNTED + "override_object\n{\nname I[0,0]\nposition 9 0 0\n}\n" ), &diags );
+			Check( diags.empty(), "count-refuse: (control) `override_object { name I[0,0] }` -- the recommended form -- DERIVES" );
+			Check( CenterIs( Obj( j, "I[0,0]" ), 9, 0, 0 ), "count-refuse: (control) ... and really does move that repetition" );
+			j->release();
+		}
+
+		// The scan is keyed on the chunk CARRYING counts, not on the spelling of the name:
+		// an UNCOUNTED source instance is still an ordinary parent.
+		{
+			std::vector<std::string> diags;
+			Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\n}\n"
+			                                      "standard_object\n{\nname Z\nparent I\ngeometry boxg\nmaterial m2\n}\n" ), &diags );
+			Check( diags.empty() && ParentOf( j, "Z" ) == "I", "count-refuse: (control) `parent <uncounted instance>` is untouched" );
+			j->release();
+		}
 	}
 
 	// [count][validation] AN INSTANCING CHUNK IS STILL DESCRIPTOR-VALIDATED.  PASS-1 cannot

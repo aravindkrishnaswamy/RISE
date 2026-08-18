@@ -378,6 +378,23 @@ what was authored, live material included).
    expansion; 3c `count_u`/`count_v` + per-instance exprs; 3d delete
    `instance_array`.  3a, 3b and 3c are IMPLEMENTED.
 
+   **3d CHECKLIST (accumulated by earlier slices' reviews; do these, not just
+   the deletion):**
+   - After removing `ExpandInstanceArray`, verify there is **exactly one writer**
+     to the shared entry ledger: `grep -n 'entryBudget' src/Library/Cst/Cst.cpp`
+     must show only the declaration in `DeriveToJob`, `ExpandSourceInstance`'s
+     parameter, its cap read and its two `--entryBudget` sites.  Until then the
+     `source`-path ledger assertions in `CstSourceInstanceTest` are partial, and
+     the generator's own read/decrement pair is uncovered in both directions
+     (3c review round 2).
+   - The generator's trailing expansion loop is also what makes the ledger
+     EXPANSION-order rather than document-order; deleting it removes that
+     discrepancy, so the clause on the ledger fixture's comment can go with it.
+   - The `v`-discriminating fixtures in `AgentObjectMapTest` /
+     `AgentViewModeRenderTest` are on the `instance_array` copy and die with it;
+     the `source`-path replacements landed in 3c review round 1, so check that
+     the migration does not remove coverage rather than move it.
+
    **3b (2026-08-17) — subtree expansion, IMPLEMENTED.**  The 3a
    has-children refusal is replaced by a real expansion.  Mechanics: build the
    clone by re-`Finalize`ing each subtree node's OWN chunk through the registry
@@ -620,6 +637,11 @@ what was authored, live material included).
      3-node subtree spends 6, so the next generator's refusal must say 9999994
      (9999996 with the repetition-root decrement deleted, 9999998 with the clone
      decrement deleted).  Now asserted, both decrements red-proved.
+     **CORRECTED BY ROUND 2 (below): that pins the two `source`-path decrements
+     and no more.  There is a THIRD writer to the same ledger --
+     `ExpandInstanceArray`'s own read + `--entryBudget` -- and it is untested in
+     both directions.  "The threading" was an overclaim; "the `source` path's
+     threading" is what was bought.**
      STILL UNTESTED, and cheaply so only in principle: that the budget is
      DOCUMENT-WIDE rather than per-chunk.  Separating those needs a scene whose
      total is under 1e7 (so a per-chunk cap would admit it) but over what earlier
@@ -682,6 +704,70 @@ what was authored, live material included).
      spelling in the entire corpus) or widening `toBoolean` (which changes the
      meaning of every boolean in every scene file) -- both far outside a 3c review
      round.
+
+   **3c review round 2 (2026-08-17) — no P1.  One production fix, one hang
+   converted into a red, and two claims corrected rather than tested:**
+   - **`parent <counted chunk>` GOT EXACTLY THE MISLEADING DIAGNOSTIC 3c FIXED FOR
+     `source`, and so did `override_object`.**  3c added a dedicated refusal for
+     `source A` where `A` carries counts, precisely because the fallback message
+     ("declared earlier but did not produce an object -- its own chunk failed")
+     named a cause that did not happen.  The identical shape on the other two
+     references was not covered: `parent I` landed on "A `parent` must be a
+     DECLARED-EARLIER object; must not be this object; must not already be one of
+     its descendants; and must not be a CSG operand" -- four enumerated causes and
+     `I` satisfies every one of them -- and `override_object { name I }` landed on
+     "target `I` not found in scene.  Possible causes: (a) ... appears BEFORE the
+     chunk that creates the target (b) ... deleted (c) ... typo", none of them
+     either.  Neither parser CAN do better: both run from a `Finalize` that sees
+     the live manager and not the DOCUMENT, so neither can know the name belongs to
+     a counted chunk.  Fixed with a document scan
+     (`RefuseBareReferencesToCountedChunks`, run once between
+     `BuildObjectChunkIndex` and PASS-2, refuse-all on the PASS-1 model) that names
+     the real cause AND the working spelling -- `parent I[0,0]` is not an error at
+     all, it is the intended idiom.  Tested both ways, with the recommended form
+     driven as a POSITIVE control on each: the negative half of each pair (the old
+     text is GONE) is what carries the claim, since both scenes were already being
+     refused, which is exactly why the gap was invisible.
+   - **A `perInstance` REGRESSION HUNG THE SUITE INSTEAD OF REDDENING IT.**
+     `perInstance` is `plan.size() + 1`; drop the `+ 1` and a LEAF source (empty
+     plan) computes `total = 0`, sails past the entry cap, and drops the
+     per-repetition collision scan and apply loop into a `count_u * count_v` walk
+     with nothing bounding it -- the leaf cap fixture (`count_u 1000000
+     count_v 100`) becomes 1e8 iterations and `CstSourceInstanceTest` never
+     terminates.  A hang in CI reads as infrastructure flake, not as a red test.
+     **Chosen fix: an assert-and-REFUSE invariant** (`perInstance < 1` pushes a
+     diagnostic and returns false), not a bare `assert` -- MSVC Release carries
+     `/DNDEBUG` and `run_all_tests.ps1` defaults to Release, so an assert compiles
+     to nothing on the exact configuration a hang is hardest to diagnose on (commit
+     `64d73157`).  A bounded fixture was the alternative and was NOT taken: it
+     would fix this one mutation's symptom while leaving every other route to
+     `total == 0` unbounded.  Red-proof is the mutation itself -- the suite now
+     goes red in seconds instead of hanging.
+   - **THE `instance_array` LEG OF THE SHARED LEDGER HAS ZERO COVERAGE, AND IS
+     DELIBERATELY LEFT THAT WAY.**  `ExpandInstanceArray` reads the budget and
+     decrements it, and deleting either its `--entryBudget` or its over-budget
+     refusal leaves both `CstInstanceArrayTest` and `CstSourceInstanceTest` fully
+     green.  **Decided: correct the claim, do not write the test.**  3d deletes
+     `ExpandInstanceArray` outright, so a fixture written now is deleted next
+     commit along with the suite that holds it -- it would buy one commit of
+     coverage on code with a scheduled end date, at the price of noise in the
+     commit whose entire purpose is the deletion.  The round-1 overclaim is
+     corrected above instead, because the CLAIM outlives the code.  **Added to
+     3d's checklist:** after the deletion, verify there is EXACTLY ONE writer to
+     `entryBudget` (`grep -n 'entryBudget' src/Library/Cst/Cst.cpp` should show
+     only the declaration, `ExpandSourceInstance`'s parameter, its cap read and its
+     two decrements) -- which is the property that makes the `source`-path ledger
+     assertions total rather than partial.
+   - **THE "DOCUMENT-WIDE" LEDGER IS EXPANSION-ORDER, NOT DOCUMENT-ORDER.**
+     `instance_array` chunks are skipped by the PASS-2 walk and expanded in a
+     trailing loop, so a generator declared FIRST has spent nothing by the time a
+     later `source` refusal is composed: that refusal says "room for only 10000000
+     more" while 5 entries are already committed.  The reverse order reads
+     correctly.  The global cap still holds -- the generators check last, against
+     whatever is left -- so this is message accuracy, not over-allocation, and it
+     dies with `ExpandInstanceArray` in 3d.  Recorded as a clause on the ledger
+     fixture's comment, which is true only because the earlier expansion there is a
+     `source`.
 
    **3b review round 2 (2026-08-17) — no P1.  One durable rule, and two claims
    that were TRUE but UNPINNED:**

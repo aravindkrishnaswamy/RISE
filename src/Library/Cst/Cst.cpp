@@ -1692,6 +1692,66 @@ static unsigned int ChunkOrdinal( const std::vector<NodeRef>& items, std::size_t
 	return n;
 }
 
+//! 87 step 3c: EVERY WAY A CHUNK CAN NAME A COUNTED CHUNK BY ITS BARE NAME, refused
+//! here with the real cause spelled out.
+//!
+//! A chunk carrying `count_u` / `count_v` produces `I[0,0]`, `I[1,0]`, ... and NEVER an
+//! entry called `I`.  `source I` already has its own dedicated refusal (see
+//! ExpandSourceInstance and ClonePlanBuilder::SourceSubtree); the two OTHER references
+//! an author can write did not, and each landed on a pre-existing diagnostic that
+//! enumerates causes NONE of which is the real one:
+//!
+//!   `parent I`          -> "A `parent` must be a DECLARED-EARLIER object; must not be this
+//!                          object; must not already be one of its descendants; and must not
+//!                          be a CSG operand" -- four causes, all false.  `I` IS declared
+//!                          earlier, is not this object, is nobody's descendant and is not an
+//!                          operand; it simply is not an entry name.
+//!   `override_object I` -> "target `I` not found in scene.  Possible causes: (a) the chunk
+//!                          appears BEFORE the chunk that creates the target (b) ... deleted
+//!                          (c) ... typo" -- again none of them.
+//!
+//! Both diagnostics are structurally unable to say better: they are emitted from a parser
+//! `Finalize`, which sees the live manager and not the DOCUMENT, so it cannot know that the
+//! name belongs to a counted chunk.  The document scan can, and it also names the working
+//! spelling -- `parent I[0,0]` is the intended idiom, not an error at all.
+//!
+//! Scanned over EVERY chunk role, not just the graph-object ones: `instance_array`'s own
+//! `parent` reaches the identical dead end (it would refuse with "object Finalize failed
+//! (template geometry / a referenced material missing?)"), and a `source` chunk's `parent`
+//! is the same line on the same role.
+//!
+//! `byName` is the right keyspace: only `standard_object` may carry counts (the parser
+//! refuses counts without a `source`), and `byName` holds exactly the `standard_object` /
+//! `csg_object` declarations.  `front()` because a duplicate name is separately reported.
+static bool RefuseBareReferencesToCountedChunks( const std::vector<NodeRef>& items,
+                                                const ObjectChunkIndex& index,
+                                                std::vector<std::string>& diags )
+{
+	const std::size_t before = diags.size();
+	for( std::size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( !c || c->kind != NodeKind::Chunk ) continue;
+		// The name this chunk points AT, and the parameter it points with.
+		std::string ref, param;
+		if( c->role == "override_object" ) {
+			if( !ParamValue( c.get(), "name", ref ) || ref.empty() ) continue;
+			param = "name";
+		} else {
+			if( !ParamValue( c.get(), "parent", ref ) || ref.empty() || ref == "none" ) continue;
+			param = "parent";
+		}
+		const std::map<std::string, std::vector<std::size_t> >::const_iterator ni = index.byName.find( ref );
+		if( ni == index.byName.end() || ni->second.empty() ) continue;   // not a declared object at all -> the existing diagnostics are correct
+		if( !ChunkCarriesCounts( items[ ni->second.front() ].get() ) ) continue;
+		const std::string first = InstanceBaseName( ref, /*counted*/true, 0, 0 );
+		diags.push_back( c->role + " (chunk " + std::to_string( ChunkOrdinal( items, i ) ) + "): `" + param + " " + ref
+			+ "` names a chunk carrying `count_u` / `count_v`, so `" + ref + "` is a REPETITION -- it produces one "
+			  "entry per (i,j) (`" + first + "`, `" + InstanceBaseName( ref, true, 1, 0 ) + "`, ...) and NO entry "
+			  "called `" + ref + "` at all.  Name the repetition you mean: `" + param + " " + first + "`." );
+	}
+	return diags.size() == before;
+}
+
 //! The `source` chain of chunk `idx`, NEAREST SOURCE FIRST: the chunk it instances,
 //! the chunk THAT one instances, and so on.  Empty when the chunk carries no
 //! `source`.  Terminates by the declare-earlier rule (every link points strictly
@@ -2547,6 +2607,23 @@ static bool ExpandSourceInstance(
 	// separate `count_u * count_v <= 1e7` product cap here because the budget subsumes
 	// it exactly: `perInstance >= 1`, so `total >= count_u * count_v`.
 	const long long perInstance = (long long)plan.size() + 1;
+	// AN INVARIANT THAT IS CHECKED, NOT ASSERTED, AND THE DIFFERENCE IS A HANGING SUITE.
+	// `perInstance` is the root plus one per subtree node, so it is >= 1 by construction --
+	// but it is the ONLY factor keeping `total` off zero for a LEAF source, whose plan is
+	// empty.  Drop the `+ 1` and `total` is 0 for every leaf: the cap below passes, and the
+	// per-repetition collision scan and apply loop underneath then run count_u * count_v
+	// times with nothing bounding them.  The leaf cap fixture (1e6 x 100) turns into a
+	// 1e8-iteration walk and CstSourceInstanceTest never terminates -- which reads in CI as
+	// infrastructure flake rather than as the red test it is.  A bare `assert` would not
+	// help: MSVC Release carries /DNDEBUG and run_all_tests.ps1 defaults to Release, so it
+	// compiles to nothing on the very configuration the hang would be hardest to diagnose
+	// on (see commit 64d73157).  Refuse instead, on every configuration.
+	if( perInstance < 1 ) {
+		diags.push_back( who + ": internal error -- a repetition computed " + std::to_string( perInstance )
+			+ " entries, which is impossible (it is the instance root plus one per subtree node, so it is at "
+			  "least 1).  Refusing rather than expanding a loop with nothing bounding it." );
+		return false;
+	}
 	const long long total       = (long long)countU * (long long)countV * perInstance;
 	if( total > entryBudget ) {
 		char cap[128];
@@ -2955,6 +3032,14 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// O(N), not O(N^2).
 	ObjectChunkIndex objIndex;
 	BuildObjectChunkIndex( items, objIndex );
+
+	// 87 step 3c: refuse `parent I` / `override_object I` where `I` carries counts, BEFORE
+	// anything is applied.  A document scan, and it has to be -- the parsers that own those
+	// two diagnostics run against the live manager and cannot see that the missing name
+	// belongs to a counted chunk, so each of them enumerates causes none of which is the
+	// real one.  Refuse-all on the PASS-1 model: this is a document defect, not an apply
+	// failure, and half a scene is no better here than it is there.
+	if( !RefuseBareReferencesToCountedChunks( items, objIndex, diags ) ) return 0;
 
 	// 87 step 3b: ONE document-wide synthesized-entry allowance, shared by every
 	// `source` expansion AND every `instance_array` generator below.  See
