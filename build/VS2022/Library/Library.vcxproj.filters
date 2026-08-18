@@ -282,6 +282,12 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSimulationRecords.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionTables.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionComputeUnsupported.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -1273,6 +1279,12 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionCompute.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTables.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h">

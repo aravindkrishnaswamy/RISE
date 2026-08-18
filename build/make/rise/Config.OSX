@@ -143,4 +143,4 @@ LDLIBS_OPENPGL = -lopenpgl
 # macOS platform-TLS leg (TlsTransportMac.mm).  A plain NSURLSession POST
 # needs no Security framework (no manual TLS-trust API is called).
 CPPFLAGS += $(CPPFLAGS_OPENVDB)
-LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL) $(LDLIBS_OPENVDB) -framework Foundation
+LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL) $(LDLIBS_OPENVDB) -framework Foundation -framework Metal

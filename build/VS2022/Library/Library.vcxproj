@@ -492,6 +492,8 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\RISECBOR64.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireOptics.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSimulationRecords.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionTables.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionComputeUnsupported.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PlanckRadiance.cpp" />
@@ -1037,6 +1039,8 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RISECBOR64.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionCompute.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTables.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h" />

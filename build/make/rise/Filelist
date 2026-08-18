@@ -81,6 +81,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/RISECBOR64.cpp				\
 	$(PATHLIBRARY)Utilities/FireOptics.cpp				\
 	$(PATHLIBRARY)Utilities/FireSimulationRecords.cpp		\
+	$(PATHLIBRARY)Utilities/FireProductionTables.cpp		\
 	$(PATHLIBRARY)Utilities/FireCase.cpp			\
 	$(PATHLIBRARY)Utilities/FireSequence.cpp			\
 	$(PATHLIBRARY)Utilities/PlanckRadiance.cpp				\
@@ -114,8 +115,10 @@ SRCLIBUTILITIES =\
 # is assembled below.
 ifdef IS_MACOS_BUILD
 SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeMac.mm
 else
 SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeUnsupported.cpp
 endif
 
 # Noise

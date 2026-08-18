@@ -774,6 +774,12 @@
 		FD86000131CC000100000004 /* FireOptics.h in Sources */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
 		FC11000131DD000100000001 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
 		FC11000131DD000100000002 /* FireSimulationRecords.h in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD00010000000A /* FireSimulationRecords.h */; };
+		FA83000131FF000100000001 /* FireProductionTables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF000100000009 /* FireProductionTables.cpp */; };
+		FA83000131FF000100000002 /* FireProductionTables.h in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000A /* FireProductionTables.h */; };
+		FA83000131FF000100000003 /* FireProductionCompute.h in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000B /* FireProductionCompute.h */; };
+		FA83000131FF000100000004 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; };
+		FA83000131FF000100000011 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
+		FA83000131FF000100000012 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000D /* Metal.framework */; };
 		F512000131EE000100000001 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
 		F513000131EE000100000001 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
 		F512000131EE000100000002 /* FireSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE00010000000A /* FireSequence.h */; };
@@ -1435,6 +1441,10 @@
 		FD86000131CC000100000008 /* FireOptics.h in Headers */ = {isa = PBXBuildFile; fileRef = FD86000131CC00010000000C /* FireOptics.h */; };
 		FC11000131DD000100000003 /* FireSimulationRecords.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FC11000131DD000100000009 /* FireSimulationRecords.cpp */; };
 		FC11000131DD000100000004 /* FireSimulationRecords.h in Headers */ = {isa = PBXBuildFile; fileRef = FC11000131DD00010000000A /* FireSimulationRecords.h */; };
+		FA83000131FF000100000005 /* FireProductionTables.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF000100000009 /* FireProductionTables.cpp */; };
+		FA83000131FF000100000006 /* FireProductionTables.h in Headers */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000A /* FireProductionTables.h */; };
+		FA83000131FF000100000007 /* FireProductionCompute.h in Headers */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000B /* FireProductionCompute.h */; };
+		FA83000131FF000100000008 /* FireProductionComputeMac.mm in Sources */ = {isa = PBXBuildFile; fileRef = FA83000131FF00010000000C /* FireProductionComputeMac.mm */; };
 		F512000131EE000100000003 /* FireSequence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F512000131EE000100000009 /* FireSequence.cpp */; };
 		F513000131EE000100000003 /* FireCase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F513000131EE000100000009 /* FireCase.cpp */; };
 		F513000131EE000100000004 /* FireCase.h in Headers */ = {isa = PBXBuildFile; fileRef = F513000131EE00010000000A /* FireCase.h */; };
@@ -2648,6 +2658,11 @@
 		FD86000131CC00010000000C /* FireOptics.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireOptics.h; sourceTree = "<group>"; };
 		FC11000131DD000100000009 /* FireSimulationRecords.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSimulationRecords.cpp; sourceTree = "<group>"; };
 		FC11000131DD00010000000A /* FireSimulationRecords.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireSimulationRecords.h; sourceTree = "<group>"; };
+		FA83000131FF000100000009 /* FireProductionTables.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireProductionTables.cpp; sourceTree = "<group>"; };
+		FA83000131FF00010000000A /* FireProductionTables.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionTables.h; sourceTree = "<group>"; };
+		FA83000131FF00010000000B /* FireProductionCompute.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireProductionCompute.h; sourceTree = "<group>"; };
+		FA83000131FF00010000000C /* FireProductionComputeMac.mm */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.objcpp; path = FireProductionComputeMac.mm; sourceTree = "<group>"; };
+		FA83000131FF00010000000D /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		F512000131EE000100000009 /* FireSequence.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireSequence.cpp; sourceTree = "<group>"; };
 		F513000131EE000100000009 /* FireCase.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FireCase.cpp; sourceTree = "<group>"; };
 		F513000131EE00010000000A /* FireCase.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireCase.h; sourceTree = "<group>"; };
@@ -2980,6 +2995,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA83000131FF000100000011 /* Metal.framework in Frameworks */,
 				A6E7B0F1000000000000C0DE /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2988,6 +3004,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA83000131FF000100000012 /* Metal.framework in Frameworks */,
 				F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */,
 				F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */,
 				F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */,
@@ -3001,6 +3018,7 @@
 		0249A662FF388D9811CA2CEA /* External Frameworks and Libraries */ = {
 			isa = PBXGroup;
 			children = (
+				FA83000131FF00010000000D /* Metal.framework */,
 			);
 			name = "External Frameworks and Libraries";
 			sourceTree = "<group>";
@@ -4125,6 +4143,10 @@
 				FD86000131CC00010000000C /* FireOptics.h */,
 				FC11000131DD000100000009 /* FireSimulationRecords.cpp */,
 				FC11000131DD00010000000A /* FireSimulationRecords.h */,
+				FA83000131FF000100000009 /* FireProductionTables.cpp */,
+				FA83000131FF00010000000A /* FireProductionTables.h */,
+				FA83000131FF00010000000B /* FireProductionCompute.h */,
+				FA83000131FF00010000000C /* FireProductionComputeMac.mm */,
 				F512000131EE000100000009 /* FireSequence.cpp */,
 				F513000131EE000100000009 /* FireCase.cpp */,
 				F513000131EE00010000000A /* FireCase.h */,
@@ -4935,6 +4957,8 @@
 				FD86000131CC000100000006 /* RISECBOR64.h in Headers */,
 				FD86000131CC000100000008 /* FireOptics.h in Headers */,
 				FC11000131DD000100000004 /* FireSimulationRecords.h in Headers */,
+				FA83000131FF000100000006 /* FireProductionTables.h in Headers */,
+				FA83000131FF000100000007 /* FireProductionCompute.h in Headers */,
 				F512000131EE000100000004 /* FireSequence.h in Headers */,
 				F513000131EE000100000004 /* FireCase.h in Headers */,
 				FB37000131BB000100000004 /* GaussLegendreQuadrature.h in Headers */,
@@ -5469,6 +5493,8 @@
 				FD86000131CC000100000005 /* RISECBOR64.cpp in Sources */,
 				FD86000131CC000100000007 /* FireOptics.cpp in Sources */,
 				FC11000131DD000100000003 /* FireSimulationRecords.cpp in Sources */,
+				FA83000131FF000100000005 /* FireProductionTables.cpp in Sources */,
+				FA83000131FF000100000008 /* FireProductionComputeMac.mm in Sources */,
 				F512000131EE000100000003 /* FireSequence.cpp in Sources */,
 				F513000131EE000100000003 /* FireCase.cpp in Sources */,
 				FB37000131BB000100000003 /* GaussLegendreQuadrature.cpp in Sources */,
@@ -6387,6 +6413,10 @@
 				FD86000131CC000100000004 /* FireOptics.h in Sources */,
 				FC11000131DD000100000001 /* FireSimulationRecords.cpp in Sources */,
 				FC11000131DD000100000002 /* FireSimulationRecords.h in Sources */,
+				FA83000131FF000100000001 /* FireProductionTables.cpp in Sources */,
+				FA83000131FF000100000002 /* FireProductionTables.h in Sources */,
+				FA83000131FF000100000003 /* FireProductionCompute.h in Sources */,
+				FA83000131FF000100000004 /* FireProductionComputeMac.mm in Sources */,
 				F512000131EE000100000001 /* FireSequence.cpp in Sources */,
 				F513000131EE000100000001 /* FireCase.cpp in Sources */,
 				F512000131EE000100000002 /* FireSequence.h in Sources */,
