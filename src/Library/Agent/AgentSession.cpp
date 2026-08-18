@@ -7735,13 +7735,15 @@ namespace RISE
 				}
 				std::string m = "replace_geometry_scaffold refused: no chunk named `" + target +
 					"` -- `target` is the standard_object whose geometry slot to rebind";
-				const std::vector<std::string> near =
+				// `nearMisses`, not `near`: <windef.h> #defines `near` (and `far`) away on Windows,
+				// so either word as an identifier breaks the MSVC build.
+				const std::vector<std::string> nearMisses =
 					RankNearMisses( CollectTargetNameCandidates( headDoc, std::string() ), target );
-				if( !near.empty() ) {
+				if( !nearMisses.empty() ) {
 					m += "; did you mean ";
-					for( std::size_t i = 0; i < near.size(); ++i ) {
+					for( std::size_t i = 0; i < nearMisses.size(); ++i ) {
 						if( i ) m += ", ";
-						m += "`" + near[i] + "`";
+						m += "`" + nearMisses[i] + "`";
 					}
 					m += "?";
 				}

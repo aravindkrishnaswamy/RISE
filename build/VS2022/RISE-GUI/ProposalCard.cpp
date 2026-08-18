@@ -228,7 +228,8 @@ QStringList ProposalCard::removeTargetNames() const
 int ProposalCard::minusCount() const
 {
     if (m_proposal.kind == QLatin1String("remove_chunk")) return 1;
-    if (m_proposal.kind == QLatin1String("remove_chunks")) return std::max(removeTargetNames().size(), 1);
+    if (m_proposal.kind == QLatin1String("remove_chunks"))
+        return std::max(static_cast<int>(removeTargetNames().size()), 1);
     return 0;
 }
 
