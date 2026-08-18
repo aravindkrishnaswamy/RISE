@@ -1,0 +1,72 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  FireProductionAdvection.h - fp32 conservative production remap
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef FIREPRODUCTIONADVECTION_
+#define FIREPRODUCTIONADVECTION_
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace RISE
+{
+	enum FireProductionRemapBoundary
+	{
+		FireProductionRemapPeriodic,
+		FireProductionRemapPressureOpen,
+		FireProductionRemapWall
+	};
+
+	//! One batch of logically independent uniform-grid lines. Values are SoA:
+	//! [component][line][cell], velocities are [line][face], ambient is one
+	//! authored value per component.
+	struct FireProductionRemapRequest
+	{
+		std::size_t lineLength;
+		std::size_t lineCount;
+		std::size_t componentCount;
+		float cellWidthM;
+		float timeStepS;
+		FireProductionRemapBoundary boundary;
+		std::vector<float> values;
+		std::vector<float> faceVelocityMPerS;
+		std::vector<float> ambientValues;
+
+		FireProductionRemapRequest() : lineLength(0), lineCount(0),
+			componentCount(0), cellWidthM(0.0f), timeStepS(0.0f),
+			boundary(FireProductionRemapPeriodic) {}
+	};
+
+	struct FireProductionRemapResult
+	{
+		std::vector<float> updatedValues;
+		std::vector<float> faceFluxes;
+		std::vector<float> sharedLimiterAlpha;
+		double deviceElapsedMS;
+
+		FireProductionRemapResult() : deviceElapsedMS(0.0) {}
+	};
+
+	bool ValidateFireProductionRemapRequest(
+		const FireProductionRemapRequest& request,
+		std::string* error=0 );
+
+	//! Binary32 CPU oracle with the same stored intermediates as the Metal path.
+	bool RemapFireProductionCPU(
+		const FireProductionRemapRequest& request,
+		FireProductionRemapResult& result,
+		std::string* error=0 );
+
+	//! Metal implementation. Non-Metal builds fail explicitly without CPU fallback.
+	bool RemapFireProductionMetal(
+		const FireProductionRemapRequest& request,
+		FireProductionRemapResult& result,
+		std::string* error=0 );
+}
+
+#endif

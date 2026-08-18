@@ -250,6 +250,12 @@ test : tests
 .SUFFIXES:
 .SUFFIXES: .cpp .o
 
+# r84 production remap arithmetic is a recorded binary32 operator.  It must
+# not inherit the renderer's reassociation/contract flags.
+$(PATHLIBRARY)Utilities/FireProductionAdvection.o : $(PATHLIBRARY)Utilities/FireProductionAdvection.cpp
+	@echo "Compiling (safe fp32): $<"
+	@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
 .cpp.o:
 	@echo Compiling: $<
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@

@@ -7,6 +7,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Utilities/FireProductionCompute.h"
+#include "../src/Library/Utilities/FireProductionAdvection.h"
 #include "../src/Library/Utilities/FireProductionTables.h"
 
 #include <algorithm>
@@ -15,8 +16,10 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -45,6 +48,83 @@ namespace
 		std::ostringstream text;
 		text << input.rdbuf();
 		return text.str();
+	}
+
+	std::size_t RemapValueIndex( const RISE::FireProductionRemapRequest& request,
+		std::size_t component, std::size_t line, std::size_t cell )
+	{
+		return (component*request.lineCount+line)*request.lineLength+cell;
+	}
+
+	std::size_t RemapFluxIndex( const RISE::FireProductionRemapRequest& request,
+		std::size_t component, std::size_t line, std::size_t face )
+	{
+		return (component*request.lineCount+line)*(request.lineLength+1u)+face;
+	}
+
+	RISE::FireProductionRemapRequest PeriodicRequest( std::size_t cells,
+		std::size_t components, float courant )
+	{
+		RISE::FireProductionRemapRequest request;
+		request.lineLength=cells;
+		request.lineCount=1u;
+		request.componentCount=components;
+		request.cellWidthM=1.0f/static_cast<float>(cells);
+		request.timeStepS=courant*request.cellWidthM;
+		request.boundary=RISE::FireProductionRemapPeriodic;
+		request.values.resize(cells*components);
+		request.faceVelocityMPerS.assign(cells+1u,1.0f);
+		request.ambientValues.assign(components,0.0f);
+		return request;
+	}
+
+	bool NearFloat( float a, float b, float relative=2.0e-5f )
+	{
+		return std::isfinite(a)&&std::isfinite(b)&&
+			std::fabs(a-b)<=relative*std::max(1.0f,std::max(std::fabs(a),std::fabs(b)));
+	}
+
+	bool SameRemapWithin( const RISE::FireProductionRemapResult& cpu,
+		const RISE::FireProductionRemapResult& gpu, float relative )
+	{
+		if( cpu.updatedValues.size()!=gpu.updatedValues.size()||
+			cpu.faceFluxes.size()!=gpu.faceFluxes.size()||
+			cpu.sharedLimiterAlpha.size()!=gpu.sharedLimiterAlpha.size() ) return false;
+		for( std::size_t i=0;i<cpu.updatedValues.size();++i )
+			if( !NearFloat(cpu.updatedValues[i],gpu.updatedValues[i],relative) ) return false;
+		for( std::size_t i=0;i<cpu.faceFluxes.size();++i )
+			if( !NearFloat(cpu.faceFluxes[i],gpu.faceFluxes[i],relative) ) return false;
+		for( std::size_t i=0;i<cpu.sharedLimiterAlpha.size();++i )
+			if( !NearFloat(cpu.sharedLimiterAlpha[i],gpu.sharedLimiterAlpha[i],relative) ) return false;
+		return true;
+	}
+
+	double SmoothPeriodicError( std::size_t cells, RISE::FireProductionRemapResult* output )
+	{
+		const double pi=std::acos(-1.0);
+		const double shift=0.2;
+		RISE::FireProductionRemapRequest request=PeriodicRequest(cells,1u,
+			static_cast<float>(shift*static_cast<double>(cells)));
+		for( std::size_t cell=0;cell<cells;++cell ) {
+			const double left=static_cast<double>(cell)/static_cast<double>(cells);
+			const double right=static_cast<double>(cell+1u)/static_cast<double>(cells);
+			request.values[cell]=static_cast<float>(2.0+(std::cos(2.0*pi*left)-
+				std::cos(2.0*pi*right))/(2.0*pi*(right-left)));
+		}
+		RISE::FireProductionRemapResult result;
+		std::string error;
+		if( !RISE::RemapFireProductionCPU(request,result,&error) )
+			return std::numeric_limits<double>::max();
+		double l1=0.0;
+		for( std::size_t cell=0;cell<cells;++cell ) {
+			const double left=static_cast<double>(cell)/static_cast<double>(cells)-shift;
+			const double right=static_cast<double>(cell+1u)/static_cast<double>(cells)-shift;
+			const double exact=2.0+(std::cos(2.0*pi*left)-std::cos(2.0*pi*right))/
+				(2.0*pi/static_cast<double>(cells));
+			l1+=std::fabs(static_cast<double>(result.updatedValues[cell])-exact);
+		}
+		if( output ) *output=result;
+		return l1/static_cast<double>(cells);
 	}
 }
 
@@ -173,6 +253,125 @@ int main()
 		package.PlanckMeanM2PerMolecule("CO2",aboveGasKnot,aboveRadiationKnot,kappa,&error),
 		"in-domain values immediately above fp32 knots select the upper interval");
 
+	FireProductionRemapRequest constant=PeriodicRequest(32u,3u,0.5f);
+	constant.values.assign(constant.values.size(),2.0f);
+	FireProductionRemapResult constantCPU;
+	const bool constantRemapped=RemapFireProductionCPU(constant,constantCPU,&error);
+	const bool constantExact=constantRemapped&&
+		std::all_of(constantCPU.updatedValues.begin(),constantCPU.updatedValues.end(),
+			[](float value){return value==2.0f;})&&
+		std::all_of(constantCPU.sharedLimiterAlpha.begin(),constantCPU.sharedLimiterAlpha.end(),
+			[](float value){return value==1.0f;});
+	if( !constantExact&&constantRemapped ) {
+		auto range=std::minmax_element(constantCPU.updatedValues.begin(),constantCPU.updatedValues.end());
+		std::cerr << std::hexfloat << "Observed constant remap range: " << *range.first << ", "
+			<< *range.second << std::defaultfloat << '\n';
+		for( std::size_t i=0;i<constantCPU.updatedValues.size();++i )
+			if( constantCPU.updatedValues[i]!=2.0f ) {
+				std::cerr << "First constant mismatch index " << i << " value " << std::hexfloat
+					<< constantCPU.updatedValues[i] << std::defaultfloat << '\n';break;
+			}
+		auto alphaRange=std::minmax_element(constantCPU.sharedLimiterAlpha.begin(),
+			constantCPU.sharedLimiterAlpha.end());
+		std::cerr << "Constant alpha range: " << *alphaRange.first << ", " << *alphaRange.second << '\n';
+	}
+	Check(constantExact,
+		"production remap preserves a periodic constant exactly");
+
+	for( const float signedCourant : {0.75f,2.25f,70.25f,-2.25f} ) {
+		FireProductionRemapRequest pulse=PeriodicRequest(64u,2u,std::fabs(signedCourant));
+		if( signedCourant<0.0f )
+			std::fill(pulse.faceVelocityMPerS.begin(),pulse.faceVelocityMPerS.end(),-1.0f);
+		for( std::size_t cell=16u;cell<32u;++cell ) {
+			pulse.values[RemapValueIndex(pulse,0u,0u,cell)]=1.0f;
+			pulse.values[RemapValueIndex(pulse,1u,0u,cell)]=0.5f;
+		}
+		FireProductionRemapResult pulseCPU;
+		Check(RemapFireProductionCPU(pulse,pulseCPU,&error),
+			"periodic pulse remaps below, above, negative, and beyond-domain Courant numbers");
+		for( std::size_t component=0;component<2u;++component ) {
+			float before=0.0f,after=0.0f;
+			for( std::size_t cell=0;cell<pulse.lineLength;++cell ) {
+				before+=pulse.values[RemapValueIndex(pulse,component,0u,cell)];
+				after+=pulseCPU.updatedValues[RemapValueIndex(pulse,component,0u,cell)];
+			}
+			Check(before==after,"periodic arbitrary-Courant pulse conserves each component");
+		}
+	}
+
+	FireProductionRemapResult smooth64Result;
+	const double smooth16=SmoothPeriodicError(16u,0);
+	const double smooth32=SmoothPeriodicError(32u,0);
+	const double smooth64=SmoothPeriodicError(64u,&smooth64Result);
+	const double order16To32=std::log(smooth16/smooth32)/std::log(2.0);
+	const double order32To64=std::log(smooth32/smooth64)/std::log(2.0);
+	if( !(order16To32>=1.8&&order32To64>=1.8) )
+		std::cerr << "Observed production remap orders: " << order16To32 << ", "
+			<< order32To64 << " errors: " << smooth16 << ", " << smooth32 << ", "
+			<< smooth64 << '\n';
+	Check(order16To32>=1.8&&order32To64>=1.8,
+		"smooth periodic production remap has at least 1.8 observed order");
+
+	FireProductionRemapRequest affine=PeriodicRequest(48u,3u,1.35f);
+	for( std::size_t cell=0;cell<affine.lineLength;++cell ) {
+		const float first=1.0f+0.4f*std::sin(static_cast<float>(2.0*std::acos(-1.0)*
+			static_cast<double>(cell)/static_cast<double>(affine.lineLength)));
+		const float second=0.6f+(cell>=11u&&cell<19u?0.7f:0.0f)+
+			0.1f*std::cos(static_cast<float>(6.0*std::acos(-1.0)*
+			static_cast<double>(cell)/static_cast<double>(affine.lineLength)));
+		affine.values[RemapValueIndex(affine,0u,0u,cell)]=first;
+		affine.values[RemapValueIndex(affine,1u,0u,cell)]=second;
+		affine.values[RemapValueIndex(affine,2u,0u,cell)]=first+second;
+	}
+	FireProductionRemapResult affineCPU;
+	Check(RemapFireProductionCPU(affine,affineCPU,&error),
+		"common-limiter affine tuple remaps");
+	float maximumAffineResidual=0.0f;
+	for( std::size_t cell=0;cell<affine.lineLength;++cell )
+		maximumAffineResidual=std::max(maximumAffineResidual,std::fabs(
+			affineCPU.updatedValues[RemapValueIndex(affine,2u,0u,cell)]-
+			(affineCPU.updatedValues[RemapValueIndex(affine,0u,0u,cell)]+
+			 affineCPU.updatedValues[RemapValueIndex(affine,1u,0u,cell)])));
+	if( maximumAffineResidual>2.0e-5f )
+		std::cerr << "Observed common-weight affine residual: " << maximumAffineResidual << '\n';
+	Check(maximumAffineResidual<=2.0e-5f,
+		"one tuple limiter preserves a cancellation-sensitive affine constituent row");
+
+	FireProductionRemapRequest open;
+	open.lineLength=8u;open.lineCount=1u;open.componentCount=2u;
+	open.cellWidthM=1.0f;open.timeStepS=0.5f;
+	open.boundary=FireProductionRemapPressureOpen;
+	open.values.assign(16u,2.0f);open.faceVelocityMPerS.assign(9u,0.0f);
+	open.faceVelocityMPerS.front()=1.0f;open.faceVelocityMPerS.back()=1.0f;
+	open.ambientValues={5.0f,7.0f};
+	FireProductionRemapResult openCPU;
+	Check(RemapFireProductionCPU(open,openCPU,&error)&&
+		openCPU.faceFluxes[RemapFluxIndex(open,0u,0u,0u)]==2.5f&&
+		openCPU.faceFluxes[RemapFluxIndex(open,0u,0u,8u)]==1.0f&&
+		openCPU.faceFluxes[RemapFluxIndex(open,1u,0u,0u)]==3.5f&&
+		openCPU.faceFluxes[RemapFluxIndex(open,1u,0u,8u)]==1.0f,
+		"pressure-open remap uses ambient inflow and nearest-interior outflow");
+	FireProductionRemapRequest wall=open;wall.boundary=FireProductionRemapWall;
+	FireProductionRemapResult wallCPU;
+	const bool wallRemapped=RemapFireProductionCPU(wall,wallCPU,&error);
+	bool everyWallFluxZero=wallRemapped;
+	for( std::size_t component=0;component<wall.componentCount;++component )
+		everyWallFluxZero=everyWallFluxZero&&
+			wallCPU.faceFluxes[RemapFluxIndex(wall,component,0u,0u)]==0.0f&&
+			wallCPU.faceFluxes[RemapFluxIndex(wall,component,0u,wall.lineLength)]==0.0f;
+	Check(everyWallFluxZero,
+		"wall production remap has exact zero boundary flux");
+	FireProductionRemapRequest invalid=constant;
+	invalid.values[0]=std::numeric_limits<float>::quiet_NaN();
+	FireProductionRemapResult invalidResult;invalidResult.updatedValues.push_back(9.0f);
+	Check(!RemapFireProductionCPU(invalid,invalidResult,&error)&&
+		invalidResult.updatedValues.empty()&&!error.empty(),
+		"production remap rejects nonfinite state without returning partial output");
+	FireProductionRemapRequest overflow=constant;
+	overflow.lineCount=std::numeric_limits<std::size_t>::max();
+	Check(!ValidateFireProductionRemapRequest(overflow,&error)&&!error.empty(),
+		"production remap rejects overflowing dimensions before indexing or allocation");
+
 	FireProductionComputeCapability capability;
 	Check(QueryFireProductionComputeCapability(capability),
 		"production compute capability query completes structurally");
@@ -197,6 +396,63 @@ int main()
 	for( std::size_t i=0;i<returned.size();++i )
 		Check(returned[i]==(challenge[i]^(0x9e3779b9u+static_cast<std::uint32_t>(i)*0x85ebca6bu)),
 			"Metal production challenge proves nonidentity device execution");
+	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,wallGPU,smoothGPU;
+	const bool constantMetal=RemapFireProductionMetal(constant,constantGPU,&error);
+	if( !constantMetal ) std::cerr << "Metal remap detail: " << error << '\n';
+	const bool repeatedMetal=constantMetal&&RemapFireProductionMetal(constant,constantGPURepeated,&error);
+	Check(constantMetal&&repeatedMetal&&
+		constantGPU.updatedValues==constantGPURepeated.updatedValues&&
+		constantGPU.faceFluxes==constantGPURepeated.faceFluxes&&
+		constantGPU.sharedLimiterAlpha==constantGPURepeated.sharedLimiterAlpha&&
+		SameRemapWithin(constantCPU,constantGPU,2.0e-5f),
+		"Metal remap is same-device byte deterministic and matches the fp32 oracle");
+	const bool openMetal=RemapFireProductionMetal(open,openGPU,&error);
+	if( !openMetal ) std::cerr << "Metal open-remap detail: " << error << '\n';
+	const bool wallMetal=RemapFireProductionMetal(wall,wallGPU,&error);
+	Check(openMetal&&SameRemapWithin(openCPU,openGPU,2.0e-5f)&&
+		wallMetal&&SameRemapWithin(wallCPU,wallGPU,2.0e-5f),
+		"Metal pressure-open and wall fluxes match the fp32 oracle");
+	FireProductionRemapRequest smoothRequest=PeriodicRequest(64u,1u,12.8f);
+	const double pi=std::acos(-1.0);
+	for( std::size_t cell=0;cell<smoothRequest.lineLength;++cell ) {
+		const double left=static_cast<double>(cell)/64.0;
+		const double right=static_cast<double>(cell+1u)/64.0;
+		smoothRequest.values[cell]=static_cast<float>(2.0+(std::cos(2.0*pi*left)-
+			std::cos(2.0*pi*right))/(2.0*pi*(right-left)));
+	}
+	FireProductionRemapResult smoothGPURepeated;
+	const bool smoothMetal=RemapFireProductionMetal(smoothRequest,smoothGPU,&error);
+	const bool smoothMetalRepeated=smoothMetal&&
+		RemapFireProductionMetal(smoothRequest,smoothGPURepeated,&error);
+	Check(smoothMetal&&smoothMetalRepeated&&smoothGPU.updatedValues==smoothGPURepeated.updatedValues&&
+		smoothGPU.faceFluxes==smoothGPURepeated.faceFluxes&&
+		smoothGPU.sharedLimiterAlpha==smoothGPURepeated.sharedLimiterAlpha&&
+		SameRemapWithin(smooth64Result,smoothGPU,3.0e-5f),
+		"nontrivial Metal remap is byte deterministic and matches the fp32 oracle");
+
+	FireProductionRemapRequest tier10;
+	tier10.lineLength=129u;tier10.lineCount=7568u;tier10.componentCount=8u;
+	tier10.cellWidthM=0.3f/128.0f;tier10.timeStepS=1.0f/480.0f;
+	tier10.boundary=FireProductionRemapPeriodic;
+	tier10.values.resize(tier10.componentCount*tier10.lineCount*tier10.lineLength);
+	tier10.faceVelocityMPerS.resize(tier10.lineCount*(tier10.lineLength+1u));
+	tier10.ambientValues.assign(tier10.componentCount,0.0f);
+	for( std::size_t index=0;index<tier10.values.size();++index )
+		tier10.values[index]=1.0f+static_cast<float>(index%97u)*(1.0f/256.0f);
+	for( std::size_t index=0;index<tier10.faceVelocityMPerS.size();++index )
+		tier10.faceVelocityMPerS[index]=0.2f+static_cast<float>(index%11u)*(1.0f/64.0f);
+	std::vector<double> elapsed;
+	FireProductionRemapResult tier10GPU;
+	for( unsigned run=0;run<6u;++run ) {
+		const bool remapped=RemapFireProductionMetal(tier10,tier10GPU,&error);
+		if( !remapped ) { std::cerr << "Metal tier-10 remap detail: " << error << '\n';break; }
+		if( run>0u ) elapsed.push_back(tier10GPU.deviceElapsedMS);
+	}
+	std::sort(elapsed.begin(),elapsed.end());
+	const double p95=elapsed.empty()?std::numeric_limits<double>::infinity():elapsed.back();
+	std::cout << "Production P1 tier-10-shaped remap p95_ms=" << p95 << '\n';
+	Check(elapsed.size()==5u&&std::isfinite(p95)&&p95>0.0&&p95<=45.0,
+		"tier-10-shaped Metal remap meets the 45 ms p95 allocation");
 	const std::string metalSource=ReadText("src/Library/Utilities/FireProductionComputeMac.mm");
 	Check(metalSource.find("newLibraryWithSource")!=std::string::npos&&
 		metalSource.find("dispatchThreads")!=std::string::npos&&
@@ -214,6 +470,11 @@ int main()
 	Check(!RunFireProductionComputeChallenge(unsupportedInput,2u,unsupportedOutput,&error)&&
 		unsupportedOutput.empty()&&!error.empty(),
 		"non-Metal challenge fails explicitly without a silent CPU fallback");
+	FireProductionRemapResult unsupportedRemap;unsupportedRemap.updatedValues.push_back(3.0f);
+	error.clear();
+	Check(!RemapFireProductionMetal(constant,unsupportedRemap,&error)&&
+		unsupportedRemap.updatedValues.empty()&&!error.empty(),
+		"non-Metal production remap fails explicitly without a silent CPU fallback");
 #endif
 
 	if( failures==0 ) {

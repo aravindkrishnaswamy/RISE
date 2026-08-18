@@ -56,6 +56,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/FireSimulationRecords.cpp"
     "${RISE_LIB}/Utilities/FireProductionTables.cpp"
     "${RISE_LIB}/Utilities/FireProductionComputeUnsupported.cpp"
+    "${RISE_LIB}/Utilities/FireProductionAdvection.cpp"
+    "${RISE_LIB}/Utilities/FireProductionAdvectionUnsupported.cpp"
     "${RISE_LIB}/Utilities/FireCase.cpp"
     "${RISE_LIB}/Utilities/FireSequence.cpp"
     "${RISE_LIB}/Utilities/PlanckRadiance.cpp"
