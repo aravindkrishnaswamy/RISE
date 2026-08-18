@@ -78,6 +78,8 @@ historical 2026-06-19 snapshot, not present-day ground truth.
 
 ## Active or Deferred Roadmaps
 
+- [FIRE_SMOKE_PRODUCTION_SOLVER.md](FIRE_SMOKE_PRODUCTION_SOLVER.md): r82
+  Metal-GPU production fire solver contract and oracle-validation roadmap
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): rendering backlog and acceptance criteria
 - [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md): shipped Phase-1 camera
   infrastructure and future camera models

@@ -1974,3 +1974,34 @@ it was already tried and refuted here.
   REDs reject union/intersection, pin the equal-discrepancy outflow-first tie,
   exercise nonzero diffusion/conduction and the high-order ghost, and reject a
   checksummed checkpoint with a mutated algorithm tag.
+
+- **r82 (2026-08-18):** two-tier production-solver architecture. The certified
+  fp64 solver remains the reference oracle; its stopped 2.8854439500002069 s
+  tier-10 prefix and V-tier fixtures become golden validation data rather than
+  a production-throughput path. The production solver is a separate fp32,
+  Metal-GPU-first implementation with a conservative semi-Lagrangian flux-form
+  PPM remap, local semi-implicit sources, record-compiled thermochemistry and
+  Planck-mean tables, and exactly one variable-density projection per scheduled
+  step. Finite deviations are monitored and gated by an oracle calibration
+  package, never converted into fail-closed dt halving; nonfinite/runtime/I/O
+  failures still abort structurally.
+
+  The target is the 976,272-cell, 25.032480502915522 s tier-10 methane case in
+  at most one hour on the recorded 40-core M4 Max GPU. A 1/480 s maximum step
+  gives about 12,016 steps; the pinned 250 ms p95 budget yields about 50.1
+  minutes for stepping and 9.9 minutes for I/O and handoff. State plus working
+  storage is capped at 2 GiB and remains GPU-resident. The validation band is
+  derived from oracle block variability, adjacent refinement difference, and
+  independently measured fp32 quantization, then capped by explicit scientific
+  ceilings; a calibration wider than a ceiling rejects the model rather than
+  widening the gate. Production outputs retain the existing case identity,
+  sequence-backed provenance, preview-primary labels, and sidecars, with a
+  distinct solver/kernel/table/device producer record.
+
+  Rejected: porting the full fp64 certificate stack into the fast path (misses
+  budget and duplicates the oracle), CPU-first execution (measured 23.1 s/step
+  and 16.5% efficiency), MacCormack/BFECC with clipping (nonconservative), more
+  than one projection (dominant cost), runtime tolerance widening or halving
+  (restores stalls), and changing the oracle's measured 41,600 multigrid sweeps
+  per step (separate class-B campaign). The companion contract is
+  `FIRE_SMOKE_PRODUCTION_SOLVER.md`.
