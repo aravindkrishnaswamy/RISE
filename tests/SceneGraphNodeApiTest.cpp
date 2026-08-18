@@ -221,6 +221,76 @@ static std::string RawDump( const SceneEditController::AuthoredTree& t )
 	return out;
 }
 
+//! THE STRUCTURAL CONTRACT A SHELL RESHAPES `ReadTree` UNDER (87 step 4b).
+//!
+//! Both outliner shells turn one `AuthoredTree` into {name, parent, children}
+//! rows plus a roots list and then draw exactly the nodes that walk reaches.
+//! Four properties make that drawing faithful, and a shell can check NONE of
+//! them for itself -- a node missing from the walk is simply a row that is not
+//! there, and a node reached twice is a row drawn twice, neither of which
+//! looks like a failure on screen.
+//!
+//! HONEST SCOPE: this is NOT coverage of `-[RISEViewportBridge categoryTree:]`
+//! or of `ViewportBridge::categoryTree`.  Both live in GUI targets that are not
+//! linkable from here, so what is pinned is the CONTRACT they are built on, not
+//! either one's transcription of it.  Said out loud rather than left to read as
+//! shell coverage.
+//!
+//! Returns "" when every property holds, otherwise the first violation found.
+static std::string TreeShapeViolation( const SceneEditController::AuthoredTree& t )
+{
+	const std::size_t n = t.nodes.size();
+
+	// (1) PARTITION.  Every node is either a root or exactly one node's
+	// child, so the two lists together account for the table exactly once.
+	// A shell that draws roots-then-descendants relies on this to draw the
+	// whole tree without a separate reachability pass.
+	std::size_t kids = 0;
+	for( std::size_t i = 0; i < n; ++i ) kids += t.nodes[i].childCount;
+	if( kids != t.childIndices.size() ) return "childCounts do not sum to childIndices.size()";
+	if( t.roots.size() + t.childIndices.size() != n ) return "roots + children != nodes";
+
+	// (2) BOUNDS.  A shell converts these to array indices; an out-of-range
+	// one is either a crash or -- as both bridges are written, defensively --
+	// a silently dropped row.
+	for( std::size_t r = 0; r < t.roots.size(); ++r )
+		if( t.roots[r] >= n ) return "root index out of range";
+	for( std::size_t c = 0; c < t.childIndices.size(); ++c )
+		if( t.childIndices[c] >= n ) return "child index out of range";
+	for( std::size_t i = 0; i < n; ++i ) {
+		const SceneEditController::TreeNodeRow& row = t.nodes[i];
+		if( static_cast<std::size_t>( row.firstChild ) + row.childCount > t.childIndices.size() )
+			return "child slice runs off childIndices";
+	}
+
+	// (3) THE WALK IS TOTAL AND DUPLICATE-FREE.
+	std::vector<unsigned char> seen( n, 0 );
+	std::vector<unsigned int>  stack;
+	for( std::size_t r = t.roots.size(); r > 0; --r ) stack.push_back( t.roots[r - 1] );
+	std::size_t budget = n + 1;
+	while( !stack.empty() ) {
+		const unsigned int cur = stack.back(); stack.pop_back();
+		if( budget-- == 0 ) return "walk overran the node count (a cycle survived assembly)";
+		if( seen[cur] ) return "a node is reached twice by the roots+children walk";
+		seen[cur] = 1;
+		const SceneEditController::TreeNodeRow& row = t.nodes[cur];
+		// (4) PARENT AGREEMENT.  `parent` and the child slices are two
+		// independent descriptions of one edge set; a shell reads BOTH (the
+		// slice to nest a row, `parent` to build its expand-state PATH), so
+		// they disagreeing would draw two different trees at once.
+		for( unsigned int k = row.childCount; k > 0; --k ) {
+			const unsigned int child = t.childIndices[ row.firstChild + k - 1 ];
+			if( t.nodes[child].parent != cur ) return "a child's `parent` is not the row it hangs under";
+			stack.push_back( child );
+		}
+	}
+	for( std::size_t i = 0; i < n; ++i ) if( !seen[i] ) return "a node is unreachable from the roots";
+	for( std::size_t r = 0; r < t.roots.size(); ++r )
+		if( t.nodes[ t.roots[r] ].parent != SceneEditController::kInvalidNodeIndex )
+			return "a ROOT carries a parent index";
+	return "";
+}
+
 static Seed MakeSeed( const char* name, const char* parent, unsigned long long order )
 {
 	Seed s;
@@ -1687,6 +1757,86 @@ int main()
 
 		j->release();
 		std::remove( s );
+	}
+
+	// =================================================================
+	// Y -- THE SHAPE THE OUTLINER SHELLS RESHAPE `ReadTree` INTO (step 4b).
+	//
+	//      4b turns one AuthoredTree into {name, parent, children} rows plus
+	//      a roots list and draws exactly the nodes a roots-then-children
+	//      walk reaches.  Everything else in this file asserts the tree's
+	//      CONTENT against a golden dump; this case asserts its STRUCTURE,
+	//      because the two failures a shell cannot see are structural: a node
+	//      the walk never reaches is a row that is simply absent, and a node
+	//      it reaches twice is a row drawn twice -- on screen both read as a
+	//      scene that is different from what the author wrote, not as a bug.
+	//
+	//      Run over every shape the assembler can produce, INCLUDING its two
+	//      hostile inputs: a dangling parent and a cycle are exactly where a
+	//      totality claim would break, and neither is reachable through
+	//      IObjectManager::SetObjectParent, so the pure seam is the only way
+	//      to drive them.  See TreeShapeViolation for what is checked and for
+	//      the honest scope (this pins the CONTRACT, not either shell).
+	// =================================================================
+	{
+		const char* s = "sgnode_shape.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname hub\n}\n"
+			"standard_object\n{\nname arm\nparent hub\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname hand\nparent arm\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname B\nparent S\ngeometry g\nmaterial m\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname I\nparent hub\nsource S\ncount_u 2\nposition expr(i*3) 0 0\n}\n",
+			"Y: nested + instanced scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			// A hierarchy, a fold, and a FLAT category -- the flat one matters
+			// because 4a models it as N roots with no children precisely so the
+			// shells need no per-category branch, which is a claim about THIS
+			// partition holding there too.
+			const Cat cats[4] = { Cat::Object, Cat::Material, Cat::Painter, Cat::Geometry };
+			for( int f = 0; f < 4; ++f ) {
+				SceneEditController::AuthoredTree t;
+				c.ReadTree( cats[f], t );
+				Check( t.nodes.size() > 0, "Y: the fixture category is non-empty (not vacuously shaped)" );
+				CheckEq( TreeShapeViolation( t ), "",
+				         "Y: a live category's tree is a partition its shell can draw whole" );
+			}
+			// The premise for the Object row: this really is a MULTI-LEVEL tree
+			// with a fold in it, so the walk above had something to get wrong.
+			SceneEditController::AuthoredTree t;
+			c.ReadTree( Cat::Object, t );
+			CheckEq( TreeDump( c, Cat::Object ),
+			         "hub|  arm|    hand|  I|S|  B",
+			         "Y: the premise -- three levels, a counted instance folded to one node" );
+			Check( t.roots.size() == 2 && t.nodes.size() == 6,
+			       "Y: ... two roots over six nodes, so roots+children is a real partition" );
+		}
+		j->release();
+		std::remove( s );
+
+		// The two hostile inputs, straight at the pure assembler.
+		{
+			std::vector<Seed> seeds;
+			seeds.push_back( MakeSeed( "kept",    "ghost", 1 ) );   // dangling -> root
+			seeds.push_back( MakeSeed( "child",   "kept",  2 ) );
+			CheckEq( TreeShapeViolation( SceneEditController::BuildAuthoredTree( seeds ) ), "",
+			         "Y: a DANGLING parent still yields a whole, once-each partition" );
+		}
+		{
+			std::vector<Seed> seeds;
+			seeds.push_back( MakeSeed( "a", "c", 1 ) );
+			seeds.push_back( MakeSeed( "b", "a", 2 ) );
+			seeds.push_back( MakeSeed( "c", "b", 3 ) );
+			seeds.push_back( MakeSeed( "self", "self", 4 ) );
+			const SceneEditController::AuthoredTree cyc =
+				SceneEditController::BuildAuthoredTree( seeds );
+			Check( cyc.nodes.size() == 4,
+			       "Y: the premise -- a 3-cycle and a self-parent both kept every node" );
+			CheckEq( TreeShapeViolation( cyc ), "",
+			         "Y: ... and a BROKEN cycle is still a partition -- the outliner draws each of "
+			         "those nodes exactly once, which is the whole reason the break exists" );
+		}
 	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

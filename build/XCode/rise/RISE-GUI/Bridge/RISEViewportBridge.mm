@@ -79,6 +79,18 @@ NSString* NamedViewDisplayName( const char* bytes )
 - (void)_fireDirtyChangedFromBackground:(BOOL)hasUnsavedChanges;
 @end
 
+// Class extensions: private initialisers for the 87 step 4a tree value types.
+@interface RISESceneTreeNode ()
+- (instancetype)initWithName:(NSString *)name
+                      parent:(NSInteger)parent
+                    children:(NSArray<NSNumber *> *)children;
+@end
+
+@interface RISESceneTree ()
+- (instancetype)initWithNodes:(NSArray<RISESceneTreeNode *> *)nodes
+                        roots:(NSArray<NSNumber *> *)roots;
+@end
+
 // Class extension: private initializer for RISEViewportProperty.
 @interface RISEViewportProperty ()
 - (instancetype)initWithName:(NSString *)name
@@ -1781,6 +1793,81 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return out;
 }
 
+- (RISESceneTree *)categoryTree:(RISEViewportCategory)category {
+    if (!_controller) {
+        return [[RISESceneTree alloc] initWithNodes:@[] roots:@[]];
+    }
+
+    // ONE TRANSACTIONAL READ.  SceneEditController::ReadTree refreshes once
+    // and then copies the whole published tree out under a single hold of the
+    // snapshot lock, so what lands here cannot be a mixture of two trees --
+    // which a walk built out of the per-node getters CAN be, because each of
+    // those takes the lock on its own and another thread's count call may
+    // republish between two of them.  That is an API property of ReadTree,
+    // documented at its declaration; the Qt shell reads the same guarantee.
+    //
+    // Called directly on the C++ controller, not through RISE_API_*: this file
+    // is Objective-C++ and already calls SceneEditController natively (see
+    // -categoryEntities: above).  The C ABI exists for callers that cannot see
+    // C++, and its node surface is per-node -- i.e. exactly the non-
+    // transactional shape this method is here to avoid.
+    //
+    // The indices in the returned tree are RAW indices into its own node table,
+    // NOT the generation-tagged handles the per-node getters mint, because this
+    // copy is ours and nothing can republish underneath it.  They map
+    // one-to-one onto the RISESceneTreeNode positions built below, so no
+    // handle -- and nothing that can expire -- crosses into Swift.
+    SceneEditController::AuthoredTree t;
+    _controller->ReadTree(static_cast<SceneEditController::Category>(category), t);
+
+    const std::size_t n = t.nodes.size();
+    if (n == 0) {
+        return [[RISESceneTree alloc] initWithNodes:@[] roots:@[]];
+    }
+
+    NSMutableArray<RISESceneTreeNode *> *nodes = [NSMutableArray arrayWithCapacity:n];
+    for (std::size_t i = 0; i < n; ++i) {
+        const SceneEditController::TreeNodeRow &row = t.nodes[i];
+
+        // Same decode the flat -categoryEntities: path uses, so a tree row and
+        // a list row render byte-identically and hand -setSelection:name: the
+        // identical string.  NamedViewDisplayName is a UTF-8 decode with a
+        // Latin-1 fallback, not a cosmetic transform -- there is no display /
+        // raw split to carry.
+        NSString *name = NamedViewDisplayName(row.name.c_str());
+
+        // kInvalidNodeIndex means ROOT, which the shell draws as a top-level
+        // row -- what -1 says here.  The extra range test is belt-and-braces:
+        // an index the shell could not resolve must degrade to "root", never
+        // to an out-of-bounds subscript in Swift.
+        NSInteger parent = -1;
+        if (row.parent != SceneEditController::kInvalidNodeIndex && row.parent < n) {
+            parent = static_cast<NSInteger>(row.parent);
+        }
+
+        NSMutableArray<NSNumber *> *children =
+            [NSMutableArray arrayWithCapacity:row.childCount];
+        for (unsigned int k = 0; k < row.childCount; ++k) {
+            const std::size_t slot = static_cast<std::size_t>(row.firstChild) + k;
+            if (slot >= t.childIndices.size()) break;
+            const unsigned int child = t.childIndices[slot];
+            if (child < n) [children addObject:@(static_cast<NSInteger>(child))];
+        }
+
+        [nodes addObject:[[RISESceneTreeNode alloc] initWithName:(name ?: @"")
+                                                          parent:parent
+                                                        children:children]];
+    }
+
+    NSMutableArray<NSNumber *> *roots =
+        [NSMutableArray arrayWithCapacity:t.roots.size()];
+    for (std::size_t r = 0; r < t.roots.size(); ++r) {
+        if (t.roots[r] < n) [roots addObject:@(static_cast<NSInteger>(t.roots[r]))];
+    }
+
+    return [[RISESceneTree alloc] initWithNodes:nodes roots:roots];
+}
+
 - (NSString *)activeNameForCategory:(RISEViewportCategory)category {
     if (!_controller) return @"";
     const int catInt = static_cast<int>(category);
@@ -2729,6 +2816,56 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
 - (BOOL)editable          { return _editable; }
 - (NSArray<RISEViewportPropertyPreset *> *)presets { return _presets; }
 - (NSString *)unitLabel   { return _unitLabel; }
+
+@end
+
+// 87 §5 step 4a value types -- immutable rows handed to the Swift outliner.
+
+@implementation RISESceneTreeNode {
+    NSString *_name;
+    NSInteger _parent;
+    NSArray<NSNumber *> *_children;
+}
+
+- (instancetype)initWithName:(NSString *)name
+                      parent:(NSInteger)parent
+                    children:(NSArray<NSNumber *> *)children
+{
+    self = [super init];
+    if (self) {
+        _name = [name copy] ?: @"";
+        _parent = parent;
+        // -copy on an NSMutableArray yields an immutable snapshot, which is
+        // what the readonly property promises.
+        _children = [children copy] ?: @[];
+    }
+    return self;
+}
+
+- (NSString *)name { return _name; }
+- (NSInteger)parent { return _parent; }
+- (NSArray<NSNumber *> *)children { return _children; }
+
+@end
+
+@implementation RISESceneTree {
+    NSArray<RISESceneTreeNode *> *_nodes;
+    NSArray<NSNumber *> *_roots;
+}
+
+- (instancetype)initWithNodes:(NSArray<RISESceneTreeNode *> *)nodes
+                        roots:(NSArray<NSNumber *> *)roots
+{
+    self = [super init];
+    if (self) {
+        _nodes = [nodes copy] ?: @[];
+        _roots = [roots copy] ?: @[];
+    }
+    return self;
+}
+
+- (NSArray<RISESceneTreeNode *> *)nodes { return _nodes; }
+- (NSArray<NSNumber *> *)roots { return _roots; }
 
 @end
 

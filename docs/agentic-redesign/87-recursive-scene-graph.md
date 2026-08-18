@@ -1191,9 +1191,39 @@ what was authored, live material included).
      5 → 10.25, then 3 → 1.25), both asserting the committed pose.
 4. **UI: Objects as a recursive tree** over the AUTHORED graph — a
    generic node-children API replacing per-category flat lists; Qt to a
-   real tree model, Swift to `OutlineGroup`; expand state keyed by tree
-   PATH, not name. Both outliners are currently hand-rolled two-level
-   lists, so this is a structural rewrite in each.
+   real tree model, Swift to ~~`OutlineGroup`~~ (see below); expand state
+   keyed by tree PATH, not name. Both outliners are currently hand-rolled
+   two-level lists, so this is a structural rewrite in each.
+
+   **⚠ `OutlineGroup` WAS THE WRONG TOOL, and this clause contradicted its
+   own next clause.  Corrected 2026-08-18 during 4b.**  `OutlineGroup` owns
+   its expansion state and exposes no binding to it, so it CANNOT implement
+   "expand state keyed by tree PATH" — the requirement in the very same
+   sentence.  Second, independent reason: the eleven category headers are
+   not tree nodes; they expand through the bridge (`collapseSection` /
+   `setSelection(cat, "")`), which `PropertiesPanel` also reads, and
+   `OutlineGroup` offers no hook to route a toggle into a bridge call — so
+   the top level would stay hand-rolled and the result would be a hybrid,
+   not the uniform recursion this step is asking for.
+
+   Recursive `DisclosureGroup` was ALSO rejected, deliberately: it brings
+   platform chevron chrome, while the category header already draws a
+   hand-rolled `▸`/`▾`, and mixing the two disclosure idioms in one list is
+   a visual regression.  **What 4b shipped instead:** the tree is flattened
+   to visible rows (`outlinerFlatten` + `outlinerVisibleRows`, both pure and
+   iterative) and drawn by a single `ForEach`, which keeps the existing
+   `ScrollView`/`VStack` structure, reuses one glyph at both levels, and
+   sidesteps SwiftUI's opaque-type recursion limit (`some View` cannot
+   contain itself) without `AnyView`.  The recursion lives in the flatten,
+   iteratively — for the same reason `BuildAuthoredTree` is iterative.
+
+   **Two consequences of §2 that will look like regressions and are not.**
+   The Objects count now counts AUTHORED nodes, so an 8x8 `count_u`/`count_v`
+   array counts 1, not 64 — that is the point of the fold: every row has a
+   chunk to edit.  And selecting a synthesized clone (`I[1,0]`) in the
+   viewport highlights NO outliner row, because it folded into `I`; mapping
+   a clone back to its fold target needs the provenance map, which the
+   bridges do not expose.  Open, not papered over.
 
 Then the agent surface (`build_element` emits a container plus parented
 children; `place_element` becomes ONE transform edit on the container).

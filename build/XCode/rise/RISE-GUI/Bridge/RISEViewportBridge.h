@@ -70,6 +70,48 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 @property (nonatomic, readonly) BOOL background;        ///< map visible behind geometry
 @end
 
+/// 87 §5 step 4a/4b: one node of the AUTHORED-graph tree, as read out of
+/// SceneEditController's snapshot in a single pass.  The macOS mirror of
+/// Qt's `SceneTreeNode` (build/VS2022/RISE-GUI/ViewportBridge.h).
+///
+/// `parent` is -1 for a root; otherwise it indexes into the SAME
+/// `RISESceneTree.nodes` array this node came from, as does every entry of
+/// `children`.  Which is why the whole tree is handed over by one
+/// `-categoryTree:` call rather than walked node by node: the controller's
+/// per-node getters take GENERATION-TAGGED handles that are refused once the
+/// snapshot republishes, and a republish can land between any two of them
+/// (each takes the snapshot lock on its own).  See SceneEditController.h's
+/// "HANDLE CHURN" note — dragging a sphere's radius republishes the Geometry
+/// tree on every tick.  NOTHING here is a handle, so nothing here expires;
+/// what a caller must not do is carry these INDICES across a refresh, since
+/// the next `-categoryTree:` is a different array.
+///
+/// `name` is the entity name — what the row displays AND what
+/// `-setSelection:name:` takes.  There is deliberately no second "display
+/// name" field: the flat `-categoryEntities:` path runs its names through the
+/// same `NamedViewDisplayName` decode, which is a UTF-8→NSString conversion
+/// with a Latin-1 fallback for un-decodable bytes, NOT a cosmetic transform —
+/// so display and selection identity are the same string for every name that
+/// can round-trip at all, exactly as on the flat path.
+@interface RISESceneTreeNode : NSObject
+@property (nonatomic, readonly, copy) NSString *name;
+@property (nonatomic, readonly) NSInteger parent;                    ///< -1 for a root
+@property (nonatomic, readonly, copy) NSArray<NSNumber *> *children; ///< indices into RISESceneTree.nodes
+@end
+
+/// One category's whole authored tree: the node table plus the ROOT list.
+///
+/// The roots are carried EXPLICITLY rather than re-derived by scanning for
+/// `parent == -1`, because sibling order is part of the contract (87 §2,
+/// "child order for display comes from declaration order") and only these two
+/// arrays state it.  A scan happens to agree today — `BuildAuthoredTree`
+/// emits its node table already in presentation order — but that is an
+/// internal detail of the assembler, not something a shell should be built on.
+@interface RISESceneTree : NSObject
+@property (nonatomic, readonly, copy) NSArray<RISESceneTreeNode *> *nodes;
+@property (nonatomic, readonly, copy) NSArray<NSNumber *> *roots;    ///< indices into `nodes`, in display order
+@end
+
 @interface RISEViewportBridge : NSObject
 
 /// Construct over an existing RISEBridge.  The RISEBridge must have
@@ -764,6 +806,33 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Display names of the entries in `category`.  Pulled by the
 /// accordion's list view; the platform UI caches by sceneEpoch.
 - (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category;
+
+/// 87 §5 step 4: `category`'s entities as the AUTHORED-graph TREE, which is
+/// what the outliner draws.  Supersedes `-categoryEntities:` for that view;
+/// the flat call stays for the places that genuinely want a list (the
+/// multi-pane camera picker).
+///
+/// A category whose entities have no hierarchy is N ROOTS WITH NO CHILDREN,
+/// so a caller needs no per-category branch — that is 4a's whole design.  For
+/// `RISEViewportCategoryObject` the tree is the AUTHORED graph, not the flat
+/// render list: 87 step 3's instancing expansions are FOLDED INTO the chunk
+/// that produced them, so an 8×8 `count_u`/`count_v` array is one row (with
+/// one chunk to edit), not 64.  The node count therefore need NOT match
+/// `-categoryEntities:`.count for Objects, and that is the point.
+///
+/// TRANSACTIONAL: built from `SceneEditController::ReadTree`, which refreshes
+/// once and then copies the whole published tree under a single lock hold, so
+/// the result can never be a mixture of two trees.  Do NOT reimplement it as a
+/// walk over the per-node getters.
+///
+/// Re-read whenever `sceneEpoch` advances.  NOTE for the drag-to-reparent
+/// work: a re-parent changes the TREE without changing any category's entity
+/// LIST, so that path must bump the scene epoch itself or the outliner keeps
+/// drawing the old shape.
+///
+/// Empty (but non-nil) on a temporarily unavailable controller or an empty
+/// category.
+- (RISESceneTree *)categoryTree:(RISEViewportCategory)category;
 
 /// Phase 4b: per-category panel selection.  Returns the entity
 /// name picked in `category`'s section, or empty when nothing is
