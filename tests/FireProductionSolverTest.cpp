@@ -496,6 +496,19 @@ int main()
 	Check(!ValidateFireProductionRemapRequest(admittedWorkingSet,&error)&&
 		error.find("two GiB")==std::string::npos,
 		"working-set RED straddles the complete two-GiB allocation boundary");
+	FireProductionRemapRequest finalBytesBoundary;
+	finalBytesBoundary.lineLength=4u;finalBytesBoundary.lineCount=1672495u;
+	finalBytesBoundary.componentCount=12u;finalBytesBoundary.cellWidthM=1.0f;
+	finalBytesBoundary.timeStepS=0.0f;
+	finalBytesBoundary.boundary=FireProductionRemapPeriodic;
+	Check(!ValidateFireProductionRemapRequest(finalBytesBoundary,&error)&&
+		error.find("two GiB")!=std::string::npos,
+		"two-GiB admission counts the ambient tuple and parameter bytes at the final float");
+	FireProductionRemapRequest finalBytesBelow=finalBytesBoundary;
+	finalBytesBelow.lineCount-=1u;
+	Check(!ValidateFireProductionRemapRequest(finalBytesBelow,&error)&&
+		error.find("two GiB")==std::string::npos,
+		"final-byte resource fixture has a discriminating below-bound companion");
 
 	FireProductionComputeCapability capability;
 	Check(QueryFireProductionComputeCapability(capability),
@@ -577,6 +590,8 @@ int main()
 	Check(RemapFireProductionMetal(latePrefix,latePrefixGPU,&error)&&
 		SameRemapWithin(latePrefixCPU,latePrefixGPU,3.0e-5f)&&
 		RemapFireProductionMetal(subUlpSweep,subUlpSweepGPU,&error)&&
+		subUlpSweepGPU.faceFluxes.front()>0.0f&&
+		subUlpSweepGPU.faceFluxes.front()==subUlpSweepCPU.faceFluxes.front()&&
 		SameRemapWithin(subUlpSweepCPU,subUlpSweepGPU,3.0e-5f)&&
 		RemapFireProductionMetal(blelloch,blellochGPU,&error)&&
 		blellochGPU.faceFluxes.front()==0.0f&&
