@@ -275,6 +275,56 @@ not caller knobs. The canonical manifest binds source record IDs, domains,
 all emitted knot/value fp32 bytes, measured fp64 error bounds, compiler version,
 and its one-preimage table ID. Runtime lookup rejects out-of-domain input.
 
+### 7.2 P1 conservative-remap landing pins (r84)
+
+The production advection operator is an unsplit-in-state, directionally
+composed flux-form semi-Lagrangian PPM remap. For one Cartesian sweep, every
+arrival face is backtraced with the prescribed midpoint face velocity. A
+single face thread evaluates the signed integral of the donor parabolic
+profile from the departure face to the arrival face, including every complete
+cell crossed and the two fractional cells. The two cells sharing a face read
+that one stored flux; no cell scatters mass and no atomic addition is allowed.
+The update is the difference of those shared face integrals divided by cell
+width. Thus the method remains conservative for Courant numbers above one;
+silently truncating a departure to the adjacent donor is forbidden.
+
+The unlimited interface value is the uniform-grid fourth-order value
+`7(q_i+q_{i+1})/12 - (q_{i-1}+q_{i+2})/12`. Each cell converts its two
+interfaces to the standard cell-average-preserving parabola. One cell-local
+limiter coefficient in `[0,1]` is then selected as the minimum required over
+the complete transported conservative tuple so every component polynomial
+stays within its three-cell donor envelope and has no interior extremum beyond
+that envelope. The same coefficient scales every component's two edge
+deviations from its cell average. This common limiter and the shared departure
+geometry make every transported component a linear combination with identical
+weights; element, mixture-fraction, and sensible-enthalpy affine relations
+therefore move together. Component-wise clipping after remap is forbidden.
+
+Periodic antiderivatives wrap by an integer number of domain integrals plus a
+canonical remainder. Pressure-open extension is selected from the accepted
+face-velocity sign, not the reference solver's pressure active-set bit:
+ambient authored state supplies resolved inflow and the nearest interior donor
+extends resolved outflow. A wall face has zero swept interval. The production
+bed/source map enters in P4 and is not synthesized by P1.
+
+GPU determinism is structural: SoA components use fixed buffer order; face and
+cell kernels write disjoint indices; the domain antiderivative uses one pinned
+Blelloch tree padded to the next power of two; no atomics, subgroup-width
+dependent reductions, `fast::` intrinsics, or compiler fast-math are allowed.
+The CPU comparison kernel explicitly rounds the same stored intermediates to
+binary32. Cross-device validation uses the r82 numerical bands, while repeated
+runs on one recorded device must be byte-identical.
+
+P1 gates comprise: exact constant-state transport; a periodic translated pulse
+at Courant numbers below and above one; smooth manufactured order at least 1.8;
+shared-weight mass/element/mixture-fraction/enthalpy residuals; pressure-open
+inflow and outflow with distinct ambient/interior scalars; wall zero flux; and
+CPU-versus-Metal face-flux and updated-state comparisons. The tier-10-shaped
+remap must fit the r82 45 ms p95 budget before P2 begins. MacCormack/BFECC,
+adjacent-cell CFL truncation, component-specific limiting, and post-remap
+clipping are rejected because they respectively lose conservation, mis-handle
+the target Courant range, split the affine tuple, or hide monitored deviation.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

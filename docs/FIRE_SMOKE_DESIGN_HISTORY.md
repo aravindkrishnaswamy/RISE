@@ -2024,3 +2024,24 @@ it was already tried and refuted here.
   extrapolation is rejected. Hand-copied constants, discovery without dispatch,
   caller-selected tolerances, and silent CPU fallback under a Metal producer
   tag are rejected.
+
+- **r84 (2026-08-18):** production P1 conservative-remap semantics. The fp32
+  fast path uses a flux-form semi-Lagrangian PPM sweep: every face is backtraced
+  at midpoint velocity and integrates the complete donor parabola interval,
+  including all crossed cells, so the shared face flux remains conservative
+  above unit Courant number. The fourth-order interface stencil and
+  cell-average-preserving parabola are limited by one cell coefficient shared
+  across the complete conservative tuple. This makes species, mixture
+  fraction, elements, and sensible enthalpy use identical weights instead of
+  relying on a post-update repair.
+
+  Periodic wrap adds exact whole-domain integrals before the canonical
+  remainder; pressure-open ghost selection follows accepted velocity sign,
+  with ambient inflow and nearest-interior outflow, and walls have zero swept
+  interval. Fixed SoA order, disjoint face/cell writes, one padded Blelloch
+  prefix tree, and disabled fast-math pin same-device determinism. Rejected:
+  MacCormack/BFECC (nonconservative), adjacent-cell CFL truncation (invalid at
+  the target schedule), component-wise limiters (break affine common weights),
+  atomics/subgroup-dependent scans (nondeterministic), and post-remap clipping
+  (hidden state repair). P1 must demonstrate >=1.8 manufactured order and the
+  45 ms tier-10 p95 allocation before projection work begins.
