@@ -104,6 +104,14 @@ namespace RISE
 				(q6/3.0f)*(beginning*beginning+beginning*end+end*end));
 		}
 
+		float CellTrailingIntegral( float center, float left, float right, float length )
+		{
+			if( left==center&&right==center ) return length*center;
+			const float q6=6.0f*center-3.0f*(left+right);
+			return length*(right-0.5f*(right-left-q6)*length-
+				(q6/3.0f)*length*length);
+		}
+
 		std::size_t WrappedCell( long cell, std::size_t count )
 		{
 			const long signedCount=static_cast<long>(count);
@@ -140,18 +148,22 @@ namespace RISE
 		{
 			const float count=static_cast<float>(request.lineLength);
 			const float magnitude=std::fabs(courant);
-			const float cycles=std::floor(magnitude/count);
-			const float localLength=magnitude-cycles*count;
+			const float localLength=std::fmod(magnitude,count);
+			const float cycles=std::floor((magnitude-localLength)/count);
 			const std::size_t base=(component*request.lineCount+line)*(request.lineLength+1u);
 			float result=cycles*prefix[base+request.lineLength];
 			if( courant>=0.0f ) {
 				const float whole=std::floor(localLength);
 				const float fractional=localLength-whole;
-				const long beginning=fractional>0.0f ?
-					static_cast<long>(face)-static_cast<long>(whole)-1l :
-					static_cast<long>(face)-static_cast<long>(whole);
-				result+=PeriodicLocalForwardIntegral(request,component,line,beginning,
-					fractional>0.0f?1.0f-fractional:0.0f,localLength,left,right);
+				const long wholeBeginning=static_cast<long>(face)-static_cast<long>(whole);
+				if( fractional>0.0f ) {
+					const std::size_t wrapped=WrappedCell(wholeBeginning-1l,request.lineLength);
+					const std::size_t value=ValueIndex(request,component,line,wrapped);
+					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
+						fractional);
+				}
+				result+=PeriodicLocalForwardIntegral(request,component,line,wholeBeginning,
+					0.0f,whole,left,right);
 				return result;
 			}
 			result+=PeriodicLocalForwardIntegral(request,component,line,
@@ -195,12 +207,15 @@ namespace RISE
 				const float interiorLength=std::min(magnitude,static_cast<float>(face));
 				const float whole=std::floor(interiorLength);
 				const float fractional=interiorLength-whole;
-				const std::size_t beginning=fractional>0.0f ?
-					face-static_cast<std::size_t>(whole)-1u :
-					face-static_cast<std::size_t>(whole);
-				return (magnitude-interiorLength)*leftExtension+
-					OpenLocalForwardIntegral(request,component,line,beginning,
-						fractional>0.0f?1.0f-fractional:0.0f,interiorLength,left,right);
+				const std::size_t wholeBeginning=face-static_cast<std::size_t>(whole);
+				float result=(magnitude-interiorLength)*leftExtension;
+				if( fractional>0.0f ) {
+					const std::size_t value=ValueIndex(request,component,line,wholeBeginning-1u);
+					result+=CellTrailingIntegral(request.values[value],left[value],right[value],
+						fractional);
+				}
+				return result+OpenLocalForwardIntegral(request,component,line,wholeBeginning,
+					0.0f,whole,left,right);
 			}
 			const float interiorLength=std::min(magnitude,
 				static_cast<float>(request.lineLength-face));
@@ -287,16 +302,13 @@ namespace RISE
 			if( request.boundary==FireProductionRemapPeriodic&&
 				request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+request.lineLength] )
 				return Fail(error,"production periodic remap seam velocity is not single-valued");
-			double previous=0.0;
+			float previous=0.0f;
 			for( std::size_t face=0;face<=request.lineLength;++face ) {
 				const float courant=request.timeStepS*request.faceVelocityMPerS[base+face]/
 					request.cellWidthM;
 				if( !std::isfinite(courant) )
 					return Fail(error,"production remap binary32 Courant number is nonfinite");
-				const double departure=static_cast<double>(face)-
-					static_cast<double>(request.timeStepS)*
-					static_cast<double>(request.faceVelocityMPerS[base+face])/
-					static_cast<double>(request.cellWidthM);
+				const float departure=static_cast<float>(face)-courant;
 				if( !std::isfinite(departure)||(face>0u&&departure<previous) )
 					return Fail(error,"production remap backtraced face map is folded");
 				previous=departure;

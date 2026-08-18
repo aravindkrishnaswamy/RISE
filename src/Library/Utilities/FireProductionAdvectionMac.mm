@@ -108,6 +108,11 @@ inline float cell_interval(float center,float left,float right,float beginning,f
  return delta*(left+0.5f*(right-left+q6)*(beginning+end)-
   (q6/3.0f)*(beginning*beginning+beginning*end+end*end));
 }
+inline float cell_trailing(float center,float left,float right,float length){
+ if(left==center&&right==center)return length*center;
+ float q6=6.0f*center-3.0f*(left+right);
+ return length*(right-0.5f*(right-left-q6)*length-(q6/3.0f)*length*length);
+}
 inline uint wrapped_cell(int cell,uint count){int n=int(count),wrapped=cell%n;
  if(wrapped<0)wrapped+=n;return uint(wrapped);}
 inline float periodic_local_forward(device const float* q,device const float* left,
@@ -123,13 +128,14 @@ inline float periodic_local_forward(device const float* q,device const float* le
 inline float periodic_swept(device const float* q,device const float* left,
  device const float* right,device const float* prefix,constant Params& p,uint c,uint l,
  uint face,float courant){
- float count=float(p.n),magnitude=abs(courant),cycles=floor(magnitude/count);
- float localLength=magnitude-cycles*count;uint base=(c*p.lines+l)*(p.n+1u);
+ float count=float(p.n),magnitude=abs(courant),localLength=fmod(magnitude,count);
+ float cycles=floor((magnitude-localLength)/count);uint base=(c*p.lines+l)*(p.n+1u);
  float result=cycles*prefix[base+p.n];
  if(courant>=0.0f){float whole=floor(localLength),fractional=localLength-whole;
-  int beginning=fractional>0.0f?int(face)-int(whole)-1:int(face)-int(whole);
-  result+=periodic_local_forward(q,left,right,p,c,l,beginning,
-   fractional>0.0f?1.0f-fractional:0.0f,localLength);return result;}
+  int wholeBeginning=int(face)-int(whole);
+  if(fractional>0.0f){uint index=value_index(p,c,l,wrapped_cell(wholeBeginning-1,p.n));
+   result+=cell_trailing(q[index],left[index],right[index],fractional);}
+  result+=periodic_local_forward(q,left,right,p,c,l,wholeBeginning,0.0f,whole);return result;}
  result+=periodic_local_forward(q,left,right,p,c,l,int(face),0.0f,localLength);return -result;
 }
 inline float open_local_forward(device const float* q,device const float* left,
@@ -149,9 +155,10 @@ inline float open_swept(device const float* q,device const float* left,device co
   q[value_index(p,c,l,p.n-1u)];
  if(courant>=0.0f){float interiorLength=min(magnitude,float(face));
   float whole=floor(interiorLength),fractional=interiorLength-whole;
-  uint beginning=fractional>0.0f?face-uint(whole)-1u:face-uint(whole);
-  return (magnitude-interiorLength)*leftExtension+open_local_forward(q,left,right,p,c,l,
-   beginning,fractional>0.0f?1.0f-fractional:0.0f,interiorLength);}
+  uint wholeBeginning=face-uint(whole);float result=(magnitude-interiorLength)*leftExtension;
+  if(fractional>0.0f){uint index=value_index(p,c,l,wholeBeginning-1u);
+   result+=cell_trailing(q[index],left[index],right[index],fractional);}
+  return result+open_local_forward(q,left,right,p,c,l,wholeBeginning,0.0f,whole);}
  float interiorLength=min(magnitude,float(p.n-face));
  return -(open_local_forward(q,left,right,p,c,l,face,0.0f,interiorLength)+
   (magnitude-interiorLength)*rightExtension);
@@ -161,21 +168,24 @@ kernel void face_flux(device const float* q [[buffer(0)]],device const float* u 
  device const float* right [[buffer(4)]],device const float* prefix [[buffer(5)]],
  device float* flux [[buffer(6)]],constant Params& p [[buffer(7)]],
  uint gid [[thread_position_in_grid]]){
- uint faces=p.n+1u,total=p.comps*p.lines*faces;if(gid>=total)return;
- uint c=gid/(p.lines*faces);uint rem=gid-c*p.lines*faces;uint l=rem/faces;uint f=rem-l*faces;
- if(p.boundary==2u&&(f==0u||f==p.n)){flux[gid]=0.0f;return;}
- uint canonicalFace=p.boundary==0u&&f==p.n?0u:f;
- float velocity=u[l*faces+canonicalFace],courant=p.dt*velocity/p.dx;
- float swept=p.boundary==0u?periodic_swept(q,left,right,prefix,p,c,l,canonicalFace,courant):
-  open_swept(q,left,right,ambient,p,c,l,canonicalFace,courant,velocity);
- flux[gid]=p.dx*swept;
+ uint faces=p.n+1u,activeFaces=p.boundary==0u?p.n:faces,total=p.comps*p.lines*activeFaces;
+ if(gid>=total)return;uint c=gid/(p.lines*activeFaces);uint rem=gid-c*p.lines*activeFaces;
+ uint l=rem/activeFaces;uint f=rem-l*activeFaces;
+ uint output=flux_index(p,c,l,f);
+ if(p.boundary==2u&&(f==0u||f==p.n)){flux[output]=0.0f;return;}
+ float velocity=u[l*faces+f],courant=p.dt*velocity/p.dx;
+ float swept=p.boundary==0u?periodic_swept(q,left,right,prefix,p,c,l,f,courant):
+  open_swept(q,left,right,ambient,p,c,l,f,courant,velocity);
+ flux[output]=p.dx*swept;
 }
-kernel void update_cells(device const float* q [[buffer(0)]],device const float* flux [[buffer(1)]],
+kernel void update_cells(device const float* q [[buffer(0)]],device float* flux [[buffer(1)]],
  device float* updated [[buffer(2)]],constant Params& p [[buffer(3)]],
  uint gid [[thread_position_in_grid]]){
  uint total=p.comps*p.lines*p.n;if(gid>=total)return;uint c=gid/(p.lines*p.n);
  uint rem=gid-c*p.lines*p.n;uint l=rem/p.n;uint cell=rem-l*p.n;
- updated[gid]=q[gid]-(flux[flux_index(p,c,l,cell+1u)]-flux[flux_index(p,c,l,cell)])/p.dx;
+ uint base=flux_index(p,c,l,0u),right=cell+1u;
+ if(p.boundary==0u&&right==p.n){right=0u;flux[base+p.n]=flux[base];}
+ updated[gid]=q[gid]-(flux[base+right]-flux[base+cell])/p.dx;
 }
 )METAL";
 		}
@@ -345,7 +355,9 @@ kernel void update_cells(device const float* q [[buffer(0)]],device const float*
 			[encoder setBuffer:ambient offset:0 atIndex:2];[encoder setBuffer:left offset:0 atIndex:3];
 			[encoder setBuffer:right offset:0 atIndex:4];[encoder setBuffer:prefix offset:0 atIndex:5];
 			[encoder setBuffer:flux offset:0 atIndex:6];[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
-			Dispatch(encoder,context.flux,fluxCount);[encoder endEncoding];
+			const std::size_t activeFluxCount=request.boundary==FireProductionRemapPeriodic ?
+				request.componentCount*request.lineCount*request.lineLength : fluxCount;
+			Dispatch(encoder,context.flux,activeFluxCount);[encoder endEncoding];
 
 			encoder=[command computeCommandEncoder];
 			if( !encoder ) {

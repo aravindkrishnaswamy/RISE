@@ -20,6 +20,7 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -49,6 +50,15 @@ namespace
 		std::ostringstream text;
 		text << input.rdbuf();
 		return text.str();
+	}
+
+	std::size_t CountSubstring( const std::string& text, const std::string& needle )
+	{
+		std::size_t count=0u,position=0u;
+		while( (position=text.find(needle,position))!=std::string::npos ) {
+			++count;position+=needle.size();
+		}
+		return count;
 	}
 
 	std::size_t RemapValueIndex( const RISE::FireProductionRemapRequest& request,
@@ -286,6 +296,28 @@ int main()
 		std::all_of(latePrefixCPU.updatedValues.begin(),latePrefixCPU.updatedValues.end(),
 			[](float value){return value==1.0e8f;}),
 		"local fractional integral survives a tiny late-cell sweep without prefix cancellation");
+	FireProductionRemapRequest subUlpSweep=PeriodicRequest(9u,1u,0x1p-25f);
+	subUlpSweep.cellWidthM=1.0f;subUlpSweep.timeStepS=0x1p-25f;
+	subUlpSweep.values.assign(subUlpSweep.values.size(),0.1f);
+	FireProductionRemapResult subUlpSweepCPU;
+	Check(RemapFireProductionCPU(subUlpSweep,subUlpSweepCPU,&error)&&
+		subUlpSweepCPU.faceFluxes.front()>0.0f&&
+		std::all_of(subUlpSweepCPU.updatedValues.begin(),subUlpSweepCPU.updatedValues.end(),
+			[](float value){return value==0.1f;}),
+		"sub-ulp trailing sweep advances without constructing the rounded value one-minus-C");
+	for( const std::pair<std::size_t,float>& largeCourant : {
+		std::make_pair(std::size_t(5u),0x1.fff832p+24f),
+		std::make_pair(std::size_t(7u),0x1.110bb6p+62f)} ) {
+		FireProductionRemapRequest large=PeriodicRequest(largeCourant.first,1u,
+			largeCourant.second);
+		large.cellWidthM=1.0f;large.timeStepS=largeCourant.second;
+		large.values.assign(large.values.size(),0.1f);
+		FireProductionRemapResult largeCPU;
+		Check(RemapFireProductionCPU(large,largeCPU,&error)&&
+			std::all_of(largeCPU.updatedValues.begin(),largeCPU.updatedValues.end(),
+				[](float value){return value==0.1f;}),
+			"large finite periodic Courant has a bounded canonical quotient and remainder");
+	}
 
 	FireProductionRemapRequest seam=PeriodicRequest(7u,1u,0.1f);
 	for( std::size_t cell=0;cell<seam.lineLength;++cell )
@@ -425,6 +457,16 @@ int main()
 	Check(!RemapFireProductionCPU(folded,foldedResult,&error)&&
 		foldedResult.updatedValues.empty()&&error.find("folded")!=std::string::npos,
 		"production remap rejects a crossed departure map instead of draining a donor twice");
+	FireProductionRemapRequest roundedFold;
+	roundedFold.lineLength=4u;roundedFold.lineCount=1u;roundedFold.componentCount=1u;
+	roundedFold.cellWidthM=0x1.a0e166p+72f;roundedFold.timeStepS=0x1.34a348p+38f;
+	roundedFold.boundary=FireProductionRemapPressureOpen;
+	roundedFold.values.assign(4u,1.0e-30f);roundedFold.ambientValues.assign(1u,1.0e-30f);
+	roundedFold.faceVelocityMPerS={0x1.cdfcecp+57f,0x1.cdfceep+57f,
+		0x1.cdfceep+57f,0x1.cdfceep+57f,0x1.cdfceep+57f};
+	Check(!ValidateFireProductionRemapRequest(roundedFold,&error)&&
+		error.find("folded")!=std::string::npos,
+		"fold admission evaluates the same rounded binary32 Courants as the kernels");
 	FireProductionRemapRequest invalid=constant;
 	invalid.values[0]=std::numeric_limits<float>::quiet_NaN();
 	FireProductionRemapResult invalidResult;invalidResult.updatedValues.push_back(9.0f);
@@ -443,12 +485,17 @@ int main()
 	Check(!ValidateFireProductionRemapRequest(overflow,&error)&&!error.empty(),
 		"production remap rejects overflowing dimensions before indexing or allocation");
 	FireProductionRemapRequest excessiveWorkingSet;
-	excessiveWorkingSet.lineLength=1024u;excessiveWorkingSet.lineCount=300000u;
+	excessiveWorkingSet.lineLength=1024u;excessiveWorkingSet.lineCount=70000u;
 	excessiveWorkingSet.componentCount=1u;excessiveWorkingSet.cellWidthM=1.0f;
 	excessiveWorkingSet.timeStepS=0.0f;excessiveWorkingSet.boundary=FireProductionRemapPeriodic;
 	Check(!ValidateFireProductionRemapRequest(excessiveWorkingSet,&error)&&
 		error.find("two GiB")!=std::string::npos,
 		"production remap accounts for every Metal buffer before the two-GiB admission gate");
+	FireProductionRemapRequest admittedWorkingSet=excessiveWorkingSet;
+	admittedWorkingSet.lineCount=65000u;
+	Check(!ValidateFireProductionRemapRequest(admittedWorkingSet,&error)&&
+		error.find("two GiB")==std::string::npos,
+		"working-set RED straddles the complete two-GiB allocation boundary");
 
 	FireProductionComputeCapability capability;
 	Check(QueryFireProductionComputeCapability(capability),
@@ -476,7 +523,7 @@ int main()
 			"Metal production challenge proves nonidentity device execution");
 	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,openNegativeGPU,wallGPU,
 		wallNegativeGPU,
-		smoothGPU,affineGPU,latePrefixGPU,blellochGPU;
+		smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
 	const bool constantMetal=RemapFireProductionMetal(constant,constantGPU,&error);
 	if( !constantMetal ) std::cerr << "Metal remap detail: " << error << '\n';
 	const bool repeatedMetal=constantMetal&&RemapFireProductionMetal(constant,constantGPURepeated,&error);
@@ -529,10 +576,20 @@ int main()
 		"Metal applies one shared tuple limiter to a cancellation-sensitive affine row");
 	Check(RemapFireProductionMetal(latePrefix,latePrefixGPU,&error)&&
 		SameRemapWithin(latePrefixCPU,latePrefixGPU,3.0e-5f)&&
+		RemapFireProductionMetal(subUlpSweep,subUlpSweepGPU,&error)&&
+		SameRemapWithin(subUlpSweepCPU,subUlpSweepGPU,3.0e-5f)&&
 		RemapFireProductionMetal(blelloch,blellochGPU,&error)&&
 		blellochGPU.faceFluxes.front()==0.0f&&
 		blellochGPU.faceFluxes.front()==blellochGPU.faceFluxes.back(),
 		"Metal local integration and Blelloch cancellation topology match their oracle fixtures");
+	FireProductionRemapRequest largeMetalRequest=PeriodicRequest(7u,1u,0x1.110bb6p+62f);
+	largeMetalRequest.cellWidthM=1.0f;largeMetalRequest.timeStepS=0x1.110bb6p+62f;
+	largeMetalRequest.values.assign(7u,0.1f);
+	FireProductionRemapResult largeMetalCPU,largeMetalGPU;
+	Check(RemapFireProductionCPU(largeMetalRequest,largeMetalCPU,&error)&&
+		RemapFireProductionMetal(largeMetalRequest,largeMetalGPU,&error)&&
+		SameRemapWithin(largeMetalCPU,largeMetalGPU,3.0e-5f),
+		"Metal bounded quotient and remainder handle a large finite periodic Courant");
 	FireProductionRemapResult finiteOverflowGPU;finiteOverflowGPU.updatedValues.push_back(4.0f);
 	Check(!RemapFireProductionMetal(finiteOverflow,finiteOverflowGPU,&error)&&
 		finiteOverflowGPU.updatedValues.empty()&&!error.empty(),
@@ -586,7 +643,8 @@ int main()
 	std::cout << "Production P1 tier-10-shaped remap device_p95_ms=" << p95 <<
 		" wall_p95_ms=" << wallP95 << '\n';
 	Check(elapsed.size()==5u&&wallElapsed.size()==5u&&std::isfinite(p95)&&p95>0.0&&
-		std::isfinite(wallP95)&&wallP95>0.0&&p95<=wallP95+1.0&&p95<=45.0,
+		std::isfinite(wallP95)&&wallP95>0.0&&p95<=wallP95+1.0&&p95<=45.0&&
+		wallP95<=45.0,
 		"tier-10-shaped Metal remap meets the 45 ms p95 allocation");
 	const std::string metalSource=ReadText("src/Library/Utilities/FireProductionComputeMac.mm");
 	Check(metalSource.find("newLibraryWithSource")!=std::string::npos&&
@@ -600,8 +658,10 @@ int main()
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
 	const std::string androidRules=ReadText("build/cmake/rise-android/CMakeLists.txt");
+	const std::string visualStudioProject=ReadText("build/VS2022/Library/Library.vcxproj");
 	Check(advectionMetalSource.find("MTLMathModeSafe")!=std::string::npos&&
 		advectionMetalSource.find("MTLMathModeFast")==std::string::npos&&
+		advectionMetalSource.find("fast::")==std::string::npos&&
 		advectionMetalSource.find("atomic_")==std::string::npos&&
 		advectionMetalSource.find("simd_")==std::string::npos&&
 		advectionMetalSource.find("RemapFireProductionCPU")==std::string::npos&&
@@ -614,9 +674,13 @@ int main()
 		advectionMetalSource.find("[updated contents]")!=std::string::npos&&
 		advectionMetalSource.find("GPUStartTime")!=std::string::npos&&
 		advectionMetalSource.find("GPUEndTime")!=std::string::npos&&
+		advectionMetalSource.find("activeFaces=p.boundary==0u?p.n:faces")!=std::string::npos&&
+		advectionMetalSource.find("flux[base+p.n]=flux[base]")!=std::string::npos&&
 		makeRules.find("-fno-fast-math -ffp-contract=off")!=std::string::npos&&
-		xcodeProject.find("-fno-fast-math -ffp-contract=off")!=std::string::npos&&
-		androidRules.find("-fno-fast-math;-ffp-contract=off")!=std::string::npos,
+		CountSubstring(xcodeProject,"-fno-fast-math -ffp-contract=off")==2u&&
+		androidRules.find("-fno-fast-math;-ffp-contract=off")!=std::string::npos&&
+		visualStudioProject.find("<FloatingPointModel>Strict</FloatingPointModel>")!=
+			std::string::npos,
 		"production remap source binds safe math, four real kernels, device output, and strict CPU builds");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
