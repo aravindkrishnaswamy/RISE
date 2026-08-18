@@ -1113,6 +1113,15 @@ static bool IsExprValue( const std::string& value, std::string& body )
 //! string -- this derive path formats r to %.17g anyway, so the byte scan is the free check here;
 //! ExpressionProgram::IsFinite is now volatile-hardened and is the equivalent hot-path guard).  u/v are the evaluator's query coordinates --
 //! bound to the instance_array i/j-derived u,v (slice 4); a let / scene expr passes u=v=0 (a constant).
+//!
+//! THE NON-FINITE GUARD DOES NOT COVER DIVISION OR MODULO BY ZERO, and reading it as "an expr
+//! is protected against a bad divisor" is wrong.  `ExpressionEval.h`'s `kDiv` / `kMod` return
+//! ZERO for a zero divisor rather than producing an inf/nan -- deliberate, and the painters
+//! depend on it (a procedural texture must not blow up on one pixel) -- so nothing non-finite
+//! ever reaches this scan.  `expr(1/(i-1))` over `count_u 2` therefore derives x = -1 and then
+//! x = 0, with NO diagnostic, and `count_u expr(4/0)` derives a silently EMPTY array.  Do not
+//! "fix" it in the evaluator; it is documented as an authoring hazard in SCENE_CONVENTIONS
+//! (§ per-instance expressions).
 static bool EvalExprBody( const std::string& body, const LetBindings& lets, double u, double v, double& outVal, std::string& err )
 {
 	RISE::Implementation::ExpressionProgram prog = RISE::Implementation::ExpressionProgram::Invalid();
@@ -1417,6 +1426,13 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 //! scene that derives today can hit it.
 static const long long kMaxSynthesizedEntries = 10000000LL;
 
+//! 87 step 3c: the repetition-root entry name, `<name>[i,j]`.  Forward-declared because
+//! `ExpandInstanceArray` (below) and the `source` expansion (far below) must spell a
+//! generated name IDENTICALLY -- they used to hold two copies of one snprintf, and the
+//! copies were free to drift (they did: only one of them truncated safely).  Defined with
+//! the rest of the 87 step 3c helpers.
+static std::string InstanceBaseName( const std::string& instName, bool counted, int i, int j );
+
 //! #5 slice 4: expand an `instance_array` generator (§2.6.1) into N standard_objects.  The generator
 //! is NOT an engine entity -- the CST stores it; DeriveToJob expands it here (the canonical derive)
 //! AFTER the normal entities so the template geometry + referenced materials exist.  Params: name +
@@ -1481,8 +1497,13 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
 			const double v = ( countV > 1 ) ? (double)j / (double)( countV - 1 ) : 0.0;
 			IAsciiChunkParser::ParamsList plist;
-			char nm[256]; std::snprintf( nm, sizeof(nm), "%s[%d,%d]", name.c_str(), i, j );
-			if( objMgr && objMgr->GetItem( nm ) ) { diags.push_back( "instance_array '" + name + "': generated object '" + std::string( nm ) + "' collides with an existing object" ); return false; }
+			// The SAME spelling `source`'s counted form uses, and now literally the same
+			// function: this generator had its own `char[256]` snprintf copy, which
+			// TRUNCATED a long template name and collapsed two repetitions onto one
+			// generated name (see InstanceBaseName).  Retired by 3d, fixed here anyway so
+			// the two do not disagree while both exist.
+			const std::string nm = InstanceBaseName( name, /*counted*/true, i, j );
+			if( objMgr && objMgr->GetItem( nm.c_str() ) ) { diags.push_back( "instance_array '" + name + "': generated object '" + nm + "' collides with an existing object" ); return false; }
 			plist.push_back( String( ( std::string( "name " ) + nm ).c_str() ) );
 			plist.push_back( String( ( std::string( "geometry " ) + templ ).c_str() ) );
 			bool ok = true;
@@ -1502,7 +1523,7 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 			// consumers map it back to the generator by a MAP LOOKUP instead of probing
 			// the spelling of the name for a `[`.  No source NODE: this generator's
 			// template is a GEOMETRY, so the second field is empty.
-			if( objMgr ) objMgr->SetObjectProvenance( nm, name.c_str(), "" );
+			if( objMgr ) objMgr->SetObjectProvenance( nm.c_str(), name.c_str(), "" );
 			++made;
 			--entryBudget;
 		}
@@ -1543,15 +1564,24 @@ static bool ChunkCarriesCounts( const Node* c )
 }
 
 //! 87 step 3c: the ENTRY name of ONE repetition's root -- `I` when the chunk carries no
-//! counts, `I[i,j]` when it does.  `%s[%d,%d]` is `ExpandInstanceArray`'s own spelling,
-//! kept byte-for-byte so an objectmap legend, a saved isolate name or a `parent` line
-//! written against an `instance_array` grid means the same thing after 3d retires it.
+//! counts, `I[i,j]` when it does.  `<name>[i,j]` is `ExpandInstanceArray`'s own spelling,
+//! and that generator now CALLS this function rather than holding a second copy of it -- so
+//! an objectmap legend, a saved isolate name or a `parent` line written against an
+//! `instance_array` grid means the same thing after 3d retires it, by construction rather
+//! than by two implementations agreeing.
+//!
+//! BUILT WITH `std::string`, NOT A FIXED BUFFER, AND THAT IS LOAD-BEARING.  A chunk name
+//! is unbounded, and the collision scan's whole argument rests on this function being
+//! INJECTIVE in (i,j) ("distinct (i,j) give distinct bases by construction" -- see the
+//! per-repetition scan).  A truncating `snprintf` into `char[256]` breaks exactly that: a
+//! 253-character name makes `[0,0]` and `[0,1]` both truncate to `<name>[0`, the scan sees
+//! two names it believes distinct, and the SECOND repetition then fails at AddItem with a
+//! message blaming an apply failure -- with the first already applied.  Longer still and
+//! the `[i,j]` suffix vanishes entirely, collapsing every repetition onto one name.
 static std::string InstanceBaseName( const std::string& instName, bool counted, int i, int j )
 {
 	if( !counted ) return instName;
-	char nm[256];
-	std::snprintf( nm, sizeof(nm), "%s[%d,%d]", instName.c_str(), i, j );
-	return nm;
+	return instName + "[" + std::to_string( i ) + "," + std::to_string( j ) + "]";
 }
 
 //! Is `role` a chunk type whose Finalize registers a scene-graph OBJECT that can
@@ -2545,9 +2575,24 @@ static bool ExpandSourceInstance(
 	//     `rect_light` named `I.C` claims the entry name `I.C` just as a
 	//     `standard_object` would.
 	//
-	// RUN IN FULL BEFORE ANYTHING IS APPLIED, counted case included: a colliding scene
+	// RUN IN FULL BEFORE ANYTHING IS APPLIED, counted case included: a COLLIDING scene
 	// must refuse with nothing half-applied rather than fail on the fourth of nine
 	// clones of the seventh of a hundred repetitions.
+	//
+	// THAT GUARANTEE IS THE COLLISION SCAN'S, AND IT IS NOT DOCUMENT-WIDE -- do not read
+	// it as "this expansion is atomic".  PER-INSTANCE PARAMETER EVALUATION HAPPENS INSIDE
+	// THE APPLY LOOP BELOW, and PASS-1 validated only (i,j) = (0,0), so a value that is
+	// finite at instance zero and NOT at instance two (`position expr(sqrt(1-i)) 0 0`,
+	// count_u 4) applies `I[0,0]` and `I[1,0]` and THEN refuses.  Deliberately not
+	// pre-validated over every (i,j): PASS-2 applies chunk by chunk and `break`s on the
+	// first refusal (see DeriveToJob), so a member's Finalize failure, or any later
+	// chunk's, already leaves the Job partially applied -- an extra count_u*count_v
+	// evaluation pass here would buy an atomicity the surrounding machinery does not
+	// have.  What makes it harmless is the CALLER, and that is where the guarantee lives:
+	// `Job::LoadAsciiSceneViaCst` returns false on any diagnostic and the Job is
+	// discarded, and the GUI re-derive dry-runs into a STAGING Job
+	// (`RederiveCstDocumentFull_`) before it swaps.  A new caller that keeps a Job whose
+	// derive diagnosed would see the partial state -- so do not add one.
 	{
 		// The chunk name is ambiguous whether or not counts are present: provenance maps
 		// every entry back to THIS name, so two chunks holding it send a picked instance
@@ -2691,6 +2736,11 @@ static bool ExpandSourceInstance(
 				// byte-identical (EvalInstanceValue re-joins the components single-spaced,
 				// which is what the token loop already produced), so every existing 3a/3b
 				// scene derives exactly as it did.
+				// A FAILURE HERE CAN LEAVE EARLIER REPETITIONS APPLIED (see the collision
+				// scan's note above): only (i,j) = (0,0) was validated in PASS-1, so an
+				// expression that goes non-finite at a later index is diagnosed at THAT
+				// index, with everything before it already in the Job.  Contained by the
+				// caller, not by this loop.
 				if( !MergeChunkParams( items, lets, instIndex, chain, order, merged, targetRole, diags, &iv ) )
 					return false;
 				if( !ApplySynthesizedNode( registry, pJob, order, merged, targetRole, base,

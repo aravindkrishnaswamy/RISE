@@ -163,6 +163,23 @@ int main()
 		Check( !d.empty(), "collision: a generated name clashing an existing object diagnoses (no silent first-win)" );
 	}
 
+	// [long name] THE GENERATED NAME IS BUILT WITH std::string, NOT A FIXED BUFFER.  This
+	// generator carried its own `char[256]` + snprintf copy of the `%s[%d,%d]` spelling
+	// (87 step 3c gave `source` a second one; both are now the SAME function, so a fix on
+	// one side cannot leave the other truncating).  At 253 characters the `[0,0]` and
+	// `[0,1]` suffixes both truncate to `[0`, the two generated objects collide, and the
+	// array silently becomes a one-object array -- or, once AddItem rejects the duplicate,
+	// a whole scene that refuses for a reason the author cannot act on.
+	{
+		const std::string LONG( 253, 'N' );
+		std::vector<std::string> d;
+		const std::string ia = DumpCst( Scene(
+			"instance_array\n{\nname " + LONG + "\ntemplate geo\nmaterial m\ncount_u 1\ncount_v 2\n}\n" ), &d );
+		Check( d.empty(), "long-name: a 253-character array name expands cleanly" );
+		Check( ia == DumpCst( Scene( Obj( LONG + "[0,0]", "0 0 0" ) + Obj( LONG + "[0,1]", "0 0 0" ) ) ),
+		       "long-name: ... into BOTH hand-written objects -- the [i,j] suffix is not truncated away" );
+	}
+
 	// [incremental] an instance_array edit refuses on the O(closure) path -> full-derive fallback.
 	{
 		Document d = ParseToCst( Scene( "instance_array\n{\nname g\ntemplate geo\nmaterial m\ncount_u 2\nposition expr(i) 0 0\n}\n" ) );

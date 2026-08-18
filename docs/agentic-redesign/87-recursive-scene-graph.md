@@ -541,14 +541,14 @@ what was authored, live material included).
      one; `instance_array` had no descendants at all, so there is no parity to
      lose.  Say that in the docs rather than implying per-descendant variation.
    - **THE CAP COUNTS `count_u * count_v * subtreeSize`, and 3c is the first
-     slice in which it can be TESTED.**  3b could only cross the document budget
-     by materialising ten million objects; a count is refused from arithmetic
-     alone, before one entry is built.  The regression guard asserts the NUMBER in
-     the refusal: 1e6 x 10 repetitions of a 3-node subtree is 1e7 instances --
-     exactly the budget, so an instance-counting cap would admit it -- and 3e7
-     entries, which is what reaches the TLAS.  `instance_array`'s per-count 1e6
-     clamp is kept (it arrives with the shared validator); no separate product cap
-     is needed, because `perInstance >= 1` makes the entry total subsume it.
+     slice in which its ARITHMETIC can be TESTED.**  3b could only cross the
+     document budget by materialising ten million objects; a count is refused from
+     arithmetic alone, before one entry is built.  The regression guard asserts the
+     NUMBER in the refusal: 1e6 x 10 repetitions of a 3-node subtree is 1e7
+     instances -- exactly the budget, so an instance-counting cap would admit it --
+     and 3e7 entries, which is what reaches the TLAS.  `instance_array`'s per-count
+     1e6 clamp is kept (it arrives with the shared validator); no separate product
+     cap is needed, because `perInstance >= 1` makes the entry total subsume it.
    - **A COUNTED CHUNK CANNOT BE A `source`, NOR A MEMBER OF A COPIED SUBTREE.**
      It is N entries, not a node; copying "the first one" is the silent partial
      copy every other refusal in the walk exists to prevent.  The source-side check
@@ -607,6 +607,81 @@ what was authored, live material included).
    (`count_u 1e-999`) -- OVERFLOW is refused earlier by PASS-1's string-layer
    check, since the counts are descriptor-declared numeric.  It stays reachable
    both ways from `instance_array`, which PASS-1 skips.
+
+   **3c review round 1 (2026-08-17) — no P1.  Four things the reviewer's
+   out-of-tree mutants proved, and every one of them is about what a GREEN test
+   was NOT saying:**
+   - **"THE CAP CAN NOW BE TESTED" WAS TRUE OF THE ARITHMETIC AND FALSE OF THE
+     ACCOUNTING.**  The cap fixture was the document's ONLY expansion, so
+     `entryBudget` was still the full 1e7 when it ran and the refusal read "room
+     for only 10000000 more" under BOTH `--entryBudget` deletions.  The refusal
+     PRINTS the remaining budget, which makes the accounting testable for the price
+     of one earlier expansion in the same document: `I source S count_u 2` over a
+     3-node subtree spends 6, so the next generator's refusal must say 9999994
+     (9999996 with the repetition-root decrement deleted, 9999998 with the clone
+     decrement deleted).  Now asserted, both decrements red-proved.
+     STILL UNTESTED, and cheaply so only in principle: that the budget is
+     DOCUMENT-WIDE rather than per-chunk.  Separating those needs a scene whose
+     total is under 1e7 (so a per-chunk cap would admit it) but over what earlier
+     expansions have left -- i.e. ~1e7 entries actually materialised.  Same
+     "ten million objects" cost 3b had; not paid.
+   - **THE `v` NORMALIZATION HAD NO DISCRIMINATING FIXTURE AT ALL.**  The only
+     `expr(v)` assertion used `count_u 1` with no `count_v`, where `v` is 0 under
+     every wrong implementation too -- `v = 0.0`, an off-by-one `j/countV`, and the
+     copy-paste `v = i/(countU-1)` all stayed green.  The last is the shape two
+     adjacent near-identical lines actually invite, and it was the greenest.
+     Aggravating: the only `v`-discriminating fixtures in the tree were on the
+     `instance_array` copy, which **3d deletes** -- so this had to exist on the
+     `source` path BEFORE 3d lands.  Now `count_u 2 count_v 3` +
+     `position expr(u) expr(v) 0`, asserting `I[0,1]` at (0, 0.5, 0) and `I[1,2]`
+     at (1, 1, 0); all three mutants red.
+   - **"NOTHING HALF-APPLIED" IS THE COLLISION SCAN'S GUARANTEE, NOT THE
+     EXPANSION'S.**  The scan does run in full before anything is applied — but
+     per-instance parameter evaluation runs INSIDE the apply loop, and PASS-1
+     validated only (i,j) = (0,0), so `position expr(sqrt(1-i)) 0 0` with
+     `count_u 4` applies `I[0,0]` and `I[1,0]` and then refuses at `[2,0]`.
+     **Decided: leave it, and say so in the code** (both sites now do).
+     Pre-validating every (i,j) would cost a second `count_u * count_v` evaluation
+     pass to buy an atomicity the surrounding machinery does not have anyway --
+     PASS-2 applies chunk by chunk and `break`s on the first refusal, so a later
+     chunk's failure already leaves the Job partial.  The containment is the
+     CALLER's: `LoadAsciiSceneViaCst` returns false on any diagnostic, and the GUI
+     re-derive dry-runs into a staging Job.
+   - **`InstanceBaseName` TRUNCATED, WHICH IS EXACTLY THE INVARIANT THE COLLISION
+     SCAN RESTS ON.**  `char[256]` + `snprintf`: a 253-character chunk name with
+     `count_u 1 count_v 2` truncates both repetitions to `<name>[0`, the scan's
+     "distinct (i,j) give distinct bases by construction" stops holding, and the
+     second repetition fails at AddItem blaming an apply failure with the first
+     already applied.  Now `std::string` + `std::to_string`.  `instance_array` held
+     the identical shape (pre-existing); rather than fix a second copy it now CALLS
+     `InstanceBaseName`, so the two spellings cannot drift in the window before 3d
+     deletes it.  Both sides pinned by a long-name fixture.
+
+   Three smaller notes, all recorded in
+   [SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) § "Three ways a per-instance
+   `expr(...)` fails QUIETLY" rather than fixed in code, and the reason is the same
+   for all three -- **the evaluator is shared with the procedural painters, where
+   totality is the right property**:
+   - **Division / modulo by zero evaluates to `0`, so `EvalExprBody`'s non-finite
+     guard never fires for `/`.**  `expr(1/(i-1))` over `count_u 2` derives x = -1
+     then x = 0, silently; `count_u expr(n/0)` is a silently EMPTY array.  Newly
+     REACHABLE in 3c (an instance index is a natural divisor) but not newly broken.
+     The `EvalExprBody` header, which read as if exprs were protected against this,
+     is corrected.
+   - **`i` / `j` / `u` / `v` inside a COUNT bind to 0**, so `count_u expr(i)` means
+     `count_u 0`.  Refusing them was considered and NOT done: the check would have
+     to be a lexical scan of the raw token for a standalone `i`/`j`/`u`/`v`, in a
+     validator SHARED with `instance_array`, to catch an authoring shape nothing in
+     the corpus uses -- a parser-level heuristic bought with real refusal risk.
+     Documented instead.
+   - **An `expr(...)` on a BOOLEAN slot is always false**, because
+     `String::toBoolean` is "first character is `t`" and an expr evaluates to a
+     number.  Pre-existing and whole-value (any `expr` on any bool slot, any chunk),
+     newly per-instance.  Not fixed: the fix is either a `ValueKind::Bool` check in
+     `DispatchChunkParameters` (which would start refusing every non-`TRUE`/`FALSE`
+     spelling in the entire corpus) or widening `toBoolean` (which changes the
+     meaning of every boolean in every scene file) -- both far outside a 3c review
+     round.
 
    **3b review round 2 (2026-08-17) — no P1.  One durable rule, and two claims
    that were TRUE but UNPINNED:**

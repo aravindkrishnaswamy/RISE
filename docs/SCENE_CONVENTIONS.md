@@ -602,6 +602,37 @@ orientation 0 expr(u * 15) 0
 - **A document-wide cap** bounds `count_u x count_v x subtree size` — ENTRIES,
   not repetitions — at 10 000 000, and each count is separately clamped to 1e6.
 
+##### Three ways a per-instance `expr(...)` fails QUIETLY
+
+These are properties of RISE's expression evaluator, which is shared with the
+procedural painters and is deliberately total (it never faults, never produces
+`inf`/`nan`).  That is right for a texture evaluated a million times a frame and
+surprising when the same evaluator computes how many objects a scene has.
+
+- **Divide or modulo by zero evaluates to `0`, with no diagnostic.**  The
+  instance index makes a natural divisor, so this is easy to write by accident:
+
+  ```text
+  source S  count_u 2  position expr(1/(i-1)) 0 0
+  ```
+
+  derives `x = -1` for `i = 0` and `x = 0` — not a refusal — for `i = 1`
+  (verified against the derive, 2026-08-17).  Reshape the expression so the
+  divisor cannot reach zero, or offset it (`expr(1/(i+1))`).  It bites hardest in
+  a COUNT: `count_u expr(4/0)` is `count_u 0`, and the array simply is not there.
+- **`i` / `j` / `u` / `v` inside a COUNT are always zero.**  A count says how
+  many repetitions there will be, so it is evaluated BEFORE any repetition
+  exists; the per-instance variables are bound to `0` there.  `count_u expr(i)`
+  therefore means `count_u 0` and the whole array vanishes silently.  A count may
+  use `let` constants and arithmetic freely — just not the indices it produces.
+- **An `expr(...)` on a BOOLEAN parameter is always false.**  Boolean scene
+  values are read as "true if the first character is `t`" (`TRUE` / `FALSE`), and
+  an expr evaluates to a NUMBER — so `casts_shadows expr(i)` is `casts_shadows 0`
+  is `FALSE` in every repetition, including the ones where `i` is nonzero.  This
+  is not specific to instancing (any `expr(...)` on any bool slot has always
+  behaved this way); to vary a boolean per repetition, author the two variants as
+  separate chunks.
+
 ---
 
 ## 6. Coordinate system

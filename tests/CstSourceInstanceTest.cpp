@@ -351,6 +351,16 @@ int main()
 	CapturingLogPrinter* pNumericLog = pNumericLogOwned;
 	safe_release( pNumericLogOwned );
 
+	// 87 step 3c: the descriptor's UNDECLARED-PARAMETER rejection, for the same reason as
+	// the one above -- it goes to the LOG, and what reaches `diags` is the same generic
+	// "invalid parameter(s) (see log)".  An assertion that the DIAGNOSTICS lack this text
+	// is therefore vacuous: they never contain it, whatever the descriptor declares.  Read
+	// by DELTA, since other blocks in this binary legitimately provoke it.
+	CapturingLogPrinter* pUndeclaredLogOwned = new CapturingLogPrinter( "not declared in `standard_object` descriptor" );
+	RISE::GlobalLogPriv()->AddPrinter( pUndeclaredLogOwned );
+	CapturingLogPrinter* pUndeclaredLog = pUndeclaredLogOwned;
+	safe_release( pUndeclaredLogOwned );
+
 	const std::string SRC_LEAF = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n";
 
 	// ---------------------------------------------------------------- round-trip
@@ -2689,6 +2699,32 @@ int main()
 		j->release();
 	}
 
+	// [count][long name] THE REPETITION-ROOT NAME IS BUILT WITH std::string, NOT A FIXED
+	// BUFFER -- and the collision scan is why this is a correctness assertion rather than a
+	// tidiness one.  That scan does NOT put every repetition's base into one `planned` set;
+	// it argues instead that "distinct (i,j) give distinct bases by construction".  A
+	// truncating `snprintf` into `char[256]` retires that argument: at 253 characters the
+	// `[0,0]` and `[0,1]` suffixes are both cut to `[0`, the scan sees no collision because
+	// it never compares them, and the SECOND repetition dies at AddItem -- reported as an
+	// apply failure, with the first repetition already in the Job.
+	//
+	// 253 rather than 300 on purpose: at 300 the suffix vanishes ENTIRELY and every
+	// repetition collapses onto one name, which is a louder failure.  253 is the quiet one,
+	// where the name is JUST long enough for the truncation to eat the index and nothing
+	// else.
+	{
+		const std::string LONG( 253, 'N' );
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( SRC_LEAF
+			+ "standard_object\n{\nname " + LONG + "\nsource S\ncount_u 1\ncount_v 2\n}\n" ), &diags );
+		std::string all;
+		for( std::size_t k = 0; k < diags.size(); ++k ) all += diags[k];
+		Check( diags.empty(), ( "long-name: a 253-character instance name derives cleanly (" + all + ")" ).c_str() );
+		Check( Obj( j, ( LONG + "[0,0]" ).c_str() ) != 0 && Obj( j, ( LONG + "[0,1]" ).c_str() ) != 0,
+		       "long-name: ... and BOTH repetitions exist -- the [i,j] suffix is not truncated away" );
+		j->release();
+	}
+
 	// [count][u/v] the NORMALIZED instance variables, and the divide-by-zero they must not
 	// do.  `u = i/(count_u-1)` across a row of three is 0, 0.5, 1; with a count of ONE it
 	// is 0, not a 0/0 NaN.  Both come across from `instance_array` unchanged.
@@ -2704,6 +2740,25 @@ int main()
 		Check( CenterIs( Obj( j2, "I[0,0]" ), 0, 0, 0, &got ),
 		       ( "u/v: a count of ONE gives u=v=0, not a 0/0 NaN (got " + got + ")" ).c_str() );
 		j2->release();
+		// `v` ON ITS OWN AXIS, AND THIS IS THE ASSERTION THE `v` LINE HAS.  The two above
+		// do not have it: BOTH read `v` only where every wrong implementation also answers
+		// 0 (the `count_u 1` scene has no `count_v` at all).  A `2 x 3` grid separates
+		// every near-miss the two adjacent normalization lines invite -- `v = 0`, an
+		// off-by-one `j/count_v` (which would put `I[0,1]` at 1/3), and the copy-paste
+		// `v = i/(count_u-1)` (which would put it at 0 and `I[1,2]` at 1 for the wrong
+		// reason).  `I[0,1]` pins j WITH i held at 0; `I[1,2]` pins the far corner, so a
+		// transposed pair cannot satisfy both.
+		//
+		// IT HAS TO LIVE HERE, on the `source` path.  Until now the only `v`-discriminating
+		// fixtures in the tree were on the `instance_array` copy of this arithmetic --
+		// which 87 step 3d deletes.
+		Job* j3 = DeriveJob( Scene( SRC_LEAF
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\ncount_v 3\nposition expr(u) expr(v) 0\n}\n" ) );
+		Check( CenterIs( Obj( j3, "I[0,1]" ), 0, 0.5, 0, &got ),
+		       ( "u/v: `v` is normalized over its OWN axis -- j=1 of count_v 3 is 0.5 (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j3, "I[1,2]" ), 1, 1, 0, &got ),
+		       ( "u/v: ... and the far corner is u=v=1, so u and v are not transposed (got " + got + ")" ).c_str() );
+		j3->release();
 	}
 
 	// [count][expr on a NON-transform param] the per-instance expression applies to the
@@ -2936,6 +2991,41 @@ int main()
 		       "count-cap: a leaf source's total IS the product, and the same budget bounds it" );
 	}
 
+	// [count][cap] THE ACCOUNTING, which the block above does NOT test.  Its fixture is the
+	// document's ONLY expansion, so `entryBudget` is still the full 1e7 when the refusal is
+	// composed -- and the refusal reads "room for only 10000000 more" whether the budget is
+	// decremented per entry, per repetition, or NOT AT ALL.  Delete either `--entryBudget`
+	// and that block stays green.
+	//
+	// The discriminator is free, because the refusal PRINTS the remaining budget: put a
+	// SPENDING expansion in the same document first, and the number in the second one's
+	// refusal is the ledger.  `I source S count_u 2` over the 3-node subtree SUB3 spends
+	// 2 x 3 = SIX -- two repetition roots and four clones -- so the next generator must be
+	// told 9999994.  With the repetition-root decrement deleted it reads 9999996; with the
+	// clone decrement deleted, 9999998.
+	{
+		std::string all;
+		const bool refused = RefusedWith( Scene( SUB3
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n"
+			  "standard_object\n{\nname K\nsource S\ncount_u 1000000\ncount_v 10\n}\n" ),
+			"room for only 9999994 more", &all );
+		Check( refused, ( "count-cap-ledger: an earlier counted expansion SPENDS from the shared budget, "
+		                  "roots and clones alike -- 2 repetitions x 3 entries = 6 (got: " + all + ")" ).c_str() );
+		// The SAME ledger through the UNCOUNTED form, which spends 3 (one root + two clones)
+		// -- so the decrements are on the shared path, not on a counted-only branch.
+		std::string all2;
+		Check( RefusedWith( Scene( SUB3
+			+ "standard_object\n{\nname I\nsource S\n}\n"
+			  "standard_object\n{\nname K\nsource S\ncount_u 1000000\ncount_v 10\n}\n" ),
+			"room for only 9999997 more", &all2 ),
+		       ( "count-cap-ledger: ... and an UNCOUNTED instance spends its 3 entries too (got: " + all2 + ")" ).c_str() );
+		// NON-VACUITY: the two scenes really do differ only in what came before, and the
+		// full-budget spelling the block above asserts is NOT what either of them says.
+		Check( all.find( "room for only 10000000 more" ) == std::string::npos
+		    && all2.find( "room for only 10000000 more" ) == std::string::npos,
+		       "count-cap-ledger: ... and neither refusal still claims the full document allowance" );
+	}
+
 	// [count][clamp] the PER-COUNT clamp `instance_array` has always had, inherited with the
 	// shared validator: 1e6 on EACH axis.  Without it a `count_u 1e12` would be refused only
 	// by the budget line above -- one arithmetic slip away from a 1e12-iteration loop.
@@ -3014,10 +3104,18 @@ int main()
 		       "count-refuse: ... and on a CONTAINER chunk too" );
 		// The parameter is DECLARED, which is what makes the refusal above the parser's own
 		// message rather than the descriptor's "not declared in `standard_object`".
+		//
+		// ASSERTED ON THE LOG, not on the diagnostics.  The descriptor's undeclared-name
+		// rejection is PRINTED (ChunkParserRegistry's DispatchChunkParameters) and what
+		// reaches `diags` is the generic "invalid parameter(s) (see log)" -- so the
+		// obvious `diags.find(...) == npos` form cannot fail whatever the descriptor
+		// says, and stayed green with `count_u` removed from it.
+		const int undeclBefore = pUndeclaredLog->MatchCount();
 		std::string all;
 		RefusedWith( Scene( "standard_object\n{\nname X\ngeometry geo\ncount_u 3\n}\n" ), "zzz-never", &all );
-		Check( all.find( "not declared in `standard_object` descriptor" ) == std::string::npos,
-		       "count-refuse: ... and it is the PARSER's reason, not an undeclared-parameter error" );
+		Check( pUndeclaredLog->MatchCount() == undeclBefore,
+		       "count-refuse: ... and it is the PARSER's reason -- the descriptor DECLARES `count_u`, so nothing "
+		       "logged an undeclared-parameter rejection" );
 	}
 
 	// [count][refuse] A COUNTED CHUNK CANNOT BE A `source`, from both sides.  It produces
