@@ -96,8 +96,12 @@ namespace RISE
 			// production batch peak even though their vectors predate this call.
 			if( !AddBytes(2u*fineCells+fineFaces,sizeof(float),total)||
 				!AddBytes(fineCells+3u*fineFaces,sizeof(float),total) ) return false;
-			std::uint64_t largestCoarseCells=0u;
+			// Metal owns a target copy plus provisional/stored/corrected/velocity face
+			// buffers while the caller request and returned vectors remain live.
+			if( !AddBytes(fineCells+4u*fineFaces,sizeof(float),total) ) return false;
+			std::uint64_t levelCount=0u;
 			for( ;; ) {
+				++levelCount;
 				const std::uint64_t cells=static_cast<std::uint64_t>(nx)*ny*nz;
 				const std::uint64_t faces=FaceValueCount(nx,ny,nz);
 				// density, rhs, pressure, temporary, residual, diagonal, and three beta arrays.
@@ -105,8 +109,6 @@ namespace RISE
 				if( nx<=4u&&ny<=4u&&nz<=4u ) break;
 				nx=nx>4u?(nx+1u)/2u:nx;ny=ny>4u?(ny+1u)/2u:ny;
 				nz=nz>4u?(nz+1u)/2u:nz;
-				largestCoarseCells=std::max(largestCoarseCells,
-					static_cast<std::uint64_t>(nx)*ny*nz);
 			}
 			const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
 				static_cast<std::uint64_t>(shape.nx)*shape.nz+
@@ -114,7 +116,8 @@ namespace RISE
 			if( !AddBytes(boundaryFaces,sizeof(float),total)||
 				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
 				!AddBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(float),total)||
-				!AddBytes(largestCoarseCells,sizeof(unsigned int),total) ) return false;
+				!AddBytes(12u,sizeof(float),total)||
+				!AddBytes(levelCount,84u,total) ) return false;
 			bytes=total;return true;
 		}
 

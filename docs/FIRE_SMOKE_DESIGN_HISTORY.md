@@ -2094,3 +2094,15 @@ it was already tried and refuted here.
   substance), and fail-closed halving for a finite residual (restores the
   throughput stall).  P2 is pre-release production algorithm semantics; case
   authorship and `case_record_id` remain unchanged.
+
+  P2 landed as a GPU-resident schedule with no CPU solve or fallback behind the
+  Metal producer tag.  The independently manufactured odd-grid comparison
+  measured maximum CPU/Metal differences of 1.19209e-7 Pa and 2.98023e-8 m/s;
+  the fp32 comparator residual was 3.06303e-5 s^-1 against the certified fp64
+  oracle's 2.65183e-5 s^-1 (ratio 1.15506).  Across repeated 976,272-cell M4
+  Max trials, command p95 measured 10.55--11.09 ms and completed-call p95
+  21.28--23.94 ms, below the 120 ms allocation with more than fourfold margin.
+  The admission certificate counts simultaneous caller vectors, Metal input
+  and output buffers, every hierarchy payload, boundary evidence, fixed-tree
+  scratch, diagnostics, and serialized level parameters under the two-GiB
+  cap; unsupported platforms return an explicit no-result error.

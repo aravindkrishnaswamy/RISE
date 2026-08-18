@@ -500,6 +500,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjection.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjectionUnsupported.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionAdvectionUnsupported.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireSequence.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\FireCase.cpp" />

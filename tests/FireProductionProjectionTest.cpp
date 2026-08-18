@@ -10,6 +10,7 @@
 #include "../tools/fire_simulator_core.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <fstream>
@@ -440,6 +441,21 @@ int main()
 			result.validationPassed&&result.maximumPreProjectionResidualPerS==0.0f&&
 			result.maximumPostProjectionResidualPerS==0.0f,
 			"P2 periodic, wall, and pressure-open rest states are byte exact");
+		FireProductionProjectionResult metalResult;
+#ifdef __APPLE__
+		const bool metalOK=ProjectFireProductionMetal(rest,metalResult,&error);
+		if( !metalOK ) std::cerr << "Metal rest detail: " << error << '\n';
+		Check(metalOK&&EveryZero(metalResult)&&metalResult.validationPassed&&
+			metalResult.maximumPreProjectionResidualPerS==0.0f&&
+			metalResult.maximumPostProjectionResidualPerS==0.0f&&
+			metalResult.executedVCycleCount==12u,
+			"P2 Metal periodic, wall, and pressure-open rest states are byte exact");
+#else
+		metalResult.pressurePa.push_back(7.0f);
+		Check(!ProjectFireProductionMetal(rest,metalResult,&error)&&
+			metalResult.pressurePa.empty()&&!error.empty(),
+			"P2 unsupported platform rejects Metal projection without CPU fallback");
+#endif
 	}
 
 	FireProductionProjectionRequest sinusoid=EmptyRequest(16u,8u,4u);
@@ -623,6 +639,38 @@ int main()
 		manufacturedResult.velocityMPerS==repeatedResult.velocityMPerS&&
 		EveryPeriodicSeamExact(manufactured.shape,manufacturedResult),
 		"P2 odd-grid variable-density manufactured projection is accurate and byte deterministic");
+	float maximumMetalPressureDifference=0.0f;
+	float maximumMetalVelocityDifference=0.0f;
+#ifdef __APPLE__
+	FireProductionProjectionResult manufacturedMetal,manufacturedMetalRepeat;
+	const bool manufacturedMetalOK=ProjectFireProductionMetal(
+		manufactured,manufacturedMetal,&error);
+	const bool manufacturedMetalRepeatOK=ProjectFireProductionMetal(
+		manufactured,manufacturedMetalRepeat,&error);
+	if( !manufacturedMetalOK||!manufacturedMetalRepeatOK )
+		std::cerr << "Metal manufactured detail: " << error << '\n';
+	const float metalResidual=manufacturedMetalOK?
+		IndependentResidual(manufactured,manufacturedMetal):0.0f;
+	if( manufacturedMetalOK ) for( std::size_t cell=0;cell<manufacturedResult.pressurePa.size();++cell )
+		maximumMetalPressureDifference=std::max(maximumMetalPressureDifference,std::fabs(
+			manufacturedMetal.pressurePa[cell]-manufacturedResult.pressurePa[cell]));
+	if( manufacturedMetalOK ) for( unsigned int axis=0;axis<3u;++axis )
+		for( std::size_t face=0;face<manufacturedResult.velocityMPerS[axis].size();++face )
+			maximumMetalVelocityDifference=std::max(maximumMetalVelocityDifference,std::fabs(
+				manufacturedMetal.velocityMPerS[axis][face]-
+				manufacturedResult.velocityMPerS[axis][face]));
+	Check(manufacturedMetalOK&&manufacturedMetalRepeatOK&&
+		manufacturedMetal.validationPassed&&
+		manufacturedMetal.maximumPostProjectionResidualPerS==metalResidual&&
+		maximumMetalPressureDifference<=2.5e-4f&&
+		maximumMetalVelocityDifference<=3.0e-5f&&
+		manufacturedMetal.pressurePa==manufacturedMetalRepeat.pressurePa&&
+		manufacturedMetal.velocityMPerS==manufacturedMetalRepeat.velocityMPerS&&
+		EveryPeriodicSeamExact(manufactured.shape,manufacturedMetal)&&
+		std::isfinite(manufacturedMetal.deviceElapsedMS)&&
+		manufacturedMetal.deviceElapsedMS>0.0,
+		"P2 Metal odd-grid variable-density projection matches the comparator and repeats byte exactly");
+#endif
 	FireSim::PeriodicMACShape oracleShape;oracleShape.nx=manufactured.shape.nx;
 	oracleShape.ny=manufactured.shape.ny;oracleShape.nz=manufactured.shape.nz;
 	oracleShape.cellWidthM=manufactured.shape.cellWidthM;
@@ -900,14 +948,14 @@ int main()
 		error.find("2 GiB")!=std::string::npos,
 		"P2 rejects the complete peak working set before allocating arrays");
 	FireProductionProjectionShape nearUnder,nearOver;
-	nearUnder.nx=264u;nearUnder.ny=266u;nearUnder.nz=281u;nearUnder.cellWidthM=0.1f;
-	nearOver.nx=260u;nearOver.ny=274u;nearOver.nz=277u;nearOver.cellWidthM=0.1f;
+	nearUnder.nx=119u;nearUnder.ny=152u;nearUnder.nz=747u;nearUnder.cellWidthM=0.1f;
+	nearOver.nx=82u;nearOver.ny=215u;nearOver.nz=766u;nearOver.cellWidthM=0.1f;
 	std::uint64_t nearUnderBytes=0u,nearOverBytes=0u;
 	Check(FireProductionProjectionWorkingSetBytes(nearUnder,nearUnderBytes)&&
 		FireProductionProjectionWorkingSetBytes(nearOver,nearOverBytes)&&
-		nearUnderBytes==UINT64_C(2147440808)&&nearOverBytes==UINT64_C(2147512068)&&
+		nearUnderBytes==UINT64_C(2147483642)&&nearOverBytes==UINT64_C(2147483700)&&
 		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
-		"P2 complete working-set accounting binds the independent final-42-KiB boundary pair");
+		"P2 complete host-plus-Metal working-set accounting binds the independent cap boundary pair");
 	FireProductionProjectionShape malformedWorkingSet=nearUnder;
 	malformedWorkingSet.nx=std::numeric_limits<std::size_t>::max();
 	std::uint64_t malformedBytes=9u;
@@ -919,8 +967,41 @@ int main()
 		malformedBytes==0u,
 		"P2 working-set query is total only over the production 4..1024 shape domain");
 
+	double projectionWallP95=0.0,projectionDeviceP95=0.0;
+#ifdef __APPLE__
+	FireProductionProjectionRequest tier10Shape=EmptyRequest(86u,86u,132u);
+	SetBoundary(tier10Shape,FireProductionProjectionPressureOpen);
+	FireProductionProjectionResult tier10ShapeResult;
+	Check(ProjectFireProductionMetal(tier10Shape,tier10ShapeResult,&error)&&
+		tier10ShapeResult.validationPassed,
+		"P2 Metal executes the 976272-cell tier-10 shape before timing");
+	std::vector<double> projectionWallMS;
+	std::vector<double> projectionDeviceMS;
+	for( unsigned int trial=0;trial<5u;++trial ) {
+		const auto beginning=std::chrono::steady_clock::now();
+		const bool projected=ProjectFireProductionMetal(tier10Shape,tier10ShapeResult,&error);
+		const auto ending=std::chrono::steady_clock::now();
+		Check(projected&&tier10ShapeResult.validationPassed,
+			"P2 Metal tier-10 timing trial remains structurally valid");
+		projectionWallMS.push_back(std::chrono::duration<double,std::milli>(ending-beginning).count());
+		projectionDeviceMS.push_back(tier10ShapeResult.deviceElapsedMS);
+	}
+	std::sort(projectionWallMS.begin(),projectionWallMS.end());
+	std::sort(projectionDeviceMS.begin(),projectionDeviceMS.end());
+	projectionWallP95=projectionWallMS.back();
+	projectionDeviceP95=projectionDeviceMS.back();
+	Check(std::isfinite(projectionWallP95)&&std::isfinite(projectionDeviceP95)&&
+		projectionWallP95<=120.0&&projectionDeviceP95<=120.0,
+		"P2 Metal tier-10 device and completed-call p95 meet the 120 ms allocation");
+#endif
+
 	const std::string source=ReadFile("src/Library/Utilities/FireProductionProjection.cpp");
+	const std::string metalSource=ReadFile("src/Library/Utilities/FireProductionProjectionMac.mm");
+	const std::string unsupportedSource=ReadFile(
+		"src/Library/Utilities/FireProductionProjectionUnsupported.cpp");
 	const std::string makefile=ReadFile("build/make/rise/Makefile");
+	const std::string filelist=ReadFile("build/make/rise/Filelist");
+	const std::string androidSources=ReadFile("build/cmake/rise-android/rise_sources.cmake");
 	const std::string android=ReadFile("build/cmake/rise-android/CMakeLists.txt");
 	const std::string visualStudio=ReadFile("build/VS2022/Library/Library.vcxproj");
 	const std::string xcode=ReadFile("build/XCode/rise/rise.xcodeproj/project.pbxproj");
@@ -937,18 +1018,45 @@ int main()
 		cycleBody.find("break") == std::string::npos&&
 		source.find("const float mean=BlellochSum(values)")!=std::string::npos,
 		"P2 source guard binds 12 cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
+	Check(Count(metalSource,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
+		metalSource.find("return EncodeSmooth(context,command,level,32u")!=std::string::npos&&
+		Count(metalSource,"EncodeSmooth(context,command,level,3u")==2u&&
+		metalSource.find("(2.0f/3.0f)*")!=std::string::npos&&
+		metalSource.find("options.mathMode=MTLMathModeSafe")!=std::string::npos&&
+		metalSource.find("ProjectFireProductionCPU")==std::string::npos&&
+		metalSource.find("atomic_")==std::string::npos&&
+		metalSource.find("simd_")==std::string::npos&&
+		metalSource.find("fast::")==std::string::npos&&
+		unsupportedSource.find("result=FireProductionProjectionResult();")!=std::string::npos&&
+		unsupportedSource.find("return false;")!=std::string::npos,
+		"P2 Metal source binds the fixed safe-math GPU schedule and honest unsupported seam");
 	const std::size_t makeRule=makefile.find("FireProductionProjection.o :");
 	const std::size_t makeRuleEnd=makeRule==std::string::npos?std::string::npos:
 		makefile.find("\n\n",makeRule);
 	const std::string projectionMakeRule=makeRule==std::string::npos?std::string():
 		makefile.substr(makeRule,makeRuleEnd-makeRule);
+	const std::size_t metalMakeRule=makefile.find("FireProductionProjectionMac.o :");
+	const std::size_t metalMakeRuleEnd=metalMakeRule==std::string::npos?std::string::npos:
+		makefile.find("\n\n",metalMakeRule);
+	const std::string projectionMetalMakeRule=metalMakeRule==std::string::npos?std::string():
+		makefile.substr(metalMakeRule,metalMakeRuleEnd-metalMakeRule);
 	Check(projectionMakeRule.find("$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math "
-		"-ffp-contract=off")!=std::string::npos&&android.find("FireProductionProjection.cpp\"\n    PROPERTIES "
+		"-ffp-contract=off")!=std::string::npos&&projectionMetalMakeRule.find(
+		"$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off")!=
+			std::string::npos&&android.find("FireProductionProjection.cpp\"\n    PROPERTIES "
 			"COMPILE_OPTIONS \"-fno-fast-math;-ffp-contract=off\"")!=std::string::npos&&
 		visualStudio.find("FireProductionProjection.cpp\">\n      <FloatingPointModel>Strict")!=
 			std::string::npos&&Count(xcode,"FireProductionProjection.cpp in Sources */ = "
 			"{isa = PBXBuildFile;")==2u&&Count(xcode,"FireProductionProjection.cpp */; settings = "
-			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; };")==2u,
+			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; };")==2u&&
+		Count(xcode,"FireProductionProjectionMac.mm in Sources */ = {isa = PBXBuildFile;")==2u&&
+		Count(xcode,"FireProductionProjectionMac.mm */; settings = {COMPILER_FLAGS = "
+			"\"-fno-fast-math -ffp-contract=off\"; };")==2u&&
+		filelist.find("FireProductionProjectionMac.mm")!=std::string::npos&&
+		filelist.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
+		androidSources.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
+		visualStudio.find("FireProductionProjectionUnsupported.cpp")!=std::string::npos&&
+		Count(xcode,"FireProductionProjectionMac.mm in Sources */,")==2u,
 		"P2 strict-fp32 bindings are present on every authoritative build surface");
 
 	if( failures==0 ) {
@@ -957,7 +1065,11 @@ int main()
 			" oracle_residual=" << oracleMaximumResidual << " oracle_ratio=" <<
 			manufacturedResult.maximumPostProjectionResidualPerS/oracleMaximumResidual <<
 			" fixed12_fp64_residual=" << fixedWorkOracleResidual <<
-			" pressure_error=" << maximumPressureError << '\n';
+			" pressure_error=" << maximumPressureError <<
+			" metal_pressure_delta=" << maximumMetalPressureDifference <<
+			" metal_velocity_delta=" << maximumMetalVelocityDifference <<
+			" metal_device_p95_ms=" << projectionDeviceP95 <<
+			" metal_wall_p95_ms=" << projectionWallP95 << '\n';
 		return 0;
 	}
 	std::cerr << failures << " FireProductionProjectionTest failure(s)\n";

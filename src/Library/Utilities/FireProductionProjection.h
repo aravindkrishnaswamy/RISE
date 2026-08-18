@@ -96,6 +96,14 @@ namespace RISE
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
 
+	//! Metal-resident implementation of the same fixed P2 schedule.  Platforms
+	//! without Metal provide an honest fail-closed definition; there is no CPU
+	//! fallback behind this entry point.
+	bool ProjectFireProductionMetal(
+		const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+
 }
 
 #endif

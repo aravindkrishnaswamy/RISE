@@ -119,10 +119,12 @@ ifdef IS_MACOS_BUILD
 SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportMac.mm
 SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeMac.mm
 SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionAdvectionMac.mm
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionProjectionMac.mm
 else
 SRCLIBUTILITIES += $(PATHLIBRARY)Agent/TlsTransportUnsupported.cpp
 SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionComputeUnsupported.cpp
 SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionAdvectionUnsupported.cpp
+SRCLIBUTILITIES += $(PATHLIBRARY)Utilities/FireProductionProjectionUnsupported.cpp
 endif
 
 # Noise
