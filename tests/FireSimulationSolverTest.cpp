@@ -1046,6 +1046,102 @@ int main()
 		std::all_of(staleDeadband.inflow[0].begin(),staleDeadband.inflow[0].end(),
 			[](const bool value){return value;}),
 		"open Picard deadband consumes the immediately preceding active-set classification");
+	// Synthetic pressure-algebra fixture, deliberately distinct from every fuel
+	// record.  These are the exact rounded bytes of the first compact state found
+	// to reproduce the R0/R1 two-state cycle seen in the preserved tier-10 prefix.
+	const char* r80FixtureId="synthetic-r80-open-active-cycle-v1";
+	Check(std::string(r80FixtureId)!=fuel.RecordId(),
+		"r80 cycling fixture remains distinct from the physical methane record");
+	PeriodicMACShape r80Shape;r80Shape.nx=2;r80Shape.ny=2;r80Shape.nz=2;
+	r80Shape.cellWidthM=0.025;
+	OpenBoundaryConfig3D r80Boundary;
+	r80Boundary.kind.fill(PressureOpenBoundary3D);
+	r80Boundary.kind[4]=AdiabaticWallBoundary3D;
+	r80Boundary.ambientDensityKGPerM3=1.18;
+	r80Boundary.injectedGasDensityKGPerM3=0.65;
+	r80Boundary.ambientState[1+MethaneN2]=1.18;
+	r80Boundary.injectedState[1+MethaneCH4]=0.65;
+	r80Boundary.velocityToleranceMPerS=1.0e-10;
+	r80Boundary.pressureTolerancePa=1.18e-10;
+	OpenMACField3D r80Momentum;
+	r80Momentum.component[0]={-0.39204603162628593,0.021721462695222103,
+		-0.29886061033561701,0.15764038356392523,-0.29753741599264799,
+		-0.11689292488510242,0.44857978295174833,0.30318676269653672,
+		-0.093165684114380518,-0.36645652810715085,-0.18848203347961781,
+		-0.37139439953351877};
+	r80Momentum.component[1]={-0.45187780714885317,0.27922894000192938,
+		0.07818145964801268,0.40027363403184107,-0.28437611228830761,
+		-0.21789700828283587,-0.27340293223340723,0.12155702730464175,
+		-0.18524288676327269,-0.090770919811655915,-0.37732836817869225,
+		0.46879158025325962};
+	r80Momentum.component[2]={0.16158029623408621,-0.37692737674629062,
+		-0.30714421191164104,-0.43596729901984049,0.33236684009648332,
+		-0.22216859679920789,0.26506101216476513,0.010631582398982762,
+		-0.052440224127210638,0.46978404796341594,-0.35630712207170895,
+		0.042736637727026877};
+	const std::vector<double> r80Target={-1.2455912455668876,-0.93702700426044117,
+		0.77579829288905022,-0.45763762396502206,-1.1951777950380715,
+		-1.3103188149369387,-0.78556623220967647,0.20074400281819904};
+	OpenMACProjection3DResult r80OneWorker,r80ManyWorkers;
+	const bool r80OneOK=ProjectPressureOpenMACVelocity3D(r80Shape,
+		std::vector<double>(r80Shape.CellCount(),1.18),r80Momentum,r80Target,
+		r80Boundary,0.01,2.0e-8,r80OneWorker,&error,1u);
+	const bool r80ManyOK=ProjectPressureOpenMACVelocity3D(r80Shape,
+		std::vector<double>(r80Shape.CellCount(),1.18),r80Momentum,r80Target,
+		r80Boundary,0.01,2.0e-8,r80ManyWorkers,&error,4u);
+	OpenBoundaryConfig3D r80OtherBoundary=r80Boundary;
+	r80OtherBoundary.priorInflow=r80OneWorker.inflow;
+	for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;
+		const bool positive=side%2;const std::size_t firstCount=side<2?r80Shape.ny:
+			r80Shape.nx,secondCount=side<4?r80Shape.nz:r80Shape.ny;
+		for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;
+			first<firstCount;++first){const std::size_t index=
+			OpenBoundaryFaceLinearIndex3D(r80Shape,side,first,second);
+			if(r80Boundary.kind[side]!=PressureOpenBoundary3D)continue;
+			std::size_t x=0,y=0,z=0;if(axis==0){x=positive?r80Shape.nx:0;y=first;z=second;}
+			if(axis==1){x=first;y=positive?r80Shape.ny:0;z=second;}
+			if(axis==2){x=first;y=second;z=positive?r80Shape.nz:0;}
+			const double outward=(positive?1.0:-1.0)*r80OneWorker.velocityMPerS.
+				component[axis][OpenMACFaceIndex3D(r80Shape,axis,x,y,z)];
+			if(outward < -r80Boundary.velocityToleranceMPerS)
+				r80OtherBoundary.priorInflow[side][index]=true;
+			else if(outward > r80Boundary.velocityToleranceMPerS)
+				r80OtherBoundary.priorInflow[side][index]=false;}}
+	OpenMACProjection3DResult r80OtherBranch,r80ReversedVisit;
+	const bool r80OtherOK=r80OneOK&&ProjectPressureOpenMACVelocity3D(r80Shape,
+		std::vector<double>(r80Shape.CellCount(),1.18),r80Momentum,r80Target,
+		r80OtherBoundary,0.01,2.0e-8,r80OtherBranch,&error,1u,true);
+	const bool r80ReversedOK=r80OtherOK&&ProjectPressureOpenMACVelocity3D(r80Shape,
+		std::vector<double>(r80Shape.CellCount(),1.18),r80Momentum,r80Target,
+		r80OtherBoundary,0.01,2.0e-8,r80ReversedVisit,&error,1u);
+	bool r80BitIdentity=r80OneOK&&r80ManyOK;
+	for(unsigned int axis=0;r80BitIdentity&&axis<3;++axis)r80BitIdentity=
+		r80OneWorker.velocityMPerS.component[axis]==r80ManyWorkers.velocityMPerS.component[axis]&&
+		r80OneWorker.momentumKGPerM2S.component[axis]==r80ManyWorkers.momentumKGPerM2S.component[axis];
+	if(!r80BitIdentity||r80OneWorker.inflow!=r80ManyWorkers.inflow||
+		r80OneWorker.maximumActiveSetComplementarityDiscrepancyMPerS!=
+			r80ManyWorkers.maximumActiveSetComplementarityDiscrepancyMPerS)
+		std::printf("r80 worker diagnostic: one_ok=%d many_ok=%d bits=%d inflow=%d "
+			"one_disc=%.17g many_disc=%.17g one_cycle=%zu many_cycle=%zu\n",
+			r80OneOK?1:0,r80ManyOK?1:0,r80BitIdentity?1:0,
+			r80OneWorker.inflow==r80ManyWorkers.inflow?1:0,
+			r80OneWorker.maximumActiveSetComplementarityDiscrepancyMPerS,
+			r80ManyWorkers.maximumActiveSetComplementarityDiscrepancyMPerS,
+			r80OneWorker.activeSetCycleLength,r80ManyWorkers.activeSetCycleLength);
+	Check(r80OneOK&&r80ManyOK&&r80OtherOK&&r80ReversedOK&&
+		r80OneWorker.activeSetDiscontinuousClass&&r80ReversedVisit.activeSetDiscontinuousClass&&
+		r80OneWorker.activeSetCycleLength==2u&&r80OneWorker.activeSetDifferingFaceCount==1u&&
+		OpenActiveSetDifferingFaceCount3D(r80OneWorker.inflow,r80OtherBranch.inflow)==1u&&
+		OpenActiveSetCanonicalBefore3D(r80Shape,r80Boundary,r80OneWorker,r80OtherBranch)&&
+		r80OneWorker.inflow==r80ReversedVisit.inflow&&
+		r80OneWorker.velocityMPerS.component==r80ReversedVisit.velocityMPerS.component&&
+		r80OneWorker.maximumDivergenceResidualPerS<=2.0e-8&&
+		r80OneWorker.maximumBoundaryHeadResidualPa<=r80Boundary.pressureTolerancePa,
+		"r80 recorded cycling state accepts the canonical solved branch without dt reduction");
+	Check(r80BitIdentity&&r80OneWorker.inflow==r80ManyWorkers.inflow&&
+		r80OneWorker.maximumActiveSetComplementarityDiscrepancyMPerS==
+			r80ManyWorkers.maximumActiveSetComplementarityDiscrepancyMPerS,
+		"r80 discontinuous active-set selection is bit-identical at one and N workers");
 	bool allPositiveInflowHeads=true;
 	for( unsigned int normalAxis=0; normalAxis<3; ++normalAxis ) {
 		const unsigned int positiveSide=2*normalAxis+1;

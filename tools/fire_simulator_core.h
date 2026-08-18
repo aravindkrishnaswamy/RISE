@@ -1858,11 +1858,38 @@ namespace RISE
 				boundaryTangentialVelocityMPerS;
 			double maximumDivergenceResidualPerS;
 			double maximumBoundaryHeadResidualPa;
+			double maximumActiveSetComplementarityDiscrepancyMPerS;
+			std::size_t activeSetCycleLength;
+			std::size_t activeSetDifferingFaceCount;
+			bool activeSetDiscontinuousClass;
 			std::vector<double> nonlinearResidualHistory;
 			std::vector<double> multigridResidualHistoryPerS;
 			OpenMACProjection3DResult() : maximumDivergenceResidualPerS(0.0),
-				maximumBoundaryHeadResidualPa(0.0) {}
+				maximumBoundaryHeadResidualPa(0.0),
+				maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
+				activeSetCycleLength(0u),activeSetDifferingFaceCount(0u),
+				activeSetDiscontinuousClass(false) {}
 		};
+
+		inline std::vector<unsigned char> FlattenOpenActiveSet3D(
+			const std::array<std::vector<bool>,6>& inflow )
+		{
+			std::vector<unsigned char> result;
+			for( unsigned int side=0; side<6; ++side ) for( const bool value :
+				inflow[side] ) result.push_back(value?1u:0u);
+			return result;
+		}
+
+		inline std::size_t OpenActiveSetDifferingFaceCount3D(
+			const std::array<std::vector<bool>,6>& first,
+			const std::array<std::vector<bool>,6>& second )
+		{
+			std::size_t result=0u;
+			for( unsigned int side=0; side<6; ++side ) for( std::size_t face=0;
+				face<first[side].size() && face<second[side].size(); ++face )
+				result+=first[side][face]!=second[side][face]?1u:0u;
+			return result;
+		}
 
 		struct OpenBoundaryFlux3D
 		{
@@ -2053,6 +2080,55 @@ namespace RISE
 			if( side < 2 ) return second*shape.ny+first;
 			if( side < 4 ) return second*shape.nx+first;
 			return second*shape.nx+first;
+		}
+
+		inline double OpenActiveSetComplementarityDiscrepancy3D(
+			const PeriodicMACShape& shape,
+			const OpenBoundaryConfig3D& boundary,
+			const OpenMACProjection3DResult& projection )
+		{
+			double result=0.0;
+			for( unsigned int side=0; side<6; ++side ) {
+				const unsigned int axis=side/2; const bool positive=side%2;
+				const std::size_t firstCount=side<2?shape.ny:shape.nx;
+				const std::size_t secondCount=side<4?shape.nz:shape.ny;
+				for( std::size_t second=0; second<secondCount; ++second ) for(
+					std::size_t first=0; first<firstCount; ++first ) {
+					const std::size_t index=OpenBoundaryFaceLinearIndex3D(shape,side,
+						first,second);
+					unsigned int kind=boundary.kind[side];
+					if( side==4u && !boundary.bottomFuelMask.empty() &&
+						boundary.bottomFuelMask[index] ) kind=FuelInletBoundary3D;
+					if( kind!=PressureOpenBoundary3D ) continue;
+					std::size_t x=0,y=0,z=0;
+					if(axis==0){x=positive?shape.nx:0;y=first;z=second;}
+					if(axis==1){x=first;y=positive?shape.ny:0;z=second;}
+					if(axis==2){x=first;y=second;z=positive?shape.nz:0;}
+					const double outward=(positive?1.0:-1.0)*projection.velocityMPerS.
+						component[axis][OpenMACFaceIndex3D(shape,axis,x,y,z)];
+					const double discrepancy=projection.inflow[side][index]?
+						std::max(0.0,outward-boundary.velocityToleranceMPerS):
+						std::max(0.0,-outward-boundary.velocityToleranceMPerS);
+					result=std::max(result,discrepancy);
+				}
+			}
+			return result;
+		}
+
+		inline bool OpenActiveSetCanonicalBefore3D(
+			const PeriodicMACShape& shape,
+			const OpenBoundaryConfig3D& boundary,
+			const OpenMACProjection3DResult& first,
+			const OpenMACProjection3DResult& second )
+		{
+			const double firstDiscrepancy=OpenActiveSetComplementarityDiscrepancy3D(
+				shape,boundary,first);
+			const double secondDiscrepancy=OpenActiveSetComplementarityDiscrepancy3D(
+				shape,boundary,second);
+			if(firstDiscrepancy!=secondDiscrepancy)
+				return firstDiscrepancy<secondDiscrepancy;
+			return FlattenOpenActiveSet3D(first.inflow)<
+				FlattenOpenActiveSet3D(second.inflow);
 		}
 
 		struct OpenBoundaryFluxField3D
@@ -3160,7 +3236,8 @@ namespace RISE
 			const double absoluteTolerancePerS,
 			OpenMACProjection3DResult& result,
 			std::string* error = 0,
-			const unsigned int workerCount = 1u
+			const unsigned int workerCount = 1u,
+			const bool fixedActiveSet = false
 			)
 		{
 			FireProfileIncrement(FireProfile().projCalls);
@@ -3278,6 +3355,8 @@ namespace RISE
 					level?1u:workerCount);
 			std::vector<double> unknown(layout.unknownCount,0.0);
 			std::vector<std::vector<unsigned char> > activeHistory;
+			std::vector<std::array<std::vector<bool>,6> > activeSetHistory;
+			std::vector<double> activeDiscrepancyHistory;
 			auto evaluateVelocity=[&](const std::vector<double>& value,OpenMACField3D& velocity){
 				for(unsigned int axis=0;axis<3;++axis)velocity.component[axis].assign(
 					OpenMACFaceCount3D(shape,axis),0.0);
@@ -3344,12 +3423,57 @@ namespace RISE
 				residual[u]=value[u]+(candidate.inflow[side][index]?0.5*boundary.ambientDensityKGPerM3*speed:0.0);}}
 				for(const double v:residual)if(!std::isfinite(v))return false;return true;};
 
-			for(std::size_t active=0;active<16;++active){std::vector<unsigned char> activeState;
-				for(unsigned int side=0;side<6;++side)for(const bool b:candidate.inflow[side])activeState.push_back(b?1u:0u);
-				if(std::find(activeHistory.begin(),activeHistory.end(),activeState)!=activeHistory.end()) {
-					return Fail(error,"fire solver augmented 3-D active set cycled");
+			auto publishCandidate=[&](){
+				candidate.stepAverageDynamicPressurePa.assign(unknown.begin(),
+					unknown.begin()+cellCount);
+				for(unsigned int side=0;side<6;++side)for(std::size_t i=0;
+					i<layout.boundaryUnknown[side].size();++i){const std::size_t u=
+					layout.boundaryUnknown[side][i];if(u!=std::numeric_limits<std::size_t>::max())
+					candidate.boundaryDynamicPressurePa[side][i]=unknown[u];}
+				for(unsigned int axis=0;axis<3;++axis)for(std::size_t f=0;
+					f<candidate.velocityMPerS.component[axis].size();++f){
+					candidate.momentumKGPerM2S.component[axis][f]=candidate.
+						faceDensityKGPerM3.component[axis][f]*candidate.velocityMPerS.
+						component[axis][f];
+					if(!std::isfinite(candidate.momentumKGPerM2S.component[axis][f]))
+						return Fail(error,"fire solver augmented momentum overflowed");}
+				PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,candidate);
+				result=candidate;return true;
+			};
+
+			for(std::size_t active=0;active<(fixedActiveSet?1u:16u);++active){
+				const std::vector<unsigned char> activeState=FlattenOpenActiveSet3D(
+					candidate.inflow);
+				const std::vector<std::vector<unsigned char> >::const_iterator repeated=
+					std::find(activeHistory.begin(),activeHistory.end(),activeState);
+				if(repeated!=activeHistory.end()) {
+					const std::size_t cycleFirst=static_cast<std::size_t>(repeated-
+						activeHistory.begin());
+					std::size_t selected=cycleFirst;
+					for(std::size_t i=cycleFirst+1u;i<activeHistory.size();++i)if(
+						activeDiscrepancyHistory[i]<activeDiscrepancyHistory[selected]||
+						(activeDiscrepancyHistory[i]==activeDiscrepancyHistory[selected]&&
+						activeHistory[i]<activeHistory[selected]))selected=i;
+					OpenBoundaryConfig3D frozenBoundary=boundary;
+					frozenBoundary.priorInflow=activeSetHistory[selected];
+					OpenMACProjection3DResult frozen;
+					if(!ProjectPressureOpenMACVelocity3D(shape,gasDensityKGPerM3,
+						unprojectedMomentumKGPerM2S,divergenceTargetPerS,frozenBoundary,
+						deltaTimeS,absoluteTolerancePerS,frozen,error,1u,true))return false;
+					frozen.activeSetDiscontinuousClass=true;
+					frozen.activeSetCycleLength=activeHistory.size()-cycleFirst;
+					for(std::size_t face=0;face<activeHistory[selected].size();++face){
+						bool differs=false;
+						for(std::size_t i=cycleFirst;i<activeHistory.size();++i)
+							differs=differs||activeHistory[i][face]!=activeHistory[selected][face];
+						frozen.activeSetDifferingFaceCount+=differs?1u:0u;
+					}
+					frozen.maximumActiveSetComplementarityDiscrepancyMPerS=
+						OpenActiveSetComplementarityDiscrepancy3D(shape,boundary,frozen);
+					result=std::move(frozen);return true;
 				}
 				activeHistory.push_back(activeState);
+				activeSetHistory.push_back(candidate.inflow);
 				bool converged=false;for(std::size_t nonlinear=0;nonlinear<12;++nonlinear){OpenMACField3D velocity;
 					std::vector<double> residual;
 					if(!evaluateResidual(unknown,velocity,residual)) return Fail(error,
@@ -3414,7 +3538,11 @@ namespace RISE
 						for(std::size_t i=cellCount;i<trial.size();++i)th=std::max(th,std::fabs(trialResidual[i]));
 						if(std::max(td/absoluteTolerancePerS,th/boundary.pressureTolerancePa)<norm){unknown.swap(trial);accepted=true;break;}}
 						damping*=0.5;}if(!accepted)return Fail(error,"fire solver augmented Newton line search failed");}
-				if(!converged)return Fail(error,"fire solver augmented nonlinear solve did not converge");bool changed=false;
+				if(!converged)return Fail(error,"fire solver augmented nonlinear solve did not converge");
+				activeDiscrepancyHistory.push_back(OpenActiveSetComplementarityDiscrepancy3D(
+					shape,boundary,candidate));
+				if(fixedActiveSet)return publishCandidate();
+				bool changed=false;
 				for(unsigned int side=0;side<6;++side){const unsigned int axis=side/2;const bool positive=side%2;
 				const std::size_t firstCount=side<2?shape.ny:shape.nx,secondCount=side<4?shape.nz:shape.ny;
 				for(std::size_t second=0;second<secondCount;++second)for(std::size_t first=0;first<firstCount;++first){
@@ -3425,14 +3553,7 @@ namespace RISE
 				const double outward=(positive?1.0:-1.0)*candidate.velocityMPerS.component[axis][OpenMACFaceIndex3D(shape,axis,x,y,z)];
 				const bool next=outward < -boundary.velocityToleranceMPerS?true:(outward>boundary.velocityToleranceMPerS?false:
 				candidate.inflow[side][index]);changed=changed||next!=candidate.inflow[side][index];candidate.inflow[side][index]=next;}}
-				if(!changed){candidate.stepAverageDynamicPressurePa.assign(unknown.begin(),unknown.begin()+cellCount);
-				for(unsigned int side=0;side<6;++side)for(std::size_t i=0;i<layout.boundaryUnknown[side].size();++i){const std::size_t u=
-				layout.boundaryUnknown[side][i];if(u!=std::numeric_limits<std::size_t>::max())candidate.boundaryDynamicPressurePa[side][i]=unknown[u];}
-				for(unsigned int axis=0;axis<3;++axis)for(std::size_t f=0;f<candidate.velocityMPerS.component[axis].size();++f){candidate.momentumKGPerM2S.component[axis][f]=
-				candidate.faceDensityKGPerM3.component[axis][f]*candidate.velocityMPerS.component[axis][f];if(!std::isfinite(candidate.momentumKGPerM2S.component[axis][f]))
-				return Fail(error,"fire solver augmented momentum overflowed");}
-				PopulateOpenBoundaryTangentialVelocity3D(shape,boundary,candidate);
-				result=candidate;return true;}}
+				if(!changed)return publishCandidate();}
 			return Fail(error,"fire solver augmented active set did not converge");
 		}
 

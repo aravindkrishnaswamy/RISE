@@ -1202,7 +1202,8 @@ namespace
 			if(!advancedOK) error=lastAdvanceError;
 			reaction.deltaTimeS=config.transport.deltaTimeS;
 			if(advancedOK) {
-				if(workerCount>1u&&advanced.discontinuousLimiterClassCount>0u&&
+				if(workerCount>1u&&(advanced.discontinuousLimiterClassCount>0u||
+					advanced.discontinuousActiveSetClassCount>0u)&&
 					!values.discontinuousClassThreadIdentityChecked){
 					ConservativeAdvance3DConfig serialConfig=config;
 					serialConfig.workerCount=1u;
@@ -1217,7 +1218,15 @@ namespace
 						serialAdvanced.maximumLimiterClassDiscrepancy==
 							advanced.maximumLimiterClassDiscrepancy&&
 						serialAdvanced.discontinuousLimiterClassCount==
-							advanced.discontinuousLimiterClassCount;
+							advanced.discontinuousLimiterClassCount&&
+						serialAdvanced.maximumActiveSetComplementarityDiscrepancyMPerS==
+							advanced.maximumActiveSetComplementarityDiscrepancyMPerS&&
+						serialAdvanced.discontinuousActiveSetClassCount==
+							advanced.discontinuousActiveSetClassCount&&
+						serialAdvanced.maximumActiveSetCycleLength==
+							advanced.maximumActiveSetCycleLength&&
+						serialAdvanced.maximumActiveSetDifferingFaceCount==
+							advanced.maximumActiveSetDifferingFaceCount;
 					for(std::size_t cell=0;identical&&cell<advanced.conservative.size();++cell)
 						for(std::size_t component=0;component<MethaneConservativeDimension;++component)
 							identical=identical&&serialAdvanced.conservative[cell][component]==
@@ -1514,12 +1523,19 @@ namespace
 							packets[diagnosticCell].gasHeatReleaseWPerM3);
 					}
 					std::fprintf(stderr,"capstone accepted step=%u time=%.9g dt=%.9g Tmax=%.9g "
-						"qmax=%.9g eos_max=%.9g approach_eos_max=%.9g limiter_class=%s limiter_discrepancy=%.9g\n",acceptedSteps,
+						"qmax=%.9g eos_max=%.9g approach_eos_max=%.9g limiter_class=%s "
+						"limiter_discrepancy=%.9g active_set_class=%s active_set_discrepancy=%.9g "
+						"active_set_cycle=%zu active_set_faces=%zu\n",acceptedSteps,
 						simulationTimeS,reaction.deltaTimeS,maximumTemperatureK,
 						maximumReactionWPerM3,values.maximumAcceptedEOSResidual,
 						values.maximumPilotApproachEOSResidual,
 						advanced.discontinuousLimiterClassCount?
-						"discontinuous":"continuous",advanced.maximumLimiterClassDiscrepancy);
+						"discontinuous":"continuous",advanced.maximumLimiterClassDiscrepancy,
+						advanced.discontinuousActiveSetClassCount?
+						"discontinuous":"continuous",
+						advanced.maximumActiveSetComplementarityDiscrepancyMPerS,
+						advanced.maximumActiveSetCycleLength,
+						advanced.maximumActiveSetDifferingFaceCount);
 				}
 			}
 		}

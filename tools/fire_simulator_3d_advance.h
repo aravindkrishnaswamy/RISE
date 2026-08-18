@@ -1876,6 +1876,10 @@
 			std::vector<double> dynamicViscosityPaS;
 			double maximumLimiterClassDiscrepancy=0.0;
 			bool limiterDiscontinuousClass=false;
+			double maximumActiveSetComplementarityDiscrepancyMPerS=0.0;
+			std::size_t activeSetCycleLength=0u;
+			std::size_t activeSetDifferingFaceCount=0u;
+			bool activeSetDiscontinuousClass=false;
 		};
 
 		inline bool SolveConservativeStage3D(
@@ -2071,10 +2075,17 @@
 			unsigned int effectiveWorkerCount;
 			double maximumLimiterClassDiscrepancy;
 			unsigned int discontinuousLimiterClassCount;
+			double maximumActiveSetComplementarityDiscrepancyMPerS;
+			unsigned int discontinuousActiveSetClassCount;
+			std::size_t maximumActiveSetCycleLength;
+			std::size_t maximumActiveSetDifferingFaceCount;
 			ConservativeStage3D r0, r1, r2;
 			ConservativeAdvance3DResult() : maximumDivergenceResidualPerS(0.0),
 				maximumBoundaryHeadResidualPa(0.0),effectiveWorkerCount(0u),
-				maximumLimiterClassDiscrepancy(0.0),discontinuousLimiterClassCount(0u) {}
+				maximumLimiterClassDiscrepancy(0.0),discontinuousLimiterClassCount(0u),
+				maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
+				discontinuousActiveSetClassCount(0u),maximumActiveSetCycleLength(0u),
+				maximumActiveSetDifferingFaceCount(0u) {}
 		};
 
 		struct OpenConservativeStage3D
@@ -2088,6 +2099,10 @@
 			std::vector<double> diffusivityM2PerS,conductivityWPerMK,dynamicViscosityPaS;
 			double maximumLimiterClassDiscrepancy=0.0;
 			bool limiterDiscontinuousClass=false;
+			double maximumActiveSetComplementarityDiscrepancyMPerS=0.0;
+			std::size_t activeSetCycleLength=0u;
+			std::size_t activeSetDifferingFaceCount=0u;
+			bool activeSetDiscontinuousClass=false;
 		};
 
 		struct OpenConservativeAdvance3DResult
@@ -2099,6 +2114,10 @@
 			std::vector<double> divergenceHeunPerS;
 			double maximumLimiterClassDiscrepancy=0.0;
 			unsigned int discontinuousLimiterClassCount=0u;
+			double maximumActiveSetComplementarityDiscrepancyMPerS=0.0;
+			unsigned int discontinuousActiveSetClassCount=0u;
+			std::size_t maximumActiveSetCycleLength=0u;
+			std::size_t maximumActiveSetDifferingFaceCount=0u;
 			OpenConservativeStage3D r0,r1,r2;
 		};
 
@@ -2462,7 +2481,7 @@
 				result.dynamicViscosityPaS=viscosity;
 				if(iteration&&residual<=config.projectionTolerancePerS&&
 					massResidual<=config.projectionTolerancePerS&&
-					coefficientResidual<=config.projectionTolerancePerS&&!activeSetChanged){
+					coefficientResidual<=config.projectionTolerancePerS){
 					OpenMACProjection3DResult acceptedProjection;
 					OpenBoundaryConfig3D acceptedBoundary=stageBoundary;
 					acceptedBoundary.priorInflow=projection.inflow;
@@ -2474,6 +2493,36 @@
 						config.transport.deltaTimeS,config.projectionTolerancePerS,
 						acceptedProjection,error,config.workerCount);
 					if(!acceptedOK) return false;
+					if(!finalStage&&acceptedProjection.inflow!=projection.inflow){
+						OpenBoundaryConfig3D iterationBranchBoundary=acceptedBoundary;
+						iterationBranchBoundary.priorInflow=projection.inflow;
+						OpenBoundaryConfig3D verifiedBranchBoundary=acceptedBoundary;
+						verifiedBranchBoundary.priorInflow=acceptedProjection.inflow;
+						OpenMACProjection3DResult iterationBranch,verifiedBranch;
+						if(!ProjectPressureOpenMACVelocity3D(shape,
+							GasDensityFromConservative(state),unprojected,target,
+							iterationBranchBoundary,config.transport.deltaTimeS,
+							config.projectionTolerancePerS,iterationBranch,error,
+							1u,true)||!ProjectPressureOpenMACVelocity3D(shape,
+							GasDensityFromConservative(state),unprojected,target,
+							verifiedBranchBoundary,config.transport.deltaTimeS,
+							config.projectionTolerancePerS,verifiedBranch,error,
+							1u,true))return false;
+						const std::size_t differing=OpenActiveSetDifferingFaceCount3D(
+							iterationBranch.inflow,verifiedBranch.inflow);
+						if(OpenActiveSetCanonicalBefore3D(shape,acceptedBoundary,
+							iterationBranch,verifiedBranch))
+							acceptedProjection=std::move(iterationBranch);
+						else acceptedProjection=std::move(verifiedBranch);
+						acceptedProjection.activeSetDiscontinuousClass=true;
+						acceptedProjection.activeSetCycleLength=std::max<std::size_t>(
+							acceptedProjection.activeSetCycleLength,2u);
+						acceptedProjection.activeSetDifferingFaceCount=std::max(
+							acceptedProjection.activeSetDifferingFaceCount,differing);
+						acceptedProjection.maximumActiveSetComplementarityDiscrepancyMPerS=
+							OpenActiveSetComplementarityDiscrepancy3D(shape,acceptedBoundary,
+								acceptedProjection);
+					}
 					std::vector<double> acceptedDiffusivity,acceptedConductivity,acceptedViscosity;
 					if(!BuildOpenStageTransport3D(shape,state,temperature,
 						acceptedProjection.velocityMPerS,acceptedBoundary,config.dns,thermochemistry,transport,
@@ -2514,10 +2563,7 @@
 						iterationMass,acceptedDiffusivity,diffusivity,acceptedConductivity,
 						conductivity,acceptedViscosity,viscosity,shape.cellWidthM,verification,error))
 						return false;
-					bool verifiedActiveSet=true;for(unsigned int side=0;side<6;++side)
-						verifiedActiveSet=verifiedActiveSet&&acceptedProjection.inflow[side]==
-							projection.inflow[side];
-					if(verification>config.projectionTolerancePerS||!verifiedActiveSet){
+					if(verification>config.projectionTolerancePerS){
 						target.swap(verifiedTarget);priorInflow=acceptedProjection.inflow;
 						continue;}
 					LimiterPicardAcceptance3D limiterAcceptance;
@@ -2548,6 +2594,13 @@
 						limiterAcceptance.maximumFaceDiscrepancy:0.0;
 					result.limiterDiscontinuousClass=predictorLimiter&&
 						limiterAcceptance.discontinuousClass;
+					result.maximumActiveSetComplementarityDiscrepancyMPerS=
+						result.projection.maximumActiveSetComplementarityDiscrepancyMPerS;
+					result.activeSetCycleLength=result.projection.activeSetCycleLength;
+					result.activeSetDifferingFaceCount=
+						result.projection.activeSetDifferingFaceCount;
+					result.activeSetDiscontinuousClass=
+						result.projection.activeSetDiscontinuousClass;
 					result.divergenceTargetPerS=std::move(verifiedTarget);
 					result.diffusivityM2PerS=acceptedDiffusivity;
 					result.conductivityWPerMK=acceptedConductivity;
@@ -2616,6 +2669,13 @@
 				candidate.r0.maximumLimiterClassDiscrepancy;
 			candidate.discontinuousLimiterClassCount=
 				candidate.r0.limiterDiscontinuousClass?1u:0u;
+			candidate.maximumActiveSetComplementarityDiscrepancyMPerS=
+				candidate.r0.maximumActiveSetComplementarityDiscrepancyMPerS;
+			candidate.discontinuousActiveSetClassCount=
+				candidate.r0.activeSetDiscontinuousClass?1u:0u;
+			candidate.maximumActiveSetCycleLength=candidate.r0.activeSetCycleLength;
+			candidate.maximumActiveSetDifferingFaceCount=
+				candidate.r0.activeSetDifferingFaceCount;
 			std::array<std::vector<double>,3> low0, high0, diffusion0;
 			GasPrimalSubfluxes3D(candidate.r0.flux,low0,high0,diffusion0);
 			std::array<std::vector<double>,3> predictorAccepted;
@@ -2771,6 +2831,16 @@
 				candidate.r1,error,&projectionEnergyDeltaJPerM3,&projectionExpansionIntegral,
 				&beginning,&candidate.r0.flux,true))
 				{if(error)*error=std::string("R1: ")+*error;return false;}
+			candidate.maximumActiveSetComplementarityDiscrepancyMPerS=std::max(
+				candidate.maximumActiveSetComplementarityDiscrepancyMPerS,
+				candidate.r1.maximumActiveSetComplementarityDiscrepancyMPerS);
+			candidate.discontinuousActiveSetClassCount+=
+				candidate.r1.activeSetDiscontinuousClass?1u:0u;
+			candidate.maximumActiveSetCycleLength=std::max(
+				candidate.maximumActiveSetCycleLength,candidate.r1.activeSetCycleLength);
+			candidate.maximumActiveSetDifferingFaceCount=std::max(
+				candidate.maximumActiveSetDifferingFaceCount,
+				candidate.r1.activeSetDifferingFaceCount);
 			OpenFluxPair3D averaged;
 			for(std::size_t component=0;component<MethaneMassStateDimension;++component)
 				averaged.boundaryCanSupply[component]=candidate.r0.flux.boundaryCanSupply[component]||
@@ -2875,6 +2945,13 @@
 				open.r2.projection.maximumBoundaryHeadResidualPa;
 			candidate.maximumLimiterClassDiscrepancy=open.maximumLimiterClassDiscrepancy;
 			candidate.discontinuousLimiterClassCount=open.discontinuousLimiterClassCount;
+			candidate.maximumActiveSetComplementarityDiscrepancyMPerS=
+				open.maximumActiveSetComplementarityDiscrepancyMPerS;
+			candidate.discontinuousActiveSetClassCount=
+				open.discontinuousActiveSetClassCount;
+			candidate.maximumActiveSetCycleLength=open.maximumActiveSetCycleLength;
+			candidate.maximumActiveSetDifferingFaceCount=
+				open.maximumActiveSetDifferingFaceCount;
 			if(config.retainStageDiagnostics){
 				candidate.r0.flux.low=std::move(open.r0.flux.low);
 				candidate.r0.flux.high=std::move(open.r0.flux.high);
@@ -2884,6 +2961,16 @@
 				candidate.r0.maximumLimiterClassDiscrepancy=
 					open.r0.maximumLimiterClassDiscrepancy;
 				candidate.r0.limiterDiscontinuousClass=open.r0.limiterDiscontinuousClass;
+				candidate.r0.maximumActiveSetComplementarityDiscrepancyMPerS=
+					open.r0.maximumActiveSetComplementarityDiscrepancyMPerS;
+				candidate.r0.activeSetCycleLength=open.r0.activeSetCycleLength;
+				candidate.r0.activeSetDifferingFaceCount=open.r0.activeSetDifferingFaceCount;
+				candidate.r0.activeSetDiscontinuousClass=open.r0.activeSetDiscontinuousClass;
+				candidate.r1.maximumActiveSetComplementarityDiscrepancyMPerS=
+					open.r1.maximumActiveSetComplementarityDiscrepancyMPerS;
+				candidate.r1.activeSetCycleLength=open.r1.activeSetCycleLength;
+				candidate.r1.activeSetDifferingFaceCount=open.r1.activeSetDifferingFaceCount;
+				candidate.r1.activeSetDiscontinuousClass=open.r1.activeSetDiscontinuousClass;
 				candidate.r0.picardResidualPerS=std::move(open.r0.picardResidualPerS);
 				candidate.r1.picardResidualPerS=std::move(open.r1.picardResidualPerS);
 				candidate.r2.picardResidualPerS=std::move(open.r2.picardResidualPerS);

@@ -212,6 +212,30 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         self.assertNotRegex(combined,
                             r"ConservativeStateFeasible\s*\([^)]*,\s*(256|512|1024|2048|4096)")
 
+    def test_r80_open_active_set_two_class_sites(self) -> None:
+        core = (ROOT / "tools/fire_simulator_core.h").read_text(encoding="utf-8")
+        advance = (ROOT / "tools/fire_simulator_3d_advance.h").read_text(
+            encoding="utf-8")
+
+        def inline_body(source: str, name: str) -> str:
+            start = source.index("inline bool " + name + "(")
+            end = source.find("\n\t\tinline ", start + 1)
+            return source[start:] if end < 0 else source[start:end]
+
+        projector = inline_body(core, "ProjectPressureOpenMACVelocity3D")
+        self.assertIn("activeSetDiscontinuousClass=true", projector)
+        self.assertIn("OpenActiveSetComplementarityDiscrepancy3D", projector)
+        self.assertIn("activeHistory[i]<activeHistory[selected]", projector)
+        self.assertIn("error,1u,true", projector)
+        self.assertNotIn("augmented 3-D active set cycled", projector)
+
+        owner = inline_body(advance, "SolveOpenConservativeStage3D")
+        self.assertIn("OpenActiveSetCanonicalBefore3D", owner)
+        self.assertGreaterEqual(owner.count("1u,true"), 2)
+        self.assertNotIn("coefficientResidual<=config.projectionTolerancePerS&&!activeSetChanged",
+                         owner)
+        self.assertNotIn("verification>config.projectionTolerancePerS||!verifiedActiveSet",
+                         owner)
     def test_generated_include_is_current(self) -> None:
         generated = records.generate(self.snapshot_path,self.constants_path)
         committed = (ROOT / "src/Library/Utilities/FireSimulationRecordData.inc").read_text(
