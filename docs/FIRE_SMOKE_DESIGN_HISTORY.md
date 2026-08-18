@@ -2045,3 +2045,21 @@ it was already tried and refuted here.
   atomics/subgroup-dependent scans (nondeterministic), and post-remap clipping
   (hidden state repair). P1 must demonstrate >=1.8 manufactured order and the
   45 ms tier-10 p95 allocation before projection work begins.
+
+- **r85 (2026-08-18):** production P1 executable swept-interval closure after
+  the first fresh implementation review.  Measured counterexamples were an
+  ordinary `0.1f`, `C=0.3` free stream drifting across several ulps; periodic
+  seam fluxes differing despite equal endpoint velocities (and an unequal-seam
+  case changing total 36 to 32); a folded `C=0.75` departure map producing
+  `-0.5` from a nonnegative unit cell; finite `FLT_MAX` inputs publishing NaNs;
+  and an admission formula permitting about 2.67 GiB while claiming two.
+  The ruling factors fractional integrals by interval length, accumulates
+  crossed donors canonically, makes face zero the byte-canonical periodic seam,
+  and requires a finite nondecreasing backtraced face map selected before
+  dispatch.  It also makes output finiteness and complete checked Metal-buffer
+  accounting structural admission rules.  Absolute Courant remains unbounded
+  by adjacent-cell CFL, so uniform sweeps across cells and whole domains remain
+  valid.  Rejected: clipping, a fixture-serving outgoing-flux repair, duplicate
+  seam evaluation, acceptance of folded maps followed by dt retry, and deferred
+  nonfinite detection.  None changes case identity: these are pre-release
+  production-kernel semantics and validation gates.

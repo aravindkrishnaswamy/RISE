@@ -325,6 +325,47 @@ adjacent-cell CFL truncation, component-specific limiting, and post-remap
 clipping are rejected because they respectively lose conservation, mis-handle
 the target Courant range, split the affine tuple, or hide monitored deviation.
 
+#### 7.2.1 Executable swept-interval closure (r85)
+
+The first P1 implementation review measured three failures that the original
+wording did not exclude strongly enough.  With a constant `0.1f` field, a
+`C=0.3` periodic sweep returned values from `0x1.999992p-4` through
+`0x1.9999aap-4`; subtracting two absolute fp32 antiderivatives had erased the
+free-stream invariant.  At a periodic seam, independently evaluated endpoint
+fluxes differed by one or more ulps even with equal velocities, and unequal
+endpoint velocities changed a test-domain sum from 36 to 32.  Finally, two
+outward faces with `C=0.75` drained a nonnegative unit cell to `-0.5` because
+their backtraced faces had crossed.
+
+The executable rule is therefore:
+
+- fractional-cell integrals use a factored interval polynomial in `b-a`; they
+  never subtract two large absolute antiderivatives.  Complete crossed cells
+  are accumulated in canonical donor order, while the padded Blelloch tree is
+  retained for the whole-domain integral used by periodic wraps;
+- a periodic line has one physical seam.  Its two API endpoint velocities must
+  be equal, face zero is canonical, and the stored face-`n` flux is the exact
+  byte duplicate of face zero;
+- the scheduled backtraced face map must be finite and nondecreasing on every
+  line.  This is a pre-step scheduling condition on velocity gradients, not an
+  absolute-Courant restriction: uniform transport may still cross any number
+  of cells and whole domains.  The future production driver selects a valid
+  scheduled dt before dispatch; it does not discover a fold by retry-halving;
+- every published state, face flux, limiter coefficient, and device timing is
+  finite.  The two-GiB admission calculation counts every actual Metal buffer
+  (input state and velocity, ambient tuple, both edge arrays, limiter, prefix,
+  flux, output, and parameter bytes) with checked arithmetic.
+
+Rejected alternatives are post-remap clipping (hidden state repair), an
+outgoing-flux cap introduced solely to rescue a folded map (changes the pinned
+operator and common weights), independently recomputing the periodic duplicate
+(permits secular leakage), and tolerating nonfinite output until validation
+(structural failure, not model deviation).  RED coverage includes late-cell
+large-prefix tiny sweeps, ordinary non-power-of-two constants, a
+cancellation-sensitive Blelloch total, negative open-boundary roles, a folded
+departure map, finite-input arithmetic overflow, GPU common-limiter behavior,
+and source/build guards binding safe math and the four real Metal kernels.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
