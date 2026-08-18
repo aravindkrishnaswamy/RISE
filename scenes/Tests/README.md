@@ -57,6 +57,14 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - Scene-graph parenting: `Geometry/object_parenting.RISEscene` (an articulated
   arm built from container nodes; the hand's `scale` is authored once and
   inherited by the fingers through composition)
+- Scene-graph instancing: `Geometry/object_instancing.RISEscene` (one authored
+  four-node lantern, then the three things `source` does with it -- a whole
+  SUBTREE clone, a LEAF source that collapses to a single object, and a
+  `count_u`/`count_v` array with per-instance `expr(...)`.  42 live objects
+  from 7 authored object chunks.)  **This is the scene to open in the GUI to
+  check 87's outliner**: the Objects section is a tree, the 30-object array is
+  ONE editable row, and picking any copy in the viewport highlights that row.
+  Its header comment lists what to look for.
 - CST/parser sanity: `Parser/loops.RISEscene` (a flattened native-v7 fixture;
   the filename and historical header comment predate retirement of the
   streaming loop language)

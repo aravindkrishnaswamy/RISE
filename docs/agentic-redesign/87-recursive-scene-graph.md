@@ -1283,6 +1283,17 @@ what was authored, live material included).
    Both shells carry the same occurrence encoding anyway, so the latent
    case is closed on both.
 
+   **The GUI check-scene is `scenes/Tests/Geometry/object_instancing.RISEscene`**
+   (added 2026-08-18).  Nothing in the corpus exercised `source` or the counted
+   arrays -- `object_parenting.RISEscene` covers step 1 only -- so there was no
+   scene a person could open to see any of step 3 or step 4 work.  This one
+   authors ONE four-node lantern and then instances it three ways (subtree
+   clone, leaf collapse, 3x2 counted array), giving 42 live objects from 7
+   authored chunks and 7 outliner rows.  Its header comment enumerates what to
+   look for, including the two things only a human can confirm: that the array
+   is one editable row rather than thirty, and that picking a copy in the
+   viewport highlights that row (step 4d).
+
    **Two consequences of §2 that will look like regressions and are not.**
    The Objects count now counts AUTHORED nodes, so an 8x8 `count_u`/`count_v`
    array counts 1, not 64 — that is the point of the fold: every row has a

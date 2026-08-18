@@ -1,0 +1,296 @@
+RISE ASCII SCENE 7
+#
+# object_instancing.RISEscene -- docs/agentic-redesign/87-recursive-scene-graph.md
+#
+# The companion to object_parenting.RISEscene.  That scene shows a node tree;
+# this one shows what `source` does with one -- and it is the scene to open in
+# the GUI to see 87's outliner behave, because every claim below is visible in
+# the Objects section without rendering anything.
+#
+# ONE authored lantern, four nodes deep:
+#
+#   lantern                        container -- no geometry, pure transform
+#     +-- lantern_post             the cylinder
+#     +-- lantern_head             container, lifted to the top of the post
+#           +-- lantern_globe      the glowing ball
+#           +-- lantern_cap        a lid
+#
+# Then three DIFFERENT things `source` can do with it, which is the point:
+#
+#   pair_b     `source lantern`        -- clones the WHOLE subtree.  The
+#                                         descendants are named `pair_b.lantern_post`
+#                                         and so on: one level of qualification,
+#                                         because descendant names are already
+#                                         globally unique.
+#   globe_solo `source lantern_globe`  -- sources a LEAF, so it collapses to
+#                                         exactly ONE object under the chunk's
+#                                         own name.  There is no `globe_solo.
+#                                         lantern_globe`; the instancing node IS
+#                                         the clone.
+#   row        `source lantern`        -- with `count_u` / `count_v`, so it mints
+#              + count_u 3 count_v 2      `row[i,j]` per repetition and
+#                                         `row[i,j].lantern_post` beneath each.
+#                                         SIX lanterns, THIRTY objects (each
+#                                         repetition is a root plus four
+#                                         descendants).  The whole scene holds
+#                                         42 live objects and 7 outliner rows.
+#
+# WHAT TO LOOK FOR IN THE GUI (87 step 4):
+#
+#   * The Objects section is a TREE, not a flat list.  `lantern` discloses to
+#     `lantern_post` and `lantern_head`, and `lantern_head` discloses again.
+#     Expand state is keyed by tree PATH, so it survives a re-render.
+#   * `row` is ONE row, not thirty.  The outliner draws the AUTHORED graph,
+#     so every synthesized copy folds into the chunk that mints it -- the row you
+#     see is the row you can edit.  Change `count_u` on it and the whole array
+#     changes.  A flat list of `row[0,0].lantern_post` entries would be noise
+#     you cannot edit.
+#   * Click any lantern of the array IN THE VIEWPORT and the `row` row
+#     highlights.  Picking returns the live copy (`row[2,1].lantern_globe`) --
+#     the only thing a ray can return -- and the outliner resolves it back
+#     through the provenance map to the chunk you wrote.
+#   * `globe_solo` has NO disclosure triangle.  Sourcing a leaf collapses.
+#   * The floor, the lights and the camera sit in their own flat sections and
+#     look exactly as they always did -- flat categories are modelled as roots
+#     with no children, so one tree renders them all.
+#
+# Deterministic coverage lives in tests/CstSourceInstanceTest.cpp and
+# tests/SceneGraphNodeApiTest.cpp; this scene is the visual / GUI check.
+#
+
+film
+{
+width 640
+height 400
+}
+
+pinhole_camera
+{
+name cam
+location 0 6.5 17
+lookat 0 1.8 0
+up 0 1 0
+}
+
+# ---------------------------------------------------------------- materials
+
+uniformcolor_painter
+{
+name pnt_post
+color 0.30 0.32 0.38
+}
+
+uniformcolor_painter
+{
+name pnt_globe
+color 0.98 0.82 0.42
+}
+
+uniformcolor_painter
+{
+name pnt_cap
+color 0.72 0.28 0.16
+}
+
+uniformcolor_painter
+{
+name pnt_floor
+color 0.52 0.54 0.52
+}
+
+lambertian_material
+{
+name mat_post
+reflectance pnt_post
+}
+
+lambertian_material
+{
+name mat_globe
+reflectance pnt_globe
+}
+
+lambertian_material
+{
+name mat_cap
+reflectance pnt_cap
+}
+
+lambertian_material
+{
+name mat_floor
+reflectance pnt_floor
+}
+
+# ---------------------------------------------------------------- geometry
+
+infiniteplane_geometry
+{
+name geo_floor
+xtile 4
+ytile 4
+}
+
+cylinder_geometry
+{
+name geo_post
+axis y
+radius 0.13
+height 2.0
+}
+
+sphere_geometry
+{
+name geo_globe
+radius 0.42
+}
+
+box_geometry
+{
+name geo_cap
+width 0.66
+height 0.14
+depth 0.66
+}
+
+# ---------------------------------------------------------------- the floor
+
+standard_object
+{
+name floor
+geometry geo_floor
+material mat_floor
+position 0 0 0
+orientation -90 0 0
+}
+
+# ------------------------------------------------- the ONE authored lantern
+#
+# `lantern` has no `geometry` line, so it is a CONTAINER: it never renders and
+# is not in the acceleration structure.  It exists to carry the transform its
+# subtree composes against -- which is what makes `source lantern` able to
+# clone the whole assembly by naming one node.
+
+standard_object
+{
+name lantern
+position -5.5 0 0
+}
+
+standard_object
+{
+name lantern_post
+parent lantern
+geometry geo_post
+material mat_post
+position 0 1.0 0
+}
+
+standard_object
+{
+name lantern_head
+parent lantern
+position 0 2.1 0
+}
+
+standard_object
+{
+name lantern_globe
+parent lantern_head
+geometry geo_globe
+material mat_globe
+position 0 0 0
+}
+
+standard_object
+{
+name lantern_cap
+parent lantern_head
+geometry geo_cap
+material mat_cap
+position 0 0.48 0
+}
+
+# ------------------------------------------------- SUBTREE instance (3b)
+#
+# One chunk, FIVE objects: `pair_b`, `pair_b.lantern_post`,
+# `pair_b.lantern_head`, `pair_b.lantern_globe`, `pair_b.lantern_cap`.
+# The instancing node IS the clone of the source ROOT, so `pair_b` is the
+# container -- there is no `pair_b.lantern`.
+
+standard_object
+{
+name pair_b
+source lantern
+position -3.4 0 0
+}
+
+# ------------------------------------------------- LEAF instance (3a collapse)
+#
+# `source` names a leaf, so this collapses to exactly ONE object under this
+# chunk's own name.  In the outliner it is a single row with no disclosure
+# triangle -- not a parent with one child.
+
+standard_object
+{
+name globe_solo
+source lantern_globe
+position -1.7 0.55 0
+}
+
+# ------------------------------------------------- COUNTED array (3c)
+#
+# THE ROW TO WATCH IN THE OUTLINER.  This mints `row[i,j]` per repetition and
+# `row[i,j].lantern_post` and friends beneath each -- 6 repetitions, 30 live
+# objects -- and the outliner shows ONE row for all of it, because that is the
+# one thing an author can edit.  Per-instance `expr(...)` gets `i`, `j`, `u`
+# and `v`; `u` and `v` are normalised, which is why the height ripple below
+# reads as a curve rather than a staircase.
+
+standard_object
+{
+name row
+source lantern
+count_u 3
+count_v 2
+position expr(0.6 + i*2.6) expr(v*0.55) expr(-2.2 - j*2.9)
+}
+
+# ---------------------------------------------------------------- lighting
+#
+# `direction` is the vector FROM the surface TO the light, so a camera at +Z
+# needs a POSITIVE z here or the fronts of the lanterns go dark.
+
+directional_light
+{
+name key
+power 2.4
+color 1 0.97 0.90
+direction 0.35 0.80 0.55
+}
+
+ambient_light
+{
+name fill
+power 0.28
+color 0.55 0.62 0.75
+}
+
+standard_shader
+{
+name global
+shaderop DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+samples 24
+}
+
+file_rasterizeroutput
+{
+pattern rendered/object_instancing
+type PNG
+bpp 8
+color_space sRGB
+}
