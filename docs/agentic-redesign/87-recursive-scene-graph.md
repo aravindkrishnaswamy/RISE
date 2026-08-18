@@ -1,8 +1,9 @@
 # 87 — Recursive Scene Graph
 
 **Status: decided 2026-08-15.  §5 steps 0, 1 and 2 are IMPLEMENTED, and so are
-step 3's slices 3a (`source`, single-node) and 3b (subtree expansion); 3c
-(`count_u`/`count_v`) , 3d (delete `instance_array`) and step 4 are not.**  §2's "composition happens in the per-frame prepare pass" is now
+step 3's slices 3a (`source`, single-node), 3b (subtree expansion) and 3c
+(`count_u`/`count_v` + per-instance exprs); 3d (delete `instance_array`) and
+step 4 are not.**  §2's "composition happens in the per-frame prepare pass" is now
 literally true: step 2 re-bakes the hierarchy in
 `ObjectManager::PrepareForRendering()`, so a timeline on a parent carries its
 subtree.  Step 1's derive-tail and live-edit composes remain — they are what
@@ -375,7 +376,7 @@ what was authored, live material included).
      write `name my.object`.
    Slices: 3a `source` single-node + refusals + provenance; 3b subtree
    expansion; 3c `count_u`/`count_v` + per-instance exprs; 3d delete
-   `instance_array`.
+   `instance_array`.  3a, 3b and 3c are IMPLEMENTED.
 
    **3b (2026-08-17) — subtree expansion, IMPLEMENTED.**  The 3a
    has-children refusal is replaced by a real expansion.  Mechanics: build the
@@ -498,6 +499,114 @@ what was authored, live material included).
    test — `instance_array` clamps each count to 1e6, so crossing the budget
    means materialising ten million objects.  Its arithmetic was verified by
    temporarily lowering the constant.
+
+   **3c (2026-08-17) — `count_u` / `count_v` + per-instance exprs, IMPLEMENTED.**
+   A chunk carrying `source` may also carry `count_u U [count_v V]`, repeating the
+   WHOLE instance -- root plus subtree -- `U x V` times as `I[i,j]` and
+   `I[i,j].X`, with the instancing chunk's own parameters evaluated per repetition
+   over `i`/`j` and `u`/`v`.  `EvalInstanceValue`, the count validator and the
+   caps are `instance_array`'s own, CALLED rather than re-derived: the validator
+   was lifted out of `ExpandInstanceArray`'s `evalCount` lambda verbatim into
+   `EvalInstanceCount`, with only the diagnostic prefix parameterised, and one
+   mutation to it now reddens BOTH suites (verified: deleting the `(long long)`
+   round-trip fails 3 assertions in `CstSourceInstanceTest` and 3 in
+   `CstInstanceArrayTest`).  Seven things met the code and are decisions:
+
+   - **PRESENCE of a count selects the repeated naming, never its VALUE.
+     `count_u 1` derives `I[0,0]`, not `I`.**  A count may be an `expr(...)` over
+     a `let`, so a value-keyed rule would silently re-name every entry -- dangling
+     every `parent I[0,0]` in the file -- when a constant went from 2 to 1.  It
+     also keeps the entry names byte-compatible with the `instance_array`
+     generator 3d retires, which names its one-instance case `g[0,0]` for exactly
+     the same reason.  The count-less form is untouched: still plain `I` / `I.X`.
+   - **PASS-1 VALIDATES AN INSTANCING CHUNK AT INSTANCE ZERO, and without that
+     the feature does not parse at all.**  `position expr(i*2) 0 0` is a
+     three-component value with one expr in it, which `TryEvalExprValue` (a
+     WHOLE-value rule) passes through verbatim -- and that is not a finite numeric
+     triple, so PASS-1's descriptor check refused the scene before any expansion
+     ran.  (`instance_array` never met this because PASS-1 SKIPS its chunks
+     entirely.)  `ResolveChunkParams` now takes an optional per-instance context
+     and PASS-2's trigger (`source` read off the CST token) is hoisted above it.
+     The bag built there is never applied for such a chunk, but the arity and kind
+     checks are real: `position expr(i) bogus 0` is still refused.
+   - **THE SAME CONTEXT IS PASSED WHEN THERE ARE NO COUNTS.**  A single instance
+     IS instance zero.  Evaluating the uncounted form by the whole-value rule
+     instead would have PASS-1 admit a chunk that PASS-2 then refuses at the
+     descriptor -- the live/CST divergence class this arc keeps closing.  For a
+     value with no `expr(` in it the two paths are byte-identical, so every 3a/3b
+     scene derives exactly as before (`CstDeriveGoldenTest` 383 MATCH / 0 DRIFT).
+   - **PER-INSTANCE VARIATION IS THE INSTANCING CHUNK'S OWN PARAMS ONLY, and that
+     is `instance_array`'s scope too -- not a reduction of it.**  A subtree MEMBER
+     is an ordinary `standard_object`, so PASS-1 refuses a per-component expr on
+     one; `instance_array` had no descendants at all, so there is no parity to
+     lose.  Say that in the docs rather than implying per-descendant variation.
+   - **THE CAP COUNTS `count_u * count_v * subtreeSize`, and 3c is the first
+     slice in which it can be TESTED.**  3b could only cross the document budget
+     by materialising ten million objects; a count is refused from arithmetic
+     alone, before one entry is built.  The regression guard asserts the NUMBER in
+     the refusal: 1e6 x 10 repetitions of a 3-node subtree is 1e7 instances --
+     exactly the budget, so an instance-counting cap would admit it -- and 3e7
+     entries, which is what reaches the TLAS.  `instance_array`'s per-count 1e6
+     clamp is kept (it arrives with the shared validator); no separate product cap
+     is needed, because `perInstance >= 1` makes the entry total subsume it.
+   - **A COUNTED CHUNK CANNOT BE A `source`, NOR A MEMBER OF A COPIED SUBTREE.**
+     It is N entries, not a node; copying "the first one" is the silent partial
+     copy every other refusal in the walk exists to prevent.  The source-side check
+     sits BEFORE the manager probe deliberately: a counted chunk produces `A[0,0]`
+     and no `A`, so the probe would have refused it with "declared earlier but did
+     not produce an object (its own chunk failed)" -- a cause that did not happen.
+     The member-side check is reachable and pinned; the one inside `SourceSubtree`
+     (a counted chunk deeper in a `source` chain) is defensive by the same
+     PASS-2-stops-at-the-first-refusal argument the walk's other dead tails carry.
+   - **The clone plan is now RELATIVE to the instance root** (`srcEntryName` +
+     `parentRel`), so it is built ONCE and composed into `I[i,j].X` per
+     repetition.  A 100x100 grid walks the document once, not 10 000 times.
+
+   **THE PER-FRAME COST, MEASURED (2026-08-17, `renderanimation` at 8x8, 1000
+   frames, load excluded via the CLI's own "Total Rasterization Time", 3 reps;
+   same harness as step 2's and 3b's tables):**
+
+   | scene | objects | links | ms/pass |
+   |---|---|---|---|
+   | flat 10 000, short names | 10 000 | 0 | 0.174 – 0.178 |
+   | flat 10 000, authored as `I[i,j]` at the same poses | 10 000 | 0 | 0.182 – 0.184 |
+   | **`source <leaf> count_u 100 count_v 100`** | 10 000 | **0** | **0.177 – 0.183** |
+   | flat 500 | 500 | 0 | 0.054 – 0.055 |
+   | hand-authored 5-node chains, short names | 500 | 400 | 0.460 – 0.474 |
+   | hand-authored 5-node chains, named `I[i,j].Cn` | 500 | 400 | 0.510 – 0.513 |
+   | **`source <5-node subtree> count_u 100`** | 505 | **404** | **0.507 – 0.510** |
+
+   (1) **THE COLLAPSE CASE IS FREE, AND THE ARRAY CASE INHERITS THAT.**  10 000
+   repetitions of a LEAF source cost ZERO links and measure at the flat baseline
+   -- indistinguishable from the byte-equivalent hand-authored flat scene at the
+   same poses and names (0.177–0.183 vs 0.182–0.184).  This is the property the
+   collapse semantics were chosen for in the first place, now measured at the
+   scale the counts make easy to reach.
+   (2) **3c ADDS NOTHING OF ITS OWN.**  The counted subtree (505 objects, 404
+   links) measures the same as the hand-authored hierarchy with matching names and
+   poses (0.507–0.510 vs 0.510–0.513) -- if anything a hair faster, with four more
+   links.
+   (3) **LINEAR IN LINKS, AGAINST 3b's NUMBER.**  `(0.467 - 0.055) / 400 =
+   1.03 µs/link/pass` on the short-name control, which is 3b's own 404-link row
+   (0.45–0.46) to within measurement noise; 3b's ~1.4 µs/link is the slope at its
+   4004-link point.  Nothing about counts changes the per-link cost.
+   (4) **ONE MEASURED SURPRISE, and it is step 2's, not 3c's: LONGER ENTRY NAMES
+   COST ~10% AT 400 LINKS.**  The identical hierarchy authored as `H37_3` measures
+   0.460–0.474 and as `I[37,0].C3` measures 0.510–0.513.  `RebakeHierarchy` is
+   string-keyed (three `String`-keyed containers rebuilt per pass, a String-copying
+   stack), so key LENGTH is on the per-pass path -- and 3c's names are the longest
+   the language can produce.  The memoized pointer-keyed plan already proposed for
+   step 2 removes this along with the rest.  At ZERO links there is no walk and no
+   effect (the 10 000-object rows differ only by spatial layout).
+
+   **NOT DONE in 3c, stated plainly:** a `scenes/Tests` visual scene (render
+   equivalence is carried by the DumpJob oracle against hand-written twins);
+   `AgentSession::ResolveIsolateObject` is verified only through the provenance
+   rows it reads, not driven end-to-end from this binary; and the ERANGE branch of
+   the shared validator is reachable from a `standard_object` only for UNDERFLOW
+   (`count_u 1e-999`) -- OVERFLOW is refused earlier by PASS-1's string-layer
+   check, since the counts are descriptor-declared numeric.  It stays reachable
+   both ways from `instance_array`, which PASS-1 skips.
 
    **3b review round 2 (2026-08-17) — no P1.  One durable rule, and two claims
    that were TRUE but UNPINNED:**

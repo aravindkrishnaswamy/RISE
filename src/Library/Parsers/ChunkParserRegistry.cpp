@@ -7027,6 +7027,21 @@ namespace RISE
 						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
 						return false;
 					}
+					// 87 step 3c: `count_u` / `count_v` REPEAT AN INSTANCE, so they mean
+					// nothing without a `source` to repeat.  Unlike the backstop above this
+					// one is genuinely REACHABLE: a chunk with counts and no `source` is not
+					// an instancing chunk, so PASS-2 hands it to this Finalize like any
+					// other object.  Silently ignoring the counts would derive ONE object
+					// from a chunk the author wrote expecting N.
+					if( bag.Has( "count_u" ) || bag.Has( "count_v" ) ) {
+						const std::string diag = "standard_object `" + name + "`: `count_u` / `count_v` repeat an "
+							"INSTANCE, so they need a `source` naming the node to repeat.  On a chunk with a "
+							"`geometry` (or with neither) there is nothing to repeat, and the counts would be "
+							"silently ignored.  Add a `source`, or drop the counts.";
+						GlobalLog()->PrintEx( eLog_Error, "%s", diag.c_str() );
+						if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = diag;
+						return false;
+					}
 
 					// 87: `geometry` is OPTIONAL.  Absent (or the universal
 					// no-reference sentinel `none`) means this object is a
@@ -7202,6 +7217,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Geometry to instance; omit for a pure container node"; }
 						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object (declared EARLIER) to INSTANCE: this node takes a copy of that object's bindings -- geometry / material / modifier / shader / radiance map / interior medium / shadow flags -- while its OWN position, orientation and scale say where the copy goes.  If the source has CHILDREN its whole SUBTREE is copied too: each descendant becomes one further object named `<this name>.<that node's name>`, parented to the copy of its own parent, so the assembly arrives intact and moving this node moves all of it.  The source keeps rendering; `source` copies, it does not move or hide anything.  The whole subtree must be declared before this chunk.  Mutually exclusive with `geometry`"; }
+						{ auto& p = P(); p.name = "count_u";          p.kind = ValueKind::UInt;      p.description = "REPEAT this instance `count_u` times along the first axis (87 step 3c).  Needs a `source`; refused without one.  Each repetition is a whole copy of the instance -- root plus subtree -- named `<this name>[i,j]` and `<this name>[i,j].<member>`.  Every OTHER parameter on this chunk may then be a PER-COMPONENT `expr(...)` over the instance variables `i`/`j` (the indices) and `u`/`v` (the same, normalized into [0,1]; 0 when the count is 1), e.g. `position expr(i*3) 0 0`.  The counts vary THIS chunk's own parameters only -- a member of the copied subtree is not per-instance variable.  PRESENCE selects the repeated form: `count_u 1` names its one entry `[0,0]`, it does not fall back to the plain name.  A fractional, negative, non-finite or > 1e6 count is refused (never rounded)"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "count_v";          p.kind = ValueKind::UInt;      p.description = "Second axis of the `count_u` repetition (default 1).  Needs `count_u`"; p.defaultValueHint = "1"; }
 						{ auto& p = P(); p.name = "parent";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Object to parent this one to (must be declared earlier)"; }
 						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
 						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }

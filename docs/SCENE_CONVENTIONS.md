@@ -559,6 +559,49 @@ Things worth knowing:
   the same), but subtree instancing is the easiest way to author thousands of
   links by accident.
 
+#### Repeating an instance — `count_u` / `count_v`
+
+A chunk carrying `source` may also carry **`count_u U`** and, optionally,
+**`count_v V`** (default 1).  The whole instance — root plus subtree — is then
+repeated `U x V` times:
+
+```text
+standard_object { name post  geometry post_mesh  material wood }
+
+standard_object
+{
+name fence
+source post
+count_u 20
+position expr(i * 1.5)  0  0
+orientation 0 expr(u * 15) 0
+}
+```
+
+- **Names.**  Each repetition's root is `<name>[i,j]` and each of its subtree
+  copies is `<name>[i,j].<member>` — so the fence above is `fence[0,0]` …
+  `fence[19,0]`.  `i` runs fastest.
+- **`count_u 1` is still `[0,0]`.**  The PRESENCE of a count selects the
+  repeated naming, not its value; a count may be an `expr(...)` over a `let`,
+  and a name that flipped when a constant changed from 2 to 1 would dangle
+  every `parent fence[0,0]` in the file.
+- **Per-instance expressions.**  Every OTHER parameter on the instancing chunk
+  may use per-component `expr(...)` over four variables: `i` and `j` (the
+  indices) and `u` and `v` (the same, normalized into `[0,1]`; `0` when that
+  count is 1).  This is the same expression scope `instance_array` has.
+- **The counts vary THIS chunk only.**  A member of the copied subtree is not
+  per-instance variable — its parameters are the same in every repetition.
+- **Refused, each with its own message:** counts without a `source`; `count_v`
+  without `count_u`; a fractional, negative or out-of-range count (never
+  rounded); instancing a chunk that itself carries counts, or copying a subtree
+  that contains one (either would silently copy just one of its N entries).
+- **Cost.**  Repeating a LEAF is free — 10 000 repetitions of a leaf source
+  measure at the flat baseline, because the collapse case has no parent links
+  at all.  Repeating a SUBTREE costs `count x (subtree size - 1)` links, and the
+  per-frame re-bake is sized by links (see below).
+- **A document-wide cap** bounds `count_u x count_v x subtree size` — ENTRIES,
+  not repetitions — at 10 000 000, and each count is separately clamped to 1e6.
+
 ---
 
 ## 6. Coordinate system

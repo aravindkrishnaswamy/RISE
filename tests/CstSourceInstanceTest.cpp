@@ -341,6 +341,16 @@ int main()
 	CapturingLogPrinter* pDecomposeLog = pDecomposeLogOwned;
 	safe_release( pDecomposeLogOwned );
 
+	// 87 step 3c: the DESCRIPTOR's own numeric rejection.  It goes to the LOG, and the
+	// diagnostic that reaches `diags` is the shared, uninformative "invalid parameter(s)
+	// (see log)" -- so an assertion on the diagnostic alone cannot tell a numeric rejection
+	// from an undeclared parameter, a value-less line, or any other PASS-1 failure.  Read
+	// the log line, by DELTA, since the whole run shares one printer.
+	CapturingLogPrinter* pNumericLogOwned = new CapturingLogPrinter( "expects finite numeric value" );
+	RISE::GlobalLogPriv()->AddPrinter( pNumericLogOwned );
+	CapturingLogPrinter* pNumericLog = pNumericLogOwned;
+	safe_release( pNumericLogOwned );
+
 	const std::string SRC_LEAF = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n";
 
 	// ---------------------------------------------------------------- round-trip
@@ -2588,6 +2598,501 @@ int main()
 		}
 		j->release();
 		std::remove( path.c_str() );
+	}
+
+	// ================================================================ 87 step 3c
+	// COUNTS.  `count_u U [count_v V]` on a chunk carrying `source` repeats the WHOLE
+	// instance -- root plus subtree -- U x V times, naming each repetition `I[i,j]` and
+	// each of its clones `I[i,j].X`, with the instancing chunk's OWN parameters evaluated
+	// per repetition over `i`/`j` (indices) and `u`/`v` (the same, normalized into [0,1]).
+	//
+	// THE DECISION THIS SLICE HAD TO MAKE, recorded here and pinned below: PRESENCE of a
+	// count selects the repeated naming, not its VALUE.  `count_u 1` derives `I[0,0]`, NOT
+	// `I`.  Two reasons, and the second is the load-bearing one: it keeps the entry names
+	// byte-compatible with the `instance_array` generator 3d retires (which names its
+	// one-instance case `g[0,0]`), and a count may be an `expr(...)` over a `let`, so a
+	// value-keyed rule would silently re-name every entry -- dangling every `parent
+	// I[0,0]` in the file -- when a constant went from 2 to 1.
+
+	// [count][1-D] the simplest form: a leaf source repeated along one axis, with a
+	// per-instance `position`.  The oracle is a dump-vs-dump compare against the two
+	// hand-written objects, so bindings, visibility and world bboxes all have to match.
+	{
+		std::vector<std::string> diags;
+		const std::string got = DumpCst( Scene( SRC_LEAF
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i*10) 0 0\n}\n" ), &diags );
+		const std::string want = DumpCst( Scene( SRC_LEAF
+			+ "standard_object\n{\nname I[0,0]\ngeometry geo\nmaterial m\nposition 0 0 0\n}\n"
+			  "standard_object\n{\nname I[1,0]\ngeometry geo\nmaterial m\nposition 10 0 0\n}\n" ) );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "count-1d: a counted leaf instance derives cleanly (" ) + all + ")" ).c_str() );
+		Check( got == want, "count-1d: `count_u 2` == the two hand-written `I[i,j]` objects it stands for" );
+	}
+
+	// [count][2-D] + [count_v] a grid, with `i` FASTEST -- the same traversal order
+	// `instance_array` has, so a legend or a `parent` line written against one means the
+	// same thing after the other replaces it.
+	{
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( SRC_LEAF
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\ncount_v 3\nposition expr(i) expr(j) 0\n}\n" ), &diags );
+		Check( diags.empty(), "count-2d: a 2x3 grid derives cleanly" );
+		std::string got;
+		Check( CenterIs( Obj( j, "I[0,0]" ), 0, 0, 0, &got ) && CenterIs( Obj( j, "I[1,2]" ), 1, 2, 0, &got ),
+		       ( "count-2d: `position expr(i) expr(j) 0` places every cell of the grid (got " + got + ")" ).c_str() );
+		// THE WHOLE SET, so an expansion that produced six objects with the wrong INDICES
+		// (a transposed i/j, or a `[i,j]` built from the wrong pair) cannot pass on two
+		// spot checks -- and an expansion that produced the right SET at the wrong POSES
+		// is caught by the pair above.
+		Check( EntryNames( j ) == "I[0,0]|I[0,1]|I[0,2]|I[1,0]|I[1,1]|I[1,2]|S",
+		       "count-2d: the entry set is exactly the 2x3 grid plus the untouched source" );
+		j->release();
+	}
+
+	// [count_v defaulting] `count_u` alone means ONE row: `count_v` defaults to 1, so the
+	// j index is 0 everywhere and there is no `[i,1]`.
+	{
+		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 3\n}\n" ) );
+		Check( EntryNames( j ) == "I[0,0]|I[1,0]|I[2,0]|S",
+		       "count_v-default: `count_u 3` alone is a single row -- count_v defaults to 1" );
+		j->release();
+	}
+
+	// [count==1] THE DECISION, PINNED.  `count_u 1` is the REPEATED form with one
+	// repetition: the entry is `I[0,0]` and there is no `I`.  Keying the naming on the
+	// VALUE instead would make this scene derive `I` -- and every `parent I[0,0]` written
+	// against it would dangle the day the count changed.
+	{
+		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 1\nposition 5 0 0\n}\n" ) );
+		Check( Obj( j, "I[0,0]" ) != 0, "count==1: `count_u 1` names its one entry `I[0,0]`" );
+		Check( Obj( j, "I" ) == 0,      "count==1: ... and NOT `I` -- presence of the count selects the naming, not its value" );
+		std::string got;
+		Check( CenterIs( Obj( j, "I[0,0]" ), 5, 0, 0, &got ), ( "count==1: ... and it is placed by its own `position` (got " + got + ")" ).c_str() );
+		j->release();
+		// The CONTROL that makes the pair above mean something: the same chunk with NO
+		// count is still plain `I`, exactly as 3a/3b derived it.
+		Job* j2 = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		Check( Obj( j2, "I" ) != 0 && Obj( j2, "I[0,0]" ) == 0,
+		       "count==1: (control) the count-less form is untouched -- plain `I`, no `[0,0]`" );
+		j2->release();
+	}
+
+	// [count==0] a zero count produces NO entries.  `instance_array`'s shared validator has
+	// always admitted a zero count (non-negative, integral), and 3c inherits it verbatim
+	// rather than inventing a different rule for the same word.
+	{
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 0\n}\n" ), &diags );
+		Check( diags.empty() && EntryNames( j ) == "S",
+		       "count==0: a zero count derives cleanly and synthesizes nothing" );
+		j->release();
+	}
+
+	// [count][u/v] the NORMALIZED instance variables, and the divide-by-zero they must not
+	// do.  `u = i/(count_u-1)` across a row of three is 0, 0.5, 1; with a count of ONE it
+	// is 0, not a 0/0 NaN.  Both come across from `instance_array` unchanged.
+	{
+		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 3\nposition expr(u) 0 0\n}\n" ) );
+		std::string got;
+		Check( CenterIs( Obj( j, "I[0,0]" ), 0,   0, 0, &got )
+		    && CenterIs( Obj( j, "I[1,0]" ), 0.5, 0, 0, &got )
+		    && CenterIs( Obj( j, "I[2,0]" ), 1,   0, 0, &got ),
+		       ( "u/v: `expr(u)` runs 0, 0.5, 1 across a row of three (got " + got + ")" ).c_str() );
+		j->release();
+		Job* j2 = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 1\nposition expr(u) expr(v) 0\n}\n" ) );
+		Check( CenterIs( Obj( j2, "I[0,0]" ), 0, 0, 0, &got ),
+		       ( "u/v: a count of ONE gives u=v=0, not a 0/0 NaN (got " + got + ")" ).c_str() );
+		j2->release();
+	}
+
+	// [count][expr on a NON-transform param] the per-instance expression applies to the
+	// instancing chunk's parameters, NOT only to its transform: `material expr(i)` selects
+	// a different material per repetition.  (Numerically-named materials because an expr
+	// evaluates to a NUMBER -- which is exactly what makes this a real test of the
+	// reference slot rather than of the transform path.)
+	{
+		const std::string MATS = "lambertian_material\n{\nname 0\nreflectance p\n}\n"
+		                         "lambertian_material\n{\nname 1\nreflectance p2\n}\n";
+		std::vector<std::string> diags;
+		const std::string got = DumpCst( Scene( MATS + SRC_LEAF
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\nmaterial expr(i)\nposition expr(i*4) 0 0\n}\n" ), &diags );
+		const std::string want = DumpCst( Scene( MATS + SRC_LEAF
+			+ "standard_object\n{\nname I[0,0]\ngeometry geo\nmaterial 0\nposition 0 0 0\n}\n"
+			  "standard_object\n{\nname I[1,0]\ngeometry geo\nmaterial 1\nposition 4 0 0\n}\n" ) );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "expr-material: the fixture derives cleanly (" ) + all + ")" ).c_str() );
+		Check( got == want, "expr-material: `material expr(i)` binds a DIFFERENT material per repetition" );
+		// NON-VACUITY: the two materials really are distinguishable in the dump (they carry
+		// different painters), so the compare above would have caught both cells taking one.
+		const std::string same = DumpCst( Scene( MATS + SRC_LEAF
+			+ "standard_object\n{\nname I[0,0]\ngeometry geo\nmaterial 0\nposition 0 0 0\n}\n"
+			  "standard_object\n{\nname I[1,0]\ngeometry geo\nmaterial 0\nposition 4 0 0\n}\n" ) );
+		Check( got != same, "expr-material: ... and the dump really does separate the two materials" );
+	}
+
+	// [count][subtree] A COUNTED SUBTREE -- the entry NAMES and the LINK STRUCTURE.  Every
+	// repetition carries its own copy of the whole subtree, each clone parented to the
+	// CLONE OF ITS OWN PARENT within that repetition: `I[1,0].D` hangs off `I[1,0].C`, not
+	// off the repetition root and not off some other repetition's `C`.
+	{
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( SUB3
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i*10) 0 0\n}\n" ), &diags );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "count-subtree: a counted 3-level subtree derives cleanly (" ) + all + ")" ).c_str() );
+		Check( EntryNames( j ) == "C|D|I[0,0]|I[0,0].C|I[0,0].D|I[1,0]|I[1,0].C|I[1,0].D|S",
+		       "count-subtree: the entry set is TWO whole copies of the subtree, named `I[i,j].X`" );
+		Check( ParentOf( j, "I[0,0].C" ) == "I[0,0]" && ParentOf( j, "I[1,0].C" ) == "I[1,0]",
+		       "count-subtree: each repetition's direct child hangs off THAT repetition's root" );
+		Check( ParentOf( j, "I[0,0].D" ) == "I[0,0].C" && ParentOf( j, "I[1,0].D" ) == "I[1,0].C",
+		       "count-subtree: and the grandchild hangs off the CLONE of its own parent, per repetition" );
+		Check( ParentOf( j, "I[1,0]" ).empty(), "count-subtree: (control) a repetition root took no parent of its own" );
+		// THE COMPOSED POSE, which is what a wrong link would move.  A grandchild parented
+		// to the repetition ROOT instead of to `I[i,j].C` would sit at (10,0,1) rather than
+		// (10,1,1); one parented to the FIRST repetition's clone would sit at (0,1,1).
+		std::string got;
+		Check( CenterIs( Obj( j, "I[1,0]" ),   10, 0, 0, &got ), ( "count-subtree: repetition 1's root (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I[1,0].C" ), 10, 1, 0, &got ), ( "count-subtree: ... its child composes through it (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I[1,0].D" ), 10, 1, 1, &got ), ( "count-subtree: ... and its grandchild through BOTH (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I[0,0].D" ), 0,  1, 1, &got ), ( "count-subtree: repetition 0's grandchild is independent of it (got " + got + ")" ).c_str() );
+		// PRE-ORDER, per repetition: a parent is registered before its children (what
+		// SetObjectParent's declare-before-use guard needs), and repetition 0 wholly
+		// precedes repetition 1.
+		IObjectManager* objs = j->GetObjects();
+		const unsigned long long s00  = objs ? objs->GetItemSerial( "I[0,0]" )   : 0;
+		const unsigned long long s00C = objs ? objs->GetItemSerial( "I[0,0].C" ) : 0;
+		const unsigned long long s00D = objs ? objs->GetItemSerial( "I[0,0].D" ) : 0;
+		const unsigned long long s10  = objs ? objs->GetItemSerial( "I[1,0]" )   : 0;
+		Check( s00 && s00C && s00D && s10, "count-subtree: (control) every entry got a registration serial" );
+		Check( s00 < s00C && s00C < s00D && s00D < s10,
+		       "count-subtree: the walk is PRE-ORDER within a repetition, and repetitions are emitted in order" );
+		j->release();
+	}
+
+	// [count][parent] EVERY repetition keeps the instancing chunk's OWN `parent`, so a
+	// whole counted grid composes through its host: move the host, the grid moves.
+	{
+		Job* j = DeriveJob( Scene( "standard_object\n{\nname host\nposition 0 0 20\n}\n" + SUB2
+			+ "standard_object\n{\nname I\nsource S\nparent host\ncount_u 2\nposition expr(i*10) 0 0\n}\n" ) );
+		Check( ParentOf( j, "I[0,0]" ) == "host" && ParentOf( j, "I[1,0]" ) == "host",
+		       "count-parent: every repetition root keeps the instancing chunk's own `parent`" );
+		std::string got;
+		Check( CenterIs( Obj( j, "I[1,0]" ),   10, 0, 20, &got ), ( "count-parent: ... so it composes through the host (got " + got + ")" ).c_str() );
+		Check( CenterIs( Obj( j, "I[1,0].C" ), 10, 1, 20, &got ), ( "count-parent: ... and so does its subtree (got " + got + ")" ).c_str() );
+		j->release();
+	}
+
+	// [count][collision] A COUNTED entry name colliding with an AUTHORED chunk, in BOTH
+	// declaration orders.  A counted root's name is SYNTHESIZED like a clone's, so it takes
+	// the clone's "declared at all" test rather than the count-less root's "declared more
+	// than once" one -- and the DOCUMENT half is the one the manager pre-check structurally
+	// cannot see, because the colliding chunk may not exist yet.
+	{
+		const std::string collider = "standard_object\n{\nname I[1,0]\ngeometry boxg\nmaterial m2\n}\n";
+		const std::string inst     = "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n";
+		std::string all;
+		Check( RefusedWith( Scene( SRC_LEAF + collider + inst ), "already exists as an object", &all ),
+		       ( "count-collision: an authored chunk declared BEFORE the instance is caught by the manager pre-check (got: " + all + ")" ).c_str() );
+		Check( RefusedWith( Scene( SRC_LEAF + inst + collider ), "the document ALREADY declares an object of that name", &all ),
+		       ( "count-collision: ... and one declared AFTER it by the DOCUMENT scan, which the pre-check cannot see (got: " + all + ")" ).c_str() );
+		Check( all.find( "`I[1,0]`" ) != std::string::npos, "count-collision: ... naming the exact synthesized entry that clashes" );
+	}
+
+	// [count][collision] the chunk NAME declared twice.  Provenance maps every entry back to
+	// that one name, so two chunks holding it send a picked instance to whichever the lookup
+	// finds first.  Under counts the name is not an entry, so the refusal says "the name"
+	// rather than "the entry name" -- the advice is the same, the noun is not.
+	{
+		std::string all;
+		Check( RefusedWith( Scene( SRC_LEAF
+			+ "standard_object\n{\nname I\ngeometry boxg\nmaterial m2\n}\n"
+			  "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n" ), "declared by MORE THAN ONE object chunk", &all ),
+		       "count-collision: a twice-declared chunk NAME is refused under counts too" );
+		Check( all.find( "the name `I` is declared" ) != std::string::npos
+		    && all.find( "the entry name `I` is declared" ) == std::string::npos,
+		       "count-collision: ... and says `the name`, since under counts `I` is not itself an entry" );
+	}
+
+	// [count][provenance] BOTH shapes, which is what makes a counted entry traceable back
+	// to editable text.  `I[i,j] -> (I, S)`: the chunk to edit and the node it copies.
+	// `I[i,j].X -> (I, X)`: the same chunk, and the SOURCE-SIDE node this clone is a copy
+	// of -- a live entry, so a consumer that follows the hop lands on something real.
+	{
+		Job* j = DeriveJob( Scene( SUB3 + "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n" ) );
+		IObjectManager* objs = j->GetObjects();
+		const char* inst = 0; const char* src = 0;
+		const bool gotRoot = objs && objs->GetObjectProvenance( "I[1,0]", &inst, &src );
+		Check( gotRoot && inst && std::string( inst ) == "I", "count-provenance: `I[1,0]` names the INSTANCING chunk `I`" );
+		Check( gotRoot && src && std::string( src ) == "S",   "count-provenance: ... and the source node `S`" );
+		const char* inst2 = 0; const char* src2 = 0;
+		const bool gotKid = objs && objs->GetObjectProvenance( "I[1,0].D", &inst2, &src2 );
+		Check( gotKid && inst2 && std::string( inst2 ) == "I", "count-provenance: `I[1,0].D` names the same instancing chunk" );
+		Check( gotKid && src2 && std::string( src2 ) == "D",   "count-provenance: ... and the subtree node `D` it is a copy of" );
+		Check( gotKid && src2 && objs && objs->GetItem( src2 ) != 0,
+		       "count-provenance: ... which really is a live entry in the manager" );
+		// EVERY repetition's row points at the ONE chunk -- the property
+		// AgentSession::ResolveIsolateObject reads to answer "isolate `I`" with the list of
+		// entries `I` produced.  A per-repetition provenance chunk name would break it.
+		int rows = 0;
+		const char* c = 0;
+		if( objs ) {
+			const char* every[] = { "I[0,0]", "I[0,0].C", "I[0,0].D", "I[1,0]", "I[1,0].C", "I[1,0].D" };
+			for( std::size_t k = 0; k < sizeof(every)/sizeof(every[0]); ++k )
+				if( objs->GetObjectProvenance( every[k], &c, 0 ) && c && std::string( c ) == "I" ) ++rows;
+		}
+		Check( rows == 6, "count-provenance: all six synthesized entries trace to the single chunk `I`" );
+		j->release();
+	}
+
+	// [count][provenance consumers] the two provenance readers a test in this binary can
+	// drive, both on a COUNTED entry.  (The third, AgentSession::ResolveIsolateObject, reads
+	// the same rows the block above asserts and is unchanged by 3c.)
+	{
+		using Cat = SceneEditController::Category;
+		const std::string scene = Scene( SUB2 + "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n" );
+		const std::string path = WriteTempScene( "cst_source_instance_3c_prov.RISEscene", scene );
+		Job* j = new Job();
+		const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+		Check( loaded, "count-consumers: the counted fixture loads through the retained-CST path" );
+		if( loaded ) {
+			SceneEditController c( *j, 0 );
+			// (1) ResolveSourceChunkId, reached through ResolveSourceSpan: a counted entry
+			// has no chunk of its own name, so it must trace through provenance to `I`'s
+			// chunk.  Compared against the span `I` itself resolves to -- an absolute byte
+			// offset would pin the fixture's layout rather than the resolution.
+			SceneEditController::SourceSpan viaEntry, viaChunk, viaClone;
+			const bool okEntry = c.ResolveSourceSpan( Cat::Object, String( "I[1,0]" ), String( "source" ), 0, viaEntry );
+			const bool okChunk = c.ResolveSourceSpan( Cat::Object, String( "I" ),      String( "source" ), 0, viaChunk );
+			const bool okClone = c.ResolveSourceSpan( Cat::Object, String( "I[1,0].C" ), String( "source" ), 0, viaClone );
+			Check( okChunk, "count-consumers: (control) the instancing chunk's own `source` line resolves to a span" );
+			Check( okEntry && viaEntry.byteOffset == viaChunk.byteOffset && viaEntry.byteLength == viaChunk.byteLength,
+			       "count-consumers: a counted ENTRY `I[1,0]` traces to the instancing chunk's span" );
+			Check( okClone && viaClone.byteOffset == viaChunk.byteOffset,
+			       "count-consumers: ... and so does a counted subtree CLONE `I[1,0].C`" );
+			// (2) SceneEditor's transform refusal: a counted entry is not transform-routable,
+			// and the message names the chunk the author can actually move.
+			Check( j->CstObjectTransformKind( "I[1,0]" ) == 0,
+			       "count-consumers: a counted entry is NOT transform-routable (no chunk of its own name)" );
+			c.SetSelection( Cat::Object, String( "I[1,0]" ) );
+			const int before = pRefusalLog->MatchCount();
+			Check( !c.SetPropertyForCategory( Cat::Object, String( "position" ), String( "0 5 0" ) ),
+			       "count-consumers: a transform edit on a counted entry is refused" );
+			Check( pRefusalLog->MatchCount() == before + 1, "count-consumers: ... and the author is told" );
+			Check( pRefusalLog->LastMatch().find( "INSTANCE synthesized by `I`" ) != std::string::npos,
+			       "count-consumers: ... naming the INSTANCING chunk, resolved through provenance" );
+		}
+		j->release();
+		std::remove( path.c_str() );
+	}
+
+	// [count][round-trip] a counted scene round-trips byte-for-byte, and DERIVING it leaves
+	// the document untouched -- the expansion writes into the Job, never into the CST.
+	{
+		const std::string scene = Scene( SUB2
+			+ "standard_object\n{\nname I\nsource S\ncount_u 2\ncount_v 2\nposition expr(i*3) expr(j*3) 0\n}\n" );
+		Check( SerializeCst( ParseToCst( scene ) ) == scene, "count-round-trip: a counted `source` scene round-trips byte-for-byte" );
+		Document d = ParseToCst( scene );
+		{
+			Job* j = new Job();
+			std::vector<std::string> diags;
+			DeriveToJob( d, *j, &diags );
+			Check( diags.empty(), "count-round-trip: (control) that document really did derive" );
+			Check( Obj( j, "I[1,1].C" ) != 0, "count-round-trip: (control) and really did synthesize the grid" );
+			j->release();
+		}
+		const std::string out = SerializeCst( d );
+		Check( out == scene, "count-round-trip: ... and deriving it leaves the document byte-identical" );
+		Check( out.find( "I[0,0]" ) == std::string::npos,
+		       "count-round-trip: ... so no synthesized name appears anywhere in it (the `expr` survives verbatim)" );
+	}
+
+	// [count][cap] THE CAP ARITHMETIC, and this is the first slice in which it can be
+	// tested at all: 3b could only cross the document budget by MATERIALIZING ten million
+	// objects, but a count is refused from ARITHMETIC alone, before a single entry is built.
+	//
+	// The number in the refusal is the discriminator.  A 3-node subtree repeated 1e6 x 10
+	// times is 1e7 INSTANCES -- exactly the budget, so an instance-counting cap would let
+	// it through -- and 3e7 ENTRIES, which is what actually reaches the TLAS, the luminary
+	// list and every per-frame walk.  The message must say 30000000.
+	{
+		std::string all;
+		const bool refused = RefusedWith( Scene( SUB3
+			+ "standard_object\n{\nname I\nsource S\ncount_u 1000000\ncount_v 10\n}\n" ), "would synthesize 30000000 objects", &all );
+		Check( refused, ( "count-cap: count x SUBTREE SIZE is what the document budget counts (got: " + all + ")" ).c_str() );
+		Check( all.find( "would synthesize 10000000 objects" ) == std::string::npos,
+		       "count-cap: ... NOT the instance count, which at 1e7 is exactly the budget and would have passed" );
+		Check( all.find( "room for only 10000000 more" ) != std::string::npos,
+		       "count-cap: ... and the refusal states the document-wide allowance it ran out of" );
+		// And nothing was built: the refusal is arithmetic, not a failure part-way through.
+		Job* j = DeriveJob( Scene( SUB3 + "standard_object\n{\nname I\nsource S\ncount_u 1000000\ncount_v 10\n}\n" ) );
+		Check( EntryNames( j ) == "C|D|S", "count-cap: ... and NOTHING was synthesized -- the source subtree is all that derived" );
+		j->release();
+		// A LEAF source (subtree size 1) crosses the same budget on the product alone.
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 1000000\ncount_v 100\n}\n" ),
+		                    "would synthesize 100000000 objects" ),
+		       "count-cap: a leaf source's total IS the product, and the same budget bounds it" );
+	}
+
+	// [count][clamp] the PER-COUNT clamp `instance_array` has always had, inherited with the
+	// shared validator: 1e6 on EACH axis.  Without it a `count_u 1e12` would be refused only
+	// by the budget line above -- one arithmetic slip away from a 1e12-iteration loop.
+	{
+		// The counts here would ALSO cross the document budget (2e8 entries), so the
+		// assertion separates the two refusals: with the clamp removed this scene is still
+		// refused, by the budget line, with a different message.  A count that only the
+		// clamp catches would have to be materialisable to prove anything.
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 2000000\ncount_v 100\n}\n" ),
+		                    "count_u must be a non-negative integer <= 1e6 (got '2000000')" ),
+		       "count-clamp: a count above 1e6 is refused PER-AXIS, before any document-budget arithmetic" );
+	}
+
+	// [count][fractional] A FRACTIONAL COUNT IS REFUSED, NEVER ROUNDED.  The `(long long)`
+	// round-trip in the shared validator is what does it; rounding `1.5` to 2 would change
+	// how many objects the scene has, silently.
+	{
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 1.5\n}\n" ),
+		                    "count_u must be a non-negative integer <= 1e6 (got '1.5')" ),
+		       "count-fractional: `count_u 1.5` is refused with the value the author wrote" );
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u expr(1.5)\n}\n" ),
+		                    "count_u must be a non-negative integer" ),
+		       "count-fractional: ... and so is an expr that evaluates to one" );
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 2\ncount_v 0.5\n}\n" ),
+		                    "count_v must be a non-negative integer" ),
+		       "count-fractional: ... on the second axis too" );
+		// The CONTROL: an INTEGRAL expr is fine, so the refusal above is about the fraction
+		// and not about exprs in a count.
+		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u expr(1.0+1.0)\n}\n" ) );
+		Check( EntryNames( j ) == "I[0,0]|I[1,0]|S", "count-fractional: (control) an integral `expr` count is accepted" );
+		j->release();
+	}
+
+	// [count][ERANGE] THE UNDERFLOW TRAP, which is the one thing in the shared validator
+	// NOTHING ELSE catches.  `strtod("1e-999")` sets ERANGE and returns a finite ZERO --
+	// which passes the range test AND the integrality test.  Drop the `errno == ERANGE`
+	// term and this scene silently becomes `count 0`: no objects, no diagnostic, no clue.
+	//
+	// (Its OVERFLOW sibling, `1e999`, never reaches here from a `standard_object`: the
+	// descriptor declares the counts numeric, so PASS-1's string-layer overflow check
+	// refuses first.  It stays reachable through `instance_array`, which PASS-1 skips
+	// entirely -- so the term guards both, and only underflow separates it here.)
+	{
+		std::string all;
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 1e-999\n}\n" ),
+		                    "count_u must be a non-negative integer", &all ),
+		       ( "count-erange: an UNDERFLOWING count is refused, not silently taken as zero (got: " + all + ")" ).c_str() );
+		// NON-VACUITY: the refusal is the validator's, and the scene really would otherwise
+		// have derived -- `count_u 0` is legal and derives clean, so "refused" here cannot
+		// be an artifact of zero being rejected.
+		std::vector<std::string> zdiags;
+		Job* jz = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 0\n}\n" ), &zdiags );
+		Check( zdiags.empty(), "count-erange: (control) an explicit `count_u 0` derives CLEANLY, so the refusal above is about ERANGE" );
+		jz->release();
+	}
+
+	// [count][refuse] `count_v` with no `count_u`.  There is no grid to describe, and
+	// silently treating it as `count_u 1` would repeat along an axis the author never named.
+	{
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_v 3\n}\n" ),
+		                    "`count_v` without `count_u`" ),
+		       "count-refuse: `count_v` alone is refused -- `count_u` is the first axis" );
+	}
+
+	// [count][refuse] COUNTS WITHOUT A `source`.  The descriptor accepts the parameter names
+	// on every `standard_object` (a descriptor IS the accepted-parameter set, and it cannot
+	// be conditional), so the meaning check belongs in the parser -- and unlike the lone
+	// `source` backstop beside it, THIS one is genuinely reachable: a chunk with counts and
+	// no `source` is not an instancing chunk, so PASS-2 hands it to Finalize like any other.
+	{
+		Check( RefusedWith( Scene( "standard_object\n{\nname X\ngeometry geo\nmaterial m\ncount_u 3\n}\n" ),
+		                    "repeat an INSTANCE, so they need a `source`" ),
+		       "count-refuse: `count_u` on a LEAF chunk is refused (there is nothing to repeat)" );
+		Check( RefusedWith( Scene( "standard_object\n{\nname X\ncount_v 3\n}\n" ),
+		                    "repeat an INSTANCE, so they need a `source`" ),
+		       "count-refuse: ... and on a CONTAINER chunk too" );
+		// The parameter is DECLARED, which is what makes the refusal above the parser's own
+		// message rather than the descriptor's "not declared in `standard_object`".
+		std::string all;
+		RefusedWith( Scene( "standard_object\n{\nname X\ngeometry geo\ncount_u 3\n}\n" ), "zzz-never", &all );
+		Check( all.find( "not declared in `standard_object` descriptor" ) == std::string::npos,
+		       "count-refuse: ... and it is the PARSER's reason, not an undeclared-parameter error" );
+	}
+
+	// [count][refuse] A COUNTED CHUNK CANNOT BE A `source`, from both sides.  It produces
+	// one entry per (i,j) rather than a single node, so a copy of it would silently be a
+	// copy of exactly one -- the partial-copy shape every other refusal in the walk exists
+	// to prevent.
+	{
+		Check( RefusedWith( Scene( SRC_LEAF
+			+ "standard_object\n{\nname A\nsource S\ncount_u 3\n}\n"
+			  "standard_object\n{\nname B\nsource A\n}\n" ), "names a chunk carrying `count_u` / `count_v`" ),
+		       "count-refuse: instancing a COUNTED chunk is refused (there is no single node to copy)" );
+		// NAMED FOR ITS REAL CAUSE.  The manager probe one line further on would have
+		// refused this scene anyway -- a counted chunk produces `A[0,0]`, never `A` -- with
+		// "declared earlier but did not produce an object (its own chunk failed)", a cause
+		// that did not happen and a chunk that is not broken.
+		{
+			std::string all;
+			RefusedWith( Scene( SRC_LEAF
+				+ "standard_object\n{\nname A\nsource S\ncount_u 3\n}\n"
+				  "standard_object\n{\nname B\nsource A\n}\n" ), "zzz-never", &all );
+			Check( all.find( "did not produce an object" ) == std::string::npos,
+			       "count-refuse: ... and NOT with the misleading `its own chunk failed` message the probe would give" );
+		}
+		Check( RefusedWith( Scene( SRC_LEAF
+			+ "standard_object\n{\nname M\nsource S\nparent S\ncount_u 3\n}\n" ), "recursive definition" )
+		    || RefusedWith( Scene( SRC_LEAF
+			+ "standard_object\n{\nname M\nsource S\nparent S\ncount_u 3\n}\n" ), "SAME chunk" ),
+		       "count-refuse: (control) the pre-existing `source S parent S` refusal still fires under counts" );
+		// The MEMBER side: a counted node INSIDE a subtree being copied.
+		Check( RefusedWith( Scene(
+			  "standard_object\n{\nname L\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname S\ngeometry geo\nmaterial m\nposition 2 0 0\n}\n"
+			  "standard_object\n{\nname M\nparent S\nsource L\ncount_u 3\n}\n"
+			  "standard_object\n{\nname I\nsource S\n}\n" ), "carries `count_u` / `count_v`" ),
+		       "count-refuse: a counted MEMBER of a copied subtree is refused too" );
+	}
+
+	// [count][validation] AN INSTANCING CHUNK IS STILL DESCRIPTOR-VALIDATED.  PASS-1 cannot
+	// check `position expr(i*2) 0 0` as written -- it is not a finite numeric triple -- so it
+	// evaluates the chunk at instance ZERO and checks THAT.  The point of the pair below is
+	// that this buys the per-instance form without giving up the validation: a component that
+	// is neither an expr nor a number is still refused.
+	{
+		std::vector<std::string> diags;
+		Job* j = DeriveJob( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i) 0 0\n}\n" ), &diags );
+		Check( diags.empty() && Obj( j, "I[1,0]" ) != 0, "validation: a per-component `expr` on an instancing chunk is ACCEPTED" );
+		j->release();
+		const int numericBefore = pNumericLog->MatchCount();
+		Check( RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i) bogus 0\n}\n" ),
+		                    "invalid parameter(s)" ),
+		       "validation: ... while a non-numeric component beside it is still REFUSED" );
+		Check( pNumericLog->MatchCount() == numericBefore + 1
+		    && pNumericLog->LastMatch().find( "`position`" ) != std::string::npos,
+		       "validation: ... by the DESCRIPTOR's numeric check, on `position` -- not by some other PASS-1 failure" );
+		// And a bad expr BODY is refused at the eval boundary, naming the parameter.
+		std::string all;
+		RefusedWith( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(nosuchvar) 0 0\n}\n" ),
+		             "zzz-never", &all );
+		Check( all.find( "standard_object.position" ) != std::string::npos && all.find( "failed to compile" ) != std::string::npos,
+		       ( "validation: ... and an expr over an unknown identifier is refused, naming the parameter (got: " + all + ")" ).c_str() );
+	}
+
+	// [count][scope] PER-INSTANCE VARIATION IS THE INSTANCING CHUNK'S OWN PARAMS ONLY.  A
+	// subtree MEMBER is an ordinary `standard_object`, so PASS-1 refuses a per-component
+	// expr on it -- `instance_array` never offered per-descendant variation either (it had
+	// no descendants at all), so this is a documented limit and not a regression.
+	{
+		const int numericBefore = pNumericLog->MatchCount();
+		Check( RefusedWith( Scene(
+			  "standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+			  "standard_object\n{\nname C\nparent S\ngeometry boxg\nmaterial m2\nposition expr(i) 0 0\n}\n"
+			  "standard_object\n{\nname I\nsource S\ncount_u 2\n}\n" ), "invalid parameter(s)" ),
+		       "scope: a per-component expr on a subtree MEMBER is refused -- counts vary the instancing chunk only" );
+		Check( pNumericLog->MatchCount() == numericBefore + 1,
+		       "scope: ... by the descriptor's numeric check on the MEMBER's own chunk" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

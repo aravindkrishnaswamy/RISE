@@ -1190,6 +1190,52 @@ static bool EvalInstanceValue( const std::string& value, const LetBindings& lets
 	return true;
 }
 
+//! 87 step 3c: the PER-INSTANCE variable bindings one repetition of an instancing chunk
+//! evaluates its own parameters under -- `i`/`j` indices and `u`/`v` in [0,1].  Passed as a
+//! POINTER everywhere below, and a null pointer means "not a repetition": the single-instance
+//! `source` form and every ordinary chunk keep the whole-value `expr(...)` handling they had.
+struct InstanceVars
+{
+	int    i;
+	int    j;
+	double u;
+	double v;
+};
+
+//! Validate ONE count (`count_u` / `count_v`) for a repetition generator.
+//!
+//! MOVED HERE VERBATIM from `ExpandInstanceArray`'s `evalCount` lambda so `instance_array`
+//! and 87 step 3c's `source` counts share one implementation rather than two that drift.
+//! ONLY the diagnostic PREFIX is parameterised (`who`), which is what keeps the
+//! `instance_array` messages byte-identical to what they were.
+//!
+//! THE ARITHMETIC ENCODES TWO PRIOR P1 FIXES AND MUST NOT BE "CLEANED UP":
+//!   * the `(long long)` round-trip rejects a FRACTIONAL count (P1-B) -- silently rounding
+//!     via `(int)(d+0.5)` would change the generator's cardinality (`count_u 1.5` -> 2);
+//!   * `errno == ERANGE` rejects an out-of-range literal AT THE SOURCE.  Overflow
+//!     (`1e999` -> HUGE_VAL) must not be left to an `inf > 1e6` compare, which was
+//!     unreliable under bare `-ffast-math`; UNDERFLOW (`1e-999`) is caught by NOTHING
+//!     ELSE HERE -- strtod returns a finite 0, which passes both the range test and the
+//!     integrality test, so deleting the ERANGE term silently turns it into `count 0`.
+//! The nan/inf char scan catches an explicit "nan"/"inf" literal (strtod sets no errno for
+//! those); an expr-valued count already passed EvalExprBody's finite guard.
+static bool EvalInstanceCount( const std::string& raw, const LetBindings& lets,
+                               const std::string& who, const char* which,
+                               std::vector<std::string>& diags, int& out )
+{
+	out = 0;
+	std::string cs, e;
+	if( !EvalInstanceValue( raw, lets, 0, 0, 0.0, 0.0, cs, e ) ) { diags.push_back( who + ": " + which + " " + e ); return false; }
+	errno = 0;
+	char* end = nullptr; const double d = std::strtod( cs.c_str(), &end );
+	bool bad = cs.empty() || end != cs.c_str() + cs.size() || errno == ERANGE;
+	for( size_t ci = 0; ci < cs.size(); ++ci ) { const char ch = cs[ci]; if( ch == 'n' || ch == 'N' || ch == 'i' || ch == 'I' ) bad = true; }
+	if( !bad ) { if( d < 0.0 || d > 1.0e6 ) bad = true; else if( (double)(long long)d != d ) bad = true; }
+	if( bad ) { diags.push_back( who + ": " + which + " must be a non-negative integer <= 1e6 (got '" + cs + "')" ); return false; }
+	out = (int)d;
+	return true;
+}
+
 static LetBindings CollectLetBindings( const std::vector<NodeRef>& items, std::vector<std::string>& diags )
 {
 	LetBindings out;
@@ -1259,9 +1305,23 @@ static bool TryEvalExprValue( const std::string& value, std::string& outLit,
 //! ParseStateBag exists, so a bag-driven expansion would silently freeze every
 //! per-instance expression at instance zero.  3a has no per-instance exprs, but
 //! 3c does, and it inherits this code path.
-static void ChunkParamPairs( const NodeRef& c, const LetBindings& lets,
+//!
+//! `iv` (87 step 3c) is the per-instance context: NON-NULL for a repetition of an
+//! instancing chunk, in which case EVERY value is evaluated PER COMPONENT through
+//! `EvalInstanceValue` (so `position expr(i*2) 0 0` is three components, one of them an
+//! expr, exactly as `instance_array` reads it) with i/j/u/v in scope.  NULL keeps the
+//! whole-value-only handling every other chunk has always had, and is byte-identical to
+//! it for a value with no `expr(` in it: `EvalInstanceValue` re-joins the components
+//! single-spaced, which is what the token loop below already produced.
+//!
+//! Returns false ONLY when `iv` is non-null and a per-instance eval failed (the caller
+//! must then stop -- `instance_array` does the same, and a partial expansion is worse
+//! than none).  A whole-value expr failure under `iv == 0` keeps the legacy shape:
+//! diagnosed, value left verbatim, refuse-all upstream.
+static bool ChunkParamPairs( const NodeRef& c, const LetBindings& lets,
                              std::vector<std::string>& diags,
-                             std::vector<std::pair<std::string,std::string> >& out )
+                             std::vector<std::pair<std::string,std::string> >& out,
+                             const InstanceVars* iv = nullptr )
 {
 	const std::string& kw = c->role;
 	for( const auto& kid : c->kids )
@@ -1273,12 +1333,23 @@ static void ChunkParamPairs( const NodeRef& c, const LetBindings& lets,
 					if( first ) { pname = tk->text; first = false; }
 					else { if( !value.empty() ) value += ' '; value += tk->text; }
 				}
+			if( iv ) {
+				std::string ev, e;
+				if( !EvalInstanceValue( value, lets, iv->i, iv->j, iv->u, iv->v, ev, e ) ) {
+					char where[64]; std::snprintf( where, sizeof(where), "[%d,%d]", iv->i, iv->j );
+					diags.push_back( kw + "." + pname + " " + where + ": " + e );
+					return false;
+				}
+				out.push_back( std::make_pair( pname, ev ) );
+				continue;
+			}
 			// #5 slice 2: an expr(...) value -> a numeric literal (Facet-1 derive-time eval); a non-expr
 			// value is passed through verbatim, so non-expr scenes stay byte-identical to legacy.
 			std::string lit;
 			if( TryEvalExprValue( value, lit, diags, kw, pname, lets ) ) value = lit;
 			out.push_back( std::make_pair( pname, value ) );
 		}
+	return true;
 }
 
 static const IAsciiChunkParser* ResolveChunkParams(
@@ -1286,7 +1357,8 @@ static const IAsciiChunkParser* ResolveChunkParams(
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
 	IAsciiChunkParser::ParamsList& plist,
 	std::vector<std::string>& diags,
-	const LetBindings& lets )
+	const LetBindings& lets,
+	const InstanceVars* iv = nullptr )
 {
 	const std::string& kw = c->role;
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
@@ -1295,7 +1367,7 @@ static const IAsciiChunkParser* ResolveChunkParams(
 		if( kid->kind == NodeKind::Token && kid->role == "pname" )
 			diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
 	std::vector<std::pair<std::string,std::string> > pairs;
-	ChunkParamPairs( c, lets, diags, pairs );
+	(void)ChunkParamPairs( c, lets, diags, pairs, iv );   // a failed instance eval is already diagnosed -> refuse-all upstream
 	for( std::size_t i = 0; i < pairs.size(); ++i ) {
 		std::string line = pairs[i].first;
 		if( !pairs[i].second.empty() ) { line += ' '; line += pairs[i].second; }
@@ -1381,28 +1453,14 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 	if( name.empty() )       { diags.push_back( "instance_array: needs a `name`" ); return false; }
 	if( templ.empty() )      { diags.push_back( "instance_array '" + name + "': needs a `template` geometry" ); return false; }
 	if( countU_raw.empty() ) { diags.push_back( "instance_array '" + name + "': needs `count_u`" ); return false; }
-	bool countOk = true;
-	auto evalCount = [&]( const std::string& raw, const char* which ) -> int {
-		std::string cs, e;
-		if( !EvalInstanceValue( raw, lets, 0, 0, 0.0, 0.0, cs, e ) ) { diags.push_back( "instance_array '" + name + "': " + which + " " + e ); countOk = false; return 0; }
-		errno = 0;
-		char* end = nullptr; const double d = std::strtod( cs.c_str(), &end );
-		// require a fully-consumed, NON-NEGATIVE, INTEGRAL literal within the DoS cap.  The (long long)
-		// round-trip rejects a FRACTIONAL count (P1-B: silently rounding via (int)(d+0.5) would change the
-		// generator's cardinality, e.g. count_u 1.5 -> 2 objects); it runs only AFTER the range check.
-		// errno==ERANGE rejects an OVERFLOWING literal (count_u 1e400 -> inf) AT THE SOURCE -- the standard
-		// guarantees ERANGE on strtod overflow -- so the (long long) cast is never reached for a non-finite d
-		// (no reliance on an inf>1e6 compare, which was unreliable under bare -ffast-math (fixed 2026-07-29)).  The nan/inf char scan
-		// catches an explicit "nan"/"inf" literal (strtod sets no errno for those); an expr-valued count
-		// already passed EvalExprBody's finite guard.
-		bool bad = cs.empty() || end != cs.c_str() + cs.size() || errno == ERANGE;
-		for( size_t ci = 0; ci < cs.size(); ++ci ) { const char ch = cs[ci]; if( ch == 'n' || ch == 'N' || ch == 'i' || ch == 'I' ) bad = true; }
-		if( !bad ) { if( d < 0.0 || d > 1.0e6 ) bad = true; else if( (double)(long long)d != d ) bad = true; }
-		if( bad ) { diags.push_back( "instance_array '" + name + "': " + which + " must be a non-negative integer <= 1e6 (got '" + cs + "')" ); countOk = false; return 0; }
-		return (int)d;
-	};
-	const int countU = evalCount( countU_raw, "count_u" );
-	const int countV = countV_raw.empty() ? 1 : evalCount( countV_raw, "count_v" );
+	// The count validator is SHARED with 87 step 3c's `source` counts -- see EvalInstanceCount,
+	// which is this generator's own arithmetic moved out verbatim, prior P1 fixes and all.
+	const std::string who = "instance_array '" + name + "'";
+	// BOTH are evaluated even when the first fails, so a scene with two bad counts reports
+	// two diagnostics -- the shape the lambda this replaced had.
+	int countU = 0, countV = 1;
+	bool countOk = EvalInstanceCount( countU_raw, lets, who, "count_u", diags, countU );
+	if( !countV_raw.empty() && !EvalInstanceCount( countV_raw, lets, who, "count_v", diags, countV ) ) countOk = false;
 	if( !countOk ) return false;
 	if( (long long)countU * (long long)countV > 10000000LL ) { diags.push_back( "instance_array '" + name + "': count_u*count_v exceeds 10,000,000 instances" ); return false; }
 	// 87 step 3b: the generator's own cap above bounds THIS generator; the shared
@@ -1461,11 +1519,39 @@ static bool ExpandInstanceArray( const NodeRef& chunk, const LetBindings& lets, 
 //! composed.  `name` and `parent` are the instance's own for the same reason --
 //! an instance is a node in its own right, placeable anywhere in the tree --
 //! and `source` itself is consumed by the expansion.
+//!
+//! 87 step 3c adds `count_u` / `count_v` to the list: a count says how many times THIS
+//! chunk repeats, so inheriting one would make a copy of a repetition repeat again.
+//! Belt-and-braces rather than the live guard -- `ChunkCarriesCounts` refuses a counted
+//! chunk as a `source` or as a subtree member outright -- but the two must not disagree.
 static bool IsInstanceOwnParam( const std::string& pname )
 {
 	return pname == "name"        || pname == "parent"      || pname == "source"
 	    || pname == "position"    || pname == "orientation" || pname == "quaternion"
-	    || pname == "matrix"      || pname == "scale";
+	    || pname == "matrix"      || pname == "scale"
+	    || pname == "count_u"     || pname == "count_v";
+}
+
+//! 87 step 3c: does this chunk carry a repetition count?  PRESENCE selects the array form,
+//! never the VALUE -- `count_u 1` is `I[0,0]`, not `I`.  Keying on the value would make the
+//! entry NAMES depend on a number that may be an `expr(...)` of a `let`, so an author's
+//! `parent I[0,0]` would silently dangle when a constant changed from 2 to 1.
+static bool ChunkCarriesCounts( const Node* c )
+{
+	std::string v;
+	return ( ParamValue( c, "count_u", v ) && !v.empty() ) || ( ParamValue( c, "count_v", v ) && !v.empty() );
+}
+
+//! 87 step 3c: the ENTRY name of ONE repetition's root -- `I` when the chunk carries no
+//! counts, `I[i,j]` when it does.  `%s[%d,%d]` is `ExpandInstanceArray`'s own spelling,
+//! kept byte-for-byte so an objectmap legend, a saved isolate name or a `parent` line
+//! written against an `instance_array` grid means the same thing after 3d retires it.
+static std::string InstanceBaseName( const std::string& instName, bool counted, int i, int j )
+{
+	if( !counted ) return instName;
+	char nm[256];
+	std::snprintf( nm, sizeof(nm), "%s[%d,%d]", instName.c_str(), i, j );
+	return nm;
 }
 
 //! Is `role` a chunk type whose Finalize registers a scene-graph OBJECT that can
@@ -1614,8 +1700,19 @@ static bool SourceChainOf( const std::vector<NodeRef>& items, const ObjectChunkI
 //!
 //! `IsInstanceOwnParam` is applied to the INHERITED chunks only: the source's name,
 //! parent and local transform are DROPPED, never composed (see its own header).  The
-//! chunk's own params come through whole except `source`, which the expansion consumes.
-static void MergeChunkParams(
+//! chunk's own params come through whole except `source` / `count_u` / `count_v`, which
+//! the expansion consumes.
+//!
+//! `iv` (87 step 3c) applies PER-INSTANCE EXPRESSIONS -- and it applies to THIS CHUNK'S
+//! OWN PARAMS ONLY, never to the inherited chain.  That is the same scope
+//! `instance_array` has always had: `i`/`j`/`u`/`v` vary the parameters of the chunk
+//! that carries the counts, and a DESCENDANT's parameters are not per-instance
+//! variable.  (Nor could they be by accident: a subtree member is an ordinary
+//! `standard_object`, and PASS-1 rejects `position expr(i) 0 0` on one because a
+//! multi-component value with an embedded expr is not a whole-value expr.)
+//!
+//! Returns false when a per-instance eval failed; the caller must stop.
+static bool MergeChunkParams(
 	const std::vector<NodeRef>& items,
 	const LetBindings& lets,
 	std::size_t chunkIdx,
@@ -1623,7 +1720,8 @@ static void MergeChunkParams(
 	std::vector<std::string>& order,
 	std::map<std::string, std::string>& merged,
 	std::string& targetRole,
-	std::vector<std::string>& diags )
+	std::vector<std::string>& diags,
+	const InstanceVars* iv = nullptr )
 {
 	order.clear();
 	merged.clear();
@@ -1633,14 +1731,15 @@ static void MergeChunkParams(
 	};
 	for( std::size_t ci = chain.size(); ci-- > 0; ) {
 		std::vector<std::pair<std::string,std::string> > sp;
-		ChunkParamPairs( items[ chain[ci] ], lets, diags, sp );
+		(void)ChunkParamPairs( items[ chain[ci] ], lets, diags, sp );   // no `iv`: the inherited chain is not per-instance
 		for( std::size_t k = 0; k < sp.size(); ++k )
 			if( !IsInstanceOwnParam( sp[k].first ) ) put( sp[k].first, sp[k].second );
 	}
 	std::vector<std::pair<std::string,std::string> > own;
-	ChunkParamPairs( items[ chunkIdx ], lets, diags, own );
+	if( !ChunkParamPairs( items[ chunkIdx ], lets, diags, own, iv ) ) return false;
 	for( std::size_t k = 0; k < own.size(); ++k )
-		if( own[k].first != "source" ) put( own[k].first, own[k].second );
+		if( own[k].first != "source" && own[k].first != "count_u" && own[k].first != "count_v" )
+			put( own[k].first, own[k].second );
 
 	// The clone is built through the SOURCE's own chunk type -- so a csg_object
 	// source yields a csg_object, `obja` / `objb` / `operation` come along
@@ -1671,6 +1770,7 @@ static void MergeChunkParams(
 	// transitive-`parent` definition of "subtree" excludes operands
 	// self-consistently, and nothing in the walk below can reach one.)
 	targetRole = items[ chain.empty() ? chunkIdx : chain.back() ]->role;
+	return true;
 }
 
 //! Build + apply ONE synthesized node from a merged parameter set: force its `name`
@@ -1763,12 +1863,18 @@ static bool ApplySynthesizedNode(
 //! EVERY entry the expansion would create while none of them exists yet -- both
 //! against the live manager and against the document -- so a colliding scene refuses
 //! with nothing half-applied rather than failing on the fourth of nine clones.
+//!
+//! THE PLAN IS NAMED RELATIVE TO THE INSTANCE ROOT, and 87 step 3c is why.  A plan item
+//! records the copied node's SOURCE-SIDE entry name and its PARENT's source-side entry
+//! name; the actual entry names are `<base>.<srcEntryName>` for a base that is `I` in the
+//! single-instance form and `I[i,j]` for one repetition of a counted one.  Building the
+//! plan once and composing names per repetition is what keeps a count from re-walking the
+//! document N times -- and it is why nothing in the walk below knows the instance name.
 struct SubtreeClonePlanItem
 {
 	std::size_t chunkIdx;      //!< the source-subtree chunk this clone is a copy of
 	std::string srcEntryName;  //!< that node's ENTRY name in the source tree (itself qualified, when it is a nested instance's clone)
-	std::string cloneName;     //!< `I` + "." + srcEntryName
-	std::string parentClone;   //!< the clone this one is parented to
+	std::string parentRel;     //!< the source-side entry name of the node this one is parented to; EMPTY means the instance root
 };
 
 //! The recursive walk that fills a SubtreeClonePlan.
@@ -1792,7 +1898,6 @@ struct ClonePlanBuilder
 {
 	const std::vector<NodeRef>&  items;
 	const ObjectChunkIndex&      index;
-	const std::string&           instName;      //!< `I`
 	const std::string&           who;
 	std::size_t                  instIndex;     //!< the instancing chunk's own item index -- every subtree member must precede it
 	IObjectManager*              objMgr;
@@ -1800,12 +1905,13 @@ struct ClonePlanBuilder
 	std::vector<SubtreeClonePlanItem>& plan;
 	std::set<std::size_t>        path;          //!< chunk indices on the CURRENT clone path -- a revisit is a recursive definition
 
-	//! Clone the subtree of the ENTRY produced by chunk `srcChunkIdx`, whose clone is
-	//! called `cloneName`.  `ctxParts` qualifies the entry names of `srcChunkIdx`'s
-	//! own document children (empty at the top of a source tree).
-	bool SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName, const std::vector<std::string>& ctxParts, int depth );
-	//! Clone chunk `chunkIdx` (and everything under it) as a child of `parentClone`.
-	bool ClonedEntry( std::size_t chunkIdx, const std::vector<std::string>& ctxParts, const std::string& parentClone, int depth );
+	//! Clone the subtree of the ENTRY produced by chunk `srcChunkIdx`, whose clone's
+	//! RELATIVE name is `parentRel` ("" at the instance root).  `ctxParts` qualifies the
+	//! entry names of `srcChunkIdx`'s own document children (empty at the top of a source tree).
+	bool SourceSubtree( std::size_t srcChunkIdx, const std::string& parentRel, const std::vector<std::string>& ctxParts, int depth );
+	//! Clone chunk `chunkIdx` (and everything under it) as a child of the clone whose
+	//! relative name is `parentRel`.
+	bool ClonedEntry( std::size_t chunkIdx, const std::vector<std::string>& ctxParts, const std::string& parentRel, int depth );
 
 	//! `ctxParts[from..]` joined with dots and a trailing dot, or "" when empty.
 	static std::string JoinFrom( const std::vector<std::string>& ctxParts, std::size_t from )
@@ -1853,12 +1959,22 @@ struct ClonePlanBuilder
 	}
 };
 
-bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string& cloneName,
+bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string& parentRel,
                                      const std::vector<std::string>& ctxParts, int depth )
 {
 	if( !DepthOk( depth ) ) return false;
 	std::string srcOwnName;
 	ParamValue( items[srcChunkIdx].get(), "name", srcOwnName );
+	// 87 step 3c: a chunk that carries counts produces N ENTRIES, not one node, so there is
+	// no single thing for a `source` to be a copy OF -- taking the first of them is the
+	// silent partial copy every other refusal in this walk exists to prevent.  Reached for
+	// the instancing chunk's own source and for every chunk further down its `source` chain.
+	if( ChunkCarriesCounts( items[srcChunkIdx].get() ) ) {
+		diags.push_back( who + ": `" + srcOwnName + "` carries `count_u` / `count_v`, so it is a REPETITION -- it "
+			"produces one entry per (i,j), not a single node, and a copy of it would silently be a copy of just "
+			"one.  Instance the node the counts repeat, or write the counts on THIS chunk instead." );
+		return false;
+	}
 	// DEFENSIVE, and deliberately kept: no scene can reach this guard TODAY, and the
 	// argument is worth writing down because it is not obvious and it is fragile.
 	// Reaching it needs a `source` hop back onto a chunk already on the clone path,
@@ -1895,7 +2011,7 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < srcChunkIdx ) {
 			std::vector<std::string> deeper = ctxParts;
 			deeper.push_back( srcOwnName );
-			if( !SourceSubtree( ni->second.front(), cloneName, deeper, depth + 1 ) ) return false;
+			if( !SourceSubtree( ni->second.front(), parentRel, deeper, depth + 1 ) ) return false;
 		}
 	}
 	// The source entry's own document children.
@@ -1904,13 +2020,13 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 	// the point: this chunk's own name is NEVER an entry under a qualification.  It is
 	// either the top of the chain (whose entry name IS `srcOwnName`, so `ctxParts` is
 	// empty and the union would degenerate to this one key anyway) or a chunk reached
-	// ACROSS a `source` boundary, whose identity is subsumed into `cloneName` and which
+	// ACROSS a `source` boundary, whose identity is subsumed into the clone's own name and which
 	// therefore mints no entry of its own for anything to be parented to.  Every entry
 	// that does get minted is minted by `ClonedEntry`, which does take the union.
 	const std::map<std::string, std::vector<std::size_t> >::const_iterator kids = index.childrenOf.find( srcOwnName );
 	if( kids != index.childrenOf.end() ) {
 		for( std::size_t k = 0; k < kids->second.size(); ++k )
-			if( !ClonedEntry( kids->second[k], ctxParts, cloneName, depth + 1 ) ) return false;
+			if( !ClonedEntry( kids->second[k], ctxParts, parentRel, depth + 1 ) ) return false;
 	}
 	// An `instance_array` generator parented into the subtree would be dropped from
 	// the copy: generators expand in a trailing pass, after every `source` chunk, and
@@ -1942,7 +2058,7 @@ bool ClonePlanBuilder::SourceSubtree( std::size_t srcChunkIdx, const std::string
 }
 
 bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std::string>& ctxParts,
-                                   const std::string& parentClone, int depth )
+                                   const std::string& parentRel, int depth )
 {
 	if( !DepthOk( depth ) ) return false;
 	std::string ownName;
@@ -1975,8 +2091,19 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 			"it -- move the instance below the last member of the subtree." );
 		return false;
 	}
+	// 87 step 3c: a MEMBER that carries counts is the same silent-partial-copy shape
+	// `SourceSubtree` refuses for a counted SOURCE, from the other side: the member is N
+	// entries in the original (`M[0,0]`, `M[1,0]`, ...) and the copy would carry one node
+	// called `I.M`.  Refused rather than approximated; counts belong on the chunk doing
+	// the instancing, which for a subtree is its ROOT.
+	if( ChunkCarriesCounts( items[chunkIdx].get() ) ) {
+		diags.push_back( who + ": the source subtree member `" + ownName + "` (chunk #"
+			+ std::to_string( ChunkOrdinal( items, chunkIdx ) ) + ") carries `count_u` / `count_v`, so in the "
+			"original it is one entry per (i,j) rather than a single node -- the copy would silently hold just "
+			"one of them.  Counts belong on the chunk that instances the subtree, not on a member of it." );
+		return false;
+	}
 	const std::string srcEntryName = JoinFrom( ctxParts, 0 ) + ownName;
-	const std::string cloneName    = instName + "." + srcEntryName;
 
 	// THE KEY SET this entry answers to -- its own qualified entry name, its bare chunk
 	// name, and every intermediate.  Read three times below (override layers, children,
@@ -2043,8 +2170,7 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 	SubtreeClonePlanItem it;
 	it.chunkIdx     = chunkIdx;
 	it.srcEntryName = srcEntryName;
-	it.cloneName    = cloneName;
-	it.parentClone  = parentClone;
+	it.parentRel    = parentRel;
 	plan.push_back( it );
 
 	// IF THIS MEMBER IS ITSELF AN INSTANCE, the entries its own expansion made are part
@@ -2059,7 +2185,7 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 		if( ni != index.byName.end() && !ni->second.empty() && ni->second.front() < chunkIdx ) {
 			std::vector<std::string> deeper = ctxParts;
 			deeper.push_back( ownName );
-			if( !SourceSubtree( ni->second.front(), cloneName, deeper, depth + 1 ) ) return false;
+			if( !SourceSubtree( ni->second.front(), srcEntryName, deeper, depth + 1 ) ) return false;
 		}
 	}
 
@@ -2083,7 +2209,7 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 		std::sort( kidsFound.begin(), kidsFound.end() );
 		for( std::size_t k = 0; k < kidsFound.size(); ++k ) {
 			const std::vector<std::string> kidCtx( ctxParts.begin(), ctxParts.begin() + kidsFound[k].second );
-			if( !ClonedEntry( kidsFound[k].first, kidCtx, cloneName, depth + 1 ) ) return false;
+			if( !ClonedEntry( kidsFound[k].first, kidCtx, srcEntryName, depth + 1 ) ) return false;
 		}
 	}
 	// The `instance_array` refusal, over the same key set -- and, like the override lookup
@@ -2247,6 +2373,20 @@ static bool ExpandSourceInstance(
 		return false;
 	}
 
+	// 87 step 3c: THE SOURCE ITSELF CARRIES COUNTS.  Checked HERE, before the manager
+	// probe below, because a counted chunk produces `A[i,j]` and NO entry called `A` --
+	// so the probe would refuse it with "declared earlier but did not produce an object
+	// (its own chunk failed)", which names a cause that did not happen and sends the
+	// author looking for a broken chunk.  The walk has the same check for every chunk
+	// further down the `source` chain and for every subtree member.
+	if( ChunkCarriesCounts( items[ si->second.front() ].get() ) ) {
+		diags.push_back( who + ": `source " + srcName + "` names a chunk carrying `count_u` / `count_v`, so it is a "
+			"REPETITION -- it produces one entry per (i,j) (`" + srcName + "[0,0]`, ...) rather than a single node, "
+			"and a copy of it would silently be a copy of just one.  Instance the node the counts repeat, or write "
+			"the counts on THIS chunk instead." );
+		return false;
+	}
+
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
 	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;
 	if( !objMgr ) {
@@ -2310,6 +2450,38 @@ static bool ExpandSourceInstance(
 		}
 	}
 
+	// 87 step 3c -- THE REPETITION COUNTS.  `count_u U [count_v V]` repeats this whole
+	// instance (root + subtree) U x V times, naming each repetition's root `I[i,j]` and
+	// each of its clones `I[i,j].X`.
+	//
+	// PRESENCE selects the array form, never the VALUE.  `count_u 1` derives `I[0,0]`,
+	// not `I` -- because the value may be an `expr(...)` of a `let`, and a naming scheme
+	// that flipped when a constant went from 2 to 1 would silently dangle every `parent
+	// I[0,0]` in the file.  It also keeps the entry names byte-compatible with the
+	// `instance_array` generator this replaces, which names its single-instance case
+	// `g[0,0]` for the same reason.
+	//
+	// A count of ZERO is legal and produces NO entries, exactly as `instance_array`'s
+	// shared validator has always allowed.
+	std::string countU_raw, countV_raw;
+	const bool hasCountU = ParamValue( inst.get(), "count_u", countU_raw ) && !countU_raw.empty();
+	const bool hasCountV = ParamValue( inst.get(), "count_v", countV_raw ) && !countV_raw.empty();
+	const bool counted   = hasCountU || hasCountV;
+	if( hasCountV && !hasCountU ) {
+		diags.push_back( who + ": `count_v` without `count_u`.  `count_u` is the first axis of the repetition and "
+			"`count_v` the optional second, so a `count_v` alone describes no grid -- write `count_u` too (use "
+			"`count_u 1` for a single column)." );
+		return false;
+	}
+	int countU = 1, countV = 1;
+	if( counted ) {
+		// The SHARED validator -- `instance_array`'s own, moved out verbatim.  Both counts
+		// are evaluated even when the first fails, so two bad counts report twice.
+		bool countOk = EvalInstanceCount( countU_raw, lets, who, "count_u", diags, countU );
+		if( hasCountV && !EvalInstanceCount( countV_raw, lets, who, "count_v", diags, countV ) ) countOk = false;
+		if( !countOk ) return false;
+	}
+
 	// Walk the `source` chain back to the ROOT chunk -- the one that declares what
 	// the thing actually IS.  `I source S` where `S source T` is legal and means
 	// "another copy of T, with S's overrides on top of it".
@@ -2319,29 +2491,44 @@ static bool ExpandSourceInstance(
 		return false;
 	}
 
-	// THE SUBTREE PLAN, built before anything is applied.  See ClonePlanBuilder.
+	// THE SUBTREE PLAN, built before anything is applied, and NAMED RELATIVE to the
+	// instance root -- see ClonePlanBuilder.  Built ONCE even for a counted expansion:
+	// the plan depends on the DOCUMENT, not on (i,j), so a 100x100 grid walks the
+	// document once and composes 10 000 sets of names out of the one plan.
 	std::vector<SubtreeClonePlanItem> plan;
 	{
-		ClonePlanBuilder b = { items, index, instName, who, instIndex, objMgr, diags, plan, std::set<std::size_t>() };
+		ClonePlanBuilder b = { items, index, who, instIndex, objMgr, diags, plan, std::set<std::size_t>() };
 		b.path.insert( instIndex );   // this chunk is on the path from the start -- see the recursive-definition guard
-		if( !b.SourceSubtree( chain.front(), instName, std::vector<std::string>(), 1 ) ) return false;
+		if( !b.SourceSubtree( chain.front(), std::string(), std::vector<std::string>(), 1 ) ) return false;
 	}
 
-	// THE DOCUMENT-WIDE ENTRY CAP.  `plan.size() + 1` counts the root, and the budget
-	// is shared with every other expansion in this document -- because what has to be
-	// bounded is the number of entries reaching the TLAS, not the number of times any
-	// one generator repeats.
-	if( (long long)plan.size() + 1 > entryBudget ) {
+	// THE DOCUMENT-WIDE ENTRY CAP.  `perInstance` counts the root plus one per subtree
+	// node; the total is `count_u * count_v * perInstance`, which is what 87 step 3c
+	// requires the cap to count -- NOT the instance count.  The budget is shared with
+	// every other expansion in this document, because what has to be bounded is the
+	// number of entries reaching the TLAS, not the number of times any one generator
+	// repeats.  No overflow: EvalInstanceCount clamps each count to 1e6, so the product
+	// is at most 1e12, and `perInstance` is bounded by the document's chunk count.
+	//
+	// The per-count 1e6 clamp is `instance_array`'s and is kept deliberately (it comes
+	// with the shared validator): without it a `count_u 1e12` on a subtree whose plan is
+	// EMPTY-but-for-the-root would be refused only by this budget line, and the refusal
+	// would be the only thing between the author and a 1e12-iteration loop.  There is no
+	// separate `count_u * count_v <= 1e7` product cap here because the budget subsumes
+	// it exactly: `perInstance >= 1`, so `total >= count_u * count_v`.
+	const long long perInstance = (long long)plan.size() + 1;
+	const long long total       = (long long)countU * (long long)countV * perInstance;
+	if( total > entryBudget ) {
 		char cap[128];
 		std::snprintf( cap, sizeof(cap), "%lld more (of %lld document-wide)", entryBudget, (long long)kMaxSynthesizedEntries );
 		diags.push_back( who + ": expanding `source " + srcName + "` would synthesize "
-			+ std::to_string( plan.size() + 1 ) + " objects, and this document has room for only "
+			+ std::to_string( total ) + " objects, and this document has room for only "
 			+ cap + ".  A subtree instance costs one entry per subtree NODE, so the total is count x subtree size." );
 		return false;
 	}
 
 	// COLLISION, both kinds, over the WHOLE entry-name set this expansion would
-	// create -- the root plus every clone.
+	// create -- every repetition's root plus every clone under it.
 	//
 	// (1) MANAGER-level.  AddItem already rejects a duplicate and Job::AddObject
 	//     honours its bool, but that diagnostic names neither the instancing chunk
@@ -2357,14 +2544,16 @@ static bool ExpandSourceInstance(
 	//     keyspace (`entryByName`), not the source-resolvable one, because a
 	//     `rect_light` named `I.C` claims the entry name `I.C` just as a
 	//     `standard_object` would.
+	//
+	// RUN IN FULL BEFORE ANYTHING IS APPLIED, counted case included: a colliding scene
+	// must refuse with nothing half-applied rather than fail on the fourth of nine
+	// clones of the seventh of a hundred repetitions.
 	{
-		// The root's own name: it IS the instancing chunk's name, so the document
-		// test is "declared more than once"; a clone's name is synthesized, so the
-		// test there is "declared at all".
-		if( objMgr->GetItem( instName.c_str() ) ) {
-			diags.push_back( who + ": the entry `" + instName + "` this instance would create already exists as an object" );
-			return false;
-		}
+		// The chunk name is ambiguous whether or not counts are present: provenance maps
+		// every entry back to THIS name, so two chunks holding it send a picked instance
+		// to whichever the lookup finds first.  Under counts the entry names are
+		// `I[i,j]`, so the name itself is never an entry -- hence "the name", not "the
+		// entry name", in the counted spelling.
 		const std::map<std::string, std::vector<std::size_t> >::const_iterator ci = index.entryByName.find( instName );
 		if( ci != index.entryByName.end() && ci->second.size() > 1 ) {
 			// Say WHICH TWO in terms the author can find: role + position among the
@@ -2376,70 +2565,92 @@ static bool ExpandSourceInstance(
 			std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`, and chunk #%u, a `%s`",
 				ChunkOrdinal( items, a ), items[a] ? items[a]->role.c_str() : "?",
 				ChunkOrdinal( items, b ), items[b] ? items[b]->role.c_str() : "?" );
-			diags.push_back( who + ": the entry name `" + instName + "` is declared by MORE THAN ONE object chunk ("
+			diags.push_back( who + ": " + ( counted ? std::string( "the name `" ) : std::string( "the entry name `" ) )
+				+ instName + "` is declared by MORE THAN ONE object chunk ("
 				+ pos + ").  A picked instance would resolve back to whichever the name lookup finds first, so an "
 				"edit could land in the wrong chunk.  Rename one." );
 			return false;
 		}
-		std::set<std::string> planned;
-		planned.insert( instName );
-		for( std::size_t k = 0; k < plan.size(); ++k ) {
-			const std::string& nm = plan[k].cloneName;
-			// A BELT, not a live case: two subtree nodes can only resolve to one entry
-			// name if an authored chunk is named exactly like some earlier expansion's
-			// synthesized entry -- which the document scan below refuses at THAT
-			// expansion, before this one runs.  Kept because it is the one check whose
-			// absence would let a copy silently REPLACE another copy rather than fail.
-			if( !planned.insert( nm ).second ) {
-				diags.push_back( who + ": expanding `source " + srcName + "` would synthesize the entry name `" + nm
-					+ "` TWICE.  Two nodes in the subtree resolve to the same entry name, so one copy would silently "
-					"replace the other." );
-				return false;
+		// Per REPETITION, because the base name is what differs between them.  A `planned`
+		// set spanning every repetition is not needed and would cost one string per
+		// synthesized entry: distinct (i,j) give distinct bases by construction, so two
+		// repetitions can never resolve to one entry name.
+		for( int j = 0; j < countV; ++j )
+			for( int i = 0; i < countU; ++i ) {
+				const std::string base = InstanceBaseName( instName, counted, i, j );
+				std::set<std::string> planned;
+				planned.insert( base );
+				// The UNCOUNTED root's name IS the instancing chunk's name, so the document
+				// test for it is "declared more than once" (done above); a COUNTED root's
+				// name is synthesized like a clone's, so it takes the same "declared at
+				// all" test the clones do.  The manager test applies to both.
+				if( objMgr->GetItem( base.c_str() ) ) {
+					diags.push_back( who + ": the entry `" + base + "` this instance would create already exists as an object" );
+					return false;
+				}
+				if( counted ) {
+					const std::map<std::string, std::vector<std::size_t> >::const_iterator bi = index.entryByName.find( base );
+					if( bi != index.entryByName.end() && !bi->second.empty() ) {
+						char pos[128];
+						std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`",
+							ChunkOrdinal( items, bi->second[0] ),
+							items[ bi->second[0] ] ? items[ bi->second[0] ]->role.c_str() : "?" );
+						diags.push_back( who + ": this instance would synthesize the entry `" + base
+							+ "`, but the document ALREADY declares an object of that name (" + pos
+							+ ").  A pick on the synthesized entry would resolve back to that chunk, so an edit could "
+							  "land in something unrelated.  Rename one." );
+						return false;
+					}
+				}
+				for( std::size_t k = 0; k < plan.size(); ++k ) {
+					const std::string nm = base + "." + plan[k].srcEntryName;
+					// A BELT, not a live case: two subtree nodes can only resolve to one entry
+					// name if an authored chunk is named exactly like some earlier expansion's
+					// synthesized entry -- which the document scan below refuses at THAT
+					// expansion, before this one runs.  Kept because it is the one check whose
+					// absence would let a copy silently REPLACE another copy rather than fail.
+					if( !planned.insert( nm ).second ) {
+						diags.push_back( who + ": expanding `source " + srcName + "` would synthesize the entry name `" + nm
+							+ "` TWICE.  Two nodes in the subtree resolve to the same entry name, so one copy would silently "
+							"replace the other." );
+						return false;
+					}
+					if( objMgr->GetItem( nm.c_str() ) ) {
+						diags.push_back( who + ": the entry `" + nm + "` this instance would synthesize for the subtree member `"
+							+ plan[k].srcEntryName + "` already exists as an object" );
+						return false;
+					}
+					const std::map<std::string, std::vector<std::size_t> >::const_iterator di = index.entryByName.find( nm );
+					if( di != index.entryByName.end() && !di->second.empty() ) {
+						const std::size_t a = di->second[0];
+						char pos[128];
+						std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`",
+							ChunkOrdinal( items, a ), items[a] ? items[a]->role.c_str() : "?" );
+						diags.push_back( who + ": this instance would synthesize the entry `" + nm + "` for the subtree member `"
+							+ plan[k].srcEntryName + "`, but the document ALREADY declares an object of that name (" + pos
+							+ ").  A pick on the synthesized entry would resolve back to that chunk, so an edit could land in "
+							"something unrelated.  Rename one." );
+						return false;
+					}
+				}
 			}
-			if( objMgr->GetItem( nm.c_str() ) ) {
-				diags.push_back( who + ": the entry `" + nm + "` this instance would synthesize for the subtree member `"
-					+ plan[k].srcEntryName + "` already exists as an object" );
-				return false;
-			}
-			const std::map<std::string, std::vector<std::size_t> >::const_iterator di = index.entryByName.find( nm );
-			if( di != index.entryByName.end() && !di->second.empty() ) {
-				const std::size_t a = di->second[0];
-				char pos[128];
-				std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`",
-					ChunkOrdinal( items, a ), items[a] ? items[a]->role.c_str() : "?" );
-				diags.push_back( who + ": this instance would synthesize the entry `" + nm + "` for the subtree member `"
-					+ plan[k].srcEntryName + "`, but the document ALREADY declares an object of that name (" + pos
-					+ ").  A pick on the synthesized entry would resolve back to that chunk, so an edit could land in "
-					"something unrelated.  Rename one." );
-				return false;
-			}
-		}
 	}
 
-	// APPLY.  The root first -- its clones are parented to it, and
-	// ObjectManager::SetObjectParent requires the parent to exist already.
+	// THE MEMBERS' MERGED PARAMS, computed ONCE for the whole expansion.  They cannot
+	// vary with (i,j): per-instance variables scope to the chunk that CARRIES the counts,
+	// which is the instancing chunk, never a descendant (see MergeChunkParams).  Hoisting
+	// them out of the repetition loop is what keeps a counted subtree's derive cost
+	// proportional to `count + subtreeSize` rather than to `count * subtreeSize` in
+	// document parsing -- and it means a member's own diagnostic is emitted ONCE, not
+	// once per repetition.
+	struct MemberBuild
 	{
-		std::vector<std::string> order;
-		std::map<std::string, std::string> merged;
-		std::string targetRole;
-		MergeChunkParams( items, lets, instIndex, chain, order, merged, targetRole, diags );
-		if( !ApplySynthesizedNode( registry, pJob, order, merged, targetRole, instName,
-		                           /*parentOverride*/ 0, who, srcName, diags ) )
-			return false;
-	}
-	// PROVENANCE.  Recorded even in the collapse case, where the entry name and the
-	// instancing chunk name are the same string: consumers ask ONE question ("where
-	// did this entry come from?") and get one answer, instead of each re-deriving
-	// the relationship from the spelling of the name.
-	objMgr->SetObjectProvenance( instName.c_str(), instName.c_str(), srcName.c_str() );
-	--entryBudget;
-
-	// Then the subtree, pre-order, each clone built by re-`Finalize`ing the node's OWN
-	// chunk with `name` and `parent` remapped.  Re-Finalizing rather than deep-copying
-	// the live object is what makes a chunk whose Finalize synthesizes MORE THAN ONE
-	// entity come out right for free: a `rect_light` names its painter / material /
-	// geometry `<name>__pnt` / `__mat` / `__geo`, so remapping the one `name` renames
-	// all four, where an object-level clone walk would collide on all three helpers.
+		std::vector<std::string>            order;
+		std::map<std::string, std::string>  merged;
+		std::string                         targetRole;
+		std::string                         kidSrc;
+	};
+	std::vector<MemberBuild> members( plan.size() );
 	for( std::size_t k = 0; k < plan.size(); ++k ) {
 		std::vector<std::size_t> kidChain;
 		if( !SourceChainOf( items, index, plan[k].chunkIdx, kidChain ) ) {
@@ -2447,22 +2658,87 @@ static bool ExpandSourceInstance(
 				"not resolve (a broken link, or deeper than 256 links)" );
 			return false;
 		}
-		std::vector<std::string> order;
-		std::map<std::string, std::string> merged;
-		std::string targetRole;
-		MergeChunkParams( items, lets, plan[k].chunkIdx, kidChain, order, merged, targetRole, diags );
-		std::string kidSrc;
-		ParamValue( items[ plan[k].chunkIdx ].get(), "source", kidSrc );
-		if( !ApplySynthesizedNode( registry, pJob, order, merged, targetRole, plan[k].cloneName,
-		                           &plan[k].parentClone, who, kidSrc.empty() ? srcName : kidSrc, diags ) )
+		if( !MergeChunkParams( items, lets, plan[k].chunkIdx, kidChain, members[k].order, members[k].merged,
+		                       members[k].targetRole, diags ) )
 			return false;
-		// `I.X -> (I, X)`: the node this entry is a COPY OF, which is what makes the
-		// entry traceable to something an author can edit.  X is the SOURCE-SIDE
-		// ENTRY name, which for a nested instance's clone is itself qualified -- so a
-		// consumer that follows the chain lands on a real live entry at every hop.
-		objMgr->SetObjectProvenance( plan[k].cloneName.c_str(), instName.c_str(), plan[k].srcEntryName.c_str() );
-		--entryBudget;
+		ParamValue( items[ plan[k].chunkIdx ].get(), "source", members[k].kidSrc );
 	}
+
+	// APPLY, one repetition at a time.  Within a repetition the root comes first -- its
+	// clones are parented to it, and ObjectManager::SetObjectParent requires the parent
+	// to exist already.
+	for( int j = 0; j < countV; ++j )
+		for( int i = 0; i < countU; ++i ) {
+			// The instance variables, EXACTLY as ExpandInstanceArray defines them: u and v
+			// are the index normalized into [0,1], and a count of 1 gives 0 rather than a
+			// 0/0 NaN.
+			const double u = ( countU > 1 ) ? (double)i / (double)( countU - 1 ) : 0.0;
+			const double v = ( countV > 1 ) ? (double)j / (double)( countV - 1 ) : 0.0;
+			const InstanceVars iv = { i, j, u, v };
+			const std::string base = InstanceBaseName( instName, counted, i, j );
+			{
+				std::vector<std::string> order;
+				std::map<std::string, std::string> merged;
+				std::string targetRole;
+				// `&iv` UNCONDITIONALLY, counted or not, and that is not an oversight.
+				// PASS-1 validates every instancing chunk at instance zero (see there), so
+				// a chunk with a per-component expr and NO counts is admitted by PASS-1;
+				// evaluating it here with the whole-value-only rule instead would hand
+				// `ApplySynthesizedNode` the raw `expr(...)` text and refuse at the
+				// descriptor -- PASS-1 and PASS-2 disagreeing about the same chunk, which
+				// is the divergence class this arc keeps closing.  A single instance IS
+				// instance zero.  For a value with no `expr(` in it the two paths are
+				// byte-identical (EvalInstanceValue re-joins the components single-spaced,
+				// which is what the token loop already produced), so every existing 3a/3b
+				// scene derives exactly as it did.
+				if( !MergeChunkParams( items, lets, instIndex, chain, order, merged, targetRole, diags, &iv ) )
+					return false;
+				if( !ApplySynthesizedNode( registry, pJob, order, merged, targetRole, base,
+				                           /*parentOverride*/ 0, who, srcName, diags ) )
+					return false;
+			}
+			// PROVENANCE.  Recorded even in the collapse case, where the entry name and the
+			// instancing chunk name are the same string: consumers ask ONE question ("where
+			// did this entry come from?") and get one answer, instead of each re-deriving
+			// the relationship from the spelling of the name.  Under counts the row is
+			// `I[i,j] -> (I, S)`: the chunk to edit and the node it copies.
+			objMgr->SetObjectProvenance( base.c_str(), instName.c_str(), srcName.c_str() );
+			--entryBudget;
+
+			// Then the subtree, pre-order, each clone built by re-`Finalize`ing the node's OWN
+			// chunk with `name` and `parent` remapped.  Re-Finalizing rather than deep-copying
+			// the live object is what makes a chunk whose Finalize synthesizes MORE THAN ONE
+			// entity come out right for free: a `rect_light` names its painter / material /
+			// geometry `<name>__pnt` / `__mat` / `__geo`, so remapping the one `name` renames
+			// all four, where an object-level clone walk would collide on all three helpers.
+			for( std::size_t k = 0; k < plan.size(); ++k ) {
+				const std::string cloneName = base + "." + plan[k].srcEntryName;
+				const std::string parentClone = plan[k].parentRel.empty() ? base : ( base + "." + plan[k].parentRel );
+				// A COPY per repetition, because ApplySynthesizedNode WRITES the `parent`
+				// override into the map it is handed and this one is shared across
+				// repetitions.  DEFENSIVE, not load-bearing, and measured as such: aliasing
+				// `members[k]` directly leaves the whole suite green, because the write is
+				// unconditional (every repetition overwrites the previous one's value) and
+				// `order` only ever gains `parent` once.  The copy is kept because that
+				// green rests on ApplySynthesizedNode's write being unconditional -- a
+				// property of a function three call sites away, which nothing here states
+				// or checks -- and the failure mode if it ever stops holding is every
+				// repetition after the first being parented into the FIRST one.
+				std::vector<std::string>           order  = members[k].order;
+				std::map<std::string, std::string> merged = members[k].merged;
+				if( !ApplySynthesizedNode( registry, pJob, order, merged, members[k].targetRole, cloneName,
+				                           &parentClone, who, members[k].kidSrc.empty() ? srcName : members[k].kidSrc, diags ) )
+					return false;
+				// `I.X -> (I, X)`: the node this entry is a COPY OF, which is what makes the
+				// entry traceable to something an author can edit.  X is the SOURCE-SIDE
+				// ENTRY name, which for a nested instance's clone is itself qualified -- so a
+				// consumer that follows the chain lands on a real live entry at every hop.
+				// Under counts every repetition's clone names the SAME source node: `I[i,j].X
+				// -> (I, X)`.
+				objMgr->SetObjectProvenance( cloneName.c_str(), instName.c_str(), plan[k].srcEntryName.c_str() );
+				--entryBudget;
+			}
+		}
 	return true;
 }
 
@@ -2516,21 +2792,35 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
 		if( c->role == "let" || c->role == "instance_array" ) continue;   // #5 slice 3/4: CST-level (let) / generator (instance_array) -- not 1:1 engine chunks
+		// 87 step 3a: read `source` off the CST TOKEN, not the bag -- the expansion is
+		// deliberately bag-free (ExpandSourceInstance's header says why), and so is its trigger.
+		// Read BEFORE the params are resolved, because 87 step 3c makes the resolution itself
+		// depend on the answer.
+		std::string srcRef;
+		const bool isSrc = ( c->role == "standard_object" )
+		               && ParamValue( c.get(), "source", srcRef ) && !srcRef.empty() && srcRef != "none";
 		// Resolve the parser + normalise the params (shared with the incremental
 		// derive, so both paths normalise identically -- see ResolveChunkParams).
+		//
+		// 87 step 3c: AN INSTANCING CHUNK IS VALIDATED AT INSTANCE ZERO.  Its params may
+		// hold PER-COMPONENT `expr(...)` (`position expr(i*2) 0 0`), which the ordinary
+		// whole-value handling passes through verbatim -- and `position expr(i*2) 0 0` is
+		// not a finite numeric triple, so PASS-1 would refuse the scene before the
+		// expansion ever ran.  Evaluating at (i,j,u,v) = 0 gives the descriptor a real
+		// value to check the arity and kind of, which is validation this chunk would
+		// otherwise lose entirely; the values the SCENE gets are computed per repetition
+		// in ExpandSourceInstance, from the raw tokens, exactly as `instance_array` does.
+		// The bag built here is never applied for such a chunk -- PASS-2 expands instead
+		// of calling its Finalize.
+		const InstanceVars instZero = { 0, 0, 0.0, 0.0 };
 		IAsciiChunkParser::ParamsList plist;
-		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags, lets );
+		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags, lets, isSrc ? &instZero : nullptr );
 		if( !parser ) continue;                       // unknown chunk type (diagnostic already pushed)
 		ParseStateBag bag( &parser->Describe() );
 		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) {
 			diags.push_back( c->role + ": invalid parameter(s) (see log)" );
 			continue;
 		}
-		// 87 step 3a: read `source` off the CST TOKEN, not the bag -- the expansion is
-		// deliberately bag-free (ExpandSourceInstance's header says why), and so is its trigger.
-		std::string srcRef;
-		const bool isSrc = ( c->role == "standard_object" )
-		               && ParamValue( c.get(), "source", srcRef ) && !srcRef.empty() && srcRef != "none";
 		pending.push_back( Pending{ parser, std::move(bag), c->role, DocNodeIdAt( doc, (int)i ), i, isSrc } );   // nodeId: D35 recording attribution
 	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
