@@ -191,8 +191,17 @@ error and must be corrected.
      advective candidate is needed later by the combined Heun FCT solve, but it
      is irrelevant to the instantaneous divergence target. R0 converges when
      cellwise S_div, every projected face mass flux, and the transport
-     coefficients change below the projection/EOS tolerances with an unchanged
-     open-face active set; R1 uses the same criteria. **α₀ is a derived control
+     coefficients change below the projection/EOS tolerances; R1 uses the same
+     criteria. **The open-face active set is a derived discrete control outside
+     the Cauchy gate (r80):** a stable set is continuous-class; a repeated
+     state is discontinuous-class and selects the solved cycle branch with the
+     smallest maximum deadband complementarity violation, breaking exact ties
+     lexicographically with outflow before inflow. The selected branch is
+     re-solved frozen and must pass the unchanged divergence/head residuals.
+     Acceptance verification applies the same canonical ordering to disagreeing
+     branches at the accepted target, then rechecks every continuous residual;
+     first/last wins, Boolean union/intersection, tolerance inflation, and
+     relaxation are forbidden. **α₀ is a derived control
      outside the convergence gate (r59):** the limiter map is discontinuous on
      constraint-activation boundaries, so its Cauchy convergence is not
      required — see §3.7's two-class rule. At acceptance, if the verification

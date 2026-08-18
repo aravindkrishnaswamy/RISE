@@ -1382,9 +1382,47 @@ The most notorious practical trap in fire LES; specified accordingly:
   class (all pressure-open faces seed outflow at the quiescent initial state);
   R1 seeds from converged R0. In either solve |u_n|≤u_bc,tol retains its
   seeded/current class, preventing a
-  roundoff toggle; a repeated active-set state outside that band is a cycle and
-  rejects/reduces Δt rather than choosing first/last wins. Only after this
-  convergence is that stage's scalar upwinding selected. The endpoint u₂ class
+  roundoff toggle.
+
+  **Open-face active-set acceptance (r80) — the two-class rule.** The R0/R1
+  pressure-open class is a derived, discrete boundary control, not a continuous
+  Picard unknown. A stable class is the **continuous class** and is accepted
+  unchanged. A repeated state outside the deadband is the **discontinuous
+  class**: rejection and Δt reduction are forbidden because the recorded
+  tier-10 oracle prefix showed the same two-state R0/R1 cycle recurring from
+  Δt=6.99×10⁻⁵ s down through 4.86×10⁻⁵ s while the continuous solve remained
+  converged. For a solved branch c and its outward normal velocity u_n define
+
+  > d_f(c,u_n)=max(0,u_n−u_bc,tol) for inflow, and
+  > d_f(c,u_n)=max(0,−u_n−u_bc,tol) for outflow.
+
+  On a cycle, select from the states in the detected cycle the state minimizing
+  max_f d_f; exact ties select the lexicographically smallest flattened bit
+  vector with outflow=false before inflow=true. This is the canonical
+  complementarity projection: deterministic, parameter-free, independent of
+  visit order and thread count, and it minimizes the worst disagreement with
+  the sign contract rather than pretending the discontinuous map has a fixed
+  point. Re-solve that selected branch once with its class frozen, require the
+  unchanged divergence and total-head residuals, and publish it. The R0/R1
+  coupled Picard gate and its acceptance verification likewise gate only the
+  continuous quantities. If their classes disagree, evaluate both branches
+  frozen at the accepted target and apply the same ordering; then re-evaluate
+  every continuous verification residual against the selected branch before
+  acceptance. Record the class, cycle length, differing-face count, and maximum
+  complementarity discrepancy in run diagnostics. A stable case must remain
+  byte-identical. The final R2 endpoint classification remains its already
+  specified one-shot diagnostic and is not an iterative sibling.
+
+  **REJECTED alternatives:** first/last wins depends on seed and visit order;
+  pointwise Boolean union/intersection can synthesize a branch never solved;
+  raising u_bc,tol hides a resolved flow reversal; active-set averaging has no
+  Boolean meaning; and under-relaxation merely relocates the discontinuity.
+  None may replace the canonical rule. This is a reference-solver algorithm
+  version recorded in run metadata, not a physical case input, so it does not
+  change `case_record_id`; the preserved r77--r79 prefix remains a valid oracle
+  artifact under its original producer metadata.
+
+  Only after this acceptance is that stage's scalar upwinding selected. The endpoint u₂ class
   uses its sign with the same band, retaining I₁ inside the band, and seeds the
   next step; it does not reopen π₂. On inflow, advective ghost state is the complete frozen ambient
   record: Z=0, q_k=ρ∞Y_k,∞, ℋ_s=ℋ_s(T∞,Y∞), and zero carbon/condensed aerosol;

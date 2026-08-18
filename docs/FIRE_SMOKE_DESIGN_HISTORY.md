@@ -1905,3 +1905,29 @@ it was already tried and refuted here.
   launch ceiling. The durable checkpoint remains the recovery root; the
   next campaign, if authorized, is class B and starts from zero. No case or
   solver semantics changed, so `case_record_id` is unchanged.
+
+- **r80 (2026-08-18):** canonical two-class acceptance for the certified
+  solver's pressure-open R0/R1 active set. The stopped tier-10 oracle log
+  recorded repeated augmented active-set cycles at accepted-step candidates
+  spanning 6.99×10^-5 s down through 4.86×10^-5 s; reducing Δt moved the
+  switching surface but did not create a Cauchy fixed point. The durable
+  step-3479 checkpoint at t=2.8854439500002069 s and its streamed prefix are
+  preserved as golden reference data (checkpoint SHA-256
+  `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`).
+
+  Ruling: the active set is a derived discrete control. Stable classifications
+  retain the prior behaviour. A detected cycle canonically chooses the solved
+  cycle branch minimizing the maximum deadband complementarity violation,
+  with exact ties resolved lexicographically outflow-first, re-solves that
+  branch frozen, and retains the existing divergence and total-head gates.
+  The outer coupled Picard and verification gates contain only continuous
+  residuals; disagreeing classifications are compared frozen at the accepted
+  target by the same ordering before those residuals are rechecked. Diagnostics
+  record class, cycle length, differing faces, and discrepancy. Rejected:
+  first/last wins (seed/order dependence), Boolean union/intersection (possibly
+  unsolved synthetic branch), a wider velocity deadband (hides reversal), and
+  relaxation/averaging (no certified Boolean meaning). R2 is a one-shot
+  endpoint diagnostic and is not a sibling. The rule is reference-solver run
+  semantics, not physical case authorship; it is recorded in producer/run
+  metadata and does not change `case_record_id`, preserving the stopped prefix
+  as an oracle under its original producer identity.
