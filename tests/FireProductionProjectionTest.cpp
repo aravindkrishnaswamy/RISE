@@ -7,11 +7,14 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "../src/Library/Utilities/FireProductionProjection.h"
+#include "../tools/fire_simulator_core.h"
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 
 namespace
@@ -95,6 +98,274 @@ namespace
 				[](float value){return value==0.0f;}) ) return false;
 		return true;
 	}
+
+	std::string ReadFile( const char* path )
+	{
+		std::ifstream input(path,std::ios::binary);
+		std::ostringstream bytes;bytes << input.rdbuf();return bytes.str();
+	}
+
+	std::size_t Count( const std::string& text, const std::string& needle )
+	{
+		std::size_t count=0u,position=0u;
+		while( (position=text.find(needle,position))!=std::string::npos ) {
+			++count;position+=needle.size();
+		}
+		return count;
+	}
+
+	struct DoubleLevel
+	{
+		std::size_t nx,ny,nz;
+		double spacing[3];
+		std::vector<double> density,rhs,pressure,temporary,residual,diagonal;
+		std::array<std::vector<double>,3> beta;
+	};
+
+	std::size_t DoubleCell( const DoubleLevel& level,
+		std::size_t x,std::size_t y,std::size_t z )
+	{
+		return (z*level.ny+y)*level.nx+x;
+	}
+
+	std::size_t DoubleFace( const DoubleLevel& level,unsigned int axis,
+		std::size_t x,std::size_t y,std::size_t z )
+	{
+		if( axis==0u ) return (z*level.ny+y)*(level.nx+1u)+x;
+		if( axis==1u ) return (z*(level.ny+1u)+y)*level.nx+x;
+		return (z*level.ny+y)*level.nx+x;
+	}
+
+	void BuildDoubleWallCoefficients( DoubleLevel& level )
+	{
+		level.beta[0].assign((level.nx+1u)*level.ny*level.nz,0.0);
+		level.beta[1].assign(level.nx*(level.ny+1u)*level.nz,0.0);
+		level.beta[2].assign(level.nx*level.ny*(level.nz+1u),0.0);
+		for( std::size_t z=0;z<level.nz;++z ) for( std::size_t y=0;y<level.ny;++y )
+			for( std::size_t x=1u;x<level.nx;++x ) level.beta[0][DoubleFace(
+				level,0u,x,y,z)]=1.0/(0.5*level.density[DoubleCell(level,x-1u,y,z)]+
+				0.5*level.density[DoubleCell(level,x,y,z)]);
+		for( std::size_t z=0;z<level.nz;++z ) for( std::size_t y=1u;y<level.ny;++y )
+			for( std::size_t x=0;x<level.nx;++x ) level.beta[1][DoubleFace(
+				level,1u,x,y,z)]=1.0/(0.5*level.density[DoubleCell(level,x,y-1u,z)]+
+				0.5*level.density[DoubleCell(level,x,y,z)]);
+		for( std::size_t z=1u;z<level.nz;++z ) for( std::size_t y=0;y<level.ny;++y )
+			for( std::size_t x=0;x<level.nx;++x ) level.beta[2][DoubleFace(
+				level,2u,x,y,z)]=1.0/(0.5*level.density[DoubleCell(level,x,y,z-1u)]+
+				0.5*level.density[DoubleCell(level,x,y,z)]);
+		level.diagonal.assign(level.nx*level.ny*level.nz,0.0);
+		for( std::size_t z=0;z<level.nz;++z ) for( std::size_t y=0;y<level.ny;++y )
+			for( std::size_t x=0;x<level.nx;++x ) {
+				double value=0.0;
+				for( unsigned int axis=0;axis<3u;++axis ) {
+					std::size_t hx=x,hy=y,hz=z;
+					if( axis==0u ) ++hx;if( axis==1u ) ++hy;if( axis==2u ) ++hz;
+					const double scale=1.0/(level.spacing[axis]*level.spacing[axis]);
+					value+=level.beta[axis][DoubleFace(level,axis,x,y,z)]*scale;
+					value+=level.beta[axis][DoubleFace(level,axis,hx,hy,hz)]*scale;
+				}
+				level.diagonal[DoubleCell(level,x,y,z)]=value;
+			}
+	}
+
+	void ApplyDoubleWallOperator( const DoubleLevel& level,
+		const std::vector<double>& pressure,std::vector<double>& output )
+	{
+		output.assign(level.nx*level.ny*level.nz,0.0);
+		for( std::size_t z=0;z<level.nz;++z ) for( std::size_t y=0;y<level.ny;++y )
+			for( std::size_t x=0;x<level.nx;++x ) {
+				const std::size_t cell=DoubleCell(level,x,y,z);double value=0.0;
+				const std::size_t coordinate[3]={x,y,z};
+				const std::size_t extent[3]={level.nx,level.ny,level.nz};
+				for( unsigned int axis=0;axis<3u;++axis ) {
+					const double scale=1.0/(level.spacing[axis]*level.spacing[axis]);
+					if( coordinate[axis]>0u ) {
+						std::size_t px=x,py=y,pz=z;
+						if( axis==0u ) --px;if( axis==1u ) --py;if( axis==2u ) --pz;
+						value+=level.beta[axis][DoubleFace(level,axis,x,y,z)]*scale*
+							(pressure[cell]-pressure[DoubleCell(level,px,py,pz)]);
+					}
+					if( coordinate[axis]+1u<extent[axis] ) {
+						std::size_t px=x,py=y,pz=z,hx=x,hy=y,hz=z;
+						if( axis==0u ) {++px;++hx;}if( axis==1u ) {++py;++hy;}
+						if( axis==2u ) {++pz;++hz;}
+						value+=level.beta[axis][DoubleFace(level,axis,hx,hy,hz)]*scale*
+							(pressure[cell]-pressure[DoubleCell(level,px,py,pz)]);
+					}
+				}
+				output[cell]=value;
+			}
+	}
+
+	double DoubleTreeSum( const std::vector<double>& values )
+	{
+		std::size_t width=1u;while( width<values.size() ) width<<=1u;
+		std::vector<double> scratch(width,0.0);
+		std::copy(values.begin(),values.end(),scratch.begin());
+		for( std::size_t offset=1u;offset<width;offset<<=1u )
+			for( std::size_t index=2u*offset-1u;index<width;index+=2u*offset )
+				scratch[index]+=scratch[index-offset];
+		return scratch.back();
+	}
+
+	void RemoveDoubleMean( std::vector<double>& values )
+	{
+		const double mean=DoubleTreeSum(values)/static_cast<double>(values.size());
+		for( double& value : values ) value-=mean;
+	}
+
+	void SmoothDoubleWall( DoubleLevel& level,unsigned int sweeps )
+	{
+		const double omega=static_cast<double>(2.0f/3.0f);
+		for( unsigned int sweep=0;sweep<sweeps;++sweep ) {
+			ApplyDoubleWallOperator(level,level.pressure,level.temporary);
+			for( std::size_t cell=0;cell<level.pressure.size();++cell )
+				level.residual[cell]=level.pressure[cell]+omega*
+					(level.rhs[cell]-level.temporary[cell])/level.diagonal[cell];
+			level.pressure.swap(level.residual);RemoveDoubleMean(level.pressure);
+		}
+	}
+
+	std::size_t DoubleCoarseCoordinate( std::size_t fine,std::size_t fineExtent,
+		std::size_t coarseExtent )
+	{
+		return coarseExtent==fineExtent?fine:std::min(coarseExtent-1u,fine/2u);
+	}
+
+	void RestrictDouble( const DoubleLevel& fine,DoubleLevel& coarse,
+		const std::vector<double>& values,std::vector<double>& result )
+	{
+		result.assign(coarse.nx*coarse.ny*coarse.nz,0.0);
+		std::vector<unsigned int> count(result.size(),0u);
+		for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
+			for( std::size_t x=0;x<fine.nx;++x ) {
+				const std::size_t cell=DoubleCell(coarse,DoubleCoarseCoordinate(x,fine.nx,
+					coarse.nx),DoubleCoarseCoordinate(y,fine.ny,coarse.ny),
+					DoubleCoarseCoordinate(z,fine.nz,coarse.nz));
+				result[cell]+=values[DoubleCell(fine,x,y,z)];++count[cell];
+			}
+		for( std::size_t cell=0;cell<result.size();++cell )
+			result[cell]/=static_cast<double>(count[cell]);
+	}
+
+	void DoubleInterpolation( std::size_t fine,std::size_t fineExtent,
+		std::size_t coarseExtent,std::size_t& first,std::size_t& second,double& weight )
+	{
+		if( fineExtent==coarseExtent ) {first=second=fine;weight=0.0;return;}
+		const double position=(static_cast<double>(fine)+0.5)*
+			static_cast<double>(coarseExtent)/static_cast<double>(fineExtent)-0.5;
+		if( position<=0.0 ) {first=second=0u;weight=0.0;return;}
+		if( position>=static_cast<double>(coarseExtent-1u) ) {
+			first=second=coarseExtent-1u;weight=0.0;return;
+		}
+		first=static_cast<std::size_t>(std::floor(position));second=first+1u;
+		weight=position-static_cast<double>(first);
+	}
+
+	void ProlongateDouble( const DoubleLevel& coarse,DoubleLevel& fine )
+	{
+		for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
+			for( std::size_t x=0;x<fine.nx;++x ) {
+				std::size_t x0=0,x1=0,y0=0,y1=0,z0=0,z1=0;
+				double wx=0.0,wy=0.0,wz=0.0;
+				DoubleInterpolation(x,fine.nx,coarse.nx,x0,x1,wx);
+				DoubleInterpolation(y,fine.ny,coarse.ny,y0,y1,wy);
+				DoubleInterpolation(z,fine.nz,coarse.nz,z0,z1,wz);
+				double value=0.0;
+				for( unsigned int iz=0;iz<2u;++iz ) for( unsigned int iy=0;iy<2u;++iy )
+					for( unsigned int ix=0;ix<2u;++ix ) value+=(ix?wx:1.0-wx)*
+						(iy?wy:1.0-wy)*(iz?wz:1.0-wz)*coarse.pressure[DoubleCell(
+							coarse,ix?x1:x0,iy?y1:y0,iz?z1:z0)];
+				fine.pressure[DoubleCell(fine,x,y,z)]+=value;
+			}
+	}
+
+	void DoubleVCycle( std::vector<DoubleLevel>& levels,std::size_t levelIndex )
+	{
+		DoubleLevel& level=levels[levelIndex];
+		if( levelIndex+1u==levels.size() ) {SmoothDoubleWall(level,32u);return;}
+		SmoothDoubleWall(level,3u);ApplyDoubleWallOperator(level,level.pressure,level.temporary);
+		for( std::size_t cell=0;cell<level.rhs.size();++cell )
+			level.residual[cell]=level.rhs[cell]-level.temporary[cell];
+		DoubleLevel& coarse=levels[levelIndex+1u];
+		RestrictDouble(level,coarse,level.residual,coarse.rhs);RemoveDoubleMean(coarse.rhs);
+		std::fill(coarse.pressure.begin(),coarse.pressure.end(),0.0);
+		DoubleVCycle(levels,levelIndex+1u);ProlongateDouble(coarse,level);
+		SmoothDoubleWall(level,3u);
+	}
+
+	double IndependentFixed12WallResidual(
+		const RISE::FireProductionProjectionRequest& request )
+	{
+		DoubleLevel fine;fine.nx=request.shape.nx;fine.ny=request.shape.ny;
+		fine.nz=request.shape.nz;fine.spacing[0]=request.shape.cellWidthM;
+		fine.spacing[1]=request.shape.cellWidthM;fine.spacing[2]=request.shape.cellWidthM;
+		fine.density.assign(request.gasDensityKGPerM3.begin(),request.gasDensityKGPerM3.end());
+		BuildDoubleWallCoefficients(fine);const std::size_t cells=fine.nx*fine.ny*fine.nz;
+		fine.rhs.assign(cells,0.0);fine.pressure.assign(cells,0.0);
+		fine.temporary.assign(cells,0.0);fine.residual.assign(cells,0.0);
+		for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
+			for( std::size_t x=0;x<fine.nx;++x ) {
+				double divergence=0.0;
+				for( unsigned int axis=0;axis<3u;++axis ) {
+					std::size_t hx=x,hy=y,hz=z;if( axis==0u ) ++hx;
+					if( axis==1u ) ++hy;if( axis==2u ) ++hz;
+					const std::size_t low=DoubleFace(fine,axis,x,y,z);
+					const std::size_t high=DoubleFace(fine,axis,hx,hy,hz);
+					const double lowVelocity=fine.beta[axis][low]==0.0?0.0:
+						static_cast<double>(request.provisionalMomentumKGPerM2S[axis][low])*
+						fine.beta[axis][low];
+					const double highVelocity=fine.beta[axis][high]==0.0?0.0:
+						static_cast<double>(request.provisionalMomentumKGPerM2S[axis][high])*
+						fine.beta[axis][high];
+					divergence+=(highVelocity-lowVelocity)/fine.spacing[axis];
+				}
+				const std::size_t cell=DoubleCell(fine,x,y,z);
+				fine.rhs[cell]=-(divergence-request.divergenceTargetPerS[cell])/
+					static_cast<double>(request.timeStepS);
+			}
+		RemoveDoubleMean(fine.rhs);std::vector<DoubleLevel> levels;levels.push_back(fine);
+		while( levels.back().nx>4u||levels.back().ny>4u||levels.back().nz>4u ) {
+			const DoubleLevel& parent=levels.back();DoubleLevel coarse;
+			coarse.nx=parent.nx>4u?(parent.nx+1u)/2u:parent.nx;
+			coarse.ny=parent.ny>4u?(parent.ny+1u)/2u:parent.ny;
+			coarse.nz=parent.nz>4u?(parent.nz+1u)/2u:parent.nz;
+			coarse.spacing[0]=parent.spacing[0]*parent.nx/coarse.nx;
+			coarse.spacing[1]=parent.spacing[1]*parent.ny/coarse.ny;
+			coarse.spacing[2]=parent.spacing[2]*parent.nz/coarse.nz;
+			RestrictDouble(parent,coarse,parent.density,coarse.density);
+			BuildDoubleWallCoefficients(coarse);const std::size_t count=coarse.nx*coarse.ny*coarse.nz;
+			coarse.rhs.assign(count,0.0);coarse.pressure.assign(count,0.0);
+			coarse.temporary.assign(count,0.0);coarse.residual.assign(count,0.0);
+			levels.push_back(coarse);
+		}
+		for( unsigned int cycle=0;cycle<12u;++cycle ) {
+			DoubleVCycle(levels,0u);RemoveDoubleMean(levels[0].pressure);
+		}
+		double maximum=0.0;
+		for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
+			for( std::size_t x=0;x<fine.nx;++x ) {
+				double divergence=0.0;
+				for( unsigned int axis=0;axis<3u;++axis ) {
+					std::size_t hx=x,hy=y,hz=z;if( axis==0u ) ++hx;
+					if( axis==1u ) ++hy;if( axis==2u ) ++hz;
+					auto corrected=[&](std::size_t fx,std::size_t fy,std::size_t fz){
+						const std::size_t face=DoubleFace(fine,axis,fx,fy,fz);
+						if( fine.beta[axis][face]==0.0 ) return 0.0;
+						std::size_t lx=fx,ly=fy,lz=fz;
+						if( axis==0u ) --lx;if( axis==1u ) --ly;if( axis==2u ) --lz;
+						const double gradient=(levels[0].pressure[DoubleCell(fine,fx,fy,fz)]-
+							levels[0].pressure[DoubleCell(fine,lx,ly,lz)])/fine.spacing[axis];
+						return (static_cast<double>(request.provisionalMomentumKGPerM2S[axis][face])-
+							static_cast<double>(request.timeStepS)*gradient)*fine.beta[axis][face];};
+					const double low=corrected(x,y,z);const double high=corrected(hx,hy,hz);
+					divergence+=(high-low)/fine.spacing[axis];
+				}
+				maximum=std::max(maximum,std::fabs(divergence-
+					request.divergenceTargetPerS[DoubleCell(fine,x,y,z)]));
+			}
+		return maximum;
+	}
 }
 
 int main()
@@ -135,6 +406,55 @@ int main()
 	Check(ProjectFireProductionCPU(sinusoid,sinusoidResult,&error)&&
 		sinusoidResult.validationPassed&&sinusoidResult.maximumPostProjectionResidualPerS<=5.0e-5f,
 		"P2 constant-density sinusoidal pressure is recovered within the fixed schedule");
+
+	FireProductionProjectionRequest densityBytes=EmptyRequest(4u,4u,4u);
+	densityBytes.ambientDensityKGPerM3=0.04f;
+	densityBytes.boundary={{FireProductionProjectionPeriodic,FireProductionProjectionPeriodic,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionWall,FireProductionProjectionWall}};
+	for( std::size_t z=0;z<densityBytes.shape.nz;++z )
+		for( std::size_t y=0;y<densityBytes.shape.ny;++y )
+			for( std::size_t x=0;x<densityBytes.shape.nx;++x )
+				densityBytes.gasDensityKGPerM3[Cell(densityBytes.shape,x,y,z)]=
+					x==0u?0.01f:(x==1u?0.02f:(x==2u?0.08f:0.16f));
+	for( std::size_t z=0;z<densityBytes.shape.nz;++z )
+		for( std::size_t y=0;y<densityBytes.shape.ny;++y )
+			for( std::size_t x=0;x<=densityBytes.shape.nx;++x )
+				densityBytes.provisionalMomentumKGPerM2S[0][Face(
+					densityBytes.shape,0u,x,y,z)]=IndependentFaceDensity(
+						densityBytes,0u,x,y,z)*0.1f;
+	FireProductionProjectionResult densityBytesResult;
+	const bool densityBytesOK=ProjectFireProductionCPU(densityBytes,densityBytesResult,&error);
+	Check(densityBytesOK&&
+		densityBytesResult.faceDensityKGPerM3[0][Face(densityBytes.shape,0u,1u,0u,0u)]==
+			0.5f*0.01f+0.5f*0.02f&&
+		densityBytesResult.faceDensityKGPerM3[0][Face(densityBytes.shape,0u,0u,0u,0u)]==
+			0.5f*0.16f+0.5f*0.01f&&
+		densityBytesResult.faceDensityKGPerM3[1][Face(densityBytes.shape,1u,0u,0u,0u)]==
+			0.5f*0.01f+0.5f*densityBytes.ambientDensityKGPerM3&&
+		densityBytesResult.faceDensityKGPerM3[2][Face(densityBytes.shape,2u,2u,0u,0u)]==0.08f&&
+		densityBytesResult.velocityMPerS[0][Face(densityBytes.shape,0u,1u,0u,0u)]==
+			((0.5f*0.01f+0.5f*0.02f)*0.1f)/(0.5f*0.01f+0.5f*0.02f),
+		"P2 stores exact arithmetic-mean interior, periodic, open, and wall face densities");
+	Check(densityBytesOK&&
+		densityBytesResult.faceDensityKGPerM3[0][Face(densityBytes.shape,0u,0u,0u,0u)]==
+			densityBytesResult.faceDensityKGPerM3[0][Face(densityBytes.shape,0u,4u,0u,0u)]&&
+		densityBytesResult.momentumKGPerM2S[0][Face(densityBytes.shape,0u,0u,0u,0u)]==
+			densityBytesResult.momentumKGPerM2S[0][Face(densityBytes.shape,0u,4u,0u,0u)]&&
+		densityBytesResult.velocityMPerS[0][Face(densityBytes.shape,0u,0u,0u,0u)]==
+			densityBytesResult.velocityMPerS[0][Face(densityBytes.shape,0u,4u,0u,0u)],
+		"P2 publishes the positive periodic seam as an exact canonical byte duplicate");
+
+	FireProductionProjectionRequest wallOverwrite=EmptyRequest(4u,4u,4u);
+	SetBoundary(wallOverwrite,FireProductionProjectionWall);
+	wallOverwrite.gasDensityKGPerM3[Cell(wallOverwrite.shape,0u,0u,0u)]=2.0f;
+	wallOverwrite.provisionalMomentumKGPerM2S[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]=7.0f;
+	FireProductionProjectionResult wallOverwriteResult;
+	Check(ProjectFireProductionCPU(wallOverwrite,wallOverwriteResult,&error)&&
+		wallOverwriteResult.faceDensityKGPerM3[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]==2.0f&&
+		wallOverwriteResult.momentumKGPerM2S[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]==0.0f&&
+		wallOverwriteResult.velocityMPerS[0][Face(wallOverwrite.shape,0u,0u,0u,0u)]==0.0f,
+		"P2 wall output preserves adjacent density and overwrites nonzero normal momentum exactly");
 
 	FireProductionProjectionRequest manufactured=EmptyRequest(17u,9u,7u);
 	SetBoundary(manufactured,FireProductionProjectionPeriodic);
@@ -217,6 +537,86 @@ int main()
 		manufacturedResult.pressurePa==repeatedResult.pressurePa&&
 		manufacturedResult.velocityMPerS==repeatedResult.velocityMPerS,
 		"P2 odd-grid variable-density manufactured projection is accurate and byte deterministic");
+	FireSim::PeriodicMACShape oracleShape;oracleShape.nx=manufactured.shape.nx;
+	oracleShape.ny=manufactured.shape.ny;oracleShape.nz=manufactured.shape.nz;
+	oracleShape.cellWidthM=manufactured.shape.cellWidthM;
+	std::vector<double> oracleDensity(manufactured.gasDensityKGPerM3.begin(),
+		manufactured.gasDensityKGPerM3.end());
+	std::vector<double> oracleTarget(manufactured.divergenceTargetPerS.begin(),
+		manufactured.divergenceTargetPerS.end());
+	FireSim::PeriodicMACField oracleMomentum;
+	for( unsigned int axis=0;axis<3u;++axis ) {
+		oracleMomentum.component[axis].assign(oracleShape.CellCount(),0.0);
+		for( std::size_t z=0;z<manufactured.shape.nz;++z )
+			for( std::size_t y=0;y<manufactured.shape.ny;++y )
+				for( std::size_t x=0;x<manufactured.shape.nx;++x ) {
+					const std::size_t fx=axis==0u?x+1u:x;
+					const std::size_t fy=axis==1u?y+1u:y;
+					const std::size_t fz=axis==2u?z+1u:z;
+					oracleMomentum.component[axis][oracleShape.Index(x,y,z)]=
+						manufactured.provisionalMomentumKGPerM2S[axis][Face(
+							manufactured.shape,axis,fx,fy,fz)];
+				}
+	}
+	FireSim::PeriodicMACProjection3DResult oracleResult;
+	// U_ref=0.2 m/s is a predeclared upper bound on the fixture's independently
+	// authored provisional velocity (the measured maximum is below 0.185 m/s).
+	const double oracleReferenceVelocity=0.2;
+	const double oracleTolerance=0.005*oracleReferenceVelocity/
+		(static_cast<double>(manufactured.shape.cellWidthM)*manufactured.shape.nx);
+	const bool oracleOK=FireSim::ProjectPeriodicMACVelocity3D(oracleShape,oracleDensity,oracleMomentum,
+		oracleTarget,manufactured.timeStepS,oracleTolerance,oracleResult,&error);
+	double oracleMaximumResidual=0.0;
+	if( oracleOK ) for( std::size_t cell=0;cell<oracleShape.CellCount();++cell )
+		oracleMaximumResidual=std::max(oracleMaximumResidual,std::fabs(
+			FireSim::PeriodicMACDivergence3D(oracleShape,oracleResult.velocityMPerS,cell)-
+			oracleTarget[cell]));
+	Check(oracleOK&&oracleMaximumResidual>0.0&&oracleMaximumResidual<=oracleTolerance&&
+		manufacturedResult.maximumPostProjectionResidualPerS<=
+		1.25f*static_cast<float>(oracleMaximumResidual),
+		"P2 manufactured residual is no worse than 1.25 times the fp64 oracle error");
+
+	FireProductionProjectionRequest fixedWork=EmptyRequest(17u,9u,7u);
+	SetBoundary(fixedWork,FireProductionProjectionWall);
+	std::vector<float> fixedPressure(fixedWork.shape.CellCount(),0.0f);
+	for( std::size_t z=0;z<fixedWork.shape.nz;++z )
+		for( std::size_t y=0;y<fixedWork.shape.ny;++y )
+			for( std::size_t x=0;x<fixedWork.shape.nx;++x ) {
+				const float px=pi*(static_cast<float>(x)+0.5f)/
+					static_cast<float>(fixedWork.shape.nx);
+				const float py=pi*(static_cast<float>(y)+0.5f)/
+					static_cast<float>(fixedWork.shape.ny);
+				const float pz=pi*(static_cast<float>(z)+0.5f)/
+					static_cast<float>(fixedWork.shape.nz);
+				fixedPressure[Cell(fixedWork.shape,x,y,z)]=0.7f*std::cos(px)+
+					0.2f*std::cos(py)+0.1f*std::cos(pz);
+				fixedWork.gasDensityKGPerM3[Cell(fixedWork.shape,x,y,z)]=
+					1.0f+0.15f*std::sin(px)*std::cos(py);
+			}
+	for( unsigned int axis=0;axis<3u;++axis ) {
+		const std::size_t ex=axis==0u?fixedWork.shape.nx+1u:fixedWork.shape.nx;
+		const std::size_t ey=axis==1u?fixedWork.shape.ny+1u:fixedWork.shape.ny;
+		const std::size_t ez=axis==2u?fixedWork.shape.nz+1u:fixedWork.shape.nz;
+		for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
+			for( std::size_t x=0;x<ex;++x ) {
+				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+				const std::size_t extent=axis==0u?fixedWork.shape.nx:
+					(axis==1u?fixedWork.shape.ny:fixedWork.shape.nz);
+				if( coordinate==0u||coordinate==extent ) continue;
+				std::size_t lx=x,ly=y,lz=z;
+				if( axis==0u ) --lx;if( axis==1u ) --ly;if( axis==2u ) --lz;
+				fixedWork.provisionalMomentumKGPerM2S[axis][Face(fixedWork.shape,
+					axis,x,y,z)]=fixedWork.timeStepS*(fixedPressure[Cell(fixedWork.shape,x,y,z)]-
+					fixedPressure[Cell(fixedWork.shape,lx,ly,lz)])/fixedWork.shape.cellWidthM;
+			}
+	}
+	FireProductionProjectionResult fixedWorkResult;
+	const bool fixedWorkOK=ProjectFireProductionCPU(fixedWork,fixedWorkResult,&error);
+	const double fixedWorkOracleResidual=IndependentFixed12WallResidual(fixedWork);
+	Check(fixedWorkOK&&fixedWorkResult.validationPassed&&fixedWorkOracleResidual>0.0&&
+		fixedWorkResult.maximumPostProjectionResidualPerS<=
+			1.25f*static_cast<float>(fixedWorkOracleResidual),
+		"P2 fp32 fixed schedule stays within 1.25 times an independent fp64 fixed-work mirror");
 
 	FireProductionProjectionRequest expansion=EmptyRequest(11u,7u,5u);
 	SetBoundary(expansion,FireProductionProjectionPressureOpen);
@@ -250,6 +650,59 @@ int main()
 					[](unsigned char value){return value==0u;});}),
 		"P2 pressure-open expansion preserves the independent x-linear target field");
 
+	for( const float normalVelocity : {0.3f,-0.3f} ) {
+		FireProductionProjectionRequest totalHead=EmptyRequest(11u,7u,5u);
+		totalHead.boundary={{FireProductionProjectionPressureOpen,
+			FireProductionProjectionPressureOpen,FireProductionProjectionPeriodic,
+			FireProductionProjectionPeriodic,FireProductionProjectionPeriodic,
+			FireProductionProjectionPeriodic}};
+		for( float& value : totalHead.provisionalMomentumKGPerM2S[0] ) value=normalVelocity;
+		for( float& value : totalHead.provisionalMomentumKGPerM2S[1] ) value=0.4f;
+		for( float& value : totalHead.provisionalMomentumKGPerM2S[2] ) value=-0.2f;
+		float speed2=normalVelocity*normalVelocity;
+		speed2+=0.4f*0.4f;speed2+=(-0.2f)*(-0.2f);
+		const float inflowPressure=-0.5f*totalHead.ambientDensityKGPerM3*speed2;
+		const float lowPressure=normalVelocity>0.0f?inflowPressure:0.0f;
+		const float highPressure=normalVelocity<0.0f?inflowPressure:0.0f;
+		const float gradient=(highPressure-lowPressure)/
+			(totalHead.shape.cellWidthM*static_cast<float>(totalHead.shape.nx));
+		FireProductionProjectionResult totalHeadResult;
+		const bool totalHeadOK=ProjectFireProductionCPU(totalHead,totalHeadResult,&error);
+		float totalHeadPressureError=0.0f,totalHeadVelocityError=0.0f;
+		if( totalHeadOK ) {
+			for( std::size_t z=0;z<totalHead.shape.nz;++z )
+				for( std::size_t y=0;y<totalHead.shape.ny;++y )
+					for( std::size_t x=0;x<totalHead.shape.nx;++x ) {
+						const float expected=lowPressure+(static_cast<float>(x)+0.5f)*
+							totalHead.shape.cellWidthM*gradient;
+						totalHeadPressureError=std::max(totalHeadPressureError,std::fabs(
+							totalHeadResult.pressurePa[Cell(totalHead.shape,x,y,z)]-expected));
+					}
+			const float expectedVelocity=normalVelocity-totalHead.timeStepS*gradient;
+			for( const float value : totalHeadResult.velocityMPerS[0] )
+				totalHeadVelocityError=std::max(totalHeadVelocityError,
+					std::fabs(value-expectedVelocity));
+		}
+		const unsigned char lowInflow=normalVelocity>0.0f?1u:0u;
+		const unsigned char highInflow=normalVelocity<0.0f?1u:0u;
+		if( !totalHeadOK||!totalHeadResult.validationPassed||
+			totalHeadPressureError>2.0e-4f||totalHeadVelocityError>3.0e-5f )
+			std::cerr << "Total-head detail: u=" << normalVelocity << " error=" << error <<
+				" residual=" << totalHeadResult.maximumPostProjectionResidualPerS <<
+				" pressure=" << totalHeadPressureError << " velocity=" <<
+				totalHeadVelocityError << '\n';
+		Check(totalHeadOK&&totalHeadResult.validationPassed&&
+			totalHeadResult.maximumPostProjectionResidualPerS<=2.5e-4f&&
+			totalHeadPressureError<=2.0e-4f&&totalHeadVelocityError<=3.0e-5f&&
+			std::all_of(totalHeadResult.pressureOpenInflow[0].begin(),
+				totalHeadResult.pressureOpenInflow[0].end(),[&](unsigned char value){
+					return value==lowInflow;})&&
+			std::all_of(totalHeadResult.pressureOpenInflow[1].begin(),
+				totalHeadResult.pressureOpenInflow[1].end(),[&](unsigned char value){
+					return value==highInflow;}),
+			"P2 total-head manufactured field binds factor-two faces, tangents, and reversed roles");
+	}
+
 	FireProductionProjectionRequest roles=EmptyRequest(8u,6u,4u);
 	SetBoundary(roles,FireProductionProjectionPressureOpen);
 	for( std::size_t z=0;z<roles.shape.nz;++z ) for( std::size_t y=0;y<roles.shape.ny;++y ) {
@@ -264,16 +717,69 @@ int main()
 			rolesResult.pressureOpenInflow[1].end(),[](unsigned char value){return value==0u;}),
 		"P2 frozen pressure-open total-head roles distinguish inflow and outflow signs");
 
+	FireProductionProjectionRequest incompatible=EmptyRequest(6u,5u,4u);
+	SetBoundary(incompatible,FireProductionProjectionWall);
+	std::fill(incompatible.divergenceTargetPerS.begin(),
+		incompatible.divergenceTargetPerS.end(),0.4f);
+	FireProductionProjectionResult incompatibleResult;
+	Check(ProjectFireProductionCPU(incompatible,incompatibleResult,&error)&&
+		!incompatibleResult.validationPassed&&
+		incompatibleResult.maximumPostProjectionResidualPerS==0.4f&&
+		!incompatibleResult.pressurePa.empty(),
+		"P2 finite validation miss publishes diagnostics without retry or structural abort");
+
 	FireProductionProjectionRequest invalid=manufactured;
 	invalid.gasDensityKGPerM3[0]=std::numeric_limits<float>::quiet_NaN();
 	FireProductionProjectionResult invalidResult;invalidResult.pressurePa.push_back(9.0f);
 	Check(!ProjectFireProductionCPU(invalid,invalidResult,&error)&&
 		invalidResult.pressurePa.empty()&&!error.empty(),
 		"P2 structural input failure returns no partial projection");
+	FireProductionProjectionRequest seam=EmptyRequest(4u,4u,4u);
+	SetBoundary(seam,FireProductionProjectionPeriodic);
+	seam.provisionalMomentumKGPerM2S[0][Face(seam.shape,0u,4u,0u,0u)]=1.0f;
+	Check(!ValidateFireProductionProjectionRequest(seam,&error)&&
+		error.find("seam differs")!=std::string::npos,
+		"P2 rejects a noncanonical periodic momentum seam");
+	FireProductionProjectionRequest unpaired=EmptyRequest(4u,4u,4u);
+	unpaired.boundary[0]=FireProductionProjectionPeriodic;
+	Check(!ValidateFireProductionProjectionRequest(unpaired,&error)&&
+		error.find("unpaired")!=std::string::npos,
+		"P2 rejects an unpaired periodic boundary");
+	FireProductionProjectionRequest oversized;
+	oversized.shape.nx=1024u;oversized.shape.ny=1024u;oversized.shape.nz=1024u;
+	oversized.shape.cellWidthM=0.1f;oversized.timeStepS=0.01f;
+	oversized.ambientDensityKGPerM3=1.0f;
+	Check(!ValidateFireProductionProjectionRequest(oversized,&error)&&
+		error.find("2 GiB")!=std::string::npos,
+		"P2 rejects the complete peak working set before allocating arrays");
+
+	const std::string source=ReadFile("src/Library/Utilities/FireProductionProjection.cpp");
+	const std::string makefile=ReadFile("build/make/rise/Makefile");
+	const std::string android=ReadFile("build/cmake/rise-android/CMakeLists.txt");
+	const std::string visualStudio=ReadFile("build/VS2022/Library/Library.vcxproj");
+	const std::string xcode=ReadFile("build/XCode/rise/rise.xcodeproj/project.pbxproj");
+	Check(Count(source,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
+		Count(source,"Smooth(level,boundary,3u,nullspace)")==2u&&
+		Count(source,"Smooth(level,boundary,32u,nullspace)")==1u&&
+		Count(source,"const float omega=2.0f/3.0f;")==1u&&
+		source.find("BlellochSum")!=std::string::npos,
+		"P2 source guard binds 12 cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
+	Check(makefile.find("FireProductionProjection.o :")!=std::string::npos&&
+		makefile.find("$(filter-out -ffast-math,$(CXXFLAGS)) -fno-fast-math -ffp-contract=off")!=
+			std::string::npos&&android.find("FireProductionProjection.cpp\"\n    PROPERTIES "
+			"COMPILE_OPTIONS \"-fno-fast-math;-ffp-contract=off\"")!=std::string::npos&&
+		visualStudio.find("FireProductionProjection.cpp\">\n      <FloatingPointModel>Strict")!=
+			std::string::npos&&Count(xcode,"FireProductionProjection.cpp in Sources */ = "
+			"{isa = PBXBuildFile;")==2u&&Count(xcode,"FireProductionProjection.cpp */; settings = "
+			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; };")==2u,
+		"P2 strict-fp32 bindings are present on every authoritative build surface");
 
 	if( failures==0 ) {
 		std::cout << "FireProductionProjectionTest passed: post_residual=" <<
 			manufacturedResult.maximumPostProjectionResidualPerS <<
+			" oracle_residual=" << oracleMaximumResidual << " oracle_ratio=" <<
+			manufacturedResult.maximumPostProjectionResidualPerS/oracleMaximumResidual <<
+			" fixed12_fp64_residual=" << fixedWorkOracleResidual <<
 			" pressure_error=" << maximumPressureError << '\n';
 		return 0;
 	}

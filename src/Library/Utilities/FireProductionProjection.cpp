@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <new>
 
 namespace RISE
 {
@@ -68,6 +69,55 @@ namespace RISE
 			return result;
 		}
 
+		bool AddBytes( std::uint64_t count, std::uint64_t bytesPerValue,
+			std::uint64_t& total )
+		{
+			if( count>std::numeric_limits<std::uint64_t>::max()/bytesPerValue ) return false;
+			const std::uint64_t bytes=count*bytesPerValue;
+			if( total>std::numeric_limits<std::uint64_t>::max()-bytes ) return false;
+			total+=bytes;return true;
+		}
+
+		std::uint64_t FaceValueCount( std::size_t nx, std::size_t ny, std::size_t nz )
+		{
+			return static_cast<std::uint64_t>(nx+1u)*ny*nz+
+				static_cast<std::uint64_t>(nx)*(ny+1u)*nz+
+				static_cast<std::uint64_t>(nx)*ny*(nz+1u);
+		}
+
+		bool ProjectionWorkingSetWithinLimit( const FireProductionProjectionShape& shape )
+		{
+			const std::uint64_t limit=UINT64_C(1)<<31u;
+			std::uint64_t total=0u;
+			std::size_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+			const std::uint64_t fineCells=static_cast<std::uint64_t>(nx)*ny*nz;
+			const std::uint64_t fineFaces=FaceValueCount(nx,ny,nz);
+			// Caller-owned request bytes and returned fine-grid bytes are part of the
+			// production batch peak even though their vectors predate this call.
+			if( !AddBytes(2u*fineCells+fineFaces,sizeof(float),total)||
+				!AddBytes(fineCells+3u*fineFaces,sizeof(float),total) ) return false;
+			std::uint64_t largestCoarseCells=0u;
+			for( ;; ) {
+				const std::uint64_t cells=static_cast<std::uint64_t>(nx)*ny*nz;
+				const std::uint64_t faces=FaceValueCount(nx,ny,nz);
+				// density, rhs, pressure, temporary, residual, diagonal, and three beta arrays.
+				if( !AddBytes(6u*cells+faces,sizeof(float),total) ) return false;
+				if( nx<=4u&&ny<=4u&&nz<=4u ) break;
+				nx=nx>4u?(nx+1u)/2u:nx;ny=ny>4u?(ny+1u)/2u:ny;
+				nz=nz>4u?(nz+1u)/2u:nz;
+				largestCoarseCells=std::max(largestCoarseCells,
+					static_cast<std::uint64_t>(nx)*ny*nz);
+			}
+			const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
+				static_cast<std::uint64_t>(shape.nx)*shape.nz+
+				static_cast<std::uint64_t>(shape.nx)*shape.ny);
+			if( !AddBytes(boundaryFaces,sizeof(float),total)||
+				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
+				!AddBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(float),total)||
+				!AddBytes(largestCoarseCells,sizeof(unsigned int),total) ) return false;
+			return total<=limit;
+		}
+
 		float BlellochSum( const std::vector<float>& values )
 		{
 			const std::size_t width=NextPowerOfTwo(values.size());
@@ -96,6 +146,38 @@ namespace RISE
 			return 0.5f*first+0.5f*second;
 		}
 
+		float StoredFaceDensity( const Level& level,
+			const std::array<FireProductionProjectionBoundary,6>& boundary,
+			float ambientDensity, unsigned int axis,
+			std::size_t x, std::size_t y, std::size_t z )
+		{
+			const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+			const std::size_t extent=axis==0u?level.nx:(axis==1u?level.ny:level.nz);
+			std::size_t lowX=x,lowY=y,lowZ=z,highX=x,highY=y,highZ=z;
+			if( coordinate>0u&&coordinate<extent ) {
+				if( axis==0u ) --lowX;if( axis==1u ) --lowY;if( axis==2u ) --lowZ;
+				return ArithmeticMean(level.density[CellIndex(level.nx,level.ny,
+					lowX,lowY,lowZ)],level.density[CellIndex(level.nx,level.ny,
+					highX,highY,highZ)]);
+			}
+			const unsigned int side=2u*axis+(coordinate?1u:0u);
+			if( boundary[side]==FireProductionProjectionPeriodic ) {
+				if( axis==0u ) {lowX=level.nx-1u;highX=0u;}
+				if( axis==1u ) {lowY=level.ny-1u;highY=0u;}
+				if( axis==2u ) {lowZ=level.nz-1u;highZ=0u;}
+				return ArithmeticMean(level.density[CellIndex(level.nx,level.ny,
+					lowX,lowY,lowZ)],level.density[CellIndex(level.nx,level.ny,
+					highX,highY,highZ)]);
+			}
+			if( axis==0u ) highX=coordinate?level.nx-1u:0u;
+			if( axis==1u ) highY=coordinate?level.ny-1u:0u;
+			if( axis==2u ) highZ=coordinate?level.nz-1u:0u;
+			const float interior=level.density[CellIndex(level.nx,level.ny,
+				highX,highY,highZ)];
+			return boundary[side]==FireProductionProjectionPressureOpen?
+				ArithmeticMean(interior,ambientDensity):interior;
+		}
+
 		void BuildLevelCoefficients( Level& level,
 			const std::array<FireProductionProjectionBoundary,6>& boundary,
 			float ambientDensity )
@@ -109,19 +191,16 @@ namespace RISE
 				for( std::size_t x=0;x<=nx;++x ) {
 					const std::size_t face=FaceIndex(nx,ny,0u,x,y,z);
 					if( x>0u&&x<nx ) level.inverseFaceDensity[0][face]=1.0f/
-						ArithmeticMean(level.density[CellIndex(nx,ny,x-1u,y,z)],
-							level.density[CellIndex(nx,ny,x,y,z)]);
+						StoredFaceDensity(level,boundary,ambientDensity,0u,x,y,z);
 					else {
 						const unsigned int side=x?1u:0u;
 						if( boundary[side]==FireProductionProjectionPeriodic ) {
-							const float value=1.0f/ArithmeticMean(
-								level.density[CellIndex(nx,ny,nx-1u,y,z)],
-								level.density[CellIndex(nx,ny,0u,y,z)]);
+							const float value=1.0f/
+								StoredFaceDensity(level,boundary,ambientDensity,0u,x,y,z);
 							level.inverseFaceDensity[0][face]=value;
 						} else if( boundary[side]==FireProductionProjectionPressureOpen ) {
-							const std::size_t cell=CellIndex(nx,ny,x?nx-1u:0u,y,z);
 							level.inverseFaceDensity[0][face]=1.0f/
-								ArithmeticMean(level.density[cell],ambientDensity);
+								StoredFaceDensity(level,boundary,ambientDensity,0u,x,y,z);
 						}
 					}
 				}
@@ -129,18 +208,15 @@ namespace RISE
 				for( std::size_t x=0;x<nx;++x ) {
 					const std::size_t face=FaceIndex(nx,ny,1u,x,y,z);
 					if( y>0u&&y<ny ) level.inverseFaceDensity[1][face]=1.0f/
-						ArithmeticMean(level.density[CellIndex(nx,ny,x,y-1u,z)],
-							level.density[CellIndex(nx,ny,x,y,z)]);
+						StoredFaceDensity(level,boundary,ambientDensity,1u,x,y,z);
 					else {
 						const unsigned int side=y?3u:2u;
 						if( boundary[side]==FireProductionProjectionPeriodic ) {
-							level.inverseFaceDensity[1][face]=1.0f/ArithmeticMean(
-								level.density[CellIndex(nx,ny,x,ny-1u,z)],
-								level.density[CellIndex(nx,ny,x,0u,z)]);
-						} else if( boundary[side]==FireProductionProjectionPressureOpen ) {
-							const std::size_t cell=CellIndex(nx,ny,x,y?ny-1u:0u,z);
 							level.inverseFaceDensity[1][face]=1.0f/
-								ArithmeticMean(level.density[cell],ambientDensity);
+								StoredFaceDensity(level,boundary,ambientDensity,1u,x,y,z);
+						} else if( boundary[side]==FireProductionProjectionPressureOpen ) {
+							level.inverseFaceDensity[1][face]=1.0f/
+								StoredFaceDensity(level,boundary,ambientDensity,1u,x,y,z);
 						}
 					}
 				}
@@ -148,18 +224,15 @@ namespace RISE
 				for( std::size_t x=0;x<nx;++x ) {
 					const std::size_t face=FaceIndex(nx,ny,2u,x,y,z);
 					if( z>0u&&z<nz ) level.inverseFaceDensity[2][face]=1.0f/
-						ArithmeticMean(level.density[CellIndex(nx,ny,x,y,z-1u)],
-							level.density[CellIndex(nx,ny,x,y,z)]);
+						StoredFaceDensity(level,boundary,ambientDensity,2u,x,y,z);
 					else {
 						const unsigned int side=z?5u:4u;
 						if( boundary[side]==FireProductionProjectionPeriodic ) {
-							level.inverseFaceDensity[2][face]=1.0f/ArithmeticMean(
-								level.density[CellIndex(nx,ny,x,y,nz-1u)],
-								level.density[CellIndex(nx,ny,x,y,0u)]);
-						} else if( boundary[side]==FireProductionProjectionPressureOpen ) {
-							const std::size_t cell=CellIndex(nx,ny,x,y,z?nz-1u:0u);
 							level.inverseFaceDensity[2][face]=1.0f/
-								ArithmeticMean(level.density[cell],ambientDensity);
+								StoredFaceDensity(level,boundary,ambientDensity,2u,x,y,z);
+						} else if( boundary[side]==FireProductionProjectionPressureOpen ) {
+							level.inverseFaceDensity[2][face]=1.0f/
+								StoredFaceDensity(level,boundary,ambientDensity,2u,x,y,z);
 						}
 					}
 				}
@@ -363,6 +436,8 @@ namespace RISE
 		if( shape.nx>std::numeric_limits<std::size_t>::max()/shape.ny||
 			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz )
 			return Fail(error,"production projection dimensions overflow");
+		if( !ProjectionWorkingSetWithinLimit(shape) )
+			return Fail(error,"production projection working set exceeds 2 GiB");
 		const std::size_t cells=shape.CellCount();
 		for( const FireProductionProjectionBoundary value : request.boundary )
 			if( value!=FireProductionProjectionPeriodic&&value!=FireProductionProjectionWall&&
@@ -406,7 +481,7 @@ namespace RISE
 		return true;
 	}
 
-	bool ProjectFireProductionCPU( const FireProductionProjectionRequest& request,
+	bool ProjectFireProductionCPUImplementation( const FireProductionProjectionRequest& request,
 		FireProductionProjectionResult& result, std::string* error )
 	{
 		result=FireProductionProjectionResult();
@@ -423,13 +498,23 @@ namespace RISE
 			result.faceDensityKGPerM3[axis].resize(faces);
 			result.velocityMPerS[axis].resize(faces);
 			result.momentumKGPerM2S[axis]=request.provisionalMomentumKGPerM2S[axis];
-			for( std::size_t face=0;face<faces;++face ) {
-				const float inverse=fine.inverseFaceDensity[axis][face];
-				result.faceDensityKGPerM3[axis][face]=inverse>0.0f?1.0f/inverse:
-					request.ambientDensityKGPerM3;
-				result.velocityMPerS[axis][face]=inverse>0.0f?
-					request.provisionalMomentumKGPerM2S[axis][face]*inverse:0.0f;
-			}
+			const std::size_t ex=axis==0u?nx+1u:nx;
+			const std::size_t ey=axis==1u?ny+1u:ny;
+			const std::size_t ez=axis==2u?nz+1u:nz;
+			for( std::size_t z=0;z<ez;++z ) for( std::size_t y=0;y<ey;++y )
+				for( std::size_t x=0;x<ex;++x ) {
+					const std::size_t face=FaceIndex(nx,ny,axis,x,y,z);
+					const float density=StoredFaceDensity(fine,request.boundary,
+						request.ambientDensityKGPerM3,axis,x,y,z);
+					result.faceDensityKGPerM3[axis][face]=density;
+					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
+					const unsigned int side=2u*axis+(coordinate?1u:0u);
+					const bool wall=(coordinate==0u||coordinate==extent)&&
+						request.boundary[side]==FireProductionProjectionWall;
+					result.velocityMPerS[axis][face]=wall?0.0f:
+						request.provisionalMomentumKGPerM2S[axis][face]/density;
+				}
 			for( const float value : result.velocityMPerS[axis] )
 				maximumVelocity=std::max(maximumVelocity,std::fabs(value));
 		}
@@ -660,5 +745,16 @@ namespace RISE
 		}
 		if( error ) error->clear();
 		return true;
+	}
+
+	bool ProjectFireProductionCPU( const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result, std::string* error )
+	{
+		try {
+			return ProjectFireProductionCPUImplementation(request,result,error);
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionProjectionResult();
+			return Fail(error,"production projection allocation failed");
+		}
 	}
 }

@@ -80,11 +80,6 @@ namespace RISE
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
 
-	//! Metal implementation. Non-Metal builds fail explicitly without CPU fallback.
-	bool ProjectFireProductionMetal(
-		const FireProductionProjectionRequest& request,
-		FireProductionProjectionResult& result,
-		std::string* error=0 );
 }
 
 #endif
