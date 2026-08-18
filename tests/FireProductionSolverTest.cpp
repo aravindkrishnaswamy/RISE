@@ -467,6 +467,17 @@ int main()
 	Check(!ValidateFireProductionRemapRequest(roundedFold,&error)&&
 		error.find("folded")!=std::string::npos,
 		"fold admission evaluates the same rounded binary32 Courants as the kernels");
+	FireProductionRemapRequest cancellationFold;
+	cancellationFold.lineLength=4u;cancellationFold.lineCount=1u;
+	cancellationFold.componentCount=1u;cancellationFold.cellWidthM=1.0f;
+	cancellationFold.timeStepS=1.0f;cancellationFold.boundary=FireProductionRemapPressureOpen;
+	cancellationFold.values.assign(4u,0x1p-100f);
+	cancellationFold.ambientValues.assign(1u,0x1p-100f);
+	cancellationFold.faceVelocityMPerS={0x1.000002p+24f,0x1.000002p+24f,
+		0x1.000002p+24f,0x1.000004p+24f,0x1.000004p+24f};
+	Check(!ValidateFireProductionRemapRequest(cancellationFold,&error)&&
+		error.find("folded")!=std::string::npos,
+		"fold admission preserves unit face separation after rounded large Courants");
 	FireProductionRemapRequest invalid=constant;
 	invalid.values[0]=std::numeric_limits<float>::quiet_NaN();
 	FireProductionRemapResult invalidResult;invalidResult.updatedValues.push_back(9.0f);

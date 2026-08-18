@@ -302,13 +302,14 @@ namespace RISE
 			if( request.boundary==FireProductionRemapPeriodic&&
 				request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+request.lineLength] )
 				return Fail(error,"production periodic remap seam velocity is not single-valued");
-			float previous=0.0f;
+			double previous=0.0;
 			for( std::size_t face=0;face<=request.lineLength;++face ) {
 				const float courant=request.timeStepS*request.faceVelocityMPerS[base+face]/
 					request.cellWidthM;
 				if( !std::isfinite(courant) )
 					return Fail(error,"production remap binary32 Courant number is nonfinite");
-				const float departure=static_cast<float>(face)-courant;
+				const double departure=static_cast<double>(face)-
+					static_cast<double>(courant);
 				if( !std::isfinite(departure)||(face>0u&&departure<previous) )
 					return Fail(error,"production remap backtraced face map is folded");
 				previous=departure;
