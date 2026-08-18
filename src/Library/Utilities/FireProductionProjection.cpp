@@ -788,7 +788,11 @@ namespace RISE
 			return ProjectFireProductionCPUImplementation(request,result,error);
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionProjectionResult();
-			return Fail(error,"production projection allocation failed");
+			if( error ) {
+				try { *error="production projection allocation failed"; }
+				catch( const std::bad_alloc& ) { error->clear(); }
+			}
+			return false;
 		}
 	}
 }

@@ -10,12 +10,29 @@
 #include "../tools/fire_simulator_core.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <sstream>
 #include <string>
+
+namespace
+{
+	bool denyTestAllocations=false;
+}
+
+void* operator new( std::size_t bytes )
+{
+	if( denyTestAllocations ) throw std::bad_alloc();
+	if( void* memory=std::malloc(bytes) ) return memory;
+	throw std::bad_alloc();
+}
+
+void operator delete( void* memory ) noexcept {std::free(memory);}
+void operator delete( void* memory, std::size_t ) noexcept {std::free(memory);}
 
 namespace
 {
@@ -855,6 +872,15 @@ int main()
 	Check(!ProjectFireProductionCPU(invalid,invalidResult,&error)&&
 		invalidResult.pressurePa.empty()&&!error.empty(),
 		"P2 structural input failure returns no partial projection");
+	FireProductionProjectionRequest allocationFailure=EmptyRequest(4u,4u,4u);
+	FireProductionProjectionResult allocationFailureResult;
+	allocationFailureResult.pressurePa.push_back(7.0f);error.clear();error.shrink_to_fit();
+	denyTestAllocations=true;
+	const bool allocationFailureReturned=ProjectFireProductionCPU(
+		allocationFailure,allocationFailureResult,&error);
+	denyTestAllocations=false;
+	Check(!allocationFailureReturned&&allocationFailureResult.pressurePa.empty(),
+		"P2 persistent allocator denial returns false with no partial result or escaped exception");
 	FireProductionProjectionRequest seam=EmptyRequest(4u,4u,4u);
 	SetBoundary(seam,FireProductionProjectionPeriodic);
 	seam.provisionalMomentumKGPerM2S[0][Face(seam.shape,0u,4u,0u,0u)]=1.0f;
