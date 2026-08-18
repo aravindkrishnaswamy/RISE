@@ -208,6 +208,12 @@ int main()
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),
 		"non-Metal production capability reports honest unavailability");
+	const std::uint32_t unsupportedInput[]={0x12345678u,0x9abcdef0u};
+	std::vector<std::uint32_t> unsupportedOutput(2u,0xfeedfaceu);
+	error.clear();
+	Check(!RunFireProductionComputeChallenge(unsupportedInput,2u,unsupportedOutput,&error)&&
+		unsupportedOutput.empty()&&!error.empty(),
+		"non-Metal challenge fails explicitly without a silent CPU fallback");
 #endif
 
 	if( failures==0 ) {
