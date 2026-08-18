@@ -283,15 +283,36 @@ foreach(test_src ${TEST_SOURCES})
         "${RISE_LIB_INCLUDE}"
         "${RISE_TESTS_DIR}"        # ProceduralTestHelpers.h, StandaloneTestReporting.h, etc.
         "${VCPKG_INCLUDE}"
+        "${OIDN_DIR}/include"      # RISE_ENABLE_OIDN: library headers include OpenImageDenoise/*
+        "${OPENPGL_DIR}/include"   # RISE_ENABLE_OPENPGL: PathGuidingField.h includes openpgl/*
     )
 
     # Defines mirror Library.vcxproj + the legacy test .vcxproj.
+    # ABI-CRITICAL: RISE_ENABLE_OIDN / RISE_ENABLE_OPENPGL gate class LAYOUT in
+    # library headers (PixelBasedRasterizerHelper.h's OnBeforeDenoise vtable slot;
+    # PixelBasedPelRasterizer.h's pGuidingField/guidingAlphaScale members).  The
+    # prebuilt RISE.lib defines them, so every test TU must too or member offsets
+    # and vtables silently diverge (real 0xC0000005-class failures, not warnings).
+    # RISE_ENABLE_PROFILING follows Library.vcxproj: Release-only, not Debug.
+    # Deliberately NOT mirrored: INLINE_TEMPLATE_SPECIALIZATIONS (a
+    # library-internal technique that re-includes KeyframableHelper.cpp
+    # into every TU -- in a test TU it emits strong duplicate
+    # Parameter<Point3/Vector3> specializations and LNK2005s against
+    # RISE.lib; it gates symbol emission only, never class layout) and
+    # USE_PRECOMPILED_HEADER_ (gates pch.h content tests never include).
     target_compile_definitions(${test_name} PRIVATE
         COLORS_RGB
         MERSENNE53
         NO_TIFF_SUPPORT
         WIN32
+        _WINDOWS
         _CRT_SECURE_NO_WARNINGS
+        _CRT_SECURE_NO_DEPRECATE
+        NOMINMAX
+        IMATH_HALF_NO_LOOKUP_TABLE
+        RISE_ENABLE_OIDN
+        RISE_ENABLE_OPENPGL
+        $<$<NOT:$<CONFIG:Debug>>:RISE_ENABLE_PROFILING>
     )
 
     target_compile_options(${test_name} PRIVATE
