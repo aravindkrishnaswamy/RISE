@@ -462,6 +462,82 @@ iteration (more than one projection in substance), and treating a finite
 residual miss as a structural abort (recreates the certified solver's stall in
 the monitored production path).
 
+### 7.4 P3 coupled-transport landing pins (r87)
+
+P3 owns one production transport step without chemistry, radiation, phase
+change, pilot, or prescribed bed flux. Those source maps enter at P4. Its
+beginning snapshot contains record-ordered cell conservative channels,
+staggered momentum, a finite cell `S_div` field, and the molecular kinematic
+viscosity field that P4 will derive from the record tables. Component zero is
+gas density. The Vreman coefficient is read from the canonical transport
+record; it is not a request knob or duplicated literal.
+
+The step has one immutable beginning state and this exact order:
+
+1. derive stored arithmetic-mean face density and beginning MAC velocity,
+   applying wall normal prescription before any gradient or norm;
+2. evaluate the centered beginning-velocity gradient and retained Vreman eddy
+   viscosity once per cell; combine it with the supplied molecular field and
+   assemble gravity plus symmetric viscous-stress momentum RHS from that same
+   snapshot;
+3. trace all three remap directions from the beginning velocity. Every cell
+   channel and every dual-volume momentum channel obtains its x/y/z fluxes
+   from the same beginning bytes. The conservative update accumulates the
+   three signed flux divergences in x, then y, then z order; no direction sees
+   another direction's updated state;
+4. add exactly one `dt` times the frozen nonpressure momentum RHS to the
+   remapped staggered momentum; and
+5. invoke the r86 projection exactly once with remapped gas density, that
+   provisional momentum, and the supplied `S_div`. The projected momentum is
+   the accepted P3 momentum. Scalars are not pressure-corrected.
+
+The staggered-momentum remap uses the r84 swept-profile operator on each
+component's dual control volumes. Transport velocity at a dual face is the
+arithmetic average of the two beginning MAC velocities that meet that dual
+face, with the boundary role inherited from the transported component's
+normal direction. This construction is fixed before any remap dispatch and
+uses the same shared limiter across the three momentum components. It is not
+three sequential dimensional-splitting steps.
+
+All coefficient evaluation and maps use strict binary32 and fixed index
+ranges. Max diagnostics use fixed max reductions; ledger sums use padded
+Blelloch trees. A finite projection validation miss publishes the full P3
+state and `validation_passed=false`; malformed input, table-domain failure,
+nonfinite derived arithmetic, Metal failure, or nonfinite output is structural
+and publishes no state. No retry, halving, clamp, adaptive viscosity, or second
+projection exists in this path.
+
+The binding P3 gates are:
+
+- V1 open hydrostatic rest with gravity written as `(rho-rho_ambient) g`,
+  requiring exact zero momentum and unchanged scalars;
+- the V2 nonzero variable-density manufactured field, including independently
+  assembled gravity, viscous stress, Vreman zero/rotation/linear-gradient
+  limits, nonzero `S_div`, and the r86 fp64 projection comparison;
+- V3 constant preservation, translated and deforming conservative fields,
+  affine/common-weight ledgers, and the smooth three-refinement L1 order gate
+  inherited from P1;
+- an unsplit-cross term whose x and y fluxes are both nonzero, so a sequential
+  x-then-y state mutation is RED; a dual-volume momentum pulse that makes
+  cell-grid remapping or component-wise limiter weights RED; and exact
+  diagnostics proving one remap assembly and one projection; and
+- at least eight accepted slices reconstructed from the preserved certified
+  tier-10 prefix. Compare gas mass, each transported integral, momentum,
+  `T_max` proxy inputs, `S_div`, and projection residual histories. Tolerances
+  are frozen from certified 1-vs-N variability (zero for bit-identical integral
+  ledgers) before production output is inspected.
+
+P3 has a `200 ms` completed-call p95 allocation at the 976,272-cell tier-10
+shape: 45 ms remap, 20 ms coefficient/force assembly, 120 ms projection, and
+15 ms orchestration margin. Exceeding it is a design failure before P4.
+
+Rejected alternatives are sequential dimensional splitting (changes the
+multidimensional operator), post-remap momentum repair (hidden clamp),
+re-evaluating Vreman after an axis update (order-dependent coefficient), using
+cell-centered velocity as the momentum transport velocity (wrong dual
+geometry), implicit viscosity iteration (an unbudgeted solve), and a second
+projection after forces (violates the one-projection architecture).
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

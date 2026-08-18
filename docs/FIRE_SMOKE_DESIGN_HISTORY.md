@@ -2150,3 +2150,28 @@ it was already tried and refuted here.
   exactly `40 s^-2`; both are independently recomputed and executed on Metal.
   The final on-device run measured `10.575 ms` device p95 and `23.316 ms`
   completed-call p95 with the scientific ratio unchanged.
+
+- **r87 (2026-08-18):** production P3 coupled-transport order. Evidence from
+  P1/P2 showed that the two kernels separately fit their allocations, but the
+  architecture still left load-bearing choices open: sequential versus
+  unsplit directional updates, when Vreman coefficients are frozen, which
+  velocity transports dual-volume momentum, and whether forces precede or
+  follow the only projection. The ruling is one immutable beginning snapshot:
+  wall-aware face velocity; one beginning-state Vreman/molecular/gravity
+  assembly; x/y/z remap fluxes all traced from those same bytes and accumulated
+  in fixed axis order; one frozen nonpressure momentum increment; then exactly
+  one r86 projection using remapped density and the authored `S_div`. Momentum
+  uses the same swept-profile operator on its dual volumes with arithmetic
+  beginning-MAC transport velocity. Chemistry, radiation, pilot, phase change,
+  and bed flux remain P4.
+
+  Validation binds V1 rest, V2 variable-density/Vreman/source-divergence
+  manufacture, V3 conservative/common-weight transport, an unsplit cross term,
+  a dual-volume momentum pulse, and at least eight preserved certified-prefix
+  slices. P3 receives a 200 ms tier-10 completed-call allocation (45 remap,
+  20 coefficient/force assembly, 120 projection, 15 orchestration). Rejected:
+  sequential directional splitting, post-remap momentum repair, coefficient
+  recomputation after an axis, cell-centered momentum transport, implicit
+  viscosity iteration, and a second projection. These are pre-release
+  production-kernel semantics; case authorship and `case_record_id` do not
+  change.
