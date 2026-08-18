@@ -4684,28 +4684,37 @@ void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>
 	// The fold reads the LIVE MANAGER's names.  The derive-time guard that is
 	// supposed to make a fold target unambiguous -- ExpandSourceInstance's
 	// document-level collision scan (Cst.cpp) -- reads the DOCUMENT's `name`
-	// PARAM names, and BuildObjectChunkIndex only indexes a chunk that
-	// CARRIES one.  A `standard_object` / `csg_object` with no `name` line
-	// still registers a live object, because Finalize DEFAULTS the name to
-	// `noname` (ChunkParserRegistry.cpp).  So an unnamed chunk puts `noname`
-	// in the live keyspace and NOTHING in the document keyspace, the derive
-	// guard sees no collision, and a counted instancing chunk that happens to
-	// be named `noname` folds its whole array into that unrelated object --
-	// and, with the target visible, the synth pass below would skip it too,
-	// so the array AND the chunk the author wrote would get no row at all,
-	// while `Z parent noname[0,0]` would resolve onto the stranger.
+	// PARAM names.  Whenever a live entry name has no `name` param behind it,
+	// that guard is blind to it, the derive sees no collision, and a counted
+	// instancing chunk that happens to share the name folds its whole array
+	// into an unrelated object -- and, with the target visible, the synth
+	// pass below would skip it too, so the array AND the chunk the author
+	// wrote would get no row at all, while `Z parent I[0,0]` would resolve
+	// onto the stranger.
 	//
 	// So: unfold.  The folded entries stay VISIBLE as their own nodes.  That
 	// degrades to a NOISY outliner (one row per repetition instead of one per
 	// chunk) which an author can see and recover from; the alternative is an
 	// array that silently does not exist, which they cannot.
 	//
-	// `noname` is today's ONLY witness.  Any future role whose live name can
-	// diverge from its `name` param re-opens this, which is why the test is
-	// "the target is genuinely the collapse case" and not "the target is not
-	// literally called noname".  Fixing it in Cst.cpp by indexing defaulted
-	// names would change derive-time REFUSAL behaviour and reject documents
-	// that load today -- a separate decision, deliberately not taken here.
+	// THE `noname` WITNESS IS GONE, AND THIS PASS IS STILL LOAD-BEARING.
+	// A `standard_object` / `csg_object` with no `name` line used to be the
+	// witness: Finalize DEFAULTS its entry to `noname` (ChunkParserRegistry.cpp)
+	// while the document held nothing.  That decision HAS NOW BEEN TAKEN in
+	// Cst.cpp -- `RoleDefaultedEntryName` indexes the defaulted name, and the
+	// two-keyspace `noname` document is REFUSED at derive time rather than
+	// reaching here.  It did change derive-time refusal behaviour; 0 of the
+	// tracked scenes were affected.
+	//
+	// What that fix CANNOT reach is `gltf_import`, a FIFTH object-producing
+	// route: `Job::ImportGLTFScene` registers `<name_prefix>.obj.n<node>.p<prim>`
+	// per mesh primitive (GLTFSceneImporter.cpp) and those names are spelled by
+	// NO `name` param in the document, so no document-level scan can see them.
+	// An import whose object name a counted instancing chunk also carries loads
+	// with ZERO diagnostics today and lands here -- which is what cases M and AA
+	// in SceneGraphNodeApiTest now pin.  Keep the test "the target is genuinely
+	// the collapse case" rather than any name-shaped special case: the witness
+	// changed once already.
 	{
 		std::set<std::string> unfold;
 		for( std::map<std::string, std::string>::const_iterator f = foldOf.begin();

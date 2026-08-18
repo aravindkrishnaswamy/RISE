@@ -53,8 +53,11 @@
 //    M -- a COUNTED ARRAY is not swallowed by an unrelated live object
 //         that shares the instancing chunk's name.  The fold reads the
 //         LIVE manager's keyspace; the derive-time collision guard reads
-//         the DOCUMENT's `name`-param keyspace, and an unnamed chunk puts
-//         `noname` in the first and nothing in the second.
+//         the DOCUMENT's `name`-param keyspace, and a `gltf_import`
+//         object puts `<prefix>.obj.n<node>.p<prim>` in the first and
+//         nothing in the second.  (The old witness -- an unnamed chunk,
+//         which defaults to `noname` -- is now refused at derive time,
+//         asserted alongside.)
 //    N -- a STALE handle FAILS rather than resolving to a different
 //         object, through both the C++ and the C-ABI surface.
 //    O -- a read is TRANSACTIONAL (ReadTree copies the whole tree under
@@ -860,19 +863,36 @@ int main()
 	// Two keyspaces that do not agree.  The fold reads the LIVE manager's
 	// names.  The derive-time guard that is supposed to make a fold target
 	// unambiguous -- ExpandSourceInstance's collision scan -- reads the
-	// DOCUMENT's `name` PARAM names, and BuildObjectChunkIndex only indexes
-	// a chunk that CARRIES one.  A `standard_object` with no `name` line
-	// still registers a live object, because Finalize defaults the name to
-	// `noname`.  So this document loads with ZERO diagnostics and the two
-	// keyspaces disagree about exactly one name.
+	// DOCUMENT's `name` PARAM names.  A live object whose name is spelled by
+	// no `name` param ANYWHERE is invisible to that guard, so the document
+	// loads with ZERO diagnostics while the two keyspaces disagree about
+	// exactly one name.
 	//
-	// Before the fix: `noname[0,0]` and `noname[1,0]` folded into the
-	// unrelated plain object `noname`; the synth pass then skipped the
-	// chunk because the target "already had an entry"; so the array AND
-	// the chunk the author wrote got NO ROW AT ALL, and `Z parent
-	// noname[0,0]` resolved onto the stranger.  Silently.
+	// THE WITNESS IS `gltf_import`, and it is the durable one.  It is a
+	// FIFTH object-producing route (`Job::ImportGLTFScene` ->
+	// `AddObjectMatrix`, GLTFSceneImporter.cpp) that registers one object per
+	// mesh primitive as `<name_prefix>.obj.n<node>.p<prim>` -- names built
+	// from the glTF file's own hierarchy, which no document text spells and
+	// no document-level scan can enumerate.  `Box.glb` has its mesh on glTF
+	// node 1, primitive 0, so `name_prefix P` yields exactly `P.obj.n1.p0`.
+	// (Verified against the asset, not assumed: a `standard_object` spelling
+	// that name fails its own AddItem with "Item of same name already
+	// exists", and `P.obj.n0.p0` does not.)
 	//
-	// After: the fold is REFUSED (the target is live but is not the
+	// These cases used to use a NAMELESS `standard_object`, which defaults
+	// its live entry to `noname`.  That divergence has since been closed at
+	// its source -- Cst.cpp's `RoleDefaultedEntryName` indexes the defaulted
+	// name and the old fixture is now REFUSED at derive time (pinned just
+	// below, and in CstSourceInstanceTest).  The gltf route is NOT closable
+	// that way and is what keeps PASS 1b load-bearing.
+	//
+	// Without PASS 1b: `P.obj.n1.p0[0,0]` and `[1,0]` fold into the unrelated
+	// imported object `P.obj.n1.p0`; the synth pass then skips the chunk
+	// because the target "already had an entry"; so the array AND the chunk
+	// the author wrote get NO ROW AT ALL, and `Z parent P.obj.n1.p0[0,0]`
+	// resolves onto the stranger.  Silently.
+	//
+	// With it: the fold is REFUSED (the target is live but is not the
 	// collapse case), the repetitions stay visible as their own nodes, and
 	// `Z` stays under the repetition it actually names.  A noisy outliner
 	// is recoverable; a missing array is not.
@@ -880,22 +900,26 @@ int main()
 	// Both chunk ORDERS, because the fold decision must not depend on
 	// which chunk registered first.
 	// =================================================================
+	static const char* const kGltfBox =
+		"gltf_import\n{\nfile scenes/Tests/Geometry/assets/Box.glb\nname_prefix P\n}\n";
 	{
 		const char* s = "sgnode_namespace.RISEscene";
 		Job* j = LoadScene( s,
-			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
-			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed -> live object `noname`
-			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n"
-			"standard_object\n{\nname Z\ngeometry g\nmaterial m\nparent noname[0,0]\n}\n",
+			std::string( "standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n" )
+			+ kGltfBox                                                            // -> live object `P.obj.n1.p0`
+			+ "standard_object\n{\nname P.obj.n1.p0\nsource S\ncount_u 2\n}\n"
+			  "standard_object\n{\nname Z\ngeometry g\nmaterial m\nparent P.obj.n1.p0[0,0]\n}\n",
 			"M: the two-keyspace scene loads with no diagnostic" );
 		{
 			SceneEditController c( *j, 0 );
 			const IScene* sc = j->GetScene();
 			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
-			Check( om && om->GetItem( "noname" ) && om->GetItem( "noname[0,0]" ) && om->GetItem( "noname[1,0]" ),
-			       "M: the premise -- an UNRELATED live object named `noname` coexists with a counted "
-			       "instancing chunk of the same name" );
-			CheckEq( TreeDump( c, Cat::Object ), "S|noname|noname[0,0]|  Z|noname[1,0]",
+			Check( om && om->GetItem( "P.obj.n1.p0" ) && om->GetItem( "P.obj.n1.p0[0,0]" )
+			          && om->GetItem( "P.obj.n1.p0[1,0]" ),
+			       "M: the premise -- an UNRELATED live object named `P.obj.n1.p0` coexists with a "
+			       "counted instancing chunk of the same name" );
+			CheckEq( TreeDump( c, Cat::Object ),
+			         "S|P.obj.n1.p0|P.obj.n1.p0[0,0]|  Z|P.obj.n1.p0[1,0]",
 			         "M: the counted array still has rows, and `Z` stays under the repetition it names "
 			         "-- neither is swallowed by the unrelated same-named object" );
 		}
@@ -905,17 +929,39 @@ int main()
 	{
 		const char* s = "sgnode_namespace2.RISEscene";
 		Job* j = LoadScene( s,
-			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
-			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n"
-			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed, declared AFTER
-			"standard_object\n{\nname Z\ngeometry g\nmaterial m\nparent noname[0,0]\n}\n",
+			std::string( "standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n" )
+			+ "standard_object\n{\nname P.obj.n1.p0\nsource S\ncount_u 2\n}\n"
+			+ kGltfBox                                                            // imported AFTER
+			+ "standard_object\n{\nname Z\ngeometry g\nmaterial m\nparent P.obj.n1.p0[0,0]\n}\n",
 			"M: the reversed-order scene loads with no diagnostic" );
 		{
 			SceneEditController c( *j, 0 );
-			CheckEq( TreeDump( c, Cat::Object ), "S|noname[0,0]|  Z|noname[1,0]|noname",
+			CheckEq( TreeDump( c, Cat::Object ),
+			         "S|P.obj.n1.p0[0,0]|  Z|P.obj.n1.p0[1,0]|P.obj.n1.p0",
 			         "M: and the same holds with the chunks in the other order -- the fold decision "
 			         "does not depend on which registered first" );
 		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		// M's ORIGINAL fixture, now on the other side of the line.  A NAMELESS
+		// `standard_object` beside an instancing chunk named `noname` was the
+		// two-keyspace witness these cases used to run on; Cst.cpp now indexes
+		// the defaulted entry name, so the derive REFUSES it instead of loading
+		// it silently.  Asserted HERE, next to the cases it displaced, so the
+		// reason they moved to the gltf route is recorded where a reader meets
+		// them -- and so re-opening the divergence reddens this suite too, not
+		// only CstSourceInstanceTest.
+		const char* s = "sgnode_namespace_noname.RISEscene";
+		WriteScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed -> live object `noname`
+			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n" );
+		Job* j = new Job();
+		Check( !j->LoadAsciiSceneViaCst( s ),
+		       "M: the ORIGINAL nameless-`standard_object` witness is now REFUSED at derive time -- "
+		       "the document-side half of this divergence is closed at its source" );
 		j->release();
 		std::remove( s );
 	}
@@ -2153,19 +2199,22 @@ int main()
 	{
 		// -- case M's REFUSED fold: the repetitions are their own rows, so
 		//    they must resolve to themselves and NOT to the unrelated live
-		//    object whose name their provenance still records.
+		//    object whose name their provenance still records.  Same
+		//    two-keyspace witness as M, and see M for why it is the gltf
+		//    import rather than a nameless chunk.
 		const char* s = "sgnode_rowresolve_unfold.RISEscene";
 		Job* j = LoadScene( s,
-			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
-			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed -> live object `noname`
-			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n",
+			std::string( "standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n" )
+			+ "gltf_import\n{\nfile scenes/Tests/Geometry/assets/Box.glb\nname_prefix P\n}\n"
+			+ "standard_object\n{\nname P.obj.n1.p0\nsource S\ncount_u 2\n}\n",
 			"AA: the two-keyspace scene loads" );
 		{
 			SceneEditController c( *j, 0 );
-			CheckEq( TreeDump( c, Cat::Object ), "S|noname|noname[0,0]|noname[1,0]",
+			CheckEq( TreeDump( c, Cat::Object ),
+			         "S|P.obj.n1.p0|P.obj.n1.p0[0,0]|P.obj.n1.p0[1,0]",
 			         "AA: the premise -- the fold was REFUSED, so the repetitions are their own rows" );
-			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "noname[1,0]" ) ).c_str() ),
-			         "noname[1,0]",
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "P.obj.n1.p0[1,0]" ) ).c_str() ),
+			         "P.obj.n1.p0[1,0]",
 			         "AA: a repetition whose fold was refused resolves to ITSELF -- following its "
 			         "provenance would highlight the unrelated same-named object instead" );
 		}

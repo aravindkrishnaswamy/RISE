@@ -3444,6 +3444,180 @@ int main()
 		       "scope: ... by the descriptor's numeric check on the MEMBER's own chunk" );
 	}
 
+	// ================================================================
+	// NAMELESS -- the document keyspace vs the LIVE MANAGER keyspace.
+	//
+	// `standard_object` / `csg_object` DEFAULT the registered entry name to
+	// `noname` (ChunkParserRegistry.cpp), so a chunk that spells no `name`
+	// still produces a real object.  `BuildObjectChunkIndex` used to index
+	// only chunks that SPELL a name, so the collision scan was blind to
+	// those -- and an instancing chunk explicitly named `noname` coexisted
+	// with one, undiagnosed, two authored things claiming one name.
+	// ================================================================
+	{
+		// The PREMISE, asserted first so the case cannot pass for the wrong
+		// reason: a nameless chunk really does register `noname`.  This is the
+		// behavioural pin that keeps the CST's literal and the parser's default
+		// from drifting apart -- there is no shared header to hold one copy.
+		{
+			std::vector<std::string> diags;
+			Job* j = DeriveJob( Scene(
+				"standard_object\n{\ngeometry geo\nmaterial m\n}\n" ), &diags );
+			Check( EntryNames( j ) == "noname",
+			       "nameless: the premise -- a chunk spelling no `name` registers `noname`" );
+			if( j ) j->release();
+		}
+		// A nameless csg_object defaults the same way.  Pinned because
+		// RoleDefaultedEntryName lists exactly these two roles, and the other
+		// two object roles REFUSE an empty name instead of defaulting.
+		{
+			Job* j = DeriveJob( Scene(
+				"standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+				"standard_object\n{\nname B\ngeometry boxg\nmaterial m\n}\n"
+				"csg_object\n{\nobja A\nobjb B\noperation union\n}\n" ) );
+			const std::string names = EntryNames( j );
+			Check( names.find( "noname" ) != std::string::npos,
+			       "nameless: a csg_object spelling no `name` also registers `noname`" );
+			if( j ) j->release();
+		}
+		// THE DIVERGENCE, which used to load with ZERO diagnostics.
+		std::string all;
+		const bool refused = RefusedWith( Scene(
+			"standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+			"standard_object\n{\ngeometry geo\nmaterial m\n}\n"
+			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n" ),
+			"is declared by MORE THAN ONE object chunk", &all );
+		Check( refused,
+		       "nameless: an instancing chunk named `noname` beside a NAMELESS chunk is REFUSED" );
+		// The instruction has to fit the chunk.  "Rename one" is wrong advice for
+		// a chunk that spells no name at all, so the message must say the other
+		// thing -- and this assertion is what stops it silently reverting.
+		Check( all.find( "spells no `name` at all" ) != std::string::npos,
+		       "nameless: ... and the message says to NAME the nameless one, not rename it" );
+		Check( all.find( "Rename one." ) == std::string::npos,
+		       "nameless: ... and does NOT say `Rename one.` for that case" );
+		// The ordinary duplicate keeps the ordinary wording.  Without this, the
+		// branch above could return the nameless text for every collision and
+		// nothing would notice.
+		// EXACTLY TWO chunks declare the name, both SPELLED -- the same shape as
+		// the divergence case above with the nameless chunk replaced by a named
+		// one, so the only difference between them is the thing under test.  (A
+		// third same-named chunk makes the derive fail earlier with "apply
+		// failed" and the scan never runs, which is why this is a pair.)
+		std::string all2;
+		Check( RefusedWith( Scene(
+			"standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+			"standard_object\n{\nname D\ngeometry geo\nmaterial m\n}\n"
+			"standard_object\n{\nname D\nsource S\ncount_u 2\n}\n" ),
+			"Rename one.", &all2 ),
+		       "nameless: the control -- two SPELLED duplicates still say `Rename one.`" );
+		Check( all2.find( "spells no `name` at all" ) == std::string::npos,
+		       "nameless: ... and do NOT get the nameless instruction" );
+		// THE ROLE SCOPING'S PREMISE.  RoleDefaultedEntryName deliberately lists
+		// only `standard_object` and `csg_object`; `rect_light` and `shape_light`
+		// read `GetString( "name", std::string() )` and REFUSE an empty one.  This
+		// pins that refusal, which is the whole justification for excluding them.
+		{
+			std::string all3;
+			RefusedWith( Scene(
+				"standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+				"rect_light\n{\ncenter 2 3 1\nsize 1 1\nfacing 0 -1 0\ncolor 1 1 1\nexitance 20\n}\n" ),
+				"", &all3 );
+			Check( all3.find( "`name` is required" ) != std::string::npos,
+			       "nameless: a NAMELESS rect_light REFUSES rather than defaulting -- the premise "
+			       "that lets RoleDefaultedEntryName exclude the two light roles" );
+		}
+		// AND THE SCOPING ITSELF, which POSITION makes observable.
+		//
+		// Widening RoleDefaultedEntryName to the two light roles would make a
+		// nameless `rect_light` claim `noname` in the collision keyspace -- so
+		// this document would refuse with a COLLISION naming the light, instead of
+		// with the light's own "`name` is required".
+		//
+		// The light is placed AFTER the instancing chunk on purpose, and that is
+		// the entire trick.  PASS-2 applies chunks in DOCUMENT ORDER and breaks AT
+		// the failure, so a nameless light placed FIRST aborts the derive before
+		// any expansion runs and the two helper widths look identical.  But
+		// `BuildObjectChunkIndex` is a whole-document PRE-PASS: put the light last
+		// and the expansion -- with the light already in the index -- runs first.
+		// Measured both ways: narrow gives `name` is required, wide gives the
+		// collision naming chunk #9 (`standard_object`) and #10 (`rect_light`).
+		{
+			std::string all4;
+			RefusedWith( Scene(
+				"standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+				"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n"
+				"rect_light\n{\ncenter 2 3 1\nsize 1 1\nfacing 0 -1 0\ncolor 1 1 1\nexitance 20\n}\n" ),
+				"", &all4 );
+			Check( all4.find( "declared by MORE THAN ONE object chunk" ) == std::string::npos,
+			       "nameless: RoleDefaultedEntryName is SCOPED to the two defaulting roles -- a "
+			       "nameless `rect_light` after an instancing chunk named `noname` must NOT be "
+			       "reported as a collision with it" );
+			Check( all4.find( "`name` is required" ) != std::string::npos,
+			       "nameless: ... the light still refuses on its own terms instead" );
+		}
+		// THE MESSAGE NAMES THE CHUNKS ITS ADVICE IS ABOUT.
+		//
+		// The collision text quotes exactly TWO declarers, `[0]` and `[1]`, so the
+		// nameless-vs-rename branch must be decided over those two and no others.
+		// Deciding it over EVERY declarer produced a message that named two chunks
+		// which both SPELL `name noname` and then told the author "one of them
+		// spells no `name` at all" -- true of neither, while the nameless chunk it
+		// was about (#11) went unnamed.  Three declarers is the smallest document
+		// that can tell the two implementations apart.
+		{
+			std::string all5;
+			Check( RefusedWith( Scene(
+				"standard_object\n{\nname S\ngeometry geo\nmaterial m\n}\n"
+				"standard_object\n{\nname noname\ngeometry boxg\nmaterial m\n}\n"
+				"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n"
+				"standard_object\n{\ngeometry boxg\nmaterial m\n}\n" ),
+				"declared by MORE THAN ONE object chunk", &all5 ),
+			       "nameless: three declarers of `noname` -- two SPELLED, one nameless -- collide" );
+			Check( all5.find( "spells no `name` at all" ) == std::string::npos,
+			       "nameless: ... and the message does NOT claim one of the two chunks it NAMES is "
+			       "nameless when BOTH of them spell `name noname`" );
+			Check( all5.find( "Rename one." ) != std::string::npos,
+			       "nameless: ... it gives the advice that fits the pair it quoted" );
+		}
+		// THE DEFAULTED NAME IS NOT ADDRESSABLE, and the two keyspaces the index
+		// keeps are what separate that from the collision above.
+		//
+		// `entryByName` answers "what live entry name does this chunk CLAIM?", and
+		// the defaulted `noname` belongs there -- that is the whole fix.  `byName`
+		// answers "which chunk does this name RESOLVE to?", and it is read by
+		// `source` resolution, by SourceChainOf and by both ClonePlanBuilder nested
+		// lookups.  Putting the defaulted name in THAT one made `source noname`
+		// legal (measured), binding an instance to a chunk the editor cannot
+		// address at all: `DocFindByNameAnyRole` skips a chunk whose
+		// `ChunkNamePath` is empty, so nothing could ever resolve back to it -- and
+		// the link would break with "no object of that name" the moment the author
+		// finally spelled a name on it.  So the feed is SPELLED-only, and this is
+		// the assertion that keeps it that way.
+		{
+			Check( RefusedWith( Scene(
+				"standard_object\n{\ngeometry geo\nmaterial m\n}\n"
+				"standard_object\n{\nname I\nsource noname\n}\n" ),
+				"no `standard_object` / `csg_object` of that name exists" ),
+			       "nameless: `source noname` is REFUSED -- a chunk's DEFAULTED entry name is not a "
+			       "`source` target, because the editor cannot address a nameless chunk" );
+		}
+		// A nameless chunk with NO instancing chunk in the document must still
+		// derive cleanly: indexing the defaulted name must not turn a lone
+		// nameless object into a refusal.  0 of 404 tracked scenes have one,
+		// but the corpus is not the contract.
+		{
+			std::vector<std::string> diags;
+			Job* j = DeriveJob( Scene(
+				"standard_object\n{\nname A\ngeometry geo\nmaterial m\n}\n"
+				"standard_object\n{\ngeometry boxg\nmaterial m\n}\n" ), &diags );
+			Check( diags.empty(), "nameless: a lone nameless chunk still derives with NO diagnostic" );
+			Check( EntryNames( j ) == "A|noname",
+			       "nameless: ... and both objects exist" );
+			if( j ) j->release();
+		}
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

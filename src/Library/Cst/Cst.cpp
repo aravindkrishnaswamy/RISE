@@ -1504,10 +1504,65 @@ static std::string InstanceBaseName( const std::string& instName, bool counted, 
 //! `standard_object` / `csg_object`, which is why a source whose only child was a
 //! `rect_light` slipped past its has-children refusal and instanced root-only,
 //! silently dropping the lamp.
+//!
+//! ⚠ FOUR PARSERS, BUT A FIFTH ROUTE.  `gltf_import` also produces objects --
+//! `Job::ImportGLTFScene` calls `AddObjectMatrix` per mesh primitive
+//! (GLTFSceneImporter.cpp) and registers names built from the glTF hierarchy,
+//! `<name_prefix>.obj.n<node>.p<prim>`.  Those names appear in NO `name` param
+//! anywhere in the document, so NOTHING role-based can see them: this predicate,
+//! `BuildObjectChunkIndex`, and every derive-time guard reading them are blind to
+//! that whole slice of the live object keyspace.  A guard that assumes "the
+//! document's `name` params ARE the object keyspace" is therefore incomplete by
+//! construction, not by oversight -- which is why the GUI's outliner keeps its own
+//! live-keyspace defence (SceneEditController::BuildObjectTreeSeedsLocked_ PASS 1b)
+//! instead of relying on a derive-time refusal.
 static bool RoleDeclaresGraphObject( const std::string& role )
 {
 	return role == "standard_object" || role == "csg_object"
 	    || role == "rect_light"      || role == "shape_light";
+}
+
+//! The entry name a nameless chunk of `role` will REGISTER, or empty if the role
+//! requires a name and refuses without one.
+//!
+//! This exists because the document keyspace and the LIVE MANAGER keyspace used to
+//! disagree, and the disagreement was silent.  `BuildObjectChunkIndex` indexed only
+//! chunks that SPELL a `name`, while `StandardObjectAsciiChunkParser::Finalize`
+//! (ChunkParserRegistry.cpp, `bag.GetString( "name", "noname" )`) and its
+//! `csg_object` twin DEFAULT the live entry to `noname`.  So a nameless chunk
+//! registered a real object the collision scan could not see -- and an instancing
+//! chunk explicitly named `noname` then coexisted with it, undiagnosed, two
+//! authored things claiming one name in the LIVE object keyspace.
+//!
+//! WHAT THAT ACTUALLY BROKE was the GUI's OUTLINER FOLD, not name-addressed
+//! editing.  `DocFindByNameAnyRole` skips every chunk with an empty
+//! `ChunkNamePath`, so a nameless chunk was never document-addressable in the
+//! first place and never competed in that lookup.  The fold is where the live
+//! keyspace IS the lookup: `BuildObjectTreeSeedsLocked_` folds `noname[0,0]` /
+//! `noname[1,0]` into the live entry called `noname`, which here is the unrelated
+//! nameless object -- so the whole counted array AND the chunk the author wrote
+//! got no outliner row at all.  (Proven by disabling that pass's `unfold` set: the
+//! tree loses both.)  87 step 4a defended it CONTROLLER-LOCAL; this closes it at
+//! the source instead, for the chunks a document can see.
+//!
+//! Of the four object-creating roles only these TWO default; `rect_light` and
+//! `shape_light` read `bag.GetString( "name", std::string() )` and REFUSE when it is
+//! empty, so they can never produce an entry the author did not name.  Do not add
+//! them here without checking that again.
+//!
+//! ⚠ This does NOT make the document keyspace complete -- `gltf_import` registers
+//! objects under names no `name` param spells (see RoleDeclaresGraphObject above),
+//! which is why PASS 1b stays load-bearing.
+//!
+//! ⚠ The literal is duplicated from the parser by necessity (no header is shared
+//! between the CST and the parser registry).  `CstSourceInstanceTest` pins the
+//! agreement BEHAVIOURALLY ("nameless: the premise") -- it derives a nameless chunk
+//! and asserts the live manager holds exactly this name -- so a change to either
+//! side reddens a test rather than silently re-opening the divergence.
+static std::string RoleDefaultedEntryName( const std::string& role )
+{
+	if( role == "standard_object" || role == "csg_object" ) return "noname";
+	return std::string();
 }
 
 //! An O(N) index of the document's OBJECT-CREATING chunks, built ONCE per derive
@@ -1563,9 +1618,31 @@ static void BuildObjectChunkIndex( const std::vector<NodeRef>& items, ObjectChun
 		}
 		if( !RoleDeclaresGraphObject( c->role ) ) continue;
 		std::string nm;
-		if( ParamValue( c.get(), "name", nm ) && !nm.empty() ) {
+		const bool spelled = ( ParamValue( c.get(), "name", nm ) && !nm.empty() );
+		if( !spelled ) {
+			// NAMELESS.  It still REGISTERS an object for the two roles that default
+			// the name, so it must be indexed under the name it will actually take --
+			// otherwise the collision scan is blind to it and an instancing chunk
+			// spelling that same name coexists with it undiagnosed.  Costs nothing on
+			// the corpus: 0 of 404 tracked scenes have a nameless object chunk.
+			nm = RoleDefaultedEntryName( c->role );
+		}
+		if( !nm.empty() ) {
+			// `entryByName` is the COLLISION keyspace -- "what live entry name does
+			// this chunk claim?" -- and a defaulted name claims one exactly as a
+			// spelled one does, so it belongs here.
 			out.entryByName[ nm ].push_back( i );
-			if( c->role == "standard_object" || c->role == "csg_object" ) out.byName[ nm ].push_back( i );
+			// `byName` is the ADDRESSABILITY keyspace -- "which chunk does this name
+			// RESOLVE to?" -- and it is read by `source` resolution
+			// (ExpandSourceInstance, SourceChainOf) and by both ClonePlanBuilder
+			// nested-source lookups.  A DEFAULTED name must NOT enter it.  Feeding
+			// it in would make `source noname` resolve to a chunk the editor cannot
+			// address (`DocFindByNameAnyRole` skips an empty `ChunkNamePath`), and
+			// would break with a misleading "no object of that name" the moment the
+			// author gave that chunk the explicit name it never had.  Measured: it
+			// turned `source noname` from REFUSED into legal.  So: SPELLED only.
+			if( spelled && ( c->role == "standard_object" || c->role == "csg_object" ) )
+				out.byName[ nm ].push_back( i );
 		}
 		std::string pr;
 		if( ParamValue( c.get(), "parent", pr ) && !pr.empty() && pr != "none" ) out.childrenOf[ pr ].push_back( i );
@@ -2543,10 +2620,33 @@ static bool ExpandSourceInstance(
 			std::snprintf( pos, sizeof(pos), "chunk #%u, a `%s`, and chunk #%u, a `%s`",
 				ChunkOrdinal( items, a ), items[a] ? items[a]->role.c_str() : "?",
 				ChunkOrdinal( items, b ), items[b] ? items[b]->role.c_str() : "?" );
+			// A chunk in the pair may be NAMELESS and still be here: the two roles
+			// that default their entry name register `noname` without spelling it,
+			// and the index now records that (or the scan would be blind to them).
+			// "Rename one" is the wrong instruction for such a chunk -- there is no
+			// name on it to change -- so say which fix applies.
+			//
+			// SCANNED OVER `{a, b}` ONLY, and that restriction is the whole point:
+			// the message NAMES those two and no others, so asking the question of
+			// any further declarer would attach "one of them spells no `name`" to a
+			// pair where it is true of NEITHER, while the chunk it is true of goes
+			// unnamed.  The predicate has to have the same domain as the sentence.
+			const std::size_t pair[2] = { a, b };
+			bool anyNameless = false;
+			for( std::size_t k = 0; k < 2 && !anyNameless; ++k ) {
+				const std::size_t idx = pair[k];
+				std::string spelled;
+				if( !items[idx] ) continue;
+				if( !( ParamValue( items[idx].get(), "name", spelled ) && !spelled.empty() ) ) anyNameless = true;
+			}
 			diags.push_back( who + ": " + ( counted ? std::string( "the name `" ) : std::string( "the entry name `" ) )
 				+ instName + "` is declared by MORE THAN ONE object chunk ("
 				+ pos + ").  A picked instance would resolve back to whichever the name lookup finds first, so an "
-				"edit could land in the wrong chunk.  Rename one." );
+				"edit could land in the wrong chunk.  "
+				+ ( anyNameless
+				    ? std::string( "One of them spells no `name` at all and takes `" ) + instName
+				      + "` by default -- give it an explicit, different name."
+				    : std::string( "Rename one." ) ) );
 			return false;
 		}
 		// Per REPETITION, because the base name is what differs between them.  A `planned`
