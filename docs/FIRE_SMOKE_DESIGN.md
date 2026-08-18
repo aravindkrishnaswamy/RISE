@@ -1435,7 +1435,9 @@ The most notorious practical trap in fire LES; specified accordingly:
   projector calls in the stage and all stages in the step: no later stable
   solve may erase an earlier cycle, and run checkpoints record the algorithm
   version, event count, maximum cycle length, differing-face count, and maximum
-  discrepancy.
+  discrepancy. A repeated classification discovered by the acceptance re-solve
+  is the same cycle proof as a repeat in the main projection sequence; it may
+  not be discarded merely because that branch was first seen in verification.
 
   The selected Boolean branch governs only the nonlinear pressure boundary
   equation. It is not an override of the conservative scalar upwind direction.
@@ -1448,7 +1450,13 @@ The most notorious practical trap in fire LES; specified accordingly:
   2.9506166530252633e-3 m/s discrepancy against a 1e-10 m/s deadband, making
   the distinction load-bearing. Pressure diagnostics continue to report
   disagreement against the selected pressure branch; scalar donor choice is
-  separately reproducible from the accepted velocity and deadband.
+  separately reproducible from the accepted velocity and deadband. The same
+  scalar classification governs the Dirichlet diffusive/conductive term and
+  the boundary ghost used by high-order reconstruction. A detected 1-vs-N byte
+  mismatch is a structured run failure before accepted-state accumulation or
+  checkpoint publication. Current checkpoints validate the exact algorithm tag
+  on resume; a legacy checkpoint carries an explicit prior-algorithm tag into
+  run metadata rather than being relabelled as current-algorithm evidence.
 
   **REJECTED alternatives:** treating the first transition as a two-cycle
   changes stable trajectories; using the selected pressure bit as the scalar

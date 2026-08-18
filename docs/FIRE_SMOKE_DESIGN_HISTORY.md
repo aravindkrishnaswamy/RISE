@@ -1959,3 +1959,18 @@ it was already tried and refuted here.
   clipping (changes the accepted solve), and last-solve-only diagnostics (loses
   trajectory-changing evidence). This is reference-run semantics and does not
   change `case_record_id`.
+
+  Implementation closure extended the scalar-sign separation through the
+  nonzero diffusive/conductive boundary term and the boundary ghost used by
+  high-order reconstruction. Checkpoint format v8 preserves the current and
+  prior active-set algorithm tags; v5/v6 checkpoints are admitted only as
+  explicitly tagged legacy history, while v7/v8 checkpoints must carry the
+  exact current tag. Thread-identity disagreement now fails before run
+  accumulation or checkpoint publication. The immutable step-3479 v6 golden
+  checkpoint then advanced eight full production-owner steps to step 3487 with
+  accepted dt=5.4851762335687565e-5 s, ten discontinuous events, cycle length 2,
+  four differing faces, and maximum discrepancy
+  1.1766913664658803e-3 m/s; its source SHA-256 remained unchanged. Independent
+  REDs reject union/intersection, pin the equal-discrepancy outflow-first tie,
+  exercise nonzero diffusion/conduction and the high-order ghost, and reject a
+  checksummed checkpoint with a mutated algorithm tag.

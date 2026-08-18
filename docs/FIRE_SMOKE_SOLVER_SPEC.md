@@ -207,12 +207,15 @@ error and must be corrected.
      supplies its own repeated-state proof. At an outer cycle, re-solve every
      distinct cycle state frozen at the accepted continuous target before
      ordering them. A verification-only mismatch without a repeat continues
-     Picard iteration. Accumulate cycle diagnostics over every projection in
+     Picard iteration; a verification classification already present in the
+     history is itself a repeated-state proof. Accumulate cycle diagnostics over every projection in
      the stage and every stage in the step. The selected pressure bit does not
      override scalar upwinding: use the accepted outward-velocity sign outside
-     `u_bc,tol`, retaining the selected bit only inside the deadband. Persist
-     the algorithm version and monotone event diagnostics in checkpoint/run
-     metadata. **α₀ is a derived control
+     `u_bc,tol`, retaining the selected bit only inside the deadband. Apply this
+     same scalar classification to boundary diffusion/conduction and the
+     high-order reconstruction ghost. Persist the algorithm version and monotone
+     event diagnostics in checkpoint/run metadata, validate the tag on resume,
+     and fail the run before publication on any 1-vs-N mismatch. **α₀ is a derived control
      outside the convergence gate (r59):** the limiter map is discontinuous on
      constraint-activation boundaries, so its Cauchy convergence is not
      required — see §3.7's two-class rule. At acceptance, if the verification
