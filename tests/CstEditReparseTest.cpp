@@ -104,7 +104,7 @@ int main()
 		Check( DeriveDump( d2 ).find( "ball " + std::string("bsphere=") ) != std::string::npos, "derived geometry present" );
 		Check( DeriveMatchesReparse( d2 ), "edited CST derives the same Job as a fresh parse of its text" );
 		// the new radius actually took (bsphere == 0.9)
-		char b[64]; std::snprintf( b, sizeof(b), "bsphere=%.17g", (double)(Scalar)0.9 );
+		char b[64]; std::snprintf( b, sizeof(b), "bsphere=%.9g", (double)(Scalar)0.9 );   // %.9g matches DumpJob (CstRenderEquivalence.h, cross-platform precision)
 		Check( DeriveDump( d2 ).find( b ) != std::string::npos, "derived bsphere == 0.9 (the edit reached the engine)" );
 	}
 
@@ -117,7 +117,7 @@ int main()
 		Check( idx >= 0, "ball located by NodeId" );
 		Document d2 = DocReplaceItem( d, idx, ItemFromText( "sphere_geometry\n{\nname ball\nradius 3\n}\n" ) );
 		Check( DocFindByName( d2, "sphere_geometry/ball" ) == ball, "replaced chunk keeps the position's NodeId" );
-		char b[64]; std::snprintf( b, sizeof(b), "bsphere=%.17g", (double)(Scalar)3 );
+		char b[64]; std::snprintf( b, sizeof(b), "bsphere=%.9g", (double)(Scalar)3 );   // %.9g matches DumpJob
 		Check( DeriveDump( d2 ).find( b ) != std::string::npos && DeriveMatchesReparse( d2 ), "replace derives radius 3, faithfully" );
 	}
 

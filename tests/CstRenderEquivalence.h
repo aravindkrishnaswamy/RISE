@@ -100,12 +100,12 @@ inline void DumpMedium( std::ostream& o, const IMedium* m )
 	const Point3 sp = bounded ? Point3( (bbMin.x+bbMax.x)*0.5, (bbMin.y+bbMax.y)*0.5, (bbMin.z+bbMax.z)*0.5 ) : Point3(0,0,0);
 	const MediumCoefficients c = m->GetCoefficients( sp ); const IPhaseFunction* pf = m->GetPhaseFunction();
 	char b[480];
-	std::snprintf( b, sizeof(b), " sigma_t=[%.17g %.17g %.17g] sigma_s=[%.17g %.17g %.17g] emission=[%.17g %.17g %.17g] g=%.17g homog=%d",
+	std::snprintf( b, sizeof(b), " sigma_t=[%.9g %.9g %.9g] sigma_s=[%.9g %.9g %.9g] emission=[%.9g %.9g %.9g] g=%.9g homog=%d",
 		(double)c.sigma_t.r,(double)c.sigma_t.g,(double)c.sigma_t.b, (double)c.sigma_s.r,(double)c.sigma_s.g,(double)c.sigma_s.b,
 		(double)c.emission.r,(double)c.emission.g,(double)c.emission.b, (double)( pf ? pf->GetMeanCosine() : 0 ), m->IsHomogeneous()?1:0 );
 	o << b;
 	if( bounded ) {
-		char bb[224]; std::snprintf( bb, sizeof(bb), " bbox=[%.17g %.17g %.17g .. %.17g %.17g %.17g]",
+		char bb[224]; std::snprintf( bb, sizeof(bb), " bbox=[%.9g %.9g %.9g .. %.9g %.9g %.9g]",
 			(double)bbMin.x,(double)bbMin.y,(double)bbMin.z, (double)bbMax.x,(double)bbMax.y,(double)bbMax.z ); o << bb;
 	}
 }
@@ -125,16 +125,30 @@ inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
 {
 	o << "painter=" << ReverseName( job.GetPainters(), &rm->GetPainter() );
 	const Matrix4& t = rm->GetTransform(); char b[640];
-	std::snprintf( b, sizeof(b), " scale=%.17g xform=[%.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g %.17g]",
+	std::snprintf( b, sizeof(b), " scale=%.9g xform=[%.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g]",
 		(double)rm->GetScale(), (double)t._00,(double)t._01,(double)t._02,(double)t._03, (double)t._10,(double)t._11,(double)t._12,(double)t._13,
 		(double)t._20,(double)t._21,(double)t._22,(double)t._23, (double)t._30,(double)t._31,(double)t._32,(double)t._33 ); o << b;
 }
 
 // Canonical structural dump of a Job -- the equivalence metric. Two parse paths
 // that yield the same dump produce the same scene (hence the same render). Sorted
-// per manager for stability. Numeric fields use LOSSLESS %.17g (exactly
-// round-trips an IEEE double), so two distinct radii can never collide into an
-// equal dump.
+// per manager for stability. Numeric fields use %.9g -- 9 significant digits,
+// NOT the lossless %.17g this harness originally used (changed 2026-08-18).
+// The change makes CstDeriveGoldenTest's committed digests CROSS-PLATFORM:
+// macOS builds with -ffast-math (Config.OSX) while MSVC/Linux are strict IEEE,
+// so DERIVED values (bounding-sphere radii via sqrt, world bboxes through
+// transform chains) differ between platforms in the last 1-2 ulps -- at %.17g
+// that ULP noise drifted 178 of 383 golden digests on the first Windows run.
+// 9 digits sits ~5 orders of magnitude above that noise floor and still far
+// below anything a real derive regression produces.  Trade-off, accepted
+// deliberately: two values that differ by less than ~1e-9 RELATIVE now
+// collide into an equal dump -- fine for the in-process equivalence tests,
+// which compare parses of the SAME ASCII decimals (differences are
+// exact-equal or gross).  Residual risk: a derived value sitting within ulps
+// of a 9-digit rounding boundary can still round differently across
+// platforms (expected << 1 occurrence corpus-wide).  If a single-scene
+// cross-platform DRIFT ever appears with matching line counts and a ~0 byte
+// delta, THIS is the cause -- review + regenerate, don't debug the derive.
 //
 // GATE-MAINTENANCE RULE (per the item-2 review): as each new DERIVED type lands,
 // this dump MUST gain that type's discriminating state (reference bindings,
@@ -178,13 +192,13 @@ inline std::string DumpJob( Job& job )
 	for( const auto& n : SortedNames( job.GetGeometries() ) ) {
 		o << "  " << n;
 		IGeometry* g = job.GetGeometries() ? job.GetGeometries()->GetItem( n.c_str() ) : 0;
-		if( g ) { Point3 c; Scalar r = 0; g->GenerateBoundingSphere( c, r ); char b[64]; std::snprintf( b, sizeof(b), " bsphere=%.17g", (double)r ); o << b; }
+		if( g ) { Point3 c; Scalar r = 0; g->GenerateBoundingSphere( c, r ); char b[64]; std::snprintf( b, sizeof(b), " bsphere=%.9g", (double)r ); o << b; }
 		o << "\n";
 	}
 	o << "materials:\n";
 	for( const auto& n : SortedNames( job.GetMaterials() ) ) {
 		o << "  " << n; IMaterial* mat = job.GetMaterials() ? job.GetMaterials()->GetItem( n.c_str() ) : 0;
-		if( mat && mat->GetEmitter() ) { const RISEPel e = mat->GetEmitter()->averageRadiantExitance(); char eb[96]; std::snprintf( eb, sizeof(eb), " emitter=[%.17g %.17g %.17g]", (double)e.r,(double)e.g,(double)e.b ); o << eb; }
+		if( mat && mat->GetEmitter() ) { const RISEPel e = mat->GetEmitter()->averageRadiantExitance(); char eb[96]; std::snprintf( eb, sizeof(eb), " emitter=[%.9g %.9g %.9g]", (double)e.r,(double)e.g,(double)e.b ); o << eb; }
 		o << "\n";
 	}
 	o << "painters:\n";  for( const auto& n : SortedNames( job.GetPainters()  ) ) o << "  " << n << "\n";
@@ -202,7 +216,7 @@ inline std::string DumpJob( Job& job )
 			o << " visible=" << ( ob->IsWorldVisible() ? "1" : "0" );
 			BoundingBox bb = ob->getBoundingBox();
 			char b[160];
-			std::snprintf( b, sizeof(b), " bbox=[%.17g %.17g %.17g .. %.17g %.17g %.17g]",
+			std::snprintf( b, sizeof(b), " bbox=[%.9g %.9g %.9g .. %.9g %.9g %.9g]",
 				(double)bb.ll.x, (double)bb.ll.y, (double)bb.ll.z,
 				(double)bb.ur.x, (double)bb.ur.y, (double)bb.ur.z );
 			o << b;
@@ -224,18 +238,18 @@ inline std::string DumpJob( Job& job )
 	for( const auto& n : SortedNames( job.GetCameras() ) ) {
 		o << "  " << n;
 		ICamera* c = job.GetCameras() ? job.GetCameras()->GetItem( n.c_str() ) : 0;
-		if( c ) { Point3 p = c->GetLocation(); char b[96]; std::snprintf( b, sizeof(b), " loc=[%.17g %.17g %.17g]", (double)p.x, (double)p.y, (double)p.z ); o << b; }
+		if( c ) { Point3 p = c->GetLocation(); char b[96]; std::snprintf( b, sizeof(b), " loc=[%.9g %.9g %.9g]", (double)p.x, (double)p.y, (double)p.z ); o << b; }
 		o << "\n";
 	}
 	// --- scene singletons reachable via job.GetScene() (audit-by-bug-pattern: the global-medium sibling set).
 	o << "scene:\n";
 	{
 		IScenePriv* scp = job.GetScene(); const IFilm* fl = scp ? scp->GetFilm() : 0; char fb[96];
-		if( fl ) { std::snprintf( fb, sizeof(fb), "  film=[%u x %u par=%.17g]", fl->GetWidth(), fl->GetHeight(), (double)fl->GetPixelAR() ); o << fb << "\n"; } else o << "  film=(none)\n";
+		if( fl ) { std::snprintf( fb, sizeof(fb), "  film=[%u x %u par=%.9g]", fl->GetWidth(), fl->GetHeight(), (double)fl->GetPixelAR() ); o << fb << "\n"; } else o << "  film=(none)\n";
 		const IRadianceMap* grm = scp ? scp->GetGlobalRadianceMap() : 0;
 		o << "  global_rmap="; if( grm ) DumpRadianceMap( o, grm, job ); else o << "(none)"; o << "\n";
 		o << "  active_camera=" << job.GetActiveCameraName() << "\n";   // last-add-wins; catches a camera-ORDER divergence the sorted cameras: section cannot
-		{ char rrb[64]; std::snprintf( rrb, sizeof(rrb), "  light_rr_threshold=%.17g\n", job.GetLightSampleRRThreshold() ); o << rrb; }   // render-affecting light-sample RR (v7 light_rr_threshold chunk)
+		{ char rrb[64]; std::snprintf( rrb, sizeof(rrb), "  light_rr_threshold=%.9g\n", job.GetLightSampleRRThreshold() ); o << rrb; }   // render-affecting light-sample RR (v7 light_rr_threshold chunk)
 	}
 	// --- lights + media (Phase B / 0b: close the F1 verification gap for the CHEAPLY-READABLE blind values).
 	// Lights have no manager names, so dump a value-tuple per light and SORT for a stable canonical order; a
@@ -253,7 +267,7 @@ inline std::string DumpJob( Job& job )
 				const Point3 p = l->position(), tg = l->emissionTarget(); const Vector3 d = l->emissionDirection();
 				char b[768];
 				std::snprintf( b, sizeof(b),
-					"  type=%d energy=%.17g col=[%.17g %.17g %.17g] exitance=[%.17g %.17g %.17g] pos=[%.17g %.17g %.17g] dir=[%.17g %.17g %.17g] cone=%.17g inner=%.17g outer=%.17g target=[%.17g %.17g %.17g] photons=%d",
+					"  type=%d energy=%.9g col=[%.9g %.9g %.9g] exitance=[%.9g %.9g %.9g] pos=[%.9g %.9g %.9g] dir=[%.9g %.9g %.9g] cone=%.9g inner=%.9g outer=%.9g target=[%.9g %.9g %.9g] photons=%d",
 					(int)l->lightType(), (double)l->emissionEnergy(),
 					(double)col.r,(double)col.g,(double)col.b, (double)rx.r,(double)rx.g,(double)rx.b,
 					(double)p.x,(double)p.y,(double)p.z, (double)d.x,(double)d.y,(double)d.z,
