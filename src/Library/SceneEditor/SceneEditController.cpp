@@ -3910,8 +3910,13 @@ public:
 struct PainterUnionEntry
 {
 	String             name;
-	unsigned long long serial   = 0;   //!< from the manager named by `fromScalar`
-	bool               fromScalar = false;
+	//! The serial as reported by the manager that ENUMERATED this row -- which is
+	//! the whole point of the struct.  Deliberately no `fromScalar` flag beside it:
+	//! nothing reads one, and an unread field invites the next reader to believe
+	//! the origin is recoverable downstream.  It is not, and it does not need to
+	//! be -- the origin is consumed HERE, by pairing the serial with the name in
+	//! the same loop iteration.
+	unsigned long long serial = 0;
 };
 
 std::vector<PainterUnionEntry> CollectPainterUnionEntries( IJobPriv& job )
@@ -3922,9 +3927,8 @@ std::vector<PainterUnionEntry> CollectPainterUnionEntries( IJobPriv& job )
 		m->EnumerateItemNames( cb );
 		for( std::size_t i = 0; i < cb.names.size(); ++i ) {
 			PainterUnionEntry e;
-			e.name       = cb.names[i];
-			e.serial     = m->GetItemSerial( cb.names[i].c_str() );
-			e.fromScalar = false;
+			e.name   = cb.names[i];
+			e.serial = m->GetItemSerial( cb.names[i].c_str() );
 			out.push_back( e );
 		}
 	}
@@ -3933,9 +3937,8 @@ std::vector<PainterUnionEntry> CollectPainterUnionEntries( IJobPriv& job )
 		m->EnumerateItemNames( cb );
 		for( std::size_t i = 0; i < cb.names.size(); ++i ) {
 			PainterUnionEntry e;
-			e.name       = cb.names[i];
-			e.serial     = m->GetItemSerial( cb.names[i].c_str() );
-			e.fromScalar = true;
+			e.name   = cb.names[i];
+			e.serial = m->GetItemSerial( cb.names[i].c_str() );
 			out.push_back( e );
 		}
 	}

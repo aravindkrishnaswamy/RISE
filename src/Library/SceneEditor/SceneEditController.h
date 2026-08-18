@@ -2321,6 +2321,14 @@ namespace RISE
 			//! all Painter edits, `let` edits, unnamed chunks and composed
 			//! materials -- plus `RederiveCstWithVariant` and reopening a
 			//! document into a reused Job.
+			//!
+			//! Bumped at TWO sites in Job, not one: `InitializeContainers` and
+			//! `SetPrimaryAcceleration`, which replaces the ObjectManager on its
+			//! own.  Round 5 found the second one missing here; no GUI can reach
+			//! it today (its callers are the CLI console, the Blender bridge at
+			//! job-build time, and 3DSMax, none of which holds a controller), but
+			//! the fresh manager restarts its serials at 0 just the same, so it
+			//! would have reopened this exact hole for whoever wired it up next.
 			unsigned long long        rebuildCount = 0;
 		};
 
@@ -2343,7 +2351,7 @@ namespace RISE
 		//! THE WAY BACK from a `ReadTree` row to the per-node getters.
 		//!
 		//! `ReadTree` is what every multi-node consumer is told to use, and it
-		//! yields RAW INDICES -- while `TreeNodeName` / `TreeChildCount` /
+		//! yields RAW INDICES -- while `TreeNodeNameByHandle` / `TreeChildCountByHandle` /
 		//! `TreeNodeParent` take generation-tagged HANDLES, and the encoding is
 		//! deliberately private.  Without this a shell that follows the advice
 		//! has only two ways out of its own model row: re-walk with the

@@ -103,7 +103,12 @@ namespace RISE
 
 		// 87 step 4a round-4 (P1-A): how many times this Job's container set has been BUILT --
 		// once at construction, once more per ClearAll (i.e. per DestroyContainers +
-		// InitializeContainers pair).  Monotonic for the Job's lifetime.
+		// InitializeContainers pair), AND once per SetPrimaryAcceleration, which
+		// replaces the ObjectManager on its own without going through
+		// InitializeContainers.  Those are the two sites; an earlier version of this
+		// comment claimed InitializeContainers was the only one, which was FALSE.
+		// ANY future code that releases and recreates a manager must bump it too.
+		// Monotonic for the Job's lifetime.
 		//
 		// THE POINT: a registration serial is NOT a cross-rebuild identity.
 		// GenericManager::m_nNextSerial is per-manager-INSTANCE and restarts at construction, so a

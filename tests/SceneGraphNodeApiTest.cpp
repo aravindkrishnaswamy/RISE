@@ -153,7 +153,7 @@ typedef SceneEditController::TreeNodeSeed Seed;
 //! siblings.  A spot check on one name sees none of those.
 //!
 //! Walks by handle through the public API only, so it also exercises
-//! TreeRootNode / TreeChildNode / TreeNodeName / TreeNodeParent -- and
+//! TreeRootNode / TreeChildNode / TreeNodeNameByHandle / TreeNodeParent -- and
 //! asserts, on the way, that every node's recorded parent agrees with the
 //! node it was reached FROM.
 static std::string TreeDump( const SceneEditController& c, Cat cat, bool* outParentsAgree = 0 )
@@ -1642,6 +1642,51 @@ int main()
 		jB->release();
 		std::remove( sA );
 		std::remove( sB );
+	}
+
+	// =================================================================
+	// X -- SetPrimaryAcceleration REPLACES the ObjectManager without going
+	//      through InitializeContainers, so it is the SECOND site that has to
+	//      bump the container-rebuild count.  Round 5 found it missing: the
+	//      fresh manager restarts its serial counter at 0, so the next objects
+	//      registered get serials byte-identical to the ones just destroyed --
+	//      the exact precondition the rebuild count exists to detect.
+	//
+	//      No GUI can reach this today (the callers are the CLI console, the
+	//      Blender bridge at job-build time, and 3DSMax, none of which holds a
+	//      SceneEditController), which is why it is pinned HERE, at the Job,
+	//      rather than through a controller: the guard has to survive whoever
+	//      wires a controller up to an accelerator swap later.
+	// =================================================================
+	{
+		const char* s = "sgnode_accel.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname AAA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname BBB\ngeometry g\nmaterial m\n}\n",
+			"X: two-object scene loads" );
+
+		const unsigned long long before = j->GetContainerRebuildCount();
+
+		// The PREMISE, asserted so the case cannot pass for the wrong reason:
+		// the live manager really is handing out non-zero serials right now.
+		const IObjectManager* om0 = j->GetScene()->GetObjects();
+		Check( om0 && om0->GetItemSerial( "BBB" ) != 0,
+		       "X: the premise -- BBB has a real, non-zero serial before the swap" );
+
+		j->SetPrimaryAcceleration( true, false, 4, 32 );
+
+		const IObjectManager* om1 = j->GetScene()->GetObjects();
+		Check( om1 && om1 != om0,
+		       "X: the premise -- SetPrimaryAcceleration really did replace the manager" );
+		Check( om1 && om1->GetItemSerial( "BBB" ) == 0,
+		       "X: ... and the replacement starts its serials over, so the NEXT "
+		       "registrations would reproduce the destroyed ones" );
+		Check( j->GetContainerRebuildCount() != before,
+		       "X: so the container-rebuild count MUST move -- it is the only thing "
+		       "that can tell the tree snapshot the serials were reset" );
+
+		j->release();
+		std::remove( s );
 	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

@@ -3233,9 +3233,14 @@ namespace RISE
 		unsigned int m_objectOverrideCount;
 
 		//! 87 step 4a (round-4 P1-A): how many times the container set has been
-		//! BUILT -- incremented by InitializeContainers, i.e. once at construction
-		//! and once more per ClearAll.  NOT reset by InitializeContainers (that
-		//! would defeat it) and NOT touched by DestroyContainers.
+		//! BUILT.  TWO sites bump it, not one: InitializeContainers (construction,
+		//! and once more per ClearAll) and SetPrimaryAcceleration, which releases
+		//! and recreates the ObjectManager by itself.  Round 5 caught the second --
+		//! this comment used to say InitializeContainers was the sole funnel, and a
+		//! fresh ObjectManager restarts its serials at 0 just the same, so the miss
+		//! reopened the very hole the counter exists to close.  NOT reset by
+		//! InitializeContainers (that would defeat it) and NOT touched by
+		//! DestroyContainers.  A future manager swap MUST bump it.
 		//!
 		//! Exists because a registration SERIAL is not a cross-rebuild identity:
 		//! GenericManager::m_nNextSerial is per-manager-instance and starts over on

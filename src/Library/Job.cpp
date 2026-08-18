@@ -638,6 +638,16 @@ bool Job::SetPrimaryAcceleration(
 	RISE_API_CreateObjectManager( &pObjectManager, bUseBSPtree, bUseOctree, nMaxObjectsPerNode, nMaxTreeDepth );
 	pScene->SetObjectManager( pObjectManager );
 
+	// 87 step 4a: this is the SECOND site that replaces a manager, and it does
+	// not go through InitializeContainers.  The fresh ObjectManager's serial
+	// counter starts at 0, so the next objects registered get serials
+	// byte-identical to the ones just destroyed -- which is exactly the
+	// condition SceneEditController's tree-snapshot identity relies on this
+	// count to detect.  Bump it here too, or a caller that swaps the
+	// accelerator under a live controller leaves every outstanding tree handle
+	// resolving to an object that no longer exists.
+	++m_containerRebuildCount;
+
 	return true;
 }
 
