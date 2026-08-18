@@ -12,6 +12,7 @@
 #include "FireProductionAdvection.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace RISE
@@ -59,6 +60,7 @@ inline void unlimited_edges(device const float* q,device const float* u,device c
  int i=int(cell);float im2=sample_value(q,u,ambient,p,c,l,i-2);
  float im1=sample_value(q,u,ambient,p,c,l,i-1);float center=sample_value(q,u,ambient,p,c,l,i);
  float ip1=sample_value(q,u,ambient,p,c,l,i+1);float ip2=sample_value(q,u,ambient,p,c,l,i+2);
+ if(im2==center&&im1==center&&ip1==center&&ip2==center){left=center;right=center;return;}
  left=(7.0f*(im1+center)-(im2+ip1))/12.0f;
  right=(7.0f*(center+ip1)-(im1+ip2))/12.0f;
 }
@@ -100,50 +102,59 @@ kernel void scan_lines(device const float* q [[buffer(0)]],device float* prefix 
   threadgroup_barrier(mem_flags::mem_threadgroup);}
  if(tid<p.n)prefix[base+tid]=scratch[tid];
 }
-inline float partial_integral(float center,float left,float right,float s){
- float q6=6.0f*center-3.0f*(left+right);float s2=s*s;
- return left*s+0.5f*(right-left+q6)*s2-(q6/3.0f)*s2*s;
+inline float cell_interval(float center,float left,float right,float beginning,float end){
+ if(left==center&&right==center)return (end-beginning)*center;
+ float q6=6.0f*center-3.0f*(left+right),delta=end-beginning;
+ return delta*(left+0.5f*(right-left+q6)*(beginning+end)-
+  (q6/3.0f)*(beginning*beginning+beginning*end+end*end));
 }
-inline float local_antiderivative(device const float* q,device const float* left,
- device const float* right,device const float* prefix,constant Params& p,uint c,uint l,float x){
- uint base=(c*p.lines+l)*(p.n+1u);if(x<=0.0f)return 0.0f;if(x>=float(p.n))return prefix[base+p.n];
- uint cell=min(p.n-1u,uint(floor(x)));float s=x-float(cell);uint index=value_index(p,c,l,cell);
- return prefix[base+cell]+partial_integral(q[index],left[index],right[index],s);
-}
-inline float periodic_forward(device const float* q,device const float* left,device const float* right,
- device const float* prefix,constant Params& p,uint c,uint l,float beginning,float end){
- float n=float(p.n),start=beginning-floor(beginning/n)*n;if(start>=n)start=0.0f;
- float remaining=end-beginning,first=min(remaining,n-start);
- float result=local_antiderivative(q,left,right,prefix,p,c,l,start+first)-
-  local_antiderivative(q,left,right,prefix,p,c,l,start);remaining-=first;
- if(remaining>0.0f){uint base=(c*p.lines+l)*(p.n+1u);float cycles=floor(remaining/n);
-  result+=cycles*prefix[base+p.n];remaining-=cycles*n;
-  result+=local_antiderivative(q,left,right,prefix,p,c,l,remaining);}
+inline uint wrapped_cell(int cell,uint count){int n=int(count),wrapped=cell%n;
+ if(wrapped<0)wrapped+=n;return uint(wrapped);}
+inline float periodic_local_forward(device const float* q,device const float* left,
+ device const float* right,constant Params& p,uint c,uint l,int beginningCell,
+ float beginningFraction,float length){
+ float remaining=length,result=0.0f,fraction=beginningFraction;int cell=beginningCell;
+ while(remaining>0.0f){float span=min(remaining,1.0f-fraction);
+  uint index=value_index(p,c,l,wrapped_cell(cell,p.n));
+  result+=cell_interval(q[index],left[index],right[index],fraction,fraction+span);
+  remaining-=span;fraction=0.0f;++cell;}
  return result;
 }
-inline float periodic_interval(device const float* q,device const float* left,device const float* right,
- device const float* prefix,constant Params& p,uint c,uint l,float beginning,float end){
- return end>=beginning?periodic_forward(q,left,right,prefix,p,c,l,beginning,end):
-  -periodic_forward(q,left,right,prefix,p,c,l,end,beginning);
+inline float periodic_swept(device const float* q,device const float* left,
+ device const float* right,device const float* prefix,constant Params& p,uint c,uint l,
+ uint face,float courant){
+ float count=float(p.n),magnitude=abs(courant),cycles=floor(magnitude/count);
+ float localLength=magnitude-cycles*count;uint base=(c*p.lines+l)*(p.n+1u);
+ float result=cycles*prefix[base+p.n];
+ if(courant>=0.0f){float whole=floor(localLength),fractional=localLength-whole;
+  int beginning=fractional>0.0f?int(face)-int(whole)-1:int(face)-int(whole);
+  result+=periodic_local_forward(q,left,right,p,c,l,beginning,
+   fractional>0.0f?1.0f-fractional:0.0f,localLength);return result;}
+ result+=periodic_local_forward(q,left,right,p,c,l,int(face),0.0f,localLength);return -result;
 }
-inline float open_forward(device const float* q,device const float* left,device const float* right,
- device const float* prefix,device const float* ambient,constant Params& p,uint c,uint l,
- float beginning,float end,float velocity){
- float n=float(p.n);float leftExtension=p.boundary==1u&&velocity>0.0f?ambient[c]:
+inline float open_local_forward(device const float* q,device const float* left,
+ device const float* right,constant Params& p,uint c,uint l,uint beginningCell,
+ float beginningFraction,float length){
+ float remaining=length,result=0.0f,fraction=beginningFraction;uint cell=beginningCell;
+ while(remaining>0.0f&&cell<p.n){float span=min(remaining,1.0f-fraction);
+  uint index=value_index(p,c,l,cell);
+  result+=cell_interval(q[index],left[index],right[index],fraction,fraction+span);
+  remaining-=span;fraction=0.0f;++cell;}
+ return result;
+}
+inline float open_swept(device const float* q,device const float* left,device const float* right,
+ device const float* ambient,constant Params& p,uint c,uint l,uint face,float courant,float velocity){
+ float magnitude=abs(courant);float leftExtension=p.boundary==1u&&velocity>0.0f?ambient[c]:
   q[value_index(p,c,l,0u)];float rightExtension=p.boundary==1u&&velocity<0.0f?ambient[c]:
-  q[value_index(p,c,l,p.n-1u)];float result=0.0f;
- if(beginning<0.0f)result+=(min(end,0.0f)-beginning)*leftExtension;
- float interiorBeginning=max(beginning,0.0f),interiorEnd=min(end,n);
- if(interiorEnd>interiorBeginning)result+=
-  local_antiderivative(q,left,right,prefix,p,c,l,interiorEnd)-
-  local_antiderivative(q,left,right,prefix,p,c,l,interiorBeginning);
- if(end>n)result+=(end-max(beginning,n))*rightExtension;return result;
-}
-inline float open_interval(device const float* q,device const float* left,device const float* right,
- device const float* prefix,device const float* ambient,constant Params& p,uint c,uint l,
- float beginning,float end,float velocity){
- return end>=beginning?open_forward(q,left,right,prefix,ambient,p,c,l,beginning,end,velocity):
-  -open_forward(q,left,right,prefix,ambient,p,c,l,end,beginning,velocity);
+  q[value_index(p,c,l,p.n-1u)];
+ if(courant>=0.0f){float interiorLength=min(magnitude,float(face));
+  float whole=floor(interiorLength),fractional=interiorLength-whole;
+  uint beginning=fractional>0.0f?face-uint(whole)-1u:face-uint(whole);
+  return (magnitude-interiorLength)*leftExtension+open_local_forward(q,left,right,p,c,l,
+   beginning,fractional>0.0f?1.0f-fractional:0.0f,interiorLength);}
+ float interiorLength=min(magnitude,float(p.n-face));
+ return -(open_local_forward(q,left,right,p,c,l,face,0.0f,interiorLength)+
+  (magnitude-interiorLength)*rightExtension);
 }
 kernel void face_flux(device const float* q [[buffer(0)]],device const float* u [[buffer(1)]],
  device const float* ambient [[buffer(2)]],device const float* left [[buffer(3)]],
@@ -153,9 +164,10 @@ kernel void face_flux(device const float* q [[buffer(0)]],device const float* u 
  uint faces=p.n+1u,total=p.comps*p.lines*faces;if(gid>=total)return;
  uint c=gid/(p.lines*faces);uint rem=gid-c*p.lines*faces;uint l=rem/faces;uint f=rem-l*faces;
  if(p.boundary==2u&&(f==0u||f==p.n)){flux[gid]=0.0f;return;}
- float velocity=u[l*faces+f],arrival=float(f),departure=arrival-p.dt*velocity/p.dx;
- float swept=p.boundary==0u?periodic_interval(q,left,right,prefix,p,c,l,departure,arrival):
-  open_interval(q,left,right,prefix,ambient,p,c,l,departure,arrival,velocity);
+ uint canonicalFace=p.boundary==0u&&f==p.n?0u:f;
+ float velocity=u[l*faces+canonicalFace],courant=p.dt*velocity/p.dx;
+ float swept=p.boundary==0u?periodic_swept(q,left,right,prefix,p,c,l,canonicalFace,courant):
+  open_swept(q,left,right,ambient,p,c,l,canonicalFace,courant,velocity);
  flux[gid]=p.dx*swept;
 }
 kernel void update_cells(device const float* q [[buffer(0)]],device const float* flux [[buffer(1)]],
@@ -237,6 +249,12 @@ kernel void update_cells(device const float* q [[buffer(0)]],device const float*
 			[encoder setComputePipelineState:pipeline];
 			[encoder dispatchThreads:MTLSizeMake(count,1,1)
 				threadsPerThreadgroup:MTLSizeMake(width,1,1)];
+		}
+
+		bool AllFinite( const std::vector<float>& values )
+		{
+			return std::all_of(values.begin(),values.end(),
+				[](float value){return std::isfinite(value);});
 		}
 	}
 
@@ -350,6 +368,13 @@ kernel void update_cells(device const float* q [[buffer(0)]],device const float*
 			result.faceFluxes.assign(faceFluxes,faceFluxes+fluxCount);
 			result.sharedLimiterAlpha.assign(limiter,limiter+alphaCount);
 			result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+		}
+		if( !AllFinite(result.updatedValues)||!AllFinite(result.faceFluxes)||
+			!AllFinite(result.sharedLimiterAlpha)||!std::isfinite(result.deviceElapsedMS) ) {
+			result=FireProductionRemapResult();
+			if( structuredError )
+				*structuredError="production fire remap produced nonfinite device output";
+			return false;
 		}
 		if( structuredError ) structuredError->clear();
 		return true;

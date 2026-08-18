@@ -70,6 +70,9 @@ namespace RISE
 			const float center=Sample(request,component,line,i);
 			const float ip1=Sample(request,component,line,i+1);
 			const float ip2=Sample(request,component,line,i+2);
+			if( im2==center&&im1==center&&ip1==center&&ip2==center ) {
+				left=center;right=center;return;
+			}
 			left=(7.0f*(im1+center)-(im2+ip1))/12.0f;
 			right=(7.0f*(center+ip1)-(im1+ip2))/12.0f;
 		}
@@ -91,98 +94,118 @@ namespace RISE
 			}
 		}
 
-		float PartialCellIntegral( float center, float left, float right, float fraction )
+		float CellIntervalIntegral( float center, float left, float right,
+			float beginning, float end )
 		{
+			if( left==center&&right==center ) return (end-beginning)*center;
 			const float q6=6.0f*center-3.0f*(left+right);
-			const float fraction2=fraction*fraction;
-			return left*fraction+0.5f*(right-left+q6)*fraction2-
-				(q6/3.0f)*fraction2*fraction;
+			const float delta=end-beginning;
+			return delta*(left+0.5f*(right-left+q6)*(beginning+end)-
+				(q6/3.0f)*(beginning*beginning+beginning*end+end*end));
 		}
 
-		float LocalAntiderivative( const FireProductionRemapRequest& request,
-			std::size_t component, std::size_t line, float positionCells,
-			const std::vector<float>& left, const std::vector<float>& right,
-			const std::vector<float>& prefix )
+		std::size_t WrappedCell( long cell, std::size_t count )
 		{
-			if( positionCells<=0.0f ) return 0.0f;
-			if( positionCells>=static_cast<float>(request.lineLength) )
-				return prefix[(component*request.lineCount+line)*(request.lineLength+1u)+
-					request.lineLength];
-			const std::size_t cell=std::min(request.lineLength-1u,
-				static_cast<std::size_t>(std::floor(positionCells)));
-			const float fraction=positionCells-static_cast<float>(cell);
-			const std::size_t value=ValueIndex(request,component,line,cell);
-			const std::size_t base=(component*request.lineCount+line)*(request.lineLength+1u);
-			return prefix[base+cell]+
-				PartialCellIntegral(request.values[value],left[value],right[value],fraction);
+			const long signedCount=static_cast<long>(count);
+			long wrapped=cell%signedCount;
+			if( wrapped<0 ) wrapped+=signedCount;
+			return static_cast<std::size_t>(wrapped);
 		}
 
-		float PeriodicForwardIntegral( const FireProductionRemapRequest& request,
-			std::size_t component, std::size_t line, float beginningCells, float endCells,
-			const std::vector<float>& left,
-			const std::vector<float>& right, const std::vector<float>& prefix )
+		float PeriodicLocalForwardIntegral( const FireProductionRemapRequest& request,
+			std::size_t component, std::size_t line, long beginningCell,
+			float beginningFraction, float length, const std::vector<float>& left,
+			const std::vector<float>& right )
 		{
-			const float count=static_cast<float>(request.lineLength);
-			const std::size_t base=(component*request.lineCount+line)*(request.lineLength+1u);
-			const float total=prefix[base+request.lineLength];
-			float start=beginningCells-std::floor(beginningCells/count)*count;
-			if( start>=count ) start=0.0f;
-			float remaining=endCells-beginningCells;
-			const float firstLength=std::min(remaining,count-start);
-			float result=LocalAntiderivative(request,component,line,start+firstLength,
-				left,right,prefix)-LocalAntiderivative(request,component,line,start,left,right,prefix);
-			remaining-=firstLength;
-			if( remaining>0.0f ) {
-				const float cycles=std::floor(remaining/count);
-				result+=cycles*total;
-				remaining-=cycles*count;
-				result+=LocalAntiderivative(request,component,line,remaining,left,right,prefix);
+			float remaining=length,result=0.0f;
+			long cell=beginningCell;
+			float fraction=beginningFraction;
+			while( remaining>0.0f ) {
+				const float span=std::min(remaining,1.0f-fraction);
+				const std::size_t wrapped=WrappedCell(cell,request.lineLength);
+				const std::size_t value=ValueIndex(request,component,line,wrapped);
+				result+=CellIntervalIntegral(request.values[value],left[value],right[value],
+					fraction,fraction+span);
+				remaining-=span;
+				fraction=0.0f;
+				++cell;
 			}
 			return result;
 		}
 
-		float PeriodicIntervalIntegral( const FireProductionRemapRequest& request,
-			std::size_t component, std::size_t line, float beginningCells, float endCells,
+		float PeriodicSweptIntegral( const FireProductionRemapRequest& request,
+			std::size_t component, std::size_t line, std::size_t face, float courant,
 			const std::vector<float>& left, const std::vector<float>& right,
 			const std::vector<float>& prefix )
 		{
-			return endCells>=beginningCells ? PeriodicForwardIntegral(request,component,line,
-				beginningCells,endCells,left,right,prefix) : -PeriodicForwardIntegral(request,
-				component,line,endCells,beginningCells,left,right,prefix);
+			const float count=static_cast<float>(request.lineLength);
+			const float magnitude=std::fabs(courant);
+			const float cycles=std::floor(magnitude/count);
+			const float localLength=magnitude-cycles*count;
+			const std::size_t base=(component*request.lineCount+line)*(request.lineLength+1u);
+			float result=cycles*prefix[base+request.lineLength];
+			if( courant>=0.0f ) {
+				const float whole=std::floor(localLength);
+				const float fractional=localLength-whole;
+				const long beginning=fractional>0.0f ?
+					static_cast<long>(face)-static_cast<long>(whole)-1l :
+					static_cast<long>(face)-static_cast<long>(whole);
+				result+=PeriodicLocalForwardIntegral(request,component,line,beginning,
+					fractional>0.0f?1.0f-fractional:0.0f,localLength,left,right);
+				return result;
+			}
+			result+=PeriodicLocalForwardIntegral(request,component,line,
+				static_cast<long>(face),0.0f,localLength,left,right);
+			return -result;
 		}
 
-		float OpenForwardIntegral( const FireProductionRemapRequest& request,
-			std::size_t component, std::size_t line, float beginningCells, float endCells,
-			float faceVelocity, const std::vector<float>& left,
-			const std::vector<float>& right, const std::vector<float>& prefix )
+		float OpenLocalForwardIntegral( const FireProductionRemapRequest& request,
+			std::size_t component, std::size_t line, std::size_t beginningCell,
+			float beginningFraction, float length, const std::vector<float>& left,
+			const std::vector<float>& right )
 		{
-			const float count=static_cast<float>(request.lineLength);
+			float remaining=length,result=0.0f;
+			std::size_t cell=beginningCell;
+			float fraction=beginningFraction;
+			while( remaining>0.0f&&cell<request.lineLength ) {
+				const float span=std::min(remaining,1.0f-fraction);
+				const std::size_t value=ValueIndex(request,component,line,cell);
+				result+=CellIntervalIntegral(request.values[value],left[value],right[value],
+					fraction,fraction+span);
+				remaining-=span;
+				fraction=0.0f;
+				++cell;
+			}
+			return result;
+		}
+
+		float OpenSweptIntegral( const FireProductionRemapRequest& request,
+			std::size_t component, std::size_t line, std::size_t face, float courant,
+			float faceVelocity, const std::vector<float>& left,
+			const std::vector<float>& right )
+		{
+			const float magnitude=std::fabs(courant);
 			const float leftExtension=request.boundary==FireProductionRemapPressureOpen&&
 				faceVelocity>0.0f ? request.ambientValues[component] :
 				request.values[ValueIndex(request,component,line,0u)];
 			const float rightExtension=request.boundary==FireProductionRemapPressureOpen&&
 				faceVelocity<0.0f ? request.ambientValues[component] :
 				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
-			float result=0.0f;
-			if( beginningCells<0.0f )
-				result+=(std::min(endCells,0.0f)-beginningCells)*leftExtension;
-			const float interiorBeginning=std::max(beginningCells,0.0f);
-			const float interiorEnd=std::min(endCells,count);
-			if( interiorEnd>interiorBeginning ) result+=
-				LocalAntiderivative(request,component,line,interiorEnd,left,right,prefix)-
-				LocalAntiderivative(request,component,line,interiorBeginning,left,right,prefix);
-			if( endCells>count ) result+=(endCells-std::max(beginningCells,count))*rightExtension;
-			return result;
-		}
-
-		float OpenIntervalIntegral( const FireProductionRemapRequest& request,
-			std::size_t component, std::size_t line, float beginningCells, float endCells,
-			float faceVelocity, const std::vector<float>& left,
-			const std::vector<float>& right, const std::vector<float>& prefix )
-		{
-			return endCells>=beginningCells ? OpenForwardIntegral(request,component,line,
-				beginningCells,endCells,faceVelocity,left,right,prefix) : -OpenForwardIntegral(
-				request,component,line,endCells,beginningCells,faceVelocity,left,right,prefix);
+			if( courant>=0.0f ) {
+				const float interiorLength=std::min(magnitude,static_cast<float>(face));
+				const float whole=std::floor(interiorLength);
+				const float fractional=interiorLength-whole;
+				const std::size_t beginning=fractional>0.0f ?
+					face-static_cast<std::size_t>(whole)-1u :
+					face-static_cast<std::size_t>(whole);
+				return (magnitude-interiorLength)*leftExtension+
+					OpenLocalForwardIntegral(request,component,line,beginning,
+						fractional>0.0f?1.0f-fractional:0.0f,interiorLength,left,right);
+			}
+			const float interiorLength=std::min(magnitude,
+				static_cast<float>(request.lineLength-face));
+			return -(OpenLocalForwardIntegral(request,component,line,face,0.0f,
+				interiorLength,left,right)+(magnitude-interiorLength)*rightExtension);
 		}
 
 		std::size_t NextPowerOfTwo( std::size_t value )
@@ -238,10 +261,14 @@ namespace RISE
 			request.lineCount>std::numeric_limits<std::uint32_t>::max()||
 			request.componentCount>std::numeric_limits<std::uint32_t>::max() )
 			return Fail(error,"production remap request exceeds binary32 kernel indexing");
-		const std::size_t maximumWorkingBytes=std::size_t(2u)<<30u;
-		if( valueCount>maximumWorkingBytes/(4u*sizeof(float))||
-			fluxCount>maximumWorkingBytes/(2u*sizeof(float))||
-			4u*valueCount*sizeof(float)+2u*fluxCount*sizeof(float)>maximumWorkingBytes )
+		const std::uint64_t maximumWorkingBytes=std::uint64_t(2u)<<30u;
+		const std::uint64_t alphaCount=request.lineCount*request.lineLength;
+		const std::uint64_t workingFloatCount=4u*static_cast<std::uint64_t>(valueCount)+
+			2u*static_cast<std::uint64_t>(fluxCount)+
+			static_cast<std::uint64_t>(velocityCount)+alphaCount+
+			static_cast<std::uint64_t>(request.componentCount);
+		const std::uint64_t parameterBytes=4u*sizeof(std::uint32_t)+2u*sizeof(float);
+		if( workingFloatCount>(maximumWorkingBytes-parameterBytes)/sizeof(float) )
 			return Fail(error,"production remap working set exceeds two GiB");
 		if( !(request.cellWidthM>0.0f)||request.timeStepS<0.0f||
 			!std::isfinite(request.cellWidthM)||!std::isfinite(request.timeStepS)||
@@ -255,6 +282,26 @@ namespace RISE
 			return Fail(error,"production remap velocity is nonfinite");
 		for( const float value : request.ambientValues ) if( !std::isfinite(value) )
 			return Fail(error,"production remap ambient state is nonfinite");
+		for( std::size_t line=0;line<request.lineCount;++line ) {
+			const std::size_t base=line*(request.lineLength+1u);
+			if( request.boundary==FireProductionRemapPeriodic&&
+				request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+request.lineLength] )
+				return Fail(error,"production periodic remap seam velocity is not single-valued");
+			double previous=0.0;
+			for( std::size_t face=0;face<=request.lineLength;++face ) {
+				const float courant=request.timeStepS*request.faceVelocityMPerS[base+face]/
+					request.cellWidthM;
+				if( !std::isfinite(courant) )
+					return Fail(error,"production remap binary32 Courant number is nonfinite");
+				const double departure=static_cast<double>(face)-
+					static_cast<double>(request.timeStepS)*
+					static_cast<double>(request.faceVelocityMPerS[base+face])/
+					static_cast<double>(request.cellWidthM);
+				if( !std::isfinite(departure)||(face>0u&&departure<previous) )
+					return Fail(error,"production remap backtraced face map is folded");
+				previous=departure;
+			}
+		}
 		return true;
 	}
 
@@ -306,7 +353,7 @@ namespace RISE
 			(request.lineLength+1u),0.0f);
 		for( std::size_t component=0;component<request.componentCount;++component )
 			for( std::size_t line=0;line<request.lineCount;++line )
-				for( std::size_t face=0;face<=request.lineLength;++face ) {
+				for( std::size_t face=0;face<request.lineLength;++face ) {
 					const std::size_t flux=FluxIndex(request,component,line,face);
 					if( request.boundary==FireProductionRemapWall&&
 						(face==0u||face==request.lineLength) ) {
@@ -314,13 +361,28 @@ namespace RISE
 						continue;
 					}
 					const float velocity=request.faceVelocityMPerS[line*(request.lineLength+1u)+face];
-					const float arrival=static_cast<float>(face);
-					const float departure=arrival-request.timeStepS*velocity/request.cellWidthM;
+					const float courant=request.timeStepS*velocity/request.cellWidthM;
 					const float swept=request.boundary==FireProductionRemapPeriodic ?
-						PeriodicIntervalIntegral(request,component,line,departure,arrival,left,right,prefix):
-						OpenIntervalIntegral(request,component,line,departure,arrival,velocity,left,right,prefix);
+						PeriodicSweptIntegral(request,component,line,face,courant,left,right,prefix):
+						OpenSweptIntegral(request,component,line,face,courant,velocity,left,right);
 					result.faceFluxes[flux]=request.cellWidthM*swept;
 				}
+		for( std::size_t component=0;component<request.componentCount;++component )
+			for( std::size_t line=0;line<request.lineCount;++line ) {
+				const std::size_t end=FluxIndex(request,component,line,request.lineLength);
+				if( request.boundary==FireProductionRemapPeriodic )
+					result.faceFluxes[end]=result.faceFluxes[
+						FluxIndex(request,component,line,0u)];
+				else if( request.boundary==FireProductionRemapWall )
+					result.faceFluxes[end]=0.0f;
+				else {
+					const float velocity=request.faceVelocityMPerS[
+						line*(request.lineLength+1u)+request.lineLength];
+					const float courant=request.timeStepS*velocity/request.cellWidthM;
+					result.faceFluxes[end]=request.cellWidthM*OpenSweptIntegral(request,
+						component,line,request.lineLength,courant,velocity,left,right);
+				}
+			}
 
 		result.updatedValues.resize(request.values.size());
 		for( std::size_t component=0;component<request.componentCount;++component )
@@ -331,6 +393,19 @@ namespace RISE
 						(result.faceFluxes[FluxIndex(request,component,line,cell+1u)]-
 						 result.faceFluxes[FluxIndex(request,component,line,cell)])/request.cellWidthM;
 				}
+		for( const float value : result.updatedValues ) if( !std::isfinite(value) ) {
+			result=FireProductionRemapResult();
+			return Fail(error,"production remap produced nonfinite updated state");
+		}
+		for( const float value : result.faceFluxes ) if( !std::isfinite(value) ) {
+			result=FireProductionRemapResult();
+			return Fail(error,"production remap produced nonfinite face flux");
+		}
+		for( const float value : result.sharedLimiterAlpha ) if( !std::isfinite(value) ) {
+			result=FireProductionRemapResult();
+			return Fail(error,"production remap produced nonfinite limiter state");
+		}
+		if( error ) error->clear();
 		return true;
 	}
 }
