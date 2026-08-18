@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace RISE
 {
@@ -37,6 +38,15 @@ namespace RISE
 	//! and returned the exact expected bytes.
 	bool QueryFireProductionComputeCapability(
 		FireProductionComputeCapability& capability );
+
+	//! Executes a nonidentity integer transform through the same owned Metal
+	//! command seam.  It exists so the capability gate can challenge the device
+	//! with caller-selected bytes instead of trusting self-reported booleans.
+	bool RunFireProductionComputeChallenge(
+		const std::uint32_t* input,
+		std::size_t count,
+		std::vector<std::uint32_t>& output,
+		std::string* error=0 );
 }
 
 #endif

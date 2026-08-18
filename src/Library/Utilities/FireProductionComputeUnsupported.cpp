@@ -19,4 +19,14 @@ namespace RISE
 			"production fire compute capability unavailable: Metal is not built on this platform";
 		return true;
 	}
+
+	bool RunFireProductionComputeChallenge(
+		const std::uint32_t*, std::size_t, std::vector<std::uint32_t>& output,
+		std::string* error )
+	{
+		output.clear();
+		if( error ) *error=
+			"production fire compute challenge unavailable: Metal is not built on this platform";
+		return false;
+	}
 }

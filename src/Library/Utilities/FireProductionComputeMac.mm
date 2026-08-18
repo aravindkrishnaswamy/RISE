@@ -37,13 +37,46 @@ namespace RISE
 		std::string DeviceFamily( id<MTLDevice> device )
 		{
 			if( @available(macOS 10.15,*) ) {
-				for( int family=9; family>=1; --family ) {
-					const MTLGPUFamily candidate=static_cast<MTLGPUFamily>(family);
-					if( [device supportsFamily:candidate] )
-						return "apple"+std::to_string(family);
-				}
+				const MTLGPUFamily appleFamilies[]={MTLGPUFamilyApple10,MTLGPUFamilyApple9,
+					MTLGPUFamilyApple8,MTLGPUFamilyApple7,MTLGPUFamilyApple6,
+					MTLGPUFamilyApple5,MTLGPUFamilyApple4,MTLGPUFamilyApple3,
+					MTLGPUFamilyApple2,MTLGPUFamilyApple1};
+				for( std::size_t i=0;i<sizeof(appleFamilies)/sizeof(appleFamilies[0]);++i )
+					if( [device supportsFamily:appleFamilies[i]] )
+						return "apple"+std::to_string(10-static_cast<int>(i));
+				if( [device supportsFamily:MTLGPUFamilyMac2] ) return "mac2";
+				if( [device supportsFamily:MTLGPUFamilyCommon3] ) return "common3";
+				if( [device supportsFamily:MTLGPUFamilyCommon2] ) return "common2";
+				if( [device supportsFamily:MTLGPUFamilyCommon1] ) return "common1";
 			}
 			return "metal-family-unreported";
+		}
+
+		id<MTLLibrary> CompileLibrary( id<MTLDevice> device,
+			std::string* structuredError )
+		{
+			static NSString* const source=
+				@"#include <metal_stdlib>\n"
+				 "using namespace metal;\n"
+				 "kernel void rise_fire_identity(device const float* input [[buffer(0)]],"
+				 " device float* output [[buffer(1)]], uint i [[thread_position_in_grid]])"
+				 " { output[i]=input[i]; }\n"
+				 "kernel void rise_fire_challenge(device const uint* input [[buffer(0)]],"
+				 " device uint* output [[buffer(1)]], uint i [[thread_position_in_grid]])"
+				 " { output[i]=input[i] ^ (0x9e3779b9u + i*0x85ebca6bu); }\n";
+			NSError* error=nil;
+			MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
+			if( @available(macOS 15.0,*) ) options.mathMode=MTLMathModeSafe;
+			else {
+				if( structuredError ) *structuredError=
+					"production fire compute requires Metal safe math mode on macOS 15 or newer";
+				return nil;
+			}
+			id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&error];
+			if( library ) return library;
+			if( structuredError ) *structuredError=
+				MetalError("production fire compute library compilation failed",error);
+			return nil;
 		}
 	}
 
@@ -65,19 +98,11 @@ namespace RISE
 			if( @available(macOS 10.15,*) )
 				capability.unifiedMemory=[device hasUnifiedMemory];
 
-			static NSString* const source=
-				@"#include <metal_stdlib>\n"
-				 "using namespace metal;\n"
-				 "kernel void rise_fire_identity(device const float* input [[buffer(0)]],"
-				 " device float* output [[buffer(1)]], uint i [[thread_position_in_grid]])"
-				 " { output[i]=input[i]; }\n";
-			NSError* error=nil;
-			MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
-			id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&error];
+			id<MTLLibrary> library=CompileLibrary(device,&capability.structuredError);
 			if( !library ) {
-				capability.structuredError=MetalError("production fire identity library compilation failed",error);
 				return true;
 			}
+			NSError* error=nil;
 			id<MTLFunction> function=[library newFunctionWithName:@"rise_fire_identity"];
 			if( !function ) {
 				capability.structuredError="production fire identity function missing after compilation";
@@ -129,6 +154,68 @@ namespace RISE
 			capability.identityKernelPassed=true;
 			capability.structuredError.clear();
 		}
+		return true;
+	}
+
+	bool RunFireProductionComputeChallenge(
+		const std::uint32_t* inputBits, std::size_t count,
+		std::vector<std::uint32_t>& outputBits, std::string* structuredError )
+	{
+		outputBits.clear();
+		if( !inputBits || count==0u ) {
+			if( structuredError ) *structuredError="production fire compute challenge is empty";
+			return false;
+		}
+		@autoreleasepool {
+			id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+			if( !device ) {
+				if( structuredError ) *structuredError="production fire compute challenge has no Metal device";
+				return false;
+			}
+			id<MTLLibrary> library=CompileLibrary(device,structuredError);
+			if( !library ) return false;
+			id<MTLFunction> function=[library newFunctionWithName:@"rise_fire_challenge"];
+			NSError* metalError=nil;
+			id<MTLComputePipelineState> pipeline=function ?
+				[device newComputePipelineStateWithFunction:function error:&metalError] : nil;
+			if( !pipeline ) {
+				if( structuredError ) *structuredError=MetalError(
+					"production fire challenge pipeline creation failed",metalError);
+				return false;
+			}
+			const std::size_t byteCount=count*sizeof(std::uint32_t);
+			id<MTLBuffer> input=[device newBufferWithBytes:inputBits length:byteCount
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> output=[device newBufferWithLength:byteCount
+				options:MTLResourceStorageModeShared];
+			id<MTLCommandQueue> queue=[device newCommandQueue];
+			id<MTLCommandBuffer> command=[queue commandBuffer];
+			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			if( !input || !output || !queue || !command || !encoder ) {
+				if( structuredError ) *structuredError=
+					"production fire challenge command allocation failed";
+				return false;
+			}
+			[encoder setComputePipelineState:pipeline];
+			[encoder setBuffer:input offset:0 atIndex:0];
+			[encoder setBuffer:output offset:0 atIndex:1];
+			const std::size_t width=std::min(count,
+				static_cast<std::size_t>([pipeline maxTotalThreadsPerThreadgroup]));
+			[encoder dispatchThreads:MTLSizeMake(count,1,1)
+				threadsPerThreadgroup:MTLSizeMake(width,1,1)];
+			[encoder endEncoding];
+			[command commit];
+			[command waitUntilCompleted];
+			if( [command status]!=MTLCommandBufferStatusCompleted ) {
+				if( structuredError ) *structuredError=MetalError(
+					"production fire challenge command failed",[command error]);
+				return false;
+			}
+			const std::uint32_t* returned=
+				static_cast<const std::uint32_t*>([output contents]);
+			outputBits.assign(returned,returned+count);
+		}
+		if( structuredError ) structuredError->clear();
 		return true;
 	}
 }

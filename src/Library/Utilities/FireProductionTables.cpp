@@ -51,9 +51,37 @@ namespace RISE
 				std::isfinite(enthalpy)&&std::isfinite(cp)&&cp>0.0;
 		}
 
+		double CpOverRLocal( const double* a, double temperatureK )
+		{
+			return a[0]/(temperatureK*temperatureK)+a[1]/temperatureK+a[2]+
+				a[3]*temperatureK+a[4]*temperatureK*temperatureK+
+				a[5]*temperatureK*temperatureK*temperatureK+
+				a[6]*temperatureK*temperatureK*temperatureK*temperatureK;
+		}
+
+		double CpFirstDerivativeBoundOverR( const double* a, double minimumK,
+			double maximumK )
+		{
+			return 2.0*std::fabs(a[0])/(minimumK*minimumK*minimumK)+
+				std::fabs(a[1])/(minimumK*minimumK)+std::fabs(a[3])+
+				2.0*std::fabs(a[4])*maximumK+
+				3.0*std::fabs(a[5])*maximumK*maximumK+
+				4.0*std::fabs(a[6])*maximumK*maximumK*maximumK;
+		}
+
+		double CpSecondDerivativeBoundOverR( const double* a, double minimumK,
+			double maximumK )
+		{
+			return 6.0*std::fabs(a[0])/(minimumK*minimumK*minimumK*minimumK)+
+				2.0*std::fabs(a[1])/(minimumK*minimumK*minimumK)+
+				2.0*std::fabs(a[4])+6.0*std::fabs(a[5])*maximumK+
+				12.0*std::fabs(a[6])*maximumK*maximumK;
+		}
+
 		bool AppendThermoInterval( const FireSimulationMethaneRecord& record,
 			const FireThermochemistrySpecies& species, double lowerK, double upperK,
-			double cpLower, unsigned depth, FireProductionThermochemistryTable& table,
+			const FireThermochemistrySegment& segment, unsigned depth,
+			FireProductionThermochemistryTable& table,
 			std::string* error )
 		{
 			if( !(lowerK<upperK) || depth>24u )
@@ -72,14 +100,29 @@ namespace RISE
 			const float upperCpF=static_cast<float>(upperCp);
 			const double interpolatedH=0.5*(static_cast<double>(lowerHF)+upperHF);
 			const double interpolatedCp=0.5*(static_cast<double>(lowerCpF)+upperCpF);
-			const double enthalpyError=std::fabs(interpolatedH-middleH);
-			const double cpIntegratedError=
-				std::fabs(interpolatedCp-middleCp)*0.5*(upperK-lowerK);
-			const double allowed=cpLower*0.25;
-			if( enthalpyError>allowed || cpIntegratedError>allowed ) {
-				if( !AppendThermoInterval(record,species,lowerK,middleK,cpLower,depth+1u,
+			const double span=upperK-lowerK;
+			const double dimensionlessCp=CpOverRLocal(segment.coefficients,middleK);
+			if( !(dimensionlessCp>0.0) )
+				return Fail(error,"production thermochemistry derivative scale is invalid");
+			const double cpScale=middleCp/dimensionlessCp;
+			const double endpointHQuantization=std::max(
+				std::fabs(static_cast<double>(lowerHF)-lowerH),
+				std::fabs(static_cast<double>(upperHF)-upperH));
+			const double endpointCpQuantization=std::max(
+				std::fabs(static_cast<double>(lowerCpF)-lowerCp),
+				std::fabs(static_cast<double>(upperCpF)-upperCp));
+			const double enthalpyErrorBound=endpointHQuantization+
+				cpScale*CpFirstDerivativeBoundOverR(segment.coefficients,lowerK,upperK)*
+				span*span/8.0;
+			const double cpErrorBound=endpointCpQuantization+
+				cpScale*CpSecondDerivativeBoundOverR(segment.coefficients,lowerK,upperK)*
+				span*span/8.0;
+			const double cpIntegratedErrorBound=cpErrorBound*0.5*span;
+			const double allowed=segment.certifiedCpLowerJPerKGK*0.25;
+			if( enthalpyErrorBound>allowed || cpIntegratedErrorBound>allowed ) {
+				if( !AppendThermoInterval(record,species,lowerK,middleK,segment,depth+1u,
 					table,error) ) return false;
-				return AppendThermoInterval(record,species,middleK,upperK,cpLower,depth+1u,
+				return AppendThermoInterval(record,species,middleK,upperK,segment,depth+1u,
 					table,error);
 			}
 
@@ -87,20 +130,17 @@ namespace RISE
 				table.temperatureK.push_back(static_cast<float>(lowerK));
 				table.sensibleEnthalpyJPerKG.push_back(lowerHF);
 				table.cpJPerKGK.push_back(lowerCpF);
-				table.maximumEnthalpyErrorJPerKG=std::max(
-					table.maximumEnthalpyErrorJPerKG,std::fabs(static_cast<double>(lowerHF)-lowerH));
-				table.maximumCpIntegratedErrorJPerKG=std::max(
-					table.maximumCpIntegratedErrorJPerKG,
-					std::fabs(static_cast<double>(lowerCpF)-lowerCp)*0.5*(upperK-lowerK));
 			}
 			table.temperatureK.push_back(static_cast<float>(upperK));
 			table.sensibleEnthalpyJPerKG.push_back(upperHF);
 			table.cpJPerKGK.push_back(upperCpF);
-			table.maximumEnthalpyErrorJPerKG=std::max(table.maximumEnthalpyErrorJPerKG,
-				std::max(enthalpyError,std::fabs(static_cast<double>(upperHF)-upperH)));
+			table.maximumEnthalpyErrorJPerKG=std::max(
+				table.maximumEnthalpyErrorJPerKG,enthalpyErrorBound);
 			table.maximumCpIntegratedErrorJPerKG=std::max(
-				table.maximumCpIntegratedErrorJPerKG,std::max(cpIntegratedError,
-				std::fabs(static_cast<double>(upperCpF)-upperCp)*0.5*(upperK-lowerK)));
+				table.maximumCpIntegratedErrorJPerKG,cpIntegratedErrorBound);
+			if( std::fabs(interpolatedH-middleH)>enthalpyErrorBound ||
+				std::fabs(interpolatedCp-middleCp)*0.5*span>cpIntegratedErrorBound )
+				return Fail(error,"production thermochemistry certified bound missed its midpoint");
 			return true;
 		}
 
@@ -116,8 +156,8 @@ namespace RISE
 				const double lower=std::max(segment.temperatureMinK,record.TemperatureMinK());
 				const double upper=std::min(segment.temperatureMaxK,record.TemperatureMaxK());
 				if( lower>=upper ) continue;
-				if( !AppendThermoInterval(record,species,lower,upper,
-					segment.certifiedCpLowerJPerKGK,0u,table,error) ) return false;
+				if( !AppendThermoInterval(record,species,lower,upper,segment,0u,table,error) )
+					return false;
 			}
 			return table.temperatureK.size()>=2u;
 		}
@@ -144,6 +184,18 @@ namespace RISE
 			double gasDerivative=0.0,radiationDerivative=0.0;
 			return record.PlanckMeanCrossSectionM2PerMolecule(species,gasK,radiationK,
 				value,gasDerivative,radiationDerivative,error)&&std::isfinite(value)&&value>=0.0;
+		}
+
+		double OpacitySecondDerivativeBound( const FireGasOpacityCell& cell,
+			double spacing, bool gasDerivative )
+		{
+			double result=0.0;
+			for( unsigned i=0;i<4u;++i ) for( unsigned j=0;j<4u;++j ) {
+				const unsigned degree=gasDerivative ? i : j;
+				if( degree>=2u ) result+=degree*(degree-1u)*
+					std::fabs(cell.coefficients[i][j])/(spacing*spacing);
+			}
+			return result;
 		}
 
 		bool BuildOpacityAtSubdivision( const FireSimulationGasOpacityRecord& record,
@@ -192,12 +244,50 @@ namespace RISE
 					table.planckMeanM2PerMolecule[(g+1u)*stride+r]+
 					table.planckMeanM2PerMolecule[g*stride+r+1u]+
 					table.planckMeanM2PerMolecule[(g+1u)*stride+r+1u]);
-				const double scale=std::max(std::fabs(middle),std::max(std::fabs(interpolated),
-					std::max(std::fabs(exact[g*stride+r]),
-						std::fabs(exact[(g+1u)*stride+r+1u]))));
-				if( scale<=0.0 ) {
-					if( middle!=interpolated ) return Fail(error,"zero-scale production opacity cell differs");
-				} else maximumRelative=std::max(maximumRelative,std::fabs(interpolated-middle)/scale);
+				const std::size_t sourceGas=g/subdivisions;
+				const std::size_t sourceRadiation=r/subdivisions;
+				const FireGasOpacityCell& sourceCell=species.cells[
+					sourceGas*(species.radiationTemperatureAxisK.size()-1u)+sourceRadiation];
+				const double gasSpan=gasAxis[g+1u]-gasAxis[g];
+				const double radiationSpan=radiationAxis[r+1u]-radiationAxis[r];
+				const double sourceGasSpan=species.gasTemperatureAxisK[sourceGas+1u]-
+					species.gasTemperatureAxisK[sourceGas];
+				const double sourceRadiationSpan=
+					species.radiationTemperatureAxisK[sourceRadiation+1u]-
+					species.radiationTemperatureAxisK[sourceRadiation];
+				const double cornerQuantization=std::max(
+					std::max(std::fabs(static_cast<double>(table.planckMeanM2PerMolecule[g*stride+r])-
+						exact[g*stride+r]),
+						std::fabs(static_cast<double>(table.planckMeanM2PerMolecule[(g+1u)*stride+r])-
+						exact[(g+1u)*stride+r])),
+					std::max(std::fabs(static_cast<double>(table.planckMeanM2PerMolecule[g*stride+r+1u])-
+						exact[g*stride+r+1u]),
+						std::fabs(static_cast<double>(table.planckMeanM2PerMolecule[(g+1u)*stride+r+1u])-
+						exact[(g+1u)*stride+r+1u])));
+				const double absoluteErrorBound=cornerQuantization+
+					OpacitySecondDerivativeBound(sourceCell,sourceGasSpan,true)*gasSpan*gasSpan/8.0+
+					OpacitySecondDerivativeBound(sourceCell,sourceRadiationSpan,false)*
+						radiationSpan*radiationSpan/8.0;
+				double gasDerivativeMinimum=0.0,gasDerivativeMaximum=0.0;
+				double radiationDerivativeMinimum=0.0,radiationDerivativeMaximum=0.0;
+				if( !record.PlanckMeanDerivativeEnclosure(species.id.c_str(),gasAxis[g],
+					gasAxis[g+1u],radiationAxis[r],radiationAxis[r+1u],gasDerivativeMinimum,
+					gasDerivativeMaximum,radiationDerivativeMinimum,radiationDerivativeMaximum,
+					error) ) return false;
+				const double exactLower=middle-
+					std::max(std::fabs(gasDerivativeMinimum),std::fabs(gasDerivativeMaximum))*
+						gasSpan*0.5-
+					std::max(std::fabs(radiationDerivativeMinimum),
+						std::fabs(radiationDerivativeMaximum))*radiationSpan*0.5;
+				if( !(exactLower>0.0) ) {
+					maximumRelative=std::numeric_limits<double>::infinity();
+				} else {
+					const double relativeBound=absoluteErrorBound/exactLower;
+					if( std::fabs(interpolated-middle)/std::max(std::fabs(interpolated),
+						std::fabs(middle))>relativeBound )
+						return Fail(error,"production opacity certified bound missed its midpoint");
+					maximumRelative=std::max(maximumRelative,relativeBound);
+				}
 			}
 			table.maximumRelativeError=maximumRelative;
 			acceptable=maximumRelative<=0.005;
@@ -255,8 +345,9 @@ namespace RISE
 			std::size_t& lower, double& fraction )
 		{
 			if( axis.size()<2u || value<axis.front() || value>axis.back() ) return false;
-			const std::vector<float>::const_iterator found=
-				std::lower_bound(axis.begin(),axis.end(),static_cast<float>(value));
+			const std::vector<float>::const_iterator found=std::upper_bound(
+				axis.begin(),axis.end(),value,
+				[]( double query, float knot ){ return query<static_cast<double>(knot); });
 			if( found==axis.begin() ) lower=0u;
 			else if( found==axis.end() ) lower=axis.size()-2u;
 			else lower=static_cast<std::size_t>(found-axis.begin()-1);
