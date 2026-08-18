@@ -129,8 +129,11 @@ a half-migrated `member`/`parent` world is worse than either.
   of the same articulated-hierarchy demo)
 
 Also folded away by the new design: `instance_array` becomes the `source`
-+ count/expression mode of `standard_object` (killing its document-wide
-incremental-derive refusal), and `mChunkAttribution` — the agent's
++ count/expression mode of `standard_object` (**the parenthetical this line
+used to carry — "killing its document-wide incremental-derive refusal" — did
+NOT survive contact with the code; see §4 and §5 step 3's 3d block: the
+document-wide refusal is restored, keyed on `source` instead**), and
+`mChunkAttribution` — the agent's
 session-only element ledger — is replaced by real parent links.
 
 ## 4. Engine facts worth not re-deriving
@@ -217,11 +220,30 @@ discoveries.
   `source`. **The refusal survives step 3**, and retiring it is its own
   arc — it also needs a typed "drop this chunk's N synthesized objects"
   primitive, which the provenance map is the inverse index for.
-  **CORRECTED BY 3d: "renamed" was wrong.**  What survives is 3a/3b's PER-CHUNK
-  pair in `DeriveToJobIncremental` (a closure chunk carrying a real `source`; a
-  closure object still holding a live provenance row), not a renamed
-  document-wide count.  The document-wide `instanceArrayCount` form is DELETED
-  with its subject, and nothing replaced it — see step 3's 3d block.
+  **THIS PARAGRAPH IS CORRECT AS WRITTEN, AND 3d WRONGLY STAMPED IT RESOLVED.**
+  3d replaced the text above with a "CORRECTED BY 3d" note claiming the
+  document-wide form was deleted because "3b closed the subtree-MEMBER hop
+  through the manager resolution inside the armed sink."  That claim is FALSE
+  for two independent reasons, either one sufficient: (1) the armed resolution
+  sink is **never armed in production** — `DeriveToJob`'s recording is opt-in via
+  `outRecorded` and every production call site passes `nullptr` (Job.cpp,
+  AgentSession.cpp; the only non-null caller in tree is
+  `tests/CstRecordDeriveTest.cpp`), so nothing is recorded when
+  `ClonePlanBuilder` resolves a subtree member; and (2) even armed, the recorded
+  graph is **not the closure consumer** — `Cst.h` says so verbatim, closure
+  consumers still read `BuildReferenceGraph` until the consumer-switch lands, and
+  no descriptor `Reference` points at a subtree member.  Measured on the probe
+  `A` / `B parent A` / `I source A`: `DocEditClosure(d, B)` has size 1 and does
+  NOT contain `I`; `Job::ApplyCstParamEdit("B", …, "position", "0 9 0")` returned
+  rc=1 with zero diagnostics and left `I.B` at the pre-edit pose while a full
+  re-derive moved it.  The DEFECT itself predates 3d (the deleted refusal keyed on
+  `instanceArrayCount`, which is 0 in a `source`-only document, so it never
+  covered this case); what 3d did was record the hop as closed in four places,
+  which is what stops the next reviewer looking.  **The refusal is RESTORED**, now
+  keyed on `Document::sourceInstanceCount` — the count of `standard_object`
+  chunks carrying a live `source` — so a `source` document always takes the full
+  re-derive.  Retiring it needs BOTH the closure consumer-switch AND the
+  transitive `source` → `parent`-descendant edge described above.
 - **Animation does not compose with instancing.** §1 pairs them ("hierarchical
   transforms give hierarchical animation. One subtree may be instanced many
   times"), but an instance is a COPY, not a live view, and
@@ -419,15 +441,24 @@ what was authored, live material included).
      `1e999` first.  The term is kept — strtod reports both directions through one
      errno, and UNDERFLOW (`1e-999`) is caught by nothing else — but its overflow
      half is unreachable and the fixture comment says so.
-   - **TWO REFUSALS SURVIVE, AND ONE OF THEM IS NOT THE ONE §4 PREDICTED.**  §4
-     said "the refusal survives step 3, renamed".  What survives is 3a/3b's
-     PER-CHUNK pair in `DeriveToJobIncremental` — a closure chunk that carries a
-     real `source`, and one that still holds a live PROVENANCE row — not a
-     renamed document-wide count.  The document-wide form is gone with its
-     subject, and it is not needed: `source` is a descriptor-declared Reference,
-     so editing the source reaches the instancing chunk, and 3b closed the
+   - **~~TWO REFUSALS SURVIVE, AND ONE OF THEM IS NOT THE ONE §4 PREDICTED.~~
+     WITHDRAWN — THIS WAS THE 3d P1.**  3d wrote here that the document-wide form
+     "is not needed", because "`source` is a descriptor-declared Reference, so
+     editing the source reaches the instancing chunk, and 3b closed the
      subtree-MEMBER hop by resolving each member through the manager inside the
-     derive's armed sink.
+     derive's armed sink."  The first clause is true and the second is FALSE: the
+     armed sink is opt-in via `DeriveToJob`'s `outRecorded`, which every
+     production caller passes `nullptr` for, and the recorded graph is not what
+     closure consumers read anyway.  A subtree-MEMBER edit therefore took the
+     incremental path and left every clone stale, silently and live-only.  The
+     defect is OLDER than 3d — the deleted refusal keyed on `instanceArrayCount`,
+     which is 0 in a `source`-only document — but 3d recorded it as closed in four
+     places.  **THREE refusals now survive**: 3a/3b's PER-CHUNK pair (a closure
+     chunk carrying a real `source`; one still holding a live PROVENANCE row),
+     both still correct and still needed, plus a RESTORED DOCUMENT-WIDE form keyed
+     on `Document::sourceInstanceCount`.  §4's original conclusion — "the refusal
+     survives step 3" — was right, and the cost it named (a `source` scene always
+     full-derives) is the cost now paid.
    Migrated, not deleted: the `grid[i,j]` legend fixtures in
    `AgentObjectMapTest` and `AgentViewModeRenderTest` are now counted `source`
    chunks.  The names are byte-identical, which is what 3c's naming decision was
@@ -525,15 +556,31 @@ what was authored, live material included).
      is caught by the walk's own path-revisit guard, which is why both exist and
      why their messages differ.
 
-   **The incremental-derive trace was closed for subtree MEMBERS, one hop
-   further than 3a.**  The reference graph's `parent` edge runs child → parent,
-   so editing a member reaches that member's chunk and stops — the instancing
-   chunk never enters the closure, and the incremental apply would re-point the
-   member while N stale clones kept the old binding.  The plan walk therefore
-   resolves each member through `objMgr->GetItem` inside the derive's armed
-   resolution sink, which records the member's chunk as a producer the expansion
-   consumes.  Editing a member now reaches `I`, and `I` carries `source`, which
-   the existing per-chunk gate turns into a full derive.  Chunk INSERT and
+   **⚠ THE PARAGRAPH BELOW WAS WRONG.  Struck 2026-08-17 — 3b did NOT close
+   the subtree-MEMBER hop.**  It is kept, struck, because it is the ORIGIN of the
+   false claim that 3d later cited to delete the document-wide incremental-derive
+   refusal.  3d's four repetitions were reverted at the time; this fifth, inherited
+   copy survived that sweep untouched and was found by the review round after.
+   The refutation is in §4: the resolution sink is **never armed in production**
+   (every production `DeriveToJob` call site passes `outRecorded = nullptr`; the
+   only non-null caller in the tree is `tests/CstRecordDeriveTest.cpp`), and
+   production closure is `DocEditClosure` → the static `BuildReferenceGraph`,
+   which would not consult that sink even if it were armed.  Editing a subtree
+   member therefore kept taking the incremental path, leaving every clone stale,
+   until `fab30721` restored a document-wide refusal keyed on
+   `Document::sourceInstanceCount`.
+
+   > ~~**The incremental-derive trace was closed for subtree MEMBERS, one hop
+   > further than 3a.**  The reference graph's `parent` edge runs child → parent,
+   > so editing a member reaches that member's chunk and stops — the instancing
+   > chunk never enters the closure, and the incremental apply would re-point the
+   > member while N stale clones kept the old binding.  The plan walk therefore
+   > resolves each member through `objMgr->GetItem` inside the derive's armed
+   > resolution sink, which records the member's chunk as a producer the expansion
+   > consumes.  Editing a member now reaches `I`, and `I` carries `source`, which
+   > the existing per-chunk gate turns into a full derive.~~
+
+   The surviving, TRUE half of the original paragraph: chunk INSERT and
    REMOVE never took the incremental path at all (`Job::ApplyCstInsertChunk` /
    `ApplyCstRemoveChunk` both route through `RederiveCstDocumentFull_`), so the
    structural half needs nothing.

@@ -909,11 +909,16 @@ int main()
 		j->release();
 	}
 
-	// [closure] the property that lets 3a get away with a PER-CHUNK incremental refusal where
-	// the `instance_array` generator 87 step 3d deleted needed a document-wide one: `source`
-	// is a descriptor-declared Reference, so editing the SOURCE puts the instancing chunk in
-	// the edit closure.  Without this the
-	// incremental apply would re-point S while I kept its stale copy of S's bindings.
+	// [closure] `source` is a descriptor-declared Reference, so editing the SOURCE puts the
+	// instancing chunk in the edit closure.  Without this the incremental apply would re-point
+	// S while I kept its stale copy of S's bindings.
+	//
+	// THIS IS THE HOP THAT WAS NEVER IN DOUBT, and 87 step 3d rewrote this header to read as
+	// the warrant for deleting the document-wide incremental refusal.  It is not: the hop that
+	// needed proving runs the other way, from a subtree MEMBER to the instancing chunk, and it
+	// does NOT close -- see the `[subtree][closure][incremental]` block in the 3b section below,
+	// which asserts the closure fact as it really is and then pins the BEHAVIOUR the restored
+	// document-wide gate delivers.
 	{
 		Document d = ParseToCst( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
 		const NodeId sid = DocFindByName( d, "standard_object/S" );
@@ -925,9 +930,16 @@ int main()
 	}
 
 	// ---------------------------------------------------------------- incremental
-	// [incremental] editing a `source` chunk refuses -> the caller full-derives, which
-	// re-expands from the document.  (Its own Finalize cannot apply it: the expansion is
-	// DeriveToJob PASS-2's job.)
+	// [incremental] A DOCUMENT HOLDING ANY INSTANCING CHUNK REFUSES WHOLESALE -> the caller
+	// full-derives, which re-expands from the document.  Restored after 87 step 3d deleted the
+	// document-wide form on a claim that turned out to be false (see the SUBTREE-MEMBER block at
+	// the end of this file for the divergence it lets through, and Cst.cpp's `source` guard for
+	// why nothing narrower can see it).
+	//
+	// The refusal is document-wide, so it also catches EVERY OTHER chunk in such a document --
+	// the ordinary sibling `S` included.  That over-refusal is the ADVERTISED COST, asserted here
+	// rather than left implicit: an author who writes one `source` line pays a full DeriveToJob
+	// (ClearAll + manager rebind, rc 2/3) on every subsequent discrete edit anywhere in the scene.
 	{
 		Job* j = new Job();
 		Document d = ParseToCst( Scene( SRC_LEAF + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
@@ -939,16 +951,86 @@ int main()
 		const int applied = DeriveToJobIncremental( d2, *j, std::vector<NodeId>( 1, id ), &di );
 		std::string all;
 		for( std::size_t i = 0; i < di.size(); ++i ) { all += di[i]; all += "\n"; }
-		Check( applied == 0 && all.find( "carries `source" ) != std::string::npos,
-		       "incremental: a `standard_object` carrying `source` refuses -> full-derive fallback" );
-		// The sibling case must NOT regress: an ordinary object chunk still applies incrementally.
+		Check( applied == 0 && all.find( "contains a `source` instancing chunk" ) != std::string::npos,
+		       "incremental: a document containing a `source` instancing chunk refuses -> full-derive fallback" );
+		// The sibling: SAME refusal, SAME reason -- not the per-chunk one, which never gets a look in.
 		const NodeId sid = DocFindByName( d, "standard_object/S" );
 		Document d3 = DocSetParamValue( d, sid, "position", 0, "3 0 0" );
 		std::vector<std::string> di2;
 		const int applied2 = DeriveToJobIncremental( d3, *j, std::vector<NodeId>( 1, sid ), &di2 );
-		Check( applied2 >= 1 && di2.empty(), "incremental: an ordinary standard_object still applies incrementally (no over-broad refusal)" );
+		std::string all2;
+		for( std::size_t i = 0; i < di2.size(); ++i ) { all2 += di2[i]; all2 += "\n"; }
+		Check( applied2 == 0 && all2.find( "contains a `source` instancing chunk" ) != std::string::npos,
+		       "incremental: ... and so does an ORDINARY chunk in the same document -- the cost of a document-wide gate, stated" );
 		j->release();
 	}
+
+	// [incremental] AND THE GATE IS NOT OVER-BROAD ACROSS DOCUMENTS.  The byte-identical ordinary
+	// chunk in a document with NO instancing chunk still takes the incremental path -- so the
+	// refusal above is keyed on the DOCUMENT holding a `source`, not on "objects are risky".
+	{
+		Job* j = new Job();
+		Document d = ParseToCst( Scene( SRC_LEAF ) );
+		std::vector<std::string> diags;
+		DeriveToJob( d, *j, &diags );
+		const NodeId sid = DocFindByName( d, "standard_object/S" );
+		Document d2 = DocSetParamValue( d, sid, "position", 0, "3 0 0" );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d2, *j, std::vector<NodeId>( 1, sid ), &di );
+		Check( applied >= 1 && di.empty(), "incremental: the same ordinary standard_object in a `source`-free document still applies incrementally" );
+		j->release();
+	}
+
+	// [incremental] THE DOCUMENT-WIDE SIGNAL IS MAINTAINED ACROSS INSERT AND ERASE, not only
+	// across parse and param-edit.  `Job::ApplyCstInsertChunk` builds a `source` chunk through
+	// `DocInsertItem` and `ApplyCstRemoveChunk` drops one through `DocEraseChunkTidy` ->
+	// `DocRemoveItem` -> `DocEraseItem`, so a counter maintained only at parse time would let an
+	// AGENT-CREATED instance take the incremental path forever after -- and would keep charging
+	// full derives forever after the instance was deleted.  Driven through the Doc primitives so
+	// the two directions are separable; the param-edit direction is covered by the `source none`
+	// block below (clearing the slot decrements, which is what lets the PROVENANCE gate be the
+	// one that answers there).
+	{
+		Job* j = new Job();
+		Document d = ParseToCst( Scene( SRC_LEAF ) );
+		std::vector<std::string> diags;
+		DeriveToJob( d, *j, &diags );
+		const NodeId sid = DocFindByName( d, "standard_object/S" );
+
+		// INSERT an instancing chunk at the end of the document, exactly the way
+		// Job::ApplyCstInsertChunk builds one: parse the chunk text into its own one-item
+		// Document and splice that item in.
+		Document instDoc = ParseToCst( std::string( "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		NodeRef inst = DocResolveNodeId( instDoc, DocNodeIdAt( instDoc, 0 ) );
+		Check( inst != nullptr && inst->kind == NodeKind::Chunk, "incremental-insert: the instancing chunk parses to a single top-level chunk item" );
+		Document dIns = DocInsertItem( d, DocItemCount( d ), inst );
+		Document e1 = DocSetParamValue( dIns, sid, "position", 0, "3 0 0" );
+		std::vector<std::string> di1;
+		const int a1 = DeriveToJobIncremental( e1, *j, std::vector<NodeId>( 1, sid ), &di1 );
+		std::string all1;
+		for( std::size_t i = 0; i < di1.size(); ++i ) { all1 += di1[i]; all1 += "\n"; }
+		Check( a1 == 0 && all1.find( "contains a `source` instancing chunk" ) != std::string::npos,
+		       "incremental-insert: INSERTING an instancing chunk arms the document-wide refusal" );
+
+		// ERASE it again -- the document is `source`-free once more and the gate must stand down.
+		Document dEra = DocEraseItem( dIns, DocItemCount( dIns ) - 1 );
+		Document e2 = DocSetParamValue( dEra, sid, "position", 0, "4 0 0" );
+		std::vector<std::string> di2;
+		const int a2 = DeriveToJobIncremental( e2, *j, std::vector<NodeId>( 1, sid ), &di2 );
+		Check( a2 >= 1 && di2.empty(), "incremental-insert: ERASING it again disarms it -- the count is a delta, not a latch" );
+		j->release();
+	}
+
+	// [incremental] THE PER-CHUNK `carries source` REFUSAL IS NOW UNREACHABLE FROM A DOCUMENT, and
+	// that is RECORDED here rather than tested.  It is the 3a gate that says WHY such a chunk
+	// cannot be re-Finalized (PASS-2 expands it; its own Finalize would refuse or build a bare
+	// container), and it is KEPT -- the document-wide gate above is the thing that would be retired
+	// first, once the closure consumer-switch and a transitive source -> descendant edge land, and
+	// retiring it must not silently re-open the per-chunk case.  The document-wide gate returns
+	// before any closure member is inspected, so no document can reach it today.  The OTHER
+	// per-chunk gate -- the live PROVENANCE row -- stays fully reachable and is pinned by the three
+	// blocks below, because the document it fires in has had its `source` cleared or deleted and so
+	// no longer trips the document-wide count.
 
 	// [incremental] CLEARING the slot -- `source none` -- refuses too, for a DIFFERENT reason.
 	// The chunk then derives as a plain container, which the in-place re-point handles perfectly
@@ -1798,6 +1880,75 @@ int main()
 		Check( CenterIs( Obj( j2, "I" ), 5, 0, 20, &g2 ), ( "subtree3: ... so the instance root composes through it (got " + g2 + ")" ).c_str() );
 		Check( CenterIs( Obj( j2, "I.D" ), 5, 1, 21, &g2 ), ( "subtree3: ... and so does the deepest clone (got " + g2 + ")" ).c_str() );
 		j2->release();
+	}
+
+	// [subtree][closure][incremental] EDITING A SUBTREE MEMBER, THROUGH THE PRODUCTION ENTRY POINT.
+	//
+	// THIS IS THE HOP THE FILE'S ONE `closure` FIXTURE DOES NOT PROVE.  That fixture asserts the
+	// SOURCE hop -- `DocEditClosure(d, S)` contains `I` -- which holds because `source` is a
+	// descriptor-declared Reference; it was never in doubt, and 87 step 3d cited it as the warrant
+	// for deleting the document-wide incremental refusal.  The hop that needed proving is the
+	// MEMBER hop, and it goes the OTHER way: the `parent` Reference runs child -> parent, so
+	// NOTHING references `C`, and no amount of reference-graph work reaches `I` from it.
+	//
+	// STATED HONESTLY: the closure STILL cannot reach `I`, and the fix does not change that -- it
+	// is a document-wide derive gate, not a closure change.  So the assertion that matters is
+	// BEHAVIOURAL, driven through `Job::ApplyCstParamEdit` (the GUI panel/gizmo route) and
+	// `ApplyCstParamEditChecked` (the agent route): the edit must take the FULL re-derive (rc 2,
+	// not the in-place re-point's rc 1) and the CLONE must move with the member.  Before the
+	// document-wide refusal was restored this returned rc=1 with zero diagnostics and left
+	// `I.C` / `I.D` at their pre-edit poses -- silently, and live-only, since the saved bytes were
+	// correct and a reload healed it.
+	{
+		const std::string scene = Scene( SUB3 + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" );
+
+		// (a) the closure fact, recorded as it really is rather than as one would wish it.
+		{
+			Document d = ParseToCst( scene );
+			const NodeId cid = DocFindByName( d, "standard_object/C" );
+			const NodeId iid = DocFindByName( d, "standard_object/I" );
+			const std::vector<NodeId> closure = DocEditClosure( d, cid );
+			bool hasI = false;
+			for( std::size_t k = 0; k < closure.size(); ++k ) if( closure[k] == iid ) hasI = true;
+			Check( cid != 0 && iid != 0 && !hasI,
+			       "member-closure: editing a subtree MEMBER does NOT put the instancing chunk in the edit closure (the `parent` edge runs child -> parent)" );
+		}
+
+		// (b) the behaviour, on the GUI route.
+		{
+			const std::string path = WriteTempScene( "cst_source_member_edit.RISEscene", scene );
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+			Check( loaded, "member-edit: the fixture loads with a retained CST head" );
+			if( loaded ) {
+				std::string got;
+				Check( CenterIs( Obj( j, "I.C" ), 5, 1, 0, &got ), ( "member-edit: (precondition) the clone starts at C's local (got " + got + ")" ).c_str() );
+				const int rc = j->ApplyCstParamEdit( "C", "standard_object", "position", 0, "0 6 0" );
+				Check( rc == 2, "member-edit: the edit takes the FULL re-derive (rc=2), NOT the in-place re-point (rc=1)" );
+				Check( CenterIs( Obj( j, "C" ), 2, 6, 0, &got ), ( "member-edit: the authored member moved (got " + got + ")" ).c_str() );
+				// THE ASSERTION THAT WAS RED ON THE PRE-FIX TREE: the clone tracks it.
+				Check( CenterIs( Obj( j, "I.C" ), 5, 6, 0, &got ), ( "member-edit: ... and the CLONE moved with it -- not stale at the pre-edit pose (got " + got + ")" ).c_str() );
+				Check( CenterIs( Obj( j, "I.D" ), 5, 6, 1, &got ), ( "member-edit: ... and so did the clone BELOW it, which composes through it (got " + got + ")" ).c_str() );
+			}
+			j->release();
+			std::remove( path.c_str() );
+		}
+
+		// (c) and the agent route, whose dry-run goes into a THROWAWAY Job -- so it diverges
+		// exactly the same way and needs the same gate.  Kept separate rather than assumed.
+		{
+			const std::string path = WriteTempScene( "cst_source_member_edit_checked.RISEscene", scene );
+			Job* j = new Job();
+			const bool loaded = j->LoadAsciiSceneViaCst( path.c_str() );
+			if( loaded ) {
+				std::string got;
+				const int rc = j->ApplyCstParamEditChecked( "C", "standard_object", "position", 0, "0 6 0" );
+				Check( rc == 2, "member-edit(agent): the checked route ALSO takes the full re-derive (rc=2)" );
+				Check( CenterIs( Obj( j, "I.C" ), 5, 6, 0, &got ), ( "member-edit(agent): ... and the clone is not stale (got " + got + ")" ).c_str() );
+			}
+			j->release();
+			std::remove( path.c_str() );
+		}
 	}
 
 	// [subtree][order][compose] THE TWO STRUCTURAL CLAIMS OF THE WALK, each against the
@@ -2720,6 +2871,46 @@ int main()
 		Check( CenterIs( Obj( j3, "I[1,2]" ), 1, 1, 0, &got ),
 		       ( "u/v: ... and the far corner is u=v=1, so u and v are not transposed (got " + got + ")" ).c_str() );
 		j3->release();
+	}
+
+	// [count][expr on orientation / scale] THE OTHER TWO TRANSFORM PARAMS, per component.
+	//
+	// A COVERAGE GAP RE-FILLED, and named as such: `tests/CstInstanceArrayTest.cpp` carried
+	// "passthrough: orientation/scale per-component eval == hand-written", and 87 step 3d
+	// deleted that file with its subject without writing the `source` twin -- leaving EVERY
+	// per-instance-expression fixture in this file on `position`, `count_u` or `material`.
+	// `EvalInstanceValue` is generic over the param name, so this is a pass-through claim, and
+	// a pass-through claim is exactly the kind that survives on one param and quietly stops
+	// being true on another (`orientation` and `scale` reach `standard_object` through
+	// different bag slots than `position`, and `matrix` precedence sits between them).
+	// A BOX SOURCE, AND A 45-DEGREE ANGLE, BOTH ON PURPOSE.  DumpJob's only transform-sensitive
+	// field is the world bbox, and the deleted `instance_array` fixture rotated a SPHERE by 90
+	// degrees -- a bbox-invariant mutation on a bbox-invariant shape, so its `orientation` half
+	// asserted nothing at all.  A unit box at 45 degrees widens its bbox to sqrt(2), which the
+	// dump does see.
+	{
+		const std::string SRC_BOX = "standard_object\n{\nname SB\ngeometry boxg\nmaterial m\nposition 0 0 0\n}\n";
+		std::vector<std::string> diags;
+		const std::string got = DumpCst( Scene( SRC_BOX
+			+ "standard_object\n{\nname I\nsource SB\ncount_u 2\norientation expr(i*45) 0 0\nscale expr(u+1) 1 1\n}\n" ), &diags );
+		const std::string want = DumpCst( Scene( SRC_BOX
+			+ "standard_object\n{\nname I[0,0]\ngeometry boxg\nmaterial m\norientation 0 0 0\nscale 1 1 1\n}\n"
+			  "standard_object\n{\nname I[1,0]\ngeometry boxg\nmaterial m\norientation 45 0 0\nscale 2 1 1\n}\n" ) );
+		std::string all;
+		for( std::size_t i = 0; i < diags.size(); ++i ) all += diags[i];
+		Check( diags.empty(), ( std::string( "expr-passthrough: the fixture derives cleanly (" ) + all + ")" ).c_str() );
+		Check( got == want, "expr-passthrough: `orientation` / `scale` evaluate PER COMPONENT, exactly like `position`" );
+		// NON-VACUITY, SEPARATELY PER PARAM -- one compare against one wrong variant cannot say
+		// WHICH of the two carried the claim.  `scale expr(u+1)` doubles the second cell's x
+		// extent; `orientation expr(i*45)` widens its y/z.  Each is visible in the dumped bbox.
+		const std::string noScale = DumpCst( Scene( SRC_BOX
+			+ "standard_object\n{\nname I[0,0]\ngeometry boxg\nmaterial m\norientation 0 0 0\nscale 1 1 1\n}\n"
+			  "standard_object\n{\nname I[1,0]\ngeometry boxg\nmaterial m\norientation 45 0 0\nscale 1 1 1\n}\n" ) );
+		Check( got != noScale, "expr-passthrough: ... and the `scale` expr alone really moves the dump" );
+		const std::string noRot = DumpCst( Scene( SRC_BOX
+			+ "standard_object\n{\nname I[0,0]\ngeometry boxg\nmaterial m\norientation 0 0 0\nscale 1 1 1\n}\n"
+			  "standard_object\n{\nname I[1,0]\ngeometry boxg\nmaterial m\norientation 0 0 0\nscale 2 1 1\n}\n" ) );
+		Check( got != noRot, "expr-passthrough: ... and so does the `orientation` expr alone -- the half the deleted sphere fixture could not see" );
 	}
 
 	// [count][expr on a NON-transform param] the per-instance expression applies to the

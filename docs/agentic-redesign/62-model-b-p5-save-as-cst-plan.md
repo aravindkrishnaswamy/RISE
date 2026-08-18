@@ -58,9 +58,13 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   you can't load-as-CST without a v7 scene (G4). So "P5" is really the
   **{convert corpus (Phase C) + dual-path load (Phase D) + save-as-CST (P5)} bundle** — exactly what
   [61] §"Phase C/D" predicted. Scope it as one workstream.
-- **F-P5.2 — animated / `instance_array` scenes refuse the incremental path.** `DeriveToJobIncremental` +
+- **F-P5.2 — animated / instancing scenes refuse the incremental path.** `DeriveToJobIncremental` +
   `DocRename` REFUSE on any document with an animation/timeline (dynamic refs are invisible to the static
-  reference graph, Cst.h:304) or an `instance_array` generator (Cst.h:184). The watch / showcase heroes are
+  reference graph) or an instancing chunk. *(Updated 2026-08-17: this bullet said "an `instance_array`
+  generator (Cst.h:184)"; doc 87 step 3d deleted that generator, and the line numbers here are long stale.
+  The refusal now keys on `Document::sourceInstanceCount` — a `standard_object` carrying a live `source` —
+  and the reason is the same one, an untraced input edge: nothing REFERENCES a subtree member, so an edit to
+  one never reaches the instancing chunk.)* The watch / showcase heroes are
   animated → need a **full-re-derive fallback** (correct, just slower) for those; the incremental path is a
   perf optimization, not a correctness requirement.
 - **F-P5.3 — a minor save-fidelity behavior change.** `SerializeCst` preserves untouched nodes verbatim but
@@ -104,8 +108,9 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   v7 so the deprecated `> modify` can be dropped.) git history keeps the authored originals. *The big diff, but
   reversible (dual-readable + git).*
 - **Slice 3 — edits → CST patches (flagged).** Retarget `SceneEditor::Apply`: a property edit →
-  `DocSetParamValue` → `DeriveToJobIncremental` → Scene; undo = CST versions; animated / `instance_array`
-  docs → the full-re-derive fallback (D2). *The bulk + the highest-risk slice — the edit-model pivot.*
+  `DocSetParamValue` → `DeriveToJobIncremental` → Scene; undo = CST versions; animated / instancing
+  docs → the full-re-derive fallback (D2) *(`instance_array` was folded into `source` by doc 87 step 3d;
+  see F-P5.2)*. *The bulk + the highest-risk slice — the edit-model pivot.*
 - **Slice 4 — save = SerializeCst (flagged).** In CST mode, `RequestSave` → `SerializeCst(head)` + D17; the
   byte-splice path is bypassed. Verify against the G5 fidelity test + the existing save-test suite.
 - **Slice 5 — flip the default + drop the coupling.** CST-load becomes the default; delete the `SaveEngine`
@@ -121,7 +126,8 @@ So the hard algorithmic parts are done. **What's missing is wiring + provenance*
   the convert FLATTENS authored `FOR`/macros/includes into verbose canonical text (the Model-B "text is the
   compiled view" premise; git history keeps the authored originals). "No surprises" also means resolving the
   convert TAIL up front (the 2 `sss` divergences + the 27 media-missing legacy-fails).  **As-built (2026-06-29):** the convert is a LEAN fold -- dead inlined color constants are pruned per-scene (a `> run colors` scene keeps only the colors it references), so the corpus lands at ~245k lines, not the naive fold-all's ~359k; the 2 `sss` divergences self-resolved (inlining makes legacy energy-conserve too).
-- **D2 — RATIFIED: full-re-derive fallback** for animated / `instance_array` scenes. MEASURED (CstEditCostTest,
+- **D2 — RATIFIED: full-re-derive fallback** for animated / instancing scenes *(`instance_array` was folded
+  into `source` by doc 87 step 3d; see F-P5.2)*. MEASURED (CstEditCostTest,
   this machine): a full re-derive is ~2 ms @ ~1k chunks, ~9 ms @ ~4k, ~38 ms @ ~16k (O(N log N)); the
   incremental path is ~5 µs, flat. In absolute terms that is low-single-digit ms for realistic scenes (a hero
   is tens-to-low-hundreds of chunks; Sponza ~600) — within the ~16 ms/edit interactive frame budget up to ~4k

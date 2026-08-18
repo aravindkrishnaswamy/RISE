@@ -181,6 +181,15 @@ namespace RISE
 			IdMapRef    byId;      //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
 			ParamMapRef paramIds;  //!< (chunkId, role, occurrence) -> param NodeId (item 4)
 			NodeId      nextId = 1;
+			//! How many top-level chunks INSTANCE another node -- `standard_object`
+			//! carrying a live `source` (87 step 3a-3c).  The O(1) signal
+			//! DeriveToJobIncremental's DOCUMENT-WIDE refusal reads; see the refusal
+			//! itself for why a `source` document cannot take the incremental path at
+			//! all.  Maintained at parse / replace / insert / erase (a reparse copies
+			//! it from the fresh parse) -- NOT recomputed by a per-edit O(N) doc scan,
+			//! which would make every incremental apply O(N) and fail CstEditCostTest's
+			//! ~flat-in-N gate exactly as the animation guard warns.
+			int         sourceInstanceCount = 0;
 		};
 
 		//! Optimistic-concurrency identity of a Job's RETAINED CST head (Facet 5,

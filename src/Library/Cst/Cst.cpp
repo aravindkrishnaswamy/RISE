@@ -207,6 +207,24 @@ namespace
 		return found;
 	}
 
+	//! Does this top-level item INSTANCE another node -- i.e. is it a `standard_object`
+	//! carrying a live `source`?  This is EXACTLY DeriveToJob PASS-2's `isSrc` trigger
+	//! (same role, same empty/`none` sentinels), and PASS-2 calls this function rather
+	//! than spelling the test a second time, so `Document::sourceInstanceCount` -- and
+	//! therefore DeriveToJobIncremental's document-wide refusal -- cannot come to a
+	//! different answer than the expansion it exists to gate.
+	//!
+	//! ROLE-SCOPED ON PURPOSE.  `channel_painter` also declares a `source` (a Reference
+	//! to a painter, nothing to do with instancing), so a role-blind "any chunk with a
+	//! `source`" predicate would make every scene that uses one pay a full re-derive on
+	//! every gizmo drag for a feature it does not use.
+	bool ChunkIsSourceInstance( const Node* c )
+	{
+		if( !c || c->kind != NodeKind::Chunk || c->role != "standard_object" ) return false;
+		std::string src;
+		return ParamValue( c, "source", src ) && !src.empty() && src != "none";
+	}
+
 	//----------------------------------------------------------------------
 	// Item 3 -- persistent balanced sequence of top-level items (the D16 rope).
 	//----------------------------------------------------------------------
@@ -1020,6 +1038,7 @@ Document ParseToCst( const std::string& bytes )
 		d.byId = IdMapSet( d.byId, id, items[k], label );
 		std::string np = ChunkNamePath( items[k] );
 		if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
+		if( ChunkIsSourceInstance( items[k].get() ) ) ++d.sourceInstanceCount;   // the O(1) incremental-refuse signal
 	}
 	d.idseq  = IdBuild( ids, labels, 0, (int)ids.size() );
 	d.nextId = (NodeId)items.size() + 1;
@@ -2103,17 +2122,22 @@ bool ClonePlanBuilder::ClonedEntry( std::size_t chunkIdx, const std::vector<std:
 		}
 	}
 
-	// Resolve the SOURCE-SIDE entry through the manager.  Two jobs, both load-bearing:
-	//   (1) it verifies the subtree member actually produced an object (a member whose
-	//       own chunk failed would otherwise be cloned from params nothing validated);
-	//   (2) it RECORDS the dependency edge.  The reference graph's `parent` edge runs
-	//       child -> parent, so editing a subtree MEMBER reaches that member's chunk
-	//       and stops -- nothing references it, so the instancing chunk would never
-	//       enter the edit closure and the incremental apply would re-point the
-	//       member while N stale clones kept the old binding.  Resolving the member
-	//       HERE, inside the derive's armed resolution sink, makes its chunk a
-	//       producer this expansion consumes, so the closure reaches `I`, and `I`
-	//       carries `source` -- which the incremental gate turns into a full derive.
+	// Resolve the SOURCE-SIDE entry through the manager.  It verifies the subtree member
+	// actually produced an object -- a member whose own chunk failed would otherwise be
+	// cloned from params nothing validated.
+	//
+	// IT DOES NOT CLOSE THE SUBTREE-MEMBER EDIT HOP, and an earlier version of this comment
+	// claimed it did.  Two independent reasons, either one sufficient: (a) the derive's
+	// resolution sink is armed ONLY when DeriveToJob is passed a non-null `outRecorded`, and
+	// every production call site passes nullptr (the sole non-null caller in tree is
+	// tests/CstRecordDeriveTest.cpp) -- so `g_cstResolutionSink` is null here and NOTHING is
+	// recorded; and (b) even when it is armed, the recorded graph is not what closure
+	// consumers read (Cst.h says so verbatim -- they still read `BuildReferenceGraph`, the
+	// static descriptor-Reference graph, until the consumer-switch lands), and no descriptor
+	// Reference points at a subtree member.  `DocEditClosure( d, <member> )` therefore does
+	// NOT contain the instancing chunk.  The hop is closed instead by
+	// DeriveToJobIncremental's DOCUMENT-WIDE `source` refusal -- see it for the cost and for
+	// what would let it go.
 	if( objMgr && !objMgr->GetItem( srcEntryName.c_str() ) ) {
 		diags.push_back( who + ": the source subtree member `" + srcEntryName + "` is declared earlier but did not "
 			"produce an object (its own chunk failed, or it was dropped by a scene variant)" );
@@ -2754,10 +2778,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		// 87 step 3a: read `source` off the CST TOKEN, not the bag -- the expansion is
 		// deliberately bag-free (ExpandSourceInstance's header says why), and so is its trigger.
 		// Read BEFORE the params are resolved, because 87 step 3c makes the resolution itself
-		// depend on the answer.
-		std::string srcRef;
-		const bool isSrc = ( c->role == "standard_object" )
-		               && ParamValue( c.get(), "source", srcRef ) && !srcRef.empty() && srcRef != "none";
+		// depend on the answer.  Through `ChunkIsSourceInstance`, which is ALSO what
+		// `Document::sourceInstanceCount` counts -- so the incremental derive's document-wide
+		// refusal and this expansion trigger cannot drift apart.
+		const bool isSrc = ChunkIsSourceInstance( c.get() );
 		// Resolve the parser + normalise the params (shared with the incremental
 		// derive, so both paths normalise identically -- see ResolveChunkParams).
 		//
@@ -3044,6 +3068,54 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		return 0;
 	}
 
+	// `source` guard: A DOCUMENT HOLDING ANY INSTANCING CHUNK TAKES THE FULL RE-DERIVE, WHOLESALE.
+	//
+	// THE HOP THIS CLOSES is an edit to a SUBTREE MEMBER of an instanced source.  The reference
+	// graph's `parent` edge runs child -> parent, so editing `B` (where `B parent A`, and some `I
+	// source A` copies A's subtree) reaches B's own chunk and STOPS: nothing REFERENCES B, so `I`
+	// never enters the edit closure, the incremental apply re-points the live `B` alone, and every
+	// `I.B` clone keeps the pre-edit binding.  The divergence is silent, it is live-only (the saved
+	// bytes are correct, so it self-heals on reload), and it is exactly what §4 of
+	// docs/agentic-redesign/87-recursive-scene-graph.md predicted.
+	//
+	// A DOCUMENT-WIDE GATE, and deliberately not a narrower one.  The per-chunk refusals below
+	// cover the chunks the closure DOES reach (the instancing chunk itself; an entry still holding
+	// a provenance row).  They cannot cover this case, because the whole defect is that the
+	// closure never contains an instancing chunk at all -- a gate that only inspects the closure's
+	// members is structurally unable to see the member-edit hop.  Nor is the count of `source`
+	// chunks a proxy for "an edit is dangerous": we would have to know the edited chunk is inside
+	// SOME source's subtree, and answering that per edit is the transitive-membership query the
+	// static graph does not have.
+	//
+	// WHAT IT COSTS: every discrete edit in a scene that uses `source` even once -- a panel value
+	// change, a gizmo drag commit, an agent param edit -- pays a full DeriveToJob (two, on the
+	// agent path, which dry-runs first) instead of an O(closure . log N) re-point, and the object
+	// manager is REPLACED so every caller must rebind (rc 2/3 rather than 1).  That is the honest
+	// cost 87 §4 named when it concluded "the refusal survives step 3", and 87 step 3d was wrong
+	// to delete it: the deleted form keyed on `instanceArrayCount`, which is 0 in a `source`-only
+	// document, so the guard it removed never covered this case either -- the hole is older than
+	// 3d -- but the four places 3d recorded the hop as CLOSED are what stopped it being found.
+	//
+	// WHAT WOULD LET IT GO -- both, not either:
+	//   (1) the closure consumer-switch (Cst.h `RecordedGraph`): closure consumers still read
+	//       BuildReferenceGraph, the STATIC descriptor-Reference graph, so the derive's recorded
+	//       resolutions (which DO include the manager lookup ClonePlanBuilder performs on each
+	//       subtree member) reach no consumer -- and the recording sink is opt-in via
+	//       DeriveToJob's `outRecorded`, which every production call site passes nullptr for;
+	//   (2) a TRANSITIVE structural edge from a `source` to every `parent`-descendant of its
+	//       source, which MaintainedReferenceGraph cannot maintain incrementally today (its
+	//       SetParamValue re-runs ComputeChunkRefs for the EDITED chunk only, while a `parent`
+	//       edit anywhere changes subtree membership for every ancestor `source`).
+	// O(1): a Document-level count maintained at parse / replace / insert / erase, NOT a per-edit
+	// O(N) doc scan (which would make the incremental O(N) and fail the ~flat-in-N cost gate,
+	// exactly as the animation guard above warns).
+	if( doc.sourceInstanceCount > 0 ) {
+		diags.push_back( "incremental: the document contains a `source` instancing chunk, and an edit to a "
+			"member of an instanced SUBTREE is not traced to the instance (the `parent` edge runs child -> "
+			"parent, so nothing references the member); fall back to a full derive" );
+		return 0;
+	}
+
 	// Re-apply ONLY the given closure (DocEditClosure) into an ALREADY-derived Job
 	// after an edit: recreate the non-object entities (drop + re-Finalize), but
 	// re-point the closure's OBJECTS in place (slice 3) -- so the work is
@@ -3101,10 +3173,20 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			// unexpanded-`source` backstop) or, worse under a future relaxation, build a
 			// bare CONTAINER where the author asked for a copy.  Refuse -> full derive,
 			// which re-expands from the document.  PER-CHUNK, matching the three refusals
-			// below; the document-wide guard that would also cover "edit the SOURCE and
-			// the instance must re-expand" is not needed here, because the expansion
-			// resolves the source object THROUGH the manager and so records the source's
-			// chunk as a traced dependency (see ExpandSourceInstance (c)).
+			// below.
+			//
+			// UNREACHABLE IN PRACTICE TODAY, and kept anyway: the DOCUMENT-WIDE `source`
+			// refusal above already returned 0 for any document holding an instancing
+			// chunk, so no closure containing one gets this far.  This stays as the
+			// per-chunk statement of WHY such a chunk cannot be re-Finalized, so that
+			// retiring the document-wide gate (which needs the closure consumer-switch
+			// plus a transitive source -> descendant edge) does not silently re-open it.
+			// An earlier version of this comment said the document-wide guard "is not
+			// needed here, because the expansion resolves the source object THROUGH the
+			// manager and so records the source's chunk as a traced dependency"; that was
+			// wrong twice over -- the recording sink is not armed in production, and the
+			// recorded graph is not the closure consumer (see ExpandSourceInstance's
+			// manager-resolution comment).
 			//
 			// CLEARING the slot needs the same fallback, for a DIFFERENT reason: the
 			// chunk then derives as a plain container, which the in-place re-point
@@ -4568,6 +4650,12 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	int iv = 0; const NodeId id = IdAt( doc.idseq, index, iv );    // the persisting id
 	int v = 0;
 	Document d = doc;                                              // carry idseq / byName / byId / paramIds / nextId
+	// EVERY param mutation funnels through here (DocSetParamValue / DocSetOrAddParamValue /
+	// DocRemoveParam / DocRemoveParamOcc / DocRename all rebuild the chunk and land on this
+	// function), so this ONE delta covers adding, editing, clearing and DELETING a `source`
+	// line as well as a whole-item replace that flips the role.
+	d.sourceInstanceCount += ( ChunkIsSourceInstance( newChunk.get() ) ? 1 : 0 )
+	                       - ( ChunkIsSourceInstance( oldChunk.get() ) ? 1 : 0 );
 	d.byId  = IdMapRepoint( d.byId, id, newItem );               // reverse index -> the new node (label unchanged)
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
@@ -4611,6 +4699,7 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
 	d.nextId = src.nextId + 1;
 	AddChunkParams( d.paramIds, d.byId, id, newChunk, d.nextId );        // param occurrence ids
+	if( ChunkIsSourceInstance( newChunk.get() ) ) ++d.sourceInstanceCount;
 	if( visits ) *visits = v;
 	return d;
 }
@@ -4625,6 +4714,7 @@ Document DocEraseItem( const Document& doc, int index, int* visits, std::vector<
 	int iv = 0; const NodeId eid = IdAt( doc.idseq, index, iv );   // the erased item's id
 	int v = 0;
 	Document d = doc;
+	if( ChunkIsSourceInstance( oldChunk.get() ) && d.sourceInstanceCount > 0 ) --d.sourceInstanceCount;
 	d.items  = SeqEraseAt( doc.items, index, v );                  // O(log N) WBT
 	d.idseq  = IdEraseAt( doc.idseq, index );                      // O(log N) lockstep splice
 	d.byId   = IdMapErase( d.byId, eid );                          // reverse index drops the id
@@ -5077,7 +5167,7 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	for( int j = 0; j < M; ++j ) if( carried[j] == 0 ) carried[j] = next++;
 	if( invalidated ) { invalidated->clear(); for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) invalidated->push_back( oldIds[i] ); }
 
-	Document d = fresh;
+	Document d = fresh;   // ... incl. `sourceInstanceCount`, which ParseToCst just counted over the NEW text
 	std::vector<std::int64_t> labels; labels.reserve( M );
 	for( int j = 0; j < M; ++j ) labels.push_back( (std::int64_t)( j + 1 ) * LABEL_GAP );   // fresh evenly-spaced labels by new position
 	d.idseq    = IdBuild( carried, labels, 0, M );

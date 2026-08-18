@@ -4196,7 +4196,15 @@ static void RunIsolateNameFailureTest()
 		allP.renderTarget = AgentRenderTarget::ObjectMap;
 		const AgentRenderResult allR = session->Render( allP );
 		Check( allR.ok && allR.legend.size() == 5,
-		       "(control) the counted source derived four repetitions AND left its source rendering" );
+		       "(control) the counted source derived four repetitions PLUS its source -- five world-visible entries" );
+		// ASSERT WHAT THE CLAIM SAYS.  The sentence above used to end "AND left its source
+		// RENDERING" while asserting only a legend SIZE -- and the legend is filtered on
+		// IsWorldVisible with no pixel requirement, so a source that covered zero pixels
+		// would still be counted.  The sibling AgentObjectMapTest asserts `pixelCount > 0`
+		// on the same object; match it, so "rendering" is a measurement rather than a word.
+		const LegendEntry* srcEntry = FindLegend( allR, "src" );
+		Check( srcEntry && srcEntry->pixelCount > 0,
+		       "(control) ... and the source really is RENDERING -- it covers pixels of its own" );
 
 		// ...and one instance BY ITS FULL NAME resolves cleanly.
 		AgentRenderParams okP;
