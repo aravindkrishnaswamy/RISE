@@ -1908,6 +1908,16 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
     return s ?: @"";
 }
 
+- (NSString *)selectionRowName {
+    if (!_controller) return @"";
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionRowName(_controller, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
 - (BOOL)setSelectionCategory:(RISEViewportCategory)category name:(NSString *)name {
     if (!_controller) return NO;
     const char* utf8 = name ? [name UTF8String] : "";

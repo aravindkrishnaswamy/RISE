@@ -2387,6 +2387,77 @@ namespace RISE
 		//! index (which is what it used to do -- measured).
 		static TreeNodeHandle HandleFor( const AuthoredTree& t, unsigned int index );
 
+		//! THE WAY BACK FROM A LIVE ENTRY TO THE ROW THAT REPRESENTS IT.
+		//!
+		//! The outliner draws the AUTHORED graph, so a SYNTHESIZED entry
+		//! (87 step 3's instancing expansions) is not a row: `I[1,0]` folds
+		//! into `I`.  Selection, though, is by NAME and comes from wherever
+		//! the user clicked -- and a VIEWPORT pick necessarily names the LIVE
+		//! entry it hit, because that is the only thing a ray can return.  So
+		//! `GetSelectionName()` can legitimately hold a name no row answers
+		//! to, and a shell matching it against row names highlights nothing.
+		//! That was the state 87 step 4b left behind, deliberately.
+		//!
+		//! This resolves that name to the row.  Answers `entityName` itself
+		//! whenever that IS a row -- which covers every ordinary object, the
+		//! step-3a COLLAPSE case (entry name == chunk name), and the PASS-1b
+		//! UNFOLD case where a same-name collision made the fold refuse.
+		//!
+		//! THE AUTHORITY IS TREE MEMBERSHIP, NOT A REIMPLEMENTED FOLD RULE.
+		//! `BuildObjectTreeSeedsLocked_` decides what folds, through several
+		//! interacting cases (collapse, unfold-on-collision, synthesized
+		//! chunk nodes).  Restating any of that here would be a second copy
+		//! free to drift, and a resolver that names a row the tree does not
+		//! contain is worse than no resolver -- the shell would highlight
+		//! nothing while reporting success.  So the only question asked of
+		//! the fold data is "what chunk did this entry come from?"
+		//! (`IObjectManager::GetObjectProvenance`, the ONE sanctioned route
+		//! -- see its header: a synthesized name is an opaque token and
+		//! nobody may split it on `.` or probe for a `[`), and the only
+		//! question asked of the tree is "is this name a row?".  Every
+		//! discrimination falls out of the second question.
+		//!
+		//! ITERATED and CYCLE-PROOF: the chain is walked with a visited set
+		//! rather than a hop budget, so a future expansion that folds one
+		//! synthesized entry into another resolves, and a fold CYCLE
+		//! terminates instead of spinning.  One hop is all any shape reaches
+		//! today.
+		//!
+		//! Returns `entityName` UNCHANGED when nothing resolves -- an empty
+		//! name, a name that has since been deleted, a non-Object category
+		//! (only Objects have provenance), or a contended read.  The caller
+		//! then highlights nothing, which is exactly the pre-fix behaviour:
+		//! this can restore a highlight, never move one onto a wrong row.
+		//!
+		//! IT DOES NOT CHANGE WHAT IS SELECTED, and that is the point.  The
+		//! selection stays the LIVE ENTRY the user clicked, so the gizmo
+		//! still lands on THAT copy, the properties panel still inspects
+		//! THAT copy, and the viewport chrome still names it.  Folding
+		//! `mSelectionName` itself would have moved all three onto the array
+		//! -- and for a COUNTED chunk, whose row has no live object at all,
+		//! `IObjectManager::GetItem` would return null and the gizmo would
+		//! disappear rather than move.  This is a PRESENTATION fold, applied
+		//! at the one place that presents.
+		//!
+		//! IT DOES NOT REFRESH THE TREE, unlike `ReadTree` /
+		//! `TreeNodeCount` -- it answers against whatever is PUBLISHED,
+		//! which is what the shell has drawn.  Both shells re-read the
+		//! selection on every refresh and the Qt outliner's refresh rides
+		//! `imageUpdated` (once per preview frame), so refreshing here would
+		//! defeat the epoch gate they use to keep the O(n) rebuild off that
+		//! path.  The sole exception is a category nothing has published yet
+		//! (`TreeGeneration( cat ) == 0`), which is a COLD controller rather
+		//! than a stale one and publishes once, so this stays usable on its
+		//! own.  See the fuller note at the definition.
+		String ResolveTreeRowName( Category cat, const String& entityName ) const;
+
+		//! The row a shell should highlight for the CURRENT selection:
+		//! `ResolveTreeRowName( GetSelectionCategory(), GetSelectionName() )`.
+		//! This is what an outliner compares against its row names; the
+		//! unfolded `GetSelectionName()` remains what the property panel,
+		//! the gizmo and the viewport chrome use.
+		String SelectionRowName() const;
+
 		//! The input to the pure tree assembler: one record per node that is
 		//! to APPEAR in the tree, already resolved out of whatever the
 		//! category's backing store is.
@@ -5301,6 +5372,12 @@ namespace RISE
 		//! legitimately write `name my.object`), and the map is the only
 		//! sanctioned route.
 		void BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>& outSeeds ) const;
+
+		//! Does `cat`'s CURRENTLY PUBLISHED tree contain a row named `name`?
+		//! Takes only the leaf snapshot lock and does NOT refresh -- it asks
+		//! about the tree a shell has drawn, which is the question
+		//! `ResolveTreeRowName` needs answered.
+		bool TreeContainsName_( Category cat, const std::string& name ) const;
 
 		//! Document-first ADR phase 2: THE unified UI read surface.  Every
 		//! public read accessor (properties, enumeration, jump rows) serves

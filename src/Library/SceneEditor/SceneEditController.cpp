@@ -4930,6 +4930,106 @@ SceneEditController::TreeNodeHandle SceneEditController::HandleFor(
 	return EncodeTreeHandle( t.generation, index );
 }
 
+// Is `name` a row in `cat`'s CURRENTLY PUBLISHED tree?  Leaf lock only, and
+// the caller is expected to have refreshed already -- this asks about what is
+// published, which is what a shell has drawn.
+//
+// A linear scan, not an index.  The trees this runs against are outliner-sized
+// and the call happens ONCE per outliner reload (both shells resolve the
+// selection, not each row), so an auxiliary name map inside AuthoredTree would
+// be a second thing to keep consistent with `nodes` across every publish for
+// no measurable gain -- and AuthoredTree's own comment is explicit that
+// members which must agree with `nodes` are a hazard, not a convenience.
+bool SceneEditController::TreeContainsName_( Category cat, const std::string& name ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return false;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	for( std::size_t i = 0; i < t.nodes.size(); ++i )
+		if( std::string( t.nodes[i].name.c_str() ) == name ) return true;
+	return false;
+}
+
+String SceneEditController::ResolveTreeRowName( Category cat, const String& entityName ) const
+{
+	if( entityName.size() <= 1 ) return entityName;          // String carries its NUL: <=1 is empty
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return entityName;
+
+	// ASK ABOUT THE PUBLISHED TREE, AND DO NOT REFRESH IT.  This is a
+	// deliberate departure from `TreeNodeCount` / `ReadTree`, and it is
+	// load-bearing twice over.
+	//
+	// CORRECTNESS: the question is "which of the rows the shell HAS DRAWN
+	// should be highlighted?"  The published tree is exactly that set.  If it
+	// is stale relative to the scene, so is what the user is looking at, and
+	// answering against a fresher tree would name a row that is not on screen.
+	//
+	// COST: both shells re-read the selection on EVERY refresh, and the Qt
+	// outliner's refresh is wired to `imageUpdated` -- i.e. it runs once per
+	// preview frame.  Both gate their tree PULL on the scene epoch precisely
+	// so a per-frame refresh does not rebuild the tree; a refresh here would
+	// defeat that gate from underneath them and put an O(n) rebuild + compare
+	// back on every frame of every drag.
+	//
+	// The one exception is a category NOTHING has published yet
+	// (`generation == 0`), which is a cold controller rather than a stale one
+	// -- there are no drawn rows to be consistent with, so publish once.  That
+	// keeps this usable on its own (a test, or a C-ABI caller that never walks
+	// the tree) without putting a rebuild on the per-frame path.
+	if( TreeGeneration( cat ) == 0 ) RefreshTreeSnapshot_( cat );
+
+	const std::string raw( entityName.c_str() );
+	if( TreeContainsName_( cat, raw ) ) return entityName;
+
+	// Not a row.  Only Objects can be synthesized, so only Objects have a
+	// chain to walk -- every other category ends here with the name it came
+	// in with.
+	if( cat != Category::Object ) return entityName;
+
+	// Build the fold CHAIN under the mutation lock, then release it before
+	// testing membership: the tree snapshot's leaf lock is never taken across
+	// this one from here, which keeps this method out of the lock-order graph
+	// entirely (RefreshTreeSnapshot_ above is the one place that nests them,
+	// and it is unchanged).
+	std::vector<std::string> chain;
+	{
+		if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return entityName;
+		std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+		if( !lk.owns_lock() ) return entityName;              // contended -> no highlight this frame
+		const IScene* scene = mJob.GetScene();
+		const IObjectManager* m = scene ? scene->GetObjects() : 0;
+		if( !m ) return entityName;
+		std::set<std::string> seen;
+		seen.insert( raw );
+		std::string cur = raw;
+		for( ;; ) {
+			const char* chunk = 0;
+			if( !m->GetObjectProvenance( cur.c_str(), &chunk, /*outSourceNode*/ 0 ) ) break;
+			const std::string next( chunk ? chunk : "" );
+			// A row whose provenance names ITSELF is 87 step 3a's collapse
+			// case; it is a fold target, not a fold source, so the chain ends.
+			if( next.empty() || next == cur ) break;
+			if( !seen.insert( next ).second ) break;          // fold cycle -> stop, do not spin
+			chain.push_back( next );
+			cur = next;
+		}
+	}
+
+	for( std::size_t i = 0; i < chain.size(); ++i )
+		if( TreeContainsName_( cat, chain[i] ) ) return String( chain[i].c_str() );
+
+	// Nothing on the chain is a row.  Hand back what we were given: the
+	// caller highlights nothing, which is what it did before this existed.
+	return entityName;
+}
+
+String SceneEditController::SelectionRowName() const
+{
+	return ResolveTreeRowName( mSelectionCategory, mSelectionName );
+}
+
 unsigned long long SceneEditController::TreeGeneration( Category cat ) const
 {
 	const int ci = static_cast<int>( cat );

@@ -4249,6 +4249,27 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GetSelectionName(
 		SceneEditController* p, char* buf, unsigned int bufLen );
 
+	//! The OUTLINER ROW the current selection should highlight.
+	//!
+	//! Identical to `_GetSelectionName` for every ordinary entity.  It
+	//! differs only when the selection names a SYNTHESIZED instancing entry
+	//! (`I[1,0]`, `I.X`) -- which is what a VIEWPORT PICK necessarily
+	//! produces, since a ray can only return a live object -- where the
+	//! outliner's row is the instancing CHUNK those entries were expanded
+	//! from.  Without this an outliner matching `_GetSelectionName` against
+	//! its row names highlights nothing at all.
+	//!
+	//! Use this for ROW HIGHLIGHTING ONLY.  `_GetSelectionName` remains the
+	//! selected ENTITY -- what the property panel inspects, what the gizmo
+	//! transforms, what the viewport chrome names -- and folding those onto
+	//! the array would edit every copy at once (and, for a counted chunk
+	//! whose row has no live object, would leave the gizmo with nothing to
+	//! attach to).  Falls back to the unfolded name whenever nothing
+	//! resolves, so a caller can always use it and never lands on a wrong
+	//! row.  Returns false on null controller.
+	bool RISE_API_SceneEditController_GetSelectionRowName(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
 	//! Apply a (category, name) selection.  Empty `name` selects the
 	//! category with no row picked (the section opens, the property
 	//! panel below shows nothing).  Camera / Rasterizer selections

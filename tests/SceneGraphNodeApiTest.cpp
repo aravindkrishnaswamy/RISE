@@ -105,6 +105,19 @@
 //         roots+children is a total, duplicate-free, in-bounds partition that
 //         agrees with each row's `parent`, over every shape the assembler can
 //         produce including its two hostile inputs.
+//   AA -- a SYNTHESIZED entry RESOLVES to the row that represents it.
+//         Includes the two contracts nothing reachable through scene text
+//         can reach: the ITERATED chain walk with its cycle guard (every
+//         expansion records provenance one hop, so the loop never takes a
+//         second iteration -- driven here through the public provenance
+//         setter), and the NO-REFRESH-WHEN-WARM cost guarantee both shells
+//         depend on.
+//         Viewport picking selects the LIVE entry a ray hit (`I[1,0]`),
+//         which is not a row, so an outliner matching the selection name
+//         against row names highlighted NOTHING.  `ResolveTreeRowName`
+//         folds the entry onto its instancing chunk for row-highlighting
+//         only -- the selection itself, and therefore the panel, the gizmo
+//         and the viewport chrome, still name the copy that was clicked.
 //    Z -- a row the tree OFFERS must INSPECT (step 4b review).  A counted
 //         instancing chunk's node has no live object of its own, and the
 //         properties panel's Object arm inspected the live object only -- so
@@ -1982,6 +1995,327 @@ int main()
 			IObjectManager* om2 = sc2 ? const_cast<IObjectManager*>( sc2->GetObjects() ) : 0;
 			Check( om2 != 0 && om2->GetItem( "I[2,0]" ) != 0,
 			       "Z: ... and the array really grew -- a third repetition exists" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// AA -- A SYNTHESIZED ENTRY RESOLVES TO THE ROW THAT REPRESENTS IT.
+	//
+	//      Cases G and H established the fold: `I.X` and `I[1,0]` are not
+	//      rows, `I` is.  Selection is by NAME, and a VIEWPORT PICK can only
+	//      ever name the LIVE entry its ray hit -- so after a pick on any
+	//      copy of an instanced array the selection held a name no row
+	//      answered to, and both outliners highlighted nothing.  87 step 4b
+	//      opened that gap deliberately and left it open.
+	//
+	//      The fold applied here is PRESENTATIONAL and one-directional:
+	//      `ResolveTreeRowName` answers which ROW to highlight, while
+	//      `GetSelectionName` keeps naming the clicked copy -- which is what
+	//      the property panel inspects, what the gizmo attaches to, and what
+	//      the viewport chrome shows.  The last assertion in each block is
+	//      what pins that apart: fold the selection itself and the copy is
+	//      unreachable, and for a COUNTED chunk (whose row has no live object
+	//      at all) the gizmo would have nothing to attach to rather than
+	//      merely the wrong thing.
+	//
+	//      The authority for "what is a row" is TREE MEMBERSHIP, not a
+	//      restated fold rule -- so the two shapes where an entry with
+	//      provenance is nonetheless its OWN row (the step-3a COLLAPSE case,
+	//      and case M's refused fold) must resolve to THEMSELVES, and they
+	//      are checked here rather than assumed.
+	// =================================================================
+	{
+		// -- counted array: `I[1,0]` -> `I`, whose row has NO live object.
+		const char* s = "sgnode_rowresolve_counted.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname X\nparent S\ngeometry g\nmaterial m\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i*3) 0 0\n}\n",
+			"AA: counted-instance scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			// The PREMISE: these are exactly the names a viewport pick can
+			// return, and none of them is a row.
+			Check( om && om->GetItem( "I[1,0]" ) && om->GetItem( "I[1,0].X" ) && om->GetItem( "I" ) == 0,
+			       "AA: the premise -- the repetitions are live, the chunk they fold into is not" );
+			CheckEq( TreeDump( c, Cat::Object ), "S|  X|I",
+			         "AA: ... and the tree draws the chunk, not the repetitions" );
+
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "I[1,0]" ) ).c_str() ), "I",
+			         "AA: a picked REPETITION resolves to the instancing chunk's row" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "I[1,0].X" ) ).c_str() ), "I",
+			         "AA: ... and so does a picked CLONE INSIDE a repetition" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "S" ) ).c_str() ), "S",
+			         "AA: an ordinary object resolves to itself" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "X" ) ).c_str() ), "X",
+			         "AA: ... including one that is a source subtree member -- `source` copies, and "
+			         "the original is still its own row" );
+
+			// Through the SELECTION, which is the path a viewport pick takes.
+			Check( c.SetSelection( Cat::Object, String( "I[1,0]" ) ),
+			       "AA: the picked repetition selects" );
+			CheckEq( std::string( c.SelectionRowName().c_str() ), "I",
+			         "AA: the outliner highlights the chunk's row -- an EMPTY or unfolded answer here "
+			         "is the 4b gap: a pick that highlights nothing" );
+			CheckEq( std::string( c.GetSelectionName().c_str() ), "I[1,0]",
+			         "AA: while the SELECTION still names the clicked copy -- the panel, the gizmo and "
+			         "the viewport chrome all read this, and folding it would move an edit onto every "
+			         "copy at once" );
+			Check( om && om->GetItem( c.GetSelectionName().c_str() ) != 0,
+			       "AA: ... and it still names a LIVE object, which is what the gizmo needs: the row "
+			       "it highlights has none" );
+
+			// THE C ABI, which is what the two shells actually call -- neither
+			// bridge can reach `SelectionRowName()` directly.  Case K's
+			// convention for every `RISE_API_SceneEditController_*` wrapper:
+			// one real call plus the null-controller contract.  Untested, the
+			// wrapper is one copy-paste away from calling `GetSelectionName`
+			// (it sits four lines above it in RISE_API.cpp and does almost the
+			// same thing), which would silently restore the exact "a pick
+			// highlights nothing" defect this whole case exists to prevent --
+			// with every C++-side assertion above still green.
+			{
+				char buf[128] = { 0 };
+				Check( RISE_API_SceneEditController_GetSelectionRowName( &c, buf, sizeof(buf) )
+				    && std::string( buf ) == "I",
+				       "AA: the C ABI reports the FOLDED row name -- this, not the C++ accessor, is "
+				       "what both outliners compare against their rows" );
+				char raw[128] = { 0 };
+				Check( RISE_API_SceneEditController_GetSelectionName( &c, raw, sizeof(raw) )
+				    && std::string( raw ) == "I[1,0]",
+				       "AA: ... while the C ABI's SELECTION accessor still reports the clicked copy, "
+				       "so the two wrappers have not been collapsed into one" );
+				Check( !RISE_API_SceneEditController_GetSelectionRowName( 0, buf, sizeof(buf) ),
+				       "AA: null controller -> failure, not a name" );
+			}
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		// -- subtree clone (no count): `I.X` -> `I`, whose row IS live.
+		const char* s = "sgnode_rowresolve_subtree.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname X\nparent S\ngeometry g\nmaterial m\nposition 0 1 0\n}\n"
+			"standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n",
+			"AA: subtree-instance scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			Check( om && om->GetItem( "I.X" ) != 0,
+			       "AA: the premise -- `I.X` really was synthesized, so the fold has something to fold" );
+
+			// AND THE COLD-START PREMISE, which is why this block deliberately
+			// does NOT call TreeDump/ReadTree first.  `ResolveTreeRowName` does
+			// not refresh the tree (both shells re-read the selection every
+			// frame and gate their tree PULL on the scene epoch, so a refresh
+			// here would put an O(n) rebuild back on the per-frame path); its
+			// ONE exception is a category nothing has published yet, which
+			// publishes once so the accessor is usable on its own.  Nothing
+			// else in this file exercises that branch -- without the branch,
+			// the assertion below resolves to an unchanged `I.X`, because every
+			// membership test would run against a never-published tree.
+			//
+			// So do not "tidy" a TreeDump call into the top of this block for
+			// parity with the others: that silently deletes this coverage.
+			Check( c.TreeGeneration( Cat::Object ) == 0,
+			       "AA: the premise -- NOTHING has published this category's tree yet, so the next "
+			       "call takes the cold-start self-publish branch" );
+
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "I.X" ) ).c_str() ), "I",
+			         "AA: a cloned subtree member resolves to the instance row -- from a COLD "
+			         "controller, i.e. through the self-publish branch" );
+			Check( c.TreeGeneration( Cat::Object ) != 0,
+			       "AA: ... and that call really did publish the tree it then asked about" );
+
+			// THE COLLAPSE CASE.  It returns through the SAME fast path as an
+			// ordinary object -- `I` is already a row, so the membership test
+			// answers before provenance is ever consulted -- and that IS the
+			// point: "already a row" is the question, and having provenance
+			// never enters into it.  (The chain walk's own `next == cur` guard
+			// is a SECOND, independent protection for the same shape, reached
+			// only when a collapse entry turns up as a fold TARGET, as `I.X`
+			// above does.  No single mutation isolates this assertion; it is
+			// here to pin the contract, not to discriminate.)
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "I" ) ).c_str() ), "I",
+			         "AA: the COLLAPSE-case instance resolves to ITSELF -- it has provenance, and it "
+			         "is still the row" );
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		// -- case M's REFUSED fold: the repetitions are their own rows, so
+		//    they must resolve to themselves and NOT to the unrelated live
+		//    object whose name their provenance still records.
+		const char* s = "sgnode_rowresolve_unfold.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed -> live object `noname`
+			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n",
+			"AA: the two-keyspace scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			CheckEq( TreeDump( c, Cat::Object ), "S|noname|noname[0,0]|noname[1,0]",
+			         "AA: the premise -- the fold was REFUSED, so the repetitions are their own rows" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "noname[1,0]" ) ).c_str() ),
+			         "noname[1,0]",
+			         "AA: a repetition whose fold was refused resolves to ITSELF -- following its "
+			         "provenance would highlight the unrelated same-named object instead" );
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		// -- THE ITERATED CHAIN, AND ITS CYCLE GUARD.
+		//
+		//    `ResolveTreeRowName` walks the fold chain with a VISITED SET
+		//    rather than a hop budget, and the header sells that as
+		//    "cycle-proof, and a future expansion that folds one synthesized
+		//    entry into another still resolves".  NOTHING REACHABLE THROUGH
+		//    SCENE TEXT EXERCISES IT: `ExpandSourceInstance` records the
+		//    IMMEDIATE instancing chunk for every entry it mints (Cst.cpp's
+		//    two `SetObjectProvenance` calls), so even `I[i,j].X` is one hop,
+		//    and the loop provably never takes its second iteration.  Left
+		//    uncovered, the walk is write-only code: "this loop only ever runs
+		//    once, simplify it" is a plausible future edit that would break the
+		//    documented contract with the whole suite green (measured -- a
+		//    single-lookup rewrite passes 301/301).
+		//
+		//    So drive the provenance map DIRECTLY.  That is the honest way to
+		//    test a contract about inputs the scene language cannot yet
+		//    produce: `IObjectManager::SetObjectProvenance` is the same public
+		//    setter the derive uses, and re-pointing it is exactly what a
+		//    future expansion would do.  Both hops here are REAL live entries,
+		//    so nothing about the fixture is fictional except the wiring.
+		const char* s = "sgnode_rowresolve_chain.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i*3) 0 0\n}\n",
+			"AA: chain-walk scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			// Publish FIRST: everything below depends on `I` being a row in the
+			// published tree, and on later calls being WARM (see the
+			// no-refresh assertion at the end).
+			CheckEq( TreeDump( c, Cat::Object ), "S|I", "AA: the premise -- `I` is a row, the two "
+			                                            "repetitions are not" );
+			const unsigned long long gen = c.TreeGeneration( Cat::Object );
+			Check( gen != 0, "AA: ... and the tree really is published" );
+
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			Check( om != 0, "AA: the object manager is reachable" );
+
+			// TWO HOPS: `I[1,0]` -> `I[0,0]` -> `I`.  The middle hop is a live
+			// entry that is NOT a row, so a single-hop resolver stops there,
+			// fails the membership test, and hands back the unfolded name.
+			Check( om && om->SetObjectProvenance( "I[1,0]", "I[0,0]", "S" ),
+			       "AA: re-point the first entry's provenance at the second" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "I[1,0]" ) ).c_str() ), "I",
+			         "AA: a TWO-HOP fold chain resolves to the row at its end -- a resolver that took "
+			         "only one hop would stop on `I[0,0]`, which is not a row, and give up" );
+
+			// A CYCLE terminates and degrades, rather than spinning.  Neither
+			// name is a row, so there is no row to find; the guard's job is to
+			// make that a RETURN and not a hang.  (A hang shows up as this test
+			// never finishing, which is why the assertion is worth having even
+			// though its expected value is "unchanged".)
+			Check( om && om->SetObjectProvenance( "I[0,0]", "I[1,0]", "S" ),
+			       "AA: close the loop -- the two entries now name each other" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "I[0,0]" ) ).c_str() ),
+			         "I[0,0]",
+			         "AA: a fold CYCLE terminates and hands back the unfolded name -- the visited set "
+			         "is what stops the walk instead of spinning on it" );
+
+			// AND THE WARM CALLS DID NOT REFRESH.  Re-pointing provenance
+			// changes what BuildObjectTreeSeedsLocked_ would fold, so a
+			// resolver that refreshed unconditionally would have republished a
+			// DIFFERENT tree by now and moved the generation.  This is the
+			// mirror of the cold-start assertion in the subtree block: that one
+			// proves the publish happens when nothing is published, this one
+			// proves it does NOT happen when something is -- which is the
+			// per-frame cost guarantee both shells depend on.
+			Check( c.TreeGeneration( Cat::Object ) == gen,
+			       "AA: the warm resolves did NOT refresh the tree -- an unconditional refresh here "
+			       "would put an O(n) rebuild back on every preview frame in the Qt shell" );
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		// -- THE RENDER-OWNS-SCENE GUARD.  Resolution reads the LIVE object
+		//    manager for provenance, so it must refuse to touch it once the
+		//    render owns the scene -- the same rule case J pins for the tree
+		//    snapshot, and the same mechanism: `PrepareForDestruction` is the
+		//    one public entry that raises the flag WITHOUT also holding
+		//    mMutex, so what this separates is the FLAG, not the try_lock
+		//    behind it.
+		//
+		//    This discriminates precisely because the unguarded code would
+		//    still get the RIGHT answer: with no competing lock holder the
+		//    chain walk runs uncontended and folds `I[1,0]` to `I` quite
+		//    happily.  Deleting the guard therefore does not break the fold --
+		//    it breaks the refusal, silently reintroducing a live-manager read
+		//    on the one path that must not make one.  Only an assertion that
+		//    demands the DEGRADED answer can tell those apart.
+		const char* s = "sgnode_rowresolve_renderowns.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname I\nsource S\ncount_u 2\nposition expr(i*3) 0 0\n}\n",
+			"AA: render-owns-scene scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			// Publish the tree and prove the fold WORKS here, so the refusal
+			// below is a change of behaviour and not this fixture's baseline.
+			CheckEq( TreeDump( c, Cat::Object ), "S|I", "AA: the premise -- the array is folded" );
+			Check( c.SetSelection( Cat::Object, String( "I[1,0]" ) ), "AA: the repetition selects" );
+			CheckEq( std::string( c.SelectionRowName().c_str() ), "I",
+			         "AA: the premise -- while the controller owns the scene, it folds normally" );
+
+			Check( c.PrepareForDestruction(), "AA: the controller is prepared for destruction" );
+			Check( c.ForTest_RenderOwnsScene(), "AA: ... which leaves the render owning the scene" );
+
+			CheckEq( std::string( c.SelectionRowName().c_str() ), "I[1,0]",
+			         "AA: once the render owns the scene, resolution DEGRADES to the unfolded name "
+			         "rather than reading the live manager for provenance -- the caller highlights "
+			         "nothing for a frame, which is the safe answer" );
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		// -- the degradations.  Every one of these must hand back what it was
+		//    given: the caller then highlights nothing, which is the
+		//    pre-existing behaviour.  A resolver that guessed here would move
+		//    a highlight onto a WRONG row, which is worse than none.
+		const char* s = "sgnode_rowresolve_degrade.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname I\nsource S\ncount_u 2\n}\n",
+			"AA: degradation scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String( "ghost" ) ).c_str() ), "ghost",
+			         "AA: a name no entity carries comes back unchanged" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Object, String() ).c_str() ), "",
+			         "AA: an EMPTY selection stays empty -- `section open, no row picked` must not "
+			         "acquire a row" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::None, String( "I[1,0]" ) ).c_str() ), "I[1,0]",
+			         "AA: Category::None resolves nothing" );
+			CheckEq( std::string( c.ResolveTreeRowName( Cat::Light, String( "I[1,0]" ) ).c_str() ), "I[1,0]",
+			         "AA: and a non-Object category resolves nothing -- only Objects are synthesized" );
+			// A selection in another category must not be folded through the
+			// Object tree either: SelectionRowName carries the CATEGORY.
+			Check( c.SetSelection( Cat::Light, String( "I[1,0]" ) ), "AA: a Light selection is taken" );
+			CheckEq( std::string( c.SelectionRowName().c_str() ), "I[1,0]",
+			         "AA: SelectionRowName resolves within the SELECTED category, not always Object" );
 		}
 		j->release();
 		std::remove( s );

@@ -878,6 +878,18 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// chunk-name).  Empty when the section is open with no row picked.
 @property (nonatomic, readonly, copy) NSString *selectionName;
 
+/// The OUTLINER ROW the current selection should highlight -- what an
+/// outliner compares against its row names.  Identical to `selectionName`
+/// for every ordinary entity; differs only when the selection names a
+/// SYNTHESIZED instancing entry (`I[1,0]`, `I.X`), which is what a viewport
+/// pick necessarily produces, where the row is the instancing CHUNK.
+///
+/// ROW HIGHLIGHTING ONLY.  `selectionName` stays the selected ENTITY --
+/// what the property panel inspects, what the gizmo moves, what the
+/// viewport chrome names.  Falls back to `selectionName` when nothing
+/// resolves.
+@property (nonatomic, readonly, copy) NSString *selectionRowName;
+
 /// Apply a (category, name) selection.  Empty `name` opens the
 /// section without picking a row.  Camera / Rasterizer selections
 /// also activate the named entity.  Returns YES on success.

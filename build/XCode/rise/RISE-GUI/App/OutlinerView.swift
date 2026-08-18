@@ -312,7 +312,12 @@ struct OutlinerView: View {
     /// disclosure state, which is the behaviour a user expects from an undo.
     @State private var expandedPaths: Set<String> = []
     @State private var selectionCategory: RISEViewportCategory = .none
-    @State private var selectionName: String = ""
+    /// The ROW the selection highlights.  Equal to `selectionName` for every
+    /// ordinary entity; for a SYNTHESIZED instancing entry (`I[1,0]`, which
+    /// is what a viewport pick returns) it is the instancing CHUNK's row,
+    /// because that is the row this outliner actually draws.  Matching
+    /// `selectionName` here highlighted nothing at all for such a pick.
+    @State private var selectionRowName: String = ""
     @State private var lastEpoch: UInt = 0
 
     var body: some View {
@@ -339,7 +344,7 @@ struct OutlinerView: View {
                                     depth: node.depth,
                                     hasChildren: node.hasChildren,
                                     isExpanded: expandedPaths.contains(node.path),
-                                    isSelected: selectionCategory == cat.category && selectionName == node.name,
+                                    isSelected: selectionCategory == cat.category && selectionRowName == node.name,
                                     isActive: isActiveEntity(cat: cat, name: node.name),
                                     canReveal: canMutate,
                                     canMutate: canMutate,
@@ -495,7 +500,6 @@ struct OutlinerView: View {
     /// changes — including agent-driven ones.)
     private func reload(force: Bool = false) {
         selectionCategory = bridge.selectionCategory
-        selectionName = bridge.selectionName
 
         var freshExpanded: [Int: Bool] = [:]
         var freshActive: [Int: String] = [:]
@@ -525,6 +529,13 @@ struct OutlinerView: View {
             }
             nodesByCategory = fresh
         }
+
+        // AFTER the tree pull, deliberately.  `selectionRowName` answers
+        // against the tree the core has PUBLISHED (it does not refresh one --
+        // see SceneEditController::ResolveTreeRowName), so reading it before
+        // the pull above would resolve against the previous shape for one
+        // cycle whenever an edit changed the tree and the selection together.
+        selectionRowName = bridge.selectionRowName
     }
 }
 

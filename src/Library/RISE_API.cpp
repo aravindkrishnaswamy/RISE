@@ -8693,6 +8693,14 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_GetSelectionRowName(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->SelectionRowName(), buf, bufLen );
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_SetSelection(
 		SceneEditController* p, int category, const char* name )
 	{

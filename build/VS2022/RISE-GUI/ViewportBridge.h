@@ -1080,6 +1080,19 @@ public:
     Category selectionCategory() const;
     QString  selectionName() const;
 
+    /// The OUTLINER ROW the current selection should highlight -- what the
+    /// outliner model compares against its row names.  Identical to
+    /// `selectionName` for every ordinary entity; differs only when the
+    /// selection names a SYNTHESIZED instancing entry (`I[1,0]`, `I.X`),
+    /// which is what a viewport pick necessarily produces, where the row is
+    /// the instancing CHUNK those entries were expanded from.
+    ///
+    /// ROW HIGHLIGHTING ONLY.  `selectionName` stays the selected ENTITY --
+    /// what the property panel inspects, what the gizmo moves, what the
+    /// viewport chrome names.  Falls back to `selectionName` when nothing
+    /// resolves.
+    QString  selectionRowName() const;
+
     /// Apply a selection.  Empty `name` opens the section without
     /// picking a row.  Camera / Rasterizer selections also activate
     /// the named entity (calls SetActiveCamera / SetActiveRasterizer

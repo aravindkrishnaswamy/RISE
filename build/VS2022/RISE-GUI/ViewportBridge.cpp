@@ -1618,6 +1618,16 @@ QString ViewportBridge::selectionName() const
     return QString::fromUtf8(buf);
 }
 
+QString ViewportBridge::selectionRowName() const
+{
+    if (!m_controller) return QString();
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionRowName(m_controller, buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
 bool ViewportBridge::setSelection(Category cat, const QString& name)
 {
     if (!m_controller) return false;

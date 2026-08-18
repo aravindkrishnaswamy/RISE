@@ -1359,7 +1359,11 @@ void OutlinerWidget::refresh()
     }
     m_model->setActiveNames(active);
     m_model->setTemplateCounts(templates);
-    m_model->setSelection(static_cast<int>(m_bridge->selectionCategory()), m_bridge->selectionName());
+    // ROW name, not the entity name: a viewport pick on a synthesized
+    // instancing entry (`I[1,0]`) selects that live copy, while the row this
+    // tree draws is the instancing chunk it was expanded from.  Matching the
+    // raw entity name highlighted no row at all for such a pick.
+    m_model->setSelection(static_cast<int>(m_bridge->selectionCategory()), m_bridge->selectionRowName());
 
     applyExpansionState();
     m_countLabel->setText(tr("%1 entities").arg(m_model->totalEntityCount()));
