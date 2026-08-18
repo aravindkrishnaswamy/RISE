@@ -1927,7 +1927,11 @@ it was already tried and refuted here.
   first/last wins (seed/order dependence), Boolean union/intersection (possibly
   unsolved synthetic branch), a wider velocity deadband (hides reversal), and
   relaxation/averaging (no certified Boolean meaning). R2 is a one-shot
-  endpoint diagnostic and is not a sibling. The rule is reference-solver run
+  endpoint diagnostic and is not a sibling. The eliminated 3-D and dense 1-D
+  routines are verification-only independent comparators, never R0/R1 owner
+  paths; they deliberately retain cycle rejection so the old pathology remains
+  directly observable rather than copying the production selector into its
+  oracle. Periodic projection has no open active set. The rule is reference-solver run
   semantics, not physical case authorship; it is recorded in producer/run
   metadata and does not change `case_record_id`, preserving the stopped prefix
   as an oracle under its original producer identity.
