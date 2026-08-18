@@ -2141,3 +2141,12 @@ it was already tried and refuted here.
   Max run preserved the oracle ratio `1.15506`, with `10.855 ms` device p95 and
   `23.306 ms` completed-call p95.  These are validation-evidence repairs, not
   new operator semantics; case identity remains unchanged.
+
+  The final mutation pass rejected zero-valued diagnostic witnesses as
+  insufficient: a hardwired zero would have passed both the original
+  complementarity and mean-removal comparisons.  The settled gates use the
+  measured pressure-open role reversal (`0.0941987 m/s` complementarity) and
+  the closed-box incompatible target whose fixed-tree right-hand-side mean is
+  exactly `40 s^-2`; both are independently recomputed and executed on Metal.
+  The final on-device run measured `10.575 ms` device p95 and `23.316 ms`
+  completed-call p95 with the scientific ratio unchanged.

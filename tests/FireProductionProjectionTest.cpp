@@ -717,6 +717,7 @@ int main()
 		discardedWallVelocity,discardedWallVelocityCPU,&error);
 	Check(discardedWallVelocityCPUOK&&!discardedWallVelocityCPU.validationPassed&&
 		discardedWallVelocityCPU.maximumPostProjectionResidualPerS==0.4f&&
+		discardedWallVelocityCPU.removedFineRightHandSideMean==40.0f&&
 		EveryWallFaceOverwritten(discardedWallVelocity,discardedWallVelocityCPU),
 		"P2 validation scale excludes prescribed-away wall-normal velocity");
 #ifdef __APPLE__
@@ -725,6 +726,8 @@ int main()
 		!discardedWallVelocityMetal.validationPassed&&
 		discardedWallVelocityMetal.maximumPostProjectionResidualPerS==
 			discardedWallVelocityCPU.maximumPostProjectionResidualPerS&&
+		discardedWallVelocityMetal.removedFineRightHandSideMean==
+			discardedWallVelocityCPU.removedFineRightHandSideMean&&
 		EveryWallFaceOverwritten(discardedWallVelocity,discardedWallVelocityMetal),
 		"P2 Metal excludes discarded wall-normal velocity from monitored acceptance");
 #endif
@@ -1107,6 +1110,18 @@ int main()
 		std::all_of(rolesResult.pressureOpenInflow[1].begin(),
 			rolesResult.pressureOpenInflow[1].end(),[](unsigned char value){return value==0u;}),
 		"P2 frozen pressure-open total-head roles distinguish inflow and outflow signs");
+	Check(rolesResult.maximumOpenComplementarityDiscrepancyMPerS>0.09f&&
+		rolesResult.maximumOpenComplementarityDiscrepancyMPerS==
+			IndependentOpenComplementarity(roles,rolesResult),
+		"P2 role reversal publishes independently recomputed nonzero complementarity");
+#ifdef __APPLE__
+	FireProductionProjectionResult rolesMetal;
+	Check(ProjectFireProductionMetal(roles,rolesMetal,&error)&&
+		rolesMetal.maximumOpenComplementarityDiscrepancyMPerS>0.09f&&
+		rolesMetal.maximumOpenComplementarityDiscrepancyMPerS==
+			IndependentOpenComplementarity(roles,rolesMetal),
+		"P2 Metal publishes independently recomputed nonzero role-reversal complementarity");
+#endif
 
 	FireProductionProjectionRequest incompatible=EmptyRequest(6u,5u,4u);
 	SetBoundary(incompatible,FireProductionProjectionWall);
