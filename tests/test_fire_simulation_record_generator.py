@@ -232,7 +232,7 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         owner = inline_body(advance, "SolveOpenConservativeStage3D")
         self.assertIn("OpenActiveSetCanonicalBefore3D", owner)
         self.assertIn("outerActiveSetHistory", owner)
-        self.assertGreaterEqual(owner.count("provedOuterCycle.assign"), 2)
+        self.assertGreaterEqual(owner.count("ObserveOpenActiveSetHistory3D"), 2)
         self.assertIn("activeSetMismatch&&!cycleProved", owner)
         self.assertIn("activeSetDiscontinuousEventCount=activeSetDiscontinuousEvents", owner)
         self.assertGreaterEqual(owner.count("1u,true"), 1)
@@ -264,6 +264,8 @@ class MethaneRecordGeneratorTest(unittest.TestCase):
         self.assertIn('"active_set_algorithm_version"', sequence)
         self.assertIn('"active_set_prior_algorithm_version"', sequence)
         self.assertIn("active_set_thread_identity_mismatch", sequence)
+        self.assertIn("priorActiveSetHistoryValid", sequence)
+        self.assertIn("advancedOK=DiscontinuousThreadIdentityAccepted", sequence)
         self.assertIn("discontinuousActiveSetEvents+=", sequence)
     def test_generated_include_is_current(self) -> None:
         generated = records.generate(self.snapshot_path,self.constants_path)

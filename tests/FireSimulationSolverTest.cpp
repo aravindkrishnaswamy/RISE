@@ -1149,6 +1149,16 @@ int main()
 	Check(r81MinimumDiscrepancy==0u&&r81CrossingHistory[r81MinimumDiscrepancy]!=r81Union&&
 		r81CrossingHistory[r81MinimumDiscrepancy]!=r81Intersection&&r81EqualDiscrepancy==1u,
 		"r81 canonical history selection rejects union/intersection and breaks exact ties lexicographically outflow-first");
+	std::vector<std::array<std::vector<bool>,6> > r81OuterHistory,r81ProvedCycle;
+	const bool r81FirstA=ObserveOpenActiveSetHistory3D(r81OuterHistory,r80CrossA.inflow,
+		r81ProvedCycle);
+	const bool r81FirstB=ObserveOpenActiveSetHistory3D(r81OuterHistory,r80CrossB.inflow,
+		r81ProvedCycle);
+	const bool r81VerificationReturnsA=ObserveOpenActiveSetHistory3D(r81OuterHistory,
+		r80CrossA.inflow,r81ProvedCycle);
+	Check(!r81FirstA&&!r81FirstB&&r81VerificationReturnsA&&r81ProvedCycle.size()==2u&&
+		r81ProvedCycle[0]==r80CrossA.inflow&&r81ProvedCycle[1]==r80CrossB.inflow,
+		"r81 acceptance verification A-to-B-to-A repetition proves the owning outer cycle");
 	bool r80BitIdentity=r80OneOK&&r80ManyOK;
 	for(unsigned int axis=0;r80BitIdentity&&axis<3;++axis)r80BitIdentity=
 		r80OneWorker.velocityMPerS.component[axis]==r80ManyWorkers.velocityMPerS.component[axis]&&

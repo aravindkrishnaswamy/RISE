@@ -2476,11 +2476,8 @@
 					activeSetChanged=activeSetChanged||projection.inflow[side]!=priorInflow[side];
 				if(!iteration)outerActiveSetHistory.push_back(projection.inflow);
 				else if(activeSetChanged&&provedOuterCycle.empty()){
-					const auto repeated=std::find(outerActiveSetHistory.begin(),
-						outerActiveSetHistory.end(),projection.inflow);
-					if(repeated==outerActiveSetHistory.end())
-						outerActiveSetHistory.push_back(projection.inflow);
-					else provedOuterCycle.assign(repeated,outerActiveSetHistory.end());
+					ObserveOpenActiveSetHistory3D(outerActiveSetHistory,projection.inflow,
+						provedOuterCycle);
 				}
 				for(std::size_t cell=0;cell<count;++cell) residual=std::max(residual,
 					std::fabs(nextTarget[cell]-target[cell]));
@@ -2533,14 +2530,11 @@
 						acceptedProjection.activeSetDiscontinuousClass;
 					if(!finalStage&&activeSetMismatch&&!cycleProved){
 						// A first transition is ordinary Picard history, not a two-cycle.
-						const auto repeated=std::find(outerActiveSetHistory.begin(),
-							outerActiveSetHistory.end(),acceptedProjection.inflow);
-						if(repeated==outerActiveSetHistory.end()){
-							outerActiveSetHistory.push_back(acceptedProjection.inflow);
+						if(!ObserveOpenActiveSetHistory3D(outerActiveSetHistory,
+							acceptedProjection.inflow,provedOuterCycle)){
 							priorInflow=acceptedProjection.inflow;
 							continue;
 						}
-						provedOuterCycle.assign(repeated,outerActiveSetHistory.end());
 						cycleProved=true;
 					}
 					if(!finalStage&&cycleProved){

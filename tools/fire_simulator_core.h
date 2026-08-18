@@ -2156,6 +2156,17 @@ namespace RISE
 			return selected;
 		}
 
+		inline bool ObserveOpenActiveSetHistory3D(
+			std::vector<std::array<std::vector<bool>,6> >& history,
+			const std::array<std::vector<bool>,6>& classification,
+			std::vector<std::array<std::vector<bool>,6> >& provedCycle )
+		{
+			const auto repeated=std::find(history.begin(),history.end(),classification);
+			if(repeated==history.end()){history.push_back(classification);return false;}
+			provedCycle.assign(repeated,history.end());
+			return true;
+		}
+
 		struct OpenBoundaryFluxField3D
 		{
 			std::array<std::vector<OpenBoundaryFlux3D>,6> side;

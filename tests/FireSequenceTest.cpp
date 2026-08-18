@@ -260,6 +260,8 @@ namespace
 		std::string isolatedExpectedCheckpointBuildId;
 		std::uint64_t stopAfterAdditionalAcceptedSteps=0u;
 		std::filesystem::path equivalenceSnapshotDirectory;
+		bool forceActiveSetIdentityCheckForTest=false;
+		bool injectActiveSetIdentityMismatchForTest=false;
 	};
 
 	class CheckpointWriter
@@ -1075,10 +1077,16 @@ namespace
 				checkpoint.values.activeSetAlgorithmVersion==CurrentActiveSetAlgorithmVersion();
 			const bool legacyActiveSetCheckpoint=checkpoint.checkpointFormatVersion<7u&&
 				checkpoint.values.activeSetAlgorithmVersion==LegacyActiveSetAlgorithmVersion();
+			const bool priorActiveSetHistoryValid=checkpoint.checkpointFormatVersion<8u?
+				checkpoint.values.priorActiveSetAlgorithmVersion.empty():
+				(checkpoint.values.priorActiveSetAlgorithmVersion.empty()||
+					checkpoint.values.priorActiveSetAlgorithmVersion==
+						LegacyActiveSetAlgorithmVersion());
 			if(checkpoint.caseRecordId!=caseRecord.caseRecordId||
 				(!sameBuild&&!isolatedProbe&&!certifiedMigration)||
 				checkpoint.values.reductionMode!="fixed_order_tree_v1"||
 				(!currentActiveSetCheckpoint&&!legacyActiveSetCheckpoint)||
+				!priorActiveSetHistoryValid||
 				checkpoint.dimensions!=std::array<std::size_t,3>{{shape.nx,shape.ny,shape.nz}}||
 				checkpoint.cellWidthM!=shape.cellWidthM||checkpoint.states.size()!=shape.CellCount()||
 				checkpoint.acceptedSteps>std::numeric_limits<unsigned int>::max()||
@@ -1262,7 +1270,8 @@ namespace
 					advanced.discontinuousLimiterClassCount>0u&&
 					!values.discontinuousClassThreadIdentityChecked;
 				const bool checkActiveSetIdentity=workerCount>1u&&
-					advanced.discontinuousActiveSetClassCount>0u&&
+					(advanced.discontinuousActiveSetClassCount>0u||
+						persistence.forceActiveSetIdentityCheckForTest)&&
 					!values.activeSetThreadIdentityChecked;
 				if(checkLimiterIdentity||checkActiveSetIdentity){
 					ConservativeAdvance3DConfig serialConfig=config;
@@ -1296,6 +1305,8 @@ namespace
 							advanced.momentumKGPerM2S.component[axis]&&
 						serialAdvanced.velocityMPerS.component[axis]==
 							advanced.velocityMPerS.component[axis];
+					if(checkActiveSetIdentity&&
+						persistence.injectActiveSetIdentityMismatchForTest)identical=false;
 					if(checkLimiterIdentity){
 						values.discontinuousClassThreadIdentity=identical;
 						values.discontinuousClassThreadIdentityChecked=true;
@@ -2789,13 +2800,48 @@ namespace
 		const int status=RunResumeEquivalenceTraceChild(checkpointPath,tracePath,framePath,
 			16u,8u,targetS,1.0/targetS,10.0,0.30,33.0,checkpointBuild);
 		if(status!=0||DigestFile(checkpointPath)!=checkpointDigest)return status?status:91;
+		ResumeEquivalenceTrace trace;std::string error;
+		const std::vector<std::uint64_t> expectedTimeStepBits={
+			4543432537948766955ull,4544197666642132584ull,4544654590867399846ull,
+			4545157207515193834ull,4545710085827767221ull,4546318251971597947ull,
+			4542483635102441249ull,4543219516136476427ull};
+		const std::vector<std::uint64_t> expectedMaximumTemperatureBits={
+			4655159579052727434ull,4655159374940711548ull,4655159154984970440ull,
+			4655158912993804872ull,4655158636009097964ull,4655158346958421514ull,
+			4655158196749501340ull,4655158022160599380ull};
+		const std::vector<std::uint64_t> expectedMaximumEOSResidualBits={
+			4485619931794112512ull,4489437736410808320ull,4488601145836568576ull,
+			4486917660591783936ull,4488934740778287104ull,4487986528701644800ull,
+			4484167744161316864ull,4484941030474383360ull};
+		const std::vector<std::string> expectedFrameDigests={
+			"4dd7381f54b3931f3e108f805f63d8d2ec456bd955ca7717059c182886092344",
+			"77988ea6692f20e10bdf58035748bbbe33025dd33a4b969e82f37d7c3d10e4d7",
+			"5d261f869ef75a40867ca0a80dfef4b21bd6e7d8016ac6123dd10541c64cedc2",
+			"66ff620f3212e00f93d9f519813e6740201292ddf1b8ecf76ac3e2debee6b5b3",
+			"4a36583eaf66cafd797077609248a3bc1cc44e5cc6611695a4363b55474d052e",
+			"154b501c1b66437003557db728ba233aac04d89ba423bd678518d6014a2abce5",
+			"5618775a8311ecb401277833ca5c38b9f5a6c0e6c4f4e8ab4fb820e20497b95c",
+			"ccd9d2902468a6b2341307a495a9c567e89b4a68f1efffe176d780dd73a999fe"};
+		if(!LoadResumeEquivalenceTrace(tracePath,trace,error)||
+			trace.timeStepBits!=expectedTimeStepBits||
+			trace.maximumTemperatureBits!=expectedMaximumTemperatureBits||
+			trace.maximumEOSResidualBits!=expectedMaximumEOSResidualBits||
+			trace.frameDigests!=expectedFrameDigests){
+			std::fprintf(stderr,"r80 golden continuation trace mismatch: %s\n",error.c_str());
+			return 92;
+		}
 		const std::filesystem::path finalSnapshot=tracePath.string()+
 			".snapshots/step_08.checkpoint";
-		MethaneRunCheckpoint final;std::string error;
+		MethaneRunCheckpoint final;
 		if(!LoadMethaneRunCheckpoint(finalSnapshot,final,error)||final.acceptedSteps!=3487u||
 			final.values.acceptedTimeStepHistoryS.empty()||
-			final.values.acceptedTimeStepHistoryS.back()<4.0e-5||
-			final.values.discontinuousActiveSetEvents==0u||
+			DoubleBits(final.values.acceptedTimeStepHistoryS.back())!=
+				expectedTimeStepBits.back()||
+			final.values.discontinuousActiveSetEvents!=10u||
+			final.values.maximumActiveSetCycleLength!=2u||
+			final.values.maximumActiveSetDifferingFaceCount!=4u||
+			DoubleBits(final.values.maximumActiveSetComplementarityDiscrepancyMPerS)!=
+				DoubleBits(0.0011766913664658803)||
 			final.values.activeSetAlgorithmVersion!=CurrentActiveSetAlgorithmVersion()||
 			final.values.priorActiveSetAlgorithmVersion!=LegacyActiveSetAlgorithmVersion()||
 			!final.values.activeSetThreadIdentityChecked||
@@ -3045,6 +3091,19 @@ int main(int argc,char** argv)
 	std::filesystem::create_directories(root);
 	const std::filesystem::path checkpointFixture=root/"checkpoint_fixture";
 	std::filesystem::create_directories(checkpointFixture);
+	RunPersistenceOptions identityMismatchPersistence;
+	identityMismatchPersistence.checkpointPath=checkpointFixture/"identity_mismatch.checkpoint";
+	identityMismatchPersistence.checkpointCadenceWallS=0.0;
+	identityMismatchPersistence.forceActiveSetIdentityCheckForTest=true;
+	identityMismatchPersistence.injectActiveSetIdentityMismatchForTest=true;
+	const SolverFrameValues identityMismatch=RunMethaneFrameProbe(4u,2u,0.0,1.0,
+		4.0,6.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,
+		identityMismatchPersistence);
+	Check(!identityMismatch.succeeded&&identityMismatch.structuredError==
+		"solver_failure:active_set_thread_identity_mismatch"&&
+		identityMismatch.discontinuousActiveSetEvents==0u&&
+		!std::filesystem::exists(identityMismatchPersistence.checkpointPath),
+		"r81 injected production-path active-set mismatch fails before accumulation and checkpoint publication");
 	const std::filesystem::path checkpointPath=checkpointFixture/"run.checkpoint";
 	const std::filesystem::path baselineCheckpointFrame=checkpointFixture/"baseline.vdb";
 	const std::filesystem::path resumedCheckpointFrame=checkpointFixture/"resumed.vdb";
@@ -3148,6 +3207,10 @@ int main(int argc,char** argv)
 	bindingMutation.values.activeSetAlgorithmVersion="mutated_active_set_algorithm";
 	Check(ValidMutatedCheckpointRejects("wrong_active_set_algorithm",bindingMutation),
 		"r81 resume rejects a checksummed checkpoint with different active-set semantics");
+	bindingMutation=resumedCheckpointMetadata;
+	bindingMutation.values.priorActiveSetAlgorithmVersion="fabricated_prior_algorithm";
+	Check(ValidMutatedCheckpointRejects("wrong_prior_active_set_algorithm",bindingMutation),
+		"r81 resume rejects a checksummed checkpoint with fabricated prior active-set history");
 	RISECBOR64::Bytes migrationBuildRecord;std::string migrationNewBuildId,
 		migrationNewExecutableDigest;
 	Check(CurrentRendererBuildIdentity(migrationBuildRecord,migrationNewBuildId)&&
