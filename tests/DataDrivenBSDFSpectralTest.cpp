@@ -163,7 +163,13 @@ namespace
 			"valueNM preserves CHROMA: red BRDF peaks at long lambda (not a flat luminance fallback)" );
 
 		bsdf->release();
-		std::remove( kPath );
+		// CHECKED remove: DataDrivenBSDF's constructor used to leak its
+		// DiskFileReadBuffer (open FILE*), which made this remove fail
+		// silently on Windows (sharing violation) and litter the repo root
+		// with the .bdf -- POSIX unlink succeeds on open files, so only
+		// Windows saw it.  Asserting success keeps the leak class caught.
+		Check( std::remove( kPath ) == 0,
+			"temp red .bdf removed (no lingering open handle -- the ctor's read-buffer leak stays fixed)" );
 	}
 
 	// ---- Test 2: non-negativity under Catmull-Rom overshoot ----
@@ -215,7 +221,8 @@ namespace
 		Check( neg == 0, "value()/valueNM are NEVER negative across the overshoot fuzz (BUG 2 clamp)" );
 
 		bsdf->release();
-		std::remove( kPath );
+		Check( std::remove( kPath ) == 0,
+			"temp overshoot .bdf removed (no lingering open handle -- the ctor's read-buffer leak stays fixed)" );
 	}
 }
 
