@@ -100,6 +100,23 @@ namespace RISE
 		// ExchangeProgress instead for their capture).  Job is the sole implementer.
 		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention -- do NOT insert mid-tail).
 		virtual IProgressCallback*			GetProgress() const = 0;
+
+		// 87 step 4a round-4 (P1-A): how many times this Job's container set has been BUILT --
+		// once at construction, once more per ClearAll (i.e. per DestroyContainers +
+		// InitializeContainers pair).  Monotonic for the Job's lifetime.
+		//
+		// THE POINT: a registration serial is NOT a cross-rebuild identity.
+		// GenericManager::m_nNextSerial is per-manager-INSTANCE and restarts at construction, so a
+		// ClearAll + re-derive of the same document re-registers in the same order and hands out
+		// BYTE-IDENTICAL serials to genuinely new instances.  Any cache that keys on (name, serial)
+		// and can outlive a rebuild -- SceneEditController's authored-tree snapshot is the one in
+		// tree -- must compose this counter in, or a stale key silently re-resolves onto the
+		// rebuild's fresh entity.  Reachable on the mainline: Job::ApplyCstParamEdit returning 2/3
+		// (the D2 fallback taken by every edit the incremental path refuses), RederiveCstWithVariant,
+		// and reopening a document into a reused Job -- the GUIs keep ONE Job and clearAll+load.
+		// Job is the sole implementer.
+		// APPENDED AT THE TRUE END OF THE VIRTUAL TAIL (append-only ABI convention).
+		virtual unsigned long long			GetContainerRebuildCount() const = 0;
 	};
 
 

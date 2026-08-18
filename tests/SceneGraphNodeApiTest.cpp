@@ -78,6 +78,25 @@
 //         the C-ABI surface has no ReadTree to pair it with, because
 //         AuthoredTree is a nested C++ type RISE_API.h cannot name without
 //         including SceneEditController.h.
+//    T -- a PAINTER row's serial belongs to the entity that row DENOTES.
+//         Painter is the union of two managers with independent serial
+//         counters and no dedup, so one name can address two different
+//         entities; deriving the serial by probing the managers in order
+//         gave both rows the colour painter's, and a scalar-side
+//         replacement then moved nothing the tree could see.
+//    U -- a FULL RE-DERIVE invalidates, even though every serial comes back
+//         IDENTICAL.  A serial is unique only within one manager instance,
+//         and ClearAll + re-derive restarts every counter -- so the whole
+//         per-row equivalence is defeated by a rebuild unless the tree
+//         records which build it came from.
+//    V -- the HANDLE-CHURN ASYMMETRY: an incremental param edit drops and
+//         re-adds a Geometry (fresh serial, every handle dies) but
+//         re-points an Object in place (serial held, nothing dies).
+//         Correct, surprising, and pinned so it cannot change silently.
+//    W -- a handle minted on ONE controller does not resolve on another.
+//         Generations come from a process-global counter, so no two
+//         published trees anywhere share one; while the counter was a
+//         per-controller member seeded at 1, A's handle named B's node.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -99,6 +118,8 @@
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectPriv.h"   // Q: addref/release around the rename's drop + re-register
 #include "../src/Library/Interfaces/IMaterialManager.h" // S: the flat-category half of the replacement case
+#include "../src/Library/Interfaces/IPainterManager.h"       // T: the colour half of the Painter union
+#include "../src/Library/Interfaces/IScalarPainterManager.h" // T: the physical-scalar half
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -159,9 +180,9 @@ static std::string TreeDump( const SceneEditController& c, Cat cat, bool* outPar
 		if( c.TreeNodeParent( cat, n ) != p && outParentsAgree ) *outParentsAgree = false;
 		if( !out.empty() ) out += "|";
 		for( unsigned int i = 0; i < d; ++i ) out += "  ";
-		out += c.TreeNodeName( cat, n ).c_str();
+		out += c.TreeNodeNameByHandle( cat, n ).c_str();
 		if( ++emitted > total ) { out += "|<OVERRUN>"; break; }
-		const unsigned int kids = c.TreeChildCount( cat, n );
+		const unsigned int kids = c.TreeChildCountByHandle( cat, n );
 		for( unsigned int k = kids; k > 0; --k ) {
 			stackNode.push_back( c.TreeChildNode( cat, n, k - 1 ) );
 			stackDepth.push_back( d + 1 );
@@ -265,9 +286,9 @@ int main()
 				bool sameNames = true, anyChildren = false;
 				for( unsigned int i = 0; i < n; ++i ) {
 					const SceneEditController::TreeNodeHandle node = c.TreeRootNode( cat, i );
-					if( std::string( c.TreeNodeName( cat, node ).c_str() )
+					if( std::string( c.TreeNodeNameByHandle( cat, node ).c_str() )
 					 != std::string( c.CategoryEntityName( cat, i ).c_str() ) ) sameNames = false;
-					if( c.TreeChildCount( cat, node ) != 0 ) anyChildren = true;
+					if( c.TreeChildCountByHandle( cat, node ) != 0 ) anyChildren = true;
 					if( c.TreeNodeParent( cat, node ) != SceneEditController::kInvalidTreeNode ) anyChildren = true;
 				}
 				Check( sameNames, "A: root i's name IS flat entry i's name, in the SAME order" );
@@ -824,7 +845,7 @@ int main()
 			CheckEq( TreeDump( c, Cat::Object ), "aaa|bbb|  bkid|ccc", "N: the tree starts as declared" );
 
 			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
-			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "bbb",
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, h ).c_str() ), "bbb",
 			         "N: the captured handle names `bbb` before the mutation" );
 			const unsigned long long genBefore = c.TreeGeneration( Cat::Object );
 
@@ -838,12 +859,12 @@ int main()
 			Check( c.TreeGeneration( Cat::Object ) != genBefore,
 			       "N: a tree that CHANGED gets a new snapshot generation" );
 
-			Check( c.TreeNodeName( Cat::Object, h ).size() <= 1,
+			Check( c.TreeNodeNameByHandle( Cat::Object, h ).size() <= 1,
 			       "N: the STALE handle has NO name -- it does not resolve to whatever node now sits "
 			       "at that index" );
 			Check( c.TreeNodeParent( Cat::Object, h ) == SceneEditController::kInvalidTreeNode,
 			       "N: the stale handle has no parent either" );
-			Check( c.TreeChildCount( Cat::Object, h ) == 0, "N: and no children" );
+			Check( c.TreeChildCountByHandle( Cat::Object, h ) == 0, "N: and no children" );
 
 			char buf[128] = { 0 };
 			buf[0] = 'z';
@@ -902,7 +923,7 @@ int main()
 			for( int i = 0; i < 5; ++i ) { c.TreeNodeCount( Cat::Object ); c.TreeRootCount( Cat::Object ); }
 			Check( c.TreeGeneration( Cat::Object ) == gen0,
 			       "O: refreshing an UNCHANGED tree does not republish it" );
-			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "hub",
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, h ).c_str() ), "hub",
 			         "O: so a handle survives the idle refreshes a UI poll makes" );
 
 			// (1) the transactional read agrees with the handle walk ...
@@ -989,7 +1010,7 @@ int main()
 			CheckEq( TreeDump( c, Cat::Object ), "AAA|BBB", "Q: the tree starts as declared" );
 
 			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
-			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "BBB",
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, h ).c_str() ), "BBB",
 			         "Q: the captured handle names `BBB` before the rename" );
 			const unsigned long long genBefore = c.TreeGeneration( Cat::Object );
 
@@ -1021,7 +1042,7 @@ int main()
 			Check( c.TreeGeneration( Cat::Object ) != genBefore,
 			       "Q: the rename REPUBLISHES -- the snapshot generation advanced on a change that "
 			       "moved no node" );
-			Check( c.TreeNodeName( Cat::Object, h ).size() <= 1,
+			Check( c.TreeNodeNameByHandle( Cat::Object, h ).size() <= 1,
 			       "Q: so the handle captured before the rename FAILS -- it does not keep naming an "
 			       "entity the manager no longer holds" );
 			char buf[128] = { 0 };
@@ -1052,7 +1073,7 @@ int main()
 			CheckEq( TreeDump( c, Cat::SceneVariant ), "(base)|vA",
 			         "Q: the SceneVariant tree lists the base entry and the variant" );
 			const SceneEditController::TreeNodeHandle hv = c.TreeRootNode( Cat::SceneVariant, 1 );
-			CheckEq( std::string( c.TreeNodeName( Cat::SceneVariant, hv ).c_str() ), "vA",
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::SceneVariant, hv ).c_str() ), "vA",
 			         "Q: and a handle on the variant row resolves" );
 			const unsigned long long varGen = c.TreeGeneration( Cat::SceneVariant );
 			j->ClearSceneVariants();
@@ -1062,7 +1083,7 @@ int main()
 			       "is the only member that differs" );
 			Check( c.TreeGeneration( Cat::SceneVariant ) != varGen,
 			       "Q: the rename republishes on the strength of the NAME comparison alone" );
-			Check( c.TreeNodeName( Cat::SceneVariant, hv ).size() <= 1,
+			Check( c.TreeNodeNameByHandle( Cat::SceneVariant, hv ).size() <= 1,
 			       "Q: so the variant handle taken before the rename fails" );
 			CheckEq( TreeDump( c, Cat::SceneVariant ), "(base)|vB",
 			         "Q: and a fresh walk shows the new variant name" );
@@ -1106,7 +1127,7 @@ int main()
 			for( std::size_t i = 0; i < t.nodes.size(); ++i ) {
 				const SceneEditController::TreeNodeHandle hh =
 					SceneEditController::HandleFor( t, static_cast<unsigned int>( i ) );
-				if( std::string( c.TreeNodeName( Cat::Object, hh ).c_str() )
+				if( std::string( c.TreeNodeNameByHandle( Cat::Object, hh ).c_str() )
 				 != std::string( t.nodes[i].name.c_str() ) ) allNamed = false;
 			}
 			Check( allNamed,
@@ -1115,7 +1136,7 @@ int main()
 			Check( SceneEditController::HandleFor( t, t.roots[0] ) == c.TreeRootNode( Cat::Object, 0 ),
 			       "R: and it is bit-for-bit the handle TreeRootNode mints -- ONE encoding, not a "
 			       "second one that happens to agree today" );
-			Check( c.TreeChildCount( Cat::Object, SceneEditController::HandleFor( t, t.roots[0] ) ) == 1,
+			Check( c.TreeChildCountByHandle( Cat::Object, SceneEditController::HandleFor( t, t.roots[0] ) ) == 1,
 			       "R: a handle made from the copy drives the OTHER getters too" );
 
 			Check( SceneEditController::HandleFor( t, 999 ) == SceneEditController::kInvalidTreeNode,
@@ -1134,13 +1155,13 @@ int main()
 			// being the published tree.
 			Check( j->SetObjectParent( "arm", 0 ), "R: `arm` detached on the live manager" );
 			Check( c.TreeNodeCount( Cat::Object ) == 2, "R: a count getter refreshes and republishes" );
-			Check( c.TreeNodeName( Cat::Object, SceneEditController::HandleFor( t, 0 ) ).size() <= 1,
+			Check( c.TreeNodeNameByHandle( Cat::Object, SceneEditController::HandleFor( t, 0 ) ).size() <= 1,
 			       "R: a handle minted from the OLD copy no longer resolves -- validity is that "
 			       "copy's generation still being the published one" );
 			SceneEditController::AuthoredTree t2;
 			c.ReadTree( Cat::Object, t2 );
 			Check( t2.nodes.size() == 2
-			    && std::string( c.TreeNodeName( Cat::Object,
+			    && std::string( c.TreeNodeNameByHandle( Cat::Object,
 			           SceneEditController::HandleFor( t2, 0 ) ).c_str() )
 			       == std::string( t2.nodes[0].name.c_str() ),
 			       "R: while one minted from a FRESH copy does" );
@@ -1186,7 +1207,7 @@ int main()
 			CheckEq( TreeDump( c, Cat::Object ), "AAA|victim", "S: the tree starts as declared" );
 
 			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
-			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "victim",
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, h ).c_str() ), "victim",
 			         "S: the captured handle names `victim` before the swap" );
 			const unsigned long long genBefore = c.TreeGeneration( Cat::Object );
 
@@ -1228,7 +1249,7 @@ int main()
 			Check( c.TreeGeneration( Cat::Object ) != genBefore,
 			       "S: the REPLACEMENT republishes -- the generation advanced on a change no "
 			       "structural comparison and no name comparison can see" );
-			Check( c.TreeNodeName( Cat::Object, h ).size() <= 1,
+			Check( c.TreeNodeNameByHandle( Cat::Object, h ).size() <= 1,
 			       "S: so the handle captured before the swap FAILS -- it does not silently transfer "
 			       "onto the replacement" );
 			Check( c.TreeNodeParent( Cat::Object, h ) == SceneEditController::kInvalidTreeNode,
@@ -1239,7 +1260,7 @@ int main()
 			       "S: the C ABI refuses it too" );
 
 			const SceneEditController::TreeNodeHandle fresh = c.TreeRootNode( Cat::Object, 1 );
-			CheckEq( std::string( c.TreeNodeName( Cat::Object, fresh ).c_str() ), "victim",
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, fresh ).c_str() ), "victim",
 			         "S: control -- a handle taken AFTER the swap resolves, so the API is refusing "
 			         "staleness and not refusing to work" );
 
@@ -1254,7 +1275,7 @@ int main()
 			SceneEditController::TreeNodeHandle hm = SceneEditController::kInvalidTreeNode;
 			for( unsigned int i = 0; i < mi; ++i ) {
 				const SceneEditController::TreeNodeHandle t2h = c.TreeRootNode( Cat::Material, i );
-				if( std::string( c.TreeNodeName( Cat::Material, t2h ).c_str() ) == "m2" ) hm = t2h;
+				if( std::string( c.TreeNodeNameByHandle( Cat::Material, t2h ).c_str() ) == "m2" ) hm = t2h;
 			}
 			Check( hm != SceneEditController::kInvalidTreeNode, "S: `m2` has a Material row" );
 			const unsigned long long matGenBefore = c.TreeGeneration( Cat::Material );
@@ -1267,11 +1288,360 @@ int main()
 			Check( c.TreeGeneration( Cat::Material ) != matGenBefore,
 			       "S: a FLAT category's replacement republishes too -- the serial is looked up per "
 			       "category, not only for Objects" );
-			Check( c.TreeNodeName( Cat::Material, hm ).size() <= 1,
+			Check( c.TreeNodeNameByHandle( Cat::Material, hm ).size() <= 1,
 			       "S: so the Material handle taken before the swap fails as well" );
 		}
 		j->release();
 		std::remove( s );
+	}
+
+	// =================================================================
+	// T -- A PAINTER ROW'S SERIAL BELONGS TO THE ENTITY THAT ROW DENOTES.
+	//
+	// Category::Painter is the only category whose rows come from TWO
+	// stores: the colour-painter manager and the physical-scalar-painter
+	// manager (CLAUDE.md's IScalarPainter split -- material slots route by
+	// physical meaning, so `uniformcolor_painter P` and `scalar_painter P`
+	// are different KINDS of entity, not two spellings of one).
+	// `CollectPainterUnionNames` concatenates them WITHOUT dedup, and it is
+	// right not to dedup: `Cst::ChunkNamePath` keys the document index on
+	// `role + "/" + name`, so both are real, separately-addressable document
+	// entities and both must get a row.
+	//
+	// So a duplicated name produces TWO rows, and which entity a given row
+	// denotes is decided by POSITION.  Round 3 derived each row's serial by
+	// probing the colour manager and then the scalar one and taking the
+	// first hit -- on a comment asserting a name "lives in exactly one of
+	// them", which the concatenation it cited disproves.  Both rows then
+	// carried the COLOUR painter's serial, so replacing the SCALAR painter
+	// moved nothing the tree could see: the generation stood and a handle
+	// captured before the replacement kept resolving.
+	//
+	// The two managers' serial counters run independently, which is what
+	// makes the fixture discriminating -- the base scene declares a colour
+	// painter before this one, so the colour `DUP` sits at a different
+	// serial from the scalar `DUP`.
+	// =================================================================
+	{
+		const char* s = "sgnode_painterunion.RISEscene";
+		Job* j = LoadScene( s,
+			"uniformcolor_painter\n{\nname DUP\ncolor 1 0 0\n}\n"
+			"scalar_painter\n{\nname DUP\nvalue 0.25\n}\n",
+			"T: painter-union scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			IPainterManager*       pm = j->GetPainters();
+			IScalarPainterManager* sm = j->GetScalarPainters();
+			Check( pm != 0 && sm != 0, "T: both painter managers exist" );
+
+			const unsigned long long colourSerial = pm ? pm->GetItemSerial( "DUP" ) : 0;
+			const unsigned long long scalarSerial = sm ? sm->GetItemSerial( "DUP" ) : 0;
+			Check( colourSerial != 0 && scalarSerial != 0,
+			       "T: the premise -- BOTH managers hold an entity named `DUP`, so the name does not "
+			       "identify one" );
+			Check( colourSerial != scalarSerial,
+			       "T: ... and their independent counters give the two different serials, so the "
+			       "assertions below discriminate" );
+
+			// Locate the two `DUP` rows.  Both are roots (Painter is flat) and
+			// the union puts colour painters before scalars, so the FIRST is
+			// the colour one -- a stable_sort on the name alone preserves that.
+			Check( c.TreeNodeCount( Cat::Painter ) > 0, "T: the Painter tree publishes" );
+			SceneEditController::AuthoredTree pt;
+			c.ReadTree( Cat::Painter, pt );
+			std::vector<std::size_t> dupRows;
+			for( std::size_t i = 0; i < pt.nodes.size(); ++i )
+				if( std::string( pt.nodes[i].name.c_str() ) == "DUP" ) dupRows.push_back( i );
+			Check( dupRows.size() == 2,
+			       "T: the union does NOT dedup -- both `DUP` entities get their own row" );
+			if( dupRows.size() == 2 ) {
+				Check( pt.nodes[ dupRows[0] ].serial == colourSerial,
+				       "T: the first `DUP` row carries the COLOUR painter's serial" );
+				Check( pt.nodes[ dupRows[1] ].serial == scalarSerial,
+				       "T: and the second carries the SCALAR painter's -- a row's serial comes from "
+				       "the manager the row came from, not from a name probe that races the two" );
+			}
+
+			// A handle on the SCALAR row, then replace the scalar entity.
+			SceneEditController::TreeNodeHandle hs = SceneEditController::kInvalidTreeNode;
+			if( dupRows.size() == 2 )
+				hs = SceneEditController::HandleFor( pt, static_cast<unsigned int>( dupRows[1] ) );
+			Check( hs != SceneEditController::kInvalidTreeNode, "T: the scalar `DUP` row has a handle" );
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Painter, hs ).c_str() ), "DUP",
+			         "T: which resolves before the replacement" );
+			const unsigned long long genBefore = c.TreeGeneration( Cat::Painter );
+
+			Check( sm && sm->RemoveItem( "DUP" ), "T: the SCALAR `DUP` is removed" );
+			IScalarPainter* fresh = 0;
+			Check( RISE_API_CreateUniformScalarPainter( &fresh, Scalar( 0.75 ) ) && fresh != 0,
+			       "T: ... a different scalar painter is built" );
+			if( fresh ) {
+				Check( sm->AddItem( fresh, "DUP" ), "T: ... and registered under the same name" );
+				fresh->release();
+			}
+			Check( sm && sm->GetItemSerial( "DUP" ) != scalarSerial,
+			       "T: the premise -- the scalar manager records a NEW registration serial" );
+			Check( pm && pm->GetItemSerial( "DUP" ) == colourSerial,
+			       "T: ... while the COLOUR `DUP` is untouched, so a name probe would see no change "
+			       "at all" );
+
+			Check( c.TreeNodeCount( Cat::Painter ) == static_cast<unsigned int>( pt.nodes.size() ),
+			       "T: the replacement left the Painter row count alone" );
+			Check( c.TreeGeneration( Cat::Painter ) != genBefore,
+			       "T: the SCALAR-side replacement REPUBLISHES -- the row that denotes it carries its "
+			       "serial, so the change is visible" );
+			Check( c.TreeNodeNameByHandle( Cat::Painter, hs ).size() <= 1,
+			       "T: so the handle captured before it FAILS" );
+
+			SceneEditController::AuthoredTree pt2;
+			c.ReadTree( Cat::Painter, pt2 );
+			bool freshResolves = false;
+			for( std::size_t i = 0; i < pt2.nodes.size(); ++i ) {
+				if( std::string( pt2.nodes[i].name.c_str() ) != "DUP" ) continue;
+				if( std::string( c.TreeNodeNameByHandle( Cat::Painter,
+					SceneEditController::HandleFor( pt2, static_cast<unsigned int>( i ) ) ).c_str() ) == "DUP" )
+					freshResolves = true;
+			}
+			Check( freshResolves,
+			       "T: control -- a handle taken AFTER the replacement resolves, so the API is "
+			       "refusing staleness and not refusing to work" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// U -- A FULL RE-DERIVE INVALIDATES, EVEN THOUGH EVERY SERIAL COMES
+	//      BACK IDENTICAL.
+	//
+	// The serial is the identity relation cases Q and S rest on, and it is
+	// only an identity WITHIN ONE INSTANCE of the stores.
+	// `GenericManager::m_nNextSerial` is a per-manager member starting at 0;
+	// `Job::ClearAll` destroys and recreates every manager; a re-derive
+	// re-registers the same document in the same order.  So a full re-derive
+	// hands genuinely NEW entities the SAME serials the old ones had, every
+	// row of the rebuilt tree compares equal to the published one, the
+	// generation stands, and a handle minted before the rebuild resolves --
+	// onto an entity that did not exist when it was minted.
+	//
+	// Driven through `SetSelection( SceneVariant, "(base)" )`, which is the
+	// controller's own supported route into `Job::RederiveCstWithVariant`
+	// (ClearAll + re-derive + rebind).  It is not the only reachable one --
+	// `ApplyCstParamEdit` returning 2/3 is the fallback for every category
+	// the incremental path refuses, and reopening a document into a reused
+	// Job is what both GUIs do -- but it is the one a test can drive without
+	// leaving the controller holding pointers into freed managers.
+	//
+	// The PREMISE half is what makes this a test of the rebuild counter and
+	// not of something else: it asserts the serials really do come back
+	// identical, so nothing else in TreesEquivalent could have caught it.
+	// =================================================================
+	{
+		const char* s = "sgnode_rederive.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname AAA\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname BBB\ngeometry g\nmaterial m\nposition 2 0 0\n}\n",
+			"U: re-derive scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const int OBJ = static_cast<int>( Cat::Object );
+			CheckEq( TreeDump( c, Cat::Object ), "AAA|BBB", "U: the tree starts as declared" );
+
+			const IScene* sc0 = j->GetScene();
+			const IObjectManager* om0 = sc0 ? sc0->GetObjects() : 0;
+			const unsigned long long serialA = om0 ? om0->GetItemSerial( "AAA" ) : 0;
+			const unsigned long long serialB = om0 ? om0->GetItemSerial( "BBB" ) : 0;
+			Check( serialA != 0 && serialB != 0, "U: both objects have registration serials" );
+
+			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, h ).c_str() ), "BBB",
+			         "U: the captured handle names `BBB` before the re-derive" );
+			const unsigned long long genBefore   = c.TreeGeneration( Cat::Object );
+			const unsigned long long rebuild0    = j->GetContainerRebuildCount();
+			SceneEditController::AuthoredTree before;
+			c.ReadTree( Cat::Object, before );
+			Check( before.rebuildCount == rebuild0 && rebuild0 != 0,
+			       "U: the published tree records WHICH BUILD of the stores it was read from" );
+
+			// THE RE-DERIVE.  ClearAll + re-derive the retained document.
+			Check( c.SetSelection( Cat::SceneVariant, String( "(base)" ) ),
+			       "U: a scene-variant activation re-derives the document" );
+			Check( j->GetContainerRebuildCount() == rebuild0 + 1,
+			       "U: the premise -- the container set was rebuilt exactly once" );
+
+			// THE PREMISE THAT MAKES THIS CASE NECESSARY.
+			const IScene* sc1 = j->GetScene();
+			const IObjectManager* om1 = sc1 ? sc1->GetObjects() : 0;
+			Check( om1 && om1->GetItemSerial( "AAA" ) == serialA
+			    && om1->GetItemSerial( "BBB" ) == serialB,
+			       "U: the premise -- the rebuilt managers hand the NEW entities the SAME serials, "
+			       "because each manager's counter restarted with the manager" );
+			Check( c.TreeNodeCount( Cat::Object ) == 2, "U: a count getter refreshes and sees two nodes" );
+			CheckEq( TreeDump( c, Cat::Object ), "AAA|BBB",
+			         "U: ... and the walk is identical, name for name and position for position -- so "
+			         "no row comparison could tell the trees apart" );
+
+			Check( c.TreeGeneration( Cat::Object ) != genBefore,
+			       "U: the RE-DERIVE republishes anyway -- the tree records which build of the stores "
+			       "it came from, and that is the only member that moved" );
+			Check( c.TreeNodeNameByHandle( Cat::Object, h ).size() <= 1,
+			       "U: so the handle captured before the re-derive FAILS -- it does not silently "
+			       "transfer onto the object the rebuild created" );
+			Check( c.TreeNodeParent( Cat::Object, h ) == SceneEditController::kInvalidTreeNode,
+			       "U: and neither does a parent read through it" );
+			char buf[128] = { 0 };
+			buf[0] = 'z';
+			Check( !RISE_API_SceneEditController_TreeNodeNameByHandle( &c, OBJ, h, buf, sizeof(buf) ),
+			       "U: the C ABI refuses it too" );
+
+			const SceneEditController::TreeNodeHandle fresh = c.TreeRootNode( Cat::Object, 1 );
+			CheckEq( std::string( c.TreeNodeNameByHandle( Cat::Object, fresh ).c_str() ), "BBB",
+			         "U: control -- a handle taken AFTER the re-derive resolves" );
+
+			// EVERY CATEGORY, not only the ones with serials.  A rebuild
+			// replaces all the stores at once, so the Material tree must
+			// invalidate on the same event -- this is the half that the
+			// serial-less categories (Medium/Rasterizer/Film/Animation/
+			// SceneVariant) depend on entirely.
+			SceneEditController::AuthoredTree mt;
+			c.ReadTree( Cat::Material, mt );
+			Check( mt.rebuildCount == rebuild0 + 1,
+			       "U: a category read after the rebuild records the NEW build, so its handles are "
+			       "keyed to it too" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// V -- THE HANDLE-CHURN ASYMMETRY, pinned so it cannot move silently.
+	//
+	// An INCREMENTAL CST param edit drops and re-adds the affected
+	// Material / Geometry / Light / Modifier entity in the same manager
+	// under the same name (Cst.cpp's re-Finalize loop), which mints a fresh
+	// serial -- while OBJECTS are re-pointed IN PLACE, deliberately, so the
+	// raw addresses the TLAS holds stay valid, and they keep their serial.
+	//
+	// So a radius drag invalidates every Geometry handle on every tick and
+	// the same gesture on an object's transform invalidates nothing.  That
+	// is CORRECT under the identity model and harmless under the round-4
+	// scope decision (ReadTree is the sanctioned multi-node surface and
+	// nothing holds a handle across a turn) -- but it is surprising enough
+	// that a 4b/4c author who trips over it should find it asserted rather
+	// than rediscover it.
+	//
+	// The `code == 1` checks are load-bearing PREMISES, not decoration: a
+	// code of 2 or 3 would be a full re-derive, which bumps every category
+	// by design (case U), and the asymmetry is only claimed for the
+	// incremental path.
+	// =================================================================
+	{
+		const char* s = "sgnode_churn.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname obj\ngeometry g\nmaterial m\n}\n",
+			"V: churn scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			Check( c.TreeNodeCount( Cat::Geometry ) > 0, "V: the Geometry tree publishes" );
+			Check( c.TreeNodeCount( Cat::Object ) > 0, "V: the Object tree publishes" );
+			const unsigned long long geomGen0 = c.TreeGeneration( Cat::Geometry );
+			const unsigned long long objGen0  = c.TreeGeneration( Cat::Object );
+			const unsigned long long rebuild0 = j->GetContainerRebuildCount();
+
+			// (a) a GEOMETRY param edit -- dropped and re-added, fresh serial.
+			Check( j->ApplyCstParamEdit( "g", "geometry", "radius", 0, "2.0" ) == 1,
+			       "V: the premise -- a geometry param edit applies INCREMENTALLY (code 1), so no "
+			       "re-derive is in play" );
+			Check( j->GetContainerRebuildCount() == rebuild0,
+			       "V: ... and the container set was NOT rebuilt" );
+			Check( c.TreeNodeCount( Cat::Geometry ) > 0, "V: a count getter refreshes the Geometry tree" );
+			Check( c.TreeGeneration( Cat::Geometry ) != geomGen0,
+			       "V: a Geometry entity is DROPPED AND RE-ADDED by the incremental apply, so its "
+			       "serial moves and every Geometry handle dies -- on every tick of a radius drag" );
+
+			// (b) an OBJECT param edit -- re-pointed in place, serial held.
+			const IScene* sc = j->GetScene();
+			const IObjectManager* om = sc ? sc->GetObjects() : 0;
+			const unsigned long long objSerial0 = om ? om->GetItemSerial( "obj" ) : 0;
+			Check( objSerial0 != 0, "V: `obj` has a registration serial" );
+			Check( c.TreeNodeCount( Cat::Object ) > 0, "V: the Object tree is current before the edit" );
+			const unsigned long long objGen1 = c.TreeGeneration( Cat::Object );
+			Check( objGen1 == objGen0,
+			       "V: ... and the geometry edit did not disturb it either" );
+			const unsigned long long rev0 = j->GetCstHeadVersion().revision;
+			Check( j->ApplyCstParamEdit( "obj", "object", "position", 0, "1 0 0" ) == 1,
+			       "V: the premise -- an object param edit also applies incrementally" );
+			Check( j->GetContainerRebuildCount() == rebuild0,
+			       "V: ... with no rebuild" );
+			Check( j->GetCstHeadVersion().revision != rev0,
+			       "V: ... and the edit REALLY LANDED (the head revision moved), so the "
+			       "no-republish assertion below is not vacuously true of a rejected edit" );
+			Check( c.TreeNodeCount( Cat::Object ) > 0, "V: a count getter refreshes the Object tree" );
+			const IObjectManager* om2 = j->GetScene() ? j->GetScene()->GetObjects() : 0;
+			Check( om2 && om2->GetItemSerial( "obj" ) == objSerial0,
+			       "V: an OBJECT is re-pointed IN PLACE, so its serial is unchanged" );
+			Check( c.TreeGeneration( Cat::Object ) == objGen1,
+			       "V: ... and the Object tree does NOT republish -- the asymmetry is real, and a "
+			       "shell must not assume one category's churn rate is the other's" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// W -- A HANDLE FROM ANOTHER CONTROLLER DOES NOT RESOLVE.
+	//
+	// The generation tag is compared against the CURRENTLY PUBLISHED
+	// generation for the category, and nothing in the comparison names a
+	// controller.  While the counter was a per-controller member seeded at
+	// 1, controller A's first published tree and controller B's first
+	// published tree both carried generation 1, so a handle minted on A
+	// decoded cleanly against B and named B's node at the same index --
+	// with a valid-looking name coming back.  Round 4 moved the counter to
+	// a process-global atomic, so no two published trees anywhere share a
+	// generation.
+	//
+	// Not reachable in the Mac GUI today (the bridge is torn down before
+	// its replacement is built, so two controllers are never live at once),
+	// but a 4b model that caches handles across a document reload is the
+	// realistic shape, and `HandleFor`'s doc used to SELL the aliasing as a
+	// feature ("does not care which controller the copy came from").
+	// =================================================================
+	{
+		const char* sA = "sgnode_xctlA.RISEscene";
+		const char* sB = "sgnode_xctlB.RISEscene";
+		Job* jA = LoadScene( sA,
+			"standard_object\n{\nname AONLY\ngeometry g\nmaterial m\n}\n",
+			"W: controller-A scene loads" );
+		Job* jB = LoadScene( sB,
+			"standard_object\n{\nname BONLY\ngeometry g\nmaterial m\n}\n",
+			"W: controller-B scene loads" );
+		{
+			SceneEditController cA( *jA, 0 );
+			SceneEditController cB( *jB, 0 );
+			// Enter through a count getter on BOTH: only the count getters
+			// refresh, and a fresh controller has published nothing yet.
+			Check( cA.TreeRootCount( Cat::Object ) == 1 && cB.TreeRootCount( Cat::Object ) == 1,
+			       "W: both controllers publish a single-root tree" );
+			const SceneEditController::TreeNodeHandle hA = cA.TreeRootNode( Cat::Object, 0 );
+			CheckEq( std::string( cA.TreeNodeNameByHandle( Cat::Object, hA ).c_str() ), "AONLY",
+			         "W: the handle names A's node on A" );
+			CheckEq( std::string( cB.TreeNodeNameByHandle( Cat::Object, cB.TreeRootNode( Cat::Object, 0 ) ).c_str() ),
+			         "BONLY",
+			         "W: the premise -- B has its own single root at the same INDEX, so a decoded "
+			         "cross-controller handle would name it" );
+			Check( cA.TreeGeneration( Cat::Object ) != cB.TreeGeneration( Cat::Object ),
+			       "W: the two controllers' trees do not share a generation" );
+			Check( cB.TreeNodeNameByHandle( Cat::Object, hA ).size() <= 1,
+			       "W: so A's handle FAILS on B rather than naming `BONLY`" );
+			Check( cB.TreeNodeParent( Cat::Object, hA ) == SceneEditController::kInvalidTreeNode
+			    && cB.TreeChildCountByHandle( Cat::Object, hA ) == 0,
+			       "W: ... through the other getters too" );
+		}
+		jA->release();
+		jB->release();
+		std::remove( sA );
+		std::remove( sB );
 	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

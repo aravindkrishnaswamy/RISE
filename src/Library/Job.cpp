@@ -447,6 +447,11 @@ void Job::InitializeContainers()
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
 	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
+	// 87 step 4a round-4 (P1-A): NOT reset -- INCREMENTED.  This is the "the managers you were
+	// looking at no longer exist" signal, and it is only meaningful if it survives the rebuild it
+	// counts.  Every serial the managers below hand out restarts from 1, so without this a
+	// ClearAll + re-derive is invisible to anything caching (name, serial).
+	++m_containerRebuildCount;
 	ClearSceneVariants();        // doc 63: reset the scene-variant records per derive/clear (no cross-load leak)
 	mGltfImportPrefixes.clear(); // reset per derive/clear -- see Job.h member doc (gltf_import name_prefix collision guard)
 

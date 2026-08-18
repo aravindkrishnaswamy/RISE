@@ -2046,27 +2046,48 @@ namespace RISE
 		// for the rule and for why nobody may reconstruct it from the
 		// spelling of a name.
 		//
-		// A node is addressed by an opaque handle.  A handle is NOT a bare
-		// index: it carries the SNAPSHOT GENERATION it was minted in, and
-		// every per-node getter refuses a handle whose generation is not the
-		// currently published one.  That is the whole point of the encoding.
-		// A bare index silently RE-RESOLVES across a republish -- remove one
-		// object and the handle that named `BBB` names `CCC`, with a
-		// valid-looking name coming back and no way for the caller to tell.
-		// (Measured, review of 87 step 4a.)  Reachable shapes are ordinary,
-		// not exotic: `for( i = 0; i < c.TreeRootCount( cat ); ++i )`
-		// refreshes once PER ITERATION, and a Qt QAbstractItemModel parks
-		// handles in `QModelIndex::internalId()` across event-loop turns.
-		// With the generation tag a stale handle FAILS -- empty name,
-		// kInvalidTreeNode parent, zero children -- which a caller can act
-		// on.  DO NOT "simplify" the handle back to a raw index.
+		// `ReadTree` IS THE SANCTIONED MULTI-NODE SURFACE.  Decided in round 4
+		// of this step's review, and it changes what the per-node getters are
+		// FOR, so read this before building anything on them.
+		//
+		// A node is addressed by an opaque handle that carries the SNAPSHOT
+		// GENERATION it was minted in, and every per-node getter refuses a
+		// handle whose generation is not the currently published one.  That
+		// tag remains worth having: it turns "silently re-resolves onto some
+		// other node" into a visible failure -- remove one object and a bare
+		// index that named `BBB` names `CCC`, with a valid-looking name
+		// coming back and no way for the caller to tell (measured).
+		//
+		// But a handle is NOT A DURABLE IDENTITY and must not be treated as
+		// one.  Its guarantee is bounded: VALID WITHIN ONE WALK, against the
+		// generation you observed.  Two things bound it, and neither is going
+		// away:
+		//   - A REBUILD of the stores (ClearAll + re-derive) is only
+		//     detectable because `AuthoredTree::rebuildCount` is folded into
+		//     the equivalence.  Take that away and the tag cannot see it,
+		//     because the serials it is built on restart from 1.
+		//   - An INCREMENTAL edit invalidates a whole category's handles even
+		//     when nothing the shell drew has moved -- see the
+		//     "HANDLE CHURN" note on the getters below.
+		// So nothing should hold a handle ACROSS AN EVENT-LOOP TURN.  Nothing
+		// in tree does: 87 §5 step 4 keys expand state on the tree PATH, this
+		// controller's selection is by NAME (`SetSelection( Category, const
+		// String& )`), and `ViewportBridge::categoryTree` reads `ReadTree`
+		// only.  4b and 4c must be written the same way.
+		//
+		// The per-node getters therefore stay as a CONVENIENCE (a single-node
+		// probe, the C-ABI's only node surface) and as a SAFETY NET -- a
+		// detectable-when-it-can-be failure beats a silent one.  They are not
+		// deleted and neither is the generation check.
 		//
 		// PREFER `ReadTree` for anything that walks more than one node.  It
 		// is the only TRANSACTIONAL entry point: one refresh, one locked
 		// pass, the whole tree copied out.  A multi-call walk is not
 		// transactional even without a mutation -- each getter takes the
 		// leaf lock on its own, so another thread's count call can land
-		// between two of them.
+		// between two of them.  DO NOT "simplify" the handle back to a raw
+		// index either: within a walk the tag is what makes the failure
+		// visible.
 		//
 		// REFRESH CADENCE, and how it differs from the flat getters
 		// deliberately: `TreeNodeCount` and `TreeRootCount` refresh the
@@ -2126,28 +2147,69 @@ namespace RISE
 		//! refresh.  A caller that wants to know whether a walk it just did
 		//! spanned a republish reads this before and after and compares.
 		//!
-		//! 0 means NOTHING IS PUBLISHED, which is not quite "nothing has ever
-		//! been published": a category that is legitimately EMPTY stays at 0
-		//! for the life of the controller, because an empty rebuild compares
-		//! equivalent to the default-constructed tree and so is never
-		//! published.  Both readings agree on what a caller may do with it --
-		//! there are no nodes and no handle can resolve -- so this is a
-		//! precision note, not a case to branch on.
+		//! 0 means NO REFRESH HAS RUN for this category yet -- nothing is
+		//! published, so there are no nodes and no handle can resolve.  Note
+		//! that a legitimately EMPTY category does NOT stay at 0: since round
+		//! 4 the tree carries `rebuildCount`, which differs from the
+		//! default-constructed 0 on the very first refresh, so an empty
+		//! category publishes an empty tree at generation >= 1.  (An earlier
+		//! version of this doc said the opposite, and it was true then.)
+		//!
+		//! Generations are minted from a PROCESS-GLOBAL counter shared by
+		//! every controller and every category, so no two published trees
+		//! anywhere in the process share one -- see the round-4 P3-1 note in
+		//! the .cpp.
 		unsigned long long TreeGeneration( Category cat ) const;
+
+		// HANDLE CHURN, and an ASYMMETRY a 4b/4c author must not be
+		// surprised by (round-4 P2).  An INCREMENTAL CST param edit
+		// (`Cst.cpp`'s re-Finalize loop) DROPS and RE-ADDS the affected
+		// Material / Geometry / Light / Modifier entity in the same manager
+		// under the same name, which mints a fresh registration serial --
+		// while OBJECTS are re-pointed IN PLACE, precisely so the raw
+		// addresses the TLAS stores stay valid, and keep their serial.
+		//
+		// So dragging a sphere's `radius` bumps the Geometry tree's
+		// generation on EVERY tick and invalidates every outstanding
+		// Geometry handle, while the same gesture on an Object's transform
+		// invalidates nothing.  That is CORRECT under the identity model --
+		// the geometry really is a different instance -- and it is harmless
+		// exactly because `ReadTree` is the sanctioned surface and nothing
+		// holds a handle across a turn.  It is documented here so that a
+		// shell which finds its handles dying under a drag reaches for
+		// `ReadTree` instead of "fixing" the equivalence by dropping the
+		// serial, which would re-open round-4 case S.
+
 		//! Handle of the `rootIdx`-th root, or kInvalidTreeNode.
 		TreeNodeHandle TreeRootNode( Category cat, unsigned int rootIdx ) const;
 		//! How many children `node` has.  0 for an unknown or STALE handle.
-		unsigned int TreeChildCount( Category cat, TreeNodeHandle node ) const;
+		//!
+		//! `ByHandle` for the same reason the C-ABI mirror carries it: round
+		//! 3 widened the node parameter from `unsigned int` to
+		//! `TreeNodeHandle` and changed NOTHING ELSE in the signature, so a
+		//! caller written against the pre-handle API keeps compiling and
+		//! degrades to "every node is a childless row" -- indistinguishable
+		//! from a legitimately flat category.  A rename is the only thing
+		//! that breaks it loudly.  Round 4 applied it on this side too, which
+		//! also gives the C++ and C names parity.  (The other three getters
+		//! kept their names: each ALSO changed its return type, so a caller
+		//! storing the result in an `unsigned int` at least gets a narrowing
+		//! the compiler can warn about, and the C ABI's out-pointer widening
+		//! is a hard error outright.)
+		unsigned int TreeChildCountByHandle( Category cat, TreeNodeHandle node ) const;
 		//! Handle of `node`'s `childIdx`-th child, or kInvalidTreeNode.
 		TreeNodeHandle TreeChildNode( Category cat, TreeNodeHandle node, unsigned int childIdx ) const;
 		//! `node`'s parent handle, or kInvalidTreeNode for a root / unknown /
 		//! STALE handle.  Walking this up to a root is how a shell builds the
-		//! tree PATH that 87 §5 step 4 keys expand-state on.
+		//! tree PATH that 87 §5 step 4 keys expand-state on -- but do that
+		//! WITHIN one walk, or better over a `ReadTree` copy, not by parking
+		//! a handle between turns.
 		TreeNodeHandle TreeNodeParent( Category cat, TreeNodeHandle node ) const;
 		//! `node`'s entity name -- the identity a shell passes to
 		//! `SetSelection` and renders as the row label.  Empty for an unknown
-		//! or STALE handle.
-		String       TreeNodeName( Category cat, TreeNodeHandle node ) const;
+		//! or STALE handle.  `ByHandle` for the reason on
+		//! `TreeChildCountByHandle`.
+		String       TreeNodeNameByHandle( Category cat, TreeNodeHandle node ) const;
 
 		//! One tree node, as published in the snapshot.  `parent` and the
 		//! `childIndices` slice are indices into the SAME snapshot's node
@@ -2170,6 +2232,19 @@ namespace RISE
 			//! is the identity model `SceneEditor.cpp`'s capture/apply
 			//! serial gate already enforces one layer down; a name-only
 			//! equivalence here would contradict it.
+			//!
+			//! MEANINGFUL PER INDEX, NOT CATEGORY-WIDE.  A serial is unique
+			//! only within one manager instance, and `Category::Painter` is
+			//! a UNION of two managers with independent counters -- so two
+			//! Painter rows denoting two genuinely different entities can
+			//! carry the same number.  `TreesEquivalent` compares row `i`
+			//! against row `i`, which is exactly the comparison the value
+			//! supports; do not build a set or a map out of these.
+			//!
+			//! AND IT SAYS NOTHING ACROSS A REBUILD.  See
+			//! AuthoredTree::rebuildCount -- the counter behind every serial
+			//! restarts when the manager is reconstructed, so the serial is
+			//! an identity WITHIN one instance of the stores only.
 			//!
 			//! NOT part of the public handle surface and deliberately not
 			//! exposed by a getter -- it is an equivalence input, not a row
@@ -2213,6 +2288,40 @@ namespace RISE
 			//! Travels INSIDE the struct so it cannot be published
 			//! separately from the table it describes.
 			unsigned long long        generation = 0;
+			//! WHICH INSTANCE OF THE STORES this tree was read out of --
+			//! `IJobPriv::GetContainerRebuildCount`, stamped by
+			//! `BuildCategoryTreeLocked_`.  Compared by `TreesEquivalent`,
+			//! which is what makes a whole-scene rebuild republish.
+			//!
+			//! It is here because A SERIAL IS NOT A CROSS-REBUILD IDENTITY,
+			//! and the rest of this API's identity story is built on serials.
+			//! `GenericManager::m_nNextSerial` is per-manager-INSTANCE and
+			//! starts at 0 on construction; `Job::ClearAll` destroys and
+			//! recreates every manager; a re-derive re-registers the same
+			//! document in the same order.  So a full re-derive reproduces
+			//! BYTE-IDENTICAL serials for genuinely new instances, every row
+			//! compares equal, the generation stands, and a handle minted
+			//! before the rebuild still resolves -- now onto an entity that
+			//! did not exist when it was minted.  (Measured; case U.)
+			//!
+			//! THE HOLE THIS CLOSES BELONGED TO EVERY CATEGORY, not to the
+			//! serial-less ones.  An earlier version of this header
+			//! enumerated Medium / Rasterizer / Film / Animation /
+			//! SceneVariant and implied the gap was theirs.  Their gap is
+			//! real and separate (a same-name REPLACEMENT inside one store
+			//! is invisible there, because there is no serial to move -- see
+			//! TreeNodeSeed::serial).  The rebuild gap was UNIVERSAL: it
+			//! applied to Object, Material, Geometry, Light and Painter
+			//! exactly as much, because it defeats the serial rather than
+			//! being defeated by its absence.
+			//!
+			//! Reachable on the mainline, not exotic: `ApplyCstParamEdit`
+			//! returning 2 or 3 -- the full-re-derive fallback taken by every
+			//! category the incremental path refuses, which is all Camera and
+			//! all Painter edits, `let` edits, unnamed chunks and composed
+			//! materials -- plus `RederiveCstWithVariant` and reopening a
+			//! document into a reused Job.
+			unsigned long long        rebuildCount = 0;
 		};
 
 		//! THE TRANSACTIONAL READ, and what every multi-node consumer should
@@ -2258,7 +2367,16 @@ namespace RISE
 		//! resolve.
 		//!
 		//! PURE and static: it reads only the tree it is handed, so it takes
-		//! no lock and does not care which controller the copy came from.
+		//! no lock.
+		//!
+		//! IT DOES CARE WHICH CONTROLLER THE COPY CAME FROM, and an earlier
+		//! version of this line said the opposite and sold that as a feature.
+		//! A handle is only ever resolved AGAINST a particular controller's
+		//! published tree, so one minted from controller A's copy and handed
+		//! to controller B is a bug, not a portability affordance.  Since
+		//! round 4 generations come from a process-global counter, so such a
+		//! handle FAILS to decode rather than naming B's node at the same
+		//! index (which is what it used to do -- measured).
 		static TreeNodeHandle HandleFor( const AuthoredTree& t, unsigned int index );
 
 		//! The input to the pure tree assembler: one record per node that is
@@ -2280,9 +2398,18 @@ namespace RISE
 			//! original" -- Medium, Rasterizer, Film, Animation and
 			//! SceneVariant, none of which is reached through an IManager
 			//! from here.  For those categories a remove + re-add under the
-			//! same name does NOT bump the tree generation, and an
-			//! outstanding handle keeps resolving.  Said out loud rather
-			//! than left for a reader to infer from a silent 0.
+			//! same name WITHIN one instance of the stores does NOT bump the
+			//! tree generation, and an outstanding handle keeps resolving.
+			//! Said out loud rather than left for a reader to infer from a
+			//! silent 0.
+			//!
+			//! That is the ONLY gap left, and it is narrower than it reads:
+			//! a whole-scene REBUILD is caught for every category, serial or
+			//! not, by AuthoredTree::rebuildCount.
+			//!
+			//! Category::Painter does not come through here at all -- its
+			//! serial is positional, from the manager the row was enumerated
+			//! out of.  See BuildCategoryTreeLocked_.
 			unsigned long long serial = 0;
 		};
 
@@ -5099,6 +5226,13 @@ namespace RISE
 		//! that store is not an IManager reachable from here (Medium,
 		//! Rasterizer, Film, Animation, SceneVariant) -- see
 		//! TreeNodeSeed::serial for what a 0 costs.  mMutex must be held.
+		//!
+		//! ALSO 0 FOR Category::Painter, which is not a lookup failure but a
+		//! statement that the question is ill-posed: Painter is the union of
+		//! two managers with independent counters, a name may live in both,
+		//! and a row denotes ONE of them by position.  BuildCategoryTreeLocked_
+		//! builds Painter seeds from `CollectPainterUnionEntries` instead and
+		//! never calls this for that category.
 		unsigned long long CategoryEntitySerialLocked_( Category cat, const String& name ) const;
 
 		//! Round-4 structural fix (the "UI reads live managers" P1 class): the
@@ -5181,14 +5315,14 @@ namespace RISE
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;
 
-		//! Next snapshot generation to stamp onto a republished tree.
-		//! PROCESS-of-this-controller-wide rather than per category, so a
-		//! handle minted for one category can never match another category's
-		//! published generation -- a cross-category handle mix-up fails the
-		//! same way a stale one does instead of resolving to an unrelated
-		//! entity.  Guarded by mUiSnapshotMutex; starts at 1 so that 0 keeps
-		//! meaning "never published".
-		mutable unsigned long long mNextTreeGeneration = 1;
+		// NO PER-CONTROLLER GENERATION COUNTER.  Round-4 P3-1 moved it to a
+		// process-global atomic (`NextTreeGeneration()` in the .cpp): a
+		// per-controller counter seeded at 1 meant a handle minted on
+		// controller A decoded cleanly against controller B and named B's node
+		// at the same index.  Global also keeps the cross-CATEGORY property the
+		// old member had (one counter serves every category, so no two
+		// published trees share a generation) without depending on the two
+		// being in the same object.
 
 		//! External-review P1 (2026-07-22): general reference-target guard for
 		//! GUI property edits.  Returns true (== "reject this edit") ONLY when

@@ -383,6 +383,9 @@ namespace RISE
 		// Model-B F2 slice S2a fix round 2 (P2-A): read-only accessor for pGlobalProgress -- see
 		// IJobPriv::GetProgress's doc.  Inline, no-`override` convention like the other getters.
 		IProgressCallback*			GetProgress() const					{ return pGlobalProgress.load( std::memory_order_acquire ); }
+		// 87 step 4a round-4 P1-A: the container-rebuild counter -- see IJobPriv::GetContainerRebuildCount
+		// and the m_containerRebuildCount member doc.  Inline, no-`override` convention like the others.
+		unsigned long long			GetContainerRebuildCount() const	{ return m_containerRebuildCount; }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
@@ -3228,6 +3231,20 @@ namespace RISE
 		//! Count of override_object chunks that modified an object in place this derive
 		//! (see IJob::NoteObjectOverride).  The CST incremental apply refuses when > 0.
 		unsigned int m_objectOverrideCount;
+
+		//! 87 step 4a (round-4 P1-A): how many times the container set has been
+		//! BUILT -- incremented by InitializeContainers, i.e. once at construction
+		//! and once more per ClearAll.  NOT reset by InitializeContainers (that
+		//! would defeat it) and NOT touched by DestroyContainers.
+		//!
+		//! Exists because a registration SERIAL is not a cross-rebuild identity:
+		//! GenericManager::m_nNextSerial is per-manager-instance and starts over on
+		//! construction, so a ClearAll + re-derive that re-registers the same
+		//! document in the same order reproduces BYTE-IDENTICAL serials for
+		//! genuinely new instances.  Anything caching per-entity identity across a
+		//! possible rebuild must compose this counter with the serial.  See
+		//! SceneEditController::AuthoredTree::rebuildCount, its sole consumer.
+		unsigned long long m_containerRebuildCount = 0;
 
 		//! `gltf_import` name_prefix values already consumed THIS derive (reset in
 		//! InitializeContainers, so a fresh Job -- or a ClearAll'd one -- starts empty).

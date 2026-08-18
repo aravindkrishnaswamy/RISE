@@ -4312,6 +4312,21 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	// shell sits on for a long time.  So those two, and only those two,
 	// are renamed: a stale caller now fails to build on every path.  If the
 	// handle encoding ever changes again, rename again.
+	//
+	// ROUND 4 APPLIED THE SAME RENAME ON THE C++ SIDE, so the two surfaces
+	// now agree name for name.  The argument above transfers verbatim to
+	// `SceneEditController::TreeChildCountByHandle` /
+	// `TreeNodeNameByHandle`: those two C++ methods also had the handle as
+	// their only changed parameter.  It does NOT transfer to the other
+	// three C++ methods -- they have no out-pointer, but each changed its
+	// RETURN type from `unsigned int` to a 64-bit handle, so a stale caller
+	// storing the result gets a narrowing conversion the compiler can warn
+	// about rather than a silently wrong answer.
+	//
+	// (And note what this rename does NOT protect, on either surface: a
+	// handle from ANOTHER CONTROLLER used to decode cleanly.  That is fixed
+	// by making generations process-global, not by a name -- see
+	// `SceneEditController::HandleFor`.)
 
 	//! Total nodes in `category`'s tree.  0 on null controller or an
 	//! unknown category.

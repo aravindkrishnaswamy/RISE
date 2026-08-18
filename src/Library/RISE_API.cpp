@@ -8756,7 +8756,7 @@ namespace RISE
 		SceneEditController* p, int category, unsigned long long node )
 	{
 		if( !p ) return 0;
-		return p->TreeChildCount(
+		return p->TreeChildCountByHandle(
 			static_cast<SceneEditController::Category>( category ), node );
 	}
 
@@ -8814,7 +8814,7 @@ namespace RISE
 		// than guarded: a second discriminator would be one more thing to
 		// keep in sync, and the honest fix if it ever becomes reachable is
 		// for AddItem to refuse the empty name.
-		const String nm = p->TreeNodeName( cat, node );
+		const String nm = p->TreeNodeNameByHandle( cat, node );
 		if( nm.size() <= 1 ) return false;
 		CopyToBuf( nm, buf, bufLen );
 		return true;

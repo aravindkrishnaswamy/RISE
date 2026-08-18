@@ -3893,14 +3893,68 @@ public:
 // (CategoryEntityCount then repeated CategoryEntityName(idx)) is
 // deterministic across calls even though neither manager's own
 // EnumerateItemNames documents a stable order.
+//! One row of the Painter union, WITH the manager it came from and that
+//! manager's registration serial for it.
+//!
+//! 87 step 4a round-4 (P1-B).  The union is NOT a set: `CollectPainterUnionNames`
+//! concatenates without dedup, and it is right not to dedup -- `Cst::ChunkNamePath`
+//! keys the document index as `role + "/" + name`, so `uniformcolor_painter/P` and
+//! `scalar_painter/P` are DIFFERENT document entities and both must get a row.  A
+//! same-named pair therefore produces TWO rows, and which manager a given row
+//! denotes is decided by POSITION, not by the name.  Re-deriving the serial from
+//! the name afterwards ("probe the colour manager, then the scalar one, first that
+//! answers wins") hands BOTH rows the colour painter's serial -- so a replacement
+//! on the scalar side moves nothing the tree can see, the generation stands, and a
+//! stale handle keeps resolving.  (Measured; case T.)  So the origin is captured
+//! HERE, at the one place that knows it.
+struct PainterUnionEntry
+{
+	String             name;
+	unsigned long long serial   = 0;   //!< from the manager named by `fromScalar`
+	bool               fromScalar = false;
+};
+
+std::vector<PainterUnionEntry> CollectPainterUnionEntries( IJobPriv& job )
+{
+	std::vector<PainterUnionEntry> out;
+	if( IPainterManager* m = job.GetPainters() ) {
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+			PainterUnionEntry e;
+			e.name       = cb.names[i];
+			e.serial     = m->GetItemSerial( cb.names[i].c_str() );
+			e.fromScalar = false;
+			out.push_back( e );
+		}
+	}
+	if( IScalarPainterManager* m = job.GetScalarPainters() ) {
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+			PainterUnionEntry e;
+			e.name       = cb.names[i];
+			e.serial     = m->GetItemSerial( cb.names[i].c_str() );
+			e.fromScalar = true;
+			out.push_back( e );
+		}
+	}
+	// STABLE sort on the name alone, exactly as before: the pre-sort order is
+	// colour-painters-then-scalars, so a duplicated name keeps the colour row
+	// first and the flat surface's byte-for-byte order is unchanged.
+	std::stable_sort( out.begin(), out.end(),
+		[]( const PainterUnionEntry& a, const PainterUnionEntry& b ) {
+			return std::string( a.name.c_str() ) < std::string( b.name.c_str() ); } );
+	return out;
+}
+
 std::vector<String> CollectPainterUnionNames( IJobPriv& job )
 {
-	CollectNamesCallback cb;
-	if( IPainterManager* m = job.GetPainters() ) m->EnumerateItemNames( cb );
-	if( IScalarPainterManager* m = job.GetScalarPainters() ) m->EnumerateItemNames( cb );
-	std::stable_sort( cb.names.begin(), cb.names.end(),
-		[]( const String& a, const String& b ) { return std::string( a.c_str() ) < std::string( b.c_str() ); } );
-	return cb.names;
+	const std::vector<PainterUnionEntry> entries = CollectPainterUnionEntries( job );
+	std::vector<String> names;
+	names.reserve( entries.size() );
+	for( std::size_t i = 0; i < entries.size(); ++i ) names.push_back( entries[i].name );
+	return names;
 }
 
 }  // namespace
@@ -4189,7 +4243,13 @@ void SceneEditController::CategoryEntityNamesLocked_( Category cat, std::vector<
 
 unsigned long long SceneEditController::CategoryEntitySerialLocked_( Category cat, const String& name ) const
 {
-	if( name.size() <= 1 ) return 0;                       // String carries its NUL
+	// NO EMPTY-NAME SHORT CIRCUIT.  An earlier `if( name.size() <= 1 ) return 0;`
+	// was removed in round 4: `String::c_str()` on an empty String yields `""`,
+	// `GenericManager::GetItemSerial( "" )` simply misses and returns 0, so the
+	// guard bought nothing -- and `GenericManager::AddItem` PERMITS an entity
+	// named `""`, for which the guard manufactured a serial-0 hole (a category
+	// row that could never be told apart from its own replacement) out of a case
+	// the managers handle correctly.
 	const IScene* scene = mJob.GetScene();
 	switch( cat ) {
 	case Category::Camera: {
@@ -4212,22 +4272,26 @@ unsigned long long SceneEditController::CategoryEntitySerialLocked_( Category ca
 		const IGeometryManager* m = mJob.GetGeometries();
 		return m ? m->GetItemSerial( name.c_str() ) : 0;
 	}
-	case Category::Painter: {
-		// The Painter list is the UNION of two managers, each with its own
-		// serial counter.  Probe in the same order the union is built and
-		// take the first that answers -- a name lives in exactly one of them
-		// (CollectPainterUnionNames concatenates), so the two counters never
-		// have to be reconciled.
-		if( const IPainterManager* m = mJob.GetPainters() ) {
-			const unsigned long long v = m->GetItemSerial( name.c_str() );
-			if( v ) return v;
-		}
-		if( const IScalarPainterManager* m = mJob.GetScalarPainters() ) {
-			const unsigned long long v = m->GetItemSerial( name.c_str() );
-			if( v ) return v;
-		}
+	case Category::Painter:
+		// NOT ANSWERABLE FROM A NAME, and round 4 removed the code that pretended
+		// otherwise.  It probed the colour manager then the scalar one and took
+		// the first hit, on a comment claiming "a name lives in exactly one of
+		// them (CollectPainterUnionNames concatenates), so the two counters never
+		// have to be reconciled."  THAT COMMENT WAS FALSE.  The concatenation is
+		// exactly what lets a name live in BOTH: it does not dedup, and it is
+		// right not to -- `Cst::ChunkNamePath` keys on `role + "/" + name`, so
+		// `uniformcolor_painter/P` and `scalar_painter/P` are two distinct
+		// document entities that both deserve a row.  With both present the probe
+		// handed the SCALAR row the COLOUR entity's serial, so replacing the
+		// scalar painter moved nothing the tree could see.  (Measured; case T.)
+		//
+		// A Painter row's serial is decided by the row's ORIGIN, which is
+		// positional -- see PainterUnionEntry and BuildCategoryTreeLocked_'s
+		// Painter branch, which is the only path that builds Painter seeds.
+		// Reaching HERE for Category::Painter would be a routing bug, and the 0
+		// it now returns is the same "no identity available" answer the
+		// serial-less categories below get.
 		return 0;
-	}
 	case Category::Medium:
 	case Category::Rasterizer:
 	case Category::Film:
@@ -4360,13 +4424,33 @@ namespace {
 bool TreesEquivalent( const SceneEditController::AuthoredTree& a,
                       const SceneEditController::AuthoredTree& b )
 {
-	// The size compare is a BOUNDS GUARD for the loop below, not a
-	// discriminator: every node is either a root or somebody's child, so a
-	// changed node count always shows up in `roots` or in `childIndices`
-	// first.  Measured -- deleting this line alone leaves the whole suite
-	// green.  It stays because without it the loop reads `b.nodes[i]` past
-	// the end when `b` is the shorter tree, and no behavioural test can pin
-	// that (the failure is UB, not a wrong answer).
+	// THE REBUILD COUNTER, compared FIRST because it subsumes everything below.
+	// A serial is unique only within one manager INSTANCE, so it cannot tell a
+	// rebuilt store from the original -- see AuthoredTree::rebuildCount, which
+	// says why, and IJobPriv::GetContainerRebuildCount, which is where it comes
+	// from.  Without this the whole per-row comparison is defeated by any
+	// ClearAll + re-derive, which reproduces the same names in the same order
+	// with the same freshly-restarted serials.  (Measured; case U.)
+	if( a.rebuildCount != b.rebuildCount ) return false;
+	// A BOUNDS GUARD for the loop below, not a discriminator -- deleting this
+	// line alone leaves the whole suite green, because every node is either a
+	// root or somebody's child, so a changed node count always shows up in
+	// `roots` or in `childIndices` first.
+	//
+	// An earlier version of this comment justified the guard by claiming the
+	// loop would otherwise read `b.nodes[i]` past the end.  IT WOULD NOT.
+	// `BuildAuthoredTree` maintains `nodes.size() == roots.size() +
+	// childIndices.size()` (every node is pushed to `roots` or counted into
+	// exactly one parent's slice, and the prefix sum sizes `childIndices` to
+	// that count) -- and it holds for a default-constructed tree too, at
+	// 0 == 0 + 0.  So by the time control reaches the loop, `childIndices` and
+	// `roots` have already compared EQUAL on both size and content, which
+	// determines `nodes.size()`, and the out-of-bounds read is unreachable
+	// rather than merely untestable.
+	//
+	// It stays anyway: it is a LOCAL bound on a loop whose safety would
+	// otherwise depend on an invariant maintained in another function, and it
+	// is one integer compare.
 	if( a.nodes.size() != b.nodes.size() ) return false;
 	if( a.childIndices != b.childIndices ) return false;
 	if( a.roots        != b.roots )        return false;
@@ -4378,6 +4462,26 @@ bool TreesEquivalent( const SceneEditController::AuthoredTree& a,
 		if( std::strcmp( x.name.c_str(), y.name.c_str() ) != 0 ) return false;
 	}
 	return true;
+}
+
+//! The snapshot-generation source, PROCESS-GLOBAL and shared by every
+//! SceneEditController and every category.
+//!
+//! Round-4 P3-1: it used to be a per-controller member seeded at 1, so a handle
+//! minted on controller A decoded cleanly against controller B and named B's
+//! node at the same index -- and `HandleFor`'s doc actively sold that ("does not
+//! care which controller the copy came from").  Not reachable in the Mac GUI
+//! today (the bridge is torn down before the replacement is built), but a 4b
+//! model that caches handles across a document reload is the realistic shape,
+//! and one shared counter makes it DETECTABLE for the cost of an atomic
+//! increment on a path that already takes two mutexes.  Same idiom the
+//! process-global scene-epoch seed uses.  Cross-CATEGORY aliasing was already
+//! impossible for the same reason (one counter served all categories); this
+//! extends that to controllers.
+std::atomic<unsigned long long>& NextTreeGeneration()
+{
+	static std::atomic<unsigned long long> g( 1 );
+	return g;
 }
 
 //! Handle encoding: generation in the high 32 bits, node index in the low 32.
@@ -4724,6 +4828,24 @@ SceneEditController::AuthoredTree SceneEditController::BuildCategoryTreeLocked_(
 	std::vector<TreeNodeSeed> seeds;
 	if( cat == Category::Object ) {
 		BuildObjectTreeSeedsLocked_( seeds );
+	} else if( cat == Category::Painter ) {
+		// THE ONE CATEGORY WHOSE ROWS DO NOT COME FROM ONE STORE.  Painter is the
+		// union of the colour-painter and physical-scalar-painter managers, and a
+		// name may legitimately appear in BOTH (see PainterUnionEntry).  A row's
+		// serial therefore has to be taken from the manager the row CAME from,
+		// which is positional -- `CategoryEntitySerialLocked_` cannot answer it
+		// from a name and no longer pretends to.  Same enumeration and same order
+		// as the flat surface, because both go through
+		// `CollectPainterUnionEntries`.
+		const std::vector<PainterUnionEntry> entries = CollectPainterUnionEntries( mJob );
+		seeds.reserve( entries.size() );
+		for( std::size_t i = 0; i < entries.size(); ++i ) {
+			TreeNodeSeed s;
+			s.name   = entries[i].name;
+			s.order  = i;                    // preserve the flat list's own order exactly
+			s.serial = entries[i].serial;
+			seeds.push_back( s );
+		}
 	} else {
 		// EVERY OTHER CATEGORY IS FLAT, and is modelled here as N roots with
 		// no children rather than special-cased in each shell -- which is the
@@ -4750,7 +4872,14 @@ SceneEditController::AuthoredTree SceneEditController::BuildCategoryTreeLocked_(
 			seeds.push_back( s );
 		}
 	}
-	return BuildAuthoredTree( seeds );
+	AuthoredTree t = BuildAuthoredTree( seeds );
+	// STAMP THE REBUILD COUNTER, unconditionally and for every category
+	// including an empty one.  This is the only member of the tree that does not
+	// come from the seeds, because it is not about the entities -- it is about
+	// which INSTANCE of the stores they were read out of.  See
+	// AuthoredTree::rebuildCount.
+	t.rebuildCount = mJob.GetContainerRebuildCount();
+	return t;
 }
 
 void SceneEditController::RefreshTreeSnapshot_( Category cat ) const
@@ -4772,7 +4901,7 @@ void SceneEditController::RefreshTreeSnapshot_( Category cat ) const
 	// The whole struct is assigned under this lock, and every reader holds
 	// the same lock for its whole read -- that, and not the assignment being
 	// one statement, is what stops a torn read.  See AuthoredTree's comment.
-	built.generation = mNextTreeGeneration++;
+	built.generation = NextTreeGeneration().fetch_add( 1, std::memory_order_relaxed );
 	mUi.trees[ci]    = std::move( built );
 }
 
@@ -4834,7 +4963,7 @@ SceneEditController::TreeNodeHandle SceneEditController::TreeRootNode( Category 
 	return EncodeTreeHandle( t.generation, t.roots[rootIdx] );
 }
 
-unsigned int SceneEditController::TreeChildCount( Category cat, TreeNodeHandle node ) const
+unsigned int SceneEditController::TreeChildCountByHandle( Category cat, TreeNodeHandle node ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return 0;
@@ -4878,7 +5007,7 @@ SceneEditController::TreeNodeHandle SceneEditController::TreeNodeParent( Categor
 	return EncodeTreeHandle( t.generation, p );
 }
 
-String SceneEditController::TreeNodeName( Category cat, TreeNodeHandle node ) const
+String SceneEditController::TreeNodeNameByHandle( Category cat, TreeNodeHandle node ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return String();
