@@ -1,6 +1,6 @@
 # Fire/Smoke Production Solver Contract
 
-Status: **r82 design contract; implementation increments pending**  
+Status: **r86 design contract; P0/P1 landed, P2 pinned**
 Reference date: 2026-08-18  
 Normative companions: [FIRE_SMOKE_DESIGN.md](FIRE_SMOKE_DESIGN.md),
 [FIRE_SMOKE_SOLVER_SPEC.md](FIRE_SMOKE_SOLVER_SPEC.md), and
@@ -365,6 +365,102 @@ large-prefix tiny sweeps, ordinary non-power-of-two constants, a
 cancellation-sensitive Blelloch total, negative open-boundary roles, a folded
 departure map, finite-input arithmetic overflow, GPU common-limiter behavior,
 and source/build guards binding safe math and the four real Metal kernels.
+
+### 7.3 P2 one-projection landing pins (r86)
+
+P2 owns one linear, variable-density MAC projection.  Its public batch has a
+uniform Cartesian shape `(nx,ny,nz,dx)`, positive finite cell gas density,
+record-ordered provisional face momentum, a finite cell divergence target,
+`dt`, ambient density, and one boundary kind per side.  Face arrays have the
+open-MAC shapes `(nx+1)ny nz`, `nx(ny+1)nz`, and `nx ny(nz+1)` even when an
+opposite side pair is periodic.  Periodicity is legal only as an opposite-side
+pair; the other supported kinds in P2 are adiabatic wall and pressure-open.
+Fuel-bed prescribed momentum enters P4 and is rejected by the P2 API rather
+than synthesized as a pressure boundary.
+
+Face density is the fp32 arithmetic mean of its two adjacent cell densities;
+an open boundary's outside value is the authored ambient density.  Provisional
+velocity is face momentum divided by that stored face density.  Wall normal
+velocity is exactly zero.  A pressure-open face freezes one production class
+before the solve from the provisional outward normal velocity: resolved
+outflow uses ambient static gauge pressure zero; resolved inflow uses the
+reference total-head linearization
+`p_b=-rho_amb |u_star|^2/2`, including both tangential components sampled by
+the same centered boundary-cell stencil.  Classification and `p_b` are frozen
+for the only projection; they are not iterated, relaxed, or changed to make a
+step pass.  The post-projection complementarity discrepancy is a monitored
+diagnostic and an oracle-validation metric.
+
+With cell pressure `p`, arithmetic-mean inverse face density `beta`, centered
+MAC divergence `D`, gradient `G`, and the half-cell open-boundary gradient,
+the operator is
+
+`A p = -D(beta G p) = (S_div-D u_star)/dt`.
+
+Interior gradient and divergence are an adjoint pair.  An open boundary adds
+the exact factor-two Dirichlet coefficient and its frozen `p_b` contribution;
+a wall adds neither coefficient nor flux.  Periodic face zero is canonical and
+the opposite stored face is its byte duplicate.  A closed/periodic component
+has a constant nullspace: its right-hand side mean is removed by one pinned
+Blelloch tree and pressure is returned mean-zero.  A component containing an
+open face has no nullspace.  The corrected momentum is `m'=m-dt Gp`; velocity
+is derived from the same stored face density.  No velocity, pressure, or
+residual clamp exists.
+
+The production solve is a matrix-free fp32 geometric multigrid with a fixed
+hierarchy and schedule:
+
+- each dimension greater than four coarsens independently by `(n+1)/2` until
+  every dimension is at most four; density and multigrid residual restrict by
+  volume-weighted averaging over the actual fine cells, so odd dimensions have
+  no invented duplicate cell;
+- each level rediscretizes the same MAC operator from its restricted density
+  and inherited boundary kinds; correction prolongation is cell-centered
+  trilinear interpolation with the same clamped coarse-coordinate rule in CPU
+  and Metal;
+- one V-cycle has three weighted-Jacobi pre-sweeps and three post-sweeps with
+  the stored binary32 result of `2.0f/3.0f`; the coarsest level performs 32
+  Jacobi sweeps;
+- exactly 12 V-cycles execute from zero pressure.  There is no residual-based
+  early exit, retry projection, warm-start history, atomics, subgroup scan, or
+  CPU solve.  Residual reductions occur only before cycle one and after cycle
+  twelve through fixed padded max/sum trees.
+
+Twelve cycles are the pre-release fixed schedule selected to fit the r82
+120 ms projection allocation while leaving a factor-of-two smoother-count
+comparison in the P2 validation report.  If the independent manufactured
+fields miss the scientific ceiling, the schedule/model is revised in a new
+numbered design revision; a runtime knob or per-case cycle adaptation is not
+allowed.
+
+The CPU comparator stores and rounds the same fp32 face densities, hierarchy,
+Jacobi states, restriction, prolongation, and correction expressions.  Metal
+safe math and the same strict host build bindings as P1 apply.  Same-device
+repetition must be byte-identical.  Structural failures—malformed shapes,
+nonpositive density, nonfinite derived arithmetic, allocation/command failure,
+or output nonfiniteness—return no result.  A finite residual outside the
+validation band is returned with `validation_passed=false`; it is not converted
+into dt halving or another projection.
+
+Independent P2 gates are: exact rest for periodic, all-wall, and all-open
+boxes; a constant-density sinusoidal pressure field whose provisional momentum
+is formed independently so the known pressure is recovered up to its gauge;
+a variable-density manufactured field with nonzero `S_div`; an x-only
+pressure-open expansion with every boundary face checked; sign-reversed
+inflow/outflow total-head roles; odd and non-power-of-two shapes; repeat-byte
+determinism; CPU/Metal comparison; and a tier-10-shaped timing/memory run.
+Post-projection `L_inf |D u-S_div|` must be no more than `5e-3 U/L` and no
+worse than 1.25 times the fp64 oracle error.  Both Metal command time and an
+external completed-call p95 must be at most 120 ms on the recorded M4 Max.
+
+Rejected alternatives are conjugate-gradient or BiCGStab dot products
+(additional global reductions and ordering sensitivity), adaptive cycles
+(data-dependent runtime and a hidden acceptance loop), a CPU coarse solve
+(GPU residency and fallback ambiguity), harmonic face density (unnecessary
+departure from the certified arithmetic-mean oracle), nonlinear open-boundary
+iteration (more than one projection in substance), and treating a finite
+residual miss as a structural abort (recreates the certified solver's stall in
+the monitored production path).
 
 ## 8. Rejected directions and future work
 

@@ -2063,3 +2063,34 @@ it was already tried and refuted here.
   seam evaluation, acceptance of folded maps followed by dt retry, and deferred
   nonfinite detection.  None changes case identity: these are pre-release
   production-kernel semantics and validation gates.
+
+- **r86 (2026-08-18):** production P2 one-projection executable contract.  P1
+  closed at exact commit `d9e7263d` after three fresh reviewers reached zero
+  P1; independent M4 Max measurements ranged from 3.70 to 4.37 ms device p95
+  and 20.95 to 23.48 ms completed-call p95, materially below the 45 ms remap
+  allocation.  The adversarial closure required local interval arithmetic,
+  an ordered periodic seam, a bounded finite-C quotient/remainder, exact-fp32
+  departure-map admission, complete 2 GiB accounting, and structural finite
+  output checks before projection work was permitted to begin.
+
+  Ruling: P2 is one matrix-free fp32 variable-density MAC projection with
+  arithmetic-mean face density and the same centered `D/G` pair as the oracle.
+  Walls prescribe exact zero normal velocity.  Pressure-open faces freeze one
+  pre-solve class: static-gauge outflow or a provisional-velocity total-head
+  inflow linearization, with the factor-two half-cell Dirichlet coefficient.
+  The solve is twelve fixed geometric-multigrid V-cycles from zero pressure,
+  three `omega=2/3` Jacobi pre/post sweeps, 32 coarsest sweeps, volume-weighted
+  odd-grid restriction, trilinear prolongation, and fixed padded reductions
+  only before/after the schedule.  Finite residual misses are returned as
+  monitored validation evidence; malformed/nonfinite/command failures abort
+  structurally.  The milestone must satisfy the independent manufactured
+  `5e-3 U/L` ceiling and both device and completed-call 120 ms p95 gates before
+  coupled transport begins.
+
+  Rejected: Krylov dot-product solves (global ordering and synchronization),
+  adaptive cycles or retry projection (hidden acceptance loop), CPU coarse
+  fallback (breaks residency and provenance), harmonic density (unearned
+  oracle departure), nonlinear boundary iteration (multiple projections in
+  substance), and fail-closed halving for a finite residual (restores the
+  throughput stall).  P2 is pre-release production algorithm semantics; case
+  authorship and `case_record_id` remain unchanged.
