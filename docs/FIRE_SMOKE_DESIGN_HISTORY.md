@@ -2175,3 +2175,34 @@ it was already tried and refuted here.
   viscosity iteration, and a second projection. These are pre-release
   production-kernel semantics; case authorship and `case_record_id` do not
   change.
+
+- **r88 (2026-08-18):** P3 multidimensional, dual-grid, stability, residency,
+  and oracle-slice closure before implementation. Fresh review falsified r87's
+  additive “unsplit” model with an isolated cell: individually admissible
+  `C_x=C_y=0.75` outflows produce `q'=-0.5q`, while unit x/y Courants omit the
+  translated corner entirely. The ruling replaces it with the fixed symmetric
+  palindrome `x(dt/2),y(dt/2),z(dt),y(dt/2),x(dt/2)`, composing P1's arbitrary-
+  Courant conservation and monotonicity without a clamp. A sum-CFL gate was
+  rejected because it restores the throughput wall; a new multidimensional
+  swept-volume kernel was rejected because it duplicates P1 before the
+  production path exists.
+
+  Momentum is now executable on three separately sized dual lattices. Each
+  component shares its limiter only with its collocated dual density; carrier
+  interpolation and periodic/wall/open rules are pinned for every transported-
+  component/sweep-axis pair. The force stencil inherits the certified open
+  reference exactly in fp32: relative face gravity, centered ghosted gradient,
+  `mu=rho(nu_mol+nu_vreman)`, deviatoric stress, and its normal/transverse face
+  divergence. A derived `3/8` explicit deviatoric bound selects and records
+  deterministic viscous substeps; a single unstable frozen RHS and implicit
+  solve were rejected.
+
+  Separate P1/P2 memory claims were also rejected as noncompositional. P3 must
+  expose an interval-lifetime working-set certificate for resident state,
+  palindrome/dual scratch, forces, and the complete projection peak, with no
+  inter-stage full-grid readback and a checked two-GiB boundary witness. Finally,
+  “eight prefix slices” is fixed to certified steps 3480–3487 extracted by pure
+  serialization from the immutable step-3479 checkpoint. Bands follow r82's
+  `max(3 sigma,1.25 Delta_refine,B_fp32)` rule; zero oracle thread variance may
+  zero only sigma, never the fp32 comparison allowance. These pre-release
+  corrections do not change case identity or the 200 ms budget.

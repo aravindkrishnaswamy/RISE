@@ -538,6 +538,137 @@ cell-centered velocity as the momentum transport velocity (wrong dual
 geometry), implicit viscosity iteration (an unbudgeted solve), and a second
 projection after forces (violates the one-projection architecture).
 
+### 7.5 P3 closure after multidimensional review (r88)
+
+The r87 additive beginning-state x/y/z commit is rejected before
+implementation. It is not a multidimensional monotone remap: an isolated
+nonnegative cell with nonfolded `C_x=C_y=0.75` can lose `0.75q` through each
+independently admissible one-dimensional map and land at `-0.5q`; at unit
+Courants it also omits the translated corner term. A sum-Courant admission
+would restore the throughput wall the production architecture exists to
+remove. The ruling is therefore one fixed **palindromic split remap** using the
+already certified arbitrary-Courant P1 map:
+
+`R(dt) = R_x(dt/2) R_y(dt/2) R_z(dt) R_y(dt/2) R_x(dt/2)`.
+
+Each submap consumes the previous submap's conservative output, so P1's
+monotonicity and conservation compose without a clamp. Carrier velocities,
+Vreman coefficients, molecular coefficients, boundary classifications, and
+ambient tuples remain frozen from the beginning snapshot; only transported
+state advances through the palindrome. This five-dispatch composition is one
+P3 remap and remains symmetric for the frozen operator. A reverse-only or
+three-full-step Lie split is RED. The r87 unsplit-cross fixture is replaced by
+the exact diagonal unit-Courant translation and the `0.75+0.75` donor-survival
+counterexample.
+
+For momentum component `c`, the dual lattice has extents
+`(nx+[c=0], ny+[c=1], nz+[c=2])`. Each directional submap transports the tuple
+`(rho_face_c,m_c)` on that lattice with one common P1 limiter for those two
+collocated channels; limiters are not shared across the three noncollocated
+momentum components. The dual density at the beginning is the r86 stored face
+density. For sweep direction `a`, the carrier at a dual flux face is:
+
+- when `a=c`, the arithmetic average of the two adjacent beginning `u_c` MAC
+  faces;
+- when `a!=c`, the arithmetic average of the two beginning `u_a` MAC faces on
+  opposite sides of the `c`-face.
+
+Periodic indices wrap before averaging and the positive dual seam is a byte
+copy of face zero. Boundary behavior is selected by sweep direction `a`, never
+by transported component `c`:
+
+| `a` side | dual tuple rule |
+|---|---|
+| periodic | wrapped tuple and carrier; opposite sides must be paired |
+| wall, `a=c` | endpoint normal-momentum DOF is prescribed zero; no swept flux |
+| wall, `a!=c` | even tangential tuple extension and zero normal carrier; no swept flux |
+| pressure-open | accepted beginning carrier selects ambient inflow or nearest-dual-cell outflow; ambient dual density is `rho_amb`, ambient normal momentum is `rho_amb u_a` when `c=a`, and ambient tangential momentum is zero |
+
+P3 rejects fuel-bed prescribed faces until P4. The 3x3 component/sweep matrix,
+all six side orientations, mixed wall/open pairs, and canonical periodic seams
+are direct fixtures with independently expected face-flux bytes. Mutations for
+cell-grid momentum remap, sweep-by-component boundary selection, wrong carrier
+average, and unshared dual-density/momentum limiting are RED. A commuting
+fixture independently remaps dual density and requires the published momentum
+velocity to use that same collocated density.
+
+The force operator is the strict-fp32 transcription of the certified open
+reference stencil, not a new discretization. Beginning cell velocity is the
+average of its two MAC faces. Centered gradients use nearest-interior extension
+at pressure-open sides and odd reflection about prescribed zero normal
+velocity at walls; tangential wall velocity uses even extension. With
+beginning gas density `rho`, `nu_eff=nu_mol+nu_vreman`, and
+`mu_eff=rho*nu_eff`, the deviatoric cell stress is
+
+`tau_ij = mu_eff (du_j/dx_i + du_i/dx_j - (2/3) delta_ij div u)`.
+
+Its face divergence uses the exact normal difference and four-cell transverse
+average/difference stencil of `BuildOpenNonpressureMomentumRHS3D`. Relative
+gravity at a face is `(rho_face-rho_amb) g`, with the same arithmetic face
+density used by r86. Tests bind a variable-density gravity face, off-diagonal
+stress, variable `mu_eff`, rigid rotation, zero gradient, and the Vreman linear
+gradient value derived from `FireSimulationTransportRecord::OpenV1()`.
+Supplied molecular kinematic viscosity must be finite and nonnegative in every
+cell; violation is structural. The Vreman `B_beta` expression and zero floor
+use the record implementation's operation order, with per-cell ULP comparison,
+not only a maximum diagnostic.
+
+Vreman viscosity and `mu_eff` remain frozen for the step, but explicit
+viscous evolution uses a deterministic stability schedule rather than a retry.
+Let `nu_bound` be the maximum over momentum faces of the largest adjacent
+`mu_eff` divided by that face's minimum adjacent positive density. Define
+
+`N_nu = max(1, ceil((8/3) dt nu_bound (dx^-2+dy^-2+dz^-2)))`.
+
+P3 applies `N_nu` forward-Euler viscous substeps of size `dt/N_nu`,
+re-evaluating only the linear stress divergence on the evolving momentum with
+the frozen coefficient. Thus every substep satisfies the derived deviatoric
+bound `dt_sub nu_bound sum(dx^-2) <= 3/8`. Relative gravity is added once over
+`dt` from beginning density after the remap and before the sole projection.
+`N_nu` is a diagnostic and fixed function of accepted input bytes, not an
+outcome-driven retry or tuning knob. Implicit viscosity remains rejected; a
+frozen single RHS beyond the bound and an unrecorded adaptive loop are RED.
+
+The one-projection claim is bound by more than a diagnostic scalar. The test
+seam captures and hashes the sole P2 request and counts the actual public P2
+invocation. A nonzero-divergence force witness independently assembles
+palindrome-remapped gas density, remapped momentum plus the specified viscous
+substeps and one gravity increment, and authored `S_div`; every captured P2
+input field must match it. Invocation count is one, P2 reports exactly 12
+V-cycles and its pinned smoother count, and accepted momentum is byte-identical
+to that one P2 result. Projection-before-force, beginning-density projection,
+doubled force, and a hidden second projection are RED.
+
+The Metal P3 path owns a resident state handle. Its checked working-set query
+counts the beginning/accepted conservative state, five-pass ping-pong storage,
+all three dual density/momentum pairs, carrier/flux/edge/limiter scratch reused
+between submaps, frozen velocity/gradient/viscosity/stress/gravity fields, and
+the complete r86 projection peak. Lifetimes are interval-accounted rather than
+blindly summed, but overlapping buffers are never omitted. Peak must be at most
+2 GiB, with an independently computed one-buffer boundary pair. No production
+step may read back a full grid between remap, force, and projection; only fixed
+diagnostics leave the device. CPU publication exists only on the comparator
+API and scheduled output/checkpoint paths.
+
+The preserved-prefix contract is made executable by a pure-serialization
+oracle extraction seam. Starting from the immutable step-3479 checkpoint, the
+certified binary advances exactly steps 3480 through 3487 and writes a hashed
+slice package containing each beginning state, dt, six boundary records,
+ambient density, gravity, molecular viscosity, `S_div`, and the reference
+transport/projection observables. Extraction cannot alter the trajectory and
+the source checkpoint digest remains unchanged. Each metric uses the r82 rule
+`B_m=max(3 sigma_m,1.25 Delta_refine_m,B_fp32_m)` and its predeclared hard
+ceiling; zero 1-vs-N variability makes only `sigma_m` zero. A paired tier-6
+adjacent-resolution extraction supplies `Delta_refine`; analytic accumulation
+bounds supply `B_fp32`. The slice manifest freezes indices, hashes, metric
+bands, and calibration inputs before production results are inspected. Zero
+tolerance is retained only for identities that are algebraically byte-preserved
+within the same fp32 path, never for fp32-versus-fp64 comparison.
+
+These rulings replace r87's additive update, cross-component limiter, frozen
+single viscous RHS, and selectable/zero-tolerance slice language. They do not
+alter the 200 ms or 2 GiB milestone budgets.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
