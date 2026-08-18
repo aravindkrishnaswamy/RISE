@@ -170,7 +170,9 @@ static Point3 Origin( const Matrix4& m ) { return Point3( m._30, m._31, m._32 );
 
 static void WriteScene( const char* path, const std::string& body )
 {
-	std::ofstream o( path );
+	// binary: text-mode would write CRLF on Windows; CST round-trips those bytes
+	// verbatim and the raw find('\n') scans below would then capture "...\r".
+	std::ofstream o( path, std::ios::binary );
 	o << "RISE ASCII SCENE 7\n"
 	     "film\n{\nwidth 32\nheight 24\n}\n"
 	     "pinhole_camera\n{\nname cam\nlocation 0 0 10\nlookat 0 0 0\n}\n"

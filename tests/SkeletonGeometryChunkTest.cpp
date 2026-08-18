@@ -72,7 +72,24 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
-#include <unistd.h>
+#ifdef _WIN32
+	#include <process.h>
+	#include <io.h>
+	#define getpid _getpid
+	// NOT `#define close _close`: this file also calls std::ofstream::close()
+	// (the macro would rewrite it).  Prefixed names, matching
+	// BDPTPhantomStrategyWeightTest.cpp's convention.
+	#define RISE_TEST_DUP    _dup
+	#define RISE_TEST_DUP2   _dup2
+	#define RISE_TEST_CLOSE  _close
+	#define RISE_TEST_FILENO _fileno
+#else
+	#include <unistd.h>			// getpid(), dup(), dup2(), close()
+	#define RISE_TEST_DUP    dup
+	#define RISE_TEST_DUP2   dup2
+	#define RISE_TEST_CLOSE  close
+	#define RISE_TEST_FILENO fileno
+#endif
 
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -376,14 +393,14 @@ void TestDegenerateBoneAABB()
 		const std::string capPath = dir + "rise_skeleton_geo_degen_stdout_" + pidbuf + ".txt";
 
 		std::fflush( stdout );
-		const int savedFd = dup( fileno( stdout ) );
+		const int savedFd = RISE_TEST_DUP( RISE_TEST_FILENO( stdout ) );
 		FILE* capFile = std::fopen( capPath.c_str(), "w" );
-		if( capFile ) dup2( fileno( capFile ), fileno( stdout ) );
+		if( capFile ) RISE_TEST_DUP2( RISE_TEST_FILENO( capFile ), RISE_TEST_FILENO( stdout ) );
 
 		const bool ok = ParseBodyInto( "degen", SkeletonChunk( "bonebug", joints, "0" ), *job );
 
 		std::fflush( stdout );
-		if( savedFd >= 0 ) { dup2( savedFd, fileno( stdout ) ); close( savedFd ); }
+		if( savedFd >= 0 ) { RISE_TEST_DUP2( savedFd, RISE_TEST_FILENO( stdout ) ); RISE_TEST_CLOSE( savedFd ); }
 		if( capFile ) std::fclose( capFile );
 
 		std::ifstream ifs( capPath.c_str() );

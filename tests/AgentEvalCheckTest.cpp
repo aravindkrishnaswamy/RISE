@@ -308,7 +308,12 @@ static std::string ScratchTestRoot()
 	const char* base = std::getenv( "TMPDIR" );
 	if( !base ) base = std::getenv( "TMP" );
 	std::string dir = base ? base : "/tmp";
-	if( !dir.empty() && dir.back() != '/' && dir.back() != '\\' ) dir += '/';
+	// Forward slashes throughout: several tests embed these paths RAW inside
+	// JSON string literals, where a Windows '\' backslash is an (invalid)
+	// escape introducer ("C:\Users" -> bad escape "\U" -> JsonParse refusal).
+	// Win32 accepts '/' in paths everywhere the CRT/std::filesystem does.
+	for( char& c : dir ) if( c == '\\' ) c = '/';
+	if( !dir.empty() && dir.back() != '/' ) dir += '/';
 	dir += "rise_agent_eval_check_test_";
 	dir += std::to_string( (long)getpid() );
 	return dir;
