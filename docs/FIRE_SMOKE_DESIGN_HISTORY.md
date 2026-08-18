@@ -2106,3 +2106,20 @@ it was already tried and refuted here.
   and output buffers, every hierarchy payload, boundary evidence, fixed-tree
   scratch, diagnostics, and serialized level parameters under the two-GiB
   cap; unsupported platforms return an explicit no-result error.
+
+  The first fresh Metal review then exposed six implementation-certificate
+  gaps without changing the r86 algorithm: the peak accounting omitted the
+  simultaneous device and caller-owned inflow-classification bytes; the
+  Metal validation band measured corrected velocity only; schedule counters
+  were inferred rather than counted; allocation failure did not enclose the
+  whole API boundary; same-device repetition omitted non-pressure payloads;
+  and nonzero open/wall semantics had only CPU witnesses.  The corrected
+  certificate counts both live classification copies and repins the closest
+  independently searched boundary pair at 2,147,483,472 bytes admitted and
+  2,147,483,796 bytes rejected.  Actual encoder counters, full-payload repeat
+  equality, persistent-allocation and injected command-failure REDs, the
+  provisional-plus-corrected velocity scale, and Metal executions of the
+  sinusoid, six walls, expansion, both total-head signs, and both fp64 oracle
+  comparisons now bind those claims.  The repaired on-device run retained
+  the scientific ratio 1.15506 and measured 10.967 ms device p95 and 23.923 ms
+  completed-call p95.

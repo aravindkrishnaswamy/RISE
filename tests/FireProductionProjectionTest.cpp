@@ -111,9 +111,53 @@ namespace
 	{
 		if( !std::all_of(result.pressurePa.begin(),result.pressurePa.end(),
 			[](float value){return value==0.0f;}) ) return false;
-		for( unsigned int axis=0;axis<3u;++axis )
+		for( unsigned int axis=0;axis<3u;++axis ) {
 			if( !std::all_of(result.velocityMPerS[axis].begin(),result.velocityMPerS[axis].end(),
 				[](float value){return value==0.0f;}) ) return false;
+			if( !std::all_of(result.momentumKGPerM2S[axis].begin(),result.momentumKGPerM2S[axis].end(),
+				[](float value){return value==0.0f;}) ) return false;
+		}
+		for( const std::vector<unsigned char>& side : result.pressureOpenInflow )
+			if( !std::all_of(side.begin(),side.end(),
+				[](unsigned char value){return value==0u;}) ) return false;
+		return result.maximumPreProjectionResidualPerS==0.0f&&
+			result.maximumPostProjectionResidualPerS==0.0f&&
+			result.maximumOpenComplementarityDiscrepancyMPerS==0.0f&&
+			result.removedFineRightHandSideMean==0.0f;
+	}
+
+	bool SameProjectionEvidence( const RISE::FireProductionProjectionResult& a,
+		const RISE::FireProductionProjectionResult& b )
+	{
+		return a.faceDensityKGPerM3==b.faceDensityKGPerM3&&
+			a.velocityMPerS==b.velocityMPerS&&a.momentumKGPerM2S==b.momentumKGPerM2S&&
+			a.pressurePa==b.pressurePa&&a.pressureOpenInflow==b.pressureOpenInflow&&
+			a.maximumPreProjectionResidualPerS==b.maximumPreProjectionResidualPerS&&
+			a.maximumPostProjectionResidualPerS==b.maximumPostProjectionResidualPerS&&
+			a.maximumOpenComplementarityDiscrepancyMPerS==
+				b.maximumOpenComplementarityDiscrepancyMPerS&&
+			a.removedFineRightHandSideMean==b.removedFineRightHandSideMean&&
+			a.executedVCycleCount==b.executedVCycleCount&&
+			a.executedJacobiSweepCount==b.executedJacobiSweepCount&&
+			a.validationPassed==b.validationPassed;
+	}
+
+	bool EveryWallFaceOverwritten( const RISE::FireProductionProjectionRequest& request,
+		const RISE::FireProductionProjectionResult& result )
+	{
+		for( unsigned int axis=0;axis<3u;++axis ) {
+			const std::size_t extent=axis==0u?request.shape.nx:
+				(axis==1u?request.shape.ny:request.shape.nz);
+			for( const std::size_t coordinate : {std::size_t(0u),extent} ) {
+				std::size_t x=1u,y=1u,z=1u;
+				if( axis==0u ) x=coordinate;if( axis==1u ) y=coordinate;
+				if( axis==2u ) z=coordinate;
+				const std::size_t face=Face(request.shape,axis,x,y,z);
+				if( result.faceDensityKGPerM3[axis][face]!=2.0f||
+					result.momentumKGPerM2S[axis][face]!=0.0f||
+					result.velocityMPerS[axis][face]!=0.0f ) return false;
+			}
+		}
 		return true;
 	}
 
@@ -441,14 +485,16 @@ int main()
 			result.validationPassed&&result.maximumPreProjectionResidualPerS==0.0f&&
 			result.maximumPostProjectionResidualPerS==0.0f,
 			"P2 periodic, wall, and pressure-open rest states are byte exact");
-		FireProductionProjectionResult metalResult;
+		FireProductionProjectionResult metalResult,metalRepeat;
 #ifdef __APPLE__
 		const bool metalOK=ProjectFireProductionMetal(rest,metalResult,&error);
+		const bool metalRepeatOK=ProjectFireProductionMetal(rest,metalRepeat,&error);
 		if( !metalOK ) std::cerr << "Metal rest detail: " << error << '\n';
-		Check(metalOK&&EveryZero(metalResult)&&metalResult.validationPassed&&
+		Check(metalOK&&metalRepeatOK&&EveryZero(metalResult)&&metalResult.validationPassed&&
 			metalResult.maximumPreProjectionResidualPerS==0.0f&&
 			metalResult.maximumPostProjectionResidualPerS==0.0f&&
-			metalResult.executedVCycleCount==12u,
+			metalResult.executedVCycleCount==12u&&
+			SameProjectionEvidence(metalResult,metalRepeat),
 			"P2 Metal periodic, wall, and pressure-open rest states are byte exact");
 #else
 		metalResult.pressurePa.push_back(7.0f);
@@ -457,6 +503,17 @@ int main()
 			"P2 unsupported platform rejects Metal projection without CPU fallback");
 #endif
 	}
+
+#ifndef __APPLE__
+	FireProductionProjectionRequest unsupportedRequest=EmptyRequest(4u,4u,4u);
+	FireProductionProjectionResult unsupportedResult;unsupportedResult.pressurePa.push_back(7.0f);
+	error.clear();error.shrink_to_fit();denyTestAllocations=true;
+	const bool unsupportedReturned=ProjectFireProductionMetal(
+		unsupportedRequest,unsupportedResult,&error);
+	denyTestAllocations=false;
+	Check(!unsupportedReturned&&unsupportedResult.pressurePa.empty(),
+		"P2 unsupported Metal seam contains persistent diagnostic allocation failure");
+#endif
 
 	FireProductionProjectionRequest sinusoid=EmptyRequest(16u,8u,4u);
 	SetBoundary(sinusoid,FireProductionProjectionPeriodic);
@@ -480,6 +537,13 @@ int main()
 	Check(ProjectFireProductionCPU(sinusoid,sinusoidResult,&error)&&
 		sinusoidResult.validationPassed&&sinusoidResult.maximumPostProjectionResidualPerS<=5.0e-5f,
 		"P2 constant-density sinusoidal pressure is recovered within the fixed schedule");
+#ifdef __APPLE__
+	FireProductionProjectionResult sinusoidMetal;
+	Check(ProjectFireProductionMetal(sinusoid,sinusoidMetal,&error)&&
+		sinusoidMetal.validationPassed==sinusoidResult.validationPassed&&
+		sinusoidMetal.maximumPostProjectionResidualPerS<=5.0e-5f,
+		"P2 Metal validation uses the same provisional-plus-corrected velocity scale as the comparator");
+#endif
 
 	FireProductionProjectionRequest densityBytes=EmptyRequest(4u,4u,4u);
 	densityBytes.ambientDensityKGPerM3=0.04f;
@@ -535,22 +599,17 @@ int main()
 		}
 	}
 	FireProductionProjectionResult wallOverwriteResult;
-	bool everyWallOverwritten=ProjectFireProductionCPU(wallOverwrite,wallOverwriteResult,&error);
-	for( unsigned int axis=0;everyWallOverwritten&&axis<3u;++axis ) {
-		const std::size_t extent=axis==0u?wallOverwrite.shape.nx:
-			(axis==1u?wallOverwrite.shape.ny:wallOverwrite.shape.nz);
-		for( const std::size_t coordinate : {std::size_t(0u),extent} ) {
-			std::size_t x=1u,y=1u,z=1u;
-			if( axis==0u ) x=coordinate;if( axis==1u ) y=coordinate;
-			if( axis==2u ) z=coordinate;
-			const std::size_t face=Face(wallOverwrite.shape,axis,x,y,z);
-			everyWallOverwritten=wallOverwriteResult.faceDensityKGPerM3[axis][face]==2.0f&&
-				wallOverwriteResult.momentumKGPerM2S[axis][face]==0.0f&&
-				wallOverwriteResult.velocityMPerS[axis][face]==0.0f;
-		}
-	}
+	const bool everyWallOverwritten=ProjectFireProductionCPU(
+		wallOverwrite,wallOverwriteResult,&error)&&
+		EveryWallFaceOverwritten(wallOverwrite,wallOverwriteResult);
 	Check(everyWallOverwritten,
 		"P2 wall output preserves adjacent density and overwrites nonzero normal momentum exactly");
+#ifdef __APPLE__
+	FireProductionProjectionResult wallOverwriteMetal;
+	Check(ProjectFireProductionMetal(wallOverwrite,wallOverwriteMetal,&error)&&
+		EveryWallFaceOverwritten(wallOverwrite,wallOverwriteMetal),
+		"P2 Metal overwrites all six nonzero wall-normal faces exactly");
+#endif
 
 	FireProductionProjectionRequest manufactured=EmptyRequest(17u,9u,7u);
 	SetBoundary(manufactured,FireProductionProjectionPeriodic);
@@ -662,10 +721,11 @@ int main()
 	Check(manufacturedMetalOK&&manufacturedMetalRepeatOK&&
 		manufacturedMetal.validationPassed&&
 		manufacturedMetal.maximumPostProjectionResidualPerS==metalResidual&&
+		manufacturedMetal.executedVCycleCount==12u&&
+		manufacturedMetal.executedJacobiSweepCount==600u&&
 		maximumMetalPressureDifference<=2.5e-4f&&
 		maximumMetalVelocityDifference<=3.0e-5f&&
-		manufacturedMetal.pressurePa==manufacturedMetalRepeat.pressurePa&&
-		manufacturedMetal.velocityMPerS==manufacturedMetalRepeat.velocityMPerS&&
+		SameProjectionEvidence(manufacturedMetal,manufacturedMetalRepeat)&&
 		EveryPeriodicSeamExact(manufactured.shape,manufacturedMetal)&&
 		std::isfinite(manufacturedMetal.deviceElapsedMS)&&
 		manufacturedMetal.deviceElapsedMS>0.0,
@@ -707,7 +767,11 @@ int main()
 			oracleTarget[cell]));
 	Check(oracleOK&&oracleMaximumResidual>0.0&&oracleMaximumResidual<=oracleTolerance&&
 		independentlyMeasuredResidual<=
-		1.25f*static_cast<float>(oracleMaximumResidual),
+		1.25f*static_cast<float>(oracleMaximumResidual)
+#ifdef __APPLE__
+		&&metalResidual<=1.25f*static_cast<float>(oracleMaximumResidual)
+#endif
+		,
 		"P2 manufactured residual is no worse than 1.25 times the fp64 oracle error");
 
 	FireProductionProjectionRequest fixedWork=EmptyRequest(17u,9u,7u);
@@ -751,6 +815,15 @@ int main()
 		fixedWorkResult.maximumPostProjectionResidualPerS<=
 			1.25f*static_cast<float>(fixedWorkOracleResidual),
 		"P2 fp32 fixed schedule stays within 1.25 times an independent fp64 fixed-work mirror");
+#ifdef __APPLE__
+	FireProductionProjectionResult fixedWorkMetal;
+	Check(ProjectFireProductionMetal(fixedWork,fixedWorkMetal,&error)&&
+		fixedWorkMetal.maximumPostProjectionResidualPerS==
+			IndependentResidual(fixedWork,fixedWorkMetal)&&
+		fixedWorkMetal.maximumPostProjectionResidualPerS<=
+			1.25f*static_cast<float>(fixedWorkOracleResidual),
+		"P2 Metal fixed schedule stays within 1.25 times the independent fp64 wall mirror");
+#endif
 
 	FireProductionProjectionRequest expansion=EmptyRequest(11u,7u,5u);
 	SetBoundary(expansion,FireProductionProjectionPressureOpen);
@@ -783,6 +856,21 @@ int main()
 				return std::all_of(side.begin(),side.end(),
 					[](unsigned char value){return value==0u;});}),
 		"P2 pressure-open expansion preserves the independent x-linear target field");
+#ifdef __APPLE__
+	FireProductionProjectionResult expansionMetal;
+	const bool expansionMetalOK=ProjectFireProductionMetal(expansion,expansionMetal,&error);
+	float expansionMetalPressure=0.0f;
+	if( expansionMetalOK ) for( const float value : expansionMetal.pressurePa )
+		expansionMetalPressure=std::max(expansionMetalPressure,std::fabs(value));
+	Check(expansionMetalOK&&expansionMetal.validationPassed&&
+		expansionMetal.maximumPostProjectionResidualPerS<=1.0e-5f&&
+		expansionMetalPressure<=1.0e-6f&&
+		std::all_of(expansionMetal.pressureOpenInflow.begin(),
+			expansionMetal.pressureOpenInflow.end(),[](const std::vector<unsigned char>& side){
+				return std::all_of(side.begin(),side.end(),
+					[](unsigned char value){return value==0u;});}),
+		"P2 Metal preserves the independent pressure-open expansion field");
+#endif
 
 	for( const float normalVelocity : {0.3f,-0.3f} ) {
 		FireProductionProjectionRequest totalHead=EmptyRequest(11u,7u,5u);
@@ -835,6 +923,35 @@ int main()
 				totalHeadResult.pressureOpenInflow[1].end(),[&](unsigned char value){
 					return value==highInflow;}),
 			"P2 total-head manufactured field binds factor-two faces, tangents, and reversed roles");
+#ifdef __APPLE__
+		FireProductionProjectionResult totalHeadMetal;
+		const bool totalHeadMetalOK=ProjectFireProductionMetal(totalHead,totalHeadMetal,&error);
+		float metalPressureError=0.0f,metalVelocityError=0.0f;
+		if( totalHeadMetalOK ) {
+			for( std::size_t z=0;z<totalHead.shape.nz;++z )
+				for( std::size_t y=0;y<totalHead.shape.ny;++y )
+					for( std::size_t x=0;x<totalHead.shape.nx;++x ) {
+						const float expected=lowPressure+(static_cast<float>(x)+0.5f)*
+							totalHead.shape.cellWidthM*gradient;
+						metalPressureError=std::max(metalPressureError,std::fabs(
+							totalHeadMetal.pressurePa[Cell(totalHead.shape,x,y,z)]-expected));
+					}
+			const float expectedVelocity=normalVelocity-totalHead.timeStepS*gradient;
+			for( const float value : totalHeadMetal.velocityMPerS[0] )
+				metalVelocityError=std::max(metalVelocityError,
+					std::fabs(value-expectedVelocity));
+		}
+		Check(totalHeadMetalOK&&totalHeadMetal.validationPassed&&
+			totalHeadMetal.maximumPostProjectionResidualPerS<=2.5e-4f&&
+			metalPressureError<=2.0e-4f&&metalVelocityError<=3.0e-5f&&
+			std::all_of(totalHeadMetal.pressureOpenInflow[0].begin(),
+				totalHeadMetal.pressureOpenInflow[0].end(),[&](unsigned char value){
+					return value==lowInflow;})&&
+			std::all_of(totalHeadMetal.pressureOpenInflow[1].begin(),
+				totalHeadMetal.pressureOpenInflow[1].end(),[&](unsigned char value){
+					return value==highInflow;}),
+			"P2 Metal total-head field binds factor-two faces, tangents, and reversed roles");
+#endif
 	}
 
 	FireProductionProjectionRequest roles=EmptyRequest(8u,6u,4u);
@@ -913,6 +1030,13 @@ int main()
 		toleranceOverflowResult.pressurePa.empty()&&
 		error.find("validation band overflowed")!=std::string::npos,
 		"P2 finite inputs fail structurally when the derived validation band overflows");
+#ifdef __APPLE__
+	FireProductionProjectionResult toleranceOverflowMetal;
+	Check(!ProjectFireProductionMetal(toleranceOverflow,toleranceOverflowMetal,&error)&&
+		toleranceOverflowMetal.pressurePa.empty()&&
+		error.find("validation band overflowed")!=std::string::npos,
+		"P2 Metal fails structurally when finite inputs overflow the derived validation band");
+#endif
 
 	FireProductionProjectionRequest invalid=manufactured;
 	invalid.gasDensityKGPerM3[0]=std::numeric_limits<float>::quiet_NaN();
@@ -920,6 +1044,12 @@ int main()
 	Check(!ProjectFireProductionCPU(invalid,invalidResult,&error)&&
 		invalidResult.pressurePa.empty()&&!error.empty(),
 		"P2 structural input failure returns no partial projection");
+#ifdef __APPLE__
+	FireProductionProjectionResult invalidMetal;invalidMetal.pressurePa.push_back(9.0f);
+	Check(!ProjectFireProductionMetal(invalid,invalidMetal,&error)&&
+		invalidMetal.pressurePa.empty()&&!error.empty(),
+		"P2 Metal structural input failure returns no partial projection");
+#endif
 	FireProductionProjectionRequest allocationFailure=EmptyRequest(4u,4u,4u);
 	FireProductionProjectionResult allocationFailureResult;
 	allocationFailureResult.pressurePa.push_back(7.0f);error.clear();error.shrink_to_fit();
@@ -929,6 +1059,24 @@ int main()
 	denyTestAllocations=false;
 	Check(!allocationFailureReturned&&allocationFailureResult.pressurePa.empty(),
 		"P2 persistent allocator denial returns false with no partial result or escaped exception");
+#ifdef __APPLE__
+	FireProductionProjectionResult metalAllocationFailure;metalAllocationFailure.pressurePa.push_back(7.0f);
+	error.clear();error.shrink_to_fit();denyTestAllocations=true;
+	const bool metalAllocationReturned=ProjectFireProductionMetal(
+		allocationFailure,metalAllocationFailure,&error);
+	denyTestAllocations=false;
+	Check(!metalAllocationReturned&&metalAllocationFailure.pressurePa.empty(),
+		"P2 Metal persistent allocator denial returns false with no partial result or escaped exception");
+	for( const char* injectedStage : {"buffer","command"} ) {
+		setenv("RISE_FIRE_PROJECTION_TEST_FAILURE",injectedStage,1);
+		FireProductionProjectionResult injectedResult;injectedResult.pressurePa.push_back(7.0f);
+		const bool injectedReturned=ProjectFireProductionMetal(
+			allocationFailure,injectedResult,&error);
+		unsetenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
+		Check(!injectedReturned&&injectedResult.pressurePa.empty()&&!error.empty(),
+			"P2 Metal buffer and command failures return no partial result");
+	}
+#endif
 	FireProductionProjectionRequest seam=EmptyRequest(4u,4u,4u);
 	SetBoundary(seam,FireProductionProjectionPeriodic);
 	seam.provisionalMomentumKGPerM2S[0][Face(seam.shape,0u,4u,0u,0u)]=1.0f;
@@ -948,12 +1096,12 @@ int main()
 		error.find("2 GiB")!=std::string::npos,
 		"P2 rejects the complete peak working set before allocating arrays");
 	FireProductionProjectionShape nearUnder,nearOver;
-	nearUnder.nx=119u;nearUnder.ny=152u;nearUnder.nz=747u;nearUnder.cellWidthM=0.1f;
-	nearOver.nx=82u;nearOver.ny=215u;nearOver.nz=766u;nearOver.cellWidthM=0.1f;
+	nearUnder.nx=85u;nearUnder.ny=187u;nearUnder.nz=849u;nearUnder.cellWidthM=0.1f;
+	nearOver.nx=221u;nearOver.ny=240u;nearOver.nz=255u;nearOver.cellWidthM=0.1f;
 	std::uint64_t nearUnderBytes=0u,nearOverBytes=0u;
 	Check(FireProductionProjectionWorkingSetBytes(nearUnder,nearUnderBytes)&&
 		FireProductionProjectionWorkingSetBytes(nearOver,nearOverBytes)&&
-		nearUnderBytes==UINT64_C(2147483642)&&nearOverBytes==UINT64_C(2147483700)&&
+		nearUnderBytes==UINT64_C(2147483472)&&nearOverBytes==UINT64_C(2147483796)&&
 		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
 		"P2 complete host-plus-Metal working-set accounting binds the independent cap boundary pair");
 	FireProductionProjectionShape malformedWorkingSet=nearUnder;
@@ -1010,6 +1158,12 @@ int main()
 		source.find("result.pressurePa=",cycleLoop);
 	const std::string cycleBody=cycleLoop==std::string::npos?std::string():
 		source.substr(cycleLoop,cycleLoopEnd-cycleLoop);
+	const std::size_t metalCycleLoop=metalSource.find(
+		"for( unsigned int cycle=0;cycle<12u;++cycle )");
+	const std::size_t metalCycleLoopEnd=metalCycleLoop==std::string::npos?std::string::npos:
+		metalSource.find("for( unsigned int axis=0;axis<3u;++axis )",metalCycleLoop);
+	const std::string metalCycleBody=metalCycleLoop==std::string::npos?std::string():
+		metalSource.substr(metalCycleLoop,metalCycleLoopEnd-metalCycleLoop);
 	Check(Count(source,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
 		Count(source,"Smooth(level,boundary,3u,nullspace,sweepCounter)")==2u&&
 		Count(source,"Smooth(level,boundary,32u,nullspace,sweepCounter)")==1u&&
@@ -1022,7 +1176,10 @@ int main()
 		metalSource.find("return EncodeSmooth(context,command,level,32u")!=std::string::npos&&
 		Count(metalSource,"EncodeSmooth(context,command,level,3u")==2u&&
 		metalSource.find("(2.0f/3.0f)*")!=std::string::npos&&
-		metalSource.find("options.mathMode=MTLMathModeSafe")!=std::string::npos&&
+		Count(metalSource,"options.mathMode=MTLMathModeSafe")==1u&&
+		metalSource.find("MTLMathModeFast")==std::string::npos&&
+		metalSource.find("MTLMathModeRelaxed")==std::string::npos&&
+		metalCycleBody.find("break")==std::string::npos&&
 		metalSource.find("ProjectFireProductionCPU")==std::string::npos&&
 		metalSource.find("atomic_")==std::string::npos&&
 		metalSource.find("simd_")==std::string::npos&&

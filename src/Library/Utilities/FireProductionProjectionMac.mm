@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <new>
@@ -351,6 +353,12 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			return context;
 		}
 
+		bool InjectedFailure( const char* stage )
+		{
+			const char* value=std::getenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
+			return value&&std::strcmp(value,stage)==0;
+		}
+
 		std::size_t NextPowerOfTwo( std::size_t value )
 		{
 			std::size_t result=1u;while( result<value ) result<<=1u;return result;
@@ -453,7 +461,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 
 		bool EncodeSmooth( MetalProjectionContext& context,id<MTLCommandBuffer> command,
 			MetalLevel& level,unsigned int sweeps,id<MTLBuffer> scratch,id<MTLBuffer> diagnostics,
-			std::string* error )
+			std::uint64_t& executedSweeps,std::string* error )
 		{
 			const std::size_t count=level.nx*level.ny*level.nz;
 			for( unsigned int sweep=0;sweep<sweeps;++sweep ) {
@@ -467,18 +475,19 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				const MetalLevelParameters* p=static_cast<const MetalLevelParameters*>([level.parameters contents]);
 				if( p->nullspace!=0u&&!EncodeRemoveMean(context,command,level.pressure,count,scratch,
 					diagnostics,std::numeric_limits<std::uint32_t>::max(),error) ) return false;
+				++executedSweeps;
 			}
 			return true;
 		}
 
 		bool EncodeVCycle( MetalProjectionContext& context,id<MTLCommandBuffer> command,
 			std::vector<MetalLevel>& hierarchy,std::size_t index,id<MTLBuffer> scratch,
-			id<MTLBuffer> diagnostics,std::string* error )
+			id<MTLBuffer> diagnostics,std::uint64_t& executedSweeps,std::string* error )
 		{
 			MetalLevel& level=hierarchy[index];const std::size_t count=level.nx*level.ny*level.nz;
 			if( index+1u==hierarchy.size() ) return EncodeSmooth(context,command,level,32u,
-				scratch,diagnostics,error);
-			if( !EncodeSmooth(context,command,level,3u,scratch,diagnostics,error) ) return false;
+				scratch,diagnostics,executedSweeps,error);
+			if( !EncodeSmooth(context,command,level,3u,scratch,diagnostics,executedSweeps,error) ) return false;
 			id<MTLComputeCommandEncoder> encoder=nil;if( !Begin(command,encoder,error,"residual") ) return false;
 			[encoder setBuffer:level.pressure offset:0 atIndex:0];[encoder setBuffer:level.rhs offset:0 atIndex:1];
 			for( unsigned int axis=0;axis<3u;++axis ) [encoder setBuffer:level.beta[axis] offset:0 atIndex:2u+axis];
@@ -496,12 +505,13 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			if( !Begin(command,encoder,error,"coarse clear") ) return false;
 			[encoder setBuffer:coarse.pressure offset:0 atIndex:0];[encoder setBytes:&clear length:sizeof(clear) atIndex:1];
 			Dispatch(encoder,context.clearValues,coarseCount);[encoder endEncoding];
-			if( !EncodeVCycle(context,command,hierarchy,index+1u,scratch,diagnostics,error) ) return false;
+			if( !EncodeVCycle(context,command,hierarchy,index+1u,scratch,diagnostics,
+				executedSweeps,error) ) return false;
 			if( !Begin(command,encoder,error,"prolongation") ) return false;
 			[encoder setBuffer:coarse.pressure offset:0 atIndex:0];[encoder setBuffer:level.pressure offset:0 atIndex:1];
 			[encoder setBuffer:coarse.parameters offset:0 atIndex:2];[encoder setBuffer:level.parameters offset:0 atIndex:3];
 			Dispatch(encoder,context.prolongate,count);[encoder endEncoding];
-			return EncodeSmooth(context,command,level,3u,scratch,diagnostics,error);
+			return EncodeSmooth(context,command,level,3u,scratch,diagnostics,executedSweeps,error);
 		}
 	}
 
@@ -509,10 +519,10 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 		FireProductionProjectionResult& result, std::string* error )
 	{
 		result=FireProductionProjectionResult();
-		if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
-		MetalProjectionContext& context=Context();
-		if( !context.Valid() ) {if( error ) *error=context.error;return false;}
 		try {
+			if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
+			MetalProjectionContext& context=Context();
+			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
 			@autoreleasepool {
 				const FireProductionProjectionShape& shape=request.shape;
 				const std::size_t cells=shape.CellCount(),finePadded=NextPowerOfTwo(cells);
@@ -562,6 +572,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					level.beta[0]&&level.beta[1]&&level.beta[2];
 				for( unsigned int axis=0;axis<3u;++axis ) allocated=allocated&&provisional[axis]&&stored[axis]&&
 					momentum[axis]&&velocity[axis];
+				if( InjectedFailure("buffer") ) allocated=false;
 				if( !allocated ) {if( error ) *error="production fire projection buffer allocation failed";return false;}
 				std::fill_n(static_cast<float*>([boundaryPressure contents]),boundaryCount,0.0f);
 				std::fill_n(static_cast<unsigned char*>([inflow contents]),boundaryCount,
@@ -569,6 +580,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				std::fill_n(static_cast<float*>([diagnostics contents]),12u,0.0f);
 
 				id<MTLCommandBuffer> command=[context.queue commandBuffer];
+				if( InjectedFailure("command") ) command=nil;
 				if( !command ) {if( error ) *error="production fire projection command allocation failed";return false;}
 				id<MTLComputeCommandEncoder> encoder=nil;
 				for( std::size_t index=0;index<hierarchy.size();++index ) {
@@ -628,10 +640,13 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					[encoder setBuffer:level.pressure offset:0 atIndex:0];[encoder setBytes:&clear length:sizeof(clear) atIndex:1];
 					Dispatch(encoder,context.clearValues,count);[encoder endEncoding];
 				}
+				std::uint32_t executedCycles=0u;std::uint64_t executedSweeps=0u;
 				for( unsigned int cycle=0;cycle<12u;++cycle ) {
-					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,error) ) return false;
+					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,
+						executedSweeps,error) ) return false;
 					if( fp->nullspace!=0u&&!EncodeRemoveMean(context,command,fineLevel.pressure,cells,scratch,
 						diagnostics,std::numeric_limits<std::uint32_t>::max(),error) ) return false;
+					++executedCycles;
 				}
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const MetalAxisParameters axisParameters={axis,0u,0u,0u};
@@ -680,8 +695,14 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				result.maximumPreProjectionResidualPerS=d[0];result.maximumPostProjectionResidualPerS=d[1];
 				result.removedFineRightHandSideMean=fp->nullspace!=0u?d[11]:0.0f;
 				float maximumVelocity=0.0f;
-				for( unsigned int axis=0;axis<3u;++axis ) for( const float value:result.velocityMPerS[axis] )
-					maximumVelocity=std::max(maximumVelocity,std::fabs(value));
+				for( unsigned int axis=0;axis<3u;++axis )
+					for( std::size_t face=0;face<result.velocityMPerS[axis].size();++face ) {
+						maximumVelocity=std::max(maximumVelocity,std::fabs(
+							request.provisionalMomentumKGPerM2S[axis][face]/
+							result.faceDensityKGPerM3[axis][face]));
+						maximumVelocity=std::max(maximumVelocity,
+							std::fabs(result.velocityMPerS[axis][face]));
+					}
 				result.maximumOpenComplementarityDiscrepancyMPerS=0.0f;
 				for( unsigned int side=0;side<6u;++side ) if( request.boundary[side]==FireProductionProjectionPressureOpen ) {
 					const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
@@ -701,28 +722,28 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 							inside?std::max(0.0f,outward):std::max(0.0f,-outward));
 					}
 				}
-				result.executedVCycleCount=12u;
-				result.executedJacobiSweepCount=12u*(32u+6u*(hierarchy.size()-1u));
+				result.executedVCycleCount=executedCycles;
+				result.executedJacobiSweepCount=executedSweeps;
 				const float length=shape.cellWidthM*static_cast<float>(std::max(shape.nx,std::max(shape.ny,shape.nz)));
 				if( !FireProductionProjectionResidualWithinBand(result.maximumPostProjectionResidualPerS,
 					maximumVelocity,length,result.validationPassed) ) {
 					result=FireProductionProjectionResult();if( error ) *error="production fire projection validation band overflowed";return false;}
 				result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
 			}
-		} catch( const std::bad_alloc& ) {
-			result=FireProductionProjectionResult();if( error ) {try {*error="production fire projection allocation failed";}
-			catch( const std::bad_alloc& ) {error->clear();}}return false;
-		}
-		if( !AllFinite(result.pressurePa)||!std::isfinite(result.deviceElapsedMS)||
+			if( !AllFinite(result.pressurePa)||!std::isfinite(result.deviceElapsedMS)||
 			!std::isfinite(result.maximumPreProjectionResidualPerS)||
 			!std::isfinite(result.maximumPostProjectionResidualPerS)||
 			!std::isfinite(result.maximumOpenComplementarityDiscrepancyMPerS) ) {
 			result=FireProductionProjectionResult();if( error ) *error="production fire projection produced nonfinite output";return false;}
-		for( unsigned int axis=0;axis<3u;++axis ) if( !AllFinite(result.faceDensityKGPerM3[axis])||
+			for( unsigned int axis=0;axis<3u;++axis ) if( !AllFinite(result.faceDensityKGPerM3[axis])||
 			!AllFinite(result.velocityMPerS[axis])||!AllFinite(result.momentumKGPerM2S[axis])||
 			std::any_of(result.faceDensityKGPerM3[axis].begin(),result.faceDensityKGPerM3[axis].end(),
 				[](float value){return !(value>0.0f);}) ) {
 			result=FireProductionProjectionResult();if( error ) *error="production fire projection produced invalid face output";return false;}
-		if( error ) error->clear();return true;
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionProjectionResult();if( error ) {try {*error="production fire projection allocation failed";}
+			catch( const std::bad_alloc& ) {error->clear();}}return false;
+		}
 	}
 }

@@ -114,7 +114,9 @@ namespace RISE
 				static_cast<std::uint64_t>(shape.nx)*shape.nz+
 				static_cast<std::uint64_t>(shape.nx)*shape.ny);
 			if( !AddBytes(boundaryFaces,sizeof(float),total)||
-				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
+				// The device classification remains live while the six caller-owned
+				// publication vectors are materialized.
+				!AddBytes(2u*boundaryFaces,sizeof(unsigned char),total)||
 				!AddBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(float),total)||
 				!AddBytes(12u,sizeof(float),total)||
 				!AddBytes(levelCount,84u,total) ) return false;
