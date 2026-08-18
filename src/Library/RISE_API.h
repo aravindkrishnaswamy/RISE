@@ -4268,6 +4268,61 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_CategoryActiveName(
 		SceneEditController* p, int category, char* buf, unsigned int bufLen );
 
+	// Authored-graph node tree (87 section 5 step 4a) -----------------
+	//
+	// The generic node-children surface the tree outliners are built on.
+	// A node is addressed by an opaque handle -- an index into the
+	// controller's current snapshot for that category -- valid only until
+	// SceneEpoch() advances, exactly like the flat lists above.  A
+	// category with no hierarchy (Camera, Material, Painter, ...) reports
+	// its entities as roots with no children, so a shell needs no
+	// per-category branch.
+	//
+	// See SceneEditController::TreeNodeCount for the refresh cadence:
+	// TreeNodeCount / TreeRootCount refresh the snapshot, the per-node
+	// getters serve it.  Walk from the roots and the ordering is right.
+
+	//! Total nodes in `category`'s tree.  0 on null controller or an
+	//! unknown category.
+	unsigned int RISE_API_SceneEditController_TreeNodeCount(
+		SceneEditController* p, int category );
+
+	//! Number of ROOT nodes in `category`'s tree.
+	unsigned int RISE_API_SceneEditController_TreeRootCount(
+		SceneEditController* p, int category );
+
+	//! Handle of the `rootIdx`-th root.  Returns false -- leaving
+	//! `*outNode` untouched -- on null controller / null out-pointer /
+	//! out-of-range index.
+	bool RISE_API_SceneEditController_TreeRootNode(
+		SceneEditController* p, int category, unsigned int rootIdx,
+		unsigned int* outNode );
+
+	//! How many children `node` has.  0 for an unknown handle.
+	unsigned int RISE_API_SceneEditController_TreeChildCount(
+		SceneEditController* p, int category, unsigned int node );
+
+	//! Handle of `node`'s `childIdx`-th child.  Returns false -- leaving
+	//! `*outNode` untouched -- on null controller / null out-pointer /
+	//! unknown handle / out-of-range index.
+	bool RISE_API_SceneEditController_TreeChildNode(
+		SceneEditController* p, int category, unsigned int node,
+		unsigned int childIdx, unsigned int* outNode );
+
+	//! Handle of `node`'s parent.  Returns FALSE for a ROOT as well as for
+	//! an unknown handle -- a shell that is walking up to build a tree
+	//! path stops on either, and neither is an error.
+	bool RISE_API_SceneEditController_TreeNodeParent(
+		SceneEditController* p, int category, unsigned int node,
+		unsigned int* outParent );
+
+	//! `node`'s entity name -- what a row displays and what
+	//! RISE_API_SceneEditController_SetSelection takes.  Returns false on
+	//! null controller or an unknown handle.
+	bool RISE_API_SceneEditController_TreeNodeName(
+		SceneEditController* p, int category, unsigned int node,
+		char* buf, unsigned int bufLen );
+
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache
 	//! (epoch, category) → entity-name list and re-pull when this

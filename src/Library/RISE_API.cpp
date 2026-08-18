@@ -8713,6 +8713,96 @@ namespace RISE
 		return true;
 	}
 
+	// Authored-graph node tree (87 step 4a) ---------------------------
+
+	unsigned int RISE_API_SceneEditController_TreeNodeCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->TreeNodeCount(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	unsigned int RISE_API_SceneEditController_TreeRootCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->TreeRootCount(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_TreeRootNode(
+		SceneEditController* p, int category, unsigned int rootIdx,
+		unsigned int* outNode )
+	{
+		if( !p || !outNode ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		const unsigned int n = p->TreeRootNode( cat, rootIdx );
+		if( n == SceneEditController::kInvalidTreeNode ) return false;
+		*outNode = n;
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_TreeChildCount(
+		SceneEditController* p, int category, unsigned int node )
+	{
+		if( !p ) return 0;
+		return p->TreeChildCount(
+			static_cast<SceneEditController::Category>( category ), node );
+	}
+
+	bool RISE_API_SceneEditController_TreeChildNode(
+		SceneEditController* p, int category, unsigned int node,
+		unsigned int childIdx, unsigned int* outNode )
+	{
+		if( !p || !outNode ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		const unsigned int n = p->TreeChildNode( cat, node, childIdx );
+		if( n == SceneEditController::kInvalidTreeNode ) return false;
+		*outNode = n;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_TreeNodeParent(
+		SceneEditController* p, int category, unsigned int node,
+		unsigned int* outParent )
+	{
+		if( !p || !outParent ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		const unsigned int n = p->TreeNodeParent( cat, node );
+		if( n == SceneEditController::kInvalidTreeNode ) return false;
+		*outParent = n;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_TreeNodeName(
+		SceneEditController* p, int category, unsigned int node,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		// An unknown handle is reported as a FAILURE rather than as an empty
+		// name: the flat twin discriminates the same way (it range-checks the
+		// index before copying), and a shell that cannot tell "no such row"
+		// from "a row whose name is empty" would render a blank row for a
+		// handle that has gone stale.
+		//
+		// Discriminated on the RETURNED name being empty, NOT by asking
+		// TreeNodeCount first: that getter REFRESHES the snapshot, so calling
+		// it here would re-publish a possibly different tree in the middle of
+		// a shell's walk -- the exact hazard the split refresh cadence exists
+		// to remove.  Every registered entity has a non-empty name, so the
+		// two conditions coincide.
+		const String nm = p->TreeNodeName( cat, node );
+		if( nm.size() <= 1 ) return false;
+		CopyToBuf( nm, buf, bufLen );
+		return true;
+	}
+
 	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
 	{
 		if( !p ) return 0;

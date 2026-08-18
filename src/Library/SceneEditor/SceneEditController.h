@@ -2028,6 +2028,128 @@ namespace RISE
 		//! the active camera / rasterizer / film rather than "(pick one)".
 		String       CategoryActiveName( Category cat ) const;
 
+		// Authored-graph node tree (87 §5 step 4a) ---------------------
+		//
+		// THE GENERIC NODE-CHILDREN SURFACE that replaces the per-category
+		// flat lists above.  Both shells consume it: 4b builds a SwiftUI
+		// `OutlineGroup` from it, 4c a `QAbstractItemModel`.  Neither knows
+		// anything about Objects specifically -- a category whose entities
+		// have no hierarchy (Camera, Material, Painter, ...) is modelled as
+		// N ROOTS WITH NO CHILDREN, which is why a shell needs no per-
+		// category branch and why the flat categories keep working through
+		// the identical code path.
+		//
+		// The tree is over the AUTHORED graph, not over the flat render
+		// list.  For Category::Object that means the manager's entries with
+		// the SYNTHESIZED ones (87 step 3's instancing expansions) FOLDED
+		// INTO the chunk that produced them -- see BuildObjectTreeSeedsLocked_
+		// for the rule and for why nobody may reconstruct it from the
+		// spelling of a name.
+		//
+		// A node is addressed by an opaque handle: an index into this
+		// category's snapshot node table.  Handles are STABLE ONLY WITHIN
+		// ONE SNAPSHOT -- a shell must re-read the tree (and rebuild its own
+		// model) when `SceneEpoch()` advances, exactly as it already does
+		// for the flat lists.
+		//
+		// REFRESH CADENCE, and how it differs from the flat getters
+		// deliberately: `TreeNodeCount` and `TreeRootCount` refresh the
+		// snapshot; the per-node accessors serve the PUBLISHED snapshot
+		// without refreshing.  The flat getters refresh on every indexed
+		// call, which makes a full walk of N entries O(N^2) (each
+		// CategoryEntityName rebuilds the whole list).  A tree walk touches
+		// every node several times, so repeating that here would be O(N^2)
+		// with a much larger constant -- and it would let a walk observe two
+		// different trees, handing out a child handle that the next call no
+		// longer resolves.  Entering through a count getter is not a burden
+		// the shells have to remember: a tree walk BEGINS at the roots.
+
+		//! Handle value meaning "no such node" -- returned for an
+		//! out-of-range index, and reported as the parent of a root.
+		static constexpr unsigned int kInvalidTreeNode = 0xFFFFFFFFu;
+
+		//! Total nodes in `cat`'s tree.  REFRESHES the snapshot.
+		unsigned int TreeNodeCount( Category cat ) const;
+		//! Number of ROOT nodes in `cat`'s tree.  REFRESHES the snapshot.
+		unsigned int TreeRootCount( Category cat ) const;
+		//! Handle of the `rootIdx`-th root, or kInvalidTreeNode.
+		unsigned int TreeRootNode( Category cat, unsigned int rootIdx ) const;
+		//! How many children `node` has.  0 for an unknown handle.
+		unsigned int TreeChildCount( Category cat, unsigned int node ) const;
+		//! Handle of `node`'s `childIdx`-th child, or kInvalidTreeNode.
+		unsigned int TreeChildNode( Category cat, unsigned int node, unsigned int childIdx ) const;
+		//! `node`'s parent handle, or kInvalidTreeNode for a root / unknown
+		//! handle.  Walking this up to a root is how a shell builds the tree
+		//! PATH that 87 §5 step 4 keys expand-state on.
+		unsigned int TreeNodeParent( Category cat, unsigned int node ) const;
+		//! `node`'s entity name -- the identity a shell passes to
+		//! `SetSelection` and renders as the row label.  Empty for an
+		//! unknown handle.
+		String       TreeNodeName( Category cat, unsigned int node ) const;
+
+		//! One tree node, as published in the snapshot.  `parent` and the
+		//! `childIndices` slice are indices into the SAME snapshot's node
+		//! table -- see AuthoredTree for why that identity is load-bearing.
+		struct TreeNodeRow
+		{
+			String       name;         //!< entity name (the selection identity)
+			unsigned int parent;       //!< kInvalidTreeNode for a root
+			unsigned int firstChild;   //!< offset into AuthoredTree::childIndices
+			unsigned int childCount;   //!< length of that slice
+		};
+
+		//! ONE STRUCT, PUBLISHED BY ONE ASSIGNMENT, and it must stay that way.
+		//!
+		//! The flat per-category surface is a single `std::vector<String>`,
+		//! so it gets snapshot atomicity for free: the one `swap` that
+		//! publishes it publishes everything a reader can see.  A TREE is a
+		//! node table PLUS index arrays that address INTO that table.  Split
+		//! across separate snapshot members, a reader could take the leaf
+		//! lock between the writes and observe a NEW `childIndices` against
+		//! an OLD `nodes` -- an out-of-bounds read, not merely a stale
+		//! answer.  Keeping all three vectors in one struct that
+		//! RefreshTreeSnapshot_ publishes with a single move-assignment makes
+		//! that unrepresentable.  DO NOT split these back out into separate
+		//! snapshot members, and do not publish them field by field.
+		struct AuthoredTree
+		{
+			std::vector<TreeNodeRow>  nodes;
+			std::vector<unsigned int> childIndices;  //!< flattened child lists
+			std::vector<unsigned int> roots;         //!< indices into `nodes`
+		};
+
+		//! The input to the pure tree assembler: one record per node that is
+		//! to APPEAR in the tree, already resolved out of whatever the
+		//! category's backing store is.
+		struct TreeNodeSeed
+		{
+			String             name;
+			String             parent;   //!< "" -- or a name that is not itself a seed -- means ROOT
+			unsigned long long order;    //!< sibling display order key (registration serial)
+		};
+
+		//! Assemble an AuthoredTree from seeds.  PURE and static: it touches
+		//! no controller state and no manager, which is what lets its two
+		//! hostile inputs -- a DANGLING parent and a CYCLE -- be driven
+		//! directly by a test.  Neither is reachable through
+		//! `IObjectManager::SetObjectParent` today (it refuses an unknown
+		//! parent and walks the ancestor chain to refuse a cycle), so a
+		//! scene-level test cannot produce either and this seam is the only
+		//! honest way to pin the guards.
+		//!
+		//! Contract:
+		//!  - Every seed becomes exactly one node.  Nothing is ever dropped.
+		//!  - A parent that names no seed is treated as ROOT (the same rule
+		//!    `ComposeWorldTransforms` applies to a dangling link).
+		//!  - A cycle is BROKEN, not followed: one link on each cycle is cut
+		//!    and the node it belonged to becomes a root, so the walk
+		//!    terminates and every node stays visible.  The assembly is
+		//!    iterative throughout -- no recursion, so no stack overflow on
+		//!    a deep chain either.
+		//!  - Roots and each child list are ordered by `order`, ties broken
+		//!    by name, so the result is deterministic.
+		static AuthoredTree BuildAuthoredTree( const std::vector<TreeNodeSeed>& seeds );
+
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
 		//! instance.  Each fresh controller therefore has a unique
@@ -4812,6 +4934,36 @@ namespace RISE
 		//! acquires mMutex (or anything else) while holding it.
 		void RefreshEnumSnapshot_( Category cat ) const;
 
+		//! 87 step 4a: the same refresh policy, for the node tree.  A
+		//! SEPARATE pass from RefreshEnumSnapshot_ rather than a second half
+		//! of it, deliberately: the flat getters refresh on EVERY indexed
+		//! call, so folding the tree build into them would rebuild the whole
+		//! tree once per `CategoryEntityName` -- N tree builds to enumerate N
+		//! names.  Identical discipline otherwise: bail on render-owns-scene,
+		//! bail on a contended mMutex (serving the prior tree in both cases),
+		//! build into a LOCAL under mMutex, publish with one swap under the
+		//! leaf mUiSnapshotMutex.
+		void RefreshTreeSnapshot_( Category cat ) const;
+
+		//! Build `cat`'s tree from the live managers.  REQUIRES mMutex held.
+		AuthoredTree BuildCategoryTreeLocked_( Category cat ) const;
+
+		//! Category::Object's half of that: turn the manager's FLAT entry set
+		//! into the AUTHORED graph's nodes.  REQUIRES mMutex held.
+		//!
+		//! The flat set is the render list, and under 87 step 3 instancing it
+		//! contains SYNTHESIZED entries that have no chunk of their own --
+		//! `I.X` for a subtree clone, `I[i,j]` for a repetition, `I[i,j].X`
+		//! for both.  Showing them would flood the outliner (an 8x8 grid is
+		//! 64+ rows) and offer edits on rows no author can address.  So each
+		//! synthesized entry is FOLDED INTO ITS INSTANCING CHUNK, and the
+		//! discriminator is `IObjectManager::GetObjectProvenance` -- NEVER the
+		//! spelling of the name.  Splitting on `.` or probing for `[` is
+		//! explicitly forbidden by that interface's contract (an author may
+		//! legitimately write `name my.object`), and the map is the only
+		//! sanctioned route.
+		void BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>& outSeeds ) const;
+
 		//! Document-first ADR phase 2: THE unified UI read surface.  Every
 		//! public read accessor (properties, enumeration, jump rows) serves
 		//! this one struct under the one leaf mUiSnapshotMutex; the writers
@@ -4825,6 +4977,11 @@ namespace RISE
 			std::vector<CameraProperty> propertiesByCategory[kNumCategories];
 			std::vector<String>         entityNames[kNumCategories];
 			String                      activeNames[kNumCategories];
+			//! 87 step 4a.  ONE AuthoredTree per category, each published by
+			//! a single struct swap -- see AuthoredTree's own comment for why
+			//! its three vectors may not be hoisted out into three arrays
+			//! here.
+			AuthoredTree                trees[kNumCategories];
 		};
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;

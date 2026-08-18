@@ -115,6 +115,25 @@ struct ViewportRenderModeInfo {
     bool isVariant = false;
 };
 
+/// 87 section 5 step 4a: one node of the AUTHORED-graph tree, as read
+/// out of SceneEditController's snapshot in a single pass.
+///
+/// `parent` and every entry of `children` index into the SAME
+/// QVector<SceneTreeNode> this node came from -- which is why the whole
+/// tree is handed over as one vector by `categoryTree()` rather than
+/// walked node by node: the controller's own snapshot may be republished
+/// between calls, so a handle read in one call is not guaranteed to
+/// resolve in the next.  One pass, one consistent tree, and a
+/// QAbstractItemModel can hold it as its backing store.
+///
+/// `parent` is -1 for a root.  `name` is the entity name -- what the row
+/// displays and what `setSelection()` takes.
+struct SceneTreeNode {
+    QString      name;
+    int          parent = -1;
+    QVector<int> children;
+};
+
 class ViewportBridge : public QObject
 {
     Q_OBJECT
@@ -991,6 +1010,27 @@ public:
     /// lights, chunk-name for rasterizers).  Empty list when the
     /// scene has nothing in that category.
     QStringList categoryEntities(Category cat) const;
+
+    /// The AUTHORED-graph tree for `category` (87 section 5 step 4a) --
+    /// the surface the outliner's QAbstractItemModel is built over,
+    /// replacing the flat `categoryEntities()` list above.
+    ///
+    /// The returned vector is the controller's node TABLE, in the
+    /// controller's presentation order.  The ROOTS are exactly the
+    /// entries whose `parent` is -1, in that same order; descend through
+    /// each node's `children` list.
+    ///
+    /// A category with no hierarchy (Camera, Material, Painter, ...)
+    /// comes back as N nodes all with `parent == -1` and no children, so
+    /// the model needs no per-category branch.
+    ///
+    /// For Category::Object the tree is the AUTHORED graph, not the flat
+    /// render list: 87 step 3's synthesized instancing entries (`I.X`,
+    /// `I[i,j]`) are folded into the chunk that produced them, so an 8x8
+    /// instanced grid is one row rather than 64+.
+    ///
+    /// Empty vector on a null controller or an empty category.
+    QVector<SceneTreeNode> categoryTree(Category cat) const;
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →

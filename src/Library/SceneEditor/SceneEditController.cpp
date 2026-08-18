@@ -37,6 +37,7 @@
 #include "../Cst/Cst.h"                   // Shared-undo U1: DocFindByNameAnyRole / DocResolveNodeId (prior-value capture)
 #include "../Parsers/ChunkParserRegistry.h"  // source-traceability reverse: authoritative keyword -> ChunkCategory
 #include <map>                            // source-traceability reverse: cached keyword -> Category map
+#include <set>                            // 87 step 4a: the object-tree fold's visible-name set
 #include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "../Animation/KeyframableHelper.h"
 #include "ObjectIntrospection.h"
@@ -4180,6 +4181,362 @@ String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 	default:
 		return String();
 	}
+}
+
+// =====================================================================
+// 87 §5 step 4a -- the AUTHORED-GRAPH node tree.
+//
+// Three layers, deliberately separated:
+//   1. BuildAuthoredTree      -- PURE.  Seeds -> AuthoredTree.  Owns the
+//                                dangling-parent and cycle guards, and is
+//                                the only layer a test can hand a hostile
+//                                input to (see its header doc).
+//   2. Build*TreeSeedsLocked_ -- reads the live managers under mMutex and
+//                                produces the seeds.  Category::Object is
+//                                where the instancing fold lives.
+//   3. RefreshTreeSnapshot_   -- the SAME stale-fallback publish discipline
+//                                RefreshEnumSnapshot_ uses.
+// =====================================================================
+
+SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
+	const std::vector<TreeNodeSeed>& seeds )
+{
+	AuthoredTree out;
+	const std::size_t n = seeds.size();
+	if( n == 0 ) return out;
+
+	// Presentation order, computed FIRST so every index below is already in
+	// the order a shell renders: by `order` (the registration serial, which
+	// on a full derive IS document order -- 87 §2 "child order for display
+	// comes from declaration order"), ties broken by name so the result is
+	// deterministic even when two entities share a serial (they cannot today;
+	// the tiebreak is what makes that not worth relying on).
+	std::vector<std::size_t> perm( n );
+	for( std::size_t i = 0; i < n; ++i ) perm[i] = i;
+	std::stable_sort( perm.begin(), perm.end(),
+		[&seeds]( std::size_t a, std::size_t b ) {
+			if( seeds[a].order != seeds[b].order ) return seeds[a].order < seeds[b].order;
+			return std::string( seeds[a].name.c_str() ) < std::string( seeds[b].name.c_str() );
+		} );
+
+	// name -> node index.  A DUPLICATE name keeps the FIRST occurrence in
+	// presentation order; the caller is responsible for not producing one
+	// (the object manager cannot hold two items of one name), and silently
+	// re-pointing every later reference at one of them is the least
+	// surprising degradation if it ever happens.
+	std::map<std::string, unsigned int> byName;
+	out.nodes.resize( n );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const TreeNodeSeed& s = seeds[ perm[k] ];
+		out.nodes[k].name       = s.name;
+		out.nodes[k].parent     = kInvalidTreeNode;
+		out.nodes[k].firstChild = 0;
+		out.nodes[k].childCount = 0;
+		byName.insert( std::make_pair( std::string( s.name.c_str() ), static_cast<unsigned int>( k ) ) );
+	}
+
+	// Resolve parent NAMES to indices.  An unresolvable name -- empty, or one
+	// that no seed answers to -- is a ROOT.  That is the same answer
+	// ObjectManager::ComposeWorldTransforms gives a dangling link, and it is
+	// the only one that keeps the node VISIBLE: dropping it would make an
+	// authoring mistake look like a deleted object.
+	std::vector<unsigned int> parentOf( n, kInvalidTreeNode );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const TreeNodeSeed& s = seeds[ perm[k] ];
+		if( s.parent.size() <= 1 ) continue;                 // String carries its NUL: <=1 is empty
+		const std::map<std::string, unsigned int>::const_iterator p =
+			byName.find( std::string( s.parent.c_str() ) );
+		if( p == byName.end() ) continue;                     // dangling -> root
+		// A SELF-parent is deliberately NOT special-cased here.  It is a
+		// 1-cycle, and the cycle break below cuts it exactly as it cuts any
+		// other -- an explicit guard here was measured to be dead code
+		// (removing it leaves the self-parent fixture green).  One guard, one
+		// mechanism, one thing to keep right.
+		parentOf[k] = p->second;
+	}
+
+	// CYCLE BREAK.  Iterative three-colour walk UP the parent chain, O(n)
+	// total: each node is coloured once.  When a walk re-enters a node that
+	// is grey (i.e. on the chain currently being walked) that node closes a
+	// cycle, so ITS link is cut and it becomes a root.  Cutting exactly one
+	// link per cycle keeps every node reachable from exactly one root, which
+	// is what makes the child-list build below total.
+	//
+	// No recursion anywhere in this function, so a pathologically deep chain
+	// cannot overflow the stack either.
+	{
+		enum { kWhite = 0, kGrey = 1, kBlack = 2 };
+		std::vector<unsigned char> colour( n, kWhite );
+		std::vector<unsigned int>  path;
+		for( std::size_t i = 0; i < n; ++i ) {
+			if( colour[i] != kWhite ) continue;
+			path.clear();
+			unsigned int c = static_cast<unsigned int>( i );
+			while( c != kInvalidTreeNode && colour[c] == kWhite ) {
+				colour[c] = kGrey;
+				path.push_back( c );
+				c = parentOf[c];
+			}
+			if( c != kInvalidTreeNode && colour[c] == kGrey ) parentOf[c] = kInvalidTreeNode;
+			for( std::size_t q = 0; q < path.size(); ++q ) colour[ path[q] ] = kBlack;
+		}
+	}
+
+	// Child counts, then a prefix sum, then a second pass that fills the
+	// flattened slices.  `perm` order is already the display order, so
+	// walking k ascending emits each child list in it -- no per-list sort.
+	std::vector<unsigned int> cursor( n, 0 );
+	for( std::size_t k = 0; k < n; ++k ) {
+		if( parentOf[k] != kInvalidTreeNode ) ++out.nodes[ parentOf[k] ].childCount;
+		else                                  out.roots.push_back( static_cast<unsigned int>( k ) );
+	}
+	unsigned int running = 0;
+	for( std::size_t k = 0; k < n; ++k ) {
+		out.nodes[k].firstChild = running;
+		cursor[k]               = running;
+		running += out.nodes[k].childCount;
+	}
+	out.childIndices.assign( running, 0u );
+	for( std::size_t k = 0; k < n; ++k ) {
+		const unsigned int p = parentOf[k];
+		if( p == kInvalidTreeNode ) continue;
+		out.nodes[k].parent          = p;
+		out.childIndices[ cursor[p]++ ] = static_cast<unsigned int>( k );
+	}
+	return out;
+}
+
+void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>& outSeeds ) const
+{
+	outSeeds.clear();
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return;
+	const IObjectManager* cm = scene->GetObjects();
+	if( !cm ) return;
+	IObjectManager* m = const_cast<IObjectManager*>( cm );
+
+	CollectNamesCallback cb;
+	m->EnumerateItemNames( cb );
+
+	// PASS 1 -- classify every live entry as an authored node or as a
+	// synthesized entry that folds away.
+	//
+	// The discriminator is 87 step 3a's COLLAPSE case: an instancing chunk
+	// whose source is a single node produces ONE entry under the chunk's own
+	// name, so `entry == instancingChunk` means this entry IS the authored
+	// node and stays visible.  Everything else with a provenance row (`I.X`,
+	// `I[i,j]`, `I[i,j].X`) is a copy that has no chunk of its own, and folds
+	// into the chunk named by the row.  Read from the provenance MAP only --
+	// see the header for why the name itself is off limits.
+	std::map<std::string, std::string> foldOf;    // folded entry -> instancing chunk
+	std::vector<std::string>           visible;   // entries that stay as nodes
+	for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+		const std::string nm( cb.names[i].c_str() );
+		const char* chunk = 0;
+		if( m->GetObjectProvenance( nm.c_str(), &chunk, /*outSourceNode*/ 0 ) ) {
+			const std::string ch( chunk ? chunk : "" );
+			if( !ch.empty() && ch != nm ) { foldOf[nm] = ch; continue; }
+		}
+		visible.push_back( nm );
+	}
+
+	std::set<std::string> visibleSet( visible.begin(), visible.end() );
+
+	// PASS 2 -- the fold TARGETS that have no live entry of their own.
+	//
+	// A COUNTED instancing chunk (87 step 3c) is exactly this case: `I
+	// count_u 2` produces `I[0,0]` and `I[1,0]` and NO entry named `I`, so
+	// every one of its entries folds into a chunk the manager has never heard
+	// of.  Without a node for it the whole array would vanish from the tree
+	// and the author would have no row for the chunk they wrote -- while the
+	// stated reason for folding is the opposite: keep the row that HAS a
+	// chunk and drop the ones that do not.  So the chunk gets one node.
+	//
+	// Its order key and its parent come from the entry with the LOWEST
+	// REGISTRATION SERIAL among those folding into it -- which by
+	// construction is the first REPETITION ROOT the expansion built
+	// (`ExpandSourceInstance` applies `I[i,j]` and only then its clones), so
+	// the parent read here is the instancing chunk's own `parent` line.
+	//
+	// The serial, NOT enumeration order, and that is load-bearing rather
+	// than tidy.  Enumeration is by name, and a CLONE's parent is its
+	// repetition root -- which folds into this very node -- so picking a
+	// clone would give the synthesized node ITSELF as its parent and silently
+	// drop the chunk's real parent link.  Today `I[0,0]` happens to sort
+	// before `I[0,0].X`, which would make a name-ordered pick right by
+	// accident; the serial is right by the expansion's own ordering.
+	std::map<std::string, unsigned long long> synthOrder;
+	std::map<std::string, std::string>        synthParent;
+	for( std::size_t i = 0; i < cb.names.size(); ++i ) {
+		const std::string nm( cb.names[i].c_str() );
+		const std::map<std::string, std::string>::const_iterator f = foldOf.find( nm );
+		if( f == foldOf.end() ) continue;
+		if( visibleSet.count( f->second ) ) continue;          // the chunk has its own entry already
+		const unsigned long long serial = m->GetItemSerial( nm.c_str() );
+		const std::map<std::string, unsigned long long>::const_iterator have = synthOrder.find( f->second );
+		if( have != synthOrder.end() && have->second <= serial ) continue;
+		synthOrder[ f->second ]  = serial;
+		const char* pp = m->GetObjectParent( nm.c_str() );
+		synthParent[ f->second ] = pp ? pp : "";
+	}
+
+	// A fold target resolves to the node an entry is folded INTO, so a
+	// document node parented onto a synthesized entry (`Z parent I.B`, which
+	// 87 step 3b supports) lands under `I` rather than becoming a stray root.
+	//
+	// ITERATED, not a single hop, and BOUNDED.  A single hop is enough for
+	// every shape reachable today -- a fold target is an instancing chunk
+	// name, and an entry under that name is the collapse case, whose own
+	// provenance row names itself and so does not fold.  The loop costs
+	// nothing on that path (one probe, one miss) and means a future
+	// expansion that folds one synthesized entry into another does not
+	// silently strand a branch at the root.  The bound is the fold-map size,
+	// so a fold CYCLE degrades to "treat as a root" instead of spinning.
+	struct Resolve {
+		const std::map<std::string, std::string>& fold;
+		std::string operator()( const std::string& raw ) const {
+			std::string cur = raw;
+			for( std::size_t guard = fold.size() + 1; guard > 0; --guard ) {
+				const std::map<std::string, std::string>::const_iterator f = fold.find( cur );
+				if( f == fold.end() ) return cur;
+				cur = f->second;
+			}
+			return std::string();
+		}
+	} resolve{ foldOf };
+
+	outSeeds.reserve( visible.size() + synthOrder.size() );
+	for( std::size_t i = 0; i < visible.size(); ++i ) {
+		const char* pp = m->GetObjectParent( visible[i].c_str() );
+		const std::string parent = resolve( std::string( pp ? pp : "" ) );
+		TreeNodeSeed s;
+		s.name   = String( visible[i].c_str() );
+		s.parent = String( parent.c_str() );
+		s.order  = m->GetItemSerial( visible[i].c_str() );
+		outSeeds.push_back( s );
+	}
+	for( std::map<std::string, unsigned long long>::const_iterator s = synthOrder.begin();
+		s != synthOrder.end(); ++s ) {
+		TreeNodeSeed seed;
+		seed.name   = String( s->first.c_str() );
+		seed.parent = String( resolve( synthParent[ s->first ] ).c_str() );
+		seed.order  = s->second;
+		outSeeds.push_back( seed );
+	}
+}
+
+SceneEditController::AuthoredTree SceneEditController::BuildCategoryTreeLocked_( Category cat ) const
+{
+	std::vector<TreeNodeSeed> seeds;
+	if( cat == Category::Object ) {
+		BuildObjectTreeSeedsLocked_( seeds );
+	} else {
+		// EVERY OTHER CATEGORY IS FLAT, and is modelled here as N roots with
+		// no children rather than special-cased in each shell -- which is the
+		// whole point of a generic node-children API (87 §5 step 4).  Built
+		// from the SAME *Locked_ bodies the flat getters use, so the two
+		// surfaces cannot report different entity sets.
+		const unsigned int n = CategoryEntityCountLocked_( cat );
+		seeds.reserve( n );
+		for( unsigned int i = 0; i < n; ++i ) {
+			TreeNodeSeed s;
+			s.name  = CategoryEntityNameLocked_( cat, i );
+			s.order = i;                    // preserve the flat list's own order exactly
+			seeds.push_back( s );
+		}
+	}
+	return BuildAuthoredTree( seeds );
+}
+
+void SceneEditController::RefreshTreeSnapshot_( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return;
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return;   // render owns the scene: serve stale
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
+	AuthoredTree built = BuildCategoryTreeLocked_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );                // leaf lock: never held across mMutex
+	// ONE move-assignment publishes the node table AND both index arrays
+	// together -- see AuthoredTree's comment for why that has to be one
+	// operation and not three.  Deliberately not three member swaps: those
+	// would be equally atomic against a reader that holds this lock, and
+	// would quietly stop being atomic the day someone reads one of them
+	// without it.  Vector move-assignment is noexcept, so this cannot leave
+	// the snapshot half-written either.
+	mUi.trees[ci] = std::move( built );
+}
+
+unsigned int SceneEditController::TreeNodeCount( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	RefreshTreeSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.trees[ci].nodes.size() );
+}
+
+unsigned int SceneEditController::TreeRootCount( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	RefreshTreeSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return static_cast<unsigned int>( mUi.trees[ci].roots.size() );
+}
+
+unsigned int SceneEditController::TreeRootNode( Category cat, unsigned int rootIdx ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	return rootIdx < t.roots.size() ? t.roots[rootIdx] : kInvalidTreeNode;
+}
+
+unsigned int SceneEditController::TreeChildCount( Category cat, unsigned int node ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	return node < t.nodes.size() ? t.nodes[node].childCount : 0;
+}
+
+unsigned int SceneEditController::TreeChildNode( Category cat, unsigned int node, unsigned int childIdx ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	if( node >= t.nodes.size() ) return kInvalidTreeNode;
+	const TreeNodeRow& r = t.nodes[node];
+	if( childIdx >= r.childCount ) return kInvalidTreeNode;
+	const unsigned int slot = r.firstChild + childIdx;
+	// Belt-and-braces: the one swap above makes `nodes` and `childIndices`
+	// inseparable, so this cannot fire -- but an out-of-bounds READ is the
+	// exact failure that splitting them would produce, and a bounds check is
+	// cheaper than trusting a future edit to preserve the invariant.
+	if( slot >= t.childIndices.size() ) return kInvalidTreeNode;
+	return t.childIndices[slot];
+}
+
+unsigned int SceneEditController::TreeNodeParent( Category cat, unsigned int node ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	return node < t.nodes.size() ? t.nodes[node].parent : kInvalidTreeNode;
+}
+
+String SceneEditController::TreeNodeName( Category cat, unsigned int node ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return String();
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	const AuthoredTree& t = mUi.trees[ci];
+	return node < t.nodes.size() ? t.nodes[node].name : String();
 }
 
 namespace {

@@ -1516,6 +1516,47 @@ QStringList ViewportBridge::categoryEntities(Category cat) const
     return out;
 }
 
+QVector<SceneTreeNode> ViewportBridge::categoryTree(Category cat) const
+{
+    QVector<SceneTreeNode> out;
+    if (!m_controller) return out;
+    const int catInt = static_cast<int>(cat);
+
+    // ONE pass over the controller's snapshot.  TreeNodeCount refreshes it;
+    // every getter after that serves the published tree without refreshing
+    // (see SceneEditController::TreeNodeCount), so the handles collected
+    // below all address the same tree.
+    const unsigned int n = RISE_API_SceneEditController_TreeNodeCount(m_controller, catInt);
+    if (n == 0) return out;
+    out.resize(static_cast<int>(n));
+
+    for (unsigned int i = 0; i < n; ++i) {
+        SceneTreeNode& node = out[static_cast<int>(i)];
+        node.name = QString::fromUtf8(
+            m_controller->TreeNodeName(
+                static_cast<SceneEditController::Category>(catInt), i).c_str());
+
+        unsigned int parent = 0;
+        // FALSE means "root" as well as "unknown handle"; both leave the
+        // default -1, which is what the model treats as a top-level row.
+        if (RISE_API_SceneEditController_TreeNodeParent(m_controller, catInt, i, &parent)) {
+            node.parent = static_cast<int>(parent);
+        }
+
+        const unsigned int kids =
+            RISE_API_SceneEditController_TreeChildCount(m_controller, catInt, i);
+        node.children.reserve(static_cast<int>(kids));
+        for (unsigned int k = 0; k < kids; ++k) {
+            unsigned int child = 0;
+            if (RISE_API_SceneEditController_TreeChildNode(m_controller, catInt, i, k, &child)
+             && child < n) {
+                node.children.append(static_cast<int>(child));
+            }
+        }
+    }
+    return out;
+}
+
 QString ViewportBridge::activeNameForCategory(Category cat) const
 {
     if (!m_controller) return QString();
