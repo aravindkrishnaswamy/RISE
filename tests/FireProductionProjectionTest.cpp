@@ -803,6 +803,30 @@ int main()
 		FireProductionProjectionResidualWithinBand(std::nextafter(exactBand,
 			std::numeric_limits<float>::infinity()),2.0f,4.0f,justAbove)&&!justAbove,
 		"P2 validation band straddles the exact 0.005 U/L boundary");
+	for( const float speed : {47.0f,49.0f} ) {
+		FireProductionProjectionRequest wiredBand=EmptyRequest(6u,5u,4u);
+		SetBoundary(wiredBand,FireProductionProjectionPeriodic);
+		std::fill(wiredBand.provisionalMomentumKGPerM2S[0].begin(),
+			wiredBand.provisionalMomentumKGPerM2S[0].end(),speed);
+		std::fill(wiredBand.divergenceTargetPerS.begin(),
+			wiredBand.divergenceTargetPerS.end(),0.4f);
+		FireProductionProjectionResult wiredBandResult;
+		const bool wiredBandOK=ProjectFireProductionCPU(wiredBand,wiredBandResult,&error);
+		const float wiredResidual=wiredBandOK?IndependentResidual(wiredBand,wiredBandResult):0.0f;
+		float wiredMaximumVelocity=0.0f;
+		if( wiredBandOK ) for( unsigned int axis=0;axis<3u;++axis )
+			for( const float value : wiredBandResult.velocityMPerS[axis] )
+				wiredMaximumVelocity=std::max(wiredMaximumVelocity,std::fabs(value));
+		const float wiredLength=wiredBand.shape.cellWidthM*static_cast<float>(
+			std::max(wiredBand.shape.nx,std::max(wiredBand.shape.ny,wiredBand.shape.nz)));
+		const bool independentlyAccepted=wiredResidual<=
+			0.005f*wiredMaximumVelocity/wiredLength;
+		Check(wiredBandOK&&wiredResidual==0.4f&&wiredMaximumVelocity==speed&&
+			wiredBandResult.maximumPostProjectionResidualPerS==wiredResidual&&
+			wiredBandResult.validationPassed==independentlyAccepted&&
+			independentlyAccepted==(speed==49.0f),
+			"P2 production wiring straddles the independently computed nonzero 0.005 U/L band");
+	}
 	FireProductionProjectionRequest cancellation=EmptyRequest(4u,4u,4u);
 	SetBoundary(cancellation,FireProductionProjectionPeriodic);
 	cancellation.divergenceTargetPerS[0]=1.0e6f;
@@ -858,6 +882,16 @@ int main()
 		nearUnderBytes==UINT64_C(2147440808)&&nearOverBytes==UINT64_C(2147512068)&&
 		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
 		"P2 complete working-set accounting binds the independent final-42-KiB boundary pair");
+	FireProductionProjectionShape malformedWorkingSet=nearUnder;
+	malformedWorkingSet.nx=std::numeric_limits<std::size_t>::max();
+	std::uint64_t malformedBytes=9u;
+	Check(!FireProductionProjectionWorkingSetBytes(malformedWorkingSet,malformedBytes)&&
+		malformedBytes==0u,
+		"P2 working-set query rejects SIZE_MAX dimensions without wrapped arithmetic");
+	malformedWorkingSet.nx=1025u;malformedBytes=9u;
+	Check(!FireProductionProjectionWorkingSetBytes(malformedWorkingSet,malformedBytes)&&
+		malformedBytes==0u,
+		"P2 working-set query is total only over the production 4..1024 shape domain");
 
 	const std::string source=ReadFile("src/Library/Utilities/FireProductionProjection.cpp");
 	const std::string makefile=ReadFile("build/make/rise/Makefile");

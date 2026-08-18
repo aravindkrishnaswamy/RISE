@@ -431,7 +431,8 @@ namespace RISE
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
 	{
 		bytes=0u;
-		if( shape.nx==0u||shape.ny==0u||shape.nz==0u||
+		if( shape.nx<4u||shape.ny<4u||shape.nz<4u||shape.nx>1024u||
+			shape.ny>1024u||shape.nz>1024u||
 			shape.nx>std::numeric_limits<std::size_t>::max()/shape.ny||
 			shape.nx*shape.ny>std::numeric_limits<std::size_t>::max()/shape.nz ) return false;
 		return ProjectionWorkingSetBytes(shape,bytes);
