@@ -1520,38 +1520,45 @@ QVector<SceneTreeNode> ViewportBridge::categoryTree(Category cat) const
 {
     QVector<SceneTreeNode> out;
     if (!m_controller) return out;
-    const int catInt = static_cast<int>(cat);
 
-    // ONE pass over the controller's snapshot.  TreeNodeCount refreshes it;
-    // every getter after that serves the published tree without refreshing
-    // (see SceneEditController::TreeNodeCount), so the handles collected
-    // below all address the same tree.
-    const unsigned int n = RISE_API_SceneEditController_TreeNodeCount(m_controller, catInt);
+    // ONE TRANSACTIONAL READ.  SceneEditController::ReadTree refreshes once
+    // and then copies the whole published tree out under a single hold of the
+    // snapshot lock, so what lands here cannot be a mixture of two trees --
+    // which a walk built out of the per-node getters CAN be, because each of
+    // those takes the lock on its own and another thread's count call may
+    // republish between two of them.
+    //
+    // That is now an API PROPERTY of ReadTree, not a property of how this
+    // function happens to be written: the Swift shell (4b) reads the same
+    // guarantee off the declaration instead of having to rediscover it.
+    //
+    // The indices in the returned tree are RAW indices into its own node
+    // table -- not the generation-tagged handles the per-node getters hand
+    // out -- because this copy is ours and nothing can republish underneath
+    // it.  They map one-to-one onto SceneTreeNode positions below.
+    SceneEditController::AuthoredTree t;
+    m_controller->ReadTree(static_cast<SceneEditController::Category>(cat), t);
+
+    const int n = static_cast<int>(t.nodes.size());
     if (n == 0) return out;
-    out.resize(static_cast<int>(n));
+    out.resize(n);
 
-    for (unsigned int i = 0; i < n; ++i) {
-        SceneTreeNode& node = out[static_cast<int>(i)];
-        node.name = QString::fromUtf8(
-            m_controller->TreeNodeName(
-                static_cast<SceneEditController::Category>(catInt), i).c_str());
-
-        unsigned int parent = 0;
-        // FALSE means "root" as well as "unknown handle"; both leave the
-        // default -1, which is what the model treats as a top-level row.
-        if (RISE_API_SceneEditController_TreeNodeParent(m_controller, catInt, i, &parent)) {
-            node.parent = static_cast<int>(parent);
+    for (int i = 0; i < n; ++i) {
+        const SceneEditController::TreeNodeRow& row = t.nodes[static_cast<std::size_t>(i)];
+        SceneTreeNode& node = out[i];
+        node.name = QString::fromUtf8(row.name.c_str());
+        // kInvalidNodeIndex means ROOT, which the model draws as a top-level
+        // row -- that is what the -1 default already says.
+        if (row.parent != SceneEditController::kInvalidNodeIndex
+         && row.parent < static_cast<unsigned int>(n)) {
+            node.parent = static_cast<int>(row.parent);
         }
-
-        const unsigned int kids =
-            RISE_API_SceneEditController_TreeChildCount(m_controller, catInt, i);
-        node.children.reserve(static_cast<int>(kids));
-        for (unsigned int k = 0; k < kids; ++k) {
-            unsigned int child = 0;
-            if (RISE_API_SceneEditController_TreeChildNode(m_controller, catInt, i, k, &child)
-             && child < n) {
-                node.children.append(static_cast<int>(child));
-            }
+        node.children.reserve(static_cast<int>(row.childCount));
+        for (unsigned int k = 0; k < row.childCount; ++k) {
+            const std::size_t slot = static_cast<std::size_t>(row.firstChild) + k;
+            if (slot >= t.childIndices.size()) break;
+            const unsigned int child = t.childIndices[slot];
+            if (child < static_cast<unsigned int>(n)) node.children.append(static_cast<int>(child));
         }
     }
     return out;

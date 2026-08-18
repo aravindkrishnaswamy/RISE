@@ -2046,11 +2046,27 @@ namespace RISE
 		// for the rule and for why nobody may reconstruct it from the
 		// spelling of a name.
 		//
-		// A node is addressed by an opaque handle: an index into this
-		// category's snapshot node table.  Handles are STABLE ONLY WITHIN
-		// ONE SNAPSHOT -- a shell must re-read the tree (and rebuild its own
-		// model) when `SceneEpoch()` advances, exactly as it already does
-		// for the flat lists.
+		// A node is addressed by an opaque handle.  A handle is NOT a bare
+		// index: it carries the SNAPSHOT GENERATION it was minted in, and
+		// every per-node getter refuses a handle whose generation is not the
+		// currently published one.  That is the whole point of the encoding.
+		// A bare index silently RE-RESOLVES across a republish -- remove one
+		// object and the handle that named `BBB` names `CCC`, with a
+		// valid-looking name coming back and no way for the caller to tell.
+		// (Measured, review of 87 step 4a.)  Reachable shapes are ordinary,
+		// not exotic: `for( i = 0; i < c.TreeRootCount( cat ); ++i )`
+		// refreshes once PER ITERATION, and a Qt QAbstractItemModel parks
+		// handles in `QModelIndex::internalId()` across event-loop turns.
+		// With the generation tag a stale handle FAILS -- empty name,
+		// kInvalidTreeNode parent, zero children -- which a caller can act
+		// on.  DO NOT "simplify" the handle back to a raw index.
+		//
+		// PREFER `ReadTree` for anything that walks more than one node.  It
+		// is the only TRANSACTIONAL entry point: one refresh, one locked
+		// pass, the whole tree copied out.  A multi-call walk is not
+		// transactional even without a mutation -- each getter takes the
+		// leaf lock on its own, so another thread's count call can land
+		// between two of them.
 		//
 		// REFRESH CADENCE, and how it differs from the flat getters
 		// deliberately: `TreeNodeCount` and `TreeRootCount` refresh the
@@ -2059,33 +2075,72 @@ namespace RISE
 		// call, which makes a full walk of N entries O(N^2) (each
 		// CategoryEntityName rebuilds the whole list).  A tree walk touches
 		// every node several times, so repeating that here would be O(N^2)
-		// with a much larger constant -- and it would let a walk observe two
-		// different trees, handing out a child handle that the next call no
-		// longer resolves.  Entering through a count getter is not a burden
-		// the shells have to remember: a tree walk BEGINS at the roots.
+		// with a much larger constant.  Entering through a count getter is
+		// not a burden the shells have to remember: a tree walk BEGINS at
+		// the roots.
+		//
+		// A refresh REPUBLISHES ONLY WHEN THE TREE ACTUALLY CHANGED, and the
+		// generation is bumped only then.  That is load-bearing rather than
+		// an optimisation: bumping on every refresh would invalidate every
+		// outstanding handle on every count call, which makes the handle API
+		// unusable.  Compare-then-publish costs one O(n) structural compare
+		// on top of an O(n) build.
+		//
+		// EPOCH CONTRACT, and a TRAP for 4b/4c.  A shell re-reads when
+		// `SceneEpoch()` advances.  That is sufficient TODAY only because
+		// `parent` is a READ-ONLY property (ObjectIntrospection.cpp) and every
+		// re-parent therefore goes through a document chunk edit, which bumps
+		// the epoch.  When 4b/4c add DRAG-TO-REPARENT, that path MUST bump
+		// `mSceneEpoch` itself: a re-parent changes the TREE without changing
+		// any category's entity LIST, so nothing else in the pipeline would
+		// notice, and the outliner would keep drawing the old hierarchy.  The
+		// generation tag does not cover this -- it makes a stale handle fail,
+		// it does not tell a shell that the shape it drew is out of date.
+
+		//! An opaque, GENERATION-TAGGED node handle.  64 bits because it is
+		//! two fields: the high 32 are the snapshot generation the handle was
+		//! minted in, the low 32 the index into that snapshot's node table.
+		//! Callers must treat it as opaque -- the split is an implementation
+		//! detail of Encode/DecodeTreeHandle in the .cpp.  32 bits would have
+		//! forced a narrow generation field that wraps within one GUI session
+		//! and starts making stale handles look valid again, which is the
+		//! exact failure the tag exists to remove.
+		typedef unsigned long long TreeNodeHandle;
 
 		//! Handle value meaning "no such node" -- returned for an
-		//! out-of-range index, and reported as the parent of a root.
-		static constexpr unsigned int kInvalidTreeNode = 0xFFFFFFFFu;
+		//! out-of-range index, for a handle from an older generation, and
+		//! reported as the parent of a root.
+		static constexpr TreeNodeHandle kInvalidTreeNode = 0xFFFFFFFFFFFFFFFFull;
+
+		//! Sentinel for a RAW node index inside an AuthoredTree
+		//! (TreeNodeRow::parent).  Distinct from kInvalidTreeNode, which is a
+		//! HANDLE: the two live in different value spaces and conflating them
+		//! is how a root's parent would decode to node 0xFFFFFFFF.
+		static constexpr unsigned int kInvalidNodeIndex = 0xFFFFFFFFu;
 
 		//! Total nodes in `cat`'s tree.  REFRESHES the snapshot.
 		unsigned int TreeNodeCount( Category cat ) const;
 		//! Number of ROOT nodes in `cat`'s tree.  REFRESHES the snapshot.
 		unsigned int TreeRootCount( Category cat ) const;
+		//! The generation of `cat`'s currently published tree.  Does NOT
+		//! refresh.  A caller that wants to know whether a walk it just did
+		//! spanned a republish reads this before and after and compares; 0
+		//! means nothing has ever been published for this category.
+		unsigned long long TreeGeneration( Category cat ) const;
 		//! Handle of the `rootIdx`-th root, or kInvalidTreeNode.
-		unsigned int TreeRootNode( Category cat, unsigned int rootIdx ) const;
-		//! How many children `node` has.  0 for an unknown handle.
-		unsigned int TreeChildCount( Category cat, unsigned int node ) const;
+		TreeNodeHandle TreeRootNode( Category cat, unsigned int rootIdx ) const;
+		//! How many children `node` has.  0 for an unknown or STALE handle.
+		unsigned int TreeChildCount( Category cat, TreeNodeHandle node ) const;
 		//! Handle of `node`'s `childIdx`-th child, or kInvalidTreeNode.
-		unsigned int TreeChildNode( Category cat, unsigned int node, unsigned int childIdx ) const;
-		//! `node`'s parent handle, or kInvalidTreeNode for a root / unknown
-		//! handle.  Walking this up to a root is how a shell builds the tree
-		//! PATH that 87 §5 step 4 keys expand-state on.
-		unsigned int TreeNodeParent( Category cat, unsigned int node ) const;
+		TreeNodeHandle TreeChildNode( Category cat, TreeNodeHandle node, unsigned int childIdx ) const;
+		//! `node`'s parent handle, or kInvalidTreeNode for a root / unknown /
+		//! STALE handle.  Walking this up to a root is how a shell builds the
+		//! tree PATH that 87 §5 step 4 keys expand-state on.
+		TreeNodeHandle TreeNodeParent( Category cat, TreeNodeHandle node ) const;
 		//! `node`'s entity name -- the identity a shell passes to
-		//! `SetSelection` and renders as the row label.  Empty for an
-		//! unknown handle.
-		String       TreeNodeName( Category cat, unsigned int node ) const;
+		//! `SetSelection` and renders as the row label.  Empty for an unknown
+		//! or STALE handle.
+		String       TreeNodeName( Category cat, TreeNodeHandle node ) const;
 
 		//! One tree node, as published in the snapshot.  `parent` and the
 		//! `childIndices` slice are indices into the SAME snapshot's node
@@ -2093,30 +2148,61 @@ namespace RISE
 		struct TreeNodeRow
 		{
 			String       name;         //!< entity name (the selection identity)
-			unsigned int parent;       //!< kInvalidTreeNode for a root
+			unsigned int parent;       //!< kInvalidNodeIndex for a root
 			unsigned int firstChild;   //!< offset into AuthoredTree::childIndices
 			unsigned int childCount;   //!< length of that slice
 		};
 
-		//! ONE STRUCT, PUBLISHED BY ONE ASSIGNMENT, and it must stay that way.
+		//! ONE STRUCT, READ AND PUBLISHED UNDER ONE LOCK HOLD, and it must
+		//! stay that way.
 		//!
-		//! The flat per-category surface is a single `std::vector<String>`,
-		//! so it gets snapshot atomicity for free: the one `swap` that
-		//! publishes it publishes everything a reader can see.  A TREE is a
-		//! node table PLUS index arrays that address INTO that table.  Split
-		//! across separate snapshot members, a reader could take the leaf
-		//! lock between the writes and observe a NEW `childIndices` against
-		//! an OLD `nodes` -- an out-of-bounds read, not merely a stale
-		//! answer.  Keeping all three vectors in one struct that
-		//! RefreshTreeSnapshot_ publishes with a single move-assignment makes
-		//! that unrepresentable.  DO NOT split these back out into separate
-		//! snapshot members, and do not publish them field by field.
+		//! The flat per-category surface is a single `std::vector<String>`:
+		//! there is nothing to keep consistent with anything else.  A TREE is
+		//! a node table PLUS index arrays that address INTO that table, so a
+		//! reader that saw a NEW `childIndices` against an OLD `nodes` would
+		//! read OUT OF BOUNDS, not merely answer stale.
+		//!
+		//! WHAT ACTUALLY PREVENTS THAT is `mUiSnapshotMutex`: RefreshTreeSnapshot_
+		//! assigns this struct while holding it, and EVERY reader holds the
+		//! same lock for the WHOLE of its read.  It is NOT the assignment
+		//! being one statement -- the publish is the compiler-generated
+		//! `AuthoredTree::operator=( AuthoredTree&& )`, which is FOUR
+		//! sequential member assignments (three vector moves and the
+		//! generation), and a reader that took no lock could land between any
+		//! two of them.  An earlier version of this comment claimed the
+		//! single assignment was itself the mechanism; it is not, and reading
+		//! it that way would invite a lock-free reader that is unsound.
+		//!
+		//! Keeping the vectors in one struct is still worth doing -- it is
+		//! what makes "publish them all or none" the obvious shape and stops
+		//! a future edit from publishing one member outside the lock -- so DO
+		//! NOT split these back out into separate snapshot members.
 		struct AuthoredTree
 		{
 			std::vector<TreeNodeRow>  nodes;
 			std::vector<unsigned int> childIndices;  //!< flattened child lists
 			std::vector<unsigned int> roots;         //!< indices into `nodes`
+			//! The generation this tree was published at; 0 = never
+			//! published.  Handles minted from this tree carry it, and the
+			//! per-node getters refuse any handle that does not match.
+			//! Travels INSIDE the struct so it cannot be published
+			//! separately from the table it describes.
+			unsigned long long        generation = 0;
 		};
+
+		//! THE TRANSACTIONAL READ, and what every multi-node consumer should
+		//! use.  Refreshes once, then copies the whole published tree out
+		//! under a single hold of the leaf lock, so the result cannot mix two
+		//! trees the way a sequence of per-node getters can.  The returned
+		//! indices (`roots`, `TreeNodeRow::parent`, `childIndices`) are RAW
+		//! indices into `out.nodes` -- not handles -- because the caller owns
+		//! the copy and nothing can republish underneath it.
+		//!
+		//! This is an API PROPERTY, not an accident of how a given shell
+		//! happens to be written: ViewportBridge::categoryTree and 4b's
+		//! SwiftUI model both depend on it, and neither should have to
+		//! rediscover it by reasoning about the getters.
+		void ReadTree( Category cat, AuthoredTree& out ) const;
 
 		//! The input to the pure tree assembler: one record per node that is
 		//! to APPEAR in the tree, already resolved out of whatever the
@@ -2148,6 +2234,8 @@ namespace RISE
 		//!    a deep chain either.
 		//!  - Roots and each child list are ordered by `order`, ties broken
 		//!    by name, so the result is deterministic.
+		//!  - `generation` is left 0: only RefreshTreeSnapshot_ stamps it,
+		//!    at publish time.
 		static AuthoredTree BuildAuthoredTree( const std::vector<TreeNodeSeed>& seeds );
 
 		//! Monotonic counter — set ONCE at controller construction from
@@ -4920,6 +5008,21 @@ namespace RISE
 		String       CategoryEntityNameLocked_( Category cat, unsigned int idx ) const;
 		String       CategoryActiveNameLocked_( Category cat ) const;
 
+		//! ALL of `cat`'s entity names in ONE pass -- the O(N) bulk twin of
+		//! the O(N) - per - call `CategoryEntityNameLocked_`.  Same list, same
+		//! order, by construction: the manager-backed categories share the
+		//! single EnumerateItemNames call here, and the handful that are
+		//! genuinely index-addressed (Rasterizer, Film, Animation,
+		//! SceneVariant) fall through to the count+index loop, which is O(N)
+		//! for them anyway.
+		//!
+		//! Exists because the per-index getter RE-ENUMERATES THE WHOLE
+		//! MANAGER on every call, so building a list of N names through it is
+		//! O(N^2).  RefreshEnumSnapshot_ has always paid that; the tree API
+		//! is meant to REPLACE the flat one and must not inherit its worst
+		//! property, so both go through this.  REQUIRES mMutex held.
+		void CategoryEntityNamesLocked_( Category cat, std::vector<String>& out ) const;
+
 		//! Round-4 structural fix (the "UI reads live managers" P1 class): the
 		//! PUBLIC enumeration getters serve a per-category SNAPSHOT with a
 		//! stale-fallback refresh, never a blocking mMutex hold.  Refresh
@@ -4941,8 +5044,23 @@ namespace RISE
 		//! tree once per `CategoryEntityName` -- N tree builds to enumerate N
 		//! names.  Identical discipline otherwise: bail on render-owns-scene,
 		//! bail on a contended mMutex (serving the prior tree in both cases),
-		//! build into a LOCAL under mMutex, publish with one swap under the
-		//! leaf mUiSnapshotMutex.
+		//! build into a LOCAL under mMutex, publish under the leaf
+		//! mUiSnapshotMutex -- but COMPARE FIRST and publish only when the
+		//! tree actually changed, stamping a fresh generation when it does.
+		//! An unconditional publish would bump the generation on every count
+		//! call and invalidate every outstanding handle, which would make the
+		//! handle API unusable for the shells it exists for.
+		//!
+		//! Note on the `std::try_to_lock` above: it doubles as a re-entrancy
+		//! guard (a dirty-changed listener that calls back in on the mutating
+		//! thread fails it and gets the stale tree).  By the standard,
+		//! try_lock on a non-recursive mutex the calling thread already owns
+		//! is UNDEFINED; in practice pthreads and Win32 both return false,
+		//! which is the behaviour relied on.  This is PRE-EXISTING -- the
+		//! whole refresh discipline is copied from RefreshEnumSnapshot_,
+		//! which has always done it -- and is recorded here rather than
+		//! changed, because changing it is a change to the deadlock-avoidance
+		//! contract of every snapshot getter, not a local edit.
 		void RefreshTreeSnapshot_( Category cat ) const;
 
 		//! Build `cat`'s tree from the live managers.  REQUIRES mMutex held.
@@ -4977,14 +5095,22 @@ namespace RISE
 			std::vector<CameraProperty> propertiesByCategory[kNumCategories];
 			std::vector<String>         entityNames[kNumCategories];
 			String                      activeNames[kNumCategories];
-			//! 87 step 4a.  ONE AuthoredTree per category, each published by
-			//! a single struct swap -- see AuthoredTree's own comment for why
-			//! its three vectors may not be hoisted out into three arrays
-			//! here.
+			//! 87 step 4a.  ONE AuthoredTree per category -- see AuthoredTree's
+			//! own comment for why its vectors may not be hoisted out into
+			//! parallel arrays here.
 			AuthoredTree                trees[kNumCategories];
 		};
 		mutable std::mutex        mUiSnapshotMutex;   // leaf: never held while acquiring any other lock
 		mutable EditorUiSnapshot  mUi;
+
+		//! Next snapshot generation to stamp onto a republished tree.
+		//! PROCESS-of-this-controller-wide rather than per category, so a
+		//! handle minted for one category can never match another category's
+		//! published generation -- a cross-category handle mix-up fails the
+		//! same way a stale one does instead of resolving to an unrelated
+		//! entity.  Guarded by mUiSnapshotMutex; starts at 1 so that 0 keeps
+		//! meaning "never published".
+		mutable unsigned long long mNextTreeGeneration = 1;
 
 		//! External-review P1 (2026-07-22): general reference-target guard for
 		//! GUI property edits.  Returns true (== "reject this edit") ONLY when

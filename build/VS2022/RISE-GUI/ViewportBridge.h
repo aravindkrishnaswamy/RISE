@@ -122,9 +122,12 @@ struct ViewportRenderModeInfo {
 /// QVector<SceneTreeNode> this node came from -- which is why the whole
 /// tree is handed over as one vector by `categoryTree()` rather than
 /// walked node by node: the controller's own snapshot may be republished
-/// between calls, so a handle read in one call is not guaranteed to
-/// resolve in the next.  One pass, one consistent tree, and a
-/// QAbstractItemModel can hold it as its backing store.
+/// between calls, and a handle minted before a republish is REFUSED
+/// afterwards (it carries the snapshot generation, so it fails rather
+/// than silently naming whichever node now sits at that index).  One
+/// locked pass, one consistent tree, and a QAbstractItemModel can hold
+/// it as its backing store -- including in QModelIndex::internalId(),
+/// which is exactly the place a controller handle must never go.
 ///
 /// `parent` is -1 for a root.  `name` is the entity name -- what the row
 /// displays and what `setSelection()` takes.
@@ -1028,6 +1031,18 @@ public:
     /// render list: 87 step 3's synthesized instancing entries (`I.X`,
     /// `I[i,j]`) are folded into the chunk that produced them, so an 8x8
     /// instanced grid is one row rather than 64+.
+    ///
+    /// TRANSACTIONAL: built from SceneEditController::ReadTree, which
+    /// copies the whole published tree under one lock hold, so the
+    /// result is never a mixture of two trees.  Do NOT reimplement this
+    /// as a walk over the per-node getters -- each of those takes the
+    /// snapshot lock separately, and another thread's count call can
+    /// republish between two of them.
+    ///
+    /// Re-read this whenever the scene epoch advances.  NOTE for the
+    /// drag-to-reparent work: a re-parent changes the TREE without
+    /// changing any category's entity LIST, so that path must bump the
+    /// scene epoch itself or the outliner keeps drawing the old shape.
     ///
     /// Empty vector on a null controller or an empty category.
     QVector<SceneTreeNode> categoryTree(Category cat) const;

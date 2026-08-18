@@ -50,6 +50,17 @@
 //         a plausible-looking zero.
 //    L -- the flat API is UNCHANGED.  4b/4c migrate the shells off it;
 //         nothing may regress before then.
+//    M -- a COUNTED ARRAY is not swallowed by an unrelated live object
+//         that shares the instancing chunk's name.  The fold reads the
+//         LIVE manager's keyspace; the derive-time collision guard reads
+//         the DOCUMENT's `name`-param keyspace, and an unnamed chunk puts
+//         `noname` in the first and nothing in the second.
+//    N -- a STALE handle FAILS rather than resolving to a different
+//         object, through both the C++ and the C-ABI surface.
+//    O -- a read is TRANSACTIONAL (ReadTree copies the whole tree under
+//         one lock hold), and an idle refresh neither republishes nor
+//         invalidates an outstanding handle.
+//    P -- the sibling sort's tie-break-by-name branch.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -112,7 +123,8 @@ static std::string TreeDump( const SceneEditController& c, Cat cat, bool* outPar
 	// (node, depth, expected parent) -- an explicit stack, so a cycle that
 	// somehow survived the assembler shows up as a hang in THIS test rather
 	// than as a stack overflow with no line number.  Bounded below.
-	std::vector<unsigned int> stackNode, stackDepth, stackParent;
+	std::vector<SceneEditController::TreeNodeHandle> stackNode, stackParent;
+	std::vector<unsigned int> stackDepth;
 	const unsigned int total = c.TreeNodeCount( cat );
 	const unsigned int roots = c.TreeRootCount( cat );
 	for( unsigned int r = roots; r > 0; --r ) {
@@ -122,9 +134,9 @@ static std::string TreeDump( const SceneEditController& c, Cat cat, bool* outPar
 	}
 	unsigned int emitted = 0;
 	while( !stackNode.empty() ) {
-		const unsigned int n = stackNode.back();     stackNode.pop_back();
-		const unsigned int d = stackDepth.back();    stackDepth.pop_back();
-		const unsigned int p = stackParent.back();   stackParent.pop_back();
+		const SceneEditController::TreeNodeHandle n = stackNode.back();  stackNode.pop_back();
+		const unsigned int d = stackDepth.back();                        stackDepth.pop_back();
+		const SceneEditController::TreeNodeHandle p = stackParent.back(); stackParent.pop_back();
 		if( c.TreeNodeParent( cat, n ) != p && outParentsAgree ) *outParentsAgree = false;
 		if( !out.empty() ) out += "|";
 		for( unsigned int i = 0; i < d; ++i ) out += "  ";
@@ -233,7 +245,7 @@ int main()
 				       "A: every entry of a flat category is a ROOT" );
 				bool sameNames = true, anyChildren = false;
 				for( unsigned int i = 0; i < n; ++i ) {
-					const unsigned int node = c.TreeRootNode( cat, i );
+					const SceneEditController::TreeNodeHandle node = c.TreeRootNode( cat, i );
 					if( std::string( c.TreeNodeName( cat, node ).c_str() )
 					 != std::string( c.CategoryEntityName( cat, i ).c_str() ) ) sameNames = false;
 					if( c.TreeChildCount( cat, node ) != 0 ) anyChildren = true;
@@ -558,10 +570,23 @@ int main()
 
 	// =================================================================
 	// K -- the C-ABI surface.
+	//
+	// THE FIXTURE IS THE TEST HERE.  An earlier version used just
+	// `root` + `kid`, where `root` is the only root AND the
+	// first-registered object, so its node index is 0 -- and 0 is also
+	// what a wrapper that simply zeroed its out-parameter would produce.
+	// Two numbering schemes coincided, and `*outNode = 0;` in
+	// TreeRootNode, and `*outParent = 0;` in TreeNodeParent, both left the
+	// suite fully green.  (Verified; the same mutation on TreeChildNode
+	// WAS caught, because `kid`'s child handle is 1.)  So the fixture now
+	// declares `aaa` FIRST: the root under test is the SECOND root and the
+	// second-registered node, `kid`'s parent handle is not 0, and neither
+	// coincides with a zeroed out-param.
 	// =================================================================
 	{
 		const char* s = "sgnode_cabi.RISEscene";
 		Job* j = LoadScene( s,
+			"standard_object\n{\nname aaa\ngeometry g\nmaterial m\n}\n"
 			"standard_object\n{\nname root\n}\n"
 			"standard_object\n{\nname kid\nparent root\ngeometry g\nmaterial m\n}\n",
 			"K: C-ABI scene loads" );
@@ -569,41 +594,58 @@ int main()
 			SceneEditController c( *j, 0 );
 			const int OBJ = static_cast<int>( Cat::Object );
 
-			Check( RISE_API_SceneEditController_TreeNodeCount( &c, OBJ ) == 2, "K: C count == 2" );
-			Check( RISE_API_SceneEditController_TreeRootCount( &c, OBJ ) == 1, "K: C root count == 1" );
+			Check( RISE_API_SceneEditController_TreeNodeCount( &c, OBJ ) == 3, "K: C count == 3" );
+			Check( RISE_API_SceneEditController_TreeRootCount( &c, OBJ ) == 2, "K: C root count == 2" );
+			Check( RISE_API_SceneEditController_TreeGeneration( &c, OBJ ) != 0,
+			       "K: a published tree has a non-zero generation" );
 
-			unsigned int rootNode = 0xDEADu;
-			Check( RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 0, &rootNode ),
+			// Root 0 is `aaa`.  Reading it is what makes root 1 below a
+			// DISCRIMINATING read rather than one that any constant would pass.
+			unsigned long long firstRoot = 0xDEADull;
+			Check( RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 0, &firstRoot ),
 			       "K: root 0 resolves" );
 			char buf[128] = { 0 };
+			Check( RISE_API_SceneEditController_TreeNodeName( &c, OBJ, firstRoot, buf, sizeof(buf) )
+			    && std::string( buf ) == "aaa", "K: root 0 is `aaa` -- the first-registered object" );
+
+			unsigned long long rootNode = 0xDEADull;
+			Check( RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 1, &rootNode ),
+			       "K: root 1 resolves" );
+			buf[0] = 0;
 			Check( RISE_API_SceneEditController_TreeNodeName( &c, OBJ, rootNode, buf, sizeof(buf) )
-			    && std::string( buf ) == "root", "K: the root's name comes back as `root`" );
+			    && std::string( buf ) == "root", "K: root 1's name comes back as `root`" );
+			Check( rootNode != firstRoot,
+			       "K: the two roots have DIFFERENT handles -- TreeRootNode is not answering a constant" );
 
 			Check( RISE_API_SceneEditController_TreeChildCount( &c, OBJ, rootNode ) == 1,
-			       "K: the root has one child" );
-			unsigned int kidNode = 0xDEADu;
+			       "K: `root` has one child" );
+			Check( RISE_API_SceneEditController_TreeChildCount( &c, OBJ, firstRoot ) == 0,
+			       "K: `aaa` has none -- the child count is per node, not a constant" );
+			unsigned long long kidNode = 0xDEADull;
 			Check( RISE_API_SceneEditController_TreeChildNode( &c, OBJ, rootNode, 0, &kidNode ),
 			       "K: child 0 resolves" );
 			buf[0] = 0;
 			Check( RISE_API_SceneEditController_TreeNodeName( &c, OBJ, kidNode, buf, sizeof(buf) )
 			    && std::string( buf ) == "kid", "K: the child's name comes back as `kid`" );
 
-			unsigned int par = 0xDEADu;
+			unsigned long long par = 0xDEADull;
 			Check( RISE_API_SceneEditController_TreeNodeParent( &c, OBJ, kidNode, &par )
-			    && par == rootNode, "K: the child's parent is the root" );
+			    && par == rootNode && par != firstRoot,
+			       "K: the child's parent is `root` -- and NOT the first-registered node, so this "
+			       "is not a zeroed out-param passing by coincidence" );
 
 			// Every out-of-range address is a FAILURE, and leaves its
 			// out-parameter untouched -- a shell that mistook a zeroed
 			// out-param for node 0 would render the wrong row.
-			unsigned int sentinel = 0xBEEFu;
+			unsigned long long sentinel = 0xBEEFull;
 			Check( !RISE_API_SceneEditController_TreeRootNode( &c, OBJ, 9, &sentinel )
-			    && sentinel == 0xBEEFu, "K: an out-of-range root index fails and writes nothing" );
+			    && sentinel == 0xBEEFull, "K: an out-of-range root index fails and writes nothing" );
 			Check( !RISE_API_SceneEditController_TreeChildNode( &c, OBJ, rootNode, 9, &sentinel )
-			    && sentinel == 0xBEEFu, "K: an out-of-range child index fails and writes nothing" );
+			    && sentinel == 0xBEEFull, "K: an out-of-range child index fails and writes nothing" );
 			Check( !RISE_API_SceneEditController_TreeChildNode( &c, OBJ, 999, 0, &sentinel )
-			    && sentinel == 0xBEEFu, "K: an unknown node handle fails and writes nothing" );
+			    && sentinel == 0xBEEFull, "K: an unknown node handle fails and writes nothing" );
 			Check( !RISE_API_SceneEditController_TreeNodeParent( &c, OBJ, rootNode, &sentinel )
-			    && sentinel == 0xBEEFu, "K: a ROOT reports NO parent and writes nothing" );
+			    && sentinel == 0xBEEFull, "K: a ROOT reports NO parent and writes nothing" );
 			buf[0] = 'z';
 			Check( !RISE_API_SceneEditController_TreeNodeName( &c, OBJ, 999, buf, sizeof(buf) ),
 			       "K: an unknown handle has no name" );
@@ -612,6 +654,7 @@ int main()
 			// RISE_API_SceneEditController_* getter carries.
 			Check( RISE_API_SceneEditController_TreeNodeCount( 0, OBJ ) == 0, "K: null controller -> 0 nodes" );
 			Check( RISE_API_SceneEditController_TreeRootCount( 0, OBJ ) == 0, "K: null controller -> 0 roots" );
+			Check( RISE_API_SceneEditController_TreeGeneration( 0, OBJ ) == 0, "K: null controller -> generation 0" );
 			Check( !RISE_API_SceneEditController_TreeRootNode( 0, OBJ, 0, &sentinel ), "K: null controller -> no root" );
 			Check( RISE_API_SceneEditController_TreeChildCount( 0, OBJ, 0 ) == 0, "K: null controller -> 0 children" );
 			Check( !RISE_API_SceneEditController_TreeChildNode( 0, OBJ, 0, 0, &sentinel ), "K: null controller -> no child" );
@@ -652,6 +695,228 @@ int main()
 		}
 		j->release();
 		std::remove( s );
+	}
+
+	// =================================================================
+	// M -- A COUNTED ARRAY MUST NOT VANISH INTO AN UNRELATED OBJECT.
+	//
+	// Two keyspaces that do not agree.  The fold reads the LIVE manager's
+	// names.  The derive-time guard that is supposed to make a fold target
+	// unambiguous -- ExpandSourceInstance's collision scan -- reads the
+	// DOCUMENT's `name` PARAM names, and BuildObjectChunkIndex only indexes
+	// a chunk that CARRIES one.  A `standard_object` with no `name` line
+	// still registers a live object, because Finalize defaults the name to
+	// `noname`.  So this document loads with ZERO diagnostics and the two
+	// keyspaces disagree about exactly one name.
+	//
+	// Before the fix: `noname[0,0]` and `noname[1,0]` folded into the
+	// unrelated plain object `noname`; the synth pass then skipped the
+	// chunk because the target "already had an entry"; so the array AND
+	// the chunk the author wrote got NO ROW AT ALL, and `Z parent
+	// noname[0,0]` resolved onto the stranger.  Silently.
+	//
+	// After: the fold is REFUSED (the target is live but is not the
+	// collapse case), the repetitions stay visible as their own nodes, and
+	// `Z` stays under the repetition it actually names.  A noisy outliner
+	// is recoverable; a missing array is not.
+	//
+	// Both chunk ORDERS, because the fold decision must not depend on
+	// which chunk registered first.
+	// =================================================================
+	{
+		const char* s = "sgnode_namespace.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed -> live object `noname`
+			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n"
+			"standard_object\n{\nname Z\ngeometry g\nmaterial m\nparent noname[0,0]\n}\n",
+			"M: the two-keyspace scene loads with no diagnostic" );
+		{
+			SceneEditController c( *j, 0 );
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			Check( om && om->GetItem( "noname" ) && om->GetItem( "noname[0,0]" ) && om->GetItem( "noname[1,0]" ),
+			       "M: the premise -- an UNRELATED live object named `noname` coexists with a counted "
+			       "instancing chunk of the same name" );
+			CheckEq( TreeDump( c, Cat::Object ), "S|noname|noname[0,0]|  Z|noname[1,0]",
+			         "M: the counted array still has rows, and `Z` stays under the repetition it names "
+			         "-- neither is swallowed by the unrelated same-named object" );
+		}
+		j->release();
+		std::remove( s );
+	}
+	{
+		const char* s = "sgnode_namespace2.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname S\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname noname\nsource S\ncount_u 2\n}\n"
+			"standard_object\n{\ngeometry g\nmaterial m\n}\n"                    // unnamed, declared AFTER
+			"standard_object\n{\nname Z\ngeometry g\nmaterial m\nparent noname[0,0]\n}\n",
+			"M: the reversed-order scene loads with no diagnostic" );
+		{
+			SceneEditController c( *j, 0 );
+			CheckEq( TreeDump( c, Cat::Object ), "S|noname[0,0]|  Z|noname[1,0]|noname",
+			         "M: and the same holds with the chunks in the other order -- the fold decision "
+			         "does not depend on which registered first" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// N -- A STALE HANDLE FAILS.  It does NOT quietly name another object.
+	//
+	// Measured on the pre-fix API: handle 1 resolved to `bkid`'s
+	// predecessor, an object was removed, a count getter refreshed, and
+	// handle 1 then resolved to a DIFFERENT node -- with the name getter
+	// returning success and a plausible name.  No caller could tell.
+	//
+	// The shapes that reach it are ordinary: `for( i = 0; i <
+	// c.TreeRootCount( cat ); ++i )` refreshes once per iteration, and a
+	// QAbstractItemModel parks handles in QModelIndex::internalId() across
+	// event-loop turns.  Node order is (registration serial, name), so a
+	// remove shifts every later index down by one.
+	//
+	// The fixture is built so the stale index lands on a node of a
+	// DIFFERENT KIND (a child, not a root) -- otherwise "resolved to the
+	// wrong node" and "resolved to the right node" would look alike.
+	// =================================================================
+	{
+		const char* s = "sgnode_stalehandle.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname aaa\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname bbb\n}\n"
+			"standard_object\n{\nname bkid\nparent bbb\ngeometry g\nmaterial m\n}\n"
+			"standard_object\n{\nname ccc\ngeometry g\nmaterial m\n}\n",
+			"N: stale-handle scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+			const int OBJ = static_cast<int>( Cat::Object );
+			CheckEq( TreeDump( c, Cat::Object ), "aaa|bbb|  bkid|ccc", "N: the tree starts as declared" );
+
+			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 1 );
+			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "bbb",
+			         "N: the captured handle names `bbb` before the mutation" );
+			const unsigned long long genBefore = c.TreeGeneration( Cat::Object );
+
+			// Remove the FIRST object, which shifts every later node index
+			// down by one -- so the captured handle's raw index now addresses
+			// `bkid`, a child of a different node.
+			const IScene* sc = j->GetScene();
+			IObjectManager* om = sc ? const_cast<IObjectManager*>( sc->GetObjects() ) : 0;
+			Check( om && om->RemoveItem( "aaa" ), "N: `aaa` removed from the live manager" );
+			Check( c.TreeNodeCount( Cat::Object ) == 3, "N: a count getter refreshes and sees three nodes" );
+			Check( c.TreeGeneration( Cat::Object ) != genBefore,
+			       "N: a tree that CHANGED gets a new snapshot generation" );
+
+			Check( c.TreeNodeName( Cat::Object, h ).size() <= 1,
+			       "N: the STALE handle has NO name -- it does not resolve to whatever node now sits "
+			       "at that index" );
+			Check( c.TreeNodeParent( Cat::Object, h ) == SceneEditController::kInvalidTreeNode,
+			       "N: the stale handle has no parent either" );
+			Check( c.TreeChildCount( Cat::Object, h ) == 0, "N: and no children" );
+
+			char buf[128] = { 0 };
+			buf[0] = 'z';
+			Check( !RISE_API_SceneEditController_TreeNodeName( &c, OBJ, h, buf, sizeof(buf) ),
+			       "N: the C ABI reports the stale handle as a FAILURE, not as a row" );
+			unsigned long long sentinel = 0xBEEFull;
+			Check( !RISE_API_SceneEditController_TreeNodeParent( &c, OBJ, h, &sentinel )
+			    && sentinel == 0xBEEFull,
+			       "N: and the stale parent read fails and writes nothing" );
+
+			// The control: the API is refusing STALENESS, not refusing to work.
+			CheckEq( TreeDump( c, Cat::Object ), "bbb|  bkid|ccc",
+			         "N: control -- a fresh walk after the mutation is correct and complete" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// O -- A WALK IS TRANSACTIONAL, and an idle refresh costs nothing.
+	//
+	// Two halves of the same problem.  (1) Even with NO mutation, a
+	// multi-call walk takes the snapshot lock once per getter, so another
+	// thread's count call can land between two of them; `ReadTree` closes
+	// that by copying the whole tree under ONE hold, and the copy is the
+	// caller's -- a later republish cannot reach into it.  (2) A refresh
+	// that finds NOTHING CHANGED must not republish, or every count call
+	// would invalidate every outstanding handle and the handle API would
+	// be unusable for the shells it exists for.
+	//
+	// Driven single-threaded on purpose.  A genuinely concurrent mutator
+	// would have to mutate the LIVE manager from a second thread, which no
+	// production path does and which the controller's lock does not cover
+	// -- that would be testing an unsupported shape, not this one.  The
+	// property under test is the one that matters and it is fully
+	// determined: the copy is unaffected by a republish that happens after
+	// it was taken.
+	// =================================================================
+	{
+		const char* s = "sgnode_transactional.RISEscene";
+		Job* j = LoadScene( s,
+			"standard_object\n{\nname hub\n}\n"
+			"standard_object\n{\nname arm\nparent hub\ngeometry g\nmaterial m\nposition 0 1 0\n}\n",
+			"O: transactional-read scene loads" );
+		{
+			SceneEditController c( *j, 0 );
+
+			// (2) an idle refresh does not move the generation, so a handle
+			//     taken before it still resolves after it.  The walk BEGINS at
+			//     a count getter, which is the documented entry point -- the
+			//     per-node getters serve the published snapshot and a fresh
+			//     controller has not published one yet.
+			Check( c.TreeNodeCount( Cat::Object ) == 2, "O: the first count publishes the tree" );
+			const SceneEditController::TreeNodeHandle h = c.TreeRootNode( Cat::Object, 0 );
+			const unsigned long long gen0 = c.TreeGeneration( Cat::Object );
+			for( int i = 0; i < 5; ++i ) { c.TreeNodeCount( Cat::Object ); c.TreeRootCount( Cat::Object ); }
+			Check( c.TreeGeneration( Cat::Object ) == gen0,
+			       "O: refreshing an UNCHANGED tree does not republish it" );
+			CheckEq( std::string( c.TreeNodeName( Cat::Object, h ).c_str() ), "hub",
+			         "O: so a handle survives the idle refreshes a UI poll makes" );
+
+			// (1) the transactional read agrees with the handle walk ...
+			SceneEditController::AuthoredTree t;
+			c.ReadTree( Cat::Object, t );
+			CheckEq( RawDump( t ), "hub|  arm",
+			         "O: ReadTree hands over the WHOLE tree in one pass -- nodes, child index and roots" );
+			Check( t.generation == c.TreeGeneration( Cat::Object ) && t.generation != 0,
+			       "O: and it carries the generation it was published at" );
+
+			// ... and the copy is immune to a later republish.
+			Check( j->SetObjectParent( "arm", 0 ), "O: `arm` detached on the live manager" );
+			Check( c.TreeNodeCount( Cat::Object ) == 2, "O: a count getter refreshes" );
+			CheckEq( RawDump( t ), "hub|  arm",
+			         "O: the copy taken earlier is UNCHANGED by the republish -- a walk over it cannot "
+			         "mix two trees" );
+			SceneEditController::AuthoredTree t2;
+			c.ReadTree( Cat::Object, t2 );
+			CheckEq( RawDump( t2 ), "hub|arm", "O: while a fresh read sees the new shape" );
+			Check( t2.generation != t.generation, "O: which is a different generation" );
+		}
+		j->release();
+		std::remove( s );
+	}
+
+	// =================================================================
+	// P -- the sibling sort's TIE-BREAK-BY-NAME branch.
+	//
+	// Every scene fixture gives its objects distinct registration serials,
+	// so nothing above reaches the tiebreak; without this the branch is
+	// live code with no coverage at all.  Driven through the pure
+	// assembler, which is the only place two equal `order` keys can be
+	// constructed.
+	// =================================================================
+	{
+		std::vector<Seed> seeds;
+		seeds.push_back( MakeSeed( "bee", "", 5 ) );
+		seeds.push_back( MakeSeed( "ant", "", 5 ) );   // same order key as `bee`
+		seeds.push_back( MakeSeed( "cat", "", 4 ) );
+		const SceneEditController::AuthoredTree t = SceneEditController::BuildAuthoredTree( seeds );
+		CheckEq( RawDump( t ), "cat|ant|bee",
+		         "P: `order` decides first, and equal orders break by NAME -- not by the order the "
+		         "seeds happened to arrive in" );
 	}
 
 	std::cout << passCount << " passed, " << failCount << " failed" << std::endl;

@@ -8731,21 +8731,29 @@ namespace RISE
 			static_cast<SceneEditController::Category>( category ) );
 	}
 
+	unsigned long long RISE_API_SceneEditController_TreeGeneration(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->TreeGeneration(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
 	bool RISE_API_SceneEditController_TreeRootNode(
 		SceneEditController* p, int category, unsigned int rootIdx,
-		unsigned int* outNode )
+		unsigned long long* outNode )
 	{
 		if( !p || !outNode ) return false;
 		const SceneEditController::Category cat =
 			static_cast<SceneEditController::Category>( category );
-		const unsigned int n = p->TreeRootNode( cat, rootIdx );
+		const SceneEditController::TreeNodeHandle n = p->TreeRootNode( cat, rootIdx );
 		if( n == SceneEditController::kInvalidTreeNode ) return false;
 		*outNode = n;
 		return true;
 	}
 
 	unsigned int RISE_API_SceneEditController_TreeChildCount(
-		SceneEditController* p, int category, unsigned int node )
+		SceneEditController* p, int category, unsigned long long node )
 	{
 		if( !p ) return 0;
 		return p->TreeChildCount(
@@ -8753,33 +8761,33 @@ namespace RISE
 	}
 
 	bool RISE_API_SceneEditController_TreeChildNode(
-		SceneEditController* p, int category, unsigned int node,
-		unsigned int childIdx, unsigned int* outNode )
+		SceneEditController* p, int category, unsigned long long node,
+		unsigned int childIdx, unsigned long long* outNode )
 	{
 		if( !p || !outNode ) return false;
 		const SceneEditController::Category cat =
 			static_cast<SceneEditController::Category>( category );
-		const unsigned int n = p->TreeChildNode( cat, node, childIdx );
+		const SceneEditController::TreeNodeHandle n = p->TreeChildNode( cat, node, childIdx );
 		if( n == SceneEditController::kInvalidTreeNode ) return false;
 		*outNode = n;
 		return true;
 	}
 
 	bool RISE_API_SceneEditController_TreeNodeParent(
-		SceneEditController* p, int category, unsigned int node,
-		unsigned int* outParent )
+		SceneEditController* p, int category, unsigned long long node,
+		unsigned long long* outParent )
 	{
 		if( !p || !outParent ) return false;
 		const SceneEditController::Category cat =
 			static_cast<SceneEditController::Category>( category );
-		const unsigned int n = p->TreeNodeParent( cat, node );
+		const SceneEditController::TreeNodeHandle n = p->TreeNodeParent( cat, node );
 		if( n == SceneEditController::kInvalidTreeNode ) return false;
 		*outParent = n;
 		return true;
 	}
 
 	bool RISE_API_SceneEditController_TreeNodeName(
-		SceneEditController* p, int category, unsigned int node,
+		SceneEditController* p, int category, unsigned long long node,
 		char* buf, unsigned int bufLen )
 	{
 		if( !p ) return false;
@@ -8795,8 +8803,17 @@ namespace RISE
 		// TreeNodeCount first: that getter REFRESHES the snapshot, so calling
 		// it here would re-publish a possibly different tree in the middle of
 		// a shell's walk -- the exact hazard the split refresh cadence exists
-		// to remove.  Every registered entity has a non-empty name, so the
-		// two conditions coincide.
+		// to remove.
+		//
+		// The two conditions COINCIDE rather than being one condition: every
+		// entity registered through the parsers has a non-empty name
+		// (standard_object defaults an omitted `name` to `noname`), but
+		// GenericManager::AddItem only NULL-checks the name pointer, so an
+		// entity literally named "" would be reported here as an unknown
+		// handle.  Not reachable through any parser today.  Recorded rather
+		// than guarded: a second discriminator would be one more thing to
+		// keep in sync, and the honest fix if it ever becomes reachable is
+		// for AddItem to refuse the empty name.
 		const String nm = p->TreeNodeName( cat, node );
 		if( nm.size() <= 1 ) return false;
 		CopyToBuf( nm, buf, bufLen );

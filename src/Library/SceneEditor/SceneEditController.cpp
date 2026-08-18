@@ -3921,9 +3921,7 @@ void SceneEditController::RefreshEnumSnapshot_( Category cat ) const
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
 	std::vector<String> names;
-	const unsigned int n = CategoryEntityCountLocked_( cat );
-	names.reserve( n );
-	for( unsigned int i = 0; i < n; ++i ) names.push_back( CategoryEntityNameLocked_( cat, i ) );
+	CategoryEntityNamesLocked_( cat, names );   // ONE pass -- see the header note on the O(N^2) it replaces
 	String active = CategoryActiveNameLocked_( cat );
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );              // leaf lock: never held across mMutex
 	mUi.entityNames[ci].swap( names );
@@ -4130,6 +4128,63 @@ String SceneEditController::CategoryEntityNameLocked_( Category cat, unsigned in
 	}
 }
 
+void SceneEditController::CategoryEntityNamesLocked_( Category cat, std::vector<String>& out ) const
+{
+	out.clear();
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return;
+	// The manager-backed categories: ONE EnumerateItemNames each.  These are
+	// exactly the cases where the per-index getter re-enumerates, so they are
+	// the ones that turn an N-name build into O(N^2).
+	switch( cat ) {
+	case Category::Camera: {
+		const ICameraManager* m = scene->GetCameras();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Object: {
+		const IObjectManager* m = scene->GetObjects();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Light: {
+		const ILightManager* m = scene->GetLights();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Material: {
+		const IMaterialManager* m = mJob.GetMaterials();
+		if( !m ) return;
+		CollectNamesCallback cb; m->EnumerateItemNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Medium: {
+		CollectNamesCallback cb; mJob.EnumerateMediumNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Geometry: {
+		CollectNamesCallback cb; mJob.EnumerateGeometryNames( cb ); out.swap( cb.names );
+		return;
+	}
+	case Category::Painter: {
+		out = CollectPainterUnionNames( mJob );
+		return;
+	}
+	default:
+		break;
+	}
+	// Rasterizer / Film / Animation / SceneVariant are genuinely
+	// index-addressed -- their per-index getter is O(1), so the plain loop is
+	// already O(N) and going through it keeps ONE definition of what those
+	// lists contain.
+	const unsigned int n = CategoryEntityCountLocked_( cat );
+	out.reserve( n );
+	for( unsigned int i = 0; i < n; ++i ) out.push_back( CategoryEntityNameLocked_( cat, i ) );
+}
+
 String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 {
 	switch( cat ) {
@@ -4198,6 +4253,55 @@ String SceneEditController::CategoryActiveNameLocked_( Category cat ) const
 //                                RefreshEnumSnapshot_ uses.
 // =====================================================================
 
+namespace {
+
+//! Structural equality of two published trees, IGNORING `generation`.  Drives
+//! RefreshTreeSnapshot_'s compare-then-publish: if the rebuilt tree says the
+//! same thing as the published one, nothing is republished and no outstanding
+//! handle is invalidated.  Compares everything a reader can observe -- name,
+//! parent, child slice, the flattened child index, the root list -- because
+//! anything left out here would be a change that silently keeps the old
+//! generation, i.e. a stale handle that resolves.
+bool TreesEquivalent( const SceneEditController::AuthoredTree& a,
+                      const SceneEditController::AuthoredTree& b )
+{
+	if( a.nodes.size() != b.nodes.size() ) return false;
+	if( a.childIndices != b.childIndices ) return false;
+	if( a.roots        != b.roots )        return false;
+	for( std::size_t i = 0; i < a.nodes.size(); ++i ) {
+		const SceneEditController::TreeNodeRow& x = a.nodes[i];
+		const SceneEditController::TreeNodeRow& y = b.nodes[i];
+		if( x.parent != y.parent || x.firstChild != y.firstChild || x.childCount != y.childCount ) return false;
+		if( std::string( x.name.c_str() ) != std::string( y.name.c_str() ) ) return false;
+	}
+	return true;
+}
+
+//! Handle encoding: generation in the high 32 bits, node index in the low 32.
+//! The ONLY two places that know the layout.
+SceneEditController::TreeNodeHandle EncodeTreeHandle( unsigned long long generation, unsigned int index )
+{
+	return ( generation << 32 ) | static_cast<unsigned long long>( index );
+}
+
+//! Decode `h` AGAINST `t`.  Returns false -- and leaves `outIndex` untouched
+//! -- when the handle was minted from a different snapshot (or is out of
+//! range, or is kInvalidTreeNode).  This is the check that turns "silently
+//! resolves to some OTHER object after a republish" into a clean failure the
+//! caller can see.
+bool DecodeTreeHandle( const SceneEditController::AuthoredTree& t,
+                       SceneEditController::TreeNodeHandle h, unsigned int& outIndex )
+{
+	if( t.generation == 0 ) return false;                 // nothing published yet
+	if( ( h >> 32 ) != ( t.generation & 0xFFFFFFFFull ) ) return false;   // a handle from another snapshot
+	const unsigned int idx = static_cast<unsigned int>( h & 0xFFFFFFFFull );
+	if( idx >= t.nodes.size() ) return false;
+	outIndex = idx;
+	return true;
+}
+
+}  // namespace
+
 SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 	const std::vector<TreeNodeSeed>& seeds )
 {
@@ -4229,7 +4333,7 @@ SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 	for( std::size_t k = 0; k < n; ++k ) {
 		const TreeNodeSeed& s = seeds[ perm[k] ];
 		out.nodes[k].name       = s.name;
-		out.nodes[k].parent     = kInvalidTreeNode;
+		out.nodes[k].parent     = kInvalidNodeIndex;
 		out.nodes[k].firstChild = 0;
 		out.nodes[k].childCount = 0;
 		byName.insert( std::make_pair( std::string( s.name.c_str() ), static_cast<unsigned int>( k ) ) );
@@ -4240,7 +4344,7 @@ SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 	// ObjectManager::ComposeWorldTransforms gives a dangling link, and it is
 	// the only one that keeps the node VISIBLE: dropping it would make an
 	// authoring mistake look like a deleted object.
-	std::vector<unsigned int> parentOf( n, kInvalidTreeNode );
+	std::vector<unsigned int> parentOf( n, kInvalidNodeIndex );
 	for( std::size_t k = 0; k < n; ++k ) {
 		const TreeNodeSeed& s = seeds[ perm[k] ];
 		if( s.parent.size() <= 1 ) continue;                 // String carries its NUL: <=1 is empty
@@ -4272,12 +4376,12 @@ SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 			if( colour[i] != kWhite ) continue;
 			path.clear();
 			unsigned int c = static_cast<unsigned int>( i );
-			while( c != kInvalidTreeNode && colour[c] == kWhite ) {
+			while( c != kInvalidNodeIndex && colour[c] == kWhite ) {
 				colour[c] = kGrey;
 				path.push_back( c );
 				c = parentOf[c];
 			}
-			if( c != kInvalidTreeNode && colour[c] == kGrey ) parentOf[c] = kInvalidTreeNode;
+			if( c != kInvalidNodeIndex && colour[c] == kGrey ) parentOf[c] = kInvalidNodeIndex;
 			for( std::size_t q = 0; q < path.size(); ++q ) colour[ path[q] ] = kBlack;
 		}
 	}
@@ -4287,8 +4391,8 @@ SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 	// walking k ascending emits each child list in it -- no per-list sort.
 	std::vector<unsigned int> cursor( n, 0 );
 	for( std::size_t k = 0; k < n; ++k ) {
-		if( parentOf[k] != kInvalidTreeNode ) ++out.nodes[ parentOf[k] ].childCount;
-		else                                  out.roots.push_back( static_cast<unsigned int>( k ) );
+		if( parentOf[k] != kInvalidNodeIndex ) ++out.nodes[ parentOf[k] ].childCount;
+		else                                   out.roots.push_back( static_cast<unsigned int>( k ) );
 	}
 	unsigned int running = 0;
 	for( std::size_t k = 0; k < n; ++k ) {
@@ -4299,7 +4403,7 @@ SceneEditController::AuthoredTree SceneEditController::BuildAuthoredTree(
 	out.childIndices.assign( running, 0u );
 	for( std::size_t k = 0; k < n; ++k ) {
 		const unsigned int p = parentOf[k];
-		if( p == kInvalidTreeNode ) continue;
+		if( p == kInvalidNodeIndex ) continue;
 		out.nodes[k].parent          = p;
 		out.childIndices[ cursor[p]++ ] = static_cast<unsigned int>( k );
 	}
@@ -4311,9 +4415,12 @@ void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>
 	outSeeds.clear();
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return;
-	const IObjectManager* cm = scene->GetObjects();
-	if( !cm ) return;
-	IObjectManager* m = const_cast<IObjectManager*>( cm );
+	// Every manager call this function makes -- EnumerateItemNames,
+	// GetObjectProvenance, GetItemSerial, GetObjectParent -- is const, so the
+	// const pointer is used directly.  An earlier version const_cast'd it,
+	// which falsely signalled that reading the tree mutates the scene.
+	const IObjectManager* m = scene->GetObjects();
+	if( !m ) return;
 
 	CollectNamesCallback cb;
 	m->EnumerateItemNames( cb );
@@ -4328,19 +4435,70 @@ void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>
 	// `I[i,j]`, `I[i,j].X`) is a copy that has no chunk of its own, and folds
 	// into the chunk named by the row.  Read from the provenance MAP only --
 	// see the header for why the name itself is off limits.
-	std::map<std::string, std::string> foldOf;    // folded entry -> instancing chunk
-	std::vector<std::string>           visible;   // entries that stay as nodes
+	std::map<std::string, std::string> foldOf;      // folded entry -> instancing chunk
+	std::vector<std::string>           visible;     // entries that stay as nodes
+	std::set<std::string>              ownsItsChunk; // the collapse case: entry name IS its chunk
 	for( std::size_t i = 0; i < cb.names.size(); ++i ) {
 		const std::string nm( cb.names[i].c_str() );
 		const char* chunk = 0;
 		if( m->GetObjectProvenance( nm.c_str(), &chunk, /*outSourceNode*/ 0 ) ) {
 			const std::string ch( chunk ? chunk : "" );
 			if( !ch.empty() && ch != nm ) { foldOf[nm] = ch; continue; }
+			if( !ch.empty() ) ownsItsChunk.insert( nm );
 		}
 		visible.push_back( nm );
 	}
 
 	std::set<std::string> visibleSet( visible.begin(), visible.end() );
+
+	// PASS 1b -- REFUSE a fold whose target is a live object that is NOT the
+	// collapse case, because then the target is some OTHER object that merely
+	// shares the name.
+	//
+	// TWO KEYSPACES THAT DO NOT AGREE, and this is the seam between them.
+	// The fold reads the LIVE MANAGER's names.  The derive-time guard that is
+	// supposed to make a fold target unambiguous -- ExpandSourceInstance's
+	// document-level collision scan (Cst.cpp) -- reads the DOCUMENT's `name`
+	// PARAM names, and BuildObjectChunkIndex only indexes a chunk that
+	// CARRIES one.  A `standard_object` / `csg_object` with no `name` line
+	// still registers a live object, because Finalize DEFAULTS the name to
+	// `noname` (ChunkParserRegistry.cpp).  So an unnamed chunk puts `noname`
+	// in the live keyspace and NOTHING in the document keyspace, the derive
+	// guard sees no collision, and a counted instancing chunk that happens to
+	// be named `noname` folds its whole array into that unrelated object --
+	// and, with the target visible, the synth pass below would skip it too,
+	// so the array AND the chunk the author wrote would get no row at all,
+	// while `Z parent noname[0,0]` would resolve onto the stranger.
+	//
+	// So: unfold.  The folded entries stay VISIBLE as their own nodes.  That
+	// degrades to a NOISY outliner (one row per repetition instead of one per
+	// chunk) which an author can see and recover from; the alternative is an
+	// array that silently does not exist, which they cannot.
+	//
+	// `noname` is today's ONLY witness.  Any future role whose live name can
+	// diverge from its `name` param re-opens this, which is why the test is
+	// "the target is genuinely the collapse case" and not "the target is not
+	// literally called noname".  Fixing it in Cst.cpp by indexing defaulted
+	// names would change derive-time REFUSAL behaviour and reject documents
+	// that load today -- a separate decision, deliberately not taken here.
+	{
+		std::set<std::string> unfold;
+		for( std::map<std::string, std::string>::const_iterator f = foldOf.begin();
+			f != foldOf.end(); ++f ) {
+			if( !visibleSet.count( f->second ) ) continue;    // no live entry -> synthesized below
+			if( ownsItsChunk.count( f->second ) ) continue;   // the collapse case -> a real fold target
+			unfold.insert( f->second );
+		}
+		if( !unfold.empty() ) {
+			std::map<std::string, std::string> kept;
+			for( std::map<std::string, std::string>::const_iterator f = foldOf.begin();
+				f != foldOf.end(); ++f ) {
+				if( unfold.count( f->second ) ) { visible.push_back( f->first ); visibleSet.insert( f->first ); }
+				else                            { kept.insert( *f ); }
+			}
+			foldOf.swap( kept );
+		}
+	}
 
 	// PASS 2 -- the fold TARGETS that have no live entry of their own.
 	//
@@ -4371,7 +4529,13 @@ void SceneEditController::BuildObjectTreeSeedsLocked_( std::vector<TreeNodeSeed>
 		const std::string nm( cb.names[i].c_str() );
 		const std::map<std::string, std::string>::const_iterator f = foldOf.find( nm );
 		if( f == foldOf.end() ) continue;
-		if( visibleSet.count( f->second ) ) continue;          // the chunk has its own entry already
+		// A target that IS live is the collapse case and already has its own
+		// node -- PASS 1b has removed every other visible-target fold from
+		// the map, so this test no longer has to stand in for "is this
+		// genuinely the same object?".  It was that conflation (live-manager
+		// keyspace vs document `name`-param keyspace) that made an unrelated
+		// same-named object swallow a whole counted array; see PASS 1b.
+		if( visibleSet.count( f->second ) ) continue;
 		const unsigned long long serial = m->GetItemSerial( nm.c_str() );
 		const std::map<std::string, unsigned long long>::const_iterator have = synthOrder.find( f->second );
 		if( have != synthOrder.end() && have->second <= serial ) continue;
@@ -4434,13 +4598,19 @@ SceneEditController::AuthoredTree SceneEditController::BuildCategoryTreeLocked_(
 		// EVERY OTHER CATEGORY IS FLAT, and is modelled here as N roots with
 		// no children rather than special-cased in each shell -- which is the
 		// whole point of a generic node-children API (87 §5 step 4).  Built
-		// from the SAME *Locked_ bodies the flat getters use, so the two
+		// from the SAME *Locked_ body the flat getters use, so the two
 		// surfaces cannot report different entity sets.
-		const unsigned int n = CategoryEntityCountLocked_( cat );
-		seeds.reserve( n );
-		for( unsigned int i = 0; i < n; ++i ) {
+		//
+		// ONE bulk enumeration, not N calls to the per-index getter: that
+		// getter re-enumerates the whole manager every time, so the obvious
+		// loop is O(N^2) -- the flat API's worst property, which the API that
+		// REPLACES it must not inherit.
+		std::vector<String> names;
+		CategoryEntityNamesLocked_( cat, names );
+		seeds.reserve( names.size() );
+		for( std::size_t i = 0; i < names.size(); ++i ) {
 			TreeNodeSeed s;
-			s.name  = CategoryEntityNameLocked_( cat, i );
+			s.name  = names[i];
 			s.order = i;                    // preserve the flat list's own order exactly
 			seeds.push_back( s );
 		}
@@ -4457,14 +4627,36 @@ void SceneEditController::RefreshTreeSnapshot_( Category cat ) const
 	if( !lk.owns_lock() ) return;                                      // contended (or re-entrant): serve stale
 	AuthoredTree built = BuildCategoryTreeLocked_( cat );
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );                // leaf lock: never held across mMutex
-	// ONE move-assignment publishes the node table AND both index arrays
-	// together -- see AuthoredTree's comment for why that has to be one
-	// operation and not three.  Deliberately not three member swaps: those
-	// would be equally atomic against a reader that holds this lock, and
-	// would quietly stop being atomic the day someone reads one of them
-	// without it.  Vector move-assignment is noexcept, so this cannot leave
-	// the snapshot half-written either.
-	mUi.trees[ci] = std::move( built );
+	// COMPARE, THEN PUBLISH.  An unchanged tree is not republished and the
+	// generation does not move, so a handle a shell is holding survives every
+	// idle count call -- without this the handle tag would invalidate
+	// everything on every poll and the API would be unusable.  It also makes
+	// the "another thread refreshed mid-walk" case benign whenever the scene
+	// did not actually change: there is no writer at all.
+	if( TreesEquivalent( built, mUi.trees[ci] ) ) return;
+	// The whole struct is assigned under this lock, and every reader holds
+	// the same lock for its whole read -- that, and not the assignment being
+	// one statement, is what stops a torn read.  See AuthoredTree's comment.
+	built.generation = mNextTreeGeneration++;
+	mUi.trees[ci]    = std::move( built );
+}
+
+void SceneEditController::ReadTree( Category cat, AuthoredTree& out ) const
+{
+	out = AuthoredTree();
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return;
+	RefreshTreeSnapshot_( cat );
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	out = mUi.trees[ci];              // ONE locked pass: the copy cannot mix two trees
+}
+
+unsigned long long SceneEditController::TreeGeneration( Category cat ) const
+{
+	const int ci = static_cast<int>( cat );
+	if( ci <= 0 || ci >= kNumCategories ) return 0;
+	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
+	return mUi.trees[ci].generation;
 }
 
 unsigned int SceneEditController::TreeNodeCount( Category cat ) const
@@ -4485,58 +4677,69 @@ unsigned int SceneEditController::TreeRootCount( Category cat ) const
 	return static_cast<unsigned int>( mUi.trees[ci].roots.size() );
 }
 
-unsigned int SceneEditController::TreeRootNode( Category cat, unsigned int rootIdx ) const
+SceneEditController::TreeNodeHandle SceneEditController::TreeRootNode( Category cat, unsigned int rootIdx ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const AuthoredTree& t = mUi.trees[ci];
-	return rootIdx < t.roots.size() ? t.roots[rootIdx] : kInvalidTreeNode;
+	if( rootIdx >= t.roots.size() ) return kInvalidTreeNode;
+	return EncodeTreeHandle( t.generation, t.roots[rootIdx] );
 }
 
-unsigned int SceneEditController::TreeChildCount( Category cat, unsigned int node ) const
+unsigned int SceneEditController::TreeChildCount( Category cat, TreeNodeHandle node ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return 0;
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const AuthoredTree& t = mUi.trees[ci];
-	return node < t.nodes.size() ? t.nodes[node].childCount : 0;
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return 0;
+	return t.nodes[idx].childCount;
 }
 
-unsigned int SceneEditController::TreeChildNode( Category cat, unsigned int node, unsigned int childIdx ) const
+SceneEditController::TreeNodeHandle SceneEditController::TreeChildNode(
+	Category cat, TreeNodeHandle node, unsigned int childIdx ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const AuthoredTree& t = mUi.trees[ci];
-	if( node >= t.nodes.size() ) return kInvalidTreeNode;
-	const TreeNodeRow& r = t.nodes[node];
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return kInvalidTreeNode;
+	const TreeNodeRow& r = t.nodes[idx];
 	if( childIdx >= r.childCount ) return kInvalidTreeNode;
 	const unsigned int slot = r.firstChild + childIdx;
-	// Belt-and-braces: the one swap above makes `nodes` and `childIndices`
-	// inseparable, so this cannot fire -- but an out-of-bounds READ is the
-	// exact failure that splitting them would produce, and a bounds check is
-	// cheaper than trusting a future edit to preserve the invariant.
+	// Belt-and-braces: `nodes` and `childIndices` are published together under
+	// this lock, so this cannot fire -- but an out-of-bounds READ is the exact
+	// failure that publishing them separately would produce, and a bounds
+	// check is cheaper than trusting a future edit to preserve the invariant.
 	if( slot >= t.childIndices.size() ) return kInvalidTreeNode;
-	return t.childIndices[slot];
+	return EncodeTreeHandle( t.generation, t.childIndices[slot] );
 }
 
-unsigned int SceneEditController::TreeNodeParent( Category cat, unsigned int node ) const
+SceneEditController::TreeNodeHandle SceneEditController::TreeNodeParent( Category cat, TreeNodeHandle node ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return kInvalidTreeNode;
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const AuthoredTree& t = mUi.trees[ci];
-	return node < t.nodes.size() ? t.nodes[node].parent : kInvalidTreeNode;
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return kInvalidTreeNode;
+	const unsigned int p = t.nodes[idx].parent;
+	if( p == kInvalidNodeIndex ) return kInvalidTreeNode;      // a ROOT: no parent, not an error
+	return EncodeTreeHandle( t.generation, p );
 }
 
-String SceneEditController::TreeNodeName( Category cat, unsigned int node ) const
+String SceneEditController::TreeNodeName( Category cat, TreeNodeHandle node ) const
 {
 	const int ci = static_cast<int>( cat );
 	if( ci <= 0 || ci >= kNumCategories ) return String();
 	std::lock_guard<std::mutex> sk( mUiSnapshotMutex );
 	const AuthoredTree& t = mUi.trees[ci];
-	return node < t.nodes.size() ? t.nodes[node].name : String();
+	unsigned int idx = 0;
+	if( !DecodeTreeHandle( t, node, idx ) ) return String();
+	return t.nodes[idx].name;
 }
 
 namespace {
