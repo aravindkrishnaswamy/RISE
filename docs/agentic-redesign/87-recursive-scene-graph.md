@@ -1217,6 +1217,72 @@ what was authored, live material included).
    contain itself) without `AnyView`.  The recursion lives in the flatten,
    iteratively — for the same reason `BuildAuthoredTree` is iterative.
 
+   **The Qt half (4c) went the other way, and 87's "real tree model" was
+   right there.**  `QAbstractItemModel` + `QTreeView` has none of
+   `OutlineGroup`'s obstacles: it exposes expansion via
+   `setExpanded`/`isExpanded` and lets the model own index identity.  What
+   the naive form WOULD have broken is the flat categories — a default
+   `QTreeView` draws its own branch indicators and depth insets, moving
+   every depth-0 row.  `indentation(0)` + `rootIsDecorated(false)` + a
+   delegate that owns the whole row is what makes "a real tree model" and
+   "a flat category looks exactly as before" compatible.  `QModelIndex::
+   internalId()` holds a slot in the model's OWN flat row table, never a
+   controller `TreeNodeHandle`, and a rebuild resets the model so every
+   index is invalidated — which is how 4a's no-handle-across-a-turn rule
+   is honoured on a surface built to tempt the opposite.
+
+   4c also **added `roots` to the Qt payload** rather than re-deriving it
+   by scanning for `parent == -1`: sibling ORDER is contract (§2, display
+   order comes from declaration order) and only `AuthoredTree::roots`
+   states it, while the scan works solely because `BuildAuthoredTree`
+   happens to emit in presentation order — an assembler detail.  Safe to
+   change the signature because 4a shipped `categoryTree()` with zero
+   consumers.
+
+   Two further findings from 4c, both in code it merely passed through:
+   the pre-4c `kCategories` table held **copies** of `Theme::cat*`, which
+   are `inline QColor` globals that `applyThemeTokens()` reassigns IN
+   PLACE — so after one Dark/Light switch every tag chip painted the
+   previous palette forever.  Fixed by storing pointers and dereferencing
+   at paint time.  And the LIVE THEME-SWITCH CONTRACT's queued-rebuild
+   clause **no longer applies** to this panel: it exists for panels whose
+   row widgets bake tokens at construction, and there are no row widgets
+   any more, so the fix collapses to `viewport()->update()`.  A deliberate
+   deviation from a written contract, recorded here rather than buried.
+
+   **⚠ THE QT CODE IS UNCOMPILED.**  No Qt and no Windows toolchain on the
+   development machine; it needs a Windows build before it can be trusted.
+   Specifically unobserved: row height and vertical centring, whether
+   `indexAt()` returns an index for the zero-width branch region, whether
+   `customContextMenuRequested`'s position is viewport-relative on that Qt
+   build, whether the `QTreeView` background stylesheet perturbs
+   `PE_PanelItemViewRow`, and how `setViewportMargins` interacts with the
+   305px cap.
+
+   **Selection is by NAME, so two same-named siblings highlight together.**
+   4a settled that handles are not durable and selection addresses an
+   entity name; the tree can now legitimately contain two rows with the
+   same name — the Painter union's `DUP` (`uniformcolor_painter` and
+   `scalar_painter` may each declare it; `CollectPainterUnionEntries`
+   deliberately does not dedup, and `ChunkNamePath` keys on
+   `role + "/" + name`, so both survive the derive).  `isSelected` is
+   `selectionName == node.name`, so clicking either highlights BOTH.
+   Inherent to name-selection, not introduced by step 4; changing it means
+   changing selection identity, which is a larger decision than the
+   outliner.  Recorded here rather than left to be rediscovered.
+
+   Note the two shells diverge on the related PATH-KEY question, and that
+   is correct rather than drift: on macOS the key IS row identity
+   (`ForEach(rows, id: \.path)` silently drops a duplicate id), so 4b's
+   key had to become node-injective via an occurrence suffix; on Qt
+   identity is the model's own table slot in `QModelIndex::internalId()`,
+   so a key collision could only tie shared disclosure state — and cannot
+   even do that today, because Painter is the only category that can
+   collide and `BuildCategoryTreeLocked_` seeds every non-Object category
+   with an empty `parent`, making its rows childless BY CONSTRUCTION.
+   Both shells carry the same occurrence encoding anyway, so the latent
+   case is closed on both.
+
    **Two consequences of §2 that will look like regressions and are not.**
    The Objects count now counts AUTHORED nodes, so an 8x8 `count_u`/`count_v`
    array counts 1, not 64 — that is the point of the fold: every row has a

@@ -1516,9 +1516,9 @@ QStringList ViewportBridge::categoryEntities(Category cat) const
     return out;
 }
 
-QVector<SceneTreeNode> ViewportBridge::categoryTree(Category cat) const
+SceneTree ViewportBridge::categoryTree(Category cat) const
 {
-    QVector<SceneTreeNode> out;
+    SceneTree out;
     if (!m_controller) return out;
 
     // ONE TRANSACTIONAL READ.  SceneEditController::ReadTree refreshes once
@@ -1541,11 +1541,11 @@ QVector<SceneTreeNode> ViewportBridge::categoryTree(Category cat) const
 
     const int n = static_cast<int>(t.nodes.size());
     if (n == 0) return out;
-    out.resize(n);
+    out.nodes.resize(n);
 
     for (int i = 0; i < n; ++i) {
         const SceneEditController::TreeNodeRow& row = t.nodes[static_cast<std::size_t>(i)];
-        SceneTreeNode& node = out[i];
+        SceneTreeNode& node = out.nodes[i];
         node.name = QString::fromUtf8(row.name.c_str());
         // kInvalidNodeIndex means ROOT, which the model draws as a top-level
         // row -- that is what the -1 default already says.
@@ -1559,6 +1559,19 @@ QVector<SceneTreeNode> ViewportBridge::categoryTree(Category cat) const
             if (slot >= t.childIndices.size()) break;
             const unsigned int child = t.childIndices[slot];
             if (child < static_cast<unsigned int>(n)) node.children.append(static_cast<int>(child));
+        }
+    }
+
+    // THE ROOT LIST IS COPIED, NOT RE-DERIVED.  Scanning `out.nodes` for
+    // `parent == -1` would agree today, but only because BuildAuthoredTree
+    // emits its table in presentation order -- see SceneTree's doc.  Out-of-
+    // range entries are dropped for the same belt-and-braces reason the
+    // parent/child indices above are range-tested: a shell must never be able
+    // to subscript past the node table.
+    out.roots.reserve(static_cast<int>(t.roots.size()));
+    for (std::size_t r = 0; r < t.roots.size(); ++r) {
+        if (t.roots[r] < static_cast<unsigned int>(n)) {
+            out.roots.append(static_cast<int>(t.roots[r]));
         }
     }
     return out;

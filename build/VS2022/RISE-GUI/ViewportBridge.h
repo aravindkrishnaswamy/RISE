@@ -119,8 +119,8 @@ struct ViewportRenderModeInfo {
 /// out of SceneEditController's snapshot in a single pass.
 ///
 /// `parent` and every entry of `children` index into the SAME
-/// QVector<SceneTreeNode> this node came from -- which is why the whole
-/// tree is handed over as one vector by `categoryTree()` rather than
+/// SceneTree::nodes this node came from -- which is why the whole tree is
+/// handed over as one value by `categoryTree()` rather than
 /// walked node by node: the controller's own snapshot may be republished
 /// between calls, and a handle minted before a republish is REFUSED
 /// afterwards (it carries the snapshot generation, so it fails rather
@@ -135,6 +135,25 @@ struct SceneTreeNode {
     QString      name;
     int          parent = -1;
     QVector<int> children;
+};
+
+/// 87 section 5 step 4: one category's whole authored tree -- the node
+/// table PLUS the root list.
+///
+/// THE ROOTS ARE CARRIED EXPLICITLY, and step 4b (the macOS twin) flagged
+/// their absence here as the one thing 4a got wrong.  Re-deriving them by
+/// scanning `nodes` for `parent == -1` yields the right answer TODAY only
+/// because `SceneEditController::BuildAuthoredTree` happens to emit its
+/// node table in presentation order -- an internal detail of the
+/// assembler, not a contract, and sibling ORDER is part of the contract
+/// (87 section 2: "child order for display comes from declaration
+/// order").  `AuthoredTree::roots` states that order directly, so it is
+/// copied across rather than reconstructed.  RISESceneTree on macOS
+/// carries the same two arrays for the same reason.
+struct SceneTree {
+    QVector<SceneTreeNode> nodes;
+    /// Indices into `nodes`, in display order.
+    QVector<int>           roots;
 };
 
 class ViewportBridge : public QObject
@@ -1018,14 +1037,15 @@ public:
     /// the surface the outliner's QAbstractItemModel is built over,
     /// replacing the flat `categoryEntities()` list above.
     ///
-    /// The returned vector is the controller's node TABLE, in the
-    /// controller's presentation order.  The ROOTS are exactly the
-    /// entries whose `parent` is -1, in that same order; descend through
-    /// each node's `children` list.
+    /// `nodes` is the controller's node TABLE and `roots` is the
+    /// controller's own root list, both in presentation order.  START AT
+    /// `roots` and descend through each node's `children` list -- do NOT
+    /// re-derive the roots by scanning for `parent == -1` (see
+    /// SceneTree's doc for why that only happens to work).
     ///
     /// A category with no hierarchy (Camera, Material, Painter, ...)
-    /// comes back as N nodes all with `parent == -1` and no children, so
-    /// the model needs no per-category branch.
+    /// comes back as N nodes all with `parent == -1` and no children,
+    /// all of them in `roots`, so the model needs no per-category branch.
     ///
     /// For Category::Object the tree is the AUTHORED graph, not the flat
     /// render list: 87 step 3's synthesized instancing entries (`I.X`,
@@ -1044,8 +1064,8 @@ public:
     /// changing any category's entity LIST, so that path must bump the
     /// scene epoch itself or the outliner keeps drawing the old shape.
     ///
-    /// Empty vector on a null controller or an empty category.
-    QVector<SceneTreeNode> categoryTree(Category cat) const;
+    /// Empty (both arrays) on a null controller or an empty category.
+    SceneTree categoryTree(Category cat) const;
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →
