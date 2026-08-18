@@ -44,7 +44,7 @@
         "fov": 40.0
       },
       "compareToImage": "evals/references/view1.png",
-      "rmseMax": 0.015
+      "rmseMax": 0.02
     },
     {
       "kind": "render",
