@@ -914,6 +914,16 @@ Fixtures assign distinct exact-binary values to every component, line, and
 side, bind both boundary fluxes, and compare the Metal bytes with the fp32 CPU
 oracle. Incomplete or nonfinite arrays fail before dispatch.
 
+The r92 implementation review also closed an older r85 accounting mismatch.
+One purported below-cap request was 936 requested bytes under two GiB but
+147,456 bytes over after the M4's per-buffer allocation rounding. P1 therefore
+computes its certificate by rounding each of its eleven Metal buffers outward
+to 16 KiB, then sums every runtime `allocatedSize` and requires the measured
+total to be no greater than both that certificate and two GiB before creating
+or committing a command buffer. The result is assembled privately and moves to
+the caller only after finite-output validation; persistent host allocation
+failure returns the complete default result.
+
 Using a side average was rejected because it changes the conservative flux;
 launching one remap per line was rejected because it defeats the resident
 batched kernel and command budget; and inserting ambient values into the

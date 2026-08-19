@@ -2304,3 +2304,15 @@ it was already tried and refuted here.
   side/line-distinct exact-flux fixture and malformed/nonfinite REDs bind the
   seam. This closes an internal representation detail of the already pinned
   P3 operator and changes no case identity, physical semantics, or budget.
+
+  Fresh implementation review found that r85's requested-byte admission was
+  not its promised actual-buffer certificate: the legacy below-cap witness was
+  936 requested bytes under two GiB but 147,456 bytes over after M4 allocation
+  rounding. The implementation now outward-rounds every one of the eleven P1
+  Metal buffers to 16 KiB, independently sums every runtime `allocatedSize`,
+  and rejects before command creation if either the certificate or the cap is
+  exceeded. Requested-length accounting and reliance on allocation failure
+  were rejected because neither bounds the admitted peak. Standalone Metal
+  result publication is also atomic under persistent allocation denial. This
+  restores r85's existing resource/fail-closed rules; it is not a new operator
+  or identity change.
