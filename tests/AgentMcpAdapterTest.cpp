@@ -18,6 +18,10 @@
 //      entity -> isError:true, NOT a protocol error -- RED-PROVED against
 //      a naive "always protocol error" implementation.
 //    * tools/call protocol error: unknown tool name -> JSON-RPC error.
+//    * tools/call STRUCTURAL: every name tools/list advertises is a name
+//      tools/call routes (no -32601) -- the invariant coupling the adapter's
+//      two independent tool lists, added 2026-08-19 after build_element and
+//      place_element were found advertised but unroutable.
 //    * malformed line -> -32700.
 //    * batch (array) envelope -> a clean rejection, not a crash.
 //
@@ -337,6 +341,10 @@ int main()
 		static const char* const kExpectedNames[] = {
 			// S1 (2026-08-11): the two staged-build-protocol verbs.
 			"finish_element", "reopen_element",
+			// S2 (2026-08-11): the two CLEAN-ROOM construction verbs.  Being
+			// listed here only proves they are ADVERTISED; the structural
+			// sweep further below is what proves they are also ROUTABLE.
+			"build_element", "place_element",
 			"read_document", "read_schema", "read_skill", "validate",
 			"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 			"insert_material_scaffold", "insert_geometry_scaffold",
@@ -1016,6 +1024,96 @@ int main()
 		Check( !env.has( "result" ), "tools/call(unknown tool name) has NO result field" );
 		Check( env.get( "error" ).get( "code" ).asNumber() == -32601.0,
 		       "tools/call(unknown tool name) -> error.code == -32601 (method not found)" );
+	}
+
+	//----------------------------------------------------------------------
+	// STRUCTURAL INVARIANT: ADVERTISED IMPLIES ROUTABLE.
+	//
+	// Every name tools/list hands a client must be a name tools/call will
+	// route.  The adapter keeps two independent lists -- BuildToolsList's
+	// MakeTool calls and IsKnownToolName's kNames array -- and nothing but
+	// this check couples them, so a verb can land advertised-but-unroutable
+	// and no name-by-name test notices.  That is exactly what happened to
+	// build_element and place_element, the two CLEAN-ROOM construction
+	// verbs at the core of the staged build protocol: advertised from the
+	// day they landed, absent from kNames, so every MCP client that listed
+	// the tools and then called one got -32601 Unknown tool (found and
+	// fixed 2026-08-19).  This loop is the structural guarantee that
+	// replaces spotting it by eye -- it would have failed the day the
+	// omission was introduced, and it fails for the NEXT such verb too.
+	//
+	// Driven against a NULL-session adapter at Read autonomy on purpose:
+	// a mutating verb is refused by AgentRpc's autonomy gate and a
+	// head-backed verb by its no-head guard, both BEFORE any execution, so
+	// this sweep cannot render, hit a provider, or touch a document.  The
+	// only thing under test is the name lookup: -32601 means the adapter
+	// disowns a tool it just advertised, and EVERY other outcome (a
+	// success, an isError:true tool error, an invalid-params error) proves
+	// the name was recognized and dispatched.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] STRUCTURAL: every advertised tool is routable (no -32601)\n" );
+	{
+		std::unique_ptr<AgentSession> nullSession;
+		AgentMcpAdapter probe( std::move( nullSession ), AgentAutonomy::Read );
+
+		JsonValue listEnv; std::string listErr;
+		Check( JsonParse( probe.HandleLine( Req( 900, "tools/list", JsonValue::MakeObject() ) ),
+		                  listEnv, listErr ),
+		       "structural sweep: tools/list response parses" );
+		const JsonValue advertised = listEnv.get( "result" ).get( "tools" );
+		Check( advertised.isArray() && advertised.size() > 0,
+		       "structural sweep: tools/list advertised a non-empty tool array (the sweep is not vacuous)" );
+
+		std::size_t unroutable = 0;
+		for( std::size_t i = 0; i < advertised.size(); ++i ) {
+			const std::string name = advertised.at( i ).get( "name" ).asString();
+
+			JsonValue env; std::string err;
+			if( !JsonParse( probe.HandleLine(
+			        ReqToolCall( 901.0 + static_cast<double>( i ), name, JsonValue::MakeObject() ) ),
+			    env, err ) ) {
+				++unroutable;
+				Check( false, "advertised tool '" + name + "' returned an unparseable response" );
+				continue;
+			}
+
+			// -32601 from tools/call can only come from IsKnownToolName
+			// rejecting the name -- the method itself ("tools/call") was
+			// recognized to get this far.
+			const bool disowned = env.has( "error" ) &&
+			                      env.get( "error" ).get( "code" ).asNumber( 0 ) == -32601.0;
+			if( disowned ) ++unroutable;
+			Check( !disowned,
+			       "advertised tool '" + name + "' is ROUTABLE by tools/call (not -32601 Unknown tool)" );
+		}
+		Check( unroutable == 0,
+		       "structural sweep: EVERY advertised tool is routable" );
+	}
+
+	//----------------------------------------------------------------------
+	// The two CLEAN-ROOM construction verbs by name, so the regression that
+	// motivated the sweep above is also pinned explicitly: a reader
+	// grepping for build_element finds a test, not just a loop.  This one
+	// runs against the LIVE session-backed adapter, which the sweep above
+	// deliberately does not -- proving the names route on a real head too.
+	// Safe and cheap regardless: both verbs validate their required params
+	// (build_element needs element+height, place_element element+position)
+	// and return -32602 BEFORE they reach AgentSession, so an empty
+	// arguments object cannot start a provider request or touch a document.
+	//----------------------------------------------------------------------
+	std::printf( "[tools/call] build_element / place_element route (not -32601)\n" );
+	{
+		const char* const kCleanRoom[] = { "build_element", "place_element" };
+		double id = 950;
+		for( const char* verb : kCleanRoom ) {
+			const std::string resp = mcp.HandleLine( ReqToolCall( id, verb, JsonValue::MakeObject() ) );
+			JsonValue env = ParseResponse( resp, id );
+			id += 1;
+			const bool disowned = env.has( "error" ) &&
+			                      env.get( "error" ).get( "code" ).asNumber( 0 ) == -32601.0;
+			Check( !disowned,
+			       std::string( "tools/call('" ) + verb + "') is NOT -32601 (the name is known to the adapter)" );
+		}
 	}
 	{
 		// Missing 'name' entirely -> -32602 Invalid params (still a

@@ -2076,6 +2076,13 @@ namespace RISE
 					"file_build_plan",   // G2 (2026-08-10): read-safe, the build-plan gate's unblock
 					"finish_element",   // S1 (2026-08-11): read-safe, closes the active element (renders)
 					"reopen_element",   // S1 (2026-08-11): read-safe, re-enters an element's window
+					// S2 (2026-08-11): the two CLEAN-ROOM construction verbs, the core
+					// of the staged build protocol.  Both MUTATE.  They were advertised
+					// by tools/list from the day they landed but were omitted HERE, so
+					// every tools/call for them answered -32601 (fixed 2026-08-19; the
+					// advertised-implies-routable invariant is now pinned by
+					// AgentMcpAdapterTest so no future verb can land half-wired).
+					"build_element", "place_element",
 					"imagine_scene",    // Arc 77 Phase 2 (2026-08-11): read-safe, the gate's OTHER unblock
 					"propose_patch", "propose_patches", "insert_chunk", "insert_chunks",
 					"insert_material_scaffold", "insert_geometry_scaffold",
@@ -2236,7 +2243,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 29 verbs as MCP tools.
+				// tools/list -> the 35 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();
