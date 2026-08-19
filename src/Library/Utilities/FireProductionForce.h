@@ -179,6 +179,29 @@ namespace RISE
 		FireProductionFrozenForceAdvanceResult& result,
 		FireProductionResidentForceDiagnostics& diagnostics,
 		std::string* error=0 );
+
+	struct FireProductionResidentForceProjectionResult
+	{
+		FireProductionViscousSchedule forceSchedule;
+		FireProductionProjectionResult projection;
+		FireProductionResidentForceDiagnostics forceDiagnostics;
+		std::uint32_t forceToProjectionDeviceToHostTransferCount;
+		std::uint32_t residentProjectionInvocationCount;
+		std::uint64_t combinedCertifiedWorkingSetBytes;
+		std::uint64_t combinedActualMetalAllocationBytes;
+
+		FireProductionResidentForceProjectionResult() :
+			forceToProjectionDeviceToHostTransferCount(0u),residentProjectionInvocationCount(0u),
+			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u) {}
+	};
+
+	//! Resident production seam: frozen force substeps, gravity, and exactly one
+	//! P2 projection without a full-grid host transfer between the operators.
+	bool AdvanceFireProductionForceProjectionMetal(
+		const FireProductionFrozenForceRequest& forceRequest,
+		const std::vector<float>& divergenceTargetPerS,
+		FireProductionResidentForceProjectionResult& result,
+		std::string* error=0 );
 }
 
 #endif

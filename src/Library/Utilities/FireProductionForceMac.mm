@@ -22,6 +22,28 @@ namespace RISE
 {
 	namespace
 	{
+		enum ResidentForceHostAccessKind
+		{
+			ResidentForceScalarAccess,
+			ResidentForceInterstageFullGridAccess,
+			ResidentForceTerminalAccess
+		};
+
+		thread_local std::uint64_t residentForceCommandCommitCount=0u;
+		thread_local std::uint64_t residentForceInterstageFullGridReadCount=0u;
+
+		void CommitResidentForceCommand( id<MTLCommandBuffer> command )
+		{
+			[command commit];++residentForceCommandCommitCount;
+		}
+
+		void* ResidentForceBufferContents( id<MTLBuffer> buffer,
+			ResidentForceHostAccessKind kind )
+		{
+			if( kind==ResidentForceInterstageFullGridAccess )
+				++residentForceInterstageFullGridReadCount;
+			return [buffer contents];
+		}
 		struct ForceParameters
 		{
 			std::uint32_t nx,ny,nz,padding0;
@@ -504,18 +526,23 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		}
 	}
 
-	bool AdvanceFireProductionFrozenForceMetal(
+	bool AdvanceFireProductionFrozenForceMetalImpl(
 		const FireProductionFrozenForceRequest& request,
 		bool captureIntermediateStates,
+		const std::vector<float>* projectionTarget,
+		FireProductionResidentForceProjectionResult* composedResult,
 		FireProductionFrozenForceAdvanceResult& result,
 		FireProductionResidentForceDiagnostics& diagnostics,
 		std::string* error )
 	{
 		result=FireProductionFrozenForceAdvanceResult();
 		diagnostics=FireProductionResidentForceDiagnostics();
+		if( composedResult ) *composedResult=FireProductionResidentForceProjectionResult();
 		try {
 			FireProductionResidentForceDiagnostics observed;
 			FireProductionViscousSchedule selectedSchedule;
+			const std::uint64_t beginningCommandCommits=residentForceCommandCommitCount;
+			const std::uint64_t beginningInterstageReads=residentForceInterstageFullGridReadCount;
 			const FireProductionProjectionShape& shape=request.shape;
 			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
 				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
@@ -535,6 +562,9 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					return Fail(error,"production resident force boundary pairing is invalid");
 			}
 			const std::size_t cells=shape.CellCount();
+			if( projectionTarget&&(projectionTarget->size()!=cells||
+				!AllFinite(*projectionTarget)) )
+				return Fail(error,"production resident projection target is invalid");
 			std::array<std::size_t,3> faceCounts={};std::size_t faces=0u;
 			for( unsigned int axis=0u;axis<3u;++axis ) {
 				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);faces+=faceCounts[axis];
@@ -543,6 +573,13 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 			if( !FireProductionResidentForceMetalWorkingSetBytes(
 				shape,captureIntermediateStates,certifiedBytes)||certifiedBytes>(UINT64_C(1)<<31u) )
 				return Fail(error,"production resident force working set exceeds two GiB");
+			if( projectionTarget ) {
+				const std::uint64_t cellBytes=static_cast<std::uint64_t>(cells)*sizeof(float);
+				const std::uint64_t allocation=(cellBytes+UINT64_C(16383))&~UINT64_C(16383);
+				if( certifiedBytes>std::numeric_limits<std::uint64_t>::max()-2u*allocation )
+					return Fail(error,"production resident projection target certificate overflowed");
+				certifiedBytes+=2u*allocation;
+			}
 			if( request.cellGasDensityKGPerM3.size()!=cells||
 				request.molecularKinematicViscosityM2PerS.size()!=cells )
 				return Fail(error,"production resident force cell shape is invalid");
@@ -604,6 +641,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				id<MTLBuffer> nuUpload=sharedBytes(request.molecularKinematicViscosityM2PerS.data(),cellBytes);
 				id<MTLBuffer> faceRhoUpload=sharedBytes(packedDensity.data(),faceBytes);
 				id<MTLBuffer> momentumUpload=sharedBytes(packedMomentum.data(),faceBytes);
+				id<MTLBuffer> projectionTargetUpload=projectionTarget?
+					sharedBytes(projectionTarget->data(),cellBytes):nil;
 				id<MTLBuffer> rho=privateBuffer(cellBytes),nu=privateBuffer(cellBytes);
 				id<MTLBuffer> faceRho=privateBuffer(faceBytes),momentum=privateBuffer(faceBytes);
 				id<MTLBuffer> faceVelocity=privateBuffer(faceBytes),cellVelocity=privateBuffer(3u*cellBytes);
@@ -613,12 +652,15 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				id<MTLBuffer> gravity=privateBuffer(faceBytes),scratchA=privateBuffer(padded*sizeof(float));
 				id<MTLBuffer> scratchB=privateBuffer(padded*sizeof(float)),maxima=privateBuffer(2u*sizeof(float));
 				id<MTLBuffer> lambda=sharedBuffer(sizeof(float)),parameters=sharedBytes(&p,sizeof(p));
+				id<MTLBuffer> privateProjectionTarget=projectionTarget?privateBuffer(cellBytes):nil;
 				id<MTLBuffer> snapshots=nil;
 				const id<MTLBuffer> uploads[]={rhoUpload,nuUpload,faceRhoUpload,momentumUpload};
 				const id<MTLBuffer> required[]={rho,nu,faceRho,momentum,faceVelocity,cellVelocity,stress,
 					eddy,mu,viscous,beginningViscous,gravity,scratchA,scratchB,maxima,lambda,parameters};
 				for( id<MTLBuffer> buffer : uploads ) if( !buffer )
 					return Fail(error,"production resident force upload allocation failed");
+				if( projectionTarget&&(!projectionTargetUpload||!privateProjectionTarget) )
+					return Fail(error,"production resident projection target allocation failed");
 				for( id<MTLBuffer> buffer : required ) if( !buffer )
 					return Fail(error,"production resident force buffer allocation failed");
 				const std::uint64_t hostBytes=(4u*cells+7u*faces)*sizeof(float);
@@ -631,6 +673,14 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( !allocatedSum(required,sizeof(required)/sizeof(required[0]),residentBytes)||
 					!allocatedSum(uploads,sizeof(uploads)/sizeof(uploads[0]),uploadBytes) )
 					return Fail(error,"production resident force allocation overflowed");
+				if( projectionTarget ) {
+					const std::uint64_t residentAllocation=[privateProjectionTarget allocatedSize];
+					const std::uint64_t uploadAllocation=[projectionTargetUpload allocatedSize];
+					if( residentBytes>std::numeric_limits<std::uint64_t>::max()-residentAllocation||
+						uploadBytes>std::numeric_limits<std::uint64_t>::max()-uploadAllocation )
+						return Fail(error,"production resident projection target allocation overflowed");
+					residentBytes+=residentAllocation;uploadBytes+=uploadAllocation;
+				}
 				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
 					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes )
 					return Fail(error,"production resident force allocation overflowed");
@@ -654,6 +704,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				[upload copyFromBuffer:nuUpload sourceOffset:0 toBuffer:nu destinationOffset:0 size:cellBytes];
 				[upload copyFromBuffer:faceRhoUpload sourceOffset:0 toBuffer:faceRho destinationOffset:0 size:faceBytes];
 				[upload copyFromBuffer:momentumUpload sourceOffset:0 toBuffer:momentum destinationOffset:0 size:faceBytes];
+				if( projectionTarget ) [upload copyFromBuffer:projectionTargetUpload sourceOffset:0
+					toBuffer:privateProjectionTarget destinationOffset:0 size:cellBytes];
 				[upload endEncoding];
 				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
@@ -688,13 +740,15 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> lambdaBuffers[]={maxima,lambda,parameters};
 				if( !begin(preflight,context.buildLambda,lambdaBuffers,3u,1u) )
 					return Fail(error,"production resident force lambda encoder failed");
-				[preflight commit];[preflight waitUntilCompleted];++observed.commandCommitCount;
+				CommitResidentForceCommand(preflight);[preflight waitUntilCompleted];
 				if( [preflight status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force preflight command failed");
 				observed.preflightDeviceElapsedMS=([preflight GPUEndTime]-[preflight GPUStartTime])*1000.0;
-				observed.outwardLambdaPerS=*static_cast<const float*>([lambda contents]);
+				observed.outwardLambdaPerS=*static_cast<const float*>(ResidentForceBufferContents(
+					lambda,ResidentForceScalarAccess));
 				observed.scalarDiagnosticTransferCount=1u;
 				rhoUpload=nil;nuUpload=nil;faceRhoUpload=nil;momentumUpload=nil;
+				projectionTargetUpload=nil;
 				if( !(observed.outwardLambdaPerS>=0.0f)||!std::isfinite(observed.outwardLambdaPerS)||
 					!SelectFireProductionViscousSchedule(request.timeStepS,observed.outwardLambdaPerS,
 						selectedSchedule,error) ) return false;
@@ -729,11 +783,65 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> gravityBuffers[]={momentum,gravity,parameters};
 				if( !begin(advance,context.addGravity,gravityBuffers,3u,faces) )
 					return Fail(error,"production resident force gravity encoder failed");
-				[advance commit];[advance waitUntilCompleted];++observed.commandCommitCount;
+				CommitResidentForceCommand(advance);[advance waitUntilCompleted];
 				if( InjectedFailure("resident-command")||
 					[advance status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force advance command failed");
+				if( InjectedFailure("resident-interstage-transfer") )
+					ResidentForceBufferContents(lambda,ResidentForceInterstageFullGridAccess);
 				observed.advanceDeviceElapsedMS=([advance GPUEndTime]-[advance GPUStartTime])*1000.0;
+				if( residentForceCommandCommitCount<beginningCommandCommits||
+					residentForceInterstageFullGridReadCount<beginningInterstageReads ) return false;
+				observed.commandCommitCount=static_cast<std::uint32_t>(
+					residentForceCommandCommitCount-beginningCommandCommits);
+				observed.substepLoopDeviceToHostTransferCount=static_cast<std::uint32_t>(
+					residentForceInterstageFullGridReadCount-beginningInterstageReads);
+				if( observed.substepLoopDeviceToHostTransferCount!=0u )
+					return Fail(error,"production resident force interstage transfer observed");
+				if( composedResult ) {
+					FireProductionProjectionRequest projectionRequest;
+					projectionRequest.shape=request.shape;projectionRequest.timeStepS=request.timeStepS;
+					projectionRequest.ambientDensityKGPerM3=request.ambientDensityKGPerM3;
+					projectionRequest.boundary=request.boundary;
+					projectionRequest.gasDensityKGPerM3=request.cellGasDensityKGPerM3;
+					projectionRequest.provisionalMomentumKGPerM2S=request.beginningMomentumKGPerM2S;
+					projectionRequest.divergenceTargetPerS=*projectionTarget;
+					FireProductionMetalProjectionResidentInput residentProjection;
+					residentProjection.gasDensityKGPerM3=rho;
+					residentProjection.divergenceTargetPerS=privateProjectionTarget;
+					std::size_t momentumOffset=0u;
+					for( unsigned int axis=0u;axis<3u;++axis ) {
+						residentProjection.provisionalMomentumKGPerM2S[axis]=momentum;
+						residentProjection.provisionalMomentumByteOffset[axis]=
+							momentumOffset*sizeof(float);
+						momentumOffset+=faceCounts[axis];
+					}
+					FireProductionProjectionResult projected;
+					if( !ProjectFireProductionMetalResident(projectionRequest,residentProjection,
+						projected,error) ) return false;
+					if( certifiedBytes>std::numeric_limits<std::uint64_t>::max()-
+						projected.residentCertifiedWorkingSetBytes||
+						actual>std::numeric_limits<std::uint64_t>::max()-
+						projected.residentActualMetalAllocationBytes )
+						return Fail(error,"production resident force-projection accounting overflowed");
+					FireProductionResidentForceProjectionResult computed;
+					computed.forceSchedule=selectedSchedule;computed.projection=std::move(projected);
+					computed.forceDiagnostics=observed;
+					computed.forceToProjectionDeviceToHostTransferCount=
+						observed.substepLoopDeviceToHostTransferCount;
+					computed.residentProjectionInvocationCount=
+						computed.projection.residentProjectionInvocationCount;
+					computed.combinedCertifiedWorkingSetBytes=certifiedBytes+
+						computed.projection.residentCertifiedWorkingSetBytes;
+					computed.combinedActualMetalAllocationBytes=actual+
+						computed.projection.residentActualMetalAllocationBytes;
+					if( computed.combinedActualMetalAllocationBytes>
+						computed.combinedCertifiedWorkingSetBytes||
+						computed.combinedActualMetalAllocationBytes>(UINT64_C(1)<<31u) )
+						return Fail(error,"production resident force-projection working set exceeds two GiB");
+					*composedResult=std::move(computed);diagnostics=observed;
+					if( error ) error->clear();return true;
+				}
 				id<MTLBuffer> stageEddy=InjectedFailure("resident-staging")?
 					nil:sharedBuffer(cellBytes),stageMu=sharedBuffer(cellBytes);
 				id<MTLBuffer> stageViscous=sharedBuffer(faceBytes),stageGravity=sharedBuffer(faceBytes);
@@ -770,19 +878,26 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				[blit copyFromBuffer:momentum sourceOffset:0 toBuffer:stageMomentum destinationOffset:0 size:faceBytes];
 				if( captureIntermediateStates ) [blit copyFromBuffer:snapshots sourceOffset:0
 					toBuffer:stageSnapshots destinationOffset:0 size:8u*faceBytes];
-				[blit endEncoding];[staging commit];[staging waitUntilCompleted];
-				++observed.commandCommitCount;observed.terminalStagingCount=1u;
+				[blit endEncoding];CommitResidentForceCommand(staging);[staging waitUntilCompleted];
+				observed.terminalStagingCount=1u;
 				if( [staging status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force staging command failed");
+				observed.commandCommitCount=static_cast<std::uint32_t>(
+					residentForceCommandCommitCount-beginningCommandCommits);
 				observed.actualMetalAllocationBytes=actual;
 				FireProductionFrozenForceAdvanceResult computed;computed.schedule=selectedSchedule;
-				const float* eddyValues=static_cast<const float*>([stageEddy contents]);
-				const float* muValues=static_cast<const float*>([stageMu contents]);
+				const float* eddyValues=static_cast<const float*>(ResidentForceBufferContents(
+					stageEddy,ResidentForceTerminalAccess));
+				const float* muValues=static_cast<const float*>(ResidentForceBufferContents(
+					stageMu,ResidentForceTerminalAccess));
 				computed.frozenFields.eddyKinematicViscosityM2PerS.assign(eddyValues,eddyValues+cells);
 				computed.frozenFields.effectiveDynamicViscosityPaS.assign(muValues,muValues+cells);
-				const float* viscousValues=static_cast<const float*>([stageViscous contents]);
-				const float* gravityValues=static_cast<const float*>([stageGravity contents]);
-				const float* momentumValues=static_cast<const float*>([stageMomentum contents]);
+				const float* viscousValues=static_cast<const float*>(ResidentForceBufferContents(
+					stageViscous,ResidentForceTerminalAccess));
+				const float* gravityValues=static_cast<const float*>(ResidentForceBufferContents(
+					stageGravity,ResidentForceTerminalAccess));
+				const float* momentumValues=static_cast<const float*>(ResidentForceBufferContents(
+					stageMomentum,ResidentForceTerminalAccess));
 				offset=0u;for( unsigned int axis=0u;axis<3u;++axis ) {
 					computed.frozenFields.beginningViscousMomentumRateKGPerM2S2[axis].assign(
 						viscousValues+offset,viscousValues+offset+faceCounts[axis]);
@@ -792,7 +907,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						momentumValues+offset+faceCounts[axis]);offset+=faceCounts[axis];
 				}
 				computed.executedViscousSubstepCount=selectedSchedule.substepCount;
-				if( captureIntermediateStates ) {const float* values=static_cast<const float*>([stageSnapshots contents]);
+				if( captureIntermediateStates ) {const float* values=static_cast<const float*>(
+					ResidentForceBufferContents(stageSnapshots,ResidentForceTerminalAccess));
 					computed.intermediateMomentumDigestCount=selectedSchedule.substepCount;
 					for( std::uint32_t step=0u;step<selectedSchedule.substepCount;++step )
 						computed.intermediateMomentumByteDigests[step]=
@@ -813,5 +929,28 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 			diagnostics=FireProductionResidentForceDiagnostics();
 			return Fail(error,"production resident force allocation failed");
 		}
+	}
+
+	bool AdvanceFireProductionFrozenForceMetal(
+		const FireProductionFrozenForceRequest& request,
+		bool captureIntermediateStates,
+		FireProductionFrozenForceAdvanceResult& result,
+		FireProductionResidentForceDiagnostics& diagnostics,
+		std::string* error )
+	{
+		return AdvanceFireProductionFrozenForceMetalImpl(request,captureIntermediateStates,
+			0,0,result,diagnostics,error);
+	}
+
+	bool AdvanceFireProductionForceProjectionMetal(
+		const FireProductionFrozenForceRequest& forceRequest,
+		const std::vector<float>& divergenceTargetPerS,
+		FireProductionResidentForceProjectionResult& result,
+		std::string* error )
+	{
+		FireProductionFrozenForceAdvanceResult unpublishedForce;
+		FireProductionResidentForceDiagnostics unpublishedDiagnostics;
+		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
+			&result,unpublishedForce,unpublishedDiagnostics,error);
 	}
 }

@@ -165,6 +165,68 @@ namespace
 		}
 	}
 
+	RISE::FireProductionFrozenForceRequest ComposedForceCharacterizationCase(
+		int boundaryClass,int phase,float vremanCoefficient )
+	{
+		RISE::FireProductionFrozenForceRequest request;
+		request.shape.nx=5u;request.shape.ny=6u;request.shape.nz=7u;
+		request.shape.cellWidthM=0.1f;request.timeStepS=1.0e-6f;
+		request.ambientDensityKGPerM3=1.1f;request.vremanCoefficient=vremanCoefficient;
+		request.gravityMPerS2={1.3f,-9.81f,0.7f};
+		if( boundaryClass==0 ) request.boundary.fill(RISE::FireProductionProjectionPeriodic);
+		else if( boundaryClass==1 )
+			request.boundary.fill(RISE::FireProductionProjectionPressureOpen);
+		else {
+			const unsigned int mask=static_cast<unsigned int>(boundaryClass-2);
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const bool lowerWall=(mask&(1u<<axis))!=0u;
+				request.boundary[2u*axis]=lowerWall?RISE::FireProductionProjectionWall:
+					RISE::FireProductionProjectionPressureOpen;
+				request.boundary[2u*axis+1u]=lowerWall?
+					RISE::FireProductionProjectionPressureOpen:RISE::FireProductionProjectionWall;
+			}
+		}
+		const std::size_t cells=request.shape.CellCount();
+		request.cellGasDensityKGPerM3.resize(cells);
+		request.molecularKinematicViscosityM2PerS.resize(cells);
+		for( std::size_t cell=0u;cell<cells;++cell ) {
+			request.cellGasDensityKGPerM3[cell]=0.7f+0.13f*static_cast<float>(
+				(cell+static_cast<std::size_t>(phase))%9u);
+			request.molecularKinematicViscosityM2PerS[cell]=0.002f+0.001f*
+				static_cast<float>((cell+2u*static_cast<std::size_t>(phase))%11u);
+		}
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const std::size_t faces=RISE::FireProductionProjectionFaceCount(request.shape,axis);
+			request.faceDensityKGPerM3[axis].resize(faces);
+			request.beginningMomentumKGPerM2S[axis].resize(faces);
+			for( std::size_t face=0u;face<faces;++face ) {
+				request.faceDensityKGPerM3[axis][face]=0.6f+0.11f*static_cast<float>(
+					(face+3u*axis+5u*static_cast<unsigned int>(phase))%13u);
+				request.beginningMomentumKGPerM2S[axis][face]=static_cast<float>(
+					static_cast<int>((17u*face+5u*axis+7u*static_cast<unsigned int>(phase))%37u)-18)*0.071f;
+			}
+		}
+		if( boundaryClass==0 ) PublishTestForceBoundaries(request,
+			request.beginningMomentumKGPerM2S);
+		if( boundaryClass==0 ) {
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t extent=axis==0u?request.shape.nx:
+					(axis==1u?request.shape.ny:request.shape.nz);
+				const std::size_t plane=request.faceDensityKGPerM3[axis].size()/(extent+1u);
+				for( std::size_t line=0u;line<plane;++line ) {
+					const std::size_t low=axis==0u?line*(extent+1u):
+						(axis==1u?(line/request.shape.nx)*(extent+1u)*request.shape.nx+
+						line%request.shape.nx:line);
+					const std::size_t high=axis==0u?low+extent:
+						(axis==1u?low+extent*request.shape.nx:
+						low+extent*request.shape.nx*request.shape.ny);
+					request.faceDensityKGPerM3[axis][high]=request.faceDensityKGPerM3[axis][low];
+				}
+			}
+		}
+		return request;
+	}
+
 	std::uint64_t IndependentMomentumByteDigest(
 		const std::array<std::vector<float>,3>& momentum )
 	{
@@ -2693,6 +2755,114 @@ int main()
 		residentForceComposedWithinBound&&residentForceMaximumAbsolute==0x1p-25f&&
 		residentForceMaximumULPs>64u&&residentForceSeamsExact,
 		"resident eight-substep force keeps the loop private and remains within the measured composed bound");
+	std::uint64_t composedCharacterizationCases=0u,composedCharacterizationMaximumULPs=0u;
+	float composedCharacterizationMaximumAbsolute=0.0f;
+	float composedHighULPMaximumAbsolute=0.0f;
+	bool composedCharacterizationWithinBound=true,composedAnalyticBytesExact=true;
+	for( const float cv : {0.0f,0.07f} ) for( int phase=0;phase<8;++phase )
+		for( int boundaryClass=0;boundaryClass<10;++boundaryClass ) {
+			FireProductionFrozenForceRequest characterized=
+				ComposedForceCharacterizationCase(boundaryClass,phase,cv);
+			FireProductionFrozenForceAdvanceResult preflightCharacterized,metalCharacterized,
+				cpuCharacterized;
+			FireProductionResidentForceDiagnostics characterizedDiagnostics;
+			if( !AdvanceFireProductionFrozenForceMetal(characterized,false,
+				preflightCharacterized,characterizedDiagnostics,&error) ) {
+				composedCharacterizationWithinBound=false;continue;
+			}
+			characterized.timeStepS=static_cast<float>(15.0/
+				static_cast<double>(characterizedDiagnostics.outwardLambdaPerS));
+			if( !AdvanceFireProductionFrozenForceMetal(characterized,false,metalCharacterized,
+				characterizedDiagnostics,&error)||metalCharacterized.executedViscousSubstepCount!=8u||
+				!AdvanceFireProductionFrozenForceCPU(characterized,
+					characterizedDiagnostics.outwardLambdaPerS,cpuCharacterized,&error) ) {
+				composedCharacterizationWithinBound=false;continue;
+			}
+			++composedCharacterizationCases;
+			for( unsigned int axis=0u;axis<3u;++axis )
+				for( std::size_t face=0u;face<cpuCharacterized.momentumKGPerM2S[axis].size();++face ) {
+					const float expected=cpuCharacterized.momentumKGPerM2S[axis][face];
+					const float observed=metalCharacterized.momentumKGPerM2S[axis][face];
+					const std::uint64_t ulps=FloatULPDistance(expected,observed);
+					const float absolute=std::fabs(expected-observed);
+					composedCharacterizationMaximumULPs=std::max(
+						composedCharacterizationMaximumULPs,ulps);
+					composedCharacterizationMaximumAbsolute=std::max(
+						composedCharacterizationMaximumAbsolute,absolute);
+					if( ulps>64u ) composedHighULPMaximumAbsolute=std::max(
+						composedHighULPMaximumAbsolute,absolute);
+					composedCharacterizationWithinBound=composedCharacterizationWithinBound&&
+						(ulps<=64u||absolute<=0x1p-23f);
+					if( expected==0.0f ) composedAnalyticBytesExact=
+						composedAnalyticBytesExact&&SameFloatBytes(expected,observed);
+				}
+		}
+	std::cout << "Production resident composed_force_cases=" << composedCharacterizationCases <<
+		" max_ulp=" << composedCharacterizationMaximumULPs << " max_abs=" <<
+		composedCharacterizationMaximumAbsolute << " high_ulp_max_abs=" <<
+		composedHighULPMaximumAbsolute << '\n';
+	Check(composedCharacterizationCases==160u&&composedCharacterizationWithinBound&&
+		composedAnalyticBytesExact&&composedCharacterizationMaximumULPs==8192u&&
+		composedCharacterizationMaximumAbsolute==0x1p-21f&&
+		composedHighULPMaximumAbsolute==0x1p-23f,
+		"the 160-case N8 boundary/density/Vreman matrix binds the r96 composed force bound");
+	FireProductionProjectionRequest stagedProjection;
+	stagedProjection.shape=residentForce.shape;stagedProjection.timeStepS=residentForce.timeStepS;
+	stagedProjection.ambientDensityKGPerM3=residentForce.ambientDensityKGPerM3;
+	stagedProjection.boundary=residentForce.boundary;
+	stagedProjection.gasDensityKGPerM3=residentForce.cellGasDensityKGPerM3;
+	stagedProjection.provisionalMomentumKGPerM2S=residentForceGPU.momentumKGPerM2S;
+	stagedProjection.divergenceTargetPerS.assign(residentForce.shape.CellCount(),0.0f);
+	FireProductionProjectionResult stagedProjectionResult;
+	const bool stagedProjectionOK=ProjectFireProductionMetal(stagedProjection,
+		stagedProjectionResult,&error);
+	FireProductionResidentForceProjectionResult residentStep;
+	const bool residentStepOK=AdvanceFireProductionForceProjectionMetal(residentForce,
+		stagedProjection.divergenceTargetPerS,residentStep,&error);
+	const bool residentProjectionMatches=residentStepOK&&stagedProjectionOK&&
+		residentStep.projection.faceDensityKGPerM3==stagedProjectionResult.faceDensityKGPerM3&&
+		residentStep.projection.velocityMPerS==stagedProjectionResult.velocityMPerS&&
+		residentStep.projection.momentumKGPerM2S==stagedProjectionResult.momentumKGPerM2S&&
+		residentStep.projection.pressurePa==stagedProjectionResult.pressurePa&&
+		residentStep.projection.pressureOpenInflow==stagedProjectionResult.pressureOpenInflow&&
+		residentStep.projection.maximumPreProjectionResidualPerS==
+			stagedProjectionResult.maximumPreProjectionResidualPerS&&
+		residentStep.projection.maximumPostProjectionResidualPerS==
+			stagedProjectionResult.maximumPostProjectionResidualPerS&&
+		residentStep.projection.validationPassed==stagedProjectionResult.validationPassed;
+	Check(residentProjectionMatches&&residentStep.forceSchedule.substepCount==8u&&
+		residentStep.forceDiagnostics.scalarDiagnosticTransferCount==1u&&
+		residentStep.forceDiagnostics.terminalStagingCount==0u&&
+		residentStep.forceDiagnostics.commandCommitCount==2u&&
+		residentStep.projection.residentUploadStagingCount==0u&&
+		residentStep.projection.residentInterstageDeviceToHostTransferCount==0u&&
+		residentStep.projection.residentTerminalStagingCount==1u&&
+		residentStep.projection.residentCommandCommitCount==2u&&
+		residentStep.forceToProjectionDeviceToHostTransferCount==0u&&
+		residentStep.residentProjectionInvocationCount==1u&&
+		residentStep.combinedActualMetalAllocationBytes<=
+			residentStep.combinedCertifiedWorkingSetBytes&&
+		residentStep.combinedActualMetalAllocationBytes<(UINT64_C(1)<<31u),
+		"resident force, gravity, and one projection preserve staged-reference bytes without an interstage transfer");
+	FireProductionResidentForceProjectionResult rejectedResidentStep;
+	rejectedResidentStep.projection.pressurePa.push_back(1.0f);
+	rejectedResidentStep.forceSchedule.substepCount=4u;
+	rejectedResidentStep.forceToProjectionDeviceToHostTransferCount=4u;
+	rejectedResidentStep.residentProjectionInvocationCount=4u;
+	rejectedResidentStep.combinedCertifiedWorkingSetBytes=4u;
+	rejectedResidentStep.combinedActualMetalAllocationBytes=4u;
+	setenv("RISE_FIRE_FORCE_TEST_FAILURE","resident-interstage-transfer",1);
+	const bool rejectedResidentTransfer=!AdvanceFireProductionForceProjectionMetal(residentForce,
+		stagedProjection.divergenceTargetPerS,rejectedResidentStep,&error);
+	unsetenv("RISE_FIRE_FORCE_TEST_FAILURE");
+	Check(rejectedResidentTransfer&&rejectedResidentStep.projection.pressurePa.empty()&&
+		rejectedResidentStep.forceSchedule.substepCount==0u&&
+		rejectedResidentStep.forceToProjectionDeviceToHostTransferCount==0u&&
+		rejectedResidentStep.residentProjectionInvocationCount==0u&&
+		rejectedResidentStep.combinedCertifiedWorkingSetBytes==0u&&
+		rejectedResidentStep.combinedActualMetalAllocationBytes==0u&&
+		error.find("interstage transfer observed")!=std::string::npos,
+		"the observed transfer seam fails closed when an interstage host access is injected");
 	FireProductionFrozenForceRequest matrixForce=forceRest;
 	matrixForce.shape.nx=4u;matrixForce.shape.ny=4u;matrixForce.shape.nz=4u;
 	matrixForce.shape.cellWidthM=1.0f;matrixForce.timeStepS=1.0f;
@@ -2860,6 +3030,58 @@ int main()
 	Check(std::isfinite(residentForceDeviceP95)&&residentForceDeviceP95>0.0&&
 		residentForceDeviceP95<=20.0&&tier10N7&&tier10N9,
 		"tier-10-shaped force preflight and exact eight-update edge fit twenty milliseconds");
+	std::vector<float> tier10ProjectionTarget(tier10ResidentForce.shape.CellCount(),0.0f);
+	std::vector<double> residentCombinedDeviceMS,residentCombinedWallMS;
+	bool residentCombinedExactZero=true,residentCombinedTopology=true;
+	FireProductionResidentForceProjectionResult tier10ResidentStep;
+	for( unsigned int trial=0u;trial<5u;++trial ) {
+		const auto beginning=std::chrono::steady_clock::now();
+		const bool advanced=AdvanceFireProductionForceProjectionMetal(tier10ResidentForce,
+			tier10ProjectionTarget,tier10ResidentStep,&error);
+		const double wallMS=std::chrono::duration<double,std::milli>(
+			std::chrono::steady_clock::now()-beginning).count();
+		if( !advanced ) {std::cerr << "Resident combined detail: " << error << '\n';
+			residentCombinedTopology=false;continue;}
+		residentCombinedDeviceMS.push_back(tier10ResidentStep.forceDiagnostics.preflightDeviceElapsedMS+
+			tier10ResidentStep.forceDiagnostics.advanceDeviceElapsedMS+
+			tier10ResidentStep.projection.deviceElapsedMS);
+		residentCombinedWallMS.push_back(wallMS);
+		residentCombinedTopology=residentCombinedTopology&&
+			tier10ResidentStep.forceSchedule.substepCount==8u&&
+			tier10ResidentStep.forceDiagnostics.scalarDiagnosticTransferCount==1u&&
+			tier10ResidentStep.forceToProjectionDeviceToHostTransferCount==0u&&
+			tier10ResidentStep.projection.residentUploadStagingCount==0u&&
+			tier10ResidentStep.projection.residentInterstageDeviceToHostTransferCount==0u&&
+			tier10ResidentStep.projection.residentTerminalStagingCount==1u&&
+			tier10ResidentStep.residentProjectionInvocationCount==1u;
+		for( const float pressure:tier10ResidentStep.projection.pressurePa )
+			residentCombinedExactZero=residentCombinedExactZero&&SameFloatBytes(pressure,0.0f);
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			for( const float momentum:tier10ResidentStep.projection.momentumKGPerM2S[axis] )
+				residentCombinedExactZero=residentCombinedExactZero&&SameFloatBytes(momentum,0.0f);
+			for( const float velocity:tier10ResidentStep.projection.velocityMPerS[axis] )
+				residentCombinedExactZero=residentCombinedExactZero&&SameFloatBytes(velocity,0.0f);
+		}
+	}
+	std::sort(residentCombinedDeviceMS.begin(),residentCombinedDeviceMS.end());
+	std::sort(residentCombinedWallMS.begin(),residentCombinedWallMS.end());
+	const double residentCombinedDeviceP95=residentCombinedDeviceMS.size()==5u?
+		residentCombinedDeviceMS.back():std::numeric_limits<double>::infinity();
+	const double residentCombinedWallP95=residentCombinedWallMS.size()==5u?
+		residentCombinedWallMS.back():std::numeric_limits<double>::infinity();
+	std::cout << "Production resident N8 force-projection device_p95_ms=" <<
+		residentCombinedDeviceP95 << " wall_p95_ms=" << residentCombinedWallP95 <<
+		" certified_bytes=" << tier10ResidentStep.combinedCertifiedWorkingSetBytes <<
+		" actual_bytes=" << tier10ResidentStep.combinedActualMetalAllocationBytes << '\n';
+	Check(residentCombinedTopology&&residentCombinedExactZero&&
+		residentCombinedDeviceMS.size()==5u&&residentCombinedWallMS.size()==5u&&
+		std::isfinite(residentCombinedDeviceP95)&&residentCombinedDeviceP95>0.0&&
+		std::isfinite(residentCombinedWallP95)&&residentCombinedWallP95>0.0&&
+		residentCombinedDeviceP95<=140.0&&residentCombinedWallP95<=160.0&&
+		tier10ResidentStep.combinedActualMetalAllocationBytes<=
+			tier10ResidentStep.combinedCertifiedWorkingSetBytes&&
+		tier10ResidentStep.combinedActualMetalAllocationBytes<(UINT64_C(1)<<31u),
+		"tier-10 N8 force and one projection remain resident, exact at rest, and fit their combined allocation");
 	if( !periodicForceMetal ) std::cerr << "Metal frozen-force detail: " << error << '\n';
 	auto reportForceDifference=[](const char* label,
 		const FireProductionFrozenForceResult& cpu,
@@ -3390,6 +3612,13 @@ int main()
 	const std::string forceResourceBody=forceResourceBeginning==std::string::npos||
 		forceResourceEnd==std::string::npos?std::string():forceMetalBody.substr(
 			forceResourceBeginning,forceResourceEnd-forceResourceBeginning);
+	const std::size_t residentForceBeginning=forceMetalSource.find(
+		"bool AdvanceFireProductionFrozenForceMetalImpl(");
+	const std::size_t residentForceEnd=forceMetalSource.find(
+		"bool AdvanceFireProductionFrozenForceMetal(",residentForceBeginning);
+	const std::string residentForceBody=residentForceBeginning==std::string::npos||
+		residentForceEnd==std::string::npos?std::string():forceMetalSource.substr(
+			residentForceBeginning,residentForceEnd-residentForceBeginning);
 	const std::size_t crossCarrierBeginning=transportSource.find("float CrossCarrierAt(");
 	const std::size_t dualAxisBeginning=transportSource.find("bool BuildDualAxisRequest(");
 	const std::string crossCarrierBody=crossCarrierBeginning==std::string::npos||
@@ -3611,6 +3840,17 @@ int main()
 			"-ffp-contract=off\"; };")==2u,
 		"production force primitives bind their arithmetic topology and all five strict build "
 		"surfaces");
+	Check(!residentForceBody.empty()&&
+		CountSubstring(residentForceBody,"CommitResidentForceCommand(")==3u&&
+		CountSubstring(residentForceBody,"ResidentForceBufferContents(")==8u&&
+		CountSubstring(residentForceBody,"[preflight commit]")==0u&&
+		CountSubstring(residentForceBody,"[advance commit]")==0u&&
+		CountSubstring(residentForceBody,"[staging commit]")==0u&&
+		CountSubstring(residentForceBody," contents]")==0u&&
+		residentForceBody.find("residentForceInterstageFullGridReadCount-"
+			"beginningInterstageReads")!=std::string::npos&&
+		residentForceBody.find("ProjectFireProductionMetalResident(")!=std::string::npos,
+		"resident force observes every command/read seam and invokes one private-buffer projection");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),
