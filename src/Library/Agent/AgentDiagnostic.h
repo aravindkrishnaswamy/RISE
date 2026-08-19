@@ -96,6 +96,24 @@ namespace RISE
 			//! DESIGN_SCALAR_PIPE_UNUSED, and the same shared fire
 			//! condition.
 			static const char* const DESIGN_NO_ADVANCED_GEOMETRY  = "DESIGN_NO_ADVANCED_GEOMETRY";
+			//! 88 (2026-08-19), the same advisory family: five or more
+			//! `standard_object` chunks are separate hand-authored copies of
+			//! ONE geometry that share every non-transform binding and differ
+			//! only in where they sit -- the repetition `source` + `count_u`
+			//! expresses in a single chunk.  SILENT whenever the document
+			//! carries a `source` / `count_u` / `count_v` anywhere (the author
+			//! has already reached for the idiom, so pricing it again is
+			//! noise), and geometry-less container nodes -- including the
+			//! harness's own `<prefix>element_root` -- never enter a group at
+			//! all.  Severity::Info, same self-disarming convention as its two
+			//! siblings, and the same shared
+			//! ComputeDesignNoteConditionsFromDoc_ scan.  NOTE it is a
+			//! BACKSTOP: it rides render results and `validate`, both of which
+			//! run AFTER the objects exist, so it prompts a correction rather
+			//! than preventing the fan-out -- getting it right the first time
+			//! is the skill prose's job (object-modeling-recipes,
+			//! "Assemblies are subtrees; repeats are one chunk").
+			static const char* const DESIGN_HAND_REPEATED_COPIES  = "DESIGN_HAND_REPEATED_COPIES";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

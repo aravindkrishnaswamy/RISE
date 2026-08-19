@@ -570,7 +570,7 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// A rot guard for the extraction itself: the eight seed skills ship
 	// TWENTY snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 4, object-modeling-recipes 5, observe-modes 1,
+	// geometry 3, object-modeling-recipes 6, observe-modes 1,
 	// procedural-textures 2, scene-skeleton-and-conventions 1) -- if the
 	// fence tag or extraction regresses, this trips before a snippet
 	// silently escapes checking.  object-modeling-recipes gained Recipe 4
@@ -595,10 +595,26 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// has ever built a hierarchy or an instance array.  This is the ONE
 	// channel that carries "when", and hierarchy/instancing is exactly the
 	// kind of thing an example moves and prose does not (this workstream's
-	// own measurement).  It went into modeling-workflow-and-geometry rather
-	// than object-modeling-recipes because it is about PLACEMENT and
-	// REPETITION, not about how one object's shape is made -- the same
-	// distinction that keeps it out of the `construction` enum.
+	// own measurement).  It originally went into modeling-workflow-and-
+	// geometry rather than object-modeling-recipes on the argument that it
+	// is about PLACEMENT and REPETITION, not about how one object's shape
+	// is made -- the same distinction that keeps it out of the
+	// `construction` enum.
+	//
+	// 88 (2026-08-19) MOVED it to object-modeling-recipes, and the count
+	// stayed 20 because a move is not an addition (the per-skill split
+	// above went 4/5 -> 3/6).  A live gemini-3.7-flash run on an
+	// apothecary-workbench prompt adopted lathe_geometry, skeleton_geometry
+	// and superellipsoid -- every affordance on an always-delivered channel
+	// or in a skill it actually pulled -- and adopted `source`/`count_u`
+	// ZERO times, hand-authoring six standard_objects on one bottle
+	// geometry.  The trajectory shows why: it read object-modeling-recipes
+	// and materials-and-media-basics, and never opened modeling-workflow-
+	// and-geometry or read_schema standard_object, the only two channels
+	// carrying instancing.  The taxonomy argument was sound and the
+	// placement still lost; a model deciding how to build repeated objects
+	// is reading the RECIPES.  A short pointer stays behind in the workflow
+	// skill so the content still has exactly one home.
 	Check( totalSnippets == 20, "the seed skills carry the expected 20 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }

@@ -358,13 +358,231 @@ your render shows the handle detached, it is not overlapping the
 body's outer radius; increase the X position past `body radius -
 torus minorratio*majorradius` or bring it closer to `0.5`.
 
-## Recipe 2: a table (primitive reuse, one geometry instanced four times)
+## Assemblies are subtrees; repeats are one chunk
+
+Objects form a TREE, not a flat list.  Two parameters on
+`standard_object` carry all of it, and both are worth reaching for
+before you write the tenth near-identical chunk:
+
+- **`parent <object>`** -- the node's transform becomes LOCAL, and its
+  world transform is `parent.world * local`.  Move the parent and the
+  whole subtree moves.  A `standard_object` with NO `geometry` is a
+  pure CONTAINER: invisible to the renderer, but a real node whose
+  transform everything under it composes against.  That is what an
+  assembly is -- one container plus its parts -- and it is what lets
+  you place, rotate or scale a bench, a lamp or a whole building with
+  ONE edit instead of N.
+- **`source <object>`** -- this node becomes an INSTANCE of that
+  object.  If the source has children, its whole subtree is copied and
+  the descendants are named `<this name>.<their name>`.  Add
+  `count_u U` (and optionally `count_v V`) and the whole instance is
+  repeated `U x V` times as `<this name>[i,j]`, with the instancing
+  chunk's own parameters free to be per-component `expr(...)` over the
+  instance variables `i` / `j` (indices) and `u` / `v` (the same,
+  normalized into [0,1]).
+
+Read `read_schema` for `standard_object` for the full parameter text;
+what follows is the part the schema cannot tell you -- when to reach
+for them, and what bites.
+
+**When to reach for them.**  Copy-paste is right for two or three
+objects that differ in more than their placement.  A subtree is right
+the moment you would otherwise repeat a placement edit; an instance
+array is right the moment you would otherwise paste the same chunk
+more than about four times.  The array is also ONE row in the
+outliner and ONE chunk to edit -- change `count_u` and the whole
+arrangement changes -- where thirty pasted chunks are thirty edits.
+Recipe 2 below sits right on that line: a table's four legs share ONE
+geometry across four `standard_object`s, and four is the right shape.
+A shelf lined with six identical bottles, or a fence of thirty
+pickets, is past it -- author ONE and let `count_u` write the rest.
+
+**Five things that bite.**
+
+1. **A `parent` and a `source` must be DECLARED EARLIER in the file.**
+   Same rule as every other reference.  So an assembly reads top-down:
+   the container first, then its parts.
+2. **`source` COPIES; it does not move or hide anything.**  The source
+   object keeps rendering where it is.  So an array of `count_u 5` off
+   a visible source gives you SIX, not five -- author the source where
+   you actually want one of them, as the example below does.
+3. **A repetition is not a chunk.**  `grid[3,1]` is a real object with
+   a real name you can see in `scene_inventory`, but there is nothing
+   named `grid[3,1]` to patch.  Edit the instancing chunk.
+   `scene_inventory` names it for you under `instancedFrom`.
+4. **A CSG operand cannot be parented.**  An operand's transform is
+   read in the composite's frame, so parent the `csg_object` itself and
+   leave `obja` / `objb` unparented.
+5. **The counted form always names `[i,j]`,** even at `count_u 1` --
+   so a `parent` pointing at a counted chunk must say `parent
+   name[0,0]`, not `parent name`.
+
+**Scaling a container is a scene-graph scale**, and every component
+must be greater than zero: a zero makes the composed matrix singular
+for every object under it, which is a whole subtree of wrong
+intersections rather than one flat object.
+
+If you are working through the staged build protocol, this is already
+happening for you: every object you create inside an element's window
+is parented to that element's root container, and `place_element`
+writes one transform onto it.  Reach for `parent` yourself for
+hierarchy INSIDE an element -- a hand under a wrist, a shade on a lamp
+-- and for `source` whenever a part repeats.
+
+```rise
+RISE ASCII SCENE 7
+
+# A fence: ONE post authored, five more from ONE instancing chunk, all
+# hanging off a container so the whole run swings with a single
+# `orientation`.  Nine objects; the parts a human edits are four chunks.
+
+standard_shader
+{
+name global
+shaderop DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+samples 12
+pixel_filter box
+oidn_denoise FALSE
+}
+
+film
+{
+width 96
+height 72
+}
+
+pinhole_camera
+{
+name cam
+location 3.4 2.6 6.6
+lookat 2.1 0.7 0
+up 0 1 0
+fov 42
+}
+
+uniformcolor_painter
+{
+name pnt_wood
+color 0.52 0.36 0.22
+}
+
+lambertian_material
+{
+name mat_wood
+reflectance pnt_wood
+}
+
+uniformcolor_painter
+{
+name pnt_ground
+color 0.55 0.55 0.52
+}
+
+lambertian_material
+{
+name mat_ground
+reflectance pnt_ground
+}
+
+clippedplane_geometry
+{
+name geo_ground
+pta -9 0 -9
+ptb 9 0 -9
+ptc 9 0 9
+ptd -9 0 9
+}
+
+box_geometry
+{
+name geo_post
+width 0.16
+height 1.2
+depth 0.16
+}
+
+box_geometry
+{
+name geo_rail
+width 4.8
+height 0.14
+depth 0.1
+}
+
+standard_object
+{
+name ground
+geometry geo_ground
+material mat_ground
+}
+
+# THE CONTAINER.  No `geometry`, so it renders nothing -- it is a
+# transform the three chunks below compose against.  Change this one
+# `orientation` and the whole fence turns.
+standard_object
+{
+name fence
+position 0 0 0
+orientation 0 -12 0
+}
+
+# Post 0, authored once.  Its `position` is LOCAL to `fence`.
+standard_object
+{
+name fence_post
+parent fence
+geometry geo_post
+material mat_wood
+position 0 0.6 0
+}
+
+# Posts 1..5, from one chunk.  `source` copies `fence_post`; `count_u`
+# mints `fence_posts[i,0]` per repetition, and this chunk's own
+# `position` is evaluated per repetition over `i`.  The SOURCE still
+# renders at its own spot, which is why this starts at i*0.9 + 0.9 --
+# six evenly spaced posts from two chunks.
+standard_object
+{
+name fence_posts
+parent fence
+source fence_post
+count_u 5
+position expr(0.9+i*0.9) 0.6 0
+}
+
+standard_object
+{
+name fence_rail
+parent fence
+geometry geo_rail
+material mat_wood
+position 2.25 1.05 0
+}
+
+# `direction` is the vector FROM the surface TO the light, so a camera
+# at +Z needs a POSITIVE z here.
+directional_light
+{
+name key
+power 2.4
+color 1 0.97 0.90
+direction 0.35 0.80 0.55
+}
+```
+
+## Recipe 2: a table (primitive reuse, one geometry reused by four objects)
 
 Declare the leg geometry ONCE and reference it from four
 `standard_object`s at four positions -- geometry is a reusable
-template, not copied per placement.  This is the cheapest way to build
-anything with repeated parts (chair legs, railings, a picket fence)
-before reaching for `path_instances_geometry`.
+template, not copied per placement.  Four is the honest upper end of
+hand-authoring: past about four near-identical chunks, author ONE and
+repeat it with `source` + `count_u` instead (see "Assemblies are
+subtrees; repeats are one chunk" above), so a railing or a picket
+fence is two chunks rather than thirty.
 
 ```rise
 RISE ASCII SCENE 7

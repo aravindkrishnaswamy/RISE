@@ -783,6 +783,244 @@ static void RunValidateDesignDiagnosticsScanTest()
 	}
 }
 
+//----------------------------------------------------------------------
+// 88 (2026-08-19) condition C -- DESIGN_HAND_REPEATED_COPIES.
+//
+// Motivated by a MEASURED miss: a live gemini-3.7-flash run on an
+// apothecary-workbench prompt ("each shelf lined with rows of the same
+// glass bottle") reused the GEOMETRY -- six standard_objects on one
+// `shelf_wares_tall_bottle_geo` -- but hand-authored six chunks instead
+// of one `source` + `count_u` chunk.  Every fixture below is built to
+// DISCRIMINATE rather than merely pass: each non-firing case differs
+// from the firing one in exactly ONE respect, so a condition that
+// over-fires (or that silently stops firing) fails a named assertion
+// rather than sliding through.
+//----------------------------------------------------------------------
+static void RunDesignRepeatedCopiesScanTest()
+{
+	std::printf( "[design-note] condition C: DESIGN_HAND_REPEATED_COPIES red-proofs\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+
+	// The document PREAMBLE every fixture shares: a geometry, a material,
+	// and a scalar_painter + sdf_geometry so conditions A and B are both
+	// silenced.  That isolation matters -- it means a fixture's note being
+	// non-empty can ONLY be condition C.
+	const std::string preamble =
+		"RISE ASCII SCENE 7\n"
+		"scalar_painter\n{\n\tname r\n\tfile none\n}\n\n"
+		"sdf_geometry\n{\n\tname sdf_geo\n\tpart\t\tsphere union 0 0 0 0 0 0 0 0 0 1 0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt\n\tcolor 0.6 0.6 0.6\n}\n\n"
+		"lambertian_material\n{\n\tname mat\n\treflectance pnt\n}\n\n"
+		"lambertian_material\n{\n\tname mat2\n\treflectance pnt\n}\n\n"
+		"sphere_geometry\n{\n\tname bottle_geo\n\tradius 0.2\n}\n\n";
+
+	// One `standard_object` bound to bottle_geo/mat at x = `x`.
+	auto bottle = []( const std::string& name, const std::string& x ) {
+		return "standard_object\n{\n\tname " + name + "\n\tgeometry bottle_geo\n\tmaterial mat\n"
+		       "\tposition " + x + " 0 0\n}\n\n";
+	};
+
+	// -- (1) RED-PROVE: the measured pattern.  SIX copies of one geometry,
+	//    identical bindings, transform-only differences, no instancing.
+	const std::string docSix = preamble +
+		bottle( "b0", "0" ) + bottle( "b1", "0.5" ) + bottle( "b2", "1.0" ) +
+		bottle( "b3", "1.5" ) + bottle( "b4", "2.0" ) + bottle( "b5", "2.5" );
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docSix );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_HAND_REPEATED_COPIES" );
+		Check( d != nullptr,
+		       "RED-PROVE C: 6 standard_objects on ONE geometry, transform-only differences, no "
+		       "source/count_u -- fires DESIGN_HAND_REPEATED_COPIES" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity (advisory, like A and B)" );
+			Check( d->message.find( "6 standard_objects" ) != std::string::npos,
+			       "...reporting the actual group SIZE (6), not a generic count" );
+			Check( d->message.find( "`bottle_geo`" ) != std::string::npos,
+			       "...NAMING the shared geometry, so the author knows which run is meant" );
+			Check( d->message.find( "`source <that one>`" ) != std::string::npos &&
+			       d->message.find( "count_u 5" ) != std::string::npos,
+			       "...pricing the alternative BY NAME (`source` + `count_u 5` -- one fewer than 6, "
+			       "because the source still renders)" );
+			Check( d->message.find( "COPIES rather than moves or hides" ) != std::string::npos &&
+			       d->message.find( "are 6, not 5" ) != std::string::npos,
+			       "...teaching the off-by-one trap the section teaches (`source` copies, so count_u 5 "
+			       "off a visible source yields SIX)" );
+			Check( d->message.find( "this is fine -- ignore and do not churn" ) != std::string::npos,
+			       "...self-disarming, the same advisory discipline conditions A and B follow" );
+		}
+		// A and B are silenced by the preamble, so a non-empty note here is
+		// condition C and nothing else.
+		const std::string note = AgentSession::ComputeDesignNote( docSix );
+		Check( note.find( "the scalar pipe is unused" ) == std::string::npos &&
+		       note.find( "geometry census" ) == std::string::npos,
+		       "...with conditions A and B provably silent (the fixture binds both a scalar_painter "
+		       "and an sdf_geometry), so the note below is condition C in isolation" );
+		Check( note.find( "DESIGN NOTE" ) != std::string::npos &&
+		       note.find( "6 standard_objects" ) != std::string::npos,
+		       "...and the RENDER-RESULT note carrier fires on the same document" );
+
+		// THE VERBATIM-COPY INVARIANT (the note clause and the diagnostic
+		// message must never be able to disagree).  Condition C keeps it
+		// STRUCTURALLY -- one shared FormatRepeatedCopiesClause_, two
+		// callers -- and this asserts the observable consequence: the
+		// diagnostic's whole message appears, byte for byte, inside the note.
+		if( d ) {
+			Check( note.find( d->message ) != std::string::npos,
+			       "MONEY (verbatim invariant): the DESIGN_HAND_REPEATED_COPIES message appears "
+			       "BYTE-IDENTICALLY inside the render-result note -- one shared clause formatter, "
+			       "so note and diagnostic cannot drift" );
+		}
+	}
+
+	// -- (2) GREEN-PROVE: the SAME six objects, but the repetition is
+	//    ALREADY expressed with source/count_u.  Firing here would be
+	//    actively wrong -- the author did the right thing.
+	{
+		const std::string docInstanced = docSix +
+			"standard_object\n{\n\tname shelf_row\n\tsource b0\n\tcount_u 3\n\tposition expr(3+i) 1 0\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docInstanced );
+		Check( !hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
+		       "GREEN-PROVE C (already instanced): the SAME 6-copy run plus ONE source/count_u chunk "
+		       "silences condition C -- a note there would price an idiom the author already used" );
+		Check( AgentSession::ComputeDesignNote( docInstanced ).empty(),
+		       "...and the note goes fully empty (A and B were already silent)" );
+	}
+
+	// -- (2b) ...and `source` ALONE (no counts) disarms it too: a single
+	//    instance is still proof the author has the idiom in hand.
+	{
+		const std::string docSourceOnly = docSix +
+			"standard_object\n{\n\tname shelf_copy\n\tsource b0\n\tposition 0 1 0\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docSourceOnly ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "GREEN-PROVE C: a bare `source` (no count_u) disarms condition C as well" );
+	}
+
+	// -- (3) GREEN-PROVE: BELOW the gate.  Four legs sharing one geometry
+	//    is the honest authoring shape (object-modeling-recipes Recipe 2),
+	//    and the gate of 5 exists precisely so this does not get nagged.
+	const std::string docFour = preamble +
+		bottle( "leg0", "0" ) + bottle( "leg1", "0.5" ) + bottle( "leg2", "1.0" ) + bottle( "leg3", "1.5" );
+	{
+		Check( !hasCode( AgentSession::ValidateText( docFour ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "GREEN-PROVE C (threshold): FOUR copies -- a table's legs -- stay silent (gate is 5, "
+		       "matching the skill's own \"more than about four times\" rule)" );
+	}
+	// ...and the boundary is exactly where it is claimed to be: adding the
+	// FIFTH identical-binding copy to that same document fires it.
+	{
+		const std::string docFive = docFour + bottle( "leg4", "2.0" );
+		Check( hasCode( AgentSession::ValidateText( docFive ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "BOUNDARY C: the same document plus a FIFTH copy fires -- the gate is 5, proven from "
+		       "both sides on one fixture" );
+	}
+
+	// -- (4) GREEN-PROVE: six objects on one geometry that differ in more
+	//    than placement (two materials) are NOT one array -- an instancing
+	//    chunk copies bindings wholesale, so it could not have written them.
+	{
+		std::string docMixedBindings = preamble;
+		for( int i = 0; i < 6; ++i ) {
+			docMixedBindings += "standard_object\n{\n\tname m" + std::to_string( i ) +
+				"\n\tgeometry bottle_geo\n\tmaterial " + ( ( i % 2 ) ? "mat2" : "mat" ) +
+				"\n\tposition " + std::to_string( i ) + " 0 0\n}\n\n";
+		}
+		Check( !hasCode( AgentSession::ValidateText( docMixedBindings ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "GREEN-PROVE C (bindings): 6 objects on one geometry split 3/3 across TWO materials "
+		       "stay silent -- neither group reaches 5, and one `source` chunk could not have "
+		       "produced both" );
+	}
+
+	// -- (5) GREEN-PROVE: geometry-less CONTAINERS never enter a group.
+	//    This is the harness's own machine-minted `<prefix>element_root`
+	//    shape (AgentSession::ElementRootName mints exactly
+	//    `standard_object { name <prefix>element_root }`), and the trajectory
+	//    that motivated this slice carried 93 such links -- so a condition
+	//    that counted them would fire on every staged build.  CONFIRMED
+	//    here, not assumed.
+	//
+	//    The containers below each carry a DISTINCT `position`, which is
+	//    not decoration: `place_element` writes exactly one transform onto
+	//    each element root, so in a real staged build the roots are a run
+	//    of same-binding, different-transform nodes -- the shape condition
+	//    C looks for in every respect EXCEPT the missing `geometry`.  A
+	//    fixture without those positions passes for the wrong reason (the
+	//    co-located rule catches it instead) and would keep passing with
+	//    the container rule deleted; this one does not.
+	{
+		std::string docRoots = preamble;
+		const char* const roots[] = { "shelf", "bench", "wall", "props", "glass", "lamp" };
+		for( int i = 0; i < 6; ++i )
+			docRoots += std::string( "standard_object\n{\n\tname " ) + roots[i] +
+				"_element_root\n\tposition " + std::to_string( i ) + " 0 0\n}\n\n";
+		Check( !hasCode( AgentSession::ValidateText( docRoots ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "GREEN-PROVE C (element roots): SIX geometry-less `<prefix>element_root` containers, "
+		       "each posed by its own `place_element` transform, stay silent -- a container carries "
+		       "no `geometry`, so it never enters a group" );
+		// ...and the SAME document with six real, geometry-bearing copies
+		// added DOES fire, proving the silence above is the container rule
+		// and not the fixture failing to reach the scan at all.
+		const std::string docRootsPlusCopies = docRoots +
+			bottle( "b0", "0" ) + bottle( "b1", "0.5" ) + bottle( "b2", "1.0" ) +
+			bottle( "b3", "1.5" ) + bottle( "b4", "2.0" ) + bottle( "b5", "2.5" );
+		Check( hasCode( AgentSession::ValidateText( docRootsPlusCopies ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "...while the SAME six containers plus six geometry-bearing copies DO fire -- the "
+		       "silence above is the container rule, not a dead scan" );
+	}
+
+	// -- (6) GREEN-PROVE: six co-located, byte-identical copies are a
+	//    duplication BUG, not an array.  The clause claims they "differ
+	//    only in their transform"; with no distinct transform at all that
+	//    claim would be false, so the condition must not make it.
+	{
+		std::string docStacked = preamble;
+		for( int i = 0; i < 6; ++i )
+			docStacked += "standard_object\n{\n\tname s" + std::to_string( i ) +
+				"\n\tgeometry bottle_geo\n\tmaterial mat\n}\n\n";
+		Check( !hasCode( AgentSession::ValidateText( docStacked ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "GREEN-PROVE C (co-located): 6 copies with NO transform between them stay silent -- "
+		       "that is a duplication bug, and `count_u` is advice about a different problem" );
+	}
+
+	// -- (7) Whitespace/indentation must not split a group: the signature
+	//    compares BINDINGS, not bytes.  Same six copies, wildly different
+	//    formatting, still one group.
+	{
+		const std::string docFormatting = preamble +
+			"standard_object{\nname w0\ngeometry bottle_geo\nmaterial mat\nposition 0 0 0\n}\n\n"
+			"standard_object\n{\n\t\tname w1\n\t\tgeometry   bottle_geo\n\t\tmaterial\tmat\n\t\tposition 1 0 0\n}\n\n"
+			"standard_object\n{\n name w2\n geometry bottle_geo\n material mat\n position 2 0 0\n}\n\n"
+			"standard_object\n{\n\tname w3\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 3 0 0\n}\n\n"
+			"standard_object\n{\n\tname w4\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 4 0 0\n}\n\n"
+			"standard_object\n{\n\tname w5\n\tgeometry bottle_geo\n\tmaterial mat\n\tposition 5 0 0\n}\n";
+		Check( hasCode( AgentSession::ValidateText( docFormatting ), "DESIGN_HAND_REPEATED_COPIES" ),
+		       "C (signature): six copies formatted six different ways are still ONE group -- the "
+		       "signature reads pvalue tokens, never raw bytes" );
+	}
+
+	// -- (8) The three conditions are INDEPENDENT diagnostics, not a merged
+	//    one: a document that trips all three carries three entries.
+	{
+		std::string docAll = "RISE ASCII SCENE 7\n"
+			"box_geometry\n{\n\tname geo\n\twidth 1\n\theight 1\n\tdepth 1\n}\n\n";
+		for( int i = 0; i < 6; ++i )
+			docAll += "standard_object\n{\n\tname a" + std::to_string( i ) +
+				"\n\tgeometry geo\n\tposition " + std::to_string( i ) + " 0 0\n}\n\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docAll );
+		Check( hasCode( diags, "DESIGN_SCALAR_PIPE_UNUSED" ) && hasCode( diags, "DESIGN_NO_ADVANCED_GEOMETRY" ) &&
+		       hasCode( diags, "DESIGN_HAND_REPEATED_COPIES" ),
+		       "COMBINED: a 6-box fan-out with no scalar_painter and no advanced geometry fires ALL "
+		       "THREE design codes as three separate diagnostics" );
+	}
+}
+
 int main()
 {
 	// G2 (2026-08-10): the build-plan gate is ON by default in production (a
@@ -1413,6 +1651,7 @@ int main()
 
 	RunReadSchemaBatchTest();
 	RunDesignNoteScanTest();
+	RunDesignRepeatedCopiesScanTest();
 	RunValidateDesignDiagnosticsScanTest();
 	RunValidateDesignDiagnosticsCarrierTest();
 

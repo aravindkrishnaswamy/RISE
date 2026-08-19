@@ -2962,30 +2962,141 @@ namespace RISE
 			//!     CheckerCollectKindFilterMatches uses) -- purely for the
 			//!     human-readable "k box_geometry, m sphere_geometry" clause;
 			//!     it plays no role in either fire condition.
+			//!   * (88) per-`standard_object` BINDING signatures, so a run of
+			//!     hand-authored copies of ONE geometry that differ only in
+			//!     where they sit can be recognised -- condition C below.
 			//!
 			//! FIRE CONDITIONS (sec 7's re-target, both pure existence/count
 			//! checks -- deliberately no BuildReferenceGraph closure; a v1 that
 			//! needs one hasn't been justified by the baseline):
 			//!   A (scalar-pipe unused):  standardObjectCount >= 3 && !hasScalarPainter
 			//!   B (no advanced geometry): standardObjectCount >= 4 && !hasAdvancedGeometry
-			//! Neither condition looks at whether an object's MATERIAL actually
+			//!   C (hand-fanned repetition): the largest group of `standard_object`s
+			//!     sharing ONE geometry AND every non-transform binding, with at
+			//!     least two DISTINCT transforms among them, reaches
+			//!     kRepeatedCopyGate -- and the document expresses no `source` /
+			//!     `count_u` / `count_v` anywhere.
+			//! Neither A nor B looks at whether an object's MATERIAL actually
 			//! reaches the missing kind -- an object with no material bound at
 			//! all still counts toward the gate, matching the sec 7 text's
 			//! "walk doc.items roles" framing (a coarser, cheaper test than A1's
 			//! originally-approved reachability scan, superseded here).
+			//!
+			//! ORDERING FACT, recorded because it bounds what condition C can
+			//! do (88, 2026-08-19): the design note rides RENDER results
+			//! (RenderCore_'s two designNoteLocal sites) and validate's
+			//! diagnostics, but under the staged build protocol a scene's
+			//! elements are BUILT BEFORE the first render -- so by the time
+			//! this fires, the six pasted chunks already exist.  Condition C
+			//! therefore prompts a CORRECTION, not a prevention; it is a
+			//! BACKSTOP behind the skill prose (object-modeling-recipes,
+			//! "Assemblies are subtrees; repeats are one chunk"), which is the
+			//! channel that can get it right the first time.  Conditions A and
+			//! B have exactly the same shape, which is why this is still worth
+			//! carrying -- but the note's WORDING must not oversell it as
+			//! prevention.
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused
 				bool conditionB = false;   //!< no advanced geometry
+				bool conditionC = false;   //!< hand-fanned repetition of one geometry (88)
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
+				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
+				std::string repeatedCopyGeometry;            //!< condition C: the geometry name that group shares
 			};
+
+			//! Condition C's gate: how many hand-authored copies of ONE
+			//! geometry it takes before the note names `source` / `count_u`.
+			//!
+			//! FIVE, and the number is not arbitrary.  The skill corpus
+			//! already states this exact boundary in prose --
+			//! object-modeling-recipes, "an instance array is right the moment
+			//! you would otherwise paste the same chunk more than about four
+			//! times" -- so the engine-side gate is set to agree with the text
+			//! a model may have just read, rather than to a second, private
+			//! threshold that could contradict it.  It also clears the honest
+			//! counter-example in the same skill: a table's FOUR legs share one
+			//! geometry across four `standard_object`s and that is the right
+			//! authoring shape (Recipe 2), so a gate of 4 would nag a correct
+			//! scene.  The measured miss that motivated condition C was SIX
+			//! (six `standard_object`s on `shelf_wares_tall_bottle_geo`), which
+			//! this catches with one to spare.
+			static const int kRepeatedCopyGate = 5;
+
+			//! Condition C's transform-parameter set: the params that say WHERE
+			//! a `standard_object` sits, as opposed to WHAT it is.  A `source` +
+			//! `count_u` array varies exactly these (per-component `expr(...)`
+			//! over the instance variables) and copies everything else
+			//! wholesale, so a group differing ONLY in these is precisely the
+			//! group one instancing chunk could have written.  `parent` is
+			//! deliberately NOT here: copies under DIFFERENT parents cannot be
+			//! one array, so a differing `parent` must split the group.
+			bool IsObjectTransformParam_( const std::string& pname )
+			{
+				return pname == "position" || pname == "orientation" ||
+				       pname == "quaternion" || pname == "matrix" || pname == "scale";
+			}
+
+			//! Every param on `chunkItem` as name -> space-joined value, LAST
+			//! occurrence winning -- ParamValueAsParsed's rule, which is the
+			//! rule the descriptor-driven parser itself applies through
+			//! ParseStateBag::SetSingle.  (ChunkParamString_ above answers the
+			//! FIRST-occurrence question for a single param; this one exists
+			//! because condition C needs the WHOLE param set, including params
+			//! no descriptor list here enumerates.)  Only `pvalue` Tokens are
+			//! joined, so inter-token Trivia never reaches the string: two
+			//! chunks that differ only in indentation, or in how a tuple is
+			//! spaced, produce IDENTICAL maps.  That is what the signature
+			//! comparison needs -- it asks "same bindings?", never "same
+			//! bytes?".
+			std::map<std::string, std::string> ChunkParamMap_( const NodeRef& chunkItem )
+			{
+				std::map<std::string, std::string> out;
+				if( !chunkItem ) return out;
+				for( const NodeRef& kid : chunkItem->kids ) {
+					if( !kid || kid->kind != NodeKind::Param ) continue;
+					std::string pname, val;
+					for( const NodeRef& tk : kid->kids ) {
+						if( !tk || tk->kind != NodeKind::Token ) continue;
+						if( tk->role == "pname" ) pname = tk->text;
+						else if( tk->role == "pvalue" ) { if( !val.empty() ) val += ' '; val += tk->text; }
+					}
+					if( !pname.empty() ) out[pname] = val;   // LAST occurrence wins
+				}
+				return out;
+			}
 
 			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc )
 			{
 				DesignNoteConditions_ c;
 				bool hasScalarPainter    = false;
 				bool hasAdvancedGeometry = false;
+
+				// -- Condition C accumulators (88) -------------------------
+				// Keyed by the object's BINDING signature (every param except
+				// `name` and the five transform params), so two objects land in
+				// the same group iff one `source` chunk could have produced
+				// both.  `geometry` is part of that signature, so the key
+				// already separates different shapes.
+				struct RepeatGroup_
+				{
+					int         count = 0;
+					std::string geometry;
+					std::string firstTransform;
+					bool        distinctTransforms = false;   //!< at least two group members sit in DIFFERENT places
+				};
+				std::map<std::string, RepeatGroup_> repeatGroups;
+				// Any `source` / `count_u` / `count_v` ANYWHERE in the document
+				// disarms C wholesale.  Document-level, not per-group, and
+				// deliberately so: the note works by PRICING an affordance the
+				// author has not reached for, and one instancing chunk proves
+				// they have -- so the teaching value is already spent and a
+				// second nudge is just noise.  (A per-geometry refinement --
+				// "this group is not the one you instanced" -- is the obvious
+				// v2 if a measurement ever shows models instancing once and
+				// then fanning out anyway.  Nothing measures that today.)
+				bool docExpressesInstancing = false;
 
 				const int n = RISE::Cst::DocItemCount( doc );
 				for( int i = 0; i < n; ++i ) {
@@ -2995,7 +3106,40 @@ namespace RISE
 					if( !item || item->kind != NodeKind::Chunk ) continue;
 					const std::string& role = item->role;
 
-					if( role == "standard_object" ) { ++c.standardObjectCount; continue; }
+					if( role == "standard_object" ) {
+						++c.standardObjectCount;
+
+						// (88) Condition C's per-object census.  Objects with no
+						// `geometry` never enter a group -- which is exactly what
+						// excludes the harness's own machine-minted element-root
+						// containers: ElementRootName's node is inserted as
+						// `standard_object { name <prefix>element_root }` and
+						// AdoptOrMintElementRoot_ REFUSES to adopt any node of
+						// that name carrying a `geometry` or a `source`, so a
+						// root is a container by construction and falls out here
+						// on the `geometry` test, not on a name match.  (Every
+						// other pure container -- an authored assembly node --
+						// falls out for the same structural reason.)
+						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
+						if( pm.count( "source" ) || pm.count( "count_u" ) || pm.count( "count_v" ) )
+							docExpressesInstancing = true;
+
+						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
+						if( geo != pm.end() && !geo->second.empty() && geo->second != "none" ) {
+							std::string bindings, xform;
+							for( const std::pair<const std::string, std::string>& kv : pm ) {
+								if( kv.first == "name" ) continue;   // the one param an array necessarily rewrites
+								if( IsObjectTransformParam_( kv.first ) ) xform    += kv.first + " " + kv.second + "\n";
+								else                                      bindings += kv.first + " " + kv.second + "\n";
+							}
+							RepeatGroup_& g = repeatGroups[bindings];
+							++g.count;
+							g.geometry = geo->second;
+							if( g.count == 1 ) g.firstTransform = xform;
+							else if( !g.distinctTransforms && xform != g.firstTransform ) g.distinctTransforms = true;
+						}
+						continue;
+					}
 					if( role == "scalar_painter" )  { hasScalarPainter = true; continue; }
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
 					// form here for the same reason the other three do -- it
@@ -3025,6 +3169,25 @@ namespace RISE
 
 				c.conditionA = c.standardObjectCount >= 3 && !hasScalarPainter;
 				c.conditionB = c.standardObjectCount >= 4 && !hasAdvancedGeometry;
+
+				// (88) Condition C: the LARGEST qualifying group wins, so the
+				// note names one concrete geometry rather than a list.  The
+				// `distinctTransforms` requirement is what makes the clause's
+				// own claim ("differing only by transform") TRUE: a run of
+				// byte-identical, co-located chunks is a duplication bug, not
+				// an array, and telling its author to reach for `count_u`
+				// would be advice about the wrong problem.
+				if( !docExpressesInstancing ) {
+					for( const std::pair<const std::string, RepeatGroup_>& kv : repeatGroups ) {
+						if( kv.second.count < kRepeatedCopyGate ) continue;
+						if( !kv.second.distinctTransforms )       continue;
+						if( kv.second.count > c.repeatedCopyCount ) {
+							c.repeatedCopyCount    = kv.second.count;
+							c.repeatedCopyGeometry = kv.second.geometry;
+						}
+					}
+				}
+				c.conditionC = c.repeatedCopyCount >= kRepeatedCopyGate;
 				return c;
 			}
 
@@ -3043,10 +3206,42 @@ namespace RISE
 				return census;
 			}
 
-			//! RETURNS empty iff neither condition fires (the "omit the note
+			//! Condition C's whole clause (88), SHARED by the note builder and
+			//! the diagnostic builder rather than pasted into both.
+			//!
+			//! The A and B clauses are byte-identical copies living at two
+			//! sites, held in step only by whoever edits them remembering to
+			//! edit both.  This one keeps the SAME invariant -- the note text
+			//! and the diagnostic message must not be able to disagree -- by
+			//! the mechanism FormatGeometryCensus_ already set the precedent
+			//! for: one function, two callers.  Returns the clause with NO
+			//! leading space; the note glues it on, the diagnostic uses it as
+			//! a standalone message.
+			//!
+			//! The wording deliberately does NOT claim to have prevented
+			//! anything (see DesignNoteConditions_'s ordering-fact note): the
+			//! chunks already exist by the time any carrier runs this, so it
+			//! describes a cheaper SHAPE and prices it, and the caller's
+			//! self-disarm sentence carries the rest.
+			std::string FormatRepeatedCopiesClause_( int repeatedCopyCount, const std::string& repeatedCopyGeometry )
+			{
+				const std::string n     = std::to_string( repeatedCopyCount );
+				const std::string nLess = std::to_string( repeatedCopyCount - 1 );
+				return n + " standard_objects are separate hand-authored copies of the same geometry (`" +
+					repeatedCopyGeometry + "`), differing only in their transform -- that repetition is what "
+					"`source` + `count_u` says in ONE chunk: keep one of them, then a second object with "
+					"`source <that one>`, `count_u " + nLess + "` and a per-component `position expr(...)` over the "
+					"instance variables `i`/`j` (or `u`/`v`, the same normalized into [0,1]) mints the rest. "
+					"`source` COPIES rather than moves or hides, so those " + nLess + " plus the still-visible "
+					"source are " + n + ", not " + nLess + ". Two chunks and one outliner row to edit instead of " +
+					n + " (read_skill {\"name\":\"object-modeling-recipes\"}). If these are meant to stay "
+					"separate objects, this is fine -- ignore and do not churn.";
+			}
+
+			//! RETURNS empty iff NO condition fires (the "omit the note
 			//! entirely when clean" convention -- see AgentSkillResult::note
 			//! and its AgentRpc.cpp `read_skill` carrier for the precedent this
-			//! mirrors).  When one or both fire, returns ONE combined
+			//! mirrors).  When any of them fire, returns ONE combined
 			//! "DESIGN NOTE: ..." string carrying every firing clause plus the
 			//! anti-churn escape clause (load-bearing from day one, sec 2 P2 --
 			//! a loud signal with no escape clause just buys a different
@@ -3056,7 +3251,7 @@ namespace RISE
 			std::string ComputeDesignNoteFromDoc_( const Document& doc )
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
-				if( !c.conditionA && !c.conditionB ) return std::string();
+				if( !c.conditionA && !c.conditionB && !c.conditionC ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -3101,6 +3296,9 @@ namespace RISE
 						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; read_skill "
 						"{\"name\":\"object-modeling-recipes\"}).";
 				}
+				if( c.conditionC ) {
+					note += " " + FormatRepeatedCopiesClause_( c.repeatedCopyCount, c.repeatedCopyGeometry );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -3135,7 +3333,7 @@ namespace RISE
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out )
 			{
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc );
-				if( !c.conditionA && !c.conditionB ) return;
+				if( !c.conditionA && !c.conditionB && !c.conditionC ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -3164,6 +3362,20 @@ namespace RISE
 						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; read_skill "
 						"{\"name\":\"object-modeling-recipes\"}).";
 					d.message += kSelfDisarm;
+					out.push_back( d );
+				}
+				if( c.conditionC ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_HAND_REPEATED_COPIES;
+					// The clause comes from the SHARED formatter, so this
+					// message and the note's C clause cannot drift (88).  No
+					// kSelfDisarm here, deliberately: that suffix disarms
+					// "flat/simple STYLING", which says nothing about a run of
+					// pasted objects -- C's own targeted disarm sentence is
+					// built into the shared clause, so BOTH carriers get it and
+					// neither carries two.
+					d.message  = FormatRepeatedCopiesClause_( c.repeatedCopyCount, c.repeatedCopyGeometry );
 					out.push_back( d );
 				}
 			}
