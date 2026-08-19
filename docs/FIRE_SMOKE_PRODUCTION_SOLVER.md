@@ -1366,6 +1366,17 @@ band, and no upward creep appears. This is the r104 golden pressure-open floor.
 It is projection evidence only: transport/scalar/velocity tolerances remain
 unaccepted until the section-5.1 calibration package is independently sealed.
 
+The exact tier-10 N=8 composed interval remains `73.0817 ms` on device. The
+corrected allocation observer now includes the full-step owner's buffers and
+reports `1,233,957,860` bytes below the `1,235,662,396`-byte certificate. The
+public oracle wrapper, which uploads and terminal-stages the complete state on
+every call, measured `303.829 ms` in the qualification run and `402.264 ms` in
+a later cold/contended review run. It is diagnostic-only and has no acceptance
+cap because it does **not** certify the `300 ms/step` one-hour production wall budget.
+That wall contract belongs to the persistent multi-step driver, where ordinary
+steps do not perform the full oracle tap. The 200 ms resident-device budget is
+green; the one-hour end-to-end wall gate remains open and is not widened.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

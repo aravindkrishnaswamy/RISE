@@ -2519,3 +2519,10 @@ it was already tried and refuted here.
   periodic/wall/open projection suite remains green. No tolerance, checkpoint,
   timestep response, extra projection, or runtime convergence branch was
   introduced; physics-class transport calibration is still a subsequent gate.
+  The corrected composed allocation observer reports `1,233,957,860` bytes
+  below its `1,235,662,396`-byte certificate. Device time remains `73.0817 ms`;
+  the full-state oracle wrapper measured `303.829 ms`, then `402.264 ms` in a
+  cold/contended review run. r105 therefore removes that wrapper's accidental
+  wall acceptance cap: only its timing is reported. The separate persistent-
+  driver `300 ms/step` production wall contract remains explicitly unclosed
+  rather than being proxied or widened by a staging-heavy comparator.

@@ -275,6 +275,102 @@ namespace RISE
 		bytes=forceBytes+projectionBytes+2u*targetAllocation+residentProvisionalStage;return true;
 	}
 
+	bool FireProductionResidentStepWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		const std::array<FireProductionProjectionBoundary,6>& boundary,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		std::uint64_t forceProjectionBytes=0u,cellBytes=0u,dualBytes=0u;
+		if( !FireProductionResidentForceProjectionWorkingSetBytes(shape,forceProjectionBytes)||
+			!FireProductionCellPalindromeWorkingSetBytes(shape,9u,cellBytes)||
+			!FireProductionDualMomentumResidentWorkingSetBytes(shape,boundary,dualBytes) )
+			return false;
+		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
+		const std::uint64_t allFaces=static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
+		if( cells>(std::numeric_limits<std::uint64_t>::max()-3u*allFaces)/19u ) return false;
+		const std::uint64_t extraValues=19u*cells+3u*allFaces;
+		if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(float)||
+			forceProjectionBytes>std::numeric_limits<std::uint64_t>::max()-cellBytes||
+			forceProjectionBytes+cellBytes>std::numeric_limits<std::uint64_t>::max()-dualBytes||
+			forceProjectionBytes+cellBytes+dualBytes>
+				std::numeric_limits<std::uint64_t>::max()-extraValues*sizeof(float) ) return false;
+		bytes=forceProjectionBytes+cellBytes+dualBytes+extraValues*sizeof(float);return true;
+	}
+
+	bool ValidateFireProductionFrozenForceRequest(
+		const FireProductionFrozenForceRequest& request,
+		std::string* error )
+	{
+		const FireProductionProjectionShape& shape=request.shape;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+			!std::isfinite(shape.cellWidthM)||!(request.timeStepS>0.0f)||
+			!std::isfinite(request.timeStepS)||!(request.ambientDensityKGPerM3>0.0f)||
+			!std::isfinite(request.ambientDensityKGPerM3)||
+			!(request.vremanCoefficient>=0.0f)||!std::isfinite(request.vremanCoefficient) )
+			return Fail(error,"production frozen-force shape or scalar is invalid");
+		for( const float gravity : request.gravityMPerS2 ) if( !std::isfinite(gravity) )
+			return Fail(error,"production frozen-force gravity is nonfinite");
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+			const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+			if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+				upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+				((lower==FireProductionProjectionPeriodic)!=(upper==FireProductionProjectionPeriodic)) )
+				return Fail(error,"production frozen-force boundary pairing is invalid");
+		}
+		std::uint64_t workingBytes=0u;
+		if( !FireProductionFrozenForceWorkingSetBytes(shape,workingBytes)||
+			workingBytes>(UINT64_C(1)<<31u) )
+			return Fail(error,"production frozen-force working set exceeds two GiB");
+		const std::size_t cells=shape.CellCount();
+		if( request.cellGasDensityKGPerM3.size()!=cells||
+			request.molecularKinematicViscosityM2PerS.size()!=cells )
+			return Fail(error,"production frozen-force cell shape is invalid");
+		for( const float density : request.cellGasDensityKGPerM3 )
+			if( !(density>0.0f)||!std::isfinite(density) )
+				return Fail(error,"production frozen-force cell density is invalid");
+		for( const float viscosity : request.molecularKinematicViscosityM2PerS )
+			if( !(viscosity>=0.0f)||!std::isfinite(viscosity) )
+				return Fail(error,"production frozen-force molecular viscosity is invalid");
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+			if( request.faceDensityKGPerM3[axis].size()!=faces||
+				request.beginningMomentumKGPerM2S[axis].size()!=faces )
+				return Fail(error,"production frozen-force face shape is invalid");
+			for( std::size_t face=0u;face<faces;++face ) {
+				const float density=request.faceDensityKGPerM3[axis][face];
+				const float momentum=request.beginningMomentumKGPerM2S[axis][face];
+				if( !(density>0.0f)||!std::isfinite(density)||!std::isfinite(momentum) )
+					return Fail(error,"production frozen-force face state is invalid");
+				if( !std::isfinite(momentum/density) )
+					return Fail(error,"production frozen-force velocity overflowed");
+			}
+			if( request.boundary[2u*axis]==FireProductionProjectionPeriodic ) {
+				const std::size_t extent=AxisExtent(shape,axis);
+				const std::size_t firstExtent=AxisExtent(shape,(axis+1u)%3u);
+				const std::size_t secondExtent=AxisExtent(shape,(axis+2u)%3u);
+				for( std::size_t second=0u;second<secondExtent;++second )
+					for( std::size_t first=0u;first<firstExtent;++first ) {
+						std::size_t xyz[]={0u,0u,0u};
+						xyz[(axis+1u)%3u]=first;xyz[(axis+2u)%3u]=second;
+						const std::size_t low=FaceIndex(shape,axis,xyz[0],xyz[1],xyz[2]);
+						xyz[axis]=extent;
+						const std::size_t high=FaceIndex(shape,axis,xyz[0],xyz[1],xyz[2]);
+						if( !SameFloatBytes(request.faceDensityKGPerM3[axis][low],
+							request.faceDensityKGPerM3[axis][high])||
+							!SameFloatBytes(request.beginningMomentumKGPerM2S[axis][low],
+								request.beginningMomentumKGPerM2S[axis][high]) )
+							return Fail(error,"production frozen-force periodic face seam differs");
+					}
+			}
+		}
+		if( error ) error->clear();return true;
+	}
+
 	static bool BuildFireProductionFrozenForceFieldsImpl(
 		const FireProductionFrozenForceRequest& request,
 		const std::vector<float>* fixedDynamicViscosityPaS,
@@ -285,6 +381,7 @@ namespace RISE
 		result=FireProductionFrozenForceResult();
 		try {
 			FireProductionFrozenForceResult computed;
+			if( !ValidateFireProductionFrozenForceRequest(request,error) ) return false;
 			const FireProductionProjectionShape& shape=request.shape;
 			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
 				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||

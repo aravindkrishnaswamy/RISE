@@ -15,8 +15,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace RISE
@@ -2005,13 +2007,6 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 		result=FireProductionResidentStepResult();
 		try {
 			const FireProductionProjectionShape& shape=request.force.shape;
-			const std::size_t cells=shape.CellCount();
-			std::array<std::size_t,3> faceCounts,faceOffsets;std::size_t allFaces=0u;
-			for( unsigned int axis=0u;axis<3u;++axis ) {
-				faceOffsets[axis]=allFaces*sizeof(float);
-				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);
-				allFaces+=faceCounts[axis];
-			}
 			auto sameShape=[](const FireProductionProjectionShape& a,
 				const FireProductionProjectionShape& b) {
 				return a.nx==b.nx&&a.ny==b.ny&&a.nz==b.nz&&a.cellWidthM==b.cellWidthM;
@@ -2022,10 +2017,28 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.force.timeStepS!=request.dualTransport.timeStepS||
 				request.force.boundary!=request.cellTransport.boundary||
 				request.force.boundary!=request.dualTransport.boundary||
-				request.cellTransport.componentCount!=9u||
+				request.cellTransport.componentCount!=9u ) return false;
+			std::uint64_t certified=0u;
+			if( !FireProductionResidentStepWorkingSetBytes(shape,request.force.boundary,certified)||
+				certified>(UINT64_C(1)<<31u) ) {
+				if( structuredError ) *structuredError=
+					"production resident step working set exceeds two GiB";
+				return false;
+			}
+			const std::size_t cells=shape.CellCount();
+			std::array<std::size_t,3> faceCounts,faceOffsets;std::size_t allFaces=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				faceOffsets[axis]=allFaces*sizeof(float);
+				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);
+				allFaces+=faceCounts[axis];
+			}
+			if( !ValidateFireProductionFrozenForceRequest(request.force,structuredError)||
+				request.force.cellGasDensityKGPerM3.size()!=cells||
 				request.cellTransport.conservativeValues.size()!=9u*cells||
 				request.cellSourceIncrement.size()!=9u*cells||
-				request.divergenceTargetPerS.size()!=cells ) return false;
+				request.divergenceTargetPerS.size()!=cells||
+				!ValidateFireProductionCellPalindromeRequest(request.cellTransport,structuredError)||
+				!ValidateFireProductionDualMomentumRequest(request.dualTransport,structuredError) ) return false;
 			for( std::size_t cell=0u;cell<cells;++cell ) {
 				float gas=request.cellTransport.conservativeValues[cells+cell];
 				for( std::size_t component=2u;component<=6u;++component )
@@ -2044,24 +2057,6 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 			for( const float value : request.cellSourceIncrement ) if( !positiveZero(value) ) return false;
 			for( const std::vector<float>& source : request.momentumSourceIncrement )
 				for( const float value : source ) if( !positiveZero(value) ) return false;
-			std::uint64_t forceProjectionBytes=0u,cellBytes=0u,dualBytes=0u;
-			if( !FireProductionResidentForceProjectionWorkingSetBytes(shape,forceProjectionBytes)||
-				!FireProductionCellPalindromeWorkingSetBytes(shape,9u,cellBytes)||
-				!FireProductionDualMomentumResidentWorkingSetBytes(shape,request.force.boundary,dualBytes) )
-				return false;
-			const std::uint64_t extraValues=UINT64_C(19)*cells+3u*allFaces;
-			if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(float)||
-				forceProjectionBytes>std::numeric_limits<std::uint64_t>::max()-cellBytes||
-				forceProjectionBytes+cellBytes>std::numeric_limits<std::uint64_t>::max()-dualBytes||
-				forceProjectionBytes+cellBytes+dualBytes>
-					std::numeric_limits<std::uint64_t>::max()-extraValues*sizeof(float) ) return false;
-			const std::uint64_t certified=forceProjectionBytes+cellBytes+dualBytes+
-				extraValues*sizeof(float);
-			if( certified>(UINT64_C(1)<<31u) ) {
-				if( structuredError ) *structuredError=
-					"production resident step working set exceeds two GiB";
-				return false;
-			}
 			FireProductionMetalDualMomentumStaticState dualStatic;
 			if( !PrepareFireProductionDualMomentumMetalStaticState(request.dualTransport,
 				dualStatic,structuredError) ) return false;
@@ -2101,6 +2096,20 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
+				std::uint64_t ownerActualMetalBytes=0u;
+				auto recordOwner=[&](id<MTLBuffer> buffer) {
+					if( !buffer ) return false;
+					const std::uint64_t bytes=static_cast<std::uint64_t>([buffer allocatedSize]);
+					if( ownerActualMetalBytes>std::numeric_limits<std::uint64_t>::max()-bytes ) return false;
+					ownerActualMetalBytes+=bytes;return ownerActualMetalBytes<=certified;
+				};
+				if( !recordOwner(cellStage)||!recordOwner(cellPrivate)||!recordOwner(ambientStage)||
+					!recordOwner(ambientPrivate)||!recordOwner(cellSourceStage)||
+					!recordOwner(cellSourcePrivate)||!recordOwner(faceSourceStage)||
+					!recordOwner(faceSourcePrivate)||!recordOwner(targetStage)||!recordOwner(targetPrivate) )
+					return false;
+				for( unsigned int axis=0u;axis<3u;++axis ) if(
+					!recordOwner(velocityStage[axis])||!recordOwner(velocityPrivate[axis]) ) return false;
 				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
 				id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;if( !blit ) return false;
 				[blit copyFromBuffer:cellStage sourceOffset:0 toBuffer:cellPrivate destinationOffset:0 size:cellValueBytes];
@@ -2136,7 +2145,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					length:sizeof(sourceGrid) options:MTLResourceStorageModeShared];
 				id<MTLBuffer> sourceFaceParameter=[context.device newBufferWithBytes:&packedFaceCount
 					length:sizeof(packedFaceCount) options:MTLResourceStorageModeShared];
-				if( !projectedDensity||!sourceGridParameter||!sourceFaceParameter ) return false;
+				if( !recordOwner(projectedDensity)||!recordOwner(sourceGridParameter)||
+					!recordOwner(sourceFaceParameter) ) return false;
 				const std::uint64_t beginningCommits=MetalCommandCommitCount;
 				const std::uint64_t beginningReads=MetalHostBufferReadCount;
 				id<MTLCommandBuffer> sourceCommand=TrackedMetalCommandBuffer(context.queue);
@@ -2178,7 +2188,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:
 					(cellValueBytes+2u*packedFaceBytes) options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> terminalCommand=TrackedMetalCommandBuffer(context.queue);
-				blit=terminalCommand?[terminalCommand blitCommandEncoder]:nil;if( !terminal||!blit ) return false;
+				blit=terminalCommand?[terminalCommand blitCommandEncoder]:nil;
+				if( !recordOwner(terminal)||!blit ) return false;
 				[blit copyFromBuffer:cell.conservativeValues sourceOffset:0 toBuffer:terminal
 					destinationOffset:0 size:cellValueBytes];
 				[blit copyFromBuffer:dual.packedAuxiliaryFaceDensity sourceOffset:0 toBuffer:terminal
@@ -2187,7 +2198,24 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					destinationOffset:cellValueBytes+packedFaceBytes size:packedFaceBytes];
 				[blit endEncoding];CommitTrackedMetalCommand(terminalCommand);[terminalCommand waitUntilCompleted];
 				if( [terminalCommand status]!=MTLCommandBufferStatusCompleted ) return false;
-				const float* values=static_cast<const float*>(ReadTrackedMetalBuffer(terminal));
+				float* values=static_cast<float*>(ReadTrackedMetalBuffer(terminal));
+				const char* injected=std::getenv("RISE_FIRE_PRODUCTION_STEP_FAILURE");
+				if( values&&injected&&std::strcmp(injected,"terminal-nonfinite")==0 )
+					values[0]=std::numeric_limits<float>::quiet_NaN();
+				bool terminalValid=values!=0;
+				for( std::size_t cell=0u;terminalValid&&cell<cells;++cell ) {
+					float gas=values[cells+cell];
+					for( std::size_t component=0u;component<9u;++component )
+						terminalValid=terminalValid&&std::isfinite(values[component*cells+cell]);
+					for( std::size_t component=2u;component<=6u;++component )
+						gas+=values[component*cells+cell];
+					terminalValid=terminalValid&&gas>0.0f&&std::isfinite(gas);
+				}
+				for( std::size_t face=0u;terminalValid&&face<allFaces;++face )
+					terminalValid=std::isfinite(values[9u*cells+face])&&
+						values[9u*cells+face]>0.0f&&
+						std::isfinite(values[9u*cells+allFaces+face]);
+				if( !terminalValid ) return false;
 				FireProductionResidentStepResult computed;
 				computed.conservativeValues.assign(values,values+9u*cells);
 				for( unsigned int axis=0u;axis<3u;++axis ) {
@@ -2210,7 +2238,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				computed.terminalStagingCount=
 					computed.projection.residentTerminalStagingCount+1u;
 				computed.combinedCertifiedWorkingSetBytes=certified;
-				computed.combinedActualMetalAllocationBytes=force.diagnostics.actualMetalAllocationBytes+
+				computed.combinedActualMetalAllocationBytes=ownerActualMetalBytes+
+					force.diagnostics.actualMetalAllocationBytes+
 					cell.actualMetalAllocationBytes+dual.actualMetalAllocationBytes+
 					computed.projection.residentActualMetalAllocationBytes;
 				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+cell.deviceElapsedMS+
@@ -2231,5 +2260,10 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				"production resident step allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
+	}
+
+	std::uint64_t FireProductionResidentStepMetalCommandCommitCount()
+	{
+		return MetalCommandCommitCount;
 	}
 }

@@ -115,6 +115,19 @@ namespace RISE
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
 
+	//! Complete full resident-step certificate. This query is shape/boundary
+	//! only so the owner can reject the two-GiB limit before inspecting payloads.
+	bool FireProductionResidentStepWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		const std::array<FireProductionProjectionBoundary,6>& boundary,
+		std::uint64_t& bytes );
+
+	//! Allocation-free structural and payload preflight shared by every frozen-
+	//! force owner. It performs no physical work and publishes no partial state.
+	bool ValidateFireProductionFrozenForceRequest(
+		const FireProductionFrozenForceRequest& request,
+		std::string* error=0 );
+
 	//! Beginning-state, strict-binary32 force field used by the production P3
 	//! comparator. Vreman and mu are frozen; viscous rates update only interior
 	//! normal faces, relative gravity also owns pressure-open endpoint faces,
@@ -286,6 +299,10 @@ namespace RISE
 		const FireProductionResidentStepRequest& request,
 		FireProductionResidentStepResult& result,
 		std::string* error=0 );
+
+	//! Thread-local observed Metal commits, exposed only to bind fail-before-work
+	//! owner gates. Unsupported builds return zero.
+	std::uint64_t FireProductionResidentStepMetalCommandCommitCount();
 }
 
 #endif

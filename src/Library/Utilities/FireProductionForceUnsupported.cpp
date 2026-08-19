@@ -78,4 +78,9 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
+
+	std::uint64_t FireProductionResidentStepMetalCommandCommitCount()
+	{
+		return 0u;
+	}
 }
