@@ -145,6 +145,8 @@ namespace
 			a.residentTerminalStagingCount==b.residentTerminalStagingCount&&
 			a.residentCommandCommitCount==b.residentCommandCommitCount&&
 			a.residentProjectionInvocationCount==b.residentProjectionInvocationCount&&
+			a.residentCertifiedWorkingSetBytes==b.residentCertifiedWorkingSetBytes&&
+			a.residentActualMetalAllocationBytes==b.residentActualMetalAllocationBytes&&
 			a.validationPassed==b.validationPassed;
 	}
 
@@ -869,6 +871,8 @@ int main()
 		manufacturedMetal.residentTerminalStagingCount==1u&&
 		manufacturedMetal.residentCommandCommitCount==3u&&
 		manufacturedMetal.residentProjectionInvocationCount==1u&&
+		manufacturedMetal.residentActualMetalAllocationBytes<=
+			manufacturedMetal.residentCertifiedWorkingSetBytes&&
 		maximumMetalPressureDifference<=2.5e-4f&&
 		maximumMetalVelocityDifference<=3.0e-5f&&
 		SameProjectionEvidence(manufacturedMetal,manufacturedMetalRepeat)&&
@@ -1289,14 +1293,24 @@ int main()
 		error.find("2 GiB")!=std::string::npos,
 		"P2 rejects the complete peak working set before allocating arrays");
 	FireProductionProjectionShape nearUnder,nearOver;
-	nearUnder.nx=205u;nearUnder.ny=131u;nearUnder.nz=399u;nearUnder.cellWidthM=0.1f;
-	nearOver.nx=309u;nearOver.ny=86u;nearOver.nz=403u;nearOver.cellWidthM=0.1f;
+	nearUnder.nx=120u;nearUnder.ny=226u;nearUnder.nz=395u;nearUnder.cellWidthM=0.1f;
+	nearOver.nx=119u;nearOver.ny=200u;nearOver.nz=450u;nearOver.cellWidthM=0.1f;
 	std::uint64_t nearUnderBytes=0u,nearOverBytes=0u;
 	Check(FireProductionProjectionWorkingSetBytes(nearUnder,nearUnderBytes)&&
 		FireProductionProjectionWorkingSetBytes(nearOver,nearOverBytes)&&
-		nearUnderBytes==UINT64_C(2147474676)&&nearOverBytes==UINT64_C(2147484216)&&
+		nearUnderBytes==UINT64_C(2147482428)&&nearOverBytes==UINT64_C(2147484428)&&
 		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
-		"P2 complete host-plus-Metal working-set accounting binds the independent cap boundary pair");
+		"P2 complete rounded Metal working-set accounting binds the independent cap boundary pair");
+	FireProductionProjectionRequest underAdmission,overAdmission;
+	underAdmission.shape=nearUnder;underAdmission.timeStepS=0.01f;
+	underAdmission.ambientDensityKGPerM3=1.0f;
+	overAdmission.shape=nearOver;overAdmission.timeStepS=0.01f;
+	overAdmission.ambientDensityKGPerM3=1.0f;
+	Check(!ValidateFireProductionProjectionRequest(overAdmission,&error)&&
+		error.find("2 GiB")!=std::string::npos&&
+		!ValidateFireProductionProjectionRequest(underAdmission,&error)&&
+		error.find("2 GiB")==std::string::npos,
+		"the public P2 admission path applies the rounded cap before payload access");
 	FireProductionProjectionShape malformedWorkingSet=nearUnder;
 	malformedWorkingSet.nx=std::numeric_limits<std::size_t>::max();
 	std::uint64_t malformedBytes=9u;
@@ -1327,7 +1341,9 @@ int main()
 			tier10ShapeResult.residentInterstageDeviceToHostTransferCount==0u&&
 			tier10ShapeResult.residentTerminalStagingCount==1u&&
 			tier10ShapeResult.residentCommandCommitCount==3u&&
-			tier10ShapeResult.residentProjectionInvocationCount==1u,
+			tier10ShapeResult.residentProjectionInvocationCount==1u&&
+			tier10ShapeResult.residentActualMetalAllocationBytes<=
+				tier10ShapeResult.residentCertifiedWorkingSetBytes,
 			"P2 Metal tier-10 timing trial remains structurally valid");
 		projectionWallMS.push_back(std::chrono::duration<double,std::milli>(ending-beginning).count());
 		projectionDeviceMS.push_back(tier10ShapeResult.deviceElapsedMS);

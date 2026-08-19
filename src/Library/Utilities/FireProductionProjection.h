@@ -67,6 +67,8 @@ namespace RISE
 		std::uint32_t residentTerminalStagingCount;
 		std::uint32_t residentCommandCommitCount;
 		std::uint32_t residentProjectionInvocationCount;
+		std::uint64_t residentCertifiedWorkingSetBytes;
+		std::uint64_t residentActualMetalAllocationBytes;
 		bool validationPassed;
 		double deviceElapsedMS;
 
@@ -76,7 +78,8 @@ namespace RISE
 			removedFineRightHandSideMean(0.0f),executedVCycleCount(0u),
 			executedJacobiSweepCount(0u),residentUploadStagingCount(0u),
 			residentInterstageDeviceToHostTransferCount(0u),residentTerminalStagingCount(0u),
-			residentCommandCommitCount(0u),residentProjectionInvocationCount(0u),validationPassed(false),
+			residentCommandCommitCount(0u),residentProjectionInvocationCount(0u),
+			residentCertifiedWorkingSetBytes(0u),residentActualMetalAllocationBytes(0u),validationPassed(false),
 			deviceElapsedMS(0.0) {}
 	};
 

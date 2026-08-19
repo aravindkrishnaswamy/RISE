@@ -78,6 +78,18 @@ namespace RISE
 			total+=bytes;return true;
 		}
 
+		bool AddMetalBufferBytes( std::uint64_t count, std::uint64_t bytesPerValue,
+			std::uint64_t& total )
+		{
+			if( count>std::numeric_limits<std::uint64_t>::max()/bytesPerValue ) return false;
+			const std::uint64_t bytes=count*bytesPerValue;
+			const std::uint64_t alignment=UINT64_C(16384);
+			if( bytes>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
+			const std::uint64_t allocated=(bytes+alignment-1u)&~(alignment-1u);
+			if( total>std::numeric_limits<std::uint64_t>::max()-allocated ) return false;
+			total+=allocated;return true;
+		}
+
 		std::uint64_t FaceValueCount( std::size_t nx, std::size_t ny, std::size_t nz )
 		{
 			return static_cast<std::uint64_t>(nx+1u)*ny*nz+
@@ -96,19 +108,31 @@ namespace RISE
 			// production batch peak even though their vectors predate this call.
 			if( !AddBytes(2u*fineCells+fineFaces,sizeof(float),total)||
 				!AddBytes(fineCells+3u*fineFaces,sizeof(float),total) ) return false;
-			// Metal owns a target copy plus provisional/stored/corrected/velocity face
-			// buffers while the caller request and returned vectors remain live.  The
-			// terminal Private-to-Shared staging payload coexists until atomic result
-			// publication; upload staging is smaller and has already been released.
-			if( !AddBytes(fineCells+4u*fineFaces,sizeof(float),total)||
-				!AddBytes(fineCells+3u*fineFaces,sizeof(float),total) ) return false;
-			std::uint64_t levelCount=0u;
+			// Every Metal allocation is rounded outward independently to the measured
+			// M4 allocation quantum.  The terminal Private-to-Shared staging payload
+			// coexists with the resident solve and caller/result vectors; upload staging
+			// is smaller and has already been released.
+			if( !AddMetalBufferBytes(fineCells,sizeof(float),total) ) return false; // target
+			for( unsigned int copy=0u;copy<4u;++copy )
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::uint64_t count=axis==0u?static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz:
+						(axis==1u?static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz:
+						static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u));
+					if( !AddMetalBufferBytes(count,sizeof(float),total) ) return false;
+				}
 			for( ;; ) {
-				++levelCount;
 				const std::uint64_t cells=static_cast<std::uint64_t>(nx)*ny*nz;
-				const std::uint64_t faces=FaceValueCount(nx,ny,nz);
-				// density, rhs, pressure, temporary, residual, diagonal, and three beta arrays.
-				if( !AddBytes(6u*cells+faces,sizeof(float),total) ) return false;
+				// Six cell buffers, three independently allocated beta face buffers, and
+				// one retained parameter buffer per level.
+				for( unsigned int field=0u;field<6u;++field )
+					if( !AddMetalBufferBytes(cells,sizeof(float),total) ) return false;
+				const std::uint64_t xFaces=static_cast<std::uint64_t>(nx+1u)*ny*nz;
+				const std::uint64_t yFaces=static_cast<std::uint64_t>(nx)*(ny+1u)*nz;
+				const std::uint64_t zFaces=static_cast<std::uint64_t>(nx)*ny*(nz+1u);
+				if( !AddMetalBufferBytes(xFaces,sizeof(float),total)||
+					!AddMetalBufferBytes(yFaces,sizeof(float),total)||
+					!AddMetalBufferBytes(zFaces,sizeof(float),total)||
+					!AddMetalBufferBytes(84u,1u,total) ) return false;
 				if( nx<=4u&&ny<=4u&&nz<=4u ) break;
 				nx=nx>4u?(nx+1u)/2u:nx;ny=ny>4u?(ny+1u)/2u:ny;
 				nz=nz>4u?(nz+1u)/2u:nz;
@@ -116,13 +140,22 @@ namespace RISE
 			const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
 				static_cast<std::uint64_t>(shape.nx)*shape.nz+
 				static_cast<std::uint64_t>(shape.nx)*shape.ny);
-			if( !AddBytes(boundaryFaces,sizeof(float),total)||
-				// The device classification remains live while the six caller-owned
-				// publication vectors are materialized.
-				!AddBytes(2u*boundaryFaces,sizeof(unsigned char),total)||
-				!AddBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(float),total)||
-				!AddBytes(12u,sizeof(float),total)||
-				!AddBytes(levelCount,84u,total) ) return false;
+			if( !AddMetalBufferBytes(boundaryFaces,sizeof(float),total)||
+				!AddMetalBufferBytes(boundaryFaces,sizeof(unsigned char),total)||
+				// Six caller-owned classification vectors are materialized while the
+				// device classification remains live.
+				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
+				!AddMetalBufferBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(float),total)||
+				!AddMetalBufferBytes(12u,sizeof(float),total) ) return false;
+			// Terminal staging: pressure plus stored density, momentum, and velocity.
+			if( !AddMetalBufferBytes(fineCells,sizeof(float),total) ) return false;
+			for( unsigned int copy=0u;copy<3u;++copy )
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::uint64_t count=axis==0u?static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz:
+						(axis==1u?static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz:
+						static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u));
+					if( !AddMetalBufferBytes(count,sizeof(float),total) ) return false;
+				}
 			bytes=total;return true;
 		}
 

@@ -527,7 +527,10 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 		try {
 			std::uint32_t observedUploadStaging=0u,observedTerminalStaging=0u;
 			std::uint32_t observedCommandCommits=0u,observedProjectionInvocations=0u;
+			std::uint64_t observedActualMetalBytes=0u,certifiedWorkingSetBytes=0u;
 			if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
+			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes) )
+				return false;
 			MetalProjectionContext& context=Context();
 			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
 			@autoreleasepool {
@@ -586,6 +589,40 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					provisionalUpload[axis]&&stored[axis]&&momentum[axis]&&velocity[axis];
 				if( InjectedFailure("buffer") ) allocated=false;
 				if( !allocated ) {if( error ) *error="production fire projection buffer allocation failed";return false;}
+				auto addAllocation=[&](id<MTLBuffer> buffer,std::uint64_t& total)->bool {
+					const std::uint64_t value=[buffer allocatedSize];
+					if( total>std::numeric_limits<std::uint64_t>::max()-value ) return false;
+					total+=value;return true;};
+				std::uint64_t residentBytes=0u,uploadBytes=0u;
+				for( const MetalLevel& level:hierarchy ) {
+					const id<MTLBuffer> levelBuffers[]={level.density,level.rhs,level.pressure,
+						level.temporary,level.residual,level.diagonal,level.beta[0],level.beta[1],
+						level.beta[2],level.parameters};
+					for( id<MTLBuffer> buffer:levelBuffers ) if( !addAllocation(buffer,residentBytes) )
+						return false;
+				}
+				const id<MTLBuffer> fixedResident[]={target,boundaryPressure,inflow,scratch,diagnostics};
+				for( id<MTLBuffer> buffer:fixedResident ) if( !addAllocation(buffer,residentBytes) ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const id<MTLBuffer> faceResident[]={provisional[axis],stored[axis],momentum[axis],velocity[axis]};
+					for( id<MTLBuffer> buffer:faceResident ) if( !addAllocation(buffer,residentBytes) ) return false;
+				}
+				if( !addAllocation(densityUpload,uploadBytes)||!addAllocation(targetUpload,uploadBytes) )
+					return false;
+				for( id<MTLBuffer> buffer:provisionalUpload ) if( !addAllocation(buffer,uploadBytes) ) return false;
+				std::uint64_t faceValues=0u;for( unsigned int axis=0u;axis<3u;++axis )
+					faceValues+=FireProductionProjectionFaceCount(shape,axis);
+				const std::uint64_t hostBytes=(3u*static_cast<std::uint64_t>(cells)+4u*faceValues)*
+					sizeof(float)+2u*static_cast<std::uint64_t>(boundaryCount);
+				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
+					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes )
+					return false;
+				observedActualMetalBytes=hostBytes+residentBytes+uploadBytes;
+				if( observedActualMetalBytes>certifiedWorkingSetBytes||
+					observedActualMetalBytes>(UINT64_C(1)<<31u) ) {
+					if( error ) *error="production fire projection actual allocation exceeds certificate";
+					return false;
+				}
 				std::fill_n(static_cast<float*>([boundaryPressure contents]),boundaryCount,0.0f);
 				std::fill_n(static_cast<unsigned char*>([inflow contents]),boundaryCount,
 					static_cast<unsigned char>(0u));
@@ -713,6 +750,22 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					staged=staged&&storedStage[axis]&&momentumStage[axis]&&velocityStage[axis];
 				}
 				if( !staged ) {if( error ) *error="production fire projection staging allocation failed";return false;}
+				std::uint64_t stagingBytes=0u;
+				if( !addAllocation(pressureStage,stagingBytes) ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis )
+					if( !addAllocation(storedStage[axis],stagingBytes)||
+						!addAllocation(momentumStage[axis],stagingBytes)||
+						!addAllocation(velocityStage[axis],stagingBytes) ) return false;
+				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
+					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-stagingBytes )
+					return false;
+				observedActualMetalBytes=std::max(observedActualMetalBytes,
+					hostBytes+residentBytes+stagingBytes);
+				if( observedActualMetalBytes>certifiedWorkingSetBytes||
+					observedActualMetalBytes>(UINT64_C(1)<<31u) ) {
+					if( error ) *error="production fire projection staging allocation exceeds certificate";
+					return false;
+				}
 				id<MTLCommandBuffer> stagingCommand=InjectedFailure("staging_command")?
 					nil:[context.queue commandBuffer];
 				id<MTLBlitCommandEncoder> staging=InjectedFailure("staging_encoder")?
@@ -795,6 +848,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				result.residentTerminalStagingCount=observedTerminalStaging;
 				result.residentCommandCommitCount=observedCommandCommits;
 				result.residentProjectionInvocationCount=observedProjectionInvocations;
+				result.residentCertifiedWorkingSetBytes=certifiedWorkingSetBytes;
+				result.residentActualMetalAllocationBytes=observedActualMetalBytes;
 				const float length=shape.cellWidthM*static_cast<float>(std::max(shape.nx,std::max(shape.ny,shape.nz)));
 				if( !FireProductionProjectionResidualWithinBand(result.maximumPostProjectionResidualPerS,
 					maximumVelocity,length,result.validationPassed) ) {
