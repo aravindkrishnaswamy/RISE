@@ -2415,3 +2415,24 @@ it was already tried and refuted here.
   `3e-5` comparator, and the production residual is below the unchanged
   validation band. The contract therefore absorbs the measured fp32 floor;
   no tolerance or physics change is made.
+
+- **r98 (2026-08-19):** resident ownership and transfer-observer closure.
+  Fresh review found that the resident P2 API trusted opaque Metal buffers and
+  that a caller-labelled observer recognized only Private-to-Shared copies.
+  The seam now requires full-grid Private density/target resources and one
+  canonical packed Private momentum allocation with exact axis offsets and
+  bounds before any projection command or invocation. Transfer phase is an
+  RAII scope: uploads and terminal publication are explicit, while every
+  other blit is interstage and any host-visible/Private crossing in either
+  direction is forbidden. Private-to-Shared and Shared-to-Private injected
+  blits, plus Shared, short, and aliased resident inputs, are independent
+  atomic-failure REDs.
+
+  Every Metal allocation is also observed at its creation wrapper and the
+  terminal count/`allocatedSize` sum must equal the independently enumerated
+  resident, upload, borrowed, and staging topology. This closes omissions in
+  either the implementation or its two-GiB ledger. The exact tier-10 N=8
+  transaction measured 42.8285/66.8613 ms device/completed p95 and retained
+  512,093,336 observed bytes below the 524,688,024-byte certificate; standalone
+  P2 measured 10.5484/25.1084 ms. No numerical operator, comparison bound,
+  validation tolerance, checkpoint byte, identity, or budget changed.

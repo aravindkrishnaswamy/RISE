@@ -1142,6 +1142,37 @@ the validation contract; no tolerance change is authorized or needed.
 r97 changes the device ownership seam and evidence only. It changes no force or
 projection arithmetic, case identity, validation tolerance, or oracle bytes.
 
+### 7.15 Resident ownership and bidirectional transfer closure (r98)
+
+The resident P2 seam accepts only full-grid `MTLStorageModePrivate` resources.
+Density and divergence-target buffers must cover the complete cell payload;
+all three momentum views must name one packed allocation, use the canonical
+axis byte offsets, and fit wholly inside that allocation. Density, target, and
+packed momentum are distinct owners. These checks run before projection
+context creation, command allocation, or invocation accounting. Shared,
+short, aliased, or noncanonical inputs therefore fail with a default result
+rather than silently weakening residency or the two-GiB ledger.
+
+Transfer classification is phase-scoped, not supplied as a label by each copy
+call. Upload and terminal-staging scopes are explicit; every other force or
+projection blit is structurally interstage. During that interval, a copy is a
+forbidden full-grid transfer whenever exactly one endpoint is host-visible,
+so both Private-to-Shared staging and Shared-to-Private re-upload are observed.
+Independent injected blits in both directions fail atomically. Allocation
+wrappers likewise verify the requested storage mode and record every created
+buffer's actual `allocatedSize`. At publication, the recorded allocation count
+and byte sum must reproduce the complete independently enumerated resident,
+upload, borrowed, and terminal-stage ledger. This prevents either a new hidden
+allocation or an omitted ledger operand from preserving a false certificate.
+
+The repaired exact tier-10 N=8 transaction measured 42.8285 ms device p95 and
+66.8613 ms completed-call p95, with the unchanged 512,093,336-byte observed
+ledger below the unchanged 524,688,024-byte conservative certificate. The
+standalone resident projection measured 10.5484 ms device p95 and 25.1084 ms
+completed-call p95. r98 changes only ownership, observation, and failure
+evidence; arithmetic, accepted bytes, r96 comparison bounds, validation
+tolerances, checkpoint identity, and the 200 ms/two-GiB budgets are unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
