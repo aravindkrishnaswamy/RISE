@@ -1164,6 +1164,11 @@ buffer's actual `allocatedSize`. At publication, the recorded allocation count
 and byte sum must reproduce the complete independently enumerated resident,
 upload, borrowed, and terminal-stage ledger. This prevents either a new hidden
 allocation or an omitted ledger operand from preserving a false certificate.
+Every named force and projection work role is also checked against its required
+Private or Shared mode, rather than inferring residency from the allocation
+factory's name. Source gates admit raw Metal allocation primitives only inside
+the observing factories, and the composed force owner repeats its exact
+count/byte reconciliation immediately before result publication.
 
 The repaired exact tier-10 N=8 transaction measured 42.8285 ms device p95 and
 66.8613 ms completed-call p95, with the unchanged 512,093,336-byte observed

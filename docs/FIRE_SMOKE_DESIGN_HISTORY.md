@@ -2430,8 +2430,11 @@ it was already tried and refuted here.
 
   Every Metal allocation is also observed at its creation wrapper and the
   terminal count/`allocatedSize` sum must equal the independently enumerated
-  resident, upload, borrowed, and staging topology. This closes omissions in
-  either the implementation or its two-GiB ledger. The exact tier-10 N=8
+  resident, upload, borrowed, and staging topology. Named local work roles are
+  checked against their required Private/Shared modes, raw allocation sites are
+  confined to the observing factories, and force reconciles again at the
+  publication boundary. This closes omissions in either the implementation or
+  its two-GiB ledger. The exact tier-10 N=8
   transaction measured 42.8285/66.8613 ms device/completed p95 and retained
   512,093,336 observed bytes below the 524,688,024-byte certificate; standalone
   P2 measured 10.5484/25.1084 ms. No numerical operator, comparison bound,
