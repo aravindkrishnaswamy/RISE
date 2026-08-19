@@ -38,6 +38,11 @@ namespace RISE
 			std::uint32_t nx,ny,nz,axis,componentCount;
 		};
 
+		struct MetalPeriodicDualParameters
+		{
+			std::uint32_t nx,ny,nz,component,sweepAxis;
+		};
+
 		thread_local std::uint64_t MetalCommandCommitCount=0u;
 		thread_local std::uint64_t MetalHostBufferReadCount=0u;
 
@@ -270,6 +275,76 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
  if(p.lowerBoundary==0u&&p.upperBoundary==0u&&right==p.n){right=0u;flux[base+p.n]=flux[base];}
  updated[gid]=q[gid]-(flux[base+right]-flux[base+cell])/p.dx;
 }
+struct DualParams { uint nx; uint ny; uint nz; uint component; uint sweepAxis; };
+inline uint dual_extent(constant DualParams& p,uint axis){return axis==0u?p.nx:(axis==1u?p.ny:p.nz);}
+inline uint dual_face_index(constant DualParams& p,uint axis,uint x,uint y,uint z){
+ if(axis==0u)return (z*p.ny+y)*(p.nx+1u)+x;
+ if(axis==1u)return (z*(p.ny+1u)+y)*p.nx+x;
+ return (z*p.ny+y)*p.nx+x;
+}
+inline void dual_face_coordinates(constant DualParams& p,uint axis,uint face,
+ thread uint& x,thread uint& y,thread uint& z){
+ if(axis==0u){x=face%(p.nx+1u);uint r=face/(p.nx+1u);y=r%p.ny;z=r/p.ny;return;}
+ if(axis==1u){x=face%p.nx;uint r=face/p.nx;y=r%(p.ny+1u);z=r/(p.ny+1u);return;}
+ x=face%p.nx;uint r=face/p.nx;y=r%p.ny;z=r/p.ny;
+}
+inline void dual_set_coordinate(uint axis,uint value,thread uint& x,thread uint& y,thread uint& z){
+ if(axis==0u)x=value;else if(axis==1u)y=value;else z=value;
+}
+inline uint dual_coordinate(uint axis,uint x,uint y,uint z){return axis==0u?x:(axis==1u?y:z);}
+kernel void gather_periodic_dual_values(device const float* density [[buffer(0)]],
+ device const float* momentum [[buffer(1)]],device float* values [[buffer(2)]],
+ constant DualParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ uint cells=p.nx*p.ny*p.nz;if(gid>=2u*cells)return;uint channel=gid/cells,cell=gid-channel*cells;
+ uint x=cell%p.nx,y=(cell/p.nx)%p.ny,z=cell/(p.nx*p.ny);
+ uint face=dual_face_index(p,p.component,x,y,z);values[gid]=channel==0u?density[face]:momentum[face];
+}
+kernel void gather_periodic_dual_carrier(device const float* ux [[buffer(0)]],
+ device const float* uy [[buffer(1)]],device const float* uz [[buffer(2)]],
+ device float* carrier [[buffer(3)]],constant DualParams& p [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){
+ uint faceCount=p.sweepAxis==0u?(p.nx+1u)*p.ny*p.nz:
+  (p.sweepAxis==1u?p.nx*(p.ny+1u)*p.nz:p.nx*p.ny*(p.nz+1u));
+ if(gid>=faceCount)return;uint x,y,z;dual_face_coordinates(p,p.sweepAxis,gid,x,y,z);
+ uint averageAxis=p.component==p.sweepAxis?p.sweepAxis:p.component;
+ uint extent=dual_extent(p,averageAxis),coordinate=dual_coordinate(averageAxis,x,y,z);
+ uint canonical=coordinate==extent?0u:coordinate,previous=canonical==0u?extent-1u:canonical-1u;
+ uint lx=x,ly=y,lz=z,uxc=x,uyc=y,uzc=z;
+ dual_set_coordinate(averageAxis,previous,lx,ly,lz);
+ dual_set_coordinate(averageAxis,canonical,uxc,uyc,uzc);
+ if(p.sweepAxis!=averageAxis){
+  uint sweepExtent=dual_extent(p,p.sweepAxis);
+  uint sweepCoordinate=dual_coordinate(p.sweepAxis,x,y,z);
+  uint sweepCanonical=sweepCoordinate==sweepExtent?0u:sweepCoordinate;
+  dual_set_coordinate(p.sweepAxis,sweepCanonical,lx,ly,lz);
+  dual_set_coordinate(p.sweepAxis,sweepCanonical,uxc,uyc,uzc);
+ }
+ device const float* velocity=p.sweepAxis==0u?ux:(p.sweepAxis==1u?uy:uz);
+ float lower=velocity[dual_face_index(p,p.sweepAxis,lx,ly,lz)];
+ float upper=velocity[dual_face_index(p,p.sweepAxis,uxc,uyc,uzc)];
+ carrier[gid]=0.5f*(lower+upper);
+}
+kernel void scatter_periodic_dual_values(device const float* values [[buffer(0)]],
+ device float* density [[buffer(1)]],device float* momentum [[buffer(2)]],
+ constant DualParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ uint cells=p.nx*p.ny*p.nz;if(gid>=2u*cells)return;uint channel=gid/cells,cell=gid-channel*cells;
+ uint x=cell%p.nx,y=(cell/p.nx)%p.ny,z=cell/(p.nx*p.ny);
+ uint face=dual_face_index(p,p.component,x,y,z);
+ if(channel==0u)density[face]=values[gid];else momentum[face]=values[gid];
+}
+kernel void publish_periodic_dual_seam(device float* density [[buffer(0)]],
+ device float* momentum [[buffer(1)]],constant DualParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
+ uint firstExtent=p.component==0u?p.ny:p.nx;
+ uint secondExtent=p.component==2u?p.ny:p.nz;if(gid>=firstExtent*secondExtent)return;
+ uint first=gid%firstExtent,second=gid/firstExtent;
+ uint lx=p.component==0u?0u:first;
+ uint ly=p.component==0u?first:(p.component==1u?0u:second);
+ uint lz=p.component==2u?0u:second;uint hx=lx,hy=ly,hz=lz;
+ dual_set_coordinate(p.component,dual_extent(p,p.component),hx,hy,hz);
+ uint low=dual_face_index(p,p.component,lx,ly,lz),high=dual_face_index(p,p.component,hx,hy,hz);
+ density[high]=density[low];momentum[high]=momentum[low];
+}
 )METAL";
 		}
 
@@ -284,10 +359,16 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			id<MTLComputePipelineState> gatherValues;
 			id<MTLComputePipelineState> scatterValues;
 			id<MTLComputePipelineState> gatherVelocity;
+			id<MTLComputePipelineState> gatherPeriodicDualValues;
+			id<MTLComputePipelineState> gatherPeriodicDualCarrier;
+			id<MTLComputePipelineState> scatterPeriodicDualValues;
+			id<MTLComputePipelineState> publishPeriodicDualSeam;
 			std::string error;
 
 			MetalRemapContext() : device(nil), queue(nil), reconstruct(nil), scan(nil),
-				flux(nil), update(nil),gatherValues(nil),scatterValues(nil),gatherVelocity(nil)
+				flux(nil), update(nil),gatherValues(nil),scatterValues(nil),gatherVelocity(nil),
+				gatherPeriodicDualValues(nil),gatherPeriodicDualCarrier(nil),
+				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -312,8 +393,14 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 					gatherValues=makePipeline("gather_grid_values");
 					scatterValues=makePipeline("scatter_grid_values");
 					gatherVelocity=makePipeline("gather_grid_velocity");
+					gatherPeriodicDualValues=makePipeline("gather_periodic_dual_values");
+					gatherPeriodicDualCarrier=makePipeline("gather_periodic_dual_carrier");
+					scatterPeriodicDualValues=makePipeline("scatter_periodic_dual_values");
+					publishPeriodicDualSeam=makePipeline("publish_periodic_dual_seam");
 					if( !reconstruct||!scan||!flux||!update||!gatherValues||
-						!scatterValues||!gatherVelocity ) {
+						!scatterValues||!gatherVelocity||!gatherPeriodicDualValues||
+						!gatherPeriodicDualCarrier||!scatterPeriodicDualValues||
+						!publishPeriodicDualSeam ) {
 						error=MetalError("production fire remap pipeline creation failed",metalError);
 						return;
 					}
@@ -325,7 +412,9 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			bool Valid() const
 			{
 				return device&&queue&&reconstruct&&scan&&flux&&update&&gatherValues&&
-					scatterValues&&gatherVelocity&&error.empty();
+					scatterValues&&gatherVelocity&&gatherPeriodicDualValues&&
+					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
+					publishPeriodicDualSeam&&error.empty();
 			}
 		};
 
@@ -1137,6 +1226,277 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			result=FireProductionCellPalindromeResult();
 			if( structuredError ) try {
 				*structuredError="production resident palindrome comparator allocation failed";
+			} catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
+
+	bool RemapFireProductionPeriodicDualMomentumMetalResident(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		const FireProductionMetalPeriodicDualMomentumResidentInput& input,
+		FireProductionMetalPeriodicDualMomentumResidentResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionMetalPeriodicDualMomentumResidentResult();
+		try {
+			std::uint64_t certifiedBytes=0u;
+			if( !FireProductionPeriodicDualMomentumResidentWorkingSetBytes(request.shape,
+				certifiedBytes)||certifiedBytes>(UINT64_C(1)<<31u) ) {
+				if( structuredError ) *structuredError=
+					"production resident periodic dual working set exceeds two GiB";
+				return false;
+			}
+			std::array<FireProductionCellPalindromeRequest,3> dualRequest;
+			for( unsigned int component=0u;component<3u;++component ) if(
+				!BuildFireProductionPeriodicDualCellRequest(request,component,
+					dualRequest[component],structuredError) ) return false;
+			MetalRemapContext& context=Context();
+			if( !context.Valid() ) {
+				if( structuredError ) *structuredError=context.error;
+				return false;
+			}
+			@autoreleasepool {
+				std::array<std::size_t,3> faceCounts;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					faceCounts[axis]=FireProductionProjectionFaceCount(request.shape,axis);
+					const id<MTLBuffer> buffers[]={input.beginningFaceDensity[axis],
+						input.beginningMomentum[axis],input.frozenVelocityMPerS[axis]};
+					for( id<MTLBuffer> buffer : buffers ) if( !buffer||
+						[buffer storageMode]!=MTLStorageModePrivate||
+						[buffer length]<faceCounts[axis]*sizeof(float) ) {
+						if( structuredError ) *structuredError=
+							"production resident periodic dual input ownership is invalid";
+						return false;
+					}
+				}
+				const std::size_t cells=request.shape.CellCount();
+				const std::size_t dualBytes=2u*cells*sizeof(float);
+				std::uint64_t borrowedBytes=0u,outputBytes=0u,maximumActual=0u;
+				auto addAllocation=[](id<MTLBuffer> buffer,std::uint64_t& total) {
+					const std::uint64_t bytes=static_cast<std::uint64_t>([buffer allocatedSize]);
+					if( total>std::numeric_limits<std::uint64_t>::max()-bytes ) return false;
+					total+=bytes;return true;
+				};
+				for( unsigned int axis=0u;axis<3u;++axis ) if(
+					!addAllocation(input.beginningFaceDensity[axis],borrowedBytes)||
+					!addAllocation(input.beginningMomentum[axis],borrowedBytes)||
+					!addAllocation(input.frozenVelocityMPerS[axis],borrowedBytes) ) return false;
+				FireProductionMetalPeriodicDualMomentumResidentResult computed;
+				for( unsigned int component=0u;component<3u;++component ) {
+					computed.auxiliaryFaceDensity[component]=[context.device newBufferWithLength:
+						faceCounts[component]*sizeof(float) options:MTLResourceStorageModePrivate];
+					computed.momentum[component]=[context.device newBufferWithLength:
+						faceCounts[component]*sizeof(float) options:MTLResourceStorageModePrivate];
+					if( !computed.auxiliaryFaceDensity[component]||!computed.momentum[component]||
+						!addAllocation(computed.auxiliaryFaceDensity[component],outputBytes)||
+						!addAllocation(computed.momentum[component],outputBytes) ) return false;
+				}
+				const std::uint64_t beginningCommits=MetalCommandCommitCount;
+				const std::uint64_t beginningReads=MetalHostBufferReadCount;
+				double deviceMS=0.0;
+				for( unsigned int component=0u;component<3u;++component ) {
+					id<MTLBuffer> dualInput=[context.device newBufferWithLength:dualBytes
+						options:MTLResourceStorageModePrivate];
+					std::array<id<MTLBuffer>,3> carrier;
+					std::array<id<MTLBuffer>,3> parameter;
+					for( unsigned int sweep=0u;sweep<3u;++sweep ) {
+						carrier[sweep]=[context.device newBufferWithLength:
+							faceCounts[sweep]*sizeof(float) options:MTLResourceStorageModePrivate];
+						const MetalPeriodicDualParameters values={
+							static_cast<std::uint32_t>(request.shape.nx),
+							static_cast<std::uint32_t>(request.shape.ny),
+							static_cast<std::uint32_t>(request.shape.nz),component,sweep};
+						parameter[sweep]=[context.device newBufferWithBytes:&values length:sizeof(values)
+							options:MTLResourceStorageModeShared];
+					}
+					const float ambientValues[]={0.0f,0.0f};
+					id<MTLBuffer> ambient=[context.device newBufferWithBytes:ambientValues
+						length:sizeof(ambientValues) options:MTLResourceStorageModeShared];
+					if( !dualInput||!ambient ) return false;
+					std::uint64_t packingBytes=0u;
+					if( !addAllocation(dualInput,packingBytes)||!addAllocation(ambient,packingBytes) )
+						return false;
+					for( unsigned int sweep=0u;sweep<3u;++sweep ) if( !carrier[sweep]||
+						!parameter[sweep]||!addAllocation(carrier[sweep],packingBytes)||
+						!addAllocation(parameter[sweep],packingBytes) ) return false;
+					id<MTLCommandBuffer> pack=TrackedMetalCommandBuffer(context.queue);
+					id<MTLBlitCommandEncoder> blit=pack?[pack blitCommandEncoder]:nil;
+					if( !blit ) return false;
+					[blit copyFromBuffer:input.beginningFaceDensity[component] sourceOffset:0
+						toBuffer:computed.auxiliaryFaceDensity[component] destinationOffset:0
+						size:faceCounts[component]*sizeof(float)];
+					[blit copyFromBuffer:input.beginningMomentum[component] sourceOffset:0
+						toBuffer:computed.momentum[component] destinationOffset:0
+						size:faceCounts[component]*sizeof(float)];[blit endEncoding];
+					id<MTLComputeCommandEncoder> encoder=[pack computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:computed.auxiliaryFaceDensity[component] offset:0 atIndex:0];
+					[encoder setBuffer:computed.momentum[component] offset:0 atIndex:1];
+					[encoder setBuffer:dualInput offset:0 atIndex:2];
+					[encoder setBuffer:parameter[0] offset:0 atIndex:3];
+					Dispatch(encoder,context.gatherPeriodicDualValues,2u*cells);[encoder endEncoding];
+					for( unsigned int sweep=0u;sweep<3u;++sweep ) {
+						encoder=[pack computeCommandEncoder];if( !encoder ) return false;
+						[encoder setBuffer:input.frozenVelocityMPerS[0] offset:0 atIndex:0];
+						[encoder setBuffer:input.frozenVelocityMPerS[1] offset:0 atIndex:1];
+						[encoder setBuffer:input.frozenVelocityMPerS[2] offset:0 atIndex:2];
+						[encoder setBuffer:carrier[sweep] offset:0 atIndex:3];
+						[encoder setBuffer:parameter[sweep] offset:0 atIndex:4];
+						Dispatch(encoder,context.gatherPeriodicDualCarrier,faceCounts[sweep]);
+						[encoder endEncoding];
+					}
+					CommitTrackedMetalCommand(pack);[pack waitUntilCompleted];
+					if( [pack status]!=MTLCommandBufferStatusCompleted ) return false;
+					deviceMS+=([pack GPUEndTime]-[pack GPUStartTime])*1000.0;
+					FireProductionMetalCellPalindromeResidentInput cellInput;
+					cellInput.conservativeValues=dualInput;cellInput.frozenVelocityMPerS=carrier;
+					cellInput.ambientValues=ambient;
+					FireProductionMetalCellPalindromeResidentResult cellResult;
+					if( !RemapFireProductionCellPalindromeMetalResident(dualRequest[component],
+						cellInput,cellResult,structuredError) ) return false;
+					deviceMS+=cellResult.deviceElapsedMS;
+					id<MTLCommandBuffer> scatter=TrackedMetalCommandBuffer(context.queue);
+					encoder=scatter?[scatter computeCommandEncoder]:nil;if( !encoder ) return false;
+					[encoder setBuffer:cellResult.conservativeValues offset:0 atIndex:0];
+					[encoder setBuffer:computed.auxiliaryFaceDensity[component] offset:0 atIndex:1];
+					[encoder setBuffer:computed.momentum[component] offset:0 atIndex:2];
+					[encoder setBuffer:parameter[0] offset:0 atIndex:3];
+					Dispatch(encoder,context.scatterPeriodicDualValues,2u*cells);[encoder endEncoding];
+					encoder=[scatter computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:computed.auxiliaryFaceDensity[component] offset:0 atIndex:0];
+					[encoder setBuffer:computed.momentum[component] offset:0 atIndex:1];
+					[encoder setBuffer:parameter[0] offset:0 atIndex:2];
+					const std::size_t seamCount=component==0u?request.shape.ny*request.shape.nz:
+						(component==1u?request.shape.nx*request.shape.nz:
+						 request.shape.nx*request.shape.ny);
+					Dispatch(encoder,context.publishPeriodicDualSeam,seamCount);[encoder endEncoding];
+					CommitTrackedMetalCommand(scatter);[scatter waitUntilCompleted];
+					if( [scatter status]!=MTLCommandBufferStatusCompleted ) return false;
+					deviceMS+=([scatter GPUEndTime]-[scatter GPUStartTime])*1000.0;
+					if( borrowedBytes>std::numeric_limits<std::uint64_t>::max()-outputBytes||
+						borrowedBytes+outputBytes>std::numeric_limits<std::uint64_t>::max()-
+							packingBytes||borrowedBytes+outputBytes+packingBytes>
+							std::numeric_limits<std::uint64_t>::max()-cellResult.actualMetalAllocationBytes )
+						return false;
+					maximumActual=std::max(maximumActual,borrowedBytes+outputBytes+packingBytes+
+						cellResult.actualMetalAllocationBytes);
+				}
+				const std::uint64_t commits=MetalCommandCommitCount-beginningCommits;
+				const std::uint64_t reads=MetalHostBufferReadCount-beginningReads;
+				if( commits!=9u||reads!=0u||maximumActual>certifiedBytes||
+					maximumActual>(UINT64_C(1)<<31u) ) return false;
+				computed.executedSubmapCount=15u;computed.commandCommitCount=9u;
+				computed.interstageFullGridTransferCount=0u;
+				computed.actualMetalAllocationBytes=maximumActual;
+				computed.deviceElapsedMS=deviceMS;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionMetalPeriodicDualMomentumResidentResult();
+			if( structuredError ) try {
+				*structuredError="production resident periodic dual allocation failed";
+			} catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
+
+	bool RemapFireProductionPeriodicDualMomentumMetal(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		FireProductionPeriodicDualMomentumResult& result, std::string* structuredError )
+	{
+		result=FireProductionPeriodicDualMomentumResult();
+		try {
+			std::uint64_t certifiedBytes=0u;
+			if( !FireProductionPeriodicDualMomentumResidentWorkingSetBytes(request.shape,
+				certifiedBytes)||certifiedBytes>(UINT64_C(1)<<31u) ) {
+				if( structuredError ) *structuredError=
+					"production resident periodic dual working set exceeds two GiB";
+				return false;
+			}
+			FireProductionCellPalindromeRequest validated;
+			if( !BuildFireProductionPeriodicDualCellRequest(request,0u,validated,
+				structuredError) ) return false;
+			MetalRemapContext& context=Context();if( !context.Valid() ) return false;
+			@autoreleasepool {
+				std::array<std::size_t,3> faceCounts;
+				FireProductionMetalPeriodicDualMomentumResidentInput residentInput;
+				std::array<std::array<id<MTLBuffer>,3>,3> stage;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					faceCounts[axis]=FireProductionProjectionFaceCount(request.shape,axis);
+					const std::vector<float>* values[]={&request.beginningFaceDensity[axis],
+						&request.beginningMomentum[axis],&request.frozenVelocityMPerS[axis]};
+					for( unsigned int role=0u;role<3u;++role ) {
+						stage[axis][role]=[context.device newBufferWithBytes:values[role]->data()
+							length:faceCounts[axis]*sizeof(float) options:MTLResourceStorageModeShared];
+						id<MTLBuffer> privateValue=[context.device newBufferWithLength:
+							faceCounts[axis]*sizeof(float)
+							options:MTLResourceStorageModePrivate];
+						if( role==0u ) residentInput.beginningFaceDensity[axis]=privateValue;
+						else if( role==1u ) residentInput.beginningMomentum[axis]=privateValue;
+						else residentInput.frozenVelocityMPerS[axis]=privateValue;
+						if( !stage[axis][role]||!privateValue ) return false;
+					}
+				}
+				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;if( !blit ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					id<MTLBuffer> resident[]={residentInput.beginningFaceDensity[axis],
+						residentInput.beginningMomentum[axis],residentInput.frozenVelocityMPerS[axis]};
+					for( unsigned int role=0u;role<3u;++role )
+						[blit copyFromBuffer:stage[axis][role] sourceOffset:0 toBuffer:resident[role]
+							destinationOffset:0 size:faceCounts[axis]*sizeof(float)];
+				}
+				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
+				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
+				FireProductionMetalPeriodicDualMomentumResidentResult resident;
+				if( !RemapFireProductionPeriodicDualMomentumMetalResident(request,residentInput,
+					resident,structuredError) ) return false;
+				std::array<std::array<id<MTLBuffer>,2>,3> outputStage;
+				id<MTLCommandBuffer> staging=TrackedMetalCommandBuffer(context.queue);
+				blit=staging?[staging blitCommandEncoder]:nil;if( !blit ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					outputStage[axis][0]=[context.device newBufferWithLength:
+						faceCounts[axis]*sizeof(float) options:MTLResourceStorageModeShared];
+					outputStage[axis][1]=[context.device newBufferWithLength:
+						faceCounts[axis]*sizeof(float) options:MTLResourceStorageModeShared];
+					if( !outputStage[axis][0]||!outputStage[axis][1] ) return false;
+					[blit copyFromBuffer:resident.auxiliaryFaceDensity[axis] sourceOffset:0
+						toBuffer:outputStage[axis][0] destinationOffset:0
+						size:faceCounts[axis]*sizeof(float)];
+					[blit copyFromBuffer:resident.momentum[axis] sourceOffset:0
+						toBuffer:outputStage[axis][1] destinationOffset:0
+						size:faceCounts[axis]*sizeof(float)];
+				}
+				[blit endEncoding];CommitTrackedMetalCommand(staging);[staging waitUntilCompleted];
+				if( [staging status]!=MTLCommandBufferStatusCompleted ) return false;
+				FireProductionPeriodicDualMomentumResult computed;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const float* density=static_cast<const float*>(
+						ReadTrackedMetalBuffer(outputStage[axis][0]));
+					const float* momentum=static_cast<const float*>(
+						ReadTrackedMetalBuffer(outputStage[axis][1]));
+					computed.auxiliaryFaceDensity[axis].assign(density,density+faceCounts[axis]);
+					computed.momentum[axis].assign(momentum,momentum+faceCounts[axis]);
+				}
+				computed.executedSubmapCount=resident.executedSubmapCount;
+				computed.canonicalSeamCopyCount=static_cast<std::uint32_t>(2u*(
+					request.shape.ny*request.shape.nz+request.shape.nx*request.shape.nz+
+					request.shape.nx*request.shape.ny));
+				computed.commandCommitCount=resident.commandCommitCount;
+				computed.interstageFullGridTransferCount=resident.interstageFullGridTransferCount;
+				computed.actualMetalAllocationBytes=resident.actualMetalAllocationBytes;
+				computed.deviceElapsedMS=resident.deviceElapsedMS;
+				for( unsigned int axis=0u;axis<3u;++axis ) if(
+					!AllFinite(computed.auxiliaryFaceDensity[axis])||
+					!AllFinite(computed.momentum[axis]) ) return false;
+				if( !std::isfinite(computed.deviceElapsedMS) ) return false;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionPeriodicDualMomentumResult();
+			if( structuredError ) try {
+				*structuredError="production periodic dual Metal allocation failed";
 			} catch( const std::bad_alloc& ) {}
 			return false;
 		}

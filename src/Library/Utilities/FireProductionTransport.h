@@ -79,9 +79,15 @@ namespace RISE
 		std::array<std::vector<float>,3> momentum;
 		std::uint32_t executedSubmapCount;
 		std::uint32_t canonicalSeamCopyCount;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint64_t actualMetalAllocationBytes;
+		double deviceElapsedMS;
 
 		FireProductionDualMomentumResult() : executedSubmapCount(0u),
-			canonicalSeamCopyCount(0u) {}
+			canonicalSeamCopyCount(0u),commandCommitCount(0u),
+			interstageFullGridTransferCount(0u),actualMetalAllocationBytes(0u),
+			deviceElapsedMS(0.0) {}
 	};
 
 	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
@@ -167,6 +173,31 @@ namespace RISE
 		FireProductionPeriodicDualMomentumResult& result,
 		std::string* error=0 );
 
+	//! Step-boundary packing oracle for one periodic MAC component. This builds
+	//! the common auxiliary-density/momentum cell tuple and its three frozen
+	//! dual carriers; resident execution consumes the corresponding Private
+	//! buffers without rebuilding or staging them interstage.
+	bool BuildFireProductionPeriodicDualCellRequest(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		unsigned int transportedComponent,
+		FireProductionCellPalindromeRequest& dualRequest,
+		std::string* error=0 );
+
+	//! Conservative resident periodic-dual peak. It adds all nine borrowed and
+	//! six atomically published face arrays to the largest two-channel resident
+	//! palindrome certificate.
+	bool FireProductionPeriodicDualMomentumResidentWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
+	//! Standalone oracle wrapper around the periodic Private-buffer resident
+	//! dual-grid seam. Boundary uploads and the final tap are outside the
+	//! measured resident interval.
+	bool RemapFireProductionPeriodicDualMomentumMetal(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		FireProductionPeriodicDualMomentumResult& result,
+		std::string* error=0 );
+
 	//! Strict-binary32 six-side MAC oracle. Component-normal wall planes are
 	//! prescribed, open endpoints skip only their normal sweep, and transverse
 	//! sweeps consume line-resolved ambient tuples through the shared P1 kernel.
@@ -174,6 +205,46 @@ namespace RISE
 		const FireProductionDualMomentumRequest& request,
 		FireProductionDualMomentumResult& result,
 		std::string* error=0 );
+
+#if defined(__OBJC__) && defined(__APPLE__)
+	struct FireProductionMetalPeriodicDualMomentumResidentInput
+	{
+		std::array<id<MTLBuffer>,3> beginningFaceDensity;
+		std::array<id<MTLBuffer>,3> beginningMomentum;
+		std::array<id<MTLBuffer>,3> frozenVelocityMPerS;
+
+		FireProductionMetalPeriodicDualMomentumResidentInput()
+		{
+			beginningFaceDensity.fill(nil);beginningMomentum.fill(nil);
+			frozenVelocityMPerS.fill(nil);
+		}
+	};
+
+	struct FireProductionMetalPeriodicDualMomentumResidentResult
+	{
+		std::array<id<MTLBuffer>,3> auxiliaryFaceDensity;
+		std::array<id<MTLBuffer>,3> momentum;
+		std::uint32_t executedSubmapCount;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint64_t actualMetalAllocationBytes;
+		double deviceElapsedMS;
+
+		FireProductionMetalPeriodicDualMomentumResidentResult() :
+			executedSubmapCount(0u),commandCommitCount(0u),
+			interstageFullGridTransferCount(0u),actualMetalAllocationBytes(0u),
+			deviceElapsedMS(0.0)
+		{
+			auxiliaryFaceDensity.fill(nil);momentum.fill(nil);
+		}
+	};
+
+	bool RemapFireProductionPeriodicDualMomentumMetalResident(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		const FireProductionMetalPeriodicDualMomentumResidentInput& input,
+		FireProductionMetalPeriodicDualMomentumResidentResult& result,
+		std::string* error=0 );
+#endif
 }
 
 #endif

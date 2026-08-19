@@ -2266,6 +2266,7 @@ int main()
 	}
 	Check(exactDualTranslation,
 		"each periodic MAC dual tuple exactly translates by the (2,2,1) palindrome");
+	const FireProductionPeriodicDualMomentumResult dualTranslatedExpected=dualTranslatedResult;
 	FireProductionPeriodicDualMomentumRequest brokenDualSeam=dualTranslated;
 	brokenDualSeam.beginningMomentum[1][TransportFaceIndex(brokenDualSeam.shape,1u,
 		2u,brokenDualSeam.shape.ny,2u)]=1.0f;
@@ -2311,6 +2312,21 @@ int main()
 		!RemapFireProductionPeriodicDualMomentumCPU(dualCombinedUnder,
 			dualTranslatedResult,&error)&&error.find("combined working set")==std::string::npos,
 		"dual momentum admission counts caller and atomic result faces around nested remap peak");
+	FireProductionProjectionShape residentDualUnderShape,residentDualOverShape;
+	residentDualUnderShape.nx=43u;residentDualUnderShape.ny=229u;
+	residentDualUnderShape.nz=676u;residentDualUnderShape.cellWidthM=1.0f;
+	residentDualOverShape.nx=52u;residentDualOverShape.ny=157u;
+	residentDualOverShape.nz=816u;residentDualOverShape.cellWidthM=1.0f;
+	std::uint64_t residentDualUnderBytes=0u,residentDualOverBytes=0u;
+	Check(FireProductionPeriodicDualMomentumResidentWorkingSetBytes(
+		residentDualUnderShape,residentDualUnderBytes)&&
+		residentDualUnderBytes==UINT64_C(2147483272)&&
+		FireProductionPeriodicDualMomentumResidentWorkingSetBytes(
+			residentDualOverShape,residentDualOverBytes)&&
+		residentDualOverBytes==UINT64_C(2147483912)&&
+		residentDualUnderBytes<(UINT64_C(1)<<31u)&&
+		residentDualOverBytes>(UINT64_C(1)<<31u),
+		"resident periodic dual certificate straddles two GiB by the complete face topology");
 	FireProductionPeriodicDualMomentumRequest dualVariable;
 	dualVariable.shape.nx=5u;dualVariable.shape.ny=6u;dualVariable.shape.nz=7u;
 	dualVariable.shape.cellWidthM=1.0f;dualVariable.timeStepS=0.35f;
@@ -2475,6 +2491,8 @@ int main()
 			seeded.momentum[component].assign(1u,4.0f);
 		}
 		seeded.executedSubmapCount=9u;seeded.canonicalSeamCopyCount=11u;
+		seeded.commandCommitCount=7u;seeded.interstageFullGridTransferCount=8u;
+		seeded.actualMetalAllocationBytes=9u;seeded.deviceElapsedMS=10.0;
 	};
 	auto dualResultIsDefault=[](const FireProductionDualMomentumResult& rejected) {
 		return rejected.auxiliaryFaceDensity[0].empty()&&
@@ -2482,7 +2500,9 @@ int main()
 			rejected.auxiliaryFaceDensity[2].empty()&&
 			rejected.momentum[0].empty()&&rejected.momentum[1].empty()&&
 			rejected.momentum[2].empty()&&rejected.executedSubmapCount==0u&&
-			rejected.canonicalSeamCopyCount==0u;
+			rejected.canonicalSeamCopyCount==0u&&rejected.commandCommitCount==0u&&
+			rejected.interstageFullGridTransferCount==0u&&
+			rejected.actualMetalAllocationBytes==0u&&rejected.deviceElapsedMS==0.0;
 	};
 	FireProductionDualMomentumRequest malformedDual=mixedDual;
 	malformedDual.boundary[0]=FireProductionProjectionPeriodic;
@@ -3620,6 +3640,55 @@ int main()
 	}
 	Check(everyMixedPalindromeMetal,
 		"Metal palindrome matches all non-cubic axis/side/open-role oracle fixtures");
+	FireProductionPeriodicDualMomentumResult dualTranslatedGPU;
+	const bool periodicDualMetal=RemapFireProductionPeriodicDualMomentumMetal(
+		dualTranslated,dualTranslatedGPU,&error);
+	bool periodicDualMatches=periodicDualMetal&&
+		dualTranslatedGPU.executedSubmapCount==15u&&
+		dualTranslatedGPU.commandCommitCount==9u&&
+		dualTranslatedGPU.interstageFullGridTransferCount==0u&&
+		dualTranslatedGPU.deviceElapsedMS>0.0;
+	for( unsigned int axis=0u;axis<3u;++axis ) periodicDualMatches=periodicDualMatches&&
+		dualTranslatedGPU.auxiliaryFaceDensity[axis]==
+			dualTranslatedExpected.auxiliaryFaceDensity[axis]&&
+		dualTranslatedGPU.momentum[axis]==dualTranslatedExpected.momentum[axis];
+	Check(periodicDualMatches,
+		"resident periodic dual momentum is byte-identical to the 15-submap CPU oracle "
+		"with zero interstage transfer");
+	FireProductionPeriodicDualMomentumResult dualVariableGPU;
+	const bool periodicDualVariableMetal=RemapFireProductionPeriodicDualMomentumMetal(
+		dualVariable,dualVariableGPU,&error);
+	bool periodicDualVariableMatches=periodicDualVariableMetal&&
+		dualVariableGPU.executedSubmapCount==15u&&
+		dualVariableGPU.commandCommitCount==9u&&
+		dualVariableGPU.interstageFullGridTransferCount==0u;
+	for( unsigned int axis=0u;axis<3u;++axis ) periodicDualVariableMatches=
+		periodicDualVariableMatches&&SameFloatVectorsWithin(
+			dualVariableGPU.auxiliaryFaceDensity[axis],
+			dualVariableResult.auxiliaryFaceDensity[axis],3.0e-5f)&&
+		SameFloatVectorsWithin(dualVariableGPU.momentum[axis],
+			dualVariableResult.momentum[axis],3.0e-5f);
+	Check(periodicDualVariableMatches,
+		"resident periodic dual carrier packing matches the noncubic variable-state oracle");
+	FireProductionPeriodicDualMomentumResult rejectedPeriodicDualGPU;
+	seedDualResult(rejectedPeriodicDualGPU);error.clear();
+	Check(!RemapFireProductionPeriodicDualMomentumMetal(brokenDualSeam,
+		rejectedPeriodicDualGPU,&error)&&dualResultIsDefault(rejectedPeriodicDualGPU)&&
+		error.find("seam")!=std::string::npos,
+		"resident periodic dual wrapper rejects malformed seams before Metal work with no result");
+	FireProductionPeriodicDualMomentumRequest residentDualAdmission;
+	residentDualAdmission.shape=residentDualOverShape;residentDualAdmission.timeStepS=0.0f;
+	seedDualResult(rejectedPeriodicDualGPU);error.clear();
+	const bool residentDualOverRejected=!RemapFireProductionPeriodicDualMomentumMetal(
+		residentDualAdmission,rejectedPeriodicDualGPU,&error)&&
+		dualResultIsDefault(rejectedPeriodicDualGPU)&&error.find("two GiB")!=std::string::npos;
+	residentDualAdmission.shape=residentDualUnderShape;
+	seedDualResult(rejectedPeriodicDualGPU);error.clear();
+	const bool residentDualUnderAdvances=!RemapFireProductionPeriodicDualMomentumMetal(
+		residentDualAdmission,rejectedPeriodicDualGPU,&error)&&
+		dualResultIsDefault(rejectedPeriodicDualGPU)&&error.find("two GiB")==std::string::npos;
+	Check(residentDualOverRejected&&residentDualUnderAdvances,
+		"resident periodic dual public admission rejects the over-cap shape before payload access");
 	FireProductionCellPalindromeRequest tier10Palindrome;
 	tier10Palindrome.shape=tier10TransportShape;tier10Palindrome.componentCount=9u;
 	tier10Palindrome.timeStepS=1.0f/480.0f;
@@ -3844,6 +3913,10 @@ int main()
 		"bool RemapFireProductionCellPalindromeMetalResident(");
 	const std::size_t residentPalindromeComparatorBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionCellPalindromeMetalResidentComparator(");
+	const std::size_t residentPeriodicDualBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionPeriodicDualMomentumMetalResident(");
+	const std::size_t periodicDualComparatorBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionPeriodicDualMomentumMetal(");
 	const std::string standaloneMetalBody=standaloneMetalBeginning==std::string::npos||
 		palindromeMetalBeginning==std::string::npos?std::string():
 		advectionMetalSource.substr(standaloneMetalBeginning,
@@ -3857,8 +3930,14 @@ int main()
 		advectionMetalSource.substr(residentPalindromeBeginning,
 			residentPalindromeComparatorBeginning-residentPalindromeBeginning);
 	const std::string residentPalindromeComparatorBody=
-		residentPalindromeComparatorBeginning==std::string::npos?std::string():
-		advectionMetalSource.substr(residentPalindromeComparatorBeginning);
+		residentPalindromeComparatorBeginning==std::string::npos||
+		residentPeriodicDualBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentPalindromeComparatorBeginning,
+			residentPeriodicDualBeginning-residentPalindromeComparatorBeginning);
+	const std::string residentPeriodicDualBody=residentPeriodicDualBeginning==std::string::npos||
+		periodicDualComparatorBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentPeriodicDualBeginning,
+			periodicDualComparatorBeginning-residentPeriodicDualBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string makeFilelist=ReadText("build/make/rise/Filelist");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
@@ -3937,9 +4016,9 @@ int main()
 		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
 		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
 		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
-		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==6u&&
-		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==6u&&
-		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==6u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==10u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==10u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==8u&&
 		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
 		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
@@ -3960,6 +4039,23 @@ int main()
 		CountSubstring(residentPalindromeComparatorBody,"CommitTrackedMetalCommand(")==2u&&
 		CountSubstring(residentPalindromeComparatorBody,"ReadTrackedMetalBuffer(")==1u,
 		"resident palindrome owns only Private full grids and observes zero interstage host access");
+	Check(!residentPeriodicDualBody.empty()&&
+		advectionMetalSource.find("makePipeline(\"gather_periodic_dual_values\")")!=
+			std::string::npos&&
+		advectionMetalSource.find("makePipeline(\"gather_periodic_dual_carrier\")")!=
+			std::string::npos&&
+		advectionMetalSource.find("makePipeline(\"scatter_periodic_dual_values\")")!=
+			std::string::npos&&
+		advectionMetalSource.find("makePipeline(\"publish_periodic_dual_seam\")")!=
+			std::string::npos&&
+		CountSubstring(residentPeriodicDualBody,"TrackedMetalCommandBuffer(")==2u&&
+		CountSubstring(residentPeriodicDualBody,"CommitTrackedMetalCommand(")==2u&&
+		CountSubstring(residentPeriodicDualBody,"ReadTrackedMetalBuffer(")==0u&&
+		residentPeriodicDualBody.find("[buffer storageMode]!=MTLStorageModePrivate")!=
+			std::string::npos&&residentPeriodicDualBody.find("commits!=9u||reads!=0u")!=
+			std::string::npos&&residentPeriodicDualBody.find(
+			"RemapFireProductionCellPalindromeMetalResident(")!=std::string::npos,
+		"periodic dual momentum packs, remaps, and republishes Private grids with zero host access");
 	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
 		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==2u&&
 		CountSubstring(transportSource,

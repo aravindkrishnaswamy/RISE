@@ -33,4 +33,26 @@ namespace RISE
 		} catch( const std::bad_alloc& ) {}
 		return false;
 	}
+
+	bool RemapFireProductionCellPalindromeMetalResidentComparator(
+		const FireProductionCellPalindromeRequest&,
+		FireProductionCellPalindromeResult& result, std::string* error )
+	{
+		result=FireProductionCellPalindromeResult();
+		if( error ) try {
+			*error="production resident Metal palindrome unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) {}
+		return false;
+	}
+
+	bool RemapFireProductionPeriodicDualMomentumMetal(
+		const FireProductionPeriodicDualMomentumRequest&,
+		FireProductionPeriodicDualMomentumResult& result, std::string* error )
+	{
+		result=FireProductionPeriodicDualMomentumResult();
+		if( error ) try {
+			*error="production resident periodic dual remap unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) {}
+		return false;
+	}
 }

@@ -657,6 +657,84 @@ namespace RISE
 		}
 	}
 
+	bool BuildFireProductionPeriodicDualCellRequest(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		unsigned int transportedComponent,
+		FireProductionCellPalindromeRequest& dualRequest, std::string* error )
+	{
+		dualRequest=FireProductionCellPalindromeRequest();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			if( transportedComponent>2u||shape.nx<4u||shape.nx>1024u||
+				shape.ny<4u||shape.ny>1024u||shape.nz<4u||shape.nz>1024u||
+				!(shape.cellWidthM>0.0f)||request.timeStepS<0.0f||
+				!std::isfinite(shape.cellWidthM)||!std::isfinite(request.timeStepS) )
+				return Fail(error,"periodic dual cell request shape is invalid");
+			for( const FireProductionProjectionBoundary boundary : request.boundary )
+				if( boundary!=FireProductionProjectionPeriodic )
+					return Fail(error,"periodic dual cell request requires periodic boundaries");
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.beginningFaceDensity[axis].size()!=faces||
+					request.beginningMomentum[axis].size()!=faces||
+					request.frozenVelocityMPerS[axis].size()!=faces||
+					!PeriodicFaceSeamEqual(shape,request.beginningFaceDensity[axis],axis)||
+					!PeriodicFaceSeamEqual(shape,request.beginningMomentum[axis],axis)||
+					!PeriodicFaceSeamEqual(shape,request.frozenVelocityMPerS[axis],axis) )
+					return Fail(error,"periodic dual cell request face shape or seam is invalid");
+				for( const float density : request.beginningFaceDensity[axis] )
+					if( !(density>0.0f)||!std::isfinite(density) )
+						return Fail(error,"periodic dual cell request density is invalid");
+				for( const float value : request.beginningMomentum[axis] )
+					if( !std::isfinite(value) )
+						return Fail(error,"periodic dual cell request momentum is nonfinite");
+				for( const float value : request.frozenVelocityMPerS[axis] )
+					if( !std::isfinite(value) )
+						return Fail(error,"periodic dual cell request carrier is nonfinite");
+			}
+			const std::size_t cells=shape.CellCount();
+			dualRequest.shape=shape;dualRequest.componentCount=2u;
+			dualRequest.timeStepS=request.timeStepS;
+			dualRequest.boundary.fill(FireProductionProjectionPeriodic);
+			dualRequest.conservativeValues.resize(2u*cells);
+			dualRequest.ambientValues.assign(2u,0.0f);
+			for( std::size_t z=0u;z<shape.nz;++z )
+				for( std::size_t y=0u;y<shape.ny;++y )
+					for( std::size_t x=0u;x<shape.nx;++x ) {
+						const std::size_t cell=CellIndex(shape,x,y,z);
+						const std::size_t face=FaceIndex(shape,transportedComponent,x,y,z);
+						dualRequest.conservativeValues[cell]=
+							request.beginningFaceDensity[transportedComponent][face];
+						dualRequest.conservativeValues[cells+cell]=
+							request.beginningMomentum[transportedComponent][face];
+					}
+			for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis )
+				dualRequest.frozenVelocityMPerS[sweepAxis]=
+					PeriodicDualCarrier(request,transportedComponent,sweepAxis);
+			if( !ValidateFireProductionCellPalindromeRequest(dualRequest,error) ) {
+				dualRequest=FireProductionCellPalindromeRequest();return false;
+			}
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			dualRequest=FireProductionCellPalindromeRequest();
+			FailWithoutThrow(error,"periodic dual cell request allocation failed");
+			return false;
+		}
+	}
+
+	bool FireProductionPeriodicDualMomentumResidentWorkingSetBytes(
+		const FireProductionProjectionShape& shape, std::uint64_t& bytes )
+	{
+		bytes=0u;std::uint64_t nested=0u;
+		if( !FireProductionCellPalindromeWorkingSetBytes(shape,2u,nested) ) return false;
+		const std::uint64_t allFaces=
+			static_cast<std::uint64_t>(FireProductionProjectionFaceCount(shape,0u))+
+			FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u);
+		if( !AddBytes(allFaces,15u*sizeof(float),nested) ) return false;
+		bytes=nested;return true;
+	}
+
 	bool RemapFireProductionPeriodicDualMomentumCPU(
 		const FireProductionPeriodicDualMomentumRequest& request,
 		FireProductionPeriodicDualMomentumResult& result, std::string* error )
