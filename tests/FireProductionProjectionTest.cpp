@@ -1427,8 +1427,11 @@ int main()
 		Count(metalSource,"return [buffer contents]")==1u&&
 		Count(metalSource," commit]")==1u&&
 		Count(metalSource," contents]")==1u&&
+		Count(metalSource," copyFromBuffer:")==1u&&
 		Count(metalSource,"CommitProjectionCommand(")==4u&&
+		Count(metalSource,"CopyProjectionBuffer(")==10u&&
 		Count(residentProjectionBody,"ObserveProjectionInvocation();")==2u&&
+		residentProjectionBody.find(" copyFromBuffer:")==std::string::npos&&
 		residentProjectionBody.find("projectionInterstageFullGridReadCount-"
 			"beginningInterstageReads")!=std::string::npos,
 		"P2 resident wrapper releases upload staging before one Private solve and stages only after completion");

@@ -3963,7 +3963,10 @@ int main()
 		"surfaces");
 	Check(!residentForceBody.empty()&&
 		CountSubstring(residentForceBody,"CommitResidentForceCommand(")==3u&&
-		CountSubstring(residentForceBody,"ResidentForceBufferContents(")==8u&&
+		CountSubstring(residentForceBody,"ResidentForceBufferContents(")==7u&&
+		CountSubstring(forceMetalSource," copyFromBuffer:")==1u&&
+		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==13u&&
+		residentForceBody.find(" copyFromBuffer:")==std::string::npos&&
 		CountSubstring(residentForceBody,"[preflight commit]")==0u&&
 		CountSubstring(residentForceBody,"[advance commit]")==0u&&
 		CountSubstring(residentForceBody,"[staging commit]")==0u&&

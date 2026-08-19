@@ -28,6 +28,12 @@ namespace RISE
 			ResidentForceInterstageFullGridAccess,
 			ResidentForceTerminalAccess
 		};
+		enum ResidentForceTransferPhase
+		{
+			ResidentForceUploadTransfer,
+			ResidentForceInterstageTransfer,
+			ResidentForceTerminalTransfer
+		};
 
 		thread_local std::uint64_t residentForceCommandCommitCount=0u;
 		thread_local std::uint64_t residentForceInterstageFullGridReadCount=0u;
@@ -43,6 +49,18 @@ namespace RISE
 			if( kind==ResidentForceInterstageFullGridAccess )
 				++residentForceInterstageFullGridReadCount;
 			return [buffer contents];
+		}
+
+		void CopyResidentForceBuffer( id<MTLBlitCommandEncoder> encoder,
+			id<MTLBuffer> source,std::size_t sourceOffset,id<MTLBuffer> destination,
+			std::size_t destinationOffset,std::size_t size,ResidentForceTransferPhase phase )
+		{
+			[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
+				destinationOffset:destinationOffset size:size];
+			if( phase==ResidentForceInterstageTransfer&&
+				[source storageMode]==MTLStorageModePrivate&&
+				[destination storageMode]!=MTLStorageModePrivate )
+				++residentForceInterstageFullGridReadCount;
 		}
 		struct ForceParameters
 		{
@@ -706,12 +724,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					return Fail(error,"production resident force preflight command allocation failed");
 				id<MTLBlitCommandEncoder> upload=[preflight blitCommandEncoder];if( !upload )
 					return Fail(error,"production resident force upload encoder failed");
-				[upload copyFromBuffer:rhoUpload sourceOffset:0 toBuffer:rho destinationOffset:0 size:cellBytes];
-				[upload copyFromBuffer:nuUpload sourceOffset:0 toBuffer:nu destinationOffset:0 size:cellBytes];
-				[upload copyFromBuffer:faceRhoUpload sourceOffset:0 toBuffer:faceRho destinationOffset:0 size:faceBytes];
-				[upload copyFromBuffer:momentumUpload sourceOffset:0 toBuffer:momentum destinationOffset:0 size:faceBytes];
-				if( projectionTarget ) [upload copyFromBuffer:projectionTargetUpload sourceOffset:0
-					toBuffer:privateProjectionTarget destinationOffset:0 size:cellBytes];
+				CopyResidentForceBuffer(upload,rhoUpload,0u,rho,0u,cellBytes,ResidentForceUploadTransfer);
+				CopyResidentForceBuffer(upload,nuUpload,0u,nu,0u,cellBytes,ResidentForceUploadTransfer);
+				CopyResidentForceBuffer(upload,faceRhoUpload,0u,faceRho,0u,faceBytes,ResidentForceUploadTransfer);
+				CopyResidentForceBuffer(upload,momentumUpload,0u,momentum,0u,faceBytes,ResidentForceUploadTransfer);
+				if( projectionTarget ) CopyResidentForceBuffer(upload,projectionTargetUpload,0u,
+					privateProjectionTarget,0u,cellBytes,ResidentForceUploadTransfer);
 				[upload endEncoding];
 				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
@@ -789,12 +807,21 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> gravityBuffers[]={momentum,gravity,parameters};
 				if( !begin(advance,context.addGravity,gravityBuffers,3u,faces) )
 					return Fail(error,"production resident force gravity encoder failed");
+				id<MTLBuffer> injectedInterstageStage=nil;
+				if( InjectedFailure("resident-interstage-transfer") ) {
+					injectedInterstageStage=sharedBuffer(faceBytes);
+					id<MTLBlitCommandEncoder> injectedBlit=injectedInterstageStage?
+						[advance blitCommandEncoder]:nil;
+					if( !injectedBlit ) return Fail(error,
+						"production resident force injected staging allocation failed");
+					CopyResidentForceBuffer(injectedBlit,momentum,0u,injectedInterstageStage,0u,
+						faceBytes,ResidentForceInterstageTransfer);
+					[injectedBlit endEncoding];
+				}
 				CommitResidentForceCommand(advance);[advance waitUntilCompleted];
 				if( InjectedFailure("resident-command")||
 					[advance status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force advance command failed");
-				if( InjectedFailure("resident-interstage-transfer") )
-					ResidentForceBufferContents(lambda,ResidentForceInterstageFullGridAccess);
 				observed.advanceDeviceElapsedMS=([advance GPUEndTime]-[advance GPUStartTime])*1000.0;
 				if( residentForceCommandCommitCount<beginningCommandCommits||
 					residentForceInterstageFullGridReadCount<beginningInterstageReads ) return false;
@@ -876,13 +903,16 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					return Fail(error,"production resident force staging command allocation failed");
 				id<MTLBlitCommandEncoder> blit=[staging blitCommandEncoder];if( !blit )
 					return Fail(error,"production resident force terminal staging encoder failed");
-				[blit copyFromBuffer:eddy sourceOffset:0 toBuffer:stageEddy destinationOffset:0 size:cellBytes];
-				[blit copyFromBuffer:mu sourceOffset:0 toBuffer:stageMu destinationOffset:0 size:cellBytes];
-				[blit copyFromBuffer:beginningViscous sourceOffset:0 toBuffer:stageViscous destinationOffset:0 size:faceBytes];
-				[blit copyFromBuffer:gravity sourceOffset:0 toBuffer:stageGravity destinationOffset:0 size:faceBytes];
-				[blit copyFromBuffer:momentum sourceOffset:0 toBuffer:stageMomentum destinationOffset:0 size:faceBytes];
-				if( captureIntermediateStates ) [blit copyFromBuffer:snapshots sourceOffset:0
-					toBuffer:stageSnapshots destinationOffset:0 size:8u*faceBytes];
+				CopyResidentForceBuffer(blit,eddy,0u,stageEddy,0u,cellBytes,ResidentForceTerminalTransfer);
+				CopyResidentForceBuffer(blit,mu,0u,stageMu,0u,cellBytes,ResidentForceTerminalTransfer);
+				CopyResidentForceBuffer(blit,beginningViscous,0u,stageViscous,0u,faceBytes,
+					ResidentForceTerminalTransfer);
+				CopyResidentForceBuffer(blit,gravity,0u,stageGravity,0u,faceBytes,
+					ResidentForceTerminalTransfer);
+				CopyResidentForceBuffer(blit,momentum,0u,stageMomentum,0u,faceBytes,
+					ResidentForceTerminalTransfer);
+				if( captureIntermediateStates ) CopyResidentForceBuffer(blit,snapshots,0u,
+					stageSnapshots,0u,8u*faceBytes,ResidentForceTerminalTransfer);
 				[blit endEncoding];CommitResidentForceCommand(staging);[staging waitUntilCompleted];
 				observed.terminalStagingCount=1u;
 				if( [staging status]!=MTLCommandBufferStatusCompleted )

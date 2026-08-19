@@ -29,6 +29,12 @@ namespace RISE
 			ProjectionInterstageFullGridAccess,
 			ProjectionTerminalAccess
 		};
+		enum ProjectionTransferPhase
+		{
+			ProjectionUploadTransfer,
+			ProjectionInterstageTransfer,
+			ProjectionTerminalTransfer
+		};
 
 		thread_local std::uint64_t projectionCommandCommitCount=0u;
 		thread_local std::uint64_t projectionInterstageFullGridReadCount=0u;
@@ -45,6 +51,18 @@ namespace RISE
 			if( kind==ProjectionInterstageFullGridAccess )
 				++projectionInterstageFullGridReadCount;
 			return [buffer contents];
+		}
+
+		void CopyProjectionBuffer( id<MTLBlitCommandEncoder> encoder,
+			id<MTLBuffer> source,std::size_t sourceOffset,id<MTLBuffer> destination,
+			std::size_t destinationOffset,std::size_t size,ProjectionTransferPhase phase )
+		{
+			[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
+				destinationOffset:destinationOffset size:size];
+			if( phase==ProjectionInterstageTransfer&&
+				[source storageMode]==MTLStorageModePrivate&&
+				[destination storageMode]!=MTLStorageModePrivate )
+				++projectionInterstageFullGridReadCount;
 		}
 
 		void ObserveProjectionInvocation()
@@ -693,11 +711,14 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					id<MTLBlitCommandEncoder> upload=InjectedFailure("upload_encoder")?
 						nil:[uploadCommand blitCommandEncoder];
 					if( !upload ) {if( error ) *error="production fire projection upload encoder allocation failed";return false;}
-					[upload copyFromBuffer:densityUpload sourceOffset:0 toBuffer:fine.density destinationOffset:0 size:cells*sizeof(float)];
-					[upload copyFromBuffer:targetUpload sourceOffset:0 toBuffer:target destinationOffset:0 size:cells*sizeof(float)];
-					for( unsigned int axis=0;axis<3u;++axis ) [upload copyFromBuffer:provisionalUpload[axis]
-						sourceOffset:0 toBuffer:provisional[axis] destinationOffset:0
-						size:FireProductionProjectionFaceCount(shape,axis)*sizeof(float)];
+					CopyProjectionBuffer(upload,densityUpload,0u,fine.density,0u,cells*sizeof(float),
+						ProjectionUploadTransfer);
+					CopyProjectionBuffer(upload,targetUpload,0u,target,0u,cells*sizeof(float),
+						ProjectionUploadTransfer);
+					for( unsigned int axis=0;axis<3u;++axis ) CopyProjectionBuffer(upload,
+						provisionalUpload[axis],0u,provisional[axis],0u,
+						FireProductionProjectionFaceCount(shape,axis)*sizeof(float),
+						ProjectionUploadTransfer);
 					[upload endEncoding];CommitProjectionCommand(uploadCommand);
 					++observedUploadStaging;[uploadCommand waitUntilCompleted];
 					if( [uploadCommand status]!=MTLCommandBufferStatusCompleted ) {
@@ -797,11 +818,23 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				[encoder setBuffer:target offset:0 atIndex:3];[encoder setBuffer:fineLevel.residual offset:0 atIndex:4];
 				[encoder setBuffer:fineLevel.parameters offset:0 atIndex:5];Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,1u,true,error) ) return false;
+				id<MTLBuffer> injectedInterstageStage=nil;
+				if( InjectedFailure("interstage_transfer") ) {
+					injectedInterstageStage=NewSharedBuffer(context.device,cells*sizeof(float));
+					id<MTLBlitCommandEncoder> injectedBlit=injectedInterstageStage?
+						[command blitCommandEncoder]:nil;
+					if( !injectedBlit ) {
+						if( error ) *error=
+							"production fire projection injected staging allocation failed";
+						return false;
+					}
+					CopyProjectionBuffer(injectedBlit,fineLevel.pressure,0u,injectedInterstageStage,
+						0u,cells*sizeof(float),ProjectionInterstageTransfer);
+					[injectedBlit endEncoding];
+				}
 				CommitProjectionCommand(command);[command waitUntilCompleted];
 				if( [command status]!=MTLCommandBufferStatusCompleted||InjectedFailure("command") ) {
 					if( error ) *error=MetalError("production fire projection command failed",[command error]);return false;}
-				if( InjectedFailure("interstage_transfer") )
-					ProjectionBufferContents(diagnostics,ProjectionInterstageFullGridAccess);
 				if( InjectedFailure("second_projection") ) ObserveProjectionInvocation();
 				id<MTLBuffer> pressureStage=InjectedFailure("staging_buffer")?
 					nil:NewSharedBuffer(context.device,cells*sizeof(float));
@@ -839,19 +872,19 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				id<MTLBlitCommandEncoder> staging=InjectedFailure("staging_encoder")?
 					nil:(stagingCommand?[stagingCommand blitCommandEncoder]:nil);
 				if( !staging ) {if( error ) *error="production fire projection staging encoder allocation failed";return false;}
-				[staging copyFromBuffer:fineLevel.pressure sourceOffset:0 toBuffer:pressureStage
-					destinationOffset:0 size:cells*sizeof(float)];
+				CopyProjectionBuffer(staging,fineLevel.pressure,0u,pressureStage,0u,
+					cells*sizeof(float),ProjectionTerminalTransfer);
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const std::size_t bytes=FireProductionProjectionFaceCount(shape,axis)*sizeof(float);
-					[staging copyFromBuffer:stored[axis] sourceOffset:0 toBuffer:storedStage[axis]
-						destinationOffset:0 size:bytes];
-					[staging copyFromBuffer:momentum[axis] sourceOffset:0 toBuffer:momentumStage[axis]
-						destinationOffset:0 size:bytes];
-					[staging copyFromBuffer:velocity[axis] sourceOffset:0 toBuffer:velocityStage[axis]
-						destinationOffset:0 size:bytes];
-					if( resident ) [staging copyFromBuffer:provisional[axis]
-						sourceOffset:provisionalOffset[axis] toBuffer:provisionalStage[axis]
-						destinationOffset:0 size:bytes];
+					CopyProjectionBuffer(staging,stored[axis],0u,storedStage[axis],0u,bytes,
+						ProjectionTerminalTransfer);
+					CopyProjectionBuffer(staging,momentum[axis],0u,momentumStage[axis],0u,bytes,
+						ProjectionTerminalTransfer);
+					CopyProjectionBuffer(staging,velocity[axis],0u,velocityStage[axis],0u,bytes,
+						ProjectionTerminalTransfer);
+					if( resident ) CopyProjectionBuffer(staging,provisional[axis],
+						provisionalOffset[axis],provisionalStage[axis],0u,bytes,
+						ProjectionTerminalTransfer);
 				}
 				[staging endEncoding];CommitProjectionCommand(stagingCommand);
 				++observedTerminalStaging;[stagingCommand waitUntilCompleted];
