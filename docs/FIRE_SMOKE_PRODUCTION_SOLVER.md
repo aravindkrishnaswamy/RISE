@@ -972,20 +972,24 @@ stored by the matrix-free operator: authoritative face density, frozen
 `mu_eff`, grid scale, and boundary-role bytes. No expanded sparse matrix is
 materialized.
 
-The stability preflight propagates an absolute-row-sum envelope through the
-exact matrix-free dependency graph. Each primitive fp32 multiply, divide,
-boundary ghost factor, arithmetic face-to-cell average, centered gradient,
-deviatoric-stress combination, and stress-divergence weight is formed in the
-same operation order as the update and rounded outward with
-`nextafter(...,+infinity)`. Wall-prescribed coefficients are zero; periodic
-neighbors wrap through the unique seam owner; pressure-open ghosts use the
-pinned nearest extension. A fixed max tree reduces the per-output-face
-envelopes to one `Lambda_up` scalar. A separate small-grid host oracle
-assembles the signed matrix column by column from the strict-fp32 force
-operator and requires every exact absolute row sum to be no greater than the
-GPU envelope. Threshold and N=7/8/9 fixtures remain those of r90--r91. The
-envelope may select more work than the exact row sum, but it may never select
-less; exceeding eight is a structural capability failure before any update.
+The stability preflight uses the analytic global row envelope of this fixed
+symmetric-stress stencil,
+`Lambda_up = 24 * max(mu_eff) * max(1/rho_face) / dx^2`. The factor 24 is the
+coefficient-count bound after the two face-to-cell averages, centered/ghosted
+gradient, symmetric deviatoric combination, and face stress difference are
+expanded; wall removal can only reduce a row, while periodic wrap and nearest
+pressure-open extension never exceed the same absolute coefficient sum. The
+GPU forms `nextafter(1/rho,+infinity)`, the fixed-tree maxima, outward `1/dx`,
+and each multiplication in the displayed order with
+`nextafter(...,+infinity)`. A separate small-grid host oracle assembles the
+signed strict-fp32 matrix column by column for periodic and mixed wall/open,
+variable-density/viscosity cases and requires every exact absolute row sum to
+be no greater than this scalar. Per-face dependency-envelope storage was
+considered and rejected with sparse materialization: it adds bandwidth and
+state without tightening the capability edge enough to justify it. Threshold
+and N=7/8/9 fixtures remain those of r90--r91. The envelope may select more
+work than the exact row sum, but it may never select less; exceeding eight is
+a structural capability failure before any update.
 
 Residency is measured, not inferred from output agreement. The preflight may
 publish exactly one fixed-size `Lambda_up` diagnostic before scheduling. The
@@ -1048,6 +1052,30 @@ weaken ordinary values up to magnitude 14.4414, where the measured composed
 difference is only 2 ULP. The r95 bound is comparison evidence for the fixed
 N=8 composition; it changes no state bytes, operator, validation tolerance,
 case identity, or budget.
+
+### 7.13 Mixed-boundary composed force bound correction (r96)
+
+The r95 periodic characterization was not universal. A deterministic matrix
+of 160 exact-N8 cases now crosses ten boundary classes (periodic, all-open,
+and all eight lower-wall/lower-open mixed masks), two Vreman coefficients
+(`0` and `0.07`), and eight phase shifts of variable cell density, molecular
+viscosity, face density, and three-axis momentum. The matrix observed 20 faces
+outside r95. Its maximum ordered distance was 8192 ULP at an absolute drift of
+`2^-25`; its maximum absolute drift was `2^-21` at only 8 ULP. Among faces
+over the retained 64-ULP ordinary-value ceiling, the maximum absolute drift
+was exactly `2^-23`.
+
+The corrected composed comparison is therefore `ULP <= 64 OR abs <= 2^-23`
+for every non-analytic final momentum face. The load-bearing witness is mixed
+`x wall/open, y open/wall, z wall/open`, phase 4, `Cv=0`, y-face 18: CPU
+`-0x1.6c96p-10`, Metal `-0x1.6c9ep-10`, 1024 ULP and exactly `2^-23`
+absolute drift, with `Lambda_up=83.52005767822266 s^-1` and represented
+`dt=0.17959757149219513 s`. Analytic zeros, wall prescriptions, and periodic
+publication seams remain exact-byte requirements. The alternative
+`ULP <= 1024 OR abs <= 2^-25` was rejected because it weakens the ordinary ULP
+evidence rather than extending only the cancellation-safe branch. This is an
+empirical oracle-comparison correction; it changes no kernel arithmetic,
+accepted state, runtime validation band, identity, or budget.
 
 ## 8. Rejected directions and future work
 

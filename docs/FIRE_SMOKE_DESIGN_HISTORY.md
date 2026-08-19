@@ -2343,10 +2343,11 @@ it was already tried and refuted here.
   coefficients per face cost 319.56 MB, 54 cost 639.13 MB, and 96 cost
   1.136 GB before resident state and projection. The operator itself is
   matrix-free. The ruling retains its authoritative stored density, frozen
-  viscosity, spacing, and boundary bytes and outward-propagates an
-  absolute-row envelope through those exact primitive weights. A strict-fp32
-  small-grid column oracle independently assembles the signed matrix and must
-  lie below every GPU envelope; N=7/8/9 gates retain the r90--r91 schedule.
+  viscosity, spacing, and boundary bytes and uses the analytic global bound
+  `24*max(mu_eff)*max(1/rho_face)/dx^2`, with every reduction, reciprocal, and
+  product rounded outward. A strict-fp32 small-grid column oracle independently
+  assembles periodic and mixed wall/open variable-density matrices and must lie
+  below the scalar envelope; N=7/8/9 gates retain the r90--r91 schedule.
 
   Residency now has an observed transfer ledger: one fixed `Lambda_up` scalar
   may cross before scheduling; the full viscous loop, boundary publication,
@@ -2374,3 +2375,18 @@ it was already tried and refuted here.
   evidence, zero-crossing singularity, and weakening ordinary magnitudes up to
   14.4414. This measured comparison rule changes no physics, bytes,
   validation contract, identity, or budget.
+
+- **r96 (2026-08-19):** mixed-boundary composed-force comparison correction.
+  Fresh review disproved r95 outside its periodic uniform-density fixture. A
+  160-case exact-N8 matrix crossed periodic, all-open, all eight mixed
+  wall/open masks, `Cv={0,0.07}`, and eight variable-state phases. Twenty faces
+  exceeded r95. Raw maximum distance was 8192 ULP at `2^-25`; global maximum
+  absolute drift was `2^-21` at 8 ULP; and the maximum absolute drift among
+  faces over 64 ULP was exactly `2^-23`. The binding witness is mixed
+  x-wall/open, y-open/wall, z-wall/open, phase 4, `Cv=0`, y-face 18: CPU
+  `-0x1.6c96p-10`, Metal `-0x1.6c9ep-10`, 1024 ULP and `2^-23`, at
+  `Lambda_up=83.52005767822266 s^-1`, `dt=0.17959757149219513 s`.
+  The corrected gate is `ULP <= 64 OR abs <= 2^-23`; analytic zeros, wall
+  prescriptions, and seam copies remain byte exact. The 1024-ULP alternative
+  was rejected because it weakened ordinary-value evidence. No kernel bytes,
+  runtime acceptance, case identity, or budget changed.
