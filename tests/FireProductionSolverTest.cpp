@@ -448,6 +448,35 @@ int main()
 				wallNegative.lineLength)]==0.0f;
 	Check(everyNegativeWallFluxZero,
 		"wall production remap has exact zero boundary flux under negative velocity");
+	FireProductionRemapRequest wallToOpen=open;
+	wallToOpen.asymmetricBoundaries=true;
+	wallToOpen.lowerBoundary=FireProductionRemapWall;
+	wallToOpen.upperBoundary=FireProductionRemapPressureOpen;
+	FireProductionRemapResult wallToOpenCPU;
+	Check(RemapFireProductionCPU(wallToOpen,wallToOpenCPU,&error)&&
+		wallToOpenCPU.faceFluxes[RemapFluxIndex(wallToOpen,0u,0u,0u)]==0.0f&&
+		wallToOpenCPU.faceFluxes[RemapFluxIndex(wallToOpen,0u,0u,8u)]==1.0f&&
+		wallToOpenCPU.faceFluxes[RemapFluxIndex(wallToOpen,1u,0u,0u)]==0.0f&&
+		wallToOpenCPU.faceFluxes[RemapFluxIndex(wallToOpen,1u,0u,8u)]==1.0f,
+		"asymmetric remap applies a lower wall and upper pressure-open outflow independently");
+	FireProductionRemapRequest openToWall=open;
+	openToWall.asymmetricBoundaries=true;
+	openToWall.lowerBoundary=FireProductionRemapPressureOpen;
+	openToWall.upperBoundary=FireProductionRemapWall;
+	FireProductionRemapResult openToWallCPU;
+	Check(RemapFireProductionCPU(openToWall,openToWallCPU,&error)&&
+		openToWallCPU.faceFluxes[RemapFluxIndex(openToWall,0u,0u,0u)]==2.5f&&
+		openToWallCPU.faceFluxes[RemapFluxIndex(openToWall,0u,0u,8u)]==0.0f&&
+		openToWallCPU.faceFluxes[RemapFluxIndex(openToWall,1u,0u,0u)]==3.5f&&
+		openToWallCPU.faceFluxes[RemapFluxIndex(openToWall,1u,0u,8u)]==0.0f,
+		"asymmetric remap applies lower pressure-open inflow and an upper wall independently");
+	FireProductionRemapRequest invalidPeriodicPair=open;
+	invalidPeriodicPair.asymmetricBoundaries=true;
+	invalidPeriodicPair.lowerBoundary=FireProductionRemapPeriodic;
+	invalidPeriodicPair.upperBoundary=FireProductionRemapWall;
+	Check(!ValidateFireProductionRemapRequest(invalidPeriodicPair,&error)&&
+		error.find("boundary pairing")!=std::string::npos,
+		"asymmetric remap rejects an unpaired periodic boundary");
 	FireProductionRemapRequest folded=open;
 	folded.timeStepS=0.75f;
 	folded.faceVelocityMPerS.assign(9u,0.0f);
@@ -546,7 +575,7 @@ int main()
 		Check(returned[i]==(challenge[i]^(0x9e3779b9u+static_cast<std::uint32_t>(i)*0x85ebca6bu)),
 			"Metal production challenge proves nonidentity device execution");
 	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,openNegativeGPU,wallGPU,
-		wallNegativeGPU,
+		wallNegativeGPU,wallToOpenGPU,openToWallGPU,
 		smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
 	const bool constantMetal=RemapFireProductionMetal(constant,constantGPU,&error);
 	if( !constantMetal ) std::cerr << "Metal remap detail: " << error << '\n';
@@ -586,8 +615,12 @@ int main()
 		SameRemapWithin(openNegativeCPU,openNegativeGPU,2.0e-5f)&&
 		wallMetal&&SameRemapWithin(wallCPU,wallGPU,2.0e-5f)&&
 		RemapFireProductionMetal(wallNegative,wallNegativeGPU,&error)&&
-		SameRemapWithin(wallNegativeCPU,wallNegativeGPU,2.0e-5f),
-		"Metal pressure-open and wall fluxes match the fp32 oracle");
+		SameRemapWithin(wallNegativeCPU,wallNegativeGPU,2.0e-5f)&&
+		RemapFireProductionMetal(wallToOpen,wallToOpenGPU,&error)&&
+		SameRemapWithin(wallToOpenCPU,wallToOpenGPU,2.0e-5f)&&
+		RemapFireProductionMetal(openToWall,openToWallGPU,&error)&&
+		SameRemapWithin(openToWallCPU,openToWallGPU,2.0e-5f),
+		"Metal symmetric and asymmetric pressure-open/wall fluxes match the fp32 oracle");
 	const bool affineMetal=RemapFireProductionMetal(affine,affineGPU,&error);
 	float maximumGPUAffineResidual=0.0f;
 	if( affineMetal ) for( std::size_t cell=0;cell<affine.lineLength;++cell )
@@ -700,10 +733,15 @@ int main()
 		advectionMetalSource.find("[updated contents]")!=std::string::npos&&
 		advectionMetalSource.find("GPUStartTime")!=std::string::npos&&
 		advectionMetalSource.find("GPUEndTime")!=std::string::npos&&
-		advectionMetalSource.find("activeFaces=p.boundary==0u?p.n:faces")!=std::string::npos&&
+		advectionMetalSource.find("activeFaces=periodic?p.n:faces")!=std::string::npos&&
+		advectionMetalSource.find("p.lowerBoundary==2u")!=std::string::npos&&
+		advectionMetalSource.find("p.upperBoundary==2u")!=std::string::npos&&
 		advectionMetalSource.find("flux[base+p.n]=flux[base]")!=std::string::npos&&
 		makeRules.find("-fno-fast-math -ffp-contract=off")!=std::string::npos&&
-		CountSubstring(xcodeProject,"-fno-fast-math -ffp-contract=off")==2u&&
+		CountSubstring(xcodeProject,
+			"FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = "
+			"FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = "
+			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; }; }")==2u&&
 		androidRules.find("-fno-fast-math;-ffp-contract=off")!=std::string::npos&&
 		visualStudioProject.find("<FloatingPointModel>Strict</FloatingPointModel>")!=
 			std::string::npos,

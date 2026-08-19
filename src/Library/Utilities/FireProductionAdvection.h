@@ -33,13 +33,18 @@ namespace RISE
 		float cellWidthM;
 		float timeStepS;
 		FireProductionRemapBoundary boundary;
+		bool asymmetricBoundaries;
+		FireProductionRemapBoundary lowerBoundary;
+		FireProductionRemapBoundary upperBoundary;
 		std::vector<float> values;
 		std::vector<float> faceVelocityMPerS;
 		std::vector<float> ambientValues;
 
 		FireProductionRemapRequest() : lineLength(0), lineCount(0),
 			componentCount(0), cellWidthM(0.0f), timeStepS(0.0f),
-			boundary(FireProductionRemapPeriodic) {}
+			boundary(FireProductionRemapPeriodic), asymmetricBoundaries(false),
+			lowerBoundary(FireProductionRemapPeriodic),
+			upperBoundary(FireProductionRemapPeriodic) {}
 	};
 
 	struct FireProductionRemapResult

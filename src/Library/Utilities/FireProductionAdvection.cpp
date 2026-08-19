@@ -17,6 +17,24 @@ namespace RISE
 {
 	namespace
 	{
+		FireProductionRemapBoundary LowerBoundary(
+			const FireProductionRemapRequest& request )
+		{
+			return request.asymmetricBoundaries ? request.lowerBoundary : request.boundary;
+		}
+
+		FireProductionRemapBoundary UpperBoundary(
+			const FireProductionRemapRequest& request )
+		{
+			return request.asymmetricBoundaries ? request.upperBoundary : request.boundary;
+		}
+
+		bool IsPeriodic( const FireProductionRemapRequest& request )
+		{
+			return LowerBoundary(request)==FireProductionRemapPeriodic&&
+				UpperBoundary(request)==FireProductionRemapPeriodic;
+		}
+
 		bool Fail( std::string* error, const std::string& message )
 		{
 			if( error ) *error=message;
@@ -39,20 +57,20 @@ namespace RISE
 			std::size_t component, std::size_t line, long cell )
 		{
 			const long count=static_cast<long>(request.lineLength);
-			if( request.boundary==FireProductionRemapPeriodic ) {
+			if( IsPeriodic(request) ) {
 				long wrapped=cell%count;
 				if( wrapped<0 ) wrapped+=count;
 				return request.values[ValueIndex(request,component,line,
 					static_cast<std::size_t>(wrapped))];
 			}
 			if( cell<0 ) {
-				const bool inflow=request.boundary==FireProductionRemapPressureOpen&&
+				const bool inflow=LowerBoundary(request)==FireProductionRemapPressureOpen&&
 					request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f;
 				return inflow ? request.ambientValues[component] :
 					request.values[ValueIndex(request,component,line,0u)];
 			}
 			if( cell>=count ) {
-				const bool inflow=request.boundary==FireProductionRemapPressureOpen&&
+				const bool inflow=UpperBoundary(request)==FireProductionRemapPressureOpen&&
 					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0f;
 				return inflow ? request.ambientValues[component] :
 					request.values[ValueIndex(request,component,line,request.lineLength-1u)];
@@ -197,10 +215,10 @@ namespace RISE
 			const std::vector<float>& right )
 		{
 			const float magnitude=std::fabs(courant);
-			const float leftExtension=request.boundary==FireProductionRemapPressureOpen&&
+			const float leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen&&
 				faceVelocity>0.0f ? request.ambientValues[component] :
 				request.values[ValueIndex(request,component,line,0u)];
-			const float rightExtension=request.boundary==FireProductionRemapPressureOpen&&
+			const float rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
 				faceVelocity<0.0f ? request.ambientValues[component] :
 				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
 			if( courant>=0.0f ) {
@@ -282,15 +300,20 @@ namespace RISE
 			2u*static_cast<std::uint64_t>(fluxCount)+
 			static_cast<std::uint64_t>(velocityCount)+alphaCount+
 			static_cast<std::uint64_t>(request.componentCount);
-		const std::uint64_t parameterBytes=4u*sizeof(std::uint32_t)+2u*sizeof(float);
+		const std::uint64_t parameterBytes=5u*sizeof(std::uint32_t)+2u*sizeof(float);
 		if( workingFloatCount>(maximumWorkingBytes-parameterBytes)/sizeof(float) )
 			return Fail(error,"production remap working set exceeds two GiB");
 		if( !(request.cellWidthM>0.0f)||request.timeStepS<0.0f||
 			!std::isfinite(request.cellWidthM)||!std::isfinite(request.timeStepS)||
 			request.values.size()!=valueCount||request.faceVelocityMPerS.size()!=velocityCount||
-			request.ambientValues.size()!=request.componentCount||
-			request.boundary<FireProductionRemapPeriodic||request.boundary>FireProductionRemapWall )
+			request.ambientValues.size()!=request.componentCount )
 			return Fail(error,"production remap request shape or schedule is invalid");
+		const FireProductionRemapBoundary lower=LowerBoundary(request);
+		const FireProductionRemapBoundary upper=UpperBoundary(request);
+		if( lower<FireProductionRemapPeriodic||lower>FireProductionRemapWall||
+			upper<FireProductionRemapPeriodic||upper>FireProductionRemapWall||
+			((lower==FireProductionRemapPeriodic)!=(upper==FireProductionRemapPeriodic)) )
+			return Fail(error,"production remap boundary pairing is invalid");
 		for( const float value : request.values ) if( !std::isfinite(value) )
 			return Fail(error,"production remap state is nonfinite");
 		for( const float value : request.faceVelocityMPerS ) if( !std::isfinite(value) )
@@ -299,7 +322,7 @@ namespace RISE
 			return Fail(error,"production remap ambient state is nonfinite");
 		for( std::size_t line=0;line<request.lineCount;++line ) {
 			const std::size_t base=line*(request.lineLength+1u);
-			if( request.boundary==FireProductionRemapPeriodic&&
+			if( IsPeriodic(request)&&
 				request.faceVelocityMPerS[base]!=request.faceVelocityMPerS[base+request.lineLength] )
 				return Fail(error,"production periodic remap seam velocity is not single-valued");
 			double previous=0.0;
@@ -368,14 +391,13 @@ namespace RISE
 			for( std::size_t line=0;line<request.lineCount;++line )
 				for( std::size_t face=0;face<request.lineLength;++face ) {
 					const std::size_t flux=FluxIndex(request,component,line,face);
-					if( request.boundary==FireProductionRemapWall&&
-						(face==0u||face==request.lineLength) ) {
+					if( face==0u&&LowerBoundary(request)==FireProductionRemapWall ) {
 						result.faceFluxes[flux]=0.0f;
 						continue;
 					}
 					const float velocity=request.faceVelocityMPerS[line*(request.lineLength+1u)+face];
 					const float courant=request.timeStepS*velocity/request.cellWidthM;
-					const float swept=request.boundary==FireProductionRemapPeriodic ?
+					const float swept=IsPeriodic(request) ?
 						PeriodicSweptIntegral(request,component,line,face,courant,left,right,prefix):
 						OpenSweptIntegral(request,component,line,face,courant,velocity,left,right);
 					result.faceFluxes[flux]=request.cellWidthM*swept;
@@ -383,10 +405,10 @@ namespace RISE
 		for( std::size_t component=0;component<request.componentCount;++component )
 			for( std::size_t line=0;line<request.lineCount;++line ) {
 				const std::size_t end=FluxIndex(request,component,line,request.lineLength);
-				if( request.boundary==FireProductionRemapPeriodic )
+				if( IsPeriodic(request) )
 					result.faceFluxes[end]=result.faceFluxes[
 						FluxIndex(request,component,line,0u)];
-				else if( request.boundary==FireProductionRemapWall )
+				else if( UpperBoundary(request)==FireProductionRemapWall )
 					result.faceFluxes[end]=0.0f;
 				else {
 					const float velocity=request.faceVelocityMPerS[

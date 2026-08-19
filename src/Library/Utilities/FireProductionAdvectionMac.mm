@@ -24,7 +24,8 @@ namespace RISE
 			std::uint32_t lineLength;
 			std::uint32_t lineCount;
 			std::uint32_t componentCount;
-			std::uint32_t boundary;
+			std::uint32_t lowerBoundary;
+			std::uint32_t upperBoundary;
 			float cellWidthM;
 			float timeStepS;
 		};
@@ -43,15 +44,15 @@ namespace RISE
 			return R"METAL(
 #include <metal_stdlib>
 using namespace metal;
-struct Params { uint n; uint lines; uint comps; uint boundary; float dx; float dt; };
+struct Params { uint n; uint lines; uint comps; uint lowerBoundary; uint upperBoundary; float dx; float dt; };
 inline uint value_index(constant Params& p,uint c,uint l,uint i){return (c*p.lines+l)*p.n+i;}
 inline uint flux_index(constant Params& p,uint c,uint l,uint f){return (c*p.lines+l)*(p.n+1u)+f;}
 inline float sample_value(device const float* q,device const float* u,device const float* ambient,
  constant Params& p,uint c,uint l,int i){
- if(p.boundary==0u){int n=int(p.n);int w=i%n;if(w<0)w+=n;return q[value_index(p,c,l,uint(w))];}
- if(i<0){bool inflow=p.boundary==1u&&u[l*(p.n+1u)]>0.0f;
+ if(p.lowerBoundary==0u&&p.upperBoundary==0u){int n=int(p.n);int w=i%n;if(w<0)w+=n;return q[value_index(p,c,l,uint(w))];}
+ if(i<0){bool inflow=p.lowerBoundary==1u&&u[l*(p.n+1u)]>0.0f;
   return inflow?ambient[c]:q[value_index(p,c,l,0u)];}
- if(i>=int(p.n)){bool inflow=p.boundary==1u&&u[l*(p.n+1u)+p.n]<0.0f;
+ if(i>=int(p.n)){bool inflow=p.upperBoundary==1u&&u[l*(p.n+1u)+p.n]<0.0f;
   return inflow?ambient[c]:q[value_index(p,c,l,p.n-1u)];}
  return q[value_index(p,c,l,uint(i))];
 }
@@ -150,8 +151,8 @@ inline float open_local_forward(device const float* q,device const float* left,
 }
 inline float open_swept(device const float* q,device const float* left,device const float* right,
  device const float* ambient,constant Params& p,uint c,uint l,uint face,float courant,float velocity){
- float magnitude=abs(courant);float leftExtension=p.boundary==1u&&velocity>0.0f?ambient[c]:
-  q[value_index(p,c,l,0u)];float rightExtension=p.boundary==1u&&velocity<0.0f?ambient[c]:
+ float magnitude=abs(courant);float leftExtension=p.lowerBoundary==1u&&velocity>0.0f?ambient[c]:
+  q[value_index(p,c,l,0u)];float rightExtension=p.upperBoundary==1u&&velocity<0.0f?ambient[c]:
   q[value_index(p,c,l,p.n-1u)];
  if(courant>=0.0f){float interiorLength=min(magnitude,float(face));
   float whole=floor(interiorLength),fractional=interiorLength-whole;
@@ -168,13 +169,14 @@ kernel void face_flux(device const float* q [[buffer(0)]],device const float* u 
  device const float* right [[buffer(4)]],device const float* prefix [[buffer(5)]],
  device float* flux [[buffer(6)]],constant Params& p [[buffer(7)]],
  uint gid [[thread_position_in_grid]]){
- uint faces=p.n+1u,activeFaces=p.boundary==0u?p.n:faces,total=p.comps*p.lines*activeFaces;
+ bool periodic=p.lowerBoundary==0u&&p.upperBoundary==0u;
+ uint faces=p.n+1u,activeFaces=periodic?p.n:faces,total=p.comps*p.lines*activeFaces;
  if(gid>=total)return;uint c=gid/(p.lines*activeFaces);uint rem=gid-c*p.lines*activeFaces;
  uint l=rem/activeFaces;uint f=rem-l*activeFaces;
  uint output=flux_index(p,c,l,f);
- if(p.boundary==2u&&(f==0u||f==p.n)){flux[output]=0.0f;return;}
+ if((f==0u&&p.lowerBoundary==2u)||(f==p.n&&p.upperBoundary==2u)){flux[output]=0.0f;return;}
  float velocity=u[l*faces+f],courant=p.dt*velocity/p.dx;
- float swept=p.boundary==0u?periodic_swept(q,left,right,prefix,p,c,l,f,courant):
+ float swept=periodic?periodic_swept(q,left,right,prefix,p,c,l,f,courant):
   open_swept(q,left,right,ambient,p,c,l,f,courant,velocity);
  flux[output]=p.dx*swept;
 }
@@ -184,7 +186,7 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
  uint total=p.comps*p.lines*p.n;if(gid>=total)return;uint c=gid/(p.lines*p.n);
  uint rem=gid-c*p.lines*p.n;uint l=rem/p.n;uint cell=rem-l*p.n;
  uint base=flux_index(p,c,l,0u),right=cell+1u;
- if(p.boundary==0u&&right==p.n){right=0u;flux[base+p.n]=flux[base];}
+ if(p.lowerBoundary==0u&&p.upperBoundary==0u&&right==p.n){right=0u;flux[base+p.n]=flux[base];}
  updated[gid]=q[gid]-(flux[base+right]-flux[base+cell])/p.dx;
 }
 )METAL";
@@ -310,7 +312,10 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			const MetalParameters parameters={static_cast<std::uint32_t>(request.lineLength),
 				static_cast<std::uint32_t>(request.lineCount),
 				static_cast<std::uint32_t>(request.componentCount),
-				static_cast<std::uint32_t>(request.boundary),request.cellWidthM,request.timeStepS};
+				static_cast<std::uint32_t>(request.asymmetricBoundaries ? request.lowerBoundary :
+					request.boundary),
+				static_cast<std::uint32_t>(request.asymmetricBoundaries ? request.upperBoundary :
+					request.boundary),request.cellWidthM,request.timeStepS};
 			id<MTLBuffer> parameterBuffer=[context.device newBufferWithBytes:&parameters
 				length:sizeof(parameters) options:MTLResourceStorageModeShared];
 			if( !values||!velocity||!ambient||!left||!right||!alpha||!prefix||!flux||
@@ -355,7 +360,12 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			[encoder setBuffer:ambient offset:0 atIndex:2];[encoder setBuffer:left offset:0 atIndex:3];
 			[encoder setBuffer:right offset:0 atIndex:4];[encoder setBuffer:prefix offset:0 atIndex:5];
 			[encoder setBuffer:flux offset:0 atIndex:6];[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
-			const std::size_t activeFluxCount=request.boundary==FireProductionRemapPeriodic ?
+			const FireProductionRemapBoundary lower=request.asymmetricBoundaries ?
+				request.lowerBoundary : request.boundary;
+			const FireProductionRemapBoundary upper=request.asymmetricBoundaries ?
+				request.upperBoundary : request.boundary;
+			const std::size_t activeFluxCount=lower==FireProductionRemapPeriodic&&
+				upper==FireProductionRemapPeriodic ?
 				request.componentCount*request.lineCount*request.lineLength : fluxCount;
 			Dispatch(encoder,context.flux,activeFluxCount);[encoder endEncoding];
 
