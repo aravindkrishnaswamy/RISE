@@ -12,8 +12,11 @@ declaration; context-volume law respected).  C1 shipped as the
 `roundcone` parts, one per bone, `smin`-blended), plus the analogous
 adoption wiring gated on `construction == "chain"`.  Both: two review
 rounds to zero P1; adoption is wired but NOT yet measured live — the
-census on the next live runs is the measurement for each.  Remaining
-candidates (C3-C6) unstarted.
+census on the next live runs is the measurement for each.  C6 shipped
+as the `superellipsoid` SDF part (Barr superquadric, pole axis local
+Y, exponents clamped to [0.1, 2] where the solid stays convex and the
+mixed-norm distance bound stays conservative).  Remaining candidates
+(C3-C5) unstarted.
 This is the opening document of the workstream seeded by the
 creative-richness closing verdict ([CREATIVITY_JOURNAL.md](CREATIVITY_JOURNAL.md),
 Closing): *"what limits realism now is what a `part` line can EXPRESS"* —
@@ -64,8 +67,9 @@ exists).
 
 - Analytic primitives: sphere, ellipsoid, cylinder, torus, box,
   clipped plane, disk, infinite plane, Bézier/bilinear patches.
-- `sdf_geometry`: 7 prims (sphere, box, roundbox, cylinder, torus,
-  capsule, **roundcone**), hard/smooth union/subtract/intersect,
+- `sdf_geometry`: 8 prims (sphere, box, roundbox, cylinder, torus,
+  capsule, **roundcone**, **superellipsoid** — the last shipped by C6
+  below), hard/smooth union/subtract/intersect,
   per-part TRS, marching-tet tessellation, heightfield mode,
   keyframeable. No domain ops (repeat/twist/mirror).
 - `csg_object` (object-level booleans), `displaced_geometry` (any
@@ -80,8 +84,10 @@ exists).
   programmatic emission path: `TriangleMeshGeometryIndexed` +
   `Job::AddPrebuiltTriangleMeshGeometry` + `GeometryUtilities`
   (grid generation, welding, normal recompute). BVH is automatic.
-- Missing entirely: lathe/revolve, skeleton→flesh, loft, L-systems,
-  superquadrics, subdivision surfaces, bevel/inset operators.
+- Missing entirely: lathe/revolve, loft, L-systems, subdivision
+  surfaces, bevel/inset operators.  (Skeleton→flesh closed by C1's
+  `skeleton_geometry`; superquadrics closed by C6's `superellipsoid`
+  SDF part.)
 
 Two proven, cheap implementation patterns exist:
 
@@ -203,7 +209,7 @@ models and humans alike.
 Effort: M (turtle + recursion + reuse of sweep emission). Risk: medium
 (tessellation budget on deep recursion; needs poly-count caps).
 
-### C6. Superellipsoid — cheap primitive-family widening
+### C6. Superellipsoid — cheap primitive-family widening — **SHIPPED**
 
 Add exponent pair (e1, e2) to the ellipsoid family (analytic chunk
 and/or an SDF prim with a conservative Lipschitz bound). One line, a
@@ -213,6 +219,20 @@ a force-multiplier inside `part` lines, where the census already
 measures usage.
 
 Effort: XS–S. Risk: SDF distance-bound care under non-uniform scale.
+
+**Shipped** as the `superellipsoid` SDF part: `a` = radius, `b` = e1
+(north-south exponent), `c` = e2 (east-west), `round` unused,
+proportions from the part's own `<sx sy sz>`.  Both exponents are
+clamped to [0.1, 2] IN THE FIELD (not only in the parser — `size` is
+keyframable): 2 is exactly the convexity boundary past which the
+distance bound stops being conservative and the sphere trace would
+step through surface.  The bound is the Minkowski gauge of the mixed
+l_p(l_q) norm rescaled by a closed-form inradius, which makes it
+1-Lipschitz and therefore a strict under-estimate everywhere.  The
+distance-bound-under-non-uniform-scale risk is carried by the existing
+per-part `minScale` factor, unchanged.  Regression instrument:
+`scenes/Tests/Geometry/superellipsoid_stress.RISEscene`; unit coverage
+in `tests/SDFGeometryTest.cpp` tests 33a–33l.
 
 ### Deliberately excluded
 
@@ -241,8 +261,11 @@ Effort: XS–S. Risk: SDF distance-bound care under non-uniform scale.
 2. **C1** (`skeleton_geometry`) — **SHIPPED 2026-08-14** — the creature
    unlock; backs the `chain` construction method (replacing its interim
    hand-authored-smin-parts backing).
-3. **C3** (`lathe_geometry`) → **C4** (first 4–6 macro-builders).
-4. **C5** (branching) and **C6** (superellipsoid) as satellites.
+3. **C6** (superellipsoid) — **SHIPPED** — taken early out of
+   satellite order: XS effort, and it widens every existing
+   `sdf_geometry` author rather than adding an object class.
+4. **C3** (`lathe_geometry`) → **C4** (first 4–6 macro-builders).
+5. **C5** (branching) as the remaining satellite.
 
 Each slice = geometry + parser descriptor + one worked example wired
 into the relevant clean-room prompt + a parse/render test scene +

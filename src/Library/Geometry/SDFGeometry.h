@@ -3,8 +3,9 @@
 //  SDFGeometry.h - Signed-distance-field (implicit) geometry.
 //
 //  A list of transformed primitives (sphere / box / round box /
-//  cylinder / torus / capsule / round cone) composed with hard- or
-//  SMOOTH-MINIMUM boolean operations, ray-traced by sphere tracing.
+//  cylinder / torus / capsule / round cone / superellipsoid) composed
+//  with hard- or SMOOTH-MINIMUM boolean operations, ray-traced by
+//  sphere tracing.
 //  This is the primitive for melded / filleted organic shapes that the
 //  analytic primitives + hard-boolean CSG cannot express -- e.g. watch
 //  lugs flowing into a bezel with a real fillet, or fat-in-the-middle /
@@ -51,7 +52,23 @@ namespace RISE
 				ePrimCylinder = 3,	//!< a = radius, b = half-height (axis = local Y)
 				ePrimTorus    = 4,	//!< a = major radius, b = tube radius (ring in local XZ, around Y)
 				ePrimCapsule  = 5,	//!< a = radius, b = half-height of the core segment (axis = local Y)
-				ePrimRoundCone= 6	//!< a = base radius (at y=0), b = tip radius (at y=c), c = height (axis = local Y)
+				ePrimRoundCone= 6,	//!< a = base radius (at y=0), b = tip radius (at y=c), c = height (axis = local Y)
+				//! SUPERELLIPSOID (Barr superquadric), pole axis = local Y.
+				//! a = radius, b = e1 (NORTH-SOUTH / latitude exponent), c = e2
+				//! (EAST-WEST / longitude exponent); `round` is UNUSED (author 0),
+				//! as on roundcone.  Ellipsoidal PROPORTIONS come from the part's
+				//! own <sx sy sz> scale, whose conservative minScale Lipschitz
+				//! factor partEval already applies -- the primitive itself is
+				//! always radius-uniform.  The continuum: e1 = e2 = 1 is a SPHERE
+				//! (exactly -- the field reduces to sdSphere); both -> 0 is a BOX;
+				//! e1 -> 0 with e2 = 1 is a CYLINDER about local Y; e1 = e2 = 2 is
+				//! an OCTAHEDRON; in between lie the cushions, rounded boxes and
+				//! bicones.  BOTH exponents are CLAMPED to [0.1, 2] (kSEMinExp /
+				//! kSEMaxExp in SDFGeometry.cpp): above 2 the solid stops being
+				//! convex and the distance bound stops being CONSERVATIVE (a
+				//! sphere-trace overshoot); below 0.1 the shape is already within
+				//! 3.5 % of the box that `box` renders exactly and more cheaply.
+				ePrimSuperellipsoid = 7
 			};
 
 			//! Boolean op used to fold a part into the running field.

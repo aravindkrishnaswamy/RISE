@@ -25,6 +25,7 @@
 #include "GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for TessellateToMesh
 #include "../Animation/KeyframableHelper.h"	// Parameter<>, Point3/Vector3Keyframe, ParseStrict*
 #include "../Utilities/RenderParallelScope.h"	// g_renderParallelDepth -- single-thread-mutation tripwire
+#include "../Utilities/FiniteMath.h"		// RISE::IsFiniteDouble -- the superellipsoid's non-finite guards
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -136,6 +137,251 @@ namespace
 		return qx * a + qy * b - r1;
 	}
 
+	// ---- superellipsoid (Barr superquadric), pole axis = local Y ----
+	//
+	// SUPPORTED EXPONENT RANGE.  Both exponents are clamped into
+	// [kSEMinExp, kSEMaxExp] = [0.1, 2] before anything else touches them.
+	//   UPPER 2 is LOAD-BEARING, not taste: it is exactly the convexity
+	//     boundary (see the proof below), and past it the returned distance
+	//     OVERESTIMATES -- i.e. March would step through surface.  Measured
+	//     on the same dense-search harness the unit test uses: worst
+	//     |estimate| / true distance is 1.000 at e = 2 (never above), 1.24 at
+	//     e = 2.2, 2.68 at e = 3, 94 at e = 4.
+	//   LOWER 0.1 is numerical/expressive headroom: 2/e is the pow exponent,
+	//     and at e = 0.1 the shape already sits within 3.5 % of the box that
+	//     `box` / `roundbox` render EXACTLY and far more cheaply (the gauge at
+	//     an edge midpoint is 2^(e/2) = 1.035), so the clamp costs no
+	//     expressible shape.
+	// The clamp lives HERE, in the field, not (only) in the parser: `a`, `b`,
+	// `c` are KEYFRAMABLE (`part<i>.size`), and SetIntermediateValue writes
+	// them straight into the Part -- a parser-only clamp would be bypassed
+	// mid-animation.  ParsePartLines clamps too, but only to WARN the author.
+	const Scalar kSEMinExp = Scalar(0.1);
+	const Scalar kSEMaxExp = Scalar(2.0);
+
+	//! Clamp a superellipsoid exponent into the supported range, NaN-safely
+	//! (a bare clampS would pass a NaN straight through -- both compares are
+	//! false -- and NaN^x poisons the whole field).  Non-finite maps to 1,
+	//! the ellipsoid identity.
+	inline Scalar clampSuperExp( const Scalar e )
+	{
+		if( !RISE::IsFiniteDouble( e ) ) {
+			return Scalar(1);
+		}
+		return clampS( e, kSEMinExp, kSEMaxExp );
+	}
+
+	//! |(fx,fy,fz)| for NON-NEGATIVE, FINITE components, computed MAX-FACTORED
+	//! ( |v| = m * |v/m|, m = max component ) so that a huge-but-finite
+	//! coordinate cannot square to +inf.  An infinite result would be an
+	//! OVER-estimate of the distance -- the one direction a sphere-traced
+	//! field must never err in -- which is why this is not a plain
+	//! sqrt(x*x + y*y + z*z).
+	inline Scalar superMagnitude( const Scalar fx, const Scalar fy, const Scalar fz )
+	{
+		const Scalar m = std::max( fx, std::max( fy, fz ) );
+		if( !( m > Scalar(0) ) ) {
+			return Scalar(0);
+		}
+		const Scalar im = Scalar(1) / m;
+		const Scalar bx = fx*im, by = fy*im, bz = fz*im;
+		return m * std::sqrt( bx*bx + by*by + bz*bz );
+	}
+
+	// Implicit form, radius a, latitude (north-south) exponent e1, longitude
+	// (east-west) exponent e2:
+	//
+	//   F(p) = ( |x/a|^(2/e2) + |z/a|^(2/e2) )^(e2/e1) + |y/a|^(2/e1),  surface F = 1
+	//
+	// e1 = e2 = 1 is the sphere; both -> 0 the box; e1 -> 0 with e2 = 1 the
+	// cylinder about Y; e1 = e2 = 2 the octahedron.  F is homogeneous of
+	// degree 2/e1 -- F(t*p) = t^(2/e1) F(p) -- so the solid is the unit ball
+	// of the MIXED NORM (an l_p of an l_q; p = 2/e1 along the pole axis,
+	// q = 2/e2 across it), whose Minkowski GAUGE is
+	//
+	//   g(p) = F(p)^(e1/2) = ( ( |x/a|^q + |z/a|^q )^(p/q) + |y/a|^p )^(1/p)
+	//
+	// g < 1 inside, = 1 on the surface, > 1 outside.
+	//
+	// CONSERVATIVENESS -- the load-bearing property.  SDFGeometry's sphere
+	// tracer requires every part field to be <= 1-Lipschitz, i.e. to NEVER
+	// overestimate the distance to its own zero set, or March overshoots and
+	// misses surface (same contract sminP/smaxP's comment relies on).  A
+	// superquadric has NO exact closed-form SDF.  What we return is
+	//
+	//   d(p) = rin * ( g(p) - 1 )
+	//
+	// and it is conservative by this argument:
+	//   (1) For p, q >= 1 the mixed norm IS a norm: |y| and ||(x,z)||_q are
+	//       each convex and positively homogeneous, and the outer l_p norm on
+	//       R^2 is convex AND nondecreasing in each |component|, so the
+	//       composition is convex.  Hence g is SUBADDITIVE and the solid
+	//       {g <= 1} is CONVEX.  p, q >= 1  <=>  e1, e2 <= 2 -- which is
+	//       exactly why kSEMaxExp is 2.
+	//   (2) Let rin be any radius with the ball B(0, rin) inside the solid.
+	//       Then g(v) <= |v| / rin for all v, so by subadditivity
+	//       |g(p) - g(r)| <= g(p - r) <= |p - r| / rin: g is 1/rin-Lipschitz,
+	//       and d = rin*(g - 1) is 1-LIPSCHITZ.
+	//   (3) d vanishes on the surface {g = 1}.  A 1-Lipschitz function that
+	//       vanishes on a set S obeys, for EVERY s in S,
+	//       |d(p)| = |d(p) - d(s)| <= |p - s|, hence |d(p)| <= dist(p, S).
+	//       Conservative both OUTSIDE and INSIDE, at every in-range exponent.
+	// Note what does NOT work: the naive radial estimate
+	// |p| * (1 - F(p)^(-e1/2)) -- the distance from p to the surface ALONG THE
+	// RAY THROUGH THE ORIGIN.  That ray lands on an ACTUAL surface point, so
+	// it is an OVER-estimate of the true (nearest-point) distance -- ~10 % off
+	// a near-box face column.  d above is that same radial estimate rescaled
+	// from the LOCAL surface radius down to the GLOBAL inradius; the rescale
+	// is what makes it safe.
+	//
+	// rin: the closed-form lower bound rin = a / (Cp*Cq), C = 2^max(0,(e-1)/2).
+	// Derivation from the standard l_p-vs-l_2 constants on R^2:
+	// ||(x,z)||_q <= Cq*||(x,z)||_2 and ||(s,t)||_p <= Cp*||(s,t)||_2, and the
+	// outer norm is monotone, so g(v) <= Cp*Cq*|v| / a -- i.e. the ball of
+	// radius a/(Cp*Cq) is inside the solid.  It is EXACT for e1, e2 <= 1
+	// (Cp = Cq = 1: the sphere / cushion / box regime most authoring lives in,
+	// where d is the EXACT SDF at e1 = e2 = 1), exact for the (e1=2, e2=1)
+	// bicone, and 13 % conservative at the far corner e1 = e2 = 2 (bound a/2
+	// vs the octahedron's true inradius a/sqrt(3)) -- which costs a few extra
+	// sphere-trace steps there and nothing else.
+	//
+	// Empirically re-verified by SDFGeometryTest Test 33d over 10 exponent
+	// pairs spanning the whole supported range, against a true-distance
+	// reference that is itself PINNED rather than assumed: the UPPER bound
+	// comes from surface points sampled by DIRECTION (d/g(d) lies exactly on
+	// {g = 1}) plus a tangent-frame refine, the matching LOWER bound from the
+	// analytic support function of the DUAL mixed norm (conjugate exponents
+	// p/(p-1), q/(q-1)) taken through the nearest point found.  The two
+	// bracket the truth to < 1e-4 relative at every probe, so the "never
+	// overestimates" assertion is exact rather than lenient.  Tests 33g / 33j
+	// re-run the same check on the clamped and the specialized paths.
+	inline Scalar sdSuperellipsoidY( const Scalar x, const Scalar y, const Scalar z,
+	                                 const Scalar a, const Scalar e1raw, const Scalar e2raw )
+	{
+		const Scalar fx = std::fabs(x);
+		const Scalar fy = std::fabs(y);
+		const Scalar fz = std::fabs(z);
+
+		// NON-FINITE GUARD, ON THE INPUTS.  It has to be here, BEFORE the
+		// gauge: the max-factoring below turns inf/inf into NaN, and
+		// std::max(NaN, v) is (a<b)?b:a == NaN, after which the `> 0` tests
+		// are FALSE (every compare against NaN is) and u / g silently collapse
+		// to the ORIGIN value 0 -- so a NaN or infinite coordinate would come
+		// back as -rin, i.e. the point reported MAXIMALLY INSIDE.  Folded
+		// through Map's min() that is far worse than a stray NaN: a constant
+		// negative FILLS the bounding box.  A guard on the RESULT alone CANNOT
+		// see it -- the NaN is erased before it is ever reached (measured on
+		// the pre-fix form: an inf or NaN in x or z, or a NaN in y, returned
+		// a NEGATIVE distance; only a non-finite y reached the result check).
+		//   ONE add-and-test covers all three coordinates, because fx/fy/fz
+		// are non-negative by construction: no cancellation can hide an inf,
+		// and any NaN propagates through the sum.  The answer is 1e30, a
+		// definite MISS -- an UNDER-estimate of the true distance at any such
+		// point, hence safe for the sphere trace.
+		if( !RISE::IsFiniteDouble( fx + fy + fz ) ) {
+			return Scalar(1e30);
+		}
+
+		// Degenerate radius (0, negative, or non-finite): the solid collapses
+		// to the local origin, whose EXACT distance field is |p| - a.  Handled
+		// up front because every expression below divides by a.
+		if( !( RISE::IsFiniteDouble( a ) && a > Scalar(1e-12) ) ) {
+			const Scalar aa = ( RISE::IsFiniteDouble( a ) && a > Scalar(0) ) ? a : Scalar(0);
+			return superMagnitude( fx, fy, fz ) - aa;
+		}
+
+		const Scalar e1 = clampSuperExp( e1raw );
+		const Scalar e2 = clampSuperExp( e2raw );
+
+		// FAST PATH 1 -- THE ELLIPSOID/SPHERE, and EXACTLY sdSphere.
+		// e1 = e2 = 1 gives p = q = 2, so the mixed norm IS the Euclidean one;
+		// and both l_p-vs-l_2 constants are 2^max(0,(1-1)/2) = 1, so rin = a
+		// EXACTLY.  d = rin*(g-1) = a*(|point|/a - 1) = |point| - a: the same
+		// closed form sdSphere returns, with nothing approximated -- the
+		// general form below spends four pow() calls arriving at it.  This is
+		// the most commonly authored member of the family (the ellipsoidal
+		// PROPORTIONS come from the part's own <sx sy sz>, so `a` stays a
+		// single radius), and on the general path it costs ~17x a `sphere`
+		// part (52.1 vs 3.04 ns/eval, -O2); specialised it costs ~1.4x
+		// (4.35 ns/eval).  superMagnitude, not a literal
+		// sqrt(x*x+y*y+z*z), so a huge-but-finite coordinate cannot square to
+		// +inf and hand the tracer an OVERestimate.
+		if( e1 == Scalar(1) && e2 == Scalar(1) )
+		{
+			return superMagnitude( fx, fy, fz ) - a;	// g = |point|/a, rin = a
+		}
+
+		const Scalar ax = fx / a;
+		const Scalar ay = fy / a;
+		const Scalar az = fz / a;
+
+		// Second guard, for the DIVISION: a finite-but-huge coordinate over a
+		// near-1e-12 radius can overflow to inf, which the max-factoring would
+		// again launder into a spurious -rin.  (The sphere path above never
+		// divides by a, so it does not need this.)
+		if( !RISE::IsFiniteDouble( ax + ay + az ) ) {
+			return Scalar(1e30);
+		}
+
+		// Both l-norms are evaluated MAX-FACTORED: ||v||_n = m * ||v/m||_n with
+		// m = max|component|.  Every base handed to pow() is then in [0,1], so
+		// no exponent the clamp permits (up to 20) can overflow -- checked to
+		// |coord| = 1e300 and down to 1e-160 denormals.  A base that UNDERFLOWS
+		// to 0 drops a term worth < 1e-300 RELATIVE to the retained max term,
+		// and that MAGNITUDE bound is the whole safety argument: the resulting
+		// |dg| <= 1e-300*g is orders below the field's own round-off, on either
+		// side of the surface.  (It is NOT a direction argument -- d = rin*(g-1),
+		// so a smaller g means a SMALLER |d| outside but a LARGER |d| inside.)
+		Scalar g, rin;
+		if( e1 == e2 )
+		{
+			// FAST PATH 2 -- EQUAL EXPONENTS, also exact.  p == q makes the
+			// outer exponent ratio p/q == 1, so the nested gauge
+			//   ( ( |x|^q + |z|^q )^(p/q) + |y|^p )^(1/p)
+			// collapses ALGEBRAICALLY to the single 3-term l_p norm
+			//   ( |x|^p + |y|^p + |z|^p )^(1/p)
+			// -- four pow() calls instead of six, and one max-factoring
+			// instead of two (49.8 -> 26.2 ns/eval at e = 0.45, -O2).  rin
+			// uses the SAME constant twice, so squaring one pow() is
+			// bit-identical to the general form's product of two.
+			const Scalar p = Scalar(2) / e1;
+			const Scalar C = std::pow( Scalar(2), std::max( Scalar(0), (e1-Scalar(1))*Scalar(0.5) ) );
+			rin = a / ( C * C );
+			const Scalar m = std::max( ax, std::max( ay, az ) );
+			if( m > Scalar(0) ) {
+				const Scalar im = Scalar(1) / m;
+				const Scalar bx = ax*im, by = ay*im, bz = az*im;
+				g = m * std::pow( std::pow(bx,p) + std::pow(by,p) + std::pow(bz,p), Scalar(1)/p );
+			} else {
+				g = Scalar(0);
+			}
+		}
+		else
+		{
+			const Scalar p = Scalar(2) / e1;
+			const Scalar q = Scalar(2) / e2;
+			const Scalar m = std::max( ax, az );
+			const Scalar u = ( m > Scalar(0) )
+				? m * std::pow( std::pow( ax/m, q ) + std::pow( az/m, q ), Scalar(1)/q )
+				: Scalar(0);
+			const Scalar M = std::max( u, ay );
+			g = ( M > Scalar(0) )
+				? M * std::pow( std::pow( u/M, p ) + std::pow( ay/M, p ), Scalar(1)/p )
+				: Scalar(0);	// p == local origin: g = 0, d = -rin (deepest point)
+			rin = a / ( std::pow( Scalar(2), std::max( Scalar(0), (e1-Scalar(1))*Scalar(0.5) ) )
+			          * std::pow( Scalar(2), std::max( Scalar(0), (e2-Scalar(1))*Scalar(0.5) ) ) );
+		}
+
+		// Residual overflow guard on the RESULT.  With ax/ay/az already known
+		// finite the only way out is m * (a bounded factor <= 3) overflowing
+		// for m near DBL_MAX.  Same answer, same reason: a definite MISS.
+		if( !RISE::IsFiniteDouble( g ) ) {
+			return Scalar(1e30);
+		}
+
+		return rin * ( g - Scalar(1) );
+	}
+
 	// Quilez polynomial smooth minimum (k = blend radius in world units)
 	inline Scalar sminP( const Scalar a, const Scalar b, const Scalar k )
 	{
@@ -171,6 +417,7 @@ namespace
 		case SDFGeometry::ePrimTorus:     return sdTorusY   ( lx, ly, lz, pt.a, pt.b );
 		case SDFGeometry::ePrimCapsule:   return sdCapsuleY ( lx, ly, lz, pt.a, pt.b );
 		case SDFGeometry::ePrimRoundCone: return sdRoundConeY( lx, ly, lz, pt.a, pt.b, pt.c );
+		case SDFGeometry::ePrimSuperellipsoid: return sdSuperellipsoidY( lx, ly, lz, pt.a, pt.b, pt.c );
 		}
 		return Scalar(1e30);
 	}
@@ -199,7 +446,38 @@ namespace
 		case SDFGeometry::ePrimRoundBox:  rx = pt.a; rz = pt.c;      ry0 = -pt.b;        ry1 = pt.b;        break;
 		case SDFGeometry::ePrimCylinder:  rx = rz = pt.a;            ry0 = -pt.b;        ry1 = pt.b;        break;
 		case SDFGeometry::ePrimTorus:     rx = rz = pt.a + pt.b;     ry0 = -pt.b;        ry1 = pt.b;        break;
-		case SDFGeometry::ePrimCapsule:   rx = rz = pt.a;            ry0 = -(pt.b+pt.a); ry1 = pt.b+pt.a;   break;
+		case SDFGeometry::ePrimCapsule:
+			// Half-height |b|, NOT b.  sdCapsuleY's core segment is
+			// clampS(y, -b, b), and for a NEGATIVE b that interval has lo > hi:
+			// clampS then returns lo = |b| for every y < |b| and hi = -|b| for
+			// every y >= |b|, so the solid is the cap sphere of radius a centred
+			// at y = +|b| (plus, when a >= 2|b|, a second lobe from the sphere at
+			// y = -|b|).  Its true top is |b|, while b+a = a-|b| -- an UNDER-bound
+			// by 2|b|-a once |b| > a/2, which CLIPS real surface out of the march
+			// (the bbox gate rejects rays that should hit).  |b| bounds both
+			// lobes: [-(|b|+a), |b|+a] contains [|b|-a, max(|b|, a-|b|)].
+			// BIT-IDENTICAL for every b >= 0 (fabs is the identity there), which
+			// is every capsule ParsePartLines has ever produced -- but `size` is
+			// KEYFRAMABLE and SetIntermediateValue writes a/b/c RAW, so a
+			// half-height easing through zero reaches the negative branch.
+			// Same defect class as the ePrimRoundCone and roundbox rows below.
+			{ const Scalar hh = std::fabs( pt.b );
+			  rx = rz = pt.a;            ry0 = -(hh+pt.a);   ry1 = hh+pt.a;   }
+			break;
+		case SDFGeometry::ePrimSuperellipsoid:
+			// EXACT and tight for EVERY exponent pair, in range or not: on the
+			// surface F = 1 is a sum of NON-NEGATIVE terms, so each term is
+			// <= 1 individually -- |y/a|^(2/e1) <= 1 gives |y| <= a, and
+			// (|x/a|^(2/e2) + |z/a|^(2/e2))^(e2/e1) <= 1 gives |x|, |z| <= a.
+			// Tight because the three axis intercepts sit exactly AT +-a for
+			// every exponent (F on the +x axis is |x/a|^(2/e1) = 1).  So the
+			// e > 1 regime (which pulls the surface IN toward the octahedral
+			// diagonals) and the e < 1 regime (which pushes it OUT toward the
+			// box) share one bound, and no clamp interaction can invalidate
+			// it.  Same box as ePrimSphere -- but spelled out rather than
+			// folded into the sphere row, because the two coincide for a
+			// DIFFERENT reason and only the sphere's is a radius.
+			rx = rz = pt.a;            ry0 = -pt.a;        ry1 = pt.a;        break;
 		case SDFGeometry::ePrimRoundCone:
 			// Envelope of a round cone (base cap radius a at y=0, tip cap
 			// radius b at y=c) is the convex hull of its two end spheres --
@@ -220,8 +498,24 @@ namespace
 		}
 		// box geometry uses (a,b,c) per axis
 		if( pt.type == SDFGeometry::ePrimBox || pt.type == SDFGeometry::ePrimRoundBox ) {
-			lmin = Point3( -pt.a, -pt.b, -pt.c );
-			lmax = Point3(  pt.a,  pt.b,  pt.c );
+			// A ROUNDBOX reaches max(half-extent, round) per axis, not the
+			// half-extent: sdRoundBox SHRINKS the core box by `round` and then
+			// INFLATES the result by `round`, i.e.
+			//   sdBox( ..., max(bx-r,0), ... ) - r   ->   surface at max(bx, r).
+			// For every well-formed rounded box (r <= min half-extent -- the
+			// only regime a scene sanely authors) max(bx,r) == bx and this is
+			// BIT-IDENTICAL to the old bound.  Once r exceeds a half-extent the
+			// core box collapses and the solid IS the sphere of radius r, which
+			// the half-extents alone UNDER-bound -- and an under-bound clips
+			// real surface out of the march (the bbox gate rejects rays that
+			// should hit).  Same defect class as the roundcone envelope above;
+			// keep this in sync with sdRoundBox's shrink-then-inflate form.
+			// `round` is IGNORED by the plain box field, so it must not widen
+			// the plain box's bound.
+			const Scalar r  = ( pt.type == SDFGeometry::ePrimRoundBox ) ? std::max( pt.round, Scalar(0) ) : Scalar(0);
+			const Scalar ex = std::max( pt.a, r ), ey = std::max( pt.b, r ), ez = std::max( pt.c, r );
+			lmin = Point3( -ex, -ey, -ez );
+			lmax = Point3(  ex,  ey,  ez );
 		} else {
 			lmin = Point3( -rx, ry0, -rz );
 			lmax = Point3(  rx, ry1,  rz );
@@ -1505,6 +1799,7 @@ namespace
 		if( !strcmp(s,"torus") )     { out = SDFGeometry::ePrimTorus;     return true; }
 		if( !strcmp(s,"capsule") )   { out = SDFGeometry::ePrimCapsule;   return true; }
 		if( !strcmp(s,"roundcone") ) { out = SDFGeometry::ePrimRoundCone; return true; }
+		if( !strcmp(s,"superellipsoid") ) { out = SDFGeometry::ePrimSuperellipsoid; return true; }
 		return false;
 	}
 	bool ParseSDFOpToken( const char* s, SDFGeometry::SDFOp& out )
@@ -1575,7 +1870,7 @@ bool SDFGeometry::ParsePartLines(
 		SDFOp   op;
 		if( !ParseSDFPrimToken( ts, prim ) ) {
 			GlobalLog()->PrintEx( eLog_Error,
-				"SDFGeometry::ParsePartLines:: unknown primitive `%s` at line %u of %s (want sphere|box|roundbox|cylinder|torus|capsule|roundcone)",
+				"SDFGeometry::ParsePartLines:: unknown primitive `%s` at line %u of %s (want sphere|box|roundbox|cylinder|torus|capsule|roundcone|superellipsoid)",
 				ts, lineNo, ctx );
 			return false;
 		}
@@ -1584,6 +1879,30 @@ bool SDFGeometry::ParsePartLines(
 				"SDFGeometry::ParsePartLines:: unknown op `%s` at line %u of %s (want union|smin|subtract|intersect)",
 				os, lineNo, ctx );
 			return false;
+		}
+
+		// A superellipsoid's b / c are its EXPONENTS (e1 north-south, e2
+		// east-west), and only [kSEMinExp, kSEMaxExp] is supported -- above
+		// kSEMaxExp the solid leaves the convex regime and the primitive's
+		// distance bound stops being conservative (a sphere-trace overshoot).
+		// The field clamps unconditionally (it has to: `size` is keyframable,
+		// so a runtime value can arrive without passing through here), which
+		// would make an out-of-range authored exponent SILENTLY render a
+		// different shape.  Clamp here too, purely so the author gets told.
+		// Clamp-and-warn rather than reject: the nearest supported shape is a
+		// useful answer, and an unparseable line would fail the whole scene
+		// load over what is a taste-level authoring slip.  (NaN compares
+		// unequal to its clamp, so a NaN exponent warns here as well.)
+		if( prim == ePrimSuperellipsoid ) {
+			const Scalar cb = clampSuperExp( b ), cc = clampSuperExp( c );
+			if( cb != b || cc != c ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SDFGeometry::ParsePartLines:: superellipsoid exponents (%g, %g) at line %u of %s are outside "
+					"the supported [%g, %g]; clamped to (%g, %g).  Above the max the distance bound stops being "
+					"conservative; below the min use `box`, which is exact and cheaper",
+					b, c, lineNo, ctx, kSEMinExp, kSEMaxExp, cb, cc );
+				b = cb; c = cc;
+			}
 		}
 
 		// The running field starts EMPTY (Map's fold begins at +1e30), so a

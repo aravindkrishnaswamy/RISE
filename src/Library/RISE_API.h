@@ -471,8 +471,8 @@ namespace RISE
 
 	//! Creates a signed-distance-field (implicit) geometry: transformed
 	//! primitives (sphere / box / roundbox / cylinder / torus / capsule /
-	//! roundcone) composed with smooth-min / boolean ops, ray-traced by sphere
-	//! tracing.  This is the C-API construction boundary for SDF geometry;
+	//! roundcone / superellipsoid) composed with smooth-min / boolean ops,
+	//! ray-traced by sphere tracing.  This is the C-API construction boundary for SDF geometry;
 	//! IJob::AddSDFGeometry and the scene parser both route through here.
 	//! The part list comes from exactly ONE of `szParts` (inline, newline-
 	//! separated part lines -- the normal authoring path) or `szFileName`

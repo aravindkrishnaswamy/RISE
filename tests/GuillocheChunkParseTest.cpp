@@ -10,6 +10,8 @@
 //    sweep_geometry            -> Job::AddSweepGeometry
 //    lathe_geometry            -> Job::AddLatheGeometry (arc-85 C3
 //                                 surface of revolution)
+//    sdf_geometry `part`       -> SDFGeometry::ParsePartLines (arc-85 C6
+//                                 `superellipsoid` primitive)
 //    path_instances_geometry   -> Job::AddPathInstancesGeometry
 //    scalar_painter function2d + scale/bias (the affine form)
 //    function2d_painter        (greyscale colour wrapper)
@@ -700,6 +702,67 @@ static void TestLatheChunk()
 	}
 }
 
+//! arc-85 C6: the `superellipsoid` SDF part token, through the REAL chunk
+//! parser.  `sdf_geometry` forwards `part` lines verbatim to
+//! SDFGeometry::ParsePartLines, so a new primitive needs no chunk change --
+//! which is exactly the claim worth a parse-level test rather than a unit
+//! test on the grammar function alone.  Three rows: the token is accepted and
+//! the geometry registers; out-of-range exponents CLAMP-AND-WARN rather than
+//! rejecting the scene (the field clamps unconditionally anyway, because
+//! `part<i>.size` is keyframable); a malformed line still hard-fails.
+static void TestSDFSuperellipsoidPartLines()
+{
+	std::cout << "Test 9: sdf_geometry `superellipsoid` part lines (arc-85 C6)" << std::endl;
+
+	Job* job = new Job();
+	job->addref();
+	const bool ok = ParseBody( "superell",
+		// the continuum, plus a composed pair: exponents inside range, a
+		// non-uniform per-part scale carrying the ellipsoidal proportions,
+		// and a superellipsoid smin-blended onto a sphere
+		"sdf_geometry\n{\nname cushiong\n"
+		"part superellipsoid union 0  0 0 0  0 0 0  1.6 1.0 0.9  1.0 0.45 0.6  0\n}\n"
+		"sdf_geometry\n{\nname blendg\n"
+		"part sphere union 0  0 0 0  0 0 0  1 1 1  1.0 0 0  0\n"
+		"part superellipsoid smin 0.5  1.4 0 0  0 15 0  1 1 1  0.8 0.3 1.0  0\n}\n"
+		"sdf_geometry\n{\nname octag\n"
+		"part superellipsoid union 0  0 0 0  0 0 0  1 1 1  1.0 2.0 2.0  0\n}\n",
+		*job );
+	Check( ok, "superellipsoid part lines parse through sdf_geometry" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	Check( priv != 0, "IJobPriv available" );
+	if( priv ) {
+		Check( priv->GetGeometries()->GetItem( "cushiong" ) != 0, "superellipsoid sdf geometry registered" );
+		Check( priv->GetGeometries()->GetItem( "blendg" ) != 0,   "superellipsoid smin sphere registered" );
+		Check( priv->GetGeometries()->GetItem( "octag" ) != 0,    "e1 = e2 = 2 (octahedron) registered" );
+	}
+	job->release();
+
+	// Out of range on EITHER exponent: warns on the console, clamps, and the
+	// scene still LOADS.  (Rejecting would fail an entire scene over a
+	// taste-level authoring slip, and the field clamps regardless.)
+	Check( ParseBody( "superell_hi",
+		"sdf_geometry\n{\nname g\npart superellipsoid union 0  0 0 0  0 0 0  1 1 1  1.0 6.0 1.0  0\n}\n" ),
+		"exponent above the supported range CLAMPS (loads, does not reject)" );
+	Check( ParseBody( "superell_lo",
+		"sdf_geometry\n{\nname g\npart superellipsoid union 0  0 0 0  0 0 0  1 1 1  1.0 1.0 0.001  0\n}\n" ),
+		"exponent below the supported range CLAMPS (loads, does not reject)" );
+
+	// ...and the grammar is no softer for the new token than for the old ones.
+	Check( !ParseBody( "superell_short",
+		"sdf_geometry\n{\nname g\npart superellipsoid union 0  0 0 0  0 0 0  1 1 1  1.0 1.0\n}\n" ),
+		"short superellipsoid part line (14 tokens) still rejects" );
+	Check( !ParseBody( "superell_trail",
+		"sdf_geometry\n{\nname g\npart superellipsoid union 0  0 0 0  0 0 0  1 1 1  1.0 1.0 1.0  0  9\n}\n" ),
+		"trailing token on a superellipsoid part line still rejects" );
+	Check( !ParseBody( "superell_typo",
+		"sdf_geometry\n{\nname g\npart superelipsoid union 0  0 0 0  0 0 0  1 1 1  1.0 1.0 1.0  0\n}\n" ),
+		"a misspelled primitive token still rejects (no silent fallback to sphere)" );
+	Check( !ParseBody( "superell_firstop",
+		"sdf_geometry\n{\nname g\npart superellipsoid subtract 0  0 0 0  0 0 0  1 1 1  1.0 1.0 1.0  0\n}\n" ),
+		"a leading `subtract` still rejects for the new primitive too" );
+}
+
 int main( int, char** )
 {
 	std::cout << "GuillocheChunkParseTest -- parse-level plumbing for the procedural chunks" << std::endl << std::endl;
@@ -711,6 +774,7 @@ int main( int, char** )
 	TestFunction2DColorPainter();
 	TestExpressionAndDisplacement();
 	TestLatheChunk();
+	TestSDFSuperellipsoidPartLines();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

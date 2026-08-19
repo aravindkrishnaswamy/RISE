@@ -72,7 +72,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   hard-edge idiom at its two flat ends; and a 140-degree CUTAWAY, which opens
   the surface along two radial half-planes and gets a flat ear-clipped cap on
   each)
-- **Expressive-geometry STRESS scenes** (`Geometry/*_stress.RISEscene`): five
+- **Expressive-geometry STRESS scenes** (`Geometry/*_stress.RISEscene`): six
   inspection instruments, not demos.  Every specimen in them exercises a case
   that has actually produced a bug or that the implementation's own comments
   flag as delicate, and each file's header comment says, per specimen, what it
@@ -104,6 +104,27 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
     and `blend 0` beside `blend 1.2` on the same skeleton.  This is the ONE
     stress scene that prints a diagnostic: the degenerate bone intentionally
     trips `skeleton_geometry`'s own non-rejecting warning ON THE CONSOLE.
+  - `Geometry/superellipsoid_stress.RISEscene` -- the whole `superellipsoid`
+    SDF-part continuum in one frame (ellipsoid, cushion, rounded box, near-box
+    beside a plain `box` CONTROL, cylinder, octahedron), plus the three cases a
+    broken CONSERVATIVE distance bound breaks first.  The primitive has no
+    exact closed-form SDF, so its field is a bound; when a bound over-estimates
+    the sphere trace steps THROUGH surface, which shows as speckle and eaten
+    silhouettes rather than as an error.  The headline is the OCTAHEDRON PAIR
+    at `e1 = e2 = 2`: the exact top of the supported range (past it the solid
+    stops being convex and the bound stops holding) and where the inradius
+    bound is loosest, authored once in range and once out of range so the
+    clamp is visible as two identical objects.  Also: the CYLINDER beside its
+    exponent-TRANSPOSED twin (a square-section barrel -- the by-eye proof that
+    e1 and e2 have not been swapped), a superellipsoid `smin`-blended with
+    roundcones into a creature (the composition that justifies shipping this
+    as an SDF part rather than a chunk), an octahedral `subtract` carve, an
+    octahedron `intersect`ed with a sphere-exponent twin so that exactly its
+    six vertices are sliced into spherical caps (a shape neither part makes
+    alone, so a broken clip cannot fake it), and a 5:1 non-uniform scale under
+    rotation (where the conservative `min|scale|` factor does the most work).
+    This scene prints exactly ONE diagnostic, from the out-of-range clamp
+    specimen.
   - `Geometry/scenegraph_stress.RISEscene` -- five levels of nesting with a
     non-identity transform at every one; `source` instancing of a multi-node,
     multi-level subtree; `count_u 5` driving BOTH `position` and `orientation`

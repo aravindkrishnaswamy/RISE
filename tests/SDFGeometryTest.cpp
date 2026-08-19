@@ -14,6 +14,7 @@
 #include <iostream>
 #include <cmath>
 #include <vector>
+#include <limits>
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -1429,6 +1430,1145 @@ static void TestRoundConeDegenerateOnAxisFieldMatchesSphere()
 	safe_release( g );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 33 -- SUPERELLIPSOID (Barr superquadric), arc-85 candidate C6.
+//
+// The primitive has no exact closed-form SDF, so its field is a
+// CONSERVATIVE bound (see sdSuperellipsoidY's derivation in
+// SDFGeometry.cpp).  These tests pin, in order: the two closed-form
+// identities the family must reduce to (sphere, box), the octahedron
+// and cylinder limits (which also pin WHICH exponent is which), the
+// conservativeness itself, that the sphere tracer actually converges on
+// the implicit surface, and that a composed field stays 1-Lipschitz.
+//////////////////////////////////////////////////////////////////////
+
+// The composed field is protected; a probe subclass is the honest way to
+// assert on the SHIPPED Map (a test-local re-implementation could drift
+// from it silently, which is precisely what these tests exist to catch).
+namespace
+{
+	class FieldProbe : public SDFGeometry
+	{
+	public:
+		FieldProbe( const std::vector<SDFGeometry::Part>& parts )
+			: SDFGeometry( parts, 512, Scalar(1e-5) ) {}
+		Scalar FieldAt( const Point3& p ) const { return Map( p ); }
+	protected:
+		virtual ~FieldProbe() {}
+	};
+
+	// ---- reference math, INDEPENDENT of the shipped implementation ----
+	//
+	// Deliberately the STRAIGHT nested-power form of the gauge, not
+	// sdSuperellipsoidY's max-factored one: at the moderate exponents and
+	// coordinates used here the two are numerically equivalent, so a
+	// disagreement is a real disagreement and not two copies of one bug.
+	//
+	//   g(p) = ( ( |x/a|^q + |z/a|^q )^(p/q) + |y/a|^p )^(1/p),  p = 2/e1, q = 2/e2
+	//
+	// The implicit is F = g^p, surface at F = 1 <=> g = 1.
+	Scalar SEGauge( const Point3& v, const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		const Scalar p = Scalar(2)/e1, q = Scalar(2)/e2;
+		const Scalar ax = std::fabs(v.x)/a, ay = std::fabs(v.y)/a, az = std::fabs(v.z)/a;
+		const Scalar cross = std::pow( std::pow(ax,q) + std::pow(az,q), p/q );
+		return std::pow( cross + std::pow(ay,p), Scalar(1)/p );
+	}
+	Scalar SEImplicitF( const Point3& v, const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		return std::pow( SEGauge(v,a,e1,e2), Scalar(2)/e1 );
+	}
+	// The conservative inradius the primitive scales by (kept here so the
+	// closed-form expectations below are written in the test's own terms).
+	Scalar SEInradius( const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		return a / ( std::pow( Scalar(2), std::max( Scalar(0), (e1-Scalar(1))*Scalar(0.5) ) )
+		           * std::pow( Scalar(2), std::max( Scalar(0), (e2-Scalar(1))*Scalar(0.5) ) ) );
+	}
+	// Barr's surface parameterization -- verified against the implicit in
+	// TestSuperellipsoidConservativeDistance before it is trusted.
+	Point3 SESurfacePoint( const Scalar eta, const Scalar om, const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		const Scalar ce = std::copysign( std::pow( std::fabs(std::cos(eta)), e1 ), std::cos(eta) );
+		const Scalar se = std::copysign( std::pow( std::fabs(std::sin(eta)), e1 ), std::sin(eta) );
+		const Scalar co = std::copysign( std::pow( std::fabs(std::cos(om )), e2 ), std::cos(om ) );
+		const Scalar so = std::copysign( std::pow( std::fabs(std::sin(om )), e2 ), std::sin(om ) );
+		return Point3( a*ce*co, a*se, a*ce*so );
+	}
+	Scalar SEDist2( const Point3& s, const Point3& p )
+	{
+		const Scalar dx=s.x-p.x, dy=s.y-p.y, dz=s.z-p.z;
+		return dx*dx + dy*dy + dz*dz;
+	}
+	// ---- the TRUE-DISTANCE reference, and the proof that it IS the truth ----
+	//
+	// Sampling the surface by DIRECTION.  The gauge is positively homogeneous,
+	// so for any non-zero d the point d / g(d) lies EXACTLY on {g = 1}; a
+	// Fibonacci lattice of directions therefore lands genuine surface points
+	// spread by solid angle.  This replaces sampling Barr's (eta, omega)
+	// parameterization on a uniform grid, which is a BAD parametrization once
+	// an exponent leaves the neighbourhood of 1: it piles almost all of its
+	// parameter area onto the flat faces, leaves the corner and edge regions
+	// to a handful of samples, and a local refine started there settles into a
+	// LOCAL minimum.  Measured looseness of that old grid against the truth
+	// (bracketed below), over test 33d's own 75-point probe set at a = 1.3:
+	//     e = (1.0, 1.0)   +0.00 %      e = (0.1, 1.0)    +2.26 %
+	//     e = (0.5, 0.5)   +0.00 %      e = (0.1, 2.0)   +10.21 %
+	//     e = (0.3, 1.7)   +0.05 %      e = (2.0, 0.1)  +111.50 %
+	//     e = (0.1, 0.1)  +73.79 %      e = (1.0, 0.1)  +242.79 %
+	// A `<= 1 + 1e-6` money assertion resting on a +242 % upper bound would
+	// have passed a field overestimating the distance by 3.4x -- squarely
+	// inside the near-box range most authoring uses.  The direction lattice
+	// plus tangent-frame refine below is within 1e-8 RELATIVE of the truth at
+	// every one of those pairs, and the bracket asserted in 33d proves it
+	// rather than assuming it.
+	Vector3 SEFibDir( const int i, const int n )
+	{
+		const Scalar z  = Scalar(1) - Scalar(2)*(Scalar(i) + Scalar(0.5))/Scalar(n);
+		const Scalar r  = std::sqrt( std::max( Scalar(0), Scalar(1) - z*z ) );
+		const Scalar th = Scalar(PI) * ( Scalar(3) - std::sqrt(Scalar(5)) ) * Scalar(i);
+		return Vector3( r*std::cos(th), z, r*std::sin(th) );
+	}
+	Point3 SESurfaceFromDir( const Vector3& d, const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		const Scalar g = SEGauge( Point3(d.x,d.y,d.z), a, e1, e2 );
+		return Point3( d.x/g, d.y/g, d.z/g );
+	}
+	void SEFrame( const Vector3& n, Vector3& t1, Vector3& t2 )
+	{
+		const Vector3 h = ( std::fabs(n.x) < Scalar(0.9) ) ? Vector3(1,0,0) : Vector3(0,1,0);
+		t1 = norm3( h.y*n.z - h.z*n.y, h.z*n.x - h.x*n.z, h.x*n.y - h.y*n.x );
+		t2 = Vector3( n.y*t1.z - n.z*t1.y, n.z*t1.x - n.x*t1.z, n.x*t1.y - n.y*t1.x );
+	}
+	// UPPER bound on dist(p, surface): the minimum over genuine surface points,
+	// which is the direction the conservativeness assertion needs (est <= this
+	// => est <= true).  `witness`, when given, receives the nearest surface
+	// point found -- 33d turns it into the matching LOWER bound.
+	Scalar SETrueDistance( const Point3& p, const Scalar a, const Scalar e1, const Scalar e2,
+	                       Point3* witness = 0 )
+	{
+		const int NDIR = 4096, REFINE = 30;
+		Scalar  best = Scalar(1e30);
+		Vector3 bd( 0, 0, 1 );
+		for( int i = 0; i < NDIR; ++i ) {
+			const Vector3 d = SEFibDir( i, NDIR );
+			const Scalar dd = SEDist2( SESurfaceFromDir(d,a,e1,e2), p );
+			if( dd < best ) { best = dd; bd = d; }
+		}
+		// tangent-frame descent, window shrinking from ~2.5 lattice spacings
+		Scalar w = Scalar(2.5) * std::sqrt( Scalar(4)*Scalar(PI)/Scalar(NDIR) );
+		for( int r = 0; r < REFINE; ++r ) {
+			Vector3 t1, t2; SEFrame( bd, t1, t2 );
+			Vector3 cd = bd; Scalar cb = best;
+			for( int i = -3; i <= 3; ++i )
+			for( int j = -3; j <= 3; ++j ) {
+				if( i == 0 && j == 0 ) { continue; }
+				const Scalar u = w*Scalar(i)/Scalar(3), v = w*Scalar(j)/Scalar(3);
+				const Vector3 d = norm3( bd.x + t1.x*u + t2.x*v,
+				                         bd.y + t1.y*u + t2.y*v,
+				                         bd.z + t1.z*u + t2.z*v );
+				const Scalar dd = SEDist2( SESurfaceFromDir(d,a,e1,e2), p );
+				if( dd < cb ) { cb = dd; cd = d; }
+			}
+			bd = cd; best = cb; w *= Scalar(0.62);
+		}
+		if( witness ) { *witness = SESurfaceFromDir( bd, a, e1, e2 ); }
+		return std::sqrt( best );
+	}
+	// SUPPORT FUNCTION, in CLOSED FORM: h(n) = sup{ <n,v> : g(v) <= 1 }.  The
+	// solid is the unit ball of a mixed norm l_p(l_q) -- p = 2/e1 along the
+	// pole axis, q = 2/e2 across it -- whose dual is the mixed norm with the
+	// CONJUGATE exponents p' = p/(p-1), q' = q/(q-1) (r' = infinity exactly
+	// when r == 1, where the dual norm degenerates to a max: that is the
+	// e = 2 octahedron corner, and it is why the two branches are here).  So
+	// h(n) = a * ||n||_{p'(q')}, evaluated, not searched.
+	//
+	// This is what makes the harness SELF-VALIDATING.  {g <= 1} is convex for
+	// every supported exponent pair, so for an EXTERIOR point P
+	//     dist(P, solid)  =  max over unit n of ( <n,P> - h(n) )
+	// -- every n names a supporting hyperplane and hence a rigorous LOWER
+	// bound, while every surface sample gives a rigorous UPPER bound.  Test
+	// 33d evaluates the lower bound along (P - nearest-found) and asserts the
+	// two close: where they do, the upper bound the money assertion rests on
+	// IS the true distance, proven rather than hoped.
+	Scalar SESupportH( const Vector3& n, const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		const Scalar p = Scalar(2)/e1, q = Scalar(2)/e2;
+		const Scalar nx = std::fabs(n.x), ny = std::fabs(n.y), nz = std::fabs(n.z);
+		Scalar A;
+		if( q <= Scalar(1) + Scalar(1e-15) ) {			// q' = infinity
+			A = std::max( nx, nz );
+		} else {
+			const Scalar qd = q/(q-Scalar(1));
+			A = std::pow( std::pow(nx,qd) + std::pow(nz,qd), Scalar(1)/qd );
+		}
+		Scalar G;
+		if( p <= Scalar(1) + Scalar(1e-15) ) {			// p' = infinity
+			G = std::max( A, ny );
+		} else {
+			const Scalar pd = p/(p-Scalar(1));
+			G = std::pow( std::pow(A,pd) + std::pow(ny,pd), Scalar(1)/pd );
+		}
+		return a*G;
+	}
+	// max over the surface of <n, x>, by the same direction lattice + tangent
+	// refine the distance search uses.  Only the ATTAINMENT half of the support
+	// check needs it: a bare 4096-direction lattice under-reads h(n) by ~3 % at
+	// the octahedron corner, where a single VERTEX is the only attaining point.
+	Scalar SESupportReached( const Vector3& n, const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		const int NDIR = 4096, REFINE = 30;
+		Scalar  best = -Scalar(1e30);
+		Vector3 bd( 0, 0, 1 );
+		for( int i = 0; i < NDIR; ++i ) {
+			const Vector3 d = SEFibDir( i, NDIR );
+			const Point3  sfc = SESurfaceFromDir( d, a, e1, e2 );
+			const Scalar  v = n.x*sfc.x + n.y*sfc.y + n.z*sfc.z;
+			if( v > best ) { best = v; bd = d; }
+		}
+		Scalar w = Scalar(2.5) * std::sqrt( Scalar(4)*Scalar(PI)/Scalar(NDIR) );
+		for( int r = 0; r < REFINE; ++r ) {
+			Vector3 t1, t2; SEFrame( bd, t1, t2 );
+			Vector3 cd = bd; Scalar cb = best;
+			for( int i = -3; i <= 3; ++i )
+			for( int j = -3; j <= 3; ++j ) {
+				if( i == 0 && j == 0 ) { continue; }
+				const Scalar u = w*Scalar(i)/Scalar(3), v = w*Scalar(j)/Scalar(3);
+				const Vector3 d = norm3( bd.x + t1.x*u + t2.x*v,
+				                         bd.y + t1.y*u + t2.y*v,
+				                         bd.z + t1.z*u + t2.z*v );
+				const Point3 sfc = SESurfaceFromDir( d, a, e1, e2 );
+				const Scalar val = n.x*sfc.x + n.y*sfc.y + n.z*sfc.z;
+				if( val > cb ) { cb = val; cd = d; }
+			}
+			bd = cd; best = cb; w *= Scalar(0.62);
+		}
+		return best;
+	}
+	// First entry point of the ray o + t*dir into the solid, analytically.
+	// The gauge is CONVEX (that is the whole basis of the distance bound), so
+	// along a line it is convex too: {t : g <= 1} is a single interval.  A
+	// ternary search finds its minimum, a bisection the entry crossing.
+	// Returns false when the ray misses.
+	bool SERayEntry( const Point3& o, const Vector3& dir, const Scalar tMax,
+	                 const Scalar a, const Scalar e1, const Scalar e2, Scalar& tEntry )
+	{
+		Scalar lo = 0, hi = tMax;
+		for( int i = 0; i < 200; ++i ) {
+			const Scalar m1 = lo + (hi-lo)/3, m2 = hi - (hi-lo)/3;
+			const Point3 p1( o.x+dir.x*m1, o.y+dir.y*m1, o.z+dir.z*m1 );
+			const Point3 p2( o.x+dir.x*m2, o.y+dir.y*m2, o.z+dir.z*m2 );
+			if( SEGauge(p1,a,e1,e2) < SEGauge(p2,a,e1,e2) ) { hi = m2; } else { lo = m1; }
+		}
+		const Scalar tMin = (lo+hi)/2;
+		const Point3 pm( o.x+dir.x*tMin, o.y+dir.y*tMin, o.z+dir.z*tMin );
+		if( SEGauge(pm,a,e1,e2) > Scalar(1) ) { return false; }   // ray misses the solid
+		Scalar t0 = 0, t1 = tMin;
+		for( int i = 0; i < 200; ++i ) {
+			const Scalar tm = (t0+t1)/2;
+			const Point3 pt( o.x+dir.x*tm, o.y+dir.y*tm, o.z+dir.z*tm );
+			if( SEGauge(pt,a,e1,e2) > Scalar(1) ) { t0 = tm; } else { t1 = tm; }
+		}
+		tEntry = (t0+t1)/2;
+		return true;
+	}
+
+	FieldProbe* MakeSuperProbe( const Scalar a, const Scalar e1, const Scalar e2 )
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), a, e1, e2, 0 ) );
+		return new FieldProbe( parts );
+	}
+}
+
+// Test 33a: e1 = e2 = 1 IS the sphere.  The superquadric reduces exactly
+// (p = q = 2 makes the mixed norm the Euclidean one, and Cp = Cq = 1 makes
+// the inradius the radius), so the field must match sdSphere -- |p| - R --
+// to round-off, not merely to sphere-trace tolerance.
+static void TestSuperellipsoidIsSphereAtUnitExponents()
+{
+	std::cout << "Test 33a: superellipsoid e1 = e2 = 1 == exact analytic sphere (field + trace)" << std::endl;
+	const Scalar R = 1.7;
+	FieldProbe* g = MakeSuperProbe( R, 1.0, 1.0 );
+
+	Scalar worst = 0;
+	for( int i = -6; i <= 6; ++i )
+	for( int j = -6; j <= 6; ++j )
+	for( int k = -6; k <= 6; ++k ) {
+		const Point3 p( i*0.53, j*0.47, k*0.61 );
+		const Scalar expected = std::sqrt(p.x*p.x + p.y*p.y + p.z*p.z) - R;   // sdSphere
+		worst = std::max( worst, std::fabs( g->FieldAt(p) - expected ) );
+	}
+	Check( worst < 1e-12, "MONEY -- field == sdSphere at 2197 sample points (max |delta| < 1e-12)" );
+
+	// ...and the ray path agrees with the analytic sphere too.
+	const Point3 origins[4] = { Point3(0,0,9), Point3(7,0,0), Point3(5,5,4), Point3(-6,3,-5) };
+	for( int i = 0; i < 4; ++i ) {
+		const Point3 P = origins[i];
+		const Scalar L = std::sqrt(P.x*P.x+P.y*P.y+P.z*P.z);
+		RayIntersectionGeometric ri = MkRI( P, Vector3(-P.x/L,-P.y/L,-P.z/L) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.range, L - R, 3e-3 ), "e1=e2=1 hit distance == analytic sphere" );
+		Check( VClose( ri.vNormal, norm3(P.x,P.y,P.z) ), "e1=e2=1 normal == radial" );
+	}
+	safe_release( g );
+}
+
+// Test 33b: the BOX limit.  As the exponents shrink the solid converges to
+// the box of half-extent a from the INSIDE-out.  Both probes are closed
+// form, so nothing here is a tuned constant:
+//   * on the box's own edge midpoint (a,a,0) the gauge is 2^(e1/2), so the
+//     field is exactly a*(2^(e1/2) - 1);
+//   * on its corner (a,a,a) the gauge is 3^(e/2) (isotropic exponents), so
+//     the field is exactly a*(3^(e/2) - 1);
+//   * on an exterior point whose nearest box feature is a FACE, the field is
+//     >= sdBox and decreases monotonically toward it.
+// All three tend to the box value monotonically as e shrinks -- which is the
+// convergence assertion, no magic threshold involved.
+static void TestSuperellipsoidBoxLimit()
+{
+	std::cout << "Test 33b: superellipsoid -> box as the exponents shrink (closed form, monotone)" << std::endl;
+	const Scalar a = 1.25;
+	const Scalar es[5] = { 1.0, 0.7, 0.4, 0.2, 0.1 };
+
+	Scalar prevEdge = 1e30, prevCorner = 1e30, prevFace = 1e30;
+	for( int i = 0; i < 5; ++i ) {
+		const Scalar e = es[i];
+		FieldProbe* g = MakeSuperProbe( a, e, e );
+
+		// face centre: the axis intercept -- exactly ON the surface at EVERY
+		// exponent (F on the +x axis is |x/a|^(2/e1)), so the field is 0.
+		Check( std::fabs( g->FieldAt( Point3(a,0,0) ) ) < 1e-12, "box limit: +X face centre is on the surface at every e" );
+
+		const Scalar edge   = g->FieldAt( Point3(a,a,0) );
+		const Scalar corner = g->FieldAt( Point3(a,a,a) );
+		const Scalar face   = g->FieldAt( Point3(2*a,0.5*a,0.5*a) );   // nearest box feature is the +X FACE, sdBox = a
+
+		Check( IsClose( edge,   a*(std::pow(Scalar(2),e/2)-1), 1e-12 ), "box limit: edge midpoint field == a*(2^(e/2)-1) exactly" );
+		Check( IsClose( corner, a*(std::pow(Scalar(3),e/2)-1), 1e-12 ), "box limit: corner field == a*(3^(e/2)-1) exactly" );
+		Check( face >= a - Scalar(1e-12), "box limit: exterior over-a-face field never dips below sdBox" );
+
+		if( i > 0 ) {
+			Check( edge   < prevEdge,   "box limit: edge-midpoint field decreases monotonically toward 0" );
+			Check( corner < prevCorner, "box limit: corner field decreases monotonically toward 0" );
+			Check( face   < prevFace,   "box limit: over-a-face field decreases monotonically toward sdBox" );
+		}
+		prevEdge = edge; prevCorner = corner; prevFace = face;
+		safe_release( g );
+	}
+	// the tail of those monotone sequences really is the box, to the closed
+	// form's own value (2^0.05 - 1 = 3.5 %, 3^0.05 - 1 = 5.6 %)
+	Check( prevEdge   < a*Scalar(0.036), "box limit: edge field has converged to within 3.6 % of the box" );
+	Check( prevCorner < a*Scalar(0.057), "box limit: corner field has converged to within 5.7 % of the box" );
+	Check( prevFace   < a*Scalar(1.06),  "box limit: over-a-face field has converged to within 6 % of sdBox" );
+}
+
+// Test 33c: the OCTAHEDRON (e1 = e2 = 2) and the CYLINDER (e1 -> 0, e2 = 1)
+// limits.  The cylinder half also pins WHICH exponent is which: swapping
+// e1/e2 turns the cylinder into a square-section barrel, and the two
+// disagree on the SIGN of the field at a probe point and on the hit range of
+// one descending ray.
+static void TestSuperellipsoidOctahedronAndCylinder()
+{
+	std::cout << "Test 33c: octahedron (e=2,2) axis intercepts + cylinder (e1->0,e2=1), which pins e1 vs e2" << std::endl;
+	const Scalar a = 1.4;
+
+	{	// e1 = e2 = 2 is |x| + |y| + |z| = a
+		FieldProbe* g = MakeSuperProbe( a, 2.0, 2.0 );
+		Check( std::fabs( g->FieldAt( Point3(a,0,0) ) ) < 1e-12, "octahedron: +X axis intercept at a" );
+		Check( std::fabs( g->FieldAt( Point3(0,a,0) ) ) < 1e-12, "octahedron: +Y axis intercept at a" );
+		Check( std::fabs( g->FieldAt( Point3(0,0,-a) ) ) < 1e-12, "octahedron: -Z axis intercept at a" );
+		// a face point: |x|+|y|+|z| = a with all three non-zero
+		Check( std::fabs( g->FieldAt( Point3(a/3,a/3,a/3) ) ) < 1e-12, "octahedron: (a/3,a/3,a/3) is on the surface" );
+		Check( g->FieldAt( Point3(0.4*a,0.4*a,0) ) < 0, "octahedron: 0.8a along an edge diagonal is INSIDE" );
+		Check( g->FieldAt( Point3(0.6*a,0.6*a,0) ) > 0, "octahedron: 1.2a along an edge diagonal is OUTSIDE" );
+		// through the tracer: the +X intercept and the (1,1,1) face
+		{	RayIntersectionGeometric ri = MkRI( Point3(9,0,0), Vector3(-1,0,0) );
+			g->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && IsClose( ri.range, 9 - a, 3e-3 ), "octahedron: traced +X intercept == a" ); }
+		{	const Scalar s = 5.0, L = s*std::sqrt(Scalar(3));
+			RayIntersectionGeometric ri = MkRI( Point3(s,s,s), norm3(-1,-1,-1) );
+			g->IntersectRay( ri, true, true, false );
+			// the (1,1,1) face is hit where 3t/sqrt(3) = a  =>  |p| = a/sqrt(3)
+			Check( ri.bHit && IsClose( ri.range, L - a/std::sqrt(Scalar(3)), 3e-3 ), "octahedron: traced (1,1,1) face at a/sqrt(3)" ); }
+		safe_release( g );
+	}
+
+	{	// e1 -> 0 with e2 = 1: a CYLINDER about local Y, radius a, half-height a
+		FieldProbe* cyl  = MakeSuperProbe( a, 0.1, 1.0 );
+		FieldProbe* swap = MakeSuperProbe( a, 1.0, 0.1 );   // the SAME numbers, transposed
+		Check( cyl->FieldAt( Point3(0.97*a,0,0) ) < 0,      "cylinder: near the barrel wall is inside" );
+		Check( cyl->FieldAt( Point3(0,0.97*a,0) ) < 0,      "cylinder: near the flat cap is inside" );
+		Check( cyl->FieldAt( Point3(1.03*a,0,0) ) > 0,      "cylinder: just past the barrel wall is outside" );
+		// THE ORIENTATION PROBE: (0.9a, 0.9a, 0) is comfortably inside a
+		// cylinder (rho and |y| both < a) but OUTSIDE the transposed shape,
+		// whose square cross-section shrinks as sqrt(1-(y/a)^2).
+		Check( cyl->FieldAt(  Point3(0.9*a,0.9*a,0) ) < 0, "MONEY (e1 vs e2) -- cylinder puts (0.9a,0.9a,0) INSIDE" );
+		Check( swap->FieldAt( Point3(0.9*a,0.9*a,0) ) > 0, "MONEY (e1 vs e2) -- the transposed exponents put it OUTSIDE" );
+		// and through the tracer: a ray descending at x = a/2 meets the
+		// cylinder's flat cap at y ~= a, but the transposed shape's round
+		// profile at y = a*sqrt(1 - 1/4) = 0.866a.
+		{	RayIntersectionGeometric ri = MkRI( Point3(0.5*a,9,0), Vector3(0,-1,0) );
+			cyl->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && IsClose( ri.range, 9 - a, 4e-3 ), "cylinder: descending ray meets the FLAT cap at y = a" ); }
+		{	RayIntersectionGeometric ri = MkRI( Point3(0.5*a,9,0), Vector3(0,-1,0) );
+			swap->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && IsClose( ri.range, 9 - a*std::sqrt(Scalar(0.75)), 4e-3 ), "transposed: same ray meets the ROUND profile at 0.866a" ); }
+		safe_release( cyl );
+		safe_release( swap );
+	}
+}
+
+// Test 33d: CONSERVATIVENESS -- THE MONEY TEST.  SDFGeometry's sphere tracer
+// requires every part field to be <= 1-Lipschitz, i.e. never to OVERESTIMATE
+// the distance to its own zero set; an overestimate anywhere is a March
+// overshoot waiting to happen (surface silently missed).  The superquadric
+// has no exact SDF, so this is the assertion that the chosen bound really is
+// a bound: over a grid of exponent pairs spanning the whole supported range
+// (plus the two anisotropic corners), at points inside, outside and close to
+// the surface, |field| must never exceed the true nearest-surface distance
+// found by dense numerical search.
+static void TestSuperellipsoidConservativeDistance()
+{
+	std::cout << "Test 33d: MONEY -- the field NEVER overestimates the true distance to the surface" << std::endl;
+	const Scalar a = 1.3;
+
+	// First: the search harness itself is trustworthy.  At e1 = e2 = 1 the
+	// true distance is analytic (||p| - a|), so any error in the dense search
+	// shows up here before it can weaken the assertions below.
+	{
+		Scalar worstSearch = 0;
+		const Point3 probes[5] = { Point3(2.2,0.4,-0.9), Point3(-0.3,1.9,0.2), Point3(0.2,0.1,0.15),
+		                           Point3(-1.4,-1.4,1.1), Point3(0,0,3.0) };
+		for( int i = 0; i < 5; ++i ) {
+			const Point3& p = probes[i];
+			const Scalar analytic = std::fabs( std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z) - a );
+			worstSearch = std::max( worstSearch, std::fabs( SETrueDistance(p,a,1.0,1.0) - analytic ) );
+		}
+		Check( worstSearch < 1e-6, "search harness reproduces the analytic sphere distance (< 1e-6)" );
+	}
+
+	// Second: the closed-form SUPPORT function really does describe supporting
+	// hyperplanes of THIS solid -- no surface point may exceed h(n), and some
+	// surface point must attain it.  Verified numerically against the same
+	// direction-sampled surface the distance search uses, at the exponent
+	// corners where the conjugate exponent goes to infinity (e = 2, both
+	// axes) as well as in the smooth interior.  Without this the lower bound
+	// in the bracket below would be an unchecked assumption.
+	{
+		struct Pr { Scalar e1, e2; };
+		const Pr sp[6] = { {1.0,1.0}, {0.5,0.5}, {2.0,2.0}, {2.0,1.0}, {1.0,2.0}, {0.3,1.7} };
+		Scalar worstOver = 0, worstSlack = 0;
+		for( int ip = 0; ip < 6; ++ip ) {
+			for( int k = 0; k < 16; ++k ) {
+				const Vector3 n = SEFibDir( k, 16 );
+				const Scalar h = SESupportH( n, a, sp[ip].e1, sp[ip].e2 );
+				const Scalar reached = SESupportReached( n, a, sp[ip].e1, sp[ip].e2 );
+				worstOver  = std::max( worstOver,  reached - h );		// must be <= 0
+				worstSlack = std::max( worstSlack, h - reached );		// must be ~0
+			}
+		}
+		Check( worstOver <= 1e-9,
+		       "MONEY -- the closed-form support function is never exceeded by a surface point (it SUPPORTS)" );
+		Check( worstSlack < 1e-6,
+		       "...and it is attained (tight), so it is the true support function, not merely an over-bound" );
+	}
+
+	struct Pair { Scalar e1, e2; };
+	const Pair pairs[10] = {
+		{1.0,1.0}, {0.5,0.5}, {0.1,0.1}, {2.0,2.0}, {1.5,1.5},
+		{0.1,1.0}, {1.0,0.1}, {2.0,0.1}, {0.1,2.0}, {0.3,1.7}
+	};
+
+	// a deterministic, reproducible spread: a lattice of directions x three
+	// radial shells (inside / just outside the surface / well outside).
+	Scalar worstRatio = 0, worstBracket = 0;
+	Scalar worstE1 = 0, worstE2 = 0;
+	Point3 worstAt(0,0,0);
+	for( int ip = 0; ip < 10; ++ip ) {
+		const Scalar e1 = pairs[ip].e1, e2 = pairs[ip].e2;
+		// the parameterization used by the reference search must actually lie
+		// on the implicit surface, or the "true distance" is fiction
+		Check( std::fabs( SEImplicitF( SESurfacePoint(0.7,1.9,a,e1,e2), a, e1, e2 ) - 1 ) < 1e-9,
+		       "reference surface parameterization satisfies F == 1" );
+
+		FieldProbe* g = MakeSuperProbe( a, e1, e2 );
+
+		// The CENTRE is the deepest interior point and pins the inradius
+		// scaling exactly: the gauge is 0 there, so the field must be
+		// -rin.  Drop the rin factor (or replace it with the local surface
+		// radius) and this closed form breaks before the search-based
+		// assertion below even runs.
+		Check( IsClose( g->FieldAt( Point3(0,0,0) ), -SEInradius(a,e1,e2), 1e-12 ),
+		       "field at the centre == -(conservative inradius), exactly" );
+		{	const Scalar truCentre = SETrueDistance( Point3(0,0,0), a, e1, e2 );
+			Check( std::fabs( g->FieldAt( Point3(0,0,0) ) ) <= truCentre + 1e-9,
+			       "centre depth never exceeds the TRUE inradius" ); }
+
+		for( int i = 0; i < 5; ++i )
+		for( int j = 0; j < 5; ++j )
+		for( int s = 0; s < 3; ++s ) {
+			// a direction lattice that dodges the exact axes and diagonals on
+			// most cells but hits a few of them squarely
+			const Vector3 d = norm3( Scalar(i)-2 + Scalar(0.13), Scalar(j)-2 - Scalar(0.07), Scalar(i-j)*Scalar(0.6) + Scalar(0.21) );
+			const Scalar shell[3] = { Scalar(0.45), Scalar(1.05), Scalar(2.30) };
+			const Point3 p( d.x*a*shell[s], d.y*a*shell[s], d.z*a*shell[s] );
+			const Scalar est  = g->FieldAt( p );
+			Point3 witness( 0, 0, 0 );
+			const Scalar tru  = SETrueDistance( p, a, e1, e2, &witness );
+			if( tru < 1e-6 ) { continue; }              // sitting on the surface: ratio is meaningless
+			// BRACKET.  For an exterior probe the supporting hyperplane through
+			// the nearest surface point found gives a rigorous LOWER bound on
+			// the same distance; where it meets the upper bound, `tru` IS the
+			// true distance and the ratio below is exact rather than lenient.
+			if( SEGauge( p, a, e1, e2 ) > Scalar(1) ) {
+				const Vector3 n = norm3( p.x-witness.x, p.y-witness.y, p.z-witness.z );
+				const Scalar lo = ( n.x*p.x + n.y*p.y + n.z*p.z ) - SESupportH( n, a, e1, e2 );
+				worstBracket = std::max( worstBracket, (tru - lo)/tru );
+			}
+			const Scalar ratio = std::fabs(est) / tru;
+			if( ratio > worstRatio ) { worstRatio = ratio; worstE1 = e1; worstE2 = e2; worstAt = p; }
+		}
+		safe_release( g );
+	}
+	if( worstRatio > 1 + 1e-6 ) {
+		std::cout << "    worst |field|/true = " << worstRatio << " at e1=" << worstE1 << " e2=" << worstE2
+		          << " p=(" << worstAt.x << "," << worstAt.y << "," << worstAt.z << ")" << std::endl;
+	}
+	// The reference is pinned BEFORE it is leaned on: a loose upper bound is
+	// exactly how a 44 %-overestimating field would sail through the assertion
+	// that follows (see the measured table above SETrueDistance).
+	if( worstBracket > 1e-4 ) {
+		std::cout << "    worst (upper-lower)/upper on the true-distance bracket = " << worstBracket << std::endl;
+	}
+	Check( worstBracket < 1e-4,
+	       "MONEY -- the true-distance reference is bracketed to < 1e-4 relative, so it IS the true distance" );
+	Check( worstRatio <= 1 + 1e-6,
+	       "MONEY ASSERTION -- |field| <= true distance at every probe, every supported exponent pair" );
+}
+
+// Test 33e: SPHERE-TRACE ROUND TRIP.  A conservative field is worthless if
+// March never converges on it (or tunnels straight through).  Fire rays from
+// several directions at several exponent pairs and assert the reported hit
+// (a) satisfies the implicit F == 1, and (b) is the FIRST crossing -- the
+// analytic entry point, found by ternary search + bisection on the (convex)
+// gauge along the ray, so a hit on the far side fails rather than passes.
+static void TestSuperellipsoidSphereTraceRoundTrip()
+{
+	std::cout << "Test 33e: sphere-trace round trip -- hits land ON the implicit surface, at the FIRST crossing" << std::endl;
+	const Scalar a = 1.3;
+	struct Pair { Scalar e1, e2; };
+	const Pair pairs[6] = { {1.0,1.0}, {0.6,0.6}, {0.2,0.2}, {2.0,2.0}, {0.15,1.0}, {1.6,0.4} };
+	const Vector3 dirs[6] = { norm3(0,0,-1), norm3(-1,0,0), norm3(0,-1,0),
+	                          norm3(-1,-1,-1), norm3(-0.4,-1,0.3), norm3(0.9,-0.2,-1) };
+
+	for( int ip = 0; ip < 6; ++ip ) {
+		const Scalar e1 = pairs[ip].e1, e2 = pairs[ip].e2;
+		FieldProbe* g = MakeSuperProbe( a, e1, e2 );
+		for( int i = 0; i < 6; ++i ) {
+			const Vector3 d = dirs[i];
+			const Point3 o( -d.x*8, -d.y*8, -d.z*8 );
+			RayIntersectionGeometric ri = MkRI( o, d );
+			g->IntersectRay( ri, true, true, false );
+			Check( ri.bHit, "round trip: ray hits (March converged, no tunnelling)" );
+			if( !ri.bHit ) { continue; }
+			const Point3 h( o.x + d.x*ri.range, o.y + d.y*ri.range, o.z + d.z*ri.range );
+			// (a) the implicit.  F = g^(2/e1), so a gauge error eps shows up in
+			// F multiplied by 2/e1 -- scale the tolerance the same way instead
+			// of pretending one absolute number fits every exponent.
+			Check( std::fabs( SEGauge(h,a,e1,e2) - 1 ) < 2e-3, "round trip: |gauge(hit) - 1| < 2e-3" );
+			Check( std::fabs( SEImplicitF(h,a,e1,e2) - 1 ) < 2e-3 * (2/e1) + 1e-3, "round trip: |F(hit) - 1| within the gauge tolerance carried through F" );
+			// (b) the FIRST crossing, not the far side
+			Scalar tEntry = 0;
+			Check( SERayEntry( o, d, 16.0, a, e1, e2, tEntry ), "round trip: the analytic entry exists" );
+			Check( IsClose( ri.range, tEntry, 4e-3 ), "MONEY -- traced range == the analytic FIRST entry point" );
+		}
+		safe_release( g );
+	}
+}
+
+// Test 33f: COMPOSITION.  The point of shipping this as an SDF part rather
+// than a standalone chunk is that it composes -- smin with a sphere, carved
+// by a subtract -- and sminP/smaxP's conservativeness argument holds only
+// while EVERY part field is <= 1-Lipschitz.  Finite-difference the composed
+// field along sampled lines and assert the gradient magnitude never exceeds
+// 1 (which is exactly the composed-field precondition March relies on).
+static void TestSuperellipsoidCompositionStaysLipschitz()
+{
+	std::cout << "Test 33f: superellipsoid smin sphere (+ a subtract) stays <= 1-Lipschitz" << std::endl;
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1.6,1.0,0.8), 1.2, 0.45, 0.7, 0 ) );      // a cushion, non-uniformly scaled
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin, 0.8,
+		Point3(1.9,0.3,0), 0,0,0, Vector3(1,1,1), 0.9, 0, 0, 0 ) );
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpSubtract, 0.4,
+		Point3(-1.2,0.9,0), 20,0,35, Vector3(1,1,1), 0.7, 1.8, 0.3, 0 ) );      // an octahedral-ish carve
+	FieldProbe* g = new FieldProbe( parts );
+
+	const Scalar h = 1e-4;
+	Scalar worst = 0;
+	for( int line = 0; line < 8; ++line ) {
+		const Vector3 d = norm3( std::cos(line*0.7), std::sin(line*1.1)*0.6 + 0.2, std::sin(line*0.4) );
+		for( int t = 0; t < 400; ++t ) {
+			const Scalar s = -3.5 + 7.0*t/399.0;
+			const Point3 p( d.x*s + 0.13, d.y*s - 0.07, d.z*s + 0.05 );
+			const Scalar gx = ( g->FieldAt(Point3(p.x+h,p.y,p.z)) - g->FieldAt(Point3(p.x-h,p.y,p.z)) ) / (2*h);
+			const Scalar gy = ( g->FieldAt(Point3(p.x,p.y+h,p.z)) - g->FieldAt(Point3(p.x,p.y-h,p.z)) ) / (2*h);
+			const Scalar gz = ( g->FieldAt(Point3(p.x,p.y,p.z+h)) - g->FieldAt(Point3(p.x,p.y,p.z-h)) ) / (2*h);
+			worst = std::max( worst, std::sqrt(gx*gx + gy*gy + gz*gz) );
+		}
+	}
+	Check( worst <= 1 + 1e-3, "MONEY -- composed |grad| never exceeds 1 along 3200 sampled points" );
+	// the sampling really does cross the blend and the carve (a field that is
+	// flat everywhere would pass the assertion above vacuously)
+	Check( worst > 0.9, "the sampled lines really do traverse the field (max |grad| is near 1)" );
+	safe_release( g );
+}
+
+// Test 33g: OUT-OF-RANGE exponents.  The field clamps to [0.1, 2]
+// unconditionally, because `size` is keyframable and a runtime value never
+// passes through ParsePartLines.  Two things follow, and both are asserted:
+// an out-of-range part renders exactly the CLAMPED shape, and it is still
+// conservative (at e = 3 the unclamped bound overestimates by 2.7x -- an
+// overshoot -- which is precisely why the clamp is in the field).
+static void TestSuperellipsoidExponentClamp()
+{
+	std::cout << "Test 33g: out-of-range exponents clamp in the FIELD (keyframing bypasses the parser)" << std::endl;
+	const Scalar a = 1.3;
+	FieldProbe* wild    = MakeSuperProbe( a, 4.0, 3.0 );      // MakePart does not clamp
+	FieldProbe* clamped = MakeSuperProbe( a, 2.0, 2.0 );
+	FieldProbe* tiny    = MakeSuperProbe( a, 0.001, 0.02 );
+	FieldProbe* floored = MakeSuperProbe( a, 0.1, 0.1 );
+
+	Scalar worstHi = 0, worstLo = 0;
+	for( int i = -4; i <= 4; ++i )
+	for( int j = -4; j <= 4; ++j )
+	for( int k = -4; k <= 4; ++k ) {
+		const Point3 p( i*0.6, j*0.55, k*0.5 );
+		worstHi = std::max( worstHi, std::fabs( wild->FieldAt(p) - clamped->FieldAt(p) ) );
+		worstLo = std::max( worstLo, std::fabs( tiny->FieldAt(p) - floored->FieldAt(p) ) );
+	}
+	Check( worstHi < 1e-12, "above-range exponents render exactly the e = 2 shape" );
+	Check( worstLo < 1e-12, "below-range exponents render exactly the e = 0.1 shape" );
+
+	// ...and the clamped field is still conservative against the shape it
+	// actually renders (the e = 2 solid), which is the property the clamp
+	// exists for.  Same 75-point lattice and same bracketed reference as
+	// 33d -- 16 probe points was not enough surface to catch an overestimate
+	// that only appears near the octahedron's edges.
+	Scalar worstRatio = 0, worstBracket = 0;
+	for( int i = 0; i < 5; ++i )
+	for( int j = 0; j < 5; ++j )
+	for( int sh = 0; sh < 3; ++sh ) {
+		const Vector3 d = norm3( Scalar(i)-2 + Scalar(0.13), Scalar(j)-2 - Scalar(0.07), Scalar(i-j)*Scalar(0.6) + Scalar(0.21) );
+		const Scalar shell[3] = { Scalar(0.45), Scalar(1.05), Scalar(2.30) };
+		const Point3 p( d.x*a*shell[sh], d.y*a*shell[sh], d.z*a*shell[sh] );
+		Point3 witness( 0, 0, 0 );
+		const Scalar tru = SETrueDistance( p, a, 2.0, 2.0, &witness );
+		if( tru < 1e-6 ) { continue; }
+		if( SEGauge( p, a, 2.0, 2.0 ) > Scalar(1) ) {
+			const Vector3 n = norm3( p.x-witness.x, p.y-witness.y, p.z-witness.z );
+			const Scalar lo = ( n.x*p.x + n.y*p.y + n.z*p.z ) - SESupportH( n, a, 2.0, 2.0 );
+			worstBracket = std::max( worstBracket, (tru - lo)/tru );
+		}
+		worstRatio = std::max( worstRatio, std::fabs( wild->FieldAt(p) ) / tru );
+	}
+	Check( worstBracket < 1e-4, "the e = 2 true-distance reference is bracketed to < 1e-4 relative" );
+	Check( worstRatio <= 1 + 1e-6, "MONEY -- an e = (4,3) part is STILL conservative, because the field clamped it" );
+
+	safe_release( wild ); safe_release( clamped ); safe_release( tiny ); safe_release( floored );
+}
+
+// Test 33h: the part GRAMMAR accepts the new token, and the local AABB is the
+// radii box (tight: the axis intercepts touch it at every exponent).
+static void TestSuperellipsoidGrammarAndBounds()
+{
+	std::cout << "Test 33h: `superellipsoid` part token parses; local AABB is the tight radii box" << std::endl;
+	{
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines(
+			"superellipsoid union 0  0.5 1 -2  10 20 30  1 2 3  0.8 0.45 1.6  0\n", "<test>", parts ),
+			"superellipsoid part line parses" );
+		Check( parts.size() == 1, "one part" );
+		if( parts.size() == 1 ) {
+			Check( parts[0].type == SDFGeometry::ePrimSuperellipsoid, "type is ePrimSuperellipsoid" );
+			Check( parts[0].a == 0.8 && parts[0].b == 0.45 && parts[0].c == 1.6, "a = radius, b = e1, c = e2" );
+			Check( parts[0].scale.x == 1 && parts[0].scale.y == 2 && parts[0].scale.z == 3, "proportions come from the per-part scale" );
+		}
+	}
+	{	// out of range: WARNS and clamps rather than rejecting the scene
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines(
+			"superellipsoid union 0  0 0 0  0 0 0  1 1 1  1 7 -3  0\n", "<test>", parts ),
+			"out-of-range exponents do NOT reject the line" );
+		if( parts.size() == 1 ) {
+			Check( parts[0].b == 2.0 && parts[0].c == 0.1, "out-of-range exponents are clamped to [0.1, 2] at parse time" );
+		}
+	}
+	{	// still 16 tokens, still a hard grammar
+		std::vector<SDFGeometry::Part> parts;
+		Check( !SDFGeometry::ParsePartLines(
+			"superellipsoid union 0  0 0 0  0 0 0  1 1 1  1 1 1\n", "<test>", parts ),
+			"short superellipsoid line still rejected" );
+		Check( !SDFGeometry::ParsePartLines(
+			"super_ellipsoid union 0  0 0 0  0 0 0  1 1 1  1 1 1  0\n", "<test>", parts ),
+			"a near-miss spelling is still rejected (no silent fallback)" );
+	}
+	{	// bounds: [-a,a]^3 in local space, at exponents on both sides of 1
+		const Scalar a = 1.1;
+		const Scalar es[3] = { 0.2, 1.0, 2.0 };
+		for( int i = 0; i < 3; ++i ) {
+			FieldProbe* g = MakeSuperProbe( a, es[i], es[i] );
+			BoundingBox bb = g->GenerateBoundingBox();
+			// contains the surface (the axis intercepts sit exactly at +-a)
+			Check( bb.ll.x <= -a && bb.ur.x >= a && bb.ll.y <= -a && bb.ur.y >= a && bb.ll.z <= -a && bb.ur.z >= a,
+			       "local AABB contains the +-a axis intercepts" );
+			// and is not loose: only the fixed safety pad beyond them
+			Check( bb.ll.x >= -a - 0.02 && bb.ur.x <= a + 0.02,
+			       "local AABB is TIGHT to the radii box (pad only)" );
+			safe_release( g );
+		}
+	}
+}
+
+// Test 33i: NON-FINITE COORDINATES.  A NaN or infinite coordinate can reach
+// a part field through a degenerate part transform (invScale from a scale
+// keyframed through zero) or through caller arithmetic.  The gauge's own
+// max-factoring LAUNDERS it: inf/inf is NaN, and std::max(NaN, v) is
+// (a<b)?b:a == NaN, after which every `> 0` test is false and the gauge
+// collapses to the ORIGIN value -- so the pre-fix field answered -rin, the
+// point reported MAXIMALLY INSIDE.  Through Map's min() fold a constant
+// negative does not merely add noise, it FILLS the bounding box.  Measured on
+// the pre-fix form at a = 1.3, e = (1,1): x = +-inf -> -1.3, x = NaN -> -1.0,
+// z = +-inf or NaN -> -1.3; only a non-finite y (-> 1e30) was ever caught.
+// Every row must now be the definite-miss 1e30, on every code path.
+static void TestSuperellipsoidNonFiniteCoordinates()
+{
+	std::cout << "Test 33i: a non-finite coordinate is a definite MISS, never a negative distance" << std::endl;
+	const Scalar a = 1.3;
+	const Scalar inf = std::numeric_limits<Scalar>::infinity();
+	const Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
+	const Scalar bad[3] = { inf, -inf, nan };
+	const char*  nm [3] = { "+inf", "-inf", "NaN" };
+
+	// one probe per code path in sdSuperellipsoidY: sphere fast path,
+	// equal-exponent fast path, general nested path, degenerate radius.
+	struct Cfg { Scalar a, e1, e2; const char* what; };
+	const Cfg cfgs[4] = {
+		{ a,   1.0, 1.0, "sphere fast path"  },
+		{ a,   0.45,0.45,"equal-exponent fast path" },
+		{ a,   0.3, 1.7, "general nested path" },
+		{ 0.0, 1.0, 1.0, "degenerate radius"  }
+	};
+
+	for( int c = 0; c < 4; ++c ) {
+		FieldProbe* g = MakeSuperProbe( cfgs[c].a, cfgs[c].e1, cfgs[c].e2 );
+		for( int axis = 0; axis < 3; ++axis )
+		for( int k = 0; k < 3; ++k ) {
+			Scalar v[3] = { Scalar(0.3), Scalar(0.3), Scalar(0.3) };
+			v[axis] = bad[k];
+			const Scalar d = g->FieldAt( Point3(v[0],v[1],v[2]) );
+			const bool ok = ( d >= Scalar(1e29) );
+			if( !ok ) {
+				std::cout << "    " << cfgs[c].what << ": " << "xyz"[axis] << " = " << nm[k]
+				          << " -> " << d << std::endl;
+			}
+			Check( ok, "MONEY -- non-finite coordinate returns the definite-miss value, not a negative distance" );
+		}
+		safe_release( g );
+	}
+
+	// ...and the composed field agrees: a non-finite probe must not read as
+	// INSIDE a two-part union (which is how the pre-fix -rin filled the bbox).
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), a, 0.5, 0.5, 0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3(3,0,0), 0,0,0, Vector3(1,1,1), 0.7, 0, 0, 0 ) );
+		FieldProbe* g = new FieldProbe( parts );
+		Check( g->FieldAt( Point3(inf,0.3,0.3) ) > 0, "composed field: infinite x is not INSIDE" );
+		Check( g->FieldAt( Point3(0.3,0.3,nan) ) > 0, "composed field: NaN z is not INSIDE" );
+		safe_release( g );
+	}
+}
+
+// Test 33j: THE TWO EXACT SPECIALIZATIONS.  The general gauge costs six pow()
+// calls; on a 6-part scene at maxsteps 320 that is ~96 us/ray against ~6 us
+// for the analytic primitives.  Two cases collapse ALGEBRAICALLY, not
+// approximately, and the field takes both:
+//   * e1 == e2 (after clamping) makes p == q, so the outer exponent ratio p/q
+//     is 1 and the nested l_p(l_q) gauge becomes ONE 3-term l_p norm;
+//   * e1 == e2 == 1 makes p == q == 2 and rin == a, so the field is exactly
+//     |point| - a, i.e. sdSphere.
+// "Exact" is not taken on faith here.  Each specialization is checked against
+// (a) the test's own INDEPENDENT nested-power reference, and (b) the SHIPPED
+// general branch itself, reached by nudging one exponent by 1e-11 -- a
+// perturbation whose true effect on the field is ~1e-11, so a specialization
+// that were merely approximate could not hide.  Conservativeness on the
+// specialized paths is re-checked against the bracketed true distance.
+static void TestSuperellipsoidFastPathsAreExact()
+{
+	std::cout << "Test 33j: the sphere / equal-exponent specializations are EXACT, not approximate" << std::endl;
+	const Scalar a = 1.3;
+
+	// (a) vs the independent nested-power reference, across the whole range
+	{
+		Scalar worstRef = 0, worstSphere = 0;
+		for( int ei = 0; ei <= 20; ++ei ) {
+			const Scalar e = Scalar(0.1) + (Scalar(2.0)-Scalar(0.1))*ei/20;
+			FieldProbe* g = MakeSuperProbe( a, e, e );
+			for( int i = -4; i <= 4; ++i )
+			for( int j = -4; j <= 4; ++j )
+			for( int k = -4; k <= 4; ++k ) {
+				const Point3 p( i*0.47, j*0.53, k*0.61 );
+				const Scalar ref = SEInradius(a,e,e) * ( SEGauge(p,a,e,e) - 1 );
+				worstRef = std::max( worstRef, std::fabs( g->FieldAt(p) - ref ) );
+			}
+			safe_release( g );
+		}
+		FieldProbe* sph = MakeSuperProbe( a, 1.0, 1.0 );
+		for( int i = -6; i <= 6; ++i )
+		for( int j = -6; j <= 6; ++j )
+		for( int k = -6; k <= 6; ++k ) {
+			const Point3 p( i*0.43, j*0.51, k*0.59 );
+			const Scalar analytic = std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z) - a;
+			worstSphere = std::max( worstSphere, std::fabs( sph->FieldAt(p) - analytic ) );
+		}
+		safe_release( sph );
+		Check( worstRef < 1e-12,
+		       "MONEY -- equal-exponent path == the independent nested-power gauge (21 exponents x 729 points)" );
+		Check( worstSphere < 1e-12,
+		       "MONEY -- e = (1,1) path == the analytic sdSphere |p| - a exactly (2197 points)" );
+	}
+
+	// (b) vs the SHIPPED general branch, reached by an infinitesimal exponent
+	// split.  Interior exponents only: nudging 0.1 down or 2.0 up would be
+	// clamped straight back onto the equal-exponent path.
+	{
+		const Scalar es[5] = { 0.2, 0.45, 1.0, 1.5, 1.9 };
+		Scalar worstSplit = 0;
+		for( int ei = 0; ei < 5; ++ei ) {
+			const Scalar e = es[ei];
+			FieldProbe* eq  = MakeSuperProbe( a, e, e );
+			FieldProbe* gen = MakeSuperProbe( a, e, e*(Scalar(1) - Scalar(1e-11)) );	// takes the general branch
+			for( int i = -4; i <= 4; ++i )
+			for( int j = -4; j <= 4; ++j )
+			for( int k = -4; k <= 4; ++k ) {
+				const Point3 p( i*0.47, j*0.53, k*0.61 );
+				worstSplit = std::max( worstSplit, std::fabs( eq->FieldAt(p) - gen->FieldAt(p) ) );
+			}
+			safe_release( eq ); safe_release( gen );
+		}
+		Check( worstSplit < 1e-9,
+		       "MONEY -- specialized field == the SHIPPED general branch at a 1e-11 exponent split" );
+	}
+
+	// (c) and the specializations are still CONSERVATIVE against the bracketed
+	// true distance -- an exact algebraic identity would be worthless if the
+	// evaluation order it saves had cost the never-overestimate property.
+	{
+		struct Pair { Scalar e1, e2; };
+		const Pair pairs[4] = { {1.0,1.0}, {0.45,0.45}, {2.0,2.0}, {0.1,0.1} };
+		Scalar worstRatio = 0, worstBracket = 0;
+		for( int ip = 0; ip < 4; ++ip ) {
+			const Scalar e1 = pairs[ip].e1, e2 = pairs[ip].e2;
+			FieldProbe* g = MakeSuperProbe( a, e1, e2 );
+			for( int i = 0; i < 5; ++i )
+			for( int j = 0; j < 5; ++j )
+			for( int sh = 0; sh < 3; ++sh ) {
+				const Vector3 d = norm3( Scalar(i)-2 + Scalar(0.13), Scalar(j)-2 - Scalar(0.07), Scalar(i-j)*Scalar(0.6) + Scalar(0.21) );
+				const Scalar shell[3] = { Scalar(0.45), Scalar(1.05), Scalar(2.30) };
+				const Point3 p( d.x*a*shell[sh], d.y*a*shell[sh], d.z*a*shell[sh] );
+				Point3 witness( 0, 0, 0 );
+				const Scalar tru = SETrueDistance( p, a, e1, e2, &witness );
+				if( tru < 1e-6 ) { continue; }
+				if( SEGauge( p, a, e1, e2 ) > Scalar(1) ) {
+					const Vector3 n = norm3( p.x-witness.x, p.y-witness.y, p.z-witness.z );
+					const Scalar lo = ( n.x*p.x + n.y*p.y + n.z*p.z ) - SESupportH( n, a, e1, e2 );
+					worstBracket = std::max( worstBracket, (tru - lo)/tru );
+				}
+				worstRatio = std::max( worstRatio, std::fabs( g->FieldAt(p) ) / tru );
+			}
+			safe_release( g );
+		}
+		Check( worstBracket < 1e-4, "specialized-path true-distance reference is bracketed to < 1e-4 relative" );
+		Check( worstRatio <= 1 + 1e-6,
+		       "MONEY -- the specialized paths never overestimate the true distance either" );
+	}
+}
+
+// Test 33k: INTERSECT.  The other three ops were covered (union by every test
+// above, smin and subtract by 33f); `intersect` was not, and it is the op that
+// reads the superellipsoid field with the OPPOSITE sign convention through
+// smaxP.  Both hard (k = 0) and smooth (k > 0) are pinned against closed
+// forms: an OCTAHEDRON clipped by a SPHERE, where each surface governs on a
+// different ray so a clip that silently dropped one field would show.
+static void TestSuperellipsoidIntersect()
+{
+	std::cout << "Test 33k: superellipsoid `intersect` -- octahedron clipped by a sphere, hard and smooth" << std::endl;
+	const Scalar aOct = 1.45, aSph = 1.2;
+
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), aOct, 2.0, 2.0, 0 ) );			// octahedron
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSuperellipsoid, SDFGeometry::eOpIntersect, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), aSph, 1.0, 1.0, 0 ) );			// == a sphere, exactly
+	FieldProbe* g = new FieldProbe( parts );
+
+	// membership, from the closed forms: |x|+|y|+|z| <= aOct AND |p| <= aSph
+	Check( g->FieldAt( Point3(1.10,0,0) ) < 0, "intersect: inside both octahedron and sphere" );
+	Check( g->FieldAt( Point3(1.35,0,0) ) > 0, "MONEY -- inside the OCTAHEDRON but outside the sphere reads OUTSIDE" );
+	Check( g->FieldAt( Point3(0.55,0.55,0.55) ) > 0, "MONEY -- inside the SPHERE but outside the octahedron reads OUTSIDE" );
+
+	// through the tracer, on two rays whose hit is governed by a DIFFERENT
+	// one of the two surfaces
+	{	RayIntersectionGeometric ri = MkRI( Point3(9,0,0), Vector3(-1,0,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.range, 9 - aSph, 3e-3 ), "intersect: +X ray stops at the SPHERE (1.2), not the octahedron (1.45)" ); }
+	{	const Scalar s = 5.0, L = s*std::sqrt(Scalar(3));
+		RayIntersectionGeometric ri = MkRI( Point3(s,s,s), norm3(-1,-1,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.range, L - aOct/std::sqrt(Scalar(3)), 3e-3 ),
+		       "intersect: (1,1,1) ray stops at the OCTAHEDRON face (a/sqrt3 = 0.837), inside the sphere" ); }
+
+	// SMOOTH intersect: smaxP >= the hard max, so the solid can only SHRINK --
+	// the same ray must stop no earlier, and the composed field must still be
+	// <= 1-Lipschitz (the precondition March relies on).
+	std::vector<SDFGeometry::Part> sparts = parts;
+	sparts[1].k = Scalar(0.35);
+	FieldProbe* gs = new FieldProbe( sparts );
+	{	RayIntersectionGeometric rh = MkRI( Point3(9,0,0), Vector3(-1,0,0) );
+		RayIntersectionGeometric rs = MkRI( Point3(9,0,0), Vector3(-1,0,0) );
+		g ->IntersectRay( rh, true, true, false );
+		gs->IntersectRay( rs, true, true, false );
+		Check( rs.bHit && rs.range >= rh.range - 3e-3, "smooth intersect only shrinks the solid (hit no earlier)" ); }
+	{
+		const Scalar h = 1e-4;
+		Scalar worst = 0;
+		for( int line = 0; line < 6; ++line ) {
+			const Vector3 d = norm3( std::cos(line*0.9), std::sin(line*1.3)*0.7 + 0.15, std::sin(line*0.5) );
+			for( int t = 0; t < 300; ++t ) {
+				const Scalar u = -3.0 + 6.0*t/299.0;
+				const Point3 p( d.x*u + 0.11, d.y*u - 0.05, d.z*u + 0.07 );
+				const Scalar gx = ( gs->FieldAt(Point3(p.x+h,p.y,p.z)) - gs->FieldAt(Point3(p.x-h,p.y,p.z)) ) / (2*h);
+				const Scalar gy = ( gs->FieldAt(Point3(p.x,p.y+h,p.z)) - gs->FieldAt(Point3(p.x,p.y-h,p.z)) ) / (2*h);
+				const Scalar gz = ( gs->FieldAt(Point3(p.x,p.y,p.z+h)) - gs->FieldAt(Point3(p.x,p.y,p.z-h)) ) / (2*h);
+				worst = std::max( worst, std::sqrt(gx*gx + gy*gy + gz*gz) );
+			}
+		}
+		Check( worst <= 1 + 1e-3, "MONEY -- smooth-intersect composed |grad| never exceeds 1 (1800 points)" );
+		Check( worst > 0.9,       "the sampled lines really do traverse the field" );
+	}
+	safe_release( gs );
+	safe_release( g );
+}
+
+// Test 33l: THE KEYFRAME PATH.  Both the exponent clamp and the capsule's
+// half-extent bound are argued in SDFGeometry.cpp on the grounds that
+// `part<i>.size` is KEYFRAMABLE and SetIntermediateValue writes a / b / c RAW,
+// so a parser-side guard cannot be the whole story.  Nothing exercised that
+// claim.  This drives the real animation entry points --
+// KeyframeFromParameters -> SetIntermediateValue -> RegenerateData -- and
+// asserts the field and the bounds survive an exponent driven out of range
+// and an extent driven through zero.
+static void TestSDFKeyframedSizeStaysConservative()
+{
+	std::cout << "Test 33l: keyframed `part0.size` -- out-of-range exponent + extent through zero" << std::endl;
+	const Scalar a = 1.3;
+
+	// (1) an exponent animated far out of range renders exactly the CLAMPED shape
+	{
+		FieldProbe* anim = MakeSuperProbe( a, 1.0, 1.0 );
+		IKeyframeParameter* kp = anim->KeyframeFromParameters( String("part0.size"), String("1.3 7.0 -3.0") );
+		Check( kp != 0, "part0.size keyframe parameter is created" );
+		if( kp ) {
+			anim->SetIntermediateValue( *kp );
+			anim->RegenerateData();
+			safe_release( kp );
+		}
+		FieldProbe* clamped = MakeSuperProbe( a, 2.0, 0.1 );			// what (7, -3) must clamp to
+		Scalar worst = 0;
+		for( int i = -4; i <= 4; ++i )
+		for( int j = -4; j <= 4; ++j )
+		for( int k = -4; k <= 4; ++k ) {
+			const Point3 p( i*0.55, j*0.49, k*0.61 );
+			worst = std::max( worst, std::fabs( anim->FieldAt(p) - clamped->FieldAt(p) ) );
+		}
+		Check( worst < 1e-12, "MONEY -- keyframing e = (7, -3) renders exactly the clamped (2.0, 0.1) shape" );
+
+		// ...and is still conservative there, against the bracketed reference
+		Scalar worstRatio = 0;
+		for( int i = 0; i < 4; ++i )
+		for( int j = 0; j < 4; ++j )
+		for( int sh = 0; sh < 3; ++sh ) {
+			const Vector3 d = norm3( Scalar(i)-1.5 + Scalar(0.13), Scalar(j)-1.5 - Scalar(0.07), Scalar(i-j)*Scalar(0.6) + Scalar(0.21) );
+			const Scalar shell[3] = { Scalar(0.45), Scalar(1.05), Scalar(2.30) };
+			const Point3 p( d.x*a*shell[sh], d.y*a*shell[sh], d.z*a*shell[sh] );
+			const Scalar tru = SETrueDistance( p, a, 2.0, 0.1 );
+			if( tru < 1e-6 ) { continue; }
+			worstRatio = std::max( worstRatio, std::fabs( anim->FieldAt(p) ) / tru );
+		}
+		Check( worstRatio <= 1 + 1e-6, "MONEY -- the keyframed out-of-range part is still conservative" );
+		safe_release( clamped );
+		safe_release( anim );
+	}
+
+	// (2) the RADIUS animated through zero.  a <= 0 collapses the solid to the
+	// local origin, whose exact field is |p| - 0 = |p|: everywhere >= 0, so
+	// nothing may read as inside, and the rebuilt bbox must stay well formed.
+	{
+		FieldProbe* anim = MakeSuperProbe( a, 0.45, 0.45 );
+		IKeyframeParameter* kp = anim->KeyframeFromParameters( String("part0.size"), String("0 0.45 0.45") );
+		if( kp ) { anim->SetIntermediateValue( *kp ); anim->RegenerateData(); safe_release( kp ); }
+		Scalar worst = 0, mostNegative = 0;
+		for( int i = -4; i <= 4; ++i )
+		for( int j = -4; j <= 4; ++j )
+		for( int k = -4; k <= 4; ++k ) {
+			const Point3 p( i*0.55, j*0.49, k*0.61 );
+			const Scalar d = anim->FieldAt(p);
+			worst = std::max( worst, std::fabs( d - std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z) ) );
+			mostNegative = std::min( mostNegative, d );
+		}
+		Check( worst < 1e-12,       "radius keyframed to 0: the field is exactly |p| (the collapsed solid)" );
+		Check( mostNegative >= 0,   "MONEY -- a zero-radius part never reads as INSIDE anywhere" );
+		BoundingBox bb = anim->GenerateBoundingBox();
+		Check( bb.ll.x <= bb.ur.x && bb.ll.y <= bb.ur.y && bb.ll.z <= bb.ur.z, "rebuilt bbox is still well formed" );
+		safe_release( anim );
+	}
+
+	// (3) a CAPSULE half-height eased through zero into the negative branch --
+	// the exact route the ePrimCapsule bound comment cites, driven for real.
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimCapsule, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 1.0, 1.0, 0, 0 ) );
+		SDFGeometry* geo = MakeGeom( parts );
+		IKeyframeParameter* kp = geo->KeyframeFromParameters( String("part0.size"), String("1.0 -2.5 0") );
+		if( kp ) { geo->SetIntermediateValue( *kp ); geo->RegenerateData(); safe_release( kp ); }
+		// solid is now the cap sphere of radius 1 centred at y = +2.5; an
+		// upward ray at x = 0.5 meets it at y = 2.5 - sqrt(1 - 0.25)
+		const Scalar yHit = Scalar(2.5) - std::sqrt(Scalar(0.75));
+		RayIntersectionGeometric ri = MkRI( Point3(0.5,-6,0), Vector3(0,1,0) );
+		geo->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.range, 6 + yHit, 5e-3 ),
+		       "MONEY -- a capsule half-height keyframed NEGATIVE still renders (bound did not clip it)" );
+		safe_release( geo );
+	}
+}
+
+// Test 35: CAPSULE with a NEGATIVE half-height -- the third member of the
+// primLocalAABB under-bound family (round cone in Test 32c, round box in Test
+// 34).  sdCapsuleY's core segment is clampS(y, -b, b); for b < 0 that interval
+// is INVERTED (lo = |b| > hi = -|b|), so clampS returns |b| for every y < |b|
+// and -|b| above it.  The solid is therefore the cap SPHERE of radius a
+// centred at y = +|b|, whose top is |b| -- while the old bound's b + a is
+// a - |b|, an under-bound by 2|b| - a once |b| > a/2, and the surface it
+// clips out is gated away by the bbox test before the march ever runs.
+// (For b < 0 the FIELD is also discontinuous at y = |b|; that is a separate,
+// pre-existing property of the primitive.  The bound's only job is not to
+// clip surface that the field does render, and this test pins exactly that.)
+// b >= 0 is bit-identical, which the first block asserts.
+static void TestCapsuleNegativeHalfHeightDoesNotClipSurface()
+{
+	std::cout << "Test 35: capsule with a negative half-height -- AABB must not clip the displaced cap" << std::endl;
+
+	// well-formed first: the bound must not have MOVED for the ordinary case
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimCapsule, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 0.8, 2.0, 0, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		BoundingBox bb = g->GenerateBoundingBox();
+		Check( bb.ur.y >= 2.8 && bb.ur.y <= 2.8 + 0.02, "well-formed capsule: bound unchanged at half-height + radius" );
+		Check( bb.ur.x >= 0.8 && bb.ur.x <= 0.8 + 0.02, "well-formed capsule: lateral bound unchanged at the radius" );
+		RayIntersectionGeometric ri = MkRI( Point3(0,20,0), Vector3(0,-1,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.range, 17.2 ), "well-formed capsule: +Y cap still hit at 2.8" );
+		safe_release( g );
+	}
+
+	// degenerate: a = 1, b = -2.5.  The solid is the sphere of radius 1 at
+	// y = +2.5; the OLD bound was |a + b| = 1.5, whose top sits exactly at the
+	// solid's BOTTOM, so every off-axis ray was gated away before marching.
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimCapsule, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 1.0, -2.5, 0, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		BoundingBox bb = g->GenerateBoundingBox();
+		Check( bb.ur.y >= 2.5, "MONEY -- the bound now reaches the displaced cap's top at |b| (old bound stopped at 1.5)" );
+
+		// an off-axis upward ray meets the cap sphere at y = 2.5 - sqrt(1 - 0.25)
+		const Scalar yHit = Scalar(2.5) - std::sqrt(Scalar(0.75));
+		RayIntersectionGeometric ri = MkRI( Point3(0.5,-6,0), Vector3(0,1,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit, "MONEY -- the ray hits (the pre-fix bound clipped the march at y = 1.5 and it missed)" );
+		Check( ri.bHit && IsClose( ri.range, 6 + yHit, 5e-3 ),
+		       "MONEY -- hit range matches the TRUE displaced cap sphere, not the old clipped box" );
+
+		// a second off-axis ray, on the other side, to rule out a lucky axis
+		RayIntersectionGeometric ri2 = MkRI( Point3(-0.8,-6,0), Vector3(0,1,0) );
+		g->IntersectRay( ri2, true, true, false );
+		Check( ri2.bHit && IsClose( ri2.range, 6 + Scalar(2.5) - std::sqrt(Scalar(1.0-0.64)), 5e-3 ),
+		       "second off-axis ray lands on the displaced cap too" );
+		safe_release( g );
+	}
+}
+
+// Test 34: ROUNDBOX with `round` LARGER than a half-extent -- the sibling of
+// the round-cone AABB bug (Test 32c), found by auditing primLocalAABB for the
+// same defect class while adding the superellipsoid.  sdRoundBox shrinks the
+// core box by r and then INFLATES by r:
+//     sdBox( ..., max(bx-r,0), max(by-r,0), max(bz-r,0) ) - r
+// so its surface reaches max(bx, r) along x, not bx.  Once r exceeds a
+// half-extent the solid IS the sphere of radius r -- and the local AABB, which
+// used the half-extents alone, under-bounded it and CLIPPED real surface: a ray
+// that should hit is gated away by the bbox test before it ever marches.
+// The bound is now max(half-extent, round) per axis, which is BIT-IDENTICAL
+// for every well-formed rounded box (r <= min half-extent, the only regime any
+// existing scene authors) and only widens in the degenerate one.
+static void TestRoundBoxLargeRoundDoesNotClipSurface()
+{
+	std::cout << "Test 34: roundbox with round > half-extent -- AABB must not clip the inflated surface" << std::endl;
+
+	// well-formed first: the bound must not have MOVED for the ordinary case
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimRoundBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 2.0, 2.0, 2.0, 0.5 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		BoundingBox bb = g->GenerateBoundingBox();
+		Check( bb.ur.x >= 2.0 && bb.ur.x <= 2.0 + 0.02, "well-formed roundbox: bound unchanged at the half-extent" );
+		RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.range, 18.0 ), "well-formed roundbox: +Z face still hit at the half-extent" );
+		safe_release( g );
+	}
+
+	// degenerate: r = 3 against half-extents of 1 -- the solid is EXACTLY the
+	// sphere of radius 3 (the core box collapses to a point), so a ray down
+	// the +Z axis must hit at z = 3, and the old bound (top at z = 1) clipped it.
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimRoundBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 1.0, 1.0, 1.0, 3.0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit, "MONEY -- the ray hits (the pre-fix bound clipped the march at z = 1 and it missed)" );
+		Check( ri.bHit && IsClose( ri.range, 17.0, 0.02 ),
+		       "MONEY -- hit range matches the TRUE inflated surface (sphere of radius 3), not the old clipped box" );
+		// off-axis too: at (x,y) = (1.8, 0) the sphere top is sqrt(9-3.24) = 2.4
+		RayIntersectionGeometric ri2 = MkRI( Point3(1.8,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri2, true, true, false );
+		Check( ri2.bHit && IsClose( ri2.range, 20.0 - std::sqrt(Scalar(9.0-3.24)), 0.02 ),
+		       "off-axis ray lands on the inflated surface too" );
+		safe_release( g );
+	}
+}
+
 int main()
 {
 	std::cout << "SDFGeometryTest" << std::endl;
@@ -1469,6 +2609,20 @@ int main()
 	TestRoundConeAABBIdentityForWellFormedCones();
 	TestRoundConeDegenerateAABBDoesNotClipSurface();
 	TestRoundConeDegenerateOnAxisFieldMatchesSphere();
+	TestSuperellipsoidIsSphereAtUnitExponents();
+	TestSuperellipsoidBoxLimit();
+	TestSuperellipsoidOctahedronAndCylinder();
+	TestSuperellipsoidConservativeDistance();
+	TestSuperellipsoidSphereTraceRoundTrip();
+	TestSuperellipsoidCompositionStaysLipschitz();
+	TestSuperellipsoidExponentClamp();
+	TestSuperellipsoidGrammarAndBounds();
+	TestSuperellipsoidNonFiniteCoordinates();
+	TestSuperellipsoidFastPathsAreExact();
+	TestSuperellipsoidIntersect();
+	TestSDFKeyframedSizeStaysConservative();
+	TestRoundBoxLargeRoundDoesNotClipSurface();
+	TestCapsuleNegativeHalfHeightDoesNotClipSurface();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
