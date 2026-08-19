@@ -93,6 +93,10 @@ namespace RISE
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
 
+	bool FireProductionFrozenForceAdvanceWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
 	//! Beginning-state, strict-binary32 force field used by the production P3
 	//! comparator. Vreman and mu are frozen; viscous rates update only interior
 	//! normal faces, relative gravity also owns pressure-open endpoint faces,
@@ -100,6 +104,31 @@ namespace RISE
 	bool BuildFireProductionFrozenForceFieldsCPU(
 		const FireProductionFrozenForceRequest& request,
 		FireProductionFrozenForceResult& result,
+		std::string* error=0 );
+
+	struct FireProductionFrozenForceAdvanceResult
+	{
+		FireProductionFrozenForceResult frozenFields;
+		FireProductionViscousSchedule schedule;
+		std::array<std::vector<float>,3> momentumKGPerM2S;
+		std::array<std::uint64_t,8> intermediateMomentumByteDigests;
+		std::uint32_t intermediateMomentumDigestCount;
+		std::uint32_t executedViscousSubstepCount;
+
+		FireProductionFrozenForceAdvanceResult() :
+			intermediateMomentumDigestCount(0u),executedViscousSubstepCount(0u)
+		{
+			intermediateMomentumByteDigests.fill(0u);
+		}
+	};
+
+	//! Strict-binary32 force comparator after the resident preflight has supplied
+	//! its outward Lambda scalar. mu_eff and face density stay frozen through all
+	//! viscous substeps; relative gravity is added exactly once afterward.
+	bool AdvanceFireProductionFrozenForceCPU(
+		const FireProductionFrozenForceRequest& request,
+		float outwardLambdaPerS,
+		FireProductionFrozenForceAdvanceResult& result,
 		std::string* error=0 );
 }
 

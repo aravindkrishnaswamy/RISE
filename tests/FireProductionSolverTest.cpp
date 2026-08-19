@@ -118,6 +118,68 @@ namespace
 		return true;
 	}
 
+	bool FrozenForceAdvanceResultEmpty(
+		const RISE::FireProductionFrozenForceAdvanceResult& result )
+	{
+		if( !FrozenForceResultEmpty(result.frozenFields)||
+			result.schedule.substepCount!=0u||result.schedule.substepTimeS!=0.0f||
+			result.schedule.outwardWork!=0.0||result.schedule.representedProductUpper!=0.0||
+			result.intermediateMomentumDigestCount!=0u||
+			result.executedViscousSubstepCount!=0u ) return false;
+		for( const std::uint64_t digest : result.intermediateMomentumByteDigests )
+			if( digest!=0u ) return false;
+		for( unsigned int axis=0u;axis<3u;++axis )
+			if( !result.momentumKGPerM2S[axis].empty() ) return false;
+		return true;
+	}
+
+	void PublishTestForceBoundaries(
+		const RISE::FireProductionFrozenForceRequest& request,
+		std::array<std::vector<float>,3>& momentum )
+	{
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const std::size_t extent=axis==0u?request.shape.nx:
+				(axis==1u?request.shape.ny:request.shape.nz);
+			const unsigned int firstAxis=(axis+1u)%3u,secondAxis=(axis+2u)%3u;
+			const std::size_t firstExtent=firstAxis==0u?request.shape.nx:
+				(firstAxis==1u?request.shape.ny:request.shape.nz);
+			const std::size_t secondExtent=secondAxis==0u?request.shape.nx:
+				(secondAxis==1u?request.shape.ny:request.shape.nz);
+			for( std::size_t second=0u;second<secondExtent;++second )
+				for( std::size_t first=0u;first<firstExtent;++first ) {
+					std::size_t lowXYZ[]={0u,0u,0u};
+					lowXYZ[firstAxis]=first;lowXYZ[secondAxis]=second;
+					std::size_t highXYZ[]={lowXYZ[0],lowXYZ[1],lowXYZ[2]};
+					highXYZ[axis]=extent;
+					const std::size_t low=TransportFaceIndex(request.shape,axis,
+						lowXYZ[0],lowXYZ[1],lowXYZ[2]);
+					const std::size_t high=TransportFaceIndex(request.shape,axis,
+						highXYZ[0],highXYZ[1],highXYZ[2]);
+					if( request.boundary[2u*axis]==RISE::FireProductionProjectionPeriodic )
+						momentum[axis][high]=momentum[axis][low];
+					if( request.boundary[2u*axis]==RISE::FireProductionProjectionWall )
+						momentum[axis][low]=0.0f;
+					if( request.boundary[2u*axis+1u]==RISE::FireProductionProjectionWall )
+						momentum[axis][high]=0.0f;
+				}
+		}
+	}
+
+	std::uint64_t IndependentMomentumByteDigest(
+		const std::array<std::vector<float>,3>& momentum )
+	{
+		std::uint64_t digest=UINT64_C(14695981039346656037);
+		for( unsigned int axis=0u;axis<3u;++axis ) for( const float value : momentum[axis] ) {
+			std::uint32_t bits=0u;
+			std::memcpy(&bits,&value,sizeof(bits));
+			for( unsigned int byte=0u;byte<4u;++byte ) {
+				digest^=static_cast<unsigned char>(bits>>(8u*byte));
+				digest*=UINT64_C(1099511628211);
+			}
+		}
+		return digest;
+	}
+
 	std::string FloatBytesSHA256( const std::vector<float>& values )
 	{
 		RISE::RISECBOR64::Bytes bytes(values.size()*sizeof(float));
@@ -1121,6 +1183,203 @@ int main()
 		periodicForceResult.gravityMomentumIncrementKGPerM2S[0][periodicHigh]==
 			periodicForceResult.gravityMomentumIncrementKGPerM2S[0][periodicLow],
 		"periodic face zero owns the wrapped viscous stencil and publishes one exact seam copy");
+	FireProductionFrozenForceRequest advanceForce=periodicForce;
+	advanceForce.vremanCoefficient=0.0f;
+	for( std::size_t z=0u;z<advanceForce.shape.nz;++z )
+		for( std::size_t y=0u;y<advanceForce.shape.ny;++y )
+			for( std::size_t x=0u;x<advanceForce.shape.nx;++x ) {
+				const std::size_t cell=TransportCellIndex(advanceForce.shape,x,y,z);
+				advanceForce.cellGasDensityKGPerM3[cell]=((x+y+z)&1u)?2.0f:1.0f;
+				advanceForce.molecularKinematicViscosityM2PerS[cell]=0.25f;
+			}
+	for( std::size_t z=0u;z<advanceForce.shape.nz;++z )
+		for( std::size_t y=0u;y<advanceForce.shape.ny;++y )
+			for( std::size_t x=0u;x<=advanceForce.shape.nx;++x ) {
+				const std::size_t canonicalX=x==advanceForce.shape.nx?0u:x;
+				advanceForce.faceDensityKGPerM3[0][TransportFaceIndex(
+					advanceForce.shape,0u,x,y,z)]=1.25f+0.25f*static_cast<float>(canonicalX);
+			}
+	FireProductionFrozenForceResult advanceForceFields;
+	const bool advanceForceBuilt=BuildFireProductionFrozenForceFieldsCPU(
+		advanceForce,advanceForceFields,&error);
+	FireProductionFrozenForceAdvanceResult periodicAdvance;
+	bool periodicAdvanceExact=advanceForceBuilt&&AdvanceFireProductionFrozenForceCPU(
+		advanceForce,16.0f,periodicAdvance,&error)&&
+		periodicAdvance.schedule.substepCount==2u&&
+		periodicAdvance.executedViscousSubstepCount==2u&&
+		periodicAdvance.intermediateMomentumDigestCount==2u&&
+		periodicAdvance.frozenFields.effectiveDynamicViscosityPaS==
+			advanceForceFields.effectiveDynamicViscosityPaS;
+	std::array<std::vector<float>,3> expectedPeriodicMomentum=
+		advanceForce.beginningMomentumKGPerM2S;
+	PublishTestForceBoundaries(advanceForce,expectedPeriodicMomentum);
+	FireProductionFrozenForceRequest periodicSubstep=advanceForce;
+	periodicSubstep.timeStepS=periodicAdvance.schedule.substepTimeS;
+	periodicSubstep.gravityMPerS2.fill(0.0f);periodicSubstep.vremanCoefficient=0.0f;
+	for( std::size_t cell=0u;cell<advanceForce.shape.CellCount();++cell )
+		periodicSubstep.molecularKinematicViscosityM2PerS[cell]=
+			advanceForceFields.effectiveDynamicViscosityPaS[cell]/
+			advanceForce.cellGasDensityKGPerM3[cell];
+	std::array<std::uint64_t,8> expectedIntermediateDigests={};
+	for( std::uint32_t substep=0u;substep<periodicAdvance.schedule.substepCount;++substep ) {
+		periodicSubstep.beginningMomentumKGPerM2S=expectedPeriodicMomentum;
+		FireProductionFrozenForceResult expectedSubstepFields;
+		periodicAdvanceExact=periodicAdvanceExact&&BuildFireProductionFrozenForceFieldsCPU(
+			periodicSubstep,expectedSubstepFields,&error);
+		if( periodicAdvanceExact ) for( unsigned int axis=0u;axis<3u;++axis )
+			for( std::size_t face=0u;face<expectedPeriodicMomentum[axis].size();++face )
+				expectedPeriodicMomentum[axis][face]+=
+					periodicAdvance.schedule.substepTimeS*
+					expectedSubstepFields.beginningViscousMomentumRateKGPerM2S2[axis][face];
+		PublishTestForceBoundaries(advanceForce,expectedPeriodicMomentum);
+		expectedIntermediateDigests[substep]=
+			IndependentMomentumByteDigest(expectedPeriodicMomentum);
+	}
+	for( unsigned int axis=0u;axis<3u;++axis )
+		for( std::size_t face=0u;face<expectedPeriodicMomentum[axis].size();++face )
+			expectedPeriodicMomentum[axis][face]+=
+				advanceForceFields.gravityMomentumIncrementKGPerM2S[axis][face];
+	PublishTestForceBoundaries(advanceForce,expectedPeriodicMomentum);
+	std::array<std::vector<float>,3> gravityFirstMomentum=
+		advanceForce.beginningMomentumKGPerM2S;
+	for( unsigned int axis=0u;axis<3u;++axis )
+		for( std::size_t face=0u;face<gravityFirstMomentum[axis].size();++face )
+			gravityFirstMomentum[axis][face]+=
+				advanceForceFields.gravityMomentumIncrementKGPerM2S[axis][face];
+	PublishTestForceBoundaries(advanceForce,gravityFirstMomentum);
+	for( std::uint32_t substep=0u;substep<periodicAdvance.schedule.substepCount;++substep ) {
+		periodicSubstep.beginningMomentumKGPerM2S=gravityFirstMomentum;
+		FireProductionFrozenForceResult gravityFirstFields;
+		periodicAdvanceExact=periodicAdvanceExact&&BuildFireProductionFrozenForceFieldsCPU(
+			periodicSubstep,gravityFirstFields,&error);
+		if( periodicAdvanceExact ) for( unsigned int axis=0u;axis<3u;++axis )
+			for( std::size_t face=0u;face<gravityFirstMomentum[axis].size();++face )
+				gravityFirstMomentum[axis][face]+=
+					periodicAdvance.schedule.substepTimeS*
+					gravityFirstFields.beginningViscousMomentumRateKGPerM2S2[axis][face];
+		PublishTestForceBoundaries(advanceForce,gravityFirstMomentum);
+	}
+	Check(periodicAdvanceExact&&
+		periodicAdvance.intermediateMomentumByteDigests==expectedIntermediateDigests&&
+		periodicAdvance.momentumKGPerM2S==expectedPeriodicMomentum&&
+		gravityFirstMomentum!=expectedPeriodicMomentum,
+		"every outward-selected viscous intermediate reuses frozen dynamic mu before "
+		"one noncommuting gravity update");
+	FireProductionFrozenForceAdvanceResult mixedBoundaryAdvance;
+	const std::size_t mixedOpenFace=TransportFaceIndex(
+		upperWallShear.shape,1u,2u,0u,2u);
+	const std::size_t mixedWallFace=TransportFaceIndex(
+		upperWallShear.shape,1u,2u,upperWallShear.shape.ny,2u);
+	upperWallShear.beginningMomentumKGPerM2S[1][mixedOpenFace]=0.5f;
+	upperWallShear.beginningMomentumKGPerM2S[1][mixedWallFace]=7.0f;
+	FireProductionFrozenForceResult mixedInitialFields;
+	bool mixedAdvanceExact=BuildFireProductionFrozenForceFieldsCPU(
+		upperWallShear,mixedInitialFields,&error)&&AdvanceFireProductionFrozenForceCPU(
+		upperWallShear,16.0f,mixedBoundaryAdvance,&error)&&
+		mixedBoundaryAdvance.intermediateMomentumDigestCount==2u;
+	std::array<std::vector<float>,3> expectedMixedMomentum=
+		upperWallShear.beginningMomentumKGPerM2S;
+	PublishTestForceBoundaries(upperWallShear,expectedMixedMomentum);
+	FireProductionFrozenForceRequest mixedSubstep=upperWallShear;
+	mixedSubstep.timeStepS=mixedBoundaryAdvance.schedule.substepTimeS;
+	mixedSubstep.gravityMPerS2.fill(0.0f);mixedSubstep.vremanCoefficient=0.0f;
+	mixedSubstep.molecularKinematicViscosityM2PerS=
+		mixedInitialFields.effectiveDynamicViscosityPaS;
+	for( std::uint32_t substep=0u;substep<2u;++substep ) {
+		mixedSubstep.beginningMomentumKGPerM2S=expectedMixedMomentum;
+		FireProductionFrozenForceResult mixedSubstepFields;
+		mixedAdvanceExact=mixedAdvanceExact&&BuildFireProductionFrozenForceFieldsCPU(
+			mixedSubstep,mixedSubstepFields,&error);
+		if( mixedAdvanceExact ) for( unsigned int axis=0u;axis<3u;++axis )
+			for( std::size_t face=0u;face<expectedMixedMomentum[axis].size();++face )
+				expectedMixedMomentum[axis][face]+=
+					mixedBoundaryAdvance.schedule.substepTimeS*
+					mixedSubstepFields.beginningViscousMomentumRateKGPerM2S2[axis][face];
+		PublishTestForceBoundaries(upperWallShear,expectedMixedMomentum);
+		mixedAdvanceExact=mixedAdvanceExact&&
+			mixedBoundaryAdvance.intermediateMomentumByteDigests[substep]==
+				IndependentMomentumByteDigest(expectedMixedMomentum);
+	}
+	for( unsigned int axis=0u;axis<3u;++axis )
+		for( std::size_t face=0u;face<expectedMixedMomentum[axis].size();++face )
+			expectedMixedMomentum[axis][face]+=
+				mixedInitialFields.gravityMomentumIncrementKGPerM2S[axis][face];
+	PublishTestForceBoundaries(upperWallShear,expectedMixedMomentum);
+	Check(mixedAdvanceExact&&mixedBoundaryAdvance.momentumKGPerM2S==
+		expectedMixedMomentum&&mixedBoundaryAdvance.momentumKGPerM2S[1][mixedWallFace]==0.0f&&
+		mixedBoundaryAdvance.momentumKGPerM2S[1][mixedOpenFace]==0.625f,
+		"both mixed-boundary intermediates prescribe a raw wall endpoint while "
+		"pressure-open gravity remains owned");
+	FireProductionFrozenForceAdvanceResult rejectedAdvance;
+	auto SeedRejectedAdvance=[](FireProductionFrozenForceAdvanceResult& seeded) {
+		seeded.frozenFields.eddyKinematicViscosityM2PerS.assign(1u,1.0f);
+		seeded.frozenFields.effectiveDynamicViscosityPaS.assign(1u,2.0f);
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			seeded.frozenFields.beginningViscousMomentumRateKGPerM2S2[axis].assign(1u,3.0f);
+			seeded.frozenFields.gravityMomentumIncrementKGPerM2S[axis].assign(1u,4.0f);
+			seeded.momentumKGPerM2S[axis].assign(1u,5.0f);
+		}
+		seeded.schedule.substepCount=6u;seeded.schedule.substepTimeS=7.0f;
+		seeded.schedule.outwardWork=8.0;
+		seeded.schedule.representedProductUpper=9.0;
+		seeded.intermediateMomentumByteDigests.fill(11u);
+		seeded.intermediateMomentumDigestCount=12u;
+		seeded.executedViscousSubstepCount=10u;
+	};
+	SeedRejectedAdvance(rejectedAdvance);error.clear();
+	const bool rejectedNinthAdvance=!AdvanceFireProductionFrozenForceCPU(
+		forceRest,900.0f,rejectedAdvance,&error);
+	Check(rejectedNinthAdvance&&FrozenForceAdvanceResultEmpty(rejectedAdvance)&&
+		error.find("eight")!=std::string::npos,
+		"a required ninth viscous substep rejects before any force-state publication");
+	SeedRejectedAdvance(rejectedAdvance);error.clear();denyTestAllocations=true;
+	const bool advanceAllocationRejected=!AdvanceFireProductionFrozenForceCPU(
+		forceRest,1.0f,rejectedAdvance,&error);
+	denyTestAllocations=false;
+	Check(advanceAllocationRejected&&FrozenForceAdvanceResultEmpty(rejectedAdvance),
+		"persistent allocation denial is contained by the advance API boundary");
+	FireProductionFrozenForceRequest lateOverflowAdvance=forceRest;
+	lateOverflowAdvance.vremanCoefficient=0.0f;
+	std::fill(lateOverflowAdvance.molecularKinematicViscosityM2PerS.begin(),
+		lateOverflowAdvance.molecularKinematicViscosityM2PerS.end(),0.0f);
+	lateOverflowAdvance.timeStepS=1.0f;lateOverflowAdvance.ambientDensityKGPerM3=1.0f;
+	lateOverflowAdvance.gravityMPerS2[0]=2.0f;
+	std::fill(lateOverflowAdvance.faceDensityKGPerM3[0].begin(),
+		lateOverflowAdvance.faceDensityKGPerM3[0].end(),0x1.2ced32p+126f);
+	std::fill(lateOverflowAdvance.beginningMomentumKGPerM2S[0].begin(),
+		lateOverflowAdvance.beginningMomentumKGPerM2S[0].end(),0x1.2ced32p+127f);
+	SeedRejectedAdvance(rejectedAdvance);error.clear();
+	const bool lateOverflowRejected=!AdvanceFireProductionFrozenForceCPU(
+		lateOverflowAdvance,0.0f,rejectedAdvance,&error);
+	Check(lateOverflowRejected&&FrozenForceAdvanceResultEmpty(rejectedAdvance)&&
+		error.find("gravity update overflowed")!=std::string::npos,
+		"a finite late gravity overflow discards every completed viscous intermediate");
+	FireProductionProjectionShape advanceBelowShape,advanceAboveShape;
+	advanceBelowShape.nx=103u;advanceBelowShape.ny=313u;advanceBelowShape.nz=332u;
+	advanceAboveShape.nx=86u;advanceAboveShape.ny=200u;advanceAboveShape.nz=622u;
+	std::uint64_t advanceBelowBytes=0u,advanceAboveBytes=0u;
+	FireProductionFrozenForceRequest advanceAdmission;
+	advanceAdmission.shape=advanceAboveShape;advanceAdmission.shape.cellWidthM=1.0f;
+	advanceAdmission.timeStepS=1.0f;
+	SeedRejectedAdvance(rejectedAdvance);error.clear();
+	const bool advanceOverRejected=!AdvanceFireProductionFrozenForceCPU(
+		advanceAdmission,0.0f,rejectedAdvance,&error)&&
+		FrozenForceAdvanceResultEmpty(rejectedAdvance)&&
+		error.find("two GiB")!=std::string::npos;
+	advanceAdmission.shape=advanceBelowShape;advanceAdmission.shape.cellWidthM=1.0f;
+	SeedRejectedAdvance(rejectedAdvance);error.clear();
+	const bool advanceBelowContinues=!AdvanceFireProductionFrozenForceCPU(
+		advanceAdmission,0.0f,rejectedAdvance,&error)&&
+		FrozenForceAdvanceResultEmpty(rejectedAdvance)&&
+		error.find("cell shape")!=std::string::npos;
+	Check(FireProductionFrozenForceAdvanceWorkingSetBytes(
+		advanceBelowShape,advanceBelowBytes)&&
+		FireProductionFrozenForceAdvanceWorkingSetBytes(
+			advanceAboveShape,advanceAboveBytes)&&
+		advanceBelowBytes==UINT64_C(2147483640)&&
+		advanceAboveBytes==UINT64_C(2147483680)&&
+		advanceOverRejected&&advanceBelowContinues,
+		"multi-substep force peak and actual admission straddle two GiB exactly");
 	FireProductionFrozenForceRequest invalidFrozenForce=forceRest;
 	auto SeedRejectedFrozenForce=[](FireProductionFrozenForceResult& seeded) {
 		seeded.eddyKinematicViscosityM2PerS.assign(1u,1.0f);
@@ -2502,6 +2761,10 @@ int main()
 		"src/Library/Utilities/FireProductionTransport.cpp");
 	const std::string forceSource=ReadText(
 		"src/Library/Utilities/FireProductionForce.cpp");
+	const std::size_t forceAdvanceBeginning=forceSource.find(
+		"bool AdvanceFireProductionFrozenForceCPU(");
+	const std::string forceAdvanceBody=forceAdvanceBeginning==std::string::npos?
+		std::string():forceSource.substr(forceAdvanceBeginning);
 	const std::size_t crossCarrierBeginning=transportSource.find("float CrossCarrierAt(");
 	const std::size_t dualAxisBeginning=transportSource.find("bool BuildDualAxisRequest(");
 	const std::string crossCarrierBody=crossCarrierBeginning==std::string::npos||
@@ -2629,7 +2892,10 @@ int main()
 			"FireProductionProjectionWall?1u:0u")!=std::string::npos,
 		"dual line builder binds sweep-side roles, wall-zero precedence, open nearest ghosts, "
 		"and prescribed component-wall ownership");
-	Check(forceSource.find("alphaSquared+=alpha*alpha;")!=std::string::npos&&
+	Check(!forceAdvanceBody.empty()&&
+		CountSubstring(forceAdvanceBody,"publishBoundaries();")==3u&&
+		CountSubstring(forceAdvanceBody,"MomentumByteDigest(")==1u&&
+		forceSource.find("alphaSquared+=alpha*alpha;")!=std::string::npos&&
 		forceSource.find("std::max(0.0f,rawBBeta)")!=std::string::npos&&
 		forceSource.find("std::nextafter((static_cast<double>(timeStepS)*")!=
 			std::string::npos&&

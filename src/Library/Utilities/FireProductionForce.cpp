@@ -49,6 +49,23 @@ namespace RISE
 		{
 			return std::memcmp(&first,&second,sizeof(float))==0;
 		}
+
+		std::uint64_t MomentumByteDigest(
+			const std::array<std::vector<float>,3>& momentum )
+		{
+			// FNV-1a over explicitly little-endian binary32 words. This is a fixed,
+			// allocation-free diagnostic topology, not a record identity hash.
+			std::uint64_t digest=UINT64_C(14695981039346656037);
+			for( unsigned int axis=0u;axis<3u;++axis ) for( const float value : momentum[axis] ) {
+				std::uint32_t bits=0u;
+				std::memcpy(&bits,&value,sizeof(bits));
+				for( unsigned int byte=0u;byte<4u;++byte ) {
+					digest^=static_cast<unsigned char>(bits>>(8u*byte));
+					digest*=UINT64_C(1099511628211);
+				}
+			}
+			return digest;
+		}
 	}
 
 	bool EvaluateFireProductionVremanEddyViscosity(
@@ -157,8 +174,27 @@ namespace RISE
 		return true;
 	}
 
-	bool BuildFireProductionFrozenForceFieldsCPU(
+	bool FireProductionFrozenForceAdvanceWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		const std::uint64_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+		const std::uint64_t cells=nx*ny*nz;
+		const std::uint64_t allFaces=(nx+1u)*ny*nz+
+			nx*(ny+1u)*nz+nx*ny*(nz+1u);
+		// At a substep peak the original request, frozen fields, evolving
+		// momentum, copied substep request, and atomic substep result/work coexist.
+		bytes=(20u*cells+10u*allFaces)*sizeof(float);
+		return true;
+	}
+
+	static bool BuildFireProductionFrozenForceFieldsImpl(
 		const FireProductionFrozenForceRequest& request,
+		const std::vector<float>* fixedDynamicViscosityPaS,
+		bool propagateAllocationFailure,
 		FireProductionFrozenForceResult& result,
 		std::string* error )
 	{
@@ -193,6 +229,8 @@ namespace RISE
 			if( request.cellGasDensityKGPerM3.size()!=cells||
 				request.molecularKinematicViscosityM2PerS.size()!=cells )
 				return Fail(error,"production frozen-force cell shape is invalid");
+			if( fixedDynamicViscosityPaS&&fixedDynamicViscosityPaS->size()!=cells )
+				return Fail(error,"production frozen-force fixed-mu shape is invalid");
 			for( const float density : request.cellGasDensityKGPerM3 )
 				if( !(density>0.0f)||!std::isfinite(density) )
 					return Fail(error,"production frozen-force cell density is invalid");
@@ -300,14 +338,22 @@ namespace RISE
 					vreman.directionalWidthsM.fill(shape.cellWidthM);
 					for( unsigned int i=0u;i<3u;++i ) for( unsigned int j=0u;j<3u;++j )
 						vreman.velocityGradientPerS[3u*i+j]=gradient[i][j];
-					if( !EvaluateFireProductionVremanEddyViscosity(vreman,
-						computed.eddyKinematicViscosityM2PerS[cell],error) ) return false;
-					const float effectiveKinematic=
-						request.molecularKinematicViscosityM2PerS[cell]+
-						computed.eddyKinematicViscosityM2PerS[cell];
-					const float mu=request.cellGasDensityKGPerM3[cell]*effectiveKinematic;
-					if( !std::isfinite(effectiveKinematic)||!std::isfinite(mu) )
-						return Fail(error,"production frozen-force viscosity overflowed");
+					float mu=0.0f;
+					if( fixedDynamicViscosityPaS ) {
+						computed.eddyKinematicViscosityM2PerS[cell]=0.0f;
+						mu=(*fixedDynamicViscosityPaS)[cell];
+						if( !(mu>=0.0f)||!std::isfinite(mu) )
+							return Fail(error,"production frozen-force fixed mu is invalid");
+					} else {
+						if( !EvaluateFireProductionVremanEddyViscosity(vreman,
+							computed.eddyKinematicViscosityM2PerS[cell],error) ) return false;
+						const float effectiveKinematic=
+							request.molecularKinematicViscosityM2PerS[cell]+
+							computed.eddyKinematicViscosityM2PerS[cell];
+						mu=request.cellGasDensityKGPerM3[cell]*effectiveKinematic;
+						if( !std::isfinite(effectiveKinematic)||!std::isfinite(mu) )
+							return Fail(error,"production frozen-force viscosity overflowed");
+					}
 					computed.effectiveDynamicViscosityPaS[cell]=mu;
 					for( unsigned int component=0u;component<3u;++component )
 						for( unsigned int derivative=0u;derivative<3u;++derivative )
@@ -407,8 +453,105 @@ namespace RISE
 			if( error ) error->clear();
 			return true;
 		} catch( const std::bad_alloc& ) {
+			if( propagateAllocationFailure ) throw;
 			result=FireProductionFrozenForceResult();
 			Fail(error,"production frozen-force allocation failed");
+			return false;
+		}
+	}
+
+	bool BuildFireProductionFrozenForceFieldsCPU(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionFrozenForceResult& result,
+		std::string* error )
+	{
+		return BuildFireProductionFrozenForceFieldsImpl(request,0,false,result,error);
+	}
+
+	bool AdvanceFireProductionFrozenForceCPU(
+		const FireProductionFrozenForceRequest& request,
+		float outwardLambdaPerS,
+		FireProductionFrozenForceAdvanceResult& result,
+		std::string* error )
+	{
+		result=FireProductionFrozenForceAdvanceResult();
+		try {
+			FireProductionFrozenForceAdvanceResult computed;
+			std::uint64_t workingBytes=0u;
+			if( !FireProductionFrozenForceAdvanceWorkingSetBytes(
+				request.shape,workingBytes)||workingBytes>(UINT64_C(1)<<31u) )
+				return Fail(error,
+					"production frozen-force advance working set exceeds two GiB");
+			if( !BuildFireProductionFrozenForceFieldsImpl(
+				request,0,true,computed.frozenFields,error)||
+				!SelectFireProductionViscousSchedule(request.timeStepS,
+					outwardLambdaPerS,computed.schedule,error) ) return false;
+			computed.momentumKGPerM2S=request.beginningMomentumKGPerM2S;
+			auto publishBoundaries=[&]() {
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t extent=AxisExtent(request.shape,axis);
+					const std::size_t firstExtent=AxisExtent(request.shape,(axis+1u)%3u);
+					const std::size_t secondExtent=AxisExtent(request.shape,(axis+2u)%3u);
+					for( std::size_t second=0u;second<secondExtent;++second )
+						for( std::size_t first=0u;first<firstExtent;++first ) {
+							std::size_t lowXYZ[]={0u,0u,0u};
+							lowXYZ[(axis+1u)%3u]=first;lowXYZ[(axis+2u)%3u]=second;
+							std::size_t highXYZ[]={lowXYZ[0],lowXYZ[1],lowXYZ[2]};
+							highXYZ[axis]=extent;
+							const std::size_t low=FaceIndex(request.shape,axis,
+								lowXYZ[0],lowXYZ[1],lowXYZ[2]);
+							const std::size_t high=FaceIndex(request.shape,axis,
+								highXYZ[0],highXYZ[1],highXYZ[2]);
+							if( request.boundary[2u*axis]==FireProductionProjectionPeriodic )
+								computed.momentumKGPerM2S[axis][high]=
+									computed.momentumKGPerM2S[axis][low];
+							if( request.boundary[2u*axis]==FireProductionProjectionWall )
+								computed.momentumKGPerM2S[axis][low]=0.0f;
+							if( request.boundary[2u*axis+1u]==FireProductionProjectionWall )
+								computed.momentumKGPerM2S[axis][high]=0.0f;
+						}
+				}
+			};
+			publishBoundaries();
+			FireProductionFrozenForceRequest substepRequest=request;
+			substepRequest.timeStepS=computed.schedule.substepTimeS;
+			substepRequest.gravityMPerS2.fill(0.0f);
+			for( std::uint32_t substep=0u;substep<computed.schedule.substepCount;++substep ) {
+				substepRequest.beginningMomentumKGPerM2S=computed.momentumKGPerM2S;
+				FireProductionFrozenForceResult substepFields;
+				if( !BuildFireProductionFrozenForceFieldsImpl(substepRequest,
+					&computed.frozenFields.effectiveDynamicViscosityPaS,
+					true,substepFields,error) ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis )
+					for( std::size_t face=0u;face<computed.momentumKGPerM2S[axis].size();++face ) {
+						const float value=computed.momentumKGPerM2S[axis][face]+
+							computed.schedule.substepTimeS*
+							substepFields.beginningViscousMomentumRateKGPerM2S2[axis][face];
+						if( !std::isfinite(value) )
+							return Fail(error,"production frozen-force substep overflowed");
+						computed.momentumKGPerM2S[axis][face]=value;
+					}
+				publishBoundaries();
+				computed.intermediateMomentumByteDigests[
+					computed.intermediateMomentumDigestCount++]=
+					MomentumByteDigest(computed.momentumKGPerM2S);
+				++computed.executedViscousSubstepCount;
+			}
+			for( unsigned int axis=0u;axis<3u;++axis )
+				for( std::size_t face=0u;face<computed.momentumKGPerM2S[axis].size();++face ) {
+					const float value=computed.momentumKGPerM2S[axis][face]+
+						computed.frozenFields.gravityMomentumIncrementKGPerM2S[axis][face];
+					if( !std::isfinite(value) )
+						return Fail(error,"production frozen-force gravity update overflowed");
+					computed.momentumKGPerM2S[axis][face]=value;
+				}
+			publishBoundaries();
+			result=std::move(computed);
+			if( error ) error->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionFrozenForceAdvanceResult();
+			Fail(error,"production frozen-force advance allocation failed");
 			return false;
 		}
 	}
