@@ -1019,6 +1019,36 @@ digest and the resident production schedule. r94 changes only the executable
 form of the r90--r91 stability/evidence certificate. It does not change the
 force operator, case identity, validation bands, or milestone budgets.
 
+### 7.12 Eight-substep composed force comparison (r95)
+
+The per-kernel r93 ULP ceiling is not applied blindly through cancellation.
+On the strict N=8 periodic, variable-momentum resident fixture, the maximum
+absolute CPU/Metal difference after all eight frozen-viscosity updates and the
+terminal gravity addition is exactly `2^-25 = 2.98023223876953125e-8`. Where
+the result magnitude is at least `1e-5` during characterization, the measured
+maximum is 2 ULP, below the naive `8 * 8 = 64` ULP accumulation ceiling. The
+raw ordered-ULP maximum is 1,614,348,289 only because one cancellation cell is
+`-4.47471e-10` on CPU and `+7.09406e-10` on Metal; treating that sign crossing
+as a billion-ULP physical error is numerically meaningless.
+
+The composed comparison therefore accepts each non-analytic output only when
+either its ordered-binary32 distance is at most 64 ULP or its absolute
+difference is at most `2^-25`. This is a disjunction, not a magnitude switch,
+so no chosen near-zero threshold enters the runtime or the gate. Analytic
+zeros, prescribed wall values, and periodic publication seams retain exact-byte
+requirements. The gate applies to every final momentum face, and the eight
+Private intermediate snapshots retain their canonical FNV evidence after the
+single terminal staging event.
+
+Increasing r93's per-kernel 8-ULP ceiling was rejected because the individual
+kernel evidence did not move. Using raw ordered ULP alone was rejected because
+it is singular across zero and would report a sub-nanounit sign crossing as a
+billion-ULP failure. Using only an absolute band was rejected because it would
+weaken ordinary values up to magnitude 14.4414, where the measured composed
+difference is only 2 ULP. The r95 bound is comparison evidence for the fixed
+N=8 composition; it changes no state bytes, operator, validation tolerance,
+case identity, or budget.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

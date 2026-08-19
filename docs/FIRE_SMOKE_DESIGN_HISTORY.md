@@ -2360,3 +2360,17 @@ it was already tried and refuted here.
   21.1372/35.2078 ms for the tier-10 palindrome. This is an executable
   certificate/evidence amendment only; physics, identity, validation bands,
   two-GiB cap, and 200 ms budget are unchanged.
+
+- **r95 (2026-08-19):** measured eight-substep force composition bound. The
+  resident N=8 periodic fixture measured a maximum final absolute CPU/Metal
+  drift of exactly `2^-25` (2.98023223876953125e-8). Ordinary values had a
+  maximum 2-ULP drift, below the naive 64-ULP sum of eight r93 ceilings, but a
+  cancellation cell crossed zero (`-4.47471e-10` versus `+7.09406e-10`) and
+  therefore produced a meaningless ordered distance of 1,614,348,289 ULP.
+  The ruling gates every composed face by `ULP <= 64 OR abs <= 2^-25`, with
+  exact bytes retained for analytic zeros, wall prescriptions, and periodic
+  publication. Widening the per-kernel rule, raw ULP alone, and a universal
+  absolute band were rejected respectively for contradicting unchanged r93
+  evidence, zero-crossing singularity, and weakening ordinary magnitudes up to
+  14.4414. This measured comparison rule changes no physics, bytes,
+  validation contract, identity, or budget.
