@@ -2206,3 +2206,32 @@ it was already tried and refuted here.
   `max(3 sigma,1.25 Delta_refine,B_fp32)` rule; zero oracle thread variance may
   zero only sigma, never the fp32 comparison allowance. These pre-release
   corrections do not change case identity or the 200 ms budget.
+
+- **r89 (2026-08-18):** P3 executable dual ownership and certificate closure.
+  Review showed that r88 still demanded an impossible unit-Courant identity
+  from two nonlinear half-remaps, treated publication seams and open/wall MAC
+  endpoints as uniform dual cells, made remapped dual density compete with
+  r86's cell-derived face density, misstated the certified wall ghost as
+  free-slip, and applied a constant-coefficient Fourier bound to the actual
+  variable-coefficient operator. The ruling moves exact diagonal translation
+  to total `(2,2,1)` Courants, where every palindrome submap is an integer
+  shift, and uses an independent five-pass oracle for fractional Courants.
+
+  Unique periodic DOFs, publication duplicates, prescribed wall planes,
+  pressure-open reservoir endpoints, cross-carrier ghosts, and corner
+  precedence are pinned for all 54 component/sweep/side orientations. Dual
+  density is limiter-only and discarded; remapped cell density's r86 arithmetic
+  face mean is the sole viscosity/projection/accepted-velocity denominator.
+  Every wall velocity component uses the certified odd no-slip reflection.
+  Viscous work now derives `N_nu` from the actual assembled operator's maximum
+  absolute row sum, with the exact fp32 ceil association, an eight-substep
+  capability ceiling, and a tier-10 timing proof; the unproved `3/8` shortcut
+  is rejected.
+
+  P3 also gains a resident P2 encoder seam, an allocation high-water ledger,
+  no-interstage-readback capture, and process-wide projection counters. The
+  exact steps-3480--3487 package schema cross-binds r80 dt/Tmax/EOS/frame
+  evidence, separates later source maps, and carries operation-count/operand
+  `B_fp32` plus restriction-matched refinement inputs. These changes are still
+  pre-release production semantics and do not alter case identity, 200 ms, or
+  two-GiB limits.

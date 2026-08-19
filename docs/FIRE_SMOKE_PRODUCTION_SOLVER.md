@@ -669,6 +669,112 @@ These rulings replace r87's additive update, cross-component limiter, frozen
 single viscous RHS, and selectable/zero-tolerance slice language. They do not
 alter the 200 ms or 2 GiB milestone budgets.
 
+### 7.6 P3 dual ownership and executable certificates (r89)
+
+Review of r88 found four remaining contradictions; none reached code. First,
+two nonlinear limited half-remaps have no semigroup identity, so total unit
+Courant is not an exact one-cell translation through the palindrome. The exact
+integer gate instead uses total `C_x=C_y=2` (and `C_z=1`): every half x/y pass
+and the full z pass is an exact unit shift, giving exact translation by
+`(2,2,1)`. At total `C_x=C_y=1`, the expected bytes come from an independently
+composed five-pass CPU oracle; an asymmetric variable-carrier field must
+distinguish the palindrome from its reverse and from a three-pass Lie split.
+The `0.75+0.75` isolated donor remains a conservation/nonnegativity gate, not
+an exact-translation claim. No formal-order claim follows merely from the
+palindrome; the measured V3 refinement gate remains authoritative.
+
+Second, MAC storage and dual ownership are now explicit. For component `c`,
+the periodic c-normal positive seam is publication-only: exactly `N_c` unique
+DOFs are remapped and the `N_c` face is copied from face zero afterward. A
+c-normal wall has `N_c-1` owned interior DOFs; both endpoint planes are
+prescribed zero and excluded from remap/forces. A c-normal pressure-open side
+has a boundary-reservoir endpoint DOF that is carried from the beginning into
+the sole projection but is not an advected dual control volume; the `N_c-1`
+interior DOFs are remapped. Transverse sweeps retain those owned c-normal
+planes except prescribed wall planes.
+
+For the `a!=c` carrier average at a c-normal endpoint, the c-side ghost is:
+periodic wrap; odd reflection of every velocity component at a wall (the
+certified no-slip rule); and nearest-interior extension at pressure-open. A
+prescribed c-wall plane wins at a corner, then an a-wall zero carrier, then an
+a-open reservoir rule. Pressure-open ambient normal momentum uses the frozen
+boundary carrier selected at that a-side; ambient tangential momentum is zero.
+The asymmetric-line P3 kernel, not the symmetric public P1 wrapper, implements
+these six-side rules while reusing the P1 reconstruction/integral/limiter
+arithmetic. The fixture matrix covers every `(c,a,side)` combination (54
+orientations), both signs on each open side, and mixed-side corners with
+nonzero expected flux where the boundary is not prescribed.
+
+The dual density transported beside `m_c` is **limiter-only auxiliary state**.
+It provides the common collocated limiter and conservation witness during each
+momentum submap, then is discarded. It is never a published velocity
+denominator. After the cell palindrome, r86's arithmetic mean of remapped cell
+gas density is the sole authoritative face density for viscous evolution,
+gravity, projection, and accepted velocity. A non-affine density fixture must
+prove the auxiliary remap and arithmetic mean differ while the captured P2
+request and accepted velocity use only the latter. This resolves the former
+noncommuting double authority without revising P2.
+
+Third, wall gradients match the certified no-slip stencil: all velocity
+components use odd reflection about zero at an adiabatic wall; pressure-open
+uses nearest-interior extension. During every viscous substep, evolving
+momentum is converted to velocity with the single frozen authoritative face
+density derived from remapped cell gas density. `mu_eff` stays frozen.
+
+The old constant-coefficient `3/8` shortcut is withdrawn. The implementation
+assembles the actual strict-fp32 linear viscous operator—including variable
+`mu`, frozen face-density division, odd/Neumann ghosts, and the four-cell
+transverse stencil—and simultaneously accumulates each row's absolute
+coefficient sum. Energy dissipation of the symmetric-stress divergence makes
+its spectrum nonpositive; Gershgorin gives `|lambda|<=Lambda_inf`, the maximum
+row sum. The exact schedule is
+
+`N_nu = max(1, ceilf((dt * Lambda_inf) * 0.5f))`,
+
+with the written binary32 association. It enforces
+`dt_sub Lambda_inf <= 2`. Nonfinite product, integer overflow, or `N_nu>8` is
+an unsupported production request and fails structurally before dispatch. The
+eight-substep ceiling comes from the 20 ms P3 force allocation and must be
+confirmed by the tier-10 stress-kernel p95 before P3 closes; otherwise a new
+design revision is required. A strict-fp32 `N_nu>1` fixture independently
+checks the integer, every intermediate momentum digest, frozen density and
+`mu`, and single gravity addition. A separately assembled matrix/eigenvalue
+witness verifies the row-sum bound for variable coefficients and wall/open
+ghosts.
+
+Fourth, the production invocation is a new **resident P2 seam** operating on
+the owning P3 Metal buffers and encoding the same r86 hierarchy and twelve
+cycles into the existing command sequence. It performs no full-grid upload or
+readback. The standalone public P2 function becomes a comparison wrapper that
+uploads, calls that resident seam, and publishes after completion. The P3 test
+counter binds resident projection encodes/V-cycles, not wrapper calls; the
+captured request digest is computed on-device through fixed trees. A process-
+wide test counter also catches a discarded hidden solve. The allocation ledger
+records every real Metal allocation and lifetime high-water mark; it must equal
+the independent interval query on the nearest admitted shape. A one-buffer
+mutation changes the boundary result. Encoder capture rejects any full-grid
+blit/readback between P3 stages.
+
+The oracle slice package schema is fixed. Each of steps 3480--3487 contains
+beginning conservative/MAC bytes, dt, six boundaries, ambient density,
+gravity, molecular viscosity, `S_div`; certified advection flux/integral
+observables; per-cell Vreman/`mu`; viscous and gravity momentum increments; the
+isolated projection operand/result; and mass/species/enthalpy/momentum,
+`T_max`, EOS, and projection-residual metrics. Source/chemistry/pilot/radiation
+increments are separately serialized and excluded from the isolated P3 metric
+surface. Package dt/Tmax/EOS sequences and eight frame digests must equal the
+already pinned r80 continuation, proving instrumentation transparency.
+`B_fp32` is generated from `gamma_n` accumulation bounds using enumerated
+operation counts and absolute operand sums; `Delta_refine` compares
+volume-normalized physical integrals and restriction-matched fields from the
+paired tier-6 adjacent resolutions. The manifest stores those inputs, formulas,
+and outputs, not only final allowances.
+
+These corrections supersede r88's unit-Courant exactness, uniform dual-grid,
+dual-density authority, tangential free-slip wording, `3/8` shortcut, public
+P2 invocation, and self-certifying allocation/slice evidence. The palindrome,
+fixed 3480--3487 extraction, r82 bands, 200 ms, and 2 GiB limits stand.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
