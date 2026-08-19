@@ -2390,3 +2390,25 @@ it was already tried and refuted here.
   prescriptions, and seam copies remain byte exact. The 1024-ULP alternative
   was rejected because it weakened ordinary-value evidence. No kernel bytes,
   runtime acceptance, case identity, or budget changed.
+
+- **r97 (2026-08-19):** resident force--projection transaction and golden P2
+  evidence. The eight frozen-viscosity updates and one gravity addition now
+  hand their Private packed momentum allocation directly to one resident P2
+  solve. Observed command/access counters require one scalar preflight
+  transfer, zero interstage full-grid reads, zero projection uploads, one
+  projection invocation, and one terminal stage; injected access or a hidden
+  second projection fails atomically. On the exact tier-10 shape, five N=8
+  force--projection calls measured 47.4189 ms device and 71.5982 ms completed
+  p95, with 512,093,336 observed bytes below the conservative 524,688,024-byte
+  certificate. The analytic rest transaction is exact `+0` for pressure,
+  momentum, and velocity.
+
+  The immutable step-3479 checkpoint (SHA-256 `1b944176a1dad4937872b0b63057`
+  `854659cb37672ff833635c3d1827cbcb4947`) now owns a shared-periodic
+  production/fp64 projection comparison. The production residual is exact
+  `0x1.48p-15` after an exact `0x1.3ap-11` pre-residual; the fp64 residual is
+  `6.708440414004929e-5`, giving a 0.5828574834 ratio. Maximum projected
+  velocity disagreement is `1.2527614002610932e-5 m/s`, below the existing
+  `3e-5` comparator, and the production residual is below the unchanged
+  validation band. The contract therefore absorbs the measured fp32 floor;
+  no tolerance or physics change is made.

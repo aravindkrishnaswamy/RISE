@@ -1077,6 +1077,60 @@ evidence rather than extending only the cancellation-safe branch. This is an
 empirical oracle-comparison correction; it changes no kernel arithmetic,
 accepted state, runtime validation band, identity, or budget.
 
+### 7.14 Resident force--projection transaction and golden P2 gate (r97)
+
+The production transaction now carries authoritative gas density, packed MAC
+momentum, and the authored divergence target in Private Metal buffers from the
+frozen-force preflight through all eight viscous updates, one relative-gravity
+addition, and exactly one P2 projection. The projection accepts byte offsets
+into the force-owned packed momentum allocation; it does not upload or
+reconstruct those faces on the host. The only pre-update device-to-host value
+is the fixed-size outward `Lambda_up` scalar needed to select the represented
+substep schedule. No full-grid host access occurs between force and projection.
+One terminal staging event publishes the projected state and diagnostics at
+the step boundary.
+
+This absence is observed at the command/access seams rather than authored as a
+zero. Thread-local counters surround every command commit and every Metal
+`contents` access in the two translation units. The resident owner requires
+one projection invocation, zero interstage full-grid reads, zero projection
+uploads, and one terminal stage; injected interstage access and a hidden second
+projection both fail with a completely default result. The projection's
+rounded working-set certificate counts the resident provisional-state stage,
+and its actual ledger counts the force-owned packed allocation once rather than
+once per axis view.
+
+On the exact tier-10 shape (`86 x 86 x 132`) with the certified `N_nu=8`
+stress coefficients, five completed resident force--projection calls measured
+47.4189 ms device p95 and 71.5982 ms completed-call p95. The conservative
+combined certificate was 524,688,024 bytes and the observed combined allocation
+ledger was 512,093,336 bytes. The same request is an analytic rest solution:
+every published pressure, momentum, and velocity value is exact `+0` and every
+periodic seam is the canonical publication copy. Together with the measured
+20.8456 ms / 36.1283 ms tier-10 conservative palindrome, this leaves material
+room inside the 200 ms P3 step allocation and keeps the one-hour tier-10 target
+credible before P4 is added.
+
+The projection oracle gate retains the immutable step-3479 checkpoint at SHA-256
+`1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+Because the certified and production pressure-open equations intentionally have
+different active-set semantics, the shared periodic subset is used: the gate
+loads the checkpoint's accepted gas-density and MAC-velocity bytes, applies a
+fixed analytic periodic pressure perturbation, and runs the production fp32
+fixed-work projection and the independent certified fp64 adaptive projection.
+The production residual fell from exact `0x1.3ap-11` =
+`5.98907470703125e-4 s^-1` to exact `0x1.48p-15` =
+`3.910064697265625e-5 s^-1`. The fp64 oracle residual was
+`6.708440414004929e-5 s^-1`, so the production/oracle residual ratio was
+0.5828574834. The maximum projected-velocity difference was
+`1.2527614002610932e-5 m/s`, below the already pinned `3e-5 m/s` P2 comparator,
+and the production residual was far below the independently evaluated
+`1.1504455730808001e-2 s^-1` validation band. Thus the measured fp32 floor fits
+the validation contract; no tolerance change is authorized or needed.
+
+r97 changes the device ownership seam and evidence only. It changes no force or
+projection arithmetic, case identity, validation tolerance, or oracle bytes.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

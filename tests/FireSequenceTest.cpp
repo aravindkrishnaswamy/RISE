@@ -10,6 +10,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Utilities/FireSimulationRecords.h"
+#include "../src/Library/Utilities/FireProductionProjection.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
@@ -2787,6 +2788,10 @@ namespace
 		return 0;
 	}
 
+// Kept as a compact test-only include because the checkpoint schema and
+// certified periodic oracle are private to this translation unit.
+#include "FireProductionGoldenProjectionFixture.h"
+
 	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
 	{
@@ -2956,6 +2961,8 @@ int main(int argc,char** argv)
 		return RunResumeEquivalenceCertificateChild(argv[2],argv[3],argv[4],argv[5]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-r80-golden-continuation")==0)
 		return RunR80GoldenContinuationFixture(argv[2],argv[3],argv[4]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-golden-projection")==0)
+		return RunProductionGoldenProjectionFixture(argv[2]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;
