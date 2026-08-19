@@ -552,7 +552,10 @@ photos support.
 Cross-reference object-modeling-recipes for the full vocabulary and
 the mug/table/lamp recipes.  In short: analytic primitives
 (sphere/box/cylinder/torus/ellipsoid) for anything whose silhouette a
-primitive already matches; `csg_object` for anything with a hole,
+primitive already matches; `lathe_geometry` for anything that
+photographs as a solid of revolution (a bottle, a jar, a cup, a turned
+leg) -- its `profile_point <r> <h>` lines ARE the silhouette you traced
+off the photo, and never a cylinder stack; `csg_object` for a hole,
 cutout, or subtracted cavity (a mug's hollow, a drilled bracket);
 `sdf_geometry` for a taper or fillet no analytic primitive provides
 (a lampshade, a rounded bezel); mesh import only once the shape is
@@ -564,7 +567,12 @@ An organic single-form object that photographs as ONE blended mass
 `sdf_geometry` with generous `smin` blends (k 0.1-0.2) rather than
 stacking discrete primitives with a hard union -- a visible crease
 where two parts meet means k is too small, not that a different
-primitive is needed.  Asymmetric features (notches, cutouts) are
+primitive is needed.  But check first whether the mass is really ONE
+`superellipsoid` part (`a` = radius, `b` = e1, `c` = e2, proportions
+from the part's `<sx sy sz>`), whose exponents run ellipsoid (1) ->
+cushion/torso (0.4-0.7) -> box (toward 0) -- most pebbles, soap bars,
+torsos and soft-cornered slabs are that one line, not several blended
+ones.  Asymmetric features (notches, cutouts) are
 `subtract` parts on the SDF; place them by checking MORE than one
 verification view (section 5 above) -- a notch positioned from the
 front reference view alone can match that view perfectly and still

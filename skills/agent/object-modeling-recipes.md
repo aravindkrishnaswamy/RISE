@@ -23,9 +23,9 @@ not listed here.
 | `infiniteplane_geometry` | floors, walls, backdrops | cheap analytic, unbounded | the CHUNK itself only takes `name`/`xtile`/`ytile` -- placement/tilt comes from the enclosing `standard_object`'s `position`/`orientation` (universal for every geometry chunk); default lies in XY facing +Z before that transform |
 | `clippedplane_geometry` | bounded floors, area-light quads, framed backdrops | cheap analytic | four explicit corners; vertex WINDING picks which side renders/emits |
 | `csg_object` | booleans of two already-declared objects | cost of both operands + one more test | **no `scale` parameter** -- size the operands, not the CSG result |
-| `sdf_geometry` | melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp and turned-vessel recipes below for the field layout |
+| `sdf_geometry` | melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers.  **Before composing several parts for one rounded MASS -- a cushion, a torso, a pebble, a soft-cornered slab -- try a single `superellipsoid` part**, the continuum primitive: `a` = radius, `b` = e1 (north-south exponent), `c` = e2 (east-west), proportions from the part's own `<sx sy sz>`, `round` unused.  `b`=`c`=1 is an ellipsoid, both toward 0 a box, `b` toward 0 with `c`=1 a cylinder, `b`=`c`=2 an octahedron, and **0.4-0.7 is the cushion/torso range** (both clamped to [0.1, 2]).  One part spans that whole family, so a roundbox-plus-blend stack, or a box intersected with a sphere, for the same shape is work you no longer have to do | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp recipe below for the field layout |
 | `lathe_geometry` | **SURFACES OF REVOLUTION -- the turned/lathe verb** (bottles, jars, vases, mortars, goblets, urns, turned legs, finials, lamp bases -- see "Turned forms" below) | mesh cost (tessellated once), no sphere-tracing | repeated `profile_point <r> <h>` lines ARE the silhouette (`r` = radius from the axis, `h` = height along it), spun about `axis` (default `y`); a point at `r 0` sits ON the axis and collapses to a single pole, so a profile that starts and ends there is closed and watertight with no caps; `sweep_degrees` under 360 cuts a capped section; the baked mesh is DOUBLE-SIDED, so a luminaire material on it radiates inward too |
-| `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius>` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; still just roundcones -- a non-circular cross-section or a flat-cut base needs the manual `sdf_geometry` `part` grammar (see "Turned forms" below), which remains the fallback for anything the joint graph can't express |
+| `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius>` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; still just roundcones, so every bone is a capsule -- a body MASS that is really a cushion (a torso, an abdomen) is one `superellipsoid` part in a plain `sdf_geometry`, and a limb that FOLLOWS A CURVE is `sweep_geometry`; the manual `part` grammar stays the fallback for anything the joint graph can't express |
 | `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
 | `displaced_geometry` | bumpy/organic surfaces (a `base_geometry` tessellated + offset by a painter) | tessellation + per-vertex offset | prefer FEWER bumps with LONGER wavelengths -- finer `detail` does not fix a too-busy displacement (SMS docs lesson) |
@@ -76,10 +76,10 @@ a third of the local radius; larger `k` = softer shoulder.
 
 **A BRANCHING body (a creature, not a single profile) has its own
 chunk now: `skeleton_geometry`.**  Hand-chaining `roundcone` parts this
-way is still the right tool for a single continuous profile that runs
-straight up one axis (a lathe form) or for a shape the joint graph
-can't express (a non-circular cross-section, a flat-cut base, a
-hollow interior).  But a body with more than one limb meeting at a
+way is still the right tool for a shape neither the lathe nor the joint
+graph can express (a non-circular cross-section, a hollow interior, a
+profile that has to blend into a larger implicit
+body).  But a body with more than one limb meeting at a
 shared joint -- a hip branching into two legs and a tail, a hand's
 finger tree -- is a GRAPH, not a chain, and hand-authoring it as
 `sdf_geometry` `part` lines means re-deriving each bone's position,
@@ -92,20 +92,23 @@ flat-bottom cuts still applies to how each individual bone is shaped --
 `skeleton_geometry` only automates the graph assembly, not the
 primitive vocabulary.  See the geometry vocabulary table above.
 
-Reading a profile off a reference is mechanical.  Write down (height,
-radius) pairs from the bottom up -- base, belly, shoulder, neck, lip --
-then emit one `roundcone` part per span, and a `torus` part for a rolled
-lip or a raised collar.  Recipe 4 below does exactly this and renders.
+Reading a profile off a reference is mechanical.  Write down (radius,
+height) pairs from the bottom up -- base, belly, shoulder, neck, lip --
+and emit one `profile_point` per pair, in that order.  Recipe 4 below
+does exactly this and renders.
 
 Two things the profile approach needs:
 
-- **A flat bottom needs a cut.**  `roundcone`'s `y=0` end carries a
+- **A flat bottom is free on the lathe and needs a cut on the
+  fallback.**  Start the profile at `0 0` (on the axis) and run straight
+  out to the base radius at the same height: that horizontal first
+  segment IS the flat base disc, no cap chunk and no boolean.  The
+  `roundcone` fallback has no such move -- its `y=0` end carries a
   hemispherical cap of radius `r1`, so the bottom-most segment bulges
   below its own origin and a vessel authored naively sinks through the
-  table.  End the part list with `part box subtract 0` positioned so the
-  box's top face sits at the intended base plane -- one line, and the
-  bottom is flat.  (A round-bottomed florence flask genuinely wants the
-  cap; leave it in that one case.)
+  table.  End THAT part list with `part box subtract 0` positioned so
+  the box's top face sits at the intended base plane.  (A round-bottomed
+  florence flask genuinely wants the cap; leave it in that one case.)
 - **`sweep_geometry` is still NOT the lathe verb, even though it now has
   a round per-station taper.**  `point_scale` (per-station, UNIFORM on
   BOTH profile axes, composed multiplicatively with `point_width` and
@@ -121,10 +124,10 @@ Two things the profile approach needs:
   share).  What `sweep_geometry` is genuinely the right verb for is a
   TUBE THAT FOLLOWS A CURVE at roughly constant bore, optionally
   tapering smoothly: a retort's curved neck, a spout, a handle, a bail,
-  a cable, a tapered tentacle.  A retort is therefore both verbs -- an
-  SDF profile for the bulb, a sweep for the neck.  Recipe 4 shows the
-  pair.  For a round cross-section, `profile_circle <r> [n]` writes the
-  bore in one line instead of a hand-listed `profile_point` N-gon.
+  a cable, a tapered tentacle.  A retort is therefore both verbs -- a
+  lathe profile for the bulb, a sweep for the neck -- and Recipe 4 shows
+  the pair.  For a round cross-section, `profile_circle <r> [n]` writes
+  the bore in one line instead of a hand-listed `profile_point` N-gon.
 
 **When a cylinder IS the right answer** -- do not cargo-cult this into
 banning cylinders.  `cylinder_geometry` is correct, and cheaper and
@@ -570,6 +573,13 @@ reads as a teardrop/balloon from every angle) and the CSG-clipped
 version (confirmed: reads as a lamp from two angles, see below) --
 don't skip the CSG step and assume the bare primitive is "close enough".
 
+**Two shapes this clip-the-caps reflex is NOT the answer for.**  A
+lampshade is itself a solid of revolution, so `lathe_geometry` draws
+the same frustum in four `profile_point` lines and no CSG; keep the
+SDF-plus-clip below for a tapered form that must stay an SDF, and as
+the general way to put a flat cut on one.  A rounded-cornered BOX or
+cushion needs neither -- one `superellipsoid` part IS that shape.
+
 `part` field layout: `<prim> <op> <k>  <pos xyz>  <euler xyz deg>
 <scale xyz>  <a b c>  <round>`.  For `roundcone`, `a`/`b`/`c` are `<r1>
 <r2> <h>` -- the primitive grows along LOCAL +Y from `y=0` (radius
@@ -826,44 +836,33 @@ the clip box isn't cutting deep enough -- shrink its `height` (or grow
 its Y `position` overlap into the roundcone's caps) until the
 curvature is gone.
 
-## Recipe 4: a turned vessel (`sdf_geometry` profile + `sweep_geometry` neck)
+## Recipe 4: a turned vessel (`lathe_geometry` profile + `sweep_geometry` neck)
 
 The lathe recipe from "Turned forms" above, built for real: a flask
 whose whole body is one continuous profile, plus a curved neck that a
 profile cannot express.  This is the shape family that a cylinder stack
 ruins -- bottles, jars, retorts, mortars, vases, decanters.
 
-**The profile, read bottom-up as (height, radius) pairs:** base
-`(0.02, 0.26)` -> belly `(0.28, 0.31)` -> shoulder `(0.54, 0.22)` ->
-neck-in `(0.72, 0.075)` -> neck top `(0.98, 0.08)`, finished with a
-rolled lip.  Each span becomes ONE `roundcone` part; each part's `y`
-position is the previous part's top, so the segments chain end to end.
+Three things to notice:
 
-`part` field layout (same as Recipe 3): `<prim> <op> <k>  <pos xyz>
-<euler xyz deg>  <scale xyz>  <a b c>  <round>`.  For `roundcone`,
-`a b c` = `<r1> <r2> <h>`; for `torus`, `a b` = `<major> <minor>`; for
-`box`, `a b c` = the HALF-extents.
-
-Three things to notice in the part list:
-
-1. **Every joint after the first is `smin`, not `union`**, with the
-   blend radius `k` roughly a third of the local radius (`0.10` at the
-   fat belly joint, tapering to `0.02` at the lip).  Swap those `smin`s
-   for `union` and the same five parts render as a stepped stack -- the
-   blend IS the difference between a turned vessel and a pile of cones.
-2. **The last part is `box subtract`**, half-extents `1.2 0.6 1.2` at
-   `y=-0.6`, so its top face lands exactly on `y=0`.  That flattens the
-   hemispherical cap on the bottom-most `roundcone`, giving the flat
-   base a vessel needs to sit on a table.
+1. **The `profile_point` list IS the silhouette**, in `<r> <h>` --
+   radius from the axis, height along it -- read off the reference
+   bottom-up: base rim `0.26 0`, belly `0.31 0.28`, shoulder
+   `0.22 0.54`, neck-in `0.075 0.72`, rolled lip `0.10 0.99`.  Nothing
+   is derived; you write down what you see.  Points interpolate
+   STRAIGHT, so add one wherever the outline actually curves.
+2. **It starts and ends at `r = 0`**, on the axis, so those two points
+   collapse to poles and the vessel is closed and watertight with NO
+   cap geometry -- and since the first two share `h = 0`, that opening
+   horizontal segment is the flat base it sits on.
 3. **The neck is a `sweep_geometry`, not part of the profile**, because
-   it CURVES -- an eight-point circular `profile_point` polygon (radius
-   0.035) swept along a five-point Catmull-Rom path.  Its first path
-   point sits at `0.16 0.62 0`, inside the body's surface at that
-   height, so it reads as joined rather than floating alongside.  (A
-   hand-authored N-gon like this one is no longer necessary for a round
-   bore -- `profile_circle <r> [n]` emits the same ring in one line; the
-   snippet below keeps the explicit `profile_point` form as the general
-   pattern for a NON-circular cross-section.)
+   it CURVES, which no surface of revolution can do.  Its cross-section
+   is the eight-point circular polygon (`profile_point` here means
+   `<x> <y>` on that polygon, NOT the lathe's `<r> <h>`; `profile_circle
+   0.035 8` writes the same ring in one line), carried along a
+   five-point Catmull-Rom path whose first point `0.16 0.62 0` sits
+   INSIDE the body's surface at that height, so it reads as joined
+   rather than floating alongside.
 
 ```rise
 RISE ASCII SCENE 7
@@ -935,19 +934,25 @@ standard_object
 	orientation	-90 0 0
 }
 
-# The PROFILE: one roundcone per (height, radius) span, chained end to
-# end, every joint after the first blended with smin so the silhouette
-# is continuous.  The closing box subtract flattens the bottom cap.
-sdf_geometry
+# The PROFILE: <r> <h> pairs read bottom-up off the reference, spun
+# about the default y axis.  First and last points sit at r = 0 (on the
+# axis), so the vessel closes at both ends with no caps; the first two
+# share h = 0, so the base is a flat disc.
+lathe_geometry
 {
 	name	flask_body
-	part	roundcone union 0  0 0.02 0  0 0 0  1 1 1  0.26 0.31 0.26  0.0
-	part	roundcone smin 0.10  0 0.28 0  0 0 0  1 1 1  0.31 0.22 0.26  0.0
-	part	roundcone smin 0.08  0 0.54 0  0 0 0  1 1 1  0.22 0.075 0.18  0.0
-	part	roundcone smin 0.05  0 0.72 0  0 0 0  1 1 1  0.075 0.08 0.26  0.0
-	part	torus smin 0.02  0 0.99 0  0 0 0  1 1 1  0.085 0.024 0.0  0.0
-	part	box subtract 0  0 -0.6 0  0 0 0  1 1 1  1.2 0.6 1.2  0.0
-	maxsteps	256
+	profile_point	0 0
+	profile_point	0.26 0
+	profile_point	0.30 0.10
+	profile_point	0.31 0.28
+	profile_point	0.28 0.44
+	profile_point	0.22 0.54
+	profile_point	0.19 0.62
+	profile_point	0.075 0.72
+	profile_point	0.075 0.92
+	profile_point	0.10 0.99
+	profile_point	0.075 1.03
+	profile_point	0 1.05
 }
 
 standard_object
@@ -958,7 +963,7 @@ standard_object
 }
 
 # The NECK: a fixed circular cross-section swept along a curve -- the
-# job sweep_geometry actually does.  profile_point is <x> <h> in the
+# job sweep_geometry actually does.  profile_point is <x> <y> in the
 # sweep frame (a closed polygon, CCW); point is a path control point.
 sweep_geometry
 {
@@ -1001,14 +1006,14 @@ Rendered at 128px this already reads as a turned vessel: the silhouette
 runs from a flat base out through a full belly, tucks into a shoulder,
 draws in to a slim neck and finishes on a rolled lip, with no visible
 step anywhere along it -- and the swept neck arcs away and back down as
-one continuous tube.  Compare that against the same five radii authored
+one continuous tube.  Compare that against the same silhouette authored
 as five `cylinder_geometry` chunks, which produces a staircase.
 
-If your version shows a visible ledge at a joint, the `smin` `k` there
-is too small for the radius change across it -- raise it.  If the vessel
-sinks into the table, the closing `box subtract` is missing or its top
-face is not at the base plane (`position.y + half-extent.y` must equal
-the intended base height).  If the neck floats beside the body, its
+If your version shows a visible ledge, two adjacent `profile_point`s
+drop too much radius over too little height -- add a point between
+them.  If the vessel sinks into the table, its first `profile_point`'s
+`h` is not the base plane, or the profile never reaches `r = 0` there
+and the base is open.  If the neck floats beside the body, its
 first `point` is outside the body's radius at that height -- move it
 inward until it is buried, and confirm with a render, not with
 arithmetic.
@@ -1016,8 +1021,10 @@ arithmetic.
 **A one-call alternative to the body profile above.**
 `insert_geometry_scaffold {family:"blended_vessel", name:"vessel1",
 size:1.0, detail:0.5, aspect:1.0}` expands a base/belly/rim roundcone
-`smin` chain plus the same flat-bottom `box subtract` into ONE
-`sdf_geometry` chunk (`tmpl_vessel1_vessel`) in a single call --
+`smin` chain plus a flat-bottom `box subtract` into ONE
+`sdf_geometry` chunk (`tmpl_vessel1_vessel`) in a single call -- the
+FALLBACK form, so it is the one to reach for when the vessel must also
+take part in CSG; hand-write the `profile_point` list above otherwise --
 `size` sets the base/belly radii, `aspect` elongates total height (a
 squat bowl at low aspect, a tall vase at high), `detail` is smin blend
 tightness (crisper joints as it rises toward 1, softer shoulders as it

@@ -866,7 +866,9 @@ static void TestObserveModesTeaching( AgentRpcDispatcher& statelessRpc )
 // were never once looked at.  The rules:
 //
 //   1. TURNED FORMS ARE A PROFILE.  A solid of revolution is authored
-//      as an sdf_geometry roundcone/smin chain, never a cylinder stack.
+//      as a profile, never a cylinder stack -- a lathe_geometry
+//      `profile_point` silhouette since 2026-08-18, an sdf_geometry
+//      roundcone/smin chain before that (and still, as the fallback).
 //   2. BUILD CADENCE.  Look after each OBJECT GROUP, not once at the
 //      end.
 //   3. RELATIONAL CONSTRAINTS MUST BE SEEN.  Verify "resting against /
@@ -915,8 +917,54 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 	// The PRESCRIPTION, not just the prohibition: the actual verbs.  A
 	// rule that says "do not stack cylinders" without naming what to do
 	// instead is the failure mode this whole change exists to fix.
+	//
+	// RE-EXPRESSED 2026-08-18.  This used to pin "roundcone" + "smin" as
+	// THE prescription, which was right when written and wrong the day
+	// lathe_geometry shipped: a chain of roundcones is now the FALLBACK
+	// (for a turned form that must join a CSG, carry a non-circular
+	// cross-section, or blend into a larger implicit body), and pinning
+	// it as the prescription pins the skill to stale advice.  The
+	// invariant underneath was never those two tokens -- it was that the
+	// skill NAMES A CONCRETE VERB instead of only banning the cylinder
+	// stack.  Three assertions carry that forward:
+	//   (a) the prescribed verb plus the parameter that makes it usable
+	//       (a model that reads "lathe_geometry" and not "profile_point"
+	//       cannot write one),
+	//   (b) the fallback still NAMED -- it stays correct for what the
+	//       lathe cannot reach, and both skeleton_geometry and the
+	//       blended_vessel/sdf_column scaffold families expand into it,
+	//       so a skill that forgets it strands those, and
+	//   (c) the prescription comes FIRST, inside the turned-forms
+	//       section itself.  (c) is the one that actually fires on the
+	//       next staleness of this shape: a newer verb ships, the
+	//       section keeps headlining the older one, and (a)/(b) both
+	//       still pass while the advice is wrong.
+	Check( omr.find( "lathe_geometry" ) != std::string::npos
+	       && omr.find( "profile_point" ) != std::string::npos,
+	       "S3c: object-modeling-recipes prescribes lathe_geometry with its profile_point silhouette" );
 	Check( omr.find( "roundcone" ) != std::string::npos && omr.find( "smin" ) != std::string::npos,
-	       "S3c: object-modeling-recipes prescribes sdf_geometry roundcone parts joined by smin" );
+	       "S3c: object-modeling-recipes still names the sdf_geometry roundcone/smin fallback" );
+	{
+		const size_t secBeg = omr.find( "## Turned forms" );
+		Check( secBeg != std::string::npos,
+		       "S3c: object-modeling-recipes carries the turned-forms section" );
+		size_t secEnd = omr.find( "\n## ", secBeg + 4 );
+		if( secEnd == std::string::npos ) secEnd = omr.size();
+		const std::string sec = omr.substr( secBeg, secEnd - secBeg );
+		const size_t pLathe = sec.find( "lathe_geometry" );
+		const size_t pFall  = sec.find( "roundcone" );
+		Check( pLathe != std::string::npos && pFall != std::string::npos && pLathe < pFall,
+		       "S3c: the turned-forms section leads with lathe_geometry and only then the roundcone fallback" );
+	}
+	// The superellipsoid teaching (85 C6): one part spans ellipsoid ->
+	// cushion/torso (e1,e2 in 0.4-0.7) -> box -> cylinder -> octahedron,
+	// which is what a model should reach for instead of composing a
+	// roundbox-plus-blend stack for one rounded mass.  Anchored on the
+	// primitive name alone -- the numbers are prose that may legitimately
+	// be reworded; the skill being SILENT about the primitive is the
+	// staleness worth failing on.
+	Check( omr.find( "superellipsoid" ) != std::string::npos,
+	       "S3c: object-modeling-recipes names the superellipsoid part for a rounded/cushion mass" );
 	// And the honest scope limit: sweep_geometry sweeps a FIXED profile
 	// SHAPE along a path -- point_scale/point_width vary its overall
 	// scale per station (round or x-only respectively), but never its
@@ -931,8 +979,10 @@ static void TestOutputQualityRules( AgentRpcDispatcher& rpc )
 	       "S3c: object-modeling-recipes keeps a cylinder-is-correct carve-out" );
 	// The rule is reachable from the geometry-selection skill too -- a
 	// model that reads only modeling-workflow-and-geometry must still
-	// hit it.
+	// hit it, and must hit the PRESCRIBED verb there, not just the
+	// fallback (same re-expression as above).
 	Check( mwg.find( "solid of revolution" ) != std::string::npos
+	       && mwg.find( "lathe_geometry" ) != std::string::npos
 	       && mwg.find( "roundcone" ) != std::string::npos,
 	       "S3c: modeling-workflow-and-geometry carries the turned-form rule as well" );
 

@@ -96,9 +96,11 @@ above.
 
 ## A one-call alternative for turned geometry
 
-Hand-authoring a turned profile -- a chain of `sdf_geometry`
-`roundcone` parts joined by `smin` (see object-modeling-recipes' turned-
-vessel recipe) -- is the right verb but several lines of `part` math.
+A turned profile is a `lathe_geometry`: `profile_point <r> <h>` lines
+that ARE the silhouette (see object-modeling-recipes' turned-vessel
+recipe).  When the form must instead be an SDF -- to take part in CSG,
+or to blend into a larger body -- that is a chain of `roundcone` parts
+joined by `smin`, and several lines of `part` math.
 `insert_geometry_scaffold` expands one of six family templates
 (`displaced_slab`, `sweep_rail`, `blended_vessel`, `sdf_column`,
 `blended_chain`, `volume_bank`) into that graph in a single call, e.g.

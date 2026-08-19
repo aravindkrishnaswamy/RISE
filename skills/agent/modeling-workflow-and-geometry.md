@@ -209,10 +209,15 @@ invent kinds not listed here.
   shaped.  Declare the geometry chunk before the `standard_object`
   that references it, same declare-before-use rule as painters and
   materials.
-- **Other real kinds worth knowing about**: `circulardisk_geometry`,
+- **Other real kinds worth knowing about**: `lathe_geometry` (a
+  `profile_point <r> <h>` silhouette revolved about an axis -- the
+  LATHE verb, see the rule below), `skeleton_geometry` (a `joint <name>
+  <parent|none> <x> <y> <z> <radius>` graph, the verb for a limbed
+  body), `circulardisk_geometry`,
   `bezierpatch_geometry`, `bilinearpatch_geometry` (patch/surface
-  primitives), `sdf_geometry` (signed-distance-field geometry -- also
-  the LATHE verb, see the rule below),
+  primitives), `sdf_geometry` (signed-distance-field geometry -- blends,
+  fillets, and one `superellipsoid` part for any rounded box/cushion/
+  torso mass),
   `cartesian_disk_geometry`, `sweep_geometry`, `path_instances_geometry`
   (instancing along a path), and `displaced_geometry` (tessellates a
   `base_geometry` and offsets vertices by a `displacement` painter --
@@ -420,11 +425,12 @@ matching endpoints.  A cylinder is still exactly right when the real
 object's radius does not change along its axis: a straight shaft, a
 peg, a pipe, a cork, a candle, a coin.  Full rule, the flat-bottom cut,
 and a rendered profile recipe: object-modeling-recipes, "Turned forms
-are a PROFILE, never a stack of cylinders" and Recipe 4.  This
-roundcone-chain-plus-smin technique is exactly what `skeleton_geometry`
-now automates for a JOINT GRAPH (see above) -- keep hand-chaining parts
-here for a single straight-axis profile or anything the joint graph's
-per-bone roundcone-only vocabulary can't express.
+are a PROFILE, never a stack of cylinders" and Recipe 4.  The
+roundcone-chain-plus-smin fallback is exactly what `skeleton_geometry`
+now automates for a JOINT GRAPH (see above) -- hand-chain parts only
+for what neither the lathe nor the joint graph reaches (a non-circular
+cross-section, a hollow interior, a form that must blend into a larger
+implicit body).
 
 ## Placement and scale sanity
 

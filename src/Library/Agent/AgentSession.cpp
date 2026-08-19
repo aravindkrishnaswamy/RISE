@@ -2966,8 +2966,15 @@ namespace RISE
 					// profile of revolution.  A scene that already built its
 					// vessels on a lathe must not be told it has none of the
 					// rich forms and pointed at the very chunk it used.
+					// skeleton_geometry joins them on the same argument: it
+					// EXPANDS to an sdf_geometry at parse time, so a scene
+					// that authored a creature as a joint graph is as rich as
+					// one that hand-wrote the equivalent part chain -- but the
+					// role recorded on the Document item is the skeleton
+					// keyword, so without this it read as "no advanced forms".
 					if( role == "sdf_geometry" || role == "sweep_geometry" ||
-					    role == "lathe_geometry" || role == "displaced_geometry" ) {
+					    role == "lathe_geometry" || role == "skeleton_geometry" ||
+					    role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
 						++c.geometryCensus[role];
 						continue;
@@ -3051,9 +3058,9 @@ namespace RISE
 				if( c.conditionB ) {
 					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/lathe_geometry/displaced_geometry forms (a profile of "
-						"revolution -- vase, bottle, goblet, turned leg -- is one lathe_geometry, its "
-						"`profile_point <r> <h>` lines the silhouette itself; read_skill "
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/displaced_geometry "
+						"forms (a profile of revolution -- vase, bottle, goblet, turned leg -- is one "
+						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; read_skill "
 						"{\"name\":\"object-modeling-recipes\"}).";
 				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
@@ -3114,9 +3121,9 @@ namespace RISE
 					d.code     = AgentDiagnosticCode::DESIGN_NO_ADVANCED_GEOMETRY;
 					d.message  = "geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/lathe_geometry/displaced_geometry forms (a profile of "
-						"revolution -- vase, bottle, goblet, turned leg -- is one lathe_geometry, its "
-						"`profile_point <r> <h>` lines the silhouette itself; read_skill "
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/skeleton_geometry/displaced_geometry "
+						"forms (a profile of revolution -- vase, bottle, goblet, turned leg -- is one "
+						"lathe_geometry, its `profile_point <r> <h>` lines the silhouette itself; read_skill "
 						"{\"name\":\"object-modeling-recipes\"}).";
 					d.message += kSelfDisarm;
 					out.push_back( d );

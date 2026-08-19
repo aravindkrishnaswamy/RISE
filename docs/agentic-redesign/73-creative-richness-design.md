@@ -221,10 +221,15 @@ vague-prompt-vs-exact-checkpoint failures):
   unchanged, only configured.
 - The second uses the `kinds`-list filter to express "at least one advanced
   modeling verb" — SDF composition, sweeps, or displacement — which is where
-  RISE's real geometric vocabulary lives (profiles of revolution are
-  `sdf_geometry` roundcone+smin per the §6.1 domain facts; there is no lathe
-  verb). Partial credit, not gating: a legitimate courtyard *can* be mostly
-  primitives.
+  RISE's real geometric vocabulary lives (profiles of revolution were
+  `sdf_geometry` roundcone+smin per the §6.1 domain facts when this was
+  written). Partial credit, not gating: a legitimate courtyard *can* be mostly
+  primitives. **Superseded 2026-08-18:** `lathe_geometry` and
+  `skeleton_geometry` shipped and are now the answers for a profile of
+  revolution and a limbed body respectively, so the `kinds` list above (still
+  the shipped one in `evals/scenarios/`) UNDER-counts a scene that reached for
+  either. Left as-is deliberately — widening it would break comparability with
+  every banked baseline; re-cut the list when the next baseline batch runs.
 - The painter-diversity checkpoint keeps the top weight (2); geometry enters
   at 1.5 + 1. Rebalance only on baseline evidence.
 - **Geometry anti-gaming asymmetry (round-2 review P2, disclosed not
