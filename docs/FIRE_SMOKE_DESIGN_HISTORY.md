@@ -2471,3 +2471,14 @@ it was already tried and refuted here.
   evidence without retry, dt response, clipping, or an extra projection. This
   ruling changes ownership/order only, not the oracle, checkpoint, identity, or
   validation tolerance.
+
+- **r101 (2026-08-19):** resident mixed-boundary dual transport. Nine frozen
+  component/sweep carrier and line-ambient layouts are uploaded once at the
+  step boundary, after which the force-updated packed Private momentum executes
+  all fifteen dual submaps in one command with zero host access. The result is
+  one canonical packed Private allocation ready for r98 P2. On-device mixed
+  wall/open comparison is deterministic and matches the independent strict-
+  fp32 oracle within the existing Metal comparator band. The outward-rounded
+  resident certificate is exactly 2,147,483,648 bytes at `80 x 195 x 1000`;
+  the adjacent 2,149,646,336-byte request rejects before payload inspection.
+  No operator, case, or validation tolerance changed.

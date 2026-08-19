@@ -1255,6 +1255,33 @@ projection, clips a field, or stalls a run. r100 changes the resident ownership
 and composition seam only; it does not change case identity, checkpoint bytes,
 the certified oracle, or an existing validation tolerance.
 
+### 7.18 Resident mixed-boundary dual transport (r101)
+
+The general wall/open dual oracle now has an executable resident Metal seam.
+At the step boundary, the nine frozen `(transported component,sweep axis)`
+carrier arrays and their distinct lower/upper line-resolved ambient tuples are
+packed once and uploaded to Private storage. The resident interval accepts the
+force leg's canonical packed Private face-density and momentum allocations,
+prescribes component-normal wall planes, then executes all fifteen dual
+submaps in one ordered command. Generic gather/scatter kernels implement the
+same owned-line coordinates as the 54-role CPU oracle; open endpoints retain
+their transverse ownership and periodic components receive one terminal
+canonical seam copy. The output is one packed Private momentum allocation with
+the r98 canonical offsets, so P2 needs no repack or upload.
+
+The standalone wrapper observes one resident command, zero resident host
+accesses, deterministic repeated bytes, and agreement with the independent
+mixed wall/open strict-fp32 oracle under the existing production Metal
+comparator. Its working-set certificate counts 27 frozen carrier/ambient
+buffers, two borrowed and two atomically published packed face allocations,
+seven maximum-line scratch allocations, and every command-retained parameter
+buffer with 16-KiB outward rounding. The exact-cap witness is
+`80 x 195 x 1000`, `2,147,483,648` bytes; the adjacent `z=1001` witness is
+`2,149,646,336` bytes and is rejected before payload access or Metal work.
+This revision changes residency and publication ownership only; the r89 dual
+operator, r92 side tuples, fp32 arithmetic, case identity, and validation bands
+are unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
