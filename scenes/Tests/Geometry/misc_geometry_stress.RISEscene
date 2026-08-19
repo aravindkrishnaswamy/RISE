@@ -1,0 +1,407 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           misc_geometry_stress.RISEscene                                                          #
+#   Description:    A REGRESSION INSTRUMENT for the two expressive-geometry chunks with the THINNEST test    #
+#                   coverage in the corpus:                                                                 #
+#                     - `cartesian_disk_geometry`, which had ZERO test scenes anywhere before this file      #
+#                       (its only in-repo consumer was the guilloche watch hero, which is far too heavy to   #
+#                       serve as a regression check)                                                        #
+#                     - `path_instances_geometry` with a NON-TRIVIAL template on a CURVED path (the only     #
+#                       other coverage, sweep_instances.RISEscene, instances plain spheres)                  #
+#                                                                                                           #
+#   LAYOUT: BACK band (z = -5), left to right --                                                            #
+#                   CHECKER disk / FINE displaced disk / COARSE displaced disk                              #
+#           FRONT band (z = +5), left to right --                                                           #
+#                   UPRIGHT bead chain / SLANTED + SCALED bead chain                                        #
+#                                                                                                           #
+#   SPECIMENS (what it stresses -> what CORRECT looks like):                                                #
+#                                                                                                           #
+#     CHECKER disk, back band left -- the LINEAR CARTESIAN UV, which is the whole reason this geometry       #
+#       exists instead of a polar fan.  u = (x + R) / 2R, v likewise, so a checker in UV must land as a      #
+#       true SQUARE GRID in world space.                                                                    #
+#       CORRECT: a circular disk carrying a regular grid of EQUAL SQUARE cells, the same size at the centre  #
+#       as at the rim, with the grid lines straight and axis-aligned and the circular edge cutting across    #
+#       them.  A REGRESSION to polar UV shows immediately as wedge-shaped cells converging on the centre     #
+#       (and cells that shrink toward the middle).  The disk's own normal is +Z, so it faces the camera.     #
+#                                                                                                           #
+#     FINE displaced disk, back band centre -- the DOCUMENTED reason the chunk exists: a flat Cartesian      #
+#       base with an arbitrary 2D field displaced onto it via `displaced_geometry` with `uv_seam_fold        #
+#       FALSE` (the field is an OPEN Cartesian map, so there is no closed-surface UV mirror to fold).  The   #
+#       field is a concentric-RING term (5 rings) plus a 4 x 4 square-GRID term, chosen because the two      #
+#       stress different things: the rings expose any radial UV distortion, the grid -- which reads as a     #
+#       gentle four-fold SQUARING of the rings, strongest along the two diagonals -- exposes any             #
+#       non-uniform cell density.  mesh_n 300.                                                                #
+#       CORRECT: the rings are CONCENTRIC and EVENLY spaced from centre to rim -- they must NOT bunch up     #
+#       near the middle -- the relief is equally crisp at the centre and at the rim, and the four-fold       #
+#       squaring is symmetric.  A Cartesian disk's world-space cell size is constant everywhere; a polar     #
+#       fan's is not, and would crowd the relief into the middle.                                           #
+#                                                                                                           #
+#     COARSE displaced disk, back band right -- the IDENTICAL field on the IDENTICAL base at mesh_n 44       #
+#       instead of 300.  This makes the sampling lattice itself visible.                                     #
+#       CORRECT: the same pattern, blocky, resolved on a visible SQUARE lattice -- and the disk's RIM is a   #
+#       STAIRCASE of whole grid cells, not a smooth polygon.  That staircase is the Cartesian disk's         #
+#       signature: the grid is built first and clipped to the circle, so the boundary follows the LATTICE.   #
+#       A smooth polygonal rim at low mesh_n would mean a polar fan had been substituted.  The pair also     #
+#       proves `mesh_n` is honoured at all rather than clamped to a fixed density.                           #
+#                                                                                                           #
+#     UPRIGHT bead chain, front band left -- `path_instances_geometry` with a NON-TRIVIAL TEMPLATE: a        #
+#       `lathe_geometry` turned finial, not a sphere.  The template goes through the universal               #
+#       TessellateToMesh contract, so this also checks that a lathe survives being consumed as a template     #
+#       WITHOUT losing its turned profile.  The path is a genuinely 3D Catmull-Rom curve (it rises, falls    #
+#       and swings through z), instances are laid at ARC-LENGTH `pitch 2.60`, and the template's +Y axis --  #
+#       which for a lathe is its axis of revolution -- aligns with the path TANGENT, so the finials are      #
+#       THREADED ON THE PATH like beads on a wire rather than standing up off it.  Instances BANK with the   #
+#       path (there is no world-up mode).                                                                    #
+#       CORRECT: a row of finials, EVENLY spaced along the ARC -- they must neither bunch in the tight bends #
+#       nor stretch on the straights -- each lying along the curve with its wide bead leading and its        #
+#       narrow neck trailing, and with the turned bead-cove-bead profile legible on every single one.        #
+#       Spacing that varies with curvature means the walk is parameter-based rather than arc-length; a       #
+#       featureless ellipsoid instead of the turned profile means the template was proxied rather than       #
+#       tessellated.                                                                                         #
+#                                                                                                           #
+#     SLANTED + SCALED bead chain, front band right -- the SAME template on a COPY of the same path, at the  #
+#       same `pitch 2.60`, but with `slant 55` and `scale 1.30` against the left chain's `scale 2.00`.       #
+#       Slant rotates the template about the frame NORMAL, so the finials tip over sideways relative to the  #
+#       tangent; scale sizes them uniformly.                                                                 #
+#       CORRECT: the same number of finials at the same arc-length spacing as the left chain, every one of   #
+#       them visibly TIPPED by the same angle, and all of them uniformly SMALLER.  A slant that varies       #
+#       along the chain means the frame normal is drifting; a different COUNT means `scale` is leaking into  #
+#       the arc-length walk.                                                                                 #
+#                                                                                                           #
+#   No specimen here should produce a log line.  A clean render leaves RISE_Log.txt free of any `Error` or   #
+#   `Warning` entry.                                                                                        #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				16
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/misc_geometry_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1500
+	height			620
+}
+
+pinhole_camera
+{
+	location			0 13 32
+	lookat				0 1.5 0
+	up					0 1 0
+	fov					17.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_chk_a
+	color				0.80 0.78 0.72
+}
+
+uniformcolor_painter
+{
+	name				pnt_chk_b
+	color				0.16 0.30 0.44
+}
+
+checker_painter
+{
+	name				pnt_checker
+	colora				pnt_chk_a
+	colorb				pnt_chk_b
+	size				0.0833
+}
+
+uniformcolor_painter
+{
+	name				pnt_brass
+	color				0.74 0.58 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_copper
+	color				0.68 0.32 0.16
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.20 0.58 0.42
+}
+
+uniformcolor_painter
+{
+	name				pnt_plum
+	color				0.44 0.28 0.62
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.46 0.46 0.48
+}
+
+lambertian_material
+{
+	name				mat_checker
+	reflectance			pnt_checker
+}
+
+lambertian_material
+{
+	name				mat_brass
+	reflectance			pnt_brass
+}
+
+lambertian_material
+{
+	name				mat_copper
+	reflectance			pnt_copper
+}
+
+lambertian_material
+{
+	name				mat_jade
+	reflectance			pnt_jade
+}
+
+lambertian_material
+{
+	name				mat_plum
+	reflectance			pnt_plum
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+#############################################################################
+# SPECIMEN 1 -- THE CARTESIAN UV.  A checker in UV must land as a true square
+# grid in world space, identical at centre and rim.
+#############################################################################
+cartesian_disk_geometry
+{
+	name				chkdisk
+	radius				2.20
+	mesh_n				420
+}
+
+standard_object
+{
+	name				checkerdisk
+	geometry			chkdisk
+	material			mat_checker
+	position			-7.0 2.60 -5
+}
+
+#############################################################################
+# SPECIMEN 2 + 3 -- THE DOCUMENTED USE: an arbitrary 2D field displaced onto
+# the flat Cartesian base, at two very different mesh_n on the SAME field.
+#
+# The field is a concentric-ring term times a square-grid term: the rings
+# expose radial UV distortion, the grid exposes non-uniform cell density.
+#############################################################################
+expression_function2d
+{
+	name				diskfn
+	param				R 2.20
+	param				rings 5
+	param				cells 4
+	def					x (2*u-1)*R
+	def					y (2*v-1)*R
+	def					r hypot(x,y)
+	def					ring 0.5+0.5*cos(tau*rings*r/R)
+	def					gx 0.5+0.5*cos(tau*cells*x/(2*R))
+	def					gy 0.5+0.5*cos(tau*cells*y/(2*R))
+	expr				clamp(0.40*ring+0.60*gx*gy,0,1)
+}
+
+cartesian_disk_geometry
+{
+	name				finedisk
+	radius				2.20
+	mesh_n				300
+}
+
+cartesian_disk_geometry
+{
+	name				coarsedisk
+	radius				2.20
+	mesh_n				44
+}
+
+displaced_geometry
+{
+	name				finerelief
+	base_geometry		finedisk
+	displacement		diskfn
+	disp_scale			0.30
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+displaced_geometry
+{
+	name				coarserelief
+	base_geometry		coarsedisk
+	displacement		diskfn
+	disp_scale			0.30
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+standard_object
+{
+	name				finedial
+	geometry			finerelief
+	material			mat_brass
+	position			-1.0 2.60 -5
+}
+
+standard_object
+{
+	name				coarsedial
+	geometry			coarserelief
+	material			mat_copper
+	position			5.4 2.60 -5
+}
+
+#############################################################################
+# SPECIMEN 4 -- `path_instances_geometry` with a NON-TRIVIAL TEMPLATE.
+#
+# The template is a lathe-turned finial (bead, cove, bead), consumed through
+# TessellateToMesh, stamped at ARC-LENGTH pitch along a genuinely 3D path.
+#############################################################################
+lathe_geometry
+{
+	name				beadgeom
+	profile_point		0.00 0.00
+	profile_point		0.15 0.05
+	profile_point		0.30 0.22
+	profile_point		0.21 0.42
+	profile_point		0.34 0.60
+	profile_point		0.17 0.80
+	profile_point		0.00 0.90
+	n_radial			28
+}
+
+path_instances_geometry
+{
+	name				beadchain_up
+	geometry			beadgeom
+	point				-4.0 0.10 -1.2
+	point				-2.0 1.25 0.9
+	point				0.3 0.15 -0.9
+	point				2.2 1.35 1.0
+	point				4.0 0.30 -0.7
+	pitch				2.60
+	scale				2.00
+	n_len				400
+	detail				24
+}
+
+standard_object
+{
+	name				beads_upright
+	geometry			beadchain_up
+	material			mat_jade
+	position			-5.0 0.95 5
+}
+
+#############################################################################
+# SPECIMEN 5 -- the SAME template on a MIRRORED copy of the same path, with
+# `slant 55` (rotation about the frame normal) and `scale 0.62`.
+#############################################################################
+path_instances_geometry
+{
+	name				beadchain_slant
+	geometry			beadgeom
+	point				-4.0 0.10 -1.2
+	point				-2.0 1.25 0.9
+	point				0.3 0.15 -0.9
+	point				2.2 1.35 1.0
+	point				4.0 0.30 -0.7
+	pitch				2.60
+	n_len				400
+	detail				24
+	slant				55
+	scale				1.30
+}
+
+standard_object
+{
+	name				beads_slanted
+	geometry			beadchain_slant
+	material			mat_plum
+	position			5.0 0.95 5
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				2000
+	color				1.0 0.98 0.94
+	position			-10 16 14
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				0.90 0.94 1.0
+	position			12 10 12
+}
+
+omni_light
+{
+	name				rimlight
+	power				600
+	color				1.0 1.0 1.0
+	position			0 12 -16
+}

@@ -1,0 +1,502 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           scenegraph_stress.RISEscene                                                             #
+#   Description:    A REGRESSION INSTRUMENT for `standard_object` COMPOSITION -- parenting, `source`         #
+#                   subtree instancing, `count_u` arrays with per-component `expr(...)`, and what an         #
+#                   EMISSIVE node inside an instanced subtree is supposed to do.  Companions:                #
+#                   object_parenting.RISEscene (a node tree) and object_instancing.RISEscene (what `source`  #
+#                   does with one).  This scene exists for the cases those two do not PROVE.                #
+#                                                                                                           #
+#   LAYOUT: BACK band (z = -6), left to right --                                                            #
+#                   the FIVE-LEVEL arm / the AUTHORED lamp / TWO sourced lamp instances                     #
+#           FRONT band (z = +5.5), left to right --                                                         #
+#                   the AUTHORED paddle template / a FIVE-wide `count_u` fan, with a hand-placed TWIN        #
+#                   sitting exactly on top of fan element [3,0]                                             #
+#                                                                                                           #
+#   SPECIMENS (what it stresses -> what CORRECT looks like):                                                #
+#                                                                                                           #
+#     THE FIVE-LEVEL ARM, back band far left -- DEEP NESTING with a NON-IDENTITY transform at EVERY level:   #
+#         armbase (container: position + orientation)                                                       #
+#           -> arm_upper (position + orientation)                                                           #
+#              -> arm_fore (position + orientation + scale 0.80)                                            #
+#                 -> arm_hand (position + orientation + scale 0.90)                                         #
+#                    -> arm_tip (position + orientation)                                                    #
+#       Each level's world transform is `parent.world * local`, so `arm_tip` carries the product of five     #
+#       rotations AND the 0.80 x 0.90 = 0.72 inherited scale that neither of its own chunks authors.         #
+#       CORRECT: one continuous articulated arm -- every segment's base MEETS its parent's tip, with no gap  #
+#       and no overshoot at any of the four joints; the segments get progressively SMALLER toward the tip    #
+#       (inherited scale), and the whole arm leans as one rigid body (the root's `orientation 0 25 0`).      #
+#       A composition bug shows as a segment detached from the joint below it, or as a tip at full size.     #
+#                                                                                                           #
+#     THE THREE LAMPS, back band -- `source` INSTANCING OF A MULTI-NODE, MULTI-LEVEL SUBTREE, and the        #
+#       EMISSIVE-INSIDE-AN-INSTANCE case.  ONE lamp is AUTHORED (`lamp` -> `lamp_post`, and `lamp_head` ->   #
+#       `lamp_bulb` + `lamp_cap`: four descendants over three levels).  `lamp_b` and `lamp_c` are `source    #
+#       lamp`, so each mints `lamp_b.lamp_post`, `lamp_b.lamp_head`, `lamp_b.lamp_bulb`, `lamp_b.lamp_cap`.  #
+#       `lamp_bulb`'s material is a `lambertian_luminaire_material`, so EVERY copy of that node has to be an #
+#       independent AREA LIGHT.  This is the case that was reasoned about but never PROVED: a cloned         #
+#       emissive node must be REGISTERED as its own luminaire, not merely drawn glowing.                     #
+#       CORRECT: THREE glowing plates AND THREE separate warm POOLS on the floor beneath them -- the same    #
+#       size, the same shape and the same brightness under all three, and each lamp's post is lit from       #
+#       above by its own plate.  If only the AUTHORED lamp (the leftmost) has a pool while the two clones    #
+#       glow but light nothing, the clone is being drawn and not registered as an emitter.  The general      #
+#       lighting is deliberately dim, and the plates hang low, so a missing pool cannot hide.                #
+#                                                                                                           #
+#       (The bulb is a flat PLATE rather than a sphere on purpose: a `sphere_geometry` luminaire NEE-samples #
+#       with very high variance at close range in this rasterizer, and `lum_samples` does not reduce it --   #
+#       only pixel `samples` does.  A plate keeps the specimen readable at a few seconds of render.)         #
+#                                                                                                           #
+#     THE PADDLE FAN, front band -- `count_u 5` with PER-COMPONENT `expr(i)` on TWO different parameters at  #
+#       once: `position expr(-5.6 + i*2.8) 0 5.5` AND `orientation 0 expr(-60 + i*30) 0`.  Each repetition   #
+#       is a whole copy of the `paddle` subtree (post + blade), named `fan[i,0]` and `fan[i,0].paddle_post`  #
+#       / `fan[i,0].paddle_blade`.                                                                          #
+#       CORRECT: five evenly spaced blades fanning through -60, -30, 0, +30, +60 degrees left to right --    #
+#       the middle one square to the camera, the outer two turned hardest (their projected width is about    #
+#       HALF the middle one's).  Even spacing with a CONSTANT blade angle means `expr` reached `position`    #
+#       but not `orientation`; a correct angle sweep on stacked-up blades means the reverse.                 #
+#                                                                                                           #
+#     THE TWIN, front band -- the CORRECTNESS CONTROL.  `twin` is a hand-placed `source paddle` at exactly   #
+#       the world transform the array's own arithmetic produces for i = 3 (position 2.8 0 5.5, orientation   #
+#       0 30 0).  It is therefore COINCIDENT with `fan[3,0]`.  `casts_shadows FALSE` on the twin only, so    #
+#       two exactly-coincident surfaces cannot shadow-acne each other; that is a rendering nicety and does   #
+#       not weaken the check.                                                                                #
+#       CORRECT: SIX blades in the front band -- the AUTHORED `paddle` template at far left (which `source`  #
+#       neither hides nor moves) plus the five array copies.  The twin is INVISIBLE, exactly inside          #
+#       `fan[3,0]`.  If the `count_u` composition drifts by so much as a degree or a tenth of a unit, a      #
+#       SEVENTH blade appears beside the fourth array copy -- and the size of the offset is the size of the  #
+#       bug.                                                                                                 #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				32
+	lum_samples			4
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/scenegraph_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1500
+	height			620
+}
+
+pinhole_camera
+{
+	location			0 13 32
+	lookat				0 1.5 0
+	up					0 1 0
+	fov					17.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_arm1
+	color				0.20 0.52 0.58
+}
+
+uniformcolor_painter
+{
+	name				pnt_arm2
+	color				0.72 0.42 0.16
+}
+
+uniformcolor_painter
+{
+	name				pnt_arm3
+	color				0.62 0.22 0.46
+}
+
+uniformcolor_painter
+{
+	name				pnt_arm4
+	color				0.74 0.68 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_metal
+	color				0.36 0.38 0.44
+}
+
+uniformcolor_painter
+{
+	name				pnt_cap
+	color				0.66 0.26 0.16
+}
+
+uniformcolor_painter
+{
+	name				pnt_blade
+	color				0.22 0.54 0.40
+}
+
+uniformcolor_painter
+{
+	name				pnt_emit
+	color				1.00 0.62 0.24
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.56 0.56 0.58
+}
+
+lambertian_material
+{
+	name				mat_arm1
+	reflectance			pnt_arm1
+}
+
+lambertian_material
+{
+	name				mat_arm2
+	reflectance			pnt_arm2
+}
+
+lambertian_material
+{
+	name				mat_arm3
+	reflectance			pnt_arm3
+}
+
+lambertian_material
+{
+	name				mat_arm4
+	reflectance			pnt_arm4
+}
+
+lambertian_material
+{
+	name				mat_metal
+	reflectance			pnt_metal
+}
+
+lambertian_material
+{
+	name				mat_cap
+	reflectance			pnt_cap
+}
+
+lambertian_material
+{
+	name				mat_blade
+	reflectance			pnt_blade
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				mat_emit
+	exitance			pnt_emit
+	scale				9.0
+	material			none
+}
+
+##################################################
+# Geometry
+##################################################
+
+cylinder_geometry
+{
+	name				geo_seg
+	axis				y
+	radius				0.22
+	height				1.60
+}
+
+box_geometry
+{
+	name				geo_hand
+	width				0.50
+	height				0.50
+	depth				0.50
+}
+
+box_geometry
+{
+	name				geo_tip
+	width				0.24
+	height				0.70
+	depth				0.24
+}
+
+cylinder_geometry
+{
+	name				geo_lamppost
+	axis				y
+	radius				0.10
+	height				1.70
+}
+
+box_geometry
+{
+	name				geo_bulb
+	width				1.60
+	height				0.14
+	depth				1.20
+}
+
+box_geometry
+{
+	name				geo_cap
+	width				1.90
+	height				0.12
+	depth				1.50
+}
+
+cylinder_geometry
+{
+	name				geo_paddlepost
+	axis				y
+	radius				0.09
+	height				1.10
+}
+
+box_geometry
+{
+	name				geo_blade
+	width				1.10
+	height				0.85
+	depth				0.10
+}
+
+infiniteplane_geometry
+{
+	name				geo_floor
+	xtile				4.0
+	ytile				4.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			geo_floor
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+#############################################################################
+# SPECIMEN 1 -- FIVE LEVELS OF NESTING, non-identity transform at each.
+#
+# armbase is a pure CONTAINER: no geometry, so it never renders and is not in
+# the acceleration structure -- it exists only to carry the transform its
+# subtree composes against.  arm_fore and arm_hand each author a `scale`, so
+# arm_tip inherits 0.80 * 0.90 = 0.72 without authoring any scale of its own.
+#############################################################################
+standard_object
+{
+	name				armbase
+	position			-8.5 0 -6
+	orientation			0 25 0
+}
+
+standard_object
+{
+	name				arm_upper
+	parent				armbase
+	geometry			geo_seg
+	material			mat_arm1
+	position			0 0.79 0
+	orientation			0 0 -16
+}
+
+standard_object
+{
+	name				arm_fore
+	parent				arm_upper
+	geometry			geo_seg
+	material			mat_arm2
+	position			0.320 1.354 0
+	orientation			0 0 -30
+	scale				0.80 0.80 0.80
+}
+
+standard_object
+{
+	name				arm_hand
+	parent				arm_fore
+	geometry			geo_hand
+	material			mat_arm3
+	position			0.126 0.987 0
+	orientation			0 0 -34
+	scale				0.90 0.90 0.90
+}
+
+standard_object
+{
+	name				arm_tip
+	parent				arm_hand
+	geometry			geo_tip
+	material			mat_arm4
+	position			0.175 0.553 0
+	orientation			0 0 -30
+}
+
+#############################################################################
+# SPECIMEN 2 -- THE AUTHORED LAMP.  A three-level, four-descendant subtree
+# with an EMISSIVE leaf.  This is the assembly `source` has to clone whole.
+#############################################################################
+standard_object
+{
+	name				lamp
+	position			-2.4 0 -6
+}
+
+standard_object
+{
+	name				lamp_post
+	parent				lamp
+	geometry			geo_lamppost
+	material			mat_metal
+	position			0 0.85 0
+}
+
+standard_object
+{
+	name				lamp_head
+	parent				lamp
+	position			0 1.90 0
+}
+
+standard_object
+{
+	name				lamp_bulb
+	parent				lamp_head
+	geometry			geo_bulb
+	material			mat_emit
+}
+
+standard_object
+{
+	name				lamp_cap
+	parent				lamp_head
+	geometry			geo_cap
+	material			mat_cap
+	position			0 0.34 0
+}
+
+#############################################################################
+# SPECIMEN 3 -- TWO SUBTREE INSTANCES, each carrying its own copy of the
+# emissive plate.  EACH MUST BE ITS OWN WORKING AREA LIGHT.
+#############################################################################
+standard_object
+{
+	name				lamp_b
+	source				lamp
+	position			2.2 0 -6
+}
+
+standard_object
+{
+	name				lamp_c
+	source				lamp
+	position			6.8 0 -6
+}
+
+#############################################################################
+# SPECIMEN 4 -- THE PADDLE SUBTREE, then a `count_u 5` array over it driving
+# BOTH position and orientation from `expr(i)`.
+#############################################################################
+standard_object
+{
+	name				paddle
+	position			-8.6 0 5.5
+}
+
+standard_object
+{
+	name				paddle_post
+	parent				paddle
+	geometry			geo_paddlepost
+	material			mat_metal
+	position			0 0.55 0
+}
+
+standard_object
+{
+	name				paddle_blade
+	parent				paddle
+	geometry			geo_blade
+	material			mat_blade
+	position			0 1.52 0
+}
+
+standard_object
+{
+	name				fan
+	source				paddle
+	count_u				5
+	position			expr(-5.6 + i*2.8) 0 5.5
+	orientation			0 expr(-60 + i*30) 0
+}
+
+#############################################################################
+# SPECIMEN 5 -- THE TWIN.  Hand-placed at exactly the transform the array's
+# own arithmetic gives for i = 3, so it is COINCIDENT with `fan[3,0]`.
+# `casts_shadows FALSE` keeps two coincident surfaces from shadow-acneing
+# each other; it does not weaken the check.
+#############################################################################
+standard_object
+{
+	name				twin
+	source				paddle
+	position			2.8 0 5.5
+	orientation			0 30 0
+	casts_shadows		FALSE
+}
+
+##################################################
+# Lights.  Deliberately DIM: the three lamp pools have to be the brightest
+# thing on the floor, so a missing pool cannot hide behind general lighting.
+##################################################
+omni_light
+{
+	name				keylight
+	power				620
+	color				1.0 0.98 0.94
+	position			-11 15 16
+}
+
+omni_light
+{
+	name				filllight
+	power				380
+	color				0.88 0.92 1.0
+	position			13 10 15
+}
+
+ambient_light
+{
+	name				amb
+	power				0.055
+	color				0.55 0.60 0.72
+}

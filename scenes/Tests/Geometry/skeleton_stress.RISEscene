@@ -1,0 +1,380 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           skeleton_stress.RISEscene                                                               #
+#   Description:    A REGRESSION INSTRUMENT for `skeleton_geometry`, not a demo.  Companion to               #
+#                   skeleton_basic.RISEscene, which shows the chunk doing ordinary creature work; every      #
+#                   specimen here is a case that has produced a bug or that the expansion's own comments     #
+#                   flag as delicate, laid out in two clean bands so a human can spot a regression BY EYE.   #
+#                                                                                                           #
+#   LAYOUT: BACK band (z = -5), left to right --                                                            #
+#                   TEAL three-child hub / MAGENTA degenerate bone / GOLD isolated joint                    #
+#           FRONT band (z = +5), left to right --                                                           #
+#                   JADE deep chain / SLATE blend 0 / CLAY blend 1.2                                        #
+#                                                                                                           #
+#   SPECIMENS (what it stresses -> what CORRECT looks like):                                                #
+#                                                                                                           #
+#     TEAL three-child hub, back band -- BRANCHING.  `hub` has THREE children (`upL`, `upR`, `down`), each   #
+#       of which has a child of its own, so the graph is a real tree rather than a chain.  A joint with      #
+#       children contributes NO part of its own -- its cap spheres are supplied by its OUTGOING bones -- so  #
+#       a three-way hub is exactly where that rule has to hold three times over at one point.                #
+#       CORRECT: one continuous blended body; the three limbs meet the hub in a smooth fillet with NO seam,  #
+#       no bulge and no missing wedge between any pair of them.  A hub that grew its own sphere would read   #
+#       as a bead sitting proud of the junction.                                                            #
+#                                                                                                           #
+#     MAGENTA degenerate bone, back band -- |r_parent - r_child| > BONE LENGTH.  `big` (r 1.00) and `tiny`   #
+#       (r 0.20) sit 0.45 apart, so |1.00 - 0.20| = 0.80 EXCEEDS the 0.45 bone length: the small cap sphere  #
+#       is entirely swallowed by the large one and the roundcone's visible surface collapses to a plain      #
+#       sphere at `big`.  This case exposed BOTH an AABB under-bound that sliced real surface off the        #
+#       sphere AND an on-axis field error that cut a notch along the bone's own axis.  The degenerate bone   #
+#       deliberately points at +Z -- STRAIGHT AT THE CAMERA -- so either failure lands face-on in the middle #
+#       of the ball rather than on a limb.  `big` also carries a SECOND, perfectly ordinary child (`stalk`,  #
+#       bone length 1.27 > radius delta 0.86), leaning off to one side so the rest of the ball's silhouette  #
+#       stays clean -- the specimen is not just a lone sphere.                                               #
+#       CORRECT: a SMOOTH round ball with a thin spike leaning off its upper right -- the whole remaining    #
+#       silhouette is a circular arc, there is NO flat clipped disk on the camera-facing pole, and no        #
+#       crease, dimple or notch at its centre.                                                               #
+#       NOTE: this specimen INTENTIONALLY trips the chunk's own non-rejecting diagnostic, so rendering THIS  #
+#       scene prints exactly ONE warning ON THE CONSOLE (it does NOT reach RISE_Log.txt, which stays empty): #
+#         `skeleton_geometry `degenskel`: bone `big` -> `tiny` is degenerate (|radius delta| 0.8 > bone      #
+#          length 0.45) -- ... collapses to a plain sphere at `big` with no visible taper`                   #
+#       That line is the specimen working as intended.  Any OTHER diagnostic, or the absence of this one,    #
+#       is the regression.                                                                                   #
+#                                                                                                           #
+#     GOLD isolated joint, back band -- a joint with NEITHER parent NOR children.  It is the ONE case that   #
+#       gets a `sphere` part of its own; without that rule it would be invisible.  Beside it, in the SAME   #
+#       chunk, sits an ordinary parent -> child bone whose root must NOT get a sphere (its cap comes from    #
+#       the bone).                                                                                          #
+#       CORRECT: a free-floating ball ABOVE a separate tapered bone.  The ball is fully round.  The bone's   #
+#       fat end is a clean hemispherical cap, not a ball stuck onto a cone.                                 #
+#                                                                                                           #
+#     JADE deep chain, front band -- NINE joints, EIGHT bones, radius decreasing monotonically 0.42 -> 0.07  #
+#       while the chain curves through all three axes.  Part count and smin nesting depth both scale with    #
+#       the chain, and the finest bones are near the sphere-trace epsilon.                                   #
+#       CORRECT: one continuous tentacle that thins smoothly to a fine tip.  A gentle swell on the OUTSIDE   #
+#       of each bend is the smin union doing its job and is expected; a REGRESSION is a WAIST narrower than  #
+#       both neighbouring joint radii, a bead that visibly detaches, or a tip that speckles away or          #
+#       disappears before c8.                                                                                #
+#                                                                                                           #
+#     SLATE `blend 0` vs CLAY `blend 1.2`, front band -- the SAME five-joint skeleton at the two ends of     #
+#       the blend range.  `blend` multiplies min(parent radius, child radius) to give each bone's smin       #
+#       width, and 0 is documented as a HARD union.                                                          #
+#       CORRECT: SLATE shows a VISIBLE CREASE at every joint -- you can count the individual capsules and    #
+#       see the intersection curves between them.  CLAY is one melted blob with the joints barely            #
+#       readable.  If they look alike, `blend` has stopped reaching the smin width.                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				16
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/skeleton_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1500
+	height			620
+}
+
+pinhole_camera
+{
+	location			0 13 32
+	lookat				0 1.5 0
+	up					0 1 0
+	fov					17.0
+}
+
+##################################################
+# Painters + materials, one distinct colour per specimen
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_teal
+	color				0.10 0.52 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_magenta
+	color				0.72 0.18 0.55
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.78 0.62 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.20 0.58 0.40
+}
+
+uniformcolor_painter
+{
+	name				pnt_slate
+	color				0.34 0.44 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_clay
+	color				0.74 0.34 0.20
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.46 0.46 0.48
+}
+
+lambertian_material
+{
+	name				mat_teal
+	reflectance			pnt_teal
+}
+
+lambertian_material
+{
+	name				mat_magenta
+	reflectance			pnt_magenta
+}
+
+lambertian_material
+{
+	name				mat_gold
+	reflectance			pnt_gold
+}
+
+lambertian_material
+{
+	name				mat_jade
+	reflectance			pnt_jade
+}
+
+lambertian_material
+{
+	name				mat_slate
+	reflectance			pnt_slate
+}
+
+lambertian_material
+{
+	name				mat_clay
+	reflectance			pnt_clay
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+#############################################################################
+# SPECIMEN 1 -- BRANCHING: a joint with THREE children.
+#
+# `hub` fans out to `upL`, `upR` and `down`, each of which carries a child of
+# its own.  Six bones, six roundcone parts; `hub` itself contributes NONE --
+# its cap spheres arrive from its three outgoing bones at once.
+#############################################################################
+skeleton_geometry
+{
+	name				hubskel
+	joint				hub    none  0.00 1.70  0.00  0.45
+	joint				upL    hub  -1.15 2.55  0.25  0.24
+	joint				upLt   upL  -1.95 3.15  0.45  0.10
+	joint				upR    hub   1.15 2.55 -0.25  0.24
+	joint				upRt   upR   1.95 3.15 -0.45  0.10
+	joint				down   hub   0.00 0.45  0.00  0.30
+	joint				downt  down  0.20 0.05  0.55  0.14
+	blend				0.4
+}
+
+standard_object
+{
+	name				hubcreature
+	geometry			hubskel
+	material			mat_teal
+	position			-7.0 0 -5
+}
+
+#############################################################################
+# SPECIMEN 2 -- DEGENERATE BONE.  |r_big - r_tiny| = 0.75 > bone length 0.45,
+# so `tiny`'s cap sphere is entirely inside `big`'s and the bone collapses to
+# a plain sphere at `big`.  `stalk` is an ordinary, non-degenerate sibling.
+#
+# THIS CHUNK INTENTIONALLY EMITS ONE eLog_Warning -- see the header.
+#############################################################################
+skeleton_geometry
+{
+	name				degenskel
+	joint				big    none  0.00 1.05  0.00  1.00
+	joint				tiny   big   0.00 1.05  0.45  0.20
+	joint				stalk  big   0.62 2.20 -0.35  0.14
+	blend				0.25
+}
+
+standard_object
+{
+	name				degenerate
+	geometry			degenskel
+	material			mat_magenta
+	position			-0.5 0 -5
+}
+
+#############################################################################
+# SPECIMEN 3 -- ISOLATED JOINT.  `lone` has neither parent nor children, so it
+# is the one case that gets a `sphere` part.  `pA` -> `pB` in the SAME chunk is
+# an ordinary bone whose root must NOT get a sphere of its own.
+#############################################################################
+skeleton_geometry
+{
+	name				loneskel
+	joint				pA     none  -0.70 0.85  0.00  0.42
+	joint				pB     pA     0.75 1.45  0.00  0.22
+	joint				lone   none   0.00 2.85  0.00  0.48
+	blend				0.4
+}
+
+standard_object
+{
+	name				lonejoint
+	geometry			loneskel
+	material			mat_gold
+	position			5.5 0 -5
+}
+
+#############################################################################
+# SPECIMEN 4 -- DEEP CHAIN.  Nine joints, eight bones, radius monotonically
+# 0.42 -> 0.07, curving through all three axes.
+#############################################################################
+skeleton_geometry
+{
+	name				chainskel
+	joint				c0 none  0.00 0.40  0.00  0.42
+	joint				c1 c0    0.25 0.95  0.10  0.37
+	joint				c2 c1    0.55 1.48  0.05  0.32
+	joint				c3 c2    0.70 2.02 -0.10  0.27
+	joint				c4 c3    0.55 2.54 -0.20  0.23
+	joint				c5 c4    0.20 3.00 -0.15  0.19
+	joint				c6 c5   -0.20 3.40  0.02  0.15
+	joint				c7 c6   -0.55 3.74  0.20  0.11
+	joint				c8 c7   -0.75 4.02  0.35  0.07
+	blend				0.45
+}
+
+standard_object
+{
+	name				deepchain
+	geometry			chainskel
+	material			mat_jade
+	position			-6.5 0 5
+}
+
+#############################################################################
+# SPECIMEN 5 -- `blend 0`, a HARD union.  Every joint is a visible crease.
+#############################################################################
+skeleton_geometry
+{
+	name				hardskel
+	joint				b0 none  0.00 0.40  0.00  0.40
+	joint				b1 b0    0.00 1.25  0.00  0.34
+	joint				b2 b1   -0.80 1.90  0.00  0.26
+	joint				b3 b1    0.80 1.90  0.00  0.26
+	joint				b4 b1    0.00 2.10  0.70  0.22
+	blend				0.0
+}
+
+standard_object
+{
+	name				hardblend
+	geometry			hardskel
+	material			mat_slate
+	position			-0.5 0 5
+}
+
+#############################################################################
+# SPECIMEN 6 -- `blend 1.2` on the IDENTICAL skeleton.  One melted blob.
+#############################################################################
+skeleton_geometry
+{
+	name				softskel
+	joint				b0 none  0.00 0.40  0.00  0.40
+	joint				b1 b0    0.00 1.25  0.00  0.34
+	joint				b2 b1   -0.80 1.90  0.00  0.26
+	joint				b3 b1    0.80 1.90  0.00  0.26
+	joint				b4 b1    0.00 2.10  0.70  0.22
+	blend				1.2
+}
+
+standard_object
+{
+	name				softblend
+	geometry			softskel
+	material			mat_clay
+	position			5.0 0 5
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				2000
+	color				1.0 0.98 0.94
+	position			-10 16 14
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				0.90 0.94 1.0
+	position			12 10 12
+}
+
+omni_light
+{
+	name				rimlight
+	power				600
+	color				1.0 1.0 1.0
+	position			0 12 -16
+}

@@ -1,0 +1,456 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sweep_stress.RISEscene                                                                  #
+#   Description:    A REGRESSION INSTRUMENT for `sweep_geometry`, not a demo.  Companion to                  #
+#                   sweep_instances.RISEscene, which shows the chunk doing ordinary work; every specimen     #
+#                   here is a case that has produced a bug or that the profile/frame code flags as           #
+#                   delicate, laid out in two clean bands so a human can spot a regression BY EYE.          #
+#                                                                                                           #
+#   LAYOUT: BACK band (z = -5), left to right --                                                            #
+#                   TEAL stadium bar / GOLD trefoil / COPPER coil                                           #
+#           FRONT band (z = +5), left to right --                                                           #
+#                   MAGENTA round taper / JADE flat taper / SLATE capped tube / CLAY uncapped tube          #
+#                                                                                                           #
+#   SPECIMENS (what it stresses -> what CORRECT looks like):                                                #
+#                                                                                                           #
+#     TEAL stadium bar, back band -- `profile_rect 2.0 1.0 0.5` sits EXACTLY on the STADIUM BOUNDARY,        #
+#       r == min(w,h)/2.  There the two straight sides of length h - 2r vanish entirely and each pair of     #
+#       adjacent corner arcs meets at a COINCIDENT profile point.  That is the case the per-side, cyclic     #
+#       coincident-point drop exists for: dropping a corner's last sample unconditionally would also cut     #
+#       the real straight run on the OTHER pair of sides, and NOT dropping it leaves duplicate profile       #
+#       vertices that stitch zero-area quads down the length of the sweep.  The path bends toward the        #
+#       camera at the near end so the END CAP is visible.                                                   #
+#       CORRECT: the cross-section is a true STADIUM -- flat top and bottom over half-round left and right   #
+#       ends (the `frame_hint 0 1 0` puts the 2.0 axis vertical, so the round ends read as the top and       #
+#       bottom of the bar), the end cap is one clean ear-clipped stadium, and there is NO dark hairline or   #
+#       creased strip running lengthwise where the arcs join.                                                #
+#                                                                                                           #
+#     GOLD trefoil, back band -- `path_closed TRUE` on a path with GENUINE TORSION.  A planar ring has zero  #
+#       holonomy, so a closed sweep around one proves nothing about the frame-closure correction -- which    #
+#       is exactly why an earlier closed-loop test was vacuous.  A trefoil accumulates real torsion, so the  #
+#       rotation-minimizing frame arrives back at the start rotated, and the holonomy correction has to      #
+#       spread that residual over the whole loop.  The profile is a flat-ish rounded rect (0.40 x 0.18) so   #
+#       the ROLL of the ribbon is visible everywhere.                                                       #
+#       CORRECT: the ribbon's roll varies smoothly and continuously all the way round; there is exactly ONE  #
+#       closure point and you should not be able to find it.  A regression is a single sharp twist, crease   #
+#       or facet-seam somewhere on the loop where the frame snaps back.                                     #
+#                                                                                                           #
+#     COPPER coil, back band -- a TIGHT profile radius (0.09) on a LONG, STRONGLY CURVED path: a three-turn  #
+#       helix of coil radius 1.25, arc length ~24, walked at n_len 900.  Tests that the arc-length walk and  #
+#       the rotation-minimizing frame survive many turns without drift, and that a thin tube does not pinch  #
+#       or self-fold at the bends.                                                                          #
+#       CORRECT: three even turns of wire of CONSTANT apparent thickness, no kinks, no beading, no gaps      #
+#       between stations.                                                                                    #
+#                                                                                                           #
+#     MAGENTA round taper vs JADE flat taper, front band -- IDENTICAL paths and IDENTICAL taper numbers      #
+#       (1.0 / 0.62 / 0.30 / 0.10), one driven by `point_scale` (BOTH profile axes -- a ROUND taper) and     #
+#       one by `point_width` (the x axis ONLY -- a FLATTENING taper).  `frame_hint 0 0 1` pins the profile   #
+#       x axis to world Z, so `point_width` eats the DEPTH while leaving the height alone.                   #
+#       CORRECT: MAGENTA narrows to a point in both directions -- a cone.  JADE keeps its full HEIGHT the    #
+#       whole way and narrows only in depth -- a vertical fin / blade, thinning to a knife edge, which the   #
+#       elevated camera sees clearly from above.  If the two look alike, the two taper channels are being    #
+#       composed into the same axis.                                                                        #
+#                                                                                                           #
+#     SLATE capped tube vs CLAY uncapped tube, front band -- the SAME open sweep with `cap_start`/`cap_end`  #
+#       defaulted TRUE (slate) and set FALSE (clay).  Both are angled so the near end faces UP toward the    #
+#       camera -- deliberately, so the cap is LIT: pointed the other way both variants read as an identical  #
+#       black ellipse and the specimen proves nothing.                                                      #
+#       CORRECT: SLATE's near end is a flat, lit, ear-clipped disk.  CLAY's near end is an open mouth -- you #
+#       see the far interior wall of the tube through it (the baked mesh is double-sided, so it shades, it   #
+#       does not show the background).  If they look the same, the cap flags stopped being honoured.        #
+#                                                                                                           #
+#   No specimen here should produce a log line.  A clean render leaves RISE_Log.txt free of any `Error` or   #
+#   `Warning` entry.                                                                                        #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				16
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sweep_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1500
+	height			620
+}
+
+pinhole_camera
+{
+	location			0 13 32
+	lookat				0 1.5 0
+	up					0 1 0
+	fov					17.0
+}
+
+##################################################
+# Painters + materials, one distinct colour per specimen
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_teal
+	color				0.10 0.52 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.78 0.62 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_copper
+	color				0.68 0.30 0.14
+}
+
+uniformcolor_painter
+{
+	name				pnt_magenta
+	color				0.72 0.18 0.55
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.20 0.58 0.40
+}
+
+uniformcolor_painter
+{
+	name				pnt_slate
+	color				0.34 0.44 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_clay
+	color				0.74 0.34 0.20
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.46 0.46 0.48
+}
+
+lambertian_material
+{
+	name				mat_teal
+	reflectance			pnt_teal
+}
+
+lambertian_material
+{
+	name				mat_gold
+	reflectance			pnt_gold
+}
+
+lambertian_material
+{
+	name				mat_copper
+	reflectance			pnt_copper
+}
+
+lambertian_material
+{
+	name				mat_magenta
+	reflectance			pnt_magenta
+}
+
+lambertian_material
+{
+	name				mat_jade
+	reflectance			pnt_jade
+}
+
+lambertian_material
+{
+	name				mat_slate
+	reflectance			pnt_slate
+}
+
+lambertian_material
+{
+	name				mat_clay
+	reflectance			pnt_clay
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+#############################################################################
+# SPECIMEN 1 -- STADIUM BOUNDARY.
+#
+# `profile_rect 2.0 1.0 0.5`: r == min(w,h)/2 == 0.5 EXACTLY.  The two sides
+# of length h - 2r collapse to nothing and each adjacent pair of corner arcs
+# meets at a coincident profile point -- the case the per-side cyclic
+# coincident-point drop was written for.
+#
+# The path runs along -X and then swings toward the camera so the near END
+# CAP is visible; `frame_hint 0 1 0` pins the profile's 2.0 axis vertical.
+#############################################################################
+sweep_geometry
+{
+	name				stadiumgeom
+	profile_rect		2.0 1.0 0.5
+	point				-11.2 1.06 -6.6
+	point				-9.0 1.06 -6.4
+	point				-7.2 1.06 -5.6
+	point				-6.2 1.06 -4.0
+	point				-6.0 1.06 -2.2
+	n_len				160
+	frame_hint			0 1 0
+}
+
+standard_object
+{
+	name				stadiumbar
+	geometry			stadiumgeom
+	material			mat_teal
+}
+
+#############################################################################
+# SPECIMEN 2 -- CLOSED LOOP WITH GENUINE TORSION.
+#
+# A trefoil knot: 18 control points off the standard parameterisation, so the
+# path is strongly NON-PLANAR and accumulates real torsion.  `path_closed
+# TRUE` therefore has to do actual work -- periodic sampling, a holonomy
+# correction spread over the whole loop, and cyclic ring stitching.
+#
+# The profile is a flat rounded rect, NOT a circle, precisely so the roll is
+# visible: a circular profile would hide a frame discontinuity completely.
+#############################################################################
+sweep_geometry
+{
+	name				trefoilgeom
+	profile_rect		0.40 0.18 0.06
+	point				0.000 -0.800 -0.000
+	point				1.302 -0.474 -0.953
+	point				2.090 0.335 -0.953
+	point				2.078 1.200 -0.000
+	point				1.335 1.642 0.953
+	point				0.241 1.365 0.953
+	point				-0.693 0.400 0.000
+	point				-1.061 -0.891 -0.953
+	point				-0.755 -1.977 -0.953
+	point				-0.000 -2.400 -0.000
+	point				0.755 -1.977 0.953
+	point				1.061 -0.891 0.953
+	point				0.693 0.400 0.000
+	point				-0.241 1.365 -0.953
+	point				-1.335 1.642 -0.953
+	point				-2.078 1.200 -0.000
+	point				-2.090 0.335 0.953
+	point				-1.302 -0.474 0.953
+	n_len				420
+	path_closed			TRUE
+}
+
+standard_object
+{
+	name				trefoil
+	geometry			trefoilgeom
+	material			mat_gold
+	position			-1.4 3.0 -5.0
+}
+
+#############################################################################
+# SPECIMEN 3 -- TIGHT PROFILE RADIUS ON A LONG, STRONGLY CURVED PATH.
+#
+# Three helical turns, coil radius 1.25, arc length ~24, tube radius 0.09.
+#############################################################################
+sweep_geometry
+{
+	name				coilgeom
+	profile_circle		0.09 16
+	point				1.250 0.350 0.000
+	point				0.386 0.530 1.189
+	point				-1.011 0.710 0.735
+	point				-1.011 0.890 -0.735
+	point				0.386 1.070 -1.189
+	point				1.250 1.250 -0.000
+	point				0.386 1.430 1.189
+	point				-1.011 1.610 0.735
+	point				-1.011 1.790 -0.735
+	point				0.386 1.970 -1.189
+	point				1.250 2.150 -0.000
+	point				0.386 2.330 1.189
+	point				-1.011 2.510 0.735
+	point				-1.011 2.690 -0.735
+	point				0.386 2.870 -1.189
+	point				1.250 3.050 -0.000
+	n_len				900
+}
+
+standard_object
+{
+	name				coil
+	geometry			coilgeom
+	material			mat_copper
+	position			6.0 0.2 -5.0
+}
+
+#############################################################################
+# SPECIMEN 4 -- `point_scale` ROUND taper.  Identical path and identical taper
+# numbers as SPECIMEN 5; the only difference is WHICH channel carries them.
+# `frame_hint 0 0 1` puts the profile x axis on world Z (depth).
+#############################################################################
+sweep_geometry
+{
+	name				roundtapergeom
+	profile_circle		0.62 24
+	point				-9.2 1.3 5.0
+	point				-8.0 1.3 5.0
+	point				-6.8 1.3 5.0
+	point				-5.6 1.3 5.0
+	point_scale			1.00
+	point_scale			0.62
+	point_scale			0.30
+	point_scale			0.10
+	n_len				120
+	frame_hint			0 0 1
+}
+
+standard_object
+{
+	name				roundtaper
+	geometry			roundtapergeom
+	material			mat_magenta
+}
+
+#############################################################################
+# SPECIMEN 5 -- `point_width` X-ONLY taper.  Same path, same numbers, other
+# channel.  This one may only FLATTEN: the height must stay 1.24 end to end.
+#############################################################################
+sweep_geometry
+{
+	name				flattapergeom
+	profile_circle		0.62 24
+	point				-4.4 1.3 5.0
+	point				-3.2 1.3 5.0
+	point				-2.0 1.3 5.0
+	point				-0.8 1.3 5.0
+	point_width			1.00
+	point_width			0.62
+	point_width			0.30
+	point_width			0.10
+	n_len				120
+	frame_hint			0 0 1
+}
+
+standard_object
+{
+	name				flattaper
+	geometry			flattapergeom
+	material			mat_jade
+}
+
+#############################################################################
+# SPECIMEN 6 -- CAPS ON (the default).  A straight tube angled so its near end
+# faces the camera; the near end is a flat ear-clipped disk.
+#############################################################################
+sweep_geometry
+{
+	name				cappedgeom
+	profile_circle		0.55 24
+	point				2.0 3.30 7.4
+	point				1.4 0.60 2.8
+	n_len				48
+}
+
+standard_object
+{
+	name				cappedtube
+	geometry			cappedgeom
+	material			mat_slate
+}
+
+#############################################################################
+# SPECIMEN 7 -- CAPS OFF.  Same tube, `cap_start FALSE` / `cap_end FALSE`: the
+# near end is an OPEN mouth showing the far interior wall.
+#############################################################################
+sweep_geometry
+{
+	name				uncappedgeom
+	profile_circle		0.55 24
+	point				6.0 3.30 7.4
+	point				5.4 0.60 2.8
+	n_len				48
+	cap_start			FALSE
+	cap_end				FALSE
+}
+
+standard_object
+{
+	name				uncappedtube
+	geometry			uncappedgeom
+	material			mat_clay
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				2000
+	color				1.0 0.98 0.94
+	position			-10 16 14
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				0.90 0.94 1.0
+	position			12 10 12
+}
+
+omni_light
+{
+	name				rimlight
+	power				600
+	color				1.0 1.0 1.0
+	position			0 12 -16
+}

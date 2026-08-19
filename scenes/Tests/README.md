@@ -65,6 +65,60 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   check 87's outliner**: the Objects section is a tree, the 30-object array is
   ONE editable row, and picking any copy in the viewport highlights that row.
   Its header comment lists what to look for.
+- Surface of revolution: `Geometry/lathe_basic.RISEscene` (the three cases
+  `lathe_geometry` exists for -- a VASE whose profile starts and ends at r = 0,
+  so both rings collapse to a single pole vertex and the vessel is watertight
+  with no caps; a TURNED TABLE LEG with beads, coves and the duplicate-a-point
+  hard-edge idiom at its two flat ends; and a 140-degree CUTAWAY, which opens
+  the surface along two radial half-planes and gets a flat ear-clipped cap on
+  each)
+- **Expressive-geometry STRESS scenes** (`Geometry/*_stress.RISEscene`): five
+  inspection instruments, not demos.  Every specimen in them exercises a case
+  that has actually produced a bug or that the implementation's own comments
+  flag as delicate, and each file's header comment says, per specimen, what it
+  stresses and what CORRECT looks like -- so a regression is spottable by eye
+  from one render.  Each takes a few seconds and leaves `RISE_Log.txt` empty.
+  - `Geometry/lathe_stress.RISEscene` -- ten `lathe_geometry` specimens in two
+    bands.  The headline is the INTERIOR POLE (a symmetric hourglass whose
+    profile touches the axis mid-way): the shared pole vertex is claimed by two
+    bands whose outward normals provably disagree in axial sign, which is the
+    P1 where `vGeomNormal` ended up pointing INTO the solid near the pinch.
+    Also: pole-at-start-only, pole-at-both-ends, the duplicate-a-point hard-edge
+    idiom, `smooth TRUE` vs `FALSE` at `n_radial 12`, a level-ended TUBE at
+    `sweep_degrees 200` (the `endsLevel` cap rule), a 140-degree solid cutaway
+    turned so both ear-clipped caps face the camera, a REVERSED profile beside
+    its forward twin (the signed-volume orientation derivation), and one
+    specimen each on `axis x` and `axis z` (the frame was only ever pinned
+    for `y`).
+  - `Geometry/sweep_stress.RISEscene` -- `profile_rect 2.0 1.0 0.5` sitting
+    EXACTLY on the stadium boundary `r == min(w,h)/2`, where adjacent corner
+    arcs meet at coincident profile points; `path_closed TRUE` on a TREFOIL,
+    which has genuine torsion (a planar ring has zero holonomy and proves
+    nothing, which is why an earlier closed-loop test was vacuous); a
+    `point_scale` round taper beside a `point_width` x-only taper on identical
+    paths; a 0.09-radius tube on a three-turn helix; and caps on vs off.
+  - `Geometry/skeleton_stress.RISEscene` -- a three-child hub, a DEGENERATE
+    bone (`|r_parent - r_child| > bone length`, aimed straight at the camera:
+    the case that exposed both an AABB under-bound and an on-axis field error),
+    an isolated joint beside an ordinary bone, a nine-joint monotonic taper,
+    and `blend 0` beside `blend 1.2` on the same skeleton.  This is the ONE
+    stress scene that prints a diagnostic: the degenerate bone intentionally
+    trips `skeleton_geometry`'s own non-rejecting warning ON THE CONSOLE.
+  - `Geometry/scenegraph_stress.RISEscene` -- five levels of nesting with a
+    non-identity transform at every one; `source` instancing of a multi-node,
+    multi-level subtree; `count_u 5` driving BOTH `position` and `orientation`
+    from `expr(i)`; an EMISSIVE node INSIDE the instanced subtree, so each
+    clone has to be its own registered area light (three lamps, three separate
+    pools on the floor); and a hand-placed TWIN sitting exactly on top of one
+    array element as a correctness control -- if the composition drifts, an
+    extra blade appears.
+  - `Geometry/misc_geometry_stress.RISEscene` -- the two thinnest-covered
+    chunks: `cartesian_disk_geometry`, which had ZERO test scenes anywhere
+    (a checker disk proving the LINEAR CARTESIAN UV, plus the same displaced
+    field at `mesh_n` 300 and 44 so the sampling lattice and the staircase rim
+    are visible), and `path_instances_geometry` with a NON-TRIVIAL template
+    (a lathe-turned finial, not a sphere) threaded along a curved 3D path,
+    with a `slant` + `scale` variant beside it.
 - CST/parser sanity: `Parser/loops.RISEscene` (a flattened native-v7 fixture;
   the filename and historical header comment predate retirement of the
   streaming loop language)

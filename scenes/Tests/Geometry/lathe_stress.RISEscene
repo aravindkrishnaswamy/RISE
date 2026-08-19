@@ -1,0 +1,652 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           lathe_stress.RISEscene                                                                  #
+#   Description:    A REGRESSION INSTRUMENT for `lathe_geometry`, not a demo.  Every specimen below is a     #
+#                   case that has produced a bug or that the factory's own comments flag as delicate, laid   #
+#                   out in two clean bands so a human can spot a regression BY EYE.  Companion to            #
+#                   lathe_basic.RISEscene, which shows the three cases the chunk exists FOR; this one shows  #
+#                   the cases that break it.                                                                #
+#                                                                                                           #
+#   LAYOUT: BACK band (z = -5), left to right --                                                            #
+#                   COPPER horn / PLUM egg / SLATE spool / CLAY cutaway / GOLD pair                         #
+#           FRONT band (z = +5), left to right --                                                           #
+#                   JADE cup / AMBER pair / MAGENTA hourglass / TEAL tube / STEEL ziggurat                 #
+#                                                                                                           #
+#   SPECIMENS (what it stresses -> what CORRECT looks like):                                                #
+#                                                                                                           #
+#     MAGENTA hourglass, front band -- INTERIOR POLE.  THE MONEY CASE.  A symmetric peanut whose profile     #
+#       touches the axis at r = 0 MID-WAY (0 -> 0.92 -> 0 -> 0.92 -> 0), so one pole vertex is shared by     #
+#       two bands whose outward normals provably disagree in SIGN along the axis (lower band dr < 0 so       #
+#       nh > 0; upper band dr > 0 so nh < 0), while a pole vertex's normal is forced to +-axis.              #
+#       GUARDS the P1 in which that single shared vertex carried ONE normal and therefore sat in the         #
+#       opposite half-space from one of its two fans -- `vGeomNormal` then pointed INTO the solid near the   #
+#       pinch.  The factory now SPLITS an interior pole into two rows, one per band.                        #
+#       CORRECT: the upper and lower lobes are shaded IDENTICALLY and symmetrically about the waist, and     #
+#       the neck reads as a smooth pinch.  A REGRESSION shows as exactly ONE lobe going black (or blowing    #
+#       out) in the band adjacent to the waist, breaking the up/down symmetry.                              #
+#                                                                                                           #
+#     JADE cup, front band -- POLE AT START ONLY.  r = 0 at the first profile point, r > 0 at the last:      #
+#       closed dome at the bottom, OPEN rim at the top (a lathe emits no caps at 360).  CORRECT: a solid     #
+#       rounded base, and the rim is genuinely open -- the baked mesh is double-sided, so the INNER wall     #
+#       is visible and shaded through the mouth rather than showing a hole into the background.             #
+#                                                                                                           #
+#     PLUM egg, back band -- POLE AT BOTH ENDS.  A closed, watertight vessel: no caps, no zero-area          #
+#       triangles.  CORRECT: a smooth egg with no seam and no dark speck at either pole.                    #
+#                                                                                                           #
+#     SLATE spool, back band -- HARD EDGES via DUPLICATED profile points.  The zero-length segment is not    #
+#       "live", so it emits no band and splits the two normals.  CORRECT: three crisp creases (base disk /   #
+#       barrel, barrel / waist, waist / collar) with smoothly shaded curvature BETWEEN them.  A regression   #
+#       is either a uniformly rounded object (the split stopped happening) or a uniformly faceted one.      #
+#                                                                                                           #
+#     AMBER pair, front band -- `smooth TRUE` (left) vs `smooth FALSE` (right).  SAME profile, SAME          #
+#       n_radial 12.  CORRECT: the LEFT one shades as a turned surface -- a continuous gradient around and   #
+#       along the profile, with only the silhouette betraying the 12-gon.  The RIGHT one is visibly          #
+#       faceted BOTH ways: 12 flat radial strips and a flat band per profile segment.  If the two look       #
+#       alike, one of the two row-building branches has stopped doing its job.                              #
+#                                                                                                           #
+#     TEAL tube, front band -- TUBE / SHELL with LEVEL off-axis ends, at sweep_degrees 200.  Both profile    #
+#       ends sit at h = 0 with r > 0, which is the `endsLevel` branch of the cap rule: closing the cross-    #
+#       section THROUGH THE AXIS would put both axis projections on the SAME point, collinear with the two   #
+#       endpoints, and ear-clip a zero-area spur.  The factory closes the cross-section DIRECTLY instead.    #
+#       CORRECT: each of the two cut faces is a THIN WALL RECTANGLE (outer r 1.00 to inner r 0.72) and the   #
+#       BORE IS OPEN -- the inner wall is visible the whole way through the C.  If a cut face is a solid     #
+#       filled disk, or the object reads as a solid half-cylinder, the endsLevel rule regressed.            #
+#                                                                                                           #
+#     CLAY cutaway, back band -- PARTIAL SWEEP at 140 degrees on a SOLID silhouette (profile starts and      #
+#       ends ON the axis), turned so the opening faces the camera.  Both cut half-planes get a flat          #
+#       ear-clipped cap of the body's cross-section, and the two caps are wound OPPOSITELY (the start cap    #
+#       faces -tangent(0), the end cap +tangent(sweep)).  CORRECT: both cut faces are opaque and lit; you    #
+#       cannot see through the solid at any angle.  A cap wound the wrong way reads as a black gap.         #
+#                                                                                                           #
+#     GOLD pair, back band -- REVERSED vs FORWARD profile.  The same asymmetric profile authored bottom-to-  #
+#       top (left) and top-to-bottom (right); SAME material, SAME transform but for x.  Outward orientation  #
+#       is DERIVED from the signed volume of revolution, so authoring direction must not be load-bearing.    #
+#       CORRECT: the two are INDISTINGUISHABLE.  If the right one is dark, inside-out, or reads as a         #
+#       silhouette only, the volume-sign derivation regressed.                                              #
+#                                                                                                           #
+#     COPPER horn, back band far left -- `axis x`.  The axis frame (ax / au / av) was only ever pinned for   #
+#       the default `y`.  CORRECT: the horn lies HORIZONTALLY along world X with the wide mouth at -X and    #
+#       the closed tip at +X, circular in the Y/Z plane, and it is SHADED (a broken frame collapses the      #
+#       revolution into a flat fan or puts the whole shape on the wrong axis).                              #
+#                                                                                                           #
+#     STEEL ziggurat, front band far right -- `axis z`.  A stepped cone revolved about world Z, so h runs    #
+#       along +Z and the apex points at the camera.  Every step boundary is a duplicated profile point.      #
+#       CORRECT: CONCENTRIC RINGS in the X/Y plane, five of them, each with a shaded annular tread and a     #
+#       crisp riser edge; the rings are round and share one centre.  A broken axis frame turns them into     #
+#       ellipses, a fan, or rings stacked along the wrong world axis.                                       #
+#                                                                                                           #
+#   No specimen here should produce a log line.  A clean render leaves RISE_Log.txt free of any `Error` or   #
+#   `Warning` entry.  There is no ambient light on purpose: an inverted normal must read as BLACK, not as    #
+#   a slightly darker grey.                                                                                 #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				16
+	lum_samples			3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/lathe_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1500
+	height			620
+}
+
+pinhole_camera
+{
+	location			0 13 32
+	lookat				0 1.5 0
+	up					0 1 0
+	fov					17.0
+}
+
+##################################################
+# Painters + materials, one distinct colour per specimen
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_magenta
+	color				0.72 0.18 0.55
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.20 0.58 0.40
+}
+
+uniformcolor_painter
+{
+	name				pnt_plum
+	color				0.40 0.26 0.62
+}
+
+uniformcolor_painter
+{
+	name				pnt_slate
+	color				0.34 0.44 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_amber
+	color				0.82 0.56 0.12
+}
+
+uniformcolor_painter
+{
+	name				pnt_teal
+	color				0.10 0.52 0.56
+}
+
+uniformcolor_painter
+{
+	name				pnt_clay
+	color				0.74 0.34 0.20
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.76 0.66 0.24
+}
+
+uniformcolor_painter
+{
+	name				pnt_copper
+	color				0.66 0.30 0.14
+}
+
+uniformcolor_painter
+{
+	name				pnt_steel
+	color				0.30 0.36 0.46
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.46 0.46 0.48
+}
+
+lambertian_material
+{
+	name				mat_magenta
+	reflectance			pnt_magenta
+}
+
+lambertian_material
+{
+	name				mat_jade
+	reflectance			pnt_jade
+}
+
+lambertian_material
+{
+	name				mat_plum
+	reflectance			pnt_plum
+}
+
+lambertian_material
+{
+	name				mat_slate
+	reflectance			pnt_slate
+}
+
+lambertian_material
+{
+	name				mat_amber
+	reflectance			pnt_amber
+}
+
+lambertian_material
+{
+	name				mat_teal
+	reflectance			pnt_teal
+}
+
+lambertian_material
+{
+	name				mat_clay
+	reflectance			pnt_clay
+}
+
+lambertian_material
+{
+	name				mat_gold
+	reflectance			pnt_gold
+}
+
+lambertian_material
+{
+	name				mat_copper
+	reflectance			pnt_copper
+}
+
+lambertian_material
+{
+	name				mat_steel
+	reflectance			pnt_steel
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+#############################################################################
+# SPECIMEN 1 -- INTERIOR POLE.  THE MONEY CASE.
+#
+# A symmetric peanut: r runs 0 -> 0.92 -> 0 -> 0.92 -> 0.  The middle point
+# (0.00, 1.62) is an INTERIOR pole -- it sits ON the axis with a LIVE band on
+# BOTH sides.  Those two bands demand opposite axial normal signs, and a pole
+# vertex's normal is forced to +-axis, so ONE shared vertex cannot serve both
+# fans.  The factory splits it into two rows, one per band.
+#
+# The two END points are ALSO poles, but ordinary ones (a live band on one
+# side only).  Having all three in one specimen is deliberate: only the
+# middle one may split.
+#############################################################################
+lathe_geometry
+{
+	name				pinchgeom
+	profile_point		0.00 0.00
+	profile_point		0.44 0.12
+	profile_point		0.72 0.34
+	profile_point		0.92 0.68
+	profile_point		0.80 1.02
+	profile_point		0.54 1.30
+	profile_point		0.26 1.50
+	profile_point		0.00 1.62
+	profile_point		0.26 1.74
+	profile_point		0.54 1.94
+	profile_point		0.80 2.22
+	profile_point		0.92 2.56
+	profile_point		0.72 2.90
+	profile_point		0.44 3.12
+	profile_point		0.00 3.24
+	n_radial			72
+	smooth				TRUE
+}
+
+standard_object
+{
+	name				pinch
+	geometry			pinchgeom
+	material			mat_magenta
+	position			0.6 0 5
+}
+
+#############################################################################
+# SPECIMEN 2 -- POLE AT START ONLY.  Closed dome at the bottom, open rim at
+# the top.  The mesh is double-sided, so the inside of the wall is visible
+# and shaded through the mouth.
+#############################################################################
+lathe_geometry
+{
+	name				cupgeom
+	profile_point		0.00 0.00
+	profile_point		0.28 0.06
+	profile_point		0.50 0.22
+	profile_point		0.68 0.52
+	profile_point		0.80 0.94
+	profile_point		0.86 1.40
+	profile_point		0.83 1.82
+	profile_point		0.78 2.20
+	profile_point		0.84 2.48
+	profile_point		0.92 2.70
+	n_radial			64
+}
+
+standard_object
+{
+	name				cup
+	geometry			cupgeom
+	material			mat_jade
+	position			-8.6 0 5
+}
+
+#############################################################################
+# SPECIMEN 3 -- POLE AT BOTH ENDS.  A closed, watertight vessel: no caps,
+# no zero-area triangles, no seam.
+#############################################################################
+lathe_geometry
+{
+	name				egggeom
+	profile_point		0.00 0.00
+	profile_point		0.30 0.10
+	profile_point		0.52 0.34
+	profile_point		0.70 0.72
+	profile_point		0.80 1.14
+	profile_point		0.86 1.70
+	profile_point		0.82 2.10
+	profile_point		0.68 2.44
+	profile_point		0.44 2.70
+	profile_point		0.00 2.86
+	n_radial			64
+}
+
+standard_object
+{
+	name				egg
+	geometry			egggeom
+	material			mat_plum
+	position			-5.0 0 -5
+}
+
+#############################################################################
+# SPECIMEN 4 -- HARD EDGES via DUPLICATED profile points.  Three duplicated
+# points give three crisp creases; the curvature between them stays smooth.
+#############################################################################
+lathe_geometry
+{
+	name				spoolgeom
+	profile_point		0.00 0.00
+	profile_point		0.88 0.00
+	profile_point		0.88 0.00
+	profile_point		0.88 0.34
+	profile_point		0.88 0.34
+	profile_point		0.62 0.62
+	profile_point		0.44 1.10
+	profile_point		0.42 1.70
+	profile_point		0.56 2.14
+	profile_point		0.56 2.14
+	profile_point		0.96 2.30
+	profile_point		0.96 2.62
+	profile_point		0.00 2.62
+	n_radial			64
+	smooth				TRUE
+}
+
+standard_object
+{
+	name				spool
+	geometry			spoolgeom
+	material			mat_slate
+	position			-2.0 0 -5
+}
+
+#############################################################################
+# SPECIMEN 5 -- `smooth TRUE` (left) vs `smooth FALSE` (right).  Identical
+# profile, identical n_radial 12.  Left averages adjacent segment normals per
+# profile point; right emits two rows per segment carrying that segment's own
+# flat normal.
+#############################################################################
+lathe_geometry
+{
+	name				smoothgeom
+	profile_point		0.00 0.00
+	profile_point		0.52 0.22
+	profile_point		0.80 0.80
+	profile_point		0.88 1.50
+	profile_point		0.66 2.20
+	profile_point		0.00 2.60
+	n_radial			12
+	smooth				TRUE
+}
+
+lathe_geometry
+{
+	name				flatgeom
+	profile_point		0.00 0.00
+	profile_point		0.52 0.22
+	profile_point		0.80 0.80
+	profile_point		0.88 1.50
+	profile_point		0.66 2.20
+	profile_point		0.00 2.60
+	n_radial			12
+	smooth				FALSE
+}
+
+standard_object
+{
+	name				smoothed
+	geometry			smoothgeom
+	material			mat_amber
+	position			-5.4 0 5
+}
+
+standard_object
+{
+	name				faceted
+	geometry			flatgeom
+	material			mat_amber
+	position			-2.8 0 5
+}
+
+#############################################################################
+# SPECIMEN 6 -- TUBE / SHELL with LEVEL off-axis ends, partial sweep.
+#
+# The profile runs UP the outer wall, ACROSS the rim, and back DOWN the inner
+# wall, ending at the same height it started (h = 0 and r > 0 at both ends).
+# That is the `endsLevel` branch of the cap rule: the cross-section is closed
+# DIRECTLY rather than through the axis, because the through-axis spur would
+# have zero area and ear-clip into zero-area triangles.
+#
+# `orientation 0 55 0` turns the missing 160-degree wedge toward the camera.
+#############################################################################
+lathe_geometry
+{
+	name				tubegeom
+	profile_point		1.00 0.00
+	profile_point		1.00 1.20
+	profile_point		1.00 2.40
+	profile_point		0.72 2.40
+	profile_point		0.72 1.20
+	profile_point		0.72 0.00
+	sweep_degrees		200
+	n_radial			48
+}
+
+standard_object
+{
+	name				tube
+	geometry			tubegeom
+	material			mat_teal
+	position			4.2 0 5
+	orientation			0 55 0
+}
+
+#############################################################################
+# SPECIMEN 7 -- PARTIAL SWEEP, 140 degrees, SOLID silhouette.  The profile
+# starts and ends ON the axis, so the cut cross-section is already a closed
+# polygon and both cut half-planes get a flat ear-clipped cap.
+#############################################################################
+lathe_geometry
+{
+	name				cutawaygeom
+	profile_point		0.00 0.00
+	profile_point		0.94 0.18
+	profile_point		1.14 1.05
+	profile_point		0.56 2.10
+	profile_point		0.68 2.60
+	profile_point		0.00 2.78
+	sweep_degrees		140
+	n_radial			40
+}
+
+standard_object
+{
+	name				cutaway
+	geometry			cutawaygeom
+	material			mat_clay
+	position			1.2 0 -5
+	orientation			0 110 0
+}
+
+#############################################################################
+# SPECIMEN 8 -- REVERSED vs FORWARD profile, same material.
+#
+# `fwdgeom` is authored bottom-to-top; `revgeom` is the identical point list
+# written backwards.  Outward orientation is derived from the signed volume of
+# revolution, so both must face outward.  CORRECT: indistinguishable.
+#############################################################################
+lathe_geometry
+{
+	name				fwdgeom
+	profile_point		0.00 0.00
+	profile_point		0.64 0.10
+	profile_point		0.92 0.72
+	profile_point		0.34 1.58
+	profile_point		0.54 2.24
+	profile_point		0.00 2.46
+	n_radial			56
+}
+
+lathe_geometry
+{
+	name				revgeom
+	profile_point		0.00 2.46
+	profile_point		0.54 2.24
+	profile_point		0.34 1.58
+	profile_point		0.92 0.72
+	profile_point		0.64 0.10
+	profile_point		0.00 0.00
+	n_radial			56
+}
+
+standard_object
+{
+	name				fwd
+	geometry			fwdgeom
+	material			mat_gold
+	position			4.4 0 -5
+}
+
+standard_object
+{
+	name				rev
+	geometry			revgeom
+	material			mat_gold
+	position			7.2 0 -5
+}
+
+#############################################################################
+# SPECIMEN 9 -- `axis x`.  A horn revolved about world X: mouth at the local
+# h = 0 end (world -X), closed tip at h = 2.60 (world +X), circular in Y/Z.
+#############################################################################
+lathe_geometry
+{
+	name				trumpet_x
+	profile_point		1.20 0.00
+	profile_point		0.72 0.55
+	profile_point		0.46 1.15
+	profile_point		0.34 1.90
+	profile_point		0.30 2.60
+	profile_point		0.00 2.60
+	axis				x
+	n_radial			56
+}
+
+standard_object
+{
+	name				horiz_x
+	geometry			trumpet_x
+	material			mat_copper
+	position			-10.2 1.5 -5
+}
+
+#############################################################################
+# SPECIMEN 10 -- `axis z`.  A STEPPED ZIGGURAT about world Z: h runs along +Z,
+# so the widest step sits farthest from the camera and the apex points at it.
+# Head-on that is an unambiguous signature -- CONCENTRIC RINGS in the X/Y
+# plane with a shaded annular tread between each pair.  Every step boundary is
+# a duplicated profile point, so each ring edge is a hard crease.
+#############################################################################
+lathe_geometry
+{
+	name				zigg_z
+	profile_point		0.00 0.00
+	profile_point		1.20 0.00
+	profile_point		1.20 0.00
+	profile_point		1.20 0.44
+	profile_point		1.20 0.44
+	profile_point		0.92 0.44
+	profile_point		0.92 0.44
+	profile_point		0.92 0.88
+	profile_point		0.92 0.88
+	profile_point		0.64 0.88
+	profile_point		0.64 0.88
+	profile_point		0.64 1.32
+	profile_point		0.64 1.32
+	profile_point		0.36 1.32
+	profile_point		0.36 1.32
+	profile_point		0.36 1.76
+	profile_point		0.36 1.76
+	profile_point		0.00 1.76
+	axis				z
+	n_radial			56
+}
+
+standard_object
+{
+	name				horiz_z
+	geometry			zigg_z
+	material			mat_steel
+	position			7.8 1.5 3.4
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				2000
+	color				1.0 0.98 0.94
+	position			-10 16 14
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				0.90 0.94 1.0
+	position			12 10 12
+}
+
+omni_light
+{
+	name				rimlight
+	power				600
+	color				1.0 1.0 1.0
+	position			0 12 -16
+}
