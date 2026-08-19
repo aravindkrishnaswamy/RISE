@@ -2316,3 +2316,23 @@ it was already tried and refuted here.
   result publication is also atomic under persistent allocation denial. This
   restores r85's existing resource/fail-closed rules; it is not a new operator
   or identity change.
+
+- **r93 (2026-08-18):** measured Metal frozen-force comparison. Fresh review
+  found that the provisional `3e-5*max(1,|a|,|b|)` CPU/Metal gate became a
+  broad absolute allowance for every sub-unit force and viscosity value. An
+  on-device ordered-binary32 audit over zero flow, nonlinear periodic flow,
+  every wall/open orientation, every periodic seam, variable-density
+  authority, and deviatoric compression found exact zeros and seam copies,
+  with a worst nonzero difference of 8 ULP at x-viscous face 25 (`0.778665`
+  versus `0.778666` at printed precision). The ruling pins an 8-ULP gate on
+  every published value and retains exact-byte gates for analytic zeros,
+  canonical seams, and repeat execution.
+
+  The absolute band was rejected because it hid millions of ULPs at small
+  magnitudes; universal byte identity was rejected because it contradicts the
+  measured repeatable target/compiler result; and a maximum-only diagnostic
+  was rejected because it does not gate each cell. Vreman association/order,
+  the strict `2/3` coefficient, all twelve actual Metal allocations, and nil
+  command/encoder failure paths receive separate binding REDs. This closes the
+  comparison evidence for the existing r89--r91 operator. It does not change
+  case identity, physics, provenance, or the 200 ms/two-GiB budgets.

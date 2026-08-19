@@ -932,6 +932,33 @@ not owned conservative state. r92 is an internal representation closure for
 the already pinned P3 operator. It changes no case identity, physical model,
 or milestone budget.
 
+### 7.10 Metal frozen-force comparison bound (r93)
+
+The standalone Metal frozen-force comparison is gated per published cell and
+face by ordered-binary32 ULP distance. On the M4 target, the complete
+zero-flow, nonlinear periodic, all-axis wall/open, all-axis periodic,
+variable-density authority, and deviatoric-compression fixture surface was
+measured against the strict-fp32 CPU oracle. Zero flow, periodic publication,
+and same-device repetition were bit-identical. The largest nonzero CPU/Metal
+difference was 8 ULP, at the authority fixture's x-viscous face index 25
+(`0.778665` CPU versus `0.778666` Metal at printed precision). The binding
+comparison ceiling is therefore 8 ULP for every Vreman, `mu_eff`, viscous, and
+gravity value; exact analytic zeros and canonical seam copies remain exact-byte
+gates.
+
+The former `3e-5*max(1,|a|,|b|)` comparison is rejected because it becomes a
+`3e-5` absolute allowance below unity and can hide millions of ULPs in small
+viscosity and force values. Requiring byte identity everywhere is rejected
+because the measured eight-ULP target/compiler difference is finite,
+repeatable, and confined to an otherwise matching strict operation topology;
+it would reject the intended operator rather than distinguish a model change.
+A maximum-only diagnostic is rejected because it can hide a bad cell behind a
+good aggregate. Source gates separately bind Vreman beta association and
+accumulation order, the exact `2/3` deviatoric coefficient, all twelve live
+Metal buffers, and every command/encoder fail-closed stage. This is a measured
+comparison rule for the already pinned operator, not a physical-tolerance,
+identity, case-record, or budget change.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
