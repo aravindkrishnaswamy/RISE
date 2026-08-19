@@ -302,7 +302,9 @@ kernel void prolongate_add(device const float* coarse [[buffer(0)]],device float
  interp_coord(y,f.ny,c.ny,y0,y1,wy);interp_coord(z,f.nz,c.nz,z0,z1,wz);float value=0.0f;
  for(uint iz=0u;iz<2u;++iz)for(uint iy=0u;iy<2u;++iy)for(uint ix=0u;ix<2u;++ix){
   float w=(ix?wx:1.0f-wx)*(iy?wy:1.0f-wy)*(iz?wz:1.0f-wz);
-  value+=w*coarse[cell_index(c,ix?x1:x0,iy?y1:y0,iz?z1:z0)];}fine[gid]+=value;
+  value+=w*coarse[cell_index(c,ix?x1:x0,iy?y1:y0,iz?z1:z0)];}bool pressureOpen=false;
+ for(uint side=0u;side<6u;++side)pressureOpen=pressureOpen||f.boundary[side]==1u;
+ fine[gid]+=(pressureOpen?0.75f:1.0f)*value;
 }
 kernel void clear_values(device float* values [[buffer(0)]],constant ReductionParams& r [[buffer(1)]],
  uint gid [[thread_position_in_grid]]){if(gid<r.count)values[gid]=0.0f;}
@@ -885,7 +887,10 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					Dispatch(encoder,context.clearValues,count);[encoder endEncoding];
 				}
 				std::uint32_t executedCycles=0u;std::uint64_t executedSweeps=0u;
-				for( unsigned int cycle=0;cycle<12u;++cycle ) {
+				unsigned int cycleCount=12u;
+				for( FireProductionProjectionBoundary boundary:request.boundary )
+					if( boundary==FireProductionProjectionPressureOpen ) cycleCount=16u;
+				for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
 					if( !EncodeVCycle(context,command,hierarchy,0u,scratch,diagnostics,
 						executedSweeps,error) ) return false;
 					if( fp->nullspace!=0u&&!EncodeRemoveMean(context,command,fineLevel.pressure,cells,scratch,

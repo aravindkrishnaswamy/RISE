@@ -576,7 +576,8 @@ int main()
 		Check(metalOK&&metalRepeatOK&&EveryZero(metalResult)&&metalResult.validationPassed&&
 			metalResult.maximumPreProjectionResidualPerS==0.0f&&
 			metalResult.maximumPostProjectionResidualPerS==0.0f&&
-			metalResult.executedVCycleCount==12u&&
+			metalResult.executedVCycleCount==
+				(boundary==FireProductionProjectionPressureOpen?16u:12u)&&
 			SameProjectionEvidence(metalResult,metalRepeat),
 			"P2 Metal periodic, wall, and pressure-open rest states are byte exact");
 #else
@@ -1375,13 +1376,13 @@ int main()
 	const std::string android=ReadFile("build/cmake/rise-android/CMakeLists.txt");
 	const std::string visualStudio=ReadFile("build/VS2022/Library/Library.vcxproj");
 	const std::string xcode=ReadFile("build/XCode/rise/rise.xcodeproj/project.pbxproj");
-	const std::size_t cycleLoop=source.find("for( unsigned int cycle=0;cycle<12u;++cycle )");
+	const std::size_t cycleLoop=source.find("for( unsigned int cycle=0;cycle<cycleCount;++cycle )");
 	const std::size_t cycleLoopEnd=cycleLoop==std::string::npos?std::string::npos:
 		source.find("result.pressurePa=",cycleLoop);
 	const std::string cycleBody=cycleLoop==std::string::npos?std::string():
 		source.substr(cycleLoop,cycleLoopEnd-cycleLoop);
 	const std::size_t metalCycleLoop=metalSource.find(
-		"for( unsigned int cycle=0;cycle<12u;++cycle )");
+		"for( unsigned int cycle=0;cycle<cycleCount;++cycle )");
 	const std::size_t metalCycleLoopEnd=metalCycleLoop==std::string::npos?std::string::npos:
 		metalSource.find("for( unsigned int axis=0;axis<3u;++axis )",metalCycleLoop);
 	const std::string metalCycleBody=metalCycleLoop==std::string::npos?std::string():
@@ -1390,15 +1391,19 @@ int main()
 		"bool ProjectFireProductionMetalImpl(");
 	const std::string residentProjectionBody=residentProjectionBeginning==std::string::npos?
 		std::string():metalSource.substr(residentProjectionBeginning);
-	Check(Count(source,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
+	Check(Count(source,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
+		Count(source,"HasOpenBoundary(request.boundary)?16u:12u")==1u&&
+		Count(source,"HasOpenBoundary(boundary)?0.75f:1.0f")==1u&&
 		Count(source,"Smooth(level,boundary,3u,nullspace,sweepCounter)")==2u&&
 		Count(source,"Smooth(level,boundary,32u,nullspace,sweepCounter)")==1u&&
 		Count(source,"const float omega=2.0f/3.0f;")==1u&&
 		Count(source,"VCycle(hierarchy,0u,request.boundary,nullspace,")==1u&&
 		cycleBody.find("break") == std::string::npos&&
 		source.find("const float mean=BlellochSum(values)")!=std::string::npos,
-		"P2 source guard binds 12 cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
-	Check(Count(metalSource,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
+		"P2 source guard binds 12 cycles or 16 damped open cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
+	Check(Count(metalSource,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
+		Count(metalSource,"cycleCount=16u")==1u&&
+		Count(metalSource,"(pressureOpen?0.75f:1.0f)*value")==1u&&
 		metalSource.find("return EncodeSmooth(context,command,level,32u")!=std::string::npos&&
 		Count(metalSource,"EncodeSmooth(context,command,level,3u")==2u&&
 		metalSource.find("(2.0f/3.0f)*")!=std::string::npos&&

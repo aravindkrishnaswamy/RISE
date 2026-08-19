@@ -406,7 +406,7 @@ namespace RISE
 			weight=position-static_cast<float>(first);
 		}
 
-		void ProlongateAndAdd( const Level& coarse, Level& fine )
+		void ProlongateAndAdd( const Level& coarse, Level& fine, float damping )
 		{
 			for( std::size_t z=0;z<fine.nz;++z ) for( std::size_t y=0;y<fine.ny;++y )
 				for( std::size_t x=0;x<fine.nx;++x ) {
@@ -423,7 +423,7 @@ namespace RISE
 							value+=weight*coarse.pressure[CellIndex(coarse.nx,coarse.ny,
 								ix?x1:x0,iy?y1:y0,iz?z1:z0)];
 						}
-					fine.pressure[CellIndex(fine.nx,fine.ny,x,y,z)]+=value;
+					fine.pressure[CellIndex(fine.nx,fine.ny,x,y,z)]+=damping*value;
 				}
 		}
 
@@ -444,7 +444,7 @@ namespace RISE
 			if( nullspace ) RemoveMean(coarse.rhs);
 			std::fill(coarse.pressure.begin(),coarse.pressure.end(),0.0f);
 			VCycle(hierarchy,levelIndex+1u,boundary,nullspace,sweepCounter);
-			ProlongateAndAdd(coarse,level);
+			ProlongateAndAdd(coarse,level,HasOpenBoundary(boundary)?0.75f:1.0f);
 			Smooth(level,boundary,3u,nullspace,sweepCounter);
 		}
 
@@ -681,7 +681,8 @@ namespace RISE
 			coarse.temporary.assign(count,0.0f);coarse.residual.assign(count,0.0f);
 			hierarchy.push_back(std::move(coarse));
 		}
-		for( unsigned int cycle=0;cycle<12u;++cycle ) {
+		const unsigned int cycleCount=HasOpenBoundary(request.boundary)?16u:12u;
+		for( unsigned int cycle=0;cycle<cycleCount;++cycle ) {
 			VCycle(hierarchy,0u,request.boundary,nullspace,
 				result.executedJacobiSweepCount);
 			++result.executedVCycleCount;

@@ -417,21 +417,26 @@ hierarchy and schedule:
 - each level rediscretizes the same MAC operator from its restricted density
   and inherited boundary kinds; correction prolongation is cell-centered
   trilinear interpolation with the same clamped coarse-coordinate rule in CPU
-  and Metal;
+  and Metal. Hierarchies containing a pressure-open side multiply every coarse
+  correction by the stored binary32 `0.75f`; periodic/wall-only hierarchies
+  retain the established undamped correction;
 - one V-cycle has three weighted-Jacobi pre-sweeps and three post-sweeps with
   the stored binary32 result of `2.0f/3.0f`; the coarsest level performs 32
   Jacobi sweeps;
-- exactly 12 V-cycles execute from zero pressure.  There is no residual-based
+- exactly 12 V-cycles execute from zero pressure for periodic/wall-only
+  hierarchies, and exactly 16 execute for a hierarchy containing any
+  pressure-open side. There is no residual-based
   early exit, retry projection, warm-start history, atomics, subgroup scan, or
-  CPU solve.  Residual reductions occur only before cycle one and after cycle
-  twelve through fixed padded max/sum trees.
+  CPU solve. Residual reductions occur only before cycle one and after the
+  fixed final cycle through padded max/sum trees.
 
-Twelve cycles are the pre-release fixed schedule selected to fit the r82
-120 ms projection allocation while leaving a factor-of-two smoother-count
-comparison in the P2 validation report.  If the independent manufactured
-fields miss the scientific ceiling, the schedule/model is revised in a new
-numbered design revision; a runtime knob or per-case cycle adaptation is not
-allowed.
+The boundary-class schedule is fixed by r104, not selected from the runtime
+residual. Twelve undamped cycles preserve the qualified periodic/wall oracle
+ratio; sixteen `0.75f`-damped cycles stabilize the rediscretized pressure-open
+coarse correction and fit the r82 120 ms projection allocation. If an
+independent manufactured field misses the scientific ceiling, the
+schedule/model is revised in a new numbered design revision; a runtime knob or
+per-case cycle adaptation is not allowed.
 
 The CPU comparator stores and rounds the same fp32 face densities, hierarchy,
 Jacobi states, restriction, prolongation, and correction expressions.  Metal
@@ -1328,6 +1333,38 @@ exact tier-10 tuple the full resident device p95 is `72.6851 ms`, the staged
 validation wall p95 is `243.495 ms`, and the existing resource certificate is
 unchanged. r103 repairs operand identity only; it changes no transport,
 projection, tolerance, case, or checkpoint byte.
+
+### 7.21 Pressure-open multigrid stabilization and golden floor (r104)
+
+The first SHA-bound golden composition slice exposed a fixed-schedule failure,
+not an fp32 floor: the r86 pressure-open solve entered with a
+`37.872447967529297 s^-1` residual and twelve undamped cycles published
+`0.4867178201675415 s^-1`, `42.663082095` times its unchanged
+`0.011408407366927702 s^-1` validation band. An exact one-through-sixteen stop
+sweep found the best undamped published iterate at cycle four
+(`0.15998798608779907 s^-1`) and strict worsening thereafter. Adding further
+undamped work is therefore rejected.
+
+Pressure-open hierarchies now damp each rediscretized coarse correction by the
+stored binary32 `0.75f` and execute exactly sixteen cycles. The measured
+published sequence at 8/12/16 cycles is
+`0.087220191955566406`, `0.019500255584716797`, and
+`0.0051319599151611328 s^-1`; it is monotone through the fixed stop and crosses
+the existing band without changing tolerance, adding a projection, or reading
+the residual at runtime. Periodic/wall-only hierarchies retain twelve undamped
+cycles: the full manufactured suite preserves its `1.15506` fp32/fp64 oracle
+ratio and prior CPU/Metal deltas. A rejected global-damping experiment degraded
+that periodic ratio to `1.4718`, so damping is an operator-class rule rather
+than a case-wide knob.
+
+The fixed step-3480--3487 beginning-state chain is SHA-bound independently.
+Its exact post-projection trace is
+`{0x1.5054p-8,0x1.4704p-8,0x1.4cd4p-8,0x1.4af4p-8,`
+`0x1.49bp-8,0x1.4b28p-8,0x1.49c8p-8,0x1.4954p-8} s^-1`;
+the maximum is `0.0051319599151611328 s^-1`, every slice passes its authored
+band, and no upward creep appears. This is the r104 golden pressure-open floor.
+It is projection evidence only: transport/scalar/velocity tolerances remain
+unaccepted until the section-5.1 calibration package is independently sealed.
 
 ## 8. Rejected directions and future work
 

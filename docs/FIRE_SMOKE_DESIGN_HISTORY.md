@@ -2502,3 +2502,20 @@ it was already tried and refuted here.
   rejects the old component-zero mapping. Corrected tier-10 measurements are
   72.6851 ms device p95 and 243.495 ms staged wall p95 with the unchanged
   1,235,662,396-byte certificate. No solver tolerance or checkpoint changed.
+
+- **r104 (2026-08-19):** pressure-open production multigrid stabilization.
+  The first immutable golden composition slice proved the old twelve-cycle
+  pressure-open schedule missed its unchanged divergence band by `42.663x`;
+  this was a coarse-mode oscillation, not the r99 fp32 floor. Undamped fixed
+  stops bottomed at `0.1599879861 s^-1` on cycle four and then worsened.
+  Pressure-open hierarchies now use a binary32 `0.75f` coarse-correction factor
+  and sixteen fixed cycles, reaching `0.0051319599 s^-1` on that slice.
+  Periodic/wall hierarchies remain twelve-cycle and undamped because global
+  damping degraded their independent oracle ratio.
+
+  All eight step-3480--3487 beginnings are SHA-bound. Their exact production
+  residual trace is pinned and plateaus between `0.0049898624` and
+  `0.0051319599 s^-1`, with zero monitored misses and no creep. The full
+  periodic/wall/open projection suite remains green. No tolerance, checkpoint,
+  timestep response, extra projection, or runtime convergence branch was
+  introduced; physics-class transport calibration is still a subsequent gate.
