@@ -1205,6 +1205,56 @@ The fixture pins the complete sequence, the maximum, and the final ceiling;
 an upward creep is a contract failure and cannot trigger dt changes or extra
 projections. r99 adds evidence only and changes no operator or validation band.
 
+### 7.17 Resident transport and full-step ownership (r100)
+
+The production step order is `force -> advection -> sources -> projection`.
+The force leg advances the beginning MAC momentum through its selected frozen-
+viscosity substeps and one relative-gravity addition. The cell palindrome then
+advects the beginning nine-channel conservative tuple, while the dual-grid
+palindrome advects the force-updated momentum. Both remaps use the beginning
+accepted MAC velocity as their frozen carrier for all five submaps
+`x/2,y/2,z,y/2,x/2`; force does not silently change the carrier inside the
+step. This preserves the settled semi-implicit transport contract while making
+the owner-directed operator order executable.
+
+The dual-grid auxiliary face density remains a limiter companion only. After
+transport, source maps add exactly once to the cell tuple and MAC momentum, and
+the sole r86 projection reconstructs its authoritative arithmetic face density
+from the post-source cell gas density. No independently transported face
+density enters the projection. The resident source seam accepts explicit fp32
+cell and face increments. During this milestone they are exact zero for the
+discarded zero-source shadow; the following thermo/source-map milestone owns
+their nonzero construction. Zero is therefore an authored comparison operand,
+not an omitted production stage.
+
+All full-grid state, frozen carriers, line scratch, dual tuples, source maps,
+and projection operands are Private Metal resources between the initial upload
+and terminal oracle/diagnostic tap. The resident cell and dual remaps may commit
+commands, but may not stage, dereference, or re-upload a full grid. A scoped
+transfer/allocation ledger observes both host-visible directions, every command
+commit, every terminal tap, and the exact live high-water allocation set. The
+combined two-GiB certificate is checked before payload access or Metal work.
+Standalone wrappers retain one upload and one terminal staging event solely to
+compare the resident kernels with the strict CPU production oracle.
+
+Transport comparison changes from ULP evidence against the certified solver to
+physics evidence because its FCT operator is intentionally different. The
+golden zero-source shadow must preserve each conservative integral within a
+predeclared fp32 reduction bound, remain within the certified local envelope at
+the pilot-ring and plume-edge steep-front probes, and report velocity/scalar
+deviations against bands generated from the certified solver's thread and
+adjacent-refinement variability under section 5.1. No production output may be
+inspected before those bands are frozen. The complete resident step is then
+measured over the fixed eight slices 3480--3487; any composed bound wider than
+the constituent evidence receives its own revision rather than being assumed
+to be the naive sum.
+
+Acceptance remains monitored: every deviation is accumulated in step metadata
+and evaluated by the validation campaign. It never retries, halves dt, adds a
+projection, clips a field, or stalls a run. r100 changes the resident ownership
+and composition seam only; it does not change case identity, checkpoint bytes,
+the certified oracle, or an existing validation tolerance.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

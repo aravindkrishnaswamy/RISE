@@ -2451,3 +2451,23 @@ it was already tried and refuted here.
   `0x1.48p-16` and repeats a bounded fp32 oscillation rather than creeping.
   The full sixteen-value trace is exact-pinned. No additional projection,
   timestep response, tolerance change, or operator change is authorized.
+
+- **r100 (2026-08-19):** resident transport and full-step ownership. The
+  production order is fixed as force, advection, source maps, then one
+  projection. Force-updated momentum and the beginning nine-channel cell tuple
+  enter the dual/cell palindromes, while the beginning accepted MAC velocity
+  remains the frozen carrier for all five submaps. Transported dual density is
+  limiter-only; r86 reconstructs its authoritative face density from the
+  post-source cell density. Source increments are explicit resident operands
+  and are exact zero only for the isolated golden shadow until the next
+  thermo/source-map milestone supplies them.
+
+  Full grids remain Private from the boundary upload through transport and P2;
+  scoped ledgers observe all transfers, commands, allocations, and the combined
+  two-GiB high-water mark. Certified comparison is physics-class rather than
+  ULP-class: conservative ledgers, steep-front envelopes, and section-5.1
+  oracle-variability bands are frozen before production inspection. Eight fixed
+  golden slices measure the composed step, and monitored deviations publish
+  evidence without retry, dt response, clipping, or an extra projection. This
+  ruling changes ownership/order only, not the oracle, checkpoint, identity, or
+  validation tolerance.
