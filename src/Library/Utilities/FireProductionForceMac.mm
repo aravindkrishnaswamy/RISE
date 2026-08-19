@@ -562,6 +562,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					return Fail(error,"production resident force boundary pairing is invalid");
 			}
 			const std::size_t cells=shape.CellCount();
+			std::uint64_t combinedPreflightCertificate=0u;
+			if( projectionTarget&&(!FireProductionResidentForceProjectionWorkingSetBytes(
+				shape,combinedPreflightCertificate)||
+				combinedPreflightCertificate>(UINT64_C(1)<<31u)) )
+				return Fail(error,
+					"production resident force-projection working set exceeds two GiB");
 			if( projectionTarget&&(projectionTarget->size()!=cells||
 				!AllFinite(*projectionTarget)) )
 				return Fail(error,"production resident projection target is invalid");
@@ -831,8 +837,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						observed.substepLoopDeviceToHostTransferCount;
 					computed.residentProjectionInvocationCount=
 						computed.projection.residentProjectionInvocationCount;
-					computed.combinedCertifiedWorkingSetBytes=certifiedBytes+
-						computed.projection.residentCertifiedWorkingSetBytes;
+					computed.combinedCertifiedWorkingSetBytes=combinedPreflightCertificate;
 					computed.combinedActualMetalAllocationBytes=actual+
 						computed.projection.residentActualMetalAllocationBytes;
 					if( computed.combinedActualMetalAllocationBytes>

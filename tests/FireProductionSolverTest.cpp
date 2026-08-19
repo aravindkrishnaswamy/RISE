@@ -227,6 +227,57 @@ namespace
 		return request;
 	}
 
+	bool IndependentForceMaximumAbsoluteRowSum(
+		RISE::FireProductionFrozenForceRequest request,
+		double& maximumRowSum,std::string& error )
+	{
+		std::size_t allFaces=0u;std::array<std::size_t,3> offsets={};
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			offsets[axis]=allFaces;
+			allFaces+=RISE::FireProductionProjectionFaceCount(request.shape,axis);
+			request.beginningMomentumKGPerM2S[axis].assign(
+				RISE::FireProductionProjectionFaceCount(request.shape,axis),0.0f);
+		}
+		std::vector<double> rowSums(allFaces,0.0);
+		for( unsigned int inputAxis=0u;inputAxis<3u;++inputAxis ) {
+			const std::size_t count=request.beginningMomentumKGPerM2S[inputAxis].size();
+			for( std::size_t inputFace=0u;inputFace<count;++inputFace ) {
+				std::size_t x=0u,y=0u,z=0u;
+				if( inputAxis==0u ) {x=inputFace%(request.shape.nx+1u);
+					const std::size_t rest=inputFace/(request.shape.nx+1u);
+					y=rest%request.shape.ny;z=rest/request.shape.ny;}
+				if( inputAxis==1u ) {x=inputFace%request.shape.nx;
+					const std::size_t rest=inputFace/request.shape.nx;
+					y=rest%(request.shape.ny+1u);z=rest/(request.shape.ny+1u);}
+				if( inputAxis==2u ) {x=inputFace%request.shape.nx;
+					const std::size_t rest=inputFace/request.shape.nx;
+					y=rest%request.shape.ny;z=rest/request.shape.ny;}
+				const std::size_t coordinate=inputAxis==0u?x:(inputAxis==1u?y:z);
+				const std::size_t extent=inputAxis==0u?request.shape.nx:
+					(inputAxis==1u?request.shape.ny:request.shape.nz);
+				const bool periodic=request.boundary[2u*inputAxis]==
+					RISE::FireProductionProjectionPeriodic;
+				if( periodic&&coordinate==extent ) continue;
+				std::size_t duplicate=inputFace;
+				if( periodic&&coordinate==0u ) duplicate=inputAxis==0u?inputFace+extent:
+					(inputAxis==1u?inputFace+extent*request.shape.nx:
+					inputFace+extent*request.shape.nx*request.shape.ny);
+				request.beginningMomentumKGPerM2S[inputAxis][inputFace]=1.0f;
+				request.beginningMomentumKGPerM2S[inputAxis][duplicate]=1.0f;
+				RISE::FireProductionFrozenForceResult column;
+				if( !RISE::BuildFireProductionFrozenForceFieldsCPU(request,column,&error) ) return false;
+				for( unsigned int outputAxis=0u;outputAxis<3u;++outputAxis )
+					for( std::size_t outputFace=0u;outputFace<
+						column.beginningViscousMomentumRateKGPerM2S2[outputAxis].size();++outputFace )
+						rowSums[offsets[outputAxis]+outputFace]+=std::fabs(static_cast<double>(
+							column.beginningViscousMomentumRateKGPerM2S2[outputAxis][outputFace]));
+				request.beginningMomentumKGPerM2S[inputAxis][inputFace]=0.0f;
+				request.beginningMomentumKGPerM2S[inputAxis][duplicate]=0.0f;
+			}
+		}
+		maximumRowSum=*std::max_element(rowSums.begin(),rowSums.end());return true;
+	}
+
 	std::uint64_t IndependentMomentumByteDigest(
 		const std::array<std::vector<float>,3>& momentum )
 	{
@@ -2863,6 +2914,50 @@ int main()
 		rejectedResidentStep.combinedActualMetalAllocationBytes==0u&&
 		error.find("interstage transfer observed")!=std::string::npos,
 		"the observed transfer seam fails closed when an interstage host access is injected");
+	FireProductionProjectionShape combinedUnderShape,combinedOverShape;
+	std::uint64_t combinedUnderBytes=0u,combinedOverBytes=0u;
+	for( std::size_t nz=4u;nz<=1024u;++nz ) {
+		FireProductionProjectionShape candidate;candidate.nx=86u;candidate.ny=86u;
+		candidate.nz=nz;candidate.cellWidthM=0.30f/86.0f;
+		std::uint64_t candidateBytes=0u;
+		if( !FireProductionResidentForceProjectionWorkingSetBytes(candidate,candidateBytes) ) break;
+		if( candidateBytes<=(UINT64_C(1)<<31u) ) {
+			combinedUnderShape=candidate;combinedUnderBytes=candidateBytes;
+		} else {combinedOverShape=candidate;combinedOverBytes=candidateBytes;break;}
+	}
+	std::uint64_t independentForceBytes=0u,independentProjectionBytes=0u;
+	const std::uint64_t targetRaw=static_cast<std::uint64_t>(combinedUnderShape.CellCount())*
+		sizeof(float),targetRounded=(targetRaw+UINT64_C(16383))&~UINT64_C(16383);
+	std::uint64_t residentProvisionalStage=0u;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::uint64_t raw=static_cast<std::uint64_t>(
+			FireProductionProjectionFaceCount(combinedUnderShape,axis))*sizeof(float);
+		residentProvisionalStage+=(raw+UINT64_C(16383))&~UINT64_C(16383);
+	}
+	const bool combinedUnderFormula=FireProductionResidentForceMetalWorkingSetBytes(
+		combinedUnderShape,false,independentForceBytes)&&
+		FireProductionProjectionWorkingSetBytes(combinedUnderShape,independentProjectionBytes)&&
+		combinedUnderBytes==independentForceBytes+independentProjectionBytes+
+			2u*targetRounded+residentProvisionalStage;
+	FireProductionFrozenForceRequest combinedOverRequest;
+	combinedOverRequest.shape=combinedOverShape;combinedOverRequest.timeStepS=1.0f;
+	FireProductionResidentForceProjectionResult combinedOverResult;
+	combinedOverResult.projection.pressurePa.push_back(1.0f);
+	combinedOverResult.forceSchedule.substepCount=1u;
+	error.clear();const bool combinedOverRejected=!AdvanceFireProductionForceProjectionMetal(
+		combinedOverRequest,std::vector<float>(),combinedOverResult,&error)&&
+		error.find("working set exceeds two GiB")!=std::string::npos;
+	FireProductionFrozenForceRequest combinedUnderRequest;
+	combinedUnderRequest.shape=combinedUnderShape;combinedUnderRequest.timeStepS=1.0f;
+	error.clear();const bool combinedUnderPassedResourceGate=
+		!AdvanceFireProductionForceProjectionMetal(combinedUnderRequest,std::vector<float>(),
+			combinedOverResult,&error)&&error.find("projection target is invalid")!=std::string::npos;
+	Check(combinedUnderShape.nz>=4u&&combinedOverShape.nz==combinedUnderShape.nz+1u&&
+		combinedUnderBytes<=(UINT64_C(1)<<31u)&&combinedOverBytes>(UINT64_C(1)<<31u)&&
+		combinedUnderFormula&&combinedOverRejected&&combinedUnderPassedResourceGate&&
+		combinedOverResult.projection.pressurePa.empty()&&
+		combinedOverResult.forceSchedule.substepCount==0u,
+		"combined resident admission rejects the first over-cap shape before payload access or Metal work");
 	FireProductionFrozenForceRequest matrixForce=forceRest;
 	matrixForce.shape.nx=4u;matrixForce.shape.ny=4u;matrixForce.shape.nz=4u;
 	matrixForce.shape.cellWidthM=1.0f;matrixForce.timeStepS=1.0f;
@@ -2925,6 +3020,32 @@ int main()
 	Check(matrixEnvelopeBuilt&&exactMatrixBuilt&&exactMaximumRowSum>0.0&&
 		exactMaximumRowSum<=static_cast<double>(matrixForceDiagnostics.outwardLambdaPerS),
 		"matrix-free outward envelope dominates every independently assembled signed row");
+	FireProductionFrozenForceRequest mixedMatrixForce=matrixForce;
+	mixedMatrixForce.boundary={FireProductionProjectionWall,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionWall,FireProductionProjectionWall,
+		FireProductionProjectionPressureOpen};
+	for( std::size_t cell=0u;cell<mixedMatrixForce.shape.CellCount();++cell ) {
+		mixedMatrixForce.cellGasDensityKGPerM3[cell]=0.7f+0.1f*static_cast<float>(cell%7u);
+		mixedMatrixForce.molecularKinematicViscosityM2PerS[cell]=
+			0.004f+0.001f*static_cast<float>((3u*cell)%9u);
+	}
+	for( unsigned int axis=0u;axis<3u;++axis )
+		for( std::size_t face=0u;face<mixedMatrixForce.faceDensityKGPerM3[axis].size();++face )
+			mixedMatrixForce.faceDensityKGPerM3[axis][face]=
+				0.65f+0.08f*static_cast<float>((face+2u*axis)%11u);
+	double mixedMaximumRowSum=0.0;
+	const bool mixedMatrixBuilt=IndependentForceMaximumAbsoluteRowSum(
+		mixedMatrixForce,mixedMaximumRowSum,error);
+	FireProductionFrozenForceAdvanceResult mixedMatrixGPU;
+	FireProductionResidentForceDiagnostics mixedMatrixDiagnostics;
+	const bool mixedEnvelopeBuilt=AdvanceFireProductionFrozenForceMetal(
+		mixedMatrixForce,false,mixedMatrixGPU,mixedMatrixDiagnostics,&error);
+	std::cout << "Production resident force mixed_exact_row_max=" << mixedMaximumRowSum <<
+		" mixed_outward_lambda=" << mixedMatrixDiagnostics.outwardLambdaPerS << '\n';
+	Check(mixedEnvelopeBuilt&&mixedMatrixBuilt&&mixedMaximumRowSum>0.0&&
+		mixedMaximumRowSum<=static_cast<double>(mixedMatrixDiagnostics.outwardLambdaPerS),
+		"matrix-free envelope also dominates mixed wall/open variable-density/viscosity rows");
 	FireProductionFrozenForceRequest rejectedResidentForce=matrixForce;
 	rejectedResidentForce.cellGasDensityKGPerM3[0]=-1.0f;
 	FireProductionFrozenForceAdvanceResult rejectedResidentResult;

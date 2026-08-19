@@ -104,6 +104,12 @@ namespace RISE
 		bool captureIntermediateStates,
 		std::uint64_t& bytes );
 
+	//! Conservative force-owned plus resident-P2 peak, including the two target
+	//! buffers retained by the composed owner. Used before any Metal allocation.
+	bool FireProductionResidentForceProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
 	bool FireProductionFrozenForceAdvanceWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );

@@ -242,6 +242,39 @@ namespace RISE
 		return true;
 	}
 
+	bool FireProductionResidentForceProjectionWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;std::uint64_t forceBytes=0u,projectionBytes=0u;
+		if( !FireProductionResidentForceMetalWorkingSetBytes(shape,false,forceBytes)||
+			!FireProductionProjectionWorkingSetBytes(shape,projectionBytes) ) return false;
+		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
+		if( cells>std::numeric_limits<std::uint64_t>::max()/sizeof(float) ) return false;
+		const std::uint64_t raw=cells*sizeof(float),alignment=UINT64_C(16384);
+		if( raw>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
+		const std::uint64_t targetAllocation=(raw+alignment-1u)&~(alignment-1u);
+		std::uint64_t residentProvisionalStage=0u;
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const std::uint64_t faces=axis==0u?static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz:
+				(axis==1u?static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz:
+				static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u));
+			if( faces>std::numeric_limits<std::uint64_t>::max()/sizeof(float) ) return false;
+			const std::uint64_t faceRaw=faces*sizeof(float);
+			if( faceRaw>std::numeric_limits<std::uint64_t>::max()-(alignment-1u) ) return false;
+			const std::uint64_t allocation=(faceRaw+alignment-1u)&~(alignment-1u);
+			if( residentProvisionalStage>std::numeric_limits<std::uint64_t>::max()-allocation )
+				return false;
+			residentProvisionalStage+=allocation;
+		}
+		if( forceBytes>std::numeric_limits<std::uint64_t>::max()-projectionBytes||
+			forceBytes+projectionBytes>std::numeric_limits<std::uint64_t>::max()-
+				2u*targetAllocation||
+			forceBytes+projectionBytes+2u*targetAllocation>
+				std::numeric_limits<std::uint64_t>::max()-residentProvisionalStage ) return false;
+		bytes=forceBytes+projectionBytes+2u*targetAllocation+residentProvisionalStage;return true;
+	}
+
 	static bool BuildFireProductionFrozenForceFieldsImpl(
 		const FireProductionFrozenForceRequest& request,
 		const std::vector<float>* fixedDynamicViscosityPaS,
