@@ -11455,25 +11455,40 @@ static void TestCleanRoomPlaceElement()
 		sess->PlaceElement( "wizard", "5 0 -2" );
 	Check( pr.ok, "S2g place_element applies" );
 	Check( pr.objects.size() == 2,
-	       "S2g MONEY ASSERTION: EVERY standard_object attributed to the element is transformed, "
+	       "S2g MONEY ASSERTION: EVERY standard_object attributed to the element is carried, "
 	       "which is the operation RISE's flat scene graph cannot express natively" );
+	// 87 STEP 5 (2026-08-18): the placement is ONE local transform on the
+	// element's ROOT NODE, so the objects' OWN authored numbers are no longer
+	// rewritten -- this used to assert `position 5 1 -2` and `position 5 2.15
+	// -2` spliced into the two objects.  The rigid-carry claim is unchanged;
+	// what changed is where the answer LIVES, and the object-level assertion
+	// is replaced by (a) the objects' authored offsets still reading exactly
+	// as the builder wrote them and (b) the root carrying the placement.
+	// The COMPOSED result is asserted numerically in AgentElementRootTest.
+	const std::string root = Agent::AgentSession::ElementRootName( "wizard" );
 	const std::string doc = sess->ReadDocument();
-	Check( doc.find( "position 5 1 -2" ) != std::string::npos,
-	       "S2g the body's own offset (0 1 0) is PRESERVED and added to the new base-centre" );
-	Check( doc.find( "position 5 2.15 -2" ) != std::string::npos,
-	       "S2g MONEY ASSERTION: so is the hat's -- the element moves rigidly, it does not collapse" );
+	Check( doc.find( "position 0 1 0" ) != std::string::npos &&
+	       doc.find( "position 0 2.15 0" ) != std::string::npos,
+	       "S2g MONEY ASSERTION: both objects' own offsets are UNTOUCHED -- placement is separable "
+	       "from construction, so re-placing cannot compound into them" );
+	Check( doc.find( "name " + root ) != std::string::npos,
+	       "S2g the element has a root node" );
+	Check( doc.find( "position 5 0 -2" ) != std::string::npos,
+	       "S2g and the base-centre landed on it" );
 
-	// A second placement composes against the first the same way (offset,
-	// not accumulate-from-origin): the base-centre is where it is asked for.
+	// A second placement REPLACES rather than composing: the base-centre is
+	// where it is asked for, absolutely.
 	const Agent::AgentSession::AgentPlaceElementResult pr2 =
 		sess->PlaceElement( "wizard", "0 0 0", "2" );
 	Check( pr2.ok, "S2g a scaled placement applies" );
 	const std::string doc2 = sess->ReadDocument();
 	Check( doc2.find( "scale 2 2 2" ) != std::string::npos,
-	       "S2g the uniform factor multiplies each object's scale" );
-	Check( doc2.find( "position 10 2 -4" ) != std::string::npos,
-	       "S2g and multiplies its offset from the element's origin, so the element scales about "
-	       "its own base-centre" );
+	       "S2g the uniform factor reaches the root, and the whole subtree scales with it" );
+	Check( doc2.find( "position 0 1 0" ) != std::string::npos &&
+	       doc2.find( "position 0 2.15 0" ) != std::string::npos,
+	       "S2g MONEY ASSERTION: and STILL nothing was written into the objects -- the pre-87 verb "
+	       "multiplied each object's own scale and offset here, which is what made a second "
+	       "placement compound rather than replace" );
 
 	// An element with nothing placeable says so, and changes nothing.
 	{

@@ -1,9 +1,10 @@
 # 87 — Recursive Scene Graph
 
-**Status: decided 2026-08-15.  §5 steps 0, 1, 2 and 3 are IMPLEMENTED — step 3
-in all four slices: 3a (`source`, single-node), 3b (subtree expansion), 3c
-(`count_u`/`count_v` + per-instance exprs) and 3d (delete `instance_array`).
-Step 4 is not.**  §2's "composition happens in the per-frame prepare pass" is now
+**Status: decided 2026-08-15.  §5 steps 0, 1, 2, 3, 4 and 5 are IMPLEMENTED —
+step 3 in all four slices: 3a (`source`, single-node), 3b (subtree expansion),
+3c (`count_u`/`count_v` + per-instance exprs) and 3d (delete `instance_array`);
+step 4 through 4d (the Qt half UNCOMPILED — see step 4's warning); step 5
+(the agent surface) 2026-08-18.**  §2's "composition happens in the per-frame prepare pass" is now
 literally true: step 2 re-bakes the hierarchy in
 `ObjectManager::PrepareForRendering()`, so a timeline on a parent carries its
 subtree.  Step 1's derive-tail and live-edit composes remain — they are what
@@ -1302,8 +1303,146 @@ what was authored, live material included).
    a clone back to its fold target needs the provenance map, which the
    bridges do not expose.  Open, not papered over.
 
-Then the agent surface (`build_element` emits a container plus parented
-children; `place_element` becomes ONE transform edit on the container).
+5. **The agent surface. IMPLEMENTED 2026-08-18.**  An element becomes a real
+   node; `place_element` becomes ONE transform edit on it; the observe side
+   learns to report the tree.  Seven things met the code and are recorded here
+   because they are decisions, not details.
+
+   - **THE ROOT IS MINTED WITH THE ELEMENT'S FIRST OBJECT, and the choice is
+     forced by DOCUMENT ORDER rather than settled on taste.**  The brief
+     offered "eager at the element window" or "lazy at placement".  Lazy at
+     placement is not implementable at all: `parent` is declare-before-use and
+     `Job::ApplyCstInsertChunk` APPENDS every Object-tier chunk at the document
+     END, so a root minted after the element's objects lands BELOW them and
+     every `parent` line naming it is a forward reference the derive refuses.
+     Eager at the window would make `file_build_plan` -- today a pure planning
+     call, with a test asserting it does not touch the document -- mutate and
+     bump the head, and would leave one empty container per element that built
+     nothing.  First-object gives the outliner a real tree from the first shape
+     onward, guarantees the ordering by construction (root and child both
+     append, root first), and mints nothing for an element that produces no
+     object.  A chunk with no transform (a painter, a material, a geometry)
+     does NOT mint it; that is pinned.
+   - **THE NAME IS `<prefix>element_root`, which is a collision policy and not
+     a spelling.**  It satisfies the element's own name-prefix rule, so a
+     builder that mints the same name is refused by the ORDINARY duplicate-name
+     rule and gets the one repair retry.  `none` is the only name this scene
+     language reserves; inventing a second reservation mechanism for this was
+     rejected.
+   - **THREE OF THE FOUR PRE-87 DEFECTS DISSOLVE, AND SO DO THREE OF THE FOUR
+     REFUSALS.**  Euler-triple ADDITION (exact only about one shared axis), the
+     `quaternion`-authored object that could not be rotated at all, and the
+     `matrix`-authored object that was skipped were all artefacts of patching
+     each object's OWN params; a child's transform is its LOCAL one and
+     composes as a matrix, so all three are simply gone along with the
+     arithmetic.  The uniform-scale-only refusal is lifted for the same reason
+     -- a parent node expresses a non-uniform scale directly.  **What is KEPT
+     is positivity**: a zero component makes the composed matrix singular for
+     the WHOLE SUBTREE, and `Matrix4Ops::Inverse` returns its input unchanged
+     at `det == 0` (section 4, "a rank-deficient container").
+   - **PLACEMENT BECAME ABSOLUTE, WHICH IS A CONTRACT CHANGE.**  All three
+     params are written to the root every call, defaults included, so a repeat
+     is a no-op.  The pre-87 verb read each object's CURRENT pose and added to
+     it, so re-placing compounded -- which is why `position` was documented as
+     an OFFSET on both model-facing surfaces.  Both now say ABSOLUTE, and
+     `tests/AgentChunkCrudTest.cpp`'s S2g -- which pinned the compounding --
+     was rewritten to pin the objects' authored params staying UNTOUCHED
+     instead.
+   - **THE ONE SURVIVING SKIP CAUSE IS REAL: an attributed object whose
+     `parent` chain does not reach the root.**  Established by WALKING
+     `IObjectManager::GetObjectParent`, not assumed from the ledger.  It covers
+     an authored `parent` pointing outside the element and, unavoidably, a CSG
+     operand.
+   - **A `csg_object` IN AN ELEMENT FORCED AN OPERAND REPAIR, AND THE REPAIR
+     EXPOSED A GATE GOING BLIND.**  `Job::AddCSGObject` refuses a parented
+     operand ("an operand's transform is interpreted in this csg_object's
+     frame, not the world's.  Parent the csg_object instead"), and an operand
+     is an ordinary `standard_object` declared BEFORE the composite -- so it
+     was already auto-parented and the composite's insert would be refused,
+     making `construction: csg` unbuildable.  The insert therefore detaches the
+     operands (`parent none`) and parents the COMPOSITE, exactly as that
+     message prescribes, and only ever undoes a link the mechanism itself
+     added.  The non-obvious part: the E1 non-sampling-emitter gate DERIVES a
+     candidate document, and with parented operands still in the head that
+     candidate does not derive at all -- `FindUnacknowledgedNullGeometryEmitters_`
+     returns nothing and the gate is silently blind on the one chunk kind it
+     exists for.  Fixed by splitting the repair into a PLAN (pure) and an
+     apply: the gate judges a computed head carrying the detaches, the apply
+     performs them once every gate has passed, so a refused insert still leaves
+     the document byte-identical.  **The regression guard is
+     `AgentElementRootTest` case I, and it had to be written as a guard rather
+     than as a correctness check for step 4d's reason:** unguarded, the insert
+     still lands the RIGHT chunk and the scene still renders, so only an
+     assertion demanding the DEGRADED answer -- "the gate finds nothing" --
+     discriminates.  Red-proved by folding the plan back into the apply (the
+     gate reading `snap.document` instead of the computed head): case I goes
+     0 -> 8 failures, and **every other agent test, `SourceHygieneTest`,
+     `SceneGraphParentTest` and `CstSourceInstanceTest` stay green** -- which is
+     the measurement, not the passing.  I(a) asserts the gate's own findings
+     (its consequence clause, its escape clause, the composite it named) plus
+     the byte-identical head; I(b) is the positive control -- the same chunk
+     WITH `allow_non_sampling_emitter TRUE` applies -- without which I(a)'s
+     `!applied` could be satisfied by any unrelated element-window refusal.  Parenting the composite also CLOSES a
+     pre-existing hole -- the pre-87 verb transformed `standard_object` chunks
+     only, so a csg-construction element was never moved by `place_element` at
+     all.  Same for `rect_light` / `shape_light`, which also declare `parent`.
+   - **EXTERNAL AUTHORITY IS EXCLUDED, and that is a correctness call.**  Under
+     staging nothing an insert submits reaches the head until an Owner approves
+     it, so the root probe -- which reads the HEAD -- would never see a root it
+     had already staged and would stage one fresh root proposal per object.
+     `place_element` is itself unavailable on that autonomy, so nothing is lost.
+
+   **THE AGENT-FACING SURFACE, and where each piece went.**  `read_schema
+   standard_object` ALREADY carried `parent`, `source`, `count_u` and `count_v`
+   with full help text -- `SchemaGen` emits every descriptor parameter -- so the
+   pull channel needed nothing.  What was missing was DISCOVERY (nothing told a
+   model the capability existed or when to reach for it) and OBSERVATION.
+   - **NOT a `construction` value.**  That enum is "the seven ways RISE can
+     build a PART" -- the shape of one element.  Hierarchy and instancing are
+     about placement and repetition, so an eighth value would compete with the
+     shape method a fence or a chandelier still needs, on a CLOSED enum that is
+     contract in two tool schemas and a refusal string.
+   - **NOT in `ComposeBuilderPrompt_`'s unconditional set**, for the measured
+     context-volume law (18.0 SDF parts at short context, 7.7 with 60k
+     prepended).  The gated schema+example mechanism exists for methods, and
+     there is no method here to gate on.
+   - **ONE section plus ONE snippet in `skills/agent/modeling-workflow-and-
+     geometry.md`**, taking `AgentSkillsTest`'s pinned snippet count 19 -> 20.
+     That file rather than `object-modeling-recipes.md` for the same reason it
+     is not a construction value: its hook is placement.  Every fenced snippet
+     is parsed, derived (zero diagnostics) and RENDERED by that test, so "it
+     actually parses" is a gate rather than a claim.
+   - **`scene_inventory` gained `parent` and `instancedFrom`.**  Everything
+     else it reports is measured off the flat render list, which section 2
+     makes deliberately structureless -- right for "what does the camera see",
+     wrong for "what is this part of".  Read from `GetObjectParent` and
+     `GetObjectProvenance`, the sanctioned readers, so a SYNTHESIZED entry
+     answers too: `grid[3,1]` now names the chunk an author can actually edit,
+     which is the agent-side half of the step-4 gap ("mapping a clone back to
+     its fold target needs the provenance map, which the bridges do not
+     expose").  Both keys are omitted for a root, authored object, so a flat
+     scene's payload and inventory TEXT are byte-identical to before -- which
+     matters because that text is prepended to every compose-phase render.
+
+   **NOT DONE, stated plainly:** `mChunkAttribution` is NOT retired in favour
+   of the parent links (section 3 lists that as folded away by the design; the
+   ledger still carries the chunk KINDS and the non-object chunks, which have
+   no node).  The GUI outliners are untouched -- they read the authored tree
+   already, so an element now simply appears as a subtree with no shell change,
+   but that is unobserved on Qt for the reason step 4c records.  And an element
+   whose objects were created before this mechanism (or under External
+   authority) has no root; `place_element` REFUSES such an element by name
+   rather than silently doing nothing, but it does not retrofit one.
+
+> The original one-line plan for step 5, kept because step 5 above is exactly
+> it and the wording is what the implementation was measured against:
+> ~~Then the agent surface (`build_element` emits a container plus parented
+> children; `place_element` becomes ONE transform edit on the container).~~
+> One correction it needed on contact: it is not `build_element` that emits the
+> container.  Chunks reach an element through `insert_chunk` / `insert_chunks`
+> as well, and `build_element` is only the FIRST-geometry route, so the seam is
+> the shared insert path -- an element hand-authored chunk by chunk gets the
+> same root, and place_element works on it.
 
 ## Appendix — alternatives considered and rejected
 

@@ -931,7 +931,13 @@ namespace RISE
 						"stops, and whatever landed stays landed. Nothing is ever dropped silently: a "
 						"chunk that came back unclosed, unnamed, wrongly prefixed or rejected by "
 						"insertion is reported with its reason. Everything that lands is recorded "
-						"against the active element exactly as if it had been inserted directly. On a "
+						"against the active element exactly as if it had been inserted directly. The "
+						"element's FIRST object also mints its ROOT NODE -- a geometry-less "
+						"`standard_object` container named \"<prefix>element_root\" that every object "
+						"of this element is parented to, so the element is one subtree in the scene "
+						"graph and place_element moves it with a single transform. You may parent "
+						"objects to each other inside the element to build real internal hierarchy; "
+						"a `parent` you write yourself is never overruled. On a "
 						"provider that cannot run a separate completion this returns ok:false with a "
 						"plain statement, nothing else changes, and authoring by hand is not blocked. "
 						"Returns {ok,element,provider,model,chunksExtracted,landed,"
@@ -950,15 +956,18 @@ namespace RISE
 					// fuller tool description below.  Now unmistakable here too --
 					// mirrors AgentChatCodecs.cpp's identical fix verbatim.
 					props.set( "position", StringProp(
-						"Required. An OFFSET added to each object's own CURRENT (already scaled/rotated) "
-						"position, as \"x y z\" -- equals the base-centre's world position on a first "
-						"call from the origin, but a later call composes on top of wherever the element "
-						"already is rather than resetting it there." ) );
+						"Required. Where the element's base-centre goes in WORLD space, as \"x y z\". "
+						"ABSOLUTE, not an offset: it is written to the element's root node, so calling "
+						"again with the same value changes nothing. Each object's own position inside "
+						"the element is scaled, rotated and then added to it, so the internal "
+						"arrangement is unchanged." ) );
 					JsonValue scaleProp = JsonValue::MakeObject();
-					scaleProp.set( "type", JsonValue::MakeString( "number" ) );
+					scaleProp.set( "type", JsonValue::MakeString( "string" ) );
 					scaleProp.set( "description", JsonValue::MakeString(
-						"Optional, default 1. ONE uniform factor -- not three. Must be greater than 0. "
-						"It multiplies each object's scale and its offset from the element's origin." ) );
+						"Optional, default \"1\". ONE uniform factor (\"2\") or THREE per-axis factors "
+						"(\"sx sy sz\"). Every component must be finite and greater than 0 -- a zero "
+						"makes the element's composed transform singular for every object under it. "
+						"Scaling is about the element's own origin." ) );
 					props.set( "scale", scaleProp );
 					props.set( "orientation", StringProp(
 						"Optional, default \"0 0 0\". Euler degrees about the element's own origin, as "
@@ -972,27 +981,29 @@ namespace RISE
 						            : proposeOnly ? kPlaceElementProposeRefusedNote
 						                          : std::string() ) +
 						std::string(
-						"Move an element into the scene: one rigid transform applied to every "
-						"standard_object recorded against it, so an element built at the origin ends "
-						"up where you want it without patching each object. `position` is where the "
-						"element's base-centre goes, and it is an OFFSET -- each object's own position "
-						"inside the element is scaled, rotated and then added to it, so the objects "
-						"keep their arrangement relative to one another. `scale` is one uniform factor "
-						"multiplying each object's scale and its offset from the element's origin, so "
-						"the element scales about its own base-centre. `orientation` is Euler degrees "
-						"about that same origin; an object that carries no rotation of its own is set "
-						"to it exactly, and one that already carries a rotation has the degrees added "
-						"per axis, which the result reports because adding Euler angles is only exact "
-						"when both rotations are about the same axis. An object authored with `matrix` "
-						"is skipped and named, because a matrix overrides position, orientation and "
-						"scale and the patch would do nothing; an object authored with `quaternion` is "
-						"moved and scaled but not rotated, and is named too. Legal in the pieces phase "
-						"and in the compose phase. The whole placement is ONE batch, so ONE head "
-						"version bump and ONE undo step. ok:false means nothing was submitted (no "
-						"build plan, an element that is not in it, or an element with no "
-						"standard_object recorded against it) and the document is unchanged. Returns "
-						"{ok,element,objects,skipped:[{object,reason}],patchResults,patchesApplied,"
-						"patchesRejected,bbox:{min,max},message}." );
+						"Move an element into the scene: ONE local transform written to the "
+						"element's ROOT NODE -- a container object every chunk the element created is "
+						"parented to -- so an element built at the origin ends up where you want it "
+						"without patching each object. `position` is where the element's base-centre "
+						"goes; each object's own position inside the element is scaled, rotated and "
+						"then added to it by the engine's `world = parent.world * local` composition, "
+						"so the objects keep their arrangement relative to one another. `scale` is one "
+						"uniform factor or three per-axis factors about that same origin. "
+						"`orientation` is Euler degrees about it. Rotation and scale are EXACT for "
+						"every object under the root, including objects that carry a rotation of "
+						"their own and objects authored with `quaternion` or `matrix` -- a child's "
+						"transform is its LOCAL one and composes as a matrix. The objects' own "
+						"authored values are NEVER rewritten, and the placement is ABSOLUTE: calling "
+						"again with the same arguments changes nothing, so you can re-place freely. "
+						"Legal in the pieces phase and in the compose phase. The whole placement is "
+						"ONE batch, so ONE head version bump and ONE undo step. `skipped` names any "
+						"object recorded against the element that the root does not carry (it was "
+						"authored with a `parent` of its own pointing outside the element, or it is a "
+						"CSG operand, which cannot be parented). ok:false means nothing was submitted "
+						"(no build plan, an element that is not in it, or an element with no root node "
+						"-- the root is created with the element's FIRST object) and the document is "
+						"unchanged. Returns {ok,element,root,objects,skipped:[{object,reason}],"
+						"patchResults,patchesApplied,patchesRejected,bbox:{min,max},message}." );
 					tools.push_back( MakeTool( "place_element", desc, ObjectProp( "", props, required ) ) );
 				}
 
@@ -1821,7 +1832,11 @@ namespace RISE
 						"(occluded, or smaller than one pass pixel -- this does not distinguish "
 						"those), or crossing the camera plane. Positions are measured in a small "
 						"one-ray-per-pixel identity pass, so a footprint under one pass pixel reads "
-						"as 0, and the pass's dimensions are reported. Where an object lies relative "
+						"as 0, and the pass's dimensions are reported. An object that is part of an "
+						"assembly also carries the name of its `parent` node, and a repetition of an "
+						"instancing chunk (`grid[3,1]`) carries `instancedFrom` -- the chunk you can "
+						"actually EDIT, since a repetition is not a chunk of its own. Both are "
+						"omitted for an ordinary top-level object. Where an object lies relative "
 						"to the view is NOT computed -- and says so -- when the active camera is not "
 						"a pinhole, or the render was taken from a named view or an orientation-only "
 						"camera override. YOU USUALLY DO NOT NEED TO CALL THIS: the same inventory "

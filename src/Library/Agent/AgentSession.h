@@ -4186,8 +4186,11 @@ namespace RISE
 			//     -- base-centre at the origin, +Y up, facing +Z, a height
 			//     budget, a name prefix, self-contained, and no world
 			//     placement.  `place_element` is what the frame exists to
-			//     enable, and it is the operation RISE's FLAT scene graph
-			//     cannot express natively.
+			//     enable.  It USED to be the operation RISE's flat scene graph
+			//     could not express natively; since 87 the graph is recursive
+			//     and the element is a real subtree, so the verb writes ONE
+			//     local transform onto the element's root node instead of
+			//     composing arithmetically into every object it created.
 			//
 			//   VALIDATED INSERTION -- never string concatenation.  A real
 			//     balanced-brace extractor (ExtractChunkTexts, which REPORTS
@@ -4352,7 +4355,19 @@ namespace RISE
 			                                      double height,
 			                                      const std::string& notes = std::string() );
 
-			//! One standard_object `place_element` did not transform, and why.
+			//! One object recorded against the element that the element root's
+			//! transform does NOT carry, and why.
+			//!
+			//! 87 STEP 5 (2026-08-18): the three PRE-ROOT skip causes -- an
+			//! object authored with `matrix`, one authored with `quaternion`,
+			//! and one whose `position` was unparseable -- are GONE, because
+			//! all three were artefacts of patching each object's own params.
+			//! A child's `matrix` or `quaternion` is its LOCAL transform and
+			//! composes through the parent untouched.  What remains is the one
+			//! cause that is real under hierarchy: an object recorded against
+			//! the element whose `parent` chain does not reach the element
+			//! root (it was authored with an explicit `parent` pointing
+			//! elsewhere, or it is a CSG operand, which cannot be parented).
 			struct AgentPlaceElementSkip
 			{
 				std::string object;
@@ -4366,11 +4381,19 @@ namespace RISE
 			{
 				bool        ok = false;
 				std::string element;
-				//! The standard_objects transformed, in attribution order.
+				//! 87 step 5: the element root node the transform landed on,
+				//! or "" when there is none (which is also the only reason
+				//! this verb now refuses on a well-formed element).
+				std::string root;
+				//! The objects the root's transform carries, in attribution
+				//! order.  They are NOT patched -- their authored params are
+				//! untouched -- so this is a statement about what MOVED, not
+				//! about what was written.
 				std::vector<std::string> objects;
 				std::vector<AgentPlaceElementSkip> skipped;
 				//! One AgentPatchResult per patch submitted, in submission
-				//! order (position, then scale, then orientation, per object).
+				//! order: position, scale, orientation -- all three on the
+				//! element ROOT, so this is exactly three entries.
 				std::vector<AgentPatchResult> patchResults;
 				unsigned int patchesApplied = 0;
 				unsigned int patchesRejected = 0;
@@ -4382,51 +4405,62 @@ namespace RISE
 				std::string message;
 			};
 
-			//! Apply ONE rigid transform to every `standard_object` attributed
-			//! to `element` -- the operation the local frame exists to make
-			//! possible, and the one RISE's flat scene graph cannot express
-			//! natively.  Legal in the PIECES and COMPOSE phases; ok:false
+			//! Place `element` by writing ONE local transform onto its ROOT
+			//! NODE (see ElementRootName) -- the container every object the
+			//! element created is parented to.  The engine composes
+			//! `world = parent.world * local` for the whole subtree, so the
+			//! placement is EXACT and the author's own numbers are never
+			//! touched.  Legal in the PIECES and COMPOSE phases; ok:false
 			//! (nothing submitted) with the protocol off, with no plan filed,
-			//! for an element not in the plan, or for an element with no
-			//! standard_object attributed to it.
+			//! for an element not in the plan, or for an element that has no
+			//! root node.
 			//!
-			//! COMPOSITION SEMANTICS (it COMPOSES with each object's existing
-			//! params; it never replaces them wholesale):
-			//!   * `scale` is a single UNIFORM factor, default 1.  Each
-			//!     object's per-axis `scale` is MULTIPLIED by it, and each
-			//!     object's existing `position` is multiplied by it too -- so
-			//!     an element scales about its OWN base-centre origin and its
-			//!     internal offsets scale with it.  Exact regardless of any
-			//!     rotation, because a uniform scale commutes with rotation.
-			//!   * `orientation` is Euler DEGREES, default "0 0 0", and
-			//!     rotates the element about its own origin.  Each object's
-			//!     existing `position` is rotated EXACTLY (the same
-			//!     Rx*Ry*Rz composition Transformable::SetOrientation applies).
-			//!     For the object's OWN rotation: an object that carries none
-			//!     (or an all-zero one) is SET to this rotation, which is
-			//!     exact; an object that already carries a non-zero
-			//!     `orientation` has the degrees ADDED per axis, which is
-			//!     exact when the two rotations share a single axis and an
-			//!     APPROXIMATION otherwise -- the result names every object
-			//!     that case applied to rather than leaving it implied.
-			//!   * `position` is the element's new base-centre in world space
-			//!     and is an OFFSET: it is ADDED to each object's existing
-			//!     position after that position has been scaled and rotated.
-			//!     An element whose objects already carry their own offsets
-			//!     therefore keeps them, rigidly -- which is the whole point.
-			//!   * An object authored with `matrix` is SKIPPED and named: a
-			//!     `matrix` bypasses position/orientation/scale entirely
-			//!     (see standard_object's descriptor), so patching those
-			//!     params would be a silent no-op, and a silent no-op is
-			//!     exactly what this arc exists to eliminate.  An object
-			//!     authored with `quaternion` is positioned and scaled (both
-			//!     compose with a quaternion) but NOT rotated, and is named
-			//!     for that too.
+			//! PLACEMENT SEMANTICS -- ABSOLUTE, not compounding.  All three
+			//! params are written to the root every call, defaults included,
+			//! so a second call with the same arguments is a NO-OP rather than
+			//! a doubling.  That is the whole of defect 4: the pre-87 verb
+			//! read each object's CURRENT position and added to it, so
+			//! re-placing an element compounded the error and placement could
+			//! not be separated from construction.
+			//!   * `position` is the element's base-centre in world space,
+			//!     written to the root's `position`.  Each object's own offset
+			//!     inside the element is scaled, rotated and then added to it
+			//!     by the engine's composition -- so the internal arrangement
+			//!     is rigid, which is the whole point.
+			//!   * `orientation` is Euler DEGREES about the element's own
+			//!     origin, default "0 0 0", written to the root's
+			//!     `orientation`.  EXACT for every child, including children
+			//!     that carry a rotation of their own and children authored
+			//!     with `quaternion` or `matrix`: a child's transform is its
+			//!     LOCAL one and composes as a matrix.  The pre-87 verb added
+			//!     Euler triples per axis (exact only about one shared axis)
+			//!     and could not rotate a `quaternion` child at all; both
+			//!     approximations are gone with the arithmetic that forced
+			//!     them.
+			//!   * `scale` is ONE uniform factor or THREE per-axis factors,
+			//!     default 1, written to the root's `scale`.  Non-uniform is
+			//!     admitted now because a parent node can express it (the
+			//!     pre-87 refusal existed because multiplying a child's own
+			//!     `scale` per axis and then rotating its offset is not a
+			//!     similarity transform).  Every component must be finite and
+			//!     > 0: a zero component makes the composed matrix singular
+			//!     for the WHOLE SUBTREE, and Matrix4Ops::Inverse returns its
+			//!     input unchanged at det == 0 (87 §4, "a rank-deficient
+			//!     container").
+			//!
+			//! WHAT IS REPORTED.  `objects` names what the root's transform
+			//! carries -- established by walking `IObjectManager::
+			//! GetObjectParent` from each attributed object, not assumed.
+			//! `skipped` names an attributed object whose ancestry does NOT
+			//! reach the root; the three pre-87 skip causes (`matrix`,
+			//! `quaternion`, an unparseable `position`) are gone.
 			//!
 			//! Routes entirely through ProposePatches, so authority, autonomy
 			//! staging, conflict detection and per-patch diagnostics are
 			//! inherited unchanged.  ONE head bump and ONE undo step: the
-			//! whole placement is submitted as a single ProposePatches batch.
+			//! whole placement is submitted as a single ProposePatches batch
+			//! -- and it is now three patches on one chunk rather than up to
+			//! three per object.
 			AgentPlaceElementResult PlaceElement( const std::string& element,
 			                                      const std::string& position,
 			                                      const std::string& scale = std::string(),
@@ -4775,11 +4809,16 @@ namespace RISE
 			//! ATTRIBUTED to the active element, by arc 78's universal
 			//! attribute-everything rule and its machinery, unchanged.  For a
 			//! light chunk that is inert (the whole Light category is exempt
-			//! from every element-window refusal, and `place_element`
-			//! transforms only `standard_object`s).  For an AREA light it
-			//! means `place_element` would carry that emissive object along
-			//! with the element -- correct behaviour for a lamp built as part
-			//! of a lamp element, surprising for a key light.  The phase this
+			//! from every element-window refusal, and a delta light declares
+			//! no `parent`, so it joins no element subtree).  For a `rect_light`
+			//! or `shape_light` it means the element's root node carries that
+			//! emissive object along with the element -- correct behaviour for
+			//! a lamp built as part of a lamp element, surprising for a key
+			//! light.  (87 step 5 made that carry REAL rather than notional:
+			//! those two roles declare a `parent`, so they are auto-parented to
+			//! the element root like any other object, where the pre-87
+			//! `place_element` patched `standard_object` chunks only and left
+			//! them behind.)  The phase this
 			//! verb is designed for, and the one its gate forces it in, is
 			//! COMPOSE, where no element is active and nothing is attributed.
 			//!
@@ -5303,6 +5342,29 @@ namespace RISE
 			//! alphanumeric character at all gives "element_".  Static so the
 			//! prompt, the check and a test all read the SAME rule.
 			static std::string ElementChunkNamePrefix( const std::string& element );
+
+			//! 87 STEP 5 (2026-08-18): the name of the element's ROOT NODE --
+			//! the geometry-less `standard_object` CONTAINER every object the
+			//! element creates is parented to, and the ONE chunk
+			//! `place_element` transforms.
+			//!
+			//! WHY A NODE AT ALL.  Before 87 shipped a recursive scene graph
+			//! there was nowhere to put an element's pose, so `place_element`
+			//! composed the placement arithmetically into EVERY object it had
+			//! recorded: it added Euler triples (exact only about one shared
+			//! axis), it could not rotate a `quaternion`-authored object at
+			//! all, it refused a non-uniform scale, and it OVERWROTE the
+			//! author's own numbers so re-placing compounded the error.  All
+			//! four defects existed only because there was no parent to move.
+			//! With one, the placement is a single local transform on this
+			//! node and the engine composes `world = parent.world * local`
+			//! exactly (`IObjectManager::ComposeWorldTransforms`).
+			//!
+			//! `<prefix>element_root`, so it satisfies the element's own
+			//! name-prefix rule (a builder's chunk named this is refused as a
+			//! duplicate, the ordinary way) and reads unmistakably as the
+			//! harness's node rather than a part of the model.
+			static std::string ElementRootName( const std::string& element );
 
 			//! Model-B F5 slice S2 (remove_chunk): REMOVE the chunk resolved
 			//! by bare name `target` (+ optional `kind` keyword-suffix
@@ -6250,6 +6312,41 @@ namespace RISE
 				//! For "offframe" only: "left", "right", "above", "below",
 				//! or a pair joined by " and ".  Empty otherwise.
 				std::string   offFrameDirection;
+				//! 87 STEP 5 (2026-08-18): WHERE THIS OBJECT SITS IN THE
+				//! AUTHORED TREE -- the name of its `parent` node, or "" when
+				//! it is a root.
+				//!
+				//! Everything else in this struct is measured off the RENDER
+				//! LIST, which 87 §2 makes deliberately flat: every entry
+				//! carries a fully composed world transform and no structure
+				//! at all.  That is right for "what does the camera see" and
+				//! wrong for "what is this thing part of", and an agent that
+				//! can only read the flat list cannot navigate an assembly it
+				//! just built.  Read from `IObjectManager::GetObjectParent`,
+				//! the live link map, so it answers for a SYNTHESIZED entry
+				//! (which has no chunk of its own to read) exactly as it does
+				//! for an authored one.
+				//!
+				//! A named parent may not appear as a row of its own: a pure
+				//! CONTAINER is world-invisible by construction and covers no
+				//! pixel, so it is not in the identity pass.  That is the
+				//! point rather than a gap -- siblings sharing a parent name
+				//! are what identifies the assembly, and the container's own
+				//! chunk is in the document for anyone who wants its pose.
+				std::string   parent;
+				//! 87 STEP 5: for a SYNTHESIZED entry (one repetition of a
+				//! `source` / `count_u` instancing chunk), the name of the
+				//! chunk an author can actually edit; "" for an ordinary
+				//! authored object.
+				//!
+				//! From `IObjectManager::GetObjectProvenance`, which its own
+				//! header calls "THE ONLY SANCTIONED WAY to map a rendered
+				//! entry back to an editable chunk" -- callers must not
+				//! reconstruct it by splitting the name on `.` or probing for
+				//! `[`.  Without it, an agent that sees `grid[3,1]` in the
+				//! inventory and tries to patch that name is editing something
+				//! that does not exist as a chunk.
+				std::string   instancedFrom;
 			};
 
 			//! Arc 80 (2026-08-12): the whole inventory -- what
@@ -7213,6 +7310,87 @@ namespace RISE
 
 			//! The attribution entry for `chunk`, or nullptr when it has none.
 			const ChunkAttribution_* FindChunkAttribution_( const std::string& chunk ) const;
+
+			//----------------------------------------------------------------
+			// 87 STEP 5 (2026-08-18): THE ELEMENT ROOT NODE.
+			//
+			// LAZY, AT THE ELEMENT'S FIRST OBJECT -- not eager at the window
+			// and not at placement time.  The three candidates and why this
+			// one:
+			//
+			//  * AT PLACEMENT is ruled out by DOCUMENT ORDER, not by taste.
+			//    `parent` is declare-before-use and `Job::ApplyCstInsertChunk`
+			//    APPENDS every Object-tier chunk at the document END (Job.cpp,
+			//    "INSERT POSITION"), so a root minted after the element's
+			//    objects lands BELOW them and every `parent` line pointing at
+			//    it is a forward reference the derive refuses.  It also gives
+			//    the outliner nothing to show for the whole build, and gives
+			//    an element that is never placed no grouping at all -- and
+			//    place_element is optional, so that is the common case, not
+			//    the corner.
+			//  * EAGER AT THE WINDOW would make `file_build_plan` -- today a
+			//    pure planning call -- mutate the document and bump the head,
+			//    and would leave one empty container per element that built
+			//    nothing.
+			//  * AT THE FIRST OBJECT gives the outliner a real tree from the
+			//    first shape onward (which is what 87 step 4 built the tree
+			//    for), guarantees the ordering by construction (the root is
+			//    inserted immediately before its first child, and both append
+			//    at the end), and mints nothing for an element that produces
+			//    no object at all.
+			//
+			// Returns the root's name in `outRoot` on success.  On failure
+			// `outWhyNot` carries a caller-facing clause and NOTHING is
+			// parented -- the insert still proceeds, unparented, because a
+			// harness convenience must never cost the model its geometry.
+			bool EnsureElementRootChunk_( const std::string& element,
+			                              std::string& outRoot,
+			                              std::string& outWhyNot );
+
+			//! Re-entrancy guard for EnsureElementRootChunk_'s own InsertChunk
+			//! call: the root is itself a `standard_object`, so without this
+			//! the auto-parent hook would try to give it a parent.
+			bool mCreatingElementRoot = false;
+
+			//! Does `chunk` (a live document chunk of role `role`) reach the
+			//! element root by walking `parent` links in the LIVE object
+			//! manager?  This is what `place_element` reports on: an object
+			//! recorded against the element whose ancestry does NOT reach the
+			//! root is not moved by the root's transform, and is named.
+			bool ObjectReachesElementRoot_( const std::string& object,
+			                                const std::string& root ) const;
+
+			//! 87 STEP 5: which of the `csg_object` chunk `chunkText`'s operands
+			//! does `headText` currently show parented to the ACTIVE element's
+			//! root?  Empty for every other chunk kind, outside an element
+			//! window, and when no root exists.
+			//!
+			//! `Job::AddCSGObject` REFUSES a parented operand -- "an operand's
+			//! transform is interpreted in this csg_object's frame, not the
+			//! world's.  Parent the csg_object instead" -- and an operand is an
+			//! ordinary `standard_object` declared BEFORE the composite, so it
+			//! was already auto-parented by the time the composite arrives.
+			//! The insert therefore has to detach them and parent the COMPOSITE
+			//! instead, which is exactly what that message prescribes.
+			//!
+			//! IT IS A PLAN, NOT AN EDIT, AND THAT IS THE POINT.  Two callers
+			//! need the same answer at two different times: the E1
+			//! non-sampling-emitter gate, which DERIVES a candidate document
+			//! and would otherwise derive one with parented operands -- i.e. a
+			//! document that cannot derive at all, leaving the gate silently
+			//! blind on exactly the chunk kind it exists for -- and the
+			//! auto-parent arm, which applies the detach for real once every
+			//! gate has passed.  A refused insert must still leave the document
+			//! byte-identical, so the gate gets a computed head and never a
+			//! mutated one.
+			std::vector<std::string> PlanElementRootOperandDetach_( const std::string& headText,
+			                                                        const std::string& chunkText ) const;
+
+			//! `headText` with `parent none` written onto each named
+			//! `standard_object` -- the candidate head PlanElementRootOperandDetach_'s
+			//! first caller judges.  Pure; touches no document.
+			static std::string HeadTextWithOperandsDetached_( const std::string& headText,
+			                                                  const std::vector<std::string>& detach );
 
 			//! S1 fix-round (2026-08-11): DID THIS CALL LAND?  The ONE
 			//! predicate every attribution hook below keys off, and the reason

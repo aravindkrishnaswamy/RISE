@@ -1148,6 +1148,44 @@ namespace RISE
 				return std::string();
 			}
 
+			//! 87 step 5: the FIRST top-level chunk of role `role` whose `name`
+			//! is `name`, or a null NodeRef.  One walk, so the three call sites
+			//! that need "is this chunk in the document, and what does it say"
+			//! (the element-root probe, the auto-parent hook's CSG-operand
+			//! repair, and place_element's root resolve) cannot drift on what
+			//! counts as a match.  Role-qualified deliberately: a bare name may
+			//! legitimately be shared across chunk kinds (a geometry and a
+			//! material may both be `dup`), and only the Object roles are ever
+			//! asked for here.
+			RISE::Cst::NodeRef FindChunkByRoleAndName_( const RISE::Cst::Document& doc,
+			                                            const std::string& role,
+			                                            const std::string& name )
+			{
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const NodeRef it = RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != NodeKind::Chunk ) continue;
+					if( it->role != role ) continue;
+					if( ChunkParamString_( it, "name" ) != name ) continue;
+					return it;
+				}
+				return NodeRef();
+			}
+
+			//! 87 step 5: the four chunk roles that PRODUCE a world object AND
+			//! declare a `parent` -- so the four an element's placement can
+			//! legitimately carry.  `standard_object` and `csg_object` are the
+			//! Object-category pair; `rect_light` and `shape_light` each
+			//! synthesize an object and each declare `parent` for it
+			//! (ChunkParserRegistry.cpp).  Everything else an element creates
+			//! (painters, materials, geometries) has no transform of its own
+			//! and needs none.
+			bool RoleIsParentableObject_( const std::string& role )
+			{
+				return role == "standard_object" || role == "csg_object" ||
+				       role == "rect_light"      || role == "shape_light";
+			}
+
 			//! Every csg_object in `doc` that IsNullGeometryEmitter_ flags in
 			//! `job`, each paired with whether its own chunk acknowledges the
 			//! gap.  Restricting the walk to that keyword is exhaustive, not a
@@ -5312,7 +5350,21 @@ namespace RISE
 					if( !touchedName.empty() ) {
 						const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
 						if( snap.hasDocument ) {
-							const std::string clause = CheckNonSamplingEmitterGateForInsert( snap.document, chunkText );
+							// 87 STEP 5: this gate DERIVES head + candidate, so
+							// it must judge the head the insert will actually
+							// produce.  Inside an element window the composite's
+							// operands are still parented to the element root at
+							// this point and the auto-parent arm further down
+							// detaches them -- without that detach folded in
+							// here, the candidate derive fails outright,
+							// `FindUnacknowledgedNullGeometryEmitters_` returns
+							// nothing, and the gate goes silently blind on the
+							// one chunk kind it exists for.  Computed, never
+							// applied: a refused insert still leaves the
+							// document byte-identical.
+							const std::string gateHead = HeadTextWithOperandsDetached_(
+								snap.document, PlanElementRootOperandDetach_( snap.document, chunkText ) );
+							const std::string clause = CheckNonSamplingEmitterGateForInsert( gateHead, chunkText );
 							if( !clause.empty() ) {
 								r.applied     = false;
 								r.rawCode     = 0;
@@ -5327,6 +5379,114 @@ namespace RISE
 					}
 				}
 			}
+
+			//------------------------------------------------------------------
+			// 87 STEP 5 (2026-08-18): AUTO-PARENT TO THE ELEMENT ROOT.
+			//
+			// An object created while an element's window is open is a PART OF
+			// THAT ELEMENT, and 87 gave the scene language a way to say so.
+			// Every later verb that has to move the element as a unit --
+			// place_element today, a gizmo drag on the outliner row tomorrow --
+			// then edits ONE node instead of arithmetically composing into N.
+			//
+			// WHERE THIS SITS AND WHY.  After every refusal gate above (a
+			// refused chunk must not mint a root) and before all three apply
+			// branches (staged / live / headless), which is why the branches
+			// below splice `applyText` rather than `chunkText`.  Everything
+			// this arm can do is expressed in that ONE rewritten string, so
+			// External staging carries the parent link to the Owner exactly as
+			// the live and headless paths carry it to the Job.
+			//
+			// IT NEVER COSTS THE MODEL ITS GEOMETRY.  If the root cannot be
+			// minted or is unusable, `whyNot` is DISCLOSED on the result and
+			// the chunk is inserted unparented -- place_element then reports
+			// that object as one it does not carry, which is the honest
+			// outcome and not a silent one.
+			//
+			// EXTERNAL AUTHORITY IS EXCLUDED, and not for tidiness: under
+			// staging nothing this call submits reaches the head until an Owner
+			// approves it, so the root probe -- which reads the HEAD -- would
+			// never see a root it had already staged and would stage one fresh
+			// proposal per object.  place_element is itself unavailable on that
+			// autonomy (see kPlaceElementProposeRefusedNote), so nothing is
+			// lost by leaving those sessions exactly as they were.
+			//------------------------------------------------------------------
+			std::string applyText = chunkText;
+			std::string autoParentNotice;
+			if( BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces &&
+			    !mCreatingElementRoot && mAuthority != AgentAuthority::External &&
+			    mActiveElement < mBuildPlan.size() )
+			{
+				RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeId chunkNodeId = 0;
+				std::string role, cname, existingParent;
+				{
+					const int n = RISE::Cst::DocItemCount( cdoc );
+					for( int c = 0; c < n; ++c ) {
+						const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( cdoc, c );
+						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( cdoc, nid );
+						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+						role           = it->role;
+						cname          = ChunkParamString_( it, "name" );
+						existingParent = ChunkParamString_( it, "parent" );
+						chunkNodeId    = nid;
+						break;
+					}
+				}
+				// AN AUTHORED `parent` WINS, always.  The harness supplies a
+				// default parent; it does not overrule a stated one, which is
+				// how an element builds real internal hierarchy (a hand or a
+				// finger parented to a wrist) and still rides the root.
+				const std::string element = mBuildPlan[ mActiveElement ].element;
+				if( chunkNodeId != 0 && RoleIsParentableObject_( role ) && !cname.empty() &&
+				    existingParent.empty() && cname != ElementRootName( element ) )
+				{
+					std::string rootName, whyNot;
+					if( EnsureElementRootChunk_( element, rootName, whyNot ) ) {
+						// THE CSG-OPERAND REPAIR, applied for real here -- the
+						// same plan the E1 gate above judged, so the gate and
+						// the apply cannot disagree about what this insert
+						// produces.  `parent none` is the language's own unbind
+						// sentinel, and the plan only ever names a link THIS
+						// arm added.
+						if( role == "csg_object" ) {
+							const AgentDocumentSnapshot dsnap = ReadDocumentSnapshot();
+							if( dsnap.hasDocument ) {
+								const std::vector<std::string> detachNames =
+									PlanElementRootOperandDetach_( dsnap.document, chunkText );
+								for( std::size_t d = 0; d < detachNames.size(); ++d ) {
+									AgentSetPatch detach;
+									detach.target = detachNames[d];
+									detach.kind   = "standard_object";
+									detach.param  = "parent";
+									detach.value  = "none";
+									const AgentPatchResult dr = ProposePatch( detach );
+									if( !dr.applied ) {
+										autoParentNotice += " The CSG operand \"" + detachNames[d] +
+											"\" could not be detached from the element root (" +
+											dr.message + "), so this composite may be refused.";
+									}
+								}
+							}
+						}
+						cdoc = RISE::Cst::DocSetOrAddParamValue( cdoc, chunkNodeId, "parent", 0, rootName );
+						applyText = RISE::Cst::SerializeCst( cdoc );
+					}
+					else if( !whyNot.empty() ) {
+						autoParentNotice = " This chunk was NOT parented to the element's root node: " +
+							whyNot + ".";
+					}
+				}
+			}
+			// The notice, if any, is folded onto whichever return fires below --
+			// same discipline as this function's other destructor-time
+			// appenders, and never instead of the apply's own message.
+			struct AutoParentNoticeFold_
+			{
+				std::string& msg;
+				const std::string& notice;
+				~AutoParentNoticeFold_() { if( !notice.empty() ) msg += notice; }
+			} autoParentFold{ r.message, autoParentNotice };
 
 			// Secure-MCP slice 5a: the SAME authority gate as ProposePatch
 			// (see that method's doc for the full rationale) -- enforced
@@ -5348,7 +5508,7 @@ namespace RISE
 				// its own mMutex hold when no explicit base was supplied.
 				SceneEditController::AgentProposal p;
 				p.kind        = SceneEditController::AgentProposalKind::InsertChunk;
-				p.chunkText   = String( chunkText.c_str() );
+				p.chunkText   = String( applyText.c_str() );
 				p.hasExplicitBaseVersion = ( baseOrNull != nullptr );
 				if( baseOrNull ) p.baseVersion = *baseOrNull;
 				// Secure-MCP slice 5c: see ProposePatch's identical comment.
@@ -5388,7 +5548,7 @@ namespace RISE
 			if( mController )
 			{
 				const SceneEditController::AgentCommitResult cr =
-					mController->ApplyAgentInsertChunk( String( chunkText.c_str() ), baseOrNull );
+					mController->ApplyAgentInsertChunk( String( applyText.c_str() ), baseOrNull );
 				r.applied     = cr.applied;
 				r.retriable   = cr.retriable;
 				r.rawCode     = cr.rawCode;
@@ -5408,7 +5568,7 @@ namespace RISE
 				RISE::Cst::Document headDoc;
 				if( r.applied && r.headVersion.uuid != 0
 				 && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
-					AttachChunkIssueWarnings( r, headDoc, chunkText );
+					AttachChunkIssueWarnings( r, headDoc, applyText );
 				// ...and the REJECTION analyser on the failing side.  THIS is the
 				// GUI path -- the one where the unactionable "apply failed (e.g.
 				// unresolved reference); see log" was actually observed stalling a
@@ -5417,7 +5577,7 @@ namespace RISE
 				// UNCHANGED, so the retained Document is the correct namespace to
 				// resolve the candidate chunk's references against.
 				else if( IsAnalysableRejection_( r ) && ReadHeadDocumentAt_( r.headVersion, headDoc ) )
-					AttachRejectionIssues( r, headDoc, chunkText );
+					AttachRejectionIssues( r, headDoc, applyText );
 				return r;
 			}
 
@@ -5459,7 +5619,7 @@ namespace RISE
 			char kwBuf[128];   kwBuf[0] = '\0';
 			char nameBuf[256]; nameBuf[0] = '\0';
 			char diagBuf[512]; diagBuf[0] = '\0';
-			const int code = mJob->ApplyCstInsertChunk( chunkText.c_str(),
+			const int code = mJob->ApplyCstInsertChunk( applyText.c_str(),
 			                                            kwBuf, sizeof( kwBuf ),
 			                                            nameBuf, sizeof( nameBuf ),
 			                                            diagBuf, sizeof( diagBuf ) );
@@ -5470,7 +5630,7 @@ namespace RISE
 			// Model-B: non-blocking dangling-reference WARNING (see
 			// AttachChunkIssueWarnings's doc above FoldChunkCode's namespace).
 			if( r.applied && mJob->GetCstDocument() )
-				AttachChunkIssueWarnings( r, *mJob->GetCstDocument(), chunkText );
+				AttachChunkIssueWarnings( r, *mJob->GetCstDocument(), applyText );
 			// Model-B F5 slice S3: the pre-flight CAUSE analysis for a REJECTED
 			// insert -- ONLY for code 0 (Job::ApplyCstInsertChunk's generic
 			// "would not derive in context" catch-all; see AnalyzeRejectedInsert's
@@ -5479,7 +5639,7 @@ namespace RISE
 			// dry-run ran against (a reject never mutates), so this is a faithful
 			// re-check, not a stale one.
 			if( code == 0 && mJob->GetCstDocument() )
-				AttachRejectionIssues( r, *mJob->GetCstDocument(), chunkText );
+				AttachRejectionIssues( r, *mJob->GetCstDocument(), applyText );
 			return r;
 		}
 
@@ -12184,6 +12344,162 @@ namespace RISE
 			}
 		}
 
+		bool AgentSession::EnsureElementRootChunk_( const std::string& element,
+		                                            std::string& outRoot,
+		                                            std::string& outWhyNot )
+		{
+			outRoot.clear();
+			outWhyNot.clear();
+			if( element.empty() ) return false;
+			const std::string rootName = ElementRootName( element );
+
+			// THE DOCUMENT IS THE AUTHORITY, not the attribution ledger.  The
+			// ledger is session state and is dropped when a chunk is removed;
+			// the question here is only "does the document already declare a
+			// usable root", and the document answers it for a reloaded session,
+			// a re-opened element and a hand-authored one alike.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				outWhyNot = "this session has no scene document";
+				return false;
+			}
+			{
+				const RISE::Cst::Document doc = RISE::Cst::ParseToCst( snap.document );
+				const RISE::Cst::NodeRef existing =
+					FindChunkByRoleAndName_( doc, "standard_object", rootName );
+				if( existing ) {
+					// A ROOT MUST BE A CONTAINER.  The only way a chunk of this
+					// name can exist and NOT be one is that something else --
+					// hand-authored content, or a restored document -- claimed
+					// the name for a real shape.  Adopting it would make
+					// place_element overwrite an authored pose, which is the
+					// destructiveness this whole change removes, so it is
+					// refused and NAMED instead.
+					const std::string geom = ChunkParamString_( existing, "geometry" );
+					const std::string src  = ChunkParamString_( existing, "source" );
+					const bool isContainer = ( geom.empty() || geom == "none" ) && src.empty();
+					if( !isContainer ) {
+						outWhyNot = "a `standard_object` named \"" + rootName + "\" already exists and "
+						            "is not a container (it carries a `geometry` or a `source`), so it "
+						            "cannot be used as the element's root node";
+						return false;
+					}
+					outRoot = rootName;
+					return true;
+				}
+			}
+
+			// MINT IT.  Through InsertChunk, so the root pays every gate an
+			// authored chunk pays and is attributed to the active element by
+			// the same destructor hook -- there is no second, privileged
+			// insertion path in this file.  The guard is what stops the
+			// auto-parent hook below from trying to give the root a parent.
+			struct RootCreationGuard_
+			{
+				bool& flag;
+				explicit RootCreationGuard_( bool& f ) : flag( f ) { flag = true; }
+				~RootCreationGuard_() { flag = false; }
+			};
+			AgentChunkResult rr;
+			{
+				// SCOPED, not a bare set/clear pair: a leaked `true` would
+				// disable auto-parenting for the rest of the session, silently,
+				// and the only symptom would be place_element finding no root
+				// several verbs later.
+				RootCreationGuard_ guard( mCreatingElementRoot );
+				rr = InsertChunk( "standard_object\n{\n\tname " + rootName + "\n}\n" );
+			}
+			if( !rr.applied ) {
+				outWhyNot = "the element's root node could not be created (" +
+					( rr.message.empty() ? std::string( "no reason given" ) : rr.message ) + ")";
+				return false;
+			}
+			outRoot = rootName;
+			return true;
+		}
+
+		bool AgentSession::ObjectReachesElementRoot_( const std::string& object,
+		                                              const std::string& root ) const
+		{
+			if( object.empty() || root.empty() ) return false;
+			if( object == root ) return true;
+			const IObjectManager* objMgr = mJob ? mJob->GetObjects() : nullptr;
+			if( !objMgr ) return false;
+			// THE LIVE LINK MAP, not the document text: an object may reach the
+			// root through a chain the author wrote inside the element, and a
+			// synthesized entry has no chunk of its own to read.  Bounded, so a
+			// link map corrupted by anything upstream cannot hang this walk --
+			// the manager's own cycle guards make it unreachable, and a bound
+			// is cheaper than trusting that.
+			std::string at = object;
+			for( int hops = 0; hops < 256; ++hops ) {
+				const char* p = objMgr->GetObjectParent( at.c_str() );
+				if( !p || !*p ) return false;
+				if( root == p ) return true;
+				at = p;
+			}
+			return false;
+		}
+
+		std::vector<std::string> AgentSession::PlanElementRootOperandDetach_(
+			const std::string& headText, const std::string& chunkText ) const
+		{
+			std::vector<std::string> out;
+			if( !BuildProtocolActive_() || mBuildPhase != AgentBuildPhase::Pieces ) return out;
+			if( mAuthority == AgentAuthority::External ) return out;
+			if( mActiveElement >= mBuildPlan.size() ) return out;
+			if( headText.empty() || chunkText.empty() ) return out;
+
+			const RISE::Cst::Document cdoc = RISE::Cst::ParseToCst( chunkText );
+			RISE::Cst::NodeRef self;
+			{
+				const int n = RISE::Cst::DocItemCount( cdoc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( cdoc, RISE::Cst::DocNodeIdAt( cdoc, i ) );
+					if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { self = it; break; }
+				}
+			}
+			if( !self || self->role != "csg_object" ) return out;
+
+			const std::string root = ElementRootName( mBuildPlan[ mActiveElement ].element );
+			const RISE::Cst::Document head = RISE::Cst::ParseToCst( headText );
+			const char* const kOperandParams[2] = { "obja", "objb" };
+			for( int op = 0; op < 2; ++op ) {
+				const std::string opName = ChunkParamString_( self, kOperandParams[op] );
+				if( opName.empty() ) continue;
+				const RISE::Cst::NodeRef opChunk =
+					FindChunkByRoleAndName_( head, "standard_object", opName );
+				if( !opChunk ) continue;
+				// ONLY a link THIS mechanism added.  An authored `parent` on an
+				// operand is the author's own error and stays theirs -- the
+				// engine will refuse it with a message that names it.
+				if( ChunkParamString_( opChunk, "parent" ) != root ) continue;
+				out.push_back( opName );
+			}
+			return out;
+		}
+
+		std::string AgentSession::HeadTextWithOperandsDetached_(
+			const std::string& headText, const std::vector<std::string>& detach )
+		{
+			if( detach.empty() ) return headText;
+			RISE::Cst::Document doc = RISE::Cst::ParseToCst( headText );
+			for( std::size_t d = 0; d < detach.size(); ++d ) {
+				const int n = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < n; ++i ) {
+					const RISE::Cst::NodeId nid = RISE::Cst::DocNodeIdAt( doc, i );
+					const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId( doc, nid );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( it->role != "standard_object" ) continue;
+					if( ChunkParamString_( it, "name" ) != detach[d] ) continue;
+					doc = RISE::Cst::DocSetOrAddParamValue( doc, nid, "parent", 0, "none" );
+					break;
+				}
+			}
+			return RISE::Cst::SerializeCst( doc );
+		}
+
 		bool AgentSession::KindIsPhaseExemptCategory_( const std::string& kind )
 		{
 			if( kind.empty() ) return false;
@@ -12995,6 +13311,17 @@ namespace RISE
 			return out + "_";
 		}
 
+		std::string AgentSession::ElementRootName( const std::string& element )
+		{
+			// PREFIX + "element_root", so the harness's own node satisfies the
+			// same name rule every builder chunk must satisfy.  That is not
+			// cosmetic: it means a builder that happens to mint this exact name
+			// is refused by the ORDINARY duplicate-name rule (and gets the one
+			// repair retry), instead of needing a second, bespoke reservation
+			// mechanism -- `none` is the only name this scene language reserves.
+			return ElementChunkNamePrefix( element ) + "element_root";
+		}
+
 		void AgentSession::ExtractChunkTexts( const std::string& text,
 		                                       std::vector<std::string>& outChunks,
 		                                       std::vector<std::string>& outProblems )
@@ -13361,23 +13688,6 @@ namespace RISE
 
 		namespace
 		{
-			//! S2: does `chunkItem` carry a parameter named `pname` at all?
-			//! ChunkParamString_ cannot answer this (an absent param and a
-			//! present-but-empty one both read as ""), and place_element's
-			//! matrix / quaternion precedence checks need PRESENCE.
-			bool ChunkHasParam_( const RISE::Cst::NodeRef& chunkItem, const std::string& pname )
-			{
-				if( !chunkItem ) return false;
-				for( const RISE::Cst::NodeRef& kid : chunkItem->kids ) {
-					if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
-					for( const RISE::Cst::NodeRef& tk : kid->kids ) {
-						if( tk && tk->kind == RISE::Cst::NodeKind::Token &&
-						    tk->role == "pname" && tk->text == pname ) return true;
-					}
-				}
-				return false;
-			}
-
 			//! S2: how many `part` lines does this chunk text carry?  The
 			//! arc's headline measurement, counted from the CST rather than by
 			//! substring so a `part` inside a comment or a value cannot
@@ -13436,33 +13746,6 @@ namespace RISE
 			{
 				return FormatScalar_( v[0] ) + " " + FormatScalar_( v[1] ) + " " + FormatScalar_( v[2] );
 			}
-
-			//! S2: rotate `p` by the Euler triple `deg` using the SAME
-			//! composition Transformable::SetOrientation applies --
-			//! XRotation(x) * YRotation(y) * ZRotation(z) in RISE's row-vector
-			//! convention, i.e. the point is rotated about X first, then Y,
-			//! then Z.  Written out rather than reusing Matrix4Ops so this file
-			//! does not have to agree with that header's storage order as well
-			//! as its composition order; the two rotations a placement can
-			//! involve are the only rotations here.
-			void RotateEulerDeg_( const double deg[3], const double p[3], double out[3] )
-			{
-				const double d2r = 3.14159265358979323846 / 180.0;
-				const double cx = std::cos( deg[0]*d2r ), sx = std::sin( deg[0]*d2r );
-				const double cy = std::cos( deg[1]*d2r ), sy = std::sin( deg[1]*d2r );
-				const double cz = std::cos( deg[2]*d2r ), sz = std::sin( deg[2]*d2r );
-				// X, then Y, then Z.
-				double x = p[0], y = p[1], z = p[2];
-				double ny =  cx*y - sx*z;
-				double nz =  sx*y + cx*z;
-				y = ny; z = nz;
-				double nx =  cy*x + sy*z;
-				nz        = -sy*x + cy*z;
-				x = nx; z = nz;
-				nx =  cz*x - sz*y;
-				ny =  sz*x + cz*y;
-				out[0] = nx; out[1] = ny; out[2] = z;
-			}
 		}
 
 		bool AgentSession::ElementWorldBounds_( const std::string& element,
@@ -13471,8 +13754,16 @@ namespace RISE
 			bool any = false;
 			double lo[3] = { 0.0, 0.0, 0.0 };
 			double hi[3] = { 0.0, 0.0, 0.0 };
+			// 87 STEP 5: the element ROOT is a geometry-less container, so its
+			// bounding box is the DEFAULT-constructed one, not an empty-set
+			// sentinel -- folding it in would drag the reported box to include
+			// the container's origin and silently mis-state every element that
+			// does not straddle it.  Excluded by name, which is the one thing
+			// this function can know without resolving a live object first.
+			const std::string rootName = ElementRootName( element );
 			const std::vector<std::string> chunks = ElementChunks( element );
 			for( std::size_t i = 0; i < chunks.size(); ++i ) {
+				if( chunks[i] == rootName ) continue;
 				const ChunkAttribution_* a = FindChunkAttribution_( chunks[i] );
 				if( !a ) continue;
 				const ChunkDescriptor* d = DescriptorForKeyword( String( a->kind.c_str() ) );
@@ -14291,19 +14582,40 @@ namespace RISE
 				              "\"x y z\" -- the element's new base-centre in world space.";
 				return out;
 			}
-			double s = 1.0;
+			// 87 STEP 5: `scale` accepts ONE uniform factor OR THREE per-axis
+			// factors.  The pre-87 uniform-only refusal was not a physical
+			// limit -- it was a consequence of multiplying each object's own
+			// `scale` per axis and then rotating its offset, which is only a
+			// similarity transform when the factors agree.  A parent node
+			// expresses a non-uniform scale directly, so the refusal is lifted.
+			// What is NOT lifted is the POSITIVITY requirement: a zero
+			// component makes this container's composed matrix singular, and
+			// Matrix4Ops::Inverse returns its input unchanged at det == 0 --
+			// which would transform world rays for the WHOLE SUBTREE with a
+			// singular matrix rather than an inverse (87 §4, "a rank-deficient
+			// container silently widens an existing hazard to its whole
+			// subtree").
+			double s[3] = { 1.0, 1.0, 1.0 };
 			if( !scale.empty() ) {
+				double one = 0.0;
 				char sextra[8] = { 0 };
-				const int sn = std::sscanf( scale.c_str(), "%lf %7s", &s, sextra );
-				if( sn != 1 ) {
+				const int sn = std::sscanf( scale.c_str(), "%lf %7s", &one, sextra );
+				if( sn == 1 ) {
+					s[0] = s[1] = s[2] = one;
+				}
+				else if( !ParseVec3_( scale, s ) ) {
 					out.message = "place_element did nothing: `scale` must be ONE number (a uniform "
-					              "factor), not three.";
+					              "factor) or THREE numbers (\"sx sy sz\", per axis).";
 					return out;
 				}
-				if( !RISE::IsFiniteDouble( s ) || s <= 0.0 ) {
-					out.message = "place_element did nothing: `scale` must be one finite number "
-					              "greater than 0 -- a uniform factor.";
-					return out;
+				for( int k = 0; k < 3; ++k ) {
+					if( !RISE::IsFiniteDouble( s[k] ) || s[k] <= 0.0 ) {
+						out.message = "place_element did nothing: every `scale` component must be "
+						              "finite and greater than 0 -- a zero component makes the "
+						              "element's composed transform singular for every object under "
+						              "it.";
+						return out;
+					}
 				}
 			}
 			double rot[3] = { 0.0, 0.0, 0.0 };
@@ -14312,190 +14624,143 @@ namespace RISE
 				              "\"ex ey ez\" in degrees.";
 				return out;
 			}
-			const bool rotating = ( rot[0] != 0.0 || rot[1] != 0.0 || rot[2] != 0.0 );
 
-			// Read the objects' CURRENT params from the document, so the
-			// composition below is against what is actually authored rather
-			// than against a derived transform this verb cannot write back.
 			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
 			if( !snap.hasDocument ) {
 				out.message = "place_element did nothing: this session has no scene document.";
 				return out;
 			}
 
-			// ONE parse of the snapshot's bytes, reused for every object --
-			// AgentDocumentSnapshot carries the document TEXT, not a CST.
-			const RISE::Cst::Document liveDoc = RISE::Cst::ParseToCst( snap.document );
+			//------------------------------------------------------------------
+			// THE ROOT.  It is resolved from the DOCUMENT, never minted here:
+			// an Object-tier chunk is appended at the document END, so a root
+			// created now would be declared BELOW the children that name it and
+			// every one of those forward references would be refused.  The root
+			// is minted when the element's first object is inserted, which is
+			// the only moment at which the ordering is correct by construction.
+			//
+			// An element with no root therefore means one of exactly two
+			// things, and both are stated rather than silently no-op'd: the
+			// element created no object at all, or its objects predate this
+			// mechanism / were created under an authority it excludes.
+			//------------------------------------------------------------------
+			const std::string rootName = ElementRootName( element );
+			{
+				const RISE::Cst::Document liveDoc = RISE::Cst::ParseToCst( snap.document );
+				const RISE::Cst::NodeRef rootChunk =
+					FindChunkByRoleAndName_( liveDoc, "standard_object", rootName );
+				// THE LAST SILENT NO-OP, closed at the root instead of at every
+				// object.  `matrix` > `quaternion` > `orientation` is
+				// standard_object's transform precedence, so a `matrix` on the
+				// root would swallow all three params this verb writes and a
+				// `quaternion` would swallow the rotation -- the exact failure
+				// the pre-87 verb reported per object, now possible at exactly
+				// one place and refused there.  Nothing the harness writes puts
+				// either on the root; reaching this means someone edited it.
+				if( rootChunk ) {
+					const char* const kBypass[2] = { "matrix", "quaternion" };
+					for( int b = 0; b < 2; ++b ) {
+						if( ChunkParamString_( rootChunk, kBypass[b] ).empty() ) continue;
+						out.message = std::string( "place_element did nothing: \"" ) + element +
+							"\"'s root node \"" + rootName + "\" is authored with `" + kBypass[b] +
+							"`, which takes precedence over the `position` / `orientation` / `scale` "
+							"this verb writes, so the placement would have no effect. Remove that "
+							"parameter from \"" + rootName + "\" and call again. The document is "
+							"unchanged.";
+						return out;
+					}
+				}
+				if( !rootChunk ) {
+					out.message = "place_element did nothing: \"" + element + "\" has no root node "
+						"(no `standard_object` named \"" + rootName + "\" is in the document), so "
+						"there is nothing to place. The root is created together with the element's "
+						"FIRST object -- build_element, or insert_chunk with a standard_object, "
+						"while this element's window is open. The document is unchanged.";
+					return out;
+				}
+			}
+			out.root = rootName;
 
-			std::vector<AgentSetPatch> patches;
-			std::vector<std::string> approxObjects;
+			//------------------------------------------------------------------
+			// WHAT THE ROOT CARRIES.  Established by walking the LIVE parent
+			// links, not assumed from the attribution ledger: an object
+			// recorded against the element may legitimately hang off something
+			// else (an authored `parent`), and a CSG operand cannot be
+			// parented at all.  Those are named, and they are the ONLY skip
+			// cause that survives 87 -- the pre-87 `matrix`, `quaternion` and
+			// unparseable-`position` skips were artefacts of patching each
+			// object's own params, and a child's `matrix` or `quaternion` is
+			// its LOCAL transform, which composes through the parent untouched.
+			//------------------------------------------------------------------
 			const std::vector<std::string> chunks = ElementChunks( element );
 			for( std::size_t c = 0; c < chunks.size(); ++c ) {
+				if( chunks[c] == rootName ) continue;
 				const ChunkAttribution_* a = FindChunkAttribution_( chunks[c] );
-				if( !a || a->kind != "standard_object" ) continue;
-
-				RISE::Cst::NodeRef objItem;
-				{
-					const int n = RISE::Cst::DocItemCount( liveDoc );
-					for( int i = 0; i < n; ++i ) {
-						const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId(
-							liveDoc, RISE::Cst::DocNodeIdAt( liveDoc, i ) );
-						if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
-						if( it->role != "standard_object" ) continue;
-						if( ChunkParamString_( it, "name" ) != chunks[c] ) continue;
-						objItem = it;
-						break;
-					}
-				}
-				if( !objItem ) {
-					AgentPlaceElementSkip sk;
-					sk.object = chunks[c];
-					sk.reason = "this standard_object is no longer in the document";
-					out.skipped.push_back( sk );
+				if( !a || !RoleIsParentableObject_( a->kind ) ) continue;
+				if( ObjectReachesElementRoot_( chunks[c], rootName ) ) {
+					out.objects.push_back( chunks[c] );
 					continue;
 				}
-				if( ChunkHasParam_( objItem, "matrix" ) ) {
-					// A `matrix` bypasses position / orientation / scale
-					// entirely, so patching them would be a silent no-op --
-					// exactly the failure mode this arc exists to remove.
-					AgentPlaceElementSkip sk;
-					sk.object = chunks[c];
-					sk.reason = "this standard_object is authored with `matrix`, which bypasses "
-					            "position, orientation and scale, so a placement written into those "
-					            "parameters would have no effect";
-					out.skipped.push_back( sk );
-					continue;
-				}
-				const bool hasQuat = ChunkHasParam_( objItem, "quaternion" );
-
-				double oldPos[3] = { 0.0, 0.0, 0.0 };
-				double oldScale[3] = { 1.0, 1.0, 1.0 };
-				double oldRot[3] = { 0.0, 0.0, 0.0 };
-				const std::string posStr = ChunkParamString_( objItem, "position" );
-				const std::string sclStr = ChunkParamString_( objItem, "scale" );
-				const std::string rotStr = ChunkParamString_( objItem, "orientation" );
-				if( !posStr.empty() && !ParseVec3_( posStr, oldPos ) ) {
-					AgentPlaceElementSkip sk;
-					sk.object = chunks[c];
-					sk.reason = "this standard_object's `position` is not three finite numbers, so "
-					            "there is nothing to compose the placement with";
-					out.skipped.push_back( sk );
-					continue;
-				}
-				if( !sclStr.empty() && !ParseVec3_( sclStr, oldScale ) ) {
-					oldScale[0] = oldScale[1] = oldScale[2] = 1.0;
-				}
-				const bool hadRot = ( !rotStr.empty() && ParseVec3_( rotStr, oldRot ) &&
-				                      ( oldRot[0] != 0.0 || oldRot[1] != 0.0 || oldRot[2] != 0.0 ) );
-
-				// SCALE about the element's own origin, then ROTATE about it,
-				// then OFFSET -- so the object's own place inside the element
-				// is preserved and carried rigidly.
-				double p[3] = { oldPos[0] * s, oldPos[1] * s, oldPos[2] * s };
-				if( rotating ) {
-					double r[3];
-					RotateEulerDeg_( rot, p, r );
-					p[0] = r[0]; p[1] = r[1]; p[2] = r[2];
-				}
-				p[0] += pos[0]; p[1] += pos[1]; p[2] += pos[2];
-
-				AgentSetPatch pp;
-				pp.target = chunks[c];
-				pp.kind   = "standard_object";
-				pp.param  = "position";
-				pp.value  = FormatVec3_( p );
-				patches.push_back( pp );
-
-				if( s != 1.0 || !sclStr.empty() ) {
-					const double ns[3] = { oldScale[0] * s, oldScale[1] * s, oldScale[2] * s };
-					AgentSetPatch sp;
-					sp.target = chunks[c];
-					sp.kind   = "standard_object";
-					sp.param  = "scale";
-					sp.value  = FormatVec3_( ns );
-					patches.push_back( sp );
-				}
-
-				if( rotating ) {
-					if( hasQuat ) {
-						AgentPlaceElementSkip sk;
-						sk.object = chunks[c];
-						sk.reason = "this standard_object is authored with `quaternion`, which takes "
-						            "precedence over `orientation`, so it was moved and scaled but "
-						            "not rotated";
-						out.skipped.push_back( sk );
-					}
-					else {
-						const double nr[3] = { oldRot[0] + rot[0], oldRot[1] + rot[1],
-						                       oldRot[2] + rot[2] };
-						AgentSetPatch rp;
-						rp.target = chunks[c];
-						rp.kind   = "standard_object";
-						rp.param  = "orientation";
-						rp.value  = FormatVec3_( nr );
-						patches.push_back( rp );
-						if( hadRot ) approxObjects.push_back( chunks[c] );
-					}
-				}
-
-				out.objects.push_back( chunks[c] );
+				AgentPlaceElementSkip sk;
+				sk.object = chunks[c];
+				sk.reason = "its `parent` chain does not reach the element's root node \"" + rootName +
+					"\", so the root's transform does not carry it (it was authored with a `parent` "
+					"of its own pointing outside the element, or it is a CSG operand, which cannot "
+					"be parented)";
+				out.skipped.push_back( sk );
 			}
 
-			if( patches.empty() ) {
-				out.message = "place_element did nothing: no standard_object recorded against \"" +
-					element + "\" could be placed";
-				if( !out.skipped.empty() ) {
-					out.message += " (";
-					for( std::size_t i = 0; i < out.skipped.size(); ++i ) {
-						if( i ) out.message += "; ";
-						out.message += out.skipped[i].object + ": " + out.skipped[i].reason;
-					}
-					out.message += ")";
-				}
-				else {
-					out.message += " -- build_element creates the element's objects, and every chunk "
-					               "created while an element is active is recorded against it";
-				}
-				out.message += ". The document is unchanged.";
-				return out;
+			//------------------------------------------------------------------
+			// ONE CHUNK, THREE PARAMS, ABSOLUTE.  All three are written every
+			// call, defaults included, so the placement is idempotent: calling
+			// again with the same arguments is a no-op instead of a doubling.
+			// The pre-87 verb read each object's CURRENT pose and added to it,
+			// which is why re-placing compounded.
+			//------------------------------------------------------------------
+			std::vector<AgentSetPatch> patches;
+			{
+				AgentSetPatch p;
+				p.target = rootName;
+				p.kind   = "standard_object";
+				p.param  = "position";
+				p.value  = FormatVec3_( pos );
+				patches.push_back( p );
+				p.param  = "scale";
+				p.value  = FormatVec3_( s );
+				patches.push_back( p );
+				p.param  = "orientation";
+				p.value  = FormatVec3_( rot );
+				patches.push_back( p );
 			}
 
-			// ONE batch, so ONE head bump and ONE undo step for the whole
-			// placement.  ProposePatches is sequential and best-effort inside
-			// the batch, which is right here: a rejected object does not make
-			// the others' placement wrong.
 			out.patchResults = ProposePatches( patches );
 			for( std::size_t i = 0; i < out.patchResults.size(); ++i ) {
 				if( out.patchResults[i].applied ) ++out.patchesApplied;
 				else                              ++out.patchesRejected;
 			}
-			out.ok = ( out.patchesApplied > 0 );
+			out.ok = ( out.patchesRejected == 0 );
 			out.bboxValid = ElementWorldBounds_( element, out.bboxMin, out.bboxMax );
 
-			std::string m = "place_element applied one rigid transform to " +
-				std::to_string( out.objects.size() ) +
-				( out.objects.size() == 1 ? " object" : " objects" ) + " recorded against \"" +
-				element + "\": base-centre moved to (" + FormatVec3_( pos ) + ")";
-			if( s != 1.0 ) m += ", scaled by " + FormatScalar_( s ) + " about the element's origin";
+			const bool rotating = ( rot[0] != 0.0 || rot[1] != 0.0 || rot[2] != 0.0 );
+			const bool scaling  = ( s[0] != 1.0 || s[1] != 1.0 || s[2] != 1.0 );
+			std::string m = "place_element wrote one local transform onto \"" + element + "\"'s root "
+				"node \"" + rootName + "\": base-centre at (" + FormatVec3_( pos ) + ")";
+			if( scaling )  m += ", scaled (" + FormatVec3_( s ) + ") about the element's origin";
 			if( rotating ) m += ", rotated (" + FormatVec3_( rot ) + ") degrees about it";
-			m += ". Each object's own offset inside the element was scaled and rotated with the "
-			     "element and then added to the new base-centre, so their relative arrangement is "
-			     "unchanged. Patches applied: " + std::to_string( out.patchesApplied );
+			m += ". The root carries " + std::to_string( out.objects.size() ) +
+				( out.objects.size() == 1 ? " object" : " objects" ) +
+				" recorded against this element; each object's own position inside the element is "
+				"scaled, rotated and then added to it by the engine's `world = parent.world * local` "
+				"composition, so their relative arrangement is unchanged and their own authored "
+				"values were not rewritten. Rotation and scale are EXACT for every object under the "
+				"root, including any authored with `quaternion` or `matrix`. Placement is ABSOLUTE: "
+				"calling again with the same arguments changes nothing. Patches applied: " +
+				std::to_string( out.patchesApplied );
 			if( out.patchesRejected > 0 )
 				m += ", rejected: " + std::to_string( out.patchesRejected );
 			m += ".";
-			if( !approxObjects.empty() ) {
-				m += " These objects already carried a rotation of their own, and the placement's "
-				     "Euler degrees were ADDED per axis, which is exact only when both rotations "
-				     "are about the same axis: ";
-				for( std::size_t i = 0; i < approxObjects.size(); ++i ) {
-					if( i ) m += ", ";
-					m += approxObjects[i];
-				}
-				m += ".";
-			}
 			if( !out.skipped.empty() ) {
-				m += " Not fully placed: ";
+				m += " Not carried by the root: ";
 				for( std::size_t i = 0; i < out.skipped.size(); ++i ) {
 					if( i ) m += "; ";
 					m += out.skipped[i].object + " -- " + out.skipped[i].reason;
@@ -19935,6 +20200,31 @@ namespace RISE
 				return std::string( buf );
 			}
 
+			//! 87 STEP 5 (2026-08-18): the STRUCTURE clause of an inventory
+			//! row -- where this object sits in the AUTHORED tree, and whether
+			//! it is a repetition of an instancing chunk rather than a chunk
+			//! of its own.
+			//!
+			//! Appended to both the covered and the uncovered row, because the
+			//! question it answers ("what is this part of, and what do I edit
+			//! to move it") is orthogonal to whether the camera can see it.
+			//! Omitted entirely for a root, authored object -- which is most
+			//! rows in most scenes -- so a flat scene's inventory is
+			//! BYTE-IDENTICAL to what it was before hierarchy existed, and the
+			//! cost of this field is paid only by scenes that use the feature.
+			//! That matters here more than usual: this text is prepended to
+			//! every compose-phase render payload, and prompt VOLUME is the
+			//! one thing this workstream has measured collapsing construction
+			//! richness.
+			std::string InventoryStructureClause_( const AgentSession::AgentSceneInventoryEntry& e )
+			{
+				std::string c;
+				if( !e.parent.empty() )        c += "; part of " + e.parent;
+				if( !e.instancedFrom.empty() ) c += "; one repetition of the chunk " + e.instancedFrom +
+				                                    " (edit that chunk, not this name)";
+				return c;
+			}
+
 			//! The ONE formatter -- the render payload and `scene_inventory`
 			//! both read this string, so the two surfaces cannot describe the
 			//! same scene differently.  See kInventoryMaxOnScreenLines for the
@@ -20075,6 +20365,7 @@ namespace RISE
 						}
 						if( e.worldCentreKnown )
 							onScreenTail += ", world bbox centre (" + FormatVec3_( e.worldCentre ) + ")";
+						onScreenTail += InventoryStructureClause_( e );
 					}
 					else {
 						++zeroTotal;
@@ -20091,6 +20382,7 @@ namespace RISE
 							zeroTail += "; world bbox centre (" + FormatVec3_( e.worldCentre ) + ")";
 						else
 							zeroTail += "; its world bounding box could not be read";
+						zeroTail += InventoryStructureClause_( e );
 					}
 				}
 
@@ -20363,6 +20655,23 @@ namespace RISE
 				e.pixelCount    = le.pixelCount;
 				e.frameFraction = static_cast<double>( le.pixelCount ) / static_cast<double>( passPixels );
 				e.onScreen      = le.pixelCount > 0;
+
+				// 87 STEP 5 (2026-08-18): STRUCTURE, alongside the footprint.
+				// Every other field here is measured off the flat render list,
+				// which by 87 §2's design carries no hierarchy at all; these
+				// two are read from the object manager's own link and
+				// provenance maps -- the sanctioned readers -- so an agent can
+				// tell which rows are one assembly, and which row is a
+				// repetition of an editable instancing chunk rather than a
+				// chunk in its own right.
+				if( objs ) {
+					const char* p = objs->GetObjectParent( le.name.c_str() );
+					if( p && *p ) e.parent = p;
+					const char* instChunk = nullptr;
+					if( objs->GetObjectProvenance( le.name.c_str(), &instChunk, nullptr ) &&
+					    instChunk && *instChunk && le.name != instChunk )
+						e.instancedFrom = instChunk;
+				}
 
 				// The object's world bounding box -- the "where is it, then?"
 				// for anything that covered nothing, and the input to the

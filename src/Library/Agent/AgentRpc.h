@@ -878,8 +878,19 @@
 //                                            entries:[{name,pixelCount,frameFraction,
 //                                                      onScreen,frameX?,frameY?,
 //                                                      worldCentre?,placement,
-//                                                      offFrameDirection?}],
+//                                                      offFrameDirection?,
+//                                                      parent?,instancedFrom?}],
 //                                            text,message}
+//                                           (87 step 5 (2026-08-18): `parent` and
+//                                            `instancedFrom` are the AUTHORED-TREE
+//                                            half.  Everything else here is measured
+//                                            off the flat render list, which carries
+//                                            no structure by design; `parent` says
+//                                            which rows are one assembly, and
+//                                            `instancedFrom` names the chunk to EDIT
+//                                            for a synthesized repetition like
+//                                            `grid[3,1]`, which is not a chunk.  Both
+//                                            omitted for a root, authored object.)
 //                                           (Arc 80 (2026-08-12): "WHERE IS
 //                                            EVERYTHING?" -- the FORWARD counterpart
 //                                            to query_object_at's inverse

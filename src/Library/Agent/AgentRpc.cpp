@@ -2479,7 +2479,7 @@ namespace RISE
 
 				//--------------------------------------------------------------
 				// place_element {element, position, scale?, orientation?}
-				//   -> {ok, element, objects:[...], skipped:[{object,reason}],
+				//   -> {ok, element, root, objects:[...], skipped:[{object,reason}],
 				//       patchResults:[...], patchesApplied, patchesRejected,
 				//       bbox?:{min:[3],max:[3]}, message}
 				//   S2 (2026-08-11).  MUTATING (it submits one ProposePatches
@@ -2508,8 +2508,12 @@ namespace RISE
 					{
 						const JsonValue* sc = params.find( "scale" );
 						if( sc ) {
-							// Accepted as a NUMBER or as a one-number string; the
-							// session layer parses one canonical form.
+							// Accepted as a NUMBER or as a STRING; the session
+							// layer parses one canonical form.  87 step 5 made
+							// the string form carry three per-axis factors as
+							// well as one uniform one, which is why the schema
+							// now advertises `string` -- a bare number is still
+							// accepted, and still means a uniform factor.
 							if( sc->isNumber() ) {
 								char b[48];
 								std::snprintf( b, sizeof( b ), "%.10g", sc->asNumber() );
@@ -2519,7 +2523,8 @@ namespace RISE
 							else {
 								return MakeError( idValue, kInvalidParams,
 									"Invalid params: 'scale', when present, must be a number (a uniform "
-									"factor greater than 0)" );
+									"factor greater than 0) or a string -- one factor \"2\" or three "
+									"\"sx sy sz\"" );
 							}
 						}
 						const JsonValue* orv = params.find( "orientation" );
@@ -2539,6 +2544,11 @@ namespace RISE
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok", JsonValue::MakeBool( prr.ok ) );
 					if( !prr.element.empty() ) result.set( "element", JsonValue::MakeString( prr.element ) );
+					// 87 step 5: the ROOT NODE the transform landed on.  Named
+					// rather than left implicit, because it is a real, editable
+					// chunk in the document -- a caller that wants to nudge the
+					// element by hand patches this one name instead of N.
+					if( !prr.root.empty() ) result.set( "root", JsonValue::MakeString( prr.root ) );
 					JsonValue objArr = JsonValue::MakeArray();
 					for( std::size_t i = 0; i < prr.objects.size(); ++i )
 						objArr.push_back( JsonValue::MakeString( prr.objects[i] ) );
@@ -4830,6 +4840,20 @@ namespace RISE
 						}
 						if( !e.offFrameDirection.empty() )
 							o.set( "offFrameDirection", JsonValue::MakeString( e.offFrameDirection ) );
+						// 87 STEP 5 (2026-08-18): the two STRUCTURE keys, under
+						// the same omit-when-absent convention as every key
+						// above -- a root, authored object sends neither, so a
+						// flat scene's payload is byte-identical to what it was
+						// before hierarchy existed.  `parent` is the authored
+						// tree (which rows are one assembly); `instancedFrom`
+						// is the chunk an author can actually edit for a
+						// synthesized repetition, and is the ONLY sanctioned
+						// way to get it -- a client must not derive it by
+						// splitting the name.
+						if( !e.parent.empty() )
+							o.set( "parent", JsonValue::MakeString( e.parent ) );
+						if( !e.instancedFrom.empty() )
+							o.set( "instancedFrom", JsonValue::MakeString( e.instancedFrom ) );
 						entries.push_back( o );
 					}
 					result.set( "entries", entries );

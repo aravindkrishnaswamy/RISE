@@ -568,9 +568,9 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	             renderSeconds, static_cast<int>( totalSnippets ) );
 
 	// A rot guard for the extraction itself: the eight seed skills ship
-	// NINETEEN snippets total (lighting-recipes 3, materials-and-media-
+	// TWENTY snippets total (lighting-recipes 3, materials-and-media-
 	// basics 3, modeling-from-image-captures 1, modeling-workflow-and-
-	// geometry 3, object-modeling-recipes 5, observe-modes 1,
+	// geometry 4, object-modeling-recipes 5, observe-modes 1,
 	// procedural-textures 2, scene-skeleton-and-conventions 1) -- if the
 	// fence tag or extraction regresses, this trips before a snippet
 	// silently escapes checking.  object-modeling-recipes gained Recipe 4
@@ -585,7 +585,21 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// re-anchored on the scenes/Tests/Geometry/sweep_instances.RISEscene
 	// horn idiom, replacing Recipe 4's scenario-glued flask neck as the
 	// generic form -- Recipe 4 itself is untouched).
-	Check( totalSnippets == 19, "the seed skills carry the expected 19 ```rise snippets in total (got " +
+	//
+	// 87 STEP 5 (2026-08-18) took the count 19 -> 20, and the extra snippet
+	// is DELIBERATE rather than drift.  Doc 87 shipped a recursive scene
+	// graph -- `parent`, container nodes, `source` + `count_u`/`count_v`
+	// instancing -- through the engine and both GUI outliners with NO agent
+	// surface at all: the parameters reach `read_schema`, but nothing told a
+	// model the capability existed or when to reach for it, so no agent run
+	// has ever built a hierarchy or an instance array.  This is the ONE
+	// channel that carries "when", and hierarchy/instancing is exactly the
+	// kind of thing an example moves and prose does not (this workstream's
+	// own measurement).  It went into modeling-workflow-and-geometry rather
+	// than object-modeling-recipes because it is about PLACEMENT and
+	// REPETITION, not about how one object's shape is made -- the same
+	// distinction that keeps it out of the `construction` enum.
+	Check( totalSnippets == 20, "the seed skills carry the expected 20 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
