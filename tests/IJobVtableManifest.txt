@@ -288,3 +288,4 @@ ApplyCstRemoveChunks
 ApplyCstReplaceDocumentText
 SetObjectParent
 ComposeObjectHierarchy
+AddLatheGeometry

@@ -4783,6 +4783,26 @@ bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
 	return ok;
 }
 
+bool Job::AddLatheGeometry( const char* name, const LatheDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateLatheGeometry( &pGeometry, desc ) ) {
+		// The factory logged the reason AND (per GenericManager.h's
+		// "however deep the call stack" contract) left it in the CST
+		// Finalize diag sink.  It cannot know the geometry's name, so
+		// qualify it here to match the chunk parser's own Reject() form --
+		// DeriveToJob prepends `lathe_geometry: ` to whatever lands here.
+		if( RISE::g_cstFinalizeDiagSink && !RISE::g_cstFinalizeDiagSink->empty() ) {
+			*RISE::g_cstFinalizeDiagSink =
+				"`" + std::string( name ? name : "" ) + "`: " + *RISE::g_cstFinalizeDiagSink;
+		}
+		return false;
+	}
+	const bool ok = RegisterOrDiag( pGeomManager, pGeometry, name, "geometry" );
+	safe_release( pGeometry );
+	return ok;
+}
+
 bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
 {
 	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );

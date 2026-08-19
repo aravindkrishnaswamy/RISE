@@ -8,6 +8,8 @@
 //                                 in-scene math that supplanted the
 //                                 guilloché dial + oxide bakers)
 //    sweep_geometry            -> Job::AddSweepGeometry
+//    lathe_geometry            -> Job::AddLatheGeometry (arc-85 C3
+//                                 surface of revolution)
 //    path_instances_geometry   -> Job::AddPathInstancesGeometry
 //    scalar_painter function2d + scale/bias (the affine form)
 //    function2d_painter        (greyscale colour wrapper)
@@ -33,11 +35,16 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
 
 #include "../src/Library/Job.h"
+// arc-85 C3 fix round: asserting the FINALIZE DIAGNOSTIC (not just the
+// verdict) needs the CST derive's `diagnostics` out-param -- the load-a-file
+// helper below reports a bool only.
+#include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/RISE_API.h"
 // C2 fix round (2026-08-14), Fix 2: real-parser coverage for the
@@ -97,6 +104,27 @@ namespace {
 		const bool ok = ParseBody( tag, body, *job );
 		job->release();
 		return ok;
+	}
+
+	// Derive an inline body through the CST and return its DIAGNOSTICS,
+	// joined.  DeriveToJob prefers the specific reason a Finalize (however
+	// deep the call stack) leaves in g_cstFinalizeDiagSink over its generic
+	// "<keyword>: apply failed (e.g. unresolved reference); see log" -- so
+	// this is how a factory-level refusal's own message is pinned.
+	std::string DeriveDiagnostics( const std::string& body )
+	{
+		Job* job = new Job();
+		job->addref();
+		RISE::Cst::Document doc = RISE::Cst::ParseToCst( "RISE ASCII SCENE 7\n" + body );
+		std::vector<std::string> diags;
+		RISE::Cst::DeriveToJob( doc, *job, &diags );
+		job->release();
+		std::string joined;
+		for( std::size_t i = 0; i < diags.size(); ++i ) {
+			joined += diags[i];
+			joined += "\n";
+		}
+		return joined;
 	}
 
 	// Small chunks reused across cases (mesh_n tiny so the bake is instant).
@@ -496,6 +524,182 @@ static void TestExpressionAndDisplacement()
 		"missing expr rejects" );
 }
 
+// arc-85 C3 (2026-08-18): `lathe_geometry` -- the surface-of-revolution
+// chunk.  The MESH is proven from first principles in ProceduralMeshTest
+// (cylinder / cone / sphere identities, exact angular span, pole
+// collapse, outward winding by ray probe); this owns the PARSE contract:
+// every documented validation refusal, the clamp that is a warning rather
+// than a refusal, and one money assertion pinning the emitted vertex
+// count through the REAL parser so a silently-changed default or a
+// dropped pole collapse cannot slip past the chunk layer.
+static void TestLatheChunk()
+{
+	std::cout << "Test 6: lathe_geometry -- parse-level plumbing, validation, and the pole-collapse vertex count" << std::endl;
+
+	// (a) happy path: a vase (both ends on the axis), a partial-sweep
+	// cutaway, an explicit axis, and smooth FALSE all register.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "lathe_happy",
+			"lathe_geometry\n{\nname vaseg\n"
+			"profile_point 0.00 0.00\nprofile_point 0.35 0.05\nprofile_point 0.42 0.30\n"
+			"profile_point 0.18 0.72\nprofile_point 0.22 0.90\nprofile_point 0.00 0.94\n"
+			"axis y\nsweep_degrees 360\nn_radial 48\nsmooth TRUE\n}\n"
+			"lathe_geometry\n{\nname cutg\n"
+			"profile_point 0.5 0\nprofile_point 0.5 2\n"
+			"sweep_degrees 90\nn_radial 12\n}\n"
+			"lathe_geometry\n{\nname axzg\n"
+			"profile_point 0.5 0\nprofile_point 0.5 2\naxis z\n}\n"
+			"lathe_geometry\n{\nname facetg\n"
+			"profile_point 0.5 0\nprofile_point 0.8 1\nprofile_point 0.5 2\nsmooth FALSE\n}\n",
+			*job );
+		Check( ok, "lathe_geometry happy-path scene parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		Check( priv != 0, "IJobPriv available" );
+		if( priv ) {
+			Check( priv->GetGeometries()->GetItem( "vaseg" )  != 0, "lathe vase registered" );
+			Check( priv->GetGeometries()->GetItem( "cutg" )   != 0, "lathe partial-sweep cutaway registered" );
+			Check( priv->GetGeometries()->GetItem( "axzg" )   != 0, "lathe with axis z registered" );
+			Check( priv->GetGeometries()->GetItem( "facetg" ) != 0, "lathe with smooth FALSE registered" );
+		}
+		job->release();
+	}
+
+	// (b) MONEY ASSERTION through the REAL parser: a vase profile with both
+	// endpoints on the axis collapses each to ONE vertex, so the count is
+	// 2 + rings*n_radial -- NOT rows*n_radial (poles not collapsed) and NOT
+	// rows*(n_radial+1) (a duplicated 360-degree seam column).  n_radial is
+	// authored explicitly so the assertion does not silently follow a
+	// changed default.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "lathe_counts",
+			"lathe_geometry\n{\nname lc\n"
+			"profile_point 0 0\nprofile_point 1 1\nprofile_point 1 2\nprofile_point 0 3\n"
+			"n_radial 8\n}\n", *job );
+		Check( ok, "lathe vertex-count fixture parses" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "lc" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh != 0, "lathe count fixture: concrete mesh type available" );
+			if( mesh ) {
+				Check( mesh->numPoints() == 2 + 2 * 8,
+					"lathe: MONEY ASSERTION -- 2 pole vertices + 2 rings x n_radial 8, through the REAL parser "
+					"(not 4*8 with uncollapsed poles, not 4*9 with a duplicated seam column)" );
+				Check( mesh->getFaces().size() == (size_t)( 8 + 2 * 8 + 8 ),
+					"lathe: two pole fans of n_radial plus one full band of 2*n_radial" );
+			}
+		} else {
+			Check( false, "IJobPriv available" );
+		}
+		job->release();
+	}
+
+	// (c) n_radial CLAMPS (a warning, not a refusal) -- and the clamp is
+	// observable in the emitted vertex count.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "lathe_clamp",
+			"lathe_geometry\n{\nname lcl\nprofile_point 1 0\nprofile_point 1 1\nn_radial 1\n}\n", *job );
+		Check( ok, "lathe n_radial 1 CLAMPS (parses) rather than rejecting" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "lcl" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh && mesh->numPoints() == 6, "lathe n_radial 1 clamped to the minimum 3 columns" );
+		}
+		job->release();
+	}
+
+	// (d) every documented refusal.
+	struct Row { const char* tag; const char* body; const char* what; };
+	const Row rows[] = {
+		{ "lathe_one_pt",   "lathe_geometry\n{\nname l\nprofile_point 1 0\n}\n",
+		  "lathe: a single profile_point rejects (need at least 2)" },
+		{ "lathe_no_pt",    "lathe_geometry\n{\nname l\nn_radial 16\n}\n",
+		  "lathe: no profile_point at all rejects" },
+		{ "lathe_arity3",   "lathe_geometry\n{\nname l\nprofile_point 1 0 5\nprofile_point 1 1\n}\n",
+		  "lathe: a 3-number profile_point rejects (wrong arity)" },
+		{ "lathe_arity1",   "lathe_geometry\n{\nname l\nprofile_point 1\nprofile_point 1 1\n}\n",
+		  "lathe: a 1-number profile_point rejects (wrong arity)" },
+		{ "lathe_nonnum",   "lathe_geometry\n{\nname l\nprofile_point 1 abc\nprofile_point 1 1\n}\n",
+		  "lathe: a non-numeric profile_point rejects" },
+		{ "lathe_trailing", "lathe_geometry\n{\nname l\nprofile_point 0.35abc 0\nprofile_point 1 1\n}\n",
+		  "lathe: a profile_point with glued trailing garbage rejects (sscanf would silently truncate it)" },
+		{ "lathe_nan",      "lathe_geometry\n{\nname l\nprofile_point nan 0\nprofile_point 1 1\n}\n",
+		  "lathe: a nan profile_point rejects at the TOKEN layer" },
+		{ "lathe_inf",      "lathe_geometry\n{\nname l\nprofile_point 1 inf\nprofile_point 1 1\n}\n",
+		  "lathe: an inf profile_point rejects at the TOKEN layer" },
+		{ "lathe_negr",     "lathe_geometry\n{\nname l\nprofile_point -1 0\nprofile_point 1 1\n}\n",
+		  "lathe: a NEGATIVE radius rejects (the profile lives in a half-plane)" },
+		{ "lathe_allaxis",  "lathe_geometry\n{\nname l\nprofile_point 0 0\nprofile_point 0 1\nprofile_point 0 2\n}\n",
+		  "lathe: an ALL-on-axis profile rejects (zero area)" },
+		{ "lathe_sweep0",   "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\nsweep_degrees 0\n}\n",
+		  "lathe: sweep_degrees 0 rejects" },
+		{ "lathe_sweepneg", "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\nsweep_degrees -90\n}\n",
+		  "lathe: a negative sweep_degrees rejects" },
+		{ "lathe_sweep361", "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\nsweep_degrees 361\n}\n",
+		  "lathe: sweep_degrees > 360 rejects" },
+		{ "lathe_sweepnan", "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\nsweep_degrees nan\n}\n",
+		  "lathe: a nan sweep_degrees rejects at the dispatcher's numeric ValueKind gate" },
+		{ "lathe_badaxis",  "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\naxis w\n}\n",
+		  "lathe: an axis that is not x/y/z rejects" },
+		{ "lathe_upaxis",   "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\naxis Y\n}\n",
+		  "lathe: an UPPER-CASE axis rejects -- the descriptor's enumValues {x,y,z} IS the accepted set, so autocomplete/read_schema cannot understate what parses" },
+		{ "lathe_zeroarea", "lathe_geometry\n{\nname l\nprofile_point 5 3\nprofile_point 5 3\nprofile_point 5 3\n}\n",
+		  "lathe: a profile of identical points rejects (every segment is zero-length -- it revolves to zero area)" },
+		{ "lathe_unknown",  "lathe_geometry\n{\nname l\nprofile_point 1 0\nprofile_point 1 1\nsweep_deg 90\n}\n",
+		  "lathe: an undeclared parameter name rejects (descriptor is the accepted set)" },
+	};
+	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+		Check( !ParseBody( rows[i].tag, rows[i].body ), rows[i].what );
+	}
+
+	// (d2) FACTORY-LEVEL refusals must reach the CST DIAGNOSTIC, not fold
+	// into the generic "apply failed (e.g. unresolved reference); see log"
+	// -- which is actively misleading here, since no reference is involved.
+	// Three identical profile_point lines pass every check the chunk parser
+	// itself makes and die inside the factory, so this is the reachable
+	// representative of that whole class (the >4096 cap, the ear-clip
+	// failure and the vertex budget travel the same channel).
+	{
+		const std::string diag = DeriveDiagnostics(
+			"lathe_geometry\n{\nname zerog\nprofile_point 5 3\nprofile_point 5 3\nprofile_point 5 3\n}\n" );
+		Check( diag.find( "zero surface area" ) != std::string::npos,
+			"lathe: MONEY ASSERTION -- a FACTORY-level refusal's own reason reaches the CST diagnostic" );
+		Check( diag.find( "zerog" ) != std::string::npos,
+			"lathe: the factory-level diagnostic names the geometry it refused" );
+		Check( diag.find( "unresolved reference" ) == std::string::npos,
+			"lathe: the factory-level refusal does NOT fold into the generic unresolved-reference message" );
+	}
+
+	// (e) a zero-length profile segment (the documented duplicate-a-point
+	// hard-edge idiom) is ACCEPTED -- and must not emit a zero-area band.
+	{
+		Job* job = new Job();
+		job->addref();
+		const bool ok = ParseBody( "lathe_dup",
+			"lathe_geometry\n{\nname ldup\n"
+			"profile_point 1 0\nprofile_point 1 1\nprofile_point 1 1\nprofile_point 0.6 2\n"
+			"n_radial 8\n}\n", *job );
+		Check( ok, "lathe: a duplicated profile_point (hard-edge idiom) is ACCEPTED" );
+		IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+		if( priv ) {
+			IGeometry* g = priv->GetGeometries()->GetItem( "ldup" );
+			const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( g );
+			Check( mesh && mesh->numPoints() == 4 * 8, "lathe hard edge: all four rows still emitted" );
+			// the zero-length segment contributes NO band, so 2 bands x 2*8
+			Check( mesh && mesh->getFaces().size() == (size_t)( 2 * 2 * 8 ),
+				"lathe hard edge: MONEY ASSERTION -- the zero-length segment emits NO band (no zero-area triangles)" );
+		}
+		job->release();
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "GuillocheChunkParseTest -- parse-level plumbing for the procedural chunks" << std::endl << std::endl;
@@ -506,6 +710,7 @@ int main( int, char** )
 	TestProfileConvenienceRealParserCoverage();
 	TestFunction2DColorPainter();
 	TestExpressionAndDisplacement();
+	TestLatheChunk();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

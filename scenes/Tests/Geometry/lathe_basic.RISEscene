@@ -1,0 +1,238 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           lathe_basic.RISEscene                                                                   #
+#   Description:    The `lathe_geometry` surface-of-revolution chunk (arc-85 C3), on the three cases it      #
+#                   exists for:                                                                             #
+#                     - a VASE: profile starts and ends ON the axis (r = 0), so both rings collapse to a     #
+#                       single pole vertex and the vessel is closed and watertight with NO caps at all       #
+#                     - a TURNED TABLE LEG: beads, coves and a taper, with the profile point DUPLICATED at   #
+#                       the two flat ends so those edges stay crisp instead of being smoothed away           #
+#                     - a CUTAWAY: the same vase at sweep_degrees 140, which opens the surface along two     #
+#                       radial half-planes and gets a flat ear-clipped cap on each                           #
+#                                                                                                           #
+#                   Every profile is authored bottom-to-top; outward orientation is DERIVED from the         #
+#                   signed volume of revolution, so the authoring direction is not load-bearing.             #
+#                   The default `axis y` is used throughout, matching cylinder_geometry.                     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/lathe_basic
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			512
+	height			512
+}
+
+pinhole_camera
+{
+	location			0 3.4 16
+	lookat				0 2.4 0
+	up					0 1 0
+	fov					45.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.25 0.62 0.45
+}
+
+uniformcolor_painter
+{
+	name				pnt_walnut
+	color				0.42 0.26 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_clay
+	color				0.78 0.42 0.28
+}
+
+lambertian_material
+{
+	name				mat_jade
+	reflectance			pnt_jade
+}
+
+lambertian_material
+{
+	name				mat_walnut
+	reflectance			pnt_walnut
+}
+
+lambertian_material
+{
+	name				mat_clay
+	reflectance			pnt_clay
+}
+
+##################################################
+# A VASE.  First and last profile_point sit at r = 0, i.e. ON the
+# axis, so each collapses to ONE pole vertex fanned to its neighbour
+# ring -- the vessel closes itself at both ends with no caps and no
+# zero-area triangles.
+##################################################
+lathe_geometry
+{
+	name				vasegeom
+	profile_point		0.00 0.00
+	profile_point		1.05 0.15
+	profile_point		1.26 0.90
+	profile_point		0.54 2.16
+	profile_point		0.66 2.70
+	profile_point		0.00 2.82
+	axis				y
+	sweep_degrees		360
+	n_radial			64
+	smooth				TRUE
+}
+
+standard_object
+{
+	name				vase
+	geometry			vasegeom
+	material			mat_jade
+	position			-4.2 0 0
+}
+
+##################################################
+# A TURNED TABLE LEG.  Beads, coves and a long taper -- the shape a
+# lathe exists to make.  The profile point is DUPLICATED at the two
+# flat ends (`0.42 0.00` twice, `0.40 6.00` twice): the zero-length
+# segment splits the two normals, so the transition from the flat
+# end disk to the barrel stays a crisp edge rather than a rounded
+# one, and it emits no band (so no zero-area triangles either).
+##################################################
+lathe_geometry
+{
+	name				leggeom
+	profile_point		0.00 0.00
+	profile_point		0.42 0.00
+	profile_point		0.42 0.00
+	profile_point		0.42 0.55
+	profile_point		0.30 0.75
+	profile_point		0.46 0.95
+	profile_point		0.28 1.30
+	profile_point		0.24 2.20
+	profile_point		0.34 2.60
+	profile_point		0.22 3.00
+	profile_point		0.20 4.30
+	profile_point		0.36 4.70
+	profile_point		0.30 5.00
+	profile_point		0.40 5.60
+	profile_point		0.40 6.00
+	profile_point		0.40 6.00
+	profile_point		0.00 6.00
+	n_radial			48
+}
+
+standard_object
+{
+	name				tableleg
+	geometry			leggeom
+	material			mat_walnut
+	position			0 0 0
+}
+
+##################################################
+# A CUTAWAY.  The same vase profile through 140 degrees only: the
+# surface is open along the two cut half-planes, so each gets a flat
+# ear-clipped cap of the body's cross-section (the profile closed
+# back through the axis).  Rotated so the opening faces the camera.
+##################################################
+lathe_geometry
+{
+	name				cutawaygeom
+	profile_point		0.00 0.00
+	profile_point		1.05 0.15
+	profile_point		1.26 0.90
+	profile_point		0.54 2.16
+	profile_point		0.66 2.70
+	profile_point		0.00 2.82
+	sweep_degrees		140
+	n_radial			40
+}
+
+standard_object
+{
+	name				cutaway
+	geometry			cutawaygeom
+	material			mat_clay
+	position			4.2 0 0
+	orientation			0 -20 0
+}
+
+##################################################
+# Ground + lights
+##################################################
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				4.0
+	ytile				4.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.55 0.55 0.58
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			mat_floor
+	orientation			-90 0 0
+	position			0 0 0
+}
+
+omni_light
+{
+	name				keylight
+	power				750
+	color				1.0 0.98 0.94
+	position			-7 11 12
+}
+
+omni_light
+{
+	name				filllight
+	power				280
+	color				0.9 0.94 1.0
+	position			9 4 9
+}

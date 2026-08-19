@@ -398,6 +398,8 @@ namespace RISE
 #include "Geometry/TriangleMeshLoaderRAW.h"
 #include "Geometry/TriangleMeshLoaderRAW2.h"
 #include "Geometry/TriangleMeshLoaderPLY.h"
+#include "Managers/GenericManager.h"			// g_cstFinalizeDiagSink -- the specific-reason channel a Finalize (however deep the call stack) may hand back instead of the generic "apply failed"
+#include "Utilities/FiniteMath.h"			// IsFiniteDouble -- profile-point validation in the procedural mesh factories
 
 namespace RISE
 {
@@ -1606,6 +1608,664 @@ namespace RISE
 						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
 					} else {
 						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					}
+				}
+			}
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	// Surface of revolution (lathe): an OPEN 2D profile polyline authored
+	// in the (r, h) half-plane -- r = radius from the axis, h = height
+	// along it -- spun about a world axis, optionally through less than a
+	// full turn.
+	//
+	// AXIS BASIS.  For axis index a (0 = X, 1 = Y, 2 = Z) the frame is the
+	// cyclic triple (A, U, V) = (e[a], e[(a+1)%3], e[(a+2)%3]), which is
+	// right-handed (U x V = A) for all three axes.  A profile point (r, h)
+	// at angle t lands at  h*A + r*cos(t)*U + r*sin(t)*V.  For the default
+	// axis y that means A = +Y, U = +Z, V = +X: t = 0 sits on +Z and grows
+	// right-handedly about +Y.
+	//
+	// ORIENTATION.  Which side is "outward" is DERIVED, not assumed.  The
+	// signed volume of the solid of revolution is  V = pi * integral(r^2 dh)
+	// along the profile (closing the region back along the axis adds
+	// nothing, since r = 0 there), and V > 0 exactly when the profile runs
+	// up the OUTSIDE of the body.  So outward = sign(V), and a profile
+	// authored in either direction still produces outward normals and
+	// outward winding -- the same "derive it from the authored profile"
+	// contract sweep_geometry gets from its signed area.
+	//
+	// That sign is ROBUST, including for a profile that doubles back on
+	// itself or hugs the axis: by Green's theorem the same quantity is
+	// integral(r^2 dh) == doubleIntegral(2r dA) over the enclosed region,
+	// and the integrand 2r is NON-NEGATIVE everywhere in the half-plane.
+	// So the accumulation is a genuine (twice) area moment with nothing to
+	// cancel against -- it is never a near-zero difference of large terms,
+	// and a thin shell reports its own orientation as cleanly as a solid.
+	// vol3 == 0 therefore fires only on genuinely zero-volume input (a flat
+	// annulus, dh == 0 everywhere), where no outward side exists at all;
+	// +1 is an arbitrary but harmless pick there.
+	//
+	// WINDING CONVENTION.  With (t, h) as the surface parameters,
+	// dP/dt x dP/dh points radially OUTWARD:  dP/dt = r*(-sin(t)*U +
+	// cos(t)*V), dP/dh = A, and (-sin*U + cos*V) x A = cos*U + sin*V = e_r
+	// (using U x A = -V and V x A = U, which follow from U x V = A).  A
+	// triangle's geometric normal is (b-a) x (c-a), so a band quad is
+	// emitted with its FIRST edge along +t and its SECOND along +h:
+	//     (row[j][k], row[j][k+1], row[j+1][k+1])
+	//     (row[j][k], row[j+1][k+1], row[j+1][k])
+	// and both are reversed when outward < 0.  ProceduralMeshTest fires
+	// rays at the cylinder side, the cone side, and the partial-sweep caps
+	// from OUTSIDE and asserts front-face hits, so this convention is
+	// pinned by test rather than by this comment alone.
+	//
+	// POLES.  A profile point with r == 0 lies ON the axis: its ring is
+	// ONE vertex, fanned to the neighbouring ring, never nRadial
+	// coincident copies with a zero-area quad band between them.  That is
+	// what makes the common case -- a vase whose first and last profile
+	// points are on the axis -- watertight with no caps at all.  An
+	// INTERIOR pole (a waisted/hourglass profile pinched to r == 0 with a
+	// live band on BOTH sides) gets TWO pole vertices, one per adjacent
+	// band: across a pinch the two bands always demand OPPOSITE axial
+	// normals (below it dr < 0 so snh > 0, above it dr > 0 so snh < 0), so
+	// no single shared vertex can serve both -- one band would get a
+	// shading normal in the wrong half-space, and
+	// TriangleMeshGeometryIndexed re-orients vGeomNormal to agree with the
+	// interpolated normal, so the reported GEOMETRIC normal would flip too.
+	// Splitting is exactly what `smooth FALSE` already does structurally
+	// (two rows per segment); this makes the smooth path agree.
+	bool RISE_API_CreateLatheGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const LatheDescriptor&         desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// EVERY refusal below goes through this ONE helper so the author's
+		// specific reason reaches BOTH the log and the CST Finalize
+		// diagnostic sink (GenericManager.h's documented "however deep the
+		// call stack" channel).  Without it a factory-only gate -- the
+		// profile-point cap, the zero-area profile, the ear-clip failure,
+		// the vertex budget -- surfaced to a scene author as the generic
+		// "apply failed (e.g. unresolved reference); see log", which is
+		// actively misleading since no reference is involved.  Job::
+		// AddLatheGeometry prepends the geometry's name.
+		auto fail = []( const std::string& why ) -> bool {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateLatheGeometry: %s", why.c_str() );
+			if( g_cstFinalizeDiagSink ) *g_cstFinalizeDiagSink = why;
+			return false;
+		};
+		char msgbuf[512];
+
+		if( !desc.profilePoints || desc.numProfilePoints < 2 ) {
+			return fail( "need at least 2 `profile_point` entries (an open polyline)" );
+		}
+		if( desc.numProfilePoints > 4096 ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"%u profile points exceeds the 4096 maximum", desc.numProfilePoints );
+			return fail( msgbuf );
+		}
+		if( desc.axis < 0 || desc.axis > 2 ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"axis %d is not 0 (world X), 1 (world Y) or 2 (world Z)", desc.axis );
+			return fail( msgbuf );
+		}
+		// Negated idiom on purpose: a NaN sweepDegrees fails BOTH halves and
+		// is rejected, where the naive `< 0 || > 360` would pass it through.
+		if( !( desc.sweepDegrees > 0.0 && desc.sweepDegrees <= 360.0 ) ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"sweep_degrees (%g) must be in (0, 360]", desc.sweepDegrees );
+			return fail( msgbuf );
+		}
+		const int nRadial = desc.nRadial < 3 ? 3 : ( desc.nRadial > 2048 ? 2048 : desc.nRadial );
+		if( nRadial != desc.nRadial ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateLatheGeometry: n_radial %d clamped to %d", desc.nRadial, nRadial );
+		}
+
+		const unsigned int nProf = desc.numProfilePoints;
+		std::vector<Scalar> pr( nProf ), ph( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			pr[k] = (Scalar)desc.profilePoints[ 2*k ];
+			ph[k] = (Scalar)desc.profilePoints[ 2*k + 1 ];
+			// BOTH components are checked for finiteness, not just the
+			// radius' sign.  `pr >= 0` alone rejects a NaN (it fails the
+			// compare) but PASSES +inf, and h was not checked at all: an
+			// infinite h makes every segment length inf, so the segment
+			// reads LIVE with a NaN normal, vol3 is inf, and the factory
+			// happily emits inf vertices with NaN texcoords for the BVH to
+			// build over.  The chunk parser's AllTokensAreFiniteNumbers gate
+			// already covers the scene/GUI/agent paths; this is the same
+			// defense in depth the sweepDegrees check above gets, for the
+			// direct RISE_API.h caller.
+			if( !IsFiniteDouble( (double)pr[k] ) || !IsFiniteDouble( (double)ph[k] ) ) {
+				std::snprintf( msgbuf, sizeof(msgbuf),
+					"profile point %u (%g, %g) must be two FINITE numbers (no nan, no inf)",
+					k, (double)pr[k], (double)ph[k] );
+				return fail( msgbuf );
+			}
+			if( !( pr[k] >= 0 ) ) {
+				std::snprintf( msgbuf, sizeof(msgbuf),
+					"profile point %u radius (%g) must be >= 0 (the profile lives in a HALF-plane)",
+					k, (double)pr[k] );
+				return fail( msgbuf );
+			}
+		}
+
+		// PROFILE EXTENT -- the ONE scale every tolerance in this factory is
+		// measured against, taken from the profile's own bounding box in
+		// (r, h).  It is a SPAN, not a max coordinate: a thin washer far out
+		// on the axis (r ~ 1e6, 1e-3 thick) has a genuine extent of ~5, and
+		// scaling by |coordinate| instead would hand it a tolerance of 2e-3 --
+		// bigger than the part itself, so the closed-loop test below would
+		// fire on a plainly open profile and silently drop its last point.
+		Scalar rLo = pr[0], rHi = pr[0], hLo = ph[0], hHi = ph[0];
+		for( unsigned int k = 1; k < nProf; k++ ) {
+			if( pr[k] < rLo ) rLo = pr[k];
+			if( pr[k] > rHi ) rHi = pr[k];
+			if( ph[k] < hLo ) hLo = ph[k];
+			if( ph[k] > hHi ) hHi = ph[k];
+		}
+		const Scalar profileExtent = ( ( rHi - rLo ) > ( hHi - hLo ) ) ? ( rHi - rLo ) : ( hHi - hLo );
+		const Scalar profileEps = Scalar(1e-9) * profileExtent;
+
+		// SNAP TO THE AXIS, ONCE, BEFORE any pole / segment-live / cap
+		// decision reads a radius.  Every one of those is an EXACT `r > 0`
+		// test, and an exact test cannot survive a GENERATED profile: a
+		// semicircle sampled as r = R*sin(pi*i/M) lands on r = 1.5e-16 at
+		// i == M, because sin(pi) is not 0 in IEEE double.  Un-snapped, the
+		// factory then emits a full n_radial ring of radius 1.5e-16 where the
+		// author meant a single pole vertex, with a skirt of ~1e-17-area
+		// sliver triangles -- violating the same "no zero-area triangles"
+		// contract the pole collapse exists to uphold.  A generator (or the
+		// agent surface) cannot be expected to emit a bit-exact 0.0, so the
+		// snap happens here rather than being pushed onto the author.
+		//
+		// The threshold is RELATIVE to the profile's own extent, so it is
+		// scale-invariant: a microscopic lathe is not flattened, and a real
+		// feature is never eaten (a 1e-9-of-extent radius is sub-visible on
+		// any object at any scale).
+		bool anyPositiveRadius = false;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			if( pr[k] <= profileEps ) {
+				pr[k] = 0;
+			} else {
+				anyPositiveRadius = true;
+			}
+		}
+		if( !anyPositiveRadius ) {
+			return fail( "every profile point lies ON the axis (radius 0, or within 1e-9 of the profile's own extent) -- the profile revolves to zero area" );
+		}
+
+		// Signed volume of revolution -> the outward side (see ORIENTATION
+		// above).  Exact per linear segment: with r(u) = r0 + u*(r1-r0) and
+		// h linear too, integral(r^2 dh) = dh * (r0^2 + r0*r1 + r1^2)/3.
+		// Only the SIGN is used, so the common pi/3 factor is dropped.
+		Scalar vol3 = 0;
+		for( unsigned int k = 0; k + 1 < nProf; k++ ) {
+			vol3 += ( ph[k+1] - ph[k] ) * ( pr[k]*pr[k] + pr[k]*pr[k+1] + pr[k+1]*pr[k+1] );
+		}
+		const Scalar outward = ( vol3 >= 0 ) ? Scalar(1) : Scalar(-1);
+
+		// V texture coordinate = normalized ARC LENGTH along the profile
+		// polyline, not index fraction: arc length keeps texture density
+		// even on an unevenly-sampled profile (the same reason
+		// sweep_geometry measures its profile U by arc length).
+		std::vector<Scalar> vFrac( nProf );
+		vFrac[0] = 0;
+		for( unsigned int k = 0; k + 1 < nProf; k++ ) {
+			const Scalar dr = pr[k+1] - pr[k], dh = ph[k+1] - ph[k];
+			vFrac[k+1] = vFrac[k] + sqrt( dr*dr + dh*dh );
+		}
+		const Scalar vTotal = ( vFrac[ nProf - 1 ] > 0 ) ? vFrac[ nProf - 1 ] : Scalar(1);
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			vFrac[k] /= vTotal;
+		}
+
+		// Per-SEGMENT outward normal in the (r, h) half-plane: the segment
+		// direction rotated -90 degrees, times the derived orientation.  A
+		// segment is "live" (contributes a band AND a normal) only when it
+		// has non-zero length AND does not lie entirely on the axis -- a
+		// zero-length segment is the documented duplicate-a-profile-point
+		// hard-edge idiom, and an on-axis run revolves to a line.
+		const unsigned int nSeg = nProf - 1;
+		std::vector<Scalar> snr( nSeg, Scalar(0) ), snh( nSeg, Scalar(0) );
+		std::vector<unsigned char> segLive( nSeg, 0 );
+		for( unsigned int k = 0; k < nSeg; k++ ) {
+			const Scalar dr = pr[k+1] - pr[k], dh = ph[k+1] - ph[k];
+			const Scalar l = sqrt( dr*dr + dh*dh );
+			if( l > 0 && ( pr[k] > 0 || pr[k+1] > 0 ) ) {
+				snr[k] =  outward * dh / l;
+				snh[k] = -outward * dr / l;
+				segLive[k] = 1;
+			}
+		}
+
+		// ROWS + BANDS.  smooth TRUE: one row per profile point whose normal
+		// AVERAGES its two adjacent live segment normals -- a straight-sided
+		// section stays exactly flat-shaded and a curved one reads smooth,
+		// and duplicating a profile point kills the segment between the two
+		// copies so each keeps its own side's normal (the hard-edge idiom
+		// sweep_geometry documents for its profile).  smooth FALSE: two rows
+		// per live segment, both carrying that segment's own flat normal.
+		struct LatheRow { Scalar r, h, nr, nh, v; };
+		std::vector<LatheRow> rows;
+		std::vector<std::pair<int,int> > bands;
+		if( desc.smooth ) {
+			// A profile point normally contributes ONE row shared by the band
+			// below it and the band above it -- rowBelow[k] == rowAbove[k].
+			// The one exception is an INTERIOR POLE (r == 0 with a live band
+			// on both sides, i.e. a waisted/hourglass profile): see the POLES
+			// note in the header.  There the two bands demand provably
+			// opposite axial normals, so the point contributes TWO rows, each
+			// carrying its own band's segment normal, and the bands index
+			// them separately.
+			std::vector<int> rowBelow( nProf, -1 ), rowAbove( nProf, -1 );
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const bool liveBelow = ( k > 0 && segLive[ k - 1 ] != 0 );
+				const bool liveAbove = ( k < nSeg && segLive[ k ] != 0 );
+				// A point with NO live neighbour is referenced by no band, so
+				// emitting a row for it puts a vertex in the mesh that no
+				// triangle uses -- and TriangleMeshGeometryIndexed builds its
+				// BVH root box over ALL points, not over referenced ones, so a
+				// dead vertex silently inflates the root.  The case is real,
+				// not theoretical: a profile that walks up the axis before it
+				// leaves it -- (0,-100) (0,0) (1,1) (0,2) -- has a dead on-axis
+				// point at h = -100, which grows the box from [0,2] to
+				// [-100,2] and hands the traversal a 50x oversized root.  Dead
+				// rows from the zero-length duplicate-a-point hard-edge idiom
+				// are coincident with a live neighbour and cost nothing, so
+				// only on-axis (and >= 3-long coincident) runs are at stake --
+				// but skipping is uniform and cheaper than special-casing.
+				// Bands only ever read rowAbove[k] / rowBelow[k+1] for a LIVE
+				// segment k, and both of those points have a live neighbour by
+				// construction, so the -1 left behind here is never indexed.
+				if( !liveBelow && !liveAbove ) {
+					continue;
+				}
+				LatheRow row;
+				row.r = pr[k]; row.h = ph[k]; row.v = vFrac[k];
+				if( !( pr[k] > 0 ) && liveBelow && liveAbove ) {
+					LatheRow lo = row, hi = row;
+					lo.nr = snr[ k - 1 ]; lo.nh = snh[ k - 1 ];
+					hi.nr = snr[ k ];     hi.nh = snh[ k ];
+					rowBelow[k] = (int)rows.size(); rows.push_back( lo );
+					rowAbove[k] = (int)rows.size(); rows.push_back( hi );
+					continue;
+				}
+				Scalar ar = 0, ah = 0;
+				if( liveBelow ) { ar += snr[ k - 1 ]; ah += snh[ k - 1 ]; }
+				if( liveAbove ) { ar += snr[ k ];     ah += snh[ k ];     }
+				const Scalar l = sqrt( ar*ar + ah*ah );
+				if( l > 0 ) {
+					row.nr = ar / l; row.nh = ah / l;
+				} else {
+					// Rows no triangle references are skipped above, so this
+					// is reached only by an EXACT cusp whose two live segment
+					// normals cancel -- a profile that runs up and back down
+					// at the same radius (a zero-thickness shell).  Give it a
+					// sane radial normal rather than a zero vector.
+					row.nr = 1; row.nh = 0;
+				}
+				rowBelow[k] = rowAbove[k] = (int)rows.size();
+				rows.push_back( row );
+			}
+			for( unsigned int k = 0; k < nSeg; k++ ) {
+				if( segLive[k] ) {
+					// The band spans segment k: it uses point k's ABOVE row and
+					// point k+1's BELOW row -- identical to the single shared
+					// row everywhere except at a split interior pole.
+					bands.push_back( std::make_pair( rowAbove[k], rowBelow[ k + 1 ] ) );
+				}
+			}
+		} else {
+			for( unsigned int k = 0; k < nSeg; k++ ) {
+				if( !segLive[k] ) {
+					continue;
+				}
+				LatheRow a, b;
+				a.r = pr[k];     a.h = ph[k];     a.v = vFrac[k];     a.nr = snr[k]; a.nh = snh[k];
+				b.r = pr[k+1];   b.h = ph[k+1];   b.v = vFrac[k+1];   b.nr = snr[k]; b.nh = snh[k];
+				const int ia = (int)rows.size(); rows.push_back( a );
+				const int ib = (int)rows.size(); rows.push_back( b );
+				bands.push_back( std::make_pair( ia, ib ) );
+			}
+		}
+		if( bands.empty() ) {
+			return fail( "the profile revolves to zero surface area (every segment is zero-length or lies on the axis)" );
+		}
+
+		const int ax = desc.axis;
+		const int au = ( desc.axis + 1 ) % 3;
+		const int av = ( desc.axis + 2 ) % 3;
+		// A full turn closes on itself: nRadial columns, the last stitching
+		// straight back to column 0 with NO duplicated seam column (matching
+		// how sweep_geometry wraps its profile U).  A partial turn spans
+		// nRadial segments across nRadial + 1 distinct columns.
+		const bool fullTurn = ( desc.sweepDegrees >= 360.0 - 1e-9 );
+		const int nCols = fullTurn ? nRadial : ( nRadial + 1 );
+		const Scalar sweepRad = (Scalar)desc.sweepDegrees * DEG_TO_RAD;
+		const Scalar dTheta = ( fullTurn ? TWO_PI : sweepRad ) / Scalar( nRadial );
+
+		// Output budget.  It has to be REACHABLE to be a guard at all: the
+		// worst case the clamps allow is 4095 faceted segments x 2 rows =
+		// 8190 rows at nRadial 2048 -> 2049 columns = 16.8M vertices, so the
+		// original 20M ceiling could never fire.  2M is the working number --
+		// still an absurd single lathe (a 1000-row profile at full radial
+		// resolution), but low enough that a runaway request degrades to a
+		// diagnostic instead of a multi-gigabyte allocation.
+		//
+		// NOTE the budget bounds VERTICES, not memory: it is not a memory
+		// ceiling and must not be read as one.  TRIANGLES dominate, and there
+		// are ~2 per ring vertex -- at the cap that is ~4M PointerTriangle
+		// entries (~288 MB) against ~128 MB of vertex/normal/texcoord arrays,
+		// before the BVH built over them.
+		const double plannedVerts = (double)rows.size() * (double)nCols;
+		if( plannedVerts > 2000000.0 ) {
+			std::snprintf( msgbuf, sizeof(msgbuf),
+				"%g ring vertices requested (%u profile rows x %d radial columns) exceeds the 2M budget -- reduce n_radial or the profile point count",
+				plannedVerts, (unsigned int)rows.size(), nCols );
+			return fail( msgbuf );
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "lathe geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		std::vector<int>  rowBase( rows.size(), 0 );
+		std::vector<unsigned char> rowIsPole( rows.size(), 0 );
+		int vc = 0;
+		for( size_t j = 0; j < rows.size(); j++ ) {
+			const LatheRow& row = rows[j];
+			// Exact, and safe to be exact: every radius was snapped to a hard
+			// 0.0 at the top of the factory (see SNAP TO THE AXIS), so a
+			// generated profile's 1.5e-16 endpoint reaches here as a genuine
+			// pole rather than as an n_radial ring of sliver triangles.
+			const bool pole = !( row.r > 0 );
+			rowIsPole[j] = pole ? 1 : 0;
+			rowBase[j] = vc;
+			if( pole ) {
+				// ONE vertex on the axis.  Its normal is the theta-average of
+				// the revolved profile normal: the radial part integrates to
+				// zero around the axis, leaving +-A.  nh cannot be zero for a
+				// pole whose band is live (a live band there forces dr != 0),
+				// so the sign is well defined -- and an interior pinch, whose
+				// two bands want opposite signs, has already been SPLIT into
+				// two rows above, so each of them carries its own band's
+				// (non-zero) nh.  The >= is then only a defensive tie-break
+				// for a row no band references at all.
+				Scalar p[3] = { 0, 0, 0 };
+				p[ax] = row.h;
+				pGeom->AddVertex( Vertex( p[0], p[1], p[2] ) );
+				Scalar nrm[3] = { 0, 0, 0 };
+				nrm[ax] = ( row.nh >= 0 ) ? Scalar(1) : Scalar(-1);
+				pGeom->AddNormal( Normal( nrm[0], nrm[1], nrm[2] ) );
+				// u is genuinely undefined on the axis (every angle maps to
+				// this one point); 0.5 puts the pole at the texture's middle.
+				pGeom->AddTexCoord( TexCoord( Scalar(0.5), row.v ) );
+				vc++;
+			} else {
+				for( int k = 0; k < nCols; k++ ) {
+					const Scalar th = dTheta * Scalar(k);
+					const Scalar ct = cos( th ), st = sin( th );
+					Scalar p[3] = { 0, 0, 0 };
+					p[ax] = row.h;
+					p[au] = row.r * ct;
+					p[av] = row.r * st;
+					pGeom->AddVertex( Vertex( p[0], p[1], p[2] ) );
+					Scalar nrm[3] = { 0, 0, 0 };
+					nrm[ax] = row.nh;
+					nrm[au] = row.nr * ct;
+					nrm[av] = row.nr * st;
+					pGeom->AddNormal( Normal( nrm[0], nrm[1], nrm[2] ) );
+					pGeom->AddTexCoord( TexCoord( Scalar(k) / Scalar( nRadial ), row.v ) );
+					vc++;
+				}
+			}
+		}
+
+		// One place for the orientation flip derived above.
+		const bool flip = ( outward < 0 );
+		auto emitTri = [&]( const int a, const int b, const int c ) {
+			if( flip ) {
+				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+			} else {
+				pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+			}
+		};
+
+		for( size_t bi = 0; bi < bands.size(); bi++ ) {
+			const int j0 = bands[bi].first, j1 = bands[bi].second;
+			const bool pole0 = rowIsPole[ (size_t)j0 ] != 0;
+			const bool pole1 = rowIsPole[ (size_t)j1 ] != 0;
+			for( int k = 0; k < nRadial; k++ ) {
+				const int kn = ( k + 1 ) % nCols;	// wraps to 0 only on a full turn (nCols == nRadial there)
+				const int a = rowBase[ (size_t)j0 ] + ( pole0 ? 0 : k );
+				const int d = rowBase[ (size_t)j0 ] + ( pole0 ? 0 : kn );
+				const int b = rowBase[ (size_t)j1 ] + ( pole1 ? 0 : k );
+				const int c = rowBase[ (size_t)j1 ] + ( pole1 ? 0 : kn );
+				// Quad corners: a = (j0,k), d = (j0,k+1), c = (j1,k+1),
+				// b = (j1,k).  Collapsing either row to a pole degenerates
+				// exactly one of the two triangles, so a pole emits a FAN of
+				// nRadial triangles instead of nRadial zero-area quads.
+				if( pole0 ) {
+					emitTri( a, c, b );
+				} else if( pole1 ) {
+					emitTri( a, d, c );
+				} else {
+					emitTri( a, d, c );
+					emitTri( a, c, b );
+				}
+			}
+		}
+
+		// PARTIAL SWEEP CAPS.  Below 360 degrees the surface is open along
+		// the two radial half-planes t = 0 and t = sweep; close each with the
+		// body's cross-section.  That cross-section is the profile polyline
+		// closed back through the AXIS (append the axis projection of the
+		// last and then the first profile point, skipping either that is
+		// already on the axis).  A profile authored as a closed LOOP (first
+		// point == last point, e.g. a hollow shell band) is already its own
+		// cross-section and is capped as authored.  EarClipProfile drops
+		// consecutively-coincident vertices itself (cyclically), so the
+		// shell case whose two axis projections land on the same point needs
+		// no separate dedup here.
+		//
+		// TWO exceptions to "close through the axis", both about the spur it
+		// would add:
+		//  - LOOP detection is a TOLERANCE, not exact equality.  A closed
+		//    profile GENERATED from cos/sin (a torus/bead ring) does not come
+		//    back bit-exact, so an `==` test read it as open, appended a spur
+		//    from the ring THROUGH its own interior to the axis, and the
+		//    self-intersecting cross-section then failed ear-clipping -- i.e.
+		//    a generated torus rendered fine at 360 and HARD-FAILED the
+		//    instant the author set sweep_degrees 180.  The tolerance is
+		//    profileEps -- 1e-9 of the profile's own bounding EXTENT, shared
+		//    with the on-axis snap.
+		//  - ENDS AT EQUAL HEIGHT (a tube/shell authored up one wall and back
+		//    down the other) puts both axis projections at the SAME point,
+		//    collinear with both endpoints: the spur has zero area and ear-
+		//    clipping it yields a zero-area triangle, contradicting the "no
+		//    zero-area triangles" contract.  Closing the cross-section
+		//    DIRECTLY there is both non-degenerate and the right shape (the
+		//    tube wall, not the filled bore).  When the ends are at DIFFERENT
+		//    heights the spur has real area and the cap does fill the bore --
+		//    a documented limitation of the close-through-the-axis rule, not
+		//    something this can decide for the author.
+		//
+		// And ONE reason the cross-section is not always a single polygon:
+		//  - AN INTERIOR ON-AXIS POINT (the hourglass/waisted profile, pinched
+		//    to r == 0 mid-way) makes the closed-through-the-axis polygon
+		//    NON-SIMPLE: the pinch point lies EXACTLY on the closing edge that
+		//    runs down the axis, so the polygon touches itself.  Ear clipping
+		//    still succeeds and the total area is still right, but it emits a
+		//    triangle of EXACTLY zero area at the touch -- the very thing the
+		//    level-ends rule above refuses to do.  So the cross-section is
+		//    SPLIT at every interior on-axis point into LOBES, and each lobe
+		//    is closed through the axis and ear-clipped on its own.  Each
+		//    lobe's own ends decide its own spur, so the hourglass at
+		//    sweep_degrees 90 caps as two clean triangles instead of one
+		//    self-touching pentagon.  (A lobe that revolves to nothing -- an
+		//    on-axis run, or a zero-thickness flat cross-section -- simply
+		//    contributes no cap; see the `< 3` skip below.)
+		if( !fullTurn ) {
+			// profileEps -- the SAME profile-extent-relative tolerance the
+			// on-axis snap uses, deliberately shared: both questions are
+			// "is this distance zero at the scale of the part?".
+			const Scalar loopTol = profileEps;
+			const bool profileLoop = ( fabs( pr[0] - pr[ nProf - 1 ] ) <= loopTol &&
+			                           fabs( ph[0] - ph[ nProf - 1 ] ) <= loopTol );
+
+			// LOBES: inclusive [first, last] index ranges of the profile, cut
+			// at every INTERIOR on-axis point (see the note above).  A profile
+			// that never touches the axis in its interior -- the overwhelming
+			// common case -- yields exactly one lobe spanning the whole
+			// polyline, so this is a no-op there.  A profile already authored
+			// as a closed LOOP is its own cross-section and is never cut: its
+			// last point is the duplicate of its first and is dropped instead.
+			std::vector<std::pair<unsigned int,unsigned int> > lobes;
+			if( profileLoop ) {
+				lobes.push_back( std::make_pair( 0u, nProf - 2u ) );
+			} else {
+				unsigned int lobeStart = 0;
+				for( unsigned int k = 1; k + 1 < nProf; k++ ) {
+					if( !( pr[k] > 0 ) ) {
+						lobes.push_back( std::make_pair( lobeStart, k ) );
+						lobeStart = k;
+					}
+				}
+				lobes.push_back( std::make_pair( lobeStart, nProf - 1u ) );
+			}
+
+			// Build + triangulate every lobe FIRST, so the cap UV frame can be
+			// the union box over all of them (one continuous cap parameter-
+			// ization across the lobes, not each lobe stretched to 0..1), and
+			// so a refusal happens before any cap vertex is emitted.
+			struct LatheCapLobe {
+				std::vector<Scalar>       cr, chh;
+				std::vector<unsigned int> tris;
+				bool                      ccw;
+			};
+			std::vector<LatheCapLobe> capLobes;
+			for( size_t li = 0; li < lobes.size(); li++ ) {
+				const unsigned int s = lobes[li].first, e = lobes[li].second;
+				LatheCapLobe lobe;
+				lobe.cr.reserve( ( e - s ) + 3 );
+				lobe.chh.reserve( ( e - s ) + 3 );
+				for( unsigned int k = s; k <= e; k++ ) {
+					lobe.cr.push_back( pr[k] ); lobe.chh.push_back( ph[k] );
+				}
+				// Each lobe answers the level-ends question for ITSELF: a lobe
+				// of a split profile has its own pair of ends, and the whole
+				// profile's endsLevel says nothing about them.
+				const bool lobeLevel = ( fabs( ph[s] - ph[e] ) <= loopTol );
+				if( !profileLoop && !lobeLevel ) {
+					if( pr[e] > 0 ) { lobe.cr.push_back( 0 ); lobe.chh.push_back( ph[e] ); }
+					if( pr[s] > 0 ) { lobe.cr.push_back( 0 ); lobe.chh.push_back( ph[s] ); }
+				}
+				// A cross-section with fewer than 3 distinct points has no
+				// area, so there is NOTHING to cap -- emit the band and no
+				// cap, rather than refusing to build the geometry at all.
+				// The case is ordinary, not pathological: a flat radial washer
+				// (1,0) (3,0) is level-ended, so no spur is appended and the
+				// cross-section is the 2-point segment itself.  Refusing here
+				// is exactly the "builds at 360, hard-fails the instant the
+				// author types sweep_degrees 180" pathology the loop tolerance
+				// above exists to remove.
+				if( lobe.cr.size() < 3 ) {
+					continue;
+				}
+				if( !EarClipProfile( lobe.cr, lobe.chh, lobe.tris ) ) {
+					pGeom->release();
+					// NOTE the wording: ear clipping REFUSED, and the reason is
+					// not diagnosed here.  In particular there is no self-
+					// intersection test -- a Z-shaped self-crossing profile
+					// ear-clips happily into two overlapping, oppositely-wound
+					// caps.  Garbage in is accepted (sweep_geometry behaves the
+					// same way); promising detection this code does not perform
+					// would send an author looking for the wrong bug.
+					return fail( "the partial-sweep cross-section could not be ear-clipped into triangles -- the usual cause is a profile that degenerates to a line once closed through the axis" );
+				}
+				// A cross-section wound CCW in (r, h) maps to geometric normal
+				// e_r x e_h = -tangent(t) (same U x A = -V, V x A = U
+				// identities as the WINDING note).  The START cap faces
+				// -tangent(0) and the END cap +tangent(sweep), so CCW is right
+				// for the start and must be reversed for the end.
+				// EarClipProfile preserves the polygon's own winding, and the
+				// winding is measured HERE from each lobe's signed area rather
+				// than inherited from `outward`, so the caps stay self-
+				// consistent even for a profile whose enclosed volume does not
+				// determine its cap winding.
+				Scalar capArea2 = 0;
+				for( size_t k = 0; k < lobe.cr.size(); k++ ) {
+					const size_t k2 = ( k + 1 ) % lobe.cr.size();
+					capArea2 += lobe.cr[k] * lobe.chh[k2] - lobe.cr[k2] * lobe.chh[k];
+				}
+				lobe.ccw = ( capArea2 >= 0 );
+				capLobes.push_back( lobe );
+			}
+
+			// Cap UV over the UNION bounding box of every capped lobe.
+			Scalar bx0 = 0, bx1 = 0, bh0 = 0, bh1 = 0;
+			bool haveBox = false;
+			for( size_t li = 0; li < capLobes.size(); li++ ) {
+				const LatheCapLobe& lobe = capLobes[li];
+				for( size_t k = 0; k < lobe.cr.size(); k++ ) {
+					if( !haveBox ) {
+						bx0 = bx1 = lobe.cr[k]; bh0 = bh1 = lobe.chh[k];
+						haveBox = true;
+						continue;
+					}
+					if( lobe.cr[k]  < bx0 ) bx0 = lobe.cr[k];
+					if( lobe.cr[k]  > bx1 ) bx1 = lobe.cr[k];
+					if( lobe.chh[k] < bh0 ) bh0 = lobe.chh[k];
+					if( lobe.chh[k] > bh1 ) bh1 = lobe.chh[k];
+				}
+			}
+			const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1) / ( bx1 - bx0 ) : Scalar(1);
+			const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1) / ( bh1 - bh0 ) : Scalar(1);
+
+			// Side-major on purpose: every start-cap face, then every end-cap
+			// face, so the face order stays "sides, start cap, end cap"
+			// whatever the lobe count.
+			for( int side = 0; side < 2; side++ ) {
+				const bool isStart = ( side == 0 );
+				const Scalar th = isStart ? Scalar(0) : sweepRad;
+				const Scalar ct = cos( th ), st = sin( th );
+				Scalar tang[3] = { 0, 0, 0 };
+				tang[au] = -st;
+				tang[av] =  ct;
+				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
+				const Normal capN( sgn * tang[0], sgn * tang[1], sgn * tang[2] );
+				for( size_t li = 0; li < capLobes.size(); li++ ) {
+					const LatheCapLobe& lobe = capLobes[li];
+					const int base = vc;
+					for( size_t k = 0; k < lobe.cr.size(); k++ ) {
+						Scalar p[3] = { 0, 0, 0 };
+						p[ax] = lobe.chh[k];
+						p[au] = lobe.cr[k] * ct;
+						p[av] = lobe.cr[k] * st;
+						pGeom->AddVertex( Vertex( p[0], p[1], p[2] ) );
+						pGeom->AddNormal( capN );
+						pGeom->AddTexCoord( TexCoord( ( lobe.cr[k] - bx0 ) * bxs, ( lobe.chh[k] - bh0 ) * bhs ) );
+						vc++;
+					}
+					const bool capFlip = isStart ? !lobe.ccw : lobe.ccw;
+					for( size_t t = 0; t + 2 < lobe.tris.size(); t += 3 ) {
+						const int a = base + (int)lobe.tris[t];
+						const int b = base + (int)lobe.tris[t+1];
+						const int c = base + (int)lobe.tris[t+2];
+						if( capFlip ) {
+							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+						} else {
+							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+						}
 					}
 				}
 			}

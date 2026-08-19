@@ -1569,6 +1569,12 @@ namespace RISE
 					const SweepDescriptor& desc				///< [in] Profile + path + taper + cap parameters
 					);
 
+		//! Creates a surface of revolution / lathe (see IJob)
+		bool AddLatheGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const LatheDescriptor& desc				///< [in] Profile + axis + sweep + resolution parameters
+					);
+
 		//! Creates along-path instances of a named template geometry (see IJob)
 		bool AddPathInstancesGeometry(
 					const char* name,						///< [in] Name of the geometry

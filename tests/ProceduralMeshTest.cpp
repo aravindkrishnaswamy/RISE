@@ -24,7 +24,15 @@
 #include <string>
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
+// arc-85 C3 (lathe_geometry): the winding convention is pinned by firing
+// rays at the surface from OUTSIDE and asserting front-face hits, which
+// needs the intersection record and the vector ops alongside the mesh
+// accessors.
+#include "../src/Library/Interfaces/IGeometry.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Utilities/Math3D/VectorsOps.h"
 #include <cmath>
+#include <limits>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1084,6 +1092,1230 @@ static void TestSweepPerStationWidth()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+//
+//  lathe_geometry (arc-85 C3) vs FIRST PRINCIPLES.  Every assertion
+//  below is CLOSED FORM -- an exact right cylinder, an exact cone with
+//  its analytic lateral area, an exact sphere with its analytic surface
+//  area, an exact 90-degree angular span -- never "whatever the factory
+//  produced last time".
+//
+//  Axis/basis recap (see RISE_API_CreateLatheGeometry's header comment):
+//  for axis index a the frame is the cyclic (A, U, V) = (e[a],
+//  e[(a+1)%3], e[(a+2)%3]).  For the default axis y that is A = +Y,
+//  U = +Z, V = +X, so a profile point (r, h) at angle t lands at
+//  (r*sin t, h, r*cos t) and t = atan2(x, z).
+//
+//////////////////////////////////////////////////////////////////////
+
+static const double kPi = 3.14159265358979323846;
+
+// Radius off the lathe axis (axis y) and the polar angle about it.
+static Scalar LatheRadiusY( const Vertex& p ) { return std::sqrt( p.x*p.x + p.z*p.z ); }
+static Scalar LatheThetaY ( const Vertex& p ) { return std::atan2( p.x, p.z ); }
+
+// Total surface area of an indexed mesh, and the smallest triangle area
+// in it (a lathe must never emit a zero-area triangle -- that is the
+// whole point of collapsing an on-axis ring to a single pole vertex).
+static void MeshAreaStats( const TriangleMeshGeometryIndexed* m, Scalar& total, Scalar& minTri )
+{
+	total = 0;
+	minTri = std::numeric_limits<Scalar>::max();
+	for( size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		const Scalar ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+		const Scalar vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+		const Scalar cx = uy*vz - uz*vy, cy = uz*vx - ux*vz, cz = ux*vy - uy*vx;
+		const Scalar area = Scalar(0.5) * std::sqrt( cx*cx + cy*cy + cz*cz );
+		total += area;
+		if( area < minTri ) minTri = area;
+	}
+}
+
+// Fire one ray and report whether it struck a FRONT face -- i.e. whether
+// the TRUE geometric normal opposes the ray.  The lathe factory builds a
+// DOUBLE-SIDED TriangleMeshGeometryIndexed, which flips vGeomNormal to
+// face the ray and records that in bGeomNormalOrientedToRay, so the raw
+// dot product is always negative and useless; undo the flip with the
+// recovery formula the flag's own documentation prescribes.
+static bool LatheFrontFaceHit( const IGeometry* g, const Point3& o, const Vector3& d )
+{
+	RayIntersectionGeometric ri( Ray( o, d ), nullRasterizerState );
+	g->IntersectRay( ri, true, true, false );
+	if( !ri.bHit ) {
+		return false;
+	}
+	const Scalar raw = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() );
+	const Scalar facing = ri.bGeomNormalOrientedToRay ? -raw : raw;
+	return facing < 0;
+}
+
+// Probe the surface at a given polar angle about `axis`, from `startScale`
+// times the expected hit radius, aimed straight at the axis.  Callers pass
+// a MID-FACET angle so the ray never lands exactly on a shared vertex
+// column or facet edge, where a hit is legitimately ambiguous.
+static bool LatheProbeAtAngle( const IGeometry* g, const int axis, const double theta,
+		const double h, const double rHit, const double startScale )
+{
+	const int au = ( axis + 1 ) % 3, av = ( axis + 2 ) % 3;
+	const double ct = std::cos( theta ), st = std::sin( theta );
+	Scalar o[3] = { 0, 0, 0 }, dir[3] = { 0, 0, 0 };
+	o[axis] = (Scalar)h;
+	o[au]   = (Scalar)( rHit * startScale * ct );
+	o[av]   = (Scalar)( rHit * startScale * st );
+	dir[au] = (Scalar)( -ct );
+	dir[av] = (Scalar)( -st );
+	return LatheFrontFaceHit( g, Point3( o[0], o[1], o[2] ), Vector3( dir[0], dir[1], dir[2] ) );
+}
+
+// Fire one ray and report whether the TRUE geometric normal at the hit --
+// the double-sided flip undone exactly as RayCaster.cpp:456 does it -- lies
+// in the same half-space as `want`.  This is the assertion a front-face
+// probe CANNOT make: TriangleMeshGeometryIndexedSpecializations.h (~206)
+// re-orients ri.vGeomNormal to AGREE with the interpolated shading normal
+// BEFORE the double-sided flip is considered, so a vertex normal sitting in
+// the wrong half-space silently flips the reported GEOMETRIC normal -- which
+// is what SMS chain-physics validation, every side test, and RayCaster.cpp
+// read.  A front-face probe still passes in that state; this does not.
+static bool LatheGeomNormalInHalfSpace( const IGeometry* g, const Point3& o, const Vector3& d, const Vector3& want )
+{
+	RayIntersectionGeometric ri( Ray( o, d ), nullRasterizerState );
+	g->IntersectRay( ri, true, true, false );
+	if( !ri.bHit ) {
+		return false;
+	}
+	const Scalar raw = Vector3Ops::Dot( ri.vGeomNormal, want );
+	const Scalar trueDot = ri.bGeomNormalOrientedToRay ? -raw : raw;
+	return trueDot > 0;
+}
+
+// WINDING, part 2.  A front-face ray probe alone CANNOT pin the emitted
+// triangle winding on this mesh: TriangleMeshGeometryIndexed re-orients
+// ri.vGeomNormal to agree with the Phong shading normal
+// (TriangleMeshGeometryIndexedSpecializations.h ~line 206) before the
+// double-sided flip is even considered, so a mesh whose winding is
+// reversed but whose vertex normals still point outward probes
+// IDENTICALLY.  The probes above therefore pin the NORMAL field; this
+// pins the WINDING against it -- non-circularly, because the normal field
+// itself is pinned in closed form elsewhere (exactly radial on the
+// cylinder, exactly -Y at the cone apex, exactly the cut-plane normal on
+// a partial-sweep cap) and by the outside-in probes.
+static bool MeshWindingAgreesWithNormals( const TriangleMeshGeometryIndexed* m )
+{
+	for( size_t f = 0; f < m->getFaces().size(); ++f ) {
+		const PointerPolygon_Template<3>& face = m->getFaces()[f];
+		const Point3& a = *face.pVertices[0];
+		const Point3& b = *face.pVertices[1];
+		const Point3& c = *face.pVertices[2];
+		const Scalar ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+		const Scalar vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+		const Scalar gx = uy*vz - uz*vy, gy = uz*vx - ux*vz, gz = ux*vy - uy*vx;
+		const Normal& n0 = *face.pNormals[0];
+		const Normal& n1 = *face.pNormals[1];
+		const Normal& n2 = *face.pNormals[2];
+		const Scalar rx = n0.x+n1.x+n2.x, ry = n0.y+n1.y+n2.y, rz = n0.z+n1.z+n2.z;
+		if( gx*rx + gy*ry + gz*rz <= 0 ) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// (1) CYLINDER IDENTITY.  profile (R,0) (R,H), 360 degrees, N radial:
+// an exact right cylinder, and the money assertion on the SEAM -- a full
+// turn stitches the last radial column straight back to the first, so
+// the vertex count is exactly rows*N, never rows*(N+1).
+static void TestLatheCylinderIdentity()
+{
+	std::cout << "Test 5: lathe_geometry -- cylinder identity + 360-degree seam (no duplicated column)" << std::endl;
+	const double R = 2.0, H = 5.0;
+	const int N = 32;
+	const double prof[] = { R, 0.0,  R, H };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 2;
+	d.nRadial = N;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe cylinder factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "lathe cylinder concrete type" ); pi->release(); return; }
+
+	Check( m->numPoints() == (unsigned int)( 2 * N ),
+		"lathe cylinder: MONEY ASSERTION -- 360 degrees emits rows*n_radial vertices (no duplicated seam column)" );
+	Check( m->numPoints() != (unsigned int)( 2 * ( N + 1 ) ),
+		"lathe cylinder: the seam column is NOT duplicated (would be rows*(n_radial+1))" );
+	Check( m->getFaces().size() == (size_t)( 2 * N ),
+		"lathe cylinder: analytic triangle count 2*n_radial (one band, two triangles per quad)" );
+
+	bool radiusOK = true, spanOK = true, normalOK = true, uvOK = true;
+	Scalar hMin = m->getVertices()[0].y, hMax = m->getVertices()[0].y;
+	for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+		const Vertex& p = m->getVertices()[i];
+		const Normal& n = m->getNormals()[i];
+		if( std::fabs( LatheRadiusY( p ) - R ) > 1e-9 ) radiusOK = false;
+		if( p.y < hMin ) hMin = p.y;
+		if( p.y > hMax ) hMax = p.y;
+		if( p.y < -1e-12 || p.y > H + 1e-12 ) spanOK = false;
+		// exactly radial: no axial component, unit dot with the radial direction
+		const Scalar rr = LatheRadiusY( p );
+		if( std::fabs( n.y ) > 1e-12 ) normalOK = false;
+		if( ( n.x * p.x + n.z * p.z ) / ( rr > 0 ? rr : 1 ) < 1.0 - 1e-9 ) normalOK = false;
+		// v = normalized arc length along the profile: 0 on the bottom row, 1 on the top
+		const TexCoord& c = m->getCoords()[i];
+		if( std::fabs( c.y - p.y / H ) > 1e-9 ) uvOK = false;
+		if( c.x < -1e-12 || c.x > 1.0 - 1e-12 ) uvOK = false;	// u in [0,1), the seam never repeats
+	}
+	Check( radiusOK, "lathe cylinder: every vertex EXACTLY at radius R from the axis" );
+	Check( spanOK && std::fabs( hMin ) < 1e-12 && std::fabs( hMax - H ) < 1e-12,
+		"lathe cylinder: height span is exactly [0, H]" );
+	Check( normalOK, "lathe cylinder: every normal exactly radial" );
+	Check( uvOK, "lathe cylinder: u in [0,1) (no repeated seam), v == arc-length fraction" );
+
+	// exact lateral area 2*pi*R*H, up to the inscribed-polygon factor
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	const double exact = 2.0 * kPi * R * H;
+	const double inscribed = exact * ( std::sin( kPi / N ) / ( kPi / N ) );	// an N-gon prism's exact lateral area
+	Check( std::fabs( (double)area - inscribed ) < 1e-9 * exact,
+		"lathe cylinder: lateral area EXACTLY matches the inscribed N-gon prism 2*N*R*sin(pi/N)*H" );
+	Check( minTri > 1e-12, "lathe cylinder: no zero-area triangles" );
+
+	// CLOSED-FORM winding anchor, independent of the normal field: on a
+	// cylinder about +Y the outward direction at a face centroid is simply
+	// its own radial direction, so (b-a)x(c-a) . (cx, 0, cz) must be > 0
+	// for EVERY face.
+	{
+		bool windOK = true;
+		for( size_t f = 0; f < m->getFaces().size(); ++f ) {
+			const PointerPolygon_Template<3>& face = m->getFaces()[f];
+			const Point3& a = *face.pVertices[0];
+			const Point3& b = *face.pVertices[1];
+			const Point3& c = *face.pVertices[2];
+			const Scalar ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+			const Scalar vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+			const Scalar gx = uy*vz - uz*vy, gz = ux*vy - uy*vx;
+			const Scalar cx = ( a.x + b.x + c.x ) / 3, cz = ( a.z + b.z + c.z ) / 3;
+			if( gx*cx + gz*cz <= 0 ) windOK = false;
+		}
+		Check( windOK, "lathe cylinder: MONEY ASSERTION -- every face's GEOMETRIC winding points radially OUTWARD" );
+	}
+	Check( MeshWindingAgreesWithNormals( m ), "lathe cylinder: winding agrees with the (independently pinned) normal field" );
+	pi->release();
+}
+
+// (2) CONE IDENTITY.  profile (0,0) (R,H): the r == 0 point is a POLE.
+// It must be ONE vertex fanned to the base ring, not N coincident copies
+// with a zero-area quad band, and the lateral area must match the
+// analytic pi*R*sqrt(R^2+H^2) to tessellation tolerance.
+static void TestLatheConePole()
+{
+	std::cout << "Test 5b: lathe_geometry -- cone identity, apex is a single POLE vertex" << std::endl;
+	const double R = 1.5, H = 3.0;
+	const int N = 64;
+	const double prof[] = { 0.0, 0.0,  R, H };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 2;
+	d.nRadial = N;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe cone factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "lathe cone concrete type" ); pi->release(); return; }
+
+	Check( m->numPoints() == (unsigned int)( 1 + N ),
+		"lathe cone: MONEY ASSERTION -- the apex is ONE vertex, so the count is 1 + n_radial (not 2*n_radial)" );
+	Check( m->getFaces().size() == (size_t)N,
+		"lathe cone: a pole emits a FAN of n_radial triangles (not 2*n_radial with half of them degenerate)" );
+
+	unsigned int apexCount = 0, ringCount = 0;
+	bool ringRadiusOK = true;
+	for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+		const Vertex& p = m->getVertices()[i];
+		const Scalar rr = LatheRadiusY( p );
+		if( rr < 1e-12 ) {
+			++apexCount;
+			if( std::fabs( p.y ) > 1e-12 ) ringRadiusOK = false;
+		} else {
+			++ringCount;
+			if( std::fabs( rr - R ) > 1e-9 || std::fabs( p.y - H ) > 1e-12 ) ringRadiusOK = false;
+		}
+	}
+	Check( apexCount == 1, "lathe cone: exactly ONE vertex sits on the axis" );
+	Check( ringCount == (unsigned int)N, "lathe cone: the base ring carries exactly n_radial vertices" );
+	Check( ringRadiusOK, "lathe cone: apex at (0,0,0), base ring exactly at radius R and height H" );
+
+	// the apex normal is the theta-average of the revolved profile normal:
+	// the radial part cancels, leaving -Y for a cone opening upward.
+	{
+		bool apexNormalOK = false;
+		for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+			if( LatheRadiusY( m->getVertices()[i] ) < 1e-12 ) {
+				const Normal& n = m->getNormals()[i];
+				apexNormalOK = ( std::fabs( n.x ) < 1e-12 && std::fabs( n.z ) < 1e-12 && n.y < -0.999 );
+			}
+		}
+		Check( apexNormalOK, "lathe cone: the apex normal is exactly -Y (the radial part averages away)" );
+	}
+
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	const double exact = kPi * R * std::sqrt( R*R + H*H );
+	Check( std::fabs( (double)area - exact ) < 0.005 * exact,
+		"lathe cone: lateral area matches the analytic pi*R*sqrt(R^2+H^2) within 0.5% at n_radial 64" );
+	Check( minTri > 1e-12, "lathe cone: no zero-area triangles (the pole fan replaces the degenerate band)" );
+	Check( MeshWindingAgreesWithNormals( m ),
+		"lathe cone: MONEY ASSERTION -- every pole-fan triangle's GEOMETRIC winding faces outward" );
+	pi->release();
+}
+
+// (3) SPHERE IDENTITY.  A semicircular profile revolved 360 degrees.
+// Every vertex is EXACTLY on the sphere; the mesh area approaches the
+// analytic 4*pi*R^2 from below, and raising n_radial must move it
+// strictly closer (a monotone-improvement assertion, not a magic
+// constant).
+static void TestLatheSphereConvergence()
+{
+	std::cout << "Test 5c: lathe_geometry -- sphere identity + monotone area convergence to 4*pi*R^2" << std::endl;
+	const double R = 1.25;
+	const int M = 128;		// profile subdivisions (semicircle)
+	std::vector<double> prof;
+	prof.reserve( ( M + 1 ) * 2 );
+	for( int i = 0; i <= M; ++i ) {
+		const double phi = kPi * i / M;
+		// AUTHORED AS GENERATED, deliberately un-patched.  sin(pi) is 1.5e-16,
+		// not 0, in IEEE double, so the last profile point is NOT bit-exactly
+		// on the axis -- and the factory's pole test is an exact `r > 0`.  An
+		// earlier version of this test hand-pinned the two endpoints to 0.0 so
+		// the factory would see them as poles; that hid the defect instead of
+		// catching it (un-patched, the factory emitted a full n_radial ring of
+		// radius 1.5e-16 with a skirt of ~1e-18-area slivers).  The factory
+		// now snaps any radius within 1e-9 of the profile's own extent to a
+		// hard 0.0 BEFORE the pole decision, which is what a generator -- or
+		// the agent surface -- actually needs; this test is its guard.
+		prof.push_back( R * std::sin( phi ) );		// r
+		prof.push_back( -R * std::cos( phi ) );		// h, running -R -> +R
+	}
+	const double exact = 4.0 * kPi * R * R;
+
+	double areas[2] = { 0, 0 };
+	const int radial[2] = { 12, 96 };
+	for( int t = 0; t < 2; ++t ) {
+		LatheDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = (unsigned int)( M + 1 );
+		d.nRadial = radial[t];
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe sphere factory succeeds" );
+		if( !pi ) return;
+		const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+		if( !m ) { Check( false, "lathe sphere concrete type" ); pi->release(); return; }
+
+		bool onSphere = true;
+		for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+			const Vertex& p = m->getVertices()[i];
+			const Scalar rad = std::sqrt( p.x*p.x + p.y*p.y + p.z*p.z );
+			if( std::fabs( rad - R ) > 1e-9 ) onSphere = false;
+		}
+		Check( onSphere, "lathe sphere: every vertex lies EXACTLY on the sphere of radius R" );
+
+		// both poles collapse: 2 single vertices + (M-1) full rings
+		Check( m->numPoints() == (unsigned int)( 2 + ( M - 1 ) * radial[t] ),
+			"lathe sphere: MONEY ASSERTION -- both GENERATED on-axis endpoints collapse to ONE vertex each (the sin(pi) = 1.5e-16 end is SNAPPED to the axis, not emitted as a ring)" );
+
+		// The same fact stated on the vertices rather than the count: exactly
+		// two vertices sit BIT-EXACTLY on the axis.  Un-snapped there is only
+		// one, plus a ring of n_radial vertices at radius 1.5e-16.
+		unsigned int exactlyOnAxis = 0;
+		for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+			const Vertex& p = m->getVertices()[i];
+			if( p.x == 0 && p.z == 0 ) ++exactlyOnAxis;
+		}
+		Check( exactlyOnAxis == 2,
+			"lathe sphere: exactly TWO vertices lie bit-exactly on the axis (the generated 1.5e-16 endpoint became a pole)" );
+
+		Scalar area = 0, minTri = 0;
+		MeshAreaStats( m, area, minTri );
+		// 1e-12, not 1e-18: the real pole-fan triangles are ~3e-5 at these
+		// resolutions, while an un-snapped 1.5e-16 ring produces ~1e-18
+		// slivers, so this bound separates the two.
+		Check( minTri > 1e-12, "lathe sphere: no zero-area triangles at either pole" );
+		Check( MeshWindingAgreesWithNormals( m ), "lathe sphere: every face's GEOMETRIC winding faces outward" );
+		areas[t] = (double)area;
+	}
+	Check( areas[0] < exact && areas[1] < exact,
+		"lathe sphere: an inscribed mesh under-estimates 4*pi*R^2 at both resolutions" );
+	Check( areas[1] > areas[0],
+		"lathe sphere: MONOTONE improvement -- n_radial 96 is strictly closer to 4*pi*R^2 than n_radial 12" );
+	Check( std::fabs( areas[1] - exact ) < 0.01 * exact,
+		"lathe sphere: n_radial 96 lands within 1% of the analytic 4*pi*R^2" );
+}
+
+// (4) PARTIAL SWEEP.  90 degrees: the surface is open along the two cut
+// half-planes, so both get a flat ear-clipped cap, and the emitted
+// vertices span EXACTLY 90 degrees (columns are nRadial+1, not nRadial).
+static void TestLathePartialSweep()
+{
+	std::cout << "Test 5d: lathe_geometry -- 90-degree partial sweep (caps present, exact angular span)" << std::endl;
+	const double R = 1.0, H = 2.0;
+	const int N = 8;
+	const double prof[] = { R, 0.0,  R, H };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 2;
+	d.nRadial = N;
+	d.sweepDegrees = 90.0;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe 90-degree factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "lathe partial concrete type" ); pi->release(); return; }
+
+	// 2 rows x (N+1) columns of side vertices, plus 2 caps of 4
+	// cross-section vertices each ((R,0) (R,H) axis(0,H) axis(0,0)).
+	Check( m->numPoints() == (unsigned int)( 2 * ( N + 1 ) + 2 * 4 ),
+		"lathe partial: a partial sweep emits n_radial+1 columns (the seam does NOT wrap) plus two 4-vertex caps" );
+	// side 2*N triangles + 2 caps x 2 triangles
+	Check( m->getFaces().size() == (size_t)( 2 * N + 4 ),
+		"lathe partial: MONEY ASSERTION -- CAPS ARE PRESENT (2*n_radial side triangles + 2 ear-clipped caps of 2)" );
+
+	// angular span of every OFF-AXIS vertex is exactly [0, 90 degrees]
+	Scalar tMin = Scalar( 10.0 ), tMax = Scalar( -10.0 );
+	for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+		const Vertex& p = m->getVertices()[i];
+		if( LatheRadiusY( p ) < 1e-12 ) continue;	// the cross-section's on-axis corners have no angle
+		const Scalar th = LatheThetaY( p );
+		if( th < tMin ) tMin = th;
+		if( th > tMax ) tMax = th;
+	}
+	Check( std::fabs( (double)tMin ) < 1e-12 && std::fabs( (double)tMax - kPi/2.0 ) < 1e-12,
+		"lathe partial: the emitted angular span is EXACTLY [0, 90 degrees]" );
+
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	Check( minTri > 1e-12, "lathe partial: no zero-area triangles" );
+	// side (a quarter of the inscribed prism) + two R x H rectangular caps
+	const double side = 2.0 * N * R * std::sin( ( kPi / 2.0 ) / ( 2 * N ) ) * H;
+	const double caps = 2.0 * R * H;
+	Check( std::fabs( (double)area - ( side + caps ) ) < 1e-9 * ( side + caps ),
+		"lathe partial: total area EXACTLY equals the quarter prism plus the two flat R x H caps" );
+
+	// CLOSED-FORM cap winding.  The side bands are emitted first (2*N
+	// faces), then the theta=0 cap (2 faces) and the theta=90 cap (2).
+	// With axis y the frame is A=+Y, U=+Z, V=+X, so the start cap must
+	// wind toward -X and the end cap toward -Z, exactly.
+	{
+		bool capWindOK = true;
+		for( size_t f = (size_t)( 2 * N ); f < m->getFaces().size(); ++f ) {
+			const PointerPolygon_Template<3>& face = m->getFaces()[f];
+			const Point3& a = *face.pVertices[0];
+			const Point3& b = *face.pVertices[1];
+			const Point3& c = *face.pVertices[2];
+			const Scalar ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+			const Scalar vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+			const Scalar gx = uy*vz - uz*vy, gy = uz*vx - ux*vz, gz = ux*vy - uy*vx;
+			const bool isStartCap = ( f < (size_t)( 2 * N + 2 ) );
+			const Scalar want = isStartCap ? -gx : -gz;		// -X for the start cap, -Z for the end cap
+			const Scalar other = isStartCap ? ( std::fabs(gy) + std::fabs(gz) ) : ( std::fabs(gx) + std::fabs(gy) );
+			if( !( want > 0 ) || other > 1e-12 * ( std::fabs(gx)+std::fabs(gy)+std::fabs(gz) + 1 ) ) capWindOK = false;
+		}
+		Check( capWindOK,
+			"lathe partial: MONEY ASSERTION -- the theta=0 cap winds toward -X and the theta=90 cap toward -Z" );
+	}
+	Check( MeshWindingAgreesWithNormals( m ), "lathe partial: winding agrees with the cap and side normals" );
+	pi->release();
+}
+
+// (5) WINDING.  The convention (dP/dtheta x dP/dh points outward, so a
+// band quad is emitted +theta first and +h second) is PINNED by ray
+// probes from OUTSIDE, not by the comment that derives it: every probe
+// must strike a FRONT face.  Covers the cylinder side, the cone side and
+// pole fan, and both partial-sweep caps.
+static void TestLatheWinding()
+{
+	std::cout << "Test 5e: lathe_geometry -- outward winding pinned by front-face ray probes" << std::endl;
+
+	// (a) cylinder side, probed at 8 angles and 3 heights
+	{
+		const double R = 2.0, H = 4.0;
+		const double prof[] = { R, 0.0,  R, H };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 2;
+		d.nRadial = 64;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "winding cylinder factory succeeds" );
+		if( pi ) {
+			bool allFront = true;
+			for( int a = 0; a < 8 && allFront; ++a ) {
+				const double th = 2.0 * kPi * ( 8.0 * a + 0.5 ) / 64.0;	// mid-facet of n_radial 64
+				for( int hi = 1; hi <= 3; ++hi ) {
+					if( !LatheProbeAtAngle( pi, 1, th, H * hi / 4.0, R, 3.0 ) ) allFront = false;
+				}
+			}
+			Check( allFront, "winding: every inward probe at the cylinder side strikes a FRONT face" );
+			pi->release();
+		}
+	}
+
+	// (b) cone side + apex fan
+	{
+		const double R = 1.0, H = 2.0;
+		const double prof[] = { 0.0, 0.0,  R, H };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 2;
+		d.nRadial = 48;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "winding cone factory succeeds" );
+		if( pi ) {
+			bool allFront = true;
+			for( int a = 0; a < 8 && allFront; ++a ) {
+				const double th = 2.0 * kPi * ( 6.0 * a + 0.5 ) / 48.0;	// mid-facet of n_radial 48
+				const double ys[3] = { H * 0.25, H * 0.5, H * 0.85 };
+				for( int k = 0; k < 3; ++k ) {
+					if( !LatheProbeAtAngle( pi, 1, th, ys[k], R * ys[k] / H, 4.0 ) ) allFront = false;
+				}
+			}
+			Check( allFront, "winding: every inward probe at the cone lateral surface strikes a FRONT face" );
+			pi->release();
+		}
+	}
+
+	// (c) partial-sweep caps.  With axis y the frame is A=+Y, U=+Z, V=+X,
+	// so a 90-degree sweep occupies the x>=0, z>=0 quadrant: the START cap
+	// lies in the plane x = 0 facing -X, the END cap in z = 0 facing -Z.
+	{
+		const double R = 1.0, H = 2.0;
+		const double prof[] = { R, 0.0,  R, H };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 2;
+		d.nRadial = 16;
+		d.sweepDegrees = 90.0;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "winding partial-sweep factory succeeds" );
+		if( pi ) {
+			// (r, h) = (0.7, 1.0) inside the R x H cross-section and off both
+			// of its possible ear-clip diagonals (h = 2r and h = 2 - 2r).
+			const bool startFront = LatheFrontFaceHit( pi, Point3( -3.0, 1.0, 0.7 ), Vector3( 1, 0, 0 ) );
+			const bool endFront   = LatheFrontFaceHit( pi, Point3( 0.7, 1.0, -3.0 ), Vector3( 0, 0, 1 ) );
+			Check( startFront, "winding: the theta=0 cap faces -X and is struck FRONT-facing from -X" );
+			Check( endFront,   "winding: the theta=90 cap faces -Z and is struck FRONT-facing from -Z" );
+			pi->release();
+		}
+	}
+}
+
+// (6) VASE.  The headline case: a profile that starts and ends ON the
+// axis is a closed vessel -- both poles collapse, no caps are emitted at
+// 360 degrees, and there is not a single zero-area triangle.  Also pins
+// the duplicate-a-point hard-edge idiom (a zero-length profile segment
+// splits the normals and emits NO band, rather than a zero-area one).
+static void TestLatheVaseAndHardEdge()
+{
+	std::cout << "Test 5f: lathe_geometry -- closed vase (both poles) + the duplicate-point hard-edge idiom" << std::endl;
+	{
+		const int N = 24;
+		const double prof[] = {
+			0.00, 0.00,
+			0.35, 0.05,
+			0.42, 0.30,
+			0.18, 0.72,
+			0.22, 0.90,
+			0.00, 0.94
+		};
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 6;
+		d.nRadial = N;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe vase factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			if( m ) {
+				// 2 poles + 4 full rings; 2 pole fans of N + 3 bands of 2N
+				Check( m->numPoints() == (unsigned int)( 2 + 4 * N ),
+					"lathe vase: MONEY ASSERTION -- rings*n_radial minus the two pole collapses" );
+				Check( m->getFaces().size() == (size_t)( 2 * N + 3 * 2 * N ),
+					"lathe vase: two pole fans of n_radial plus three full bands of 2*n_radial" );
+				Scalar area = 0, minTri = 0;
+				MeshAreaStats( m, area, minTri );
+				Check( minTri > 1e-12, "lathe vase: MONEY ASSERTION -- watertight with NO zero-area triangles and no caps" );
+				// front-face probes around the widest part
+				bool allFront = true;
+				for( int a = 0; a < 6; ++a ) {
+					const double th = 2.0 * kPi * ( 4.0 * a + 0.5 ) / 24.0;	// mid-facet of n_radial 24
+					if( !LatheProbeAtAngle( pi, 1, th, 0.30, 0.40, 8.0 ) ) allFront = false;
+				}
+				Check( allFront, "lathe vase: inward probes at the belly strike FRONT faces" );
+				Check( MeshWindingAgreesWithNormals( m ),
+					"lathe vase: every face's GEOMETRIC winding faces outward (both pole fans included)" );
+			}
+			pi->release();
+		}
+	}
+	// hard-edge idiom: a duplicated profile point splits the two normals
+	// and contributes NO band (so no zero-area triangles either).
+	{
+		const int N = 8;
+		const double prof[] = { 0.0, 0.0,   1.0, 1.0,   1.0, 1.0,   1.0, 2.0 };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 4;
+		d.nRadial = N;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe hard-edge factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			if( m ) {
+				// pole + 3 rings; a pole fan of N and one band of 2N (the
+				// duplicated segment emits nothing at all)
+				Check( m->numPoints() == (unsigned int)( 1 + 3 * N ),
+					"hard edge: the duplicated point still gets its own row" );
+				Check( m->getFaces().size() == (size_t)( N + 2 * N ),
+					"hard edge: MONEY ASSERTION -- the zero-length segment emits NO band (not a zero-area one)" );
+				// rows 1 and 2 are coincident but must carry DIFFERENT normals
+				const Normal& nA = m->getNormals()[ 1 ];			// first vertex of row 1 (cone side)
+				const Normal& nB = m->getNormals()[ 1 + N ];		// first vertex of row 2 (cylinder side)
+				const Scalar dot = nA.x*nB.x + nA.y*nB.y + nA.z*nB.z;
+				Check( dot < 0.99, "hard edge: the duplicated point's two rows carry DIFFERENT normals" );
+				Scalar area = 0, minTri = 0;
+				MeshAreaStats( m, area, minTri );
+				Check( minTri > 1e-12, "hard edge: no zero-area triangles" );
+			}
+			pi->release();
+		}
+	}
+}
+
+// (7) AXIS + ORIENTATION.  axis x / y / z produce the same cylinder about
+// their own axis; and a profile authored TOP-TO-BOTTOM still faces
+// outward, because the orientation is derived from the signed volume of
+// revolution rather than assumed from the authoring order.
+static void TestLatheAxisAndReversedProfile()
+{
+	std::cout << "Test 5g: lathe_geometry -- axis x/y/z, and a reversed profile still faces outward" << std::endl;
+	const double R = 1.0, H = 3.0;
+	for( int axis = 0; axis < 3; ++axis ) {
+		const double prof[] = { R, 0.0,  R, H };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 2;
+		d.nRadial = 24;
+		d.axis = axis;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe axis factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			bool onAxis = true;
+			if( m ) for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+				const Vertex& p = m->getVertices()[i];
+				const Scalar comp[3] = { p.x, p.y, p.z };
+				const Scalar h = comp[axis];
+				const Scalar rr = std::sqrt( comp[(axis+1)%3]*comp[(axis+1)%3] + comp[(axis+2)%3]*comp[(axis+2)%3] );
+				if( std::fabs( rr - R ) > 1e-9 || h < -1e-12 || h > H + 1e-12 ) onAxis = false;
+			}
+			Check( onAxis, "axis: the cylinder is exactly about the requested world axis" );
+			// probe perpendicular to the axis, mid-facet of n_radial 24
+			Check( LatheProbeAtAngle( pi, axis, 2.0 * kPi * 0.5 / 24.0, H * 0.5, R, 4.0 ),
+				"axis: an inward probe strikes a FRONT face on every axis" );
+			// The two assertions above are both invariant under a U/V swap
+			// (radius and height are symmetric in the two off-axis
+			// components, and a probe fired straight at the axis hits either
+			// way), so a HANDEDNESS flip on x or z alone would sail through
+			// them -- the closed-form radial-outward winding check lives only
+			// in the axis-y cylinder test.  This pins the frame per axis:
+			// under a coordinate-swap reflection the geometric normal picks
+			// up the reflection's sign while the vertex normals are written
+			// componentwise, so the two disagree and this fails.
+			Check( m && MeshWindingAgreesWithNormals( m ),
+				"axis: MONEY ASSERTION -- winding agrees with the normal field on EVERY axis (a handedness flip on x or z alone is caught here)" );
+			pi->release();
+		}
+	}
+	// reversed profile (top -> bottom): the signed volume of revolution is
+	// negative, so the factory flips both the normals and the winding.
+	{
+		const double prof[] = { R, H,  R, 0.0 };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 2;
+		d.nRadial = 24;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe reversed-profile factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			bool radialOut = true;
+			if( m ) for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+				const Vertex& p = m->getVertices()[i];
+				const Normal& n = m->getNormals()[i];
+				const Scalar rr = LatheRadiusY( p );
+				if( ( n.x * p.x + n.z * p.z ) / ( rr > 0 ? rr : 1 ) < 1.0 - 1e-9 ) radialOut = false;
+			}
+			Check( radialOut, "reversed profile: normals still point radially OUTWARD (orientation is derived, not assumed)" );
+			Check( LatheProbeAtAngle( pi, 1, 2.0 * kPi * 0.5 / 24.0, H * 0.5, R, 4.0 ),
+				"reversed profile: an inward probe still strikes a FRONT face" );
+			Check( m && MeshWindingAgreesWithNormals( m ),
+				"reversed profile: MONEY ASSERTION -- the winding is flipped in lockstep with the normals" );
+			pi->release();
+		}
+	}
+}
+
+// (8) INTERIOR POLE.  A waisted / hourglass profile pinched to r == 0 in
+// the MIDDLE has live bands on BOTH sides of the pinch, and the two bands
+// demand provably OPPOSITE axial normals: below the pinch dr < 0 so
+// snh = -outward*dr/l > 0, above it dr > 0 so snh < 0.  No single shared
+// vertex can serve both -- so the pole is emitted TWICE, once per band,
+// exactly as `smooth FALSE` already does structurally.
+static void TestLatheInteriorPolePinch()
+{
+	std::cout << "Test 5i: lathe_geometry -- an INTERIOR pole splits into one vertex per adjacent band" << std::endl;
+	const double R = 1.0;
+	const int N = 24;
+	const double prof[] = { R, 0.0,   0.0, 1.0,   R, 2.0 };	// hourglass, pinched on the axis at h = 1
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 3;
+	d.nRadial = N;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "lathe pinch factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "lathe pinch concrete type" ); pi->release(); return; }
+
+	Check( m->numPoints() == (unsigned int)( 2 * N + 2 ),
+		"pinch: MONEY ASSERTION -- the interior pole emits TWO vertices (one per adjacent band), not one shared vertex" );
+	Check( m->getFaces().size() == (size_t)( 2 * N ),
+		"pinch: each band is a pole fan of n_radial triangles" );
+
+	// The two pole vertices are emitted in row order: the lower band's
+	// first.  Their axial normals must be exact, opposite unit vectors.
+	int poleCount = 0;
+	Scalar poleNy[4] = { 0, 0, 0, 0 };
+	bool poleAxialOnly = true;
+	for( unsigned int i = 0; i < m->numPoints(); ++i ) {
+		if( LatheRadiusY( m->getVertices()[i] ) < 1e-12 ) {
+			const Normal& n = m->getNormals()[i];
+			if( poleCount < 4 ) poleNy[poleCount] = n.y;
+			if( std::fabs( n.x ) > 1e-12 || std::fabs( n.z ) > 1e-12 ) poleAxialOnly = false;
+			++poleCount;
+		}
+	}
+	Check( poleCount == 2, "pinch: exactly two vertices sit on the axis" );
+	Check( poleAxialOnly, "pinch: both pole normals are purely axial (the radial part averages away)" );
+	Check( poleCount == 2 && poleNy[0] > 0.999 && poleNy[1] < -0.999,
+		"pinch: MONEY ASSERTION -- the lower band's pole normal is +Y and the upper band's is -Y (no single sign serves both)" );
+
+	// The consequence that actually matters.  Probe each band CLOSE to the
+	// pinch (barycentric weight ~0.9 on the pole vertex, so the interpolated
+	// shading normal is pole-dominated) and demand that the recovered
+	// GEOMETRIC normal lies in the same half-space as that band's analytic
+	// surface normal.  Analytically the lower band's normal is
+	// (e_r + A)/sqrt(2) and the upper band's is (e_r - A)/sqrt(2); with one
+	// shared +A pole vertex the upper band's reported vGeomNormal is FLIPPED
+	// into the solid and this fails.
+	{
+		const double th = 2.0 * kPi * 0.5 / N;		// mid-facet
+		const double ct = std::cos( th ), st = std::sin( th );	// point = h*Y + r*ct*Z + r*st*X
+		bool bandOK[2] = { false, false };
+		for( int side = 0; side < 2; ++side ) {
+			const double h     = ( side == 0 ) ? 0.9 : 1.1;		// r = 0.1 on both bands
+			const double ySign = ( side == 0 ) ? 1.0 : -1.0;
+			const Point3  o( (Scalar)( 0.5 * st ), (Scalar)h, (Scalar)( 0.5 * ct ) );
+			const Vector3 dir( (Scalar)(-st), 0, (Scalar)(-ct) );
+			const Vector3 want( (Scalar)st, (Scalar)ySign, (Scalar)ct );	// e_r +/- A, unnormalized
+			bandOK[side] = LatheGeomNormalInHalfSpace( pi, o, dir, want );
+		}
+		Check( bandOK[0], "pinch: the LOWER band's near-pole hit reports a geometric normal in its own band's half-space" );
+		Check( bandOK[1],
+			"pinch: MONEY ASSERTION -- the UPPER band's near-pole hit does too (a shared pole vertex reports it FLIPPED, pointing into the solid)" );
+	}
+
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	Check( minTri > 1e-12, "pinch: no zero-area triangles" );
+	Check( MeshWindingAgreesWithNormals( m ), "pinch: winding agrees with the normal field on both fans" );
+	pi->release();
+}
+
+// (9) V IS ARC LENGTH, NOT INDEX FRACTION.  The cylinder test cannot tell
+// the two apart (a 2-point profile gives {0,1} either way), so the spec's
+// arc-length requirement is pinned HERE, on an unevenly-sampled profile
+// where every interior row differs between the two conventions.
+static void TestLatheArcLengthV()
+{
+	std::cout << "Test 5j: lathe_geometry -- V is normalized ARC LENGTH (not index fraction)" << std::endl;
+	{
+		const int N = 8;
+		const double prof[] = {
+			0.00, 0.00,
+			0.35, 0.05,
+			0.42, 0.30,
+			0.18, 0.72,
+			0.22, 0.90,
+			0.00, 0.94
+		};
+		// Segment lengths 0.35355339, 0.25961510, 0.48373546, 0.18439089,
+		// 0.22360680; total 1.50490164.  Normalized cumulative sums below.
+		const double wantV[6]  = { 0.0, 0.234934550, 0.407447552, 0.728887473, 0.851414344, 1.0 };
+		const double indexV[6] = { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0 };
+		bool discriminates = true;
+		for( int j = 1; j < 5; ++j ) {
+			if( std::fabs( wantV[j] - indexV[j] ) < 1e-6 ) discriminates = false;
+		}
+		Check( discriminates,
+			"arc-length V: the vase profile SEPARATES arc length from index fraction at every interior row (so the assertions below discriminate)" );
+
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 6;
+		d.nRadial = N;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "arc-length V factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			if( m && m->numPoints() == (unsigned int)( 2 + 4 * N ) ) {
+				// Row layout: pole (1 vertex), 4 rings of N, pole (1 vertex).
+				bool rowVOK = true, ringUniformOK = true;
+				if( std::fabs( (double)m->getCoords()[0].y - wantV[0] ) > 1e-9 ) rowVOK = false;
+				for( int j = 1; j <= 4; ++j ) {
+					const unsigned int base = (unsigned int)( 1 + ( j - 1 ) * N );
+					if( std::fabs( (double)m->getCoords()[base].y - wantV[j] ) > 1e-9 ) rowVOK = false;
+					for( int k = 1; k < N; ++k ) {
+						if( m->getCoords()[ base + k ].y != m->getCoords()[base].y ) ringUniformOK = false;
+					}
+				}
+				if( std::fabs( (double)m->getCoords()[ 4*N + 1 ].y - wantV[5] ) > 1e-9 ) rowVOK = false;
+				Check( rowVOK,
+					"arc-length V: MONEY ASSERTION -- every row's v is the normalized ARC LENGTH to that profile point (index fraction would give 0/.2/.4/.6/.8/1)" );
+				Check( ringUniformOK, "arc-length V: every vertex of a ring carries that row's single v" );
+			} else {
+				Check( false, "arc-length V: expected vertex layout (2 poles + 4 rings)" );
+			}
+			pi->release();
+		}
+	}
+	// A ZERO-LENGTH segment (the duplicate-a-point hard-edge idiom) adds no
+	// arc length, so its two rows must carry IDENTICAL v -- under index
+	// fraction they would be 1/3 and 2/3 and the texture would tear across
+	// an edge that is geometrically in one place.
+	{
+		const int N = 8;
+		const double prof[] = { 1.0, 0.0,   1.0, 1.0,   1.0, 1.0,   0.6, 2.0 };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 4;
+		d.nRadial = N;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "arc-length V hard-edge factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			if( m && m->numPoints() == (unsigned int)( 4 * N ) ) {
+				// vFrac[2] == vFrac[1] + sqrt(0) exactly, then both scaled by
+				// the same total -- so this is an EXACT equality, not a
+				// tolerance.
+				const Scalar v1 = m->getCoords()[ N ].y;
+				const Scalar v2 = m->getCoords()[ 2 * N ].y;
+				Check( v1 == v2,
+					"arc-length V: MONEY ASSERTION -- a zero-length profile segment gives its two rows IDENTICAL v (index fraction would give 1/3 vs 2/3)" );
+				Check( v1 > 0 && v1 < 1, "arc-length V: the duplicated point's v is interior to [0,1]" );
+			} else {
+				Check( false, "arc-length V: expected hard-edge vertex layout" );
+			}
+			pi->release();
+		}
+	}
+}
+
+// (10) A GENERATED CLOSED PROFILE AT A PARTIAL SWEEP.  A bead/torus ring
+// built from cos/sin does not close BIT-EXACTLY, so an `==` loop test read
+// it as OPEN, appended a spur from the ring THROUGH its own interior to the
+// axis, and ear-clipping the self-intersecting cross-section failed -- i.e.
+// the ring rendered fine at 360 and HARD-FAILED the instant the author set a
+// partial sweep.  The loop test is a tolerance, and the cap carries M
+// cross-section vertices (the near-duplicate closing point dropped).
+static void TestLatheGeneratedClosedProfile()
+{
+	std::cout << "Test 5k: lathe_geometry -- a GENERATED closed bead profile builds at a partial sweep" << std::endl;
+	const int M = 32, N = 12;
+	const double rc = 1.0, hc = 0.5, rad = 0.3;
+	std::vector<double> prof;
+	prof.reserve( ( M + 1 ) * 2 );
+	for( int k = 0; k <= M; ++k ) {
+		const double a = 2.0 * kPi * k / M;
+		prof.push_back( rc + rad * std::cos( a ) );
+		prof.push_back( hc + rad * std::sin( a ) );
+	}
+	Check( prof[0] != prof[ 2*M ] || prof[1] != prof[ 2*M + 1 ],
+		"bead: the generated closure is NOT bit-exact (so an `==` loop test cannot see it -- this is the premise of the case)" );
+
+	LatheDescriptor d;
+	d.profilePoints = &prof[0]; d.numProfilePoints = (unsigned int)( M + 1 );
+	d.nRadial = N;
+	d.sweepDegrees = 180.0;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ),
+		"bead: MONEY ASSERTION -- a generated closed profile at sweep_degrees 180 BUILDS" );
+	if( pi ) {
+		const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+		if( m ) {
+			Check( m->numPoints() == (unsigned int)( ( M + 1 ) * ( N + 1 ) + 2 * M ),
+				"bead: MONEY ASSERTION -- each cap carries M cross-section vertices (the loop is detected by TOLERANCE, so the near-duplicate closing point is dropped)" );
+			Check( m->getFaces().size() == (size_t)( M * 2 * N + 2 * ( M - 2 ) ),
+				"bead: each cap ear-clips a simple M-gon to M-2 triangles" );
+			Scalar area = 0, minTri = 0;
+			MeshAreaStats( m, area, minTri );
+			Check( minTri > 1e-12, "bead: no zero-area triangles (a retained near-duplicate vertex would make a ~1e-17 sliver)" );
+		}
+		pi->release();
+	}
+}
+
+// (11) A LEVEL-ENDED TUBE.  A shell authored up one wall and back down the
+// other ends at the SAME height, so closing the cross-section "back through
+// the axis" would append a spur that is COLLINEAR with both endpoints: zero
+// area, and an ear-clipped zero-area triangle -- contradicting the "no
+// zero-area triangles" contract.  Level ends close DIRECTLY instead, which
+// is both non-degenerate and the right shape (the wall, not the filled
+// bore).  (When the two ends are at DIFFERENT heights the spur has real
+// area and the cap DOES fill the bore; that is the documented limitation of
+// the close-through-the-axis rule.)
+static void TestLatheLevelEndTubeCap()
+{
+	std::cout << "Test 5l: lathe_geometry -- a level-ended TUBE caps without a zero-area spur" << std::endl;
+	const int N = 8;
+	const double prof[] = { 2.0, 0.0,   2.0, 1.0,   1.0, 1.0,   1.0, 0.0 };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 4;
+	d.nRadial = N;
+	d.sweepDegrees = 90.0;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "tube: a level-ended shell profile builds at a partial sweep" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "tube: concrete type" ); pi->release(); return; }
+
+	Check( m->numPoints() == (unsigned int)( 4 * ( N + 1 ) + 2 * 4 ),
+		"tube: MONEY ASSERTION -- the cap is the 4-vertex wall cross-section (closing through the axis appends a 5th, collinear, vertex)" );
+	Check( m->getFaces().size() == (size_t)( 3 * 2 * N + 2 * 2 ),
+		"tube: three side bands plus two 2-triangle caps" );
+
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	Check( minTri > 1e-12,
+		"tube: MONEY ASSERTION -- no zero-area triangles (the axis spur would ear-clip to a collinear one)" );
+
+	// Cap area, in closed form: the cross-section is exactly the 1 x 1 wall
+	// rectangle, on each of the two cut half-planes.
+	{
+		Scalar capArea = 0;
+		for( size_t f = (size_t)( 3 * 2 * N ); f < m->getFaces().size(); ++f ) {
+			const PointerPolygon_Template<3>& face = m->getFaces()[f];
+			const Point3& a = *face.pVertices[0];
+			const Point3& b = *face.pVertices[1];
+			const Point3& c = *face.pVertices[2];
+			const Scalar ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+			const Scalar vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+			const Scalar cx = uy*vz - uz*vy, cy = uz*vx - ux*vz, cz = ux*vy - uy*vx;
+			capArea += Scalar(0.5) * std::sqrt( cx*cx + cy*cy + cz*cz );
+		}
+		Check( std::fabs( (double)capArea - 2.0 ) < 1e-12,
+			"tube: the two caps are EXACTLY the 1 x 1 wall rectangle (not the filled bore)" );
+	}
+	Check( MeshWindingAgreesWithNormals( m ), "tube: winding agrees with the side and cap normals" );
+	pi->release();
+}
+
+// (12) AN INTERIOR POLE AT A PARTIAL SWEEP.  The hourglass -- the shape the
+// interior-pole split exists for -- had never been asked to CAP itself.
+// Closing (1,0) (0,1) (1,2) back through the axis appends the spur (0,2)
+// (0,0), and the profile's own pinch point (0,1) lies EXACTLY on the closing
+// edge (0,2)->(0,0): the polygon is not simple, it merely touches itself.
+// Ear clipping still succeeds and the total area is still right, but one of
+// the emitted triangles has EXACTLY zero area -- the same contract violation
+// the level-ends rule cites as its own reason to exist.  The cross-section is
+// therefore SPLIT at the interior on-axis point and each lobe capped on its
+// own, which is both non-degenerate and the same total area.
+static void TestLatheInteriorPolePartialCap()
+{
+	std::cout << "Test 5m: lathe_geometry -- an INTERIOR pole at a partial sweep caps as two lobes (no zero-area cap triangle)" << std::endl;
+	const int N = 8;
+	const double prof[] = { 1.0, 0.0,   0.0, 1.0,   1.0, 2.0 };	// hourglass, pinched on the axis at h = 1
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 3;
+	d.nRadial = N;
+	d.sweepDegrees = 90.0;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "hourglass-90: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "hourglass-90: concrete type" ); pi->release(); return; }
+
+	// Sides: two rings of N+1 columns plus the two split pinch poles.
+	// Caps: two sides x two 3-vertex lobes.
+	Check( m->numPoints() == (unsigned int)( 2 * ( N + 1 ) + 2 + 2 * ( 3 + 3 ) ),
+		"hourglass-90: MONEY ASSERTION -- each cap is TWO 3-vertex lobes (the un-split cross-section would be one 5-gon)" );
+	Check( m->getFaces().size() == (size_t)( 2 * N + 4 ),
+		"hourglass-90: two pole fans of n_radial, plus one triangle per lobe per cap" );
+
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	Check( minTri > 1e-12,
+		"hourglass-90: MONEY ASSERTION -- no zero-area triangles (the un-split 5-gon ear-clips one of EXACTLY zero area at the pinch)" );
+
+	// Cap area in closed form: the cross-section is the two unit right
+	// triangles (0,0)(1,0)(0,1) and (0,1)(1,2)(0,2), area 1/2 each, on each
+	// of the two cut half-planes.
+	{
+		Scalar capArea = 0;
+		for( size_t f = (size_t)( 2 * N ); f < m->getFaces().size(); ++f ) {
+			const PointerPolygon_Template<3>& face = m->getFaces()[f];
+			const Point3& a = *face.pVertices[0];
+			const Point3& b = *face.pVertices[1];
+			const Point3& c = *face.pVertices[2];
+			const Scalar ux = b.x-a.x, uy = b.y-a.y, uz = b.z-a.z;
+			const Scalar vx = c.x-a.x, vy = c.y-a.y, vz = c.z-a.z;
+			const Scalar cx = uy*vz - uz*vy, cy = uz*vx - ux*vz, cz = ux*vy - uy*vx;
+			capArea += Scalar(0.5) * std::sqrt( cx*cx + cy*cy + cz*cz );
+		}
+		Check( std::fabs( (double)capArea - 2.0 ) < 1e-12,
+			"hourglass-90: the two split caps carry EXACTLY the same total area as the un-split cross-section (2 x 1.0)" );
+	}
+	Check( MeshWindingAgreesWithNormals( m ), "hourglass-90: winding agrees with the side and cap normals" );
+	pi->release();
+}
+
+// (13) A FLAT ANNULUS AT A PARTIAL SWEEP.  A zero-thickness radial washer
+// (1,0) (3,0) is level-ended, so no axis spur is appended and the
+// cross-section is the 2-point segment itself -- which has no area to cap.
+// Refusing to build there is the same "renders fine at 360, HARD-FAILS the
+// instant the author types sweep_degrees 180" pathology the loop tolerance
+// exists to remove; the right answer is the band with NO caps.
+static void TestLatheFlatAnnulusPartialSweep()
+{
+	std::cout << "Test 5n: lathe_geometry -- a FLAT annulus builds at a partial sweep (band, no caps)" << std::endl;
+	const int N = 6;
+	const double r0 = 1.0, r1 = 3.0, sweep = 120.0;
+	const double prof[] = { r0, 0.0,   r1, 0.0 };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 2;
+	d.nRadial = N;
+	d.sweepDegrees = sweep;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ),
+		"flat annulus: MONEY ASSERTION -- a zero-thickness cross-section BUILDS at a partial sweep instead of refusing" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "flat annulus: concrete type" ); pi->release(); return; }
+
+	Check( m->numPoints() == (unsigned int)( 2 * ( N + 1 ) ),
+		"flat annulus: two rows of n_radial+1 columns and NOTHING else (no cap vertices)" );
+	Check( m->getFaces().size() == (size_t)( 2 * N ),
+		"flat annulus: the band only -- a zero-area cross-section contributes no cap triangles" );
+
+	Scalar area = 0, minTri = 0;
+	MeshAreaStats( m, area, minTri );
+	Check( minTri > 1e-12, "flat annulus: no zero-area triangles" );
+	// Closed form: each radial segment is an annular-sector polygon of area
+	// (1/2)*sin(dTheta)*(r1^2 - r0^2).
+	const double dTheta = ( sweep * kPi / 180.0 ) / N;
+	const double exact = N * 0.5 * std::sin( dTheta ) * ( r1*r1 - r0*r0 );
+	Check( std::fabs( (double)area - exact ) < 1e-9 * exact,
+		"flat annulus: area EXACTLY equals the inscribed annular-sector polygon" );
+	Check( MeshWindingAgreesWithNormals( m ), "flat annulus: winding agrees with the (purely axial) normal field" );
+	pi->release();
+}
+
+// (14) DEAD ROWS MUST NOT REACH THE MESH.  A profile that walks UP THE AXIS
+// before it leaves it -- (0,-100) (0,0) (1,1) (0,2) -- has a first segment
+// that lies entirely on the axis, so that segment is not live and its first
+// point is referenced by no band at all.  Emitting a row for it anyway puts
+// an unreferenced vertex at h = -100 in the mesh, and
+// TriangleMeshGeometryIndexed builds its BVH root box over ALL points rather
+// than over referenced triangles -- so the root grows from [0,2] to [-100,2],
+// a 50x oversized box that every traversal pays for.
+static void TestLatheDeadRowBoundingBox()
+{
+	std::cout << "Test 5o: lathe_geometry -- an unreferenced on-axis row never reaches the mesh (bbox = the LIVE extent)" << std::endl;
+	const int N = 8;
+	const double prof[] = { 0.0, -100.0,   0.0, 0.0,   1.0, 1.0,   0.0, 2.0 };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 4;
+	d.nRadial = N;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "dead row: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "dead row: concrete type" ); pi->release(); return; }
+
+	// two pole vertices (h = 0 and h = 2) + one ring; the h = -100 row is
+	// referenced by no band and is never emitted.
+	Check( m->numPoints() == (unsigned int)( 2 + N ),
+		"dead row: MONEY ASSERTION -- the unreferenced on-axis row is NOT emitted (it would add a third pole vertex)" );
+	Check( m->getFaces().size() == (size_t)( 2 * N ), "dead row: two pole fans of n_radial" );
+
+	const BoundingBox bb = m->GenerateBoundingBox();
+	Check( (double)bb.ll.y > -1.0 && std::fabs( (double)bb.ll.y ) < 1e-6,
+		"dead row: MONEY ASSERTION -- the bbox LOWER bound is the live extent h = 0, not the dead row's h = -100" );
+	Check( std::fabs( (double)bb.ur.y - 2.0 ) < 1e-6,
+		"dead row: the bbox upper bound is the live extent h = 2" );
+	pi->release();
+}
+
+// (15) THE LOOP TOLERANCE IS PINNED IN BOTH DIRECTIONS.  Test 5k red-proves
+// TIGHTENING it to `==` (a generated ring must still be seen as closed).
+// Nothing pinned LOOSENING it, because no fixture had ends separated by a
+// distance between the tolerance and something visible -- a tolerance of 1e-3
+// would have passed every test while silently dropping the closing point of
+// any profile that stops a micron short.  This fixture stops 1e-6 short:
+// genuinely OPEN at the scale of the part, so the closing point must be KEPT
+// and the cross-section closed through the axis around it.
+static void TestLatheNearLoopIsNotALoop()
+{
+	std::cout << "Test 5p: lathe_geometry -- a profile that closes to within 1e-6 is OPEN (the closing point is retained)" << std::endl;
+	const int N = 6;
+	const double gap = 1e-6;
+	// a unit box section 1..2 in r, 0..1 in h, walked all the way round but
+	// stopping `gap` short of its own start.
+	const double prof[] = { 1.0, 0.0,   2.0, 0.0,   2.0, 1.0,   1.0, 1.0,   1.0, gap };
+	LatheDescriptor d;
+	d.profilePoints = prof; d.numProfilePoints = 5;
+	d.nRadial = N;
+	d.sweepDegrees = 90.0;
+
+	ITriangleMeshGeometryIndexed* pi = 0;
+	Check( RISE_API_CreateLatheGeometry( &pi, d ), "near-loop: factory succeeds" );
+	if( !pi ) return;
+	const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+	if( !m ) { Check( false, "near-loop: concrete type" ); pi->release(); return; }
+
+	// 5 profile rows of N+1 columns, and a cap of 7 cross-section vertices
+	// (the 5 profile points plus the two axis-spur points) on each side.  A
+	// tolerance loose enough to call this a LOOP would drop the closing point
+	// and cap a 4-gon instead -- 2*4 cap vertices, not 2*7.
+	Check( m->numPoints() == (unsigned int)( 5 * ( N + 1 ) + 2 * 7 ),
+		"near-loop: MONEY ASSERTION -- the 1e-6 closing point is RETAINED and the cross-section closes through the AXIS around it" );
+	Check( m->getFaces().size() == (size_t)( 4 * 2 * N + 2 * 5 ),
+		"near-loop: four side bands plus two 5-triangle ear-clipped caps (a 7-gon, not a 4-gon)" );
+	pi->release();
+}
+
+// (16) FACTORY-LEVEL VALIDATION.  The chunk parser owns the author-facing
+// diagnostics (GuillocheChunkParseTest covers those); these pin the
+// factory's own refusals, which any direct API caller hits.
+static void TestLatheValidation()
+{
+	std::cout << "Test 5h: lathe_geometry -- factory validation" << std::endl;
+	ITriangleMeshGeometryIndexed* pi = 0;
+	{
+		const double prof[] = { 1.0, 0.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 1;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: a single profile point rejects" );
+	}
+	{
+		const double prof[] = { -1.0, 0.0,  1.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: a negative radius rejects" );
+	}
+	{
+		const double prof[] = { 0.0, 0.0,  0.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: an all-on-axis profile rejects" );
+	}
+	{
+		const double prof[] = { 1.0, 0.0,  1.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2; d.sweepDegrees = 0.0;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: sweep_degrees 0 rejects" );
+		d.sweepDegrees = 361.0;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: sweep_degrees > 360 rejects" );
+	}
+	{
+		const double prof[] = { 1.0, 0.0,  1.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2; d.axis = 3;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: an out-of-range axis rejects" );
+	}
+	// NON-FINITE profile components.  `r >= 0` rejects a NaN (it fails the
+	// compare) but PASSES +inf, and h was never checked at all: an infinite
+	// h makes every segment length inf, so the segment reads LIVE with a NaN
+	// normal and the factory emits inf vertices with NaN texcoords for the
+	// BVH to build over.  The chunk parser's token gate covers scene text;
+	// these pin the direct RISE_API.h caller.
+	{
+		const double inf = std::numeric_limits<double>::infinity();
+		const double prof[] = { 1.0, 0.0,  1.0, inf };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0,
+			"validation: MONEY ASSERTION -- an INFINITE profile height rejects (it would otherwise reach the BVH as inf vertices and NaN texcoords)" );
+	}
+	{
+		const double nan = std::numeric_limits<double>::quiet_NaN();
+		const double prof[] = { 1.0, nan,  1.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: a NaN profile height rejects" );
+	}
+	{
+		const double inf = std::numeric_limits<double>::infinity();
+		const double prof[] = { inf, 0.0,  1.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0,
+			"validation: an INFINITE profile radius rejects (the `>= 0` sign test alone passes +inf)" );
+	}
+	// Profile-point cap.
+	{
+		std::vector<double> prof( 2 * 5000 );
+		for( int k = 0; k < 5000; ++k ) { prof[ 2*k ] = 1.0; prof[ 2*k + 1 ] = 0.001 * k; }
+		LatheDescriptor d; d.profilePoints = &prof[0]; d.numProfilePoints = 5000;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0, "validation: more than 4096 profile points rejects" );
+	}
+	// Vertex budget.  A guard has to be REACHABLE to be a guard: 1001 rows x
+	// 2049 columns = 2.05M, just over the 2M ceiling.  (The original 20M
+	// ceiling could never fire -- the profile-point and n_radial clamps top
+	// out at 8190 x 2049 = 16.8M.)
+	{
+		std::vector<double> prof( 2 * 1001 );
+		for( int k = 0; k < 1001; ++k ) { prof[ 2*k ] = 1.0; prof[ 2*k + 1 ] = 0.01 * k; }
+		LatheDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = 1001;
+		d.nRadial = 2048; d.sweepDegrees = 90.0;
+		Check( !RISE_API_CreateLatheGeometry( &pi, d ) && pi == 0,
+			"validation: MONEY ASSERTION -- the ring-vertex budget REJECTS a REACHABLE request (1001 rows x 2049 columns)" );
+	}
+	// n_radial CLAMPS (with a warning) rather than rejecting
+	{
+		const double prof[] = { 1.0, 0.0,  1.0, 1.0 };
+		LatheDescriptor d; d.profilePoints = prof; d.numProfilePoints = 2; d.nRadial = 1;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "validation: n_radial 1 CLAMPS to 3 rather than rejecting" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			Check( m && m->numPoints() == 6, "validation: n_radial 1 clamped to the minimum 3 columns" );
+			pi->release();
+			pi = 0;
+		}
+	}
+	// smooth FALSE: two rows per live segment, each flat
+	{
+		const int N = 8;
+		const double prof[] = { 1.0, 0.0,  1.0, 1.0,  0.5, 2.0 };
+		LatheDescriptor d;
+		d.profilePoints = prof; d.numProfilePoints = 3; d.nRadial = N; d.smooth = false;
+		Check( RISE_API_CreateLatheGeometry( &pi, d ), "smooth FALSE factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			Check( m && m->numPoints() == (unsigned int)( 4 * N ),
+				"smooth FALSE: two rows per profile segment (faceted), so 2*segments*n_radial vertices" );
+			// the two rows of the FIRST segment share one flat normal
+			if( m ) {
+				const Normal& a = m->getNormals()[0];
+				const Normal& b = m->getNormals()[ N ];
+				const Scalar dot = a.x*b.x + a.y*b.y + a.z*b.z;
+				Check( dot > 1.0 - 1e-12, "smooth FALSE: both rows of a segment carry that segment's own flat normal" );
+			}
+			pi->release();
+			pi = 0;
+		}
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "ProceduralMeshTest -- procedural mesh factories vs Python baker goldens" << std::endl << std::endl;
@@ -1097,6 +2329,22 @@ int main( int, char** )
 	TestSweepClosedLoopPerStationWidthScale();
 	TestSweepPerStationWidth();
 	TestPathInstances();
+	TestLatheCylinderIdentity();
+	TestLatheConePole();
+	TestLatheSphereConvergence();
+	TestLathePartialSweep();
+	TestLatheWinding();
+	TestLatheVaseAndHardEdge();
+	TestLatheAxisAndReversedProfile();
+	TestLatheInteriorPolePinch();
+	TestLatheArcLengthV();
+	TestLatheGeneratedClosedProfile();
+	TestLatheLevelEndTubeCap();
+	TestLatheInteriorPolePartialCap();
+	TestLatheFlatAnnulusPartialSweep();
+	TestLatheDeadRowBoundingBox();
+	TestLatheNearLoopIsNotALoop();
+	TestLatheValidation();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

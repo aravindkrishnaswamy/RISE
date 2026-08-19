@@ -6378,6 +6378,133 @@ namespace RISE
 				}
 			};
 
+			struct LatheGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Same one-place-both-diagnostics pattern as
+				//! SkeletonGeometryAsciiChunkParser::Reject -- the specific
+				//! reason reaches the CST diag sink AND the log, so an author
+				//! (or the agent surface) is told which profile_point is at
+				//! fault rather than "the chunk failed".
+				static bool Reject( const std::string& why )
+				{
+					if( RISE::g_cstFinalizeDiagSink ) *RISE::g_cstFinalizeDiagSink = why;
+					GlobalLog()->PrintEx( eLog_Error, "lathe_geometry:: %s", why.c_str() );
+					return false;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", "noname" );
+
+					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
+					if( profLines.size() < 2 ) {
+						char buf[32];
+						std::snprintf( buf, sizeof(buf), "%u", (unsigned int)profLines.size() );
+						return Reject( "`" + name + "`: need at least 2 repeatable `profile_point <r> <h>` "
+							"entries (the silhouette to revolve) -- got " + buf );
+					}
+
+					std::vector<double> prof;
+					prof.reserve( profLines.size() * 2 );
+					bool anyPositiveRadius = false;
+					for( std::size_t i = 0; i < profLines.size(); ++i ) {
+						// TEXT-validate first: an exact 2-token all-finite-numeric
+						// check catches wrong arity, non-numeric fields, glued
+						// trailing garbage (`0.35abc`, which a bare sscanf would
+						// silently truncate), and nan/inf spellings in one shot --
+						// the same gate sweep_geometry's optional-arity
+						// profile_circle/profile_rect were moved onto in the C2
+						// fix round.
+						int nTok = 0;
+						if( !AllTokensAreFiniteNumbers( profLines[i].c_str(), &nTok ) || nTok != 2 ) {
+							char buf[32];
+							std::snprintf( buf, sizeof(buf), "%u", (unsigned int)i );
+							return Reject( "`" + name + "`: profile_point " + buf + " (`" + profLines[i] +
+								"`) must be exactly two finite numbers `<r> <h>` (no trailing garbage, no nan/inf)" );
+						}
+						double r = 0, h = 0;
+						std::sscanf( profLines[i].c_str(), "%lf %lf", &r, &h );
+						if( !( r >= 0.0 ) ) {
+							char buf[96];
+							std::snprintf( buf, sizeof(buf), "%u (%g)", (unsigned int)i, r );
+							return Reject( "`" + name + "`: profile_point " + buf + " has a NEGATIVE radius -- "
+								"the profile is a silhouette in the HALF-plane, so r must be >= 0 "
+								"(r = 0 puts the point ON the axis, which is how a vase closes)" );
+						}
+						if( r > 0.0 ) {
+							anyPositiveRadius = true;
+						}
+						prof.push_back( r );
+						prof.push_back( h );
+					}
+					if( !anyPositiveRadius ) {
+						return Reject( "`" + name + "`: every profile_point has radius 0 -- the whole profile "
+							"lies ON the axis and revolves to zero area; at least one point needs r > 0" );
+					}
+
+					LatheDescriptor d;
+
+					{
+						// LOWER-CASE ONLY, exactly matching the `enumValues`
+						// this parameter advertises: the descriptor IS the
+						// accepted set (that is the whole point of the
+						// descriptor-driven parsers), so accepting `Y` while
+						// the schema, autocomplete and read_schema all say
+						// `y` would understate what parses and let the two
+						// drift.
+						const std::string axisStr = bag.GetString( "axis", "y" );
+						if     ( axisStr == "x" ) d.axis = 0;
+						else if( axisStr == "y" ) d.axis = 1;
+						else if( axisStr == "z" ) d.axis = 2;
+						else {
+							return Reject( "`" + name + "`: axis `" + axisStr + "` must be x, y or z (lower case)" );
+						}
+					}
+
+					d.sweepDegrees = bag.GetDouble( "sweep_degrees", d.sweepDegrees );
+					// Negated idiom on purpose (matches sweep_geometry's
+					// profile_rect range check): a NaN fails BOTH halves and
+					// is rejected, where `< 0 || > 360` would pass it through.
+					// Defense in depth -- the dispatcher's numeric ValueKind
+					// gate already rejects a `nan` token before Finalize runs.
+					if( !( d.sweepDegrees > 0.0 && d.sweepDegrees <= 360.0 ) ) {
+						char buf[64];
+						std::snprintf( buf, sizeof(buf), "%g", d.sweepDegrees );
+						return Reject( std::string( "`" ) + name + "`: sweep_degrees (" + buf +
+							") must be in (0, 360] -- 360 is a full turn, less is a section/cutaway" );
+					}
+
+					d.profilePoints    = &prof[0];
+					d.numProfilePoints = (unsigned int)( prof.size() / 2 );
+					d.nRadial          = (int)bag.GetUInt( "n_radial", (unsigned int)d.nRadial );
+					d.smooth           = bag.GetBool( "smooth", d.smooth );
+
+					return pJob.AddLatheGeometry( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lathe_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A SURFACE OF REVOLUTION: an open 2D profile polyline (repeatable `profile_point <r> <h>`, r = radius from the axis, h = height along it) spun about a world axis.  Vases, bottles, goblets, turned table/chair legs, lamp bases, pedestals, finials, knobs -- the furniture-and-vessel vocabulary, authored as the one thing a silhouette already is: an outline.  A profile point with r = 0 sits ON the axis, so its ring collapses to a single POLE vertex fanned to its neighbour -- a profile that starts and ends at r = 0 is a closed, watertight vessel with NO caps needed and no zero-area triangles.  `sweep_degrees` below 360 makes a section/cutaway and adds two flat ear-clipped caps on the cut half-planes; at exactly 360 the last radial column stitches straight back to the first (no duplicated seam column).  UV = (angle fraction, normalized ARC LENGTH along the profile), so texture density stays even ALONG the profile however unevenly it is sampled -- with one exception, the single wrap-around band of a full 360 turn, where U runs the whole range backwards across that one band (the same seam convention sweep_geometry uses for its wrapped profile).  Outward orientation is DERIVED from the profile's signed volume of revolution, so a profile authored bottom-to-top or top-to-bottom both face outward.  A cutaway's cap is the profile closed back through the AXIS, which is the body's cross-section for a SOLID silhouette; for a TUBE/shell profile whose two ends sit at DIFFERENT heights that cap also fills the bore (when the two ends are level the cross-section is instead closed directly, so no zero-area spur is emitted).  The baked mesh is DOUBLE-SIDED (as sweep_geometry's is), so a luminaire material on a lathe radiates from the inside face as well as the outside -- worth knowing when a vase or a lamp shade IS the light.  One interaction to plan around: displaced_geometry over a PINCHED (waisted/hourglass) lathe TEARS at the waist, because the two pinch poles are coincident but carry opposite normals and displacement separates them by twice disp_scale -- inherent to split normals (sweep_geometry's hard-edge idiom has it too), and sharing one vertex instead would put one band's shading normal in the wrong half-space.  Displace an unpinched profile instead.  Contrast sweep_geometry, which moves a CLOSED profile polygon along an arbitrary 3D path; a lathe spins an OPEN polyline about one fixed straight axis.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.required = true;
+						  p.description = "One silhouette vertex `<r> <h>` (repeatable; at least 2 required).  `r` is the radius from the axis and must be >= 0; r = 0 puts the point ON the axis, collapsing that ring to a single pole vertex (how a vase closes at top and bottom).  A radius within 1e-9 of the profile's own bounding extent is SNAPPED to the axis, so a GENERATED silhouette (whose `sin(pi)` endpoint is 1.5e-16, not 0) still reads as a pole rather than as a ring of sliver triangles.  `h` is the height along the axis.  Not every point may be r = 0.  Duplicate a point to HARDEN that edge (the zero-length segment splits the two normals), exactly as in sweep_geometry"; }
+						{ auto& p = P(); p.name = "axis";          p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"};
+						  p.description = "World axis to revolve about.  `y` matches cylinder_geometry and the SDF roundcone/capsule local-Y convention, so a lathe drops straight into a scene alongside them"; p.defaultValueHint = "y"; }
+						{ auto& p = P(); p.name = "sweep_degrees"; p.kind = ValueKind::Double;
+						  p.description = "Angular extent of the revolution, in (0, 360].  360 = a full closed turn (no duplicated seam column, no radial caps); anything less is a section/cutaway and gets a flat ear-clipped cap on each cut half-plane"; p.defaultValueHint = "360"; }
+						{ auto& p = P(); p.name = "n_radial";      p.kind = ValueKind::UInt;
+						  p.description = "Radial SEGMENTS around the axis (clamped 3..2048, with a warning when clamped).  A full turn emits n_radial columns; a partial sweep emits n_radial + 1"; p.defaultValueHint = "48"; }
+						{ auto& p = P(); p.name = "smooth";        p.kind = ValueKind::Bool;
+						  p.description = "TRUE: one row per profile point carrying the AVERAGE of its two adjacent segment normals -- a straight-sided section still shades flat, a curved one reads like a turned surface, and duplicating a profile point hardens just that edge.  FALSE: two rows per profile segment carrying that segment's flat normal (fully faceted)"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct PathInstancesGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -11393,6 +11520,7 @@ namespace RISE
 		add( "skeleton_geometry",                     new SkeletonGeometryAsciiChunkParser() );
 		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
 		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
+		add( "lathe_geometry",                        new LatheGeometryAsciiChunkParser() );
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
 

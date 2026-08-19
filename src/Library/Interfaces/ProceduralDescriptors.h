@@ -90,6 +90,51 @@ namespace RISE
 		{
 		}
 	};
+
+	//! Surface-of-revolution (lathe) parameters: an OPEN 2D profile
+	//! polyline authored in the half-plane (r = radius from the axis,
+	//! h = height along it) revolved about a world axis.  Vases, bottles,
+	//! turned table/chair legs, lamp bases, pedestals, knobs, goblets --
+	//! the furniture-and-vessel vocabulary.  A silhouette is the single
+	//! most reliable thing to author by hand (or to generate): only the
+	//! outline is described, and the revolution supplies the solid.
+	//!
+	//! Distinct from SweepDescriptor: a sweep moves a CLOSED profile
+	//! polygon along an arbitrary 3D path; a lathe spins an OPEN profile
+	//! polyline about a fixed straight axis.  A profile point with r == 0
+	//! sits ON the axis, so its ring collapses to a single POLE vertex
+	//! (a triangle fan, no degenerate quad band) -- which is what makes a
+	//! vase closed at both ends watertight with no caps at all.  An
+	//! INTERIOR pole (a waisted profile pinched to r == 0 mid-way) gets one
+	//! pole vertex per adjacent band, since the two sides of a pinch demand
+	//! opposite axial normals.  The baked mesh is DOUBLE-SIDED, so an
+	//! emissive material on a lathe radiates from both faces.
+	//!
+	//! CONSEQUENCE of that split, worth knowing before reaching for a fix:
+	//! displaced_geometry over a PINCHED lathe TEARS at the waist.  The two
+	//! pinch poles are coincident but carry exactly opposite normals, so
+	//! displacement pushes them apart by 2 * disp_scale and opens a crack.
+	//! This is inherent to split normals -- sweep_geometry's duplicate-a-
+	//! profile-point hard-edge idiom has it too -- and sharing one vertex
+	//! instead would trade the crack for a shading normal in the wrong
+	//! half-space on one of the two bands, which is the very defect the
+	//! split exists to prevent.  Displace an UNPINCHED profile, or keep
+	//! disp_scale small relative to the waist, rather than "fixing" it.
+	struct LatheDescriptor
+	{
+		const double* profilePoints;	//!< r0 h0 r1 h1 ... (pairs; OPEN polyline, >= 2, every r >= 0, not ALL r == 0)
+		unsigned int  numProfilePoints;	//!< number of (r, h) PAIRS
+		int    axis;					//!< revolution axis: 0 = world X, 1 = world Y (the default, matching cylinder_geometry and the SDF roundcone/capsule local-Y convention), 2 = world Z
+		double sweepDegrees;			//!< angular extent of the revolution, in (0, 360].  360 closes the surface on itself (the last radial column IS the first -- no duplicated seam); anything less is a section/cutaway and gets two flat radial caps
+		int    nRadial;					//!< radial SEGMENTS around the axis (clamped 3..2048).  A full 360 sweep emits nRadial columns (wrapping); a partial sweep emits nRadial + 1
+		bool   smooth;					//!< TRUE: one row per profile point carrying the AVERAGE of its two adjacent segment normals (a turned surface reads smooth; duplicate a profile point to harden one edge).  FALSE: two rows per profile segment carrying that segment's flat normal (fully faceted)
+
+		LatheDescriptor() :
+			profilePoints( 0 ), numProfilePoints( 0 ),
+			axis( 1 ), sweepDegrees( 360.0 ), nRadial( 48 ), smooth( true )
+		{
+		}
+	};
 }
 
 #endif

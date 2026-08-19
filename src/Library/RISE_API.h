@@ -534,6 +534,19 @@ namespace RISE
 						const SweepDescriptor&         desc	///< [in] Profile + path + taper + cap parameters
 						);
 
+	//! Creates a SURFACE OF REVOLUTION (lathe): an OPEN 2D profile
+	//! polyline authored in the (r, h) half-plane revolved about a world
+	//! axis, optionally through less than a full turn (which adds two flat
+	//! ear-clipped radial caps).  Vases, bottles, turned legs, lamp bases,
+	//! pedestals, knobs.  A profile point at r == 0 collapses to a single
+	//! POLE vertex fanned to its neighbouring ring, so a profile that
+	//! starts and ends on the axis is watertight with no caps at all.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateLatheGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const LatheDescriptor&         desc	///< [in] Profile + axis + sweep + resolution parameters
+						);
+
 	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
 	//! through the universal TessellateToMesh contract) stamped along a 3D
 	//! Catmull-Rom path at arc-length pitch with optional slant and scale.

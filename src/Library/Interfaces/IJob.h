@@ -3881,6 +3881,19 @@ namespace RISE
 		//! \return TRUE if any object's world matrix actually changed.
 		virtual bool ComposeObjectHierarchy( ) { return false; }
 
+		//! Creates a SURFACE OF REVOLUTION (lathe): an open 2D profile
+		//! polyline in the (radius, height) half-plane revolved about a
+		//! world axis, optionally through less than a full turn (which
+		//! adds two flat ear-clipped radial caps).  Vases, bottles, turned
+		//! legs, lamp bases, pedestals, knobs.  Appended after
+		//! ComposeObjectHierarchy per the append-only IJob tail (preserves
+		//! every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddLatheGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const LatheDescriptor& desc				///< [in] Profile + axis + sweep + resolution parameters
+			) = 0;
+
 	};
 
 
