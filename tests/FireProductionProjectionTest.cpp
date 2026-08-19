@@ -1248,7 +1248,7 @@ int main()
 		"P2 Metal persistent allocator denial returns false with no partial result or escaped exception");
 	for( const char* injectedStage : {"buffer","upload_command","upload_encoder",
 		"command_buffer","command","staging_buffer","staging_command","staging_encoder","output",
-		"interstage_transfer","second_projection"} ) {
+		"interstage_transfer","interstage_upload","second_projection"} ) {
 		setenv("RISE_FIRE_PROJECTION_TEST_FAILURE",injectedStage,1);
 		FireProductionProjectionResult injectedResult;injectedResult.pressurePa.push_back(7.0f);
 		error.clear();
@@ -1256,6 +1256,7 @@ int main()
 			allocationFailure,injectedResult,&error);
 		unsetenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
 		const bool topology=std::string(injectedStage)=="interstage_transfer"||
+			std::string(injectedStage)=="interstage_upload"||
 			std::string(injectedStage)=="second_projection";
 		const bool expectedDiagnostic=topology?
 			error.find("resident topology changed")!=std::string::npos:
@@ -1429,11 +1430,18 @@ int main()
 		Count(metalSource," contents]")==1u&&
 		Count(metalSource," copyFromBuffer:")==1u&&
 		Count(metalSource,"CommitProjectionCommand(")==4u&&
-		Count(metalSource,"CopyProjectionBuffer(")==10u&&
+		Count(metalSource,"CopyProjectionBuffer(")==11u&&
+		Count(metalSource,"ProjectionTransferScope transferScope(")==2u&&
 		Count(residentProjectionBody,"ObserveProjectionInvocation();")==2u&&
 		residentProjectionBody.find(" copyFromBuffer:")==std::string::npos&&
 		residentProjectionBody.find("projectionInterstageFullGridReadCount-"
-			"beginningInterstageReads")!=std::string::npos,
+			"beginningInterstageReads")!=std::string::npos&&
+		residentProjectionBody.find("[residentInput->gasDensityKGPerM3 storageMode]!="
+			"MTLStorageModePrivate")!=std::string::npos&&
+		residentProjectionBody.find("residentInput->provisionalMomentumKGPerM2S[axis]!=packed")!=
+			std::string::npos&&
+		residentProjectionBody.find("trackedBytes+borrowedBytes!=residentBytes+uploadBytes+"
+			"stagingBytes")!=std::string::npos,
 		"P2 resident wrapper releases upload staging before one Private solve and stages only after completion");
 	const std::size_t makeRule=makefile.find("FireProductionProjection.o :");
 	const std::size_t makeRuleEnd=makeRule==std::string::npos?std::string::npos:

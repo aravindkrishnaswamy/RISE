@@ -37,6 +37,16 @@ namespace RISE
 
 		thread_local std::uint64_t residentForceCommandCommitCount=0u;
 		thread_local std::uint64_t residentForceInterstageFullGridReadCount=0u;
+		thread_local ResidentForceTransferPhase residentForceTransferPhase=
+			ResidentForceInterstageTransfer;
+
+		struct ResidentForceTransferScope
+		{
+			ResidentForceTransferPhase previous;
+			explicit ResidentForceTransferScope( ResidentForceTransferPhase phase ) :
+				previous(residentForceTransferPhase) {residentForceTransferPhase=phase;}
+			~ResidentForceTransferScope() {residentForceTransferPhase=previous;}
+		};
 
 		void CommitResidentForceCommand( id<MTLCommandBuffer> command )
 		{
@@ -53,13 +63,14 @@ namespace RISE
 
 		void CopyResidentForceBuffer( id<MTLBlitCommandEncoder> encoder,
 			id<MTLBuffer> source,std::size_t sourceOffset,id<MTLBuffer> destination,
-			std::size_t destinationOffset,std::size_t size,ResidentForceTransferPhase phase )
+			std::size_t destinationOffset,std::size_t size )
 		{
 			[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
 				destinationOffset:destinationOffset size:size];
-			if( phase==ResidentForceInterstageTransfer&&
-				[source storageMode]==MTLStorageModePrivate&&
-				[destination storageMode]!=MTLStorageModePrivate )
+			const bool sourceVisible=[source storageMode]!=MTLStorageModePrivate;
+			const bool destinationVisible=[destination storageMode]!=MTLStorageModePrivate;
+			if( residentForceTransferPhase==ResidentForceInterstageTransfer&&
+				sourceVisible!=destinationVisible )
 				++residentForceInterstageFullGridReadCount;
 		}
 		struct ForceParameters
@@ -655,12 +666,29 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						static_cast<std::uint32_t>(faceCounts[0]+faceCounts[1])},
 					static_cast<std::uint32_t>(faces)};
 				for( unsigned int side=0u;side<6u;++side ) p.boundary[side]=request.boundary[side];
+				std::uint64_t trackedAllocationBytes=0u,trackedAllocationCount=0u;
+				auto recordAllocation=[&](id<MTLBuffer> buffer) -> id<MTLBuffer> {
+					if( !buffer ) return nil;
+					const std::uint64_t bytes=[buffer allocatedSize];
+					if( trackedAllocationCount==std::numeric_limits<std::uint64_t>::max()||
+						trackedAllocationBytes>std::numeric_limits<std::uint64_t>::max()-bytes )
+						return nil;
+					++trackedAllocationCount;trackedAllocationBytes+=bytes;return buffer;};
 				auto sharedBytes=[&](const void* source,std::size_t bytes) -> id<MTLBuffer> {
-					return [context.device newBufferWithBytes:source length:bytes options:MTLResourceStorageModeShared];};
+					id<MTLBuffer> buffer=[context.device newBufferWithBytes:source length:bytes
+						options:MTLResourceStorageModeShared];
+					return buffer&&[buffer storageMode]==MTLStorageModeShared?
+						recordAllocation(buffer):nil;};
 				auto privateBuffer=[&](std::size_t bytes) -> id<MTLBuffer> {
-					return [context.device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];};
+					id<MTLBuffer> buffer=[context.device newBufferWithLength:bytes
+						options:MTLResourceStorageModePrivate];
+					return buffer&&[buffer storageMode]==MTLStorageModePrivate?
+						recordAllocation(buffer):nil;};
 				auto sharedBuffer=[&](std::size_t bytes) -> id<MTLBuffer> {
-					return [context.device newBufferWithLength:bytes options:MTLResourceStorageModeShared];};
+					id<MTLBuffer> buffer=[context.device newBufferWithLength:bytes
+						options:MTLResourceStorageModeShared];
+					return buffer&&[buffer storageMode]==MTLStorageModeShared?
+						recordAllocation(buffer):nil;};
 				id<MTLBuffer> rhoUpload=sharedBytes(request.cellGasDensityKGPerM3.data(),cellBytes);
 				id<MTLBuffer> nuUpload=sharedBytes(request.molecularKinematicViscosityM2PerS.data(),cellBytes);
 				id<MTLBuffer> faceRhoUpload=sharedBytes(packedDensity.data(),faceBytes);
@@ -724,12 +752,15 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					return Fail(error,"production resident force preflight command allocation failed");
 				id<MTLBlitCommandEncoder> upload=[preflight blitCommandEncoder];if( !upload )
 					return Fail(error,"production resident force upload encoder failed");
-				CopyResidentForceBuffer(upload,rhoUpload,0u,rho,0u,cellBytes,ResidentForceUploadTransfer);
-				CopyResidentForceBuffer(upload,nuUpload,0u,nu,0u,cellBytes,ResidentForceUploadTransfer);
-				CopyResidentForceBuffer(upload,faceRhoUpload,0u,faceRho,0u,faceBytes,ResidentForceUploadTransfer);
-				CopyResidentForceBuffer(upload,momentumUpload,0u,momentum,0u,faceBytes,ResidentForceUploadTransfer);
-				if( projectionTarget ) CopyResidentForceBuffer(upload,projectionTargetUpload,0u,
-					privateProjectionTarget,0u,cellBytes,ResidentForceUploadTransfer);
+				{
+					ResidentForceTransferScope transferScope(ResidentForceUploadTransfer);
+					CopyResidentForceBuffer(upload,rhoUpload,0u,rho,0u,cellBytes);
+					CopyResidentForceBuffer(upload,nuUpload,0u,nu,0u,cellBytes);
+					CopyResidentForceBuffer(upload,faceRhoUpload,0u,faceRho,0u,faceBytes);
+					CopyResidentForceBuffer(upload,momentumUpload,0u,momentum,0u,faceBytes);
+					if( projectionTarget ) CopyResidentForceBuffer(upload,projectionTargetUpload,0u,
+						privateProjectionTarget,0u,cellBytes);
+				}
 				[upload endEncoding];
 				const id<MTLBuffer> setupBuffers[]={faceRho,momentum,faceVelocity,parameters};
 				const id<MTLBuffer> cellBuffers[]={faceVelocity,cellVelocity,parameters};
@@ -815,7 +846,18 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					if( !injectedBlit ) return Fail(error,
 						"production resident force injected staging allocation failed");
 					CopyResidentForceBuffer(injectedBlit,momentum,0u,injectedInterstageStage,0u,
-						faceBytes,ResidentForceInterstageTransfer);
+						faceBytes);
+					[injectedBlit endEncoding];
+				}
+				id<MTLBuffer> injectedInterstageUpload=nil;
+				if( InjectedFailure("resident-interstage-upload") ) {
+					injectedInterstageUpload=sharedBuffer(faceBytes);
+					id<MTLBlitCommandEncoder> injectedBlit=injectedInterstageUpload?
+						[advance blitCommandEncoder]:nil;
+					if( !injectedBlit ) return Fail(error,
+						"production resident force injected upload allocation failed");
+					CopyResidentForceBuffer(injectedBlit,injectedInterstageUpload,0u,momentum,0u,
+						faceBytes);
 					[injectedBlit endEncoding];
 				}
 				CommitResidentForceCommand(advance);[advance waitUntilCompleted];
@@ -832,6 +874,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( observed.substepLoopDeviceToHostTransferCount!=0u )
 					return Fail(error,"production resident force interstage transfer observed");
 				if( composedResult ) {
+					if( trackedAllocationCount!=23u||
+						residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
+						trackedAllocationBytes!=residentBytes+uploadBytes )
+						return Fail(error,"production resident force allocation topology changed");
 					FireProductionProjectionRequest projectionRequest;
 					projectionRequest.shape=request.shape;projectionRequest.timeStepS=request.timeStepS;
 					projectionRequest.ambientDensityKGPerM3=request.ambientDensityKGPerM3;
@@ -848,6 +894,16 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						residentProjection.provisionalMomentumByteOffset[axis]=
 							momentumOffset*sizeof(float);
 						momentumOffset+=faceCounts[axis];
+					}
+					id<MTLBuffer> injectedResidentInput=nil;
+					if( InjectedFailure("resident-shared-input") ) {
+						injectedResidentInput=sharedBuffer(cellBytes);
+						residentProjection.divergenceTargetPerS=injectedResidentInput;
+					} else if( InjectedFailure("resident-short-input") ) {
+						injectedResidentInput=privateBuffer(sizeof(float));
+						residentProjection.divergenceTargetPerS=injectedResidentInput;
+					} else if( InjectedFailure("resident-alias-input") ) {
+						residentProjection.provisionalMomentumKGPerM2S[1]=faceRho;
 					}
 					FireProductionProjectionResult projected;
 					if( !ProjectFireProductionMetalResident(projectionRequest,residentProjection,
@@ -898,21 +954,29 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				actual=std::max(actual,hostBytes+residentBytes+snapshotBytes+stageBytes);
 				if( actual>certifiedBytes||actual>(UINT64_C(1)<<31u) )
 					return Fail(error,"production resident force staging allocation exceeds certificate");
+				const std::uint64_t expectedAllocationCount=captureIntermediateStates?28u:26u;
+				if( residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
+					residentBytes+uploadBytes>std::numeric_limits<std::uint64_t>::max()-snapshotBytes||
+					residentBytes+uploadBytes+snapshotBytes>
+						std::numeric_limits<std::uint64_t>::max()-stageBytes||
+					trackedAllocationCount!=expectedAllocationCount||
+					trackedAllocationBytes!=residentBytes+uploadBytes+snapshotBytes+stageBytes )
+					return Fail(error,"production resident force allocation topology changed");
 				id<MTLCommandBuffer> staging=InjectedFailure("resident-staging-command")?
 					nil:[context.queue commandBuffer];if( !staging )
 					return Fail(error,"production resident force staging command allocation failed");
 				id<MTLBlitCommandEncoder> blit=[staging blitCommandEncoder];if( !blit )
 					return Fail(error,"production resident force terminal staging encoder failed");
-				CopyResidentForceBuffer(blit,eddy,0u,stageEddy,0u,cellBytes,ResidentForceTerminalTransfer);
-				CopyResidentForceBuffer(blit,mu,0u,stageMu,0u,cellBytes,ResidentForceTerminalTransfer);
-				CopyResidentForceBuffer(blit,beginningViscous,0u,stageViscous,0u,faceBytes,
-					ResidentForceTerminalTransfer);
-				CopyResidentForceBuffer(blit,gravity,0u,stageGravity,0u,faceBytes,
-					ResidentForceTerminalTransfer);
-				CopyResidentForceBuffer(blit,momentum,0u,stageMomentum,0u,faceBytes,
-					ResidentForceTerminalTransfer);
-				if( captureIntermediateStates ) CopyResidentForceBuffer(blit,snapshots,0u,
-					stageSnapshots,0u,8u*faceBytes,ResidentForceTerminalTransfer);
+				{
+					ResidentForceTransferScope transferScope(ResidentForceTerminalTransfer);
+					CopyResidentForceBuffer(blit,eddy,0u,stageEddy,0u,cellBytes);
+					CopyResidentForceBuffer(blit,mu,0u,stageMu,0u,cellBytes);
+					CopyResidentForceBuffer(blit,beginningViscous,0u,stageViscous,0u,faceBytes);
+					CopyResidentForceBuffer(blit,gravity,0u,stageGravity,0u,faceBytes);
+					CopyResidentForceBuffer(blit,momentum,0u,stageMomentum,0u,faceBytes);
+					if( captureIntermediateStates ) CopyResidentForceBuffer(blit,snapshots,0u,
+						stageSnapshots,0u,8u*faceBytes);
+				}
 				[blit endEncoding];CommitResidentForceCommand(staging);[staging waitUntilCompleted];
 				observed.terminalStagingCount=1u;
 				if( [staging status]!=MTLCommandBufferStatusCompleted )

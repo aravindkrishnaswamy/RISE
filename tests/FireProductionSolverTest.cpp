@@ -2895,25 +2895,108 @@ int main()
 			residentStep.combinedCertifiedWorkingSetBytes&&
 		residentStep.combinedActualMetalAllocationBytes<(UINT64_C(1)<<31u),
 		"resident force, gravity, and one projection preserve staged-reference bytes without an interstage transfer");
-	FireProductionResidentForceProjectionResult rejectedResidentStep;
-	rejectedResidentStep.projection.pressurePa.push_back(1.0f);
-	rejectedResidentStep.forceSchedule.substepCount=4u;
-	rejectedResidentStep.forceToProjectionDeviceToHostTransferCount=4u;
-	rejectedResidentStep.residentProjectionInvocationCount=4u;
-	rejectedResidentStep.combinedCertifiedWorkingSetBytes=4u;
-	rejectedResidentStep.combinedActualMetalAllocationBytes=4u;
-	setenv("RISE_FIRE_FORCE_TEST_FAILURE","resident-interstage-transfer",1);
-	const bool rejectedResidentTransfer=!AdvanceFireProductionForceProjectionMetal(residentForce,
-		stagedProjection.divergenceTargetPerS,rejectedResidentStep,&error);
-	unsetenv("RISE_FIRE_FORCE_TEST_FAILURE");
-	Check(rejectedResidentTransfer&&rejectedResidentStep.projection.pressurePa.empty()&&
-		rejectedResidentStep.forceSchedule.substepCount==0u&&
-		rejectedResidentStep.forceToProjectionDeviceToHostTransferCount==0u&&
-		rejectedResidentStep.residentProjectionInvocationCount==0u&&
-		rejectedResidentStep.combinedCertifiedWorkingSetBytes==0u&&
-		rejectedResidentStep.combinedActualMetalAllocationBytes==0u&&
-		error.find("interstage transfer observed")!=std::string::npos,
-		"the observed transfer seam fails closed when an interstage host access is injected");
+	auto seedResidentResult=[](FireProductionResidentForceProjectionResult& seeded) {
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			seeded.projection.faceDensityKGPerM3[axis].push_back(1.0f);
+			seeded.projection.velocityMPerS[axis].push_back(1.0f);
+			seeded.projection.momentumKGPerM2S[axis].push_back(1.0f);
+		}
+		for( unsigned int side=0u;side<6u;++side )
+			seeded.projection.pressureOpenInflow[side].push_back(1u);
+		seeded.projection.pressurePa.push_back(1.0f);
+		seeded.projection.maximumPreProjectionResidualPerS=1.0f;
+		seeded.projection.maximumPostProjectionResidualPerS=1.0f;
+		seeded.projection.maximumOpenComplementarityDiscrepancyMPerS=1.0f;
+		seeded.projection.removedFineRightHandSideMean=1.0f;
+		seeded.projection.executedVCycleCount=1u;
+		seeded.projection.executedJacobiSweepCount=1u;
+		seeded.projection.residentUploadStagingCount=1u;
+		seeded.projection.residentInterstageDeviceToHostTransferCount=1u;
+		seeded.projection.residentTerminalStagingCount=1u;
+		seeded.projection.residentCommandCommitCount=1u;
+		seeded.projection.residentProjectionInvocationCount=1u;
+		seeded.projection.residentCertifiedWorkingSetBytes=1u;
+		seeded.projection.residentActualMetalAllocationBytes=1u;
+		seeded.projection.validationPassed=true;seeded.projection.deviceElapsedMS=1.0;
+		seeded.forceSchedule.substepCount=4u;seeded.forceSchedule.substepTimeS=1.0f;
+		seeded.forceSchedule.outwardWork=1.0;seeded.forceSchedule.representedProductUpper=1.0;
+		seeded.forceDiagnostics.outwardLambdaPerS=1.0f;
+		seeded.forceDiagnostics.scalarDiagnosticTransferCount=1u;
+		seeded.forceDiagnostics.substepLoopDeviceToHostTransferCount=1u;
+		seeded.forceDiagnostics.terminalStagingCount=1u;
+		seeded.forceDiagnostics.commandCommitCount=4u;
+		seeded.forceDiagnostics.certifiedWorkingSetBytes=1u;
+		seeded.forceDiagnostics.actualMetalAllocationBytes=1u;
+		seeded.forceDiagnostics.preflightDeviceElapsedMS=1.0;
+		seeded.forceDiagnostics.advanceDeviceElapsedMS=1.0;
+		seeded.forceToProjectionDeviceToHostTransferCount=4u;
+		seeded.residentProjectionInvocationCount=4u;
+		seeded.combinedCertifiedWorkingSetBytes=4u;
+		seeded.combinedActualMetalAllocationBytes=4u;
+	};
+	auto residentResultEmpty=[](const FireProductionResidentForceProjectionResult& rejected) {
+		bool empty=rejected.projection.pressurePa.empty();
+		for( unsigned int axis=0u;axis<3u;++axis ) empty=empty&&
+			rejected.projection.faceDensityKGPerM3[axis].empty()&&
+			rejected.projection.velocityMPerS[axis].empty()&&
+			rejected.projection.momentumKGPerM2S[axis].empty();
+		for( unsigned int side=0u;side<6u;++side )
+			empty=empty&&rejected.projection.pressureOpenInflow[side].empty();
+		return empty&&rejected.projection.maximumPreProjectionResidualPerS==0.0f&&
+			rejected.projection.maximumPostProjectionResidualPerS==0.0f&&
+			rejected.projection.maximumOpenComplementarityDiscrepancyMPerS==0.0f&&
+			rejected.projection.removedFineRightHandSideMean==0.0f&&
+			rejected.projection.executedVCycleCount==0u&&
+			rejected.projection.executedJacobiSweepCount==0u&&
+			rejected.projection.residentUploadStagingCount==0u&&
+			rejected.projection.residentInterstageDeviceToHostTransferCount==0u&&
+			rejected.projection.residentTerminalStagingCount==0u&&
+			rejected.projection.residentCommandCommitCount==0u&&
+			rejected.projection.residentProjectionInvocationCount==0u&&
+			rejected.projection.residentCertifiedWorkingSetBytes==0u&&
+			rejected.projection.residentActualMetalAllocationBytes==0u&&
+			!rejected.projection.validationPassed&&rejected.projection.deviceElapsedMS==0.0&&
+			rejected.forceSchedule.substepCount==0u&&rejected.forceSchedule.substepTimeS==0.0f&&
+			rejected.forceSchedule.outwardWork==0.0&&
+			rejected.forceSchedule.representedProductUpper==0.0&&
+			rejected.forceDiagnostics.outwardLambdaPerS==0.0f&&
+			rejected.forceDiagnostics.scalarDiagnosticTransferCount==0u&&
+			rejected.forceDiagnostics.substepLoopDeviceToHostTransferCount==0u&&
+			rejected.forceDiagnostics.terminalStagingCount==0u&&
+			rejected.forceDiagnostics.commandCommitCount==0u&&
+			rejected.forceDiagnostics.certifiedWorkingSetBytes==0u&&
+			rejected.forceDiagnostics.actualMetalAllocationBytes==0u&&
+			rejected.forceDiagnostics.preflightDeviceElapsedMS==0.0&&
+			rejected.forceDiagnostics.advanceDeviceElapsedMS==0.0&&
+			rejected.forceToProjectionDeviceToHostTransferCount==0u&&
+			rejected.residentProjectionInvocationCount==0u&&
+			rejected.combinedCertifiedWorkingSetBytes==0u&&
+			rejected.combinedActualMetalAllocationBytes==0u;
+	};
+	for( const char* injectedTransfer : {"resident-interstage-transfer",
+		"resident-interstage-upload"} ) {
+		FireProductionResidentForceProjectionResult rejectedResidentStep;
+		seedResidentResult(rejectedResidentStep);
+		setenv("RISE_FIRE_FORCE_TEST_FAILURE",injectedTransfer,1);
+		const bool rejectedResidentTransfer=!AdvanceFireProductionForceProjectionMetal(residentForce,
+			stagedProjection.divergenceTargetPerS,rejectedResidentStep,&error);
+		unsetenv("RISE_FIRE_FORCE_TEST_FAILURE");
+		Check(rejectedResidentTransfer&&residentResultEmpty(rejectedResidentStep)&&
+			error.find("interstage transfer observed")!=std::string::npos,
+			"both resident interstage transfer directions are observed and fail closed");
+	}
+	for( const char* malformedResident : {"resident-shared-input","resident-short-input",
+		"resident-alias-input"} ) {
+		FireProductionResidentForceProjectionResult rejectedResidentInput;
+		seedResidentResult(rejectedResidentInput);
+		setenv("RISE_FIRE_FORCE_TEST_FAILURE",malformedResident,1);
+		const bool rejected=!AdvanceFireProductionForceProjectionMetal(residentForce,
+			stagedProjection.divergenceTargetPerS,rejectedResidentInput,&error);
+		unsetenv("RISE_FIRE_FORCE_TEST_FAILURE");
+		Check(rejected&&residentResultEmpty(rejectedResidentInput)&&
+			error.find("resident")!=std::string::npos,
+			"resident projection rejects Shared, short, and noncanonical packed inputs atomically");
+	}
 	FireProductionProjectionShape combinedUnderShape,combinedOverShape;
 	std::uint64_t combinedUnderBytes=0u,combinedOverBytes=0u;
 	for( std::size_t nz=4u;nz<=1024u;++nz ) {
@@ -3965,7 +4048,8 @@ int main()
 		CountSubstring(residentForceBody,"CommitResidentForceCommand(")==3u&&
 		CountSubstring(residentForceBody,"ResidentForceBufferContents(")==7u&&
 		CountSubstring(forceMetalSource," copyFromBuffer:")==1u&&
-		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==13u&&
+		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==14u&&
+		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==2u&&
 		residentForceBody.find(" copyFromBuffer:")==std::string::npos&&
 		CountSubstring(residentForceBody,"[preflight commit]")==0u&&
 		CountSubstring(residentForceBody,"[advance commit]")==0u&&
@@ -3973,6 +4057,11 @@ int main()
 		CountSubstring(residentForceBody," contents]")==0u&&
 		residentForceBody.find("residentForceInterstageFullGridReadCount-"
 			"beginningInterstageReads")!=std::string::npos&&
+		forceMetalSource.find("sourceVisible!=destinationVisible")!=std::string::npos&&
+		residentForceBody.find("trackedAllocationBytes!=residentBytes+uploadBytes")!=
+			std::string::npos&&
+		residentForceBody.find("[buffer storageMode]==MTLStorageModePrivate")!=
+			std::string::npos&&
 		residentForceBody.find("ProjectFireProductionMetalResident(")!=std::string::npos,
 		"resident force observes every command/read seam and invokes one private-buffer projection");
 #else

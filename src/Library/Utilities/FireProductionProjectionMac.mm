@@ -39,6 +39,17 @@ namespace RISE
 		thread_local std::uint64_t projectionCommandCommitCount=0u;
 		thread_local std::uint64_t projectionInterstageFullGridReadCount=0u;
 		thread_local std::uint64_t projectionInvocationCount=0u;
+		thread_local ProjectionTransferPhase projectionTransferPhase=ProjectionInterstageTransfer;
+		thread_local std::uint64_t projectionBufferAllocationCount=0u;
+		thread_local std::uint64_t projectionBufferAllocationBytes=0u;
+
+		struct ProjectionTransferScope
+		{
+			ProjectionTransferPhase previous;
+			explicit ProjectionTransferScope( ProjectionTransferPhase phase ) :
+				previous(projectionTransferPhase) {projectionTransferPhase=phase;}
+			~ProjectionTransferScope() {projectionTransferPhase=previous;}
+		};
 
 		void CommitProjectionCommand( id<MTLCommandBuffer> command )
 		{
@@ -55,19 +66,31 @@ namespace RISE
 
 		void CopyProjectionBuffer( id<MTLBlitCommandEncoder> encoder,
 			id<MTLBuffer> source,std::size_t sourceOffset,id<MTLBuffer> destination,
-			std::size_t destinationOffset,std::size_t size,ProjectionTransferPhase phase )
+			std::size_t destinationOffset,std::size_t size )
 		{
 			[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
 				destinationOffset:destinationOffset size:size];
-			if( phase==ProjectionInterstageTransfer&&
-				[source storageMode]==MTLStorageModePrivate&&
-				[destination storageMode]!=MTLStorageModePrivate )
+			const bool sourceVisible=[source storageMode]!=MTLStorageModePrivate;
+			const bool destinationVisible=[destination storageMode]!=MTLStorageModePrivate;
+			if( projectionTransferPhase==ProjectionInterstageTransfer&&
+				sourceVisible!=destinationVisible )
 				++projectionInterstageFullGridReadCount;
 		}
 
 		void ObserveProjectionInvocation()
 		{
 			++projectionInvocationCount;
+		}
+
+		id<MTLBuffer> ObserveProjectionAllocation( id<MTLBuffer> buffer )
+		{
+			if( !buffer ) return nil;
+			const std::uint64_t bytes=[buffer allocatedSize];
+			if( projectionBufferAllocationCount==std::numeric_limits<std::uint64_t>::max()||
+				projectionBufferAllocationBytes>std::numeric_limits<std::uint64_t>::max()-bytes )
+				return nil;
+			++projectionBufferAllocationCount;projectionBufferAllocationBytes+=bytes;
+			return buffer;
 		}
 		struct MetalLevelParameters
 		{
@@ -421,17 +444,26 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 
 		id<MTLBuffer> NewBuffer( id<MTLDevice> device, std::size_t bytes )
 		{
-			return [device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> buffer=[device newBufferWithLength:bytes
+				options:MTLResourceStorageModePrivate];
+			return buffer&&[buffer storageMode]==MTLStorageModePrivate?
+				ObserveProjectionAllocation(buffer):nil;
 		}
 
 		id<MTLBuffer> NewBufferWithBytes( id<MTLDevice> device,const void* bytes,std::size_t size )
 		{
-			return [device newBufferWithBytes:bytes length:size options:MTLResourceStorageModeShared];
+			id<MTLBuffer> buffer=[device newBufferWithBytes:bytes length:size
+				options:MTLResourceStorageModeShared];
+			return buffer&&[buffer storageMode]==MTLStorageModeShared?
+				ObserveProjectionAllocation(buffer):nil;
 		}
 
 		id<MTLBuffer> NewSharedBuffer( id<MTLDevice> device, std::size_t bytes )
 		{
-			return [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+			id<MTLBuffer> buffer=[device newBufferWithLength:bytes
+				options:MTLResourceStorageModeShared];
+			return buffer&&[buffer storageMode]==MTLStorageModeShared?
+				ObserveProjectionAllocation(buffer):nil;
 		}
 
 		bool AllFinite( const std::vector<float>& values )
@@ -578,6 +610,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			const std::uint64_t beginningCommandCommits=projectionCommandCommitCount;
 			const std::uint64_t beginningInterstageReads=projectionInterstageFullGridReadCount;
 			const std::uint64_t beginningProjectionInvocations=projectionInvocationCount;
+			const std::uint64_t beginningAllocationCount=projectionBufferAllocationCount;
+			const std::uint64_t beginningAllocationBytes=projectionBufferAllocationBytes;
 			std::uint64_t observedActualMetalBytes=0u,certifiedWorkingSetBytes=0u;
 			if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
 			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes) )
@@ -588,6 +622,36 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				if( certifiedWorkingSetBytes>std::numeric_limits<std::uint64_t>::max()-allocation )
 					return false;
 				certifiedWorkingSetBytes+=allocation;
+			}
+			if( residentInput ) {
+				const std::size_t cellBytes=request.shape.CellCount()*sizeof(float);
+				id<MTLBuffer> packed=residentInput->provisionalMomentumKGPerM2S[0];
+				if( !residentInput->gasDensityKGPerM3||!residentInput->divergenceTargetPerS||!packed||
+					[residentInput->gasDensityKGPerM3 storageMode]!=MTLStorageModePrivate||
+					[residentInput->divergenceTargetPerS storageMode]!=MTLStorageModePrivate||
+					[packed storageMode]!=MTLStorageModePrivate||
+					[residentInput->gasDensityKGPerM3 length]<cellBytes||
+					[residentInput->divergenceTargetPerS length]<cellBytes ) {
+					if( error ) *error="production fire projection resident input is not private full-grid storage";
+					return false;
+				}
+				std::size_t expectedOffset=0u;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t bytes=FireProductionProjectionFaceCount(request.shape,axis)*sizeof(float);
+					if( residentInput->provisionalMomentumKGPerM2S[axis]!=packed||
+						residentInput->provisionalMomentumByteOffset[axis]!=expectedOffset||
+						expectedOffset>[packed length]||bytes>[packed length]-expectedOffset ) {
+						if( error ) *error="production fire projection resident momentum packing is invalid";
+						return false;
+					}
+					expectedOffset+=bytes;
+				}
+				if( [packed length]<expectedOffset||packed==residentInput->gasDensityKGPerM3||
+					packed==residentInput->divergenceTargetPerS||
+					residentInput->gasDensityKGPerM3==residentInput->divergenceTargetPerS ) {
+					if( error ) *error="production fire projection resident buffer ownership is invalid";
+					return false;
+				}
 			}
 			MetalProjectionContext& context=Context();
 			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
@@ -711,14 +775,14 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					id<MTLBlitCommandEncoder> upload=InjectedFailure("upload_encoder")?
 						nil:[uploadCommand blitCommandEncoder];
 					if( !upload ) {if( error ) *error="production fire projection upload encoder allocation failed";return false;}
-					CopyProjectionBuffer(upload,densityUpload,0u,fine.density,0u,cells*sizeof(float),
-						ProjectionUploadTransfer);
-					CopyProjectionBuffer(upload,targetUpload,0u,target,0u,cells*sizeof(float),
-						ProjectionUploadTransfer);
-					for( unsigned int axis=0;axis<3u;++axis ) CopyProjectionBuffer(upload,
-						provisionalUpload[axis],0u,provisional[axis],0u,
-						FireProductionProjectionFaceCount(shape,axis)*sizeof(float),
-						ProjectionUploadTransfer);
+					{
+						ProjectionTransferScope transferScope(ProjectionUploadTransfer);
+						CopyProjectionBuffer(upload,densityUpload,0u,fine.density,0u,cells*sizeof(float));
+						CopyProjectionBuffer(upload,targetUpload,0u,target,0u,cells*sizeof(float));
+						for( unsigned int axis=0;axis<3u;++axis ) CopyProjectionBuffer(upload,
+							provisionalUpload[axis],0u,provisional[axis],0u,
+							FireProductionProjectionFaceCount(shape,axis)*sizeof(float));
+					}
 					[upload endEncoding];CommitProjectionCommand(uploadCommand);
 					++observedUploadStaging;[uploadCommand waitUntilCompleted];
 					if( [uploadCommand status]!=MTLCommandBufferStatusCompleted ) {
@@ -829,7 +893,21 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 						return false;
 					}
 					CopyProjectionBuffer(injectedBlit,fineLevel.pressure,0u,injectedInterstageStage,
-						0u,cells*sizeof(float),ProjectionInterstageTransfer);
+						0u,cells*sizeof(float));
+					[injectedBlit endEncoding];
+				}
+				id<MTLBuffer> injectedInterstageUpload=nil;
+				if( InjectedFailure("interstage_upload") ) {
+					injectedInterstageUpload=NewSharedBuffer(context.device,cells*sizeof(float));
+					id<MTLBlitCommandEncoder> injectedBlit=injectedInterstageUpload?
+						[command blitCommandEncoder]:nil;
+					if( !injectedBlit ) {
+						if( error ) *error=
+							"production fire projection injected upload allocation failed";
+						return false;
+					}
+					CopyProjectionBuffer(injectedBlit,injectedInterstageUpload,0u,
+						fineLevel.pressure,0u,cells*sizeof(float));
 					[injectedBlit endEncoding];
 				}
 				CommitProjectionCommand(command);[command waitUntilCompleted];
@@ -872,19 +950,18 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				id<MTLBlitCommandEncoder> staging=InjectedFailure("staging_encoder")?
 					nil:(stagingCommand?[stagingCommand blitCommandEncoder]:nil);
 				if( !staging ) {if( error ) *error="production fire projection staging encoder allocation failed";return false;}
-				CopyProjectionBuffer(staging,fineLevel.pressure,0u,pressureStage,0u,
-					cells*sizeof(float),ProjectionTerminalTransfer);
-				for( unsigned int axis=0;axis<3u;++axis ) {
-					const std::size_t bytes=FireProductionProjectionFaceCount(shape,axis)*sizeof(float);
-					CopyProjectionBuffer(staging,stored[axis],0u,storedStage[axis],0u,bytes,
-						ProjectionTerminalTransfer);
-					CopyProjectionBuffer(staging,momentum[axis],0u,momentumStage[axis],0u,bytes,
-						ProjectionTerminalTransfer);
-					CopyProjectionBuffer(staging,velocity[axis],0u,velocityStage[axis],0u,bytes,
-						ProjectionTerminalTransfer);
-					if( resident ) CopyProjectionBuffer(staging,provisional[axis],
-						provisionalOffset[axis],provisionalStage[axis],0u,bytes,
-						ProjectionTerminalTransfer);
+				{
+					ProjectionTransferScope transferScope(ProjectionTerminalTransfer);
+					CopyProjectionBuffer(staging,fineLevel.pressure,0u,pressureStage,0u,
+						cells*sizeof(float));
+					for( unsigned int axis=0;axis<3u;++axis ) {
+						const std::size_t bytes=FireProductionProjectionFaceCount(shape,axis)*sizeof(float);
+						CopyProjectionBuffer(staging,stored[axis],0u,storedStage[axis],0u,bytes);
+						CopyProjectionBuffer(staging,momentum[axis],0u,momentumStage[axis],0u,bytes);
+						CopyProjectionBuffer(staging,velocity[axis],0u,velocityStage[axis],0u,bytes);
+						if( resident ) CopyProjectionBuffer(staging,provisional[axis],
+							provisionalOffset[axis],provisionalStage[axis],0u,bytes);
+					}
 				}
 				[staging endEncoding];CommitProjectionCommand(stagingCommand);
 				++observedTerminalStaging;[stagingCommand waitUntilCompleted];
@@ -974,6 +1051,36 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					result.residentProjectionInvocationCount!=1u ) {
 					result=FireProductionProjectionResult();
 					if( error ) *error="production fire projection resident topology changed";
+					return false;
+				}
+				if( projectionBufferAllocationCount<beginningAllocationCount||
+					projectionBufferAllocationBytes<beginningAllocationBytes ) {
+					result=FireProductionProjectionResult();
+					return false;
+				}
+				std::uint64_t borrowedBytes=0u;
+				if( resident ) {
+					const id<MTLBuffer> borrowed[]={fine.density,target,provisional[0]};
+					for( id<MTLBuffer> buffer:borrowed ) {
+						const std::uint64_t bytes=[buffer allocatedSize];
+						if( borrowedBytes>std::numeric_limits<std::uint64_t>::max()-bytes ) {
+							result=FireProductionProjectionResult();return false;
+						}
+						borrowedBytes+=bytes;
+					}
+				}
+				const std::uint64_t trackedCount=projectionBufferAllocationCount-
+					beginningAllocationCount;
+				const std::uint64_t trackedBytes=projectionBufferAllocationBytes-
+					beginningAllocationBytes;
+				const std::uint64_t expectedCount=10u*hierarchy.size()+(resident?25u:32u);
+				if( residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
+					residentBytes+uploadBytes>std::numeric_limits<std::uint64_t>::max()-stagingBytes||
+					trackedBytes>std::numeric_limits<std::uint64_t>::max()-borrowedBytes||
+					trackedCount!=expectedCount||
+					trackedBytes+borrowedBytes!=residentBytes+uploadBytes+stagingBytes ) {
+					result=FireProductionProjectionResult();
+					if( error ) *error="production fire projection allocation topology changed";
 					return false;
 				}
 				result.residentCertifiedWorkingSetBytes=certifiedWorkingSetBytes;
