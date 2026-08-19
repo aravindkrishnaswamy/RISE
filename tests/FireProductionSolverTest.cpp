@@ -9,11 +9,13 @@
 #include "../src/Library/Utilities/FireProductionCompute.h"
 #include "../src/Library/Utilities/FireProductionAdvection.h"
 #include "../src/Library/Utilities/FireProductionTables.h"
+#include "../src/Library/Utilities/FireProductionTransport.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -73,6 +75,19 @@ namespace
 		return (component*request.lineCount+line)*(request.lineLength+1u)+face;
 	}
 
+	std::size_t TransportCellIndex( const RISE::FireProductionProjectionShape& shape,
+		std::size_t x, std::size_t y, std::size_t z )
+	{
+		return (z*shape.ny+y)*shape.nx+x;
+	}
+
+	std::string FloatBytesSHA256( const std::vector<float>& values )
+	{
+		RISE::RISECBOR64::Bytes bytes(values.size()*sizeof(float));
+		if( !bytes.empty() ) std::memcpy(bytes.data(),values.data(),bytes.size());
+		return RISE::RISECBOR64::SHA256Hex(bytes);
+	}
+
 	RISE::FireProductionRemapRequest PeriodicRequest( std::size_t cells,
 		std::size_t components, float courant )
 	{
@@ -87,6 +102,87 @@ namespace
 		request.faceVelocityMPerS.assign(cells+1u,1.0f);
 		request.ambientValues.assign(components,0.0f);
 		return request;
+	}
+
+	RISE::FireProductionRemapBoundary TestRemapBoundary(
+		RISE::FireProductionProjectionBoundary boundary )
+	{
+		if( boundary==RISE::FireProductionProjectionPeriodic )
+			return RISE::FireProductionRemapPeriodic;
+		if( boundary==RISE::FireProductionProjectionPressureOpen )
+			return RISE::FireProductionRemapPressureOpen;
+		return RISE::FireProductionRemapWall;
+	}
+
+	bool IndependentCellAxisPass(
+		const RISE::FireProductionCellPalindromeRequest& request,
+		unsigned int axis, float timeStepS, std::vector<float>& values,
+		std::string& error )
+	{
+		const RISE::FireProductionProjectionShape& shape=request.shape;
+		const std::size_t length=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+		const std::size_t lines=axis==0u?shape.ny*shape.nz:
+			(axis==1u?shape.nx*shape.nz:shape.nx*shape.ny);
+		RISE::FireProductionRemapRequest oneDimensional;
+		oneDimensional.lineLength=length;oneDimensional.lineCount=lines;
+		oneDimensional.componentCount=request.componentCount;
+		oneDimensional.cellWidthM=shape.cellWidthM;oneDimensional.timeStepS=timeStepS;
+		oneDimensional.asymmetricBoundaries=true;
+		oneDimensional.lowerBoundary=TestRemapBoundary(request.boundary[2u*axis]);
+		oneDimensional.upperBoundary=TestRemapBoundary(request.boundary[2u*axis+1u]);
+		oneDimensional.ambientValues=request.ambientValues;
+		oneDimensional.values.resize(values.size());
+		oneDimensional.faceVelocityMPerS.resize(lines*(length+1u));
+		for( std::size_t line=0;line<lines;++line ) {
+			const std::size_t transverse0=axis==0u?line%shape.ny:line%shape.nx;
+			const std::size_t transverse1=axis==0u?line/shape.ny:
+				(axis==1u?line/shape.nx:line/shape.nx);
+			for( std::size_t coordinate=0;coordinate<=length;++coordinate ) {
+				const std::size_t x=axis==0u?coordinate:transverse0;
+				const std::size_t y=axis==1u?coordinate:(axis==0u?transverse0:transverse1);
+				const std::size_t z=axis==2u?coordinate:transverse1;
+				std::size_t face=0u;
+				if( axis==0u ) face=(z*shape.ny+y)*(shape.nx+1u)+x;
+				else if( axis==1u ) face=(z*(shape.ny+1u)+y)*shape.nx+x;
+				else face=(z*shape.ny+y)*shape.nx+x;
+				oneDimensional.faceVelocityMPerS[line*(length+1u)+coordinate]=
+					request.frozenVelocityMPerS[axis][face];
+				if( coordinate==length ) continue;
+				const std::size_t cell=TransportCellIndex(shape,x,y,z);
+				for( std::size_t component=0;component<request.componentCount;++component )
+					oneDimensional.values[(component*lines+line)*length+coordinate]=
+						values[component*shape.CellCount()+cell];
+			}
+		}
+		RISE::FireProductionRemapResult remapped;
+		if( !RISE::RemapFireProductionCPU(oneDimensional,remapped,&error) ) return false;
+		for( std::size_t line=0;line<lines;++line ) {
+			const std::size_t transverse0=axis==0u?line%shape.ny:line%shape.nx;
+			const std::size_t transverse1=axis==0u?line/shape.ny:
+				(axis==1u?line/shape.nx:line/shape.nx);
+			for( std::size_t coordinate=0;coordinate<length;++coordinate ) {
+				const std::size_t x=axis==0u?coordinate:transverse0;
+				const std::size_t y=axis==1u?coordinate:(axis==0u?transverse0:transverse1);
+				const std::size_t z=axis==2u?coordinate:transverse1;
+				const std::size_t cell=TransportCellIndex(shape,x,y,z);
+				for( std::size_t component=0;component<request.componentCount;++component )
+					values[component*shape.CellCount()+cell]=
+						remapped.updatedValues[(component*lines+line)*length+coordinate];
+			}
+		}
+		return true;
+	}
+
+	bool IndependentCellComposition(
+		const RISE::FireProductionCellPalindromeRequest& request,
+		const unsigned int* axes, const float* stepFactors, std::size_t passCount,
+		std::vector<float>& values, std::string& error )
+	{
+		values=request.conservativeValues;
+		for( std::size_t pass=0;pass<passCount;++pass )
+			if( !IndependentCellAxisPass(request,axes[pass],
+				stepFactors[pass]*request.timeStepS,values,error) ) return false;
+		return true;
 	}
 
 	bool NearFloat( float a, float b, float relative=2.0e-5f )
@@ -550,6 +646,188 @@ int main()
 		error.find("two GiB")==std::string::npos,
 		"final-byte resource fixture has a discriminating below-bound companion");
 
+	FireProductionCellPalindromeRequest translated;
+	translated.shape.nx=8u;translated.shape.ny=8u;translated.shape.nz=8u;
+	translated.shape.cellWidthM=1.0f;translated.componentCount=2u;
+	translated.timeStepS=1.0f;
+	translated.boundary.fill(FireProductionProjectionPeriodic);
+	translated.conservativeValues.assign(2u*translated.shape.CellCount(),0.0f);
+	translated.ambientValues.assign(2u,0.0f);
+	for( unsigned int axis=0u;axis<3u;++axis )
+		translated.frozenVelocityMPerS[axis].assign(
+			FireProductionProjectionFaceCount(translated.shape,axis),axis<2u?2.0f:1.0f);
+	const std::size_t translatedBeginning=TransportCellIndex(translated.shape,1u,1u,1u);
+	translated.conservativeValues[translatedBeginning]=1.0f;
+	translated.conservativeValues[translated.shape.CellCount()+translatedBeginning]=2.0f;
+	const unsigned int canonicalAxes[]={0u,1u,2u,1u,0u};
+	const float canonicalFactors[]={0.5f,0.5f,1.0f,0.5f,0.5f};
+	std::vector<float> translatedIndependent;
+	const bool translatedReference=IndependentCellComposition(translated,canonicalAxes,
+		canonicalFactors,5u,translatedIndependent,error);
+	FireProductionCellPalindromeResult translatedResult;
+	const std::size_t translatedEnd=TransportCellIndex(translated.shape,3u,3u,2u);
+	bool exactTranslatedTuple=false;
+	if( RemapFireProductionCellPalindromeCPU(translated,translatedResult,&error) ) {
+		exactTranslatedTuple=translatedResult.executedSubmapCount==5u;
+		for( std::size_t cell=0;cell<translated.shape.CellCount();++cell )
+			exactTranslatedTuple=exactTranslatedTuple&&
+				translatedResult.conservativeValues[cell]==(cell==translatedEnd?1.0f:0.0f)&&
+				translatedResult.conservativeValues[translated.shape.CellCount()+cell]==
+					(cell==translatedEnd?2.0f:0.0f);
+	}
+	Check(translatedReference&&exactTranslatedTuple&&
+		translatedResult.conservativeValues==translatedIndependent,
+		"production palindrome exactly translates an integer-Courant tuple by (2,2,1)");
+
+	FireProductionCellPalindromeRequest donor=translated;
+	donor.componentCount=1u;
+	donor.conservativeValues.assign(donor.shape.CellCount(),0.0f);
+	donor.ambientValues.assign(1u,0.0f);
+	donor.conservativeValues[translatedBeginning]=1.0f;
+	std::fill(donor.frozenVelocityMPerS[0].begin(),donor.frozenVelocityMPerS[0].end(),0.75f);
+	std::fill(donor.frozenVelocityMPerS[1].begin(),donor.frozenVelocityMPerS[1].end(),0.75f);
+	std::fill(donor.frozenVelocityMPerS[2].begin(),donor.frozenVelocityMPerS[2].end(),0.0f);
+	FireProductionCellPalindromeResult donorResult;
+	std::vector<float> donorIndependent;
+	const bool donorReference=IndependentCellComposition(donor,canonicalAxes,
+		canonicalFactors,5u,donorIndependent,error);
+	Check(RemapFireProductionCellPalindromeCPU(donor,donorResult,&error)&&
+		donorReference&&donorResult.conservativeValues==donorIndependent&&
+		donorResult.executedSubmapCount==5u&&
+		*std::min_element(donorResult.conservativeValues.begin(),
+			donorResult.conservativeValues.end())>=0.0f&&
+		std::fabs(std::accumulate(donorResult.conservativeValues.begin(),
+			donorResult.conservativeValues.end(),0.0)-1.0)<=2.0e-6,
+		"palindromic composition survives combined 0.75+0.75 donor outflow without a clamp");
+	FireProductionCellPalindromeRequest orderSensitive=donor;
+	orderSensitive.timeStepS=0.4f;
+	for( std::size_t z=0;z<orderSensitive.shape.nz;++z )
+		for( std::size_t y=0;y<orderSensitive.shape.ny;++y )
+			for( std::size_t x=0;x<orderSensitive.shape.nx;++x )
+				orderSensitive.conservativeValues[TransportCellIndex(orderSensitive.shape,x,y,z)]=
+					0.2f+0.07f*static_cast<float>((x+3u*y+5u*z)%11u);
+	for( std::size_t z=0;z<orderSensitive.shape.nz;++z )
+		for( std::size_t y=0;y<orderSensitive.shape.ny;++y )
+			for( std::size_t x=0;x<=orderSensitive.shape.nx;++x )
+				orderSensitive.frozenVelocityMPerS[0][(z*orderSensitive.shape.ny+y)*
+					(orderSensitive.shape.nx+1u)+x]=0.3f+0.02f*static_cast<float>(y);
+	for( std::size_t z=0;z<orderSensitive.shape.nz;++z )
+		for( std::size_t y=0;y<=orderSensitive.shape.ny;++y )
+			for( std::size_t x=0;x<orderSensitive.shape.nx;++x )
+				orderSensitive.frozenVelocityMPerS[1][(z*(orderSensitive.shape.ny+1u)+y)*
+					orderSensitive.shape.nx+x]=-0.2f+0.015f*static_cast<float>(x);
+	for( std::size_t z=0;z<=orderSensitive.shape.nz;++z )
+		for( std::size_t y=0;y<orderSensitive.shape.ny;++y )
+			for( std::size_t x=0;x<orderSensitive.shape.nx;++x )
+				orderSensitive.frozenVelocityMPerS[2][(z*orderSensitive.shape.ny+y)*
+					orderSensitive.shape.nx+x]=0.1f+
+					0.01f*static_cast<float>((x+y)%3u);
+	FireProductionCellPalindromeResult orderSensitiveResult;
+	std::vector<float> orderIndependent,axisReversed,lieSplit;
+	const unsigned int axisReversedAxes[]={2u,1u,0u,1u,2u};
+	const unsigned int lieAxes[]={0u,1u,2u};
+	const float lieFactors[]={1.0f,1.0f,1.0f};
+	const bool orderReference=IndependentCellComposition(orderSensitive,canonicalAxes,
+		canonicalFactors,5u,orderIndependent,error);
+	const bool axisReversedReference=IndependentCellComposition(orderSensitive,
+		axisReversedAxes,canonicalFactors,5u,axisReversed,error);
+	const bool lieReference=IndependentCellComposition(orderSensitive,lieAxes,
+		lieFactors,3u,lieSplit,error);
+	Check(RemapFireProductionCellPalindromeCPU(orderSensitive,orderSensitiveResult,&error)&&
+		orderReference&&axisReversedReference&&lieReference&&
+		orderSensitiveResult.conservativeValues==orderIndependent&&
+		orderIndependent!=axisReversed&&orderIndependent!=lieSplit&&
+		FloatBytesSHA256(orderSensitiveResult.conservativeValues)==
+			"e2d29d9429e1a0aee15a6969f90077846a0d98c09ac140f89ca572b0c7b4ac38",
+		"asymmetric variable-carrier fixture binds the canonical x-y-z-y-x palindrome bytes");
+
+	FireProductionCellPalindromeRequest palindromeConstant=donor;
+	palindromeConstant.conservativeValues.assign(palindromeConstant.shape.CellCount(),0.1f);
+	FireProductionCellPalindromeResult palindromeConstantResult;
+	Check(RemapFireProductionCellPalindromeCPU(palindromeConstant,palindromeConstantResult,&error)&&
+		palindromeConstantResult.conservativeValues.size()==
+			palindromeConstant.conservativeValues.size()&&
+		std::all_of(palindromeConstantResult.conservativeValues.begin(),
+			palindromeConstantResult.conservativeValues.end(),
+			[](float value){return value==0.1f;}),
+		"production palindrome preserves an ordinary fp32 constant exactly through five passes");
+
+	for( unsigned int axis=0u;axis<3u;++axis ) for( unsigned int role=0u;role<4u;++role ) {
+		FireProductionCellPalindromeRequest mixed;
+		mixed.shape.nx=5u;mixed.shape.ny=6u;mixed.shape.nz=7u;
+		mixed.shape.cellWidthM=1.0f;mixed.componentCount=2u;mixed.timeStepS=0.4f;
+		mixed.boundary.fill(FireProductionProjectionWall);
+		const bool openAtLower=role>=2u;
+		mixed.boundary[2u*axis]=openAtLower?FireProductionProjectionPressureOpen:
+			FireProductionProjectionWall;
+		mixed.boundary[2u*axis+1u]=openAtLower?FireProductionProjectionWall:
+			FireProductionProjectionPressureOpen;
+		mixed.conservativeValues.resize(2u*mixed.shape.CellCount());
+		for( std::size_t cell=0;cell<mixed.shape.CellCount();++cell ) {
+			mixed.conservativeValues[cell]=1.0f+0.01f*static_cast<float>(cell%13u);
+			mixed.conservativeValues[mixed.shape.CellCount()+cell]=
+				2.0f+0.02f*static_cast<float>(cell%7u);
+		}
+		mixed.ambientValues={5.0f,9.0f};
+		for( unsigned int velocityAxis=0u;velocityAxis<3u;++velocityAxis )
+			mixed.frozenVelocityMPerS[velocityAxis].assign(
+				FireProductionProjectionFaceCount(mixed.shape,velocityAxis),0.0f);
+		const bool inflow=(role%2u)==1u;
+		const float boundaryVelocity=openAtLower?(inflow?0.6f:-0.6f):
+			(inflow?-0.6f:0.6f);
+		const std::size_t extent=axis==0u?mixed.shape.nx:
+			(axis==1u?mixed.shape.ny:mixed.shape.nz);
+		const std::size_t lines=axis==0u?mixed.shape.ny*mixed.shape.nz:
+			(axis==1u?mixed.shape.nx*mixed.shape.nz:mixed.shape.nx*mixed.shape.ny);
+		for( std::size_t line=0;line<lines;++line ) {
+			const std::size_t faceCoordinate=openAtLower?0u:extent;
+			const std::size_t transverse0=axis==0u?line%mixed.shape.ny:line%mixed.shape.nx;
+			const std::size_t transverse1=axis==0u?line/mixed.shape.ny:line/mixed.shape.nx;
+			const std::size_t x=axis==0u?faceCoordinate:transverse0;
+			const std::size_t y=axis==1u?faceCoordinate:(axis==0u?transverse0:transverse1);
+			const std::size_t z=axis==2u?faceCoordinate:transverse1;
+			std::size_t face=0u;
+			if( axis==0u ) face=(z*mixed.shape.ny+y)*(mixed.shape.nx+1u)+x;
+			else if( axis==1u ) face=(z*(mixed.shape.ny+1u)+y)*mixed.shape.nx+x;
+			else face=(z*mixed.shape.ny+y)*mixed.shape.nx+x;
+			mixed.frozenVelocityMPerS[axis][face]=boundaryVelocity;
+			const std::size_t wallCoordinate=openAtLower?extent:0u;
+			const std::size_t wallX=axis==0u?wallCoordinate:transverse0;
+			const std::size_t wallY=axis==1u?wallCoordinate:
+				(axis==0u?transverse0:transverse1);
+			const std::size_t wallZ=axis==2u?wallCoordinate:transverse1;
+			if( axis==0u ) face=(wallZ*mixed.shape.ny+wallY)*(mixed.shape.nx+1u)+wallX;
+			else if( axis==1u ) face=(wallZ*(mixed.shape.ny+1u)+wallY)*mixed.shape.nx+wallX;
+			else face=(wallZ*mixed.shape.ny+wallY)*mixed.shape.nx+wallX;
+			mixed.frozenVelocityMPerS[axis][face]=openAtLower?-0.35f:0.35f;
+		}
+		std::vector<float> mixedIndependent;
+		FireProductionCellPalindromeResult mixedResult;
+		Check(IndependentCellComposition(mixed,canonicalAxes,canonicalFactors,5u,
+			mixedIndependent,error)&&
+			RemapFireProductionCellPalindromeCPU(mixed,mixedResult,&error)&&
+			mixedResult.conservativeValues==mixedIndependent&&
+			mixedResult.conservativeValues!=mixed.conservativeValues,
+			"non-cubic P3 packing binds every axis, side, and pressure-open flow sign");
+	}
+	FireProductionCellPalindromeRequest invalidPalindrome=translated;
+	invalidPalindrome.boundary[4]=FireProductionProjectionPeriodic;
+	invalidPalindrome.boundary[5]=FireProductionProjectionWall;
+	Check(!ValidateFireProductionCellPalindromeRequest(invalidPalindrome,&error)&&
+		error.find("boundary pairing")!=std::string::npos,
+		"P3 palindrome rejects an unpaired periodic side before dispatch");
+	FireProductionCellPalindromeRequest lateFold=translated;
+	lateFold.frozenVelocityMPerS[2].assign(
+		FireProductionProjectionFaceCount(lateFold.shape,2u),0.0f);
+	lateFold.frozenVelocityMPerS[2][TransportCellIndex(lateFold.shape,2u,2u,3u)]=-1.0f;
+	lateFold.frozenVelocityMPerS[2][TransportCellIndex(lateFold.shape,2u,2u,4u)]=1.0f;
+	FireProductionCellPalindromeResult lateFoldResult;
+	lateFoldResult.conservativeValues.assign(1u,8.0f);lateFoldResult.executedSubmapCount=9u;
+	Check(!RemapFireProductionCellPalindromeCPU(lateFold,lateFoldResult,&error)&&
+		lateFoldResult.conservativeValues.empty()&&lateFoldResult.executedSubmapCount==0u&&
+		error.find("folded")!=std::string::npos,
+		"a folded z map fails preflight without publishing partial x/y work");
+
 	FireProductionComputeCapability capability;
 	Check(QueryFireProductionComputeCapability(capability),
 		"production compute capability query completes structurally");
@@ -742,9 +1020,21 @@ int main()
 			"FireProductionAdvection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = "
 			"FA84000131FF000100000007 /* FireProductionAdvection.cpp */; settings = "
 			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; }; }")==2u&&
+		makeRules.find("Utilities/FireProductionTransport.o : "
+			"$(PATHLIBRARY)Utilities/FireProductionTransport.cpp\n\t@echo \"Compiling "
+			"(safe fp32): $<\"\n\t@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) "
+			"-fno-fast-math -ffp-contract=off")!=std::string::npos&&
+		CountSubstring(xcodeProject,
+			"FireProductionTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = "
+			"FC92000131FF000100000007 /* FireProductionTransport.cpp */; settings = "
+			"{COMPILER_FLAGS = \"-fno-fast-math -ffp-contract=off\"; }; }")==2u&&
 		androidRules.find("-fno-fast-math;-ffp-contract=off")!=std::string::npos&&
-		visualStudioProject.find("<FloatingPointModel>Strict</FloatingPointModel>")!=
-			std::string::npos,
+		androidRules.find("\"${RISE_LIB}/Utilities/FireProductionTransport.cpp\"\n"
+			"    PROPERTIES COMPILE_OPTIONS \"-fno-fast-math;-ffp-contract=off\"")!=
+			std::string::npos&&visualStudioProject.find(
+			"<ClCompile Include=\"..\\..\\..\\src\\Library\\Utilities\\"
+			"FireProductionTransport.cpp\">\n      <FloatingPointModel>Strict"
+			"</FloatingPointModel>")!=std::string::npos,
 		"production remap source binds safe math, four real kernels, device output, and strict CPU builds");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&

@@ -500,6 +500,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjection.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionTransport.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjectionUnsupported.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
@@ -1053,6 +1056,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTables.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionAdvection.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionProjection.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTransport.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSequence.h" />
