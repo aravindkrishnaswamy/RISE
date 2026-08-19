@@ -735,6 +735,68 @@ namespace RISE
 		bytes=nested;return true;
 	}
 
+	bool FireProductionDualMomentumResidentWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		const std::array<FireProductionProjectionBoundary,6>& boundary,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		FireProductionDualMomentumRequest dimensions;dimensions.shape=shape;
+		dimensions.boundary=boundary;
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const FireProductionProjectionBoundary lower=boundary[2u*axis];
+			const FireProductionProjectionBoundary upper=boundary[2u*axis+1u];
+			if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+				upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+				((lower==FireProductionProjectionPeriodic)!=(upper==FireProductionProjectionPeriodic)) )
+				return false;
+		}
+		const std::uint64_t xFaces=static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz;
+		const std::uint64_t yFaces=static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz;
+		const std::uint64_t zFaces=static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
+		const std::uint64_t allFaces=xFaces+yFaces+zFaces;
+		std::uint64_t maximumValues=0u,maximumFaces=0u,maximumCells=0u,total=0u;
+		for( unsigned int component=0u;component<3u;++component )
+			for( unsigned int sweep=0u;sweep<3u;++sweep ) {
+				std::size_t length=0u,lines=0u;
+				if( !DualLineDimensions(dimensions,component,sweep,length,lines) ) return false;
+				const std::uint64_t lineLength=static_cast<std::uint64_t>(length);
+				const std::uint64_t lineCount=static_cast<std::uint64_t>(lines);
+				const std::uint64_t lineFaces=lineCount*(lineLength+1u);
+				const std::uint64_t lineCells=lineCount*lineLength;
+				const std::uint64_t ambient=AxisIsPeriodic(dimensions,sweep)?2u:2u*lineCount;
+				if( !AddMetalValueBuffer(lineFaces,sizeof(float),total)||
+					!AddMetalValueBuffer(ambient,sizeof(float),total)||
+					!AddMetalValueBuffer(ambient,sizeof(float),total) ) return false;
+				maximumValues=std::max(maximumValues,2u*lineCells);
+				maximumFaces=std::max(maximumFaces,lineFaces);
+				maximumCells=std::max(maximumCells,lineCells);
+			}
+		// Borrowed packed density/momentum and their atomically published successors.
+		for( unsigned int buffer=0u;buffer<4u;++buffer )
+			if( !AddMetalValueBuffer(allFaces,sizeof(float),total) ) return false;
+		// Four tuple fields, one limiter, and two two-component face arrays.
+		for( unsigned int buffer=0u;buffer<4u;++buffer )
+			if( !AddMetalValueBuffer(maximumValues,sizeof(float),total) ) return false;
+		if( !AddMetalValueBuffer(maximumCells,sizeof(float),total)||
+			!AddMetalValueBuffer(2u*maximumFaces,sizeof(float),total)||
+			!AddMetalValueBuffer(2u*maximumFaces,sizeof(float),total) ) return false;
+		// Three wall-prescription parameters, two parameters for each of fifteen
+		// submaps, and one seam parameter for every periodic component axis.
+		for( unsigned int component=0u;component<3u;++component ) {
+			if( !AddMetalBufferBytes(sizeof(std::uint32_t)*11u,total) ) return false;
+			if( boundary[2u*component]==FireProductionProjectionPeriodic&&
+				!AddMetalBufferBytes(sizeof(std::uint32_t)*5u,total) ) return false;
+		}
+		for( unsigned int pass=0u;pass<15u;++pass )
+			if( !AddMetalBufferBytes(sizeof(std::uint32_t)*11u,total)||
+				!AddMetalBufferBytes(sizeof(std::uint32_t)*6u+sizeof(float)*2u,total) )
+				return false;
+		bytes=total;return true;
+	}
+
 	bool RemapFireProductionPeriodicDualMomentumCPU(
 		const FireProductionPeriodicDualMomentumRequest& request,
 		FireProductionPeriodicDualMomentumResult& result, std::string* error )
@@ -829,6 +891,111 @@ namespace RISE
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionPeriodicDualMomentumResult();
 			FailWithoutThrow(error,"periodic dual momentum allocation failed");
+			return false;
+		}
+	}
+
+	bool ValidateFireProductionDualMomentumRequest(
+		const FireProductionDualMomentumRequest& request, std::string* error )
+	{
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				request.timeStepS<0.0f||!std::isfinite(shape.cellWidthM)||
+				!std::isfinite(request.timeStepS)||!(request.ambientDensityKGPerM3>0.0f)||
+				!std::isfinite(request.ambientDensityKGPerM3) )
+				return Fail(error,"dual momentum shape, schedule, or ambient density is invalid");
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==FireProductionProjectionPeriodic)) )
+					return Fail(error,"dual momentum boundary pairing is invalid");
+				if( !AxisIsPeriodic(request,axis)&&AxisCoordinateExtent(shape,axis)<5u )
+					return Fail(error,"dual momentum nonperiodic normal line is too short");
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.beginningFaceDensity[axis].size()!=faces||
+					request.beginningMomentum[axis].size()!=faces||
+					request.frozenVelocityMPerS[axis].size()!=faces )
+					return Fail(error,"dual momentum face shape is invalid");
+				if( AxisIsPeriodic(request,axis)&&
+					(!PeriodicFaceSeamEqual(shape,request.beginningFaceDensity[axis],axis)||
+					 !PeriodicFaceSeamEqual(shape,request.beginningMomentum[axis],axis)||
+					 !PeriodicFaceSeamEqual(shape,request.frozenVelocityMPerS[axis],axis)) )
+					return Fail(error,"dual momentum periodic seam is invalid");
+				for( const float density : request.beginningFaceDensity[axis] )
+					if( !(density>0.0f)||!std::isfinite(density) )
+						return Fail(error,"dual momentum density is invalid");
+				for( const float momentum : request.beginningMomentum[axis] )
+					if( !std::isfinite(momentum) )
+						return Fail(error,"dual momentum is nonfinite");
+				for( const float velocity : request.frozenVelocityMPerS[axis] )
+					if( !std::isfinite(velocity) )
+						return Fail(error,"dual momentum carrier is nonfinite");
+			}
+			std::uint64_t nestedWorkingSetBytes=0u;
+			for( unsigned int component=0u;component<3u;++component )
+				for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis ) {
+					std::size_t length=0u,lines=0u;
+					if( !DualLineDimensions(request,component,sweepAxis,length,lines) )
+						return Fail(error,"dual momentum owned line is invalid");
+					FireProductionRemapRequest resource;
+					resource.lineLength=length;resource.lineCount=lines;resource.componentCount=2u;
+					resource.lineSpecificAmbientValues=!AxisIsPeriodic(request,sweepAxis);
+					std::uint64_t bytes=0u;
+					if( !FireProductionRemapWorkingSetBytes(resource,bytes) )
+						return Fail(error,"dual momentum nested working-set calculation failed");
+					nestedWorkingSetBytes=std::max(nestedWorkingSetBytes,bytes);
+				}
+			const std::uint64_t allFaces=
+				static_cast<std::uint64_t>(FireProductionProjectionFaceCount(shape,0u))+
+				FireProductionProjectionFaceCount(shape,1u)+
+				FireProductionProjectionFaceCount(shape,2u);
+			std::uint64_t combinedWorkingSetBytes=nestedWorkingSetBytes;
+			if( !AddBytes(allFaces,15u*sizeof(float),combinedWorkingSetBytes)||
+				combinedWorkingSetBytes>(std::uint64_t(2u)<<30u) )
+				return Fail(error,"dual momentum combined working set exceeds two GiB");
+			const float axisTimeStep[]={0.5f*request.timeStepS,
+				0.5f*request.timeStepS,request.timeStepS};
+			for( unsigned int component=0u;component<3u;++component )
+				for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis ) {
+					FireProductionRemapRequest preflight;
+					if( !BuildDualAxisRequest(request,component,sweepAxis,
+						axisTimeStep[sweepAxis],request.beginningFaceDensity[component],
+						request.beginningMomentum[component],preflight,error)||
+						!ValidateFireProductionRemapRequest(preflight,error) ) return false;
+				}
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			FailWithoutThrow(error,"dual momentum validation allocation failed");return false;
+		}
+	}
+
+	bool BuildFireProductionDualAxisRequest(
+		const FireProductionDualMomentumRequest& request,
+		unsigned int transportedComponent,
+		unsigned int sweepAxis,
+		float timeStepS,
+		const std::vector<float>& density,
+		const std::vector<float>& momentum,
+		FireProductionRemapRequest& lineRequest,
+		std::string* error )
+	{
+		lineRequest=FireProductionRemapRequest();
+		if( transportedComponent>=3u||sweepAxis>=3u )
+			return Fail(error,"dual momentum axis selection is invalid");
+		try {
+			if( !BuildDualAxisRequest(request,transportedComponent,sweepAxis,timeStepS,
+				density,momentum,lineRequest,error) ) return false;
+			if( !ValidateFireProductionRemapRequest(lineRequest,error) ) {
+				lineRequest=FireProductionRemapRequest();return false;
+			}
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			lineRequest=FireProductionRemapRequest();
+			FailWithoutThrow(error,"dual momentum axis packing allocation failed");
 			return false;
 		}
 	}

@@ -45,6 +45,18 @@ namespace RISE
 		return false;
 	}
 
+	bool RemapFireProductionDualMomentumMetalResidentComparator(
+		const FireProductionDualMomentumRequest&,
+		FireProductionDualMomentumResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionDualMomentumResult();
+		if( structuredError ) try {
+			*structuredError="production resident dual Metal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { structuredError->clear(); }
+		return false;
+	}
+
 	bool RemapFireProductionPeriodicDualMomentumMetal(
 		const FireProductionPeriodicDualMomentumRequest&,
 		FireProductionPeriodicDualMomentumResult& result, std::string* error )

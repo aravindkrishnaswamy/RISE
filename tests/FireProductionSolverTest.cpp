@@ -2327,6 +2327,25 @@ int main()
 		residentDualUnderBytes<(UINT64_C(1)<<31u)&&
 		residentDualOverBytes>(UINT64_C(1)<<31u),
 		"resident periodic dual certificate straddles two GiB by the complete face topology");
+	const std::array<FireProductionProjectionBoundary,6> residentMixedBoundary={
+		FireProductionProjectionWall,FireProductionProjectionPressureOpen,
+		FireProductionProjectionPressureOpen,FireProductionProjectionWall,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen};
+	FireProductionProjectionShape residentMixedUnderShape,residentMixedOverShape;
+	residentMixedUnderShape.nx=80u;residentMixedUnderShape.ny=195u;
+	residentMixedUnderShape.nz=1000u;residentMixedUnderShape.cellWidthM=1.0f;
+	residentMixedOverShape=residentMixedUnderShape;residentMixedOverShape.nz=1001u;
+	std::uint64_t residentMixedUnderBytes=0u,residentMixedOverBytes=0u;
+	Check(FireProductionDualMomentumResidentWorkingSetBytes(residentMixedUnderShape,
+		residentMixedBoundary,residentMixedUnderBytes)&&
+		residentMixedUnderBytes==UINT64_C(2147483648)&&
+		FireProductionDualMomentumResidentWorkingSetBytes(residentMixedOverShape,
+			residentMixedBoundary,residentMixedOverBytes)&&
+		residentMixedOverBytes==UINT64_C(2149646336)&&
+		residentMixedUnderBytes==(UINT64_C(1)<<31u)&&
+		residentMixedOverBytes>(UINT64_C(1)<<31u),
+		"resident mixed dual certificate counts all static tuples, packed state, scratch, and "
+		"command-retained parameters at the exact two-GiB boundary");
 	FireProductionPeriodicDualMomentumRequest dualVariable;
 	dualVariable.shape.nx=5u;dualVariable.shape.ny=6u;dualVariable.shape.nz=7u;
 	dualVariable.shape.cellWidthM=1.0f;dualVariable.timeStepS=0.35f;
@@ -3678,6 +3697,43 @@ int main()
 			dualVariableResult.momentum[axis],3.0e-5f);
 	Check(periodicDualVariableMatches,
 		"resident periodic dual carrier packing matches the noncubic variable-state oracle");
+	FireProductionDualMomentumResult mixedDualGPU,mixedDualGPURepeat;
+	const bool mixedDualMetal=RemapFireProductionDualMomentumMetalResidentComparator(
+		mixedDual,mixedDualGPU,&error);
+	const bool mixedDualMetalRepeat=mixedDualMetal&&
+		RemapFireProductionDualMomentumMetalResidentComparator(
+			mixedDual,mixedDualGPURepeat,&error);
+	bool mixedDualMetalMatches=mixedDualMetal&&mixedDualMetalRepeat&&
+		mixedDualGPU.executedSubmapCount==15u&&mixedDualGPU.commandCommitCount==1u&&
+		mixedDualGPU.interstageFullGridTransferCount==0u&&
+		mixedDualGPU.deviceElapsedMS>0.0&&mixedDualGPU.momentum==mixedDualGPURepeat.momentum&&
+		mixedDualGPU.auxiliaryFaceDensity==mixedDualGPURepeat.auxiliaryFaceDensity;
+	for( unsigned int axis=0u;axis<3u;++axis ) mixedDualMetalMatches=
+		mixedDualMetalMatches&&SameFloatVectorsWithin(mixedDualGPU.auxiliaryFaceDensity[axis],
+			mixedDualResult.auxiliaryFaceDensity[axis],3.0e-5f)&&
+		SameFloatVectorsWithin(mixedDualGPU.momentum[axis],
+			mixedDualResult.momentum[axis],3.0e-5f);
+	Check(mixedDualMetalMatches,
+		"one-command resident mixed dual transport matches all wall/open CPU bytes within the "
+		"production Metal comparator band with zero interstage transfer");
+	FireProductionDualMomentumRequest mixedResidentAdmission;
+	mixedResidentAdmission.boundary=residentMixedBoundary;
+	mixedResidentAdmission.shape=residentMixedOverShape;
+	FireProductionDualMomentumResult rejectedMixedResident;
+	seedDualResult(rejectedMixedResident);error.clear();
+	const bool mixedResidentOverRejected=
+		!RemapFireProductionDualMomentumMetalResidentComparator(mixedResidentAdmission,
+			rejectedMixedResident,&error)&&dualResultIsDefault(rejectedMixedResident)&&
+		error.find("two GiB")!=std::string::npos;
+	mixedResidentAdmission.shape=residentMixedUnderShape;
+	seedDualResult(rejectedMixedResident);error.clear();
+	const bool mixedResidentUnderAdvances=
+		!RemapFireProductionDualMomentumMetalResidentComparator(mixedResidentAdmission,
+			rejectedMixedResident,&error)&&dualResultIsDefault(rejectedMixedResident)&&
+		error.find("two GiB")==std::string::npos;
+	Check(mixedResidentOverRejected&&mixedResidentUnderAdvances,
+		"resident mixed dual admission rejects above two GiB before payload access while the "
+		"exact-cap companion advances to payload validation");
 	FireProductionPeriodicDualMomentumResult rejectedPeriodicDualGPU;
 	seedDualResult(rejectedPeriodicDualGPU);error.clear();
 	Check(!RemapFireProductionPeriodicDualMomentumMetal(brokenDualSeam,
@@ -3946,6 +4002,20 @@ int main()
 		periodicDualComparatorBeginning==std::string::npos?std::string():
 		advectionMetalSource.substr(residentPeriodicDualBeginning,
 			periodicDualComparatorBeginning-residentPeriodicDualBeginning);
+	const std::size_t prepareMixedDualBeginning=advectionMetalSource.find(
+		"bool PrepareFireProductionDualMomentumMetalStaticState(");
+	const std::size_t residentMixedDualBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionDualMomentumMetalResident(");
+	const std::size_t mixedDualComparatorBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionDualMomentumMetalResidentComparator(");
+	const std::string prepareMixedDualBody=prepareMixedDualBeginning==std::string::npos||
+		residentMixedDualBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(prepareMixedDualBeginning,
+			residentMixedDualBeginning-prepareMixedDualBeginning);
+	const std::string residentMixedDualBody=residentMixedDualBeginning==std::string::npos||
+		mixedDualComparatorBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentMixedDualBeginning,
+			mixedDualComparatorBeginning-residentMixedDualBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string makeFilelist=ReadText("build/make/rise/Filelist");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
@@ -4024,9 +4094,9 @@ int main()
 		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
 		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
 		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
-		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==10u&&
-		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==10u&&
-		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==8u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==14u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==14u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==9u&&
 		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
 		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
@@ -4064,6 +4134,24 @@ int main()
 			std::string::npos&&residentPeriodicDualBody.find(
 			"RemapFireProductionCellPalindromeMetalResident(")!=std::string::npos,
 		"periodic dual momentum packs, remaps, and republishes Private grids with zero host access");
+	Check(!prepareMixedDualBody.empty()&&!residentMixedDualBody.empty()&&
+		CountSubstring(prepareMixedDualBody,"TrackedMetalCommandBuffer(")==1u&&
+		CountSubstring(prepareMixedDualBody,"CommitTrackedMetalCommand(")==1u&&
+		CountSubstring(prepareMixedDualBody,"ReadTrackedMetalBuffer(")==0u&&
+		CountSubstring(residentMixedDualBody,"TrackedMetalCommandBuffer(")==1u&&
+		CountSubstring(residentMixedDualBody,"CommitTrackedMetalCommand(")==1u&&
+		CountSubstring(residentMixedDualBody,"ReadTrackedMetalBuffer(")==0u&&
+		CountSubstring(residentMixedDualBody," copyFromBuffer:")==2u&&
+		residentMixedDualBody.find(
+			"[input.packedFaceDensity storageMode]!=MTLStorageModePrivate")!=std::string::npos&&
+		residentMixedDualBody.find(
+			"[input.packedMomentum storageMode]!=MTLStorageModePrivate")!=std::string::npos&&
+		residentMixedDualBody.find("commits!=1u||reads!=0u")!=std::string::npos&&
+		residentMixedDualBody.find("context.gatherDualLineValues")!=std::string::npos&&
+		residentMixedDualBody.find("context.scatterDualLineValues")!=std::string::npos&&
+		residentMixedDualBody.find("context.prescribeDualComponentWalls")!=std::string::npos,
+		"mixed dual transport uploads frozen line ownership only before the resident interval and "
+		"executes all fifteen submaps with one command and zero host access");
 	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
 		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==2u&&
 		CountSubstring(transportSource,

@@ -9,6 +9,7 @@
 #ifndef FIREPRODUCTIONTRANSPORT_
 #define FIREPRODUCTIONTRANSPORT_
 
+#include "FireProductionAdvection.h"
 #include "FireProductionProjection.h"
 
 #include <array>
@@ -95,6 +96,10 @@ namespace RISE
 
 	bool ValidateFireProductionCellPalindromeRequest(
 		const FireProductionCellPalindromeRequest& request,
+		std::string* error=0 );
+
+	bool ValidateFireProductionDualMomentumRequest(
+		const FireProductionDualMomentumRequest& request,
 		std::string* error=0 );
 
 	//! Complete standalone-comparator peak, including caller request/result,
@@ -190,6 +195,11 @@ namespace RISE
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
 
+	bool FireProductionDualMomentumResidentWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		const std::array<FireProductionProjectionBoundary,6>& boundary,
+		std::uint64_t& bytes );
+
 	//! Standalone oracle wrapper around the periodic Private-buffer resident
 	//! dual-grid seam. Boundary uploads and the final tap are outside the
 	//! measured resident interval.
@@ -202,6 +212,26 @@ namespace RISE
 	//! prescribed, open endpoints skip only their normal sweep, and transverse
 	//! sweeps consume line-resolved ambient tuples through the shared P1 kernel.
 	bool RemapFireProductionDualMomentumCPU(
+		const FireProductionDualMomentumRequest& request,
+		FireProductionDualMomentumResult& result,
+		std::string* error=0 );
+
+	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The
+	//! values are disposable packing bytes; carrier and side ambient arrays are
+	//! the frozen operands uploaded before the resident interval.
+	bool BuildFireProductionDualAxisRequest(
+		const FireProductionDualMomentumRequest& request,
+		unsigned int transportedComponent,
+		unsigned int sweepAxis,
+		float timeStepS,
+		const std::vector<float>& density,
+		const std::vector<float>& momentum,
+		FireProductionRemapRequest& lineRequest,
+		std::string* error=0 );
+
+	//! Standalone oracle wrapper around the mixed-boundary resident seam.
+	//! Upload and final staging are outside the measured resident interval.
+	bool RemapFireProductionDualMomentumMetalResidentComparator(
 		const FireProductionDualMomentumRequest& request,
 		FireProductionDualMomentumResult& result,
 		std::string* error=0 );
@@ -243,6 +273,78 @@ namespace RISE
 		const FireProductionPeriodicDualMomentumRequest& request,
 		const FireProductionMetalPeriodicDualMomentumResidentInput& input,
 		FireProductionMetalPeriodicDualMomentumResidentResult& result,
+		std::string* error=0 );
+
+	struct FireProductionMetalDualAxisStaticState
+	{
+		id<MTLBuffer> faceVelocityMPerS;
+		id<MTLBuffer> lowerAmbientValues;
+		id<MTLBuffer> upperAmbientValues;
+		std::uint32_t lineLength;
+		std::uint32_t lineCount;
+		std::uint32_t lowerBoundary;
+		std::uint32_t upperBoundary;
+		std::uint32_t ambientPerLine;
+
+		FireProductionMetalDualAxisStaticState() : faceVelocityMPerS(nil),
+			lowerAmbientValues(nil),upperAmbientValues(nil),lineLength(0u),lineCount(0u),
+			lowerBoundary(0u),upperBoundary(0u),ambientPerLine(0u) {}
+	};
+
+	struct FireProductionMetalDualMomentumStaticState
+	{
+		std::array<std::array<FireProductionMetalDualAxisStaticState,3>,3> axis;
+		FireProductionProjectionShape shape;
+		float timeStepS;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::uint32_t uploadCommandCommitCount;
+		std::uint64_t actualMetalAllocationBytes;
+
+		FireProductionMetalDualMomentumStaticState() : timeStepS(0.0f),
+			uploadCommandCommitCount(0u),actualMetalAllocationBytes(0u)
+			{ boundary.fill(FireProductionProjectionWall); }
+	};
+
+	struct FireProductionMetalDualMomentumResidentInput
+	{
+		id<MTLBuffer> packedFaceDensity;
+		id<MTLBuffer> packedMomentum;
+		std::array<std::size_t,3> faceByteOffset;
+
+		FireProductionMetalDualMomentumResidentInput() : packedFaceDensity(nil),
+			packedMomentum(nil) { faceByteOffset.fill(0u); }
+	};
+
+	struct FireProductionMetalDualMomentumResidentResult
+	{
+		id<MTLBuffer> packedAuxiliaryFaceDensity;
+		id<MTLBuffer> packedMomentum;
+		std::array<std::size_t,3> faceByteOffset;
+		std::uint32_t executedSubmapCount;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint64_t actualMetalAllocationBytes;
+		double deviceElapsedMS;
+
+		FireProductionMetalDualMomentumResidentResult() :
+			packedAuxiliaryFaceDensity(nil),packedMomentum(nil),executedSubmapCount(0u),
+			commandCommitCount(0u),interstageFullGridTransferCount(0u),
+			actualMetalAllocationBytes(0u),deviceElapsedMS(0.0) { faceByteOffset.fill(0u); }
+	};
+
+	//! Step-boundary upload of the nine frozen carrier/ambient layouts.
+	bool PrepareFireProductionDualMomentumMetalStaticState(
+		const FireProductionDualMomentumRequest& request,
+		FireProductionMetalDualMomentumStaticState& state,
+		std::string* error=0 );
+
+	//! Mixed-boundary dual-grid resident seam.  All full-grid and line operands
+	//! are Private and no host access or upload occurs in this call.
+	bool RemapFireProductionDualMomentumMetalResident(
+		const FireProductionDualMomentumRequest& request,
+		const FireProductionMetalDualMomentumStaticState& staticState,
+		const FireProductionMetalDualMomentumResidentInput& input,
+		FireProductionMetalDualMomentumResidentResult& result,
 		std::string* error=0 );
 #endif
 }
