@@ -2439,3 +2439,15 @@ it was already tried and refuted here.
   512,093,336 observed bytes below the 524,688,024-byte certificate; standalone
   P2 measured 10.5484/25.1084 ms. No numerical operator, comparison bound,
   validation tolerance, checkpoint byte, identity, or budget changed.
+
+- **r99 (2026-08-19):** golden divergence steady-state floor. Sixteen complete
+  resident force--projection cycles start from the immutable step-3479 state
+  and reuse its fixed density, MAC bytes, dt, periodic geometry, and authored
+  divergence target. The force leg is neutral (`nu_mol=Cv=g=0`) to isolate the
+  single-projection recurrence while still exercising the actual resident
+  handoff. Each cycle selects N=1, observes no interstage transfer, invokes one
+  projection, and passes monitored validation. The residual never exceeds the
+  accepted r97 floor `0x1.48p-15 = 3.910064697265625e-5 s^-1`; it finishes at
+  `0x1.48p-16` and repeats a bounded fp32 oscillation rather than creeping.
+  The full sixteen-value trace is exact-pinned. No additional projection,
+  timestep response, tolerance change, or operator change is authorized.

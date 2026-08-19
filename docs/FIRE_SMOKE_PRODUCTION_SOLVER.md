@@ -1178,6 +1178,33 @@ completed-call p95. r98 changes only ownership, observation, and failure
 evidence; arithmetic, accepted bytes, r96 comparison bounds, validation
 tolerances, checkpoint identity, and the 200 ms/two-GiB budgets are unchanged.
 
+### 7.16 Golden divergence steady-state floor (r99)
+
+Before resident transport composition, the immutable step-3479 golden state is
+reprojected through sixteen complete resident force--projection transactions.
+The divergence target, gas density, accepted MAC state, dt, and periodic
+geometry are the same bytes as the r97 oracle fixture. The force leg is
+intentionally neutral (`nu_mol=0`, `Cv=0`, and `g=0`), so it still exercises
+the resident force handoff and its single P2 invocation without conflating the
+projection recurrence with an evolving physical RHS. Every cycle selects one
+viscous substep, observes zero interstage transfers, invokes P2 exactly once,
+and passes monitored validation.
+
+The exact fp32 residual sequence is
+
+`{0x1.46ep-15, 0x1.48p-15, 0x1.0p-15, 0x1.ea8p-16,
+0x1.ea48p-16, 0x1.48p-16, 0x1.47p-16, 0x1.ea5p-16,
+0x1.48p-16, 0x1.ea4p-16, 0x1.48p-16, 0x1.47p-16,
+0x1.ea4p-16, 0x1.47p-16, 0x1.47p-16, 0x1.48p-16}` s^-1.
+
+The maximum is therefore `0x1.48p-15 = 3.910064697265625e-5 s^-1`,
+equal to the already accepted first-pass r97 floor, and the sixteenth cycle is
+`0x1.48p-16 = 1.9550323486328125e-5 s^-1`. The recurrence settles into a
+bounded deterministic oscillatory floor rather than accumulating divergence.
+The fixture pins the complete sequence, the maximum, and the final ceiling;
+an upward creep is a contract failure and cannot trigger dt changes or extra
+projections. r99 adds evidence only and changes no operator or validation band.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
