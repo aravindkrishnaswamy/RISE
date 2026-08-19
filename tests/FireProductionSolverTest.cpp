@@ -10,6 +10,8 @@
 #include "../src/Library/Utilities/FireProductionAdvection.h"
 #include "../src/Library/Utilities/FireProductionTables.h"
 #include "../src/Library/Utilities/FireProductionTransport.h"
+#include "../src/Library/Utilities/FireProductionForce.h"
+#include "../src/Library/Utilities/FireSimulationRecords.h"
 
 #include <algorithm>
 #include <chrono>
@@ -647,6 +649,140 @@ int main()
 		std::cerr << "Observed table package ID: " << package.TablePackageId() << '\n';
 	Check(package.TablePackageId()==expectedTablePackageId,
 		"production r83 table package digest matches the independently pinned fixture");
+
+	FireProductionVremanInput vremanInput;
+	vremanInput.coefficient=static_cast<float>(FireSimulationTransportRecord::OpenV1().VremanCv());
+	vremanInput.directionalWidthsM={0.01f,0.0125f,0.008f};
+	vremanInput.velocityGradientPerS={12.0f,3.0f,0.0f,-2.0f,-4.0f,1.0f,
+		0.5f,2.0f,-8.0f};
+	double certifiedGradient[3][3]={};double certifiedWidths[3]={};
+	for( unsigned int i=0u;i<3u;++i ) {
+		certifiedWidths[i]=vremanInput.directionalWidthsM[i];
+		for( unsigned int j=0u;j<3u;++j )
+			certifiedGradient[i][j]=vremanInput.velocityGradientPerS[3u*i+j];
+	}
+	double certifiedVreman=0.0;float productionVreman=0.0f;
+	Check(FireSimulationTransportRecord::OpenV1().VremanEddyViscosityM2PerS(
+		certifiedGradient,certifiedWidths,certifiedVreman,&error)&&
+		EvaluateFireProductionVremanEddyViscosity(vremanInput,productionVreman,&error)&&
+		productionVreman==0x1.86cf3p-15f&&
+		std::fabs(productionVreman-static_cast<float>(certifiedVreman))<=
+			4.0f*std::numeric_limits<float>::epsilon()*
+			std::max(1.0f,std::fabs(static_cast<float>(certifiedVreman))),
+		"strict-fp32 Vreman bytes are pinned and remain within four ulps of the "
+		"certified-record oracle");
+	FireProductionVremanInput zeroVremanInput;
+	float zeroProductionVreman=1.0f;
+	Check(EvaluateFireProductionVremanEddyViscosity(zeroVremanInput,
+		zeroProductionVreman,&error)&&zeroProductionVreman==0.0f,
+		"production Vreman zero-gradient branch is exact");
+	FireProductionVremanInput laminarVremanInput;
+	laminarVremanInput.velocityGradientPerS[0]=7.0f;
+	float laminarProductionVreman=1.0f;
+	Check(EvaluateFireProductionVremanEddyViscosity(laminarVremanInput,
+		laminarProductionVreman,&error)&&laminarProductionVreman==0.0f,
+		"production Vreman nonnegative B_beta floor preserves a rank-one laminar gradient");
+	FireProductionVremanInput roundedNegativeBBeta;
+	roundedNegativeBBeta.velocityGradientPerS={-0x1.01e168p+7f,-0x1.1a8adcp+7f,
+		-0x1.f9930ap+8f,-0x1.cf77f2p+7f,-0x1.fbcaa0p+7f,-0x1.c65094p+9f,
+		0x1.f29338p+10f,0x1.1120b0p+11f,0x1.e8ba58p+12f};
+	roundedNegativeBBeta.directionalWidthsM={0x1.4f33a4p-5f,0x1.7b5decp-4f,
+		0x1.6c25e8p-4f};
+	float flooredProductionVreman=1.0f;
+	Check(EvaluateFireProductionVremanEddyViscosity(roundedNegativeBBeta,
+		flooredProductionVreman,&error)&&flooredProductionVreman==0.0f,
+		"production Vreman floors a measured negative strict-fp32 B_beta roundoff witness");
+	FireProductionVremanInput associationVreman;
+	associationVreman.velocityGradientPerS={-0x1.08ceacp+13f,-0x1.54d38p+12f,
+		0x1.5de604p+12f,-0x1.c491c4p+11f,-0x1.33f43p+10f,0x1.2ae3acp+13f,
+		0x1.1754dcp+12f,-0x1.bc26ap+9f,0x1.2abe5p+13f};
+	associationVreman.directionalWidthsM={0x1.bf4aacp-10f,0x1.d3201ep-7f,
+		0x1.29de1ap-10f};
+	float associationVremanValue=0.0f;
+	Check(EvaluateFireProductionVremanEddyViscosity(associationVreman,
+		associationVremanValue,&error)&&associationVremanValue==0x1.1454fep-7f,
+		"production Vreman pins (widthSquared*gradient_i)*gradient_j association");
+	FireProductionVremanInput accumulationVreman;
+	accumulationVreman.velocityGradientPerS={0x1.de60cp+9f,0x1.09475p+10f,
+		0x1.fa119p+11f,0x1.15111cp+13f,-0x1.1bce9cp+11f,0x1.43e0bp+11f,
+		0x1.e618cp+11f,0x1.44593p+10f,0x1.96169p+12f};
+	accumulationVreman.directionalWidthsM={0x1.9779eap-6f,0x1.dba5a4p-12f,
+		0x1.c99916p-2f};
+	float accumulationVremanValue=0.0f;
+	Check(EvaluateFireProductionVremanEddyViscosity(accumulationVreman,
+		accumulationVremanValue,&error)&&accumulationVremanValue==0x1.3795a6p-1f,
+		"production Vreman pins the m=0,1,2 beta accumulation order");
+	FireProductionVremanInput malformedVreman=vremanInput;
+	malformedVreman.velocityGradientPerS[4]=std::numeric_limits<float>::quiet_NaN();
+	productionVreman=9.0f;error.clear();
+	Check(!EvaluateFireProductionVremanEddyViscosity(malformedVreman,
+		productionVreman,&error)&&productionVreman==0.0f&&
+		error.find("nonfinite")!=std::string::npos,
+		"production Vreman rejects nonfinite operands with no partial value");
+	malformedVreman=vremanInput;malformedVreman.directionalWidthsM[1]=-0.01f;
+	productionVreman=9.0f;error.clear();
+	Check(!EvaluateFireProductionVremanEddyViscosity(malformedVreman,
+		productionVreman,&error)&&productionVreman==0.0f&&
+		error.find("filter width")!=std::string::npos,
+		"production Vreman rejects a signed-invalid filter width with no partial value");
+	bool everyViscousScheduleThreshold=true;
+	for( std::uint32_t expected=1u;expected<=8u;++expected ) {
+		FireProductionViscousSchedule selected;
+		const float interiorLambda=static_cast<float>(2u*expected-1u);
+		everyViscousScheduleThreshold=everyViscousScheduleThreshold&&
+			SelectFireProductionViscousSchedule(1.0f,interiorLambda,selected,&error)&&
+			selected.substepCount==expected&&selected.substepTimeS==
+				1.0f/static_cast<float>(expected)&&
+			selected.outwardWork==std::nextafter(
+				static_cast<double>(interiorLambda)*0.5,
+				std::numeric_limits<double>::infinity())&&
+			selected.representedProductUpper==std::nextafter(
+				static_cast<double>(selected.substepTimeS)*
+					static_cast<double>(interiorLambda),
+				std::numeric_limits<double>::infinity())&&
+			selected.representedProductUpper<=2.0;
+		if( expected<8u ) {
+			const float exactBoundary=static_cast<float>(2u*expected);
+			FireProductionViscousSchedule below,at;
+			everyViscousScheduleThreshold=everyViscousScheduleThreshold&&
+				SelectFireProductionViscousSchedule(1.0f,
+					std::nextafter(exactBoundary,0.0f),below,&error)&&
+				below.substepCount==expected&&
+				SelectFireProductionViscousSchedule(1.0f,exactBoundary,at,&error)&&
+				at.substepCount==expected+1u;
+		}
+	}
+	Check(everyViscousScheduleThreshold,
+		"outward viscous selection straddles every represented N=1..8 threshold");
+	FireProductionViscousSchedule roundedDivisionSchedule;
+	Check(SelectFireProductionViscousSchedule(0x1.ce70f4p-1f,0x1.a92704p+2f,
+		roundedDivisionSchedule,&error)&&roundedDivisionSchedule.substepCount==4u&&
+		roundedDivisionSchedule.outwardWork==std::nextafter(
+			(static_cast<double>(0x1.ce70f4p-1f)*static_cast<double>(0x1.a92704p+2f))*0.5,
+			std::numeric_limits<double>::infinity())&&
+		roundedDivisionSchedule.representedProductUpper==std::nextafter(
+			static_cast<double>(roundedDivisionSchedule.substepTimeS)*
+				static_cast<double>(0x1.a92704p+2f),
+			std::numeric_limits<double>::infinity())&&
+		roundedDivisionSchedule.representedProductUpper<=2.0,
+		"represented upward-rounded dt/N increments the pre-dispatch substep count");
+	FireProductionViscousSchedule rejectedSchedule;
+	rejectedSchedule.substepCount=3u;rejectedSchedule.substepTimeS=4.0f;
+	rejectedSchedule.outwardWork=5.0;rejectedSchedule.representedProductUpper=6.0;
+	error.clear();
+	Check(!SelectFireProductionViscousSchedule(1.0f,16.0f,rejectedSchedule,&error)&&
+		rejectedSchedule.substepCount==0u&&rejectedSchedule.substepTimeS==0.0f&&
+		rejectedSchedule.outwardWork==0.0&&rejectedSchedule.representedProductUpper==0.0&&
+		error.find("eight")!=std::string::npos,
+		"outward exact N=8 boundary rejects a required ninth substep transactionally");
+	rejectedSchedule.substepCount=3u;rejectedSchedule.substepTimeS=4.0f;
+	rejectedSchedule.outwardWork=5.0;rejectedSchedule.representedProductUpper=6.0;
+	error.clear();
+	Check(!SelectFireProductionViscousSchedule(1.0f,-1.0f,rejectedSchedule,&error)&&
+		rejectedSchedule.substepCount==0u&&rejectedSchedule.substepTimeS==0.0f&&
+		rejectedSchedule.outwardWork==0.0&&rejectedSchedule.representedProductUpper==0.0&&
+		error.find("input")!=std::string::npos,
+		"viscous scheduling rejects negative Lambda with a fully default payload");
 
 	RISECBOR64::Value envelope;RISECBOR64::Bytes payloadBytes;
 	const RISECBOR64::Value* payload=0;const RISECBOR64::Value* id=0;
@@ -1901,6 +2037,8 @@ int main()
 		"src/Library/Utilities/FireProductionAdvectionMac.mm");
 	const std::string transportSource=ReadText(
 		"src/Library/Utilities/FireProductionTransport.cpp");
+	const std::string forceSource=ReadText(
+		"src/Library/Utilities/FireProductionForce.cpp");
 	const std::size_t crossCarrierBeginning=transportSource.find("float CrossCarrierAt(");
 	const std::size_t dualAxisBeginning=transportSource.find("bool BuildDualAxisRequest(");
 	const std::string crossCarrierBody=crossCarrierBeginning==std::string::npos||
@@ -1918,9 +2056,13 @@ int main()
 	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos?
 		std::string():advectionMetalSource.substr(palindromeMetalBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
+	const std::string makeFilelist=ReadText("build/make/rise/Filelist");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
 	const std::string androidRules=ReadText("build/cmake/rise-android/CMakeLists.txt");
+	const std::string androidSources=ReadText("build/cmake/rise-android/rise_sources.cmake");
 	const std::string visualStudioProject=ReadText("build/VS2022/Library/Library.vcxproj");
+	const std::string visualStudioFilters=ReadText(
+		"build/VS2022/Library/Library.vcxproj.filters");
 	Check(!standaloneMetalBody.empty()&&
 		CountSubstring(standaloneMetalBody,"recordBuffer(")==11u&&
 		standaloneMetalBody.find("recordBuffer(values)")!=std::string::npos&&
@@ -2024,6 +2166,42 @@ int main()
 			"FireProductionProjectionWall?1u:0u")!=std::string::npos,
 		"dual line builder binds sweep-side roles, wall-zero precedence, open nearest ghosts, "
 		"and prescribed component-wall ownership");
+	Check(forceSource.find("alphaSquared+=alpha*alpha;")!=std::string::npos&&
+		forceSource.find("std::max(0.0f,rawBBeta)")!=std::string::npos&&
+		forceSource.find("std::nextafter((static_cast<double>(timeStepS)*")!=
+			std::string::npos&&
+		forceSource.find("std::nextafter(static_cast<double>(substep)*\n"
+			"\t\t\t\tstatic_cast<double>(outwardLambdaPerS),infinity);")!=
+			std::string::npos&&
+		forceSource.find("if( count>8u )")!=std::string::npos&&
+		makeFilelist.find("$(PATHLIBRARY)Utilities/FireProductionForce.cpp")!=
+			std::string::npos&&
+		androidSources.find("${RISE_LIB}/Utilities/FireProductionForce.cpp")!=
+			std::string::npos&&
+		visualStudioProject.find("<ClInclude Include=\"..\\..\\..\\src\\Library\\Utilities\\"
+			"FireProductionForce.h\" />")!=std::string::npos&&
+		visualStudioFilters.find("FireProductionForce.cpp")!=std::string::npos&&
+		visualStudioFilters.find("FireProductionForce.h")!=std::string::npos&&
+		makeRules.find("$(PATHLIBRARY)Utilities/FireProductionForce.o : "
+			"$(PATHLIBRARY)Utilities/FireProductionForce.cpp\n"
+			"\t@echo \"Compiling (safe fp32): $<\"\n"
+			"\t@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) "
+			"-fno-fast-math -ffp-contract=off $(CXXARCHFLAGS) $(CXXLIBSETTINGS) "
+			"$(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@")!=std::string::npos&&
+		androidRules.find("\"${RISE_LIB}/Utilities/FireProductionForce.cpp\"\n"
+			"    PROPERTIES COMPILE_OPTIONS \"-fno-fast-math;-ffp-contract=off\"")!=
+			std::string::npos&&
+		visualStudioProject.find("<ClCompile Include=\"..\\..\\..\\src\\Library\\Utilities\\"
+			"FireProductionForce.cpp\">\n      <FloatingPointModel>Strict"
+			"</FloatingPointModel>")!=std::string::npos&&
+		CountSubstring(xcodeProject,
+			"FireProductionForce.cpp in Sources */ = {isa = PBXBuildFile;")==2u&&
+		CountSubstring(xcodeProject,
+			"FireProductionForce.cpp */; settings = {COMPILER_FLAGS = \"-fno-fast-math "
+			"-ffp-contract=off\"; };")==2u&&
+		CountSubstring(xcodeProject,"FireProductionForce.h in Headers")==2u,
+		"production force primitives bind their arithmetic topology and all five strict build "
+		"surfaces");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),
