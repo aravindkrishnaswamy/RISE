@@ -1425,6 +1425,8 @@ int main()
 			residentProjectionBody.find("[command status]!=MTLCommandBufferStatusCompleted")&&
 		Count(metalSource,"[command commit]")==1u&&
 		Count(metalSource,"return [buffer contents]")==1u&&
+		Count(metalSource," commit]")==1u&&
+		Count(metalSource," contents]")==1u&&
 		Count(metalSource,"CommitProjectionCommand(")==4u&&
 		Count(residentProjectionBody,"ObserveProjectionInvocation();")==2u&&
 		residentProjectionBody.find("projectionInterstageFullGridReadCount-"
