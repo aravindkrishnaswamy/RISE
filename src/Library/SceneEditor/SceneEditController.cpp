@@ -6768,7 +6768,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentRemoveChun
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometryCrud_(
 	const String& objectName,
 	const String& candidateDocText,
-	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	const char* verbLabel )
 {
 	AgentCommitResult r;
 	r.chunkName    = objectName;
@@ -6845,7 +6846,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 	const int code = mJob.ApplyCstReplaceDocumentText( candidateDocText.c_str(),
 	                                                    /*restoreActiveRasterizer*/ true,
 	                                                    diagBuf, sizeof( diagBuf ),
-	                                                    "replace_geometry_scaffold" );
+	                                                    verbLabel ? verbLabel : "replace_geometry_scaffold" );
 
 	// A whole-document swap that landed is ALWAYS a D2 full re-derive (codes 2/3) -- re-point the editor's
 	// cached pointers BEFORE releasing the lock (same rebind rule as every other agent commit).
@@ -6918,7 +6919,8 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeometry(
 	const String& objectName,
 	const String& candidateDocText,
-	const RISE::Cst::CstHeadVersion* baseVersionOrNull )
+	const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+	const char* verbLabel )
 {
 	AgentCommitResult r;
 	{
@@ -6940,7 +6942,7 @@ SceneEditController::AgentCommitResult SceneEditController::ApplyAgentReplaceGeo
 			r.headVersion = mJob.GetCstHeadVersion();
 			return r;
 		}
-		r = ApplyAgentReplaceGeometryCrud_( objectName, candidateDocText, baseVersionOrNull );
+		r = ApplyAgentReplaceGeometryCrud_( objectName, candidateDocText, baseVersionOrNull, verbLabel );
 	}
 	mEditor.DrainDirtyNotification();   // Document-first phase 1: post-unlock drain
 	return r;

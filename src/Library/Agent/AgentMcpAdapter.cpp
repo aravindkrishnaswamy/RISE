@@ -327,6 +327,19 @@ namespace RISE
 			//! verbs" prose ripple SourceHygieneTest's verb-parity scan pins;
 			//! refused under Propose exactly like Read; deliberately contains
 			//! neither magic substring the per-note counters key on).
+			//! 88 step 2 (2026-08-19): collapse_to_instances' own annotation
+			//! under AgentAutonomy::Propose SPECIFICALLY -- the same rationale
+			//! as kReplaceGeometryScaffoldProposeRefusedNote above (it mutates;
+			//! deliberately excluded from AgentRpc.cpp's IsProposeSafeVerb
+			//! rather than pay the "N mutating verbs" prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under Propose
+			//! exactly like Read; deliberately contains neither magic substring
+			//! the per-note counters key on).
+			const std::string kCollapseToInstancesProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: collapse_to_instances is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -374,7 +387,7 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 34 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 35 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -1508,6 +1521,54 @@ namespace RISE
 					tools.push_back( MakeTool( "replace_geometry_scaffold", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// collapse_to_instances (88 step 2, 2026-08-19) -- the VERB half of design-note
+				// condition C.  Hand-authored HERE and semantically identical to the chat-codec
+				// definition in AgentChatCodecs.cpp's kToolDefs (two texts, one verb -- a semantic
+				// change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "target", StringProp(
+						"OPTIONAL. The name of ANY ONE standard_object in the run of copies to collapse. Omit it "
+						"to take the LARGEST run of hand-authored copies in the document -- which is what a "
+						"DESIGN NOTE about repeated copies is pointing at, so the no-argument call is the usual "
+						"one." ) );
+					props.set( "name", StringProp(
+						"OPTIONAL. The name for the instancing chunk. Omit for <source>_array. A grid also mints "
+						"<name>_row0 for the remainder of the first row." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason replace_geometry_scaffold is: this
+					// verb commits ONE composite whole-document swap, which is no
+					// AgentProposalKind an Owner could approve card-by-card, so an
+					// External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kCollapseToInstancesProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"REWRITE a run of hand-authored copies as ONE instancing chunk. Call this the moment you "
+						"notice (or are told) that several standard_objects share one geometry and differ only in "
+						"where they sit -- five bottles along a shelf, a grid of books, a row of fence posts. It "
+						"keeps the FIRST copy, replaces the others with a `source` + `count_u` chunk whose "
+						"`position expr(...)` reproduces exactly the positions they already had, and does the "
+						"whole thing in ONE call, ONE headVersion bump and ONE undo step. THE RENDERED SCENE IS "
+						"UNCHANGED -- this is a re-expression, not a redesign: nothing moves and nothing "
+						"disappears, because `source` COPIES rather than moves or hides (which is why `count_u` "
+						"is one LESS than the number of copies -- the kept one is still there). Pass NO ARGUMENTS "
+						"to collapse the largest such run. It REFUSES, changing nothing and costing only this "
+						"call, whenever it cannot prove the rewrite is exact: copies that are not on a regular "
+						"line or grid, copies that differ in orientation/quaternion/scale as well as position, "
+						"any copy carrying a `matrix` (which overrides position), or any copy NAMED by another "
+						"chunk (a `parent` link, an override_object, a CSG operand -- and a child of the kept "
+						"copy would be cloned into every minted copy, since `source` copies a whole SUBTREE). A "
+						"refusal is a real answer with the reason in `message`: read it and leave the objects "
+						"alone rather than retrying with hand-written chunks. A GRID takes TWO instancing chunks "
+						"rather than one, because the kept copy already occupies the first cell and there is no "
+						"way to skip a cell. Returns {ok,applied,rawCode,status,retriable,headVersion,message,"
+						"source,geometry,collapsed,countU,countV,instanceChunks,removedObjects}; a PRE-COMMIT "
+						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
+						"headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "collapse_to_instances", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2006,7 +2067,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 34 tool names this adapter recognizes --
+			//! The list of the 35 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -2021,6 +2082,7 @@ namespace RISE
 					"replace_geometry_scaffold",   // R2 (2026-08-10): one-call form revision
 					"remove_chunk",
 					"remove_chunks",
+					"collapse_to_instances",   // 88 step 2 (2026-08-19): MUTATING, the condition-C rewrite verb
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
 					"scene_inventory",   // Arc 80 (2026-08-12): read-safe, the FORWARD "where is everything" inventory

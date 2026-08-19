@@ -92,6 +92,7 @@
 
 #include <algorithm>   // Facet 5 slice S1: std::sort for the deterministic skills index
 #include <cctype>
+#include <cerrno>   // 88 step 2: strtod's ERANGE, the out-of-range guard on collapse_to_instances' position parse
 #include <climits>
 #include <cmath>
 #include <cstdint>  // Arc-75 S2.1: std::uint64_t for the material-scaffold jitter hash
@@ -101,6 +102,7 @@
 #include <fstream>  // Facet 5 slice S1: read-only skill-file reads
 #include <iterator> // Facet 5 slice S1: istreambuf_iterator for whole-file reads
 #include <limits>
+#include <set>      // 88 step 2: collapse_to_instances' member-name / member-item sets
 #include <mutex>    // F5 S3: std::once_flag for AllChunkKeywords' one-time cache (also already relied on by AgentSession.h's mAsyncCacheMutex)
 #include <unordered_set>  // Toolkit slice 3a fix-round P2-1: objectmap palette byte-uniqueness set
 
@@ -2932,6 +2934,28 @@ namespace RISE
 
 		namespace
 		{
+			//! (88 step 2, 2026-08-19) ONE group of hand-authored `standard_object`
+			//! copies: every member shares a `geometry` AND every non-transform
+			//! binding, so ONE `source` chunk could have produced all of them.
+			//!
+			//! THE GROUP DEFINITION IS SHARED, ON PURPOSE.  Condition C (which
+			//! PRICES the collapse in the design note) and
+			//! `AgentSession::CollapseToInstances` (which PERFORMS it) read the
+			//! SAME vector out of the SAME scan -- so the note can never name a
+			//! run the verb then declines to see, which is the drift that would
+			//! make the advice worse than silence.  Condition C layers its own
+			//! gate (kRepeatedCopyGate) and its own document-wide disarm on top;
+			//! the verb deliberately takes neither (see CollapseToInstances).
+			struct RepeatGroup_
+			{
+				std::vector<int>         itemIndices;              //!< top-level Document item indices, DOCUMENT ORDER
+				std::vector<std::string> memberNames;              //!< parallel to itemIndices
+				std::string              geometry;                 //!< the `geometry` value every member shares
+				std::string              firstTransform;           //!< the first member's transform blob (distinctness probe only)
+				bool                     distinctTransforms = false;   //!< at least two members sit in DIFFERENT places
+				int  Count() const { return static_cast<int>( itemIndices.size() ); }
+			};
+
 			//! Creative-richness P2 / P2.b (73-creative-richness-design.md sec
 			//! 2 P2, RE-TARGETED by sec 7 to the two MEASURED bare-prompt
 			//! deficits, DIAGNOSTIC-FRAMED by sec 9): the shared, engine-side
@@ -3004,6 +3028,14 @@ namespace RISE
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
 				std::string repeatedCopyGeometry;            //!< condition C: the geometry name that group shares
+				//! EVERY group of >= 2 same-binding copies, ordered by their FIRST
+				//! member's document position.  Condition C reads it through the
+				//! gate; CollapseToInstances reads it whole.
+				std::vector<RepeatGroup_> repeatGroups;
+				//! Any `source` / `count_u` / `count_v` ANYWHERE in the document.
+				//! Condition C's disarm; the verb ignores it (a document that
+				//! instanced one run may still have hand-fanned another).
+				bool docExpressesInstancing = false;
 			};
 
 			//! Condition C's gate: how many hand-authored copies of ONE
@@ -3079,14 +3111,14 @@ namespace RISE
 				// the same group iff one `source` chunk could have produced
 				// both.  `geometry` is part of that signature, so the key
 				// already separates different shapes.
-				struct RepeatGroup_
-				{
-					int         count = 0;
-					std::string geometry;
-					std::string firstTransform;
-					bool        distinctTransforms = false;   //!< at least two group members sit in DIFFERENT places
-				};
-				std::map<std::string, RepeatGroup_> repeatGroups;
+				//
+				// The map holds INDICES into c.repeatGroups rather than the
+				// groups themselves, so the groups come out in DOCUMENT order
+				// (of their first member) rather than in signature-string order
+				// -- what a caller that has to NAME one of them wants, and what
+				// makes condition C's largest-group tie-break stable against an
+				// unrelated re-spelling of some binding.
+				std::map<std::string, std::size_t> repeatGroupAt;
 				// Any `source` / `count_u` / `count_v` ANYWHERE in the document
 				// disarms C wholesale.  Document-level, not per-group, and
 				// deliberately so: the note works by PRICING an affordance the
@@ -3096,7 +3128,9 @@ namespace RISE
 				// "this group is not the one you instanced" -- is the obvious
 				// v2 if a measurement ever shows models instancing once and
 				// then fanning out anyway.  Nothing measures that today.)
-				bool docExpressesInstancing = false;
+				// CollapseToInstances does NOT consult it: the verb is called
+				// deliberately, about a named run, and a scene that already
+				// instanced its bottles may still be hand-fanning its books.
 
 				const int n = RISE::Cst::DocItemCount( doc );
 				for( int i = 0; i < n; ++i ) {
@@ -3122,7 +3156,7 @@ namespace RISE
 						// falls out for the same structural reason.)
 						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
 						if( pm.count( "source" ) || pm.count( "count_u" ) || pm.count( "count_v" ) )
-							docExpressesInstancing = true;
+							c.docExpressesInstancing = true;
 
 						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
 						if( geo != pm.end() && !geo->second.empty() && geo->second != "none" ) {
@@ -3132,11 +3166,24 @@ namespace RISE
 								if( IsObjectTransformParam_( kv.first ) ) xform    += kv.first + " " + kv.second + "\n";
 								else                                      bindings += kv.first + " " + kv.second + "\n";
 							}
-							RepeatGroup_& g = repeatGroups[bindings];
-							++g.count;
+							const std::map<std::string, std::size_t>::const_iterator at = repeatGroupAt.find( bindings );
+							std::size_t slot;
+							if( at == repeatGroupAt.end() ) {
+								slot = c.repeatGroups.size();
+								repeatGroupAt[bindings] = slot;
+								c.repeatGroups.push_back( RepeatGroup_() );
+								c.repeatGroups[slot].firstTransform = xform;
+							} else {
+								slot = at->second;
+							}
+							RepeatGroup_& g = c.repeatGroups[slot];
+							g.itemIndices.push_back( i );
+							{
+								const std::map<std::string, std::string>::const_iterator nm = pm.find( "name" );
+								g.memberNames.push_back( ( nm != pm.end() ) ? nm->second : std::string() );
+							}
 							g.geometry = geo->second;
-							if( g.count == 1 ) g.firstTransform = xform;
-							else if( !g.distinctTransforms && xform != g.firstTransform ) g.distinctTransforms = true;
+							if( !g.distinctTransforms && xform != g.firstTransform ) g.distinctTransforms = true;
 						}
 						continue;
 					}
@@ -3177,13 +3224,13 @@ namespace RISE
 				// byte-identical, co-located chunks is a duplication bug, not
 				// an array, and telling its author to reach for `count_u`
 				// would be advice about the wrong problem.
-				if( !docExpressesInstancing ) {
-					for( const std::pair<const std::string, RepeatGroup_>& kv : repeatGroups ) {
-						if( kv.second.count < kRepeatedCopyGate ) continue;
-						if( !kv.second.distinctTransforms )       continue;
-						if( kv.second.count > c.repeatedCopyCount ) {
-							c.repeatedCopyCount    = kv.second.count;
-							c.repeatedCopyGeometry = kv.second.geometry;
+				if( !c.docExpressesInstancing ) {
+					for( const RepeatGroup_& g : c.repeatGroups ) {
+						if( g.Count() < kRepeatedCopyGate ) continue;
+						if( !g.distinctTransforms )         continue;
+						if( g.Count() > c.repeatedCopyCount ) {
+							c.repeatedCopyCount    = g.Count();
+							c.repeatedCopyGeometry = g.geometry;
 						}
 					}
 				}
@@ -3223,19 +3270,35 @@ namespace RISE
 			//! chunks already exist by the time any carrier runs this, so it
 			//! describes a cheaper SHAPE and prices it, and the caller's
 			//! self-disarm sentence carries the rest.
+			//!
+			//! 88 step 2 (2026-08-19) -- WHY THIS NAMES A VERB NOW.  Step 1
+			//! shipped this clause as advice, and a live gemini-3.7-flash run
+			//! received it FIVE times (four render results, one validate),
+			//! parsed it correctly -- the note named the geometry and the count
+			//! -- and then ran three further propose_patches rounds making ZERO
+			//! attempts that mentioned `source` or `count_u`.  Not a failed
+			//! attempt: zero.  Post-hoc advice asking for a multi-chunk hand
+			//! rewrite loses to the clause's own anti-churn escape, which is
+			//! cheaper to take and is load-bearing for conditions A and B, so
+			//! it stays.  What changes is the PRICE: the clause now names ONE
+			//! CALL that does the rewrite, `collapse_to_instances`, and states
+			//! its refusal contract up front so a model can trust that calling
+			//! it on an irregular arrangement costs nothing.
 			std::string FormatRepeatedCopiesClause_( int repeatedCopyCount, const std::string& repeatedCopyGeometry )
 			{
 				const std::string n     = std::to_string( repeatedCopyCount );
 				const std::string nLess = std::to_string( repeatedCopyCount - 1 );
 				return n + " standard_objects are separate hand-authored copies of the same geometry (`" +
 					repeatedCopyGeometry + "`), differing only in their transform -- that repetition is what "
-					"`source` + `count_u` says in ONE chunk: keep one of them, then a second object with "
-					"`source <that one>`, `count_u " + nLess + "` and a per-component `position expr(...)` over the "
-					"instance variables `i`/`j` (or `u`/`v`, the same normalized into [0,1]) mints the rest. "
-					"`source` COPIES rather than moves or hides, so those " + nLess + " plus the still-visible "
-					"source are " + n + ", not " + nLess + ". Two chunks and one outliner row to edit instead of " +
-					n + " (read_skill {\"name\":\"object-modeling-recipes\"}). If these are meant to stay "
-					"separate objects, this is fine -- ignore and do not churn.";
+					"`source` + `count_u` says in ONE chunk, and `collapse_to_instances` writes it for you: "
+					"call it with no arguments and it keeps one of them, replaces the other " + nLess + " with an "
+					"instancing chunk carrying `source <that one>`, `count_u " + nLess + "` and a per-component "
+					"`position expr(...)` over the instance variables `i`/`j`, and REFUSES -- changing nothing, "
+					"costing one call -- if the copies do not sit on a regular line or grid. The rendered image "
+					"is the same either way: `source` COPIES rather than moves or hides, so those " + nLess +
+					" plus the still-visible source are " + n + ", not " + nLess + ". Two chunks and one outliner "
+					"row to edit instead of " + n + " (read_skill {\"name\":\"object-modeling-recipes\"}). If "
+					"these are meant to stay separate objects, this is fine -- ignore and do not churn.";
 			}
 
 			//! RETURNS empty iff NO condition fires (the "omit the note
@@ -26239,6 +26302,876 @@ namespace RISE
 
 			outAvailable = true;
 			return png;
+		}
+
+		//==============================================================
+		// 88 step 2 (2026-08-19) -- collapse_to_instances.
+		//
+		// The VERB half of design-note condition C.  Step 1 shipped the
+		// advice; a live gemini-3.7-flash run received it FIVE times (four
+		// render results, one validate), parsed it correctly -- it named the
+		// geometry and the count -- and then ran three further
+		// propose_patches rounds containing ZERO attempts that mention
+		// `source` or `count_u`.  Not a failed attempt: zero.  Post-hoc
+		// advice asking for a multi-chunk hand rewrite loses to the clause's
+		// own anti-churn escape, so this is the same instruction expressed as
+		// ONE call the model can make.
+		//
+		// THE CONTRACT IS "NO-OP ON THE RENDERED SCENE", and everything below
+		// exists to keep it.  The arrangement must fit an exact arithmetic
+		// progression; every transform parameter OTHER than `position` must
+		// be constant across the run; nothing outside the run may name a
+		// member; and the kept copy may have no children, because `source`
+		// clones a whole SUBTREE.  Any one of those failing is a REFUSAL, not
+		// a best-effort rewrite: a wrong `expr` silently slides geometry,
+		// which is far worse than declining.
+		//==============================================================
+		namespace
+		{
+			//! The smallest run this verb will collapse.  THREE, which is
+			//! lower than design-note condition C's gate of five, and the
+			//! split is deliberate: the NOTE decides when repetition is worth
+			//! remarking on unprompted (five, matching the skill prose and
+			//! clearing the honest four-legged-table counter-example), while
+			//! the VERB answers a caller who has already decided.  Below
+			//! three there is nothing to win -- one source plus one instancing
+			//! chunk is two chunks, so collapsing two objects trades two
+			//! chunks for two.
+			const int kCollapseMinGroup = 3;
+
+			//! How far a fitted position may sit from the position it replaces
+			//! before the fit is REFUSED.  Relative with a floor, because
+			//! scene coordinates run from millimetres to hundreds of metres
+			//! and one absolute epsilon would be either meaningless at one end
+			//! or hostile at the other.  1e-9 is several decimal digits
+			//! tighter than any authored coordinate and still far looser than
+			//! the double rounding a decimal step accumulates over the handful
+			//! of repetitions a hand-fanned run has.
+			double CollapseTol_( double v )
+			{
+				return 1e-9 * std::max( 1.0, std::fabs( v ) );
+			}
+
+			//! Whitespace-split a parameter value.  The CST already stripped
+			//! trivia, so this only separates the value's own tokens.
+			std::vector<std::string> CollapseSplitWs_( const std::string& v )
+			{
+				std::vector<std::string> out;
+				std::size_t i = 0;
+				while( i < v.size() ) {
+					while( i < v.size() && std::isspace( static_cast<unsigned char>( v[i] ) ) ) ++i;
+					if( i >= v.size() ) break;
+					const std::size_t s = i;
+					while( i < v.size() && !std::isspace( static_cast<unsigned char>( v[i] ) ) ) ++i;
+					out.push_back( v.substr( s, i - s ) );
+				}
+				return out;
+			}
+
+			//! ONE plain finite decimal, consuming the WHOLE token.  An
+			//! `expr(...)`, a `let` name, a trailing unit, a range-overflowing
+			//! literal and a non-finite one all fail here -- deliberately:
+			//! this verb fits NUMBERS, and a value it cannot read as a number
+			//! is a value it must not pretend to have understood.
+			bool CollapseParseScalar_( const std::string& tok, double& out )
+			{
+				if( tok.empty() ) return false;
+				errno = 0;
+				char* end = nullptr;
+				const double d = std::strtod( tok.c_str(), &end );
+				if( end != tok.c_str() + tok.size() ) return false;
+				if( errno == ERANGE ) return false;
+				if( !RISE::IsFiniteDouble( d ) ) return false;
+				out = d;
+				return true;
+			}
+
+			//! Exactly three of them -- a `position`.
+			bool CollapseParseTriple_( const std::string& value, double out[3] )
+			{
+				const std::vector<std::string> t = CollapseSplitWs_( value );
+				if( t.size() != 3 ) return false;
+				for( std::size_t c = 0; c < 3; ++c )
+					if( !CollapseParseScalar_( t[c], out[c] ) ) return false;
+				return true;
+			}
+
+			//! `%.<prec>g` of `v`.  `g` rather than `f` so a value of any
+			//! magnitude renders in a bounded buffer, and the exponential form
+			//! it can produce is safe here: the expression grammar's number
+			//! scan is a bare `strtod` (ExpressionEval.h), which consumes
+			//! `1e-06` exactly as it consumes `0.5`.
+			std::string CollapseFmt_( double v, int prec )
+			{
+				char buf[64];
+				std::snprintf( buf, sizeof( buf ), "%.*g", prec, v );
+				return std::string( buf );
+			}
+
+			//! `%g` renders a negative with a leading '-' and nothing else, so
+			//! the magnitude's text is the text minus that character.  Used to
+			//! emit `- i*2.6` instead of `+ i*-2.6`: the grammar accepts the
+			//! latter (ParseMul -> ParseUnary), but nobody should read it.
+			std::string CollapseAbsText_( const std::string& s )
+			{
+				return ( !s.empty() && s[0] == '-' ) ? s.substr( 1 ) : s;
+			}
+
+			//! The SHORTEST decimal rendering of `v` that parses back
+			//! BIT-EXACT.
+			//!
+			//! Bit-exact, not within-tolerance, and only for the ANCHOR (the
+			//! kept copy's own position): the anchor is what every fitted
+			//! position is measured FROM, so a rendering that shifted it would
+			//! move the goalposts rather than the geometry.  `%.17g` always
+			//! round-trips a double, so this always terminates with an answer.
+			std::string CollapseShortestExact_( double v )
+			{
+				for( int p = 1; p < 17; ++p ) {
+					const std::string s = CollapseFmt_( v, p );
+					double back = 0.0;
+					if( CollapseParseScalar_( s, back ) && back == v ) return s;
+				}
+				return CollapseFmt_( v, 17 );
+			}
+
+			//! ONE component of a fitted arrangement: the anchor plus the two
+			//! per-axis steps, each as the DECIMAL TEXT that will be written
+			//! into the chunk AND the value that text parses back to -- which
+			//! is what the fit was verified against, never the unrounded
+			//! ideal.
+			struct CollapseAxisFit_
+			{
+				std::string anchorText;
+				double      anchor = 0.0;
+				std::string duText;
+				double      du = 0.0;
+				std::string dvText;
+				double      dv = 0.0;
+			};
+
+			//! Fit ONE component of the run to `anchor + a*du + b*dv`, where a
+			//! member's (a,b) is its position in the run decomposed against the
+			//! arrangement: a = k % countU, b = k / countU, with k the member's
+			//! index in DOCUMENT order.  countV == 1 degenerates to the plain
+			//! line (b is always 0, dv unused).
+			//!
+			//! THE SEARCH IS OVER THE DECIMAL TEXT, not over the ideal step,
+			//! and that ordering is the whole point: it returns the shortest
+			//! `du` (then the shortest `dv`) whose PARSED-BACK value still
+			//! lands every member inside CollapseTol_.  A run authored at 0.6,
+			//! 3.2, 5.8 therefore emits `2.6` rather than the
+			//! `2.6000000000000005` that subtracting two decimals actually
+			//! produces -- and the number that gets emitted is the one that
+			//! was verified, not a prettier one substituted afterwards.
+			//!
+			//! Returns false when NO rendering fits: this component is not an
+			//! arithmetic progression, and the whole collapse must be refused.
+			bool CollapseFitAxis_( const std::vector<double>& y, int countU, int countV,
+			                       CollapseAxisFit_& fit )
+			{
+				const int n = static_cast<int>( y.size() );
+				if( n < 2 || countU < 2 ) return false;
+				if( countV >= 2 && countU >= n ) return false;   // y[countU] would not exist
+
+				fit.anchor     = y[0];
+				fit.anchorText = CollapseShortestExact_( y[0] );
+
+				const double duRaw = y[1] - y[0];
+				const double dvRaw = ( countV >= 2 ) ? ( y[static_cast<std::size_t>( countU )] - y[0] ) : 0.0;
+
+				for( int pu = 1; pu <= 17; ++pu ) {
+					const std::string duText = CollapseFmt_( duRaw, pu );
+					double du = 0.0;
+					if( !CollapseParseScalar_( duText, du ) ) continue;
+					for( int pv = 1; pv <= 17; ++pv ) {
+						const std::string dvText = CollapseFmt_( dvRaw, pv );
+						double dv = 0.0;
+						if( !CollapseParseScalar_( dvText, dv ) ) continue;
+						bool ok = true;
+						for( int k = 1; k < n && ok; ++k ) {
+							const std::size_t kk = static_cast<std::size_t>( k );
+							const double pred = fit.anchor
+								+ static_cast<double>( k % countU ) * du
+								+ static_cast<double>( k / countU ) * dv;
+							if( std::fabs( pred - y[kk] ) > CollapseTol_( y[kk] ) ) ok = false;
+						}
+						if( ok ) {
+							fit.duText = duText; fit.du = du;
+							fit.dvText = dvText; fit.dv = dv;
+							return true;
+						}
+						if( countV < 2 ) break;   // `dv` is unused -- one pass settles it
+					}
+				}
+				return false;
+			}
+
+			//! One component of an emitted `position`: the anchor plus
+			//! whichever index terms are non-zero, as a per-component
+			//! `expr(...)`, or the bare anchor when both terms drop out.
+			//!
+			//! `uTerm` / `vTerm` are the index EXPRESSIONS the emitting chunk
+			//! needs (`i`, `(i+1)`, `(j+1)`, ...); an empty one omits that
+			//! axis entirely.  A zero step drops its whole term rather than
+			//! writing `+ i*0`.
+			std::string CollapseComponentText_( const CollapseAxisFit_& f,
+			                                    const std::string& uTerm,
+			                                    const std::string& vTerm )
+			{
+				std::string body = f.anchorText;
+				bool anyTerm = false;
+				if( !uTerm.empty() && f.du != 0.0 ) {
+					body += ( f.du < 0.0 ) ? " - " : " + ";
+					body += uTerm + "*" + CollapseAbsText_( f.duText );
+					anyTerm = true;
+				}
+				if( !vTerm.empty() && f.dv != 0.0 ) {
+					body += ( f.dv < 0.0 ) ? " - " : " + ";
+					body += vTerm + "*" + CollapseAbsText_( f.dvText );
+					anyTerm = true;
+				}
+				if( !anyTerm ) return f.anchorText;
+				return "expr(" + body + ")";
+			}
+
+			//! Compose ONE instancing chunk's text.
+			//!
+			//! WHAT GOES ON IT AND WHY.  `source` inherits every parameter
+			//! EXCEPT the ones Cst.cpp's IsInstanceOwnParam lists -- `name`,
+			//! `parent`, `position`, `orientation`, `quaternion`, `matrix`,
+			//! `scale`, `source` and the counts.  So geometry, material,
+			//! modifier, shader, shadow flags, radiance map and interior
+			//! medium arrive for free and must NOT be restated, while the
+			//! parent and the non-position transform parameters must be
+			//! restated verbatim or the copies would silently lose them.
+			std::string CollapseChunkText_( const std::string& chunkName,
+			                                const std::string& parentValue,
+			                                const std::string& sourceName,
+			                                int countU, int countV,
+			                                const std::string position[3],
+			                                const std::string& orientationValue,
+			                                const std::string& quaternionValue,
+			                                const std::string& scaleValue )
+			{
+				std::string t = "standard_object\n{\n";
+				t += "\tname " + chunkName + "\n";
+				if( !parentValue.empty() ) t += "\tparent " + parentValue + "\n";
+				t += "\tsource " + sourceName + "\n";
+				t += "\tcount_u " + std::to_string( countU ) + "\n";
+				if( countV > 1 ) t += "\tcount_v " + std::to_string( countV ) + "\n";
+				t += "\tposition " + position[0] + " " + position[1] + " " + position[2] + "\n";
+				if( !orientationValue.empty() ) t += "\torientation " + orientationValue + "\n";
+				if( !quaternionValue.empty() )  t += "\tquaternion "  + quaternionValue  + "\n";
+				if( !scaleValue.empty() )       t += "\tscale "       + scaleValue       + "\n";
+				t += "}";
+				return t;
+			}
+
+			//! Splice one chunk text in at top-level item index `at`, wrapped
+			//! in the same [lead "\n"][chunk][trail "\n"] anti-glue triple
+			//! Job::ApplyCstInsertChunk and ScaffoldSpliceChunkTierPositioned_
+			//! use.  Unlike that one this positions EXPLICITLY: an instancing
+			//! chunk must land after the last copy it replaces (so its
+			//! `source` and its `parent` are both already declared), which is
+			//! a position no tier rule can express.  Returns `doc` unchanged
+			//! if the text does not parse to a chunk (defensive -- it is
+			//! generated right above).
+			RISE::Cst::Document CollapseSpliceChunkAt_( const RISE::Cst::Document& doc, int at,
+			                                            const std::string& chunkText )
+			{
+				RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef  chunkItem;
+				{
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it =
+							RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+					}
+				}
+				if( !chunkItem ) return doc;
+
+				RISE::Cst::Document leadDoc  = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::NodeRef  leadItem = RISE::Cst::DocResolveNodeId( leadDoc, RISE::Cst::DocNodeIdAt( leadDoc, 0 ) );
+				RISE::Cst::Document sepDoc   = RISE::Cst::ParseToCst( std::string( "\n" ) );
+				RISE::Cst::NodeRef  sepItem  = RISE::Cst::DocResolveNodeId( sepDoc, RISE::Cst::DocNodeIdAt( sepDoc, 0 ) );
+				if( !leadItem || !sepItem ) return doc;
+
+				RISE::Cst::Document work = doc;
+				work = RISE::Cst::DocInsertItem( work, at,     leadItem );
+				work = RISE::Cst::DocInsertItem( work, at + 1, chunkItem );
+				work = RISE::Cst::DocInsertItem( work, at + 2, sepItem );
+				return work;
+			}
+
+			//! Is `n` a name this verb may mint a chunk under?  Non-empty, no
+			//! whitespace (the parser's `name` is one token), no `[` or `]`
+			//! (those spell a SYNTHESIZED repetition entry, `I[i,j]`, and an
+			//! authored chunk wearing that shape makes a picked instance
+			//! resolve to the wrong chunk), and not the reserved `none`.
+			bool CollapseNameIsUsable_( const std::string& n )
+			{
+				if( n.empty() || n == "none" ) return false;
+				for( char c : n )
+					if( std::isspace( static_cast<unsigned char>( c ) ) || c == '[' || c == ']' ) return false;
+				return true;
+			}
+
+			//! Does any top-level chunk in `doc` carry `name <n>`?  A direct
+			//! scan rather than DocFindByNameAnyRole because the question here
+			//! is "is this name taken AT ALL", for which that helper's
+			//! ambiguity-returns-zero contract answers the wrong thing.
+			bool CollapseNameTaken_( const RISE::Cst::Document& doc, const std::string& n )
+			{
+				const int count = RISE::Cst::DocItemCount( doc );
+				for( int i = 0; i < count; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( doc, RISE::Cst::DocNodeIdAt( doc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					if( ChunkParamString_( it, "name" ) == n ) return true;
+				}
+				return false;
+			}
+		}
+
+		AgentSession::AgentCollapseResult AgentSession::CollapseToInstances(
+			const std::string& target, const std::string& name,
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			AgentCollapseResult out;
+			// S1 (2026-08-11): folds a phase give-up notice into out.message
+			// whichever of this method's many returns fires -- see
+			// BuildPlanGiveUpFold_'s doc (above AgentSession::InsertChunk).
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE.  Everything below is computed against THESE bytes and the
+			// commit re-checks the head is still exactly this version, so the candidate can never land on
+			// top of a head that moved underneath it (the same discipline ReplaceGeometryScaffold follows).
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "collapse_to_instances refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"collapse_to_instances refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			// ---- (2) Find the run.  THE SAME SCAN design-note condition C reads -- one
+			// ComputeDesignNoteConditionsFromDoc_, one definition of "a group" (objects sharing a `geometry`
+			// and every non-transform binding), so the note can never name a run this verb then declines to
+			// see.  What this verb does NOT inherit is condition C's gate of five and its document-wide
+			// "somebody already used `source` somewhere" disarm: this is a deliberate call about a named
+			// run, and a scene that instanced its bottles may still be hand-fanning its books.
+			const DesignNoteConditions_ cond = ComputeDesignNoteConditionsFromDoc_( headDoc );
+
+			const RepeatGroup_* group = nullptr;
+			if( !target.empty() ) {
+				for( const RepeatGroup_& g : cond.repeatGroups ) {
+					for( const std::string& nm : g.memberNames ) if( nm == target ) { group = &g; break; }
+					if( group ) break;
+				}
+				if( !group ) {
+					out.message = "collapse_to_instances refused: `" + target + "` is not a geometry-bearing "
+						"`standard_object` in this document -- this verb collapses a run of hand-authored "
+						"COPIES, so `target` must name one of them (a container with no `geometry`, a light, "
+						"a camera or an unknown name cannot start one) -- document unchanged";
+					return out;
+				}
+			}
+			else {
+				for( const RepeatGroup_& g : cond.repeatGroups ) {
+					if( g.Count() < kCollapseMinGroup ) continue;
+					if( !g.distinctTransforms )         continue;
+					if( !group || g.Count() > group->Count() ) group = &g;
+				}
+				if( !group ) {
+					out.message = "collapse_to_instances refused: no run of hand-authored copies to collapse "
+						"-- no group of " + std::to_string( kCollapseMinGroup ) + " or more `standard_object`s "
+						"shares one `geometry`, every other binding AND differs only in where it sits. Name one "
+						"of the copies in `target` if you believe there is a run this did not see -- document "
+						"unchanged";
+					return out;
+				}
+			}
+
+			const int n = group->Count();
+			out.geometry     = group->geometry;
+			out.sourceObject = group->memberNames.empty() ? std::string() : group->memberNames[0];
+			out.collapsedCount = n;
+
+			if( n < kCollapseMinGroup ) {
+				out.message = "collapse_to_instances refused: `" + out.sourceObject + "` is one of only " +
+					std::to_string( n ) + " object(s) sharing its bindings, and the smallest run worth "
+					"collapsing is " + std::to_string( kCollapseMinGroup ) + " (below that, one source plus one "
+					"instancing chunk is not fewer chunks than what is already there) -- document unchanged";
+				return out;
+			}
+			if( !group->distinctTransforms ) {
+				out.message = "collapse_to_instances refused: all " + std::to_string( n ) + " copies of `" +
+					group->geometry + "` sit at the SAME transform -- that is duplicated geometry, not an "
+					"array, and `count_u` would only reproduce the duplication. Remove the extras instead "
+					"-- document unchanged";
+				return out;
+			}
+
+			// ---- (3) Read every member's transform parameters.
+			std::vector<std::map<std::string, std::string> > pm;
+			pm.reserve( static_cast<std::size_t>( n ) );
+			for( int k = 0; k < n; ++k ) {
+				const RISE::Cst::NodeRef it = RISE::Cst::DocResolveNodeId(
+					headDoc, RISE::Cst::DocNodeIdAt( headDoc, group->itemIndices[static_cast<std::size_t>( k )] ) );
+				if( !it ) {
+					out.message = "collapse_to_instances refused: internal -- copy " + std::to_string( k ) +
+						" of the run could not be re-resolved in the document; nothing changed";
+					return out;
+				}
+				pm.push_back( ChunkParamMap_( it ) );
+			}
+
+			// A `matrix` OVERRIDES position/orientation/quaternion/scale entirely (the standard_object
+			// descriptor says so), so a run that carries one has no position progression to fit -- the
+			// positions that differ are the ones the engine ignores.  Refuse rather than emit an array whose
+			// `position expr(...)` is decorative.
+			for( int k = 0; k < n; ++k ) {
+				if( pm[static_cast<std::size_t>( k )].count( "matrix" ) ) {
+					out.message = "collapse_to_instances refused: `" +
+						group->memberNames[static_cast<std::size_t>( k )] + "` carries a `matrix`, which "
+						"overrides position/orientation/quaternion/scale -- so the differing `position` values "
+						"in this run are not what places the copies and there is no progression to fit. "
+						"Re-author the run with `position` (plus `orientation`/`scale`) if you want it "
+						"collapsed -- document unchanged";
+					return out;
+				}
+			}
+
+			// `orientation` / `quaternion` / `scale` are NOT inherited through `source` (Cst.cpp's
+			// IsInstanceOwnParam drops them), so the instancing chunk has to restate them -- which it can
+			// only do when the whole run agrees on them.  A run whose copies are individually rotated or
+			// scaled is a genuinely different arrangement, and v1 says so instead of guessing.
+			{
+				static const char* const kConstantTransformParams[] = { "orientation", "quaternion", "scale" };
+				for( const char* p : kConstantTransformParams ) {
+					const std::map<std::string, std::string>& first = pm[0];
+					const std::map<std::string, std::string>::const_iterator f = first.find( p );
+					const std::string firstVal = ( f == first.end() ) ? std::string() : f->second;
+					for( int k = 1; k < n; ++k ) {
+						const std::map<std::string, std::string>& m = pm[static_cast<std::size_t>( k )];
+						const std::map<std::string, std::string>::const_iterator g2 = m.find( p );
+						const std::string v = ( g2 == m.end() ) ? std::string() : g2->second;
+						if( v == firstVal ) continue;
+						out.message = std::string( "collapse_to_instances refused: `" ) +
+							group->memberNames[0] + "` and `" +
+							group->memberNames[static_cast<std::size_t>( k )] + "` differ in `" + p +
+							"`, and one instancing chunk states `" + p + "` once for every copy it mints (it "
+							"is not inherited through `source`). Only `position` may vary across the run -- "
+							"document unchanged";
+						return out;
+					}
+				}
+			}
+
+			// The positions themselves.  A missing `position` is the descriptor's documented `0 0 0`.
+			std::vector<double> comp[3];
+			for( int c = 0; c < 3; ++c ) comp[c].resize( static_cast<std::size_t>( n ) );
+			for( int k = 0; k < n; ++k ) {
+				const std::map<std::string, std::string>& m = pm[static_cast<std::size_t>( k )];
+				const std::map<std::string, std::string>::const_iterator p = m.find( "position" );
+				const std::string value = ( p == m.end() || p->second.empty() ) ? std::string( "0 0 0" ) : p->second;
+				double xyz[3];
+				if( !CollapseParseTriple_( value, xyz ) ) {
+					out.message = "collapse_to_instances refused: `" +
+						group->memberNames[static_cast<std::size_t>( k )] + "` has `position " + value +
+						"`, which is not three plain finite numbers -- an `expr(...)`, a `let` name or a "
+						"wrong-arity value cannot be fitted to a progression, and this verb will not guess "
+						"-- document unchanged";
+					return out;
+				}
+				for( int c = 0; c < 3; ++c ) comp[c][static_cast<std::size_t>( k )] = xyz[c];
+			}
+
+			// ---- (4) Nothing outside the run may NAME a member.
+			//
+			// ONE scan covering three distinct hazards at once.  (a) The N-1 copies are about to be erased,
+			// so anything pointing at one (`parent`, an `override_object`'s `name`, a CSG operand) would
+			// dangle.  (b) The KEPT copy becomes a `source`, and `source` clones the whole SUBTREE -- so if
+			// anything is parented to it, every minted copy would arrive with a clone of that subtree
+			// attached and the collapse would NOT be a no-op.  (c) The copies are renamed to `<chunk>[i,j]`
+			// entries, so even a reference that would survive erasure stops resolving.  Conservative on
+			// purpose: over-refusing costs one call and a clear reason, while under-refusing silently
+			// changes the picture.
+			{
+				std::set<std::string> memberNames;
+				std::set<int>         memberItems;
+				for( int k = 0; k < n; ++k ) {
+					memberNames.insert( group->memberNames[static_cast<std::size_t>( k )] );
+					memberItems.insert( group->itemIndices[static_cast<std::size_t>( k )] );
+				}
+				std::string referrers;
+				int referrerCount = 0;
+				const int itemCount = RISE::Cst::DocItemCount( headDoc );
+				for( int i = 0; i < itemCount && referrerCount < 4; ++i ) {
+					const RISE::Cst::NodeRef it =
+						RISE::Cst::DocResolveNodeId( headDoc, RISE::Cst::DocNodeIdAt( headDoc, i ) );
+					if( !it || it->kind != RISE::Cst::NodeKind::Chunk ) continue;
+					const bool isMember = ( memberItems.count( i ) != 0 );
+					for( const RISE::Cst::NodeRef& kid : it->kids ) {
+						if( !kid || kid->kind != RISE::Cst::NodeKind::Param ) continue;
+						std::string pname;
+						std::vector<std::string> values;
+						for( const RISE::Cst::NodeRef& tk : kid->kids ) {
+							if( !tk || tk->kind != RISE::Cst::NodeKind::Token ) continue;
+							if( tk->role == "pname" )       pname = tk->text;
+							else if( tk->role == "pvalue" ) values.push_back( tk->text );
+						}
+						// A member's OWN `name` line names itself -- not a reference.  Scoped to the member
+						// chunks specifically, so an `override_object { name b3 }` (whose `name` IS a
+						// reference) is still caught.
+						if( isMember && pname == "name" ) continue;
+						for( const std::string& v : values ) {
+							if( !memberNames.count( v ) ) continue;
+							if( referrerCount++ >= 4 ) break;
+							if( !referrers.empty() ) referrers += ", ";
+							referrers += "`" + it->role + "` " + pname + " " + v;
+						}
+					}
+				}
+				if( referrerCount > 0 ) {
+					out.message = "collapse_to_instances refused: other chunks NAME copies in this run (" +
+						referrers + ") -- the copies are replaced by `<chunk>[i,j]` entries and all but one "
+						"are erased, so every such reference would dangle; and a child of the kept copy would "
+						"be cloned into every minted one, because `source` copies a whole SUBTREE. Re-point or "
+						"remove those references first -- document unchanged";
+					return out;
+				}
+			}
+
+			// ---- (5) FIT the arrangement.
+			//
+			// A plain line first (countU = n, countV = 1), then every rectangular factorization with both
+			// sides >= 2, smallest countU first.  Line-first matters: a run that IS a line also satisfies
+			// several grid factorizations (with dv = countU*du), and the line is both the cheaper chunk and
+			// the truthful description.
+			int countU = 0, countV = 0;
+			CollapseAxisFit_ fit[3];
+			{
+				CollapseAxisFit_ cand[3];
+				auto tryShape = [&]( int u, int v ) -> bool {
+					for( int c = 0; c < 3; ++c )
+						if( !CollapseFitAxis_( comp[c], u, v, cand[c] ) ) return false;
+					for( int c = 0; c < 3; ++c ) fit[c] = cand[c];
+					countU = u; countV = v;
+					return true;
+				};
+				if( !tryShape( n, 1 ) ) {
+					for( int u = 2; u * u <= n; ++u ) {
+						if( n % u != 0 ) continue;
+						const int v = n / u;
+						if( v < 2 ) continue;
+						if( tryShape( u, v ) ) break;
+						if( tryShape( v, u ) ) break;
+					}
+				}
+				if( countU == 0 ) {
+					out.message = "collapse_to_instances refused: the " + std::to_string( n ) + " copies of `" +
+						group->geometry + "` are not on a regular arrangement -- their positions, taken in "
+						"document order, fit neither a straight line (constant step) nor a rectangular grid "
+						"(constant step along each axis). An instancing chunk can only mint an arithmetic "
+						"progression, so collapsing this run would MOVE geometry; nothing was changed. Keep "
+						"them as separate objects, or re-space them evenly first";
+					return out;
+				}
+			}
+			out.countU = countU;
+			out.countV = countV;
+
+			// ---- (6) Name the chunk(s).
+			const std::string srcName = group->memberNames[0];
+			std::string baseName;
+			if( !name.empty() ) {
+				if( !CollapseNameIsUsable_( name ) ) {
+					out.message = "collapse_to_instances refused: `" + name + "` is not usable as a chunk name "
+						"(it must be one non-empty token, must not be the reserved `none`, and must not "
+						"contain `[` or `]` -- that spelling belongs to the synthesized `<chunk>[i,j]` "
+						"entries) -- document unchanged";
+					return out;
+				}
+				baseName = name;
+				if( CollapseNameTaken_( headDoc, baseName ) ) {
+					out.message = "collapse_to_instances refused: a chunk named `" + baseName +
+						"` already exists -- pass a different `name` -- document unchanged";
+					return out;
+				}
+			}
+			else {
+				for( int attempt = 0; attempt < 64 && baseName.empty(); ++attempt ) {
+					const std::string cand = srcName + "_array" + ( attempt ? std::to_string( attempt + 1 ) : std::string() );
+					if( !CollapseNameTaken_( headDoc, cand ) ) baseName = cand;
+				}
+				if( baseName.empty() ) {
+					out.message = "collapse_to_instances refused: could not derive an unused name from `" +
+						srcName + "` -- pass an explicit `name` -- document unchanged";
+					return out;
+				}
+			}
+			// A grid takes TWO chunks, and that is a property of the language, not a shortcut.  `source`
+			// COPIES: the kept copy keeps rendering, so a countU x countV grid plus a visible source would be
+			// countU*countV + 1 objects where the run had countU*countV.  There is no way to skip a cell, so
+			// the remainder is expressed as the rest of ROW ZERO (countU-1 wide) plus EVERY LATER ROW
+			// (countU wide, countV-1 tall) -- exactly N objects, both chunks over the same source.  A line
+			// (countV == 1) needs only the first of the two.
+			const bool twoChunks = ( countV >= 2 );
+			std::string rowName;
+			if( twoChunks ) {
+				for( int attempt = 0; attempt < 64 && rowName.empty(); ++attempt ) {
+					const std::string cand = baseName + "_row0" + ( attempt ? std::to_string( attempt + 1 ) : std::string() );
+					if( !CollapseNameTaken_( headDoc, cand ) ) rowName = cand;
+				}
+				if( rowName.empty() ) {
+					out.message = "collapse_to_instances refused: could not derive an unused name for the "
+						"first-row chunk of the grid from `" + baseName + "` -- pass a different `name` -- "
+						"document unchanged";
+					return out;
+				}
+			}
+
+			// ---- (7) Compose the chunk text(s).
+			const std::string parentValue      = pm[0].count( "parent" )      ? pm[0]["parent"]      : std::string();
+			const std::string orientationValue = pm[0].count( "orientation" ) ? pm[0]["orientation"] : std::string();
+			const std::string quaternionValue  = pm[0].count( "quaternion" )  ? pm[0]["quaternion"]  : std::string();
+			const std::string scaleValue       = pm[0].count( "scale" )       ? pm[0]["scale"]       : std::string();
+
+			std::vector<std::string> chunkTexts;
+			std::vector<std::string> chunkNames;
+			{
+				// Chunk one -- the rest of row zero.  Its `i` runs 0 .. countU-2 and must land on members
+				// 1 .. countU-1, which is why the emitted term is `(i+1)` and the count is countU-1.  For a
+				// LINE this is the whole collapse and countU == n, so the count is n-1: the off-by-one the
+				// design note teaches, written out in the expression instead of hidden in the base.
+				std::string pos[3];
+				for( int c = 0; c < 3; ++c ) pos[c] = CollapseComponentText_( fit[c], "(i+1)", std::string() );
+				chunkNames.push_back( twoChunks ? rowName : baseName );
+				chunkTexts.push_back( CollapseChunkText_( chunkNames.back(), parentValue, srcName,
+				                                          countU - 1, 1, pos,
+				                                          orientationValue, quaternionValue, scaleValue ) );
+			}
+			if( twoChunks ) {
+				// Chunk two -- every row after the first.  `i` runs 0 .. countU-1 (whole rows) and `j` runs
+				// 0 .. countV-2, landing on member i + (j+1)*countU.
+				std::string pos[3];
+				for( int c = 0; c < 3; ++c ) pos[c] = CollapseComponentText_( fit[c], "i", "(j+1)" );
+				chunkNames.push_back( baseName );
+				chunkTexts.push_back( CollapseChunkText_( baseName, parentValue, srcName,
+				                                          countU, countV - 1, pos,
+				                                          orientationValue, quaternionValue, scaleValue ) );
+			}
+
+			// ---- (8) Build the candidate document.
+			//
+			// Splice AFTER the LAST copy, then erase copies 1..n-1 from the highest index down.  Both halves
+			// of that order are load-bearing: the instancing chunks must follow the `source` they name (the
+			// declare-earlier rule) and every erased index must still be valid when it is used, which
+			// descending order guarantees since the splice happened at a strictly HIGHER index than any of
+			// them.
+			RISE::Cst::Document work = headDoc;
+			{
+				int at = group->itemIndices[static_cast<std::size_t>( n - 1 )] + 1;
+				for( const std::string& text : chunkTexts ) {
+					const RISE::Cst::Document spliced = CollapseSpliceChunkAt_( work, at, text );
+					if( RISE::Cst::DocItemCount( spliced ) == RISE::Cst::DocItemCount( work ) ) {
+						out.message = "collapse_to_instances refused: internal -- the generated instancing "
+							"chunk did not parse; nothing changed";
+						return out;
+					}
+					work = spliced;
+					at += 3;   // [lead][chunk][trail]
+				}
+				for( int k = n - 1; k >= 1; --k )
+					work = RISE::Cst::DocEraseChunkTidy( work, group->itemIndices[static_cast<std::size_t>( k )] );
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "collapse_to_instances refused: internal -- the candidate document serialized to "
+					"nothing; document unchanged";
+				return out;
+			}
+
+			// ---- (9) S1 (2026-08-11, the staged build protocol): the CROSS-ELEMENT arm, over every copy.
+			//
+			// Deliberately AFTER the fit and the candidate build, and this ordering is the same rule
+			// CheckBuildPlanGate_'s doc states: a call refused for being unfittable must not ALSO burn one of
+			// the three shared phase-refusal slots.  Only a call that would otherwise have succeeded reaches
+			// here.
+			//
+			// Deliberately WITHOUT the compose-phase DELETE arm (CheckComposePhaseForRemove_), which the
+			// remove verbs take.  That arm exists because arc 79 measured a compose phase destroying 80 of 82
+			// hand-built parts; this verb destroys nothing -- it is a lossless re-expression whose whole
+			// contract is that the rendered scene is unchanged, and the refusals above are what make that
+			// claim true.  Blocking it in Compose would block it in exactly the phase design-note condition
+			// C fires in.
+			{
+				std::string clause;
+				for( int k = 0; k < n && clause.empty(); ++k )
+					clause = CheckElementWindowForEdit_( "collapse_to_instances",
+					                                     group->memberNames[static_cast<std::size_t>( k )],
+					                                     &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (10) COMMIT: ONE whole-document swap, ONE dry-run-guarded re-derive, ONE head bump, ONE
+			// undo step.  `snap.headVersion` is passed as the base UNCONDITIONALLY (even when the caller
+			// omitted baseHeadVersion): the candidate was computed outside the commit lock, so committing it
+			// against a head that moved would silently clobber a co-editor.
+			AgentChunkResult commit;
+			commit.name = srcName;
+			commit.kind = "standard_object";
+
+			if( mAuthority == AgentAuthority::External ) {
+				// No staging path, for the SAME reason ReplaceGeometryScaffold has none: an AgentProposal
+				// replays ONE of the four AgentProposalKind verbs, and a composite whole-document swap is
+				// none of them -- there is no card-by-card approval of "collapse this run" that means
+				// anything.  Document byte-identical.
+				out.message = "collapse_to_instances refused: this session is External-authority, and this "
+					"verb has no staged-proposal form (it is ONE composite document swap, not a single chunk "
+					"edit an Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk "
+					"the instancing chunk (`source " + srcName + "`, `count_u " + std::to_string( countU - 1 ) +
+					"`), then remove_chunks the copies it replaces -- document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( srcName.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "collapse_to_instances" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "collapse_to_instances refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else {
+				// HEADLESS (direct-Job).  The conflict gate the controller applies under its lock is applied
+				// here too -- single-threaded in practice, but the invariant ("the candidate is committed
+				// against exactly the head it was computed from, or not at all") is the verb's.
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"collapse_to_instances refused: the head moved (revision %llu) while the collapse was "
+						"being composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "collapse_to_instances" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 ) {
+					commit.applied = true;
+					commit.status  = "applied";
+				}
+				else if( code == 3 ) {
+					commit.applied = false;
+					commit.status  = "diagnosed";
+				}
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (11) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			// `instanceChunks` and `removedObjects` describe what IS in the document, never what a
+			// discarded candidate would have contained -- a caller that reads them on a rejection and
+			// believes them would go looking for chunks that do not exist.  Gated on the SAME predicate
+			// the attribution bookkeeping below uses, so the two can never disagree about whether the
+			// document was touched.  `countU`/`countV`/`collapsedCount` stay set either way: those
+			// describe the RUN, which is a fact about the document as it stands.
+			if( ResultMutatedDocument_( commit ) ) {
+				out.instanceChunks = chunkNames;
+				for( int k = 1; k < n; ++k )
+					out.removedObjects.push_back( group->memberNames[static_cast<std::size_t>( k )] );
+			}
+
+			{
+				char shape[96];
+				if( countV >= 2 )
+					std::snprintf( shape, sizeof( shape ), "a %d x %d grid", countU, countV );
+				else
+					std::snprintf( shape, sizeof( shape ), "a line of %d", countU );
+				std::string m;
+				if( commit.applied ) {
+					m = "collapsed " + std::to_string( n ) + " hand-authored copies of `" + group->geometry +
+						"` (" + shape + ") into `" + srcName + "` plus " +
+						std::to_string( chunkNames.size() ) + " instancing chunk(s) -- ONE full re-derive, ONE "
+						"undo step. The rendered scene is unchanged: every copy is minted at the position it "
+						"already had, and `source` keeps `" + srcName + "` visible.";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "collapse NOT a clean success: the Document was mutated and the live managers were "
+						"replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+				}
+				else {
+					m = "collapse rejected (NOTHING changed): the candidate document would not derive -- head "
+						"unchanged";
+				}
+				// The commit layer's own wording belongs to the whole-document-swap primitive this verb
+				// SHARES with replace_geometry_scaffold, so it says "geometry replacement" -- bracketed and
+				// attributed rather than reworded, because the derive diagnostic it carries is the useful
+				// half and paraphrasing an engine message is how they stop matching the log.
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
+			// S1 (2026-08-11): this verb rewrites the document itself instead of routing through
+			// InsertChunk/RemoveChunks, so nothing else records attribution for what it landed or dropped.
+			// `diagnosed` counts, for the reason ResultMutatedDocument_ encodes: code 3 DID mutate.
+			if( ResultMutatedDocument_( commit ) ) {
+				for( int k = 1; k < n; ++k )
+					DropChunkAttribution_( group->memberNames[static_cast<std::size_t>( k )] );
+				for( const std::string& nm : chunkNames )
+					AttributeChunkToActiveElement_( nm, "standard_object" );
+			}
+
+			return out;
 		}
 	}
 }

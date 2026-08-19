@@ -574,6 +574,38 @@ namespace RISE
 					"},\"required\":[\"target\"]}"
 				},
 				{
+					"collapse_to_instances",
+					"REWRITE a run of hand-authored copies as ONE instancing chunk. Call this the moment you "
+					"notice (or are told) that several standard_objects share one geometry and differ only in "
+					"where they sit -- five bottles along a shelf, a grid of books, a row of fence posts. It "
+					"keeps the FIRST copy, replaces the others with a `source` + `count_u` chunk whose "
+					"`position expr(...)` reproduces exactly the positions they already had, and does the whole "
+					"thing in ONE call, ONE headVersion bump and ONE undo step. The RENDERED SCENE IS "
+					"UNCHANGED -- this is a re-expression, not a redesign: nothing moves, nothing disappears "
+					"(`source` COPIES, so the kept copy keeps rendering and `count_u` is one less than the "
+					"number of copies). Pass NO ARGUMENTS to collapse the largest such run in the document -- "
+					"that is the normal way to call it, and it is what a DESIGN NOTE naming repeated copies is "
+					"asking for. Pass `target` (the name of any ONE copy) to choose a different run, and `name` "
+					"to name the new chunk. It REFUSES, changing nothing and costing only this call, whenever "
+					"it cannot prove the rewrite is exact: copies that are not on a regular line or grid, "
+					"copies that differ in orientation/quaternion/scale as well as position, any copy carrying "
+					"a `matrix`, or any copy named by another chunk (a parent link, an override_object, a CSG "
+					"operand). A refusal is a real answer -- read it and leave the objects alone; do NOT retry "
+					"with hand-written chunks. A GRID takes two instancing chunks rather than one, because the "
+					"kept copy occupies the first cell. Always pass the headVersion you last read as "
+					"baseHeadVersion.",
+					"{\"type\":\"object\",\"properties\":{"
+						"\"target\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The name of ANY ONE standard_object in the run to collapse. Omit it to take the largest run of hand-authored copies in the document -- which is what a DESIGN NOTE about repeated copies is pointing at, so the no-argument call is the usual one.\"},"
+						"\"name\":{\"type\":\"string\",\"description\":"
+						"\"Optional. The name for the instancing chunk. Omit for <source>_array. A grid also mints <name>_row0 for the remainder of the first row.\"},"
+						"\"baseHeadVersion\":{\"type\":\"object\",\"description\":"
+						"\"The headVersion from your last read_document -- pass it EVERY time so a stale edit is rejected as a conflict instead of clobbering.\","
+						"\"properties\":{\"uuid\":{\"type\":\"number\"},\"revision\":{\"type\":\"number\"}},"
+						"\"required\":[\"uuid\",\"revision\"]}"
+					"}}"
+				},
+				{
 					"remove_chunks",
 					"DELETE SEVERAL entities (whole chunks) in ONE call, ATOMICALLY. Prefer ONE remove_chunks "
 					"call over repeated remove_chunk calls whenever you are deleting more than one chunk: each "

@@ -6893,6 +6893,11 @@ namespace RISE
 										// Omitting it would let a run that re-formed the scene
 										// before asking VACUOUSLY PASS askUserBeforeMutation.
 										"replace_geometry_scaffold",
+										// 88 step 2 (2026-08-19): collapse_to_instances mutates the
+										// document (one composite swap replacing N chunks), so a run
+										// that collapsed a run before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"collapse_to_instances",
 										// G2 (2026-08-10): file_build_plan is DELIBERATELY
 										// absent.  It changes nothing in the document, so
 										// listing it here would fail askUserBeforeMutation

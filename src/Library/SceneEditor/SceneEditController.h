@@ -705,10 +705,20 @@ namespace RISE
 		//! HISTORY: exactly ONE EditHistory record (SceneEdit::AgentReplaceGeometry) is pushed, carrying the
 		//! byte-exact PRE text (captured under this same lock hold) and the byte-exact POST text, so one
 		//! Cmd-Z restores the pre-call document and one Cmd-Shift-Z reinstalls the post-call one.
+		//! `verbLabel` is the DIAGNOSTIC CONTEXT string handed to
+		//! Job::ApplyCstReplaceDocumentText -- it names, in the log, which
+		//! agent verb composed the candidate.  Defaulted so every pre-existing
+		//! call site and its wording are untouched; 88 step 2 passes
+		//! "collapse_to_instances", the second verb whose commit is one
+		//! whole-document swap (see AgentSession::CollapseToInstances).  It
+		//! does NOT change the result messages -- those stay this verb's, and
+		//! a caller with different wording overwrites them in its own result,
+		//! which is exactly what CollapseToInstances does.
 		AgentCommitResult ApplyAgentReplaceGeometry(
 			const String& objectName,
 			const String& candidateDocText,
-			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			const char* verbLabel = "replace_geometry_scaffold" );
 
 		//! Secure-MCP slice 5a: which verb-kind a staged AgentProposal replays
 		//! on approval.  Mirrors the three existing agent commit entry points
@@ -4012,7 +4022,8 @@ namespace RISE
 		AgentCommitResult ApplyAgentReplaceGeometryCrud_(
 			const String& objectName,
 			const String& candidateDocText,
-			const RISE::Cst::CstHeadVersion* baseVersionOrNull );
+			const RISE::Cst::CstHeadVersion* baseVersionOrNull,
+			const char* verbLabel );
 
 		AgentCommitResult ApplyAgentChunkCrud_(
 			bool isInsert,

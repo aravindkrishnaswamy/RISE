@@ -335,6 +335,13 @@ namespace
 		    // AND rewrites the whole document in one call -- at least as much
 		    // per-call leverage as its insert sibling, same membership.
 		    name == "replace_geometry_scaffold" ||
+		    // 88 step 2 (2026-08-19): collapse_to_instances rewrites the whole
+		    // document in one call, exactly like replace_geometry_scaffold --
+		    // same per-call leverage, same rate-limit membership.  It counts
+		    // even though the rewrite is a no-op on the RENDERED scene: what
+		    // this limiter meters is document mutations per unit time, and one
+		    // of these replaces N chunks with one.
+		    name == "collapse_to_instances" ||
 		    name == "remove_chunk"   ||
 		    // R1a (2026-08-09): remove_chunks removes N chunks per call --
 		    // strictly MORE per-call leverage than the singular verb, so it

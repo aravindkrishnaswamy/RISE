@@ -1276,6 +1276,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// 88 step 2 (2026-08-19): collapse_to_instances is the SECOND
+					// verb whose commit is one composite whole-document swap, so it
+					// is excluded from IsProposeSafeVerb for the identical reason --
+					// there is no AgentProposalKind an Owner could approve
+					// card-by-card, and inventing one would replay the collapse
+					// against a DIFFERENT head than the one it was fitted to.
+					if( m == "collapse_to_instances" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; collapse_to_instances "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -3640,6 +3654,73 @@ namespace RISE
 						result.set( "orphans", orphans );
 					}
 					if( !sr.message.empty() ) result.set( "message", JsonValue::MakeString( sr.message ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// collapse_to_instances {target?, name?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       source,geometry,collapsed,countU,countV,
+				//       instanceChunks:[string,...],removedObjects:[string,...]}
+				//   88 step 2 (2026-08-19): the VERB half of design-note
+				//   condition C -- rewrite a run of hand-authored copies of one
+				//   geometry as ONE `source` + `count_u` instancing chunk (two
+				//   for a grid), keeping the first copy as the source.  The
+				//   contract is that the RENDERED SCENE is unchanged, so every
+				//   case it cannot prove that for is a REFUSAL with the document
+				//   byte-identical (see AgentSession::CollapseToInstances).  A
+				//   pre-commit refusal comes back as ok=false with the reason in
+				//   `message` -- a SUCCESSFUL response, not a JSON-RPC error,
+				//   because "these copies are not on a regular grid" is an answer
+				//   rather than a malformed call.
+				//--------------------------------------------------------------
+				if( m == "collapse_to_instances" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string targetStr, nameStr;
+					if( const JsonValue* tv = params.find( "target" ) ) {
+						if( tv->isString() ) targetStr = tv->asString();
+						else if( !tv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'target' must be a string" );
+					}
+					if( const JsonValue* nv = params.find( "name" ) ) {
+						if( nv->isString() ) nameStr = nv->asString();
+						else if( !nv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'name' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentCollapseResult cir =
+						s->CollapseToInstances( targetStr, nameStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( cir.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( cir.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( cir.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( cir.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( cir.retriable ) );
+					result.set( "headVersion", HeadVersionJson( cir.headVersion ) );
+					if( !cir.message.empty() )      result.set( "message",  JsonValue::MakeString( cir.message ) );
+					if( !cir.sourceObject.empty() ) result.set( "source",   JsonValue::MakeString( cir.sourceObject ) );
+					if( !cir.geometry.empty() )     result.set( "geometry", JsonValue::MakeString( cir.geometry ) );
+					if( cir.collapsedCount > 0 )
+						result.set( "collapsed", JsonValue::MakeNumber( static_cast<double>( cir.collapsedCount ) ) );
+					if( cir.countU > 0 ) {
+						result.set( "countU", JsonValue::MakeNumber( static_cast<double>( cir.countU ) ) );
+						result.set( "countV", JsonValue::MakeNumber( static_cast<double>( cir.countV ) ) );
+					}
+					if( !cir.instanceChunks.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : cir.instanceChunks ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "instanceChunks", arr );
+					}
+					if( !cir.removedObjects.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : cir.removedObjects ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "removedObjects", arr );
+					}
 					return MakeSuccess( idValue, result );
 				}
 

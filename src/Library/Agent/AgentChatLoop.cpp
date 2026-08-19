@@ -429,6 +429,13 @@ namespace RISE
 				       // ONE history entry and ONE undo step, so it must count
 				       // exactly once here too, no more and no less.
 				       v == "replace_geometry_scaffold" ||
+				       // 88 step 2 (2026-08-19): ONE collapse_to_instances call
+				       // is ONE blind mutation on the same argument -- one
+				       // composite document swap, one head bump, one undo step.
+				       // It counts even though the rewrite is a provable no-op on
+				       // the rendered scene: what this streak measures is edits
+				       // the model made without looking, and it looked at nothing.
+				       v == "collapse_to_instances" ||
 				       // S2 (2026-08-11): ONE build_element call is ONE blind
 				       // mutation -- it inserts the whole element's chunks with
 				       // no visual observation in between, exactly like one
@@ -1397,6 +1404,7 @@ namespace RISE
 			//!   4. name in {insert_chunks,propose_patches,insert_material_scaffold,insert_geometry_scaffold}  -> "<applied>/<total> applied"
 			//!   4b. name == "remove_chunks"                -> "<removed>/<total> removed" (all-or-nothing: `applied` is a BOOL here, counts ride in removed/total)
 			//!   4c. name == "replace_geometry_scaffold"   -> "`<target>` -> <geometryKind> (old geometry removed|kept)" (R2: ONE atomic mutation, so an N/M count would misreport it as a best-effort batch)
+			//!   4d. name == "collapse_to_instances"      -> "<n> copies -> `<source>` + instancing[ (<u>x<v> grid)]", or "refused: <=80 chars of message" (88 step 2: a pre-commit refusal carries an EMPTY status, so it cannot reach rule 2)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1494,6 +1502,30 @@ namespace RISE
 					std::string s = tgt.empty() ? std::string( "geometry replaced" )
 					                            : ( "`" + tgt + "` -> " + ( gkind.empty() ? std::string( "new geometry" ) : gkind ) );
 					s += removed ? " (old geometry removed)" : " (old geometry kept)";
+					return s;
+				}
+
+				// 4b-2. 88 step 2 (2026-08-19) collapse_to_instances: also ONE atomic
+				// mutation, and also not a count -- report the fact the user needs,
+				// which is how many hand-authored copies stopped being chunks and
+				// what replaced them.  A REFUSAL left through rule 2 above, so
+				// reaching here means the collapse landed.
+				if( call.name == "collapse_to_instances" ) {
+					// A PRE-COMMIT refusal carries ok=false and an EMPTY `status`, so it
+					// slips past rule 2's status=="rejected" test -- and it is the most
+					// common non-success outcome this verb has, since refusing is how it
+					// keeps its no-op contract.  Reported here, with the reason, rather
+					// than falling through to a count of zero that reads like a success.
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long collapsed = static_cast<long long>( result.get( "collapsed" ).asNumber() );
+					const std::string src = result.get( "source" ).asString();
+					std::string s = std::to_string( collapsed ) + " copies -> `" +
+						( src.empty() ? std::string( "source" ) : src ) + "` + instancing";
+					const long long cv = static_cast<long long>( result.get( "countV" ).asNumber() );
+					const long long cu = static_cast<long long>( result.get( "countU" ).asNumber() );
+					if( cv >= 2 ) s += " (" + std::to_string( cu ) + "x" + std::to_string( cv ) + " grid)";
 					return s;
 				}
 

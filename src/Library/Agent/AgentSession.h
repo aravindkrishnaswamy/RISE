@@ -5564,6 +5564,82 @@ namespace RISE
 			AgentRemoveBatchResult RemoveChunks( const std::vector<std::string>& targets,
 			                                     const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! 88 step 2 (2026-08-19): what CollapseToInstances did, or the
+			//! reason it declined.
+			//!
+			//! `ok` follows the ReplaceGeometryScaffold convention exactly: it
+			//! is true once the request was well-formed AND reached a
+			//! commit-stage disposition, so `status` carries the actual
+			//! outcome ("applied"/"rejected"/"diagnosed"/"conflict").  A
+			//! PRE-COMMIT refusal -- no run found, an unfittable arrangement,
+			//! a referenced member, a colliding name -- leaves `ok` false and
+			//! `status` empty, with the whole reason in `message`.  Every one
+			//! of those leaves the document, the head version, the history and
+			//! the proposal queue byte-identical.
+			struct AgentCollapseResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string sourceObject;    //!< the copy that was KEPT and is now the `source` (it still renders)
+				std::string geometry;        //!< the geometry every copy in the run shares
+				int         collapsedCount = 0;   //!< how many copies the run held (N -- the source plus the N-1 replaced)
+				int         countU = 0;      //!< the fitted arrangement's first axis
+				int         countV = 0;      //!< its second axis (1 for a plain line)
+				std::vector<std::string> instanceChunks;   //!< the instancing chunk(s) minted, in document order
+				std::vector<std::string> removedObjects;   //!< the N-1 copies erased (empty unless the commit landed)
+			};
+
+			//! 88 step 2 (2026-08-19): collapse a run of hand-authored copies
+			//! into ONE `source` + `count_u` instancing chunk -- the VERB half
+			//! of design-note condition C.
+			//!
+			//! WHY A VERB AND NOT MORE ADVICE.  Step 1 shipped the clause; a
+			//! live gemini-3.7-flash run received it five times, read it
+			//! correctly, and then made ZERO attempts at `source`/`count_u`
+			//! across three further propose_patches rounds.  Advice that asks
+			//! for a multi-chunk hand rewrite loses to its own anti-churn
+			//! escape, so the clause now names this call instead.
+			//!
+			//! THE CONTRACT IS "NO-OP ON THE RENDERED SCENE".  It keeps the
+			//! FIRST copy (in document order) exactly as authored, mints the
+			//! other N-1 from it, and refuses -- changing nothing -- whenever
+			//! it cannot prove the copies land where they already were:
+			//!   * the positions must fit an exact arithmetic progression, as
+			//!     a line or as a rectangular grid, verified against the
+			//!     DECIMAL TEXT that will actually be written;
+			//!   * `orientation` / `quaternion` / `scale` must be constant
+			//!     across the run (they are NOT inherited through `source`, so
+			//!     the instancing chunk states them once for every copy);
+			//!   * a `matrix` anywhere in the run refuses it (a matrix
+			//!     overrides `position`, so the differing positions are not
+			//!     what places the copies);
+			//!   * no chunk outside the run may NAME a member -- an erased
+			//!     copy's referrer would dangle, and a child of the kept copy
+			//!     would be cloned into every minted one, because `source`
+			//!     copies a whole SUBTREE.
+			//!
+			//! `target` names any ONE copy in the run; omit it to take the
+			//! largest qualifying run in the document (the same one condition
+			//! C names).  `name` names the instancing chunk; omit it for
+			//! `<source>_array`.  A GRID takes TWO chunks, and that is the
+			//! language, not a shortcut: `source` copies rather than moves or
+			//! hides, so a countU x countV grid plus the still-visible source
+			//! would be one object too many -- the run is expressed as the
+			//! rest of row zero plus every later row.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
+			//! same commit path ReplaceGeometryScaffold uses, and for the same
+			//! reason it has no staged-proposal form under External authority.
+			AgentCollapseResult CollapseToInstances( const std::string& target = std::string(),
+			                                         const std::string& name   = std::string(),
+			                                         const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Secure-MCP slice 5a: one entry of ListProposals -- a wire-
 			//! friendly flattening of SceneEditController::AgentProposal (see
 			//! that struct's doc for field meaning; `kind` here is the

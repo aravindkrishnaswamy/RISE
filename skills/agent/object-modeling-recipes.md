@@ -397,6 +397,18 @@ geometry across four `standard_object`s, and four is the right shape.
 A shelf lined with six identical bottles, or a fence of thirty
 pickets, is past it -- author ONE and let `count_u` write the rest.
 
+**Already pasted them?  `collapse_to_instances` fixes it in one
+call.**  It keeps the first copy, replaces the rest with the `source`
++ `count_u` chunk that reproduces exactly the positions they already
+had, and leaves the rendered image unchanged -- one call, one undo
+step.  Called with no arguments it takes the largest such run in the
+scene, which is what a DESIGN NOTE about repeated copies is pointing
+at.  It REFUSES, changing nothing, when the copies are not on a
+regular line or grid, when they differ in more than `position`, or
+when another chunk names one of them -- so trying it is free, and a
+refusal is an answer to read rather than a cue to hand-write the
+chunk yourself.
+
 **Five things that bite.**
 
 1. **A `parent` and a `source` must be DECLARED EARLIER in the file.**
