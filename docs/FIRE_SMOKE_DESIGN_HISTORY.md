@@ -2482,3 +2482,13 @@ it was already tried and refuted here.
   resident certificate is exactly 2,147,483,648 bytes at `80 x 195 x 1000`;
   the adjacent 2,149,646,336-byte request rejects before payload inspection.
   No operator, case, or validation tolerance changed.
+
+- **r102 (2026-08-19):** first full resident step. Frozen force, cell and dual
+  transport, explicit exact-zero source operands, and one r98 P2 now compose
+  without an interstage full-grid transfer. A mixed-boundary CPU composition is
+  the independent numerical oracle. The exact tier-10 N=8 path measured
+  73.8315 ms resident device p95 and 242.727 ms wall p95 in the deliberately
+  staged validation wrapper, below the respective 200 ms P3 and 300 ms/step
+  one-hour envelopes. The combined certificate is 1,235,662,396 bytes versus
+  a 975,303,556-byte observed upper bound. Nonzero source maps and the golden
+  eight-slice physics campaign remain subsequent milestones.

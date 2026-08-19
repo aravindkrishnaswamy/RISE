@@ -1282,6 +1282,31 @@ This revision changes residency and publication ownership only; the r89 dual
 operator, r92 side tuples, fp32 arithmetic, case identity, and validation bands
 are unchanged.
 
+### 7.19 First full resident step and measured budget (r102)
+
+The first full resident owner now executes frozen force, the nine-channel cell
+palindrome, mixed-boundary dual momentum, explicit source operands, and exactly
+one r98 projection in that order. Source operands are Private full-grid buffers
+and are required to be exact positive zero for this isolated-shadow milestone;
+nonzero thermo/source maps remain the next numbered stage. The source command
+adds both cell and packed-face operands and extracts component zero as the sole
+P2 gas-density input. Observed child diagnostics, rather than authored zeros,
+must report five cell submaps, fifteen dual submaps, one source command, one P2
+invocation, and zero interstage full-grid transfer. Cell and transported-dual
+oracle taps occur only after P2's terminal step-boundary publication.
+
+On the exact `86 x 86 x 132`, nine-channel, N=8 workload, resident device p95
+is `73.8315 ms`. The validation wrapper, which deliberately rebuilds frozen
+line tuples and stages full oracle outputs at both step boundaries, measures
+`242.727 ms` wall p95. Thus the production interval clears the 200 ms P3
+allocation, and even the instrumented wrapper remains below the 300 ms/step
+one-hour tier-10 envelope. Its conservative combined certificate is
+`1,235,662,396` bytes; the independently summed observed upper bound is
+`975,303,556` bytes. A mixed wall/open fixture independently composes the CPU
+force, cell remap, dual remap, zero source, and P2 operators and gates the full
+resident result. r102 changes no numerical kernel, validation tolerance, case,
+or checkpoint.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
