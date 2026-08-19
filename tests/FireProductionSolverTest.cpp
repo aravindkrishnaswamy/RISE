@@ -2771,6 +2771,45 @@ int main()
 		rejectedResidentDiagnostics.outwardLambdaPerS==0.0f&&
 		rejectedResidentDiagnostics.commandCommitCount==0u,
 		"resident force rejects malformed input with a fully default result and transfer ledger");
+	const char* residentFailureStages[]={"resident-snapshot","resident-command-allocation",
+		"resident-command","resident-staging","resident-staging-command"};
+	bool residentLateFailuresAtomic=true;
+	for( const char* stage:residentFailureStages ) {
+		FireProductionFrozenForceAdvanceResult failed;failed.schedule.substepCount=7u;
+		failed.schedule.substepTimeS=1.0f;failed.schedule.outwardWork=2.0;
+		failed.schedule.representedProductUpper=2.0;
+		failed.frozenFields.eddyKinematicViscosityM2PerS.push_back(1.0f);
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			failed.frozenFields.beginningViscousMomentumRateKGPerM2S2[axis].push_back(1.0f);
+			failed.frozenFields.gravityMomentumIncrementKGPerM2S[axis].push_back(1.0f);
+			failed.momentumKGPerM2S[axis].push_back(1.0f);
+		}
+		failed.intermediateMomentumByteDigests.fill(3u);
+		failed.intermediateMomentumDigestCount=3u;failed.executedViscousSubstepCount=3u;
+		FireProductionResidentForceDiagnostics failedDiagnostics;
+		failedDiagnostics.outwardLambdaPerS=1.0f;failedDiagnostics.preflightDeviceElapsedMS=1.0;
+		failedDiagnostics.advanceDeviceElapsedMS=1.0;failedDiagnostics.certifiedWorkingSetBytes=1u;
+		failedDiagnostics.actualMetalAllocationBytes=1u;failedDiagnostics.commandCommitCount=1u;
+		failedDiagnostics.scalarDiagnosticTransferCount=1u;
+		failedDiagnostics.substepLoopDeviceToHostTransferCount=1u;
+		failedDiagnostics.terminalStagingCount=1u;
+		setenv("RISE_FIRE_FORCE_TEST_FAILURE",stage,1);
+		const bool rejected=!AdvanceFireProductionFrozenForceMetal(matrixForce,true,
+			failed,failedDiagnostics,&error);
+		unsetenv("RISE_FIRE_FORCE_TEST_FAILURE");
+		residentLateFailuresAtomic=residentLateFailuresAtomic&&rejected&&
+			FrozenForceAdvanceResultEmpty(failed)&&failedDiagnostics.outwardLambdaPerS==0.0f&&
+			failedDiagnostics.preflightDeviceElapsedMS==0.0&&
+			failedDiagnostics.advanceDeviceElapsedMS==0.0&&
+			failedDiagnostics.certifiedWorkingSetBytes==0u&&
+			failedDiagnostics.actualMetalAllocationBytes==0u&&
+			failedDiagnostics.commandCommitCount==0u&&
+			failedDiagnostics.scalarDiagnosticTransferCount==0u&&
+			failedDiagnostics.substepLoopDeviceToHostTransferCount==0u&&
+			failedDiagnostics.terminalStagingCount==0u;
+	}
+	Check(residentLateFailuresAtomic,
+		"every post-preflight resident-force failure publishes a fully default result and ledger");
 	FireProductionFrozenForceRequest tier10ResidentForce;
 	tier10ResidentForce.shape.nx=86u;tier10ResidentForce.shape.ny=86u;
 	tier10ResidentForce.shape.nz=132u;tier10ResidentForce.shape.cellWidthM=0.30f/86.0f;
@@ -2813,7 +2852,8 @@ int main()
 	tier10ResidentForceN9.timeStepS*=8.5f/7.5f;
 	const bool tier10N9=!AdvanceFireProductionFrozenForceMetal(tier10ResidentForceN9,false,
 		tier10N9Result,tier10N9Diagnostics,&error)&&FrozenForceAdvanceResultEmpty(tier10N9Result)&&
-		tier10N9Diagnostics.commandCommitCount==1u&&
+		tier10N9Diagnostics.commandCommitCount==0u&&
+		tier10N9Diagnostics.outwardLambdaPerS==0.0f&&
 		tier10N9Diagnostics.terminalStagingCount==0u;
 	std::cout << "Production resident force N8 device_p95_ms=" << residentForceDeviceP95 <<
 		" lambda=" << (residentForceDeviceMS.empty()?0.0f:tier10N7Diagnostics.outwardLambdaPerS) << '\n';

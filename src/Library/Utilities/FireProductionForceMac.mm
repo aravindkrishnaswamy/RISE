@@ -514,6 +514,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		result=FireProductionFrozenForceAdvanceResult();
 		diagnostics=FireProductionResidentForceDiagnostics();
 		try {
+			FireProductionResidentForceDiagnostics observed;
+			FireProductionViscousSchedule selectedSchedule;
 			const FireProductionProjectionShape& shape=request.shape;
 			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
 				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
@@ -635,8 +637,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				std::uint64_t actual=hostBytes+residentBytes+uploadBytes;
 				if( actual>certifiedBytes||actual>(UINT64_C(1)<<31u) )
 					return Fail(error,"production resident force preflight allocation exceeds certificate");
-				diagnostics.certifiedWorkingSetBytes=certifiedBytes;
-				diagnostics.actualMetalAllocationBytes=actual;
+				observed.certifiedWorkingSetBytes=certifiedBytes;
+				observed.actualMetalAllocationBytes=actual;
 				auto begin=[&](id<MTLCommandBuffer> command,id<MTLComputePipelineState> pipeline,
 					const id<MTLBuffer>* buffers,std::size_t bufferCount,std::size_t count,
 					const void* bytes=0,std::size_t byteCount=0u)->bool {
@@ -686,17 +688,18 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> lambdaBuffers[]={maxima,lambda,parameters};
 				if( !begin(preflight,context.buildLambda,lambdaBuffers,3u,1u) )
 					return Fail(error,"production resident force lambda encoder failed");
-				[preflight commit];[preflight waitUntilCompleted];++diagnostics.commandCommitCount;
+				[preflight commit];[preflight waitUntilCompleted];++observed.commandCommitCount;
 				if( [preflight status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force preflight command failed");
-				diagnostics.preflightDeviceElapsedMS=([preflight GPUEndTime]-[preflight GPUStartTime])*1000.0;
-				diagnostics.outwardLambdaPerS=*static_cast<const float*>([lambda contents]);
-				diagnostics.scalarDiagnosticTransferCount=1u;
+				observed.preflightDeviceElapsedMS=([preflight GPUEndTime]-[preflight GPUStartTime])*1000.0;
+				observed.outwardLambdaPerS=*static_cast<const float*>([lambda contents]);
+				observed.scalarDiagnosticTransferCount=1u;
 				rhoUpload=nil;nuUpload=nil;faceRhoUpload=nil;momentumUpload=nil;
-				if( !(diagnostics.outwardLambdaPerS>=0.0f)||!std::isfinite(diagnostics.outwardLambdaPerS)||
-					!SelectFireProductionViscousSchedule(request.timeStepS,diagnostics.outwardLambdaPerS,
-						result.schedule,error) ) return false;
-				if( captureIntermediateStates ) {snapshots=privateBuffer(8u*faceBytes);
+				if( !(observed.outwardLambdaPerS>=0.0f)||!std::isfinite(observed.outwardLambdaPerS)||
+					!SelectFireProductionViscousSchedule(request.timeStepS,observed.outwardLambdaPerS,
+						selectedSchedule,error) ) return false;
+				if( captureIntermediateStates ) {snapshots=InjectedFailure("resident-snapshot")?
+					nil:privateBuffer(8u*faceBytes);
 					if( !snapshots ) return Fail(error,"production resident force snapshot allocation failed");
 					const std::uint64_t snapshotBytes=[snapshots allocatedSize];
 					if( hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-snapshotBytes )
@@ -704,9 +707,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					actual=std::max(actual,hostBytes+residentBytes+snapshotBytes);}
 				if( actual>certifiedBytes||actual>(UINT64_C(1)<<31u) )
 					return Fail(error,"production resident force advance allocation exceeds certificate");
-				id<MTLCommandBuffer> advance=[context.queue commandBuffer];if( !advance )
+				id<MTLCommandBuffer> advance=InjectedFailure("resident-command-allocation")?
+					nil:[context.queue commandBuffer];if( !advance )
 					return Fail(error,"production resident force advance command allocation failed");
-				for( std::uint32_t substep=0u;substep<result.schedule.substepCount;++substep ) {
+				for( std::uint32_t substep=0u;substep<selectedSchedule.substepCount;++substep ) {
 					if( !begin(advance,context.setupFace,setupBuffers,4u,faces)||
 						!begin(advance,context.cellVelocity,cellBuffers,3u,cells) )
 						return Fail(error,"production resident force substep velocity encoder failed");
@@ -716,7 +720,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						return Fail(error,"production resident force substep operator encoder failed");
 					const id<MTLBuffer> updateBuffers[]={momentum,viscous,parameters};
 					if( !begin(advance,context.updateViscous,updateBuffers,3u,faces,
-						&result.schedule.substepTimeS,sizeof(float)) )
+						&selectedSchedule.substepTimeS,sizeof(float)) )
 						return Fail(error,"production resident force substep update encoder failed");
 					if( captureIntermediateStates ) {const id<MTLBuffer> snapshotBuffers[]={momentum,snapshots,parameters};
 						if( !begin(advance,context.snapshot,snapshotBuffers,3u,faces,&substep,sizeof(substep)) )
@@ -725,11 +729,13 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				const id<MTLBuffer> gravityBuffers[]={momentum,gravity,parameters};
 				if( !begin(advance,context.addGravity,gravityBuffers,3u,faces) )
 					return Fail(error,"production resident force gravity encoder failed");
-				[advance commit];[advance waitUntilCompleted];++diagnostics.commandCommitCount;
-				if( [advance status]!=MTLCommandBufferStatusCompleted )
+				[advance commit];[advance waitUntilCompleted];++observed.commandCommitCount;
+				if( InjectedFailure("resident-command")||
+					[advance status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force advance command failed");
-				diagnostics.advanceDeviceElapsedMS=([advance GPUEndTime]-[advance GPUStartTime])*1000.0;
-				id<MTLBuffer> stageEddy=sharedBuffer(cellBytes),stageMu=sharedBuffer(cellBytes);
+				observed.advanceDeviceElapsedMS=([advance GPUEndTime]-[advance GPUStartTime])*1000.0;
+				id<MTLBuffer> stageEddy=InjectedFailure("resident-staging")?
+					nil:sharedBuffer(cellBytes),stageMu=sharedBuffer(cellBytes);
 				id<MTLBuffer> stageViscous=sharedBuffer(faceBytes),stageGravity=sharedBuffer(faceBytes);
 				id<MTLBuffer> stageMomentum=sharedBuffer(faceBytes);
 				id<MTLBuffer> stageSnapshots=captureIntermediateStates?sharedBuffer(8u*faceBytes):nil;
@@ -752,7 +758,8 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				actual=std::max(actual,hostBytes+residentBytes+snapshotBytes+stageBytes);
 				if( actual>certifiedBytes||actual>(UINT64_C(1)<<31u) )
 					return Fail(error,"production resident force staging allocation exceeds certificate");
-				id<MTLCommandBuffer> staging=[context.queue commandBuffer];if( !staging )
+				id<MTLCommandBuffer> staging=InjectedFailure("resident-staging-command")?
+					nil:[context.queue commandBuffer];if( !staging )
 					return Fail(error,"production resident force staging command allocation failed");
 				id<MTLBlitCommandEncoder> blit=[staging blitCommandEncoder];if( !blit )
 					return Fail(error,"production resident force terminal staging encoder failed");
@@ -764,11 +771,11 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				if( captureIntermediateStates ) [blit copyFromBuffer:snapshots sourceOffset:0
 					toBuffer:stageSnapshots destinationOffset:0 size:8u*faceBytes];
 				[blit endEncoding];[staging commit];[staging waitUntilCompleted];
-				++diagnostics.commandCommitCount;diagnostics.terminalStagingCount=1u;
+				++observed.commandCommitCount;observed.terminalStagingCount=1u;
 				if( [staging status]!=MTLCommandBufferStatusCompleted )
 					return Fail(error,"production resident force staging command failed");
-				diagnostics.actualMetalAllocationBytes=actual;
-				FireProductionFrozenForceAdvanceResult computed;computed.schedule=result.schedule;
+				observed.actualMetalAllocationBytes=actual;
+				FireProductionFrozenForceAdvanceResult computed;computed.schedule=selectedSchedule;
 				const float* eddyValues=static_cast<const float*>([stageEddy contents]);
 				const float* muValues=static_cast<const float*>([stageMu contents]);
 				computed.frozenFields.eddyKinematicViscosityM2PerS.assign(eddyValues,eddyValues+cells);
@@ -784,10 +791,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					computed.momentumKGPerM2S[axis].assign(momentumValues+offset,
 						momentumValues+offset+faceCounts[axis]);offset+=faceCounts[axis];
 				}
-				computed.executedViscousSubstepCount=result.schedule.substepCount;
+				computed.executedViscousSubstepCount=selectedSchedule.substepCount;
 				if( captureIntermediateStates ) {const float* values=static_cast<const float*>([stageSnapshots contents]);
-					computed.intermediateMomentumDigestCount=result.schedule.substepCount;
-					for( std::uint32_t step=0u;step<result.schedule.substepCount;++step )
+					computed.intermediateMomentumDigestCount=selectedSchedule.substepCount;
+					for( std::uint32_t step=0u;step<selectedSchedule.substepCount;++step )
 						computed.intermediateMomentumByteDigests[step]=
 							PackedMomentumByteDigest(values+step*faces,faces);}
 				if( !AllFinite(computed.frozenFields.eddyKinematicViscosityM2PerS)||
@@ -798,7 +805,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					computed.frozenFields.gravityMomentumIncrementKGPerM2S[axis])||
 					!AllFinite(computed.momentumKGPerM2S[axis]) )
 					return Fail(error,"production resident force output is nonfinite");
-				result=std::move(computed);
+				result=std::move(computed);diagnostics=observed;
 			}
 			if( error ) error->clear();return true;
 		} catch( const std::bad_alloc& ) {
