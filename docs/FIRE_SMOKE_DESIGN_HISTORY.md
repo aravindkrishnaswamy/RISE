@@ -2286,3 +2286,21 @@ it was already tried and refuted here.
   Original bed inputs remain serialized as excluded P4 evidence, while the
   sourced continuation still reproduces r80. No physical operator, identity,
   or budget changes.
+
+- **r92 (2026-08-18):** line-resolved pressure-open ambient tuples. The first
+  mixed-boundary dual-momentum implementation exposed a representation gap:
+  r89 requires normal ambient momentum `rho_amb u_boundary`, but the frozen
+  carrier varies by boundary line while P1 accepted only one ambient value per
+  component. Lower and upper open sides can also carry different roles and
+  values in the same batch. The ruling adds optional, distinct lower/upper
+  `(component,line)` tuples to the shared P1 CPU/Metal kernel, with exact
+  `component*lineCount+line` indexing; the component-only path is preserved
+  byte-for-byte.
+
+  Averaging a side was rejected because it changes conservative boundary
+  flux; dispatching each line separately was rejected because it breaks the
+  resident batching and command budget; and encoding ambient data as ghost
+  conservative state was rejected because it changes limiter ownership. A
+  side/line-distinct exact-flux fixture and malformed/nonfinite REDs bind the
+  seam. This closes an internal representation detail of the already pinned
+  P3 operator and changes no case identity, physical semantics, or budget.

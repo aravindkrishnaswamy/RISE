@@ -895,6 +895,33 @@ r91 makes the r90 certificates executable on the target and closes P4 boundary
 leakage from the P3 oracle surface. It changes no case identity, operator, or
 budget.
 
+### 7.9 Line-resolved pressure-open ambient tuples (r92)
+
+The one-dimensional P1 kernel accepts an optional boundary-owned ambient tuple
+for every `(component,line)` on each side, indexed exactly as
+`component*lineCount+line`. The lower and upper arrays are distinct. When this
+mode is disabled, both sides consume the original component-only ambient tuple
+and the settled P1/P3 bytes remain unchanged. Reconstruction ghosts and swept
+extensions read the same selected tuple; CPU and Metal do not restate the
+selection differently.
+
+This seam is required by r89's dual-momentum boundary table. At a normal
+pressure-open face the ambient momentum is `rho_amb*u_boundary`, and the frozen
+boundary carrier can vary along the side; one component-wide value therefore
+cannot represent the ruled operator. Each side also has an independent role,
+so one shared line tuple cannot represent simultaneous lower/upper inflow.
+Fixtures assign distinct exact-binary values to every component, line, and
+side, bind both boundary fluxes, and compare the Metal bytes with the fp32 CPU
+oracle. Incomplete or nonfinite arrays fail before dispatch.
+
+Using a side average was rejected because it changes the conservative flux;
+launching one remap per line was rejected because it defeats the resident
+batched kernel and command budget; and inserting ambient values into the
+transported state or limiter stencil was rejected because boundary data are
+not owned conservative state. r92 is an internal representation closure for
+the already pinned P3 operator. It changes no case identity, physical model,
+or milestone budget.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
