@@ -214,6 +214,34 @@ namespace RISE
 		return true;
 	}
 
+	bool FireProductionResidentForceMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		bool captureIntermediateStates,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		const std::uint64_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+		const std::uint64_t cells=nx*ny*nz;
+		const std::uint64_t faces=(nx+1u)*ny*nz+
+			nx*(ny+1u)*nz+nx*ny*(nz+1u);
+		std::uint64_t padded=1u;
+		while( padded<std::max(cells,faces) ) padded*=2u;
+		const std::uint64_t quantum=UINT64_C(16384);
+		auto rounded=[&](std::uint64_t count) -> std::uint64_t {
+			const std::uint64_t raw=count*sizeof(float);
+			return ((raw+quantum-1u)/quantum)*quantum;
+		};
+		// Host caller, packing, and atomic publication coexist with all resident
+		// buffers.  Optional snapshots exist once Private and once in terminal
+		// Shared staging; neither is present in production execution.
+		bytes=(4u*cells+7u*faces)*sizeof(float)+18u*rounded(cells)+
+			9u*rounded(faces)+2u*rounded(padded)+3u*quantum;
+		if( captureIntermediateStates ) bytes+=16u*rounded(faces);
+		return true;
+	}
+
 	static bool BuildFireProductionFrozenForceFieldsImpl(
 		const FireProductionFrozenForceRequest& request,
 		const std::vector<float>* fixedDynamicViscosityPaS,

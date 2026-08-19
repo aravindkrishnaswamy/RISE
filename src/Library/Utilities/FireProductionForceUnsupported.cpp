@@ -24,4 +24,19 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
+
+	bool AdvanceFireProductionFrozenForceMetal(
+		const FireProductionFrozenForceRequest&,
+		bool,
+		FireProductionFrozenForceAdvanceResult& result,
+		FireProductionResidentForceDiagnostics& diagnostics,
+		std::string* error )
+	{
+		result=FireProductionFrozenForceAdvanceResult();
+		diagnostics=FireProductionResidentForceDiagnostics();
+		if( error ) try {
+			*error="production resident frozen-force Metal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
 }

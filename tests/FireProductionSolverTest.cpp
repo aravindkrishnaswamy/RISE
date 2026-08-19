@@ -2605,6 +2605,221 @@ int main()
 		forceRest,restForceGPU,restForceMetalMS,&error);
 	const bool compressionForceMetal=BuildFireProductionFrozenForceFieldsMetal(
 		compressionForce,compressionForceGPU,compressionForceMetalMS,&error);
+	FireProductionFrozenForceRequest residentForce=periodicForce;
+	residentForce.timeStepS=62.5f;residentForce.vremanCoefficient=0.0f;
+	residentForce.cellGasDensityKGPerM3.assign(residentForce.shape.CellCount(),1.2f);
+	residentForce.molecularKinematicViscosityM2PerS.assign(
+		residentForce.shape.CellCount(),0.01f);
+	for( unsigned int axis=0u;axis<3u;++axis )
+		residentForce.faceDensityKGPerM3[axis].assign(
+			FireProductionProjectionFaceCount(residentForce.shape,axis),1.2f);
+	FireProductionFrozenForceAdvanceResult residentForceGPU,residentForceCPU;
+	FireProductionFrozenForceAdvanceResult residentForceGPURepeat;
+	FireProductionResidentForceDiagnostics residentForceDiagnostics;
+	FireProductionResidentForceDiagnostics residentForceRepeatDiagnostics;
+	const bool residentForceMetal=AdvanceFireProductionFrozenForceMetal(
+		residentForce,true,residentForceGPU,residentForceDiagnostics,&error);
+	const bool residentForceMetalRepeat=AdvanceFireProductionFrozenForceMetal(
+		residentForce,true,residentForceGPURepeat,residentForceRepeatDiagnostics,&error);
+	const bool residentForceOracle=residentForceMetal&&AdvanceFireProductionFrozenForceCPU(
+		residentForce,residentForceDiagnostics.outwardLambdaPerS,residentForceCPU,&error);
+	std::uint64_t residentForceMaximumULPs=0u;
+	float residentForceMaximumAbsolute=0.0f,residentForceMaximumMagnitude=0.0f;
+	bool residentForceComposedWithinBound=true;
+	float residentForceExpected=0.0f,residentForceObserved=0.0f;
+	unsigned int residentForceAxis=0u;std::size_t residentForceFace=0u;
+	if( residentForceOracle ) for( unsigned int axis=0u;axis<3u;++axis )
+		for( std::size_t face=0u;face<residentForceCPU.momentumKGPerM2S[axis].size();++face ) {
+			const float expected=residentForceCPU.momentumKGPerM2S[axis][face];
+			const float observed=residentForceGPU.momentumKGPerM2S[axis][face];
+			residentForceMaximumAbsolute=std::max(residentForceMaximumAbsolute,std::fabs(expected-observed));
+			residentForceMaximumMagnitude=std::max(residentForceMaximumMagnitude,
+				std::max(std::fabs(expected),std::fabs(observed)));
+			const std::uint64_t difference=FloatULPDistance(
+				expected,observed);
+			residentForceComposedWithinBound=residentForceComposedWithinBound&&
+				(difference<=64u||std::fabs(expected-observed)<=0x1p-25f);
+			if( difference>residentForceMaximumULPs ) {residentForceMaximumULPs=difference;
+				residentForceExpected=expected;residentForceObserved=observed;
+				residentForceAxis=axis;residentForceFace=face;}
+		}
+	if( residentForceMetal ) std::cerr << "Resident force lambda=" <<
+		residentForceDiagnostics.outwardLambdaPerS << " substeps=" <<
+		residentForceGPU.executedViscousSubstepCount << " max_ulp=" <<
+		residentForceMaximumULPs << " preflight_ms=" <<
+		residentForceDiagnostics.preflightDeviceElapsedMS << " advance_ms=" <<
+		residentForceDiagnostics.advanceDeviceElapsedMS << " axis=" << residentForceAxis <<
+		" face=" << residentForceFace << " expected=" << residentForceExpected <<
+		" observed=" << residentForceObserved << " max_abs=" << residentForceMaximumAbsolute <<
+		" max_mag=" << residentForceMaximumMagnitude << '\n';
+	bool residentForceSeamsExact=true;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::size_t extent=axis==0u?residentForce.shape.nx:
+			(axis==1u?residentForce.shape.ny:residentForce.shape.nz);
+		const std::size_t plane=residentForceGPU.momentumKGPerM2S[axis].size()/(extent+1u);
+		for( std::size_t line=0u;line<plane;++line ) {
+			const std::size_t low=axis==0u?line*(extent+1u):
+				(axis==1u?(line/residentForce.shape.nx)*(extent+1u)*residentForce.shape.nx+
+					line%residentForce.shape.nx:line);
+			const std::size_t high=axis==0u?low+extent:
+				(axis==1u?low+extent*residentForce.shape.nx:
+					low+extent*residentForce.shape.nx*residentForce.shape.ny);
+			residentForceSeamsExact=residentForceSeamsExact&&SameFloatBytes(
+				residentForceGPU.momentumKGPerM2S[axis][low],
+				residentForceGPU.momentumKGPerM2S[axis][high]);
+		}
+	}
+	Check(residentForceOracle&&residentForceMetalRepeat&&
+		residentForceGPU.frozenFields.eddyKinematicViscosityM2PerS==
+			residentForceGPURepeat.frozenFields.eddyKinematicViscosityM2PerS&&
+		residentForceGPU.frozenFields.effectiveDynamicViscosityPaS==
+			residentForceGPURepeat.frozenFields.effectiveDynamicViscosityPaS&&
+		residentForceGPU.frozenFields.beginningViscousMomentumRateKGPerM2S2==
+			residentForceGPURepeat.frozenFields.beginningViscousMomentumRateKGPerM2S2&&
+		residentForceGPU.frozenFields.gravityMomentumIncrementKGPerM2S==
+			residentForceGPURepeat.frozenFields.gravityMomentumIncrementKGPerM2S&&
+		residentForceGPU.momentumKGPerM2S==residentForceGPURepeat.momentumKGPerM2S&&
+		residentForceGPU.intermediateMomentumByteDigests==
+			residentForceGPURepeat.intermediateMomentumByteDigests&&
+		residentForceDiagnostics.outwardLambdaPerS==residentForceRepeatDiagnostics.outwardLambdaPerS&&
+		residentForceGPU.executedViscousSubstepCount==8u&&
+		residentForceGPU.intermediateMomentumDigestCount==8u&&
+		residentForceDiagnostics.scalarDiagnosticTransferCount==1u&&
+		residentForceDiagnostics.substepLoopDeviceToHostTransferCount==0u&&
+		residentForceDiagnostics.terminalStagingCount==1u&&
+		residentForceDiagnostics.commandCommitCount==3u&&
+		residentForceDiagnostics.actualMetalAllocationBytes<=
+			residentForceDiagnostics.certifiedWorkingSetBytes&&
+		residentForceComposedWithinBound&&residentForceMaximumAbsolute==0x1p-25f&&
+		residentForceMaximumULPs>64u&&residentForceSeamsExact,
+		"resident eight-substep force keeps the loop private and remains within the measured composed bound");
+	FireProductionFrozenForceRequest matrixForce=forceRest;
+	matrixForce.shape.nx=4u;matrixForce.shape.ny=4u;matrixForce.shape.nz=4u;
+	matrixForce.shape.cellWidthM=1.0f;matrixForce.timeStepS=1.0f;
+	matrixForce.vremanCoefficient=0.0f;matrixForce.gravityMPerS2.fill(0.0f);
+	matrixForce.boundary.fill(FireProductionProjectionPeriodic);
+	matrixForce.cellGasDensityKGPerM3.assign(matrixForce.shape.CellCount(),1.2f);
+	matrixForce.molecularKinematicViscosityM2PerS.assign(matrixForce.shape.CellCount(),0.01f);
+	std::size_t matrixFaces=0u;std::array<std::size_t,3> matrixOffsets={};
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		matrixOffsets[axis]=matrixFaces;
+		const std::size_t count=FireProductionProjectionFaceCount(matrixForce.shape,axis);
+		matrixFaces+=count;matrixForce.faceDensityKGPerM3[axis].assign(count,1.2f);
+		matrixForce.beginningMomentumKGPerM2S[axis].assign(count,0.0f);
+	}
+	std::vector<double> exactRowSums(matrixFaces,0.0);
+	bool exactMatrixBuilt=true;
+	for( unsigned int inputAxis=0u;inputAxis<3u;++inputAxis ) {
+		const std::size_t count=matrixForce.beginningMomentumKGPerM2S[inputAxis].size();
+		for( std::size_t inputFace=0u;inputFace<count;++inputFace ) {
+			std::size_t x=0u,y=0u,z=0u;
+			if( inputAxis==0u ) {x=inputFace%(matrixForce.shape.nx+1u);
+				const std::size_t rest=inputFace/(matrixForce.shape.nx+1u);
+				y=rest%matrixForce.shape.ny;z=rest/matrixForce.shape.ny;}
+			if( inputAxis==1u ) {x=inputFace%matrixForce.shape.nx;
+				const std::size_t rest=inputFace/matrixForce.shape.nx;
+				y=rest%(matrixForce.shape.ny+1u);z=rest/(matrixForce.shape.ny+1u);}
+			if( inputAxis==2u ) {x=inputFace%matrixForce.shape.nx;
+				const std::size_t rest=inputFace/matrixForce.shape.nx;
+				y=rest%matrixForce.shape.ny;z=rest/matrixForce.shape.ny;}
+			const std::size_t coordinate=inputAxis==0u?x:(inputAxis==1u?y:z);
+			const std::size_t extent=inputAxis==0u?matrixForce.shape.nx:
+				(inputAxis==1u?matrixForce.shape.ny:matrixForce.shape.nz);
+			if( coordinate==extent ) continue;
+			matrixForce.beginningMomentumKGPerM2S[inputAxis][inputFace]=1.0f;
+			std::size_t duplicate=inputFace;
+			if( coordinate==0u ) duplicate=inputAxis==0u?inputFace+extent:
+				(inputAxis==1u?inputFace+extent*matrixForce.shape.nx:
+					inputFace+extent*matrixForce.shape.nx*matrixForce.shape.ny);
+			matrixForce.beginningMomentumKGPerM2S[inputAxis][duplicate]=1.0f;
+			FireProductionFrozenForceResult column;
+			exactMatrixBuilt=exactMatrixBuilt&&BuildFireProductionFrozenForceFieldsCPU(
+				matrixForce,column,&error);
+			if( exactMatrixBuilt ) for( unsigned int outputAxis=0u;outputAxis<3u;++outputAxis )
+				for( std::size_t outputFace=0u;outputFace<column.beginningViscousMomentumRateKGPerM2S2[outputAxis].size();++outputFace )
+					exactRowSums[matrixOffsets[outputAxis]+outputFace]+=std::fabs(
+						static_cast<double>(column.beginningViscousMomentumRateKGPerM2S2[outputAxis][outputFace]));
+			matrixForce.beginningMomentumKGPerM2S[inputAxis][inputFace]=0.0f;
+			matrixForce.beginningMomentumKGPerM2S[inputAxis][duplicate]=0.0f;
+		}
+	}
+	const double exactMaximumRowSum=exactMatrixBuilt?
+		*std::max_element(exactRowSums.begin(),exactRowSums.end()):
+		std::numeric_limits<double>::infinity();
+	FireProductionFrozenForceAdvanceResult matrixForceGPU;
+	FireProductionResidentForceDiagnostics matrixForceDiagnostics;
+	const bool matrixEnvelopeBuilt=AdvanceFireProductionFrozenForceMetal(
+		matrixForce,false,matrixForceGPU,matrixForceDiagnostics,&error);
+	std::cout << "Production resident force exact_row_max=" << exactMaximumRowSum <<
+		" outward_lambda=" << matrixForceDiagnostics.outwardLambdaPerS << '\n';
+	Check(matrixEnvelopeBuilt&&exactMatrixBuilt&&exactMaximumRowSum>0.0&&
+		exactMaximumRowSum<=static_cast<double>(matrixForceDiagnostics.outwardLambdaPerS),
+		"matrix-free outward envelope dominates every independently assembled signed row");
+	FireProductionFrozenForceRequest rejectedResidentForce=matrixForce;
+	rejectedResidentForce.cellGasDensityKGPerM3[0]=-1.0f;
+	FireProductionFrozenForceAdvanceResult rejectedResidentResult;
+	rejectedResidentResult.momentumKGPerM2S[0].push_back(1.0f);
+	rejectedResidentResult.intermediateMomentumByteDigests.fill(5u);
+	rejectedResidentResult.intermediateMomentumDigestCount=5u;
+	rejectedResidentResult.executedViscousSubstepCount=5u;
+	FireProductionResidentForceDiagnostics rejectedResidentDiagnostics;
+	rejectedResidentDiagnostics.outwardLambdaPerS=1.0f;
+	rejectedResidentDiagnostics.commandCommitCount=5u;
+	Check(!AdvanceFireProductionFrozenForceMetal(rejectedResidentForce,true,
+		rejectedResidentResult,rejectedResidentDiagnostics,&error)&&
+		FrozenForceAdvanceResultEmpty(rejectedResidentResult)&&
+		rejectedResidentDiagnostics.outwardLambdaPerS==0.0f&&
+		rejectedResidentDiagnostics.commandCommitCount==0u,
+		"resident force rejects malformed input with a fully default result and transfer ledger");
+	FireProductionFrozenForceRequest tier10ResidentForce;
+	tier10ResidentForce.shape.nx=86u;tier10ResidentForce.shape.ny=86u;
+	tier10ResidentForce.shape.nz=132u;tier10ResidentForce.shape.cellWidthM=0.30f/86.0f;
+	tier10ResidentForce.timeStepS=1.0f/480.0f;
+	tier10ResidentForce.ambientDensityKGPerM3=1.2f;tier10ResidentForce.vremanCoefficient=0.0f;
+	tier10ResidentForce.gravityMPerS2.fill(0.0f);
+	tier10ResidentForce.boundary.fill(FireProductionProjectionPeriodic);
+	const float tier10N8Nu=(15.0f/tier10ResidentForce.timeStepS)*
+		tier10ResidentForce.shape.cellWidthM*tier10ResidentForce.shape.cellWidthM/24.0f;
+	tier10ResidentForce.cellGasDensityKGPerM3.assign(
+		tier10ResidentForce.shape.CellCount(),1.2f);
+	tier10ResidentForce.molecularKinematicViscosityM2PerS.assign(
+		tier10ResidentForce.shape.CellCount(),tier10N8Nu);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::size_t count=FireProductionProjectionFaceCount(tier10ResidentForce.shape,axis);
+		tier10ResidentForce.faceDensityKGPerM3[axis].assign(count,1.2f);
+		tier10ResidentForce.beginningMomentumKGPerM2S[axis].assign(count,0.0f);
+	}
+	std::vector<double> residentForceDeviceMS;
+	for( unsigned int trial=0u;trial<5u;++trial ) {
+		FireProductionFrozenForceAdvanceResult timedResult;
+		FireProductionResidentForceDiagnostics timedDiagnostics;
+		if( AdvanceFireProductionFrozenForceMetal(tier10ResidentForce,false,timedResult,
+			timedDiagnostics,&error)&&timedResult.executedViscousSubstepCount==8u&&
+			timedDiagnostics.substepLoopDeviceToHostTransferCount==0u )
+			residentForceDeviceMS.push_back(timedDiagnostics.preflightDeviceElapsedMS+
+				timedDiagnostics.advanceDeviceElapsedMS);
+	}
+	std::sort(residentForceDeviceMS.begin(),residentForceDeviceMS.end());
+	const double residentForceDeviceP95=residentForceDeviceMS.size()==5u?
+		residentForceDeviceMS.back():std::numeric_limits<double>::infinity();
+	FireProductionFrozenForceRequest tier10ResidentForceN7=tier10ResidentForce;
+	tier10ResidentForceN7.timeStepS*=6.5f/7.5f;
+	FireProductionFrozenForceAdvanceResult tier10N7Result,tier10N9Result;
+	FireProductionResidentForceDiagnostics tier10N7Diagnostics,tier10N9Diagnostics;
+	const bool tier10N7=AdvanceFireProductionFrozenForceMetal(tier10ResidentForceN7,false,
+		tier10N7Result,tier10N7Diagnostics,&error)&&
+		tier10N7Result.executedViscousSubstepCount==7u;
+	FireProductionFrozenForceRequest tier10ResidentForceN9=tier10ResidentForce;
+	tier10ResidentForceN9.timeStepS*=8.5f/7.5f;
+	const bool tier10N9=!AdvanceFireProductionFrozenForceMetal(tier10ResidentForceN9,false,
+		tier10N9Result,tier10N9Diagnostics,&error)&&FrozenForceAdvanceResultEmpty(tier10N9Result)&&
+		tier10N9Diagnostics.commandCommitCount==1u&&
+		tier10N9Diagnostics.terminalStagingCount==0u;
+	std::cout << "Production resident force N8 device_p95_ms=" << residentForceDeviceP95 <<
+		" lambda=" << (residentForceDeviceMS.empty()?0.0f:tier10N7Diagnostics.outwardLambdaPerS) << '\n';
+	Check(std::isfinite(residentForceDeviceP95)&&residentForceDeviceP95>0.0&&
+		residentForceDeviceP95<=20.0&&tier10N7&&tier10N9,
+		"tier-10-shaped force preflight and exact eight-update edge fit twenty milliseconds");
 	if( !periodicForceMetal ) std::cerr << "Metal frozen-force detail: " << error << '\n';
 	auto reportForceDifference=[](const char* label,
 		const FireProductionFrozenForceResult& cpu,
@@ -3399,6 +3614,21 @@ int main()
 		unsupportedForceMS,&error)&&FrozenForceResultEmpty(unsupportedForce)&&
 		unsupportedForceMS==0.0&&!error.empty(),
 		"non-Metal frozen-force seam fails explicitly without a silent CPU fallback");
+	FireProductionFrozenForceAdvanceResult unsupportedResidentForce;
+	unsupportedResidentForce.momentumKGPerM2S[0].push_back(1.0f);
+	unsupportedResidentForce.intermediateMomentumByteDigests.fill(7u);
+	unsupportedResidentForce.intermediateMomentumDigestCount=7u;
+	unsupportedResidentForce.executedViscousSubstepCount=7u;
+	FireProductionResidentForceDiagnostics unsupportedResidentDiagnostics;
+	unsupportedResidentDiagnostics.outwardLambdaPerS=1.0f;
+	unsupportedResidentDiagnostics.commandCommitCount=7u;
+	error.clear();
+	Check(!AdvanceFireProductionFrozenForceMetal(forceRest,true,unsupportedResidentForce,
+		unsupportedResidentDiagnostics,&error)&&
+		FrozenForceAdvanceResultEmpty(unsupportedResidentForce)&&
+		unsupportedResidentDiagnostics.outwardLambdaPerS==0.0f&&
+		unsupportedResidentDiagnostics.commandCommitCount==0u&&!error.empty(),
+		"non-Metal resident force seam fails explicitly without a silent CPU fallback");
 #endif
 	FireProductionRemapResult allocationFailureRemap;
 	allocationFailureRemap.updatedValues.push_back(1.0f);

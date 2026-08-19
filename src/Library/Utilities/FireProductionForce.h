@@ -99,6 +99,11 @@ namespace RISE
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
 
+	bool FireProductionResidentForceMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		bool captureIntermediateStates,
+		std::uint64_t& bytes );
+
 	bool FireProductionFrozenForceAdvanceWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
@@ -144,6 +149,35 @@ namespace RISE
 		const FireProductionFrozenForceRequest& request,
 		float outwardLambdaPerS,
 		FireProductionFrozenForceAdvanceResult& result,
+		std::string* error=0 );
+
+	struct FireProductionResidentForceDiagnostics
+	{
+		float outwardLambdaPerS;
+		std::uint32_t scalarDiagnosticTransferCount;
+		std::uint32_t substepLoopDeviceToHostTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t commandCommitCount;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		double preflightDeviceElapsedMS;
+		double advanceDeviceElapsedMS;
+
+		FireProductionResidentForceDiagnostics() : outwardLambdaPerS(0.0f),
+			scalarDiagnosticTransferCount(0u),substepLoopDeviceToHostTransferCount(0u),
+			terminalStagingCount(0u),commandCommitCount(0u),certifiedWorkingSetBytes(0u),
+			actualMetalAllocationBytes(0u),preflightDeviceElapsedMS(0.0),
+			advanceDeviceElapsedMS(0.0) {}
+	};
+
+	//! Standalone oracle wrapper around the resident force sequence. Full-grid
+	//! resources remain Private through every viscous substep and the gravity
+	//! update. Optional Private snapshots stage only after command completion.
+	bool AdvanceFireProductionFrozenForceMetal(
+		const FireProductionFrozenForceRequest& request,
+		bool captureIntermediateStates,
+		FireProductionFrozenForceAdvanceResult& result,
+		FireProductionResidentForceDiagnostics& diagnostics,
 		std::string* error=0 );
 }
 
