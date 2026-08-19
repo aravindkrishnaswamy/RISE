@@ -186,6 +186,41 @@ namespace RISE
 		FireProductionResidentForceDiagnostics& diagnostics,
 		std::string* error=0 );
 
+	//! Oracle wrapper for the no-staging resident-state branch. It performs one
+	//! terminal momentum tap after the resident call and leaves the force
+	//! diagnostics' terminal-staging count at zero for that measured interval.
+	bool AdvanceFireProductionFrozenForceMetalResidentStateComparator(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionFrozenForceAdvanceResult& result,
+		FireProductionResidentForceDiagnostics& diagnostics,
+		std::string* error=0 );
+
+#if defined(__OBJC__) && defined(__APPLE__)
+	struct FireProductionMetalFrozenForceResidentState
+	{
+		id<MTLBuffer> cellGasDensityKGPerM3;
+		id<MTLBuffer> packedFaceDensityKGPerM3;
+		id<MTLBuffer> packedMomentumKGPerM2S;
+		std::array<std::size_t,3> faceByteOffset;
+		FireProductionViscousSchedule schedule;
+		FireProductionResidentForceDiagnostics diagnostics;
+
+		FireProductionMetalFrozenForceResidentState() : cellGasDensityKGPerM3(nil),
+			packedFaceDensityKGPerM3(nil),packedMomentumKGPerM2S(nil)
+		{
+			faceByteOffset.fill(0u);
+		}
+	};
+
+	//! Internal full-grid Private state seam. It executes preflight, every
+	//! selected viscous substep, and gravity, then returns the still-resident
+	//! density/momentum owners without terminal staging or projection.
+	bool AdvanceFireProductionFrozenForceMetalResidentState(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionMetalFrozenForceResidentState& state,
+		std::string* error=0 );
+#endif
+
 	struct FireProductionResidentForceProjectionResult
 	{
 		FireProductionViscousSchedule forceSchedule;

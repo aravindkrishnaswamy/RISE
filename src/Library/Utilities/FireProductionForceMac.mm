@@ -560,6 +560,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		bool captureIntermediateStates,
 		const std::vector<float>* projectionTarget,
 		FireProductionResidentForceProjectionResult* composedResult,
+		FireProductionMetalFrozenForceResidentState* residentState,
 		FireProductionFrozenForceAdvanceResult& result,
 		FireProductionResidentForceDiagnostics& diagnostics,
 		std::string* error )
@@ -567,6 +568,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		result=FireProductionFrozenForceAdvanceResult();
 		diagnostics=FireProductionResidentForceDiagnostics();
 		if( composedResult ) *composedResult=FireProductionResidentForceProjectionResult();
+		if( residentState ) *residentState=FireProductionMetalFrozenForceResidentState();
 		try {
 			FireProductionResidentForceDiagnostics observed;
 			FireProductionViscousSchedule selectedSchedule;
@@ -890,6 +892,26 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					residentForceInterstageFullGridReadCount-beginningInterstageReads);
 				if( observed.substepLoopDeviceToHostTransferCount!=0u )
 					return Fail(error,"production resident force interstage transfer observed");
+				if( residentState ) {
+					if( trackedAllocationCount!=21u||
+						residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
+						trackedAllocationBytes!=residentBytes+uploadBytes )
+						return Fail(error,"production resident force-state allocation topology changed");
+					FireProductionMetalFrozenForceResidentState computed;
+					computed.cellGasDensityKGPerM3=rho;
+					computed.packedFaceDensityKGPerM3=faceRho;
+					computed.packedMomentumKGPerM2S=momentum;
+					std::size_t faceOffset=0u;
+					for( unsigned int axis=0u;axis<3u;++axis ) {
+						computed.faceByteOffset[axis]=faceOffset*sizeof(float);
+						faceOffset+=faceCounts[axis];
+					}
+					computed.schedule=selectedSchedule;computed.diagnostics=observed;
+					computed.diagnostics.terminalStagingCount=0u;
+					computed.diagnostics.actualMetalAllocationBytes=actual;
+					*residentState=std::move(computed);
+					diagnostics=observed;if( error ) error->clear();return true;
+				}
 				if( composedResult ) {
 					if( trackedAllocationCount!=23u||
 						residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
@@ -1062,7 +1084,68 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		std::string* error )
 	{
 		return AdvanceFireProductionFrozenForceMetalImpl(request,captureIntermediateStates,
-			0,0,result,diagnostics,error);
+			0,0,0,result,diagnostics,error);
+	}
+
+	bool AdvanceFireProductionFrozenForceMetalResidentState(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionMetalFrozenForceResidentState& state,
+		std::string* error )
+	{
+		FireProductionFrozenForceAdvanceResult unpublished;
+		FireProductionResidentForceDiagnostics diagnostics;
+		return AdvanceFireProductionFrozenForceMetalImpl(request,false,0,0,&state,
+			unpublished,diagnostics,error);
+	}
+
+	bool AdvanceFireProductionFrozenForceMetalResidentStateComparator(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionFrozenForceAdvanceResult& result,
+		FireProductionResidentForceDiagnostics& diagnostics,
+		std::string* error )
+	{
+		result=FireProductionFrozenForceAdvanceResult();
+		diagnostics=FireProductionResidentForceDiagnostics();
+		try {
+			FireProductionMetalFrozenForceResidentState state;
+			if( !AdvanceFireProductionFrozenForceMetalResidentState(request,state,error) ) return false;
+			ForceContext& context=Context();
+			const std::size_t faces=FireProductionProjectionFaceCount(request.shape,0u)+
+				FireProductionProjectionFaceCount(request.shape,1u)+
+				FireProductionProjectionFaceCount(request.shape,2u);
+			@autoreleasepool {
+				id<MTLBuffer> stage=[context.device newBufferWithLength:faces*sizeof(float)
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> command=[context.queue commandBuffer];
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if( !stage||!blit ) return Fail(error,
+					"production resident force-state comparator staging allocation failed");
+				{
+					ResidentForceTransferScope transferScope(ResidentForceTerminalTransfer);
+					CopyResidentForceBuffer(blit,state.packedMomentumKGPerM2S,0u,stage,0u,
+						faces*sizeof(float));
+				}
+				[blit endEncoding];CommitResidentForceCommand(command);[command waitUntilCompleted];
+				if( [command status]!=MTLCommandBufferStatusCompleted ) return Fail(error,
+					"production resident force-state comparator staging command failed");
+				const float* values=static_cast<const float*>(ResidentForceBufferContents(
+					stage,ResidentForceTerminalAccess));
+				FireProductionFrozenForceAdvanceResult computed;computed.schedule=state.schedule;
+				std::size_t offset=0u;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t count=FireProductionProjectionFaceCount(request.shape,axis);
+					computed.momentumKGPerM2S[axis].assign(values+offset,values+offset+count);
+					offset+=count;
+				}
+				computed.executedViscousSubstepCount=state.schedule.substepCount;
+				result=std::move(computed);diagnostics=state.diagnostics;
+			}
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionFrozenForceAdvanceResult();
+			diagnostics=FireProductionResidentForceDiagnostics();
+			return Fail(error,"production resident force-state comparator allocation failed");
+		}
 	}
 
 	bool AdvanceFireProductionForceProjectionMetal(
@@ -1074,6 +1157,6 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		FireProductionFrozenForceAdvanceResult unpublishedForce;
 		FireProductionResidentForceDiagnostics unpublishedDiagnostics;
 		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
-			&result,unpublishedForce,unpublishedDiagnostics,error);
+			&result,0,unpublishedForce,unpublishedDiagnostics,error);
 	}
 }

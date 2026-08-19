@@ -2748,12 +2748,16 @@ int main()
 			FireProductionProjectionFaceCount(residentForce.shape,axis),1.2f);
 	FireProductionFrozenForceAdvanceResult residentForceGPU,residentForceCPU;
 	FireProductionFrozenForceAdvanceResult residentForceGPURepeat;
+	FireProductionFrozenForceAdvanceResult residentForceStateGPU;
 	FireProductionResidentForceDiagnostics residentForceDiagnostics;
 	FireProductionResidentForceDiagnostics residentForceRepeatDiagnostics;
+	FireProductionResidentForceDiagnostics residentForceStateDiagnostics;
 	const bool residentForceMetal=AdvanceFireProductionFrozenForceMetal(
 		residentForce,true,residentForceGPU,residentForceDiagnostics,&error);
 	const bool residentForceMetalRepeat=AdvanceFireProductionFrozenForceMetal(
 		residentForce,true,residentForceGPURepeat,residentForceRepeatDiagnostics,&error);
+	const bool residentForceStateMetal=AdvanceFireProductionFrozenForceMetalResidentStateComparator(
+		residentForce,residentForceStateGPU,residentForceStateDiagnostics,&error);
 	const bool residentForceOracle=residentForceMetal&&AdvanceFireProductionFrozenForceCPU(
 		residentForce,residentForceDiagnostics.outwardLambdaPerS,residentForceCPU,&error);
 	std::uint64_t residentForceMaximumULPs=0u;
@@ -2802,7 +2806,11 @@ int main()
 				residentForceGPU.momentumKGPerM2S[axis][high]);
 		}
 	}
-	Check(residentForceOracle&&residentForceMetalRepeat&&
+	Check(residentForceOracle&&residentForceMetalRepeat&&residentForceStateMetal&&
+		residentForceStateGPU.momentumKGPerM2S==residentForceGPU.momentumKGPerM2S&&
+		residentForceStateGPU.executedViscousSubstepCount==8u&&
+		residentForceStateDiagnostics.terminalStagingCount==0u&&
+		residentForceStateDiagnostics.substepLoopDeviceToHostTransferCount==0u&&
 		residentForceGPU.frozenFields.eddyKinematicViscosityM2PerS==
 			residentForceGPURepeat.frozenFields.eddyKinematicViscosityM2PerS&&
 		residentForceGPU.frozenFields.effectiveDynamicViscosityPaS==
@@ -4184,8 +4192,8 @@ int main()
 		CountSubstring(residentForceBody,"privateBuffer(")==18u&&
 		CountSubstring(residentForceBody,"sharedBuffer(")==11u&&
 		CountSubstring(residentForceBody,"sharedBytes(")==6u&&
-		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==14u&&
-		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==2u&&
+		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==15u&&
+		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==3u&&
 		residentForceBody.find(" copyFromBuffer:")==std::string::npos&&
 		CountSubstring(residentForceBody,"[preflight commit]")==0u&&
 		CountSubstring(residentForceBody,"[advance commit]")==0u&&

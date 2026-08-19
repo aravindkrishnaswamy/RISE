@@ -40,6 +40,20 @@ namespace RISE
 		return false;
 	}
 
+	bool AdvanceFireProductionFrozenForceMetalResidentStateComparator(
+		const FireProductionFrozenForceRequest&,
+		FireProductionFrozenForceAdvanceResult& result,
+		FireProductionResidentForceDiagnostics& diagnostics,
+		std::string* error )
+	{
+		result=FireProductionFrozenForceAdvanceResult();
+		diagnostics=FireProductionResidentForceDiagnostics();
+		if( error ) try {
+			*error="production resident force-state Metal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
 	bool AdvanceFireProductionForceProjectionMetal(
 		const FireProductionFrozenForceRequest&,
 		const std::vector<float>&,
