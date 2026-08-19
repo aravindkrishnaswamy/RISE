@@ -343,6 +343,233 @@ namespace
 		return true;
 	}
 
+	bool TestDualAxisPeriodic( const RISE::FireProductionDualMomentumRequest& request,
+		unsigned int axis )
+	{
+		return request.boundary[2u*axis]==RISE::FireProductionProjectionPeriodic&&
+			request.boundary[2u*axis+1u]==RISE::FireProductionProjectionPeriodic;
+	}
+
+	float IndependentDualCrossCarrier(
+		const RISE::FireProductionDualMomentumRequest& request,
+		unsigned int component, unsigned int sweepAxis, std::size_t sweepFace,
+		std::size_t componentFace, std::size_t remainingCoordinate )
+	{
+		const RISE::FireProductionProjectionShape& shape=request.shape;
+		if( (sweepFace==0u&&request.boundary[2u*sweepAxis]==
+			RISE::FireProductionProjectionWall)||
+			(sweepFace==TestAxisExtent(shape,sweepAxis)&&
+			 request.boundary[2u*sweepAxis+1u]==RISE::FireProductionProjectionWall) )
+			return 0.0f;
+		const unsigned int remaining=3u-component-sweepAxis;
+		const std::size_t componentExtent=TestAxisExtent(shape,component);
+		auto sample=[&](std::size_t componentCell) {
+			std::size_t coordinates[]={0u,0u,0u};
+			coordinates[sweepAxis]=sweepFace;
+			coordinates[component]=componentCell;
+			coordinates[remaining]=remainingCoordinate;
+			return request.frozenVelocityMPerS[sweepAxis][TransportFaceIndex(shape,
+				sweepAxis,coordinates[0],coordinates[1],coordinates[2])];
+		};
+		float lower=0.0f,upper=0.0f;
+		if( componentFace>0u&&componentFace<componentExtent ) {
+			lower=sample(componentFace-1u);upper=sample(componentFace);
+		} else if( componentFace==0u ) {
+			upper=sample(0u);
+			const RISE::FireProductionProjectionBoundary boundary=request.boundary[2u*component];
+			lower=boundary==RISE::FireProductionProjectionPeriodic?
+				sample(componentExtent-1u):
+				(boundary==RISE::FireProductionProjectionWall?-upper:upper);
+		} else {
+			lower=sample(componentExtent-1u);
+			const RISE::FireProductionProjectionBoundary boundary=
+				request.boundary[2u*component+1u];
+			upper=boundary==RISE::FireProductionProjectionPeriodic?sample(0u):
+				(boundary==RISE::FireProductionProjectionWall?-lower:lower);
+		}
+		return 0.5f*(lower+upper);
+	}
+
+	bool IndependentDualAxisPass(
+		const RISE::FireProductionDualMomentumRequest& request,
+		unsigned int component, unsigned int sweepAxis, float timeStepS,
+		std::vector<float>& density, std::vector<float>& momentum,
+		std::string& error )
+	{
+		const RISE::FireProductionProjectionShape& shape=request.shape;
+		const std::size_t componentExtent=TestAxisExtent(shape,component);
+		const bool componentPeriodic=TestDualAxisPeriodic(request,component);
+		const std::size_t componentBeginning=componentPeriodic?0u:
+			(request.boundary[2u*component]==RISE::FireProductionProjectionWall?1u:0u);
+		const std::size_t componentEnd=componentPeriodic?componentExtent:
+			componentExtent+1u-
+			(request.boundary[2u*component+1u]==RISE::FireProductionProjectionWall?1u:0u);
+		const unsigned int remaining=component==sweepAxis?(component+2u)%3u:
+			3u-component-sweepAxis;
+		const unsigned int first=(component+1u)%3u;
+		const unsigned int second=(component+2u)%3u;
+		const std::size_t length=component==sweepAxis?
+			(componentPeriodic?componentExtent:componentExtent-1u):
+			TestAxisExtent(shape,sweepAxis);
+		const std::size_t lines=component==sweepAxis?
+			TestAxisExtent(shape,first)*TestAxisExtent(shape,second):
+			(componentEnd-componentBeginning)*TestAxisExtent(shape,remaining);
+		RISE::FireProductionRemapRequest lineRequest;
+		lineRequest.lineLength=length;lineRequest.lineCount=lines;
+		lineRequest.componentCount=2u;lineRequest.cellWidthM=shape.cellWidthM;
+		lineRequest.timeStepS=timeStepS;lineRequest.asymmetricBoundaries=true;
+		lineRequest.lowerBoundary=TestRemapBoundary(request.boundary[2u*sweepAxis]);
+		lineRequest.upperBoundary=TestRemapBoundary(request.boundary[2u*sweepAxis+1u]);
+		lineRequest.lineSpecificAmbientValues=!TestDualAxisPeriodic(request,sweepAxis);
+		lineRequest.ambientValues.assign(2u,0.0f);
+		if( lineRequest.lineSpecificAmbientValues ) {
+			lineRequest.lowerAmbientValues.resize(2u*lines);
+			lineRequest.upperAmbientValues.resize(2u*lines);
+		}
+		lineRequest.values.resize(2u*lines*length);
+		lineRequest.faceVelocityMPerS.resize(lines*(length+1u));
+		if( component==sweepAxis ) {
+			const std::size_t firstExtent=TestAxisExtent(shape,first);
+			for( std::size_t line=0u;line<lines;++line ) {
+				const std::size_t firstCoordinate=line%firstExtent;
+				const std::size_t secondCoordinate=line/firstExtent;
+				for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+					std::size_t xyz[]={0u,0u,0u};
+					xyz[component]=componentPeriodic?coordinate:coordinate+1u;
+					xyz[first]=firstCoordinate;xyz[second]=secondCoordinate;
+					const std::size_t face=TransportFaceIndex(shape,component,
+						xyz[0],xyz[1],xyz[2]);
+					lineRequest.values[line*length+coordinate]=density[face];
+					lineRequest.values[(lines+line)*length+coordinate]=momentum[face];
+				}
+				for( std::size_t face=0u;face<=length;++face ) {
+					std::size_t lowerCoordinate=face,upperCoordinate=face+1u;
+					if( componentPeriodic ) {
+						upperCoordinate=face==length?0u:face;
+						lowerCoordinate=upperCoordinate?upperCoordinate-1u:componentExtent-1u;
+					}
+					std::size_t lowerXYZ[]={0u,0u,0u},upperXYZ[]={0u,0u,0u};
+					lowerXYZ[component]=lowerCoordinate;upperXYZ[component]=upperCoordinate;
+					lowerXYZ[first]=firstCoordinate;upperXYZ[first]=firstCoordinate;
+					lowerXYZ[second]=secondCoordinate;upperXYZ[second]=secondCoordinate;
+					const float lower=request.frozenVelocityMPerS[component][
+						TransportFaceIndex(shape,component,lowerXYZ[0],lowerXYZ[1],lowerXYZ[2])];
+					const float upper=request.frozenVelocityMPerS[component][
+						TransportFaceIndex(shape,component,upperXYZ[0],upperXYZ[1],upperXYZ[2])];
+					lineRequest.faceVelocityMPerS[line*(length+1u)+face]=0.5f*(lower+upper);
+				}
+			}
+		} else {
+			const std::size_t remainingExtent=TestAxisExtent(shape,remaining);
+			for( std::size_t line=0u;line<lines;++line ) {
+				const std::size_t componentCoordinate=componentBeginning+line/remainingExtent;
+				const std::size_t remainingCoordinate=line%remainingExtent;
+				for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+					std::size_t xyz[]={0u,0u,0u};
+					xyz[component]=componentCoordinate;xyz[sweepAxis]=coordinate;
+					xyz[remaining]=remainingCoordinate;
+					const std::size_t face=TransportFaceIndex(shape,component,
+						xyz[0],xyz[1],xyz[2]);
+					lineRequest.values[line*length+coordinate]=density[face];
+					lineRequest.values[(lines+line)*length+coordinate]=momentum[face];
+				}
+				for( std::size_t face=0u;face<=length;++face )
+					lineRequest.faceVelocityMPerS[line*(length+1u)+face]=
+						IndependentDualCrossCarrier(request,component,sweepAxis,face,
+							componentCoordinate,remainingCoordinate);
+			}
+		}
+		if( lineRequest.lineSpecificAmbientValues )
+			for( std::size_t line=0u;line<lines;++line ) {
+				lineRequest.lowerAmbientValues[line]=request.ambientDensityKGPerM3;
+				lineRequest.upperAmbientValues[line]=request.ambientDensityKGPerM3;
+				lineRequest.lowerAmbientValues[lines+line]=component==sweepAxis?
+					request.ambientDensityKGPerM3*lineRequest.faceVelocityMPerS[
+						line*(length+1u)]:0.0f;
+				lineRequest.upperAmbientValues[lines+line]=component==sweepAxis?
+					request.ambientDensityKGPerM3*lineRequest.faceVelocityMPerS[
+						line*(length+1u)+length]:0.0f;
+			}
+		RISE::FireProductionRemapResult remapped;
+		if( !RISE::RemapFireProductionCPU(lineRequest,remapped,&error) ) return false;
+		if( component==sweepAxis ) {
+			const std::size_t firstExtent=TestAxisExtent(shape,first);
+			for( std::size_t line=0u;line<lines;++line )
+				for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+					std::size_t xyz[]={0u,0u,0u};
+					xyz[component]=componentPeriodic?coordinate:coordinate+1u;
+					xyz[first]=line%firstExtent;xyz[second]=line/firstExtent;
+					const std::size_t face=TransportFaceIndex(shape,component,
+						xyz[0],xyz[1],xyz[2]);
+					density[face]=remapped.updatedValues[line*length+coordinate];
+					momentum[face]=remapped.updatedValues[(lines+line)*length+coordinate];
+				}
+		} else {
+			const std::size_t remainingExtent=TestAxisExtent(shape,remaining);
+			for( std::size_t line=0u;line<lines;++line )
+				for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+					std::size_t xyz[]={0u,0u,0u};
+					xyz[component]=componentBeginning+line/remainingExtent;
+					xyz[sweepAxis]=coordinate;xyz[remaining]=line%remainingExtent;
+					const std::size_t face=TransportFaceIndex(shape,component,
+						xyz[0],xyz[1],xyz[2]);
+					density[face]=remapped.updatedValues[line*length+coordinate];
+					momentum[face]=remapped.updatedValues[(lines+line)*length+coordinate];
+				}
+		}
+		return true;
+	}
+
+	bool IndependentDualComponent(
+		const RISE::FireProductionDualMomentumRequest& request,
+		unsigned int component, std::vector<float>& density,
+		std::vector<float>& momentum, std::string& error )
+	{
+		density=request.beginningFaceDensity[component];
+		momentum=request.beginningMomentum[component];
+		const RISE::FireProductionProjectionShape& shape=request.shape;
+		const std::size_t componentExtent=TestAxisExtent(shape,component);
+		const unsigned int first=(component+1u)%3u,second=(component+2u)%3u;
+		for( std::size_t secondCoordinate=0u;
+			secondCoordinate<TestAxisExtent(shape,second);++secondCoordinate )
+			for( std::size_t firstCoordinate=0u;
+				firstCoordinate<TestAxisExtent(shape,first);++firstCoordinate ) {
+				std::size_t xyz[]={0u,0u,0u};
+				xyz[first]=firstCoordinate;xyz[second]=secondCoordinate;
+				if( request.boundary[2u*component]==RISE::FireProductionProjectionWall ) {
+					xyz[component]=0u;
+					momentum[TransportFaceIndex(shape,component,xyz[0],xyz[1],xyz[2])]=0.0f;
+				}
+				if( request.boundary[2u*component+1u]==RISE::FireProductionProjectionWall ) {
+					xyz[component]=componentExtent;
+					momentum[TransportFaceIndex(shape,component,xyz[0],xyz[1],xyz[2])]=0.0f;
+				}
+			}
+		const unsigned int axes[]={0u,1u,2u,1u,0u};
+		const float steps[]={0.5f,0.5f,1.0f,0.5f,0.5f};
+		for( unsigned int pass=0u;pass<5u;++pass )
+			if( !IndependentDualAxisPass(request,component,axes[pass],
+				steps[pass]*request.timeStepS,density,momentum,error) ) return false;
+		if( TestDualAxisPeriodic(request,component) ) {
+			const std::size_t firstExtent=TestAxisExtent(shape,first);
+			const std::size_t secondExtent=TestAxisExtent(shape,second);
+			for( std::size_t secondCoordinate=0u;secondCoordinate<secondExtent;
+				++secondCoordinate ) for( std::size_t firstCoordinate=0u;
+				firstCoordinate<firstExtent;++firstCoordinate ) {
+				std::size_t lowXYZ[]={0u,0u,0u},highXYZ[]={0u,0u,0u};
+				lowXYZ[first]=firstCoordinate;lowXYZ[second]=secondCoordinate;
+				highXYZ[first]=firstCoordinate;highXYZ[second]=secondCoordinate;
+				highXYZ[component]=componentExtent;
+				const std::size_t low=TransportFaceIndex(shape,component,
+					lowXYZ[0],lowXYZ[1],lowXYZ[2]);
+				const std::size_t high=TransportFaceIndex(shape,component,
+					highXYZ[0],highXYZ[1],highXYZ[2]);
+				density[high]=density[low];momentum[high]=momentum[low];
+			}
+		}
+		return true;
+	}
+
 	bool NearFloat( float a, float b, float relative=2.0e-5f )
 	{
 		return std::isfinite(a)&&std::isfinite(b)&&
@@ -1100,6 +1327,155 @@ int main()
 	}
 	Check(dualVariableMatches&&everyOneSidedCarrierDiffers&&everySplitLimiterDiffers,
 		"periodic dual momentum binds all nine cross-carrier averages and common tuple bytes");
+	FireProductionDualMomentumResult dualVariableGeneralResult;
+	Check(RemapFireProductionDualMomentumCPU(dualVariable,dualVariableGeneralResult,&error)&&
+		dualVariableGeneralResult.executedSubmapCount==15u&&
+		dualVariableGeneralResult.canonicalSeamCopyCount==
+			dualVariableResult.canonicalSeamCopyCount&&
+		dualVariableGeneralResult.auxiliaryFaceDensity==
+			dualVariableResult.auxiliaryFaceDensity&&
+		dualVariableGeneralResult.momentum==dualVariableResult.momentum,
+		"six-side dual oracle preserves the settled periodic bytes exactly");
+	FireProductionDualMomentumRequest mixedDual=dualVariable;
+	mixedDual.ambientDensityKGPerM3=0.8f;
+	mixedDual.boundary={FireProductionProjectionWall,FireProductionProjectionPressureOpen,
+		FireProductionProjectionPressureOpen,FireProductionProjectionWall,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen};
+	FireProductionDualMomentumResult mixedDualResult;
+	const bool mixedDualRemapped=RemapFireProductionDualMomentumCPU(
+		mixedDual,mixedDualResult,&error);
+	bool mixedDualMatchesIndependent=mixedDualRemapped;
+	for( unsigned int component=0u;component<3u;++component ) {
+		std::vector<float> expectedDensity,expectedMomentum;
+		mixedDualMatchesIndependent=mixedDualMatchesIndependent&&
+			IndependentDualComponent(mixedDual,component,expectedDensity,
+				expectedMomentum,error)&&
+			mixedDualResult.auxiliaryFaceDensity[component]==expectedDensity&&
+			mixedDualResult.momentum[component]==expectedMomentum;
+	}
+	bool mixedDualWallPlanesZero=mixedDualRemapped&&
+		mixedDualResult.executedSubmapCount==15u&&
+		mixedDualResult.canonicalSeamCopyCount==0u;
+	for( std::size_t z=0u;z<mixedDual.shape.nz;++z )
+		for( std::size_t y=0u;y<mixedDual.shape.ny;++y )
+			mixedDualWallPlanesZero=mixedDualWallPlanesZero&&
+				mixedDualResult.momentum[0][TransportFaceIndex(mixedDual.shape,0u,0u,y,z)]==0.0f;
+	for( std::size_t z=0u;z<mixedDual.shape.nz;++z )
+		for( std::size_t x=0u;x<mixedDual.shape.nx;++x )
+			mixedDualWallPlanesZero=mixedDualWallPlanesZero&&
+				mixedDualResult.momentum[1][TransportFaceIndex(mixedDual.shape,1u,x,
+					mixedDual.shape.ny,z)]==0.0f;
+	Check(mixedDualMatchesIndependent&&mixedDualWallPlanesZero&&
+		mixedDualResult.momentum!=mixedDual.beginningMomentum,
+		"mixed dual momentum matches an independent corner oracle, prescribes normal walls, "
+		"and advances ordinary open endpoints");
+	bool dualBoundaryMatrixMatches=true,dualBoundaryMatrixChanges=true;
+	bool dualBoundaryRoleVisited[3][3][2][3]={};
+	std::vector<float> positiveSignMomentum[3][2][3];
+	for( unsigned int component=0u;component<3u;++component )
+		for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis )
+			for( unsigned int side=0u;side<2u;++side )
+				dualBoundaryRoleVisited[component][sweepAxis][side][0]=true;
+	for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis )
+		for( unsigned int openSide=0u;openSide<2u;++openSide )
+			for( unsigned int sign=0u;sign<2u;++sign ) {
+				FireProductionDualMomentumRequest orientation=dualVariable;
+				orientation.ambientDensityKGPerM3=0.73f+
+					0.04f*static_cast<float>(sweepAxis);
+				orientation.boundary[2u*sweepAxis]=openSide==0u?
+					FireProductionProjectionPressureOpen:FireProductionProjectionWall;
+				orientation.boundary[2u*sweepAxis+1u]=openSide==1u?
+					FireProductionProjectionPressureOpen:FireProductionProjectionWall;
+				if( sign==1u ) for( float& velocity :
+					orientation.frozenVelocityMPerS[sweepAxis] ) velocity=-velocity;
+				FireProductionDualMomentumResult observed;
+				const bool observedOK=RemapFireProductionDualMomentumCPU(
+					orientation,observed,&error);
+				bool thisMatches=observedOK&&observed.executedSubmapCount==15u;
+				bool thisChanges=true;
+				for( unsigned int component=0u;component<3u;++component ) {
+					std::vector<float> expectedDensity,expectedMomentum;
+					thisMatches=thisMatches&&IndependentDualComponent(orientation,component,
+						expectedDensity,expectedMomentum,error)&&
+						observed.auxiliaryFaceDensity[component]==expectedDensity&&
+						observed.momentum[component]==expectedMomentum;
+					thisChanges=thisChanges&&
+						observed.momentum[component]!=orientation.beginningMomentum[component];
+					if( sign==0u ) positiveSignMomentum[sweepAxis][openSide][component]=
+						observed.momentum[component];
+					else thisChanges=thisChanges&&observed.momentum[component]!=
+						positiveSignMomentum[sweepAxis][openSide][component];
+					for( unsigned int axis=0u;axis<3u;++axis )
+						for( unsigned int side=0u;side<2u;++side ) {
+							const FireProductionProjectionBoundary role=
+								orientation.boundary[2u*axis+side];
+							const unsigned int roleIndex=role==FireProductionProjectionPeriodic?
+								0u:(role==FireProductionProjectionWall?1u:2u);
+							dualBoundaryRoleVisited[component][axis][side][roleIndex]=true;
+						}
+				}
+				if( !thisMatches ) std::cerr << "Dual boundary mismatch a=" << sweepAxis <<
+					" side=" << openSide << " sign=" << sign << " error=" << error << '\n';
+				dualBoundaryMatrixMatches=dualBoundaryMatrixMatches&&thisMatches;
+				dualBoundaryMatrixChanges=dualBoundaryMatrixChanges&&thisChanges;
+			}
+	bool everyDualBoundaryRoleVisited=true;
+	for( unsigned int component=0u;component<3u;++component )
+		for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis )
+			for( unsigned int side=0u;side<2u;++side )
+				for( unsigned int role=0u;role<3u;++role )
+					everyDualBoundaryRoleVisited=everyDualBoundaryRoleVisited&&
+						dualBoundaryRoleVisited[component][sweepAxis][side][role];
+	Check(dualBoundaryMatrixMatches&&dualBoundaryMatrixChanges&&
+		everyDualBoundaryRoleVisited,
+		"independent dual oracle covers every component, sweep axis, wall/open side, "
+		"periodic role, and both pressure-open flow signs with nonzero deltas");
+	auto seedDualResult=[](FireProductionDualMomentumResult& seeded) {
+		for( unsigned int component=0u;component<3u;++component ) {
+			seeded.auxiliaryFaceDensity[component].assign(1u,3.0f);
+			seeded.momentum[component].assign(1u,4.0f);
+		}
+		seeded.executedSubmapCount=9u;seeded.canonicalSeamCopyCount=11u;
+	};
+	auto dualResultIsDefault=[](const FireProductionDualMomentumResult& rejected) {
+		return rejected.auxiliaryFaceDensity[0].empty()&&
+			rejected.auxiliaryFaceDensity[1].empty()&&
+			rejected.auxiliaryFaceDensity[2].empty()&&
+			rejected.momentum[0].empty()&&rejected.momentum[1].empty()&&
+			rejected.momentum[2].empty()&&rejected.executedSubmapCount==0u&&
+			rejected.canonicalSeamCopyCount==0u;
+	};
+	FireProductionDualMomentumRequest malformedDual=mixedDual;
+	malformedDual.boundary[0]=FireProductionProjectionPeriodic;
+	malformedDual.boundary[1]=FireProductionProjectionWall;
+	FireProductionDualMomentumResult rejectedDual;
+	seedDualResult(rejectedDual);error.clear();
+	Check(!RemapFireProductionDualMomentumCPU(malformedDual,rejectedDual,&error)&&
+		dualResultIsDefault(rejectedDual)&&error.find("boundary pairing")!=std::string::npos,
+		"general dual remap rejects an unpaired periodic side with no partial result");
+	malformedDual=mixedDual;malformedDual.ambientDensityKGPerM3=0.0f;
+	seedDualResult(rejectedDual);error.clear();
+	Check(!RemapFireProductionDualMomentumCPU(malformedDual,rejectedDual,&error)&&
+		dualResultIsDefault(rejectedDual)&&error.find("ambient density")!=std::string::npos,
+		"general dual remap rejects invalid ambient density with no partial result");
+	malformedDual=mixedDual;
+	malformedDual.frozenVelocityMPerS[2][3u]=
+		std::numeric_limits<float>::quiet_NaN();
+	seedDualResult(rejectedDual);error.clear();
+	Check(!RemapFireProductionDualMomentumCPU(malformedDual,rejectedDual,&error)&&
+		dualResultIsDefault(rejectedDual)&&error.find("nonfinite")!=std::string::npos,
+		"general dual remap rejects nonfinite carrier bytes with no partial result");
+	FireProductionDualMomentumRequest lateDualArithmetic=dualVariable;
+	std::fill(lateDualArithmetic.beginningFaceDensity[1].begin(),
+		lateDualArithmetic.beginningFaceDensity[1].end(),
+		std::numeric_limits<float>::max());
+	std::fill(lateDualArithmetic.beginningMomentum[1].begin(),
+		lateDualArithmetic.beginningMomentum[1].end(),
+		std::numeric_limits<float>::max());
+	seedDualResult(rejectedDual);error.clear();
+	Check(!RemapFireProductionDualMomentumCPU(lateDualArithmetic,rejectedDual,&error)&&
+		dualResultIsDefault(rejectedDual)&&!error.empty(),
+		"a later-component derived-arithmetic failure cannot publish an earlier dual remap");
 
 	FireProductionCellPalindromeRequest donor=translated;
 	donor.componentCount=1u;
@@ -1525,6 +1901,12 @@ int main()
 		"src/Library/Utilities/FireProductionAdvectionMac.mm");
 	const std::string transportSource=ReadText(
 		"src/Library/Utilities/FireProductionTransport.cpp");
+	const std::size_t crossCarrierBeginning=transportSource.find("float CrossCarrierAt(");
+	const std::size_t dualAxisBeginning=transportSource.find("bool BuildDualAxisRequest(");
+	const std::string crossCarrierBody=crossCarrierBeginning==std::string::npos||
+		dualAxisBeginning==std::string::npos?std::string():
+		transportSource.substr(crossCarrierBeginning,
+			dualAxisBeginning-crossCarrierBeginning);
 	const std::size_t standaloneMetalBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionMetal(");
 	const std::size_t palindromeMetalBeginning=advectionMetalSource.find(
@@ -1617,10 +1999,31 @@ int main()
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
 		palindromeMetalBody.find("RemapFireProductionMetal(request")==std::string::npos,
 		"P3 palindrome measures one command and one scheduled host publication at the global seams");
-	Check(CountSubstring(transportSource,"PublishPeriodicDualSeam(")==2u&&
+	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
+		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==2u&&
 		CountSubstring(transportSource,
 			"density[high]=density[low];momentum[high]=momentum[low];copyCount+=2u;")==1u,
-		"periodic dual output has one canonical positive-seam byte-copy publication path");
+		"both dual APIs share one canonical positive-seam byte-copy publication path");
+	Check(!crossCarrierBody.empty()&&
+		CountSubstring(crossCarrierBody,"sweepFace==0u")==1u&&
+		CountSubstring(crossCarrierBody,"request.boundary[2u*sweepAxis]==")==1u&&
+		CountSubstring(crossCarrierBody,
+			"sweepFace==AxisCoordinateExtent(shape,sweepAxis)")==1u&&
+		CountSubstring(crossCarrierBody,"request.boundary[2u*sweepAxis+1u]")==1u&&
+		crossCarrierBody.find("return 0.0f;")<
+			crossCarrierBody.find("float lower=0.0f,upper=0.0f;")&&
+		crossCarrierBody.find("boundary==FireProductionProjectionWall?-upper:upper")!=
+			std::string::npos&&
+		crossCarrierBody.find("boundary==FireProductionProjectionWall?-lower:lower")!=
+			std::string::npos&&
+		transportSource.find("lineRequest.lowerBoundary=RemapBoundary("
+			"request.boundary[2u*sweepAxis]);")!=std::string::npos&&
+		transportSource.find("lineRequest.upperBoundary=RemapBoundary("
+			"request.boundary[2u*sweepAxis+1u]);")!=std::string::npos&&
+		transportSource.find("request.boundary[2u*component]=="
+			"FireProductionProjectionWall?1u:0u")!=std::string::npos,
+		"dual line builder binds sweep-side roles, wall-zero precedence, open nearest ghosts, "
+		"and prescribed component-wall ownership");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),

@@ -150,6 +150,224 @@ namespace RISE
 			return carrier;
 		}
 
+		bool AxisIsPeriodic( const FireProductionDualMomentumRequest& request,
+			unsigned int axis )
+		{
+			return request.boundary[2u*axis]==FireProductionProjectionPeriodic&&
+				request.boundary[2u*axis+1u]==FireProductionProjectionPeriodic;
+		}
+
+		FireProductionRemapBoundary RemapBoundary(
+			FireProductionProjectionBoundary boundary );
+
+		bool DualLineDimensions( const FireProductionDualMomentumRequest& request,
+			unsigned int component, unsigned int sweepAxis,
+			std::size_t& length, std::size_t& lines )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			const std::size_t componentExtent=AxisCoordinateExtent(shape,component);
+			if( component==sweepAxis ) {
+				length=AxisIsPeriodic(request,component)?componentExtent:componentExtent-1u;
+				const unsigned int first=(component+1u)%3u,second=(component+2u)%3u;
+				lines=AxisCoordinateExtent(shape,first)*AxisCoordinateExtent(shape,second);
+				return length>=4u;
+			}
+			const bool componentPeriodic=AxisIsPeriodic(request,component);
+			const std::size_t beginning=componentPeriodic?0u:
+				(request.boundary[2u*component]==FireProductionProjectionWall?1u:0u);
+			const std::size_t end=componentPeriodic?componentExtent:
+				componentExtent+1u-
+				(request.boundary[2u*component+1u]==FireProductionProjectionWall?1u:0u);
+			const unsigned int remaining=3u-component-sweepAxis;
+			length=AxisCoordinateExtent(shape,sweepAxis);
+			lines=(end-beginning)*AxisCoordinateExtent(shape,remaining);
+			return length>=4u&&lines>0u;
+		}
+
+		float CrossCarrierAt( const FireProductionDualMomentumRequest& request,
+			unsigned int component, unsigned int sweepAxis,
+			std::size_t sweepFace, std::size_t componentFace,
+			std::size_t remainingCoordinate )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			if( (sweepFace==0u&&request.boundary[2u*sweepAxis]==
+				FireProductionProjectionWall)||
+			(sweepFace==AxisCoordinateExtent(shape,sweepAxis)&&
+			 request.boundary[2u*sweepAxis+1u]==FireProductionProjectionWall) ) return 0.0f;
+			const unsigned int remaining=3u-component-sweepAxis;
+			const std::size_t componentExtent=AxisCoordinateExtent(shape,component);
+			auto velocityAt=[&](std::size_t componentCell) {
+				std::size_t x=0u,y=0u,z=0u;
+				SetAxisCoordinate(sweepAxis,sweepFace,x,y,z);
+				SetAxisCoordinate(component,componentCell,x,y,z);
+				SetAxisCoordinate(remaining,remainingCoordinate,x,y,z);
+				return request.frozenVelocityMPerS[sweepAxis][
+					FaceIndex(shape,sweepAxis,x,y,z)];
+			};
+			float lower=0.0f,upper=0.0f;
+			if( componentFace>0u&&componentFace<componentExtent ) {
+				lower=velocityAt(componentFace-1u);upper=velocityAt(componentFace);
+			} else if( componentFace==0u ) {
+				upper=velocityAt(0u);
+				const FireProductionProjectionBoundary boundary=request.boundary[2u*component];
+				lower=boundary==FireProductionProjectionPeriodic?
+					velocityAt(componentExtent-1u):
+					(boundary==FireProductionProjectionWall?-upper:upper);
+			} else {
+				lower=velocityAt(componentExtent-1u);
+				const FireProductionProjectionBoundary boundary=
+					request.boundary[2u*component+1u];
+				upper=boundary==FireProductionProjectionPeriodic?velocityAt(0u):
+					(boundary==FireProductionProjectionWall?-lower:lower);
+			}
+			return 0.5f*(lower+upper);
+		}
+
+		bool BuildDualAxisRequest( const FireProductionDualMomentumRequest& request,
+			unsigned int component, unsigned int sweepAxis, float timeStepS,
+			const std::vector<float>& density, const std::vector<float>& momentum,
+			FireProductionRemapRequest& lineRequest, std::string* error )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			std::size_t length=0u,lines=0u;
+			if( !DualLineDimensions(request,component,sweepAxis,length,lines) )
+				return Fail(error,"dual momentum owned line is too short");
+			lineRequest=FireProductionRemapRequest();
+			lineRequest.lineLength=length;lineRequest.lineCount=lines;
+			lineRequest.componentCount=2u;lineRequest.cellWidthM=shape.cellWidthM;
+			lineRequest.timeStepS=timeStepS;lineRequest.asymmetricBoundaries=true;
+			lineRequest.lowerBoundary=RemapBoundary(request.boundary[2u*sweepAxis]);
+			lineRequest.upperBoundary=RemapBoundary(request.boundary[2u*sweepAxis+1u]);
+			lineRequest.lineSpecificAmbientValues=!AxisIsPeriodic(request,sweepAxis);
+			lineRequest.ambientValues.assign(2u,0.0f);
+			if( lineRequest.lineSpecificAmbientValues ) {
+				lineRequest.lowerAmbientValues.resize(2u*lines);
+				lineRequest.upperAmbientValues.resize(2u*lines);
+			}
+			lineRequest.values.resize(2u*lines*length);
+			lineRequest.faceVelocityMPerS.resize(lines*(length+1u));
+			const std::size_t componentExtent=AxisCoordinateExtent(shape,component);
+			if( component==sweepAxis ) {
+				const unsigned int first=(component+1u)%3u,second=(component+2u)%3u;
+				const std::size_t firstExtent=AxisCoordinateExtent(shape,first);
+				for( std::size_t line=0u;line<lines;++line ) {
+					const std::size_t firstCoordinate=line%firstExtent;
+					const std::size_t secondCoordinate=line/firstExtent;
+					for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+						std::size_t x=0u,y=0u,z=0u;
+						SetAxisCoordinate(component,AxisIsPeriodic(request,component)?
+							coordinate:coordinate+1u,x,y,z);
+						SetAxisCoordinate(first,firstCoordinate,x,y,z);
+						SetAxisCoordinate(second,secondCoordinate,x,y,z);
+						const std::size_t face=FaceIndex(shape,component,x,y,z);
+						lineRequest.values[line*length+coordinate]=density[face];
+						lineRequest.values[(lines+line)*length+coordinate]=momentum[face];
+					}
+					for( std::size_t face=0u;face<=length;++face ) {
+						std::size_t lowerCoordinate=0u,upperCoordinate=0u;
+						if( AxisIsPeriodic(request,component) ) {
+							upperCoordinate=face==length?0u:face;
+							lowerCoordinate=upperCoordinate?upperCoordinate-1u:componentExtent-1u;
+						} else {lowerCoordinate=face;upperCoordinate=face+1u;}
+						std::size_t lx=0u,ly=0u,lz=0u,ux=0u,uy=0u,uz=0u;
+						SetAxisCoordinate(component,lowerCoordinate,lx,ly,lz);
+						SetAxisCoordinate(component,upperCoordinate,ux,uy,uz);
+						SetAxisCoordinate(first,firstCoordinate,lx,ly,lz);
+						SetAxisCoordinate(first,firstCoordinate,ux,uy,uz);
+						SetAxisCoordinate(second,secondCoordinate,lx,ly,lz);
+						SetAxisCoordinate(second,secondCoordinate,ux,uy,uz);
+						const float lower=request.frozenVelocityMPerS[component][
+							FaceIndex(shape,component,lx,ly,lz)];
+						const float upper=request.frozenVelocityMPerS[component][
+							FaceIndex(shape,component,ux,uy,uz)];
+						lineRequest.faceVelocityMPerS[line*(length+1u)+face]=0.5f*(lower+upper);
+					}
+				}
+			} else {
+				const bool componentPeriodic=AxisIsPeriodic(request,component);
+				const std::size_t componentBeginning=componentPeriodic?0u:
+					(request.boundary[2u*component]==FireProductionProjectionWall?1u:0u);
+				const unsigned int remaining=3u-component-sweepAxis;
+				const std::size_t remainingExtent=AxisCoordinateExtent(shape,remaining);
+				for( std::size_t line=0u;line<lines;++line ) {
+					const std::size_t componentCoordinate=componentBeginning+
+						line/remainingExtent;
+					const std::size_t remainingCoordinate=line%remainingExtent;
+					for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+						std::size_t x=0u,y=0u,z=0u;
+						SetAxisCoordinate(component,componentCoordinate,x,y,z);
+						SetAxisCoordinate(sweepAxis,coordinate,x,y,z);
+						SetAxisCoordinate(remaining,remainingCoordinate,x,y,z);
+						const std::size_t face=FaceIndex(shape,component,x,y,z);
+						lineRequest.values[line*length+coordinate]=density[face];
+						lineRequest.values[(lines+line)*length+coordinate]=momentum[face];
+					}
+					for( std::size_t face=0u;face<=length;++face )
+						lineRequest.faceVelocityMPerS[line*(length+1u)+face]=CrossCarrierAt(
+							request,component,sweepAxis,face,componentCoordinate,
+							remainingCoordinate);
+				}
+			}
+			if( lineRequest.lineSpecificAmbientValues ) for( std::size_t line=0u;line<lines;++line ) {
+				lineRequest.lowerAmbientValues[line]=request.ambientDensityKGPerM3;
+				lineRequest.upperAmbientValues[line]=request.ambientDensityKGPerM3;
+				lineRequest.lowerAmbientValues[lines+line]=component==sweepAxis?
+					request.ambientDensityKGPerM3*lineRequest.faceVelocityMPerS[
+						line*(length+1u)]:0.0f;
+				lineRequest.upperAmbientValues[lines+line]=component==sweepAxis?
+					request.ambientDensityKGPerM3*lineRequest.faceVelocityMPerS[
+						line*(length+1u)+length]:0.0f;
+			}
+			return true;
+		}
+
+		bool ApplyDualAxis( const FireProductionDualMomentumRequest& request,
+			unsigned int component, unsigned int sweepAxis, float timeStepS,
+			std::vector<float>& density, std::vector<float>& momentum,
+			std::string* error )
+		{
+			FireProductionRemapRequest lineRequest;
+			if( !BuildDualAxisRequest(request,component,sweepAxis,timeStepS,
+				density,momentum,lineRequest,error) ) return false;
+			FireProductionRemapResult remapped;
+			if( !RemapFireProductionCPU(lineRequest,remapped,error) ) return false;
+			const FireProductionProjectionShape& shape=request.shape;
+			const std::size_t length=lineRequest.lineLength,lines=lineRequest.lineCount;
+			if( component==sweepAxis ) {
+				const unsigned int first=(component+1u)%3u,second=(component+2u)%3u;
+				const std::size_t firstExtent=AxisCoordinateExtent(shape,first);
+				for( std::size_t line=0u;line<lines;++line )
+					for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+						std::size_t x=0u,y=0u,z=0u;
+						SetAxisCoordinate(component,AxisIsPeriodic(request,component)?
+							coordinate:coordinate+1u,x,y,z);
+						SetAxisCoordinate(first,line%firstExtent,x,y,z);
+						SetAxisCoordinate(second,line/firstExtent,x,y,z);
+						const std::size_t face=FaceIndex(shape,component,x,y,z);
+						density[face]=remapped.updatedValues[line*length+coordinate];
+						momentum[face]=remapped.updatedValues[(lines+line)*length+coordinate];
+					}
+			} else {
+				const bool componentPeriodic=AxisIsPeriodic(request,component);
+				const std::size_t componentBeginning=componentPeriodic?0u:
+					(request.boundary[2u*component]==FireProductionProjectionWall?1u:0u);
+				const unsigned int remaining=3u-component-sweepAxis;
+				const std::size_t remainingExtent=AxisCoordinateExtent(shape,remaining);
+				for( std::size_t line=0u;line<lines;++line )
+					for( std::size_t coordinate=0u;coordinate<length;++coordinate ) {
+						std::size_t x=0u,y=0u,z=0u;
+						SetAxisCoordinate(component,componentBeginning+
+							line/remainingExtent,x,y,z);
+						SetAxisCoordinate(sweepAxis,coordinate,x,y,z);
+						SetAxisCoordinate(remaining,line%remainingExtent,x,y,z);
+						const std::size_t face=FaceIndex(shape,component,x,y,z);
+						density[face]=remapped.updatedValues[line*length+coordinate];
+						momentum[face]=remapped.updatedValues[(lines+line)*length+coordinate];
+					}
+			}
+			return true;
+		}
+
 		bool PeriodicFaceSeamEqual( const FireProductionProjectionShape& shape,
 			const std::vector<float>& values, unsigned int axis )
 		{
@@ -446,6 +664,9 @@ namespace RISE
 		result=FireProductionPeriodicDualMomentumResult();
 		try {
 			const FireProductionProjectionShape& shape=request.shape;
+			for( const FireProductionProjectionBoundary boundary : request.boundary )
+				if( boundary!=FireProductionProjectionPeriodic )
+					return Fail(error,"periodic dual momentum requires periodic boundaries");
 			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
 				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
 				request.timeStepS<0.0f||!std::isfinite(shape.cellWidthM)||
@@ -530,6 +751,125 @@ namespace RISE
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionPeriodicDualMomentumResult();
 			FailWithoutThrow(error,"periodic dual momentum allocation failed");
+			return false;
+		}
+	}
+
+	bool RemapFireProductionDualMomentumCPU(
+		const FireProductionDualMomentumRequest& request,
+		FireProductionDualMomentumResult& result, std::string* error )
+	{
+		result=FireProductionDualMomentumResult();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				request.timeStepS<0.0f||!std::isfinite(shape.cellWidthM)||
+				!std::isfinite(request.timeStepS)||!(request.ambientDensityKGPerM3>0.0f)||
+				!std::isfinite(request.ambientDensityKGPerM3) )
+				return Fail(error,"dual momentum shape, schedule, or ambient density is invalid");
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==FireProductionProjectionPeriodic)) )
+					return Fail(error,"dual momentum boundary pairing is invalid");
+				if( !AxisIsPeriodic(request,axis)&&AxisCoordinateExtent(shape,axis)<5u )
+					return Fail(error,"dual momentum nonperiodic normal line is too short");
+			}
+			std::uint64_t nestedWorkingSetBytes=0u;
+			for( unsigned int component=0u;component<3u;++component )
+				for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis ) {
+					std::size_t length=0u,lines=0u;
+					if( !DualLineDimensions(request,component,sweepAxis,length,lines) )
+						return Fail(error,"dual momentum owned line is invalid");
+					FireProductionRemapRequest resource;
+					resource.lineLength=length;resource.lineCount=lines;resource.componentCount=2u;
+					resource.lineSpecificAmbientValues=!AxisIsPeriodic(request,sweepAxis);
+					std::uint64_t bytes=0u;
+					if( !FireProductionRemapWorkingSetBytes(resource,bytes) )
+						return Fail(error,"dual momentum nested working-set calculation failed");
+					nestedWorkingSetBytes=std::max(nestedWorkingSetBytes,bytes);
+				}
+			const std::uint64_t allFaces=
+				static_cast<std::uint64_t>(FireProductionProjectionFaceCount(shape,0u))+
+				FireProductionProjectionFaceCount(shape,1u)+
+				FireProductionProjectionFaceCount(shape,2u);
+			std::uint64_t combinedWorkingSetBytes=nestedWorkingSetBytes;
+			if( !AddBytes(allFaces,15u*sizeof(float),combinedWorkingSetBytes)||
+				combinedWorkingSetBytes>(std::uint64_t(2u)<<30u) )
+				return Fail(error,"dual momentum combined working set exceeds two GiB");
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.beginningFaceDensity[axis].size()!=faces||
+					request.beginningMomentum[axis].size()!=faces||
+					request.frozenVelocityMPerS[axis].size()!=faces )
+					return Fail(error,"dual momentum face shape is invalid");
+				if( AxisIsPeriodic(request,axis)&&
+					(!PeriodicFaceSeamEqual(shape,request.beginningFaceDensity[axis],axis)||
+					 !PeriodicFaceSeamEqual(shape,request.beginningMomentum[axis],axis)||
+					 !PeriodicFaceSeamEqual(shape,request.frozenVelocityMPerS[axis],axis)) )
+					return Fail(error,"dual momentum periodic seam is invalid");
+				for( const float density : request.beginningFaceDensity[axis] )
+					if( !(density>0.0f)||!std::isfinite(density) )
+						return Fail(error,"dual momentum density is invalid");
+				for( const float momentum : request.beginningMomentum[axis] )
+					if( !std::isfinite(momentum) )
+						return Fail(error,"dual momentum is nonfinite");
+				for( const float velocity : request.frozenVelocityMPerS[axis] )
+					if( !std::isfinite(velocity) )
+						return Fail(error,"dual momentum carrier is nonfinite");
+			}
+			FireProductionDualMomentumResult computed;
+			computed.auxiliaryFaceDensity=request.beginningFaceDensity;
+			computed.momentum=request.beginningMomentum;
+			for( unsigned int component=0u;component<3u;++component ) {
+				const std::size_t extent=AxisCoordinateExtent(shape,component);
+				const std::size_t firstExtent=AxisCoordinateExtent(shape,(component+1u)%3u);
+				const std::size_t secondExtent=AxisCoordinateExtent(shape,(component+2u)%3u);
+				for( std::size_t second=0u;second<secondExtent;++second )
+					for( std::size_t first=0u;first<firstExtent;++first ) {
+						std::size_t x=0u,y=0u,z=0u;
+						SetAxisCoordinate((component+1u)%3u,first,x,y,z);
+						SetAxisCoordinate((component+2u)%3u,second,x,y,z);
+						if( request.boundary[2u*component]==FireProductionProjectionWall ) {
+							SetAxisCoordinate(component,0u,x,y,z);
+							computed.momentum[component][FaceIndex(shape,component,x,y,z)]=0.0f;
+						}
+						if( request.boundary[2u*component+1u]==FireProductionProjectionWall ) {
+							SetAxisCoordinate(component,extent,x,y,z);
+							computed.momentum[component][FaceIndex(shape,component,x,y,z)]=0.0f;
+						}
+					}
+			}
+			const float axisTimeStep[]={0.5f*request.timeStepS,
+				0.5f*request.timeStepS,request.timeStepS};
+			for( unsigned int component=0u;component<3u;++component )
+				for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis ) {
+					FireProductionRemapRequest preflight;
+					if( !BuildDualAxisRequest(request,component,sweepAxis,
+						axisTimeStep[sweepAxis],computed.auxiliaryFaceDensity[component],
+						computed.momentum[component],preflight,error)||
+						!ValidateFireProductionRemapRequest(preflight,error) ) return false;
+				}
+			const unsigned int axes[]={0u,1u,2u,1u,0u};
+			for( unsigned int component=0u;component<3u;++component ) {
+				for( const unsigned int sweepAxis : axes )
+					if( !ApplyDualAxis(request,component,sweepAxis,axisTimeStep[sweepAxis],
+						computed.auxiliaryFaceDensity[component],computed.momentum[component],
+						error) ) return false;
+				if( AxisIsPeriodic(request,component) ) PublishPeriodicDualSeam(shape,component,
+					computed.auxiliaryFaceDensity[component],computed.momentum[component],
+					computed.canonicalSeamCopyCount);
+			}
+			computed.executedSubmapCount=15u;
+			result=std::move(computed);
+			if( error ) error->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionDualMomentumResult();
+			FailWithoutThrow(error,"dual momentum allocation failed");
 			return false;
 		}
 	}

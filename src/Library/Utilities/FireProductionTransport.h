@@ -55,29 +55,37 @@ namespace RISE
 			actualTrackedWorkingSetBytes(0u),deviceElapsedMS(0.0) {}
 	};
 
-	//! Periodic dual-grid comparison surface for the first momentum-transport
-	//! increment.  Face arrays include their positive publication seam.
-	struct FireProductionPeriodicDualMomentumRequest
+	//! Dual-grid momentum comparison surface. Face arrays include their positive
+	//! publication plane; it is a duplicate only on periodic component-normal axes.
+	struct FireProductionDualMomentumRequest
 	{
 		FireProductionProjectionShape shape;
 		float timeStepS;
+		float ambientDensityKGPerM3;
+		std::array<FireProductionProjectionBoundary,6> boundary;
 		std::array<std::vector<float>,3> beginningFaceDensity;
 		std::array<std::vector<float>,3> beginningMomentum;
 		std::array<std::vector<float>,3> frozenVelocityMPerS;
 
-		FireProductionPeriodicDualMomentumRequest() : timeStepS(0.0f) {}
+		FireProductionDualMomentumRequest() : timeStepS(0.0f),ambientDensityKGPerM3(1.0f)
+		{
+			boundary.fill(FireProductionProjectionPeriodic);
+		}
 	};
 
-	struct FireProductionPeriodicDualMomentumResult
+	struct FireProductionDualMomentumResult
 	{
 		std::array<std::vector<float>,3> auxiliaryFaceDensity;
 		std::array<std::vector<float>,3> momentum;
 		std::uint32_t executedSubmapCount;
 		std::uint32_t canonicalSeamCopyCount;
 
-		FireProductionPeriodicDualMomentumResult() : executedSubmapCount(0u),
+		FireProductionDualMomentumResult() : executedSubmapCount(0u),
 			canonicalSeamCopyCount(0u) {}
 	};
+
+	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
+	using FireProductionPeriodicDualMomentumResult=FireProductionDualMomentumResult;
 
 	bool ValidateFireProductionCellPalindromeRequest(
 		const FireProductionCellPalindromeRequest& request,
@@ -110,6 +118,14 @@ namespace RISE
 	bool RemapFireProductionPeriodicDualMomentumCPU(
 		const FireProductionPeriodicDualMomentumRequest& request,
 		FireProductionPeriodicDualMomentumResult& result,
+		std::string* error=0 );
+
+	//! Strict-binary32 six-side MAC oracle. Component-normal wall planes are
+	//! prescribed, open endpoints skip only their normal sweep, and transverse
+	//! sweeps consume line-resolved ambient tuples through the shared P1 kernel.
+	bool RemapFireProductionDualMomentumCPU(
+		const FireProductionDualMomentumRequest& request,
+		FireProductionDualMomentumResult& result,
 		std::string* error=0 );
 }
 
