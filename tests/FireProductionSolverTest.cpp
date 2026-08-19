@@ -191,6 +191,13 @@ namespace
 			std::fabs(a-b)<=relative*std::max(1.0f,std::max(std::fabs(a),std::fabs(b)));
 	}
 
+	bool SameFloatVectorsWithin( const std::vector<float>& first,
+		const std::vector<float>& second, float relative )
+	{
+		return first.size()==second.size()&&std::equal(first.begin(),first.end(),second.begin(),
+			[relative](float a,float b){return NearFloat(a,b,relative);});
+	}
+
 	bool SameRemapWithin( const RISE::FireProductionRemapResult& cpu,
 		const RISE::FireProductionRemapResult& gpu, float relative )
 	{
@@ -752,6 +759,8 @@ int main()
 			[](float value){return value==0.1f;}),
 		"production palindrome preserves an ordinary fp32 constant exactly through five passes");
 
+	std::vector<FireProductionCellPalindromeRequest> mixedPalindromeRequests;
+	std::vector<std::vector<float> > mixedPalindromeExpected;
 	for( unsigned int axis=0u;axis<3u;++axis ) for( unsigned int role=0u;role<4u;++role ) {
 		FireProductionCellPalindromeRequest mixed;
 		mixed.shape.nx=5u;mixed.shape.ny=6u;mixed.shape.nz=7u;
@@ -809,6 +818,8 @@ int main()
 			mixedResult.conservativeValues==mixedIndependent&&
 			mixedResult.conservativeValues!=mixed.conservativeValues,
 			"non-cubic P3 packing binds every axis, side, and pressure-open flow sign");
+		mixedPalindromeRequests.push_back(mixed);
+		mixedPalindromeExpected.push_back(mixedIndependent);
 	}
 	FireProductionCellPalindromeRequest invalidPalindrome=translated;
 	invalidPalindrome.boundary[4]=FireProductionProjectionPeriodic;
@@ -827,6 +838,31 @@ int main()
 		lateFoldResult.conservativeValues.empty()&&lateFoldResult.executedSubmapCount==0u&&
 		error.find("folded")!=std::string::npos,
 		"a folded z map fails preflight without publishing partial x/y work");
+	FireProductionProjectionShape tier10TransportShape;
+	tier10TransportShape.nx=86u;tier10TransportShape.ny=86u;tier10TransportShape.nz=132u;
+	tier10TransportShape.cellWidthM=0.3f/128.0f;
+	std::uint64_t tier10TransportBytes=0u;
+	FireProductionProjectionShape transportUnder,transportOver;
+	transportUnder.nx=16u;transportUnder.ny=209u;transportUnder.nz=1024u;
+	transportOver.nx=28u;transportOver.ny=120u;transportOver.nz=1024u;
+	transportUnder.cellWidthM=1.0f;transportOver.cellWidthM=1.0f;
+	std::uint64_t transportUnderBytes=0u,transportOverBytes=0u;
+	Check(FireProductionCellPalindromeWorkingSetBytes(tier10TransportShape,9u,
+		tier10TransportBytes)&&tier10TransportBytes==UINT64_C(466364852)&&
+		FireProductionCellPalindromeWorkingSetBytes(transportUnder,12u,
+			transportUnderBytes)&&transportUnderBytes==UINT64_C(2147468400)&&
+		FireProductionCellPalindromeWorkingSetBytes(transportOver,12u,
+			transportOverBytes)&&transportOverBytes==UINT64_C(2147529904)&&
+		transportUnderBytes<(UINT64_C(1)<<31u)&&transportOverBytes>(UINT64_C(1)<<31u),
+		"palindrome working-set certificate includes outward-rounded Metal allocations at two GiB");
+	FireProductionCellPalindromeRequest overAdmission,underAdmission;
+	overAdmission.shape=transportOver;overAdmission.componentCount=12u;
+	underAdmission.shape=transportUnder;underAdmission.componentCount=12u;
+	Check(!ValidateFireProductionCellPalindromeRequest(overAdmission,&error)&&
+		error.find("two GiB")!=std::string::npos&&
+		!ValidateFireProductionCellPalindromeRequest(underAdmission,&error)&&
+		error.find("two GiB")==std::string::npos,
+		"the actual palindrome admission path rejects the over-cap shape before tuple allocation");
 
 	FireProductionComputeCapability capability;
 	Check(QueryFireProductionComputeCapability(capability),
@@ -855,6 +891,84 @@ int main()
 	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,openNegativeGPU,wallGPU,
 		wallNegativeGPU,wallToOpenGPU,openToWallGPU,
 		smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
+	FireProductionCellPalindromeResult translatedGPU,donorGPU,orderGPU,orderGPURepeated,
+		palindromeConstantGPU;
+	const bool translatedMetal=RemapFireProductionCellPalindromeMetal(
+		translated,translatedGPU,&error);
+	if( !translatedMetal ) std::cerr << "Metal palindrome detail: " << error << '\n';
+	const bool donorMetal=RemapFireProductionCellPalindromeMetal(donor,donorGPU,&error);
+	const bool orderMetal=RemapFireProductionCellPalindromeMetal(orderSensitive,orderGPU,&error);
+	const bool orderRepeated=orderMetal&&RemapFireProductionCellPalindromeMetal(
+		orderSensitive,orderGPURepeated,&error);
+	const bool palindromeConstantMetal=RemapFireProductionCellPalindromeMetal(
+		palindromeConstant,palindromeConstantGPU,&error);
+	Check(translatedMetal&&translatedGPU.executedSubmapCount==5u&&
+		translatedGPU.conservativeValues==translatedResult.conservativeValues&&
+		donorMetal&&SameFloatVectorsWithin(donorGPU.conservativeValues,
+			donorResult.conservativeValues,3.0e-5f)&&orderMetal&&orderRepeated&&
+		SameFloatVectorsWithin(orderGPU.conservativeValues,
+			orderSensitiveResult.conservativeValues,3.0e-5f)&&
+		orderGPU.conservativeValues==orderGPURepeated.conservativeValues&&
+		orderGPU.executedSubmapCount==5u&&orderGPU.deviceElapsedMS>0.0&&
+		orderGPU.privateResidentBufferCount==13u&&orderGPU.sharedBufferCount==16u&&
+		orderGPU.commandCommitCount==1u&&orderGPU.interstageFullGridReadbackCount==0u&&
+		orderGPU.actualTrackedWorkingSetBytes<=orderGPU.certifiedWorkingSetBytes&&
+		palindromeConstantMetal&&palindromeConstantGPU.conservativeValues==
+			palindromeConstantResult.conservativeValues,
+		"one-command Metal palindrome is byte-identical to the independent five-pass oracle");
+	bool everyMixedPalindromeMetal=true;
+	for( std::size_t fixture=0;fixture<mixedPalindromeRequests.size();++fixture ) {
+		FireProductionCellPalindromeResult mixedGPU;
+		everyMixedPalindromeMetal=everyMixedPalindromeMetal&&
+			RemapFireProductionCellPalindromeMetal(mixedPalindromeRequests[fixture],mixedGPU,&error)&&
+			SameFloatVectorsWithin(mixedGPU.conservativeValues,
+				mixedPalindromeExpected[fixture],3.0e-5f);
+	}
+	Check(everyMixedPalindromeMetal,
+		"Metal palindrome matches all non-cubic axis/side/open-role oracle fixtures");
+	FireProductionCellPalindromeRequest tier10Palindrome;
+	tier10Palindrome.shape=tier10TransportShape;tier10Palindrome.componentCount=9u;
+	tier10Palindrome.timeStepS=1.0f/480.0f;
+	tier10Palindrome.boundary.fill(FireProductionProjectionPeriodic);
+	tier10Palindrome.conservativeValues.resize(
+		tier10Palindrome.componentCount*tier10Palindrome.shape.CellCount());
+	for( std::size_t index=0;index<tier10Palindrome.conservativeValues.size();++index )
+		tier10Palindrome.conservativeValues[index]=1.0f+
+			static_cast<float>(index%97u)*(1.0f/256.0f);
+	tier10Palindrome.ambientValues.assign(tier10Palindrome.componentCount,0.0f);
+	for( unsigned int axis=0u;axis<3u;++axis )
+		tier10Palindrome.frozenVelocityMPerS[axis].assign(
+			FireProductionProjectionFaceCount(tier10Palindrome.shape,axis),0.2f);
+	std::vector<double> palindromeDeviceMS,palindromeWallMS;
+	FireProductionCellPalindromeResult tier10PalindromeResult;
+	for( unsigned int trial=0u;trial<6u;++trial ) {
+		const std::chrono::steady_clock::time_point beginning=std::chrono::steady_clock::now();
+		const bool remapped=RemapFireProductionCellPalindromeMetal(
+			tier10Palindrome,tier10PalindromeResult,&error);
+		const double wallMS=std::chrono::duration<double,std::milli>(
+			std::chrono::steady_clock::now()-beginning).count();
+		Check(remapped&&tier10PalindromeResult.executedSubmapCount==5u&&
+			tier10PalindromeResult.certifiedWorkingSetBytes==tier10TransportBytes&&
+			tier10PalindromeResult.actualTrackedWorkingSetBytes<=tier10TransportBytes,
+			"tier-10-shaped Metal palindrome timing trial remains structurally valid");
+		if( trial>0u&&remapped ) {
+			palindromeDeviceMS.push_back(tier10PalindromeResult.deviceElapsedMS);
+			palindromeWallMS.push_back(wallMS);
+		}
+	}
+	std::sort(palindromeDeviceMS.begin(),palindromeDeviceMS.end());
+	std::sort(palindromeWallMS.begin(),palindromeWallMS.end());
+	const double palindromeDeviceP95=palindromeDeviceMS.empty()?infinity:
+		palindromeDeviceMS.back();
+	const double palindromeWallP95=palindromeWallMS.empty()?infinity:palindromeWallMS.back();
+	std::cout << "Production P3 cell palindrome device_p95_ms=" << palindromeDeviceP95 <<
+		" wall_p95_ms=" << palindromeWallP95 << " certified_bytes=" <<
+		tier10PalindromeResult.certifiedWorkingSetBytes << " actual_tracked_bytes=" <<
+		tier10PalindromeResult.actualTrackedWorkingSetBytes << '\n';
+	Check(palindromeDeviceMS.size()==5u&&palindromeWallMS.size()==5u&&
+		palindromeDeviceP95>0.0&&palindromeDeviceP95<=45.0&&
+		palindromeWallP95>0.0&&palindromeWallP95<=45.0,
+		"tier-10-shaped one-command Metal palindrome meets the 45 ms remap allocation");
 	const bool constantMetal=RemapFireProductionMetal(constant,constantGPU,&error);
 	if( !constantMetal ) std::cerr << "Metal remap detail: " << error << '\n';
 	const bool repeatedMetal=constantMetal&&RemapFireProductionMetal(constant,constantGPURepeated,&error);
@@ -992,6 +1106,10 @@ int main()
 		"Metal capability source gate binds compilation, dispatch, completion, and returned bytes");
 	const std::string advectionMetalSource=ReadText(
 		"src/Library/Utilities/FireProductionAdvectionMac.mm");
+	const std::size_t palindromeMetalBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionCellPalindromeMetal(");
+	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos?
+		std::string():advectionMetalSource.substr(palindromeMetalBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
 	const std::string androidRules=ReadText("build/cmake/rise-android/CMakeLists.txt");
@@ -1008,7 +1126,7 @@ int main()
 		advectionMetalSource.find("makePipeline(\"update_cells\")")!=std::string::npos&&
 		advectionMetalSource.find("[command commit]")!=std::string::npos&&
 		advectionMetalSource.find("MTLCommandBufferStatusCompleted")!=std::string::npos&&
-		advectionMetalSource.find("[updated contents]")!=std::string::npos&&
+		advectionMetalSource.find("ReadTrackedMetalBuffer(updated)")!=std::string::npos&&
 		advectionMetalSource.find("GPUStartTime")!=std::string::npos&&
 		advectionMetalSource.find("GPUEndTime")!=std::string::npos&&
 		advectionMetalSource.find("activeFaces=periodic?p.n:faces")!=std::string::npos&&
@@ -1036,6 +1154,28 @@ int main()
 			"FireProductionTransport.cpp\">\n      <FloatingPointModel>Strict"
 			"</FloatingPointModel>")!=std::string::npos,
 		"production remap source binds safe math, four real kernels, device output, and strict CPU builds");
+	Check(!palindromeMetalBody.empty()&&
+		advectionMetalSource.find("makePipeline(\"gather_grid_values\")")!=std::string::npos&&
+		advectionMetalSource.find("makePipeline(\"scatter_grid_values\")")!=std::string::npos&&
+		advectionMetalSource.find("makePipeline(\"gather_grid_velocity\")")!=std::string::npos&&
+		CountSubstring(palindromeMetalBody,"options:MTLResourceStorageModePrivate")==13u&&
+		CountSubstring(palindromeMetalBody,"options:MTLResourceStorageModeShared")==8u&&
+		palindromeMetalBody.find("recordBuffer(gridA,MTLStorageModePrivate")!=std::string::npos&&
+		palindromeMetalBody.find("recordBuffer(outputStage,MTLStorageModeShared")!=std::string::npos&&
+		palindromeMetalBody.find("context.gatherValues")!=std::string::npos&&
+		palindromeMetalBody.find("context.gatherVelocity")!=std::string::npos&&
+		palindromeMetalBody.find("context.scatterValues")!=std::string::npos&&
+		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
+		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
+		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==3u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==3u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==5u&&
+		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
+		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
+		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
+		palindromeMetalBody.find("RemapFireProductionMetal(request")==std::string::npos,
+		"P3 palindrome measures one command and one scheduled host publication at the global seams");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),
@@ -1051,6 +1191,28 @@ int main()
 	Check(!RemapFireProductionMetal(constant,unsupportedRemap,&error)&&
 		unsupportedRemap.updatedValues.empty()&&!error.empty(),
 		"non-Metal production remap fails explicitly without a silent CPU fallback");
+	FireProductionCellPalindromeResult unsupportedPalindrome;
+	unsupportedPalindrome.conservativeValues.push_back(3.0f);
+	unsupportedPalindrome.executedSubmapCount=7u;
+	unsupportedPalindrome.privateResidentBufferCount=9u;
+	unsupportedPalindrome.sharedBufferCount=9u;
+	unsupportedPalindrome.commandCommitCount=9u;
+	unsupportedPalindrome.interstageFullGridReadbackCount=9u;
+	unsupportedPalindrome.certifiedWorkingSetBytes=9u;
+	unsupportedPalindrome.actualTrackedWorkingSetBytes=9u;
+	unsupportedPalindrome.deviceElapsedMS=9.0;
+	error.clear();
+	Check(!RemapFireProductionCellPalindromeMetal(translated,unsupportedPalindrome,&error)&&
+		unsupportedPalindrome.conservativeValues.empty()&&
+		unsupportedPalindrome.executedSubmapCount==0u&&
+		unsupportedPalindrome.privateResidentBufferCount==0u&&
+		unsupportedPalindrome.sharedBufferCount==0u&&
+		unsupportedPalindrome.commandCommitCount==0u&&
+		unsupportedPalindrome.interstageFullGridReadbackCount==0u&&
+		unsupportedPalindrome.certifiedWorkingSetBytes==0u&&
+		unsupportedPalindrome.actualTrackedWorkingSetBytes==0u&&
+		unsupportedPalindrome.deviceElapsedMS==0.0&&!error.empty(),
+		"non-Metal production palindrome fails explicitly without a silent CPU fallback");
 #endif
 
 	if( failures==0 ) {

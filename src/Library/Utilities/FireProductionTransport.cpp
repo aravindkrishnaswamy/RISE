@@ -19,10 +19,44 @@ namespace RISE
 {
 	namespace
 	{
+		const std::uint64_t MetalAllocationQuantumBytes=UINT64_C(16384);
+
 		bool Fail( std::string* error, const char* message ) noexcept
 		{
 			if( error ) try { *error=message; } catch( const std::bad_alloc& ) {}
 			return false;
+		}
+
+		bool AddBytes( std::uint64_t count, std::uint64_t bytesPerValue,
+			std::uint64_t& total )
+		{
+			if( bytesPerValue&&count>std::numeric_limits<std::uint64_t>::max()/bytesPerValue )
+				return false;
+			const std::uint64_t bytes=count*bytesPerValue;
+			if( total>std::numeric_limits<std::uint64_t>::max()-bytes ) return false;
+			total+=bytes;return true;
+		}
+
+		bool AddMetalBufferBytes( std::uint64_t requestedBytes, std::uint64_t& total )
+		{
+			if( requestedBytes==0u ) return false;
+			const std::uint64_t remainder=requestedBytes%MetalAllocationQuantumBytes;
+			if( remainder ) {
+				const std::uint64_t increment=MetalAllocationQuantumBytes-remainder;
+				if( requestedBytes>std::numeric_limits<std::uint64_t>::max()-increment )
+					return false;
+				requestedBytes+=increment;
+			}
+			if( total>std::numeric_limits<std::uint64_t>::max()-requestedBytes ) return false;
+			total+=requestedBytes;return true;
+		}
+
+		bool AddMetalValueBuffer( std::uint64_t count, std::uint64_t bytesPerValue,
+			std::uint64_t& total )
+		{
+			if( bytesPerValue&&count>std::numeric_limits<std::uint64_t>::max()/bytesPerValue )
+				return false;
+			return AddMetalBufferBytes(count*bytesPerValue,total);
 		}
 
 		void FailWithoutThrow( std::string* error, const char* message ) noexcept
@@ -181,6 +215,52 @@ namespace RISE
 		}
 	}
 
+	bool FireProductionCellPalindromeWorkingSetBytes(
+		const FireProductionProjectionShape& shape, std::size_t componentCount,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||componentCount==0u ) return false;
+		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
+		if( componentCount>std::numeric_limits<std::uint64_t>::max()/cells ) return false;
+		const std::uint64_t values=cells*componentCount;
+		const std::uint64_t xFaces=static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz;
+		const std::uint64_t yFaces=static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz;
+		const std::uint64_t zFaces=static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
+		const std::uint64_t allFaces=xFaces+yFaces+zFaces;
+		const std::uint64_t maximumLineFaces=std::max(xFaces,std::max(yFaces,zFaces));
+		if( componentCount>std::numeric_limits<std::uint64_t>::max()/maximumLineFaces )
+			return false;
+		const std::uint64_t componentLineFaces=componentCount*maximumLineFaces;
+		std::uint64_t total=0u;
+		// Caller-owned request/result payloads remain live through publication.
+		if( !AddBytes(values,2u*sizeof(float),total)||
+			!AddBytes(allFaces,sizeof(float),total)||
+			!AddBytes(componentCount,sizeof(float),total) ) return false;
+		// Eight value-sized Metal buffers: input/output staging, two resident grids,
+		// and four resident line/reconstruction fields.
+		for( unsigned int buffer=0u;buffer<8u;++buffer )
+			if( !AddMetalValueBuffer(values,sizeof(float),total) ) return false;
+		// Each carrier is present once in Shared staging and once in Private storage.
+		const std::uint64_t faceCounts[]={xFaces,yFaces,zFaces};
+		for( const std::uint64_t faceCount : faceCounts )
+			for( unsigned int buffer=0u;buffer<2u;++buffer )
+				if( !AddMetalValueBuffer(faceCount,sizeof(float),total) ) return false;
+		if( !AddMetalValueBuffer(maximumLineFaces,sizeof(float),total)||
+			!AddMetalValueBuffer(cells,sizeof(float),total)||
+			!AddMetalValueBuffer(componentLineFaces,sizeof(float),total)||
+			!AddMetalValueBuffer(componentLineFaces,sizeof(float),total)||
+			!AddMetalValueBuffer(componentCount,sizeof(float),total) ) return false;
+		// Five grid-parameter and five line-parameter resources remain retained by
+		// the one command until its terminal publication completes.
+		for( unsigned int pass=0u;pass<5u;++pass )
+			if( !AddMetalBufferBytes(sizeof(std::uint32_t)*5u,total)||
+				!AddMetalBufferBytes(sizeof(std::uint32_t)*5u+sizeof(float)*2u,total) )
+				return false;
+		bytes=total;return true;
+	}
+
 	bool ValidateFireProductionCellPalindromeRequest(
 		const FireProductionCellPalindromeRequest& request, std::string* error )
 	{
@@ -194,8 +274,13 @@ namespace RISE
 		if( shape.nx>maximum/shape.ny||shape.nx*shape.ny>maximum/shape.nz )
 			return Fail(error,"production palindrome shape overflows");
 		const std::size_t cells=shape.CellCount();
-		if( request.componentCount>maximum/cells||
-			request.conservativeValues.size()!=request.componentCount*cells||
+		if( request.componentCount>maximum/cells )
+			return Fail(error,"production palindrome tuple shape is invalid");
+		std::uint64_t workingBytes=0u;
+		if( !FireProductionCellPalindromeWorkingSetBytes(shape,request.componentCount,
+			workingBytes)||workingBytes>(std::uint64_t(2u)<<30u) )
+			return Fail(error,"production palindrome working set exceeds two GiB");
+		if( request.conservativeValues.size()!=request.componentCount*cells||
 			request.ambientValues.size()!=request.componentCount )
 			return Fail(error,"production palindrome tuple shape is invalid");
 		for( unsigned int axis=0u;axis<3u;++axis ) {
