@@ -55,6 +55,30 @@ namespace RISE
 			actualTrackedWorkingSetBytes(0u),deviceElapsedMS(0.0) {}
 	};
 
+	//! Periodic dual-grid comparison surface for the first momentum-transport
+	//! increment.  Face arrays include their positive publication seam.
+	struct FireProductionPeriodicDualMomentumRequest
+	{
+		FireProductionProjectionShape shape;
+		float timeStepS;
+		std::array<std::vector<float>,3> beginningFaceDensity;
+		std::array<std::vector<float>,3> beginningMomentum;
+		std::array<std::vector<float>,3> frozenVelocityMPerS;
+
+		FireProductionPeriodicDualMomentumRequest() : timeStepS(0.0f) {}
+	};
+
+	struct FireProductionPeriodicDualMomentumResult
+	{
+		std::array<std::vector<float>,3> auxiliaryFaceDensity;
+		std::array<std::vector<float>,3> momentum;
+		std::uint32_t executedSubmapCount;
+		std::uint32_t canonicalSeamCopyCount;
+
+		FireProductionPeriodicDualMomentumResult() : executedSubmapCount(0u),
+			canonicalSeamCopyCount(0u) {}
+	};
+
 	bool ValidateFireProductionCellPalindromeRequest(
 		const FireProductionCellPalindromeRequest& request,
 		std::string* error=0 );
@@ -79,6 +103,13 @@ namespace RISE
 	bool RemapFireProductionCellPalindromeMetal(
 		const FireProductionCellPalindromeRequest& request,
 		FireProductionCellPalindromeResult& result,
+		std::string* error=0 );
+
+	//! Strict-binary32 periodic MAC oracle.  Each noncollocated momentum
+	//! component owns a separate dual tuple and five-pass palindrome.
+	bool RemapFireProductionPeriodicDualMomentumCPU(
+		const FireProductionPeriodicDualMomentumRequest& request,
+		FireProductionPeriodicDualMomentumResult& result,
 		std::string* error=0 );
 }
 

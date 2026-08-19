@@ -81,6 +81,14 @@ namespace
 		return (z*shape.ny+y)*shape.nx+x;
 	}
 
+	std::size_t TransportFaceIndex( const RISE::FireProductionProjectionShape& shape,
+		unsigned int axis, std::size_t x, std::size_t y, std::size_t z )
+	{
+		if( axis==0u ) return (z*shape.ny+y)*(shape.nx+1u)+x;
+		if( axis==1u ) return (z*(shape.ny+1u)+y)*shape.nx+x;
+		return (z*shape.ny+y)*shape.nx+x;
+	}
+
 	std::string FloatBytesSHA256( const std::vector<float>& values )
 	{
 		RISE::RISECBOR64::Bytes bytes(values.size()*sizeof(float));
@@ -182,6 +190,139 @@ namespace
 		for( std::size_t pass=0;pass<passCount;++pass )
 			if( !IndependentCellAxisPass(request,axes[pass],
 				stepFactors[pass]*request.timeStepS,values,error) ) return false;
+		return true;
+	}
+
+	std::size_t TestAxisExtent( const RISE::FireProductionProjectionShape& shape,
+		unsigned int axis )
+	{
+		return axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+	}
+
+	std::size_t TestAxisCoordinate( unsigned int axis, std::size_t x,
+		std::size_t y, std::size_t z )
+	{
+		return axis==0u?x:(axis==1u?y:z);
+	}
+
+	void SetTestAxisCoordinate( unsigned int axis, std::size_t coordinate,
+		std::size_t& x, std::size_t& y, std::size_t& z )
+	{
+		if( axis==0u ) x=coordinate;
+		else if( axis==1u ) y=coordinate;
+		else z=coordinate;
+	}
+
+	float TestCanonicalFaceValue( const RISE::FireProductionProjectionShape& shape,
+		const std::vector<float>& values, unsigned int axis,
+		std::size_t x, std::size_t y, std::size_t z )
+	{
+		if( axis==0u&&x==shape.nx ) x=0u;
+		if( axis==1u&&y==shape.ny ) y=0u;
+		if( axis==2u&&z==shape.nz ) z=0u;
+		return values[TransportFaceIndex(shape,axis,x,y,z)];
+	}
+
+	bool IndependentPeriodicDualComponent(
+		const RISE::FireProductionPeriodicDualMomentumRequest& request,
+		unsigned int transportedComponent, int oneSidedSweepAxis,
+		bool useLowerCarrier, bool splitTupleLimiter,
+		std::vector<float>& density, std::vector<float>& momentum,
+		std::string& error )
+	{
+		const RISE::FireProductionProjectionShape& shape=request.shape;
+		const std::size_t cells=shape.CellCount();
+		RISE::FireProductionCellPalindromeRequest dual;
+		dual.shape=shape;dual.componentCount=2u;dual.timeStepS=request.timeStepS;
+		dual.boundary.fill(RISE::FireProductionProjectionPeriodic);
+		dual.conservativeValues.resize(2u*cells);dual.ambientValues.assign(2u,0.0f);
+		for( std::size_t z=0u;z<shape.nz;++z ) for( std::size_t y=0u;y<shape.ny;++y )
+			for( std::size_t x=0u;x<shape.nx;++x ) {
+				const std::size_t cell=TransportCellIndex(shape,x,y,z);
+				const std::size_t face=TransportFaceIndex(shape,transportedComponent,x,y,z);
+				dual.conservativeValues[cell]=request.beginningFaceDensity[transportedComponent][face];
+				dual.conservativeValues[cells+cell]=request.beginningMomentum[transportedComponent][face];
+			}
+		for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis ) {
+			std::vector<float>& carrier=dual.frozenVelocityMPerS[sweepAxis];
+			carrier.resize(RISE::FireProductionProjectionFaceCount(shape,sweepAxis));
+			const std::size_t xEnd=shape.nx+(sweepAxis==0u?1u:0u);
+			const std::size_t yEnd=shape.ny+(sweepAxis==1u?1u:0u);
+			const std::size_t zEnd=shape.nz+(sweepAxis==2u?1u:0u);
+			for( std::size_t z=0u;z<zEnd;++z ) for( std::size_t y=0u;y<yEnd;++y )
+				for( std::size_t x=0u;x<xEnd;++x ) {
+					const unsigned int averageAxis=transportedComponent==sweepAxis?
+						sweepAxis:transportedComponent;
+					const std::size_t extent=TestAxisExtent(shape,averageAxis);
+					const std::size_t raw=TestAxisCoordinate(averageAxis,x,y,z);
+					const std::size_t current=raw==extent?0u:raw;
+					const std::size_t previous=current?current-1u:extent-1u;
+					std::size_t lx=x,ly=y,lz=z,ux=x,uy=y,uz=z;
+					SetTestAxisCoordinate(averageAxis,previous,lx,ly,lz);
+					SetTestAxisCoordinate(averageAxis,current,ux,uy,uz);
+					if( averageAxis!=sweepAxis ) {
+						const std::size_t sweepExtent=TestAxisExtent(shape,sweepAxis);
+						const std::size_t sweepRaw=TestAxisCoordinate(sweepAxis,x,y,z);
+						const std::size_t sweepCurrent=sweepRaw==sweepExtent?0u:sweepRaw;
+						SetTestAxisCoordinate(sweepAxis,sweepCurrent,lx,ly,lz);
+						SetTestAxisCoordinate(sweepAxis,sweepCurrent,ux,uy,uz);
+					}
+					const float lower=TestCanonicalFaceValue(shape,
+						request.frozenVelocityMPerS[sweepAxis],sweepAxis,lx,ly,lz);
+					const float upper=TestCanonicalFaceValue(shape,
+						request.frozenVelocityMPerS[sweepAxis],sweepAxis,ux,uy,uz);
+					carrier[TransportFaceIndex(shape,sweepAxis,x,y,z)]=
+						static_cast<int>(sweepAxis)==oneSidedSweepAxis?
+							(useLowerCarrier?lower:upper):0.5f*(lower+upper);
+				}
+		}
+		const unsigned int axes[]={0u,1u,2u,1u,0u};
+		const float factors[]={0.5f,0.5f,1.0f,0.5f,0.5f};
+		std::vector<float> values;
+		if( !splitTupleLimiter ) {
+			if( !IndependentCellComposition(dual,axes,factors,5u,values,error) ) return false;
+		} else {
+			values.resize(2u*cells);
+			for( std::size_t channel=0u;channel<2u;++channel ) {
+				RISE::FireProductionCellPalindromeRequest single=dual;
+				single.componentCount=1u;single.ambientValues.assign(1u,0.0f);
+				single.conservativeValues.assign(dual.conservativeValues.begin()+channel*cells,
+					dual.conservativeValues.begin()+(channel+1u)*cells);
+				std::vector<float> channelValues;
+				if( !IndependentCellComposition(single,axes,factors,5u,channelValues,error) )
+					return false;
+				std::copy(channelValues.begin(),channelValues.end(),values.begin()+channel*cells);
+			}
+		}
+		density.assign(RISE::FireProductionProjectionFaceCount(shape,transportedComponent),0.0f);
+		momentum.assign(density.size(),0.0f);
+		for( std::size_t z=0u;z<shape.nz;++z ) for( std::size_t y=0u;y<shape.ny;++y )
+			for( std::size_t x=0u;x<shape.nx;++x ) {
+				const std::size_t cell=TransportCellIndex(shape,x,y,z);
+				const std::size_t face=TransportFaceIndex(shape,transportedComponent,x,y,z);
+				density[face]=values[cell];momentum[face]=values[cells+cell];
+			}
+		if( transportedComponent==0u ) for( std::size_t z=0u;z<shape.nz;++z )
+			for( std::size_t y=0u;y<shape.ny;++y ) {
+				density[TransportFaceIndex(shape,0u,shape.nx,y,z)]=
+					density[TransportFaceIndex(shape,0u,0u,y,z)];
+				momentum[TransportFaceIndex(shape,0u,shape.nx,y,z)]=
+					momentum[TransportFaceIndex(shape,0u,0u,y,z)];
+			}
+		if( transportedComponent==1u ) for( std::size_t z=0u;z<shape.nz;++z )
+			for( std::size_t x=0u;x<shape.nx;++x ) {
+				density[TransportFaceIndex(shape,1u,x,shape.ny,z)]=
+					density[TransportFaceIndex(shape,1u,x,0u,z)];
+				momentum[TransportFaceIndex(shape,1u,x,shape.ny,z)]=
+					momentum[TransportFaceIndex(shape,1u,x,0u,z)];
+			}
+		if( transportedComponent==2u ) for( std::size_t y=0u;y<shape.ny;++y )
+			for( std::size_t x=0u;x<shape.nx;++x ) {
+				density[TransportFaceIndex(shape,2u,x,y,shape.nz)]=
+					density[TransportFaceIndex(shape,2u,x,y,0u)];
+				momentum[TransportFaceIndex(shape,2u,x,y,shape.nz)]=
+					momentum[TransportFaceIndex(shape,2u,x,y,0u)];
+			}
 		return true;
 	}
 
@@ -686,6 +827,155 @@ int main()
 		translatedResult.conservativeValues==translatedIndependent,
 		"production palindrome exactly translates an integer-Courant tuple by (2,2,1)");
 
+	FireProductionPeriodicDualMomentumRequest dualTranslated;
+	dualTranslated.shape=translated.shape;dualTranslated.timeStepS=translated.timeStepS;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::size_t faces=FireProductionProjectionFaceCount(dualTranslated.shape,axis);
+		dualTranslated.beginningFaceDensity[axis].assign(faces,1.0f);
+		dualTranslated.beginningMomentum[axis].assign(faces,0.0f);
+		dualTranslated.frozenVelocityMPerS[axis].assign(faces,axis<2u?2.0f:1.0f);
+		const std::size_t beginning=TransportFaceIndex(dualTranslated.shape,axis,1u,1u,1u);
+		dualTranslated.beginningMomentum[axis][beginning]=static_cast<float>(axis+1u);
+		if( axis==0u ) {
+			dualTranslated.beginningMomentum[axis][TransportFaceIndex(
+				dualTranslated.shape,axis,dualTranslated.shape.nx,1u,1u)]=
+				dualTranslated.beginningMomentum[axis][TransportFaceIndex(
+					dualTranslated.shape,axis,0u,1u,1u)];
+		} else if( axis==1u ) {
+			dualTranslated.beginningMomentum[axis][TransportFaceIndex(
+				dualTranslated.shape,axis,1u,dualTranslated.shape.ny,1u)]=
+				dualTranslated.beginningMomentum[axis][TransportFaceIndex(
+					dualTranslated.shape,axis,1u,0u,1u)];
+		} else {
+			dualTranslated.beginningMomentum[axis][TransportFaceIndex(
+				dualTranslated.shape,axis,1u,1u,dualTranslated.shape.nz)]=
+				dualTranslated.beginningMomentum[axis][TransportFaceIndex(
+					dualTranslated.shape,axis,1u,1u,0u)];
+		}
+	}
+	FireProductionPeriodicDualMomentumResult dualTranslatedResult;
+	bool exactDualTranslation=RemapFireProductionPeriodicDualMomentumCPU(
+		dualTranslated,dualTranslatedResult,&error)&&
+		dualTranslatedResult.executedSubmapCount==15u&&
+		dualTranslatedResult.canonicalSeamCopyCount==2u*(
+			dualTranslated.shape.ny*dualTranslated.shape.nz+
+			dualTranslated.shape.nx*dualTranslated.shape.nz+
+			dualTranslated.shape.nx*dualTranslated.shape.ny);
+	for( unsigned int axis=0u;axis<3u&&exactDualTranslation;++axis ) {
+		const std::size_t expected=TransportFaceIndex(dualTranslated.shape,axis,3u,3u,2u);
+		for( std::size_t z=0u;z<dualTranslated.shape.nz;++z )
+			for( std::size_t y=0u;y<dualTranslated.shape.ny;++y )
+				for( std::size_t x=0u;x<dualTranslated.shape.nx;++x ) {
+					const std::size_t face=TransportFaceIndex(dualTranslated.shape,axis,x,y,z);
+					exactDualTranslation=exactDualTranslation&&
+						dualTranslatedResult.auxiliaryFaceDensity[axis][face]==1.0f&&
+						dualTranslatedResult.momentum[axis][face]==
+							(face==expected?static_cast<float>(axis+1u):0.0f);
+				}
+	}
+	Check(exactDualTranslation,
+		"each periodic MAC dual tuple exactly translates by the (2,2,1) palindrome");
+	FireProductionPeriodicDualMomentumRequest brokenDualSeam=dualTranslated;
+	brokenDualSeam.beginningMomentum[1][TransportFaceIndex(brokenDualSeam.shape,1u,
+		2u,brokenDualSeam.shape.ny,2u)]=1.0f;
+	Check(!RemapFireProductionPeriodicDualMomentumCPU(brokenDualSeam,
+		dualTranslatedResult,&error)&&dualTranslatedResult.executedSubmapCount==0u&&
+		dualTranslatedResult.canonicalSeamCopyCount==0u&&
+		dualTranslatedResult.momentum[0].empty()&&error.find("seam")!=std::string::npos,
+		"dual periodic publication seams are validated before any component remap");
+	FireProductionPeriodicDualMomentumRequest laterComponentFold=dualTranslated;
+	for( unsigned int axis=0u;axis<3u;++axis )
+		std::fill(laterComponentFold.frozenVelocityMPerS[axis].begin(),
+			laterComponentFold.frozenVelocityMPerS[axis].end(),0.0f);
+	for( std::size_t z=0u;z<laterComponentFold.shape.nz;++z )
+		for( std::size_t y=0u;y<laterComponentFold.shape.ny;++y )
+			laterComponentFold.frozenVelocityMPerS[0][TransportFaceIndex(
+				laterComponentFold.shape,0u,2u,y,z)]=4.0f;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		dualTranslatedResult.auxiliaryFaceDensity[axis].assign(1u,3.0f);
+		dualTranslatedResult.momentum[axis].assign(1u,4.0f);
+	}
+	dualTranslatedResult.executedSubmapCount=9u;
+	dualTranslatedResult.canonicalSeamCopyCount=9u;
+	const bool laterFoldRejected=!RemapFireProductionPeriodicDualMomentumCPU(laterComponentFold,
+		dualTranslatedResult,&error);
+	if( !laterFoldRejected||error.find("folded")==std::string::npos )
+		std::cerr << "Later dual fold detail: rejected=" << laterFoldRejected << " error=" <<
+			error << " count=" << dualTranslatedResult.executedSubmapCount << '\n';
+	Check(laterFoldRejected&&error.find("folded")!=std::string::npos&&
+		dualTranslatedResult.executedSubmapCount==0u&&
+		dualTranslatedResult.canonicalSeamCopyCount==0u&&
+		dualTranslatedResult.auxiliaryFaceDensity[0].empty()&&
+		dualTranslatedResult.auxiliaryFaceDensity[1].empty()&&
+		dualTranslatedResult.auxiliaryFaceDensity[2].empty()&&
+		dualTranslatedResult.momentum[0].empty()&&dualTranslatedResult.momentum[1].empty()&&
+		dualTranslatedResult.momentum[2].empty(),
+		"a later-component carrier fold cannot publish an earlier dual remap");
+	FireProductionPeriodicDualMomentumRequest dualCombinedOver,dualCombinedUnder;
+	dualCombinedOver.shape.nx=22u;dualCombinedOver.shape.ny=294u;
+	dualCombinedOver.shape.nz=1024u;dualCombinedOver.shape.cellWidthM=1.0f;
+	dualCombinedUnder=dualCombinedOver;dualCombinedUnder.shape.nz=1023u;
+	Check(!RemapFireProductionPeriodicDualMomentumCPU(dualCombinedOver,
+		dualTranslatedResult,&error)&&error.find("combined working set")!=std::string::npos&&
+		!RemapFireProductionPeriodicDualMomentumCPU(dualCombinedUnder,
+			dualTranslatedResult,&error)&&error.find("combined working set")==std::string::npos,
+		"dual momentum admission counts caller and atomic result faces around nested remap peak");
+	FireProductionPeriodicDualMomentumRequest dualVariable;
+	dualVariable.shape.nx=5u;dualVariable.shape.ny=6u;dualVariable.shape.nz=7u;
+	dualVariable.shape.cellWidthM=1.0f;dualVariable.timeStepS=0.35f;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::size_t faces=FireProductionProjectionFaceCount(dualVariable.shape,axis);
+		dualVariable.beginningFaceDensity[axis].resize(faces);
+		dualVariable.beginningMomentum[axis].resize(faces);
+		dualVariable.frozenVelocityMPerS[axis].resize(faces);
+		const std::size_t xEnd=dualVariable.shape.nx+(axis==0u?1u:0u);
+		const std::size_t yEnd=dualVariable.shape.ny+(axis==1u?1u:0u);
+		const std::size_t zEnd=dualVariable.shape.nz+(axis==2u?1u:0u);
+		for( std::size_t z=0u;z<zEnd;++z ) for( std::size_t y=0u;y<yEnd;++y )
+			for( std::size_t x=0u;x<xEnd;++x ) {
+				const std::size_t cx=axis==0u&&x==dualVariable.shape.nx?0u:x;
+				const std::size_t cy=axis==1u&&y==dualVariable.shape.ny?0u:y;
+				const std::size_t cz=axis==2u&&z==dualVariable.shape.nz?0u:z;
+				const std::size_t face=TransportFaceIndex(dualVariable.shape,axis,x,y,z);
+				dualVariable.beginningFaceDensity[axis][face]=1.0f+
+					0.03f*static_cast<float>((cx+3u*cy+5u*cz+axis)%9u);
+				dualVariable.beginningMomentum[axis][face]=0.2f+
+					0.04f*static_cast<float>((5u*cx+2u*cy+cz+2u*axis)%11u);
+				dualVariable.frozenVelocityMPerS[axis][face]=0.08f+
+					0.01f*static_cast<float>((3u*cx+5u*cy+4u*cz+axis)%7u);
+			}
+	}
+	FireProductionPeriodicDualMomentumResult dualVariableResult;
+	bool dualVariableMatches=RemapFireProductionPeriodicDualMomentumCPU(
+		dualVariable,dualVariableResult,&error)&&dualVariableResult.executedSubmapCount==15u;
+	bool everyOneSidedCarrierDiffers=true,everySplitLimiterDiffers=true;
+	for( unsigned int component=0u;component<3u;++component ) {
+		std::vector<float> expectedDensity,expectedMomentum,wrongDensity,wrongMomentum;
+		dualVariableMatches=dualVariableMatches&&IndependentPeriodicDualComponent(
+			dualVariable,component,-1,false,false,expectedDensity,expectedMomentum,error)&&
+			dualVariableResult.auxiliaryFaceDensity[component]==expectedDensity&&
+			dualVariableResult.momentum[component]==expectedMomentum;
+		for( unsigned int sweepAxis=0u;sweepAxis<3u;++sweepAxis )
+			for( unsigned int side=0u;side<2u;++side ) {
+				const bool wrongOK=IndependentPeriodicDualComponent(dualVariable,component,
+					static_cast<int>(sweepAxis),side==0u,false,
+					wrongDensity,wrongMomentum,error);
+				const bool differs=wrongOK&&
+					(wrongDensity!=expectedDensity||wrongMomentum!=expectedMomentum);
+				if( !differs ) std::cerr << "Insensitive dual carrier mutant c=" << component <<
+					" a=" << sweepAxis << " side=" << side << '\n';
+				everyOneSidedCarrierDiffers=everyOneSidedCarrierDiffers&&differs;
+			}
+		const bool splitOK=IndependentPeriodicDualComponent(dualVariable,component,
+			-1,false,true,wrongDensity,wrongMomentum,error);
+		const bool splitDiffers=splitOK&&
+			(wrongDensity!=expectedDensity||wrongMomentum!=expectedMomentum);
+		if( !splitDiffers ) std::cerr << "Insensitive split dual limiter c=" << component << '\n';
+		everySplitLimiterDiffers=everySplitLimiterDiffers&&splitDiffers;
+	}
+	Check(dualVariableMatches&&everyOneSidedCarrierDiffers&&everySplitLimiterDiffers,
+		"periodic dual momentum binds all nine cross-carrier averages and common tuple bytes");
+
 	FireProductionCellPalindromeRequest donor=translated;
 	donor.componentCount=1u;
 	donor.conservativeValues.assign(donor.shape.CellCount(),0.0f);
@@ -1106,6 +1396,8 @@ int main()
 		"Metal capability source gate binds compilation, dispatch, completion, and returned bytes");
 	const std::string advectionMetalSource=ReadText(
 		"src/Library/Utilities/FireProductionAdvectionMac.mm");
+	const std::string transportSource=ReadText(
+		"src/Library/Utilities/FireProductionTransport.cpp");
 	const std::size_t palindromeMetalBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionCellPalindromeMetal(");
 	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos?
@@ -1176,6 +1468,10 @@ int main()
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
 		palindromeMetalBody.find("RemapFireProductionMetal(request")==std::string::npos,
 		"P3 palindrome measures one command and one scheduled host publication at the global seams");
+	Check(CountSubstring(transportSource,"PublishPeriodicDualSeam(")==2u&&
+		CountSubstring(transportSource,
+			"density[high]=density[low];momentum[high]=momentum[low];copyCount+=2u;")==1u,
+		"periodic dual output has one canonical positive-seam byte-copy publication path");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),
