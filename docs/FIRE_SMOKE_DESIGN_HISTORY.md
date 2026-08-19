@@ -2395,7 +2395,7 @@ it was already tried and refuted here.
   evidence. The eight frozen-viscosity updates and one gravity addition now
   hand their Private packed momentum allocation directly to one resident P2
   solve. Observed command/access counters require one scalar preflight
-  transfer, zero interstage full-grid reads, zero projection uploads, one
+  transfer, zero interstage full-grid reads or Private-to-Shared blits, zero projection uploads, one
   projection invocation, and one terminal stage; injected access or a hidden
   second projection fails atomically. On the exact tier-10 shape, five N=8
   force--projection calls measured 42.8205--47.4189 ms device and

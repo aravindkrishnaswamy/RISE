@@ -1091,11 +1091,16 @@ One terminal staging event publishes the projected state and diagnostics at
 the step boundary.
 
 This absence is observed at the command/access seams rather than authored as a
-zero. Thread-local counters surround every command commit and every Metal
-`contents` access in the two translation units. The resident owner requires
+zero. Thread-local counters surround every command commit, every Metal
+`contents` access, and every blit copy in the two translation units. Transfer
+wrappers classify an actual Private-to-host-visible copy by phase; raw blit,
+commit, and host-access primitives are globally source-bound to those wrappers.
+The resident owner requires
 one projection invocation, zero interstage full-grid reads, zero projection
 uploads, and one terminal stage; injected interstage access and a hidden second
-projection both fail with a completely default result. The projection's
+projection both fail with a completely default result. The transfer RED encodes
+a real Private-to-Shared full-grid blit before the projection and proves that
+the observed ledger rejects it atomically. The projection's
 rounded working-set certificate counts the resident provisional-state stage,
 and its actual ledger counts the force-owned packed allocation once rather than
 once per axis view. The conservative combined certificate is evaluated before
