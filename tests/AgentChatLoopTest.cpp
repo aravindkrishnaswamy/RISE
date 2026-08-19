@@ -1527,10 +1527,21 @@ static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
 
 	std::string b64First, b64Second;
 	const char* const ids[] = { "toolu_inlA", "toolu_inlB" };
+	// Different imageMaxEdge per round: the retention checks below need the
+	// two renders' bytes to DIFFER, and two renders of an unchanged scene can
+	// legitimately come back byte-identical (QMC sampling is deterministic;
+	// the only cross-call entropy is thread interleaving).  imageMaxEdge only
+	// DOWNSCALES (AgentRpc.cpp render handler), and the fixture film is 24x24,
+	// so the second round must sit BELOW the native edge: 16 (the param's
+	// clamp floor) forces 24x24 -> 16x16, making the PNGs structurally
+	// distinct every run.  (A first attempt used 32/24 -- neither downscales
+	// 24x24, and the fixture-sanity check below caught the two renders coming
+	// back byte-identical.)
+	const char* const edges[] = { "32", "16" };
 	for( int round = 0; round < 2; ++round ) {
 		const std::string fx = AnthropicFixture(
 			std::string( "[{\"type\":\"tool_use\",\"id\":\"" ) + ids[round] +
-			"\",\"name\":\"render\",\"input\":{\"imageMaxEdge\":32}}]", "tool_use" );
+			"\",\"name\":\"render\",\"input\":{\"imageMaxEdge\":" + edges[round] + "}}]", "tool_use" );
 		ChatStepResult st = loop.HandleResponse( 200, fx );
 		Check( st.kind == ChatStepResult::Kind::ToolCalls && st.toolCalls.size() == 1,
 		       "T3b: inline-render fixture -> one ToolCall" );
@@ -1544,6 +1555,8 @@ static void TestInlineRenderImagePacking( AgentRpcDispatcher& rpc )
 		loop.AddToolResult( st.toolCalls[0], resp );
 	}
 	if( b64First.empty() || b64Second.empty() ) return;
+	Check( b64First != b64Second,
+	       "T3b: (fixture sanity) the two renders' bytes differ -- the retention counts below are meaningful" );
 
 	const ChatHttpRequest req = loop.BuildRequest( kApiKey );
 	JsonValue root = ParseBody( req.body );

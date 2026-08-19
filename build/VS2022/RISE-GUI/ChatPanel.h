@@ -70,7 +70,9 @@ public:
     //! runs first writes the snapshot; a second close this soon after
     //! finds nothing new and is a harmless no-op).  No-op if no
     //! trajectory session is active.
-    void finishTrajectoryOnQuit() { m_loop->FinishTrajectory("app_quit"); }
+    //! Defined in the .cpp: AgentChatLoop is only forward-declared here,
+    //! and MSVC rejects member calls through the incomplete type.
+    void finishTrajectoryOnQuit();
 
     //! Review-round P2 (E1): the scene path is the trajectory<->document
     //! correlator; MainWindow sets it at scene load, clears it at teardown.

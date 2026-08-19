@@ -489,8 +489,14 @@ int main()
 			/ "RISE-GUI" / "Resources" / "empty_starter.RISEscene";
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		const std::string canonicalBytes = slurp( canonical );
 		Check( !canonicalBytes.empty(),
@@ -518,8 +524,14 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		const std::string macApp = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RISEApp.swift" );
@@ -582,8 +594,14 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		const std::string mac = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "MultiPaneViewport.swift" );
@@ -616,8 +634,14 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		const std::string macModel = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "App" / "RenderViewModel.swift" );
@@ -2407,8 +2431,14 @@ int main()
 		const fs::path agentDir = repoRoot / "src" / "Library" / "Agent";
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		const std::string rpcCpp = slurp( agentDir / "AgentRpc.cpp" );
 		Check( !rpcCpp.empty(), "verb-parity: AgentRpc.cpp read" );
@@ -2797,8 +2827,14 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		auto bodyBetween = []( const std::string& src, const char* begin,
 		                       const char* next ) -> std::string {
@@ -3145,8 +3181,14 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		auto bodyBetween = []( const std::string& src, const char* begin,
 		                       const char* next ) -> std::string {
@@ -3221,8 +3263,14 @@ int main()
 		const fs::path repoRoot = testsDir.parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		const std::string macBridge = slurp( repoRoot / "build" / "XCode" / "rise"
 			/ "RISE-GUI" / "Bridge" / "RISEAgentChatBridge.mm" );
@@ -3422,8 +3470,14 @@ int main()
 		const fs::path repoRoot = fs::weakly_canonical( fs::absolute( testsDir ) ).parent_path();
 		auto slurp = []( const fs::path& f ) -> std::string {
 			std::ifstream in( f, std::ios::binary );
-			return std::string( std::istreambuf_iterator<char>( in ),
-			                    std::istreambuf_iterator<char>() );
+			std::string s{ std::istreambuf_iterator<char>( in ),
+			               std::istreambuf_iterator<char>() };
+			// Normalize CRLF: git's text=auto checks working-tree files out
+			// with native EOLs, so on Windows every "...\n..." literal match
+			// below would otherwise miss the '\r' that sits before it.
+			std::string::size_type r = 0;
+			while( ( r = s.find( "\r\n", r ) ) != std::string::npos ) s.erase( r, 1 );
+			return s;
 		};
 		// ONE list, used by both the scanner and the registry-path extractor.
 		static const char* kTextExts[] = {

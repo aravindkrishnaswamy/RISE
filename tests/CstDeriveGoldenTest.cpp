@@ -37,14 +37,28 @@
 //    (a) its derive produces the empty-job dump (a negative test the CST rejects,
 //        or a scene that derives to nothing), OR
 //    (b) its derive emits ANY diagnostic (a chunk failed to apply -- typically a
-//        media-missing mesh/texture, e.g. the sponza_new* scenes reference an
-//        absolute Windows glTF path and pr.RISEscene a missing chair.rawmesh).
+//        media-missing mesh/texture, e.g. pr.RISEscene's missing chair.rawmesh), OR
+//    (c) its TEXT references an ABSOLUTE filesystem path (SceneIsMachineSpecific
+//        below) -- e.g. the sponza_new* scenes point at the author's local
+//        C:/Users/... glTF.  (c) exists because (b) alone is machine-DEPENDENT
+//        for such scenes: on the one machine where the absolute path resolves
+//        they derive cleanly and would either bake that machine's state into a
+//        golden generated there or report as spurious UNCOVERED against a
+//        golden generated elsewhere.  The classifier skips them symmetrically
+//        on every machine, in generate AND in verify's coverage sweep.
 //  Case (b) matters for TRUST + PORTABILITY: legacy hard-fails those same scenes
 //  (no legacy dump was ever produced -> the CST derive was NEVER validated by the
 //  oracle), and a partial media-dependent derive would bake a machine-specific
 //  state into the golden.  So the golden covers exactly the scenes that derive
 //  cleanly AND were legacy-validated -- mirroring the oracle's legacy-fail skip.
-//  The generator reports covered vs skipped (empty / diag) with reasons.
+//  The generator reports covered vs skipped (empty / diag / machine-specific)
+//  with reasons.
+//
+//  CROSS-PLATFORM DIGESTS (2026-08-18): DumpJob prints numerics at %.9g, not
+//  lossless %.17g, precisely so ONE committed golden verifies on macOS
+//  (-ffast-math), Windows, and Linux (strict IEEE) alike -- see the comment on
+//  DumpJob in CstRenderEquivalence.h for the noise-floor analysis and the
+//  residual rounding-boundary caveat.
 //
 //  REGENERATE (after an INTENTIONAL derive change -- reviewer must eyeball the diff)
 //  --------------------------------------------------------------------------------
@@ -86,6 +100,7 @@
 #include "../tools/CstMigrator.h"          // Migrate / ReadFile (the oracle's CST-side pipeline)
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -256,6 +271,35 @@ std::vector<std::string> EnumerateCorpus() {
 	return paths;
 }
 
+// A scene whose text references an ABSOLUTE filesystem path is machine-specific
+// BY CONSTRUCTION: whether it derives depends on which machine runs the test
+// (the sponza_new* scenes point at the author's local C:/Users/... glTF -- they
+// emit a media-missing diagnostic everywhere else but derive CLEANLY on that
+// one machine, showing up there as 4 UNCOVERED).  Such a derive can never be
+// portably captured in the golden, so both the generator and the verify
+// coverage sweep skip it -- classified by the PROPERTY (an absolute path in the
+// scene source), not by scene name, preserving the no-hardcoded-skip-list rule.
+// Matches a drive-letter absolute ("C:/", "C:\") or a POSIX user-area absolute
+// ("/Users/", "/home/", "/Volumes/") at a token boundary.  A false positive
+// (say, a comment quoting such a path) merely excludes that scene from golden
+// coverage on every machine symmetrically -- visible in the --generate diff.
+bool SceneIsMachineSpecific( const std::string& scenePath ) {
+	const std::string text = ReadFile( scenePath );
+	for( size_t i = 0; i + 2 < text.size(); ++i ) {
+		const bool atBoundary = ( i == 0 ) || std::isspace( (unsigned char)text[i-1] );
+		if( !atBoundary ) continue;
+		if( std::isalpha( (unsigned char)text[i] ) && text[i+1] == ':'
+		    && ( text[i+2] == '/' || text[i+2] == '\\' ) )
+			return true;
+		if( text[i] == '/' ) {
+			static const char* kUserAreas[] = { "/Users/", "/home/", "/Volumes/" };
+			for( const char* p : kUserAreas )
+				if( text.compare( i, std::strlen( p ), p ) == 0 ) return true;
+		}
+	}
+	return false;
+}
+
 // The CST-derive pipeline -- IDENTICAL to the equivalence oracle's CST side, so
 // the golden captured here is exactly the legacy-validated CST state.
 // Returns the canonical DumpJob string; `outDiagCount` (optional) receives the
@@ -318,9 +362,10 @@ int Generate() {
 	if( paths.empty() ) { std::printf( "GENERATE: no corpus scenes found (run from repo root; `git ls-files` must see scenes/)\n" ); return 2; }
 
 	std::vector<GoldenEntry> entries;
-	int covered = 0, skippedEmpty = 0, skippedDiag = 0;
+	int covered = 0, skippedEmpty = 0, skippedDiag = 0, skippedMachine = 0;
 	const std::string& empty = EmptyDump();
 	for( const std::string& path : paths ) {
+		if( SceneIsMachineSpecific( path ) ) { ++skippedMachine; std::printf( "  SKIP (machine-specific -- references an absolute filesystem path) %s\n", path.c_str() ); continue; }
 		size_t diagCount = 0;
 		const std::string dump = DeriveDump( path, &diagCount );
 		if( diagCount > 0 ) { ++skippedDiag; std::printf( "  SKIP (derive diagnostic -- media-missing / chunk-apply-fail) %s\n", path.c_str() ); continue; }
@@ -339,8 +384,8 @@ int Generate() {
 		o << e.path << "  " << e.digest << "  " << e.bytes << "  " << e.lines << "\n";
 	o.flush();
 
-	std::printf( "\n=== GENERATE: %d covered, %d skipped-diag (media-missing), %d skipped-empty (of %zu tracked non-Internal scenes) -> %s ===\n",
-		covered, skippedDiag, skippedEmpty, paths.size(), kGoldenPath );
+	std::printf( "\n=== GENERATE: %d covered, %d skipped-diag (media-missing), %d skipped-empty, %d skipped-machine-specific (of %zu tracked non-Internal scenes) -> %s ===\n",
+		covered, skippedDiag, skippedEmpty, skippedMachine, paths.size(), kGoldenPath );
 	return 0;
 }
 
@@ -418,6 +463,7 @@ int Verify() {
 	// (a) UNCOVERED -- a cleanly-deriving corpus scene missing from the manifest.
 	for( const std::string& path : corpus ) {
 		if( goldenPaths.count( path ) ) continue;   // already covered (digest-checked above)
+		if( SceneIsMachineSpecific( path ) ) continue;   // machine-specific: excluded from golden on EVERY machine (see the classifier's doc)
 		size_t diagCount = 0;
 		const std::string dump = DeriveDump( path, &diagCount );
 		if( diagCount > 0 || dump == EmptyDump() ) continue;   // legacy-fail: excluded from golden, correctly skipped

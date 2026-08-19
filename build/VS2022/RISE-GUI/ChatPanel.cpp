@@ -1037,6 +1037,11 @@ ChatPanel::~ChatPanel()
     }
 }
 
+void ChatPanel::finishTrajectoryOnQuit()
+{
+    m_loop->FinishTrajectory("app_quit");
+}
+
 // ============================================================
 // LIVE THEME-SWITCH CONTRACT (Theme.h) -- see MainWindow::restyleTheme
 // for the reference implementation this mirrors.

@@ -402,9 +402,16 @@ int main()
 
 		// B. WARM CHROMA preserved — the gathered GI carries the warm
 		//    light's hue.  Scale-invariant.  A luminance / flat fallback
-		//    would gray it (R == B) and FAIL this.
-		Check( spec.mean[0] > spec.mean[2] * 1.10,
-			"spectral final-gather GI keeps the warm hue (mean R dominates B)" );
+		//    would gray it (per-pixel R/(R+G+B) == 1/3) and FAIL this.
+		//    Asserted on the firefly-robust MEDIAN red fraction (stable to
+		//    ~0.01 run-to-run), NOT the whole-frame mean — the mean is
+		//    dominated by a few bright hue-unstable firefly pixels at this
+		//    low sample count and flapped below its old 1.10x R-vs-B cap
+		//    about 1 run in 10 (see check C's comment for the same
+		//    mean-vs-median reasoning).  0.36 sits ~3 sigma above the gray
+		//    fallback's 1/3 and well below the warm light's ~0.40+.
+		Check( spec.medianRedFraction > 0.36,
+			"spectral final-gather GI keeps the warm hue (median red fraction clears the gray-fallback 1/3)" );
 	}
 
 	// C. HUE matches the RGB render.  Both root in the same RGB photon-map

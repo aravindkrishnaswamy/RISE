@@ -75,7 +75,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
-#include <unistd.h>
+#ifdef _WIN32
+	#include <process.h>
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"

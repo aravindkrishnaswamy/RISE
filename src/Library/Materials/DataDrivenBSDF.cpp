@@ -31,6 +31,7 @@ DataDrivenBSDF::DataDrivenBSDF(
 	// First check for the signature
 	if( pBuffer->getInt() != 0xBDF ) {
 		GlobalLog()->PrintEasyError( "DataDrivenBSDF:: Signature not found in file!" );
+		safe_release( pBuffer );
 		return;
 	}
 
@@ -39,6 +40,7 @@ DataDrivenBSDF::DataDrivenBSDF(
 
 	if( pBuffer->getUInt() != our_version ) {
 		GlobalLog()->PrintEasyError( "DataDrivenBSDF:: File contains bad version info!" );
+		safe_release( pBuffer );
 		return;
 	}
 
@@ -99,6 +101,12 @@ DataDrivenBSDF::DataDrivenBSDF(
 
 	pInterpolator = new CatmullRomCubicInterpolator<RISEPel>();
 	GlobalLog()->PrintNew( pInterpolator, __FILE__, __LINE__, "uniform b-spline interpolator" );
+
+	// Release the read buffer (DiskFileReadBuffer holds its FILE* open until
+	// destruction).  Leaking it kept the .bdf open for the process lifetime,
+	// which on Windows blocks any later remove/replace of the file -- POSIX
+	// unlink succeeds on an open file, so the leak was invisible on macOS.
+	safe_release( pBuffer );
 }
 
 DataDrivenBSDF::~DataDrivenBSDF( )

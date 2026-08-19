@@ -237,7 +237,10 @@ static const char* kNoScaleScene =
 
 static Job* LoadScene( const char* text, const char* tmpPath )
 {
-	{ std::ofstream o( tmpPath ); o << text; }
+	// binary: text-mode would write CRLF on Windows; CST round-trips the bytes
+	// verbatim and the raw "\n"-anchored text scans in several tests would
+	// then capture "...\r" (Test 53's ScaleValueOf mispaired 4000/4000 this way).
+	{ std::ofstream o( tmpPath, std::ios::binary ); o << text; }
 	Job* pJob = new Job();
 	if( !pJob->LoadAsciiSceneViaCst( tmpPath ) ) {
 		pJob->release();
@@ -1026,7 +1029,7 @@ static void TestCodeThreeRerender()
 	const char* tmp = "agentlive_code3.RISEscene";
 	// Load the VARIANT scene (any edit forces a D2 -> base returns 2 -> CodeThreeJob rewrites to 3)
 	// into a CodeThreeJob so ApplyCstParamEdit reports the forced code 3.
-	{ std::ofstream o( tmp ); o << kVariantScene; }
+	{ std::ofstream o( tmp, std::ios::binary ); o << kVariantScene; }
 	CodeThreeJob* pJob = new CodeThreeJob();
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
 	if( !pJob ) { std::remove( tmp ); return; }
@@ -1123,7 +1126,7 @@ static void TestTransformCommitCodeThree()
 	// Variant scene (as in TestCodeThreeRerender): any CST document edit on `obj` forces
 	// a real D2 full re-derive (base ApplyCstObjectMatrixEdit returns 2), which
 	// CodeThreeTransformJob rewrites to 3.
-	{ std::ofstream o( tmp ); o << kVariantScene; }
+	{ std::ofstream o( tmp, std::ios::binary ); o << kVariantScene; }
 	CodeThreeTransformJob* pJob = new CodeThreeTransformJob();
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeTransformJob via the CST path" );
 	if( !pJob ) { std::remove( tmp ); return; }
@@ -2257,7 +2260,7 @@ static void TestCodeThreeUndo()
 	std::cout << "Test 14: code-3 (diagnosed) agent edit is STILL undo/redo-able (documented choice)..." << std::endl;
 
 	const char* tmp = "agentlive_c3undo.RISEscene";
-	{ std::ofstream o( tmp ); o << kVariantScene; }
+	{ std::ofstream o( tmp, std::ios::binary ); o << kVariantScene; }
 	CodeThreeJob* pJob = new CodeThreeJob();
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
 
@@ -2649,7 +2652,7 @@ static void TestArmedCodeThreeRevert()
 	std::cout << "Test 20: ARMED code-3 revert completes the undo/redo stack transfer (P1-3)..." << std::endl;
 
 	const char* tmp = "agentlive_c3armed.RISEscene";
-	{ std::ofstream o( tmp ); o << kVariantScene; }
+	{ std::ofstream o( tmp, std::ios::binary ); o << kVariantScene; }
 	CodeThreeJob* pJob = new CodeThreeJob();
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "variant scene loads into CodeThreeJob via the CST path" );
 
@@ -3304,7 +3307,7 @@ static void TestReplaceGeometryScaffoldDiagnosedPopulatesDisposition()
 	// performs a REAL D2 full re-derive (Scene + managers genuinely replaced), only the reported code
 	// is corrupted to 3, so the "mutated but diagnosed" contract is exercised against a genuinely-
 	// replaced live Scene, not a synthetic result.
-	{ std::ofstream o( tmp ); o << kR2Scene; }
+	{ std::ofstream o( tmp, std::ios::binary ); o << kR2Scene; }
 	CodeThreeJob* pJob = new CodeThreeJob();
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "R2 fixture scene loads into CodeThreeJob via the CST path" );
 	if( !pJob ) { std::remove( tmp ); return; }
@@ -3786,7 +3789,7 @@ static void TestCodeThreeArmedChunkCrudUndoRedo()
 	std::cout << "Test 27: code-3 ARMED through chunk-CRUD Undo/Redo -- stack transfer completes, no wedge (shared-undo U2)..." << std::endl;
 
 	const char* tmp = "agentlive_u2_c3.RISEscene";
-	{ std::ofstream o( tmp ); o << kU2Scene; }
+	{ std::ofstream o( tmp, std::ios::binary ); o << kU2Scene; }
 	CodeThreeJob* pJob = new CodeThreeJob();
 	Check( pJob->LoadAsciiSceneViaCst( tmp ), "U2 fixture scene loads into CodeThreeJob via the CST path" );
 
@@ -4774,7 +4777,7 @@ static void TestAuthorityMatrixRefusals()
 	// closes: a headless External session has no queue to stage TO.
 	{
 		const char* tmp = "agentlive_proposal_headless_ext.RISEscene";
-		{ std::ofstream o( tmp ); o << kBaseScene; }
+		{ std::ofstream o( tmp, std::ios::binary ); o << kBaseScene; }
 		std::unique_ptr<Agent::AgentSession> headlessExt =
 			Agent::AgentSession::LoadFromFile( std::string( tmp ), Agent::AgentAuthority::External );
 		Check( headlessExt != nullptr, "a headless External session loads" );
@@ -6400,7 +6403,7 @@ static void TestUnnamedSingletonPatchAddressing()
 		std::string dir = base ? base : "/tmp";
 		if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += '/';
 		scenePath = dir + std::to_string( (long)getpid() ) + "_rise_unnamed_singleton.RISEscene";
-		std::ofstream o( scenePath.c_str() );
+		std::ofstream o( scenePath.c_str(), std::ios::binary );
 		o << kU2RasterizerScene;
 	}
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::LoadFromFile( scenePath );

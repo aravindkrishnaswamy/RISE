@@ -352,6 +352,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mDirectRenderStopping( false )
 , mDirectRenderCancelRequested( false )
 , mCancelCount( 0 )
+, mAgentCancelRequestCount( 0 )
 , mRenderCount( 0 )
 // Model-B F2 slice S2a fix: every mint site does `mNextRenderJobId +=
 // kControllerRenderJobIdStride` BEFORE using the result (see
@@ -5578,6 +5579,11 @@ unsigned int SceneEditController::ForTest_GetCancelCount() const
 	return mCancelCount.load( std::memory_order_acquire );
 }
 
+unsigned int SceneEditController::ForTest_GetAgentCancelRequestCount() const
+{
+	return mAgentCancelRequestCount.load( std::memory_order_acquire );
+}
+
 unsigned int SceneEditController::ForTest_GetRenderCount() const
 {
 	return mRenderCount.load( std::memory_order_acquire );
@@ -5769,6 +5775,11 @@ void SceneEditController::CancelAndParkRender_( std::unique_lock<std::mutex>& lk
 //     (an interrupting newer intent) doesn't need it.
 void SceneEditController::CancelAgentRender_()
 {
+	// Test observability (see ForTest_GetAgentCancelRequestCount's doc):
+	// counted unconditionally, BEFORE the pending/running narrowing below,
+	// because the property under test is "the drain path never even
+	// REQUESTS a cancel it doesn't own", not "the request found a target".
+	mAgentCancelRequestCount.fetch_add( 1, std::memory_order_acq_rel );
 	// Serialize the target choice with submit/slot-release. The shared
 	// progress flag still handles a currently-running render immediately;
 	// the per-occupant bit closes the queued-before-start window where the

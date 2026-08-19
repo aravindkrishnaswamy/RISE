@@ -5869,13 +5869,31 @@ static void RunBeautyVariantLiveQualityPolicyTest()
 	       "lost-End timeline live pass mints" );
 	Check( f.ctrl->WaitForVariantPassCount( 2, kWaitMs ),
 	       "timeline watchdog mints a recovery pass" );
+	// Pass-count 2 does NOT imply the recovery pass landed: while the gesture
+	// is still open (the watchdog fires at kScrubWatchdogMs = 1500 ms), the
+	// scheduler can legitimately mint a SECOND live 1-SPP quantum first --
+	// observed under full-suite CPU load, where records.back() sampled right
+	// after the count-2 wait was still the live pass.  Poll for the actual
+	// CONDITION (a final-quality non-gesture record at the tail AND the
+	// composite closed) up to the same deadline.
 	{
+		const auto deadline = std::chrono::steady_clock::now()
+			+ std::chrono::milliseconds( kWaitMs );
+		bool recovered = false;
+		while( std::chrono::steady_clock::now() < deadline ) {
+			const std::vector<RecordingController::VariantPassRecord> r =
+				f.ctrl->VariantPassRecords();
+			if( r.size() >= 2 && !r.back().liveGesture && r.back().samples == 8
+			    && !f.ctrl->Editor().IsCompositeOpen() ) { recovered = true; break; }
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+		}
 		const std::vector<RecordingController::VariantPassRecord> records =
 			f.ctrl->VariantPassRecords();
 		Check( records.size() >= 2 && records.front().liveGesture
 		    && records.front().samples == 1,
 		       "lost-End timeline starts at live 1-SPP quality" );
-		Check( records.size() >= 2 && !records.back().liveGesture
+		Check( recovered
+		    && !records.empty() && !records.back().liveGesture
 		    && records.back().samples == 8,
 		       "MONEY: timeline watchdog restores Direct's final 8-SPP quality" );
 	}

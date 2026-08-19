@@ -2633,6 +2633,16 @@ namespace RISE
 		//! callers should join via Stop() before sampling.
 		unsigned int ForTest_GetCancelCount() const;
 
+		//! Increments on every CancelAgentRender_() invocation -- the
+		//! agent-teardown/drain cancel path, which deliberately does NOT
+		//! bump mCancelCount (that counter belongs to the UI-mutation
+		//! CancelAndParkRender_ idiom).  Added for AgentRenderAsyncTest's
+		//! no-stale-id red-prove: a stale mAsyncOutstandingJobId makes
+		//! ~AgentSession's drain call CancelAgentRender_() against an
+		//! unrelated render, and THIS counter is the only signal that
+		//! observes that call directly.
+		unsigned int ForTest_GetAgentCancelRequestCount() const;
+
 		//! Increments at the start of each render-loop iteration
 		//! that actually fires a render pass.
 		unsigned int ForTest_GetRenderCount() const;
@@ -4460,6 +4470,7 @@ namespace RISE
 		std::atomic<bool>           mDirectRenderCancelRequested;
 		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
+		std::atomic<unsigned int>   mAgentCancelRequestCount;   // see ForTest_GetAgentCancelRequestCount
 		std::atomic<unsigned int>   mRenderCount;
 
 		// Model-B F2 slice S1: render-identity bookkeeping.  The counter

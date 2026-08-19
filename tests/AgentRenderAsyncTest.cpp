@@ -2154,7 +2154,6 @@ static void RunNoStaleOutstandingIdTest()
 	// drain would call CancelAgentRender_() and truncate the interactive
 	// pass early.
 	std::atomic<bool> stopScrub{ false };
-	std::atomic<unsigned int> cancelCountBefore{ controller.ForTest_GetCancelCount() };
 	std::thread scrubThread( [&]() {
 		double t = 0.0;
 		while( !stopScrub.load( std::memory_order_acquire ) ) {
@@ -2165,18 +2164,37 @@ static void RunNoStaleOutstandingIdTest()
 	} );
 	std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );   // let the interactive loop get genuinely busy
 
-	session.reset();   // destroys the (already-detached) AgentSession -- must be uneventful
-
-	std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	// JOIN the scrub thread BEFORE the destroy, then kick ONE final pass and
+	// sample the counter after that kick.  OnTimeScrub legitimately
+	// self-cancels an in-flight pass whenever the next scrub arrives before
+	// the pass finishes, so a counter sampled while the scrub loop is still
+	// running is load-dependent (on a busy machine 5ms passes routinely
+	// overrun the cadence and the old form of this assertion flaked with
+	// before=0 after=4..5).  With the loop joined, the ONLY actor that can
+	// move the counter between the two samples below is ~AgentSession's
+	// drain -- which is exactly the thing under test, now deterministic.
 	stopScrub.store( true, std::memory_order_release );
 	scrubThread.join();
+	controller.OnTimeScrub( 0.99 );   // leave one interactive pass genuinely in flight across the destroy
 
-	const unsigned int cancelCountAfter = controller.ForTest_GetCancelCount();
-	std::printf( "  [no-stale-id] interactive cancel count before=%u after=%u\n", cancelCountBefore.load(), cancelCountAfter );
-	Check( cancelCountAfter == cancelCountBefore.load(),
-	       "RED-PROVE P1-2 BEHAVIORAL ASSERTION: destroying an already-completed, detached AgentSession does not spuriously cancel a "
-	       "concurrently-running UNRELATED interactive render (mCancelCount is unchanged) -- a stale mAsyncOutstandingJobId would have "
-	       "made DrainAsyncRender_ call CancelAgentRender_() against a job that no longer belongs to this session." );
+	// Sample the AGENT-cancel request counter, not mCancelCount: the buggy
+	// drain path (~AgentSession -> DrainAsyncRender_ -> CancelAgentRender_)
+	// never touches mCancelCount (that counter belongs to the UI-mutation
+	// CancelAndParkRender_ idiom), so the old mCancelCount comparison could
+	// not have gone red even with the P1-2 bug reintroduced -- while scrub
+	// self-cancels moved it spuriously under load.  This counter increments
+	// on exactly the call the stale-id bug would make, and nothing else runs
+	// between the two samples.
+	const unsigned int agentCancelsBefore = controller.ForTest_GetAgentCancelRequestCount();
+
+	session.reset();   // destroys the (already-detached) AgentSession -- must be uneventful
+
+	const unsigned int agentCancelsAfter = controller.ForTest_GetAgentCancelRequestCount();
+	std::printf( "  [no-stale-id] agent-cancel request count before=%u after=%u\n", agentCancelsBefore, agentCancelsAfter );
+	Check( agentCancelsAfter == agentCancelsBefore,
+	       "RED-PROVE P1-2 BEHAVIORAL ASSERTION: destroying an already-completed, detached AgentSession issues NO agent-cancel "
+	       "request (ForTest_GetAgentCancelRequestCount is unchanged) -- a stale mAsyncOutstandingJobId would have made "
+	       "DrainAsyncRender_ call CancelAgentRender_() against a job that no longer belongs to this session." );
 
 	controller.Stop();
 	pJob->release();
@@ -3140,10 +3158,16 @@ static void RunSaveSnapshotConcurrentEditTest()
 	Check( controller.HasUnsavedChanges(),
 		"MONEY (t2-a): newer head remains dirty after the older snapshot is saved" );
 
-	std::ifstream firstDiskIn( scenePath.c_str(), std::ios::binary );
-	std::stringstream firstDiskBytes;
-	firstDiskBytes << firstDiskIn.rdbuf();
-	const std::string firstDisk = firstDiskBytes.str();
+	std::string firstDisk;
+	{
+		// Scoped so the stream CLOSES before the second RequestSave below:
+		// SaveEngine's atomic temp-file + rename fails on Windows with a
+		// sharing violation while any ordinary read handle is still open.
+		std::ifstream firstDiskIn( scenePath.c_str(), std::ios::binary );
+		std::stringstream firstDiskBytes;
+		firstDiskBytes << firstDiskIn.rdbuf();
+		firstDisk = firstDiskBytes.str();
+	}
 	Check( firstDisk.find( "scale 30.0" ) != std::string::npos
 	    && firstDisk.find( "scale 45.0" ) == std::string::npos,
 		"MONEY (t2-b): first save wrote exactly the pre-edit snapshot, not the concurrently replaced live Document" );
@@ -3151,11 +3175,15 @@ static void RunSaveSnapshotConcurrentEditTest()
 	const SaveResult secondSave = controller.RequestSave( scenePath );
 	Check( Succeeded( secondSave.status ), "second save writes the newer live head" );
 	Check( !controller.HasUnsavedChanges(), "second save baselines the unchanged newer head as clean" );
-	std::ifstream secondDiskIn( scenePath.c_str(), std::ios::binary );
-	std::stringstream secondDiskBytes;
-	secondDiskBytes << secondDiskIn.rdbuf();
-	Check( secondDiskBytes.str().find( "scale 45.0" ) != std::string::npos,
-		"MONEY (t2-c): second save persisted the newer edit" );
+	{
+		// Scoped for the same reason: the std::remove below would silently
+		// fail on Windows while this read handle is open.
+		std::ifstream secondDiskIn( scenePath.c_str(), std::ios::binary );
+		std::stringstream secondDiskBytes;
+		secondDiskBytes << secondDiskIn.rdbuf();
+		Check( secondDiskBytes.str().find( "scale 45.0" ) != std::string::npos,
+			"MONEY (t2-c): second save persisted the newer edit" );
+	}
 
 	pJob->release();
 	std::remove( scenePath.c_str() );
