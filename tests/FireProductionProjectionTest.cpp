@@ -139,6 +139,12 @@ namespace
 			a.removedFineRightHandSideMean==b.removedFineRightHandSideMean&&
 			a.executedVCycleCount==b.executedVCycleCount&&
 			a.executedJacobiSweepCount==b.executedJacobiSweepCount&&
+			a.residentUploadStagingCount==b.residentUploadStagingCount&&
+			a.residentInterstageDeviceToHostTransferCount==
+				b.residentInterstageDeviceToHostTransferCount&&
+			a.residentTerminalStagingCount==b.residentTerminalStagingCount&&
+			a.residentCommandCommitCount==b.residentCommandCommitCount&&
+			a.residentProjectionInvocationCount==b.residentProjectionInvocationCount&&
 			a.validationPassed==b.validationPassed;
 	}
 
@@ -858,6 +864,11 @@ int main()
 		manufacturedMetal.maximumPostProjectionResidualPerS==metalResidual&&
 		manufacturedMetal.executedVCycleCount==12u&&
 		manufacturedMetal.executedJacobiSweepCount==600u&&
+		manufacturedMetal.residentUploadStagingCount==1u&&
+		manufacturedMetal.residentInterstageDeviceToHostTransferCount==0u&&
+		manufacturedMetal.residentTerminalStagingCount==1u&&
+		manufacturedMetal.residentCommandCommitCount==3u&&
+		manufacturedMetal.residentProjectionInvocationCount==1u&&
 		maximumMetalPressureDifference<=2.5e-4f&&
 		maximumMetalVelocityDifference<=3.0e-5f&&
 		SameProjectionEvidence(manufacturedMetal,manufacturedMetalRepeat)&&
@@ -1231,7 +1242,8 @@ int main()
 	denyTestAllocations=false;
 	Check(!metalAllocationReturned&&metalAllocationFailure.pressurePa.empty(),
 		"P2 Metal persistent allocator denial returns false with no partial result or escaped exception");
-	for( const char* injectedStage : {"buffer","command_buffer","command","output"} ) {
+	for( const char* injectedStage : {"buffer","upload_command","upload_encoder",
+		"command_buffer","command","staging_buffer","staging_command","staging_encoder","output"} ) {
 		setenv("RISE_FIRE_PROJECTION_TEST_FAILURE",injectedStage,1);
 		FireProductionProjectionResult injectedResult;injectedResult.pressurePa.push_back(7.0f);
 		error.clear();
@@ -1240,11 +1252,20 @@ int main()
 		unsetenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
 		const bool expectedDiagnostic=std::string(injectedStage)=="buffer"?
 			error.find("buffer allocation failed")!=std::string::npos:
+			(std::string(injectedStage)=="upload_command"?
+				error.find("upload command allocation failed")!=std::string::npos:
+			(std::string(injectedStage)=="upload_encoder"?
+				error.find("upload encoder allocation failed")!=std::string::npos:
 			(std::string(injectedStage)=="command_buffer"?
 				error.find("command allocation failed")!=std::string::npos:
 				(std::string(injectedStage)=="command"?
 					error.find("command failed")!=std::string::npos:
-					error.find("nonfinite output")!=std::string::npos));
+				(std::string(injectedStage)=="staging_buffer"?
+					error.find("staging allocation failed")!=std::string::npos:
+				(std::string(injectedStage)=="staging_command"||
+					std::string(injectedStage)=="staging_encoder"?
+					error.find("staging encoder allocation failed")!=std::string::npos:
+					error.find("nonfinite output")!=std::string::npos))))));
 		Check(!injectedReturned&&injectedResult.pressurePa.empty()&&expectedDiagnostic,
 			"P2 Metal buffer, committed-command, and output failures return no partial result");
 	}
@@ -1268,12 +1289,12 @@ int main()
 		error.find("2 GiB")!=std::string::npos,
 		"P2 rejects the complete peak working set before allocating arrays");
 	FireProductionProjectionShape nearUnder,nearOver;
-	nearUnder.nx=85u;nearUnder.ny=187u;nearUnder.nz=849u;nearUnder.cellWidthM=0.1f;
-	nearOver.nx=221u;nearOver.ny=240u;nearOver.nz=255u;nearOver.cellWidthM=0.1f;
+	nearUnder.nx=205u;nearUnder.ny=131u;nearUnder.nz=399u;nearUnder.cellWidthM=0.1f;
+	nearOver.nx=309u;nearOver.ny=86u;nearOver.nz=403u;nearOver.cellWidthM=0.1f;
 	std::uint64_t nearUnderBytes=0u,nearOverBytes=0u;
 	Check(FireProductionProjectionWorkingSetBytes(nearUnder,nearUnderBytes)&&
 		FireProductionProjectionWorkingSetBytes(nearOver,nearOverBytes)&&
-		nearUnderBytes==UINT64_C(2147483472)&&nearOverBytes==UINT64_C(2147483796)&&
+		nearUnderBytes==UINT64_C(2147474676)&&nearOverBytes==UINT64_C(2147484216)&&
 		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
 		"P2 complete host-plus-Metal working-set accounting binds the independent cap boundary pair");
 	FireProductionProjectionShape malformedWorkingSet=nearUnder;
@@ -1301,7 +1322,12 @@ int main()
 		const auto beginning=std::chrono::steady_clock::now();
 		const bool projected=ProjectFireProductionMetal(tier10Shape,tier10ShapeResult,&error);
 		const auto ending=std::chrono::steady_clock::now();
-		Check(projected&&tier10ShapeResult.validationPassed,
+		Check(projected&&tier10ShapeResult.validationPassed&&
+			tier10ShapeResult.residentUploadStagingCount==1u&&
+			tier10ShapeResult.residentInterstageDeviceToHostTransferCount==0u&&
+			tier10ShapeResult.residentTerminalStagingCount==1u&&
+			tier10ShapeResult.residentCommandCommitCount==3u&&
+			tier10ShapeResult.residentProjectionInvocationCount==1u,
 			"P2 Metal tier-10 timing trial remains structurally valid");
 		projectionWallMS.push_back(std::chrono::duration<double,std::milli>(ending-beginning).count());
 		projectionDeviceMS.push_back(tier10ShapeResult.deviceElapsedMS);
@@ -1336,6 +1362,10 @@ int main()
 		metalSource.find("for( unsigned int axis=0;axis<3u;++axis )",metalCycleLoop);
 	const std::string metalCycleBody=metalCycleLoop==std::string::npos?std::string():
 		metalSource.substr(metalCycleLoop,metalCycleLoopEnd-metalCycleLoop);
+	const std::size_t residentProjectionBeginning=metalSource.find(
+		"bool ProjectFireProductionMetal(");
+	const std::string residentProjectionBody=residentProjectionBeginning==std::string::npos?
+		std::string():metalSource.substr(residentProjectionBeginning);
 	Check(Count(source,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
 		Count(source,"Smooth(level,boundary,3u,nullspace,sweepCounter)")==2u&&
 		Count(source,"Smooth(level,boundary,32u,nullspace,sweepCounter)")==1u&&
@@ -1364,6 +1394,21 @@ int main()
 		unsupportedSource.find("result=FireProductionProjectionResult();")!=std::string::npos&&
 		unsupportedSource.find("return false;")!=std::string::npos,
 		"P2 Metal source binds the fixed safe-math GPU schedule and honest unsupported seam");
+	Check(!residentProjectionBody.empty()&&
+		metalSource.find("options:MTLResourceStorageModePrivate")!=std::string::npos&&
+		residentProjectionBody.find("fine.density=NewBuffer(context.device")!=std::string::npos&&
+		residentProjectionBody.find("provisional[axis]=NewBuffer(context.device")!=std::string::npos&&
+		residentProjectionBody.find("target=NewBuffer(context.device")!=std::string::npos&&
+		residentProjectionBody.find("densityUpload=nil;targetUpload=nil;")<
+			residentProjectionBody.find("id<MTLCommandBuffer> command=")&&
+		residentProjectionBody.find("id<MTLBuffer> pressureStage=")>
+			residentProjectionBody.find("[command status]!=MTLCommandBufferStatusCompleted")&&
+		Count(residentProjectionBody," commit]")==3u&&
+		Count(residentProjectionBody,"++observedCommandCommits")==3u&&
+		Count(residentProjectionBody,"++observedProjectionInvocations")==1u&&
+		residentProjectionBody.find("residentInterstageDeviceToHostTransferCount=0u")!=
+			std::string::npos,
+		"P2 resident wrapper releases upload staging before one Private solve and stages only after completion");
 	const std::size_t makeRule=makefile.find("FireProductionProjection.o :");
 	const std::size_t makeRuleEnd=makeRule==std::string::npos?std::string::npos:
 		makefile.find("\n\n",makeRule);

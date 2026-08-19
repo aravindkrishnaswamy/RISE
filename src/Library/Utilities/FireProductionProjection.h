@@ -62,6 +62,11 @@ namespace RISE
 		float removedFineRightHandSideMean;
 		std::uint32_t executedVCycleCount;
 		std::uint64_t executedJacobiSweepCount;
+		std::uint32_t residentUploadStagingCount;
+		std::uint32_t residentInterstageDeviceToHostTransferCount;
+		std::uint32_t residentTerminalStagingCount;
+		std::uint32_t residentCommandCommitCount;
+		std::uint32_t residentProjectionInvocationCount;
 		bool validationPassed;
 		double deviceElapsedMS;
 
@@ -69,7 +74,9 @@ namespace RISE
 			maximumPostProjectionResidualPerS(0.0f),
 			maximumOpenComplementarityDiscrepancyMPerS(0.0f),
 			removedFineRightHandSideMean(0.0f),executedVCycleCount(0u),
-			executedJacobiSweepCount(0u),validationPassed(false),
+			executedJacobiSweepCount(0u),residentUploadStagingCount(0u),
+			residentInterstageDeviceToHostTransferCount(0u),residentTerminalStagingCount(0u),
+			residentCommandCommitCount(0u),residentProjectionInvocationCount(0u),validationPassed(false),
 			deviceElapsedMS(0.0) {}
 	};
 

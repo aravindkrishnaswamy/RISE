@@ -97,8 +97,11 @@ namespace RISE
 			if( !AddBytes(2u*fineCells+fineFaces,sizeof(float),total)||
 				!AddBytes(fineCells+3u*fineFaces,sizeof(float),total) ) return false;
 			// Metal owns a target copy plus provisional/stored/corrected/velocity face
-			// buffers while the caller request and returned vectors remain live.
-			if( !AddBytes(fineCells+4u*fineFaces,sizeof(float),total) ) return false;
+			// buffers while the caller request and returned vectors remain live.  The
+			// terminal Private-to-Shared staging payload coexists until atomic result
+			// publication; upload staging is smaller and has already been released.
+			if( !AddBytes(fineCells+4u*fineFaces,sizeof(float),total)||
+				!AddBytes(fineCells+3u*fineFaces,sizeof(float),total) ) return false;
 			std::uint64_t levelCount=0u;
 			for( ;; ) {
 				++levelCount;
