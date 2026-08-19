@@ -1885,6 +1885,57 @@ int main()
 					}
 				}
 
+				// C4 (2026-08-19): the MULTI-VALUE `construction` contract, on
+				// both surfaces, with the CAP read out of AgentSession.h
+				// rather than spelled here -- ground truth is the code, the
+				// same rule the enum scan above follows.
+				//
+				// Each of these is a fact a model cannot recover without
+				// burning a round trip.  (1) that an ARRAY is accepted at
+				// all: without it a model with a two-method element declares
+				// one and hand-approximates the other, which is the measured
+				// failure this slice exists to remove.  (2) the CAP and the
+				// no-repeat rule: both are -32602s.  (3) that a BARE STRING
+				// still works: the schema says array, so a surface silent on
+				// this makes every pre-existing single-value call look
+				// illegal to the model reading it.
+				{
+					std::string capText;
+					{
+						const std::string hdr = slurp( agentDir / "AgentSession.h" );
+						const std::string anchor = "kBuildPlanMaxConstructionMethods = ";
+						const std::size_t at = hdr.find( anchor );
+						const std::size_t semi = at == std::string::npos ? std::string::npos
+						                                                 : hdr.find( ';', at );
+						if( semi != std::string::npos )
+							capText = hdr.substr( at + anchor.size(), semi - at - anchor.size() );
+					}
+					Check( !capText.empty(),
+					       "C4 parity: parsed kBuildPlanMaxConstructionMethods out of AgentSession.h "
+					       "(got `" + capText + "`)" );
+					const std::string capPin = "At most " + capText + " per element and no repeats";
+					for( const char* fname : kPlanSurfaces ) {
+						const std::string joined = joinLiterals( slurp( agentDir / fname ) );
+						if( joined.find( "an ARRAY of one or two methods" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not state that "
+								"`construction` accepts an ARRAY -- a model with a genuinely "
+								"two-method element (a lathe pot with a sweep coil) will declare one "
+								"and hand-approximate the other, which is the exact failure C4 exists "
+								"to remove" );
+						if( joined.find( capPin ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not state the "
+								"construction cap and the no-repeat rule in the form `" + capPin +
+								"` -- both are -32602s, and the number must match "
+								"kBuildPlanMaxConstructionMethods, which this scan reads out of "
+								"AgentSession.h" );
+						if( joined.find( "may also be written as a plain string" ) == std::string::npos )
+							planProblems.push_back( std::string( fname ) + ": does not state that a "
+								"single method may still be sent as a bare STRING -- the schema says "
+								"array, so a surface silent on this makes every single-value call "
+								"look illegal to a model reading it" );
+					}
+				}
+
 				for( const char* fname : kPlanSurfaces ) {
 					const std::string joined = joinLiterals( slurp( agentDir / fname ) );
 					if( joined.find( "imagine_scene" ) == std::string::npos ) {

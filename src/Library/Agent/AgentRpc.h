@@ -44,7 +44,7 @@
 //                                            '\\', ".." -> -32602; unknown or not in
 //                                            the index (the fetchable set IS the
 //                                            listed set) -> -32602.)
-//      file_build_plan {elements:[{element,pieces,construction,outline,view?,note?},...]}
+//      file_build_plan {elements:[{element,pieces,construction:[..]|"..",outline,view?,note?},...]}
 //                                        -> {filed:true,replacedPreviousPlan:bool,elementCount:number,
 //                                            elements:[{element,pieces,construction,note,outline,view,
 //                                                    pointCount,areaFraction,aspect},...],
@@ -55,8 +55,10 @@
 //                                            file the session's BUILD PLAN -- the elements
 //                                            of the subject being built, each broken into
 //                                            named `pieces` and carrying a `construction`
-//                                            value from the CLOSED enum
-//                                            primitive|csg|sweep|chain|displaced|mesh.
+//                                            list of 1..2 values from the CLOSED enum
+//                                            primitive|csg|sweep|lathe|chain|displaced|mesh
+//                                            (a single value may be sent as a bare string;
+//                                            the echo is always an array).  C4 2026-08-19.
 //                                            Filing also enters the PIECES phase with the
 //                                            first element active -- see finish_element.
 //                                            READ-SAFE: it records a per-session

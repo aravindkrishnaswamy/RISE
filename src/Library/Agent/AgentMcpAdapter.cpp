@@ -722,14 +722,32 @@ namespace RISE
 							"requires a chunk per piece and no piece is separately gated." ) );
 						entryProps.set( "pieces", piecesProp );
 					}
-					JsonValue construction = StringProp(
-						"Required. Exactly one of: primitive, csg, sweep, lathe, chain, displaced, mesh." );
+					// C4 (2026-08-19): an ARRAY of one or two methods.  The
+					// enum, the count and the cap are all DERIVED from
+					// AgentSession's constants, so this surface cannot drift
+					// from what the dispatcher enforces -- the chat codec's
+					// hand-authored twin can only state them verbatim, which
+					// is what SourceHygieneTest's parity scan pins.
+					JsonValue construction = JsonValue::MakeObject();
+					construction.set( "type", JsonValue::MakeString( "array" ) );
+					construction.set( "minItems", JsonValue::MakeNumber( 1.0 ) );
+					construction.set( "maxItems", JsonValue::MakeNumber(
+						static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ) ) );
 					{
+						JsonValue items = StringProp( "" );
 						JsonValue enumArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < AgentSession::kBuildPlanConstructionCount; ++i )
 							enumArr.push_back( JsonValue::MakeString( AgentSession::kBuildPlanConstructionValues[i] ) );
-						construction.set( "enum", enumArr );
+						items.set( "enum", enumArr );
+						construction.set( "items", items );
 					}
+					construction.set( "description", JsonValue::MakeString(
+						"Required. An array of 1 to " +
+						std::to_string( AgentSession::kBuildPlanMaxConstructionMethods ) + " of: " +
+						AgentSession::BuildPlanConstructionList() + " -- no repeats. Name two when the "
+						"element really is built two ways (e.g. [\"lathe\",\"sweep\"] for a turned "
+						"vessel with a coiled pipe); you then get the grammar for both. A single "
+						"method may also be sent as a plain string instead of a one-item array." ) );
 					entryProps.set( "construction", construction );
 					// G3a (2026-08-10): the REQUIRED outline and the OPTIONAL
 					// view.  Kept semantically identical to the chat codec's
@@ -783,12 +801,22 @@ namespace RISE
 						"tool -- up to 3 refusals; the 4th such call is let through and the gate stops "
 						"intercepting for the rest of the session. `pieces` is REQUIRED per element: at least "
 						"one name, in your own words; any names are accepted and nothing checks them. "
-						"`construction` is REQUIRED per element and "
+						"`construction` is REQUIRED per element: an ARRAY of one or two methods (a single "
+						"method may also be written as a plain string, e.g. \"lathe\" instead of "
+						"[\"lathe\"] -- both are accepted). Name TWO when the element genuinely needs "
+						"two, e.g. [\"lathe\",\"sweep\"] for a copper still whose pot is a solid of "
+						"revolution and whose condenser is a coiled tube: you are then given the grammar "
+						"and a worked example for BOTH, and hand-approximating one of them is what "
+						"naming only one leads to. At most 2 per element and no repeats -- each method "
+						"you name adds its own grammar to what the builder reads, and an element needing "
+						"three methods is two elements. Every entry "
 						"must be one of exactly: \"primitive\" (a single built-in shape chunk -- balls, "
 						"crates, poles, rings; the blockout default), \"csg\" (a csg_object or an "
 						"sdf_geometry combining shapes with boolean ops -- union/subtract/intersect: drilled "
 						"bores, clipped tapers, lenses), \"sweep\" (a sweep_geometry profile swept along a "
-						"path -- tentacles, stems, handles; taper and closed loops), \"chain\" "
+						"path -- tentacles, stems, handles; taper and closed loops), \"lathe\" (a "
+						"lathe_geometry: an open `profile_point <r> <h>` silhouette spun about an axis -- "
+						"vases, bottles, goblets, turned legs, finials, any solid of revolution), \"chain\" "
 						"(a skeleton_geometry joint graph, or sdf_geometry parts blended with smin, into "
 						"one continuous form -- creature bodies, limbs, spines, necks, vessel bodies; a "
 						"chunk mixing smin AND booleans is \"chain\" -- the blend characterises the form, "

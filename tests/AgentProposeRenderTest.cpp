@@ -2419,7 +2419,7 @@ static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
 		AgentSession::AgentBuildPlanEntry e;
 		e.element         = "canned" + std::to_string( i );
 		e.pieces.push_back( "piece" );
-		e.construction = "primitive";
+		e.construction.push_back( "primitive" );
 		e.outline      = "0 0; 1 0; 1 1; 0 1";
 		parts.push_back( e );
 	}

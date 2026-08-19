@@ -159,7 +159,7 @@ int main()
 			if( minter ) {
 				std::vector<AgentSession::AgentBuildPlanEntry> parts;
 				AgentSession::AgentBuildPlanEntry e;
-				e.element = "canned"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1";
+				e.element = "canned"; e.construction.push_back( "primitive" ); e.outline = "0 0; 1 0; 1 1; 0 1";
 				e.pieces.push_back( "piece" );
 				parts.push_back( e );
 				cannedPng = minter->FileBuildPlan( parts ).compositePng;

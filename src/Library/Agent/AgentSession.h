@@ -3328,7 +3328,7 @@ namespace RISE
 			//----------------------------------------------------------------
 
 			//! One declared ELEMENT of the subject being built.  `construction`
-			//! is REQUIRED and comes from the closed enum
+			//! is REQUIRED and every entry comes from the closed enum
 			//! kBuildPlanConstructionValues; `note` is optional free text.
 			//! G3a: `outline` is REQUIRED (see ValidateElementOutline for the
 			//! accepted grammar) and `view` is optional, defaulting to
@@ -3352,7 +3352,29 @@ namespace RISE
 				//! validates, gates or scores them; finish_element reports
 				//! which piece names appear inside an attributed chunk name.
 				std::vector<std::string> pieces;
-				std::string construction;   //!< one of kBuildPlanConstructionValues
+				//! C4 (2026-08-19): ONE OR MORE of kBuildPlanConstructionValues,
+				//! at most kBuildPlanMaxConstructionMethods of them, no
+				//! duplicates.  It became a LIST because real elements are
+				//! multi-method and one value could not say so: a copper still
+				//! is a `lathe` pot AND a `sweep` condenser coil, and with one
+				//! slot whichever the planner named made the other verb's
+				//! gated schema unreachable for the WHOLE element (measured:
+				//! two runs of the same prompt, one declaring `csg`+`sweep`
+				//! and emitting 10 sweep_geometry chunks, the other declaring
+				//! `lathe` and hand-approximating the helix as four stacked
+				//! tori -- exactly the pre-sweep workaround the sweep arc
+				//! existed to delete).
+				//!
+				//! ORDER IS THE CALLER'S and is preserved verbatim: it is
+				//! echoed back and restated to the builder, so re-ordering it
+				//! would make the echo a paraphrase rather than a fact.  The
+				//! gated schema blocks in ComposeBuilderPrompt_ are emitted in
+				//! the file's own sweep/chain/lathe order regardless, so the
+				//! prompt is a pure function of the SET.
+				//!
+				//! A single-value list is the complete, unremarkable case --
+				//! `{"primitive"}` for every element is still a complete plan.
+				std::vector<std::string> construction;
 				std::string note;           //!< optional, may be empty
 				//! G3a: REQUIRED closed polygon, "x y; x y; x y[; ...]",
 				//! >= 3 points, stored verbatim as the model authored it.
@@ -3361,6 +3383,17 @@ namespace RISE
 				//! kBuildPlanDefaultView default.  Recorded with the target
 				//! for G3b's comparison vantage; G3a only echoes it.
 				std::string view;
+
+				//! C4: does this element declare `method`?  The ONE predicate
+				//! every gated-schema decision uses, so no site can
+				//! reintroduce the `construction == "sweep"` equality that
+				//! made the field effectively single-valued.
+				bool HasConstruction( const std::string& method ) const
+				{
+					for( std::size_t i = 0; i < construction.size(); ++i )
+						if( construction[i] == method ) return true;
+					return false;
+				}
 			};
 
 			//! G3a: one rasterized imagination TARGET -- the session-lifetime
@@ -3413,7 +3446,9 @@ namespace RISE
 
 			//! The CLOSED `construction` enum, in declaration order.  Seven
 			//! values naming the seven ways RISE can build a part; the model
-			//! picks one per part.  Order is the order they are listed to the
+			//! picks one -- or, since C4, up to
+			//! kBuildPlanMaxConstructionMethods of them -- per element.
+			//! Order is the order they are listed to the
 			//! model everywhere (refusal text, tool schemas), so it is part of
 			//! the contract, not an implementation detail.
 			//!
@@ -3427,13 +3462,76 @@ namespace RISE
 			static const char* const kBuildPlanConstructionValues[7];
 			static const std::size_t kBuildPlanConstructionCount = 7;
 
+			//! C4 (2026-08-19): MOST construction methods one element may
+			//! declare.  TWO, and the number is argued from measurement, not
+			//! taste -- this is the one cap in this class that is a DESIGN
+			//! limit rather than an allocation guard, because what it bounds
+			//! is PROMPT VOLUME, and prompt volume is the quantity the whole
+			//! gated-schema mechanism exists to protect (18.0 SDF parts at
+			//! short context, 7.7 with 60k of skills prepended).
+			//!
+			//! The MEASURED sizes (2026-08-19).  The schema halves come from
+			//! the descriptor registry itself (SchemaGenForChunk, the exact
+			//! text ComposeBuilderPrompt_ sends); the example halves are the
+			//! literal blocks in that function:
+			//!
+			//!   GATED schema + worked example, per method
+			//!     sweep   3577 +  484 =  4061 B
+			//!     chain   3094 +  438 =  3532 B
+			//!     lathe   4595 +  494 =  5089 B
+			//!   UNCONDITIONAL grammar (kBuilderGrammarKeywords, six kinds)
+			//!                            14589 B
+			//!
+			//! Only THREE of the seven values carry a gated block at all
+			//! (primitive / csg / displaced / mesh add nothing), so an
+			//! UNCAPPED list delivers at most all three -- 12682 B, i.e. 87 %
+			//! of the entire unconditional grammar added on top of it.  That
+			//! is the grammar dump this mechanism exists to prevent,
+			//! reachable by writing three words.  It also means a cap of 3
+			//! would today be indistinguishable from NO cap: it would bound
+			//! nothing that is not already bounded by the gated-kind count.
+			//!
+			//! TWO bounds the worst case at lathe+sweep = 9150 B (63 % of the
+			//! unconditional grammar) and admits the case that motivated the
+			//! change -- a copper still is a lathe pot and a sweep coil, and
+			//! two is what it needs.  An element that genuinely needs three
+			//! construction methods is two elements; the plan's unit of work
+			//! IS the element, so splitting it is free and each half then
+			//! gets a focused prompt rather than one diluted one.
+			//!
+			//! Raising this is a MEASUREMENT decision, not a schema tweak: it
+			//! must be argued against the same volume law, with the block
+			//! sizes re-measured (they grow whenever a descriptor gains
+			//! parameters).
+			static constexpr std::size_t kBuildPlanMaxConstructionMethods = 2;
+
 			//! True iff `v` is exactly one of kBuildPlanConstructionValues.
 			static bool IsValidElementConstruction( const std::string& v );
+
+			//! C4: is `v` a well-formed `construction` LIST?  The ONE
+			//! predicate both layers use -- AgentRpc validates the wire with
+			//! it and FileBuildPlan re-checks with it -- for the same reason
+			//! ValidateElementOutline is shared: the wire error and the
+			//! session's own precondition can never disagree about what a
+			//! valid declaration is.  Rejects an empty list, an unknown
+			//! value, a DUPLICATE (a repeat is not a second method, and
+			//! letting it through would make "at most N methods" ambiguous),
+			//! and more than kBuildPlanMaxConstructionMethods entries.
+			//! `outError` gets a model-facing clause naming the defect; it is
+			//! untouched on success.
+			static bool ValidateConstructionList( const std::vector<std::string>& v,
+			                                      std::string& outError );
 
 			//! "primitive, csg, sweep, lathe, chain, displaced, mesh" -- the ONE
 			//! rendering of the enum every message that names it uses, so the
 			//! refusal, the -32602 and both tool schemas cannot drift apart.
 			static std::string BuildPlanConstructionList();
+
+			//! C4: one element's DECLARED list rendered for display -- "lathe"
+			//! for a single method, "lathe + sweep" for two.  Used by the
+			//! filing echo and by the builder prompt's restatement, so those
+			//! two can never render the same declaration differently.
+			static std::string JoinConstruction( const std::vector<std::string>& v );
 
 			//! G3a: the CLOSED `view` enum, in declaration order -- which
 			//! axis-aligned direction the part's `outline` was drawn from.

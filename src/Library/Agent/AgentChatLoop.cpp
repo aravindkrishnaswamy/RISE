@@ -1403,7 +1403,7 @@ namespace RISE
 			//!                                                  (+ "; <part> vs sketch: iou <2dp>" on a G3b target comparison,
 			//!                                                   + "; imagined-scene target shown|held" on an Arc-77 scene-target render -- Phase 2b: no score, the composite IS the comparison)
 			//!   7. name in {read_image,read_viewport}       -> "image <w>x<h>" when width/height are present, else "ok"
-			//!   7b. name == "file_build_plan"                -> "<n> element(s): <element>=<construction>, ... (<p> piece(s), <k> sketch(es))" (G2; sketches G3a; elements/pieces S1)
+			//!   7b. name == "file_build_plan"                -> "<n> element(s): <element>=<construction>[+<construction>], ... (<p> piece(s), <k> sketch(es))" (G2; sketches G3a; elements/pieces S1; multi-method C4)
 			//!   7c. name == "imagine_scene"                 -> "scene imagined (image received) <w>x<h>[, replaced previous]"
 			//!   7d. name == "finish_element"                -> "finished <element> (<n> chunks, <k>/<m> pieces named) -> <next>|compose" (S1)
 			//!       name == "reopen_element"                -> "reopened <element> (from <phase>)" (S1)
@@ -1631,8 +1631,26 @@ namespace RISE
 						( elements.size() == 1 ? " element: " : " elements: " );
 					for( std::size_t i = 0; i < elements.size(); ++i ) {
 						if( i ) line += ", ";
-						line += elements.at( i ).get( "element" ).asString() + "=" +
-						        elements.at( i ).get( "construction" ).asString();
+						// C4 (2026-08-19): `construction` is an ARRAY on the
+						// wire now (an element may declare up to
+						// kBuildPlanMaxConstructionMethods methods, e.g. a
+						// turned vessel with a coiled pipe).  Read
+						// array-OR-string, both because a trajectory recorded
+						// before C4 replays through this same function and
+						// because a bare string is still an accepted INBOUND
+						// form -- rendering "wing=" for either would silently
+						// drop the one fact this line exists to show.
+						line += elements.at( i ).get( "element" ).asString() + "=";
+						const JsonValue& cons = elements.at( i ).get( "construction" );
+						if( cons.isArray() ) {
+							for( std::size_t c = 0; c < cons.size(); ++c ) {
+								if( c ) line += "+";
+								line += cons.at( c ).asString();
+							}
+						}
+						else {
+							line += cons.asString();
+						}
 						const JsonValue& pv = elements.at( i ).get( "pieces" );
 						if( pv.isArray() ) pieces += pv.size();
 						if( elements.at( i ).has( "pointCount" ) ) ++sketched;

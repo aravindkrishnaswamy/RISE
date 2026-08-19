@@ -9527,7 +9527,22 @@ static void TestFileBuildPlanToolAndGateClassification()
 			saw = true;
 			const JsonValue& items = tools.at( i ).get( "input_schema" ).get( "properties" )
 			                              .get( "elements" ).get( "items" );
-			const JsonValue& en = items.get( "properties" ).get( "construction" ).get( "enum" );
+			// C4 (2026-08-19): `construction` is an ARRAY of 1..2 methods, so
+			// the closed enum now lives on its `items`.  An element is
+			// legitimately multi-method (a copper still is a lathe pot AND a
+			// sweep coil), and with one slot the second method's gated schema
+			// was unreachable for the whole element.
+			const JsonValue& consProp = items.get( "properties" ).get( "construction" );
+			Check( consProp.get( "type" ).asString() == "array",
+			       "T47a/C4: anthropic `construction` is an array" );
+			Check( consProp.get( "minItems" ).asNumber( -1 ) == 1.0 &&
+			       consProp.get( "maxItems" ).asNumber( -1 ) ==
+			           static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ),
+			       "T47a/C4: MONEY ASSERTION -- the schema states the CAP the dispatcher enforces "
+			       "(kBuildPlanMaxConstructionMethods), so a compliant model never spends a turn "
+			       "discovering it, and the codec's hand-authored literal cannot drift from the "
+			       "constant" );
+			const JsonValue& en = consProp.get( "items" ).get( "enum" );
 			Check( en.isArray() && en.size() == 7, "T47a: anthropic `construction` carries a 7-value enum" );
 			// C3 (2026-08-18): `lathe` joined at index 3 (next to `sweep`),
 			// so `mesh` moved from index 5 to 6 -- the ORDER is contractual
@@ -9596,10 +9611,15 @@ static void TestFileBuildPlanToolAndGateClassification()
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			if( tools.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
 			saw = true;
-			const JsonValue& en = tools.at( i ).get( "parameters" ).get( "properties" )
-			                           .get( "elements" ).get( "items" )
-			                           .get( "properties" ).get( "construction" ).get( "enum" );
+			const JsonValue& consProp = tools.at( i ).get( "parameters" ).get( "properties" )
+			                                 .get( "elements" ).get( "items" )
+			                                 .get( "properties" ).get( "construction" );
+			const JsonValue& en = consProp.get( "items" ).get( "enum" );
 			Check( en.isArray() && en.size() == 7, "T47a: openai `construction` carries the 7-value enum" );
+			Check( consProp.get( "type" ).asString() == "array" &&
+			       consProp.get( "maxItems" ).asNumber( -1 ) ==
+			           static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ),
+			       "T47a/C4: openai gets the same array shape and the same cap" );
 		}
 		Check( saw, "T47a: the OpenAI tool table includes file_build_plan" );
 	}
@@ -9613,10 +9633,15 @@ static void TestFileBuildPlanToolAndGateClassification()
 		for( std::size_t i = 0; i < decls.size(); ++i ) {
 			if( decls.at( i ).get( "name" ).asString() != "file_build_plan" ) continue;
 			saw = true;
-			const JsonValue& en = decls.at( i ).get( "parameters" ).get( "properties" )
-			                           .get( "elements" ).get( "items" )
-			                           .get( "properties" ).get( "construction" ).get( "enum" );
+			const JsonValue& consProp = decls.at( i ).get( "parameters" ).get( "properties" )
+			                                 .get( "elements" ).get( "items" )
+			                                 .get( "properties" ).get( "construction" );
+			const JsonValue& en = consProp.get( "items" ).get( "enum" );
 			Check( en.isArray() && en.size() == 7, "T47a: gemini `construction` carries the 7-value enum" );
+			Check( consProp.get( "type" ).asString() == "array" &&
+			       consProp.get( "maxItems" ).asNumber( -1 ) ==
+			           static_cast<double>( AgentSession::kBuildPlanMaxConstructionMethods ),
+			       "T47a/C4: gemini gets the same array shape and the same cap" );
 		}
 		Check( saw, "T47a: the Gemini declarations include file_build_plan" );
 	}
@@ -9719,6 +9744,30 @@ static void TestFileBuildPlanToolAndGateClassification()
 		// should see it without opening the raw payload.
 		Check( line.find( "3 pieces" ) != std::string::npos,
 		       "T47c/S1: and the total piece count across the declared elements" );
+
+		// C4 (2026-08-19): the LIVE shape.  The dispatcher echoes
+		// `construction` as an ARRAY now, so the fixture above -- a bare
+		// string, the pre-C4 recorded form that still replays through this
+		// same function -- proves only the back-compat leg.  This second
+		// fixture is what a real payload looks like today, including a
+		// two-method element, and it must render BOTH methods: a line
+		// showing "still=lathe" for an element declared [lathe, sweep]
+		// would hide exactly the fact this slice exists to make visible.
+		const std::string kPlanResultArray =
+			"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"filed\":true,\"elementCount\":2,"
+			"\"elements\":["
+			"{\"element\":\"still\",\"pieces\":[\"pot\",\"coil\"],"
+			"\"construction\":[\"lathe\",\"sweep\"],\"pointCount\":4},"
+			"{\"element\":\"bench\",\"pieces\":[\"top\"],\"construction\":[\"primitive\"],"
+			"\"pointCount\":4}],"
+			"\"message\":\"build plan filed\"}}";
+		const std::string arrLine =
+			AgentChatLoop::ToolOutcomeLineForDisplay( call, kPlanResultArray );
+		Check( arrLine.find( "still=lathe+sweep" ) != std::string::npos,
+		       "T47c/C4: MONEY ASSERTION -- a multi-method element renders EVERY method it "
+		       "declared, joined, not just the first" );
+		Check( arrLine.find( "bench=primitive" ) != std::string::npos,
+		       "T47c/C4: and a one-method element still renders exactly as it always did" );
 	}
 
 	// G3a (2026-08-10): the plan result IS an image result for TRANSPORT

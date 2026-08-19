@@ -7637,12 +7637,12 @@ static std::vector<Agent::AgentSession::AgentBuildPlanEntry> SamplePlan()
 {
 	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p;
 	Agent::AgentSession::AgentBuildPlanEntry a;
-	a.element = "body";  a.construction = "sweep";
+	a.element = "body";  a.construction.push_back( "sweep" );
 	a.pieces.push_back( "piece" );
 	a.outline = "0 0; 2 0.5; 2.4 2; 1 3; -0.4 1.8";
 	p.push_back( a );
 	Agent::AgentSession::AgentBuildPlanEntry b;
-	b.element = "base";  b.construction = "csg";    b.note = "two boxes";
+	b.element = "base";  b.construction.push_back( "csg" );    b.note = "two boxes";
 	b.pieces.push_back( "piece" );
 	b.outline = "0 0; 3 0; 3 1; 0 1";
 	b.view = "side";
@@ -7776,7 +7776,8 @@ static void TestBuildPlanFiledFirstNeverIntercepts()
 	Check( pr.ok,                       "G2b the plan is accepted" );
 	Check( !pr.replacedPreviousPlan,    "G2b the first filing replaced nothing" );
 	Check( pr.elements.size() == 2,        "G2b the result echoes both parts" );
-	Check( pr.elements[0].element == "body" && pr.elements[0].construction == "sweep",
+	Check( pr.elements[0].element == "body" &&
+	       pr.elements[0].construction == std::vector<std::string>( 1, "sweep" ),
 	       "G2b the echo is FACTUAL: part name and declared construction, in order" );
 	Check( pr.elements[1].note == "two boxes", "G2b the optional per-part note round-trips" );
 	Check( pr.message.find( "body: sweep" ) != std::string::npos &&
@@ -7794,7 +7795,7 @@ static void TestBuildPlanFiledFirstNeverIntercepts()
 	// Re-filing REPLACES and is never refused (an over-refusal on a call that
 	// costs the document nothing is the E1 review's P1).
 	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p2;
-	Agent::AgentSession::AgentBuildPlanEntry e; e.element = "everything"; e.construction = "mesh";
+	Agent::AgentSession::AgentBuildPlanEntry e; e.element = "everything"; e.construction.push_back( "mesh" );
 	e.pieces.push_back( "piece" );      // S1: `pieces` is required, >= 1
 	e.outline = "0 0; 1 0; 1 1; 0 1";   // G3a: `outline` is required
 	p2.push_back( e );
@@ -8003,7 +8004,7 @@ static void TestBuildPlanAnyPlanAcceptedAndNonBinding()
 				Agent::AgentSession::AgentBuildPlanEntry e;
 				e.element = "part" + std::to_string( i );
 				e.pieces.push_back( "piece" );
-				e.construction = "primitive";
+				e.construction.push_back( "primitive" );
 				// G3a: `outline` is required; a distinct triangle per part so
 				// the four sketches are not four copies of one shape.
 				e.outline = "0 0; " + std::to_string( i + 1 ) + " 0; 0.5 1";
@@ -8030,7 +8031,7 @@ static void TestBuildPlanAnyPlanAcceptedAndNonBinding()
 		if( pJob ) {
 			std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
 			std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
-			Agent::AgentSession::AgentBuildPlanEntry e; e.element = "body"; e.construction = "sweep";
+			Agent::AgentSession::AgentBuildPlanEntry e; e.element = "body"; e.construction.push_back( "sweep" );
 			e.pieces.push_back( "piece" );      // S1: `pieces` is required, >= 1
 			e.outline = "0 0; 1 0; 1 2; 0 2";   // G3a: `outline` is required
 			plan.push_back( e );
@@ -8570,6 +8571,7 @@ static void TestBuildPlanWireShape()
 		       "G2h an EMPTY element name is -32602 naming the field" );
 	}
 
+
 	// A refused plan must NOT have disarmed the gate: the intercepted insert
 	// still fires.  (A malformed filing that silently counted would be the
 	// worst of both -- the model gets no plan and no gate.)
@@ -8597,8 +8599,13 @@ static void TestBuildPlanWireShape()
 		Check( result.get( "elementCount" ).asNumber( -1 ) == 2.0, "G2h `elementCount` is 2" );
 		Check( result.get( "elements" ).isArray() && result.get( "elements" ).size() == 2,
 		       "G2h `elements` echoes one entry per declared element" );
+		// C4 (2026-08-19): `construction` echoes as an ARRAY even for the
+		// bare-string form this filing sends -- one shape back, so a reader
+		// never has to branch on what was sent.
 		Check( result.get( "elements" ).at( 0 ).get( "element" ).asString() == "wing" &&
-		       result.get( "elements" ).at( 0 ).get( "construction" ).asString() == "sweep" &&
+		       result.get( "elements" ).at( 0 ).get( "construction" ).isArray() &&
+		       result.get( "elements" ).at( 0 ).get( "construction" ).size() == 1 &&
+		       result.get( "elements" ).at( 0 ).get( "construction" ).at( 0 ).asString() == "sweep" &&
 		       result.get( "elements" ).at( 0 ).get( "note" ).asString() == "membrane",
 		       "G2h each entry carries {element,pieces,construction,note}, in the order declared" );
 		Check( result.get( "elements" ).at( 1 ).get( "note" ).asString().empty(),
@@ -8618,6 +8625,85 @@ static void TestBuildPlanWireShape()
 		Check( JsonResultObj( resp, result ), "G2h the post-plan insert returns a result" );
 		Check( result.get( "applied" ).asBool(),
 		       "G2h MONEY ASSERTION (wire): after file_build_plan the SAME insert applies" );
+	}
+
+	//------------------------------------------------------------------
+	// C4 (2026-08-19): `construction` is a LIST on the wire.  Six cases:
+	// the array form lands, a BARE STRING still lands (and normalizes), the
+	// echo is ALWAYS an array, and the three refusals -- over cap, repeat,
+	// non-string entry -- are clean -32602s naming the offending index.
+	//------------------------------------------------------------------
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"still\",\"pieces\":[\"pot\",\"coil\"],"
+			"\"construction\":[\"lathe\",\"sweep\"],\"outline\":\"0 0; 1 0; 1 2; 0 2\"}]}}" );
+		Check( resp.find( "-32602" ) == std::string::npos,
+		       "G2h/C4 MONEY ASSERTION: an ARRAY of two construction methods is ACCEPTED -- the "
+		       "shape a copper still (lathe pot + sweep coil) needs" );
+		Check( resp.find( "\"construction\":[\"lathe\",\"sweep\"]" ) != std::string::npos,
+		       "G2h/C4 and the echo carries BOTH, as a JSON array, in the order sent" );
+		Check( resp.find( "still: lathe + sweep" ) != std::string::npos,
+		       "G2h/C4 and the human-readable message joins them rather than showing the first" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"vase\",\"pieces\":[\"body\"],"
+			"\"construction\":\"lathe\",\"outline\":\"0 0; 1 0; 1 2; 0 2\"}]}}" );
+		Check( resp.find( "-32602" ) == std::string::npos,
+		       "G2h/C4 MONEY ASSERTION: a BARE STRING is still accepted -- the schema says array, "
+		       "but models routinely send a scalar there and refusing costs a turn for no benefit" );
+		Check( resp.find( "\"construction\":[\"lathe\"]" ) != std::string::npos,
+		       "G2h/C4 and it is normalized to a one-entry array on the way out, so a reader never "
+		       "has to branch on what was sent" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"thing\",\"pieces\":[\"p\"],"
+			"\"construction\":[\"lathe\",\"sweep\",\"chain\"],\"outline\":\"0 0; 1 0; 1 2; 0 2\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "G2h/C4 MONEY ASSERTION: MORE than the cap is REFUSED, not silently truncated -- "
+		       "honouring the first N would teach a model nothing and would make the echo a "
+		       "rewrite of what it sent" );
+		Check( resp.find( "elements[0].construction" ) != std::string::npos,
+		       "G2h/C4 the refusal names the offending index and field" );
+		Check( resp.find( "at most " + std::to_string(
+		           Agent::AgentSession::kBuildPlanMaxConstructionMethods ) +
+		       " are accepted per element" ) != std::string::npos,
+		       "G2h/C4 and states the cap the dispatcher actually enforces" );
+		Check( resp.find( "Split an element" ) != std::string::npos,
+		       "G2h/C4 and the REMEDY -- an element needing three methods is two elements, which "
+		       "is a legal plan; a cap with no way forward reads as a dead end" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"thing\",\"pieces\":[\"p\"],"
+			"\"construction\":[\"sweep\",\"sweep\"],\"outline\":\"0 0; 1 0; 1 2; 0 2\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos &&
+		       resp.find( "twice" ) != std::string::npos,
+		       "G2h/C4 a REPEATED method is -32602 -- a repeat is not a second method, and "
+		       "accepting it would make `at most N methods` mean two different things" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"thing\",\"pieces\":[\"p\"],"
+			"\"construction\":[],\"outline\":\"0 0; 1 0; 1 2; 0 2\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos,
+		       "G2h/C4 an EMPTY construction array is -32602 -- the declaration is required, and "
+		       "`[]` is an absence wearing an array's clothes" );
+	}
+	{
+		const std::string resp = rpc.HandleLine(
+			"{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"file_build_plan\",\"params\":"
+			"{\"elements\":[{\"element\":\"thing\",\"pieces\":[\"p\"],"
+			"\"construction\":[\"sweep\",7],\"outline\":\"0 0; 1 0; 1 2; 0 2\"}]}}" );
+		Check( resp.find( "-32602" ) != std::string::npos &&
+		       resp.find( "elements[0].construction[1]" ) != std::string::npos,
+		       "G2h/C4 a non-string ENTRY is -32602 naming the entry's own index" );
 	}
 
 	pJob->release();
@@ -8686,7 +8772,7 @@ static Agent::AgentSession::AgentBuildPlanEntry PlanEntry( const char* part, con
                                                           const char* outline, const char* view = "" )
 {
 	Agent::AgentSession::AgentBuildPlanEntry e;
-	e.element = part; e.construction = cons; e.outline = outline; e.view = view;
+	e.element = part; e.construction.push_back( cons ); e.outline = outline; e.view = view;
 	e.pieces.push_back( "piece" );
 	return e;
 }
@@ -9292,7 +9378,7 @@ static std::vector<unsigned char> MintCannedPng( Job* pJob, int partCount )
 		Agent::AgentSession::AgentBuildPlanEntry e;
 		e.element         = "canned" + std::to_string( i );
 		e.pieces.push_back( "piece" );
-		e.construction = "primitive";
+		e.construction.push_back( "primitive" );
 		e.outline      = "0 0; 1 0; 1 1; 0 1";
 		parts.push_back( e );
 	}
@@ -9709,13 +9795,13 @@ static std::vector<Agent::AgentSession::AgentBuildPlanEntry> TwoElementPlan()
 	a.element = "wizard";
 	a.pieces.push_back( "robe" );
 	a.pieces.push_back( "hat" );
-	a.construction = "csg";
+	a.construction.push_back( "csg" );
 	a.outline = "0 0; 2 0; 1.2 4; 0.8 4";
 	p.push_back( a );
 	Agent::AgentSession::AgentBuildPlanEntry b;
 	b.element = "terrain";
 	b.pieces.push_back( "ground" );
-	b.construction = "displaced";
+	b.construction.push_back( "displaced" );
 	b.outline = "0 0; 8 0; 8 1; 0 1";
 	p.push_back( b );
 	return p;
@@ -10489,7 +10575,7 @@ static std::vector<Agent::AgentSession::AgentBuildPlanEntry> WizardOnlyPlan()
 	a.element = "wizard";
 	a.pieces.push_back( "robe" );
 	a.pieces.push_back( "hat" );
-	a.construction = "csg";
+	a.construction.push_back( "csg" );
 	a.outline = "0 0; 2 0; 1.2 4; 0.8 4";
 	p.push_back( a );
 	return p;
@@ -10636,7 +10722,7 @@ static void TestCleanRoomSweepWorkedExample()
 	Agent::AgentSession::AgentBuildPlanEntry e;
 	e.element = "tentacle";
 	e.pieces.push_back( "body" );
-	e.construction = "sweep";
+	e.construction.push_back( "sweep" );
 	e.outline = "0 0; 1 0; 1 3; 0 3";
 	plan.push_back( e );
 
@@ -10733,7 +10819,7 @@ static void TestCleanRoomSweepWorkedExample()
 		Agent::AgentSession::AgentBuildPlanEntry e2;
 		e2.element = "tentacle";
 		e2.pieces.push_back( "body" );
-		e2.construction = "sweep";
+		e2.construction.push_back( "sweep" );
 		e2.outline = "0 0; 1 0; 1 3; 0 3";
 		plan2.push_back( e2 );
 
@@ -10783,7 +10869,7 @@ static void TestCleanRoomChainWorkedExample()
 	Agent::AgentSession::AgentBuildPlanEntry e;
 	e.element = "critter";
 	e.pieces.push_back( "tail" );
-	e.construction = "chain";
+	e.construction.push_back( "chain" );
 	e.outline = "0 0; 1 0; 1 3; 0 3";
 	plan.push_back( e );
 
@@ -10875,7 +10961,7 @@ static void TestCleanRoomChainWorkedExample()
 		Agent::AgentSession::AgentBuildPlanEntry e2;
 		e2.element = "critter";
 		e2.pieces.push_back( "tail" );
-		e2.construction = "chain";
+		e2.construction.push_back( "chain" );
 		e2.outline = "0 0; 1 0; 1 3; 0 3";
 		plan2.push_back( e2 );
 
@@ -10926,7 +11012,7 @@ static void TestCleanRoomLatheWorkedExample()
 	Agent::AgentSession::AgentBuildPlanEntry e;
 	e.element = "vase";
 	e.pieces.push_back( "body" );
-	e.construction = "lathe";
+	e.construction.push_back( "lathe" );
 	e.outline = "0 0; 1 0; 1 3; 0 3";
 	plan.push_back( e );
 
@@ -11031,7 +11117,7 @@ static void TestCleanRoomLatheWorkedExample()
 		Agent::AgentSession::AgentBuildPlanEntry e2;
 		e2.element = "vase";
 		e2.pieces.push_back( "body" );
-		e2.construction = "lathe";
+		e2.construction.push_back( "lathe" );
 		e2.outline = "0 0; 1 0; 1 3; 0 3";
 		plan2.push_back( e2 );
 
@@ -11045,6 +11131,180 @@ static void TestCleanRoomLatheWorkedExample()
 		       std::to_string( r2.landed.size() ) + ")" );
 		Check( r2.rejected.empty(), "S2l/real with nothing rejected" );
 	}
+}
+
+//! C4 (2026-08-19): THE MULTI-METHOD GATE.  An element declaring lathe AND
+//! sweep must receive BOTH gated schemas and BOTH worked examples, and an
+//! element declaring NEITHER must receive neither.
+//!
+//! This is the measured failure the slice exists to remove.  Two live runs
+//! of one prompt ("a small copper still with its coiled condenser tubing")
+//! declared `copper_still: csg` + `articulated_lamp: sweep` (10
+//! sweep_geometry chunks) and `copper_still: lathe` + `desk_lamp: csg` (ZERO
+//! sweep_geometry chunks -- the helix hand-approximated as four stacked
+//! tori, the exact pre-sweep workaround the sweep arc deleted).  The cause
+//! was not the model: `construction` held ONE value, so whichever method the
+//! planner named made the other's schema unreachable for the whole element.
+//!
+//! THE FIXTURE IS BUILT TO FAIL FOR THE RIGHT REASON.  Every gated
+//! assertion is preceded by an anchor that holds regardless of the
+//! multi-value dispatch -- the composed prompt's chunk-name prefix and the
+//! unconditional sdf_geometry schema -- so a prompt that never got composed,
+//! or an element that was never active, fails LOUDLY on the anchor instead
+//! of passing a `find() == npos` negative vacuously.
+static void TestCleanRoomMultiMethodWorkedExamples()
+{
+	std::printf( "C4: an element declaring lathe AND sweep gets BOTH schemas and BOTH examples...\n" );
+	const std::string tmp = TempPath( "agentcrud_c4.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "C4 fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	// Prefix-clean trios for each element.  What the completer answers is
+	// independent of the PROMPT under examination; these only let
+	// BuildElement run to completion so `prompts` is populated.
+	static const char* const kStillAnswer =
+		"uniformcolor_painter\n{\n\tname still_copper_pnt\n\tcolor 0.7 0.4 0.2\n}\n"
+		"lambertian_material\n{\n\tname still_copper_mat\n\treflectance still_copper_pnt\n}\n"
+		"box_geometry\n{\n\tname still_pot_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n"
+		"standard_object\n{\n\tname still_obj\n\tgeometry still_pot_box\n"
+		"\tmaterial still_copper_mat\n\tposition 0 0 0\n}\n";
+	static const char* const kBenchAnswer =
+		"uniformcolor_painter\n{\n\tname bench_wood_pnt\n\tcolor 0.4 0.3 0.2\n}\n"
+		"lambertian_material\n{\n\tname bench_wood_mat\n\treflectance bench_wood_pnt\n}\n"
+		"box_geometry\n{\n\tname bench_top_box\n\twidth 2\n\theight 0.1\n\tdepth 1\n}\n"
+		"standard_object\n{\n\tname bench_obj\n\tgeometry bench_top_box\n"
+		"\tmaterial bench_wood_mat\n\tposition 0 0 0\n}\n";
+
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+	{
+		// THE COPPER STILL: a lathe pot AND a swept condenser coil.  Two
+		// methods is exactly what this subject needs and exactly what the
+		// single-valued field could not say.
+		Agent::AgentSession::AgentBuildPlanEntry still;
+		still.element = "still";
+		still.pieces.push_back( "pot" );
+		still.pieces.push_back( "coil" );
+		still.construction.push_back( "lathe" );
+		still.construction.push_back( "sweep" );
+		still.outline = "0 0; 1.2 0; 1.2 2.4; 0 2.4";
+		plan.push_back( still );
+
+		// THE NEGATIVE HALF, in the SAME plan so it runs against the same
+		// session state: an element declaring neither method.
+		Agent::AgentSession::AgentBuildPlanEntry bench;
+		bench.element = "bench";
+		bench.pieces.push_back( "top" );
+		bench.construction.push_back( "primitive" );
+		bench.outline = "0 0; 2 0; 2 0.5; 0 0.5";
+		plan.push_back( bench );
+	}
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kStillAnswer, kBenchAnswer }, nullptr, &prompts ) );
+
+	const Agent::AgentSession::AgentBuildPlanResult pr = sess->FileBuildPlan( plan );
+	Check( pr.ok, "C4 the two-method plan files: " + pr.message );
+	if( !pr.ok ) return;
+	Check( pr.elements.size() == 2 && pr.elements[0].construction.size() == 2 &&
+	       pr.elements[0].construction[0] == "lathe" && pr.elements[0].construction[1] == "sweep",
+	       "C4 the echo carries BOTH declared methods, in the order they were filed" );
+	Check( pr.message.find( "still: lathe + sweep" ) != std::string::npos,
+	       "C4 and the filing message states both, not just the first" );
+
+	//------------------------------------------------------------------
+	// THE POSITIVE HALF -- the element that declared lathe AND sweep.
+	//------------------------------------------------------------------
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "still", 2.0 );
+	Check( r.ok, "C4 build_element completes for the two-method element" );
+	Check( prompts.size() == 1, "C4 one prompt was composed" );
+	if( prompts.empty() ) return;
+	// BY VALUE, not by reference: this test composes a SECOND prompt below,
+	// and the push_back that records it reallocates `prompts`, which would
+	// dangle a reference taken here (it did -- the measured-size printf at
+	// the end read 0 bytes from freed memory before this copy went in).
+	const std::string p = prompts[0];
+
+	// ANCHORS FIRST.  These hold whatever the gate does, so a prompt that
+	// was never really composed cannot make the negatives below vacuous.
+	Check( p.find( "REQUIRED CHUNK-NAME PREFIX: still_" ) != std::string::npos,
+	       "C4 ANCHOR: this really is the still's composed builder prompt" );
+	Check( p.find( "\"keyword\":\"sdf_geometry\"" ) != std::string::npos,
+	       "C4 ANCHOR: the unconditional grammar is present, so a missing gated schema below "
+	       "means the GATE dropped it, not that schema fetching is broken" );
+
+	Check( p.find( "DECLARED CONSTRUCTION METHODS: lathe + sweep" ) != std::string::npos,
+	       "C4 the plural label restates BOTH declared methods" );
+
+	Check( p.find( "\"keyword\":\"lathe_geometry\"" ) != std::string::npos,
+	       "C4 MONEY ASSERTION: the lathe_geometry SCHEMA is sent for an element declaring lathe "
+	       "AND sweep" );
+	Check( p.find( "\"keyword\":\"sweep_geometry\"" ) != std::string::npos,
+	       "C4 MONEY ASSERTION: the sweep_geometry SCHEMA is sent for the SAME element -- the "
+	       "single-value field could deliver only one of these two, which is why a copper still's "
+	       "coil came back as four stacked tori" );
+	Check( p.find( "WORKED EXAMPLE for the lathe method" ) != std::string::npos,
+	       "C4 MONEY ASSERTION: the lathe worked example is spliced in" );
+	Check( p.find( "WORKED EXAMPLE for the sweep method" ) != std::string::npos,
+	       "C4 MONEY ASSERTION: and so is the sweep one, in the same prompt" );
+
+	// The THIRD gated kind was not declared and must not appear -- the cap
+	// bounds volume only if an undeclared method really costs nothing.
+	Check( p.find( "\"keyword\":\"skeleton_geometry\"" ) == std::string::npos &&
+	       p.find( "WORKED EXAMPLE for the chain method" ) == std::string::npos,
+	       "C4 MONEY ASSERTION: the UNDECLARED third gated kind (chain) is still absent -- a "
+	       "membership test that had degenerated into `send everything` would fail here" );
+
+	// Both examples must be USABLE, not decorative: every name in each is
+	// built from this element's real prefix, the property S2j/S2k/S2l pin
+	// one method at a time and which must survive two blocks in one prompt.
+	Check( p.find( "still_body_lathe" ) != std::string::npos &&
+	       p.find( "still_body_sweep" ) != std::string::npos,
+	       "C4 both examples are built from the element's REAL chunk-name prefix" );
+
+	//------------------------------------------------------------------
+	// THE NEGATIVE HALF -- an element declaring NEITHER method.
+	//------------------------------------------------------------------
+	// reopen rather than finish: switching the window is all this half
+	// needs, and finish_element additionally runs an isolate RENDER whose
+	// cost and failure modes have nothing to do with the gate under test.
+	const Agent::AgentSession::AgentReopenElementResult rr = sess->ReopenElement( "bench" );
+	Check( rr.ok, "C4 the build window moves to the bench" );
+	Check( sess->ActiveElement() == "bench",
+	       "C4 ANCHOR: the bench really is the active element, so the BuildElement below is not "
+	       "refused for the wrong reason" );
+
+	const Agent::AgentSession::AgentBuildElementResult r2 = sess->BuildElement( "bench", 0.5 );
+	Check( r2.ok, "C4 build_element completes for the one-method element" );
+	Check( prompts.size() == 2, "C4 a second prompt was composed" );
+	if( prompts.size() < 2 ) return;
+	const std::string q = prompts[1];
+
+	Check( q.find( "REQUIRED CHUNK-NAME PREFIX: bench_" ) != std::string::npos,
+	       "C4 ANCHOR: this really is the bench's composed builder prompt" );
+	Check( q.find( "\"keyword\":\"sdf_geometry\"" ) != std::string::npos,
+	       "C4 ANCHOR: with the unconditional grammar present, so the negatives below are about "
+	       "the GATE" );
+	Check( q.find( "DECLARED CONSTRUCTION METHOD: primitive" ) != std::string::npos,
+	       "C4 a single-method element keeps the SINGULAR label, byte-for-byte as before C4" );
+	Check( q.find( "\"keyword\":\"lathe_geometry\"" ) == std::string::npos &&
+	       q.find( "WORKED EXAMPLE for the lathe method" ) == std::string::npos,
+	       "C4 MONEY ASSERTION: neither lathe schema nor lathe example reaches an element that "
+	       "declared neither" );
+	Check( q.find( "\"keyword\":\"sweep_geometry\"" ) == std::string::npos &&
+	       q.find( "WORKED EXAMPLE for the sweep method" ) == std::string::npos,
+	       "C4 MONEY ASSERTION: and neither does sweep" );
+
+	//------------------------------------------------------------------
+	// THE VOLUME COST, measured rather than asserted.  The cap exists
+	// because this number is the thing that collapses construction
+	// richness; printing it keeps the justification in
+	// kBuildPlanMaxConstructionMethods's doc honest as descriptors grow.
+	//------------------------------------------------------------------
+	std::printf( "    C4 MEASURED: two-method prompt %zu bytes, one-method prompt %zu bytes, "
+	             "delta %zu\n", p.size(), q.size(),
+	             p.size() > q.size() ? p.size() - q.size() : 0 );
 }
 
 //! S2b: a prefix violation is REJECTED, not renamed -- and an unbalanced
@@ -17806,6 +18066,8 @@ int main()
 	TestCleanRoomSweepWorkedExample();
 	TestCleanRoomChainWorkedExample();
 	TestCleanRoomLatheWorkedExample();
+	// C4 (2026-08-19): the multi-method gate -- both schemas, both examples.
+	TestCleanRoomMultiMethodWorkedExamples();
 	TestCleanRoomValidatedInsertion();
 	TestCleanRoomRepairRetry();
 	TestCleanRoomBuildElementRefusals();

@@ -2141,16 +2141,59 @@ namespace RISE
 							}
 							pieces.push_back( pv.asString() );
 						}
+						// C4 (2026-08-19): `construction` is a LIST of at most
+						// AgentSession::kBuildPlanMaxConstructionMethods
+						// methods -- a copper still is a `lathe` pot AND a
+						// `sweep` coil, and the single-value field made the
+						// second verb's gated schema unreachable for the whole
+						// element.
+						//
+						// A BARE STRING IS ALSO ACCEPTED and normalized to a
+						// one-entry list.  The schema says array, but models
+						// routinely send a scalar where a schema says array,
+						// and refusing that costs a turn and teaches nothing:
+						// the intent of "construction": "lathe" is not
+						// ambiguous.  Both tool-description surfaces state
+						// that both forms work, so this is a documented
+						// contract rather than a silent leniency.
+						//
+						// Everything past the shape check is
+						// AgentSession::ValidateConstructionList -- the SAME
+						// predicate FileBuildPlan re-checks with, so the wire
+						// error and the session's own precondition cannot
+						// disagree (the pattern `outline` already follows).
 						const JsonValue* consVal = e.find( "construction" );
-						if( !consVal || !consVal->isString() ) {
+						std::vector<std::string> construction;
+						if( !consVal || ( !consVal->isString() && !consVal->isArray() ) ) {
 							return MakeError( idValue, kInvalidParams,
-								std::string( "Invalid params: " ) + idx + ".construction (string) is required "
-								"-- one of: " + enumList );
+								std::string( "Invalid params: " ) + idx + ".construction is required "
+								"-- an array of at most " +
+								std::to_string( AgentSession::kBuildPlanMaxConstructionMethods ) +
+								" of: " + enumList + " (a single method may also be given as a plain "
+								"string)" );
 						}
-						if( !AgentSession::IsValidElementConstruction( consVal->asString() ) ) {
-							return MakeError( idValue, kInvalidParams,
-								std::string( "Invalid params: " ) + idx + ".construction is `" +
-								consVal->asString() + "` -- it must be one of: " + enumList );
+						if( consVal->isString() ) {
+							construction.push_back( consVal->asString() );
+						}
+						else {
+							for( std::size_t c = 0; c < consVal->size(); ++c ) {
+								const JsonValue& cv = consVal->at( c );
+								if( !cv.isString() ) {
+									char cidx[24];
+									std::snprintf( cidx, sizeof( cidx ), "[%d]", static_cast<int>( c ) );
+									return MakeError( idValue, kInvalidParams,
+										std::string( "Invalid params: " ) + idx + ".construction" + cidx +
+										" must be a string -- one of: " + enumList );
+								}
+								construction.push_back( cv.asString() );
+							}
+						}
+						{
+							std::string cerr;
+							if( !AgentSession::ValidateConstructionList( construction, cerr ) ) {
+								return MakeError( idValue, kInvalidParams,
+									std::string( "Invalid params: " ) + idx + ".construction " + cerr );
+							}
 						}
 						const JsonValue* noteVal = e.find( "note" );
 						if( noteVal && !noteVal->isString() ) {
@@ -2194,7 +2237,7 @@ namespace RISE
 						AgentSession::AgentBuildPlanEntry entry;
 						entry.element      = elemVal->asString();
 						entry.pieces       = pieces;
-						entry.construction = consVal->asString();
+						entry.construction = construction;
 						entry.outline      = outlineVal->asString();
 						if( viewVal ) entry.view = viewVal->asString();
 						if( noteVal ) entry.note = noteVal->asString();
@@ -2218,7 +2261,18 @@ namespace RISE
 						for( std::size_t p = 0; p < e.pieces.size(); ++p )
 							piecesArr.push_back( JsonValue::MakeString( e.pieces[p] ) );
 						o.set( "pieces",       piecesArr );
-						o.set( "construction", JsonValue::MakeString( e.construction ) );
+						// C4 (2026-08-19): the echo is an ARRAY, always -- even
+						// for a caller that sent a bare string.  One shape
+						// back means a reader never has to branch on what was
+						// sent, and it is the honest report of what the
+						// session actually recorded.  Consumers of this field
+						// (AgentChatLoop's transcript one-liner) read
+						// array-or-string defensively so an older recorded
+						// payload still renders.
+						JsonValue consArr = JsonValue::MakeArray();
+						for( std::size_t c = 0; c < e.construction.size(); ++c )
+							consArr.push_back( JsonValue::MakeString( e.construction[c] ) );
+						o.set( "construction", consArr );
 						o.set( "note",         JsonValue::MakeString( e.note ) );
 						// The per-element sketch FACTS, index-parallel to
 						// pr.elements by construction (FileBuildPlan builds one

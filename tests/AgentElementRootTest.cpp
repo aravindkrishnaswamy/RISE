@@ -127,7 +127,7 @@ static std::vector<Agent::AgentSession::AgentBuildPlanEntry> OnePartPlan( const 
 	std::vector<Agent::AgentSession::AgentBuildPlanEntry> p;
 	Agent::AgentSession::AgentBuildPlanEntry a;
 	a.element      = element;
-	a.construction = "primitive";
+	a.construction.push_back( "primitive" );
 	a.pieces.push_back( "piece" );
 	a.outline      = "0 0; 2 0; 2 2; 0 2";
 	p.push_back( a );

@@ -5089,7 +5089,7 @@ static std::vector<AgentSession::AgentBuildPlanEntry> TargetTestPlan()
 		AgentSession::AgentBuildPlanEntry e;
 		e.element = part;
 		e.pieces.push_back( "piece" );
-		e.construction = "primitive";
+		e.construction.push_back( "primitive" );
 		e.outline = outline;
 		e.view = view;
 		return e;
@@ -5861,7 +5861,7 @@ static void RunTargetComposesWithShippedGatesTest()
 		std::unique_ptr<AgentSession> s = AgentSession::WrapJob( pJob );
 		if( !s ) { pJob->release(); Check( false, "oversize session wraps" ); return; }
 		AgentSession::AgentBuildPlanEntry e;
-		e.element = "ball"; e.construction = "primitive"; e.outline = "0 0; 1 0; 1 1; 0 1"; e.view = "front";
+		e.element = "ball"; e.construction.push_back( "primitive" ); e.outline = "0 0; 1 0; 1 1; 0 1"; e.view = "front";
 		e.pieces.push_back( "piece" );
 		Check( s->FileBuildPlan( { e } ).ok, "the oversize session files its plan" );
 

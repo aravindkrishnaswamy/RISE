@@ -9458,6 +9458,65 @@ namespace RISE
 			return s;
 		}
 
+		std::string AgentSession::JoinConstruction( const std::vector<std::string>& v )
+		{
+			// " + " rather than ", " deliberately: the list is a CONJUNCTION
+			// (this element is built by lathe AND sweep), while the enum
+			// rendering above is a menu of alternatives.  Two different
+			// separators keep a model from reading one as the other in a
+			// message that happens to contain both.
+			std::string s;
+			for( std::size_t i = 0; i < v.size(); ++i ) {
+				if( i ) s += " + ";
+				s += v[i];
+			}
+			return s;
+		}
+
+		bool AgentSession::ValidateConstructionList( const std::vector<std::string>& v,
+		                                            std::string& outError )
+		{
+			if( v.empty() ) {
+				outError = "is empty -- name at least one construction method, from: " +
+					BuildPlanConstructionList() + ".";
+				return false;
+			}
+			if( v.size() > kBuildPlanMaxConstructionMethods ) {
+				// The refusal STATES THE REMEDY, because "at most 2" with no
+				// way forward reads as a dead end for an element that really
+				// does need three methods.  Splitting is free: the element is
+				// the plan's unit of work, so two elements each declaring two
+				// methods is a legal plan that loses nothing.
+				outError = "names " + std::to_string( v.size() ) + " construction methods -- at most " +
+					std::to_string( kBuildPlanMaxConstructionMethods ) + " are accepted per element, "
+					"because each declared method sends its own grammar and worked example to the "
+					"builder and the volume of that text measurably reduces how much gets built. "
+					"Split an element that needs more into two elements, each naming at most " +
+					std::to_string( kBuildPlanMaxConstructionMethods ) + ".";
+				return false;
+			}
+			for( std::size_t i = 0; i < v.size(); ++i ) {
+				if( !IsValidElementConstruction( v[i] ) ) {
+					outError = "names `" + v[i] + "`, which is not a construction method -- each entry "
+						"must be one of: " + BuildPlanConstructionList() + ".";
+					return false;
+				}
+				for( std::size_t j = 0; j < i; ++j ) {
+					if( v[j] == v[i] ) {
+						// A repeat is not a second method.  Refused rather
+						// than silently deduped so "at most N methods" means
+						// exactly one thing at every layer, and so the echo
+						// of a filed plan is the caller's own list rather
+						// than a quietly rewritten one.
+						outError = "names `" + v[i] + "` twice -- each construction method may appear "
+							"at most once.";
+						return false;
+					}
+				}
+			}
+			return true;
+		}
+
 		bool AgentSession::IsValidElementView( const std::string& v )
 		{
 			for( std::size_t i = 0; i < kBuildPlanViewCount; ++i ) {
@@ -9790,6 +9849,18 @@ namespace RISE
 						"and an `outline` -- a closed 2D polygon of at least 3 \"x y\" points separated by "
 						"semicolons, e.g. \"0 0; 1 0; 1 2; 0 2\" -- and may carry a `view` of " +
 						BuildPlanViewList() + " (default " + kBuildPlanDefaultView + "). "
+						// C4 (2026-08-19): the multi-value half of the
+						// contract.  EVERY CLAUSE MUST STAY TRUE of what the
+						// dispatcher enforces: an array really is accepted, a
+						// bare string really is accepted, the cap really is
+						// kBuildPlanMaxConstructionMethods, and a repeat
+						// really is refused.  A model that follows this
+						// sentence must never then get a -32602.
+						"`construction` may be an array when the element genuinely needs more than one "
+						"method -- e.g. [\"lathe\",\"sweep\"] for a turned vessel with a coiled pipe -- "
+						"and each method you name sends you its own grammar; at most " +
+						std::to_string( kBuildPlanMaxConstructionMethods ) +
+						" per element, no repeats, and a single value may be written as a plain string. "
 						"Any of those construction values is accepted -- `primitive` for every element is a "
 						"complete plan -- any piece names are accepted, and any outline shape with extent "
 						"on both axes is accepted, a rough blob included. The plan "
@@ -9912,6 +9983,31 @@ namespace RISE
 					return out;
 				}
 
+				// C4 (2026-08-19): the construction LIST, checked with the
+				// SAME predicate AgentRpc pre-validates the wire with, for the
+				// reason ValidateElementOutline is shared -- the two layers
+				// can never disagree about what a valid declaration is.
+				//
+				// An EMPTY list is deliberately NOT checked here.  On the wire
+				// `construction` is required and AgentRpc refuses an absent or
+				// empty one before this is reached, but the C++ API has never
+				// required it (ComposeBuilderPrompt_ has always guarded with
+				// `!construction.empty()`), and adding the requirement here
+				// would break in-process callers that legitimately file a
+				// plan for its outlines alone.  A NON-EMPTY list, though, must
+				// satisfy every rule the wire enforces -- otherwise the cap
+				// this slice adds would have an in-process bypass.
+				if( !elements[i].construction.empty() ) {
+					std::string cerr;
+					if( !ValidateConstructionList( elements[i].construction, cerr ) ) {
+						out.ok = false;
+						out.replacedPreviousPlan = false;
+						out.message = "build plan not filed: " + idx + ".construction " + cerr +
+							" Nothing was recorded; the build plan and the build-plan gate are unchanged.";
+						return out;
+					}
+				}
+
 				std::string view = elements[i].view;
 				if( view.empty() ) view = kBuildPlanDefaultView;
 				if( !IsValidElementView( view ) ) {
@@ -10010,7 +10106,7 @@ namespace RISE
 				( mBuildPlan.size() == 1 ? " element" : " elements" ) + " -- ";
 			for( std::size_t i = 0; i < mBuildPlan.size(); ++i ) {
 				if( i ) m += "; ";
-				m += mBuildPlan[i].element + ": " + mBuildPlan[i].construction + ", " +
+				m += mBuildPlan[i].element + ": " + JoinConstruction( mBuildPlan[i].construction ) + ", " +
 					std::to_string( mBuildPlan[i].pieces.size() ) +
 					( mBuildPlan[i].pieces.size() == 1 ? " piece (" : " pieces (" );
 				for( std::size_t p = 0; p < mBuildPlan[i].pieces.size(); ++p ) {
@@ -14018,12 +14114,21 @@ namespace RISE
 			//! detail, a painter, and the standard_object every element must
 			//! finish with.  sweep_geometry is NOT here -- its schema rides
 			//! the declared construction method instead (see the
-			//! construction == "sweep" gate below), so it only enters the
+			//! HasConstruction( "sweep" ) gate below), so it only enters the
 			//! prompt when the element actually needs it.  skeleton_geometry
-			//! follows the identical discipline under construction == "chain"
-			//! (see that gate further below) -- also absent from this list
-			//! for the same reason, and so does lathe_geometry under
-			//! construction == "lathe" (C3, 2026-08-18).
+			//! follows the identical discipline under
+			//! HasConstruction( "chain" ) (see that gate further below) --
+			//! also absent from this list for the same reason, and so does
+			//! lathe_geometry under HasConstruction( "lathe" )
+			//! (C3, 2026-08-18).
+			//!
+			//! C4 (2026-08-19): those three gates are now MEMBERSHIP tests,
+			//! not equality tests, because `construction` is a list -- an
+			//! element declaring lathe AND sweep gets BOTH blocks.  The cap
+			//! that keeps this from becoming the grammar dump the paragraph
+			//! above warns about is AgentSession::
+			//! kBuildPlanMaxConstructionMethods, whose doc carries the
+			//! measured block sizes behind the number.
 			//!
 			//! THE TEXT IS THE DESCRIPTOR REGISTRY'S OWN, fetched through the
 			//! same ReadSchema the `read_schema` tool answers with -- there is
@@ -14078,9 +14183,31 @@ namespace RISE
 					p += "\n";
 				}
 				if( !entry->construction.empty() ) {
-					p += "DECLARED CONSTRUCTION METHOD: " + entry->construction + "\n\n";
-					// C2 (2026-08-14): ONE worked example, gated on the declared
-					// method being exactly "sweep" -- the summoning mechanics this
+					// C4 (2026-08-19): the singular label is preserved
+					// BYTE-FOR-BYTE for a one-method element -- that is the
+					// overwhelmingly common case and there is nothing to be
+					// gained by churning the text a builder already reads
+					// well.  A multi-method element gets the plural label and
+					// one extra sentence saying that each method's grammar
+					// follows, because without it a model that declared two
+					// methods and receives two schemas has to infer which
+					// example belongs to which.
+					if( entry->construction.size() == 1 ) {
+						p += "DECLARED CONSTRUCTION METHOD: " + entry->construction[0] + "\n\n";
+					}
+					else {
+						p += "DECLARED CONSTRUCTION METHODS: " +
+							JoinConstruction( entry->construction ) +
+							" -- this element is built from more than one, and the grammar and worked "
+							"example for each one you declared follow below. Use each where it fits; "
+							"nothing requires you to use all of them. The examples are independent and "
+							"reuse the same illustrative names, so if you adapt more than one, give "
+							"your chunks distinct names.\n\n";
+					}
+					// C2 (2026-08-14): ONE worked example, gated on "sweep"
+					// being among the declared methods (C4 2026-08-19 made that
+					// a membership test; before it, an equality one) -- the
+					// summoning mechanics this
 					// arc's journal measured (laws 8/9/12) are an EXAMPLE moves
 					// what a model writes, prose measures ~0, and context volume
 					// collapses richness -- so this is short, literal, and only
@@ -14090,7 +14217,7 @@ namespace RISE
 					// retry), so `reflectance none` -- the always-present null
 					// painter -- stands in for a real colour the builder should
 					// replace.
-					if( entry->construction == "sweep" ) {
+					if( entry->HasConstruction( "sweep" ) ) {
 						// C2 fix round (2026-08-14): sweep_geometry's schema is
 						// sent here, gated on the declared construction method,
 						// rather than unconditionally in kBuilderGrammarKeywords
@@ -14165,7 +14292,7 @@ namespace RISE
 					// (the prior example's comment claimed this but its actual
 					// deltas were Dx=1.8, Dy=1.0, Dz=0.05 -- dominant X, not
 					// y/z).
-					if( entry->construction == "chain" ) {
+					if( entry->HasConstruction( "chain" ) ) {
 						p += "\n";
 						p += ReadSchema( "skeleton_geometry" );
 						p += "\n";
@@ -14221,7 +14348,7 @@ namespace RISE
 					// x = 0, z = 0.  axis / sweep_degrees / smooth are all left
 					// at their defaults and omitted, the same
 					// omit-what-defaults discipline the sweep example follows.
-					if( entry->construction == "lathe" ) {
+					if( entry->HasConstruction( "lathe" ) ) {
 						p += "\n";
 						p += ReadSchema( "lathe_geometry" );
 						p += "\n";

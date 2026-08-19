@@ -121,7 +121,8 @@ arc tests is about.
 file_build_plan { elements: [ {
     element:      string   (required)   e.g. "wizard"
     pieces:       [string] (required, >=1)  e.g. ["robe","hat","beard","staff"]
-    construction: enum     (required)   primitive|csg|sweep|chain|displaced|mesh
+    construction: [enum]   (required, 1..2, no repeats; a bare string is also accepted)
+                                       primitive|csg|sweep|lathe|chain|displaced|mesh
     outline:      "x y; ..." (required, >=3 pts)   the element's silhouette
     view:         front|side|top (optional)
     note:         string   (optional)

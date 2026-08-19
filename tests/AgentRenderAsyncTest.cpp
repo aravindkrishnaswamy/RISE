@@ -6673,7 +6673,7 @@ static std::vector<AgentSession::AgentBuildPlanEntry> AsyncTargetPlan( const cha
 	AgentSession::AgentBuildPlanEntry e;
 	e.element         = "ball";
 	e.pieces.push_back( "piece" );
-	e.construction = "primitive";
+	e.construction.push_back( "primitive" );
 	e.outline      = outline;
 	e.view         = view;
 	return std::vector<AgentSession::AgentBuildPlanEntry>( 1, e );
@@ -6909,7 +6909,7 @@ static void RunAsyncSceneTargetSnapshotTest()
 					AgentSession::AgentBuildPlanEntry e;
 					e.element = "canned" + std::to_string( i );
 					e.pieces.push_back( "piece" );
-					e.construction = "primitive";
+					e.construction.push_back( "primitive" );
 					e.outline = "0 0; 1 0; 1 1; 0 1";
 					parts.push_back( e );
 				}
