@@ -17,6 +17,8 @@ namespace RISE
 {
 	namespace
 	{
+		const std::uint64_t MetalAllocationQuantumBytes=UINT64_C(16384);
+
 		FireProductionRemapBoundary LowerBoundary(
 			const FireProductionRemapRequest& request )
 		{
@@ -41,6 +43,21 @@ namespace RISE
 			return false;
 		}
 
+		bool AddMetalBufferBytes( std::uint64_t requestedBytes,
+			std::uint64_t& total )
+		{
+			if( requestedBytes==0u ) return false;
+			const std::uint64_t remainder=requestedBytes%MetalAllocationQuantumBytes;
+			if( remainder ) {
+				const std::uint64_t increment=MetalAllocationQuantumBytes-remainder;
+				if( requestedBytes>std::numeric_limits<std::uint64_t>::max()-increment )
+					return false;
+				requestedBytes+=increment;
+			}
+			if( total>std::numeric_limits<std::uint64_t>::max()-requestedBytes ) return false;
+			total+=requestedBytes;return true;
+		}
+
 		std::size_t ValueIndex( const FireProductionRemapRequest& request,
 			std::size_t component, std::size_t line, std::size_t cell )
 		{
@@ -51,6 +68,15 @@ namespace RISE
 			std::size_t component, std::size_t line, std::size_t face )
 		{
 			return (component*request.lineCount+line)*(request.lineLength+1u)+face;
+		}
+
+		float AmbientValue( const FireProductionRemapRequest& request, bool lower,
+			std::size_t component, std::size_t line )
+		{
+			if( !request.lineSpecificAmbientValues ) return request.ambientValues[component];
+			const std::vector<float>& values=lower?request.lowerAmbientValues:
+				request.upperAmbientValues;
+			return values[component*request.lineCount+line];
 		}
 
 		float Sample( const FireProductionRemapRequest& request,
@@ -66,13 +92,13 @@ namespace RISE
 			if( cell<0 ) {
 				const bool inflow=LowerBoundary(request)==FireProductionRemapPressureOpen&&
 					request.faceVelocityMPerS[line*(request.lineLength+1u)]>0.0f;
-				return inflow ? request.ambientValues[component] :
+				return inflow ? AmbientValue(request,true,component,line) :
 					request.values[ValueIndex(request,component,line,0u)];
 			}
 			if( cell>=count ) {
 				const bool inflow=UpperBoundary(request)==FireProductionRemapPressureOpen&&
 					request.faceVelocityMPerS[line*(request.lineLength+1u)+request.lineLength]<0.0f;
-				return inflow ? request.ambientValues[component] :
+				return inflow ? AmbientValue(request,false,component,line) :
 					request.values[ValueIndex(request,component,line,request.lineLength-1u)];
 			}
 			return request.values[ValueIndex(request,component,line,static_cast<std::size_t>(cell))];
@@ -216,10 +242,10 @@ namespace RISE
 		{
 			const float magnitude=std::fabs(courant);
 			const float leftExtension=LowerBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity>0.0f ? request.ambientValues[component] :
+				faceVelocity>0.0f ? AmbientValue(request,true,component,line) :
 				request.values[ValueIndex(request,component,line,0u)];
 			const float rightExtension=UpperBoundary(request)==FireProductionRemapPressureOpen&&
-				faceVelocity<0.0f ? request.ambientValues[component] :
+				faceVelocity<0.0f ? AmbientValue(request,false,component,line) :
 				request.values[ValueIndex(request,component,line,request.lineLength-1u)];
 			if( courant>=0.0f ) {
 				const float interiorLength=std::min(magnitude,static_cast<float>(face));
@@ -274,6 +300,45 @@ namespace RISE
 		}
 	}
 
+	bool FireProductionRemapWorkingSetBytes( const FireProductionRemapRequest& request,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		std::uint64_t total=0u;
+		if( request.lineLength<4u||request.lineLength>1024u||request.lineCount==0u||
+			request.componentCount==0u ) return false;
+		const std::size_t maximum=std::numeric_limits<std::size_t>::max();
+		if( request.lineCount>maximum/request.lineLength||
+			request.componentCount>maximum/(request.lineCount*request.lineLength)||
+			request.lineCount>maximum/(request.lineLength+1u)||
+			request.componentCount>maximum/(request.lineCount*(request.lineLength+1u)) )
+			return false;
+		const std::uint64_t valueCount=request.componentCount*request.lineCount*
+			request.lineLength;
+		const std::uint64_t fluxCount=request.componentCount*request.lineCount*
+			(request.lineLength+1u);
+		const std::uint64_t velocityCount=request.lineCount*(request.lineLength+1u);
+		const std::uint64_t alphaCount=request.lineCount*request.lineLength;
+		if( valueCount>std::numeric_limits<std::uint32_t>::max()||
+			fluxCount>std::numeric_limits<std::uint32_t>::max()||
+			request.lineCount>std::numeric_limits<std::uint32_t>::max()||
+			request.componentCount>std::numeric_limits<std::uint32_t>::max() ) return false;
+		const std::uint64_t ambientCount=request.lineSpecificAmbientValues?
+			static_cast<std::uint64_t>(request.componentCount)*request.lineCount:
+			request.componentCount;
+		for( unsigned int copy=0u;copy<4u;++copy )
+			if( !AddMetalBufferBytes(valueCount*sizeof(float),total) ) return false;
+		for( unsigned int copy=0u;copy<2u;++copy )
+			if( !AddMetalBufferBytes(fluxCount*sizeof(float),total) ) return false;
+		if( !AddMetalBufferBytes(velocityCount*sizeof(float),total)||
+			!AddMetalBufferBytes(alphaCount*sizeof(float),total)||
+			!AddMetalBufferBytes(ambientCount*sizeof(float),total)||
+			!AddMetalBufferBytes(ambientCount*sizeof(float),total)||
+			!AddMetalBufferBytes(6u*sizeof(std::uint32_t)+2u*sizeof(float),total) )
+			return false;
+		bytes=total;return true;
+	}
+
 	bool ValidateFireProductionRemapRequest( const FireProductionRemapRequest& request,
 		std::string* error )
 	{
@@ -294,19 +359,19 @@ namespace RISE
 			request.lineCount>std::numeric_limits<std::uint32_t>::max()||
 			request.componentCount>std::numeric_limits<std::uint32_t>::max() )
 			return Fail(error,"production remap request exceeds binary32 kernel indexing");
-		const std::uint64_t maximumWorkingBytes=std::uint64_t(2u)<<30u;
-		const std::uint64_t alphaCount=request.lineCount*request.lineLength;
-		const std::uint64_t workingFloatCount=4u*static_cast<std::uint64_t>(valueCount)+
-			2u*static_cast<std::uint64_t>(fluxCount)+
-			static_cast<std::uint64_t>(velocityCount)+alphaCount+
-			static_cast<std::uint64_t>(request.componentCount);
-		const std::uint64_t parameterBytes=5u*sizeof(std::uint32_t)+2u*sizeof(float);
-		if( workingFloatCount>(maximumWorkingBytes-parameterBytes)/sizeof(float) )
+		std::uint64_t workingBytes=0u;
+		if( !FireProductionRemapWorkingSetBytes(request,workingBytes) )
+			return Fail(error,"production remap working-set calculation failed");
+		if( workingBytes>(std::uint64_t(2u)<<30u) )
 			return Fail(error,"production remap working set exceeds two GiB");
 		if( !(request.cellWidthM>0.0f)||request.timeStepS<0.0f||
 			!std::isfinite(request.cellWidthM)||!std::isfinite(request.timeStepS)||
 			request.values.size()!=valueCount||request.faceVelocityMPerS.size()!=velocityCount||
-			request.ambientValues.size()!=request.componentCount )
+			(!request.lineSpecificAmbientValues&&
+				request.ambientValues.size()!=request.componentCount)||
+			(request.lineSpecificAmbientValues&&
+				(request.lowerAmbientValues.size()!=request.componentCount*request.lineCount||
+				 request.upperAmbientValues.size()!=request.componentCount*request.lineCount)) )
 			return Fail(error,"production remap request shape or schedule is invalid");
 		const FireProductionRemapBoundary lower=LowerBoundary(request);
 		const FireProductionRemapBoundary upper=UpperBoundary(request);
@@ -318,7 +383,13 @@ namespace RISE
 			return Fail(error,"production remap state is nonfinite");
 		for( const float value : request.faceVelocityMPerS ) if( !std::isfinite(value) )
 			return Fail(error,"production remap velocity is nonfinite");
-		for( const float value : request.ambientValues ) if( !std::isfinite(value) )
+		const std::vector<float>& lowerAmbient=request.lineSpecificAmbientValues?
+			request.lowerAmbientValues:request.ambientValues;
+		const std::vector<float>& upperAmbient=request.lineSpecificAmbientValues?
+			request.upperAmbientValues:request.ambientValues;
+		for( const float value : lowerAmbient ) if( !std::isfinite(value) )
+			return Fail(error,"production remap ambient state is nonfinite");
+		for( const float value : upperAmbient ) if( !std::isfinite(value) )
 			return Fail(error,"production remap ambient state is nonfinite");
 		for( std::size_t line=0;line<request.lineCount;++line ) {
 			const std::size_t base=line*(request.lineLength+1u);

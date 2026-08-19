@@ -28,6 +28,7 @@ namespace RISE
 			std::uint32_t componentCount;
 			std::uint32_t lowerBoundary;
 			std::uint32_t upperBoundary;
+			std::uint32_t ambientPerLine;
 			float cellWidthM;
 			float timeStepS;
 		};
@@ -69,7 +70,7 @@ namespace RISE
 			return R"METAL(
 #include <metal_stdlib>
 using namespace metal;
-struct Params { uint n; uint lines; uint comps; uint lowerBoundary; uint upperBoundary; float dx; float dt; };
+struct Params { uint n; uint lines; uint comps; uint lowerBoundary; uint upperBoundary; uint ambientPerLine; float dx; float dt; };
 struct GridParams { uint nx; uint ny; uint nz; uint axis; uint comps; };
 inline uint value_index(constant Params& p,uint c,uint l,uint i){return (c*p.lines+l)*p.n+i;}
 inline uint flux_index(constant Params& p,uint c,uint l,uint f){return (c*p.lines+l)*(p.n+1u)+f;}
@@ -116,20 +117,27 @@ kernel void gather_grid_velocity(device const float* ux [[buffer(0)]],
  device const float* velocity=g.axis==0u?ux:(g.axis==1u?uy:uz);
  lines[gid]=velocity[grid_face(g,g.axis,x,y,z)];
 }
-inline float sample_value(device const float* q,device const float* u,device const float* ambient,
+inline float ambient_value(device const float* ambient,constant Params& p,uint c,uint l){
+ return ambient[p.ambientPerLine!=0u?c*p.lines+l:c];
+}
+inline float sample_value(device const float* q,device const float* u,
+ device const float* lowerAmbient,device const float* upperAmbient,
  constant Params& p,uint c,uint l,int i){
  if(p.lowerBoundary==0u&&p.upperBoundary==0u){int n=int(p.n);int w=i%n;if(w<0)w+=n;return q[value_index(p,c,l,uint(w))];}
  if(i<0){bool inflow=p.lowerBoundary==1u&&u[l*(p.n+1u)]>0.0f;
-  return inflow?ambient[c]:q[value_index(p,c,l,0u)];}
+  return inflow?ambient_value(lowerAmbient,p,c,l):q[value_index(p,c,l,0u)];}
  if(i>=int(p.n)){bool inflow=p.upperBoundary==1u&&u[l*(p.n+1u)+p.n]<0.0f;
-  return inflow?ambient[c]:q[value_index(p,c,l,p.n-1u)];}
+  return inflow?ambient_value(upperAmbient,p,c,l):q[value_index(p,c,l,p.n-1u)];}
  return q[value_index(p,c,l,uint(i))];
 }
-inline void unlimited_edges(device const float* q,device const float* u,device const float* ambient,
+inline void unlimited_edges(device const float* q,device const float* u,
+ device const float* lowerAmbient,device const float* upperAmbient,
  constant Params& p,uint c,uint l,uint cell,thread float& left,thread float& right){
- int i=int(cell);float im2=sample_value(q,u,ambient,p,c,l,i-2);
- float im1=sample_value(q,u,ambient,p,c,l,i-1);float center=sample_value(q,u,ambient,p,c,l,i);
- float ip1=sample_value(q,u,ambient,p,c,l,i+1);float ip2=sample_value(q,u,ambient,p,c,l,i+2);
+ int i=int(cell);float im2=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,i-2);
+ float im1=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,i-1);
+ float center=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,i);
+ float ip1=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,i+1);
+ float ip2=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,i+2);
  if(im2==center&&im1==center&&ip1==center&&ip2==center){left=center;right=center;return;}
  left=(7.0f*(im1+center)-(im2+ip1))/12.0f;
  right=(7.0f*(center+ip1)-(im1+ip2))/12.0f;
@@ -139,15 +147,16 @@ inline void deviation_range(float dl,float dr,thread float& mn,thread float& mx)
  if(a!=0.0f){float s=-b/(2.0f*a);if(s>0.0f&&s<1.0f){float v=(a*s+b)*s+dl;mn=min(mn,v);mx=max(mx,v);}}
 }
 kernel void reconstruct(device const float* q [[buffer(0)]],device const float* u [[buffer(1)]],
- device const float* ambient [[buffer(2)]],device float* left [[buffer(3)]],
- device float* right [[buffer(4)]],device float* alphaOut [[buffer(5)]],
- constant Params& p [[buffer(6)]],uint gid [[thread_position_in_grid]]){
+ device const float* lowerAmbient [[buffer(2)]],device const float* upperAmbient [[buffer(3)]],
+ device float* left [[buffer(4)]],device float* right [[buffer(5)]],
+ device float* alphaOut [[buffer(6)]],constant Params& p [[buffer(7)]],
+ uint gid [[thread_position_in_grid]]){
  if(gid>=p.n*p.lines)return;uint l=gid/p.n;uint cell=gid-l*p.n;float alpha=1.0f;
  for(uint c=0;c<p.comps;++c){uint index=value_index(p,c,l,cell);float ql,qr;
-  unlimited_edges(q,u,ambient,p,c,l,cell,ql,qr);left[index]=ql;right[index]=qr;
+  unlimited_edges(q,u,lowerAmbient,upperAmbient,p,c,l,cell,ql,qr);left[index]=ql;right[index]=qr;
   float center=q[index],mnDev,mxDev;deviation_range(ql-center,qr-center,mnDev,mxDev);
-  float qm=sample_value(q,u,ambient,p,c,l,int(cell)-1);
-  float qp=sample_value(q,u,ambient,p,c,l,int(cell)+1);
+  float qm=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,int(cell)-1);
+  float qp=sample_value(q,u,lowerAmbient,upperAmbient,p,c,l,int(cell)+1);
   float mn=min(center,min(qm,qp)),mx=max(center,max(qm,qp));
   if(mxDev>0.0f)alpha=min(alpha,(mx-center)/mxDev);
   if(mnDev<0.0f)alpha=min(alpha,(center-mn)/(-mnDev));
@@ -219,9 +228,11 @@ inline float open_local_forward(device const float* q,device const float* left,
  return result;
 }
 inline float open_swept(device const float* q,device const float* left,device const float* right,
- device const float* ambient,constant Params& p,uint c,uint l,uint face,float courant,float velocity){
- float magnitude=abs(courant);float leftExtension=p.lowerBoundary==1u&&velocity>0.0f?ambient[c]:
-  q[value_index(p,c,l,0u)];float rightExtension=p.upperBoundary==1u&&velocity<0.0f?ambient[c]:
+ device const float* lowerAmbient,device const float* upperAmbient,
+ constant Params& p,uint c,uint l,uint face,float courant,float velocity){
+ float magnitude=abs(courant);float leftExtension=p.lowerBoundary==1u&&velocity>0.0f?
+  ambient_value(lowerAmbient,p,c,l):q[value_index(p,c,l,0u)];
+ float rightExtension=p.upperBoundary==1u&&velocity<0.0f?ambient_value(upperAmbient,p,c,l):
   q[value_index(p,c,l,p.n-1u)];
  if(courant>=0.0f){float interiorLength=min(magnitude,float(face));
   float whole=floor(interiorLength),fractional=interiorLength-whole;
@@ -234,9 +245,10 @@ inline float open_swept(device const float* q,device const float* left,device co
   (magnitude-interiorLength)*rightExtension);
 }
 kernel void face_flux(device const float* q [[buffer(0)]],device const float* u [[buffer(1)]],
- device const float* ambient [[buffer(2)]],device const float* left [[buffer(3)]],
- device const float* right [[buffer(4)]],device const float* prefix [[buffer(5)]],
- device float* flux [[buffer(6)]],constant Params& p [[buffer(7)]],
+ device const float* lowerAmbient [[buffer(2)]],device const float* upperAmbient [[buffer(3)]],
+ device const float* left [[buffer(4)]],device const float* right [[buffer(5)]],
+ device const float* prefix [[buffer(6)]],device float* flux [[buffer(7)]],
+ constant Params& p [[buffer(8)]],
  uint gid [[thread_position_in_grid]]){
  bool periodic=p.lowerBoundary==0u&&p.upperBoundary==0u;
  uint faces=p.n+1u,activeFaces=periodic?p.n:faces,total=p.comps*p.lines*activeFaces;
@@ -246,7 +258,7 @@ kernel void face_flux(device const float* q [[buffer(0)]],device const float* u 
  if((f==0u&&p.lowerBoundary==2u)||(f==p.n&&p.upperBoundary==2u)){flux[output]=0.0f;return;}
  float velocity=u[l*faces+f],courant=p.dt*velocity/p.dx;
  float swept=periodic?periodic_swept(q,left,right,prefix,p,c,l,f,courant):
-  open_swept(q,left,right,ambient,p,c,l,f,courant,velocity);
+  open_swept(q,left,right,lowerAmbient,upperAmbient,p,c,l,f,courant,velocity);
  flux[output]=p.dx*swept;
 }
 kernel void update_cells(device const float* q [[buffer(0)]],device float* flux [[buffer(1)]],
@@ -351,6 +363,8 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 		FireProductionRemapResult& result, std::string* structuredError )
 	{
 		result=FireProductionRemapResult();
+		try {
+		FireProductionRemapResult computed;
 		if( !ValidateFireProductionRemapRequest(request,structuredError) ) return false;
 		MetalRemapContext& context=Context();
 		if( !context.Valid() ) {
@@ -366,7 +380,12 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 		@autoreleasepool {
 			const std::size_t valueBytes=request.values.size()*sizeof(float);
 			const std::size_t velocityBytes=request.faceVelocityMPerS.size()*sizeof(float);
-			const std::size_t ambientBytes=request.ambientValues.size()*sizeof(float);
+			const std::vector<float>& lowerAmbientValues=request.lineSpecificAmbientValues?
+				request.lowerAmbientValues:request.ambientValues;
+			const std::vector<float>& upperAmbientValues=request.lineSpecificAmbientValues?
+				request.upperAmbientValues:request.ambientValues;
+			const std::size_t lowerAmbientBytes=lowerAmbientValues.size()*sizeof(float);
+			const std::size_t upperAmbientBytes=upperAmbientValues.size()*sizeof(float);
 			const std::size_t alphaCount=request.lineCount*request.lineLength;
 			const std::size_t fluxCount=request.componentCount*request.lineCount*
 				(request.lineLength+1u);
@@ -374,8 +393,10 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 				length:valueBytes options:MTLResourceStorageModeShared];
 			id<MTLBuffer> velocity=[context.device newBufferWithBytes:request.faceVelocityMPerS.data()
 				length:velocityBytes options:MTLResourceStorageModeShared];
-			id<MTLBuffer> ambient=[context.device newBufferWithBytes:request.ambientValues.data()
-				length:ambientBytes options:MTLResourceStorageModeShared];
+			id<MTLBuffer> lowerAmbient=[context.device newBufferWithBytes:lowerAmbientValues.data()
+				length:lowerAmbientBytes options:MTLResourceStorageModeShared];
+			id<MTLBuffer> upperAmbient=[context.device newBufferWithBytes:upperAmbientValues.data()
+				length:upperAmbientBytes options:MTLResourceStorageModeShared];
 			id<MTLBuffer> left=[context.device newBufferWithLength:valueBytes options:MTLResourceStorageModeShared];
 			id<MTLBuffer> right=[context.device newBufferWithLength:valueBytes options:MTLResourceStorageModeShared];
 			id<MTLBuffer> alpha=[context.device newBufferWithLength:alphaCount*sizeof(float)
@@ -392,12 +413,35 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 				static_cast<std::uint32_t>(request.asymmetricBoundaries ? request.lowerBoundary :
 					request.boundary),
 				static_cast<std::uint32_t>(request.asymmetricBoundaries ? request.upperBoundary :
-					request.boundary),request.cellWidthM,request.timeStepS};
+					request.boundary),request.lineSpecificAmbientValues?1u:0u,
+				request.cellWidthM,request.timeStepS};
 			id<MTLBuffer> parameterBuffer=[context.device newBufferWithBytes:&parameters
 				length:sizeof(parameters) options:MTLResourceStorageModeShared];
-			if( !values||!velocity||!ambient||!left||!right||!alpha||!prefix||!flux||
+			if( !values||!velocity||!lowerAmbient||!upperAmbient||!left||!right||!alpha||!prefix||!flux||
 				!updated||!parameterBuffer ) {
 				if( structuredError ) *structuredError="production fire remap buffer allocation failed";
+				return false;
+			}
+			std::uint64_t certifiedWorkingSetBytes=0u,actualWorkingSetBytes=0u;
+			if( !FireProductionRemapWorkingSetBytes(request,certifiedWorkingSetBytes) ) {
+				if( structuredError ) *structuredError=
+					"production fire remap working-set certificate failed";
+				return false;
+			}
+			auto recordBuffer=[&](id<MTLBuffer> buffer) -> bool {
+				const std::uint64_t allocated=static_cast<std::uint64_t>([buffer allocatedSize]);
+				if( actualWorkingSetBytes>
+					std::numeric_limits<std::uint64_t>::max()-allocated ) return false;
+				actualWorkingSetBytes+=allocated;return true;
+			};
+			if( !recordBuffer(values)||!recordBuffer(velocity)||!recordBuffer(lowerAmbient)||
+				!recordBuffer(upperAmbient)||!recordBuffer(left)||!recordBuffer(right)||
+				!recordBuffer(alpha)||!recordBuffer(prefix)||!recordBuffer(flux)||
+				!recordBuffer(updated)||!recordBuffer(parameterBuffer)||
+				actualWorkingSetBytes>certifiedWorkingSetBytes||
+				actualWorkingSetBytes>(std::uint64_t(2u)<<30u) ) {
+				if( structuredError ) *structuredError=
+					"production fire remap actual allocation exceeds certificate";
 				return false;
 			}
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
@@ -411,9 +455,11 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 				return false;
 			}
 			[encoder setBuffer:values offset:0 atIndex:0];[encoder setBuffer:velocity offset:0 atIndex:1];
-			[encoder setBuffer:ambient offset:0 atIndex:2];[encoder setBuffer:left offset:0 atIndex:3];
-			[encoder setBuffer:right offset:0 atIndex:4];[encoder setBuffer:alpha offset:0 atIndex:5];
-			[encoder setBuffer:parameterBuffer offset:0 atIndex:6];
+			[encoder setBuffer:lowerAmbient offset:0 atIndex:2];
+			[encoder setBuffer:upperAmbient offset:0 atIndex:3];
+			[encoder setBuffer:left offset:0 atIndex:4];[encoder setBuffer:right offset:0 atIndex:5];
+			[encoder setBuffer:alpha offset:0 atIndex:6];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
 			Dispatch(encoder,context.reconstruct,request.lineCount*request.lineLength);[encoder endEncoding];
 
 			encoder=[command computeCommandEncoder];
@@ -434,9 +480,11 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 				return false;
 			}
 			[encoder setBuffer:values offset:0 atIndex:0];[encoder setBuffer:velocity offset:0 atIndex:1];
-			[encoder setBuffer:ambient offset:0 atIndex:2];[encoder setBuffer:left offset:0 atIndex:3];
-			[encoder setBuffer:right offset:0 atIndex:4];[encoder setBuffer:prefix offset:0 atIndex:5];
-			[encoder setBuffer:flux offset:0 atIndex:6];[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
+			[encoder setBuffer:lowerAmbient offset:0 atIndex:2];
+			[encoder setBuffer:upperAmbient offset:0 atIndex:3];
+			[encoder setBuffer:left offset:0 atIndex:4];[encoder setBuffer:right offset:0 atIndex:5];
+			[encoder setBuffer:prefix offset:0 atIndex:6];[encoder setBuffer:flux offset:0 atIndex:7];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];
 			const FireProductionRemapBoundary lower=request.asymmetricBoundaries ?
 				request.lowerBoundary : request.boundary;
 			const FireProductionRemapBoundary upper=request.asymmetricBoundaries ?
@@ -463,20 +511,27 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			const float* updatedValues=static_cast<const float*>(ReadTrackedMetalBuffer(updated));
 			const float* faceFluxes=static_cast<const float*>(ReadTrackedMetalBuffer(flux));
 			const float* limiter=static_cast<const float*>(ReadTrackedMetalBuffer(alpha));
-			result.updatedValues.assign(updatedValues,updatedValues+request.values.size());
-			result.faceFluxes.assign(faceFluxes,faceFluxes+fluxCount);
-			result.sharedLimiterAlpha.assign(limiter,limiter+alphaCount);
-			result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+			computed.updatedValues.assign(updatedValues,updatedValues+request.values.size());
+			computed.faceFluxes.assign(faceFluxes,faceFluxes+fluxCount);
+			computed.sharedLimiterAlpha.assign(limiter,limiter+alphaCount);
+			computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
 		}
-		if( !AllFinite(result.updatedValues)||!AllFinite(result.faceFluxes)||
-			!AllFinite(result.sharedLimiterAlpha)||!std::isfinite(result.deviceElapsedMS) ) {
-			result=FireProductionRemapResult();
+		if( !AllFinite(computed.updatedValues)||!AllFinite(computed.faceFluxes)||
+			!AllFinite(computed.sharedLimiterAlpha)||!std::isfinite(computed.deviceElapsedMS) ) {
 			if( structuredError )
 				*structuredError="production fire remap produced nonfinite device output";
 			return false;
 		}
 		if( structuredError ) structuredError->clear();
+		result=std::move(computed);
 		return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionRemapResult();
+			if( structuredError ) try {
+				*structuredError="production fire remap allocation failed";
+			} catch( const std::bad_alloc& ) {}
+			return false;
+		}
 	}
 
 	bool RemapFireProductionCellPalindromeMetal(
@@ -634,7 +689,7 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 					static_cast<std::uint32_t>(lines),
 					static_cast<std::uint32_t>(request.componentCount),
 					boundaryValue(request.boundary[2u*axis]),
-					boundaryValue(request.boundary[2u*axis+1u]),request.shape.cellWidthM,
+					boundaryValue(request.boundary[2u*axis+1u]),0u,request.shape.cellWidthM,
 					steps[pass]};
 				id<MTLBuffer> gridParameterBuffer=[context.device newBufferWithBytes:&gridParameters
 					length:sizeof(gridParameters) options:MTLResourceStorageModeShared];
@@ -672,9 +727,11 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 					return false;
 				}
 				[encoder setBuffer:lineValues offset:0 atIndex:0];[encoder setBuffer:lineVelocity offset:0 atIndex:1];
-				[encoder setBuffer:ambient offset:0 atIndex:2];[encoder setBuffer:left offset:0 atIndex:3];
-				[encoder setBuffer:right offset:0 atIndex:4];[encoder setBuffer:alpha offset:0 atIndex:5];
-				[encoder setBuffer:parameterBuffer offset:0 atIndex:6];
+				[encoder setBuffer:ambient offset:0 atIndex:2];
+				[encoder setBuffer:ambient offset:0 atIndex:3];
+				[encoder setBuffer:left offset:0 atIndex:4];[encoder setBuffer:right offset:0 atIndex:5];
+				[encoder setBuffer:alpha offset:0 atIndex:6];
+				[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
 				Dispatch(encoder,context.reconstruct,cells);[encoder endEncoding];
 				const std::size_t padded=NextPowerOfTwo(length);
 				encoder=[command computeCommandEncoder];
@@ -694,9 +751,11 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 					return false;
 				}
 				[encoder setBuffer:lineValues offset:0 atIndex:0];[encoder setBuffer:lineVelocity offset:0 atIndex:1];
-				[encoder setBuffer:ambient offset:0 atIndex:2];[encoder setBuffer:left offset:0 atIndex:3];
-				[encoder setBuffer:right offset:0 atIndex:4];[encoder setBuffer:prefix offset:0 atIndex:5];
-				[encoder setBuffer:flux offset:0 atIndex:6];[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
+				[encoder setBuffer:ambient offset:0 atIndex:2];
+				[encoder setBuffer:ambient offset:0 atIndex:3];
+				[encoder setBuffer:left offset:0 atIndex:4];[encoder setBuffer:right offset:0 atIndex:5];
+				[encoder setBuffer:prefix offset:0 atIndex:6];[encoder setBuffer:flux offset:0 atIndex:7];
+				[encoder setBuffer:parameterBuffer offset:0 atIndex:8];
 				const bool periodic=request.boundary[2u*axis]==FireProductionProjectionPeriodic;
 				Dispatch(encoder,context.flux,periodic?request.componentCount*lines*length:
 					passFluxCount);[encoder endEncoding];

@@ -10,6 +10,7 @@
 #define FIREPRODUCTIONADVECTION_
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -39,12 +40,15 @@ namespace RISE
 		std::vector<float> values;
 		std::vector<float> faceVelocityMPerS;
 		std::vector<float> ambientValues;
+		bool lineSpecificAmbientValues;
+		std::vector<float> lowerAmbientValues;
+		std::vector<float> upperAmbientValues;
 
 		FireProductionRemapRequest() : lineLength(0), lineCount(0),
 			componentCount(0), cellWidthM(0.0f), timeStepS(0.0f),
 			boundary(FireProductionRemapPeriodic), asymmetricBoundaries(false),
 			lowerBoundary(FireProductionRemapPeriodic),
-			upperBoundary(FireProductionRemapPeriodic) {}
+			upperBoundary(FireProductionRemapPeriodic),lineSpecificAmbientValues(false) {}
 	};
 
 	struct FireProductionRemapResult
@@ -56,6 +60,11 @@ namespace RISE
 
 		FireProductionRemapResult() : deviceElapsedMS(0.0) {}
 	};
+
+	//! Outward-rounded Metal allocation bytes for the request's buffer topology.
+	bool FireProductionRemapWorkingSetBytes(
+		const FireProductionRemapRequest& request,
+		std::uint64_t& bytes );
 
 	bool ValidateFireProductionRemapRequest(
 		const FireProductionRemapRequest& request,

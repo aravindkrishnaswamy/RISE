@@ -14,11 +14,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -27,8 +29,23 @@
 
 namespace
 {
-	int failures=0;
+	bool denyTestAllocations=false;
 
+	int failures=0;
+}
+
+void* operator new( std::size_t bytes )
+{
+	if( denyTestAllocations ) throw std::bad_alloc();
+	if( void* memory=std::malloc(bytes) ) return memory;
+	throw std::bad_alloc();
+}
+
+void operator delete( void* memory ) noexcept {std::free(memory);}
+void operator delete( void* memory, std::size_t ) noexcept {std::free(memory);}
+
+namespace
+{
 	void Check( bool condition, const char* message )
 	{
 		if( !condition ) {
@@ -714,6 +731,86 @@ int main()
 		openToWallCPU.faceFluxes[RemapFluxIndex(openToWall,1u,0u,0u)]==3.5f&&
 		openToWallCPU.faceFluxes[RemapFluxIndex(openToWall,1u,0u,8u)]==0.0f,
 		"asymmetric remap applies lower pressure-open inflow and an upper wall independently");
+	FireProductionRemapRequest lineAmbient;
+	lineAmbient.lineLength=4u;lineAmbient.lineCount=3u;lineAmbient.componentCount=2u;
+	lineAmbient.cellWidthM=1.0f;lineAmbient.timeStepS=0.25f;
+	lineAmbient.boundary=FireProductionRemapPressureOpen;
+	lineAmbient.lineSpecificAmbientValues=true;
+	lineAmbient.values.resize(lineAmbient.componentCount*lineAmbient.lineCount*
+		lineAmbient.lineLength);
+	for( std::size_t component=0u;component<lineAmbient.componentCount;++component )
+		for( std::size_t line=0u;line<lineAmbient.lineCount;++line )
+			for( std::size_t cell=0u;cell<lineAmbient.lineLength;++cell )
+				lineAmbient.values[RemapValueIndex(lineAmbient,component,line,cell)]=
+					4.0f+static_cast<float>(component*3u+line);
+	lineAmbient.faceVelocityMPerS.assign(lineAmbient.lineCount*
+		(lineAmbient.lineLength+1u),0.0f);
+	lineAmbient.lowerAmbientValues.resize(lineAmbient.componentCount*lineAmbient.lineCount);
+	lineAmbient.upperAmbientValues.resize(lineAmbient.componentCount*lineAmbient.lineCount);
+	for( std::size_t component=0u;component<lineAmbient.componentCount;++component )
+		for( std::size_t line=0u;line<lineAmbient.lineCount;++line ) {
+			const std::size_t ambientIndex=component*lineAmbient.lineCount+line;
+			lineAmbient.lowerAmbientValues[ambientIndex]=
+				1.0f+static_cast<float>(component*8u+line);
+			lineAmbient.upperAmbientValues[ambientIndex]=
+				17.0f+static_cast<float>(component*8u+line);
+		}
+	for( std::size_t line=0u;line<lineAmbient.lineCount;++line ) {
+		lineAmbient.faceVelocityMPerS[line*(lineAmbient.lineLength+1u)]=0.5f;
+		lineAmbient.faceVelocityMPerS[line*(lineAmbient.lineLength+1u)+
+			lineAmbient.lineLength]=-0.75f;
+	}
+	FireProductionRemapResult lineAmbientCPU;
+	bool everyLineAmbientFlux=RemapFireProductionCPU(lineAmbient,lineAmbientCPU,&error);
+	for( std::size_t component=0u;component<lineAmbient.componentCount;++component )
+		for( std::size_t line=0u;line<lineAmbient.lineCount;++line ) {
+			const std::size_t ambientIndex=component*lineAmbient.lineCount+line;
+			everyLineAmbientFlux=everyLineAmbientFlux&&
+				lineAmbientCPU.faceFluxes[RemapFluxIndex(lineAmbient,component,line,0u)]==
+					0.125f*lineAmbient.lowerAmbientValues[ambientIndex]&&
+				lineAmbientCPU.faceFluxes[RemapFluxIndex(lineAmbient,component,line,
+					lineAmbient.lineLength)]==
+					-0.1875f*lineAmbient.upperAmbientValues[ambientIndex];
+		}
+	Check(everyLineAmbientFlux,
+		"pressure-open remap binds distinct lower and upper ambient tuples for every line");
+	auto seedRemapResult=[](FireProductionRemapResult& seeded) {
+		seeded.updatedValues.assign(1u,1.0f);seeded.faceFluxes.assign(1u,2.0f);
+		seeded.sharedLimiterAlpha.assign(1u,3.0f);seeded.deviceElapsedMS=4.0;
+	};
+	auto remapResultIsDefault=[](const FireProductionRemapResult& rejected) {
+		return rejected.updatedValues.empty()&&rejected.faceFluxes.empty()&&
+			rejected.sharedLimiterAlpha.empty()&&rejected.deviceElapsedMS==0.0;
+	};
+	FireProductionRemapRequest malformedLineAmbient=lineAmbient;
+	malformedLineAmbient.lowerAmbientValues.pop_back();
+	FireProductionRemapResult malformedLineAmbientResult;
+	seedRemapResult(malformedLineAmbientResult);
+	Check(!RemapFireProductionCPU(malformedLineAmbient,malformedLineAmbientResult,&error)&&
+		remapResultIsDefault(malformedLineAmbientResult)&&
+		error.find("shape")!=std::string::npos,
+		"line-specific pressure-open ambient tuples require complete lower and upper shapes");
+	malformedLineAmbient=lineAmbient;
+	malformedLineAmbient.upperAmbientValues.pop_back();
+	seedRemapResult(malformedLineAmbientResult);
+	Check(!RemapFireProductionCPU(malformedLineAmbient,malformedLineAmbientResult,&error)&&
+		remapResultIsDefault(malformedLineAmbientResult)&&
+		error.find("shape")!=std::string::npos,
+		"line-specific pressure-open ambient tuples reject an incomplete upper side");
+	malformedLineAmbient=lineAmbient;
+	malformedLineAmbient.lowerAmbientValues[1u]=std::numeric_limits<float>::infinity();
+	seedRemapResult(malformedLineAmbientResult);
+	Check(!RemapFireProductionCPU(malformedLineAmbient,malformedLineAmbientResult,&error)&&
+		remapResultIsDefault(malformedLineAmbientResult)&&
+		error.find("nonfinite")!=std::string::npos,
+		"line-specific pressure-open ambient tuples reject nonfinite lower-side values");
+	malformedLineAmbient=lineAmbient;
+	malformedLineAmbient.upperAmbientValues[1u]=std::numeric_limits<float>::quiet_NaN();
+	seedRemapResult(malformedLineAmbientResult);
+	Check(!RemapFireProductionCPU(malformedLineAmbient,malformedLineAmbientResult,&error)&&
+		remapResultIsDefault(malformedLineAmbientResult)&&
+		error.find("nonfinite")!=std::string::npos,
+		"line-specific pressure-open ambient tuples reject nonfinite upper-side values");
 	FireProductionRemapRequest invalidPeriodicPair=open;
 	invalidPeriodicPair.asymmetricBoundaries=true;
 	invalidPeriodicPair.lowerBoundary=FireProductionRemapPeriodic;
@@ -766,7 +863,10 @@ int main()
 		"finite input that overflows derived arithmetic fails without published output");
 	FireProductionRemapRequest overflow=constant;
 	overflow.lineCount=std::numeric_limits<std::size_t>::max();
-	Check(!ValidateFireProductionRemapRequest(overflow,&error)&&!error.empty(),
+	std::uint64_t overflowWorkingBytes=9u;
+	Check(!FireProductionRemapWorkingSetBytes(overflow,overflowWorkingBytes)&&
+		overflowWorkingBytes==0u&&
+		!ValidateFireProductionRemapRequest(overflow,&error)&&!error.empty(),
 		"production remap rejects overflowing dimensions before indexing or allocation");
 	FireProductionRemapRequest excessiveWorkingSet;
 	excessiveWorkingSet.lineLength=1024u;excessiveWorkingSet.lineCount=70000u;
@@ -781,18 +881,43 @@ int main()
 		error.find("two GiB")==std::string::npos,
 		"working-set RED straddles the complete two-GiB allocation boundary");
 	FireProductionRemapRequest finalBytesBoundary;
-	finalBytesBoundary.lineLength=4u;finalBytesBoundary.lineCount=1672495u;
-	finalBytesBoundary.componentCount=12u;finalBytesBoundary.cellWidthM=1.0f;
+	finalBytesBoundary.lineLength=15u;finalBytesBoundary.lineCount=4364545u;
+	finalBytesBoundary.componentCount=1u;finalBytesBoundary.cellWidthM=1.0f;
 	finalBytesBoundary.timeStepS=0.0f;
 	finalBytesBoundary.boundary=FireProductionRemapPeriodic;
-	Check(!ValidateFireProductionRemapRequest(finalBytesBoundary,&error)&&
+	std::uint64_t finalBytesBoundaryCount=0u,finalBytesBelowCount=0u;
+	Check(FireProductionRemapWorkingSetBytes(finalBytesBoundary,
+		finalBytesBoundaryCount)&&finalBytesBoundaryCount==UINT64_C(2147500032)&&
+		!ValidateFireProductionRemapRequest(finalBytesBoundary,&error)&&
 		error.find("two GiB")!=std::string::npos,
-		"two-GiB admission counts the ambient tuple and parameter bytes at the final float");
+		"two-GiB admission counts the ambient tuple and parameter at allocation granularity");
 	FireProductionRemapRequest finalBytesBelow=finalBytesBoundary;
 	finalBytesBelow.lineCount-=1u;
-	Check(!ValidateFireProductionRemapRequest(finalBytesBelow,&error)&&
+	Check(FireProductionRemapWorkingSetBytes(finalBytesBelow,finalBytesBelowCount)&&
+		finalBytesBelowCount==UINT64_C(2147450880)&&
+		!ValidateFireProductionRemapRequest(finalBytesBelow,&error)&&
 		error.find("two GiB")==std::string::npos,
-		"final-byte resource fixture has a discriminating below-bound companion");
+		"rounded-allocation resource fixture has a discriminating below-bound companion");
+	FireProductionRemapRequest lineAmbientResourceBoundary;
+	lineAmbientResourceBoundary.lineLength=9u;
+	lineAmbientResourceBoundary.lineCount=6971848u;
+	lineAmbientResourceBoundary.componentCount=1u;
+	lineAmbientResourceBoundary.cellWidthM=1.0f;
+	lineAmbientResourceBoundary.timeStepS=0.0f;
+	lineAmbientResourceBoundary.boundary=FireProductionRemapPeriodic;
+	lineAmbientResourceBoundary.lineSpecificAmbientValues=true;
+	std::uint64_t lineAmbientResourceBytes=0u,lineAmbientResourceBelowBytes=0u;
+	Check(FireProductionRemapWorkingSetBytes(lineAmbientResourceBoundary,
+		lineAmbientResourceBytes)&&lineAmbientResourceBytes==UINT64_C(2147500032)&&
+		!ValidateFireProductionRemapRequest(lineAmbientResourceBoundary,&error)&&
+		error.find("two GiB")!=std::string::npos,
+		"line-specific resource admission counts both per-line ambient side buffers");
+	lineAmbientResourceBoundary.lineCount-=1u;
+	Check(FireProductionRemapWorkingSetBytes(lineAmbientResourceBoundary,
+		lineAmbientResourceBelowBytes)&&lineAmbientResourceBelowBytes==UINT64_C(2147418112)&&
+		!ValidateFireProductionRemapRequest(lineAmbientResourceBoundary,&error)&&
+		error.find("two GiB")==std::string::npos,
+		"line-specific resource fixture has a discriminating below-bound companion");
 
 	FireProductionCellPalindromeRequest translated;
 	translated.shape.nx=8u;translated.shape.ny=8u;translated.shape.nz=8u;
@@ -1180,7 +1305,7 @@ int main()
 			"Metal production challenge proves nonidentity device execution");
 	FireProductionRemapResult constantGPU,constantGPURepeated,openGPU,openNegativeGPU,wallGPU,
 		wallNegativeGPU,wallToOpenGPU,openToWallGPU,
-		smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
+		lineAmbientGPU,smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
 	FireProductionCellPalindromeResult translatedGPU,donorGPU,orderGPU,orderGPURepeated,
 		palindromeConstantGPU;
 	const bool translatedMetal=RemapFireProductionCellPalindromeMetal(
@@ -1301,7 +1426,9 @@ int main()
 		RemapFireProductionMetal(wallToOpen,wallToOpenGPU,&error)&&
 		SameRemapWithin(wallToOpenCPU,wallToOpenGPU,2.0e-5f)&&
 		RemapFireProductionMetal(openToWall,openToWallGPU,&error)&&
-		SameRemapWithin(openToWallCPU,openToWallGPU,2.0e-5f),
+		SameRemapWithin(openToWallCPU,openToWallGPU,2.0e-5f)&&
+		RemapFireProductionMetal(lineAmbient,lineAmbientGPU,&error)&&
+		SameRemapWithin(lineAmbientCPU,lineAmbientGPU,2.0e-5f),
 		"Metal symmetric and asymmetric pressure-open/wall fluxes match the fp32 oracle");
 	const bool affineMetal=RemapFireProductionMetal(affine,affineGPU,&error);
 	float maximumGPUAffineResidual=0.0f;
@@ -1398,15 +1525,34 @@ int main()
 		"src/Library/Utilities/FireProductionAdvectionMac.mm");
 	const std::string transportSource=ReadText(
 		"src/Library/Utilities/FireProductionTransport.cpp");
+	const std::size_t standaloneMetalBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionMetal(");
 	const std::size_t palindromeMetalBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionCellPalindromeMetal(");
+	const std::string standaloneMetalBody=standaloneMetalBeginning==std::string::npos||
+		palindromeMetalBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(standaloneMetalBeginning,
+			palindromeMetalBeginning-standaloneMetalBeginning);
 	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos?
 		std::string():advectionMetalSource.substr(palindromeMetalBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
 	const std::string androidRules=ReadText("build/cmake/rise-android/CMakeLists.txt");
 	const std::string visualStudioProject=ReadText("build/VS2022/Library/Library.vcxproj");
-	Check(advectionMetalSource.find("MTLMathModeSafe")!=std::string::npos&&
+	Check(!standaloneMetalBody.empty()&&
+		CountSubstring(standaloneMetalBody,"recordBuffer(")==11u&&
+		standaloneMetalBody.find("recordBuffer(values)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(velocity)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(lowerAmbient)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(upperAmbient)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(left)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(right)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(alpha)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(prefix)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(flux)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(updated)")!=std::string::npos&&
+		standaloneMetalBody.find("recordBuffer(parameterBuffer)")!=std::string::npos&&
+		advectionMetalSource.find("MTLMathModeSafe")!=std::string::npos&&
 		advectionMetalSource.find("MTLMathModeFast")==std::string::npos&&
 		advectionMetalSource.find("fast::")==std::string::npos&&
 		advectionMetalSource.find("atomic_")==std::string::npos&&
@@ -1421,6 +1567,9 @@ int main()
 		advectionMetalSource.find("ReadTrackedMetalBuffer(updated)")!=std::string::npos&&
 		advectionMetalSource.find("GPUStartTime")!=std::string::npos&&
 		advectionMetalSource.find("GPUEndTime")!=std::string::npos&&
+		advectionMetalSource.find("actualWorkingSetBytes>certifiedWorkingSetBytes")!=
+			std::string::npos&&
+		advectionMetalSource.find("[buffer allocatedSize]")!=std::string::npos&&
 		advectionMetalSource.find("activeFaces=periodic?p.n:faces")!=std::string::npos&&
 		advectionMetalSource.find("p.lowerBoundary==2u")!=std::string::npos&&
 		advectionMetalSource.find("p.upperBoundary==2u")!=std::string::npos&&
@@ -1510,6 +1659,20 @@ int main()
 		unsupportedPalindrome.deviceElapsedMS==0.0&&!error.empty(),
 		"non-Metal production palindrome fails explicitly without a silent CPU fallback");
 #endif
+	FireProductionRemapResult allocationFailureRemap;
+	allocationFailureRemap.updatedValues.push_back(1.0f);
+	allocationFailureRemap.faceFluxes.push_back(2.0f);
+	allocationFailureRemap.sharedLimiterAlpha.push_back(3.0f);
+	allocationFailureRemap.deviceElapsedMS=4.0;
+	error.clear();error.shrink_to_fit();denyTestAllocations=true;
+	const bool allocationFailureRemapReturned=RemapFireProductionMetal(
+		constant,allocationFailureRemap,&error);
+	denyTestAllocations=false;
+	Check(!allocationFailureRemapReturned&&allocationFailureRemap.updatedValues.empty()&&
+		allocationFailureRemap.faceFluxes.empty()&&
+		allocationFailureRemap.sharedLimiterAlpha.empty()&&
+		allocationFailureRemap.deviceElapsedMS==0.0,
+		"standalone Metal remap contains persistent allocation failure without partial output");
 
 	if( failures==0 ) {
 		std::cout << "FireProductionSolverTest passed: table_package_id="

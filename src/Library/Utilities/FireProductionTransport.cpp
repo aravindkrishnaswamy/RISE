@@ -226,19 +226,17 @@ namespace RISE
 				request.componentCount>maximum/(lines*(length+1u)) )
 				return Fail(error,"production palindrome axis dimensions overflow");
 			const std::size_t fluxCount=request.componentCount*lines*(length+1u);
-			const std::size_t velocityCount=lines*(length+1u);
 			if( valueCount>std::numeric_limits<std::uint32_t>::max()||
 				fluxCount>std::numeric_limits<std::uint32_t>::max()||
 				lines>std::numeric_limits<std::uint32_t>::max()||
 				request.componentCount>std::numeric_limits<std::uint32_t>::max() )
 				return Fail(error,"production palindrome axis exceeds kernel indexing");
-			const std::uint64_t floatCount=4u*static_cast<std::uint64_t>(valueCount)+
-				2u*static_cast<std::uint64_t>(fluxCount)+
-				static_cast<std::uint64_t>(velocityCount)+
-				static_cast<std::uint64_t>(lines)*length+request.componentCount;
-			const std::uint64_t maximumBytes=std::uint64_t(2u)<<30u;
-			const std::uint64_t parameterBytes=5u*sizeof(std::uint32_t)+2u*sizeof(float);
-			if( floatCount>(maximumBytes-parameterBytes)/sizeof(float) )
+			FireProductionRemapRequest axisResource;
+			axisResource.lineLength=length;axisResource.lineCount=lines;
+			axisResource.componentCount=request.componentCount;
+			std::uint64_t axisWorkingBytes=0u;
+			if( !FireProductionRemapWorkingSetBytes(axisResource,axisWorkingBytes)||
+				axisWorkingBytes>(std::uint64_t(2u)<<30u) )
 				return Fail(error,"production palindrome axis exceeds two GiB");
 			const bool periodic=request.boundary[2u*axis]==FireProductionProjectionPeriodic;
 			for( std::size_t line=0;line<lines;++line ) {

@@ -17,8 +17,9 @@ namespace RISE
 		FireProductionRemapResult& result, std::string* error )
 	{
 		result=FireProductionRemapResult();
-		if( error ) *error=
-			"production fire Metal remap unavailable: Metal is not built on this platform";
+		if( error ) try {
+			*error="production fire Metal remap unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) {}
 		return false;
 	}
 
