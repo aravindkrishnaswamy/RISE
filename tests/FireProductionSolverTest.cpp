@@ -2459,18 +2459,17 @@ int main()
 	composedStep.cellTransport.timeStepS=mixedDual.timeStepS;
 	composedStep.cellTransport.boundary=mixedDual.boundary;
 	composedStep.cellTransport.frozenVelocityMPerS=mixedDual.frozenVelocityMPerS;
-	composedStep.cellTransport.ambientValues.resize(9u);
+	const std::array<float,9> composedTuple={{0.03125f,0.05f,0.10f,0.20f,
+		0.15f,0.10f,0.20f,0.0125f,1200.0f}};
+	composedStep.cellTransport.ambientValues.assign(composedTuple.begin(),composedTuple.end());
 	composedStep.cellTransport.conservativeValues.resize(9u*mixedDual.shape.CellCount());
 	for( std::size_t component=0u;component<9u;++component ) {
-		const float beginning=component==0u?0.8f:0.01f*static_cast<float>(component+1u);
-		composedStep.cellTransport.ambientValues[component]=beginning;
 		for( std::size_t cell=0u;cell<mixedDual.shape.CellCount();++cell )
 			composedStep.cellTransport.conservativeValues[
-				component*mixedDual.shape.CellCount()+cell]=beginning+
-				0.001f*static_cast<float>((cell+3u*component)%7u);
+				component*mixedDual.shape.CellCount()+cell]=composedTuple[component]+
+				((component==0u||component>=7u)?
+				0.001f*static_cast<float>((cell+3u*component)%7u):0.0f);
 	}
-	std::fill(composedStep.cellTransport.conservativeValues.begin(),
-		composedStep.cellTransport.conservativeValues.begin()+mixedDual.shape.CellCount(),0.8f);
 	composedStep.dualTransport=mixedDual;
 	composedStep.cellSourceIncrement.assign(9u*mixedDual.shape.CellCount(),0.0f);
 	for( unsigned int axis=0u;axis<3u;++axis )
@@ -2495,9 +2494,14 @@ int main()
 		composedProjectionRequest.timeStepS=mixedDual.timeStepS;
 		composedProjectionRequest.ambientDensityKGPerM3=mixedDual.ambientDensityKGPerM3;
 		composedProjectionRequest.boundary=mixedDual.boundary;
-		composedProjectionRequest.gasDensityKGPerM3.assign(
-			composedCellCPU.conservativeValues.begin(),
-			composedCellCPU.conservativeValues.begin()+mixedDual.shape.CellCount());
+		composedProjectionRequest.gasDensityKGPerM3.resize(mixedDual.shape.CellCount());
+		for( std::size_t cell=0u;cell<mixedDual.shape.CellCount();++cell ) {
+			float gas=composedCellCPU.conservativeValues[mixedDual.shape.CellCount()+cell];
+			for( std::size_t component=2u;component<=6u;++component )
+				gas+=composedCellCPU.conservativeValues[
+					component*mixedDual.shape.CellCount()+cell];
+			composedProjectionRequest.gasDensityKGPerM3[cell]=gas;
+		}
 		composedProjectionRequest.provisionalMomentumKGPerM2S=composedDualCPU.momentum;
 		composedProjectionRequest.divergenceTargetPerS=composedStep.divergenceTargetPerS;
 		composedCPU=ProjectFireProductionCPU(composedProjectionRequest,
@@ -3893,7 +3897,8 @@ int main()
 	tier10FullStep.cellTransport.conservativeValues.resize(
 		9u*tier10ResidentForce.shape.CellCount());
 	for( std::size_t component=0u;component<9u;++component ) {
-		const float value=component==0u?1.2f:0.01f*static_cast<float>(component);
+		const float value=component==0u?0.375f:
+			(component<=6u?0.2f:(component==7u?0.01f:1200.0f));
 		tier10FullStep.cellTransport.ambientValues.push_back(value);
 		std::fill(tier10FullStep.cellTransport.conservativeValues.begin()+
 			component*tier10ResidentForce.shape.CellCount(),
@@ -4324,7 +4329,8 @@ int main()
 		residentFullStepBody.find("RemapFireProductionDualMomentumMetalResident(")!=
 			std::string::npos&&residentFullStepBody.find(
 			"ProjectFireProductionMetalResident(")!=std::string::npos&&
-		residentFullStepBody.find("context.addCellSourcesExtractDensity")!=std::string::npos&&
+		residentFullStepBody.find("context.addCellSources")!=std::string::npos&&
+		residentFullStepBody.find("context.extractGasDensity")!=std::string::npos&&
 		residentFullStepBody.find("context.addFaceSources")!=std::string::npos&&
 		residentFullStepBody.find("computed.projection.residentProjectionInvocationCount")!=
 			std::string::npos&&residentFullStepBody.find(

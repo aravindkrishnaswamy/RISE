@@ -417,12 +417,22 @@ kernel void prescribe_dual_component_walls(device float* momentum [[buffer(0)]],
  if((coordinate==0u&&p.lowerComponentWall!=0u)||(coordinate==extent&&p.upperComponentWall!=0u))
   momentum[gid]=0.0f;
 }
-kernel void add_cell_sources_extract_density(device float* conservative [[buffer(0)]],
- device const float* source [[buffer(1)]],device float* density [[buffer(2)]],
- constant GridParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+kernel void add_cell_sources(device float* conservative [[buffer(0)]],
+ device const float* source [[buffer(1)]],constant GridParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
  uint cells=p.nx*p.ny*p.nz,total=p.comps*cells;if(gid>=total)return;
- float value=conservative[gid]+source[gid];conservative[gid]=value;
- if(gid<cells)density[gid]=value;
+ conservative[gid]+=source[gid];
+}
+kernel void extract_gas_density(device const float* conservative [[buffer(0)]],
+ device float* density [[buffer(1)]],constant GridParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
+ uint cells=p.nx*p.ny*p.nz;if(gid>=cells)return;
+ // The authoritative tuple is rho_tot Z, seven record-ordered constituent
+ // densities, and sensible enthalpy.  Only CH4..CO (components 1..6) are gas.
+ float gas=conservative[cells+gid];
+ gas+=conservative[2u*cells+gid];gas+=conservative[3u*cells+gid];
+ gas+=conservative[4u*cells+gid];gas+=conservative[5u*cells+gid];
+ gas+=conservative[6u*cells+gid];density[gid]=gas;
 }
 kernel void add_face_sources(device float* momentum [[buffer(0)]],
  device const float* source [[buffer(1)]],constant uint& count [[buffer(2)]],
@@ -448,7 +458,8 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 			id<MTLComputePipelineState> gatherDualLineValues;
 			id<MTLComputePipelineState> scatterDualLineValues;
 			id<MTLComputePipelineState> prescribeDualComponentWalls;
-			id<MTLComputePipelineState> addCellSourcesExtractDensity;
+			id<MTLComputePipelineState> addCellSources;
+			id<MTLComputePipelineState> extractGasDensity;
 			id<MTLComputePipelineState> addFaceSources;
 			std::string error;
 
@@ -457,7 +468,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				gatherPeriodicDualValues(nil),gatherPeriodicDualCarrier(nil),
 				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil),
 				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil),
-				addCellSourcesExtractDensity(nil),addFaceSources(nil)
+				addCellSources(nil),extractGasDensity(nil),addFaceSources(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -489,14 +500,15 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					gatherDualLineValues=makePipeline("gather_dual_line_values");
 					scatterDualLineValues=makePipeline("scatter_dual_line_values");
 					prescribeDualComponentWalls=makePipeline("prescribe_dual_component_walls");
-					addCellSourcesExtractDensity=makePipeline("add_cell_sources_extract_density");
+					addCellSources=makePipeline("add_cell_sources");
+					extractGasDensity=makePipeline("extract_gas_density");
 					addFaceSources=makePipeline("add_face_sources");
 					if( !reconstruct||!scan||!flux||!update||!gatherValues||
 						!scatterValues||!gatherVelocity||!gatherPeriodicDualValues||
 						!gatherPeriodicDualCarrier||!scatterPeriodicDualValues||
 						!publishPeriodicDualSeam||!gatherDualLineValues||
 						!scatterDualLineValues||!prescribeDualComponentWalls||
-						!addCellSourcesExtractDensity||!addFaceSources ) {
+						!addCellSources||!extractGasDensity||!addFaceSources ) {
 						error=MetalError("production fire remap pipeline creation failed",metalError);
 						return;
 					}
@@ -511,7 +523,7 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 					scatterValues&&gatherVelocity&&gatherPeriodicDualValues&&
 					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
 					publishPeriodicDualSeam&&gatherDualLineValues&&scatterDualLineValues&&
-					prescribeDualComponentWalls&&addCellSourcesExtractDensity&&addFaceSources&&
+				prescribeDualComponentWalls&&addCellSources&&extractGasDensity&&addFaceSources&&
 					error.empty();
 			}
 		};
@@ -2014,9 +2026,12 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				request.cellTransport.conservativeValues.size()!=9u*cells||
 				request.cellSourceIncrement.size()!=9u*cells||
 				request.divergenceTargetPerS.size()!=cells ) return false;
-			for( std::size_t cell=0u;cell<cells;++cell ) if(
-				request.cellTransport.conservativeValues[cell]!=request.force.cellGasDensityKGPerM3[cell] )
-				return false;
+			for( std::size_t cell=0u;cell<cells;++cell ) {
+				float gas=request.cellTransport.conservativeValues[cells+cell];
+				for( std::size_t component=2u;component<=6u;++component )
+					gas+=request.cellTransport.conservativeValues[component*cells+cell];
+				if( gas!=request.force.cellGasDensityKGPerM3[cell] ) return false;
+			}
 			for( unsigned int axis=0u;axis<3u;++axis ) if(
 				request.momentumSourceIncrement[axis].size()!=faceCounts[axis]||
 				request.dualTransport.beginningFaceDensity[axis]!=request.force.faceDensityKGPerM3[axis]||
@@ -2128,9 +2143,14 @@ kernel void add_face_sources(device float* momentum [[buffer(0)]],
 				id<MTLComputeCommandEncoder> encoder=sourceCommand?[sourceCommand computeCommandEncoder]:nil;
 				if( !encoder ) return false;
 				[encoder setBuffer:cell.conservativeValues offset:0 atIndex:0];
-				[encoder setBuffer:cellSourcePrivate offset:0 atIndex:1];[encoder setBuffer:projectedDensity offset:0 atIndex:2];
-				[encoder setBuffer:sourceGridParameter offset:0 atIndex:3];
-				Dispatch(encoder,context.addCellSourcesExtractDensity,9u*cells);[encoder endEncoding];
+				[encoder setBuffer:cellSourcePrivate offset:0 atIndex:1];
+				[encoder setBuffer:sourceGridParameter offset:0 atIndex:2];
+				Dispatch(encoder,context.addCellSources,9u*cells);[encoder endEncoding];
+				encoder=[sourceCommand computeCommandEncoder];if( !encoder ) return false;
+				[encoder setBuffer:cell.conservativeValues offset:0 atIndex:0];
+				[encoder setBuffer:projectedDensity offset:0 atIndex:1];
+				[encoder setBuffer:sourceGridParameter offset:0 atIndex:2];
+				Dispatch(encoder,context.extractGasDensity,cells);[encoder endEncoding];
 				encoder=[sourceCommand computeCommandEncoder];if( !encoder ) return false;
 				[encoder setBuffer:dual.packedMomentum offset:0 atIndex:0];
 				[encoder setBuffer:faceSourcePrivate offset:0 atIndex:1];
