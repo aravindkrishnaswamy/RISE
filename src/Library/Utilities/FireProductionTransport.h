@@ -113,6 +113,53 @@ namespace RISE
 		FireProductionCellPalindromeResult& result,
 		std::string* error=0 );
 
+	//! Test/publication wrapper around the Private-buffer resident seam. It
+	//! performs boundary upload and terminal staging outside the resident call,
+	//! and reports only the resident command/transfer diagnostics.
+	bool RemapFireProductionCellPalindromeMetalResidentComparator(
+		const FireProductionCellPalindromeRequest& request,
+		FireProductionCellPalindromeResult& result,
+		std::string* error=0 );
+
+#if defined(__OBJC__) && defined(__APPLE__)
+	struct FireProductionMetalCellPalindromeResidentInput
+	{
+		id<MTLBuffer> conservativeValues;
+		std::array<id<MTLBuffer>,3> frozenVelocityMPerS;
+		id<MTLBuffer> ambientValues;
+
+		FireProductionMetalCellPalindromeResidentInput() : conservativeValues(nil),
+			ambientValues(nil)
+		{
+			frozenVelocityMPerS.fill(nil);
+		}
+	};
+
+	struct FireProductionMetalCellPalindromeResidentResult
+	{
+		id<MTLBuffer> conservativeValues;
+		std::uint32_t executedSubmapCount;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint64_t actualMetalAllocationBytes;
+		double deviceElapsedMS;
+
+		FireProductionMetalCellPalindromeResidentResult() : conservativeValues(nil),
+			executedSubmapCount(0u),commandCommitCount(0u),
+			interstageFullGridTransferCount(0u),actualMetalAllocationBytes(0u),
+			deviceElapsedMS(0.0) {}
+	};
+
+	//! Private-buffer production seam. The host request supplies validation and
+	//! schedule bytes; the authoritative full-grid operands are the resident
+	//! buffers. No full-grid staging or host access is permitted in this call.
+	bool RemapFireProductionCellPalindromeMetalResident(
+		const FireProductionCellPalindromeRequest& request,
+		const FireProductionMetalCellPalindromeResidentInput& input,
+		FireProductionMetalCellPalindromeResidentResult& result,
+		std::string* error=0 );
+#endif
+
 	//! Strict-binary32 periodic MAC oracle.  Each noncollocated momentum
 	//! component owns a separate dual tuple and five-pass palindrome.
 	bool RemapFireProductionPeriodicDualMomentumCPU(

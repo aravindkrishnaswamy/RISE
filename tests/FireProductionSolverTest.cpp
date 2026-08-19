@@ -3579,7 +3579,7 @@ int main()
 		wallNegativeGPU,wallToOpenGPU,openToWallGPU,
 		lineAmbientGPU,smoothGPU,affineGPU,latePrefixGPU,subUlpSweepGPU,blellochGPU;
 	FireProductionCellPalindromeResult translatedGPU,donorGPU,orderGPU,orderGPURepeated,
-		palindromeConstantGPU;
+		palindromeConstantGPU,residentOrderGPU;
 	const bool translatedMetal=RemapFireProductionCellPalindromeMetal(
 		translated,translatedGPU,&error);
 	if( !translatedMetal ) std::cerr << "Metal palindrome detail: " << error << '\n';
@@ -3589,6 +3589,8 @@ int main()
 		orderSensitive,orderGPURepeated,&error);
 	const bool palindromeConstantMetal=RemapFireProductionCellPalindromeMetal(
 		palindromeConstant,palindromeConstantGPU,&error);
+	const bool residentOrderMetal=RemapFireProductionCellPalindromeMetalResidentComparator(
+		orderSensitive,residentOrderGPU,&error);
 	Check(translatedMetal&&translatedGPU.executedSubmapCount==5u&&
 		translatedGPU.conservativeValues==translatedResult.conservativeValues&&
 		donorMetal&&SameFloatVectorsWithin(donorGPU.conservativeValues,
@@ -3601,7 +3603,12 @@ int main()
 		orderGPU.commandCommitCount==1u&&orderGPU.interstageFullGridReadbackCount==0u&&
 		orderGPU.actualTrackedWorkingSetBytes<=orderGPU.certifiedWorkingSetBytes&&
 		palindromeConstantMetal&&palindromeConstantGPU.conservativeValues==
-			palindromeConstantResult.conservativeValues,
+			palindromeConstantResult.conservativeValues&&residentOrderMetal&&
+		residentOrderGPU.conservativeValues==orderGPU.conservativeValues&&
+		residentOrderGPU.executedSubmapCount==5u&&
+		residentOrderGPU.commandCommitCount==1u&&
+		residentOrderGPU.interstageFullGridReadbackCount==0u&&
+		residentOrderGPU.deviceElapsedMS>0.0,
 		"one-command Metal palindrome is byte-identical to the independent five-pass oracle");
 	bool everyMixedPalindromeMetal=true;
 	for( std::size_t fixture=0;fixture<mixedPalindromeRequests.size();++fixture ) {
@@ -3833,12 +3840,25 @@ int main()
 		"bool RemapFireProductionMetal(");
 	const std::size_t palindromeMetalBeginning=advectionMetalSource.find(
 		"bool RemapFireProductionCellPalindromeMetal(");
+	const std::size_t residentPalindromeBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionCellPalindromeMetalResident(");
+	const std::size_t residentPalindromeComparatorBeginning=advectionMetalSource.find(
+		"bool RemapFireProductionCellPalindromeMetalResidentComparator(");
 	const std::string standaloneMetalBody=standaloneMetalBeginning==std::string::npos||
 		palindromeMetalBeginning==std::string::npos?std::string():
 		advectionMetalSource.substr(standaloneMetalBeginning,
 			palindromeMetalBeginning-standaloneMetalBeginning);
-	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos?
-		std::string():advectionMetalSource.substr(palindromeMetalBeginning);
+	const std::string palindromeMetalBody=palindromeMetalBeginning==std::string::npos||
+		residentPalindromeBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(palindromeMetalBeginning,
+			residentPalindromeBeginning-palindromeMetalBeginning);
+	const std::string residentPalindromeBody=residentPalindromeBeginning==std::string::npos||
+		residentPalindromeComparatorBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentPalindromeBeginning,
+			residentPalindromeComparatorBeginning-residentPalindromeBeginning);
+	const std::string residentPalindromeComparatorBody=
+		residentPalindromeComparatorBeginning==std::string::npos?std::string():
+		advectionMetalSource.substr(residentPalindromeComparatorBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string makeFilelist=ReadText("build/make/rise/Filelist");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
@@ -3917,14 +3937,29 @@ int main()
 		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
 		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
 		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
-		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==3u&&
-		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==3u&&
-		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==5u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==6u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==6u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==6u&&
 		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
 		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
 		palindromeMetalBody.find("RemapFireProductionMetal(request")==std::string::npos,
 		"P3 palindrome measures one command and one scheduled host publication at the global seams");
+	Check(!residentPalindromeBody.empty()&&!residentPalindromeComparatorBody.empty()&&
+		CountSubstring(residentPalindromeBody,"TrackedMetalCommandBuffer(")==1u&&
+		CountSubstring(residentPalindromeBody,"CommitTrackedMetalCommand(")==1u&&
+		CountSubstring(residentPalindromeBody,"ReadTrackedMetalBuffer(")==0u&&
+		CountSubstring(residentPalindromeBody," copyFromBuffer:")==1u&&
+		residentPalindromeBody.find("sourceOffset:0 toBuffer:gridA")!=std::string::npos&&
+		residentPalindromeBody.find("[input.conservativeValues storageMode]!=MTLStorageModePrivate")!=
+			std::string::npos&&
+		residentPalindromeBody.find("[input.frozenVelocityMPerS[axis] storageMode]!=MTLStorageModePrivate")!=
+			std::string::npos&&
+		residentPalindromeBody.find("reads!=0u")!=std::string::npos&&
+		CountSubstring(residentPalindromeComparatorBody,"TrackedMetalCommandBuffer(")==2u&&
+		CountSubstring(residentPalindromeComparatorBody,"CommitTrackedMetalCommand(")==2u&&
+		CountSubstring(residentPalindromeComparatorBody,"ReadTrackedMetalBuffer(")==1u,
+		"resident palindrome owns only Private full grids and observes zero interstage host access");
 	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
 		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==2u&&
 		CountSubstring(transportSource,

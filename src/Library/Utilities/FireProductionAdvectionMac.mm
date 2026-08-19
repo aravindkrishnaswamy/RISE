@@ -829,4 +829,316 @@ kernel void update_cells(device const float* q [[buffer(0)]],device float* flux 
 			return false;
 		}
 	}
+
+	bool RemapFireProductionCellPalindromeMetalResident(
+		const FireProductionCellPalindromeRequest& request,
+		const FireProductionMetalCellPalindromeResidentInput& input,
+		FireProductionMetalCellPalindromeResidentResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionMetalCellPalindromeResidentResult();
+		try {
+			if( !ValidateFireProductionCellPalindromeRequest(request,structuredError) ) return false;
+			MetalRemapContext& context=Context();
+			if( !context.Valid() ) {
+				if( structuredError ) *structuredError=context.error;
+				return false;
+			}
+			@autoreleasepool {
+				const std::size_t cells=request.shape.CellCount();
+				const std::size_t valueCount=request.componentCount*cells;
+				const std::size_t valueBytes=valueCount*sizeof(float);
+				const std::size_t faceCounts[]={
+					FireProductionProjectionFaceCount(request.shape,0u),
+					FireProductionProjectionFaceCount(request.shape,1u),
+					FireProductionProjectionFaceCount(request.shape,2u)};
+				if( !input.conservativeValues||!input.ambientValues||
+					[input.conservativeValues storageMode]!=MTLStorageModePrivate||
+					[input.conservativeValues length]<valueBytes||
+					[input.ambientValues length]<request.componentCount*sizeof(float) ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome input ownership is invalid";
+					return false;
+				}
+				for( unsigned int axis=0u;axis<3u;++axis ) if(
+					!input.frozenVelocityMPerS[axis]||
+					[input.frozenVelocityMPerS[axis] storageMode]!=MTLStorageModePrivate||
+					[input.frozenVelocityMPerS[axis] length]<faceCounts[axis]*sizeof(float) ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome carrier ownership is invalid";
+					return false;
+				}
+				const std::size_t maximumLineFaces=std::max(faceCounts[0],
+					std::max(faceCounts[1],faceCounts[2]));
+				const std::size_t maximumFluxCount=request.componentCount*maximumLineFaces;
+				auto privateBuffer=[&](std::size_t bytes) {
+					return [context.device newBufferWithLength:bytes
+						options:MTLResourceStorageModePrivate];
+				};
+				id<MTLBuffer> gridA=privateBuffer(valueBytes),gridB=privateBuffer(valueBytes);
+				id<MTLBuffer> lineValues=privateBuffer(valueBytes),
+					lineUpdated=privateBuffer(valueBytes),left=privateBuffer(valueBytes),
+					right=privateBuffer(valueBytes),
+					lineVelocity=privateBuffer(maximumLineFaces*sizeof(float)),
+					alpha=privateBuffer(cells*sizeof(float)),
+					prefix=privateBuffer(maximumFluxCount*sizeof(float)),
+					flux=privateBuffer(maximumFluxCount*sizeof(float));
+				const id<MTLBuffer> privateWork[]={gridA,gridB,lineValues,lineUpdated,left,right,
+					lineVelocity,alpha,prefix,flux};
+				std::uint64_t actualBytes=0u;
+				auto record=[&](id<MTLBuffer> buffer, MTLStorageMode mode) {
+					if( !buffer||[buffer storageMode]!=mode ) return false;
+					const std::uint64_t bytes=static_cast<std::uint64_t>([buffer allocatedSize]);
+					if( actualBytes>std::numeric_limits<std::uint64_t>::max()-bytes ) return false;
+					actualBytes+=bytes;return true;
+				};
+				if( !record(input.conservativeValues,MTLStorageModePrivate)||
+					!record(input.frozenVelocityMPerS[0],MTLStorageModePrivate)||
+					!record(input.frozenVelocityMPerS[1],MTLStorageModePrivate)||
+					!record(input.frozenVelocityMPerS[2],MTLStorageModePrivate)||
+					!record(input.ambientValues,[input.ambientValues storageMode]) ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome borrowed allocation is invalid";
+					return false;
+				}
+				for( id<MTLBuffer> buffer : privateWork ) if(
+					!record(buffer,MTLStorageModePrivate) ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome work allocation failed";
+					return false;
+				}
+				const std::uint64_t beginningCommandCommitCount=MetalCommandCommitCount;
+				const std::uint64_t beginningHostBufferReadCount=MetalHostBufferReadCount;
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				if( !command ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome command allocation failed";
+					return false;
+				}
+				id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];
+				if( !blit ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome initialization encoder failed";
+					return false;
+				}
+				[blit copyFromBuffer:input.conservativeValues sourceOffset:0 toBuffer:gridA
+					destinationOffset:0 size:valueBytes];[blit endEncoding];
+				const unsigned int axes[]={0u,1u,2u,1u,0u};
+				const float steps[]={0.5f*request.timeStepS,0.5f*request.timeStepS,
+					request.timeStepS,0.5f*request.timeStepS,0.5f*request.timeStepS};
+				auto boundaryValue=[](FireProductionProjectionBoundary boundary) -> std::uint32_t {
+					return boundary==FireProductionProjectionPeriodic?0u:
+						(boundary==FireProductionProjectionPressureOpen?1u:2u);
+				};
+				for( unsigned int pass=0u;pass<5u;++pass ) {
+					const unsigned int axis=axes[pass];
+					const std::size_t length=axis==0u?request.shape.nx:
+						(axis==1u?request.shape.ny:request.shape.nz);
+					const std::size_t lines=cells/length,lineFaces=lines*(length+1u);
+					const MetalGridParameters gridParameters={
+						static_cast<std::uint32_t>(request.shape.nx),
+						static_cast<std::uint32_t>(request.shape.ny),
+						static_cast<std::uint32_t>(request.shape.nz),axis,
+						static_cast<std::uint32_t>(request.componentCount)};
+					const MetalParameters parameters={static_cast<std::uint32_t>(length),
+						static_cast<std::uint32_t>(lines),
+						static_cast<std::uint32_t>(request.componentCount),
+						boundaryValue(request.boundary[2u*axis]),
+						boundaryValue(request.boundary[2u*axis+1u]),0u,
+						request.shape.cellWidthM,steps[pass]};
+					id<MTLBuffer> gridParameterBuffer=[context.device newBufferWithBytes:&gridParameters
+						length:sizeof(gridParameters) options:MTLResourceStorageModeShared];
+					id<MTLBuffer> parameterBuffer=[context.device newBufferWithBytes:&parameters
+						length:sizeof(parameters) options:MTLResourceStorageModeShared];
+					if( !record(gridParameterBuffer,MTLStorageModeShared)||
+						!record(parameterBuffer,MTLStorageModeShared) ) {
+						if( structuredError ) *structuredError=
+							"production resident palindrome parameter allocation failed";
+						return false;
+					}
+					auto encoder=[command computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:gridA offset:0 atIndex:0];
+					[encoder setBuffer:lineValues offset:0 atIndex:1];
+					[encoder setBuffer:gridParameterBuffer offset:0 atIndex:2];
+					Dispatch(encoder,context.gatherValues,valueCount);[encoder endEncoding];
+					encoder=[command computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:input.frozenVelocityMPerS[0] offset:0 atIndex:0];
+					[encoder setBuffer:input.frozenVelocityMPerS[1] offset:0 atIndex:1];
+					[encoder setBuffer:input.frozenVelocityMPerS[2] offset:0 atIndex:2];
+					[encoder setBuffer:lineVelocity offset:0 atIndex:3];
+					[encoder setBuffer:gridParameterBuffer offset:0 atIndex:4];
+					Dispatch(encoder,context.gatherVelocity,lineFaces);[encoder endEncoding];
+					encoder=[command computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:lineValues offset:0 atIndex:0];
+					[encoder setBuffer:lineVelocity offset:0 atIndex:1];
+					[encoder setBuffer:input.ambientValues offset:0 atIndex:2];
+					[encoder setBuffer:input.ambientValues offset:0 atIndex:3];
+					[encoder setBuffer:left offset:0 atIndex:4];
+					[encoder setBuffer:right offset:0 atIndex:5];
+					[encoder setBuffer:alpha offset:0 atIndex:6];
+					[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
+					Dispatch(encoder,context.reconstruct,cells);[encoder endEncoding];
+					const std::size_t padded=NextPowerOfTwo(length);
+					encoder=[command computeCommandEncoder];
+					if( !encoder||padded>static_cast<std::size_t>(
+						[context.scan maxTotalThreadsPerThreadgroup]) ) return false;
+					[encoder setComputePipelineState:context.scan];
+					[encoder setBuffer:lineValues offset:0 atIndex:0];
+					[encoder setBuffer:prefix offset:0 atIndex:1];
+					[encoder setBuffer:parameterBuffer offset:0 atIndex:2];
+					[encoder setThreadgroupMemoryLength:padded*sizeof(float) atIndex:0];
+					[encoder dispatchThreadgroups:MTLSizeMake(request.componentCount*lines,1,1)
+						threadsPerThreadgroup:MTLSizeMake(padded,1,1)];[encoder endEncoding];
+					encoder=[command computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:lineValues offset:0 atIndex:0];
+					[encoder setBuffer:lineVelocity offset:0 atIndex:1];
+					[encoder setBuffer:input.ambientValues offset:0 atIndex:2];
+					[encoder setBuffer:input.ambientValues offset:0 atIndex:3];
+					[encoder setBuffer:left offset:0 atIndex:4];
+					[encoder setBuffer:right offset:0 atIndex:5];
+					[encoder setBuffer:prefix offset:0 atIndex:6];
+					[encoder setBuffer:flux offset:0 atIndex:7];
+					[encoder setBuffer:parameterBuffer offset:0 atIndex:8];
+					const bool periodic=request.boundary[2u*axis]==FireProductionProjectionPeriodic;
+					Dispatch(encoder,context.flux,periodic?request.componentCount*lines*length:
+						request.componentCount*lineFaces);[encoder endEncoding];
+					encoder=[command computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:lineValues offset:0 atIndex:0];
+					[encoder setBuffer:flux offset:0 atIndex:1];
+					[encoder setBuffer:lineUpdated offset:0 atIndex:2];
+					[encoder setBuffer:parameterBuffer offset:0 atIndex:3];
+					Dispatch(encoder,context.update,valueCount);[encoder endEncoding];
+					encoder=[command computeCommandEncoder];if( !encoder ) return false;
+					[encoder setBuffer:lineUpdated offset:0 atIndex:0];
+					[encoder setBuffer:gridB offset:0 atIndex:1];
+					[encoder setBuffer:gridParameterBuffer offset:0 atIndex:2];
+					Dispatch(encoder,context.scatterValues,valueCount);[encoder endEncoding];
+					std::swap(gridA,gridB);
+				}
+				if( actualBytes>(UINT64_C(1)<<31u) ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome working set exceeds two GiB";
+					return false;
+				}
+				CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if( [command status]!=MTLCommandBufferStatusCompleted ) {
+					if( structuredError ) *structuredError=MetalError(
+						"production resident palindrome command failed",[command error]);
+					return false;
+				}
+				const std::uint64_t commits=MetalCommandCommitCount-beginningCommandCommitCount;
+				const std::uint64_t reads=MetalHostBufferReadCount-beginningHostBufferReadCount;
+				if( commits!=1u||reads!=0u ) {
+					if( structuredError ) *structuredError=
+						"production resident palindrome transfer topology changed";
+					return false;
+				}
+				FireProductionMetalCellPalindromeResidentResult computed;
+				computed.conservativeValues=gridA;computed.executedSubmapCount=5u;
+				computed.commandCommitCount=1u;computed.interstageFullGridTransferCount=0u;
+				computed.actualMetalAllocationBytes=actualBytes;
+				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				if( !std::isfinite(computed.deviceElapsedMS) ) return false;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionMetalCellPalindromeResidentResult();
+			if( structuredError ) try {
+				*structuredError="production resident palindrome allocation failed";
+			} catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
+
+	bool RemapFireProductionCellPalindromeMetalResidentComparator(
+		const FireProductionCellPalindromeRequest& request,
+		FireProductionCellPalindromeResult& result, std::string* structuredError )
+	{
+		result=FireProductionCellPalindromeResult();
+		try {
+			if( !ValidateFireProductionCellPalindromeRequest(request,structuredError) ) return false;
+			MetalRemapContext& context=Context();
+			if( !context.Valid() ) {
+				if( structuredError ) *structuredError=context.error;
+				return false;
+			}
+			@autoreleasepool {
+				const std::size_t cells=request.shape.CellCount();
+				const std::size_t valueCount=request.componentCount*cells;
+				const std::size_t valueBytes=valueCount*sizeof(float);
+				std::array<std::size_t,3> faceCounts;
+				for( unsigned int axis=0u;axis<3u;++axis )
+					faceCounts[axis]=FireProductionProjectionFaceCount(request.shape,axis);
+				id<MTLBuffer> inputStage=[context.device newBufferWithBytes:
+					request.conservativeValues.data() length:valueBytes
+					options:MTLResourceStorageModeShared];
+				std::array<id<MTLBuffer>,3> velocityStage,velocityPrivate;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					velocityStage[axis]=[context.device newBufferWithBytes:
+						request.frozenVelocityMPerS[axis].data()
+						length:faceCounts[axis]*sizeof(float)
+						options:MTLResourceStorageModeShared];
+					velocityPrivate[axis]=[context.device newBufferWithLength:
+						faceCounts[axis]*sizeof(float) options:MTLResourceStorageModePrivate];
+				}
+				id<MTLBuffer> inputPrivate=[context.device newBufferWithLength:valueBytes
+					options:MTLResourceStorageModePrivate];
+				id<MTLBuffer> ambient=[context.device newBufferWithBytes:request.ambientValues.data()
+					length:request.componentCount*sizeof(float)
+					options:MTLResourceStorageModeShared];
+				if( !inputStage||!inputPrivate||!ambient ) return false;
+				for( unsigned int axis=0u;axis<3u;++axis )
+					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
+				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;
+				if( !blit ) return false;
+				[blit copyFromBuffer:inputStage sourceOffset:0 toBuffer:inputPrivate
+					destinationOffset:0 size:valueBytes];
+				for( unsigned int axis=0u;axis<3u;++axis )
+					[blit copyFromBuffer:velocityStage[axis] sourceOffset:0
+						toBuffer:velocityPrivate[axis] destinationOffset:0
+						size:faceCounts[axis]*sizeof(float)];
+				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
+				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
+				FireProductionMetalCellPalindromeResidentInput residentInput;
+				residentInput.conservativeValues=inputPrivate;
+				residentInput.frozenVelocityMPerS=velocityPrivate;
+				residentInput.ambientValues=ambient;
+				FireProductionMetalCellPalindromeResidentResult resident;
+				if( !RemapFireProductionCellPalindromeMetalResident(request,residentInput,
+					resident,structuredError) ) return false;
+				id<MTLBuffer> outputStage=[context.device newBufferWithLength:valueBytes
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> staging=TrackedMetalCommandBuffer(context.queue);
+				blit=staging?[staging blitCommandEncoder]:nil;
+				if( !outputStage||!blit ) return false;
+				[blit copyFromBuffer:resident.conservativeValues sourceOffset:0
+					toBuffer:outputStage destinationOffset:0 size:valueBytes];
+				[blit endEncoding];CommitTrackedMetalCommand(staging);[staging waitUntilCompleted];
+				if( [staging status]!=MTLCommandBufferStatusCompleted ) return false;
+				const float* output=static_cast<const float*>(ReadTrackedMetalBuffer(outputStage));
+				FireProductionCellPalindromeResult computed;
+				computed.conservativeValues.assign(output,output+valueCount);
+				computed.executedSubmapCount=resident.executedSubmapCount;
+				computed.commandCommitCount=resident.commandCommitCount;
+				computed.interstageFullGridReadbackCount=
+					resident.interstageFullGridTransferCount;
+				computed.actualTrackedWorkingSetBytes=resident.actualMetalAllocationBytes;
+				if( !FireProductionCellPalindromeWorkingSetBytes(request.shape,
+					request.componentCount,computed.certifiedWorkingSetBytes) ) return false;
+				computed.deviceElapsedMS=resident.deviceElapsedMS;
+				if( !AllFinite(computed.conservativeValues)||
+					!std::isfinite(computed.deviceElapsedMS) ) return false;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionCellPalindromeResult();
+			if( structuredError ) try {
+				*structuredError="production resident palindrome comparator allocation failed";
+			} catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
 }
