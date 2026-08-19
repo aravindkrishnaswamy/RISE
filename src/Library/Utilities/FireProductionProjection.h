@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__OBJC__) && defined(__APPLE__)
+#import <Metal/Metal.h>
+#endif
+
 namespace RISE
 {
 	enum FireProductionProjectionBoundary
@@ -105,6 +109,30 @@ namespace RISE
 		const FireProductionProjectionRequest& request,
 		FireProductionProjectionResult& result,
 		std::string* error=0 );
+
+#if defined(__OBJC__) && defined(__APPLE__)
+	struct FireProductionMetalProjectionResidentInput
+	{
+		id<MTLBuffer> gasDensityKGPerM3;
+		std::array<id<MTLBuffer>,3> provisionalMomentumKGPerM2S;
+		std::array<std::size_t,3> provisionalMomentumByteOffset;
+		id<MTLBuffer> divergenceTargetPerS;
+
+		FireProductionMetalProjectionResidentInput() : gasDensityKGPerM3(nil),
+			divergenceTargetPerS(nil)
+		{
+			provisionalMomentumKGPerM2S.fill(nil);
+			provisionalMomentumByteOffset.fill(0u);
+		}
+	};
+
+	//! Internal full-grid Private-buffer seam for the composed resident P3 step.
+	bool ProjectFireProductionMetalResident(
+		const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		FireProductionProjectionResult& result,
+		std::string* error=0 );
+#endif
 
 	//! Metal-resident implementation of the same fixed P2 schedule.  Platforms
 	//! without Metal provide an honest fail-closed definition; there is no CPU

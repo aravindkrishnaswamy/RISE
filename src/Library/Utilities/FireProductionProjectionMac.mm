@@ -23,6 +23,34 @@ namespace RISE
 {
 	namespace
 	{
+		enum ProjectionHostAccessKind
+		{
+			ProjectionMetadataAccess,
+			ProjectionInterstageFullGridAccess,
+			ProjectionTerminalAccess
+		};
+
+		thread_local std::uint64_t projectionCommandCommitCount=0u;
+		thread_local std::uint64_t projectionInterstageFullGridReadCount=0u;
+		thread_local std::uint64_t projectionInvocationCount=0u;
+
+		void CommitProjectionCommand( id<MTLCommandBuffer> command )
+		{
+			[command commit];++projectionCommandCommitCount;
+		}
+
+		void* ProjectionBufferContents( id<MTLBuffer> buffer,
+			ProjectionHostAccessKind kind )
+		{
+			if( kind==ProjectionInterstageFullGridAccess )
+				++projectionInterstageFullGridReadCount;
+			return [buffer contents];
+		}
+
+		void ObserveProjectionInvocation()
+		{
+			++projectionInvocationCount;
+		}
 		struct MetalLevelParameters
 		{
 			std::uint32_t nx,ny,nz,nullspace;
@@ -477,7 +505,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				[encoder setBuffer:level.temporary offset:0 atIndex:6];[encoder setBuffer:level.parameters offset:0 atIndex:7];
 				Dispatch(encoder,context.jacobi,count);[encoder endEncoding];
 				std::swap(level.pressure,level.temporary);
-				const MetalLevelParameters* p=static_cast<const MetalLevelParameters*>([level.parameters contents]);
+				const MetalLevelParameters* p=static_cast<const MetalLevelParameters*>(
+					ProjectionBufferContents(level.parameters,ProjectionMetadataAccess));
 				if( p->nullspace!=0u&&!EncodeRemoveMean(context,command,level.pressure,count,scratch,
 					diagnostics,std::numeric_limits<std::uint32_t>::max(),error) ) return false;
 				++executedSweeps;
@@ -503,7 +532,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			[encoder setBuffer:level.residual offset:0 atIndex:0];[encoder setBuffer:coarse.rhs offset:0 atIndex:1];
 			[encoder setBuffer:level.parameters offset:0 atIndex:2];[encoder setBuffer:coarse.parameters offset:0 atIndex:3];
 			Dispatch(encoder,context.restrictAverage,coarseCount);[encoder endEncoding];
-			const MetalLevelParameters* cp=static_cast<const MetalLevelParameters*>([coarse.parameters contents]);
+			const MetalLevelParameters* cp=static_cast<const MetalLevelParameters*>(
+				ProjectionBufferContents(coarse.parameters,ProjectionMetadataAccess));
 			if( cp->nullspace!=0u&&!EncodeRemoveMean(context,command,coarse.rhs,coarseCount,scratch,
 				diagnostics,std::numeric_limits<std::uint32_t>::max(),error) ) return false;
 			MetalReductionParameters clear={static_cast<std::uint32_t>(coarseCount),0u,0u,0u};
@@ -520,26 +550,38 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 		}
 	}
 
-	bool ProjectFireProductionMetal( const FireProductionProjectionRequest& request,
+	bool ProjectFireProductionMetalImpl( const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput* residentInput,
 		FireProductionProjectionResult& result, std::string* error )
 	{
 		result=FireProductionProjectionResult();
 		try {
 			std::uint32_t observedUploadStaging=0u,observedTerminalStaging=0u;
-			std::uint32_t observedCommandCommits=0u,observedProjectionInvocations=0u;
+			const std::uint64_t beginningCommandCommits=projectionCommandCommitCount;
+			const std::uint64_t beginningInterstageReads=projectionInterstageFullGridReadCount;
+			const std::uint64_t beginningProjectionInvocations=projectionInvocationCount;
 			std::uint64_t observedActualMetalBytes=0u,certifiedWorkingSetBytes=0u;
 			if( !ValidateFireProductionProjectionRequest(request,error) ) return false;
 			if( !FireProductionProjectionWorkingSetBytes(request.shape,certifiedWorkingSetBytes) )
 				return false;
+			if( residentInput ) for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::uint64_t bytes=FireProductionProjectionFaceCount(request.shape,axis)*sizeof(float);
+				const std::uint64_t allocation=(bytes+UINT64_C(16383))&~UINT64_C(16383);
+				if( certifiedWorkingSetBytes>std::numeric_limits<std::uint64_t>::max()-allocation )
+					return false;
+				certifiedWorkingSetBytes+=allocation;
+			}
 			MetalProjectionContext& context=Context();
 			if( !context.Valid() ) {if( error ) *error=context.error;return false;}
 			@autoreleasepool {
+				const bool resident=residentInput!=0;
 				const FireProductionProjectionShape& shape=request.shape;
 				const std::size_t cells=shape.CellCount(),finePadded=NextPowerOfTwo(cells);
 				std::vector<MetalLevel> hierarchy;MetalLevel fine={};fine.nx=shape.nx;fine.ny=shape.ny;fine.nz=shape.nz;
 				fine.spacing[0]=fine.spacing[1]=fine.spacing[2]=shape.cellWidthM;
-				fine.density=NewBuffer(context.device,cells*sizeof(float));
-				id<MTLBuffer> densityUpload=NewBufferWithBytes(context.device,
+				fine.density=resident?residentInput->gasDensityKGPerM3:
+					NewBuffer(context.device,cells*sizeof(float));
+				id<MTLBuffer> densityUpload=resident?nil:NewBufferWithBytes(context.device,
 					request.gasDensityKGPerM3.data(),cells*sizeof(float));
 				hierarchy.push_back(fine);
 				while( hierarchy.back().nx>4u||hierarchy.back().ny>4u||hierarchy.back().nz>4u ) {
@@ -565,28 +607,33 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					level.parameters=NewBufferWithBytes(context.device,&parameters,sizeof(parameters));
 				}
 				std::array<id<MTLBuffer>,3> provisional,provisionalUpload,stored,momentum,velocity;
+				std::array<std::size_t,3> provisionalOffset={};
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const std::size_t count=FireProductionProjectionFaceCount(shape,axis),bytes=count*sizeof(float);
-					provisional[axis]=NewBuffer(context.device,bytes);
-					provisionalUpload[axis]=NewBufferWithBytes(context.device,
+					provisional[axis]=resident?residentInput->provisionalMomentumKGPerM2S[axis]:
+						NewBuffer(context.device,bytes);
+					provisionalOffset[axis]=resident?residentInput->provisionalMomentumByteOffset[axis]:0u;
+					provisionalUpload[axis]=resident?nil:NewBufferWithBytes(context.device,
 						request.provisionalMomentumKGPerM2S[axis].data(),bytes);
 					stored[axis]=NewBuffer(context.device,bytes);momentum[axis]=NewBuffer(context.device,bytes);
 					velocity[axis]=NewBuffer(context.device,bytes);
 				}
-				id<MTLBuffer> target=NewBuffer(context.device,cells*sizeof(float));
-				id<MTLBuffer> targetUpload=NewBufferWithBytes(context.device,
+				id<MTLBuffer> target=resident?residentInput->divergenceTargetPerS:
+					NewBuffer(context.device,cells*sizeof(float));
+				id<MTLBuffer> targetUpload=resident?nil:NewBufferWithBytes(context.device,
 					request.divergenceTargetPerS.data(),cells*sizeof(float));
 				const std::size_t boundaryCount=2u*(shape.ny*shape.nz+shape.nx*shape.nz+shape.nx*shape.ny);
 				id<MTLBuffer> boundaryPressure=NewSharedBuffer(context.device,boundaryCount*sizeof(float));
 				id<MTLBuffer> inflow=NewSharedBuffer(context.device,boundaryCount*sizeof(unsigned char));
 				id<MTLBuffer> scratch=NewBuffer(context.device,finePadded*sizeof(float));
 				id<MTLBuffer> diagnostics=NewSharedBuffer(context.device,12u*sizeof(float));
-				bool allocated=densityUpload&&target&&targetUpload&&boundaryPressure&&inflow&&scratch&&diagnostics;
+				bool allocated=fine.density&&target&&boundaryPressure&&inflow&&scratch&&diagnostics&&
+					(resident||(densityUpload&&targetUpload));
 				for( const MetalLevel& level:hierarchy ) allocated=allocated&&level.density&&level.rhs&&
 					level.pressure&&level.temporary&&level.residual&&level.diagonal&&level.parameters&&
 					level.beta[0]&&level.beta[1]&&level.beta[2];
 				for( unsigned int axis=0;axis<3u;++axis ) allocated=allocated&&provisional[axis]&&
-					provisionalUpload[axis]&&stored[axis]&&momentum[axis]&&velocity[axis];
+					(resident||provisionalUpload[axis])&&stored[axis]&&momentum[axis]&&velocity[axis];
 				if( InjectedFailure("buffer") ) allocated=false;
 				if( !allocated ) {if( error ) *error="production fire projection buffer allocation failed";return false;}
 				auto addAllocation=[&](id<MTLBuffer> buffer,std::uint64_t& total)->bool {
@@ -604,12 +651,20 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				const id<MTLBuffer> fixedResident[]={target,boundaryPressure,inflow,scratch,diagnostics};
 				for( id<MTLBuffer> buffer:fixedResident ) if( !addAllocation(buffer,residentBytes) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) {
-					const id<MTLBuffer> faceResident[]={provisional[axis],stored[axis],momentum[axis],velocity[axis]};
+					const id<MTLBuffer> faceResident[]={stored[axis],momentum[axis],velocity[axis]};
 					for( id<MTLBuffer> buffer:faceResident ) if( !addAllocation(buffer,residentBytes) ) return false;
 				}
-				if( !addAllocation(densityUpload,uploadBytes)||!addAllocation(targetUpload,uploadBytes) )
-					return false;
-				for( id<MTLBuffer> buffer:provisionalUpload ) if( !addAllocation(buffer,uploadBytes) ) return false;
+				if( resident ) {
+					// All three axis views are byte ranges of one packed force-owned buffer.
+					if( !addAllocation(provisional[0],residentBytes) ) return false;
+				} else for( id<MTLBuffer> buffer:provisional )
+					if( !addAllocation(buffer,residentBytes) ) return false;
+				if( !resident ) {
+					if( !addAllocation(densityUpload,uploadBytes)||!addAllocation(targetUpload,uploadBytes) )
+						return false;
+					for( id<MTLBuffer> buffer:provisionalUpload )
+						if( !addAllocation(buffer,uploadBytes) ) return false;
+				}
 				std::uint64_t faceValues=0u;for( unsigned int axis=0u;axis<3u;++axis )
 					faceValues+=FireProductionProjectionFaceCount(shape,axis);
 				const std::uint64_t hostBytes=(3u*static_cast<std::uint64_t>(cells)+4u*faceValues)*
@@ -623,31 +678,37 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					if( error ) *error="production fire projection actual allocation exceeds certificate";
 					return false;
 				}
-				std::fill_n(static_cast<float*>([boundaryPressure contents]),boundaryCount,0.0f);
-				std::fill_n(static_cast<unsigned char*>([inflow contents]),boundaryCount,
+				std::fill_n(static_cast<float*>(ProjectionBufferContents(boundaryPressure,
+					ProjectionMetadataAccess)),boundaryCount,0.0f);
+				std::fill_n(static_cast<unsigned char*>(ProjectionBufferContents(inflow,
+					ProjectionMetadataAccess)),boundaryCount,
 					static_cast<unsigned char>(0u));
-				std::fill_n(static_cast<float*>([diagnostics contents]),12u,0.0f);
+				std::fill_n(static_cast<float*>(ProjectionBufferContents(diagnostics,
+					ProjectionMetadataAccess)),12u,0.0f);
 
-				id<MTLCommandBuffer> uploadCommand=InjectedFailure("upload_command")?
-					nil:[context.queue commandBuffer];
-				if( !uploadCommand ) {if( error ) *error="production fire projection upload command allocation failed";return false;}
-				id<MTLBlitCommandEncoder> upload=InjectedFailure("upload_encoder")?
-					nil:[uploadCommand blitCommandEncoder];
-				if( !upload ) {if( error ) *error="production fire projection upload encoder allocation failed";return false;}
-				[upload copyFromBuffer:densityUpload sourceOffset:0 toBuffer:fine.density destinationOffset:0 size:cells*sizeof(float)];
-				[upload copyFromBuffer:targetUpload sourceOffset:0 toBuffer:target destinationOffset:0 size:cells*sizeof(float)];
-				for( unsigned int axis=0;axis<3u;++axis ) [upload copyFromBuffer:provisionalUpload[axis]
-					sourceOffset:0 toBuffer:provisional[axis] destinationOffset:0
-					size:FireProductionProjectionFaceCount(shape,axis)*sizeof(float)];
-				[upload endEncoding];[uploadCommand commit];++observedCommandCommits;
-				++observedUploadStaging;[uploadCommand waitUntilCompleted];
-				if( [uploadCommand status]!=MTLCommandBufferStatusCompleted ) {
-					if( error ) *error=MetalError("production fire projection upload command failed",[uploadCommand error]);return false;}
-				densityUpload=nil;targetUpload=nil;for( unsigned int axis=0;axis<3u;++axis ) provisionalUpload[axis]=nil;
+				if( !resident ) {
+					id<MTLCommandBuffer> uploadCommand=InjectedFailure("upload_command")?
+						nil:[context.queue commandBuffer];
+					if( !uploadCommand ) {if( error ) *error="production fire projection upload command allocation failed";return false;}
+					id<MTLBlitCommandEncoder> upload=InjectedFailure("upload_encoder")?
+						nil:[uploadCommand blitCommandEncoder];
+					if( !upload ) {if( error ) *error="production fire projection upload encoder allocation failed";return false;}
+					[upload copyFromBuffer:densityUpload sourceOffset:0 toBuffer:fine.density destinationOffset:0 size:cells*sizeof(float)];
+					[upload copyFromBuffer:targetUpload sourceOffset:0 toBuffer:target destinationOffset:0 size:cells*sizeof(float)];
+					for( unsigned int axis=0;axis<3u;++axis ) [upload copyFromBuffer:provisionalUpload[axis]
+						sourceOffset:0 toBuffer:provisional[axis] destinationOffset:0
+						size:FireProductionProjectionFaceCount(shape,axis)*sizeof(float)];
+					[upload endEncoding];CommitProjectionCommand(uploadCommand);
+					++observedUploadStaging;[uploadCommand waitUntilCompleted];
+					if( [uploadCommand status]!=MTLCommandBufferStatusCompleted ) {
+						if( error ) *error=MetalError("production fire projection upload command failed",[uploadCommand error]);return false;}
+					densityUpload=nil;targetUpload=nil;
+					for( unsigned int axis=0;axis<3u;++axis ) provisionalUpload[axis]=nil;
+				}
 				id<MTLCommandBuffer> command=[context.queue commandBuffer];
 				if( InjectedFailure("command_buffer") ) command=nil;
 				if( !command ) {if( error ) *error="production fire projection command allocation failed";return false;}
-				id<MTLComputeCommandEncoder> encoder=nil;++observedProjectionInvocations;
+				id<MTLComputeCommandEncoder> encoder=nil;ObserveProjectionInvocation();
 				for( std::size_t index=0;index<hierarchy.size();++index ) {
 					MetalLevel& level=hierarchy[index];const std::size_t count=level.nx*level.ny*level.nz;
 					if( index>0u ) {
@@ -674,7 +735,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const MetalAxisParameters axisParameters={axis,0u,0u,0u};
 					if( !Begin(command,encoder,error,"provisional velocity") ) return false;
-					[encoder setBuffer:provisional[axis] offset:0 atIndex:0];[encoder setBuffer:stored[axis] offset:0 atIndex:1];
+					[encoder setBuffer:provisional[axis] offset:provisionalOffset[axis] atIndex:0];[encoder setBuffer:stored[axis] offset:0 atIndex:1];
 					[encoder setBuffer:momentum[axis] offset:0 atIndex:2];[encoder setBuffer:velocity[axis] offset:0 atIndex:3];
 					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:4];[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:5];
 					Dispatch(encoder,context.setupVelocity,FireProductionProjectionFaceCount(shape,axis));[encoder endEncoding];
@@ -696,7 +757,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				[encoder setBuffer:fineLevel.residual offset:0 atIndex:9];[encoder setBuffer:fineLevel.parameters offset:0 atIndex:10];
 				Dispatch(encoder,context.buildRHS,cells);[encoder endEncoding];
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,0u,true,error) ) return false;
-				const MetalLevelParameters* fp=static_cast<const MetalLevelParameters*>([fineLevel.parameters contents]);
+				const MetalLevelParameters* fp=static_cast<const MetalLevelParameters*>(
+					ProjectionBufferContents(fineLevel.parameters,ProjectionMetadataAccess));
 				if( fp->nullspace!=0u&&!EncodeRemoveMean(context,command,fineLevel.rhs,cells,scratch,diagnostics,11u,error) ) return false;
 				for( MetalLevel& level:hierarchy ) {
 					const std::size_t count=level.nx*level.ny*level.nz;
@@ -716,7 +778,7 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const MetalAxisParameters axisParameters={axis,0u,0u,0u};
 					if( !Begin(command,encoder,error,"face correction") ) return false;
-					[encoder setBuffer:provisional[axis] offset:0 atIndex:0];[encoder setBuffer:stored[axis] offset:0 atIndex:1];
+					[encoder setBuffer:provisional[axis] offset:provisionalOffset[axis] atIndex:0];[encoder setBuffer:stored[axis] offset:0 atIndex:1];
 					[encoder setBuffer:fineLevel.pressure offset:0 atIndex:2];[encoder setBuffer:boundaryPressure offset:0 atIndex:3];
 					[encoder setBuffer:momentum[axis] offset:0 atIndex:4];[encoder setBuffer:velocity[axis] offset:0 atIndex:5];
 					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:6];[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:7];
@@ -735,19 +797,24 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				[encoder setBuffer:target offset:0 atIndex:3];[encoder setBuffer:fineLevel.residual offset:0 atIndex:4];
 				[encoder setBuffer:fineLevel.parameters offset:0 atIndex:5];Dispatch(encoder,context.postResidual,cells);[encoder endEncoding];
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,1u,true,error) ) return false;
-				[command commit];++observedCommandCommits;[command waitUntilCompleted];
+				CommitProjectionCommand(command);[command waitUntilCompleted];
 				if( [command status]!=MTLCommandBufferStatusCompleted||InjectedFailure("command") ) {
 					if( error ) *error=MetalError("production fire projection command failed",[command error]);return false;}
+				if( InjectedFailure("interstage_transfer") )
+					ProjectionBufferContents(diagnostics,ProjectionInterstageFullGridAccess);
+				if( InjectedFailure("second_projection") ) ObserveProjectionInvocation();
 				id<MTLBuffer> pressureStage=InjectedFailure("staging_buffer")?
 					nil:NewSharedBuffer(context.device,cells*sizeof(float));
-				std::array<id<MTLBuffer>,3> storedStage,momentumStage,velocityStage;
+				std::array<id<MTLBuffer>,3> storedStage,momentumStage,velocityStage,provisionalStage;
 				bool staged=pressureStage!=nil;
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const std::size_t bytes=FireProductionProjectionFaceCount(shape,axis)*sizeof(float);
 					storedStage[axis]=NewSharedBuffer(context.device,bytes);
 					momentumStage[axis]=NewSharedBuffer(context.device,bytes);
 					velocityStage[axis]=NewSharedBuffer(context.device,bytes);
+					provisionalStage[axis]=resident?NewSharedBuffer(context.device,bytes):nil;
 					staged=staged&&storedStage[axis]&&momentumStage[axis]&&velocityStage[axis];
+					if( resident ) staged=staged&&provisionalStage[axis];
 				}
 				if( !staged ) {if( error ) *error="production fire projection staging allocation failed";return false;}
 				std::uint64_t stagingBytes=0u;
@@ -755,7 +822,8 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				for( unsigned int axis=0u;axis<3u;++axis )
 					if( !addAllocation(storedStage[axis],stagingBytes)||
 						!addAllocation(momentumStage[axis],stagingBytes)||
-						!addAllocation(velocityStage[axis],stagingBytes) ) return false;
+						!addAllocation(velocityStage[axis],stagingBytes)||
+						(resident&&!addAllocation(provisionalStage[axis],stagingBytes)) ) return false;
 				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
 					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-stagingBytes )
 					return false;
@@ -781,32 +849,45 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 						destinationOffset:0 size:bytes];
 					[staging copyFromBuffer:velocity[axis] sourceOffset:0 toBuffer:velocityStage[axis]
 						destinationOffset:0 size:bytes];
+					if( resident ) [staging copyFromBuffer:provisional[axis]
+						sourceOffset:provisionalOffset[axis] toBuffer:provisionalStage[axis]
+						destinationOffset:0 size:bytes];
 				}
-				[staging endEncoding];[stagingCommand commit];++observedCommandCommits;
+				[staging endEncoding];CommitProjectionCommand(stagingCommand);
 				++observedTerminalStaging;[stagingCommand waitUntilCompleted];
 				if( [stagingCommand status]!=MTLCommandBufferStatusCompleted ) {
 					if( error ) *error=MetalError("production fire projection staging command failed",[stagingCommand error]);return false;}
 
-				result.pressurePa.assign(static_cast<const float*>([pressureStage contents]),
-					static_cast<const float*>([pressureStage contents])+cells);
+				const float* stagedPressure=static_cast<const float*>(ProjectionBufferContents(
+					pressureStage,ProjectionTerminalAccess));
+				result.pressurePa.assign(stagedPressure,stagedPressure+cells);
 				for( unsigned int axis=0;axis<3u;++axis ) {
 					const std::size_t count=FireProductionProjectionFaceCount(shape,axis);
-					result.faceDensityKGPerM3[axis].assign(static_cast<const float*>([storedStage[axis] contents]),
-						static_cast<const float*>([storedStage[axis] contents])+count);
-					result.momentumKGPerM2S[axis].assign(static_cast<const float*>([momentumStage[axis] contents]),
-						static_cast<const float*>([momentumStage[axis] contents])+count);
-					result.velocityMPerS[axis].assign(static_cast<const float*>([velocityStage[axis] contents]),
-						static_cast<const float*>([velocityStage[axis] contents])+count);
+					const float* stagedDensity=static_cast<const float*>(ProjectionBufferContents(
+						storedStage[axis],ProjectionTerminalAccess));
+					const float* stagedMomentum=static_cast<const float*>(ProjectionBufferContents(
+						momentumStage[axis],ProjectionTerminalAccess));
+					const float* stagedVelocity=static_cast<const float*>(ProjectionBufferContents(
+						velocityStage[axis],ProjectionTerminalAccess));
+					result.faceDensityKGPerM3[axis].assign(stagedDensity,stagedDensity+count);
+					result.momentumKGPerM2S[axis].assign(stagedMomentum,stagedMomentum+count);
+					result.velocityMPerS[axis].assign(stagedVelocity,stagedVelocity+count);
 				}
 				const MetalLevelParameters& parameter=*fp;
 				for( unsigned int side=0;side<6u;++side ) {
 					const std::size_t count=side<2u?shape.ny*shape.nz:(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
-					const unsigned char* values=static_cast<const unsigned char*>([inflow contents])+parameter.sideOffset[side];
+					const unsigned char* values=static_cast<const unsigned char*>(ProjectionBufferContents(
+						inflow,ProjectionTerminalAccess))+parameter.sideOffset[side];
 					result.pressureOpenInflow[side].assign(values,values+count);
 				}
-				const float* d=static_cast<const float*>([diagnostics contents]);
+				const float* d=static_cast<const float*>(ProjectionBufferContents(
+					diagnostics,ProjectionTerminalAccess));
 				result.maximumPreProjectionResidualPerS=d[0];result.maximumPostProjectionResidualPerS=d[1];
 				result.removedFineRightHandSideMean=fp->nullspace!=0u?d[11]:0.0f;
+				std::array<const float*,3> residentProvisional={};
+				if( resident ) for( unsigned int axis=0u;axis<3u;++axis )
+					residentProvisional[axis]=static_cast<const float*>(ProjectionBufferContents(
+						provisionalStage[axis],ProjectionTerminalAccess));
 				float maximumVelocity=0.0f;
 				for( unsigned int axis=0;axis<3u;++axis )
 					for( std::size_t face=0;face<result.velocityMPerS[axis].size();++face ) {
@@ -816,8 +897,10 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 						const bool wall=(coordinate==0u||coordinate==extent)&&
 							request.boundary[2u*axis+(coordinate?1u:0u)]==
 								FireProductionProjectionWall;
+						const float provisionalMomentum=resident?residentProvisional[axis][face]:
+							request.provisionalMomentumKGPerM2S[axis][face];
 						if( !wall ) maximumVelocity=std::max(maximumVelocity,std::fabs(
-							request.provisionalMomentumKGPerM2S[axis][face]/
+							provisionalMomentum/
 							result.faceDensityKGPerM3[axis][face]));
 						maximumVelocity=std::max(maximumVelocity,
 							std::fabs(result.velocityMPerS[axis][face]));
@@ -844,10 +927,22 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 				result.executedVCycleCount=executedCycles;
 				result.executedJacobiSweepCount=executedSweeps;
 				result.residentUploadStagingCount=observedUploadStaging;
-				result.residentInterstageDeviceToHostTransferCount=0u;
+				if( projectionCommandCommitCount<beginningCommandCommits||
+					projectionInterstageFullGridReadCount<beginningInterstageReads||
+					projectionInvocationCount<beginningProjectionInvocations ) return false;
+				result.residentInterstageDeviceToHostTransferCount=static_cast<std::uint32_t>(
+					projectionInterstageFullGridReadCount-beginningInterstageReads);
 				result.residentTerminalStagingCount=observedTerminalStaging;
-				result.residentCommandCommitCount=observedCommandCommits;
-				result.residentProjectionInvocationCount=observedProjectionInvocations;
+				result.residentCommandCommitCount=static_cast<std::uint32_t>(
+					projectionCommandCommitCount-beginningCommandCommits);
+				result.residentProjectionInvocationCount=static_cast<std::uint32_t>(
+					projectionInvocationCount-beginningProjectionInvocations);
+				if( result.residentInterstageDeviceToHostTransferCount!=0u||
+					result.residentProjectionInvocationCount!=1u ) {
+					result=FireProductionProjectionResult();
+					if( error ) *error="production fire projection resident topology changed";
+					return false;
+				}
 				result.residentCertifiedWorkingSetBytes=certifiedWorkingSetBytes;
 				result.residentActualMetalAllocationBytes=observedActualMetalBytes;
 				const float length=shape.cellWidthM*static_cast<float>(std::max(shape.nx,std::max(shape.ny,shape.nz)));
@@ -873,5 +968,18 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 			result=FireProductionProjectionResult();if( error ) {try {*error="production fire projection allocation failed";}
 			catch( const std::bad_alloc& ) {error->clear();}}return false;
 		}
+	}
+
+	bool ProjectFireProductionMetal( const FireProductionProjectionRequest& request,
+		FireProductionProjectionResult& result, std::string* error )
+	{
+		return ProjectFireProductionMetalImpl(request,0,result,error);
+	}
+
+	bool ProjectFireProductionMetalResident( const FireProductionProjectionRequest& request,
+		const FireProductionMetalProjectionResidentInput& input,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		return ProjectFireProductionMetalImpl(request,&input,result,error);
 	}
 }

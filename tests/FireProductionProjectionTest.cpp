@@ -1247,14 +1247,19 @@ int main()
 	Check(!metalAllocationReturned&&metalAllocationFailure.pressurePa.empty(),
 		"P2 Metal persistent allocator denial returns false with no partial result or escaped exception");
 	for( const char* injectedStage : {"buffer","upload_command","upload_encoder",
-		"command_buffer","command","staging_buffer","staging_command","staging_encoder","output"} ) {
+		"command_buffer","command","staging_buffer","staging_command","staging_encoder","output",
+		"interstage_transfer","second_projection"} ) {
 		setenv("RISE_FIRE_PROJECTION_TEST_FAILURE",injectedStage,1);
 		FireProductionProjectionResult injectedResult;injectedResult.pressurePa.push_back(7.0f);
 		error.clear();
 		const bool injectedReturned=ProjectFireProductionMetal(
 			allocationFailure,injectedResult,&error);
 		unsetenv("RISE_FIRE_PROJECTION_TEST_FAILURE");
-		const bool expectedDiagnostic=std::string(injectedStage)=="buffer"?
+		const bool topology=std::string(injectedStage)=="interstage_transfer"||
+			std::string(injectedStage)=="second_projection";
+		const bool expectedDiagnostic=topology?
+			error.find("resident topology changed")!=std::string::npos:
+		(std::string(injectedStage)=="buffer"?
 			error.find("buffer allocation failed")!=std::string::npos:
 			(std::string(injectedStage)=="upload_command"?
 				error.find("upload command allocation failed")!=std::string::npos:
@@ -1269,7 +1274,7 @@ int main()
 				(std::string(injectedStage)=="staging_command"||
 					std::string(injectedStage)=="staging_encoder"?
 					error.find("staging encoder allocation failed")!=std::string::npos:
-					error.find("nonfinite output")!=std::string::npos))))));
+					error.find("nonfinite output")!=std::string::npos)))))));
 		Check(!injectedReturned&&injectedResult.pressurePa.empty()&&expectedDiagnostic,
 			"P2 Metal buffer, committed-command, and output failures return no partial result");
 	}
@@ -1379,7 +1384,7 @@ int main()
 	const std::string metalCycleBody=metalCycleLoop==std::string::npos?std::string():
 		metalSource.substr(metalCycleLoop,metalCycleLoopEnd-metalCycleLoop);
 	const std::size_t residentProjectionBeginning=metalSource.find(
-		"bool ProjectFireProductionMetal(");
+		"bool ProjectFireProductionMetalImpl(");
 	const std::string residentProjectionBody=residentProjectionBeginning==std::string::npos?
 		std::string():metalSource.substr(residentProjectionBeginning);
 	Check(Count(source,"for( unsigned int cycle=0;cycle<12u;++cycle )")==1u&&
@@ -1412,18 +1417,18 @@ int main()
 		"P2 Metal source binds the fixed safe-math GPU schedule and honest unsupported seam");
 	Check(!residentProjectionBody.empty()&&
 		metalSource.find("options:MTLResourceStorageModePrivate")!=std::string::npos&&
-		residentProjectionBody.find("fine.density=NewBuffer(context.device")!=std::string::npos&&
-		residentProjectionBody.find("provisional[axis]=NewBuffer(context.device")!=std::string::npos&&
-		residentProjectionBody.find("target=NewBuffer(context.device")!=std::string::npos&&
+		residentProjectionBody.find("NewBuffer(context.device,cells*sizeof(float))")!=std::string::npos&&
+		residentProjectionBody.find("NewBuffer(context.device,bytes)")!=std::string::npos&&
 		residentProjectionBody.find("densityUpload=nil;targetUpload=nil;")<
 			residentProjectionBody.find("id<MTLCommandBuffer> command=")&&
 		residentProjectionBody.find("id<MTLBuffer> pressureStage=")>
 			residentProjectionBody.find("[command status]!=MTLCommandBufferStatusCompleted")&&
-		Count(residentProjectionBody," commit]")==3u&&
-		Count(residentProjectionBody,"++observedCommandCommits")==3u&&
-		Count(residentProjectionBody,"++observedProjectionInvocations")==1u&&
-		residentProjectionBody.find("residentInterstageDeviceToHostTransferCount=0u")!=
-			std::string::npos,
+		Count(metalSource,"[command commit]")==1u&&
+		Count(metalSource,"return [buffer contents]")==1u&&
+		Count(metalSource,"CommitProjectionCommand(")==4u&&
+		Count(residentProjectionBody,"ObserveProjectionInvocation();")==2u&&
+		residentProjectionBody.find("projectionInterstageFullGridReadCount-"
+			"beginningInterstageReads")!=std::string::npos,
 		"P2 resident wrapper releases upload staging before one Private solve and stages only after completion");
 	const std::size_t makeRule=makefile.find("FireProductionProjection.o :");
 	const std::size_t makeRuleEnd=makeRule==std::string::npos?std::string::npos:
