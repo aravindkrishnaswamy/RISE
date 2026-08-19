@@ -2336,3 +2336,27 @@ it was already tried and refuted here.
   command/encoder failure paths receive separate binding REDs. This closes the
   comparison evidence for the existing r89--r91 operator. It does not change
   case identity, physics, provenance, or the 200 ms/two-GiB budgets.
+
+- **r94 (2026-08-19):** resident force certificate and transfer boundary.
+  Implementation planning exposed a resource contradiction in r91's literal
+  sparse-row wording. Tier 10 has 2,958,916 MAC faces: only 27 stored fp32
+  coefficients per face cost 319.56 MB, 54 cost 639.13 MB, and 96 cost
+  1.136 GB before resident state and projection. The operator itself is
+  matrix-free. The ruling retains its authoritative stored density, frozen
+  viscosity, spacing, and boundary bytes and outward-propagates an
+  absolute-row envelope through those exact primitive weights. A strict-fp32
+  small-grid column oracle independently assembles the signed matrix and must
+  lie below every GPU envelope; N=7/8/9 gates retain the r90--r91 schedule.
+
+  Residency now has an observed transfer ledger: one fixed `Lambda_up` scalar
+  may cross before scheduling; the full viscous loop, boundary publication,
+  one gravity addition, and one projection have zero host transfers; optional
+  Private intermediate snapshots stage together only after command completion
+  for canonical CPU FNV evidence. Sparse matrix materialization was rejected
+  for peak/bandwidth cost, a tuned global margin for lack of proof, per-substep
+  readback for changing the validated architecture, and serial GPU FNV for
+  inserting a single-lane full-grid pass. The measured starting point is
+  11.3556/23.6152 ms device/completed-call p95 for projection and
+  21.1372/35.2078 ms for the tier-10 palindrome. This is an executable
+  certificate/evidence amendment only; physics, identity, validation bands,
+  two-GiB cap, and 200 ms budget are unchanged.

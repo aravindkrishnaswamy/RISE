@@ -959,6 +959,66 @@ Metal buffers, and every command/encoder fail-closed stage. This is a measured
 comparison rule for the already pinned operator, not a physical-tolerance,
 identity, case-record, or budget change.
 
+### 7.11 Resident force certificate and transfer boundary (r94)
+
+The resident force path remains matrix-free. At the tier-10 shape
+(`86 x 86 x 132`, 2,958,916 MAC faces), materializing even 27 fp32
+coefficients per output face would require 319.56 MB; 54 coefficients require
+639.13 MB and 96 require 1.136 GB. Those arrays are not consumed by the
+viscous update itself and would overlap the resident state and projection
+hierarchy under the two-GiB cap. The r91 phrase "stores the actual fp32
+operator coefficients" is therefore narrowed to the coefficients already
+stored by the matrix-free operator: authoritative face density, frozen
+`mu_eff`, grid scale, and boundary-role bytes. No expanded sparse matrix is
+materialized.
+
+The stability preflight propagates an absolute-row-sum envelope through the
+exact matrix-free dependency graph. Each primitive fp32 multiply, divide,
+boundary ghost factor, arithmetic face-to-cell average, centered gradient,
+deviatoric-stress combination, and stress-divergence weight is formed in the
+same operation order as the update and rounded outward with
+`nextafter(...,+infinity)`. Wall-prescribed coefficients are zero; periodic
+neighbors wrap through the unique seam owner; pressure-open ghosts use the
+pinned nearest extension. A fixed max tree reduces the per-output-face
+envelopes to one `Lambda_up` scalar. A separate small-grid host oracle
+assembles the signed matrix column by column from the strict-fp32 force
+operator and requires every exact absolute row sum to be no greater than the
+GPU envelope. Threshold and N=7/8/9 fixtures remain those of r90--r91. The
+envelope may select more work than the exact row sum, but it may never select
+less; exceeding eight is a structural capability failure before any update.
+
+Residency is measured, not inferred from output agreement. The preflight may
+publish exactly one fixed-size `Lambda_up` diagnostic before scheduling. The
+substep command then performs all selected viscous updates, boundary
+publication after each update, the single relative-gravity addition, and the
+single resident projection without a device-to-host transfer or host-visible
+full-grid resource between those operations. Per-substep oracle taps remain
+Private snapshots and are staged together only after command completion at the
+step boundary; the host then applies the existing canonical FNV-1a momentum
+digest to those bytes. Production execution omits the snapshots. A
+call-scoped allocation/encoder ledger must report the exact scalar transfer,
+zero loop transfers, one terminal diagnostic/publication staging event, the
+selected substep count, and exactly one projection invocation.
+
+The measured starting point on the target is 11.3556 ms device / 23.6152 ms
+completed-call p95 for the standalone projection, 21.1372 / 35.2078 ms for the
+tier-10-shaped five-pass conservative remap, and 2.69608 / 17.2882 ms for the
+standalone tier-10 P1 remap. These numbers preserve the credibility of the
+20 ms force, 120 ms projection, and 200 ms P3 allocations; the resident
+eight-substep and combined measurements still have to pass their own gates.
+
+An expanded sparse matrix was rejected because it duplicates a matrix-free
+operator and consumes hundreds of megabytes to more than a gigabyte of the
+resident peak. A global hand-tuned viscosity margin was rejected because it
+would not prove the boundary/variable-density operator. Reading every
+intermediate momentum field after each substep was rejected because it makes
+the oracle tap change the architecture being validated. GPU serial FNV was
+rejected because it adds a single-lane full-grid pass to every substep; a
+terminal test-only staging of Private snapshots preserves both the canonical
+digest and the resident production schedule. r94 changes only the executable
+form of the r90--r91 stability/evidence certificate. It does not change the
+force operator, case identity, validation bands, or milestone budgets.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
