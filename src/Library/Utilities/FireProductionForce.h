@@ -9,9 +9,12 @@
 #ifndef FIRE_PRODUCTION_FORCE_H
 #define FIRE_PRODUCTION_FORCE_H
 
+#include "FireProductionProjection.h"
+
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace RISE
 {
@@ -53,6 +56,50 @@ namespace RISE
 		float timeStepS,
 		float outwardLambdaPerS,
 		FireProductionViscousSchedule& schedule,
+		std::string* error=0 );
+
+	struct FireProductionFrozenForceRequest
+	{
+		FireProductionProjectionShape shape;
+		float timeStepS;
+		float ambientDensityKGPerM3;
+		float vremanCoefficient;
+		std::array<float,3> gravityMPerS2;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::vector<float> cellGasDensityKGPerM3;
+		std::vector<float> molecularKinematicViscosityM2PerS;
+		std::array<std::vector<float>,3> faceDensityKGPerM3;
+		std::array<std::vector<float>,3> beginningMomentumKGPerM2S;
+
+		FireProductionFrozenForceRequest() : timeStepS(0.0f),ambientDensityKGPerM3(1.0f),
+			vremanCoefficient(0.07f)
+		{
+			gravityMPerS2.fill(0.0f);
+			boundary.fill(FireProductionProjectionPeriodic);
+		}
+	};
+
+	struct FireProductionFrozenForceResult
+	{
+		std::vector<float> eddyKinematicViscosityM2PerS;
+		std::vector<float> effectiveDynamicViscosityPaS;
+		std::array<std::vector<float>,3> beginningViscousMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> gravityMomentumIncrementKGPerM2S;
+	};
+
+	//! Logical peak of the CPU frozen-force comparator, including caller input,
+	//! local work, and the atomically published result payload.
+	bool FireProductionFrozenForceWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
+	//! Beginning-state, strict-binary32 force field used by the production P3
+	//! comparator. Vreman and mu are frozen; viscous rates update only interior
+	//! normal faces, relative gravity also owns pressure-open endpoint faces,
+	//! and wall-normal endpoints remain prescribed zero.
+	bool BuildFireProductionFrozenForceFieldsCPU(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionFrozenForceResult& result,
 		std::string* error=0 );
 }
 

@@ -108,6 +108,16 @@ namespace
 		return (z*shape.ny+y)*shape.nx+x;
 	}
 
+	bool FrozenForceResultEmpty( const RISE::FireProductionFrozenForceResult& result )
+	{
+		if( !result.eddyKinematicViscosityM2PerS.empty()||
+			!result.effectiveDynamicViscosityPaS.empty() ) return false;
+		for( unsigned int axis=0u;axis<3u;++axis )
+			if( !result.beginningViscousMomentumRateKGPerM2S2[axis].empty()||
+				!result.gravityMomentumIncrementKGPerM2S[axis].empty() ) return false;
+		return true;
+	}
+
 	std::string FloatBytesSHA256( const std::vector<float>& values )
 	{
 		RISE::RISECBOR64::Bytes bytes(values.size()*sizeof(float));
@@ -783,6 +793,459 @@ int main()
 		rejectedSchedule.outwardWork==0.0&&rejectedSchedule.representedProductUpper==0.0&&
 		error.find("input")!=std::string::npos,
 		"viscous scheduling rejects negative Lambda with a fully default payload");
+	FireProductionFrozenForceRequest forceRest;
+	forceRest.shape.nx=5u;forceRest.shape.ny=6u;forceRest.shape.nz=7u;
+	forceRest.shape.cellWidthM=0.1f;forceRest.timeStepS=0.02f;
+	forceRest.ambientDensityKGPerM3=1.2f;
+	forceRest.vremanCoefficient=static_cast<float>(
+		FireSimulationTransportRecord::OpenV1().VremanCv());
+	forceRest.boundary.fill(FireProductionProjectionPressureOpen);
+	forceRest.cellGasDensityKGPerM3.assign(forceRest.shape.CellCount(),1.2f);
+	forceRest.molecularKinematicViscosityM2PerS.assign(forceRest.shape.CellCount(),0.01f);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::size_t faces=FireProductionProjectionFaceCount(forceRest.shape,axis);
+		forceRest.faceDensityKGPerM3[axis].assign(faces,1.2f);
+		forceRest.beginningMomentumKGPerM2S[axis].assign(faces,0.0f);
+	}
+	FireProductionFrozenForceResult forceRestResult;
+	bool forceRestExact=BuildFireProductionFrozenForceFieldsCPU(
+		forceRest,forceRestResult,&error)&&
+		forceRestResult.eddyKinematicViscosityM2PerS.size()==forceRest.shape.CellCount()&&
+		forceRestResult.effectiveDynamicViscosityPaS.size()==forceRest.shape.CellCount()&&
+		std::all_of(forceRestResult.eddyKinematicViscosityM2PerS.begin(),
+			forceRestResult.eddyKinematicViscosityM2PerS.end(),
+			[](float value){return value==0.0f;});
+	for( std::size_t cell=0u;cell<forceRest.shape.CellCount();++cell )
+		forceRestExact=forceRestExact&&forceRestResult.effectiveDynamicViscosityPaS[cell]==
+			forceRest.cellGasDensityKGPerM3[cell]*
+			forceRest.molecularKinematicViscosityM2PerS[cell];
+	for( unsigned int axis=0u;axis<3u;++axis )
+		forceRestExact=forceRestExact&&
+		forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis].size()==
+			FireProductionProjectionFaceCount(forceRest.shape,axis)&&
+		forceRestResult.gravityMomentumIncrementKGPerM2S[axis].size()==
+			FireProductionProjectionFaceCount(forceRest.shape,axis)&&std::all_of(
+			forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis].begin(),
+			forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis].end(),
+			[](float value){return value==0.0f;})&&std::all_of(
+			forceRestResult.gravityMomentumIncrementKGPerM2S[axis].begin(),
+			forceRestResult.gravityMomentumIncrementKGPerM2S[axis].end(),
+			[](float value){return value==0.0f;});
+	Check(forceRestExact,
+		"ambient rest gives zero Vreman, stress divergence, and relative gravity exactly");
+	FireProductionFrozenForceRequest gravityForce=forceRest;
+	gravityForce.gravityMPerS2={0.0f,-9.81f,0.0f};
+	gravityForce.boundary[2u]=FireProductionProjectionWall;
+	for( float& density : gravityForce.faceDensityKGPerM3[1] ) density=1.5f;
+	FireProductionFrozenForceResult gravityForceResult;
+	bool gravityForceExact=BuildFireProductionFrozenForceFieldsCPU(
+		gravityForce,gravityForceResult,&error);
+	for( std::size_t z=0u;z<gravityForce.shape.nz;++z )
+		for( std::size_t y=0u;y<=gravityForce.shape.ny;++y )
+			for( std::size_t x=0u;x<gravityForce.shape.nx;++x ) {
+				// Derived by the strict-fp32 association dt*(rho_f-rho_amb)*g.
+				// Writing the expression here would let the Opto test translation
+				// unit contract it differently from the strict production object.
+				const float expected=y==0u?0.0f:-0x1.e22e5ap-5f;
+				const float observed=gravityForceResult.gravityMomentumIncrementKGPerM2S[1][
+					TransportFaceIndex(gravityForce.shape,1u,x,y,z)];
+				gravityForceExact=gravityForceExact&&observed==expected;
+			}
+	Check(gravityForceExact,
+		"relative gravity uses authoritative face density, keeps a wall prescribed, "
+		"and updates the opposite open endpoint");
+	FireProductionFrozenForceRequest affineForce=forceRest;
+	affineForce.ambientDensityKGPerM3=1.0f;
+	std::fill(affineForce.cellGasDensityKGPerM3.begin(),
+		affineForce.cellGasDensityKGPerM3.end(),1.0f);
+	for( unsigned int axis=0u;axis<3u;++axis )
+		std::fill(affineForce.faceDensityKGPerM3[axis].begin(),
+			affineForce.faceDensityKGPerM3[axis].end(),1.0f);
+	for( std::size_t z=0u;z<affineForce.shape.nz;++z )
+		for( std::size_t y=0u;y<affineForce.shape.ny;++y )
+			for( std::size_t x=0u;x<=affineForce.shape.nx;++x ) {
+				const float px=static_cast<float>(x)*affineForce.shape.cellWidthM;
+				const float py=(static_cast<float>(y)+0.5f)*affineForce.shape.cellWidthM;
+				affineForce.beginningMomentumKGPerM2S[0][TransportFaceIndex(
+					affineForce.shape,0u,x,y,z)]=2.0f*px+3.0f*py;
+			}
+	for( std::size_t z=0u;z<affineForce.shape.nz;++z )
+		for( std::size_t y=0u;y<=affineForce.shape.ny;++y )
+			for( std::size_t x=0u;x<affineForce.shape.nx;++x ) {
+				const float px=(static_cast<float>(x)+0.5f)*affineForce.shape.cellWidthM;
+				const float pz=(static_cast<float>(z)+0.5f)*affineForce.shape.cellWidthM;
+				affineForce.beginningMomentumKGPerM2S[1][TransportFaceIndex(
+					affineForce.shape,1u,x,y,z)]=-px+4.0f*pz;
+			}
+	for( std::size_t z=0u;z<=affineForce.shape.nz;++z )
+		for( std::size_t y=0u;y<affineForce.shape.ny;++y )
+			for( std::size_t x=0u;x<affineForce.shape.nx;++x ) {
+				const float py=(static_cast<float>(y)+0.5f)*affineForce.shape.cellWidthM;
+				const float pz=static_cast<float>(z)*affineForce.shape.cellWidthM;
+				affineForce.beginningMomentumKGPerM2S[2][TransportFaceIndex(
+					affineForce.shape,2u,x,y,z)]=0.5f*py-2.0f*pz;
+			}
+	FireProductionFrozenForceResult affineForceResult;
+	FireProductionVremanInput affineCenterVreman;
+	affineCenterVreman.coefficient=affineForce.vremanCoefficient;
+	affineCenterVreman.directionalWidthsM.fill(affineForce.shape.cellWidthM);
+	affineCenterVreman.velocityGradientPerS={2.0f,-1.0f,0.0f,3.0f,0.0f,0.5f,
+		0.0f,4.0f,-2.0f};
+	float expectedAffineCenterVreman=0.0f;
+	const std::size_t affineCenter=TransportCellIndex(affineForce.shape,2u,2u,2u);
+	Check(EvaluateFireProductionVremanEddyViscosity(affineCenterVreman,
+		expectedAffineCenterVreman,&error)&&BuildFireProductionFrozenForceFieldsCPU(
+		affineForce,affineForceResult,&error)&&
+		affineForceResult.eddyKinematicViscosityM2PerS[affineCenter]==
+			expectedAffineCenterVreman&&
+		affineForceResult.effectiveDynamicViscosityPaS[affineCenter]==
+			affineForce.cellGasDensityKGPerM3[affineCenter]*(
+				affineForce.molecularKinematicViscosityM2PerS[affineCenter]+
+				expectedAffineCenterVreman),
+		"frozen affine-gradient Vreman and effective mu match an independent center oracle");
+	FireProductionFrozenForceRequest transposeShear=forceRest;
+	transposeShear.shape.cellWidthM=0.125f;
+	transposeShear.ambientDensityKGPerM3=1.0f;
+	transposeShear.vremanCoefficient=0.0f;
+	std::fill(transposeShear.cellGasDensityKGPerM3.begin(),
+		transposeShear.cellGasDensityKGPerM3.end(),1.0f);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		std::fill(transposeShear.faceDensityKGPerM3[axis].begin(),
+			transposeShear.faceDensityKGPerM3[axis].end(),1.0f);
+		std::fill(transposeShear.beginningMomentumKGPerM2S[axis].begin(),
+			transposeShear.beginningMomentumKGPerM2S[axis].end(),0.0f);
+	}
+	for( std::size_t z=0u;z<transposeShear.shape.nz;++z )
+		for( std::size_t y=0u;y<transposeShear.shape.ny;++y )
+			for( std::size_t x=0u;x<transposeShear.shape.nx;++x )
+				transposeShear.molecularKinematicViscosityM2PerS[TransportCellIndex(
+					transposeShear.shape,x,y,z)]=0.03125f+static_cast<float>(y)*0.0078125f;
+	for( std::size_t z=0u;z<transposeShear.shape.nz;++z )
+		for( std::size_t y=0u;y<=transposeShear.shape.ny;++y )
+			for( std::size_t x=0u;x<transposeShear.shape.nx;++x )
+				transposeShear.beginningMomentumKGPerM2S[1][TransportFaceIndex(
+					transposeShear.shape,1u,x,y,z)]=
+					2.0f*(static_cast<float>(x)+0.5f)*transposeShear.shape.cellWidthM;
+	FireProductionFrozenForceResult transposeShearResult;
+	const std::size_t transposeFace=TransportFaceIndex(
+		transposeShear.shape,0u,2u,2u,2u);
+	Check(BuildFireProductionFrozenForceFieldsCPU(
+		transposeShear,transposeShearResult,&error)&&
+		transposeShearResult.beginningViscousMomentumRateKGPerM2S2[0][transposeFace]==
+			0.125f&&std::all_of(
+				transposeShearResult.eddyKinematicViscosityM2PerS.begin(),
+				transposeShearResult.eddyKinematicViscosityM2PerS.end(),
+				[](float value){return value==0.0f;}),
+		"variable-mu transverse shear binds the transposed gradient and four-cell stencil");
+	FireProductionFrozenForceRequest wallShear=transposeShear;
+	wallShear.boundary[2u]=FireProductionProjectionWall;
+	std::fill(wallShear.molecularKinematicViscosityM2PerS.begin(),
+		wallShear.molecularKinematicViscosityM2PerS.end(),0.015625f);
+	for( std::size_t face=0u;face<wallShear.beginningMomentumKGPerM2S[0].size();++face )
+		wallShear.beginningMomentumKGPerM2S[0][face]=1.0f;
+	std::fill(wallShear.beginningMomentumKGPerM2S[1].begin(),
+		wallShear.beginningMomentumKGPerM2S[1].end(),0.0f);
+	FireProductionFrozenForceResult wallShearResult;
+	const std::size_t lowWallShearFace=TransportFaceIndex(
+		wallShear.shape,0u,2u,0u,2u);
+	const std::size_t openInteriorShearFace=TransportFaceIndex(
+		wallShear.shape,0u,2u,wallShear.shape.ny-1u,2u);
+	const std::size_t pressureOpenNormalLow=TransportFaceIndex(
+		wallShear.shape,0u,0u,0u,2u);
+	const std::size_t pressureOpenNormalHigh=TransportFaceIndex(
+		wallShear.shape,0u,wallShear.shape.nx,0u,2u);
+	Check(BuildFireProductionFrozenForceFieldsCPU(wallShear,wallShearResult,&error)&&
+		wallShearResult.beginningViscousMomentumRateKGPerM2S2[0][lowWallShearFace]==
+			-1.0f&&
+		wallShearResult.beginningViscousMomentumRateKGPerM2S2[0][openInteriorShearFace]==
+			0.0f&&
+		wallShearResult.beginningViscousMomentumRateKGPerM2S2[0][pressureOpenNormalLow]==
+			0.0f&&
+		wallShearResult.beginningViscousMomentumRateKGPerM2S2[0][pressureOpenNormalHigh]==
+			0.0f,
+		"odd no-slip wall ghosts create the exact tangential shear while open extension does not");
+	FireProductionFrozenForceRequest upperWallShear=transposeShear;
+	upperWallShear.boundary[3u]=FireProductionProjectionWall;
+	upperWallShear.timeStepS=0.125f;upperWallShear.gravityMPerS2[1]=1.0f;
+	std::fill(upperWallShear.faceDensityKGPerM3[1].begin(),
+		upperWallShear.faceDensityKGPerM3[1].end(),2.0f);
+	std::fill(upperWallShear.molecularKinematicViscosityM2PerS.begin(),
+		upperWallShear.molecularKinematicViscosityM2PerS.end(),0.015625f);
+	for( std::size_t face=0u;face<upperWallShear.beginningMomentumKGPerM2S[0].size();++face )
+		upperWallShear.beginningMomentumKGPerM2S[0][face]=1.0f;
+	std::fill(upperWallShear.beginningMomentumKGPerM2S[1].begin(),
+		upperWallShear.beginningMomentumKGPerM2S[1].end(),0.0f);
+	FireProductionFrozenForceResult upperWallShearResult;
+	const std::size_t lowerOpenShearFace=TransportFaceIndex(
+		upperWallShear.shape,0u,2u,0u,2u);
+	const std::size_t highWallShearFace=TransportFaceIndex(
+		upperWallShear.shape,0u,2u,upperWallShear.shape.ny-1u,2u);
+	const std::size_t lowerOpenGravityFace=TransportFaceIndex(
+		upperWallShear.shape,1u,2u,0u,2u);
+	const std::size_t upperWallGravityFace=TransportFaceIndex(
+		upperWallShear.shape,1u,2u,upperWallShear.shape.ny,2u);
+	Check(BuildFireProductionFrozenForceFieldsCPU(
+		upperWallShear,upperWallShearResult,&error)&&
+		upperWallShearResult.beginningViscousMomentumRateKGPerM2S2[0][
+			lowerOpenShearFace]==0.0f&&
+		upperWallShearResult.beginningViscousMomentumRateKGPerM2S2[0][
+			highWallShearFace]==-1.0f&&
+		upperWallShearResult.gravityMomentumIncrementKGPerM2S[1][lowerOpenGravityFace]==
+			0.125f&&
+		upperWallShearResult.gravityMomentumIncrementKGPerM2S[1][upperWallGravityFace]==
+			0.0f,
+		"upper odd wall and lower pressure-open extensions retain distinct exact shear roles");
+	FireProductionFrozenForceRequest compressionForce=transposeShear;
+	for( std::size_t z=0u;z<compressionForce.shape.nz;++z )
+		for( std::size_t y=0u;y<compressionForce.shape.ny;++y )
+			for( std::size_t x=0u;x<compressionForce.shape.nx;++x )
+				compressionForce.molecularKinematicViscosityM2PerS[TransportCellIndex(
+					compressionForce.shape,x,y,z)]=
+					0.03125f+static_cast<float>(x)*0.0078125f;
+	for( unsigned int axis=0u;axis<3u;++axis )
+		std::fill(compressionForce.beginningMomentumKGPerM2S[axis].begin(),
+			compressionForce.beginningMomentumKGPerM2S[axis].end(),0.0f);
+	for( std::size_t z=0u;z<compressionForce.shape.nz;++z )
+		for( std::size_t y=0u;y<compressionForce.shape.ny;++y )
+			for( std::size_t x=0u;x<=compressionForce.shape.nx;++x )
+				compressionForce.beginningMomentumKGPerM2S[0][TransportFaceIndex(
+					compressionForce.shape,0u,x,y,z)]=
+					2.0f*static_cast<float>(x)*compressionForce.shape.cellWidthM;
+	FireProductionFrozenForceResult compressionForceResult;
+	const std::size_t compressionFace=TransportFaceIndex(
+		compressionForce.shape,0u,2u,2u,2u);
+	Check(BuildFireProductionFrozenForceFieldsCPU(
+		compressionForce,compressionForceResult,&error)&&
+		compressionForceResult.beginningViscousMomentumRateKGPerM2S2[0][compressionFace]==
+			0x1.555558p-3f,
+		"variable-mu compression binds the two-thirds deviatoric trace subtraction");
+	FireProductionFrozenForceRequest wallNormalCompression=compressionForce;
+	wallNormalCompression.boundary[1u]=FireProductionProjectionWall;
+	FireProductionFrozenForceResult wallNormalCompressionResult;
+	const std::size_t openCompressionEndpoint=TransportFaceIndex(
+		wallNormalCompression.shape,0u,0u,2u,2u);
+	const std::size_t wallCompressionEndpoint=TransportFaceIndex(
+		wallNormalCompression.shape,0u,wallNormalCompression.shape.nx,2u,2u);
+	const std::size_t adjacentCompressionFace=TransportFaceIndex(
+		wallNormalCompression.shape,0u,wallNormalCompression.shape.nx-1u,2u,2u);
+	Check(BuildFireProductionFrozenForceFieldsCPU(
+		wallNormalCompression,wallNormalCompressionResult,&error)&&
+		wallNormalCompressionResult.beginningViscousMomentumRateKGPerM2S2[0][
+			openCompressionEndpoint]==0.0f&&
+		wallNormalCompressionResult.beginningViscousMomentumRateKGPerM2S2[0][
+			wallCompressionEndpoint]==0.0f&&
+		wallNormalCompressionResult.beginningViscousMomentumRateKGPerM2S2[0][
+			adjacentCompressionFace]==-0x1.affffep+1f,
+		"pressure-open and wall normal endpoints own no viscous increment beside active interior work");
+	FireProductionFrozenForceRequest authorityForce=forceRest;
+	authorityForce.shape.cellWidthM=1.0f;authorityForce.ambientDensityKGPerM3=1.0f;
+	std::fill(authorityForce.cellGasDensityKGPerM3.begin(),
+		authorityForce.cellGasDensityKGPerM3.end(),3.0f);
+	std::fill(authorityForce.molecularKinematicViscosityM2PerS.begin(),
+		authorityForce.molecularKinematicViscosityM2PerS.end(),0.125f);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		std::fill(authorityForce.faceDensityKGPerM3[axis].begin(),
+			authorityForce.faceDensityKGPerM3[axis].end(),2.0f);
+		std::fill(authorityForce.beginningMomentumKGPerM2S[axis].begin(),
+			authorityForce.beginningMomentumKGPerM2S[axis].end(),0.0f);
+	}
+	for( std::size_t z=0u;z<authorityForce.shape.nz;++z )
+		for( std::size_t y=0u;y<authorityForce.shape.ny;++y )
+			for( std::size_t x=0u;x<=authorityForce.shape.nx;++x )
+				authorityForce.beginningMomentumKGPerM2S[0][TransportFaceIndex(
+					authorityForce.shape,0u,x,y,z)]=
+					2.0f*static_cast<float>(x*x);
+	for( std::size_t z=0u;z<authorityForce.shape.nz;++z )
+		for( std::size_t y=0u;y<=authorityForce.shape.ny;++y )
+			for( std::size_t x=0u;x<authorityForce.shape.nx;++x )
+				authorityForce.beginningMomentumKGPerM2S[1][TransportFaceIndex(
+					authorityForce.shape,1u,x,y,z)]=
+					2.0f*static_cast<float>(y*y);
+	FireProductionVremanInput authorityVreman;
+	authorityVreman.coefficient=authorityForce.vremanCoefficient;
+	authorityVreman.directionalWidthsM.fill(1.0f);
+	authorityVreman.velocityGradientPerS={5.0f,0.0f,0.0f,0.0f,5.0f,0.0f,
+		0.0f,0.0f,0.0f};
+	float expectedAuthorityVreman=0.0f;
+	FireProductionFrozenForceResult authorityForceResult;
+	const std::size_t authorityCell=TransportCellIndex(authorityForce.shape,2u,2u,2u);
+	Check(EvaluateFireProductionVremanEddyViscosity(authorityVreman,
+		expectedAuthorityVreman,&error)&&BuildFireProductionFrozenForceFieldsCPU(
+			authorityForce,authorityForceResult,&error)&&
+		authorityForceResult.eddyKinematicViscosityM2PerS[authorityCell]==
+			expectedAuthorityVreman&&
+		authorityForceResult.effectiveDynamicViscosityPaS[authorityCell]==
+			3.0f*(0.125f+expectedAuthorityVreman),
+		"two-face velocity averaging, authoritative face division, and cell-density mu are bound");
+	FireProductionFrozenForceRequest periodicForce=forceRest;
+	periodicForce.shape.cellWidthM=1.0f;periodicForce.timeStepS=0.125f;
+	periodicForce.ambientDensityKGPerM3=1.0f;periodicForce.gravityMPerS2[0]=1.0f;
+	periodicForce.boundary.fill(FireProductionProjectionPeriodic);
+	std::fill(periodicForce.cellGasDensityKGPerM3.begin(),
+		periodicForce.cellGasDensityKGPerM3.end(),1.0f);
+	std::fill(periodicForce.molecularKinematicViscosityM2PerS.begin(),
+		periodicForce.molecularKinematicViscosityM2PerS.end(),1.0f);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		std::fill(periodicForce.faceDensityKGPerM3[axis].begin(),
+			periodicForce.faceDensityKGPerM3[axis].end(),1.0f);
+		std::fill(periodicForce.beginningMomentumKGPerM2S[axis].begin(),
+			periodicForce.beginningMomentumKGPerM2S[axis].end(),0.0f);
+	}
+	std::fill(periodicForce.faceDensityKGPerM3[0].begin(),
+		periodicForce.faceDensityKGPerM3[0].end(),2.0f);
+	const std::size_t periodicPulseX[]={0u,2u,4u,periodicForce.shape.nx};
+	for( std::size_t z=0u;z<periodicForce.shape.nz;++z )
+		for( std::size_t y=0u;y<periodicForce.shape.ny;++y ) {
+			for( const std::size_t x : periodicPulseX )
+				periodicForce.beginningMomentumKGPerM2S[0][TransportFaceIndex(
+					periodicForce.shape,0u,x,y,z)]=2.0f;
+		}
+	for( std::size_t z=0u;z<periodicForce.shape.nz;++z )
+		for( std::size_t x=0u;x<periodicForce.shape.nx;++x )
+			periodicForce.beginningMomentumKGPerM2S[1][TransportFaceIndex(
+				periodicForce.shape,1u,x,2u,z)]=1.0f;
+	FireProductionFrozenForceResult periodicForceResult;
+	const std::size_t periodicLow=TransportFaceIndex(periodicForce.shape,0u,0u,2u,2u);
+	const std::size_t periodicHigh=TransportFaceIndex(
+		periodicForce.shape,0u,periodicForce.shape.nx,2u,2u);
+	const std::size_t periodicCell=TransportCellIndex(periodicForce.shape,0u,2u,2u);
+	const bool periodicBuilt=BuildFireProductionFrozenForceFieldsCPU(
+		periodicForce,periodicForceResult,&error);
+	Check(periodicBuilt&&
+		periodicForceResult.beginningViscousMomentumRateKGPerM2S2[0][periodicLow]==
+			-0x1.5771fap-2f&&
+		periodicForceResult.eddyKinematicViscosityM2PerS[periodicCell]==0x1.957bbap-7f&&
+		periodicForceResult.beginningViscousMomentumRateKGPerM2S2[0][periodicHigh]==
+			periodicForceResult.beginningViscousMomentumRateKGPerM2S2[0][periodicLow]&&
+		periodicForceResult.gravityMomentumIncrementKGPerM2S[0][periodicLow]==0.125f&&
+		periodicForceResult.gravityMomentumIncrementKGPerM2S[0][periodicHigh]==
+			periodicForceResult.gravityMomentumIncrementKGPerM2S[0][periodicLow],
+		"periodic face zero owns the wrapped viscous stencil and publishes one exact seam copy");
+	FireProductionFrozenForceRequest invalidFrozenForce=forceRest;
+	auto SeedRejectedFrozenForce=[](FireProductionFrozenForceResult& seeded) {
+		seeded.eddyKinematicViscosityM2PerS.assign(1u,1.0f);
+		seeded.effectiveDynamicViscosityPaS.assign(1u,2.0f);
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			seeded.beginningViscousMomentumRateKGPerM2S2[axis].assign(
+				1u,3.0f+static_cast<float>(axis));
+			seeded.gravityMomentumIncrementKGPerM2S[axis].assign(
+				1u,6.0f+static_cast<float>(axis));
+		}
+	};
+	invalidFrozenForce.molecularKinematicViscosityM2PerS[3]=-1.0f;
+	FireProductionFrozenForceResult rejectedFrozenForce;
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("molecular")!=std::string::npos,
+		"negative molecular viscosity rejects with a fully default frozen-force payload");
+	invalidFrozenForce=forceRest;
+	invalidFrozenForce.faceDensityKGPerM3[0][5]=std::numeric_limits<float>::min();
+	invalidFrozenForce.beginningMomentumKGPerM2S[0][5]=
+		std::numeric_limits<float>::max();
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("overflowed")!=std::string::npos,
+		"late derived-velocity overflow cannot publish a partial frozen-force result");
+	invalidFrozenForce=forceRest;
+	invalidFrozenForce.boundary.fill(FireProductionProjectionPeriodic);
+	invalidFrozenForce.beginningMomentumKGPerM2S[2].back()=1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("seam")!=std::string::npos,
+		"frozen-force input rejects a noncanonical periodic MAC publication seam");
+	invalidFrozenForce=forceRest;
+	invalidFrozenForce.boundary.fill(FireProductionProjectionPeriodic);
+	invalidFrozenForce.beginningMomentumKGPerM2S[0][0]=0.0f;
+	invalidFrozenForce.beginningMomentumKGPerM2S[0][forceRest.shape.nx]=-0.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("seam")!=std::string::npos,
+		"periodic seam validation rejects numerically equal but byte-distinct signed zero");
+	invalidFrozenForce=forceRest;
+	invalidFrozenForce.boundary[0]=FireProductionProjectionPeriodic;
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("pairing")!=std::string::npos,
+		"unpaired periodic frozen-force boundaries reject with no result");
+	invalidFrozenForce=forceRest;
+	invalidFrozenForce.faceDensityKGPerM3[2][7]=-1.0f;
+	invalidFrozenForce.beginningMomentumKGPerM2S[2][7]=1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("face state")!=std::string::npos,
+		"finite negative authoritative face density is structurally rejected");
+	invalidFrozenForce=forceRest;invalidFrozenForce.cellGasDensityKGPerM3[9]=-1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("cell density")!=std::string::npos,
+		"finite negative cell density cannot create a negative effective dynamic viscosity");
+	invalidFrozenForce=forceRest;invalidFrozenForce.timeStepS=-1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("scalar")!=std::string::npos,
+		"finite negative frozen-force timestep is rejected transactionally");
+	invalidFrozenForce=forceRest;invalidFrozenForce.ambientDensityKGPerM3=-1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("scalar")!=std::string::npos,
+		"finite negative ambient density is rejected transactionally");
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	denyTestAllocations=true;
+	const bool frozenAllocationRejected=!BuildFireProductionFrozenForceFieldsCPU(
+		forceRest,rejectedFrozenForce,0);
+	denyTestAllocations=false;
+	Check(frozenAllocationRejected&&FrozenForceResultEmpty(rejectedFrozenForce),
+		"persistent allocation denial cannot escape or publish a partial frozen-force result");
+	FireProductionProjectionShape frozenBytesBelow,frozenBytesAbove;
+	frozenBytesBelow.nx=26u;frozenBytesBelow.ny=765u;frozenBytesBelow.nz=865u;
+	frozenBytesAbove.nx=49u;frozenBytesAbove.ny=439u;frozenBytesAbove.nz=802u;
+	std::uint64_t frozenBelowBytes=0u,frozenAboveBytes=0u;
+	Check(FireProductionFrozenForceWorkingSetBytes(frozenBytesBelow,frozenBelowBytes)&&
+		FireProductionFrozenForceWorkingSetBytes(frozenBytesAbove,frozenAboveBytes)&&
+		frozenBelowBytes==UINT64_C(2147483500)&&
+		frozenAboveBytes==UINT64_C(2147483668)&&
+		frozenBelowBytes<(UINT64_C(1)<<31u)&&
+		frozenAboveBytes>(UINT64_C(1)<<31u),
+		"independent near-cap shapes bind all sixteen cell and five face payloads");
+	FireProductionFrozenForceRequest frozenAdmission;
+	frozenAdmission.shape=frozenBytesAbove;frozenAdmission.shape.cellWidthM=1.0f;
+	frozenAdmission.timeStepS=1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);error.clear();
+	const bool overFrozenAdmission=!BuildFireProductionFrozenForceFieldsCPU(
+		frozenAdmission,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("two GiB")!=std::string::npos;
+	frozenAdmission.shape=frozenBytesBelow;frozenAdmission.shape.cellWidthM=1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);error.clear();
+	const bool underFrozenAdmission=!BuildFireProductionFrozenForceFieldsCPU(
+		frozenAdmission,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("cell shape")!=std::string::npos&&
+		error.find("two GiB")==std::string::npos;
+	Check(overFrozenAdmission&&underFrozenAdmission,
+		"the actual frozen-force admission path straddles the exact two-GiB boundary");
+	invalidFrozenForce=FireProductionFrozenForceRequest();
+	invalidFrozenForce.shape.nx=1024u;invalidFrozenForce.shape.ny=1024u;
+	invalidFrozenForce.shape.nz=1024u;invalidFrozenForce.shape.cellWidthM=1.0f;
+	invalidFrozenForce.timeStepS=1.0f;
+	SeedRejectedFrozenForce(rejectedFrozenForce);
+	error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsCPU(
+		invalidFrozenForce,rejectedFrozenForce,&error)&&
+		FrozenForceResultEmpty(rejectedFrozenForce)&&error.find("two GiB")!=std::string::npos,
+		"frozen-force peak is rejected before any oversized allocation or payload access");
 
 	RISECBOR64::Value envelope;RISECBOR64::Bytes payloadBytes;
 	const RISECBOR64::Value* payload=0;const RISECBOR64::Value* id=0;
@@ -2174,6 +2637,13 @@ int main()
 			"\t\t\t\tstatic_cast<double>(outwardLambdaPerS),infinity);")!=
 			std::string::npos&&
 		forceSource.find("if( count>8u )")!=std::string::npos&&
+		forceSource.find("bytes=(16u*cells+5u*allFaces)*sizeof(float);")!=
+			std::string::npos&&
+		forceSource.find("leftXYZ[component]=normal==0u?normalExtent-1u:normal-1u;")!=
+			std::string::npos&&
+		forceSource.find("computed.beginningViscousMomentumRateKGPerM2S2[component][high]=\n"
+			"\t\t\t\t\t\t\t\tcomputed.beginningViscousMomentumRateKGPerM2S2[component][low];")!=
+			std::string::npos&&
 		makeFilelist.find("$(PATHLIBRARY)Utilities/FireProductionForce.cpp")!=
 			std::string::npos&&
 		androidSources.find("${RISE_LIB}/Utilities/FireProductionForce.cpp")!=

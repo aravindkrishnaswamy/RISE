@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <new>
+#include <utility>
 
 namespace RISE
 {
@@ -21,6 +23,31 @@ namespace RISE
 		{
 			if( error ) try { *error=message; } catch( const std::bad_alloc& ) {}
 			return false;
+		}
+
+		std::size_t CellIndex( const FireProductionProjectionShape& shape,
+			std::size_t x, std::size_t y, std::size_t z )
+		{
+			return (z*shape.ny+y)*shape.nx+x;
+		}
+
+		std::size_t FaceIndex( const FireProductionProjectionShape& shape,
+			unsigned int axis, std::size_t x, std::size_t y, std::size_t z )
+		{
+			if( axis==0u ) return (z*shape.ny+y)*(shape.nx+1u)+x;
+			if( axis==1u ) return (z*(shape.ny+1u)+y)*shape.nx+x;
+			return (z*shape.ny+y)*shape.nx+x;
+		}
+
+		std::size_t AxisExtent( const FireProductionProjectionShape& shape,
+			unsigned int axis )
+		{
+			return axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+		}
+
+		bool SameFloatBytes( float first, float second )
+		{
+			return std::memcmp(&first,&second,sizeof(float))==0;
 		}
 	}
 
@@ -109,6 +136,280 @@ namespace RISE
 				return true;
 			}
 			++count;
+		}
+	}
+
+	bool FireProductionFrozenForceWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		const std::uint64_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+		const std::uint64_t cells=nx*ny*nz;
+		const std::uint64_t allFaces=(nx+1u)*ny*nz+
+			nx*(ny+1u)*nz+nx*ny*(nz+1u);
+		// Peak includes caller-owned inputs and the local atomic result:
+		// 16 cell arrays (2 input, 14 work/result) and 5 face arrays
+		// (2 input, velocity work, viscous result, gravity result).
+		bytes=(16u*cells+5u*allFaces)*sizeof(float);
+		return true;
+	}
+
+	bool BuildFireProductionFrozenForceFieldsCPU(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionFrozenForceResult& result,
+		std::string* error )
+	{
+		result=FireProductionFrozenForceResult();
+		try {
+			FireProductionFrozenForceResult computed;
+			const FireProductionProjectionShape& shape=request.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!(request.timeStepS>0.0f)||
+				!std::isfinite(request.timeStepS)||!(request.ambientDensityKGPerM3>0.0f)||
+				!std::isfinite(request.ambientDensityKGPerM3)||
+				!(request.vremanCoefficient>=0.0f)||
+				!std::isfinite(request.vremanCoefficient) )
+				return Fail(error,"production frozen-force shape or scalar is invalid");
+			for( const float gravity : request.gravityMPerS2 ) if( !std::isfinite(gravity) )
+				return Fail(error,"production frozen-force gravity is nonfinite");
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=
+					 (upper==FireProductionProjectionPeriodic)) )
+					return Fail(error,"production frozen-force boundary pairing is invalid");
+			}
+			const std::size_t cells=shape.CellCount();
+			std::uint64_t workingBytes=0u;
+			if( !FireProductionFrozenForceWorkingSetBytes(shape,workingBytes)||
+				workingBytes>(UINT64_C(1)<<31u) )
+				return Fail(error,"production frozen-force working set exceeds two GiB");
+			if( request.cellGasDensityKGPerM3.size()!=cells||
+				request.molecularKinematicViscosityM2PerS.size()!=cells )
+				return Fail(error,"production frozen-force cell shape is invalid");
+			for( const float density : request.cellGasDensityKGPerM3 )
+				if( !(density>0.0f)||!std::isfinite(density) )
+					return Fail(error,"production frozen-force cell density is invalid");
+			for( const float viscosity : request.molecularKinematicViscosityM2PerS )
+				if( !(viscosity>=0.0f)||!std::isfinite(viscosity) )
+					return Fail(error,"production frozen-force molecular viscosity is invalid");
+			std::array<std::vector<float>,3> faceVelocity;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.faceDensityKGPerM3[axis].size()!=faces||
+					request.beginningMomentumKGPerM2S[axis].size()!=faces )
+					return Fail(error,"production frozen-force face shape is invalid");
+				faceVelocity[axis].resize(faces);
+				for( std::size_t face=0u;face<faces;++face ) {
+					const float density=request.faceDensityKGPerM3[axis][face];
+					const float momentum=request.beginningMomentumKGPerM2S[axis][face];
+					if( !(density>0.0f)||!std::isfinite(density)||!std::isfinite(momentum) )
+						return Fail(error,"production frozen-force face state is invalid");
+					faceVelocity[axis][face]=momentum/density;
+					if( !std::isfinite(faceVelocity[axis][face]) )
+						return Fail(error,"production frozen-force velocity overflowed");
+				}
+				const std::size_t extent=AxisExtent(shape,axis);
+				const std::size_t firstExtent=AxisExtent(shape,(axis+1u)%3u);
+				const std::size_t secondExtent=AxisExtent(shape,(axis+2u)%3u);
+				for( std::size_t second=0u;second<secondExtent;++second )
+					for( std::size_t first=0u;first<firstExtent;++first ) {
+						std::size_t xyz[]={0u,0u,0u};
+						xyz[(axis+1u)%3u]=first;xyz[(axis+2u)%3u]=second;
+						if( request.boundary[2u*axis]==FireProductionProjectionPeriodic ) {
+							xyz[axis]=0u;
+							const std::size_t low=FaceIndex(shape,axis,xyz[0],xyz[1],xyz[2]);
+							xyz[axis]=extent;
+							const std::size_t high=FaceIndex(shape,axis,xyz[0],xyz[1],xyz[2]);
+							if( !SameFloatBytes(request.faceDensityKGPerM3[axis][low],
+								request.faceDensityKGPerM3[axis][high])||
+								!SameFloatBytes(request.beginningMomentumKGPerM2S[axis][low],
+									request.beginningMomentumKGPerM2S[axis][high]) )
+								return Fail(error,
+									"production frozen-force periodic face seam differs");
+						}
+						if( request.boundary[2u*axis]==FireProductionProjectionWall ) {
+							xyz[axis]=0u;faceVelocity[axis][FaceIndex(shape,axis,
+								xyz[0],xyz[1],xyz[2])]=0.0f;
+						}
+						if( request.boundary[2u*axis+1u]==FireProductionProjectionWall ) {
+							xyz[axis]=extent;faceVelocity[axis][FaceIndex(shape,axis,
+								xyz[0],xyz[1],xyz[2])]=0.0f;
+						}
+					}
+			}
+			std::array<std::vector<float>,3> cellVelocity;
+			for( unsigned int component=0u;component<3u;++component )
+				cellVelocity[component].resize(cells);
+			for( std::size_t z=0u;z<shape.nz;++z ) for( std::size_t y=0u;y<shape.ny;++y )
+				for( std::size_t x=0u;x<shape.nx;++x ) {
+					const std::size_t cell=CellIndex(shape,x,y,z);
+					const std::size_t xyz[]={x,y,z};
+					for( unsigned int component=0u;component<3u;++component ) {
+						std::size_t upperXYZ[]={x,y,z};++upperXYZ[component];
+						cellVelocity[component][cell]=0.5f*(faceVelocity[component][
+							FaceIndex(shape,component,xyz[0],xyz[1],xyz[2])]+
+							faceVelocity[component][FaceIndex(shape,component,
+								upperXYZ[0],upperXYZ[1],upperXYZ[2])]);
+					}
+				}
+			computed.eddyKinematicViscosityM2PerS.resize(cells);
+			computed.effectiveDynamicViscosityPaS.resize(cells);
+			std::array<std::array<std::vector<float>,3>,3> stress;
+			for( unsigned int i=0u;i<3u;++i ) for( unsigned int j=0u;j<3u;++j )
+				stress[i][j].resize(cells);
+			for( std::size_t z=0u;z<shape.nz;++z ) for( std::size_t y=0u;y<shape.ny;++y )
+				for( std::size_t x=0u;x<shape.nx;++x ) {
+					const std::size_t cell=CellIndex(shape,x,y,z);
+					const std::size_t coordinate[]={x,y,z};
+					float gradient[3][3]={};float divergence=0.0f;
+					for( unsigned int derivative=0u;derivative<3u;++derivative ) {
+						const std::size_t extent=AxisExtent(shape,derivative);
+						for( unsigned int component=0u;component<3u;++component ) {
+							float previous=cellVelocity[component][cell];
+							float next=cellVelocity[component][cell];
+							if( coordinate[derivative]>0u ) {
+								std::size_t xyz[]={x,y,z};--xyz[derivative];
+								previous=cellVelocity[component][CellIndex(shape,xyz[0],xyz[1],xyz[2])];
+							} else if( request.boundary[2u*derivative]==FireProductionProjectionPeriodic ) {
+								std::size_t xyz[]={x,y,z};xyz[derivative]=extent-1u;
+								previous=cellVelocity[component][CellIndex(shape,xyz[0],xyz[1],xyz[2])];
+							} else if( request.boundary[2u*derivative]==FireProductionProjectionWall )
+								previous=-cellVelocity[component][cell];
+							if( coordinate[derivative]+1u<extent ) {
+								std::size_t xyz[]={x,y,z};++xyz[derivative];
+								next=cellVelocity[component][CellIndex(shape,xyz[0],xyz[1],xyz[2])];
+							} else if( request.boundary[2u*derivative+1u]==FireProductionProjectionPeriodic ) {
+								std::size_t xyz[]={x,y,z};xyz[derivative]=0u;
+								next=cellVelocity[component][CellIndex(shape,xyz[0],xyz[1],xyz[2])];
+							} else if( request.boundary[2u*derivative+1u]==FireProductionProjectionWall )
+								next=-cellVelocity[component][cell];
+							gradient[derivative][component]=(next-previous)/
+								(2.0f*shape.cellWidthM);
+						}
+						divergence+=gradient[derivative][derivative];
+					}
+					FireProductionVremanInput vreman;
+					vreman.coefficient=request.vremanCoefficient;
+					vreman.directionalWidthsM.fill(shape.cellWidthM);
+					for( unsigned int i=0u;i<3u;++i ) for( unsigned int j=0u;j<3u;++j )
+						vreman.velocityGradientPerS[3u*i+j]=gradient[i][j];
+					if( !EvaluateFireProductionVremanEddyViscosity(vreman,
+						computed.eddyKinematicViscosityM2PerS[cell],error) ) return false;
+					const float effectiveKinematic=
+						request.molecularKinematicViscosityM2PerS[cell]+
+						computed.eddyKinematicViscosityM2PerS[cell];
+					const float mu=request.cellGasDensityKGPerM3[cell]*effectiveKinematic;
+					if( !std::isfinite(effectiveKinematic)||!std::isfinite(mu) )
+						return Fail(error,"production frozen-force viscosity overflowed");
+					computed.effectiveDynamicViscosityPaS[cell]=mu;
+					for( unsigned int component=0u;component<3u;++component )
+						for( unsigned int derivative=0u;derivative<3u;++derivative )
+							stress[component][derivative][cell]=mu*(
+								gradient[derivative][component]+
+								gradient[component][derivative]-
+								(component==derivative?(2.0f/3.0f)*divergence:0.0f));
+				}
+			for( unsigned int component=0u;component<3u;++component ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,component);
+				computed.beginningViscousMomentumRateKGPerM2S2[component].assign(faces,0.0f);
+				computed.gravityMomentumIncrementKGPerM2S[component].resize(faces);
+				const std::size_t normalExtent=AxisExtent(shape,component);
+				const bool periodicNormal=request.boundary[2u*component]==
+					FireProductionProjectionPeriodic;
+				const unsigned int firstAxis=(component+1u)%3u,secondAxis=(component+2u)%3u;
+				const std::size_t firstExtent=AxisExtent(shape,firstAxis);
+				const std::size_t secondExtent=AxisExtent(shape,secondAxis);
+				for( std::size_t second=0u;second<secondExtent;++second )
+					for( std::size_t first=0u;first<firstExtent;++first )
+						for( std::size_t normal=0u;normal<=normalExtent;++normal ) {
+							std::size_t xyz[]={0u,0u,0u};xyz[component]=normal;
+							xyz[firstAxis]=first;xyz[secondAxis]=second;
+							const std::size_t face=FaceIndex(shape,component,xyz[0],xyz[1],xyz[2]);
+							if( periodicNormal&&normal==normalExtent ) continue;
+							const bool prescribedWall=(normal==0u&&request.boundary[2u*component]==
+								FireProductionProjectionWall)||(normal==normalExtent&&
+								request.boundary[2u*component+1u]==FireProductionProjectionWall);
+							computed.gravityMomentumIncrementKGPerM2S[component][face]=prescribedWall?
+								0.0f:request.timeStepS*(request.faceDensityKGPerM3[component][face]-
+									request.ambientDensityKGPerM3)*request.gravityMPerS2[component];
+							if( !std::isfinite(
+								computed.gravityMomentumIncrementKGPerM2S[component][face]) )
+								return Fail(error,"production frozen-force output is nonfinite");
+							if( (normal==0u&&!periodicNormal)||normal==normalExtent ) continue;
+							std::size_t leftXYZ[]={xyz[0],xyz[1],xyz[2]};
+							leftXYZ[component]=normal==0u?normalExtent-1u:normal-1u;
+							const std::size_t left=CellIndex(shape,leftXYZ[0],leftXYZ[1],leftXYZ[2]);
+							const std::size_t right=CellIndex(shape,xyz[0],xyz[1],xyz[2]);
+							float viscous=(stress[component][component][right]-
+								stress[component][component][left])/shape.cellWidthM;
+							for( unsigned int derivative=0u;derivative<3u;++derivative ) {
+								if( derivative==component ) continue;
+								const std::size_t position=xyz[derivative];
+								const std::size_t extent=AxisExtent(shape,derivative);
+								std::size_t leftPrevious=left,rightPrevious=right;
+								std::size_t leftNext=left,rightNext=right;
+								const bool hasPrevious=position>0u||request.boundary[2u*derivative]==
+									FireProductionProjectionPeriodic;
+								const bool hasNext=position+1u<extent||
+									request.boundary[2u*derivative+1u]==FireProductionProjectionPeriodic;
+								if( hasPrevious ) {
+									std::size_t lp[]={leftXYZ[0],leftXYZ[1],leftXYZ[2]};
+									std::size_t rp[]={xyz[0],xyz[1],xyz[2]};
+									lp[derivative]=position?position-1u:extent-1u;
+									rp[derivative]=position?position-1u:extent-1u;
+									leftPrevious=CellIndex(shape,lp[0],lp[1],lp[2]);
+									rightPrevious=CellIndex(shape,rp[0],rp[1],rp[2]);
+								}
+								if( hasNext ) {
+									std::size_t ln[]={leftXYZ[0],leftXYZ[1],leftXYZ[2]};
+									std::size_t rn[]={xyz[0],xyz[1],xyz[2]};
+									ln[derivative]=position+1u<extent?position+1u:0u;
+									rn[derivative]=position+1u<extent?position+1u:0u;
+									leftNext=CellIndex(shape,ln[0],ln[1],ln[2]);
+									rightNext=CellIndex(shape,rn[0],rn[1],rn[2]);
+								}
+								const float distance=(hasPrevious&&hasNext)?
+									4.0f*shape.cellWidthM:2.0f*shape.cellWidthM;
+								viscous+=(stress[component][derivative][leftNext]+
+									stress[component][derivative][rightNext]-
+									stress[component][derivative][leftPrevious]-
+									stress[component][derivative][rightPrevious])/distance;
+							}
+							if( !std::isfinite(viscous) )
+								return Fail(error,"production frozen-force output is nonfinite");
+							computed.beginningViscousMomentumRateKGPerM2S2[component][face]=viscous;
+						}
+				if( periodicNormal )
+					for( std::size_t second=0u;second<secondExtent;++second )
+						for( std::size_t first=0u;first<firstExtent;++first ) {
+							std::size_t lowXYZ[]={0u,0u,0u};
+							lowXYZ[firstAxis]=first;lowXYZ[secondAxis]=second;
+							std::size_t highXYZ[]={lowXYZ[0],lowXYZ[1],lowXYZ[2]};
+							highXYZ[component]=normalExtent;
+							const std::size_t low=FaceIndex(shape,component,
+								lowXYZ[0],lowXYZ[1],lowXYZ[2]);
+							const std::size_t high=FaceIndex(shape,component,
+								highXYZ[0],highXYZ[1],highXYZ[2]);
+							computed.beginningViscousMomentumRateKGPerM2S2[component][high]=
+								computed.beginningViscousMomentumRateKGPerM2S2[component][low];
+							computed.gravityMomentumIncrementKGPerM2S[component][high]=
+								computed.gravityMomentumIncrementKGPerM2S[component][low];
+						}
+			}
+			result=std::move(computed);
+			if( error ) error->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionFrozenForceResult();
+			Fail(error,"production frozen-force allocation failed");
+			return false;
 		}
 	}
 }
