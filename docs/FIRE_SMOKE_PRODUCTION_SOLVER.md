@@ -775,6 +775,87 @@ dual-density authority, tangential free-slip wording, `3/8` shortcut, public
 P2 invocation, and self-certifying allocation/slice evidence. The palindrome,
 fixed 3480--3487 extraction, r82 bands, 200 ms, and 2 GiB limits stand.
 
+### 7.7 P3 outward stability and independent evidence (r90)
+
+The r89 phrase “reverse palindrome” is deleted: reversing
+`x/2,y/2,z,y/2,x/2` is the same sequence and no fixture can distinguish it.
+The ordering mutant is the axis-reversed palindrome
+`z/2,y/2,x,y/2,z/2`; the second mutant is the three-full-pass Lie split.
+Before either is used as a RED, the independent CPU composition must prove its
+bytes differ from the canonical result on the asymmetric variable-carrier
+fixture.
+
+The viscous schedule is an outward certificate over stored fp32 coefficient
+bytes. Each coefficient is promoted exactly to binary64. In fixed column order,
+the row accumulator performs `nextafter(sum+abs(a_ij),+infinity)` after every
+addition; the maximum of those outward row bounds is `Lambda_up`. Schedule
+work is `nextafter((double(dt)*Lambda_up)*0.5,+infinity)`, with the written
+association, and the first candidate is `max(1,ceil(work))`. The stored fp32
+`dt_sub=dt/float(N_nu)` is then certified directly: evaluate
+`nextafter(double(dt_sub)*Lambda_up,+infinity)`. While that value exceeds two,
+increment `N_nu` deterministically and recompute `dt_sub`; this is
+pre-dispatch integer selection, not an attempted physical step or retry. Any
+nonfinite intermediate, integer overflow, or required `N_nu>8` fails before
+encoding. Thus the represented substep, not an ideal quotient, satisfies the
+bound. REDs straddle every `N=1..8` ceil threshold with `nextafter`, include a
+long-row downward-rounding mutant, exercise upward-rounded fp32 division, and
+bind the 8/9 structural edge.
+
+Boundary coverage is an explicit bitmap indexed by transported component,
+sweep axis, side, and role `{periodic,wall,open_inflow,open_outflow}`. Every
+semantically applicable entry must be visited; open signs are separate. Raw
+nonzero wall endpoint input must distinguish prescription from a skipped
+branch, and transverse open fixtures pair zero ambient tangential inflow with
+nonzero nearest-interior outflow so both role mutations have nonzero deltas.
+Mixed-side corners are an additional matrix, not substitutes for bitmap cells.
+
+A c-normal pressure-open endpoint is excluded only from the c-normal sweep.
+It remains an owned half-support plane for transverse sweeps, using the pinned
+c-open nearest-interior carrier ghost. During force application it receives
+the certified relative-gravity increment formed from interior/ambient face
+density, receives no viscous endpoint increment (the reference stress
+divergence updates interior normal faces only), and then participates in r86
+projection. A c-wall endpoint is prescribed zero through every sweep and force.
+These rules remove the former ambiguity between “reservoir” and transverse
+transport; mixed-corner tests bind both paths.
+
+Calibration operation counts are not self-authored manifest values. Every
+kernel has a test-only trace build that counts executed fp32 arithmetic by
+operation kind and emits fixed-reduction depths. A separate host topology
+oracle walks the declared index/reduction graph without consuming the manifest
+and must reproduce those counts and depths. The bound generator consumes the
+trace/oracle-agreed count and independently accumulated absolute operands.
+It rejects `n*epsilon>=1`, any disagreement, and any generated `B_fp32` or
+final `B_m` above its already declared scientific ceiling before production
+output is available. A high-cancellation RED removes one accumulation level;
+the observed fp32-versus-high-precision error must then exceed the mutated
+bound. These traces are test instrumentation only and cannot select runtime
+work.
+
+All full-grid buffers on the resident P3 path use
+`MTLResourceStorageModePrivate`. Shared storage is limited to fixed-size
+diagnostics and explicit scheduled staging for checkpoint/frame publication.
+The standalone P1/P2 wrappers may retain Shared staging around their resident
+kernel calls, but no Shared full-grid buffer survives into P3 interstage
+ownership. Thus direct CPU dereference cannot bypass the encoder/readback
+capture. The allocation ledger classifies every resource by storage mode and
+the gate rejects a resident full-grid Shared allocation.
+
+The certified-prefix extractor obtains a source-free comparison through a
+discarded **zero-source shadow**, not algebraic subtraction. At each immutable
+beginning state for steps 3480--3487 it executes the certified transport and
+projection with all chemistry/radiation/pilot/phase packets identically zero,
+using the accepted dt, boundary, molecular, gravity, and `S_div` operands, and
+serializes that shadow's isolated observables. The shadow has separate storage,
+never feeds the accepted trajectory, and cannot publish a run checkpoint. The
+ordinary sourced continuation runs independently and must reproduce the pinned
+r80 dt/Tmax/EOS/frame evidence, proving instrumentation transparency. “Pure
+serialization” applies to capturing either result, not to pretending the
+nonlinearly coupled source can be subtracted afterward.
+
+r90 changes certificate evaluation and RED definitions only. It does not
+change the P3 physical operator, case identity, or milestone budgets.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

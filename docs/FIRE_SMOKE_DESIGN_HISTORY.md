@@ -2235,3 +2235,35 @@ it was already tried and refuted here.
   `B_fp32` plus restriction-matched refinement inputs. These changes are still
   pre-release production semantics and do not alter case identity, 200 ms, or
   two-GiB limits.
+
+- **r90 (2026-08-18):** P3 outward stability and independent evidence. Review
+  found no remaining physical-operator conflict, but ordinary fp32 row sums,
+  ceil products, and `dt/N` could round toward an unsafe one-fewer-substep
+  result. The ruling promotes stored coefficient bytes exactly, rounds every
+  row addition and schedule product outward with `nextafter`, then certifies
+  the represented fp32 `dt_sub` against the outward row bound and increments
+  the pre-dispatch integer until `dt_sub Lambda_up<=2`. Threshold pairs for
+  N=1..8, downward row-sum rounding, upward division, and the 8/9 capability
+  edge are RED.
+
+  The impossible “reverse palindrome” mutant is replaced by the genuinely
+  different axis-reversed palindrome; an independent oracle must first prove a
+  nonzero delta. Boundary evidence becomes a full component/sweep/side/role
+  bitmap with separate open signs. Finally, kernel operation counts and tree
+  depths come from agreement between a trace build and an independent topology
+  walker, not the allowance manifest itself; disagreement, `n epsilon>=1`, or
+  a bound above the scientific ceiling fails generation. This is certificate
+  and test governance only; P3 semantics, case identity, 200 ms, and two GiB
+  are unchanged.
+
+  Runtime review additionally pinned open-endpoint participation: exclude a
+  pressure-open normal endpoint only from its normal sweep, retain transverse
+  remap and relative gravity, omit the reference's nonexistent endpoint
+  viscous increment, then project it normally. Resident full-grid resources
+  are Private Metal buffers; Shared storage is restricted to fixed diagnostics
+  and scheduled publication staging, closing the direct-host-dereference hole
+  in encoder-only evidence. Finally, the golden extractor runs a discarded
+  zero-source certified shadow from each immutable beginning state; source
+  packets cannot be subtracted from the nonlinear sourced step. The ordinary
+  continuation separately reproduces r80 evidence and the shadow never affects
+  accepted state or checkpoints.
