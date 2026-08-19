@@ -9528,9 +9528,14 @@ static void TestFileBuildPlanToolAndGateClassification()
 			const JsonValue& items = tools.at( i ).get( "input_schema" ).get( "properties" )
 			                              .get( "elements" ).get( "items" );
 			const JsonValue& en = items.get( "properties" ).get( "construction" ).get( "enum" );
-			Check( en.isArray() && en.size() == 6, "T47a: anthropic `construction` carries a 6-value enum" );
-			Check( en.at( 0 ).asString() == "primitive" && en.at( 5 ).asString() == "mesh",
-			       "T47a: the enum is primitive..mesh in the documented order" );
+			Check( en.isArray() && en.size() == 7, "T47a: anthropic `construction` carries a 7-value enum" );
+			// C3 (2026-08-18): `lathe` joined at index 3 (next to `sweep`),
+			// so `mesh` moved from index 5 to 6 -- the ORDER is contractual
+			// (it is how the enum is rendered to the model everywhere), so
+			// both ends are pinned, not just the size.
+			Check( en.at( 0 ).asString() == "primitive" && en.at( 3 ).asString() == "lathe" &&
+			       en.at( 6 ).asString() == "mesh",
+			       "T47a: the enum is primitive..mesh in the documented order, with `lathe` at 3" );
 			const JsonValue& req = items.get( "required" );
 			bool hasPart = false, hasCons = false, hasOutline = false, hasPieces = false;
 			for( std::size_t k = 0; k < req.size(); ++k ) {
@@ -9594,7 +9599,7 @@ static void TestFileBuildPlanToolAndGateClassification()
 			const JsonValue& en = tools.at( i ).get( "parameters" ).get( "properties" )
 			                           .get( "elements" ).get( "items" )
 			                           .get( "properties" ).get( "construction" ).get( "enum" );
-			Check( en.isArray() && en.size() == 6, "T47a: openai `construction` carries the 6-value enum" );
+			Check( en.isArray() && en.size() == 7, "T47a: openai `construction` carries the 7-value enum" );
 		}
 		Check( saw, "T47a: the OpenAI tool table includes file_build_plan" );
 	}
@@ -9611,7 +9616,7 @@ static void TestFileBuildPlanToolAndGateClassification()
 			const JsonValue& en = decls.at( i ).get( "parameters" ).get( "properties" )
 			                           .get( "elements" ).get( "items" )
 			                           .get( "properties" ).get( "construction" ).get( "enum" );
-			Check( en.isArray() && en.size() == 6, "T47a: gemini `construction` carries the 6-value enum" );
+			Check( en.isArray() && en.size() == 7, "T47a: gemini `construction` carries the 7-value enum" );
 		}
 		Check( saw, "T47a: the Gemini declarations include file_build_plan" );
 	}

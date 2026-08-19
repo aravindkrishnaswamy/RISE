@@ -3411,18 +3411,26 @@ namespace RISE
 				unsigned int                    compositeHeight = 0;
 			};
 
-			//! The CLOSED `construction` enum, in declaration order.  Six
-			//! values naming the six ways RISE can build a part; the model
+			//! The CLOSED `construction` enum, in declaration order.  Seven
+			//! values naming the seven ways RISE can build a part; the model
 			//! picks one per part.  Order is the order they are listed to the
 			//! model everywhere (refusal text, tool schemas), so it is part of
 			//! the contract, not an implementation detail.
-			static const char* const kBuildPlanConstructionValues[6];
-			static const std::size_t kBuildPlanConstructionCount = 6;
+			//!
+			//! C3 (2026-08-18): `lathe` joined the enum next to `sweep`, once
+			//! lathe_geometry existed to serve it -- a surface of revolution
+			//! is the ONE construction the previous six had no honest home
+			//! for (the old advice sent it to sdf roundcone+smin, which is
+			//! now the fallback, not the answer).  It sits beside `sweep`
+			//! because the two are the profile-driven pair and a model
+			//! choosing between them should read them together.
+			static const char* const kBuildPlanConstructionValues[7];
+			static const std::size_t kBuildPlanConstructionCount = 7;
 
 			//! True iff `v` is exactly one of kBuildPlanConstructionValues.
 			static bool IsValidElementConstruction( const std::string& v );
 
-			//! "primitive, csg, sweep, chain, displaced, mesh" -- the ONE
+			//! "primitive, csg, sweep, lathe, chain, displaced, mesh" -- the ONE
 			//! rendering of the enum every message that names it uses, so the
 			//! refusal, the -32602 and both tool schemas cannot drift apart.
 			static std::string BuildPlanConstructionList();

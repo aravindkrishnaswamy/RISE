@@ -1089,7 +1089,7 @@ int main()
 
 			std::vector<std::string> enumValues;
 			{
-				const std::string anchorDecl = "kBuildPlanConstructionValues[6] =";
+				const std::string anchorDecl = "kBuildPlanConstructionValues[7] =";
 				const size_t at = sessionSrc.find( anchorDecl );
 				const size_t end = at == std::string::npos ? std::string::npos
 				                                           : sessionSrc.find( "};", at );
@@ -1103,7 +1103,10 @@ int main()
 					}
 				}
 			}
-			Check( enumValues.size() == 6,
+			// C3 (2026-08-18): SEVEN since `lathe` joined the enum next to
+			// `sweep` -- bump this and the anchor above together whenever the
+			// enum grows, since the anchor's `[N]` is what finds the array.
+			Check( enumValues.size() == 7,
 			       "G2 parity: parsed the closed construction enum out of AgentSession.cpp (got "
 			       + std::to_string( enumValues.size() ) + ")" );
 

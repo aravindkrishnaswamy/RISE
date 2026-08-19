@@ -7702,7 +7702,7 @@ static void TestBuildPlanGateRefusesUntilFiledCapped()
 		       "burn ALL 3 refusals before the model ever saw one" );
 		Check( r.message.find( "file_build_plan" ) != std::string::npos,
 		       p + "the refusal NAMES the tool to call" );
-		Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		Check( r.message.find( "primitive, csg, sweep, lathe, chain, displaced, mesh" ) != std::string::npos,
 		       p + "the refusal lists the CLOSED construction enum" );
 		Check( r.message.find( "`primitive` for every element is a complete plan" ) != std::string::npos,
 		       p + "the refusal states that ANY value is accepted (anti-Goodhart)" );
@@ -8193,7 +8193,7 @@ static void TestBuildPlanGatePatchArm()
 			       "G2j the refusal names the VERB that was refused" );
 			Check( r.message.find( "file_build_plan" ) != std::string::npos,
 			       "G2j the refusal names the tool to call -- the SAME text the insert verbs emit" );
-			Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+			Check( r.message.find( "primitive, csg, sweep, lathe, chain, displaced, mesh" ) != std::string::npos,
 			       "G2j the refusal lists the CLOSED construction enum" );
 			Check( r.message.find( "2 more calls will be refused" ) != std::string::npos,
 			       "G2j the refusal states the ACCURATE remaining-refusal count" );
@@ -8525,7 +8525,7 @@ static void TestBuildPlanWireShape()
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"file_build_plan\",\"params\":{}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a missing 'parts' is -32602" );
-		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		Check( resp.find( "primitive, csg, sweep, lathe, chain, displaced, mesh" ) != std::string::npos,
 		       "G2h that error NAMES the accepted enum" );
 	}
 	{
@@ -8540,21 +8540,26 @@ static void TestBuildPlanWireShape()
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a MISSING 'construction' is -32602" );
 		Check( resp.find( "elements[0].construction" ) != std::string::npos,
 		       "G2h that error names the offending INDEX and field" );
-		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		Check( resp.find( "primitive, csg, sweep, lathe, chain, displaced, mesh" ) != std::string::npos,
 		       "G2h and the accepted enum" );
 	}
+	// C3 (2026-08-18): the out-of-enum value used to be "lathe" -- which is
+	// now a LEGAL construction, so this case would no longer be a rejection
+	// at all.  "sculpt" is the replacement: a plausible-sounding method that
+	// is deliberately NOT in the enum, so the case still proves what it was
+	// written to prove.
 	{
 		const std::string resp = rpc.HandleLine(
 			"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"file_build_plan\",\"params\":"
 			"{\"elements\":[{\"element\":\"wing\",\"pieces\":[\"p\"],\"construction\":\"sweep\","
 			"\"outline\":\"0 0; 1 0; 1 1; 0 1\"},"
-			"{\"element\":\"tail\",\"pieces\":[\"p\"],\"construction\":\"lathe\","
+			"{\"element\":\"tail\",\"pieces\":[\"p\"],\"construction\":\"sculpt\","
 			"\"outline\":\"0 0; 1 0; 0.5 1\"}]}}" );
 		Check( resp.find( "-32602" ) != std::string::npos, "G2h a construction OUTSIDE the enum is -32602" );
 		Check( resp.find( "elements[1].construction" ) != std::string::npos &&
-		       resp.find( "`lathe`" ) != std::string::npos,
+		       resp.find( "`sculpt`" ) != std::string::npos,
 		       "G2h that error names the index AND echoes the rejected value" );
-		Check( resp.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos,
+		Check( resp.find( "primitive, csg, sweep, lathe, chain, displaced, mesh" ) != std::string::npos,
 		       "G2h and the accepted enum" );
 	}
 	{
@@ -9220,7 +9225,7 @@ static void TestElementSketchRefusalText()
 	       r.message.find( "front, side, top" ) != std::string::npos &&
 	       r.message.find( "default front" ) != std::string::npos,
 	       "G3a-g and describes the optional `view` with its default" );
-	Check( r.message.find( "primitive, csg, sweep, chain, displaced, mesh" ) != std::string::npos &&
+	Check( r.message.find( "primitive, csg, sweep, lathe, chain, displaced, mesh" ) != std::string::npos &&
 	       r.message.find( "`primitive` for every element is a complete plan" ) != std::string::npos &&
 	       r.message.find( "does not constrain" ) != std::string::npos,
 	       "G3a-g the G2 claims all survive the rewrite" );
@@ -10586,6 +10591,16 @@ static void TestCleanRoomBuildElementHappyPath()
 		Check( p.find( "\"keyword\":\"skeleton_geometry\"" ) == std::string::npos,
 		       "S2a MONEY ASSERTION: the skeleton_geometry SCHEMA is NOT sent for a non-chain "
 		       "(\"csg\") construction method" );
+		// C3 (2026-08-18): lathe_geometry's schema + worked example ride the
+		// same construction=="lathe" gate -- the third mirror of this same
+		// negative check.  TestCleanRoomLatheWorkedExample below is the
+		// positive half.
+		Check( p.find( "WORKED EXAMPLE for the lathe method" ) == std::string::npos,
+		       "S2a MONEY ASSERTION: the lathe worked example is NOT spliced in for a "
+		       "non-lathe (\"csg\") construction method" );
+		Check( p.find( "\"keyword\":\"lathe_geometry\"" ) == std::string::npos,
+		       "S2a MONEY ASSERTION: the lathe_geometry SCHEMA is NOT sent for a non-lathe "
+		       "(\"csg\") construction method" );
 	}
 }
 
@@ -10873,6 +10888,162 @@ static void TestCleanRoomChainWorkedExample()
 		Check( r2.landed.size() == 3, "S2k/real all three chunks of the trio landed (got " +
 		       std::to_string( r2.landed.size() ) + ")" );
 		Check( r2.rejected.empty(), "S2k/real with nothing rejected" );
+	}
+}
+
+//! C3 (2026-08-18): the lathe-method worked example -- the exact analogue
+//! of TestCleanRoomSweepWorkedExample (S2j) and
+//! TestCleanRoomChainWorkedExample (S2k) above, now that lathe_geometry
+//! exists.  Gated on the plan's DECLARED CONSTRUCTION METHOD being exactly
+//! "lathe" (S2a above is the negative half: a "csg" plan never sees it),
+//! built with the element's real chunk-name prefix, and proven to parse
+//! with zero diagnostics through the same CST derive path a hand-authored
+//! scene goes through -- then, same as S2j/real and S2k/real, fed back
+//! through the REAL BuildElement/InsertChunks route on a second fresh
+//! session, proving "one worked example that PARSES" holds for the genuine
+//! agent-edit path, not just a raw CST parse.
+static void TestCleanRoomLatheWorkedExample()
+{
+	std::printf( "S2l: the lathe worked example is gated on construction==\"lathe\" and parses...\n" );
+	const std::string tmp = TempPath( "agentcrud_s2l.RISEscene" );
+	Job* pJob = LoadScene( kScene, tmp );
+	Check( pJob != nullptr, "S2l fixture loads" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = WrapJobGateArmed( pJob );
+
+	// A well-formed builder answer wearing the "vase_" prefix -- what the
+	// fake completer answers with is independent of the PROMPT this test is
+	// examining, so any prefix-clean trio will do to let BuildElement
+	// complete normally.
+	static const char* const kVaseAnswer =
+		"uniformcolor_painter\n{\n\tname vase_clay_pnt\n\tcolor 0.5 0.35 0.25\n}\n"
+		"lambertian_material\n{\n\tname vase_clay_mat\n\treflectance vase_clay_pnt\n}\n"
+		"box_geometry\n{\n\tname vase_body_box\n\twidth 1\n\theight 1\n\tdepth 1\n}\n"
+		"standard_object\n{\n\tname vase_obj\n\tgeometry vase_body_box\n"
+		"\tmaterial vase_clay_mat\n\tposition 0 0 0\n}\n";
+
+	std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan;
+	Agent::AgentSession::AgentBuildPlanEntry e;
+	e.element = "vase";
+	e.pieces.push_back( "body" );
+	e.construction = "lathe";
+	e.outline = "0 0; 1 0; 1 3; 0 3";
+	plan.push_back( e );
+
+	std::vector<std::string> prompts;
+	sess->SetTextCompleter( MakeFakeCompleter( { kVaseAnswer }, nullptr, &prompts ) );
+	Check( sess->FileBuildPlan( plan ).ok, "S2l the lathe plan files (so `lathe` really is in the enum)" );
+
+	const Agent::AgentSession::AgentBuildElementResult r = sess->BuildElement( "vase", 2.0 );
+	Check( r.ok, "S2l build_element still completes normally with the example present" );
+	Check( prompts.size() == 1, "S2l one prompt was composed" );
+	if( prompts.empty() ) return;
+	const std::string& p = prompts[0];
+
+	Check( p.find( "DECLARED CONSTRUCTION METHOD: lathe" ) != std::string::npos,
+	       "S2l the construction method is restated as \"lathe\"" );
+	// C3: lathe_geometry's SCHEMA rides the same construction=="lathe" gate
+	// as the worked example -- assert it IS present here, the positive half
+	// of S2a's negative assertion.  The JSON-quoted `"keyword":
+	// "lathe_geometry"` key is schema-only (the worked example's raw scene
+	// text has an unquoted bare keyword line instead, so this cannot alias
+	// it).
+	Check( p.find( "\"keyword\":\"lathe_geometry\"" ) != std::string::npos,
+	       "S2l MONEY ASSERTION: the lathe_geometry SCHEMA IS sent when construction==\"lathe\"" );
+	// ...and it is NOT in the unconditional six -- the whole point of the
+	// gate.  A "csg" element seeing it would mean it had leaked into
+	// kBuilderGrammarKeywords (S2a's negative half covers that directly).
+	const std::size_t markerPos = p.find( "WORKED EXAMPLE for the lathe method" );
+	Check( markerPos != std::string::npos,
+	       "S2l MONEY ASSERTION: the worked example IS spliced in when construction==\"lathe\"" );
+	if( markerPos == std::string::npos ) return;
+
+	// Lift the example out of the composed prompt exactly as the model
+	// would read it -- from the end of the intro line to the blank line
+	// before the next section (OUTLINE SKETCH, since this plan's outline
+	// is non-empty and G3a makes `outline` required on every entry, so
+	// that section always follows the construction-method block).
+	const std::size_t introEnd = p.find( '\n', markerPos );
+	Check( introEnd != std::string::npos, "S2l found the end of the intro line" );
+	if( introEnd == std::string::npos ) return;
+	const std::size_t chunkStart = introEnd + 1;
+	const std::size_t chunkEnd = p.find( "\n\nOUTLINE SKETCH", chunkStart );
+	Check( chunkEnd != std::string::npos, "S2l found the end of the worked-example block" );
+	if( chunkEnd == std::string::npos ) return;
+	const std::string example = p.substr( chunkStart, chunkEnd - chunkStart );
+
+	Check( example.find( "lathe_geometry" ) != std::string::npos &&
+	       example.find( "lambertian_material" ) != std::string::npos &&
+	       example.find( "standard_object" ) != std::string::npos,
+	       "S2l the lifted example carries all three chunks of the trio" );
+	Check( example.find( "vase_body_lathe" ) != std::string::npos &&
+	       example.find( "vase_body_mat" ) != std::string::npos &&
+	       example.find( "vase_body_lathe_obj" ) != std::string::npos,
+	       "S2l MONEY ASSERTION: every name in the example is built from the element's REAL "
+	       "chunk-name prefix, not a placeholder" );
+	// The LocalFrameContract rule-1 property the example claims: the
+	// profile's first point is at height 0, so the base of the revolved
+	// solid sits exactly at y = 0.  A profile that started above the floor
+	// would put the whole element airborne in every scene that copies it.
+	Check( example.find( "\tprofile_point 0 0\n" ) != std::string::npos,
+	       "S2l MONEY ASSERTION: the profile starts ON the axis at height 0, so the element's "
+	       "base sits at y = 0 as LocalFrameContract rule 1 requires" );
+
+	// THE PARSE, not a syntax guess: the lifted text goes through the same
+	// CST parse + derive a hand-authored scene uses, on a fresh Job, with
+	// ZERO diagnostics -- "one worked example that PARSES" is the law this
+	// slice exists to satisfy.
+	Job* freshJob = new Job();
+	std::vector<std::string> diags;
+	RISE::Cst::Document doc = RISE::Cst::ParseToCst( "RISE ASCII SCENE 7\n" + example + "\n" );
+	const int applied = RISE::Cst::DeriveToJob( doc, *freshJob, &diags );
+	for( std::size_t d = 0; d < diags.size(); ++d )
+		std::printf( "    S2l DIAGNOSTIC: %s\n", diags[d].c_str() );
+	Check( diags.empty(), "S2l MONEY ASSERTION: the worked example parses with ZERO diagnostics" );
+	Check( applied == 3, "S2l all three chunks of the trio applied (got " +
+	       std::to_string( applied ) + ")" );
+	IGeometryManager* geoms = freshJob->GetGeometries();
+	Check( geoms && geoms->GetItem( "vase_body_lathe" ) != nullptr,
+	       "S2l the lathe_geometry actually registered" );
+	IMaterialManager* mats = freshJob->GetMaterials();
+	Check( mats && mats->GetItem( "vase_body_mat" ) != nullptr,
+	       "S2l the lambertian_material actually registered" );
+	IObjectManager* objs = freshJob->GetObjects();
+	Check( objs && objs->GetItem( "vase_body_lathe_obj" ) != nullptr,
+	       "S2l the standard_object actually registered" );
+	freshJob->release();
+
+	// C3: the CST-level parse above proves the TEXT is well-formed, but not
+	// that it survives the REAL agent path -- the validated-insert
+	// machinery (prefix checks, balance checks, the first-geometry gate,
+	// etc) that InsertChunks actually runs.  Feed the lifted example text
+	// back in as a SECOND session's fake-completer answer and drive it
+	// through the genuine BuildElement/InsertChunks route, on a fresh Job
+	// so this run starts clean.
+	{
+		const std::string tmp2 = TempPath( "agentcrud_s2l_real.RISEscene" );
+		Job* pJob2 = LoadScene( kScene, tmp2 );
+		Check( pJob2 != nullptr, "S2l/real fixture loads" );
+		if( !pJob2 ) return;
+		std::unique_ptr<Agent::AgentSession> sess2 = WrapJobGateArmed( pJob2 );
+
+		std::vector<Agent::AgentSession::AgentBuildPlanEntry> plan2;
+		Agent::AgentSession::AgentBuildPlanEntry e2;
+		e2.element = "vase";
+		e2.pieces.push_back( "body" );
+		e2.construction = "lathe";
+		e2.outline = "0 0; 1 0; 1 3; 0 3";
+		plan2.push_back( e2 );
+
+		sess2->SetTextCompleter( MakeFakeCompleter( { example }, nullptr, nullptr ) );
+		Check( sess2->FileBuildPlan( plan2 ).ok, "S2l/real the lathe plan files" );
+
+		const Agent::AgentSession::AgentBuildElementResult r2 = sess2->BuildElement( "vase", 2.0 );
+		Check( r2.ok, "S2l/real MONEY ASSERTION: the lifted example, fed back through the REAL "
+		       "BuildElement/InsertChunks path (not just a raw CST parse), completes cleanly" );
+		Check( r2.landed.size() == 3, "S2l/real all three chunks of the trio landed (got " +
+		       std::to_string( r2.landed.size() ) + ")" );
+		Check( r2.rejected.empty(), "S2l/real with nothing rejected" );
 	}
 }
 
@@ -17619,6 +17790,7 @@ int main()
 	TestCleanRoomBuildElementHappyPath();
 	TestCleanRoomSweepWorkedExample();
 	TestCleanRoomChainWorkedExample();
+	TestCleanRoomLatheWorkedExample();
 	TestCleanRoomValidatedInsertion();
 	TestCleanRoomRepairRetry();
 	TestCleanRoomBuildElementRefusals();

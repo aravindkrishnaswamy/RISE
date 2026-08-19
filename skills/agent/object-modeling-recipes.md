@@ -23,7 +23,8 @@ not listed here.
 | `infiniteplane_geometry` | floors, walls, backdrops | cheap analytic, unbounded | the CHUNK itself only takes `name`/`xtile`/`ytile` -- placement/tilt comes from the enclosing `standard_object`'s `position`/`orientation` (universal for every geometry chunk); default lies in XY facing +Z before that transform |
 | `clippedplane_geometry` | bounded floors, area-light quads, framed backdrops | cheap analytic | four explicit corners; vertex WINDING picks which side renders/emits |
 | `csg_object` | booleans of two already-declared objects | cost of both operands + one more test | **no `scale` parameter** -- size the operands, not the CSG result |
-| `sdf_geometry` | **TURNED/LATHE PROFILES (bottles, jars, vases, mortars, goblets -- see "Turned forms" below)**; melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp and turned-vessel recipes below for the field layout |
+| `sdf_geometry` | melded/filleted/tapered organic shapes (fillets, cones, capsules, smooth unions) that no analytic primitive covers | sphere-traced -- more expensive per-hit than an analytic primitive, cost scales with `maxsteps` | inline `part` lines compose in order; the FIRST part must be `union` or `smin` (the field starts empty); see the lamp and turned-vessel recipes below for the field layout |
+| `lathe_geometry` | **SURFACES OF REVOLUTION -- the turned/lathe verb** (bottles, jars, vases, mortars, goblets, urns, turned legs, finials, lamp bases -- see "Turned forms" below) | mesh cost (tessellated once), no sphere-tracing | repeated `profile_point <r> <h>` lines ARE the silhouette (`r` = radius from the axis, `h` = height along it), spun about `axis` (default `y`); a point at `r 0` sits ON the axis and collapses to a single pole, so a profile that starts and ends there is closed and watertight with no caps; `sweep_degrees` under 360 cuts a capped section; the baked mesh is DOUBLE-SIDED, so a luminaire material on it radiates inward too |
 | `skeleton_geometry` | **CREATURE BODIES authored as a JOINT GRAPH** (a hip branching into two legs and a tail, a hand's finger tree) -- `joint <name> <parent\|none> <x> <y> <z> <radius>` lines, one per joint; expands at parse time into ONE `sdf_geometry` (a `roundcone` bone per parent->child pair, `smin`-blended) | sphere-traced, same cost model as `sdf_geometry`; `Map()` is O(joint count) per step with no acceleration over bones -- a skeleton is a render-time budget (a hand-authored SDF has a handful of parts, a skeleton invites 30-70) | a bone's own end caps ARE its two joints -- do not also add a `sphere_geometry`/extra `part` at a joint already covered by an incident bone, that just double-blends a redundant primitive; `blend` multiplies the SMALLER of the two joint radii, not either one alone; still just roundcones -- a non-circular cross-section or a flat-cut base needs the manual `sdf_geometry` `part` grammar (see "Turned forms" below), which remains the fallback for anything the joint graph can't express |
 | `sweep_geometry` | tubes, rails, mouldings, cable runs, and any TUBE THAT FOLLOWS A CURVE (a retort's neck, a spout, a handle, a bail) | mesh cost (tessellated once) | it sweeps a FIXED cross-section along a path -- it is NOT a lathe (see "Turned forms" below); open by default, `path_closed TRUE` sweeps a seamless loop instead (handles, wreaths, non-circular rings) -- `torus_geometry` is still cheaper for a plain circular ring; a NON-periodic (non-tiling) wrapping V texture shows a one-band rewind stripe at a closed loop's seam -- the geometry itself is seamless, but the texture content isn't unless it repeats at V=1==V=0 |
 | `path_instances_geometry` | fence posts, rivets, beads, chain links along a path | one tessellation + N cheap instances | template +Y aligns with the path tangent -- orient the template accordingly before instancing |
@@ -48,7 +49,21 @@ reads the steps instantly, at any resolution, under any material.  No
 amount of lighting or material work rescues it.  Three cylinders of
 decreasing radius is not a bottle; it is three cylinders.
 
-**The verb is `sdf_geometry` with `roundcone` parts joined by `smin`.**
+**The verb is `lathe_geometry`.**  One chunk, one profile: repeated
+`profile_point <r> <h>` lines are the silhouette itself -- `r` the
+radius from the axis, `h` the height along it -- revolved about `axis`
+(default `y`, so the profile's `h` runs straight up the object).  Write
+the (radius, height) pairs down the way you would read them off a
+photograph, bottom to top; a point at `r = 0` sits ON the axis and
+collapses to a single pole vertex, so a profile that starts and ends
+there is a closed, watertight vessel needing no caps.  Bottles, jars,
+vases, goblets, urns, turned table and chair legs, finials, lamp bases
+and pedestals are all this one chunk.
+
+**The FALLBACK verb is `sdf_geometry` with `roundcone` parts joined by
+`smin`** -- reach for it when the turned form must also take part in
+CSG (a drilled bore, a clipped taper), needs a non-circular
+cross-section, or has to blend into a larger implicit body.
 `roundcone` IS a profile segment: `<r1> <r2> <h>` is a frustum that runs
 along local +Y from radius `r1` at `y=0` to radius `r2` at `y=h`, i.e.
 exactly one (height, radius) span of your profile.  Chain them

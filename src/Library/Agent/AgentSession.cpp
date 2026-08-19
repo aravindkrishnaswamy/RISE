@@ -2959,7 +2959,15 @@ namespace RISE
 
 					if( role == "standard_object" ) { ++c.standardObjectCount; continue; }
 					if( role == "scalar_painter" )  { hasScalarPainter = true; continue; }
-					if( role == "sdf_geometry" || role == "sweep_geometry" || role == "displaced_geometry" ) {
+					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
+					// form here for the same reason the other three do -- it
+					// is one of the geometry kinds whose ABSENCE this note
+					// reports, and the note now names it as the answer for a
+					// profile of revolution.  A scene that already built its
+					// vessels on a lathe must not be told it has none of the
+					// rich forms and pointed at the very chunk it used.
+					if( role == "sdf_geometry" || role == "sweep_geometry" ||
+					    role == "lathe_geometry" || role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
 						++c.geometryCensus[role];
 						continue;
@@ -3043,8 +3051,10 @@ namespace RISE
 				if( c.conditionB ) {
 					note += " geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
-						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/displaced_geometry forms (a profile of "
+						"revolution -- vase, bottle, goblet, turned leg -- is one lathe_geometry, its "
+						"`profile_point <r> <h>` lines the silhouette itself; read_skill "
+						"{\"name\":\"object-modeling-recipes\"}).";
 				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
@@ -3104,8 +3114,10 @@ namespace RISE
 					d.code     = AgentDiagnosticCode::DESIGN_NO_ADVANCED_GEOMETRY;
 					d.message  = "geometry census: " + std::to_string( c.standardObjectCount ) + " objects -- " +
 						FormatGeometryCensus_( c.geometryCensus ) +
-						"; no sdf_geometry/sweep_geometry/displaced_geometry forms (profiles of revolution are "
-						"sdf roundcone+smin; read_skill {\"name\":\"object-modeling-recipes\"}).";
+						"; no sdf_geometry/sweep_geometry/lathe_geometry/displaced_geometry forms (a profile of "
+						"revolution -- vase, bottle, goblet, turned leg -- is one lathe_geometry, its "
+						"`profile_point <r> <h>` lines the silhouette itself; read_skill "
+						"{\"name\":\"object-modeling-recipes\"}).";
 					d.message += kSelfDisarm;
 					out.push_back( d );
 				}
@@ -8193,9 +8205,9 @@ namespace RISE
 		// parse of the caller's own chunk text.
 		//--------------------------------------------------------------------
 
-		const char* const AgentSession::kBuildPlanConstructionValues[6] =
+		const char* const AgentSession::kBuildPlanConstructionValues[7] =
 		{
-			"primitive", "csg", "sweep", "chain", "displaced", "mesh"
+			"primitive", "csg", "sweep", "lathe", "chain", "displaced", "mesh"
 		};
 
 		const char* const AgentSession::kBuildPlanViewValues[3] = { "front", "side", "top" };
@@ -13500,7 +13512,8 @@ namespace RISE
 			//! prompt when the element actually needs it.  skeleton_geometry
 			//! follows the identical discipline under construction == "chain"
 			//! (see that gate further below) -- also absent from this list
-			//! for the same reason.
+			//! for the same reason, and so does lathe_geometry under
+			//! construction == "lathe" (C3, 2026-08-18).
 			//!
 			//! THE TEXT IS THE DESCRIPTOR REGISTRY'S OWN, fetched through the
 			//! same ReadSchema the `read_schema` tool answers with -- there is
@@ -13667,6 +13680,66 @@ namespace RISE
 						     "\tname " + prefix + "tail_obj\n"
 						     "\tgeometry " + prefix + "tail_skel\n"
 						     "\tmaterial " + prefix + "tail_mat\n"
+						     "\tposition 0 0 0\n"
+						     "}\n\n";
+					}
+					// C3 (2026-08-18): the exact analogue for "lathe", now that
+					// lathe_geometry exists -- same gate, same reasoning as the
+					// sweep and chain blocks above (schema + ONE worked example
+					// ride the declared-construction gate rather than sitting
+					// unconditionally in kBuilderGrammarKeywords, so an element
+					// that is not a surface of revolution never pays the
+					// context-volume cost of a chunk kind it won't use), and
+					// every name in the example resolves inside the example
+					// itself via `prefix` plus the always-present null painter
+					// `none`.
+					//
+					// The subject is a VASE because the profile is the part
+					// models get wrong: `profile_point <r> <h>` is a
+					// SILHOUETTE in (radius, height), not a 3D path, so the
+					// example spends its lines on the silhouette -- foot, cove,
+					// belly, shoulder, neck, flared lip -- rather than on
+					// parameters that have defaults.  Both ends sit at r = 0,
+					// the idiom scenes/Tests/Geometry/lathe_basic.RISEscene
+					// uses: a point ON the axis collapses its ring to a single
+					// pole vertex, so a profile that starts and ends there is a
+					// closed, watertight vessel needing no caps.
+					// LocalFrameContract rule 1 is satisfied by construction:
+					// the first profile point is at h = 0 and `axis y` (the
+					// default, so it is not spelled) revolves about the local
+					// origin, so the base sits exactly at y = 0, centred on
+					// x = 0, z = 0.  axis / sweep_degrees / smooth are all left
+					// at their defaults and omitted, the same
+					// omit-what-defaults discipline the sweep example follows.
+					if( entry->construction == "lathe" ) {
+						p += "\n";
+						p += ReadSchema( "lathe_geometry" );
+						p += "\n";
+						p += "WORKED EXAMPLE for the lathe method (adapt values; delete nothing you need):\n"
+						     "lathe_geometry\n"
+						     "{\n"
+						     "\tname " + prefix + "body_lathe\n"
+						     "\tprofile_point 0 0\n"
+						     "\tprofile_point 0.30 0\n"
+						     "\tprofile_point 0.34 0.12\n"
+						     "\tprofile_point 0.24 0.30\n"
+						     "\tprofile_point 0.52 0.85\n"
+						     "\tprofile_point 0.42 1.22\n"
+						     "\tprofile_point 0.20 1.50\n"
+						     "\tprofile_point 0.26 1.66\n"
+						     "\tprofile_point 0 1.66\n"
+						     "\tn_radial 64\n"
+						     "}\n"
+						     "lambertian_material\n"
+						     "{\n"
+						     "\tname " + prefix + "body_mat\n"
+						     "\treflectance none\n"
+						     "}\n"
+						     "standard_object\n"
+						     "{\n"
+						     "\tname " + prefix + "body_lathe_obj\n"
+						     "\tgeometry " + prefix + "body_lathe\n"
+						     "\tmaterial " + prefix + "body_mat\n"
 						     "\tposition 0 0 0\n"
 						     "}\n\n";
 					}

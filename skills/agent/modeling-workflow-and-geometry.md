@@ -396,9 +396,16 @@ A cylinder stack gives a faceted silhouette with a hard right-angle
 step at every joint where the real object curves continuously, and that
 single choice is what makes a render read as cartoonish regardless of
 how good the lighting and materials are.  Author it as a PROFILE
-instead: a chain of `sdf_geometry` `roundcone` parts (each one a
-`<r1> <r2> <h>` frustum = one height/radius span) joined with `smin`,
-whose blend radius fillets the joints into a continuous curve.
+instead, and the verb for that is `lathe_geometry`: repeated
+`profile_point <r> <h>` lines (radius from the axis, height along it)
+ARE the silhouette, revolved about `axis` (default `y`), with a point at
+`r = 0` collapsing to a pole so a profile that starts and ends there is
+a closed watertight vessel.  The FALLBACK is a chain of `sdf_geometry`
+`roundcone` parts (each one a `<r1> <r2> <h>` frustum = one
+height/radius span) joined with `smin`, whose blend radius fillets the
+joints into a continuous curve -- use it when the turned form must also
+take part in CSG, needs a non-circular cross-section, or has to blend
+into a larger implicit body.
 `sweep_geometry` is NOT the lathe verb -- it sweeps a FIXED profile
 SHAPE along a path (`point_scale` can taper that shape's overall size
 per station, round or via `point_width`'s deliberate x-only flattening,

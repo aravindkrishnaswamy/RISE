@@ -723,7 +723,7 @@ namespace RISE
 						entryProps.set( "pieces", piecesProp );
 					}
 					JsonValue construction = StringProp(
-						"Required. Exactly one of: primitive, csg, sweep, chain, displaced, mesh." );
+						"Required. Exactly one of: primitive, csg, sweep, lathe, chain, displaced, mesh." );
 					{
 						JsonValue enumArr = JsonValue::MakeArray();
 						for( std::size_t i = 0; i < AgentSession::kBuildPlanConstructionCount; ++i )
