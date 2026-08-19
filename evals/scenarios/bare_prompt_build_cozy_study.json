@@ -123,6 +123,21 @@
       "metricLabel": "advanced_geometry"
     },
     {
+      "//": "Adoption census for the 85-arc geometry verbs (C1 skeleton_geometry, C3 lathe_geometry), added 2026-08-18. PURE metric, never gates: weight 0 and distinctMin 0 so it passes vacuously and only its distinct-kind COUNT is recorded. Deliberately a SECOND checkpoint rather than a widening of advanced_geometry above, because that label anchors a banked baseline series -- widening its `kinds` would make every future run incomparable with runs scored under the 3-kind list, and since distinctMin is 1 the widening could only ever move scores upward, which is exactly the direction that would masquerade as a model improvement. Read the two together: advanced_geometry stays the comparable series, this one measures whether the verbs that shipped after those baselines are actually being reached for. A scene built entirely on lathes or skeletons scored advanced_geometry = 0 before this existed.",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": [
+        "sdf_geometry",
+        "sweep_geometry",
+        "displaced_geometry",
+        "lathe_geometry",
+        "skeleton_geometry"
+      ],
+      "distinctMin": 0,
+      "weight": 0,
+      "metricLabel": "expressive_geometry"
+    },
+    {
       "kind": "render",
       "//": "PROVISIONAL. This is an INDOOR scene, so it does not inherit courtyard's outdoor 0.9 ceiling -- started instead from the harness's existing indoor precedent (build_study_scene.json / build_stilllife_scene.json / build_watch_scene.json all use meanLumaMax 0.35 with the same lamp-scale-9.0-at-z=3.5 lighting recipe). Deliberately NOT re-tuned beyond that precedent per the 70-doc Sec 6.3 lesson -- the S0 anchor run is what calibrates the measurement; over-tuning the band before that first real run just relocates the guesswork.",
       "samples": 512,
