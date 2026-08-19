@@ -1248,7 +1248,7 @@ int main()
 		"P2 Metal persistent allocator denial returns false with no partial result or escaped exception");
 	for( const char* injectedStage : {"buffer","upload_command","upload_encoder",
 		"command_buffer","command","staging_buffer","staging_command","staging_encoder","output",
-		"interstage_transfer","interstage_upload","second_projection"} ) {
+		"interstage_transfer","interstage_upload","second_projection","local_shared"} ) {
 		setenv("RISE_FIRE_PROJECTION_TEST_FAILURE",injectedStage,1);
 		FireProductionProjectionResult injectedResult;injectedResult.pressurePa.push_back(7.0f);
 		error.clear();
@@ -1260,6 +1260,8 @@ int main()
 			std::string(injectedStage)=="second_projection";
 		const bool expectedDiagnostic=topology?
 			error.find("resident topology changed")!=std::string::npos:
+		(std::string(injectedStage)=="local_shared"?
+			error.find("storage topology changed")!=std::string::npos:
 		(std::string(injectedStage)=="buffer"?
 			error.find("buffer allocation failed")!=std::string::npos:
 			(std::string(injectedStage)=="upload_command"?
@@ -1275,7 +1277,7 @@ int main()
 				(std::string(injectedStage)=="staging_command"||
 					std::string(injectedStage)=="staging_encoder"?
 					error.find("staging encoder allocation failed")!=std::string::npos:
-					error.find("nonfinite output")!=std::string::npos)))))));
+					error.find("nonfinite output")!=std::string::npos))))))));
 		Check(!injectedReturned&&injectedResult.pressurePa.empty()&&expectedDiagnostic,
 			"P2 Metal buffer, committed-command, and output failures return no partial result");
 	}
@@ -1429,6 +1431,10 @@ int main()
 		Count(metalSource," commit]")==1u&&
 		Count(metalSource," contents]")==1u&&
 		Count(metalSource," copyFromBuffer:")==1u&&
+		Count(metalSource," newBufferWithLength:")==2u&&
+		Count(metalSource," newBufferWithBytes:")==1u&&
+		residentProjectionBody.find(" newBufferWithLength:")==std::string::npos&&
+		residentProjectionBody.find(" newBufferWithBytes:")==std::string::npos&&
 		Count(metalSource,"CommitProjectionCommand(")==4u&&
 		Count(metalSource,"CopyProjectionBuffer(")==11u&&
 		Count(metalSource,"ProjectionTransferScope transferScope(")==2u&&
@@ -1439,6 +1445,10 @@ int main()
 		residentProjectionBody.find("[residentInput->gasDensityKGPerM3 storageMode]!="
 			"MTLStorageModePrivate")!=std::string::npos&&
 		residentProjectionBody.find("residentInput->provisionalMomentumKGPerM2S[axis]!=packed")!=
+			std::string::npos&&
+		residentProjectionBody.find("[stored[axis] storageMode]==MTLStorageModePrivate")!=
+			std::string::npos&&
+		residentProjectionBody.find("[level.parameters storageMode]==MTLStorageModeShared")!=
 			std::string::npos&&
 		residentProjectionBody.find("trackedBytes+borrowedBytes!=residentBytes+uploadBytes+"
 			"stagingBytes")!=std::string::npos,

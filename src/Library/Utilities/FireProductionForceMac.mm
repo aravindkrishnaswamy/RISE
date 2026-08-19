@@ -698,7 +698,9 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				id<MTLBuffer> rho=privateBuffer(cellBytes),nu=privateBuffer(cellBytes);
 				id<MTLBuffer> faceRho=privateBuffer(faceBytes),momentum=privateBuffer(faceBytes);
 				id<MTLBuffer> faceVelocity=privateBuffer(faceBytes),cellVelocity=privateBuffer(3u*cellBytes);
-				id<MTLBuffer> stress=privateBuffer(9u*cellBytes),eddy=privateBuffer(cellBytes);
+				id<MTLBuffer> stress=InjectedFailure("resident-local-shared")?
+					sharedBuffer(9u*cellBytes):privateBuffer(9u*cellBytes);
+				id<MTLBuffer> eddy=privateBuffer(cellBytes);
 				id<MTLBuffer> mu=privateBuffer(cellBytes),viscous=privateBuffer(faceBytes);
 				id<MTLBuffer> beginningViscous=privateBuffer(faceBytes);
 				id<MTLBuffer> gravity=privateBuffer(faceBytes),scratchA=privateBuffer(padded*sizeof(float));
@@ -707,14 +709,23 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				id<MTLBuffer> privateProjectionTarget=projectionTarget?privateBuffer(cellBytes):nil;
 				id<MTLBuffer> snapshots=nil;
 				const id<MTLBuffer> uploads[]={rhoUpload,nuUpload,faceRhoUpload,momentumUpload};
-				const id<MTLBuffer> required[]={rho,nu,faceRho,momentum,faceVelocity,cellVelocity,stress,
-					eddy,mu,viscous,beginningViscous,gravity,scratchA,scratchB,maxima,lambda,parameters};
-				for( id<MTLBuffer> buffer : uploads ) if( !buffer )
+				const id<MTLBuffer> privateRequired[]={rho,nu,faceRho,momentum,faceVelocity,
+					cellVelocity,stress,eddy,mu,viscous,beginningViscous,gravity,scratchA,scratchB,maxima};
+				const id<MTLBuffer> sharedRequired[]={lambda,parameters};
+				for( id<MTLBuffer> buffer : uploads ) if( !buffer||
+					[buffer storageMode]!=MTLStorageModeShared )
 					return Fail(error,"production resident force upload allocation failed");
 				if( projectionTarget&&(!projectionTargetUpload||!privateProjectionTarget) )
 					return Fail(error,"production resident projection target allocation failed");
-				for( id<MTLBuffer> buffer : required ) if( !buffer )
+				if( projectionTarget&&([projectionTargetUpload storageMode]!=MTLStorageModeShared||
+					[privateProjectionTarget storageMode]!=MTLStorageModePrivate) )
+					return Fail(error,"production resident projection target storage mode changed");
+				for( id<MTLBuffer> buffer : privateRequired ) if( !buffer||
+					[buffer storageMode]!=MTLStorageModePrivate )
 					return Fail(error,"production resident force buffer allocation failed");
+				for( id<MTLBuffer> buffer : sharedRequired ) if( !buffer||
+					[buffer storageMode]!=MTLStorageModeShared )
+					return Fail(error,"production resident force diagnostic storage mode changed");
 				const std::uint64_t hostBytes=(4u*cells+7u*faces)*sizeof(float);
 				auto allocatedSum=[&](const id<MTLBuffer>* buffers,std::size_t count,
 					std::uint64_t& sum)->bool {sum=0u;for( std::size_t i=0u;i<count;++i ) {
@@ -722,9 +733,15 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					if( sum>std::numeric_limits<std::uint64_t>::max()-allocation ) return false;
 					sum+=allocation;}return true;};
 				std::uint64_t residentBytes=0u,uploadBytes=0u;
-				if( !allocatedSum(required,sizeof(required)/sizeof(required[0]),residentBytes)||
-					!allocatedSum(uploads,sizeof(uploads)/sizeof(uploads[0]),uploadBytes) )
+				if( !allocatedSum(privateRequired,sizeof(privateRequired)/sizeof(privateRequired[0]),
+					residentBytes)||!allocatedSum(uploads,sizeof(uploads)/sizeof(uploads[0]),uploadBytes) )
 					return Fail(error,"production resident force allocation overflowed");
+				for( id<MTLBuffer> buffer:sharedRequired ) {
+					const std::uint64_t allocation=[buffer allocatedSize];
+					if( residentBytes>std::numeric_limits<std::uint64_t>::max()-allocation )
+						return Fail(error,"production resident force allocation overflowed");
+					residentBytes+=allocation;
+				}
 				if( projectionTarget ) {
 					const std::uint64_t residentAllocation=[privateProjectionTarget allocatedSize];
 					const std::uint64_t uploadAllocation=[projectionTargetUpload allocatedSize];
@@ -927,6 +944,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 						computed.combinedCertifiedWorkingSetBytes||
 						computed.combinedActualMetalAllocationBytes>(UINT64_C(1)<<31u) )
 						return Fail(error,"production resident force-projection working set exceeds two GiB");
+					if( trackedAllocationCount!=23u||
+						residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
+						trackedAllocationBytes!=residentBytes+uploadBytes )
+						return Fail(error,"production resident force allocation topology changed");
 					*composedResult=std::move(computed);diagnostics=observed;
 					if( error ) error->clear();return true;
 				}
@@ -936,9 +957,12 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				id<MTLBuffer> stageMomentum=sharedBuffer(faceBytes);
 				id<MTLBuffer> stageSnapshots=captureIntermediateStates?sharedBuffer(8u*faceBytes):nil;
 				const id<MTLBuffer> stages[]={stageEddy,stageMu,stageViscous,stageGravity,stageMomentum};
-				for( id<MTLBuffer> buffer : stages ) if( !buffer )
+				for( id<MTLBuffer> buffer : stages ) if( !buffer||
+					[buffer storageMode]!=MTLStorageModeShared )
 					return Fail(error,"production resident force staging allocation failed");
-				if( captureIntermediateStates&&!stageSnapshots )
+				if( captureIntermediateStates&&(!stageSnapshots||
+					[stageSnapshots storageMode]!=MTLStorageModeShared||
+					[snapshots storageMode]!=MTLStorageModePrivate) )
 					return Fail(error,"production resident force snapshot staging allocation failed");
 				std::uint64_t stageBytes=0u;
 				if( !allocatedSum(stages,sizeof(stages)/sizeof(stages[0]),stageBytes) )

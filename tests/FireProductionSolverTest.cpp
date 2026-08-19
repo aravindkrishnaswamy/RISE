@@ -2986,7 +2986,7 @@ int main()
 			"both resident interstage transfer directions are observed and fail closed");
 	}
 	for( const char* malformedResident : {"resident-shared-input","resident-short-input",
-		"resident-alias-input"} ) {
+		"resident-alias-input","resident-local-shared"} ) {
 		FireProductionResidentForceProjectionResult rejectedResidentInput;
 		seedResidentResult(rejectedResidentInput);
 		setenv("RISE_FIRE_FORCE_TEST_FAILURE",malformedResident,1);
@@ -4048,6 +4048,11 @@ int main()
 		CountSubstring(residentForceBody,"CommitResidentForceCommand(")==3u&&
 		CountSubstring(residentForceBody,"ResidentForceBufferContents(")==7u&&
 		CountSubstring(forceMetalSource," copyFromBuffer:")==1u&&
+		CountSubstring(residentForceBody," newBufferWithLength:")==2u&&
+		CountSubstring(residentForceBody," newBufferWithBytes:")==1u&&
+		CountSubstring(residentForceBody,"privateBuffer(")==18u&&
+		CountSubstring(residentForceBody,"sharedBuffer(")==11u&&
+		CountSubstring(residentForceBody,"sharedBytes(")==6u&&
 		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==14u&&
 		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==2u&&
 		residentForceBody.find(" copyFromBuffer:")==std::string::npos&&
@@ -4059,6 +4064,11 @@ int main()
 			"beginningInterstageReads")!=std::string::npos&&
 		forceMetalSource.find("sourceVisible!=destinationVisible")!=std::string::npos&&
 		residentForceBody.find("trackedAllocationBytes!=residentBytes+uploadBytes")!=
+			std::string::npos&&
+		CountSubstring(residentForceBody,"trackedAllocationCount!=23u")==2u&&
+		residentForceBody.find("[buffer storageMode]!=MTLStorageModePrivate")!=
+			std::string::npos&&
+		residentForceBody.find("[buffer storageMode]!=MTLStorageModeShared")!=
 			std::string::npos&&
 		residentForceBody.find("[buffer storageMode]==MTLStorageModePrivate")!=
 			std::string::npos&&

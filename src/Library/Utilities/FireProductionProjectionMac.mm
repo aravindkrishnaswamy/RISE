@@ -697,7 +697,9 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					provisionalOffset[axis]=resident?residentInput->provisionalMomentumByteOffset[axis]:0u;
 					provisionalUpload[axis]=resident?nil:NewBufferWithBytes(context.device,
 						request.provisionalMomentumKGPerM2S[axis].data(),bytes);
-					stored[axis]=NewBuffer(context.device,bytes);momentum[axis]=NewBuffer(context.device,bytes);
+					stored[axis]=InjectedFailure("local_shared")&&axis==1u?
+						NewSharedBuffer(context.device,bytes):NewBuffer(context.device,bytes);
+					momentum[axis]=NewBuffer(context.device,bytes);
 					velocity[axis]=NewBuffer(context.device,bytes);
 				}
 				id<MTLBuffer> target=resident?residentInput->divergenceTargetPerS:
@@ -718,6 +720,36 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					(resident||provisionalUpload[axis])&&stored[axis]&&momentum[axis]&&velocity[axis];
 				if( InjectedFailure("buffer") ) allocated=false;
 				if( !allocated ) {if( error ) *error="production fire projection buffer allocation failed";return false;}
+				bool storageModes=[target storageMode]==MTLStorageModePrivate&&
+					[boundaryPressure storageMode]==MTLStorageModeShared&&
+					[inflow storageMode]==MTLStorageModeShared&&
+					[scratch storageMode]==MTLStorageModePrivate&&
+					[diagnostics storageMode]==MTLStorageModeShared;
+				for( const MetalLevel& level:hierarchy ) storageModes=storageModes&&
+					[level.density storageMode]==MTLStorageModePrivate&&
+					[level.rhs storageMode]==MTLStorageModePrivate&&
+					[level.pressure storageMode]==MTLStorageModePrivate&&
+					[level.temporary storageMode]==MTLStorageModePrivate&&
+					[level.residual storageMode]==MTLStorageModePrivate&&
+					[level.diagonal storageMode]==MTLStorageModePrivate&&
+					[level.beta[0] storageMode]==MTLStorageModePrivate&&
+					[level.beta[1] storageMode]==MTLStorageModePrivate&&
+					[level.beta[2] storageMode]==MTLStorageModePrivate&&
+					[level.parameters storageMode]==MTLStorageModeShared;
+				for( unsigned int axis=0u;axis<3u;++axis ) storageModes=storageModes&&
+					[provisional[axis] storageMode]==MTLStorageModePrivate&&
+					[stored[axis] storageMode]==MTLStorageModePrivate&&
+					[momentum[axis] storageMode]==MTLStorageModePrivate&&
+					[velocity[axis] storageMode]==MTLStorageModePrivate&&
+					(resident||[provisionalUpload[axis] storageMode]==MTLStorageModeShared);
+				if( !resident ) storageModes=storageModes&&
+					[densityUpload storageMode]==MTLStorageModeShared&&
+					[targetUpload storageMode]==MTLStorageModeShared;
+				if( !storageModes ) {
+					if( error )
+						*error="production fire projection resident storage topology changed";
+					return false;
+				}
 				auto addAllocation=[&](id<MTLBuffer> buffer,std::uint64_t& total)->bool {
 					const std::uint64_t value=[buffer allocatedSize];
 					if( total>std::numeric_limits<std::uint64_t>::max()-value ) return false;
@@ -928,6 +960,18 @@ kernel void cell_post_residual(device const float* vx [[buffer(0)]],device const
 					if( resident ) staged=staged&&provisionalStage[axis];
 				}
 				if( !staged ) {if( error ) *error="production fire projection staging allocation failed";return false;}
+				if( [pressureStage storageMode]!=MTLStorageModeShared ) {
+					if( error ) *error="production fire projection staging storage topology changed";
+					return false;
+				}
+				for( unsigned int axis=0u;axis<3u;++axis ) if(
+					[storedStage[axis] storageMode]!=MTLStorageModeShared||
+					[momentumStage[axis] storageMode]!=MTLStorageModeShared||
+					[velocityStage[axis] storageMode]!=MTLStorageModeShared||
+					(resident&&[provisionalStage[axis] storageMode]!=MTLStorageModeShared) ) {
+					if( error ) *error="production fire projection staging storage topology changed";
+					return false;
+				}
 				std::uint64_t stagingBytes=0u;
 				if( !addAllocation(pressureStage,stagingBytes) ) return false;
 				for( unsigned int axis=0u;axis<3u;++axis )
