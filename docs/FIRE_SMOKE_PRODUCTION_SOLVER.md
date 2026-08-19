@@ -1289,8 +1289,10 @@ palindrome, mixed-boundary dual momentum, explicit source operands, and exactly
 one r98 projection in that order. Source operands are Private full-grid buffers
 and are required to be exact positive zero for this isolated-shadow milestone;
 nonzero thermo/source maps remain the next numbered stage. The source command
-adds both cell and packed-face operands and extracts component zero as the sole
-P2 gas-density input. Observed child diagnostics, rather than authored zeros,
+adds both cell and packed-face operands, then forms the sole P2 gas-density
+input by summing record-ordered gas constituent channels CH4 through CO in
+strict component order. `rho_tot Z`, carbon aerosol, and sensible enthalpy are
+not density aliases. Observed child diagnostics, rather than authored zeros,
 must report five cell submaps, fifteen dual submaps, one source command, one P2
 invocation, and zero interstage full-grid transfer. Cell and transported-dual
 oracle taps occur only after P2's terminal step-boundary publication.
@@ -1306,6 +1308,26 @@ one-hour tier-10 envelope. Its conservative combined certificate is
 force, cell remap, dual remap, zero source, and P2 operators and gates the full
 resident result. r102 changes no numerical kernel, validation tolerance, case,
 or checkpoint.
+
+### 7.20 Authoritative gas-density extraction (r103)
+
+The first golden-state packing audit rejected r102's provisional use of
+component zero as projection density. The authoritative nine-channel tuple is
+`rho_tot Z`, seven record-ordered constituent densities, and sensible
+enthalpy; `rho_tot Z` is a mixture-fraction numerator, not gas mass. The source
+command therefore first updates all nine channels, then a separately ordered
+kernel forms gas density as `CH4 + O2 + N2 + CO2 + H2O + CO` from components
+one through six. Carbon aerosol, `rho_tot Z`, and enthalpy never enter P2's
+density operand.
+
+The owner validates the same strict-order sum against the force leg's beginning
+gas-density bytes before Metal work. The resident RED uses deliberately
+different `rho_tot Z` and gas-density values; both the independent CPU
+composition and Metal P2 consume the six-constituent result. On the corrected
+exact tier-10 tuple the full resident device p95 is `72.6851 ms`, the staged
+validation wall p95 is `243.495 ms`, and the existing resource certificate is
+unchanged. r103 repairs operand identity only; it changes no transport,
+projection, tolerance, case, or checkpoint byte.
 
 ## 8. Rejected directions and future work
 

@@ -2492,3 +2492,13 @@ it was already tried and refuted here.
   one-hour envelopes. The combined certificate is 1,235,662,396 bytes versus
   a 975,303,556-byte observed upper bound. Nonzero source maps and the golden
   eight-slice physics campaign remain subsequent milestones.
+
+- **r103 (2026-08-19):** authoritative production gas-density extraction.
+  Golden checkpoint packing exposed that `rho_tot Z` is not gas density. The
+  resident source stage now adds the full tuple first, then sums the six gas
+  constituent channels in strict record order for P2; carbon aerosol,
+  `rho_tot Z`, and enthalpy are excluded. The owner independently checks the
+  same sum against the beginning force density, and a non-aliased tuple RED
+  rejects the old component-zero mapping. Corrected tier-10 measurements are
+  72.6851 ms device p95 and 243.495 ms staged wall p95 with the unchanged
+  1,235,662,396-byte certificate. No solver tolerance or checkpoint changed.
