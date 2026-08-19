@@ -2443,6 +2443,68 @@ int main()
 		mixedDualResult.momentum!=mixedDual.beginningMomentum,
 		"mixed dual momentum matches an independent corner oracle, prescribes normal walls, "
 		"and advances ordinary open endpoints");
+	FireProductionResidentStepRequest composedStep;
+	composedStep.force.shape=mixedDual.shape;
+	composedStep.force.timeStepS=mixedDual.timeStepS;
+	composedStep.force.ambientDensityKGPerM3=mixedDual.ambientDensityKGPerM3;
+	composedStep.force.vremanCoefficient=0.0f;
+	composedStep.force.boundary=mixedDual.boundary;
+	composedStep.force.cellGasDensityKGPerM3.assign(mixedDual.shape.CellCount(),0.8f);
+	composedStep.force.molecularKinematicViscosityM2PerS.assign(
+		mixedDual.shape.CellCount(),0.0f);
+	composedStep.force.faceDensityKGPerM3=mixedDual.beginningFaceDensity;
+	composedStep.force.beginningMomentumKGPerM2S=mixedDual.beginningMomentum;
+	composedStep.cellTransport.shape=mixedDual.shape;
+	composedStep.cellTransport.componentCount=9u;
+	composedStep.cellTransport.timeStepS=mixedDual.timeStepS;
+	composedStep.cellTransport.boundary=mixedDual.boundary;
+	composedStep.cellTransport.frozenVelocityMPerS=mixedDual.frozenVelocityMPerS;
+	composedStep.cellTransport.ambientValues.resize(9u);
+	composedStep.cellTransport.conservativeValues.resize(9u*mixedDual.shape.CellCount());
+	for( std::size_t component=0u;component<9u;++component ) {
+		const float beginning=component==0u?0.8f:0.01f*static_cast<float>(component+1u);
+		composedStep.cellTransport.ambientValues[component]=beginning;
+		for( std::size_t cell=0u;cell<mixedDual.shape.CellCount();++cell )
+			composedStep.cellTransport.conservativeValues[
+				component*mixedDual.shape.CellCount()+cell]=beginning+
+				0.001f*static_cast<float>((cell+3u*component)%7u);
+	}
+	std::fill(composedStep.cellTransport.conservativeValues.begin(),
+		composedStep.cellTransport.conservativeValues.begin()+mixedDual.shape.CellCount(),0.8f);
+	composedStep.dualTransport=mixedDual;
+	composedStep.cellSourceIncrement.assign(9u*mixedDual.shape.CellCount(),0.0f);
+	for( unsigned int axis=0u;axis<3u;++axis )
+		composedStep.momentumSourceIncrement[axis].assign(
+			FireProductionProjectionFaceCount(mixedDual.shape,axis),0.0f);
+	composedStep.divergenceTargetPerS.assign(mixedDual.shape.CellCount(),0.0f);
+	FireProductionFrozenForceAdvanceResult composedForceCPU;
+	FireProductionCellPalindromeResult composedCellCPU;
+	FireProductionDualMomentumResult composedDualCPU;
+	FireProductionProjectionRequest composedProjectionRequest;
+	FireProductionProjectionResult composedProjectionCPU;
+	bool composedCPU=AdvanceFireProductionFrozenForceCPU(composedStep.force,0.0f,
+		composedForceCPU,&error)&&RemapFireProductionCellPalindromeCPU(
+			composedStep.cellTransport,composedCellCPU,&error);
+	if( composedCPU ) {
+		FireProductionDualMomentumRequest afterForce=composedStep.dualTransport;
+		afterForce.beginningMomentum=composedForceCPU.momentumKGPerM2S;
+		composedCPU=RemapFireProductionDualMomentumCPU(afterForce,composedDualCPU,&error);
+	}
+	if( composedCPU ) {
+		composedProjectionRequest.shape=mixedDual.shape;
+		composedProjectionRequest.timeStepS=mixedDual.timeStepS;
+		composedProjectionRequest.ambientDensityKGPerM3=mixedDual.ambientDensityKGPerM3;
+		composedProjectionRequest.boundary=mixedDual.boundary;
+		composedProjectionRequest.gasDensityKGPerM3.assign(
+			composedCellCPU.conservativeValues.begin(),
+			composedCellCPU.conservativeValues.begin()+mixedDual.shape.CellCount());
+		composedProjectionRequest.provisionalMomentumKGPerM2S=composedDualCPU.momentum;
+		composedProjectionRequest.divergenceTargetPerS=composedStep.divergenceTargetPerS;
+		composedCPU=ProjectFireProductionCPU(composedProjectionRequest,
+			composedProjectionCPU,&error);
+	}
+	Check(composedCPU,
+		"independent CPU composition constructs the force, transport, zero-source, and sole-P2 oracle");
 	bool dualBoundaryMatrixMatches=true,dualBoundaryMatrixChanges=true;
 	bool dualBoundaryRoleVisited[3][3][2][3]={};
 	std::vector<float> positiveSignMomentum[3][2][3];
@@ -3716,6 +3778,32 @@ int main()
 	Check(mixedDualMetalMatches,
 		"one-command resident mixed dual transport matches all wall/open CPU bytes within the "
 		"production Metal comparator band with zero interstage transfer");
+	FireProductionResidentStepResult composedGPU,composedGPURepeat;
+	const bool composedMetal=AdvanceFireProductionResidentStepMetal(
+		composedStep,composedGPU,&error);
+	const bool composedMetalRepeat=composedMetal&&AdvanceFireProductionResidentStepMetal(
+		composedStep,composedGPURepeat,&error);
+	bool composedMatches=composedCPU&&composedMetal&&composedMetalRepeat&&
+		composedGPU.cellSubmapCount==5u&&composedGPU.dualSubmapCount==15u&&
+		composedGPU.sourceCommandCommitCount==1u&&
+		composedGPU.residentProjectionInvocationCount==1u&&
+		composedGPU.interstageFullGridTransferCount==0u&&
+		composedGPU.terminalStagingCount==2u&&composedGPU.deviceElapsedMS>0.0&&
+		composedGPU.conservativeValues==composedGPURepeat.conservativeValues&&
+		composedGPU.transportedDual.momentum==composedGPURepeat.transportedDual.momentum&&
+		composedGPU.projection.momentumKGPerM2S==composedGPURepeat.projection.momentumKGPerM2S&&
+		SameFloatVectorsWithin(composedGPU.conservativeValues,
+			composedCellCPU.conservativeValues,3.0e-5f);
+	for( unsigned int axis=0u;axis<3u;++axis ) composedMatches=composedMatches&&
+		SameFloatVectorsWithin(composedGPU.transportedDual.momentum[axis],
+			composedDualCPU.momentum[axis],3.0e-5f)&&
+		SameFloatVectorsWithin(composedGPU.projection.velocityMPerS[axis],
+			composedProjectionCPU.velocityMPerS[axis],3.0e-5f)&&
+		SameFloatVectorsWithin(composedGPU.projection.momentumKGPerM2S[axis],
+			composedProjectionCPU.momentumKGPerM2S[axis],3.0e-5f);
+	Check(composedMatches,
+		"full resident force, transport, explicit zero-source, and sole-projection step matches "
+		"the independent CPU composition with no interstage transfer");
 	FireProductionDualMomentumRequest mixedResidentAdmission;
 	mixedResidentAdmission.boundary=residentMixedBoundary;
 	mixedResidentAdmission.shape=residentMixedOverShape;
@@ -3796,6 +3884,76 @@ int main()
 		palindromeDeviceP95>0.0&&palindromeDeviceP95<=45.0&&
 		palindromeWallP95>0.0&&palindromeWallP95<=45.0,
 		"tier-10-shaped one-command Metal palindrome meets the 45 ms remap allocation");
+	FireProductionResidentStepRequest tier10FullStep;
+	tier10FullStep.force=tier10ResidentForce;
+	tier10FullStep.cellTransport.shape=tier10ResidentForce.shape;
+	tier10FullStep.cellTransport.componentCount=9u;
+	tier10FullStep.cellTransport.timeStepS=tier10ResidentForce.timeStepS;
+	tier10FullStep.cellTransport.boundary=tier10ResidentForce.boundary;
+	tier10FullStep.cellTransport.conservativeValues.resize(
+		9u*tier10ResidentForce.shape.CellCount());
+	for( std::size_t component=0u;component<9u;++component ) {
+		const float value=component==0u?1.2f:0.01f*static_cast<float>(component);
+		tier10FullStep.cellTransport.ambientValues.push_back(value);
+		std::fill(tier10FullStep.cellTransport.conservativeValues.begin()+
+			component*tier10ResidentForce.shape.CellCount(),
+			tier10FullStep.cellTransport.conservativeValues.begin()+
+			(component+1u)*tier10ResidentForce.shape.CellCount(),value);
+	}
+	tier10FullStep.dualTransport.shape=tier10ResidentForce.shape;
+	tier10FullStep.dualTransport.timeStepS=tier10ResidentForce.timeStepS;
+	tier10FullStep.dualTransport.ambientDensityKGPerM3=
+		tier10ResidentForce.ambientDensityKGPerM3;
+	tier10FullStep.dualTransport.boundary=tier10ResidentForce.boundary;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		const std::size_t faces=FireProductionProjectionFaceCount(tier10ResidentForce.shape,axis);
+		tier10FullStep.cellTransport.frozenVelocityMPerS[axis].assign(faces,0.0f);
+		tier10FullStep.dualTransport.frozenVelocityMPerS[axis].assign(faces,0.0f);
+		tier10FullStep.dualTransport.beginningFaceDensity[axis]=
+			tier10ResidentForce.faceDensityKGPerM3[axis];
+		tier10FullStep.dualTransport.beginningMomentum[axis]=
+			tier10ResidentForce.beginningMomentumKGPerM2S[axis];
+		tier10FullStep.momentumSourceIncrement[axis].assign(faces,0.0f);
+	}
+	tier10FullStep.cellSourceIncrement.assign(
+		9u*tier10ResidentForce.shape.CellCount(),0.0f);
+	tier10FullStep.divergenceTargetPerS.assign(
+		tier10ResidentForce.shape.CellCount(),0.0f);
+	std::vector<double> residentStepDeviceMS,residentStepWallMS;
+	FireProductionResidentStepResult tier10ResidentStepResult;
+	for( unsigned int trial=0u;trial<3u;++trial ) {
+		const std::chrono::steady_clock::time_point beginning=std::chrono::steady_clock::now();
+		const bool advanced=AdvanceFireProductionResidentStepMetal(
+			tier10FullStep,tier10ResidentStepResult,&error);
+		const double wallMS=std::chrono::duration<double,std::milli>(
+			std::chrono::steady_clock::now()-beginning).count();
+		Check(advanced&&tier10ResidentStepResult.forceSchedule.substepCount==8u&&
+			tier10ResidentStepResult.cellSubmapCount==5u&&
+			tier10ResidentStepResult.dualSubmapCount==15u&&
+			tier10ResidentStepResult.residentProjectionInvocationCount==1u&&
+			tier10ResidentStepResult.interstageFullGridTransferCount==0u&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1235662396)&&
+			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
+				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
+			"tier-10 resident full-step timing trial preserves the exact schedule and resource gate");
+		if( trial>0u&&advanced ) {residentStepDeviceMS.push_back(
+			tier10ResidentStepResult.deviceElapsedMS);residentStepWallMS.push_back(wallMS);}
+	}
+	std::sort(residentStepDeviceMS.begin(),residentStepDeviceMS.end());
+	std::sort(residentStepWallMS.begin(),residentStepWallMS.end());
+	const double residentStepDeviceP95=residentStepDeviceMS.empty()?infinity:
+		residentStepDeviceMS.back();
+	const double residentStepWallP95=residentStepWallMS.empty()?infinity:
+		residentStepWallMS.back();
+	std::cout << "Production resident full-step device_p95_ms=" << residentStepDeviceP95 <<
+		" wall_p95_ms=" << residentStepWallP95 << " certified_bytes=" <<
+		tier10ResidentStepResult.combinedCertifiedWorkingSetBytes << " observed_upper_bytes=" <<
+		tier10ResidentStepResult.combinedActualMetalAllocationBytes << '\n';
+	Check(residentStepDeviceMS.size()==2u&&residentStepWallMS.size()==2u&&
+		residentStepDeviceP95>0.0&&residentStepDeviceP95<=200.0&&
+		residentStepWallP95>0.0&&residentStepWallP95<=300.0,
+		"tier-10 N8 force, transport, source, and single-P2 resident interval meets 200 ms; "
+		"the oracle-tapped boundary wrapper remains below the one-hour 300 ms/step budget");
 	const bool constantMetal=RemapFireProductionMetal(constant,constantGPU,&error);
 	if( !constantMetal ) std::cerr << "Metal remap detail: " << error << '\n';
 	const bool repeatedMetal=constantMetal&&RemapFireProductionMetal(constant,constantGPURepeated,&error);
@@ -4016,6 +4174,10 @@ int main()
 		mixedDualComparatorBeginning==std::string::npos?std::string():
 		advectionMetalSource.substr(residentMixedDualBeginning,
 			mixedDualComparatorBeginning-residentMixedDualBeginning);
+	const std::size_t residentFullStepBeginning=advectionMetalSource.find(
+		"bool AdvanceFireProductionResidentStepMetal(");
+	const std::string residentFullStepBody=residentFullStepBeginning==std::string::npos?
+		std::string():advectionMetalSource.substr(residentFullStepBeginning);
 	const std::string makeRules=ReadText("build/make/rise/Makefile");
 	const std::string makeFilelist=ReadText("build/make/rise/Filelist");
 	const std::string xcodeProject=ReadText("build/XCode/rise/rise.xcodeproj/project.pbxproj");
@@ -4094,9 +4256,9 @@ int main()
 		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
 		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
 		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
-		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==14u&&
-		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==14u&&
-		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==9u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==17u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==17u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==10u&&
 		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
 		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
@@ -4152,6 +4314,23 @@ int main()
 		residentMixedDualBody.find("context.prescribeDualComponentWalls")!=std::string::npos,
 		"mixed dual transport uploads frozen line ownership only before the resident interval and "
 		"executes all fifteen submaps with one command and zero host access");
+	Check(!residentFullStepBody.empty()&&
+		CountSubstring(residentFullStepBody,"TrackedMetalCommandBuffer(")==3u&&
+		CountSubstring(residentFullStepBody,"CommitTrackedMetalCommand(")==3u&&
+		CountSubstring(residentFullStepBody,"ReadTrackedMetalBuffer(")==1u&&
+		residentFullStepBody.find("AdvanceFireProductionFrozenForceMetalResidentState(")!=
+			std::string::npos&&residentFullStepBody.find(
+			"RemapFireProductionCellPalindromeMetalResident(")!=std::string::npos&&
+		residentFullStepBody.find("RemapFireProductionDualMomentumMetalResident(")!=
+			std::string::npos&&residentFullStepBody.find(
+			"ProjectFireProductionMetalResident(")!=std::string::npos&&
+		residentFullStepBody.find("context.addCellSourcesExtractDensity")!=std::string::npos&&
+		residentFullStepBody.find("context.addFaceSources")!=std::string::npos&&
+		residentFullStepBody.find("computed.projection.residentProjectionInvocationCount")!=
+			std::string::npos&&residentFullStepBody.find(
+			"computed.interstageFullGridTransferCount!=0u")!=std::string::npos,
+		"full resident step binds the force, both transport owners, explicit sources, one actual "
+		"projection invocation, and observed zero-transfer diagnostics");
 	Check(CountSubstring(transportSource,"void PublishPeriodicDualSeam(")==1u&&
 		CountSubstring(transportSource,"PublishPeriodicDualSeam(shape,component,")==2u&&
 		CountSubstring(transportSource,

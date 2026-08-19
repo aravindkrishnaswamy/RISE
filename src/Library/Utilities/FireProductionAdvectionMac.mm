@@ -10,11 +10,13 @@
 #import <Metal/Metal.h>
 
 #include "FireProductionAdvection.h"
+#include "FireProductionForce.h"
 #include "FireProductionTransport.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <new>
 
 namespace RISE
@@ -415,6 +417,16 @@ kernel void prescribe_dual_component_walls(device float* momentum [[buffer(0)]],
  if((coordinate==0u&&p.lowerComponentWall!=0u)||(coordinate==extent&&p.upperComponentWall!=0u))
   momentum[gid]=0.0f;
 }
+kernel void add_cell_sources_extract_density(device float* conservative [[buffer(0)]],
+ device const float* source [[buffer(1)]],device float* density [[buffer(2)]],
+ constant GridParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ uint cells=p.nx*p.ny*p.nz,total=p.comps*cells;if(gid>=total)return;
+ float value=conservative[gid]+source[gid];conservative[gid]=value;
+ if(gid<cells)density[gid]=value;
+}
+kernel void add_face_sources(device float* momentum [[buffer(0)]],
+ device const float* source [[buffer(1)]],constant uint& count [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){if(gid<count)momentum[gid]+=source[gid];}
 )METAL";
 		}
 
@@ -436,13 +448,16 @@ kernel void prescribe_dual_component_walls(device float* momentum [[buffer(0)]],
 			id<MTLComputePipelineState> gatherDualLineValues;
 			id<MTLComputePipelineState> scatterDualLineValues;
 			id<MTLComputePipelineState> prescribeDualComponentWalls;
+			id<MTLComputePipelineState> addCellSourcesExtractDensity;
+			id<MTLComputePipelineState> addFaceSources;
 			std::string error;
 
 			MetalRemapContext() : device(nil), queue(nil), reconstruct(nil), scan(nil),
 				flux(nil), update(nil),gatherValues(nil),scatterValues(nil),gatherVelocity(nil),
 				gatherPeriodicDualValues(nil),gatherPeriodicDualCarrier(nil),
 				scatterPeriodicDualValues(nil),publishPeriodicDualSeam(nil),
-				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil)
+				gatherDualLineValues(nil),scatterDualLineValues(nil),prescribeDualComponentWalls(nil),
+				addCellSourcesExtractDensity(nil),addFaceSources(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -474,11 +489,14 @@ kernel void prescribe_dual_component_walls(device float* momentum [[buffer(0)]],
 					gatherDualLineValues=makePipeline("gather_dual_line_values");
 					scatterDualLineValues=makePipeline("scatter_dual_line_values");
 					prescribeDualComponentWalls=makePipeline("prescribe_dual_component_walls");
+					addCellSourcesExtractDensity=makePipeline("add_cell_sources_extract_density");
+					addFaceSources=makePipeline("add_face_sources");
 					if( !reconstruct||!scan||!flux||!update||!gatherValues||
 						!scatterValues||!gatherVelocity||!gatherPeriodicDualValues||
 						!gatherPeriodicDualCarrier||!scatterPeriodicDualValues||
 						!publishPeriodicDualSeam||!gatherDualLineValues||
-						!scatterDualLineValues||!prescribeDualComponentWalls ) {
+						!scatterDualLineValues||!prescribeDualComponentWalls||
+						!addCellSourcesExtractDensity||!addFaceSources ) {
 						error=MetalError("production fire remap pipeline creation failed",metalError);
 						return;
 					}
@@ -493,7 +511,8 @@ kernel void prescribe_dual_component_walls(device float* momentum [[buffer(0)]],
 					scatterValues&&gatherVelocity&&gatherPeriodicDualValues&&
 					gatherPeriodicDualCarrier&&scatterPeriodicDualValues&&
 					publishPeriodicDualSeam&&gatherDualLineValues&&scatterDualLineValues&&
-					prescribeDualComponentWalls&&error.empty();
+					prescribeDualComponentWalls&&addCellSourcesExtractDensity&&addFaceSources&&
+					error.empty();
 			}
 		};
 
@@ -1962,6 +1981,234 @@ kernel void prescribe_dual_component_walls(device float* momentum [[buffer(0)]],
 			result=FireProductionDualMomentumResult();
 			if( structuredError ) try { *structuredError=
 				"production resident dual comparator allocation failed"; } catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
+
+	bool AdvanceFireProductionResidentStepMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionResidentStepResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionResidentStepResult();
+		try {
+			const FireProductionProjectionShape& shape=request.force.shape;
+			const std::size_t cells=shape.CellCount();
+			std::array<std::size_t,3> faceCounts,faceOffsets;std::size_t allFaces=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				faceOffsets[axis]=allFaces*sizeof(float);
+				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);
+				allFaces+=faceCounts[axis];
+			}
+			auto sameShape=[](const FireProductionProjectionShape& a,
+				const FireProductionProjectionShape& b) {
+				return a.nx==b.nx&&a.ny==b.ny&&a.nz==b.nz&&a.cellWidthM==b.cellWidthM;
+			};
+			if( !sameShape(shape,request.cellTransport.shape)||
+				!sameShape(shape,request.dualTransport.shape)||
+				request.force.timeStepS!=request.cellTransport.timeStepS||
+				request.force.timeStepS!=request.dualTransport.timeStepS||
+				request.force.boundary!=request.cellTransport.boundary||
+				request.force.boundary!=request.dualTransport.boundary||
+				request.cellTransport.componentCount!=9u||
+				request.cellTransport.conservativeValues.size()!=9u*cells||
+				request.cellSourceIncrement.size()!=9u*cells||
+				request.divergenceTargetPerS.size()!=cells ) return false;
+			for( std::size_t cell=0u;cell<cells;++cell ) if(
+				request.cellTransport.conservativeValues[cell]!=request.force.cellGasDensityKGPerM3[cell] )
+				return false;
+			for( unsigned int axis=0u;axis<3u;++axis ) if(
+				request.momentumSourceIncrement[axis].size()!=faceCounts[axis]||
+				request.dualTransport.beginningFaceDensity[axis]!=request.force.faceDensityKGPerM3[axis]||
+				request.dualTransport.beginningMomentum[axis]!=request.force.beginningMomentumKGPerM2S[axis]||
+				request.dualTransport.frozenVelocityMPerS[axis]!=
+					request.cellTransport.frozenVelocityMPerS[axis] ) return false;
+			auto positiveZero=[](float value) {
+				std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));return bits==0u;
+			};
+			for( const float value : request.cellSourceIncrement ) if( !positiveZero(value) ) return false;
+			for( const std::vector<float>& source : request.momentumSourceIncrement )
+				for( const float value : source ) if( !positiveZero(value) ) return false;
+			std::uint64_t forceProjectionBytes=0u,cellBytes=0u,dualBytes=0u;
+			if( !FireProductionResidentForceProjectionWorkingSetBytes(shape,forceProjectionBytes)||
+				!FireProductionCellPalindromeWorkingSetBytes(shape,9u,cellBytes)||
+				!FireProductionDualMomentumResidentWorkingSetBytes(shape,request.force.boundary,dualBytes) )
+				return false;
+			const std::uint64_t extraValues=UINT64_C(19)*cells+3u*allFaces;
+			if( extraValues>std::numeric_limits<std::uint64_t>::max()/sizeof(float)||
+				forceProjectionBytes>std::numeric_limits<std::uint64_t>::max()-cellBytes||
+				forceProjectionBytes+cellBytes>std::numeric_limits<std::uint64_t>::max()-dualBytes||
+				forceProjectionBytes+cellBytes+dualBytes>
+					std::numeric_limits<std::uint64_t>::max()-extraValues*sizeof(float) ) return false;
+			const std::uint64_t certified=forceProjectionBytes+cellBytes+dualBytes+
+				extraValues*sizeof(float);
+			if( certified>(UINT64_C(1)<<31u) ) {
+				if( structuredError ) *structuredError=
+					"production resident step working set exceeds two GiB";
+				return false;
+			}
+			FireProductionMetalDualMomentumStaticState dualStatic;
+			if( !PrepareFireProductionDualMomentumMetalStaticState(request.dualTransport,
+				dualStatic,structuredError) ) return false;
+			MetalRemapContext& context=Context();
+			if( !context.Valid() ) return false;
+			@autoreleasepool {
+				const std::size_t cellValueBytes=9u*cells*sizeof(float);
+				const std::size_t packedFaceBytes=allFaces*sizeof(float);
+				std::vector<float> packedFaceSource(allFaces,0.0f);
+				for( unsigned int axis=0u;axis<3u;++axis ) std::copy(
+					request.momentumSourceIncrement[axis].begin(),request.momentumSourceIncrement[axis].end(),
+					packedFaceSource.begin()+faceOffsets[axis]/sizeof(float));
+				auto stage=[&](const float* values,std::size_t bytes) {
+					return [context.device newBufferWithBytes:values length:bytes
+						options:MTLResourceStorageModeShared];
+				};
+				auto privateBuffer=[&](std::size_t bytes) { return [context.device
+					newBufferWithLength:bytes options:MTLResourceStorageModePrivate]; };
+				id<MTLBuffer> cellStage=stage(request.cellTransport.conservativeValues.data(),cellValueBytes);
+				id<MTLBuffer> cellPrivate=privateBuffer(cellValueBytes);
+				std::array<id<MTLBuffer>,3> velocityStage,velocityPrivate;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					velocityStage[axis]=stage(request.cellTransport.frozenVelocityMPerS[axis].data(),
+						faceCounts[axis]*sizeof(float));
+					velocityPrivate[axis]=privateBuffer(faceCounts[axis]*sizeof(float));
+				}
+				id<MTLBuffer> ambientStage=stage(request.cellTransport.ambientValues.data(),9u*sizeof(float));
+				id<MTLBuffer> ambientPrivate=privateBuffer(9u*sizeof(float));
+				id<MTLBuffer> cellSourceStage=stage(request.cellSourceIncrement.data(),cellValueBytes);
+				id<MTLBuffer> cellSourcePrivate=privateBuffer(cellValueBytes);
+				id<MTLBuffer> faceSourceStage=stage(packedFaceSource.data(),packedFaceBytes);
+				id<MTLBuffer> faceSourcePrivate=privateBuffer(packedFaceBytes);
+				id<MTLBuffer> targetStage=stage(request.divergenceTargetPerS.data(),cells*sizeof(float));
+				id<MTLBuffer> targetPrivate=privateBuffer(cells*sizeof(float));
+				if( !cellStage||!cellPrivate||!ambientStage||!ambientPrivate||!cellSourceStage||
+					!cellSourcePrivate||!faceSourceStage||!faceSourcePrivate||!targetStage||!targetPrivate )
+					return false;
+				for( unsigned int axis=0u;axis<3u;++axis )
+					if( !velocityStage[axis]||!velocityPrivate[axis] ) return false;
+				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;if( !blit ) return false;
+				[blit copyFromBuffer:cellStage sourceOffset:0 toBuffer:cellPrivate destinationOffset:0 size:cellValueBytes];
+				for( unsigned int axis=0u;axis<3u;++axis ) [blit copyFromBuffer:velocityStage[axis]
+					sourceOffset:0 toBuffer:velocityPrivate[axis] destinationOffset:0
+					size:faceCounts[axis]*sizeof(float)];
+				[blit copyFromBuffer:ambientStage sourceOffset:0 toBuffer:ambientPrivate destinationOffset:0 size:9u*sizeof(float)];
+				[blit copyFromBuffer:cellSourceStage sourceOffset:0 toBuffer:cellSourcePrivate destinationOffset:0 size:cellValueBytes];
+				[blit copyFromBuffer:faceSourceStage sourceOffset:0 toBuffer:faceSourcePrivate destinationOffset:0 size:packedFaceBytes];
+				[blit copyFromBuffer:targetStage sourceOffset:0 toBuffer:targetPrivate destinationOffset:0 size:cells*sizeof(float)];
+				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
+				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
+				FireProductionMetalFrozenForceResidentState force;
+				if( !AdvanceFireProductionFrozenForceMetalResidentState(request.force,force,
+					structuredError) ) return false;
+				FireProductionMetalCellPalindromeResidentInput cellInput;cellInput.conservativeValues=cellPrivate;
+				cellInput.frozenVelocityMPerS=velocityPrivate;cellInput.ambientValues=ambientPrivate;
+				FireProductionMetalCellPalindromeResidentResult cell;
+				if( !RemapFireProductionCellPalindromeMetalResident(request.cellTransport,cellInput,
+					cell,structuredError) ) return false;
+				FireProductionMetalDualMomentumResidentInput dualInput;
+				dualInput.packedFaceDensity=force.packedFaceDensityKGPerM3;
+				dualInput.packedMomentum=force.packedMomentumKGPerM2S;
+				dualInput.faceByteOffset=force.faceByteOffset;
+				FireProductionMetalDualMomentumResidentResult dual;
+				if( !RemapFireProductionDualMomentumMetalResident(request.dualTransport,dualStatic,
+					dualInput,dual,structuredError) ) return false;
+				id<MTLBuffer> projectedDensity=privateBuffer(cells*sizeof(float));
+				const MetalGridParameters sourceGrid={static_cast<std::uint32_t>(shape.nx),
+					static_cast<std::uint32_t>(shape.ny),static_cast<std::uint32_t>(shape.nz),0u,9u};
+				const std::uint32_t packedFaceCount=static_cast<std::uint32_t>(allFaces);
+				id<MTLBuffer> sourceGridParameter=[context.device newBufferWithBytes:&sourceGrid
+					length:sizeof(sourceGrid) options:MTLResourceStorageModeShared];
+				id<MTLBuffer> sourceFaceParameter=[context.device newBufferWithBytes:&packedFaceCount
+					length:sizeof(packedFaceCount) options:MTLResourceStorageModeShared];
+				if( !projectedDensity||!sourceGridParameter||!sourceFaceParameter ) return false;
+				const std::uint64_t beginningCommits=MetalCommandCommitCount;
+				const std::uint64_t beginningReads=MetalHostBufferReadCount;
+				id<MTLCommandBuffer> sourceCommand=TrackedMetalCommandBuffer(context.queue);
+				id<MTLComputeCommandEncoder> encoder=sourceCommand?[sourceCommand computeCommandEncoder]:nil;
+				if( !encoder ) return false;
+				[encoder setBuffer:cell.conservativeValues offset:0 atIndex:0];
+				[encoder setBuffer:cellSourcePrivate offset:0 atIndex:1];[encoder setBuffer:projectedDensity offset:0 atIndex:2];
+				[encoder setBuffer:sourceGridParameter offset:0 atIndex:3];
+				Dispatch(encoder,context.addCellSourcesExtractDensity,9u*cells);[encoder endEncoding];
+				encoder=[sourceCommand computeCommandEncoder];if( !encoder ) return false;
+				[encoder setBuffer:dual.packedMomentum offset:0 atIndex:0];
+				[encoder setBuffer:faceSourcePrivate offset:0 atIndex:1];
+				[encoder setBuffer:sourceFaceParameter offset:0 atIndex:2];
+				Dispatch(encoder,context.addFaceSources,allFaces);[encoder endEncoding];
+				CommitTrackedMetalCommand(sourceCommand);[sourceCommand waitUntilCompleted];
+				const std::uint64_t sourceCommits=MetalCommandCommitCount-beginningCommits;
+				if( [sourceCommand status]!=MTLCommandBufferStatusCompleted||sourceCommits!=1u||
+					MetalHostBufferReadCount-beginningReads!=0u ) return false;
+				FireProductionProjectionRequest projectionRequest;
+				projectionRequest.shape=shape;projectionRequest.timeStepS=request.force.timeStepS;
+				projectionRequest.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
+				projectionRequest.boundary=request.force.boundary;
+				projectionRequest.gasDensityKGPerM3=request.force.cellGasDensityKGPerM3;
+				projectionRequest.provisionalMomentumKGPerM2S=request.dualTransport.beginningMomentum;
+				projectionRequest.divergenceTargetPerS=request.divergenceTargetPerS;
+				FireProductionMetalProjectionResidentInput projectionInput;
+				projectionInput.gasDensityKGPerM3=projectedDensity;
+				projectionInput.provisionalMomentumKGPerM2S.fill(dual.packedMomentum);
+				projectionInput.provisionalMomentumByteOffset=dual.faceByteOffset;
+				projectionInput.divergenceTargetPerS=targetPrivate;
+				FireProductionProjectionResult projection;
+				if( !ProjectFireProductionMetalResident(projectionRequest,projectionInput,projection,
+					structuredError) ) return false;
+				id<MTLBuffer> terminal=[context.device newBufferWithLength:
+					(cellValueBytes+2u*packedFaceBytes) options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> terminalCommand=TrackedMetalCommandBuffer(context.queue);
+				blit=terminalCommand?[terminalCommand blitCommandEncoder]:nil;if( !terminal||!blit ) return false;
+				[blit copyFromBuffer:cell.conservativeValues sourceOffset:0 toBuffer:terminal
+					destinationOffset:0 size:cellValueBytes];
+				[blit copyFromBuffer:dual.packedAuxiliaryFaceDensity sourceOffset:0 toBuffer:terminal
+					destinationOffset:cellValueBytes size:packedFaceBytes];
+				[blit copyFromBuffer:dual.packedMomentum sourceOffset:0 toBuffer:terminal
+					destinationOffset:cellValueBytes+packedFaceBytes size:packedFaceBytes];
+				[blit endEncoding];CommitTrackedMetalCommand(terminalCommand);[terminalCommand waitUntilCompleted];
+				if( [terminalCommand status]!=MTLCommandBufferStatusCompleted ) return false;
+				const float* values=static_cast<const float*>(ReadTrackedMetalBuffer(terminal));
+				FireProductionResidentStepResult computed;
+				computed.conservativeValues.assign(values,values+9u*cells);
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t beginning=faceOffsets[axis]/sizeof(float);
+					computed.transportedDual.auxiliaryFaceDensity[axis].assign(
+						values+9u*cells+beginning,values+9u*cells+beginning+faceCounts[axis]);
+					computed.transportedDual.momentum[axis].assign(values+9u*cells+allFaces+beginning,
+						values+9u*cells+allFaces+beginning+faceCounts[axis]);
+				}
+				computed.projection=std::move(projection);computed.forceSchedule=force.schedule;
+				computed.forceDiagnostics=force.diagnostics;computed.cellSubmapCount=cell.executedSubmapCount;
+				computed.dualSubmapCount=dual.executedSubmapCount;computed.sourceCommandCommitCount=
+					static_cast<std::uint32_t>(sourceCommits);
+				computed.residentProjectionInvocationCount=
+					computed.projection.residentProjectionInvocationCount;
+				computed.interstageFullGridTransferCount=
+					force.diagnostics.substepLoopDeviceToHostTransferCount+
+					cell.interstageFullGridTransferCount+dual.interstageFullGridTransferCount+
+					computed.projection.residentInterstageDeviceToHostTransferCount;
+				computed.terminalStagingCount=
+					computed.projection.residentTerminalStagingCount+1u;
+				computed.combinedCertifiedWorkingSetBytes=certified;
+				computed.combinedActualMetalAllocationBytes=force.diagnostics.actualMetalAllocationBytes+
+					cell.actualMetalAllocationBytes+dual.actualMetalAllocationBytes+
+					computed.projection.residentActualMetalAllocationBytes;
+				computed.deviceElapsedMS=force.diagnostics.advanceDeviceElapsedMS+cell.deviceElapsedMS+
+					dual.deviceElapsedMS+([sourceCommand GPUEndTime]-[sourceCommand GPUStartTime])*1000.0+
+					computed.projection.deviceElapsedMS;
+				if( computed.cellSubmapCount!=5u||computed.dualSubmapCount!=15u||
+					computed.sourceCommandCommitCount!=1u||
+					computed.residentProjectionInvocationCount!=1u||
+					computed.interstageFullGridTransferCount!=0u||
+					computed.combinedActualMetalAllocationBytes>certified||
+					!std::isfinite(computed.deviceElapsedMS) ) return false;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionResidentStepResult();
+			if( structuredError ) try { *structuredError=
+				"production resident step allocation failed"; } catch( const std::bad_alloc& ) {}
 			return false;
 		}
 	}

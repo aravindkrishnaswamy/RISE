@@ -10,6 +10,7 @@
 #define FIRE_PRODUCTION_FORCE_H
 
 #include "FireProductionProjection.h"
+#include "FireProductionTransport.h"
 
 #include <array>
 #include <cstdint>
@@ -242,6 +243,48 @@ namespace RISE
 		const FireProductionFrozenForceRequest& forceRequest,
 		const std::vector<float>& divergenceTargetPerS,
 		FireProductionResidentForceProjectionResult& result,
+		std::string* error=0 );
+
+	struct FireProductionResidentStepRequest
+	{
+		FireProductionFrozenForceRequest force;
+		FireProductionCellPalindromeRequest cellTransport;
+		FireProductionDualMomentumRequest dualTransport;
+		std::vector<float> cellSourceIncrement;
+		std::array<std::vector<float>,3> momentumSourceIncrement;
+		std::vector<float> divergenceTargetPerS;
+	};
+
+	struct FireProductionResidentStepResult
+	{
+		std::vector<float> conservativeValues;
+		FireProductionDualMomentumResult transportedDual;
+		FireProductionProjectionResult projection;
+		FireProductionViscousSchedule forceSchedule;
+		FireProductionResidentForceDiagnostics forceDiagnostics;
+		std::uint32_t cellSubmapCount;
+		std::uint32_t dualSubmapCount;
+		std::uint32_t sourceCommandCommitCount;
+		std::uint32_t residentProjectionInvocationCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint64_t combinedCertifiedWorkingSetBytes;
+		std::uint64_t combinedActualMetalAllocationBytes;
+		double deviceElapsedMS;
+
+		FireProductionResidentStepResult() : cellSubmapCount(0u),dualSubmapCount(0u),
+			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
+			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
+			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
+			deviceElapsedMS(0.0) {}
+	};
+
+	//! Full resident P3 shadow step: frozen force, cell and dual transport,
+	//! explicit source operands, and exactly one P2 projection. Full-grid host
+	//! access is limited to the terminal step-boundary oracle tap.
+	bool AdvanceFireProductionResidentStepMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionResidentStepResult& result,
 		std::string* error=0 );
 }
 

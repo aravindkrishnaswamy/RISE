@@ -66,4 +66,16 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
+
+	bool AdvanceFireProductionResidentStepMetal(
+		const FireProductionResidentStepRequest&,
+		FireProductionResidentStepResult& result,
+		std::string* error )
+	{
+		result=FireProductionResidentStepResult();
+		if( error ) try {
+			*error="production resident step Metal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
 }
