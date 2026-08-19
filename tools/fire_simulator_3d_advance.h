@@ -2077,6 +2077,7 @@
 			std::array<std::vector<double>,3> faceAlpha;
 			std::vector<double> divergenceHeunPerS;
 			double maximumDivergenceResidualPerS;
+			double maximumPreProjectionDivergenceResidualPerS;
 			double maximumBoundaryHeadResidualPa;
 			unsigned int effectiveWorkerCount;
 			double maximumLimiterClassDiscrepancy;
@@ -2087,6 +2088,7 @@
 			std::size_t maximumActiveSetDifferingFaceCount;
 			ConservativeStage3D r0, r1, r2;
 			ConservativeAdvance3DResult() : maximumDivergenceResidualPerS(0.0),
+				maximumPreProjectionDivergenceResidualPerS(0.0),
 				maximumBoundaryHeadResidualPa(0.0),effectiveWorkerCount(0u),
 				maximumLimiterClassDiscrepancy(0.0),discontinuousLimiterClassCount(0u),
 				maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
@@ -2999,6 +3001,8 @@
 			candidate.divergenceHeunPerS=open.divergenceHeunPerS;
 			candidate.maximumDivergenceResidualPerS=
 				open.r2.projection.maximumDivergenceResidualPerS;
+			candidate.maximumPreProjectionDivergenceResidualPerS=
+				open.r2.projection.maximumPreProjectionDivergenceResidualPerS;
 			candidate.maximumBoundaryHeadResidualPa=
 				open.r2.projection.maximumBoundaryHeadResidualPa;
 			candidate.maximumLimiterClassDiscrepancy=open.maximumLimiterClassDiscrepancy;

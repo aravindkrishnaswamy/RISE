@@ -1857,6 +1857,7 @@ namespace RISE
 			std::array<std::array<std::vector<double>,2>,6>
 				boundaryTangentialVelocityMPerS;
 			double maximumDivergenceResidualPerS;
+			double maximumPreProjectionDivergenceResidualPerS;
 			double maximumBoundaryHeadResidualPa;
 			double maximumActiveSetComplementarityDiscrepancyMPerS;
 			std::size_t activeSetCycleLength;
@@ -1865,6 +1866,7 @@ namespace RISE
 			std::vector<double> nonlinearResidualHistory;
 			std::vector<double> multigridResidualHistoryPerS;
 			OpenMACProjection3DResult() : maximumDivergenceResidualPerS(0.0),
+				maximumPreProjectionDivergenceResidualPerS(0.0),
 				maximumBoundaryHeadResidualPa(0.0),
 				maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
 				activeSetCycleLength(0u),activeSetDifferingFaceCount(0u),
@@ -3513,6 +3515,8 @@ namespace RISE
 						"fire solver augmented residual overflowed");
 					double maximumDivergence=0.0,maximumHead=0.0;
 					for(std::size_t i=0;i<cellCount;++i)maximumDivergence=std::max(maximumDivergence,std::fabs(residual[i]));
+					if(candidate.nonlinearResidualHistory.empty())
+						candidate.maximumPreProjectionDivergenceResidualPerS=maximumDivergence;
 					for(std::size_t i=cellCount;i<layout.unknownCount;++i)maximumHead=std::max(maximumHead,std::fabs(residual[i]));
 					const double norm=std::max(maximumDivergence/absoluteTolerancePerS,maximumHead/boundary.pressureTolerancePa);
 					candidate.nonlinearResidualHistory.push_back(norm);if(maximumDivergence<=absoluteTolerancePerS &&
@@ -3812,6 +3816,7 @@ namespace RISE
 					maximum=std::max(maximum,std::fabs(residual[cell]));
 					rightHandSide[cell]=-residual[cell]/deltaTimeS;
 				}
+				if( outer==0u ) result.maximumPreProjectionDivergenceResidualPerS=maximum;
 				if(maximum<=absoluteTolerancePerS){result.maximumDivergenceResidualPerS=maximum;break;}
 				std::vector<double> correction,linearHistory;
 				if( !SolveOpenPressureMultigrid3D(shape,pressureOperator,rightHandSide,

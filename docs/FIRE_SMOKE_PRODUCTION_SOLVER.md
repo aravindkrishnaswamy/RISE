@@ -1377,6 +1377,47 @@ That wall contract belongs to the persistent multi-step driver, where ordinary
 steps do not perform the full oracle tap. The 200 ms resident-device budget is
 green; the one-hour end-to-end wall gate remains open and is not widened.
 
+### 7.22 Full resident composition evidence and calibration stop (r105)
+
+The full owner now performs its combined `2 GiB` admission before payload
+inspection, validates the complete frozen-force request before the first Metal
+command, observes every owner and child allocation, and validates every staged
+cell scalar, auxiliary face density, and dual momentum before atomic
+publication. The exact tier-10 certificate remains `1,235,662,396` bytes and
+the independently bound observed allocation remains `1,233,957,860` bytes.
+
+The SHA-bound steps 3480--3487 campaign executes the complete resident shadow
+with one projection and zero interstage full-grid transfers on every slice.
+The independently recomputed production post-projection residual trace is
+`{0.0051404458276261911, 0.0049875522159004513, 0.0050794154282387217,`
+`0.0050499014713932307, 0.0050310902116719207, 0.0050479588015629375,`
+`0.0050315443766649108, 0.0050194765847817882} s^-1`. There are zero
+validation misses and no upward creep. The oracle and production enter with
+nearly identical `37.85--38.00 s^-1` residuals; production's reduction factor
+is `14.37360898839597--14.750826431310701` times weaker than the oracle's,
+while remaining inside the unchanged production validation band.
+
+The two fixed steep-front probes retain exact nonzero beginning-state local
+contrasts `0.30206703454394657` (plume edge) and `363818.26731442177 J/m^3`
+(pilot ring), with zero local overshoot and no new density undershoot. Across
+the eight slices, the observed production/oracle differences are scalar
+absolute `833.57847605185816`, scalar relative `0.0021660226012641007`,
+velocity absolute `0.078576087059462285 m/s`, and conservation-ledger relative
+`1.8370760700895922e-7`.
+
+Those physics differences are **not accepted tolerances**. The available
+oracle-only adjacent-time diagnostic is scalar absolute `4.9907348694323446`,
+scalar relative `1.2966848729312654e-5`, velocity absolute
+`0.0015257825718035956 m/s`, and ledger relative `1.1475158518490884e-8`.
+On the same slice, the production differences are respectively `83.51`,
+`83.51`, `27.73`, and `8.67` times the `1.25 Delta_dt` terms. The required adjacent-grid tier-6
+package and independently enumerated `B_fp32` terms do not yet exist, so
+section 5.1 cannot choose a band without post-hoc tuning. The validation
+fixture therefore records all eight monitored deviations and deliberately
+returns a calibration-blocked result at the end. r105 stops here rather than
+blessing production output or widening a ceiling. The immutable checkpoint
+remains SHA-256 `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

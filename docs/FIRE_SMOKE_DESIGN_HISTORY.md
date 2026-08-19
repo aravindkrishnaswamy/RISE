@@ -2526,3 +2526,21 @@ it was already tried and refuted here.
   wall acceptance cap: only its timing is reported. The separate persistent-
   driver `300 ms/step` production wall contract remains explicitly unclosed
   rather than being proxied or widened by a staging-heavy comparator.
+
+- **r105 (2026-08-19):** resident composition evidence and calibration stop.
+  The full owner now rejects the combined two-GiB peak before payload access,
+  preflights the complete force request before Metal work, counts its own live
+  allocations alongside every child, and rejects nonfinite or nonpositive
+  terminal state before atomic publication. The eight SHA-bound golden slices
+  execute with one projection, zero interstage transfers, zero monitored
+  validation misses, and no divergence creep. Independent post residuals stay
+  in `0.00498755--0.00514045 s^-1`; matched production/oracle pre residuals
+  prove the production reduction factor is `14.37--14.75x` weaker than the
+  oracle's, but still inside the unchanged production band. Fixed plume/pilot
+  probes retain exact nonzero contrast with no overshoot. Physics acceptance
+  is intentionally blocked: scalar, velocity, and ledger differences exceed
+  the available slice-matched `1.25 Delta_dt` terms by `83.51x`, `27.73x`, and
+  `8.67x`,
+  while the required tier-6 adjacent-grid and analytic `B_fp32` evidence is
+  absent. The fixture accumulates all eight deviations and fails at validation
+  time; it does not tune a tolerance from production output.
