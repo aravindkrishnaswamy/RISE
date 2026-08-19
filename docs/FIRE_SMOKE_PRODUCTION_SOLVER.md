@@ -856,6 +856,45 @@ nonlinearly coupled source can be subtracted afterward.
 r90 changes certificate evaluation and RED definitions only. It does not
 change the P3 physical operator, case identity, or milestone budgets.
 
+### 7.8 P3 executable Metal preflight and isolated shadow (r91)
+
+Apple Metal has no native fp64, so r90's per-row binary64 walk is replaced by
+an executable split certificate. The resident kernel forms and stores the
+actual fp32 operator coefficients, then accumulates each row in fixed column
+order as `nextafter(sum+abs(a_ij),+infinity)` in fp32. Coefficient formation is
+not reinterpreted: the certificate bounds the exact stored bytes the operator
+will consume. A fixed outward max tree reduces those row bounds to one fp32
+`Lambda_up` scalar in the Shared diagnostic block. Only that scalar is read by
+the host. The host promotes `dt` and `Lambda_up` exactly to binary64 and performs
+r90's outward work/ceil and represented-fp32-`dt_sub` checks. A high-precision
+host oracle independently bounds every stored row in fixtures. Source/build
+guards require the private coefficient buffers, forbid their blit/readback,
+and bind the sole scalar diagnostic transfer.
+
+The eight-substep capability is timed at its actual edge. A tier-10-shaped
+manufactured coefficient field must select exactly `N_nu=8` under the outward
+preflight; completed-call p95 for coefficient/operator construction, outward
+row/max reduction, scalar synchronization, all eight viscous updates, and one
+gravity addition is at most 20 ms. An `N=7` control executes seven updates; the
+nextafter-adjacent `N=9` control fails structurally before any update dispatch.
+Timing the natural methane field at a smaller `N` cannot qualify the cap.
+
+The isolated certified shadow removes the fuel bed as well as source packets.
+For its P3 comparison only, every `bottomFuelMask` face replaces the separate
+`FuelInletBoundary3D` constituent/enthalpy tuple with bit-zero flux and inherits
+the underlying adiabatic-wall/no-slip geometry. The supplied shadow `S_div`
+operand remains the serialized P3 input; it is not recomputed to disguise the
+exclusion. Original bed mask, fuel record, injection temperature, and mass-flux
+bytes are serialized separately as excluded P4 evidence. A nonzero-bed fixture
+requires ordinary continuation ledgers to contain prescribed fuel/enthalpy
+flux while every corresponding shadow boundary flux byte is zero; restoring
+the bed tuple changes the isolated flux and integral digests. The sourced
+continuation still cross-binds r80.
+
+r91 makes the r90 certificates executable on the target and closes P4 boundary
+leakage from the P3 oracle surface. It changes no case identity, operator, or
+budget.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

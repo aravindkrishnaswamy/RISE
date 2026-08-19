@@ -2267,3 +2267,22 @@ it was already tried and refuted here.
   packets cannot be subtracted from the nonlinear sourced step. The ordinary
   continuation separately reproduces r80 evidence and the shadow never affects
   accepted state or checkpoints.
+
+- **r91 (2026-08-18):** executable P3 Metal preflight and isolated oracle
+  shadow. Review found that r90's per-row binary64 certificate could not run in
+  a resident Apple Metal kernel, whose full grids are Private and whose shader
+  language has no fp64. The ruling accumulates actual stored fp32 coefficient
+  rows outward with `nextafter` on GPU, fixed-max reduces one fp32 bound, and
+  transfers only that scalar; binary64 schedule selection and represented
+  `dt_sub` certification then run on the host. A high-precision fixture oracle
+  and no-private-grid-readback guard bind the split.
+
+  The `N_nu<=8` capability is qualified only by a tier-10-shaped request that
+  selects exactly eight and completes preflight, eight updates, one gravity
+  addition, and synchronization within 20 ms; N=7 and pre-dispatch-rejected N=9
+  controls prevent an easier case from qualifying. Finally, the discarded P3
+  shadow zeroes the certified solver's separate fuel-bed boundary tuple and
+  restores underlying wall geometry in addition to zeroing source packets.
+  Original bed inputs remain serialized as excluded P4 evidence, while the
+  sourced continuation still reproduces r80. No physical operator, identity,
+  or budget changes.
