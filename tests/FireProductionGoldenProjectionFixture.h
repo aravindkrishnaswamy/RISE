@@ -143,9 +143,17 @@ int RunProductionGoldenProjectionFixture(const std::filesystem::path& checkpoint
 	const double tolerance=0.005*static_cast<double>(maximumVelocity)/length;
 	FireSim::PeriodicMACProjection3DResult oracle;
 	double oraclePreResidual=0.0,targetMaximum=0.0;
+	FireSim::PeriodicMACField oraclePreVelocity;
+	for(unsigned int axis=0u;axis<3u;++axis){oraclePreVelocity.component[axis].resize(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){
+			const std::size_t next=FireSim::PeriodicNext(oracleShape,cell,axis);
+			const double density=0.5*(oracleDensity[cell]+oracleDensity[next]);
+			oraclePreVelocity.component[axis][cell]=oracleMomentum.component[axis][cell]/density;
+		}
+	}
 	for(std::size_t cell=0u;cell<cells;++cell){
 		oraclePreResidual=std::max(oraclePreResidual,std::fabs(
-			FireSim::PeriodicMACDivergence3D(oracleShape,oracleMomentum,cell)-oracleTarget[cell]));
+			FireSim::PeriodicMACDivergence3D(oracleShape,oraclePreVelocity,cell)-oracleTarget[cell]));
 		targetMaximum=std::max(targetMaximum,std::fabs(oracleTarget[cell]));
 	}
 	if(!FireSim::ProjectPeriodicMACVelocity3D(oracleShape,oracleDensity,oracleMomentum,
@@ -165,20 +173,29 @@ int RunProductionGoldenProjectionFixture(const std::filesystem::path& checkpoint
 				static_cast<double>(production.velocityMPerS[axis][productionFace])-
 				oracle.velocityMPerS.component[axis][cell]));
 		}
+	const double productionReduction=static_cast<double>(
+		production.maximumPostProjectionResidualPerS)/static_cast<double>(maximumPreResidual);
+	const double oracleReduction=oracleResidual/oraclePreResidual;
 	std::fprintf(stderr,"production golden projection step=%llu pre=%.17g post=%.17g "
-		"oracle_pre=%.17g oracle=%.17g ratio=%.17g velocity_delta=%.17g band=%.17g target=%.17g\n",
+		"oracle_pre=%.17g oracle=%.17g ratio=%.17g reduction_ratio=%.17g "
+		"velocity_delta=%.17g band=%.17g target=%.17g\n",
 		static_cast<unsigned long long>(checkpoint.acceptedSteps),
 		static_cast<double>(maximumPreResidual),
 		static_cast<double>(production.maximumPostProjectionResidualPerS),oraclePreResidual,oracleResidual,
 		static_cast<double>(production.maximumPostProjectionResidualPerS)/oracleResidual,
-		velocityDifference,tolerance,targetMaximum);
+		productionReduction/oracleReduction,velocityDifference,tolerance,targetMaximum);
 	if(DigestFile(checkpointPath)!=checkpointDigest||!production.validationPassed||
 		maximumPreResidual!=0x1.3ap-11f||
 		production.maximumPostProjectionResidualPerS!=0x1.48p-15f||
+		oraclePreResidual!=0x1.3c6f3212e17b0p-11||
+		oracleResidual!=0x1.195f54993dfdbp-14||
+		std::fabs(oraclePreResidual-static_cast<double>(maximumPreResidual))>
+			0.01*oraclePreResidual||
 		production.maximumPostProjectionResidualPerS>tolerance||
 		production.maximumPostProjectionResidualPerS>1.25*oracleResidual||
 		production.maximumPostProjectionResidualPerS>0.1f*maximumPreResidual||
-		!(oracleResidual>0.0)||oracleResidual>tolerance||
+		!(oraclePreResidual>0.0)||!(oracleResidual>0.0)||oracleResidual>tolerance||
+		productionReduction>1.25*oracleReduction||
 		!std::isfinite(velocityDifference)||velocityDifference>3.0e-5)return 96;
 	return 0;
 }

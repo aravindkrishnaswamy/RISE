@@ -2398,8 +2398,9 @@ it was already tried and refuted here.
   transfer, zero interstage full-grid reads, zero projection uploads, one
   projection invocation, and one terminal stage; injected access or a hidden
   second projection fails atomically. On the exact tier-10 shape, five N=8
-  force--projection calls measured 47.4189 ms device and 71.5982 ms completed
-  p95, with 512,093,336 observed bytes below the conservative 524,688,024-byte
+  force--projection calls measured 42.8205--47.4189 ms device and
+  66.1993--71.5982 ms completed p95, with 512,093,336 observed bytes below the
+  conservative 524,688,024-byte
   certificate. The analytic rest transaction is exact `+0` for pressure,
   momentum, and velocity.
 
@@ -2407,7 +2408,9 @@ it was already tried and refuted here.
   `854659cb37672ff833635c3d1827cbcb4947`) now owns a shared-periodic
   production/fp64 projection comparison. The production residual is exact
   `0x1.48p-15` after an exact `0x1.3ap-11` pre-residual; the fp64 residual is
-  `6.708440414004929e-5`, giving a 0.5828574834 ratio. Maximum projected
+  `6.708440414004929e-5`, from a `6.035506397530279e-4` oracle pre-residual;
+  final residual ratio is 0.5828574834 and reduction-factor ratio is
+  0.5873762212. Maximum projected
   velocity disagreement is `1.2527614002610932e-5 m/s`, below the existing
   `3e-5` comparator, and the production residual is below the unchanged
   validation band. The contract therefore absorbs the measured fp32 floor;

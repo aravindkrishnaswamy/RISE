@@ -1098,17 +1098,21 @@ uploads, and one terminal stage; injected interstage access and a hidden second
 projection both fail with a completely default result. The projection's
 rounded working-set certificate counts the resident provisional-state stage,
 and its actual ledger counts the force-owned packed allocation once rather than
-once per axis view.
+once per axis view. The conservative combined certificate is evaluated before
+target payload validation or any Metal allocation; the first adjacent shape
+over two GiB therefore rejects without allocating or committing either stage.
 
 On the exact tier-10 shape (`86 x 86 x 132`) with the certified `N_nu=8`
-stress coefficients, five completed resident force--projection calls measured
-47.4189 ms device p95 and 71.5982 ms completed-call p95. The conservative
+stress coefficients, repeated five-call landing runs measured
+42.8205--47.4189 ms device p95 and 66.1993--71.5982 ms completed-call p95. The
+conservative
 combined certificate was 524,688,024 bytes and the observed combined allocation
 ledger was 512,093,336 bytes. The same request is an analytic rest solution:
 every published pressure, momentum, and velocity value is exact `+0` and every
 periodic seam is the canonical publication copy. Together with the measured
-20.8456 ms / 36.1283 ms tier-10 conservative palindrome, this leaves material
-room inside the 200 ms P3 step allocation and keeps the one-hour tier-10 target
+20.7379--20.8456 ms / 35.3388--36.1283 ms tier-10 conservative palindrome,
+this leaves material room inside the 200 ms P3 step allocation and keeps the
+one-hour tier-10 target
 credible before P4 is added.
 
 The projection oracle gate retains the immutable step-3479 checkpoint at SHA-256
@@ -1120,9 +1124,11 @@ fixed analytic periodic pressure perturbation, and runs the production fp32
 fixed-work projection and the independent certified fp64 adaptive projection.
 The production residual fell from exact `0x1.3ap-11` =
 `5.98907470703125e-4 s^-1` to exact `0x1.48p-15` =
-`3.910064697265625e-5 s^-1`. The fp64 oracle residual was
+`3.910064697265625e-5 s^-1`. The fp64 oracle began at
+`6.035506397530279e-4 s^-1` and finished at
 `6.708440414004929e-5 s^-1`, so the production/oracle residual ratio was
-0.5828574834. The maximum projected-velocity difference was
+0.5828574834 and the ratio of their post/pre reduction factors was
+0.5873762212. The maximum projected-velocity difference was
 `1.2527614002610932e-5 m/s`, below the already pinned `3e-5 m/s` P2 comparator,
 and the production residual was far below the independently evaluated
 `1.1504455730808001e-2 s^-1` validation band. Thus the measured fp32 floor fits
