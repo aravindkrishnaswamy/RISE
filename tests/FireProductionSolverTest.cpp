@@ -672,6 +672,58 @@ namespace
 		return true;
 	}
 
+	std::uint64_t FloatULPDistance( float first, float second )
+	{
+		if( !std::isfinite(first)||!std::isfinite(second) )
+			return std::numeric_limits<std::uint64_t>::max();
+		std::uint32_t firstBits=0u,secondBits=0u;
+		std::memcpy(&firstBits,&first,sizeof(first));
+		std::memcpy(&secondBits,&second,sizeof(second));
+		const std::uint32_t firstOrdered=(firstBits&UINT32_C(0x80000000))?
+			~firstBits:(firstBits|UINT32_C(0x80000000));
+		const std::uint32_t secondOrdered=(secondBits&UINT32_C(0x80000000))?
+			~secondBits:(secondBits|UINT32_C(0x80000000));
+		return firstOrdered>secondOrdered?
+			static_cast<std::uint64_t>(firstOrdered)-secondOrdered:
+			static_cast<std::uint64_t>(secondOrdered)-firstOrdered;
+	}
+
+	bool SameFloatBytes( float first, float second )
+	{
+		return std::memcmp(&first,&second,sizeof(float))==0;
+	}
+
+	bool SameFloatVectorBytes( const std::vector<float>& first,
+		const std::vector<float>& second )
+	{
+		return first.size()==second.size()&&(first.empty()||std::memcmp(
+			first.data(),second.data(),first.size()*sizeof(float))==0);
+	}
+
+	bool SameFloatVectorsWithinULP( const std::vector<float>& first,
+		const std::vector<float>& second, std::uint64_t maximumULPs )
+	{
+		return first.size()==second.size()&&std::equal(first.begin(),first.end(),second.begin(),
+			[maximumULPs](float a,float b){return FloatULPDistance(a,b)<=maximumULPs;});
+	}
+
+	bool SameFrozenForceWithinULP(
+		const RISE::FireProductionFrozenForceResult& cpu,
+		const RISE::FireProductionFrozenForceResult& gpu,
+		std::uint64_t maximumULPs )
+	{
+		if( !SameFloatVectorsWithinULP(cpu.eddyKinematicViscosityM2PerS,
+			gpu.eddyKinematicViscosityM2PerS,maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.effectiveDynamicViscosityPaS,
+				gpu.effectiveDynamicViscosityPaS,maximumULPs) ) return false;
+		for( unsigned int axis=0u;axis<3u;++axis ) if( !SameFloatVectorsWithinULP(
+			cpu.beginningViscousMomentumRateKGPerM2S2[axis],
+			gpu.beginningViscousMomentumRateKGPerM2S2[axis],maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.gravityMomentumIncrementKGPerM2S[axis],
+				gpu.gravityMomentumIncrementKGPerM2S[axis],maximumULPs) ) return false;
+		return true;
+	}
+
 	double SmoothPeriodicError( std::size_t cells, RISE::FireProductionRemapResult* output )
 	{
 		const double pi=std::acos(-1.0);
@@ -1495,6 +1547,22 @@ int main()
 		error.find("two GiB")==std::string::npos;
 	Check(overFrozenAdmission&&underFrozenAdmission,
 		"the actual frozen-force admission path straddles the exact two-GiB boundary");
+	FireProductionProjectionShape forceMetalBelow,forceMetalAbove;
+	forceMetalBelow.nx=67u;forceMetalBelow.ny=306u;forceMetalBelow.nz=492u;
+	forceMetalAbove.nx=43u;forceMetalAbove.ny=393u;forceMetalAbove.nz=596u;
+	FireProductionProjectionShape tier10ForceMetalShape;
+	tier10ForceMetalShape.nx=86u;tier10ForceMetalShape.ny=86u;tier10ForceMetalShape.nz=132u;
+	std::uint64_t forceMetalBelowBytes=0u,forceMetalAboveBytes=0u,tier10ForceMetalBytes=0u;
+	Check(FireProductionFrozenForceMetalWorkingSetBytes(
+		forceMetalBelow,forceMetalBelowBytes)&&
+		FireProductionFrozenForceMetalWorkingSetBytes(
+			forceMetalAbove,forceMetalAboveBytes)&&
+		FireProductionFrozenForceMetalWorkingSetBytes(
+			tier10ForceMetalShape,tier10ForceMetalBytes)&&
+		forceMetalBelowBytes==UINT64_C(2147483504)&&
+		forceMetalAboveBytes==UINT64_C(2147483752)&&
+		tier10ForceMetalBytes==UINT64_C(208432992),
+		"standalone Metal force certificate counts live host arrays and every rounded buffer");
 	invalidFrozenForce=FireProductionFrozenForceRequest();
 	invalidFrozenForce.shape.nx=1024u;invalidFrozenForce.shape.ny=1024u;
 	invalidFrozenForce.shape.nz=1024u;invalidFrozenForce.shape.cellWidthM=1.0f;
@@ -2519,6 +2587,295 @@ int main()
 #if defined(__APPLE__)
 	if( !capability.available )
 		std::cerr << "Metal capability detail: " << capability.structuredError << '\n';
+	FireProductionFrozenForceResult periodicForceGPU,periodicForceGPURepeat,
+		mixedForceGPU,authorityForceGPU,restForceGPU,compressionForceGPU;
+	double periodicForceMetalMS=0.0,periodicForceRepeatMS=0.0,
+		mixedForceMetalMS=0.0,authorityForceMetalMS=0.0,restForceMetalMS=0.0,
+		compressionForceMetalMS=0.0;
+	const std::uint64_t forceMetalMaximumULPs=8u;
+	const bool periodicForceMetal=BuildFireProductionFrozenForceFieldsMetal(
+		periodicForce,periodicForceGPU,periodicForceMetalMS,&error);
+	const bool periodicForceMetalRepeat=BuildFireProductionFrozenForceFieldsMetal(
+		periodicForce,periodicForceGPURepeat,periodicForceRepeatMS,&error);
+	const bool mixedForceMetal=BuildFireProductionFrozenForceFieldsMetal(
+		upperWallShear,mixedForceGPU,mixedForceMetalMS,&error);
+	const bool authorityForceMetal=BuildFireProductionFrozenForceFieldsMetal(
+		authorityForce,authorityForceGPU,authorityForceMetalMS,&error);
+	const bool restForceMetal=BuildFireProductionFrozenForceFieldsMetal(
+		forceRest,restForceGPU,restForceMetalMS,&error);
+	const bool compressionForceMetal=BuildFireProductionFrozenForceFieldsMetal(
+		compressionForce,compressionForceGPU,compressionForceMetalMS,&error);
+	if( !periodicForceMetal ) std::cerr << "Metal frozen-force detail: " << error << '\n';
+	auto reportForceDifference=[](const char* label,
+		const FireProductionFrozenForceResult& cpu,
+		const FireProductionFrozenForceResult& gpu) {
+		std::uint64_t maximum=0u;float expected=0.0f,observed=0.0f;
+		const char* field="none";std::size_t index=0u;
+		auto scan=[&](const char* name,const std::vector<float>& a,const std::vector<float>& b) {
+			for( std::size_t i=0u;i<std::min(a.size(),b.size());++i ) {
+				const std::uint64_t difference=FloatULPDistance(a[i],b[i]);
+				if( difference>maximum ) {maximum=difference;field=name;index=i;expected=a[i];observed=b[i];}
+			}
+		};
+		scan("eddy",cpu.eddyKinematicViscosityM2PerS,gpu.eddyKinematicViscosityM2PerS);
+		scan("mu",cpu.effectiveDynamicViscosityPaS,gpu.effectiveDynamicViscosityPaS);
+		const char* viscousNames[]={"viscous-x","viscous-y","viscous-z"};
+		const char* gravityNames[]={"gravity-x","gravity-y","gravity-z"};
+		for( unsigned int axis=0u;axis<3u;++axis ) {scan(viscousNames[axis],
+			cpu.beginningViscousMomentumRateKGPerM2S2[axis],
+			gpu.beginningViscousMomentumRateKGPerM2S2[axis]);scan(gravityNames[axis],
+			cpu.gravityMomentumIncrementKGPerM2S[axis],gpu.gravityMomentumIncrementKGPerM2S[axis]);}
+		std::cerr << label << " force max_ulp=" << maximum << " field=" << field <<
+			" index=" << index << " expected=" << expected << " observed=" << observed << '\n';
+	};
+	if( periodicForceMetal&&!SameFrozenForceWithinULP(
+		periodicForceResult,periodicForceGPU,forceMetalMaximumULPs) )
+		{reportForceDifference("periodic",periodicForceResult,periodicForceGPU);
+		std::cerr << "periodic low cpu=" << periodicForceResult.beginningViscousMomentumRateKGPerM2S2[0][periodicLow]
+			<< " gpu=" << periodicForceGPU.beginningViscousMomentumRateKGPerM2S2[0][periodicLow] << '\n';}
+	if( mixedForceMetal&&!SameFrozenForceWithinULP(
+		mixedInitialFields,mixedForceGPU,forceMetalMaximumULPs) )
+		reportForceDifference("mixed",mixedInitialFields,mixedForceGPU);
+	if( authorityForceMetal&&!SameFrozenForceWithinULP(
+		authorityForceResult,authorityForceGPU,forceMetalMaximumULPs) )
+		reportForceDifference("authority",authorityForceResult,authorityForceGPU);
+	Check(periodicForceMetal&&periodicForceMetalRepeat&&
+		SameFrozenForceWithinULP(periodicForceResult,periodicForceGPU,
+			forceMetalMaximumULPs)&&
+		SameFrozenForceWithinULP(periodicForceGPU,periodicForceGPURepeat,0u)&&
+		SameFloatBytes(periodicForceGPU.beginningViscousMomentumRateKGPerM2S2[0][periodicHigh],
+			periodicForceGPU.beginningViscousMomentumRateKGPerM2S2[0][periodicLow])&&
+		SameFloatBytes(periodicForceGPU.gravityMomentumIncrementKGPerM2S[0][periodicHigh],
+			periodicForceGPU.gravityMomentumIncrementKGPerM2S[0][periodicLow])&&
+		std::isfinite(periodicForceMetalMS)&&periodicForceMetalMS>0.0,
+		"Metal frozen-force periodic field matches the CPU oracle and exact seam publication");
+	Check(mixedForceMetal&&SameFrozenForceWithinULP(
+		mixedInitialFields,mixedForceGPU,forceMetalMaximumULPs)&&
+		mixedForceGPU.beginningViscousMomentumRateKGPerM2S2[0][highWallShearFace]==
+			mixedInitialFields.beginningViscousMomentumRateKGPerM2S2[0][highWallShearFace]&&
+		mixedForceGPU.gravityMomentumIncrementKGPerM2S[1][upperWallGravityFace]==0.0f&&
+		mixedForceGPU.gravityMomentumIncrementKGPerM2S[1][lowerOpenGravityFace]==0.125f,
+		"Metal frozen-force distinguishes upper wall prescription from lower open ownership");
+	Check(authorityForceMetal&&SameFrozenForceWithinULP(
+		authorityForceResult,authorityForceGPU,forceMetalMaximumULPs)&&
+		authorityForceGPU.effectiveDynamicViscosityPaS[authorityCell]==
+			authorityForceResult.effectiveDynamicViscosityPaS[authorityCell],
+		"Metal frozen-force uses the authoritative cell density and strict Vreman mu bytes");
+	bool restForceExact=restForceMetal&&SameFrozenForceWithinULP(
+		forceRestResult,restForceGPU,forceMetalMaximumULPs)&&SameFloatVectorBytes(
+			forceRestResult.eddyKinematicViscosityM2PerS,
+			restForceGPU.eddyKinematicViscosityM2PerS);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		restForceExact=restForceExact&&SameFloatVectorBytes(
+			forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis],
+			restForceGPU.beginningViscousMomentumRateKGPerM2S2[axis])&&
+			SameFloatVectorBytes(forceRestResult.gravityMomentumIncrementKGPerM2S[axis],
+				restForceGPU.gravityMomentumIncrementKGPerM2S[axis]);
+	}
+	Check(restForceExact,
+		"Metal zero-flow witness publishes exact-zero Vreman, stress divergence, and gravity");
+	Check(compressionForceMetal&&SameFrozenForceWithinULP(
+		compressionForceResult,compressionForceGPU,forceMetalMaximumULPs)&&
+		compressionForceGPU.beginningViscousMomentumRateKGPerM2S2[0][compressionFace]==
+			compressionForceResult.beginningViscousMomentumRateKGPerM2S2[0][compressionFace],
+		"Metal compression binds the strict two-thirds deviatoric coefficient bytes");
+	bool everyMetalBoundaryOrientation=true;
+	for( unsigned int axis=0u;axis<3u;++axis ) for( unsigned int wallSide=0u;
+		wallSide<2u;++wallSide ) {
+		FireProductionFrozenForceRequest oriented=forceRest;
+		oriented.boundary.fill(FireProductionProjectionPressureOpen);
+		oriented.boundary[2u*axis+wallSide]=FireProductionProjectionWall;
+		oriented.ambientDensityKGPerM3=1.0f;oriented.timeStepS=0.125f;
+		oriented.gravityMPerS2.fill(0.0f);oriented.gravityMPerS2[axis]=1.0f;
+		std::fill(oriented.cellGasDensityKGPerM3.begin(),
+			oriented.cellGasDensityKGPerM3.end(),1.0f);
+		std::fill(oriented.molecularKinematicViscosityM2PerS.begin(),
+			oriented.molecularKinematicViscosityM2PerS.end(),0.015625f);
+		for( unsigned int component=0u;component<3u;++component ) {
+			std::fill(oriented.faceDensityKGPerM3[component].begin(),
+				oriented.faceDensityKGPerM3[component].end(),2.0f);
+			std::fill(oriented.beginningMomentumKGPerM2S[component].begin(),
+				oriented.beginningMomentumKGPerM2S[component].end(),0.0f);
+		}
+		const unsigned int tangential=(axis+1u)%3u;
+		std::fill(oriented.beginningMomentumKGPerM2S[tangential].begin(),
+			oriented.beginningMomentumKGPerM2S[tangential].end(),2.0f);
+		const std::size_t xFaces=oriented.shape.nx+(axis==0u?1u:0u);
+		const std::size_t yFaces=oriented.shape.ny+(axis==1u?1u:0u);
+		const std::size_t zFaces=oriented.shape.nz+(axis==2u?1u:0u);
+		for( std::size_t z=0u;z<zFaces;++z ) for( std::size_t y=0u;y<yFaces;++y )
+			for( std::size_t x=0u;x<xFaces;++x ) {
+				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+				const std::size_t extent=axis==0u?oriented.shape.nx:
+					(axis==1u?oriented.shape.ny:oriented.shape.nz);
+				if( coordinate!=0u&&coordinate!=extent ) continue;
+				const bool isWall=(coordinate==0u?0u:1u)==wallSide;
+				oriented.beginningMomentumKGPerM2S[axis][TransportFaceIndex(
+					oriented.shape,axis,x,y,z)]=isWall?14.0f:1.0f;
+			}
+		std::size_t wallXYZ[]={2u,2u,2u},openXYZ[]={2u,2u,2u},shearXYZ[]={2u,2u,2u};
+		const std::size_t axisExtent=axis==0u?oriented.shape.nx:
+			(axis==1u?oriented.shape.ny:oriented.shape.nz);
+		wallXYZ[axis]=wallSide==0u?0u:axisExtent;
+		openXYZ[axis]=wallSide==0u?axisExtent:0u;
+		shearXYZ[axis]=wallSide==0u?0u:axisExtent-1u;
+		const std::size_t wallFace=TransportFaceIndex(oriented.shape,axis,
+			wallXYZ[0],wallXYZ[1],wallXYZ[2]);
+		const std::size_t openFace=TransportFaceIndex(oriented.shape,axis,
+			openXYZ[0],openXYZ[1],openXYZ[2]);
+		const std::size_t shearFace=TransportFaceIndex(oriented.shape,tangential,
+			shearXYZ[0],shearXYZ[1],shearXYZ[2]);
+		FireProductionFrozenForceResult orientedCPU,orientedGPU;double orientedMS=0.0;
+		error.clear();
+		everyMetalBoundaryOrientation=everyMetalBoundaryOrientation&&
+			BuildFireProductionFrozenForceFieldsCPU(oriented,orientedCPU,&error)&&
+			BuildFireProductionFrozenForceFieldsMetal(oriented,orientedGPU,orientedMS,&error)&&
+			SameFrozenForceWithinULP(orientedCPU,orientedGPU,forceMetalMaximumULPs)&&
+			SameFloatBytes(orientedCPU.gravityMomentumIncrementKGPerM2S[axis][wallFace],
+				0.0f)&&SameFloatBytes(
+				orientedGPU.gravityMomentumIncrementKGPerM2S[axis][wallFace],0.0f)&&
+			orientedCPU.gravityMomentumIncrementKGPerM2S[axis][openFace]==0.125f&&
+			orientedGPU.gravityMomentumIncrementKGPerM2S[axis][openFace]==0.125f&&
+			orientedCPU.beginningViscousMomentumRateKGPerM2S2[tangential][shearFace]!=0.0f;
+	}
+	Check(everyMetalBoundaryOrientation,
+		"Metal frozen force covers lower and upper wall/open ownership on all three axes");
+	bool everyMetalPeriodicAxis=true;
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		FireProductionFrozenForceRequest oriented=forceRest;
+		oriented.boundary.fill(FireProductionProjectionPeriodic);
+		oriented.shape.cellWidthM=1.0f;oriented.timeStepS=0.125f;
+		oriented.ambientDensityKGPerM3=1.0f;oriented.gravityMPerS2.fill(0.0f);
+		oriented.gravityMPerS2[axis]=1.0f;
+		std::fill(oriented.cellGasDensityKGPerM3.begin(),
+			oriented.cellGasDensityKGPerM3.end(),1.0f);
+		std::fill(oriented.molecularKinematicViscosityM2PerS.begin(),
+			oriented.molecularKinematicViscosityM2PerS.end(),1.0f);
+		for( unsigned int component=0u;component<3u;++component ) {
+			std::fill(oriented.faceDensityKGPerM3[component].begin(),
+				oriented.faceDensityKGPerM3[component].end(),1.0f);
+			std::fill(oriented.beginningMomentumKGPerM2S[component].begin(),
+				oriented.beginningMomentumKGPerM2S[component].end(),0.0f);
+		}
+		std::fill(oriented.faceDensityKGPerM3[axis].begin(),
+			oriented.faceDensityKGPerM3[axis].end(),2.0f);
+		const std::size_t axisExtent=axis==0u?oriented.shape.nx:
+			(axis==1u?oriented.shape.ny:oriented.shape.nz);
+		for( std::size_t z=0u;z<oriented.shape.nz;++z )
+			for( std::size_t y=0u;y<oriented.shape.ny;++y )
+				for( std::size_t x=0u;x<oriented.shape.nx;++x ) {
+					std::size_t xyz[]={x,y,z};
+					const std::size_t first=TransportFaceIndex(oriented.shape,axis,
+						x,y,z);oriented.beginningMomentumKGPerM2S[axis][first]=
+						xyz[axis]==0u||xyz[axis]==2u?2.0f:0.0f;
+				}
+		for( std::size_t z=0u;z<oriented.shape.nz;++z )
+			for( std::size_t y=0u;y<oriented.shape.ny;++y )
+				for( std::size_t x=0u;x<oriented.shape.nx;++x ) {
+					std::size_t lowCopyXYZ[]={x,y,z},highCopyXYZ[]={x,y,z};
+					if( lowCopyXYZ[axis]!=0u ) continue;
+					highCopyXYZ[axis]=axisExtent;
+					const std::size_t lowCopy=TransportFaceIndex(oriented.shape,axis,
+						lowCopyXYZ[0],lowCopyXYZ[1],lowCopyXYZ[2]);
+					const std::size_t highCopy=TransportFaceIndex(oriented.shape,axis,
+						highCopyXYZ[0],highCopyXYZ[1],highCopyXYZ[2]);
+					oriented.beginningMomentumKGPerM2S[axis][highCopy]=
+						oriented.beginningMomentumKGPerM2S[axis][lowCopy];
+				}
+		std::size_t lowXYZ[]={2u,2u,2u},highXYZ[]={2u,2u,2u};
+		lowXYZ[axis]=0u;highXYZ[axis]=axisExtent;
+		const std::size_t low=TransportFaceIndex(oriented.shape,axis,
+			lowXYZ[0],lowXYZ[1],lowXYZ[2]);
+		const std::size_t high=TransportFaceIndex(oriented.shape,axis,
+			highXYZ[0],highXYZ[1],highXYZ[2]);
+		FireProductionFrozenForceResult orientedCPU,orientedGPU;double orientedMS=0.0;
+		error.clear();
+		const bool orientedBuilt=BuildFireProductionFrozenForceFieldsCPU(
+			oriented,orientedCPU,&error)&&BuildFireProductionFrozenForceFieldsMetal(
+				oriented,orientedGPU,orientedMS,&error);
+		bool seamBytesExact=orientedBuilt;
+		if( orientedBuilt ) for( std::size_t z=0u;z<oriented.shape.nz;++z )
+			for( std::size_t y=0u;y<oriented.shape.ny;++y )
+				for( std::size_t x=0u;x<oriented.shape.nx;++x ) {
+					std::size_t lowSeamXYZ[]={x,y,z},highSeamXYZ[]={x,y,z};
+					if( lowSeamXYZ[axis]!=0u ) continue;
+					highSeamXYZ[axis]=axisExtent;
+					const std::size_t lowSeam=TransportFaceIndex(oriented.shape,axis,
+						lowSeamXYZ[0],lowSeamXYZ[1],lowSeamXYZ[2]);
+					const std::size_t highSeam=TransportFaceIndex(oriented.shape,axis,
+						highSeamXYZ[0],highSeamXYZ[1],highSeamXYZ[2]);
+					seamBytesExact=seamBytesExact&&SameFloatBytes(
+						orientedGPU.beginningViscousMomentumRateKGPerM2S2[axis][lowSeam],
+						orientedGPU.beginningViscousMomentumRateKGPerM2S2[axis][highSeam])&&
+						SameFloatBytes(orientedGPU.gravityMomentumIncrementKGPerM2S[axis][lowSeam],
+							orientedGPU.gravityMomentumIncrementKGPerM2S[axis][highSeam]);
+				}
+		everyMetalPeriodicAxis=everyMetalPeriodicAxis&&orientedBuilt&&seamBytesExact&&
+			SameFrozenForceWithinULP(orientedCPU,orientedGPU,forceMetalMaximumULPs)&&
+			orientedCPU.beginningViscousMomentumRateKGPerM2S2[axis][low]!=0.0f&&
+			SameFloatBytes(orientedGPU.beginningViscousMomentumRateKGPerM2S2[axis][high],
+				orientedGPU.beginningViscousMomentumRateKGPerM2S2[axis][low])&&
+			orientedGPU.gravityMomentumIncrementKGPerM2S[axis][low]==0.125f&&
+			SameFloatBytes(orientedGPU.gravityMomentumIncrementKGPerM2S[axis][high],
+				orientedGPU.gravityMomentumIncrementKGPerM2S[axis][low]);
+	}
+	Check(everyMetalPeriodicAxis,
+		"Metal periodic force publishes nonzero viscous and gravity seams exactly on every axis");
+	FireProductionFrozenForceRequest malformedForceMetal=forceRest;
+	malformedForceMetal.boundary[0]=FireProductionProjectionPeriodic;
+	FireProductionFrozenForceResult rejectedForceMetal;
+	SeedRejectedFrozenForce(rejectedForceMetal);double rejectedForceMetalMS=7.0;error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsMetal(malformedForceMetal,rejectedForceMetal,
+		rejectedForceMetalMS,&error)&&FrozenForceResultEmpty(rejectedForceMetal)&&
+		rejectedForceMetalMS==0.0&&error.find("pairing")!=std::string::npos,
+		"Metal frozen-force structural rejection publishes no field or timing payload");
+	malformedForceMetal=forceRest;
+	malformedForceMetal.boundary.fill(FireProductionProjectionPeriodic);
+	malformedForceMetal.beginningMomentumKGPerM2S[0][0]=0.0f;
+	malformedForceMetal.beginningMomentumKGPerM2S[0][forceRest.shape.nx]=-0.0f;
+	SeedRejectedFrozenForce(rejectedForceMetal);rejectedForceMetalMS=7.0;error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsMetal(malformedForceMetal,rejectedForceMetal,
+		rejectedForceMetalMS,&error)&&FrozenForceResultEmpty(rejectedForceMetal)&&
+		rejectedForceMetalMS==0.0&&error.find("seam")!=std::string::npos,
+		"Metal periodic validation rejects byte-distinct signed-zero input seams");
+	FireProductionFrozenForceRequest forceMetalAdmission;
+	forceMetalAdmission.shape=forceMetalAbove;forceMetalAdmission.shape.cellWidthM=1.0f;
+	forceMetalAdmission.timeStepS=1.0f;
+	SeedRejectedFrozenForce(rejectedForceMetal);rejectedForceMetalMS=7.0;error.clear();
+	const bool forceMetalOverRejected=!BuildFireProductionFrozenForceFieldsMetal(
+		forceMetalAdmission,rejectedForceMetal,rejectedForceMetalMS,&error)&&
+		FrozenForceResultEmpty(rejectedForceMetal)&&rejectedForceMetalMS==0.0&&
+		error.find("two GiB")!=std::string::npos;
+	forceMetalAdmission.shape=forceMetalBelow;forceMetalAdmission.shape.cellWidthM=1.0f;
+	SeedRejectedFrozenForce(rejectedForceMetal);rejectedForceMetalMS=7.0;error.clear();
+	const bool forceMetalUnderContinues=!BuildFireProductionFrozenForceFieldsMetal(
+		forceMetalAdmission,rejectedForceMetal,rejectedForceMetalMS,&error)&&
+		FrozenForceResultEmpty(rejectedForceMetal)&&rejectedForceMetalMS==0.0&&
+		error.find("cell shape")!=std::string::npos&&error.find("two GiB")==std::string::npos;
+	Check(forceMetalOverRejected&&forceMetalUnderContinues,
+		"actual Metal force admission straddles the rounded two-GiB certificate");
+	bool everyForceMetalFailureAtomic=true;
+	const char* forceMetalFailureStages[]={"buffer","command-allocation","encoder","command","output"};
+	for( const char* stage : forceMetalFailureStages ) {
+		SeedRejectedFrozenForce(rejectedForceMetal);rejectedForceMetalMS=7.0;error.clear();
+		setenv("RISE_FIRE_FORCE_TEST_FAILURE",stage,1);
+		const bool rejected=!BuildFireProductionFrozenForceFieldsMetal(
+			periodicForce,rejectedForceMetal,rejectedForceMetalMS,&error);
+		unsetenv("RISE_FIRE_FORCE_TEST_FAILURE");
+		everyForceMetalFailureAtomic=everyForceMetalFailureAtomic&&rejected&&
+			FrozenForceResultEmpty(rejectedForceMetal)&&rejectedForceMetalMS==0.0&&
+			!error.empty();
+	}
+	Check(everyForceMetalFailureAtomic,
+		"buffer, command-allocation, encoder, completed-command, and output failures publish no Metal force payload");
+	SeedRejectedFrozenForce(rejectedForceMetal);rejectedForceMetalMS=7.0;
+	denyTestAllocations=true;
+	const bool forceMetalAllocationRejected=!BuildFireProductionFrozenForceFieldsMetal(
+		periodicForce,rejectedForceMetal,rejectedForceMetalMS,0);
+	denyTestAllocations=false;
+	Check(forceMetalAllocationRejected&&FrozenForceResultEmpty(rejectedForceMetal)&&
+		rejectedForceMetalMS==0.0,
+		"persistent allocation denial cannot escape the Metal force API boundary");
 	Check(capability.available&&capability.identityKernelPassed&&capability.backend=="metal"&&
 		!capability.deviceName.empty()&&!capability.deviceFamily.empty()&&
 		capability.deviceFamily!="metal-family-unreported"&&
@@ -2761,10 +3118,23 @@ int main()
 		"src/Library/Utilities/FireProductionTransport.cpp");
 	const std::string forceSource=ReadText(
 		"src/Library/Utilities/FireProductionForce.cpp");
+	const std::string forceMetalSource=ReadText(
+		"src/Library/Utilities/FireProductionForceMac.mm");
 	const std::size_t forceAdvanceBeginning=forceSource.find(
 		"bool AdvanceFireProductionFrozenForceCPU(");
 	const std::string forceAdvanceBody=forceAdvanceBeginning==std::string::npos?
 		std::string():forceSource.substr(forceAdvanceBeginning);
+	const std::size_t forceMetalBeginning=forceMetalSource.find(
+		"bool BuildFireProductionFrozenForceFieldsMetal(");
+	const std::string forceMetalBody=forceMetalBeginning==std::string::npos?
+		std::string():forceMetalSource.substr(forceMetalBeginning);
+	const std::size_t forceResourceBeginning=forceMetalBody.find(
+		"const id<MTLBuffer> buffers[]=");
+	const std::size_t forceResourceEnd=forceMetalBody.find(
+		"if( actual>certifiedBytes",forceResourceBeginning);
+	const std::string forceResourceBody=forceResourceBeginning==std::string::npos||
+		forceResourceEnd==std::string::npos?std::string():forceMetalBody.substr(
+			forceResourceBeginning,forceResourceEnd-forceResourceBeginning);
 	const std::size_t crossCarrierBeginning=transportSource.find("float CrossCarrierAt(");
 	const std::size_t dualAxisBeginning=transportSource.find("bool BuildDualAxisRequest(");
 	const std::string crossCarrierBody=crossCarrierBeginning==std::string::npos||
@@ -2892,7 +3262,7 @@ int main()
 			"FireProductionProjectionWall?1u:0u")!=std::string::npos,
 		"dual line builder binds sweep-side roles, wall-zero precedence, open nearest ghosts, "
 		"and prescribed component-wall ownership");
-	Check(!forceAdvanceBody.empty()&&
+	Check(!forceAdvanceBody.empty()&&!forceMetalBody.empty()&&!forceResourceBody.empty()&&
 		CountSubstring(forceAdvanceBody,"publishBoundaries();")==3u&&
 		CountSubstring(forceAdvanceBody,"MomentumByteDigest(")==1u&&
 		forceSource.find("alphaSquared+=alpha*alpha;")!=std::string::npos&&
@@ -2935,7 +3305,55 @@ int main()
 		CountSubstring(xcodeProject,
 			"FireProductionForce.cpp */; settings = {COMPILER_FLAGS = \"-fno-fast-math "
 			"-ffp-contract=off\"; };")==2u&&
-		CountSubstring(xcodeProject,"FireProductionForce.h in Headers")==2u,
+		CountSubstring(xcodeProject,"FireProductionForce.h in Headers")==2u&&
+		forceMetalSource.find("MTLMathModeSafe")!=std::string::npos&&
+		forceMetalSource.find("MTLMathModeFast")==std::string::npos&&
+		forceMetalSource.find("fast::")==std::string::npos&&
+		forceMetalSource.find("BuildFireProductionFrozenForceFieldsCPU")==std::string::npos&&
+		forceMetalSource.find("pipeline(\"setup_face_velocity\")")!=std::string::npos&&
+		forceMetalSource.find("pipeline(\"build_cell_velocity\")")!=std::string::npos&&
+		forceMetalSource.find("pipeline(\"build_stress\")")!=std::string::npos&&
+		forceMetalSource.find("pipeline(\"build_face_force\")")!=std::string::npos&&
+		forceMetalSource.find(
+			"beta[i][j]+=widthSquared*gradient[m][i]*gradient[m][j];")!=
+			std::string::npos&&
+		forceMetalSource.find("for(uint m=0u;m<3u;++m)for(uint i=0u;i<3u;++i)")!=
+			std::string::npos&&
+		forceMetalSource.find("(c==d?(2.0f/3.0f)*divergence:0.0f)")!=
+			std::string::npos&&
+		forceMetalBody.find("const id<MTLBuffer> buffers[]={rho,nu,faceRho,momentum,"
+			"faceVelocity,cellVelocity,\n\t\t\t\t\tstress,eddy,mu,viscous,gravity,parameters};")!=
+			std::string::npos&&
+		forceMetalBody.find("sizeof(buffers)/sizeof(buffers[0])==12u")!=
+			std::string::npos&&
+		CountSubstring(forceResourceBody,"for( id<MTLBuffer> buffer : buffers )")==1u&&
+		CountSubstring(forceResourceBody,"[buffer allocatedSize]")==1u&&
+		forceResourceBody.find("for( id<MTLBuffer> buffer : buffers ) {\n"
+			"\t\t\t\t\tconst std::uint64_t allocated=[buffer allocatedSize];\n"
+			"\t\t\t\t\tif( actual>std::numeric_limits<std::uint64_t>::max()-allocated )\n"
+			"\t\t\t\t\t\treturn Fail(error,\"production frozen-force Metal allocation overflowed\");\n"
+			"\t\t\t\t\tactual+=allocated;\n\t\t\t\t}")!=std::string::npos&&
+		forceMetalSource.find("actual>certifiedBytes")!=std::string::npos&&
+		forceMetalBody.find("InjectedFailure(\"command-allocation\")")!=std::string::npos&&
+		forceMetalBody.find("InjectedFailure(\"encoder\")")!=std::string::npos&&
+		forceMetalSource.find("MTLCommandBufferStatusCompleted")!=std::string::npos&&
+		makeFilelist.find("$(PATHLIBRARY)Utilities/FireProductionForceMac.mm")!=
+			std::string::npos&&makeFilelist.find(
+			"$(PATHLIBRARY)Utilities/FireProductionForceUnsupported.cpp")!=std::string::npos&&
+		makeRules.find("Utilities/FireProductionForceMac.o : "
+			"$(PATHLIBRARY)Utilities/FireProductionForceMac.mm\n"
+			"\t@echo \"Compiling (safe fp32 ObjC++): $<\"\n"
+			"\t@$(CXX) $(CPPFLAGS) $(filter-out -ffast-math,$(CXXFLAGS)) "
+			"-fno-fast-math -ffp-contract=off")!=std::string::npos&&
+		androidSources.find("${RISE_LIB}/Utilities/FireProductionForceUnsupported.cpp")!=
+			std::string::npos&&visualStudioProject.find(
+			"FireProductionForceUnsupported.cpp\" />")!=std::string::npos&&
+		visualStudioFilters.find("FireProductionForceUnsupported.cpp")!=std::string::npos&&
+		CountSubstring(xcodeProject,
+			"FireProductionForceMac.mm in Sources */ = {isa = PBXBuildFile;")==2u&&
+		CountSubstring(xcodeProject,
+			"FireProductionForceMac.mm */; settings = {COMPILER_FLAGS = \"-fno-fast-math "
+			"-ffp-contract=off\"; };")==2u,
 		"production force primitives bind their arithmetic topology and all five strict build "
 		"surfaces");
 #else
@@ -2975,6 +3393,12 @@ int main()
 		unsupportedPalindrome.actualTrackedWorkingSetBytes==0u&&
 		unsupportedPalindrome.deviceElapsedMS==0.0&&!error.empty(),
 		"non-Metal production palindrome fails explicitly without a silent CPU fallback");
+	FireProductionFrozenForceResult unsupportedForce;
+	SeedRejectedFrozenForce(unsupportedForce);double unsupportedForceMS=9.0;error.clear();
+	Check(!BuildFireProductionFrozenForceFieldsMetal(forceRest,unsupportedForce,
+		unsupportedForceMS,&error)&&FrozenForceResultEmpty(unsupportedForce)&&
+		unsupportedForceMS==0.0&&!error.empty(),
+		"non-Metal frozen-force seam fails explicitly without a silent CPU fallback");
 #endif
 	FireProductionRemapResult allocationFailureRemap;
 	allocationFailureRemap.updatedValues.push_back(1.0f);

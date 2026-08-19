@@ -93,6 +93,12 @@ namespace RISE
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
 
+	//! Complete standalone Metal-wrapper peak: live caller/result arrays plus
+	//! every MTLBuffer rounded outward to the M4 allocation quantum.
+	bool FireProductionFrozenForceMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
 	bool FireProductionFrozenForceAdvanceWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );
@@ -104,6 +110,15 @@ namespace RISE
 	bool BuildFireProductionFrozenForceFieldsCPU(
 		const FireProductionFrozenForceRequest& request,
 		FireProductionFrozenForceResult& result,
+		std::string* error=0 );
+
+	//! Standalone Metal comparison wrapper for the same beginning-state frozen
+	//! fields. Platforms without Metal fail honestly; no CPU fallback is hidden
+	//! behind this entry point. The later resident P3 seam reuses these kernels.
+	bool BuildFireProductionFrozenForceFieldsMetal(
+		const FireProductionFrozenForceRequest& request,
+		FireProductionFrozenForceResult& result,
+		double& deviceElapsedMS,
 		std::string* error=0 );
 
 	struct FireProductionFrozenForceAdvanceResult

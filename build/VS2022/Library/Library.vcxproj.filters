@@ -300,6 +300,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionForce.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionForceUnsupported.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionProjectionUnsupported.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>

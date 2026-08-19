@@ -191,6 +191,29 @@ namespace RISE
 		return true;
 	}
 
+	bool FireProductionFrozenForceMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		const std::uint64_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+		const std::uint64_t cells=nx*ny*nz;
+		const std::uint64_t faces=(nx+1u)*ny*nz+
+			nx*(ny+1u)*nz+nx*ny*(nz+1u);
+		const std::uint64_t quantum=UINT64_C(16384);
+		auto rounded=[&](std::uint64_t count) -> std::uint64_t {
+			const std::uint64_t raw=count*sizeof(float);
+			return ((raw+quantum-1u)/quantum)*quantum;
+		};
+		// Host request, packed face staging, and atomic result: 4C+6F. Metal owns four C buffers,
+		// one 3C buffer, one 9C buffer, five F buffers, and one 88-byte record.
+		bytes=(4u*cells+6u*faces)*sizeof(float)+4u*rounded(cells)+
+			rounded(3u*cells)+rounded(9u*cells)+5u*rounded(faces)+quantum;
+		return true;
+	}
+
 	static bool BuildFireProductionFrozenForceFieldsImpl(
 		const FireProductionFrozenForceRequest& request,
 		const std::vector<float>* fixedDynamicViscosityPaS,
