@@ -124,6 +124,41 @@ int RunProductionGoldenProjectionFixture(const std::filesystem::path& checkpoint
 	RISE::FireProductionProjectionResult production;
 	if(!RISE::ProjectFireProductionMetal(request,production,&error)){std::fprintf(stderr,
 		"production golden projection Metal failed: %s\n",error.c_str());return 94;}
+	RISE::FireProductionFrozenForceRequest steadyForce;
+	steadyForce.shape=request.shape;steadyForce.timeStepS=request.timeStepS;
+	steadyForce.ambientDensityKGPerM3=request.ambientDensityKGPerM3;
+	steadyForce.vremanCoefficient=0.0f;steadyForce.gravityMPerS2.fill(0.0f);
+	steadyForce.boundary=request.boundary;
+	steadyForce.cellGasDensityKGPerM3=request.gasDensityKGPerM3;
+	steadyForce.molecularKinematicViscosityM2PerS.assign(cells,0.0f);
+	steadyForce.faceDensityKGPerM3=production.faceDensityKGPerM3;
+	steadyForce.beginningMomentumKGPerM2S=production.momentumKGPerM2S;
+	std::array<float,16> steadyResiduals={};
+	for(std::size_t cycle=0u;cycle<steadyResiduals.size();++cycle){
+		RISE::FireProductionResidentForceProjectionResult steady;
+		if(!RISE::AdvanceFireProductionForceProjectionMetal(steadyForce,
+			request.divergenceTargetPerS,steady,&error)){std::fprintf(stderr,
+			"production golden steady projection cycle %zu failed: %s\n",cycle+1u,
+			error.c_str());return 97;}
+		if(steady.forceSchedule.substepCount!=1u||
+			steady.forceToProjectionDeviceToHostTransferCount!=0u||
+			steady.residentProjectionInvocationCount!=1u||
+			!steady.projection.validationPassed)return 98;
+		steadyResiduals[cycle]=steady.projection.maximumPostProjectionResidualPerS;
+		steadyForce.faceDensityKGPerM3=steady.projection.faceDensityKGPerM3;
+		steadyForce.beginningMomentumKGPerM2S=steady.projection.momentumKGPerM2S;
+	}
+	std::fprintf(stderr,"production golden steady residuals=");
+	for(float residual:steadyResiduals)std::fprintf(stderr," %.17g",static_cast<double>(residual));
+	std::fprintf(stderr,"\n");
+	const std::array<float,16> expectedSteadyResiduals={
+		0x1.46ep-15f,0x1.48p-15f,0x1.0p-15f,0x1.ea8p-16f,
+		0x1.ea48p-16f,0x1.48p-16f,0x1.47p-16f,0x1.ea5p-16f,
+		0x1.48p-16f,0x1.ea4p-16f,0x1.48p-16f,0x1.47p-16f,
+		0x1.ea4p-16f,0x1.47p-16f,0x1.47p-16f,0x1.48p-16f};
+	if(steadyResiduals!=expectedSteadyResiduals||
+		*std::max_element(steadyResiduals.begin(),steadyResiduals.end())>0x1.48p-15f||
+		steadyResiduals.back()>0x1.48p-16f)return 99;
 	FireSim::PeriodicMACShape oracleShape;oracleShape.nx=request.shape.nx;
 	oracleShape.ny=request.shape.ny;oracleShape.nz=request.shape.nz;
 	oracleShape.cellWidthM=request.shape.cellWidthM;

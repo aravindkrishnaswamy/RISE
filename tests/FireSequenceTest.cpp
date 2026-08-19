@@ -11,6 +11,7 @@
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Utilities/FireSimulationRecords.h"
 #include "../src/Library/Utilities/FireProductionProjection.h"
+#include "../src/Library/Utilities/FireProductionForce.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
