@@ -291,3 +291,6 @@ ComposeObjectHierarchy
 AddLatheGeometry
 AddExpressionPainter
 AddRampPainter
+AddMappingPainter
+AddVoronoi3DPainterWithSpace
+AddBlendPainterWithMode

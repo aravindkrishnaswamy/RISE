@@ -219,6 +219,7 @@ scenes/Tests/Painters/composite_sum_multi_scale.RISEscene  b4296f0972350930cf961
 scenes/Tests/Painters/expression_painter_marble.RISEscene  588ad51c4c095d0df5d9fdde21167b8291c4ff672af1585e27d6d301c62605cc  747  22
 scenes/Tests/Painters/fractal.RISEscene  81bacbe1d95c8980b37ff82fc682d9a0544d444ae62965fbc7ddb37d1780f818  699  23
 scenes/Tests/Painters/jpg_painter.RISEscene  65eff483cf81bc9b348526b33b79c37165fc305581c77e2e734a56bcf8950535  576  21
+scenes/Tests/Painters/mapping_triplanar.RISEscene  7862d83950f56dd19cbbcf5c3ce0703638344bdc70aca865094b543d19ea133a  1076  32
 scenes/Tests/Painters/painters.RISEscene  ed81ac01d862ba19798560b6cd1672f2f1774f623d1433cedcf6b3a922a0ecc3  2754  65
 scenes/Tests/Painters/polynomial_displacement_catalog.RISEscene  59b6fd365659a7a728e25c8c2fb445334c4556d68139eb446705c4bd3d34bf08  2061  45
 scenes/Tests/Painters/polynomial_negative_amplitude_check.RISEscene  f303f0b8b8a066328dc78d5efa8f8d68624054273d883740dae7f4dd7a0a85fb  848  28

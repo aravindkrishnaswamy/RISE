@@ -17,9 +17,10 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-Voronoi3DPainter::Voronoi3DPainter( const GeneratorsList& g, const IPainter& border_, const Scalar border_size_  ) : 
+Voronoi3DPainter::Voronoi3DPainter( const GeneratorsList& g, const IPainter& border_, const Scalar border_size_, const bool worldSpace_  ) :
   border( border_ ),
-  border_size( border_size_ )
+  border_size( border_size_ ),
+  worldSpace( worldSpace_ )
 {
 	GeneratorsList::const_iterator i, e;
 
@@ -71,12 +72,16 @@ inline const IPainter& Voronoi3DPainter::ComputeWhich( const RayIntersectionGeom
 	Scalar distance1 = RISE_INFINITY;
 	Scalar distance2 = RISE_INFINITY;
 
+	// P2.5 (doc 88): `space world` samples ptIntersection (matching the
+	// other 3D painters); the historical default samples ptObjIntersec.
+	const Point3& samplePt = worldSpace ? ri.ptIntersection : ri.ptObjIntersec;
+
 	GeneratorsList::const_iterator i, e;
 
 	for( i=generators.begin(), e=generators.end(); i!=e; i++ ) {
 		const Generator& g = *i;
 
-		const Scalar d = Point3Ops::Distance( g.first, ri.ptObjIntersec );
+		const Scalar d = Point3Ops::Distance( g.first, samplePt );
 
 		if( d < distance1 ) {
 			distance2 = distance1;

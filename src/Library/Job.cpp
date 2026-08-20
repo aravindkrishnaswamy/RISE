@@ -1396,6 +1396,109 @@ bool Job::AddRampPainter(
 	return ok;
 }
 
+//! Adds a mapping_painter (doc 88 P2.3)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddMappingPainter(
+							const char* name,
+							const char* source,
+							const unsigned int projection,
+							const double scale[3],
+							const double rotateDeg[3],
+							const double translate[3],
+							const double blendSharpness
+							)
+{
+	IPainter* pSource = pPntManager->GetItem( source );
+	if( !pSource ) {
+		GlobalLog()->PrintEx( eLog_Error, "AddMappingPainter `%s`: source painter `%s` not found", name ? name : "noname", source ? source : "" );
+		return false;
+	}
+
+	const Vector3 vScale{ Scalar( scale[0] ), Scalar( scale[1] ), Scalar( scale[2] ) };
+	const Vector3 vRotateDeg{ Scalar( rotateDeg[0] ), Scalar( rotateDeg[1] ), Scalar( rotateDeg[2] ) };
+	const Vector3 vTranslate{ Scalar( translate[0] ), Scalar( translate[1] ), Scalar( translate[2] ) };
+
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateMappingPainter( &pPainter, *pSource, projection, vScale, vRotateDeg, vTranslate, Scalar( blendSharpness ) ) ) {
+		return false;
+	}
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
+//! P1-A fix (S7 review round 1): new tail-appended virtual carrying the
+//! P2.5 `space` parameter -- see IJob.h for the ABI rationale.  Body is
+//! identical to AddVoronoi3DPainter below except for the extra argument
+//! threaded through to RISE_API_CreateVoronoi3DPainterWithSpace.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddVoronoi3DPainterWithSpace(
+							const char* name,				///< [in] Name of the painter
+							const double pt_x[],			///< [in] X co-ordinates of generators
+							const double pt_y[],			///< [in] Y co-ordinates of generators
+							const double pt_z[],			///< [in] Z co-ordinates of generators
+							const char** painters,			///< [in] The painters for each generator
+							const unsigned int count,		///< [in] Number of the generators
+							const char* border,				///< [in] Name of the painter for the border
+							const double bsize,				///< [in] Size of the border
+							const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+							)
+{
+	if( count < 2 ) {
+		return false;
+	}
+
+	IPainter* pBorder = pPntManager->GetItem( border );
+
+	if( !pBorder ) {
+		return false;
+	}
+
+	std::vector<Point3> pts;
+	std::vector<IPainter*> ptrs;
+
+	for( unsigned int i=0; i<count; i++ ) {
+		pts.push_back( Point3( pt_x[i], pt_y[i], pt_z[i] ) );
+		ptrs.push_back( pPntManager->GetItem( painters[i] ) );
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateVoronoi3DPainterWithSpace( &pPainter, pts, ptrs, *pBorder, bsize, worldSpace );
+
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+
+	return ok;
+}
+
+//! P1-A fix (S7 review round 1): new tail-appended virtual carrying the
+//! P2.4 `mode` parameter -- see IJob.h for the ABI rationale.  Body is
+//! identical to AddBlendPainter below except for the extra argument
+//! threaded through to RISE_API_CreateBlendPainterWithMode.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddBlendPainterWithMode(
+							const char* name,				///< [in] Name of the painter
+							const char* pa,					///< [in] First painter
+							const char* pb,					///< [in] Second painter
+							const char* mask,				///< [in] Mask painter
+							const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+	IPainter* pMask = pPntManager->GetItem( mask );
+
+	if( !pA || !pB || !pMask ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateBlendPainterWithMode( &pPainter, *pA, *pB, *pMask, mode );
+	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
+	safe_release( pPainter );
+	return ok;
+}
+
 //! Adds a 2D perlin noise painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPerlin3DPainter(

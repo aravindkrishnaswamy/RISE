@@ -697,6 +697,45 @@ namespace RISE
 									const char* colorSpace
 									);
 
+		//! Adds a mapping_painter (doc 88 P2.3) -- see IJob.h for the
+		//! full parameter doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddMappingPainter(
+									const char* name,
+									const char* source,
+									const unsigned int projection,
+									const double scale[3],
+									const double rotateDeg[3],
+									const double translate[3],
+									const double blendSharpness
+									);
+
+		//! P1-A fix (S7 review round 1): new tail-appended virtual, see
+		//! IJob.h for the ABI rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddVoronoi3DPainterWithSpace(
+									const char* name,
+									const double pt_x[],
+									const double pt_y[],
+									const double pt_z[],
+									const char** painters,
+									const unsigned int count,
+									const char* border,
+									const double bsize,
+									const bool worldSpace
+									);
+
+		//! P1-A fix (S7 review round 1): new tail-appended virtual, see
+		//! IJob.h for the ABI rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddBlendPainterWithMode(
+									const char* name,
+									const char* pa,
+									const char* pb,
+									const char* mask,
+									const unsigned int mode
+									);
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPerlin3DPainter(

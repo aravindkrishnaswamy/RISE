@@ -3332,6 +3332,7 @@ namespace RISE
 #include "Painters/ChannelPainter.h"
 #include "Painters/UVTransformPainter.h"
 #include "Painters/TexCoord1Painter.h"
+#include "Painters/MappingPainter.h"
 
 namespace RISE
 {
@@ -3961,6 +3962,39 @@ namespace RISE
 		return true;
 	}
 
+	//! P1-A fix (S7 review round 1): new, separately-named function
+	//! carrying the P2.5 `space` parameter -- see RISE_API.h for the
+	//! ABI rationale.  Body is identical to RISE_API_CreateVoronoi3DPainter
+	//! above except for the extra argument threaded through to the
+	//! Voronoi3DPainter ctor.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVoronoi3DPainterWithSpace(
+								IPainter**ppi,					///< [out] Pointer to recieve the painter
+								const std::vector<Point3> pts,	///< [in] The locations of the generators
+								const std::vector<IPainter*> p,	///< [in] The painters for the generators
+								const IPainter& border,			///< [in] Painter for the border
+								const Scalar bsize,				///< [in] Size of the borders
+								const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		if( pts.size() != p.size() ) {
+			GlobalLog()->PrintEasyError( "RISE_API_CreateVoronoi3DPainterWithSpace:: Size of points array and painters array does not match" );
+			return false;
+		}
+
+		Voronoi3DPainter::GeneratorsList gl;
+
+		stl_utils::shuffle( pts, p, gl );
+
+		(*ppi) = new Voronoi3DPainter( gl, border, bsize, worldSpace );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "voronoi3D painter" );
+		return true;
+	}
+
 	//! Creates a iridescent painter (a painter whose color changes as viewing angle changes)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIridescentPainter(
@@ -4050,6 +4084,34 @@ namespace RISE
 		return true;
 	}
 
+	//! P1-A fix (S7 review round 1): new, separately-named function
+	//! carrying the P2.4 `mode` parameter -- see RISE_API.h for the ABI
+	//! rationale.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBlendPainterWithMode(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& a,				///< [in] First color
+								const IPainter& b,				///< [in] Second color
+								const IPainter& mask,			///< [in] Blend mask
+								const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const BlendPainter::Mode m =
+			mode == 1 ? BlendPainter::Mode_Multiply :
+			mode == 2 ? BlendPainter::Mode_Screen :
+			mode == 3 ? BlendPainter::Mode_Overlay :
+			mode == 4 ? BlendPainter::Mode_Add :
+			            BlendPainter::Mode_Mix;
+
+		(*ppi) = new BlendPainter( a, b, mask, m );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blend painter" );
+		return true;
+	}
+
 	//! Creates a TEXCOORD_1 selector painter (glTF L12.D)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTexCoord1Painter(
@@ -4084,6 +4146,37 @@ namespace RISE
 
 		(*ppi) = new UVTransformPainter( source, offset_u, offset_v, rotation, scale_u, scale_v );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uv transform painter" );
+		return true;
+	}
+
+	//! Creates a mapping_painter (doc 88 P2.3): wraps `source` and
+	//! transforms the domain it is evaluated at (uv / world / object /
+	//! triplanar) before delegating.  See MappingPainter.h for the full
+	//! design rationale (TRS composition order, per-projection domain
+	//! field, triplanar axis convention).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMappingPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter (addref'd)
+								const unsigned int projection,	///< [in] 0=uv, 1=world, 2=object, 3=triplanar
+								const Vector3& scale,				///< [in] Per-axis scale (uv: x/y only)
+								const Vector3& rotateDeg,			///< [in] Per-axis rotation in DEGREES (uv: z only)
+								const Vector3& translate,			///< [in] Per-axis translation (uv: x/y only)
+								const Scalar blendSharpness		///< [in] Triplanar normal-weight exponent (ignored otherwise)
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const MappingPainter::Projection proj =
+			projection == 1 ? MappingPainter::Proj_World :
+			projection == 2 ? MappingPainter::Proj_Object :
+			projection == 3 ? MappingPainter::Proj_Triplanar :
+			                  MappingPainter::Proj_UV;
+
+		(*ppi) = new MappingPainter( source, proj, scale, rotateDeg, translate, blendSharpness );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mapping painter" );
 		return true;
 	}
 }

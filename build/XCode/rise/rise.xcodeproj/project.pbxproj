@@ -36,6 +36,10 @@
 		A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
 		71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F204D6F309C3AA61F5300F19 /* RampPainter.cpp */; };
 		E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 89A2797DF74BDB70C5D959B9 /* RampPainter.h */; };
+		D7F0DC15ABC1B86AE7C693B0 /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
+		FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
+		FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */; };
+		5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 457B359DA029B1CE5FC98767 /* MappingPainter.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -1937,6 +1941,8 @@
 		EE990000000000000000001B /* ExpressionPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ExpressionPainter.cpp; sourceTree = "<group>"; };
 		89A2797DF74BDB70C5D959B9 /* RampPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = RampPainter.h; sourceTree = "<group>"; };
 		F204D6F309C3AA61F5300F19 /* RampPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = RampPainter.cpp; sourceTree = "<group>"; };
+		457B359DA029B1CE5FC98767 /* MappingPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MappingPainter.h; sourceTree = "<group>"; };
+		03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = MappingPainter.cpp; sourceTree = "<group>"; };
 		6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AmbientOcclusionShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AmbientOcclusionShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AreaLightShaderOp.cpp; sourceTree = "<group>"; };
@@ -3653,6 +3659,8 @@
 				EE990000000000000000001B /* ExpressionPainter.cpp */,
 				89A2797DF74BDB70C5D959B9 /* RampPainter.h */,
 				F204D6F309C3AA61F5300F19 /* RampPainter.cpp */,
+				457B359DA029B1CE5FC98767 /* MappingPainter.h */,
+				03B051EC7E1634F3288D0E59 /* MappingPainter.cpp */,
 				F2ADD1000000000000000001 /* ExpressionParamSpec.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
@@ -4650,6 +4658,7 @@
 				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
 				EE990000000000000000001D /* ExpressionPainter.h in Headers */,
 				A2734F5E5E2E6A67DCE1D387 /* RampPainter.h in Headers */,
+				FB255A9D62917BC1024B3ACA /* MappingPainter.h in Headers */,
 				F2ADD1000000000000000002 /* ExpressionParamSpec.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
@@ -5244,6 +5253,7 @@
 				DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */,
 				EE990000000000000000001C /* ExpressionPainter.cpp in Sources */,
 				994B89380C42A0BE4D05347C /* RampPainter.cpp in Sources */,
+				D7F0DC15ABC1B86AE7C693B0 /* MappingPainter.cpp in Sources */,
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
 				F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */,
@@ -6299,6 +6309,8 @@
 				EE990000000000000000001F /* ExpressionPainter.h in Sources */,
 				71B3E7795A55BC80646AA095 /* RampPainter.cpp in Sources */,
 				E1C2E3EF3B82102F8E57329C /* RampPainter.h in Sources */,
+				FF6F2FF372416EB54D24CE1F /* MappingPainter.cpp in Sources */,
+				5D99880CC710FF26DF5B6027 /* MappingPainter.h in Sources */,
 				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,

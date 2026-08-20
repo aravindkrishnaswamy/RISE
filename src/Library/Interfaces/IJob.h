@@ -3940,6 +3940,71 @@ namespace RISE
 									const char* colorSpace				///< [in] Interpretation of stopColors triples
 									) = 0;
 
+		//! Adds a mapping_painter (doc 88 P2.3): wraps `source` and
+		//! transforms the domain it is evaluated at (uv / world / object /
+		//! triplanar) before delegating -- the author-facing scale/
+		//! rotate/translate/reproject tool (distinct from
+		//! UVTransformPainter, which stays the glTF KHR_texture_transform
+		//! bridge).  `scale`/`rotateDeg`/`translate` are flattened (x,y,z)
+		//! triples; for `projection` == uv (0), only x/y of scale and
+		//! translate and z of rotateDeg are meaningful (documented, not
+		//! silently dropped -- see MappingPainter.h).  Appended after
+		//! AddRampPainter per the append-only IJob tail (preserves every
+		//! prior vtable slot -- see SourceHygieneTest).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddMappingPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* source,				///< [in] Named source painter
+									const unsigned int projection,	///< [in] 0=uv, 1=world, 2=object, 3=triplanar
+									const double scale[3],				///< [in] Per-axis scale
+									const double rotateDeg[3],			///< [in] Per-axis rotation in DEGREES
+									const double translate[3],			///< [in] Per-axis translation
+									const double blendSharpness		///< [in] Triplanar normal-weight exponent
+									) = 0;
+
+		//! P1-A fix (S7 review round 1): AddVoronoi3DPainter's original
+		//! signature (above) must stay byte-identical -- an out-of-tree
+		//! consumer compiled against the OLD IJob vtable calls that slot
+		//! with 8 arguments; widening it in place (even with a default
+		//! value) would push 9 arguments through a vtable thunk built for
+		//! 8 and read garbage for the 9th.  The `space` (P2.5, doc 88)
+		//! form is therefore a NEW tail-appended virtual, matching the
+		//! repo's existing `*WithFilter` / `*WithEmission` / `*WithBasis`
+		//! / `*WithVariant` idiom for "old signature stays, new
+		//! parameter via a new name" (see RISE_API_CreateMLTRasterizer
+		//! WithFilter, RISE_API_CreateHomogeneousMediumWithEmission,
+		//! ApplyCstCameraPoseEditWithBasis, RederiveCstWithVariant) --
+		//! there is no `*InSpace`/`*In<X>` precedent anywhere in the
+		//! codebase, so `WithSpace` was picked over `InSpace` to match
+		//! the idiom that actually exists.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddVoronoi3DPainterWithSpace(
+									const char* name,				///< [in] Name of the painter
+									const double pt_x[],			///< [in] X co-ordinates of generators
+									const double pt_y[],			///< [in] Y co-ordinates of generators
+									const double pt_z[],			///< [in] Z co-ordinates of generators
+									const char** painters,			///< [in] The painters for each generator
+									const unsigned int count,		///< [in] Number of the generators
+									const char* border,				///< [in] Name of the painter for the border
+									const double bsize,				///< [in] Size of the border
+									const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+									) = 0;
+
+		//! P1-A fix (S7 review round 1): same rationale as
+		//! AddVoronoi3DPainterWithSpace above -- AddBlendPainter's
+		//! original 4-argument signature must stay byte-identical for
+		//! out-of-tree vtable compatibility, so the `mode` (P2.4, doc 88)
+		//! form is a new tail-appended virtual, named `WithMode` to match
+		//! the repo's `*With<Thing>` idiom.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddBlendPainterWithMode(
+									const char* name,				///< [in] Name of the painter
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const char* mask,				///< [in] Mask painter
+									const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+									) = 0;
+
 	};
 
 

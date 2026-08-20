@@ -1450,6 +1450,24 @@ namespace RISE
 								const Scalar bsize				///< [in] Size of the borders
 								);
 
+	//! P1-A fix (S7 review round 1): RISE_API_CreateVoronoi3DPainter's
+	//! signature above must stay byte-identical for out-of-tree link
+	//! compatibility (a defaulted parameter still changes the mangled
+	//! symbol -- an old caller's call site references a symbol the new
+	//! binary would no longer export).  The `space` (P2.5, doc 88) form
+	//! is therefore a new, separately-named function, matching the
+	//! repo's `*WithFilter` / `*WithEmission` / `*WithBasis` /
+	//! `*WithVariant` idiom (there is no `*InSpace`/`*In<X>` precedent).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVoronoi3DPainterWithSpace(
+								IPainter**	ppi,				///< [out] Pointer to recieve the painter
+								const std::vector<Point3> pts,	///< [in] The locations of the generators
+								const std::vector<IPainter*> p,	///< [in] The painters for the generators
+								const IPainter& border,			///< [in] Painter for the border
+								const Scalar bsize,				///< [in] Size of the borders
+								const bool worldSpace			///< [in] P2.5 (doc 88): sample ptIntersection (TRUE) instead of the historical ptObjIntersec (FALSE)
+								);
+
 	//! Creates a iridescent painter (a painter whose color changes as viewing angle changes)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIridescentPainter(
@@ -1487,6 +1505,19 @@ namespace RISE
 								const IPainter& mask			///< [in] Blend mask
 								);
 
+	//! P1-A fix (S7 review round 1): same rationale as
+	//! RISE_API_CreateVoronoi3DPainterWithSpace above -- the `mode`
+	//! (P2.4, doc 88) form is a new, separately-named function so the
+	//! 4-argument signature above stays byte-identical.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBlendPainterWithMode(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& a,				///< [in] First color
+								const IPainter& b,				///< [in] Second color
+								const IPainter& mask,			///< [in] Blend mask
+								const unsigned int mode			///< [in] P2.4 (doc 88): 0=mix, 1=multiply, 2=screen, 3=overlay, 4=add
+								);
+
 	//! Creates a channel-extraction painter (glTF MR-texture helper).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateChannelPainter(
@@ -1521,6 +1552,21 @@ namespace RISE
 								const Scalar rotation,			///< [in] Rotation in radians (KHR sign)
 								const Scalar scale_u,			///< [in] U scale
 								const Scalar scale_v			///< [in] V scale
+								);
+
+	//! Creates a mapping_painter (doc 88 P2.3): the author-facing
+	//! scale/rotate/translate/reproject wrapper -- NOT the glTF
+	//! KHR_texture_transform bridge (that stays UVTransformPainter).
+	//! See MappingPainter.h for the design rationale.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMappingPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter (addref'd)
+								const unsigned int projection,	///< [in] 0=uv, 1=world, 2=object, 3=triplanar
+								const Vector3& scale,				///< [in] Per-axis scale (uv: x/y only)
+								const Vector3& rotateDeg,			///< [in] Per-axis rotation in DEGREES (uv: z only)
+								const Vector3& translate,			///< [in] Per-axis translation (uv: x/y only)
+								const Scalar blendSharpness		///< [in] Triplanar normal-weight exponent (ignored otherwise)
 								);
 
 

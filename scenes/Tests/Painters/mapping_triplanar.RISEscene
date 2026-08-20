@@ -1,0 +1,210 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mapping_triplanar.RISEscene                                                            #
+#   Description:    S7 regression scene for mapping_painter (doc 88 P2.3) -- two independent               #
+#                   demonstrations of the domain wrapper:                                                  #
+#                     1) TRIPLANAR: a checker_painter (a UV-only painter) projected onto a UV-less          #
+#                        sdf_geometry blob via `projection triplanar` -- three axis-blended checker         #
+#                        samples with no seams and no authored UVs.                                        #
+#                     2) WORLD reproject: a perlin3d_painter (already world-space by default) is            #
+#                        additionally rotated 45 degrees about Y and non-uniformly scaled via               #
+#                        `projection world`, independent of the noise painter's own `shift`/`scale`         #
+#                        fields -- the retile/reorient tool `mapping_painter` adds to the scene language.   #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-20                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/mapping_triplanar
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			480
+	height			480
+}
+
+pinhole_camera
+{
+	location		0 2.4 6.5
+	lookat			0 0 0
+	up				0 1 0
+	fov				38.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name			black
+	color			0.05 0.05 0.05
+	colorspace		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			white
+	color			0.9 0.9 0.9
+	colorspace		Rec709RGB_Linear
+}
+
+# The UV-only source: a checker pattern.  Wrapped below in `projection
+# triplanar` so it can paint a UV-less sdf_geometry blob.
+checker_painter
+{
+	name			checker_src
+	colora			black
+	colorb			white
+	size			1.0
+}
+
+# Triplanar wrap: three axis-blended checker samples, blended by
+# |N.axis|^blend_sharpness (world shading normal).  `scale` retiles the
+# checker relative to the blob's size (checker `size 1.0` at world scale
+# would be far too coarse for a ~1-unit blob).
+mapping_painter
+{
+	name			blob_triplanar
+	source			checker_src
+	projection		triplanar
+	scale			2.5 2.5 2.5
+	blend_sharpness	4.0
+}
+
+uniformcolor_painter
+{
+	name			ochre_lo
+	color			0.35 0.22 0.08
+	colorspace		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			ochre_hi
+	color			0.85 0.72 0.45
+	colorspace		Rec709RGB_Linear
+}
+
+# The 3D world-space source: perlin3d_painter is ALREADY world-space by
+# default (see docs/skills/procedural-textures.md "2D vs 3D").
+# mapping_painter's `projection world` reprojects it independently of
+# the painter's own `shift`/`scale` fields -- rotate 45 degrees about Y
+# and stretch along X, a retile mapping_painter adds that the source
+# painter alone cannot express.
+perlin3d_painter
+{
+	name			ground_noise
+	colora			ochre_lo
+	colorb			ochre_hi
+}
+
+mapping_painter
+{
+	name			ground_reprojected
+	source			ground_noise
+	projection		world
+	scale			1.8 0.6 0.6
+	rotate			0 45 0
+	translate		0 0 0
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name			mat_blob
+	reflectance		blob_triplanar
+}
+
+lambertian_material
+{
+	name			mat_ground
+	reflectance		ground_reprojected
+}
+
+##################################################
+# Objects
+##################################################
+
+# UV-less blob: an sdf_geometry sphere primitive (sphere-traced implicit
+# surface -- no authored UVs, so a UV-only painter like checker_painter
+# can ONLY reach it via triplanar projection).
+sdf_geometry
+{
+	name			blob_sdf
+	part			sphere union 0  0 0 0  0 0 0  1 1 1  1.05 0 0  0
+}
+
+standard_object
+{
+	name			blob
+	geometry		blob_sdf
+	position		0 0.4 0
+	material		mat_blob
+	receives_shadows false
+}
+
+box_geometry
+{
+	name			ground_box
+	width			12
+	height			0.2
+	depth			12
+}
+
+standard_object
+{
+	name			ground
+	geometry		ground_box
+	orientation		0 0 0
+	position		0 -1.0 0
+	material		mat_ground
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.6 0.7 1.0
+}
+
+ambient_light
+{
+	name		amb
+	color		1.0 1.0 1.0
+	power		0.4
+}

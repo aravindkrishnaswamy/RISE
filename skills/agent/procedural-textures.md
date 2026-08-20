@@ -51,6 +51,7 @@ all of them; the decision map below is the shortcut.
 | A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  Still the right choice for a `displaced_geometry` `function` slot and the `scalar_painter { function2d ... }` bridge, which take an IFunction2D. |
 | Turn a grey field into real colour (terrain bands, patina, rust-to-metal) | `ramp_painter` | Multi-stop colour ramp driven by any painter's channel.  The universal scalar -> colour remap; see "The composition boundary" below. |
 | Drive a PHYSICAL SCALAR from any colour painter you already have | `scalar_painter { painter <name> channel <R\|G\|B\|A> scale <s> bias <b> }` | The any-painter -> scalar bridge: binds ANY of the painter kinds above (a worley field, an image, an expression) to roughness / IOR / scattering. |
+| Retile, rotate, or reproject an existing painter without rebuilding it | `mapping_painter { source <name> projection uv\|world\|object\|triplanar scale rotate translate }` | Wraps ANY painter and transforms the DOMAIN it is evaluated at before delegating -- the general-purpose scale/rotate/offset tool.  `triplanar` is also how a UV-only painter (a `png_painter`, `checker_painter`, ...) gets projected onto UV-less geometry (an `sdf_geometry`, a heavily displaced mesh) via three axis-blended samples. |
 
 `checker_painter`, `lines_painter` and `mandelbrot_painter` also exist and
 are spatially varying, but they are deliberately synthetic: right for
@@ -64,7 +65,16 @@ Every painter is one or the other, and the chunk name tells you:
 - **3D / solid** (`perlin3d`, `turbulence3d`, `simplex3d`, `wavelet3d`,
   `worley3d`, `perlinworley3d`, `gabor3d`, `curlnoise3d`,
   `domainwarp3d`, `reactiondiffusion3d`, `sdf3d`, `voronoi3d`) is
-  evaluated at the **WORLD-SPACE intersection point**.  Needs no UVs,
+  evaluated at the **WORLD-SPACE intersection point** -- with ONE
+  historical exception: `voronoi3d_painter` has always sampled OBJECT
+  space instead (an instanced/transformed object keeps the same cell
+  pattern).  Its `space` field (P2.5, doc 88) makes that explicit;
+  `space world` opts it into the same world-space convention as the
+  rest of this family -- but flipping it RE-INTERPRETS every authored
+  `gen`/border position against the other domain, since the same raw
+  x/y/z you wrote for `object` space now gets read as a world
+  coordinate, so treat a `space` change as a re-authoring pass on the
+  generator coordinates, not a free toggle.  Needs no UVs,
   shows no seams, and looks like the object was CARVED OUT of the
   material.  **Default to these** for wood, stone, marble, metal.
   Two consequences of "world space":
@@ -718,7 +728,12 @@ directional_light
   computes `colora * mask + colorb * (1 - mask)`, per channel.  So
   **mask 1 selects colora and mask 0 selects colorb** -- the opposite
   of the reading most people assume.  Any painter can be the mask; a
-  coloured mask tints as well as blends.
+  coloured mask tints as well as blends.  That formula is `mode mix`,
+  the default.  `mode multiply|screen|overlay|add` (P2.4, doc 88)
+  combines colora and colorb with the named formula FIRST, and the
+  mask then interpolates between that combination (mask 1) and colorb
+  (mask 0) exactly as before -- e.g. `mode multiply` for a shadow-mask
+  AO tint, `mode add` for an emissive glow layered on a base colour.
 - **Nesting is usually simpler than blending.**  Every noise painter
   already interpolates `colora -> colorb`, and those two slots take
   PAINTERS, not just flat colours.  Putting one noise painter in

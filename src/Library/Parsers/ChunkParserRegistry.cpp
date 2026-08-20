@@ -2836,6 +2836,23 @@ namespace RISE
 					std::string border = bag.GetString( "border",     "none" );
 					double bordersize  = bag.GetDouble( "bordersize", 0.0 );
 
+					// P2.5 (doc 88): historically this painter always sampled
+					// OBJECT space regardless of the "world space" claim in
+					// skills/agent/procedural-textures.md -- `space` makes that
+					// explicit and lets a scene opt into `world` to match the
+					// rest of the 3D painter family.  Default preserves the
+					// historical behaviour byte-identically.
+					std::string spaceStr = bag.GetString( "space", "object" );
+					bool worldSpace = false;
+					if( spaceStr == "object" )      worldSpace = false;
+					else if( spaceStr == "world" )  worldSpace = true;
+					else {
+						GlobalLog()->PrintEx( eLog_Error,
+							"voronoi3d_painter `%s`: unknown space `%s` (expected object or world)",
+							name.c_str(), spaceStr.c_str() );
+						return false;
+					}
+
 					std::vector<double> ptx;
 					std::vector<double> pty;
 					std::vector<double> ptz;
@@ -2883,7 +2900,13 @@ namespace RISE
 						strncpy( pntrs[i], painters[i].c_str(), 255 );
 					}
 
-					bool bRet = pJob.AddVoronoi3DPainter( name.c_str(), &ptx[0], &pty[0], &ptz[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize );
+					// P1-A fix (S7 review round 1): AddVoronoi3DPainter's
+					// original 8-arg signature must stay byte-identical
+					// (see IJob.h) -- call the tail-appended `WithSpace`
+					// virtual instead, which always carries `worldSpace`
+					// (computed above, defaulting to the historical FALSE
+					// when `space` is omitted).
+					bool bRet = pJob.AddVoronoi3DPainterWithSpace( name.c_str(), &ptx[0], &pty[0], &ptz[0], (const char**)pntrs, num, border=="none"?0:border.c_str(), bordersize, worldSpace );
 
 					delete [] pntrs;
 					delete [] pntrmem;
@@ -2895,13 +2918,14 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "voronoi3d_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Explicit Voronoi cells in world space (3D solid domain): each repeatable `gen <x> <y> <z> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- aggregate, terrazzo, crystal grains.";
+						cd.description = "Explicit Voronoi cells (3D solid domain): each repeatable `gen <x> <y> <z> <painter>` seeds ONE cell with its OWN painter, plus an optional `border` painter.  Art-directable where worley3d_painter is random -- aggregate, terrazzo, crystal grains.  HISTORICAL INCONSISTENCY (P2.5, doc 88): unlike the rest of the 3D painter family (perlin3d, worley3d, ...), which always sample the WORLD-space intersection, this painter has always sampled OBJECT space (`ptObjIntersec`) -- `space` makes that explicit; the default `object` preserves every existing scene byte-identically, `world` opts into the same convention as the other 3D painters.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable).  These x/y/z coordinates are interpreted in whichever domain `space` selects (P2.5, doc 88): `object` (default) reads them as OBJECT-space coordinates (ptObjIntersec), `world` reads them as WORLD-space coordinates (ptIntersection) -- flipping `space` therefore RE-INTERPRETS every authored generator (and the border) position against a different point domain, it does not just change which point the distance test samples."; }
 						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (count-prefixed: N then N lines of x y z paintername)"; }
 						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "space";      p.kind = ValueKind::Enum;      p.enumValues = {"object","world"}; p.description = "Domain to sample generator distances in (P2.5, doc 88).  `object` (default) is the HISTORICAL behaviour -- ptObjIntersec, so an instanced/transformed object keeps the same cell pattern.  `world` samples ptIntersection, matching perlin3d/worley3d/etc.  WARNING: this is not just a sampling-side switch -- every `gen` (and border) position was authored assuming ONE of these domains, so flipping `space` re-interprets every authored cell position against the OTHER domain and generally requires re-authoring the generator coordinates to match."; p.defaultValueHint = "object"; }
 						return cd;
 					}();
 					return d;
@@ -2979,19 +3003,45 @@ namespace RISE
 					std::string colorb = bag.GetString( "colorb", "none" );
 					std::string mask   = bag.GetString( "mask",   "none" );
 
-					return pJob.AddBlendPainter( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str() );
+					// P2.4 (doc 88): blend mode -- HOW colora/colorb combine
+					// before mask interpolates toward colorb.  Absent = mix,
+					// byte-identical to the pre-P2.4 formula.
+					unsigned int mode = 0;
+					if( bag.Has( "mode" ) ) {
+						const std::string modeStr = bag.GetString( "mode" );
+						if(      modeStr == "mix" )      mode = 0;
+						else if( modeStr == "multiply" ) mode = 1;
+						else if( modeStr == "screen" )   mode = 2;
+						else if( modeStr == "overlay" )  mode = 3;
+						else if( modeStr == "add" )      mode = 4;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"blend_painter `%s`: unknown mode `%s` (expected mix, multiply, screen, overlay, or add)",
+								name.c_str(), modeStr.c_str() );
+							return false;
+						}
+					}
+
+					// P1-A fix (S7 review round 1): AddBlendPainter's
+					// original 4-arg signature must stay byte-identical
+					// (see IJob.h) -- call the tail-appended `WithMode`
+					// virtual instead, which always carries `mode`
+					// (defaulting to 0=mix, byte-identical, when `mode`
+					// is omitted above).
+					return pJob.AddBlendPainterWithMode( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str(), mode );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "blend_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Blends colora and colorb per a THIRD painter used as the `mask`: out = colora * mask + colorb * (1 - mask), so mask 1 -> colora and mask 0 -> colorb (NOT the other way round).  The mask is applied PER CHANNEL, so a coloured mask tints as well as blends.  THE composition verb for procedural materials: put a noise painter in `mask` and two colours in colora/colorb, and the surface gets spatially-varying reflectance.";
+						cd.description = "Blends colora and colorb per a THIRD painter used as the `mask`: out = blend(colora,colorb) * mask + colorb * (1 - mask), so mask 1 selects the blended combination and mask 0 -> colorb (NOT the other way round).  `mode` (P2.4, doc 88) picks the blend(a,b) formula: `mix` (default) is blend(a,b)=a, which reduces the whole expression to the original `colora * mask + colorb * (1 - mask)` -- byte-identical when `mode` is omitted.  `multiply`/`screen`/`overlay`/`add` combine a and b per channel (RGB) or per spectral sample (GetColorNM) with the SAME formula shape before the mask still interpolates toward colorb.  `screen` and `overlay` are DISPLAY-COMPOSITING curves defined only on [0,1] -- colora/colorb are CLAMPED to [0,1] before those two formulas (an out-of-range input would otherwise sign-flip the result); `mix`/`multiply`/`add` stay unbounded, matching the rest of RISE's HDR colour math.  The mask is applied PER CHANNEL, so a coloured mask tints as well as blends.  THE composition verb for procedural materials: put a noise painter in `mask` and two colours in colora/colorb, and the surface gets spatially-varying reflectance.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
 						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
 						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter, applied per channel: weight 1 selects colora, weight 0 selects colorb"; }
+						{ auto& p = P(); p.name = "mode";   p.kind = ValueKind::Enum;      p.enumValues = {"mix","multiply","screen","overlay","add"}; p.description = "P2.4 (doc 88): how colora and colorb combine before `mask` interpolates.  `mix` (default) reduces to the original colora*mask+colorb*(1-mask) formula, byte-identical when omitted."; p.defaultValueHint = "mix"; }
 						return cd;
 					}();
 					return d;
@@ -6234,6 +6284,72 @@ namespace RISE
 						{ auto& p = P(); p.name = "interpolation"; p.kind = ValueKind::Enum;       p.enumValues = {"linear","constant","smooth"}; p.description = "Blend shape between bracketing stops"; p.defaultValueHint = "linear"; }
 						{ auto& p = P(); p.name = "stop";          p.kind = ValueKind::String;     p.repeatable = true; p.description = "Colour stop `<pos> <r> <g> <b>` (repeatable, in order; positions must be non-decreasing; at least 2 required)"; }
 						{ auto& p = P(); p.name = "color_space";   p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Interpretation of each stop's r g b (linear default; same value set as uniformcolor_painter's `colorspace`)"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// mapping_painter -- the author-facing scale/rotate/translate/
+			// reproject wrapper (doc 88 P2.3).  See MappingPainter.h for the
+			// full design rationale; NOT the glTF KHR_texture_transform
+			// bridge (UVTransformPainter stays that).
+			struct MappingPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name", "noname" );
+					std::string source = bag.GetString( "source", "" );
+					if( source.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"mapping_painter `%s`: missing `source` (the painter whose domain is transformed)",
+							name.c_str() );
+						return false;
+					}
+
+					unsigned int projection = 0;	// uv default
+					if( bag.Has( "projection" ) ) {
+						const std::string projStr = bag.GetString( "projection" );
+						if(      projStr == "uv" )        projection = 0;
+						else if( projStr == "world" )     projection = 1;
+						else if( projStr == "object" )    projection = 2;
+						else if( projStr == "triplanar" ) projection = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"mapping_painter `%s`: unknown projection `%s` (expected uv, world, object, or triplanar)",
+								name.c_str(), projStr.c_str() );
+							return false;
+						}
+					}
+
+					double scale[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "scale", scale );	// leaves the 1,1,1 default untouched if absent
+
+					double rotateDeg[3] = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "rotate", rotateDeg );
+
+					double translate[3] = { 0.0, 0.0, 0.0 };
+					bag.GetVec3( "translate", translate );
+
+					const double blendSharpness = bag.GetDouble( "blend_sharpness", 4.0 );
+
+					return pJob.AddMappingPainter( name.c_str(), source.c_str(), projection,
+						scale, rotateDeg, translate, blendSharpness );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "mapping_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Wraps `source` and transforms the DOMAIN it is evaluated at before delegating (doc 88 P2.3) -- the author-facing scale/rotate/translate/reproject tool (NOT the glTF KHR_texture_transform bridge; that stays UVTransformPainter, importer-only).  `projection uv` (default) transforms the surface UV (`ptCoord`) -- 2D semantics: only `scale.x/y`, `rotate.z`, and `translate.x/y` apply, `scale.z`/`rotate.x`/`rotate.y`/`translate.z` are IGNORED.  `projection world`/`object` transform the WORLD (`ptIntersection`) / OBJECT (`ptObjIntersec`) position respectively before delegating to a 3D-domain source (perlin3d, worley3d, voronoi3d, ...) -- wrapping a UV-domain source in world/object is a silent no-op, since that source never reads the field being transformed.  `projection triplanar` is for a UV-CONSUMING source (an image painter, checker_painter, ...) on UV-LESS geometry: it samples `source` three times with ptCoord derived from (y,z)/(x,z)/(x,y) of the TRS-transformed WORLD position, blended by |N.axis|^blend_sharpness (world shading normal, normalized) -- always world position/normal, no object-space triplanar variant; the blend normal itself is used AS-IS, not rotated by `rotate` (axis dominance is a geometric fact about the surface, not part of the retiling -- rotating it too would double-apply the rotation on curved geometry).  TRS composes as scale, then rotate (Z then Y then X, matching standard_object's `orientation`), then translate.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";           p.kind = ValueKind::Reference;  p.required = true; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named source painter whose domain is transformed"; }
+						{ auto& p = P(); p.name = "projection";       p.kind = ValueKind::Enum;       p.enumValues = {"uv","world","object","triplanar"}; p.description = "Which domain field to transform: uv (ptCoord), world (ptIntersection), object (ptObjIntersec), or triplanar (three ptCoord samples blended by normal)"; p.defaultValueHint = "uv"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale, applied FIRST.  uv projection uses x/y only"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "rotate";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis rotation in DEGREES, applied SECOND (Z then Y then X, matching standard_object orientation).  uv projection uses z only"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "translate";        p.kind = ValueKind::DoubleVec3; p.description = "Per-axis translation, applied LAST.  uv projection uses x/y only"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "blend_sharpness";  p.kind = ValueKind::Double;     p.description = "Triplanar-only: exponent on |N.axis| before normalizing the three per-axis blend weights.  Higher = sharper axis-aligned transitions"; p.defaultValueHint = "4.0"; }
 						return cd;
 					}();
 					return d;
@@ -11707,6 +11823,7 @@ namespace RISE
 		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
 		add( "expression_painter",                    new ExpressionPainterAsciiChunkParser() );
 		add( "ramp_painter",                          new RampPainterAsciiChunkParser() );
+		add( "mapping_painter",                       new MappingPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions

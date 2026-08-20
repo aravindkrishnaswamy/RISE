@@ -1716,6 +1716,810 @@ static void TestRampPainterEdgeInputs()
 	CheckClose( RampColorForT( RampPainter::Interp_Linear, stops, -std::numeric_limits<Scalar>::infinity() )[0], 3, 1e-9, "-inf t clamps to first stop" );
 }
 
+//======================================================================
+// S7 (doc 88 P2.3-P2.5): mapping_painter, blend_painter `mode`,
+// voronoi3d_painter `space`.  Golden-value math tests below construct
+// painters directly through RISE_API (bypassing the parser, the same
+// approach UVTransformPainterTest.cpp uses) with tiny local "echo"
+// probe painters that reveal exactly which domain field / value the
+// wrapper sampled.  Parser-surface tests (registration, diagnostics)
+// use S2::ParseBody like the S3 section above.
+//======================================================================
+namespace S7 {
+
+	// Echoes ptCoord as (R=u, G=v, B=0) -- reveals exactly which UV a
+	// wrapper sampled at.  GetColorNM/GetAlpha also echo u, so a caller
+	// can check GetColor(ri).r == GetColorNM(ri,*) == GetAlpha(ri) to
+	// prove all four Get* paths use the SAME weights/coords.
+	class UVEchoPainter : public Painter
+	{
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ri ) const
+		{
+			return RISEPel( ri.ptCoord.x, ri.ptCoord.y, 0.0 );
+		}
+		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar ) const
+		{
+			return ri.ptCoord.x;
+		}
+		Scalar GetAlpha( const RayIntersectionGeometric& ri ) const
+		{
+			return ri.ptCoord.x;
+		}
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	// Echoes all three domain fields at once: R=ptIntersection.x,
+	// G=ptObjIntersec.x, B=ptCoord.x -- lets a single GetColor call
+	// prove which ONE field a given `projection` patched, leaving the
+	// other two verbatim.
+	class DomainEchoPainter : public Painter
+	{
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ri ) const
+		{
+			return RISEPel( ri.ptIntersection.x, ri.ptObjIntersec.x, ri.ptCoord.x );
+		}
+		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar ) const { return ri.ptIntersection.x; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	// A fixed RGB colour, independent of `ri` -- for blend_painter /
+	// voronoi3d_painter golden-value tests where the OPERAND values
+	// need to be exact hand-computable constants (uniformcolor_painter
+	// would work too, but its colour-space uplift makes hand-verifying
+	// exact goldens needlessly fiddly).  GetColorNM returns the R
+	// channel, so a test can assert GetColorNM == GetColor().r.
+	class ConstColorPainter : public Painter
+	{
+	protected:
+		const RISEPel c;
+	public:
+		explicit ConstColorPainter( const RISEPel& c_ ) : c( c_ ) {}
+		RISEPel GetColor( const RayIntersectionGeometric& ) const { return c; }
+		Scalar GetColorNM( const RayIntersectionGeometric&, const Scalar ) const { return c.r; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	// P1-B (S7 review round 1): records whether the txFootprint the
+	// wrapper handed down was valid -- mirrors TexCoord1PainterTest.cpp's
+	// EchoPainter approach (that test is the in-tree precedent for "does
+	// a wrapper correctly invalidate a footprint it can no longer
+	// vouch for").  GetColor also echoes ptCoord in (R,G) so a single
+	// call can confirm BOTH the remapped coordinate and the footprint
+	// state at once.
+	class FootprintEchoPainter : public Painter
+	{
+	public:
+		mutable bool lastFootprintValid;
+		FootprintEchoPainter() : lastFootprintValid( true ) {}
+		RISEPel GetColor( const RayIntersectionGeometric& ri ) const
+		{
+			lastFootprintValid = ri.txFootprint.valid;
+			return RISEPel( ri.ptCoord.x, ri.ptCoord.y, 0.0 );
+		}
+		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar ) const
+		{
+			lastFootprintValid = ri.txFootprint.valid;
+			return ri.ptCoord.x;
+		}
+		SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
+		{
+			lastFootprintValid = ri.txFootprint.valid;
+			SpectralPacket sp( 400, 700, 1 );
+			return sp;
+		}
+		Scalar GetAlpha( const RayIntersectionGeometric& ri ) const
+		{
+			lastFootprintValid = ri.txFootprint.valid;
+			return ri.ptCoord.x;
+		}
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	// P2.1 (S7 review round 1): echoes the WORLD / OBJECT intersection
+	// point verbatim (R=x,G=y,B=z) -- needed for the multi-axis rotation
+	// golden test, which must see all three transformed components at
+	// once (DomainEchoPainter above only echoes the .x of each field).
+	class WorldPointEchoPainter : public Painter
+	{
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ri ) const
+		{
+			return RISEPel( ri.ptIntersection.x, ri.ptIntersection.y, ri.ptIntersection.z );
+		}
+		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar ) const { return ri.ptIntersection.x; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	class ObjectPointEchoPainter : public Painter
+	{
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ri ) const
+		{
+			return RISEPel( ri.ptObjIntersec.x, ri.ptObjIntersec.y, ri.ptObjIntersec.z );
+		}
+		Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar ) const { return ri.ptObjIntersec.x; }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	RayIntersectionGeometric MakeRi()
+	{
+		const Ray r( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		const RasterizerState rs = { 0, 0 };
+		RayIntersectionGeometric ri( r, rs );
+		ri.bHit = true;
+		return ri;
+	}
+
+} // namespace S7
+
+static void TestMappingPainterUVGolden()
+{
+	std::cout << "Test 33: mapping_painter -- uv projection TRS golden values (scale, then rotate CCW about z, then translate)" << std::endl;
+	using namespace S7;
+
+	UVEchoPainter src; src.addref();
+
+	auto MakeMapping = [&]( unsigned int proj, const Vector3& sc, const Vector3& rotDeg, const Vector3& tr, Scalar sharp ) {
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, proj, sc, rotDeg, tr, sharp );
+		return mp;
+	};
+
+	// Identity: passthrough.
+	{
+		IPainter* mp = MakeMapping( 0, Vector3(1,1,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.3, 0.7 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 0.3, 1e-9, "uv identity: u unchanged" );
+		CheckClose( c.g, 0.7, 1e-9, "uv identity: v unchanged" );
+		mp->release();
+	}
+	// Translate only.
+	{
+		IPainter* mp = MakeMapping( 0, Vector3(1,1,1), Vector3(0,0,0), Vector3(0.5,-0.25,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.1, 0.2 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 0.6,  1e-9, "uv translate: u' = u + tx" );
+		CheckClose( c.g, -0.05, 1e-9, "uv translate: v' = v + ty" );
+		mp->release();
+	}
+	// Scale only.
+	{
+		IPainter* mp = MakeMapping( 0, Vector3(2,0.5,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.25, 0.4 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 0.5, 1e-9, "uv scale: u' = sx * u" );
+		CheckClose( c.g, 0.2, 1e-9, "uv scale: v' = sy * v" );
+		mp->release();
+	}
+	// Rotate 90 deg -- STANDARD CCW convention (u'=cos*su-sin*sv,
+	// v'=sin*su+cos*sv), deliberately NOT UVTransformPainter's KHR
+	// sign flip -- mapping_painter is the author-facing tool, not the
+	// glTF bridge.  (1,0) -> (0,1) under CCW 90 deg.
+	{
+		IPainter* mp = MakeMapping( 0, Vector3(1,1,1), Vector3(0,0,90), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 1.0, 0.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 0.0, 1e-6, "uv rotate 90 CCW: (1,0) -> u'=0" );
+		CheckClose( c.g, 1.0, 1e-6, "uv rotate 90 CCW: (1,0) -> v'=1" );
+		mp->release();
+	}
+	// Combined scale -> rotate -> translate, pinned by hand:
+	// (1,1) *scale(2,3)-> (2,3) *rotate90 CCW-> (-3,2) *translate(0.1,0.2)-> (-2.9,2.2)
+	{
+		IPainter* mp = MakeMapping( 0, Vector3(2,3,1), Vector3(0,0,90), Vector3(0.1,0.2,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 1.0, 1.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, -2.9, 1e-6, "uv combined TRS: composition order scale->rotate->translate (u)" );
+		CheckClose( c.g,  2.2, 1e-6, "uv combined TRS: composition order scale->rotate->translate (v)" );
+		mp->release();
+	}
+	// scale.z / rotate.x / rotate.y / translate.z are IGNORED for uv --
+	// loading them up with large nonzero values must not perturb the
+	// output at all.
+	{
+		IPainter* mp = MakeMapping( 0, Vector3(1,1,99), Vector3(45,45,0), Vector3(0,0,77), 4.0 );
+		RayIntersectionGeometric ri = MakeRi(); ri.ptCoord = Point2( 0.3, 0.7 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 0.3, 1e-9, "uv: scale.z/rotate.x/rotate.y/translate.z ignored (u)" );
+		CheckClose( c.g, 0.7, 1e-9, "uv: scale.z/rotate.x/rotate.y/translate.z ignored (v)" );
+		mp->release();
+	}
+
+	src.release();
+}
+
+static void TestMappingPainterWorldObjectDomainPatch()
+{
+	std::cout << "Test 34: mapping_painter -- world/object patch EXACTLY the named domain field, others verbatim" << std::endl;
+	using namespace S7;
+
+	DomainEchoPainter src; src.addref();
+	RayIntersectionGeometric ri = MakeRi();
+	ri.ptIntersection = Point3( 2, 3, 5 );
+	ri.ptObjIntersec   = Point3( 11, 13, 17 );
+	ri.ptCoord         = Point2( 0.25, 0.75 );
+
+	const Vector3 sc( 2, 1, 1 ), rot( 0, 0, 0 ), tr( 10, 0, 0 );
+
+	// world (projection=1): ptIntersection.x -> 2*2+10=14 (patched);
+	// ptObjIntersec.x and ptCoord.x stay verbatim.
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 1, sc, rot, tr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 14,   1e-9, "world: ptIntersection.x patched" );
+		CheckClose( c.g, 11,   1e-9, "world: ptObjIntersec.x left VERBATIM" );
+		CheckClose( c.b, 0.25, 1e-9, "world: ptCoord.x left VERBATIM" );
+		mp->release();
+	}
+	// object (projection=2): ptObjIntersec.x -> 11*2+10=32 (patched);
+	// ptIntersection.x and ptCoord.x stay verbatim.
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 2, sc, rot, tr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 2,    1e-9, "object: ptIntersection.x left VERBATIM" );
+		CheckClose( c.g, 32,   1e-9, "object: ptObjIntersec.x patched" );
+		CheckClose( c.b, 0.25, 1e-9, "object: ptCoord.x left VERBATIM" );
+		mp->release();
+	}
+	// uv (projection=0): ptCoord.x -> 2*0.25+10=10.5 (patched, x/y-only
+	// TRS -- `tr`'s x=10 applies to uv same as it does to world/object
+	// above); ptIntersection.x and ptObjIntersec.x stay verbatim.
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 0, sc, rot, tr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 2,    1e-9, "uv: ptIntersection.x left VERBATIM" );
+		CheckClose( c.g, 11,   1e-9, "uv: ptObjIntersec.x left VERBATIM" );
+		CheckClose( c.b, 10.5, 1e-9, "uv: ptCoord.x patched" );
+		mp->release();
+	}
+
+	src.release();
+}
+
+static void TestMappingPainterTriplanar()
+{
+	std::cout << "Test 35: mapping_painter -- triplanar axis convention, weight normalization, blend_sharpness, NM/RGB/alpha consistency" << std::endl;
+	using namespace S7;
+
+	UVEchoPainter src; src.addref();
+	RayIntersectionGeometric ri = MakeRi();
+	ri.ptIntersection = Point3( 2, 3, 5 );
+
+	const Vector3 identityScale( 1, 1, 1 ), identityRot( 0, 0, 0 ), identityTr( 0, 0, 0 );
+
+	// Axis-aligned normals collapse to a single pure axis sample --
+	// pins the (y,z)/(x,z)/(x,y) convention exactly.
+	{
+		ri.vNormal = Vector3( 1, 0, 0 );
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, identityScale, identityRot, identityTr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 3, 1e-9, "triplanar X-facing (N=(1,0,0)): ptCoord = (P.y, P.z) -- u=P.y" );
+		CheckClose( c.g, 5, 1e-9, "triplanar X-facing (N=(1,0,0)): ptCoord = (P.y, P.z) -- v=P.z" );
+		mp->release();
+	}
+	{
+		ri.vNormal = Vector3( 0, 1, 0 );
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, identityScale, identityRot, identityTr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 2, 1e-9, "triplanar Y-facing (N=(0,1,0)): ptCoord = (P.x, P.z) -- u=P.x" );
+		CheckClose( c.g, 5, 1e-9, "triplanar Y-facing (N=(0,1,0)): ptCoord = (P.x, P.z) -- v=P.z" );
+		mp->release();
+	}
+	{
+		ri.vNormal = Vector3( 0, 0, 1 );
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, identityScale, identityRot, identityTr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 2, 1e-9, "triplanar Z-facing (N=(0,0,1)): ptCoord = (P.x, P.y) -- u=P.x" );
+		CheckClose( c.g, 3, 1e-9, "triplanar Z-facing (N=(0,0,1)): ptCoord = (P.x, P.y) -- v=P.y" );
+		mp->release();
+	}
+	// Degenerate (zero-length) normal -- weights fall back to an even
+	// 1/3 split instead of a 0/0 NaN: (3+2+2)/3, (5+5+3)/3.
+	{
+		ri.vNormal = Vector3( 0, 0, 0 );
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, identityScale, identityRot, identityTr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 7.0/3.0,  1e-9, "triplanar degenerate normal: even 1/3 split (u)" );
+		CheckClose( c.g, 13.0/3.0, 1e-9, "triplanar degenerate normal: even 1/3 split (v)" );
+		mp->release();
+	}
+	// blend_sharpness: N=(0.6,0.8,0) (unit length; Z weight 0, so the
+	// second ptCoord component is P.z=5 either way -- only the FIRST
+	// component (a blend of P.y=3 from the X sample and P.x=2 from the
+	// Y sample) moves as sharpness changes).  r = 2 + nwx, where nwx is
+	// the NORMALIZED X weight -- higher sharpness pushes weight toward
+	// the dominant axis (Y, weight 0.8), so nwx SHRINKS and r DROPS.
+	{
+		ri.vNormal = Vector3( 0.6, 0.8, 0.0 );
+		IPainter* mpSharp4 = 0, *mpSharp1 = 0;
+		RISE_API_CreateMappingPainter( &mpSharp4, src, 3, identityScale, identityRot, identityTr, 4.0 );
+		RISE_API_CreateMappingPainter( &mpSharp1, src, 3, identityScale, identityRot, identityTr, 1.0 );
+		const RISEPel c4 = mpSharp4->GetColor( ri );
+		const RISEPel c1 = mpSharp1->GetColor( ri );
+		// nwx(sharp=4) = 0.6^4 / (0.6^4+0.8^4) = 0.1296/0.5392 = 0.240356...
+		CheckClose( c4.r, 2.0 + 0.1296/0.5392, 1e-6, "triplanar blend_sharpness=4: pinned r" );
+		// nwx(sharp=1) = 0.6/1.4 = 0.428571...
+		CheckClose( c1.r, 2.0 + 0.6/1.4, 1e-6, "triplanar blend_sharpness=1: pinned r" );
+		CheckClose( c4.g, 5.0, 1e-9, "triplanar: Z weight 0 either way -- v stays P.z" );
+		CheckClose( c1.g, 5.0, 1e-9, "triplanar: Z weight 0 either way -- v stays P.z" );
+		Check( c4.r < c1.r, "triplanar: higher sharpness pulls weight toward the dominant (Y) axis, dropping r" );
+		mpSharp4->release();
+		mpSharp1->release();
+	}
+	// Triplanar respects the TRS transform on the WORLD position before
+	// deriving axis coordinates: scale.y=10 on P=(2,3,5) -> p'=(2,30,5);
+	// pure-X normal samples (p'.y, p'.z) = (30, 5).
+	{
+		ri.vNormal = Vector3( 1, 0, 0 );
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, Vector3(1,10,1), identityRot, identityTr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, 30, 1e-9, "triplanar: TRS-transformed world position feeds the axis coords (u)" );
+		CheckClose( c.g, 5,  1e-9, "triplanar: TRS-transformed world position feeds the axis coords (v)" );
+		mp->release();
+	}
+	// NM / RGB / alpha consistency (the S2 lesson): all three Get*
+	// paths route through the SAME ComputeTriplanar() weights/coords,
+	// so GetColor(ri).r == GetColorNM(ri,*) == GetAlpha(ri) for a probe
+	// whose GetColorNM/GetAlpha echo the same ptCoord.x per axis.
+	{
+		ri.vNormal = Vector3( 0.6, 0.8, 0.0 );
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, identityScale, identityRot, identityTr, 4.0 );
+		const RISEPel c = mp->GetColor( ri );
+		const Scalar nm = mp->GetColorNM( ri, 550.0 );
+		const Scalar a  = mp->GetAlpha( ri );
+		CheckClose( (Scalar)c.r, nm, 1e-9, "triplanar: GetColorNM matches GetColor.r (same weights)" );
+		CheckClose( (Scalar)c.r, a,  1e-9, "triplanar: GetAlpha matches GetColor.r (same weights)" );
+		const SpectralPacket sp = mp->GetSpectrum( ri );
+		CheckClose( sp.ValueAtNM( 550.0 ), nm, 1e-9, "triplanar: GetSpectrum.ValueAtNM matches GetColorNM (nm-independent probe, so bin quantization introduces no error)" );
+		mp->release();
+	}
+
+	src.release();
+}
+
+static void TestBlendPainterModes()
+{
+	std::cout << "Test 36: blend_painter -- mode formulas golden per mode, mode=mix byte-identical to pre-P2.4, mask interplay" << std::endl;
+	using namespace S7;
+
+	// a = (0.2, 0.4, 0.6), b = (0.8, 0.1, 0.3), mask = (1.0, 0.5, 0.0) --
+	// picked so every channel exercises a DIFFERENT mask value (1, 0.5, 0).
+	ConstColorPainter a( RISEPel( 0.2, 0.4, 0.6 ) ); a.addref();
+	ConstColorPainter b( RISEPel( 0.8, 0.1, 0.3 ) ); b.addref();
+	ConstColorPainter mask( RISEPel( 1.0, 0.5, 0.0 ) ); mask.addref();
+	RayIntersectionGeometric ri = MakeRi();
+
+	struct Case { unsigned int mode; const char* name; Scalar er, eg, eb; };
+	const Case cases[] = {
+		{ 0, "mix",      0.2,  0.25, 0.3 },
+		{ 1, "multiply", 0.16, 0.07, 0.3 },
+		{ 2, "screen",   0.84, 0.28, 0.3 },
+		{ 3, "overlay",  0.68, 0.09, 0.3 },
+		{ 4, "add",      1.0,  0.3,  0.3 },
+	};
+	for( const Case& tc : cases ) {
+		IPainter* bp = 0;
+		RISE_API_CreateBlendPainterWithMode( &bp, a, b, mask, tc.mode );
+		const RISEPel c = bp->GetColor( ri );
+		CheckClose( c.r, tc.er, 1e-9, std::string("blend mode ") + tc.name + ": R channel golden" );
+		CheckClose( c.g, tc.eg, 1e-9, std::string("blend mode ") + tc.name + ": G channel golden" );
+		CheckClose( c.b, tc.eb, 1e-9, std::string("blend mode ") + tc.name + ": B channel golden" );
+		// GetColorNM uses the SAME formula shape: a/b/mask's GetColorNM
+		// echo their R channel, so the NM result must equal the R
+		// channel of GetColor exactly.
+		const Scalar nm = bp->GetColorNM( ri, 500.0 );
+		CheckClose( nm, c.r, 1e-9, std::string("blend mode ") + tc.name + ": GetColorNM matches GetColor.r (same formula shape)" );
+		bp->release();
+	}
+
+	// Mask interplay: mask=0 always yields b (regardless of mode);
+	// mask=1 always yields the raw Combine(a,b) (regardless of mode,
+	// value differs per mode except mix==a).
+	ConstColorPainter mask0( RISEPel( 0, 0, 0 ) ); mask0.addref();
+	ConstColorPainter mask1( RISEPel( 1, 1, 1 ) ); mask1.addref();
+	for( const Case& tc : cases ) {
+		IPainter* bp0 = 0; RISE_API_CreateBlendPainterWithMode( &bp0, a, b, mask0, tc.mode );
+		const RISEPel c0 = bp0->GetColor( ri );
+		CheckClose( c0.r, 0.8, 1e-9, std::string("blend mode ") + tc.name + ": mask=0 -> b, ignoring mode (R)" );
+		CheckClose( c0.g, 0.1, 1e-9, std::string("blend mode ") + tc.name + ": mask=0 -> b, ignoring mode (G)" );
+		CheckClose( c0.b, 0.3, 1e-9, std::string("blend mode ") + tc.name + ": mask=0 -> b, ignoring mode (B)" );
+		bp0->release();
+	}
+	{
+		// mode=mix, mask=1 -> a (the historical `colora * mask + colorb
+		// * (1-mask)` formula, byte-identical reduction).
+		IPainter* bp1 = 0; RISE_API_CreateBlendPainterWithMode( &bp1, a, b, mask1, 0u );
+		const RISEPel c1 = bp1->GetColor( ri );
+		CheckClose( c1.r, 0.2, 1e-9, "blend mode mix: mask=1 -> a exactly (pre-P2.4 formula)" );
+		CheckClose( c1.g, 0.4, 1e-9, "blend mode mix: mask=1 -> a exactly (pre-P2.4 formula)" );
+		CheckClose( c1.b, 0.6, 1e-9, "blend mode mix: mask=1 -> a exactly (pre-P2.4 formula)" );
+		bp1->release();
+	}
+
+	mask0.release(); mask1.release();
+	mask.release(); b.release(); a.release();
+}
+
+static void TestVoronoi3DSpaceParam()
+{
+	std::cout << "Test 37: voronoi3d_painter -- space object (default, historical) vs world golden" << std::endl;
+	using namespace S7;
+
+	ConstColorPainter colorA( RISEPel( 1, 0, 0 ) ); colorA.addref();
+	ConstColorPainter colorB( RISEPel( 0, 1, 0 ) ); colorB.addref();
+	ConstColorPainter border( RISEPel( 0, 0, 1 ) ); border.addref();
+
+	std::vector<Point3> pts;
+	pts.push_back( Point3( 0, 0, 0 ) );
+	pts.push_back( Point3( 10, 0, 0 ) );
+	std::vector<IPainter*> ptrs;
+	ptrs.push_back( &colorA );
+	ptrs.push_back( &colorB );
+
+	RayIntersectionGeometric ri = MakeRi();
+	// An instanced/transformed-object scenario: object space keeps the
+	// point at the generator-A cell; world space has moved it to the
+	// generator-B cell.
+	ri.ptObjIntersec  = Point3( 0, 0, 0 );
+	ri.ptIntersection = Point3( 10, 0, 0 );
+
+	{
+		IPainter* vp = 0;
+		RISE_API_CreateVoronoi3DPainterWithSpace( &vp, pts, ptrs, border, 0.0, false );	// space=object (default)
+		const RISEPel c = vp->GetColor( ri );
+		CheckClose( c.r, 1, 1e-9, "voronoi3d space=object (default): samples ptObjIntersec -> colorA (historical, byte-identical)" );
+		CheckClose( c.g, 0, 1e-9, "voronoi3d space=object (default): samples ptObjIntersec -> colorA (historical, byte-identical)" );
+		vp->release();
+	}
+	{
+		IPainter* vp = 0;
+		RISE_API_CreateVoronoi3DPainterWithSpace( &vp, pts, ptrs, border, 0.0, true );	// space=world
+		const RISEPel c = vp->GetColor( ri );
+		CheckClose( c.r, 0, 1e-9, "voronoi3d space=world: samples ptIntersection -> colorB (DIFFERS from object default)" );
+		CheckClose( c.g, 1, 1e-9, "voronoi3d space=world: samples ptIntersection -> colorB (DIFFERS from object default)" );
+		vp->release();
+	}
+
+	border.release(); colorB.release(); colorA.release();
+}
+
+static void TestS7ChunkParsingAndDiagnostics()
+{
+	std::cout << "Test 38: mapping_painter / blend_painter mode / voronoi3d_painter space -- chunk parsing, registration, diagnostics" << std::endl;
+
+	// mapping_painter: missing `source` rejects.
+	Check( !S2::ParseBody( "map_nosrc", "mapping_painter\n{\nname m1\nprojection uv\n}\n" ),
+		"mapping_painter missing `source` rejects" );
+	// mapping_painter: bad projection enum rejects.
+	Check( !S2::ParseBody( "map_badproj",
+		"uniformcolor_painter\n{\nname s\ncolor 1 1 1\n}\n"
+		"mapping_painter\n{\nname m2\nsource s\nprojection sideways\n}\n" ),
+		"mapping_painter unknown projection rejects" );
+	// mapping_painter: all four projections parse and register (dual,
+	// like blend_painter/ramp_painter).
+	{
+		const char* projs[4] = { "uv", "world", "object", "triplanar" };
+		for( int i = 0; i < 4; ++i ) {
+			Job* job = new Job(); job->addref();
+			const std::string body =
+				"uniformcolor_painter\n{\nname s\ncolor 1 1 1\n}\n"
+				"mapping_painter\n{\nname m\nsource s\nprojection " + std::string(projs[i]) +
+				"\nscale 2 2 2\nrotate 0 0 45\ntranslate 0.1 0.1 0\nblend_sharpness 3\n}\n";
+			Check( S2::ParseBody( std::string("map_ok_") + projs[i], body, *job ), std::string("mapping_painter projection ") + projs[i] + " parses" );
+			IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+			if( priv ) {
+				Check( priv->GetPainters()->GetItem( "m" ) != 0, std::string("mapping_painter (") + projs[i] + ") registered as a colour painter" );
+				Check( priv->GetFunction2Ds()->GetItem( "m" ) != 0, std::string("mapping_painter (") + projs[i] + ") ALSO registered as an IFunction2D (dual registration)" );
+			}
+			job->release();
+		}
+	}
+
+	// blend_painter: bad mode enum rejects; every named mode parses.
+	Check( !S2::ParseBody( "blend_badmode",
+		"uniformcolor_painter\n{\nname a\ncolor 0 0 0\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 1 1 1\n}\n"
+		"blend_painter\n{\nname bp1\ncolora a\ncolorb b\nmask a\nmode neon\n}\n" ),
+		"blend_painter unknown mode rejects" );
+	{
+		const char* modes[5] = { "mix", "multiply", "screen", "overlay", "add" };
+		for( int i = 0; i < 5; ++i ) {
+			const std::string body =
+				"uniformcolor_painter\n{\nname a\ncolor 0 0 0\n}\n"
+				"uniformcolor_painter\n{\nname b\ncolor 1 1 1\n}\n"
+				"blend_painter\n{\nname bp\ncolora a\ncolorb b\nmask a\nmode " + std::string(modes[i]) + "\n}\n";
+			Check( S2::ParseBody( std::string("blend_mode_") + modes[i], body ), std::string("blend_painter mode ") + modes[i] + " parses" );
+		}
+	}
+	// blend_painter: `mode` omitted still parses (back-compat).
+	Check( S2::ParseBody( "blend_nomode",
+		"uniformcolor_painter\n{\nname a\ncolor 0 0 0\n}\n"
+		"uniformcolor_painter\n{\nname b\ncolor 1 1 1\n}\n"
+		"blend_painter\n{\nname bp2\ncolora a\ncolorb b\nmask a\n}\n" ),
+		"blend_painter with `mode` omitted still parses (back-compat)" );
+
+	// voronoi3d_painter: bad space enum rejects; object/world both parse.
+	Check( !S2::ParseBody( "vor_badspace",
+		"uniformcolor_painter\n{\nname g\ncolor 1 1 1\n}\n"
+		"voronoi3d_painter\n{\nname v1\ngen 0 0 0 g\ngen 1 1 1 g\nborder g\nspace nowhere\n}\n" ),
+		"voronoi3d_painter unknown space rejects" );
+	Check( S2::ParseBody( "vor_object",
+		"uniformcolor_painter\n{\nname g\ncolor 1 1 1\n}\n"
+		"voronoi3d_painter\n{\nname v2\ngen 0 0 0 g\ngen 1 1 1 g\nborder g\nspace object\n}\n" ),
+		"voronoi3d_painter space object parses" );
+	Check( S2::ParseBody( "vor_world",
+		"uniformcolor_painter\n{\nname g\ncolor 1 1 1\n}\n"
+		"voronoi3d_painter\n{\nname v3\ngen 0 0 0 g\ngen 1 1 1 g\nborder g\nspace world\n}\n" ),
+		"voronoi3d_painter space world parses" );
+	// voronoi3d_painter: `space` omitted still parses (back-compat).
+	Check( S2::ParseBody( "vor_nospace",
+		"uniformcolor_painter\n{\nname g\ncolor 1 1 1\n}\n"
+		"voronoi3d_painter\n{\nname v4\ngen 0 0 0 g\ngen 1 1 1 g\nborder g\n}\n" ),
+		"voronoi3d_painter with `space` omitted still parses (back-compat)" );
+}
+
+static void TestMappingPainterFootprintInvalidation()
+{
+	std::cout << "Test 39: mapping_painter -- P1-B fix: uv/triplanar remap invalidates txFootprint, world/object leave it valid" << std::endl;
+	using namespace S7;
+
+	FootprintEchoPainter src; src.addref();
+
+	// uv projection: the remapped ptCoord no longer matches the
+	// footprint's baked (dudx,dudy,dvdx,dvdy) -- must be invalidated on
+	// ALL FOUR accessors (TexCoord1PainterTest.cpp's precedent for this
+	// exact shape of check).
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 0, Vector3(2,2,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptCoord = Point2( 0.3, 0.4 );
+		ri.txFootprint.valid = true;
+
+		src.lastFootprintValid = true;
+		mp->GetColor( ri );
+		Check( src.lastFootprintValid == false, "uv: GetColor invalidates txFootprint" );
+
+		src.lastFootprintValid = true;
+		mp->GetColorNM( ri, 550.0 );
+		Check( src.lastFootprintValid == false, "uv: GetColorNM invalidates txFootprint" );
+
+		src.lastFootprintValid = true;
+		mp->GetSpectrum( ri );
+		Check( src.lastFootprintValid == false, "uv: GetSpectrum invalidates txFootprint" );
+
+		src.lastFootprintValid = true;
+		mp->GetAlpha( ri );
+		Check( src.lastFootprintValid == false, "uv: GetAlpha invalidates txFootprint" );
+
+		Check( ri.txFootprint.valid == true, "uv: caller's ri.txFootprint.valid is NOT mutated by the wrapper" );
+
+		mp->release();
+	}
+
+	// triplanar projection: same invalidation rationale, all four
+	// accessors -- each of the three per-axis samples patches ptCoord
+	// to a world-derived coordinate the inherited footprint never
+	// described.
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 3, Vector3(1,1,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptIntersection = Point3( 2, 3, 5 );
+		ri.vNormal = Vector3( 1, 0, 0 );
+		ri.txFootprint.valid = true;
+
+		src.lastFootprintValid = true;
+		mp->GetColor( ri );
+		Check( src.lastFootprintValid == false, "triplanar: GetColor invalidates txFootprint" );
+
+		src.lastFootprintValid = true;
+		mp->GetColorNM( ri, 550.0 );
+		Check( src.lastFootprintValid == false, "triplanar: GetColorNM invalidates txFootprint" );
+
+		src.lastFootprintValid = true;
+		mp->GetSpectrum( ri );
+		Check( src.lastFootprintValid == false, "triplanar: GetSpectrum invalidates txFootprint" );
+
+		src.lastFootprintValid = true;
+		mp->GetAlpha( ri );
+		Check( src.lastFootprintValid == false, "triplanar: GetAlpha invalidates txFootprint" );
+
+		mp->release();
+	}
+
+	// world / object projections leave ptCoord UNTOUCHED (they patch
+	// ptIntersection / ptObjIntersec instead) -- the footprint, which
+	// describes a uv derivative, must stay valid.
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 1, Vector3(1,1,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptIntersection = Point3( 2, 3, 5 );
+		ri.txFootprint.valid = true;
+
+		src.lastFootprintValid = false;
+		mp->GetColor( ri );
+		Check( src.lastFootprintValid == true, "world: GetColor leaves txFootprint valid (ptCoord untouched)" );
+		mp->release();
+	}
+	{
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 2, Vector3(1,1,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptObjIntersec = Point3( 2, 3, 5 );
+		ri.txFootprint.valid = true;
+
+		src.lastFootprintValid = false;
+		mp->GetColor( ri );
+		Check( src.lastFootprintValid == true, "object: GetColor leaves txFootprint valid (ptCoord untouched)" );
+		mp->release();
+	}
+
+	src.release();
+}
+
+static void TestMappingPainterMultiAxisRotationGolden()
+{
+	std::cout << "Test 40: mapping_painter -- multi-axis rotation (rotate 30 45 60) world+object, hand-computed golden" << std::endl;
+	using namespace S7;
+
+	// Hand computation (Z-then-Y-then-X composition order, matching
+	// xform3D = Translation(translate) * XRotation(rx) * YRotation(ry) *
+	// ZRotation(rz) * Stretch(scale), and Matrix4Ops::operator*'s
+	// "rightmost factor applied first" semantics -- see
+	// MappingPainter.cpp's file-header derivation):
+	//   p1 = scale * p = (1,1,1)                     (scale = identity)
+	//   p2 = Rz(60deg) p1:  x'=Cz*x-Sz*y, y'=Sz*x+Cz*y, z'=z
+	//     Cz=cos60=0.5, Sz=sin60=0.8660254
+	//     p2 = (0.5-0.8660254, 0.8660254+0.5, 1) = (-0.3660254, 1.3660254, 1)
+	//   p3 = Ry(45deg) p2:  x'=Cy*x+Sy*z, y'=y, z'=-Sy*x+Cy*z
+	//     Cy=Sy=cos45=sin45=0.7071068
+	//     p3 = (0.7071068*(-0.3660254+1), 1.3660254, 0.7071068*(0.3660254+1))
+	//        = (0.4482877, 1.3660254, 0.9659258)
+	//   p4 = Rx(30deg) p3:  x'=x, y'=Cx*y-Sx*z, z'=Sx*y+Cx*z
+	//     Cx=cos30=0.8660254, Sx=sin30=0.5
+	//     p4.x = 0.4482877  (Rx never touches x)
+	//     p4.y = 0.8660254*1.3660254 - 0.5*0.9659258 ~= 1.1830131 - 0.4829629 = 0.7000502
+	//     p4.z = 0.5*1.3660254 + 0.8660254*0.9659258 ~= 0.6830127 + 0.8365173 = 1.5195300
+	//   translate=(10,20,30) is added AFTER rotation: p' = p4 + translate
+	//        ~= (10.4482877, 20.7000502, 31.5195300)
+	//   Sanity check on the rotation-only part: |p4| must equal
+	//   sqrt(3) = |p|, since scale=identity and pure rotation preserves
+	//   length: 0.4482877^2 + 0.7000502^2 + 1.5195300^2 ~= 3.0000,
+	//   confirming the hand arithmetic above.
+	const Vector3 rotate( 30, 45, 60 );
+	const Vector3 translate( 10, 20, 30 );
+	const Vector3 scale( 1, 1, 1 );
+	const Scalar ex = 10.448288, ey = 20.700050, ez = 31.519530;
+	const Scalar tol = 1e-4;
+
+	// world (projection=1): ptIntersection patched by the full rotate+
+	// translate; ptObjIntersec/ptCoord are a different field, untouched.
+	{
+		WorldPointEchoPainter src; src.addref();
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 1, scale, rotate, translate, 4.0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptIntersection = Point3( 1, 1, 1 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, ex, tol, "world multi-axis rotate 30/45/60: x" );
+		CheckClose( c.g, ey, tol, "world multi-axis rotate 30/45/60: y" );
+		CheckClose( c.b, ez, tol, "world multi-axis rotate 30/45/60: z" );
+		mp->release();
+		src.release();
+	}
+	// object (projection=2): identical math, applied to ptObjIntersec.
+	{
+		ObjectPointEchoPainter src; src.addref();
+		IPainter* mp = 0;
+		RISE_API_CreateMappingPainter( &mp, src, 2, scale, rotate, translate, 4.0 );
+		RayIntersectionGeometric ri = MakeRi();
+		ri.ptObjIntersec = Point3( 1, 1, 1 );
+		const RISEPel c = mp->GetColor( ri );
+		CheckClose( c.r, ex, tol, "object multi-axis rotate 30/45/60: x" );
+		CheckClose( c.g, ey, tol, "object multi-axis rotate 30/45/60: y" );
+		CheckClose( c.b, ez, tol, "object multi-axis rotate 30/45/60: z" );
+		mp->release();
+		src.release();
+	}
+}
+
+static void TestBlendPainterScreenOverlayClamping()
+{
+	std::cout << "Test 41: blend_painter -- P1-C fix: screen/overlay clamp inputs to [0,1] before the curve, multiply/add stay unbounded" << std::endl;
+	using namespace S7;
+
+	// mask=1 isolates Combine(a,b) exactly: out = combined*1 + b*(1-1)
+	// = combined -- the same isolation TestBlendPainterModes already
+	// uses for its "mode mix, mask=1 -> a" case above.
+	ConstColorPainter mask1( RISEPel( 1, 1, 1 ) ); mask1.addref();
+
+	struct Case { Scalar av, bv; const char* label; };
+	const Case cases[] = {
+		{  1.5, 0.8, "a=1.5,b=0.8 (a clamps to 1.0)" },
+		{ -0.5, 0.3, "a=-0.5,b=0.3 (a clamps to 0.0)" },
+	};
+
+	for( const Case& tc : cases ) {
+		ConstColorPainter a( RISEPel( tc.av, tc.av, tc.av ) ); a.addref();
+		ConstColorPainter b( RISEPel( tc.bv, tc.bv, tc.bv ) ); b.addref();
+		RayIntersectionGeometric ri = MakeRi();
+
+		const Scalar ac = tc.av < Scalar(0) ? Scalar(0) : ( tc.av > Scalar(1) ? Scalar(1) : tc.av );
+		const Scalar bc = tc.bv < Scalar(0) ? Scalar(0) : ( tc.bv > Scalar(1) ? Scalar(1) : tc.bv );
+
+		// screen: out = 1-(1-ac)*(1-bc), operands clamped first (P1-C).
+		{
+			const Scalar eScreen = Scalar(1) - (Scalar(1)-ac)*(Scalar(1)-bc);
+			IPainter* bp = 0;
+			RISE_API_CreateBlendPainterWithMode( &bp, a, b, mask1, 2u );
+			const RISEPel c = bp->GetColor( ri );
+			CheckClose( c.r, eScreen, 1e-9, std::string("screen clamped golden (GetColor), ") + tc.label );
+			const Scalar nm = bp->GetColorNM( ri, 500.0 );
+			CheckClose( nm, eScreen, 1e-9, std::string("screen clamped golden (GetColorNM), ") + tc.label );
+			bp->release();
+		}
+		// overlay: out = bc<=0.5 ? 2*ac*bc : 1-2*(1-ac)*(1-bc), clamped first.
+		{
+			const Scalar eOverlay = bc <= Scalar(0.5) ? Scalar(2)*ac*bc : Scalar(1) - Scalar(2)*(Scalar(1)-ac)*(Scalar(1)-bc);
+			IPainter* bp = 0;
+			RISE_API_CreateBlendPainterWithMode( &bp, a, b, mask1, 3u );
+			const RISEPel c = bp->GetColor( ri );
+			CheckClose( c.r, eOverlay, 1e-9, std::string("overlay clamped golden (GetColor), ") + tc.label );
+			const Scalar nm = bp->GetColorNM( ri, 500.0 );
+			CheckClose( nm, eOverlay, 1e-9, std::string("overlay clamped golden (GetColorNM), ") + tc.label );
+			bp->release();
+		}
+		// multiply / add: UNBOUNDED passthrough control -- no clamp, so
+		// these must reproduce the raw (unclamped) av/bv arithmetic.
+		{
+			const Scalar eMul = tc.av * tc.bv;
+			IPainter* bp = 0;
+			RISE_API_CreateBlendPainterWithMode( &bp, a, b, mask1, 1u );
+			const RISEPel c = bp->GetColor( ri );
+			CheckClose( c.r, eMul, 1e-9, std::string("multiply UNCLAMPED passthrough control, ") + tc.label );
+			bp->release();
+		}
+		{
+			const Scalar eAdd = tc.av + tc.bv;
+			IPainter* bp = 0;
+			RISE_API_CreateBlendPainterWithMode( &bp, a, b, mask1, 4u );
+			const RISEPel c = bp->GetColor( ri );
+			CheckClose( c.r, eAdd, 1e-9, std::string("add UNCLAMPED passthrough control, ") + tc.label );
+			bp->release();
+		}
+
+		b.release(); a.release();
+	}
+
+	mask1.release();
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -1751,6 +2555,15 @@ int main( int, char** )
 	TestRampAndPainterChannelParserDiagnostics();
 	TestRampPainterChunkRegistrationAndBridgeForm();
 	TestRampPainterEdgeInputs();
+	TestMappingPainterUVGolden();
+	TestMappingPainterWorldObjectDomainPatch();
+	TestMappingPainterTriplanar();
+	TestBlendPainterModes();
+	TestVoronoi3DSpaceParam();
+	TestS7ChunkParsingAndDiagnostics();
+	TestMappingPainterFootprintInvalidation();
+	TestMappingPainterMultiAxisRotationGolden();
+	TestBlendPainterScreenOverlayClamping();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
