@@ -48,21 +48,32 @@ namespace RISE
 	//! UV plane.  Populated at intersection time by geometries that
 	//! support it (currently: triangle meshes) when the incoming
 	//! ray has hasDifferentials = true.  Consumed by TexturePainter
-	//! to compute mip LOD per Landing 2 of the PB pipeline plan.
+	//! to compute mip LOD per Landing 2 of the PB pipeline plan, and
+	//! by ExpressionPainter/ExpressionScalarPainter (doc 88 S9) to
+	//! populate ExprEvalContext::fw for footprint-aware fbm/turbulence/
+	//! ridged octave fade.
 	//!
 	//! Units: dudx / dudy / dvdx / dvdy are the partial derivatives
 	//! of the surface UV coordinates with respect to screen-space
 	//! pixel x and y.  In other words, advancing one pixel in x
 	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
 	//! follows by multiplying by texture width / height.
+	//!
+	//! worldWidth is a WORLD-space filter-width estimate (same units
+	//! as ptIntersection / the expression VM's `P`) -- the average
+	//! magnitude of the auxiliary rays' plane-projected offsets
+	//! (dpdx, dpdy; see TextureFootprintCompute.h), i.e. roughly the
+	//! extent of one pixel's footprint on the surface.  0 when
+	//! !valid, matching dudx/dudy/dvdx/dvdy's convention.
 	struct TextureFootprint
 	{
 		Scalar  dudx, dudy;
 		Scalar  dvdx, dvdy;
+		Scalar  worldWidth;
 		bool    valid;
 
 		TextureFootprint() :
-		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ), valid( false )
+		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ), worldWidth( 0 ), valid( false )
 		{
 		}
 	};

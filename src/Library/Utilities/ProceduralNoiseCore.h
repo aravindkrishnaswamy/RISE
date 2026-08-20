@@ -66,17 +66,47 @@ namespace RISE
 			//! persistence-weighted octave sums.  Bounded to
 			//! [-S, S] where S = sum(gain^i).  octaves is clamped to
 			//! [1, kMaxOctaves]; non-finite gain/lacunarity are treated as 0.
-			Scalar Fbm3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity );
+			//!
+			//! `fw` (doc 88 S9, default 0) is an optional filter-width
+			//! estimate, in the SAME units/domain as x,y,z (i.e. whatever
+			//! scale the caller already applied to its position argument
+			//! -- this function has no way to know that scale, so passing
+			//! a world-space fw only fades octaves correctly when x,y,z
+			//! ARE world-space; see ExpressionEval.h's fbm/turbulence/
+			//! ridged CallFunc cases).  When fw > 0, octave i's amplitude
+			//! is scaled by OctaveFadeWeight(fw * lacunarity^i) (see
+			//! ProceduralNoiseCore.cpp) -- a smoothstep-based Nyquist
+			//! fade (Apodaca & Gritz, "Advanced RenderMan: Creating CGI
+			//! for Motion Pictures", 1999, ch.12, filteredfBm) that kills
+			//! shimmer from octaves whose frequency the sample footprint
+			//! can no longer resolve.  fw == 0 (the default, and the
+			//! value every pre-S9 call site still passes) reproduces the
+			//! un-faded sum EXACTLY (bit-identical) -- the weight
+			//! evaluates to precisely 1.0 at fw == 0, not just
+			//! approximately.
+			Scalar Fbm3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity, Scalar fw = Scalar(0) );
 
 			//! Layered sum of |PerlinOctave3D| (sharp creases where the
 			//! underlying noise crosses zero), normalized by the amplitude
 			//! sum so the result lies in [0, 1].
-			Scalar Turbulence3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity );
+			//! `fw`: see Fbm3D.
+			Scalar Turbulence3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity, Scalar fw = Scalar(0) );
 
 			//! Layered sum of (1-|PerlinOctave3D|)^2 (Musgrave-style ridge,
 			//! without the previous-octave weighting term), normalized by
 			//! the amplitude sum so the result lies in [0, 1].
-			Scalar Ridged3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity );
+			//! `fw`: see Fbm3D.
+			Scalar Ridged3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity, Scalar fw = Scalar(0) );
+
+			//! Footprint-aware octave-fade weight (doc 88 S9):
+			//! 1 - smoothstep(0.2, 0.6, fw) -- fully resolved (weight 1)
+			//! at fw <= 0.2, fully faded out (weight 0) at fw >= 0.6,
+			//! smooth in between.  `fw` here is already the PER-OCTAVE
+			//! filter width (Fbm3D/Turbulence3D/Ridged3D multiply the
+			//! base fw by lacunarity^i before calling this).  Exposed
+			//! publicly for the test suite's golden pin; production
+			//! callers go through Fbm3D/Turbulence3D/Ridged3D.
+			Scalar OctaveFadeWeight( Scalar fw );
 
 			//! Compile-time-checkable octave cap; also the runtime clamp for
 			//! a non-literal octave count so a hostile/huge value can never

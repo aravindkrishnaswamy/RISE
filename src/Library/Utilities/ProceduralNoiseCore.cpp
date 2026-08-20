@@ -12,6 +12,7 @@
 #include "pch.h"
 #include "ProceduralNoiseCore.h"
 #include "FiniteMath.h"
+#include <algorithm>
 #include <cmath>
 
 using namespace RISE;
@@ -57,6 +58,61 @@ namespace
 	{
 		return RISE::IsFiniteDouble( (double)v ) ? v : Scalar(0);
 	}
+
+	// doc 88 S9: Nyquist-style octave fade, Apodaca & Gritz "Advanced
+	// RenderMan" (1999) ch.12's filteredsnoise/filteredfBm convention --
+	// fully resolved (weight 1) below fw=0.2, fully faded (weight 0) at
+	// or above fw=0.6, smoothstep in between.  At fw==0 this returns
+	// EXACTLY 1.0 (t clamps to 0, so 1 - 0*0*(3-0) == 1 - 0 == 1 bit-
+	// exactly) -- the bit-identity contract every Fbm3D/Turbulence3D/
+	// Ridged3D caller relies on for fw==0.
+	// P2-b (S9 review round 1): the (0.2, 0.6) band is deliberately more
+	// conservative than the classic ~0.5-1.0-cycle Nyquist band -- it fades
+	// earlier to suppress ringing/shimmer at grazing angles; empirically
+	// chosen, not derived.
+	inline Scalar OctaveFadeWeightImpl( Scalar fw )
+	{
+		const Scalar lo = Scalar(0.2), hi = Scalar(0.6);
+		const Scalar t = std::min( std::max( ( fw - lo ) / ( hi - lo ), Scalar(0) ), Scalar(1) );
+		const Scalar smooth = t*t*(Scalar(3)-Scalar(2)*t);
+		return Scalar(1) - smooth;
+	}
+
+	// P1 (S9 review round 1): fade-to-mean constants for Turbulence3D/Ridged3D.
+	//
+	// The pre-fix code faded each octave's NUMERATOR toward zero
+	// (term * amplitude * OctaveFadeWeightImpl(...)) while ampSum -- the
+	// normalizing DENOMINATOR -- kept the full, unfaded amplitude sum. That
+	// mismatch darkens the result as fw grows (measured ~45% at fw=0.25):
+	// the denominator keeps counting full weight for octaves the numerator
+	// has stopped contributing. Renormalizing ampSum to match would fix the
+	// brightness but breaks the smooth, unfaded octave-count normalization
+	// (ampSum = sum(gain^i) for i=0..octaves-1) that every OTHER caller of
+	// Turbulence3D/Ridged3D relies on to keep the [0,1] output range stable
+	// as `octaves` itself changes. The correct fix, per
+	// the filtered-noise literature (Apodaca & Gritz, "Advanced RenderMan",
+	// 1999, ch.12's filteredfBm generalized to turbulence/ridged): a fully
+	// faded octave should converge to its EXPECTED VALUE over the noise
+	// field, not to zero, so per-octave term computation becomes
+	// mix(kMean, term, fadeWeight) with ampSum left untouched. At
+	// fadeWeight==1 (fw==0, the default) this is bit-identical to the old
+	// unfaded term -- see Turbulence3D/Ridged3D for the exact-FP argument.
+	//
+	// The two means were measured empirically with a scratch (uncommitted)
+	// probe that links directly against PerlinOctave3D in this file (not a
+	// reimplementation) and samples it at N uniform-random points in
+	// [0,4096)^3 via std::mt19937_64:
+	//   kTurbulenceMeanAbs = E[ |PerlinOctave3D(x,y,z)| ]
+	//   kRidgedMeanSq      = E[ (1 - |PerlinOctave3D(x,y,z)|)^2 ]
+	// Two independent runs cross-checked to 4 significant digits:
+	//   seed 0xC0FFEE,     N=1,000,000: meanAbs=0.1036462669, meanSq=0.8094343646
+	//   seed 0xDEADBEEF,   N=5,000,000: meanAbs=0.1037260387, meanSq=0.8093002944
+	// (PerlinOctave3D is a convex combination of 8 heavily-smoothed lattice
+	// hashes -- see SmoothedLatticeNoise3D's 26-neighbor weighting -- so its
+	// typical magnitude is well inside its [-1,1] bound; a low mean-abs is
+	// expected, not a bug in the probe.)
+	static const Scalar kTurbulenceMeanAbs = Scalar(0.1037);
+	static const Scalar kRidgedMeanSq      = Scalar(0.8093);
 }
 
 // P1-C (promoted to the public API for P1-A, S8 review round 1 -- see
@@ -114,53 +170,108 @@ Scalar RISE::Implementation::NoiseCore::PerlinOctave3D( Scalar x, Scalar y, Scal
 	return j1*(1.0-fracZ) + j2*fracZ;
 }
 
-Scalar RISE::Implementation::NoiseCore::Fbm3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity )
+Scalar RISE::Implementation::NoiseCore::Fbm3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity, Scalar fw )
 {
 	octaves = ClampOctaves( octaves );
 	gain = SafeParam( gain );
 	lacunarity = SafeParam( lacunarity );
+	fw = SafeParam( fw );
+	if( fw < Scalar(0) ) fw = Scalar(0);
 
-	Scalar total = 0, amplitude = 1, frequency = 1;
+	// Fbm3D needs no fade-to-mean term (contrast Turbulence3D/Ridged3D
+	// below): PerlinOctave3D is SIGNED with mean ~0 (it's a convex
+	// combination of zero-mean lattice hashes), so fading a term toward
+	// zero already fades it toward its expected value -- there is no
+	// brightness mismatch to correct here.
+	Scalar total = 0, amplitude = 1, frequency = 1, fwOctave = fw;
 	for( int i = 0; i < octaves; ++i ) {
-		total += PerlinOctave3D( x*frequency, y*frequency, z*frequency ) * amplitude;
+		total += PerlinOctave3D( x*frequency, y*frequency, z*frequency ) * amplitude * OctaveFadeWeightImpl( fwOctave );
 		amplitude *= gain;
 		frequency *= lacunarity;
+		fwOctave *= lacunarity;
 	}
 	return total;
 }
 
-Scalar RISE::Implementation::NoiseCore::Turbulence3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity )
+Scalar RISE::Implementation::NoiseCore::Turbulence3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity, Scalar fw )
 {
 	octaves = ClampOctaves( octaves );
 	gain = SafeParam( gain );
 	lacunarity = SafeParam( lacunarity );
+	fw = SafeParam( fw );
+	if( fw < Scalar(0) ) fw = Scalar(0);
 
-	Scalar total = 0, amplitude = 1, frequency = 1, ampSum = 0;
+	Scalar total = 0, amplitude = 1, frequency = 1, ampSum = 0, fwOctave = fw;
+	bool allFullyFaded = true;	// every octave's weight was exactly 0.0
 	for( int i = 0; i < octaves; ++i ) {
-		total += std::fabs( PerlinOctave3D( x*frequency, y*frequency, z*frequency ) ) * amplitude;
+		const Scalar term = std::fabs( PerlinOctave3D( x*frequency, y*frequency, z*frequency ) );
+		const Scalar w = OctaveFadeWeightImpl( fwOctave );
+		if( w != Scalar(0) ) allFullyFaded = false;
+		// Fade-to-mean (P1, S9 review round 1): a faded octave converges to
+		// kTurbulenceMeanAbs (its expected value), not to zero -- see the
+		// derivation comment above OctaveFadeWeightImpl for why. ampSum is
+		// intentionally left unfaded (renormalizing it would break the
+		// smooth monotone octave-count behaviour). At w==1.0 (guaranteed
+		// exactly at fw==0, every octave, since fwOctave*=lacunarity keeps
+		// 0*anything==0.0) this is bit-identical to the pre-fix term:
+		// kTurbulenceMeanAbs*(1-1.0) == kTurbulenceMeanAbs*0.0 == 0.0 exactly,
+		// term*1.0 == term exactly (multiplying by 1.0 is always exact), so
+		// the mix collapses to term*amplitude bit-for-bit.
+		total += ( kTurbulenceMeanAbs * ( Scalar(1) - w ) + term * w ) * amplitude;
 		ampSum += amplitude;
 		amplitude *= gain;
 		frequency *= lacunarity;
+		fwOctave *= lacunarity;
 	}
+	// A weighted average of the SAME constant (kTurbulenceMeanAbs, at every
+	// octave) is mathematically that constant regardless of the weights --
+	// but total/ampSum is only an APPROXIMATION of that (per-term rounding
+	// in the accumulation doesn't generally cancel in the division). Return
+	// the constant directly so the large-fw limit is exact, not merely
+	// close, matching the fw==0 exactness contract on the other end.
+	if( allFullyFaded ) return kTurbulenceMeanAbs;
 	return ( ampSum > 1e-12 ) ? ( total / ampSum ) : Scalar(0);
 }
 
-Scalar RISE::Implementation::NoiseCore::Ridged3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity )
+Scalar RISE::Implementation::NoiseCore::Ridged3D( Scalar x, Scalar y, Scalar z, int octaves, Scalar gain, Scalar lacunarity, Scalar fw )
 {
 	octaves = ClampOctaves( octaves );
 	gain = SafeParam( gain );
 	lacunarity = SafeParam( lacunarity );
+	fw = SafeParam( fw );
+	if( fw < Scalar(0) ) fw = Scalar(0);
 
-	Scalar total = 0, amplitude = 1, frequency = 1, ampSum = 0;
+	Scalar total = 0, amplitude = 1, frequency = 1, ampSum = 0, fwOctave = fw;
+	bool allFullyFaded = true;	// every octave's weight was exactly 0.0
 	for( int i = 0; i < octaves; ++i ) {
 		const Scalar n = PerlinOctave3D( x*frequency, y*frequency, z*frequency );
 		const Scalar ridge = 1.0 - std::fabs( n );
-		total += ( ridge * ridge ) * amplitude;
+		const Scalar term = ridge * ridge;
+		const Scalar w = OctaveFadeWeightImpl( fwOctave );
+		if( w != Scalar(0) ) allFullyFaded = false;
+		// Fade-to-mean (P1, S9 review round 1): same treatment as
+		// Turbulence3D above, converging to kRidgedMeanSq instead of
+		// kTurbulenceMeanAbs (the ridge term's own expected value) --
+		// see the derivation comment above OctaveFadeWeightImpl. Same
+		// exact-FP argument gives bit-identity at w==1.0 (fw==0).
+		total += ( kRidgedMeanSq * ( Scalar(1) - w ) + term * w ) * amplitude;
 		ampSum += amplitude;
 		amplitude *= gain;
 		frequency *= lacunarity;
+		fwOctave *= lacunarity;
 	}
+	// See Turbulence3D's matching comment: return the constant directly at
+	// the large-fw limit instead of relying on total/ampSum to land on it
+	// exactly.
+	if( allFullyFaded ) return kRidgedMeanSq;
 	return ( ampSum > 1e-12 ) ? ( total / ampSum ) : Scalar(0);
+}
+
+Scalar RISE::Implementation::NoiseCore::OctaveFadeWeight( Scalar fw )
+{
+	fw = SafeParam( fw );
+	if( fw < Scalar(0) ) fw = Scalar(0);
+	return OctaveFadeWeightImpl( fw );
 }
 
 //////////////////////////////////////////////////////////////////////

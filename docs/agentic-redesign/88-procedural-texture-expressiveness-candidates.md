@@ -373,7 +373,25 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
 3. **Filtering sequenced as recommended:** `fw` is reserved in the grammar
    from day 1 (evaluates to 0.0 = "point sample, no filter info" until the
    plumbing lands) so bodies stay stable; footprint plumbing + `fbm` octave
-   fade wire in Phase 2.
+   fade wire in Phase 2.  **Shipped in S9 (2026-08-20):** `fw` is now a
+   real WORLD-space filter-width estimate (units matching `P`) on primary
+   hits against triangle-mesh geometry -- `TextureFootprintCompute.h`
+   already computed the world-space auxiliary-ray offsets (`dpdx`/`dpdy`)
+   it needed for the existing UV-space mip-LOD Jacobian; S9 additionally
+   stores `0.5*(|dpdx|+|dpdy|)` on `RayIntersectionGeometric::
+   TextureFootprint::worldWidth`, and ExpressionPainter/
+   ExpressionScalarPainter::BuildContext read it (0.0 when the RI carries
+   no valid footprint -- secondary bounces, non-mesh geometry, and
+   non-pinhole cameras all still read 0.0 today; that is the honest
+   "point sample" answer, not a regression).  `fbm`/`turbulence`/`ridged`
+   fade each octave's amplitude by `1 - smoothstep(0.2, 0.6, fw *
+   lacunarity^i)` (Apodaca & Gritz, "Advanced RenderMan", 1999, ch.12) --
+   bit-identical to the pre-S9 sum at `fw == 0`.  Known limitation, not a
+   canyon: `fw` is passed into the noise builtins in whatever domain the
+   body's own position argument is already in (e.g. `fbm(P*10, ...)`
+   makes the fade threshold off by that 10x) since the VM has no
+   autodiff to track a caller's own scale multiply -- documented at the
+   call site, not solved.
 4. **`time` is in**: exposed as a keyframable chunk param (Gerstner
    precedent), available as a variable in bodies from day 1.
 5. **Name is `expression_painter`.**  `expression_function2d` stays as-is for

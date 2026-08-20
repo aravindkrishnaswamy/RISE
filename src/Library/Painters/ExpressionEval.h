@@ -18,9 +18,15 @@
 //              P, Po, N        -- vec3 context: world position, object
 //                                 position, shading normal (0 unless the
 //                                 caller supplies an ExprEvalContext)
-//              fw              -- scalar filter width; 0.0 = point
-//                                 sample (the only value until the
-//                                 Phase-2 footprint plumbing lands)
+//              fw              -- scalar filter width, in the SAME units
+//                                 as whatever position argument the body
+//                                 passes into fbm/turbulence/ridged (see
+//                                 those builtins below); 0.0 = point
+//                                 sample, no filter info -- the honest
+//                                 answer on any surface that doesn't
+//                                 populate a footprint (secondary
+//                                 bounces, non-mesh geometry, non-pinhole
+//                                 cameras -- doc 88 S9)
 //              time            -- scalar; 0.0 unless supplied
 //              + any named `params` (constants) and `defs` (named
 //                sub-expressions / let-bindings) registered before
@@ -52,7 +58,13 @@
 //              math lives here): perlin(v)->s in [-1,1]; fbm/turbulence/
 //              ridged(v,octaves,gain,lacunarity)->s (octaves clamped to
 //              [1,10], validated at compile time when written as a
-//              literal); worley_f1/f2/f2f1/id(v,jitter)->s; cellhash(s)
+//              literal) -- these three implicitly read the context `fw`
+//              (doc 88 S9) and fade an octave's contribution toward 0 as
+//              fw * lacunarity^octave approaches/exceeds the Nyquist
+//              cutoff, killing shimmer from footprint-unresolvable
+//              detail; fw==0 (the default, and the only value pre-S9)
+//              reproduces the un-faded sum exactly; worley_f1/f2/f2f1/
+//              id(v,jitter)->s; cellhash(s)
 //              ->s.  ramp(t, pos0,val0, pos1,val1, ...)->(scalar or
 //              vec3, matching the stop values) -- variadic, >=2 stops,
 //              clamped ends, positions checked ascending at compile
@@ -164,6 +176,21 @@ namespace RISE
 			static const int kMaxParseDepth = 200;	//!< recursive-descent nesting
 			static const int kMaxOctaves    = NoiseCore::kMaxOctaves;
 			static const int kMaxRampStops  = 64;
+			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
+			//!   u=0, v=1, P=2..4, Po=5..7, N=8..10, fw=kContextSlotFw(11),
+			//!   time=kContextSlotFw+1(12).
+			//! P2-a (S9 review round 1): this pair is the SOLE place the fw slot
+			//! index and the reserved-slot count are spelled out -- Builder's ctor
+			//! (m_names reserve), Builder::Finalize (m_fwSlot/m_timeSlot pin + the
+			//! "N are reserved" error text), ExpressionProgram's default member
+			//! init, and RunAny/CallFunc's static (no `this`) fw read all reference
+			//! these two constants instead of each carrying its own copy of the
+			//! literals 11/13 -- previously four independent magic numbers that a
+			//! future context-var insertion could silently desynchronize.
+			static const int kContextSlotFw    = 11;
+			//! Total reserved context-var slots (u,v,P,Po,N,fw,time) -- fw slot + 2
+			//! (fw itself, then time).
+			static const int kContextSlotCount = kContextSlotFw + 2;
 
 			//! Finiteness test hardened for the production -ffast-math build.
 			//! IsFiniteDouble materialises the value through volatile before its
@@ -240,7 +267,7 @@ namespace RISE
 					// declare `param N <value>` as an ordinary scalar
 					// constant (enamel_watch.RISEscene et al.) that must
 					// keep meaning exactly that, not the new shading normal.
-					m_names.assign( 13, std::string() );
+					m_names.assign( kContextSlotCount, std::string() );
 				}
 
 				//! A named numeric constant (scalar only -- matches the
@@ -301,8 +328,8 @@ namespace RISE
 					}
 					if( (int)m_names.size() > kMaxSlots ) {
 						SetError( "too many variables (context + param + def); user-declared names may use "
-							"at most " + std::to_string( kMaxSlots - 13 ) + " of the " + std::to_string( kMaxSlots ) +
-							" total variable slots (13 are reserved for u,v,P,Po,N,fw,time)", -1 );
+							"at most " + std::to_string( kMaxSlots - kContextSlotCount ) + " of the " + std::to_string( kMaxSlots ) +
+							" total variable slots (" + std::to_string( kContextSlotCount ) + " are reserved for u,v,P,Po,N,fw,time)", -1 );
 						out.m_valid = false; out.m_error = m_error; out.m_errorOffset = m_errorOffset;
 						return false;
 					}
@@ -310,7 +337,7 @@ namespace RISE
 					c.type = t;
 					out.m_uSlot = 0; out.m_vSlot = 1;
 					out.m_PSlot = 2; out.m_PoSlot = 5; out.m_NSlot = 8;
-					out.m_fwSlot = 11; out.m_timeSlot = 12;
+					out.m_fwSlot = kContextSlotFw; out.m_timeSlot = kContextSlotFw + 1;
 					out.m_initEnv.assign( m_names.size(), Scalar(0) );
 					for( std::map<int,Scalar>::const_iterator it = m_init.begin(); it != m_init.end(); ++it ) {
 						out.m_initEnv[ it->first ] = it->second;
@@ -996,7 +1023,7 @@ namespace RISE
 			ptrdiff_t m_errorOffset;
 
 			ExpressionProgram() :
-				m_uSlot(0), m_vSlot(1), m_PSlot(2), m_PoSlot(5), m_NSlot(8), m_fwSlot(11), m_timeSlot(12),
+				m_uSlot(0), m_vSlot(1), m_PSlot(2), m_PoSlot(5), m_NSlot(8), m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotFw + 1),
 				m_valid(false), m_errorOffset(-1)
 			{}
 			friend class Builder;
@@ -1040,7 +1067,7 @@ namespace RISE
 				return (int)v;
 			}
 
-			static Scalar CallFunc( int fn, const Scalar* a )
+			static Scalar CallFunc( int fn, const Scalar* a, Scalar fw )
 			{
 				switch( fn )
 				{
@@ -1074,9 +1101,20 @@ namespace RISE
 				case 40: return a[0]*a[3] + a[1]*a[4] + a[2]*a[5];		// dot(a,b)
 				case 41: return std::sqrt( a[0]*a[0]+a[1]*a[1]+a[2]*a[2] );	// length(v)
 				case 42: return NoiseCore::PerlinOctave3D( a[0], a[1], a[2] );
-				case 43: return NoiseCore::Fbm3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5] );
-				case 44: return NoiseCore::Turbulence3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5] );
-				case 45: return NoiseCore::Ridged3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5] );
+				// fw (doc 88 S9): the reserved context slot, always at
+				// env[kContextSlotFw] regardless of program (Builder::Finalize
+				// pins m_fwSlot to kContextSlotFw) -- threaded in from RunAny
+				// below so fbm/turbulence/ridged can fade high octaves
+				// the sample footprint can't resolve.  Passed through
+				// UNSCALED: it is in the SAME
+				// domain as whatever x,y,z the caller computed for `a[0..2]`
+				// (see NoiseCore::Fbm3D's doc comment) -- calling e.g.
+				// fbm(P*10, ...) with a world-space fw makes the fade
+				// threshold off by that x10, a known/documented limitation,
+				// not a miscompute.
+				case 43: return NoiseCore::Fbm3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
+				case 44: return NoiseCore::Turbulence3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
+				case 45: return NoiseCore::Ridged3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
 				case 46: case 47: case 48:
 				{
 					Scalar f1, f2; int cx,cy,cz;
@@ -1153,7 +1191,7 @@ namespace RISE
 					{
 						const int ar = in.arity;
 						sp -= ar;
-						stack[sp] = CallFunc( in.fn, &stack[sp] );
+						stack[sp] = CallFunc( in.fn, &stack[sp], env[ kContextSlotFw ] );
 						++sp;
 					} break;
 					case Compiled::kFuncV3:

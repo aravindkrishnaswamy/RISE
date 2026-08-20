@@ -148,6 +148,19 @@ namespace RISE
 		ri.txFootprint.dvdx = ( -dpdu_b * dpdx_a + dpdu_a * dpdx_b ) * invDet;
 		ri.txFootprint.dudy = (  dpdv_b * dpdy_a - dpdv_a * dpdy_b ) * invDet;
 		ri.txFootprint.dvdy = ( -dpdu_b * dpdy_a + dpdu_a * dpdy_b ) * invDet;
+
+		// World-space filter width (doc 88 S9): dpdx/dpdy above are already
+		// the WORLD-space offsets from P0 to the surface-plane hit of the
+		// +x/+y auxiliary rays -- i.e. exactly the world-space displacement
+		// one pixel step induces at this surface point.  Average their
+		// magnitudes (Apodaca & Gritz-style filterwidth estimate) for a
+		// single isotropic scalar; consumed by ExpressionPainter/
+		// ExpressionScalarPainter::BuildContext to populate ExprEvalContext
+		// ::fw.
+		const Scalar lenDpdx = std::sqrt( dpdx.x*dpdx.x + dpdx.y*dpdx.y + dpdx.z*dpdx.z );
+		const Scalar lenDpdy = std::sqrt( dpdy.x*dpdy.x + dpdy.y*dpdy.y + dpdy.z*dpdy.z );
+		ri.txFootprint.worldWidth = Scalar(0.5) * ( lenDpdx + lenDpdy );
+
 		ri.txFootprint.valid = true;
 	}
 }

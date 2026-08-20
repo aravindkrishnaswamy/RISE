@@ -205,8 +205,10 @@ namespace RISE
 		//! `time` is NOT exposed on this pipe: IScalarPainter does not
 		//! derive IKeyframable (unlike IPainter), so there is no keyframe
 		//! hook to animate it through; a body that references `time`
-		//! evaluates it as the fixed constant 0, matching `fw`'s
-		//! reserved-but-zero Phase-2 convention in ExpressionEval.h.
+		//! evaluates it as the fixed constant 0.  (Pre-S9, `fw` was also
+		//! always 0 for the same "no plumbing yet" reason `time` is fixed
+		//! here -- since doc 88 S9, `fw` is live on both pipes: see
+		//! BuildContext below.)
 		class ExpressionScalarPainter :
 			public virtual IScalarPainter,
 			public virtual Reference

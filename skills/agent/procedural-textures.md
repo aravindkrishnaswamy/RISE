@@ -111,8 +111,17 @@ curve, a threshold, a mix of two noises, a scalar that varies -- because
 it costs ONE chunk instead of a graph of them.
 
 The body sees `u`, `v`, `P` (world position, a `vec3`), `Po` (object
-position), `N` (shading normal), `fw` (filter width, reserved -- reads
-0.0 today), and `time`.  Builtins: `perlin`, `fbm(p, octaves, gain,
+position), `N` (shading normal), `fw` (world-space filter-width
+estimate; real on primary hits against mesh geometry, 0.0 -- an honest
+"point sample" -- on secondary bounces and non-mesh geometry), and
+`time`.  `fbm`/`turbulence`/`ridged` use `fw` automatically to fade out
+octaves the sample footprint can't resolve, cutting shimmer on
+distant/grazing procedural surfaces.  Watch domain scaling: `fw` is
+passed through UNSCALED, so scaling the position argument (e.g.
+`fbm(P*10, ...)`) scales the effective filter width the fade sees by
+that same factor -- the standard frequency idiom silently shifts the
+fade threshold, so retune the fade expectations (or divide `fw`
+accordingly) whenever you scale `P`.  Builtins: `perlin`, `fbm(p, octaves, gain,
 lacunarity)`, `turbulence`, `ridged`, `worley_f1/f2/f2f1/id(p, jitter)`,
 `cellhash`, `ramp(t, pos0,val0, ...)`, plus `mix/clamp/smoothstep/step/
 select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
