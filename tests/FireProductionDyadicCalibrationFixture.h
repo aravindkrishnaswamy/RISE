@@ -1003,9 +1003,21 @@ namespace FireProductionDyadicCalibration
 						}
 						RISE::FireProductionResidentStepResult restored;
 						if(!RISE::AdvanceFireProductionResidentStepMetal(restoredRequest,restored,
-							&error)||!restored.projection.validationPassed||
-							restored.interstageFullGridTransferCount!=0u||
-							restored.conservativeValues!=production.conservativeValues)return 202;
+							&error)){std::fprintf(stderr,"EOSDRAIN restored step-6 call failed: %s\n",
+								error.c_str());return 202;}
+						if(!restored.projection.validationPassed){std::fprintf(stderr,
+							"EOSDRAIN restored step-6 projection failed pre=%.17g post=%.17g\n",
+							restored.projection.maximumPreProjectionResidualPerS,
+							restored.projection.maximumPostProjectionResidualPerS);return 202;}
+						if(restored.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
+							"EOSDRAIN restored step-6 transferred %u full grids\n",
+							restored.interstageFullGridTransferCount);return 202;}
+						if(restored.conservativeValues!=production.conservativeValues){
+							std::size_t mismatch=0u;while(mismatch<restored.conservativeValues.size()&&
+								restored.conservativeValues[mismatch]==production.conservativeValues[mismatch])
+								++mismatch;
+							std::fprintf(stderr,"EOSDRAIN restored step-6 changed conservative index %zu\n",
+								mismatch);return 202;}
 						restoredProbeState=states[index];
 						if(!ApplyProductionResult(restored,restoredProbeState,error))return 203;
 						restorationReferenceDeviation=beginningDeviation.signedProbe;
@@ -1015,9 +1027,16 @@ namespace FireProductionDyadicCalibration
 						if(!BuildProductionRequest(restoredProbeState,sealed[step],flowThrough/512.0,
 							drainedRequest,error))return 204;
 						RISE::FireProductionResidentStepResult drained;
-						if(!RISE::AdvanceFireProductionResidentStepMetal(drainedRequest,drained,&error)||
-							!drained.projection.validationPassed||
-							drained.interstageFullGridTransferCount!=0u)return 205;
+						if(!RISE::AdvanceFireProductionResidentStepMetal(drainedRequest,drained,&error)){
+							std::fprintf(stderr,"EOSDRAIN drained step-7 call failed: %s\n",error.c_str());
+							return 205;}
+						if(!drained.projection.validationPassed||
+							drained.interstageFullGridTransferCount!=0u){std::fprintf(stderr,
+							"EOSDRAIN drained step-7 invalid projection=%d transfers=%u pre=%.17g post=%.17g\n",
+							drained.projection.validationPassed?1:0,
+							drained.interstageFullGridTransferCount,
+							drained.projection.maximumPreProjectionResidualPerS,
+							drained.projection.maximumPostProjectionResidualPerS);return 205;}
 						ProductionEOSDeviation drainedDeviation;
 						if(!MeasureProductionEOSDeviation(drained,states[index].states.size(),
 							failingProbeCell,drainedDeviation,error))return 206;
