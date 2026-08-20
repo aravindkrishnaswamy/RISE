@@ -240,6 +240,49 @@ namespace RISE
 
 			VType ResultType() const { return m_final.type; }
 
+			//! Number of compiled `def` stages (registration order == the
+			//! chunk's `def` line order, since AddDef pushes onto m_defs in
+			//! call order and Builder::Finalize copies it verbatim).  0 for
+			//! a program with no defs.  doc 88 S10: lets a caller bound a
+			//! def-stage preview index without guessing.
+			int DefCount() const { return (int)m_defs.size(); }
+
+			//! doc 88 S10 (Tier-2 def-stage thumbnail preview): evaluate the
+			//! program only THROUGH def index `defIdx` (0-based, registration
+			//! order) and report that def's own result -- the same
+			//! intermediate value a later def or the final expression would
+			//! see at that slot, without running anything after it.  Returns
+			//! false (outVal/outType untouched) when `defIdx` is out of
+			//! [0, DefCount()) -- e.g. a program with no defs, or a stale
+			//! index after the author edits the chain; the caller must not
+			//! infer "zero" from a false return.
+			//!
+			//! A scalar-typed def's result broadcasts to (s,s,s) in outVal,
+			//! matching EvalVec3's broadcast convention -- so a caller that
+			//! always reads outVal.x gets the right number regardless of
+			//! outType, and one that wants the true triple can check
+			//! outType first.
+			//!
+			//! Const, no heap allocation, no mutable state touched -- same
+			//! stack-machine contract as Eval/EvalVec3, so this is safe to
+			//! call from many concurrent preview-render threads sharing one
+			//! compiled program.
+			bool EvalDefStage( const ExprEvalContext& ctx, int defIdx, Vector3& outVal, VType& outType ) const
+			{
+				if( defIdx < 0 || (size_t)defIdx >= m_defs.size() ) return false;
+				Scalar env[ kMaxSlots ];
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, defIdx );
+				const Compiled& d = m_defs[ (size_t)defIdx ];
+				if( d.type == kVec3 ) {
+					outVal = Vector3( env[ d.writeSlot+0 ], env[ d.writeSlot+1 ], env[ d.writeSlot+2 ] );
+				} else {
+					const Scalar s = env[ d.writeSlot ];
+					outVal = Vector3( s, s, s );
+				}
+				outType = d.type;
+				return true;
+			}
+
 			bool IsValid() const { return m_valid; }
 			const std::string& Error() const { return m_error; }
 			//! Byte offset of the error within the expression string that
@@ -1028,7 +1071,14 @@ namespace RISE
 			{}
 			friend class Builder;
 
-			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time ) const
+			//! `stopAfterDef` -1 (default, via the two callers below) runs
+			//! every def; a non-negative value runs only defs [0, stopAfterDef]
+			//! inclusive -- the EvalDefStage entry point's partial-eval path.
+			//! An out-of-range non-negative value (>= m_defs.size()) is
+			//! treated as "run all", matching Eval's normal full-program
+			//! behaviour (EvalDefStage itself never passes such a value; this
+			//! is a defensive fallback, not a documented caller contract).
+			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time, int stopAfterDef = -1 ) const
 			{
 				const size_t n = m_initEnv.size();
 				for( size_t i = 0; i < n; ++i ) env[i] = m_initEnv[i];
@@ -1038,7 +1088,9 @@ namespace RISE
 				env[ m_NSlot+0 ] = N.x;  env[ m_NSlot+1 ] = N.y;  env[ m_NSlot+2 ] = N.z;
 				env[ m_fwSlot ] = fw;
 				env[ m_timeSlot ] = time;
-				for( size_t i = 0; i < m_defs.size(); ++i ) {
+				const size_t defLimit = ( stopAfterDef >= 0 && (size_t)stopAfterDef < m_defs.size() )
+					? (size_t)stopAfterDef + 1 : m_defs.size();
+				for( size_t i = 0; i < defLimit; ++i ) {
 					Scalar out[3];
 					RunAny( m_defs[i], env, out );
 					const int w = ( m_defs[i].type == kVec3 ) ? 3 : 1;

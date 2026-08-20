@@ -4376,6 +4376,42 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_GetHasAnimation(
 		SceneEditController* p, bool* outHasAnimation );
 
+	//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of a
+	//! named painter -- see PainterPreview.h (src/Library/SceneEditor) for
+	//! the domain / display-encode / scalar-normalization contract this
+	//! call does not repeat.  `defIndex < 0` previews the painter's own
+	//! output; `defIndex >= 0` previews that expression `def` slot's
+	//! intermediate stage (refused for a non-expression painter or an
+	//! out-of-range index).  `outRGBA` is CALLER-OWNED and must have room
+	//! for exactly `w*h*4` bytes (row-major, top-to-bottom); the caller
+	//! already knows `w`/`h`, so there is no separate size-query call.
+	//! `outWasScalar`/`outRangeMin`/`outRangeMax` are optional (pass null
+	//! to skip) and report the auto-range normalization actually applied
+	//! when the previewed stage is scalar-typed -- untouched for a
+	//! colour-typed stage.  Returns false (buffer untouched) on: null
+	//! controller/name/buffer, w or h outside (0, PainterPreview::kMaxDim],
+	//! an unresolved painter name, an out-of-range/inapplicable defIndex,
+	//! or the render-owns-scene / contended-lock refusal every other
+	//! SceneEditController getter in this section documents.  A request
+	//! whose w*h exceeds PainterPreview::kMaxSampleBudget is evaluated on
+	//! a decimated grid and nearest-upscaled into `outRGBA` -- still
+	//! exactly `w*h*4` bytes; see PainterPreview.h's EVALUATION BUDGET
+	//! note.
+	bool RISE_API_SceneEditController_PainterPreview(
+		SceneEditController* p, const char* painterName, int defIndex,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		bool* outWasScalar, double* outRangeMin, double* outRangeMax );
+
+	//! doc 88 S10: a ramp_painter's own colour interpolation over its
+	//! authored stop domain, as a horizontal gradient strip -- see
+	//! PainterPreview::RenderRampStripPreview's doc comment.  Same
+	//! buffer/refusal contract as RISE_API_SceneEditController_PainterPreview
+	//! above; additionally refuses when `painterName` does not resolve to
+	//! a ramp_painter.
+	bool RISE_API_SceneEditController_RampStripPreview(
+		SceneEditController* p, const char* painterName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA );
+
 
 	//! Read the scene camera's stable full-resolution dimensions.
 	//! Bridges call this from their pointer-event handlers to convert

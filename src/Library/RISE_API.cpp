@@ -9560,6 +9560,40 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_SceneEditController_PainterPreview(
+		SceneEditController* p, const char* painterName, int defIndex,
+		unsigned int w, unsigned int h, unsigned char* outRGBA,
+		bool* outWasScalar, double* outRangeMin, double* outRangeMax )
+	{
+		if( !p || !painterName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		bool wasScalar = false;
+		double rangeMin = 0, rangeMax = 0;
+		if( !p->GetPainterPreview( String( painterName ), defIndex, w, h, rgba,
+				&wasScalar, &rangeMin, &rangeMax ) ) return false;
+		// GetPainterPreview only returns true with a full w*h*4 buffer
+		// (PainterPreview::Result's contract) -- this check is defensive,
+		// not a documented partial-success path.
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		if( outWasScalar ) *outWasScalar = wasScalar;
+		if( outRangeMin )  *outRangeMin  = rangeMin;
+		if( outRangeMax )  *outRangeMax  = rangeMax;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RampStripPreview(
+		SceneEditController* p, const char* painterName,
+		unsigned int w, unsigned int h, unsigned char* outRGBA )
+	{
+		if( !p || !painterName || !outRGBA ) return false;
+		std::vector<unsigned char> rgba;
+		if( !p->GetRampStripPreview( String( painterName ), w, h, rgba ) ) return false;
+		if( rgba.size() != (std::size_t)w * h * 4 ) return false;
+		std::memcpy( outRGBA, rgba.data(), rgba.size() );
+		return true;
+	}
+
 
 	bool RISE_API_SceneEditController_GetCameraDimensions(
 		SceneEditController* p, unsigned int* outW, unsigned int* outH )

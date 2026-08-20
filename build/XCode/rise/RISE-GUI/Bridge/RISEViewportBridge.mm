@@ -1540,6 +1540,44 @@ private:
     return hasAnimation ? 1 : 0;
 }
 
+- (NSData *)painterPreviewFor:(NSString *)painterName
+                       defIndex:(NSInteger)defIndex
+                          width:(NSUInteger)width
+                         height:(NSUInteger)height
+                      wasScalar:(BOOL *)wasScalar
+                       rangeMin:(double *)rangeMin
+                       rangeMax:(double *)rangeMax {
+    if (!_controller || painterName.length == 0 || width == 0 || height == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    bool scalar = false;
+    double rmin = 0, rmax = 0;
+    if (!RISE_API_SceneEditController_PainterPreview(
+            _controller, painterName.UTF8String, static_cast<int>(defIndex),
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes),
+            &scalar, &rmin, &rmax)) {
+        return nil;
+    }
+    if (wasScalar) *wasScalar = scalar ? YES : NO;
+    if (rangeMin) *rangeMin = rmin;
+    if (rangeMax) *rangeMax = rmax;
+    return data;
+}
+
+- (NSData *)rampStripPreviewFor:(NSString *)painterName
+                            width:(NSUInteger)width
+                           height:(NSUInteger)height {
+    if (!_controller || painterName.length == 0 || width == 0 || height == 0) return nil;
+    NSMutableData *data = [NSMutableData dataWithLength:width * height * 4];
+    if (!RISE_API_SceneEditController_RampStripPreview(
+            _controller, painterName.UTF8String,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height),
+            static_cast<unsigned char *>(data.mutableBytes))) {
+        return nil;
+    }
+    return data;
+}
+
 #pragma mark - Time scrubber
 
 - (BOOL)scrubTimeBegin {

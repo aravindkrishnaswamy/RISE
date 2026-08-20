@@ -110,6 +110,20 @@ Scalar RampPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar
 	return stops[i0].spec.Eval( nm ) * ( Scalar( 1 ) - u ) + stops[i1].spec.Eval( nm ) * u;
 }
 
+RISEPel RampPainter::EvalAt( Scalar t ) const
+{
+	const Scalar lo = stops.front().pos;
+	const Scalar hi = stops.back().pos;
+	if( std::isnan( t ) ) t = lo;
+	else if( t < lo ) t = lo;
+	else if( t > hi ) t = hi;
+
+	std::size_t i0, i1;
+	Scalar u;
+	Locate( t, i0, i1, u );
+	return stops[i0].color * ( Scalar( 1 ) - u ) + stops[i1].color * u;
+}
+
 SpectralPacket RampPainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
 {
 	std::size_t i0, i1;

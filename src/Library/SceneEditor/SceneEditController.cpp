@@ -48,6 +48,7 @@
 #include "MediaIntrospection.h"
 #include "CstIntrospection.h"         // Generic descriptor+CST property rows (Painter, Geometry, ...) -- GUI redesign 2026-07-22
 #include "PainterIntrospection.h"     // Painter rows: pipe + repeatable occurrences + ParamSpec metadata -- doc 88 S4
+#include "PainterPreview.h"           // Tier-2 painter/def-stage/ramp-strip preview thumbnails -- doc 88 S10
 #include "ChunkDescriptorRegistry.h"  // DescriptorForKeyword -- dangling-reference guard (external-review P1, 2026-07-22)
 #include "EntityTemplates.h"          // Entity-creation slice: Add-Entity template registry
 #include "FileIdentity.h"             // immutable loaded-file identity captured with save snapshots
@@ -5510,6 +5511,55 @@ bool SceneEditController::GetHasAnimation( bool& hasAnimation ) const
 	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
 	if( !lk.owns_lock() ) return false;
 	hasAnimation = mJob.AreThereAnyKeyframedObjects();
+	return true;
+}
+
+bool SceneEditController::GetPainterPreview( const String& painterName, int defIndex,
+                                             unsigned int w, unsigned int h,
+                                             std::vector<unsigned char>& outRGBA,
+                                             bool* outWasScalar,
+                                             double* outRangeMin, double* outRangeMax ) const
+{
+	// Same render-owns-scene / non-blocking try_lock discipline as
+	// GetAnimationOptions/GetHasAnimation above (and PainterIntrospection's
+	// PipesFor, the doc 88 S4 precedent this module's header cites):
+	// a preview reads live painter-manager state, which a concurrent D2
+	// re-derive can free out from under it.  Refuse rather than block --
+	// this is a one-shot bridge call on the UI/agent-RPC thread, not a
+	// per-frame poll, so there is no "shows stale data next frame" self-
+	// heal; the caller (both shells) treats a refusal as "keep the last
+	// cached thumbnail, try again later."
+	outRGBA.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+
+	const PainterPreview::Result r = ( defIndex < 0 )
+		? PainterPreview::RenderPainterPreview( mJob, painterName, w, h )
+		: PainterPreview::RenderDefStagePreview( mJob, painterName, defIndex, w, h );
+	if( r.status != PainterPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
+	if( outWasScalar ) *outWasScalar = r.wasScalar;
+	if( outRangeMin )  *outRangeMin  = r.scalarRangeMin;
+	if( outRangeMax )  *outRangeMax  = r.scalarRangeMax;
+	return true;
+}
+
+bool SceneEditController::GetRampStripPreview( const String& painterName,
+                                               unsigned int w, unsigned int h,
+                                               std::vector<unsigned char>& outRGBA ) const
+{
+	// Same discipline as GetPainterPreview above.
+	outRGBA.clear();
+	if( mRenderOwnsScene.load( std::memory_order_acquire ) ) return false;
+	std::unique_lock<std::mutex> lk( mMutex, std::try_to_lock );
+	if( !lk.owns_lock() ) return false;
+
+	const PainterPreview::Result r = PainterPreview::RenderRampStripPreview( mJob, painterName, w, h );
+	if( r.status != PainterPreview::Status::Ok ) return false;
+
+	outRGBA = r.rgba;
 	return true;
 }
 

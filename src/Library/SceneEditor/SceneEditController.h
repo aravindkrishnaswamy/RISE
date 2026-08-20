@@ -2582,6 +2582,39 @@ namespace RISE
 		//! caller should retain its last successful snapshot and try again.
 		bool GetHasAnimation( bool& hasAnimation ) const;
 
+		//! doc 88 S10 (Tier-2 panel affordances): headless RGBA8 preview of
+		//! a named painter -- see PainterPreview.h for the full domain /
+		//! display-encode / scalar-normalization contract, which this
+		//! method does not repeat.  `defIndex < 0` previews the painter's
+		//! own output (colour or scalar pipe, whichever it resolves in);
+		//! `defIndex >= 0` previews that expression `def` slot's
+		//! intermediate stage (refused for a non-expression painter or an
+		//! out-of-range index).  Fills `outRGBA` (resized to exactly
+		//! `w*h*4` bytes on success, row-major top-to-bottom) and, when the
+		//! previewed stage is SCALAR-typed, the auto-range actually applied
+		//! (`outWasScalar`/`outRangeMin`/`outRangeMax` -- all optional,
+		//! pass null to skip; untouched for a colour-typed stage). Returns
+		//! false (outRGBA cleared) on an unresolved name, w/h outside
+		//! (0, PainterPreview::kMaxDim], an out-of-range/inapplicable
+		//! defIndex, or the same render-owns-scene / contended-lock
+		//! refusal GetAnimationOptions above documents (non-blocking
+		//! try_lock -- PainterPreview.h's CONCURRENCY note).
+		bool GetPainterPreview( const String& painterName, int defIndex,
+		                        unsigned int w, unsigned int h,
+		                        std::vector<unsigned char>& outRGBA,
+		                        bool* outWasScalar = nullptr,
+		                        double* outRangeMin = nullptr,
+		                        double* outRangeMax = nullptr ) const;
+
+		//! doc 88 S10: a ramp_painter's own colour interpolation over its
+		//! authored stop domain, as a horizontal gradient strip -- see
+		//! PainterPreview::RenderRampStripPreview's doc comment.  Same
+		//! fill/refusal contract as GetPainterPreview above; additionally
+		//! refuses when `painterName` does not resolve to a ramp_painter.
+		bool GetRampStripPreview( const String& painterName,
+		                          unsigned int w, unsigned int h,
+		                          std::vector<unsigned char>& outRGBA ) const;
+
 		// (Named animations are a first-class accordion Category —
 		// Category::Animation; the generic CategoryEntityCount/Name,
 		// CategoryActiveName and SetSelection surface lists + activates

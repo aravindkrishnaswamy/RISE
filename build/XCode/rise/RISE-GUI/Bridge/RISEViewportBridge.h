@@ -550,6 +550,36 @@ typedef NS_ENUM(NSInteger, RISEViewportPaneContentSource) {
 //! value on -1 so an external agent commit never makes the timeline flicker.
 @property (nonatomic, readonly) NSInteger animationPresence;
 
+//! doc 88 S10 (Tier-2 panel affordances): a small RGBA8 preview patch for
+//! a named painter, or (defIndex >= 0) one of its expression `def`
+//! stages.  Returns nil while unavailable/refused (unknown name, bad
+//! index, a def-stage request on a non-expression painter, a render
+//! owning the scene, etc.) -- see src/Library/SceneEditor/PainterPreview.h
+//! for the domain / display-encode / scalar-normalization contract this
+//! call does not repeat.  The returned NSData is exactly width*height*4
+//! bytes, row-major top-to-bottom RGBA8 -- feed it straight to a
+//! CGImage/NSImage via a data provider.  `wasScalar`/`rangeMin`/
+//! `rangeMax` (all optional -- pass NULL/nil to skip) report the
+//! auto-range normalization actually applied for a scalar-typed stage;
+//! untouched for a colour-typed one.
+- (nullable NSData *)painterPreviewFor:(NSString *)painterName
+                               defIndex:(NSInteger)defIndex
+                                  width:(NSUInteger)width
+                                 height:(NSUInteger)height
+                              wasScalar:(nullable BOOL *)wasScalar
+                               rangeMin:(nullable double *)rangeMin
+                               rangeMax:(nullable double *)rangeMax
+    NS_SWIFT_NAME(painterPreview(for:defIndex:width:height:wasScalar:rangeMin:rangeMax:));
+
+//! doc 88 S10: a ramp_painter's own colour interpolation over its
+//! authored stop domain, as a horizontal gradient strip -- same
+//! NSData/refusal contract as painterPreviewFor: above.  Refuses (nil)
+//! when `painterName` does not resolve to a ramp_painter.
+- (nullable NSData *)rampStripPreviewFor:(NSString *)painterName
+                                    width:(NSUInteger)width
+                                   height:(NSUInteger)height
+    NS_SWIFT_NAME(rampStripPreview(for:width:height:));
+
 // Named animations are surfaced as a first-class accordion Category
 // (RISEViewportCategoryAnimation) — the generic categoryEntities: /
 // activeName: / setSelection:name: surface lists + activates them, so there

@@ -175,6 +175,13 @@ namespace RISE
 			//! in `param` line order.
 			const std::vector<ParamSpec>& GetParamSpecs() const { return m_paramSpecs; }
 
+			//! S10 (doc 88): read-only access to the compiled program, for
+			//! the def-stage preview engine (PainterPreview.cpp) to call
+			//! ExpressionProgram::EvalDefStage / DefCount directly.  Not
+			//! consulted by GetColor/GetColorNM/GetSpectrum -- eval stays on
+			//! m_prog exactly as before.
+			const ExpressionProgram& GetProgram() const { return m_prog; }
+
 			RISEPel        GetColor( const RayIntersectionGeometric& ri ) const override;
 			Scalar         GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const override;
@@ -229,6 +236,10 @@ namespace RISE
 
 			//! S4 introspection: full param metadata, in `param` line order.
 			const std::vector<ParamSpec>& GetParamSpecs() const { return m_paramSpecs; }
+
+			//! S10 (doc 88): see ExpressionPainter::GetProgram's doc comment
+			//! -- same additive accessor on the scalar pipe.
+			const ExpressionProgram& GetProgram() const { return m_prog; }
 
 			ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override;
 

@@ -116,6 +116,28 @@ namespace RISE
 			Scalar         GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const override;
 
+			//! S10 (doc 88): read-only accessors for the Tier-2 ramp
+			//! gradient-strip preview (PainterPreview.cpp).  Expose just
+			//! enough to evaluate the ramp's OWN colour interpolation over
+			//! its authored stop domain -- as if some hidden driving painter
+			//! swept `t` across [firstStopPos, lastStopPos] -- WITHOUT
+			//! touching `input` (the preview shows the ramp, not whatever
+			//! painter happens to be driving it in the live scene).
+			std::size_t StopCount() const { return stops.size(); }
+			Scalar StopPos( std::size_t i ) const { return stops[i].pos; }
+			RISEPel StopColor( std::size_t i ) const { return stops[i].color; }
+			Interpolation GetInterpolation() const { return interp; }
+
+			//! Evaluate the ramp's own colour interpolation at `t` (clamped
+			//! to [StopPos(0), StopPos(StopCount()-1)]), reusing the SAME
+			//! `Locate()` bracket/weight computation `GetColor` uses -- so
+			//! the strip preview and a real render agree on interpolation
+			//! mode exactly, not approximately.  Precondition: StopCount()
+			//! >= 2 (guaranteed by the constructor's parser-validated input;
+			//! calling this on a default-constructed/empty ramp is undefined,
+			//! same precondition GetColor already carries).
+			RISEPel EvalAt( Scalar t ) const;
+
 			// No animatable state (v1) -- `input`'s own painter may be
 			// keyframed (e.g. an expression_painter driving `t` via `time`),
 			// which flows through automatically since we re-evaluate `input`

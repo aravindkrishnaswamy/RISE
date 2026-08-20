@@ -18,6 +18,8 @@
 //////////////////////////////////////////////////////////////////////
 
 import SwiftUI
+import CoreGraphics
+import AppKit
 
 /// Mirrors RISE::ValueKind in ChunkDescriptor.h.  Selects which value
 /// cell renders for a property row.
@@ -140,6 +142,263 @@ private func categoryGlyph(_ cat: RISEViewportCategory) -> String {
     }
 }
 
+// MARK: - Painter preview thumbnails (doc 88 S10, Tier 2)
+//
+// Minimal Mac shell for the headless painter-preview engine
+// (src/Library/SceneEditor/PainterPreview.h): a small async, cached
+// swatch for a painter's own output, and one per expression `def[i]`
+// row.  This is deliberately thin -- the engine (domain conventions,
+// display encode, scalar auto-range normalization) is fully specified
+// and tested on the C++ side (PainterPreviewTest.cpp); this file only
+// turns the bridge's RGBA8 bytes into an NSImage and caches it.
+//
+// P2-2 (S10 review round 1): NO blanket `extension RISEViewportBridge:
+// @unchecked Sendable {}` here.  RISEViewportBridge is an Objective-C
+// class wrapping a live C++ SceneEditController*, and it exposes plenty
+// of MUTABLE, main-actor-only state elsewhere in the app (e.g.
+// currentTool/primaryPane/agentAutonomyLevel, read/written from
+// RenderViewModel.swift) -- a whole-type `@unchecked Sendable` would
+// disarm the concurrency checker for every one of those module-wide,
+// not just the two read-only preview calls this file actually sends
+// across an actor boundary.  `PainterPreviewFetcher` below is the
+// narrowest sound shape instead: a tiny wrapper that holds ONLY a weak
+// bridge reference and exposes ONLY
+// painterPreview(for:defIndex:width:height:wasScalar:rangeMin:rangeMax:)
+// and rampStripPreview(for:width:height:) -- the two calls the
+// background-queue fetch closures below actually need.  Both are sound
+// to call off the main actor: SceneEditController::GetPainterPreview /
+// GetRampStripPreview take the controller's own try_lock +
+// mRenderOwnsScene guard and REFUSE (return nil) rather than block or
+// race on contention (PainterPreview.h's CONCURRENCY note) -- neither
+// call touches a bridge ivar, only a straight pass-through to the
+// C-ABI shim (RISE_API_SceneEditController_PainterPreview /
+// RISE_API_SceneEditController_RampStripPreview).
+final class PainterPreviewFetcher: @unchecked Sendable {
+    private weak var bridge: RISEViewportBridge?
+
+    init(bridge: RISEViewportBridge) {
+        self.bridge = bridge
+    }
+
+    func painterPreview(for painter: String, defIndex: Int, width: UInt, height: UInt,
+                         wasScalar: inout ObjCBool, rangeMin: inout Double, rangeMax: inout Double) -> Data? {
+        bridge?.painterPreview(for: painter, defIndex: defIndex, width: width, height: height,
+                                wasScalar: &wasScalar, rangeMin: &rangeMin, rangeMax: &rangeMax)
+    }
+
+    func rampStripPreview(for painter: String, width: UInt, height: UInt) -> Data? {
+        bridge?.rampStripPreview(for: painter, width: width, height: height)
+    }
+}
+
+/// Cache key includes the retained CST Document's HEAD REVISION
+/// (`RISEViewportBridge.getSceneTextVersionUuid(_:revision:)`, the
+/// same "uuid fresh per load, revision bumps iff content changed"
+/// signal `serializedSceneText`'s neighbours already use) -- so ANY
+/// scene edit invalidates every cached thumbnail.  Coarser than a
+/// per-painter dirty signal (which doesn't exist yet), but never
+/// serves a stale swatch: a revision bump is the bridge's own
+/// definition of "the document changed."
+@MainActor
+final class PainterThumbnailCache {
+    static let shared = PainterThumbnailCache()
+    private var images: [String: NSImage] = [:]
+    private var inFlight: Set<String> = []
+
+    private func key(_ painter: String, _ defIndex: Int, _ w: Int, _ h: Int, _ revision: UInt64) -> String {
+        "\(painter)|\(defIndex)|\(w)x\(h)|\(revision)"
+    }
+
+    /// Returns a cached image synchronously on a hit.  On a miss, kicks
+    /// off an async fetch (off the main thread -- the preview evaluates
+    /// the painter over a w*h grid, cheap but not free at 60fps-body-
+    /// evaluation cadence) and calls `onReady` back on the main actor
+    /// once it lands; returns nil for this call (the view redraws when
+    /// `onReady` sets its @State).  A fetch already in flight for the
+    /// same key is not duplicated.
+    func image(fetcher: PainterPreviewFetcher, painter: String, defIndex: Int,
+               width: Int, height: Int, revision: UInt64,
+               onReady: @escaping (NSImage) -> Void) -> NSImage? {
+        let k = key(painter, defIndex, width, height, revision)
+        if let cached = images[k] { return cached }
+        if inFlight.contains(k) { return nil }
+        inFlight.insert(k)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var wasScalar: ObjCBool = false
+            var rangeMin: Double = 0
+            var rangeMax: Double = 0
+            let data = fetcher.painterPreview(
+                for: painter, defIndex: defIndex,
+                width: UInt(width), height: UInt(height),
+                wasScalar: &wasScalar, rangeMin: &rangeMin, rangeMax: &rangeMax)
+            let image = data.flatMap { Self.image(fromRGBA8: $0, width: width, height: height) }
+            DispatchQueue.main.async {
+                PainterThumbnailCache.shared.inFlight.remove(k)
+                guard let image else { return }
+                PainterThumbnailCache.shared.images[k] = image
+                onReady(image)
+            }
+        }
+        return nil
+    }
+
+    /// Same fetch/cache contract as `image(fetcher:painter:defIndex:...)`
+    /// above, for the ramp gradient strip (Deliverable 2).  Uses the
+    /// SAME cache dictionary under the `defIndex == -2` sentinel key so
+    /// a ramp's own -1 painter preview (if ever requested) and its strip
+    /// never collide.
+    func rampStrip(fetcher: PainterPreviewFetcher, painter: String,
+                    width: Int, height: Int, revision: UInt64,
+                    onReady: @escaping (NSImage) -> Void) -> NSImage? {
+        let k = key(painter, -2, width, height, revision)
+        if let cached = images[k] { return cached }
+        if inFlight.contains(k) { return nil }
+        inFlight.insert(k)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let data = fetcher.rampStripPreview(for: painter, width: UInt(width), height: UInt(height))
+            let image = data.flatMap { Self.image(fromRGBA8: $0, width: width, height: height) }
+            DispatchQueue.main.async {
+                PainterThumbnailCache.shared.inFlight.remove(k)
+                guard let image else { return }
+                PainterThumbnailCache.shared.images[k] = image
+                onReady(image)
+            }
+        }
+        return nil
+    }
+
+    /// Same recipe RenderViewModel.handleOutput uses for the viewport's
+    /// own RGBA8->NSImage conversion (premultipliedLast, no decode
+    /// array, no interpolation at build time).  `nonisolated`: a pure
+    /// function of its arguments (no access to the cache's own state),
+    /// called from the background-queue fetch closures above -- which
+    /// run off the main actor by design (MATERIAL_EDITOR.md §3.3), so
+    /// this must not inherit the class's @MainActor isolation.
+    private nonisolated static func image(fromRGBA8 data: Data, width: Int, height: Int) -> NSImage? {
+        guard width > 0, height > 0, data.count == width * height * 4 else { return nil }
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+        guard let provider = CGDataProvider(data: data as CFData),
+              let cgImage = CGImage(
+                  width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                  bytesPerRow: width * 4, space: colorSpace, bitmapInfo: bitmapInfo,
+                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+              ) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: width, height: height))
+    }
+}
+
+/// A small preview swatch for a painter (`defIndex == -1`) or one of its
+/// expression `def` stages (`defIndex >= 0`).  Renders a neutral filled
+/// tile until the async fetch lands, never blocking the row it sits in.
+private struct PainterThumbnailView: View {
+    let bridge: RISEViewportBridge
+    let painterName: String
+    let defIndex: Int
+    var size: CGFloat = 48
+
+    @State private var image: NSImage? = nil
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4).fill(Theme.textDim.opacity(0.08))
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.borderHairline, lineWidth: 1))
+        .frame(width: size, height: size)
+        .onAppear { refresh() }
+        .onChange(of: painterName) { _, _ in image = nil; refresh() }
+        .onChange(of: defIndex) { _, _ in image = nil; refresh() }
+    }
+
+    private func refresh() {
+        var uuid: UInt64 = 0
+        var revision: UInt64 = 0
+        _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
+        // Oversample a little past the on-screen point size for a crisp
+        // swatch on Retina displays; the engine's kMaxDim cap (2048) is
+        // far above anything this UI ever requests.
+        let px = max(8, Int((size * 2).rounded(.up)))
+        let fetcher = PainterPreviewFetcher(bridge: bridge)
+        if let cached = PainterThumbnailCache.shared.image(
+            fetcher: fetcher, painter: painterName, defIndex: defIndex,
+            width: px, height: px, revision: revision,
+            onReady: { img in self.image = img }
+        ) {
+            image = cached
+        }
+    }
+}
+
+/// Deliverable 2: a ramp_painter's gradient strip -- its own colour
+/// interpolation over its authored stop domain, via
+/// `RISEViewportBridge.rampStripPreview(for:width:height:)`.  Reuses
+/// PainterThumbnailCache under a distinct `defIndex == -2` key (a ramp
+/// strip is a different evaluation than the painter's own -1 preview:
+/// RampPainter::EvalAt sweeps `t` directly, bypassing `input` -- see
+/// PainterPreview::RenderRampStripPreview's doc comment), so the two
+/// never collide or overwrite each other in the cache.
+private struct RampStripThumbnailView: View {
+    let bridge: RISEViewportBridge
+    let painterName: String
+    var width: CGFloat = 220
+    var height: CGFloat = 20
+
+    @State private var image: NSImage? = nil
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4).fill(Theme.textDim.opacity(0.08))
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.borderHairline, lineWidth: 1))
+        .frame(width: width, height: height)
+        .onAppear { refresh() }
+        .onChange(of: painterName) { _, _ in image = nil; refresh() }
+    }
+
+    private func refresh() {
+        var uuid: UInt64 = 0
+        var revision: UInt64 = 0
+        _ = bridge.getSceneTextVersionUuid(&uuid, revision: &revision)
+        let pxW = max(8, Int((width * 2).rounded(.up)))
+        let pxH = max(1, Int((height * 2).rounded(.up)))
+        let fetcher = PainterPreviewFetcher(bridge: bridge)
+        if let cached = PainterThumbnailCache.shared.rampStrip(
+            fetcher: fetcher, painter: painterName, width: pxW, height: pxH, revision: revision,
+            onReady: { img in self.image = img }
+        ) {
+            image = cached
+        }
+    }
+}
+
+/// True iff `rowName` has PainterIntrospection's synthetic occurrence-row
+/// shape for the `def` role specifically ("def[2]") -- mirrors
+/// PainterIntrospection::ParseOccurrenceRowName's contract on the Swift
+/// side (name-string parsing only; this file has no CST access to
+/// confirm the role is actually `def` on THIS chunk kind, which is fine:
+/// a false positive here only means an extra thumbnail fetch that
+/// resolves to a def-index-out-of-range refusal and shows the neutral
+/// placeholder tile, never a wrong value).
+private func defStageIndex(rowName: String) -> Int? {
+    guard rowName.hasPrefix("def["), rowName.hasSuffix("]") else { return nil }
+    let inner = rowName.dropFirst(4).dropLast(1)
+    guard !inner.isEmpty else { return nil }
+    return Int(inner)
+}
+
 struct PropertiesPanel: View {
     let bridge: RISEViewportBridge
     @Binding var refreshTrigger: Int          // increment to force a snapshot reload
@@ -241,12 +500,47 @@ struct PropertiesPanel: View {
 
     // MARK: - Property body
 
+    /// doc 88 S10: a painter's own preview swatch, at the top of its row
+    /// group -- the C1 "material swatch at panel top" idiom
+    /// (MATERIAL_EDITOR.md §2.1), reused for painter nodes.
+    @ViewBuilder
+    private var painterThumbnailHeader: some View {
+        if selectionCategory == .painter && !selectionName.isEmpty {
+            HStack(spacing: 10) {
+                PainterThumbnailView(bridge: bridge, painterName: selectionName, defIndex: -1, size: 56)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Preview").font(Theme.sans(10, .medium)).foregroundColor(Theme.textDim)
+                    Text("Evaluated over a synthetic UV/world patch, not a scene render.")
+                        .font(Theme.sans(9))
+                        .foregroundColor(Theme.textDim)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 4)
+            }
+            // Deliverable 2: the ramp's own gradient, above its `stop[i]`
+            // rows -- detected off the generic "type" row's chunk keyword
+            // rather than a bespoke category, since a ramp_painter is
+            // still Category::Painter like every other painter kind.
+            if isRampPainter {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Gradient").font(Theme.sans(10, .medium)).foregroundColor(Theme.textDim)
+                    RampStripThumbnailView(bridge: bridge, painterName: selectionName)
+                }
+            }
+        }
+    }
+
+    private var isRampPainter: Bool {
+        rows.first(where: { $0.name == "type" })?.initialValue == "ramp_painter"
+    }
+
     @ViewBuilder
     private var propertyBody: some View {
         VStack(alignment: .leading, spacing: 10) {
             if selectionCategory == .camera {
                 cameraAffordances
             }
+            painterThumbnailHeader
             if rows.isEmpty {
                 Text(emptyRowsMessage)
                     .font(Theme.sans(11))
@@ -273,6 +567,22 @@ struct PropertiesPanel: View {
     }
 
     private func makeRow(_ row: PropertyRow) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            // doc 88 S10: a def[i] row gets a small stage thumbnail --
+            // "most of a node graph's explanatory value with none of the
+            // canvas machinery" (doc 88 §P5 Tier 2).  Only meaningful on
+            // an expression painter's `def` occurrences; a false-positive
+            // name match on another chunk kind just fetches a refusal and
+            // shows the neutral placeholder (see defStageIndex's doc
+            // comment), never a wrong value.
+            if selectionCategory == .painter, let stageIdx = defStageIndex(rowName: row.name) {
+                PainterThumbnailView(bridge: bridge, painterName: selectionName, defIndex: stageIdx, size: 28)
+            }
+            propertyRowCell(row)
+        }
+    }
+
+    private func propertyRowCell(_ row: PropertyRow) -> some View {
         PropertyRowView(
             row: row,
             onCommit: { newValue in

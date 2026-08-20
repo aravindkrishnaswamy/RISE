@@ -1140,6 +1140,46 @@ int ViewportBridge::animationPresence() const
     return hasAnimation ? 1 : 0;
 }
 
+bool ViewportBridge::painterPreview( const QString& painterName, int defIndex,
+                                      unsigned int w, unsigned int h, QByteArray& outRGBA,
+                                      bool* outWasScalar, double* outRangeMin, double* outRangeMax ) const
+{
+    outRGBA.clear();
+    if (!m_controller || painterName.isEmpty() || w == 0 || h == 0) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = painterName.toUtf8();
+    bool wasScalar = false;
+    double rangeMin = 0, rangeMax = 0;
+    if (!RISE_API_SceneEditController_PainterPreview(
+            m_controller, nameUtf8.constData(), defIndex, w, h,
+            reinterpret_cast<unsigned char*>( buf.data() ),
+            &wasScalar, &rangeMin, &rangeMax)) {
+        return false;
+    }
+    outRGBA = buf;
+    if (outWasScalar) *outWasScalar = wasScalar;
+    if (outRangeMin)  *outRangeMin  = rangeMin;
+    if (outRangeMax)  *outRangeMax  = rangeMax;
+    return true;
+}
+
+bool ViewportBridge::rampStripPreview( const QString& painterName,
+                                        unsigned int w, unsigned int h,
+                                        QByteArray& outRGBA ) const
+{
+    outRGBA.clear();
+    if (!m_controller || painterName.isEmpty() || w == 0 || h == 0) return false;
+    QByteArray buf( static_cast<int>( static_cast<qint64>( w ) * h * 4 ), Qt::Uninitialized );
+    const QByteArray nameUtf8 = painterName.toUtf8();
+    if (!RISE_API_SceneEditController_RampStripPreview(
+            m_controller, nameUtf8.constData(), w, h,
+            reinterpret_cast<unsigned char*>( buf.data() ))) {
+        return false;
+    }
+    outRGBA = buf;
+    return true;
+}
+
 // Named animations are now a first-class accordion Category
 // (Category::Animation) — surfaced via the generic categoryEntities() /
 // activeNameForCategory() / setSelection() methods, which pass the raw

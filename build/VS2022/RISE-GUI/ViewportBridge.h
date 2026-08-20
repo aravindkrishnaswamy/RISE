@@ -12,6 +12,7 @@
 #ifndef VIEWPORTBRIDGE_H
 #define VIEWPORTBRIDGE_H
 
+#include <QByteArray>
 #include <QObject>
 #include <QImage>
 #include <QPointer>
@@ -571,6 +572,36 @@ public:
     /// the controller is temporarily unavailable/contended.  Polling UI
     /// retains its last successful value on -1.
     int animationPresence() const;
+
+    /// doc 88 S10 (Tier-2 panel affordances): a small RGBA8 preview patch
+    /// for a named painter, or (defIndex >= 0) one of its expression
+    /// `def` stages -- see src/Library/SceneEditor/PainterPreview.h for
+    /// the domain / display-encode / scalar-normalization contract this
+    /// call does not repeat.  CARRY ONLY on this platform today (the Qt
+    /// paint-into-a-swatch-widget half is owed, needs an MSVC build to
+    /// verify -- MATERIAL_EDITOR.md §2.1's standing Mac-renders/
+    /// Windows-carries split): this fills `outRGBA` with exactly
+    /// `w*h*4` bytes (row-major top-to-bottom RGBA8, trivially wrapped
+    /// as `QImage(outRGBA.constData(), w, h, QImage::Format_RGBA8888)`
+    /// by a future widget) and reports the auto-range normalization via
+    /// `outWasScalar`/`outRangeMin`/`outRangeMax` when the previewed
+    /// stage is scalar-typed.  Returns false (buffer cleared) on an
+    /// unresolved name, an out-of-range/inapplicable defIndex, bad
+    /// dimensions, or the render-owns-scene / contended-lock refusal
+    /// every other getter in this section documents.
+    bool painterPreview( const QString& painterName, int defIndex,
+                          unsigned int w, unsigned int h, QByteArray& outRGBA,
+                          bool* outWasScalar = nullptr,
+                          double* outRangeMin = nullptr,
+                          double* outRangeMax = nullptr ) const;
+
+    /// doc 88 S10: a ramp_painter's own colour interpolation over its
+    /// authored stop domain, as a horizontal gradient strip.  Same
+    /// carry-only contract as painterPreview() above; additionally
+    /// refuses when `painterName` does not resolve to a ramp_painter.
+    bool rampStripPreview( const QString& painterName,
+                            unsigned int w, unsigned int h,
+                            QByteArray& outRGBA ) const;
 
     // Named animations are surfaced as a first-class accordion Category
     // (Category::Animation) — the generic categoryEntities() /
