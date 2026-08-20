@@ -690,3 +690,22 @@ scoping; run dir `evals/runs/s6_census_gemini`):**
 - Per the pre-committed rules, gate (a)'s pass means Phase 2 proceeds;
   gate (b)'s tuning continues via measurement, and the toll decision
   (§7 decision 2) still waits on gate (c).
+
+**Round 2 (2026-08-20, gemini-3.5-flash, N=3, resumable re-run — only the
+new `constant_materials_polish` scenario executed):**
+
+- **Gate (c): PASS 3/3.**  `vary_material_calls` per-run: passed=true,
+  metricValue=3 in every repeat — each run called the verb three times
+  (once per qualifying material), and every run's document ended with a
+  spatially-varying microsurface binding
+  (`spatially_varying_scalar` = 1 all three repeats).  The
+  collapse_to_instances hypothesis (a note that NAMES a callable verb
+  succeeds where advice asking for hand-rewrites measured zero) is
+  CONFIRMED by census.
+- **Toll decision closed (§7 decision 2):** gate (c) passed, so bare-
+  numeric microsurface slots are never priced.  Verb + note is the
+  shipped, measured mechanism.
+- **Standing census verdict:** (a) PASS 3/3, (c) PASS 3/3, (b)
+  provisional gemini-only miss (spontaneous use in generic builds) —
+  the summoned-category law in action; revisit (b) only with a
+  cross-provider run.
