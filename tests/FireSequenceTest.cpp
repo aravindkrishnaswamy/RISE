@@ -515,7 +515,8 @@ namespace
 		const std::uint64_t version)
 	{
 		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
-		if(version>=9u&&!HomogeneousStateProducerPrecision(states,precision))return false;
+		if(!HomogeneousStateProducerPrecision(states,precision)||
+			(version<9u&&precision!=FireStateProducerPrecision::Binary64))return false;
 		const std::uint64_t count=states.size();if(!writer.Pod(count))return false;
 		for(const MethaneCellState& state:states){
 			if(version>=9u){const unsigned char producerPrecision=
@@ -3326,6 +3327,19 @@ int main(int argc,char** argv)
 	}
 	MethaneCellState binary64View=precisionRoundTrip.states.front();
 	binary64View.producerPrecision=FireStateProducerPrecision::Binary64;
+	for(std::uint64_t legacyVersion=5u;legacyVersion<=8u;++legacyVersion){
+		const std::filesystem::path rejectedBinary32Legacy=checkpointFixture/
+			("binary32_legacy_v"+std::to_string(legacyVersion)+".checkpoint");
+		const std::filesystem::path rejectedMixedLegacy=checkpointFixture/
+			("mixed_legacy_v"+std::to_string(legacyVersion)+".checkpoint");
+		Check(!SaveMethaneRunCheckpoint(rejectedBinary32Legacy,precisionRoundTrip,
+			checkpointFixtureError,legacyVersion)&&
+			!std::filesystem::exists(rejectedBinary32Legacy)&&
+			!SaveMethaneRunCheckpoint(rejectedMixedLegacy,mixedPrecisionCheckpoint,
+				checkpointFixtureError,legacyVersion)&&
+			!std::filesystem::exists(rejectedMixedLegacy),
+			"r115 legacy v5-v8 publication rejects binary32 and mixed producer classes");
+	}
 	const std::filesystem::path precisionCheckpoint=checkpointFixture/"precision_class.checkpoint";
 	const std::filesystem::path precisionFrame=checkpointFixture/"precision_class.vdb";
 	MethaneRunCheckpoint loadedPrecisionRoundTrip;
