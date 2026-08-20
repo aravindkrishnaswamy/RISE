@@ -83,3 +83,56 @@ int RunProductionCalibrationStateGeneration(const std::filesystem::path& outputD
 	std::fprintf(stderr,"calibration inputs sealed manifest_sha256=%s\n",
 		DigestFile(manifest).c_str());return 0;
 }
+
+int SealExistingProductionCalibrationInputs(const std::filesystem::path& inputDirectory)
+{
+	const std::array<unsigned int,3> tiers={{5u,6u,7u}};
+	std::array<std::filesystem::path,3> paths;
+	std::array<MethaneRunCheckpoint,3> states;
+	double commonX=std::numeric_limits<double>::infinity();
+	double commonY=std::numeric_limits<double>::infinity();
+	double commonZ=std::numeric_limits<double>::infinity();
+	for(std::size_t index=0u;index<tiers.size();++index){
+		paths[index]=inputDirectory/(std::string("tier")+std::to_string(tiers[index])+
+			"_t0p32.checkpoint");
+		std::string error;
+		if(!LoadMethaneRunCheckpoint(paths[index],states[index],error)||
+			states[index].simulationTimeS!=0.32)return 137;
+		commonX=std::min(commonX,states[index].cellWidthM*states[index].dimensions[0]);
+		commonY=std::min(commonY,states[index].cellWidthM*states[index].dimensions[1]);
+		commonZ=std::min(commonZ,states[index].cellWidthM*states[index].dimensions[2]);
+	}
+	const std::filesystem::path manifest=inputDirectory/"input_manifest.v2";
+	const std::filesystem::path partial=inputDirectory/"input_manifest.v2.partial";
+	if(std::filesystem::exists(manifest)||std::filesystem::exists(partial))return 138;
+	std::ofstream output(partial,std::ios::binary|std::ios::trunc);
+	if(!output)return 139;
+	output<<"fire_production_calibration_input_v2\n"
+		"physical_time_s 0.32\n"
+		"baseline_horizon_s 0.002\n"
+		"temporal_steps_s 0.002 0.001 0.0005\n"
+		"formal_order production_space 2 production_time 1 oracle_space 2 oracle_time 2\n"
+		"horizontal_alignment domain_center\n"
+		"vertical_alignment common_floor\n"
+		"common_support_m "<<std::setprecision(17)<<-0.5*commonX<<' '<<0.5*commonX<<' '
+		<<-0.5*commonY<<' '<<0.5*commonY<<" 0 "<<commonZ<<"\n"
+		"metric_registry component_volume_l1,component_integral,velocity_volume_l2,projection_residual\n"
+		"golden_checkpoint_sha256 1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947\n"
+		"mirror_generator_sha256 "<<RISEFireProductionFP64::SourceManifest::Generator<<"\n"
+		"advection_source_sha256 "<<RISEFireProductionFP64::SourceManifest::FireProductionAdvectionSource<<"\n"
+		"transport_source_sha256 "<<RISEFireProductionFP64::SourceManifest::FireProductionTransportSource<<"\n"
+		"force_source_sha256 "<<RISEFireProductionFP64::SourceManifest::FireProductionForceSource<<"\n"
+		"projection_source_sha256 "<<RISEFireProductionFP64::SourceManifest::FireProductionProjectionSource<<"\n";
+	for(std::size_t index=0u;index<paths.size();++index){
+		const MethaneRunCheckpoint& state=states[index];
+		output<<"tier "<<tiers[index]<<" shape "<<state.dimensions[0]<<' '
+			<<state.dimensions[1]<<' '<<state.dimensions[2]<<" dx "<<std::setprecision(17)
+			<<state.cellWidthM<<" sha256 "<<DigestFile(paths[index])<<" case "
+			<<state.caseRecordId<<'\n';
+	}
+	output.flush();output.close();if(!output)return 140;
+	std::error_code renameError;std::filesystem::rename(partial,manifest,renameError);
+	if(renameError)return 141;
+	std::fprintf(stderr,"calibration inputs v2 sealed manifest_sha256=%s\n",
+		DigestFile(manifest).c_str());return 0;
+}
