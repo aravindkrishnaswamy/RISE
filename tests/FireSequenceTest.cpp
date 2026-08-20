@@ -253,6 +253,7 @@ namespace
 	struct RunPersistenceOptions
 	{
 		std::filesystem::path checkpointPath;
+		std::filesystem::path finalCheckpointPath;
 		double checkpointCadenceWallS=0.0;
 		std::uint64_t streamedFrameCountAtStart=0u;
 		bool resume=false;
@@ -908,7 +909,7 @@ namespace
 		}
 		RISECBOR64::Bytes currentBuildBytes;
 		std::string currentBuildId,currentExecutableDigest;
-		if(!persistence.checkpointPath.empty()&&
+		if((!persistence.checkpointPath.empty()||!persistence.finalCheckpointPath.empty())&&
 			(!CurrentRendererBuildIdentity(currentBuildBytes,currentBuildId)||
 			!CurrentExecutableDigest(currentBuildBytes,currentExecutableDigest,error))){
 			values.structuredError="checkpoint_build_identity_failure";return values;
@@ -1559,7 +1560,8 @@ namespace
 					std::chrono::steady_clock::now()-lastCheckpointWall).count();
 				const bool equivalenceSnapshotDue=
 					!persistence.equivalenceSnapshotDirectory.empty();
-				const bool checkpointDue=equivalenceSnapshotDue||
+				const bool finalCheckpointDue=!moreWork&&!persistence.finalCheckpointPath.empty();
+				const bool checkpointDue=equivalenceSnapshotDue||finalCheckpointDue||
 					(moreWork&&!persistence.checkpointPath.empty()&&
 						(persistence.checkpointCadenceWallS<=0.0||
 							checkpointElapsedS>=persistence.checkpointCadenceWallS));
@@ -1581,7 +1583,8 @@ namespace
 					checkpoint.previousStepS=previousStepS;
 					checkpoint.lastAcceptedStepS=reaction.deltaTimeS;
 					checkpoint.acceptedSteps=acceptedSteps;
-					std::filesystem::path checkpointOutput=persistence.checkpointPath;
+					std::filesystem::path checkpointOutput=finalCheckpointDue?
+						persistence.finalCheckpointPath:persistence.checkpointPath;
 					if(equivalenceSnapshotDue){
 						std::ostringstream snapshotName;snapshotName<<"step_"<<std::setw(2)<<
 							std::setfill('0')<<(acceptedSteps-values.resumedFromStep)<<".checkpoint";
@@ -2793,6 +2796,7 @@ namespace
 // certified periodic oracle are private to this translation unit.
 #include "FireProductionGoldenProjectionFixture.h"
 #include "FireProductionGoldenCompositionFixture.h"
+#include "FireProductionCalibrationFixture.h"
 
 	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
@@ -2967,6 +2971,8 @@ int main(int argc,char** argv)
 		return RunProductionGoldenProjectionFixture(argv[2]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-golden-composition")==0)
 		return RunProductionGoldenCompositionFixture(argv[2],argv[3]);
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-calibration-generate-inputs")==0)
+		return RunProductionCalibrationStateGeneration(argv[2]);
 	if(argc==6&&std::strcmp(argv[1],"--fire-checkpoint-child")==0){
 		const unsigned long parsed=std::strtoul(argv[5],nullptr,10);
 		if(parsed==0u||parsed>64u)return 92;
