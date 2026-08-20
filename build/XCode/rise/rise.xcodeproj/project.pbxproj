@@ -6406,12 +6406,15 @@
 				GCC_OPTIMIZATION_LEVEL = 0;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6426,8 +6429,6 @@
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6437,6 +6438,14 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6467,12 +6476,15 @@
 				GCC_OPTIMIZATION_LEVEL = 3;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6487,8 +6499,6 @@
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6498,6 +6508,14 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6527,12 +6545,15 @@
 				GCC_OPTIMIZATION_LEVEL = 3;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6547,8 +6568,6 @@
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6558,6 +6577,14 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
@@ -6710,12 +6737,15 @@
 				GCC_OPTIMIZATION_LEVEL = 3;
 				GCC_PRECOMPILE_PREFIX_HEADER = YES;
 				GCC_PREFIX_HEADER = ../../../src/Library/pch.h;
+				GCC_PREPROCESSOR_DEFINITIONS = "";
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
 				HEADER_SEARCH_PATHS = (
 					"$(SRCROOT)/../../../extlib/oidn/install/include",
 					/opt/homebrew/include,
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -6731,8 +6761,6 @@
 				OTHER_CPLUSPLUSFLAGS = (
 					"-ffast-math",
 					"-fno-finite-math-only",
-					"-DNO_PNG_SUPPORT",
-					"-DNO_TIFF_SUPPORT",
 					"-DCOLORSPACE_RGB",
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
@@ -6742,6 +6770,14 @@
 					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
+					"-lpng",
+					"-lz",
+					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 					"-lOpenImageDenoise",
 					"-lopenpgl",
 				);
