@@ -1555,8 +1555,12 @@ ratios and exits zero, explicitly labeling them diagnostic-only.
 ### 7.25 Certified-oracle output spatial stop (r108)
 
 r108 performs the missing evolved-output test before deriving `B_fp32` or
-dispatching calibration Metal. A no-Metal process advances each exact tier
-state from `0.32 s` to `0.322 s` as four fixed `0.0005 s` certified steps with
+dispatching calibration Metal. The dedicated strict executable
+`bin/tests/FireProductionCalibrationOracle` is linked without the four
+production Metal objects or `Metal.framework`; its build rejects either the
+framework or a production Metal implementation symbol. That no-Metal process
+advances each exact tier state from `0.32 s` to `0.322 s` as four fixed
+`0.0005 s` certified steps with
 zero source packets and the fuel-bed overlay disabled. It atomically seals all
 twelve resulting `S_div` arrays before the comparison process runs. The scoped
 oracle spatial manifest SHA-256 is
@@ -1588,8 +1592,8 @@ required oracle spatial terms undefined for `rho_total_Z`, `CH4`, `CO2`, and
 `H2O`. One missing addend is sufficient to block the triangle tolerance, so
 production refinement, `B_fp32`, Metal confirmation, velocity/ledger terms,
 and eight-slice readmission do not run. The canonical command is
-`./bin/tests/FireSequenceTest --fire-production-calibration-check-oracle-spatial
-rendered/fire_production_calibration/r107_state_family
+`./bin/tests/FireProductionCalibrationOracle --fire-production-calibration-check-oracle-spatial
+rendered/fire_production_calibration/r108_oracle_spatial
 a2bb4c834af7f9c839c3e0114dcaa64cac43f915969fce2ab55e0395fe1b20e2`;
 exit `162` is the monitored calibration stop. The next admissible work is a
 cause probe of the evolved tier family or an owner-approved continuous-input

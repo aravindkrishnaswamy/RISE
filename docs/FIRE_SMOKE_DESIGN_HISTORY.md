@@ -2589,14 +2589,15 @@ it was already tried and refuted here.
   `[1.18274896,1.65846154]`. `rho_total_Z` and `CH4` yield `1.1396311811`
   and `1.1647909263`; `CO2` and `H2O` both yield `0.9498604709`, with the
   tier-6/7 difference larger than tier-5/6. O2/N2/enthalpy are capped at
-  formal `p=2`; near-zero CO/C(gr) are unidentifiable. Consequently no
+  formal `p=2`; near-zero CO/C(gr) are unidentifiable. Consequently the
   beginning-state family is not asymptotic. Fresh review correctly found that
   this is diagnostic rather than dispositive: r106 applies Richardson to each
   solver's evolved `U5/U6/U7`, and did not freeze a pre-solver admission gate.
   The old exit-145 stop was withdrawn before any tolerance was certified.
 
 - **r108 (2026-08-19):** the corrected evolved-output gate legitimately stops
-  calibration. A no-Metal extractor advances the exact tier-5/6/7 certified
+  calibration. A dedicated strict executable whose link excludes all four
+  production Metal objects and `Metal.framework` advances the exact tier-5/6/7 certified
   states through four fixed `0.0005 s` source-free steps and seals every
   resulting `S_div` byte in manifest `a2bb4c834a...1b20e2`; the comparison
   process reruns and byte-verifies those targets before inspecting outputs.
