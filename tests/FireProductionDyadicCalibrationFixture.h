@@ -143,16 +143,24 @@ namespace FireProductionDyadicCalibration
 		const double amplitude=0.05*std::sqrt(Gravity*dStar),h=result.cellWidthM;
 		for(unsigned int axis=0u;axis<3u;++axis){
 			const std::size_t nx=result.dimensions[0],ny=result.dimensions[1],nz=result.dimensions[2];
-			result.momentum.component[axis].resize(cells);
-			result.velocity.component[axis].resize(cells);
-			for(std::size_t z=0u;z<nz;++z)for(std::size_t y=0u;y<ny;++y)
-				for(std::size_t x=0u;x<nx;++x){
-					const std::size_t face=CellIndex(result,x,y,z);
-					std::array<std::size_t,3> lower={{x,y,z}},upper=lower;
-					upper[axis]=(upper[axis]+1u)%result.dimensions[axis];
-					const double density=0.5*(result.states[CellIndex(result,lower[0],lower[1],
-						lower[2])].GasDensity()+result.states[CellIndex(result,upper[0],upper[1],
-						upper[2])].GasDensity());
+			const std::size_t ex=axis==0u?nx+1u:nx,ey=axis==1u?ny+1u:ny,
+				ez=axis==2u?nz+1u:nz;
+			result.momentum.component[axis].resize(ex*ey*ez);
+			result.velocity.component[axis].resize(ex*ey*ez);
+			for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+				for(std::size_t x=0u;x<ex;++x){
+					const std::size_t face=(z*ey+y)*ex+x;
+					std::array<std::size_t,3> lower={{x%nx,y%ny,z%nz}},upper=lower;
+					const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=result.dimensions[axis];
+					lower[axis]=normal==0u?0u:normal-1u;
+					upper[axis]=normal==extent?extent-1u:normal;
+					const double lowerDensity=result.states[CellIndex(result,lower[0],lower[1],
+						lower[2])].GasDensity(),upperDensity=result.states[CellIndex(result,upper[0],
+						upper[1],upper[2])].GasDensity();
+					const double density=(normal==0u||normal==extent)?
+						0.5*((normal==0u?upperDensity:lowerDensity)+ambient.GasDensity()):
+						0.5*(lowerDensity+upperDensity);
 					const double fx=(static_cast<double>(x)+(axis==0u?1.0:0.5))*h;
 					const double fy=(static_cast<double>(y)+(axis==1u?1.0:0.5))*h;
 					const double fz=(static_cast<double>(z)+(axis==2u?1.0:0.5))*h;
@@ -206,13 +214,12 @@ namespace FireProductionDyadicCalibration
 	{
 		weights.assign(samples,{});const double sourceH=length/static_cast<double>(source);
 		for(std::size_t sample=0u;sample<samples;++sample){
-			const double location=(static_cast<double>(sample)+0.5)*length/
-				static_cast<double>(samples);double sum=0.0,sumAbs=0.0;
+			const double location=(static_cast<double>(sample)+2.5)*width;
+			double sum=0.0,sumAbs=0.0;
 			for(std::size_t cell=0u;cell<source;++cell){double weight=0.0;
 				const double low=static_cast<double>(cell)*sourceH,high=low+sourceH;
-				for(int image=-1;image<=1;++image){const double shift=static_cast<double>(image)*length;
-					weight+=BSplinePrimitive((high+shift-location)/width)-
-						BSplinePrimitive((low+shift-location)/width);}
+				weight=BSplinePrimitive((high-location)/width)-
+					BSplinePrimitive((low-location)/width);
 				if(weight<0.0||!std::isfinite(weight))return false;
 				if(weight!=0.0){weights[sample].push_back({cell,weight});sum+=weight;
 					sumAbs+=std::fabs(weight);}
@@ -234,7 +241,7 @@ namespace FireProductionDyadicCalibration
 	bool FilterConservative(const MethaneRunCheckpoint& geometry,
 		const std::vector<ConservativeVector>& source,const double dStar,FilteredField& result)
 	{
-		result=FilteredField();result.dimensions={{20u,20u,30u}};
+		result=FilteredField();result.dimensions={{16u,16u,26u}};
 		if(source.size()!=geometry.states.size())return false;
 		const std::array<double,3> lengths={{4.0*dStar,4.0*dStar,6.0*dStar}};
 		const double width=dStar/5.0;
@@ -311,7 +318,7 @@ namespace FireProductionDyadicCalibration
 			<<"scope short_horizon_smooth_filtered_spatial\n"
 			<<"domain_Dstar 4 4 6\nDstar_m "<<dStar<<"\n"
 			<<"tiers 5 10 6 12\nbase_dimensions 4 4 6\n"
-			<<"boundary periodic periodic periodic periodic periodic periodic\n"
+			<<"boundary pressure_open pressure_open pressure_open pressure_open pressure_open pressure_open\n"
 			<<"state analytic_affine_admissible_all_channel_taylor_green_v3\n"
 			<<"mixture_fraction 0.04_plus_0.01_sinX_sinY_sinZ\n"
 			<<"composition ambient_injected_mixture_line\n"
@@ -325,7 +332,8 @@ namespace FireProductionDyadicCalibration
 			<<"horizon_s "<<flowThrough/64.0<<"\nstep_count 8\ndt_s "<<flowThrough/512.0<<"\n"
 			<<"filter tensor_cubic_cardinal_bspline_exact_cell_integral_v1\n"
 			<<"filter_scale_m "<<dStar/5.0<<"\nfilter_support_radius_m "<<2.0*dStar/5.0<<"\n"
-			<<"observation_lattice 20 20 30\nverified_order 1.8\n"
+			<<"observation_lattice 16 16 26 tier5_indices_2_through_extent_minus_3\n"
+			<<"observation_window inset_2h5_each_side_no_boundary_extension\nverified_order 1.8\n"
 			<<"decision independent_limit_balls_overlap_and_cross_pair_refinement\n"
 			<<"golden_checkpoint_sha256 1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947\n"
 			<<"fuel_record_id "<<FireSimulationMethaneRecord::PhysicalV1().RecordId()<<"\n"
@@ -351,7 +359,7 @@ namespace FireProductionDyadicCalibration
 				state.states.size());
 			const double flowThrough=6.0*std::sqrt(state.values.characteristicDiameterM/Gravity);
 			OracleSpatialCalibrationResult result;
-			if(!RunOracleSpatialCalibrationTrajectory(state,flowThrough/512.0,8u,result,error,true)){
+			if(!RunOracleSpatialCalibrationTrajectory(state,flowThrough/512.0,8u,result,error,false)){
 				std::fprintf(stderr,"dyadic target tier %u failed: %s\n",Tiers[index],
 					error.c_str());return 169;}
 			const std::filesystem::path path=directory/(std::string("oracle_tier")+
@@ -396,7 +404,7 @@ namespace FireProductionDyadicCalibration
 				std::to_string(Tiers[index])+"_sdiv_x8.f64");
 			if(DigestFile(target)!=targetDigests[index]||!ReadCalibrationDoublePayload(target,
 				states[index].states.size(),8u,sealed)||!RunOracleSpatialCalibrationTrajectory(
-				states[index],flowThrough/512.0,8u,outputs[index],error,true))return 176;
+				states[index],flowThrough/512.0,8u,outputs[index],error,false))return 176;
 			if(outputs[index].divergenceTargetsPerS.size()!=sealed.size())return 177;
 			for(std::size_t step=0u;step<sealed.size();++step)if(sealed[step].size()!=
 				outputs[index].divergenceTargetsPerS[step].size()||std::memcmp(sealed[step].data(),

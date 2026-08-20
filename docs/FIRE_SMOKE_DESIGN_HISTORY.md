@@ -2646,3 +2646,12 @@ it was already tried and refuted here.
   partitions using record molecular weights. No solver evidence exists for
   r110. The dyadic pairs, short horizon, mollifier, `p=1.8`, and independent
   limit-ball rule remain frozen and unchanged.
+
+- **r111 structural rejection / r112 freeze (2026-08-19):** the affine-valid
+  smooth state has nonzero mean thermodynamic expansion and was correctly
+  rejected by the periodic projection compatibility gate before output. r112
+  switches only to six pressure-open sides and canonical open-MAC endpoints.
+  The fixed B-spline is evaluated on the tier-5 interior indices two cells in
+  from every side, so its complete `2h5` support never consumes a ghost or
+  wrap. No r111 solver evidence exists; all numerical acceptance rules remain
+  unchanged.

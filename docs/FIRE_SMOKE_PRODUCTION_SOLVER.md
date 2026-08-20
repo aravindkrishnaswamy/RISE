@@ -1680,6 +1680,20 @@ same smooth temperature. All r109 geometry, horizon, filter, order, and
 decision bytes remain unchanged. This v3 analytic state is sealed before any
 r111 advance.
 
+### 7.29 Expansion-compatible open instrument (r112 protocol freeze)
+
+r111's periodic first advance was structurally rejected because its smooth
+thermochemical evolution has nonzero mean `S_div`; a periodic pressure solve
+correctly requires a compatible zero mean. No r111 output was produced. r112
+uses pressure-open on all six sides and the canonical open-MAC endpoint
+storage. The analytic field, dyadic grids, horizon, and decision rule do not
+change. To keep the fixed mollifier independent of boundary extension, the
+tier-5 observation lattice is the exact interior index box
+`[2,nx-3] x [2,ny-3] x [2,nz-3]`, dimensions `(16,16,26)`; its cubic
+B-spline support lies wholly inside the physical domain, so only physical cell
+integrals contribute. This boundary/window choice is sealed before any r112
+advance.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
